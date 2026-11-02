@@ -8,7 +8,6 @@ package tui
 // belongs behind acpclient.
 var boundaryAllowlist = map[string][]string{
 	"agents/panel.go":                {"config.SaveProjectConfig", "marshal/internal/tools/registry"},
-	"approval.go":                    {"marshal/internal/app/session"},
 	"browse_inspect.go":              {"marshal/internal/commands"},
 	"commands_dispatch.go":           {"marshal/internal/app/session", "marshal/internal/pipeline", "marshal/internal/worktree"},
 	"connect/connect.go":             {"marshal/internal/app/presetsetup", "marshal/internal/llm/modelcatalog", "marshal/internal/llm/provider", "marshal/internal/oauth"},
@@ -27,7 +26,7 @@ var boundaryAllowlist = map[string][]string{
 	"mcp.go":                         {"marshal/internal/app/session", "marshal/internal/commands", "marshal/internal/credentials", "marshal/internal/oauth"},
 	"memory/entries.go":              {"marshal/internal/db"},
 	"memory/panel.go":                {"marshal/internal/db"},
-	"model.go":                       {"config.DataDir", "config.ProjectConfigPath", "config.SaveProjectConfig", "config.SaveUserConfigPresets", "config.SaveUserConfigProviders", "config.SaveUserConfigRule", "config.SaveUserConfigValue", "config.SaveVerifyCommands", "config.UserConfigPath", "marshal/internal/agent/swarm", "marshal/internal/app/presetsetup", "marshal/internal/app/session", "marshal/internal/commands", "marshal/internal/db", "marshal/internal/llm/provider", "marshal/internal/llm/provider/modelcache", "marshal/internal/permissions", "marshal/internal/pipeline", "marshal/internal/postmortem", "marshal/internal/pubsub", "marshal/internal/sddauthor", "marshal/internal/sddplans", "marshal/internal/skills", "marshal/internal/tools/registry", "marshal/internal/trust", "marshal/internal/viewmodel", "marshal/internal/watch"},
+	"model.go":                       {"config.DataDir", "config.ProjectConfigPath", "config.SaveProjectConfig", "config.SaveUserConfigPresets", "config.SaveUserConfigProviders", "config.SaveUserConfigValue", "config.SaveVerifyCommands", "config.UserConfigPath", "marshal/internal/agent/swarm", "marshal/internal/app/presetsetup", "marshal/internal/app/session", "marshal/internal/commands", "marshal/internal/db", "marshal/internal/llm/provider", "marshal/internal/llm/provider/modelcache", "marshal/internal/pipeline", "marshal/internal/postmortem", "marshal/internal/pubsub", "marshal/internal/sddauthor", "marshal/internal/sddplans", "marshal/internal/skills", "marshal/internal/tools/registry", "marshal/internal/trust", "marshal/internal/viewmodel", "marshal/internal/watch"},
 	"model_options.go":               {"config.SaveUserConfigPresets", "config.UserConfigPath", "marshal/internal/app/session", "marshal/internal/llm/provider"},
 	"notice.go":                      {"marshal/internal/app/session", "marshal/internal/llm/provider", "marshal/internal/oauth"},
 	"plugins/panel.go":               {"marshal/internal/app/session", "marshal/internal/plugins"},
@@ -44,9 +43,8 @@ var boundaryAllowlist = map[string][]string{
 	"settings/state.go":              {"marshal/internal/llm/provider"},
 	"skills/panel.go":                {"config.SaveUserConfigValue", "config.UserConfigPath", "config.UserDir", "marshal/internal/app/session", "marshal/internal/skills"},
 	"status.go":                      {"marshal/internal/app/session"},
-	"steps.go":                       {"marshal/internal/app/session", "marshal/internal/viewmodel"},
+	"steps.go":                       {"marshal/internal/viewmodel"},
 	"todos.go":                       {"marshal/internal/app/session", "marshal/internal/tools/native", "marshal/internal/viewmodel"},
-	"toolnames.go":                   {"marshal/internal/viewmodel"},
 	"transcript.go":                  {"marshal/internal/app/session"},
 	"trustpanel/trustpanel.go":       {"marshal/internal/trust"},
 	"view.go":                        {"marshal/internal/viewmodel"},

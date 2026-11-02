@@ -93,6 +93,14 @@ var movedStateReads = map[string]string{
 	// the backup and logs the audit row.
 	"RollbackBackup": "4",
 	"LogToolCall":    "4",
+
+	// Approvals read Pending and answer through AnswerApproval since 4: the
+	// session lists every open approval, the form holds the wire request, and
+	// the adapter derives the forced deny and the standing rules.
+	"PendingApproval":    "4",
+	"SetPendingApproval": "4",
+	"ResolveApproval":    "4",
+	"ClearPrompt":        "4",
 }
 
 // movedReadSites returns one "<line>\t<Name>" entry per selector X.Sel in f

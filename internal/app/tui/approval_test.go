@@ -31,12 +31,12 @@ func keyPress(key string) tea.KeyPressMsg {
 }
 
 func TestApprovalDialogRendersDiffAsTintedBlock(t *testing.T) {
-	tc := &session.PendingToolCall{
-		Name: "file.write_patch",
+	a := acpwire.ApprovalRequest{
+		Tool: "file.write_patch",
 		Args: `{"path":"a.go"}`,
 		Diff: "--- a/a.go\n+++ b/a.go\n@@ -1,1 +1,1 @@\n-old\n+new\n",
 	}
-	am := newApprovalModel(tc, acpwire.Sandbox{}, false, 160)
+	am := newApprovalModel(a, acpwire.Sandbox{}, false, 160)
 	view := am.View()
 	// The diff should appear above the form.
 	if !strings.Contains(view, "old") || !strings.Contains(view, "new") {
@@ -51,11 +51,11 @@ func TestApprovalDialogRendersDiffAsTintedBlock(t *testing.T) {
 }
 
 func TestApprovalDialogNoDiffWhenEmpty(t *testing.T) {
-	tc := &session.PendingToolCall{
-		Name: "shell.run",
+	a := acpwire.ApprovalRequest{
+		Tool: "shell.run",
 		Args: `{"command":"ls"}`,
 	}
-	am := newApprovalModel(tc, acpwire.Sandbox{}, false, 160)
+	am := newApprovalModel(a, acpwire.Sandbox{}, false, 160)
 	view := am.View()
 	// No diff → just the warning line and selector.
 	if strings.Contains(view, "───") {
@@ -65,12 +65,7 @@ func TestApprovalDialogNoDiffWhenEmpty(t *testing.T) {
 
 func TestApprovalSubFormMarksDoneWithoutDispatching(t *testing.T) {
 	ch := make(chan session.UserApprovalDecision, 1)
-	tc := &session.PendingToolCall{
-		Name:         "shell.run",
-		Args:         `{"command":"ls"}`,
-		ResponseChan: ch,
-	}
-	am := newApprovalModel(tc, acpwire.Sandbox{}, false, 160)
+	am := newApprovalModel(acpwire.ApprovalRequest{Tool: "shell.run", Args: `{"command":"ls"}`}, acpwire.Sandbox{}, false, 160)
 
 	// Double Esc should mark done + deny without writing to the channel.
 	am, _ = am.Update(keyPress("esc"))
@@ -91,7 +86,7 @@ func TestApprovalSubFormMarksDoneWithoutDispatching(t *testing.T) {
 	}
 
 	// Reset and test the two-enter confirm path.
-	am2 := newApprovalModel(tc, acpwire.Sandbox{}, false, 160)
+	am2 := newApprovalModel(acpwire.ApprovalRequest{Tool: "shell.run", Args: `{"command":"ls"}`}, acpwire.Sandbox{}, false, 160)
 	am2, _ = am2.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // arm
 	if am2.IsDone() {
 		t.Fatal("first enter should not set done")
@@ -111,8 +106,8 @@ func TestApprovalSubFormMarksDoneWithoutDispatching(t *testing.T) {
 }
 
 func TestEscRequiresDoublePressToDeny(t *testing.T) {
-	am := newApprovalModel(&session.PendingToolCall{
-		Name: "shell.run",
+	am := newApprovalModel(acpwire.ApprovalRequest{
+		Tool: "shell.run",
 		Args: `{"command":"ls"}`,
 	}, acpwire.Sandbox{}, false, 160)
 	am, _ = am.Update(keyPress("esc"))
@@ -126,8 +121,8 @@ func TestEscRequiresDoublePressToDeny(t *testing.T) {
 }
 
 func TestEscAfterOtherKeyResetsPendingDeny(t *testing.T) {
-	am := newApprovalModel(&session.PendingToolCall{
-		Name: "shell.run",
+	am := newApprovalModel(acpwire.ApprovalRequest{
+		Tool: "shell.run",
 		Args: `{"command":"ls"}`,
 	}, acpwire.Sandbox{}, false, 160)
 	am, _ = am.Update(keyPress("esc"))
@@ -141,8 +136,8 @@ func TestEscAfterOtherKeyResetsPendingDeny(t *testing.T) {
 // advertises: Escape always disarms an armed action, so the next Enter arms
 // again instead of confirming the action the user was refusing.
 func TestApprovalEscDisarmsPendingSubmit(t *testing.T) {
-	am := newApprovalModel(&session.PendingToolCall{
-		Name: "shell.run",
+	am := newApprovalModel(acpwire.ApprovalRequest{
+		Tool: "shell.run",
 		Args: `{"command":"ls"}`,
 	}, acpwire.Sandbox{}, false, 160)
 
@@ -175,8 +170,8 @@ func TestApprovalEscDisarmsPendingSubmit(t *testing.T) {
 // included because it is a selectable decision like any other when a backup
 // exists.
 func TestApprovalEscDisarmsEveryChoice(t *testing.T) {
-	tc := &session.PendingToolCall{Name: "shell.run", Args: `{"command":"ls"}`}
-	candidates := newApprovalModel(tc, acpwire.Sandbox{}, true, 160).candidates
+	a := acpwire.ApprovalRequest{Tool: "shell.run", Args: `{"command":"ls"}`}
+	candidates := newApprovalModel(a, acpwire.Sandbox{}, true, 160).candidates
 	have := map[approvalChoice]bool{}
 	for _, c := range candidates {
 		have[c] = true
@@ -190,7 +185,7 @@ func TestApprovalEscDisarmsEveryChoice(t *testing.T) {
 	}
 
 	for i, c := range candidates {
-		am := newApprovalModel(tc, acpwire.Sandbox{}, true, 160)
+		am := newApprovalModel(a, acpwire.Sandbox{}, true, 160)
 		am.selected, am.choice = i, c
 		am, _ = am.Update(keyPress("enter"))
 		if !am.submitPending {
@@ -222,7 +217,7 @@ func TestApprovalNavigationDisarmsPendingSubmit(t *testing.T) {
 		"left arrow":  {Code: tea.KeyLeft},
 		"mnemonic":    {Code: 'd', Text: "d"},
 	} {
-		am := newApprovalModel(&session.PendingToolCall{Name: "shell.run", Args: `{"command":"ls"}`},
+		am := newApprovalModel(acpwire.ApprovalRequest{Tool: "shell.run", Args: `{"command":"ls"}`},
 			acpwire.Sandbox{}, false, 160)
 		if name == "left arrow" {
 			am, _ = am.Update(tea.KeyPressMsg{Code: tea.KeyRight})
@@ -239,11 +234,11 @@ func TestApprovalNavigationDisarmsPendingSubmit(t *testing.T) {
 }
 
 func TestApprovalDialogLabelsContainFlatSelector(t *testing.T) {
-	tc := &session.PendingToolCall{
-		Name: "shell.run",
+	a := acpwire.ApprovalRequest{
+		Tool: "shell.run",
 		Args: `{"command":"ls"}`,
 	}
-	am := newApprovalModel(tc, acpwire.Sandbox{}, false, 160)
+	am := newApprovalModel(a, acpwire.Sandbox{}, false, 160)
 	view := ansi.Strip(am.View())
 	for _, want := range []string{"⚠", "▸ a allow", "1/5"} {
 		if !strings.Contains(view, want) {
@@ -270,11 +265,11 @@ func TestApprovalDialogLabelsContainFlatSelector(t *testing.T) {
 }
 
 func TestApprovalNavigatesHorizontally(t *testing.T) {
-	tc := &session.PendingToolCall{
-		Name: "shell.run",
+	a := acpwire.ApprovalRequest{
+		Tool: "shell.run",
 		Args: `{"command":"ls"}`,
 	}
-	am := newApprovalModel(tc, acpwire.Sandbox{}, false, 160)
+	am := newApprovalModel(a, acpwire.Sandbox{}, false, 160)
 
 	// The choices render on one horizontal row, so ←/→ (and h/l) move the
 	// selection; ↑/↓/j/k must do nothing.
@@ -312,12 +307,12 @@ func TestApprovalNavigatesHorizontally(t *testing.T) {
 }
 
 func TestApprovalViewHasNoRail(t *testing.T) {
-	tc := &session.PendingToolCall{
-		Name: "file.write_patch",
+	a := acpwire.ApprovalRequest{
+		Tool: "file.write_patch",
 		Args: `{"path":"a.go"}`,
 		Diff: "--- a/a.go\n+++ b/a.go\n@@ -1,1 +1,1 @@\n-old\n+new\n",
 	}
-	am := newApprovalModel(tc, acpwire.Sandbox{}, false, 160)
+	am := newApprovalModel(a, acpwire.Sandbox{}, false, 160)
 	view := stripANSI(am.View())
 	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
 	if len(lines) < 3 {
@@ -345,7 +340,7 @@ func TestApprovalMnemonicKeysSelectChoices(t *testing.T) {
 		{"A", choiceAlways},
 		{"s", choiceSessionAllow},
 	} {
-		am := newApprovalModel(&session.PendingToolCall{Name: "shell.run"}, acpwire.Sandbox{}, false, 80)
+		am := newApprovalModel(acpwire.ApprovalRequest{Tool: "shell.run"}, acpwire.Sandbox{}, false, 80)
 		am, _ = am.Update(keyPress(tc.key))
 		if am.choice != tc.want {
 			t.Errorf("key %q selected %v, want %v", tc.key, am.choice, tc.want)
@@ -353,17 +348,18 @@ func TestApprovalMnemonicKeysSelectChoices(t *testing.T) {
 	}
 }
 
-// shell.sudo is deliberately non-bypassable: an always-allow rule would let a later command run as root with no authentication.
+// A forced prompt hides the standing choices: the wire says so, and the form
+// offers only allow, deny and edit.
 func TestForcedPromptsHideAlwaysAndSession(t *testing.T) {
-	for _, tc := range []*session.PendingToolCall{
-		{Name: "shell.sudo"},
-		{Name: "agent.run", Risk: "model-cost-consent"},
-		{Name: "file.write", Reason: "mode-elevation: edit requires write access"},
+	for _, a := range []acpwire.ApprovalRequest{
+		{Tool: "shell.sudo", Forced: true},
+		{Tool: "agent.run", Risk: "model-cost-consent", Forced: true},
+		{Tool: "file.write", Reason: "mode-elevation: edit requires write access", Forced: true},
 	} {
-		am := newApprovalModel(tc, acpwire.Sandbox{}, false, 80)
+		am := newApprovalModel(a, acpwire.Sandbox{}, false, 80)
 		for _, c := range am.candidates {
 			if c == choiceAlways || c == choiceSessionAllow {
-				t.Errorf("%s must not offer %v", tc.Name, c)
+				t.Errorf("%s must not offer %v", a.Tool, c)
 			}
 		}
 	}
@@ -371,7 +367,7 @@ func TestForcedPromptsHideAlwaysAndSession(t *testing.T) {
 
 // Approve, deny and edit are always available.
 func TestForcedPromptsKeepCoreChoices(t *testing.T) {
-	am := newApprovalModel(&session.PendingToolCall{Name: "shell.sudo"}, acpwire.Sandbox{}, false, 80)
+	am := newApprovalModel(acpwire.ApprovalRequest{Tool: "shell.sudo", Forced: true}, acpwire.Sandbox{}, false, 80)
 	have := map[approvalChoice]bool{}
 	for _, c := range am.candidates {
 		have[c] = true
@@ -386,7 +382,7 @@ func TestForcedPromptsKeepCoreChoices(t *testing.T) {
 // A mnemonic for a filtered-out choice must do nothing, not select an
 // absent option.
 func TestFilteredMnemonicIsInert(t *testing.T) {
-	am := newApprovalModel(&session.PendingToolCall{Name: "shell.sudo"}, acpwire.Sandbox{}, false, 80)
+	am := newApprovalModel(acpwire.ApprovalRequest{Tool: "shell.sudo", Forced: true}, acpwire.Sandbox{}, false, 80)
 	before := am.choice
 	am, _ = am.Update(keyPress("A"))
 	if am.choice != before {
@@ -412,10 +408,12 @@ func TestApprovalReviewShowsOperationAndReason(t *testing.T) {
 	m := testModel(state, WithHomeDir(t.TempDir()),
 		WithAuthResolver(newMemAuth()), WithOpenBrowser(func(string) error { return nil }))
 	m, _ = press(m, tea.WindowSizeMsg{Width: 100, Height: 32})
-	// The requester and the model's own "why" come from the step; supply them
-	// the way handleApproval does, then assert on the composed frame.
-	m.approvalModel = newApprovalModel(tc, acpwire.Sandbox{}, false, max(m.leftWidth-4, 30),
-		approvalWhy{owner: "reviewer", why: "fix the failing test"})
+	// The requester and the model's own "why" ride on the wire; supply them as
+	// the adapter does, then assert on the composed frame.
+	a := m.sess.Pending().Approvals[0]
+	a.Actor = "reviewer"
+	a.Why = "fix the failing test"
+	m.approvalModel = newApprovalModel(a, acpwire.Sandbox{}, false, max(m.leftWidth-4, 30))
 	m.syncPromptReviewHeights()
 
 	raw := m.viewString()
@@ -736,7 +734,8 @@ func TestApprovalReviewKeepsTranscriptNavigation(t *testing.T) {
 	state.SetPendingApproval(tc)
 	// Any ordinary key rebuilds the prompt for the new pending request.
 	m, _ = press(m, tea.KeyPressMsg{Code: tea.KeyDown})
-	if m.approvalModel == nil || m.approvalModel.tc.ID != tc.ID {
+	resentKey := m.sess.Pending().Approvals[0].Key
+	if m.approvalModel == nil || m.approvalModel.a.Key != resentKey {
 		t.Fatal("setup: the prompt was not rebuilt for the re-sent request")
 	}
 	m, _ = press(m, tea.KeyPressMsg{Code: tea.KeyPgDown})
@@ -745,8 +744,9 @@ func TestApprovalReviewKeepsTranscriptNavigation(t *testing.T) {
 	}
 	state.SetPendingApproval(tc2)
 	m, _ = press(m, tea.KeyPressMsg{Code: tea.KeyDown})
-	if m.approvalModel.tc.ID != tc2.ID {
-		t.Fatalf("the replacement request did not rebuild the prompt: %q", m.approvalModel.tc.ID)
+	replacementKey := m.sess.Pending().Approvals[0].Key
+	if m.approvalModel.a.Key != replacementKey {
+		t.Fatalf("the replacement request did not rebuild the prompt: %q", m.approvalModel.a.Key)
 	}
 	if m.approvalModel.review.offset != 0 {
 		t.Fatalf("the replacement request resumed the old review offset: %d", m.approvalModel.review.offset)
@@ -782,7 +782,7 @@ func TestApprovalReviewKeepsTranscriptNavigation(t *testing.T) {
 }
 
 func TestApprovalViewShowsMnemonicHints(t *testing.T) {
-	am := newApprovalModel(&session.PendingToolCall{Name: "shell.run"}, acpwire.Sandbox{}, false, 80)
+	am := newApprovalModel(acpwire.ApprovalRequest{Tool: "shell.run"}, acpwire.Sandbox{}, false, 80)
 	for _, want := range []struct {
 		key   string
 		label string

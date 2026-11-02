@@ -989,11 +989,11 @@ func formatElapsed(d time.Duration) string {
 	return fmt.Sprintf("%dm %ds", int(d.Minutes()), int(d.Seconds())%60)
 }
 
-func riskText(tc *session.PendingToolCall) string {
-	if tc.Risk != "" {
-		return tc.Risk
+func riskText(a acpwire.ApprovalRequest) string {
+	if a.Risk != "" {
+		return a.Risk
 	}
-	return tc.Reason
+	return a.Reason
 }
 
 // sandboxIsolationText renders an honest one-line description of the active
@@ -1021,20 +1021,17 @@ func sandboxIsolationText(sb acpwire.Sandbox) string {
 	}
 }
 
-func renderApprovalPanel(tc *session.PendingToolCall, sb acpwire.Sandbox, width int, why ...approvalWhy) string {
-	var w approvalWhy
-	if len(why) > 0 {
-		w = why[0]
-	}
-	tc = shownToolCall(tc)
+func renderApprovalPanel(a acpwire.ApprovalRequest, sb acpwire.Sandbox, width int) string {
+	w := approvalWhyOf(a)
+	a = shownApproval(a)
 	var b strings.Builder
 	headParts := []string{}
-	if tc.Name == "shell.run" {
-		headParts = append(headParts, tc.Command)
+	if a.Tool == "shell.run" {
+		headParts = append(headParts, a.Command)
 	} else {
-		headParts = append(headParts, tc.Name)
+		headParts = append(headParts, a.Tool)
 	}
-	headParts = append(headParts, riskText(tc))
+	headParts = append(headParts, riskText(a))
 	if iso := sandboxIsolationText(sb); iso != "" {
 		headParts = append(headParts, iso)
 	}
@@ -1052,7 +1049,7 @@ func renderApprovalPanel(tc *session.PendingToolCall, sb acpwire.Sandbox, width 
 		b.WriteString("\n")
 	}
 
-	for _, line := range []string{w.ownerLine(tc), w.whyLine()} {
+	for _, line := range []string{w.ownerLine(a), w.whyLine()} {
 		if line == "" {
 			continue
 		}
@@ -1070,8 +1067,8 @@ func renderApprovalPanel(tc *session.PendingToolCall, sb acpwire.Sandbox, width 
 	// Reason is a separate fact from Risk: riskText above shows whichever
 	// is set (preferring Risk), but both can be present and both matter —
 	// the cost-consent prompt's sentence is the reason, not the risk label.
-	if tc.Reason != "" {
-		for i, wl := range strings.Split(ansi.Wrap(tc.Reason, cw, WrapBreakpoints), "\n") {
+	if a.Reason != "" {
+		for i, wl := range strings.Split(ansi.Wrap(a.Reason, cw, WrapBreakpoints), "\n") {
 			if i == 0 {
 				b.WriteString(gutterPrefix(" ", warningColor))
 			} else {

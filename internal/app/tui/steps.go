@@ -12,7 +12,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/acpwire"
-	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/strutil"
@@ -562,8 +561,6 @@ func stepFailed(rows []*acpwire.WireNode) bool {
 	return false
 }
 
-func stepOwner(st session.Step) string { return viewmodel.StepOwner(st) }
-
 // stepModel is "model @ provider" only when it differs from the active route:
 // a step on the session's own model adds nothing the status line lacks.
 func stepModel(model, provider, routeModel, routeProvider string) string {
@@ -662,15 +659,6 @@ func renderMeta(p metaParts) (string, int) {
 	return strings.Join(styled, mutedStyle().Render(sep)), ansi.StringWidth(strings.Join(plain, sep))
 }
 
-// firstSentence splits s at the first ". ", "! ", "? " or newline that comes
-// after at least 8 runes. A sentence-final mark at the very end of s stays
-// with the head.
-func firstSentence(s string) (head, rest string) { return strutil.FirstSentence(s) }
-
-// stripEmphasis removes markdown emphasis and code markers from a headline,
-// which is rendered as plain text.
-func stripEmphasis(s string) string { return strutil.StripEmphasis(s) }
-
 // thoughtMeta is the head's "thought 2s": how long the beat reasoned, or
 // nothing when it did not.
 func thoughtMeta(ts []acpwire.WireThought) string {
@@ -753,25 +741,4 @@ func actorColor(role string) color.Color {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(role))
 	return palette[int(h.Sum32())%len(palette)]
-}
-
-// approvalWhyFor looks up who is asking and why for a pending approval: the
-// owner of the requesting step and the first sentence of that step's
-// narration. A call from a step with no narration gets no why line.
-//
-// A step ID is only meaningful in the State that issued it, so owner is the
-// state holding the pending call: the parent's, or a running child's.
-func (m Model) approvalWhyFor(owner *session.State, tc *session.PendingToolCall) approvalWhy {
-	if tc == nil || tc.StepID == 0 || owner == nil {
-		return approvalWhy{}
-	}
-	st, ok := owner.Step(tc.StepID)
-	if !ok {
-		return approvalWhy{}
-	}
-	w := approvalWhy{owner: stepOwner(st)}
-	if head, _ := firstSentence(owner.StepNarration(tc.StepID)); head != "" {
-		w.why = stripEmphasis(head)
-	}
-	return w
 }

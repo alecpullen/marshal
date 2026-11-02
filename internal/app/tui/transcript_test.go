@@ -353,8 +353,8 @@ func TestUserMessageUsesCoralGutter(t *testing.T) {
 }
 
 func TestApprovalPanelHasNoBackgroundFill(t *testing.T) {
-	tc := &session.PendingToolCall{Name: "shell.run", Command: "ls", Risk: "reads files"}
-	out := renderApprovalPanel(tc, acpwire.Sandbox{Backend: "restricted"}, 50)
+	a := acpwire.ApprovalRequest{Tool: "shell.run", Command: "ls", Risk: "reads files"}
+	out := renderApprovalPanel(a, acpwire.Sandbox{Backend: "restricted"}, 50)
 	if strings.Contains(out, ";235m") || strings.Contains(out, "48;5;235") {
 		t.Fatalf("approval panel still emits panel background fill:\n%q", out)
 	}
@@ -539,21 +539,6 @@ func TestActiveToolCallRendersOutputAllWhenUnderSixLines(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output missing %q: %q", want, out)
 		}
-	}
-}
-
-func TestDisplayToolNameKnown(t *testing.T) {
-	if got := DisplayToolName("file.write_patch"); got != "Edit file" {
-		t.Fatalf("DisplayToolName(file.write_patch) = %q, want %q", got, "Edit file")
-	}
-	if got := DisplayToolName("shell.run"); got != "Run command" {
-		t.Fatalf("DisplayToolName(shell.run) = %q, want %q", got, "Run command")
-	}
-}
-
-func TestDisplayToolNameUnknownFallback(t *testing.T) {
-	if got := DisplayToolName("custom.thing"); got != "Custom thing" {
-		t.Fatalf("DisplayToolName(custom.thing) = %q, want %q", got, "Custom thing")
 	}
 }
 

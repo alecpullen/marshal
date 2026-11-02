@@ -89,6 +89,65 @@ func recordingModel(t *testing.T, width, height int, rec *answerRecorder) Model 
 	return m
 }
 
+// TestTheApprovalFormAnswersThroughTheSession pins that the approval form, its
+// standing choices and the edit sub-mode all answer through the session: every
+// decision reaches AnswerApproval carrying the pending request's key, and the
+// edit rides as a once answer's edited value.
+func TestTheApprovalFormAnswersThroughTheSession(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	rec := &answerRecorder{}
+	m := testModelRecording(state, rec)
+	m.resize(80, 24)
+	m.refreshViewport()
+
+	// setApproval puts a fresh shell.run approval on the state and returns the
+	// key the session gave it.
+	setApproval := func(t *testing.T) string {
+		t.Helper()
+		state.SetPendingApproval(&session.PendingToolCall{
+			Name:    "shell.run",
+			Command: "go test ./...",
+			Risk:    "command",
+		})
+		pending := m.sess.Pending().Approvals
+		if len(pending) != 1 {
+			t.Fatalf("pending approvals = %+v, want one", pending)
+		}
+		return pending[0].Key
+	}
+
+	// Approve: two Enters confirm the default selection.
+	approveKey := setApproval(t)
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	// Always: the mnemonic selects the standing choice, then two Enters confirm.
+	alwaysKey := setApproval(t)
+	m = sendKey(m, tea.KeyPressMsg{Code: 'A', Text: "A"})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	// Edit: the edit sub-mode takes the typed value as a once answer's edit.
+	editKey := setApproval(t)
+	m = sendKey(m, tea.KeyPressMsg{Code: 'e', Text: "e"})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.approvalEdit == nil {
+		t.Fatal("the edit sub-mode did not open")
+	}
+	m.approvalEdit.input.SetValue("go test ./internal/...")
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	want := []recordedApproval{
+		{key: approveKey, answer: acpwire.ApprovalAnswer{Decision: acpwire.ApprovalOnce}},
+		{key: alwaysKey, answer: acpwire.ApprovalAnswer{Decision: acpwire.ApprovalAlways}},
+		{key: editKey, answer: acpwire.ApprovalAnswer{Decision: acpwire.ApprovalOnce, Edited: "go test ./internal/..."}},
+	}
+	if !slices.Equal(rec.approvals, want) {
+		t.Fatalf("recorded approvals = %+v, want %+v", rec.approvals, want)
+	}
+}
+
 // TestTheQuestionFormAnswersThroughTheSession pins that the inline question
 // form answers through the session: the recorder sees one question answer,
 // carrying the registered request's key and the answers the form produced.

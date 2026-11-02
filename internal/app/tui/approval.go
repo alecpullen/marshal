@@ -12,7 +12,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/acpwire"
-	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/huhtheme"
 	"marshal/internal/diffview"
@@ -65,7 +64,7 @@ func indexOf(s []approvalChoice, v approvalChoice) int {
 // the command/risk/sandbox summary that renderApprovalPanel used to show.
 type approvalModel struct {
 	form   *huh.Form
-	tc     *session.PendingToolCall
+	a      acpwire.ApprovalRequest
 	choice approvalChoice
 	// review is the bounded, pageable window over the sanitized operation the
 	// prompt is asking the user to authorise.
@@ -91,25 +90,6 @@ type approvalModel struct {
 	// Esc within 1.5s confirms the deny. Any other key resets it to zero.
 	pendingDenyAt time.Time
 	sb            acpwire.Sandbox
-}
-
-// forcedPromptClass reports whether a prompt is one the user must answer
-// each time. Always-allow would persist a bypass for a class deliberately
-// made non-bypassable, and session-allow would be a silent no-op — session
-// rules are only consulted for shell.run/test.run
-// (internal/tools/policy/policy.go).
-//
-// shell.sudo is in this class: privileged execution is gated on a per-command
-// password prompt, so an always-allow would let a later command run as root
-// with no authentication at all.
-func forcedPromptClass(tc *session.PendingToolCall) bool {
-	if tc == nil {
-		return false
-	}
-	return tc.Name == "shell.sudo" ||
-		tc.Risk == "model-cost-consent" ||
-		tc.ExactCommandApproval ||
-		isModeElevationApproval(tc)
 }
 
 // mnemonicChoice maps the mnemonic keys advertised in approvalActionRow
@@ -141,20 +121,25 @@ type approvalWhy struct {
 	why   string
 }
 
+// approvalWhyOf is the who-and-why an approval prompt shows, from the wire.
+func approvalWhyOf(a acpwire.ApprovalRequest) approvalWhy {
+	return approvalWhy{owner: a.Actor, why: a.Why}
+}
+
 // ownerLine is "<owner> wants to run a command", or "… to <tool>".
-func (w approvalWhy) ownerLine(tc *session.PendingToolCall) string {
+func (w approvalWhy) ownerLine(a acpwire.ApprovalRequest) string {
 	if w.owner == "" {
 		return ""
 	}
 	owner := strutil.ShowControls(w.owner)
-	if tc.Name == "shell.run" {
+	if a.Tool == "shell.run" {
 		return owner + " wants to run a command"
 	}
-	return owner + " wants to " + strings.ToLower(DisplayToolName(tc.Name))
+	return owner + " wants to " + strings.ToLower(a.ToolLabel)
 }
 
 // whyLine quotes the step's narration, which the model wrote, so its
-// controls are shown like the command's (see shownToolCall).
+// controls are shown like the command's (see shownApproval).
 func (w approvalWhy) whyLine() string {
 	if w.why == "" {
 		return ""
@@ -162,34 +147,30 @@ func (w approvalWhy) whyLine() string {
 	return "why  \"" + strutil.ShowControls(w.why) + "\""
 }
 
-// shownToolCall is tc as an approval prompt displays it. The prompt is what
+// shownApproval is a as an approval prompt displays it. The prompt is what
 // the user authorises, and every text field in it is model-written — the
 // command, the arguments, the patch behind the diff — or can quote it, so a
 // control character in any of them (ESC, CR, a bidi override) could erase,
 // overwrite or reorder what the user reads. Each one is shown as a visible
 // escape instead (strutil.ShowControls). Only the renderers read the copy:
-// the edit prefill, saved rules and the decision use tc itself.
-func shownToolCall(tc *session.PendingToolCall) *session.PendingToolCall {
-	return &session.PendingToolCall{
-		ID:      tc.ID,
-		Name:    tc.Name,
-		Args:    strutil.ShowControls(tc.Args),
-		Command: strutil.ShowControls(tc.Command),
-		Risk:    strutil.ShowControls(tc.Risk),
-		Reason:  strutil.ShowControls(tc.Reason),
-		Diff:    strutil.ShowControls(tc.Diff),
-		Schema:  strutil.ShowControls(tc.Schema),
-		StepID:  tc.StepID,
-	}
+// the edit prefill and the decision use the request itself.
+func shownApproval(a acpwire.ApprovalRequest) acpwire.ApprovalRequest {
+	a.Args = strutil.ShowControls(a.Args)
+	a.Command = strutil.ShowControls(a.Command)
+	a.Risk = strutil.ShowControls(a.Risk)
+	a.Reason = strutil.ShowControls(a.Reason)
+	a.Diff = strutil.ShowControls(a.Diff)
+	a.Schema = strutil.ShowControls(a.Schema)
+	return a
 }
 
-func newApprovalModel(tc *session.PendingToolCall, sb acpwire.Sandbox, hasBackup bool, width int, why ...approvalWhy) *approvalModel {
+func newApprovalModel(a acpwire.ApprovalRequest, sb acpwire.Sandbox, hasBackup bool, width int) *approvalModel {
 	opts := []huh.Option[approvalChoice]{
 		huh.NewOption("Approve", choiceApprove),
 		huh.NewOption("Deny", choiceDeny),
 		huh.NewOption("Edit command/args", choiceEdit),
 	}
-	if !forcedPromptClass(tc) {
+	if !a.Forced {
 		opts = append(opts,
 			huh.NewOption("Always allow (save to config)", choiceAlways),
 			huh.NewOption("Allow this session", choiceSessionAllow),
@@ -202,22 +183,18 @@ func newApprovalModel(tc *session.PendingToolCall, sb acpwire.Sandbox, hasBackup
 	for i, o := range opts {
 		candidates[i] = o.Value
 	}
-	var w approvalWhy
-	if len(why) > 0 {
-		w = why[0]
-	}
 	am := &approvalModel{
-		tc:         tc,
+		a:          a,
 		width:      width,
 		choice:     choiceApprove,
 		candidates: candidates,
 		selected:   0,
 		sb:         sb,
-		why:        w,
+		why:        approvalWhyOf(a),
 		bodyHeight: defaultApprovalBodyHeight,
 	}
 
-	summary := approvalSummary(tc, sb, width, w)
+	summary := approvalSummary(a, sb, width)
 
 	sel := huh.NewSelect[approvalChoice]().
 		Title(summary).
@@ -376,28 +353,28 @@ func (am *approvalModel) contentWidth() int {
 }
 
 // reviewLines builds the sanitized operation the prompt asks the user to
-// authorise, as logical lines. Every field comes from shownToolCall, the
+// authorise, as logical lines. Every field comes from shownApproval, the
 // display safety boundary: control characters in a model-written command,
 // argument, patch or reason are shown as visible escapes instead of being
 // executed by the terminal.
 func (am *approvalModel) reviewLines() []string {
-	tc := shownToolCall(am.tc)
+	a := shownApproval(am.a)
 	lines := make([]string, 0, 12)
-	if line := am.why.ownerLine(tc); line != "" {
+	if line := am.why.ownerLine(a); line != "" {
 		lines = append(lines, line)
 	}
-	if tc.Name == "shell.run" {
+	if a.Tool == "shell.run" {
 		lines = append(lines, "Agent wants to run:")
-		if tc.Command != "" {
-			lines = append(lines, tc.Command)
+		if a.Command != "" {
+			lines = append(lines, a.Command)
 		}
 	} else {
-		lines = append(lines, "Agent wants to call tool: "+tc.Name)
-		if tc.Schema != "" {
-			lines = append(lines, "Description: "+tc.Schema)
+		lines = append(lines, "Agent wants to call tool: "+a.Tool)
+		if a.Schema != "" {
+			lines = append(lines, "Description: "+a.Schema)
 		}
-		if tc.Args != "" {
-			lines = append(lines, "Arguments: "+tc.Args)
+		if a.Args != "" {
+			lines = append(lines, "Arguments: "+a.Args)
 		}
 	}
 	if line := am.why.whyLine(); line != "" {
@@ -406,19 +383,19 @@ func (am *approvalModel) reviewLines() []string {
 	// Risk and Reason are separate facts and are shown as separate fields:
 	// riskText falls back to Reason, so a prompt with both would otherwise
 	// hide the sentence that says why the guardrail or policy fired.
-	if risk := riskText(tc); risk != "" {
+	if risk := riskText(a); risk != "" {
 		lines = append(lines, "Risk: "+risk)
 	}
-	if iso := sandboxIsolationText(am.sb); iso != "" && (tc.Name == "shell.run" || tc.Name == "test.run") {
+	if iso := sandboxIsolationText(am.sb); iso != "" && (a.Tool == "shell.run" || a.Tool == "test.run") {
 		lines = append(lines, iso)
 	}
-	if tc.Reason != "" {
-		lines = append(lines, "Reason: "+tc.Reason)
+	if a.Reason != "" {
+		lines = append(lines, "Reason: "+a.Reason)
 	}
-	if tc.Diff != "" {
+	if a.Diff != "" {
 		// The whole diff, never truncated: the review wraps long lines, so a
 		// patch line keeps its suffix instead of losing it to an ellipsis.
-		diff := diffview.Render(tc.Diff, diffview.Options{
+		diff := diffview.Render(a.Diff, diffview.Options{
 			Width:     am.contentWidth(),
 			Mode:      diffview.ModeAuto,
 			Highlight: true,
@@ -489,7 +466,7 @@ func (am *approvalModel) noticeRow() string {
 }
 
 func (am *approvalModel) View() string {
-	if am.form == nil || am.tc == nil {
+	if am.form == nil {
 		return ""
 	}
 	rows := promptReviewRows(am.reviewLines(), am.contentWidth())
@@ -522,12 +499,9 @@ func (am *approvalModel) IsDone() bool           { return am.done }
 // approvalSummary builds the multi-line title shown above the select. It
 // mirrors the body of renderApprovalPanel (command/description/arguments,
 // risk, sandbox isolation) but as plain titled text the select can render.
-func approvalSummary(tc *session.PendingToolCall, sb acpwire.Sandbox, width int, why ...approvalWhy) string {
-	var w approvalWhy
-	if len(why) > 0 {
-		w = why[0]
-	}
-	tc = shownToolCall(tc)
+func approvalSummary(a acpwire.ApprovalRequest, sb acpwire.Sandbox, width int) string {
+	w := approvalWhyOf(a)
+	a = shownApproval(a)
 	titleStyle := lipgloss.NewStyle().Foreground(warningColor).Bold(true)
 	muted := mutedStyle()
 	text := lipgloss.NewStyle()
@@ -535,23 +509,23 @@ func approvalSummary(tc *session.PendingToolCall, sb acpwire.Sandbox, width int,
 	var b strings.Builder
 	b.WriteString(titleStyle.Render(glyph.Warning + " Approval needed (←/→, enter to select)"))
 	b.WriteString("\n")
-	if line := w.ownerLine(tc); line != "" {
+	if line := w.ownerLine(a); line != "" {
 		b.WriteString(muted.Render(line))
 		b.WriteString("\n")
 	}
 
-	if tc.Name == "shell.run" {
+	if a.Tool == "shell.run" {
 		b.WriteString(muted.Render("Agent wants to run:"))
 		b.WriteString("\n")
-		b.WriteString(text.Render(tc.Command))
+		b.WriteString(text.Render(a.Command))
 	} else {
-		b.WriteString(muted.Render("Agent wants to call tool: ") + toolNameStyle().Render(tc.Name))
+		b.WriteString(muted.Render("Agent wants to call tool: ") + toolNameStyle().Render(a.Tool))
 		b.WriteString("\n")
-		if tc.Schema != "" {
-			b.WriteString(muted.Render("Description: ") + text.Render(tc.Schema))
+		if a.Schema != "" {
+			b.WriteString(muted.Render("Description: ") + text.Render(a.Schema))
 			b.WriteString("\n")
 		}
-		b.WriteString(muted.Render("Arguments: ") + text.Render(tc.Args))
+		b.WriteString(muted.Render("Arguments: ") + text.Render(a.Args))
 	}
 	if line := w.whyLine(); line != "" {
 		b.WriteString("\n")
@@ -559,8 +533,8 @@ func approvalSummary(tc *session.PendingToolCall, sb acpwire.Sandbox, width int,
 	}
 	b.WriteString("\n\n")
 	b.WriteString(riskLabelStyle().Render("Risk: "))
-	b.WriteString(text.Render(riskText(tc)))
-	if iso := sandboxIsolationText(sb); iso != "" && (tc.Name == "shell.run" || tc.Name == "test.run") {
+	b.WriteString(text.Render(riskText(a)))
+	if iso := sandboxIsolationText(sb); iso != "" && (a.Tool == "shell.run" || a.Tool == "test.run") {
 		b.WriteString("\n")
 		b.WriteString(muted.Render(iso))
 	}
@@ -570,15 +544,15 @@ func approvalSummary(tc *session.PendingToolCall, sb acpwire.Sandbox, width int,
 	// prompt's actual sentence is hidden behind its Risk label.
 	//
 	// Rendered verbatim: these strings are matched elsewhere by prefix and
-	// substring (isEnvironmentConfirm, isGuardrailDeny,
-	// isModeElevationApproval), so rewording them breaks control flow.
-	if tc.Reason != "" {
+	// substring (isEnvironmentConfirm, isGuardrailDeny), so rewording them
+	// breaks control flow.
+	if a.Reason != "" {
 		b.WriteString("\n")
 		wrapWidth := width
 		if wrapWidth < 30 {
 			wrapWidth = 80
 		}
-		b.WriteString(mutedStyle().Render(ansi.Wrap(tc.Reason, wrapWidth, WrapBreakpoints)))
+		b.WriteString(mutedStyle().Render(ansi.Wrap(a.Reason, wrapWidth, WrapBreakpoints)))
 	}
 	return b.String()
 }

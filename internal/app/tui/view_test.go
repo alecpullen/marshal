@@ -341,7 +341,7 @@ func TestInputAreaPaintsNoBackground(t *testing.T) {
 		ResponseChan: make(chan session.UserApprovalDecision, 1),
 	}
 	m.state.SetPendingApproval(tc)
-	m.approvalModel = newApprovalModel(tc, m.sess.Status().Sandbox, false, max(m.width-4, 30))
+	m.approvalModel = newApprovalModel(m.sess.Pending().Approvals[0], m.sess.Status().Sandbox, false, max(m.width-4, 30))
 	if out := m.renderInputArea(); strings.Contains(out, "48;") {
 		t.Fatalf("input area paints a background SGR while an approval is pending:\n%q", out)
 	}

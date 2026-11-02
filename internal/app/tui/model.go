@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"image/color"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -65,7 +64,6 @@ import (
 	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
-	"marshal/internal/permissions"
 	"marshal/internal/pipeline"
 	"marshal/internal/postmortem"
 	"marshal/internal/progress"
@@ -1202,8 +1200,12 @@ func (m *Model) applyNewConfig(cfg config.Config) {
 	// approved grant. RebaseInteractionConfig installs the new config with the
 	// remaining override applied and preserves the system-access flag.
 	m.state.RebaseInteractionConfig(cfg)
-	// Read the effective mode back from the session: it may differ from the
-	// configured value when an override survived the rebase.
+	m.configViewsChanged(cfg)
+}
+
+// configViewsChanged resets what the TUI caches from the config, and reloads
+// the theme: applyNewConfig's TUI half.
+func (m *Model) configViewsChanged(cfg config.Config) {
 	m.setReg = nil
 	m.setPopup = nil
 	m.lastInputForPopups = ""
@@ -1754,8 +1756,8 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 	// Eagerly build inline approval/question forms if the session already
 	// has a pending request (parent or subagent), so the first render shows
 	// the huh surface instead of the legacy fallback panels.
-	if tc, _ := m.pendingApprovalDisplay(); tc != nil {
-		m.approvalModel = newApprovalModel(tc, st.Sandbox, st.HasBackup, max(m.leftWidth-4, 30), m.approvalWhyFor(m.approvalOwner(), tc))
+	if a, ok := m.pendingApprovalDisplay(); ok {
+		m.approvalModel = newApprovalModel(a, st.Sandbox, st.HasBackup, max(m.leftWidth-4, 30))
 	}
 	// One Pending read for the three forms below.
 	pending := m.sess.Pending()
@@ -2940,7 +2942,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	//
 	// Scroll gestures are handled first so the user can review transcript
 	// history before approving a destructive command.
-	if owner, tc, label := m.pendingApprovalTarget(); tc != nil {
+	if a, ok := m.pendingApprovalTarget(); ok {
 		// A prompt the user cannot fully see must never accept a decision they
 		// could not review: below the supported minimum, behind a full-frame
 		// panel, or with no room for the body, only Escape reaches the form so
@@ -2955,7 +2957,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if k.String() != "esc" {
 					return m, nil
 				}
-				return m.handleApproval(msg, owner, tc, label)
+				return m.handleApproval(msg, a)
 			}
 		}
 		if m.handleApprovalPageKey(msg) {
@@ -2964,7 +2966,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if updated, cmd, handled := m.scrollTranscript(msg); handled {
 			return updated, cmd
 		}
-		return m.handleApproval(msg, owner, tc, label)
+		return m.handleApproval(msg, a)
 	}
 
 	// Inline question prompt: when a clarifying question is pending, route
@@ -3038,98 +3040,52 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// pendingApprovalTarget returns the state owning the pending approval the
-// user should answer next, preferring the parent session, then the first
-// running subagent with a live child state. label names the subagent for
-// display; it is empty for the parent.
+// pendingApprovalTarget returns the pending approval the user should answer
+// next, as the session lists it: the session's own first, then each running
+// subagent's, in registration order.
 //
-// Subagents() returns a slice in registration order, so the first running
-// child with a pending approval is deterministic. With parallel agent.run
-// (up to agent.max_concurrent_subagents at once), several children could
-// pend at once; answering the first-registered one is acceptable — the
-// other surfaces on the next message.
-func (m *Model) pendingApprovalTarget() (owner *session.State, tc *session.PendingToolCall, label string) {
-	if tc := m.state.PendingApproval(); tc != nil {
-		return m.state, tc, ""
+// Pending returns them in that order, so the first is deterministic. With
+// parallel agent.run (up to agent.max_concurrent_subagents at once), several
+// children could pend at once; answering the first-registered one is
+// acceptable — the other surfaces on the next message.
+func (m *Model) pendingApprovalTarget() (acpwire.ApprovalRequest, bool) {
+	approvals := m.sess.Pending().Approvals
+	if len(approvals) == 0 {
+		return acpwire.ApprovalRequest{}, false
 	}
-	for _, v := range m.state.Subagents() {
-		if v.Status != session.SubagentRunning || v.Child == nil {
-			continue
-		}
-		if tc := v.Child.PendingApproval(); tc != nil {
-			return v.Child, tc, v.Label
-		}
-	}
-	return nil, nil, ""
+	return approvals[0], true
 }
 
-// approvalOwner is the state that owns the pending approval being displayed:
-// the parent's unless a running subagent's child holds it.
-func (m *Model) approvalOwner() *session.State {
-	if owner, tc, _ := m.pendingApprovalTarget(); tc != nil {
-		return owner
-	}
-	return m.state
-}
-
-// hasPendingApproval reports whether any approval is pending — either on
-// the parent state or on a running subagent's live child state. Rendering,
-// status indicators, and keypress gating must all consult this (not just
-// the parent) so a child approval is not silently routed into an invisible
-// form.
+// hasPendingApproval reports whether any approval is pending — the session's
+// own or a running subagent's. Rendering, status indicators, and keypress
+// gating must all consult this so a child approval is not silently routed
+// into an invisible form.
 func (m *Model) hasPendingApproval() bool {
-	if m.state.PendingApproval() != nil {
-		return true
-	}
-	for _, v := range m.state.Subagents() {
-		if v.Status != session.SubagentRunning || v.Child == nil {
-			continue
-		}
-		if v.Child.PendingApproval() != nil {
-			return true
-		}
-	}
-	return false
+	return len(m.sess.Pending().Approvals) > 0
 }
 
-// pendingApprovalDisplay returns the tool call to render for the pending
-// approval the user should answer next, mirroring handleApproval's display
-// copy: a subagent approval is wrapped in a shallow copy whose reason names
-// the subagent, so the rendered panel (and the eager form) attribute the
-// request. label is the subagent name, empty for the parent. Returns nil
-// when no approval is pending.
-func (m *Model) pendingApprovalDisplay() (tc *session.PendingToolCall, label string) {
-	_, src, label := m.pendingApprovalTarget()
-	if src == nil {
-		return nil, ""
+// displayApproval is a as the dialog shows it. A subagent's approval has its
+// reason prefixed with the subagent's label and its Access mark cleared, as
+// the display copy had.
+func displayApproval(a acpwire.ApprovalRequest) acpwire.ApprovalRequest {
+	if a.SubagentID == 0 {
+		return a
 	}
-	if label == "" {
-		return src, ""
-	}
-	return &session.PendingToolCall{
-		ID:                   src.ID,
-		Name:                 src.Name,
-		Args:                 src.Args,
-		Command:              src.Command,
-		Risk:                 src.Risk,
-		StepID:               src.StepID,
-		Reason:               fmt.Sprintf("subagent %q: %s", label, src.Reason),
-		Diff:                 src.Diff,
-		Schema:               src.Schema,
-		ExactCommandApproval: src.ExactCommandApproval,
-		ResponseChan:         src.ResponseChan,
-	}, label
+	a.Reason = fmt.Sprintf("subagent %q: %s", a.Subagent, a.Reason)
+	a.Access = false
+	return a
 }
 
-// isModeElevationApproval reports whether a pending approval is an ordinary
-// forced prompt that must not offer the always/session options: a mode.request
-// call, or a file.write carrying the legacy "mode-elevation:" reason prefix.
-//
-// It classifies the prompt, not dock ownership. A typed access request is
-// presented by the accesspanel through reconciliation and never reaches the
-// generic approval model at all.
-func isModeElevationApproval(tc *session.PendingToolCall) bool {
-	return tc.Name == "mode.request" || strings.HasPrefix(tc.Reason, "mode-elevation:")
+// pendingApprovalDisplay returns the approval to render for the pending
+// approval the user should answer next: a subagent's approval names the
+// subagent, so the rendered panel (and the eager form) attribute the request.
+// Returns false when no approval is pending.
+func (m *Model) pendingApprovalDisplay() (acpwire.ApprovalRequest, bool) {
+	a, ok := m.pendingApprovalTarget()
+	if !ok {
+		return acpwire.ApprovalRequest{}, false
+	}
+	return displayApproval(a), true
 }
 
 // accessWaitingRow is the muted disclosure shown while a typed access request
@@ -3288,32 +3244,31 @@ func (m *Model) handleAccessChoice(choice acpwire.AccessChoice) {
 // approvalEdit is the isolated editor for one pending approval's command or
 // JSON arguments. It owns its own textarea, so opening, typing in, saving or
 // abandoning an edit never shares text, cursor, placeholder or paste
-// attachments with the chat composer. It remembers the exact owner and request
-// it edits: an edit whose request settled, was replaced or was interrupted is
+// attachments with the chat composer. It remembers the key of the approval it
+// edits: an edit whose request settled, was replaced or was interrupted is
 // retired instead of being allowed to settle whatever is pending now.
 type approvalEdit struct {
 	input textarea.Model
-	owner *session.State
-	call  *session.PendingToolCall
+	key   string // the approval's key
 }
 
-// newApprovalEdit builds the editor for tc, prefilled from the request. The
+// newApprovalEdit builds the editor for a, prefilled from the request. The
 // character limit is unlimited so a long command or argument blob is never
 // silently truncated.
-func newApprovalEdit(owner *session.State, tc *session.PendingToolCall, width int) *approvalEdit {
+func newApprovalEdit(a acpwire.ApprovalRequest, width int) *approvalEdit {
 	input := newComposerTextarea()
 	input.CharLimit = 0
-	if tc.Name == "shell.run" {
+	if a.Tool == "shell.run" {
 		// Command editing shows the whole command as one editable value.
 		input.Placeholder = "Edit command..."
-		input.SetValue(tc.Command)
+		input.SetValue(a.Command)
 	} else {
 		input.Placeholder = "Edit JSON arguments..."
-		input.SetValue(tc.Args)
+		input.SetValue(a.Args)
 	}
 	input.SetWidth(max(width, 1))
 	input.MoveToEnd()
-	return &approvalEdit{input: input, owner: owner, call: tc}
+	return &approvalEdit{input: input, key: a.Key}
 }
 
 // approvalEditLive reports whether the open edit is still bound to the approval
@@ -3324,8 +3279,8 @@ func (m Model) approvalEditLive() bool {
 	if ed == nil {
 		return false
 	}
-	owner, tc, _ := m.pendingApprovalTarget()
-	return tc != nil && tc == ed.call && owner == ed.owner
+	a, ok := m.pendingApprovalTarget()
+	return ok && a.Key == ed.key
 }
 
 // editingApproval reports whether an approval edit holds the input.
@@ -3340,22 +3295,19 @@ func (m *Model) retireApprovalEdit() { m.approvalEdit = nil }
 // called before the main keypress switch so huh's internal navigation messages
 // (nextFieldMsg/nextGroupMsg) round-trip back to the form.
 //
-// owner is the session.State that owns the pending approval (the parent, or
-// a running subagent's child state); tc is the pending tool call on that
-// state. source names the subagent for display and is empty for the parent.
-// The decision is always Responded on the original tc; a shallow display copy
-// with a prefixed reason is shown so the dialog names who is asking.
-func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.PendingToolCall, source string) (tea.Model, tea.Cmd) {
+// a is the pending approval as the session lists it; the decision goes back
+// through AnswerApproval on its key. A display copy whose reason names the
+// subagent is what the dialog shows.
+func (m Model) handleApproval(msg tea.Msg, a acpwire.ApprovalRequest) (tea.Model, tea.Cmd) {
 	st := m.sess.Status()
 	// A typed access request is presented by the accesspanel through
 	// reconciliation, never here: it must not create a generic approval model
 	// or consume runtime events. A raw untyped mode.request (no Access
 	// metadata) fails closed with an ordinary denial, because nothing has
 	// validated or applied what it asks for.
-	if source == "" && tc.Name == "mode.request" && tc.Access == nil {
+	if a.SubagentID == 0 && a.Tool == "mode.request" && !a.Access {
 		if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "enter" {
-			tc.Respond(session.UserApprovalDecision{Approved: false})
-			m.state.SetPendingApproval(nil)
+			_ = m.settleApproval(a, acpwire.ApprovalAnswer{Decision: acpwire.ApprovalDeny})
 			m.state.AddMessage(session.RoleSystem,
 				"mode.request was not resolved by the runtime; no capability was granted.",
 				session.ContentTypePlain)
@@ -3367,7 +3319,7 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 
 	// Edit sub-mode: an isolated editor owns the input. The chat composer and
 	// its paste attachments stay untouched underneath it, and the edit is
-	// bound to the exact owner and request it was opened for.
+	// bound to the exact approval it was opened for.
 	if m.approvalEdit != nil {
 		if !m.approvalEditLive() {
 			// The request this edit was bound to is gone: replaced, settled or
@@ -3390,10 +3342,10 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 			case "enter":
 				value := strings.TrimSpace(ed.input.Value())
 				if value != "" {
-					// Settlement goes through the canonical keyed path when the
-					// request registered one; a request that was canceled
-					// meanwhile loses the claim and settles nothing.
-					m.settleApproval(owner, tc, session.UserApprovalDecision{Approved: true, Edited: value}, nil)
+					// The session arbitrates against a steering cancellation
+					// that already owns the settlement; the error is not acted
+					// on, exactly as the other answer calls.
+					_ = m.settleApproval(a, acpwire.ApprovalAnswer{Decision: acpwire.ApprovalOnce, Edited: value})
 					m.approvalModel = nil
 					m.retireApprovalEdit()
 					m.updateViewportHeight()
@@ -3412,34 +3364,13 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 	}
 
 	// Lazily build the inline approval chooser the first time a message
-	// arrives for a pending tool call. For a subagent approval, show a
-	// display copy whose reason names the subagent, but always Respond on
-	// the original tc. The copy is built field-by-field (not a struct
-	// copy) because PendingToolCall embeds sync.Once, which must not be
-	// copied.
-	displayTC := tc
-	if source != "" {
-		// Mirror pendingApprovalDisplay so the eager form and the lazily
-		// built one attribute the request identically.
-		displayTC = &session.PendingToolCall{
-			ID:                   tc.ID,
-			Name:                 tc.Name,
-			Args:                 tc.Args,
-			Command:              tc.Command,
-			Risk:                 tc.Risk,
-			StepID:               tc.StepID,
-			Reason:               fmt.Sprintf("subagent %q: %s", source, tc.Reason),
-			Diff:                 tc.Diff,
-			Schema:               tc.Schema,
-			ExactCommandApproval: tc.ExactCommandApproval,
-			ResponseChan:         tc.ResponseChan,
-		}
-	}
-	if m.approvalModel == nil || m.approvalModel.tc.ID != displayTC.ID {
+	// arrives for a pending approval, and rebuild it when it is bound to
+	// another key.
+	if m.approvalModel == nil || m.approvalModel.a.Key != a.Key {
 		// A different pending request replaces the prompt, so the review must
 		// start at the top of the new operation rather than wherever the
 		// previous one was left scrolled.
-		m.approvalModel = newApprovalModel(displayTC, st.Sandbox, st.HasBackup, max(m.leftWidth-4, 30), m.approvalWhyFor(owner, displayTC))
+		m.approvalModel = newApprovalModel(displayApproval(a), st.Sandbox, st.HasBackup, max(m.leftWidth-4, 30))
 		m.syncPromptReviewHeights()
 	}
 	am, cmd := m.approvalModel.Update(msg)
@@ -3452,72 +3383,32 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 	m.approvalModel = nil
 	switch choice {
 	case choiceApprove:
-		m.settleApproval(owner, tc, session.UserApprovalDecision{Approved: true}, nil)
+		_ = m.settleApproval(a, acpwire.ApprovalAnswer{Decision: acpwire.ApprovalOnce})
 		m.invalidateTranscript()
 		return m, nil
 	case choiceDeny:
-		m.settleApproval(owner, tc, session.UserApprovalDecision{Approved: false}, nil)
+		_ = m.settleApproval(a, acpwire.ApprovalAnswer{Decision: acpwire.ApprovalDeny})
 		m.invalidateTranscript()
 		return m, nil
 	case choiceAlways:
-		if forcedPromptClass(tc) {
-			// A forged standing choice must never persist a bypass for a prompt
-			// that only accepts an exact decision.
-			m.settleApproval(owner, tc, session.UserApprovalDecision{Approved: false}, nil)
-			m.invalidateTranscript()
-			return m, nil
+		// The adapter saves the allow rule to the user config and applies it to
+		// the session, or adds a session rule when the save fails. A forced
+		// prompt never offers this choice, and a forged one is the adapter's
+		// deny.
+		if err := m.settleApproval(a, acpwire.ApprovalAnswer{Decision: acpwire.ApprovalAlways}); err == nil {
+			m.configViewsChanged(m.state.Config)
 		}
-		rule := permissions.Rule{
-			Permission: permissions.PermissionForTool(tc.Name),
-			Pattern:    permissions.PatternForApproval(tc),
-			Action:     permissions.ActionAllow,
-		}
-		// The rule is a policy side effect: it belongs inside the apply
-		// callback so a steering cancellation that already owns the settlement
-		// can never persist a bypass for a prompt it cancelled.
-		apply := func() error {
-			userConfigPath := filepath.Join(userConfigDir(), "config.toml")
-			if err := config.SaveUserConfigRule(userConfigPath, config.PermissionRule{
-				Permission: rule.Permission,
-				Pattern:    rule.Pattern,
-				Action:     string(rule.Action),
-			}); err != nil {
-				m.state.AddSessionRule(tc.Command)
-				return nil
-			}
-			newCfg := m.state.Config
-			newCfg.Permissions.Rules = append(newCfg.Permissions.Rules, config.PermissionRule{
-				Permission: rule.Permission,
-				Pattern:    rule.Pattern,
-				Action:     string(rule.Action),
-			})
-			m.applyNewConfig(newCfg)
-			// The installed policy engine reads the owner's live config through
-			// State.PolicySnapshot; a runner-local rule mutation would create a
-			// second source of truth.
-			return nil
-		}
-		m.settleApproval(owner, tc, session.UserApprovalDecision{Approved: true}, apply)
 		m.invalidateTranscript()
 		return m, nil
 	case choiceSessionAllow:
-		if forcedPromptClass(tc) {
-			m.settleApproval(owner, tc, session.UserApprovalDecision{Approved: false}, nil)
-			m.invalidateTranscript()
-			return m, nil
-		}
-		apply := func() error {
-			m.state.AddSessionRule(tc.Command)
-			return nil
-		}
-		m.settleApproval(owner, tc, session.UserApprovalDecision{Approved: true}, apply)
+		_ = m.settleApproval(a, acpwire.ApprovalAnswer{Decision: acpwire.ApprovalSession})
 		m.invalidateTranscript()
 		return m, nil
 	case choiceEdit:
-		// The edit gets its own editor bound to this exact owner and request;
-		// the chat composer, its cursor and its paste attachments are left
-		// exactly as the user typed them.
-		m.approvalEdit = newApprovalEdit(owner, tc, max(m.leftWidth-4, 30))
+		// The edit gets its own editor bound to this exact approval; the chat
+		// composer, its cursor and its paste attachments are left exactly as
+		// the user typed them.
+		m.approvalEdit = newApprovalEdit(a, max(m.leftWidth-4, 30))
 		m.updateViewportHeight()
 		m.invalidateTranscript()
 		return m, nil
@@ -3539,30 +3430,12 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 	}
 }
 
-// settleApproval resolves an approval decision through the owning session's
-// canonical registry when the prompt carries a non-zero key, falling back to
-// the raw Respond path for a legacy unregistered fixture. apply carries policy
-// side effects and runs only for the claim that won: a decision that lost to an
-// accepted steering cancellation persists nothing, grants nothing and clears no
-// current prompt. owner is the state that raised the prompt, so a subagent's
-// approval settles against the child's own registry rather than the parent's.
-func (m *Model) settleApproval(owner *session.State, tc *session.PendingToolCall, decision session.UserApprovalDecision, apply func() error) {
-	if tc.Key.ID != "" && owner != nil {
-		if _, err := owner.ResolveApproval(tc.Key, decision, apply); err != nil {
-			owner.ClearPrompt(tc.Key)
-		}
-		return
-	}
-	// An unregistered legacy fixture owns its own channel, and nothing else can
-	// claim that settlement, so its side effect runs unconditionally — exactly
-	// as it did before the registry existed.
-	if apply != nil {
-		_ = apply()
-	}
-	if owner.PendingApproval() == tc {
-		tc.Respond(decision)
-	}
-	owner.SetPendingApproval(nil)
+// settleApproval answers the approval through the session. The adapter
+// arbitrates a late answer against an accepted steering cancellation, applies
+// a standing choice's rule on the session, and refuses a key that names no
+// open approval; the error is returned so a caller that needs it can see it.
+func (m *Model) settleApproval(a acpwire.ApprovalRequest, answer acpwire.ApprovalAnswer) error {
+	return m.sess.AnswerApproval(m.ctx, a.Key, answer)
 }
 
 // handleQuestion routes messages to the inline question form while a
@@ -3748,12 +3621,12 @@ func (m Model) inputChromeRows() int {
 			content = renderQuestionPanel(*q, max(m.leftWidth-4, 1))
 		}
 		rows += len(consoleLines(content))
-	} else if tc, _ := m.pendingApprovalDisplay(); tc != nil {
+	} else if a, ok := m.pendingApprovalDisplay(); ok {
 		// Mirror inputSections' switch exactly so the budget never disagrees
 		// with what is on screen.
 		var content string
 		switch {
-		case tc.Access != nil:
+		case a.Access:
 			// A typed access request is presented by the accesspanel, which
 			// owns the decision. When another panel holds the dock the request
 			// is queued: disclose it without rendering a second approve/deny
@@ -3769,7 +3642,7 @@ func (m Model) inputChromeRows() int {
 		case m.approvalModel != nil:
 			content = m.approvalModel.View()
 		default:
-			content = renderApprovalPanel(tc, st.Sandbox, max(m.leftWidth-4, 1), m.approvalWhyFor(m.approvalOwner(), tc))
+			content = renderApprovalPanel(a, st.Sandbox, max(m.leftWidth-4, 1))
 		}
 		rows += len(consoleLines(content))
 	} else if m.doctorSecret != nil {
@@ -8044,38 +7917,4 @@ func flags(streamLen int, busy bool, nTodos, nQueued int) uint64 {
 	f |= uint64(nTodos) << 21
 	f |= uint64(nQueued) << 41
 	return f
-}
-
-// userConfigDir returns the absolute path to the user-level Marshal
-// config directory (typically ~/.config/marshal). The path is
-// symlink-resolved and verified to be under the user's home directory
-// to defend against an attacker-controlled $HOME pointing at a
-// sensitive location (e.g. /root, /etc). See F-SEC-27.
-func userConfigDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ""
-	}
-	absHome, err := filepath.Abs(home)
-	if err != nil {
-		return ""
-	}
-	resHome, err := filepath.EvalSymlinks(absHome)
-	if err != nil {
-		resHome = absHome
-	}
-	cfgDir := filepath.Join(resHome, ".config", "marshal")
-	// If the config dir doesn't exist yet, the parent path is what
-	// matters for the trust check.
-	resCfg, err := filepath.EvalSymlinks(cfgDir)
-	if err != nil {
-		resCfg = filepath.Dir(cfgDir)
-	}
-	rel, err := filepath.Rel(resHome, resCfg)
-	if err != nil || strings.HasPrefix(rel, "..") || rel == ".." {
-		slog.Default().Warn("userConfigDir outside home; refusing",
-			"home", resHome, "configDir", resCfg)
-		return ""
-	}
-	return cfgDir
 }

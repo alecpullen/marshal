@@ -739,16 +739,17 @@ func TestAccessOrdinaryElevationReasonUsesForcedApproval(t *testing.T) {
 		Reason:       "mode-elevation: agent requests an editing mode",
 		ResponseChan: make(chan session.UserApprovalDecision, 1),
 	}
-	if !forcedPromptClass(tc) {
-		t.Fatal("a mode-elevation reason must keep the forced-prompt classification")
-	}
 	f.state.SetPendingApproval(tc)
 	f.tick()
 
+	approvals := f.m.sess.Pending().Approvals
+	if len(approvals) != 1 || !approvals[0].Forced {
+		t.Fatal("a mode-elevation reason must keep the forced-prompt classification")
+	}
 	if f.m.accessPanelOwnsDock() {
 		t.Fatal("an ordinary forced approval opened the access panel")
 	}
-	model := newApprovalModel(tc, f.m.sess.Status().Sandbox, false, 80)
+	model := newApprovalModel(approvals[0], f.m.sess.Status().Sandbox, false, 80)
 	for _, choice := range model.candidates {
 		if choice == choiceAlways || choice == choiceSessionAllow {
 			t.Fatalf("forced prompt offers %q; it must not be bypassable", choice)

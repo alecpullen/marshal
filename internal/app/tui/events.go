@@ -4,9 +4,9 @@ import (
 	"marshal/internal/acpwire"
 )
 
-// workRequestMsg is contract C5's UI→pump request. Every Tasks-panel Work
-// action emits one for the model's pump to service; the panel itself never
-// calls the Work service.
+// workRequestMsg is contract C5's UI→model request. Every Tasks-panel Work
+// action emits one for the model's work commands (workListCmd, workInspectCmd,
+// workStopCmd) to service; the panel itself never calls the Work service.
 type workRequestMsg struct {
 	conversationID, panelID, requestID string
 	kind, taskKey, resultRevision      string

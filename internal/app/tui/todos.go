@@ -115,7 +115,7 @@ type workPending struct {
 // projection (a listpanel view). It implements dock.Panel.
 //
 // The panel never performs a runtime call. Every Work action emits a
-// workRequestMsg for the model's pump to service, and results come back
+// workRequestMsg for the model's work commands to service, and results come back
 // through applyPage/applyDetail, which reconcile by request ID and TaskKey so
 // a page from a superseded request can never corrupt the list.
 type tasksPanelModel struct {
@@ -123,7 +123,7 @@ type tasksPanelModel struct {
 	panelID string
 
 	// Work availability and identity, refreshed when the panel opens and by
-	// the pump (Task 18) when a snapshot arrives.
+	// the model's syncWork when a snapshot arrives.
 	available      bool
 	conversationID string
 	snapshot       acpwire.WorkSnapshot
@@ -188,8 +188,8 @@ func (m *Model) nextPanelID() string {
 }
 
 // setWork refreshes the Work availability, identity and projection. The model's
-// Work pump (Task 18) calls it when a snapshot arrives; the panel never reads
-// the service itself.
+// syncWork calls it when a snapshot arrives; the panel never reads the service
+// itself.
 func (p *tasksPanelModel) setWork(available bool, conversationID string, snapshot acpwire.WorkSnapshot) {
 	p.available = available
 	p.conversationID = conversationID

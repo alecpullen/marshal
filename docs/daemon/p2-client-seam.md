@@ -1626,9 +1626,10 @@ child's session ID, which a work item's reference names.
 `WorkItemOf`, `WorkProgressOf`, `WorkPageOf`, `WorkDetailOf` and
 `WorkStopResultOf`. Each makes fresh values — a nil slice or pointer stays
 nil, every non-nil pointer is a new pointer to a copy, and a zero time is
-0 — and `WorkProgressOf` is exported because the live box's temporary bridge
-uses it. `viewmodel` keeps its own work types and predicates, which the work
-coordinator and ACP use.
+0 — and `WorkProgressOf` was exported for the live box's temporary bridge, which
+Task 5 removed; it stays exported so `livebox`'s test can round-trip the
+conversion through `progressOf`, pinning that it is lossless. `viewmodel` keeps
+its own work types and predicates, which the work coordinator and ACP use.
 
 `acpclient.Session` gains four methods, each with its `Methods` row:
 `Work() (acpwire.WorkSnapshot, bool)` and

@@ -162,6 +162,17 @@ func (f *fakeWork) lastStop(t *testing.T) fakeStop {
 	return f.stops[len(f.stops)-1]
 }
 
+// wantNoWorkSignal fails if Changed fires within the window a snapshot the
+// adapter should have dropped would surface in.
+func wantNoWorkSignal(t *testing.T, sess *Session) {
+	t.Helper()
+	select {
+	case <-sess.Changed():
+		t.Fatal("Changed fired for a snapshot the session should have dropped")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
 // waitWorkSignal fails unless Changed fires within 5 s.
 func waitWorkSignal(t *testing.T, sess *Session) {
 	t.Helper()
@@ -251,11 +262,22 @@ func TestWorkDropsOlderAndForeignSnapshots(t *testing.T) {
 	_, sess := New(Deps{State: newState(t, "s1"), Work: f})
 
 	f.publish(viewmodel.WorkSnapshot{ConversationID: "s1", Revision: 2})
+	wantNoWorkSignal(t, sess)
 	f.publish(viewmodel.WorkSnapshot{ConversationID: "other", Revision: 9})
+	wantNoWorkSignal(t, sess)
+
+	got, ok := sess.Work()
+	if !ok {
+		t.Fatalf("Work reports no work, want the seed")
+	}
+	if got.ConversationID != "s1" || got.Revision != 3 {
+		t.Fatalf("Work = conversation %q revision %d, want the seed's s1 and 3", got.ConversationID, got.Revision)
+	}
+
 	f.publish(viewmodel.WorkSnapshot{ConversationID: "s1", Revision: 4})
 	waitWorkSignal(t, sess)
 
-	got, ok := sess.Work()
+	got, ok = sess.Work()
 	if !ok {
 		t.Fatalf("Work reports no work, want the kept snapshot")
 	}

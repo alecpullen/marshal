@@ -55,8 +55,7 @@ type stepRenderCtx struct {
 	now           time.Time
 	routeModel    string
 	routeProvider string
-	sandbox       session.SandboxInfo
-	allowNetwork  bool
+	sandbox       acpwire.Sandbox
 	// workdir is the session's active root. A shell row that begins by
 	// changing into it says "⌂ cmd" instead of repeating the path.
 	workdir string

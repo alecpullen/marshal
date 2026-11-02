@@ -748,7 +748,7 @@ func TestAccessOrdinaryElevationReasonUsesForcedApproval(t *testing.T) {
 	if f.m.accessPanelOwnsDock() {
 		t.Fatal("an ordinary forced approval opened the access panel")
 	}
-	model := newApprovalModel(tc, f.state.SandboxInfo(), false, false, 80)
+	model := newApprovalModel(tc, f.m.sess.Status().Sandbox, false, 80)
 	for _, choice := range model.candidates {
 		if choice == choiceAlways || choice == choiceSessionAllow {
 			t.Fatalf("forced prompt offers %q; it must not be bypassable", choice)

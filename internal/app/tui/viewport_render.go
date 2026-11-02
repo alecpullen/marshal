@@ -33,9 +33,8 @@ type viewFacts struct {
 	workdir       string // the active root a completion row elides
 	routeModel    string // the route a beat's model is compared against
 	routeProvider string
-	reconnect     string              // the reconnect notice's label; "" when none
-	sandbox       session.SandboxInfo // a running shell row's isolation line
-	allowNetwork  bool
+	reconnect     string          // the reconnect notice's label; "" when none
+	sandbox       acpwire.Sandbox // a running shell row's isolation line
 }
 
 // viewFacts resolves what the transcript's renderers read about the session
@@ -43,9 +42,7 @@ type viewFacts struct {
 // child's.
 func (m *Model) viewFacts() viewFacts {
 	st := m.sess.Status()
-	f := viewFacts{
-		allowNetwork: m.state.Config.Tools.Shell.AllowNetwork,
-	}
+	var f viewFacts
 	drilled, drilling := m.drilledInto()
 	if !drilling {
 		f.workdir = st.Workspace.ActiveRoot
@@ -53,7 +50,9 @@ func (m *Model) viewFacts() viewFacts {
 		if st.Activity.Kind == string(session.ActivityReconnecting) && st.Activity.Label != "" {
 			f.reconnect = st.Activity.Label
 		}
-		f.sandbox = m.state.SandboxInfo()
+		// Only the root state records sandbox info, so a drilled view leaves
+		// it zero instead of reporting the parent's.
+		f.sandbox = st.Sandbox
 		return f
 	}
 	// The stack holds the view as it was at drill-in; the facts follow the
@@ -139,7 +138,6 @@ func (m *Model) refreshViewport() {
 		routeModel:    facts.routeModel,
 		routeProvider: facts.routeProvider,
 		sandbox:       facts.sandbox,
-		allowNetwork:  facts.allowNetwork,
 		workdir:       facts.workdir,
 	}
 
@@ -319,7 +317,7 @@ func (m *Model) drawNode(w *acpwire.WireNode, c *stepRenderCtx, width int) (stri
 		}
 		return renderCompletion(w.Completion, d, expanded, width, c.workdir), nil
 	case w.Tool != nil && w.Tool.Running != nil:
-		return renderActiveToolCall(w.Tool, c.sandbox, c.allowNetwork, c.toolSpinner, c.now, m.isToolExpanded(id, true), width), nil
+		return renderActiveToolCall(w.Tool, c.sandbox, c.toolSpinner, c.now, m.isToolExpanded(id, true), width), nil
 	case w.Message != nil || w.Thinking != nil || w.RunEvent != nil:
 		expanded := m.expandedUnder(id, m.expandAll)
 		// d is the row's whole body or reasoning when the wire cut it and the

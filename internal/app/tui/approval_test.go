@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 )
@@ -35,7 +36,7 @@ func TestApprovalDialogRendersDiffAsTintedBlock(t *testing.T) {
 		Args: `{"path":"a.go"}`,
 		Diff: "--- a/a.go\n+++ b/a.go\n@@ -1,1 +1,1 @@\n-old\n+new\n",
 	}
-	am := newApprovalModel(tc, session.SandboxInfo{}, false, false, 160)
+	am := newApprovalModel(tc, acpwire.Sandbox{}, false, 160)
 	view := am.View()
 	// The diff should appear above the form.
 	if !strings.Contains(view, "old") || !strings.Contains(view, "new") {
@@ -54,7 +55,7 @@ func TestApprovalDialogNoDiffWhenEmpty(t *testing.T) {
 		Name: "shell.run",
 		Args: `{"command":"ls"}`,
 	}
-	am := newApprovalModel(tc, session.SandboxInfo{}, false, false, 160)
+	am := newApprovalModel(tc, acpwire.Sandbox{}, false, 160)
 	view := am.View()
 	// No diff → just the warning line and selector.
 	if strings.Contains(view, "───") {
@@ -69,7 +70,7 @@ func TestApprovalSubFormMarksDoneWithoutDispatching(t *testing.T) {
 		Args:         `{"command":"ls"}`,
 		ResponseChan: ch,
 	}
-	am := newApprovalModel(tc, session.SandboxInfo{}, false, false, 160)
+	am := newApprovalModel(tc, acpwire.Sandbox{}, false, 160)
 
 	// Double Esc should mark done + deny without writing to the channel.
 	am, _ = am.Update(keyPress("esc"))
@@ -90,7 +91,7 @@ func TestApprovalSubFormMarksDoneWithoutDispatching(t *testing.T) {
 	}
 
 	// Reset and test the two-enter confirm path.
-	am2 := newApprovalModel(tc, session.SandboxInfo{}, false, false, 160)
+	am2 := newApprovalModel(tc, acpwire.Sandbox{}, false, 160)
 	am2, _ = am2.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // arm
 	if am2.IsDone() {
 		t.Fatal("first enter should not set done")
@@ -113,7 +114,7 @@ func TestEscRequiresDoublePressToDeny(t *testing.T) {
 	am := newApprovalModel(&session.PendingToolCall{
 		Name: "shell.run",
 		Args: `{"command":"ls"}`,
-	}, session.SandboxInfo{}, false, false, 160)
+	}, acpwire.Sandbox{}, false, 160)
 	am, _ = am.Update(keyPress("esc"))
 	if am.IsDone() {
 		t.Fatalf("first Esc should not complete the form")
@@ -128,7 +129,7 @@ func TestEscAfterOtherKeyResetsPendingDeny(t *testing.T) {
 	am := newApprovalModel(&session.PendingToolCall{
 		Name: "shell.run",
 		Args: `{"command":"ls"}`,
-	}, session.SandboxInfo{}, false, false, 160)
+	}, acpwire.Sandbox{}, false, 160)
 	am, _ = am.Update(keyPress("esc"))
 	am, _ = am.Update(keyPress("down"))
 	if !am.pendingDenyAt.IsZero() {
@@ -143,7 +144,7 @@ func TestApprovalEscDisarmsPendingSubmit(t *testing.T) {
 	am := newApprovalModel(&session.PendingToolCall{
 		Name: "shell.run",
 		Args: `{"command":"ls"}`,
-	}, session.SandboxInfo{}, false, false, 160)
+	}, acpwire.Sandbox{}, false, 160)
 
 	am, _ = am.Update(keyPress("enter"))
 	if !am.submitPending {
@@ -175,7 +176,7 @@ func TestApprovalEscDisarmsPendingSubmit(t *testing.T) {
 // exists.
 func TestApprovalEscDisarmsEveryChoice(t *testing.T) {
 	tc := &session.PendingToolCall{Name: "shell.run", Args: `{"command":"ls"}`}
-	candidates := newApprovalModel(tc, session.SandboxInfo{}, false, true, 160).candidates
+	candidates := newApprovalModel(tc, acpwire.Sandbox{}, true, 160).candidates
 	have := map[approvalChoice]bool{}
 	for _, c := range candidates {
 		have[c] = true
@@ -189,7 +190,7 @@ func TestApprovalEscDisarmsEveryChoice(t *testing.T) {
 	}
 
 	for i, c := range candidates {
-		am := newApprovalModel(tc, session.SandboxInfo{}, false, true, 160)
+		am := newApprovalModel(tc, acpwire.Sandbox{}, true, 160)
 		am.selected, am.choice = i, c
 		am, _ = am.Update(keyPress("enter"))
 		if !am.submitPending {
@@ -222,7 +223,7 @@ func TestApprovalNavigationDisarmsPendingSubmit(t *testing.T) {
 		"mnemonic":    {Code: 'd', Text: "d"},
 	} {
 		am := newApprovalModel(&session.PendingToolCall{Name: "shell.run", Args: `{"command":"ls"}`},
-			session.SandboxInfo{}, false, false, 160)
+			acpwire.Sandbox{}, false, 160)
 		if name == "left arrow" {
 			am, _ = am.Update(tea.KeyPressMsg{Code: tea.KeyRight})
 		}
@@ -242,7 +243,7 @@ func TestApprovalDialogLabelsContainFlatSelector(t *testing.T) {
 		Name: "shell.run",
 		Args: `{"command":"ls"}`,
 	}
-	am := newApprovalModel(tc, session.SandboxInfo{}, false, false, 160)
+	am := newApprovalModel(tc, acpwire.Sandbox{}, false, 160)
 	view := ansi.Strip(am.View())
 	for _, want := range []string{"⚠", "▸ a allow", "1/5"} {
 		if !strings.Contains(view, want) {
@@ -273,7 +274,7 @@ func TestApprovalNavigatesHorizontally(t *testing.T) {
 		Name: "shell.run",
 		Args: `{"command":"ls"}`,
 	}
-	am := newApprovalModel(tc, session.SandboxInfo{}, false, false, 160)
+	am := newApprovalModel(tc, acpwire.Sandbox{}, false, 160)
 
 	// The choices render on one horizontal row, so ←/→ (and h/l) move the
 	// selection; ↑/↓/j/k must do nothing.
@@ -316,7 +317,7 @@ func TestApprovalViewHasNoRail(t *testing.T) {
 		Args: `{"path":"a.go"}`,
 		Diff: "--- a/a.go\n+++ b/a.go\n@@ -1,1 +1,1 @@\n-old\n+new\n",
 	}
-	am := newApprovalModel(tc, session.SandboxInfo{}, false, false, 160)
+	am := newApprovalModel(tc, acpwire.Sandbox{}, false, 160)
 	view := stripANSI(am.View())
 	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
 	if len(lines) < 3 {
@@ -344,7 +345,7 @@ func TestApprovalMnemonicKeysSelectChoices(t *testing.T) {
 		{"A", choiceAlways},
 		{"s", choiceSessionAllow},
 	} {
-		am := newApprovalModel(&session.PendingToolCall{Name: "shell.run"}, session.SandboxInfo{}, false, false, 80)
+		am := newApprovalModel(&session.PendingToolCall{Name: "shell.run"}, acpwire.Sandbox{}, false, 80)
 		am, _ = am.Update(keyPress(tc.key))
 		if am.choice != tc.want {
 			t.Errorf("key %q selected %v, want %v", tc.key, am.choice, tc.want)
@@ -359,7 +360,7 @@ func TestForcedPromptsHideAlwaysAndSession(t *testing.T) {
 		{Name: "agent.run", Risk: "model-cost-consent"},
 		{Name: "file.write", Reason: "mode-elevation: edit requires write access"},
 	} {
-		am := newApprovalModel(tc, session.SandboxInfo{}, false, false, 80)
+		am := newApprovalModel(tc, acpwire.Sandbox{}, false, 80)
 		for _, c := range am.candidates {
 			if c == choiceAlways || c == choiceSessionAllow {
 				t.Errorf("%s must not offer %v", tc.Name, c)
@@ -370,7 +371,7 @@ func TestForcedPromptsHideAlwaysAndSession(t *testing.T) {
 
 // Approve, deny and edit are always available.
 func TestForcedPromptsKeepCoreChoices(t *testing.T) {
-	am := newApprovalModel(&session.PendingToolCall{Name: "shell.sudo"}, session.SandboxInfo{}, false, false, 80)
+	am := newApprovalModel(&session.PendingToolCall{Name: "shell.sudo"}, acpwire.Sandbox{}, false, 80)
 	have := map[approvalChoice]bool{}
 	for _, c := range am.candidates {
 		have[c] = true
@@ -385,7 +386,7 @@ func TestForcedPromptsKeepCoreChoices(t *testing.T) {
 // A mnemonic for a filtered-out choice must do nothing, not select an
 // absent option.
 func TestFilteredMnemonicIsInert(t *testing.T) {
-	am := newApprovalModel(&session.PendingToolCall{Name: "shell.sudo"}, session.SandboxInfo{}, false, false, 80)
+	am := newApprovalModel(&session.PendingToolCall{Name: "shell.sudo"}, acpwire.Sandbox{}, false, 80)
 	before := am.choice
 	am, _ = am.Update(keyPress("A"))
 	if am.choice != before {
@@ -413,7 +414,7 @@ func TestApprovalReviewShowsOperationAndReason(t *testing.T) {
 	m, _ = press(m, tea.WindowSizeMsg{Width: 100, Height: 32})
 	// The requester and the model's own "why" come from the step; supply them
 	// the way handleApproval does, then assert on the composed frame.
-	m.approvalModel = newApprovalModel(tc, session.SandboxInfo{}, false, false, max(m.leftWidth-4, 30),
+	m.approvalModel = newApprovalModel(tc, acpwire.Sandbox{}, false, max(m.leftWidth-4, 30),
 		approvalWhy{owner: "reviewer", why: "fix the failing test"})
 	m.syncPromptReviewHeights()
 
@@ -781,7 +782,7 @@ func TestApprovalReviewKeepsTranscriptNavigation(t *testing.T) {
 }
 
 func TestApprovalViewShowsMnemonicHints(t *testing.T) {
-	am := newApprovalModel(&session.PendingToolCall{Name: "shell.run"}, session.SandboxInfo{}, false, false, 80)
+	am := newApprovalModel(&session.PendingToolCall{Name: "shell.run"}, acpwire.Sandbox{}, false, 80)
 	for _, want := range []struct {
 		key   string
 		label string

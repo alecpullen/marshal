@@ -1755,7 +1755,7 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 	// has a pending request (parent or subagent), so the first render shows
 	// the huh surface instead of the legacy fallback panels.
 	if tc, _ := m.pendingApprovalDisplay(); tc != nil {
-		m.approvalModel = newApprovalModel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, st.HasBackup, max(m.leftWidth-4, 30), m.approvalWhyFor(m.approvalOwner(), tc))
+		m.approvalModel = newApprovalModel(tc, st.Sandbox, st.HasBackup, max(m.leftWidth-4, 30), m.approvalWhyFor(m.approvalOwner(), tc))
 	}
 	// One Pending read for the three forms below.
 	pending := m.sess.Pending()
@@ -3439,7 +3439,7 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 		// A different pending request replaces the prompt, so the review must
 		// start at the top of the new operation rather than wherever the
 		// previous one was left scrolled.
-		m.approvalModel = newApprovalModel(displayTC, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, st.HasBackup, max(m.leftWidth-4, 30), m.approvalWhyFor(owner, displayTC))
+		m.approvalModel = newApprovalModel(displayTC, st.Sandbox, st.HasBackup, max(m.leftWidth-4, 30), m.approvalWhyFor(owner, displayTC))
 		m.syncPromptReviewHeights()
 	}
 	am, cmd := m.approvalModel.Update(msg)
@@ -3727,7 +3727,8 @@ func (m Model) inputChromeRows() int {
 		return 1 + m.inputHeaderRows()
 	}
 	rows := 0
-	if m.sess.Status().SDD.Active {
+	st := m.sess.Status()
+	if st.SDD.Active {
 		rows++ // SDD hint row
 	}
 	// One Pending read for the three prompts this budget mirrors.
@@ -3777,7 +3778,7 @@ func (m Model) inputChromeRows() int {
 		case m.approvalModel != nil:
 			content = m.approvalModel.View()
 		default:
-			content = renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, max(m.leftWidth-4, 1), m.approvalWhyFor(m.approvalOwner(), tc))
+			content = renderApprovalPanel(tc, st.Sandbox, max(m.leftWidth-4, 1), m.approvalWhyFor(m.approvalOwner(), tc))
 		}
 		rows += len(consoleLines(content))
 	} else if m.doctorSecret != nil {

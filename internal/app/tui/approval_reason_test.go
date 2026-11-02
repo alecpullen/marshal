@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 )
 
@@ -14,7 +15,7 @@ func TestApprovalSummaryShowsReason(t *testing.T) {
 		Name:   "shell.run",
 		Reason: "environment mutation: npm install",
 	}
-	out := ansi.Strip(approvalSummary(tc, session.SandboxInfo{}, false, 80))
+	out := ansi.Strip(approvalSummary(tc, acpwire.Sandbox{}, 80))
 	if !strings.Contains(out, "environment mutation: npm install") {
 		t.Fatalf("reason must be rendered:\n%s", out)
 	}
@@ -27,7 +28,7 @@ func TestApprovalSummaryShowsReason(t *testing.T) {
 func TestApprovalReasonIsVerbatim(t *testing.T) {
 	reason := "mode-elevation: edit requires write access"
 	tc := &session.PendingToolCall{Name: "file.write", Reason: reason}
-	out := ansi.Strip(approvalSummary(tc, session.SandboxInfo{}, false, 80))
+	out := ansi.Strip(approvalSummary(tc, acpwire.Sandbox{}, 80))
 	if !strings.Contains(out, reason) {
 		t.Fatalf("reason must appear verbatim, got:\n%s", out)
 	}
@@ -41,7 +42,7 @@ func TestApprovalPanelShowsBothRiskAndReason(t *testing.T) {
 		Risk:   "model-cost-consent",
 		Reason: "Subagent will use opus-5 @ anthropic",
 	}
-	out := ansi.Strip(renderApprovalPanel(tc, session.SandboxInfo{}, false, 80))
+	out := ansi.Strip(renderApprovalPanel(tc, acpwire.Sandbox{}, 80))
 	if !strings.Contains(out, "model-cost-consent") {
 		t.Errorf("risk missing:\n%s", out)
 	}
@@ -52,7 +53,7 @@ func TestApprovalPanelShowsBothRiskAndReason(t *testing.T) {
 
 func TestApprovalNoReasonRendersUnchanged(t *testing.T) {
 	tc := &session.PendingToolCall{Name: "file.read"}
-	out := ansi.Strip(approvalSummary(tc, session.SandboxInfo{}, false, 80))
+	out := ansi.Strip(approvalSummary(tc, acpwire.Sandbox{}, 80))
 	if strings.Contains(strings.ToLower(out), "reason") {
 		t.Fatalf("an empty reason must add no line:\n%s", out)
 	}
@@ -61,7 +62,7 @@ func TestApprovalNoReasonRendersUnchanged(t *testing.T) {
 // A long reason must wrap inside the panel rather than overflow it.
 func TestApprovalReasonWraps(t *testing.T) {
 	tc := &session.PendingToolCall{Name: "shell.run", Reason: strings.Repeat("word ", 80)}
-	for i, line := range strings.Split(ansi.Strip(renderApprovalPanel(tc, session.SandboxInfo{}, false, 60)), "\n") {
+	for i, line := range strings.Split(ansi.Strip(renderApprovalPanel(tc, acpwire.Sandbox{}, 60)), "\n") {
 		if len([]rune(line)) > 60 {
 			t.Fatalf("row %d is %d cells wide, want <= 60", i, len([]rune(line)))
 		}

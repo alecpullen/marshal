@@ -217,6 +217,7 @@ func (m Model) inputSections() []consoleSection {
 		return prompt("? Question", keys, consoleLines(renderQuestionPanel(*q, max(m.leftWidth-4, 1))))
 	}
 	if tc, _ := m.pendingApprovalDisplay(); tc != nil {
+		st := m.sess.Status()
 		switch {
 		case tc.Access != nil:
 			// A typed access request is presented by the accesspanel, which
@@ -236,7 +237,7 @@ func (m Model) inputSections() []consoleSection {
 		case m.approvalModel != nil:
 			return prompt("⚠ Approval", keys, consoleLines(m.approvalModel.View()))
 		default:
-			return prompt("⚠ Approval", keys, consoleLines(renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, max(m.leftWidth-4, 1), m.approvalWhyFor(m.approvalOwner(), tc))))
+			return prompt("⚠ Approval", keys, consoleLines(renderApprovalPanel(tc, st.Sandbox, max(m.leftWidth-4, 1), m.approvalWhyFor(m.approvalOwner(), tc))))
 		}
 	}
 

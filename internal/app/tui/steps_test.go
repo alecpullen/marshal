@@ -507,8 +507,8 @@ func TestApprovalShowsOwnerAndWhy(t *testing.T) {
 		t.Fatalf("approvalWhyFor = %+v", w)
 	}
 	for name, view := range map[string]string{
-		"summary":  approvalSummary(tc, session.SandboxInfo{}, false, 80, w),
-		"fallback": renderApprovalPanel(tc, session.SandboxInfo{}, false, 80, w),
+		"summary":  approvalSummary(tc, acpwire.Sandbox{}, 80, w),
+		"fallback": renderApprovalPanel(tc, acpwire.Sandbox{}, 80, w),
 	} {
 		plain := stripANSI(view)
 		if !strings.Contains(plain, "implementer wants to run a command") {
@@ -527,7 +527,7 @@ func TestApprovalShowsOwnerAndWhy(t *testing.T) {
 	if w := m2.approvalWhyFor(m2.state, tc2); w != (approvalWhy{}) {
 		t.Fatalf("orchestrator step with no narration should add nothing, got %+v", w)
 	}
-	plain := stripANSI(renderApprovalPanel(tc2, session.SandboxInfo{}, false, 80, m2.approvalWhyFor(m2.state, tc2)))
+	plain := stripANSI(renderApprovalPanel(tc2, acpwire.Sandbox{}, 80, m2.approvalWhyFor(m2.state, tc2)))
 	if strings.Contains(plain, "why") || strings.Contains(plain, "wants to") {
 		t.Errorf("no owner and no narration means no extra lines:\n%s", plain)
 	}

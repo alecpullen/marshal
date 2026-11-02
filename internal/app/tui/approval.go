@@ -11,6 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/huhtheme"
@@ -89,8 +90,7 @@ type approvalModel struct {
 	// pendingDenyAt is set to time.Now() on the first Esc press. A second
 	// Esc within 1.5s confirms the deny. Any other key resets it to zero.
 	pendingDenyAt time.Time
-	sb            session.SandboxInfo
-	allowNetwork  bool
+	sb            acpwire.Sandbox
 }
 
 // forcedPromptClass reports whether a prompt is one the user must answer
@@ -183,7 +183,7 @@ func shownToolCall(tc *session.PendingToolCall) *session.PendingToolCall {
 	}
 }
 
-func newApprovalModel(tc *session.PendingToolCall, sb session.SandboxInfo, allowNetwork, hasBackup bool, width int, why ...approvalWhy) *approvalModel {
+func newApprovalModel(tc *session.PendingToolCall, sb acpwire.Sandbox, hasBackup bool, width int, why ...approvalWhy) *approvalModel {
 	opts := []huh.Option[approvalChoice]{
 		huh.NewOption("Approve", choiceApprove),
 		huh.NewOption("Deny", choiceDeny),
@@ -207,18 +207,17 @@ func newApprovalModel(tc *session.PendingToolCall, sb session.SandboxInfo, allow
 		w = why[0]
 	}
 	am := &approvalModel{
-		tc:           tc,
-		width:        width,
-		choice:       choiceApprove,
-		candidates:   candidates,
-		selected:     0,
-		sb:           sb,
-		allowNetwork: allowNetwork,
-		why:          w,
-		bodyHeight:   defaultApprovalBodyHeight,
+		tc:         tc,
+		width:      width,
+		choice:     choiceApprove,
+		candidates: candidates,
+		selected:   0,
+		sb:         sb,
+		why:        w,
+		bodyHeight: defaultApprovalBodyHeight,
 	}
 
-	summary := approvalSummary(tc, sb, allowNetwork, width, w)
+	summary := approvalSummary(tc, sb, width, w)
 
 	sel := huh.NewSelect[approvalChoice]().
 		Title(summary).
@@ -410,7 +409,7 @@ func (am *approvalModel) reviewLines() []string {
 	if risk := riskText(tc); risk != "" {
 		lines = append(lines, "Risk: "+risk)
 	}
-	if iso := sandboxIsolationText(am.sb, am.allowNetwork); iso != "" && (tc.Name == "shell.run" || tc.Name == "test.run") {
+	if iso := sandboxIsolationText(am.sb); iso != "" && (tc.Name == "shell.run" || tc.Name == "test.run") {
 		lines = append(lines, iso)
 	}
 	if tc.Reason != "" {
@@ -523,7 +522,7 @@ func (am *approvalModel) IsDone() bool           { return am.done }
 // approvalSummary builds the multi-line title shown above the select. It
 // mirrors the body of renderApprovalPanel (command/description/arguments,
 // risk, sandbox isolation) but as plain titled text the select can render.
-func approvalSummary(tc *session.PendingToolCall, sb session.SandboxInfo, allowNetwork bool, width int, why ...approvalWhy) string {
+func approvalSummary(tc *session.PendingToolCall, sb acpwire.Sandbox, width int, why ...approvalWhy) string {
 	var w approvalWhy
 	if len(why) > 0 {
 		w = why[0]
@@ -561,7 +560,7 @@ func approvalSummary(tc *session.PendingToolCall, sb session.SandboxInfo, allowN
 	b.WriteString("\n\n")
 	b.WriteString(riskLabelStyle().Render("Risk: "))
 	b.WriteString(text.Render(riskText(tc)))
-	if iso := sandboxIsolationText(sb, allowNetwork); iso != "" && (tc.Name == "shell.run" || tc.Name == "test.run") {
+	if iso := sandboxIsolationText(sb); iso != "" && (tc.Name == "shell.run" || tc.Name == "test.run") {
 		b.WriteString("\n")
 		b.WriteString(muted.Render(iso))
 	}

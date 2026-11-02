@@ -282,7 +282,7 @@ func TestInputChromeRowsCountsPopupTitleRow(t *testing.T) {
 func TestInputAreaRowsHandlesWrappedContent(t *testing.T) {
 	m := newTestModel(t)
 	m.state.SetPendingApproval(&session.PendingToolCall{Command: strings.Repeat("x ", 200)})
-	m.approvalModel = newApprovalModel(m.state.PendingApproval(), m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.state.HasBackup(), max(m.width-4, 30))
+	m.approvalModel = newApprovalModel(m.state.PendingApproval(), m.sess.Status().Sandbox, m.state.HasBackup(), max(m.width-4, 30))
 	rows := m.inputAreaRows()
 	lineCount := len(strings.Split(m.approvalModel.View(), "\n"))
 	if rows < lineCount {

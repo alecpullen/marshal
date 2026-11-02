@@ -84,6 +84,10 @@ var movedStateReads = map[string]string{
 	"ResolveSkillGate":     "4",
 	"ResolveSudoAuth":      "4",
 	"SkillGateRecordAllow": "4",
+
+	// The running shell row and the approval panel read the sandbox from
+	// Status since 4.
+	"SandboxInfo": "4",
 }
 
 // movedReadSites returns one "<line>\t<Name>" entry per selector X.Sel in f

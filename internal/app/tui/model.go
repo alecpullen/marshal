@@ -1755,12 +1755,13 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 
 	// Eagerly build inline approval/question forms if the session already
 	// has a pending request (parent or subagent), so the first render shows
-	// the huh surface instead of the legacy fallback panels.
-	if a, ok := m.pendingApprovalDisplay(); ok {
-		m.approvalModel = newApprovalModel(a, st.Sandbox, st.HasBackup, max(m.leftWidth-4, 30))
-	}
-	// One Pending read for the three forms below.
+	// the huh surface instead of the legacy fallback panels. One Pending read
+	// builds every form, so a request that opens or settles mid-construction
+	// cannot leave two surfaces disagreeing.
 	pending := m.sess.Pending()
+	if len(pending.Approvals) > 0 {
+		m.approvalModel = newApprovalModel(displayApproval(pending.Approvals[0]), st.Sandbox, st.HasBackup, max(m.leftWidth-4, 30))
+	}
 	if q := pending.Question; q != nil {
 		m.questionModel = newQuestionModel(*q, max(m.leftWidth-4, 30))
 	}
@@ -2874,7 +2875,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// approval/question routing below, which would otherwise swallow them.
 	// One Pending read serves this block and the prompt routing chain.
 	p := m.sess.Pending()
-	if m.hasPendingApproval() || p.Question != nil || p.SkillGate != nil || p.Sudo != nil {
+	if len(p.Approvals) > 0 || p.Question != nil || p.SkillGate != nil || p.Sudo != nil {
 		if k, ok := msg.(tea.KeyPressMsg); ok {
 			switch k.String() {
 			case "ctrl+o":
@@ -3666,7 +3667,7 @@ func (m Model) inputAreaRows() int {
 		return rows
 	}
 	pending := m.sess.Pending()
-	if pending.Question == nil && !m.hasPendingApproval() && pending.SkillGate == nil &&
+	if pending.Question == nil && len(pending.Approvals) == 0 && pending.SkillGate == nil &&
 		pending.Sudo == nil && m.doctorSecret == nil {
 		// DynamicHeight clamps Height() to [MinHeight, MaxHeight], so the
 		// only guard needed is the max(..., 1) floor.

@@ -94,7 +94,7 @@ func (m Model) consoleColor() color.Color {
 		return warningColor
 	case p.SkillGate != nil, p.Question != nil:
 		return violetColor
-	case m.hasPendingApproval():
+	case len(p.Approvals) > 0:
 		return warningColor
 	default:
 		return theme.Current().BorderMuted

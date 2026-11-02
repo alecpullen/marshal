@@ -448,6 +448,10 @@ func TestAnswerSkillGateRecordsTheChoice(t *testing.T) {
 					t.Error("SkillGateEnabled() = false, want the gate untouched")
 				}
 			}
+
+			if err := sess.AnswerSkillGate(context.Background(), key.ID, tc.choice); !acpclient.IsCode(err, acpwire.CodeRequestSettled) {
+				t.Errorf("second AnswerSkillGate = %v, want a request-settled code", err)
+			}
 		})
 	}
 
@@ -499,6 +503,10 @@ func TestAnswerSudoHandsThePasswordOver(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the sudo prompt was never answered; the tool would block forever")
+	}
+
+	if err := sess.AnswerSudo(context.Background(), key.ID, acpwire.SudoAnswer{OK: false}); !acpclient.IsCode(err, acpwire.CodeRequestSettled) {
+		t.Errorf("second AnswerSudo = %v, want a request-settled code", err)
 	}
 }
 
@@ -853,6 +861,10 @@ func TestAClosedSessionAnswersNothing(t *testing.T) {
 		}},
 		{name: "AnswerSudo", call: func() error {
 			return old.AnswerSudo(ctx, key.ID, acpwire.SudoAnswer{OK: true})
+		}},
+		{name: "AnswerAccess", call: func() error {
+			_, err := old.AnswerAccess(ctx, acpwire.AccessChoice{RequestID: "r1", SessionID: "s1"})
+			return err
 		}},
 		{name: "Rollback", call: func() error {
 			return old.Rollback(ctx)

@@ -216,7 +216,7 @@ func (s *Session) Status() acpwire.SessionStatus {
 		Sandbox: acpwire.Sandbox{
 			Backend:          sb.Backend,
 			NetworkIsolation: sb.NetworkIsolation,
-			AllowNetwork:     st.Config.Tools.Shell.AllowNetwork,
+			AllowNetwork:     st.ConfigSnapshot().Tools.Shell.AllowNetwork,
 		},
 		Steering: acpwire.Steering{
 			Queue: queue,

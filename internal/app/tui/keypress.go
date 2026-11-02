@@ -73,7 +73,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		// through to the trailing m.input.Update(msg) below and is typed
 		// literally.
 		p := m.sess.Pending()
-		if m.input.Value() == "" && !m.editingApproval() && p.Question == nil && !m.hasPendingApproval() && p.SkillGate == nil && p.Sudo == nil {
+		if m.input.Value() == "" && !m.editingApproval() && p.Question == nil && len(p.Approvals) == 0 && p.SkillGate == nil && p.Sudo == nil {
 			mm, cmd := m.dispatchCommand("/help")
 			return mm, cmd, true
 		}
@@ -267,7 +267,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			return *m, nil, true
 		}
 		p := m.sess.Pending()
-		if m.hasPendingApproval() || p.Question != nil || p.Sudo != nil {
+		if len(p.Approvals) > 0 || p.Question != nil || p.Sudo != nil {
 			return *m, nil, false
 		}
 		m.cycleMode(true)
@@ -277,7 +277,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			return *m, nil, true
 		}
 		p := m.sess.Pending()
-		if m.hasPendingApproval() || p.Question != nil || p.Sudo != nil {
+		if len(p.Approvals) > 0 || p.Question != nil || p.Sudo != nil {
 			return *m, nil, false
 		}
 		m.cycleMode(false)

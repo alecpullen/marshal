@@ -84,25 +84,30 @@ func (s *Session) alwaysRule(call *session.PendingToolCall) func() error {
 		Action:     permissions.ActionAllow,
 	}
 	return func() error {
-		userConfigPath := filepath.Join(userConfigDir(), "config.toml")
-		if err := config.SaveUserConfigRule(userConfigPath, config.PermissionRule{
-			Permission: rule.Permission,
-			Pattern:    rule.Pattern,
-			Action:     string(rule.Action),
-		}); err != nil {
-			s.state.AddSessionRule(call.Command)
-			return nil
+		// An always answer needs a trustworthy user config directory. Without
+		// one the save path would be a relative config.toml in the process's
+		// working directory, so the rule stays on the session instead.
+		if dir := userConfigDir(); dir != "" {
+			err := config.SaveUserConfigRule(filepath.Join(dir, "config.toml"), config.PermissionRule{
+				Permission: rule.Permission,
+				Pattern:    rule.Pattern,
+				Action:     string(rule.Action),
+			})
+			if err == nil {
+				newCfg := s.state.ConfigSnapshot()
+				newCfg.Permissions.Rules = append(newCfg.Permissions.Rules, config.PermissionRule{
+					Permission: rule.Permission,
+					Pattern:    rule.Pattern,
+					Action:     string(rule.Action),
+				})
+				// The installed policy engine reads the owner's live config
+				// through State.PolicySnapshot; a runner-local rule mutation
+				// would create a second source of truth.
+				_, _ = s.state.RebaseInteractionConfig(newCfg)
+				return nil
+			}
 		}
-		newCfg := s.state.Config
-		newCfg.Permissions.Rules = append(newCfg.Permissions.Rules, config.PermissionRule{
-			Permission: rule.Permission,
-			Pattern:    rule.Pattern,
-			Action:     string(rule.Action),
-		})
-		// The installed policy engine reads the owner's live config through
-		// State.PolicySnapshot; a runner-local rule mutation would create a
-		// second source of truth.
-		_, _ = s.state.RebaseInteractionConfig(newCfg)
+		s.state.AddSessionRule(call.Command)
 		return nil
 	}
 }
@@ -137,10 +142,12 @@ func (s *Session) settleApproval(owner *session.State, call *session.PendingTool
 	if apply != nil {
 		_ = apply()
 	}
+	// Settle only the call still in the slot: a replacement opened after the
+	// snapshot keeps its own waiter.
 	if owner.PendingApproval() == call {
 		call.Respond(decision)
+		owner.SetPendingApproval(nil)
 	}
-	owner.SetPendingApproval(nil)
 	return nil
 }
 
@@ -165,8 +172,11 @@ func (s *Session) AnswerQuestion(ctx context.Context, key string, answers []acpw
 		}
 		return nil
 	}
-	q.Respond(converted)
-	s.state.SetPendingQuestion(nil)
+	// Settle only the question still in the slot, as the skill gate does.
+	if s.state.PendingQuestion() == q {
+		q.Respond(converted)
+		s.state.SetPendingQuestion(nil)
+	}
 	return nil
 }
 
@@ -243,8 +253,11 @@ func (s *Session) AnswerSudo(ctx context.Context, key string, answer acpwire.Sud
 		}
 		return nil
 	}
-	sa.Respond(decision)
-	s.state.SetPendingSudoAuth(nil)
+	// Settle only the prompt still in the slot, as the skill gate does.
+	if s.state.PendingSudoAuth() == sa {
+		sa.Respond(decision)
+		s.state.SetPendingSudoAuth(nil)
+	}
 	return nil
 }
 

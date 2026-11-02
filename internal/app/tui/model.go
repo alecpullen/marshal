@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"image/color"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -65,7 +64,6 @@ import (
 	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
-	"marshal/internal/permissions"
 	"marshal/internal/pipeline"
 	"marshal/internal/postmortem"
 	"marshal/internal/progress"
@@ -508,13 +506,12 @@ type Model struct {
 	// another, so a single retained slot is enough.
 	composerDisplaced dock.Panel
 	// composerDisplacedAccess is the canonical access-request ID that panel
-	// represented, and composerDisplacedPrompt the canonical prompt key when a
-	// pending prompt (approval/question/skill/sudo) was displaced. Restoring
-	// requires the same identity: a request cancelled by interruption, or a
-	// prompt that settled while the composer was up, must retire rather than
-	// resurrect.
+	// represented, and composerDisplacedPrompt the request when a pending
+	// prompt (approval/question/skill/sudo) was displaced. Restoring requires
+	// the same identity: a request cancelled by interruption, or a prompt that
+	// settled while the composer was up, must retire rather than resurrect.
 	composerDisplacedAccess string
-	composerDisplacedPrompt session.PromptKey
+	composerDisplacedPrompt promptRef
 	// composerInputFocused is the base textarea's focus state before the
 	// composer took over, restored on close so Esc puts the user back where
 	// they were rather than stealing or leaving focus arbitrarily.
@@ -667,12 +664,6 @@ type Model struct {
 	// The picker itself is hosted in m.dock; pickerCommand records which
 	// command opened it so PickedMsg can dispatch correctly.
 	pickerCommand string
-	// accessRequest and resolveAccess are the runtime-facing access seam
-	// (WithAccessRequests). The TUI only presents a request and submits the
-	// user's choice; the runtime validates and applies it. Both nil means no
-	// resolver is attached, which fails closed.
-	accessRequest func() (session.AccessRequest, bool)
-	resolveAccess func(session.AccessChoice) (session.AccessResult, error)
 	// interactionSetter is the runtime-facing interaction seam
 	// (WithInteractionSetter). The TUI submits a patch and renders the
 	// committed state; it never mutates the runner, policy engine, force
@@ -895,21 +886,6 @@ func WithRunnerSource(fn func() (context.Context, AgentRunner)) Option {
 // report that a new session is unavailable.
 func WithSessionSwapper(swapper SessionSwapper) Option {
 	return func(m *Model) { m.sessionSwapper = swapper }
-}
-
-// WithAccessRequests wires the runtime-facing access seam: get returns the
-// request waiting for a decision, resolve validates and settles one. The TUI
-// presents the request and submits the choice; it never derives policy or
-// mutates session state itself. Omitting either callback fails closed — a
-// pending request is canceled rather than shown with no way to answer it.
-func WithAccessRequests(
-	get func() (session.AccessRequest, bool),
-	resolve func(session.AccessChoice) (session.AccessResult, error),
-) Option {
-	return func(m *Model) {
-		m.accessRequest = get
-		m.resolveAccess = resolve
-	}
 }
 
 // WithInteractionSetter wires the runtime-facing interaction seam. The TUI
@@ -1224,8 +1200,12 @@ func (m *Model) applyNewConfig(cfg config.Config) {
 	// approved grant. RebaseInteractionConfig installs the new config with the
 	// remaining override applied and preserves the system-access flag.
 	m.state.RebaseInteractionConfig(cfg)
-	// Read the effective mode back from the session: it may differ from the
-	// configured value when an override survived the rebase.
+	m.configViewsChanged(cfg)
+}
+
+// configViewsChanged resets what the TUI caches from the config, and reloads
+// the theme: applyNewConfig's TUI half.
+func (m *Model) configViewsChanged(cfg config.Config) {
 	m.setReg = nil
 	m.setPopup = nil
 	m.lastInputForPopups = ""
@@ -1775,18 +1755,21 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 
 	// Eagerly build inline approval/question forms if the session already
 	// has a pending request (parent or subagent), so the first render shows
-	// the huh surface instead of the legacy fallback panels.
-	if tc, _ := m.pendingApprovalDisplay(); tc != nil {
-		m.approvalModel = newApprovalModel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, st.HasBackup, max(m.leftWidth-4, 30), m.approvalWhyFor(m.approvalOwner(), tc))
+	// the huh surface instead of the legacy fallback panels. One Pending read
+	// builds every form, so a request that opens or settles mid-construction
+	// cannot leave two surfaces disagreeing.
+	pending := m.sess.Pending()
+	if len(pending.Approvals) > 0 {
+		m.approvalModel = newApprovalModel(displayApproval(pending.Approvals[0]), st.Sandbox, st.HasBackup, max(m.leftWidth-4, 30))
 	}
-	if q := m.state.PendingQuestion(); q != nil {
-		m.questionModel = newQuestionModel(q, max(m.leftWidth-4, 30))
+	if q := pending.Question; q != nil {
+		m.questionModel = newQuestionModel(*q, max(m.leftWidth-4, 30))
 	}
-	if sg := m.state.PendingSkillGate(); sg != nil {
-		m.skillGateModel = newSkillGateModel(sg, max(m.leftWidth-4, 30))
+	if sg := pending.SkillGate; sg != nil {
+		m.skillGateModel = newSkillGateModel(*sg, max(m.leftWidth-4, 30))
 	}
-	if sa := m.state.PendingSudoAuth(); sa != nil {
-		m.sudoAuthModel = newSudoAuthModel(sa, max(m.leftWidth-4, 30))
+	if sa := pending.Sudo; sa != nil {
+		m.sudoAuthModel = newSudoAuthModel(*sa, max(m.leftWidth-4, 30))
 	}
 
 	m.histIdx = -1
@@ -2037,7 +2020,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// reach it: those keys answer the modal question the user can act on,
 		// never the request neither of them can see. Approvals are already
 		// consumed above, and access choices stay consumed here.
-		if _, pending := m.state.AccessRequest(); pending {
+		if m.sess.Pending().Access != nil {
 			switch key := msg.(type) {
 			case tea.KeyPressMsg:
 				if key.String() != "ctrl+c" && !(consentOwnsDock && postmortemDeclineKey(key)) {
@@ -2890,7 +2873,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// F-BUG-147: Block overlay-opening hotkeys (Ctrl+O, Ctrl+K) while a
 	// tool decision is pending. These must be intercepted before the
 	// approval/question routing below, which would otherwise swallow them.
-	if m.hasPendingApproval() || m.state.PendingQuestion() != nil || m.state.PendingSkillGate() != nil || m.state.PendingSudoAuth() != nil {
+	// One Pending read serves this block and the prompt routing chain.
+	p := m.sess.Pending()
+	if len(p.Approvals) > 0 || p.Question != nil || p.SkillGate != nil || p.Sudo != nil {
 		if k, ok := msg.(tea.KeyPressMsg); ok {
 			switch k.String() {
 			case "ctrl+o":
@@ -2912,7 +2897,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Inline privileged-auth prompt: while a sudo password is pending, route
 	// messages to the masked form (scroll gestures first, mirroring the
 	// approval and question forms).
-	if sa := m.state.PendingSudoAuth(); sa != nil {
+	if sa := p.Sudo; sa != nil {
 		// A prompt the user cannot see must never read a password byte or
 		// authenticate: below the supported minimum, behind a full-frame panel,
 		// or with no room for its body, only Escape reaches the form so denial
@@ -2927,7 +2912,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if k.String() != "esc" {
 					return m, nil
 				}
-				return m.handleSudoAuth(msg, sa)
+				return m.handleSudoAuth(msg, *sa)
 			}
 		}
 		if m.handleSudoPageKey(msg) {
@@ -2936,17 +2921,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if updated, cmd, handled := m.scrollTranscript(msg); handled {
 			return updated, cmd
 		}
-		return m.handleSudoAuth(msg, sa)
+		return m.handleSudoAuth(msg, *sa)
 	}
 
 	// Inline skill-gate dialog: while a skill load gate is pending, route
 	// messages to it (scroll gestures first, mirroring the approval and
 	// question forms).
-	if sg := m.state.PendingSkillGate(); sg != nil {
+	if sg := p.SkillGate; sg != nil {
 		if updated, cmd, handled := m.scrollTranscript(msg); handled {
 			return updated, cmd
 		}
-		return m.handleSkillGate(msg, sg)
+		return m.handleSkillGate(msg, *sg)
 	}
 
 	// Inline approval chooser: when a tool call is pending, route every
@@ -2958,7 +2943,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	//
 	// Scroll gestures are handled first so the user can review transcript
 	// history before approving a destructive command.
-	if owner, tc, label := m.pendingApprovalTarget(); tc != nil {
+	if a, ok := m.pendingApprovalTarget(); ok {
 		// A prompt the user cannot fully see must never accept a decision they
 		// could not review: below the supported minimum, behind a full-frame
 		// panel, or with no room for the body, only Escape reaches the form so
@@ -2973,7 +2958,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if k.String() != "esc" {
 					return m, nil
 				}
-				return m.handleApproval(msg, owner, tc, label)
+				return m.handleApproval(msg, a)
 			}
 		}
 		if m.handleApprovalPageKey(msg) {
@@ -2982,17 +2967,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if updated, cmd, handled := m.scrollTranscript(msg); handled {
 			return updated, cmd
 		}
-		return m.handleApproval(msg, owner, tc, label)
+		return m.handleApproval(msg, a)
 	}
 
 	// Inline question prompt: when a clarifying question is pending, route
 	// messages to the question form. Scroll gestures are handled first so the
 	// transcript remains navigable while the question is visible.
-	if q := m.state.PendingQuestion(); q != nil {
+	if q := p.Question; q != nil {
 		if updated, cmd, handled := m.scrollTranscript(msg); handled {
 			return updated, cmd
 		}
-		return m.handleQuestion(msg, q)
+		return m.handleQuestion(msg, *q)
 	}
 
 	// Bubble Tea v2 emits a KeyReleaseMsg alongside every KeyPressMsg.
@@ -3056,98 +3041,52 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// pendingApprovalTarget returns the state owning the pending approval the
-// user should answer next, preferring the parent session, then the first
-// running subagent with a live child state. label names the subagent for
-// display; it is empty for the parent.
+// pendingApprovalTarget returns the pending approval the user should answer
+// next, as the session lists it: the session's own first, then each running
+// subagent's, in registration order.
 //
-// Subagents() returns a slice in registration order, so the first running
-// child with a pending approval is deterministic. With parallel agent.run
-// (up to agent.max_concurrent_subagents at once), several children could
-// pend at once; answering the first-registered one is acceptable — the
-// other surfaces on the next message.
-func (m *Model) pendingApprovalTarget() (owner *session.State, tc *session.PendingToolCall, label string) {
-	if tc := m.state.PendingApproval(); tc != nil {
-		return m.state, tc, ""
+// Pending returns them in that order, so the first is deterministic. With
+// parallel agent.run (up to agent.max_concurrent_subagents at once), several
+// children could pend at once; answering the first-registered one is
+// acceptable — the other surfaces on the next message.
+func (m *Model) pendingApprovalTarget() (acpwire.ApprovalRequest, bool) {
+	approvals := m.sess.Pending().Approvals
+	if len(approvals) == 0 {
+		return acpwire.ApprovalRequest{}, false
 	}
-	for _, v := range m.state.Subagents() {
-		if v.Status != session.SubagentRunning || v.Child == nil {
-			continue
-		}
-		if tc := v.Child.PendingApproval(); tc != nil {
-			return v.Child, tc, v.Label
-		}
-	}
-	return nil, nil, ""
+	return approvals[0], true
 }
 
-// approvalOwner is the state that owns the pending approval being displayed:
-// the parent's unless a running subagent's child holds it.
-func (m *Model) approvalOwner() *session.State {
-	if owner, tc, _ := m.pendingApprovalTarget(); tc != nil {
-		return owner
-	}
-	return m.state
-}
-
-// hasPendingApproval reports whether any approval is pending — either on
-// the parent state or on a running subagent's live child state. Rendering,
-// status indicators, and keypress gating must all consult this (not just
-// the parent) so a child approval is not silently routed into an invisible
-// form.
+// hasPendingApproval reports whether any approval is pending — the session's
+// own or a running subagent's. Rendering, status indicators, and keypress
+// gating must all consult this so a child approval is not silently routed
+// into an invisible form.
 func (m *Model) hasPendingApproval() bool {
-	if m.state.PendingApproval() != nil {
-		return true
-	}
-	for _, v := range m.state.Subagents() {
-		if v.Status != session.SubagentRunning || v.Child == nil {
-			continue
-		}
-		if v.Child.PendingApproval() != nil {
-			return true
-		}
-	}
-	return false
+	return len(m.sess.Pending().Approvals) > 0
 }
 
-// pendingApprovalDisplay returns the tool call to render for the pending
-// approval the user should answer next, mirroring handleApproval's display
-// copy: a subagent approval is wrapped in a shallow copy whose reason names
-// the subagent, so the rendered panel (and the eager form) attribute the
-// request. label is the subagent name, empty for the parent. Returns nil
-// when no approval is pending.
-func (m *Model) pendingApprovalDisplay() (tc *session.PendingToolCall, label string) {
-	_, src, label := m.pendingApprovalTarget()
-	if src == nil {
-		return nil, ""
+// displayApproval is a as the dialog shows it. A subagent's approval has its
+// reason prefixed with the subagent's label and its Access mark cleared, as
+// the display copy had.
+func displayApproval(a acpwire.ApprovalRequest) acpwire.ApprovalRequest {
+	if a.SubagentID == 0 {
+		return a
 	}
-	if label == "" {
-		return src, ""
-	}
-	return &session.PendingToolCall{
-		ID:                   src.ID,
-		Name:                 src.Name,
-		Args:                 src.Args,
-		Command:              src.Command,
-		Risk:                 src.Risk,
-		StepID:               src.StepID,
-		Reason:               fmt.Sprintf("subagent %q: %s", label, src.Reason),
-		Diff:                 src.Diff,
-		Schema:               src.Schema,
-		ExactCommandApproval: src.ExactCommandApproval,
-		ResponseChan:         src.ResponseChan,
-	}, label
+	a.Reason = fmt.Sprintf("subagent %q: %s", a.Subagent, a.Reason)
+	a.Access = false
+	return a
 }
 
-// isModeElevationApproval reports whether a pending approval is an ordinary
-// forced prompt that must not offer the always/session options: a mode.request
-// call, or a file.write carrying the legacy "mode-elevation:" reason prefix.
-//
-// It classifies the prompt, not dock ownership. A typed access request is
-// presented by the accesspanel through reconciliation and never reaches the
-// generic approval model at all.
-func isModeElevationApproval(tc *session.PendingToolCall) bool {
-	return tc.Name == "mode.request" || strings.HasPrefix(tc.Reason, "mode-elevation:")
+// pendingApprovalDisplay returns the approval to render for the pending
+// approval the user should answer next: a subagent's approval names the
+// subagent, so the rendered panel (and the eager form) attribute the request.
+// Returns false when no approval is pending.
+func (m *Model) pendingApprovalDisplay() (acpwire.ApprovalRequest, bool) {
+	a, ok := m.pendingApprovalTarget()
+	if !ok {
+		return acpwire.ApprovalRequest{}, false
+	}
+	return displayApproval(a), true
 }
 
 // accessWaitingRow is the muted disclosure shown while a typed access request
@@ -3164,29 +3103,27 @@ func (m Model) accessPanelOwnsDock() bool {
 	return ok
 }
 
-// accessRequestSnapshot reads the pending access request through the runtime
-// seam. It reports nothing when either callback is missing: without a resolver
-// the TUI cannot present a request it has no way to answer.
-func (m *Model) accessRequestSnapshot() (session.AccessRequest, bool) {
-	if m.accessRequest == nil || m.resolveAccess == nil {
-		return session.AccessRequest{}, false
-	}
-	return m.accessRequest()
+// accessRequestSnapshot reads the pending access request through the session.
+// The adapter settles a request that no longer asks for anything and refuses
+// one that belongs to a session it does not serve, so this reads the panel's
+// subject and nothing else.
+func (m *Model) accessRequestSnapshot() (acpwire.AccessRequest, bool) {
+	return m.sess.ReconcileAccess(m.ctx)
 }
 
 // accessOutcomeNote renders one concise line naming the outcome and the actual
 // effective state, so the transcript never claims a capability the session
 // does not hold.
-func accessOutcomeNote(result session.AccessResult) string {
+func accessOutcomeNote(result acpwire.AccessResult) string {
 	state := fmt.Sprintf("mode %s, system access %t", result.Effective.Mode, result.Effective.System)
 	switch result.Status {
-	case session.AccessGranted:
+	case acpwire.AccessGranted:
 		return fmt.Sprintf("Access granted — %s.", state)
-	case session.AccessDenied:
+	case acpwire.AccessDenied:
 		return fmt.Sprintf("Access denied — %s.", state)
-	case session.AccessAvailable:
+	case acpwire.AccessAvailable:
 		return fmt.Sprintf("Access already available — %s.", state)
-	case session.AccessCanceled:
+	case acpwire.AccessCanceled:
 		return fmt.Sprintf("Access request canceled — %s.", state)
 	default:
 		msg := result.Message
@@ -3202,9 +3139,9 @@ func accessOutcomeNote(result session.AccessResult) string {
 // runtime tick without the user typing anything, and a request that was
 // canceled, replaced or satisfied stops being shown.
 //
-// It is presentation only. It never applies a grant; the one session call it
-// makes is a fail-closed cancellation when no resolver is attached, because a
-// request nothing can answer must not block the tool forever.
+// It is presentation only. It never applies a grant: the adapter settles a
+// request that nothing can answer, and refuses one that belongs to a session
+// this model does not serve.
 func (m *Model) reconcileAccess() {
 	if m.state == nil {
 		return
@@ -3222,19 +3159,6 @@ func (m *Model) reconcileAccess() {
 	}
 
 	snapshot, pending := m.accessRequestSnapshot()
-	if !pending {
-		// Fail closed: a typed request is waiting but this model has no way to
-		// present or answer it. Settle it as a failure so the tool unblocks
-		// rather than waiting on a panel that can never submit anything.
-		if typed, ok := m.state.AccessRequest(); ok {
-			m.state.CancelAccess(typed.RequestID, session.AccessFailed, "Access resolver unavailable")
-		}
-	}
-	// A snapshot from another conversation must not open here: the session was
-	// replaced underneath this model.
-	if pending && snapshot.SessionID != m.sess.ID() {
-		pending = false
-	}
 
 	current, isAccessPanel := m.dock.Panel().(*accesspanel.Panel)
 	switch {
@@ -3278,7 +3202,7 @@ func (m *Model) reconcileAccess() {
 // actually open. It is deliberately narrow: the choice must name the panel's
 // exact request, session and presented tuple, so a stale message from an
 // earlier request can never answer a newer one.
-func (m *Model) handleAccessChoice(choice session.AccessChoice) {
+func (m *Model) handleAccessChoice(choice acpwire.AccessChoice) {
 	panel, ok := m.dock.Panel().(*accesspanel.Panel)
 	if !ok {
 		return
@@ -3290,13 +3214,9 @@ func (m *Model) handleAccessChoice(choice session.AccessChoice) {
 		// Stale or foreign: leave whatever is on screen alone.
 		return
 	}
-	if m.resolveAccess == nil {
-		m.state.CancelAccess(shown.RequestID, session.AccessFailed, "Access resolver unavailable")
-		return
-	}
 	// The resolver is a bounded, memory-only operation, so it runs inline: the
 	// panel must not close before the runtime has committed the decision.
-	result, err := m.resolveAccess(choice)
+	result, err := m.sess.AnswerAccess(m.ctx, choice)
 	if err != nil {
 		m.dock.CloseNow()
 		m.state.AddMessage(session.RoleSystem,
@@ -3304,7 +3224,7 @@ func (m *Model) handleAccessChoice(choice session.AccessChoice) {
 		m.refreshViewport()
 		return
 	}
-	if result.Status == session.AccessRefresh {
+	if result.Status == acpwire.AccessRefresh {
 		// The permission tuple moved while the user was deciding. The request
 		// stays pending; re-present the fresh state with Deny selected.
 		if fresh, pending := m.accessRequestSnapshot(); pending {
@@ -3325,32 +3245,31 @@ func (m *Model) handleAccessChoice(choice session.AccessChoice) {
 // approvalEdit is the isolated editor for one pending approval's command or
 // JSON arguments. It owns its own textarea, so opening, typing in, saving or
 // abandoning an edit never shares text, cursor, placeholder or paste
-// attachments with the chat composer. It remembers the exact owner and request
-// it edits: an edit whose request settled, was replaced or was interrupted is
+// attachments with the chat composer. It remembers the key of the approval it
+// edits: an edit whose request settled, was replaced or was interrupted is
 // retired instead of being allowed to settle whatever is pending now.
 type approvalEdit struct {
 	input textarea.Model
-	owner *session.State
-	call  *session.PendingToolCall
+	key   string // the approval's key
 }
 
-// newApprovalEdit builds the editor for tc, prefilled from the request. The
+// newApprovalEdit builds the editor for a, prefilled from the request. The
 // character limit is unlimited so a long command or argument blob is never
 // silently truncated.
-func newApprovalEdit(owner *session.State, tc *session.PendingToolCall, width int) *approvalEdit {
+func newApprovalEdit(a acpwire.ApprovalRequest, width int) *approvalEdit {
 	input := newComposerTextarea()
 	input.CharLimit = 0
-	if tc.Name == "shell.run" {
+	if a.Tool == "shell.run" {
 		// Command editing shows the whole command as one editable value.
 		input.Placeholder = "Edit command..."
-		input.SetValue(tc.Command)
+		input.SetValue(a.Command)
 	} else {
 		input.Placeholder = "Edit JSON arguments..."
-		input.SetValue(tc.Args)
+		input.SetValue(a.Args)
 	}
 	input.SetWidth(max(width, 1))
 	input.MoveToEnd()
-	return &approvalEdit{input: input, owner: owner, call: tc}
+	return &approvalEdit{input: input, key: a.Key}
 }
 
 // approvalEditLive reports whether the open edit is still bound to the approval
@@ -3361,8 +3280,8 @@ func (m Model) approvalEditLive() bool {
 	if ed == nil {
 		return false
 	}
-	owner, tc, _ := m.pendingApprovalTarget()
-	return tc != nil && tc == ed.call && owner == ed.owner
+	a, ok := m.pendingApprovalTarget()
+	return ok && a.Key == ed.key
 }
 
 // editingApproval reports whether an approval edit holds the input.
@@ -3377,22 +3296,19 @@ func (m *Model) retireApprovalEdit() { m.approvalEdit = nil }
 // called before the main keypress switch so huh's internal navigation messages
 // (nextFieldMsg/nextGroupMsg) round-trip back to the form.
 //
-// owner is the session.State that owns the pending approval (the parent, or
-// a running subagent's child state); tc is the pending tool call on that
-// state. source names the subagent for display and is empty for the parent.
-// The decision is always Responded on the original tc; a shallow display copy
-// with a prefixed reason is shown so the dialog names who is asking.
-func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.PendingToolCall, source string) (tea.Model, tea.Cmd) {
+// a is the pending approval as the session lists it; the decision goes back
+// through AnswerApproval on its key. A display copy whose reason names the
+// subagent is what the dialog shows.
+func (m Model) handleApproval(msg tea.Msg, a acpwire.ApprovalRequest) (tea.Model, tea.Cmd) {
 	st := m.sess.Status()
 	// A typed access request is presented by the accesspanel through
 	// reconciliation, never here: it must not create a generic approval model
 	// or consume runtime events. A raw untyped mode.request (no Access
 	// metadata) fails closed with an ordinary denial, because nothing has
 	// validated or applied what it asks for.
-	if source == "" && tc.Name == "mode.request" && tc.Access == nil {
+	if a.SubagentID == 0 && a.Tool == "mode.request" && !a.Access {
 		if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "enter" {
-			tc.Respond(session.UserApprovalDecision{Approved: false})
-			m.state.SetPendingApproval(nil)
+			_ = m.settleApproval(a, acpwire.ApprovalAnswer{Decision: acpwire.ApprovalDeny})
 			m.state.AddMessage(session.RoleSystem,
 				"mode.request was not resolved by the runtime; no capability was granted.",
 				session.ContentTypePlain)
@@ -3404,7 +3320,7 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 
 	// Edit sub-mode: an isolated editor owns the input. The chat composer and
 	// its paste attachments stay untouched underneath it, and the edit is
-	// bound to the exact owner and request it was opened for.
+	// bound to the exact approval it was opened for.
 	if m.approvalEdit != nil {
 		if !m.approvalEditLive() {
 			// The request this edit was bound to is gone: replaced, settled or
@@ -3427,10 +3343,10 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 			case "enter":
 				value := strings.TrimSpace(ed.input.Value())
 				if value != "" {
-					// Settlement goes through the canonical keyed path when the
-					// request registered one; a request that was canceled
-					// meanwhile loses the claim and settles nothing.
-					m.settleApproval(owner, tc, session.UserApprovalDecision{Approved: true, Edited: value}, nil)
+					// The session arbitrates against a steering cancellation
+					// that already owns the settlement; the error is not acted
+					// on, exactly as the other answer calls.
+					_ = m.settleApproval(a, acpwire.ApprovalAnswer{Decision: acpwire.ApprovalOnce, Edited: value})
 					m.approvalModel = nil
 					m.retireApprovalEdit()
 					m.updateViewportHeight()
@@ -3449,34 +3365,13 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 	}
 
 	// Lazily build the inline approval chooser the first time a message
-	// arrives for a pending tool call. For a subagent approval, show a
-	// display copy whose reason names the subagent, but always Respond on
-	// the original tc. The copy is built field-by-field (not a struct
-	// copy) because PendingToolCall embeds sync.Once, which must not be
-	// copied.
-	displayTC := tc
-	if source != "" {
-		// Mirror pendingApprovalDisplay so the eager form and the lazily
-		// built one attribute the request identically.
-		displayTC = &session.PendingToolCall{
-			ID:                   tc.ID,
-			Name:                 tc.Name,
-			Args:                 tc.Args,
-			Command:              tc.Command,
-			Risk:                 tc.Risk,
-			StepID:               tc.StepID,
-			Reason:               fmt.Sprintf("subagent %q: %s", source, tc.Reason),
-			Diff:                 tc.Diff,
-			Schema:               tc.Schema,
-			ExactCommandApproval: tc.ExactCommandApproval,
-			ResponseChan:         tc.ResponseChan,
-		}
-	}
-	if m.approvalModel == nil || m.approvalModel.tc.ID != displayTC.ID {
+	// arrives for a pending approval, and rebuild it when it is bound to
+	// another key.
+	if m.approvalModel == nil || m.approvalModel.a.Key != a.Key {
 		// A different pending request replaces the prompt, so the review must
 		// start at the top of the new operation rather than wherever the
 		// previous one was left scrolled.
-		m.approvalModel = newApprovalModel(displayTC, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, st.HasBackup, max(m.leftWidth-4, 30), m.approvalWhyFor(owner, displayTC))
+		m.approvalModel = newApprovalModel(displayApproval(a), st.Sandbox, st.HasBackup, max(m.leftWidth-4, 30))
 		m.syncPromptReviewHeights()
 	}
 	am, cmd := m.approvalModel.Update(msg)
@@ -3489,90 +3384,41 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 	m.approvalModel = nil
 	switch choice {
 	case choiceApprove:
-		m.settleApproval(owner, tc, session.UserApprovalDecision{Approved: true}, nil)
+		_ = m.settleApproval(a, acpwire.ApprovalAnswer{Decision: acpwire.ApprovalOnce})
 		m.invalidateTranscript()
 		return m, nil
 	case choiceDeny:
-		m.settleApproval(owner, tc, session.UserApprovalDecision{Approved: false}, nil)
+		_ = m.settleApproval(a, acpwire.ApprovalAnswer{Decision: acpwire.ApprovalDeny})
 		m.invalidateTranscript()
 		return m, nil
 	case choiceAlways:
-		if forcedPromptClass(tc) {
-			// A forged standing choice must never persist a bypass for a prompt
-			// that only accepts an exact decision.
-			m.settleApproval(owner, tc, session.UserApprovalDecision{Approved: false}, nil)
-			m.invalidateTranscript()
-			return m, nil
+		// The adapter saves the allow rule to the user config and applies it to
+		// the session, or adds a session rule when the save fails. A forced
+		// prompt never offers this choice, and a forged one is the adapter's
+		// deny.
+		if err := m.settleApproval(a, acpwire.ApprovalAnswer{Decision: acpwire.ApprovalAlways}); err == nil {
+			m.configViewsChanged(m.state.Config)
 		}
-		rule := permissions.Rule{
-			Permission: permissions.PermissionForTool(tc.Name),
-			Pattern:    permissions.PatternForApproval(tc),
-			Action:     permissions.ActionAllow,
-		}
-		// The rule is a policy side effect: it belongs inside the apply
-		// callback so a steering cancellation that already owns the settlement
-		// can never persist a bypass for a prompt it cancelled.
-		apply := func() error {
-			userConfigPath := filepath.Join(userConfigDir(), "config.toml")
-			if err := config.SaveUserConfigRule(userConfigPath, config.PermissionRule{
-				Permission: rule.Permission,
-				Pattern:    rule.Pattern,
-				Action:     string(rule.Action),
-			}); err != nil {
-				m.state.AddSessionRule(tc.Command)
-				return nil
-			}
-			newCfg := m.state.Config
-			newCfg.Permissions.Rules = append(newCfg.Permissions.Rules, config.PermissionRule{
-				Permission: rule.Permission,
-				Pattern:    rule.Pattern,
-				Action:     string(rule.Action),
-			})
-			m.applyNewConfig(newCfg)
-			// The installed policy engine reads the owner's live config through
-			// State.PolicySnapshot; a runner-local rule mutation would create a
-			// second source of truth.
-			return nil
-		}
-		m.settleApproval(owner, tc, session.UserApprovalDecision{Approved: true}, apply)
 		m.invalidateTranscript()
 		return m, nil
 	case choiceSessionAllow:
-		if forcedPromptClass(tc) {
-			m.settleApproval(owner, tc, session.UserApprovalDecision{Approved: false}, nil)
-			m.invalidateTranscript()
-			return m, nil
-		}
-		apply := func() error {
-			m.state.AddSessionRule(tc.Command)
-			return nil
-		}
-		m.settleApproval(owner, tc, session.UserApprovalDecision{Approved: true}, apply)
+		_ = m.settleApproval(a, acpwire.ApprovalAnswer{Decision: acpwire.ApprovalSession})
 		m.invalidateTranscript()
 		return m, nil
 	case choiceEdit:
-		// The edit gets its own editor bound to this exact owner and request;
-		// the chat composer, its cursor and its paste attachments are left
-		// exactly as the user typed them.
-		m.approvalEdit = newApprovalEdit(owner, tc, max(m.leftWidth-4, 30))
+		// The edit gets its own editor bound to this exact approval; the chat
+		// composer, its cursor and its paste attachments are left exactly as
+		// the user typed them.
+		m.approvalEdit = newApprovalEdit(a, max(m.leftWidth-4, 30))
 		m.updateViewportHeight()
 		m.invalidateTranscript()
 		return m, nil
 	case choiceRollback:
 		if st.HasBackup {
-			// The error is load-bearing: a partial rollback leaves a mixed
-			// working tree, and reporting success would hide that from both
-			// the user and the audit trail.
-			ev := registry.AuditEvent{
-				Timestamp:     time.Now(),
-				ToolName:      "rollback",
-				ResultSummary: "Rollback applied successfully",
-			}
-			if err := m.state.RollbackBackup(); err != nil {
-				ev.Error = err.Error()
-				ev.ResultSummary = "Rollback failed"
-			}
-			m.state.LogToolCall(ev)
+			// The adapter restores the backup and logs the audit row, failed or
+			// not. The error is ignored here because the row carries it, as the
+			// transcript did before.
+			_ = m.sess.Rollback(m.ctx)
 			m.invalidateTranscript()
 			m.refreshViewport()
 			// Keep the approval open so the user can then approve/deny the
@@ -3585,43 +3431,25 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 	}
 }
 
-// settleApproval resolves an approval decision through the owning session's
-// canonical registry when the prompt carries a non-zero key, falling back to
-// the raw Respond path for a legacy unregistered fixture. apply carries policy
-// side effects and runs only for the claim that won: a decision that lost to an
-// accepted steering cancellation persists nothing, grants nothing and clears no
-// current prompt. owner is the state that raised the prompt, so a subagent's
-// approval settles against the child's own registry rather than the parent's.
-func (m *Model) settleApproval(owner *session.State, tc *session.PendingToolCall, decision session.UserApprovalDecision, apply func() error) {
-	if tc.Key.ID != "" && owner != nil {
-		if _, err := owner.ResolveApproval(tc.Key, decision, apply); err != nil {
-			owner.ClearPrompt(tc.Key)
-		}
-		return
-	}
-	// An unregistered legacy fixture owns its own channel, and nothing else can
-	// claim that settlement, so its side effect runs unconditionally — exactly
-	// as it did before the registry existed.
-	if apply != nil {
-		_ = apply()
-	}
-	if owner.PendingApproval() == tc {
-		tc.Respond(decision)
-	}
-	owner.SetPendingApproval(nil)
+// settleApproval answers the approval through the session. The adapter
+// arbitrates a late answer against an accepted steering cancellation, applies
+// a standing choice's rule on the session, and refuses a key that names no
+// open approval; the error is returned so a caller that needs it can see it.
+func (m *Model) settleApproval(a acpwire.ApprovalRequest, answer acpwire.ApprovalAnswer) error {
+	return m.sess.AnswerApproval(m.ctx, a.Key, answer)
 }
 
 // handleQuestion routes messages to the inline question form while a
-// clarifying question is pending. On completion it sends the answers to the
-// runner's response channel. Escape is an explicit skip rather than a blanket
-// abort: the form finalises the questions it has already advanced past and
-// records the focused question and every later one as
-// session.AnswerUnanswered (see questionModel.skipRemaining), so a partial
-// answer set is what reaches the owner. Live input on the focused question — a
-// highlighted default, half-typed text, an unsubmitted toggle — is not an
-// answer and is never copied.
-func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Model, tea.Cmd) {
-	if m.questionModel == nil || m.questionModel.q != q {
+// clarifying question is pending. On completion it answers through the
+// session. Escape is an explicit skip rather than a blanket abort: the form
+// finalises the questions it has already advanced past and records the
+// focused question and every later one as acpwire.AnswerUnanswered (see
+// questionModel.skipRemaining), so a partial answer set is what the session
+// answers with. Live input on the focused question — a highlighted default,
+// half-typed text, an unsubmitted toggle — is not an answer and is never
+// copied.
+func (m Model) handleQuestion(msg tea.Msg, q acpwire.QuestionRequest) (tea.Model, tea.Cmd) {
+	if m.questionModel == nil || m.questionModel.q.Key != q.Key {
 		// Build the form for the question that is pending now — and rebuild it
 		// when the open form is bound to a round-trip that settled or was
 		// interrupted out from under it. Driving the stale form would answer
@@ -3636,18 +3464,10 @@ func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Mode
 		return m, cmd
 	}
 
-	answers := m.questionModel.Answers()
-	switch {
-	case q.Key.ID != "" && m.state.PendingQuestion() == q:
-		// Canonical settlement: the registry arbitrates the answer against an
-		// accepted steering cancellation, so a late answer cannot answer a
-		// question the interruption already settled, and only a winning claim
-		// clears the slot.
-		m.state.ResolveQuestion(q.Key, answers)
-	case m.state.PendingQuestion() == q:
-		q.Respond(answers)
-		m.state.SetPendingQuestion(nil)
-	}
+	// The session is the one place that settles the request: it arbitrates a
+	// late answer against an accepted steering cancellation and clears only a
+	// winning claim. The form closes either way, so the error is not acted on.
+	_ = m.sess.AnswerQuestion(m.ctx, q.Key, m.questionModel.Answers())
 	// The form has its own input: settling it must leave the composer exactly
 	// as the user left it — text, cursor, placeholder and paste attachments.
 	// Clearing here would discard an unrelated draft the user was writing
@@ -3659,13 +3479,13 @@ func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Mode
 }
 
 // handleSkillGate routes messages to the inline skill-gate dialog while a
-// skill load gate is pending. The decision is responded on the original
-// pending struct; per-skill and allow-all decisions are recorded on the
-// session state here so the runner's gate sees them on the next attempt.
-func (m Model) handleSkillGate(msg tea.Msg, sg *session.PendingSkillGate) (tea.Model, tea.Cmd) {
-	if m.skillGateModel == nil || m.skillGateModel.sg != sg {
+// skill load gate is pending. On completion it answers through the session,
+// which responds on the gate and records a per-skill or allow-all choice so
+// the runner's gate sees it on the next attempt.
+func (m Model) handleSkillGate(msg tea.Msg, sg acpwire.SkillGateRequest) (tea.Model, tea.Cmd) {
+	if m.skillGateModel == nil || m.skillGateModel.sg.Key != sg.Key {
 		// Build lazily — and rebuild when the open dialog is bound to a
-		// pending struct that was superseded while it was up (parity with
+		// pending request that was superseded while it was up (parity with
 		// the approval/question pending-identity guards, F-BUG-51 class).
 		m.skillGateModel = newSkillGateModel(sg, max(m.leftWidth-4, 30))
 		return m, nil
@@ -3675,47 +3495,23 @@ func (m Model) handleSkillGate(msg tea.Msg, sg *session.PendingSkillGate) (tea.M
 	if !gm.IsDone() {
 		return m, cmd
 	}
-	choice := gm.Choice()
-	m.skillGateModel = nil
-	// The sticky-skill record is a session side effect: it belongs inside the
-	// apply callback, so a decision that lost to an accepted steering
+	// The adapter records the choice: the sticky-skill record belongs inside
+	// the settlement, so a decision that lost to an accepted steering
 	// cancellation never records a bypass for a gate it cancelled.
-	apply := func() error {
-		switch choice {
-		case session.SkillGateAllowSkill:
-			m.state.SkillGateRecordAllow(sg.Skill, false)
-		case session.SkillGateAllowAll:
-			m.state.SkillGateRecordAllow(sg.Skill, true)
-		}
-		return nil
-	}
-	if sg.Key.ID != "" && m.state.PendingSkillGate() == sg {
-		if _, err := m.state.ResolveSkillGate(sg.Key, choice, apply); err != nil {
-			m.state.ClearPrompt(sg.Key)
-		}
-		m.refreshViewport()
-		return m, nil
-	}
-	apply()
-	// Respond only if the slot still holds this prompt: a pending that
-	// was resolved out-from-under the dialog (shutdown race) must not
-	// have its replacement cleared without a response.
-	if cur := m.state.PendingSkillGate(); cur == sg {
-		sg.Respond(choice)
-		m.state.SetPendingSkillGate(nil)
-	}
+	_ = m.sess.AnswerSkillGate(m.ctx, sg.Key, gm.Choice())
+	m.skillGateModel = nil
 	m.refreshViewport()
 	return m, nil
 }
 
 // handleSudoAuth routes messages to the inline masked password prompt while a
-// privileged-command authentication is pending. The decision is responded on
-// the original pending struct; the password lives only in the decision value
-// on that channel and is zeroed by the tool handler after use.
-func (m Model) handleSudoAuth(msg tea.Msg, sa *session.PendingSudoAuth) (tea.Model, tea.Cmd) {
-	if m.sudoAuthModel == nil || m.sudoAuthModel.sa != sa {
-		// Build lazily — and rebuild when the open form is bound to a pending
-		// struct that was superseded while it was up (parity with the
+// privileged-command authentication is pending. The decision goes to the
+// session, which hands it to the handler; the password lives only in that
+// answer and is zeroed after use.
+func (m Model) handleSudoAuth(msg tea.Msg, sa acpwire.SudoRequest) (tea.Model, tea.Cmd) {
+	if m.sudoAuthModel == nil || m.sudoAuthModel.sa.Key != sa.Key {
+		// Build lazily — and rebuild when the open form is bound to a request
+		// that was superseded while it was up (parity with the
 		// approval/question/skill-gate pending-identity guards). A freshly
 		// built prompt starts its review at the top.
 		m.sudoAuthModel = newSudoAuthModel(sa, max(m.leftWidth-4, 30))
@@ -3732,21 +3528,10 @@ func (m Model) handleSudoAuth(msg tea.Msg, sa *session.PendingSudoAuth) (tea.Mod
 	}
 	decision := sm.Decision()
 	m.sudoAuthModel = nil
-	if sa.Key.ID != "" && m.state.PendingSudoAuth() == sa {
-		// Canonical settlement: a canceled prompt delivers an empty decision,
-		// so a password typed into a prompt the interruption already settled
-		// never reaches the privileged runner.
-		m.state.ResolveSudoAuth(sa.Key, decision)
-		m.refreshViewport()
-		return m, nil
-	}
-	// Respond only if the slot still holds this prompt: a pending resolved
-	// out-from-under the form (shutdown race) must not have its replacement
-	// cleared without a response.
-	if cur := m.state.PendingSudoAuth(); cur == sa {
-		sa.Respond(decision)
-		m.state.SetPendingSudoAuth(nil)
-	}
+	// The session settles the prompt: a canceled one delivers an empty
+	// decision, so a password typed into a prompt the interruption already
+	// settled never reaches the privileged runner.
+	_ = m.sess.AnswerSudo(m.ctx, sa.Key, decision)
 	m.refreshViewport()
 	return m, nil
 }
@@ -3807,39 +3592,42 @@ func (m Model) inputChromeRows() int {
 		return 1 + m.inputHeaderRows()
 	}
 	rows := 0
-	if m.sess.Status().SDD.Active {
+	st := m.sess.Status()
+	if st.SDD.Active {
 		rows++ // SDD hint row
 	}
-	if sa := m.state.PendingSudoAuth(); sa != nil {
+	// One Pending read for the three prompts this budget mirrors.
+	pending := m.sess.Pending()
+	if sa := pending.Sudo; sa != nil {
 		content := ""
 		if m.sudoAuthModel != nil {
 			content = m.sudoAuthModel.View()
 		} else {
-			content = renderSudoAuthPanel(sa, max(m.leftWidth-4, 1))
+			content = renderSudoAuthPanel(*sa, max(m.leftWidth-4, 1))
 		}
 		rows += len(consoleLines(content))
-	} else if sg := m.state.PendingSkillGate(); sg != nil {
+	} else if sg := pending.SkillGate; sg != nil {
 		content := ""
 		if m.skillGateModel != nil {
 			content = m.skillGateModel.View()
 		} else {
-			content = renderSkillGatePanel(sg, max(m.leftWidth-4, 1))
+			content = renderSkillGatePanel(*sg, max(m.leftWidth-4, 1))
 		}
 		rows += len(consoleLines(content))
-	} else if q := m.state.PendingQuestion(); q != nil {
+	} else if q := pending.Question; q != nil {
 		content := ""
 		if m.questionModel != nil {
 			content = m.questionModel.View()
 		} else {
-			content = renderQuestionPanel(q, max(m.leftWidth-4, 1))
+			content = renderQuestionPanel(*q, max(m.leftWidth-4, 1))
 		}
 		rows += len(consoleLines(content))
-	} else if tc, _ := m.pendingApprovalDisplay(); tc != nil {
+	} else if a, ok := m.pendingApprovalDisplay(); ok {
 		// Mirror inputSections' switch exactly so the budget never disagrees
 		// with what is on screen.
 		var content string
 		switch {
-		case tc.Access != nil:
+		case a.Access:
 			// A typed access request is presented by the accesspanel, which
 			// owns the decision. When another panel holds the dock the request
 			// is queued: disclose it without rendering a second approve/deny
@@ -3855,7 +3643,7 @@ func (m Model) inputChromeRows() int {
 		case m.approvalModel != nil:
 			content = m.approvalModel.View()
 		default:
-			content = renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, max(m.leftWidth-4, 1), m.approvalWhyFor(m.approvalOwner(), tc))
+			content = renderApprovalPanel(a, st.Sandbox, max(m.leftWidth-4, 1))
 		}
 		rows += len(consoleLines(content))
 	} else if m.doctorSecret != nil {
@@ -3878,8 +3666,9 @@ func (m Model) inputAreaRows() int {
 		// input area below it renders only its suspended notice row.
 		return rows
 	}
-	if m.state.PendingQuestion() == nil && !m.hasPendingApproval() && m.state.PendingSkillGate() == nil &&
-		m.state.PendingSudoAuth() == nil && m.doctorSecret == nil {
+	pending := m.sess.Pending()
+	if pending.Question == nil && len(pending.Approvals) == 0 && pending.SkillGate == nil &&
+		pending.Sudo == nil && m.doctorSecret == nil {
 		// DynamicHeight clamps Height() to [MinHeight, MaxHeight], so the
 		// only guard needed is the max(..., 1) floor.
 		rows += max(m.input.Height(), 1)
@@ -5817,10 +5606,11 @@ func (m Model) settingsBlockReason() string {
 	if m.hasPendingApproval() {
 		return "Resolve the pending tool approval to save."
 	}
-	if m.state.PendingQuestion() != nil {
+	pending := m.sess.Pending()
+	if pending.Question != nil {
 		return "Answer the pending question to save."
 	}
-	if m.state.PendingSudoAuth() != nil {
+	if pending.Sudo != nil {
 		return "Authenticate or deny the pending privileged command to save."
 	}
 	if m.dock.IsOpen() {
@@ -6157,30 +5947,30 @@ func (m *Model) surfaceOwnsInput() bool {
 	if m.dock.IsOpen() || m.editingApproval() || m.doctorSecret != nil {
 		return true
 	}
+	pending := m.sess.Pending()
 	return m.hasPendingApproval() ||
-		m.state.PendingQuestion() != nil ||
-		m.state.PendingSkillGate() != nil ||
-		m.state.PendingSudoAuth() != nil
+		pending.Question != nil ||
+		pending.SkillGate != nil ||
+		pending.Sudo != nil
 }
 
-// focusedPromptKey returns the canonical key of the pending prompt that owns
-// the input, in the same order the update routing resolves them. A prompt
-// registered outside this session's registry (a legacy fixture) carries the
-// zero key and reports false.
-func (m *Model) focusedPromptKey() (session.PromptKey, bool) {
-	if sa := m.state.PendingSudoAuth(); sa != nil && sa.Key.ID != "" {
-		return sa.Key, true
+// focusedPromptKey returns the key of the pending prompt that owns the input,
+// in the same order the update routing resolves them.
+func (m *Model) focusedPromptKey() (promptRef, bool) {
+	p := m.sess.Pending()
+	if p.Sudo != nil && p.Sudo.Key != "" {
+		return promptRef{kind: promptSudo, key: p.Sudo.Key}, true
 	}
-	if sg := m.state.PendingSkillGate(); sg != nil && sg.Key.ID != "" {
-		return sg.Key, true
+	if p.SkillGate != nil && p.SkillGate.Key != "" {
+		return promptRef{kind: promptSkill, key: p.SkillGate.Key}, true
 	}
-	if tc, _ := m.pendingApprovalDisplay(); tc != nil && tc.Key.ID != "" {
-		return tc.Key, true
+	if len(p.Approvals) > 0 && p.Approvals[0].Key != "" {
+		return promptRef{kind: promptApproval, key: p.Approvals[0].Key}, true
 	}
-	if q := m.state.PendingQuestion(); q != nil && q.Key.ID != "" {
-		return q.Key, true
+	if p.Question != nil && p.Question.Key != "" {
+		return promptRef{kind: promptQuestion, key: p.Question.Key}, true
 	}
-	return session.PromptKey{}, false
+	return promptRef{}, false
 }
 
 // beginSendNow is the global Alt+Enter action. A plain chat editor submits its
@@ -6230,7 +6020,7 @@ func (m *Model) openSteeringComposer() {
 	}
 	m.composerDisplaced = nil
 	m.composerDisplacedAccess = ""
-	m.composerDisplacedPrompt = session.PromptKey{}
+	m.composerDisplacedPrompt = promptRef{}
 	m.composerInputFocused = m.input.Focused()
 	if panel := m.dock.Panel(); panel != nil {
 		if ap, ok := panel.(*accesspanel.Panel); ok {
@@ -6287,7 +6077,7 @@ func (m *Model) restoreComposerSurface() {
 			panel = nil
 		}
 	}
-	if key := m.composerDisplacedPrompt; key.ID != "" && !m.promptStillPending(key) {
+	if key := m.composerDisplacedPrompt; key.key != "" && !m.promptStillPending(key) {
 		m.retireStalePromptModels(key)
 	}
 	// The composer is permanently gone once it closes, whether or not the
@@ -6295,7 +6085,7 @@ func (m *Model) restoreComposerSurface() {
 	retired := m.composerDisplaced
 	m.composerDisplaced = nil
 	m.composerDisplacedAccess = ""
-	m.composerDisplacedPrompt = session.PromptKey{}
+	m.composerDisplacedPrompt = promptRef{}
 	if panel != nil {
 		// The restored surface takes the slot silently; the composer it
 		// replaces is what has been permanently discarded.
@@ -6308,39 +6098,31 @@ func (m *Model) restoreComposerSurface() {
 	m.dock.CloseNow()
 }
 
-// promptStillPending reports whether key still names the live pending prompt
+// promptStillPending reports whether ref still names the live pending request
 // of its kind.
-func (m *Model) promptStillPending(key session.PromptKey) bool {
-	switch key.Kind {
-	case session.PromptQuestion:
-		if q := m.state.PendingQuestion(); q != nil && q.Key == key {
-			return true
-		}
-	case session.PromptSkill:
-		if sg := m.state.PendingSkillGate(); sg != nil && sg.Key == key {
-			return true
-		}
-	case session.PromptSudo:
-		if sa := m.state.PendingSudoAuth(); sa != nil && sa.Key == key {
-			return true
-		}
+func (m *Model) promptStillPending(ref promptRef) bool {
+	p := m.sess.Pending()
+	switch ref.kind {
+	case promptQuestion:
+		return p.Question != nil && p.Question.Key == ref.key
+	case promptSkill:
+		return p.SkillGate != nil && p.SkillGate.Key == ref.key
+	case promptSudo:
+		return p.Sudo != nil && p.Sudo.Key == ref.key
 	default:
-		if tc, _ := m.pendingApprovalDisplay(); tc != nil && tc.Key == key {
-			return true
-		}
+		return len(p.Approvals) > 0 && p.Approvals[0].Key == ref.key
 	}
-	return false
 }
 
 // retireStalePromptModels drops a form bound to a prompt that settled while the
 // composer held the input, so a late keypress cannot drive a dead dialog.
-func (m *Model) retireStalePromptModels(key session.PromptKey) {
-	switch key.Kind {
-	case session.PromptQuestion:
+func (m *Model) retireStalePromptModels(ref promptRef) {
+	switch ref.kind {
+	case promptQuestion:
 		m.questionModel = nil
-	case session.PromptSkill:
+	case promptSkill:
 		m.skillGateModel = nil
-	case session.PromptSudo:
+	case promptSudo:
 		m.sudoAuthModel = nil
 	default:
 		m.approvalModel = nil
@@ -6867,25 +6649,26 @@ func (m *Model) openWorkDetailUnavailable(item viewmodel.WorkItem) {
 	m.refreshViewport()
 }
 
-// promptKeyByID finds the canonical key of the pending prompt carrying id, in
-// the same order focusedPromptKey resolves them.
-func (m Model) promptKeyByID(id string) (session.PromptKey, bool) {
+// promptKeyByID finds the pending request carrying id, in the same order
+// focusedPromptKey resolves them.
+func (m Model) promptKeyByID(id string) (promptRef, bool) {
 	if id == "" {
-		return session.PromptKey{}, false
+		return promptRef{}, false
 	}
-	if sa := m.state.PendingSudoAuth(); sa != nil && sa.Key.ID == id {
-		return sa.Key, true
+	p := m.sess.Pending()
+	if p.Sudo != nil && p.Sudo.Key == id {
+		return promptRef{kind: promptSudo, key: id}, true
 	}
-	if sg := m.state.PendingSkillGate(); sg != nil && sg.Key.ID == id {
-		return sg.Key, true
+	if p.SkillGate != nil && p.SkillGate.Key == id {
+		return promptRef{kind: promptSkill, key: id}, true
 	}
-	if tc, _ := m.pendingApprovalDisplay(); tc != nil && tc.Key.ID == id {
-		return tc.Key, true
+	if len(p.Approvals) > 0 && p.Approvals[0].Key == id {
+		return promptRef{kind: promptApproval, key: id}, true
 	}
-	if q := m.state.PendingQuestion(); q != nil && q.Key.ID == id {
-		return q.Key, true
+	if p.Question != nil && p.Question.Key == id {
+		return promptRef{kind: promptQuestion, key: id}, true
 	}
-	return session.PromptKey{}, false
+	return promptRef{}, false
 }
 
 // navigateToWorkPrompt navigates to the pending request a work item names, by
@@ -8135,38 +7918,4 @@ func flags(streamLen int, busy bool, nTodos, nQueued int) uint64 {
 	f |= uint64(nTodos) << 21
 	f |= uint64(nQueued) << 41
 	return f
-}
-
-// userConfigDir returns the absolute path to the user-level Marshal
-// config directory (typically ~/.config/marshal). The path is
-// symlink-resolved and verified to be under the user's home directory
-// to defend against an attacker-controlled $HOME pointing at a
-// sensitive location (e.g. /root, /etc). See F-SEC-27.
-func userConfigDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ""
-	}
-	absHome, err := filepath.Abs(home)
-	if err != nil {
-		return ""
-	}
-	resHome, err := filepath.EvalSymlinks(absHome)
-	if err != nil {
-		resHome = absHome
-	}
-	cfgDir := filepath.Join(resHome, ".config", "marshal")
-	// If the config dir doesn't exist yet, the parent path is what
-	// matters for the trust check.
-	resCfg, err := filepath.EvalSymlinks(cfgDir)
-	if err != nil {
-		resCfg = filepath.Dir(cfgDir)
-	}
-	rel, err := filepath.Rel(resHome, resCfg)
-	if err != nil || strings.HasPrefix(rel, "..") || rel == ".." {
-		slog.Default().Warn("userConfigDir outside home; refusing",
-			"home", resHome, "configDir", resCfg)
-		return ""
-	}
-	return cfgDir
 }

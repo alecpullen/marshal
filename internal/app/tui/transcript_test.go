@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/liveregion"
@@ -226,7 +227,7 @@ func TestRenderFinalAnswerNotSalvagedHasNoMarker(t *testing.T) {
 
 func TestRenderActiveToolCallUsesGutter(t *testing.T) {
 	atc := session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: time.Unix(100, 0)}
-	out := renderActiveToolCall(wireRunning(atc), session.SandboxInfo{}, false, "⠋", time.Unix(104, 0), false, 80)
+	out := renderActiveToolCall(wireRunning(atc), acpwire.Sandbox{}, "⠋", time.Unix(104, 0), false, 80)
 	plain := stripANSI(out)
 	if !strings.HasPrefix(plain, " ▸ ") {
 		t.Fatalf("active tool call missing ▸ gutter:\n%s", out)
@@ -352,8 +353,8 @@ func TestUserMessageUsesCoralGutter(t *testing.T) {
 }
 
 func TestApprovalPanelHasNoBackgroundFill(t *testing.T) {
-	tc := &session.PendingToolCall{Name: "shell.run", Command: "ls", Risk: "reads files"}
-	out := renderApprovalPanel(tc, session.SandboxInfo{Backend: "restricted"}, false, 50)
+	a := acpwire.ApprovalRequest{Tool: "shell.run", Command: "ls", Risk: "reads files"}
+	out := renderApprovalPanel(a, acpwire.Sandbox{Backend: "restricted"}, 50)
 	if strings.Contains(out, ";235m") || strings.Contains(out, "48;5;235") {
 		t.Fatalf("approval panel still emits panel background fill:\n%q", out)
 	}
@@ -386,7 +387,7 @@ func TestRenderActiveToolCallBrowserGlyphRemoved(t *testing.T) {
 		Args:      "https://example.com",
 		StartedAt: time.Unix(100, 0),
 	}
-	out := renderActiveToolCall(wireRunning(atc), session.SandboxInfo{}, false, "⠋", time.Unix(103, 0), false, 80)
+	out := renderActiveToolCall(wireRunning(atc), acpwire.Sandbox{}, "⠋", time.Unix(103, 0), false, 80)
 	stripped := stripANSI(out)
 	if strings.Contains(stripped, "🌐") {
 		t.Fatalf("browser active tool call should not render 🌐:\n%s", out)
@@ -402,7 +403,7 @@ func TestRenderActiveToolCallNonBrowserGlyph(t *testing.T) {
 		Args:      "src/main.go",
 		StartedAt: time.Unix(100, 0),
 	}
-	out := renderActiveToolCall(wireRunning(atc), session.SandboxInfo{}, false, "⠋", time.Unix(103, 0), false, 80)
+	out := renderActiveToolCall(wireRunning(atc), acpwire.Sandbox{}, "⠋", time.Unix(103, 0), false, 80)
 	stripped := stripANSI(out)
 	if strings.Contains(stripped, "🌐") {
 		t.Fatalf("non-browser tool should not have 🌐:\n%s", out)
@@ -413,12 +414,12 @@ func TestRenderActiveToolCallNonBrowserGlyph(t *testing.T) {
 }
 
 func TestRenderQuestionPanelEmpty(t *testing.T) {
-	q := &session.PendingQuestion{Questions: []session.Question{}}
+	q := acpwire.QuestionRequest{Questions: []acpwire.Question{}}
 	if out := renderQuestionPanel(q, 80); out != "" {
 		t.Fatalf("empty question panel should render nothing; got %q", out)
 	}
-	if out := renderQuestionPanel(nil, 80); out != "" {
-		t.Fatalf("nil question panel should render nothing; got %q", out)
+	if out := renderQuestionPanel(acpwire.QuestionRequest{}, 80); out != "" {
+		t.Fatalf("empty question panel should render nothing; got %q", out)
 	}
 }
 
@@ -463,7 +464,7 @@ func TestActiveToolCallHasNoSurfaceBackground(t *testing.T) {
 		Args:      "/path/to/file",
 		StartedAt: time.Now().Add(-5 * time.Second),
 	}
-	out := renderActiveToolCall(wireRunning(atc), session.SandboxInfo{}, false, "⠋", time.Now(), false, 80)
+	out := renderActiveToolCall(wireRunning(atc), acpwire.Sandbox{}, "⠋", time.Now(), false, 80)
 	// The header line should NOT contain a background SGR (48;5;) — the
 	// glyph should use the normal terminal background, not a gray square.
 	if strings.Contains(out, "48;5;") {
@@ -482,7 +483,7 @@ func TestActiveToolCallNoSurfaceBackgroundInMono(t *testing.T) {
 		Args:      "/path/to/file",
 		StartedAt: time.Now().Add(-5 * time.Second),
 	}
-	out := renderActiveToolCall(wireRunning(atc), session.SandboxInfo{}, false, "⠋", time.Now(), false, 80)
+	out := renderActiveToolCall(wireRunning(atc), acpwire.Sandbox{}, "⠋", time.Now(), false, 80)
 	// In NO_COLOR mode, BGSurface is NoColor{} so lipgloss emits no SGR.
 	if strings.Contains(out, "48;5;") {
 		t.Fatalf("unexpected background SGR in NO_COLOR mode:\n%s", out)
@@ -495,7 +496,7 @@ func TestActiveToolCallRenderedInTranscript(t *testing.T) {
 		Args:      "go test ./...",
 		StartedAt: time.Now().Add(-time.Second),
 	}
-	out := stripANSI(renderActiveToolCall(wireRunning(atc), session.SandboxInfo{}, false, "⠋", time.Now(), false, 80))
+	out := stripANSI(renderActiveToolCall(wireRunning(atc), acpwire.Sandbox{}, "⠋", time.Now(), false, 80))
 	if !strings.Contains(out, "Run command") {
 		t.Fatalf("active tool call missing pretty name in transcript: %q", out)
 	}
@@ -511,7 +512,7 @@ func TestActiveToolCallRendersOutputTail(t *testing.T) {
 		Output:    "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8",
 		StartedAt: time.Now().Add(-time.Second),
 	}
-	out := stripANSI(renderActiveToolCall(wireRunning(atc), session.SandboxInfo{}, false, "⠋", time.Now(), false, 80))
+	out := stripANSI(renderActiveToolCall(wireRunning(atc), acpwire.Sandbox{}, "⠋", time.Now(), false, 80))
 	// Should show last 6 lines (line3 through line8), not line1 or line2.
 	if strings.Contains(out, "line1") {
 		t.Fatalf("output should not contain line1 (only last 6 lines): %q", out)
@@ -533,26 +534,11 @@ func TestActiveToolCallRendersOutputAllWhenUnderSixLines(t *testing.T) {
 		Output:    "a\nb\nc",
 		StartedAt: time.Now().Add(-time.Second),
 	}
-	out := stripANSI(renderActiveToolCall(wireRunning(atc), session.SandboxInfo{}, false, "⠋", time.Now(), false, 80))
+	out := stripANSI(renderActiveToolCall(wireRunning(atc), acpwire.Sandbox{}, "⠋", time.Now(), false, 80))
 	for _, want := range []string{"a", "b", "c"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output missing %q: %q", want, out)
 		}
-	}
-}
-
-func TestDisplayToolNameKnown(t *testing.T) {
-	if got := DisplayToolName("file.write_patch"); got != "Edit file" {
-		t.Fatalf("DisplayToolName(file.write_patch) = %q, want %q", got, "Edit file")
-	}
-	if got := DisplayToolName("shell.run"); got != "Run command" {
-		t.Fatalf("DisplayToolName(shell.run) = %q, want %q", got, "Run command")
-	}
-}
-
-func TestDisplayToolNameUnknownFallback(t *testing.T) {
-	if got := DisplayToolName("custom.thing"); got != "Custom thing" {
-		t.Fatalf("DisplayToolName(custom.thing) = %q, want %q", got, "Custom thing")
 	}
 }
 
@@ -563,7 +549,7 @@ func TestActiveToolCallNoOutputShowsNothing(t *testing.T) {
 		Output:    "",
 		StartedAt: time.Now().Add(-time.Second),
 	}
-	out := stripANSI(renderActiveToolCall(wireRunning(atc), session.SandboxInfo{}, false, "⠋", time.Now(), false, 80))
+	out := stripANSI(renderActiveToolCall(wireRunning(atc), acpwire.Sandbox{}, "⠋", time.Now(), false, 80))
 	// Should not contain any output lines beyond the command line.
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if len(lines) > 3 {
@@ -605,7 +591,7 @@ func TestActiveToolCallFitsWidthWithWideRunes(t *testing.T) {
 		Name:      "agent.run",
 		Args:      "調査: これはとても長いサブエージェントの説明文で幅を超えます",
 		StartedAt: time.Now(),
-	}), session.SandboxInfo{}, false, "⠂", time.Now(), false, 40)
+	}), acpwire.Sandbox{}, "⠂", time.Now(), false, 40)
 	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
 		if w := ansi.StringWidth(line); w > 40 {
 			t.Fatalf("line is %d cells wide, budget 40: %q", w, line)
@@ -637,7 +623,7 @@ func TestActiveToolCallWrapsLongArgs(t *testing.T) {
 		Name:      "agent.run",
 		Args:      long,
 		StartedAt: time.Now(),
-	}), session.SandboxInfo{}, false, "⠂", time.Now(), false, 30))
+	}), acpwire.Sandbox{}, "⠂", time.Now(), false, 30))
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	if len(lines) < 3 {
 		t.Fatalf("expected wrapping to produce multiple lines, got %d:\n%s", len(lines), out)
@@ -660,7 +646,7 @@ func TestActiveToolCallWrapsLongOutput(t *testing.T) {
 		Args:      "echo test",
 		Output:    long,
 		StartedAt: time.Now(),
-	}), session.SandboxInfo{}, false, "⠂", time.Now(), false, 30))
+	}), acpwire.Sandbox{}, "⠂", time.Now(), false, 30))
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	for _, line := range lines {
 		if w := ansi.StringWidth(line); w > 30 {
@@ -683,7 +669,7 @@ func TestBlockRenderersEndWithSingleNewline(t *testing.T) {
 		"queued":         renderQueuedMessages([]string{"q1"}, 80),
 		"active tool": renderActiveToolCall(
 			wireRunning(session.ActiveToolCall{Name: "shell.run", Args: "go test", StartedAt: time.Unix(100, 0)}),
-			session.SandboxInfo{}, false, "⠻", time.Unix(104, 0), false, 80),
+			acpwire.Sandbox{}, "⠻", time.Unix(104, 0), false, 80),
 	}
 	for name, out := range outs {
 		if !strings.HasSuffix(out, "\n") || strings.HasSuffix(out, "\n\n") {
@@ -704,7 +690,7 @@ func TestRenderActiveToolCallExpandedShowsFullOutput(t *testing.T) {
 		Output:    out.String(),
 	}
 
-	collapsed := renderActiveToolCall(wireRunning(atc), session.SandboxInfo{}, false, "", time.Unix(101, 0), false, 80)
+	collapsed := renderActiveToolCall(wireRunning(atc), acpwire.Sandbox{}, "", time.Unix(101, 0), false, 80)
 	if strings.Contains(collapsed, "output line 0") {
 		t.Fatal("expected collapsed tail to omit early lines")
 	}
@@ -712,7 +698,7 @@ func TestRenderActiveToolCallExpandedShowsFullOutput(t *testing.T) {
 		t.Fatal("expected collapsed tail to include the last line")
 	}
 
-	expanded := renderActiveToolCall(wireRunning(atc), session.SandboxInfo{}, false, "", time.Unix(101, 0), true, 80)
+	expanded := renderActiveToolCall(wireRunning(atc), acpwire.Sandbox{}, "", time.Unix(101, 0), true, 80)
 	if !strings.Contains(expanded, "output line 0") {
 		t.Fatal("expected expanded output to include the first line")
 	}

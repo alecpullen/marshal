@@ -735,7 +735,7 @@ func renderPlanBlock(content string, width int) string {
 // sandbox backend is active, an isolation-status line, both dim-indented
 // under the gutter. When the tool has streamed output, the last 6 lines
 // are rendered dim-indented beneath the command line.
-func renderActiveToolCall(t *acpwire.WireTool, sb session.SandboxInfo, allowNetwork bool, spinnerFrame string, now time.Time, expanded bool, width int) string {
+func renderActiveToolCall(t *acpwire.WireTool, sb acpwire.Sandbox, spinnerFrame string, now time.Time, expanded bool, width int) string {
 	if t == nil || t.Running == nil {
 		return ""
 	}
@@ -766,7 +766,7 @@ func renderActiveToolCall(t *acpwire.WireTool, sb session.SandboxInfo, allowNetw
 			b.WriteString(mutedStyle().Render(wl))
 			b.WriteString("\n")
 		}
-		if iso := sandboxIsolationText(sb, allowNetwork); iso != "" {
+		if iso := sandboxIsolationText(sb); iso != "" {
 			isoWrapped := ansi.Wrap(iso, cw, WrapBreakpoints)
 			for _, wl := range strings.Split(isoWrapped, "\n") {
 				b.WriteString(continuation())
@@ -989,11 +989,11 @@ func formatElapsed(d time.Duration) string {
 	return fmt.Sprintf("%dm %ds", int(d.Minutes()), int(d.Seconds())%60)
 }
 
-func riskText(tc *session.PendingToolCall) string {
-	if tc.Risk != "" {
-		return tc.Risk
+func riskText(a acpwire.ApprovalRequest) string {
+	if a.Risk != "" {
+		return a.Risk
 	}
-	return tc.Reason
+	return a.Reason
 }
 
 // sandboxIsolationText renders an honest one-line description of the active
@@ -1002,12 +1002,12 @@ func riskText(tc *session.PendingToolCall) string {
 // never sees a false "isolated" claim (restricted mode cannot block network
 // cross-platform). Returns "" for backends with no isolation story (e.g.
 // passthrough).
-func sandboxIsolationText(sb session.SandboxInfo, allowNetwork bool) string {
+func sandboxIsolationText(sb acpwire.Sandbox) string {
 	switch sb.Backend {
 	case "", "passthrough":
 		return ""
 	case "container":
-		if sb.NetworkIsolation && !allowNetwork {
+		if sb.NetworkIsolation && !sb.AllowNetwork {
 			return "sandbox: container · network blocked"
 		}
 		return "sandbox: container · network allowed"
@@ -1021,21 +1021,18 @@ func sandboxIsolationText(sb session.SandboxInfo, allowNetwork bool) string {
 	}
 }
 
-func renderApprovalPanel(tc *session.PendingToolCall, sb session.SandboxInfo, allowNetwork bool, width int, why ...approvalWhy) string {
-	var w approvalWhy
-	if len(why) > 0 {
-		w = why[0]
-	}
-	tc = shownToolCall(tc)
+func renderApprovalPanel(a acpwire.ApprovalRequest, sb acpwire.Sandbox, width int) string {
+	w := approvalWhyOf(a)
+	a = shownApproval(a)
 	var b strings.Builder
 	headParts := []string{}
-	if tc.Name == "shell.run" {
-		headParts = append(headParts, tc.Command)
+	if a.Tool == "shell.run" {
+		headParts = append(headParts, a.Command)
 	} else {
-		headParts = append(headParts, tc.Name)
+		headParts = append(headParts, a.Tool)
 	}
-	headParts = append(headParts, riskText(tc))
-	if iso := sandboxIsolationText(sb, allowNetwork); iso != "" {
+	headParts = append(headParts, riskText(a))
+	if iso := sandboxIsolationText(sb); iso != "" {
 		headParts = append(headParts, iso)
 	}
 	// The head line carries the command/name, risk, and sandbox isolation.
@@ -1052,7 +1049,7 @@ func renderApprovalPanel(tc *session.PendingToolCall, sb session.SandboxInfo, al
 		b.WriteString("\n")
 	}
 
-	for _, line := range []string{w.ownerLine(tc), w.whyLine()} {
+	for _, line := range []string{w.ownerLine(a), w.whyLine()} {
 		if line == "" {
 			continue
 		}
@@ -1070,8 +1067,8 @@ func renderApprovalPanel(tc *session.PendingToolCall, sb session.SandboxInfo, al
 	// Reason is a separate fact from Risk: riskText above shows whichever
 	// is set (preferring Risk), but both can be present and both matter —
 	// the cost-consent prompt's sentence is the reason, not the risk label.
-	if tc.Reason != "" {
-		for i, wl := range strings.Split(ansi.Wrap(tc.Reason, cw, WrapBreakpoints), "\n") {
+	if a.Reason != "" {
+		for i, wl := range strings.Split(ansi.Wrap(a.Reason, cw, WrapBreakpoints), "\n") {
 			if i == 0 {
 				b.WriteString(gutterPrefix(" ", warningColor))
 			} else {
@@ -1119,8 +1116,8 @@ func approvalActionRow(armed int) string {
 	return strings.Join(parts, "")
 }
 
-func renderQuestionPanel(q *session.PendingQuestion, width int) string {
-	if q == nil || len(q.Questions) == 0 {
+func renderQuestionPanel(q acpwire.QuestionRequest, width int) string {
+	if len(q.Questions) == 0 {
 		return ""
 	}
 	gutter := gutterPrefix(glyph.Question, violetColor)

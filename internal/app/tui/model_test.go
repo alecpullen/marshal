@@ -18,6 +18,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpclient/inproc"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/presetsetup"
@@ -131,10 +132,10 @@ func asModel(t *testing.T, updated tea.Model) Model {
 }
 
 // TestHandleApprovalRejectsForeignPending verifies that handleApproval does
-// not respond on a PendingToolCall that is no longer the current pending
-// approval (e.g. because ResolvePendingForShutdown already responded on it).
-// We call handleApproval directly with a stale pointer to simulate the race
-// where the state changes between form completion and the switch dispatch.
+// not respond on an approval that is no longer the pending one (e.g. because
+// the runtime already settled it). The stale request's key names no open
+// approval, so the session refuses the answer and the replacement stays
+// pending.
 func TestHandleApprovalRejectsForeignPending(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	ch := make(chan session.UserApprovalDecision, 1)
@@ -158,30 +159,27 @@ func TestHandleApprovalRejectsForeignPending(t *testing.T) {
 	m := testModel(state)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
+	stale := m.sess.Pending().Approvals[0]
 
 	// Swap P2 in as the pending approval before driving the form.
 	state.SetPendingApproval(P2)
 
-	// Call handleApproval directly with P1 (a stale pointer). The form
-	// will be created from P1, driven to completion, and then the switch
-	// will check owner.PendingApproval() == tc (P2 == P1 = false).
-	updated, _ = m.handleApproval(tea.KeyPressMsg{Code: tea.KeyEnter}, state, P1, "")
+	// Drive the stale request's form to completion. Its key names nothing open
+	// any more, so the session refuses the answer.
+	updated, _ = m.handleApproval(tea.KeyPressMsg{Code: tea.KeyEnter}, stale)
 	m = updated.(Model)
-	updated, _ = m.handleApproval(tea.KeyPressMsg{Code: tea.KeyEnter}, state, P1, "")
+	updated, _ = m.handleApproval(tea.KeyPressMsg{Code: tea.KeyEnter}, stale)
 	m = updated.(Model)
 
-	// P1's channel must not have been sent to (identity guard).
+	// P1's channel must not have been sent to.
 	select {
 	case <-ch:
-		t.Fatal("handleApproval responded on P1 even though PendingApproval() was P2")
+		t.Fatal("handleApproval responded on P1 even though P2 was pending")
 	default:
 	}
-
-	// The pending approval is cleared by handleApproval's unconditional
-	// SetPendingApproval(nil) after the switch. The key assertion is that
-	// P1 was NOT responded to.
-	if state.PendingApproval() != nil {
-		t.Fatal("state.PendingApproval() should be nil after handleApproval")
+	// The stale answer settled nothing: the replacement is still pending.
+	if state.PendingApproval() != P2 {
+		t.Fatal("the stale answer settled the replacement approval")
 	}
 }
 
@@ -3438,7 +3436,7 @@ func openTestApprovalEdit(t *testing.T, m Model, command string) Model {
 		ResponseChan: make(chan session.UserApprovalDecision, 1),
 	}
 	m.state.SetPendingApproval(tc)
-	m.approvalEdit = newApprovalEdit(m.state, tc, max(m.leftWidth-4, 30))
+	m.approvalEdit = newApprovalEdit(m.sess.Pending().Approvals[0], max(m.leftWidth-4, 30))
 	return m
 }
 
@@ -3930,7 +3928,10 @@ func TestQuestionPartialSkipCannotSettleReplacement(t *testing.T) {
 	for _, msg := range questionMoveDown(1) {
 		m = sendMsg(m, msg)
 	}
-	if m.questionModel == nil || m.questionModel.q != replacement {
+	if m.questionModel == nil {
+		t.Fatal("the stale form was not rebuilt for the replacement")
+	}
+	if pending := m.sess.Pending().Question; pending == nil || m.questionModel.q.Key != pending.Key {
 		t.Fatal("the stale form was not rebuilt for the replacement")
 	}
 	if m.state.PendingQuestion() != replacement {
@@ -7838,34 +7839,6 @@ func TestInputAreaRowsIncludesSDDHint(t *testing.T) {
 	}
 }
 
-func TestUserConfigDirIsUnderHome(t *testing.T) {
-	dir := userConfigDir()
-	if dir == "" {
-		t.Skip("no home directory in this test environment")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("UserHomeDir: %v", err)
-	}
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		t.Fatalf("Abs: %v", err)
-	}
-	absHome, err := filepath.Abs(home)
-	if err != nil {
-		t.Fatalf("Abs home: %v", err)
-	}
-	// Resolve symlinks for both, then check containment.
-	resDir, _ := filepath.EvalSymlinks(absDir)
-	resHome, _ := filepath.EvalSymlinks(absHome)
-	// resDir may equal resHome only if marshal's config dir is the
-	// home itself (which is wrong) — we expect it under <home>/.config.
-	rel, err := filepath.Rel(resHome, resDir)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		t.Fatalf("userConfigDir %q escaped home %q", resDir, resHome)
-	}
-}
-
 func TestModeCycleContainsOnlyAskActAndClearsAuto(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	on := true
@@ -11713,17 +11686,17 @@ func TestPostmortemConsentResizeInvalidatesVisibility(t *testing.T) {
 		state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 		state.Config.Postmortem.OnExit = "prompt"
 		ctrl := &endTestController{}
-		m := testModel(state,
-			WithEndController(ctrl),
+		m := testModelWith(inproc.Deps{
+			State: state,
 			// Wire the access seam so a request queued behind the exit question
 			// stays pending. Without it reconcileAccess fails such a request
 			// closed as unanswerable, which is a different scenario.
-			WithAccessRequests(
-				func() (session.AccessRequest, bool) { return state.AccessRequest() },
-				func(choice session.AccessChoice) (session.AccessResult, error) {
-					return state.ResolveAccess(choice, nil)
-				},
-			),
+			AccessRequest: func() (session.AccessRequest, bool) { return state.AccessRequest() },
+			ResolveAccess: func(choice session.AccessChoice) (session.AccessResult, error) {
+				return state.ResolveAccess(choice, nil)
+			},
+		},
+			WithEndController(ctrl),
 		)
 		m.resize(80, 24)
 		m.end = &endIntent{kind: EndIntentExit}
@@ -12226,10 +12199,14 @@ func TestSendNowComposerRoutesSuspendedAsyncResultsOnce(t *testing.T) {
 	// Expiry: an access request cancelled while the composer was up must not be
 	// resurrected on close.
 	g := newSendNowFixture(t, 120, 40, true)
-	g.m.accessRequest = func() (session.AccessRequest, bool) { return g.state.AccessRequest() }
-	g.m.resolveAccess = func(session.AccessChoice) (session.AccessResult, error) {
-		return session.AccessResult{}, nil
-	}
+	_, sess := inproc.New(inproc.Deps{
+		State:         g.state,
+		AccessRequest: func() (session.AccessRequest, bool) { return g.state.AccessRequest() },
+		ResolveAccess: func(session.AccessChoice) (session.AccessResult, error) {
+			return session.AccessResult{}, nil
+		},
+	})
+	g.m.sess = sess
 	call := &session.PendingToolCall{
 		ID:           "call-1",
 		Name:         "mode.request",

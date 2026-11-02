@@ -177,8 +177,8 @@ Decision: `WireTree`, with the C6 additions.
   the standard library, like `web/`. The transcript projection types
   (`WireTree`, `WireNode` and its payloads), the work types
   (`WorkItem`, `WorkSnapshot` and the rest) and the existing ACP types
-  the client uses (`StackSnapshot`, `NodeDetail`, `PermissionRequest`,
-  `CommandResult`, …) move here. `internal/viewmodel` and `internal/acp`
+  the client uses (`StackSnapshot`, `NodeDetail`, `CommandResult`, …)
+  move here. `internal/viewmodel` and `internal/acp`
   use them from here, and their JSON does not change.
 - **`internal/acpclient` (new).** The `Host` and `Session` interfaces
   (C2) and the error helpers. It imports the standard library,
@@ -322,10 +322,11 @@ Decision: `WireTree`, with the C6 additions.
     number of files changed against the sheet's base, which the status
     line shows (plan 2c). HEAD itself stays agent side: the adapter keeps
     it as that base, and only the changed-files diff reads it;
-  - **live state:** browser info. Sandbox info arrives with plan 4,
-    because only the running-call and approval renderers read it, and
-    both read the session's. The current notice arrives with plan 6,
-    which also moves notice writes (C9);
+  - **live state:** browser info, and the sandbox info (plan 4): the
+    backend, whether it isolates the network, and the shell's configured
+    network allowance. Only the running-call and approval renderers read
+    it, and both read the session's. The current notice arrives with
+    plan 6, which also moves notice writes (C9);
   - **queues and runs** (plan 2b): the steering queue, the Send-now
     snapshot and the newest receipt for its turn, the running job count,
     subagent views, swarm and SDD progress (the tray's plan-run row), the
@@ -435,33 +436,49 @@ Decision: `WireTree`, with the C6 additions.
 ### C7. Agent requests
 
 - **`Session.Pending() acpwire.PendingRequests`** lists every open
-  request in the session tree, subagents included.
-  - Request kinds: approval, question, skill gate, sudo, mode access and
-    the SDD human gate.
+  request a person can answer: the session's own, and the approvals of
+  its running subagents. Only approvals come from subagents: children get
+  no `question.ask`, and no child state is secret-prompt capable.
+  - Request kinds, one field each: approvals (a list, the session's
+    first, then each running subagent's in registration order), the
+    question, the skill gate, the sudo prompt and the typed access
+    request. The SDD human gate stays in `Status` (C8).
   - Each request carries:
-    - an opaque key that stays stable while the request is open;
-    - its owner: subagent ID and label, or 0 for the session itself;
-    - the fields the TUI displays today. These include the approval's
-      "why" line: the requesting step's owner and narration headline,
-      which `approvalWhyFor` (`steps.go:686`) looks up by step ID in
-      the owning state.
+    - a key that stays stable while the request is open: the registry
+      ID, the access request's ID for a typed access request, or a key
+      the adapter mints for a prompt with no registry entry;
+    - an approval's owner: subagent ID and label, or none for the
+      session itself;
+    - the fields the TUI displays today. An approval also carries what
+      the TUI derived from the owning state: the "why" line (the
+      requesting step's owner and narration headline), the tool's
+      display name, and whether it is a forced prompt that only an exact
+      decision may answer.
+  - `Pending` settles nothing, so the TUI may read it while rendering.
+    `Changed` does not fire for requests; the TUI reads them on every
+    update and tick, as it read the state's slots.
 - **Answers:**
   - `AnswerApproval(ctx, key, ApprovalAnswer{Decision, Edited})`, where
     the decision is `once`, `session`, `always` or `deny`;
   - `AnswerQuestion(ctx, key, answers)`;
   - `AnswerSkillGate(ctx, key, choice)`;
   - `AnswerSudo(ctx, key, SudoAnswer)`;
-  - `AnswerAccess(ctx, key, choice)` and `CancelAccess(ctx, key,
-    reason)`;
-  - `AnswerSDDGate(ctx, answer)`.
+  - `ReconcileAccess(ctx)` settles a typed access request that no longer
+    asks for anything, then returns the one to present. The TUI calls it
+    once per update, where it read the runtime's access request before;
+  - `AnswerAccess(ctx, choice)`: the choice names its request.
 - **`Rollback(ctx)`** restores the backup and logs the audit event. The
   approval dialog stays open after it, as today.
 - **Policy moves to the adapter:**
-  - `always` saves the user rule, applies it to the live config and the
-    runner's policy rules, and falls back to a session rule if the save
-    fails;
+  - a `session` or `always` answer to a forced approval is a deny;
+  - `always` saves the user rule and applies it to the session's live
+    config, which the policy engine reads, and falls back to a session
+    rule if the save fails;
   - `session` adds a session rule;
-  - the skill gate's remembered choices are recorded agent side.
+  - both rules land on the session, whichever subagent asked, as today;
+  - the skill gate's remembered choices are recorded agent side;
+  - without the runtime's access callbacks, a typed access request is
+    settled as failed rather than presented.
 - **Settled requests.** A request settled elsewhere leaves `Pending`.
   Elsewhere means cancelled by steering, answered by another client in
   P3, or answered by shutdown. Answering a key that is no longer open
@@ -477,8 +494,9 @@ Decision: `WireTree`, with the C6 additions.
     `session/request_permission`, extended with the decision;
   - question through `session/request_question`;
   - sudo through `session/request_secret` (new);
-  - the SDD gate through `session/sdd_answer` (exists) plus a request
-    kind.
+  - rollback through `session/rollback` (new);
+  - `ReconcileAccess` has no ACP method: the agent settles such a
+    request itself, and the client reads its mirror.
 
 ### C8. Turns and runs
 
@@ -510,7 +528,10 @@ Decision: `WireTree`, with the C6 additions.
     takes all three). `SetEffort` exists, and `SetSudoUnlock` is new;
   - `CancelSubagent` (new);
   - `ClearRunEvents`, `ClearSDDProgress` and `SetIdle` (new);
-  - `TakeWatchResume` (new).
+  - `TakeWatchResume` (new);
+  - `AnswerSDDGate(ctx, answer)` and its stop (`session/sdd_answer`
+    exists). Answering the SDD human gate resumes the pipeline run, so it
+    moves with the runs, not with C7's requests.
 - **Work.** The work service's list, inspect, stop and acknowledge calls,
   and its snapshot, become `Session` methods (`session/work_*`
   exists). The work pump and the work types move with them (plan 5).
@@ -705,7 +726,13 @@ The TUI works after every plan.
      and the allowlist loses the transcript group's entries. The files
      that also hold approval, work or notice code keep their entries for
      plans 4, 5 and 6.
-4. **Agent requests** (C7).
+4. **Agent requests** (C7) ([plan](plans/2026-11-02-p2-4-requests-plan.md)).
+   `Session.Pending`, the answer calls, `ReconcileAccess` and `Rollback`,
+   with the request types in `acpwire` and the sandbox info in `Status`.
+   The TUI's approval, question, skill-gate, sudo and access surfaces read
+   and answer through them, and the policy the TUI applied on an answer
+   moves into the adapter. The SDD gate's answer waits for plan 5, because
+   answering it resumes the run.
 5. **Turns and runs** (C8).
 6. **Notes, notices and commands** (C9).
 7. **Config, providers and trust** (C10).
@@ -738,7 +765,7 @@ Each plan removes its group's allowlist entries.
   every method marked existing is registered on `acp.Server`.
 - **T5. Adapter parity.** For each group, adapter tests show each method
   does what the code it replaced did. For example, `always` writes the
-  rule, applies it and resets the runner's rules. `AddNote` persists a
+  rule and applies it to the session's live config. `AddNote` persists a
   system message. A swapped-out session's calls fail closed.
 - **T6. Renderer equivalence.** Before porting, plan 3a records the old
   renderer's output for a fixture set as golden files. The set covers
@@ -1055,6 +1082,53 @@ plan 3d:
   files until plan 5, and so does `jumpToWorkOrigin`'s match of a child by
   its session ID. The notice keeps `viewport_render.go` on `session` until
   plan 6.
+
+**2026-11-02, against plan 3d (written while it ran).** Found while
+writing plan 4:
+- **Only approvals come from subagents** (C7). Children get no
+  `question.ask`, no child state is secret-prompt capable, and both the
+  TUI and ACP collect only a running child's approval. So `Pending` lists
+  the session's own requests of every kind plus its running subagents'
+  approvals, and only an approval carries an owner.
+- **A request's key is its registry ID** (C7), which work items already
+  name prompts by. A typed access request in the approval slot has no
+  registry key, so it is keyed by its access request ID. The model-cost
+  consent and many test fixtures set prompts without registering them, so
+  the adapter mints a key for each such prompt while it stays open.
+- **The adapter derives what the TUI computed from the owning state**
+  (C7): an approval's "why" line, its tool label and whether it is
+  forced. A session or always answer to a forced approval is a deny, which
+  the adapter enforces in place of the TUI's guard.
+- **Both rules land on the session** (C7, T5). The TUI added a session
+  rule and saved an always rule on the session's state even for a
+  subagent's approval, and the adapter keeps that. The always rule is
+  applied to the session's live config, which the policy engine reads: no
+  runner state is reset, so T5's example is corrected. The rule is saved
+  where the TUI's `userConfigDir` puts it, which moves into the adapter
+  unchanged.
+- **`Pending` settles nothing; `ReconcileAccess` is new** (C7). The TUI
+  reads the access request two ways: a plain read while rendering, and
+  the runtime's read once per update, which settles a request that no
+  longer asks for anything. A read that settled while rendering could
+  change the frame between its height budget and its drawing, so
+  `Pending` is the plain read and `ReconcileAccess(ctx)` the runtime's.
+  Without the runtime's callbacks, `ReconcileAccess` settles the request
+  as failed, which was the TUI's fail-closed branch. `CancelAccess` is
+  not added: that branch was its only use.
+- **`AnswerAccess(ctx, choice)`** takes no separate key: the choice names
+  its request and session.
+- **The SDD gate's answer moves to C8** (plan 5). Answering it resumes the
+  pipeline run, which the TUI owns until `Prompt` and `StartSDD` exist.
+  The gate itself stays in `Status`.
+- **ACP's request types stay in `internal/acp`** (C1). Nothing on the TUI
+  side reads `PermissionRequest`, and its `ModeAccessState` encodes
+  `system_access` and `access_revision`, which break C3. The new
+  `acpwire` request types serve `Pending`, and P3 decides what crosses
+  when it extends `session/request_permission`.
+- **The sandbox info carries the shell's network allowance** (C5). The
+  isolation line weighs the backend, its network isolation and
+  `tools.shell.allow_network` together. A drilled view still shows no
+  isolation line.
 
 ## Implementation record
 
@@ -1391,3 +1465,77 @@ printable remainder and one holding a CRLF shows two spaces where it showed
 one. A drilled-in child whose state the session releases now shows an empty
 frame with the welcome banner, which happens only when more than ten newer
 children finish while the view is drilled into an old finished one.
+
+**Plan 4 (agent requests), branch `p2-4-requests`.** Added
+`internal/acpwire/requests.go`: `PendingRequests` with one field per kind
+(`Approvals`, `Question`, `SkillGate`, `Sudo`, `Access`), `ApprovalRequest`
+and `ApprovalAnswer` with the four `Approval*` decisions, `QuestionRequest`
+with `Question`/`QuestionOption`/`Answer` and `AnswerUnanswered`,
+`SkillGateRequest` with the four `SkillGate*` choices, `SudoRequest` and
+`SudoAnswer`, and `AccessRequest`/`AccessChoice`/`AccessResult` with the
+seven `Access*` statuses. `acpwire.Sandbox` (the backend, its network
+isolation, and the shell's configured network allowance) arrives as
+`SessionStatus.sandbox`, and the status doc's forward reference now names
+only plan 6's current notice.
+
+`acpclient.Session` gains eight methods after `Callers`, each with its ACP
+line and its `Methods` row: `Pending` (`session/request_permission`),
+`AnswerApproval` (`session/request_permission`), `AnswerQuestion`
+(`session/request_question`), `AnswerSkillGate`
+(`session/request_permission`), `AnswerSudo` (`session/request_secret`),
+`ReconcileAccess` (no ACP method, so an empty string), `AnswerAccess`
+(`session/request_permission`) and `Rollback` (`session/rollback`).
+
+The in-process adapter does the work the TUI used to do. `Pending` keys every
+open request by its registry ID, by an access request's `RequestID` when a
+typed request occupies the approval slot, or by a minted `local-N` for an
+unregistered prompt, which it keeps while that prompt stays open. It lists
+the session's own approval first, then each running subagent's in
+registration order, and derives the "why" line from the state that raised the
+request (the child's own for a subagent's approval), the tool label from
+`viewmodel.DisplayToolName`, and the forced class from the request itself.
+`Pending` settles nothing and never calls a runtime callback, and a closed
+session keeps answering it. The answer calls settle on the owning state's
+registry, or on the prompt's own channel for an unregistered fixture, and an
+"always" or "session" rule always lands on the session, whichever subagent
+asked; "always" saves to the user config and applies the new config through
+`RebaseInteractionConfig`, falling back to a session rule when the save
+fails, and a standing answer to a forced prompt is a deny the adapter
+enforces. `AnswerSkillGate` records the sticky choice, `AnswerSudo` hands the
+password slice straight through, `Rollback` restores the backup and logs the
+audit row, and access goes through the runtime's `AccessRequest` and
+`ResolveAccess` callbacks in `ReconcileAccess` and `AnswerAccess`, both of
+which settle the request as failed and report none when either callback is
+missing.
+
+The TUI's approval, question, skill-gate, sudo and access surfaces now hold
+the wire values, name a request by a `promptRef` (its kind and its wire key)
+rather than by a pointer, read `Pending` once per function, and answer
+through `AnswerQuestion`, `AnswerSkillGate`, `AnswerSudo` and
+`AnswerApproval`; `settleApproval` is one call to the session. The approval
+form takes an `acpwire.ApprovalRequest`, so `approvalWhyFor`,
+`forcedPromptClass`, `approvalOwner`, `isModeElevationApproval`,
+`userConfigDir` and `toolnames.go` are gone, and the running shell row and
+the approval panel read the sandbox from `Status().sandbox`.
+`tui.WithAccessRequests` and its two fields are deleted: the adapter's `Deps`
+carry the runtime's access seam.
+
+T1b gains 19 names, all at plan `4`: `AccessRequest`, `CancelAccess`,
+`PendingQuestion`, `SetPendingQuestion`, `ResolveQuestion`,
+`PendingSkillGate`, `SetPendingSkillGate`, `ResolveSkillGate`,
+`SkillGateRecordAllow`, `PendingSudoAuth`, `SetPendingSudoAuth`,
+`ResolveSudoAuth`, `PendingApproval`, `SetPendingApproval`,
+`ResolveApproval`, `ClearPrompt`, `SandboxInfo`, `RollbackBackup` and
+`LogToolCall`. T1's allowlist loses ten entries across nine files:
+`accesspanel/accesspanel.go`, `question.go`, `skillgate.go`, `sudoauth.go`,
+`approval.go` and `toolnames.go` lose their keys entirely, `keypress.go`
+drops `tools/registry`, `steps.go` drops `app/session`, and `model.go` drops
+`config.SaveUserConfigRule` and `internal/permissions`.
+
+Decision 12's edge cases, one line each: a subagent's approval can now be
+reached by its key, so a work item naming it navigates to it and Alt+Enter's
+composer tracks it; the model-cost consent has a minted key, so the composer
+tracks it too; a subagent's mode-elevation `file.write` approval no longer
+offers "always" or "session", which both denied anyway; and a new request
+rebuilds the approval form even when it reuses a tool-call ID, so two
+model-cost consents in a row no longer share the first one's form.

@@ -176,12 +176,12 @@ func TestChildApprovalDisplayNamesSubagent(t *testing.T) {
 	if m.approvalModel == nil {
 		t.Fatal("approval model was not built")
 	}
-	if m.approvalModel.tc == nil {
-		t.Fatal("approval model has no tool call")
+	if m.approvalModel.a.Key == "" {
+		t.Fatal("approval model is not bound to an approval")
 	}
 	want := `subagent "child-task": commit work`
-	if m.approvalModel.tc.Reason != want {
-		t.Errorf("approval model reason = %q, want %q", m.approvalModel.tc.Reason, want)
+	if m.approvalModel.a.Reason != want {
+		t.Errorf("approval model reason = %q, want %q", m.approvalModel.a.Reason, want)
 	}
 }
 
@@ -205,9 +205,9 @@ func TestCanonicalChildApprovalSettlesOnlyChildOwner(t *testing.T) {
 	}
 	child.SetPendingApproval(tc)
 
-	display, label := m.pendingApprovalDisplay()
-	if display == nil || label != "child-task" || !display.ExactCommandApproval {
-		t.Fatalf("pendingApprovalDisplay = %+v, %q; want the exact child prompt", display, label)
+	display, ok := m.pendingApprovalDisplay()
+	if !ok || !display.Forced {
+		t.Fatalf("pendingApprovalDisplay = %+v; want the exact child prompt", display)
 	}
 
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})

@@ -387,7 +387,7 @@ func TestSudoReviewHiddenPromptCannotAuthenticate(t *testing.T) {
 	m.state.SetPendingSudoAuth(sa2)
 	m, _ = press(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = primeSudoAuth(t, m)
-	if m.sudoAuthModel.sa != sa2 {
+	if pending := m.sess.Pending().Sudo; pending == nil || m.sudoAuthModel.sa.Key != pending.Key {
 		t.Fatal("the replacement request did not rebuild the prompt")
 	}
 	m, _ = press(m, tea.KeyPressMsg{Code: tea.KeyPgDown})
@@ -409,7 +409,10 @@ func TestSudoReviewHiddenPromptCannotAuthenticate(t *testing.T) {
 		t.Fatal("a privileged prompt behind a full-frame panel settled a decision")
 	default:
 	}
-	if m.sudoAuthModel == nil || m.sudoAuthModel.sa != sa2 {
+	if m.sudoAuthModel == nil {
+		t.Fatal("a prompt behind a full-frame panel must stay pending on the same request")
+	}
+	if pending := m.sess.Pending().Sudo; pending == nil || m.sudoAuthModel.sa.Key != pending.Key {
 		t.Fatal("a prompt behind a full-frame panel must stay pending on the same request")
 	}
 
@@ -423,7 +426,7 @@ func TestSudoReviewHiddenPromptCannotAuthenticate(t *testing.T) {
 	sa3 := &session.PendingSudoAuth{Command: "id", ResponseChan: ch3}
 	m.state.SetPendingSudoAuth(sa3)
 	m, _ = press(m, tea.KeyPressMsg{Code: tea.KeyUp})
-	if m.sudoAuthModel.sa != sa3 {
+	if pending := m.sess.Pending().Sudo; pending == nil || m.sudoAuthModel.sa.Key != pending.Key {
 		t.Fatal("the replacement request did not rebuild the prompt")
 	}
 	if m.sudoAuthModel.review.offset != 0 {

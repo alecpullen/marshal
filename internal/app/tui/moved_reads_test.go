@@ -65,6 +65,42 @@ var movedStateReads = map[string]string{
 	// The cursor's box stop found its child through the state; drill-in
 	// resolves it through Status since 3d.
 	"Subagent": "3d",
+
+	// The access panel presents what ReconcileAccess reports and answers
+	// through AnswerAccess since 4.
+	"AccessRequest": "4",
+	"CancelAccess":  "4",
+
+	// The three prompts read Pending and answer through the session since 4:
+	// their forms hold the wire request, and the adapter records what the
+	// answer implies.
+	"PendingQuestion":      "4",
+	"PendingSkillGate":     "4",
+	"PendingSudoAuth":      "4",
+	"SetPendingQuestion":   "4",
+	"SetPendingSkillGate":  "4",
+	"SetPendingSudoAuth":   "4",
+	"ResolveQuestion":      "4",
+	"ResolveSkillGate":     "4",
+	"ResolveSudoAuth":      "4",
+	"SkillGateRecordAllow": "4",
+
+	// The running shell row and the approval panel read the sandbox from
+	// Status since 4.
+	"SandboxInfo": "4",
+
+	// Both rollback paths call Session.Rollback since 4; the adapter restores
+	// the backup and logs the audit row.
+	"RollbackBackup": "4",
+	"LogToolCall":    "4",
+
+	// Approvals read Pending and answer through AnswerApproval since 4: the
+	// session lists every open approval, the form holds the wire request, and
+	// the adapter derives the forced deny and the standing rules.
+	"PendingApproval":    "4",
+	"SetPendingApproval": "4",
+	"ResolveApproval":    "4",
+	"ClearPrompt":        "4",
 }
 
 // movedReadSites returns one "<line>\t<Name>" entry per selector X.Sel in f

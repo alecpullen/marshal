@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/settings"
@@ -340,7 +341,7 @@ func TestInputAreaPaintsNoBackground(t *testing.T) {
 		ResponseChan: make(chan session.UserApprovalDecision, 1),
 	}
 	m.state.SetPendingApproval(tc)
-	m.approvalModel = newApprovalModel(tc, m.state.SandboxInfo(), false, false, max(m.width-4, 30))
+	m.approvalModel = newApprovalModel(m.sess.Pending().Approvals[0], m.sess.Status().Sandbox, false, max(m.width-4, 30))
 	if out := m.renderInputArea(); strings.Contains(out, "48;") {
 		t.Fatalf("input area paints a background SGR while an approval is pending:\n%q", out)
 	}
@@ -903,7 +904,7 @@ func TestTurnSpinnerOmitsActivityLabel(t *testing.T) {
 func TestRenderActiveToolCallUsesRunningGutter(t *testing.T) {
 	out := renderActiveToolCall(
 		wireRunning(session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: time.Unix(100, 0)}),
-		session.SandboxInfo{}, false, "⠻", time.Unix(104, 0), false, 80)
+		acpwire.Sandbox{}, "⠻", time.Unix(104, 0), false, 80)
 	plain := stripANSI(out)
 	if !strings.HasPrefix(plain, " ▸ ") {
 		t.Fatalf("running tool should use the ▸ gutter:\n%q", plain)

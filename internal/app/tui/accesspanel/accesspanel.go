@@ -8,17 +8,17 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"marshal/internal/app/session"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/theme"
 )
 
-type ChoiceMsg struct{ Choice session.AccessChoice }
+type ChoiceMsg struct{ Choice acpwire.AccessChoice }
 type option struct{ label, mode string }
 type Panel struct {
-	request          session.AccessRequest
+	request          acpwire.AccessRequest
 	options          []option
 	selected, offset int
 	// visible records whether the last render was large enough to show the
@@ -35,7 +35,7 @@ const (
 	minPanelHeight = 4
 )
 
-func New(request session.AccessRequest) *Panel {
+func New(request acpwire.AccessRequest) *Panel {
 	p := &Panel{request: request, options: []option{{label: "Deny"}}}
 	switch {
 	case request.MissingEditing && request.MissingSystem:
@@ -48,11 +48,11 @@ func New(request session.AccessRequest) *Panel {
 	return p
 }
 
-func (p *Panel) Request() session.AccessRequest { return p.request }
+func (p *Panel) Request() acpwire.AccessRequest { return p.request }
 func (p *Panel) Sizing() dock.Sizing            { return dock.Docked }
 
 func (p *Panel) decision(approved bool) tea.Cmd {
-	choice := session.AccessChoice{
+	choice := acpwire.AccessChoice{
 		RequestID: p.request.RequestID, SessionID: p.request.SessionID,
 		Current: p.request.Current, Approved: approved,
 	}
@@ -102,7 +102,7 @@ func clean(text string) string {
 
 // accessLabel renders the full effective tuple as the user saw it: canonical
 // mode, every active modifier, and the access revision.
-func accessLabel(s session.AccessState) string {
+func accessLabel(s acpwire.AccessState) string {
 	mode := "Ask"
 	switch s.Mode {
 	case "act", "edit", "copilot", "auto":

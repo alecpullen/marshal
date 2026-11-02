@@ -2,13 +2,11 @@ package tui
 
 import (
 	"strings"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/memory"
-	"marshal/internal/tools/registry"
 )
 
 // handleKeypress routes the global hotkeys and the Enter-submit flow.
@@ -74,7 +72,8 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		// (or mid approval/question/skill-gate/command-edit), ? falls
 		// through to the trailing m.input.Update(msg) below and is typed
 		// literally.
-		if m.input.Value() == "" && !m.editingApproval() && m.state.PendingQuestion() == nil && !m.hasPendingApproval() && m.state.PendingSkillGate() == nil && m.state.PendingSudoAuth() == nil {
+		p := m.sess.Pending()
+		if m.input.Value() == "" && !m.editingApproval() && p.Question == nil && len(p.Approvals) == 0 && p.SkillGate == nil && p.Sudo == nil {
 			mm, cmd := m.dispatchCommand("/help")
 			return mm, cmd, true
 		}
@@ -197,19 +196,10 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 				return *m, nil, true
 			}
 			m.rollbackArmed = false
-			// The error is load-bearing: a partial rollback leaves a mixed
-			// working tree, and reporting success would hide that from both
-			// the user and the audit trail.
-			ev := registry.AuditEvent{
-				Timestamp:     time.Now(),
-				ToolName:      "rollback",
-				ResultSummary: "Rollback applied successfully",
-			}
-			if err := m.state.RollbackBackup(); err != nil {
-				ev.Error = err.Error()
-				ev.ResultSummary = "Rollback failed"
-			}
-			m.state.LogToolCall(ev)
+			// The adapter restores the backup and logs the audit row, failed or
+			// not. The error is ignored here because the row carries it, exactly
+			// as the transcript did before.
+			_ = m.sess.Rollback(m.ctx)
 			m.refreshViewport()
 		}
 		return *m, nil, true
@@ -276,7 +266,8 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		if m.acceptCompletion() {
 			return *m, nil, true
 		}
-		if m.hasPendingApproval() || m.state.PendingQuestion() != nil || m.state.PendingSudoAuth() != nil {
+		p := m.sess.Pending()
+		if len(p.Approvals) > 0 || p.Question != nil || p.Sudo != nil {
 			return *m, nil, false
 		}
 		m.cycleMode(true)
@@ -285,7 +276,8 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		if m.activeCompletionPopup() != nil {
 			return *m, nil, true
 		}
-		if m.hasPendingApproval() || m.state.PendingQuestion() != nil || m.state.PendingSudoAuth() != nil {
+		p := m.sess.Pending()
+		if len(p.Approvals) > 0 || p.Question != nil || p.Sudo != nil {
 			return *m, nil, false
 		}
 		m.cycleMode(false)

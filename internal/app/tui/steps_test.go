@@ -439,26 +439,6 @@ func TestExpandingOneStepRendersOnlyThatStep(t *testing.T) {
 	}
 }
 
-func TestFirstSentence(t *testing.T) {
-	cases := []struct{ in, head, rest string }{
-		{"Reading the parser. Then the lexer.", "Reading the parser.", "Then the lexer."},
-		{"Reading the parser", "Reading the parser", ""},
-		{"Short. Next one is longer than eight.", "Short. Next one is longer than eight.", ""}, // a split needs 8 runes first
-		{"Checking the guard!\nSecond line", "Checking the guard!", "Second line"},
-		{"Why is this failing? Let me look.", "Why is this failing?", "Let me look."},
-		{"Version 1.2 is fine. Moving on", "Version 1.2 is fine.", "Moving on"},
-		{"", "", ""},
-	}
-	for _, c := range cases {
-		if h, r := firstSentence(c.in); h != c.head || r != c.rest {
-			t.Errorf("firstSentence(%q) = (%q, %q), want (%q, %q)", c.in, h, r, c.head, c.rest)
-		}
-	}
-	if got := stripEmphasis("**Reading** the `parser` __now__"); got != "Reading the parser now" {
-		t.Errorf("stripEmphasis = %q", got)
-	}
-}
-
 func TestRightMetaDropOrder(t *testing.T) {
 	p := metaParts{owner: "reviewer #1", role: "reviewer", model: "gpt-5 @ openai", dur: "1m 4s"}
 	plain := func(width int) string {
@@ -496,19 +476,16 @@ func TestActorColorIsStableAndOrchestratorHasNone(t *testing.T) {
 }
 
 func TestApprovalShowsOwnerAndWhy(t *testing.T) {
-	m := newTestModel(t)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	id := m.state.BeginStep(session.Actor{Role: "sdd_implementer", Label: "implementer"})
-	m.state.AddNarration(id, "Installing the dependency the build needs. It is pinned.")
-	tc := &session.PendingToolCall{Name: "shell.run", Command: "go get example.com/x@v1", Risk: "command", StepID: id}
-
-	w := m.approvalWhyFor(m.state, tc)
-	if w.owner != "implementer" || w.why != "Installing the dependency the build needs." {
-		t.Fatalf("approvalWhyFor = %+v", w)
+	named := acpwire.ApprovalRequest{
+		Tool:    "shell.run",
+		Command: "go get example.com/x@v1",
+		Risk:    "command",
+		Actor:   "implementer",
+		Why:     "Installing the dependency the build needs.",
 	}
 	for name, view := range map[string]string{
-		"summary":  approvalSummary(tc, session.SandboxInfo{}, false, 80, w),
-		"fallback": renderApprovalPanel(tc, session.SandboxInfo{}, false, 80, w),
+		"summary":  approvalSummary(named, acpwire.Sandbox{}, 80),
+		"fallback": renderApprovalPanel(named, acpwire.Sandbox{}, 80),
 	} {
 		plain := stripANSI(view)
 		if !strings.Contains(plain, "implementer wants to run a command") {
@@ -520,25 +497,19 @@ func TestApprovalShowsOwnerAndWhy(t *testing.T) {
 	}
 
 	// The orchestrator is not named; a step without narration has no why.
-	m2 := newTestModel(t)
-	m2.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	silent := m2.state.BeginStep(session.Actor{})
-	tc2 := &session.PendingToolCall{Name: "shell.run", Command: "ls", StepID: silent}
-	if w := m2.approvalWhyFor(m2.state, tc2); w != (approvalWhy{}) {
-		t.Fatalf("orchestrator step with no narration should add nothing, got %+v", w)
+	silent := acpwire.ApprovalRequest{Tool: "shell.run", Command: "ls"}
+	if w := approvalWhyOf(silent); w != (approvalWhy{}) {
+		t.Fatalf("an approval with no actor and no why should add nothing, got %+v", w)
 	}
-	plain := stripANSI(renderApprovalPanel(tc2, session.SandboxInfo{}, false, 80, m2.approvalWhyFor(m2.state, tc2)))
+	plain := stripANSI(renderApprovalPanel(silent, acpwire.Sandbox{}, 80))
 	if strings.Contains(plain, "why") || strings.Contains(plain, "wants to") {
 		t.Errorf("no owner and no narration means no extra lines:\n%s", plain)
 	}
-	if w := m2.approvalWhyFor(m2.state, &session.PendingToolCall{Name: "x"}); w != (approvalWhy{}) {
-		t.Fatalf("unstamped approval should add nothing, got %+v", w)
-	}
 }
 
-// A child's step IDs live in the child's State. The display copy keeps the
-// StepID, and the lookup must use the child, not the parent whose step with
-// the same number belongs to someone else.
+// A child's approval carries the subagent's label and ID on the wire, and the
+// why the adapter derived from the child's own step. The display copy keeps
+// both, so the dialog names who is asking.
 func TestSubagentApprovalResolvesOwnerAgainstChildState(t *testing.T) {
 	m := newTestModel(t)
 	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
@@ -552,17 +523,20 @@ func TestSubagentApprovalResolvesOwnerAgainstChildState(t *testing.T) {
 	if cid != pid {
 		t.Fatalf("test needs colliding step IDs, got parent %d child %d", pid, cid)
 	}
-	m.state.RegisterSubagent("reviewer", child)
-	tc := &session.PendingToolCall{Name: "shell.run", Command: "go vet ./...", Risk: "command", StepID: cid}
-	child.SetPendingApproval(tc)
+	view := m.state.RegisterSubagent("reviewer", child)
+	child.SetPendingApproval(&session.PendingToolCall{
+		Name: "shell.run", Command: "go vet ./...", Risk: "command", StepID: cid,
+	})
 
-	disp, label := m.pendingApprovalDisplay()
-	if disp == nil || label != "reviewer" || disp.StepID != cid {
-		t.Fatalf("display copy = %+v label %q; StepID must survive the copy", disp, label)
+	disp, ok := m.pendingApprovalDisplay()
+	if !ok {
+		t.Fatal("the child approval is not displayed")
 	}
-	w := m.approvalWhyFor(m.approvalOwner(), disp)
-	if w.owner != "reviewer" || w.why != "Checking the migration." {
-		t.Fatalf("why = %+v", w)
+	if disp.Actor != "reviewer" || disp.Why != "Checking the migration." {
+		t.Fatalf("display approval actor/why = %q/%q", disp.Actor, disp.Why)
+	}
+	if disp.SubagentID == 0 || disp.SubagentID != view.ID {
+		t.Fatalf("display approval SubagentID = %d, want the registered view's %d", disp.SubagentID, view.ID)
 	}
 }
 

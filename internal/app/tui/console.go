@@ -86,14 +86,15 @@ func sectionHeader(i int, s consoleSection, above consoleAbove, w int) string {
 // consoleColor is the console's border colour. It reports what the composer is
 // in the middle of; nothing else tints the chrome.
 func (m Model) consoleColor() color.Color {
+	p := m.sess.Pending()
 	switch {
 	case m.successPulse:
 		return successColor
-	case m.state.PendingSudoAuth() != nil:
+	case p.Sudo != nil:
 		return warningColor
-	case m.state.PendingSkillGate() != nil, m.state.PendingQuestion() != nil:
+	case p.SkillGate != nil, p.Question != nil:
 		return violetColor
-	case m.hasPendingApproval():
+	case len(p.Approvals) > 0:
 		return warningColor
 	default:
 		return theme.Current().BorderMuted
@@ -194,28 +195,31 @@ func (m Model) inputSections() []consoleSection {
 	}
 
 	// The prompts own every keypress while they are pending, so the textarea
-	// is deliberately not rendered beside them.
-	if sa := m.state.PendingSudoAuth(); sa != nil {
+	// is deliberately not rendered beside them. One Pending read serves the
+	// three prompt cases below.
+	pending := m.sess.Pending()
+	if sa := pending.Sudo; sa != nil {
 		if m.sudoAuthModel != nil {
 			return prompt("⚠ Sudo password", "", consoleLines(m.sudoAuthModel.View()))
 		}
-		return prompt("⚠ Sudo password", "", consoleLines(renderSudoAuthPanel(sa, max(m.leftWidth-4, 1))))
+		return prompt("⚠ Sudo password", "", consoleLines(renderSudoAuthPanel(*sa, max(m.leftWidth-4, 1))))
 	}
-	if sg := m.state.PendingSkillGate(); sg != nil {
+	if sg := pending.SkillGate; sg != nil {
 		if m.skillGateModel != nil {
 			return prompt("? Skill gate", keys, consoleLines(m.skillGateModel.View()))
 		}
-		return prompt("? Skill gate", keys, consoleLines(renderSkillGatePanel(sg, max(m.leftWidth-4, 1))))
+		return prompt("? Skill gate", keys, consoleLines(renderSkillGatePanel(*sg, max(m.leftWidth-4, 1))))
 	}
-	if q := m.state.PendingQuestion(); q != nil {
+	if q := pending.Question; q != nil {
 		if m.questionModel != nil {
 			return prompt("? Question", keys, consoleLines(m.questionModel.View()))
 		}
-		return prompt("? Question", keys, consoleLines(renderQuestionPanel(q, max(m.leftWidth-4, 1))))
+		return prompt("? Question", keys, consoleLines(renderQuestionPanel(*q, max(m.leftWidth-4, 1))))
 	}
-	if tc, _ := m.pendingApprovalDisplay(); tc != nil {
+	if a, ok := m.pendingApprovalDisplay(); ok {
+		st := m.sess.Status()
 		switch {
-		case tc.Access != nil:
+		case a.Access:
 			// A typed access request is presented by the accesspanel, which
 			// owns the decision. When another panel holds the dock the request
 			// is queued: disclose it without rendering a second approve/deny
@@ -233,7 +237,7 @@ func (m Model) inputSections() []consoleSection {
 		case m.approvalModel != nil:
 			return prompt("⚠ Approval", keys, consoleLines(m.approvalModel.View()))
 		default:
-			return prompt("⚠ Approval", keys, consoleLines(renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, max(m.leftWidth-4, 1), m.approvalWhyFor(m.approvalOwner(), tc))))
+			return prompt("⚠ Approval", keys, consoleLines(renderApprovalPanel(a, st.Sandbox, max(m.leftWidth-4, 1))))
 		}
 	}
 

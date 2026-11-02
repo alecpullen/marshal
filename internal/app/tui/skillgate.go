@@ -6,20 +6,20 @@ import (
 	"charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"marshal/internal/app/session"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/glyph"
 )
 
 // skillGateOptions is the ordered option list of the skill-gate dialog.
 var skillGateOptions = []struct {
-	choice session.SkillGateChoice
+	choice acpwire.SkillGateChoice
 	label  string
 	detail string
 }{
-	{session.SkillGateAllowOnce, "Allow once", "load this skill for this call"},
-	{session.SkillGateAllowSkill, "Allow always (this skill)", "session-scope: no more prompts for this skill"},
-	{session.SkillGateAllowAll, "Allow always (all skills)", "session-scope: turns the gate off"},
-	{session.SkillGateDeny, "Deny", "tell the model it does not need it now"},
+	{acpwire.SkillGateAllowOnce, "Allow once", "load this skill for this call"},
+	{acpwire.SkillGateAllowSkill, "Allow always (this skill)", "session-scope: no more prompts for this skill"},
+	{acpwire.SkillGateAllowAll, "Allow always (all skills)", "session-scope: turns the gate off"},
+	{acpwire.SkillGateDeny, "Deny", "tell the model it does not need it now"},
 }
 
 // skillGateModel renders the dedicated skill-load gate dialog inline in
@@ -27,13 +27,13 @@ var skillGateOptions = []struct {
 // with 1-4, confirmed with Enter. Esc moves the selection to Deny (it does
 // not respond — an accidental Esc must not record a sticky deny).
 type skillGateModel struct {
-	sg       *session.PendingSkillGate
+	sg       acpwire.SkillGateRequest
 	selected int
 	width    int
 	done     bool
 }
 
-func newSkillGateModel(sg *session.PendingSkillGate, width int) *skillGateModel {
+func newSkillGateModel(sg acpwire.SkillGateRequest, width int) *skillGateModel {
 	return &skillGateModel{sg: sg, width: max(width, 30)}
 }
 
@@ -62,7 +62,7 @@ func (m *skillGateModel) Update(msg tea.Msg) (*skillGateModel, tea.Cmd) {
 	return m, nil
 }
 
-func (m *skillGateModel) Choice() session.SkillGateChoice {
+func (m *skillGateModel) Choice() acpwire.SkillGateChoice {
 	return skillGateOptions[m.selected].choice
 }
 
@@ -114,7 +114,7 @@ func (m *skillGateModel) View() string {
 
 // renderSkillGatePanel is the fallback static panel shown before the
 // interactive model is built (mirrors renderQuestionPanel's role).
-func renderSkillGatePanel(sg *session.PendingSkillGate, width int) string {
+func renderSkillGatePanel(sg acpwire.SkillGateRequest, width int) string {
 	m := &skillGateModel{sg: sg, width: max(width, 30)}
 	return m.View()
 }

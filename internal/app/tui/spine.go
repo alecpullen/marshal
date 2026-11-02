@@ -242,7 +242,7 @@ func renderActiveCallRow(t *acpwire.WireTool, c *stepRenderCtx, expanded bool, w
 	dw := max(w-verbWidth, 1)
 	var lines []string
 	if isShellFamily(t.Name) {
-		if iso := sandboxIsolationText(c.sandbox, c.allowNetwork); iso != "" {
+		if iso := sandboxIsolationText(c.sandbox); iso != "" {
 			lines = append(lines, mutedStyle().Render(ansi.Truncate(iso, dw, "…")))
 		}
 	}

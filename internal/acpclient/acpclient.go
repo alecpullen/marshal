@@ -117,4 +117,73 @@ type Session interface {
 	//
 	// ACP: session/callers (new in P3).
 	Callers(ctx context.Context, nodeID string) ([]string, error)
+
+	// Pending lists every open request a person can answer (C7): the
+	// session's own, and the approvals of its running subagents. Pending does
+	// not block and settles nothing, so it is safe to read while rendering.
+	// Changed does not fire when a request opens or settles: the TUI reads
+	// Pending on every update and tick.
+	//
+	// ACP: session/request_permission (new in P3). The agent already sends it
+	// and session/request_question, and P3 adds session/request_secret. P3's
+	// mirror keeps each request until it is answered or an update settles it.
+	Pending() acpwire.PendingRequests
+
+	// AnswerApproval answers the approval with that key. A session or always
+	// answer to a Forced approval is a deny. always saves an allow rule to the
+	// user config and applies it to the session's config, or adds a session
+	// rule when the save fails; session adds a session rule. Both rules land
+	// on the session, whichever subagent asked. A key that names no open
+	// approval returns CodeRequestSettled.
+	//
+	// ACP: session/request_permission (new in P3): the
+	// answer is that request's result, extended with the decision.
+	AnswerApproval(ctx context.Context, key string, answer acpwire.ApprovalAnswer) error
+
+	// AnswerQuestion answers the question with that key, one answer per
+	// question in order. A key that names no open question returns
+	// CodeRequestSettled.
+	//
+	// ACP: session/request_question (new in P3).
+	AnswerQuestion(ctx context.Context, key string, answers []acpwire.Answer) error
+
+	// AnswerSkillGate answers the skill gate with that key, and records an
+	// allow_skill or allow_all choice for the rest of the session. A key that
+	// names no open gate returns CodeRequestSettled.
+	//
+	// ACP: session/request_permission (new in P3), whose
+	// request carries the skill-gate kind.
+	AnswerSkillGate(ctx context.Context, key string, choice acpwire.SkillGateChoice) error
+
+	// AnswerSudo answers the sudo prompt with that key. The password is
+	// handed to the handler as the same slice, and the handler zeroes it; it
+	// is never logged, nor returned by any read. A key that names no open
+	// prompt returns CodeRequestSettled.
+	//
+	// ACP: session/request_secret (new in P3).
+	AnswerSudo(ctx context.Context, key string, answer acpwire.SudoAnswer) error
+
+	// ReconcileAccess settles the typed access request that no longer asks
+	// for anything, then returns the one the access panel should present, if
+	// any. The TUI calls it once per update, so a request surfaces and leaves
+	// without a keypress. An implementation that cannot answer access
+	// requests settles each one as failed and reports none.
+	//
+	// ACP: none (in P3 the agent settles such a request itself, and this
+	// reads the request from the mirror).
+	ReconcileAccess(ctx context.Context) (acpwire.AccessRequest, bool)
+
+	// AnswerAccess answers the access request the choice names. The result
+	// says how it settled; refresh_required means the tuple moved while the
+	// person decided, and the request stays open.
+	//
+	// ACP: session/request_permission (new in P3), with
+	// the typed access choice.
+	AnswerAccess(ctx context.Context, choice acpwire.AccessChoice) (acpwire.AccessResult, error)
+
+	// Rollback restores the last backup and logs the rollback as an audit
+	// row in the transcript, failed or not. It returns the restore's error.
+	//
+	// ACP: session/rollback (new in P3).
+	Rollback(ctx context.Context) error
 }

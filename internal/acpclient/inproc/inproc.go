@@ -45,6 +45,14 @@ type Deps struct {
 	ProjectID int64
 	// ReferenceFinder answers Callers. Nil means no callers lookups.
 	ReferenceFinder ReferenceFinder
+
+	// AccessRequest and ResolveAccess are the runtime's access seam:
+	// AccessRequest returns the typed access request waiting for a decision,
+	// settling one that asks for nothing, and ResolveAccess validates and
+	// settles a choice. Without both, ReconcileAccess settles every typed
+	// access request as failed instead of presenting it.
+	AccessRequest func() (session.AccessRequest, bool)
+	ResolveAccess func(session.AccessChoice) (session.AccessResult, error)
 }
 
 // ReferenceFinder resolves what references a symbol. ok is false when no
@@ -78,6 +86,12 @@ type Session struct {
 	// refs answers Callers. Nil means no callers lookups.
 	refs ReferenceFinder
 
+	// accessRequest and resolveAccess are the runtime's access seam. Without
+	// both, ReconcileAccess settles every typed access request as failed
+	// instead of presenting it.
+	accessRequest func() (session.AccessRequest, bool)
+	resolveAccess func(session.AccessChoice) (session.AccessResult, error)
+
 	// ctx bounds the event subscriptions; cancel releases them.
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -91,6 +105,10 @@ type Session struct {
 	resume        *acpwire.WatchResume
 	resumeSeq     uint64
 	sheet         sheetCache
+	// localKeys holds the minted key of each open unregistered prompt, by the
+	// prompt's pointer; localSeq numbers them. Both are guarded by mu.
+	localKeys map[any]string
+	localSeq  uint64
 }
 
 var (
@@ -144,6 +162,7 @@ func (s *Session) Status() acpwire.SessionStatus {
 	act := st.Activity()
 	ws := st.Workspace()
 	bi := st.BrowserInfo()
+	sb := st.SandboxInfo()
 	gate := st.SDDGate()
 	// An empty queue encodes as absent under omitempty, so keep it nil rather
 	// than the non-nil empty slice SteeringQueue returns.
@@ -193,6 +212,11 @@ func (s *Session) Status() acpwire.SessionStatus {
 			Mode:        bi.Mode,
 			SessionOpen: bi.SessionOpen,
 			UpdatedAt:   acpwire.Millis(bi.UpdatedAt),
+		},
+		Sandbox: acpwire.Sandbox{
+			Backend:          sb.Backend,
+			NetworkIsolation: sb.NetworkIsolation,
+			AllowNetwork:     st.ConfigSnapshot().Tools.Shell.AllowNetwork,
 		},
 		Steering: acpwire.Steering{
 			Queue: queue,

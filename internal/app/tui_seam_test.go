@@ -14,3 +14,11 @@ func testTUIModel(state *session.State, opts ...tui.Option) tui.Model {
 	all := append([]tui.Option{tui.WithLegacyState(state)}, opts...)
 	return tui.New(host, sess, all...)
 }
+
+// testTUIModelWith builds a model over an adapter made from d, with d.State
+// handed in as the legacy option.
+func testTUIModelWith(d inproc.Deps, opts ...tui.Option) tui.Model {
+	host, sess := inproc.New(d)
+	all := append([]tui.Option{tui.WithLegacyState(d.State)}, opts...)
+	return tui.New(host, sess, all...)
+}

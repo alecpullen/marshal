@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/dock"
@@ -118,11 +119,8 @@ func TestDrilledViewReadsTheChildsFacts(t *testing.T) {
 	if facts.reconnect != "retrying in 2s" {
 		t.Errorf("reconnect = %q, want the child's label", facts.reconnect)
 	}
-	if facts.sandbox != (session.SandboxInfo{}) {
+	if facts.sandbox != (acpwire.Sandbox{}) {
 		t.Errorf("sandbox = %+v, want none for a drilled child", facts.sandbox)
-	}
-	if facts.allowNetwork != m.state.Config.Tools.Shell.AllowNetwork {
-		t.Errorf("allowNetwork = %v, want the session's", facts.allowNetwork)
 	}
 
 	m.invalidateTranscript()

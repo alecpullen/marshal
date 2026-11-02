@@ -226,7 +226,8 @@ func (m Model) suggestionGhost() string {
 	}
 	// The completion popup, approval, question, and skill-gate panels all
 	// hide the textarea; a ghost would be a visual conflict, so suppress it.
-	if m.activeCompletionPopup() != nil || m.hasPendingApproval() || m.state.PendingQuestion() != nil || m.state.PendingSkillGate() != nil || m.state.PendingSudoAuth() != nil {
+	p := m.sess.Pending()
+	if m.activeCompletionPopup() != nil || m.hasPendingApproval() || p.Question != nil || p.SkillGate != nil || p.Sudo != nil {
 		return ""
 	}
 	// The ghost is spliced into a single rendered row. A newline would add

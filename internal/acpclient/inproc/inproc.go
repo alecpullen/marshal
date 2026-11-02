@@ -45,6 +45,14 @@ type Deps struct {
 	ProjectID int64
 	// ReferenceFinder answers Callers. Nil means no callers lookups.
 	ReferenceFinder ReferenceFinder
+
+	// AccessRequest and ResolveAccess are the runtime's access seam:
+	// AccessRequest returns the typed access request waiting for a decision,
+	// settling one that asks for nothing, and ResolveAccess validates and
+	// settles a choice. Without both, ReconcileAccess settles every typed
+	// access request as failed instead of presenting it.
+	AccessRequest func() (session.AccessRequest, bool)
+	ResolveAccess func(session.AccessChoice) (session.AccessResult, error)
 }
 
 // ReferenceFinder resolves what references a symbol. ok is false when no
@@ -77,6 +85,12 @@ type Session struct {
 
 	// refs answers Callers. Nil means no callers lookups.
 	refs ReferenceFinder
+
+	// accessRequest and resolveAccess are the runtime's access seam. Without
+	// both, ReconcileAccess settles every typed access request as failed
+	// instead of presenting it.
+	accessRequest func() (session.AccessRequest, bool)
+	resolveAccess func(session.AccessChoice) (session.AccessResult, error)
 
 	// ctx bounds the event subscriptions; cancel releases them.
 	ctx    context.Context

@@ -2821,6 +2821,8 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			Subagents:       subagentBroker,
 			ProjectID:       projectID,
 			ReferenceFinder: refFinder,
+			AccessRequest:   rt.AccessRequest,
+			ResolveAccess:   rt.ResolveAccess,
 		})
 
 		cmdReg := rt.CommandRegistry

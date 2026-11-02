@@ -28,4 +28,11 @@ var Methods = []Method{
 	{Iface: "Session", Name: "StackNode", ACP: "session/stack_node", Exists: true},
 	{Iface: "Session", Name: "Callers", ACP: "session/callers"},
 	{Iface: "Session", Name: "Pending", ACP: "session/request_permission"},
+	{Iface: "Session", Name: "AnswerApproval", ACP: "session/request_permission"},
+	{Iface: "Session", Name: "AnswerQuestion", ACP: "session/request_question"},
+	{Iface: "Session", Name: "AnswerSkillGate", ACP: "session/request_permission"},
+	{Iface: "Session", Name: "AnswerSudo", ACP: "session/request_secret"},
+	{Iface: "Session", Name: "ReconcileAccess"},
+	{Iface: "Session", Name: "AnswerAccess", ACP: "session/request_permission"},
+	{Iface: "Session", Name: "Rollback", ACP: "session/rollback"},
 }

@@ -7,7 +7,6 @@ package tui
 // An entry is never added to make TestTUIStaysOnTheClientSeam pass. A new use
 // belongs behind acpclient.
 var boundaryAllowlist = map[string][]string{
-	"accesspanel/accesspanel.go":     {"marshal/internal/app/session"},
 	"agents/panel.go":                {"config.SaveProjectConfig", "marshal/internal/tools/registry"},
 	"approval.go":                    {"marshal/internal/app/session"},
 	"browse_inspect.go":              {"marshal/internal/commands"},

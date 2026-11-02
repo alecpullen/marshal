@@ -539,7 +539,7 @@ func (m Model) statusRightSegment() string {
 // another panel holds the dock. When the accesspanel itself owns the dock its
 // own footer supplies the keys, so this indicator is only for the queued case.
 func (m Model) accessRequestQueued() bool {
-	if _, pending := m.state.AccessRequest(); !pending {
+	if m.sess.Pending().Access == nil {
 		return false
 	}
 	if _, isAccessPanel := m.dock.Panel().(*accesspanel.Panel); isAccessPanel {

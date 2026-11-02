@@ -18,6 +18,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpclient/inproc"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/presetsetup"
@@ -11713,17 +11714,17 @@ func TestPostmortemConsentResizeInvalidatesVisibility(t *testing.T) {
 		state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 		state.Config.Postmortem.OnExit = "prompt"
 		ctrl := &endTestController{}
-		m := testModel(state,
-			WithEndController(ctrl),
+		m := testModelWith(inproc.Deps{
+			State: state,
 			// Wire the access seam so a request queued behind the exit question
 			// stays pending. Without it reconcileAccess fails such a request
 			// closed as unanswerable, which is a different scenario.
-			WithAccessRequests(
-				func() (session.AccessRequest, bool) { return state.AccessRequest() },
-				func(choice session.AccessChoice) (session.AccessResult, error) {
-					return state.ResolveAccess(choice, nil)
-				},
-			),
+			AccessRequest: func() (session.AccessRequest, bool) { return state.AccessRequest() },
+			ResolveAccess: func(choice session.AccessChoice) (session.AccessResult, error) {
+				return state.ResolveAccess(choice, nil)
+			},
+		},
+			WithEndController(ctrl),
 		)
 		m.resize(80, 24)
 		m.end = &endIntent{kind: EndIntentExit}
@@ -12226,10 +12227,14 @@ func TestSendNowComposerRoutesSuspendedAsyncResultsOnce(t *testing.T) {
 	// Expiry: an access request cancelled while the composer was up must not be
 	// resurrected on close.
 	g := newSendNowFixture(t, 120, 40, true)
-	g.m.accessRequest = func() (session.AccessRequest, bool) { return g.state.AccessRequest() }
-	g.m.resolveAccess = func(session.AccessChoice) (session.AccessResult, error) {
-		return session.AccessResult{}, nil
-	}
+	_, sess := inproc.New(inproc.Deps{
+		State:         g.state,
+		AccessRequest: func() (session.AccessRequest, bool) { return g.state.AccessRequest() },
+		ResolveAccess: func(session.AccessChoice) (session.AccessResult, error) {
+			return session.AccessResult{}, nil
+		},
+	})
+	g.m.sess = sess
 	call := &session.PendingToolCall{
 		ID:           "call-1",
 		Name:         "mode.request",

@@ -65,6 +65,11 @@ var movedStateReads = map[string]string{
 	// The cursor's box stop found its child through the state; drill-in
 	// resolves it through Status since 3d.
 	"Subagent": "3d",
+
+	// The access panel presents what ReconcileAccess reports and answers
+	// through AnswerAccess since 4.
+	"AccessRequest": "4",
+	"CancelAccess":  "4",
 }
 
 // movedReadSites returns one "<line>\t<Name>" entry per selector X.Sel in f

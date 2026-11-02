@@ -2141,13 +2141,14 @@ func roleToolIterations(cfg config.Config, role agent.AgentRole) int {
 	return cfg.Agent.MaxToolIterations
 }
 
-// accessTUIOptions wires the TUI's access seam to this runtime. The bound
-// methods read the runtime's current State and Runner under the runtime gate,
-// so a successful NewSession does not leave the TUI holding a closure over the
-// session it replaced: the same options keep working against the new one.
+// accessTUIOptions wires the TUI's interaction and effort seams to this
+// runtime. Access requests reach the TUI through the adapter's Deps instead
+// (inproc.Deps.AccessRequest and ResolveAccess). The bound methods read the
+// runtime's current State and Runner under the runtime gate, so a successful
+// NewSession does not leave the TUI holding a closure over the session it
+// replaced: the same options keep working against the new one.
 func accessTUIOptions(rt *Runtime) []tui.Option {
 	return []tui.Option{
-		tui.WithAccessRequests(rt.AccessRequest, rt.ResolveAccess),
 		tui.WithInteractionSetter(rt.SetInteraction),
 		tui.WithSessionEffortSetter(rt.SetSessionEffort),
 	}

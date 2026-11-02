@@ -23,6 +23,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acpwire"
 	"marshal/internal/agent"
 	"marshal/internal/agent/agenttest"
 	"marshal/internal/agent/swarm"
@@ -6662,19 +6664,24 @@ func accessTUIRequest(t *testing.T, state *session.State, intent session.AccessI
 
 // accessTUIChoice builds the exported message the access panel emits.
 func accessTUIChoice(req session.AccessRequest, approved bool, mode string) accesspanel.ChoiceMsg {
-	return accesspanel.ChoiceMsg{Choice: session.AccessChoice{
+	return accesspanel.ChoiceMsg{Choice: acpwire.AccessChoice{
 		RequestID: req.RequestID,
 		SessionID: req.SessionID,
-		Current:   req.Current,
-		Approved:  approved,
-		Mode:      mode,
+		Current: acpwire.AccessState{
+			Mode:     req.Current.Mode,
+			Auto:     req.Current.Auto,
+			System:   req.Current.System,
+			Revision: req.Current.Revision,
+		},
+		Approved: approved,
+		Mode:     mode,
 	}}
 }
 
-// TestAccessTUIOptionsResolveWithoutConfigReload pins the production wiring:
-// the options accessTUIOptions hands the TUI resolve a typed request through
-// the runtime, in memory, without touching the config reloader.
-func TestAccessTUIOptionsResolveWithoutConfigReload(t *testing.T) {
+// TestAdapterAccessResolvesWithoutConfigReload pins the production wiring: the
+// adapter's Deps resolve a typed request through the runtime, in memory,
+// without touching the config reloader.
+func TestAdapterAccessResolvesWithoutConfigReload(t *testing.T) {
 	cfg := nativeToolAgentConfig("access-tui-options")
 	rt, state := newAccessTestRuntime(t, cfg)
 
@@ -6684,7 +6691,11 @@ func TestAccessTUIOptionsResolveWithoutConfigReload(t *testing.T) {
 		return nil
 	}
 
-	m := testTUIModel(state, accessTUIOptions(rt)...)
+	m := testTUIModelWith(inproc.Deps{
+		State:         state,
+		AccessRequest: rt.AccessRequest,
+		ResolveAccess: rt.ResolveAccess,
+	}, accessTUIOptions(rt)...)
 
 	// The size gate needs a real frame first, exactly as the production
 	// program gets one at startup.
@@ -6727,10 +6738,11 @@ func TestAccessTUIOptionsResolveWithoutConfigReload(t *testing.T) {
 	}
 }
 
-// TestAccessTUIOptionsFollowNewSession pins that the same options keep working
-// after a session swap: the bound methods read the runtime's current state, so
-// a decision for the retired conversation cannot reach the replacement.
-func TestAccessTUIOptionsFollowNewSession(t *testing.T) {
+// TestAdapterAccessFollowsNewSession pins that the access seam keeps working
+// after a session swap: the adapter's runtime callbacks read the runtime's
+// current state, so a decision for the retired conversation cannot reach the
+// replacement.
+func TestAdapterAccessFollowsNewSession(t *testing.T) {
 	ctx := context.Background()
 	cfg := nativeToolAgentConfig("access-tui-follow")
 	// The default autoload injects a skill body into a fresh session; opt out
@@ -6759,7 +6771,16 @@ func TestAccessTUIOptionsFollowNewSession(t *testing.T) {
 	oldReq, oldDecisions := accessTUIRequest(t, oldState, session.AccessIntent{
 		System: true, Reason: "The agent requests system access.",
 	})
-	oldModel := testTUIModel(oldState, opts...)
+	// The Deps are built once, over the old state, as production builds them:
+	// their callbacks read the runtime's current state, so the same seam keeps
+	// working after a swap.
+	deps := inproc.Deps{
+		State:         oldState,
+		AccessRequest: rt.AccessRequest,
+		ResolveAccess: rt.ResolveAccess,
+	}
+	host, oldSess := inproc.New(deps)
+	oldModel := tui.New(host, oldSess, append([]tui.Option{tui.WithLegacyState(oldState)}, opts...)...)
 	updated, _ := oldModel.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	oldModel = updated.(tui.Model)
 	if view := ansi.Strip(oldModel.View().Content); !strings.Contains(view, "Allow system access?") {
@@ -6794,8 +6815,9 @@ func TestAccessTUIOptionsFollowNewSession(t *testing.T) {
 		t.Fatal("the retired request's channel is still open; it must be closed after one settlement")
 	}
 
-	// The same options now drive the replacement session.
-	newModel := testTUIModel(newState, opts...)
+	// The same Deps now drive the replacement session.
+	newSess := host.Swap(newState)
+	newModel := tui.New(host, newSess, append([]tui.Option{tui.WithLegacyState(newState)}, opts...)...)
 	newReq, newDecisions := accessTUIRequest(t, newState, session.AccessIntent{
 		System: true, Reason: "The agent requests system access.",
 	})

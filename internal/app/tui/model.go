@@ -667,12 +667,6 @@ type Model struct {
 	// The picker itself is hosted in m.dock; pickerCommand records which
 	// command opened it so PickedMsg can dispatch correctly.
 	pickerCommand string
-	// accessRequest and resolveAccess are the runtime-facing access seam
-	// (WithAccessRequests). The TUI only presents a request and submits the
-	// user's choice; the runtime validates and applies it. Both nil means no
-	// resolver is attached, which fails closed.
-	accessRequest func() (session.AccessRequest, bool)
-	resolveAccess func(session.AccessChoice) (session.AccessResult, error)
 	// interactionSetter is the runtime-facing interaction seam
 	// (WithInteractionSetter). The TUI submits a patch and renders the
 	// committed state; it never mutates the runner, policy engine, force
@@ -895,21 +889,6 @@ func WithRunnerSource(fn func() (context.Context, AgentRunner)) Option {
 // report that a new session is unavailable.
 func WithSessionSwapper(swapper SessionSwapper) Option {
 	return func(m *Model) { m.sessionSwapper = swapper }
-}
-
-// WithAccessRequests wires the runtime-facing access seam: get returns the
-// request waiting for a decision, resolve validates and settles one. The TUI
-// presents the request and submits the choice; it never derives policy or
-// mutates session state itself. Omitting either callback fails closed — a
-// pending request is canceled rather than shown with no way to answer it.
-func WithAccessRequests(
-	get func() (session.AccessRequest, bool),
-	resolve func(session.AccessChoice) (session.AccessResult, error),
-) Option {
-	return func(m *Model) {
-		m.accessRequest = get
-		m.resolveAccess = resolve
-	}
 }
 
 // WithInteractionSetter wires the runtime-facing interaction seam. The TUI
@@ -2037,7 +2016,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// reach it: those keys answer the modal question the user can act on,
 		// never the request neither of them can see. Approvals are already
 		// consumed above, and access choices stay consumed here.
-		if _, pending := m.state.AccessRequest(); pending {
+		if m.sess.Pending().Access != nil {
 			switch key := msg.(type) {
 			case tea.KeyPressMsg:
 				if key.String() != "ctrl+c" && !(consentOwnsDock && postmortemDeclineKey(key)) {
@@ -3164,29 +3143,27 @@ func (m Model) accessPanelOwnsDock() bool {
 	return ok
 }
 
-// accessRequestSnapshot reads the pending access request through the runtime
-// seam. It reports nothing when either callback is missing: without a resolver
-// the TUI cannot present a request it has no way to answer.
-func (m *Model) accessRequestSnapshot() (session.AccessRequest, bool) {
-	if m.accessRequest == nil || m.resolveAccess == nil {
-		return session.AccessRequest{}, false
-	}
-	return m.accessRequest()
+// accessRequestSnapshot reads the pending access request through the session.
+// The adapter settles a request that no longer asks for anything and refuses
+// one that belongs to a session it does not serve, so this reads the panel's
+// subject and nothing else.
+func (m *Model) accessRequestSnapshot() (acpwire.AccessRequest, bool) {
+	return m.sess.ReconcileAccess(m.ctx)
 }
 
 // accessOutcomeNote renders one concise line naming the outcome and the actual
 // effective state, so the transcript never claims a capability the session
 // does not hold.
-func accessOutcomeNote(result session.AccessResult) string {
+func accessOutcomeNote(result acpwire.AccessResult) string {
 	state := fmt.Sprintf("mode %s, system access %t", result.Effective.Mode, result.Effective.System)
 	switch result.Status {
-	case session.AccessGranted:
+	case acpwire.AccessGranted:
 		return fmt.Sprintf("Access granted — %s.", state)
-	case session.AccessDenied:
+	case acpwire.AccessDenied:
 		return fmt.Sprintf("Access denied — %s.", state)
-	case session.AccessAvailable:
+	case acpwire.AccessAvailable:
 		return fmt.Sprintf("Access already available — %s.", state)
-	case session.AccessCanceled:
+	case acpwire.AccessCanceled:
 		return fmt.Sprintf("Access request canceled — %s.", state)
 	default:
 		msg := result.Message
@@ -3202,9 +3179,9 @@ func accessOutcomeNote(result session.AccessResult) string {
 // runtime tick without the user typing anything, and a request that was
 // canceled, replaced or satisfied stops being shown.
 //
-// It is presentation only. It never applies a grant; the one session call it
-// makes is a fail-closed cancellation when no resolver is attached, because a
-// request nothing can answer must not block the tool forever.
+// It is presentation only. It never applies a grant: the adapter settles a
+// request that nothing can answer, and refuses one that belongs to a session
+// this model does not serve.
 func (m *Model) reconcileAccess() {
 	if m.state == nil {
 		return
@@ -3222,19 +3199,6 @@ func (m *Model) reconcileAccess() {
 	}
 
 	snapshot, pending := m.accessRequestSnapshot()
-	if !pending {
-		// Fail closed: a typed request is waiting but this model has no way to
-		// present or answer it. Settle it as a failure so the tool unblocks
-		// rather than waiting on a panel that can never submit anything.
-		if typed, ok := m.state.AccessRequest(); ok {
-			m.state.CancelAccess(typed.RequestID, session.AccessFailed, "Access resolver unavailable")
-		}
-	}
-	// A snapshot from another conversation must not open here: the session was
-	// replaced underneath this model.
-	if pending && snapshot.SessionID != m.sess.ID() {
-		pending = false
-	}
 
 	current, isAccessPanel := m.dock.Panel().(*accesspanel.Panel)
 	switch {
@@ -3278,7 +3242,7 @@ func (m *Model) reconcileAccess() {
 // actually open. It is deliberately narrow: the choice must name the panel's
 // exact request, session and presented tuple, so a stale message from an
 // earlier request can never answer a newer one.
-func (m *Model) handleAccessChoice(choice session.AccessChoice) {
+func (m *Model) handleAccessChoice(choice acpwire.AccessChoice) {
 	panel, ok := m.dock.Panel().(*accesspanel.Panel)
 	if !ok {
 		return
@@ -3290,13 +3254,9 @@ func (m *Model) handleAccessChoice(choice session.AccessChoice) {
 		// Stale or foreign: leave whatever is on screen alone.
 		return
 	}
-	if m.resolveAccess == nil {
-		m.state.CancelAccess(shown.RequestID, session.AccessFailed, "Access resolver unavailable")
-		return
-	}
 	// The resolver is a bounded, memory-only operation, so it runs inline: the
 	// panel must not close before the runtime has committed the decision.
-	result, err := m.resolveAccess(choice)
+	result, err := m.sess.AnswerAccess(m.ctx, choice)
 	if err != nil {
 		m.dock.CloseNow()
 		m.state.AddMessage(session.RoleSystem,
@@ -3304,7 +3264,7 @@ func (m *Model) handleAccessChoice(choice session.AccessChoice) {
 		m.refreshViewport()
 		return
 	}
-	if result.Status == session.AccessRefresh {
+	if result.Status == acpwire.AccessRefresh {
 		// The permission tuple moved while the user was deciding. The request
 		// stays pending; re-present the fresh state with Deny selected.
 		if fresh, pending := m.accessRequestSnapshot(); pending {

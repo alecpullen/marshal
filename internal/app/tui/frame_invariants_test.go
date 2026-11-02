@@ -10,6 +10,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/accesspanel"
 	"marshal/internal/app/tui/activeworkpanel"
@@ -152,7 +153,7 @@ func TestFrameInvariants(t *testing.T) {
 			})
 		}},
 		{"console+access", func(t *testing.T, m *Model) {
-			m.dock.Open(accesspanel.New(session.AccessRequest{MissingEditing: true}))
+			m.dock.Open(accesspanel.New(acpwire.AccessRequest{MissingEditing: true}))
 		}},
 		// A typed access request has two console branches of its own. Queued
 		// behind an unrelated panel it renders one muted disclosure row; while
@@ -174,7 +175,7 @@ func TestFrameInvariants(t *testing.T) {
 		{"console+access+owner", func(t *testing.T, m *Model) {
 			m.workSnapshot = workSnapOf(workRunningCard("work:01", workT0))
 			m.busy = true
-			m.dock.Open(accesspanel.New(session.AccessRequest{MissingEditing: true}))
+			m.dock.Open(accesspanel.New(acpwire.AccessRequest{MissingEditing: true}))
 			m.state.SetPendingApproval(&session.PendingToolCall{
 				ID:           "call-access-owner",
 				Name:         "mode.request",

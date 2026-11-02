@@ -14,6 +14,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/accesspanel"
@@ -237,13 +239,15 @@ func newAccessTestFixture(t *testing.T, width, height int, cfg config.Config) *a
 	t.Helper()
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	f := &accessTestFixture{t: t, state: state}
-	m := testModel(state,
-		WithAccessRequests(
-			func() (session.AccessRequest, bool) { return state.AccessRequest() },
-			func(choice session.AccessChoice) (session.AccessResult, error) {
-				return state.ResolveAccess(choice, f.prepare())
-			},
-		),
+	m := testModelWith(inproc.Deps{
+		State: state,
+		AccessRequest: func() (session.AccessRequest, bool) {
+			return state.AccessRequest()
+		},
+		ResolveAccess: func(choice session.AccessChoice) (session.AccessResult, error) {
+			return state.ResolveAccess(choice, f.prepare())
+		},
+	},
 		WithInteractionSetter(func(p interaction.Patch) (interaction.State, error) {
 			f.modeSetterCalls.Add(1)
 			return state.ApplyInteraction(p)
@@ -315,7 +319,7 @@ func (f *accessTestFixture) panel() *accesspanel.Panel {
 func (f *accessTestFixture) choose(approved bool, mode string) {
 	f.t.Helper()
 	req := f.panel().Request()
-	updated, _ := f.m.Update(accesspanel.ChoiceMsg{Choice: session.AccessChoice{
+	updated, _ := f.m.Update(accesspanel.ChoiceMsg{Choice: acpwire.AccessChoice{
 		RequestID: req.RequestID,
 		SessionID: req.SessionID,
 		Current:   req.Current,
@@ -499,11 +503,16 @@ func TestAccessPanelIgnoresExpiredAndForeignChoice(t *testing.T) {
 
 	// The stale choice names the retired request: it must not grant, and must
 	// not close the newer panel.
-	updated, _ := f.m.Update(accesspanel.ChoiceMsg{Choice: session.AccessChoice{
+	updated, _ := f.m.Update(accesspanel.ChoiceMsg{Choice: acpwire.AccessChoice{
 		RequestID: old.RequestID,
 		SessionID: old.SessionID,
-		Current:   old.Current,
-		Approved:  true,
+		Current: acpwire.AccessState{
+			Mode:     old.Current.Mode,
+			Auto:     old.Current.Auto,
+			System:   old.Current.System,
+			Revision: old.Current.Revision,
+		},
+		Approved: true,
 	}})
 	f.m = updated.(Model)
 
@@ -542,7 +551,7 @@ func TestAccessPanelHiddenSizeCannotApprove(t *testing.T) {
 	f.m = updated.(Model)
 	updated, _ = f.m.Update(tea.PasteMsg{Content: "enter"})
 	f.m = updated.(Model)
-	updated, _ = f.m.Update(accesspanel.ChoiceMsg{Choice: session.AccessChoice{
+	updated, _ = f.m.Update(accesspanel.ChoiceMsg{Choice: acpwire.AccessChoice{
 		RequestID: "whatever", SessionID: f.state.SessionID(), Approved: true,
 	}})
 	f.m = updated.(Model)
@@ -626,7 +635,7 @@ func TestAccessPanelGrantOrderingAndNoPersistence(t *testing.T) {
 	req := f.panel().Request()
 	done := make(chan Model, 1)
 	go func() {
-		updated, _ := f.m.Update(accesspanel.ChoiceMsg{Choice: session.AccessChoice{
+		updated, _ := f.m.Update(accesspanel.ChoiceMsg{Choice: acpwire.AccessChoice{
 			RequestID: req.RequestID,
 			SessionID: req.SessionID,
 			Current:   req.Current,
@@ -670,15 +679,15 @@ func TestAccessPanelGrantOrderingAndNoPersistence(t *testing.T) {
 func TestAccessPanelUnavailableResolverFailsClosed(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		opts []Option
+		deps inproc.Deps
 	}{
 		{name: "no callbacks"},
-		{name: "getter only", opts: []Option{WithAccessRequests(
-			func() (session.AccessRequest, bool) { return session.AccessRequest{}, false }, nil)}},
-		{name: "resolver only", opts: []Option{WithAccessRequests(nil,
-			func(session.AccessChoice) (session.AccessResult, error) {
+		{name: "getter only", deps: inproc.Deps{
+			AccessRequest: func() (session.AccessRequest, bool) { return session.AccessRequest{}, false }}},
+		{name: "resolver only", deps: inproc.Deps{
+			ResolveAccess: func(session.AccessChoice) (session.AccessResult, error) {
 				return session.AccessResult{}, nil
-			})}},
+			}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
@@ -692,7 +701,9 @@ func TestAccessPanelUnavailableResolverFailsClosed(t *testing.T) {
 				t.Fatalf("RegisterAccess = (%v, %v), want a published request", waiting, err)
 			}
 
-			m := testModel(state, tc.opts...)
+			deps := tc.deps
+			deps.State = state
+			m := testModelWith(deps)
 			m.resize(120, 40)
 			updated, _ := m.Update(agentTickMsg{})
 			m = updated.(Model)

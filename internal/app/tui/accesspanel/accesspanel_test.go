@@ -8,14 +8,14 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"marshal/internal/app/session"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/theme"
 )
 
-func request() session.AccessRequest {
-	return session.AccessRequest{RequestID: "r1", SessionID: "s1",
+func request() acpwire.AccessRequest {
+	return acpwire.AccessRequest{RequestID: "r1", SessionID: "s1",
 		Actor: "Marshal", StepID: 3, Reason: strings.Repeat("Downloading files. ", 20),
-		Current: session.AccessState{Mode: "copilot"}, MissingSystem: true}
+		Current: acpwire.AccessState{Mode: "copilot"}, MissingSystem: true}
 }
 
 func press(p *Panel, key string) tea.Cmd {
@@ -95,7 +95,7 @@ func TestAccessPanelOffersOnlyRequestedActSystem(t *testing.T) {
 func TestAccessPanelDisplaysFullEffectiveState(t *testing.T) {
 	r := request()
 	r.MissingEditing, r.MissingSystem = true, true
-	r.Current = session.AccessState{Mode: "auto", Auto: true, System: true, Revision: 7}
+	r.Current = acpwire.AccessState{Mode: "auto", Auto: true, System: true, Revision: 7}
 	p := New(r)
 
 	plain := ansi.Strip(p.View(120, 24))

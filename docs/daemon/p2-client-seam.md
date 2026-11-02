@@ -1465,3 +1465,77 @@ printable remainder and one holding a CRLF shows two spaces where it showed
 one. A drilled-in child whose state the session releases now shows an empty
 frame with the welcome banner, which happens only when more than ten newer
 children finish while the view is drilled into an old finished one.
+
+**Plan 4 (agent requests), branch `p2-4-requests`.** Added
+`internal/acpwire/requests.go`: `PendingRequests` with one field per kind
+(`Approvals`, `Question`, `SkillGate`, `Sudo`, `Access`), `ApprovalRequest`
+and `ApprovalAnswer` with the four `Approval*` decisions, `QuestionRequest`
+with `Question`/`QuestionOption`/`Answer` and `AnswerUnanswered`,
+`SkillGateRequest` with the four `SkillGate*` choices, `SudoRequest` and
+`SudoAnswer`, and `AccessRequest`/`AccessChoice`/`AccessResult` with the
+seven `Access*` statuses. `acpwire.Sandbox` (the backend, its network
+isolation, and the shell's configured network allowance) arrives as
+`SessionStatus.sandbox`, and the status doc's forward reference now names
+only plan 6's current notice.
+
+`acpclient.Session` gains eight methods after `Callers`, each with its ACP
+line and its `Methods` row: `Pending` (`session/request_permission`),
+`AnswerApproval` (`session/request_permission`), `AnswerQuestion`
+(`session/request_question`), `AnswerSkillGate`
+(`session/request_permission`), `AnswerSudo` (`session/request_secret`),
+`ReconcileAccess` (no ACP method, so an empty string), `AnswerAccess`
+(`session/request_permission`) and `Rollback` (`session/rollback`).
+
+The in-process adapter does the work the TUI used to do. `Pending` keys every
+open request by its registry ID, by an access request's `RequestID` when a
+typed request occupies the approval slot, or by a minted `local-N` for an
+unregistered prompt, which it keeps while that prompt stays open. It lists
+the session's own approval first, then each running subagent's in
+registration order, and derives the "why" line from the state that raised the
+request (the child's own for a subagent's approval), the tool label from
+`viewmodel.DisplayToolName`, and the forced class from the request itself.
+`Pending` settles nothing and never calls a runtime callback, and a closed
+session keeps answering it. The answer calls settle on the owning state's
+registry, or on the prompt's own channel for an unregistered fixture, and an
+"always" or "session" rule always lands on the session, whichever subagent
+asked; "always" saves to the user config and applies the new config through
+`RebaseInteractionConfig`, falling back to a session rule when the save
+fails, and a standing answer to a forced prompt is a deny the adapter
+enforces. `AnswerSkillGate` records the sticky choice, `AnswerSudo` hands the
+password slice straight through, `Rollback` restores the backup and logs the
+audit row, and access goes through the runtime's `AccessRequest` and
+`ResolveAccess` callbacks in `ReconcileAccess` and `AnswerAccess`, both of
+which settle the request as failed and report none when either callback is
+missing.
+
+The TUI's approval, question, skill-gate, sudo and access surfaces now hold
+the wire values, name a request by a `promptRef` (its kind and its wire key)
+rather than by a pointer, read `Pending` once per function, and answer
+through `AnswerQuestion`, `AnswerSkillGate`, `AnswerSudo` and
+`AnswerApproval`; `settleApproval` is one call to the session. The approval
+form takes an `acpwire.ApprovalRequest`, so `approvalWhyFor`,
+`forcedPromptClass`, `approvalOwner`, `isModeElevationApproval`,
+`userConfigDir` and `toolnames.go` are gone, and the running shell row and
+the approval panel read the sandbox from `Status().sandbox`.
+`tui.WithAccessRequests` and its two fields are deleted: the adapter's `Deps`
+carry the runtime's access seam.
+
+T1b gains 19 names, all at plan `4`: `AccessRequest`, `CancelAccess`,
+`PendingQuestion`, `SetPendingQuestion`, `ResolveQuestion`,
+`PendingSkillGate`, `SetPendingSkillGate`, `ResolveSkillGate`,
+`SkillGateRecordAllow`, `PendingSudoAuth`, `SetPendingSudoAuth`,
+`ResolveSudoAuth`, `PendingApproval`, `SetPendingApproval`,
+`ResolveApproval`, `ClearPrompt`, `SandboxInfo`, `RollbackBackup` and
+`LogToolCall`. T1's allowlist loses ten entries across nine files:
+`accesspanel/accesspanel.go`, `question.go`, `skillgate.go`, `sudoauth.go`,
+`approval.go` and `toolnames.go` lose their keys entirely, `keypress.go`
+drops `tools/registry`, `steps.go` drops `app/session`, and `model.go` drops
+`config.SaveUserConfigRule` and `internal/permissions`.
+
+Decision 12's edge cases, one line each: a subagent's approval can now be
+reached by its key, so a work item naming it navigates to it and Alt+Enter's
+composer tracks it; the model-cost consent has a minted key, so the composer
+tracks it too; a subagent's mode-elevation `file.write` approval no longer
+offers "always" or "session", which both denied anyway; and a new request
+rebuilds the approval form even when it reuses a tool-call ID, so two
+model-cost consents in a row no longer share the first one's form.

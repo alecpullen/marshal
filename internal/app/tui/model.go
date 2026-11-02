@@ -662,16 +662,6 @@ type Model struct {
 	// The picker itself is hosted in m.dock; pickerCommand records which
 	// command opened it so PickedMsg can dispatch correctly.
 	pickerCommand string
-	// interactionSetter is the runtime-facing interaction seam
-	// (WithInteractionSetter). The TUI submits a patch and renders the
-	// committed state; it never mutates the runner, policy engine, force
-	// class, config or session state itself.
-	interactionSetter func(interaction.Patch) (interaction.State, error)
-	// effortSetter is the runtime-facing effort seam (WithSessionEffortSetter).
-	// When set, effort changes go through it so validation, the session
-	// override and the running turn move together; nil reports that effort
-	// changes are unavailable.
-	effortSetter func(string) (string, error)
 	// resumeSession is non-empty when the user asked to resume a different
 	// session; the app.Run program runner reads it from the final model.
 	resumeSession string
@@ -865,21 +855,6 @@ func WithRunnerSource(fn func() (context.Context, AgentRunner)) Option {
 // report that a new session is unavailable.
 func WithSessionSwapper(swapper SessionSwapper) Option {
 	return func(m *Model) { m.sessionSwapper = swapper }
-}
-
-// WithInteractionSetter wires the runtime-facing interaction seam. The TUI
-// submits one patch and renders the committed state; a nil seam reports that
-// interaction controls are unavailable rather than mutating anything locally.
-func WithInteractionSetter(set func(interaction.Patch) (interaction.State, error)) Option {
-	return func(m *Model) { m.interactionSetter = set }
-}
-
-// WithSessionEffortSetter wires the runtime-facing effort seam. When set,
-// effort changes go through the runtime so validation, the session override
-// and the running turn move together; nil reports that effort changes are
-// unavailable.
-func WithSessionEffortSetter(set func(string) (string, error)) Option {
-	return func(m *Model) { m.effortSetter = set }
 }
 
 // WithOpenConnectOnStart opens the connect panel as the TUI starts. Used
@@ -7168,41 +7143,35 @@ func (m *Model) openSessionPicker(prefilter string) {
 	m.openPicker("sessions", "Resume session", "pick a previous conversation", items, prefilter)
 }
 
-// applyInteraction submits one interaction patch to the runtime and returns
-// the committed state. The TUI only renders that result: it never mutates the
-// runner, policy engine, force class, config or session state itself.
-func (m *Model) applyInteraction(patch interaction.Patch) (interaction.State, bool) {
-	if m.interactionSetter == nil {
-		m.state.AddMessage(session.RoleSystem,
-			"Interaction controls are unavailable: no runtime interaction seam is attached.",
-			session.ContentTypePlain)
-		m.refreshViewport()
-		return interaction.State{}, false
-	}
-	committed, err := m.interactionSetter(patch)
+// applyInteraction submits one interaction patch through the session and
+// returns the committed state. The TUI only renders that result: it never
+// mutates the runner, policy engine, force class, config or session state
+// itself.
+func (m *Model) applyInteraction(patch acpwire.InteractionPatch) (acpwire.Interaction, bool) {
+	committed, err := m.sess.SetInteraction(m.ctx, patch)
 	if err != nil {
 		m.state.AddMessage(session.RoleSystem,
 			fmt.Sprintf("Could not change interaction state: %v", err),
 			session.ContentTypePlain)
 		m.refreshViewport()
-		return interaction.State{}, false
+		return acpwire.Interaction{}, false
 	}
-	m.syncedAccessMode = string(committed.Mode)
+	m.syncedAccessMode = committed.Mode
 	return committed, true
 }
 
 // modeReceipt reports a committed mode change. Ask explicitly says that work
 // already running continues: changing the mode is forward-looking, not a
 // cancellation or restart.
-func (m *Model) modeReceipt(state interaction.State) {
+func (m *Model) modeReceipt(state acpwire.Interaction) {
 	var msg string
 	switch state.Mode {
-	case interaction.ModeAsk:
+	case string(interaction.ModeAsk):
 		msg = "Switched to Ask mode. New actions need approval."
 		if m.busy || m.sess.Status().RunningJobs > 0 {
 			msg += " Work already running continues."
 		}
-	case interaction.ModeAct:
+	case string(interaction.ModeAct):
 		msg = "Switched to Act mode. Routine workspace work proceeds without asking."
 	default:
 		msg = fmt.Sprintf("Switched to %s mode.", state.Mode)
@@ -7220,7 +7189,8 @@ func (m *Model) modeReceipt(state interaction.State) {
 // setInteractionMode applies one canonical Ask/Act transition. Auto is cleared
 // by interaction.Apply whenever Mode is patched; System is preserved.
 func (m *Model) setInteractionMode(mode interaction.Mode) {
-	if state, ok := m.applyInteraction(interaction.Patch{Mode: &mode}); ok {
+	value := string(mode)
+	if state, ok := m.applyInteraction(acpwire.InteractionPatch{Mode: &value}); ok {
 		m.modeReceipt(state)
 	}
 }
@@ -7243,7 +7213,7 @@ func (m *Model) setAuto(args []string) {
 	} else {
 		on = !m.sess.Status().Interaction.Auto
 	}
-	if _, ok := m.applyInteraction(interaction.Patch{Auto: &on}); !ok {
+	if _, ok := m.applyInteraction(acpwire.InteractionPatch{Auto: &on}); !ok {
 		return
 	}
 	if on {
@@ -7274,7 +7244,7 @@ func (m *Model) setSystem(args []string) {
 	} else {
 		on = !m.sess.Status().Interaction.System
 	}
-	if _, ok := m.applyInteraction(interaction.Patch{System: &on}); !ok {
+	if _, ok := m.applyInteraction(acpwire.InteractionPatch{System: &on}); !ok {
 		return
 	}
 	if on {

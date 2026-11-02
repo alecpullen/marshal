@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/commands"
 )
 
 // controlRecorder is a session whose turn and control calls are recorded
@@ -60,6 +62,21 @@ func (r *controlRecorder) TakeWatchResume(ctx context.Context) (string, bool, bo
 	return r.Session.TakeWatchResume(ctx)
 }
 
+func (r *controlRecorder) SetInteraction(ctx context.Context, patch acpwire.InteractionPatch) (acpwire.Interaction, error) {
+	r.interactions = append(r.interactions, patch)
+	return r.Session.SetInteraction(ctx, patch)
+}
+
+func (r *controlRecorder) SetEffort(ctx context.Context, level string) (string, error) {
+	r.efforts = append(r.efforts, level)
+	return r.Session.SetEffort(ctx, level)
+}
+
+func (r *controlRecorder) SetSudoUnlock(ctx context.Context, on bool) error {
+	r.unlocks = append(r.unlocks, on)
+	return r.Session.SetSudoUnlock(ctx, on)
+}
+
 // testModelControlled builds a model over an adapter made from d whose
 // session is rec, wrapped around the adapter's session.
 func testModelControlled(d inproc.Deps, rec *controlRecorder, opts ...Option) Model {
@@ -80,6 +97,20 @@ func controlsState(t *testing.T) *session.State {
 func controlsModel(t *testing.T, rec *controlRecorder) Model {
 	t.Helper()
 	m := testModelControlled(inproc.Deps{State: controlsState(t)}, rec)
+	m.resize(80, 24)
+	m.refreshViewport()
+	return m
+}
+
+// controlsDispatchModel is controlsModel over an adapter made from d, with the
+// real command registry so /mode, /effort and /system dispatch.
+func controlsDispatchModel(t *testing.T, d inproc.Deps, rec *controlRecorder) Model {
+	t.Helper()
+	reg := commands.New()
+	if err := commands.RegisterAll(reg, nil); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	m := testModelControlled(d, rec, WithCommandRegistry(reg))
 	m.resize(80, 24)
 	m.refreshViewport()
 	return m
@@ -196,5 +227,81 @@ func TestATurnEndTakesTheLatchThroughTheSession(t *testing.T) {
 	}
 	if takes != 1 {
 		t.Fatalf("resume takes = %d, want 1", takes)
+	}
+}
+
+// TestModeChangesGoThroughTheSession pins that /act submits its patch through
+// the session and reports the committed mode.
+func TestModeChangesGoThroughTheSession(t *testing.T) {
+	state := controlsState(t)
+	rec := &controlRecorder{}
+	m := controlsDispatchModel(t, inproc.Deps{State: state, SetInteraction: state.ApplyInteraction}, rec)
+
+	updated, _ := m.dispatchCommand("/act")
+	m = asModel(t, updated)
+
+	if len(rec.interactions) != 1 {
+		t.Fatalf("patches = %+v, want one", rec.interactions)
+	}
+	patch := rec.interactions[0]
+	if patch.Mode == nil || *patch.Mode != "act" {
+		t.Fatalf("patch = %+v, want mode act", patch)
+	}
+	if got := m.sess.Status().Interaction.Mode; got != "act" {
+		t.Fatalf("mode = %q, want act", got)
+	}
+}
+
+// TestEffortGoesThroughTheSession pins that /effort hands the level to the
+// session's setter and renders when the runtime says it applies.
+func TestEffortGoesThroughTheSession(t *testing.T) {
+	state := controlsState(t)
+	rec := &controlRecorder{}
+	m := controlsDispatchModel(t, inproc.Deps{
+		State: state,
+		SetEffort: func(string) (string, error) {
+			return session.EffortAppliesNextTurn, nil
+		},
+	}, rec)
+
+	updated, _ := m.dispatchCommand("/effort low")
+	m = asModel(t, updated)
+
+	if len(rec.efforts) != 1 || rec.efforts[0] != "low" {
+		t.Fatalf("efforts = %v, want [low]", rec.efforts)
+	}
+	if note := lastMessageContent(m.state.Messages()); !strings.Contains(note, "Effort set to low (from the next turn).") {
+		t.Fatalf("transcript note = %q, want the confirmation", note)
+	}
+}
+
+// TestSystemUnlockTogglesThroughTheSession pins that /system unlock toggles
+// sudo's grace through the session and reaches Status.
+func TestSystemUnlockTogglesThroughTheSession(t *testing.T) {
+	state := controlsState(t)
+	rec := &controlRecorder{}
+	m := controlsDispatchModel(t, inproc.Deps{State: state}, rec)
+
+	updated, _ := m.dispatchCommand("/system unlock")
+	m = asModel(t, updated)
+
+	if len(rec.unlocks) != 1 || !rec.unlocks[0] {
+		t.Fatalf("unlocks = %v, want [true]", rec.unlocks)
+	}
+	if !m.sess.Status().SudoUnlock {
+		t.Fatal("Status().SudoUnlock = false, want true")
+	}
+	if note := lastMessageContent(m.state.Messages()); !strings.HasPrefix(note, "Privileged unlock enabled") {
+		t.Fatalf("transcript note = %q, want the enabled note", note)
+	}
+
+	updated, _ = m.dispatchCommand("/system unlock")
+	m = asModel(t, updated)
+
+	if len(rec.unlocks) != 2 || rec.unlocks[1] {
+		t.Fatalf("unlocks = %v, want [true false]", rec.unlocks)
+	}
+	if m.sess.Status().SudoUnlock {
+		t.Fatal("Status().SudoUnlock = true, want false")
 	}
 }

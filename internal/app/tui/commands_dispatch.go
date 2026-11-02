@@ -370,7 +370,13 @@ func init() {
 		"system": func(m *Model, args []string) (tea.Model, tea.Cmd) {
 			if len(args) > 0 && strings.ToLower(args[0]) == "unlock" {
 				on := !m.sess.Status().SudoUnlock
-				m.state.SetSudoUnlockEnabled(on)
+				if err := m.sess.SetSudoUnlock(m.ctx, on); err != nil {
+					m.state.AddMessage(session.RoleSystem,
+						fmt.Sprintf("Could not change the privileged unlock: %v", err),
+						session.ContentTypePlain)
+					m.refreshViewport()
+					return m, nil
+				}
 				if on {
 					m.state.AddMessage(session.RoleSystem,
 						"Privileged unlock enabled: sudo's own timestamp grace applies (Defaults timestamp_timeout). Marshal still re-enters sudo for every command.",

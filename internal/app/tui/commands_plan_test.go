@@ -6,10 +6,10 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpclient/inproc"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/commands"
-	"marshal/internal/interaction"
 	"marshal/internal/skills"
 )
 
@@ -19,12 +19,18 @@ func teaWindowSize() tea.WindowSizeMsg {
 
 func newDispatchModel(t *testing.T, state *session.State, opts ...Option) Model {
 	t.Helper()
+	return newDispatchModelWith(t, inproc.Deps{State: state}, opts...)
+}
+
+// newDispatchModelWith is newDispatchModel over an adapter made from d.
+func newDispatchModelWith(t *testing.T, d inproc.Deps, opts ...Option) Model {
+	t.Helper()
 	cmdReg := commands.New()
 	if err := commands.RegisterAll(cmdReg, nil); err != nil {
 		t.Fatalf("RegisterAll() error = %v", err)
 	}
 	opts = append([]Option{WithCommandRegistry(cmdReg)}, opts...)
-	m := testModel(state, opts...)
+	m := testModelWith(d, opts...)
 	updated, _ := m.Update(teaWindowSize())
 	return asModel(t, updated)
 }
@@ -39,11 +45,8 @@ func TestModeSelectionDoesNotLoadPlanningSkill(t *testing.T) {
 		Description: "author a plan",
 		Body:        "Write the plan.",
 	})
-	m := newDispatchModel(t, state,
+	m := newDispatchModelWith(t, inproc.Deps{State: state, SetInteraction: state.ApplyInteraction},
 		WithSkillIndex(idx),
-		WithInteractionSetter(func(p interaction.Patch) (interaction.State, error) {
-			return state.ApplyInteraction(p)
-		}),
 	)
 
 	updated, _ := m.dispatchCommand("/act")

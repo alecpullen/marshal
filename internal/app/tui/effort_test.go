@@ -8,21 +8,31 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 )
 
+// withEffortSetter replaces m's session with one over m's state whose adapter
+// calls set for SetEffort.
+func withEffortSetter(m Model, set func(string) (string, error)) Model {
+	_, sess := inproc.New(inproc.Deps{State: m.state, SetEffort: set})
+	m.sess = sess
+	return m
+}
+
 // TestEffortCommandSetsLevel pins that /effort <level> hands the level to the
 // injected runtime setter unchanged.
 func TestEffortCommandSetsLevel(t *testing.T) {
 	m := newTestModel(t)
 	var got string
-	m.effortSetter = func(level string) (string, error) {
+	m = withEffortSetter(m, func(level string) (string, error) {
 		got = level
-		return session.EffortAppliesNextTurn, nil
-	}
+		return acpwire.EffortAppliesNextTurn, nil
+	})
 
 	updated, _ := m.dispatchCommand("/effort low")
 	m = asModel(t, updated)
@@ -40,10 +50,10 @@ func TestEffortCommandSetsLevel(t *testing.T) {
 func TestEffortDefaultClears(t *testing.T) {
 	m := newTestModel(t)
 	got := "unset"
-	m.effortSetter = func(level string) (string, error) {
+	m = withEffortSetter(m, func(level string) (string, error) {
 		got = level
-		return session.EffortAppliesNextTurn, nil
-	}
+		return acpwire.EffortAppliesNextTurn, nil
+	})
 
 	updated, _ := m.dispatchCommand("/effort default")
 	m = asModel(t, updated)
@@ -60,9 +70,9 @@ func TestEffortDefaultClears(t *testing.T) {
 // runtime's error text instead of failing silently.
 func TestEffortCommandShowsSetterError(t *testing.T) {
 	m := newTestModel(t)
-	m.effortSetter = func(string) (string, error) {
+	m = withEffortSetter(m, func(string) (string, error) {
 		return "", errors.New(`effort "max" is not supported`)
-	}
+	})
 
 	updated, _ := m.dispatchCommand("/effort max")
 	m = asModel(t, updated)
@@ -83,11 +93,11 @@ func TestAltECyclesEffort(t *testing.T) {
 	}
 	m.state.SetActiveRoute(session.RouteInfo{Active: true, Preset: "test", Model: "m", Provider: "p", ReasoningCapable: true})
 	var got []string
-	m.effortSetter = func(level string) (string, error) {
+	m = withEffortSetter(m, func(level string) (string, error) {
 		got = append(got, level)
 		m.state.SetEffortOverride(session.EffortOverride{Level: level})
-		return session.EffortAppliesNextStep, nil
-	}
+		return acpwire.EffortAppliesNextStep, nil
+	})
 
 	for i := 0; i < 2; i++ {
 		mm, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: 'e', Mod: tea.ModAlt})

@@ -117,6 +117,9 @@ var movedStateReads = map[string]string{
 	"ClearRunEvents":   "5b",
 	"ClearSDDProgress": "5b",
 	"TakeWatchResume":  "5b",
+
+	// /system unlock goes through the session since 5b.
+	"SetSudoUnlockEnabled": "5b",
 }
 
 // movedReadSites returns one "<line>\t<Name>" entry per selector X.Sel in f

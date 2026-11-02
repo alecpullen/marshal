@@ -6588,8 +6588,8 @@ func (m *Model) jumpToWorkOrigin(taskKey string) (Model, tea.Cmd) {
 	// actual child while it is still registered. This is the same target Ctrl+F
 	// reaches.
 	if childID := item.Reference.ChildSessionID; childID != "" {
-		for _, v := range m.state.Subagents() {
-			if v.Child != nil && v.Child.SessionID() == childID {
+		for _, v := range m.sess.Status().Subagents {
+			if v.Drill != nil && v.Drill.SessionID == childID {
 				// The child's state can outlive the wire's retention window,
 				// in which case there is nothing to drill into and the jump
 				// falls through to the retained node or the unavailable

@@ -35,4 +35,8 @@ var Methods = []Method{
 	{Iface: "Session", Name: "ReconcileAccess"},
 	{Iface: "Session", Name: "AnswerAccess", ACP: "session/request_permission"},
 	{Iface: "Session", Name: "Rollback", ACP: "session/rollback"},
+	{Iface: "Session", Name: "Work", ACP: "session/work_list", Exists: true},
+	{Iface: "Session", Name: "ListWork", ACP: "session/work_list", Exists: true},
+	{Iface: "Session", Name: "InspectWork", ACP: "session/work_inspect", Exists: true},
+	{Iface: "Session", Name: "StopWork", ACP: "session/work_stop", Exists: true},
 }

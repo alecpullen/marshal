@@ -16,6 +16,7 @@ func TestSubagentDrillJSON(t *testing.T) {
 			ActiveRoot:  "/repo/wt",
 			ActiveRoute: Route{Provider: "local", Model: "qwen3-coder", Active: true},
 			Activity:    Activity{Kind: "reconnecting", Label: "retrying in 2s", StartedAt: 1700000000000},
+			SessionID:   "child-1",
 		},
 	}
 
@@ -27,7 +28,7 @@ func TestSubagentDrillJSON(t *testing.T) {
 		{
 			name:  "every drill field set",
 			value: drilled,
-			want:  `{"id":3,"label":"scout","status":"running","drill":{"activeRoot":"/repo/wt","activeRoute":{"provider":"local","model":"qwen3-coder","active":true},"activity":{"kind":"reconnecting","label":"retrying in 2s","startedAt":1700000000000}}}`,
+			want:  `{"id":3,"label":"scout","status":"running","drill":{"activeRoot":"/repo/wt","activeRoute":{"provider":"local","model":"qwen3-coder","active":true},"activity":{"kind":"reconnecting","label":"retrying in 2s","startedAt":1700000000000},"sessionId":"child-1"}}`,
 		},
 		{
 			name:  "no drill",

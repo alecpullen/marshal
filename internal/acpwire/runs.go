@@ -30,6 +30,8 @@ type SubagentDrill struct {
 	ActiveRoot  string   `json:"activeRoot,omitempty"` // the root a completion row elides
 	ActiveRoute Route    `json:"activeRoute"`          // the route a beat's model is compared against
 	Activity    Activity `json:"activity"`             // the reconnect notice reads it
+
+	SessionID string `json:"sessionId,omitempty"` // the child's session ID, which a work item's reference names
 }
 
 // The subagent statuses.

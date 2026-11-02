@@ -175,11 +175,13 @@ Decision: `WireTree`, with the C6 additions.
 - **`internal/acpwire` (new).** The wire types: params, results, read
   values, update and request payloads, and error codes. It imports only
   the standard library, like `web/`. The transcript projection types
-  (`WireTree`, `WireNode` and its payloads), the work types
-  (`WorkItem`, `WorkSnapshot` and the rest) and the existing ACP types
+  (`WireTree`, `WireNode` and its payloads) and the existing ACP types
   the client uses (`StackSnapshot`, `NodeDetail`, `CommandResult`, …)
   move here. `internal/viewmodel` and `internal/acp`
-  use them from here, and their JSON does not change.
+  use them from here, and their JSON does not change. The work types
+  (`WorkItem`, `WorkSnapshot` and the rest) are new here (plan 5a):
+  ACP's `Work*Wire` types encode times as RFC 3339 strings, which C3
+  forbids, so they stay in `internal/acp` until P3.
 - **`internal/acpclient` (new).** The `Host` and `Session` interfaces
   (C2) and the error helpers. It imports the standard library,
   `acpwire` and the data packages below. P3 adds the JSON-RPC
@@ -214,8 +216,9 @@ Decision: `WireTree`, with the C6 additions.
   today:
   - text helpers such as `ScrubText`, `FirstSentence` and
     `StripEmphasis`, which move;
-  - work predicates such as `WorkActive` and `WorkNeedsAttention`, which
-    move with the work types;
+  - work predicates such as `WorkActive` and `WorkNeedsAttention`. The
+    TUI keeps its own copies over the wire types (plan 5a), and
+    `viewmodel` keeps its for the agent side;
   - the rest read audit events or nodes, such as `IsShellFamily`,
     `ElideWorkdir`, `JobStartID` and `ToolID`. They go away once rows
     take those values from the wire (C6).
@@ -333,7 +336,7 @@ Decision: `WireTree`, with the C6 additions.
     SDD gate and a pending watch resume. The job list and the watch
     snapshot are not carried: the TUI caches both from their events
     today, but nothing reads them. The work snapshot keeps its own pump
-    until the work group moves (plan 5). The todos reach the tray through
+    until the work group moves (plan 5a). The todos reach the tray through
     the band (C6). Active skills, the loaded tool count, the tool budget,
     the session rules and the sandbox posture are read only by the
     session sheet, so they are `Sheet` fields (plan 2c).
@@ -532,9 +535,13 @@ Decision: `WireTree`, with the C6 additions.
   - `AnswerSDDGate(ctx, answer)` and its stop (`session/sdd_answer`
     exists). Answering the SDD human gate resumes the pipeline run, so it
     moves with the runs, not with C7's requests.
-- **Work.** The work service's list, inspect, stop and acknowledge calls,
-  and its snapshot, become `Session` methods (`session/work_*`
-  exists). The work pump and the work types move with them (plan 5).
+- **Work** (plan 5a). `Work()` returns the session's live work snapshot
+  and whether the session serves work at all. `ListWork`, `InspectWork`
+  and `StopWork` are the work service's list, inspect and stop calls
+  (`session/work_list`, `session/work_inspect` and `session/work_stop`
+  exist). The TUI never acknowledges work, so no acknowledge call is
+  added. The work pump moves into the adapter, which fires `Changed`
+  for each snapshot it keeps, and the work types arrive in `acpwire`.
 - **Ending a session.**
   - The `EndController` calls become `Session` methods: `ActiveWork`,
     `AcceptEnd`, `WaitForEnd` and `RunExitAnalysis`. `Postmortem(ctx)`
@@ -665,7 +672,7 @@ The TUI works after every plan.
      empty `inproc`, and `tui.New(host, session, …)` with
      `WithLegacyState`. Each group's plan moves its own types into
      `acpwire`: ACP's steering types in plan 2b, the projection types
-     in plan 3, the request types in plan 4, the work types in plan 5
+     in plan 3, the request types in plan 4, the work types in plan 5a
      and the command types in plan 6.
    - The test helpers, and every test moved onto them.
    - The gitinfo/changedfiles move.
@@ -685,7 +692,7 @@ The TUI works after every plan.
      the steering queue, the running job count, git info, subagent views
      (with the tray's headline), swarm and SDD progress and the SDD
      gate. ACP's steering wire types move into `acpwire`. The work pump
-     stays until plan 5.
+     stays until plan 5a.
    - **2c. Sheet** ([plan](plans/2026-10-26-p2-2c-sheet-plan.md)).
      `Session.Sheet(subagentID)` and `Session.RefreshSheet`. The sheet's
      database and git caches move into the adapter, along with HEAD and
@@ -733,7 +740,30 @@ The TUI works after every plan.
    and answer through them, and the policy the TUI applied on an answer
    moves into the adapter. The SDD gate's answer waits for plan 5, because
    answering it resumes the run.
-5. **Turns and runs** (C8).
+5. **Turns and runs** (C8), in five plans:
+   - **5a. Work** ([plan](plans/2026-11-02-p2-5a-work-plan.md)).
+     `Session.Work`, `ListWork`, `InspectWork` and `StopWork`, with the
+     work types in `acpwire`. The work pump moves into the adapter, and
+     the tray, the live box and the Tasks panel render the wire types. A
+     work item's subagent is found through `Status`.
+   - **5b. Turn control.** `Steer`, `PopSteering`, `ClearSteering`,
+     `SetInteraction`, `SetEffort`, `SetSudoUnlock`, `CancelSubagent`,
+     `ClearRunEvents`, `ClearSDDProgress`, `SetIdle` and
+     `TakeWatchResume`. The interaction and effort setter options go.
+   - **5c. Prompt.** `Prompt` replaces `runAgentCmd`, `startAgentRun`'s
+     dispatch and the user-message writes. `Stop` moves with it, because
+     the turn's stop is registered before dispatch. `Review`,
+     `RunAgent`, `Suggest` and `VerifyProposal` move too.
+   - **5d. Pipelines.** `StartSwarm` with role overrides, `StartSDD`,
+     `AuthorPlan`, and `AnswerSDDGate` with its stop.
+   - **5e. Ending and swapping.** The `EndController` calls and
+     `Postmortem` become `Session` methods, `Close` replaces
+     `ResolvePendingForShutdown` and `Shutdown`, and `Host.NewSession`
+     and `Host.Resume` replace the swapper.
+
+   5c, 5d and 5e run in that order: each run kind reuses 5c's finish
+   path, and the swap result carries the runners until 5d. 5a and 5b
+   depend on nothing in plan 5.
 6. **Notes, notices and commands** (C9).
 7. **Config, providers and trust** (C10).
 8. **Project data** (C11).
@@ -1129,6 +1159,45 @@ writing plan 4:
   isolation line weighs the backend, its network isolation and
   `tools.shell.allow_network` together. A drilled view still shows no
   isolation line.
+
+**2026-11-02, against `80532121` (plan 4 merged).** Found while writing
+plan 5a:
+- **Plan 5 splits into 5a to 5e** (Migration order). C8 is the largest
+  group: 15 of the TUI's 35 options, about 20 turn-control calls on the
+  state, the work group, the end flow and the swapper. Work and turn
+  control depend on nothing else in C8. Prompt comes before the
+  pipelines, which reuse its finish path, and ending and swapping come
+  last, because the swap result carries the runners until the pipelines
+  move.
+- **The work types are new in `acpwire`; ACP's stay** (C1, C3). ACP's
+  `Work*Wire` types are the JSON of `viewmodel`'s, so their times are
+  RFC 3339 strings. The `acpwire` types keep ACP's field names and use
+  Unix milliseconds. `viewmodel` converts its types into them, and P3
+  decides whether ACP's move, as for the request types.
+- **`Work()` reports whether the session serves work** (C8). `Run`
+  attaches the work service only when startup found a working provider,
+  in the same block as the runners. Without it the TUI's work lane is
+  inactive and `/work` leaves a note instead of opening the panel. The
+  adapter serves work under the same condition, and `Work` reports it.
+- **The work pump moves into the adapter** (C5, C8). The adapter
+  subscribes to the work stream when a session is made, binds the
+  conversation from the seed snapshot, keeps each newer snapshot, and
+  fires `Changed`, as the TUI's pump did. The TUI applies the snapshot
+  on its next `Changed`. When two snapshots land before the TUI reads
+  one, a progress rate is measured across both.
+- **No acknowledge call** (C8). Nothing in the TUI acknowledges work. P3
+  adds `session/work_acknowledge` to the client when a client needs it.
+- **The work predicates stay TUI-local** (C1). The live box keeps copies
+  of `WorkActive` and `WorkNeedsAttention` over the wire types, pinned to
+  `viewmodel`'s by a test, as plan 3d did with `isShellFamily`. The live
+  box converts a wire progress observation back to `progress.Snapshot`,
+  an allowed package, to measure a rate and an ETA.
+- **A work item's subagent is found through `Status`** (C5).
+  `SubagentDrill` gains the child's session ID, which a work item's
+  reference names, so the TUI no longer searches the child states.
+- **A session names its conversation by its own ID** (C8). The adapter
+  passes its state's session ID as the work conversation, as ACP passes
+  the request's.
 
 ## Implementation record
 

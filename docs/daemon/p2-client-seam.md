@@ -1997,3 +1997,86 @@ stopped run that had started keeps its text. `BeginWork` failing with
 error, so the TUI names an admission refusal instead of a failed turn. And
 `RunReview`/`RunCustomAgent` refuse with `CodeNoRunner` when the runtime has no
 factory, which is what the `Session` docs already promised.
+
+**Plan 5d (pipelines), branch `p2-5d-pipelines`.** Added
+`internal/acpwire/pipelines.go`: the three strategy constants `StrategyAgent`,
+`StrategyAdaptive` and `StrategyStrict`; `SwarmParams` (`Goal`, `Overrides`),
+`SDDParams` (`PlanPath`, `Strategy`, `Overrides`, `Verify`),
+`PlanPreflightParams` (`PlanPath`, `Strategy`), `PlanPreflight`
+(`Inspection`, `Verify`), `VerifyGate` (`Build`, `Test`, `Known`, `Detected`),
+`PlanInspection` (the effective strategy, `HasBlocks`, `StrictBlocked`, the
+operation totals, each task's counts and the diagnostics), `PlanTask`,
+`PlanDiagnostic` with `DiagnosticError` and `DiagnosticWarning`, `AuthorPlanParams`
+(`Goal`, `Design`) and `AuthoredPlan` (`StopReason`, `Path`, `AutoAccepted`,
+`Inspection`). The wire carries what the TUI renders and no more: no plan IR
+and no plan text, and role overrides keyed by the role's name.
+
+`acpclient.Session` gains six methods with their `Methods` rows: `StartSwarm`
+on `session/swarm_start`, `StartSDD` on `session/sdd_start` and `AnswerSDDGate`
+on `session/sdd_answer`, all three on existing ACP methods, and three new in
+P3 — `PlanPreflight` on `session/sdd_preflight`, `StopSDD` on
+`session/sdd_stop` and `AuthorPlan` on `session/sdd_author`.
+
+The adapter runs the three new runs on plan 5c's run path. `PlanRun` is the
+adapter's plan-execution surface: `Run` runs or resumes the run and `Answer`
+delivers the human's answer. `StartSwarm`, `StartSDD`, `AnswerSDDGate` and
+`AuthorPlan` each take the slot, begin work, register the stop group and go
+idle at their end, and a stopped run is not an error. A plan run its human gate
+pauses is kept as the session's paused run and reported as
+`CodeHumanGateRequired`; `settlePlan` records it, a new `StartSDD` replaces it,
+a refused answer leaves it paused, and `StopSDD` drops it and clears the
+question. `AnswerSDDGate` records the answer as the user's message and resumes
+the run. `AuthorPlan` returns the candidate and reports a stopped run as
+`StopReasonCancelled`. `StartSDD` and `AnswerSDDGate` check the strategy with
+`checkStrategy`, and the preflight takes no slot.
+
+The runtime answers the four calls. `RunSwarm`, `NewPlanRun`, `PlanPreflight`
+and `AuthorPlan` read the runtime's current orchestrator, factories and state
+under `rt.mu`, and `bindTurnDeps` binds them as `Deps.Swarm`, `Deps.NewPlanRun`,
+`Deps.PlanPreflight` and `Deps.AuthorPlan`, so a `/connect` recovery and a
+reload are picked up without a `/new`. `RunSwarm` installs the cast list's
+overrides for one run and restores the factory when it returns, whatever the
+outcome. `NewPlanRun` sets the controller's strategy and replaces its verify
+commands when the params carry them. The runtime owns its runner types:
+`app.PipelineRunner` and `app.SwarmOverrideFactory` replace `tui.AgentRunner`
+and `tui.SwarmOverrideFactory` in its fields and builders, and ACP's
+`AgentRunner` still converts the factory's result. The pipeline factory closure
+now returns a true nil for a plan it cannot build.
+
+The TUI starts every run through the session. `/swarm` and `/sdd` gate on
+`Status().AgentReady` instead of a nil orchestrator or factory; `/sdd` asks the
+session for its preflight and reports a plan it rejects as
+`Cannot start plan run: …`; the confirm carries the strategy, the role
+overrides and the proposed verify commands as parameters; the gate's answer and
+stop go through `AnswerSDDGate` and `StopSDD`; and `/sdd new` runs through
+`AuthorPlan`. `WithSwarmRunner`, `WithPipelineFactory`, `WithSwarmOverrideFactory`
+and `WithPlanAuthorFactory` are deleted with the six model fields and the
+`SessionSwapResult` fields behind them, which now holds only `State`, `Session`
+and `ToolRegistry`; `startAgentRun`, `runAgentCmd`, `beginTurnStopRegistration`,
+`releaseTurnStop` and `stopTurnWork` go, and `cancelTurn` simply stops the
+session's run and then cancels. `sddreview.New` takes the wire's
+`AuthoredPlan`.
+
+Three fixes. A plan the factory cannot build no longer crashes the TUI: the
+closure returned a non-nil interface wrapping a nil controller, so `/sdd
+missing.md` wrote its note and then dereferenced nil, and ACP's `sdd_start`
+answered "internal error: handler panicked". The closure returns nil and
+`NewPlanRun` reports "cannot build a runner". Proposed verify commands now
+reach the run: the controller had been built at dispatch from the startup
+config and nothing reloads after the confirm persists the proposal, so the run
+kept the old commands — and in a repository with no manifest that meant no gate
+at all. A stopped plan authoring is not a failure: `handlePlanAuthorFinished`
+never cleared `cancelling`, so a stop wrote "✘ Plan authoring failed: context
+canceled" and the next normal turn reported "Agent turn cancelled."; it now
+writes "Agent turn cancelled." once and clears the flag. The authoring notes
+changed with them: a failed path resolution or author build is now
+"✘ Plan authoring failed: …" inside the run, and a refused start is
+"Cannot start work: …".
+
+T1b gains seven names: `ClearSDDGate`, and `BeginWork`, `EndWork`,
+`BeginTurnStop`, `EndTurnStop`, `RequestTurnStop` and `SetActivity`, all at plan
+`5d`. The allowlist loses `model.go`'s `marshal/internal/agent/swarm` and
+`marshal/internal/pipeline`, `commands_dispatch.go`'s and `sdd_command.go`'s
+`marshal/internal/pipeline`, and the `sdd_authoring.go` and
+`sddreview/review.go` entries; `model.go` keeps `sddplans`, `sddauthor` and
+`config.SaveVerifyCommands` for plans 6 to 8.

@@ -159,9 +159,8 @@ These are load-bearing; code comments and tests point back at them.
   agent side of ACP, or the data belongs in the JSON contract. Extend the
   contract; do not share a Go type.
 - **The TUI renders only.** No routing, policy, or prompt logic in
-  `internal/app/tui/`. It talks to the agent loop through the structural
-  `AgentRunner` interface so it never imports `internal/agent`. It reaches
-  the agent side through `internal/acpclient` (daemon P2, in progress).
+  `internal/app/tui/`. It reaches the agent side through `internal/acpclient`
+  (daemon P2, in progress).
   `TestTUIStaysOnTheClientSeam` (`internal/app/tui/boundary_test.go`) fails
   on any new direct use. As with `TestWebIsStdlibOnly`, the fix is to move
   the call behind the interface, never to add an allowlist entry.

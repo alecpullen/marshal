@@ -204,9 +204,6 @@ func startNewSession(m *Model, name string) tea.Cmd {
 		// model's mark restarts with it.
 		m.watchResumeSeq = 0
 	}
-	if snap.Runner != nil {
-		m.runner = snap.Runner
-	}
 	if snap.SwarmRunner != nil {
 		m.swarmRunner = snap.SwarmRunner
 	}

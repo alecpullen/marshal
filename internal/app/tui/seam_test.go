@@ -39,6 +39,19 @@ func testModelWith(d inproc.Deps, opts ...Option) Model {
 	return New(host, sess, all...)
 }
 
+// runnerOf returns a Deps.Runner that always returns r.
+func runnerOf(r inproc.Runner) func() inproc.Runner {
+	return func() inproc.Runner { return r }
+}
+
+// withPromptRunner replaces m's session with one over m's state whose runner
+// is r.
+func withPromptRunner(m Model, r inproc.Runner) Model {
+	_, sess := inproc.New(inproc.Deps{State: m.state, Runner: runnerOf(r)})
+	m.sess = sess
+	return m
+}
+
 // stubSession wraps the adapter's session for tests that need a value only
 // events or a call produce: patch adjusts every Status read, onSendNow sees
 // each SendNow request before the adapter does, onRefreshSheet sees each

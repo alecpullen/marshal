@@ -38,7 +38,7 @@ func withWatchResume(m *Model, name string, repeat bool, seq uint64) changedMsg 
 func TestWatchResumeWakeOnIdleFire(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
-	m.runner = runner
+	m = withPromptRunner(m, runner)
 	m.state.AddMessage(session.RoleAssistant, "I'll wait for the build to finish.", session.ContentTypePlain)
 	m2, cmd := m.handleChanged(withWatchResume(&m, "build", false, 1))
 	if !m2.busy {
@@ -63,7 +63,7 @@ func TestWatchResumeWakeOnIdleFire(t *testing.T) {
 func TestWatchResumeGoalQuoteCapped(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
-	m.runner = runner
+	m = withPromptRunner(m, runner)
 	m.state.AddMessage(session.RoleAssistant, strings.Repeat("y", 500), session.ContentTypePlain)
 	m2, cmd := m.handleChanged(withWatchResume(&m, "build", true, 1))
 	drainCmds(m2, cmd)
@@ -85,7 +85,7 @@ func TestWatchResumeGoalQuoteCapped(t *testing.T) {
 func TestWatchResumeBusyFireNoWake(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
-	m.runner = runner
+	m = withPromptRunner(m, runner)
 	m.busy = true
 	m.state.AddMessage(session.RoleAssistant, "working", session.ContentTypePlain)
 	m2, _ := m.handleChanged(withWatchResume(&m, "build", false, 1))
@@ -100,7 +100,7 @@ func TestWatchResumeBusyFireNoWake(t *testing.T) {
 func TestWatchResumeGateOffNoWake(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
-	m.runner = runner
+	m = withPromptRunner(m, runner)
 	m.state.Config.Watch.ResumeEnabled = false
 	m.state.AddMessage(session.RoleAssistant, "waiting", session.ContentTypePlain)
 	m2, _ := m.handleChanged(withWatchResume(&m, "build", false, 1))
@@ -114,7 +114,7 @@ func TestWatchResumeGateOffNoWake(t *testing.T) {
 func TestWatchResumeDockOpenNoWake(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
-	m.runner = runner
+	m = withPromptRunner(m, runner)
 	m.state.AddMessage(session.RoleAssistant, "waiting", session.ContentTypePlain)
 	m.dock.Open(picker.New("Pick", "", []picker.Item{{Label: "one"}}))
 	m2, _ := m.handleChanged(withWatchResume(&m, "build", false, 1))
@@ -129,7 +129,7 @@ func TestWatchResumeDockOpenNoWake(t *testing.T) {
 func TestNoPendingResumeNoWake(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
-	m.runner = runner
+	m = withPromptRunner(m, runner)
 	m.state.AddMessage(session.RoleAssistant, "waiting", session.ContentTypePlain)
 	m2, _ := m.handleChanged(changedMsg{ch: m.sess.Changed()})
 	if m2.busy {
@@ -143,7 +143,7 @@ func TestNoPendingResumeNoWake(t *testing.T) {
 func TestWatchResumeNoAssistantQuote(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
-	m.runner = runner
+	m = withPromptRunner(m, runner)
 	m2, cmd := m.handleChanged(withWatchResume(&m, "build", false, 1))
 	drainCmds(m2, cmd)
 	select {
@@ -161,7 +161,7 @@ func TestWatchResumeNoAssistantQuote(t *testing.T) {
 func TestWatchResumeActsOncePerSequence(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
-	m.runner = runner
+	m = withPromptRunner(m, runner)
 	m.state.AddMessage(session.RoleAssistant, "waiting", session.ContentTypePlain)
 
 	// Sequence 1 while busy starts nothing.
@@ -197,7 +197,7 @@ func TestWatchResumeActsOncePerSequence(t *testing.T) {
 func TestHandleAgentFinishedConsumesLatch(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
-	m.runner = runner
+	m = withPromptRunner(m, runner)
 	m.state.SetWatchResume("build", false)
 	m.state.AddMessage(session.RoleAssistant, "I'll wait for the build.", session.ContentTypePlain)
 	m2, cmd := m.handleAgentFinished(agentFinishedMsg{})
@@ -220,7 +220,7 @@ func TestHandleAgentFinishedConsumesLatch(t *testing.T) {
 func TestHandleAgentFinishedLatchSuppressedByDock(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
-	m.runner = runner
+	m = withPromptRunner(m, runner)
 	m.state.SetWatchResume("build", false)
 	m.state.AddMessage(session.RoleAssistant, "waiting", session.ContentTypePlain)
 	m.dock.Open(picker.New("Pick", "", []picker.Item{{Label: "one"}}))
@@ -239,7 +239,7 @@ func TestHandleAgentFinishedLatchSuppressedByDock(t *testing.T) {
 func TestHandleAgentFinishedGateOff(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
-	m.runner = runner
+	m = withPromptRunner(m, runner)
 	m.state.Config.Watch.ResumeEnabled = false
 	m.state.SetWatchResume("build", false)
 	m.state.AddMessage(session.RoleAssistant, "waiting", session.ContentTypePlain)

@@ -385,12 +385,12 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			m.refreshViewport()
 			return *m, nil, true
 		}
-		if m.runner == nil {
+		if !m.sess.Status().AgentReady {
 			m.state.AddMessage(session.RoleUser, value, session.ContentTypePlain)
 			m.refreshViewport()
 			return *m, nil, true
 		}
-		mm, cmd, _ := m.startAgentRun(m.runner, value)
+		mm, cmd := m.startPrompt(value, false)
 		return mm, cmd, true
 	}
 	return *m, nil, false

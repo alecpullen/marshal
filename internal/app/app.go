@@ -2777,7 +2777,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		database := must[*db.DB](rt.DB)
 		projectID := rt.ProjectID
 		sessionID := rt.SessionID
-		runner := rt.Runner
 		swarmRunner := rt.SwarmRunner
 		toolReg := rt.ToolRegistry
 		jobBroker := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
@@ -2845,8 +2844,9 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		}
 		// Config reloading stays wired even when the initial provider build
 		// failed: /settings, /set and /connect are the recovery path. A
-		// successful reload rebuilds the runtime in place, and the runner
-		// source lets the TUI adopt the rebuilt runner (see tui.adoptRunner).
+		// successful reload rebuilds the runtime in place, and the session
+		// reads the runtime's current runner from the next turn on, so a
+		// rebuilt runner needs no adoption here.
 		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
 		tuiOpts = append(tuiOpts, tui.WithHomeDir(homeDir))
 		tuiOpts = append(tuiOpts, tui.WithDataDir(config.DataDir(homeDir)))
@@ -2864,17 +2864,8 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			&clipboard.LocalWriter{},
 			func() bool { return clipboard.Remote(os.Getenv) },
 		))
-		tuiOpts = append(tuiOpts, tui.WithRunnerSource(func() (context.Context, tui.AgentRunner) {
-			rt.mu.Lock()
-			defer rt.mu.Unlock()
-			if rt.Runner == nil {
-				return nil, nil
-			}
-			return ctx, rt.Runner
-		}))
 		tuiOpts = append(tuiOpts, tui.WithContext(ctx))
 		if providerReady {
-			tuiOpts = append(tuiOpts, tui.WithRunner(ctx, runner))
 			tuiOpts = append(tuiOpts, tui.WithSwarmRunner(ctx, swarmRunner))
 			tuiOpts = append(tuiOpts, tui.WithPipelineFactory(ctx, rt.PipelineFactory))
 			if rt.SwarmOverrideFactory != nil {
@@ -2928,14 +2919,15 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// is wired outside the ProviderError block so the commands stay
 		// available even when the initial provider build failed.
 		tuiOpts = append(tuiOpts, tui.WithSessionSwapper(tui.SessionSwapperFunc(func(name string) (tui.SessionSwapResult, error) {
-			state, runner, swarmRunner, pipelineFactory, planAuthorFactory, swarmOverrideFactory, toolReg, err := rt.NewSession(name)
+			// The runner the runtime rebuilds is reachable through the
+			// session's Deps, so the swap result does not carry it.
+			state, _, swarmRunner, pipelineFactory, planAuthorFactory, swarmOverrideFactory, toolReg, err := rt.NewSession(name)
 			if err != nil {
 				return tui.SessionSwapResult{}, err
 			}
 			return tui.SessionSwapResult{
 				State:                state,
 				Session:              seamHost.Swap(state),
-				Runner:               runner,
 				SwarmRunner:          swarmRunner,
 				PipelineFactory:      pipelineFactory,
 				SwarmOverrideFactory: swarmOverrideFactory,

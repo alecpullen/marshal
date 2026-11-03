@@ -117,9 +117,8 @@ func (m *Model) reconnectMCPServer(name string) {
 			session.ContentTypePlain)
 		return
 	}
-	// The provider notice is already cleared above; adopt a runner rebuilt
-	// after a startup failure without re-clearing the notices this reload set.
-	m.adoptRunner()
+	// A runner the reload builds is used from the next turn: the session reads
+	// the runtime's current runner on each call, so nothing is adopted here.
 	m.applyNewConfig(cfg)
 	m.refreshDiagnostics()
 }

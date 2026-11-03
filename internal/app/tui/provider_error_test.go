@@ -1,11 +1,14 @@
 package tui
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	tea "charm.land/bubbletea/v2"
+
+	"marshal/internal/acpclient/inproc"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/connect"
@@ -58,60 +61,58 @@ func TestPersistAndReloadFailureRetainsProviderNotice(t *testing.T) {
 	}
 }
 
-// When the TUI started without a runner (startup provider-build failure),
-// a successful config reload rebuilt one in the runtime — the model must
-// adopt it, or every submission keeps saying "Agent runner is not
-// available." and the session can never recover.
-func TestSuccessfulReloadAdoptsMissingRunner(t *testing.T) {
-	m := newTestModel(t)
-	if m.runner != nil {
-		t.Fatal("test precondition: newTestModel must start without a runner")
-	}
-	runner := &testAgentRunner{}
-	m.runnerSource = func() (context.Context, AgentRunner) {
-		return context.Background(), runner
-	}
-	m.configReloader = func(config.Config) error { return nil }
+// A runner the runtime builds after startup is used without adoption: the
+// session reads the runtime's current runner on each call, so a model that
+// started without one recovers as soon as the runtime has one.
+func TestARunnerBuiltAfterStartupIsUsedWithoutAdoption(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	var built inproc.Runner
+	runner := &fakeAgentRunner{called: make(chan string, 1)}
+	m := testModelWith(inproc.Deps{State: state, Runner: func() inproc.Runner { return built }})
+	m.resize(80, 24)
 
-	saveErr, reloadErr := m.persistAndReload(m.state.Config)
-	if saveErr != nil || reloadErr != nil {
-		t.Fatalf("persistAndReload = (%v, %v), want (nil, nil)", saveErr, reloadErr)
+	// No runner is built yet: the text echoes locally and no turn starts.
+	m.input.SetValue("first")
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = asModel(t, updated)
+	if m.busy {
+		t.Fatal("a submission with no runner started a turn")
 	}
-	if m.runner == nil {
-		t.Fatal("runner = nil after successful reload, want the rebuilt runner adopted")
+	if msgs := state.Messages(); len(msgs) == 0 || msgs[len(msgs)-1].Content != "first" {
+		t.Fatalf("messages = %#v, want the user's text echoed", msgs)
 	}
-}
 
-// An existing runner must never be replaced by the source: reload mutates
-// it in place via CopyFrom, and swapping pointers would orphan in-flight
-// cancellation wiring.
-func TestSuccessfulReloadKeepsExistingRunner(t *testing.T) {
-	m := newTestModel(t)
-	existing := &testAgentRunner{}
-	m.runner = existing
-	m.runnerSource = func() (context.Context, AgentRunner) {
-		return context.Background(), &testAgentRunner{}
+	// The runtime builds a runner (a reload, say). The next submission uses it
+	// with no adoption step on the model.
+	built = runner
+	m.input.SetValue("second")
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = asModel(t, updated)
+	if !m.busy {
+		t.Fatal("busy = false, want the second submission to start a turn")
 	}
-	m.configReloader = func(config.Config) error { return nil }
-
-	if _, reloadErr := m.persistAndReload(m.state.Config); reloadErr != nil {
-		t.Fatalf("persistAndReload reloadErr = %v, want nil", reloadErr)
-	}
-	if m.runner != AgentRunner(existing) {
-		t.Fatal("runner was replaced despite already being set")
+	drainCmds(m, cmd)
+	select {
+	case goal := <-runner.called:
+		if goal != "second" {
+			t.Fatalf("runner goal = %q, want the second submission", goal)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the rebuilt runner was never invoked")
 	}
 }
 
 // A new turn optimistically clears a stale provider notice: the user
 // submitting another prompt is trying again, and if this turn also fails
 // the finished handler re-sets it.
-func TestStartAgentRunClearsProviderNotice(t *testing.T) {
-	m := newTestModel(t)
+func TestStartPromptClearsProviderNotice(t *testing.T) {
+	m := testModelWith(inproc.Deps{State: modelTestState(t), Runner: runnerOf(&testAgentRunner{})})
+	m.resize(80, 24)
 	m.state.SetNotice(session.Notice{Category: session.NoticeProvider, Message: "provider unreachable"})
 
-	_, cmd, _ := m.startAgentRun(&testAgentRunner{}, "retry")
+	_, cmd := m.startPrompt("retry", false)
 	if cmd == nil {
-		t.Fatal("startAgentRun returned no command")
+		t.Fatal("startPrompt returned no command")
 	}
 	if _, ok := m.state.Notice(); ok {
 		t.Fatal("provider notice should be cleared on new turn start")
@@ -120,13 +121,14 @@ func TestStartAgentRunClearsProviderNotice(t *testing.T) {
 
 // ClearNotice is category-scoped: a new turn must NOT clear an unrelated
 // internal notice.
-func TestStartAgentRunKeepsUnrelatedNotice(t *testing.T) {
-	m := newTestModel(t)
+func TestStartPromptKeepsUnrelatedNotice(t *testing.T) {
+	m := testModelWith(inproc.Deps{State: modelTestState(t), Runner: runnerOf(&testAgentRunner{})})
+	m.resize(80, 24)
 	m.state.SetNotice(session.Notice{Category: session.NoticeInternal, Message: "command registration failed"})
 
-	_, cmd, _ := m.startAgentRun(&testAgentRunner{}, "retry")
+	_, cmd := m.startPrompt("retry", false)
 	if cmd == nil {
-		t.Fatal("startAgentRun returned no command")
+		t.Fatal("startPrompt returned no command")
 	}
 	n, ok := m.state.Notice()
 	if !ok || n.Category != session.NoticeInternal {

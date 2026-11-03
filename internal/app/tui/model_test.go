@@ -1189,13 +1189,19 @@ func (f *fakeAgentRunner) AnswerGate(string)    {}
 
 // blockingAgentRunner blocks on a channel in Run until the channel is
 // closed. Used by TestAgentCommandRegistersAndReleasesSessionWork to
-// verify that session work is tracked and released.
+// verify that session work is tracked and released. started, when set, is
+// closed as Run begins, so a test can wait for the turn to be in flight
+// instead of sleeping.
 type blockingAgentRunner struct {
-	block chan struct{}
-	err   error
+	block   chan struct{}
+	err     error
+	started chan struct{}
 }
 
 func (b *blockingAgentRunner) Run(ctx context.Context, goal string) error {
+	if b.started != nil {
+		close(b.started)
+	}
 	<-b.block
 	return b.err
 }
@@ -1633,7 +1639,7 @@ func TestModePickerContainsOnlyAskAct(t *testing.T) {
 func TestEnterWithRunnerDispatchesAgentRunAndTick(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	model := testModel(state, WithRunner(context.Background(), runner))
+	model := testModelWith(inproc.Deps{State: state, Runner: runnerOf(runner)})
 
 	updated, _ := model.Update(tea.KeyPressMsg{Text: "hello"})
 	model = updated.(Model)
@@ -2039,7 +2045,7 @@ func TestSuggestionClearedOnTurnStart(t *testing.T) {
 	m.suggestion = "yes"
 	m.suggestionDismissed = false
 
-	mm, _, _ := m.startAgentRun(m.runner, "continue")
+	mm, _ := m.startPrompt("continue", false)
 	m = asModel(t, mm)
 	if m.suggestion != "" {
 		t.Fatalf("suggestion = %q, want empty when a new turn starts", m.suggestion)
@@ -2092,9 +2098,10 @@ func TestAgentFinishedAdvancesSheetBaseRefWhenCancelled(t *testing.T) {
 
 func TestAgentCommandRegistersAndReleasesSessionWork(t *testing.T) {
 	block := make(chan struct{})
-	runner := &blockingAgentRunner{block: block}
+	started := make(chan struct{})
+	runner := &blockingAgentRunner{block: block, started: started}
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	model := testModel(state, WithRunner(context.Background(), runner))
+	model := testModelWith(inproc.Deps{State: state, Runner: runnerOf(runner)})
 	model.resize(80, 24)
 
 	// Submit a turn. The runner blocks in Run, so the runAgentCmd
@@ -2113,13 +2120,18 @@ func TestAgentCommandRegistersAndReleasesSessionWork(t *testing.T) {
 	}
 
 	// Execute the runAgentCmd (batch[0]) in a goroutine; it will block.
+	// The command registers the work, so wait for Run to begin rather than
+	// guessing at a delay: BeginWork has happened by the time the runner is
+	// inside Run.
 	runDone := make(chan tea.Msg, 1)
 	go func() {
 		runDone <- batch[0]()
 	}()
-
-	// Give the goroutine a moment to block inside Run.
-	time.Sleep(10 * time.Millisecond)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("the runner never started")
+	}
 
 	// BeginQuiesce and wait for work. WaitForWork should block because
 	// the runner hasn't finished.
@@ -2176,7 +2188,7 @@ func TestEnterWithoutRunnerFallsBackToPlainAppend(t *testing.T) {
 func TestEnterWhileBusyIsIgnored(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	model := testModel(state, WithRunner(context.Background(), runner))
+	model := testModelWith(inproc.Deps{State: state, Runner: runnerOf(runner)})
 	model.busy = true
 
 	updated, _ := model.Update(tea.KeyPressMsg{Text: "hello"})
@@ -2318,7 +2330,7 @@ func TestCtrlKOpensMemoryAndClosedMsgCloses(t *testing.T) {
 func TestBusyTickRefreshesViewport(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	model := testModel(state, WithRunner(context.Background(), runner))
+	model := testModelWith(inproc.Deps{State: state, Runner: runnerOf(runner)})
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -2749,7 +2761,7 @@ func TestSlashCommandNotSentToAgent(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	cmdReg := setupCmdReg(t)
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	model := testModel(state, WithCommandRegistry(cmdReg), WithRunner(context.Background(), runner))
+	model := testModelWith(inproc.Deps{State: state, Runner: runnerOf(runner)}, WithCommandRegistry(cmdReg))
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -4377,7 +4389,7 @@ func TestCancelTurnDoesNotClearSteeringWhenAgentAlreadyFinished(t *testing.T) {
 func TestAgentFinishedFlushesQueuedSteering(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m.runner = runner
+	m = withPromptRunner(m, runner)
 	m.busy = true
 	m.state.PushSteering("deliver me after the turn")
 
@@ -4403,7 +4415,7 @@ func TestAgentFinishedFlushesQueuedSteering(t *testing.T) {
 func TestFlushQueuedSteeringStartsFollowUpTurn(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m.runner = runner
+	m = withPromptRunner(m, runner)
 	m.state.PushSteering("deliver me after the turn")
 
 	cmd := m.flushQueuedSteering()
@@ -4448,7 +4460,7 @@ func TestFlushQueuedSteeringStartsFollowUpTurn(t *testing.T) {
 func TestAgentFinishedKeepsQueueOnFailure(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m.runner = runner
+	m = withPromptRunner(m, runner)
 	m.busy = true
 	m.state.PushSteering("retry me")
 
@@ -8107,7 +8119,7 @@ func TestDispatchPromptCommandStartsAgentRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m := testModel(modelTestState(t), WithCommandRegistry(reg), WithRunner(context.Background(), runner))
+	m := testModelWith(inproc.Deps{State: modelTestState(t), Runner: runnerOf(runner)}, WithCommandRegistry(reg))
 	m.resize(80, 24)
 
 	updated, cmd := m.dispatchCommand("/revcheck main.go")
@@ -8169,14 +8181,14 @@ func TestDispatchPromptCommandPreservesQuotedArgs(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m := testModel(modelTestState(t), WithCommandRegistry(reg), WithRunner(context.Background(), runner))
+	m := testModelWith(inproc.Deps{State: modelTestState(t), Runner: runnerOf(runner)}, WithCommandRegistry(reg))
 	m.resize(80, 24)
 
 	updated, cmd := m.dispatchCommand(`/greet "hello world" 'single'`)
 	m = asModel(t, updated)
 
 	if !m.busy {
-		t.Fatalf("busy = %v, want true; runner = %v", m.busy, m.runner)
+		t.Fatalf("busy = %v, want true; agent ready = %v", m.busy, m.sess.Status().AgentReady)
 	}
 	if cmd == nil {
 		t.Fatal("dispatchCommand should return a cmd")
@@ -10069,6 +10081,7 @@ func TestRunAgentCmdPanicRecovery(t *testing.T) {
 	}
 
 	panicRunner := &panicRunner{}
+	state.SetActivity(session.Activity{Kind: session.ActivityThinking})
 	cmd := runAgentCmd(context.Background(), state, panicRunner, "test")
 	msg := cmd()
 	finished, ok := msg.(agentFinishedMsg)
@@ -10080,6 +10093,9 @@ func TestRunAgentCmdPanicRecovery(t *testing.T) {
 	}
 	if !strings.Contains(finished.err.Error(), "panic") {
 		t.Fatalf("error should mention panic, got: %v", finished.err)
+	}
+	if got := state.Activity().Kind; got != session.ActivityIdle {
+		t.Fatalf("activity = %q, want idle once the turn command returns", got)
 	}
 }
 
@@ -11174,12 +11190,9 @@ func TestPostAcceptedPromptCannotReopenWork(t *testing.T) {
 
 	// The stop/join pass is running: an ordinary prompt must be refused.
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m.runner = runner
-	_, cmd, started := m.startAgentRun(runner, "do more work")
+	m = withPromptRunner(m, runner)
+	_, cmd := m.startPrompt("do more work", false)
 
-	if started {
-		t.Fatal("a prompt started into an accepted ending")
-	}
 	if cmd != nil {
 		t.Fatalf("a refused start returned a cmd (%T), want nil", cmd)
 	}
@@ -11427,7 +11440,7 @@ func TestAgentGoalDispatchStartsRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m := testModel(modelTestState(t), WithCommandRegistry(reg), WithRunner(context.Background(), runner))
+	m := testModelWith(inproc.Deps{State: modelTestState(t), Runner: runnerOf(runner)}, WithCommandRegistry(reg))
 	m.resize(80, 24)
 
 	updated, cmd := m.dispatchCommand("/pmtest")

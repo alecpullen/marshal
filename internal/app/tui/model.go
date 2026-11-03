@@ -116,7 +116,6 @@ type SessionSwapResult struct {
 	State *session.State
 	// Session is the client session over State (P2).
 	Session              acpclient.Session
-	Runner               AgentRunner
 	SwarmRunner          AgentRunner
 	PipelineFactory      func(planPath string, overrides map[routing.AgentRole]string) AgentRunner
 	SwarmOverrideFactory SwarmOverrideFactory
@@ -341,7 +340,6 @@ type Model struct {
 	// textarea, so editing a decision never shares text, cursor, placeholder
 	// or paste attachments with the chat composer underneath it.
 	approvalEdit    *approvalEdit
-	runner          AgentRunner
 	swarmRunner     AgentRunner
 	pipelineFactory func(planPath string, overrides map[routing.AgentRole]string) AgentRunner
 	// swarmOverrideFactory builds a per-run swarm.RunnerFactory with
@@ -362,11 +360,6 @@ type Model struct {
 	lspCancel      context.CancelFunc
 	busy           bool
 	configReloader ConfigReloader
-	// runnerSource exposes the runtime's current runner after a config
-	// reload. Used to recover from a startup provider-build failure, where
-	// the TUI was constructed without a runner: the first successful reload
-	// rebuilds one, and adoptRunner installs it here.
-	runnerSource   func() (context.Context, AgentRunner)
 	sessionSwapper SessionSwapper
 	// endController is the runtime-facing end seam (WithEndController). Nil in
 	// a build without a runtime: an end then consults no work membership and
@@ -840,16 +833,6 @@ func WithConfigReloader(fn ConfigReloader) Option {
 	}
 }
 
-// WithRunnerSource lets the model fetch the runtime's current runner after
-// a successful config reload. It matters when the TUI started without a
-// runner (the initial provider build failed): the reload rebuilds one, and
-// adoptRunner wires it in so the session becomes usable without a restart.
-func WithRunnerSource(fn func() (context.Context, AgentRunner)) Option {
-	return func(m *Model) {
-		m.runnerSource = fn
-	}
-}
-
 // WithSessionSwapper wires the runtime-facing seam that /new and /clear use
 // to swap in a brand-new session. Nil (the default) makes those commands
 // report that a new session is unavailable.
@@ -986,18 +969,6 @@ func WithMemoryStore(database *db.DB, projectID int64) Option {
 	return func(m *Model) {
 		m.memoryDB = database
 		m.memoryProject = projectID
-	}
-}
-
-// WithRunner configures the TUI to drive submitted messages through runner
-// instead of the Milestone A-G placeholder behavior (append and do
-// nothing). ctx is used for every agent turn dispatched from this model —
-// callers should pass the same cancellable context the surrounding
-// tea.Program itself uses, so Ctrl+C/SIGINT cancels an in-flight turn.
-func WithRunner(ctx context.Context, runner AgentRunner) Option {
-	return func(m *Model) {
-		m.ctx = ctx
-		m.runner = runner
 	}
 }
 
@@ -1268,27 +1239,11 @@ func (m *Model) adoptLayers(layers *config.Layers) {
 // afterRuntimeReload runs the recovery steps that become valid once the
 // runtime has successfully rebuilt itself from a new config: the stale
 // provider-error banner no longer applies (a rebuilt runner proves
-// provider construction worked), and a runner rebuilt after a startup
-// failure is adopted so the session becomes usable without a restart.
+// provider construction worked). A runner a reload builds is used from the
+// next turn: the session reads the runtime's current runner on each call.
 func (m *Model) afterRuntimeReload() {
 	m.state.ClearNotice(session.NoticeProvider)
 	m.state.ClearNotice(session.NoticeConfig)
-	m.adoptRunner()
-}
-
-// adoptRunner installs the runtime's rebuilt runner when the TUI started
-// without one (e.g. the initial provider build failed). An existing runner
-// is never replaced: reload mutates it in place via CopyFrom.
-func (m *Model) adoptRunner() {
-	if m.runner != nil || m.runnerSource == nil {
-		return
-	}
-	ctx, runner := m.runnerSource()
-	if runner == nil {
-		return
-	}
-	m.ctx = ctx
-	m.runner = runner
 }
 
 // settingsRegistry returns the cached /set registry, rebuilt after a config
@@ -1468,7 +1423,7 @@ func (m *Model) openAgentsRoster(arg string) {
 			m.refreshViewport()
 			return nil
 		}
-		_, cmd, _ := m.startAgentRun(runner, goal)
+		_, cmd := m.startAgentRun(runner, goal)
 		return cmd
 	}
 	roster := agents.NewRosterPanelWithRegistry(
@@ -2610,7 +2565,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.pipelineRunner.AnswerGate(pm.Text)
 		goal := m.sess.Status().SDD.PlanPath
-		mm, sddCmd, _ := m.startAgentRun(m.pipelineRunner, goal)
+		mm, sddCmd := m.startAgentRun(m.pipelineRunner, goal)
 		return mm, sddCmd
 
 	case gatepanel.StopMsg:
@@ -2677,7 +2632,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ror.SetRunnerFactory(factory)
 			m.restoreRunner = ror.RestoreRunner
 		}
-		mm, runCmd, _ := m.startAgentRun(run.runner, run.goal)
+		mm, runCmd := m.startAgentRun(run.runner, run.goal)
 		return mm, runCmd
 	case castlist.CancelMsg:
 		m.dock.CloseNow()
@@ -4432,12 +4387,14 @@ func verifyGateRow(cfg config.Config, repoRoot string) castlist.Row {
 	return row
 }
 
-// startAgentRun begins a turn on runner with goal, wiring cancellation and
-// the busy/spinner commands. On BeginWork failure it reports and stays idle.
-// The bool reports whether the turn actually started: a refused start means
-// no run is in flight and no agentFinishedMsg will arrive, which the exit
-// postmortem's agent pass has to tell apart from a live turn.
-func (m *Model) startAgentRun(runner AgentRunner, goal string) (tea.Model, tea.Cmd, bool) {
+// startAgentRun begins a turn on runner with goal, registering its work and
+// stop group and wiring cancellation and the busy/spinner commands. On
+// BeginWork failure it reports and stays idle. Only the swarm, SDD and
+// plan-authoring runs use it: a prompt, a review and a custom-agent run go
+// through the session (startSessionRun), which owns the run's admission,
+// stop group and idle reset, until plan 5d moves those runs onto the same
+// path.
+func (m *Model) startAgentRun(runner AgentRunner, goal string) (tea.Model, tea.Cmd) {
 	// An accepted ending owns the conversation: no ordinary turn may start
 	// into a frozen membership. A queued prompt, a watch auto-resume or a
 	// settings mutation that lands after acceptance is refused here rather
@@ -4447,24 +4404,32 @@ func (m *Model) startAgentRun(runner AgentRunner, goal string) (tea.Model, tea.C
 			"The conversation is ending; this request was not started.", session.ContentTypePlain)
 		m.busy = false
 		m.refreshViewport()
-		return *m, nil, false
+		return *m, nil
 	}
 	if err := m.state.BeginWork(); err != nil {
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Cannot start work: %v", err), session.ContentTypePlain)
 		m.busy = false
 		m.refreshViewport()
-		return *m, nil, false
+		return *m, nil
 	}
-	// Optimistic dismissal: a fresh prompt means the user is trying again, so
-	// clear any stale provider notice from an earlier failed turn. If this
-	// turn also fails, handleAgentFinished re-sets it.
-	m.state.ClearNotice(session.NoticeProvider)
 	// Register the turn's stop group before the turn is dispatched. Everything
 	// from here can block (provider resolution, titling, the first model call),
 	// and a stop that lands during any of it must name this operation. The
 	// runner adopts this registration instead of allocating its own, so the
 	// stop the user's keystroke names is the turn actually running.
 	m.beginTurnStopRegistration()
+	agentCtx := m.beginTurn()
+	return *m, tea.Batch(runAgentCmd(agentCtx, m.state, runner, goal), tickCmd(), spinnerTickCmd())
+}
+
+// beginTurn marks a run as started on the model and returns its context: the
+// provider notice is cleared, busy and the turn's start are set, the held
+// window starts, the suggestion is reset, and agentCancel cancels the context.
+func (m *Model) beginTurn() context.Context {
+	// Optimistic dismissal: a fresh prompt means the user is trying again, so
+	// clear any stale provider notice from an earlier failed turn. If this
+	// turn also fails, handleAgentFinished re-sets it.
+	m.state.ClearNotice(session.NoticeProvider)
 	m.busy = true
 	m.turnStartedAt = m.now()
 	m.startHeldWindow()
@@ -4477,24 +4442,70 @@ func (m *Model) startAgentRun(runner AgentRunner, goal string) (tea.Model, tea.C
 	m.suggestionGen++
 	agentCtx, cancel := context.WithCancel(m.ctx)
 	m.agentCancel = cancel
-	return *m, tea.Batch(runAgentCmd(agentCtx, m.state, runner, goal), tickCmd(), spinnerTickCmd()), true
+	return agentCtx
 }
 
-// startWatchResumeRun checks the auto-resume conditions (runner wired,
+// startSessionRun starts a run the session owns. The session takes the run's
+// work membership, its stop group and the idle reset at its end, so the model
+// only marks the turn started and holds the context that a local cancel
+// reaches. refusal is the note a refused start writes.
+func (m *Model) startSessionRun(refusal string, run func(context.Context) error) (tea.Model, tea.Cmd) {
+	if m.endStage != endIdle {
+		m.state.AddMessage(session.RoleSystem,
+			"The conversation is ending; this request was not started.", session.ContentTypePlain)
+		m.busy = false
+		m.refreshViewport()
+		return *m, nil
+	}
+	ctx := m.beginTurn()
+	return *m, tea.Batch(sessionRunCmd(ctx, refusal, run), tickCmd(), spinnerTickCmd())
+}
+
+// sessionRunCmd runs run under ctx and reports its end.
+func sessionRunCmd(ctx context.Context, refusal string, run func(context.Context) error) tea.Cmd {
+	return func() tea.Msg {
+		return agentFinishedMsg{err: run(ctx), refusal: refusal}
+	}
+}
+
+// startPrompt starts a prompt turn through the session.
+func (m *Model) startPrompt(text string, queued bool) (tea.Model, tea.Cmd) {
+	sess := m.sess
+	return m.startSessionRun("Cannot start work", func(ctx context.Context) error {
+		_, err := sess.Prompt(ctx, acpwire.PromptParams{Text: text, Queued: queued})
+		return err
+	})
+}
+
+// refusedStart reports whether err says the run never started: CodeBusy,
+// CodeQuiescing, CodeNoRunner or CodeSessionClosed.
+func refusedStart(err error) bool {
+	code, ok := acpclient.CodeOf(err)
+	if !ok {
+		return false
+	}
+	switch code {
+	case acpwire.CodeBusy, acpwire.CodeQuiescing, acpwire.CodeNoRunner, acpwire.CodeSessionClosed:
+		return true
+	}
+	return false
+}
+
+// startWatchResumeRun checks the auto-resume conditions (a built runner,
 // not busy, no open dock panel, config gate on) and, when all hold,
 // starts the auto-resume turn, returning its cmd. It returns nil when
-// any guard fails or BeginWork refused (quiesce) — the caller proceeds
-// with its normal tail. The *m assignment is what makes the post-start
-// state (busy flag, suggestion clear, agentCancel) stick for the
-// value-receiver callers. handleWatchMsg passes name/repeat from the
+// any guard fails or the session refuses the start (ending, quiescing) —
+// the caller proceeds with its normal tail. The *m assignment is what makes
+// the post-start state (busy flag, suggestion clear, agentCancel) stick for
+// the value-receiver callers. handleWatchMsg passes name/repeat from the
 // event; handleAgentFinished from the latch.
 func (m *Model) startWatchResumeRun(name string, repeat bool) tea.Cmd {
-	if m.runner == nil || m.busy || m.dock.IsOpen() || !m.state.Config.Watch.ResumeEnabled {
+	if !m.sess.Status().AgentReady || m.busy || m.dock.IsOpen() || !m.state.Config.Watch.ResumeEnabled {
 		return nil
 	}
 	goal := watch.ResumeGoal(name, m.lastAssistantText(), repeat)
-	model, cmd, started := m.startAgentRun(m.runner, goal)
-	if !started {
+	model, cmd := m.startPrompt(goal, false)
+	if cmd == nil {
 		return nil
 	}
 	*m = model.(Model)
@@ -4510,22 +4521,19 @@ func (m *Model) startWatchResumeRun(name string, repeat bool) tea.Cmd {
 // follow-up path does.
 //
 // It returns nil when there is nothing to deliver or the turn cannot start (no
-// runner, an ending in progress, a quiescing session). A refused start puts the
-// text back so it is never silently lost.
+// runner, an ending in progress, a quiescing session). A start the session
+// refuses puts the text back on the steering queue agent side, so it is never
+// silently lost.
 func (m *Model) flushQueuedSteering() tea.Cmd {
-	if m.runner == nil || m.busy || m.endStage != endIdle {
+	if !m.sess.Status().AgentReady || m.busy || m.endStage != endIdle {
 		return nil
 	}
 	followUp, ok := m.popOldestSteering()
 	if !ok {
 		return nil
 	}
-	model, cmd, started := m.startAgentRun(m.runner, followUp)
-	if !started {
-		// The turn could not start, so the text goes back on the queue rather
-		// than disappearing. It lands at the tail, which only reorders entries
-		// in the rare refused-start case.
-		m.sess.Steer(m.ctx, followUp)
+	model, cmd := m.startPrompt(followUp, true)
+	if cmd == nil {
 		return nil
 	}
 	*m = model.(Model)
@@ -4628,7 +4636,13 @@ func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
 	}, releaseStop), tickCmd(), spinnerTickCmd())
 }
 
-type agentFinishedMsg struct{ err error }
+// agentFinishedMsg reports a run's end. refusal is the note a refused start
+// writes, as "Cannot start work"; it is empty for swarm and SDD runs, which
+// the TUI refuses before it starts them.
+type agentFinishedMsg struct {
+	err     error
+	refusal string
+}
 type agentTickMsg struct{}
 type spinnerTickMsg struct{}
 
@@ -4726,6 +4740,11 @@ func (m *Model) proposalFromSession() (build, test string, err error) {
 func runAgentCmd(ctx context.Context, state *session.State, runner AgentRunner, goal string) tea.Cmd {
 	return func() (msg tea.Msg) {
 		defer state.EndWork()
+		// The turn's end is the session going idle, whoever ran it. This reset
+		// runs after the panic recovery below and before EndWork releases the
+		// work item, so a reader never sees a finished turn whose activity
+		// still says it is thinking.
+		defer state.SetActivity(session.Activity{Kind: session.ActivityIdle})
 		// Recover from a panic in runner.Run so the goroutine does not
 		// crash the TUI before handleAgentFinished can restore the
 		// shared runner's original factory. The panic is surfaced as a
@@ -4812,17 +4831,22 @@ func (m Model) turnSpinnerFrame() string {
 // in handleAgentFinished so the finishing goroutine can observe the
 // cancellation state and avoid double-processing.
 //
-// The order is the contract: the conversation's stop operation is invoked FIRST,
-// so the command service marks and stops the commands still attached to this
-// turn — and refuses the stopped turn any further admission — and only then does
-// the agent's own wait/provider context get cancelled. Cancelling first would
-// leave a foreground command running with no stop request against it.
+// The order is the contract: the session's run is stopped FIRST, through the
+// session, so the command service marks and stops the commands still attached
+// to this turn — and refuses the stopped turn any further admission — and only
+// then does the agent's own wait/provider context get cancelled. Cancelling
+// first would leave a foreground command running with no stop request against
+// it. A run the TUI registered itself (swarm, SDD, plan authoring, until plan
+// 5d) is stopped through the state instead.
 func (m *Model) cancelTurn() bool {
 	if m.agentCancel == nil && !m.busy {
 		return false
 	}
 	m.cancelling = true
-	m.stopTurnWork("turn stopped")
+	_ = m.sess.Stop(m.ctx, "turn stopped")
+	if m.endPendingStop != nil {
+		m.stopTurnWork("turn stopped")
+	}
 	if m.agentCancel != nil {
 		m.agentCancel()
 		m.agentCancel = nil
@@ -5563,6 +5587,19 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	// suggestionCmd is the Phase 2 LLM fallback returned by computeSuggestion
 	// on the success path; nil otherwise.
 	var suggestionCmd tea.Cmd
+	// A run the session refused never started: no work is registered, no stop
+	// group needs releasing and no turn ran. The note names what refused it,
+	// and the model goes idle exactly as a finished turn does.
+	if msg.refusal != "" && refusedStart(msg.err) {
+		m.busy = false
+		m.turnStartedAt = time.Time{}
+		m.agentCancel = nil
+		m.cancelling = false
+		m.state.AddMessage(session.RoleSystem, msg.refusal+": "+msg.err.Error(), session.ContentTypePlain)
+		m.updateViewportHeight()
+		m.refreshViewport()
+		return m, nil
+	}
 	// A cancelled turn's error is an artifact of the cancellation, not a
 	// provider fault. It does not reliably wrap context.Canceled: a stream
 	// aborted mid-flight surfaces as a wrapped transport error ("provider
@@ -5606,7 +5643,6 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 				// One surface: the panel carries the question, its context,
 				// and the key hints. Nothing goes to the transcript here.
 				m.dock.Open(gatepanel.New(gate))
-				m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
 				m.updateViewportHeight()
 				m.refreshViewport()
 				return m, nil
@@ -5628,7 +5664,6 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 		// LLM fallback (nil when not applicable).
 		suggestionCmd = m.computeSuggestion()
 	}
-	m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
 	m.updateViewportHeight()
 	m.refreshViewport()
 	flushCmd := m.flushPendingModelOptions()
@@ -6805,12 +6840,12 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 			m.refreshViewport()
 			return m, nil
 		}
-		if m.runner == nil {
+		if !m.sess.Status().AgentReady {
 			m.state.AddMessage(session.RoleSystem, "Agent runner is not available.", session.ContentTypePlain)
 			m.refreshViewport()
 			return m, nil
 		}
-		mm, promptCmd, _ := m.startAgentRun(m.runner, goal)
+		mm, promptCmd := m.startPrompt(goal, false)
 		return mm, promptCmd
 	}
 
@@ -6830,8 +6865,8 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 				m.refreshViewport()
 				return m, nil
 			}
-			if m.runner != nil {
-				mm, goalCmd, _ := m.startAgentRun(m.runner, res.AgentGoal)
+			if m.sess.Status().AgentReady {
+				mm, goalCmd := m.startPrompt(res.AgentGoal, false)
 				return mm, goalCmd
 			}
 		}

@@ -232,8 +232,10 @@ func TestNewSessionSwapsTheClientSession(t *testing.T) {
 	}
 
 	model.input.SetValue("/new")
-	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m := updated.(*Model)
+	updated, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m := asModel(t, updated)
+	// The swap follows the settled end.
+	m, _ = runEndCmd(t, m, cmd)
 
 	if !swapper.called {
 		t.Fatal("expected session swapper to be called")
@@ -267,8 +269,10 @@ func TestNewSessionKeepsTheSeamSessionWhenTheSwapperOmitsIt(t *testing.T) {
 	model = updated.(Model)
 
 	model.input.SetValue("/new")
-	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m := updated.(*Model)
+	updated, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m := asModel(t, updated)
+	// The swap follows the settled end.
+	m, _ = runEndCmd(t, m, cmd)
 
 	if m.state != newState {
 		t.Fatal("expected model state to be swapped to the new session")

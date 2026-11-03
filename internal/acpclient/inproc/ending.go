@@ -73,8 +73,8 @@ func (s *Session) RunExitAnalysis(ctx context.Context, goal string) error {
 }
 
 // Postmortem writes the session's postmortem report and returns the path it
-// wrote. It reports the same errors writePostmortemFor does, so the seam and
-// the TUI's exit path name the same failure.
+// wrote. It reports the failures the TUI's exit path used to report itself, so
+// the seam and the model name the same failure.
 func (s *Session) Postmortem(ctx context.Context) (string, error) {
 	if s.closed.Load() {
 		return "", errSessionClosed

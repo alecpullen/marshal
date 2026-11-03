@@ -2503,68 +2503,6 @@ func (s *staticRouteResolver) Resolve(string) (routing.Route, provider.Provider,
 	return s.route, s.provider, nil
 }
 
-// tuiEndController is the runtime adapter behind tui.EndController. It converts
-// the runtime's own shapes into the TUI's neutral mirrors and delegates every
-// decision back to the runtime, so the model never sees a session, a policy
-// engine or a process.
-type tuiEndController struct {
-	rt *Runtime
-}
-
-// ActiveWork reports the runtime's current conversation work.
-func (c *tuiEndController) ActiveWork() tui.EndWorkSnapshot {
-	return tuiEndWorkSnapshot(c.rt.ActiveWork())
-}
-
-// AcceptEnd submits one end acceptance and reports it in the TUI's shape.
-func (c *tuiEndController) AcceptEnd(req tui.EndAcceptRequest) (tui.EndDecision, error) {
-	decision, err := c.rt.AcceptEnd(EndAcceptRequest{
-		Intent:           EndIntent(req.Intent),
-		DisplayedIDs:     req.DisplayedIDs,
-		RequireDisplayed: req.RequireDisplayed,
-	})
-	if err != nil {
-		return tui.EndDecision{}, err
-	}
-	return tui.EndDecision{
-		Accepted: decision.Accepted,
-		Expanded: decision.Expanded,
-		Work:     tuiEndWorkSnapshot(decision.Work),
-	}, nil
-}
-
-// EndAccepted reports whether an end has been accepted.
-func (c *tuiEndController) EndAccepted() bool { return c.rt.EndAccepted() }
-
-// WaitForEnd stops and joins the accepted end's work. It accepts first and is
-// safe to retry: a failed join reports the outstanding work and never latches
-// success.
-func (c *tuiEndController) WaitForEnd(ctx context.Context) error { return c.rt.WaitForEnd(ctx) }
-
-// RunExitAnalysis runs the scoped exit-analysis pass during the postmortem
-// phase. The runtime owns the pass's elevation and joins its epoch before
-// returning.
-func (c *tuiEndController) RunExitAnalysis(ctx context.Context, goal string) error {
-	return c.rt.RunExitAnalysis(ctx, goal)
-}
-
-// tuiEndWorkSnapshot converts a runtime work snapshot to the TUI's neutral
-// mirror.
-func tuiEndWorkSnapshot(work ActiveWork) tui.EndWorkSnapshot {
-	out := tui.EndWorkSnapshot{Phase: work.Phase, Targets: work.Targets}
-	for _, item := range work.Items {
-		out.Items = append(out.Items, tui.EndWorkItem{
-			ID:         item.ID,
-			Kind:       item.Kind,
-			Label:      item.Label,
-			Group:      item.Group,
-			Parent:     item.Parent,
-			SubagentID: item.SubagentID,
-		})
-	}
-	return out
-}
-
 type actionDecodingConfig struct {
 	Native         bool
 	ResponseFormat *schema.ResponseFormat
@@ -2943,11 +2881,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			}
 			return runner.Run(analysisCtx, goal)
 		})
-
-		// The TUI's structural end seam: acceptance, settlement and the scoped
-		// exit analysis are reached through neutral data, so the model decides
-		// nothing about policy or processes.
-		tuiOpts = append(tuiOpts, tui.WithEndController(&tuiEndController{rt: rt}))
 
 		progResult := runOpts.programRunner(ctx, tui.New(seamHost, seamSession, tuiOpts...), stdout)
 

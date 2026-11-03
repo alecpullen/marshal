@@ -176,7 +176,7 @@ func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	name := strings.TrimSpace(strings.Join(args, " "))
-	return m, m.beginEnd(&endIntent{kind: EndIntentReplace, name: name})
+	return m, m.beginEnd(&endIntent{kind: acpwire.EndIntentReplace, name: name})
 }
 
 // startNewSession builds the replacement session and re-points every model
@@ -239,10 +239,10 @@ func startNewSession(m *Model, name string) tea.Cmd {
 func init() {
 	tuiCommandEffects = map[string]func(m *Model, args []string) (tea.Model, tea.Cmd){
 		"exit": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			return m, m.beginEnd(&endIntent{kind: EndIntentExit})
+			return m, m.beginEnd(&endIntent{kind: acpwire.EndIntentExit})
 		},
 		"quit": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			return m, m.beginEnd(&endIntent{kind: EndIntentExit})
+			return m, m.beginEnd(&endIntent{kind: acpwire.EndIntentExit})
 		},
 		"effort": func(m *Model, args []string) (tea.Model, tea.Cmd) {
 			if len(args) == 0 {

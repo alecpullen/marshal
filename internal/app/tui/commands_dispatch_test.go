@@ -192,7 +192,7 @@ func TestExitCommandsWithoutWorkExitDirectly(t *testing.T) {
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModel(state, WithCommandRegistry(reg), WithEndController(&endTestController{}))
+	m := testModelEnding(state, &endTestController{}, WithCommandRegistry(reg))
 	m.resize(80, 24)
 
 	updated, cmd := m.dispatchCommand("/quit")

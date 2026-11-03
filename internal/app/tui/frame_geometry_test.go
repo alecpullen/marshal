@@ -300,7 +300,7 @@ func TestEndingSurfacesFitTheTerminal(t *testing.T) {
 			m := scrolledModel(t, size.w, size.h)
 			m.state.Config.Postmortem.OnExit = "prompt"
 			m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
-			m.endController = &endTestController{work: longWorkSnapshot(16)}
+			*m = withEndService(*m, &endTestController{work: longWorkSnapshot(16)})
 			if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
 				t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
 			}
@@ -339,8 +339,8 @@ func postmortemConsentFrameModel(t *testing.T, w, h int) *Model {
 	}); err != nil {
 		t.Fatalf("SetTodos: %v", err)
 	}
-	m.endController = &endTestController{}
-	m.end = &endIntent{kind: EndIntentExit}
+	*m = withEndService(*m, &endTestController{})
+	m.end = &endIntent{kind: acpwire.EndIntentExit}
 	m.endStage = endPostmortem
 	m.openPostmortemPrompt()
 	m.refreshViewport()

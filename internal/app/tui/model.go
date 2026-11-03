@@ -61,7 +61,6 @@ import (
 	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
-	"marshal/internal/postmortem"
 	"marshal/internal/pubsub"
 	"marshal/internal/sddauthor"
 	"marshal/internal/sddplans"
@@ -93,85 +92,10 @@ type SessionSwapperFunc func(name string) (SessionSwapResult, error)
 
 func (f SessionSwapperFunc) NewSession(name string) (SessionSwapResult, error) { return f(name) }
 
-// EndIntent names what the user accepted: closing the conversation (an exit) or
-// replacing it (/new, /clear, resume). The strings match the runtime's own
-// constants; a replacement never runs an exit postmortem.
-const (
-	EndIntentExit    = "exit"
-	EndIntentReplace = "replace"
-)
-
-// EndWorkItem mirrors one runtime work item in neutral data, so the TUI can
-// render the membership an end would stop without importing the app package.
-// Nothing downstream may pair work by Label: ID is the identity.
-type EndWorkItem struct {
-	ID         string
-	Kind       string
-	Label      string
-	Group      string
-	Parent     bool
-	SubagentID int64
-}
-
-// EndWorkSnapshot is the runtime's active conversation work at one moment: the
-// membership a warning must show before anything is stopped, with the exit
-// phase it was taken in.
-type EndWorkSnapshot struct {
-	Phase   string
-	Items   []EndWorkItem
-	Targets []string
-}
-
-// EndAcceptRequest is one end acceptance request. DisplayedIDs are the opaque
-// work IDs the user was actually shown; RequireDisplayed is true when the
-// caller insists nothing may be stopped that was not displayed.
-type EndAcceptRequest struct {
-	Intent           string
-	DisplayedIDs     []string
-	RequireDisplayed bool
-}
-
-// EndDecision is the outcome of an end acceptance. A non-empty Expanded with
-// Accepted false means nothing was frozen or stopped: the caller refreshes its
-// warning with Work and asks again.
-type EndDecision struct {
-	Accepted bool
-	Expanded []string
-	Work     EndWorkSnapshot
-}
-
-// EndController is the runtime-facing end seam the TUI uses to warn about live
-// work, submit the user's decision, settle it and run the scoped exit
-// analysis. It is satisfied structurally by app.go's adapter, which delegates
-// to the runtime, so the TUI never imports internal/app and never decides
-// policy.
-type EndController interface {
-	// ActiveWork returns the authoritative membership a warning renders.
-	ActiveWork() EndWorkSnapshot
-	// AcceptEnd freezes ordinary admission atomically after checking the
-	// displayed IDs. A refusal must stop nothing.
-	AcceptEnd(req EndAcceptRequest) (EndDecision, error)
-	// EndAccepted reports whether an end has been accepted.
-	EndAccepted() bool
-	// WaitForEnd stops and joins the accepted end's work. It accepts first, is
-	// idempotent, and never latches success: a failed join may be retried.
-	WaitForEnd(ctx context.Context) error
-	// RunExitAnalysis runs the scoped exit-analysis pass during the postmortem
-	// phase. It joins its own epoch before returning.
-	RunExitAnalysis(ctx context.Context, goal string) error
-}
-
-// WithEndController wires the runtime-facing end seam. Nil (the default) means
-// no runtime is attached: an end then has no work membership to consult and
-// nothing to settle, so it proceeds directly.
-func WithEndController(c EndController) Option {
-	return func(m *Model) { m.endController = c }
-}
-
 // endIntent is one pending interactive end request: what the user asked for,
 // held until the runtime accepts the work membership it would stop.
 type endIntent struct {
-	// kind is EndIntentExit or EndIntentReplace.
+	// kind is acpwire.EndIntentExit or acpwire.EndIntentReplace.
 	kind string
 	// name is the new-session name for a /new or /clear replacement.
 	name string
@@ -298,10 +222,6 @@ type Model struct {
 	busy           bool
 	configReloader ConfigReloader
 	sessionSwapper SessionSwapper
-	// endController is the runtime-facing end seam (WithEndController). Nil in
-	// a build without a runtime: an end then consults no work membership and
-	// has nothing to settle.
-	endController EndController
 	// end is the pending interactive end intent, non-nil from the moment the
 	// user asks to exit or replace the conversation until the warning is
 	// declined. It holds the target (a new-session name or a resume ID) so
@@ -312,7 +232,7 @@ type Model struct {
 	// endSnapshot is the most recent membership the warning rendered, used to
 	// refresh the panel from runtime events and as the displayed set a
 	// confirmation submits.
-	endSnapshot EndWorkSnapshot
+	endSnapshot acpwire.EndWork
 	// endDisplaced remembers the dock panel the warning displaced, so declining
 	// re-opens exactly the surface the user was working in. A panel the runtime
 	// resolved during settlement is never restored: acceptance clears it.
@@ -4567,10 +4487,7 @@ func (m *Model) beginEnd(intent *endIntent) tea.Cmd {
 	// and what an accepted end stops cannot drift apart. Cached counts and
 	// m.busy are deliberately not consulted — a detached job the TUI never
 	// tracked would otherwise be destroyed without ever being shown.
-	var snap EndWorkSnapshot
-	if m.endController != nil {
-		snap = m.endController.ActiveWork()
-	}
+	var snap = m.sess.ActiveWork()
 	if snapEmpty(snap) {
 		// Nothing to stop. No warning is warranted, and the runtime freezes
 		// admission for the rest of this pass.
@@ -4617,9 +4534,8 @@ func (m *Model) handlePostmortemDone(msg postmortempanel.DoneMsg) (tea.Model, te
 	switch msg.Result {
 	case postmortempanel.ResultWithAgent:
 		// Extraction runs first, off the render loop; the scoped analysis pass
-		// follows it in handlePostmortemWritten. A model with no scoped-analysis
-		// runtime extracts and quits.
-		return *m, m.extractPostmortemCmd(m.endController != nil)
+		// follows it in handlePostmortemWritten.
+		return *m, m.extractPostmortemCmd(true)
 	case postmortempanel.ResultExtractOnly:
 		return *m, m.extractPostmortemCmd(false)
 	default: // ResultDeclined
@@ -4636,14 +4552,14 @@ func (m *Model) handlePostmortemDone(msg postmortempanel.DoneMsg) (tea.Model, te
 // operation's own phase cleanup, and it cannot recursively trigger the
 // active-work warning: analysis work is a separate epoch, not ordinary work.
 func (m *Model) runExitAnalysis(path string) tea.Cmd {
-	ctrl := m.endController
+	sess := m.sess
 	goal := postmortemAgentGoal(path)
 	ctx := m.ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	return func() tea.Msg {
-		return endAnalysisFinishedMsg{err: ctrl.RunExitAnalysis(ctx, goal)}
+		return endAnalysisFinishedMsg{err: sess.RunExitAnalysis(ctx, goal)}
 	}
 }
 
@@ -4668,7 +4584,7 @@ func (m *Model) declineEnd() (tea.Model, tea.Cmd) {
 	m.endDisplaced = nil
 	m.endWarning = nil
 	m.end = nil
-	m.endSnapshot = EndWorkSnapshot{}
+	m.endSnapshot = acpwire.EndWork{}
 	m.endStage = endIdle
 	if displaced != nil {
 		// Nothing was stopped, so a pending approval or gate is still pending
@@ -4717,7 +4633,7 @@ func (m *Model) handleEndSettled(msg endSettledMsg) (tea.Model, tea.Cmd) {
 func (m *Model) openActiveWorkWarning() {
 	warning, ok := m.endWarning.(*activeworkpanel.Panel)
 	if !ok {
-		replacing := m.end != nil && m.end.kind == EndIntentReplace
+		replacing := m.end != nil && m.end.kind == acpwire.EndIntentReplace
 		warning = activeworkpanel.New(replacing, endWorkItems(m.endSnapshot))
 		m.endWarning = warning
 	} else {
@@ -4735,7 +4651,7 @@ func (m *Model) openActiveWorkWarning() {
 // endWorkItems renders a snapshot's membership as warning rows. An attached
 // command is indented under the operation it belongs to (its Group), so the
 // list shows one stoppable thing per line where the runtime reports one.
-func endWorkItems(snap EndWorkSnapshot) []activeworkpanel.Item {
+func endWorkItems(snap acpwire.EndWork) []activeworkpanel.Item {
 	items := make([]activeworkpanel.Item, 0, len(snap.Items))
 	for _, item := range snap.Items {
 		label := item.Label
@@ -4755,7 +4671,7 @@ func endWorkItems(snap EndWorkSnapshot) []activeworkpanel.Item {
 // exit with no target.
 func (m *Model) applyEndIntent(intent *endIntent) {
 	if intent == nil {
-		intent = &endIntent{kind: EndIntentExit}
+		intent = &endIntent{kind: acpwire.EndIntentExit}
 	}
 	if m.end != nil && m.end.kind == intent.kind {
 		// Keep the first press's target only when the new request names none.
@@ -4769,7 +4685,7 @@ func (m *Model) applyEndIntent(intent *endIntent) {
 // snapshotEmpty reports whether a membership holds no ordinary work. A nil
 // controller reports an empty membership: there is no runtime work to warn
 // about.
-func snapEmpty(snap EndWorkSnapshot) bool { return len(snap.Items) == 0 }
+func snapEmpty(snap acpwire.EndWork) bool { return len(snap.Items) == 0 }
 
 // acceptEnd submits the decision to freeze ordinary admission and stop the
 // displayed work. displayedIDs are the opaque IDs the user was actually shown
@@ -4777,18 +4693,11 @@ func snapEmpty(snap EndWorkSnapshot) bool { return len(snap.Items) == 0 }
 // membership grew while the warning was up — refreshes the warning and asks
 // again, keeping the user's selection and saying what appeared.
 func (m *Model) acceptEnd(displayedIDs []string) tea.Cmd {
-	intent := EndIntentExit
+	intent := acpwire.EndIntentExit
 	if m.end != nil && m.end.kind != "" {
 		intent = m.end.kind
 	}
-	if m.endController == nil {
-		// No runtime seam: nothing to freeze or settle. Go straight to the
-		// existing end behavior.
-		m.endStage = endPostmortem
-		m.releaseEndDisplaced()
-		return m.afterSettlement()
-	}
-	decision, err := m.endController.AcceptEnd(EndAcceptRequest{
+	decision, err := m.sess.AcceptEnd(m.ctx, acpwire.EndAcceptParams{
 		Intent:           intent,
 		DisplayedIDs:     displayedIDs,
 		RequireDisplayed: true,
@@ -4844,14 +4753,11 @@ func (m *Model) settleEnd() tea.Cmd {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ctrl := m.endController
+	sess := m.sess
 	return func() tea.Msg {
-		if ctrl == nil {
-			return endSettledMsg{}
-		}
 		ctx, cancel := context.WithTimeout(ctx, endSettlementTimeout)
 		defer cancel()
-		if err := ctrl.WaitForEnd(ctx); err != nil {
+		if err := sess.WaitForEnd(ctx); err != nil {
 			return endSettledMsg{err: err}
 		}
 		return endSettledMsg{}
@@ -4867,9 +4773,7 @@ func (m *Model) refreshEndWarning() {
 	if m.endWarning == nil || (m.endStage != endAwaitingDecision && m.endStage != endStopping) {
 		return
 	}
-	if m.endController != nil {
-		m.endSnapshot = m.endController.ActiveWork()
-	}
+	m.endSnapshot = m.sess.ActiveWork()
 	m.renderEndWarning()
 }
 
@@ -4914,7 +4818,7 @@ func expansionNotice(n int) string {
 // accepted end: the settled handler refuses to run it again.
 func (m *Model) afterSettlement() tea.Cmd {
 	m.endStage = endPostmortem
-	if m.end == nil || m.end.kind != EndIntentExit {
+	if m.end == nil || m.end.kind != acpwire.EndIntentExit {
 		// A replacement never runs an exit postmortem; it goes straight to its
 		// new/resume behavior.
 		return m.finishReplacement()
@@ -5010,7 +4914,7 @@ func (m *Model) finishReplacement() tea.Cmd {
 	intent := m.end
 	newArgs := m.endNewArgs()
 	m.end = nil
-	m.endSnapshot = EndWorkSnapshot{}
+	m.endSnapshot = acpwire.EndWork{}
 	if intent != nil && intent.resumeID != "" {
 		// Resume restarts the process with the requested session; the resume ID
 		// is recorded only now that the replacement is accepted.
@@ -5050,7 +4954,10 @@ func (m *Model) finishQuit() tea.Cmd {
 		m.lspCancel()
 		m.lspCancel = nil
 	}
-	m.state.ResolvePendingForShutdown()
+	// Closing the session settles every pending request and shuts it down; the
+	// accepted end's settlement already stopped the work, so nothing is stopped
+	// again here.
+	_ = m.sess.Close(m.ctx)
 	// Release the dock's surfaces once on the way out: the active panel and any
 	// surface parked behind a temporary exchange (the Send now composer's, the
 	// ending warning's) are permanently gone now, so a panel that cancels
@@ -5058,7 +4965,6 @@ func (m *Model) finishQuit() tea.Cmd {
 	m.dock.ReleaseRetained(m.dock.Panel())
 	m.dock.ReleaseRetained(m.composerDisplaced)
 	m.dock.ReleaseRetained(m.endDisplaced)
-	m.state.Shutdown()
 	return tea.Quit
 }
 
@@ -5085,40 +4991,24 @@ func (m *Model) sessionHasUserTurn() bool {
 	return false
 }
 
-// writePostmortemFor extracts a report from state and writes it to the user
-// config dir, returning the path written. Extraction at exit is best-effort:
-// the caller reports the error and exits anyway.
-//
-// It is a free function over an explicit state so the command that runs it can
-// keep the extraction I/O off the render loop without reaching into the live
-// model.
-func writePostmortemFor(state *session.State) (string, error) {
-	report, err := postmortem.Build(state, state.DB())
-	if err != nil {
-		return "", err
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return "", fmt.Errorf("locate home directory: %w", err)
-	}
-	slug := postmortem.ProjectSlug(state.WorkingDir)
-	return postmortem.Write(report, home, slug, state.SessionID())
-}
-
 // extractPostmortemCmd runs the exit postmortem's extraction+write step and
 // reports the outcome back through postmortemWrittenMsg. Extraction walks the
 // audit log and writes a file, so it belongs in a command rather than on the
-// render loop; only the settled state it reads is captured here, and the exit
-// flow admits no session swap while it runs.
+// render loop; the session builds and writes the report agent side, and only
+// the settled session it reads is captured here.
 //
 // analysis requests the scoped exit-analysis pass once the report has landed.
 func (m *Model) extractPostmortemCmd(analysis bool) tea.Cmd {
-	state := m.state
+	sess := m.sess
+	ctx := m.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// Latch the extraction so a repeated quit request during it neither quits
 	// ahead of the report nor starts a second one.
 	m.endExtracting = true
 	return func() tea.Msg {
-		path, err := writePostmortemFor(state)
+		path, err := sess.Postmortem(ctx)
 		return postmortemWrittenMsg{path: path, err: err, analysis: analysis}
 	}
 }
@@ -5136,10 +5026,9 @@ func (m *Model) handlePostmortemWritten(msg postmortemWrittenMsg) (tea.Model, te
 		return *m, m.finishQuit()
 	}
 	m.state.AddMessage(session.RoleSystem, "Postmortem written to "+msg.path, session.ContentTypePlain)
-	if !msg.analysis || m.endController == nil {
-		// Extraction failed to produce a path, there is no scoped-analysis
-		// runtime, or the user asked for extraction only: quit rather than leave
-		// the session hanging.
+	if !msg.analysis {
+		// The user asked for extraction only: quit rather than leave the
+		// session hanging.
 		m.endAnalyzing = false
 		m.refreshViewport()
 		return *m, m.finishQuit()
@@ -6751,7 +6640,7 @@ func (m *Model) beginResume(id string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	// A session swap is not a quit: never offer the exit postmortem here.
-	return m, m.beginEnd(&endIntent{kind: EndIntentReplace, resumeID: id})
+	return m, m.beginEnd(&endIntent{kind: acpwire.EndIntentReplace, resumeID: id})
 }
 
 // openSessionPicker opens a picker listing previous sessions for this

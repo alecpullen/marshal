@@ -335,9 +335,18 @@ func TestCtrlCQuits(t *testing.T) {
 		t.Fatal("first Ctrl+C must only arm")
 	default:
 	}
-	_, cmd = updated.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	updated, cmd = updated.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	if cmd == nil {
 		t.Fatal("quit command is nil")
+	}
+	// The end settles through the session first: the quit is the command the
+	// settlement hop produces.
+	_, cmd = runEndCmd(t, asModel(t, updated), cmd)
+	if cmd == nil {
+		t.Fatal("quit command is nil")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("cmd() = %T, want tea.QuitMsg", cmd())
 	}
 
 	select {
@@ -2775,8 +2784,10 @@ func TestSlashCommandClearMessages(t *testing.T) {
 	model = updated.(Model)
 
 	model.input.SetValue("/new")
-	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m := updated.(*Model)
+	updated, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m := asModel(t, updated)
+	// The replacement is built after the settled end: drive that hop.
+	m, _ = runEndCmd(t, m, cmd)
 
 	if !swapper.called {
 		t.Fatal("expected session swapper to be called")
@@ -2837,7 +2848,9 @@ func TestNewSessionRereadsGitInfo(t *testing.T) {
 
 	model.input.SetValue("/new")
 	updated, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m := updated.(*Model)
+	m := asModel(t, updated)
+	// The replacement is built after the settled end: drive that hop.
+	m, cmd = runEndCmd(t, m, cmd)
 
 	if !swapper.called {
 		t.Fatal("expected session swapper to be called")
@@ -2867,7 +2880,9 @@ func TestSlashCommandClearAlias(t *testing.T) {
 	model = updated.(Model)
 
 	model.input.SetValue("/clear")
-	model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	updated, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = asModel(t, updated)
+	model, _ = runEndCmd(t, model, cmd)
 
 	if !swapper.called {
 		t.Fatal("/clear should trigger the same session swap as /new")
@@ -2906,8 +2921,10 @@ func TestSlashCommandNewWithName(t *testing.T) {
 	model = updated.(Model)
 
 	model.input.SetValue("/new fix-auth")
-	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m := updated.(*Model)
+	updated, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m := asModel(t, updated)
+	// The replacement is built after the settled end: drive that hop.
+	m, _ = runEndCmd(t, m, cmd)
 
 	if !swapper.called {
 		t.Fatal("expected session swapper to be called")
@@ -5436,6 +5453,9 @@ func TestCtrlCCancelsTurn(t *testing.T) {
 			m.state.PushSteering("pending")
 
 			cmd := tt.trigger(&m)
+			// Every ending path settles through the session first: the turn
+			// cancellation and the shutdown land on the hop after it.
+			m, cmd = runEndCmd(t, m, cmd)
 
 			if !cancelled {
 				t.Fatal("should cancel the agent turn")
@@ -10135,17 +10155,16 @@ func postmortemTestState(t *testing.T, sessionID string) *session.State {
 	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: sessionID})
 }
 
-// endTestController is a scriptable tui.EndController. It records what the
+// endTestController is a scriptable inproc.EndService. It records what the
 // model submitted, returns a configured membership/decision, and reports a
-// configurable settlement error — the whole runtime contract in one fake.
+// configurable settlement error — the whole runtime end contract in one fake.
 type endTestController struct {
-	work      EndWorkSnapshot
-	activeErr error
+	work acpwire.EndWork
 	// acceptFn overrides the acceptance decision. Without it every non-empty
 	// request is accepted and nothing is frozen.
-	acceptFn func(EndAcceptRequest) (EndDecision, error)
+	acceptFn func(acpwire.EndAcceptParams) (acpwire.EndDecision, error)
 	// accepted records the requests the model submitted, in order.
-	accepted []EndAcceptRequest
+	accepted []acpwire.EndAcceptParams
 	// waitErr is returned by WaitForEnd. The pass is retried on the next
 	// request, so a test can fail once and then let it succeed.
 	waitErr error
@@ -10159,17 +10178,15 @@ type endTestController struct {
 	analysisGate chan struct{}
 }
 
-func (c *endTestController) ActiveWork() EndWorkSnapshot { return c.work }
+func (c *endTestController) ActiveWork() acpwire.EndWork { return c.work }
 
-func (c *endTestController) AcceptEnd(req EndAcceptRequest) (EndDecision, error) {
+func (c *endTestController) AcceptEnd(req acpwire.EndAcceptParams) (acpwire.EndDecision, error) {
 	c.accepted = append(c.accepted, req)
 	if c.acceptFn != nil {
 		return c.acceptFn(req)
 	}
-	return EndDecision{Accepted: true, Work: c.work}, nil
+	return acpwire.EndDecision{Accepted: true, Work: c.work}, nil
 }
-
-func (c *endTestController) EndAccepted() bool { return len(c.accepted) > 0 }
 
 func (c *endTestController) WaitForEnd(context.Context) error {
 	c.waitCalls++
@@ -10188,11 +10205,10 @@ func (c *endTestController) RunExitAnalysis(_ context.Context, goal string) erro
 }
 
 // workSnapshot builds a one-item membership for the warning tests.
-func workSnapshot(ids ...string) EndWorkSnapshot {
-	snap := EndWorkSnapshot{Phase: "open"}
+func workSnapshot(ids ...string) acpwire.EndWork {
+	snap := acpwire.EndWork{}
 	for _, id := range ids {
-		snap.Items = append(snap.Items, EndWorkItem{ID: id, Kind: "command", Label: "job " + id, Parent: true})
-		snap.Targets = append(snap.Targets, id)
+		snap.Items = append(snap.Items, acpwire.EndWorkItem{ID: id, Label: "job " + id})
 	}
 	return snap
 }
@@ -10246,7 +10262,7 @@ func answerPostmortem(t *testing.T, m Model, result postmortempanel.Result) (Mod
 // exitWithWork drives one exit request through the model and returns the
 // resulting model plus the pending command. It is the shared entry point for
 // the ending tests: every ending path reaches the same helper.
-func exitWithWork(t *testing.T, m Model, ctrl EndController) (Model, tea.Cmd) {
+func exitWithWork(t *testing.T, m Model, ctrl inproc.EndService) (Model, tea.Cmd) {
 	t.Helper()
 	return m, m.beginEnd(&endIntent{kind: EndIntentExit})
 }
@@ -10257,7 +10273,7 @@ func TestExitPromptsPostmortemPerConfig(t *testing.T) {
 	state.Config.Postmortem.OnExit = "prompt"
 	// A controller with no active work: the warning is skipped (nothing would
 	// be stopped) and the postmortem policy applies directly.
-	m := testModel(state, WithEndController(&endTestController{}))
+	m := testModelEnding(state, &endTestController{})
 
 	m, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
 
@@ -10280,7 +10296,7 @@ func TestExitAlwaysRunsPostmortem(t *testing.T) {
 	state := postmortemTestState(t, "sess-always")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "always"
-	m := testModel(state, WithEndController(&endTestController{}))
+	m := testModelEnding(state, &endTestController{})
 
 	_, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
 
@@ -10305,7 +10321,7 @@ func TestExitNeverSkipsPostmortem(t *testing.T) {
 	state := postmortemTestState(t, "sess-never")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "never"
-	m := testModel(state, WithEndController(&endTestController{}))
+	m := testModelEnding(state, &endTestController{})
 
 	_, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
 
@@ -10326,7 +10342,7 @@ func TestExitNeverSkipsPostmortem(t *testing.T) {
 func TestExitSkipsPromptOnEmptySession(t *testing.T) {
 	state := postmortemTestState(t, "sess-empty")
 	state.Config.Postmortem.OnExit = "prompt"
-	m := testModel(state, WithEndController(&endTestController{}))
+	m := testModelEnding(state, &endTestController{})
 
 	_, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
 
@@ -10346,7 +10362,7 @@ func TestResumeShutdownDoesNotPrompt(t *testing.T) {
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "prompt"
 	swapper := &fakeSessionSwapper{newState: session.New(config.Default(), t.TempDir(), time.Unix(200, 0), session.Persistence{})}
-	m := testModel(state, WithEndController(&endTestController{}), WithSessionSwapper(swapper))
+	m := testModelEnding(state, &endTestController{}, WithSessionSwapper(swapper))
 
 	updated, cmd := m.beginResume("sess-target")
 	m = asModel(t, updated)
@@ -10370,13 +10386,13 @@ func TestResumeShutdownDoesNotPrompt(t *testing.T) {
 
 // warningModel builds a model whose end controller reports live work, so an
 // exit request opens the active-work warning.
-func warningModel(t *testing.T, work EndWorkSnapshot) (Model, *endTestController) {
+func warningModel(t *testing.T, work acpwire.EndWork) (Model, *endTestController) {
 	t.Helper()
 	state := postmortemTestState(t, "sess-warning")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "never"
 	ctrl := &endTestController{work: work}
-	m := testModel(state, WithEndController(ctrl))
+	m := testModelEnding(state, ctrl)
 	m.resize(80, 24)
 	return m, ctrl
 }
@@ -10487,16 +10503,16 @@ func TestWarningConfirmationSubmitsDisplayedIDs(t *testing.T) {
 func TestWarningRefusalPreservesTheChoiceAndExplainsTheGrowth(t *testing.T) {
 	grown := workSnapshot("job-1", "job-2")
 	ctrl := &endTestController{work: workSnapshot("job-1")}
-	ctrl.acceptFn = func(req EndAcceptRequest) (EndDecision, error) {
+	ctrl.acceptFn = func(req acpwire.EndAcceptParams) (acpwire.EndDecision, error) {
 		if len(req.DisplayedIDs) < 2 {
 			// New work appeared while the user was deciding.
-			return EndDecision{Accepted: false, Expanded: []string{"job-2"}, Work: grown}, nil
+			return acpwire.EndDecision{Accepted: false, Expanded: []string{"job-2"}, Work: grown}, nil
 		}
-		return EndDecision{Accepted: true, Work: grown}, nil
+		return acpwire.EndDecision{Accepted: true, Work: grown}, nil
 	}
 	state := postmortemTestState(t, "sess-refusal")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
-	m := testModel(state, WithEndController(ctrl))
+	m := testModelEnding(state, ctrl)
 	m.resize(80, 24)
 
 	if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
@@ -10580,7 +10596,7 @@ func TestRepeatedQuitDoesNotStackWarnings(t *testing.T) {
 // point: a second Ctrl+C opens the warning, and while an ending is in progress
 // Ctrl+C retries the settlement instead of stopping a turn.
 func TestCtrlCReachesTheWarningAndRetriesSettlement(t *testing.T) {
-	m, _ := warningModel(t, workSnapshot("job-1"))
+	m, ctrl := warningModel(t, workSnapshot("job-1"))
 	m.now = func() time.Time { return time.Unix(1000, 0) }
 	m.agentCancel = nil
 
@@ -10592,7 +10608,6 @@ func TestCtrlCReachesTheWarningAndRetriesSettlement(t *testing.T) {
 	}
 
 	// A failed settlement keeps the stopping stage, and Ctrl+C retries it.
-	ctrl := m.endController.(*endTestController)
 	ctrl.waitErr = errors.New("join timed out")
 	updated, cmd := m.Update(activeworkpanel.DoneMsg{Stop: true, IDs: []string{"job-1"}})
 	m = asModel(t, updated)
@@ -10636,7 +10651,7 @@ func TestFailedJoinNeverAdvancesAsSettled(t *testing.T) {
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "always"
 	ctrl := &endTestController{work: workSnapshot("job-1"), waitErr: errors.New("outstanding: job-1")}
-	m := testModel(state, WithEndController(ctrl))
+	m := testModelEnding(state, ctrl)
 	m.resize(80, 24)
 
 	if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
@@ -10735,7 +10750,7 @@ func TestWarningRefreshesFromRuntimeEvents(t *testing.T) {
 // TestNoWorkSkipsTheWarning pins the other side: with no runtime work there is
 // nothing to warn about, so the exit proceeds without a panel.
 func TestNoWorkSkipsTheWarning(t *testing.T) {
-	m, ctrl := warningModel(t, EndWorkSnapshot{})
+	m, ctrl := warningModel(t, acpwire.EndWork{})
 
 	m, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
 
@@ -10805,14 +10820,12 @@ func TestWarningIsIndependentOfApprovalMode(t *testing.T) {
 // membership the runtime reported: parent operations, delegated children and
 // detached jobs alike.
 func TestWarningShowsParentChildAndJobWork(t *testing.T) {
-	snap := EndWorkSnapshot{
-		Phase: "open",
-		Items: []EndWorkItem{
-			{ID: "op-1", Kind: "parent", Label: "thinking", Parent: true},
-			{ID: "child-1", Kind: "child", Label: "reviewer", SubagentID: 7},
-			{ID: "job-1", Kind: "command", Label: "go test ./...", Group: "op-1"},
+	snap := acpwire.EndWork{
+		Items: []acpwire.EndWorkItem{
+			{ID: "op-1", Label: "thinking"},
+			{ID: "child-1", Label: "reviewer"},
+			{ID: "job-1", Label: "go test ./...", Group: "op-1"},
 		},
-		Targets: []string{"op-1", "child-1"},
 	}
 	m, _ := warningModel(t, snap)
 
@@ -10832,13 +10845,13 @@ func TestWarningShowsParentChildAndJobWork(t *testing.T) {
 
 // newSessionWarningModel builds a model for the replacement tests, with a live
 // membership and a wired swapper.
-func newSessionWarningModel(t *testing.T, work EndWorkSnapshot) (Model, *endTestController, *fakeSessionSwapper) {
+func newSessionWarningModel(t *testing.T, work acpwire.EndWork) (Model, *endTestController, *fakeSessionSwapper) {
 	t.Helper()
 	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	oldState.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	swapper := &fakeSessionSwapper{newState: session.New(config.Default(), "/repo", time.Unix(200, 0), session.Persistence{})}
 	ctrl := &endTestController{work: work}
-	m := testModel(oldState, WithCommandRegistry(setupCmdReg(t)), WithEndController(ctrl), WithSessionSwapper(swapper))
+	m := testModelWith(inproc.Deps{State: oldState, End: ctrl}, WithCommandRegistry(setupCmdReg(t)), WithSessionSwapper(swapper))
 	m.resize(80, 24)
 	return m, ctrl, swapper
 }
@@ -10928,7 +10941,7 @@ func TestResumeDeclineLeavesTheResumeTargetUntouched(t *testing.T) {
 	state := postmortemTestState(t, "sess-resume-decline")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	ctrl := &endTestController{work: workSnapshot("job-1")}
-	m := testModel(state, WithEndController(ctrl))
+	m := testModelEnding(state, ctrl)
 	m.resize(80, 24)
 
 	updated, cmd := m.beginResume("sess-other")
@@ -11077,7 +11090,7 @@ func TestAnalysisCannotRetriggerTheWarning(t *testing.T) {
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "prompt"
 	ctrl := &endTestController{work: workSnapshot("job-1")}
-	m := testModel(state, WithEndController(ctrl))
+	m := testModelEnding(state, ctrl)
 	m.resize(80, 24)
 
 	if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
@@ -11177,11 +11190,11 @@ func TestWarningPanelRendersBothChoicesAtRealSizes(t *testing.T) {
 		theme.Reload(th)
 
 		for _, size := range [][2]int{{80, 24}, {120, 40}, {200, 60}} {
-			work := make([]EndWorkItem, 0, 12)
+			work := make([]acpwire.EndWorkItem, 0, 12)
 			for i := 0; i < 12; i++ {
-				work = append(work, EndWorkItem{ID: fmt.Sprintf("job-%d", i), Kind: "command", Label: fmt.Sprintf("a rather long running command label %d", i)})
+				work = append(work, acpwire.EndWorkItem{ID: fmt.Sprintf("job-%d", i), Label: fmt.Sprintf("a rather long running command label %d", i)})
 			}
-			m, _ := warningModel(t, EndWorkSnapshot{Phase: "open", Items: work})
+			m, _ := warningModel(t, acpwire.EndWork{Items: work})
 			m.resize(size[0], size[1])
 			if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
 				t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
@@ -11281,7 +11294,7 @@ func TestEndAnalysisFinishedQuitsOnSuccess(t *testing.T) {
 	state := postmortemTestState(t, "sess-agentpass")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	ctrl := &endTestController{}
-	m := testModel(state, WithEndController(ctrl))
+	m := testModelEnding(state, ctrl)
 	m.resize(80, 24)
 	m.endAnalyzing = true
 
@@ -11315,7 +11328,7 @@ func TestPostmortemPanelDoneWithAgentRunsScopedAnalysis(t *testing.T) {
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "prompt"
 	ctrl := &endTestController{}
-	m := testModel(state, WithEndController(ctrl))
+	m := testModelEnding(state, ctrl)
 	m.resize(80, 24)
 
 	m, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
@@ -11363,7 +11376,7 @@ func TestEndAnalysisFailureStillQuits(t *testing.T) {
 	state := postmortemTestState(t, "sess-refused")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	ctrl := &endTestController{analysisErr: errors.New("the conversation is ending")}
-	m := testModel(state, WithEndController(ctrl))
+	m := testModelEnding(state, ctrl)
 	m.resize(80, 24)
 	m.endAnalyzing = true
 
@@ -11396,7 +11409,7 @@ func TestExitPostmortemUnknownPolicyPrompts(t *testing.T) {
 	state := postmortemTestState(t, "sess-bogus-policy")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "bogus"
-	m := testModel(state, WithEndController(&endTestController{}))
+	m := testModelEnding(state, &endTestController{})
 
 	m, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
 
@@ -11423,7 +11436,7 @@ func TestExitQuestionIsAskedOnce(t *testing.T) {
 	state := postmortemTestState(t, "sess-asked-once")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "prompt"
-	m := testModel(state, WithEndController(&endTestController{}))
+	m := testModelEnding(state, &endTestController{})
 	m.resize(80, 24)
 
 	m, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
@@ -11495,6 +11508,7 @@ func TestPostmortemConsentResizeInvalidatesVisibility(t *testing.T) {
 		ctrl := &endTestController{}
 		m := testModelWith(inproc.Deps{
 			State: state,
+			End:   ctrl,
 			// Wire the access seam so a request queued behind the exit question
 			// stays pending. Without it reconcileAccess fails such a request
 			// closed as unanswerable, which is a different scenario.
@@ -11502,9 +11516,7 @@ func TestPostmortemConsentResizeInvalidatesVisibility(t *testing.T) {
 			ResolveAccess: func(choice session.AccessChoice) (session.AccessResult, error) {
 				return state.ResolveAccess(choice, nil)
 			},
-		},
-			WithEndController(ctrl),
-		)
+		})
 		m.resize(80, 24)
 		m.end = &endIntent{kind: EndIntentExit}
 		m.endStage = endPostmortem

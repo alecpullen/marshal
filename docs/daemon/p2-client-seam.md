@@ -285,10 +285,11 @@ Decision: `WireTree`, with the C6 additions.
   which implement `acpclient.Host` and `acpclient.Session`. `Deps`
   holds the state and everything `Run` passes as an agent-side TUI
   option today. `Run` builds `Deps` instead of those options.
-- Until plan 5 replaces the swapper with `Host.NewSession` and
-  `Host.Resume`, `(*Host).Swap(state)` serves today's swap path. It
-  closes the old session and returns one over the new state, which
-  `tui.SessionSwapResult.Session` carries to the TUI.
+- `Host.NewSession` (plan 5e) asks the runtime for a new session
+  through `Deps.NewSession`, closes the old session and returns one over
+  the new state. Until then `(*Host).Swap(state)` served the swapper,
+  which `tui.SessionSwapResult.Session` carried to the TUI; plan 5e makes
+  it the unexported `swap`.
 - It must not import `internal/app`. TUI tests import it, and `app`
   imports `tui`.
 - The `Host` holds what `accessTUIOptions` binds to today (and what
@@ -302,7 +303,10 @@ Decision: `WireTree`, with the C6 additions.
 - A `Session` replaced by a swap answers reads with its final values,
   and its calls return a closed-session error.
 - `tui.WithLegacyState(*session.State)` is a temporary escape hatch for
-  groups not yet moved. Plan 1 adds it, and Plan 9 deletes it.
+  groups not yet moved. Plan 1 adds it, and Plan 9 deletes it. Its
+  partner `tui.WithLegacySession` (plan 5e) re-reads the runtime's
+  current state and tool registry after `Host.NewSession`, and goes with
+  it.
 - The adapter is deleted in P3.
 
 ### C5. Status
@@ -572,14 +576,28 @@ Decision: `WireTree`, with the C6 additions.
   exist). The TUI never acknowledges work, so no acknowledge call is
   added. The work pump moves into the adapter, which fires `Changed`
   for each snapshot it keeps, and the work types arrive in `acpwire`.
-- **Ending a session.**
-  - The `EndController` calls become `Session` methods: `ActiveWork`,
-    `AcceptEnd`, `WaitForEnd` and `RunExitAnalysis`. `Postmortem(ctx)`
-    writes the report agent side and returns its path.
+- **Ending a session** (plan 5e).
+  - The `EndController` calls become `Session` methods over the
+    runtime's end service. `ActiveWork` is a read: the warning renders
+    it, and `AcceptEnd` checks the user's choice against the live
+    membership, refusing to stop work the user was not shown
+    (`session/end_work`, new, refreshed by an `end_work` update).
+    `AcceptEnd`, `WaitForEnd` and `RunExitAnalysis` are calls
+    (`session/end_accept`, `session/end_wait` and
+    `session/exit_analysis`, new). `EndAccepted` is dropped: the TUI
+    never called it. `Postmortem(ctx)` writes the report agent side and
+    returns its path (`session/postmortem`, new). A session without an
+    end service has nothing to stop: it accepts and settles at once, and
+    refuses the exit analysis with `no_runner`.
   - `Close(ctx)` replaces `ResolvePendingForShutdown` and `Shutdown`
-    (`session/close` exists).
-  - `Host.NewSession(ctx, name)` and `Host.Resume(ctx, id)` replace the
-    swapper (`session/new` and `session/resume` exist).
+    (`session/close` exists). It cancels the run in flight, settles
+    every pending request as shut down and shuts the session down.
+    Closing a closed session does nothing.
+  - `Host.NewSession(ctx, name)` replaces the swapper (`session/new`
+    exists). Resume stays a restart of the program: the TUI reports the
+    session to resume, and `Run` starts a runtime on it, because the
+    runtime cannot open a stored session in place. P3 decides whether
+    resume moves onto `session/resume`.
 
 ### C9. Notes, notices and commands
 
@@ -797,10 +815,12 @@ The TUI works after every plan.
      travel as parameters, the preflight reads the plan's inspection from
      the session, the session keeps a plan run its gate paused, and the
      runtime's orchestrator and factories move into the adapter's `Deps`.
-   - **5e. Ending and swapping.** The `EndController` calls and
-     `Postmortem` become `Session` methods, `Close` replaces
+   - **5e. Ending and swapping** ([plan](plans/2026-11-03-p2-5e-ending-plan.md)).
+     The `EndController` calls and `Postmortem` become `Session` methods
+     over the runtime's end service, `Close` replaces
      `ResolvePendingForShutdown` and `Shutdown`, and `Host.NewSession`
-     and `Host.Resume` replace the swapper.
+     replaces the swapper. Resume stays a restart of the program. A
+     replacement leaves the TUI's end idle again.
 
    5c, 5d and 5e run in that order: each run kind reuses 5c's finish
    path, and the swap result carries the runners until 5d. 5a and 5b
@@ -1361,6 +1381,46 @@ writing plan 5d:
 - **The header's plan count is corrected.** Plan 5c's review changed it to
   five plans and twelve documents. The Migration order has nine plans,
   and 5d, 5e and 6 to 9 are still to come.
+
+**2026-11-03, against `bf211f49` (plan 5d merged).** Found while
+writing plan 5e:
+- **The end calls sit over a runtime end service** (C4, C8). `Deps.End`
+  carries the runtime's membership, acceptance, settlement and exit
+  analysis in wire types, and `bindTurnDeps` binds it. The TUI's
+  `EndController` and its mirror types go, and so does `EndAccepted`,
+  which the TUI never called.
+- **`ActiveWork` is a read** (C2, C8). The warning need not be
+  authoritative: the TUI always accepts with `RequireDisplayed`, and the
+  runtime refuses to stop work the user was not shown, returning the
+  membership to ask about again.
+- **A session without an end service ends at once** (C8). Its membership
+  is empty, it accepts and settles at once, and it refuses the exit
+  analysis. The TUI's no-controller shortcuts go; only tests built such
+  a model, because `Run` always wires the controller.
+- **`Close` cancels, settles and shuts down** (C8). It cancels the run in
+  flight, settles every pending request as shut down and shuts the state
+  down. Closing a closed session does nothing, and the run path refuses
+  a closed session when it takes the slot.
+- **`Host.NewSession` replaces the swapper, and resume stays a restart**
+  (C4, C8). The spec's `Host.Resume` is not added: the runtime has no
+  in-place resume, since only `startRuntime` loads a stored session, and
+  the TUI's other agent-side options are bound to the runtime a resume
+  replaces. The TUI keeps reporting the session to resume as its program
+  result. `WithLegacySession` hands the model the new state and tool
+  registry until plan 9.
+- **A bug is fixed on the way** (C8). After `/new` or `/clear` the TUI's
+  end stage stayed at finishing, so every run was refused with "The
+  conversation is ending; this request was not started.", a second
+  `/new` quit Marshal, `/exit` and Ctrl+C quit without the warning or the
+  postmortem question, and `/resume` exited instead of resuming. The
+  swap now returns the end to idle, whether or not it succeeded.
+- **The wire carries what the TUI renders** (C3). An end work item has
+  its ID, label and group, not the runtime's phase, kind, parent flag,
+  subagent ID or targets.
+- **The new ACP methods are named** `session/end_work`,
+  `session/end_accept`, `session/end_wait`, `session/exit_analysis` and
+  `session/postmortem`. `Close` and `Host.NewSession` use
+  `session/close` and `session/new`.
 
 ## Implementation record
 
@@ -2080,3 +2140,74 @@ T1b gains seven names: `ClearSDDGate`, and `BeginWork`, `EndWork`,
 `marshal/internal/pipeline`, and the `sdd_authoring.go` and
 `sddreview/review.go` entries; `model.go` keeps `sddplans` and `sddauthor` for
 plan 8 and `config.SaveVerifyCommands` for plan 7.
+
+**Plan 5e (ending and swapping), branch `p2-5e-ending`.** Added
+`internal/acpwire/ending.go`: the intent constants `EndIntentExit` and
+`EndIntentReplace`; `EndWork` with its `EndWorkItem`s (`ID`, `Label`, `Group`);
+`EndAcceptParams` (`Intent`, `DisplayedIDs`, `RequireDisplayed`); and
+`EndDecision` (`Accepted`, `Expanded`, `Work`). The wire carries what the
+warning renders and no more: an item's phase, kind, parent flag, subagent ID and
+the stoppable targets stay agent side.
+
+`acpclient.Session` gains six methods with their `Methods` rows: `ActiveWork` on
+`session/end_work`, `AcceptEnd` on `session/end_accept`, `WaitForEnd` on
+`session/end_wait`, `RunExitAnalysis` on `session/exit_analysis` and
+`Postmortem` on `session/postmortem`, all five new in P3, and `Close` on
+`session/close`, which exists. `acpclient.Host` gains `NewSession` on
+`session/new`, which exists.
+
+The adapter serves them over `inproc.EndService`, which `Deps.End` carries.
+A session without one ends at once: `ActiveWork` is empty, `AcceptEnd` accepts,
+`WaitForEnd` settles immediately and `RunExitAnalysis` refuses with
+`CodeNoRunner`, so only a test builds one. `Close` marks the session closed,
+drops a paused plan run and the run in flight, settles every pending request as
+shut down, shuts the state down and closes the change signal; it cancels the
+run only after releasing its lock, and closing a closed session does nothing.
+`runTurn` refuses a session that closed between `Prompt`'s check and the slot,
+so no run can start between `Close` and its cancel. `Postmortem` builds and
+writes the report agent side, where the TUI's exit path wrote it: the same home
+lookup, project slug and file name. `Deps.NewSession` carries the runtime's
+new-session factory; `Host.NewSession` closes the session it replaces and
+returns `swap` over the new state, and `swap` is unexported now that nothing
+outside the package calls it.
+
+The runtime answers the calls through the new `internal/app/ending.go`:
+`endService` converts the runtime's shapes to the wire's and leaves every
+decision to the runtime, and `bindTurnDeps` binds it as `Deps.End` together with
+`Deps.NewSession`. `rt.NewSession` and `newSessionLocked` return only the state;
+the runner, the orchestrator, the factories and the registry are installed on
+the runtime and reached from there. `Run`'s swapper goes through
+`seamHost.NewSession` and reads the state and registry under `rt.mu` after it
+returns, and the exit analysis reads `rt.TurnRunner()` under that lock rather
+than `rt.Runner`, which a reload may replace.
+
+The TUI ends and swaps through the session. `beginEnd`, `acceptEnd`,
+`settleEnd`, `refreshEndWarning`, the postmortem extraction, the scoped exit
+analysis and the postmortem answer all reach `m.sess`, and the model's snapshot
+is the wire's `EndWork`. `EndController`, `WithEndController`, `EndWorkSnapshot`,
+`EndWorkItem`, `EndAcceptRequest`, `EndDecision`, `EndIntentExit`,
+`EndIntentReplace` and `writePostmortemFor` are deleted, with `app.go`'s
+`tuiEndController` and its snapshot converter. `finishQuit` calls `Close` where
+it called `ResolvePendingForShutdown()` and no longer calls `Shutdown()`.
+`SessionSwapResult`, `SessionSwapper`, `SessionSwapperFunc`,
+`WithSessionSwapper` and the `sessionSwapper` field are deleted: `/new` and
+`/clear` ask `Host.NewSession`, and `WithLegacySession` re-reads the runtime's
+current state and tool registry for the groups plans 6 to 8 move. A host
+without `NewSession` fails the swap with "Failed to start new session: inproc:
+new sessions are not available" instead of the deleted "New session is not
+available in this build." branch.
+
+A replacement leaves the end idle (the spec's decision 10). Since `e57821a4`,
+`finishReplacement` set the end stage to finishing and nothing reset it, so
+after a `/new` or `/clear` every run was refused with "The conversation is
+ending; this request was not started.", a second `/new` quit Marshal without
+starting a session, `/exit` and Ctrl+C quit at once with no warning and no
+postmortem question, and `/resume` exited instead of resuming.
+`startNewSession` now returns the end to idle before it asks the host, whether
+the new session starts or fails, so a retried `/new` goes through acceptance
+again.
+
+T1b gains two names, `ResolvePendingForShutdown` and `Shutdown`, at plan `5e`.
+The allowlist loses `model.go`'s `marshal/internal/postmortem`;
+`commands_dispatch.go` keeps `marshal/internal/app/session` for its notes and
+`model.go` keeps `marshal/internal/tools/registry` for the roster's registry.

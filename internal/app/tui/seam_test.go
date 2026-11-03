@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -157,6 +158,11 @@ type fakeHost struct{ shared bool }
 
 func (h fakeHost) SharedFilesystem() bool { return h.shared }
 
+// NewSession refuses: the tests drive one session built by testSession.
+func (h fakeHost) NewSession(context.Context, string) (acpclient.Session, error) {
+	return nil, errors.New("fakeHost creates no sessions")
+}
+
 // seamState builds a state for the seam tests.
 func seamState(t *testing.T, id string) *session.State {
 	t.Helper()
@@ -215,9 +221,8 @@ func TestNewSessionSwapsTheClientSession(t *testing.T) {
 	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: "old"})
 	newState := session.New(config.Default(), "/repo", time.Unix(200, 0), session.Persistence{SessionID: "new"})
 
-	cmdReg := setupCmdReg(t)
-	swapper := &fakeSessionSwapper{newState: newState}
-	model := testModel(oldState, WithCommandRegistry(cmdReg), WithSessionSwapper(swapper))
+	f := &fakeNewSession{newState: newState}
+	model := testModelReplacing(t, oldState, f, &endTestController{})
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -226,11 +231,13 @@ func TestNewSessionSwapsTheClientSession(t *testing.T) {
 	}
 
 	model.input.SetValue("/new")
-	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m := updated.(*Model)
+	updated, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m := asModel(t, updated)
+	// The swap follows the settled end.
+	m, _ = runEndCmd(t, m, cmd)
 
-	if !swapper.called {
-		t.Fatal("expected session swapper to be called")
+	if f.called == 0 {
+		t.Fatal("expected the host to create a new session")
 	}
 	if m.state != newState {
 		t.Fatal("expected model state to be swapped to the new session")
@@ -240,37 +247,5 @@ func TestNewSessionSwapsTheClientSession(t *testing.T) {
 	}
 	if !strings.Contains(m.state.Messages()[0].Content, "Started new conversation") {
 		t.Errorf("expected the new-session system message, got: %s", m.state.Messages()[0].Content)
-	}
-}
-
-// stateOnlySwapper swaps the legacy state but reports no client session, the
-// shape a future swapper implementation can produce.
-type stateOnlySwapper struct{ state *session.State }
-
-func (s stateOnlySwapper) NewSession(string) (SessionSwapResult, error) {
-	return SessionSwapResult{State: s.state}, nil
-}
-
-func TestNewSessionKeepsTheSeamSessionWhenTheSwapperOmitsIt(t *testing.T) {
-	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: "old"})
-	newState := session.New(config.Default(), "/repo", time.Unix(200, 0), session.Persistence{SessionID: "new"})
-
-	cmdReg := setupCmdReg(t)
-	model := testModel(oldState, WithCommandRegistry(cmdReg), WithSessionSwapper(stateOnlySwapper{state: newState}))
-	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	model = updated.(Model)
-
-	model.input.SetValue("/new")
-	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	m := updated.(*Model)
-
-	if m.state != newState {
-		t.Fatal("expected model state to be swapped to the new session")
-	}
-	if m.sess == nil {
-		t.Fatal("expected the seam session to survive a swapper that omits it")
-	}
-	if got := m.sess.ID(); got != "old" {
-		t.Fatalf("session ID after the swap = %q, want old", got)
 	}
 }

@@ -245,4 +245,16 @@ func TestBindTurnDepsServesTheRuntime(t *testing.T) {
 	if d.AuthorPlan == nil {
 		t.Error("bindTurnDeps left AuthorPlan unset")
 	}
+
+	// The end seam and the new-session call are bound to this runtime too.
+	end, ok := d.End.(*endService)
+	if !ok {
+		t.Fatalf("bindTurnDeps bound End to %T, want *endService", d.End)
+	}
+	if end.rt != rt {
+		t.Error("bindTurnDeps bound End to a different runtime")
+	}
+	if d.NewSession == nil {
+		t.Error("bindTurnDeps left NewSession unset")
+	}
 }

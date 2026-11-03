@@ -2503,68 +2503,6 @@ func (s *staticRouteResolver) Resolve(string) (routing.Route, provider.Provider,
 	return s.route, s.provider, nil
 }
 
-// tuiEndController is the runtime adapter behind tui.EndController. It converts
-// the runtime's own shapes into the TUI's neutral mirrors and delegates every
-// decision back to the runtime, so the model never sees a session, a policy
-// engine or a process.
-type tuiEndController struct {
-	rt *Runtime
-}
-
-// ActiveWork reports the runtime's current conversation work.
-func (c *tuiEndController) ActiveWork() tui.EndWorkSnapshot {
-	return tuiEndWorkSnapshot(c.rt.ActiveWork())
-}
-
-// AcceptEnd submits one end acceptance and reports it in the TUI's shape.
-func (c *tuiEndController) AcceptEnd(req tui.EndAcceptRequest) (tui.EndDecision, error) {
-	decision, err := c.rt.AcceptEnd(EndAcceptRequest{
-		Intent:           EndIntent(req.Intent),
-		DisplayedIDs:     req.DisplayedIDs,
-		RequireDisplayed: req.RequireDisplayed,
-	})
-	if err != nil {
-		return tui.EndDecision{}, err
-	}
-	return tui.EndDecision{
-		Accepted: decision.Accepted,
-		Expanded: decision.Expanded,
-		Work:     tuiEndWorkSnapshot(decision.Work),
-	}, nil
-}
-
-// EndAccepted reports whether an end has been accepted.
-func (c *tuiEndController) EndAccepted() bool { return c.rt.EndAccepted() }
-
-// WaitForEnd stops and joins the accepted end's work. It accepts first and is
-// safe to retry: a failed join reports the outstanding work and never latches
-// success.
-func (c *tuiEndController) WaitForEnd(ctx context.Context) error { return c.rt.WaitForEnd(ctx) }
-
-// RunExitAnalysis runs the scoped exit-analysis pass during the postmortem
-// phase. The runtime owns the pass's elevation and joins its epoch before
-// returning.
-func (c *tuiEndController) RunExitAnalysis(ctx context.Context, goal string) error {
-	return c.rt.RunExitAnalysis(ctx, goal)
-}
-
-// tuiEndWorkSnapshot converts a runtime work snapshot to the TUI's neutral
-// mirror.
-func tuiEndWorkSnapshot(work ActiveWork) tui.EndWorkSnapshot {
-	out := tui.EndWorkSnapshot{Phase: work.Phase, Targets: work.Targets}
-	for _, item := range work.Items {
-		out.Items = append(out.Items, tui.EndWorkItem{
-			ID:         item.ID,
-			Kind:       item.Kind,
-			Label:      item.Label,
-			Group:      item.Group,
-			Parent:     item.Parent,
-			SubagentID: item.SubagentID,
-		})
-	}
-	return out
-}
-
 type actionDecodingConfig struct {
 	Native         bool
 	ResponseFormat *schema.ResponseFormat
@@ -2865,24 +2803,18 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		if rt.DataDir != "" {
 			tuiOpts = append(tuiOpts, tui.WithModelCache(rt.DataDir))
 		}
-		// /new and /clear swap in a brand-new session via the runtime. This
-		// is wired outside the ProviderError block so the commands stay
-		// available even when the initial provider build failed.
-		tuiOpts = append(tuiOpts, tui.WithSessionSwapper(tui.SessionSwapperFunc(func(name string) (tui.SessionSwapResult, error) {
-			// The runner, the pipeline factory, the override factory and the
-			// plan author factory the runtime rebuilds are reachable through
-			// the session's Deps, so the swap result does not carry them
-			// (plan 5d).
-			state, _, _, _, _, _, toolReg, err := rt.NewSession(name)
-			if err != nil {
-				return tui.SessionSwapResult{}, err
-			}
-			return tui.SessionSwapResult{
-				State:        state,
-				Session:      seamHost.Swap(state),
-				ToolRegistry: toolReg,
-			}, nil
-		})))
+		// /new and /clear create a brand-new session through the seam, and the
+		// model re-reads the runtime's current state and tool registry after
+		// the host returns, for the groups not yet behind it. This is wired
+		// outside the ProviderError block so the commands stay available even
+		// when the initial provider build failed.
+		tuiOpts = append(tuiOpts, tui.WithLegacySession(func() tui.LegacySession {
+			// The host installed the replacement before it returned, so the
+			// values read here are the new ones.
+			rt.mu.Lock()
+			defer rt.mu.Unlock()
+			return tui.LegacySession{State: rt.State, ToolRegistry: rt.ToolRegistry}
+		}))
 
 		logger.Info("marshal started", "project", cfg.Project.Name, "working_dir", workingDir)
 
@@ -2932,16 +2864,12 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// after the epoch's work is joined. The transport and model never grant
 		// access themselves.
 		rt.SetExitAnalysisOperation(func(analysisCtx context.Context, scope *session.ExitAnalysisScope, goal string) error {
-			if rt.Runner == nil {
+			runner := rt.TurnRunner()
+			if runner == nil {
 				return fmt.Errorf("exit analysis: no agent runner")
 			}
-			return rt.Runner.Run(analysisCtx, goal)
+			return runner.Run(analysisCtx, goal)
 		})
-
-		// The TUI's structural end seam: acceptance, settlement and the scoped
-		// exit analysis are reached through neutral data, so the model decides
-		// nothing about policy or processes.
-		tuiOpts = append(tuiOpts, tui.WithEndController(&tuiEndController{rt: rt}))
 
 		progResult := runOpts.programRunner(ctx, tui.New(seamHost, seamSession, tuiOpts...), stdout)
 

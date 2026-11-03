@@ -592,7 +592,7 @@ func TestAClosedSessionStartsNoPipeline(t *testing.T) {
 			return acpwire.AuthoredPlan{}, nil
 		},
 	})
-	host.Swap(newState(t, "s2"))
+	host.swap(newState(t, "s2"))
 
 	refused := func(name string, err error) {
 		t.Helper()

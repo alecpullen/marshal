@@ -152,7 +152,7 @@ func TestCallersIsNilWithoutALookup(t *testing.T) {
 
 func TestCallersOnAReplacedSessionFails(t *testing.T) {
 	h, old := New(Deps{State: newState(t, "s1"), ReferenceFinder: &fakeFinder{ok: true}})
-	h.Swap(newState(t, "s2"))
+	h.swap(newState(t, "s2"))
 
 	if _, err := old.Callers(context.Background(), "tool:1:c1"); !acpclient.IsCode(err, acpwire.CodeSessionClosed) {
 		t.Fatalf("Callers on a closed session = %v, want the %q code", err, acpwire.CodeSessionClosed)

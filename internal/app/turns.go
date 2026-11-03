@@ -151,4 +151,6 @@ func bindTurnDeps(d *inproc.Deps, rt *Runtime) {
 	d.NewPlanRun = rt.NewPlanRun
 	d.PlanPreflight = rt.PlanPreflight
 	d.AuthorPlan = rt.AuthorPlan
+	d.End = &endService{rt: rt}
+	d.NewSession = rt.NewSession
 }

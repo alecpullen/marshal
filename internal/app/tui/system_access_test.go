@@ -156,7 +156,7 @@ func TestPostmortemAgentPassScopedElevation(t *testing.T) {
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "prompt"
 	ctrl := &endTestController{}
-	m := testModel(state, WithEndController(ctrl))
+	m := testModelEnding(state, ctrl)
 	m.resize(80, 24)
 	act := interaction.ModeAct
 	if _, err := state.ApplyInteraction(interaction.Patch{Mode: &act}); err != nil {
@@ -197,7 +197,7 @@ func TestEndAnalysisFailureLeavesNoElevation(t *testing.T) {
 	state := postmortemTestState(t, "sess-sysrefused")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	ctrl := &endTestController{analysisErr: errors.New("refused")}
-	m := testModel(state, WithEndController(ctrl))
+	m := testModelEnding(state, ctrl)
 	m.resize(80, 24)
 	m.endAnalyzing = true
 

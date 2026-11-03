@@ -133,6 +133,11 @@ var movedStateReads = map[string]string{
 	"EndTurnStop":     "5d",
 	"RequestTurnStop": "5d",
 	"SetActivity":     "5d",
+
+	// Quitting closes the session since 5e: Close settles the pending requests
+	// and shuts the state down agent side.
+	"ResolvePendingForShutdown": "5e",
+	"Shutdown":                  "5e",
 }
 
 // movedReadSites returns one "<line>\t<Name>" entry per selector X.Sel in f

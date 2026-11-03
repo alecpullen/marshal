@@ -294,7 +294,7 @@ func TestASwapSubscribesTheNewSessionAfresh(t *testing.T) {
 	h, old := New(Deps{State: newState(t, "s1"), Work: f})
 
 	f.setSnapshot(viewmodel.WorkSnapshot{ConversationID: "s2", Revision: 1})
-	fresh := h.Swap(newState(t, "s2"))
+	fresh := h.swap(newState(t, "s2"))
 
 	got, ok := fresh.Work()
 	if !ok {
@@ -404,7 +404,7 @@ func TestInspectAndStopNameTheirTarget(t *testing.T) {
 func TestAClosedSessionServesNoWorkCalls(t *testing.T) {
 	f := &fakeWork{}
 	h, old := New(Deps{State: newState(t, "s1"), Work: f})
-	h.Swap(newState(t, "s2"))
+	h.swap(newState(t, "s2"))
 
 	ctx := context.Background()
 	_, listErr := old.ListWork(ctx, acpwire.WorkQuery{View: "history"})

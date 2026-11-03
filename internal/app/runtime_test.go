@@ -575,7 +575,7 @@ func TestRuntimeNewSessionWithName(t *testing.T) {
 	}
 	defer rt.Close(ctx)
 
-	state, _, _, _, _, _, _, err := rt.NewSession("fix-auth")
+	state, err := rt.NewSession("fix-auth")
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -587,7 +587,7 @@ func TestRuntimeNewSessionWithName(t *testing.T) {
 	}
 
 	// Empty name preserves auto-title behavior.
-	state2, _, _, _, _, _, _, err := rt.NewSession("")
+	state2, err := rt.NewSession("")
 	if err != nil {
 		t.Fatalf("NewSession empty: %v", err)
 	}
@@ -632,7 +632,7 @@ func TestRuntimeNewSessionReloadsLayerSnapshot(t *testing.T) {
 		t.Fatal("test premise broken: startup snapshot already saw the post-startup write")
 	}
 
-	state, _, _, _, _, _, _, err := rt.NewSession("layers-refresh")
+	state, err := rt.NewSession("layers-refresh")
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1737,7 +1737,7 @@ func TestRuntimeNewAndResumedSessionResetAccess(t *testing.T) {
 		t.Fatalf("granted pair = %+v, want %+v", got, want)
 	}
 
-	newState, _, _, _, _, _, _, err := rt.NewSession("")
+	newState, err := rt.NewSession("")
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -3522,7 +3522,7 @@ func TestRuntimeSendNowReplacementRejectsOldBinding(t *testing.T) {
 		t.Fatalf("pre-replacement SubmitSendNow: %v", err)
 	}
 
-	newState, _, _, _, _, _, _, err := rt.NewSession("replacement")
+	newState, err := rt.NewSession("replacement")
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -4343,7 +4343,7 @@ func TestWorkRuntimeReplacementCannotReceiveOldEpoch(t *testing.T) {
 		t.Fatal("startup did not install a work coordinator")
 	}
 
-	newState, _, _, _, _, _, _, err := rt.NewSession("")
+	newState, err := rt.NewSession("")
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -4399,7 +4399,7 @@ func TestWorkTUIFacadeReplacementUsesNewConversation(t *testing.T) {
 		t.Fatalf("the facade reported no conversation: %+v", oldSnap)
 	}
 
-	newState, _, _, _, _, _, _, err := rt.NewSession("")
+	newState, err := rt.NewSession("")
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

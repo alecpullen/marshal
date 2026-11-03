@@ -173,7 +173,7 @@ func TestSheetOfAReplacedSessionKeepsItsFinalValues(t *testing.T) {
 	oldState := newState(t, "s1")
 	oldState.LogToolCall(registry.AuditEvent{Timestamp: time.Unix(10, 0), ToolName: "final-probe"})
 	h, old := New(Deps{State: oldState})
-	h.Swap(newState(t, "s2"))
+	h.swap(newState(t, "s2"))
 
 	got := old.Sheet(0)
 	if want := []acpwire.SheetTool{{Name: "final-probe", Calls: 1}}; !reflect.DeepEqual(got.Tools, want) {
@@ -507,7 +507,7 @@ func TestRefreshSheetFiresChanged(t *testing.T) {
 // swap replaced refuses to read.
 func TestRefreshSheetOnAReplacedSessionFails(t *testing.T) {
 	h, old := New(Deps{State: newState(t, "s1")})
-	h.Swap(newState(t, "s2"))
+	h.swap(newState(t, "s2"))
 
 	err := old.RefreshSheet(context.Background(), acpwire.SheetRefresh{Stats: true})
 	if !acpclient.IsCode(err, acpwire.CodeSessionClosed) {

@@ -843,7 +843,7 @@ func TestAClosedSessionAnswersNothing(t *testing.T) {
 		t.Fatalf("RegisterApproval: %v", err)
 	}
 
-	host.Swap(newState(t, "s2"))
+	host.swap(newState(t, "s2"))
 
 	ctx := context.Background()
 	for _, tc := range []struct {

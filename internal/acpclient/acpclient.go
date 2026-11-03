@@ -33,6 +33,13 @@ type Host interface {
 	// ACP: none (a property of the transport; true for the in-process
 	// adapter and for P3's pipe).
 	SharedFilesystem() bool
+
+	// NewSession creates a session in the agent and makes it the current one,
+	// closing the session it replaces. A name that is not empty is the new
+	// session's title. A failure leaves the current session as it was.
+	//
+	// ACP: session/new (exists).
+	NewSession(ctx context.Context, name string) (Session, error)
 }
 
 // Session is one conversation the TUI drives. It gains its groups' methods
@@ -356,4 +363,47 @@ type Session interface {
 	//
 	// ACP: session/sdd_author (new in P3).
 	AuthorPlan(ctx context.Context, params acpwire.AuthorPlanParams) (acpwire.AuthoredPlan, error)
+
+	// ActiveWork is the work an end of the session would stop, as the
+	// active-work warning shows it. It is read without blocking; AcceptEnd
+	// checks the user's choice against the live membership.
+	//
+	// ACP: session/end_work (new in P3). An end_work update refreshes it.
+	ActiveWork() acpwire.EndWork
+
+	// AcceptEnd accepts an end of the session for params' intent. It checks
+	// the displayed IDs and freezes the session's admission in one step: when
+	// work the user was not shown is active, it freezes and stops nothing and
+	// reports that work in Expanded. Accepting an end already accepted changes
+	// nothing.
+	//
+	// ACP: session/end_accept (new in P3).
+	AcceptEnd(ctx context.Context, params acpwire.EndAcceptParams) (acpwire.EndDecision, error)
+
+	// WaitForEnd stops and joins the accepted end's work. It may be retried: a
+	// failure reports the work still outstanding and never latches success.
+	//
+	// ACP: session/end_wait (new in P3).
+	WaitForEnd(ctx context.Context) error
+
+	// RunExitAnalysis runs the exit postmortem's agent pass with goal, after an
+	// accepted exit has settled. The agent grants the pass its access, restores
+	// it afterwards, and joins the pass's work before returning.
+	//
+	// ACP: session/exit_analysis (new in P3).
+	RunExitAnalysis(ctx context.Context, goal string) error
+
+	// Postmortem writes the session's postmortem report and returns the path
+	// it wrote.
+	//
+	// ACP: session/postmortem (new in P3).
+	Postmortem(ctx context.Context) (string, error)
+
+	// Close ends the session: it cancels the run in flight, settles every
+	// pending request as shut down, and shuts the session down. Reads keep
+	// answering with their final values, and calls fail. Closing a closed
+	// session does nothing.
+	//
+	// ACP: session/close (exists).
+	Close(ctx context.Context) error
 }

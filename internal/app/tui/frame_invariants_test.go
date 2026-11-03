@@ -188,7 +188,7 @@ func TestFrameInvariants(t *testing.T) {
 		// described beneath them.
 		{"ending+warning", func(t *testing.T, m *Model) {
 			ctrl := &endTestController{work: longWorkSnapshot(12)}
-			m.endController = ctrl
+			*m = withEndService(*m, ctrl)
 			m.state.Config.Postmortem.OnExit = "never"
 			if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
 				t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
@@ -196,8 +196,7 @@ func TestFrameInvariants(t *testing.T) {
 		}},
 		{"ending+warning+replacement", func(t *testing.T, m *Model) {
 			ctrl := &endTestController{work: longWorkSnapshot(12)}
-			m.endController = ctrl
-			m.sessionSwapper = &fakeSessionSwapper{}
+			*m = withEndService(*m, ctrl)
 			if cmd := m.beginEnd(&endIntent{kind: EndIntentReplace}); cmd != nil {
 				t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
 			}
@@ -205,7 +204,7 @@ func TestFrameInvariants(t *testing.T) {
 		{"ending+postmortem-question", func(t *testing.T, m *Model) {
 			m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 			m.state.Config.Postmortem.OnExit = "prompt"
-			m.endController = &endTestController{}
+			*m = withEndService(*m, &endTestController{})
 			m.end = &endIntent{kind: EndIntentExit}
 			m.endAnswered = false
 			m.endStage = endPostmortem
@@ -214,7 +213,7 @@ func TestFrameInvariants(t *testing.T) {
 		{"ending+postmortem-agent-question", func(t *testing.T, m *Model) {
 			m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 			m.state.Config.Postmortem.OnExit = "prompt"
-			m.endController = &endTestController{}
+			*m = withEndService(*m, &endTestController{})
 			m.end = &endIntent{kind: EndIntentExit}
 			m.endStage = endPostmortem
 			m.openPostmortemPrompt()
@@ -226,10 +225,10 @@ func TestFrameInvariants(t *testing.T) {
 		}},
 		{"ending+stopping", func(t *testing.T, m *Model) {
 			ctrl := &endTestController{work: longWorkSnapshot(12)}
-			ctrl.acceptFn = func(EndAcceptRequest) (EndDecision, error) {
-				return EndDecision{Accepted: true, Work: longWorkSnapshot(12)}, nil
+			ctrl.acceptFn = func(acpwire.EndAcceptParams) (acpwire.EndDecision, error) {
+				return acpwire.EndDecision{Accepted: true, Work: longWorkSnapshot(12)}, nil
 			}
-			m.endController = ctrl
+			*m = withEndService(*m, ctrl)
 			m.state.Config.Postmortem.OnExit = "never"
 			if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
 				t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
@@ -287,12 +286,11 @@ func TestFrameInvariants(t *testing.T) {
 
 // longWorkSnapshot builds an n-item membership, so the ending panels are
 // rendered with content long enough to exercise the height budget.
-func longWorkSnapshot(n int) EndWorkSnapshot {
-	snap := EndWorkSnapshot{Phase: "open"}
+func longWorkSnapshot(n int) acpwire.EndWork {
+	snap := acpwire.EndWork{}
 	for i := 0; i < n; i++ {
 		id := fmt.Sprintf("job-%d", i)
-		snap.Items = append(snap.Items, EndWorkItem{ID: id, Kind: "command", Label: fmt.Sprintf("a rather long running command label %d", i)})
-		snap.Targets = append(snap.Targets, id)
+		snap.Items = append(snap.Items, acpwire.EndWorkItem{ID: id, Label: fmt.Sprintf("a rather long running command label %d", i)})
 	}
 	return snap
 }

@@ -84,6 +84,14 @@ type Deps struct {
 	NewPlanRun    func(params acpwire.SDDParams) (PlanRun, error)
 	PlanPreflight func(ctx context.Context, params acpwire.PlanPreflightParams) (acpwire.PlanPreflight, error)
 	AuthorPlan    func(ctx context.Context, params acpwire.AuthorPlanParams) (acpwire.AuthoredPlan, error)
+
+	// End is the runtime's end service. Without it the session has no work to
+	// warn about: ActiveWork is empty, AcceptEnd accepts, WaitForEnd settles
+	// at once, and RunExitAnalysis refuses with CodeNoRunner.
+	End EndService
+	// NewSession creates a session in the runtime and returns its state.
+	// Without it, Host.NewSession fails.
+	NewSession func(name string) (*session.State, error)
 }
 
 // ReferenceFinder resolves what references a symbol. ok is false when no
@@ -146,6 +154,9 @@ type Session struct {
 	newPlanRun     func(acpwire.SDDParams) (PlanRun, error)
 	planPreflight  func(context.Context, acpwire.PlanPreflightParams) (acpwire.PlanPreflight, error)
 	authorPlan     func(context.Context, acpwire.AuthorPlanParams) (acpwire.AuthoredPlan, error)
+	// end is the runtime's end service. Nil means the session has no work to
+	// warn about.
+	end EndService
 	// paused is the plan run its human gate paused, nil when none. It is
 	// guarded by mu.
 	paused PlanRun
@@ -188,9 +199,16 @@ func New(d Deps) (*Host, *Session) {
 	return &Host{deps: d, current: sess}, sess
 }
 
-// Swap closes the current session and returns a new one over state. It serves
-// today's swap path; plan 5 replaces it with Host.NewSession and Host.Resume.
-func (h *Host) Swap(state *session.State) *Session {
+// swap closes the current session and returns a new one over state. It is the
+// host's own swap path: NewSession is what callers use, and it reaches this
+// after the runtime has created the state.
+//
+// The close is deliberately minimal — it marks the session closed, cancels its
+// run and its change signal — because the runtime has already quiesced and shut
+// the replaced state down before it builds the new one. Deps.NewSession must
+// keep that promise: a factory that leaves the old state alive would leave the
+// swapped-out session's pending requests open.
+func (h *Host) swap(state *session.State) *Session {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.current != nil {

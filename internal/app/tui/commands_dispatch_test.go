@@ -192,7 +192,7 @@ func TestExitCommandsWithoutWorkExitDirectly(t *testing.T) {
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModel(state, WithCommandRegistry(reg), WithEndController(&endTestController{}))
+	m := testModelEnding(state, &endTestController{}, WithCommandRegistry(reg))
 	m.resize(80, 24)
 
 	updated, cmd := m.dispatchCommand("/quit")
@@ -213,7 +213,7 @@ func TestExitCommandsWithoutWorkExitDirectly(t *testing.T) {
 // TestClearAliasWarnsLikeNew pins that /clear shares /new's replacement path,
 // including the warning.
 func TestClearAliasWarnsLikeNew(t *testing.T) {
-	m, ctrl, swapper := newSessionWarningModel(t, workSnapshot("job-1"))
+	m, ctrl, f := newSessionWarningModel(t, workSnapshot("job-1"))
 
 	updated, cmd := m.dispatchCommand("/clear")
 	m = asModel(t, updated)
@@ -224,7 +224,7 @@ func TestClearAliasWarnsLikeNew(t *testing.T) {
 	if _, ok := m.dock.Panel().(*activeworkpanel.Panel); !ok {
 		t.Fatalf("dock panel = %T, want the replacement warning", m.dock.Panel())
 	}
-	if swapper.called {
+	if f.called > 0 {
 		t.Fatal("/clear built a session before the user decided")
 	}
 	if len(ctrl.accepted) != 0 {

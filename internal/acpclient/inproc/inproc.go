@@ -75,6 +75,15 @@ type Deps struct {
 	RunAgent       func(ctx context.Context, params acpwire.AgentRunParams) error
 	Suggest        func(ctx context.Context, lastMessage string) (string, error)
 	VerifyProposal func(ctx context.Context) (acpwire.VerifyCommands, error)
+
+	// Swarm, NewPlanRun, PlanPreflight and AuthorPlan are the runtime's
+	// pipeline calls. Each reads the runtime's current orchestrator or
+	// factory, so the same Deps keep working after a swap and a reload.
+	// Without one, the matching Session call refuses with CodeNoRunner.
+	Swarm         func(ctx context.Context, params acpwire.SwarmParams) error
+	NewPlanRun    func(params acpwire.SDDParams) (PlanRun, error)
+	PlanPreflight func(ctx context.Context, params acpwire.PlanPreflightParams) (acpwire.PlanPreflight, error)
+	AuthorPlan    func(ctx context.Context, params acpwire.AuthorPlanParams) (acpwire.AuthoredPlan, error)
 }
 
 // ReferenceFinder resolves what references a symbol. ok is false when no
@@ -133,6 +142,13 @@ type Session struct {
 	runAgent       func(context.Context, acpwire.AgentRunParams) error
 	suggest        func(context.Context, string) (string, error)
 	verifyProposal func(context.Context) (acpwire.VerifyCommands, error)
+	swarm          func(context.Context, acpwire.SwarmParams) error
+	newPlanRun     func(acpwire.SDDParams) (PlanRun, error)
+	planPreflight  func(context.Context, acpwire.PlanPreflightParams) (acpwire.PlanPreflight, error)
+	authorPlan     func(context.Context, acpwire.AuthorPlanParams) (acpwire.AuthoredPlan, error)
+	// paused is the plan run its human gate paused, nil when none. It is
+	// guarded by mu.
+	paused PlanRun
 	// turn is the run in flight, nil when none. It is guarded by mu.
 	turn *turnSlot
 

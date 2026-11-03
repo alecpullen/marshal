@@ -54,4 +54,10 @@ var Methods = []Method{
 	{Iface: "Session", Name: "RunAgent", ACP: "session/agent_run"},
 	{Iface: "Session", Name: "Suggest", ACP: "session/suggest"},
 	{Iface: "Session", Name: "VerifyProposal", ACP: "session/verify_proposal"},
+	{Iface: "Session", Name: "StartSwarm", ACP: "session/swarm_start", Exists: true},
+	{Iface: "Session", Name: "PlanPreflight", ACP: "session/sdd_preflight"},
+	{Iface: "Session", Name: "StartSDD", ACP: "session/sdd_start", Exists: true},
+	{Iface: "Session", Name: "AnswerSDDGate", ACP: "session/sdd_answer", Exists: true},
+	{Iface: "Session", Name: "StopSDD", ACP: "session/sdd_stop"},
+	{Iface: "Session", Name: "AuthorPlan", ACP: "session/sdd_author"},
 }

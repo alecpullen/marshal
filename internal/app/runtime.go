@@ -21,7 +21,6 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/logging"
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui"
 	"marshal/internal/commands"
 	"marshal/internal/db"
 	"marshal/internal/hooks"
@@ -120,10 +119,10 @@ type Runtime struct {
 	// PipelineFactory builds a plan-execution runner for one plan file.
 	// The overrides map carries per-run role→preset overrides from the
 	// castlist; nil when no overrides are set.
-	PipelineFactory func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner
+	PipelineFactory func(planPath string, overrides map[routing.AgentRole]string) PipelineRunner
 	// SwarmOverrideFactory builds a per-run swarm.RunnerFactory with
 	// role→preset overrides applied. Nil when the runtime has no provider.
-	SwarmOverrideFactory tui.SwarmOverrideFactory
+	SwarmOverrideFactory SwarmOverrideFactory
 	// PlanAuthorFactory builds a scoped SDD plan-authoring runner for one
 	// request. Set by startRuntime and replaced on config reload.
 	PlanAuthorFactory sddauthor.Factory
@@ -1993,7 +1992,7 @@ func autoloadSkills(cfg config.Config, idx *skills.Index, state *session.State, 
 // an explicit error: reopening it implicitly would put a live conversation back
 // beside whatever the replacement was for, and transferring its jobs would give
 // them an owner that never admitted them.
-func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swarm.Orchestrator, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, *registry.Registry, error) {
+func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swarm.Orchestrator, func(planPath string, overrides map[routing.AgentRole]string) PipelineRunner, sddauthor.Factory, SwarmOverrideFactory, *registry.Registry, error) {
 	// Serialize the whole replacement against config reloads, and hold that gate
 	// across the entire build/install transaction: a concurrent config reload or
 	// access resolution must not observe (or apply to) a half-installed session,
@@ -2011,7 +2010,7 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 }
 
 // newSessionLocked is NewSession's body. It expects reloadMu held.
-func (rt *Runtime) newSessionLocked(name string, replacing bool) (*session.State, *agent.Runner, *swarm.Orchestrator, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, *registry.Registry, error) {
+func (rt *Runtime) newSessionLocked(name string, replacing bool) (*session.State, *agent.Runner, *swarm.Orchestrator, func(planPath string, overrides map[routing.AgentRole]string) PipelineRunner, sddauthor.Factory, SwarmOverrideFactory, *registry.Registry, error) {
 	// Validate the configured starting tuple before any row is created: a
 	// malformed default must fail the replacement explicitly, not start a
 	// conversation under a silently substituted Ask.

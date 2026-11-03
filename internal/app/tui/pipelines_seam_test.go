@@ -3,9 +3,11 @@ package tui
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -15,6 +17,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/castlist"
 	"marshal/internal/app/tui/gatepanel"
+	"marshal/internal/app/tui/sddreview"
 )
 
 // fakePlanRun is a plan run whose first gates runs pause at the human gate,
@@ -207,6 +210,170 @@ func TestSwarmWithoutAnAgentIsUnavailable(t *testing.T) {
 		last = msgs[len(msgs)-1].Content
 	}
 	if last != "Swarm is not available (agent failed to initialise)." {
+		t.Fatalf("last message = %q, want the unavailable note", last)
+	}
+}
+
+// countContaining returns how many transcript rows contain want.
+func countContaining(msgs []session.Message, want string) int {
+	n := 0
+	for _, msg := range msgs {
+		if strings.Contains(msg.Content, want) {
+			n++
+		}
+	}
+	return n
+}
+
+// TestAuthoringGoesThroughTheSession pins decision 6 at the TUI: /sdd new is
+// one session call on the run path, carrying the goal and the design, and the
+// review opens on the candidate the session returned.
+func TestAuthoringGoesThroughTheSession(t *testing.T) {
+	m, rec := authoringModel(t)
+
+	updated, cmd := m.dispatchCommand("/sdd new add marker file")
+	m = asModel(t, updated)
+	if cmd == nil {
+		t.Fatal("/sdd new returned no command")
+	}
+	m = runAuthoringCmd(t, m, cmd)
+
+	want := acpwire.AuthorPlanParams{Goal: "add marker file", Design: "add marker file"}
+	if len(rec.authors) != 1 || rec.authors[0] != want {
+		t.Fatalf("AuthorPlan params = %+v, want one %+v", rec.authors, want)
+	}
+	panel, ok := m.dock.Panel().(*sddreview.Panel)
+	if !ok {
+		t.Fatalf("expected *sddreview.Panel, got %T", m.dock.Panel())
+	}
+	path := panel.CandidatePath()
+	if path == "" {
+		t.Fatal("the review opened on no candidate path")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("the review must open on the returned candidate %q: %v", path, err)
+	}
+}
+
+// TestAStoppedAuthoringIsNotAFailure is decision 11's regression test: a
+// stopped authoring run is a stop, not a failure, and it is reported once.
+func TestAStoppedAuthoringIsNotAFailure(t *testing.T) {
+	started := make(chan struct{})
+	m := testModelTurns(t, inproc.Deps{
+		State:  controlsState(t),
+		Runner: runnerOf(&testAgentRunner{}),
+		AuthorPlan: func(ctx context.Context, _ acpwire.AuthorPlanParams) (acpwire.AuthoredPlan, error) {
+			close(started)
+			<-ctx.Done()
+			return acpwire.AuthoredPlan{}, ctx.Err()
+		},
+	}, &turnRecorder{}, WithCommandRegistry(setupCmdReg(t)))
+
+	updated, cmd := m.dispatchCommand("/sdd new x")
+	m = asModel(t, updated)
+	if cmd == nil {
+		t.Fatal("/sdd new returned no command")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok || len(batch) == 0 {
+		t.Fatalf("/sdd new cmd = %T, want a batch led by the run", cmd())
+	}
+	finished := make(chan tea.Msg, 1)
+	go func() { finished <- batch[0]() }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("the authoring run never started")
+	}
+
+	if !m.cancelTurn() {
+		t.Fatal("cancelTurn reported no in-flight turn")
+	}
+	var msg tea.Msg
+	select {
+	case msg = <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("the stopped authoring run never finished")
+	}
+	updated, _ = m.Update(msg)
+	m = asModel(t, updated)
+
+	if n := countContaining(m.state.Messages(), "Plan authoring failed"); n != 0 {
+		t.Fatalf("a stopped authoring reported %d failure rows, want none", n)
+	}
+	if notice, ok := m.state.Notice(); ok {
+		t.Fatalf("a stopped authoring set a notice: %+v", notice)
+	}
+	if m.cancelling {
+		t.Fatal("a stopped authoring left the model cancelling")
+	}
+	if n := countContaining(m.state.Messages(), "Agent turn cancelled."); n != 1 {
+		t.Fatalf("\"Agent turn cancelled.\" rows = %d, want exactly 1", n)
+	}
+
+	// A later turn end must not report the same cancel a second time.
+	m.busy = true
+	m, _ = m.handleAgentFinished(agentFinishedMsg{})
+	if n := countContaining(m.state.Messages(), "Agent turn cancelled."); n != 1 {
+		t.Fatalf("\"Agent turn cancelled.\" rows after the turn end = %d, want exactly 1", n)
+	}
+}
+
+// TestARefusedAuthoringIsReported pins that a session that refuses the run
+// names the refusal and leaves the model idle, exactly as a refused prompt
+// does.
+func TestARefusedAuthoringIsReported(t *testing.T) {
+	state := controlsState(t)
+	rec := &turnRecorder{}
+	m := testModelTurns(t, inproc.Deps{
+		State:      state,
+		Runner:     runnerOf(&testAgentRunner{}),
+		AuthorPlan: fakeAuthorPlan(state),
+	}, rec, WithCommandRegistry(setupCmdReg(t)))
+	state.BeginQuiesce()
+
+	updated, cmd := m.dispatchCommand("/sdd new x")
+	m = asModel(t, updated)
+	if cmd == nil {
+		t.Fatal("/sdd new returned no command")
+	}
+	m = runAuthoringCmd(t, m, cmd)
+
+	msgs := m.state.Messages()
+	last := ""
+	if len(msgs) > 0 {
+		last = msgs[len(msgs)-1].Content
+	}
+	if last != "Cannot start work: session is quiescing" {
+		t.Fatalf("last message = %q, want the refused-start note", last)
+	}
+	if m.busy {
+		t.Fatal("a refused authoring must leave the model idle")
+	}
+}
+
+// TestAuthoringWithoutAnAgentIsUnavailable pins the refusal: /sdd new with no
+// runner says so and starts nothing.
+func TestAuthoringWithoutAnAgentIsUnavailable(t *testing.T) {
+	m := testModelTurns(t, inproc.Deps{State: controlsState(t)}, &turnRecorder{}, WithCommandRegistry(setupCmdReg(t)))
+
+	updated, cmd := m.dispatchCommand("/sdd new x")
+	m = asModel(t, updated)
+	if cmd != nil {
+		t.Fatal("an unavailable authoring returned a command")
+	}
+	if m.busy {
+		t.Fatal("an unavailable authoring must not start a turn")
+	}
+	if m.dock.IsOpen() {
+		t.Fatal("an unavailable authoring must not open the dock")
+	}
+	msgs := m.state.Messages()
+	last := ""
+	if len(msgs) > 0 {
+		last = msgs[len(msgs)-1].Content
+	}
+	if last != "Plan authoring is not available (agent failed to initialise)." {
 		t.Fatalf("last message = %q, want the unavailable note", last)
 	}
 }

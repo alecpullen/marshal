@@ -30,6 +30,7 @@ type turnRecorder struct {
 	sdds       []acpwire.SDDParams           // Task 3
 	answers    []string                      // Task 3
 	sddStops   int                           // Task 3
+	authors    []acpwire.AuthorPlanParams    // plan authoring through the session
 }
 
 func (r *turnRecorder) Prompt(ctx context.Context, params acpwire.PromptParams) (acpwire.PromptResult, error) {
@@ -85,6 +86,11 @@ func (r *turnRecorder) AnswerSDDGate(ctx context.Context, answer string) error {
 func (r *turnRecorder) StopSDD(ctx context.Context) error {
 	r.sddStops++
 	return r.Session.StopSDD(ctx)
+}
+
+func (r *turnRecorder) AuthorPlan(ctx context.Context, params acpwire.AuthorPlanParams) (acpwire.AuthoredPlan, error) {
+	r.authors = append(r.authors, params)
+	return r.Session.AuthorPlan(ctx, params)
 }
 
 // testModelTurns builds a sized model over an adapter made from d whose

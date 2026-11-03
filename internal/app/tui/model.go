@@ -78,9 +78,8 @@ import (
 type SessionSwapResult struct {
 	State *session.State
 	// Session is the client session over State (P2).
-	Session           acpclient.Session
-	PlanAuthorFactory PlanAuthorFactory
-	ToolRegistry      *registry.Registry
+	Session      acpclient.Session
+	ToolRegistry *registry.Registry
 }
 
 // SessionSwapper is the runtime-facing seam the TUI uses to request a new
@@ -287,10 +286,7 @@ type Model struct {
 	// textarea, so editing a decision never shares text, cursor, placeholder
 	// or paste attachments with the chat composer underneath it.
 	approvalEdit *approvalEdit
-	// planAuthorFactory builds a scoped SDD plan-authoring runner for one
-	// request. Nil when the runtime has no provider.
-	planAuthorFactory PlanAuthorFactory
-	ctx               context.Context
+	ctx          context.Context
 	// lspCtx is the context for background LSP reference lookups. It is
 	// derived from context.Background() rather than m.ctx because m.ctx is
 	// the program's cancellable turn context and can be nil or replaced on
@@ -345,11 +341,6 @@ type Model struct {
 	skillIndex    *skills.Index
 	cmdRegistry   *commands.Registry
 	agentCancel   context.CancelFunc
-	// endPendingStop clears THIS turn's stop registration (see cancelTurn and
-	// stopTurnWork). It is stored on the model so a turn that ends normally
-	// unregisters without ever requesting execution stop — the difference
-	// between finishing and being stopped. Nil when no turn registered one.
-	endPendingStop func()
 	// syncedAccessMode is the session mode the last reconciliation adopted.
 	// The sync is edge-triggered on it: a mode the model already reflects is
 	// not re-asserted over a value another path set, while a mode the session
@@ -876,20 +867,6 @@ func WithMemoryStore(database *db.DB, projectID int64) Option {
 	return func(m *Model) {
 		m.memoryDB = database
 		m.memoryProject = projectID
-	}
-}
-
-// PlanAuthorFactory builds a scoped SDD plan-authoring runner for one
-// request. It is an alias for sddauthor.Factory so the TUI does not depend
-// on the authoring package's construction details.
-type PlanAuthorFactory = sddauthor.Factory
-
-// WithPlanAuthorFactory configures the TUI to build a scoped SDD
-// plan-authoring runner on demand when /sdd new is submitted.
-func WithPlanAuthorFactory(ctx context.Context, factory PlanAuthorFactory) Option {
-	return func(m *Model) {
-		m.ctx = ctx
-		m.planAuthorFactory = factory
 	}
 }
 
@@ -4341,7 +4318,6 @@ func (m *Model) lastAssistantText() string {
 // async command. On success the completion handler opens the review panel;
 // it never starts an SDD run.
 func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
-	st := m.sess.Status()
 	if m.endStage != endIdle {
 		// An accepted ending owns the conversation. Plan authoring is an
 		// ordinary operation and registers its own work, so it must not start
@@ -4352,7 +4328,7 @@ func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, nil
 	}
-	if m.planAuthorFactory == nil {
+	if !m.sess.Status().AgentReady {
 		m.state.AddMessage(session.RoleSystem, "Plan authoring is not available (agent failed to initialise).", session.ContentTypePlain)
 		m.refreshViewport()
 		return m, nil
@@ -4377,45 +4353,17 @@ func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, nil
 	}
-	planPath, err := sddplans.DraftPath(st.WorkingDir, m.state.Config.SDD.PlansDir, goal, m.now())
-	if err != nil {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Cannot resolve plan path: %v", err), session.ContentTypePlain)
-		m.refreshViewport()
-		return m, nil
-	}
-	author, err := m.planAuthorFactory(sddauthor.Request{
-		Goal:     goal,
-		Design:   design,
-		RepoRoot: st.WorkingDir,
-		PlanPath: planPath,
-	})
-	if err != nil {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Cannot start plan authoring: %v", err), session.ContentTypePlain)
-		m.refreshViewport()
-		return m, nil
-	}
-	if err := m.state.BeginWork(); err != nil {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Cannot start work: %v", err), session.ContentTypePlain)
-		m.refreshViewport()
-		return m, nil
-	}
-	// Register the SDD authoring operation's stop group before dispatch: the
-	// authoring run can block in provider work, and a stop must be able to
-	// name it. The author inherits this group
-	// (NewSyntheticExecutionControl), so a command it launches is reachable
-	// from the same stop.
-	releaseStop := m.beginTurnStopRegistration()
-	m.busy = true
-	m.turnStartedAt = m.now()
-	m.startHeldWindow()
-	agentCtx, cancel := context.WithCancel(m.ctx)
-	m.agentCancel = cancel
-	return *m, tea.Batch(runPlanAuthorCmd(agentCtx, m.state, author, sddauthor.Request{
-		Goal:     goal,
-		Design:   design,
-		RepoRoot: st.WorkingDir,
-		PlanPath: planPath,
-	}, releaseStop), tickCmd(), spinnerTickCmd())
+	// The session resolves the draft path, builds the author and runs it, all
+	// agent side (decision 6). The TUI only chooses the design and starts the
+	// run on the run path, so authoring gets the same admission, stop group
+	// and idle reset as every other run (decision 12).
+	sess := m.sess
+	ctx := m.beginTurn()
+	return *m, tea.Batch(
+		planAuthorCmd(ctx, sess, acpwire.AuthorPlanParams{Goal: goal, Design: design}),
+		tickCmd(),
+		spinnerTickCmd(),
+	)
 }
 
 // agentFinishedMsg reports a run's end. refusal is the note a refused start
@@ -4543,68 +4491,20 @@ func (m Model) turnSpinnerFrame() string {
 // to this turn — and refuses the stopped turn any further admission — and only
 // then does the agent's own wait/provider context get cancelled. Cancelling
 // first would leave a foreground command running with no stop request against
-// it. A run the TUI registered itself (swarm, SDD, plan authoring, until plan
-// 5d) is stopped through the state instead.
+// it. Every run the TUI starts is the session's since plan 5d, so there is no
+// TUI-owned registration left to stop.
 func (m *Model) cancelTurn() bool {
 	if m.agentCancel == nil && !m.busy {
 		return false
 	}
 	m.cancelling = true
 	_ = m.sess.Stop(m.ctx, "turn stopped")
-	if m.endPendingStop != nil {
-		m.stopTurnWork("turn stopped")
-	}
 	if m.agentCancel != nil {
 		m.agentCancel()
 		m.agentCancel = nil
 	}
 	m.refreshViewport()
 	return true
-}
-
-// stopTurnWork asks the session's explicit-stop entry point to stop this turn's
-// attached commands before any agent cancellation. A session without a command
-// service (or with no registration) reports that nothing was stopped; the
-// caller still cancels its own context, so a turn with no commands behaves
-// exactly as before this feature.
-func (m *Model) stopTurnWork(cause string) {
-	if m.state == nil {
-		return
-	}
-	if _, err := m.state.RequestTurnStop(cause); err != nil && !errors.Is(err, session.ErrNoTurnStopService) {
-		m.state.Logger().Warn("turn stop was not accepted by the command service", "error", err)
-	}
-}
-
-// beginTurnStopRegistration registers the stop group for one TUI-owned turn
-// entry point — a swarm run, an SDD run, a plan-authoring run or a /pipeline
-// run — and remembers the teardown on the model. Prompt turns, /review and
-// custom-agent runs register agent side, in the session's run path, so they
-// never reach this. The actor is empty: a TUI turn is the orchestrator's own
-// work, and the session's turn identity supplies the rest.
-//
-// It returns the teardown so a caller that never proceeds past admission can
-// clear its own registration immediately rather than leaving a stale target.
-func (m *Model) beginTurnStopRegistration() func() {
-	if m.state == nil {
-		return func() {}
-	}
-	token, _ := m.state.BeginTurnStop("")
-	stop := func() { m.state.EndTurnStop(token) }
-	m.endPendingStop = stop
-	return stop
-}
-
-// releaseTurnStop clears this turn's registration without stopping anything.
-// Called when a turn ends — normally or after a cancel (the stop decision was
-// already taken by the service) — so the next operation starts from a clean
-// registration and a stale one cannot be stopped by a later keystroke.
-func (m *Model) releaseTurnStop() {
-	if m.endPendingStop == nil {
-		return
-	}
-	m.endPendingStop()
-	m.endPendingStop = nil
 }
 
 // beginEnd accepts one interactive end request. It is the single entry point
@@ -5296,14 +5196,10 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	// suggestionCmd is the Phase 2 LLM fallback returned by computeSuggestion
 	// on the success path; nil otherwise.
 	var suggestionCmd tea.Cmd
-	// A run the session refused never started: no work is registered, no stop
-	// group needs releasing and no turn ran. The note names what refused it,
-	// and the model goes idle exactly as a finished turn does.
+	// A run the session refused never started: no work is registered, no turn
+	// ran, and the model goes idle exactly as a finished turn does. The note
+	// names what refused it.
 	if msg.refusal != "" && refusedStart(msg.err) {
-		// Symmetry with the normal finish below: a start entry point that
-		// registered a stop group and was then refused must not leave its
-		// teardown on the model, or the next Ctrl+C stops a dead operation.
-		m.releaseTurnStop()
 		m.busy = false
 		m.turnStartedAt = time.Time{}
 		m.agentCancel = nil
@@ -5332,11 +5228,6 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	m.busy = false
 	m.turnStartedAt = time.Time{}
 	m.agentCancel = nil
-	// The turn is over, so its stop registration is done. Clearing it never
-	// requests execution stop: a turn that ended normally leaves its detached
-	// commands running, and a turn that was cancelled already had its stop
-	// decision taken by the command service.
-	m.releaseTurnStop()
 	// The changed files are refreshed off-thread by the refresh returned
 	// below. An open sheet's turn and fleet values are refreshed with it,
 	// off the UI thread, so they land a moment after the turn ends.
@@ -5484,8 +5375,26 @@ func (m Model) handlePlanAuthorFinished(msg planAuthorFinishedMsg) (Model, tea.C
 	m.busy = false
 	m.turnStartedAt = time.Time{}
 	m.agentCancel = nil
-	m.releaseTurnStop()
-	m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
+	// A refused start never reached the session's run path: report it the way
+	// every other refusal is reported and stay idle.
+	if msg.refusal != "" && refusedStart(msg.err) {
+		m.cancelling = false
+		m.state.AddMessage(session.RoleSystem, msg.refusal+": "+msg.err.Error(), session.ContentTypePlain)
+		m.updateViewportHeight()
+		m.refreshViewport()
+		return m, nil
+	}
+	// A stopped authoring is not a failure. The stop already reported the
+	// cancel, and the run's context error is that stop; clearing cancelling
+	// here also re-arms Ctrl+C as a stop rather than a quit (decision 11).
+	if m.cancelling || msg.result.StopReason == acpwire.StopReasonCancelled {
+		m.cancelling = false
+		m.state.ClearNotice(session.NoticeProvider)
+		m.state.AddMessage(session.RoleSystem, "Agent turn cancelled.", session.ContentTypePlain)
+		m.updateViewportHeight()
+		m.refreshViewport()
+		return m, nil
+	}
 	if msg.err != nil {
 		m.state.SetNotice(noticeForError(msg.err, "plan-author"))
 		m.state.AddMessage(session.RoleSystem, "✘ Plan authoring failed: "+firstLine(msg.err.Error()), session.ContentTypePlain)
@@ -5495,7 +5404,7 @@ func (m Model) handlePlanAuthorFinished(msg planAuthorFinishedMsg) (Model, tea.C
 	}
 	m.state.ClearNotice(session.NoticeProvider)
 	if msg.result.AutoAccepted {
-		m.state.AddMessage(session.RoleSystem, "Plan accepted in Full Auto: "+msg.result.Request.PlanPath, session.ContentTypePlain)
+		m.state.AddMessage(session.RoleSystem, "Plan accepted in Full Auto: "+msg.result.PlanPath, session.ContentTypePlain)
 	} else {
 		m.dock.Open(sddreview.New(msg.result))
 	}

@@ -10,13 +10,12 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/postmortempanel"
 	"marshal/internal/app/tui/sddreview"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/pipeline"
-	"marshal/internal/sddauthor"
 	"marshal/internal/tools/native"
 )
 
@@ -34,7 +33,7 @@ func (p overRenderingPanel) Sizing() dock.Sizing { return dock.FullFrame }
 // wider than the panel at the supported minimum, and returns the result the
 // /sdd new flow would dock for it. The markers avoid wrap breakpoints, so only
 // a real failure can hide one.
-func generatedReviewFixture(t *testing.T) (sddauthor.Result, []string) {
+func generatedReviewFixture(t *testing.T) (acpwire.AuthoredPlan, []string) {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(),
@@ -47,18 +46,17 @@ func generatedReviewFixture(t *testing.T) (sddauthor.Result, []string) {
 	}
 
 	filler := strings.Repeat("detail that runs well past the panel width ", 2)
-	return sddauthor.Result{
-			Request: sddauthor.Request{PlanPath: path},
-			Inspection: &pipeline.Inspection{
-				Plan: &pipeline.Plan{Path: path, Slug: "generated"},
-				IR:   &pipeline.PlanIR{Tasks: []pipeline.TaskIR{{TaskN: 1, Title: "Add file"}}},
-				Diagnostics: []pipeline.Diagnostic{
-					{TaskN: 0, Severity: pipeline.DiagError, Line: 12, Message: "diagoneqzstart " + filler + "diagoneqzend"},
-					{TaskN: 1, Severity: pipeline.DiagWarning, Message: "diagtwoqzstart " + filler + "diagtwoqzend"},
-					{TaskN: 2, Severity: pipeline.DiagError, Line: 344, Message: "diagthreeqzstart " + filler + "diagthreeqzend"},
+	return acpwire.AuthoredPlan{
+			PlanPath: path,
+			Inspection: &acpwire.PlanInspection{
+				Strategy:  acpwire.StrategyAdaptive,
+				HasBlocks: true,
+				Tasks:     []acpwire.PlanTask{{TaskN: 1, Title: "Add file"}},
+				Diagnostics: []acpwire.PlanDiagnostic{
+					{TaskN: 0, Severity: acpwire.DiagnosticError, Line: 12, Message: "diagoneqzstart " + filler + "diagoneqzend"},
+					{TaskN: 1, Severity: acpwire.DiagnosticWarning, Message: "diagtwoqzstart " + filler + "diagtwoqzend"},
+					{TaskN: 2, Severity: acpwire.DiagnosticError, Line: 344, Message: "diagthreeqzstart " + filler + "diagthreeqzend"},
 				},
-				EffectiveStrategy: pipeline.StrategyAdaptive,
-				HasMarshalBlocks:  true,
 			},
 		}, []string{
 			"diagoneqzstart", "diagoneqzend",
@@ -71,7 +69,7 @@ func generatedReviewFixture(t *testing.T) (sddauthor.Result, []string) {
 
 // generatedReviewFrameModel is the parent model over a populated transcript and
 // tray, with the real review docked through its own model, at w×h.
-func generatedReviewFrameModel(t *testing.T, w, h int, result sddauthor.Result) *Model {
+func generatedReviewFrameModel(t *testing.T, w, h int, result acpwire.AuthoredPlan) *Model {
 	t.Helper()
 	m := newAuthoringModel(t)
 	for i := 0; i < 60; i++ {

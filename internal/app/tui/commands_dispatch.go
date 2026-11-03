@@ -203,9 +203,6 @@ func startNewSession(m *Model, name string) tea.Cmd {
 		// model's mark restarts with it.
 		m.watchResumeSeq = 0
 	}
-	if snap.PlanAuthorFactory != nil {
-		m.planAuthorFactory = snap.PlanAuthorFactory
-	}
 	if snap.ToolRegistry != nil {
 		m.toolRegistry = snap.ToolRegistry
 	}

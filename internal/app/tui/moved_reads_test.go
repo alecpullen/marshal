@@ -123,6 +123,16 @@ var movedStateReads = map[string]string{
 
 	// The gate's stop goes through StopSDD since 5d.
 	"ClearSDDGate": "5d",
+
+	// Every run the TUI starts registers its work, stop group and idle reset
+	// in the session since 5d: the run path owns them, so the model no longer
+	// calls them.
+	"BeginWork":       "5d",
+	"EndWork":         "5d",
+	"BeginTurnStop":   "5d",
+	"EndTurnStop":     "5d",
+	"RequestTurnStop": "5d",
+	"SetActivity":     "5d",
 }
 
 // movedReadSites returns one "<line>\t<Name>" entry per selector X.Sel in f

@@ -13,22 +13,13 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/sddauthor"
 	"marshal/internal/strutil"
 )
-
-// diagError is the error severity's wire value. It is an untyped constant so
-// it compares against pipeline.DiagSeverity without the TUI importing the
-// agent-side pipeline package (see boundary_test.go).
-const diagError = "error"
-
-// diagWarning is the warning severity's wire value, declared beside diagError
-// for the same boundary reason.
-const diagWarning = "warning"
 
 // reviewBreakpoints are the cells ansi.Wrap may break a body row at. The path
 // separators let a long candidate path wrap on a directory boundary instead of
@@ -58,7 +49,7 @@ const minFitMiddle = 6
 
 // Panel is a dock.Panel that reviews one authored plan candidate.
 type Panel struct {
-	result sddauthor.Result
+	result acpwire.AuthoredPlan
 
 	// discardArmed reports that `d` has been pressed once. A second
 	// consecutive `d` confirms the discard; any other key disarms it.
@@ -90,23 +81,13 @@ type Panel struct {
 
 var _ dock.Panel = (*Panel)(nil)
 
-// New returns a review panel for the given authoring result.
-func New(result sddauthor.Result) *Panel {
+// New returns a review panel for the given authored plan.
+func New(result acpwire.AuthoredPlan) *Panel {
 	return &Panel{result: result}
 }
 
 // CandidatePath returns the authored plan artifact path, for discard.
-func (p *Panel) CandidatePath() string {
-	if path := p.result.Request.PlanPath; path != "" {
-		return path
-	}
-	// A result built without a request still names its candidate through the
-	// inspection, so keeping it for editing stays actionable.
-	if insp := p.result.Inspection; insp != nil && insp.Plan != nil {
-		return insp.Plan.Path
-	}
-	return ""
-}
+func (p *Panel) CandidatePath() string { return p.result.PlanPath }
 
 // Sizing keeps the review panel docked under the default height cap.
 func (p *Panel) Sizing() dock.Sizing { return dock.Docked }
@@ -129,7 +110,16 @@ func (p *Panel) InvalidateVisibility() {
 
 // hasErrors reports whether the candidate inspection has error diagnostics.
 func (p *Panel) hasErrors() bool {
-	return p.result.Inspection == nil || p.result.Inspection.HasErrors()
+	insp := p.result.Inspection
+	if insp == nil {
+		return true
+	}
+	for _, d := range insp.Diagnostics {
+		if d.Severity == acpwire.DiagnosticError {
+			return true
+		}
+	}
+	return false
 }
 
 // Update handles Enter (accept when clean), Esc (keep, or disarm a pending
@@ -353,14 +343,10 @@ func (p *Panel) bodyRows(th theme.Theme) []string {
 		return rows
 	}
 
-	tasks := 0
-	if insp.IR != nil {
-		tasks = len(insp.IR.Tasks)
-	}
 	add(fmt.Sprintf(
 		"%d task(s) · %d deterministic ops · %d fallback ops · est. %d model calls",
-		tasks, insp.Report.Total.DetOps, insp.Report.Total.AgentOps, insp.Report.Total.EstCalls), muted)
-	add("strategy: "+string(insp.EffectiveStrategy), muted)
+		len(insp.Tasks), insp.DetOps, insp.AgentOps, insp.EstCalls), muted)
+	add("strategy: "+insp.Strategy, muted)
 
 	if len(insp.Diagnostics) > 0 {
 		add("", muted)
@@ -371,9 +357,9 @@ func (p *Panel) bodyRows(th theme.Theme) []string {
 			if d.TaskN > 0 {
 				where = fmt.Sprintf("task %d", d.TaskN)
 			}
-			severity, style := diagWarning, warnStyle()
-			if d.Severity == diagError {
-				severity, style = diagError, errorStyle()
+			severity, style := acpwire.DiagnosticWarning, warnStyle()
+			if d.Severity == acpwire.DiagnosticError {
+				severity, style = acpwire.DiagnosticError, errorStyle()
 			}
 			row := fmt.Sprintf("  %s %s", where, severity)
 			if d.Line > 0 {

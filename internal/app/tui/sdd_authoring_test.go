@@ -15,42 +15,44 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/sddreview"
-	"marshal/internal/commands"
-	"marshal/internal/sddauthor"
-	"marshal/internal/tools/registry"
+	"marshal/internal/sddplans"
 )
 
-// fakePlanAuthorFactory returns a PlanAuthorFactory whose runner writes a
-// valid executable candidate plan to the requested path.
-func fakePlanAuthorFactory() PlanAuthorFactory {
-	return func(req sddauthor.Request) (*sddauthor.Runner, error) {
-		model := fakeModelRunner{run: func(_ context.Context, _ string) error {
-			if err := os.MkdirAll(filepath.Dir(req.PlanPath), 0o755); err != nil {
-				return err
-			}
-			return os.WriteFile(req.PlanPath, []byte("# Plan\n\n## Task 1: Add file\n\n"+
-				"```marshal.file path=\"created.txt\"\nhello\n```\n"), 0o644)
-		}}
-		return sddauthor.NewRunner(model), nil
+// fakeAuthorPlan is the runtime's authoring entry point: it resolves the draft
+// path the session would use, writes a valid executable candidate there and
+// reports the inspection the review panel shows.
+func fakeAuthorPlan(state *session.State) func(context.Context, acpwire.AuthorPlanParams) (acpwire.AuthoredPlan, error) {
+	return func(_ context.Context, params acpwire.AuthorPlanParams) (acpwire.AuthoredPlan, error) {
+		path, err := sddplans.DraftPath(state.WorkingDir, state.Config.SDD.PlansDir, params.Goal, time.Now())
+		if err != nil {
+			return acpwire.AuthoredPlan{}, err
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return acpwire.AuthoredPlan{}, err
+		}
+		if err := os.WriteFile(path, []byte("# Plan\n\n## Task 1: Add file\n\n"+
+			"```marshal.file path=\"created.txt\"\nhello\n```\n"), 0o644); err != nil {
+			return acpwire.AuthoredPlan{}, err
+		}
+		return acpwire.AuthoredPlan{
+			PlanPath: path,
+			Inspection: &acpwire.PlanInspection{
+				Strategy:  acpwire.StrategyAdaptive,
+				HasBlocks: true,
+				DetOps:    1,
+				Tasks:     []acpwire.PlanTask{{TaskN: 1, Title: "Add file", DetOps: 1, EstCalls: 1}},
+			},
+		}, nil
 	}
 }
 
-type fakeModelRunner struct {
-	run func(context.Context, string) error
-}
-
-func (f fakeModelRunner) Run(ctx context.Context, prompt string) error {
-	return f.run(ctx, prompt)
-}
-
-func newAuthoringModel(t *testing.T) Model {
+// authoringModel builds a sized model whose session authors a plan on the run
+// path, and returns it with the recorder that saw the call.
+func authoringModel(t *testing.T) (Model, *turnRecorder) {
 	t.Helper()
 	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
-	cmdReg := commands.New()
-	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
-		t.Fatalf("RegisterAll: %v", err)
-	}
-	m := testModelWith(inproc.Deps{
+	rec := &turnRecorder{}
+	m := testModelTurns(t, inproc.Deps{
 		State:  state,
 		Runner: runnerOf(&testAgentRunner{}),
 		PlanPreflight: preflightOf(acpwire.PlanPreflight{
@@ -61,11 +63,17 @@ func newAuthoringModel(t *testing.T) Model {
 				Tasks:     []acpwire.PlanTask{{TaskN: 1, Title: "Add file", DetOps: 1, EstCalls: 1}},
 			},
 		}),
-	},
-		WithCommandRegistry(cmdReg),
-		WithPlanAuthorFactory(context.Background(), fakePlanAuthorFactory()),
-	)
+		AuthorPlan: fakeAuthorPlan(state),
+	}, rec, WithCommandRegistry(setupCmdReg(t)))
 	m.resize(100, 40)
+	return m, rec
+}
+
+// newAuthoringModel is authoringModel's model alone, for the callers that only
+// need the model.
+func newAuthoringModel(t *testing.T) Model {
+	t.Helper()
+	m, _ := authoringModel(t)
 	return m
 }
 
@@ -297,7 +305,7 @@ func TestStaleReviewMessagesCannotAffectReplacement(t *testing.T) {
 	if err := os.WriteFile(replacementPath, []byte("# Plan\n"), 0o644); err != nil {
 		t.Fatalf("write replacement candidate: %v", err)
 	}
-	m.dock.Open(sddreview.New(sddauthor.Result{Request: sddauthor.Request{PlanPath: replacementPath}}))
+	m.dock.Open(sddreview.New(acpwire.AuthoredPlan{PlanPath: replacementPath}))
 	if live, ok := m.dock.Panel().(*sddreview.Panel); !ok || live == stale {
 		t.Fatalf("fixture: the replacement review must be a different panel, got %T", m.dock.Panel())
 	}
@@ -378,7 +386,7 @@ func TestDiscardHiddenOrResizedCannotConfirm(t *testing.T) {
 }
 
 func TestSDDNewFromLastPlanUsesFinalAssistantMessage(t *testing.T) {
-	m := newAuthoringModel(t)
+	m, rec := authoringModel(t)
 	m.state.AddMessageFinal(session.RoleAssistant, "approved plan content", session.ContentTypePlain)
 	updated, cmd := m.dispatchCommand("/sdd new --from-last-plan")
 	m = asModel(t, updated)
@@ -387,6 +395,17 @@ func TestSDDNewFromLastPlanUsesFinalAssistantMessage(t *testing.T) {
 	}
 	if !m.busy {
 		t.Fatal("model should be busy during authoring")
+	}
+	m = runAuthoringCmd(t, m, cmd)
+	if len(rec.authors) != 1 {
+		t.Fatalf("AuthorPlan calls = %+v, want one", rec.authors)
+	}
+	want := acpwire.AuthorPlanParams{
+		Goal:   "Convert the approved plan into an executable SDD plan.",
+		Design: "approved plan content",
+	}
+	if rec.authors[0] != want {
+		t.Fatalf("AuthorPlan params = %+v, want %+v", rec.authors[0], want)
 	}
 }
 

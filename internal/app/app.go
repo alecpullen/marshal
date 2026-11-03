@@ -2856,7 +2856,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		))
 		tuiOpts = append(tuiOpts, tui.WithContext(ctx))
 		if providerReady {
-			tuiOpts = append(tuiOpts, tui.WithPlanAuthorFactory(ctx, rt.PlanAuthorFactory))
 			tuiOpts = append(tuiOpts, tui.WithToolRegistry(toolReg))
 		}
 		if rt.TrustPromptPending {
@@ -2870,18 +2869,18 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// is wired outside the ProviderError block so the commands stay
 		// available even when the initial provider build failed.
 		tuiOpts = append(tuiOpts, tui.WithSessionSwapper(tui.SessionSwapperFunc(func(name string) (tui.SessionSwapResult, error) {
-			// The runner, the pipeline factory and the override factory the
-			// runtime rebuilds are reachable through the session's Deps, so
-			// the swap result does not carry them (plan 5d).
-			state, _, _, _, planAuthorFactory, _, toolReg, err := rt.NewSession(name)
+			// The runner, the pipeline factory, the override factory and the
+			// plan author factory the runtime rebuilds are reachable through
+			// the session's Deps, so the swap result does not carry them
+			// (plan 5d).
+			state, _, _, _, _, _, toolReg, err := rt.NewSession(name)
 			if err != nil {
 				return tui.SessionSwapResult{}, err
 			}
 			return tui.SessionSwapResult{
-				State:             state,
-				Session:           seamHost.Swap(state),
-				PlanAuthorFactory: planAuthorFactory,
-				ToolRegistry:      toolReg,
+				State:        state,
+				Session:      seamHost.Swap(state),
+				ToolRegistry: toolReg,
 			}, nil
 		})))
 

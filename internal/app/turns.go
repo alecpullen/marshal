@@ -36,7 +36,8 @@ func (rt *Runtime) RunReview(ctx context.Context, params acpwire.ReviewParams) e
 	factory := rt.CustomAgentFactory
 	rt.mu.Unlock()
 	if factory == nil {
-		return errors.New("review: no agent runner")
+		// Review refuses as Prompt does: a coded refusal the TUI can branch on.
+		return &acpwire.Error{Code: acpwire.CodeNoRunner, Message: "review: no agent runner"}
 	}
 	reviewRange := params.Range
 	if reviewRange == "" && params.Base != "" {
@@ -53,7 +54,7 @@ func (rt *Runtime) RunCustomAgent(ctx context.Context, params acpwire.AgentRunPa
 	factory := rt.CustomAgentFactory
 	rt.mu.Unlock()
 	if factory == nil {
-		return errors.New("run agent: no agent runner")
+		return &acpwire.Error{Code: acpwire.CodeNoRunner, Message: "run agent: no agent runner"}
 	}
 	return runCustomAgent(ctx, state, factory, params.Agent, params.Goal)
 }

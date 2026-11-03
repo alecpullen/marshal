@@ -941,9 +941,9 @@ func WithMemoryStore(database *db.DB, projectID int64) Option {
 }
 
 // WithSwarmRunner configures the TUI to route /swarm <goal> submissions
-// through runner (the swarm orchestrator). ctx follows the same rules as
-// WithRunner's: pass the cancellable program context so Ctrl+C and /stop
-// cancel an in-flight swarm run.
+// through runner (the swarm orchestrator). ctx is the cancellable program
+// context: Ctrl+C and /stop cancel an in-flight swarm run through the model's
+// own agentCancel, which a swarm run still owns.
 func WithSwarmRunner(ctx context.Context, runner AgentRunner) Option {
 	return func(m *Model) {
 		m.ctx = ctx
@@ -4537,11 +4537,11 @@ func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, nil
 	}
-	// Register the SDD authoring operation's stop group before dispatch, the
-	// same way startAgentRun does for a prompt turn: the authoring run can
-	// block in provider work, and a stop must be able to name it. The author
-	// inherits this group (NewSyntheticExecutionControl), so a command it
-	// launches is reachable from the same stop.
+	// Register the SDD authoring operation's stop group before dispatch: the
+	// authoring run can block in provider work, and a stop must be able to
+	// name it. The author inherits this group
+	// (NewSyntheticExecutionControl), so a command it launches is reachable
+	// from the same stop.
 	releaseStop := m.beginTurnStopRegistration()
 	m.busy = true
 	m.turnStartedAt = m.now()
@@ -4740,10 +4740,12 @@ func (m *Model) stopTurnWork(cause string) {
 	}
 }
 
-// beginTurnStopRegistration registers the stop group for one TUI turn entry
-// point — a normal prompt turn, a /review dispatch, an SDD run — and remembers
-// the teardown on the model. The actor is empty: a TUI turn is the
-// orchestrator's own work, and the session's turn identity supplies the rest.
+// beginTurnStopRegistration registers the stop group for one TUI-owned turn
+// entry point — a swarm run, an SDD run, a plan-authoring run or a /pipeline
+// run — and remembers the teardown on the model. Prompt turns, /review and
+// custom-agent runs register agent side, in the session's run path, so they
+// never reach this. The actor is empty: a TUI turn is the orchestrator's own
+// work, and the session's turn identity supplies the rest.
 //
 // It returns the teardown so a caller that never proceeds past admission can
 // clear its own registration immediately rather than leaving a stale target.
@@ -5462,6 +5464,10 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	// group needs releasing and no turn ran. The note names what refused it,
 	// and the model goes idle exactly as a finished turn does.
 	if msg.refusal != "" && refusedStart(msg.err) {
+		// Symmetry with the normal finish below: a start entry point that
+		// registered a stop group and was then refused must not leave its
+		// teardown on the model, or the next Ctrl+C stops a dead operation.
+		m.releaseTurnStop()
 		m.busy = false
 		m.turnStartedAt = time.Time{}
 		m.agentCancel = nil

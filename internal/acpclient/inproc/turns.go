@@ -47,18 +47,23 @@ func (s *Session) Prompt(ctx context.Context, params acpwire.PromptParams) (acpw
 		s.requeue(params)
 		return acpwire.PromptResult{}, errNoRunner
 	}
-	stopped, err := s.runTurn(ctx, func(ctx context.Context) error {
+	stopped, started, err := s.runTurn(ctx, func(ctx context.Context) error {
 		return runner.Run(ctx, params.Text)
 	})
 	if err != nil {
-		// A turn that never started leaves the text where it found it: the
-		// queue is the caller's, not the run's.
+		// The queue is the caller's, not the run's: a turn that never started
+		// puts a queued text back.
 		if code, ok := acpclient.CodeOf(err); ok && (code == acpwire.CodeBusy || code == acpwire.CodeQuiescing) {
 			s.requeue(params)
 			return acpwire.PromptResult{}, err
 		}
 	}
 	if stopped {
+		// A stop that landed before the run began never consumed the text, so
+		// put a queued text back rather than dropping it silently.
+		if !started {
+			s.requeue(params)
+		}
 		return acpwire.PromptResult{StopReason: acpwire.StopReasonCancelled}, nil
 	}
 	if err != nil {
@@ -69,6 +74,11 @@ func (s *Session) Prompt(ctx context.Context, params acpwire.PromptParams) (acpw
 
 // Stop stops the run in flight: the commands attached to it first, then the
 // run itself. With nothing running it does nothing.
+//
+// A Stop that lands as the run completes is indistinguishable from one that
+// lands during it: the turn reports cancelled. That is inherent to a stop
+// protocol (the stop and the last line race), and harmless — the work the
+// caller asked to stop is over either way.
 func (s *Session) Stop(ctx context.Context, cause string) error {
 	if s.closed.Load() {
 		return errSessionClosed
@@ -106,7 +116,7 @@ func (s *Session) Review(ctx context.Context, params acpwire.ReviewParams) error
 	if params.Range != "" && params.Base != "" {
 		return errRangeAndBase
 	}
-	stopped, err := s.runTurn(ctx, func(ctx context.Context) error {
+	stopped, _, err := s.runTurn(ctx, func(ctx context.Context) error {
 		return s.review(ctx, params)
 	})
 	// A stopped review is not an error: the stop already reported the cancel,
@@ -129,7 +139,7 @@ func (s *Session) RunAgent(ctx context.Context, params acpwire.AgentRunParams) e
 	if strings.TrimSpace(params.Agent) == "" {
 		return errNoAgentName
 	}
-	stopped, err := s.runTurn(ctx, func(ctx context.Context) error {
+	stopped, _, err := s.runTurn(ctx, func(ctx context.Context) error {
 		return s.runAgent(ctx, params)
 	})
 	// A stopped run is not an error: the stop already reported the cancel, and
@@ -165,8 +175,13 @@ func (s *Session) VerifyProposal(ctx context.Context) (acpwire.VerifyCommands, e
 }
 
 // runTurn is the one path every run takes (decision 2). It reports whether
-// Stop reached the run, and the run's error or the refusal.
-func (s *Session) runTurn(ctx context.Context, run func(context.Context) error) (stopped bool, err error) {
+// Stop reached the run, whether the run's work began at all, and the run's
+// error or the refusal.
+//
+// started is false when a stop (or a pending one) skipped the turn before it
+// reached run, so a caller holding the text can put it back: nothing consumed
+// it. It is true once run has been entered, even if the stop then cancels it.
+func (s *Session) runTurn(ctx context.Context, run func(context.Context) error) (stopped bool, started bool, err error) {
 	runCtx, cancel := context.WithCancel(ctx)
 	slot := &turnSlot{cancel: cancel}
 
@@ -176,7 +191,7 @@ func (s *Session) runTurn(ctx context.Context, run func(context.Context) error) 
 	if s.turn != nil {
 		s.mu.Unlock()
 		cancel()
-		return false, errTurnBusy
+		return false, false, errTurnBusy
 	}
 	s.turn = slot
 	s.mu.Unlock()
@@ -188,10 +203,12 @@ func (s *Session) runTurn(ctx context.Context, run func(context.Context) error) 
 		}
 		s.mu.Unlock()
 		cancel()
-		if errors.Is(err, session.ErrSessionQuiescing) {
-			return false, &acpwire.Error{Code: acpwire.CodeQuiescing, Message: err.Error()}
+		// A session that is ending refuses the turn as quiescing does: both
+		// are admission refusals the TUI names, not failed turns.
+		if errors.Is(err, session.ErrSessionQuiescing) || errors.Is(err, session.ErrConversationEnding) {
+			return false, false, &acpwire.Error{Code: acpwire.CodeQuiescing, Message: err.Error()}
 		}
-		return false, err
+		return false, false, err
 	}
 
 	// The cleanup runs in the order the turn's readers expect: the session is
@@ -223,12 +240,14 @@ func (s *Session) runTurn(ctx context.Context, run func(context.Context) error) 
 	s.mu.Unlock()
 
 	if stopped {
-		return true, nil
+		return true, false, nil
 	}
 	if err := runCtx.Err(); err != nil {
-		return false, err
+		return false, false, err
 	}
-	return false, callRun(runCtx, run)
+	// The run's work begins here: from this point the text is consumed even if
+	// a stop cancels it.
+	return false, true, callRun(runCtx, run)
 }
 
 // callRun runs one turn's work. A panic fails the turn, as runAgentCmd has it,
@@ -252,7 +271,8 @@ func (s *Session) currentRunner() Runner {
 }
 
 // requeue puts a turn that never started back on the steering queue when its
-// text came from there.
+// text came from there. It appends, so a put-back lands behind anything queued
+// after it; the text is preserved, its original position is not.
 func (s *Session) requeue(params acpwire.PromptParams) {
 	if params.Queued {
 		s.state.PushSteering(params.Text)

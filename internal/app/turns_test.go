@@ -190,11 +190,22 @@ func TestTheRuntimeCallsFailWithoutAFactory(t *testing.T) {
 	rt := &Runtime{State: state}
 	ctx := context.Background()
 
-	if err := rt.RunReview(ctx, acpwire.ReviewParams{}); err == nil {
-		t.Error("RunReview() with no factory = nil, want an error")
-	}
-	if err := rt.RunCustomAgent(ctx, acpwire.AgentRunParams{Agent: "linter"}); err == nil {
-		t.Error("RunCustomAgent() with no factory = nil, want an error")
+	// Review and RunAgent refuse as Prompt does: a coded refusal the TUI
+	// branches on, not a plain failed turn.
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"RunReview", rt.RunReview(ctx, acpwire.ReviewParams{})},
+		{"RunCustomAgent", rt.RunCustomAgent(ctx, acpwire.AgentRunParams{Agent: "linter"})},
+	} {
+		var coded *acpwire.Error
+		if !errors.As(tc.err, &coded) {
+			t.Fatalf("%s() = %v, want a coded *acpwire.Error", tc.name, tc.err)
+		}
+		if coded.Code != acpwire.CodeNoRunner {
+			t.Errorf("%s() code = %q, want %q", tc.name, coded.Code, acpwire.CodeNoRunner)
+		}
 	}
 	if _, err := rt.ProposeVerifyCommands(ctx); err == nil {
 		t.Error("ProposeVerifyCommands() with no factory = nil, want an error")

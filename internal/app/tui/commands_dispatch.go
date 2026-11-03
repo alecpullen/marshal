@@ -463,7 +463,7 @@ func init() {
 				return m, nil
 			}
 			if !m.sess.Status().AgentReady {
-				m.state.AddMessage(session.RoleSystem, "Review subagent is not available in this build.", session.ContentTypePlain)
+				m.state.AddMessage(session.RoleSystem, "Agent runner is not available.", session.ContentTypePlain)
 				m.refreshViewport()
 				return m, nil
 			}

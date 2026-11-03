@@ -8,9 +8,10 @@ P-A–P-E, merged at `991c18d7`). Agent side and TUI only: no bridge
 change, no new ACP method, no database schema change. ACP messages that
 already exist change only by gaining optional fields (C6).
 Status: drafted 2026-10-20; revised 2026-10-25 against `991c18d7`
-and since, plan by plan (Revision record). Delivered as nine plans
+and since, plan by plan (Revision record). Delivered as five plans
 (Migration order), each written against `main` once the previous one has
-landed; plans 2 and 3 are split into sub-plans.
+landed; plans 2, 3 and 5 are split into sub-plans (twelve plan documents
+in all).
 
 Decided with the user (2026-10-20):
 - **Transcript on the wire:** `WireTree`. The TUI renders the same
@@ -1921,3 +1922,12 @@ ordering dependency. `errNoAgentName` is checked after the missing-`runAgent`
 check, both before the slot is taken. And `bindTurnDeps` runs after
 `deps.Work` is assigned, on the fully built `Deps` and still before
 `inproc.New`.
+
+Three refinements after review. `runTurn` reports whether the run's work
+actually began, so `Prompt` can tell a stop that skipped the turn from one that
+cancelled it: a queued text is put back only when the model never saw it, and a
+stopped run that had started keeps its text. `BeginWork` failing with
+`ErrConversationEnding` is reported as `CodeQuiescing`, not as a codeless
+error, so the TUI names an admission refusal instead of a failed turn. And
+`RunReview`/`RunCustomAgent` refuse with `CodeNoRunner` when the runtime has no
+factory, which is what the `Session` docs already promised.

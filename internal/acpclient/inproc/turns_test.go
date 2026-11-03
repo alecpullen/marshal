@@ -396,8 +396,61 @@ func TestAStopRequestedBeforeTheTurnSkipsIt(t *testing.T) {
 	}
 }
 
-// TestStopWithNothingRunningLeavesTheNextTurnAlone pins that a Stop with no run
-// in flight is a no-op: it must not latch a stop onto the next turn.
+// TestAQueuedPromptSkippedByAnEarlyStopIsPutBack pins that a stop landing
+// before the run began does not consume a queued text: the text never reached
+// the model, so it goes back on the queue instead of vanishing.
+func TestAQueuedPromptSkippedByAnEarlyStopIsPutBack(t *testing.T) {
+	state := newState(t, "s1")
+	fake := newFakeRunner()
+	_, sess := New(Deps{State: state, Runner: func() Runner { return fake }})
+
+	if _, err := state.RequestTurnStop("early"); err != nil {
+		t.Fatalf("RequestTurnStop: %v", err)
+	}
+
+	res, err := sess.Prompt(context.Background(), acpwire.PromptParams{Text: "kept", Queued: true})
+	if err != nil {
+		t.Fatalf("Prompt = %v, want no error", err)
+	}
+	if res.StopReason != acpwire.StopReasonCancelled {
+		t.Errorf("StopReason = %q, want %q", res.StopReason, acpwire.StopReasonCancelled)
+	}
+	if got := fake.goalsSeen(); len(got) != 0 {
+		t.Errorf("runner goals = %v, want none", got)
+	}
+	if got := state.SteeringQueue(); !reflect.DeepEqual(got, []string{"kept"}) {
+		t.Errorf("SteeringQueue() = %v, want the skipped text back", got)
+	}
+}
+
+// TestAStoppedRunThatStartedKeepsItsText pins the other half: once the run has
+// begun, a stop consumes the text, so a queued text is not re-run.
+func TestAStoppedRunThatStartedKeepsItsText(t *testing.T) {
+	state := newState(t, "s1")
+	fake := newFakeRunner()
+	fake.setBody(func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	_, sess := New(Deps{State: state, Runner: func() Runner { return fake }})
+
+	done := make(chan acpwire.PromptResult, 1)
+	go func() {
+		res, _ := sess.Prompt(context.Background(), acpwire.PromptParams{Text: "consumed", Queued: true})
+		done <- res
+	}()
+	fake.waitStart(t)
+	if err := sess.Stop(context.Background(), "user stop"); err != nil {
+		t.Fatalf("Stop = %v", err)
+	}
+	if res := <-done; res.StopReason != acpwire.StopReasonCancelled {
+		t.Errorf("StopReason = %q, want %q", res.StopReason, acpwire.StopReasonCancelled)
+	}
+	if got := state.SteeringQueue(); len(got) != 0 {
+		t.Errorf("SteeringQueue() = %v, want empty: the run consumed the text", got)
+	}
+}
+
 func TestStopWithNothingRunningLeavesTheNextTurnAlone(t *testing.T) {
 	ctx := context.Background()
 	fake := newFakeRunner()

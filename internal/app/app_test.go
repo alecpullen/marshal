@@ -5132,7 +5132,7 @@ func TestRuntimeNewSessionResetsState(t *testing.T) {
 	rt.State.SetTurnUsage(123)
 	rt.State.SetTurnContextWindow(1000)
 
-	newState, _, _, _, _, _, _, err := rt.NewSession("")
+	newState, err := rt.NewSession("")
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -6279,7 +6279,7 @@ func TestRuntimeCarriesAuthResolverThroughReloadNewAndResume(t *testing.T) {
 		t.Fatal("config reload replaced the injected resolver")
 	}
 
-	if _, _, _, _, _, _, _, err := rt.NewSession("auth-lifecycle"); err != nil {
+	if _, err := rt.NewSession("auth-lifecycle"); err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	if rt.AuthResolver != provider.AuthResolver(auth) {
@@ -6779,6 +6779,7 @@ func TestAdapterAccessFollowsNewSession(t *testing.T) {
 		ResolveAccess:  rt.ResolveAccess,
 		SetInteraction: rt.SetInteraction,
 		SetEffort:      rt.SetSessionEffort,
+		NewSession:     rt.NewSession,
 	}
 	host, oldSess := inproc.New(deps)
 	oldModel := tui.New(host, oldSess, tui.WithLegacyState(oldState))
@@ -6788,10 +6789,13 @@ func TestAdapterAccessFollowsNewSession(t *testing.T) {
 		t.Fatalf("the pre-swap model does not show the panel:\n%s", view)
 	}
 
-	newState, _, _, _, _, _, _, err := rt.NewSession("")
+	// The host creates the replacement through Deps.NewSession, so the seam a
+	// TUI actually uses is the one under test.
+	newSess, err := host.NewSession(ctx, "")
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
+	newState := rt.State
 	if newState == oldState {
 		t.Fatal("NewSession did not replace the session")
 	}
@@ -6817,7 +6821,6 @@ func TestAdapterAccessFollowsNewSession(t *testing.T) {
 	}
 
 	// The same Deps now drive the replacement session.
-	newSess := host.Swap(newState)
 	reg := commands.New()
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)

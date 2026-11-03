@@ -343,7 +343,7 @@ func TestAClosedSessionEndsNothing(t *testing.T) {
 		decision: acpwire.EndDecision{Accepted: true},
 	}
 	host, old := New(Deps{State: newState(t, "s1"), End: fake})
-	host.Swap(newState(t, "s2"))
+	host.swap(newState(t, "s2"))
 
 	refused := func(name string, err error) {
 		t.Helper()

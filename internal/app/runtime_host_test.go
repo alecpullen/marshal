@@ -241,7 +241,7 @@ func TestNewSessionKeepsTheLSPHandleAndHost(t *testing.T) {
 	rt := startOn(t, hs, t.TempDir(), hostedProject(t))
 	handle, host, before := rt.LSPManager, rt.Host, rt.LSPManager.Get()
 
-	if _, _, _, _, _, _, _, err := rt.NewSession("next"); err != nil {
+	if _, err := rt.NewSession("next"); err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	if rt.LSPManager != handle || rt.Host != host {

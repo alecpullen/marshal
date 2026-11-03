@@ -199,9 +199,10 @@ func New(d Deps) (*Host, *Session) {
 	return &Host{deps: d, current: sess}, sess
 }
 
-// Swap closes the current session and returns a new one over state. It serves
-// today's swap path; plan 5 replaces it with Host.NewSession and Host.Resume.
-func (h *Host) Swap(state *session.State) *Session {
+// swap closes the current session and returns a new one over state. It is the
+// host's own swap path: NewSession is what callers use, and it reaches this
+// after the runtime has created the state.
+func (h *Host) swap(state *session.State) *Session {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.current != nil {

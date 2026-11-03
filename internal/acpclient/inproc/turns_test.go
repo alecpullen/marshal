@@ -658,7 +658,7 @@ func TestAClosedSessionRunsNothing(t *testing.T) {
 		Suggest:        func(context.Context, string) (string, error) { return "an answer", nil },
 		VerifyProposal: func(context.Context) (acpwire.VerifyCommands, error) { return acpwire.VerifyCommands{}, nil },
 	})
-	host.Swap(newState(t, "s2"))
+	host.swap(newState(t, "s2"))
 
 	refused := func(name string, err error) {
 		t.Helper()

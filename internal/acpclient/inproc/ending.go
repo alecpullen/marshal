@@ -135,5 +135,5 @@ func (h *Host) NewSession(ctx context.Context, name string) (acpclient.Session, 
 	if err != nil {
 		return nil, err
 	}
-	return h.Swap(state), nil
+	return h.swap(state), nil
 }

@@ -83,7 +83,7 @@ func TestSendNowReturnsTheStatesRefusal(t *testing.T) {
 // now request with the closed-session code.
 func TestSendNowOnAClosedSessionFails(t *testing.T) {
 	h, old := New(Deps{State: newState(t, "s1")})
-	h.Swap(newState(t, "s2"))
+	h.swap(newState(t, "s2"))
 
 	if _, err := old.SendNow(context.Background(), acpwire.SendNowRequest{
 		SessionID: "s1",

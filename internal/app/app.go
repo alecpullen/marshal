@@ -2869,17 +2869,22 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// is wired outside the ProviderError block so the commands stay
 		// available even when the initial provider build failed.
 		tuiOpts = append(tuiOpts, tui.WithSessionSwapper(tui.SessionSwapperFunc(func(name string) (tui.SessionSwapResult, error) {
-			// The runner, the pipeline factory, the override factory and the
-			// plan author factory the runtime rebuilds are reachable through
-			// the session's Deps, so the swap result does not carry them
-			// (plan 5d).
-			state, _, _, _, _, _, toolReg, err := rt.NewSession(name)
+			// The host creates the session through Deps.NewSession, so the
+			// runner, the pipeline factory, the override factory and the plan
+			// author factory the runtime rebuilds are reachable through the
+			// session's Deps and the swap result does not carry them (plan 5d).
+			sess, err := seamHost.NewSession(ctx, name)
 			if err != nil {
 				return tui.SessionSwapResult{}, err
 			}
+			// The runtime installed the replacement before the host returned,
+			// so the state and the registry it carries are the new ones.
+			rt.mu.Lock()
+			state, toolReg := rt.State, rt.ToolRegistry
+			rt.mu.Unlock()
 			return tui.SessionSwapResult{
 				State:        state,
-				Session:      seamHost.Swap(state),
+				Session:      sess,
 				ToolRegistry: toolReg,
 			}, nil
 		})))
@@ -2932,10 +2937,11 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// after the epoch's work is joined. The transport and model never grant
 		// access themselves.
 		rt.SetExitAnalysisOperation(func(analysisCtx context.Context, scope *session.ExitAnalysisScope, goal string) error {
-			if rt.Runner == nil {
+			runner := rt.TurnRunner()
+			if runner == nil {
 				return fmt.Errorf("exit analysis: no agent runner")
 			}
-			return rt.Runner.Run(analysisCtx, goal)
+			return runner.Run(analysisCtx, goal)
 		})
 
 		// The TUI's structural end seam: acceptance, settlement and the scoped

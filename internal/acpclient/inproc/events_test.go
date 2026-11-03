@@ -175,7 +175,7 @@ func TestReceiptsKeepTheNewestRevisionPerRequest(t *testing.T) {
 func TestSwapClosesChanged(t *testing.T) {
 	broker := pubsub.NewBroker[session.SubagentEvent]()
 	h, old := New(Deps{State: newState(t, "s1"), Subagents: broker})
-	fresh := h.Swap(newState(t, "s2"))
+	fresh := h.swap(newState(t, "s2"))
 
 	waitClosed(t, old)
 
@@ -184,7 +184,7 @@ func TestSwapClosesChanged(t *testing.T) {
 
 	// A session with no broker is closed by the swap too.
 	h2, bare := New(Deps{State: newState(t, "s3")})
-	h2.Swap(newState(t, "s4"))
+	h2.swap(newState(t, "s4"))
 	waitClosed(t, bare)
 }
 

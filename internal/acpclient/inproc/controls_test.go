@@ -265,7 +265,7 @@ func TestAClosedSessionControlsNothing(t *testing.T) {
 		t.Fatalf("Steer: %v", err)
 	}
 	state.SetWatchResume("ci", true)
-	host.Swap(newState(t, "s2"))
+	host.swap(newState(t, "s2"))
 
 	mode := "act"
 	_, interactionErr := old.SetInteraction(ctx, acpwire.InteractionPatch{Mode: &mode})

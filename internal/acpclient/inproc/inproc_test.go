@@ -34,7 +34,7 @@ func TestSessionIDIsTheStateID(t *testing.T) {
 
 func TestSwapClosesTheOldSession(t *testing.T) {
 	h, old := New(Deps{State: newState(t, "s1")})
-	fresh := h.Swap(newState(t, "s2"))
+	fresh := h.swap(newState(t, "s2"))
 
 	if got := fresh.ID(); got != "s2" {
 		t.Fatalf("new session ID() = %q, want s2", got)
@@ -281,7 +281,7 @@ func TestStatusMirrorsTheState(t *testing.T) {
 func TestStatusOfAClosedSessionStillReads(t *testing.T) {
 	oldState := newState(t, "s1")
 	h, old := New(Deps{State: oldState})
-	h.Swap(newState(t, "s2"))
+	h.swap(newState(t, "s2"))
 
 	if got, want := old.Status().WorkingDir, oldState.WorkingDir; got != want {
 		t.Errorf("closed session Status().WorkingDir = %q, want its own state's %q", got, want)

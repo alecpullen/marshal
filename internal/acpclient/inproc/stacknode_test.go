@@ -92,7 +92,7 @@ func TestStackNodeFailsForAnUnknownNodeOrSubagent(t *testing.T) {
 
 func TestStackNodeOnAReplacedSessionFails(t *testing.T) {
 	h, old := New(Deps{State: newState(t, "s1")})
-	h.Swap(newState(t, "s2"))
+	h.swap(newState(t, "s2"))
 
 	if _, err := old.StackNode(context.Background(), "step:1", 0); !acpclient.IsCode(err, acpwire.CodeSessionClosed) {
 		t.Fatalf("StackNode on a closed session = %v, want the %q code", err, acpwire.CodeSessionClosed)

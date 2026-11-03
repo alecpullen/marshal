@@ -1992,7 +1992,7 @@ func autoloadSkills(cfg config.Config, idx *skills.Index, state *session.State, 
 // an explicit error: reopening it implicitly would put a live conversation back
 // beside whatever the replacement was for, and transferring its jobs would give
 // them an owner that never admitted them.
-func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swarm.Orchestrator, func(planPath string, overrides map[routing.AgentRole]string) PipelineRunner, sddauthor.Factory, SwarmOverrideFactory, *registry.Registry, error) {
+func (rt *Runtime) NewSession(name string) (*session.State, error) {
 	// Serialize the whole replacement against config reloads, and hold that gate
 	// across the entire build/install transaction: a concurrent config reload or
 	// access resolution must not observe (or apply to) a half-installed session,
@@ -2010,12 +2010,12 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 }
 
 // newSessionLocked is NewSession's body. It expects reloadMu held.
-func (rt *Runtime) newSessionLocked(name string, replacing bool) (*session.State, *agent.Runner, *swarm.Orchestrator, func(planPath string, overrides map[routing.AgentRole]string) PipelineRunner, sddauthor.Factory, SwarmOverrideFactory, *registry.Registry, error) {
+func (rt *Runtime) newSessionLocked(name string, replacing bool) (*session.State, error) {
 	// Validate the configured starting tuple before any row is created: a
 	// malformed default must fail the replacement explicitly, not start a
 	// conversation under a silently substituted Ask.
 	if _, err := rt.Config.InteractionDefaults(); err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("invalid interaction defaults: %w", err)
+		return nil, fmt.Errorf("invalid interaction defaults: %w", err)
 	}
 	db := must[*db.DB](rt.DB)
 	jb := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
@@ -2023,7 +2023,7 @@ func (rt *Runtime) newSessionLocked(name string, replacing bool) (*session.State
 	now := time.Now()
 	sessionID := fmt.Sprintf("sess_%d", now.UnixNano())
 	if err := db.CreateSession(sessionID, rt.ProjectID, name, now); err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("create session: %w", err)
+		return nil, fmt.Errorf("create session: %w", err)
 	}
 
 	newState := session.New(rt.Config, rt.WorkingDir, now, session.Persistence{DB: db, SessionID: sessionID, Logger: rt.Logger}, session.WithSubagentMaxConcurrency(rt.Config.Agent.MaxConcurrentSubagents))
@@ -2096,7 +2096,7 @@ func (rt *Runtime) newSessionLocked(name string, replacing bool) (*session.State
 			Hint:     hint,
 			Source:   "session-new",
 		})
-		return nil, nil, nil, nil, nil, nil, nil, err
+		return nil, err
 	}
 
 	// Success — settle the outgoing session's pending prompts before the swap.
@@ -2142,6 +2142,9 @@ func (rt *Runtime) newSessionLocked(name string, replacing bool) (*session.State
 	rt.SwarmRunner = newSwarmRunner
 	rt.PipelineFactory = newPipelineFactory
 	rt.PlanAuthorFactory = newPlanAuthorFactory
+	if newSwarmOverrideFactory != nil {
+		rt.SwarmOverrideFactory = newSwarmOverrideFactory
+	}
 	rt.CustomAgentFactory = newSubagentFactory
 	// A replacement session is a NEW conversation, so it gets its own
 	// command supervisor: a fresh session id, a fresh transcript and a fresh
@@ -2236,7 +2239,7 @@ func (rt *Runtime) newSessionLocked(name string, replacing bool) (*session.State
 	rt.work = newWork
 	rt.mu.Unlock()
 
-	return newState, newRunner, newSwarmRunner, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, newReg, nil
+	return newState, nil
 }
 
 // resolveWorkingDir resolves the session working directory. When the

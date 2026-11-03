@@ -8,10 +8,9 @@ P-A–P-E, merged at `991c18d7`). Agent side and TUI only: no bridge
 change, no new ACP method, no database schema change. ACP messages that
 already exist change only by gaining optional fields (C6).
 Status: drafted 2026-10-20; revised 2026-10-25 against `991c18d7`
-and since, plan by plan (Revision record). Delivered as five plans
+and since, plan by plan (Revision record). Delivered as nine plans
 (Migration order), each written against `main` once the previous one has
-landed; plans 2, 3 and 5 are split into sub-plans (twelve plan documents
-in all).
+landed; plans 2, 3 and 5 are split into sub-plans.
 
 Decided with the user (2026-10-20):
 - **Transcript on the wire:** `WireTree`. The TUI renders the same
@@ -511,26 +510,35 @@ Decision: `WireTree`, with the C6 additions.
   user message, and at the end sets the session idle and ends the stop
   group and the work. A start it refuses comes back coded (`busy`,
   `quiescing` or `no_runner`), and a prompt marked `queued` then goes back
-  on the steering queue. It replaces `runAgentCmd` for prompt turns;
-  swarm and SDD runs keep it until plan 5d. Of the two user `AddMessage`
-  calls, the SDD gate's moves with `AnswerSDDGate` (plan 5d), and the
-  no-runner echo with the notes (plan 6). ACP: `session/prompt` (exists).
+  on the steering queue. It replaces `runAgentCmd`: for prompt turns in
+  plan 5c, and for swarm and plan runs in plan 5d. Of the two user
+  `AddMessage` calls, the SDD gate's moves into `AnswerSDDGate` (plan
+  5d), and the no-runner echo with the notes (plan 6). ACP:
+  `session/prompt` (exists).
 - **Other runs:**
   - `Review` (`session/review`, new);
   - `RunAgent`, the custom-agent run-now, which runs the agent as a
     subagent the session shows (`session/agent_run`, new);
   - `StartSwarm` with role overrides (`session/swarm_start` exists);
-  - `StartSDD` with plan, strategy and overrides
-    (`session/sdd_start` exists);
-  - `AuthorPlan` (new);
+  - `PlanPreflight`, the plan's inspection and the verify gate a plan
+    run would use, which the `/sdd` preflight renders
+    (`session/sdd_preflight`, new);
+  - `StartSDD` with plan, strategy, overrides and the verify commands a
+    proposal filled in (`session/sdd_start` exists). A run its human
+    gate pauses returns `human_gate_required`;
+  - `AuthorPlan`, which resolves the draft path, runs the plan author
+    and returns the candidate for review (`session/sdd_author`, new);
   - `Suggest`, the model call behind the next-reply suggestion
     (`session/suggest`, new);
   - `VerifyProposal`, the build/test proposal parsed from its own
     subagent's reply (`session/verify_proposal`, new).
 
-  Each carries what the TUI passes its factory today. `Review` and
-  `RunAgent` take `Prompt`'s run path; `Suggest` and `VerifyProposal`
-  are plain calls (plan 5c).
+  Each carries what the TUI passed its factories: role overrides keyed
+  by role name, the strategy, and the proposed verify commands. The
+  runtime applies them for the one run. `Review`, `RunAgent`,
+  `StartSwarm`, `StartSDD`, `AnswerSDDGate` and `AuthorPlan` take
+  `Prompt`'s run path; `Suggest`, `VerifyProposal` and `PlanPreflight`
+  are plain calls (plans 5c and 5d).
 - **Turn control:**
   - `Stop(ctx, cause)` covers today's begin/request/end turn-stop
     sequence (`session/cancel` exists). It stops the session's own run,
@@ -550,9 +558,13 @@ Decision: `WireTree`, with the C6 additions.
   - `TakeWatchResume` (new);
   - no `SetIdle`: the TUI sets the session idle only where a run it owns
     ends, and plans 5c and 5d move those ends agent side;
-  - `AnswerSDDGate(ctx, answer)` and its stop (`session/sdd_answer`
-    exists). Answering the SDD human gate resumes the pipeline run, so it
-    moves with the runs, not with C7's requests.
+  - `AnswerSDDGate(ctx, answer)` records the answer as the user's
+    message and resumes the paused plan run (`session/sdd_answer`
+    exists), and `StopSDD(ctx)` abandons it and clears the gate
+    (`session/sdd_stop`, new). The session keeps the paused run, so a
+    swap drops it and a new `StartSDD` replaces it. Answering the SDD
+    human gate resumes the pipeline run, so it moves with the runs, not
+    with C7's requests.
 - **Work** (plan 5a). `Work()` returns the session's live work snapshot
   and whether the session serves work at all. `ListWork`, `InspectWork`
   and `StopWork` are the work service's list, inspect and stop calls
@@ -647,8 +659,9 @@ Decision: `WireTree`, with the C6 additions.
 - **Memory, plugins and skills panels** use the existing `memory_*`,
   `plugins_*` and `skills_*` methods.
 - **Plans and worktrees.**
-  - SDD plan discovery, the draft path, removing a candidate and writing
-    a starter plan: `Plans()`, `DraftPlan` and `ScaffoldPlan` (new).
+  - SDD plan discovery, removing an authored candidate and writing a
+    starter plan: `Plans()`, `DiscardCandidate` and `ScaffoldPlan`
+    (new). The draft path is resolved inside `AuthorPlan` (C8, plan 5d).
   - Run outcome: the run detail, branch diff and file reads use
     `session/run`, `session/diff` and `session/file` (exist). This
     replaces `runOutcomeDoc`'s own git calls (`runoutcome.go:32`).
@@ -776,8 +789,14 @@ The TUI works after every plan.
      `VerifyProposal` move too, and the runtime's runner and calls move
      into the adapter's `Deps`. A run's end sets the session idle agent
      side, and `Status` says whether a runner is built.
-   - **5d. Pipelines.** `StartSwarm` with role overrides, `StartSDD`,
-     `AuthorPlan`, and `AnswerSDDGate` with its stop.
+   - **5d. Pipelines** ([plan](plans/2026-11-03-p2-5d-pipelines-plan.md)).
+     `StartSwarm`, `PlanPreflight`, `StartSDD`, `AnswerSDDGate`,
+     `StopSDD` and `AuthorPlan`. Swarm, plan and authoring runs take
+     `Prompt`'s run path, so the TUI's own stop registration goes. The
+     cast list's overrides, the strategy and proposed verify commands
+     travel as parameters, the preflight reads the plan's inspection from
+     the session, the session keeps a plan run its gate paused, and the
+     runtime's orchestrator and factories move into the adapter's `Deps`.
    - **5e. Ending and swapping.** The `EndController` calls and
      `Postmortem` become `Session` methods, `Close` replaces
      `ResolvePendingForShutdown` and `Shutdown`, and `Host.NewSession`
@@ -1295,6 +1314,53 @@ writing plan 5c:
   its own.
 - **The new ACP methods are named** `session/review`, `session/agent_run`,
   `session/suggest` and `session/verify_proposal`.
+
+**2026-11-03, against `cc07ed11` (plan 5c merged).** Found while
+writing plan 5d:
+- **Swarm, plan and authoring runs take the run path** (C8). `StartSwarm`,
+  `StartSDD`, `AnswerSDDGate` and `AuthorPlan` take 5c's slot, so every
+  run the TUI starts registers its work, its stop group and its idle
+  reset in the session, and the TUI's own stop registration goes.
+- **Per-run choices are parameters** (C3, C8). The cast list's role
+  overrides (keyed by role name), the strategy and the proposed verify
+  commands travel in `SwarmParams` and `SDDParams`. The runtime applies
+  them for the one run and restores the swarm's factory when it returns.
+- **A plan run is built when it starts** (C8). The `/sdd` preflight reads
+  `PlanPreflight`, an inspection that writes nothing, plus the verify gate
+  a run would use. A plan the inspection rejects is refused at `/sdd`.
+- **The human gate is a coded error** (C2, C8). A gated `StartSDD` or
+  `AnswerSDDGate` returns `human_gate_required`. The session keeps the
+  paused run: `AnswerSDDGate` records the answer and resumes it, `StopSDD`
+  drops it and clears the gate, and an answer refused at admission leaves
+  it paused.
+- **Authoring returns its candidate** (C8, C11). `AuthorPlan` resolves the
+  draft path, runs the author and returns the path, the auto-accept and
+  the inspection, with `cancelled` when stopped. The draft path leaves
+  C11's list. The TUI keeps choosing the design until plan 8 moves the
+  message query behind `--from-last-plan`.
+- **The runtime's orchestrator and factories move into `Deps`** (C4).
+  `/swarm`, `/sdd` and `/sdd new` now work after a `/connect` recovery,
+  and pick up config a reload applied, where the TUI's copies kept the
+  startup config until `/new`.
+- **Three bugs are fixed on the way** (C8). A plan the factory could not
+  build crashed the TUI: the factory returned a nil adapter inside a
+  non-nil interface, which ACP's `sdd_start` also missed. Proposed verify
+  commands never reached the run they were proposed for, because its
+  controller had already resolved the old ones. And a stopped plan
+  authoring was reported as a failure, and left the TUI marking the next
+  turn as cancelled.
+- **Two authoring notes change** (C8). A draft path or author that cannot
+  be built now fails the authoring run ("✘ Plan authoring failed: …"),
+  because both happen inside the run.
+- **The wire carries what the TUI renders** (C3). `PlanInspection` holds
+  the strategy, the block and strict flags, the operation counts and the
+  diagnostics, not the plan's IR or text.
+- **The new ACP methods are named** `session/sdd_preflight`,
+  `session/sdd_stop` and `session/sdd_author`. P3 extends
+  `session/swarm_start` and `session/sdd_start` with the new parameters.
+- **The header's plan count is corrected.** Plan 5c's review changed it to
+  five plans and twelve documents. The Migration order has nine plans,
+  and 5d, 5e and 6 to 9 are still to come.
 
 ## Implementation record
 

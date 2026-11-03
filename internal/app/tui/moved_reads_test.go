@@ -120,6 +120,9 @@ var movedStateReads = map[string]string{
 
 	// /system unlock goes through the session since 5b.
 	"SetSudoUnlockEnabled": "5b",
+
+	// The gate's stop goes through StopSDD since 5d.
+	"ClearSDDGate": "5d",
 }
 
 // movedReadSites returns one "<line>\t<Name>" entry per selector X.Sel in f

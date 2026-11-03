@@ -24,6 +24,12 @@ type turnRecorder struct {
 	agentRuns []acpwire.AgentRunParams
 	suggests  []string
 	proposals int
+
+	swarms     []acpwire.SwarmParams         // Task 3
+	preflights []acpwire.PlanPreflightParams // Task 3
+	sdds       []acpwire.SDDParams           // Task 3
+	answers    []string                      // Task 3
+	sddStops   int                           // Task 3
 }
 
 func (r *turnRecorder) Prompt(ctx context.Context, params acpwire.PromptParams) (acpwire.PromptResult, error) {
@@ -54,6 +60,31 @@ func (r *turnRecorder) Suggest(ctx context.Context, lastMessage string) (string,
 func (r *turnRecorder) VerifyProposal(ctx context.Context) (acpwire.VerifyCommands, error) {
 	r.proposals++
 	return r.Session.VerifyProposal(ctx)
+}
+
+func (r *turnRecorder) StartSwarm(ctx context.Context, params acpwire.SwarmParams) error {
+	r.swarms = append(r.swarms, params)
+	return r.Session.StartSwarm(ctx, params)
+}
+
+func (r *turnRecorder) PlanPreflight(ctx context.Context, params acpwire.PlanPreflightParams) (acpwire.PlanPreflight, error) {
+	r.preflights = append(r.preflights, params)
+	return r.Session.PlanPreflight(ctx, params)
+}
+
+func (r *turnRecorder) StartSDD(ctx context.Context, params acpwire.SDDParams) error {
+	r.sdds = append(r.sdds, params)
+	return r.Session.StartSDD(ctx, params)
+}
+
+func (r *turnRecorder) AnswerSDDGate(ctx context.Context, answer string) error {
+	r.answers = append(r.answers, answer)
+	return r.Session.AnswerSDDGate(ctx, answer)
+}
+
+func (r *turnRecorder) StopSDD(ctx context.Context) error {
+	r.sddStops++
+	return r.Session.StopSDD(ctx)
 }
 
 // testModelTurns builds a sized model over an adapter made from d whose
@@ -380,7 +411,7 @@ func TestTheProposalGoesThroughTheSession(t *testing.T) {
 	}, rec, WithCommandRegistry(setupCmdReg(t)))
 
 	// Open the /sdd preflight on a manifest-less repo so the gate is unknown.
-	m.openRunPreflight("sdd", &fakeAgentRunner{called: make(chan string, 1)}, "plan.md")
+	m.openRunPreflight("sdd", "plan.md", &acpwire.PlanPreflight{})
 
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'f'})
 	m = asModel(t, updated)

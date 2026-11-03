@@ -665,7 +665,7 @@ func (r *Runner) getTurnFinishReason() string {
 	return r.turnFinishReason
 }
 
-// AnswerGate satisfies tui.AgentRunner. The interactive runner has no
+// AnswerGate satisfies ACP's AgentRunner. The interactive runner has no
 // human gates; this is a no-op.
 func (r *Runner) AnswerGate(string) {}
 

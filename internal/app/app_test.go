@@ -6885,7 +6885,7 @@ func TestAdapterAccessFollowsNewSession(t *testing.T) {
 // test. It opens the conversation's one eligible turn exactly as RunTask does,
 // reports the turn ID it opened, and then blocks until its context is
 // cancelled — keeping the turn busy and steerable for the whole frame without a
-// provider call or a real child process. It satisfies tui.AgentRunner.
+// provider call or a real child process. It satisfies app.PipelineRunner.
 type facadeTurnRunner struct {
 	state   *session.State
 	started chan string

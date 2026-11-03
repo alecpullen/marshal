@@ -2768,7 +2768,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		database := must[*db.DB](rt.DB)
 		projectID := rt.ProjectID
 		sessionID := rt.SessionID
-		swarmRunner := rt.SwarmRunner
 		toolReg := rt.ToolRegistry
 		jobBroker := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
 		watchBroker := must[*pubsub.Broker[watch.Event]](rt.WatchBroker)
@@ -2857,19 +2856,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		))
 		tuiOpts = append(tuiOpts, tui.WithContext(ctx))
 		if providerReady {
-			tuiOpts = append(tuiOpts, tui.WithSwarmRunner(ctx, swarmRunner))
-			// The runtime's pipeline factory speaks the runtime's own runner
-			// type; the TUI keeps its copy of the contract until the rest of
-			// plan 5d moves these runs onto the session. A nil runner converts
-			// to a nil interface, and a nil factory to a nil closure.
-			if factory := rt.PipelineFactory; factory != nil {
-				tuiOpts = append(tuiOpts, tui.WithPipelineFactory(ctx, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner {
-					return factory(planPath, overrides)
-				}))
-			}
-			if rt.SwarmOverrideFactory != nil {
-				tuiOpts = append(tuiOpts, tui.WithSwarmOverrideFactory(tui.SwarmOverrideFactory(rt.SwarmOverrideFactory)))
-			}
 			tuiOpts = append(tuiOpts, tui.WithPlanAuthorFactory(ctx, rt.PlanAuthorFactory))
 			tuiOpts = append(tuiOpts, tui.WithToolRegistry(toolReg))
 		}
@@ -2884,28 +2870,18 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// is wired outside the ProviderError block so the commands stay
 		// available even when the initial provider build failed.
 		tuiOpts = append(tuiOpts, tui.WithSessionSwapper(tui.SessionSwapperFunc(func(name string) (tui.SessionSwapResult, error) {
-			// The runner the runtime rebuilds is reachable through the
-			// session's Deps, so the swap result does not carry it.
-			state, _, swarmRunner, pipelineFactory, planAuthorFactory, swarmOverrideFactory, toolReg, err := rt.NewSession(name)
+			// The runner, the pipeline factory and the override factory the
+			// runtime rebuilds are reachable through the session's Deps, so
+			// the swap result does not carry them (plan 5d).
+			state, _, _, _, planAuthorFactory, _, toolReg, err := rt.NewSession(name)
 			if err != nil {
 				return tui.SessionSwapResult{}, err
 			}
-			// The runtime's own runner and factory types convert to the TUI's
-			// copies here; a nil runner stays a nil interface.
-			var tuiPipelineFactory func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner
-			if pipelineFactory != nil {
-				tuiPipelineFactory = func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner {
-					return pipelineFactory(planPath, overrides)
-				}
-			}
 			return tui.SessionSwapResult{
-				State:                state,
-				Session:              seamHost.Swap(state),
-				SwarmRunner:          swarmRunner,
-				PipelineFactory:      tuiPipelineFactory,
-				SwarmOverrideFactory: tui.SwarmOverrideFactory(swarmOverrideFactory),
-				PlanAuthorFactory:    planAuthorFactory,
-				ToolRegistry:         toolReg,
+				State:             state,
+				Session:           seamHost.Swap(state),
+				PlanAuthorFactory: planAuthorFactory,
+				ToolRegistry:      toolReg,
 			}, nil
 		})))
 

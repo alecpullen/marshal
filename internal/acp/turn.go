@@ -65,9 +65,9 @@ type SwarmTurnResult struct {
 type RunnerFunc func(ctx context.Context, prompt string) error
 
 // AgentRunner is the swarm/SDD execution surface. Its method set matches
-// tui.AgentRunner structurally, so *swarm.Orchestrator and
+// app.PipelineRunner structurally, so *swarm.Orchestrator and
 // PipelineFactory-built runners (both sourced from app.Runtime) satisfy it
-// without internal/acp importing internal/app/tui — the same decoupling
+// without internal/acp importing internal/app — the same decoupling
 // RunnerFunc already gives regular turns.
 type AgentRunner interface {
 	Run(ctx context.Context, goal string) error

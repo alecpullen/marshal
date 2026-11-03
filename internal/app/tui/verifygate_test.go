@@ -20,20 +20,23 @@ import (
 
 func TestVerifyGateRowStates(t *testing.T) {
 	cases := []struct {
-		name        string
-		build, test string
-		wantWarn    bool
+		name     string
+		gate     acpwire.VerifyGate
+		wantWarn bool
+		wantDet  bool
 	}{
-		{"configured", "make build", "make test", false},
-		{"unconfigured", "", "", true},
+		{"configured", acpwire.VerifyGate{Build: "make build", Test: "make test", Known: true}, false, false},
+		{"unconfigured", acpwire.VerifyGate{}, true, false},
+		{"detected", acpwire.VerifyGate{Build: "go build ./...", Test: "go test ./...", Known: true, Detected: true}, false, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			cfg := config.Default()
-			cfg.SDD.Verify = config.SDDVerifyConfig{Build: c.build, Test: c.test}
-			row := verifyGateRow(cfg, "/tmp/nonexistent")
+			row := verifyGateRow(c.gate)
 			if (row.Warn != "") != c.wantWarn {
 				t.Errorf("%s: warn = %q, want warn=%v", c.name, row.Warn, c.wantWarn)
+			}
+			if got := strings.Contains(row.Detail, "(detected)"); got != c.wantDet {
+				t.Errorf("%s: detail = %q, want detected=%v", c.name, row.Detail, c.wantDet)
 			}
 		})
 	}
@@ -55,7 +58,7 @@ func TestProposalPersistsOnApprove(t *testing.T) {
 	m.resize(80, 24)
 
 	// Open the /sdd preflight on a manifest-less repo so the gate is unknown.
-	m.openRunPreflight("sdd", &fakeAgentRunner{called: make(chan string, 1)}, "plan.md")
+	m.openRunPreflight("sdd", "plan.md", &acpwire.PlanPreflight{})
 
 	// Press f to dispatch the proposal.
 	mm, cmd := m.Update(tea.KeyPressMsg{Code: 'f'})

@@ -39,8 +39,9 @@ type RunnerFactory func(role agent.AgentRole, scope RegistryScope) (*agent.Runne
 //
 //	planner -> parallel read-only repo scouts -> [implementer -> tester]* -> reviewer
 //
-// sharing one TaskState blackboard. It satisfies the TUI's AgentRunner
-// interface so /swarm dispatch reuses the existing agent-turn plumbing.
+// sharing one TaskState blackboard. It satisfies the runtime's
+// PipelineRunner interface so /swarm dispatch reuses the existing
+// agent-turn plumbing.
 type Orchestrator struct {
 	State        *session.State
 	NewRunner    RunnerFactory
@@ -50,9 +51,9 @@ type Orchestrator struct {
 	MaxTotalTokens int
 
 	// savedRunner holds the original NewRunner factory when the
-	// orchestrator is wrapped for a per-run override. The TUI calls
-	// RestoreRunner when the run ends so a leaked override does not
-	// silently apply to every later run.
+	// orchestrator is wrapped for a per-run override. The runtime's
+	// RunSwarm restores the factory when the run ends so a leaked
+	// override does not silently apply to every later run.
 	savedRunner *originalRunner
 }
 
@@ -60,22 +61,23 @@ func New(state *session.State, factory RunnerFactory) *Orchestrator {
 	return &Orchestrator{State: state, NewRunner: factory, ScoutFocuses: DefaultScoutFocuses}
 }
 
-// SetForceClass satisfies tui.AgentRunner. Swarm roles fix their own task
+// SetForceClass satisfies ACP's AgentRunner. Swarm roles fix their own task
 // classes, so forcing has no effect.
 func (o *Orchestrator) SetForceClass(string) {}
 func (o *Orchestrator) AnswerGate(string)    {}
 
 // savedRunner stores the original NewRunner factory when the orchestrator
-// is wrapped for a per-run override. The TUI calls RestoreRunner when the
-// run ends so a leaked override does not silently apply to every later run.
+// is wrapped for a per-run override. The runtime's RunSwarm restores the
+// factory when the run ends so a leaked override does not silently apply to
+// every later run.
 type originalRunner struct {
 	factory RunnerFactory
 }
 
 // SetRunnerFactory replaces o.NewRunner with factory and saves the
 // original for RestoreRunner. This is the low-level seam used by app.go
-// to wrap the factory with a per-run resolver; the TUI calls
-// RestoreRunner via the RoleOverrideRunner interface.
+// to wrap the factory with a per-run resolver; the runtime's RunSwarm
+// calls RestoreRunner when the run ends.
 func (o *Orchestrator) SetRunnerFactory(factory RunnerFactory) {
 	if o.savedRunner == nil {
 		o.savedRunner = &originalRunner{factory: o.NewRunner}

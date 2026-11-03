@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"strings"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
-	"marshal/internal/pipeline"
 )
 
 // parsedSDDArgs is the pure result of parsing /sdd arguments.
 type parsedSDDArgs struct {
-	Strategy         pipeline.Strategy
+	Strategy         string
 	ExplicitStrategy bool
 	New              bool
 	FromLastPlan     bool
@@ -69,9 +69,9 @@ func parseSDDArgs(args []string) (parsedSDDArgs, error) {
 }
 
 func (p *parsedSDDArgs) setStrategy(val string) error {
-	switch pipeline.Strategy(val) {
-	case pipeline.StrategyAgent, pipeline.StrategyAdaptive, pipeline.StrategyStrict:
-		p.Strategy = pipeline.Strategy(val)
+	switch val {
+	case acpwire.StrategyAgent, acpwire.StrategyAdaptive, acpwire.StrategyStrict:
+		p.Strategy = val
 		p.ExplicitStrategy = true
 		return nil
 	default:

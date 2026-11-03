@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -156,6 +157,11 @@ func batchResults(t *testing.T, cmd tea.Cmd) []tea.Msg {
 type fakeHost struct{ shared bool }
 
 func (h fakeHost) SharedFilesystem() bool { return h.shared }
+
+// NewSession refuses: the tests drive one session built by testSession.
+func (h fakeHost) NewSession(context.Context, string) (acpclient.Session, error) {
+	return nil, errors.New("fakeHost creates no sessions")
+}
 
 // seamState builds a state for the seam tests.
 func seamState(t *testing.T, id string) *session.State {

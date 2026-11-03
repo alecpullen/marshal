@@ -186,8 +186,15 @@ func (s *Session) runTurn(ctx context.Context, run func(context.Context) error) 
 	slot := &turnSlot{cancel: cancel}
 
 	// One run at a time: the slot is taken before any work registers, so a
-	// second caller is refused rather than queued behind the first.
+	// second caller is refused rather than queued behind the first. A session
+	// that closed since Prompt's first check is refused here: this closes the
+	// window between that check and the slot.
 	s.mu.Lock()
+	if s.closed.Load() {
+		s.mu.Unlock()
+		cancel()
+		return false, false, errSessionClosed
+	}
 	if s.turn != nil {
 		s.mu.Unlock()
 		cancel()

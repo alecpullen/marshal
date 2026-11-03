@@ -18,6 +18,7 @@ type Method struct {
 // the server side.
 var Methods = []Method{
 	{Iface: "Host", Name: "SharedFilesystem"},
+	{Iface: "Host", Name: "NewSession", ACP: "session/new", Exists: true},
 	{Iface: "Session", Name: "ID", ACP: "session/new", Exists: true},
 	{Iface: "Session", Name: "Status", ACP: "session/status"},
 	{Iface: "Session", Name: "Changed"},
@@ -60,4 +61,10 @@ var Methods = []Method{
 	{Iface: "Session", Name: "AnswerSDDGate", ACP: "session/sdd_answer", Exists: true},
 	{Iface: "Session", Name: "StopSDD", ACP: "session/sdd_stop"},
 	{Iface: "Session", Name: "AuthorPlan", ACP: "session/sdd_author"},
+	{Iface: "Session", Name: "ActiveWork", ACP: "session/end_work"},
+	{Iface: "Session", Name: "AcceptEnd", ACP: "session/end_accept"},
+	{Iface: "Session", Name: "WaitForEnd", ACP: "session/end_wait"},
+	{Iface: "Session", Name: "RunExitAnalysis", ACP: "session/exit_analysis"},
+	{Iface: "Session", Name: "Postmortem", ACP: "session/postmortem"},
+	{Iface: "Session", Name: "Close", ACP: "session/close", Exists: true},
 }

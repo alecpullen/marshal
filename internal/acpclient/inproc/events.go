@@ -45,6 +45,7 @@ func newSession(d Deps) *Session {
 		newPlanRun:     d.NewPlanRun,
 		planPreflight:  d.PlanPreflight,
 		authorPlan:     d.AuthorPlan,
+		end:            d.End,
 		ctx:            ctx,
 		cancel:         cancel,
 		changed:        make(chan struct{}, 1),

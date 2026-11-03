@@ -1828,3 +1828,96 @@ plan 5c; surfacing it now would add a note 5c has to remove. And the
 replacement model in `TestAdapterAccessFollowsNewSession`'s post-swap `/act`
 check carries `WithCommandRegistry`, which the plan's step did not mention:
 without it `/act` never dispatches, so the check would have asserted nothing.
+
+**Plan 5c (prompt), branch `p2-5c-prompt`.** Added `internal/acpwire/turns.go`:
+`PromptParams` (`Text`, `Queued`), `PromptResult` (`StopReason`) with the two
+stop reasons `StopReasonEndTurn` and `StopReasonCancelled`, `ReviewParams`
+(`Focus`, `Model`, `Range`, `Base`), `AgentRunParams` (`Agent`, `Goal`) and
+`VerifyCommands` (`Build`, `Test`). `errors.go` gains `CodeNoRunner`, and
+`SessionStatus` gains `AgentReady`, the only new status field: it reports
+whether the session's runner is built, so the TUI can drop its own
+`m.runner == nil` checks.
+
+`acpclient.Session` gains six methods with their `Methods` rows: `Prompt` on
+`session/prompt` (exists), `Stop` on `session/cancel` (exists), and four new
+in P3 — `Review` on `session/review`, `RunAgent` on `session/agent_run`,
+`Suggest` on `session/suggest` and `VerifyProposal` on
+`session/verify_proposal`.
+
+The adapter's run path is one path, and it is where admission now lives. One
+turn slot guards the session: a second `Prompt`, `Review` or `RunAgent` while
+one runs gets `CodeBusy`, as ACP's `runTurn` refuses a second turn. Every run
+takes the slot, calls `BeginWork`, registers its stop group with
+`BeginTurnStop` (after `BeginWork`, which stamps the turn onto the work item
+it opened), runs, sets the session idle, releases the slot and ends the stop
+group and the work. A refusal comes back from the call: `CodeBusy`,
+`CodeQuiescing` (any `session.ErrSessionQuiescing`, the conversation's ending
+included), `CodeNoRunner` or `CodeSessionClosed`, and a `Queued` prompt's text
+goes back on the steering queue then, which settles the put-back plan 5b left
+here. A stopped run is not an error — `Prompt` returns `StopReasonCancelled`,
+`Review` and `RunAgent` return nil. `Stop` acts on the slot only: it stops the
+registered group first (service acceptance before agent cancellation) and then
+cancels the run's context; with nothing running it does nothing, and it records
+no pending cause, so a late stop can never cancel the next turn. A panic in a
+run is recovered into `panic in agent run: …`. `Suggest` and `VerifyProposal`
+take no slot, no work and no stop registration.
+
+`inproc.Deps` gains `Runner` and the four calls `Review`, `RunAgent`,
+`Suggest` and `VerifyProposal`, bound in `Run` by `bindTurnDeps` to
+`Runtime.TurnRunner`, `RunReview`, `RunCustomAgent`, `SuggestNextReply` and
+`ProposeVerifyCommands`. Each reads the runtime's current runner, state and
+factory under `rt.mu`, so they keep working after a swap and after a reload
+builds a runner — `adoptRunner` and the runner source are gone. `review.go`'s
+`runReviewSubagent` body from the factory call inward moved into
+`runSubagentTask`, which takes the error prefix as `kind`; the review and the
+custom-agent run share it, so Run-now's agent is a registered subagent labelled
+`agent · <name>` whose summary lands in the transcript.
+
+The TUI starts every prompt, review and Run-now through the session
+(`startSessionRun`, `startPrompt`), stops them through it (`cancelTurn` calls
+`Stop`, and reaches the state's own registration only for a run the TUI still
+registers itself), and asks it for the suggestion and the proposal.
+`handleAgentFinished`'s idle reset and the SDD gate branch's are gone: the run
+path sets the session idle, and `runAgentCmd` sets it for the swarm, SDD and
+plan-authoring runs that keep the TUI's path until plan 5d. A refused start is
+reported from the run's end as `agentFinishedMsg{refusal: …}`, so the notes
+`Cannot start work: …` and `Cannot start review: …` are written once.
+`tui.WithRunner`, `WithRunnerSource`, `WithReviewDispatcher`,
+`WithSuggestionProvider`, `WithSubagentFactory` and
+`WithCustomAgentRunnerFactory` are deleted, along with the six model fields
+behind them, `SessionSwapResult.Runner` and `.ReviewDispatcher`,
+`buildCustomAgentRunner`, `proposalFromSession` and `runReviewCmd`; `app`
+deletes `beginSessionStop` too, whose only callers were the two review
+dispatchers.
+
+The two fixes. Run-now ran on a stale model: the roster's dispatch closure
+captured `m`, so `busy`, `agentCancel` and the stop teardown were set on a copy
+`Update` had already returned, while the run itself went ahead — the live model
+stayed idle, Ctrl+C and `/stop` could not reach it, and a second prompt could
+start beside it. The dispatch now captures nothing (`runNowDispatch` returns a
+`runAgentMsg`) and the live model starts the run. The note for an agent that
+cannot be built changed with it: it is now a failed turn
+(`✘ Turn failed: run agent: build subagent: …`), not
+`Cannot run custom agent …`, and the swarm-runner fallback is gone because
+production always wired the factory. The verify proposal parsed the wrong
+transcript: its runner writes to a child state, but the parse scanned the
+parent session's messages, so it failed unless the conversation's last reply
+happened to hold a build/test object. `ProposeVerifyCommands` parses the child
+state's messages through `verifyCommandsFrom`, which carries the same error
+texts.
+
+T1b and the allowlist did not change. Every state call the prompt path stops
+making — `BeginWork`, `EndWork`, `BeginTurnStop`, `EndTurnStop`,
+`RequestTurnStop`, `SetActivity` — is still made by the swarm, SDD and
+plan-authoring paths until plan 5d, and each edited file on the allowlist still
+uses every entry it has, most of them `marshal/internal/app/session` for the
+notes it writes until plan 6.
+
+Decisions recorded here rather than silently settled. `RunAgent` treats a
+whitespace-only agent name as empty, not only `""`, which matches how the roster
+reads its own names. The panic recovery is a small `callRun` helper so
+`runTurn`'s single defer stays the cleanup defer rather than gaining a second
+ordering dependency. `errNoAgentName` is checked after the missing-`runAgent`
+check, both before the slot is taken. And `bindTurnDeps` runs after
+`deps.Work` is assigned, on the fully built `Deps` and still before
+`inproc.New`.

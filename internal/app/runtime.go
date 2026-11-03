@@ -385,30 +385,29 @@ type EndAcceptRequest struct {
 	RequireDisplayed bool
 }
 
+// currentState returns the runtime's current session state. A replacement
+// installs a new State under mu, and an end call can run beside that
+// replacement, so every reader that may race a swap snapshots the pointer under
+// the same lock. Callers holding endMu may take it: endMu is taken above mu.
+func (rt *Runtime) currentState() *session.State {
+	if rt == nil {
+		return nil
+	}
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.State
+}
+
 // ActiveWork returns the runtime's currently active conversation work: the
 // authoritative membership a warning panel renders. It reads the session's gate,
 // which registers parent operations, delegated children and managed commands
 // alike, so what it reports and what an accepted end acts on cannot drift apart.
 func (rt *Runtime) ActiveWork() ActiveWork {
-	if rt == nil || rt.State == nil {
+	state := rt.currentState()
+	if state == nil {
 		return ActiveWork{Phase: EndPhaseOpen}
 	}
-	snap := rt.State.WorkMembership()
-	out := ActiveWork{Phase: string(snap.Phase)}
-	for _, item := range snap.Items {
-		out.Items = append(out.Items, WorkEntry{
-			ID:         string(item.ID),
-			Kind:       string(item.Kind),
-			Label:      item.Label,
-			Group:      string(item.Group),
-			Parent:     item.Kind == session.WorkKindParent,
-			SubagentID: item.SubagentID,
-		})
-	}
-	for _, target := range snap.Targets() {
-		out.Targets = append(out.Targets, string(target))
-	}
-	return out
+	return activeWorkFrom(state.WorkMembership())
 }
 
 // AcceptEnd accepts an end of the current conversation. It checks the displayed
@@ -420,7 +419,7 @@ func (rt *Runtime) ActiveWork() ActiveWork {
 // A second acceptance of an already-accepted end is a no-op: it stops nothing
 // again and reports Accepted with the membership it found.
 func (rt *Runtime) AcceptEnd(req EndAcceptRequest) (EndDecision, error) {
-	if rt == nil || rt.State == nil {
+	if rt == nil {
 		return EndDecision{}, fmt.Errorf("runtime: AcceptEnd called with nil State")
 	}
 	intent := req.Intent
@@ -430,7 +429,14 @@ func (rt *Runtime) AcceptEnd(req EndAcceptRequest) (EndDecision, error) {
 	rt.endMu.Lock()
 	defer rt.endMu.Unlock()
 
-	snap, expanded, frozen := rt.State.AcceptWorkDisplayed(req.DisplayedIDs, req.RequireDisplayed)
+	// Snapshot the state under mu, after endMu: a replacement may install a new
+	// State at any point, and one acceptance must act on exactly one of them.
+	state := rt.currentState()
+	if state == nil {
+		return EndDecision{}, fmt.Errorf("runtime: AcceptEnd called with nil State")
+	}
+
+	snap, expanded, frozen := state.AcceptWorkDisplayed(req.DisplayedIDs, req.RequireDisplayed)
 	if len(expanded) > 0 {
 		// The displayed set did not cover what is active: refresh and stop
 		// nothing. Ordinary admission is deliberately NOT frozen here — the
@@ -452,7 +458,7 @@ func (rt *Runtime) AcceptEnd(req EndAcceptRequest) (EndDecision, error) {
 		rt.endAccepted = true
 	}
 	rt.endPhase = EndPhaseStopping
-	rt.State.SetWorkPhase(session.ExitPhaseStopping)
+	state.SetWorkPhase(session.ExitPhaseStopping)
 	return EndDecision{Accepted: true, Work: activeWorkFrom(snap)}, nil
 }
 
@@ -485,10 +491,11 @@ func (rt *Runtime) EndPhase() string {
 	if rt.endPhase != "" {
 		return rt.endPhase
 	}
-	if rt.State == nil {
+	state := rt.currentState()
+	if state == nil {
 		return EndPhaseOpen
 	}
-	return string(rt.State.WorkPhase())
+	return string(state.WorkPhase())
 }
 
 // EndAccepted reports whether an end has been accepted and ordinary admission is
@@ -2081,10 +2088,13 @@ func (rt *Runtime) newSessionLocked(name string, replacing bool) (*session.State
 		rt.Logger.Warn("new session: runner build failed; keeping previous session", "error", err)
 		// Nothing about the runtime's state, owner or resume intent has been
 		// mutated: the old conversation is exactly as it was before this call,
-		// except that an accepted replacement has already frozen it. The error is
-		// explicit about the way out — retry the replacement, or exit — because
-		// reopening the old conversation implicitly would put a live conversation
-		// back beside whatever the replacement was for.
+		// except that an accepted replacement has already frozen it. The one
+		// pre-build write is the layer snapshot refresh above (rt.Layers), which is
+		// a fresher read of the same config rather than a change to the
+		// conversation. The error is explicit about the way out — retry the
+		// replacement, or exit — because reopening the old conversation implicitly
+		// would put a live conversation back beside whatever the replacement was
+		// for.
 		hint := "The previous session is still active. Fix the provider configuration and try /session new again."
 		if replacing {
 			hint = "The previous conversation stays frozen: retry the replacement once the provider is fixed, or exit Marshal. Its work is not reopened or transferred."

@@ -10234,14 +10234,6 @@ func answerPostmortem(t *testing.T, m Model, result postmortempanel.Result) (Mod
 	return asModel(t, updated), next
 }
 
-// exitWithWork drives one exit request through the model and returns the
-// resulting model plus the pending command. It is the shared entry point for
-// the ending tests: every ending path reaches the same helper.
-func exitWithWork(t *testing.T, m Model, ctrl inproc.EndService) (Model, tea.Cmd) {
-	t.Helper()
-	return m, m.beginEnd(&endIntent{kind: EndIntentExit})
-}
-
 func TestExitPromptsPostmortemPerConfig(t *testing.T) {
 	state := postmortemTestState(t, "sess-prompt")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)

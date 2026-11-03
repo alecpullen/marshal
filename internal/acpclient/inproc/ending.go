@@ -84,8 +84,11 @@ func (s *Session) Postmortem(ctx context.Context) (string, error) {
 		return "", err
 	}
 	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
+	if err != nil {
 		return "", fmt.Errorf("locate home directory: %w", err)
+	}
+	if home == "" {
+		return "", errors.New("locate home directory: no home directory")
 	}
 	slug := postmortem.ProjectSlug(s.state.WorkingDir)
 	return postmortem.Write(report, home, slug, s.state.SessionID())

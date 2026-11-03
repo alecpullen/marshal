@@ -30,7 +30,9 @@ func testModelEnding(state *session.State, end inproc.EndService, opts ...Option
 }
 
 // withEndService replaces m's session with one over m's state whose end service
-// is end, as withPromptRunner does for the runner.
+// is end, as withPromptRunner does for the runner. The model's host is left as it
+// was, so it stays paired with the session this replaces: a test that also drives
+// a swap must build both, as TestNewSessionSwapsTheClientSession does.
 func withEndService(m Model, end inproc.EndService) Model {
 	_, sess := inproc.New(inproc.Deps{State: m.state, End: end})
 	m.sess = sess

@@ -4672,9 +4672,9 @@ func (m *Model) applyEndIntent(intent *endIntent) {
 	m.end = intent
 }
 
-// snapshotEmpty reports whether a membership holds no ordinary work. A nil
-// controller reports an empty membership: there is no runtime work to warn
-// about.
+// snapshotEmpty reports whether a membership holds no ordinary work. A session
+// without an end service reports an empty membership: there is no runtime work
+// to warn about.
 func snapEmpty(snap acpwire.EndWork) bool { return len(snap.Items) == 0 }
 
 // acceptEnd submits the decision to freeze ordinary admission and stop the

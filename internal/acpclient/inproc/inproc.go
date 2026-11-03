@@ -202,6 +202,12 @@ func New(d Deps) (*Host, *Session) {
 // swap closes the current session and returns a new one over state. It is the
 // host's own swap path: NewSession is what callers use, and it reaches this
 // after the runtime has created the state.
+//
+// The close is deliberately minimal — it marks the session closed, cancels its
+// run and its change signal — because the runtime has already quiesced and shut
+// the replaced state down before it builds the new one. Deps.NewSession must
+// keep that promise: a factory that leaves the old state alive would leave the
+// swapped-out session's pending requests open.
 func (h *Host) swap(state *session.State) *Session {
 	h.mu.Lock()
 	defer h.mu.Unlock()

@@ -27,6 +27,8 @@ const (
 	CodeBusy ErrorCode = "busy"
 	// CodeSessionClosed means a swap replaced the session (spec C4).
 	CodeSessionClosed ErrorCode = "session_closed"
+	// CodeNoRunner means the session has no agent runner: its provider is not built.
+	CodeNoRunner ErrorCode = "no_runner"
 )
 
 // Error is an agent-side error with a code.

@@ -115,6 +115,27 @@ func TestCancelTurnStopsTurnWorkBeforeCancelling(t *testing.T) {
 	}
 }
 
+// TestCancelTurnLeavesNoPendingStop pins that a cancel with no registered stop
+// group cannot reach the next turn: cancelTurn asks the session, not the state,
+// so no pending cause is left behind for a later registration to adopt.
+func TestCancelTurnLeavesNoPendingStop(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	svc := &fakeTUISessionStopService{}
+	state.SetTurnStopService(svc)
+	m := testModel(state)
+	m.busy = true
+
+	if !m.cancelTurn() {
+		t.Fatal("cancelTurn reported no in-flight turn")
+	}
+	if turnIDs, _ := svc.snapshot(); len(turnIDs) != 0 {
+		t.Fatalf("cancelTurn issued %d service stops with no registration, want 0", len(turnIDs))
+	}
+	if _, pending := state.BeginTurnStop(""); pending != "" {
+		t.Fatalf("pending stop cause = %q, want none for the next turn", pending)
+	}
+}
+
 // TestNormalFinishUnregistersWithoutStopping pins the counterweight: a turn that
 // ends normally clears its registration and never asks the service to stop
 // anything, so background work left running survives its turn.

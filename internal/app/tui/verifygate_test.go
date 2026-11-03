@@ -9,6 +9,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/castlist"
@@ -37,22 +39,6 @@ func TestVerifyGateRowStates(t *testing.T) {
 	}
 }
 
-// proposalRunner is a fake AgentRunner that records the goal and, on Run,
-// appends a JSON proposal to the session transcript so proposalFromSession
-// can parse it.
-type proposalRunner struct {
-	state *session.State
-	goal  string
-}
-
-func (p *proposalRunner) Run(ctx context.Context, goal string) error {
-	p.goal = goal
-	p.state.AddMessage(session.RoleAssistant, `{"build":"make build","test":"make test"}`, session.ContentTypePlain)
-	return nil
-}
-func (p *proposalRunner) SetForceClass(string) {}
-func (p *proposalRunner) AnswerGate(string)    {}
-
 func TestProposalPersistsOnApprove(t *testing.T) {
 	workDir := t.TempDir()
 	state := session.New(config.Default(), workDir, time.Unix(100, 0), session.Persistence{})
@@ -60,10 +46,12 @@ func TestProposalPersistsOnApprove(t *testing.T) {
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	pr := &proposalRunner{state: state}
-	m := testModel(state, WithCommandRegistry(reg), WithSubagentFactory(func(string) (AgentRunner, error) {
-		return pr, nil
-	}))
+	m := testModelWith(inproc.Deps{
+		State: state,
+		VerifyProposal: func(context.Context) (acpwire.VerifyCommands, error) {
+			return acpwire.VerifyCommands{Build: "make build", Test: "make test"}, nil
+		},
+	}, WithCommandRegistry(reg))
 	m.resize(80, 24)
 
 	// Open the /sdd preflight on a manifest-less repo so the gate is unknown.
@@ -99,20 +87,6 @@ func TestProposalPersistsOnApprove(t *testing.T) {
 	s := string(data)
 	if !strings.Contains(s, "make build") || !strings.Contains(s, "make test") {
 		t.Fatalf("proposed commands not persisted:\n%s", s)
-	}
-}
-
-func TestProposalFromSession(t *testing.T) {
-	workDir := t.TempDir()
-	state := session.New(config.Default(), workDir, time.Unix(100, 0), session.Persistence{})
-	state.AddMessage(session.RoleAssistant, `{"build":"go build ./...","test":"go test ./..."}`, session.ContentTypePlain)
-	m := testModel(state)
-	build, test, err := m.proposalFromSession()
-	if err != nil {
-		t.Fatalf("proposalFromSession: %v", err)
-	}
-	if build != "go build ./..." || test != "go test ./..." {
-		t.Fatalf("got %q / %q", build, test)
 	}
 }
 

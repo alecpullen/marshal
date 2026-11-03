@@ -6945,9 +6945,12 @@ func TestRuntimeSendNowTUIOptionsExerciseRealFacade(t *testing.T) {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
-	model := testTUIModel(state,
+	model := testTUIModelWith(inproc.Deps{
+		State:  state,
+		Runner: func() inproc.Runner { return agentProcess },
+	},
 		tui.WithCommandRegistry(reg),
-		tui.WithRunner(runCtx, agentProcess),
+		tui.WithContext(runCtx),
 	)
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	model = updated.(tui.Model)

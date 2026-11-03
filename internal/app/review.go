@@ -21,10 +21,6 @@ func runReviewSubagent(ctx context.Context, state *session.State, factory agent.
 	if model != "" {
 		req.Model = model
 	}
-	child, childState, err := factory(req)
-	if err != nil {
-		return fmt.Errorf("review: build subagent: %w", err)
-	}
 	label := "current changes"
 	if focus != "" {
 		label = focus
@@ -32,15 +28,26 @@ func runReviewSubagent(ctx context.Context, state *session.State, factory agent.
 	if resolvedRange != "" {
 		label += " · " + resolvedRange
 	}
-	meta := session.SubagentMeta{Role: routing.RoleReviewer}
+	return runSubagentTask(ctx, state, factory, req, "review", "review · "+label, buildReviewPrompt(ctx, state.WorkingDir, focus, resolvedRange))
+}
+
+// runSubagentTask runs one subagent the session shows: it builds the child
+// from req, registers it under label, runs prompt, finishes the view, and
+// appends the child's summary to the transcript. kind prefixes its errors.
+func runSubagentTask(ctx context.Context, state *session.State, factory agent.SubagentRunnerFactory, req agent.SubagentRequest, kind, label, prompt string) error {
+	child, childState, err := factory(req)
+	if err != nil {
+		return fmt.Errorf("%s: build subagent: %w", kind, err)
+	}
+	meta := session.SubagentMeta{Role: req.Role}
 	if child.Model != "" {
 		meta.Model = child.Model
 	}
 	if child.Provider != nil {
 		meta.Provider = child.Provider.Name()
 	}
-	view := state.RegisterSubagentWithMeta("review · "+label, childState, meta)
-	task, err := child.RunTask(ctx, buildReviewPrompt(ctx, state.WorkingDir, focus, resolvedRange))
+	view := state.RegisterSubagentWithMeta(label, childState, meta)
+	task, err := child.RunTask(ctx, prompt)
 	var summary string
 	if task != nil {
 		summary = task.Summary
@@ -50,7 +57,7 @@ func runReviewSubagent(ctx context.Context, state *session.State, factory agent.
 	}
 	state.FinishSubagent(view.ID, summary, err)
 	if err != nil {
-		return fmt.Errorf("review: subagent run failed: %w", err)
+		return fmt.Errorf("%s: subagent run failed: %w", kind, err)
 	}
 	if summary != "" {
 		if task != nil && task.SalvagedReason != "" {

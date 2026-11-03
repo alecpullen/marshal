@@ -8,9 +8,10 @@ P-A–P-E, merged at `991c18d7`). Agent side and TUI only: no bridge
 change, no new ACP method, no database schema change. ACP messages that
 already exist change only by gaining optional fields (C6).
 Status: drafted 2026-10-20; revised 2026-10-25 against `991c18d7`
-and since, plan by plan (Revision record). Delivered as nine plans
+and since, plan by plan (Revision record). Delivered as five plans
 (Migration order), each written against `main` once the previous one has
-landed; plans 2 and 3 are split into sub-plans.
+landed; plans 2, 3 and 5 are split into sub-plans (twelve plan documents
+in all).
 
 Decided with the user (2026-10-20):
 - **Transcript on the wire:** `WireTree`. The TUI renders the same
@@ -318,8 +319,9 @@ Decision: `WireTree`, with the C6 additions.
     running, turn usage and window, quota, and effort override;
   - **access:** the interaction state (mode, auto and system access),
     sudo unlock, trusted, and whether there is a backup;
-  - **activity:** kind, label and start, and whether a subagent is
-    running;
+  - **activity:** kind, label and start, whether a subagent is running,
+    and whether the session's agent runner is built (`agentReady`, plan
+    5c), which input gating reads before it starts a run;
   - **workspace:** project root, active root, git info (branch,
     worktree and whether the root is a repository; plan 2b), and the
     number of files changed against the sheet's base, which the status
@@ -370,10 +372,10 @@ Decision: `WireTree`, with the C6 additions.
 - **The sheet refreshes on request.** The values read from the database
   and git are cached agent side, and `Sheet` never blocks.
   `Session.RefreshSheet(ctx, flags)` re-reads the values its flags name,
-  then fires `Changed`. Until plan 5 moves turns behind `Prompt`, the TUI
-  owns the turn boundaries. It therefore calls `RefreshSheet` at the
-  points where it re-reads those values today: startup, turn end, a
-  workspace move, a new session and opening the sheet.
+  then fires `Changed`. The TUI sees every turn boundary: since plan 5c a
+  turn ends when its `Prompt` returns. It therefore calls `RefreshSheet`
+  at the points where it re-reads those values today: startup, turn end,
+  a workspace move, a new session and opening the sheet.
 - ACP (P3): `session/status` with a `session_status` update, and
   `session/sheet`. `RefreshSheet` sends `session/sheet` with its flags,
   and the result fills the mirror that `Sheet` reads. Two parts already
@@ -386,8 +388,8 @@ Decision: `WireTree`, with the C6 additions.
   returns the projected tree with the band node: the one projection
   `session/stack` already serves. P-B removed the legacy projection, so
   the stack needs no parameter to select one. `busy` is the TUI's own
-  turn flag until plan 5 moves turns behind `Prompt` (revision record
-  2026-11-02).
+  turn flag, set while its `Prompt` or one of its other runs is in
+  flight, and P3 drops it (revision records 2026-11-02 and 2026-11-03).
 - `Session.StackNode(ctx, nodeID, subagentID)` returns
   `acpwire.NodeDetail`, the uncapped detail behind a row. ACP:
   `session/stack_node` (exists).
@@ -504,24 +506,35 @@ Decision: `WireTree`, with the C6 additions.
 ### C8. Turns and runs
 
 - `Prompt(ctx, PromptParams) (PromptResult, error)` returns when the turn
-  ends. Agent side, it begins and ends work, adds the user message and
-  runs the runner. It replaces `runAgentCmd` and the two user
-  `AddMessage` calls. ACP: `session/prompt` (exists).
+  ends (plan 5c). Agent side, it takes the session's one run slot, begins
+  work, registers the turn's stop group, runs the runner, which adds the
+  user message, and at the end sets the session idle and ends the stop
+  group and the work. A start it refuses comes back coded (`busy`,
+  `quiescing` or `no_runner`), and a prompt marked `queued` then goes back
+  on the steering queue. It replaces `runAgentCmd` for prompt turns;
+  swarm and SDD runs keep it until plan 5d. Of the two user `AddMessage`
+  calls, the SDD gate's moves with `AnswerSDDGate` (plan 5d), and the
+  no-runner echo with the notes (plan 6). ACP: `session/prompt` (exists).
 - **Other runs:**
-  - `Review` (new);
-  - `RunAgent`, the custom-agent run-now (new);
+  - `Review` (`session/review`, new);
+  - `RunAgent`, the custom-agent run-now, which runs the agent as a
+    subagent the session shows (`session/agent_run`, new);
   - `StartSwarm` with role overrides (`session/swarm_start` exists);
   - `StartSDD` with plan, strategy and overrides
     (`session/sdd_start` exists);
   - `AuthorPlan` (new);
-  - `Suggest` (new);
-  - `VerifyProposal`, the build/test proposal parsed from the last
-    reply (new).
+  - `Suggest`, the model call behind the next-reply suggestion
+    (`session/suggest`, new);
+  - `VerifyProposal`, the build/test proposal parsed from its own
+    subagent's reply (`session/verify_proposal`, new).
 
-  Each carries what the TUI passes its factory today.
+  Each carries what the TUI passes its factory today. `Review` and
+  `RunAgent` take `Prompt`'s run path; `Suggest` and `VerifyProposal`
+  are plain calls (plan 5c).
 - **Turn control:**
   - `Stop(ctx, cause)` covers today's begin/request/end turn-stop
-    sequence (`session/cancel` exists);
+    sequence (`session/cancel` exists). It stops the session's own run,
+    the commands attached to it first, and does nothing when none runs;
   - `Steer` and `SendNow` (`session/steer` exists; Send now is its
     `now` delivery), and `PopSteering` and `ClearSteering` (new) cover
     the steering queue. `SendNow` arrives early, in plan 2b, because
@@ -756,11 +769,13 @@ The TUI works after every plan.
      `SetEffort`, `SetSudoUnlock`, `CancelSubagent`, `ClearFinishedRun`
      and `TakeWatchResume`. The interaction and effort setter options
      go, and the adapter's `Deps` carry the runtime's setters.
-   - **5c. Prompt.** `Prompt` replaces `runAgentCmd`, `startAgentRun`'s
-     dispatch and the user-message writes. `Stop` moves with it, because
-     the turn's stop is registered before dispatch. `Review`,
-     `RunAgent`, `Suggest` and `VerifyProposal` move too. A turn's end
-     sets the session idle agent side.
+   - **5c. Prompt** ([plan](plans/2026-11-03-p2-5c-prompt-plan.md)).
+     `Prompt` replaces `runAgentCmd` and `startAgentRun`'s dispatch for
+     prompt turns. `Stop` moves with it, because the turn's stop is
+     registered before dispatch. `Review`, `RunAgent`, `Suggest` and
+     `VerifyProposal` move too, and the runtime's runner and calls move
+     into the adapter's `Deps`. A run's end sets the session idle agent
+     side, and `Status` says whether a runner is built.
    - **5d. Pipelines.** `StartSwarm` with role overrides, `StartSDD`,
      `AuthorPlan`, and `AnswerSDDGate` with its stop.
    - **5e. Ending and swapping.** The `EndController` calls and
@@ -1234,6 +1249,52 @@ while writing plan 5b:
   `session/steering_clear`, `session/set_sudo_unlock`,
   `session/subagent_cancel`, `session/sdd_clear` and
   `session/watch_resume_take`.
+
+**2026-11-03, against `90488446` (plans 5a and 5b merged).** Found while
+writing plan 5c:
+- **One run at a time, agent side** (C4, C8). The adapter keeps one run
+  slot that `Prompt`, `Review` and `RunAgent` take, and refuses a second
+  run with `busy`, as ACP's `runTurn` refuses a second turn.
+- **One run path** (C8). Every run takes the slot, begins work, registers
+  its stop group, runs, sets the session idle, and ends the stop group
+  and the work: the order of ACP's `runTurn` and of the TUI's
+  `startAgentRun`.
+- **A refused start comes back from the call** (C2, C8). The run reports
+  `busy`, `quiescing`, `no_runner` (new) or `session_closed`, and the
+  TUI writes today's refusal note. A prompt marked `queued` goes back on
+  the steering queue agent side, which settles the put-back plan 5b left
+  open.
+- **`Stop` acts on the session's own run** (C8). It stops the run's stop
+  group, the attached commands first, and then the run. Before the run
+  has registered, it marks the run to be skipped. With nothing running it
+  does nothing and records no pending stop, so a late stop cannot cancel
+  the next turn. Swarm, SDD and plan-authoring runs keep the TUI's own
+  registration until plan 5d.
+- **A stopped run is not an error** (C8). `Prompt` reports `cancelled`,
+  as ACP's `session/prompt` does.
+- **A run's end sets the session idle agent side** (C8). The TUI's
+  turn-end handler stops setting it, and the TUI's run command sets it
+  for swarm and SDD runs until plan 5d.
+- **`Status` says whether the agent runner is built** (C5). `agentReady`
+  replaces the TUI's checks for a runner. `Prompt` without one records
+  nothing; the TUI's echo of a prompt it cannot run stays until plan 6.
+- **The runtime's runner and calls move into `Deps`** (C4). They read the
+  runtime's current runner, state and factory, so they keep working
+  after a swap and after a reload builds the runner. The runner source
+  and its adoption go. Review, Run-now, the suggestion and the proposal
+  now work after a `/connect` recovery without a restart.
+- **`ReviewParams` carries the base and the range apart** (C3). The
+  runtime encodes the base for its range resolver.
+- **`Suggest` is the model call only** (C8). The deterministic rules, and
+  the choice of when to ask, stay in the TUI.
+- **Two bugs are fixed on the way** (C8). Run-now started its run on a
+  stale copy of the model, so the live model never knew it was busy, and
+  ran the agent on a child state nothing showed. It now runs on the live
+  model as a subagent the session shows. The verify proposal parsed the
+  parent session's transcript rather than its subagent's, and now parses
+  its own.
+- **The new ACP methods are named** `session/review`, `session/agent_run`,
+  `session/suggest` and `session/verify_proposal`.
 
 ## Implementation record
 
@@ -1768,3 +1829,105 @@ plan 5c; surfacing it now would add a note 5c has to remove. And the
 replacement model in `TestAdapterAccessFollowsNewSession`'s post-swap `/act`
 check carries `WithCommandRegistry`, which the plan's step did not mention:
 without it `/act` never dispatches, so the check would have asserted nothing.
+
+**Plan 5c (prompt), branch `p2-5c-prompt`.** Added `internal/acpwire/turns.go`:
+`PromptParams` (`Text`, `Queued`), `PromptResult` (`StopReason`) with the two
+stop reasons `StopReasonEndTurn` and `StopReasonCancelled`, `ReviewParams`
+(`Focus`, `Model`, `Range`, `Base`), `AgentRunParams` (`Agent`, `Goal`) and
+`VerifyCommands` (`Build`, `Test`). `errors.go` gains `CodeNoRunner`, and
+`SessionStatus` gains `AgentReady`, the only new status field: it reports
+whether the session's runner is built, so the TUI can drop its own
+`m.runner == nil` checks.
+
+`acpclient.Session` gains six methods with their `Methods` rows: `Prompt` on
+`session/prompt` (exists), `Stop` on `session/cancel` (exists), and four new
+in P3 — `Review` on `session/review`, `RunAgent` on `session/agent_run`,
+`Suggest` on `session/suggest` and `VerifyProposal` on
+`session/verify_proposal`.
+
+The adapter's run path is one path, and it is where admission now lives. One
+turn slot guards the session: a second `Prompt`, `Review` or `RunAgent` while
+one runs gets `CodeBusy`, as ACP's `runTurn` refuses a second turn. Every run
+takes the slot, calls `BeginWork`, registers its stop group with
+`BeginTurnStop` (after `BeginWork`, which stamps the turn onto the work item
+it opened), runs, sets the session idle, releases the slot and ends the stop
+group and the work. A refusal comes back from the call: `CodeBusy`,
+`CodeQuiescing` (any `session.ErrSessionQuiescing`, the conversation's ending
+included), `CodeNoRunner` or `CodeSessionClosed`, and a `Queued` prompt's text
+goes back on the steering queue then, which settles the put-back plan 5b left
+here. A stopped run is not an error — `Prompt` returns `StopReasonCancelled`,
+`Review` and `RunAgent` return nil. `Stop` acts on the slot only: it stops the
+registered group first (service acceptance before agent cancellation) and then
+cancels the run's context; with nothing running it does nothing, and it records
+no pending cause, so a late stop can never cancel the next turn. A panic in a
+run is recovered into `panic in agent run: …`. `Suggest` and `VerifyProposal`
+take no slot, no work and no stop registration.
+
+`inproc.Deps` gains `Runner` and the four calls `Review`, `RunAgent`,
+`Suggest` and `VerifyProposal`, bound in `Run` by `bindTurnDeps` to
+`Runtime.TurnRunner`, `RunReview`, `RunCustomAgent`, `SuggestNextReply` and
+`ProposeVerifyCommands`. Each reads the runtime's current runner, state and
+factory under `rt.mu`, so they keep working after a swap and after a reload
+builds a runner — `adoptRunner` and the runner source are gone. `review.go`'s
+`runReviewSubagent` body from the factory call inward moved into
+`runSubagentTask`, which takes the error prefix as `kind`; the review and the
+custom-agent run share it, so Run-now's agent is a registered subagent labelled
+`agent · <name>` whose summary lands in the transcript.
+
+The TUI starts every prompt, review and Run-now through the session
+(`startSessionRun`, `startPrompt`), stops them through it (`cancelTurn` calls
+`Stop`, and reaches the state's own registration only for a run the TUI still
+registers itself), and asks it for the suggestion and the proposal.
+`handleAgentFinished`'s idle reset and the SDD gate branch's are gone: the run
+path sets the session idle, and `runAgentCmd` sets it for the swarm, SDD and
+plan-authoring runs that keep the TUI's path until plan 5d. A refused start is
+reported from the run's end as `agentFinishedMsg{refusal: …}`, so the notes
+`Cannot start work: …` and `Cannot start review: …` are written once.
+`tui.WithRunner`, `WithRunnerSource`, `WithReviewDispatcher`,
+`WithSuggestionProvider`, `WithSubagentFactory` and
+`WithCustomAgentRunnerFactory` are deleted, along with the six model fields
+behind them, `SessionSwapResult.Runner` and `.ReviewDispatcher`,
+`buildCustomAgentRunner`, `proposalFromSession` and `runReviewCmd`; `app`
+deletes `beginSessionStop` too, whose only callers were the two review
+dispatchers.
+
+The two fixes. Run-now ran on a stale model: the roster's dispatch closure
+captured `m`, so `busy`, `agentCancel` and the stop teardown were set on a copy
+`Update` had already returned, while the run itself went ahead — the live model
+stayed idle, Ctrl+C and `/stop` could not reach it, and a second prompt could
+start beside it. The dispatch now captures nothing (`runNowDispatch` returns a
+`runAgentMsg`) and the live model starts the run. The note for an agent that
+cannot be built changed with it: it is now a failed turn
+(`✘ Turn failed: run agent: build subagent: …`), not
+`Cannot run custom agent …`, and the swarm-runner fallback is gone because
+production always wired the factory. The verify proposal parsed the wrong
+transcript: its runner writes to a child state, but the parse scanned the
+parent session's messages, so it failed unless the conversation's last reply
+happened to hold a build/test object. `ProposeVerifyCommands` parses the child
+state's messages through `verifyCommandsFrom`, which carries the same error
+texts.
+
+T1b and the allowlist did not change. Every state call the prompt path stops
+making — `BeginWork`, `EndWork`, `BeginTurnStop`, `EndTurnStop`,
+`RequestTurnStop`, `SetActivity` — is still made by the swarm, SDD and
+plan-authoring paths until plan 5d, and each edited file on the allowlist still
+uses every entry it has, most of them `marshal/internal/app/session` for the
+notes it writes until plan 6.
+
+Decisions recorded here rather than silently settled. `RunAgent` treats a
+whitespace-only agent name as empty, not only `""`, which matches how the roster
+reads its own names. The panic recovery is a small `callRun` helper so
+`runTurn`'s single defer stays the cleanup defer rather than gaining a second
+ordering dependency. `errNoAgentName` is checked after the missing-`runAgent`
+check, both before the slot is taken. And `bindTurnDeps` runs after
+`deps.Work` is assigned, on the fully built `Deps` and still before
+`inproc.New`.
+
+Three refinements after review. `runTurn` reports whether the run's work
+actually began, so `Prompt` can tell a stop that skipped the turn from one that
+cancelled it: a queued text is put back only when the model never saw it, and a
+stopped run that had started keeps its text. `BeginWork` failing with
+`ErrConversationEnding` is reported as `CodeQuiescing`, not as a codeless
+error, so the TUI names an admission refusal instead of a failed turn. And
+`RunReview`/`RunCustomAgent` refuse with `CodeNoRunner` when the runtime has no
+factory, which is what the `Session` docs already promised.

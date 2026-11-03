@@ -174,8 +174,8 @@ func TestADrilledCtrlXCancelsThroughTheSession(t *testing.T) {
 // queued text through the session.
 func TestAFollowUpPopsThroughTheSession(t *testing.T) {
 	rec := &controlRecorder{}
-	m := controlsModel(t, rec)
-	m.runner = &fakeAgentRunner{called: make(chan string, 1)}
+	runner := &fakeAgentRunner{called: make(chan string, 1)}
+	m := controlsDispatchModel(t, inproc.Deps{State: controlsState(t), Runner: runnerOf(runner)}, rec)
 	m.state.PushSteering("deliver me after the turn")
 
 	if cmd := m.flushQueuedSteering(); cmd == nil {
@@ -208,9 +208,8 @@ func TestTheNextTurnClearsTheFinishedRunThroughTheSession(t *testing.T) {
 // watch-resume latch through the session, and the resumed turn starts.
 func TestATurnEndTakesTheLatchThroughTheSession(t *testing.T) {
 	rec := &controlRecorder{}
-	m := controlsModel(t, rec)
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
-	m.runner = runner
+	m := controlsDispatchModel(t, inproc.Deps{State: controlsState(t), Runner: runnerOf(runner)}, rec)
 	m.state.SetWatchResume("build", false)
 	m.state.AddMessage(session.RoleAssistant, "I'll wait for the build.", session.ContentTypePlain)
 

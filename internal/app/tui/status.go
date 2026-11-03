@@ -364,9 +364,9 @@ func (m Model) statusLeftSegments() []statusSeg {
 	}
 
 	// Live context use: tokens of the parent's latest model call vs the
-	// resolved model window. Subagent usage is recorded on the child's own
-	// session state (see buildSubagentFactory) and never folded in here, so
-	// the number cannot inflate past the window.
+	// resolved model window. A named custom agent runs on its own session
+	// state and is never folded in here, so the number cannot inflate past the
+	// window.
 	if used, window := st.TurnUsed, st.TurnWindow; window > 0 {
 		segs = append(segs, statusSeg{text: dimStyle().Render(fmt.Sprintf("ctx %s/%s",
 			strutil.CompactTokens(used), strutil.CompactTokens(window))), priority: 2})

@@ -1189,13 +1189,19 @@ func (f *fakeAgentRunner) AnswerGate(string)    {}
 
 // blockingAgentRunner blocks on a channel in Run until the channel is
 // closed. Used by TestAgentCommandRegistersAndReleasesSessionWork to
-// verify that session work is tracked and released.
+// verify that session work is tracked and released. started, when set, is
+// closed as Run begins, so a test can wait for the turn to be in flight
+// instead of sleeping.
 type blockingAgentRunner struct {
-	block chan struct{}
-	err   error
+	block   chan struct{}
+	err     error
+	started chan struct{}
 }
 
 func (b *blockingAgentRunner) Run(ctx context.Context, goal string) error {
+	if b.started != nil {
+		close(b.started)
+	}
 	<-b.block
 	return b.err
 }
@@ -1633,7 +1639,7 @@ func TestModePickerContainsOnlyAskAct(t *testing.T) {
 func TestEnterWithRunnerDispatchesAgentRunAndTick(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	model := testModel(state, WithRunner(context.Background(), runner))
+	model := testModelWith(inproc.Deps{State: state, Runner: runnerOf(runner)})
 
 	updated, _ := model.Update(tea.KeyPressMsg{Text: "hello"})
 	model = updated.(Model)
@@ -1951,11 +1957,23 @@ func (f *fakeSuggestionProvider) Provide(ctx context.Context, lastMsg string) (s
 	return f.response, f.err
 }
 
+// withSuggester replaces m's session with one over m's state that has a runner
+// and calls suggest for Suggest.
+func withSuggester(m Model, suggest func(context.Context, string) (string, error)) Model {
+	_, sess := inproc.New(inproc.Deps{
+		State:   m.state,
+		Runner:  runnerOf(&testAgentRunner{}),
+		Suggest: suggest,
+	})
+	m.sess = sess
+	return m
+}
+
 func TestSuggestionLLMFallbackCmd(t *testing.T) {
 	m := newTestModel(t)
 	m.state.Config.TUI.Suggestions = "llm"
 	fp := &fakeSuggestionProvider{response: "yes, go ahead"}
-	m.suggestionProvider = fp.Provide
+	m = withSuggester(m, fp.Provide)
 	m.state.AddMessageFinalWithUsage(session.RoleAssistant, "I've finished the refactor and all tests pass.", session.ContentTypeMarkdown, 0, "")
 	m.busy = true
 
@@ -2004,7 +2022,7 @@ func TestSuggestionLLMStaleDiscarded(t *testing.T) {
 	m := newTestModel(t)
 	m.state.Config.TUI.Suggestions = "llm"
 	fp := &fakeSuggestionProvider{response: "stale"}
-	m.suggestionProvider = fp.Provide
+	m = withSuggester(m, fp.Provide)
 	m.suggestionGen = 5
 
 	// A result from an older generation (e.g. the user typed or started a
@@ -2020,7 +2038,7 @@ func TestSuggestionLLMOffNoCall(t *testing.T) {
 	m := newTestModel(t)
 	m.state.Config.TUI.Suggestions = "off"
 	fp := &fakeSuggestionProvider{response: "yes"}
-	m.suggestionProvider = fp.Provide
+	m = withSuggester(m, fp.Provide)
 	m.state.AddMessageFinalWithUsage(session.RoleAssistant, "I've finished the refactor and all tests pass.", session.ContentTypeMarkdown, 0, "")
 	m.busy = true
 
@@ -2039,7 +2057,7 @@ func TestSuggestionClearedOnTurnStart(t *testing.T) {
 	m.suggestion = "yes"
 	m.suggestionDismissed = false
 
-	mm, _, _ := m.startAgentRun(m.runner, "continue")
+	mm, _ := m.startPrompt("continue", false)
 	m = asModel(t, mm)
 	if m.suggestion != "" {
 		t.Fatalf("suggestion = %q, want empty when a new turn starts", m.suggestion)
@@ -2092,9 +2110,10 @@ func TestAgentFinishedAdvancesSheetBaseRefWhenCancelled(t *testing.T) {
 
 func TestAgentCommandRegistersAndReleasesSessionWork(t *testing.T) {
 	block := make(chan struct{})
-	runner := &blockingAgentRunner{block: block}
+	started := make(chan struct{})
+	runner := &blockingAgentRunner{block: block, started: started}
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	model := testModel(state, WithRunner(context.Background(), runner))
+	model := testModelWith(inproc.Deps{State: state, Runner: runnerOf(runner)})
 	model.resize(80, 24)
 
 	// Submit a turn. The runner blocks in Run, so the runAgentCmd
@@ -2113,13 +2132,18 @@ func TestAgentCommandRegistersAndReleasesSessionWork(t *testing.T) {
 	}
 
 	// Execute the runAgentCmd (batch[0]) in a goroutine; it will block.
+	// The command registers the work, so wait for Run to begin rather than
+	// guessing at a delay: BeginWork has happened by the time the runner is
+	// inside Run.
 	runDone := make(chan tea.Msg, 1)
 	go func() {
 		runDone <- batch[0]()
 	}()
-
-	// Give the goroutine a moment to block inside Run.
-	time.Sleep(10 * time.Millisecond)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("the runner never started")
+	}
 
 	// BeginQuiesce and wait for work. WaitForWork should block because
 	// the runner hasn't finished.
@@ -2176,7 +2200,7 @@ func TestEnterWithoutRunnerFallsBackToPlainAppend(t *testing.T) {
 func TestEnterWhileBusyIsIgnored(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	model := testModel(state, WithRunner(context.Background(), runner))
+	model := testModelWith(inproc.Deps{State: state, Runner: runnerOf(runner)})
 	model.busy = true
 
 	updated, _ := model.Update(tea.KeyPressMsg{Text: "hello"})
@@ -2318,7 +2342,7 @@ func TestCtrlKOpensMemoryAndClosedMsgCloses(t *testing.T) {
 func TestBusyTickRefreshesViewport(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	model := testModel(state, WithRunner(context.Background(), runner))
+	model := testModelWith(inproc.Deps{State: state, Runner: runnerOf(runner)})
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -2749,7 +2773,7 @@ func TestSlashCommandNotSentToAgent(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	cmdReg := setupCmdReg(t)
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	model := testModel(state, WithCommandRegistry(cmdReg), WithRunner(context.Background(), runner))
+	model := testModelWith(inproc.Deps{State: state, Runner: runnerOf(runner)}, WithCommandRegistry(cmdReg))
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -4377,7 +4401,7 @@ func TestCancelTurnDoesNotClearSteeringWhenAgentAlreadyFinished(t *testing.T) {
 func TestAgentFinishedFlushesQueuedSteering(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m.runner = runner
+	m = withPromptRunner(m, runner)
 	m.busy = true
 	m.state.PushSteering("deliver me after the turn")
 
@@ -4403,7 +4427,7 @@ func TestAgentFinishedFlushesQueuedSteering(t *testing.T) {
 func TestFlushQueuedSteeringStartsFollowUpTurn(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m.runner = runner
+	m = withPromptRunner(m, runner)
 	m.state.PushSteering("deliver me after the turn")
 
 	cmd := m.flushQueuedSteering()
@@ -4448,7 +4472,7 @@ func TestFlushQueuedSteeringStartsFollowUpTurn(t *testing.T) {
 func TestAgentFinishedKeepsQueueOnFailure(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m.runner = runner
+	m = withPromptRunner(m, runner)
 	m.busy = true
 	m.state.PushSteering("retry me")
 
@@ -7931,118 +7955,6 @@ func TestFinishedPlanIsOneIdleRow(t *testing.T) {
 	}
 }
 
-// TestBuildCustomAgentRunnerWithFactory verifies that buildCustomAgentRunner
-// uses the customAgentFactory when wired, returning a runner for the named
-// agent instead of falling back to the swarm runner.
-func TestBuildCustomAgentRunnerWithFactory(t *testing.T) {
-	cfg := config.Default()
-	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
-
-	// Without a factory, buildCustomAgentRunner should return nil (no swarm runner).
-	if r := m.buildCustomAgentRunner("test-agent"); r != nil {
-		t.Fatal("expected nil runner when no factory and no swarm runner")
-	}
-
-	// Wire a factory that returns a test runner for a specific agent name.
-	var capturedName string
-	m.customAgentFactory = func(agentName string) (AgentRunner, error) {
-		capturedName = agentName
-		return &testAgentRunner{}, nil
-	}
-
-	r := m.buildCustomAgentRunner("my-custom-agent")
-	if r == nil {
-		t.Fatal("expected non-nil runner from factory")
-	}
-	if capturedName != "my-custom-agent" {
-		t.Fatalf("factory called with agentName=%q, want %q", capturedName, "my-custom-agent")
-	}
-}
-
-// TestBuildCustomAgentRunnerUnknownAgentSurfacesError verifies that when the
-// factory returns an error for an unknown agent name, the error is surfaced
-// to the user via AddMessage and nil is returned (no silent swarm fallback).
-func TestBuildCustomAgentRunnerUnknownAgentSurfacesError(t *testing.T) {
-	cfg := config.Default()
-	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
-
-	// Wire a factory that returns an error for unknown agents.
-	m.customAgentFactory = func(agentName string) (AgentRunner, error) {
-		if agentName == "known" {
-			return &testAgentRunner{}, nil
-		}
-		return nil, fmt.Errorf("unknown custom agent: %q", agentName)
-	}
-
-	// With a swarm runner available, unknown agent should still surface error.
-	m.swarmRunner = &testAgentRunner{}
-
-	r := m.buildCustomAgentRunner("nonexistent")
-	if r != nil {
-		t.Fatal("expected nil runner for unknown agent, not swarm fallback")
-	}
-	msgs := m.state.Messages()
-	if len(msgs) == 0 {
-		t.Fatal("expected an error message to be surfaced")
-	}
-	last := msgs[len(msgs)-1].Content
-	if !strings.Contains(last, "unknown custom agent") {
-		t.Fatalf("error message should contain 'unknown custom agent', got: %q", last)
-	}
-
-	// Known agent should still work.
-	m.state.ClearMessages()
-	r = m.buildCustomAgentRunner("known")
-	if r == nil {
-		t.Fatal("expected non-nil runner for known agent")
-	}
-}
-
-// TestBuildCustomAgentRunnerFactoryError verifies that when the factory
-// returns an error, buildCustomAgentRunner surfaces the error and returns
-// nil, even when a swarm runner is available.
-func TestBuildCustomAgentRunnerFactoryError(t *testing.T) {
-	cfg := config.Default()
-	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
-
-	// Wire a factory that always errors.
-	m.customAgentFactory = func(agentName string) (AgentRunner, error) {
-		return nil, fmt.Errorf("factory error")
-	}
-
-	// Without a swarm runner, should return nil and surface error.
-	if r := m.buildCustomAgentRunner("test"); r != nil {
-		t.Fatal("expected nil when factory errors and no swarm runner")
-	}
-	msgs := m.state.Messages()
-	if len(msgs) == 0 {
-		t.Fatal("expected an error message to be surfaced")
-	}
-	last := msgs[len(msgs)-1].Content
-	if !strings.Contains(last, "factory error") {
-		t.Fatalf("error message should contain 'factory error', got: %q", last)
-	}
-
-	// With a swarm runner, should still return nil and surface error (no fallback).
-	m.state.ClearMessages()
-	m.swarmRunner = &testAgentRunner{}
-	r := m.buildCustomAgentRunner("test")
-	if r != nil {
-		t.Fatal("expected nil when factory errors, even with swarm runner available")
-	}
-	msgs = m.state.Messages()
-	if len(msgs) == 0 {
-		t.Fatal("expected an error message to be surfaced")
-	}
-	last = msgs[len(msgs)-1].Content
-	if !strings.Contains(last, "factory error") {
-		t.Fatalf("error message should contain 'factory error', got: %q", last)
-	}
-}
-
 // TestOpenAgentsRosterThreadsToolRegistry verifies that openAgentsRoster
 // passes the model's toolRegistry to the roster panel.
 func TestOpenAgentsRosterThreadsToolRegistry(t *testing.T) {
@@ -8107,7 +8019,7 @@ func TestDispatchPromptCommandStartsAgentRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m := testModel(modelTestState(t), WithCommandRegistry(reg), WithRunner(context.Background(), runner))
+	m := testModelWith(inproc.Deps{State: modelTestState(t), Runner: runnerOf(runner)}, WithCommandRegistry(reg))
 	m.resize(80, 24)
 
 	updated, cmd := m.dispatchCommand("/revcheck main.go")
@@ -8169,14 +8081,14 @@ func TestDispatchPromptCommandPreservesQuotedArgs(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m := testModel(modelTestState(t), WithCommandRegistry(reg), WithRunner(context.Background(), runner))
+	m := testModelWith(inproc.Deps{State: modelTestState(t), Runner: runnerOf(runner)}, WithCommandRegistry(reg))
 	m.resize(80, 24)
 
 	updated, cmd := m.dispatchCommand(`/greet "hello world" 'single'`)
 	m = asModel(t, updated)
 
 	if !m.busy {
-		t.Fatalf("busy = %v, want true; runner = %v", m.busy, m.runner)
+		t.Fatalf("busy = %v, want true; agent ready = %v", m.busy, m.sess.Status().AgentReady)
 	}
 	if cmd == nil {
 		t.Fatal("dispatchCommand should return a cmd")
@@ -8209,9 +8121,14 @@ func TestDispatchReviewCommandWhileBusyIsRefused(t *testing.T) {
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatal(err)
 	}
-	m := testModel(modelTestState(t), WithCommandRegistry(reg), WithReviewDispatcher(func(ctx context.Context, focus, model, reviewRange string) error {
-		return nil
-	}))
+	state := modelTestState(t)
+	m := testModelWith(inproc.Deps{
+		State:  state,
+		Runner: runnerOf(&testAgentRunner{}),
+		Review: func(ctx context.Context, params acpwire.ReviewParams) error {
+			return nil
+		},
+	}, WithCommandRegistry(reg))
 	m.resize(80, 24)
 	m.busy = true
 
@@ -8258,10 +8175,15 @@ func TestDispatchReviewCommandStartsSubagent(t *testing.T) {
 		t.Fatal(err)
 	}
 	dispatched := make(chan string, 1)
-	m := testModel(modelTestState(t), WithCommandRegistry(reg), WithReviewDispatcher(func(ctx context.Context, focus, model, reviewRange string) error {
-		dispatched <- focus
-		return nil
-	}))
+	state := modelTestState(t)
+	m := testModelWith(inproc.Deps{
+		State:  state,
+		Runner: runnerOf(&testAgentRunner{}),
+		Review: func(ctx context.Context, params acpwire.ReviewParams) error {
+			dispatched <- params.Focus
+			return nil
+		},
+	}, WithCommandRegistry(reg))
 	m.resize(80, 24)
 
 	updated, cmd := m.dispatchCommand("/review main.go")
@@ -10069,6 +9991,7 @@ func TestRunAgentCmdPanicRecovery(t *testing.T) {
 	}
 
 	panicRunner := &panicRunner{}
+	state.SetActivity(session.Activity{Kind: session.ActivityThinking})
 	cmd := runAgentCmd(context.Background(), state, panicRunner, "test")
 	msg := cmd()
 	finished, ok := msg.(agentFinishedMsg)
@@ -10080,6 +10003,9 @@ func TestRunAgentCmdPanicRecovery(t *testing.T) {
 	}
 	if !strings.Contains(finished.err.Error(), "panic") {
 		t.Fatalf("error should mention panic, got: %v", finished.err)
+	}
+	if got := state.Activity().Kind; got != session.ActivityIdle {
+		t.Fatalf("activity = %q, want idle once the turn command returns", got)
 	}
 }
 
@@ -10180,7 +10106,7 @@ func TestSuggestionLowConfidenceShowsTextAndCallsLLM(t *testing.T) {
 	m := newTestModel(t)
 	m.state.Config.TUI.Suggestions = "llm"
 	fp := &fakeSuggestionProvider{response: "yes, add the test"}
-	m.suggestionProvider = fp.Provide
+	m = withSuggester(m, fp.Provide)
 	m.state.AddMessageFinalWithUsage(session.RoleAssistant, "Want me to add a test for that?", session.ContentTypeMarkdown, 0, "")
 
 	cmd := m.computeSuggestion()
@@ -10212,7 +10138,7 @@ func TestSuggestionHighConfidenceSkipsLLM(t *testing.T) {
 	m := newTestModel(t)
 	m.state.Config.TUI.Suggestions = "llm"
 	fp := &fakeSuggestionProvider{response: "should not be used"}
-	m.suggestionProvider = fp.Provide
+	m = withSuggester(m, fp.Provide)
 	m.state.AddMessageFinalWithUsage(session.RoleAssistant, "Should I proceed with the refactor?", session.ContentTypeMarkdown, 0, "")
 
 	cmd := m.computeSuggestion()
@@ -10243,7 +10169,7 @@ func TestSuggestionRulesModeNeverCallsLLM(t *testing.T) {
 			m := newTestModel(t)
 			m.state.Config.TUI.Suggestions = "rules"
 			fp := &fakeSuggestionProvider{response: "should not be used"}
-			m.suggestionProvider = fp.Provide
+			m = withSuggester(m, fp.Provide)
 			m.state.AddMessageFinalWithUsage(session.RoleAssistant, tc.msg, session.ContentTypeMarkdown, 0, "")
 
 			cmd := m.computeSuggestion()
@@ -10265,7 +10191,6 @@ func TestSuggestionRulesModeNeverCallsLLM(t *testing.T) {
 func TestSuggestionNoProviderNoCall(t *testing.T) {
 	m := newTestModel(t)
 	m.state.Config.TUI.Suggestions = "llm"
-	m.suggestionProvider = nil
 	m.state.AddMessageFinalWithUsage(session.RoleAssistant, "Want me to add a test for that?", session.ContentTypeMarkdown, 0, "")
 
 	if cmd := m.computeSuggestion(); cmd != nil {
@@ -10287,7 +10212,7 @@ func TestSuggestionOffAtEveryConfidence(t *testing.T) {
 		m := newTestModel(t)
 		m.state.Config.TUI.Suggestions = "off"
 		fp := &fakeSuggestionProvider{response: "should not be used"}
-		m.suggestionProvider = fp.Provide
+		m = withSuggester(m, fp.Provide)
 		m.state.AddMessageFinalWithUsage(session.RoleAssistant, msg, session.ContentTypeMarkdown, 0, "")
 
 		cmd := m.computeSuggestion()
@@ -11174,12 +11099,9 @@ func TestPostAcceptedPromptCannotReopenWork(t *testing.T) {
 
 	// The stop/join pass is running: an ordinary prompt must be refused.
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m.runner = runner
-	_, cmd, started := m.startAgentRun(runner, "do more work")
+	m = withPromptRunner(m, runner)
+	_, cmd := m.startPrompt("do more work", false)
 
-	if started {
-		t.Fatal("a prompt started into an accepted ending")
-	}
 	if cmd != nil {
 		t.Fatalf("a refused start returned a cmd (%T), want nil", cmd)
 	}
@@ -11427,7 +11349,7 @@ func TestAgentGoalDispatchStartsRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m := testModel(modelTestState(t), WithCommandRegistry(reg), WithRunner(context.Background(), runner))
+	m := testModelWith(inproc.Deps{State: modelTestState(t), Runner: runnerOf(runner)}, WithCommandRegistry(reg))
 	m.resize(80, 24)
 
 	updated, cmd := m.dispatchCommand("/pmtest")

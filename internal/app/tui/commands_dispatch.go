@@ -204,9 +204,6 @@ func startNewSession(m *Model, name string) tea.Cmd {
 		// model's mark restarts with it.
 		m.watchResumeSeq = 0
 	}
-	if snap.Runner != nil {
-		m.runner = snap.Runner
-	}
 	if snap.SwarmRunner != nil {
 		m.swarmRunner = snap.SwarmRunner
 	}
@@ -221,9 +218,6 @@ func startNewSession(m *Model, name string) tea.Cmd {
 	}
 	if snap.ToolRegistry != nil {
 		m.toolRegistry = snap.ToolRegistry
-	}
-	if snap.ReviewDispatcher != nil {
-		m.reviewDispatcher = snap.ReviewDispatcher
 	}
 
 	// Drop per-message UI state that belongs to the old session.
@@ -468,45 +462,25 @@ func init() {
 			if m.busy {
 				return m, nil
 			}
-			if m.reviewDispatcher == nil {
-				m.state.AddMessage(session.RoleSystem, "Review subagent is not available in this build.", session.ContentTypePlain)
+			if !m.sess.Status().AgentReady {
+				m.state.AddMessage(session.RoleSystem, "Agent runner is not available.", session.ContentTypePlain)
 				m.refreshViewport()
 				return m, nil
 			}
-			if err := m.state.BeginWork(); err != nil {
-				m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Cannot start review: %v", err), session.ContentTypePlain)
-				m.refreshViewport()
-				return m, nil
-			}
-			// Register the review operation's stop group before dispatch: the
-			// review subagent runs synchronously under this operation and may
-			// launch commands, so the same stop must reach them. A registration
-			// is set before m.busy so the very first keypress has a target.
-			m.beginTurnStopRegistration()
-			m.busy = true
-			m.turnStartedAt = m.now()
-			m.startHeldWindow()
-			agentCtx, cancel := context.WithCancel(m.ctx)
-			m.agentCancel = cancel
 			model, base, reviewRange, remaining := parseReviewArgs(args)
 			if base != "" && reviewRange != "" {
-				m.state.EndWork()
-				m.busy = false
-				// The review never started, so its registration is cleared here:
-				// leaving it behind would let the next stop keystroke name an
-				// operation that already refused to run.
-				m.releaseTurnStop()
+				// Refused before anything starts: the run path owns the work
+				// membership, the stop group and the base's encoding.
 				m.state.AddMessage(session.RoleSystem, "review: --base and an explicit range are mutually exclusive", session.ContentTypePlain)
 				m.refreshViewport()
 				return *m, nil
 			}
-			if reviewRange == "" && base != "" {
-				// Preserve the --base distinction through the dispatcher, whose
-				// range argument is otherwise reserved for explicit Git ranges.
-				reviewRange = "base:" + base
-			}
 			focus := strings.TrimSpace(strings.Join(remaining, " "))
-			return *m, tea.Batch(runReviewCmd(agentCtx, m.state, m.reviewDispatcher, focus, model, reviewRange), tickCmd(), spinnerTickCmd())
+			sess := m.sess
+			params := acpwire.ReviewParams{Focus: focus, Model: model, Range: reviewRange, Base: base}
+			return m.startSessionRun("Cannot start review", func(ctx context.Context) error {
+				return sess.Review(ctx, params)
+			})
 		},
 		"connect": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
 			m.openConnect("/")

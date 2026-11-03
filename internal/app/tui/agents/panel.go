@@ -110,6 +110,15 @@ func NewRosterPanelWithRegistry(cfg config.Config, cfgPath, arg string, dispatch
 // FilterValue returns the current filter text.
 func (p *Panel) FilterValue() string { return p.filter.Value() }
 
+// RunNow is the Run-now action for the named agent: the dispatch's command, or
+// nil without a dispatch. The Run-now field's action calls it.
+func (p *Panel) RunNow(agentName string) tea.Cmd {
+	if p.dispatch == nil {
+		return nil
+	}
+	return p.dispatch(agentName, "")
+}
+
 // activeList returns the list keys should go to: the top drilled frame's
 // list, or the roster root.
 func (p *Panel) activeList() *settings.FieldList {
@@ -503,17 +512,12 @@ func (p *Panel) customAgentFrame(name string) *settings.Frame {
 			return nil
 		})
 
-		// Run-now action: dispatches the custom agent with an inline goal prompt.
+		// Run-now action: asks the live model to run the custom agent, which
+		// owns starting the run and showing it.
 		runField := settings.NewField("roster.ca."+name+".run", "Run now", settings.KindAction)
-		settings.SetFieldDesc(runField, "run this custom agent with a goal")
+		settings.SetFieldDesc(runField, "run this custom agent")
 		settings.SetFieldAct(runField, func() tea.Cmd {
-			if p.dispatch == nil {
-				return nil
-			}
-			// Open inline goal prompt via the dispatch closure.
-			// The dispatch closure (set by openAgentsRoster) handles
-			// building the runner and starting the agent run.
-			return p.dispatch(name, "")
+			return p.RunNow(name)
 		})
 
 		fields := []*settings.Field{

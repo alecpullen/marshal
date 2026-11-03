@@ -1499,22 +1499,6 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	return runner, reg, swarmRunner, mcpMgr, snapSvc, commandService, watchManager, desktopCloser, subagentFactory, pipelineFactory, planAuthorFactory, swarmOverrideFactory, nil
 }
 
-// beginSessionStop registers the conversation-level stop group for one parent
-// operation — a TUI turn, a /review dispatch, an SDD run, a pipeline dispatch,
-// an ACP prompt — BEFORE that operation is dispatched, and returns the teardown
-// that clears only that registration (never a newer operation's).
-//
-// Registering first is the point: a stop that lands while the operation is still
-// starting must have a target, and the group identity is what every command the
-// operation launches records as its turn.
-func beginSessionStop(state *session.State, actor string) (stop func()) {
-	if state == nil {
-		return func() {}
-	}
-	token, _ := state.BeginTurnStop(actor)
-	return func() { state.EndTurnStop(token) }
-}
-
 // mcpFailureMessage renders per-server MCP start failures as one notice
 // line. Names and reasons only — never header values.
 //
@@ -2873,40 +2857,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			}
 			tuiOpts = append(tuiOpts, tui.WithPlanAuthorFactory(ctx, rt.PlanAuthorFactory))
 			tuiOpts = append(tuiOpts, tui.WithToolRegistry(toolReg))
-			tuiOpts = append(tuiOpts, tui.WithCustomAgentRunnerFactory(
-				func(agentName string) (tui.AgentRunner, error) {
-					runner, _, err := rt.CustomAgentFactory(agent.SubagentRequest{Agent: agentName})
-					return runner, err
-				},
-			))
-			tuiOpts = append(tuiOpts, tui.WithSubagentFactory(
-				func(agentName string) (tui.AgentRunner, error) {
-					runner, _, err := rt.CustomAgentFactory(agent.SubagentRequest{Agent: agentName})
-					return runner, err
-				},
-			))
-			tuiOpts = append(tuiOpts, tui.WithReviewDispatcher(
-				func(ctx context.Context, focus, model, reviewRange string) error {
-					// Register the review operation's stop group at the dispatch
-					// entry point, before the subagent is built: a stop that
-					// arrives while the review is still starting must have a
-					// target, and the review worker inherits this group so a
-					// command it launches is reachable from the same stop.
-					releaseStop := beginSessionStop(rt.State, "")
-					defer releaseStop()
-					return runReviewSubagent(ctx, rt.State, rt.CustomAgentFactory, focus, model, reviewRange)
-				},
-			))
-			// Phase 2 next-prompt suggestion LLM fallback: a background
-			// one-shot call through the runner's provider when the
-			// deterministic rules produce no suggestion. The strict prompt
-			// asks for the user's most likely next reply in at most 10
-			// words, or "NONE".
-			tuiOpts = append(tuiOpts, tui.WithSuggestionProvider(
-				func(ctx context.Context, lastMsg string) (string, error) {
-					return rt.SuggestNextReply(ctx, lastMsg)
-				},
-			))
 		}
 		if rt.TrustPromptPending {
 			tuiOpts = append(tuiOpts, tui.WithTrustPrompt(workingDir, trustDecide))
@@ -2933,13 +2883,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 				SwarmOverrideFactory: swarmOverrideFactory,
 				PlanAuthorFactory:    planAuthorFactory,
 				ToolRegistry:         toolReg,
-				ReviewDispatcher: func(ctx context.Context, focus, model, reviewRange string) error {
-					// Same contract as the startup wiring: register the review
-					// operation's stop group at dispatch, before any worker work.
-					releaseStop := beginSessionStop(state, "")
-					defer releaseStop()
-					return runReviewSubagent(ctx, state, rt.CustomAgentFactory, focus, model, reviewRange)
-				},
 			}, nil
 		})))
 

@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"image/color"
@@ -59,7 +58,6 @@ import (
 	"marshal/internal/commands"
 	"marshal/internal/db"
 	"marshal/internal/interaction"
-	"marshal/internal/jsonextract"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
@@ -121,7 +119,6 @@ type SessionSwapResult struct {
 	SwarmOverrideFactory SwarmOverrideFactory
 	PlanAuthorFactory    PlanAuthorFactory
 	ToolRegistry         *registry.Registry
-	ReviewDispatcher     func(ctx context.Context, focus, model, reviewRange string) error
 }
 
 // SessionSwapper is the runtime-facing seam the TUI uses to request a new
@@ -266,18 +263,6 @@ type postmortemWrittenMsg struct {
 	err      error
 	analysis bool
 }
-
-// CustomAgentRunnerFactory builds a one-shot AgentRunner for a named custom
-// agent. It is wired from app.go via WithCustomAgentRunnerFactory and used
-// by buildCustomAgentRunner to dispatch Run-now. Returns nil when the agent
-// name is unknown or the factory is not available.
-type CustomAgentRunnerFactory func(agentName string) (AgentRunner, error)
-
-// SubagentRunnerFactory builds a fresh child *agent.Runner bound to a fresh
-// child session. It mirrors agent.SubagentRunnerFactory without importing
-// internal/agent, keeping the TUI a rendering layer. Used by the /sdd
-// offer-to-fill flow to run a one-shot proposal task.
-type SubagentRunnerFactory func(agentName string) (AgentRunner, error)
 
 const (
 	minTerminalWidth  = 80
@@ -467,14 +452,10 @@ type Model struct {
 	// next turn completes. Both are cleared when a new turn starts.
 	suggestion          string
 	suggestionDismissed bool
-	// suggestionProvider, when set, is the Phase 2 LLM fallback seam: a
-	// function that derives a suggestion from the last assistant message
-	// when the deterministic rules produce none. It runs as a background
-	// tea.Cmd so it never blocks the UI. suggestionGen is a generation
-	// counter bumped on every keystroke and turn start; a late result from
-	// an older generation is discarded.
-	suggestionProvider func(ctx context.Context, lastMsg string) (string, error)
-	suggestionGen      int
+	// suggestionGen is a generation counter bumped on every keystroke and
+	// turn start; a late suggestion result from an older generation is
+	// discarded.
+	suggestionGen int
 
 	cancelling bool
 	// watchResumeSeq is the last watch-resume sequence the model acted on, so
@@ -744,23 +725,10 @@ type Model struct {
 	connectReturnToSettings bool
 	connectReturnFilter     string
 
-	// customAgentFactory builds a one-shot AgentRunner for a named custom
-	// agent. Wired from app.go; used by buildCustomAgentRunner for Run-now.
-	customAgentFactory CustomAgentRunnerFactory
-
-	// subagentFactory builds a fresh child *agent.Runner for a one-shot
-	// proposal task. Wired from app.go; used by the /sdd offer-to-fill flow
-	// to propose build/test commands when none can be detected.
-	subagentFactory SubagentRunnerFactory
-
 	// pastes holds condensed paste attachments for the current input.
 	// They are expanded into fenced blocks on submit and cleared whenever
 	// the input is reset.
 	pastes []pasteAttachment
-
-	// reviewDispatcher runs a reviewer subagent for the /review command.
-	// Wired from app.go; if nil, /review reports that it is unavailable.
-	reviewDispatcher func(ctx context.Context, focus, model, reviewRange string) error
 
 	// pendingModelOptions holds a config candidate saved while the runner
 	// or background jobs are active. It is flushed when the model becomes
@@ -1020,44 +988,6 @@ func WithPlanAuthorFactory(ctx context.Context, factory PlanAuthorFactory) Optio
 func WithContext(ctx context.Context) Option {
 	return func(m *Model) {
 		m.ctx = ctx
-	}
-}
-
-// WithCustomAgentRunnerFactory wires a factory that builds a one-shot
-// AgentRunner for a named custom agent. Used by the /agents Run-now action.
-func WithCustomAgentRunnerFactory(fn CustomAgentRunnerFactory) Option {
-	return func(m *Model) {
-		m.customAgentFactory = fn
-	}
-}
-
-// WithSubagentFactory wires a factory that builds a one-shot AgentRunner for
-// a proposal task. Used by the /sdd offer-to-fill flow to propose build/test
-// commands when none can be detected.
-func WithSubagentFactory(fn SubagentRunnerFactory) Option {
-	return func(m *Model) {
-		m.subagentFactory = fn
-	}
-}
-
-// WithReviewDispatcher wires the /review command to a dispatcher that runs
-// a reviewer subagent. The dispatcher receives the user's optional focus
-// argument and runs until the subagent finishes.
-func WithReviewDispatcher(fn func(ctx context.Context, focus, model, reviewRange string) error) Option {
-	return func(m *Model) {
-		m.reviewDispatcher = fn
-	}
-}
-
-// WithSuggestionProvider wires the Phase 2 LLM fallback for next-prompt
-// suggestions. The provider derives a suggestion from the last assistant
-// message when the deterministic rules produce none. It runs as a background
-// tea.Cmd so it never blocks the UI; stale results are discarded via a
-// generation counter. Nil (the default) disables the LLM fallback even when
-// [tui] suggestions = "llm".
-func WithSuggestionProvider(fn func(ctx context.Context, lastMsg string) (string, error)) Option {
-	return func(m *Model) {
-		m.suggestionProvider = fn
 	}
 }
 
@@ -1412,25 +1342,11 @@ func (m *Model) openSettingsBrowser(query string) {
 }
 
 func (m *Model) openAgentsRoster(arg string) {
-	dispatch := func(agentName, goal string) tea.Cmd {
-		if agentName == "" || m.busy {
-			return nil
-		}
-		// Build a custom-agent runner and start the run.
-		// buildCustomAgentRunner surfaces its own error messages.
-		runner := m.buildCustomAgentRunner(agentName)
-		if runner == nil {
-			m.refreshViewport()
-			return nil
-		}
-		_, cmd := m.startAgentRun(runner, goal)
-		return cmd
-	}
 	roster := agents.NewRosterPanelWithRegistry(
 		m.state.Config,
 		projectConfigPath(m.sess.Status().WorkingDir),
 		arg,
-		dispatch,
+		runNowDispatch,
 		m.toolRegistry,
 	)
 	roster.SetLayers(m.state.Layers())
@@ -1438,29 +1354,20 @@ func (m *Model) openAgentsRoster(arg string) {
 	m.dock.Open(roster)
 }
 
-// buildCustomAgentRunner builds an AgentRunner for the named custom agent.
-// Returns nil when the runner or factory is not available. When the factory
-// returns an error, the error is surfaced to the user and nil is returned.
-// The swarm fallback is only used when the factory is not wired (nil).
-func (m *Model) buildCustomAgentRunner(name string) AgentRunner {
-	if m.customAgentFactory != nil {
-		runner, err := m.customAgentFactory(name)
-		if err != nil {
-			m.state.AddMessage(session.RoleSystem,
-				fmt.Sprintf("Cannot run custom agent %q: %v", name, err),
-				session.ContentTypePlain)
-			m.refreshViewport()
-			return nil
-		}
-		if runner != nil {
-			return runner
-		}
+// runAgentMsg asks the live model to start a Run-now. The roster's dispatch
+// captures nothing, so the model that handles this message is the live one.
+type runAgentMsg struct{ agent, goal string }
+
+// runNowDispatch is the roster's Run-now dispatch. It captures nothing: the
+// live model starts the run when it handles runAgentMsg, so the turn's busy
+// flag, cancellation and transcript all land on the model the user sees.
+func runNowDispatch(agentName, goal string) tea.Cmd {
+	if agentName == "" {
+		return nil
 	}
-	// Fallback: use the swarm runner only when the factory is not wired.
-	if m.customAgentFactory == nil && m.swarmRunner != nil {
-		return m.swarmRunner
+	return func() tea.Msg {
+		return runAgentMsg{agent: agentName, goal: goal}
 	}
-	return nil
 }
 
 // refreshOpenSettingsBrowser rebuilds an open settings browser from the
@@ -2646,6 +2553,19 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refreshViewport()
 		return m, nil
+	case runAgentMsg:
+		if m.busy {
+			return m, nil
+		}
+		if !m.sess.Status().AgentReady {
+			m.refreshViewport()
+			return m, nil
+		}
+		sess := m.sess
+		params := acpwire.AgentRunParams{Agent: pm.agent, Goal: pm.goal}
+		return m.startSessionRun("Cannot start work", func(ctx context.Context) error {
+			return sess.RunAgent(ctx, params)
+		})
 	case verifyProposeMsg:
 		if pm.err != nil {
 			m.state.AddMessage(session.RoleSystem,
@@ -4659,11 +4579,11 @@ type suggestionMsg struct {
 // provider for the given last assistant message and reports via
 // suggestionMsg. The generation counter is captured at call time so a late
 // result can be discarded if the user typed or started a new turn.
-func runSuggestionFallbackCmd(provider func(ctx context.Context, lastMsg string) (string, error), lastMsg string, gen int) tea.Cmd {
+func runSuggestionFallbackCmd(sess acpclient.Session, lastMsg string, gen int) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		s, err := provider(ctx, lastMsg)
+		s, err := sess.Suggest(ctx, lastMsg)
 		if err != nil || strings.TrimSpace(s) == "" {
 			return suggestionMsg{suggestion: "", gen: gen}
 		}
@@ -4683,54 +4603,14 @@ type verifyProposeMsg struct {
 // runs in the background while the preflight dock stays open; the result is
 // surfaced on the verify-gate row for the user to approve or edit.
 func (m *Model) startVerifyProposal() tea.Cmd {
+	sess, ctx := m.sess, m.ctx
 	return func() tea.Msg {
-		if m.subagentFactory == nil {
-			return verifyProposeMsg{err: errors.New("no subagent factory wired")}
-		}
-		runner, err := m.subagentFactory("")
+		proposed, err := sess.VerifyProposal(ctx)
 		if err != nil {
-			return verifyProposeMsg{err: fmt.Errorf("build proposal runner: %w", err)}
+			return verifyProposeMsg{err: err}
 		}
-		if runner == nil {
-			return verifyProposeMsg{err: errors.New("proposal runner is nil")}
-		}
-		prompt := "Inspect this repository and return exactly one JSON object with \"build\" and \"test\" fields: the shell commands (argv, no pipes) to compile and test it, or empty strings if a step does not apply. Only propose commands that will actually work."
-		if err := runner.Run(m.ctx, prompt); err != nil {
-			return verifyProposeMsg{err: fmt.Errorf("proposal task failed: %w", err)}
-		}
-		// The runner's final message holds the structured output; read it
-		// from the session transcript.
-		build, test, err := m.proposalFromSession()
-		return verifyProposeMsg{build: build, test: test, err: err}
+		return verifyProposeMsg{build: proposed.Build, test: proposed.Test}
 	}
-}
-
-// proposalFromSession extracts the build/test proposal from the last user
-// turn's assistant output in the session transcript.
-func (m *Model) proposalFromSession() (build, test string, err error) {
-	msgs := m.state.Messages()
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role != session.RoleAssistant {
-			continue
-		}
-		raw := msgs[i].Content
-		if raw == "" {
-			continue
-		}
-		text, rerr := jsonextract.Extract(raw)
-		if rerr != nil {
-			continue
-		}
-		var p struct {
-			Build string `json:"build"`
-			Test  string `json:"test"`
-		}
-		if json.Unmarshal([]byte(text), &p) != nil {
-			continue
-		}
-		return p.Build, p.Test, nil
-	}
-	return "", "", errors.New("proposal task returned no parseable JSON")
 }
 
 // runAgentCmd wraps an agent turn into a Bubble Tea command that
@@ -4755,15 +4635,6 @@ func runAgentCmd(ctx context.Context, state *session.State, runner AgentRunner, 
 			}
 		}()
 		err := runner.Run(ctx, goal)
-		return agentFinishedMsg{err: err}
-	}
-}
-
-// runReviewCmd wraps a /review subagent dispatch into a Bubble Tea command.
-func runReviewCmd(ctx context.Context, state *session.State, dispatcher func(ctx context.Context, focus, model, reviewRange string) error, focus, model, reviewRange string) tea.Cmd {
-	return func() tea.Msg {
-		defer state.EndWork()
-		err := dispatcher(ctx, focus, model, reviewRange)
 		return agentFinishedMsg{err: err}
 	}
 }
@@ -5760,7 +5631,7 @@ func (m *Model) computeSuggestion() tea.Cmd {
 	if conf == ConfidenceHigh {
 		return nil
 	}
-	if m.state.Config.TUI.Suggestions != "llm" || m.suggestionProvider == nil {
+	if m.state.Config.TUI.Suggestions != "llm" || !m.sess.Status().AgentReady {
 		return nil
 	}
 	// The generation counter is bumped so a stale result from an earlier
@@ -5768,7 +5639,7 @@ func (m *Model) computeSuggestion() tea.Cmd {
 	// replacement arriving after the user has started typing is exactly
 	// what it was built for.
 	m.suggestionGen++
-	return runSuggestionFallbackCmd(m.suggestionProvider, last.Content, m.suggestionGen)
+	return runSuggestionFallbackCmd(m.sess, last.Content, m.suggestionGen)
 }
 
 // handlePlanAuthorFinished handles the completion of an authoring turn. On

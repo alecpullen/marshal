@@ -11,6 +11,7 @@ import (
 	"marshal/internal/acpclient/inproc"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/agents"
 )
 
 // turnRecorder is a session whose run calls are recorded before the wrapped
@@ -215,5 +216,184 @@ func TestTheTurnEndLeavesTheActivityToTheSession(t *testing.T) {
 
 	if got := m.state.Activity().Kind; got != session.ActivityThinking {
 		t.Fatalf("activity = %q, want the session's own value left alone", got)
+	}
+}
+
+// TestReviewGoesThroughTheSession pins that /review starts on the session's run
+// path, with the base and the range kept apart.
+func TestReviewGoesThroughTheSession(t *testing.T) {
+	rec := &turnRecorder{}
+	m := testModelTurns(t, inproc.Deps{
+		State:  controlsState(t),
+		Runner: runnerOf(&testAgentRunner{}),
+		Review: func(context.Context, acpwire.ReviewParams) error { return nil },
+	}, rec, WithCommandRegistry(setupCmdReg(t)))
+
+	updated, cmd := m.dispatchCommand("/review --base main src")
+	m = asModel(t, updated)
+	if !m.busy {
+		t.Fatal("busy = false, want /review to start a run")
+	}
+	m = drainCmds(m, cmd)
+
+	want := acpwire.ReviewParams{Focus: "src", Base: "main"}
+	if len(rec.reviews) != 1 || rec.reviews[0] != want {
+		t.Fatalf("reviews = %+v, want one %+v", rec.reviews, want)
+	}
+	if m.busy {
+		t.Fatal("busy = true, want the finished review to leave the model idle")
+	}
+}
+
+// TestReviewRefusesABaseAndARangeBeforeStarting pins the refusal's side: it
+// happens before anything starts, so no work and no stop group are taken.
+func TestReviewRefusesABaseAndARangeBeforeStarting(t *testing.T) {
+	rec := &turnRecorder{}
+	m := testModelTurns(t, inproc.Deps{
+		State:  controlsState(t),
+		Runner: runnerOf(&testAgentRunner{}),
+		Review: func(context.Context, acpwire.ReviewParams) error { return nil },
+	}, rec, WithCommandRegistry(setupCmdReg(t)))
+
+	updated, cmd := m.dispatchCommand("/review --base=main main...HEAD focus")
+	m = asModel(t, updated)
+
+	if cmd != nil {
+		t.Fatal("a refused review returned a command")
+	}
+	if m.busy {
+		t.Fatal("busy = true, want the refused review to leave the model idle")
+	}
+	if len(rec.reviews) != 0 {
+		t.Fatalf("reviews = %+v, want none", rec.reviews)
+	}
+	msgs := m.state.Messages()
+	last := ""
+	if len(msgs) > 0 {
+		last = msgs[len(msgs)-1].Content
+	}
+	if last != "review: --base and an explicit range are mutually exclusive" {
+		t.Fatalf("last message = %q, want the refusal note", last)
+	}
+}
+
+// TestRunNowStartsOnTheLiveModel pins decision 10: the roster's Run-now asks
+// the live model to start the run, so the turn's busy flag, its cancellation
+// and its transcript all land where the user sees them.
+func TestRunNowStartsOnTheLiveModel(t *testing.T) {
+	rec := &turnRecorder{}
+	runner := &fakeAgentRunner{called: make(chan string, 1)}
+	m := testModelTurns(t, inproc.Deps{
+		State:    controlsState(t),
+		Runner:   runnerOf(runner),
+		RunAgent: func(context.Context, acpwire.AgentRunParams) error { return nil },
+	}, rec, WithCommandRegistry(setupCmdReg(t)))
+
+	// Open the roster the way Update does, and keep the model it returns.
+	opened, _ := tuiCommandEffects["agents"](&m, []string{})
+	m = asModel(t, opened)
+
+	panel, ok := m.dock.Panel().(*agents.Panel)
+	if !ok {
+		t.Fatalf("dock panel = %T, want the agents roster", m.dock.Panel())
+	}
+	cmd := panel.RunNow("linter")
+	if cmd == nil {
+		t.Fatal("RunNow returned no command")
+	}
+
+	updated, runCmd := m.Update(cmd())
+	m = asModel(t, updated)
+	if !m.busy {
+		t.Fatal("busy = false, want the live model to start the run")
+	}
+	if m.agentCancel == nil {
+		t.Fatal("agentCancel = nil, want the run's cancel on the live model")
+	}
+	m = drainCmds(m, runCmd)
+
+	want := acpwire.AgentRunParams{Agent: "linter"}
+	if len(rec.agentRuns) != 1 || rec.agentRuns[0] != want {
+		t.Fatalf("agent runs = %+v, want one %+v", rec.agentRuns, want)
+	}
+}
+
+// TestRunNowWhileBusyStartsNothing pins that a Run-now request landing during a
+// turn is dropped rather than queued behind it.
+func TestRunNowWhileBusyStartsNothing(t *testing.T) {
+	rec := &turnRecorder{}
+	m := testModelTurns(t, inproc.Deps{
+		State:    controlsState(t),
+		Runner:   runnerOf(&testAgentRunner{}),
+		RunAgent: func(context.Context, acpwire.AgentRunParams) error { return nil },
+	}, rec)
+	m.busy = true
+
+	updated, cmd := m.Update(runAgentMsg{agent: "linter"})
+	m = asModel(t, updated)
+
+	if cmd != nil {
+		t.Fatal("a Run-now during a turn returned a command")
+	}
+	if len(rec.agentRuns) != 0 {
+		t.Fatalf("agent runs = %+v, want none", rec.agentRuns)
+	}
+}
+
+// TestTheSuggestionGoesThroughTheSession pins that the fallback asks the
+// session's model, with the last assistant message.
+func TestTheSuggestionGoesThroughTheSession(t *testing.T) {
+	rec := &turnRecorder{}
+	m := testModelTurns(t, inproc.Deps{
+		State:  controlsState(t),
+		Runner: runnerOf(&testAgentRunner{}),
+		Suggest: func(context.Context, string) (string, error) {
+			return "yes, go ahead", nil
+		},
+	}, rec)
+	m.state.Config.TUI.Suggestions = "llm"
+	m.state.AddMessageFinalWithUsage(session.RoleAssistant,
+		"I've finished the refactor and all tests pass.", session.ContentTypeMarkdown, 0, "")
+	m.busy = true
+
+	m, cmd := m.handleAgentFinished(agentFinishedMsg{})
+	m = drainCmds(m, cmd)
+
+	if len(rec.suggests) != 1 || rec.suggests[0] != "I've finished the refactor and all tests pass." {
+		t.Fatalf("suggests = %+v, want the last assistant message", rec.suggests)
+	}
+	if m.suggestion != "yes, go ahead" {
+		t.Fatalf("suggestion = %q, want the session's answer", m.suggestion)
+	}
+}
+
+// TestTheProposalGoesThroughTheSession pins that the verify proposal is a
+// session call, driven exactly as /sdd's preflight drives it.
+func TestTheProposalGoesThroughTheSession(t *testing.T) {
+	rec := &turnRecorder{}
+	m := testModelTurns(t, inproc.Deps{
+		State:  controlsState(t),
+		Runner: runnerOf(&testAgentRunner{}),
+		VerifyProposal: func(context.Context) (acpwire.VerifyCommands, error) {
+			return acpwire.VerifyCommands{Build: "make build", Test: "make test"}, nil
+		},
+	}, rec, WithCommandRegistry(setupCmdReg(t)))
+
+	// Open the /sdd preflight on a manifest-less repo so the gate is unknown.
+	m.openRunPreflight("sdd", &fakeAgentRunner{called: make(chan string, 1)}, "plan.md")
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'f'})
+	m = asModel(t, updated)
+	if cmd == nil {
+		t.Fatal("expected a proposal command from pressing f")
+	}
+	updated, _ = m.Update(cmd())
+	m = asModel(t, updated)
+
+	if rec.proposals != 1 {
+		t.Fatalf("proposals = %d, want 1", rec.proposals)
+	}
+	if m.pendingRun == nil || m.pendingRun.verifyBuild != "make build" || m.pendingRun.verifyTest != "make test" {
+		t.Fatalf("proposal not stashed: %+v", m.pendingRun)
 	}
 }

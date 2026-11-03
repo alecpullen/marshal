@@ -2140,3 +2140,74 @@ T1b gains seven names: `ClearSDDGate`, and `BeginWork`, `EndWork`,
 `marshal/internal/pipeline`, and the `sdd_authoring.go` and
 `sddreview/review.go` entries; `model.go` keeps `sddplans` and `sddauthor` for
 plan 8 and `config.SaveVerifyCommands` for plan 7.
+
+**Plan 5e (ending and swapping), branch `p2-5e-ending`.** Added
+`internal/acpwire/ending.go`: the intent constants `EndIntentExit` and
+`EndIntentReplace`; `EndWork` with its `EndWorkItem`s (`ID`, `Label`, `Group`);
+`EndAcceptParams` (`Intent`, `DisplayedIDs`, `RequireDisplayed`); and
+`EndDecision` (`Accepted`, `Expanded`, `Work`). The wire carries what the
+warning renders and no more: an item's phase, kind, parent flag, subagent ID and
+the stoppable targets stay agent side.
+
+`acpclient.Session` gains six methods with their `Methods` rows: `ActiveWork` on
+`session/end_work`, `AcceptEnd` on `session/end_accept`, `WaitForEnd` on
+`session/end_wait`, `RunExitAnalysis` on `session/exit_analysis` and
+`Postmortem` on `session/postmortem`, all five new in P3, and `Close` on
+`session/close`, which exists. `acpclient.Host` gains `NewSession` on
+`session/new`, which exists.
+
+The adapter serves them over `inproc.EndService`, which `Deps.End` carries.
+A session without one ends at once: `ActiveWork` is empty, `AcceptEnd` accepts,
+`WaitForEnd` settles immediately and `RunExitAnalysis` refuses with
+`CodeNoRunner`, so only a test builds one. `Close` marks the session closed,
+drops a paused plan run and the run in flight, settles every pending request as
+shut down, shuts the state down and closes the change signal; it cancels the
+run only after releasing its lock, and closing a closed session does nothing.
+`runTurn` refuses a session that closed between `Prompt`'s check and the slot,
+so no run can start between `Close` and its cancel. `Postmortem` builds and
+writes the report agent side, where the TUI's exit path wrote it: the same home
+lookup, project slug and file name. `Deps.NewSession` carries the runtime's
+new-session factory; `Host.NewSession` closes the session it replaces and
+returns `swap` over the new state, and `swap` is unexported now that nothing
+outside the package calls it.
+
+The runtime answers the calls through the new `internal/app/ending.go`:
+`endService` converts the runtime's shapes to the wire's and leaves every
+decision to the runtime, and `bindTurnDeps` binds it as `Deps.End` together with
+`Deps.NewSession`. `rt.NewSession` and `newSessionLocked` return only the state;
+the runner, the orchestrator, the factories and the registry are installed on
+the runtime and reached from there. `Run`'s swapper goes through
+`seamHost.NewSession` and reads the state and registry under `rt.mu` after it
+returns, and the exit analysis reads `rt.TurnRunner()` under that lock rather
+than `rt.Runner`, which a reload may replace.
+
+The TUI ends and swaps through the session. `beginEnd`, `acceptEnd`,
+`settleEnd`, `refreshEndWarning`, the postmortem extraction, the scoped exit
+analysis and the postmortem answer all reach `m.sess`, and the model's snapshot
+is the wire's `EndWork`. `EndController`, `WithEndController`, `EndWorkSnapshot`,
+`EndWorkItem`, `EndAcceptRequest`, `EndDecision`, `EndIntentExit`,
+`EndIntentReplace` and `writePostmortemFor` are deleted, with `app.go`'s
+`tuiEndController` and its snapshot converter. `finishQuit` calls `Close` where
+it called `ResolvePendingForShutdown()` and no longer calls `Shutdown()`.
+`SessionSwapResult`, `SessionSwapper`, `SessionSwapperFunc`,
+`WithSessionSwapper` and the `sessionSwapper` field are deleted: `/new` and
+`/clear` ask `Host.NewSession`, and `WithLegacySession` re-reads the runtime's
+current state and tool registry for the groups plans 6 to 8 move. A host
+without `NewSession` fails the swap with "Failed to start new session: inproc:
+new sessions are not available" instead of the deleted "New session is not
+available in this build." branch.
+
+A replacement leaves the end idle (the spec's decision 10). Since `e57821a4`,
+`finishReplacement` set the end stage to finishing and nothing reset it, so
+after a `/new` or `/clear` every run was refused with "The conversation is
+ending; this request was not started.", a second `/new` quit Marshal without
+starting a session, `/exit` and Ctrl+C quit at once with no warning and no
+postmortem question, and `/resume` exited instead of resuming.
+`startNewSession` now returns the end to idle before it asks the host, whether
+the new session starts or fails, so a retried `/new` goes through acceptance
+again.
+
+T1b gains two names, `ResolvePendingForShutdown` and `Shutdown`, at plan `5e`.
+The allowlist loses `model.go`'s `marshal/internal/postmortem`;
+`commands_dispatch.go` keeps `marshal/internal/app/session` for its notes and
+`model.go` keeps `marshal/internal/tools/registry` for the roster's registry.

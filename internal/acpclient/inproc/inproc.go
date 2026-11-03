@@ -64,6 +64,17 @@ type Deps struct {
 	// working after a swap. Without one, the matching Session call fails.
 	SetInteraction func(interaction.Patch) (interaction.State, error)
 	SetEffort      func(level string) (applies string, err error)
+
+	// Runner returns the runtime's current agent runner, or nil while the
+	// provider is not built. A nil func means the session never has one.
+	Runner func() Runner
+	// Review, RunAgent, Suggest and VerifyProposal are the runtime's calls.
+	// Each reads the runtime's current state, so the same Deps keep working
+	// after a swap. Without one, the matching Session call fails.
+	Review         func(ctx context.Context, params acpwire.ReviewParams) error
+	RunAgent       func(ctx context.Context, params acpwire.AgentRunParams) error
+	Suggest        func(ctx context.Context, lastMessage string) (string, error)
+	VerifyProposal func(ctx context.Context) (acpwire.VerifyCommands, error)
 }
 
 // ReferenceFinder resolves what references a symbol. ok is false when no
@@ -114,6 +125,16 @@ type Session struct {
 	// matching call fails.
 	setInteraction func(interaction.Patch) (interaction.State, error)
 	setEffort      func(string) (string, error)
+
+	// runner, review, runAgent, suggest and verifyProposal are the runtime's
+	// calls. Nil means the matching call fails.
+	runner         func() Runner
+	review         func(context.Context, acpwire.ReviewParams) error
+	runAgent       func(context.Context, acpwire.AgentRunParams) error
+	suggest        func(context.Context, string) (string, error)
+	verifyProposal func(context.Context) (acpwire.VerifyCommands, error)
+	// turn is the run in flight, nil when none. It is guarded by mu.
+	turn *turnSlot
 
 	// ctx bounds the event subscriptions; cancel releases them.
 	ctx    context.Context
@@ -215,6 +236,7 @@ func (s *Session) Status() acpwire.SessionStatus {
 		HasBackup:       st.HasBackup(),
 		Activity:        activityWire(act),
 		SubagentRunning: st.HasRunningSubagent(),
+		AgentReady:      s.currentRunner() != nil,
 		Workspace: acpwire.Workspace{
 			ProjectRoot:  ws.ProjectRoot,
 			ActiveRoot:   ws.ActiveRoot,

@@ -48,4 +48,10 @@ var Methods = []Method{
 	{Iface: "Session", Name: "CancelSubagent", ACP: "session/subagent_cancel"},
 	{Iface: "Session", Name: "ClearFinishedRun", ACP: "session/sdd_clear"},
 	{Iface: "Session", Name: "TakeWatchResume", ACP: "session/watch_resume_take"},
+	{Iface: "Session", Name: "Prompt", ACP: "session/prompt", Exists: true},
+	{Iface: "Session", Name: "Stop", ACP: "session/cancel", Exists: true},
+	{Iface: "Session", Name: "Review", ACP: "session/review"},
+	{Iface: "Session", Name: "RunAgent", ACP: "session/agent_run"},
+	{Iface: "Session", Name: "Suggest", ACP: "session/suggest"},
+	{Iface: "Session", Name: "VerifyProposal", ACP: "session/verify_proposal"},
 }

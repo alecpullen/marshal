@@ -21,28 +21,31 @@ type SessionStatus struct {
 	// TurnUsed and TurnWindow are tokens: what the running turn has spent and
 	// the context window it is measured against. They are not milliseconds,
 	// unlike Quota's durations.
-	TurnUsed        int           `json:"turnUsed,omitempty"`
-	TurnWindow      int           `json:"turnWindow,omitempty"`
-	Quota           *Quota        `json:"quota,omitempty"`
-	Effort          Effort        `json:"effort"`
-	Interaction     Interaction   `json:"interaction"`
-	SudoUnlock      bool          `json:"sudoUnlock,omitempty"`
-	Trusted         bool          `json:"trusted,omitempty"`
-	HasBackup       bool          `json:"hasBackup,omitempty"`
-	Activity        Activity      `json:"activity"`
-	SubagentRunning bool          `json:"subagentRunning,omitempty"`
-	Workspace       Workspace     `json:"workspace"`
-	Browser         Browser       `json:"browser"`
-	Sandbox         Sandbox       `json:"sandbox"`
-	Steering        Steering      `json:"steering"`
-	RunningJobs     int           `json:"runningJobs,omitempty"`
-	Subagents       []Subagent    `json:"subagents,omitempty"`
-	Swarm           SwarmProgress `json:"swarm"`
-	SDD             SDDProgress   `json:"sdd"`
-	SDDGate         SDDGate       `json:"sddGate"`
-	Git             Git           `json:"git"`
-	ChangedFiles    int           `json:"changedFiles,omitempty"` // against the sheet's base; 0 means "no changes", never "not refreshed"
-	WatchResume     *WatchResume  `json:"watchResume,omitempty"`
+	TurnUsed        int         `json:"turnUsed,omitempty"`
+	TurnWindow      int         `json:"turnWindow,omitempty"`
+	Quota           *Quota      `json:"quota,omitempty"`
+	Effort          Effort      `json:"effort"`
+	Interaction     Interaction `json:"interaction"`
+	SudoUnlock      bool        `json:"sudoUnlock,omitempty"`
+	Trusted         bool        `json:"trusted,omitempty"`
+	HasBackup       bool        `json:"hasBackup,omitempty"`
+	Activity        Activity    `json:"activity"`
+	SubagentRunning bool        `json:"subagentRunning,omitempty"`
+	// AgentReady says the session's agent runner is built, so Prompt, Review
+	// and RunAgent can start. It is false while the provider is not built.
+	AgentReady   bool          `json:"agentReady,omitempty"`
+	Workspace    Workspace     `json:"workspace"`
+	Browser      Browser       `json:"browser"`
+	Sandbox      Sandbox       `json:"sandbox"`
+	Steering     Steering      `json:"steering"`
+	RunningJobs  int           `json:"runningJobs,omitempty"`
+	Subagents    []Subagent    `json:"subagents,omitempty"`
+	Swarm        SwarmProgress `json:"swarm"`
+	SDD          SDDProgress   `json:"sdd"`
+	SDDGate      SDDGate       `json:"sddGate"`
+	Git          Git           `json:"git"`
+	ChangedFiles int           `json:"changedFiles,omitempty"` // against the sheet's base; 0 means "no changes", never "not refreshed"
+	WatchResume  *WatchResume  `json:"watchResume,omitempty"`
 }
 
 // Route mirrors the session's RouteInfo: the route a turn runs on.

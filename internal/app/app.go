@@ -2823,6 +2823,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		if providerReady {
 			deps.Work = rt
 		}
+		bindTurnDeps(&deps, rt)
 		seamHost, seamSession := inproc.New(deps)
 
 		cmdReg := rt.CommandRegistry
@@ -2912,24 +2913,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			// words, or "NONE".
 			tuiOpts = append(tuiOpts, tui.WithSuggestionProvider(
 				func(ctx context.Context, lastMsg string) (string, error) {
-					rt.mu.Lock()
-					runner := rt.Runner
-					rt.mu.Unlock()
-					if runner == nil {
-						return "", nil
-					}
-					res, err := runner.Chat(ctx, []schema.ChatMessage{
-						{Role: schema.RoleUser, Content: lastMsg},
-						{Role: schema.RoleSystem, Content: "Suggest the user's most likely next reply in at most 10 words, or NONE."},
-					})
-					if err != nil {
-						return "", err
-					}
-					text := strings.TrimSpace(res.Content)
-					if strings.EqualFold(text, "NONE") || text == "" {
-						return "", nil
-					}
-					return text, nil
+					return rt.SuggestNextReply(ctx, lastMsg)
 				},
 			))
 		}

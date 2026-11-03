@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -53,7 +52,6 @@ import (
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
-	"marshal/internal/worktree"
 )
 
 type fakeSessionSwapper struct {
@@ -1209,32 +1207,21 @@ func (b *blockingAgentRunner) Run(ctx context.Context, goal string) error {
 func (b *blockingAgentRunner) SetForceClass(string) {}
 func (b *blockingAgentRunner) AnswerGate(string)    {}
 
-type fakeSwarmRunner struct {
-	mu    sync.Mutex
-	goals []string
-}
-
-func (f *fakeSwarmRunner) Run(ctx context.Context, goal string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.goals = append(f.goals, goal)
-	return nil
-}
-
-func (f *fakeSwarmRunner) SetForceClass(string) {}
-func (f *fakeSwarmRunner) AnswerGate(string)    {}
-
 func TestSwarmCommandOpensPreflightThenStartsRun(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
-	fake := &fakeSwarmRunner{}
+	var got []acpwire.SwarmParams
 	cmdReg := commands.New()
 	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
 		t.Fatal(err)
 	}
-	model := testModel(state,
-		WithCommandRegistry(cmdReg),
-		WithSwarmRunner(context.Background(), fake),
-	)
+	model := testModelWith(inproc.Deps{
+		State:  state,
+		Runner: runnerOf(&testAgentRunner{}),
+		Swarm: func(_ context.Context, params acpwire.SwarmParams) error {
+			got = append(got, params)
+			return nil
+		},
+	}, WithCommandRegistry(cmdReg))
 	model.resize(100, 40)
 
 	// /swarm with a goal should open the cast list panel (not start the run).
@@ -1263,7 +1250,7 @@ func TestSwarmCommandOpensPreflightThenStartsRun(t *testing.T) {
 	updated, cmd = m.Update(castlist.StartMsg{})
 	m = asModel(t, updated)
 	if cmd == nil {
-		t.Fatal("StartMsg should return a non-nil cmd (startAgentRun)")
+		t.Fatal("StartMsg should return a non-nil cmd (the run command)")
 	}
 	if !m.busy {
 		t.Fatal("model should be busy after StartMsg")
@@ -1276,35 +1263,24 @@ func TestSwarmCommandOpensPreflightThenStartsRun(t *testing.T) {
 	}
 
 	// Execute the batched commands; one of them runs the swarm.
-	msg := cmd()
-	batch, ok := msg.(tea.BatchMsg)
-	if !ok {
-		t.Fatalf("expected tea.BatchMsg, got %T", msg)
-	}
-	for _, sub := range batch {
-		if sub != nil {
-			_ = sub()
-		}
-	}
+	m = drainCmds(m, cmd)
 
-	fake.mu.Lock()
-	defer fake.mu.Unlock()
-	if len(fake.goals) != 1 || fake.goals[0] != "add a regression test" {
-		t.Fatalf("swarm runner goals = %v, want [\"add a regression test\"]", fake.goals)
+	if len(got) != 1 || got[0].Goal != "add a regression test" {
+		t.Fatalf("swarm params = %+v, want one goal \"add a regression test\"", got)
 	}
 }
 
 func TestSwarmCommandPreflightCancelClearsPendingRun(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
-	fake := &fakeSwarmRunner{}
 	cmdReg := commands.New()
 	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
 		t.Fatal(err)
 	}
-	model := testModel(state,
-		WithCommandRegistry(cmdReg),
-		WithSwarmRunner(context.Background(), fake),
-	)
+	model := testModelWith(inproc.Deps{
+		State:  state,
+		Runner: runnerOf(&testAgentRunner{}),
+		Swarm:  func(context.Context, acpwire.SwarmParams) error { return nil },
+	}, WithCommandRegistry(cmdReg))
 	model.resize(100, 40)
 
 	// Open the preflight panel.
@@ -1337,10 +1313,10 @@ func TestSwarmCommandWithoutGoalShowsUsage(t *testing.T) {
 	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
 		t.Fatal(err)
 	}
-	model := testModel(state,
-		WithCommandRegistry(cmdReg),
-		WithSwarmRunner(context.Background(), &fakeSwarmRunner{}),
-	)
+	model := testModelWith(inproc.Deps{
+		State:  state,
+		Runner: runnerOf(&testAgentRunner{}),
+	}, WithCommandRegistry(cmdReg))
 
 	_, _ = model.dispatchCommand("/swarm")
 	messages := state.Messages()
@@ -1353,32 +1329,22 @@ func TestSwarmCommandWithoutGoalShowsUsage(t *testing.T) {
 	}
 }
 
-type fakeSDDRunner struct {
-	mu    sync.Mutex
-	plans []string
-}
-
-func (f *fakeSDDRunner) Run(ctx context.Context, planPath string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.plans = append(f.plans, planPath)
-	return nil
-}
-
-func (f *fakeSDDRunner) SetForceClass(string) {}
-func (f *fakeSDDRunner) AnswerGate(string)    {}
-
 func TestSDDCommandOpensPreflightThenStartsRun(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
-	fake := &fakeSDDRunner{}
+	run := &fakePlanRun{}
+	var got []acpwire.SDDParams
 	cmdReg := commands.New()
 	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
 		t.Fatal(err)
 	}
-	model := testModel(state,
-		WithCommandRegistry(cmdReg),
-		WithPipelineFactory(context.Background(), func(planPath string, overrides map[routing.AgentRole]string) AgentRunner { return fake }),
-	)
+	model := testModelWith(inproc.Deps{
+		State:  state,
+		Runner: runnerOf(&testAgentRunner{}),
+		PlanPreflight: preflightOf(acpwire.PlanPreflight{
+			Inspection: acpwire.PlanInspection{Strategy: acpwire.StrategyAgent},
+		}),
+		NewPlanRun: planRunOf(run, &got),
+	}, WithCommandRegistry(cmdReg))
 	model.resize(100, 40)
 
 	// /sdd with a plan path should open the cast list panel (not start the run).
@@ -1407,7 +1373,7 @@ func TestSDDCommandOpensPreflightThenStartsRun(t *testing.T) {
 	updated, cmd = m.Update(castlist.StartMsg{})
 	m = asModel(t, updated)
 	if cmd == nil {
-		t.Fatal("StartMsg should return a non-nil cmd (startAgentRun)")
+		t.Fatal("StartMsg should return a non-nil cmd (the run command)")
 	}
 	if !m.busy {
 		t.Fatal("model should be busy after StartMsg")
@@ -1420,28 +1386,23 @@ func TestSDDCommandOpensPreflightThenStartsRun(t *testing.T) {
 	}
 
 	// Execute the batched commands.
-	msg := cmd()
-	batch, ok := msg.(tea.BatchMsg)
-	if !ok {
-		t.Fatalf("expected tea.BatchMsg, got %T", msg)
-	}
-	for _, sub := range batch {
-		if sub != nil {
-			_ = sub()
-		}
-	}
+	m = drainCmds(m, cmd)
 
-	fake.mu.Lock()
-	defer fake.mu.Unlock()
-	if len(fake.plans) != 1 || fake.plans[0] != "/repo/docs/plans/feature-plan.md" {
-		t.Fatalf("SDD runner plans = %v, want [\"/repo/docs/plans/feature-plan.md\"]", fake.plans)
+	if len(got) != 1 || got[0].PlanPath != "/repo/docs/plans/feature-plan.md" {
+		t.Fatalf("SDD params = %+v, want one with plan path \"/repo/docs/plans/feature-plan.md\"", got)
+	}
+	run.mu.Lock()
+	runs := run.runs
+	run.mu.Unlock()
+	if runs != 1 {
+		t.Fatalf("the fake plan run ran %d times, want once", runs)
 	}
 }
 
 func TestSDDPreflightMetaShowsVerifyTimeout(t *testing.T) {
 	m := newTestModel(t)
 	m.state.Config.SDD.VerifyTimeoutMS = 600000
-	m.openRunPreflight("sdd", m.pipelineRunner, "/path/plan.md")
+	m.openRunPreflight("sdd", "/path/plan.md", &acpwire.PlanPreflight{})
 	view := m.dock.View(m.width, m.height)
 	if !strings.Contains(view, "600000") {
 		t.Errorf("preflight meta missing verify timeout: %q", view)
@@ -1450,15 +1411,17 @@ func TestSDDPreflightMetaShowsVerifyTimeout(t *testing.T) {
 
 func TestSDDCommandPreflightCancelClearsPendingRun(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
-	fake := &fakeSDDRunner{}
 	cmdReg := commands.New()
 	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
 		t.Fatal(err)
 	}
-	model := testModel(state,
-		WithCommandRegistry(cmdReg),
-		WithPipelineFactory(context.Background(), func(planPath string, overrides map[routing.AgentRole]string) AgentRunner { return fake }),
-	)
+	model := testModelWith(inproc.Deps{
+		State:  state,
+		Runner: runnerOf(&testAgentRunner{}),
+		PlanPreflight: preflightOf(acpwire.PlanPreflight{
+			Inspection: acpwire.PlanInspection{Strategy: acpwire.StrategyAgent},
+		}),
+	}, WithCommandRegistry(cmdReg))
 	model.resize(100, 40)
 
 	// Open the preflight panel.
@@ -1491,10 +1454,13 @@ func TestSDDCommandWithoutPlanOpensPlanPicker(t *testing.T) {
 	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
 		t.Fatal(err)
 	}
-	model := testModel(state,
-		WithCommandRegistry(cmdReg),
-		WithPipelineFactory(context.Background(), func(planPath string, overrides map[routing.AgentRole]string) AgentRunner { return &fakeSDDRunner{} }),
-	)
+	model := testModelWith(inproc.Deps{
+		State:  state,
+		Runner: runnerOf(&testAgentRunner{}),
+		PlanPreflight: preflightOf(acpwire.PlanPreflight{
+			Inspection: acpwire.PlanInspection{Strategy: acpwire.StrategyAgent},
+		}),
+	}, WithCommandRegistry(cmdReg))
 
 	updated, _ := model.dispatchCommand("/sdd")
 	m := asModel(t, updated)
@@ -1583,11 +1549,13 @@ func TestSDDCustomPathPickerDispatchesPlanPath(t *testing.T) {
 	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
 		t.Fatal(err)
 	}
-	fake := &fakeSDDRunner{}
-	model := testModel(state,
-		WithCommandRegistry(cmdReg),
-		WithPipelineFactory(context.Background(), func(planPath string, overrides map[routing.AgentRole]string) AgentRunner { return fake }),
-	)
+	model := testModelWith(inproc.Deps{
+		State:  state,
+		Runner: runnerOf(&testAgentRunner{}),
+		PlanPreflight: preflightOf(acpwire.PlanPreflight{
+			Inspection: acpwire.PlanInspection{Strategy: acpwire.StrategyAgent},
+		}),
+	}, WithCommandRegistry(cmdReg))
 	model.resize(100, 40)
 
 	// Open the custom-path picker directly.
@@ -1658,7 +1626,7 @@ func TestEnterWithRunnerDispatchesAgentRunAndTick(t *testing.T) {
 		t.Fatalf("cmd() = %T, want tea.BatchMsg", cmd())
 	}
 	if len(batch) != 3 {
-		t.Fatalf("len(batch) = %d, want 3 (runAgentCmd, tickCmd, spinnerTickCmd)", len(batch))
+		t.Fatalf("len(batch) = %d, want 3 (the run command, tickCmd, spinnerTickCmd)", len(batch))
 	}
 
 	var sawFinished, sawTick, sawSpinnerTick bool
@@ -2116,8 +2084,8 @@ func TestAgentCommandRegistersAndReleasesSessionWork(t *testing.T) {
 	model := testModelWith(inproc.Deps{State: state, Runner: runnerOf(runner)})
 	model.resize(80, 24)
 
-	// Submit a turn. The runner blocks in Run, so the runAgentCmd
-	// command will block until we close(block).
+	// Submit a turn. The runner blocks in Run, so the run command
+	// will block until we close(block).
 	model.input.SetValue("hello")
 	_, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd == nil {
@@ -2131,7 +2099,7 @@ func TestAgentCommandRegistersAndReleasesSessionWork(t *testing.T) {
 		t.Fatalf("len(batch) = %d, want 3", len(batch))
 	}
 
-	// Execute the runAgentCmd (batch[0]) in a goroutine; it will block.
+	// Execute the run command (batch[0]) in a goroutine; it will block.
 	// The command registers the work, so wait for Run to begin rather than
 	// guessing at a delay: BeginWork has happened by the time the runner is
 	// inside Run.
@@ -2172,7 +2140,7 @@ func TestAgentCommandRegistersAndReleasesSessionWork(t *testing.T) {
 	select {
 	case msg := <-runDone:
 		if _, ok := msg.(agentFinishedMsg); !ok {
-			t.Fatalf("runAgentCmd returned %T, want agentFinishedMsg", msg)
+			t.Fatalf("the run command returned %T, want agentFinishedMsg", msg)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("runner command did not complete")
@@ -9408,7 +9376,9 @@ func TestSDDPreflightStatesRunConsequences(t *testing.T) {
 	m.state.Config.SDD.Verify.Build = "go build ./..."
 	m.state.Config.SDD.Verify.Test = "go test ./..."
 
-	m.openRunPreflight("sdd", &testAgentRunner{}, path)
+	m.openRunPreflight("sdd", path, &acpwire.PlanPreflight{
+		Verify: acpwire.VerifyGate{Build: "go build ./...", Test: "go test ./...", Known: true},
+	})
 
 	got := stripANSI(m.dock.Panel().View(100, 30))
 	for _, want := range []string{"5 tasks", "go build ./...", "go test ./...", "commit"} {
@@ -9425,7 +9395,7 @@ func TestSDDPreflightWarnsWhenVerifyIsUnconfigured(t *testing.T) {
 	m.state.Config.SDD.Verify.Build = ""
 	m.state.Config.SDD.Verify.Test = ""
 
-	m.openRunPreflight("sdd", &testAgentRunner{}, path)
+	m.openRunPreflight("sdd", path, &acpwire.PlanPreflight{})
 
 	got := stripANSI(m.dock.Panel().View(100, 30))
 	if !strings.Contains(got, "no build or test command") {
@@ -9439,7 +9409,7 @@ func TestSDDPreflightStillListsTheCast(t *testing.T) {
 	path := filepath.Join(m.state.WorkingDir, ".marshal", "plans", "p.md")
 	writeTestPlan(t, m.state.WorkingDir, "p.md", 1)
 
-	m.openRunPreflight("sdd", &testAgentRunner{}, path)
+	m.openRunPreflight("sdd", path, &acpwire.PlanPreflight{})
 
 	got := stripANSI(m.dock.Panel().View(100, 30))
 	if !strings.Contains(got, "implementer") {
@@ -9449,28 +9419,13 @@ func TestSDDPreflightStillListsTheCast(t *testing.T) {
 
 func TestSwarmPreflightUnchanged(t *testing.T) {
 	m := newTestModelInRepo(t)
-	m.openRunPreflight("swarm", &testAgentRunner{}, "make the thing faster")
+	m.openRunPreflight("swarm", "make the thing faster", nil)
 
 	got := stripANSI(m.dock.Panel().View(100, 30))
 	if !strings.Contains(got, "goal:") {
 		t.Errorf("the swarm preflight must be untouched by the SDD rewrite:\n%s", got)
 	}
 }
-
-// recordingPipelineRunner is a minimal AgentRunner that records the last
-// AnswerGate argument, so a test can assert the human's answer reaches the
-// runner. The pipeline runner (ControllerAdapter) is the only real
-// implementation that acts on AnswerGate; the others are no-ops.
-type recordingPipelineRunner struct {
-	answer string
-}
-
-func (r *recordingPipelineRunner) Run(ctx context.Context, goal string) error {
-	return nil
-}
-
-func (r *recordingPipelineRunner) SetForceClass(string)     {}
-func (r *recordingPipelineRunner) AnswerGate(answer string) { r.answer = answer }
 
 func TestChangedRefreshesTheViewportForANewSubagent(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
@@ -9539,7 +9494,9 @@ func TestGateOpensPanelNotATranscriptMessage(t *testing.T) {
 		TaskN: 2, TaskTitle: "Wire the resolver", Question: "Which timeout applies?",
 	})
 
-	m2, _ := m.handleAgentFinished(agentFinishedMsg{err: pipeline.ErrHumanGateRequired})
+	m2, _ := m.handleAgentFinished(agentFinishedMsg{err: &acpwire.Error{
+		Code: acpwire.CodeHumanGateRequired, Message: "pipeline: human gate required",
+	}})
 
 	if !m2.dock.IsOpen() {
 		t.Fatal("a gate must open the dock panel")
@@ -9555,24 +9512,27 @@ func TestGateOpensPanelNotATranscriptMessage(t *testing.T) {
 }
 
 func TestAnswerMsgResumesTheRun(t *testing.T) {
-	m := newTestModelInRepo(t)
-	runner := &recordingPipelineRunner{}
-	m.pipelineRunner = runner
-	m.state.SetSDDProgress(session.SDDProgress{PlanPath: "/plans/p.md"})
-	m.state.SetSDDGate(session.SDDGate{TaskN: 1, Question: "q"})
-	m.dock.Open(gatepanel.New(m.sess.Status().SDDGate))
+	m, run, rec := pausedGateModel(t, session.SDDGate{TaskN: 1, Question: "q"})
 
 	m2, cmd := m.Update(gatepanel.AnswerMsg{Text: "use 30s"})
 	mm := m2.(Model)
 
-	if runner.answer != "use 30s" {
-		t.Errorf("runner got answer %q, want %q", runner.answer, "use 30s")
-	}
 	if mm.dock.IsOpen() {
 		t.Error("answering must close the gate panel")
 	}
 	if cmd == nil {
-		t.Error("answering must resume the run")
+		t.Fatal("answering must resume the run")
+	}
+	mm = drainCmds(mm, cmd)
+
+	if len(rec.answers) != 1 || rec.answers[0] != "use 30s" {
+		t.Errorf("session answers = %v, want [\"use 30s\"]", rec.answers)
+	}
+	run.mu.Lock()
+	answers := append([]string(nil), run.answers...)
+	run.mu.Unlock()
+	if len(answers) != 1 || answers[0] != "use 30s" {
+		t.Errorf("plan run answers = %v, want [\"use 30s\"]", answers)
 	}
 	var sawEcho bool
 	for _, msg := range mm.state.Messages() {
@@ -9610,14 +9570,10 @@ func TestGatePagingThroughModel(t *testing.T) {
 		}
 	}
 
-	openGate := func(t *testing.T) Model {
+	openGate := func(t *testing.T) (Model, *fakePlanRun) {
 		t.Helper()
-		m := newTestModelInRepo(t)
-		m.pipelineRunner = &recordingPipelineRunner{}
-		m.state.SetSDDProgress(session.SDDProgress{PlanPath: "/plans/p.md"})
-		m.state.SetSDDGate(gateFixture())
-		m.dock.Open(gatepanel.New(m.sess.Status().SDDGate))
-		return m
+		m, run, _ := pausedGateModel(t, gateFixture())
+		return m, run
 	}
 
 	press := func(t *testing.T, m Model, code rune) Model {
@@ -9628,7 +9584,7 @@ func TestGatePagingThroughModel(t *testing.T) {
 
 	for _, size := range []struct{ w, h int }{{80, 24}, {120, 40}} {
 		t.Run(fmt.Sprintf("%dx%d", size.w, size.h), func(t *testing.T) {
-			m := openGate(t)
+			m, run := openGate(t)
 			m.resize(size.w, size.h)
 
 			for _, r := range answer {
@@ -9680,12 +9636,14 @@ func TestGatePagingThroughModel(t *testing.T) {
 			if _, ok := msg.(gatepanel.AnswerMsg); !ok {
 				t.Fatalf("enter after paging produced %T, want gatepanel.AnswerMsg", msg)
 			}
-			mm, _ = m.Update(msg)
+			mm, cmd = m.Update(msg)
 			m = asModel(t, mm)
-			runner, ok := m.pipelineRunner.(*recordingPipelineRunner)
-			if !ok || runner.answer != answer {
-				t.Fatalf("the gate handler received %q, want %q",
-					runnerAnswer(m.pipelineRunner), answer)
+			m = drainCmds(m, cmd)
+			run.mu.Lock()
+			answers := append([]string(nil), run.answers...)
+			run.mu.Unlock()
+			if len(answers) != 1 || answers[0] != answer {
+				t.Fatalf("the gate handler received %v, want %q", answers, answer)
 			}
 			if m.dock.IsOpen() {
 				t.Error("answering must close the gate panel")
@@ -9704,7 +9662,7 @@ func TestGatePagingThroughModel(t *testing.T) {
 
 	// Escape still stops the run, including after the body has been paged.
 	t.Run("escape stops the run", func(t *testing.T) {
-		m := openGate(t)
+		m, _ := openGate(t)
 		m.resize(80, 24)
 		m = press(t, m, tea.KeyPgDown)
 
@@ -9726,15 +9684,6 @@ func TestGatePagingThroughModel(t *testing.T) {
 			t.Error("stopping must clear the gate")
 		}
 	})
-}
-
-// runnerAnswer reports the answer a recording runner received, for failure
-// messages that must not panic on a nil runner.
-func runnerAnswer(r any) string {
-	if rr, ok := r.(*recordingPipelineRunner); ok && rr != nil {
-		return rr.answer
-	}
-	return "<no recording runner>"
 }
 
 func TestStopMsgEndsTheRun(t *testing.T) {
@@ -9790,33 +9739,18 @@ func TestRunCommandWithNoRunSaysSo(t *testing.T) {
 	}
 }
 
-// newSDDPreflightModel builds a model with a real ControllerAdapter over a
-// plan file so openRunPreflight can run the shared inspection.
-func newSDDPreflightModel(t *testing.T, planBody string) (Model, string) {
-	t.Helper()
-	m := newTestModelInRepo(t)
-	path := filepath.Join(m.state.WorkingDir, ".marshal", "plans", "p.md")
-	writeRawTestPlan(t, m.state.WorkingDir, "p.md", planBody)
-	c, err := pipeline.NewController(pipeline.ControllerOpts{
-		PlanPath: path,
-		RepoRoot: m.state.WorkingDir,
-		Git:      worktree.NewFakeGitOps(),
-		Strategy: pipeline.StrategyAuto,
-	})
-	if err != nil {
-		t.Fatalf("NewController: %v", err)
-	}
-	adapter := pipeline.NewControllerAdapter(c, m.state)
-	m.pipelineRunner = adapter
-	return m, path
-}
-
 func TestSDDPreflightSelectsAdaptiveForExecutablePlan(t *testing.T) {
-	m, path := newSDDPreflightModel(t, "# Plan\n\n## Task 1: Add file\n\n"+
-		"```marshal.file path=\"created.txt\"\nhello\n```\n")
-	m.openRunPreflight("sdd", m.pipelineRunner, path)
+	m := newTestModelInRepo(t)
+	m.openRunPreflight("sdd", "/plans/p.md", &acpwire.PlanPreflight{
+		Inspection: acpwire.PlanInspection{
+			Strategy:  acpwire.StrategyAdaptive,
+			HasBlocks: true,
+			DetOps:    1,
+			Tasks:     []acpwire.PlanTask{{TaskN: 1, Title: "Add file", DetOps: 1, EstCalls: 1}},
+		},
+	})
 	panel := m.dock.Panel().(*castlist.Panel)
-	if panel.SelectedStrategy() != "adaptive" {
+	if panel.SelectedStrategy() != acpwire.StrategyAdaptive {
 		t.Fatalf("selected strategy = %q, want adaptive", panel.SelectedStrategy())
 	}
 	got := stripANSI(panel.View(100, 30))
@@ -9826,10 +9760,12 @@ func TestSDDPreflightSelectsAdaptiveForExecutablePlan(t *testing.T) {
 }
 
 func TestSDDPreflightSelectsAgentForProseOnlyPlan(t *testing.T) {
-	m, path := newSDDPreflightModel(t, "# Plan\n\n## Task 1: Explain\n\nProse only.\n")
-	m.openRunPreflight("sdd", m.pipelineRunner, path)
+	m := newTestModelInRepo(t)
+	m.openRunPreflight("sdd", "/plans/p.md", &acpwire.PlanPreflight{
+		Inspection: acpwire.PlanInspection{Strategy: acpwire.StrategyAgent},
+	})
 	panel := m.dock.Panel().(*castlist.Panel)
-	if panel.SelectedStrategy() != "agent" {
+	if panel.SelectedStrategy() != acpwire.StrategyAgent {
 		t.Fatalf("selected strategy = %q, want agent", panel.SelectedStrategy())
 	}
 	got := stripANSI(panel.View(100, 30))
@@ -9839,25 +9775,33 @@ func TestSDDPreflightSelectsAgentForProseOnlyPlan(t *testing.T) {
 }
 
 func TestSDDPreflightBlocksStrictForMixedPlan(t *testing.T) {
-	m, path := newSDDPreflightModel(t, "# Plan\n\n## Task 1: Resolve\n\n"+
-		"```marshal.agent\nscope = [\"internal/app\"]\nreason = \"needs design judgment\"\n```\n")
-	m.openRunPreflight("sdd", m.pipelineRunner, path)
+	m := newTestModelInRepo(t)
+	m.openRunPreflight("sdd", "/plans/p.md", &acpwire.PlanPreflight{
+		Inspection: acpwire.PlanInspection{
+			Strategy:      acpwire.StrategyStrict,
+			HasBlocks:     true,
+			StrictBlocked: true,
+		},
+	})
 	panel := m.dock.Panel().(*castlist.Panel)
-	// Strict must be disabled for a plan with fallback work.
-	panel.SetStrategy("strict")
-	if cmd := panel.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd != nil {
-		t.Fatal("strict must be blocked for a mixed/fallback plan")
+	if panel.SelectedStrategy() != acpwire.StrategyStrict {
+		t.Fatalf("selected strategy = %q, want strict", panel.SelectedStrategy())
+	}
+	got := stripANSI(panel.View(100, 30))
+	if !strings.Contains(got, "fallback or unresolved work remains") {
+		t.Errorf("strict must be blocked for a mixed/fallback plan:\n%s", got)
 	}
 }
 
 func TestSDDPreflightExplicitStrategyOverridesAdaptive(t *testing.T) {
-	m, path := newSDDPreflightModel(t, "# Plan\n\n## Task 1: Add file\n\n"+
-		"```marshal.file path=\"created.txt\"\nhello\n```\n")
-	adapter := m.pipelineRunner.(*pipeline.ControllerAdapter)
-	adapter.Controller().Strategy = pipeline.StrategyAgent
-	m.openRunPreflight("sdd", m.pipelineRunner, path)
+	m := newTestModelInRepo(t)
+	// The session reports the explicit strategy as the effective one, so an
+	// explicit agent choice stays selected even though the plan has blocks.
+	m.openRunPreflight("sdd", "/plans/p.md", &acpwire.PlanPreflight{
+		Inspection: acpwire.PlanInspection{Strategy: acpwire.StrategyAgent, HasBlocks: true},
+	})
 	panel := m.dock.Panel().(*castlist.Panel)
-	if panel.SelectedStrategy() != "agent" {
+	if panel.SelectedStrategy() != acpwire.StrategyAgent {
 		t.Fatalf("explicit --strategy agent must override the adaptive default, got %q", panel.SelectedStrategy())
 	}
 }
@@ -9916,106 +9860,55 @@ func TestSDDNewFromLastPlanToPreflight(t *testing.T) {
 	}
 }
 
-// TestSDDControllerRebuiltWithOverrides verifies that when the user confirms
-// a /sdd run with per-run model overrides, the pipelineFactory is called
-// again with the overrides (not nil) so the controller's resolver sees them.
-// The original controller was built with nil overrides at dispatch time.
-func TestSDDControllerRebuiltWithOverrides(t *testing.T) {
+// TestSDDStartCarriesTheOverrides verifies that confirming a /sdd run with
+// per-run model overrides hands them to the session on the run's parameters,
+// converted to the wire's role-name keys.
+func TestSDDStartCarriesTheOverrides(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
-
-	var factoryCalls []struct {
-		planPath  string
-		overrides map[routing.AgentRole]string
-	}
-	var mu sync.Mutex
-
+	run := &fakePlanRun{}
+	var got []acpwire.SDDParams
 	cmdReg := commands.New()
 	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
 		t.Fatal(err)
 	}
-	model := testModel(state,
-		WithCommandRegistry(cmdReg),
-		WithPipelineFactory(context.Background(), func(planPath string, overrides map[routing.AgentRole]string) AgentRunner {
-			mu.Lock()
-			defer mu.Unlock()
-			factoryCalls = append(factoryCalls, struct {
-				planPath  string
-				overrides map[routing.AgentRole]string
-			}{planPath, overrides})
-			return &fakeSDDRunner{}
+	model := testModelWith(inproc.Deps{
+		State:  state,
+		Runner: runnerOf(&testAgentRunner{}),
+		PlanPreflight: preflightOf(acpwire.PlanPreflight{
+			Inspection: acpwire.PlanInspection{Strategy: acpwire.StrategyAgent},
 		}),
-	)
+		NewPlanRun: planRunOf(run, &got),
+	}, WithCommandRegistry(cmdReg))
 	model.resize(100, 40)
 
-	// /sdd opens the preflight panel (first factory call with nil overrides).
+	// /sdd opens the preflight panel.
 	updated, _ := model.dispatchCommand("/sdd /repo/docs/plans/feature-plan.md")
 	m := asModel(t, updated)
 	if m.pendingRun == nil {
 		t.Fatal("expected pendingRun to be set")
 	}
 
-	// Confirm with overrides — the factory should be called again with the
-	// real overrides, not nil.
+	// Confirm with a strategy and per-run overrides.
 	overrides := map[routing.AgentRole]string{
 		routing.RoleSDDImplementer: "kimi/k3",
 	}
-	updated, cmd := m.Update(castlist.StartMsg{Overrides: overrides})
+	updated, cmd := m.Update(castlist.StartMsg{Strategy: "adaptive", Overrides: overrides})
 	m = asModel(t, updated)
 	if cmd == nil {
 		t.Fatal("StartMsg should return a non-nil cmd")
 	}
+	m = drainCmds(m, cmd)
 
-	mu.Lock()
-	defer mu.Unlock()
-	if len(factoryCalls) != 2 {
-		t.Fatalf("expected 2 factory calls (nil + overrides), got %d", len(factoryCalls))
+	if len(got) != 1 {
+		t.Fatalf("plan run params = %+v, want one", got)
 	}
-	if factoryCalls[0].overrides != nil {
-		t.Fatalf("first call should have nil overrides, got %v", factoryCalls[0].overrides)
+	if got[0].Strategy != "adaptive" {
+		t.Fatalf("plan run strategy = %q, want adaptive", got[0].Strategy)
 	}
-	if factoryCalls[1].overrides == nil {
-		t.Fatal("second call should have non-nil overrides")
-	}
-	if factoryCalls[1].overrides[routing.RoleSDDImplementer] != "kimi/k3" {
-		t.Fatalf("second call overrides = %v, want kimi/k3 for implementer", factoryCalls[1].overrides)
+	if got[0].Overrides["sdd_implementer"] != "kimi/k3" {
+		t.Fatalf("plan run overrides = %v, want sdd_implementer=kimi/k3", got[0].Overrides)
 	}
 }
-
-// TestRunAgentCmdPanicRecovery verifies that a panic in runner.Run is caught
-// and surfaced as an error (not a crash), so handleAgentFinished can still
-// restore the shared runner's original factory.
-func TestRunAgentCmdPanicRecovery(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
-	if err := state.BeginWork(); err != nil {
-		t.Fatal(err)
-	}
-
-	panicRunner := &panicRunner{}
-	state.SetActivity(session.Activity{Kind: session.ActivityThinking})
-	cmd := runAgentCmd(context.Background(), state, panicRunner, "test")
-	msg := cmd()
-	finished, ok := msg.(agentFinishedMsg)
-	if !ok {
-		t.Fatalf("expected agentFinishedMsg, got %T", msg)
-	}
-	if finished.err == nil {
-		t.Fatal("expected error from panic recovery, got nil")
-	}
-	if !strings.Contains(finished.err.Error(), "panic") {
-		t.Fatalf("error should mention panic, got: %v", finished.err)
-	}
-	if got := state.Activity().Kind; got != session.ActivityIdle {
-		t.Fatalf("activity = %q, want idle once the turn command returns", got)
-	}
-}
-
-type panicRunner struct{}
-
-func (p *panicRunner) Run(ctx context.Context, goal string) error {
-	panic("boom")
-}
-func (p *panicRunner) SetForceClass(string) {}
-func (p *panicRunner) AnswerGate(string)    {}
 
 // The transcript is vertical-only: horizontal wheel pans (trackpad
 // sideways gestures, diagonal scrolls) must not shift the view.
@@ -10805,7 +10698,9 @@ func TestWarningSurvivesLateApprovalEvents(t *testing.T) {
 
 	// A gate event arrives while the warning is up.
 	m.state.SetSDDGate(session.SDDGate{TaskN: 1, Question: "Ship it?"})
-	updated, _ := m.Update(agentFinishedMsg{err: pipeline.ErrHumanGateRequired})
+	updated, _ := m.Update(agentFinishedMsg{err: &acpwire.Error{
+		Code: acpwire.CodeHumanGateRequired, Message: "pipeline: human gate required",
+	}})
 	m = asModel(t, updated)
 
 	if got, ok := m.dock.Panel().(*activeworkpanel.Panel); !ok || got != warning {

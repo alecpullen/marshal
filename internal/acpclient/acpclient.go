@@ -314,4 +314,46 @@ type Session interface {
 	//
 	// ACP: session/verify_proposal (new in P3).
 	VerifyProposal(ctx context.Context) (acpwire.VerifyCommands, error)
+
+	// StartSwarm runs a swarm over params.Goal, with params' role overrides
+	// for this run only, and returns when it ends. It starts, refuses and stops
+	// as Prompt does; a stopped run returns no error.
+	//
+	// ACP: session/swarm_start (exists).
+	StartSwarm(ctx context.Context, params acpwire.SwarmParams) error
+
+	// PlanPreflight inspects the plan a run would execute and resolves the
+	// verify gate it would use, without running or writing anything.
+	//
+	// ACP: session/sdd_preflight (new in P3).
+	PlanPreflight(ctx context.Context, params acpwire.PlanPreflightParams) (acpwire.PlanPreflight, error)
+
+	// StartSDD runs the plan at params.PlanPath with params' strategy, role
+	// overrides and verify commands, and returns when it ends. It starts,
+	// refuses and stops as Prompt does; a stopped run returns no error. A run
+	// its human gate pauses returns CodeHumanGateRequired: the question is in
+	// Status, and AnswerSDDGate resumes the run.
+	//
+	// ACP: session/sdd_start (exists).
+	StartSDD(ctx context.Context, params acpwire.SDDParams) error
+
+	// AnswerSDDGate records answer as the user's message and resumes the plan
+	// run paused at its human gate, and returns when that run ends again, as
+	// StartSDD does.
+	//
+	// ACP: session/sdd_answer (exists).
+	AnswerSDDGate(ctx context.Context, answer string) error
+
+	// StopSDD abandons the plan run paused at its human gate: the question
+	// clears and the run can no longer be answered.
+	//
+	// ACP: session/sdd_stop (new in P3).
+	StopSDD(ctx context.Context) error
+
+	// AuthorPlan runs the plan author over params and returns the candidate it
+	// wrote, for review. It starts, refuses and stops as Prompt does; a stopped
+	// run returns StopReasonCancelled and no error.
+	//
+	// ACP: session/sdd_author (new in P3).
+	AuthorPlan(ctx context.Context, params acpwire.AuthorPlanParams) (acpwire.AuthoredPlan, error)
 }

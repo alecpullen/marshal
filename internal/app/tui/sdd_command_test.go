@@ -3,7 +3,7 @@ package tui
 import (
 	"testing"
 
-	"marshal/internal/pipeline"
+	"marshal/internal/acpwire"
 )
 
 func TestParseSDDArgsAcceptsSeparateStrategyValue(t *testing.T) {
@@ -11,7 +11,7 @@ func TestParseSDDArgsAcceptsSeparateStrategyValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseSDDArgs: %v", err)
 	}
-	if got.Strategy != pipeline.StrategyAdaptive || got.PlanPath != "plan.md" {
+	if got.Strategy != acpwire.StrategyAdaptive || got.PlanPath != "plan.md" {
 		t.Fatalf("parsed = %+v", got)
 	}
 	if !got.ExplicitStrategy {
@@ -31,7 +31,7 @@ func TestParseSDDArgsEqualsStrategy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseSDDArgs: %v", err)
 	}
-	if got.Strategy != pipeline.StrategyStrict || !got.ExplicitStrategy {
+	if got.Strategy != acpwire.StrategyStrict || !got.ExplicitStrategy {
 		t.Fatalf("parsed = %+v", got)
 	}
 }

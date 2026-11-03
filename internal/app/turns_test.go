@@ -231,4 +231,18 @@ func TestBindTurnDepsServesTheRuntime(t *testing.T) {
 	if !sess.Status().AgentReady {
 		t.Fatal("AgentReady = false once the runtime has a runner; the bound deps must read it live")
 	}
+
+	// The pipeline calls are bound to this runtime too.
+	if d.Swarm == nil {
+		t.Error("bindTurnDeps left Swarm unset")
+	}
+	if d.NewPlanRun == nil {
+		t.Error("bindTurnDeps left NewPlanRun unset")
+	}
+	if d.PlanPreflight == nil {
+		t.Error("bindTurnDeps left PlanPreflight unset")
+	}
+	if d.AuthorPlan == nil {
+		t.Error("bindTurnDeps left AuthorPlan unset")
+	}
 }

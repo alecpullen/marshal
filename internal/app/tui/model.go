@@ -24,7 +24,6 @@ import (
 
 	"marshal/internal/acpclient"
 	"marshal/internal/acpwire"
-	"marshal/internal/agent/swarm"
 	"marshal/internal/app/clipboard"
 	"marshal/internal/app/config"
 	"marshal/internal/app/presetsetup"
@@ -62,7 +61,6 @@ import (
 	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
-	"marshal/internal/pipeline"
 	"marshal/internal/postmortem"
 	"marshal/internal/pubsub"
 	"marshal/internal/sddauthor"
@@ -74,51 +72,14 @@ import (
 	"marshal/internal/watch"
 )
 
-// AgentRunner is the one thing the TUI knows about the agent loop: how to
-// kick off a turn and get back a terminal error (or nil). It is satisfied
-// structurally by *agent.Runner without this package importing
-// internal/agent — the TUI stays a rendering layer with no policy/prompt
-// logic, per AGENTS.md's design constraints.
-type AgentRunner interface {
-	Run(ctx context.Context, goal string) error
-	SetForceClass(class string)
-	// AnswerGate delivers the human's typed answer to a pipeline
-	// subagent's question. Only the pipeline runner (ControllerAdapter)
-	// acts on it; the regular and swarm runners are no-ops.
-	AnswerGate(answer string)
-}
-
-// SwarmOverrideFactory builds a per-run swarm.RunnerFactory with the given
-// role→preset overrides applied. It is provided by app.go (which has
-// access to the routedProviderResolver) and wired via
-// WithSwarmOverrideFactory. The TUI calls it when the castlist confirms
-// with overrides, and the result is installed on the shared orchestrator
-// via SetRunnerFactory. RestoreRunner undoes the wrap when the run ends.
-type SwarmOverrideFactory func(overrides map[routing.AgentRole]string) swarm.RunnerFactory
-
-// RoleOverrideRunner is an optional interface for runners that accept
-// per-run role→preset overrides from the castlist. The overrides apply to
-// a copy of the routing config for this run only and are never persisted.
-// RestoreRunner undoes the override after the run ends (success, failure,
-// or cancel) so a leaked override does not silently apply to every later
-// run in the session.
-type RoleOverrideRunner interface {
-	SetRunnerFactory(factory swarm.RunnerFactory)
-	RestoreRunner()
-}
-
 // SessionSwapResult carries the rebuilt runtime pieces for a /new or /clear
 // swap so the TUI can re-point every model field that depends on the current
 // session.
 type SessionSwapResult struct {
 	State *session.State
 	// Session is the client session over State (P2).
-	Session              acpclient.Session
-	SwarmRunner          AgentRunner
-	PipelineFactory      func(planPath string, overrides map[routing.AgentRole]string) AgentRunner
-	SwarmOverrideFactory SwarmOverrideFactory
-	PlanAuthorFactory    PlanAuthorFactory
-	ToolRegistry         *registry.Registry
+	Session      acpclient.Session
+	ToolRegistry *registry.Registry
 }
 
 // SessionSwapper is the runtime-facing seam the TUI uses to request a new
@@ -324,17 +285,8 @@ type Model struct {
 	// or JSON arguments, or nil while no edit is open. It owns its own
 	// textarea, so editing a decision never shares text, cursor, placeholder
 	// or paste attachments with the chat composer underneath it.
-	approvalEdit    *approvalEdit
-	swarmRunner     AgentRunner
-	pipelineFactory func(planPath string, overrides map[routing.AgentRole]string) AgentRunner
-	// swarmOverrideFactory builds a per-run swarm.RunnerFactory with
-	// role→preset overrides applied. Nil when the runtime has no provider
-	// or when the swarm runner does not support overrides.
-	swarmOverrideFactory SwarmOverrideFactory
-	// planAuthorFactory builds a scoped SDD plan-authoring runner for one
-	// request. Nil when the runtime has no provider.
-	planAuthorFactory PlanAuthorFactory
-	ctx               context.Context
+	approvalEdit *approvalEdit
+	ctx          context.Context
 	// lspCtx is the context for background LSP reference lookups. It is
 	// derived from context.Background() rather than m.ctx because m.ctx is
 	// the program's cancellable turn context and can be nil or replaced on
@@ -389,11 +341,6 @@ type Model struct {
 	skillIndex    *skills.Index
 	cmdRegistry   *commands.Registry
 	agentCancel   context.CancelFunc
-	// endPendingStop clears THIS turn's stop registration (see cancelTurn and
-	// stopTurnWork). It is stored on the model so a turn that ends normally
-	// unregisters without ever requesting execution stop — the difference
-	// between finishing and being stopped. Nil when no turn registered one.
-	endPendingStop func()
 	// syncedAccessMode is the session mode the last reconciliation adopted.
 	// The sync is edge-triggered on it: a mode the model already reflects is
 	// not re-asserted over a value another path set, while a mode the session
@@ -744,16 +691,6 @@ type Model struct {
 	// StartMsg/CancelMsg handlers.
 	pendingRun *pendingAgentRun
 
-	// pipelineRunner is the active plan-execution runner, stored between the
-	// /sdd command dispatch and the preflight confirmation (or the human gate
-	// answer). Set by the sdd command handler; consumed by the Enter key handler.
-	pipelineRunner AgentRunner
-	// restoreRunner is the cleanup function for a per-run role override
-	// applied to a shared runner (swarm). It is called when the run ends
-	// (success, failure, or cancel) so a leaked override does not silently
-	// apply to every later run in the session. nil when no override is active.
-	restoreRunner func()
-
 	// configLayers is a pointer to the runtime's Layers snapshot, shared so
 	// the model can read provenance after each successful persist.
 	configLayers **config.Layers
@@ -763,23 +700,16 @@ type Model struct {
 	layerReloader func() (config.Layers, bool)
 }
 
-// pendingAgentRun captures the runner and goal for a run that is waiting
-// for the user to confirm via the cast list panel.
+// pendingAgentRun captures the run waiting for the user to confirm it in the
+// cast list.
 type pendingAgentRun struct {
-	runner AgentRunner
-	goal   string
-	// kind is "sdd" or "swarm", set by openRunPreflight so the StartMsg
-	// handler knows which override path to take.
+	goal string
+	// kind is "sdd" or "swarm", set by openRunPreflight.
 	kind string
 	// verifyBuild/verifyTest hold commands proposed by the offer-to-fill
-	// flow. When set, they are persisted to project config on confirm and
-	// used for this run.
+	// flow. When set, they are persisted on confirm and used for this run.
 	verifyBuild string
 	verifyTest  string
-	// modelOverrides is the castlist's per-run role→preset map. It is
-	// applied to a copy of the routing config for this run only and is
-	// never written to disk.
-	modelOverrides map[routing.AgentRole]string
 }
 
 type Option func(*Model)
@@ -937,49 +867,6 @@ func WithMemoryStore(database *db.DB, projectID int64) Option {
 	return func(m *Model) {
 		m.memoryDB = database
 		m.memoryProject = projectID
-	}
-}
-
-// WithSwarmRunner configures the TUI to route /swarm <goal> submissions
-// through runner (the swarm orchestrator). ctx is the cancellable program
-// context: Ctrl+C and /stop cancel an in-flight swarm run through the model's
-// own agentCancel, which a swarm run still owns.
-func WithSwarmRunner(ctx context.Context, runner AgentRunner) Option {
-	return func(m *Model) {
-		m.ctx = ctx
-		m.swarmRunner = runner
-	}
-}
-
-// WithPipelineFactory configures the TUI to build a plan-execution runner
-// on demand when /sdd <plan-file> is submitted. The factory is called per
-// run, not at startup.
-func WithPipelineFactory(ctx context.Context, factory func(planPath string, overrides map[routing.AgentRole]string) AgentRunner) Option {
-	return func(m *Model) {
-		m.ctx = ctx
-		m.pipelineFactory = factory
-	}
-}
-
-// WithSwarmOverrideFactory wires the function that builds a per-run
-// swarm.RunnerFactory with role→preset overrides applied. It is provided
-// by app.go (which has access to the routedProviderResolver) and called
-// when the castlist confirms with overrides.
-func WithSwarmOverrideFactory(factory SwarmOverrideFactory) Option {
-	return func(m *Model) { m.swarmOverrideFactory = factory }
-}
-
-// PlanAuthorFactory builds a scoped SDD plan-authoring runner for one
-// request. It is an alias for sddauthor.Factory so the TUI does not depend
-// on the authoring package's construction details.
-type PlanAuthorFactory = sddauthor.Factory
-
-// WithPlanAuthorFactory configures the TUI to build a scoped SDD
-// plan-authoring runner on demand when /sdd new is submitted.
-func WithPlanAuthorFactory(ctx context.Context, factory PlanAuthorFactory) Option {
-	return func(m *Model) {
-		m.ctx = ctx
-		m.planAuthorFactory = factory
 	}
 }
 
@@ -2465,19 +2352,19 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case gatepanel.AnswerMsg:
 		m.dock.CloseNow()
-		m.state.AddMessage(session.RoleUser, pm.Text, session.ContentTypePlain)
-		if m.pipelineRunner == nil {
-			m.refreshViewport()
-			return m, nil
-		}
-		m.pipelineRunner.AnswerGate(pm.Text)
-		goal := m.sess.Status().SDD.PlanPath
-		mm, sddCmd := m.startAgentRun(m.pipelineRunner, goal)
-		return mm, sddCmd
+		// The session records the answer as the user's message and resumes the
+		// run it paused; the TUI only starts that resumption on the run path
+		// (decision 5).
+		sess := m.sess
+		return m.startSessionRun("Cannot start work", func(ctx context.Context) error {
+			return sess.AnswerSDDGate(ctx, pm.Text)
+		})
 
 	case gatepanel.StopMsg:
 		m.dock.CloseNow()
-		m.state.ClearSDDGate()
+		if err := m.sess.StopSDD(m.ctx); err != nil {
+			m.state.Logger().Warn("plan run stop was not accepted", "error", err)
+		}
 		m.state.AddMessage(session.RoleSystem,
 			"Plan run stopped. "+sddResumeHint,
 			session.ContentTypePlain)
@@ -2506,51 +2393,35 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					session.ContentTypePlain)
 			}
 		}
-		// Pass the selected strategy to the runner and capture overrides.
-		var selectedStrategy string
-		if start, ok := msg.(castlist.StartMsg); ok {
-			selectedStrategy = start.Strategy
-			run.modelOverrides = start.Overrides
-		}
-		// Apply per-run role overrides to the runner.
-		//
-		// Swarm: the shared orchestrator's NewRunner is wrapped via
-		// SetRunnerFactory and restored when the run ends.
-		//
-		// SDD: the controller was built with nil overrides at dispatch
-		// time (before the user picked any). Rebuild it here with the
-		// real overrides so the per-run resolver sees them. The strategy
-		// selected in the preflight panel is carried across.
-		if run.kind == "sdd" && len(run.modelOverrides) > 0 && m.pipelineFactory != nil {
-			newRunner := m.pipelineFactory(run.goal, run.modelOverrides)
-			if newRunner != nil {
-				if na, ok := newRunner.(*pipeline.ControllerAdapter); ok {
-					na.Controller().Strategy = pipeline.Strategy(selectedStrategy)
-				}
-				run.runner = newRunner
-				m.pipelineRunner = newRunner
+		// Every run the TUI starts now takes the session's run path: the
+		// per-run role overrides, the strategy and the proposed verify
+		// commands travel as parameters and apply agent side (decision 2).
+		sess := m.sess
+		overrides := roleNames(pm.Overrides)
+		switch run.kind {
+		case "swarm":
+			params := acpwire.SwarmParams{Goal: run.goal, Overrides: overrides}
+			return m.startSessionRun("Cannot start work", func(ctx context.Context) error {
+				return sess.StartSwarm(ctx, params)
+			})
+		case "sdd":
+			params := acpwire.SDDParams{
+				PlanPath:  run.goal,
+				Strategy:  pm.Strategy,
+				Overrides: overrides,
 			}
-		} else if adapter, ok := run.runner.(*pipeline.ControllerAdapter); ok {
-			// No overrides: just apply the strategy to the existing controller.
-			adapter.Controller().Strategy = pipeline.Strategy(selectedStrategy)
+			if run.verifyBuild != "" || run.verifyTest != "" {
+				params.Verify = &acpwire.VerifyCommands{Build: run.verifyBuild, Test: run.verifyTest}
+			}
+			return m.startSessionRun("Cannot start work", func(ctx context.Context) error {
+				return sess.StartSDD(ctx, params)
+			})
 		}
-		if ror, ok := run.runner.(RoleOverrideRunner); ok && len(run.modelOverrides) > 0 && m.swarmOverrideFactory != nil {
-			factory := m.swarmOverrideFactory(run.modelOverrides)
-			ror.SetRunnerFactory(factory)
-			m.restoreRunner = ror.RestoreRunner
-		}
-		mm, runCmd := m.startAgentRun(run.runner, run.goal)
-		return mm, runCmd
+		m.refreshViewport()
+		return m, nil
 	case castlist.CancelMsg:
 		m.dock.CloseNow()
 		m.pendingRun = nil
-		// Cancelling preflight must not leave an override installed on
-		// the shared orchestrator — it would silently apply to every
-		// later run in the session.
-		if m.restoreRunner != nil {
-			m.restoreRunner()
-			m.restoreRunner = nil
-		}
 		m.refreshViewport()
 		return m, nil
 	case runAgentMsg:
@@ -4165,13 +4036,13 @@ func (m *Model) syncTranscriptWidth() {
 }
 
 // openRunPreflight opens the cast list panel for the given kind ("sdd" or
-// "swarm") and waits for the user to confirm before starting the run.
-func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
+// "swarm") and waits for the user to confirm before starting the run. pf is
+// the plan's preflight for "sdd", nil for "swarm".
+func (m *Model) openRunPreflight(kind, goal string, pf *acpwire.PlanPreflight) {
 	st := m.sess.Status()
 	router := routing.NewStaticRouter(m.state.Config.RoutingConfig())
 	roles := routing.SwarmCastRoles
 	title := "Start swarm run?"
-	var inspection *pipeline.Inspection
 	meta := []string{
 		"goal: " + strutil.Truncate(goal, 56, true),
 		fmt.Sprintf("fix rounds: %d · token budget: %d",
@@ -4197,11 +4068,6 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 			}
 		}
 		// Use the shared inspection for strategy selection and metadata.
-		if adapter, ok := runner.(*pipeline.ControllerAdapter); ok {
-			if insp, ierr := adapter.Controller().Inspect(); ierr == nil {
-				inspection = insp
-			}
-		}
 		worktree := "off"
 		if m.state.Config.SDD.AutoWorktree {
 			worktree = "on"
@@ -4212,16 +4078,15 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 			fmt.Sprintf("worktree: %s · fix rounds: %d · verify timeout: %dms",
 				worktree, m.state.Config.SDD.MaxFixRounds, m.state.Config.SDD.VerifyTimeoutMS),
 		}
-		if inspection != nil {
+		// The session's preflight already inspected the plan: render what it
+		// reports instead of re-inspecting here.
+		if pf != nil {
 			meta = append(meta, fmt.Sprintf("deterministic ops: %d · fallback ops: %d · est. model calls: %d",
-				inspection.Report.Total.DetOps, inspection.Report.Total.AgentOps, inspection.Report.Total.EstCalls))
-			for _, tr := range inspection.Report.Tasks {
+				pf.Inspection.DetOps, pf.Inspection.AgentOps, pf.Inspection.EstCalls))
+			for _, tr := range pf.Inspection.Tasks {
 				meta = append(meta, fmt.Sprintf("task %d: %s · %d det · %d agent · %d call(s)",
 					tr.TaskN, tr.Title, tr.DetOps, tr.AgentOps, tr.EstCalls))
 			}
-		}
-		if v := m.state.Config.SDD.Verify; v.Build != "" || v.Test != "" {
-			meta = append(meta, "verify: "+strutil.Truncate(strings.TrimSpace(v.Build+" · "+v.Test), 48, true))
 		}
 	}
 	rows := make([]castlist.Row, 0, len(roles))
@@ -4239,9 +4104,15 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 		rows = append(rows, row)
 	}
 	if kind == "sdd" {
-		rows = append(rows, verifyGateRow(m.state.Config, st.WorkingDir))
+		// A nil preflight leaves the gate unresolved: the row warns instead of
+		// claiming commands the run does not have.
+		gate := acpwire.VerifyGate{}
+		if pf != nil {
+			gate = pf.Verify
+		}
+		rows = append(rows, verifyGateRow(gate))
 	}
-	m.pendingRun = &pendingAgentRun{runner: runner, goal: goal, kind: kind}
+	m.pendingRun = &pendingAgentRun{goal: goal, kind: kind}
 	panel := castlist.New(title, rows, meta, "agent")
 	// Provide the config's model presets so the castlist's in-panel
 	// override picker can offer them.
@@ -4256,33 +4127,24 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 		pickerItems = append(pickerItems, picker.Item{Label: name, Detail: preset.Provider + "/" + preset.Model, Value: name})
 	}
 	panel.SetPickerItems(pickerItems)
-	if kind == "sdd" {
-		// Strategy-aware preflight: select adaptive by default when the plan
-		// has executable blocks, and disable adaptive/strict when there are
-		// none. Strict is disabled when the inspection is blocked.
-		initial := "agent"
-		var options []castlist.StrategyOption
-		if inspection != nil {
-			if inspection.HasMarshalBlocks {
-				initial = "adaptive"
-			}
-			options = []castlist.StrategyOption{
-				{Value: "agent"},
-				{Value: "adaptive"},
-				{Value: "strict"},
-			}
-			if !inspection.HasMarshalBlocks {
-				options[1].DisabledReason = "no executable blocks found"
-				options[2].DisabledReason = "no executable blocks found"
-			} else if inspection.StrictBlocked {
-				options[2].DisabledReason = "fallback or unresolved work remains"
-			}
-			// An explicit strategy override wins over the automatic default.
-			if adapter, ok := runner.(*pipeline.ControllerAdapter); ok {
-				if s := adapter.Controller().Strategy; s != pipeline.StrategyAuto && s != "" {
-					initial = string(s)
-				}
-			}
+	if kind == "sdd" && pf != nil {
+		// The session reports the effective strategy: the explicit one when
+		// /sdd named one, and otherwise adaptive or agent by blocks. It also
+		// owns the disabled reasons.
+		options := []castlist.StrategyOption{
+			{Value: acpwire.StrategyAgent},
+			{Value: acpwire.StrategyAdaptive},
+			{Value: acpwire.StrategyStrict},
+		}
+		if !pf.Inspection.HasBlocks {
+			options[1].DisabledReason = "no executable blocks found"
+			options[2].DisabledReason = "no executable blocks found"
+		} else if pf.Inspection.StrictBlocked {
+			options[2].DisabledReason = "fallback or unresolved work remains"
+		}
+		initial := pf.Inspection.Strategy
+		if initial == "" {
+			initial = acpwire.StrategyAgent
 		}
 		panel.SetStrategyOptions(options)
 		panel.SetStrategy(initial)
@@ -4290,56 +4152,33 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 	m.dock.Open(panel)
 }
 
-// verifyGateRow renders the verify-gate row for the /sdd preflight. It uses
-// the same resolver as the gate itself so the UI always shows what will run.
-func verifyGateRow(cfg config.Config, repoRoot string) castlist.Row {
+// verifyGateRow renders the verify-gate row for the /sdd preflight from the
+// gate the session resolved, so the UI always shows what will run.
+func verifyGateRow(v acpwire.VerifyGate) castlist.Row {
 	row := castlist.Row{Title: "verify gate"}
-	res := pipeline.ResolveVerifyCommands(repoRoot, cfg.SDD.Verify.Build, cfg.SDD.Verify.Test)
-	if !res.Known {
+	if !v.Known {
 		row.Warn = "no build or test command configured — press f to propose one"
 		return row
 	}
-	detail := strings.TrimSpace(res.Build + " · " + res.Test)
-	if res.Build != cfg.SDD.Verify.Build || res.Test != cfg.SDD.Verify.Test {
+	detail := strings.TrimSpace(v.Build + " · " + v.Test)
+	if v.Detected {
 		detail += " (detected)"
 	}
 	row.Detail = strutil.Truncate(detail, 44, true)
 	return row
 }
 
-// startAgentRun begins a turn on runner with goal, registering its work and
-// stop group and wiring cancellation and the busy/spinner commands. On
-// BeginWork failure it reports and stays idle. Only the swarm, SDD and
-// plan-authoring runs use it: a prompt, a review and a custom-agent run go
-// through the session (startSessionRun), which owns the run's admission,
-// stop group and idle reset, until plan 5d moves those runs onto the same
-// path.
-func (m *Model) startAgentRun(runner AgentRunner, goal string) (tea.Model, tea.Cmd) {
-	// An accepted ending owns the conversation: no ordinary turn may start
-	// into a frozen membership. A queued prompt, a watch auto-resume or a
-	// settings mutation that lands after acceptance is refused here rather
-	// than reopening work the runtime is stopping.
-	if m.endStage != endIdle {
-		m.state.AddMessage(session.RoleSystem,
-			"The conversation is ending; this request was not started.", session.ContentTypePlain)
-		m.busy = false
-		m.refreshViewport()
-		return *m, nil
+// roleNames converts the cast list's per-run overrides to the wire's
+// role-name keys; nil when empty.
+func roleNames(overrides map[routing.AgentRole]string) map[string]string {
+	if len(overrides) == 0 {
+		return nil
 	}
-	if err := m.state.BeginWork(); err != nil {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Cannot start work: %v", err), session.ContentTypePlain)
-		m.busy = false
-		m.refreshViewport()
-		return *m, nil
+	out := make(map[string]string, len(overrides))
+	for role, preset := range overrides {
+		out[string(role)] = preset
 	}
-	// Register the turn's stop group before the turn is dispatched. Everything
-	// from here can block (provider resolution, titling, the first model call),
-	// and a stop that lands during any of it must name this operation. The
-	// runner adopts this registration instead of allocating its own, so the
-	// stop the user's keystroke names is the turn actually running.
-	m.beginTurnStopRegistration()
-	agentCtx := m.beginTurn()
-	return *m, tea.Batch(runAgentCmd(agentCtx, m.state, runner, goal), tickCmd(), spinnerTickCmd())
+	return out
 }
 
 // beginTurn marks a run as started on the model and returns its context: the
@@ -4479,7 +4318,6 @@ func (m *Model) lastAssistantText() string {
 // async command. On success the completion handler opens the review panel;
 // it never starts an SDD run.
 func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
-	st := m.sess.Status()
 	if m.endStage != endIdle {
 		// An accepted ending owns the conversation. Plan authoring is an
 		// ordinary operation and registers its own work, so it must not start
@@ -4490,7 +4328,7 @@ func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, nil
 	}
-	if m.planAuthorFactory == nil {
+	if !m.sess.Status().AgentReady {
 		m.state.AddMessage(session.RoleSystem, "Plan authoring is not available (agent failed to initialise).", session.ContentTypePlain)
 		m.refreshViewport()
 		return m, nil
@@ -4515,45 +4353,17 @@ func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, nil
 	}
-	planPath, err := sddplans.DraftPath(st.WorkingDir, m.state.Config.SDD.PlansDir, goal, m.now())
-	if err != nil {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Cannot resolve plan path: %v", err), session.ContentTypePlain)
-		m.refreshViewport()
-		return m, nil
-	}
-	author, err := m.planAuthorFactory(sddauthor.Request{
-		Goal:     goal,
-		Design:   design,
-		RepoRoot: st.WorkingDir,
-		PlanPath: planPath,
-	})
-	if err != nil {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Cannot start plan authoring: %v", err), session.ContentTypePlain)
-		m.refreshViewport()
-		return m, nil
-	}
-	if err := m.state.BeginWork(); err != nil {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Cannot start work: %v", err), session.ContentTypePlain)
-		m.refreshViewport()
-		return m, nil
-	}
-	// Register the SDD authoring operation's stop group before dispatch: the
-	// authoring run can block in provider work, and a stop must be able to
-	// name it. The author inherits this group
-	// (NewSyntheticExecutionControl), so a command it launches is reachable
-	// from the same stop.
-	releaseStop := m.beginTurnStopRegistration()
-	m.busy = true
-	m.turnStartedAt = m.now()
-	m.startHeldWindow()
-	agentCtx, cancel := context.WithCancel(m.ctx)
-	m.agentCancel = cancel
-	return *m, tea.Batch(runPlanAuthorCmd(agentCtx, m.state, author, sddauthor.Request{
-		Goal:     goal,
-		Design:   design,
-		RepoRoot: st.WorkingDir,
-		PlanPath: planPath,
-	}, releaseStop), tickCmd(), spinnerTickCmd())
+	// The session resolves the draft path, builds the author and runs it, all
+	// agent side (decision 6). The TUI only chooses the design and starts the
+	// run on the run path, so authoring gets the same admission, stop group
+	// and idle reset as every other run (decision 12).
+	sess := m.sess
+	ctx := m.beginTurn()
+	return *m, tea.Batch(
+		planAuthorCmd(ctx, sess, acpwire.AuthorPlanParams{Goal: goal, Design: design}),
+		tickCmd(),
+		spinnerTickCmd(),
+	)
 }
 
 // agentFinishedMsg reports a run's end. refusal is the note a refused start
@@ -4610,32 +4420,6 @@ func (m *Model) startVerifyProposal() tea.Cmd {
 			return verifyProposeMsg{err: err}
 		}
 		return verifyProposeMsg{build: proposed.Build, test: proposed.Test}
-	}
-}
-
-// runAgentCmd wraps an agent turn into a Bubble Tea command that
-// registers session work via BeginWork on construction and releases it
-// via EndWork when the command executes. Callers must handle
-// ErrSessionQuiescing from BeginWork before creating the command.
-func runAgentCmd(ctx context.Context, state *session.State, runner AgentRunner, goal string) tea.Cmd {
-	return func() (msg tea.Msg) {
-		defer state.EndWork()
-		// The turn's end is the session going idle, whoever ran it. This reset
-		// runs after the panic recovery below and before EndWork releases the
-		// work item, so a reader never sees a finished turn whose activity
-		// still says it is thinking.
-		defer state.SetActivity(session.Activity{Kind: session.ActivityIdle})
-		// Recover from a panic in runner.Run so the goroutine does not
-		// crash the TUI before handleAgentFinished can restore the
-		// shared runner's original factory. The panic is surfaced as a
-		// turn error; the restore runs on the normal finish path.
-		defer func() {
-			if r := recover(); r != nil {
-				msg = agentFinishedMsg{err: fmt.Errorf("panic in agent run: %v", r)}
-			}
-		}()
-		err := runner.Run(ctx, goal)
-		return agentFinishedMsg{err: err}
 	}
 }
 
@@ -4707,68 +4491,20 @@ func (m Model) turnSpinnerFrame() string {
 // to this turn — and refuses the stopped turn any further admission — and only
 // then does the agent's own wait/provider context get cancelled. Cancelling
 // first would leave a foreground command running with no stop request against
-// it. A run the TUI registered itself (swarm, SDD, plan authoring, until plan
-// 5d) is stopped through the state instead.
+// it. Every run the TUI starts is the session's since plan 5d, so there is no
+// TUI-owned registration left to stop.
 func (m *Model) cancelTurn() bool {
 	if m.agentCancel == nil && !m.busy {
 		return false
 	}
 	m.cancelling = true
 	_ = m.sess.Stop(m.ctx, "turn stopped")
-	if m.endPendingStop != nil {
-		m.stopTurnWork("turn stopped")
-	}
 	if m.agentCancel != nil {
 		m.agentCancel()
 		m.agentCancel = nil
 	}
 	m.refreshViewport()
 	return true
-}
-
-// stopTurnWork asks the session's explicit-stop entry point to stop this turn's
-// attached commands before any agent cancellation. A session without a command
-// service (or with no registration) reports that nothing was stopped; the
-// caller still cancels its own context, so a turn with no commands behaves
-// exactly as before this feature.
-func (m *Model) stopTurnWork(cause string) {
-	if m.state == nil {
-		return
-	}
-	if _, err := m.state.RequestTurnStop(cause); err != nil && !errors.Is(err, session.ErrNoTurnStopService) {
-		m.state.Logger().Warn("turn stop was not accepted by the command service", "error", err)
-	}
-}
-
-// beginTurnStopRegistration registers the stop group for one TUI-owned turn
-// entry point — a swarm run, an SDD run, a plan-authoring run or a /pipeline
-// run — and remembers the teardown on the model. Prompt turns, /review and
-// custom-agent runs register agent side, in the session's run path, so they
-// never reach this. The actor is empty: a TUI turn is the orchestrator's own
-// work, and the session's turn identity supplies the rest.
-//
-// It returns the teardown so a caller that never proceeds past admission can
-// clear its own registration immediately rather than leaving a stale target.
-func (m *Model) beginTurnStopRegistration() func() {
-	if m.state == nil {
-		return func() {}
-	}
-	token, _ := m.state.BeginTurnStop("")
-	stop := func() { m.state.EndTurnStop(token) }
-	m.endPendingStop = stop
-	return stop
-}
-
-// releaseTurnStop clears this turn's registration without stopping anything.
-// Called when a turn ends — normally or after a cancel (the stop decision was
-// already taken by the service) — so the next operation starts from a clean
-// registration and a stale one cannot be stopped by a later keystroke.
-func (m *Model) releaseTurnStop() {
-	if m.endPendingStop == nil {
-		return
-	}
-	m.endPendingStop()
-	m.endPendingStop = nil
 }
 
 // beginEnd accepts one interactive end request. It is the single entry point
@@ -5460,14 +5196,10 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	// suggestionCmd is the Phase 2 LLM fallback returned by computeSuggestion
 	// on the success path; nil otherwise.
 	var suggestionCmd tea.Cmd
-	// A run the session refused never started: no work is registered, no stop
-	// group needs releasing and no turn ran. The note names what refused it,
-	// and the model goes idle exactly as a finished turn does.
+	// A run the session refused never started: no work is registered, no turn
+	// ran, and the model goes idle exactly as a finished turn does. The note
+	// names what refused it.
 	if msg.refusal != "" && refusedStart(msg.err) {
-		// Symmetry with the normal finish below: a start entry point that
-		// registered a stop group and was then refused must not leave its
-		// teardown on the model, or the next Ctrl+C stops a dead operation.
-		m.releaseTurnStop()
 		m.busy = false
 		m.turnStartedAt = time.Time{}
 		m.agentCancel = nil
@@ -5496,25 +5228,13 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	m.busy = false
 	m.turnStartedAt = time.Time{}
 	m.agentCancel = nil
-	// The turn is over, so its stop registration is done. Clearing it never
-	// requests execution stop: a turn that ended normally leaves its detached
-	// commands running, and a turn that was cancelled already had its stop
-	// decision taken by the command service.
-	m.releaseTurnStop()
-	// Restore the shared runner's original NewRunner so a per-run override
-	// does not leak into the next run. This runs on success, failure, and
-	// cancel — the defer-style guarantee the plan requires.
-	if m.restoreRunner != nil {
-		m.restoreRunner()
-		m.restoreRunner = nil
-	}
 	// The changed files are refreshed off-thread by the refresh returned
 	// below. An open sheet's turn and fleet values are refreshed with it,
 	// off the UI thread, so they land a moment after the turn ends.
 	sheetOpen := m.sheetOpen()
 	if msg.err != nil && !cancelled && !errors.Is(msg.err, context.Canceled) {
 		// SDD human gate: open the gate panel and wait for the user's answer.
-		if errors.Is(msg.err, pipeline.ErrHumanGateRequired) {
+		if acpclient.IsCode(msg.err, acpwire.CodeHumanGateRequired) {
 			gate := m.sess.Status().SDDGate
 			if gate.Question != "" {
 				// One surface: the panel carries the question, its context,
@@ -5574,8 +5294,8 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	// suppressed (dock open, gate off), the consumed intent is dropped
 	// by design: the report stays persisted, repeat watches retry on
 	// their next fire, and once-watches lose the wake (spec edge
-	// cases). startAgentRun clears the ghost suggestion and bumps the
-	// suggestion generation, so no computeSuggestion gating is needed.
+	// cases). The run path's beginTurn clears the ghost suggestion and bumps
+	// the suggestion generation, so no computeSuggestion gating is needed.
 	if name, repeat, ok := m.sess.TakeWatchResume(m.ctx); ok {
 		if cmd := m.startWatchResumeRun(name, repeat); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -5655,8 +5375,26 @@ func (m Model) handlePlanAuthorFinished(msg planAuthorFinishedMsg) (Model, tea.C
 	m.busy = false
 	m.turnStartedAt = time.Time{}
 	m.agentCancel = nil
-	m.releaseTurnStop()
-	m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
+	// A refused start never reached the session's run path: report it the way
+	// every other refusal is reported and stay idle.
+	if msg.refusal != "" && refusedStart(msg.err) {
+		m.cancelling = false
+		m.state.AddMessage(session.RoleSystem, msg.refusal+": "+msg.err.Error(), session.ContentTypePlain)
+		m.updateViewportHeight()
+		m.refreshViewport()
+		return m, nil
+	}
+	// A stopped authoring is not a failure. The stop already reported the
+	// cancel, and the run's context error is that stop; clearing cancelling
+	// here also re-arms Ctrl+C as a stop rather than a quit (decision 11).
+	if m.cancelling || msg.result.StopReason == acpwire.StopReasonCancelled {
+		m.cancelling = false
+		m.state.ClearNotice(session.NoticeProvider)
+		m.state.AddMessage(session.RoleSystem, "Agent turn cancelled.", session.ContentTypePlain)
+		m.updateViewportHeight()
+		m.refreshViewport()
+		return m, nil
+	}
 	if msg.err != nil {
 		m.state.SetNotice(noticeForError(msg.err, "plan-author"))
 		m.state.AddMessage(session.RoleSystem, "✘ Plan authoring failed: "+firstLine(msg.err.Error()), session.ContentTypePlain)
@@ -5666,7 +5404,7 @@ func (m Model) handlePlanAuthorFinished(msg planAuthorFinishedMsg) (Model, tea.C
 	}
 	m.state.ClearNotice(session.NoticeProvider)
 	if msg.result.AutoAccepted {
-		m.state.AddMessage(session.RoleSystem, "Plan accepted in Full Auto: "+msg.result.Request.PlanPath, session.ContentTypePlain)
+		m.state.AddMessage(session.RoleSystem, "Plan accepted in Full Auto: "+msg.result.PlanPath, session.ContentTypePlain)
 	} else {
 		m.dock.Open(sddreview.New(msg.result))
 	}

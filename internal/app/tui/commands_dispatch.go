@@ -17,7 +17,6 @@ import (
 	"marshal/internal/app/tui/skills"
 	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/interaction"
-	"marshal/internal/pipeline"
 	"marshal/internal/worktree"
 )
 
@@ -204,18 +203,6 @@ func startNewSession(m *Model, name string) tea.Cmd {
 		// model's mark restarts with it.
 		m.watchResumeSeq = 0
 	}
-	if snap.SwarmRunner != nil {
-		m.swarmRunner = snap.SwarmRunner
-	}
-	if snap.PipelineFactory != nil {
-		m.pipelineFactory = snap.PipelineFactory
-	}
-	if snap.SwarmOverrideFactory != nil {
-		m.swarmOverrideFactory = snap.SwarmOverrideFactory
-	}
-	if snap.PlanAuthorFactory != nil {
-		m.planAuthorFactory = snap.PlanAuthorFactory
-	}
 	if snap.ToolRegistry != nil {
 		m.toolRegistry = snap.ToolRegistry
 	}
@@ -393,7 +380,7 @@ func init() {
 				m.refreshViewport()
 				return m, nil
 			}
-			if m.swarmRunner == nil {
+			if !m.sess.Status().AgentReady {
 				m.state.AddMessage(session.RoleSystem, "Swarm is not available (agent failed to initialise).", session.ContentTypePlain)
 				m.refreshViewport()
 				return m, nil
@@ -401,7 +388,7 @@ func init() {
 			if m.busy {
 				return m, nil
 			}
-			m.openRunPreflight("swarm", m.swarmRunner, goal)
+			m.openRunPreflight("swarm", goal, nil)
 			m.refreshViewport()
 			return m, nil
 		},
@@ -416,7 +403,7 @@ func init() {
 			if parsed.New {
 				return m.startSDDAuthoring(parsed)
 			}
-			if m.pipelineFactory == nil {
+			if !m.sess.Status().AgentReady {
 				m.state.AddMessage(session.RoleSystem, "Plan execution is not available (agent failed to initialise).", session.ContentTypePlain)
 				m.refreshViewport()
 				return m, nil
@@ -430,17 +417,16 @@ func init() {
 			if m.busy {
 				return m, nil
 			}
-			runner := m.pipelineFactory(planPath, nil)
-			if runner == nil {
+			// The session inspects the plan and resolves the verify gate the
+			// run would use, without writing anything. A plan it rejects is
+			// reported here, before the preflight opens (decisions 3 and 9).
+			pf, err := m.sess.PlanPreflight(m.ctx, acpwire.PlanPreflightParams{PlanPath: planPath, Strategy: parsed.Strategy})
+			if err != nil {
+				m.state.AddMessage(session.RoleSystem, "Cannot start plan run: "+err.Error(), session.ContentTypePlain)
 				m.refreshViewport()
 				return m, nil
 			}
-			// Set the strategy on the controller.
-			if adapter, ok := runner.(*pipeline.ControllerAdapter); ok {
-				adapter.Controller().Strategy = parsed.Strategy
-			}
-			m.pipelineRunner = runner
-			m.openRunPreflight("sdd", runner, planPath)
+			m.openRunPreflight("sdd", planPath, &pf)
 			m.refreshViewport()
 			return m, nil
 		},

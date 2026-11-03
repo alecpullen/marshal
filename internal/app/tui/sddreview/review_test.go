@@ -10,10 +10,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/pipeline"
-	"marshal/internal/sddauthor"
 )
 
 var testTheme = theme.LoadFor(false, "xterm-256color")
@@ -22,46 +21,34 @@ func init() {
 	theme.Reload(testTheme)
 }
 
-func inspectionFixture() *pipeline.Inspection {
-	return &pipeline.Inspection{
-		Plan: &pipeline.Plan{Path: "/repo/.marshal/plans/feature.md", Slug: "feature"},
-		IR: &pipeline.PlanIR{
-			Tasks: []pipeline.TaskIR{
-				{TaskN: 1, Title: "Add file", Operations: []pipeline.Operation{&pipeline.FileOp{Path: "created.txt"}}},
-			},
-		},
-		Report: pipeline.CompileReport{
-			Tasks: []pipeline.TaskReport{{TaskN: 1, Title: "Add file", DetOps: 1, EstCalls: 0}},
-			Total: struct {
-				DetOps   int
-				AgentOps int
-				EstCalls int
-			}{DetOps: 1, AgentOps: 0, EstCalls: 0},
-		},
-		EffectiveStrategy: pipeline.StrategyAdaptive,
-		HasMarshalBlocks:  true,
+func inspectionFixture() *acpwire.PlanInspection {
+	return &acpwire.PlanInspection{
+		Strategy:  acpwire.StrategyAdaptive,
+		HasBlocks: true,
+		DetOps:    1,
+		Tasks:     []acpwire.PlanTask{{TaskN: 1, Title: "Add file", DetOps: 1}},
 	}
 }
 
-func cleanResult() sddauthor.Result {
-	return sddauthor.Result{
-		Request:    sddauthor.Request{PlanPath: "/repo/.marshal/plans/feature.md"},
+func cleanResult() acpwire.AuthoredPlan {
+	return acpwire.AuthoredPlan{
+		PlanPath:   "/repo/.marshal/plans/feature.md",
 		Inspection: inspectionFixture(),
 	}
 }
 
-func blockedResult() sddauthor.Result {
+func blockedResult() acpwire.AuthoredPlan {
 	insp := inspectionFixture()
-	insp.Diagnostics = []pipeline.Diagnostic{{TaskN: 0, Severity: pipeline.DiagError, Message: "blocked"}}
-	return sddauthor.Result{
-		Request:    sddauthor.Request{PlanPath: "/repo/.marshal/plans/feature.md"},
+	insp.Diagnostics = []acpwire.PlanDiagnostic{{TaskN: 0, Severity: acpwire.DiagnosticError, Message: "blocked"}}
+	return acpwire.AuthoredPlan{
+		PlanPath:   "/repo/.marshal/plans/feature.md",
 		Inspection: insp,
 	}
 }
 
 // rendered returns a panel that has been drawn once at a supported geometry,
 // which is what earns the right to act on the discard key.
-func rendered(t *testing.T, result sddauthor.Result) *Panel {
+func rendered(t *testing.T, result acpwire.AuthoredPlan) *Panel {
 	t.Helper()
 	p := New(result)
 	p.View(80, 20)
@@ -133,7 +120,7 @@ func TestEscKeepsBlockedCandidate(t *testing.T) {
 // TestEscKeepsNilInspectionCandidate covers a result with no inspection at all:
 // blocked for acceptance, still recoverable.
 func TestEscKeepsNilInspectionCandidate(t *testing.T) {
-	p := rendered(t, sddauthor.Result{Request: sddauthor.Request{PlanPath: "/repo/.marshal/plans/feature.md"}})
+	p := rendered(t, acpwire.AuthoredPlan{PlanPath: "/repo/.marshal/plans/feature.md"})
 	if cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd != nil {
 		t.Fatal("a nil inspection must not be acceptable")
 	}
@@ -371,7 +358,7 @@ func TestPanelNeverStartsRunner(t *testing.T) {
 // enough to wrap. Each diagnostic is marked at both ends so a row that is
 // truncated or dropped altogether is detectable, and the markers avoid
 // wrap breakpoints so only a real failure can hide one.
-func longBlockedResult(t *testing.T) (sddauthor.Result, string) {
+func longBlockedResult(t *testing.T) (acpwire.AuthoredPlan, string) {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -386,15 +373,14 @@ func longBlockedResult(t *testing.T) (sddauthor.Result, string) {
 
 	filler := strings.Repeat("explanatory words that run well past the panel width ", 2)
 	insp := inspectionFixture()
-	insp.Plan = &pipeline.Plan{Path: path, Slug: "feature"}
-	insp.Diagnostics = []pipeline.Diagnostic{
-		{TaskN: 0, Severity: pipeline.DiagError, Line: 12, Message: "planstartqz " + filler + "planendqz"},
-		{TaskN: 1, Severity: pipeline.DiagWarning, Message: "taskonestartqz " + filler + "taskoneendqz"},
-		{TaskN: 2, Severity: pipeline.DiagError, Line: 344, Message: "tasktwostartqz " + filler + "tasktwoendqz"},
-		{TaskN: 3, Severity: pipeline.DiagWarning, Line: 7, Message: "taskthreestartz " + filler + "taskthreeendqz"},
+	insp.Diagnostics = []acpwire.PlanDiagnostic{
+		{TaskN: 0, Severity: acpwire.DiagnosticError, Line: 12, Message: "planstartqz " + filler + "planendqz"},
+		{TaskN: 1, Severity: acpwire.DiagnosticWarning, Message: "taskonestartqz " + filler + "taskoneendqz"},
+		{TaskN: 2, Severity: acpwire.DiagnosticError, Line: 344, Message: "tasktwostartqz " + filler + "tasktwoendqz"},
+		{TaskN: 3, Severity: acpwire.DiagnosticWarning, Line: 7, Message: "taskthreestartz " + filler + "taskthreeendqz"},
 	}
-	return sddauthor.Result{
-		Request:    sddauthor.Request{PlanPath: path},
+	return acpwire.AuthoredPlan{
+		PlanPath:   path,
 		Inspection: insp,
 	}, path
 }
@@ -581,9 +567,9 @@ func TestReviewScrollResizeAndNoColor(t *testing.T) {
 	// Control characters in the diagnostics and the path are escaped, never
 	// executed: no untrusted sequence may reach the view as an escape.
 	hostile := blockedResult()
-	hostile.Request.PlanPath = "/repo/\x1b[2Kplans/feature.md"
-	hostile.Inspection.Diagnostics = []pipeline.Diagnostic{
-		{TaskN: 1, Severity: pipeline.DiagError, Line: 3, Message: "bad \x1b[2K erase\r and \x07 bell"},
+	hostile.PlanPath = "/repo/\x1b[2Kplans/feature.md"
+	hostile.Inspection.Diagnostics = []acpwire.PlanDiagnostic{
+		{TaskN: 1, Severity: acpwire.DiagnosticError, Line: 3, Message: "bad \x1b[2K erase\r and \x07 bell"},
 	}
 	hp := rendered(t, hostile)
 	out := hp.View(80, 20)

@@ -850,7 +850,7 @@ func (s *conversationCommandService) commitLaunchPolicy(policy native.LaunchPoli
 // An auth fixture passes its resolver as the trailing argument; every other
 // fixture omits it and therefore fails closed (see newRoutedProviderResolver)
 // instead of reaching the real OS keychain.
-func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], configReloader func(config.Config) error, homeDir string, auth ...provider.AuthResolver) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, error) {
+func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], configReloader func(config.Config) error, homeDir string, auth ...provider.AuthResolver) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string, overrides map[routing.AgentRole]string) PipelineRunner, sddauthor.Factory, SwarmOverrideFactory, error) {
 	// The watch manager is owned by the runtime (via buildAgentRunnerWithLock);
 	// this wrapper discards it so the ~25 test call sites that use
 	// buildAgentRunner directly do not need to change. The LSP handle is the
@@ -893,7 +893,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 // and the diagnostics checker are wired to. The build never creates or
 // starts a language server: the runtime points the handle at the project
 // host's pooled servers (Runtime.bindLSP). A nil handle wires no LSP.
-func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], watchBroker *pubsub.Broker[watch.Event], watchResumeCell *WatchResumeHook, configReloader func(config.Config) error, homeDir string, writeLock *swarm.WriteLock, service *conversationCommandService, lspHandle *lsp.Handle, auth ...provider.AuthResolver) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *conversationCommandService, *watch.Manager, func(), agent.SubagentRunnerFactory, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, error) {
+func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], watchBroker *pubsub.Broker[watch.Event], watchResumeCell *WatchResumeHook, configReloader func(config.Config) error, homeDir string, writeLock *swarm.WriteLock, service *conversationCommandService, lspHandle *lsp.Handle, auth ...provider.AuthResolver) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *conversationCommandService, *watch.Manager, func(), agent.SubagentRunnerFactory, func(planPath string, overrides map[routing.AgentRole]string) PipelineRunner, sddauthor.Factory, SwarmOverrideFactory, error) {
 	authResolver := effectiveAuthResolver(firstAuthResolver(auth))
 	resolver := newRoutedProviderResolver(cfg, dataDir, authResolver).withSessionID(state.SessionID())
 	modelProbe := modelProbeFunc(cfg, dataDir)
@@ -1485,8 +1485,15 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	}
 
 	subagentFactory, _ = buildSubagentFactoryWithLock(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, pricing.Lookup(route.Preset, state.Logger()), writeLock, nativeOpts, watchManager, commandService)
-	pipelineFactory := func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner {
-		return buildPipelineController(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, planPath, modelProbe, overrides, commandService)
+	pipelineFactory := func(planPath string, overrides map[routing.AgentRole]string) PipelineRunner {
+		controller := buildPipelineController(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, planPath, modelProbe, overrides, commandService)
+		// A plan the controller cannot build must come back as a true nil
+		// interface: callers branch on == nil to report "could not build a
+		// runner" instead of running a non-nil interface wrapping nil.
+		if controller == nil {
+			return nil
+		}
+		return controller
 	}
 	planAuthorFactory := buildPlanAuthorFactory(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, commandService)
 
@@ -2761,7 +2768,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		database := must[*db.DB](rt.DB)
 		projectID := rt.ProjectID
 		sessionID := rt.SessionID
-		swarmRunner := rt.SwarmRunner
 		toolReg := rt.ToolRegistry
 		jobBroker := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
 		watchBroker := must[*pubsub.Broker[watch.Event]](rt.WatchBroker)
@@ -2850,12 +2856,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		))
 		tuiOpts = append(tuiOpts, tui.WithContext(ctx))
 		if providerReady {
-			tuiOpts = append(tuiOpts, tui.WithSwarmRunner(ctx, swarmRunner))
-			tuiOpts = append(tuiOpts, tui.WithPipelineFactory(ctx, rt.PipelineFactory))
-			if rt.SwarmOverrideFactory != nil {
-				tuiOpts = append(tuiOpts, tui.WithSwarmOverrideFactory(rt.SwarmOverrideFactory))
-			}
-			tuiOpts = append(tuiOpts, tui.WithPlanAuthorFactory(ctx, rt.PlanAuthorFactory))
 			tuiOpts = append(tuiOpts, tui.WithToolRegistry(toolReg))
 		}
 		if rt.TrustPromptPending {
@@ -2869,20 +2869,18 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// is wired outside the ProviderError block so the commands stay
 		// available even when the initial provider build failed.
 		tuiOpts = append(tuiOpts, tui.WithSessionSwapper(tui.SessionSwapperFunc(func(name string) (tui.SessionSwapResult, error) {
-			// The runner the runtime rebuilds is reachable through the
-			// session's Deps, so the swap result does not carry it.
-			state, _, swarmRunner, pipelineFactory, planAuthorFactory, swarmOverrideFactory, toolReg, err := rt.NewSession(name)
+			// The runner, the pipeline factory, the override factory and the
+			// plan author factory the runtime rebuilds are reachable through
+			// the session's Deps, so the swap result does not carry them
+			// (plan 5d).
+			state, _, _, _, _, _, toolReg, err := rt.NewSession(name)
 			if err != nil {
 				return tui.SessionSwapResult{}, err
 			}
 			return tui.SessionSwapResult{
-				State:                state,
-				Session:              seamHost.Swap(state),
-				SwarmRunner:          swarmRunner,
-				PipelineFactory:      pipelineFactory,
-				SwarmOverrideFactory: swarmOverrideFactory,
-				PlanAuthorFactory:    planAuthorFactory,
-				ToolRegistry:         toolReg,
+				State:        state,
+				Session:      seamHost.Swap(state),
+				ToolRegistry: toolReg,
 			}, nil
 		})))
 

@@ -139,12 +139,16 @@ func verifyCommandsFrom(msgs []session.Message) (acpwire.VerifyCommands, error) 
 	return acpwire.VerifyCommands{}, errors.New("proposal task returned no parseable JSON")
 }
 
-// bindTurnDeps points d's runner and run calls at rt. Run uses it, and so do
-// the tests that build Deps the way Run does.
+// bindTurnDeps points d's runner, its run calls and its pipeline calls at rt.
+// Run uses it, and so do the tests that build Deps the way Run does.
 func bindTurnDeps(d *inproc.Deps, rt *Runtime) {
 	d.Runner = rt.TurnRunner
 	d.Review = rt.RunReview
 	d.RunAgent = rt.RunCustomAgent
 	d.Suggest = rt.SuggestNextReply
 	d.VerifyProposal = rt.ProposeVerifyCommands
+	d.Swarm = rt.RunSwarm
+	d.NewPlanRun = rt.NewPlanRun
+	d.PlanPreflight = rt.PlanPreflight
+	d.AuthorPlan = rt.AuthorPlan
 }

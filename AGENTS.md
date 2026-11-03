@@ -159,9 +159,8 @@ These are load-bearing; code comments and tests point back at them.
   agent side of ACP, or the data belongs in the JSON contract. Extend the
   contract; do not share a Go type.
 - **The TUI renders only.** No routing, policy, or prompt logic in
-  `internal/app/tui/`. It talks to the agent loop through the structural
-  `AgentRunner` interface so it never imports `internal/agent`. It reaches
-  the agent side through `internal/acpclient` (daemon P2, in progress).
+  `internal/app/tui/`. It reaches the agent side through `internal/acpclient`
+  (daemon P2, in progress).
   `TestTUIStaysOnTheClientSeam` (`internal/app/tui/boundary_test.go`) fails
   on any new direct use. As with `TestWebIsStdlibOnly`, the fix is to move
   the call behind the interface, never to add an allowlist entry.
@@ -203,7 +202,7 @@ project.
 - Most packages need cgo, so run the suite with a C toolchain available.
 - `app.Run()` takes functional options (`app.go`) so tests inject fakes
   instead of starting a real TUI — `WithConfigLoader`, `WithProgramRunner`,
-  `WithNow`, and nine others. `app_test.go` uses this pattern exclusively;
+  `WithNow`, and ten others. `app_test.go` uses this pattern exclusively;
   prefer it over driving a real program.
 - `internal/testenv.Run(m)` is the package entry point: it points `HOME`,
   `USERPROFILE`, the Marshal/XDG config and data dirs and the provider API-key

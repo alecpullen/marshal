@@ -9,9 +9,9 @@ import (
 	"marshal/internal/app/session"
 )
 
-// ControllerAdapter adapts *Controller to the TUI's AgentRunner interface
-// and mirrors controller events into session state for the panel. The
-// pipeline package does not import the TUI; the TUI reads session state.
+// ControllerAdapter adapts *Controller to the runtime's PipelineRunner
+// interface and mirrors controller events into session state for the panel.
+// The pipeline package does not import the TUI; the TUI reads session state.
 type ControllerAdapter struct {
 	c     *Controller
 	state *session.State
@@ -197,7 +197,7 @@ func (a *ControllerAdapter) recordRunEvents(ev Event) {
 }
 
 // AnswerGate hands the human's answer to the controller and clears the
-// gate. The TUI then calls Run again to resume.
+// gate. The runtime's plan run then calls Run again to resume.
 func (a *ControllerAdapter) AnswerGate(answer string) {
 	if a.c == nil {
 		return
@@ -206,8 +206,8 @@ func (a *ControllerAdapter) AnswerGate(answer string) {
 	a.state.ClearSDDGate()
 }
 
-// Controller exposes the underlying controller for the TUI's plan-path
-// lookup and for tests.
+// Controller exposes the underlying controller for the runtime's plan run
+// and for tests.
 func (a *ControllerAdapter) Controller() *Controller { return a.c }
 
 // The pipeline runs its own per-role runners; these knobs belong to the

@@ -53,7 +53,8 @@ func (s *Session) StartSwarm(ctx context.Context, params acpwire.SwarmParams) er
 }
 
 // PlanPreflight inspects the plan a run would execute and resolves its verify
-// gate. Like Suggest it takes no turn slot (decision 13).
+// gate. Like Suggest it takes no turn slot: it inspects the plan without
+// running it.
 func (s *Session) PlanPreflight(ctx context.Context, params acpwire.PlanPreflightParams) (acpwire.PlanPreflight, error) {
 	if s.closed.Load() {
 		return acpwire.PlanPreflight{}, errSessionClosed
@@ -91,6 +92,9 @@ func (s *Session) StartSDD(ctx context.Context, params acpwire.SDDParams) error 
 		if err != nil {
 			return err
 		}
+		if run == nil {
+			return errNoPlanRunner
+		}
 		// A new run replaces one paused at its gate: the older run can no
 		// longer be answered.
 		s.mu.Lock()
@@ -100,10 +104,23 @@ func (s *Session) StartSDD(ctx context.Context, params acpwire.SDDParams) error 
 		s.settlePlan(run, err)
 		return err
 	})
+	// A stopped run is not an error, with one exception: a run that reached
+	// its human gate is paused and awaiting an answer, which the stop did not
+	// cancel. The TUI only opens the gate panel on that code, so it has to
+	// arrive or the paused run waits for an answer nobody was asked for.
 	if stopped {
-		return nil
+		return stoppedErr(err)
 	}
 	return err
+}
+
+// stoppedErr is what a stopped run reports. A stop that lands on a run which
+// reached its human gate still reports the gate: the run is paused, not over.
+func stoppedErr(err error) error {
+	if acpclient.IsCode(err, acpwire.CodeHumanGateRequired) {
+		return err
+	}
+	return nil
 }
 
 // AnswerSDDGate records answer as the user's message and resumes the paused
@@ -139,7 +156,7 @@ func (s *Session) AnswerSDDGate(ctx context.Context, answer string) error {
 		return err
 	})
 	if stopped {
-		return nil
+		return stoppedErr(err)
 	}
 	return err
 }

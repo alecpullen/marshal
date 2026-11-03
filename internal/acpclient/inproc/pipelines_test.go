@@ -53,6 +53,25 @@ func gatedPlanRun(t *testing.T, name string, err error) {
 	}
 }
 
+// gateAfterStopRun is a plan run whose first Run waits for release before it
+// reports the human gate, so a test can land a stop while the gate is being
+// reached.
+type gateAfterStopRun struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (g *gateAfterStopRun) Run(context.Context) error {
+	g.once.Do(func() { close(g.started) })
+	if g.release != nil {
+		<-g.release
+	}
+	return &acpwire.Error{Code: acpwire.CodeHumanGateRequired, Message: "pipeline: human gate required"}
+}
+
+func (g *gateAfterStopRun) Answer(string) {}
+
 // TestStartSwarmRunsOnTheRunPath pins that a swarm runs on the shared run
 // path, gets its parameters unchanged, and that a goal-less run and a session
 // with no swarm runner are both refused before anything starts.
@@ -296,6 +315,52 @@ func TestStopSDDDropsThePausedRun(t *testing.T) {
 	}
 	if err := sess.AnswerSDDGate(ctx, "postgres"); !errors.Is(err, errNoPausedPlan) {
 		t.Errorf("an answer after StopSDD = %v, want errNoPausedPlan", err)
+	}
+}
+
+// TestStopSDDClearsAStaleQuestion pins the branch that keeps a gate question
+// from outliving its run: with nothing paused, StopSDD still clears it.
+func TestStopSDDClearsAStaleQuestion(t *testing.T) {
+	state := newState(t, "s1")
+	_, sess := New(Deps{State: state})
+
+	state.SetSDDGate(session.SDDGate{TaskN: 1, Question: "which database?"})
+	if err := sess.StopSDD(context.Background()); err != nil {
+		t.Fatalf("StopSDD with nothing paused: %v", err)
+	}
+	if q := state.SDDGate().Question; q != "" {
+		t.Errorf("the gate question = %q after StopSDD, want it cleared", q)
+	}
+}
+
+// TestAStopThatReachesAGatedRunStillReportsTheGate pins that a stop landing on
+// a run that reached its human gate does not swallow the gate code: the run is
+// paused and awaiting an answer the stop did not cancel, so the TUI has to
+// hear about it or the paused run waits for nothing.
+func TestAStopThatReachesAGatedRunStillReportsTheGate(t *testing.T) {
+	run := &gateAfterStopRun{started: make(chan struct{}), release: make(chan struct{})}
+	_, sess := New(Deps{
+		State:      newState(t, "s1"),
+		NewPlanRun: func(acpwire.SDDParams) (PlanRun, error) { return run, nil },
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- sess.StartSDD(context.Background(), acpwire.SDDParams{PlanPath: "docs/plans/p.md"})
+	}()
+	<-run.started
+	if err := sess.Stop(context.Background(), "stop the run"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	close(run.release)
+
+	gatedPlanRun(t, "a stopped StartSDD that reached its gate", <-done)
+
+	sess.mu.Lock()
+	paused := sess.paused
+	sess.mu.Unlock()
+	if paused != PlanRun(run) {
+		t.Errorf("the paused run = %v, want the run the gate left paused", paused)
 	}
 }
 

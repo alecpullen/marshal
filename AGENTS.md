@@ -202,7 +202,7 @@ project.
 - Most packages need cgo, so run the suite with a C toolchain available.
 - `app.Run()` takes functional options (`app.go`) so tests inject fakes
   instead of starting a real TUI — `WithConfigLoader`, `WithProgramRunner`,
-  `WithNow`, and nine others. `app_test.go` uses this pattern exclusively;
+  `WithNow`, and ten others. `app_test.go` uses this pattern exclusively;
   prefer it over driving a real program.
 - `internal/testenv.Run(m)` is the package entry point: it points `HOME`,
   `USERPROFILE`, the Marshal/XDG config and data dirs and the provider API-key

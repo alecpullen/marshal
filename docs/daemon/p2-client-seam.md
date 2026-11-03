@@ -2007,7 +2007,7 @@ factory, which is what the `Session` docs already promised.
 `PlanInspection` (the effective strategy, `HasBlocks`, `StrictBlocked`, the
 operation totals, each task's counts and the diagnostics), `PlanTask`,
 `PlanDiagnostic` with `DiagnosticError` and `DiagnosticWarning`, `AuthorPlanParams`
-(`Goal`, `Design`) and `AuthoredPlan` (`StopReason`, `Path`, `AutoAccepted`,
+(`Goal`, `Design`) and `AuthoredPlan` (`StopReason`, `PlanPath`, `AutoAccepted`,
 `Inspection`). The wire carries what the TUI renders and no more: no plan IR
 and no plan text, and role overrides keyed by the role's name.
 
@@ -2078,5 +2078,5 @@ T1b gains seven names: `ClearSDDGate`, and `BeginWork`, `EndWork`,
 `5d`. The allowlist loses `model.go`'s `marshal/internal/agent/swarm` and
 `marshal/internal/pipeline`, `commands_dispatch.go`'s and `sdd_command.go`'s
 `marshal/internal/pipeline`, and the `sdd_authoring.go` and
-`sddreview/review.go` entries; `model.go` keeps `sddplans`, `sddauthor` and
-`config.SaveVerifyCommands` for plans 6 to 8.
+`sddreview/review.go` entries; `model.go` keeps `sddplans` and `sddauthor` for
+plan 8 and `config.SaveVerifyCommands` for plan 7.

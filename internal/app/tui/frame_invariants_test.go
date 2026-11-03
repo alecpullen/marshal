@@ -197,7 +197,6 @@ func TestFrameInvariants(t *testing.T) {
 		{"ending+warning+replacement", func(t *testing.T, m *Model) {
 			ctrl := &endTestController{work: longWorkSnapshot(12)}
 			*m = withEndService(*m, ctrl)
-			m.sessionSwapper = &fakeSessionSwapper{}
 			if cmd := m.beginEnd(&endIntent{kind: EndIntentReplace}); cmd != nil {
 				t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
 			}

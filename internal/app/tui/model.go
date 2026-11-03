@@ -71,27 +71,6 @@ import (
 	"marshal/internal/watch"
 )
 
-// SessionSwapResult carries the rebuilt runtime pieces for a /new or /clear
-// swap so the TUI can re-point every model field that depends on the current
-// session.
-type SessionSwapResult struct {
-	State *session.State
-	// Session is the client session over State (P2).
-	Session      acpclient.Session
-	ToolRegistry *registry.Registry
-}
-
-// SessionSwapper is the runtime-facing seam the TUI uses to request a new
-// session without importing the app package (avoiding an import cycle).
-type SessionSwapper interface {
-	NewSession(name string) (SessionSwapResult, error)
-}
-
-// SessionSwapperFunc lets app.go pass a closure directly as a SessionSwapper.
-type SessionSwapperFunc func(name string) (SessionSwapResult, error)
-
-func (f SessionSwapperFunc) NewSession(name string) (SessionSwapResult, error) { return f(name) }
-
 // endIntent is one pending interactive end request: what the user asked for,
 // held until the runtime accepts the work membership it would stop.
 type endIntent struct {
@@ -221,7 +200,10 @@ type Model struct {
 	lspCancel      context.CancelFunc
 	busy           bool
 	configReloader ConfigReloader
-	sessionSwapper SessionSwapper
+	// legacySession re-reads the runtime's current state and tool registry
+	// after Host.NewSession, for the groups not yet behind the seam. Plan 9
+	// deletes it with WithLegacyState.
+	legacySession func() LegacySession
 	// end is the pending interactive end intent, non-nil from the moment the
 	// user asks to exit or replace the conversation until the warning is
 	// declined. It holds the target (a new-session name or a resume ID) so
@@ -651,11 +633,19 @@ func WithConfigReloader(fn ConfigReloader) Option {
 	}
 }
 
-// WithSessionSwapper wires the runtime-facing seam that /new and /clear use
-// to swap in a brand-new session. Nil (the default) makes those commands
-// report that a new session is unavailable.
-func WithSessionSwapper(swapper SessionSwapper) Option {
-	return func(m *Model) { m.sessionSwapper = swapper }
+// LegacySession is the runtime's current state and tool registry, which the
+// model re-reads after Host.NewSession for the groups not yet behind the seam.
+// Plan 9 deletes it with WithLegacyState.
+type LegacySession struct {
+	State        *session.State
+	ToolRegistry *registry.Registry
+}
+
+// WithLegacySession wires the read of the runtime's current state and tool
+// registry that follows Host.NewSession. Without it, a new session leaves the
+// model's legacy state as it was.
+func WithLegacySession(read func() LegacySession) Option {
+	return func(m *Model) { m.legacySession = read }
 }
 
 // WithOpenConnectOnStart opens the connect panel as the TUI starts. Used

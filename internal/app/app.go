@@ -2803,29 +2803,18 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		if rt.DataDir != "" {
 			tuiOpts = append(tuiOpts, tui.WithModelCache(rt.DataDir))
 		}
-		// /new and /clear swap in a brand-new session via the runtime. This
-		// is wired outside the ProviderError block so the commands stay
-		// available even when the initial provider build failed.
-		tuiOpts = append(tuiOpts, tui.WithSessionSwapper(tui.SessionSwapperFunc(func(name string) (tui.SessionSwapResult, error) {
-			// The host creates the session through Deps.NewSession, so the
-			// runner, the pipeline factory, the override factory and the plan
-			// author factory the runtime rebuilds are reachable through the
-			// session's Deps and the swap result does not carry them (plan 5d).
-			sess, err := seamHost.NewSession(ctx, name)
-			if err != nil {
-				return tui.SessionSwapResult{}, err
-			}
-			// The runtime installed the replacement before the host returned,
-			// so the state and the registry it carries are the new ones.
+		// /new and /clear create a brand-new session through the seam, and the
+		// model re-reads the runtime's current state and tool registry after
+		// the host returns, for the groups not yet behind it. This is wired
+		// outside the ProviderError block so the commands stay available even
+		// when the initial provider build failed.
+		tuiOpts = append(tuiOpts, tui.WithLegacySession(func() tui.LegacySession {
+			// The host installed the replacement before it returned, so the
+			// values read here are the new ones.
 			rt.mu.Lock()
-			state, toolReg := rt.State, rt.ToolRegistry
-			rt.mu.Unlock()
-			return tui.SessionSwapResult{
-				State:        state,
-				Session:      sess,
-				ToolRegistry: toolReg,
-			}, nil
-		})))
+			defer rt.mu.Unlock()
+			return tui.LegacySession{State: rt.State, ToolRegistry: rt.ToolRegistry}
+		}))
 
 		logger.Info("marshal started", "project", cfg.Project.Name, "working_dir", workingDir)
 

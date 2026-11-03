@@ -170,11 +170,6 @@ func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 	if m.busy {
 		return m, nil
 	}
-	if m.sessionSwapper == nil {
-		m.state.AddMessage(session.RoleSystem, "New session is not available in this build.", session.ContentTypePlain)
-		m.refreshViewport()
-		return m, nil
-	}
 	name := strings.TrimSpace(strings.Join(args, " "))
 	return m, m.beginEnd(&endIntent{kind: acpwire.EndIntentReplace, name: name})
 }
@@ -186,25 +181,30 @@ func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 // settled membership and no old work is transferred or reopened.
 func startNewSession(m *Model, name string) tea.Cmd {
 	oldCount := len(m.state.Messages())
-	snap, err := m.sessionSwapper.NewSession(name)
+	// Whatever the outcome, the end is over: the old conversation settled and a
+	// failed replacement starts nothing, so a retry begins from idle.
+	m.endStage = endIdle
+	sess, err := m.host.NewSession(m.ctx, name)
 	if err != nil {
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to start new session: %v", err), session.ContentTypePlain)
 		m.refreshViewport()
 		return nil
 	}
 
-	m.state = snap.State
-	// A swapper that omits Session leaves the seam session alone rather than
-	// nil-ing it out from under the next render.
-	replaced := snap.Session != nil
-	if replaced {
-		m.sess = snap.Session
-		// A replacement session restarts its watch-resume sequence, so the
-		// model's mark restarts with it.
-		m.watchResumeSeq = 0
-	}
-	if snap.ToolRegistry != nil {
-		m.toolRegistry = snap.ToolRegistry
+	m.sess = sess
+	// A replacement session restarts its watch-resume sequence, so the model's
+	// mark restarts with it.
+	m.watchResumeSeq = 0
+	// The groups not yet behind the seam re-read the runtime's current values:
+	// the host built the session over them before it returned.
+	if m.legacySession != nil {
+		legacy := m.legacySession()
+		if legacy.State != nil {
+			m.state = legacy.State
+		}
+		if legacy.ToolRegistry != nil {
+			m.toolRegistry = legacy.ToolRegistry
+		}
 	}
 
 	// Drop per-message UI state that belongs to the old session.
@@ -227,13 +227,11 @@ func startNewSession(m *Model, name string) tea.Cmd {
 	}
 	m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
 	m.refreshViewport()
-	cmds := []tea.Cmd{refreshSheetCmd(m.ctx, m.sess, acpwire.SheetRefresh{Rebase: true})}
-	// A replaced session needs its own change pump; the old one ends when its
-	// channel no longer matches.
-	if replaced {
-		cmds = append(cmds, pumpChanged(m.sess.Changed()))
-	}
-	return tea.Batch(cmds...)
+	// The session is always new, so its change pump always starts here.
+	return tea.Batch(
+		refreshSheetCmd(m.ctx, m.sess, acpwire.SheetRefresh{Rebase: true}),
+		pumpChanged(m.sess.Changed()),
+	)
 }
 
 func init() {

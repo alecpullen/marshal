@@ -54,26 +54,6 @@ import (
 	"marshal/internal/trust"
 )
 
-type fakeSessionSwapper struct {
-	newState *session.State
-	called   bool
-	lastName string
-	err      error
-}
-
-func (f *fakeSessionSwapper) NewSession(name string) (SessionSwapResult, error) {
-	f.called = true
-	f.lastName = name
-	if f.err != nil {
-		return SessionSwapResult{}, f.err
-	}
-	res := SessionSwapResult{State: f.newState}
-	if f.newState != nil {
-		res.Session = testSession(f.newState)
-	}
-	return res, nil
-}
-
 // drainCmds executes the returned command tree (up to a small bound) and
 // feeds each produced message back into the model. This is necessary whenever
 // a test drives a huh form, because huh advances fields and completes the form
@@ -2777,9 +2757,8 @@ func TestSlashCommandClearMessages(t *testing.T) {
 
 	newState := session.New(config.Default(), "/repo", time.Unix(200, 0), session.Persistence{})
 
-	cmdReg := setupCmdReg(t)
-	swapper := &fakeSessionSwapper{newState: newState}
-	model := testModel(oldState, WithCommandRegistry(cmdReg), WithSessionSwapper(swapper))
+	f := &fakeNewSession{newState: newState}
+	model := testModelReplacing(t, oldState, f, &endTestController{})
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -2789,8 +2768,8 @@ func TestSlashCommandClearMessages(t *testing.T) {
 	// The replacement is built after the settled end: drive that hop.
 	m, _ = runEndCmd(t, m, cmd)
 
-	if !swapper.called {
-		t.Fatal("expected session swapper to be called")
+	if f.called == 0 {
+		t.Fatal("expected the host to create a new session")
 	}
 	if m.state != newState {
 		t.Fatal("expected model state to be swapped to the new session")
@@ -2834,9 +2813,8 @@ func TestNewSessionRereadsGitInfo(t *testing.T) {
 
 	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	newState := session.New(config.Default(), dir, time.Unix(200, 0), session.Persistence{})
-	cmdReg := setupCmdReg(t)
-	swapper := &fakeSessionSwapper{newState: newState}
-	model := testModel(oldState, WithCommandRegistry(cmdReg), WithSessionSwapper(swapper))
+	f := &fakeNewSession{newState: newState}
+	model := testModelReplacing(t, oldState, f, &endTestController{})
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -2852,8 +2830,8 @@ func TestNewSessionRereadsGitInfo(t *testing.T) {
 	// The replacement is built after the settled end: drive that hop.
 	m, cmd = runEndCmd(t, m, cmd)
 
-	if !swapper.called {
-		t.Fatal("expected session swapper to be called")
+	if f.called == 0 {
+		t.Fatal("expected the host to create a new session")
 	}
 	if got := m.sess.Status().Git.Branch; got != "feat-new" {
 		t.Errorf("Git.Branch = %q, want feat-new after /new", got)
@@ -2873,9 +2851,8 @@ func TestNewSessionRereadsGitInfo(t *testing.T) {
 func TestSlashCommandClearAlias(t *testing.T) {
 	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	newState := session.New(config.Default(), "/repo", time.Unix(200, 0), session.Persistence{})
-	cmdReg := setupCmdReg(t)
-	swapper := &fakeSessionSwapper{newState: newState}
-	model := testModel(oldState, WithCommandRegistry(cmdReg), WithSessionSwapper(swapper))
+	f := &fakeNewSession{newState: newState}
+	model := testModelReplacing(t, oldState, f, &endTestController{})
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -2884,7 +2861,7 @@ func TestSlashCommandClearAlias(t *testing.T) {
 	model = asModel(t, updated)
 	model, _ = runEndCmd(t, model, cmd)
 
-	if !swapper.called {
+	if f.called == 0 {
 		t.Fatal("/clear should trigger the same session swap as /new")
 	}
 }
@@ -2892,9 +2869,8 @@ func TestSlashCommandClearAlias(t *testing.T) {
 func TestSlashCommandNewBlockedWhenBusy(t *testing.T) {
 	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	newState := session.New(config.Default(), "/repo", time.Unix(200, 0), session.Persistence{})
-	cmdReg := setupCmdReg(t)
-	swapper := &fakeSessionSwapper{newState: newState}
-	model := testModel(oldState, WithCommandRegistry(cmdReg), WithSessionSwapper(swapper))
+	f := &fakeNewSession{newState: newState}
+	model := testModelReplacing(t, oldState, f, &endTestController{})
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -2903,8 +2879,8 @@ func TestSlashCommandNewBlockedWhenBusy(t *testing.T) {
 	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m := updated.(*Model)
 
-	if swapper.called {
-		t.Fatal("expected swapper not to be called while busy")
+	if f.called > 0 {
+		t.Fatal("expected no new session to be created while busy")
 	}
 	if m.state != oldState {
 		t.Fatal("expected state to remain unchanged while busy")
@@ -2914,9 +2890,8 @@ func TestSlashCommandNewBlockedWhenBusy(t *testing.T) {
 func TestSlashCommandNewWithName(t *testing.T) {
 	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	newState := session.New(config.Default(), "/repo", time.Unix(200, 0), session.Persistence{})
-	cmdReg := setupCmdReg(t)
-	swapper := &fakeSessionSwapper{newState: newState}
-	model := testModel(oldState, WithCommandRegistry(cmdReg), WithSessionSwapper(swapper))
+	f := &fakeNewSession{newState: newState}
+	model := testModelReplacing(t, oldState, f, &endTestController{})
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -2926,11 +2901,11 @@ func TestSlashCommandNewWithName(t *testing.T) {
 	// The replacement is built after the settled end: drive that hop.
 	m, _ = runEndCmd(t, m, cmd)
 
-	if !swapper.called {
-		t.Fatal("expected session swapper to be called")
+	if f.called == 0 {
+		t.Fatal("expected the host to create a new session")
 	}
-	if swapper.lastName != "fix-auth" {
-		t.Fatalf("expected name %q, got %q", "fix-auth", swapper.lastName)
+	if f.lastName != "fix-auth" {
+		t.Fatalf("expected name %q, got %q", "fix-auth", f.lastName)
 	}
 	if m.state != newState {
 		t.Fatal("expected model state to be swapped to the new session")
@@ -10361,8 +10336,8 @@ func TestResumeShutdownDoesNotPrompt(t *testing.T) {
 	state := postmortemTestState(t, "sess-resume")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "prompt"
-	swapper := &fakeSessionSwapper{newState: session.New(config.Default(), t.TempDir(), time.Unix(200, 0), session.Persistence{})}
-	m := testModelEnding(state, &endTestController{}, WithSessionSwapper(swapper))
+	f := &fakeNewSession{newState: session.New(config.Default(), t.TempDir(), time.Unix(200, 0), session.Persistence{})}
+	m := testModelReplacing(t, state, f, &endTestController{})
 
 	updated, cmd := m.beginResume("sess-target")
 	m = asModel(t, updated)
@@ -10844,22 +10819,22 @@ func TestWarningShowsParentChildAndJobWork(t *testing.T) {
 }
 
 // newSessionWarningModel builds a model for the replacement tests, with a live
-// membership and a wired swapper.
-func newSessionWarningModel(t *testing.T, work acpwire.EndWork) (Model, *endTestController, *fakeSessionSwapper) {
+// membership and a wired session factory.
+func newSessionWarningModel(t *testing.T, work acpwire.EndWork) (Model, *endTestController, *fakeNewSession) {
 	t.Helper()
 	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	oldState.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
-	swapper := &fakeSessionSwapper{newState: session.New(config.Default(), "/repo", time.Unix(200, 0), session.Persistence{})}
+	f := &fakeNewSession{newState: session.New(config.Default(), "/repo", time.Unix(200, 0), session.Persistence{})}
 	ctrl := &endTestController{work: work}
-	m := testModelWith(inproc.Deps{State: oldState, End: ctrl}, WithCommandRegistry(setupCmdReg(t)), WithSessionSwapper(swapper))
+	m := testModelReplacing(t, oldState, f, ctrl)
 	m.resize(80, 24)
-	return m, ctrl, swapper
+	return m, ctrl, f
 }
 
 // TestNewSessionWarnsBeforeReplacing pins step 2 for /new: the replacement
 // warns, and nothing is built until the user accepts.
 func TestNewSessionWarnsBeforeReplacing(t *testing.T) {
-	m, ctrl, swapper := newSessionWarningModel(t, workSnapshot("job-1"))
+	m, ctrl, f := newSessionWarningModel(t, workSnapshot("job-1"))
 
 	updated, cmd := m.dispatchCommand("/new fix-auth")
 	m = asModel(t, updated)
@@ -10867,7 +10842,7 @@ func TestNewSessionWarnsBeforeReplacing(t *testing.T) {
 	if cmd != nil {
 		t.Fatalf("replacement warning returned a cmd (%T), want nil", cmd)
 	}
-	if swapper.called {
+	if f.called > 0 {
 		t.Fatal("the new session was built before the user accepted the replacement")
 	}
 	view := stripANSI(m.dock.Panel().View(80, 20))
@@ -10881,9 +10856,9 @@ func TestNewSessionWarnsBeforeReplacing(t *testing.T) {
 
 // TestNewSessionDeclineKeepsTheConversation pins the no-mutation rule: a
 // declined replacement leaves the current session, the resume target and the
-// swapper untouched.
+// session factory untouched.
 func TestNewSessionDeclineKeepsTheConversation(t *testing.T) {
-	m, _, swapper := newSessionWarningModel(t, workSnapshot("job-1"))
+	m, _, f := newSessionWarningModel(t, workSnapshot("job-1"))
 	oldState := m.state
 
 	updated, _ := m.dispatchCommand("/new fix-auth")
@@ -10894,7 +10869,7 @@ func TestNewSessionDeclineKeepsTheConversation(t *testing.T) {
 	if cmd != nil {
 		t.Fatalf("declining returned a cmd (%T), want nil", cmd)
 	}
-	if swapper.called {
+	if f.called > 0 {
 		t.Fatal("declining still built a new session")
 	}
 	if m.state != oldState {
@@ -10908,7 +10883,7 @@ func TestNewSessionDeclineKeepsTheConversation(t *testing.T) {
 // TestNewSessionAcceptanceBuildsTheReplacement pins the accepted path: the
 // runtime settles the old work first, then the existing swap behavior runs.
 func TestNewSessionAcceptanceBuildsTheReplacement(t *testing.T) {
-	m, ctrl, swapper := newSessionWarningModel(t, workSnapshot("job-1"))
+	m, ctrl, f := newSessionWarningModel(t, workSnapshot("job-1"))
 
 	updated, _ := m.dispatchCommand("/new fix-auth")
 	m = asModel(t, updated)
@@ -10922,11 +10897,11 @@ func TestNewSessionAcceptanceBuildsTheReplacement(t *testing.T) {
 		t.Fatalf("intent = %q, want %q", got, EndIntentReplace)
 	}
 	m, cmd = runEndCmd(t, m, cmd)
-	if !swapper.called {
+	if f.called == 0 {
 		t.Fatal("the accepted replacement did not build the new session")
 	}
-	if swapper.lastName != "fix-auth" {
-		t.Fatalf("new session name = %q, want %q", swapper.lastName, "fix-auth")
+	if f.lastName != "fix-auth" {
+		t.Fatalf("new session name = %q, want %q", f.lastName, "fix-auth")
 	}
 	if cmd == nil {
 		t.Fatal("the replacement must return its commands")
@@ -11027,7 +11002,7 @@ func TestPostAcceptedPromptCannotReopenWork(t *testing.T) {
 // TestNewSessionStillRefusedWhileBusy pins that this feature does not relax the
 // existing busy refusal for /new and /clear.
 func TestNewSessionStillRefusedWhileBusy(t *testing.T) {
-	m, ctrl, swapper := newSessionWarningModel(t, workSnapshot("job-1"))
+	m, ctrl, f := newSessionWarningModel(t, workSnapshot("job-1"))
 	m.busy = true
 
 	updated, cmd := m.dispatchCommand("/new")
@@ -11036,7 +11011,7 @@ func TestNewSessionStillRefusedWhileBusy(t *testing.T) {
 	if cmd != nil {
 		t.Fatalf("a busy /new returned a cmd (%T), want nil", cmd)
 	}
-	if swapper.called {
+	if f.called > 0 {
 		t.Fatal("a busy /new built a session")
 	}
 	if _, ok := m.dock.Panel().(*activeworkpanel.Panel); ok {
@@ -11055,7 +11030,7 @@ func TestReplacementNeverRunsExitPostmortem(t *testing.T) {
 		t.Run(onExit, func(t *testing.T) {
 			t.Setenv("MARSHAL_CONFIG_DIR", t.TempDir())
 			t.Setenv("XDG_CONFIG_HOME", "")
-			m, _, swapper := newSessionWarningModel(t, workSnapshot("job-1"))
+			m, _, f := newSessionWarningModel(t, workSnapshot("job-1"))
 			m.state.Config.Postmortem.OnExit = onExit
 
 			updated, _ := m.dispatchCommand("/new")
@@ -11067,7 +11042,7 @@ func TestReplacementNeverRunsExitPostmortem(t *testing.T) {
 			if _, ok := m.dock.Panel().(*postmortempanel.Panel); ok {
 				t.Fatal("a replacement must never open the exit postmortem question")
 			}
-			if !swapper.called {
+			if f.called == 0 {
 				t.Fatal("the replacement did not run")
 			}
 			if _, err := os.Stat(postmortemReportPath(t, m.state)); !os.IsNotExist(err) {

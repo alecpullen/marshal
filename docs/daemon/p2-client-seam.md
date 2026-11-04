@@ -10,7 +10,7 @@ already exist change only by gaining optional fields (C6).
 Status: drafted 2026-10-20; revised 2026-10-25 against `991c18d7`
 and since, plan by plan (Revision record). Delivered as nine plans
 (Migration order), each written against `main` once the previous one has
-landed; plans 2, 3 and 5 are split into sub-plans.
+landed; plans 2, 3, 5 and 7 are split into sub-plans.
 
 Decided with the user (2026-10-20):
 - **Transcript on the wire:** `WireTree`. The TUI renders the same
@@ -244,7 +244,10 @@ Decision: `WireTree`, with the C6 additions.
   them from a local mirror fed by notifications. The TUI keeps its
   render-time pattern of reading the current value.
 - **Calls** take a `context.Context`, may block, and return `acpwire`
-  results or an error.
+  results or an error. A call that reports progress before it returns
+  takes a function the agent calls with each update, as the sign-ins
+  take `show(url)` (plan 7a). P3 feeds it from the call's progress
+  notifications.
 - **`Session.Changed() <-chan struct{}`** is a coalescing signal with a
   buffer of 1. It fires after anything a read returns may have changed.
   The TUI re-reads when it fires and never infers what changed. The
@@ -275,9 +278,11 @@ Decision: `WireTree`, with the C6 additions.
   the module, and their JSON round trip is tested (T3).
 - **Secrets.** No read returns one. A literal API key in a config read is
   replaced by `""`, and its source (`config`, `env`, `keychain`, `oauth`
-  or `none`) is reported alongside, as `config/get` does. Only two calls
-  carry a secret: the provider-key write (C10) and the sudo answer (C7).
-  Neither is logged.
+  or `none`) is reported alongside, as `config/get` does. Only these
+  calls carry a secret: the provider-key write (C10), the sudo answer
+  (C7), and the probes, whose provider config may hold a key typed but
+  not yet saved, as `config/probe_provider`'s `config` does (plan 7a).
+  None is logged.
 - **Large text.** The transcript keeps `WireTextCap`. Every other
   result that can be large says how it is capped in its doc comment.
 
@@ -669,21 +674,31 @@ Decision: `WireTree`, with the C6 additions.
   `config/set_providers` does. A write during a turn returns the busy
   code, and the TUI shows today's "Stop the active turn before applying
   settings."
-- **Models and providers.**
-  - `ProviderTemplates()` is new.
-  - `ListModels(ctx, provider)` lists models from the agent's model
-    cache, and includes the thinking options the TUI resolves today
-    (new).
-  - `ProbeProvider` uses `config/probe_provider` (exists).
-  - **Preset setup after a connect** runs agent side as one `Host` call
+- **Models and providers** (plan 7a, apart from preset setup).
+  - `ProviderTemplates()` reads the catalog (new).
+  - `ProbeProvider` lists a provider's models (`config/probe_provider`
+    exists). `CanProbeModel` and `ProbeModel` check and run a model's
+    capability probe (new). Each takes the provider's name and config,
+    which need not be saved, and the adapter builds the client.
+  - The model cache is `ListModels`, `SaveModels`, `ForgetModels` and
+    `RenameModels` (new), keyed agent side by the provider's config. The
+    TUI keeps its in-session map of discovered models and decides when
+    to save or forget an entry, as today.
+  - Thinking options stay a TUI computation: the pure helpers move to
+    `llm/schema`.
+  - **Preset setup after a connect** (plan 7b) runs agent side as one `Host` call
     (new). The call loads the models.dev catalog, reads the provenance
     file and runs `presetsetup.Apply`, then returns the proposed
     presets. Accepting them saves the presets and the provenance
     together. Today the TUI does all of this itself.
-- **OAuth logins** (Codex connect, MCP auth) run agent side. The call
-  reports the authorization URL in a progress update, the TUI opens it
+- **OAuth logins** (Codex connect, MCP auth) run agent side (plan 7a).
+  A check (`PrepareProviderLogin`, `PrepareMCPLogin`) runs what must
+  succeed before the panel opens, and returns today's sentence when it
+  fails. The call (`LoginProvider`, `LoginMCP`) reports the
+  authorization URL through its `show` function (C2), the TUI opens it
   (C12), and the call returns when the callback lands. This matches how
-  ACP's `/mcp auth` works today.
+  ACP's `/mcp auth` works today. The reload that reconnects an MCP
+  server after its sign-in moves with the other reloads (plan 7b).
 - **Trust.** `Host.DecideTrust(ctx, dir, decision)` replaces the trust
   prompt callback. A trust refresh happens inside the config reload.
 - **Skill gate settings** (enabled flag, remembered decisions, clearing
@@ -862,7 +877,19 @@ The TUI works after every plan.
    through the session, a failed run's error carries its notice, and doc
    panels render wire docs. The TUI gets its own logger, and compares
    wire strings with `acpwire`'s constants.
-7. **Config, providers and trust** (C10).
+7. **Config, providers and trust** (C10), in three plans:
+   - **7a. Providers and sign-ins** ([plan](plans/2026-11-05-p2-7a-providers-plan.md)).
+     `ProviderTemplates`, the probes, the model cache calls and the two
+     sign-ins, with the resolver in the adapter's `Deps`. The TUI builds
+     no provider client and opens no credential store.
+   - **7b. Config.** `Session.Config` with literal keys redacted,
+     `Session.Layers`, the `Host` writes with the reload agent side, and
+     preset setup with its accept.
+   - **7c. Trust, skill gates and tools.** `Host.DecideTrust`, the
+     skill-gate settings calls and `Tools()`.
+
+   7a comes first: 7b's redacted read leaves the TUI without literal
+   keys, so every reader of one must already be agent side.
 8. **Project data** (C11).
 9. **Close-out.** Delete `WithLegacyState`, empty the allowlist, write
    the list of methods P3 must add, and update design §4.5, §7 and §8.
@@ -1503,6 +1530,45 @@ writing plan 6:
   `session/notice_set`, `session/notice_clear`, `session/notice_dismiss`
   and `session/command_action`. `Commands` and `Command` use
   `session/command_list` and `session/command`.
+
+**2026-11-05, against `301e19c8` (plan 6 merged).** Found while
+writing plan 7a:
+- **Plan 7 is three plans** (Migration order): 7a providers and
+  sign-ins, 7b config, 7c trust, skill gates and tools. Providers go
+  first because 7b's redacted config read leaves the TUI without
+  literal keys, which the probes and sign-ins read today.
+- **A probe takes the provider's config from the client** (C3, C10). The
+  connect wizard and the settings browser probe configs not saved yet,
+  so the probes carry a config that may hold a typed key, as
+  `config/probe_provider` already does. The adapter builds the client
+  with the runtime's resolver, the model cache's directory and the
+  session's thinking margin, which no probe reads.
+- **Capability probing has a check** (C10). The settings browser decides
+  on the Update goroutine whether to show "detecting…", so
+  `CanProbeModel` answers that and `ProbeModel` runs the probe.
+- **The model cache is four calls keyed agent side** (C10). The TUI keeps
+  its discovery map and its newest-attempt guards, so a stale probe
+  still moves neither the map nor the disk. The cache key hashes the
+  literal key, so the adapter reads the provider's config itself.
+- **Thinking options stay a TUI computation** (C10). The helpers are pure
+  over `schema` types and move to `llm/schema`; `ListModels` carries no
+  thinking options. `UniqueName` moves to `strutil`.
+- **A sign-in is a check and a call** (C2, C10). The check keeps today's
+  synchronous failures: a store or engine that cannot open, or an MCP
+  server that does not resolve, shows its sentence and starts nothing.
+  The call reports its URL through a `show` function, and the engine's
+  own `Open` stays nil agent side, so the TUI opens the browser (C12).
+  C2 gains the rule for calls that report progress.
+- **The resolver moves into the adapter's `Deps`** (C4). Nil means the
+  production resolver, the substitution `tui.New` made. `app`'s wiring
+  test reads it from the host.
+- **`ErrorData` gains no provider fields** (C2). Plan 6 expected them for
+  plan 7, but no TUI code reads them.
+- **The new ACP methods are named** `config/provider_templates`,
+  `config/probe_model`, `config/models_list`, `config/models_save`,
+  `config/models_forget`, `config/models_rename`,
+  `config/login_provider` and `session/mcp_login`. `ProbeProvider` uses
+  `config/probe_provider`, which exists.
 
 ## Implementation record
 

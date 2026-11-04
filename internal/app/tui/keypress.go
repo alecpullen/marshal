@@ -384,7 +384,11 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			return *m, nil, true
 		}
 		if !m.sess.Status().AgentReady {
-			_ = m.sess.AddNote(m.ctx, acpwire.Note{Text: value, ContentType: acpwire.ContentTypePlain, Role: acpwire.RoleUser})
+			// The echo is the user's own line, so a failed write must be
+			// logged rather than dropping what they typed in silence.
+			if err := m.sess.AddNote(m.ctx, acpwire.Note{Text: value, ContentType: acpwire.ContentTypePlain, Role: acpwire.RoleUser}); err != nil {
+				m.log().Warn("user echo dropped", "error", err)
+			}
 			m.refreshViewport()
 			return *m, nil, true
 		}

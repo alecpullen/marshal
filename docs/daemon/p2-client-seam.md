@@ -2332,15 +2332,16 @@ used to build there. A cancellation and every other error pass through
 unchanged.
 
 The TUI writes its notes, sets and clears its banner, and runs its commands
-through the session. All 135 `m.state.AddMessage` system writes go through
-`AddNote`, with the no-runner echo kept as a user note; the plugins panel takes
-a note function instead of the state; and the model logs through `WithLogger`.
+through the session. Every `m.state.AddMessage` write in the TUI is now a
+session `AddNote` (138 call sites at this commit), with the no-runner echo kept
+as a user note; the plugins panel takes a note function instead of the state;
+and the model logs through `WithLogger`.
 The banner is read from `Status().Notice` and changed through `SetNotice`,
 `ClearNotice` and `DismissNotice`, and `noticeForError` takes the notice off the
 error. `docpanel` renders an `acpwire.WireDoc` and runs a row's action ID through
 the act it is given: a command doc acts through `CommandAction` on the session
-it came from, while the `/run` outcome doc and the browse help are built as wire
-docs with local actions. `WithCommandRegistry`, `docpanel.ActionMsg`,
+it came from, while the `/run` outcome doc carries local actions and the browse
+help is a wire doc with none. `WithCommandRegistry`, `docpanel.ActionMsg`,
 `SetSource` and `browserStripText` are deleted. `transcript.go` and
 `viewport_render.go` compare the wire's role, content-type and activity
 constants, and `activeSpinnerFrame` takes a string.

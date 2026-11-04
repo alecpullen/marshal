@@ -205,6 +205,11 @@ func startNewSession(m *Model, name string) tea.Cmd {
 
 	// Drop per-message UI state that belongs to the old session.
 	m.viewStack = nil
+	// The command list follows the session, so the popup's cache of it does
+	// too: a replacement may report a different set.
+	if m.cmdPopup != nil {
+		m.cmdPopup.items = nil
+	}
 	m.syncTranscriptWidth()
 	m.resetExpansion()
 	m.nodeRegions = nil
@@ -278,8 +283,11 @@ func init() {
 			// later swap leaves the panel writing where it was opened, as the
 			// state it used to hold did.
 			sess, ctx := m.sess, m.ctx
+			log := m.log()
 			m.dock.Open(plugins.NewPanel(m.homeDir, m.workDir, m.sess.Status().Trusted, func(text string) {
-				_ = sess.AddNote(ctx, acpwire.Note{Text: text, ContentType: acpwire.ContentTypePlain})
+				if err := sess.AddNote(ctx, acpwire.Note{Text: text, ContentType: acpwire.ContentTypePlain}); err != nil {
+					log.Warn("plugin note dropped", "error", err)
+				}
 			}))
 			m.refreshViewport()
 			return m, nil

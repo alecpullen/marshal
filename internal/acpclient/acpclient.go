@@ -438,8 +438,11 @@ type Session interface {
 	Commands() []acpwire.CommandInfo
 
 	// Command runs the named command's handler over the session with args and
-	// returns its output. A command without a handler returns an empty result.
-	// The row actions of a returned doc carry IDs CommandAction runs.
+	// returns its output. A command without a handler returns an empty result
+	// from the in-process adapter; an adapter that cannot run the command at
+	// all — as the ACP manager cannot run a prompt-only or TUI-only entry —
+	// returns an error instead. The row actions of a returned doc carry IDs
+	// CommandAction runs.
 	//
 	// ACP: session/command (exists).
 	Command(ctx context.Context, name string, args []string) (acpwire.CommandResult, error)

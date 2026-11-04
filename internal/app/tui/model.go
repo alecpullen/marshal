@@ -801,10 +801,11 @@ func (m *Model) log() *slog.Logger {
 }
 
 // note appends text to the transcript as a plain system note, through the
-// session. A failure is logged at debug.
+// session. A dropped note is the one failure the user cannot see, so it is
+// logged at warn rather than debug.
 func (m *Model) note(text string) {
 	if err := m.sess.AddNote(m.ctx, acpwire.Note{Text: text, ContentType: acpwire.ContentTypePlain}); err != nil {
-		m.log().Debug("note dropped", "error", err)
+		m.log().Warn("note dropped", "error", err)
 	}
 }
 
@@ -2057,6 +2058,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.result.Text != "" {
 			m.note(msg.result.Text)
+		} else {
+			// An action that carries neither a doc nor text would otherwise
+			// close the pane in silence, as if the key had done nothing.
+			m.note("That action returned nothing.")
 		}
 		m.refreshViewport()
 		return m, nil
@@ -3440,12 +3445,13 @@ func (m *Model) updateCompletionPopups() {
 
 	cmdTrigger, cmdQuery := m.commandTrigger(value)
 	if cmdTrigger {
-		if m.cmdPopup.items == nil {
+		if len(m.cmdPopup.items) == 0 {
 			// Lazily build the command items from the session the first
-			// time the user starts typing "/". Commands can change at
-			// runtime; we re-build on every trigger so /help always
-			// reflects the current set. Commands includes hidden commands
-			// — they are runnable and belong in the popup.
+			// time the user starts typing "/", and rebuild whenever the
+			// cache holds nothing: startNewSession clears it because the
+			// command list follows the session, and an empty list leaves
+			// it empty so the next trigger retries. Commands includes
+			// hidden commands — they are runnable and belong in the popup.
 			cmds := m.sess.Commands()
 			items := make([]completionItem, 0, len(cmds))
 			for _, c := range cmds {
@@ -7311,7 +7317,6 @@ func statusBarStyle() lipgloss.Style {
 func browserGlyphStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(theme.Current().AccentTertiary)
 }
-func urlStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGDefault) }
 
 // flags packs boolean/len state into a single uint64 for the hash.
 func flags(streamLen int, busy bool, nTodos, nQueued int) uint64 {

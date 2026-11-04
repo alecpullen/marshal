@@ -65,6 +65,7 @@ type stubSession struct {
 	onSendNow      func(acpwire.SendNowRequest)
 	onRefreshSheet func(acpwire.SheetRefresh)
 	onAddNote      func(acpwire.Note)
+	onDismissNote  func()
 	sheetPatch     func(*acpwire.SessionSheet)
 }
 
@@ -95,6 +96,13 @@ func (s *stubSession) AddNote(ctx context.Context, note acpwire.Note) error {
 		s.onAddNote(note)
 	}
 	return s.Session.AddNote(ctx, note)
+}
+
+func (s *stubSession) DismissNotice(ctx context.Context) error {
+	if s.onDismissNote != nil {
+		s.onDismissNote()
+	}
+	return s.Session.DismissNotice(ctx)
 }
 
 func (s *stubSession) Sheet(subagentID int64) acpwire.SessionSheet {

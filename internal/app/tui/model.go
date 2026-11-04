@@ -2188,7 +2188,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the dock hand-off for those, since a panel that asked for the probe
 		// is still the only one that can interpret its result.
 		if pm.Err == nil && pm.Provider != "" {
-			pm.Models = provider.PreserveThinkingOptions(pm.Models, m.discovered[pm.Provider])
+			pm.Models = schema.PreserveThinkingOptions(pm.Models, m.discovered[pm.Provider])
 			m.discovered[pm.Provider] = pm.Models
 			m.persistDiscovered(pm.Provider, pm.Models)
 			if panel, ok := m.dock.Panel().(*modeloptions.Panel); ok {
@@ -6490,7 +6490,7 @@ func (m *Model) handleModelsProbeResult(msg modelsProbeResultMsg) (tea.Model, te
 		return m, nil
 	}
 	if msg.Result.Err == nil {
-		msg.Result.Models = provider.PreserveThinkingOptions(msg.Result.Models, m.discovered[msg.Provider])
+		msg.Result.Models = schema.PreserveThinkingOptions(msg.Result.Models, m.discovered[msg.Provider])
 		m.discovered[msg.Provider] = msg.Result.Models
 		m.persistDiscovered(msg.Provider, msg.Result.Models)
 		if panel, ok := m.dock.Panel().(*modeloptions.Panel); ok {
@@ -6526,7 +6526,7 @@ func (m *Model) handleWizardProbeResult(wr connect.WizardProbeResult) (tea.Model
 		return m, nil // a stale attempt within the live wizard
 	}
 	if wr.Result.Err == nil && wr.Result.Provider != "" {
-		wr.Result.Models = provider.PreserveThinkingOptions(wr.Result.Models, m.discovered[wr.Result.Provider])
+		wr.Result.Models = schema.PreserveThinkingOptions(wr.Result.Models, m.discovered[wr.Result.Provider])
 		m.discovered[wr.Result.Provider] = wr.Result.Models
 		m.persistDiscovered(wr.Result.Provider, wr.Result.Models)
 	}

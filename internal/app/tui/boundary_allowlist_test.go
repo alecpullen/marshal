@@ -17,7 +17,7 @@ var boundaryAllowlist = map[string][]string{
 	"memory/entries.go":              {"marshal/internal/db"},
 	"memory/panel.go":                {"marshal/internal/db"},
 	"model.go":                       {"config.DataDir", "config.ProjectConfigPath", "config.SaveProjectConfig", "config.SaveUserConfigPresets", "config.SaveUserConfigProviders", "config.SaveUserConfigValue", "config.SaveVerifyCommands", "config.UserConfigPath", "marshal/internal/app/presetsetup", "marshal/internal/app/session", "marshal/internal/db", "marshal/internal/llm/provider", "marshal/internal/llm/provider/modelcache", "marshal/internal/pubsub", "marshal/internal/sddauthor", "marshal/internal/sddplans", "marshal/internal/skills", "marshal/internal/tools/registry", "marshal/internal/trust", "marshal/internal/watch"},
-	"model_options.go":               {"config.SaveUserConfigPresets", "config.UserConfigPath", "marshal/internal/llm/provider"},
+	"model_options.go":               {"config.SaveUserConfigPresets", "config.UserConfigPath"},
 	"plugins/panel.go":               {"marshal/internal/plugins"},
 	"presetflow/probe.go":            {"marshal/internal/llm/provider"},
 	"probe/probe.go":                 {"marshal/internal/llm/provider"},

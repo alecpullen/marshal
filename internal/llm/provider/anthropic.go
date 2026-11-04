@@ -57,7 +57,7 @@ func NewAnthropic(opts Options) (*Anthropic, error) {
 	}
 	modelThinking := make(map[string]*schema.ThinkingOptions)
 	for model, options := range opts.ModelThinking {
-		modelThinking[model] = cloneThinkingOptions(options)
+		modelThinking[model] = schema.CloneThinkingOptions(options)
 	}
 	return &Anthropic{
 		modelThinking:        modelThinking,

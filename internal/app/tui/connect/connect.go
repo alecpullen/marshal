@@ -1383,7 +1383,7 @@ func (m *Model) uniqueName() string {
 	for k := range m.cfg.Providers {
 		existing[k] = true
 	}
-	return provider.UniqueName(base, existing)
+	return strutil.UniqueName(base, existing)
 }
 
 // nameBase picks the default provider name base. For known templates it uses

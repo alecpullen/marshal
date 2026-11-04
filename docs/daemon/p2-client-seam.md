@@ -2293,3 +2293,58 @@ T1b gains two names, `ResolvePendingForShutdown` and `Shutdown`, at plan `5e`.
 The allowlist loses `model.go`'s `marshal/internal/postmortem`;
 `commands_dispatch.go` keeps `marshal/internal/app/session` for its notes and
 `model.go` keeps `marshal/internal/tools/registry` for the roster's registry.
+
+**Plan 6 (notes, notices and commands), branch `p2-6-notes`.** Added
+`internal/acpwire/notes.go`: the three roles, the fifteen content types, the six
+activity kinds, the four notice categories, the two severities, `Note`,
+`Notice` and `ErrorData`. Added `internal/acpwire/commands.go`: the five command
+types — `CommandInfo`, `CommandListResult`, `CommandResult`, `WireDoc` and
+`WireRow` — moved out of `internal/acp` with their JSON unchanged, and the three
+command kinds. `CommandInfo` gains `hidden`, `tuiOnly`, `hasHandler` and
+`promptBody`, `CommandResult` gains `agentGoal`, and `WireRow` gains `actionId`;
+ACP leaves all five unset, reporting exactly what it reports today.
+`SessionStatus` gains `Notice`, and `CodeProviderError` and `CodeAuthRequired`
+document the notice their data carries.
+
+`internal/commands/wire.go` converts a command's result for the wire:
+`Command.Kind`, `commands.Info`, `commands.WireResultOf` and
+`commands.WireDocOf`. The last two take a mint function that names each row
+action, depth first in row order; a nil mint leaves every row without an ID.
+ACP's `CommandList` builds its entries from `commands.Info`, and its `Command`
+converts with a nil mint, so its JSON does not change.
+
+`acpclient.Session` gains seven methods with their `Methods` rows: `AddNote` on
+`session/note`, `SetNotice` on `session/notice_set`, `ClearNotice` on
+`session/notice_clear`, `DismissNotice` on `session/notice_dismiss` and
+`CommandAction` on `session/command_action`, all five new in P3, and `Commands`
+on `session/command_list` and `Command` on `session/command`, which exist.
+`acpclient.NoticeOf` reads the notice an `*acpwire.Error`'s data carries.
+
+The adapter serves them over `Deps.Commands`, the runtime's registry. `AddNote`
+appends a system message unless the note's role is user, and refuses any other
+role; the note and notice calls do not fire `Changed`. The adapter converts
+notices both ways, and mints an ID for each row action of a result it returns,
+keeping the actions of the 16 most recent results that minted any; an ID it no
+longer keeps returns an error. `runError` classifies a run's failure agent side:
+a provider failure or a login requirement comes back as an `*acpwire.Error`
+coded `provider_error` or `auth_required`, its data carrying the notice the TUI
+used to build there. A cancellation and every other error pass through
+unchanged.
+
+The TUI writes its notes, sets and clears its banner, and runs its commands
+through the session. All 135 `m.state.AddMessage` system writes go through
+`AddNote`, with the no-runner echo kept as a user note; the plugins panel takes
+a note function instead of the state; and the model logs through `WithLogger`.
+The banner is read from `Status().Notice` and changed through `SetNotice`,
+`ClearNotice` and `DismissNotice`, and `noticeForError` takes the notice off the
+error. `docpanel` renders an `acpwire.WireDoc` and runs a row's action ID through
+the act it is given: a command doc acts through `CommandAction` on the session
+it came from, while the `/run` outcome doc and the browse help are built as wire
+docs with local actions. `WithCommandRegistry`, `docpanel.ActionMsg`,
+`SetSource` and `browserStripText` are deleted. `transcript.go` and
+`viewport_render.go` compare the wire's role, content-type and activity
+constants, and `activeSpinnerFrame` takes a string.
+
+T1b gains six names at plan `6`: `AddMessage` and `Logger` with the notes, and
+`Notice`, `SetNotice`, `ClearNotice` and `DismissNotice` with the banner. The
+allowlist loses 18 entries across 17 files, ten keys entirely.

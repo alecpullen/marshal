@@ -4350,8 +4350,8 @@ func spinnerLabel(spinner, label string) string {
 // activity. For ActivityIdle it always returns "". During an SDD run it
 // always returns "": the now bar owns the only spinner on screen, so
 // transcript activity rows render their static glyph with elapsed time.
-func (m *Model) activeSpinnerFrame(kind session.ActivityKind) string {
-	if kind == session.ActivityIdle {
+func (m *Model) activeSpinnerFrame(kind string) string {
+	if kind == acpwire.ActivityIdle {
 		return ""
 	}
 	st := m.sess.Status()

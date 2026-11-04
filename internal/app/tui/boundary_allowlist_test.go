@@ -13,7 +13,6 @@ var boundaryAllowlist = map[string][]string{
 	"doctor_secret.go":               {"config.SaveUserConfigProviderAPIKey", "config.UserConfigPath"},
 	"doctorpanel/doctorpanel.go":     {"marshal/internal/app/session"},
 	"doctorpanel/intelligence.go":    {"marshal/internal/db", "marshal/internal/lsp"},
-	"livestrip.go":                   {"marshal/internal/app/session"},
 	"mcp.go":                         {"marshal/internal/commands", "marshal/internal/credentials", "marshal/internal/oauth"},
 	"memory/entries.go":              {"marshal/internal/db"},
 	"memory/panel.go":                {"marshal/internal/db"},
@@ -29,7 +28,5 @@ var boundaryAllowlist = map[string][]string{
 	"settings/state.go":              {"marshal/internal/llm/provider"},
 	"skills/panel.go":                {"config.SaveUserConfigValue", "config.UserConfigPath", "config.UserDir", "marshal/internal/app/session", "marshal/internal/skills"},
 	"todos.go":                       {"marshal/internal/app/session", "marshal/internal/tools/native"},
-	"transcript.go":                  {"marshal/internal/app/session"},
 	"trustpanel/trustpanel.go":       {"marshal/internal/trust"},
-	"viewport_render.go":             {"marshal/internal/app/session"},
 }

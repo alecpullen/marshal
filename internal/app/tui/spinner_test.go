@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 )
@@ -36,10 +37,10 @@ func TestSpinnerHiddenBefore200ms(t *testing.T) {
 	m := testModel(state)
 	m.now = func() time.Time { return now }
 	m.spinnerFrame = "⠋"
-	m.state.SetActivity(session.Activity{Kind: session.ActivityThinking, StartedAt: now})
+	m.state.SetActivity(session.Activity{Kind: acpwire.ActivityThinking, StartedAt: now})
 
 	// With StartedAt == now (0ms elapsed), the gate should hide the spinner.
-	frame := m.activeSpinnerFrame(session.ActivityThinking)
+	frame := m.activeSpinnerFrame(acpwire.ActivityThinking)
 	if frame != "" {
 		t.Fatalf("activeSpinnerFrame = %q, want \"\" (hidden before 200ms)", frame)
 	}
@@ -51,10 +52,10 @@ func TestSpinnerShownAfter200ms(t *testing.T) {
 	m := testModel(state)
 	m.now = func() time.Time { return now }
 	m.spinnerFrame = "⠋"
-	m.state.SetActivity(session.Activity{Kind: session.ActivityThinking, StartedAt: now.Add(-300 * time.Millisecond)})
+	m.state.SetActivity(session.Activity{Kind: acpwire.ActivityThinking, StartedAt: now.Add(-300 * time.Millisecond)})
 
 	// With 300ms elapsed (>= 200ms), the gate should show the spinner.
-	frame := m.activeSpinnerFrame(session.ActivityThinking)
+	frame := m.activeSpinnerFrame(acpwire.ActivityThinking)
 	if frame != "⠋" {
 		t.Fatalf("activeSpinnerFrame = %q, want \"⠋\" (shown after 200ms)", frame)
 	}
@@ -64,9 +65,9 @@ func TestSpinnerAlwaysHiddenForIdle(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	m := testModel(state)
 	m.spinnerFrame = "⠋"
-	m.state.SetActivity(session.Activity{Kind: session.ActivityIdle, StartedAt: time.Unix(0, 0)})
+	m.state.SetActivity(session.Activity{Kind: acpwire.ActivityIdle, StartedAt: time.Unix(0, 0)})
 
-	frame := m.activeSpinnerFrame(session.ActivityIdle)
+	frame := m.activeSpinnerFrame(acpwire.ActivityIdle)
 	if frame != "" {
 		t.Fatalf("activeSpinnerFrame for idle = %q, want \"\"", frame)
 	}
@@ -172,13 +173,13 @@ func TestSpinnerHiddenDuringSDDRun(t *testing.T) {
 	m := testModel(state)
 	m.now = func() time.Time { return now }
 	m.spinnerFrame = "⠋"
-	m.state.SetActivity(session.Activity{Kind: session.ActivityThinking, StartedAt: now.Add(-time.Second)})
+	m.state.SetActivity(session.Activity{Kind: acpwire.ActivityThinking, StartedAt: now.Add(-time.Second)})
 	m.state.SetSDDProgress(session.SDDProgress{Active: true})
 
 	// Past the 200ms gate the spinner would normally show — but during an
 	// SDD run the run panel owns all motion, so transcript activity rows
 	// get "" and render their static glyph instead.
-	if frame := m.activeSpinnerFrame(session.ActivityThinking); frame != "" {
+	if frame := m.activeSpinnerFrame(acpwire.ActivityThinking); frame != "" {
 		t.Fatalf("activeSpinnerFrame during SDD = %q, want \"\" (run panel owns the spinner)", frame)
 	}
 }

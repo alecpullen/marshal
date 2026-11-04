@@ -7,8 +7,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/acpwire"
-	"marshal/internal/app/session"
-	"marshal/internal/app/tui/glyph"
 )
 
 // swarmStripText renders `swarm 3/5 · implementer — round 1/2`.
@@ -30,22 +28,6 @@ func swarmStripText(p acpwire.SwarmProgress) string {
 		if detail != "" {
 			text += " — " + detail
 		}
-	}
-	return text
-}
-
-// browserStripText renders `◇ example.com/docs · Title · standalone`
-// plus the tool spinner while a browser action is in flight.
-func browserStripText(bi session.BrowserInfo, spinner string) string {
-	text := browserGlyphStyle().Render(glyph.Web) + " " + urlStyle().Render(truncateURL(bi.URL, 40))
-	if bi.Title != "" {
-		text += dimSep(bi.Title)
-	}
-	if bi.Mode != "" {
-		text += dimSep(bi.Mode)
-	}
-	if bi.Active {
-		text += dimSep(spinnerLabel(spinner, bi.ToolName))
 	}
 	return text
 }

@@ -16,7 +16,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/acpwire"
-	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/liveregion"
 	"marshal/internal/app/tui/theme"
@@ -483,35 +482,35 @@ func renderMessage(msg *acpwire.WireMessage, width int) string {
 	// (ContentTypeSkillBody) is model context, not transcript content, and
 	// the tag (ContentTypeSkill) renders as a compact one-line trace
 	// regardless of the role it was stored under (always RoleSystem today).
-	switch session.ContentType(cp.ContentType) {
-	case session.ContentTypeSkillBody:
+	switch cp.ContentType {
+	case acpwire.ContentTypeSkillBody:
 		return ""
-	case session.ContentTypeSkill:
+	case acpwire.ContentTypeSkill:
 		return renderSkillTag(cp.Content, width)
-	case session.ContentTypeCompaction:
+	case acpwire.ContentTypeCompaction:
 		return renderCompactionMarker(cp.Content, width)
-	case session.ContentTypeSubagentReport:
+	case acpwire.ContentTypeSubagentReport:
 		return ""
-	case session.ContentTypeWatchReport:
+	case acpwire.ContentTypeWatchReport:
 		return ""
-	case session.ContentTypeSteering:
+	case acpwire.ContentTypeSteering:
 		return renderSteeringMarker(cp.Content, width)
 	}
 	if cp.Final {
 		return renderFinalAnswer(&cp, width)
 	}
-	if session.Role(cp.Role) == session.RoleUser {
+	if cp.Role == acpwire.RoleUser {
 		return renderUserMessage(cp.Content, width)
 	}
-	if session.Role(cp.Role) == session.RoleSystem {
+	if cp.Role == acpwire.RoleSystem {
 		return renderSystemNotice(cp.Content, width)
 	}
-	switch session.ContentType(cp.ContentType) {
-	case session.ContentTypePlan:
+	switch cp.ContentType {
+	case acpwire.ContentTypePlan:
 		return renderPlanBlock(cp.Content, width)
-	case session.ContentTypeToolResult:
+	case acpwire.ContentTypeToolResult:
 		return renderToolResultLine(cp.Content, width)
-	case session.ContentTypeCode:
+	case acpwire.ContentTypeCode:
 		return gutterPrefix(glyph.Rail, accentColor) + renderCodeBlock(cp.Content, max(width-3, 1)) + "\n"
 	default: // plain and markdown prose render identically
 		return renderAgentMarkdown(cp.Content, width)
@@ -569,13 +568,13 @@ func renderItem(w *acpwire.WireNode, d *acpwire.NodeDetail, expanded bool, width
 		return renderThinkingSummary(w.Thinking.Text, time.Duration(w.Thinking.DurationMs)*time.Millisecond, expanded, width)
 	case w.Message != nil:
 		msg := w.Message
-		if session.ContentType(msg.ContentType) == session.ContentTypeSkillAuto {
+		if msg.ContentType == acpwire.ContentTypeSkillAuto {
 			return renderAutoSkills(msg.Content, expanded, width)
 		}
 		// Narration is a distinct block type: it renders through its own
 		// renderer — the same markdown as the final answer, on the ambient
 		// gutter — rather than falling through to renderMessage.
-		if session.ContentType(msg.ContentType) == session.ContentTypeNarration {
+		if msg.ContentType == acpwire.ContentTypeNarration {
 			return renderNarration(msg.Content, width)
 		}
 		// The reasoning is the whole of it when the detail holds it; the
@@ -615,7 +614,7 @@ func renderSkillTag(name string, width int) string {
 // renderSteeringMarker renders a user-typed mid-turn steering message as a
 // compact dim one-line marker. The user DID type it, so an honest transcript
 // shows it — but visually distinct from a real ❯ prompt (no userColor, no
-// turn separator; session.IsUserTurnMessage excludes it) so a long turn's
+// turn separator; the session's IsUserTurnMessage excludes it) so a long turn's
 // interventions read as asides, not new turns. Content is the enveloped form
 // ("[user steering, mid-turn]: ..."); the envelope prefix is stripped here
 // because the gutter + "steering:" label already say what it is.

@@ -14,10 +14,12 @@ const (
 	CodeHumanGateRequired ErrorCode = "human_gate_required"
 	// CodeKeyringUnavailable means the OS keychain cannot be reached.
 	CodeKeyringUnavailable ErrorCode = "keyring_unavailable"
-	// CodeAuthRequired means a provider or MCP server needs a login.
+	// CodeAuthRequired means a provider or MCP server needs a login. A failed
+	// run's data is an ErrorData carrying the notice (plan 6).
 	CodeAuthRequired ErrorCode = "auth_required"
-	// CodeProviderError means a provider rejected the call. Data carries its
-	// fields, which plan 7 defines.
+	// CodeProviderError means a provider rejected the call. Its data is an
+	// ErrorData: a failed run's carries the notice (plan 6), and plan 7 adds
+	// the provider's fields.
 	CodeProviderError ErrorCode = "provider_error"
 	// CodeStaleWorkCursor means the work cursor is older than the work snapshot.
 	CodeStaleWorkCursor ErrorCode = "stale_work_cursor"

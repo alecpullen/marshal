@@ -7,13 +7,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/config"
-	"marshal/internal/app/session"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/app/tui/theme"
@@ -36,7 +34,7 @@ func TestPanelRootList(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p := NewPanel(home, work, true, session.New(config.Config{}, work, time.Now(), session.Persistence{}))
+	p := NewPanel(home, work, true, nil)
 	rows := settings.FieldListRows(p.list)
 	found := false
 	for _, r := range rows {
@@ -52,7 +50,7 @@ func TestPanelRootList(t *testing.T) {
 func TestPanelViewRendersPushedInstallFrame(t *testing.T) {
 	home := t.TempDir()
 	work := t.TempDir()
-	p := NewPanel(home, work, true, session.New(config.Config{}, work, time.Now(), session.Persistence{}))
+	p := NewPanel(home, work, true, nil)
 
 	// With no plugins installed, the only selectable row is "＋ Install plugin".
 	p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -1374,4 +1372,19 @@ func TestPluginEscapeCancelsEditBeforeScanAbandonment(t *testing.T) {
 		mustExistPath(t, target)
 		mustKeepLockEntry(t, p, scopeGlobal, "demo")
 	})
+}
+
+// TestRemovingAPluginAsksForARestart pins that a finished removal tells the
+// user to restart, through the note function the panel was given.
+func TestRemovingAPluginAsksForARestart(t *testing.T) {
+	var notes []string
+	p := NewPanel(t.TempDir(), t.TempDir(), true, func(text string) {
+		notes = append(notes, text)
+	})
+	p.Update(removeResultMsg{Name: "demo", Scope: scopeGlobal})
+
+	want := "Restart Marshal to activate the plugin change."
+	if len(notes) != 1 || notes[0] != want {
+		t.Fatalf("notes = %q, want [%q]", notes, want)
+	}
 }

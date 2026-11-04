@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpclient/inproc"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/picker"
@@ -35,7 +36,7 @@ func makeSmokeModel(t *testing.T) Model {
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModel(state, WithCommandRegistry(reg))
+	m := testModelWith(inproc.Deps{State: state, Commands: reg})
 	m.resize(120, 40)
 	return m
 }
@@ -110,7 +111,7 @@ func TestSmokePickersProgrammatic(t *testing.T) {
 		if err := commands.RegisterAll(emptyReg, nil); err != nil {
 			t.Fatalf("RegisterAll: %v", err)
 		}
-		mm := testModel(emptyState, WithCommandRegistry(emptyReg))
+		mm := testModelWith(inproc.Deps{State: emptyState, Commands: emptyReg})
 		mm.resize(120, 40)
 		updated, _ := mm.dispatchCommand("/models")
 		mm2 := *(updated.(*Model))

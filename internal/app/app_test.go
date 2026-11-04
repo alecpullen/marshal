@@ -6772,7 +6772,12 @@ func TestAdapterAccessFollowsNewSession(t *testing.T) {
 	})
 	// The Deps are built once, over the old state, as production builds them:
 	// their callbacks read the runtime's current state, so the same seam keeps
-	// working after a swap.
+	// working after a swap. The registry reaches the session through them, so
+	// the replacement session keeps its commands too.
+	reg := commands.New()
+	if err := commands.RegisterAll(reg, nil); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
 	deps := inproc.Deps{
 		State:          oldState,
 		AccessRequest:  rt.AccessRequest,
@@ -6780,6 +6785,7 @@ func TestAdapterAccessFollowsNewSession(t *testing.T) {
 		SetInteraction: rt.SetInteraction,
 		SetEffort:      rt.SetSessionEffort,
 		NewSession:     rt.NewSession,
+		Commands:       reg,
 	}
 	host, oldSess := inproc.New(deps)
 	oldModel := tui.New(host, oldSess, tui.WithLegacyState(oldState))
@@ -6821,11 +6827,7 @@ func TestAdapterAccessFollowsNewSession(t *testing.T) {
 	}
 
 	// The same Deps now drive the replacement session.
-	reg := commands.New()
-	if err := commands.RegisterAll(reg, nil); err != nil {
-		t.Fatalf("RegisterAll: %v", err)
-	}
-	newModel := tui.New(host, newSess, tui.WithLegacyState(newState), tui.WithCommandRegistry(reg))
+	newModel := tui.New(host, newSess, tui.WithLegacyState(newState))
 	newReq, newDecisions := accessTUIRequest(t, newState, session.AccessIntent{
 		System: true, Reason: "The agent requests system access.",
 	})
@@ -6949,10 +6951,10 @@ func TestRuntimeSendNowTUIOptionsExerciseRealFacade(t *testing.T) {
 	}
 
 	model := testTUIModelWith(inproc.Deps{
-		State:  state,
-		Runner: func() inproc.Runner { return agentProcess },
+		State:    state,
+		Runner:   func() inproc.Runner { return agentProcess },
+		Commands: reg,
 	},
-		tui.WithCommandRegistry(reg),
 		tui.WithContext(runCtx),
 	)
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 120, Height: 40})

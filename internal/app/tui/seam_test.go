@@ -14,6 +14,7 @@ import (
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/commands"
 )
 
 // testSession returns the client session the in-process adapter builds over
@@ -56,12 +57,15 @@ func withPromptRunner(m Model, r inproc.Runner) Model {
 // stubSession wraps the adapter's session for tests that need a value only
 // events or a call produce: patch adjusts every Status read, onSendNow sees
 // each SendNow request before the adapter does, onRefreshSheet sees each
-// RefreshSheet request, and sheetPatch adjusts every Sheet read.
+// RefreshSheet request, onAddNote sees each Note before the adapter does, and
+// sheetPatch adjusts every Sheet read.
 type stubSession struct {
 	acpclient.Session
 	patch          func(*acpwire.SessionStatus)
 	onSendNow      func(acpwire.SendNowRequest)
 	onRefreshSheet func(acpwire.SheetRefresh)
+	onAddNote      func(acpwire.Note)
+	onDismissNote  func()
 	sheetPatch     func(*acpwire.SessionSheet)
 }
 
@@ -87,6 +91,20 @@ func (s *stubSession) RefreshSheet(ctx context.Context, req acpwire.SheetRefresh
 	return s.Session.RefreshSheet(ctx, req)
 }
 
+func (s *stubSession) AddNote(ctx context.Context, note acpwire.Note) error {
+	if s.onAddNote != nil {
+		s.onAddNote(note)
+	}
+	return s.Session.AddNote(ctx, note)
+}
+
+func (s *stubSession) DismissNotice(ctx context.Context) error {
+	if s.onDismissNote != nil {
+		s.onDismissNote()
+	}
+	return s.Session.DismissNotice(ctx)
+}
+
 func (s *stubSession) Sheet(subagentID int64) acpwire.SessionSheet {
 	sheet := s.Session.Sheet(subagentID)
 	if s.sheetPatch != nil {
@@ -98,10 +116,23 @@ func (s *stubSession) Sheet(subagentID int64) acpwire.SessionSheet {
 // testModelStub builds a model whose session is stub, wrapped around an
 // adapter session over state.
 func testModelStub(state *session.State, stub *stubSession, opts ...Option) Model {
-	host, sess := inproc.New(inproc.Deps{State: state})
+	return testModelStubWith(inproc.Deps{State: state}, stub, opts...)
+}
+
+// testModelStubWith is testModelStub over an adapter made from d.
+func testModelStubWith(d inproc.Deps, stub *stubSession, opts ...Option) Model {
+	host, sess := inproc.New(d)
 	stub.Session = sess
-	all := append([]Option{WithLegacyState(state)}, opts...)
+	all := append([]Option{WithLegacyState(d.State)}, opts...)
 	return New(host, stub, all...)
+}
+
+// withCommands replaces m's session with one over m's state whose registry is
+// reg, as withPromptRunner does for the runner.
+func withCommands(m Model, reg *commands.Registry) Model {
+	_, sess := inproc.New(inproc.Deps{State: m.state, Commands: reg})
+	m.sess = sess
+	return m
 }
 
 // batchResults runs cmd and returns the messages it produces. The commands of

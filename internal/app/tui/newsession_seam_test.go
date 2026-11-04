@@ -41,11 +41,10 @@ func (f *fakeNewSession) legacy() LegacySession {
 // whose end service is end, wiring the legacy read the way app.go does.
 func testModelReplacing(t *testing.T, oldState *session.State, f *fakeNewSession, end inproc.EndService, opts ...Option) Model {
 	t.Helper()
-	host, sess := inproc.New(inproc.Deps{State: oldState, NewSession: f.newSession, End: end})
+	host, sess := inproc.New(inproc.Deps{State: oldState, NewSession: f.newSession, End: end, Commands: setupCmdReg(t)})
 	all := append([]Option{
 		WithLegacyState(oldState),
 		WithLegacySession(f.legacy),
-		WithCommandRegistry(setupCmdReg(t)),
 	}, opts...)
 	return New(host, sess, all...)
 }

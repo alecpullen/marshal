@@ -254,7 +254,7 @@ func (s *Session) runTurn(ctx context.Context, run func(context.Context) error) 
 	}
 	// The run's work begins here: from this point the text is consumed even if
 	// a stop cancels it.
-	return false, true, callRun(runCtx, run)
+	return false, true, runError(callRun(runCtx, run))
 }
 
 // callRun runs one turn's work. A panic fails the turn, as runAgentCmd has it,

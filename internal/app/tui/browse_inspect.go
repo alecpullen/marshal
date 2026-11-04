@@ -11,7 +11,6 @@ import (
 	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/app/tui/inspector"
-	"marshal/internal/commands"
 	"marshal/internal/strutil"
 )
 
@@ -375,10 +374,10 @@ func (m *Model) stepInspector(delta int) {
 
 // openBrowseHelp shows the browse keys in a docked panel.
 func (m *Model) openBrowseHelp() (tea.Model, tea.Cmd, bool) {
-	row := func(k, d string) commands.Row { return commands.Row{Text: k, Detail: d} }
-	doc := commands.Doc{
+	row := func(k, d string) acpwire.WireRow { return acpwire.WireRow{Text: k, Detail: d} }
+	doc := acpwire.WireDoc{
 		Title: "Browse mode",
-		Rows: []commands.Row{
+		Rows: []acpwire.WireRow{
 			{Header: "Move"},
 			row("j / ↓   k / ↑", "next / previous node"),
 			row("J / ]   K / [", "next / previous task header or turn"),
@@ -396,7 +395,7 @@ func (m *Model) openBrowseHelp() (tea.Model, tea.Cmd, bool) {
 			row("any other key", "back to the input, and type it"),
 		},
 	}
-	m.dock.Open(docpanel.New(doc, m.state))
+	m.dock.Open(docpanel.New(doc, nil))
 	m.refreshViewport()
 	return *m, nil, true
 }

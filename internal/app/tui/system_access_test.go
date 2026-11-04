@@ -33,8 +33,7 @@ func TestSystemCommandTogglesFlagAndNotes(t *testing.T) {
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, SetInteraction: state.ApplyInteraction},
-		WithCommandRegistry(reg))
+	m := testModelWith(inproc.Deps{State: state, SetInteraction: state.ApplyInteraction, Commands: reg})
 	m.resize(80, 24)
 
 	if state.SystemAccess() {
@@ -365,8 +364,8 @@ func TestAccessPanelQueuesBehindOtherDockAndPreservesDraft(t *testing.T) {
 	f := newAccessTestFixture(t, 120, 40, config.Default())
 
 	// A FullFrame doc panel stands in for any unrelated panel holding the dock.
-	doc := commands.Doc{Title: "Inspector", FullFrame: true, Rows: []commands.Row{{Text: "row"}}}
-	f.m.dock.Open(docpanel.New(doc, f.state))
+	doc := acpwire.WireDoc{Title: "Inspector", FullFrame: true, Rows: []acpwire.WireRow{{Text: "row"}}}
+	f.m.dock.Open(docpanel.New(doc, nil))
 	f.m.input.SetValue("half-written prompt")
 	f.m.input.Focus()
 

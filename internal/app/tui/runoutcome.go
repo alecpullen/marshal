@@ -7,9 +7,7 @@ import (
 	"time"
 
 	"marshal/internal/acpwire"
-	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
-	"marshal/internal/commands"
 	"marshal/internal/diffview"
 	"marshal/internal/worktree"
 )
@@ -23,6 +21,14 @@ const sddResumeHint = "Run /sdd and pick the same plan to resume from the ledger
 // diffContextLines is the context width for the branch diff.
 const diffContextLines = 3
 
+// The two row actions a run outcome doc carries. The TUI builds this doc
+// itself, so its actions run locally until plan 8 moves the reads onto
+// session/diff and session/file.
+const (
+	outcomeDiffAction   = "diff"
+	outcomeLedgerAction = "ledger"
+)
+
 // runOutcomeDoc describes a finished plan run: what it produced, where the
 // work is, and what to do next.
 //
@@ -30,11 +36,11 @@ const diffContextLines = 3
 // controller.go CleanupWorktrees) and leaves only a branch name, while a
 // failed run collapsed to an 80-character truncated error with no route to
 // the ledger or the per-task reports.
-func runOutcomeDoc(p acpwire.SDDProgress, git worktree.GitOps, repoRoot string, now time.Time, width int) commands.Doc {
+func runOutcomeDoc(p acpwire.SDDProgress, now time.Time) acpwire.WireDoc {
 	if !p.Finished && !p.Active {
-		return commands.Doc{
+		return acpwire.WireDoc{
 			Title:  "Plan run",
-			Rows:   []commands.Row{{Text: "No plan run in this session."}},
+			Rows:   []acpwire.WireRow{{Text: "No plan run in this session."}},
 			Footer: "Run /sdd to start one.",
 		}
 	}
@@ -55,18 +61,18 @@ func runOutcomeDoc(p acpwire.SDDProgress, git worktree.GitOps, repoRoot string, 
 		status = "completed"
 	}
 
-	var rows []commands.Row
-	rows = append(rows, commands.Row{Header: "Run"})
-	rows = append(rows, commands.Row{
+	var rows []acpwire.WireRow
+	rows = append(rows, acpwire.WireRow{Header: "Run"})
+	rows = append(rows, acpwire.WireRow{
 		Text:   p.PlanName,
 		Detail: fmt.Sprintf("%s · %d/%d tasks · %s", status, p.DoneTasks, p.TotalTasks, formatElapsed(end.Sub(acpwire.Time(p.StartedAt)))),
 	})
 	if p.Branch != "" {
-		rows = append(rows, commands.Row{Text: "branch", Detail: p.Branch})
+		rows = append(rows, acpwire.WireRow{Text: "branch", Detail: p.Branch})
 	}
 	if p.Error != "" {
 		// The full reason, not the 80-character panel truncation.
-		rows = append(rows, commands.Row{Text: "reason", Detail: p.Error})
+		rows = append(rows, acpwire.WireRow{Text: "reason", Detail: p.Error})
 	}
 
 	if live {
@@ -80,13 +86,13 @@ func runOutcomeDoc(p acpwire.SDDProgress, git worktree.GitOps, repoRoot string, 
 		if low, high, openEnded, ok := estimateRemaining(p, now); ok {
 			progress += " · " + formatETA(low, high, openEnded)
 		}
-		rows = append(rows, commands.Row{Header: "Progress"})
-		rows = append(rows, commands.Row{Text: progress})
+		rows = append(rows, acpwire.WireRow{Header: "Progress"})
+		rows = append(rows, acpwire.WireRow{Text: progress})
 	}
 	if len(p.Tasks) > 0 {
-		rows = append(rows, commands.Row{Header: "Plan"})
+		rows = append(rows, acpwire.WireRow{Header: "Plan"})
 		for i, title := range p.Tasks {
-			rows = append(rows, commands.Row{
+			rows = append(rows, acpwire.WireRow{
 				Text:   fmt.Sprintf("%s %d %s", taskGlyph(i, p), i+1, title),
 				Detail: taskDuration(i, p, now),
 			})
@@ -100,29 +106,25 @@ func runOutcomeDoc(p acpwire.SDDProgress, git worktree.GitOps, repoRoot string, 
 		}
 	}
 
-	rows = append(rows, commands.Row{Header: "Inspect"})
+	rows = append(rows, acpwire.WireRow{Header: "Inspect"})
 	if p.Branch != "" && p.BaseRef != "" {
-		rows = append(rows, commands.Row{
+		rows = append(rows, acpwire.WireRow{
 			Text:        "branch diff",
 			Detail:      p.BaseRef + ".." + p.Branch,
 			ActionLabel: "view",
-			Action: func(state *session.State) commands.Result {
-				return commands.Result{Text: branchDiff(git, repoRoot, p.BaseRef, p.Branch, width)}
-			},
+			ActionID:    outcomeDiffAction,
 		})
 	}
 	if p.LedgerPath != "" {
-		rows = append(rows, commands.Row{
+		rows = append(rows, acpwire.WireRow{
 			Text:        "ledger",
 			Detail:      p.LedgerPath,
 			ActionLabel: "read",
-			Action: func(state *session.State) commands.Result {
-				return commands.Result{Text: readFileOrExplain(p.LedgerPath)}
-			},
+			ActionID:    outcomeLedgerAction,
 		})
 	}
 	if p.ArtifactsDir != "" {
-		rows = append(rows, commands.Row{
+		rows = append(rows, acpwire.WireRow{
 			Text:   "artifacts",
 			Detail: p.ArtifactsDir,
 			Desc:   "per-task briefs, implementer reports, and review verdicts",
@@ -133,7 +135,25 @@ func runOutcomeDoc(p acpwire.SDDProgress, git worktree.GitOps, repoRoot string, 
 	if !p.Succeeded {
 		footer = sddResumeHint
 	}
-	return commands.Doc{Title: "Plan run — " + p.PlanName, Rows: rows, Footer: footer}
+	return acpwire.WireDoc{Title: "Plan run — " + p.PlanName, Rows: rows, Footer: footer}
+}
+
+// runOutcomeActions returns the actions the outcome doc's action rows run: the
+// branch diff and the ledger read. The TUI builds this doc itself, so they run
+// locally until plan 8 moves the reads onto session/diff and session/file.
+func runOutcomeActions(p acpwire.SDDProgress, git worktree.GitOps, repoRoot string, width int) map[string]func() acpwire.CommandResult {
+	acts := make(map[string]func() acpwire.CommandResult, 2)
+	if p.Branch != "" && p.BaseRef != "" {
+		acts[outcomeDiffAction] = func() acpwire.CommandResult {
+			return acpwire.CommandResult{Text: branchDiff(git, repoRoot, p.BaseRef, p.Branch, width)}
+		}
+	}
+	if p.LedgerPath != "" {
+		acts[outcomeLedgerAction] = func() acpwire.CommandResult {
+			return acpwire.CommandResult{Text: readFileOrExplain(p.LedgerPath)}
+		}
+	}
+	return acts
 }
 
 // taskGlyph marks a task done, in progress, or pending — the same status

@@ -406,4 +406,51 @@ type Session interface {
 	//
 	// ACP: session/close (exists).
 	Close(ctx context.Context) error
+
+	// AddNote appends note to the transcript without starting a turn: a
+	// system message unless its role is user. It is persisted with the session,
+	// and every client sees it.
+	//
+	// ACP: session/note (new in P3).
+	AddNote(ctx context.Context, note acpwire.Note) error
+
+	// SetNotice makes notice the session's banner, replacing any other. A zero
+	// SetAt is stamped with the agent's clock.
+	//
+	// ACP: session/notice_set (new in P3). Status carries the current notice.
+	SetNotice(ctx context.Context, notice acpwire.Notice) error
+
+	// ClearNotice removes the banner only when its category is category, so a
+	// success in one subsystem never dismisses another's notice.
+	//
+	// ACP: session/notice_clear (new in P3).
+	ClearNotice(ctx context.Context, category string) error
+
+	// DismissNotice removes the banner, whatever its category.
+	//
+	// ACP: session/notice_dismiss (new in P3).
+	DismissNotice(ctx context.Context) error
+
+	// Commands lists the session's slash commands in name order, hidden ones
+	// included. It is empty when the session has no command registry.
+	//
+	// ACP: session/command_list (exists).
+	Commands() []acpwire.CommandInfo
+
+	// Command runs the named command's handler over the session with args and
+	// returns its output. A command without a handler returns an empty result
+	// from the in-process adapter; an adapter that cannot run the command at
+	// all — as the ACP manager cannot run a prompt-only or TUI-only entry —
+	// returns an error instead. The row actions of a returned doc carry IDs
+	// CommandAction runs.
+	//
+	// ACP: session/command (exists).
+	Command(ctx context.Context, name string, args []string) (acpwire.CommandResult, error)
+
+	// CommandAction runs the row action id names, from a recent Command or
+	// CommandAction result, and returns its output. An ID the session no
+	// longer keeps returns an error.
+	//
+	// ACP: session/command_action (new in P3).
+	CommandAction(ctx context.Context, id string) (acpwire.CommandResult, error)
 }

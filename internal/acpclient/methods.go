@@ -67,4 +67,11 @@ var Methods = []Method{
 	{Iface: "Session", Name: "RunExitAnalysis", ACP: "session/exit_analysis"},
 	{Iface: "Session", Name: "Postmortem", ACP: "session/postmortem"},
 	{Iface: "Session", Name: "Close", ACP: "session/close", Exists: true},
+	{Iface: "Session", Name: "AddNote", ACP: "session/note"},
+	{Iface: "Session", Name: "SetNotice", ACP: "session/notice_set"},
+	{Iface: "Session", Name: "ClearNotice", ACP: "session/notice_clear"},
+	{Iface: "Session", Name: "DismissNotice", ACP: "session/notice_dismiss"},
+	{Iface: "Session", Name: "Commands", ACP: "session/command_list", Exists: true},
+	{Iface: "Session", Name: "Command", ACP: "session/command", Exists: true},
+	{Iface: "Session", Name: "CommandAction", ACP: "session/command_action"},
 }

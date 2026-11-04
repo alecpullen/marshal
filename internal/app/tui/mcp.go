@@ -7,8 +7,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
-	"marshal/internal/app/session"
 	"marshal/internal/app/tui/mcpauth"
 	"marshal/internal/commands"
 	"marshal/internal/credentials"
@@ -20,7 +20,7 @@ import (
 // server whose config sets auth = "oauth".
 func (m *Model) handleMCPCommand(args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 || strings.ToLower(args[0]) != "auth" {
-		m.state.AddMessage(session.RoleSystem, "Usage: /mcp auth <name>", session.ContentTypePlain)
+		m.note("Usage: /mcp auth <name>")
 		m.refreshViewport()
 		return m, nil
 	}
@@ -28,7 +28,7 @@ func (m *Model) handleMCPCommand(args []string) (tea.Model, tea.Cmd) {
 	name := strings.TrimSpace(strings.Join(args[1:], " "))
 	srv, err := commands.ResolveOAuthServer(m.state.Config.MCP.Servers, name)
 	if err != nil {
-		m.state.AddMessage(session.RoleSystem, err.Error(), session.ContentTypePlain)
+		m.note(err.Error())
 		m.refreshViewport()
 		return m, nil
 	}
@@ -36,12 +36,10 @@ func (m *Model) handleMCPCommand(args []string) (tea.Model, tea.Cmd) {
 	store, err := m.auth.OpenStore("marshal")
 	if err != nil {
 		if errors.Is(err, credentials.ErrKeyringUnavailable) {
-			m.state.AddMessage(session.RoleSystem,
-				"OAuth tokens are stored in the OS keychain, which is unavailable here. "+
-					"Run Marshal on a machine with a working Keychain, Credential Manager, or Secret Service, then retry /mcp auth "+name+".",
-				session.ContentTypePlain)
+			m.note("OAuth tokens are stored in the OS keychain, which is unavailable here. " +
+				"Run Marshal on a machine with a working Keychain, Credential Manager, or Secret Service, then retry /mcp auth " + name + ".")
 		} else {
-			m.state.AddMessage(session.RoleSystem, "Cannot open the credential store: "+err.Error(), session.ContentTypePlain)
+			m.note("Cannot open the credential store: " + err.Error())
 		}
 		m.refreshViewport()
 		return m, nil
@@ -77,7 +75,7 @@ func (m *Model) mcpOAuthEngine(srv config.MCPServerConfig, store credentials.Sto
 		ClientName: "marshal",
 		Store:      store,
 		Open:       func(u string) { _ = open(u) },
-		Logger:     m.state.Logger(),
+		Logger:     m.log(),
 	}
 }
 
@@ -104,17 +102,15 @@ func (m *Model) reconnectMCPServer(name string) {
 	// but if the server still fails to start, the rebuild sets a fresh notice
 	// of its own, and clearing notices afterwards (as afterRuntimeReload does)
 	// would wipe it and leave the user with a bare success message.
-	m.state.ClearNotice(session.NoticeProvider)
-	m.state.ClearNotice(session.NoticeConfig)
+	_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeProvider)
+	_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeConfig)
 	// reloadAgentRuntime may install cfg before reporting a cleanup error;
 	// invalidate config-derived state before attempting it, mirroring the
 	// settings-browser and /set reload paths.
 	m.setReg = nil
 	if err := m.configReloader(cfg); err != nil {
 		m.applyNewConfig(cfg)
-		m.state.AddMessage(session.RoleSystem,
-			"\u2717 Authorized MCP server \""+name+"\", but it could not be connected: "+err.Error(),
-			session.ContentTypePlain)
+		m.note("\u2717 Authorized MCP server \"" + name + "\", but it could not be connected: " + err.Error())
 		return
 	}
 	// A runner the reload builds is used from the next turn: the session reads
@@ -142,18 +138,12 @@ func (m *Model) handleMCPAuthDone(msg mcpauth.AuthDoneMsg) (tea.Model, tea.Cmd) 
 	m.dock.CloseNow()
 	switch {
 	case msg.Err == nil:
-		m.state.AddMessage(session.RoleSystem,
-			"\u2713 Authorized MCP server \""+name+"\". Tokens are stored in the OS keychain.",
-			session.ContentTypePlain)
+		m.note("\u2713 Authorized MCP server \"" + name + "\". Tokens are stored in the OS keychain.")
 		m.reconnectMCPServer(name)
 	case errors.Is(msg.Err, context.Canceled):
-		m.state.AddMessage(session.RoleSystem,
-			"Authorization cancelled; no credentials were saved.",
-			session.ContentTypePlain)
+		m.note("Authorization cancelled; no credentials were saved.")
 	default:
-		m.state.AddMessage(session.RoleSystem,
-			"Authorization failed: "+msg.Err.Error(),
-			session.ContentTypePlain)
+		m.note("Authorization failed: " + msg.Err.Error())
 	}
 	m.refreshViewport()
 	return m, nil

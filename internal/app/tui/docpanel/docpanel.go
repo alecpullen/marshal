@@ -1,4 +1,4 @@
-// Package docpanel renders a commands.Doc as an interactive dock panel
+// Package docpanel renders an acpwire.WireDoc as an interactive dock panel
 // using the listpanel engine: section headers, title/detail rows, Enter
 // actions, and one level of drill-in.
 package docpanel
@@ -7,52 +7,42 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"marshal/internal/app/session"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/listpanel"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/commands"
 )
 
 // ClosedMsg asks the host to close the panel.
 type ClosedMsg struct{}
 
-// ActionMsg carries the Result a row action produced.
-type ActionMsg struct{ Result commands.Result }
-
-// Panel is a dock.Panel over a commands.Doc.
+// Panel is a dock.Panel over an acpwire.WireDoc.
 type Panel struct {
-	state *session.State
-	doc   commands.Doc
+	doc   acpwire.WireDoc
+	act   func(actionID string) tea.Cmd
 	stack *listpanel.PaneStack
-	// source, when set, re-supplies the doc on every render so a panel over
-	// changing data (the Ctrl+T Tasks list) stays live.
-	source func() commands.Doc
 }
 
 var _ dock.Panel = (*Panel)(nil)
 
 // New builds a panel for doc. Rows are converted eagerly; drill frames are
-// built lazily by the engine on Enter.
-func New(doc commands.Doc, state *session.State) *Panel {
-	p := &Panel{state: state, doc: doc}
+// built lazily by the engine on Enter. act runs a row's action ID: the panel
+// itself never holds a Go closure, so a doc that crossed the wire and one the
+// TUI built behave the same. A nil act renders every action row as plain text.
+func New(doc acpwire.WireDoc, act func(actionID string) tea.Cmd) *Panel {
+	p := &Panel{doc: doc, act: act}
 	root := listpanel.NewFrame(doc.Title, func() []*listpanel.Field {
-		return rowsToFields(p.doc.Rows, state)
+		return rowsToFields(p.doc.Rows, act)
 	})
 	p.stack = listpanel.NewPaneStack(root)
 	return p
 }
 
-// SetSource makes the panel re-read its doc from fn on every render. The
-// Model calls it each frame so fn sees the current model value rather than
-// the copy the panel was opened from.
-func (p *Panel) SetSource(fn func() commands.Doc) { p.source = fn }
-
-// rowsToFields converts Doc rows to engine fields. Shared by the root frame
+// rowsToFields converts wire rows to engine fields. Shared by the root frame
 // and drill-in children.
-func rowsToFields(rows []commands.Row, state *session.State) []*listpanel.Field {
+func rowsToFields(rows []acpwire.WireRow, act func(actionID string) tea.Cmd) []*listpanel.Field {
 	out := make([]*listpanel.Field, 0, len(rows))
 	for _, row := range rows {
 		row := row
@@ -67,11 +57,11 @@ func rowsToFields(rows []commands.Row, state *session.State) []*listpanel.Field 
 				Summary: func() string { return row.Detail },
 				Build: func() *listpanel.Frame {
 					return listpanel.NewFrame(row.Text, func() []*listpanel.Field {
-						return rowsToFields(children, state)
+						return rowsToFields(children, act)
 					})
 				},
 			})
-		case row.Action != nil:
+		case row.ActionID != "" && act != nil:
 			label := row.ActionLabel
 			if label == "" {
 				label = "↵ run"
@@ -79,9 +69,7 @@ func rowsToFields(rows []commands.Row, state *session.State) []*listpanel.Field 
 			out = append(out, &listpanel.Field{
 				ID: id, Title: row.Text, Kind: listpanel.KindAction, Desc: row.Desc,
 				ActLabel: func() string { return label },
-				Act: func() tea.Cmd {
-					return func() tea.Msg { return ActionMsg{Result: row.Action(state)} }
-				},
+				Act:      func() tea.Cmd { return act(row.ActionID) },
 			})
 		default:
 			out = append(out, &listpanel.Field{
@@ -116,9 +104,6 @@ func (p *Panel) Sizing() dock.Sizing {
 func (p *Panel) View(width, maxHeight int) string {
 	if maxHeight < 2 {
 		return ""
-	}
-	if p.source != nil {
-		p.doc = p.source()
 	}
 	pw := layout.PanelWidth(width)
 	inner := pw - 3

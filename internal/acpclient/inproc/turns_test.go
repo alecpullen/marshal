@@ -9,8 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/acpclient"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
+	"marshal/internal/llm/provider"
 )
 
 // fakeRunner is the agent runner the turn tests drive. It records each goal it
@@ -679,5 +681,46 @@ func TestAClosedSessionRunsNothing(t *testing.T) {
 
 	if got := fake.goalsSeen(); len(got) != 0 {
 		t.Errorf("runner goals = %v, want none on a closed session", got)
+	}
+}
+
+// TestPromptCodesAProviderError pins decision 4: a provider failure leaves the
+// run coded, with the banner its caller shows carried in the error's data.
+func TestPromptCodesAProviderError(t *testing.T) {
+	fake := newFakeRunner()
+	fake.err = &provider.ProviderError{Provider: "openai", StatusCode: 500, Body: "boom"}
+	_, sess := New(Deps{State: newState(t, "s1"), Runner: func() Runner { return fake }})
+
+	_, err := sess.Prompt(context.Background(), acpwire.PromptParams{Text: "hello"})
+	if err == nil {
+		t.Fatal("Prompt error = nil, want the coded provider error")
+	}
+	var coded *acpwire.Error
+	if !errors.As(err, &coded) {
+		t.Fatalf("err = %T, want *acpwire.Error", err)
+	}
+	if coded.Code != acpwire.CodeProviderError {
+		t.Errorf("code = %q, want %q", coded.Code, acpwire.CodeProviderError)
+	}
+	n, ok := acpclient.NoticeOf(err)
+	if !ok {
+		t.Fatal("the coded error must carry the notice")
+	}
+	if n.Category != acpwire.NoticeProvider || n.Hint == "" {
+		t.Errorf("notice = %+v, want a provider notice with a hint", n)
+	}
+}
+
+// TestPromptPassesOtherErrorsThrough pins the other half of decision 4: an
+// error the agent did not classify reaches the caller as the same value.
+func TestPromptPassesOtherErrorsThrough(t *testing.T) {
+	fake := newFakeRunner()
+	plain := errors.New("boom")
+	fake.err = plain
+	_, sess := New(Deps{State: newState(t, "s1"), Runner: func() Runner { return fake }})
+
+	_, err := sess.Prompt(context.Background(), acpwire.PromptParams{Text: "hello"})
+	if err != plain {
+		t.Fatalf("err = %v, want the same error value back", err)
 	}
 }

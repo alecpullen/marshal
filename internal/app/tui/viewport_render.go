@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"marshal/internal/acpwire"
-	"marshal/internal/app/session"
 	"marshal/internal/app/tui/theme"
 )
 
@@ -47,7 +46,7 @@ func (m *Model) viewFacts() viewFacts {
 	if !drilling {
 		f.workdir = st.Workspace.ActiveRoot
 		f.routeModel, f.routeProvider = st.ActiveRoute.Model, st.ActiveRoute.Provider
-		if st.Activity.Kind == string(session.ActivityReconnecting) && st.Activity.Label != "" {
+		if st.Activity.Kind == acpwire.ActivityReconnecting && st.Activity.Label != "" {
 			f.reconnect = st.Activity.Label
 		}
 		// Only the root state records sandbox info, so a drilled view leaves
@@ -67,7 +66,7 @@ func (m *Model) viewFacts() viewFacts {
 	if v.Drill != nil {
 		f.workdir = v.Drill.ActiveRoot
 		f.routeModel, f.routeProvider = v.Drill.ActiveRoute.Model, v.Drill.ActiveRoute.Provider
-		if v.Drill.Activity.Kind == string(session.ActivityReconnecting) && v.Drill.Activity.Label != "" {
+		if v.Drill.Activity.Kind == acpwire.ActivityReconnecting && v.Drill.Activity.Label != "" {
 			f.reconnect = v.Drill.Activity.Label
 		}
 	}
@@ -109,8 +108,12 @@ func (m *Model) refreshViewport() {
 
 	width := m.viewport.Width()
 	themeSig := themeFingerprint()
-	queued := m.sess.Status().Steering.Queue
-	notice, noticeUp := m.state.Notice()
+	status := m.sess.Status()
+	queued := status.Steering.Queue
+	notice, noticeUp := acpwire.Notice{}, false
+	if status.Notice != nil {
+		notice, noticeUp = *status.Notice, true
+	}
 	facts := m.viewFacts()
 	hasTurns := m.hasConversationTurns(snap.Roots)
 
@@ -122,7 +125,7 @@ func (m *Model) refreshViewport() {
 	}
 	m.lastTranscriptHash = sig
 
-	toolFrame := m.activeSpinnerFrame(session.ActivityTool)
+	toolFrame := m.activeSpinnerFrame(acpwire.ActivityTool)
 	rctx := &stepRenderCtx{
 		expanded:      m.expandedUnder,
 		liveExpanded:  func(id nodeID) bool { return m.isToolExpanded(id, true) },
@@ -133,7 +136,7 @@ func (m *Model) refreshViewport() {
 		pointer:       workPointer(m.workSnapshot.Items),
 		spinner:       m.spinnerFrame,
 		toolSpinner:   toolFrame,
-		thinkSpinner:  m.activeSpinnerFrame(session.ActivityThinking),
+		thinkSpinner:  m.activeSpinnerFrame(acpwire.ActivityThinking),
 		now:           m.now(),
 		routeModel:    facts.routeModel,
 		routeProvider: facts.routeProvider,
@@ -215,7 +218,7 @@ func (m *Model) refreshViewport() {
 		}
 	}
 	if facts.reconnect != "" {
-		addBlock(blockKey{name: "reconnect"}, renderReconnectNotice(facts.reconnect, m.activeSpinnerFrame(session.ActivityReconnecting), width), nil, nil)
+		addBlock(blockKey{name: "reconnect"}, renderReconnectNotice(facts.reconnect, m.activeSpinnerFrame(acpwire.ActivityReconnecting), width), nil, nil)
 	}
 	if noticeUp {
 		addBlock(blockKey{name: "notice"}, renderNotice(notice, width), nil, nil)
@@ -438,7 +441,7 @@ func (m *Model) hasConversationTurns(roots []string) bool {
 	walk = func(w *acpwire.WireNode) bool {
 		switch w.Kind {
 		case acpwire.KindMessage, acpwire.KindFinal:
-			if w.Message != nil && w.Message.Role == string(session.RoleAssistant) {
+			if w.Message != nil && w.Message.Role == acpwire.RoleAssistant {
 				return true
 			}
 		case acpwire.KindStep:
@@ -486,7 +489,7 @@ func (m *Model) blockTarget(w *acpwire.WireNode) *clickTarget {
 	case w.Kind == acpwire.KindThinking:
 		return &clickTarget{node: wireID(w)}
 	case w.Message != nil &&
-		session.ContentType(w.Message.ContentType) == session.ContentTypeSkillAuto:
+		w.Message.ContentType == acpwire.ContentTypeSkillAuto:
 		return &clickTarget{node: wireID(w)}
 	}
 	return nil
@@ -579,7 +582,7 @@ func (m *Model) foldNodeSig(h sigWriter, w *acpwire.WireNode, c *stepRenderCtx) 
 // into one number. Live nodes also fold the spinner frame and the clock, so a
 // running session changes the signature each tick while a settled one does
 // not.
-func (m *Model) contentSignature(roots []string, facts viewFacts, width int, themeSig uint64, queued []string, notice session.Notice, noticeUp bool, hasTurns bool) uint64 {
+func (m *Model) contentSignature(roots []string, facts viewFacts, width int, themeSig uint64, queued []string, notice acpwire.Notice, noticeUp bool, hasTurns bool) uint64 {
 	h := fnv.New64a()
 	fmt.Fprintf(h, "w%d|t%d|x%v|", width, themeSig, m.expandAll)
 	fmt.Fprintf(h, "turns%v|", hasTurns)

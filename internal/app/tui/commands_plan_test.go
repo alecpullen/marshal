@@ -29,7 +29,9 @@ func newDispatchModelWith(t *testing.T, d inproc.Deps, opts ...Option) Model {
 	if err := commands.RegisterAll(cmdReg, nil); err != nil {
 		t.Fatalf("RegisterAll() error = %v", err)
 	}
-	opts = append([]Option{WithCommandRegistry(cmdReg)}, opts...)
+	if d.Commands == nil {
+		d.Commands = cmdReg
+	}
 	m := testModelWith(d, opts...)
 	updated, _ := m.Update(teaWindowSize())
 	return asModel(t, updated)

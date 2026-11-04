@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpclient/inproc"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/doctorpanel"
@@ -38,7 +39,7 @@ func newDoctorSecretModel(t *testing.T) (Model, string) {
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModel(state, WithCommandRegistry(reg), WithHomeDir(home),
+	m := testModelWith(inproc.Deps{State: state, Commands: reg}, WithHomeDir(home),
 		WithAuthResolver(newMemAuth()), WithOpenBrowser(func(string) error { return nil }))
 	m.state.WorkingDir = work
 	m.workDir = work

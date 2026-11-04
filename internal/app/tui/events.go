@@ -1,6 +1,8 @@
 package tui
 
 import (
+	tea "charm.land/bubbletea/v2"
+
 	"marshal/internal/acpwire"
 )
 
@@ -46,3 +48,11 @@ type workActionMsg struct {
 // that its status may have changed. ch is the channel the pump read, so a
 // message from a replaced session's pump is recognised and dropped.
 type changedMsg struct{ ch <-chan struct{} }
+
+// docActionMsg is a doc row action's result. act is the function the action
+// ran through, so a doc the result carries acts the same way.
+type docActionMsg struct {
+	result acpwire.CommandResult
+	err    error
+	act    func(actionID string) tea.Cmd
+}

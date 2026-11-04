@@ -54,7 +54,8 @@ func TestProposalPersistsOnApprove(t *testing.T) {
 		VerifyProposal: func(context.Context) (acpwire.VerifyCommands, error) {
 			return acpwire.VerifyCommands{Build: "make build", Test: "make test"}, nil
 		},
-	}, WithCommandRegistry(reg))
+		Commands: reg,
+	})
 	m.resize(80, 24)
 
 	// Open the /sdd preflight on a manifest-less repo so the gate is unknown.

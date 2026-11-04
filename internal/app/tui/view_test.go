@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpclient/inproc"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -652,7 +653,7 @@ func newViewTestModelWithRegistry(t *testing.T, width, height int) Model {
 		Name: "tools", Description: "List tools", Args: "",
 		Handler: func(s *session.State, args []string) commands.Result { return commands.Text("") },
 	})
-	m := testModel(state, WithCommandRegistry(reg))
+	m := testModelWith(inproc.Deps{State: state, Commands: reg})
 	m.resize(width, height)
 	m.refreshViewport()
 	return m
@@ -692,7 +693,7 @@ func newViewTestModelWithRegistryAndFileIndex(t *testing.T, width, height int, p
 		Name: "help", Description: "Show help", Args: "",
 		Handler: func(s *session.State, args []string) commands.Result { return commands.Text("") },
 	})
-	m := testModel(state, WithCommandRegistry(reg), WithFileIndex(paths))
+	m := testModelWith(inproc.Deps{State: state, Commands: reg}, WithFileIndex(paths))
 	m.resize(width, height)
 	m.refreshViewport()
 	return m

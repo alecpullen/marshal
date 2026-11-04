@@ -9,7 +9,6 @@ import (
 
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
-	"marshal/internal/app/session"
 	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/app/tui/doctorpanel"
 	"marshal/internal/app/tui/memory"
@@ -79,10 +78,7 @@ func (m *Model) isSendNowCommand(raw string) bool {
 	if len(rest) > 0 && rest[0] != ' ' && rest[0] != '\t' && rest[0] != '\n' {
 		return false
 	}
-	if m.cmdRegistry == nil {
-		return false
-	}
-	_, ok = m.cmdRegistry.Lookup("send-now")
+	_, ok = m.lookupCommand("send-now")
 	return ok
 }
 
@@ -186,7 +182,7 @@ func startNewSession(m *Model, name string) tea.Cmd {
 	m.endStage = endIdle
 	sess, err := m.host.NewSession(m.ctx, name)
 	if err != nil {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to start new session: %v", err), session.ContentTypePlain)
+		m.note(fmt.Sprintf("Failed to start new session: %v", err))
 		m.refreshViewport()
 		return nil
 	}
@@ -209,6 +205,11 @@ func startNewSession(m *Model, name string) tea.Cmd {
 
 	// Drop per-message UI state that belongs to the old session.
 	m.viewStack = nil
+	// The command list follows the session, so the popup's cache of it does
+	// too: a replacement may report a different set.
+	if m.cmdPopup != nil {
+		m.cmdPopup.items = nil
+	}
 	m.syncTranscriptWidth()
 	m.resetExpansion()
 	m.nodeRegions = nil
@@ -225,7 +226,7 @@ func startNewSession(m *Model, name string) tea.Cmd {
 	if name != "" {
 		msg = fmt.Sprintf("Started new conversation named %q. Cleared %d messages.", name, oldCount)
 	}
-	m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
+	m.note(msg)
 	m.refreshViewport()
 	// The session is always new, so its change pump always starts here.
 	return tea.Batch(
@@ -264,7 +265,7 @@ func init() {
 		},
 		"memory": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
 			if m.memoryDB == nil {
-				m.state.AddMessage(session.RoleSystem, "Memory browser not available (no database configured).", session.ContentTypePlain)
+				m.note("Memory browser not available (no database configured).")
 				m.refreshViewport()
 				return m, nil
 			}
@@ -278,7 +279,16 @@ func init() {
 			return m, nil
 		},
 		"plugins": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			m.dock.Open(plugins.NewPanel(m.homeDir, m.workDir, m.sess.Status().Trusted, m.state))
+			// Capture the session and context the panel was opened with, so a
+			// later swap leaves the panel writing where it was opened, as the
+			// state it used to hold did.
+			sess, ctx := m.sess, m.ctx
+			log := m.log()
+			m.dock.Open(plugins.NewPanel(m.homeDir, m.workDir, m.sess.Status().Trusted, func(text string) {
+				if err := sess.AddNote(ctx, acpwire.Note{Text: text, ContentType: acpwire.ContentTypePlain}); err != nil {
+					log.Warn("plugin note dropped", "error", err)
+				}
+			}))
 			m.refreshViewport()
 			return m, nil
 		},
@@ -294,7 +304,7 @@ func init() {
 				// No pending decision (or none wired): the informative panel from
 				// the handler already rendered; steer to the shell path instead
 				// of opening a panel whose callback would panic on nil.
-				m.state.AddMessage(session.RoleSystem, "No trust decision pending. Grant permanent trust with `marshal --trust`, or restart in this directory to re-prompt once `.marshal/config.toml` exists here.", session.ContentTypePlain)
+				m.note("No trust decision pending. Grant permanent trust with `marshal --trust`, or restart in this directory to re-prompt once `.marshal/config.toml` exists here.")
 				m.refreshViewport()
 				return m, nil
 			}
@@ -337,7 +347,7 @@ func init() {
 					m.setInteractionMode(interaction.ModeAct)
 					return m, nil
 				default:
-					m.state.AddMessage(session.RoleSystem, "Usage: /mode [ask|act]", session.ContentTypePlain)
+					m.note("Usage: /mode [ask|act]")
 					m.refreshViewport()
 					return m, nil
 				}
@@ -350,20 +360,14 @@ func init() {
 			if len(args) > 0 && strings.ToLower(args[0]) == "unlock" {
 				on := !m.sess.Status().SudoUnlock
 				if err := m.sess.SetSudoUnlock(m.ctx, on); err != nil {
-					m.state.AddMessage(session.RoleSystem,
-						fmt.Sprintf("Could not change the privileged unlock: %v", err),
-						session.ContentTypePlain)
+					m.note(fmt.Sprintf("Could not change the privileged unlock: %v", err))
 					m.refreshViewport()
 					return m, nil
 				}
 				if on {
-					m.state.AddMessage(session.RoleSystem,
-						"Privileged unlock enabled: sudo's own timestamp grace applies (Defaults timestamp_timeout). Marshal still re-enters sudo for every command.",
-						session.ContentTypePlain)
+					m.note("Privileged unlock enabled: sudo's own timestamp grace applies (Defaults timestamp_timeout). Marshal still re-enters sudo for every command.")
 				} else {
-					m.state.AddMessage(session.RoleSystem,
-						"Privileged unlock disabled: every privileged command authenticates fresh.",
-						session.ContentTypePlain)
+					m.note("Privileged unlock disabled: every privileged command authenticates fresh.")
 				}
 				m.refreshViewport()
 				return m, nil
@@ -374,12 +378,12 @@ func init() {
 		"swarm": func(m *Model, args []string) (tea.Model, tea.Cmd) {
 			goal := strings.TrimSpace(strings.Join(args, " "))
 			if goal == "" {
-				m.state.AddMessage(session.RoleSystem, "Usage: /swarm <goal>", session.ContentTypePlain)
+				m.note("Usage: /swarm <goal>")
 				m.refreshViewport()
 				return m, nil
 			}
 			if !m.sess.Status().AgentReady {
-				m.state.AddMessage(session.RoleSystem, "Swarm is not available (agent failed to initialise).", session.ContentTypePlain)
+				m.note("Swarm is not available (agent failed to initialise).")
 				m.refreshViewport()
 				return m, nil
 			}
@@ -393,7 +397,7 @@ func init() {
 		"sdd": func(m *Model, args []string) (tea.Model, tea.Cmd) {
 			parsed, err := parseSDDArgs(args)
 			if err != nil {
-				m.state.AddMessage(session.RoleSystem, err.Error(), session.ContentTypePlain)
+				m.note(err.Error())
 				m.refreshViewport()
 				return m, nil
 			}
@@ -402,7 +406,7 @@ func init() {
 				return m.startSDDAuthoring(parsed)
 			}
 			if !m.sess.Status().AgentReady {
-				m.state.AddMessage(session.RoleSystem, "Plan execution is not available (agent failed to initialise).", session.ContentTypePlain)
+				m.note("Plan execution is not available (agent failed to initialise).")
 				m.refreshViewport()
 				return m, nil
 			}
@@ -420,7 +424,7 @@ func init() {
 			// reported here, before the preflight opens (decisions 3 and 9).
 			pf, err := m.sess.PlanPreflight(m.ctx, acpwire.PlanPreflightParams{PlanPath: planPath, Strategy: parsed.Strategy})
 			if err != nil {
-				m.state.AddMessage(session.RoleSystem, "Cannot start plan run: "+err.Error(), session.ContentTypePlain)
+				m.note("Cannot start plan run: " + err.Error())
 				m.refreshViewport()
 				return m, nil
 			}
@@ -430,8 +434,9 @@ func init() {
 		},
 		"run": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
 			st := m.sess.Status()
-			doc := runOutcomeDoc(st.SDD, worktree.CLIGitOps{}, st.WorkingDir, m.now(), m.width)
-			m.dock.Open(docpanel.New(doc, m.state))
+			doc := runOutcomeDoc(st.SDD, m.now())
+			acts := runOutcomeActions(st.SDD, worktree.CLIGitOps{}, st.WorkingDir, m.width)
+			m.dock.Open(docpanel.New(doc, localDocActions(acts)))
 			m.refreshViewport()
 			return m, nil
 		},
@@ -447,7 +452,7 @@ func init() {
 				return m, nil
 			}
 			if !m.sess.Status().AgentReady {
-				m.state.AddMessage(session.RoleSystem, "Agent runner is not available.", session.ContentTypePlain)
+				m.note("Agent runner is not available.")
 				m.refreshViewport()
 				return m, nil
 			}
@@ -455,7 +460,7 @@ func init() {
 			if base != "" && reviewRange != "" {
 				// Refused before anything starts: the run path owns the work
 				// membership, the stop group and the base's encoding.
-				m.state.AddMessage(session.RoleSystem, "review: --base and an explicit range are mutually exclusive", session.ContentTypePlain)
+				m.note("review: --base and an explicit range are mutually exclusive")
 				m.refreshViewport()
 				return *m, nil
 			}
@@ -499,7 +504,7 @@ func init() {
 			return m, nil
 		},
 		"save": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			m.state.AddMessage(session.RoleSystem, "Session saved. Marshal auto-saves messages, todos, and workspace state as you work.", session.ContentTypePlain)
+			m.note("Session saved. Marshal auto-saves messages, todos, and workspace state as you work.")
 			m.refreshViewport()
 			return m, nil
 		},

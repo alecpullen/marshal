@@ -12,6 +12,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpclient/inproc"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -48,7 +49,7 @@ func gitModel(t *testing.T) (Model, string) {
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModel(state, WithCommandRegistry(reg), WithHomeDir(t.TempDir()))
+	m := testModelWith(inproc.Deps{State: state, Commands: reg}, WithHomeDir(t.TempDir()))
 	m.resize(100, 40)
 	m.refreshViewport()
 	return m, dir

@@ -12,6 +12,8 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/connect"
+	"marshal/internal/llm/provider"
+	"marshal/internal/oauth"
 )
 
 // The provider notice must clear on every recovery path, not only on a
@@ -157,5 +159,69 @@ func TestCancelledTurnClearsProviderNotice(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("cancelled turn should still add the 'Agent turn cancelled.' message")
+	}
+}
+
+// A provider failure that reaches the TUI from a turn arrives coded: the
+// adapter classifies it agent side (decision 4), and the banner the agent
+// attached is the one the user sees.
+func TestAProviderErrorFromATurnSetsTheProviderNotice(t *testing.T) {
+	r := &fakeAgentRunner{
+		called: make(chan string, 1),
+		err:    &provider.ProviderError{Provider: "openai", StatusCode: 500, Body: "boom"},
+	}
+	state := modelTestState(t)
+	m := testModelWith(inproc.Deps{State: state, Runner: runnerOf(r)})
+	m.resize(80, 24)
+
+	m.input.SetValue("hello")
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = asModel(t, updated)
+	m = drainCmds(m, cmd)
+
+	n, ok := state.Notice()
+	if !ok {
+		t.Fatal("a failed turn must set a notice")
+	}
+	if n.Category != session.NoticeProvider {
+		t.Fatalf("category = %v, want NoticeProvider", n.Category)
+	}
+	if n.Source != "turn" {
+		t.Errorf("source = %q, want %q", n.Source, "turn")
+	}
+	if !strings.Contains(n.Hint, "/connect to review the provider") {
+		t.Errorf("hint = %q, want the review-the-provider hint", n.Hint)
+	}
+	msgs := state.Messages()
+	if len(msgs) == 0 || !strings.HasPrefix(msgs[len(msgs)-1].Content, "✘ Turn failed: ") {
+		t.Fatalf("last message = %q, want a compact turn-failed row", msgs[len(msgs)-1].Content)
+	}
+}
+
+// A login failure is a provider failure, but its hint names the one action
+// that fixes it: the sign-in, with the provider entry named.
+func TestALoginErrorFromATurnHintsSignIn(t *testing.T) {
+	r := &fakeAgentRunner{
+		called: make(chan string, 1),
+		err:    &oauth.ErrAuthRequired{ServerName: "codex", Reason: "no stored tokens"},
+	}
+	state := modelTestState(t)
+	m := testModelWith(inproc.Deps{State: state, Runner: runnerOf(r)})
+	m.resize(80, 24)
+
+	m.input.SetValue("hello")
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = asModel(t, updated)
+	m = drainCmds(m, cmd)
+
+	n, ok := state.Notice()
+	if !ok {
+		t.Fatal("a login failure must set a notice")
+	}
+	if n.Category != session.NoticeProvider {
+		t.Fatalf("category = %v, want NoticeProvider", n.Category)
+	}
+	if want := "Run /connect to sign in to codex."; n.Hint != want {
+		t.Errorf("hint = %q, want %q", n.Hint, want)
 	}
 }

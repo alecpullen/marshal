@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/acpclient/inproc"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/settings"
@@ -25,7 +26,7 @@ func newLayersTestModel(t *testing.T, work string) Model {
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModel(state, WithCommandRegistry(reg))
+	m := testModelWith(inproc.Deps{State: state, Commands: reg})
 	m.resize(80, 24)
 	m.refreshViewport()
 	return m

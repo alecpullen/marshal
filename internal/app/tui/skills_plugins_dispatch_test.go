@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/acpclient/inproc"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/plugins"
@@ -15,7 +16,7 @@ func TestSkillsCommandOpensPanel(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
 	reg := commands.New()
 	_ = commands.RegisterAll(reg, nil)
-	m := testModel(state, WithHomeDir(t.TempDir()), WithWorkingDir(t.TempDir()), WithCommandRegistry(reg))
+	m := testModelWith(inproc.Deps{State: state, Commands: reg}, WithHomeDir(t.TempDir()), WithWorkingDir(t.TempDir()))
 
 	m.dispatchCommand("/skills")
 	if _, ok := m.dock.Panel().(*skills.Panel); !ok {
@@ -27,7 +28,7 @@ func TestPluginsCommandOpensPanel(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
 	reg := commands.New()
 	_ = commands.RegisterAll(reg, nil)
-	m := testModel(state, WithHomeDir(t.TempDir()), WithWorkingDir(t.TempDir()), WithCommandRegistry(reg))
+	m := testModelWith(inproc.Deps{State: state, Commands: reg}, WithHomeDir(t.TempDir()), WithWorkingDir(t.TempDir()))
 
 	m.dispatchCommand("/plugins")
 	if _, ok := m.dock.Panel().(*plugins.Panel); !ok {

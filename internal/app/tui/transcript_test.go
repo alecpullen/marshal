@@ -247,9 +247,9 @@ func TestRenderActiveToolCallUsesGutter(t *testing.T) {
 }
 
 func TestRenderNoticeInline(t *testing.T) {
-	out := renderNotice(session.Notice{
-		Category: session.NoticeProvider,
-		Severity: session.SeverityError,
+	out := renderNotice(acpwire.Notice{
+		Category: acpwire.NoticeProvider,
+		Severity: acpwire.NoticeError,
 		Message:  "connection refused",
 	}, 80)
 	plain := stripANSI(out)
@@ -665,7 +665,7 @@ func TestBlockRenderersEndWithSingleNewline(t *testing.T) {
 		"system notice":  renderSystemNotice("note", 80),
 		"tool result":    renderToolResultLine("line1\nline2", 80),
 		"plan block":     renderPlanBlock("step 1", 80),
-		"provider error": renderNotice(session.Notice{Category: session.NoticeProvider, Severity: session.SeverityError, Message: "boom"}, 80),
+		"provider error": renderNotice(acpwire.Notice{Category: acpwire.NoticeProvider, Severity: acpwire.NoticeError, Message: "boom"}, 80),
 		"queued":         renderQueuedMessages([]string{"q1"}, 80),
 		"active tool": renderActiveToolCall(
 			wireRunning(session.ActiveToolCall{Name: "shell.run", Args: "go test", StartedAt: time.Unix(100, 0)}),

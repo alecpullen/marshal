@@ -5,7 +5,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/app/session"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/memory"
 )
 
@@ -101,8 +101,8 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		}
 		// Dismiss the notice banner, busy or idle: it is the most recent
 		// thing asking for attention.
-		if _, ok := m.state.Notice(); ok {
-			m.state.DismissNotice()
+		if m.sess.Status().Notice != nil {
+			_ = m.sess.DismissNotice(m.ctx)
 			m.refreshViewport()
 			return *m, nil, true
 		}
@@ -171,7 +171,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		if !m.mouseReleased {
 			verb = "captured — wheel scrolls, drag selects and copies"
 		}
-		m.state.AddMessage(session.RoleSystem, "Mouse "+verb+". Ctrl+S to toggle.", session.ContentTypePlain)
+		m.note("Mouse " + verb + ". Ctrl+S to toggle.")
 		m.refreshViewport()
 		return *m, nil, true
 	case "ctrl+b":
@@ -189,9 +189,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			// (tool approval, skill/plugin removal) confirms first.
 			if !m.rollbackArmed {
 				m.rollbackArmed = true
-				m.state.AddMessage(session.RoleSystem,
-					"Press Ctrl+R again to revert the last patch, or any other key to cancel.",
-					session.ContentTypePlain)
+				m.note("Press Ctrl+R again to revert the last patch, or any other key to cancel.")
 				m.refreshViewport()
 				return *m, nil, true
 			}
@@ -386,7 +384,11 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			return *m, nil, true
 		}
 		if !m.sess.Status().AgentReady {
-			m.state.AddMessage(session.RoleUser, value, session.ContentTypePlain)
+			// The echo is the user's own line, so a failed write must be
+			// logged rather than dropping what they typed in silence.
+			if err := m.sess.AddNote(m.ctx, acpwire.Note{Text: value, ContentType: acpwire.ContentTypePlain, Role: acpwire.RoleUser}); err != nil {
+				m.log().Warn("user echo dropped", "error", err)
+			}
 			m.refreshViewport()
 			return *m, nil, true
 		}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"image/color"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -54,7 +55,6 @@ import (
 	"marshal/internal/app/tui/steerpanel"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/app/tui/trustpanel"
-	"marshal/internal/commands"
 	"marshal/internal/db"
 	"marshal/internal/interaction"
 	"marshal/internal/llm/provider"
@@ -190,6 +190,9 @@ type Model struct {
 	// or paste attachments with the chat composer underneath it.
 	approvalEdit *approvalEdit
 	ctx          context.Context
+	// logger is the logger the TUI logs through. It is nil unless WithLogger
+	// sets it; log falls back to a discard logger.
+	logger *slog.Logger
 	// lspCtx is the context for background LSP reference lookups. It is
 	// derived from context.Background() rather than m.ctx because m.ctx is
 	// the program's cancellable turn context and can be nil or replaced on
@@ -241,7 +244,6 @@ type Model struct {
 	dataDir       string
 	workDir       string
 	skillIndex    *skills.Index
-	cmdRegistry   *commands.Registry
 	agentCancel   context.CancelFunc
 	// syncedAccessMode is the session mode the last reconciliation adopted.
 	// The sync is edge-triggered on it: a mode the model already reflects is
@@ -672,12 +674,6 @@ func WithTrustRefresh(refresh func(workingDir string)) Option {
 	return func(m *Model) { m.trustRefresh = refresh }
 }
 
-func WithCommandRegistry(reg *commands.Registry) Option {
-	return func(m *Model) {
-		m.cmdRegistry = reg
-	}
-}
-
 func WithHomeDir(homeDir string) Option {
 	return func(m *Model) {
 		m.homeDir = homeDir
@@ -785,6 +781,31 @@ func WithMemoryStore(database *db.DB, projectID int64) Option {
 func WithContext(ctx context.Context) Option {
 	return func(m *Model) {
 		m.ctx = ctx
+	}
+}
+
+// WithLogger sets the logger the TUI logs through. Without it, the model logs
+// to a discard logger.
+func WithLogger(l *slog.Logger) Option {
+	return func(m *Model) {
+		m.logger = l
+	}
+}
+
+// log is the model's logger, never nil.
+func (m *Model) log() *slog.Logger {
+	if m.logger == nil {
+		return slog.New(slog.DiscardHandler)
+	}
+	return m.logger
+}
+
+// note appends text to the transcript as a plain system note, through the
+// session. A dropped note is the one failure the user cannot see, so it is
+// logged at warn rather than debug.
+func (m *Model) note(text string) {
+	if err := m.sess.AddNote(m.ctx, acpwire.Note{Text: text, ContentType: acpwire.ContentTypePlain}); err != nil {
+		m.log().Warn("note dropped", "error", err)
 	}
 }
 
@@ -969,8 +990,8 @@ func (m *Model) adoptLayers(layers *config.Layers) {
 // provider construction worked). A runner a reload builds is used from the
 // next turn: the session reads the runtime's current runner on each call.
 func (m *Model) afterRuntimeReload() {
-	m.state.ClearNotice(session.NoticeProvider)
-	m.state.ClearNotice(session.NoticeConfig)
+	_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeProvider)
+	_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeConfig)
 }
 
 // settingsRegistry returns the cached /set registry, rebuilt after a config
@@ -984,7 +1005,7 @@ func (m *Model) settingsRegistry() *settings.Registry {
 
 func (m *Model) handleSetCommand(args []string) {
 	sys := func(text string) {
-		m.state.AddMessage(session.RoleSystem, text, session.ContentTypePlain)
+		m.note(text)
 	}
 
 	switch len(args) {
@@ -1078,7 +1099,7 @@ func (m *Model) handleSetCommand(args []string) {
 // Shared by the project-save and global-target branches.
 func (m *Model) reportSetResult(key string, change settings.Change, saveErr, reloadErr error) {
 	sys := func(text string) {
-		m.state.AddMessage(session.RoleSystem, text, session.ContentTypePlain)
+		m.note(text)
 	}
 	m.refreshOpenSettingsBrowser()
 	st := m.sess.Status()
@@ -1480,7 +1501,7 @@ func (m *Model) openSessionSheet() {
 	// Opening a panel with nothing in it would leave an invisible dock that
 	// swallows keys until Esc (every section hidden or irrelevant).
 	if !panel.HasContent() {
-		m.state.AddMessage(session.RoleSystem, "Nothing to show in the session sheet.", session.ContentTypePlain)
+		m.note("Nothing to show in the session sheet.")
 		m.refreshViewport()
 		return
 	}
@@ -1812,8 +1833,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.ctrlCArmedFor = ctrlCNone
 				if want == ctrlCStop {
 					m.cancelTurn()
-					m.state.AddMessage(session.RoleSystem, "Turn stopped.",
-						session.ContentTypePlain)
+					m.note("Turn stopped.")
 					m.refreshViewport()
 					return m, nil
 				}
@@ -1883,9 +1903,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.applyNewConfig(msg.Cfg)
 			m.configSavePending = true
 			for _, receipt := range msg.Receipts {
-				m.state.AddMessage(session.RoleSystem,
-					"✗ "+receipt+" · save blocked: "+msg.BlockedReason,
-					session.ContentTypePlain)
+				m.note("✗ " + receipt + " · save blocked: " + msg.BlockedReason)
 			}
 			m.refreshViewport()
 			return m, nil
@@ -1895,9 +1913,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.configReloader != nil {
 				m.setReg = nil
 				if err := m.configReloader(msg.Cfg); err != nil {
-					m.state.AddMessage(session.RoleSystem,
-						fmt.Sprintf("✗ settings saved, but live reload failed: %v", err),
-						session.ContentTypePlain)
+					m.note(fmt.Sprintf("✗ settings saved, but live reload failed: %v", err))
 					m.refreshViewport()
 					return m, nil
 				}
@@ -1918,9 +1934,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			for _, receipt := range msg.Receipts {
-				m.state.AddMessage(session.RoleSystem,
-					"✓ "+receipt+" · "+relPath(base, cfgPath),
-					session.ContentTypePlain)
+				m.note("✓ " + receipt + " · " + relPath(base, cfgPath))
 			}
 			m.refreshViewport()
 			return m, nil
@@ -1935,32 +1949,24 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if home, err := m.userHome(); err == nil {
 				userPath = config.UserConfigPath(home)
 			}
-			m.state.AddMessage(session.RoleSystem,
-				fmt.Sprintf("✗ save failed: %v · %s", msg.SaveErr, relPath(st.WorkingDir, userPath)),
-				session.ContentTypePlain)
+			m.note(fmt.Sprintf("✗ save failed: %v · %s", msg.SaveErr, relPath(st.WorkingDir, userPath)))
 			m.refreshViewport()
 			return m, nil
 		}
 		saveErr, reloadErr := m.persistAndReload(msg.Cfg)
 		if saveErr != nil {
-			m.state.AddMessage(session.RoleSystem,
-				fmt.Sprintf("✗ save failed: %v", saveErr),
-				session.ContentTypePlain)
+			m.note(fmt.Sprintf("✗ save failed: %v", saveErr))
 			m.refreshViewport()
 			return m, nil
 		}
 		if reloadErr != nil {
-			m.state.AddMessage(session.RoleSystem,
-				fmt.Sprintf("✗ settings saved, but live reload failed: %v", reloadErr),
-				session.ContentTypePlain)
+			m.note(fmt.Sprintf("✗ settings saved, but live reload failed: %v", reloadErr))
 			m.refreshViewport()
 			return m, nil
 		}
 		// persistAndReload already refreshed the layer snapshots.
 		for _, receipt := range msg.Receipts {
-			m.state.AddMessage(session.RoleSystem,
-				"✓ "+receipt+" · "+relPath(st.WorkingDir, projectConfigPath(st.WorkingDir)),
-				session.ContentTypePlain)
+			m.note("✓ " + receipt + " · " + relPath(st.WorkingDir, projectConfigPath(st.WorkingDir)))
 		}
 		m.refreshViewport()
 		return m, nil
@@ -1981,14 +1987,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case memory.ShowMsg:
 		m.dock.CloseNow()
 		text := memory.RenderEntry(m.memoryDB, msg.ID)
-		m.state.AddMessage(session.RoleSystem, text, session.ContentTypePlain)
+		m.note(text)
 		m.refreshViewport()
 		return m, nil
 	case memory.DeletedMsg:
 		if msg.Err != nil {
-			m.state.AddMessage(session.RoleSystem, "✗ delete failed: "+msg.Err.Error(), session.ContentTypePlain)
+			m.note("✗ delete failed: " + msg.Err.Error())
 		} else {
-			m.state.AddMessage(session.RoleSystem, "✓ deleted memory: "+msg.Title, session.ContentTypePlain)
+			m.note("✓ deleted memory: " + msg.Title)
 		}
 		m.refreshViewport()
 		return m, nil
@@ -2038,14 +2044,24 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dock.CloseNow()
 		m.refreshViewport()
 		return m, nil
-	case docpanel.ActionMsg:
+	case docActionMsg:
 		m.dock.CloseNow()
-		if msg.Result.Doc != nil {
-			m.openDocPanel(msg.Result.Doc)
+		if msg.err != nil {
+			m.note(msg.err.Error())
+			m.refreshViewport()
 			return m, nil
 		}
-		if msg.Result.Text != "" {
-			m.state.AddMessage(session.RoleSystem, msg.Result.Text, session.ContentTypePlain)
+		if msg.result.Doc != nil {
+			m.dock.Open(docpanel.New(*msg.result.Doc, msg.act))
+			m.refreshViewport()
+			return m, nil
+		}
+		if msg.result.Text != "" {
+			m.note(msg.result.Text)
+		} else {
+			// An action that carries neither a doc nor text would otherwise
+			// close the pane in silence, as if the key had done nothing.
+			m.note("That action returned nothing.")
 		}
 		m.refreshViewport()
 		return m, nil
@@ -2273,11 +2289,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case gatepanel.StopMsg:
 		m.dock.CloseNow()
 		if err := m.sess.StopSDD(m.ctx); err != nil {
-			m.state.Logger().Warn("plan run stop was not accepted", "error", err)
+			m.log().Warn("plan run stop was not accepted", "error", err)
 		}
-		m.state.AddMessage(session.RoleSystem,
-			"Plan run stopped. "+sddResumeHint,
-			session.ContentTypePlain)
+		m.note("Plan run stopped. " + sddResumeHint)
 		m.refreshViewport()
 		return m, nil
 
@@ -2294,13 +2308,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// starts. A write failure warns but never blocks the run.
 		if run.verifyBuild != "" || run.verifyTest != "" {
 			if err := config.SaveVerifyCommands(projectConfigPath(st.WorkingDir), run.verifyBuild, run.verifyTest); err != nil {
-				m.state.AddMessage(session.RoleSystem,
-					fmt.Sprintf("✗ verify commands apply to this run but could not be persisted: %v", err),
-					session.ContentTypePlain)
+				m.note(fmt.Sprintf("✗ verify commands apply to this run but could not be persisted: %v", err))
 			} else {
-				m.state.AddMessage(session.RoleSystem,
-					"✓ verify commands persisted to "+relPath(st.WorkingDir, projectConfigPath(st.WorkingDir)),
-					session.ContentTypePlain)
+				m.note("✓ verify commands persisted to " + relPath(st.WorkingDir, projectConfigPath(st.WorkingDir)))
 			}
 		}
 		// Every run the TUI starts now takes the session's run path: the
@@ -2349,8 +2359,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 	case verifyProposeMsg:
 		if pm.err != nil {
-			m.state.AddMessage(session.RoleSystem,
-				fmt.Sprintf("✗ could not propose verify commands: %v", pm.err), session.ContentTypePlain)
+			m.note(fmt.Sprintf("✗ could not propose verify commands: %v", pm.err))
 			m.refreshViewport()
 			return m, nil
 		}
@@ -2368,9 +2377,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			p.SetVerifyRow(strutil.Truncate(detail, 44, true))
 		}
-		m.state.AddMessage(session.RoleSystem,
-			"Proposed verify commands: "+strings.TrimSpace(pm.build+" · "+pm.test)+". Press Enter to run with them (persisted to .marshal/config.toml), or Esc to cancel.",
-			session.ContentTypePlain)
+		m.note("Proposed verify commands: " + strings.TrimSpace(pm.build+" · "+pm.test) + ". Press Enter to run with them (persisted to .marshal/config.toml), or Esc to cancel.")
 		m.refreshViewport()
 		return m, nil
 	case sddreview.AcceptMsg:
@@ -2391,9 +2398,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		path := pm.Panel.CandidatePath()
 		m.dock.CloseNow()
-		m.state.AddMessage(session.RoleSystem,
-			fmt.Sprintf("Kept %s. Edit it first, then run /sdd to execute it.", candidatePhrase(path)),
-			session.ContentTypePlain)
+		m.note(fmt.Sprintf("Kept %s. Edit it first, then run /sdd to execute it.", candidatePhrase(path)))
 		m.refreshViewport()
 		return m, nil
 	case sddreview.DiscardMsg:
@@ -2411,9 +2416,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.dock.CloseNow()
-		m.state.AddMessage(session.RoleSystem,
-			fmt.Sprintf("Discarded %s.", candidatePhrase(path)),
-			session.ContentTypePlain)
+		m.note(fmt.Sprintf("Discarded %s.", candidatePhrase(path)))
 		m.refreshViewport()
 		return m, nil
 	}
@@ -2426,8 +2429,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "f" && m.pendingRun != nil && m.pendingRun.verifyBuild == "" && m.pendingRun.verifyTest == "" {
 				if p, ok := m.dock.Panel().(*castlist.Panel); ok {
 					if p.VerifyGateUnknown() {
-						m.state.AddMessage(session.RoleSystem,
-							"Proposing verify commands from the repository…", session.ContentTypePlain)
+						m.note("Proposing verify commands from the repository…")
 						m.refreshViewport()
 						return m, m.startVerifyProposal()
 					}
@@ -2466,15 +2468,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if k, ok := msg.(tea.KeyPressMsg); ok {
 			switch k.String() {
 			case "ctrl+o":
-				m.state.AddMessage(session.RoleSystem,
-					"Resolve the pending tool decision before opening settings.",
-					session.ContentTypePlain)
+				m.note("Resolve the pending tool decision before opening settings.")
 				m.refreshViewport()
 				return m, nil
 			case "ctrl+k":
-				m.state.AddMessage(session.RoleSystem,
-					"Resolve the pending tool decision before opening memory browser.",
-					session.ContentTypePlain)
+				m.note("Resolve the pending tool decision before opening memory browser.")
 				m.refreshViewport()
 				return m, nil
 			}
@@ -2806,8 +2804,7 @@ func (m *Model) handleAccessChoice(choice acpwire.AccessChoice) {
 	result, err := m.sess.AnswerAccess(m.ctx, choice)
 	if err != nil {
 		m.dock.CloseNow()
-		m.state.AddMessage(session.RoleSystem,
-			fmt.Sprintf("Access request failed: %v", err), session.ContentTypePlain)
+		m.note(fmt.Sprintf("Access request failed: %v", err))
 		m.refreshViewport()
 		return
 	}
@@ -2825,7 +2822,7 @@ func (m *Model) handleAccessChoice(choice acpwire.AccessChoice) {
 	// Final outcome: close only the panel that asked, then report the state the
 	// runtime actually committed.
 	m.dock.CloseNow()
-	m.state.AddMessage(session.RoleSystem, accessOutcomeNote(result), session.ContentTypePlain)
+	m.note(accessOutcomeNote(result))
 	m.refreshViewport()
 }
 
@@ -2896,9 +2893,7 @@ func (m Model) handleApproval(msg tea.Msg, a acpwire.ApprovalRequest) (tea.Model
 	if a.SubagentID == 0 && a.Tool == "mode.request" && !a.Access {
 		if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "enter" {
 			_ = m.settleApproval(a, acpwire.ApprovalAnswer{Decision: acpwire.ApprovalDeny})
-			m.state.AddMessage(session.RoleSystem,
-				"mode.request was not resolved by the runtime; no capability was granted.",
-				session.ContentTypePlain)
+			m.note("mode.request was not resolved by the runtime; no capability was granted.")
 			m.refreshViewport()
 			return m, nil
 		}
@@ -3450,14 +3445,16 @@ func (m *Model) updateCompletionPopups() {
 
 	cmdTrigger, cmdQuery := m.commandTrigger(value)
 	if cmdTrigger {
-		if m.cmdPopup.items == nil && m.cmdRegistry != nil {
-			// Lazily build the command items from the registry the first
-			// time the user starts typing "/". Registry contents can
-			// change at runtime; we re-build on every trigger so /help
-			// always reflects the current registry. ListAll includes
-			// Hidden commands — they are runnable and belong in the popup.
-			items := make([]completionItem, 0, len(m.cmdRegistry.ListAll()))
-			for _, c := range m.cmdRegistry.ListAll() {
+		if len(m.cmdPopup.items) == 0 {
+			// Lazily build the command items from the session the first
+			// time the user starts typing "/", and rebuild whenever the
+			// cache holds nothing: startNewSession clears it because the
+			// command list follows the session, and an empty list leaves
+			// it empty so the next trigger retries. Commands includes
+			// hidden commands — they are runnable and belong in the popup.
+			cmds := m.sess.Commands()
+			items := make([]completionItem, 0, len(cmds))
+			for _, c := range cmds {
 				items = append(items, completionItem{
 					Text:        c.Name,
 					Description: c.Description,
@@ -4098,7 +4095,7 @@ func (m *Model) beginTurn() context.Context {
 	// Optimistic dismissal: a fresh prompt means the user is trying again, so
 	// clear any stale provider notice from an earlier failed turn. If this
 	// turn also fails, handleAgentFinished re-sets it.
-	m.state.ClearNotice(session.NoticeProvider)
+	_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeProvider)
 	m.busy = true
 	m.turnStartedAt = m.now()
 	m.startHeldWindow()
@@ -4120,8 +4117,7 @@ func (m *Model) beginTurn() context.Context {
 // reaches. refusal is the note a refused start writes.
 func (m *Model) startSessionRun(refusal string, run func(context.Context) error) (tea.Model, tea.Cmd) {
 	if m.endStage != endIdle {
-		m.state.AddMessage(session.RoleSystem,
-			"The conversation is ending; this request was not started.", session.ContentTypePlain)
+		m.note("The conversation is ending; this request was not started.")
 		m.busy = false
 		m.refreshViewport()
 		return *m, nil
@@ -4233,13 +4229,12 @@ func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
 		// ordinary operation and registers its own work, so it must not start
 		// into a frozen membership; reporting it here keeps the user's
 		// feedback immediate and specific.
-		m.state.AddMessage(session.RoleSystem,
-			"The conversation is ending; plan authoring was not started.", session.ContentTypePlain)
+		m.note("The conversation is ending; plan authoring was not started.")
 		m.refreshViewport()
 		return m, nil
 	}
 	if !m.sess.Status().AgentReady {
-		m.state.AddMessage(session.RoleSystem, "Plan authoring is not available (agent failed to initialise).", session.ContentTypePlain)
+		m.note("Plan authoring is not available (agent failed to initialise).")
 		m.refreshViewport()
 		return m, nil
 	}
@@ -4251,7 +4246,7 @@ func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
 	if parsed.FromLastPlan {
 		last, ok := lastFinalAssistantPlan(m.state)
 		if !ok {
-			m.state.AddMessage(session.RoleSystem, "No approved plan found in the last assistant turn. Load the marshal-writing-plans skill, produce an approved plan, then run /sdd new --from-last-plan.", session.ContentTypePlain)
+			m.note("No approved plan found in the last assistant turn. Load the marshal-writing-plans skill, produce an approved plan, then run /sdd new --from-last-plan.")
 			m.refreshViewport()
 			return m, nil
 		}
@@ -4259,7 +4254,7 @@ func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
 		goal = "Convert the approved plan into an executable SDD plan."
 	}
 	if strings.TrimSpace(goal) == "" {
-		m.state.AddMessage(session.RoleSystem, "Usage: /sdd new <goal>", session.ContentTypePlain)
+		m.note("Usage: /sdd new <goal>")
 		m.refreshViewport()
 		return m, nil
 	}
@@ -4361,8 +4356,8 @@ func spinnerLabel(spinner, label string) string {
 // activity. For ActivityIdle it always returns "". During an SDD run it
 // always returns "": the now bar owns the only spinner on screen, so
 // transcript activity rows render their static glyph with elapsed time.
-func (m *Model) activeSpinnerFrame(kind session.ActivityKind) string {
-	if kind == session.ActivityIdle {
+func (m *Model) activeSpinnerFrame(kind string) string {
+	if kind == acpwire.ActivityIdle {
 		return ""
 	}
 	st := m.sess.Status()
@@ -4559,8 +4554,7 @@ func (m *Model) runExitAnalysis(path string) tea.Cmd {
 func (m *Model) handleEndAnalysisFinished(msg endAnalysisFinishedMsg) (tea.Model, tea.Cmd) {
 	m.endAnalyzing = false
 	if msg.err != nil {
-		m.state.AddMessage(session.RoleSystem,
-			"Postmortem analysis failed: "+firstLine(msg.err.Error()), session.ContentTypePlain)
+		m.note("Postmortem analysis failed: " + firstLine(msg.err.Error()))
 	}
 	m.refreshViewport()
 	return *m, m.finishQuit()
@@ -4582,7 +4576,7 @@ func (m *Model) declineEnd() (tea.Model, tea.Cmd) {
 		// notification: it was retained, never released.
 		m.dock.SwapRetained(displaced)
 	}
-	m.state.AddMessage(session.RoleSystem, "Kept open. Active work continues.", session.ContentTypePlain)
+	m.note("Kept open. Active work continues.")
 	m.refreshViewport()
 	return *m, nil
 }
@@ -4601,9 +4595,7 @@ func (m *Model) handleEndSettled(msg endSettledMsg) (tea.Model, tea.Cmd) {
 	}
 	if msg.err != nil {
 		m.endStage = endStopping
-		m.state.AddMessage(session.RoleSystem,
-			fmt.Sprintf("Could not stop all work: %v · press Ctrl+C again to retry.", firstLine(msg.err.Error())),
-			session.ContentTypePlain)
+		m.note(fmt.Sprintf("Could not stop all work: %v · press Ctrl+C again to retry.", firstLine(msg.err.Error())))
 		m.refreshEndWarning()
 		return *m, nil
 	}
@@ -4693,8 +4685,7 @@ func (m *Model) acceptEnd(displayedIDs []string) tea.Cmd {
 		RequireDisplayed: true,
 	})
 	if err != nil {
-		m.state.AddMessage(session.RoleSystem,
-			fmt.Sprintf("Cannot end the conversation: %v", err), session.ContentTypePlain)
+		m.note(fmt.Sprintf("Cannot end the conversation: %v", err))
 		m.refreshViewport()
 		return nil
 	}
@@ -4910,7 +4901,7 @@ func (m *Model) finishReplacement() tea.Cmd {
 		// is recorded only now that the replacement is accepted.
 		m.resumeSession = intent.resumeID
 		m.endStage = endFinishing
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Resuming session %s...", intent.resumeID), session.ContentTypePlain)
+		m.note(fmt.Sprintf("Resuming session %s...", intent.resumeID))
 		m.refreshViewport()
 		return m.finishQuit()
 	}
@@ -5011,11 +5002,11 @@ func (m *Model) handlePostmortemWritten(msg postmortemWrittenMsg) (tea.Model, te
 	m.endExtracting = false
 	if msg.err != nil {
 		m.endAnalyzing = false
-		m.state.AddMessage(session.RoleSystem, "Postmortem failed: "+msg.err.Error(), session.ContentTypePlain)
+		m.note("Postmortem failed: " + msg.err.Error())
 		m.refreshViewport()
 		return *m, m.finishQuit()
 	}
-	m.state.AddMessage(session.RoleSystem, "Postmortem written to "+msg.path, session.ContentTypePlain)
+	m.note("Postmortem written to " + msg.path)
 	if !msg.analysis {
 		// The user asked for extraction only: quit rather than leave the
 		// session hanging.
@@ -5083,7 +5074,7 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 		m.turnStartedAt = time.Time{}
 		m.agentCancel = nil
 		m.cancelling = false
-		m.state.AddMessage(session.RoleSystem, msg.refusal+": "+msg.err.Error(), session.ContentTypePlain)
+		m.note(msg.refusal + ": " + msg.err.Error())
 		m.updateViewportHeight()
 		m.refreshViewport()
 		return m, nil
@@ -5100,8 +5091,8 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 		// for: the user asked explicitly for those to be delivered, and a UI
 		// cleanup must not silently revoke the request.
 		m.sess.ClearSteering(m.ctx)
-		m.state.AddMessage(session.RoleSystem, "Agent turn cancelled.", session.ContentTypePlain)
-		m.state.ClearNotice(session.NoticeProvider)
+		m.note("Agent turn cancelled.")
+		_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeProvider)
 		m.cancelling = false
 	}
 	m.busy = false
@@ -5124,13 +5115,13 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		m.state.SetNotice(noticeForError(msg.err, "turn"))
-		m.state.AddMessage(session.RoleSystem, "✘ Turn failed: "+firstLine(msg.err.Error()), session.ContentTypePlain)
+		_ = m.sess.SetNotice(m.ctx, noticeForError(msg.err, "turn"))
+		m.note("✘ Turn failed: " + firstLine(msg.err.Error()))
 		m.successPulse = false
 	} else if msg.err == nil {
 		// A completed turn proves the provider is reachable again — clear
 		// any stale provider notice from an earlier failed turn.
-		m.state.ClearNotice(session.NoticeProvider)
+		_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeProvider)
 		m.successPulse = true
 		m.successPulseAt = m.now()
 		// A completed turn is the single point where the final assistant
@@ -5258,7 +5249,7 @@ func (m Model) handlePlanAuthorFinished(msg planAuthorFinishedMsg) (Model, tea.C
 	// every other refusal is reported and stay idle.
 	if msg.refusal != "" && refusedStart(msg.err) {
 		m.cancelling = false
-		m.state.AddMessage(session.RoleSystem, msg.refusal+": "+msg.err.Error(), session.ContentTypePlain)
+		m.note(msg.refusal + ": " + msg.err.Error())
 		m.updateViewportHeight()
 		m.refreshViewport()
 		return m, nil
@@ -5268,22 +5259,22 @@ func (m Model) handlePlanAuthorFinished(msg planAuthorFinishedMsg) (Model, tea.C
 	// here also re-arms Ctrl+C as a stop rather than a quit (decision 11).
 	if m.cancelling || msg.result.StopReason == acpwire.StopReasonCancelled {
 		m.cancelling = false
-		m.state.ClearNotice(session.NoticeProvider)
-		m.state.AddMessage(session.RoleSystem, "Agent turn cancelled.", session.ContentTypePlain)
+		_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeProvider)
+		m.note("Agent turn cancelled.")
 		m.updateViewportHeight()
 		m.refreshViewport()
 		return m, nil
 	}
 	if msg.err != nil {
-		m.state.SetNotice(noticeForError(msg.err, "plan-author"))
-		m.state.AddMessage(session.RoleSystem, "✘ Plan authoring failed: "+firstLine(msg.err.Error()), session.ContentTypePlain)
+		_ = m.sess.SetNotice(m.ctx, noticeForError(msg.err, "plan-author"))
+		m.note("✘ Plan authoring failed: " + firstLine(msg.err.Error()))
 		m.updateViewportHeight()
 		m.refreshViewport()
 		return m, nil
 	}
-	m.state.ClearNotice(session.NoticeProvider)
+	_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeProvider)
 	if msg.result.AutoAccepted {
-		m.state.AddMessage(session.RoleSystem, "Plan accepted in Full Auto: "+msg.result.PlanPath, session.ContentTypePlain)
+		m.note("Plan accepted in Full Auto: " + msg.result.PlanPath)
 	} else {
 		m.dock.Open(sddreview.New(msg.result))
 	}
@@ -5359,7 +5350,7 @@ func (m *Model) sendNowTarget() (acpwire.SteeringState, bool) {
 // rejectSendNow explains a refusal in the transcript and keeps whatever draft
 // produced it. A refusal never mutates the queue, the turn or the operation.
 func (m *Model) rejectSendNow(reason string) {
-	m.state.AddMessage(session.RoleSystem, reason, session.ContentTypePlain)
+	m.note(reason)
 	m.refreshViewport()
 }
 
@@ -5997,7 +5988,7 @@ func (m Model) workItemByKey(taskKey string) (acpwire.WorkItem, bool) {
 func (m *Model) jumpToWorkOrigin(taskKey string) (Model, tea.Cmd) {
 	item, ok := m.workItemByKey(taskKey)
 	if !ok {
-		m.state.AddMessage(session.RoleSystem, "That work item is no longer available.", session.ContentTypePlain)
+		m.note("That work item is no longer available.")
 		m.refreshViewport()
 		return *m, nil
 	}
@@ -6052,7 +6043,7 @@ func (m Model) browseNodeForKey(key string) (nodeID, bool) {
 func (m *Model) openWorkDetailUnavailable(item acpwire.WorkItem) {
 	p := m.tasksPanel
 	if p == nil {
-		m.state.AddMessage(session.RoleSystem, "The referenced transcript position is no longer available.", session.ContentTypePlain)
+		m.note("The referenced transcript position is no longer available.")
 		m.refreshViewport()
 		return
 	}
@@ -6094,7 +6085,7 @@ func (m Model) promptKeyByID(id string) (promptRef, bool) {
 // with the user's own prompt surface.
 func (m *Model) navigateToWorkPrompt(msg workRequestMsg) (Model, tea.Cmd) {
 	if _, ok := m.promptKeyByID(msg.requestID); !ok {
-		m.state.AddMessage(session.RoleSystem, "That request is no longer pending.", session.ContentTypePlain)
+		m.note("That request is no longer pending.")
 		m.refreshViewport()
 		return *m, nil
 	}
@@ -6114,7 +6105,7 @@ func (m *Model) openWork() {
 		return
 	}
 	if !m.workLaneActive() {
-		m.state.AddMessage(session.RoleSystem, "No work in this session.", session.ContentTypePlain)
+		m.note("No work in this session.")
 		m.refreshViewport()
 		return
 	}
@@ -6131,9 +6122,9 @@ func (m Model) handleAgentTick(msg agentTickMsg) (Model, tea.Cmd) {
 		m.successPulse = false
 	}
 	noticePending := false
-	if n, ok := m.state.Notice(); ok {
-		if m.now().Sub(n.SetAt) >= noticeBannerDuration {
-			m.state.DismissNotice()
+	if n := m.sess.Status().Notice; n != nil {
+		if m.now().Sub(acpwire.Time(n.SetAt)) >= noticeBannerDuration {
+			_ = m.sess.DismissNotice(m.ctx)
 			// The banner is rendered into the transcript; dismissing it
 			// must repaint the viewport or the stale banner stays on screen
 			// until an unrelated transcript change.
@@ -6269,7 +6260,7 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 	}
 	parts, err := shlex.Split(raw)
 	if err != nil {
-		m.state.AddMessage(session.RoleSystem, "Invalid command syntax.", session.ContentTypePlain)
+		m.note("Invalid command syntax.")
 		m.refreshViewport()
 		return m, nil
 	}
@@ -6285,19 +6276,19 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 	// Retired legacy mode commands return an actionable explanation and never
 	// change access: hidden aliases must not survive as a second mode surface.
 	if explanation, ok := retiredInteractionCommands[name]; ok {
-		m.state.AddMessage(session.RoleSystem, explanation, session.ContentTypePlain)
+		m.note(explanation)
 		m.refreshViewport()
 		return m, nil
 	}
 
-	if m.cmdRegistry == nil {
-		m.state.AddMessage(session.RoleSystem, "Command registry not available.", session.ContentTypePlain)
+	if len(m.sess.Commands()) == 0 {
+		m.note("Command registry not available.")
 		m.refreshViewport()
 		return m, nil
 	}
-	cmd, ok := m.cmdRegistry.Lookup(name)
+	info, ok := m.lookupCommand(name)
 	if !ok {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Unknown command: /%s. Type /help for available commands.", name), session.ContentTypePlain)
+		m.note(fmt.Sprintf("Unknown command: /%s. Type /help for available commands.", name))
 		m.refreshViewport()
 		return m, nil
 	}
@@ -6306,7 +6297,7 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 	// handler; with arguments (or when there is nothing to pick) they fall
 	// through to the handler unchanged.
 	if len(args) == 0 {
-		switch cmd.Name {
+		switch info.Name {
 		case "rewind":
 			if items := m.rewindPickerItems(); len(items) > 0 {
 				m.openPicker("rewind", "Rewind to turn", "starts a new branch", items, "")
@@ -6320,8 +6311,8 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 	// Plugin-defined prompt commands replay the enter-key path: their body
 	// becomes a user turn (steering when the agent is busy), with any
 	// arguments appended verbatim to preserve quoting/whitespace.
-	if cmd.PromptBody != "" {
-		goal := cmd.PromptBody
+	if info.PromptBody != "" {
+		goal := info.PromptBody
 		if len(parts) > 1 {
 			rest := raw[len(parts[0]):]
 			rest = strings.TrimSpace(rest)
@@ -6335,7 +6326,7 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if !m.sess.Status().AgentReady {
-			m.state.AddMessage(session.RoleSystem, "Agent runner is not available.", session.ContentTypePlain)
+			m.note("Agent runner is not available.")
 			m.refreshViewport()
 			return m, nil
 		}
@@ -6343,15 +6334,20 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		return mm, promptCmd
 	}
 
-	if cmd.Handler != nil {
-		res := cmd.Handler(m.state, args)
+	if info.HasHandler {
+		res, err := m.sess.Command(m.ctx, info.Name, args)
+		if err != nil {
+			m.note(err.Error())
+			m.refreshViewport()
+			return m, nil
+		}
 		if res.Doc != nil {
 			m.openDocPanel(res.Doc)
 		} else if res.Text != "" {
-			m.state.AddMessage(session.RoleSystem, res.Text, session.ContentTypePlain)
+			m.note(res.Text)
 		}
 		// AgentGoal hands a follow-up turn back to the agent after Text is
-		// rendered (see commands.Result.AgentGoal). Mirror the PromptBody
+		// rendered (see CommandResult.AgentGoal). Mirror the PromptBody
 		// branch's busy/steering/runner idiom exactly.
 		if res.AgentGoal != "" {
 			if m.busy {
@@ -6366,10 +6362,10 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if cmd.TUIOnly {
-		effect, ok := tuiCommandEffects[cmd.Name]
+	if info.TUIOnly {
+		effect, ok := tuiCommandEffects[info.Name]
 		if !ok {
-			m.state.AddMessage(session.RoleSystem, "Command /"+cmd.Name+" is not available in this build.", session.ContentTypePlain)
+			m.note("Command /" + info.Name + " is not available in this build.")
 			m.refreshViewport()
 			return m, nil
 		}
@@ -6579,10 +6575,27 @@ func (m *Model) sortedProviderNames() []string {
 	return names
 }
 
-// openDocPanel opens a structured command result as a docked doc panel.
-func (m *Model) openDocPanel(doc *commands.Doc) {
-	m.dock.Open(docpanel.New(*doc, m.state))
+// openDocPanel opens a command's wire doc as a docked doc panel. Its rows act
+// through the session the doc came from, so a command's row actions run agent
+// side.
+func (m *Model) openDocPanel(doc *acpwire.WireDoc) {
+	if doc == nil {
+		return
+	}
+	m.dock.Open(docpanel.New(*doc, sessionDocActions(m.ctx, m.sess)))
 	m.refreshViewport()
+}
+
+// lookupCommand finds the command whose name matches, as the registry's Lookup
+// does: case-insensitively, by the lower-cased name.
+func (m *Model) lookupCommand(name string) (acpwire.CommandInfo, bool) {
+	name = strings.ToLower(name)
+	for _, c := range m.sess.Commands() {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return acpwire.CommandInfo{}, false
 }
 
 // openPicker opens a command modal. The picked value is delivered as
@@ -6639,12 +6652,12 @@ func (m *Model) openSessionPicker(prefilter string) {
 	st := m.sess.Status()
 	database := m.state.DB()
 	if database == nil {
-		m.state.AddMessage(session.RoleSystem, "Session list is not available (no database).", session.ContentTypePlain)
+		m.note("Session list is not available (no database).")
 		return
 	}
 	sessions, _, err := database.ListSessions(context.Background(), st.WorkingDir, "", 100)
 	if err != nil {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Could not list sessions: %v", err), session.ContentTypePlain)
+		m.note(fmt.Sprintf("Could not list sessions: %v", err))
 		return
 	}
 	items := make([]picker.Item, 0, len(sessions))
@@ -6666,7 +6679,7 @@ func (m *Model) openSessionPicker(prefilter string) {
 		})
 	}
 	if len(items) == 0 {
-		m.state.AddMessage(session.RoleSystem, "No previous sessions found for this project.", session.ContentTypePlain)
+		m.note("No previous sessions found for this project.")
 		return
 	}
 	m.openPicker("sessions", "Resume session", "pick a previous conversation", items, prefilter)
@@ -6679,9 +6692,7 @@ func (m *Model) openSessionPicker(prefilter string) {
 func (m *Model) applyInteraction(patch acpwire.InteractionPatch) (acpwire.Interaction, bool) {
 	committed, err := m.sess.SetInteraction(m.ctx, patch)
 	if err != nil {
-		m.state.AddMessage(session.RoleSystem,
-			fmt.Sprintf("Could not change interaction state: %v", err),
-			session.ContentTypePlain)
+		m.note(fmt.Sprintf("Could not change interaction state: %v", err))
 		m.refreshViewport()
 		return acpwire.Interaction{}, false
 	}
@@ -6711,7 +6722,7 @@ func (m *Model) modeReceipt(state acpwire.Interaction) {
 	if state.System {
 		msg += " System access is on."
 	}
-	m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
+	m.note(msg)
 	m.refreshViewport()
 }
 
@@ -6735,7 +6746,7 @@ func (m *Model) setAuto(args []string) {
 		case "off":
 			on = false
 		default:
-			m.state.AddMessage(session.RoleSystem, "Usage: /auto [on|off]", session.ContentTypePlain)
+			m.note("Usage: /auto [on|off]")
 			m.refreshViewport()
 			return
 		}
@@ -6746,11 +6757,9 @@ func (m *Model) setAuto(args []string) {
 		return
 	}
 	if on {
-		m.state.AddMessage(session.RoleSystem,
-			"Full Auto enabled: operations and System access are preapproved; no questions.", session.ContentTypePlain)
+		m.note("Full Auto enabled: operations and System access are preapproved; no questions.")
 	} else {
-		m.state.AddMessage(session.RoleSystem,
-			"Auto disabled; the current mode and System access are unchanged.", session.ContentTypePlain)
+		m.note("Auto disabled; the current mode and System access are unchanged.")
 	}
 	m.refreshViewport()
 }
@@ -6766,7 +6775,7 @@ func (m *Model) setSystem(args []string) {
 		case "off":
 			on = false
 		default:
-			m.state.AddMessage(session.RoleSystem, "Usage: /system [on|off|unlock]", session.ContentTypePlain)
+			m.note("Usage: /system [on|off|unlock]")
 			m.refreshViewport()
 			return
 		}
@@ -6777,9 +6786,9 @@ func (m *Model) setSystem(args []string) {
 		return
 	}
 	if on {
-		m.state.AddMessage(session.RoleSystem, "System access enabled for this session.", session.ContentTypePlain)
+		m.note("System access enabled for this session.")
 	} else {
-		m.state.AddMessage(session.RoleSystem, "System access disabled.", session.ContentTypePlain)
+		m.note("System access disabled.")
 	}
 	m.refreshViewport()
 }
@@ -6801,17 +6810,13 @@ func (m *Model) cycleMode(forward bool) {
 // Session-only: delegates to switchModelPreset.
 func (m *Model) cycleModel(forward bool) {
 	if m.busy {
-		m.state.AddMessage(session.RoleSystem,
-			"Busy — switch the model after this turn completes.",
-			session.ContentTypePlain)
+		m.note("Busy — switch the model after this turn completes.")
 		m.refreshViewport()
 		return
 	}
 	names := m.sortedPresetNames()
 	if len(names) == 0 {
-		m.state.AddMessage(session.RoleSystem,
-			"No model presets configured. Use /connect to add a provider or /profiles to assign a discovered model.",
-			session.ContentTypePlain)
+		m.note("No model presets configured. Use /connect to add a provider or /profiles to assign a discovered model.")
 		m.refreshViewport()
 		return
 	}
@@ -6966,7 +6971,7 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 		ToolCalling:   msg.ToolCalling,
 	})
 	if err != nil {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to materialize model preset: %v", err), session.ContentTypePlain)
+		m.note(fmt.Sprintf("✗ Failed to materialize model preset: %v", err))
 		return
 	}
 
@@ -6985,8 +6990,7 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 	// key so the reloaded runtime can use it.
 	home, err := m.userHome()
 	if err != nil {
-		m.state.AddMessage(session.RoleSystem,
-			fmt.Sprintf("✗ Failed to locate home directory: %v", err), session.ContentTypePlain)
+		m.note(fmt.Sprintf("✗ Failed to locate home directory: %v", err))
 		return
 	}
 	userPath := config.UserConfigPath(home)
@@ -6997,21 +7001,18 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 	// neither the write nor the baseline, and the merge preserves them
 	// instead of clobbering (the cross-process regression fixed here).
 	if err := config.SaveUserConfigProviders(userPath, newCfg.Providers, m.state.Config.Providers); err != nil {
-		m.state.AddMessage(session.RoleSystem,
-			fmt.Sprintf("✗ Failed to save provider: %v", err), session.ContentTypePlain)
+		m.note(fmt.Sprintf("✗ Failed to save provider: %v", err))
 		return
 	}
 	if err := config.SaveUserConfigPresets(userPath, newCfg.Models.Presets, m.state.Config.Models.Presets); err != nil {
-		m.state.AddMessage(session.RoleSystem,
-			fmt.Sprintf("✗ Failed to save model preset: %v", err), session.ContentTypePlain)
+		m.note(fmt.Sprintf("✗ Failed to save model preset: %v", err))
 		return
 	}
 	// The consent answer is a user-global preference; persist it only when the
 	// wizard actually asked (nil means the user has never answered).
 	if msg.EnrichmentConsent != nil {
 		if err := config.SaveUserConfigValue(userPath, "privacy.models_dev_enrichment", *msg.EnrichmentConsent); err != nil {
-			m.state.AddMessage(session.RoleSystem,
-				fmt.Sprintf("⚠ Could not save models.dev preference: %v", err), session.ContentTypePlain)
+			m.note(fmt.Sprintf("⚠ Could not save models.dev preference: %v", err))
 		}
 	}
 	// Provenance is written after the presets: if it fails, the presets are
@@ -7023,24 +7024,22 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 	}
 	if msg.Provenance != nil {
 		if err := presetsetup.SaveProvenance(dataDir, msg.Provenance); err != nil {
-			m.state.AddMessage(session.RoleSystem,
-				fmt.Sprintf("⚠ Presets saved, but models.dev provenance was not: %v", err), session.ContentTypePlain)
+			m.note(fmt.Sprintf("⚠ Presets saved, but models.dev provenance was not: %v", err))
 		}
 	}
 
 	saveErr, reloadErr := m.persistAndReload(newCfg)
 	switch {
 	case saveErr != nil:
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to save model: %v", saveErr), session.ContentTypePlain)
+		m.note(fmt.Sprintf("✗ Failed to save model: %v", saveErr))
 	case reloadErr != nil:
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to switch model: %v", reloadErr), session.ContentTypePlain)
+		m.note(fmt.Sprintf("✗ Failed to switch model: %v", reloadErr))
 	default:
 		// A successful switch proves provider construction works with the
 		// new config — clear any stale provider/config notice.
-		m.state.ClearNotice(session.NoticeProvider)
-		m.state.ClearNotice(session.NoticeConfig)
-		m.state.AddMessage(session.RoleSystem,
-			fmt.Sprintf("✓ Switched to model: %s (%s)", msg.Model, msg.Provider), session.ContentTypePlain)
+		_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeProvider)
+		_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeConfig)
+		m.note(fmt.Sprintf("✓ Switched to model: %s (%s)", msg.Model, msg.Provider))
 	}
 }
 
@@ -7052,11 +7051,11 @@ func (m *Model) switchModelPreset(presetName string) {
 	newCfg := m.state.Config
 	provider, model, ok := strings.Cut(presetName, "/")
 	if !ok || provider == "" || model == "" {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Invalid preset pair: %s", presetName), session.ContentTypePlain)
+		m.note(fmt.Sprintf("✗ Invalid preset pair: %s", presetName))
 		return
 	}
 	if _, ok := newCfg.Providers[provider]; !ok {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Provider %q is not configured", provider), session.ContentTypePlain)
+		m.note(fmt.Sprintf("✗ Provider %q is not configured", provider))
 		return
 	}
 	// Ensure an override exists if the user explicitly named a preset.
@@ -7093,7 +7092,7 @@ func (m *Model) switchModelPreset(presetName string) {
 	if presetCreated {
 		home, err := m.userHome()
 		if err != nil {
-			m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to locate home directory: %v", err), session.ContentTypePlain)
+			m.note(fmt.Sprintf("✗ Failed to locate home directory: %v", err))
 			return
 		}
 		// Baseline: the shared preset map (which just gained the created
@@ -7102,7 +7101,7 @@ func (m *Model) switchModelPreset(presetName string) {
 		// the merge keeps presets other marshal processes wrote after this
 		// process loaded its snapshot.
 		if err := config.SaveUserConfigPresets(config.UserConfigPath(home), newCfg.Models.Presets, m.state.Config.Models.Presets); err != nil {
-			m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to save model preset: %v", err), session.ContentTypePlain)
+			m.note(fmt.Sprintf("✗ Failed to save model preset: %v", err))
 			return
 		}
 	}
@@ -7110,11 +7109,11 @@ func (m *Model) switchModelPreset(presetName string) {
 	saveErr, reloadErr := m.persistAndReload(newCfg)
 	switch {
 	case saveErr != nil:
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to save model preset: %v", saveErr), session.ContentTypePlain)
+		m.note(fmt.Sprintf("✗ Failed to save model preset: %v", saveErr))
 	case reloadErr != nil:
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to switch model: %v", reloadErr), session.ContentTypePlain)
+		m.note(fmt.Sprintf("✗ Failed to switch model: %v", reloadErr))
 	default:
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✓ Switched to model: %s (%s)", presetName, preset.Model), session.ContentTypePlain)
+		m.note(fmt.Sprintf("✓ Switched to model: %s (%s)", presetName, preset.Model))
 	}
 }
 
@@ -7318,7 +7317,6 @@ func statusBarStyle() lipgloss.Style {
 func browserGlyphStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(theme.Current().AccentTertiary)
 }
-func urlStyle() lipgloss.Style { return lipgloss.NewStyle().Foreground(theme.Current().FGDefault) }
 
 // flags packs boolean/len state into a single uint64 for the hash.
 func flags(streamLen int, busy bool, nTodos, nQueued int) uint64 {

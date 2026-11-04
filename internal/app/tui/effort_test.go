@@ -17,9 +17,11 @@ import (
 )
 
 // withEffortSetter replaces m's session with one over m's state whose adapter
-// calls set for SetEffort.
-func withEffortSetter(m Model, set func(string) (string, error)) Model {
-	_, sess := inproc.New(inproc.Deps{State: m.state, SetEffort: set})
+// calls set for SetEffort. It carries a command registry, so dispatching
+// /effort still finds the command.
+func withEffortSetter(t *testing.T, m Model, set func(string) (string, error)) Model {
+	t.Helper()
+	_, sess := inproc.New(inproc.Deps{State: m.state, SetEffort: set, Commands: setupCmdReg(t)})
 	m.sess = sess
 	return m
 }
@@ -29,7 +31,7 @@ func withEffortSetter(m Model, set func(string) (string, error)) Model {
 func TestEffortCommandSetsLevel(t *testing.T) {
 	m := newTestModel(t)
 	var got string
-	m = withEffortSetter(m, func(level string) (string, error) {
+	m = withEffortSetter(t, m, func(level string) (string, error) {
 		got = level
 		return acpwire.EffortAppliesNextTurn, nil
 	})
@@ -50,7 +52,7 @@ func TestEffortCommandSetsLevel(t *testing.T) {
 func TestEffortDefaultClears(t *testing.T) {
 	m := newTestModel(t)
 	got := "unset"
-	m = withEffortSetter(m, func(level string) (string, error) {
+	m = withEffortSetter(t, m, func(level string) (string, error) {
 		got = level
 		return acpwire.EffortAppliesNextTurn, nil
 	})
@@ -70,7 +72,7 @@ func TestEffortDefaultClears(t *testing.T) {
 // runtime's error text instead of failing silently.
 func TestEffortCommandShowsSetterError(t *testing.T) {
 	m := newTestModel(t)
-	m = withEffortSetter(m, func(string) (string, error) {
+	m = withEffortSetter(t, m, func(string) (string, error) {
 		return "", errors.New(`effort "max" is not supported`)
 	})
 
@@ -93,7 +95,7 @@ func TestAltECyclesEffort(t *testing.T) {
 	}
 	m.state.SetActiveRoute(session.RouteInfo{Active: true, Preset: "test", Model: "m", Provider: "p", ReasoningCapable: true})
 	var got []string
-	m = withEffortSetter(m, func(level string) (string, error) {
+	m = withEffortSetter(t, m, func(level string) (string, error) {
 		got = append(got, level)
 		m.state.SetEffortOverride(session.EffortOverride{Level: level})
 		return acpwire.EffortAppliesNextStep, nil

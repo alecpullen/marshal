@@ -7,7 +7,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/config"
-	"marshal/internal/app/session"
 	"marshal/internal/app/tui/modeloptions"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
@@ -36,7 +35,7 @@ func (m *Model) resolveReasoningSupport(presetName string) bool {
 func (m *Model) openModelOptions() tea.Cmd {
 	route := m.sess.Status().ActiveRoute
 	if !route.Active || route.Preset == "" {
-		m.state.AddMessage(session.RoleSystem, "No active model preset. Use /models to pick one first.", session.ContentTypePlain)
+		m.note("No active model preset. Use /models to pick one first.")
 		return nil
 	}
 	presetName := route.Preset
@@ -45,7 +44,7 @@ func (m *Model) openModelOptions() tea.Cmd {
 		return m.probeThinkingOptions(presetName)
 	}
 	if _, ok := m.state.Config.Models.Presets[presetName]; !ok {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Preset %q is not configured.", presetName), session.ContentTypePlain)
+		m.note(fmt.Sprintf("Preset %q is not configured.", presetName))
 		return nil
 	}
 	m.dock.Open(modeloptions.New(m.state.Config, presetName, m.resolveReasoningSupport(presetName), m.modelThinkingOptions(presetName)))
@@ -65,7 +64,7 @@ func (m *Model) openModelOptionsForProvider(providerName string) {
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Label < items[j].Label })
 	if len(items) == 0 {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("No model pairs configured for %q yet. Use /connect or /models to pick one.", providerName), session.ContentTypePlain)
+		m.note(fmt.Sprintf("No model pairs configured for %q yet. Use /connect or /models to pick one.", providerName))
 		return
 	}
 	p := picker.New("Pick a model pair", "override context/max-output", items)
@@ -83,7 +82,7 @@ func (m *Model) handleModelOptionsChanged(msg modeloptions.ChangedMsg) tea.Cmd {
 	}
 	home, homeErr := m.userHome()
 	if homeErr != nil {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Could not apply %s option: %v", msg.FieldID, homeErr), session.ContentTypePlain)
+		m.note(fmt.Sprintf("Could not apply %s option: %v", msg.FieldID, homeErr))
 		return nil
 	}
 	userPath := config.UserConfigPath(home)
@@ -99,22 +98,22 @@ func (m *Model) handleModelOptionsChanged(msg modeloptions.ChangedMsg) tea.Cmd {
 	if !m.busy {
 		saveErr, reloadErr := m.savePresetsAndReload(userPath, msg.Config, m.state.Config.Models.Presets)
 		if saveErr != nil || reloadErr != nil {
-			m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Could not apply %s option: save=%v reload=%v", msg.FieldID, saveErr, reloadErr), session.ContentTypePlain)
+			m.note(fmt.Sprintf("Could not apply %s option: save=%v reload=%v", msg.FieldID, saveErr, reloadErr))
 			return nil
 		}
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("%s: %s → %s", fieldLabel(msg.FieldID), msg.OldValue, msg.NewValue), session.ContentTypePlain)
+		m.note(fmt.Sprintf("%s: %s → %s", fieldLabel(msg.FieldID), msg.OldValue, msg.NewValue))
 		return nil
 	}
 
 	if err := config.SaveUserConfigPresets(userPath, msg.Config.Models.Presets, m.state.Config.Models.Presets); err != nil {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Saved %s option failed: %v", msg.FieldID, err), session.ContentTypePlain)
+		m.note(fmt.Sprintf("Saved %s option failed: %v", msg.FieldID, err))
 		return nil
 	}
 	m.pendingModelOptions = &pendingModelOptionsState{
 		presetName: msg.PresetName,
 		cfg:        msg.Config,
 	}
-	m.state.AddMessage(session.RoleSystem, fmt.Sprintf("%s: %s → %s (saved for next idle turn)", fieldLabel(msg.FieldID), msg.OldValue, msg.NewValue), session.ContentTypePlain)
+	m.note(fmt.Sprintf("%s: %s → %s (saved for next idle turn)", fieldLabel(msg.FieldID), msg.OldValue, msg.NewValue))
 	return nil
 }
 
@@ -168,12 +167,12 @@ func (m *Model) flushPendingModelOptions() tea.Cmd {
 	reloadErr := m.configReloader(pending.cfg)
 	if reloadErr != nil {
 		pending.retry = true
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Could not activate %s options: %v", pending.presetName, reloadErr), session.ContentTypePlain)
+		m.note(fmt.Sprintf("Could not activate %s options: %v", pending.presetName, reloadErr))
 		return nil
 	}
 	m.applyNewConfig(pending.cfg)
 	m.pendingModelOptions = nil
-	m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Activated %s options", pending.presetName), session.ContentTypePlain)
+	m.note(fmt.Sprintf("Activated %s options", pending.presetName))
 	return nil
 }
 

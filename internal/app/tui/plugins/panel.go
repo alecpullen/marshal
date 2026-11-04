@@ -14,7 +14,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/config"
-	"marshal/internal/app/session"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/fuzzy"
@@ -34,7 +33,7 @@ type Panel struct {
 	homeDir        string
 	workDir        string
 	projectTrusted bool
-	state          *session.State
+	note           func(string)
 
 	filter textfield.Model
 	list   *settings.FieldList
@@ -153,19 +152,20 @@ func defaultScanDeps() scanDeps {
 	}
 }
 
-// NewPanel builds a plugins panel.
-func NewPanel(homeDir, workDir string, projectTrusted bool, state *session.State) *Panel {
-	return newPanelWithScanDeps(homeDir, workDir, projectTrusted, state, defaultScanDeps())
+// NewPanel builds a plugins panel. note appends a line to the transcript; a
+// nil note writes nothing.
+func NewPanel(homeDir, workDir string, projectTrusted bool, note func(string)) *Panel {
+	return newPanelWithScanDeps(homeDir, workDir, projectTrusted, note, defaultScanDeps())
 }
 
 // newPanelWithScanDeps builds a panel whose scans run through deps. It is the
 // only seam a test needs: everything else about the panel is production code.
-func newPanelWithScanDeps(homeDir, workDir string, projectTrusted bool, state *session.State, deps scanDeps) *Panel {
+func newPanelWithScanDeps(homeDir, workDir string, projectTrusted bool, note func(string), deps scanDeps) *Panel {
 	p := &Panel{
 		homeDir:        homeDir,
 		workDir:        workDir,
 		projectTrusted: projectTrusted,
-		state:          state,
+		note:           note,
 		removeArmed:    make(map[removeIdentity]bool),
 		installScope:   scopeGlobal,
 		scanDeps:       deps,
@@ -1011,8 +1011,8 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		// tries to remove it a second time.
 		p.resetInstall()
 		settings.FieldListRefresh(p.list)
-		if p.state != nil {
-			p.state.AddMessage(session.RoleSystem, "Restart Marshal to activate the plugin change.", session.ContentTypePlain)
+		if p.note != nil {
+			p.note("Restart Marshal to activate the plugin change.")
 		}
 		return nil
 	case removeResultMsg:
@@ -1027,8 +1027,8 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			p.stack = p.stack[:len(p.stack)-1]
 		}
 		p.list.Refresh()
-		if p.state != nil {
-			p.state.AddMessage(session.RoleSystem, "Restart Marshal to activate the plugin change.", session.ContentTypePlain)
+		if p.note != nil {
+			p.note("Restart Marshal to activate the plugin change.")
 		}
 		return nil
 	}

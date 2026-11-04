@@ -5,7 +5,6 @@ import (
 	"slices"
 
 	"marshal/internal/acpwire"
-	"marshal/internal/app/session"
 	"marshal/internal/app/tui/picker"
 )
 
@@ -36,7 +35,7 @@ func (m *Model) applyEffort(level string) {
 	}
 	applies, err := m.sess.SetEffort(m.ctx, level)
 	if err != nil {
-		m.state.AddMessage(session.RoleSystem, err.Error(), session.ContentTypePlain)
+		m.note(err.Error())
 		return
 	}
 	label := level
@@ -47,7 +46,7 @@ func (m *Model) applyEffort(level string) {
 	if applies == acpwire.EffortAppliesNextStep {
 		when = "from the next step"
 	}
-	m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Effort set to %s (%s).", label, when), session.ContentTypePlain)
+	m.note(fmt.Sprintf("Effort set to %s (%s).", label, when))
 }
 
 // cycleEffort advances the reasoning-effort override through "default" and

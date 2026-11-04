@@ -6565,7 +6565,7 @@ func newTestModel(t *testing.T) Model {
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, Commands: reg}, WithHomeDir(t.TempDir()),
+	m := testModelWith(inproc.Deps{State: state, Commands: reg, Auth: newMemAuth()}, WithHomeDir(t.TempDir()),
 		// Isolate the auth surfaces by default: no test in this package should
 		// reach the developer's OS keychain or launch a browser just by
 		// constructing or driving the model. Tests that need to observe the
@@ -6586,7 +6586,7 @@ func newTestModelInRepo(t *testing.T) Model {
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, Commands: reg}, WithHomeDir(t.TempDir()),
+	m := testModelWith(inproc.Deps{State: state, Commands: reg, Auth: newMemAuth()}, WithHomeDir(t.TempDir()),
 		WithAuthResolver(newMemAuth()), WithOpenBrowser(func(string) error { return nil }))
 	m.resize(80, 24)
 	m.refreshViewport()
@@ -6788,8 +6788,9 @@ func TestOpenSettingsBrowserForwardsAuth(t *testing.T) {
 func TestProbeProvidersUsesInjectedResolver(t *testing.T) {
 	auth := newMemAuth()
 	auth.storeErr = errors.New("injected store failure")
-	m := newTestModel(t)
-	m.auth = auth
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := testModelWith(inproc.Deps{State: state, Auth: auth}, WithHomeDir(t.TempDir()))
+	m.resize(80, 24)
 	m.state.Config.Privacy.RemoteProvidersAllowed = true
 	m.state.Config.Providers = map[string]config.ProviderConfig{
 		"codex": {Type: "openai_codex", Template: "openai-codex", BaseURL: "https://chatgpt.com/backend-api", Auth: "oauth"},

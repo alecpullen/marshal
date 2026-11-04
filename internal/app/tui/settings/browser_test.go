@@ -7,11 +7,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"marshal/internal/acpclient"
+	"marshal/internal/acpclient/inproc"
 	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/presetflow"
 	"marshal/internal/app/tui/probe"
@@ -884,6 +888,19 @@ type memAuth struct {
 
 func newMemAuth() *memAuth { return &memAuth{store: credentials.NewMemStore()} }
 
+// testHost builds a client host over a fresh test state whose credential/OAuth
+// dependency is auth, or a memory resolver when auth is nil. Probes launched
+// through it never reach the developer's keychain.
+func testHost(t *testing.T, auth provider.AuthResolver) acpclient.Host {
+	t.Helper()
+	if auth == nil {
+		auth = newMemAuth()
+	}
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	host, _ := inproc.New(inproc.Deps{State: state, Auth: auth})
+	return host
+}
+
 func (a *memAuth) OpenStore(string) (credentials.Store, error) {
 	if a.store == nil {
 		return nil, credentials.ErrKeyringUnavailable
@@ -937,10 +954,7 @@ func TestBrowserAuthResolverReachesFrameProbes(t *testing.T) {
 			Auth:     "oauth",
 		},
 	}
-	b := NewBrowser(cfg, filepath.Join(t.TempDir(), "config.toml"), "", WithAuthResolver(auth))
-	if b.reg.st.auth != provider.AuthResolver(auth) {
-		t.Fatal("WithAuthResolver must be retained on the browser's state")
-	}
+	b := NewBrowser(cfg, filepath.Join(t.TempDir(), "config.toml"), "", WithHost(testHost(t, auth)))
 
 	res := probeCmdResult(t, b.reg.st.probeCmd("test.connection", "codex", cfg.Providers["codex"]))
 	if res.Err == nil {
@@ -966,8 +980,7 @@ func TestProbeAllProvidersUsesInjectedResolver(t *testing.T) {
 		"codex": {Type: "openai_codex", BaseURL: "https://chatgpt.com/backend-api"},
 	}
 	s := newState(cfg)
-	s.SetDataDir(t.TempDir())
-	s.auth = auth
+	s.host = testHost(t, auth)
 
 	probeAllProviders(s, false)
 

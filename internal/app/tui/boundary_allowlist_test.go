@@ -20,7 +20,6 @@ var boundaryAllowlist = map[string][]string{
 	"model_options.go":               {"config.SaveUserConfigPresets", "config.UserConfigPath"},
 	"plugins/panel.go":               {"marshal/internal/plugins"},
 	"presetflow/probe.go":            {"marshal/internal/llm/provider"},
-	"probe/probe.go":                 {"marshal/internal/llm/provider"},
 	"runoutcome.go":                  {"marshal/internal/worktree"},
 	"sdd_command.go":                 {"marshal/internal/app/session"},
 	"settings/browser.go":            {"config.SaveProjectConfig", "config.SaveUserConfigPresets", "config.SaveUserConfigProviders", "config.SaveUserConfigValue", "config.UserConfigPath", "marshal/internal/llm/provider"},

@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpclient"
 	"marshal/internal/app/config"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
@@ -32,6 +33,9 @@ type state struct {
 	// WithAuthResolver overrides it, so a panel built without an injected
 	// resolver keeps the pre-existing production behavior.
 	auth provider.AuthResolver
+	// host is the client host every probe launched from this state asks.
+	// A nil host fails every probe with probe's no-host error.
+	host acpclient.Host
 	// probed records providers already probed during this browser's
 	// lifetime, so rebuilding a frame does not re-probe on every refresh.
 	probed map[string]bool

@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"marshal/internal/acpclient"
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
@@ -63,13 +64,19 @@ func WithAuthResolver(auth provider.AuthResolver) BrowserOption {
 	return func(b *BrowserPanel) { b.reg.st.auth = auth }
 }
 
-// probeCmd launches a model-list probe through the state's selected
-// credential dependency. It is the single probe entry point for settings
-// frames and for the browser's own discovery paths: routing every call
-// through the state means a rebuilt or cloned frame can never drift back to
-// the production adapter.
+// WithHost sets the client host every probe this browser launches asks. Without
+// it those probes fail: the browser holds no provider client of its own.
+func WithHost(host acpclient.Host) BrowserOption {
+	return func(b *BrowserPanel) { b.reg.st.host = host }
+}
+
+// probeCmd launches a model-list probe through the client host this state
+// holds. It is the single probe entry point for settings frames and for the
+// browser's own discovery paths: routing every call through the state means a
+// rebuilt or cloned frame can never drift back to a provider client the
+// browser built itself.
 func (s *state) probeCmd(fieldID, name string, pc config.ProviderConfig) tea.Cmd {
-	return probe.ProviderWithAuth(fieldID, name, pc, s.dataDir, s.cfg.Agent.ThinkingBudgetMargin, s.auth)
+	return probe.Provider(s.host, fieldID, name, pc)
 }
 
 // BrowserPanel is the docked settings browser. It presents a filterable flat

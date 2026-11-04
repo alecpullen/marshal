@@ -20,8 +20,11 @@ import (
 
 	"charm.land/bubbles/v2/textinput"
 
+	"marshal/internal/acpclient"
+	"marshal/internal/acpclient/inproc"
 	"marshal/internal/app/config"
 	"marshal/internal/app/presetsetup"
+	"marshal/internal/app/session"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
@@ -39,7 +42,7 @@ func TestPanelSatisfiesDock(t *testing.T) {
 }
 
 func TestNewStartsAtPickTemplate(t *testing.T) {
-	m := New(Opts{Cfg: config.Default()})
+	m := newTestWizard(t, Opts{Cfg: config.Default()})
 	if m.step != stepPickTemplate {
 		t.Fatalf("step = %v, want stepPickTemplate", m.step)
 	}
@@ -49,7 +52,7 @@ func TestNewStartsAtPickTemplate(t *testing.T) {
 }
 
 func TestNewScopedProviderStartsAtPickModel(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), SkipToIntroModel: true, ScopedProvider: "ollama"})
+	m := newTestWizard(t, Opts{Cfg: config.Default(), SkipToIntroModel: true, ScopedProvider: "ollama"})
 	if m.step != stepPickModel {
 		t.Fatalf("step = %v, want stepPickModel", m.step)
 	}
@@ -61,7 +64,7 @@ func TestNewScopedProviderStartsAtPickModel(t *testing.T) {
 // openai_compatible entry is not duplicated, and that picking the pinned
 // row enters the base-URL step.
 func TestPickTemplatePinsNewCustomProviderOnTop(t *testing.T) {
-	m := New(Opts{Cfg: config.Default()})
+	m := newTestWizard(t, Opts{Cfg: config.Default()})
 	items := m.picker.Items()
 	if len(items) == 0 || !items[0].Pinned {
 		t.Fatalf("first template item should be the pinned custom row: %+v", items[0])
@@ -85,7 +88,7 @@ func TestPickTemplatePinsNewCustomProviderOnTop(t *testing.T) {
 }
 
 func TestEscAtPickTemplateEmitsCancelled(t *testing.T) {
-	m := New(Opts{Cfg: config.Default()})
+	m := newTestWizard(t, Opts{Cfg: config.Default()})
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: 27})
 	if cmd == nil {
 		t.Fatal("expected a cmd emitting CancelledMsg")
@@ -98,7 +101,7 @@ func TestEscAtPickTemplateEmitsCancelled(t *testing.T) {
 }
 
 func TestPickTemplateOllamaSkipsAPIKey(t *testing.T) {
-	m := New(Opts{Cfg: config.Default()})
+	m := newTestWizard(t, Opts{Cfg: config.Default()})
 	updated, _ := m.Update(pickerPicked("ollama"))
 	if updated.step != stepProbing {
 		t.Fatalf("local template should skip apiKey, got step = %v", updated.step)
@@ -111,7 +114,7 @@ func TestPickTemplateOllamaSkipsAPIKey(t *testing.T) {
 func TestPickTemplateOpenRouterEntersAPIKey(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg})
+	m := newTestWizard(t, Opts{Cfg: cfg})
 	updated, _ := m.Update(pickerPicked("openrouter"))
 	if updated.step != stepAPIKey {
 		t.Fatalf("remote template should enter apiKey, got step = %v", updated.step)
@@ -122,7 +125,7 @@ func TestPickTemplateOpenRouterEntersAPIKey(t *testing.T) {
 }
 
 func TestPickCustomEntersBaseURL(t *testing.T) {
-	m := New(Opts{Cfg: config.Default()})
+	m := newTestWizard(t, Opts{Cfg: config.Default()})
 	updated, _ := m.Update(pickerPicked("custom"))
 	if updated.step != stepBaseURL {
 		t.Fatalf("custom should enter baseURL, got step = %v", updated.step)
@@ -132,7 +135,7 @@ func TestPickCustomEntersBaseURL(t *testing.T) {
 func TestPickOpenAICompatibleEntersBaseURL(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg})
+	m := newTestWizard(t, Opts{Cfg: cfg})
 	updated, _ := m.Update(pickerPicked("openai_compatible"))
 	if updated.step != stepBaseURL {
 		t.Fatalf("openai_compatible template should enter baseURL, got step = %v", updated.step)
@@ -142,7 +145,7 @@ func TestPickOpenAICompatibleEntersBaseURL(t *testing.T) {
 func TestAPIKeyEnterAdvancesToProbing(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg})
+	m := newTestWizard(t, Opts{Cfg: cfg})
 	m, _ = m.Update(pickerPicked("openrouter"))
 	m.input.SetValue("sk-test-1234")
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 13})
@@ -160,7 +163,7 @@ func TestAPIKeyEnterAdvancesToProbing(t *testing.T) {
 func TestCustomBaseURLThenKey(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg})
+	m := newTestWizard(t, Opts{Cfg: cfg})
 	m, _ = m.Update(pickerPicked("custom"))
 	m.input.SetValue("https://myhost/v1")
 	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
@@ -190,8 +193,31 @@ func wizardResult(m *Model, msg probe.ResultMsg) WizardProbeResult {
 	return WizardProbeResult{Owner: m, Generation: m.probeGen, Result: msg}
 }
 
+// testHost builds a client host over a fresh test state whose credential/OAuth
+// dependency is auth, or a memory resolver when auth is nil. A wizard run over
+// it never probes through the developer's keychain.
+func testHost(t *testing.T, auth provider.AuthResolver) acpclient.Host {
+	t.Helper()
+	if auth == nil {
+		auth = newMemAuth()
+	}
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	host, _ := inproc.New(inproc.Deps{State: state, Auth: auth})
+	return host
+}
+
+// newTestWizard builds a wizard with a test client host when opts named none,
+// so no wizard in this package is built without one.
+func newTestWizard(t *testing.T, opts Opts) *Model {
+	t.Helper()
+	if opts.Host == nil {
+		opts.Host = testHost(t, nil)
+	}
+	return New(opts)
+}
+
 func TestProbeSuccessAdvancesToPickModel(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
+	m := newTestWizard(t, Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	updated, _ := m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}, {ID: "llama3.1:8b"}}}))
 	if updated.step != stepPickModel {
@@ -206,7 +232,7 @@ func TestProbeSuccessAdvancesToPickModel(t *testing.T) {
 }
 
 func TestProbeFailureStaysWithRetrySkip(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
+	m := newTestWizard(t, Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	updated, _ := m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Err: errors.New("connection refused")}))
 	if updated.step != stepProbing {
@@ -218,7 +244,7 @@ func TestProbeFailureStaysWithRetrySkip(t *testing.T) {
 }
 
 func TestRetryReRunsProbe(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
+	m := newTestWizard(t, Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Err: errors.New("boom")}))
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: 114})
@@ -231,7 +257,7 @@ func TestRetryReRunsProbe(t *testing.T) {
 }
 
 func TestSkipProbeUsesCatalogAndAdvances(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
+	m := newTestWizard(t, Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 115})
 	if updated.step != stepPickModel {
@@ -246,7 +272,7 @@ func TestPickModelEmitsDone(t *testing.T) {
 	cfg := config.Default()
 	deny := false
 	cfg.Privacy.ModelsDevEnrichment = &deny
-	m := New(Opts{Cfg: cfg, Discovered: map[string][]schema.ModelInfo{}})
+	m := newTestWizard(t, Opts{Cfg: cfg, Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}}))
 	m, cmd := m.Update(pickerPicked("qwen2.5-coder:7b"))
@@ -289,7 +315,7 @@ func TestPickModelEmitsDone(t *testing.T) {
 }
 
 func TestConsentEscReturnsToModelPick(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
+	m := newTestWizard(t, Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen3"}}}))
 	m, _ = m.Update(pickerPicked("qwen3"))
@@ -304,7 +330,7 @@ func TestConsentEscReturnsToModelPick(t *testing.T) {
 }
 
 func TestPickTemplateKeyForwardedToPicker(t *testing.T) {
-	m := New(Opts{Cfg: config.Default()})
+	m := newTestWizard(t, Opts{Cfg: config.Default()})
 	if m.picker == nil {
 		t.Fatal("expected picker at stepPickTemplate")
 	}
@@ -322,7 +348,7 @@ func TestPickTemplateKeyForwardedToPicker(t *testing.T) {
 }
 
 func TestPickModelKeyForwardedToPicker(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), SkipToIntroModel: true, ScopedProvider: "ollama"})
+	m := newTestWizard(t, Opts{Cfg: config.Default(), SkipToIntroModel: true, ScopedProvider: "ollama"})
 	if m.picker == nil {
 		t.Fatal("expected picker at stepPickModel")
 	}
@@ -339,7 +365,7 @@ func TestPickModelKeyForwardedToPicker(t *testing.T) {
 func TestPasteMsgIntoAPIKeyInput(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg})
+	m := newTestWizard(t, Opts{Cfg: cfg})
 	m, _ = m.Update(pickerPicked("openrouter"))
 	if m.step != stepAPIKey {
 		t.Fatalf("expected stepAPIKey, got %v", m.step)
@@ -351,7 +377,7 @@ func TestPasteMsgIntoAPIKeyInput(t *testing.T) {
 }
 
 func TestPasteMsgIntoBaseURLInput(t *testing.T) {
-	m := New(Opts{Cfg: config.Default()})
+	m := newTestWizard(t, Opts{Cfg: config.Default()})
 	m, _ = m.Update(pickerPicked("custom"))
 	if m.step != stepBaseURL {
 		t.Fatalf("expected stepBaseURL, got %v", m.step)
@@ -365,7 +391,7 @@ func TestPasteMsgIntoBaseURLInput(t *testing.T) {
 func TestPickKimiPropagatesTemperatureLocked(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg})
+	m := newTestWizard(t, Opts{Cfg: cfg})
 	updated, _ := m.Update(pickerPicked("kimi"))
 	if updated.step != stepAPIKey {
 		t.Fatalf("kimi (remote, KeyEnv set) should enter apiKey, got step = %v", updated.step)
@@ -395,7 +421,7 @@ func TestTickThrottlesSpinner(t *testing.T) {
 
 func TestRemoteTemplateGatedWhenRemoteDisallowed(t *testing.T) {
 	// Default config has RemoteProvidersAllowed = false.
-	m := New(Opts{Cfg: config.Default()})
+	m := newTestWizard(t, Opts{Cfg: config.Default()})
 	updated, _ := m.Update(pickerPicked("openrouter"))
 	if updated.step != stepRemoteGate {
 		t.Fatalf("remote template should land on stepRemoteGate, got step = %v", updated.step)
@@ -408,7 +434,7 @@ func TestRemoteTemplateGatedWhenRemoteDisallowed(t *testing.T) {
 func TestRemoteTemplateNotGatedWhenAllowed(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg})
+	m := newTestWizard(t, Opts{Cfg: cfg})
 	updated, _ := m.Update(pickerPicked("openrouter"))
 	if updated.step != stepAPIKey {
 		t.Fatalf("remote template should skip gate and enter apiKey, got step = %v", updated.step)
@@ -416,7 +442,7 @@ func TestRemoteTemplateNotGatedWhenAllowed(t *testing.T) {
 }
 
 func TestRemoteGateEscGoesBackToTemplates(t *testing.T) {
-	m := New(Opts{Cfg: config.Default()})
+	m := newTestWizard(t, Opts{Cfg: config.Default()})
 	m, _ = m.Update(pickerPicked("openrouter"))
 	if m.step != stepRemoteGate {
 		t.Fatalf("expected stepRemoteGate, got %v", m.step)
@@ -428,7 +454,7 @@ func TestRemoteGateEscGoesBackToTemplates(t *testing.T) {
 }
 
 func TestRemoteGateYEnablesAndEntersAPIKey(t *testing.T) {
-	m := New(Opts{Cfg: config.Default()})
+	m := newTestWizard(t, Opts{Cfg: config.Default()})
 	m, _ = m.Update(pickerPicked("openrouter"))
 	if m.step != stepRemoteGate {
 		t.Fatalf("expected stepRemoteGate, got %v", m.step)
@@ -447,7 +473,7 @@ func TestDoneMsgCarriesEnabledRemote(t *testing.T) {
 	cfg := config.Default()
 	deny := false
 	cfg.Privacy.ModelsDevEnrichment = &deny
-	m := New(Opts{Cfg: cfg, Discovered: map[string][]schema.ModelInfo{}})
+	m := newTestWizard(t, Opts{Cfg: cfg, Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("openrouter"))
 	m, _ = m.Update(tea.KeyPressMsg{Code: 121}) // y
 	m.input.SetValue("sk-test")
@@ -479,7 +505,7 @@ func TestDoneMsgCarriesEnabledRemote(t *testing.T) {
 }
 
 func TestCustomBaseURLGatedWhenRemoteDisallowed(t *testing.T) {
-	m := New(Opts{Cfg: config.Default()})
+	m := newTestWizard(t, Opts{Cfg: config.Default()})
 	m, _ = m.Update(pickerPicked("custom"))
 	m.input.SetValue("https://remotehost/v1")
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 13})
@@ -489,7 +515,7 @@ func TestCustomBaseURLGatedWhenRemoteDisallowed(t *testing.T) {
 }
 
 func TestCustomLocalhostBaseURLSkipsGate(t *testing.T) {
-	m := New(Opts{Cfg: config.Default()})
+	m := newTestWizard(t, Opts{Cfg: config.Default()})
 	m, _ = m.Update(pickerPicked("custom"))
 	m.input.SetValue("http://localhost:11434/v1")
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 13})
@@ -499,7 +525,7 @@ func TestCustomLocalhostBaseURLSkipsGate(t *testing.T) {
 }
 
 func TestSummaryShowsNameModelAndDestination(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}, CfgPath: "/tmp/.marshal/config.toml"})
+	m := newTestWizard(t, Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}, CfgPath: "/tmp/.marshal/config.toml"})
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}}))
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
@@ -520,7 +546,7 @@ func TestSummaryShowsNameModelAndDestination(t *testing.T) {
 }
 
 func TestSummaryEnterEmitsDone(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
+	m := newTestWizard(t, Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}}))
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
@@ -539,7 +565,7 @@ func TestSummaryEnterEmitsDone(t *testing.T) {
 }
 
 func TestSummaryRenameChangesProviderName(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
+	m := newTestWizard(t, Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}}))
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
@@ -581,7 +607,7 @@ func TestScopedModelSwitchPreparesPresets(t *testing.T) {
 	cfg := config.Default()
 	deny := false
 	cfg.Privacy.ModelsDevEnrichment = &deny
-	m := New(Opts{Cfg: cfg, SkipToIntroModel: true, ScopedProvider: "ollama", Discovered: map[string][]schema.ModelInfo{}})
+	m := newTestWizard(t, Opts{Cfg: cfg, SkipToIntroModel: true, ScopedProvider: "ollama", Discovered: map[string][]schema.ModelInfo{}})
 	if m.step != stepPickModel {
 		t.Fatalf("expected stepPickModel, got %v", m.step)
 	}
@@ -609,7 +635,7 @@ func TestScopedModelSwitchPreparesPresets(t *testing.T) {
 }
 
 func TestSummaryEscGoesBackToModelPick(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
+	m := newTestWizard(t, Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}}))
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
@@ -627,7 +653,7 @@ func TestSummaryEscGoesBackToModelPick(t *testing.T) {
 }
 
 func TestRenameEmptyNameShowsError(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
+	m := newTestWizard(t, Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}}))
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
@@ -645,7 +671,7 @@ func TestRenameDuplicateNameShowsError(t *testing.T) {
 	cfg.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	}
-	m := New(Opts{Cfg: cfg, Discovered: map[string][]schema.ModelInfo{}})
+	m := newTestWizard(t, Opts{Cfg: cfg, Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}}))
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
@@ -666,7 +692,7 @@ func TestRenameToOwnNameIsAllowed(t *testing.T) {
 	cfg.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	}
-	m := New(Opts{Cfg: cfg, Discovered: map[string][]schema.ModelInfo{}})
+	m := newTestWizard(t, Opts{Cfg: cfg, Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}}))
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
@@ -687,7 +713,7 @@ func TestRenameToOwnNameIsAllowed(t *testing.T) {
 }
 
 func TestRenameEscReturnsToSummary(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
+	m := newTestWizard(t, Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}}))
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
@@ -703,7 +729,7 @@ func TestRenameEscReturnsToSummary(t *testing.T) {
 }
 
 func TestPasteMsgIntoRenameInput(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
+	m := newTestWizard(t, Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}}))
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
@@ -725,7 +751,7 @@ func TestPasteMsgIntoRenameInput(t *testing.T) {
 func TestCustomFlowPromptsForNameAfterBaseURL(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg})
+	m := newTestWizard(t, Opts{Cfg: cfg})
 	m, _ = m.Update(pickerPicked("custom"))
 	m.input.SetValue("https://api.coolmodels.com/v1")
 	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
@@ -743,7 +769,7 @@ func TestCustomFlowPromptsForNameAfterBaseURL(t *testing.T) {
 func TestCustomFlowRenameAdvancesToAPIKey(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg})
+	m := newTestWizard(t, Opts{Cfg: cfg})
 	m, _ = m.Update(pickerPicked("custom"))
 	m.input.SetValue("https://api.coolmodels.com/v1")
 	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
@@ -760,7 +786,7 @@ func TestCustomFlowRenameAdvancesToAPIKey(t *testing.T) {
 func TestCustomFlowRenameEscReturnsToBaseURL(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg})
+	m := newTestWizard(t, Opts{Cfg: cfg})
 	m, _ = m.Update(pickerPicked("custom"))
 	m.input.SetValue("https://api.coolmodels.com/v1")
 	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
@@ -771,7 +797,7 @@ func TestCustomFlowRenameEscReturnsToBaseURL(t *testing.T) {
 }
 
 func TestSummaryRenameHintIsProminent(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
+	m := newTestWizard(t, Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}}))
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
@@ -783,7 +809,7 @@ func TestSummaryRenameHintIsProminent(t *testing.T) {
 }
 
 func TestModelPickerUsesStoredTemplateID(t *testing.T) {
-	m := New(Opts{
+	m := newTestWizard(t, Opts{
 		Cfg: config.Config{Providers: map[string]config.ProviderConfig{
 			"work-openai": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1", Template: "openai"},
 		}},
@@ -812,7 +838,7 @@ func advanceToSummary(m *Model) {
 // model that has known limits, ready to test the consent/prepare flow.
 func newConnectForModelPick(t *testing.T) *Model {
 	t.Helper()
-	m := New(Opts{
+	m := newTestWizard(t, Opts{
 		Cfg: config.Default(),
 		Discovered: map[string][]schema.ModelInfo{
 			"openai": {
@@ -877,7 +903,7 @@ func TestConnectSkipsConsentWhenAnswered(t *testing.T) {
 	cfg := config.Default()
 	deny := false
 	cfg.Privacy.ModelsDevEnrichment = &deny
-	m := New(Opts{
+	m := newTestWizard(t, Opts{
 		Cfg: cfg,
 		Discovered: map[string][]schema.ModelInfo{
 			"openai": {{ID: "gpt-4o", ContextWindow: 128000}},
@@ -945,7 +971,7 @@ func pickerPicked(value string) tea.Msg { return picker.PickedMsg{Value: value} 
 func TestPickCodexTemplateEntersOAuthLogin(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg, Auth: newMemAuth(), OpenBrowser: func(string) error { return nil }})
+	m := newTestWizard(t, Opts{Cfg: cfg, Auth: newMemAuth(), OpenBrowser: func(string) error { return nil }})
 	updated, _ := m.Update(pickerPicked("openai-codex"))
 	if updated.step != stepOAuthLogin {
 		t.Fatalf("codex template should enter the OAuth login step, got %v", updated.step)
@@ -971,7 +997,7 @@ func TestPickCodexTemplateEntersOAuthLogin(t *testing.T) {
 func TestOAuthTemplateNeverPromptsForAPIKey(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg, Auth: newMemAuth(), OpenBrowser: func(string) error { return nil }})
+	m := newTestWizard(t, Opts{Cfg: cfg, Auth: newMemAuth(), OpenBrowser: func(string) error { return nil }})
 	updated, _ := m.Update(pickerPicked("openai-codex"))
 	if updated.step == stepAPIKey {
 		t.Fatal("an OAuth template must not enter the API-key step")
@@ -983,7 +1009,7 @@ func TestOAuthTemplateNeverPromptsForAPIKey(t *testing.T) {
 func TestOAuthDoneFailureStaysOnLoginStep(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg, Auth: newMemAuth(), OpenBrowser: func(string) error { return nil }})
+	m := newTestWizard(t, Opts{Cfg: cfg, Auth: newMemAuth(), OpenBrowser: func(string) error { return nil }})
 	updated, _ := m.Update(pickerPicked("openai-codex"))
 	name := updated.providerName
 
@@ -997,7 +1023,7 @@ func TestOAuthDoneFailureStaysOnLoginStep(t *testing.T) {
 }
 
 func TestOAuthCopyLinkCopiesFullURL(t *testing.T) {
-	m := New(Opts{Cfg: config.Default()})
+	m := newTestWizard(t, Opts{Cfg: config.Default()})
 	m.step = stepOAuthLogin
 	m.picker = nil
 	m.oauthDisplay = &oauthDisplay{}
@@ -1019,7 +1045,7 @@ func TestOAuthCopyLinkCopiesFullURL(t *testing.T) {
 }
 
 func TestOAuthCopyWaitsForURL(t *testing.T) {
-	m := New(Opts{Cfg: config.Default()})
+	m := newTestWizard(t, Opts{Cfg: config.Default()})
 	m.step = stepOAuthLogin
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 'c'})
 	if cmd != nil {
@@ -1032,7 +1058,7 @@ func TestOAuthCopyWaitsForURL(t *testing.T) {
 func TestOAuthDoneSuccessAdvancesToProbing(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg, Auth: newMemAuth(), OpenBrowser: func(string) error { return nil }})
+	m := newTestWizard(t, Opts{Cfg: cfg, Auth: newMemAuth(), OpenBrowser: func(string) error { return nil }})
 	updated, _ := m.Update(pickerPicked("openai-codex"))
 	name := updated.providerName
 
@@ -1047,7 +1073,7 @@ func TestOAuthDoneSuccessAdvancesToProbing(t *testing.T) {
 func TestOAuthDoneStaleResultIgnored(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg, Auth: newMemAuth(), OpenBrowser: func(string) error { return nil }})
+	m := newTestWizard(t, Opts{Cfg: cfg, Auth: newMemAuth(), OpenBrowser: func(string) error { return nil }})
 	updated, _ := m.Update(pickerPicked("openai-codex"))
 
 	updated, _ = updated.Update(OAuthDoneMsg{Provider: "some-other-provider"})
@@ -1062,7 +1088,7 @@ func TestOAuthDoneStaleResultIgnored(t *testing.T) {
 func TestOAuthLoginViewRendersWaitingState(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg, Auth: newMemAuth(), OpenBrowser: func(string) error { return nil }})
+	m := newTestWizard(t, Opts{Cfg: cfg, Auth: newMemAuth(), OpenBrowser: func(string) error { return nil }})
 	updated, _ := m.Update(pickerPicked("openai-codex"))
 	view := updated.View(80, 24)
 	if !strings.Contains(view, "signing in") {
@@ -1076,7 +1102,7 @@ func TestOAuthLoginViewRendersWaitingState(t *testing.T) {
 func TestOAuthLoginShowsAuthorizationURL(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg, Auth: newMemAuth(), OpenBrowser: func(string) error { return nil }})
+	m := newTestWizard(t, Opts{Cfg: cfg, Auth: newMemAuth(), OpenBrowser: func(string) error { return nil }})
 	updated, _ := m.Update(pickerPicked("openai-codex"))
 
 	// Before the engine reports a URL the panel says it is opening one.
@@ -1101,7 +1127,7 @@ func TestOAuthLoginWiresBrowserOpener(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
 	auth := newMemAuth()
-	m := New(Opts{Cfg: cfg, Auth: auth, OpenBrowser: func(string) error { return nil }})
+	m := newTestWizard(t, Opts{Cfg: cfg, Auth: auth, OpenBrowser: func(string) error { return nil }})
 	updated, _ := m.Update(pickerPicked("openai-codex"))
 
 	// The engine must come from the injected resolver — looking it up through
@@ -1125,7 +1151,7 @@ func TestOAuthLoginWiresBrowserOpener(t *testing.T) {
 func TestRemoteGateRoutesOAuthTemplateToLogin(t *testing.T) {
 	// Default config: remote providers disabled. The injected resolver keeps
 	// this from reaching the process-wide OAuth engine (and its real keychain).
-	m := New(Opts{Cfg: config.Default(), Auth: newMemAuth(), OpenBrowser: func(string) error { return nil }})
+	m := newTestWizard(t, Opts{Cfg: config.Default(), Auth: newMemAuth(), OpenBrowser: func(string) error { return nil }})
 	updated, _ := m.Update(pickerPicked("openai-codex"))
 	if updated.step != stepRemoteGate {
 		t.Fatalf("step = %v, want stepRemoteGate with remote providers disabled", updated.step)
@@ -1143,7 +1169,7 @@ func TestRemoteGateRoutesOAuthTemplateToLogin(t *testing.T) {
 // TestRemoteGateStillRoutesKeyedTemplateToAPIKey guards the pre-existing
 // behavior for non-OAuth templates.
 func TestRemoteGateStillRoutesKeyedTemplateToAPIKey(t *testing.T) {
-	m := New(Opts{Cfg: config.Default()})
+	m := newTestWizard(t, Opts{Cfg: config.Default()})
 	updated, _ := m.Update(pickerPicked("openrouter"))
 	if updated.step != stepRemoteGate {
 		t.Fatalf("step = %v, want stepRemoteGate", updated.step)
@@ -1157,7 +1183,7 @@ func TestRemoteGateStillRoutesKeyedTemplateToAPIKey(t *testing.T) {
 func TestAPIKeyInputIsMasked(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg})
+	m := newTestWizard(t, Opts{Cfg: cfg})
 	m, _ = m.Update(pickerPicked("openrouter"))
 	if m.step != stepAPIKey {
 		t.Fatalf("expected stepAPIKey, got %v", m.step)
@@ -1170,7 +1196,7 @@ func TestAPIKeyInputIsMasked(t *testing.T) {
 func TestDollarPrefixSetsEnvVarKey(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg})
+	m := newTestWizard(t, Opts{Cfg: cfg})
 	m, _ = m.Update(pickerPicked("openrouter"))
 	if m.step != stepAPIKey {
 		t.Fatalf("expected stepAPIKey, got %v", m.step)
@@ -1191,7 +1217,7 @@ func TestDollarPrefixSetsEnvVarKey(t *testing.T) {
 func TestDollarPrefixEmptyNameShowsError(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg})
+	m := newTestWizard(t, Opts{Cfg: cfg})
 	m, _ = m.Update(pickerPicked("openrouter"))
 	m.input.SetValue("$")
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 13})
@@ -1204,7 +1230,7 @@ func TestDollarPrefixEmptyNameShowsError(t *testing.T) {
 }
 
 func TestProbeFailureShowsHint(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
+	m := newTestWizard(t, Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	updated, _ := m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Err: errors.New("connection refused")}))
 	if updated.step != stepProbing {
@@ -1216,7 +1242,7 @@ func TestProbeFailureShowsHint(t *testing.T) {
 }
 
 func TestProbeFailureHintForNoSuchHost(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
+	m := newTestWizard(t, Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	updated, _ := m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Err: errors.New("no such host")}))
 	if !strings.Contains(updated.err, "hostname not found") {
@@ -1225,7 +1251,7 @@ func TestProbeFailureHintForNoSuchHost(t *testing.T) {
 }
 
 func TestProbeFailureHintForUnauthorized(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
+	m := newTestWizard(t, Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	updated, _ := m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Err: errors.New("401 unauthorized")}))
 	if !strings.Contains(updated.err, "key rejected") {
@@ -1234,7 +1260,7 @@ func TestProbeFailureHintForUnauthorized(t *testing.T) {
 }
 
 func TestProbeFailureHintForTimeout(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
+	m := newTestWizard(t, Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	updated, _ := m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Err: errors.New("deadline exceeded")}))
 	if !strings.Contains(updated.err, "timed out") {
@@ -1243,7 +1269,7 @@ func TestProbeFailureHintForTimeout(t *testing.T) {
 }
 
 func TestProbeFailureHintForCertificate(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
+	m := newTestWizard(t, Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	updated, _ := m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Err: errors.New("certificate signed by unknown authority")}))
 	if !strings.Contains(updated.err, "TLS problem") {
@@ -1340,7 +1366,7 @@ func TestModelValueRoundTrip(t *testing.T) {
 }
 
 func TestModelPickerListsEveryProvider(t *testing.T) {
-	m := New(Opts{
+	m := newTestWizard(t, Opts{
 		Cfg: config.Config{Providers: map[string]config.ProviderConfig{
 			"openai": {BaseURL: "https://api.openai.com/v1"},
 			"groq":   {BaseURL: "https://api.groq.com/openai/v1"},
@@ -1361,7 +1387,7 @@ func TestModelPickerListsEveryProvider(t *testing.T) {
 }
 
 func TestModelPickerPickAttributesTheRightProvider(t *testing.T) {
-	m := New(Opts{
+	m := newTestWizard(t, Opts{
 		Cfg: config.Config{Providers: map[string]config.ProviderConfig{
 			"openai": {BaseURL: "https://api.openai.com/v1"},
 			"groq":   {BaseURL: "https://api.groq.com/openai/v1"},
@@ -1439,7 +1465,7 @@ func TestUniqueNameFallsBackToCustomForInvalidURL(t *testing.T) {
 }
 
 func TestModelStepEmitsRefreshOnCtrlR(t *testing.T) {
-	m := New(Opts{
+	m := newTestWizard(t, Opts{
 		Cfg: config.Config{Providers: map[string]config.ProviderConfig{
 			"openai": {Type: "openai_compatible", BaseURL: "https://a/v1"},
 		}},
@@ -1458,7 +1484,7 @@ func TestModelStepEmitsRefreshOnCtrlR(t *testing.T) {
 }
 
 func TestPlainRStillFiltersTheModelList(t *testing.T) {
-	m := New(Opts{
+	m := newTestWizard(t, Opts{
 		Cfg: config.Config{Providers: map[string]config.ProviderConfig{
 			"openai": {Type: "openai_compatible", BaseURL: "https://a/v1"},
 		}},
@@ -1476,7 +1502,7 @@ func TestPlainRStillFiltersTheModelList(t *testing.T) {
 }
 
 func TestModelStepSubtitleNamesNoProviderInAllProvidersMode(t *testing.T) {
-	m := New(Opts{
+	m := newTestWizard(t, Opts{
 		Cfg: config.Config{Providers: map[string]config.ProviderConfig{
 			"openai": {Type: "openai_compatible", BaseURL: "https://a/v1"},
 			"groq":   {Type: "openai_compatible", BaseURL: "https://b/v1"},
@@ -1499,7 +1525,7 @@ func TestModelStepSubtitleNamesNoProviderInAllProvidersMode(t *testing.T) {
 }
 
 func TestProbeResultAttributesToMsgProviderInAllProvidersMode(t *testing.T) {
-	m := New(Opts{
+	m := newTestWizard(t, Opts{
 		Cfg: config.Config{Providers: map[string]config.ProviderConfig{
 			"kimi":   {Type: "openai_compatible", BaseURL: "https://api.moonshot.cn/v1"},
 			"ollama": {Type: "ollama", BaseURL: "http://localhost:11434"},
@@ -1527,7 +1553,7 @@ func TestProbeResultAttributesToMsgProviderInAllProvidersMode(t *testing.T) {
 }
 
 func TestProbeFailureInAllProvidersModeKeepsPickerAndNotesProvider(t *testing.T) {
-	m := New(Opts{
+	m := newTestWizard(t, Opts{
 		Cfg: config.Config{Providers: map[string]config.ProviderConfig{
 			"kimi":   {Type: "openai_compatible", BaseURL: "https://api.moonshot.cn/v1"},
 			"ollama": {Type: "ollama", BaseURL: "http://localhost:11434"},
@@ -1561,7 +1587,7 @@ func TestProbeFailureInAllProvidersModeKeepsPickerAndNotesProvider(t *testing.T)
 }
 
 func TestModelPickerKeepsUndiscoveredProviderVisible(t *testing.T) {
-	m := New(Opts{
+	m := newTestWizard(t, Opts{
 		Cfg: config.Config{Providers: map[string]config.ProviderConfig{
 			"ollama":       {Type: "ollama", BaseURL: "http://localhost:11434"},
 			"ollama cloud": {Type: "ollama", BaseURL: "https://ollama.com"},
@@ -1581,7 +1607,7 @@ func TestModelPickerKeepsUndiscoveredProviderVisible(t *testing.T) {
 }
 
 func TestManualRowPickScopesToItsProvider(t *testing.T) {
-	m := New(Opts{
+	m := newTestWizard(t, Opts{
 		Cfg: config.Config{Providers: map[string]config.ProviderConfig{
 			"kimi":   {Type: "openai_compatible", BaseURL: "https://api.moonshot.cn/v1"},
 			"ollama": {Type: "ollama", BaseURL: "http://localhost:11434"},
@@ -1609,7 +1635,7 @@ func TestManualRowPickScopesToItsProvider(t *testing.T) {
 }
 
 func TestModelStepSubtitleNamesTheProviderWhenScoped(t *testing.T) {
-	m := New(Opts{
+	m := newTestWizard(t, Opts{
 		Cfg: config.Config{Providers: map[string]config.ProviderConfig{
 			"openai": {Type: "openai_compatible", BaseURL: "https://a/v1"},
 		}},
@@ -1624,7 +1650,7 @@ func TestModelStepSubtitleNamesTheProviderWhenScoped(t *testing.T) {
 }
 
 func TestRefreshKeyInactiveOutsideModelStep(t *testing.T) {
-	m := New(Opts{Cfg: config.Config{}}) // starts at stepPickTemplate
+	m := newTestWizard(t, Opts{Cfg: config.Config{}}) // starts at stepPickTemplate
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
 	if cmd != nil {
 		if _, ok := cmd().(RefreshMsg); ok {
@@ -1730,7 +1756,7 @@ func TestPrepareCmdDoesNotMutateLivePresetMap(t *testing.T) {
 	cfg.Models.Presets = map[string]routing.ModelPreset{
 		name: {Name: name, Provider: "openai", Model: "gpt-4o", ContextWindow: 128000},
 	}
-	m := New(Opts{
+	m := newTestWizard(t, Opts{
 		Cfg: cfg,
 		Discovered: map[string][]schema.ModelInfo{
 			"openai": {{ID: "gpt-4o"}, {ID: "gpt-4o-mini"}},
@@ -1766,7 +1792,7 @@ func TestPrepareCmdSkipsCatalogWhenDenied(t *testing.T) {
 	deny := false
 	cfg.Privacy.ModelsDevEnrichment = &deny
 	dataDir := t.TempDir()
-	m := New(Opts{
+	m := newTestWizard(t, Opts{
 		Cfg: cfg,
 		Discovered: map[string][]schema.ModelInfo{
 			"openai": {{ID: "gpt-4o"}},
@@ -1880,7 +1906,7 @@ func oauthTestModel(t *testing.T, auth provider.AuthResolver) (*Model, *stubOpen
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
 	opener := &stubOpener{}
-	m := New(Opts{Cfg: cfg, Auth: auth, OpenBrowser: opener.open})
+	m := newTestWizard(t, Opts{Cfg: cfg, Auth: auth, OpenBrowser: opener.open})
 	updated, _ := m.Update(pickerPicked("openai-codex"))
 	if updated.step != stepOAuthLogin {
 		t.Fatalf("step = %v, want stepOAuthLogin", updated.step)
@@ -1893,12 +1919,12 @@ func oauthTestModel(t *testing.T, auth provider.AuthResolver) (*Model, *stubOpen
 // than leaving the field nil (which would panic on first probe).
 func TestNewInjectsAuthDependency(t *testing.T) {
 	auth := newMemAuth()
-	m := New(Opts{Cfg: config.Default(), Auth: auth})
+	m := newTestWizard(t, Opts{Cfg: config.Default(), Auth: auth})
 	if m.auth != provider.AuthResolver(auth) {
 		t.Fatalf("auth = %v, want the injected resolver", m.auth)
 	}
 
-	plain := New(Opts{Cfg: config.Default()})
+	plain := newTestWizard(t, Opts{Cfg: config.Default()})
 	if plain.auth == nil {
 		t.Fatal("an omitted resolver must select the production adapter, not nil")
 	}
@@ -1951,7 +1977,7 @@ func TestEnterOAuthLoginSurfacesResolverError(t *testing.T) {
 // production keychain.
 func TestOAuthLoginWithUnavailableStoreFailsClosed(t *testing.T) {
 	auth := &memAuth{store: nil} // OpenStore reports ErrKeyringUnavailable
-	m := New(Opts{Cfg: config.Default(), Auth: auth, OpenBrowser: func(string) error { return nil }})
+	m := newTestWizard(t, Opts{Cfg: config.Default(), Auth: auth, OpenBrowser: func(string) error { return nil }})
 	m.providerName = "codex-nil-store"
 	updated, cmd := m.enterOAuthLogin()
 
@@ -2090,7 +2116,7 @@ func TestOAuthLoginNilOpenerFallsBackToProduction(t *testing.T) {
 // openai/gpt-4o, openai/llama-3.3-70b.
 func newDiscoveryModel(t *testing.T) *Model {
 	t.Helper()
-	m := New(Opts{
+	m := newTestWizard(t, Opts{
 		Cfg: config.Config{Providers: map[string]config.ProviderConfig{
 			"groq":   {Type: "openai_compatible", BaseURL: "https://api.groq.com/openai/v1"},
 			"openai": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
@@ -2220,7 +2246,7 @@ func TestSetupProbeRejectsSkippedAndSupersededResults(t *testing.T) {
 	// delivered by hand so the test can hold two attempts at once.
 	newProbingWizard := func(t *testing.T) *Model {
 		t.Helper()
-		m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
+		m := newTestWizard(t, Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 		m, _ = m.Update(pickerPicked("ollama"))
 		if m.step != stepProbing {
 			t.Fatalf("step = %v, want stepProbing", m.step)
@@ -2291,7 +2317,7 @@ func TestSetupProbeRejectsSkippedAndSupersededResults(t *testing.T) {
 		cfg := config.Default()
 		deny := false
 		cfg.Privacy.ModelsDevEnrichment = &deny
-		m := New(Opts{Cfg: cfg, Discovered: map[string][]schema.ModelInfo{}})
+		m := newTestWizard(t, Opts{Cfg: cfg, Discovered: map[string][]schema.ModelInfo{}})
 		m, _ = m.Update(pickerPicked("ollama"))
 		if m.step != stepProbing {
 			t.Fatalf("step = %v, want stepProbing", m.step)

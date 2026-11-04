@@ -1,19 +1,14 @@
 package probe
 
 import (
+	"context"
 	"errors"
-	"fmt"
-	"io"
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
+	"marshal/internal/acpclient"
 	"marshal/internal/app/config"
-	"marshal/internal/credentials"
-	"marshal/internal/llm/provider"
-	"marshal/internal/oauth"
+	"marshal/internal/llm/schema"
 )
 
 func TestIsLocalhost(t *testing.T) {
@@ -37,183 +32,109 @@ func TestIsLocalhost(t *testing.T) {
 	}
 }
 
-func TestProviderSuccess(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/models" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"data":[{"id":"qwen2.5-coder:7b","owned_by":"ollama"},{"id":"llama3.1:8b","owned_by":"meta"}]}`))
-	}))
-	defer srv.Close()
+// fakeHost is a client host that answers ProbeProvider without a network: it
+// records what the probe asked for and returns a scripted result.
+type fakeHost struct {
+	acpclient.Host
 
-	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: srv.URL + "/v1"}
-	msg := Provider("test.field", "testprov", pc, "", 0)().(ResultMsg)
+	name  string
+	pc    config.ProviderConfig
+	calls int
+	// models and err are the scripted answer.
+	models []schema.ModelInfo
+	err    error
+	// block, when set, waits for the probe's context instead of answering.
+	block bool
+}
+
+func (h *fakeHost) ProbeProvider(ctx context.Context, name string, pc config.ProviderConfig) ([]schema.ModelInfo, error) {
+	h.calls++
+	h.name = name
+	h.pc = pc
+	if h.block {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	if h.err != nil {
+		return nil, h.err
+	}
+	return h.models, nil
+}
+
+// TestProviderAsksTheHost: the probe asks the host for the named provider's
+// models and carries the answer back with its field ID and name.
+func TestProviderAsksTheHost(t *testing.T) {
+	host := &fakeHost{models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}, {ID: "llama3.1:8b"}}}
+	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://127.0.0.1:11434/v1"}
+
+	msg := Provider(host, "test.field", "testprov", pc)().(ResultMsg)
 
 	if msg.Err != nil {
 		t.Fatalf("Provider err = %v", msg.Err)
 	}
-	if msg.Provider != "testprov" || msg.FieldID != "test.field" {
+	if host.calls != 1 {
+		t.Fatalf("host calls = %d, want 1", host.calls)
+	}
+	if host.name != "testprov" || host.pc != pc {
+		t.Fatalf("host asked for %q/%+v, want testprov/%+v", host.name, host.pc, pc)
+	}
+	if msg.FieldID != "test.field" || msg.Provider != "testprov" {
 		t.Fatalf("ResultMsg identity = %+v", msg)
 	}
-	if len(msg.Models) != 2 || msg.Models[0].ID != "qwen2.5-coder:7b" {
-		t.Fatalf("ResultMsg models = %v", msg.Models)
+	if len(msg.Models) != 2 || msg.Models[0].ID != "qwen2.5-coder:7b" || msg.Models[1].ID != "llama3.1:8b" {
+		t.Fatalf("ResultMsg models = %v, want the host's list", msg.Models)
 	}
 }
 
-func TestProviderNon200(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "forbidden", http.StatusForbidden)
-	}))
-	defer srv.Close()
-
-	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: srv.URL + "/v1"}
-	msg := Provider("test.field", "testprov", pc, "", 0)().(ResultMsg)
-	if msg.Err == nil {
-		t.Fatal("expected error for 403 response")
-	}
-}
-
-func TestProviderConnectionRefused(t *testing.T) {
+// TestProviderReportsTheHostsError: a host failure is the result's error, not
+// a swallowed or wrapped one.
+func TestProviderReportsTheHostsError(t *testing.T) {
+	hostErr := errors.New("host refused")
+	host := &fakeHost{err: hostErr}
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://127.0.0.1:1/v1"}
-	msg := Provider("test.field", "testprov", pc, "", 0)().(ResultMsg)
+
+	msg := Provider(host, "test.field", "testprov", pc)().(ResultMsg)
+
 	if msg.Err == nil {
-		t.Fatal("expected error for connection refused")
+		t.Fatal("a failing host must produce a result error")
+	}
+	if !errors.Is(msg.Err, hostErr) {
+		t.Fatalf("err = %v, want the host's error", msg.Err)
+	}
+	if msg.FieldID != "test.field" || msg.Provider != "testprov" {
+		t.Fatalf("ResultMsg identity = %+v", msg)
 	}
 }
 
-func TestProviderTimeout(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(2 * time.Second)
-	}))
-	defer srv.Close()
-
+// TestProviderBoundsTheCall: the probe's context carries Timeout, so a host
+// that never answers is cut off and the deadline surfaces as the error.
+func TestProviderBoundsTheCall(t *testing.T) {
 	old := Timeout
-	Timeout = 200 * time.Millisecond
+	Timeout = 50 * time.Millisecond
 	defer func() { Timeout = old }()
 
-	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: srv.URL + "/v1"}
-	msg := Provider("test.field", "testprov", pc, "", 0)().(ResultMsg)
-	if msg.Err == nil {
-		t.Fatal("expected timeout error")
-	}
-}
-
-func TestProviderPreservesModelLimits(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"data":[{"id":"gpt-4o","owned_by":"openai"}]}`)
-	}))
-	defer srv.Close()
-
-	msg := Provider("f", "openai", config.ProviderConfig{
-		Type: "openai_compatible", BaseURL: srv.URL,
-	}, "", 0)().(ResultMsg)
-
-	if msg.Err != nil {
-		t.Fatalf("probe: %v", msg.Err)
-	}
-	if len(msg.Models) != 1 {
-		t.Fatalf("got %d models, want 1", len(msg.Models))
-	}
-	if msg.Models[0].ID != "gpt-4o" {
-		t.Errorf("ID = %q, want gpt-4o", msg.Models[0].ID)
-	}
-	// The field must exist and be addressable — its value depends on
-	// The field must exist and be addressable: /models reports no limits, so
-	// the discovery layer leaves them for the preset defaults.
-	_ = msg.Models[0].ContextWindow
-	_ = msg.Models[0].MaxOutputTokens
-}
-
-// ── Explicit-auth probe entry point ──────────────────────────────────
-
-// memAuth is a test AuthResolver: an in-memory token store plus a record of
-// which services and provider names were asked for.
-type memAuth struct {
-	store *credentials.MemStore
-	// storeErr, when set, fails OpenStore/CodexOAuthEngine. It stands in for
-	// an unavailable OS keychain.
-	storeErr error
-	services []string
-	engines  []string
-}
-
-func newMemAuth() *memAuth { return &memAuth{store: credentials.NewMemStore()} }
-
-func (a *memAuth) OpenStore(service string) (credentials.Store, error) {
-	a.services = append(a.services, service)
-	if a.storeErr != nil {
-		return nil, a.storeErr
-	}
-	return a.store, nil
-}
-
-func (a *memAuth) CodexOAuthEngine(name string) (*oauth.Engine, error) {
-	a.engines = append(a.engines, name)
-	if a.storeErr != nil {
-		return nil, a.storeErr
-	}
-	return provider.NewCodexOAuthEngineWithStore(name, a.store)
-}
-
-// TestProviderWithAuthUsesInjectedResolver: an openai_codex probe must build
-// its token store through the supplied resolver, so a probe launched from an
-// isolated runtime never opens the developer's keychain. The probe fails with
-// the injected error and must not fall back to the production adapter.
-func TestProviderWithAuthUsesInjectedResolver(t *testing.T) {
-	auth := newMemAuth()
-	auth.storeErr = fmt.Errorf("injected store failure: %w", credentials.ErrKeyringUnavailable)
-
-	pc := config.ProviderConfig{
-		Type:     "openai_codex",
-		Template: "openai-codex",
-		BaseURL:  "https://chatgpt.com/backend-api",
-		Auth:     "oauth",
-	}
-	msg := ProviderWithAuth("f", "codex", pc, "", 0, auth)().(ResultMsg)
-
-	if len(auth.engines) != 1 || auth.engines[0] != "codex" {
-		t.Fatalf("engine requests = %v, want one for \"codex\"", auth.engines)
-	}
-	if msg.Err == nil {
-		t.Fatal("a failing injected resolver must produce an error")
-	}
-	if !errors.Is(msg.Err, credentials.ErrKeyringUnavailable) {
-		t.Fatalf("err = %v, want the injected failure wrapped", msg.Err)
-	}
-}
-
-// TestProviderWithAuthNilResolverFailsClosed: a nil resolver must error rather
-// than silently selecting the production keychain.
-func TestProviderWithAuthNilResolverFailsClosed(t *testing.T) {
+	host := &fakeHost{block: true}
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://127.0.0.1:1/v1"}
-	msg := ProviderWithAuth("f", "p", pc, "", 0, nil)().(ResultMsg)
+
+	msg := Provider(host, "test.field", "testprov", pc)().(ResultMsg)
+
 	if msg.Err == nil {
-		t.Fatal("a nil resolver must fail the probe, not fall back to the real keychain")
+		t.Fatal("expected a timeout error")
 	}
-	if !strings.Contains(msg.Err.Error(), "auth resolver is required") {
-		t.Fatalf("err = %v, want an auth-resolver-required error", msg.Err)
+	if !errors.Is(msg.Err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded", msg.Err)
 	}
 }
 
-// TestProviderWrapperSelectsProductionAdapter: the legacy wrapper keeps
-// working for callers with no injected dependency (success path through a
-// test-owned server).
-func TestProviderWrapperSelectsProductionAdapter(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"data":[{"id":"m1","owned_by":"x"}]}`)
-	}))
-	defer srv.Close()
-
-	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: srv.URL}
-	msg := Provider("f", "p", pc, "", 0)().(ResultMsg)
-	if msg.Err != nil {
-		t.Fatalf("provider: %v", msg.Err)
+// TestProviderWithoutAHost: with no client host there is nothing to ask, and
+// the result says so instead of panicking or reaching a default.
+func TestProviderWithoutAHost(t *testing.T) {
+	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://127.0.0.1:1/v1"}
+	msg := Provider(nil, "test.field", "testprov", pc)().(ResultMsg)
+	if msg.Err == nil {
+		t.Fatal("a nil host must fail the probe")
 	}
-	if len(msg.Models) != 1 || msg.Models[0].ID != "m1" {
-		t.Fatalf("models = %v, want the server's list", msg.Models)
+	if !errors.Is(msg.Err, errNoHost) {
+		t.Fatalf("err = %v, want errNoHost", msg.Err)
 	}
 }

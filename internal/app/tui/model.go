@@ -1137,6 +1137,7 @@ func (m *Model) openSettingsBrowser(query string) {
 		settings.WithProvenance(m.provenanceForPath),
 		settings.WithDataDir(m.modelCacheDir),
 		settings.WithAuthResolver(m.auth),
+		settings.WithHost(m.host),
 	}
 	if home, err := m.userHome(); err == nil {
 		opts = append(opts, settings.WithUserConfigPath(config.UserConfigPath(home)))
@@ -6384,6 +6385,7 @@ func (m *Model) openConnect(_ string) {
 		DataDir:     m.modelCacheDir,
 		Auth:        m.auth,
 		OpenBrowser: m.openBrowser,
+		Host:        m.host,
 	}
 	// Providers are saved to the user-global config; the summary screen's
 	// "save to:" line should name that file.
@@ -6413,6 +6415,7 @@ func (m *Model) openModels() tea.Cmd {
 		DataDir:          m.modelCacheDir,
 		Auth:             m.auth,
 		OpenBrowser:      m.openBrowser,
+		Host:             m.host,
 	})
 	m.connectModel.SetSize(m.leftWidth, m.height)
 	m.dock.Open(connect.Panel{Model: m.connectModel})
@@ -6457,7 +6460,7 @@ func (m *Model) probeProviders(names []string) tea.Cmd {
 		}
 		m.modelsProbeGen[n]++
 		owner, gen := n, m.modelsProbeGen[n]
-		inner := probe.ProviderWithAuth("models", n, pc, m.modelCacheDir, m.state.Config.Agent.ThinkingBudgetMargin, m.auth)
+		inner := probe.Provider(m.host, "models", n, pc)
 		cmds = append(cmds, func() tea.Msg {
 			res, ok := inner().(probe.ResultMsg)
 			if !ok {

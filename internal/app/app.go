@@ -2747,6 +2747,8 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			SetInteraction:  rt.SetInteraction,
 			SetEffort:       rt.SetSessionEffort,
 			Commands:        rt.CommandRegistry,
+			Auth:            rt.AuthResolver,
+			ModelCacheDir:   rt.DataDir,
 		}
 		if providerReady {
 			deps.Work = rt

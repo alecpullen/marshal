@@ -13,6 +13,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"marshal/internal/acpclient"
 	"marshal/internal/app/config"
 	"marshal/internal/app/presetsetup"
 	"marshal/internal/app/tui/chrome"
@@ -97,6 +98,9 @@ type Opts struct {
 	// the production behavior (mcpauth.OpenBrowser). Tests inject a stub so
 	// an executed login command never opens a real browser.
 	OpenBrowser func(url string) error
+	// Host is the client host the setup probe asks for the provider's model
+	// list. A nil host fails that probe.
+	Host acpclient.Host
 }
 
 type Model struct {
@@ -132,6 +136,7 @@ type Model struct {
 	probeErrs     map[string]error
 	dataDir       string
 	auth          provider.AuthResolver
+	host          acpclient.Host
 	openBrowser   func(url string) error
 	prepared      PreparedMsg
 
@@ -169,6 +174,7 @@ func New(opts Opts) *Model {
 		allProviders:   opts.AllProviders,
 		dataDir:        opts.DataDir,
 		auth:           auth,
+		host:           opts.Host,
 		openBrowser:    openBrowser,
 	}
 	if opts.SkipToIntroModel {
@@ -1323,7 +1329,7 @@ const parentModelProbeFieldID = "models"
 func (m *Model) runProbe() tea.Cmd {
 	owner := m
 	gen := m.probeGen
-	inner := probe.ProviderWithAuth("connect", m.providerName, m.providerCfg, m.dataDir, m.cfg.Agent.ThinkingBudgetMargin, m.auth)
+	inner := probe.Provider(m.host, "connect", m.providerName, m.providerCfg)
 	return func() tea.Msg {
 		res, ok := inner().(probe.ResultMsg)
 		if !ok {

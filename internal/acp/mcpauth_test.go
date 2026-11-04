@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/commands"
@@ -248,7 +249,7 @@ func TestCommandManagerCommandListMarksMCPAuthHeadless(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CommandList: %v", err)
 	}
-	list, ok := res.(CommandListResult)
+	list, ok := res.(acpwire.CommandListResult)
 	if !ok {
 		t.Fatalf("CommandList result type = %T, want CommandListResult", res)
 	}
@@ -292,7 +293,7 @@ func TestCommandManagerMCPAuthEmitsURLAndCompletesFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Command(mcp auth linear): %v", err)
 	}
-	cr, ok := res.(CommandResult)
+	cr, ok := res.(acpwire.CommandResult)
 	if !ok {
 		t.Fatalf("Command result type = %T, want CommandResult", res)
 	}

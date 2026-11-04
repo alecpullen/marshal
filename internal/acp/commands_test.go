@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/commands"
 )
@@ -55,7 +56,7 @@ func TestCommandManagerCommandListReturnsKinds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CommandList: %v", err)
 	}
-	list, ok := res.(CommandListResult)
+	list, ok := res.(acpwire.CommandListResult)
 	if !ok {
 		t.Fatalf("CommandList result type = %T, want CommandListResult", res)
 	}
@@ -111,7 +112,7 @@ func TestCommandManagerCommandRunsHeadlessHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Command: %v", err)
 	}
-	cr, ok := res.(CommandResult)
+	cr, ok := res.(acpwire.CommandResult)
 	if !ok {
 		t.Fatalf("Command result type = %T, want CommandResult", res)
 	}
@@ -150,7 +151,7 @@ func TestCommandManagerCommandSerializesDoc(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Command: %v", err)
 	}
-	cr := res.(CommandResult)
+	cr := res.(acpwire.CommandResult)
 	if cr.Doc == nil {
 		t.Fatal("Command result.Doc is nil, want a populated WireDoc")
 	}

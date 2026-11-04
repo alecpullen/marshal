@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/commands"
@@ -88,38 +89,6 @@ func NewCommandManager(cfg CommandManagerConfig) *CommandManager {
 	}
 }
 
-// kindOf classifies a command for the session/command_list wire result.
-// "headless" commands can be run via session/command: either they carry a
-// real Handler, or the manager implements them itself (see
-// CommandManager.supportsHeadless, applied by CommandList). "tui_only"
-// commands are interactive; those without a Handler are rejected by
-// session/command — see Command. "prompt" commands have no Handler — a
-// client runs them by sending PromptBody as a normal session/prompt instead.
-func kindOf(cmd commands.Command) string {
-	switch {
-	case cmd.TUIOnly:
-		return "tui_only"
-	case cmd.PromptBody != "":
-		return "prompt"
-	default:
-		return "headless"
-	}
-}
-
-// CommandInfo is one entry in the session/command_list result.
-type CommandInfo struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Args        string `json:"args,omitempty"`
-	Group       string `json:"group,omitempty"`
-	Kind        string `json:"kind"`
-}
-
-// CommandListResult is the JSON-RPC result for session/command_list.
-type CommandListResult struct {
-	Commands []CommandInfo `json:"commands"`
-}
-
 type commandListParams struct {
 	SessionID string `json:"sessionId"`
 }
@@ -129,62 +98,6 @@ type CommandParams struct {
 	SessionID string   `json:"sessionId"`
 	Name      string   `json:"name"`
 	Args      []string `json:"args,omitempty"`
-}
-
-// CommandResult is the JSON-RPC result for session/command.
-type CommandResult struct {
-	Text string   `json:"text,omitempty"`
-	Doc  *WireDoc `json:"doc,omitempty"`
-}
-
-// WireDoc and WireRow mirror commands.Doc and commands.Row for JSON
-// transport. Row.Action is a Go closure and has no wire representation;
-// a row that carries an Action in-process is transmitted with ActionLabel
-// as plain informational text — invoking it over ACP is not supported.
-type WireDoc struct {
-	Title     string    `json:"title,omitempty"`
-	FullFrame bool      `json:"fullFrame,omitempty"`
-	Footer    string    `json:"footer,omitempty"`
-	Rows      []WireRow `json:"rows,omitempty"`
-}
-
-type WireRow struct {
-	Header      string    `json:"header,omitempty"`
-	Text        string    `json:"text,omitempty"`
-	Detail      string    `json:"detail,omitempty"`
-	Desc        string    `json:"desc,omitempty"`
-	ActionLabel string    `json:"actionLabel,omitempty"`
-	Children    []WireRow `json:"children,omitempty"`
-}
-
-func toWireDoc(d *commands.Doc) *WireDoc {
-	if d == nil {
-		return nil
-	}
-	return &WireDoc{
-		Title:     d.Title,
-		FullFrame: d.FullFrame,
-		Footer:    d.Footer,
-		Rows:      toWireRows(d.Rows),
-	}
-}
-
-func toWireRows(rows []commands.Row) []WireRow {
-	if len(rows) == 0 {
-		return nil
-	}
-	out := make([]WireRow, len(rows))
-	for i, r := range rows {
-		out[i] = WireRow{
-			Header:      r.Header,
-			Text:        r.Text,
-			Detail:      r.Detail,
-			Desc:        r.Desc,
-			ActionLabel: r.ActionLabel,
-			Children:    toWireRows(r.Children),
-		}
-	}
-	return out
 }
 
 // Command handles session/command. It rejects unknown commands, commands
@@ -242,7 +155,7 @@ func (m *CommandManager) Command(ctx context.Context, params json.RawMessage) (a
 	} else {
 		result = cmd.Handler(rt.State, p.Args)
 	}
-	return CommandResult{Text: result.Text, Doc: toWireDoc(result.Doc)}, nil
+	return acpwire.CommandResult{Text: result.Text, Doc: commands.WireDocOf(result.Doc, nil)}, nil
 }
 
 // CommandList handles session/command_list.
@@ -266,15 +179,15 @@ func (m *CommandManager) CommandList(ctx context.Context, params json.RawMessage
 	}
 
 	cmds := rt.Registry.ListAll()
-	out := make([]CommandInfo, len(cmds))
+	out := make([]acpwire.CommandInfo, len(cmds))
 	for i, c := range cmds {
-		kind := kindOf(c)
+		kind := c.Kind()
 		if m.supportsHeadless(c.Name) {
 			// A command the manager runs itself is headless-capable over the
 			// wire even though its registry entry is TUIOnly.
-			kind = "headless"
+			kind = acpwire.CommandKindHeadless
 		}
-		out[i] = CommandInfo{
+		out[i] = acpwire.CommandInfo{
 			Name:        c.Name,
 			Description: c.Description,
 			Args:        c.Args,
@@ -282,5 +195,5 @@ func (m *CommandManager) CommandList(ctx context.Context, params json.RawMessage
 			Kind:        kind,
 		}
 	}
-	return CommandListResult{Commands: out}, nil
+	return acpwire.CommandListResult{Commands: out}, nil
 }

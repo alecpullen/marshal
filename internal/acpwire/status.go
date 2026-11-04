@@ -46,6 +46,7 @@ type SessionStatus struct {
 	Git          Git           `json:"git"`
 	ChangedFiles int           `json:"changedFiles,omitempty"` // against the sheet's base; 0 means "no changes", never "not refreshed"
 	WatchResume  *WatchResume  `json:"watchResume,omitempty"`
+	Notice       *Notice       `json:"notice,omitempty"` // the banner; nil when none
 }
 
 // Route mirrors the session's RouteInfo: the route a turn runs on.
@@ -102,6 +103,16 @@ type InteractionPatch struct {
 const (
 	EffortAppliesNextStep = "next_step"
 	EffortAppliesNextTurn = "next_turn"
+)
+
+// The kinds of activity a session reports, as the session stores them.
+const (
+	ActivityIdle         = "idle"
+	ActivityThinking     = "thinking"
+	ActivityTool         = "tool"
+	ActivityApproval     = "approval"
+	ActivityQuestion     = "question"
+	ActivityReconnecting = "reconnecting"
 )
 
 // Activity mirrors the session's Activity.

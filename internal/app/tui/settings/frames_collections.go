@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -11,7 +12,6 @@ import (
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/llm/provider"
-	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/strutil"
 )
 
@@ -78,14 +78,9 @@ func providersFrame(s *state) *frame {
 						if err := config.RenameProvider(&s.cfg, k, v, s.discovered); err != nil {
 							return err
 						}
-						if s.dataDir != "" {
-							c := modelcache.Load(s.dataDir)
-							if e, ok := c.Providers[k]; ok {
-								delete(c.Providers, k)
-								c.Providers[v] = e
-								if err := modelcache.Save(s.dataDir, c); err != nil {
-									return fmt.Errorf("rename model cache: %w", err)
-								}
+						if s.host != nil {
+							if err := s.host.RenameModels(context.Background(), k, v); err != nil {
+								return fmt.Errorf("rename model cache: %w", err)
 							}
 						}
 						k = v

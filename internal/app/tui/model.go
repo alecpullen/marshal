@@ -58,7 +58,6 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/interaction"
 	"marshal/internal/llm/provider"
-	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/pubsub"
@@ -478,9 +477,9 @@ type Model struct {
 	// keychain. New selects the production adapter when no option supplies
 	// one.
 	auth provider.AuthResolver
-	// modelCacheDir, when set, enables on-disk caching of the discovered
-	// list via internal/llm/provider/modelcache. Without it discovery is
-	// in-memory only.
+	// modelCacheDir is the data directory preset setup reads the models.dev
+	// catalog and its provenance from. The model-cache calls themselves go
+	// through m.host. Plan 7b deletes it.
 	modelCacheDir string
 
 	// Picker modal (opened by commands like /rewind, /branches, /mode).
@@ -832,8 +831,8 @@ func WithLayerReloader(fn func() (config.Layers, bool)) Option {
 	return func(m *Model) { m.layerReloader = fn }
 }
 
-// WithModelCache enables persistent model discovery caching under dataDir.
-// Without it the session behaves as before: discovery is in-memory only.
+// WithModelCache sets the data directory preset setup reads the models.dev
+// catalog and its provenance from. Plan 7b deletes it.
 func WithModelCache(dataDir string) Option {
 	return func(m *Model) { m.modelCacheDir = dataDir }
 }
@@ -1344,16 +1343,13 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 	// Update, this covers any other path that forwards mouse messages).
 	m.viewport.SetHorizontalStep(0)
 
-	// Seed the in-session discovered map from the on-disk cache so the
-	// model picker opens instantly with the last-seen lists when the
-	// config hash still matches.
-	if m.modelCacheDir != "" {
-		c := modelcache.Load(m.modelCacheDir)
-		now := time.Now()
-		for name, pc := range state.Config.Providers {
-			if models, ok := c.Lookup(name, pc, modelcache.DefaultTTL, now); ok {
-				m.discovered[name] = models
-			}
+	// Seed the in-session discovered map from the host's cache so the model
+	// picker opens instantly with the last-seen lists when the config hash
+	// still matches. The host reports nothing when no cache directory is
+	// configured.
+	for name := range state.Config.Providers {
+		if models, ok := m.host.ListModels(m.ctx, name); ok {
+			m.discovered[name] = models
 		}
 	}
 
@@ -6537,35 +6533,14 @@ func (m *Model) handleWizardProbeResult(wr connect.WizardProbeResult) (tea.Model
 }
 
 func (m *Model) persistDiscovered(name string, models []schema.ModelInfo) {
-	if m.modelCacheDir == "" || len(models) == 0 {
-		return
-	}
-	pc, ok := m.state.Config.Providers[name]
-	if !ok {
-		return
-	}
-	c := modelcache.Load(m.modelCacheDir)
-	c.Providers[name] = modelcache.Entry{
-		ConfigHash: modelcache.HashProvider(pc),
-		Models:     models,
-		FetchedAt:  time.Now(),
-	}
-	_ = modelcache.Save(m.modelCacheDir, c)
+	_ = m.host.SaveModels(m.ctx, name, models)
 }
 
-// evictDiscovered removes one provider's entry from the on-disk cache.
+// evictDiscovered removes one provider's entry from the host's cache.
 // Used by the manual refresh key — the in-session map is already cleared
 // by the caller. Failures are silent for the same reason as persist.
 func (m *Model) evictDiscovered(name string) {
-	if m.modelCacheDir == "" {
-		return
-	}
-	c := modelcache.Load(m.modelCacheDir)
-	if _, ok := c.Providers[name]; !ok {
-		return
-	}
-	delete(c.Providers, name)
-	_ = modelcache.Save(m.modelCacheDir, c)
+	_ = m.host.ForgetModels(m.ctx, name)
 }
 
 // sortedProviderNames returns provider names sorted alphabetically.

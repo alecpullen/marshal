@@ -8428,7 +8428,7 @@ func TestModelDiscoveryNewestProbeWins(t *testing.T) {
 	state := newTestState(t)
 	state.Config.Privacy.RemoteProvidersAllowed = true
 	state.Config.Providers = map[string]config.ProviderConfig{"groq": groqCfg, "openai": openaiCfg}
-	m := testModel(state, WithModelCache(dir))
+	m := testModelCached(t, state, dir)
 
 	if cmd := m.openModels(); cmd == nil {
 		t.Fatal("openModels dispatched no probes")
@@ -8581,7 +8581,7 @@ func TestModelSelectionSurvivesHostDiscovery(t *testing.T) {
 			deny := false
 			state.Config.Privacy.ModelsDevEnrichment = &deny
 			state.Config.Providers = map[string]config.ProviderConfig{"groq": groqCfg, "openai": openaiCfg}
-			m := testModel(state, WithModelCache(t.TempDir()))
+			m := testModelCached(t, state, t.TempDir())
 			m.resize(frame.width, frame.height)
 
 			if cmd := m.openModels(); cmd == nil {
@@ -8684,7 +8684,7 @@ func TestModelCacheSeedsDiscoveredAtStartup(t *testing.T) {
 
 	state := newTestState(t)
 	state.Config.Providers = map[string]config.ProviderConfig{"openai": pc}
-	m := testModel(state, WithModelCache(dir))
+	m := testModelCached(t, state, dir)
 
 	got, ok := m.discovered["openai"]
 	if !ok {
@@ -8709,7 +8709,7 @@ func TestModelCacheDoesNotSeedWhenConfigChanged(t *testing.T) {
 	state.Config.Providers = map[string]config.ProviderConfig{
 		"openai": {Type: "openai_compatible", BaseURL: "https://new/v1"},
 	}
-	m := testModel(state, WithModelCache(dir))
+	m := testModelCached(t, state, dir)
 
 	if _, ok := m.discovered["openai"]; ok {
 		t.Error("a changed base URL must not be served from cache")
@@ -8732,7 +8732,7 @@ func TestRawModelsProbeMovesNoState(t *testing.T) {
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://a/v1"}
 	state := newTestState(t)
 	state.Config.Providers = map[string]config.ProviderConfig{"openai": pc}
-	m := testModel(state, WithModelCache(dir))
+	m := testModelCached(t, state, dir)
 	m.modelsProbeGen = map[string]uint64{"openai": 1}
 
 	updated, _ := m.Update(probe.ResultMsg{
@@ -8758,7 +8758,7 @@ func TestModelsProbeResultForRemovedProviderIsDropped(t *testing.T) {
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://a/v1"}
 	state := newTestState(t)
 	state.Config.Providers = map[string]config.ProviderConfig{"openai": pc}
-	m := testModel(state, WithModelCache(dir))
+	m := testModelCached(t, state, dir)
 	m.modelsProbeGen = map[string]uint64{"openai": 1}
 
 	// The probe was dispatched, then the provider was deleted while it ran.
@@ -8784,7 +8784,7 @@ func TestProbeResultWritesThroughToCache(t *testing.T) {
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://a/v1"}
 	state := newTestState(t)
 	state.Config.Providers = map[string]config.ProviderConfig{"openai": pc}
-	m := testModel(state, WithModelCache(dir))
+	m := testModelCached(t, state, dir)
 	m.modelsProbeGen = map[string]uint64{"openai": 1}
 
 	m.Update(modelsResult(m, "openai", probe.ResultMsg{
@@ -8814,7 +8814,7 @@ func TestFailedProbeKeepsCachedEntry(t *testing.T) {
 
 	state := newTestState(t)
 	state.Config.Providers = map[string]config.ProviderConfig{"openai": pc}
-	m := testModel(state, WithModelCache(dir))
+	m := testModelCached(t, state, dir)
 	m.modelsProbeGen = map[string]uint64{"openai": 1}
 
 	m.Update(modelsResult(m, "openai", probe.ResultMsg{FieldID: "models", Provider: "openai", Err: errors.New("network down")}))
@@ -8887,7 +8887,7 @@ func TestStaleWizardProbeCannotPopulateHostCache(t *testing.T) {
 		t.Helper()
 		// No providers configured: the wizard adopts the plain template name.
 		dir := t.TempDir()
-		return testModel(newTestState(t), WithModelCache(dir)), dir
+		return testModelCached(t, newTestState(t), dir), dir
 	}
 	// seedCache plants a good catalog so an eviction or an overwrite is
 	// observable rather than lost against an empty cache.
@@ -9048,7 +9048,7 @@ func TestNoCacheDirIsHarmless(t *testing.T) {
 	// session map refuses results for one that has since been removed, so the
 	// fixture configures it like production does.
 	state.Config.Providers = map[string]config.ProviderConfig{"openai": {Type: "openai_compatible", BaseURL: "https://a/v1"}}
-	m := testModel(state) // no WithModelCache
+	m := testModelCached(t, state, "") // no cache directory
 	m.modelsProbeGen = map[string]uint64{"openai": 1}
 	m.Update(modelsResult(m, "openai", probe.ResultMsg{
 		FieldID: "models", Provider: "openai",

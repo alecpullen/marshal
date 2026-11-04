@@ -41,6 +41,13 @@ func testModelWith(d inproc.Deps, opts ...Option) Model {
 	return New(host, sess, all...)
 }
 
+// testModelCached builds a model whose host caches discovered model lists
+// under dir, as production wires the runtime's data directory.
+func testModelCached(t *testing.T, state *session.State, dir string, opts ...Option) Model {
+	t.Helper()
+	return testModelWith(inproc.Deps{State: state, ModelCacheDir: dir, Auth: newMemAuth()}, opts...)
+}
+
 // runnerOf returns a Deps.Runner that always returns r.
 func runnerOf(r inproc.Runner) func() inproc.Runner {
 	return func() inproc.Runner { return r }

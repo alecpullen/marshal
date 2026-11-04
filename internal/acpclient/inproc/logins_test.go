@@ -207,6 +207,62 @@ func TestLoginProviderRunsTheFlow(t *testing.T) {
 	}
 }
 
+// TestLoginProviderCodesAnUnavailableKeychain pins the coding Prepare also
+// applies: a client that calls LoginProvider alone still gets the error it can
+// act on, not an uncoded one.
+func TestLoginProviderCodesAnUnavailableKeychain(t *testing.T) {
+	auth := newTestAuth()
+	auth.engineErr = fmt.Errorf("OS keychain unavailable — OAuth tokens cannot be stored: %w", credentials.ErrKeyringUnavailable)
+	h, _ := New(Deps{State: newState(t, "s1"), Auth: auth})
+
+	err := h.LoginProvider(context.Background(), "codex", func(string) {})
+	var coded *acpwire.Error
+	if !errors.As(err, &coded) || coded.Code != acpwire.CodeKeyringUnavailable {
+		t.Fatalf("err = %v, want a coded keyring_unavailable error", err)
+	}
+	if coded.Message != auth.engineErr.Error() {
+		t.Fatalf("message = %q, want the resolver's %q", coded.Message, auth.engineErr)
+	}
+	if len(auth.engines) != 1 || auth.engines[0] != "codex" {
+		t.Fatalf("engine requests = %v, want one for \"codex\"", auth.engines)
+	}
+}
+
+// TestLoginMCPComposesTheServerAndTheStore drives the seam's own LoginMCP — not
+// mcpEngine directly — against a test-owned TLS server whose certificate the
+// engine's client does not trust, so the flow stops after resolving the server
+// and opening its token store. Plain http would be rejected by
+// mcp.ValidateRemoteServer before the store opens. The engine's successful path
+// is TestMCPEngineRunsAgainstATestServer's.
+func TestLoginMCPComposesTheServerAndTheStore(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	st := newState(t, "s1")
+	st.Config.MCP.Servers = map[string]config.MCPServerConfig{
+		"linear": {URL: srv.URL + "/mcp", Auth: "oauth", Trust: "unrestricted"},
+	}
+	auth := newTestAuth()
+	_, sess := New(Deps{State: st, Auth: auth})
+
+	var shown []string
+	err := sess.LoginMCP(context.Background(), "linear", func(u string) { shown = append(shown, u) })
+	if err == nil {
+		t.Fatal("a server with no OAuth metadata should fail the sign-in")
+	}
+	if len(shown) != 0 {
+		t.Fatalf("show calls = %v, want none without an authorization URL", shown)
+	}
+	if len(auth.services) != 1 || auth.services[0] != "marshal" {
+		t.Fatalf("store requests = %v, want one for \"marshal\"", auth.services)
+	}
+	if _, err := auth.store.Get("marshal:mcp:" + srv.URL + "/mcp"); !errors.Is(err, credentials.ErrNotFound) {
+		t.Fatalf("a failed flow stored a token: %v", err)
+	}
+}
+
 func TestPrepareMCPLoginSentences(t *testing.T) {
 	configured := func() *session.State {
 		st := newState(t, "s1")

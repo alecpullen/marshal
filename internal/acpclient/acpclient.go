@@ -50,8 +50,11 @@ type Host interface {
 	ProviderTemplates() []acpwire.ProviderTemplate
 
 	// ProbeProvider lists the models pc's endpoint reports, for a provider
-	// named name. pc need not be saved, and may carry a literal key (C3). It
-	// touches no cache: SaveModels does that.
+	// named name. pc need not be saved, and may carry a literal key (C3). The
+	// probe itself saves nothing: SaveModels does that. A provider whose own
+	// client refreshes the cache while listing (OpenAI Codex) may leave an
+	// entry keyed by pc, which SaveModels then overwrites with the saved
+	// config's.
 	//
 	// ACP: config/probe_provider (exists).
 	ProbeProvider(ctx context.Context, name string, pc config.ProviderConfig) ([]schema.ModelInfo, error)

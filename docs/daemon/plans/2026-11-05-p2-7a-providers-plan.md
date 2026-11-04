@@ -716,3 +716,27 @@ Finally, run `./marshal` in this repository with a local provider (LM Studio or 
 - **Anchors.** Every path, symbol and line was checked at `301e19c8`.
 - **Spec.** C2, C3, C10 and the Migration order are updated, with the revision record "2026-11-05, against `301e19c8` (plan 6 merged)" holding decisions 1 to 14.
 - **No placeholders.**
+
+## Recorded deviations
+
+These were made during execution and the post-execution review, and are correct
+as built:
+
+- **Tasks 5 and 6 export `HostForTest()`** instead of the unexported `hostForTest`
+  the steps name. The TUI's own tests (`model_test.go`, package `tui`) read the
+  accessor, and an unexported method on `settings.BrowserPanel` or
+  `connect.Model` is unreachable from there.
+- **Task 5 also changed `internal/app/tui/settings/state_test.go`**, a file
+  outside its list: `TestStateDataDirDefaultsEmpty` pinned the `dataDir` field
+  the task deletes.
+- **Task 4 keeps `frames_collections.go`'s allowlist key.** The step said it
+  "becomes empty" there, but the file still used `provider.Lookup` and
+  `provider.ProviderTemplate` until Task 5, which deletes the key.
+- **Review fixes.** `LoginProvider` codes an unavailable keychain the way
+  `PrepareProviderLogin` and the MCP pair do, so a client sees the same sentence
+  whichever call surfaces it; the seam's `ProbeProvider` comment records that a
+  provider client may refresh its own cache while listing (OpenAI Codex), rather
+  than claiming no cache is touched; `connect.enterOAuthLogin` fails with a note
+  on a nil host instead of dereferencing it; and `TestLoginMCPComposesTheServerAndTheStore`
+  runs the real `Session.LoginMCP` composition, which only `mcpEngine`'s direct
+  test covered.

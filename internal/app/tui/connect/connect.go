@@ -84,8 +84,9 @@ type Opts struct {
 	ScopedProvider   string
 	CfgPath          string
 	AllProviders     bool
-	// DataDir is the provider data directory used for the probe cache and
-	// discovered model metadata.
+	// DataDir is the provider data directory: the models.dev catalog cache and
+	// the preset provenance. Model probing is the host's, so the wizard reads
+	// nothing else from it. Plan 7b removes this field.
 	DataDir string
 	// OpenBrowser launches the authorization URL during sign-in. Nil keeps
 	// the production behavior (mcpauth.OpenBrowser). Tests inject a stub so
@@ -936,6 +937,13 @@ func (m *Model) enterOAuthLogin() (*Model, tea.Cmd) {
 	m.err = ""
 	m.picker = nil
 
+	// The catalog is the host's, so a wizard built without one never reaches
+	// an OAuth template. Defend the invariant anyway: the rest of this panel
+	// fails its probes rather than dereferencing a nil host.
+	if m.host == nil {
+		m.err = "sign-in needs the agent side: no client host"
+		return m, nil
+	}
 	if err := m.host.PrepareProviderLogin(context.Background(), m.providerName); err != nil {
 		m.err = err.Error()
 		return m, nil

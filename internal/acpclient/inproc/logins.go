@@ -41,13 +41,15 @@ func (h *Host) PrepareProviderLogin(ctx context.Context, name string) error {
 }
 
 // LoginProvider runs the browser sign-in for name and stores its tokens. The
-// engine's Open is never set: show is how the client hears of the URL.
+// engine's Open is never set: show is how the client hears of the URL. Its
+// errors are coded the way PrepareProviderLogin's are, so a client sees the
+// same keychain sentence whichever call surfaces the failure.
 func (h *Host) LoginProvider(ctx context.Context, name string, show func(url string)) error {
 	engine, err := h.AuthResolver().CodexOAuthEngine(name)
 	if err != nil {
-		return err
+		return loginError(err)
 	}
-	return engine.Authorize(ctx, &urlDisplay{show: show})
+	return loginError(engine.Authorize(ctx, &urlDisplay{show: show}))
 }
 
 // PrepareMCPLogin checks that the OAuth sign-in for server can start: the

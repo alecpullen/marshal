@@ -997,8 +997,8 @@ func (m *Model) adoptLayers(layers *config.Layers) {
 // provider construction worked). A runner a reload builds is used from the
 // next turn: the session reads the runtime's current runner on each call.
 func (m *Model) afterRuntimeReload() {
-	m.state.ClearNotice(session.NoticeProvider)
-	m.state.ClearNotice(session.NoticeConfig)
+	_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeProvider)
+	_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeConfig)
 }
 
 // settingsRegistry returns the cached /set registry, rebuilt after a config
@@ -4090,7 +4090,7 @@ func (m *Model) beginTurn() context.Context {
 	// Optimistic dismissal: a fresh prompt means the user is trying again, so
 	// clear any stale provider notice from an earlier failed turn. If this
 	// turn also fails, handleAgentFinished re-sets it.
-	m.state.ClearNotice(session.NoticeProvider)
+	_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeProvider)
 	m.busy = true
 	m.turnStartedAt = m.now()
 	m.startHeldWindow()
@@ -5087,7 +5087,7 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 		// cleanup must not silently revoke the request.
 		m.sess.ClearSteering(m.ctx)
 		m.note("Agent turn cancelled.")
-		m.state.ClearNotice(session.NoticeProvider)
+		_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeProvider)
 		m.cancelling = false
 	}
 	m.busy = false
@@ -5110,13 +5110,13 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		m.state.SetNotice(noticeForError(msg.err, "turn"))
+		_ = m.sess.SetNotice(m.ctx, noticeForError(msg.err, "turn"))
 		m.note("✘ Turn failed: " + firstLine(msg.err.Error()))
 		m.successPulse = false
 	} else if msg.err == nil {
 		// A completed turn proves the provider is reachable again — clear
 		// any stale provider notice from an earlier failed turn.
-		m.state.ClearNotice(session.NoticeProvider)
+		_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeProvider)
 		m.successPulse = true
 		m.successPulseAt = m.now()
 		// A completed turn is the single point where the final assistant
@@ -5254,20 +5254,20 @@ func (m Model) handlePlanAuthorFinished(msg planAuthorFinishedMsg) (Model, tea.C
 	// here also re-arms Ctrl+C as a stop rather than a quit (decision 11).
 	if m.cancelling || msg.result.StopReason == acpwire.StopReasonCancelled {
 		m.cancelling = false
-		m.state.ClearNotice(session.NoticeProvider)
+		_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeProvider)
 		m.note("Agent turn cancelled.")
 		m.updateViewportHeight()
 		m.refreshViewport()
 		return m, nil
 	}
 	if msg.err != nil {
-		m.state.SetNotice(noticeForError(msg.err, "plan-author"))
+		_ = m.sess.SetNotice(m.ctx, noticeForError(msg.err, "plan-author"))
 		m.note("✘ Plan authoring failed: " + firstLine(msg.err.Error()))
 		m.updateViewportHeight()
 		m.refreshViewport()
 		return m, nil
 	}
-	m.state.ClearNotice(session.NoticeProvider)
+	_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeProvider)
 	if msg.result.AutoAccepted {
 		m.note("Plan accepted in Full Auto: " + msg.result.PlanPath)
 	} else {
@@ -6117,9 +6117,9 @@ func (m Model) handleAgentTick(msg agentTickMsg) (Model, tea.Cmd) {
 		m.successPulse = false
 	}
 	noticePending := false
-	if n, ok := m.state.Notice(); ok {
-		if m.now().Sub(n.SetAt) >= noticeBannerDuration {
-			m.state.DismissNotice()
+	if n := m.sess.Status().Notice; n != nil {
+		if m.now().Sub(acpwire.Time(n.SetAt)) >= noticeBannerDuration {
+			_ = m.sess.DismissNotice(m.ctx)
 			// The banner is rendered into the transcript; dismissing it
 			// must repaint the viewport or the stale banner stays on screen
 			// until an unrelated transcript change.
@@ -7010,8 +7010,8 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 	default:
 		// A successful switch proves provider construction works with the
 		// new config — clear any stale provider/config notice.
-		m.state.ClearNotice(session.NoticeProvider)
-		m.state.ClearNotice(session.NoticeConfig)
+		_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeProvider)
+		_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeConfig)
 		m.note(fmt.Sprintf("✓ Switched to model: %s (%s)", msg.Model, msg.Provider))
 	}
 }

@@ -109,8 +109,12 @@ func (m *Model) refreshViewport() {
 
 	width := m.viewport.Width()
 	themeSig := themeFingerprint()
-	queued := m.sess.Status().Steering.Queue
-	notice, noticeUp := m.state.Notice()
+	status := m.sess.Status()
+	queued := status.Steering.Queue
+	notice, noticeUp := acpwire.Notice{}, false
+	if status.Notice != nil {
+		notice, noticeUp = *status.Notice, true
+	}
 	facts := m.viewFacts()
 	hasTurns := m.hasConversationTurns(snap.Roots)
 
@@ -579,7 +583,7 @@ func (m *Model) foldNodeSig(h sigWriter, w *acpwire.WireNode, c *stepRenderCtx) 
 // into one number. Live nodes also fold the spinner frame and the clock, so a
 // running session changes the signature each tick while a settled one does
 // not.
-func (m *Model) contentSignature(roots []string, facts viewFacts, width int, themeSig uint64, queued []string, notice session.Notice, noticeUp bool, hasTurns bool) uint64 {
+func (m *Model) contentSignature(roots []string, facts viewFacts, width int, themeSig uint64, queued []string, notice acpwire.Notice, noticeUp bool, hasTurns bool) uint64 {
 	h := fnv.New64a()
 	fmt.Fprintf(h, "w%d|t%d|x%v|", width, themeSig, m.expandAll)
 	fmt.Fprintf(h, "turns%v|", hasTurns)

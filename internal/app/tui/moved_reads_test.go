@@ -143,6 +143,13 @@ var movedStateReads = map[string]string{
 	// since 6.
 	"AddMessage": "6",
 	"Logger":     "6",
+
+	// The banner is read from Status and changed through the session since 6:
+	// a failed run's notice is classified agent side and carried on its error.
+	"Notice":        "6",
+	"SetNotice":     "6",
+	"ClearNotice":   "6",
+	"DismissNotice": "6",
 }
 
 // movedReadSites returns one "<line>\t<Name>" entry per selector X.Sel in f

@@ -7,8 +7,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
-	"marshal/internal/app/session"
 	"marshal/internal/app/tui/mcpauth"
 	"marshal/internal/commands"
 	"marshal/internal/credentials"
@@ -102,8 +102,8 @@ func (m *Model) reconnectMCPServer(name string) {
 	// but if the server still fails to start, the rebuild sets a fresh notice
 	// of its own, and clearing notices afterwards (as afterRuntimeReload does)
 	// would wipe it and leave the user with a bare success message.
-	m.state.ClearNotice(session.NoticeProvider)
-	m.state.ClearNotice(session.NoticeConfig)
+	_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeProvider)
+	_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeConfig)
 	// reloadAgentRuntime may install cfg before reporting a cleanup error;
 	// invalidate config-derived state before attempting it, mirroring the
 	// settings-browser and /set reload paths.

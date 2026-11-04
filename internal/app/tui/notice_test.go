@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,89 +10,54 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
-	"marshal/internal/llm/provider"
-	"marshal/internal/oauth"
 )
 
-func TestNoticeForErrorClassifiesProviderHTTPError(t *testing.T) {
-	err := &provider.ProviderError{Provider: "openai", StatusCode: 500, Body: "boom"}
-	n := noticeForError(err, "turn")
-	if n.Category != session.NoticeProvider {
-		t.Fatalf("category = %v, want NoticeProvider", n.Category)
+// noticeForError takes the notice the agent attached to a failed run's error
+// (C9). Provider and login classification lives agent side, where the typed
+// errors are; internal/acpclient/inproc's TestRunErrorCarriesTheNotice pins
+// those rules.
+func TestNoticeForErrorTakesTheAgentsNotice(t *testing.T) {
+	agentNotice := acpwire.Notice{
+		Category: acpwire.NoticeProvider,
+		Severity: acpwire.NoticeError,
+		Message:  `provider "openai": 500`,
+		Hint:     "Run /connect to review the provider, or /models to pick another model.",
 	}
-	if n.Hint == "" {
-		t.Fatal("provider notice must carry a hint")
+	data, err := json.Marshal(acpwire.ErrorData{Notice: &agentNotice})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
 	}
-}
+	coded := fmt.Errorf("turn failed: %w", &acpwire.Error{
+		Code:    acpwire.CodeProviderError,
+		Message: `provider "openai": 500`,
+		Data:    data,
+	})
 
-func TestNoticeForErrorClassifiesWrappedTransportError(t *testing.T) {
-	err := fmt.Errorf("outer: %w", &provider.RequestError{Provider: "ollama", Op: "chat request failed", Err: errors.New("connection refused")})
-	n := noticeForError(err, "turn")
-	if n.Category != session.NoticeProvider {
-		t.Fatalf("category = %v, want NoticeProvider for wrapped RequestError", n.Category)
+	n := noticeForError(coded, "turn")
+	if n.Category != agentNotice.Category || n.Severity != agentNotice.Severity {
+		t.Fatalf("notice = %+v, want the agent's category and severity", n)
+	}
+	if n.Hint != agentNotice.Hint {
+		t.Errorf("hint = %q, want %q", n.Hint, agentNotice.Hint)
+	}
+	if n.Source != "turn" {
+		t.Errorf("source = %q, want %q", n.Source, "turn")
 	}
 }
 
 func TestNoticeForErrorDefaultsToInternal(t *testing.T) {
 	n := noticeForError(errors.New("something weird"), "turn")
-	if n.Category != session.NoticeInternal {
+	if n.Category != acpwire.NoticeInternal {
 		t.Fatalf("category = %v, want NoticeInternal", n.Category)
 	}
 }
 
-// TestNoticeForErrorClassifiesOAuthAuthRequired: an OAuth provider that
-// needs a login is a provider error, but the hint must name the sign-in
-// action rather than the generic "review the provider" text.
-func TestNoticeForErrorClassifiesOAuthAuthRequired(t *testing.T) {
-	err := &oauth.ErrAuthRequired{ServerName: "codex", Reason: "no stored tokens"}
-	n := noticeForError(err, "turn")
-	if n.Category != session.NoticeProvider {
-		t.Fatalf("category = %v, want NoticeProvider", n.Category)
-	}
-	if !strings.Contains(n.Hint, "/connect") {
-		t.Errorf("hint %q should point at /connect", n.Hint)
-	}
-	if !strings.Contains(n.Hint, "codex") {
-		t.Errorf("hint %q should name the provider entry", n.Hint)
-	}
-	if !strings.Contains(n.Hint, "sign in") {
-		t.Errorf("hint %q should say to sign in", n.Hint)
-	}
-}
-
-// TestNoticeForErrorClassifiesWrappedOAuthAuthRequired: the provider wraps
-// the error on its way up, so classification must survive wrapping.
-func TestNoticeForErrorClassifiesWrappedOAuthAuthRequired(t *testing.T) {
-	err := fmt.Errorf("turn failed: %w", &oauth.ErrAuthRequired{ServerName: "codex", Reason: "refresh rejected"})
-	n := noticeForError(err, "turn")
-	if n.Category != session.NoticeProvider {
-		t.Fatalf("category = %v, want NoticeProvider", n.Category)
-	}
-	if !strings.Contains(n.Hint, "codex") {
-		t.Errorf("hint %q should name the provider entry", n.Hint)
-	}
-}
-
-// TestNoticeForErrorOAuthWithoutNameStillHints: a nameless auth error must
-// still produce a usable hint rather than an empty provider name.
-func TestNoticeForErrorOAuthWithoutNameStillHints(t *testing.T) {
-	n := noticeForError(&oauth.ErrAuthRequired{}, "turn")
-	if n.Category != session.NoticeProvider {
-		t.Fatalf("category = %v, want NoticeProvider", n.Category)
-	}
-	if !strings.Contains(n.Hint, "/connect") {
-		t.Errorf("hint %q should point at /connect", n.Hint)
-	}
-	if strings.Contains(n.Hint, "sign in to .") {
-		t.Errorf("hint %q has an empty provider name", n.Hint)
-	}
-}
-
 func TestRenderNoticeShowsCategoryMessageHint(t *testing.T) {
-	n := session.Notice{
-		Category: session.NoticeProvider,
-		Severity: session.SeverityError,
+	n := acpwire.Notice{
+		Category: acpwire.NoticeProvider,
+		Severity: acpwire.NoticeError,
 		Message:  "connection refused",
 		Hint:     "Run /connect to review the provider.",
 	}
@@ -104,9 +70,9 @@ func TestRenderNoticeShowsCategoryMessageHint(t *testing.T) {
 }
 
 func TestRenderNoticeClampsMessageToTwoLines(t *testing.T) {
-	n := session.Notice{
-		Category: session.NoticeInternal,
-		Severity: session.SeverityError,
+	n := acpwire.Notice{
+		Category: acpwire.NoticeInternal,
+		Severity: acpwire.NoticeError,
 		Message:  strings.Repeat("very long error message ", 40),
 	}
 	out := renderNotice(n, 60)

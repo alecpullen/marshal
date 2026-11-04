@@ -11,7 +11,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/acpwire"
-	"marshal/internal/app/session"
 	"marshal/internal/app/tui/accesspanel"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/glyph"
@@ -521,8 +520,8 @@ func (m Model) statusRightSegment() string {
 	if m.hasPendingApproval() {
 		return warningStyle().Render(glyph.Warning + " approval")
 	}
-	if n, ok := m.state.Notice(); ok {
-		if n.Severity == session.SeverityWarn {
+	if n := m.sess.Status().Notice; n != nil {
+		if n.Severity == acpwire.NoticeWarn {
 			return warningStyle().Render(glyph.Warning + " warning")
 		}
 		return errorStyle().Render("✘ error")
@@ -553,8 +552,7 @@ func (m Model) accessRequestQueued() bool {
 // error indicator in statusRightSegment is never shed for width, so the
 // hint-cluster drop logic must skip it when a notice is visible.
 func (m Model) noticeVisible() bool {
-	_, ok := m.state.Notice()
-	return ok
+	return m.sess.Status().Notice != nil
 }
 
 // footerHints snapshots the mode flags the hint cluster needs. This is

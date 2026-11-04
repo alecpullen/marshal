@@ -101,8 +101,8 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		}
 		// Dismiss the notice banner, busy or idle: it is the most recent
 		// thing asking for attention.
-		if _, ok := m.state.Notice(); ok {
-			m.state.DismissNotice()
+		if m.sess.Status().Notice != nil {
+			_ = m.sess.DismissNotice(m.ctx)
 			m.refreshViewport()
 			return *m, nil, true
 		}

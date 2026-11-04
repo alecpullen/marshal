@@ -1,51 +1,32 @@
 package tui
 
 import (
-	"errors"
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
 
-	"marshal/internal/app/session"
+	"marshal/internal/acpclient"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/llm/provider"
-	"marshal/internal/oauth"
 )
 
-// noticeForError classifies an agent-turn error into a session notice.
-// Provider-originated failures (typed by the provider package) become
-// provider notices with a /connect hint; anything else is internal.
-// Classification is by error identity (errors.As), never string matching.
-func noticeForError(err error, source string) session.Notice {
-	n := session.Notice{
-		Severity: session.SeverityError,
+// noticeForError takes the notice the agent classified a failed run's error
+// as (C9): a provider or login failure comes back coded, carrying the banner
+// it calls for, so provider and login classification lives agent side and its
+// Go types never reach the TUI. source says which path failed: "turn" or
+// "plan-author". An error the agent did not classify is an internal notice.
+func noticeForError(err error, source string) acpwire.Notice {
+	if n, ok := acpclient.NoticeOf(err); ok {
+		n.Source = source
+		return n
+	}
+	return acpwire.Notice{
+		Category: acpwire.NoticeInternal,
+		Severity: acpwire.NoticeError,
 		Message:  firstLine(err.Error()),
 		Source:   source,
 	}
-	// An OAuth provider that needs a login is checked first: it is a
-	// provider error, but the generic "review the provider" hint would
-	// bury the one action that fixes it. The hint names the provider
-	// entry so the user knows which login is missing.
-	var authErr *oauth.ErrAuthRequired
-	if errors.As(err, &authErr) {
-		n.Category = session.NoticeProvider
-		name := authErr.ServerName
-		if name == "" {
-			name = "this provider"
-		}
-		n.Hint = "Run /connect to sign in to " + name + "."
-		return n
-	}
-	var httpErr *provider.ProviderError
-	var reqErr *provider.RequestError
-	if errors.As(err, &httpErr) || errors.As(err, &reqErr) {
-		n.Category = session.NoticeProvider
-		n.Hint = "Run /connect to review the provider, or /models to pick another model."
-	} else {
-		n.Category = session.NoticeInternal
-	}
-	return n
 }
 
 // firstLine returns the first line of s, right-trimmed. Multi-line error
@@ -62,17 +43,17 @@ func firstLine(s string) string {
 // banner: severity glyph + category label + message (clamped to two
 // lines), then a muted hint line carrying the dismiss keyhint. Glyph and
 // label carry the meaning; colour is decoration (NO_COLOR safe).
-func renderNotice(n session.Notice, width int) string {
+func renderNotice(n acpwire.Notice, width int) string {
 	cw := contentWidth(width)
 	g := glyph.Error
 	gutterColor := errorColor
 	headStyle := errorStyle()
-	if n.Severity == session.SeverityWarn {
+	if n.Severity == acpwire.NoticeWarn {
 		g = glyph.Warning
 		gutterColor = theme.Current().StatusWarning
 		headStyle = warningStyle()
 	}
-	head := n.Category.String() + dimSeparator + firstLine(n.Message)
+	head := n.Category + dimSeparator + firstLine(n.Message)
 	lines := strings.Split(ansi.Wrap(head, cw, WrapBreakpoints), "\n")
 	if len(lines) > 2 {
 		lines = lines[:2]

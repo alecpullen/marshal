@@ -2051,14 +2051,20 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dock.CloseNow()
 		m.refreshViewport()
 		return m, nil
-	case docpanel.ActionMsg:
+	case docActionMsg:
 		m.dock.CloseNow()
-		if msg.Result.Doc != nil {
-			m.openDocPanel(msg.Result.Doc)
+		if msg.err != nil {
+			m.note(msg.err.Error())
+			m.refreshViewport()
 			return m, nil
 		}
-		if msg.Result.Text != "" {
-			m.note(msg.Result.Text)
+		if msg.result.Doc != nil {
+			m.dock.Open(docpanel.New(*msg.result.Doc, msg.act))
+			m.refreshViewport()
+			return m, nil
+		}
+		if msg.result.Text != "" {
+			m.note(msg.result.Text)
 		}
 		m.refreshViewport()
 		return m, nil
@@ -6566,8 +6572,21 @@ func (m *Model) sortedProviderNames() []string {
 }
 
 // openDocPanel opens a structured command result as a docked doc panel.
+//
+// Task 6 replaces this bridge: a command's doc then arrives from the session
+// already converted, with its action IDs minted agent side.
 func (m *Model) openDocPanel(doc *commands.Doc) {
-	m.dock.Open(docpanel.New(*doc, m.state))
+	acts := make(map[string]func() acpwire.CommandResult)
+	var mint func(action func(*session.State) commands.Result) string
+	mint = func(action func(*session.State) commands.Result) string {
+		id := strconv.Itoa(len(acts) + 1)
+		acts[id] = func() acpwire.CommandResult {
+			return commands.WireResultOf(action(m.state), mint)
+		}
+		return id
+	}
+	wire := commands.WireDocOf(doc, mint)
+	m.dock.Open(docpanel.New(*wire, localDocActions(acts)))
 	m.refreshViewport()
 }
 

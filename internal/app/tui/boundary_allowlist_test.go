@@ -8,10 +8,8 @@ package tui
 // belongs behind acpclient.
 var boundaryAllowlist = map[string][]string{
 	"agents/panel.go":                {"config.SaveProjectConfig", "marshal/internal/tools/registry"},
-	"browse_inspect.go":              {"marshal/internal/commands"},
 	"commands_dispatch.go":           {"marshal/internal/worktree"},
 	"connect/connect.go":             {"marshal/internal/app/presetsetup", "marshal/internal/llm/modelcatalog", "marshal/internal/llm/provider", "marshal/internal/oauth"},
-	"docpanel/docpanel.go":           {"marshal/internal/app/session", "marshal/internal/commands"},
 	"doctor_secret.go":               {"config.SaveUserConfigProviderAPIKey", "config.UserConfigPath"},
 	"doctorpanel/doctorpanel.go":     {"marshal/internal/app/session"},
 	"doctorpanel/intelligence.go":    {"marshal/internal/db", "marshal/internal/lsp"},
@@ -24,7 +22,7 @@ var boundaryAllowlist = map[string][]string{
 	"plugins/panel.go":               {"marshal/internal/plugins"},
 	"presetflow/probe.go":            {"marshal/internal/llm/provider"},
 	"probe/probe.go":                 {"marshal/internal/llm/provider"},
-	"runoutcome.go":                  {"marshal/internal/app/session", "marshal/internal/commands", "marshal/internal/worktree"},
+	"runoutcome.go":                  {"marshal/internal/worktree"},
 	"sdd_command.go":                 {"marshal/internal/app/session"},
 	"settings/browser.go":            {"config.SaveProjectConfig", "config.SaveUserConfigPresets", "config.SaveUserConfigProviders", "config.SaveUserConfigValue", "config.UserConfigPath", "marshal/internal/llm/provider"},
 	"settings/frames_collections.go": {"marshal/internal/llm/provider", "marshal/internal/llm/provider/modelcache"},

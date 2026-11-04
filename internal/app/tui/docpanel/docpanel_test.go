@@ -3,26 +3,18 @@ package docpanel
 import (
 	"strings"
 	"testing"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/app/config"
-	"marshal/internal/app/session"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/dock"
-	"marshal/internal/commands"
 )
 
-func testState(t *testing.T) *session.State {
-	t.Helper()
-	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-}
-
 func TestPanelRendersRowsAndHeaders(t *testing.T) {
-	p := New(commands.Doc{Title: "Things", Rows: []commands.Row{
+	p := New(acpwire.WireDoc{Title: "Things", Rows: []acpwire.WireRow{
 		{Header: "Group"},
 		{Text: "one", Detail: "first"},
-	}}, testState(t))
+	}}, nil)
 	out := p.View(100, 20)
 	for _, want := range []string{"Things", "Group", "one", "first"} {
 		if !strings.Contains(out, want) {
@@ -35,7 +27,7 @@ func TestPanelRendersRowsAndHeaders(t *testing.T) {
 }
 
 func TestPanelEscClosesAtRoot(t *testing.T) {
-	p := New(commands.Doc{Title: "T", Rows: []commands.Row{{Text: "a", Detail: "b"}}}, testState(t))
+	p := New(acpwire.WireDoc{Title: "T", Rows: []acpwire.WireRow{{Text: "a", Detail: "b"}}}, nil)
 	cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	if cmd == nil {
 		t.Fatal("esc at root should emit a message")
@@ -46,9 +38,9 @@ func TestPanelEscClosesAtRoot(t *testing.T) {
 }
 
 func TestPanelDrillInAndBack(t *testing.T) {
-	p := New(commands.Doc{Title: "T", Rows: []commands.Row{
-		{Text: "parent", Children: []commands.Row{{Text: "child", Detail: "c"}}},
-	}}, testState(t))
+	p := New(acpwire.WireDoc{Title: "T", Rows: []acpwire.WireRow{
+		{Text: "parent", Children: []acpwire.WireRow{{Text: "child", Detail: "c"}}},
+	}}, nil)
 	p.View(100, 20)                               // sizes the list
 	p.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // drill
 	out := p.View(100, 20)
@@ -67,10 +59,10 @@ func TestPanelDrillInAndBack(t *testing.T) {
 
 func TestPanelFooterNotClipped(t *testing.T) {
 	footer := "line one\nline two\nline three\nline four\nline five"
-	p := New(commands.Doc{Title: "Help", Footer: footer, Rows: []commands.Row{
+	p := New(acpwire.WireDoc{Title: "Help", Footer: footer, Rows: []acpwire.WireRow{
 		{Header: "Group"},
 		{Text: "one", Detail: "first"},
-	}}, testState(t))
+	}}, nil)
 	out := p.View(100, 24)
 	for _, want := range []string{"line one", "line two", "line three", "line four", "line five"} {
 		if !strings.Contains(out, want) {
@@ -79,24 +71,44 @@ func TestPanelFooterNotClipped(t *testing.T) {
 	}
 }
 
-func TestPanelActionEmitsActionMsg(t *testing.T) {
-	ran := false
-	p := New(commands.Doc{Title: "T", Rows: []commands.Row{
-		{Text: "do it", ActionLabel: "↵ run", Action: func(s *session.State) commands.Result {
-			ran = true
-			return commands.Text("done")
-		}},
-	}}, testState(t))
+// A row with an action ID runs that ID through the act the panel was given.
+func TestPanelActionRunsItsID(t *testing.T) {
+	var ran string
+	act := func(actionID string) tea.Cmd {
+		return func() tea.Msg {
+			ran = actionID
+			return "ran " + actionID
+		}
+	}
+	p := New(acpwire.WireDoc{Title: "T", Rows: []acpwire.WireRow{
+		{Text: "do it", ActionLabel: "↵ run", ActionID: "x"},
+	}}, act)
 	p.View(100, 20)
 	cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("enter on an action row should emit a command")
 	}
-	msg, ok := cmd().(ActionMsg)
-	if !ok {
-		t.Fatalf("action produced %T, want ActionMsg", cmd())
+	if msg := cmd(); msg != "ran x" {
+		t.Fatalf("action produced %v, want the act's message", msg)
 	}
-	if !ran || msg.Result.Text != "done" {
-		t.Fatalf("action did not run or wrong result: ran=%v text=%q", ran, msg.Result.Text)
+	if ran != "x" {
+		t.Fatalf("act saw %q, want %q", ran, "x")
+	}
+}
+
+// Without an act, a row that carries an action ID is plain read-only text: the
+// ACP side sends no IDs yet, and the browse help has no actions at all.
+func TestARowWithoutAnActRendersAsText(t *testing.T) {
+	p := New(acpwire.WireDoc{Title: "T", Rows: []acpwire.WireRow{
+		{Text: "do it", Detail: "later", ActionLabel: "↵ run", ActionID: "x"},
+	}}, nil)
+	out := p.View(100, 20)
+	for _, want := range []string{"do it", "later"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("view missing %q:\n%s", want, out)
+		}
+	}
+	if cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd != nil {
+		t.Fatalf("enter on a row with no act returned a command: %T", cmd)
 	}
 }

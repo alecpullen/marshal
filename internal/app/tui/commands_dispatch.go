@@ -429,8 +429,9 @@ func init() {
 		},
 		"run": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
 			st := m.sess.Status()
-			doc := runOutcomeDoc(st.SDD, worktree.CLIGitOps{}, st.WorkingDir, m.now(), m.width)
-			m.dock.Open(docpanel.New(doc, m.state))
+			doc := runOutcomeDoc(st.SDD, m.now())
+			acts := runOutcomeActions(st.SDD, worktree.CLIGitOps{}, st.WorkingDir, m.width)
+			m.dock.Open(docpanel.New(doc, localDocActions(acts)))
 			m.refreshViewport()
 			return m, nil
 		},

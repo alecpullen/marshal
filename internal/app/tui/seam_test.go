@@ -185,7 +185,11 @@ func batchResults(t *testing.T, cmd tea.Cmd) []tea.Msg {
 }
 
 // fakeHost is an acpclient.Host whose SharedFilesystem is the test's choice.
-type fakeHost struct{ shared bool }
+// The embedded interface supplies the methods these tests never call.
+type fakeHost struct {
+	acpclient.Host
+	shared bool
+}
 
 func (h fakeHost) SharedFilesystem() bool { return h.shared }
 

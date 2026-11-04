@@ -19,6 +19,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/commands"
 	"marshal/internal/interaction"
+	"marshal/internal/llm/provider"
 	"marshal/internal/llm/schema"
 	"marshal/internal/pubsub"
 	"marshal/internal/repo/gitinfo"
@@ -96,6 +97,15 @@ type Deps struct {
 	// NewSession creates a session in the runtime and returns its state.
 	// Without it, Host.NewSession fails.
 	NewSession func(name string) (*session.State, error)
+
+	// Auth is the runtime's credential and OAuth dependency: every provider
+	// client and sign-in the adapter builds uses it. Nil means
+	// provider.DefaultAuthResolver(), the substitution tui.New used to make.
+	Auth provider.AuthResolver
+	// ModelCacheDir is the data directory of the model cache and of the
+	// clients the probes build. Empty means no cache: ListModels finds
+	// nothing, and the other cache calls do nothing.
+	ModelCacheDir string
 }
 
 // ReferenceFinder resolves what references a symbol. ok is false when no
@@ -170,6 +180,9 @@ type Session struct {
 	// cmds is the runtime's slash-command registry. Nil means the session
 	// lists no commands and runs none.
 	cmds *commands.Registry
+	// auth is the runtime's credential and OAuth dependency: Deps.Auth, or
+	// provider.DefaultAuthResolver() when the caller supplied none. Never nil.
+	auth provider.AuthResolver
 	// actions holds the row actions of the most recent results that minted
 	// any, by ID; actionResults lists each such result's IDs, oldest first;
 	// actionSeq numbers them. All three are guarded by mu.
@@ -238,6 +251,18 @@ func (h *Host) swap(state *session.State) *Session {
 // SharedFilesystem reports whether a path the agent names is also a path on
 // this machine. The in-process adapter runs in the same process, so it does.
 func (h *Host) SharedFilesystem() bool { return true }
+
+// AuthResolver returns the resolver the adapter builds with: Deps.Auth, or the
+// production default when it was nil. Never nil. It exists for app's wiring
+// test and goes with the adapter in P3.
+func (h *Host) AuthResolver() provider.AuthResolver {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.deps.Auth != nil {
+		return h.deps.Auth
+	}
+	return provider.DefaultAuthResolver()
+}
 
 // ID is the session's ID. A closed session keeps answering with its final
 // value (C4), which holds because its state never changes.

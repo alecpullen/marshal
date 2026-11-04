@@ -21,6 +21,8 @@ import (
 	"context"
 
 	"marshal/internal/acpwire"
+	"marshal/internal/app/config"
+	"marshal/internal/llm/schema"
 )
 
 // Host is the transport the TUI holds: what the agent side is, independent of
@@ -40,6 +42,71 @@ type Host interface {
 	//
 	// ACP: session/new (exists).
 	NewSession(ctx context.Context, name string) (Session, error)
+
+	// ProviderTemplates lists the provider catalog, sorted by ID, each with
+	// every field.
+	//
+	// ACP: config/provider_templates (new in P3).
+	ProviderTemplates() []acpwire.ProviderTemplate
+
+	// ProbeProvider lists the models pc's endpoint reports, for a provider
+	// named name. pc need not be saved, and may carry a literal key (C3). It
+	// touches no cache: SaveModels does that.
+	//
+	// ACP: config/probe_provider (exists).
+	ProbeProvider(ctx context.Context, name string, pc config.ProviderConfig) ([]schema.ModelInfo, error)
+
+	// CanProbeModel reports whether ProbeModel can tell anything about a model
+	// of pc: false when pc's client cannot be built or cannot probe a model.
+	//
+	// ACP: config/probe_model (new in P3).
+	CanProbeModel(ctx context.Context, name string, pc config.ProviderConfig) bool
+
+	// ProbeModel probes one model's capabilities. A client that cannot probe
+	// returns zero capabilities and no error; one that cannot be built returns
+	// zero capabilities and the error.
+	//
+	// ACP: config/probe_model (new in P3).
+	ProbeModel(ctx context.Context, name string, pc config.ProviderConfig, model string) (acpwire.ModelCapabilities, error)
+
+	// ListModels returns the cached model list for the provider called name,
+	// when the cache holds one for the provider's current config that is still
+	// fresh.
+	//
+	// ACP: config/models_list (new in P3).
+	ListModels(ctx context.Context, name string) ([]schema.ModelInfo, bool)
+
+	// SaveModels caches models for the provider called name, keyed by its
+	// current config. An empty list, or a name the session's config does not
+	// have, changes nothing.
+	//
+	// ACP: config/models_save (new in P3).
+	SaveModels(ctx context.Context, name string, models []schema.ModelInfo) error
+
+	// ForgetModels drops the cached list for the provider called name.
+	//
+	// ACP: config/models_forget (new in P3).
+	ForgetModels(ctx context.Context, name string) error
+
+	// RenameModels moves the cached list of the provider called from to the
+	// name to. A from the cache does not hold changes nothing.
+	//
+	// ACP: config/models_rename (new in P3).
+	RenameModels(ctx context.Context, from, to string) error
+
+	// PrepareProviderLogin checks that the browser sign-in for the provider
+	// called name can start, and returns why not.
+	//
+	// ACP: config/login_provider (new in P3).
+	PrepareProviderLogin(ctx context.Context, name string) error
+
+	// LoginProvider runs the browser sign-in for the provider called name and
+	// stores its tokens. It calls show once with the authorization URL, which
+	// the client opens, and returns when the sign-in ends.
+	//
+	// ACP: config/login_provider (new in P3). show is fed by the call's
+	// progress notification.
+	LoginProvider(ctx context.Context, name string, show func(url string)) error
 }
 
 // Session is one conversation the TUI drives. It gains its groups' methods
@@ -453,4 +520,20 @@ type Session interface {
 	//
 	// ACP: session/command_action (new in P3).
 	CommandAction(ctx context.Context, id string) (acpwire.CommandResult, error)
+
+	// PrepareMCPLogin checks that the OAuth sign-in for the session's MCP
+	// server called server can start: the server resolves and the token store
+	// opens. Its error is the sentence the client shows.
+	//
+	// ACP: session/mcp_login (new in P3).
+	PrepareMCPLogin(ctx context.Context, server string) error
+
+	// LoginMCP runs the OAuth sign-in for the MCP server called server and
+	// stores its tokens. It calls show once with the authorization URL, which
+	// the client opens, and returns when the sign-in ends. A cancelled
+	// sign-in's error wraps context.Canceled and stores nothing.
+	//
+	// ACP: session/mcp_login (new in P3). show is fed by the call's progress
+	// notification.
+	LoginMCP(ctx context.Context, server string, show func(url string)) error
 }

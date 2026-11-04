@@ -6765,12 +6765,13 @@ func TestOpenModelsForwardsAuth(t *testing.T) {
 	}
 }
 
-// TestOpenSettingsBrowserForwardsAuth: the settings browser probes providers,
-// so it must receive the model's resolver too.
-func TestOpenSettingsBrowserForwardsAuth(t *testing.T) {
-	auth := newMemAuth()
+// TestOpenSettingsBrowserForwardsTheHost: the settings browser probes providers
+// through the client host, so it must receive the model's host.
+func TestOpenSettingsBrowserForwardsTheHost(t *testing.T) {
 	m := newTestModel(t)
-	m.auth = auth
+	if m.host == nil {
+		t.Fatal("the test model should hold a client host")
+	}
 
 	m.openSettingsBrowser("")
 
@@ -6778,8 +6779,8 @@ func TestOpenSettingsBrowserForwardsAuth(t *testing.T) {
 	if !ok {
 		t.Fatalf("dock panel = %T, want *settings.BrowserPanel", m.dock.Panel())
 	}
-	if browser.AuthResolver() != provider.AuthResolver(auth) {
-		t.Fatal("settings browser did not receive the model's auth resolver")
+	if browser.HostForTest() != m.host {
+		t.Fatal("settings browser did not receive the model's host")
 	}
 }
 

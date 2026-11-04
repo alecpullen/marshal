@@ -8,10 +8,10 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
-	"marshal/internal/llm/provider"
 	"marshal/internal/strutil"
 )
 
@@ -265,7 +265,7 @@ func modelPickerField(s *state, id string, providerName func() string, getModel 
 				if pc.Template != "" {
 					tplID = pc.Template
 				}
-				if tpl, ok := provider.Lookup(tplID); ok && len(tpl.Models) > 0 {
+				if tpl, ok := s.lookupTemplate(tplID); ok && len(tpl.Models) > 0 {
 					for _, mdl := range tpl.Models {
 						badge := "\u25cb catalog"
 						if mdl == current {
@@ -297,11 +297,19 @@ func modelPickerField(s *state, id string, providerName func() string, getModel 
 	}
 }
 
-func badgeForTemplate(tpl provider.ProviderTemplate) string {
-	if tpl.Local {
-		return "local"
+// lookupTemplate finds the catalog template with id among the templates the
+// state's host serves. With no host there is no catalog, so nothing matches —
+// the same result an unknown template ID gave.
+func (s *state) lookupTemplate(id string) (acpwire.ProviderTemplate, bool) {
+	if s.host == nil {
+		return acpwire.ProviderTemplate{}, false
 	}
-	return "remote"
+	for _, tpl := range s.host.ProviderTemplates() {
+		if tpl.ID == id {
+			return tpl, true
+		}
+	}
+	return acpwire.ProviderTemplate{}, false
 }
 
 func uniqueCopyName(base string, existing map[string]bool) string {

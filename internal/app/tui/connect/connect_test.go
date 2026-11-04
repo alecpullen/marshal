@@ -22,6 +22,7 @@ import (
 
 	"marshal/internal/acpclient"
 	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/presetsetup"
 	"marshal/internal/app/session"
@@ -1290,7 +1291,7 @@ func TestTruncateErrRuneSafe(t *testing.T) {
 
 func TestUniqueNameDisambiguatesCustomProviders(t *testing.T) {
 	m := &Model{
-		template: provider.ProviderTemplate{ID: "custom", Type: "openai_compatible"},
+		template: acpwire.ProviderTemplate{ID: "custom", Type: "openai_compatible"},
 		cfg: config.Config{Providers: map[string]config.ProviderConfig{
 			"custom": {BaseURL: "https://first.example/v1"},
 		}},
@@ -1302,7 +1303,7 @@ func TestUniqueNameDisambiguatesCustomProviders(t *testing.T) {
 
 func TestUniqueNameFirstCustomProviderKeepsBaseName(t *testing.T) {
 	m := &Model{
-		template: provider.ProviderTemplate{ID: "custom", Type: "openai_compatible"},
+		template: acpwire.ProviderTemplate{ID: "custom", Type: "openai_compatible"},
 		cfg:      config.Config{Providers: map[string]config.ProviderConfig{}},
 	}
 	if got := m.uniqueName(); got != "custom" {
@@ -1311,7 +1312,7 @@ func TestUniqueNameFirstCustomProviderKeepsBaseName(t *testing.T) {
 }
 
 func TestAPIKeyStepDefaultsToEnvVarWhenTemplateHasOne(t *testing.T) {
-	m := &Model{template: provider.ProviderTemplate{
+	m := &Model{template: acpwire.ProviderTemplate{
 		ID: "openai", KeyEnv: "OPENAI_API_KEY",
 	}}
 	m.enterAPIKey()
@@ -1325,7 +1326,7 @@ func TestAPIKeyStepDefaultsToEnvVarWhenTemplateHasOne(t *testing.T) {
 }
 
 func TestAPIKeyStepStillAcceptsPastedLiteral(t *testing.T) {
-	m := &Model{template: provider.ProviderTemplate{ID: "openai", KeyEnv: "OPENAI_API_KEY"}}
+	m := &Model{template: acpwire.ProviderTemplate{ID: "openai", KeyEnv: "OPENAI_API_KEY"}}
 	m.enterAPIKey()
 	m.input.SetValue("sk-literal-key")
 	m.confirmInput()
@@ -1339,7 +1340,7 @@ func TestAPIKeyStepStillAcceptsPastedLiteral(t *testing.T) {
 }
 
 func TestAPIKeyStepBlankUsesTemplateEnvVar(t *testing.T) {
-	m := &Model{template: provider.ProviderTemplate{ID: "openai", KeyEnv: "OPENAI_API_KEY"}}
+	m := &Model{template: acpwire.ProviderTemplate{ID: "openai", KeyEnv: "OPENAI_API_KEY"}}
 	m.enterAPIKey()
 	m.input.SetValue("")
 	m.confirmInput()
@@ -1417,7 +1418,7 @@ func TestModelPickerPickAttributesTheRightProvider(t *testing.T) {
 
 func TestUniqueNameEmptyTemplateIDBehavesAsCustom(t *testing.T) {
 	m := &Model{
-		template: provider.ProviderTemplate{ID: "", Type: "openai_compatible"},
+		template: acpwire.ProviderTemplate{ID: "", Type: "openai_compatible"},
 		cfg: config.Config{Providers: map[string]config.ProviderConfig{
 			"custom": {}, "custom-2": {},
 		}},
@@ -1429,7 +1430,7 @@ func TestUniqueNameEmptyTemplateIDBehavesAsCustom(t *testing.T) {
 
 func TestUniqueNameDerivesFromBaseURLHost(t *testing.T) {
 	m := &Model{
-		template:    provider.ProviderTemplate{ID: "custom", Type: "openai_compatible"},
+		template:    acpwire.ProviderTemplate{ID: "custom", Type: "openai_compatible"},
 		providerCfg: config.ProviderConfig{BaseURL: "https://api.coolmodels.com/v1"},
 		cfg:         config.Config{Providers: map[string]config.ProviderConfig{}},
 	}
@@ -1440,7 +1441,7 @@ func TestUniqueNameDerivesFromBaseURLHost(t *testing.T) {
 
 func TestUniqueNameDisambiguatesHostDerivedName(t *testing.T) {
 	m := &Model{
-		template:    provider.ProviderTemplate{ID: "openai_compatible", Type: "openai_compatible"},
+		template:    acpwire.ProviderTemplate{ID: "openai_compatible", Type: "openai_compatible"},
 		providerCfg: config.ProviderConfig{BaseURL: "https://api.openai.com/v1"},
 		cfg: config.Config{Providers: map[string]config.ProviderConfig{
 			"openai.com": {},
@@ -1453,7 +1454,7 @@ func TestUniqueNameDisambiguatesHostDerivedName(t *testing.T) {
 
 func TestUniqueNameFallsBackToCustomForInvalidURL(t *testing.T) {
 	m := &Model{
-		template:    provider.ProviderTemplate{ID: "custom", Type: "openai_compatible"},
+		template:    acpwire.ProviderTemplate{ID: "custom", Type: "openai_compatible"},
 		providerCfg: config.ProviderConfig{BaseURL: "not a url"},
 		cfg: config.Config{Providers: map[string]config.ProviderConfig{
 			"custom": {},
@@ -1662,7 +1663,7 @@ func TestRefreshKeyInactiveOutsideModelStep(t *testing.T) {
 func TestLiteralKeyClearsTemplateEnvRef(t *testing.T) {
 	m := &Model{
 		step:        stepAPIKey,
-		template:    provider.ProviderTemplate{ID: "openai", KeyEnv: "OPENAI_API_KEY"},
+		template:    acpwire.ProviderTemplate{ID: "openai", KeyEnv: "OPENAI_API_KEY"},
 		providerCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://api.openai.com", APIKeyEnv: "OPENAI_API_KEY"},
 		input:       textfield.New(),
 	}
@@ -1716,7 +1717,7 @@ func TestDoneCarriesProbedCaps(t *testing.T) {
 	toolCalling := true
 	m, _ = m.Update(PreparedMsg{
 		Provider: m.providerName,
-		Caps:     provider.ModelCapabilities{ContextWindow: 32768, ToolCalling: &toolCalling},
+		Caps:     acpwire.ModelCapabilities{ContextWindow: 32768, ToolCalling: &toolCalling},
 		Result:   presetsetup.Result{Prepared: 1, Fallback: 1},
 	})
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 13})

@@ -14,6 +14,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"marshal/internal/acpclient"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/presetsetup"
 	"marshal/internal/app/tui/chrome"
@@ -113,17 +114,20 @@ type Model struct {
 	subtitle         string
 	footer           string
 	err              string
-	template         provider.ProviderTemplate
-	providerName     string
-	providerCfg      config.ProviderConfig
-	models           []schema.ModelInfo
-	cfg              config.Config
-	discovered       map[string][]schema.ModelInfo
-	scopedProvider   string
-	cfgPath          string
-	width            int
-	height           int
-	probeStart       int64
+	template         acpwire.ProviderTemplate
+	// templates is the provider catalog the host served at construction. A
+	// nil host serves none, so the template step offers only the custom row.
+	templates      []acpwire.ProviderTemplate
+	providerName   string
+	providerCfg    config.ProviderConfig
+	models         []schema.ModelInfo
+	cfg            config.Config
+	discovered     map[string][]schema.ModelInfo
+	scopedProvider string
+	cfgPath        string
+	width          int
+	height         int
+	probeStart     int64
 	// probeGen correlates a setup probe result with the wizard instance and
 	// attempt that dispatched it. It increases on every dispatch (including
 	// retries) and on skip or cancel, so a late result can never be mistaken
@@ -164,6 +168,12 @@ func New(opts Opts) *Model {
 	if openBrowser == nil {
 		openBrowser = mcpauth.OpenBrowser
 	}
+	// The catalog is the host's: reading it once here means every step that
+	// offers a template reads the same list the agent side serves.
+	var templates []acpwire.ProviderTemplate
+	if opts.Host != nil {
+		templates = opts.Host.ProviderTemplates()
+	}
 	m := &Model{
 		cfg:            opts.Cfg,
 		discovered:     opts.Discovered,
@@ -175,6 +185,7 @@ func New(opts Opts) *Model {
 		dataDir:        opts.DataDir,
 		auth:           auth,
 		host:           opts.Host,
+		templates:      templates,
 		openBrowser:    openBrowser,
 	}
 	if opts.SkipToIntroModel {
@@ -394,7 +405,7 @@ type PreparedMsg struct {
 	// listed already carries them in its preset; a manually typed id has no
 	// entry, so the caps travel back here and reach the preset through
 	// DoneMsg instead.
-	Caps   provider.ModelCapabilities
+	Caps   acpwire.ModelCapabilities
 	Result presetsetup.Result
 }
 
@@ -508,7 +519,7 @@ func (m *Model) enterPickTemplate() {
 	m.subtitle = ""
 	m.footer = "[↑↓] move [↵] pick [Esc] cancel"
 	m.err = ""
-	all := provider.All()
+	all := m.templates
 	items := make([]picker.Item, 0, len(all)+1)
 	items = append(items, picker.Item{
 		Label:  "New custom provider…",
@@ -627,19 +638,15 @@ func (m *Model) prepareCmd() tea.Cmd {
 	}
 	dataDir := m.dataDir
 	allowed := m.cfg.Privacy.ModelsDevEnrichment != nil && *m.cfg.Privacy.ModelsDevEnrichment
-	margin := m.cfg.Agent.ThinkingBudgetMargin
-	auth := m.auth
+	host := m.host
 	return func() tea.Msg {
-		// Constructing the provider can resolve a credential from the OS
-		// keychain, so it happens here rather than on the UI thread.
-		var caps provider.ModelCapabilities
-		prov, err := provider.NewFromConfigWithAuth(providerName, providerCfg, dataDir, margin, "", auth)
-		if err == nil {
-			if prober, ok := prov.(provider.CapabilityProber); ok {
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				caps = prober.ProbeCapabilities(ctx, modelChosen)
-				cancel()
-			}
+		// The capability probe goes through the host, which builds the client
+		// (and may resolve a credential) agent side.
+		var caps acpwire.ModelCapabilities
+		if host != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			caps, _ = host.ProbeModel(ctx, providerName, providerCfg, modelChosen)
+			cancel()
 		}
 		// Fold the probe into the reported entry when the provider listed the
 		// model. A manually typed id has no entry, so its caps travel back in
@@ -866,7 +873,7 @@ func templateModelsToInfo(ids []string) []schema.ModelInfo {
 	return out
 }
 
-func badgeForTemplate(tpl provider.ProviderTemplate) string {
+func badgeForTemplate(tpl acpwire.ProviderTemplate) string {
 	if tpl.Local {
 		return "local"
 	}
@@ -901,15 +908,15 @@ func (m *Model) handlePickerPicked(value string) (*Model, tea.Cmd) {
 		// summary, but it must not skip this.
 		return m.afterModelChosen()
 	}
-	tpl, ok := provider.Lookup(value)
+	tpl, ok := m.lookupTemplate(value)
 	if !ok {
 		if value == "custom" || strings.HasPrefix(value, "@ai-sdk/") {
-			m.template = provider.ProviderTemplate{ID: "custom", Type: "openai_compatible"}
+			m.template = acpwire.ProviderTemplate{ID: "custom", Type: "openai_compatible"}
 			m.providerCfg = config.ProviderConfig{Type: "openai_compatible", Template: "custom"}
 			enterBaseURLStep(m)
 			return m, nil
 		}
-		m.template = provider.ProviderTemplate{ID: value, Type: "openai_compatible"}
+		m.template = acpwire.ProviderTemplate{ID: value, Type: "openai_compatible"}
 		m.providerCfg = config.ProviderConfig{Type: "openai_compatible", Template: value}
 		enterBaseURLStep(m)
 		return m, nil
@@ -1423,16 +1430,27 @@ func hostBase(baseURL string) string {
 // providerTemplate looks up the catalog template for a configured provider.
 // It prefers the stored template ID so renamed providers still resolve to
 // their original catalog models.
-func (m *Model) providerTemplate(pn string) (provider.ProviderTemplate, bool) {
+func (m *Model) providerTemplate(pn string) (acpwire.ProviderTemplate, bool) {
 	pc, ok := m.cfg.Providers[pn]
 	if !ok {
-		return provider.ProviderTemplate{}, false
+		return acpwire.ProviderTemplate{}, false
 	}
 	id := pn
 	if pc.Template != "" {
 		id = pc.Template
 	}
-	return provider.Lookup(id)
+	return m.lookupTemplate(id)
+}
+
+// lookupTemplate finds a catalog template by ID in the list the host served at
+// construction. A nil host served none, so nothing matches.
+func (m *Model) lookupTemplate(id string) (acpwire.ProviderTemplate, bool) {
+	for _, tpl := range m.templates {
+		if tpl.ID == id {
+			return tpl, true
+		}
+	}
+	return acpwire.ProviderTemplate{}, false
 }
 
 func orDefault(v, def string) string {

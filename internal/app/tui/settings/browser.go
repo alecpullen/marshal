@@ -23,15 +23,8 @@ import (
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/textfield"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/llm/provider"
 	"marshal/internal/strutil"
 )
-
-// probeProviderFor builds a provider client for capability probing only.
-// Capability probing does not need the model-list cache.
-func probeProviderFor(name string, pc config.ProviderConfig, dataDir string, thinkingBudgetMargin int, auth provider.AuthResolver) (provider.Provider, error) {
-	return provider.NewFromConfigWithAuth(name, pc, dataDir, thinkingBudgetMargin, "", auth)
-}
 
 // BrowserOption customizes a BrowserPanel.
 type BrowserOption func(*BrowserPanel)
@@ -47,21 +40,6 @@ func WithProvenance(fn func(tomlPath string) string) BrowserOption {
 // writes. When not set, the browser derives it from os.UserHomeDir.
 func WithUserConfigPath(path string) BrowserOption {
 	return func(b *BrowserPanel) { b.userConfigPath = path }
-}
-
-// WithDataDir sets the data directory used to resolve context and output
-// limits for probed models. Without it, discovered models carry zero limits
-// and presets created from them save context_window = 0.
-func WithDataDir(dir string) BrowserOption {
-	return func(b *BrowserPanel) { b.reg.st.dataDir = dir }
-}
-
-// WithAuthResolver pins the credential/OAuth dependency every probe this
-// browser launches must use. Without it the browser would build an
-// openai_codex provider through the process-wide keychain — bypassing the
-// isolated dependency an embedding app selected.
-func WithAuthResolver(auth provider.AuthResolver) BrowserOption {
-	return func(b *BrowserPanel) { b.reg.st.auth = auth }
 }
 
 // WithHost sets the client host every probe this browser launches asks. Without
@@ -168,10 +146,11 @@ func NewBrowser(cfg config.Config, cfgPath, query string, opts ...BrowserOption)
 	return browser
 }
 
-// AuthResolver returns the credential/OAuth dependency every probe from this
-// browser uses. It is never nil (newState selects the production adapter),
-// which lets callers verify that a rebuilt panel kept its dependency.
-func (b *BrowserPanel) AuthResolver() provider.AuthResolver { return b.reg.st.auth }
+// HostForTest exposes the client host this browser launches its probes with,
+// so the parent package's wiring test can verify that a docked browser kept
+// the model's host. It is test-only API: production code reads the host
+// through the state.
+func (b *BrowserPanel) HostForTest() acpclient.Host { return b.reg.st.host }
 
 // SetLayers supplies the load-time config snapshots used by project-scope
 // saves to avoid baking user-layer values into the project file.
@@ -530,10 +509,10 @@ func (b *BrowserPanel) closePicker() {
 }
 
 // startConfirm opens the shared confirm-limits screen for a just-picked
-// discovered model. It probes the model's capabilities asynchronously
-// (Ollama only — see provider.CapabilityProber) only when there is something
-// to probe, so the "detecting…" state never appears, and never hangs, for
-// providers that can't report anything beyond their bulk model list.
+// discovered model. It probes the model's capabilities asynchronously through
+// the client host only when the host can tell anything about it, so the
+// "detecting…" state never appears, and never hangs, for providers that can't
+// report anything beyond their bulk model list.
 func (b *BrowserPanel) startConfirm(pending pendingMaterialization) tea.Cmd {
 	b.cancelCapabilityProbe()
 	pc := b.reg.st.cfg.Providers[pending.ProviderName]
@@ -544,18 +523,14 @@ func (b *BrowserPanel) startConfirm(pending pendingMaterialization) tea.Cmd {
 	b.confirm = presetflow.NewConfirmState(lim)
 	b.confirmTarget = &pending
 
-	// Capability probing only needs the provider client. Limit-table discovery
+	// Capability probing only needs the client host. Limit-table discovery
 	// already happened during model-list discovery and must not block the TUI
 	// while this confirmation screen is opening.
-	prov, err := probeProviderFor(pending.ProviderName, pc, b.reg.st.dataDir, b.reg.st.cfg.Agent.ThinkingBudgetMargin, b.reg.st.auth)
-	if err != nil {
-		return nil
-	}
-	if _, ok := prov.(provider.CapabilityProber); !ok {
+	if b.reg.st.host == nil || !b.reg.st.host.CanProbeModel(context.Background(), pending.ProviderName, pc) {
 		return nil
 	}
 	b.detectingCaps = true
-	cmd, cancel := presetflow.ProbeCapabilitiesCmdWithCancel(prov, pending.ProviderName, pending.ModelID, b.capProbeID)
+	cmd, cancel := presetflow.ProbeCapabilitiesCmdWithCancel(b.reg.st.host, pending.ProviderName, pc, pending.ModelID, b.capProbeID)
 	b.cancelCapProbe = cancel
 	return cmd
 }

@@ -1134,8 +1134,6 @@ func (m *Model) provenanceForPath(tomlPath string) string {
 func (m *Model) openSettingsBrowser(query string) {
 	opts := []settings.BrowserOption{
 		settings.WithProvenance(m.provenanceForPath),
-		settings.WithDataDir(m.modelCacheDir),
-		settings.WithAuthResolver(m.auth),
 		settings.WithHost(m.host),
 	}
 	if home, err := m.userHome(); err == nil {

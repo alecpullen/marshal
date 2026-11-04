@@ -273,6 +273,7 @@ func TestSettingsModelPickerUsesStoredTemplateID(t *testing.T) {
 		"work-openai": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1", Template: "openai"},
 	}
 	st := newState(cfg)
+	st.host = testHost(t, newMemAuth())
 	f := modelPickerField(st, "test.model",
 		func() string { return "work-openai" },
 		func() string { return "gpt-4o" },

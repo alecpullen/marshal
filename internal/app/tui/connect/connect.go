@@ -26,10 +26,8 @@ import (
 	"marshal/internal/app/tui/textfield"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/llm/modelcatalog"
-	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
-	"marshal/internal/oauth"
 	"marshal/internal/strutil"
 )
 
@@ -89,12 +87,6 @@ type Opts struct {
 	// DataDir is the provider data directory used for the probe cache and
 	// discovered model metadata.
 	DataDir string
-	// Auth is the credential/OAuth dependency every provider this wizard
-	// constructs must use — capability/model probes and the sign-in engine.
-	// Nil selects the production adapter (see New); an embedded or test
-	// caller injects an isolated resolver so the wizard never reaches the
-	// real OS keychain.
-	Auth provider.AuthResolver
 	// OpenBrowser launches the authorization URL during sign-in. Nil keeps
 	// the production behavior (mcpauth.OpenBrowser). Tests inject a stub so
 	// an executed login command never opens a real browser.
@@ -139,7 +131,6 @@ type Model struct {
 	allProviders  bool
 	probeErrs     map[string]error
 	dataDir       string
-	auth          provider.AuthResolver
 	host          acpclient.Host
 	openBrowser   func(url string) error
 	prepared      PreparedMsg
@@ -156,14 +147,6 @@ func New(opts Opts) *Model {
 	ri := textfield.New()
 	ri.SetVirtualCursor(true)
 	ri.Focus()
-	// Select the production credential/OAuth adapter only when the caller
-	// supplied none. Resolving it here (rather than inside the probe and
-	// sign-in paths) means one wizard has one dependency for its whole
-	// lifetime, including through every step that rebuilds a provider client.
-	auth := opts.Auth
-	if auth == nil {
-		auth = provider.DefaultAuthResolver()
-	}
 	openBrowser := opts.OpenBrowser
 	if openBrowser == nil {
 		openBrowser = mcpauth.OpenBrowser
@@ -183,7 +166,6 @@ func New(opts Opts) *Model {
 		cfgPath:        opts.CfgPath,
 		allProviders:   opts.AllProviders,
 		dataDir:        opts.DataDir,
-		auth:           auth,
 		host:           opts.Host,
 		templates:      templates,
 		openBrowser:    openBrowser,
@@ -196,15 +178,13 @@ func New(opts Opts) *Model {
 	return m
 }
 
-// AuthResolver returns the credential/OAuth dependency this wizard uses. It
-// exposes the selected dependency (never nil — New resolves the production
-// adapter when none was injected) so callers and tests can verify that a
-// panel was built from the intended runtime.
-func (m *Model) AuthResolver() provider.AuthResolver { return m.auth }
-
 // OpenBrowserFn returns the browser launcher the sign-in flow uses, or nil
 // if none was selected (New always selects one).
 func (m *Model) OpenBrowserFn() func(url string) error { return m.openBrowser }
+
+// HostForTest returns the client host the wizard holds. It exists for the TUI's
+// wiring test; production code reaches the host through the wizard's own calls.
+func (m *Model) HostForTest() acpclient.Host { return m.host }
 
 func (m *Model) Init() tea.Cmd { return nil }
 
@@ -429,22 +409,19 @@ type OAuthDoneMsg struct {
 // CopyLinkMsg asks the app shell to copy the complete authorization URL.
 type CopyLinkMsg struct{ URL string }
 
-// oauthDisplay adapts the engine's Display interface to the connect panel.
-// ShowURL records the URL so the panel can render it; Wait returns
-// immediately because the engine waits on the loopback callback directly and
-// treats Wait as a hint, not a signal.
+// oauthDisplay is the connect panel's record of the running sign-in's
+// authorization URL.
 type oauthDisplay struct {
 	mu  sync.Mutex
 	url string
 }
 
+// ShowURL records the URL so the panel can render it.
 func (d *oauthDisplay) ShowURL(u string) {
 	d.mu.Lock()
 	d.url = u
 	d.mu.Unlock()
 }
-
-func (d *oauthDisplay) Wait(ctx context.Context) error { return nil }
 
 func (d *oauthDisplay) URL() string {
 	d.mu.Lock()
@@ -452,23 +429,24 @@ func (d *oauthDisplay) URL() string {
 	return d.url
 }
 
-// oauthLogin runs the browser flow in a tea.Cmd. The engine blocks on the
+// oauthLogin runs the browser flow in a tea.Cmd. The agent side blocks on the
 // loopback callback, so this Cmd blocks until the user finishes (or the
-// engine's own timeout fires).
+// sign-in's own timeout fires).
 //
-// The engine's Open hook is wired here rather than in the provider package:
-// launching a browser is a UI concern, and internal/llm/provider must not
-// depend on the TUI. Without this the flow would dead-end — Authorize would
-// wait on a loopback callback the user was never told how to trigger.
-func oauthLogin(engine *oauth.Engine, providerName string, display *oauthDisplay, open func(url string) error) tea.Cmd {
+// The URL arrives through show rather than an engine hook: launching a
+// browser is a UI concern, so the TUI opens it and then records the URL for
+// its panel — the order the engine itself used.
+func oauthLogin(host acpclient.Host, providerName string, display *oauthDisplay, open func(url string) error) tea.Cmd {
 	if open == nil {
 		open = mcpauth.OpenBrowser
 	}
-	engine.Open = func(u string) { _ = open(u) }
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), oauthLoginTimeout)
 		defer cancel()
-		err := engine.Authorize(ctx, display)
+		err := host.LoginProvider(ctx, providerName, func(u string) {
+			_ = open(u)
+			display.ShowURL(u)
+		})
 		return OAuthDoneMsg{Provider: providerName, Err: err}
 	}
 }
@@ -958,27 +936,12 @@ func (m *Model) enterOAuthLogin() (*Model, tea.Cmd) {
 	m.err = ""
 	m.picker = nil
 
-	engine, err := m.codexOAuthEngine()
-	if err != nil {
+	if err := m.host.PrepareProviderLogin(context.Background(), m.providerName); err != nil {
 		m.err = err.Error()
 		return m, nil
 	}
 	m.oauthDisplay = &oauthDisplay{}
-	return m, oauthLogin(engine, m.providerName, m.oauthDisplay, m.openBrowser)
-}
-
-// codexOAuthEngine returns the OAuth engine backing this wizard's sign-in,
-// built from the credential dependency the caller supplied. An injected
-// resolver is authoritative: under it the token store stays private to
-// whoever supplied it, so a test or embedded caller cannot reach the real OS
-// keychain. Only a Model built as a bare literal, bypassing New, keeps the
-// legacy process-wide engine — New always selects a resolver, so no wizard
-// reached through the normal constructor takes that branch.
-func (m *Model) codexOAuthEngine() (*oauth.Engine, error) {
-	if m.auth != nil {
-		return m.auth.CodexOAuthEngine(m.providerName)
-	}
-	return provider.CodexOAuthEngine(m.providerName)
+	return m, oauthLogin(m.host, m.providerName, m.oauthDisplay, m.openBrowser)
 }
 
 // oauthURL returns the authorization URL the running flow has produced, or

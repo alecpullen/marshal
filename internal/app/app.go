@@ -2747,8 +2747,12 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			SetInteraction:  rt.SetInteraction,
 			SetEffort:       rt.SetSessionEffort,
 			Commands:        rt.CommandRegistry,
-			Auth:            rt.AuthResolver,
-			ModelCacheDir:   rt.DataDir,
+			// The adapter builds every provider client and sign-in the TUI
+			// asks for, so an injected resolver must reach it: otherwise a
+			// probe or login under an isolated runtime would reach the real
+			// OS keychain.
+			Auth:          rt.AuthResolver,
+			ModelCacheDir: rt.DataDir,
 		}
 		if providerReady {
 			deps.Work = rt
@@ -2777,13 +2781,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// rebuilt runner needs no adoption here.
 		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
 		tuiOpts = append(tuiOpts, tui.WithHomeDir(homeDir))
-		tuiOpts = append(tuiOpts, tui.WithDataDir(config.DataDir(homeDir)))
-		// The TUI's auth-backed surfaces (provider probes, the connect
-		// wizard's sign-in engine and token store, the settings browser,
-		// /mcp auth) must use the dependency this runtime selected. Without
-		// this the TUI would fall back to the production adapter and, under
-		// an injected resolver, reach the real OS keychain.
-		tuiOpts = append(tuiOpts, tui.WithAuthResolver(rt.AuthResolver))
 		tuiOpts = append(tuiOpts, tui.WithWorkingDir(workingDir))
 		tuiOpts = append(tuiOpts, tui.WithSkillIndex(rt.SkillIndex))
 		// Copy prefers a local clipboard helper and falls back to OSC 52 over

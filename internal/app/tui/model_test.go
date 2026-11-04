@@ -42,7 +42,6 @@ import (
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/interaction"
-	"marshal/internal/llm/provider"
 	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
@@ -6570,7 +6569,7 @@ func newTestModel(t *testing.T) Model {
 		// reach the developer's OS keychain or launch a browser just by
 		// constructing or driving the model. Tests that need to observe the
 		// injected dependency replace these directly.
-		WithAuthResolver(newMemAuth()), WithOpenBrowser(func(string) error { return nil }))
+		WithOpenBrowser(func(string) error { return nil }))
 	m.resize(80, 24)
 	m.refreshViewport()
 	return m
@@ -6587,7 +6586,7 @@ func newTestModelInRepo(t *testing.T) Model {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 	m := testModelWith(inproc.Deps{State: state, Commands: reg, Auth: newMemAuth()}, WithHomeDir(t.TempDir()),
-		WithAuthResolver(newMemAuth()), WithOpenBrowser(func(string) error { return nil }))
+		WithOpenBrowser(func(string) error { return nil }))
 	m.resize(80, 24)
 	m.refreshViewport()
 	return m
@@ -6722,35 +6721,29 @@ func TestModelsOpensOverlay(t *testing.T) {
 
 // ── Auth dependency propagation into panels ──────────────────────────
 
-// TestOpenConnectForwardsAuthAndBrowser: the connect wizard must receive the
-// model's resolver and browser opener, or a sign-in launched from the TUI
-// would use the production keychain/browser.
-func TestOpenConnectForwardsAuthAndBrowser(t *testing.T) {
-	auth := newMemAuth()
-	var opened []string
+// TestOpenConnectForwardsTheHostAndBrowser: the connect wizard must receive the
+// model's client host and browser opener, or a probe or sign-in launched from
+// the TUI would bypass the seam.
+func TestOpenConnectForwardsTheHostAndBrowser(t *testing.T) {
 	m := newTestModel(t)
-	m.auth = auth
-	m.openBrowser = func(u string) error { opened = append(opened, u); return nil }
+	m.openBrowser = func(string) error { return nil }
 
 	m.openConnect("")
 	if m.connectModel == nil {
 		t.Fatal("openConnect did not build a panel")
 	}
-	if m.connectModel.AuthResolver() != provider.AuthResolver(auth) {
-		t.Fatal("connect panel did not receive the model's auth resolver")
+	if m.connectModel.HostForTest() != m.host {
+		t.Fatal("connect panel did not receive the model's host")
 	}
 	if m.connectModel.OpenBrowserFn() == nil {
 		t.Fatal("connect panel did not receive a browser opener")
 	}
-	_ = opened
 }
 
-// TestOpenModelsForwardsAuth: the /models panel is built through a separate
+// TestOpenModelsForwardsTheHost: the /models panel is built through a separate
 // call site, so it needs the same coverage.
-func TestOpenModelsForwardsAuth(t *testing.T) {
-	auth := newMemAuth()
+func TestOpenModelsForwardsTheHost(t *testing.T) {
 	m := newTestModel(t)
-	m.auth = auth
 	m.state.Config.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	}
@@ -6760,8 +6753,20 @@ func TestOpenModelsForwardsAuth(t *testing.T) {
 	if m.connectModel == nil {
 		t.Fatal("openModels did not build a panel")
 	}
-	if m.connectModel.AuthResolver() != provider.AuthResolver(auth) {
-		t.Fatal("models panel did not receive the model's auth resolver")
+	if m.connectModel.HostForTest() != m.host {
+		t.Fatal("models panel did not receive the model's host")
+	}
+}
+
+// TestModelHostIsTheOneItWasBuiltWith: Host() reports the host New was given.
+func TestModelHostIsTheOneItWasBuiltWith(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	host, sess := inproc.New(inproc.Deps{State: state, Auth: newMemAuth()})
+	m := New(host, sess, WithLegacyState(state), WithHomeDir(t.TempDir()))
+
+	got, ok := m.Host().(*inproc.Host)
+	if !ok || got != host {
+		t.Fatal("Host() did not report the host the model was built with")
 	}
 }
 
@@ -9124,9 +9129,9 @@ func TestDoctorFixSavesKeyAndReloads(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("MARSHAL_CONFIG_DIR", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
-	m := testModel(session.New(config.Default(), work, time.Unix(100, 0), session.Persistence{}),
+	m := testModelWith(inproc.Deps{State: session.New(config.Default(), work, time.Unix(100, 0), session.Persistence{}), Auth: newMemAuth()},
 		WithHomeDir(home),
-		WithAuthResolver(newMemAuth()), WithOpenBrowser(func(string) error { return nil }))
+		WithOpenBrowser(func(string) error { return nil }))
 	m.state.WorkingDir = work
 	m.workDir = work
 	m.state.Config.Providers = map[string]config.ProviderConfig{
@@ -11790,8 +11795,8 @@ func newSendNowFixture(t *testing.T, width, height int, supported bool) *sendNow
 		f.submits = append(f.submits, req)
 	}}
 	f.stub = stub
-	m := testModelStubWith(inproc.Deps{State: state, Commands: reg}, stub, WithHomeDir(t.TempDir()),
-		WithAuthResolver(newMemAuth()), WithOpenBrowser(func(string) error { return nil }))
+	m := testModelStubWith(inproc.Deps{State: state, Commands: reg, Auth: newMemAuth()}, stub, WithHomeDir(t.TempDir()),
+		WithOpenBrowser(func(string) error { return nil }))
 	m.resize(width, height)
 	m.busy = true
 	m.refreshViewport()

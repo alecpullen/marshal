@@ -6160,15 +6160,15 @@ func TestWithAuthResolverRejectsExplicitNil(t *testing.T) {
 	}
 }
 
-// TestRunPassesAuthResolverToTUI closes the one fail-open seam in the
-// isolation design. The app builders refuse an omitted resolver, but the
-// TUI's own constructors substitute provider.DefaultAuthResolver() when no
-// option supplies one — so app.Run's WithAuthResolver wiring is the single
-// place where an isolated runtime could silently regain the real OS keychain,
-// and nothing else in the suite would notice if it were dropped.
-func TestRunPassesAuthResolverToTUI(t *testing.T) {
+// TestRunPassesAuthResolverToTheSeam closes the one fail-open seam in the
+// isolation design. The adapter builds every provider client and sign-in the
+// TUI asks for, so app.Run's Auth wiring is the single place where an isolated
+// runtime could silently regain the real OS keychain, and nothing else in the
+// suite would notice if it were dropped.
+func TestRunPassesAuthResolverToTheSeam(t *testing.T) {
 	auth := &countingAuthResolver{}
 	var got provider.AuthResolver
+	var isAdapter bool
 	err := Run(context.Background(), bytes.NewBuffer(nil),
 		WithNow(func() time.Time { return time.Unix(100, 0) }),
 		WithWorkingDir(t.TempDir()),
@@ -6179,18 +6179,25 @@ func TestRunPassesAuthResolverToTUI(t *testing.T) {
 		}),
 		WithAuthResolver(auth),
 		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
-			got = model.(tui.Model).AuthResolver()
+			host, ok := model.(tui.Model).Host().(*inproc.Host)
+			isAdapter = ok
+			if ok {
+				got = host.AuthResolver()
+			}
 			return ProgramResult{}
 		}),
 	)
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
+	if !isAdapter {
+		t.Fatal("the TUI model does not hold the in-process adapter")
+	}
 	if got == nil {
-		t.Fatal("the TUI model carries no auth resolver")
+		t.Fatal("the seam carries no auth resolver")
 	}
 	if got != provider.AuthResolver(auth) {
-		t.Fatalf("TUI auth resolver = %T, want the runtime's injected resolver", got)
+		t.Fatalf("seam auth resolver = %T, want the runtime's injected resolver", got)
 	}
 	// The wiring must not itself reach a credential path: this fixture
 	// configures no provider, so a correct startup asks for neither a store

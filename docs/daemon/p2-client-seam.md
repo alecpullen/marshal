@@ -255,7 +255,9 @@ Decision: `WireTree`, with the C6 additions.
   keyring unavailable, auth required, a provider error with its fields,
   a stale work cursor, a request already settled, and busy. The TUI
   tests codes with `acpclient.IsCode`. Any other error is shown with
-  `err.Error()`, as today.
+  `err.Error()`, as today. A failed run's provider or login error
+  carries the notice it calls for in its data, an `acpwire.ErrorData`,
+  which `acpclient.NoticeOf` reads (C9, plan 6).
 - **Subagents** are addressed through the parent session by subagent ID:
   `Stack` and `Sheet` take an ID, and `Pending` tags each request with
   its owner (C7). No `Session` value exists for a child.
@@ -333,8 +335,9 @@ Decision: `WireTree`, with the C6 additions.
   - **live state:** browser info, and the sandbox info (plan 4): the
     backend, whether it isolates the network, and the shell's configured
     network allowance. Only the running-call and approval renderers read
-    it, and both read the session's. The current notice arrives with
-    plan 6, which also moves notice writes (C9);
+    it, and both read the session's. The current notice (plan 6), which
+    the runtime sets too, and which the TUI changes through the session
+    (C9);
   - **queues and runs** (plan 2b): the steering queue, the Send-now
     snapshot and the newest receipt for its turn, the running job count,
     subagent views, swarm and SDD progress (the tray's plan-run row), the
@@ -601,23 +604,49 @@ Decision: `WireTree`, with the C6 additions.
 
 ### C9. Notes, notices and commands
 
-- **Notes.** `AddNote(ctx, text, contentType)` appends a system message
-  exactly as `AddMessage(RoleSystem, …)` does today: persisted, in the
-  transcript, and visible to every client. ACP: `session/note` (new).
-- **Notices.** `SetNotice`, `ClearNotice(category)` and `DismissNotice`
-  change the banner. The current notice is in `Status`. Error
-  classification for notices (`noticeForError`) moves to the adapter,
-  which returns the notice with the error code (C2).
+- **Notes.** `AddNote(ctx, note)` appends an `acpwire.Note` exactly as
+  `AddMessage` does today: persisted, in the transcript, and visible to
+  every client. A note is a system message unless its role is user,
+  which only the no-runner echo uses: with no agent runner, Enter still
+  records the user's text and starts nothing (plan 6). ACP:
+  `session/note` (new).
+- **Notices.**
+  - `SetNotice`, `ClearNotice(category)` and `DismissNotice` change the
+    banner, and the current notice is in `Status`. None fires
+    `Changed`: the TUI repaints after each, and the runtime's own
+    notices reach the screen on the tick, as today. ACP:
+    `session/notice_set`, `session/notice_clear` and
+    `session/notice_dismiss` (new).
+  - The TUI still decides when a notice is set or cleared: when a turn
+    begins, fails or succeeds, after its reloads, on Esc and when the
+    banner's time is up.
+  - Error classification moves agent side. A run whose error is a
+    provider's, or an OAuth login the provider needs, returns it coded
+    `provider_error` or `auth_required`, with its own text and the
+    notice in its data (C2). `noticeForError` takes that notice and
+    stamps its source, and falls back to an internal notice as before.
+    An error a cancellation caused comes back unchanged.
 - **Slash commands.**
   - TUI-only commands that open panels or change view state stay in the
     TUI.
-  - Headless commands run through `Command(ctx, name, args)`, which
-    uses the same registry agent side (`session/command` exists).
-  - The completion list comes from `Commands()`
-    (`session/command_list` exists).
-  - The TUI renders the returned text or doc as it renders
-    `commands.Result` today.
-- **Logging.** The TUI logs through its own logger, not the session's.
+  - The completion list and the dispatch read `Commands()`
+    (`session/command_list` exists). Each entry carries what the
+    dispatch branches on: the prompt body, whether the command has a
+    handler and whether it is TUI-only. `/trust` is TUI-only and also
+    has a handler.
+  - Handlers run through `Command(ctx, name, args)`, which uses the same
+    registry agent side (`session/command` exists). Unlike ACP's, it
+    does not refuse during a turn: the TUI never did.
+  - A doc's row actions carry IDs, and `CommandAction(ctx, id)` runs one
+    agent side (`session/command_action`, new). The adapter keeps the
+    actions of its 16 most recent results that have any.
+  - The doc panel renders an `acpwire.WireDoc` and is given its actions:
+    a command doc's run through `CommandAction`, and a doc the TUI builds
+    itself (the `/run` outcome) runs its own until plan 8.
+  - ACP's command types move to `acpwire` with their JSON unchanged
+    (plan 6), and gain fields only the client reads.
+- **Logging.** The TUI logs through its own logger, set with
+  `WithLogger`, not the session's.
 
 ### C10. Config, providers and trust
 
@@ -825,7 +854,14 @@ The TUI works after every plan.
    5c, 5d and 5e run in that order: each run kind reuses 5c's finish
    path, and the swap result carries the runners until 5d. 5a and 5b
    depend on nothing in plan 5.
-6. **Notes, notices and commands** (C9).
+6. **Notes, notices and commands** (C9)
+   ([plan](plans/2026-11-04-p2-6-notes-plan.md)). `AddNote`, the notice
+   calls with the notice in `Status`, `Commands`, `Command` and
+   `CommandAction`, with the note, notice and command types in `acpwire`.
+   The TUI's transcript writes, banner changes and slash commands go
+   through the session, a failed run's error carries its notice, and doc
+   panels render wire docs. The TUI gets its own logger, and compares
+   wire strings with `acpwire`'s constants.
 7. **Config, providers and trust** (C10).
 8. **Project data** (C11).
 9. **Close-out.** Delete `WithLegacyState`, empty the allowlist, write
@@ -1421,6 +1457,52 @@ writing plan 5e:
   `session/end_accept`, `session/end_wait`, `session/exit_analysis` and
   `session/postmortem`. `Close` and `Host.NewSession` use
   `session/close` and `session/new`.
+
+**2026-11-04, against `fd0e778a` (plan 5e merged).** Found while
+writing plan 6:
+- **A note carries a role** (C9). Chosen with the user. With no agent
+  runner, Enter appends the user's text as a user message and starts
+  nothing, which tests pin. `AddNote` takes an `acpwire.Note` whose role
+  is system when empty, and accepts only system or user, so the echo
+  keeps its behaviour.
+- **Notes and notice calls fire no `Changed`** (C2, C9). The TUI repaints
+  after each, as today. A note on a closed session is dropped.
+- **The TUI keeps deciding when a notice changes** (C9). Only the calls
+  move. The TTL dismissal still reads, then dismisses; P3 needs a
+  conditional form once the mirror can change in between.
+- **Classification moves onto the run's error** (C2, C9). The three
+  error types `noticeForError` matched are agent side, and their Go
+  types do not survive a wire. The run path returns a provider or login
+  error coded, with its text unchanged and the notice in an
+  `ErrorData`. A cancellation's error is left alone, as the TUI's own
+  check expects. `ErrorData` is the envelope plan 7 extends with the
+  provider's fields.
+- **The command types move, and ACP's JSON stays** (C1, C9). ACP fills
+  only the fields it fills today. Its `kindOf` and `toWireDoc` become
+  `commands.Command.Kind` and `commands.WireDocOf`.
+- **`Commands()` carries the dispatch fields** (C9). ACP's `kind` cannot
+  drive the dispatch: `/trust` is TUI-only with a handler, and ACP
+  reports some TUI-only commands as headless.
+- **`Command` keeps the TUI's semantics** (C9). It makes no busy check,
+  and stays synchronous in the dispatch, so its text is noted before any
+  agent goal starts.
+- **Row actions get IDs** (C9). `/timeline`, `/branches` and `/context`
+  return docs whose actions are closures over the state. The adapter
+  mints `a1`, `a2` and on, depth first, keeps the actions of the 16 most
+  recent results that minted any, and runs one with `CommandAction`.
+- **Doc panels take their actions** (C9, C12). `docpanel.New` takes a
+  wire doc and a function from action ID to command. The `/run` outcome
+  doc's two actions stay TUI side until plan 8. `SetSource` had no
+  caller and goes.
+- **The TUI has its own logger** (C9): `WithLogger`, fed the runtime's
+  logger by `Run`.
+- **The wire names the constants the TUI compares** (C1): roles, content
+  types, activity kinds, notice categories and severities, pinned to the
+  session's by a test.
+- **The new ACP methods are named** `session/note`,
+  `session/notice_set`, `session/notice_clear`, `session/notice_dismiss`
+  and `session/command_action`. `Commands` and `Command` use
+  `session/command_list` and `session/command`.
 
 ## Implementation record
 

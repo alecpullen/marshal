@@ -17,6 +17,7 @@ import (
 	"marshal/internal/acpclient"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
+	"marshal/internal/commands"
 	"marshal/internal/interaction"
 	"marshal/internal/llm/schema"
 	"marshal/internal/pubsub"
@@ -89,6 +90,9 @@ type Deps struct {
 	// warn about: ActiveWork is empty, AcceptEnd accepts, WaitForEnd settles
 	// at once, and RunExitAnalysis refuses with CodeNoRunner.
 	End EndService
+	// Commands is the runtime's slash-command registry. Without it the session
+	// lists no commands and runs none.
+	Commands *commands.Registry
 	// NewSession creates a session in the runtime and returns its state.
 	// Without it, Host.NewSession fails.
 	NewSession func(name string) (*session.State, error)
@@ -162,6 +166,16 @@ type Session struct {
 	paused PlanRun
 	// turn is the run in flight, nil when none. It is guarded by mu.
 	turn *turnSlot
+
+	// cmds is the runtime's slash-command registry. Nil means the session
+	// lists no commands and runs none.
+	cmds *commands.Registry
+	// actions holds the row actions of the most recent results that minted
+	// any, by ID; actionResults lists each such result's IDs, oldest first;
+	// actionSeq numbers them. All three are guarded by mu.
+	actions       map[string]func(*session.State) commands.Result
+	actionResults [][]string
+	actionSeq     uint64
 
 	// ctx bounds the event subscriptions; cancel releases them.
 	ctx    context.Context
@@ -318,6 +332,10 @@ func (s *Session) Status() acpwire.SessionStatus {
 	if rec, ok := s.latestReceipt(snap.TurnID); ok {
 		receipt := viewmodel.SteeringReceiptOf(rec)
 		status.Steering.Receipt = &receipt
+	}
+	if notice, ok := st.Notice(); ok {
+		n := noticeWire(notice)
+		status.Notice = &n
 	}
 	status.WatchResume = s.watchResume()
 	return status

@@ -5,6 +5,7 @@ import (
 
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
+	"marshal/internal/commands"
 	"marshal/internal/pubsub"
 	"marshal/internal/repo/gitinfo"
 	"marshal/internal/tools/native"
@@ -46,11 +47,13 @@ func newSession(d Deps) *Session {
 		planPreflight:  d.PlanPreflight,
 		authorPlan:     d.AuthorPlan,
 		end:            d.End,
+		cmds:           d.Commands,
 		ctx:            ctx,
 		cancel:         cancel,
 		changed:        make(chan struct{}, 1),
 		receipts:       map[string]session.SteeringReceipt{},
 		localKeys:      map[any]string{},
+		actions:        map[string]func(*session.State) commands.Result{},
 	}
 	s.subscribe(d)
 	return s

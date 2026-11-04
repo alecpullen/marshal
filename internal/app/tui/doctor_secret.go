@@ -8,7 +8,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/config"
-	"marshal/internal/app/session"
 	"marshal/internal/app/tui/textfield"
 )
 
@@ -110,16 +109,14 @@ func (m Model) submitDoctorSecret() (tea.Model, tea.Cmd) {
 	}
 	home, err := m.userHome()
 	if err != nil {
-		m.state.AddMessage(session.RoleSystem,
-			fmt.Sprintf("✗ Failed to locate home directory: %v", err), session.ContentTypePlain)
+		m.note(fmt.Sprintf("✗ Failed to locate home directory: %v", err))
 		m.refreshViewport()
 		return m, nil
 	}
 	if err := config.SaveUserConfigProviderAPIKey(config.UserConfigPath(home), provider,
 		config.ProviderConfig{APIKey: value}); err != nil {
 		// Nothing was written: the field stays up for a retry.
-		m.state.AddMessage(session.RoleSystem,
-			fmt.Sprintf("✗ Failed to save API key: %v", err), session.ContentTypePlain)
+		m.note(fmt.Sprintf("✗ Failed to save API key: %v", err))
 		m.refreshViewport()
 		return m, nil
 	}
@@ -139,14 +136,11 @@ func (m Model) submitDoctorSecret() (tea.Model, tea.Cmd) {
 		newCfg.Providers[provider] = pc
 	}
 	if saveErr, reloadErr := m.persistAndReload(newCfg); saveErr != nil {
-		m.state.AddMessage(session.RoleSystem,
-			fmt.Sprintf("✗ Saved key, but failed to persist project config: %v", saveErr), session.ContentTypePlain)
+		m.note(fmt.Sprintf("✗ Saved key, but failed to persist project config: %v", saveErr))
 	} else if reloadErr != nil {
-		m.state.AddMessage(session.RoleSystem,
-			fmt.Sprintf("✗ Saved key, but failed to reload runtime: %v", reloadErr), session.ContentTypePlain)
+		m.note(fmt.Sprintf("✗ Saved key, but failed to reload runtime: %v", reloadErr))
 	} else {
-		m.state.AddMessage(session.RoleSystem,
-			fmt.Sprintf("✓ Saved API key for %s", provider), session.ContentTypePlain)
+		m.note(fmt.Sprintf("✓ Saved API key for %s", provider))
 	}
 	// The key is saved, so the field has done its job: clear it and leave the
 	// draft exactly as it was. The diagnostics badge is recomputed here so the

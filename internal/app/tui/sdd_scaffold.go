@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-
-	"marshal/internal/app/session"
 )
 
 // sddStarterPlan is the template written when a user picks "Write a starter
@@ -68,27 +66,22 @@ const sddStarterPlanName = "starter-plan.md"
 func (m *Model) scaffoldSDDPlan() {
 	dir := filepath.Join(m.sess.Status().WorkingDir, m.state.Config.SDD.PlansDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		m.state.AddMessage(session.RoleSystem,
-			fmt.Sprintf("Could not create %s: %v", dir, err), session.ContentTypePlain)
+		m.note(fmt.Sprintf("Could not create %s: %v", dir, err))
 		return
 	}
 	path := filepath.Join(dir, sddStarterPlanName)
 	if _, err := os.Stat(path); err == nil {
-		m.state.AddMessage(session.RoleSystem,
-			fmt.Sprintf("%s already exists — edit it, then run /sdd.", path),
-			session.ContentTypePlain)
+		m.note(fmt.Sprintf("%s already exists — edit it, then run /sdd.", path))
 		return
 	}
 	if err := os.WriteFile(path, []byte(sddStarterPlan), 0o644); err != nil {
-		m.state.AddMessage(session.RoleSystem,
-			fmt.Sprintf("Could not write %s: %v", path, err), session.ContentTypePlain)
+		m.note(fmt.Sprintf("Could not write %s: %v", path, err))
 		return
 	}
-	m.state.AddMessage(session.RoleSystem, fmt.Sprintf(
+	m.note(fmt.Sprintf(
 		"Wrote a starter plan to %s.\n"+
 			"Edit its tasks, then run /sdd and pick it. Each `## Task N:` heading "+
 			"becomes one implementer dispatch, one review, and one commit. "+
 			"Task 3 demonstrates deterministic `marshal.*` blocks that Marshal applies "+
-			"exactly; /sdd preflight shows the strategy and operation counts before you start.", path),
-		session.ContentTypePlain)
+			"exactly; /sdd preflight shows the strategy and operation counts before you start.", path))
 }

@@ -56,12 +56,14 @@ func withPromptRunner(m Model, r inproc.Runner) Model {
 // stubSession wraps the adapter's session for tests that need a value only
 // events or a call produce: patch adjusts every Status read, onSendNow sees
 // each SendNow request before the adapter does, onRefreshSheet sees each
-// RefreshSheet request, and sheetPatch adjusts every Sheet read.
+// RefreshSheet request, onAddNote sees each Note before the adapter does, and
+// sheetPatch adjusts every Sheet read.
 type stubSession struct {
 	acpclient.Session
 	patch          func(*acpwire.SessionStatus)
 	onSendNow      func(acpwire.SendNowRequest)
 	onRefreshSheet func(acpwire.SheetRefresh)
+	onAddNote      func(acpwire.Note)
 	sheetPatch     func(*acpwire.SessionSheet)
 }
 
@@ -85,6 +87,13 @@ func (s *stubSession) RefreshSheet(ctx context.Context, req acpwire.SheetRefresh
 		s.onRefreshSheet(req)
 	}
 	return s.Session.RefreshSheet(ctx, req)
+}
+
+func (s *stubSession) AddNote(ctx context.Context, note acpwire.Note) error {
+	if s.onAddNote != nil {
+		s.onAddNote(note)
+	}
+	return s.Session.AddNote(ctx, note)
 }
 
 func (s *stubSession) Sheet(subagentID int64) acpwire.SessionSheet {

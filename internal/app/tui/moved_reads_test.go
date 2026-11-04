@@ -138,6 +138,11 @@ var movedStateReads = map[string]string{
 	// and shuts the state down agent side.
 	"ResolvePendingForShutdown": "5e",
 	"Shutdown":                  "5e",
+
+	// The TUI's notes go through AddNote, and it logs through its own logger,
+	// since 6.
+	"AddMessage": "6",
+	"Logger":     "6",
 }
 
 // movedReadSites returns one "<line>\t<Name>" entry per selector X.Sel in f

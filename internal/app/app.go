@@ -2793,6 +2793,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			func() bool { return clipboard.Remote(os.Getenv) },
 		))
 		tuiOpts = append(tuiOpts, tui.WithContext(ctx))
+		tuiOpts = append(tuiOpts, tui.WithLogger(state.Logger()))
 		if providerReady {
 			tuiOpts = append(tuiOpts, tui.WithToolRegistry(toolReg))
 		}

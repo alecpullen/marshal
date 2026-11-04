@@ -55,7 +55,6 @@ import (
 	"marshal/internal/app/tui/steerpanel"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/app/tui/trustpanel"
-	"marshal/internal/commands"
 	"marshal/internal/db"
 	"marshal/internal/interaction"
 	"marshal/internal/llm/provider"
@@ -245,7 +244,6 @@ type Model struct {
 	dataDir       string
 	workDir       string
 	skillIndex    *skills.Index
-	cmdRegistry   *commands.Registry
 	agentCancel   context.CancelFunc
 	// syncedAccessMode is the session mode the last reconciliation adopted.
 	// The sync is edge-triggered on it: a mode the model already reflects is
@@ -674,12 +672,6 @@ func WithTrustPrompt(workingDir string, decide func(trust.Decision)) Option {
 // the user made from a trusted session instead of re-prompting next launch.
 func WithTrustRefresh(refresh func(workingDir string)) Option {
 	return func(m *Model) { m.trustRefresh = refresh }
-}
-
-func WithCommandRegistry(reg *commands.Registry) Option {
-	return func(m *Model) {
-		m.cmdRegistry = reg
-	}
 }
 
 func WithHomeDir(homeDir string) Option {
@@ -3448,14 +3440,15 @@ func (m *Model) updateCompletionPopups() {
 
 	cmdTrigger, cmdQuery := m.commandTrigger(value)
 	if cmdTrigger {
-		if m.cmdPopup.items == nil && m.cmdRegistry != nil {
-			// Lazily build the command items from the registry the first
-			// time the user starts typing "/". Registry contents can
-			// change at runtime; we re-build on every trigger so /help
-			// always reflects the current registry. ListAll includes
-			// Hidden commands — they are runnable and belong in the popup.
-			items := make([]completionItem, 0, len(m.cmdRegistry.ListAll()))
-			for _, c := range m.cmdRegistry.ListAll() {
+		if m.cmdPopup.items == nil {
+			// Lazily build the command items from the session the first
+			// time the user starts typing "/". Commands can change at
+			// runtime; we re-build on every trigger so /help always
+			// reflects the current set. Commands includes hidden commands
+			// — they are runnable and belong in the popup.
+			cmds := m.sess.Commands()
+			items := make([]completionItem, 0, len(cmds))
+			for _, c := range cmds {
 				items = append(items, completionItem{
 					Text:        c.Name,
 					Description: c.Description,
@@ -6282,12 +6275,12 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.cmdRegistry == nil {
+	if len(m.sess.Commands()) == 0 {
 		m.note("Command registry not available.")
 		m.refreshViewport()
 		return m, nil
 	}
-	cmd, ok := m.cmdRegistry.Lookup(name)
+	info, ok := m.lookupCommand(name)
 	if !ok {
 		m.note(fmt.Sprintf("Unknown command: /%s. Type /help for available commands.", name))
 		m.refreshViewport()
@@ -6298,7 +6291,7 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 	// handler; with arguments (or when there is nothing to pick) they fall
 	// through to the handler unchanged.
 	if len(args) == 0 {
-		switch cmd.Name {
+		switch info.Name {
 		case "rewind":
 			if items := m.rewindPickerItems(); len(items) > 0 {
 				m.openPicker("rewind", "Rewind to turn", "starts a new branch", items, "")
@@ -6312,8 +6305,8 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 	// Plugin-defined prompt commands replay the enter-key path: their body
 	// becomes a user turn (steering when the agent is busy), with any
 	// arguments appended verbatim to preserve quoting/whitespace.
-	if cmd.PromptBody != "" {
-		goal := cmd.PromptBody
+	if info.PromptBody != "" {
+		goal := info.PromptBody
 		if len(parts) > 1 {
 			rest := raw[len(parts[0]):]
 			rest = strings.TrimSpace(rest)
@@ -6335,15 +6328,20 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		return mm, promptCmd
 	}
 
-	if cmd.Handler != nil {
-		res := cmd.Handler(m.state, args)
+	if info.HasHandler {
+		res, err := m.sess.Command(m.ctx, info.Name, args)
+		if err != nil {
+			m.note(err.Error())
+			m.refreshViewport()
+			return m, nil
+		}
 		if res.Doc != nil {
 			m.openDocPanel(res.Doc)
 		} else if res.Text != "" {
 			m.note(res.Text)
 		}
 		// AgentGoal hands a follow-up turn back to the agent after Text is
-		// rendered (see commands.Result.AgentGoal). Mirror the PromptBody
+		// rendered (see CommandResult.AgentGoal). Mirror the PromptBody
 		// branch's busy/steering/runner idiom exactly.
 		if res.AgentGoal != "" {
 			if m.busy {
@@ -6358,10 +6356,10 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if cmd.TUIOnly {
-		effect, ok := tuiCommandEffects[cmd.Name]
+	if info.TUIOnly {
+		effect, ok := tuiCommandEffects[info.Name]
 		if !ok {
-			m.note("Command /" + cmd.Name + " is not available in this build.")
+			m.note("Command /" + info.Name + " is not available in this build.")
 			m.refreshViewport()
 			return m, nil
 		}
@@ -6571,23 +6569,27 @@ func (m *Model) sortedProviderNames() []string {
 	return names
 }
 
-// openDocPanel opens a structured command result as a docked doc panel.
-//
-// Task 6 replaces this bridge: a command's doc then arrives from the session
-// already converted, with its action IDs minted agent side.
-func (m *Model) openDocPanel(doc *commands.Doc) {
-	acts := make(map[string]func() acpwire.CommandResult)
-	var mint func(action func(*session.State) commands.Result) string
-	mint = func(action func(*session.State) commands.Result) string {
-		id := strconv.Itoa(len(acts) + 1)
-		acts[id] = func() acpwire.CommandResult {
-			return commands.WireResultOf(action(m.state), mint)
-		}
-		return id
+// openDocPanel opens a command's wire doc as a docked doc panel. Its rows act
+// through the session the doc came from, so a command's row actions run agent
+// side.
+func (m *Model) openDocPanel(doc *acpwire.WireDoc) {
+	if doc == nil {
+		return
 	}
-	wire := commands.WireDocOf(doc, mint)
-	m.dock.Open(docpanel.New(*wire, localDocActions(acts)))
+	m.dock.Open(docpanel.New(*doc, sessionDocActions(m.ctx, m.sess)))
 	m.refreshViewport()
+}
+
+// lookupCommand finds the command whose name matches, as the registry's Lookup
+// does: case-insensitively, by the lower-cased name.
+func (m *Model) lookupCommand(name string) (acpwire.CommandInfo, bool) {
+	name = strings.ToLower(name)
+	for _, c := range m.sess.Commands() {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return acpwire.CommandInfo{}, false
 }
 
 // openPicker opens a command modal. The picked value is delivered as

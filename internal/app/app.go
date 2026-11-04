@@ -2746,6 +2746,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			ResolveAccess:   rt.ResolveAccess,
 			SetInteraction:  rt.SetInteraction,
 			SetEffort:       rt.SetSessionEffort,
+			Commands:        rt.CommandRegistry,
 		}
 		if providerReady {
 			deps.Work = rt
@@ -2753,11 +2754,8 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		bindTurnDeps(&deps, rt)
 		seamHost, seamSession := inproc.New(deps)
 
-		cmdReg := rt.CommandRegistry
-
 		tuiOpts := []tui.Option{tui.WithLegacyState(state)}
 		tuiOpts = append(tuiOpts, tui.WithMemoryStore(database, projectID))
-		tuiOpts = append(tuiOpts, tui.WithCommandRegistry(cmdReg))
 		configLayers := &rt.Layers
 		tuiOpts = append(tuiOpts, tui.WithConfigLayers(&configLayers))
 		tuiOpts = append(tuiOpts, tui.WithLayerReloader(layerReloaderFor(homeDir, workingDir, state.Trusted)))

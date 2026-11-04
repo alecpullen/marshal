@@ -391,7 +391,7 @@ func TestSlashCommandsShowSuggestionsAndTabCompletes(t *testing.T) {
 	if err := reg.Register(commands.Command{Name: "swarm", Description: "Run swarm", Args: "<goal>", Handler: func(*session.State, []string) commands.Result { return commands.Text("") }}); err != nil {
 		t.Fatalf("Register swarm failed: %v", err)
 	}
-	m := testModel(state, WithCommandRegistry(reg))
+	m := testModelWith(inproc.Deps{State: state, Commands: reg})
 	m.resize(80, 24)
 
 	for _, r := range "/se" {
@@ -421,7 +421,7 @@ func TestSlashCommandSuggestionsIncludeHiddenCommands(t *testing.T) {
 	if err := reg.Register(hidden); err != nil {
 		t.Fatalf("Register settings failed: %v", err)
 	}
-	m := testModel(state, WithCommandRegistry(reg))
+	m := testModelWith(inproc.Deps{State: state, Commands: reg})
 	m.resize(80, 24)
 
 	for _, r := range "/se" {
@@ -722,7 +722,7 @@ func TestDoctorOpensDockPanel(t *testing.T) {
 	if err := commands.RegisterAll(cmdReg, nil); err != nil {
 		t.Fatalf("RegisterAll() error = %v", err)
 	}
-	m := testModel(state, WithCommandRegistry(cmdReg))
+	m := testModelWith(inproc.Deps{State: state, Commands: cmdReg})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = updated.(Model)
 	if m.dock.IsOpen() {
@@ -756,7 +756,7 @@ func TestDoctorPanelEscClosesDock(t *testing.T) {
 	if err := commands.RegisterAll(cmdReg, nil); err != nil {
 		t.Fatalf("RegisterAll() error = %v", err)
 	}
-	m := testModel(state, WithCommandRegistry(cmdReg))
+	m := testModelWith(inproc.Deps{State: state, Commands: cmdReg})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = asModel(t, updated)
 	updated, _ = m.dispatchCommand("/doctor")
@@ -1210,7 +1210,8 @@ func TestSwarmCommandOpensPreflightThenStartsRun(t *testing.T) {
 			got = append(got, params)
 			return nil
 		},
-	}, WithCommandRegistry(cmdReg))
+		Commands: cmdReg,
+	})
 	model.resize(100, 40)
 
 	// /swarm with a goal should open the cast list panel (not start the run).
@@ -1266,10 +1267,11 @@ func TestSwarmCommandPreflightCancelClearsPendingRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	model := testModelWith(inproc.Deps{
-		State:  state,
-		Runner: runnerOf(&testAgentRunner{}),
-		Swarm:  func(context.Context, acpwire.SwarmParams) error { return nil },
-	}, WithCommandRegistry(cmdReg))
+		State:    state,
+		Runner:   runnerOf(&testAgentRunner{}),
+		Swarm:    func(context.Context, acpwire.SwarmParams) error { return nil },
+		Commands: cmdReg,
+	})
 	model.resize(100, 40)
 
 	// Open the preflight panel.
@@ -1303,9 +1305,10 @@ func TestSwarmCommandWithoutGoalShowsUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	model := testModelWith(inproc.Deps{
-		State:  state,
-		Runner: runnerOf(&testAgentRunner{}),
-	}, WithCommandRegistry(cmdReg))
+		State:    state,
+		Runner:   runnerOf(&testAgentRunner{}),
+		Commands: cmdReg,
+	})
 
 	_, _ = model.dispatchCommand("/swarm")
 	messages := state.Messages()
@@ -1333,7 +1336,8 @@ func TestSDDCommandOpensPreflightThenStartsRun(t *testing.T) {
 			Inspection: acpwire.PlanInspection{Strategy: acpwire.StrategyAgent},
 		}),
 		NewPlanRun: planRunOf(run, &got),
-	}, WithCommandRegistry(cmdReg))
+		Commands:   cmdReg,
+	})
 	model.resize(100, 40)
 
 	// /sdd with a plan path should open the cast list panel (not start the run).
@@ -1410,7 +1414,8 @@ func TestSDDCommandPreflightCancelClearsPendingRun(t *testing.T) {
 		PlanPreflight: preflightOf(acpwire.PlanPreflight{
 			Inspection: acpwire.PlanInspection{Strategy: acpwire.StrategyAgent},
 		}),
-	}, WithCommandRegistry(cmdReg))
+		Commands: cmdReg,
+	})
 	model.resize(100, 40)
 
 	// Open the preflight panel.
@@ -1449,7 +1454,8 @@ func TestSDDCommandWithoutPlanOpensPlanPicker(t *testing.T) {
 		PlanPreflight: preflightOf(acpwire.PlanPreflight{
 			Inspection: acpwire.PlanInspection{Strategy: acpwire.StrategyAgent},
 		}),
-	}, WithCommandRegistry(cmdReg))
+		Commands: cmdReg,
+	})
 
 	updated, _ := model.dispatchCommand("/sdd")
 	m := asModel(t, updated)
@@ -1479,9 +1485,7 @@ func TestSDDCommandWithoutRunnerReportsUnavailable(t *testing.T) {
 	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
 		t.Fatal(err)
 	}
-	model := testModel(state,
-		WithCommandRegistry(cmdReg),
-	)
+	model := testModelWith(inproc.Deps{State: state, Commands: cmdReg})
 
 	_, _ = model.dispatchCommand("/sdd")
 	messages := state.Messages()
@@ -1544,7 +1548,8 @@ func TestSDDCustomPathPickerDispatchesPlanPath(t *testing.T) {
 		PlanPreflight: preflightOf(acpwire.PlanPreflight{
 			Inspection: acpwire.PlanInspection{Strategy: acpwire.StrategyAgent},
 		}),
-	}, WithCommandRegistry(cmdReg))
+		Commands: cmdReg,
+	})
 	model.resize(100, 40)
 
 	// Open the custom-path picker directly.
@@ -2678,7 +2683,7 @@ func TestFinalAnswerRendersWithGutter(t *testing.T) {
 func TestSlashCommandExit(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	cmdReg := setupCmdReg(t)
-	model := testModel(state, WithCommandRegistry(cmdReg))
+	model := testModelWith(inproc.Deps{State: state, Commands: cmdReg})
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -2693,7 +2698,7 @@ func TestSlashCommandExit(t *testing.T) {
 func TestSlashCommandHelp(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	cmdReg := setupCmdReg(t)
-	model := testModel(state, WithCommandRegistry(cmdReg))
+	model := testModelWith(inproc.Deps{State: state, Commands: cmdReg})
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -2709,7 +2714,7 @@ func TestSlashCommandHelp(t *testing.T) {
 func TestSlashCommandUnknown(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	cmdReg := setupCmdReg(t)
-	model := testModel(state, WithCommandRegistry(cmdReg))
+	model := testModelWith(inproc.Deps{State: state, Commands: cmdReg})
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -2730,7 +2735,7 @@ func TestSlashCommandNotSentToAgent(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	cmdReg := setupCmdReg(t)
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	model := testModelWith(inproc.Deps{State: state, Runner: runnerOf(runner)}, WithCommandRegistry(cmdReg))
+	model := testModelWith(inproc.Deps{State: state, Runner: runnerOf(runner), Commands: cmdReg})
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -2919,7 +2924,7 @@ func TestSlashCommandNewWithName(t *testing.T) {
 func TestSlashCommandBusyStillDispatched(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	cmdReg := setupCmdReg(t)
-	model := testModel(state, WithCommandRegistry(cmdReg))
+	model := testModelWith(inproc.Deps{State: state, Commands: cmdReg})
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 	model.busy = true
@@ -4493,7 +4498,7 @@ func TestArrowKeysSurviveKeyReleaseEvent(t *testing.T) {
 			Handler: func(s *session.State, args []string) commands.Result { return commands.Text("") },
 		})
 	}
-	m := testModel(state, WithCommandRegistry(reg))
+	m := testModelWith(inproc.Deps{State: state, Commands: reg})
 	m.resize(80, 24)
 	m.refreshViewport()
 
@@ -4527,7 +4532,7 @@ func TestCompletionPopupSurvivesNonKeyEvents(t *testing.T) {
 			Handler: func(s *session.State, args []string) commands.Result { return commands.Text("") },
 		})
 	}
-	m := testModel(state, WithCommandRegistry(reg))
+	m := testModelWith(inproc.Deps{State: state, Commands: reg})
 	m.resize(80, 24)
 	m.refreshViewport()
 
@@ -4572,7 +4577,7 @@ func TestCompletionPopupEscStaysSuppressedUntilInputChanges(t *testing.T) {
 			Handler: func(s *session.State, args []string) commands.Result { return commands.Text("") },
 		})
 	}
-	m := testModel(state, WithCommandRegistry(reg))
+	m := testModelWith(inproc.Deps{State: state, Commands: reg})
 	m.resize(80, 24)
 	m.refreshViewport()
 
@@ -4778,7 +4783,7 @@ func TestCommandTriggerDismissesFilePopup(t *testing.T) {
 // behaves like typing /help: it opens the help doc panel instead of typing
 // a literal ?.
 func TestQuestionMarkPrintsHelpToTranscript(t *testing.T) {
-	m := testModel(modelTestState(t), WithCommandRegistry(setupCmdReg(t)))
+	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: setupCmdReg(t)})
 	m.resize(80, 24)
 
 	updated, _ := m.Update(tea.KeyPressMsg{Code: '?'})
@@ -4790,7 +4795,7 @@ func TestQuestionMarkPrintsHelpToTranscript(t *testing.T) {
 }
 
 func TestQuestionMarkDoesNotLeakIntoInput(t *testing.T) {
-	m := testModel(modelTestState(t), WithCommandRegistry(setupCmdReg(t)))
+	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: setupCmdReg(t)})
 	m.resize(80, 24)
 
 	// Press ? — it should print help, not type ? into the textarea.
@@ -4806,7 +4811,7 @@ func TestQuestionMarkDoesNotLeakIntoInput(t *testing.T) {
 // fire in that case, because ? is a very common character in chat prompts
 // (e.g. "What is X? How do I Y?").
 func TestQuestionMarkTypesLiterallyInNonEmptyInput(t *testing.T) {
-	m := testModel(modelTestState(t), WithCommandRegistry(setupCmdReg(t)))
+	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: setupCmdReg(t)})
 	m.resize(80, 24)
 
 	// Type some text first.
@@ -4875,7 +4880,7 @@ func modelTestState(t *testing.T) *session.State {
 }
 
 func TestModelsBareOpensConnectOverlay(t *testing.T) {
-	m := testModel(modelTestState(t), WithCommandRegistry(setupCmdReg(t)))
+	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: setupCmdReg(t)})
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/models")
 	m = asModel(t, updated)
@@ -4888,7 +4893,7 @@ func TestModelsBareOpensConnectOverlay(t *testing.T) {
 
 func TestModelsExactPresetArgSwitchesDirectly(t *testing.T) {
 	var reloaded *config.Config
-	m := testModel(modelTestState(t), WithCommandRegistry(setupCmdReg(t)), WithConfigReloader(func(c config.Config) error { reloaded = &c; return nil }))
+	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: setupCmdReg(t)}, WithConfigReloader(func(c config.Config) error { reloaded = &c; return nil }))
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/models anthropic/sonnet-5")
 	m = asModel(t, updated)
@@ -4905,7 +4910,7 @@ func TestModelsExactPresetArgSwitchesDirectly(t *testing.T) {
 
 func TestModelsModelIDArgSwitchesPreset(t *testing.T) {
 	var reloaded *config.Config
-	m := testModel(modelTestState(t), WithCommandRegistry(setupCmdReg(t)), WithConfigReloader(func(c config.Config) error { reloaded = &c; return nil }))
+	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: setupCmdReg(t)}, WithConfigReloader(func(c config.Config) error { reloaded = &c; return nil }))
 	m.resize(80, 24)
 	// A bare model ID (not a preset name) resolves to the preset using it.
 	updated, _ := m.dispatchCommand("/models qwen2.5")
@@ -4922,7 +4927,7 @@ func TestModelsModelIDArgSwitchesPreset(t *testing.T) {
 }
 
 func TestModelsUnknownArgOpensConnectOverlay(t *testing.T) {
-	m := testModel(modelTestState(t), WithCommandRegistry(setupCmdReg(t)))
+	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: setupCmdReg(t)})
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/models test-a-typo-b")
 	m = asModel(t, updated)
@@ -4933,7 +4938,7 @@ func TestModelsUnknownArgOpensConnectOverlay(t *testing.T) {
 
 func TestModelPickAppliesSessionSwitch(t *testing.T) {
 	var reloaded *config.Config
-	m := testModel(modelTestState(t), WithCommandRegistry(setupCmdReg(t)), WithConfigReloader(func(c config.Config) error { reloaded = &c; return nil }))
+	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: setupCmdReg(t)}, WithConfigReloader(func(c config.Config) error { reloaded = &c; return nil }))
 	m.resize(80, 24)
 	m.openPicker("model", "Switch model", "session only — /settings to persist", m.modelPickerItems(), "")
 	updated, _ := m.Update(picker.PickedMsg{Value: "ollama/qwen2.5"})
@@ -4957,7 +4962,7 @@ func pickerTestModel(t *testing.T, state *session.State) Model {
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModel(state, WithCommandRegistry(reg))
+	m := testModelWith(inproc.Deps{State: state, Commands: reg})
 	m.resize(80, 24)
 	return m
 }
@@ -5051,7 +5056,7 @@ func TestModePickerMarksCurrentAndApplies(t *testing.T) {
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, SetInteraction: state.ApplyInteraction}, WithCommandRegistry(reg))
+	m := testModelWith(inproc.Deps{State: state, SetInteraction: state.ApplyInteraction, Commands: reg})
 	m.resize(80, 24)
 
 	updated, _ := m.dispatchCommand("/mode")
@@ -5083,7 +5088,7 @@ func TestModeWithArgDispatchesDirectly(t *testing.T) {
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, SetInteraction: state.ApplyInteraction}, WithCommandRegistry(reg))
+	m := testModelWith(inproc.Deps{State: state, SetInteraction: state.ApplyInteraction, Commands: reg})
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/mode ask")
 	m = asModel(t, updated)
@@ -5153,7 +5158,7 @@ func TestTabAcceptsCompletionWhenPopupOpen(t *testing.T) {
 		Handler:     func(s *session.State, args []string) commands.Result { return commands.Text("") },
 	})
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModel(state, WithCommandRegistry(reg))
+	m := testModelWith(inproc.Deps{State: state, Commands: reg})
 	m.resize(80, 24)
 	m.refreshViewport()
 
@@ -5332,7 +5337,7 @@ func TestShiftTabDuringPopupIsNoOp(t *testing.T) {
 		Handler:     func(s *session.State, args []string) commands.Result { return commands.Text("") },
 	})
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModel(state, WithCommandRegistry(reg))
+	m := testModelWith(inproc.Deps{State: state, Commands: reg})
 	m.resize(80, 24)
 	m.refreshViewport()
 
@@ -5418,11 +5423,11 @@ func TestCtrlCCancelsTurn(t *testing.T) {
 			})
 
 			cancelled := false
-			opts := []Option{}
+			deps := inproc.Deps{State: state}
 			if tt.name != "ctrl+c" {
-				opts = append(opts, WithCommandRegistry(setupCmdReg(t)))
+				deps.Commands = setupCmdReg(t)
 			}
-			m := testModel(state, opts...)
+			m := testModelWith(deps)
 			m.busy = true
 			m.agentCancel = func() { cancelled = true }
 			m.state.PushSteering("pending")
@@ -6169,7 +6174,7 @@ func newModelForConfigTest(t *testing.T) (m Model, workDir string, homeDir strin
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m = testModel(state, WithCommandRegistry(reg), WithWorkingDir(workDir))
+	m = testModelWith(inproc.Deps{State: state, Commands: reg}, WithWorkingDir(workDir))
 	m.resize(80, 24)
 	m.refreshViewport()
 	return
@@ -6560,7 +6565,7 @@ func newTestModel(t *testing.T) Model {
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModel(state, WithCommandRegistry(reg), WithHomeDir(t.TempDir()),
+	m := testModelWith(inproc.Deps{State: state, Commands: reg}, WithHomeDir(t.TempDir()),
 		// Isolate the auth surfaces by default: no test in this package should
 		// reach the developer's OS keychain or launch a browser just by
 		// constructing or driving the model. Tests that need to observe the
@@ -6581,7 +6586,7 @@ func newTestModelInRepo(t *testing.T) Model {
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModel(state, WithCommandRegistry(reg), WithHomeDir(t.TempDir()),
+	m := testModelWith(inproc.Deps{State: state, Commands: reg}, WithHomeDir(t.TempDir()),
 		WithAuthResolver(newMemAuth()), WithOpenBrowser(func(string) error { return nil }))
 	m.resize(80, 24)
 	m.refreshViewport()
@@ -7621,7 +7626,7 @@ func TestDispatchCommand_QuotedArgs(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	m := testModel(modelTestState(t), WithCommandRegistry(cmdReg))
+	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: cmdReg})
 	m.resize(80, 24)
 
 	_, _ = m.dispatchCommand(`/teststub "my idea"`)
@@ -7982,7 +7987,7 @@ func TestDispatchPromptCommandStartsAgentRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m := testModelWith(inproc.Deps{State: modelTestState(t), Runner: runnerOf(runner)}, WithCommandRegistry(reg))
+	m := testModelWith(inproc.Deps{State: modelTestState(t), Runner: runnerOf(runner), Commands: reg})
 	m.resize(80, 24)
 
 	updated, cmd := m.dispatchCommand("/revcheck main.go")
@@ -8022,7 +8027,7 @@ func TestDispatchPromptCommandBusySteers(t *testing.T) {
 	if err := reg.Register(commands.Command{Name: "revcheck", Description: "Review code", Group: "plugins", PromptBody: "Review the current diff."}); err != nil {
 		t.Fatal(err)
 	}
-	m := testModel(modelTestState(t), WithCommandRegistry(reg))
+	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: reg})
 	m.resize(80, 24)
 	m.busy = true
 
@@ -8044,7 +8049,7 @@ func TestDispatchPromptCommandPreservesQuotedArgs(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m := testModelWith(inproc.Deps{State: modelTestState(t), Runner: runnerOf(runner)}, WithCommandRegistry(reg))
+	m := testModelWith(inproc.Deps{State: modelTestState(t), Runner: runnerOf(runner), Commands: reg})
 	m.resize(80, 24)
 
 	updated, cmd := m.dispatchCommand(`/greet "hello world" 'single'`)
@@ -8091,7 +8096,8 @@ func TestDispatchReviewCommandWhileBusyIsRefused(t *testing.T) {
 		Review: func(ctx context.Context, params acpwire.ReviewParams) error {
 			return nil
 		},
-	}, WithCommandRegistry(reg))
+		Commands: reg,
+	})
 	m.resize(80, 24)
 	m.busy = true
 
@@ -8111,7 +8117,7 @@ func TestDispatchReviewCommandNilDispatcherShowsError(t *testing.T) {
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatal(err)
 	}
-	m := testModel(modelTestState(t), WithCommandRegistry(reg))
+	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: reg})
 	m.resize(80, 24)
 
 	updated, cmd := m.dispatchCommand("/review main.go")
@@ -8146,7 +8152,8 @@ func TestDispatchReviewCommandStartsSubagent(t *testing.T) {
 			dispatched <- params.Focus
 			return nil
 		},
-	}, WithCommandRegistry(reg))
+		Commands: reg,
+	})
 	m.resize(80, 24)
 
 	updated, cmd := m.dispatchCommand("/review main.go")
@@ -8209,7 +8216,7 @@ func TestDispatchStructuredResultOpensDocPanel(t *testing.T) {
 			return commands.Panel("Things", false, []commands.Row{{Text: "one", Detail: "first"}})
 		},
 	})
-	m.cmdRegistry = reg
+	m = withCommands(m, reg)
 	mm, _ := m.dispatchCommand("/things")
 	m = asModel(t, mm)
 	if !m.dock.IsOpen() {
@@ -9873,7 +9880,8 @@ func TestSDDStartCarriesTheOverrides(t *testing.T) {
 			Inspection: acpwire.PlanInspection{Strategy: acpwire.StrategyAgent},
 		}),
 		NewPlanRun: planRunOf(run, &got),
-	}, WithCommandRegistry(cmdReg))
+		Commands:   cmdReg,
+	})
 	model.resize(100, 40)
 
 	// /sdd opens the preflight panel.
@@ -11224,7 +11232,7 @@ func TestAgentGoalDispatchStartsRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m := testModelWith(inproc.Deps{State: modelTestState(t), Runner: runnerOf(runner)}, WithCommandRegistry(reg))
+	m := testModelWith(inproc.Deps{State: modelTestState(t), Runner: runnerOf(runner), Commands: reg})
 	m.resize(80, 24)
 
 	updated, cmd := m.dispatchCommand("/pmtest")
@@ -11780,7 +11788,7 @@ func newSendNowFixture(t *testing.T, width, height int, supported bool) *sendNow
 		f.submits = append(f.submits, req)
 	}}
 	f.stub = stub
-	m := testModelStub(state, stub, WithCommandRegistry(reg), WithHomeDir(t.TempDir()),
+	m := testModelStubWith(inproc.Deps{State: state, Commands: reg}, stub, WithHomeDir(t.TempDir()),
 		WithAuthResolver(newMemAuth()), WithOpenBrowser(func(string) error { return nil }))
 	m.resize(width, height)
 	m.busy = true

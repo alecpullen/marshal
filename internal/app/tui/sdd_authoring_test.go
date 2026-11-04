@@ -64,7 +64,8 @@ func authoringModel(t *testing.T) (Model, *turnRecorder) {
 			},
 		}),
 		AuthorPlan: fakeAuthorPlan(state),
-	}, rec, WithCommandRegistry(setupCmdReg(t)))
+		Commands:   setupCmdReg(t),
+	}, rec)
 	m.resize(100, 40)
 	return m, rec
 }

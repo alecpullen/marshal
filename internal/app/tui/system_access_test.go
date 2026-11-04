@@ -33,8 +33,7 @@ func TestSystemCommandTogglesFlagAndNotes(t *testing.T) {
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, SetInteraction: state.ApplyInteraction},
-		WithCommandRegistry(reg))
+	m := testModelWith(inproc.Deps{State: state, SetInteraction: state.ApplyInteraction, Commands: reg})
 	m.resize(80, 24)
 
 	if state.SystemAccess() {

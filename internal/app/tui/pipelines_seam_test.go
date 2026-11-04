@@ -100,7 +100,8 @@ func TestTheProposalReachesThePlanRun(t *testing.T) {
 			Inspection: acpwire.PlanInspection{Strategy: acpwire.StrategyAgent},
 		}),
 		NewPlanRun: planRunOf(run, &got),
-	}, rec, WithCommandRegistry(setupCmdReg(t)))
+		Commands:   setupCmdReg(t),
+	}, rec)
 
 	updated, _ := m.dispatchCommand("/sdd plan.md")
 	m = asModel(t, updated)
@@ -141,7 +142,8 @@ func TestAPlanThePreflightRejectsIsReportedNotRun(t *testing.T) {
 		PlanPreflight: func(context.Context, acpwire.PlanPreflightParams) (acpwire.PlanPreflight, error) {
 			return acpwire.PlanPreflight{}, errors.New("pipeline plan: read missing.md: no such file")
 		},
-	}, rec, WithCommandRegistry(setupCmdReg(t)))
+		Commands: setupCmdReg(t),
+	}, rec)
 
 	updated, cmd := m.dispatchCommand("/sdd missing.md")
 	m = asModel(t, updated)
@@ -194,7 +196,7 @@ func TestTheGateStopsThroughTheSession(t *testing.T) {
 // says so and opens nothing.
 func TestSwarmWithoutAnAgentIsUnavailable(t *testing.T) {
 	rec := &turnRecorder{}
-	m := testModelTurns(t, inproc.Deps{State: controlsState(t)}, rec, WithCommandRegistry(setupCmdReg(t)))
+	m := testModelTurns(t, inproc.Deps{State: controlsState(t), Commands: setupCmdReg(t)}, rec)
 
 	updated, cmd := m.dispatchCommand("/swarm fix it")
 	m = asModel(t, updated)
@@ -267,7 +269,8 @@ func TestAStoppedAuthoringIsNotAFailure(t *testing.T) {
 			<-ctx.Done()
 			return acpwire.AuthoredPlan{}, ctx.Err()
 		},
-	}, &turnRecorder{}, WithCommandRegistry(setupCmdReg(t)))
+		Commands: setupCmdReg(t),
+	}, &turnRecorder{})
 
 	updated, cmd := m.dispatchCommand("/sdd new x")
 	m = asModel(t, updated)
@@ -329,7 +332,8 @@ func TestARefusedAuthoringIsReported(t *testing.T) {
 		State:      state,
 		Runner:     runnerOf(&testAgentRunner{}),
 		AuthorPlan: fakeAuthorPlan(state),
-	}, rec, WithCommandRegistry(setupCmdReg(t)))
+		Commands:   setupCmdReg(t),
+	}, rec)
 	state.BeginQuiesce()
 
 	updated, cmd := m.dispatchCommand("/sdd new x")
@@ -355,7 +359,7 @@ func TestARefusedAuthoringIsReported(t *testing.T) {
 // TestAuthoringWithoutAnAgentIsUnavailable pins the refusal: /sdd new with no
 // runner says so and starts nothing.
 func TestAuthoringWithoutAnAgentIsUnavailable(t *testing.T) {
-	m := testModelTurns(t, inproc.Deps{State: controlsState(t)}, &turnRecorder{}, WithCommandRegistry(setupCmdReg(t)))
+	m := testModelTurns(t, inproc.Deps{State: controlsState(t), Commands: setupCmdReg(t)}, &turnRecorder{})
 
 	updated, cmd := m.dispatchCommand("/sdd new x")
 	m = asModel(t, updated)

@@ -110,7 +110,8 @@ func controlsDispatchModel(t *testing.T, d inproc.Deps, rec *controlRecorder) Mo
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelControlled(d, rec, WithCommandRegistry(reg))
+	d.Commands = reg
+	m := testModelControlled(d, rec)
 	m.resize(80, 24)
 	m.refreshViewport()
 	return m

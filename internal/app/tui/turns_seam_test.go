@@ -261,10 +261,11 @@ func TestTheTurnEndLeavesTheActivityToTheSession(t *testing.T) {
 func TestReviewGoesThroughTheSession(t *testing.T) {
 	rec := &turnRecorder{}
 	m := testModelTurns(t, inproc.Deps{
-		State:  controlsState(t),
-		Runner: runnerOf(&testAgentRunner{}),
-		Review: func(context.Context, acpwire.ReviewParams) error { return nil },
-	}, rec, WithCommandRegistry(setupCmdReg(t)))
+		State:    controlsState(t),
+		Runner:   runnerOf(&testAgentRunner{}),
+		Review:   func(context.Context, acpwire.ReviewParams) error { return nil },
+		Commands: setupCmdReg(t),
+	}, rec)
 
 	updated, cmd := m.dispatchCommand("/review --base main src")
 	m = asModel(t, updated)
@@ -287,10 +288,11 @@ func TestReviewGoesThroughTheSession(t *testing.T) {
 func TestReviewRefusesABaseAndARangeBeforeStarting(t *testing.T) {
 	rec := &turnRecorder{}
 	m := testModelTurns(t, inproc.Deps{
-		State:  controlsState(t),
-		Runner: runnerOf(&testAgentRunner{}),
-		Review: func(context.Context, acpwire.ReviewParams) error { return nil },
-	}, rec, WithCommandRegistry(setupCmdReg(t)))
+		State:    controlsState(t),
+		Runner:   runnerOf(&testAgentRunner{}),
+		Review:   func(context.Context, acpwire.ReviewParams) error { return nil },
+		Commands: setupCmdReg(t),
+	}, rec)
 
 	updated, cmd := m.dispatchCommand("/review --base=main main...HEAD focus")
 	m = asModel(t, updated)
@@ -324,7 +326,8 @@ func TestRunNowStartsOnTheLiveModel(t *testing.T) {
 		State:    controlsState(t),
 		Runner:   runnerOf(runner),
 		RunAgent: func(context.Context, acpwire.AgentRunParams) error { return nil },
-	}, rec, WithCommandRegistry(setupCmdReg(t)))
+		Commands: setupCmdReg(t),
+	}, rec)
 
 	// Open the roster the way Update does, and keep the model it returns.
 	opened, _ := tuiCommandEffects["agents"](&m, []string{})
@@ -414,7 +417,8 @@ func TestTheProposalGoesThroughTheSession(t *testing.T) {
 		VerifyProposal: func(context.Context) (acpwire.VerifyCommands, error) {
 			return acpwire.VerifyCommands{Build: "make build", Test: "make test"}, nil
 		},
-	}, rec, WithCommandRegistry(setupCmdReg(t)))
+		Commands: setupCmdReg(t),
+	}, rec)
 
 	// Open the /sdd preflight on a manifest-less repo so the gate is unknown.
 	m.openRunPreflight("sdd", "plan.md", &acpwire.PlanPreflight{})

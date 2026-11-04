@@ -14,6 +14,7 @@ import (
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/commands"
 )
 
 // testSession returns the client session the in-process adapter builds over
@@ -107,10 +108,23 @@ func (s *stubSession) Sheet(subagentID int64) acpwire.SessionSheet {
 // testModelStub builds a model whose session is stub, wrapped around an
 // adapter session over state.
 func testModelStub(state *session.State, stub *stubSession, opts ...Option) Model {
-	host, sess := inproc.New(inproc.Deps{State: state})
+	return testModelStubWith(inproc.Deps{State: state}, stub, opts...)
+}
+
+// testModelStubWith is testModelStub over an adapter made from d.
+func testModelStubWith(d inproc.Deps, stub *stubSession, opts ...Option) Model {
+	host, sess := inproc.New(d)
 	stub.Session = sess
-	all := append([]Option{WithLegacyState(state)}, opts...)
+	all := append([]Option{WithLegacyState(d.State)}, opts...)
 	return New(host, stub, all...)
+}
+
+// withCommands replaces m's session with one over m's state whose registry is
+// reg, as withPromptRunner does for the runner.
+func withCommands(m Model, reg *commands.Registry) Model {
+	_, sess := inproc.New(inproc.Deps{State: m.state, Commands: reg})
+	m.sess = sess
+	return m
 }
 
 // batchResults runs cmd and returns the messages it produces. The commands of

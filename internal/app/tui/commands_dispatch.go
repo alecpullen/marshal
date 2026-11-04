@@ -78,10 +78,7 @@ func (m *Model) isSendNowCommand(raw string) bool {
 	if len(rest) > 0 && rest[0] != ' ' && rest[0] != '\t' && rest[0] != '\n' {
 		return false
 	}
-	if m.cmdRegistry == nil {
-		return false
-	}
-	_, ok = m.cmdRegistry.Lookup("send-now")
+	_, ok = m.lookupCommand("send-now")
 	return ok
 }
 

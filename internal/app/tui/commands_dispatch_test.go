@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpclient/inproc"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -96,7 +97,7 @@ func TestTrustCommandOpensTrustPanelWhenPending(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
 	reg := commands.New()
 	_ = commands.RegisterAll(reg, nil)
-	m := testModel(state, WithHomeDir(t.TempDir()), WithWorkingDir("/some/project"), WithCommandRegistry(reg))
+	m := testModelWith(inproc.Deps{State: state, Commands: reg}, WithHomeDir(t.TempDir()), WithWorkingDir("/some/project"))
 
 	var decided trust.Decision
 	m.trustDecide = func(d trust.Decision) { decided = d }
@@ -118,7 +119,7 @@ func TestTrustCommandFallsBackWhenNoPendingDecision(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
 	reg := commands.New()
 	_ = commands.RegisterAll(reg, nil)
-	m := testModel(state, WithHomeDir(t.TempDir()), WithWorkingDir("/some/project"), WithCommandRegistry(reg))
+	m := testModelWith(inproc.Deps{State: state, Commands: reg}, WithHomeDir(t.TempDir()), WithWorkingDir("/some/project"))
 
 	// No trustDecide wired: the handler's docpanel opens, then the effect
 	// must NOT open a trustpanel and must steer to the shell path.
@@ -144,7 +145,7 @@ func TestTrustCommandTrustedDoesNothingExtra(t *testing.T) {
 	state.SetTrusted(true)
 	reg := commands.New()
 	_ = commands.RegisterAll(reg, nil)
-	m := testModel(state, WithHomeDir(t.TempDir()), WithWorkingDir("/some/project"), WithCommandRegistry(reg))
+	m := testModelWith(inproc.Deps{State: state, Commands: reg}, WithHomeDir(t.TempDir()), WithWorkingDir("/some/project"))
 
 	m.dispatchCommand("/trust")
 	if _, ok := m.dock.Panel().(*trustpanel.Panel); ok {
@@ -192,7 +193,7 @@ func TestExitCommandsWithoutWorkExitDirectly(t *testing.T) {
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelEnding(state, &endTestController{}, WithCommandRegistry(reg))
+	m := testModelWith(inproc.Deps{State: state, End: &endTestController{}, Commands: reg})
 	m.resize(80, 24)
 
 	updated, cmd := m.dispatchCommand("/quit")
@@ -267,7 +268,7 @@ func TestSendNowCommandTokenBoundary(t *testing.T) {
 		t.Fatal("/send-now was not recognized")
 	}
 	// A registry without the entry refuses the recognition too.
-	bare := testModel(newTestState(t), WithCommandRegistry(commands.New()))
+	bare := testModelWith(inproc.Deps{State: newTestState(t), Commands: commands.New()})
 	if bare.isSendNowCommand("/send-now text") {
 		t.Fatal("recognized /send-now without the registry entry")
 	}
@@ -420,5 +421,53 @@ func TestWorkPromptNavigationDoesNotResolveOrStealSteering(t *testing.T) {
 	// No Work action reached the service.
 	if len(svc.stopCalls) != 0 || len(svc.ackCalls) != 0 || len(svc.inspectCalls) != 0 {
 		t.Fatal("prompt navigation performed a work action")
+	}
+}
+
+// A command's row action runs agent side: Enter on the panel goes through the
+// session, the handler sees the model's state, and its text lands as a note
+// (decision 7).
+func TestADocActionRunsAgentSide(t *testing.T) {
+	state := modelTestState(t)
+	reg := commands.New()
+	var sawState *session.State
+	mustRegister(t, reg, commands.Command{
+		Name: "things",
+		Handler: func(*session.State, []string) commands.Result {
+			return commands.Panel("Things", false, []commands.Row{{
+				Text: "act", ActionLabel: "↵ run",
+				Action: func(s *session.State) commands.Result {
+					sawState = s
+					return commands.Text("done")
+				},
+			}})
+		},
+	})
+	m := testModelWith(inproc.Deps{State: state, Commands: reg})
+	m.resize(80, 24)
+
+	updated, _ := m.dispatchCommand("/things")
+	m = asModel(t, updated)
+	if !m.dock.IsOpen() {
+		t.Fatal("/things should open its doc panel")
+	}
+	panel, ok := m.dock.Panel().(*docpanel.Panel)
+	if !ok {
+		t.Fatalf("dock holds %T, want *docpanel.Panel", m.dock.Panel())
+	}
+	panel.View(100, 20)
+	cmd := panel.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter on the action row returned no command")
+	}
+	updated, _ = m.Update(cmd())
+	m = asModel(t, updated)
+
+	if sawState != state {
+		t.Fatalf("the action saw %p, want the session's state %p", sawState, state)
+	}
+	msgs := state.Messages()
+	if len(msgs) == 0 || msgs[len(msgs)-1].Content != "done" {
+		t.Fatalf("last message = %+v, want the action's text", msgs[len(msgs)-1:])
 	}
 }

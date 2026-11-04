@@ -227,8 +227,9 @@ seams that implement it.
   rather than relying on the ambient environment.
 - **Inject auth explicitly.** `provider.AuthResolver` is the credential/OAuth
   dependency. `app.WithAuthResolver` pins it for a runtime; it reaches provider
-  construction, the OAuth refresh workers, the MCP managers and the TUI's
-  probe/login surfaces. `provider.NewAuthResolver(open)` builds an isolated one
+  construction, the OAuth refresh workers, the MCP managers, and the client
+  seam's adapter, which builds the probes and sign-ins the TUI asks for.
+  `provider.NewAuthResolver(open)` builds an isolated one
   over in-memory stores. An explicitly nil resolver is rejected; an *omitted*
   one in the internal builders fails closed rather than selecting the real
   keychain, so a missed thread surfaces as a test failure.

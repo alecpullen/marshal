@@ -690,10 +690,15 @@ func (b *BrowserPanel) flushChanges(inner tea.Cmd, commitAttempted bool) tea.Cmd
 		// the diff above used. Renames rekey the maps — the old key is in the
 		// baseline but not the write, so the merge drops it; entries another
 		// marshal process persisted meanwhile are in neither and survive.
-		if err := b.reg.st.host.SaveUserProviders(context.Background(), newCfg.Providers, b.baseline.Providers, nil); err != nil {
+		if err := b.reg.st.host.SaveUserProviders(context.Background(), newCfg.Providers, b.baseline.Providers, b.reg.st.renamed); err != nil {
 			saveErr = err
 		} else if err := b.reg.st.host.SaveUserPresets(context.Background(), newCfg.Models.Presets, b.baseline.Models.Presets); err != nil {
 			saveErr = err
+		} else {
+			// The names are now the stored ones, so a later rename in this
+			// browser records against them afresh. A failed write keeps the
+			// map for the retry.
+			b.reg.st.renamed = map[string]string{}
 		}
 	}
 	if saveErr == nil && b.sess != nil {

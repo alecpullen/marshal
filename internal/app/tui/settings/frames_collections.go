@@ -83,6 +83,14 @@ func providersFrame(s *state) *frame {
 								return fmt.Errorf("rename model cache: %w", err)
 							}
 						}
+						original := k
+						if prev, ok := s.renamed[k]; ok {
+							original = prev
+							delete(s.renamed, k)
+						}
+						if v != original {
+							s.renamed[v] = original
+						}
 						k = v
 						return nil
 					})

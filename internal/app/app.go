@@ -2753,6 +2753,12 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			// OS keychain.
 			Auth:          rt.AuthResolver,
 			ModelCacheDir: rt.DataDir,
+			// The config writes go through the seam, so the runtime's reload
+			// path, the layer reloader and the trust refresh reach it here.
+			ReloadConfig: configReloader,
+			ReloadLayers: layerReloaderFor(homeDir, workingDir, state.Trusted),
+			TrustRefresh: trustRefresh,
+			HomeDir:      homeDir,
 		}
 		if providerReady {
 			deps.Work = rt
@@ -2762,9 +2768,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 
 		tuiOpts := []tui.Option{tui.WithLegacyState(state)}
 		tuiOpts = append(tuiOpts, tui.WithMemoryStore(database, projectID))
-		configLayers := &rt.Layers
-		tuiOpts = append(tuiOpts, tui.WithConfigLayers(&configLayers))
-		tuiOpts = append(tuiOpts, tui.WithLayerReloader(layerReloaderFor(homeDir, workingDir, state.Trusted)))
 		// F18: eager-seed the @file completion popup with the repo file
 		// index. Failures (no DB, empty index) are non-fatal — the TUI
 		// falls back to a lazy load on the first @-keystroke.
@@ -2775,11 +2778,11 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			tuiOpts = append(tuiOpts, tui.WithOpenConnectOnStart())
 		}
 		// Config reloading stays wired even when the initial provider build
-		// failed: /settings, /set and /connect are the recovery path. A
-		// successful reload rebuilds the runtime in place, and the session
-		// reads the runtime's current runner from the next turn on, so a
-		// rebuilt runner needs no adoption here.
-		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
+		// failed: /settings, /set and /connect are the recovery path, and they
+		// reach the reload through deps.ReloadConfig above. A successful
+		// reload rebuilds the runtime in place, and the session reads the
+		// runtime's current runner from the next turn on, so a rebuilt runner
+		// needs no adoption here.
 		tuiOpts = append(tuiOpts, tui.WithHomeDir(homeDir))
 		tuiOpts = append(tuiOpts, tui.WithWorkingDir(workingDir))
 		tuiOpts = append(tuiOpts, tui.WithSkillIndex(rt.SkillIndex))
@@ -2796,10 +2799,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		}
 		if rt.TrustPromptPending {
 			tuiOpts = append(tuiOpts, tui.WithTrustPrompt(workingDir, trustDecide))
-		}
-		tuiOpts = append(tuiOpts, tui.WithTrustRefresh(trustRefresh))
-		if rt.DataDir != "" {
-			tuiOpts = append(tuiOpts, tui.WithModelCache(rt.DataDir))
 		}
 		// /new and /clear create a brand-new session through the seam, and the
 		// model re-reads the runtime's current state and tool registry after

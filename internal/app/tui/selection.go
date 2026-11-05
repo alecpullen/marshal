@@ -63,7 +63,7 @@ var selectionStyle = lipgloss.NewStyle().Reverse(true)
 // terminal does (Ctrl+S, tui.mouse_capture = false) there is no app
 // selection.
 func (m *Model) selectionEnabled() bool {
-	return !m.mouseReleased && m.state != nil && m.state.Config.TUI.MouseCapture
+	return !m.mouseReleased && m.sess.Config().TUI.MouseCapture
 }
 
 // dragging reports whether a selection drag is in progress.

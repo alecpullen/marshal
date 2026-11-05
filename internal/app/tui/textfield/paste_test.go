@@ -1,7 +1,6 @@
 package textfield_test
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -44,7 +43,7 @@ func TestPasteReachesSelectedTextInputs(t *testing.T) {
 			return p.FilterValue()
 		},
 		"agents roster filter": func(t *testing.T) string {
-			p := agents.NewRosterPanel(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "", nil)
+			p := agents.NewRosterPanel(config.Default(), nil, "", nil)
 			p.Update(tea.PasteMsg{Content: pasted})
 			return p.FilterValue()
 		},
@@ -61,7 +60,7 @@ func TestPasteReachesSelectedTextInputs(t *testing.T) {
 			return m.InputValue()
 		},
 		"settings browser filter": func(t *testing.T) string {
-			b := settings.NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+			b := settings.NewBrowser(config.Default(), "")
 			b.Update(tea.PasteMsg{Content: pasted})
 			return b.FilterValue()
 		},

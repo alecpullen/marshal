@@ -12,7 +12,7 @@ const promptHistoryLimit = 200
 // break submit. Steering-queue follow-ups are not recorded here — they were
 // recorded when the user originally typed them.
 func (m *Model) recordPrompt(value string) {
-	if value == "" || !m.state.Config.History.Enabled {
+	if value == "" || !m.sess.Config().History.Enabled {
 		return
 	}
 	if len(m.history) == 0 || m.history[0] != value {
@@ -36,7 +36,7 @@ func (m *Model) resetHistoryNav() {
 // when the cursor is on the first input line; anywhere else the textarea
 // keeps its ordinary cursor movement. Returns true when the key was consumed.
 func (m *Model) recallOlder() bool {
-	if !m.state.Config.History.Enabled || len(m.history) == 0 || m.input.Line() != 0 {
+	if !m.sess.Config().History.Enabled || len(m.history) == 0 || m.input.Line() != 0 {
 		return false
 	}
 	if m.histIdx == -1 {

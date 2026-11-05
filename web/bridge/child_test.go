@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -80,6 +81,20 @@ func runHelperChild(mode string) {
 			continue
 		}
 		fmt.Fprintf(os.Stderr, "helper saw request %s\n", req.Method)
+		// test/big answers with a result of params.bytes "x" characters, in
+		// any mode. It exists to drive the bridge's inbound frame cap.
+		if req.Method == "test/big" {
+			var p struct {
+				Bytes int `json:"bytes"`
+			}
+			_ = json.Unmarshal(req.Params, &p)
+			_ = enc.Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      req.ID,
+				"result":  strings.Repeat("x", p.Bytes),
+			})
+			continue
+		}
 		if mode == "registry" || mode == "registry-die" || mode == "registry-merged" || mode == "registry-version" {
 			handleRegistryMode(&req, enc, mode)
 			// registry-die kills the process only after session/new, so
@@ -364,6 +379,82 @@ func TestChildRestartOnExit(t *testing.T) {
 	}
 
 	// The respawned generation answers requests again.
+	waitFor(t, 5*time.Second, "respawned child to answer", func() bool {
+		rctx, rcancel := testContext(t)
+		defer rcancel()
+		_, err := c.Request(rctx, "ping", nil)
+		return err == nil
+	})
+}
+
+// TestChildReadsFramesAboveOneMiB covers the case the frame cap exists for:
+// a long session's session/stack result or first stack_patch runs past 2 MiB,
+// well over the 1 MiB the scanner used to allow.
+func TestChildReadsFramesAboveOneMiB(t *testing.T) {
+	const size = 3 << 20
+	c := newTestChild(t, "normal")
+	if err := c.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer c.Stop()
+
+	ctx, cancel := testContext(t)
+	defer cancel()
+	res, err := c.Request(ctx, "test/big", map[string]int{"bytes": size})
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	var got string
+	if err := json.Unmarshal(res, &got); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if len(got) != size {
+		t.Fatalf("result length = %d, want %d", len(got), size)
+	}
+	if got != strings.Repeat("x", size) {
+		t.Fatal("result is not the child's payload")
+	}
+}
+
+// TestChildOversizedFrameFailsTheChild covers the other side of the cap: a
+// frame larger than maxFrameBytes must fail the request waiting on it rather
+// than wedge the connection, and the supervisor must respawn the child.
+func TestChildOversizedFrameFailsTheChild(t *testing.T) {
+	prev := maxFrameBytes
+	maxFrameBytes = 1 << 20
+	defer func() { maxFrameBytes = prev }()
+
+	restarts := make(chan struct{}, 4)
+	c := newTestChild(t, "normal")
+	c.OnRestart = func() {
+		restarts <- struct{}{}
+	}
+	if err := c.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer c.Stop()
+
+	ctx, cancel := testContext(t)
+	defer cancel()
+	_, err := c.Request(ctx, "test/big", map[string]int{"bytes": 2 << 20})
+	if err == nil {
+		t.Fatal("Request of an oversized frame succeeded, want an error")
+	}
+	if !errors.Is(err, bufio.ErrTooLong) {
+		t.Fatalf("Request error = %v, want it to wrap bufio.ErrTooLong", err)
+	}
+	if !strings.HasPrefix(err.Error(), "bridge: read child output: ") {
+		t.Fatalf("Request error = %q, want the read-failure prefix", err)
+	}
+
+	// The dead generation is reaped and a replacement spawned, as on any
+	// other unexpected exit.
+	select {
+	case <-restarts:
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnRestart was not invoked after the oversized frame")
+	}
+
 	waitFor(t, 5*time.Second, "respawned child to answer", func() bool {
 		rctx, rcancel := testContext(t)
 		defer rcancel()

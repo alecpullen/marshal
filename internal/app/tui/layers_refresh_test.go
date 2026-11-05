@@ -10,15 +10,14 @@ import (
 	"marshal/internal/acpclient/inproc"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui/settings"
 	"marshal/internal/commands"
 	"marshal/internal/tools/registry"
 )
 
 // newLayersTestModel builds a model whose state carries a real Layers
-// snapshot (user layer = defaults) and a layerReloader that re-reads the
-// user config from disk — the same shape the production wiring produces.
-func newLayersTestModel(t *testing.T, work string) Model {
+// snapshot (user layer = defaults) and whose adapter reloads the layers from
+// the given home directory — the same shape the production wiring produces.
+func newLayersTestModel(t *testing.T, home, work string) Model {
 	t.Helper()
 	state := session.New(config.Default(), work, time.Unix(100, 0), session.Persistence{})
 	state.SetLayers(config.Layers{Default: config.Default(), User: config.Default(), Merged: config.Default()})
@@ -26,36 +25,34 @@ func newLayersTestModel(t *testing.T, work string) Model {
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, Commands: reg})
+	m := testModelWith(inproc.Deps{
+		State:    state,
+		Commands: reg,
+		HomeDir:  home,
+		ReloadLayers: func() (config.Layers, bool) {
+			layers, err := config.LoadLayers(config.LoadOptions{HomeDir: home, WorkingDir: work})
+			if err != nil {
+				return config.Layers{}, false
+			}
+			return layers, true
+		},
+	}, WithHomeDir(home))
 	m.resize(80, 24)
 	m.refreshViewport()
 	return m
-}
-
-// wireLayerReloader points the model's layerReloader at the real loader
-// over the given home directory, mirroring app.layerReloaderFor.
-func wireLayerReloader(m *Model, home, work string) {
-	m.layerReloader = func() (config.Layers, bool) {
-		layers, err := config.LoadLayers(config.LoadOptions{HomeDir: home, WorkingDir: work})
-		if err != nil {
-			return config.Layers{}, false
-		}
-		return layers, true
-	}
 }
 
 // TestProjectSaveAfterGlobalSaveDoesNotBakeUserValues is the regression
 // for the stale layer snapshot: a global-scope save (user config) must
 // refresh the session's layer snapshot, or the next project-scope save
 // compares against the stale user layer and re-bakes the user-global
-// value into the committable .marshal/config.toml.
+// value into the committable .marshal/config.toml. The refresh happens agent
+// side, in the adapter, after every user write.
 func TestProjectSaveAfterGlobalSaveDoesNotBakeUserValues(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	work := t.TempDir()
-	m := newLayersTestModel(t, work)
-	m.configLayers = new(*config.Layers)
-	wireLayerReloader(&m, home, work)
+	m := newLayersTestModel(t, home, work)
 
 	// 1. Global-scope save: tui.mouse_capture is a writeGlobal field.
 	m.dispatchCommand("/set tui.mouse_capture off")
@@ -68,7 +65,7 @@ func TestProjectSaveAfterGlobalSaveDoesNotBakeUserValues(t *testing.T) {
 	}
 
 	// The session snapshot must now reflect the new user layer.
-	if m.state.Layers().Merged.TUI.MouseCapture {
+	if m.sess.Layers().Merged.TUI.MouseCapture {
 		t.Fatal("session layer snapshot went stale after a global-scope save")
 	}
 
@@ -86,43 +83,18 @@ func TestProjectSaveAfterGlobalSaveDoesNotBakeUserValues(t *testing.T) {
 	}
 }
 
-// TestReloadLayersRefreshesOpenDockPanel pins the panel-refresh half of
-// the fix: a docked settings browser that captured a snapshot at open
-// time must receive the fresh snapshot when layers reload.
-func TestReloadLayersRefreshesOpenDockPanel(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	work := t.TempDir()
-	m := newLayersTestModel(t, work)
-	m.configLayers = new(*config.Layers)
-	wireLayerReloader(&m, home, work)
+// TestSetWithoutReloaderLeavesLayersAlone guards the no-reloader path: a model
+// whose adapter has no layer reloader (most tests) still saves through the
+// seam, and the state's layers are left exactly as they were.
+func TestSetWithoutReloaderLeavesLayersAlone(t *testing.T) {
+	m := newTestModel(t)
+	m.state.WorkingDir = t.TempDir()
+	seeded := config.Layers{Default: config.Default(), User: config.Default(), Merged: config.Default()}
+	m.state.SetLayers(seeded)
 
-	m.openSettingsBrowser("")
-	browser, ok := m.dock.Panel().(*settings.BrowserPanel)
-	if !ok {
-		t.Fatalf("expected *settings.BrowserPanel, got %T", m.dock.Panel())
-	}
-	if browser.Layers().Merged.TUI.MouseCapture != config.Default().TUI.MouseCapture {
-		t.Fatal("precondition: browser snapshot should start at defaults")
-	}
+	m.dispatchCommand("/set tui.mouse_capture off")
 
-	// Change the user config behind the panel's back, then reload.
-	if err := config.SaveUserConfigValue(config.UserConfigPath(home), "tui.mouse_capture", false); err != nil {
-		t.Fatalf("seed user config: %v", err)
+	if got := m.sess.Layers(); got.Merged.TUI.MouseCapture != seeded.Merged.TUI.MouseCapture {
+		t.Fatalf("layers changed without a reloader: %+v", got)
 	}
-	m.reloadLayers()
-
-	if m.state.Layers().Merged.TUI.MouseCapture {
-		t.Fatal("session state did not adopt the reloaded layers")
-	}
-	if browser.Layers().Merged.TUI.MouseCapture {
-		t.Fatal("open dock panel kept its stale layer snapshot")
-	}
-}
-
-// TestReloadLayersNoReloaderIsNoop guards the nil-reloader path: models
-// built without WithLayerReloader (most tests) must not panic.
-func TestReloadLayersNoReloaderIsNoop(t *testing.T) {
-	m := newLayersTestModel(t, t.TempDir())
-	m.reloadLayers() // must not panic
 }

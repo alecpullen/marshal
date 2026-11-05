@@ -47,6 +47,11 @@ type SessionStatus struct {
 	ChangedFiles int           `json:"changedFiles,omitempty"` // against the sheet's base; 0 means "no changes", never "not refreshed"
 	WatchResume  *WatchResume  `json:"watchResume,omitempty"`
 	Notice       *Notice       `json:"notice,omitempty"` // the banner; nil when none
+	// UserConfigPath and ProjectConfigPath are the files the config writes
+	// change: the user config, and the session's project config. Each is
+	// empty when the agent cannot locate it.
+	UserConfigPath    string `json:"userConfigPath,omitempty"`
+	ProjectConfigPath string `json:"projectConfigPath,omitempty"`
 }
 
 // Route mirrors the session's RouteInfo: the route a turn runs on.

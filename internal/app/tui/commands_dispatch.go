@@ -313,8 +313,9 @@ func init() {
 			return m, nil
 		},
 		"doctor": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			diags := config.Diagnose(m.state.Config, m.state.Layers())
-			checks := doctorpanel.ComputeIntelligence(m.state.Config, m.memoryDB, m.memoryProject)
+			cfg := m.sess.Config()
+			diags := config.Diagnose(cfg, m.sess.Layers())
+			checks := doctorpanel.ComputeIntelligence(cfg, m.memoryDB, m.memoryProject)
 			m.dock.Open(doctorpanel.New(m.state, diags, checks))
 			m.refreshViewport()
 			return m, nil

@@ -29,6 +29,12 @@ var Methods = []Method{
 	{Iface: "Host", Name: "RenameModels", ACP: "config/models_rename"},
 	{Iface: "Host", Name: "PrepareProviderLogin", ACP: "config/login_provider"},
 	{Iface: "Host", Name: "LoginProvider", ACP: "config/login_provider"},
+	{Iface: "Host", Name: "SaveUserValue", ACP: "config/set_value"},
+	{Iface: "Host", Name: "SaveUserProviders", ACP: "config/save_providers"},
+	{Iface: "Host", Name: "SaveUserPresets", ACP: "config/save_presets"},
+	{Iface: "Host", Name: "SaveProviderKey", ACP: "config/set_provider_key", Exists: true},
+	{Iface: "Host", Name: "PreparePresets", ACP: "config/prepare_presets"},
+	{Iface: "Host", Name: "SaveProvenance", ACP: "config/save_provenance"},
 	{Iface: "Session", Name: "ID", ACP: "session/new", Exists: true},
 	{Iface: "Session", Name: "Status", ACP: "session/status"},
 	{Iface: "Session", Name: "Changed"},
@@ -87,4 +93,12 @@ var Methods = []Method{
 
 	{Iface: "Session", Name: "PrepareMCPLogin", ACP: "session/mcp_login"},
 	{Iface: "Session", Name: "LoginMCP", ACP: "session/mcp_login"},
+
+	{Iface: "Session", Name: "Config", ACP: "session/config"},
+	{Iface: "Session", Name: "Layers", ACP: "session/config"},
+	{Iface: "Session", Name: "ApplyConfig", ACP: "session/apply_config"},
+	{Iface: "Session", Name: "ReloadConfig", ACP: "session/reload_config"},
+	{Iface: "Session", Name: "ReconnectMCP", ACP: "session/mcp_reconnect"},
+	{Iface: "Session", Name: "SaveProjectConfig", ACP: "session/save_project_config"},
+	{Iface: "Session", Name: "SaveVerifyCommands", ACP: "session/save_verify_commands"},
 }

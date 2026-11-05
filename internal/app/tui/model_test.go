@@ -4892,7 +4892,7 @@ func TestModelsBareOpensConnectOverlay(t *testing.T) {
 
 func TestModelsExactPresetArgSwitchesDirectly(t *testing.T) {
 	var reloaded *config.Config
-	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: setupCmdReg(t)}, WithConfigReloader(func(c config.Config) error { reloaded = &c; return nil }))
+	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: setupCmdReg(t), ReloadConfig: func(c config.Config) error { reloaded = &c; return nil }})
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/models anthropic/sonnet-5")
 	m = asModel(t, updated)
@@ -4909,7 +4909,7 @@ func TestModelsExactPresetArgSwitchesDirectly(t *testing.T) {
 
 func TestModelsModelIDArgSwitchesPreset(t *testing.T) {
 	var reloaded *config.Config
-	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: setupCmdReg(t)}, WithConfigReloader(func(c config.Config) error { reloaded = &c; return nil }))
+	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: setupCmdReg(t), ReloadConfig: func(c config.Config) error { reloaded = &c; return nil }})
 	m.resize(80, 24)
 	// A bare model ID (not a preset name) resolves to the preset using it.
 	updated, _ := m.dispatchCommand("/models qwen2.5")
@@ -4937,7 +4937,7 @@ func TestModelsUnknownArgOpensConnectOverlay(t *testing.T) {
 
 func TestModelPickAppliesSessionSwitch(t *testing.T) {
 	var reloaded *config.Config
-	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: setupCmdReg(t)}, WithConfigReloader(func(c config.Config) error { reloaded = &c; return nil }))
+	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: setupCmdReg(t), ReloadConfig: func(c config.Config) error { reloaded = &c; return nil }})
 	m.resize(80, 24)
 	m.openPicker("model", "Switch model", "session only — /settings to persist", m.modelPickerItems(), "")
 	updated, _ := m.Update(picker.PickedMsg{Value: "ollama/qwen2.5"})
@@ -5216,10 +5216,10 @@ func TestTabIgnoredDuringApproval(t *testing.T) {
 func TestAltMCyclesModelForward(t *testing.T) {
 	var reloaded *config.Config
 	state := modelTestState(t)
-	m := testModel(state, WithConfigReloader(func(c config.Config) error {
+	m := testModelWith(inproc.Deps{State: state, ReloadConfig: func(c config.Config) error {
 		reloaded = &c
 		return nil
-	}))
+	}})
 	m.resize(80, 24)
 
 	// Set active route to ollama/qwen2.5 so cycleModel finds a known index
@@ -5234,14 +5234,14 @@ func TestAltMCyclesModelForward(t *testing.T) {
 	m = sendKey(m, tea.KeyPressMsg{Code: 'm', Mod: tea.ModAlt})
 
 	if reloaded == nil {
-		t.Fatal("configReloader was not called")
+		t.Fatal("the runtime reload was not called")
 	}
 	if reloaded.Profile.Default != singleModelProfileName {
-		t.Fatalf("configReloader default profile = %q, want single",
+		t.Fatalf("reloaded config default profile = %q, want single",
 			reloaded.Profile.Default)
 	}
 	if _, ok := reloaded.Models.Presets["anthropic/sonnet-5"]; !ok {
-		t.Fatalf("configReloader should keep the anthropic/sonnet-5 preset, got %+v", reloaded.Models.Presets)
+		t.Fatalf("the reloaded config should keep the anthropic/sonnet-5 preset, got %+v", reloaded.Models.Presets)
 	}
 	// A confirmation system message should appear
 	msgs := state.Messages()
@@ -5253,10 +5253,10 @@ func TestAltMCyclesModelForward(t *testing.T) {
 func TestAltShiftMCyclesModelBackward(t *testing.T) {
 	var reloaded *config.Config
 	state := modelTestState(t)
-	m := testModel(state, WithConfigReloader(func(c config.Config) error {
+	m := testModelWith(inproc.Deps{State: state, ReloadConfig: func(c config.Config) error {
 		reloaded = &c
 		return nil
-	}))
+	}})
 	m.resize(80, 24)
 
 	// Set active route to anthropic/sonnet-5 (index 0 in sorted order)
@@ -5270,14 +5270,14 @@ func TestAltShiftMCyclesModelBackward(t *testing.T) {
 	m = sendKey(m, tea.KeyPressMsg{Code: 'm', Mod: tea.ModAlt | tea.ModShift})
 
 	if reloaded == nil {
-		t.Fatal("configReloader was not called")
+		t.Fatal("the runtime reload was not called")
 	}
 	if reloaded.Profile.Default != singleModelProfileName {
-		t.Fatalf("configReloader default profile = %q, want single",
+		t.Fatalf("reloaded config default profile = %q, want single",
 			reloaded.Profile.Default)
 	}
 	if _, ok := reloaded.Models.Presets["ollama/qwen2.5"]; !ok {
-		t.Fatalf("configReloader should keep the ollama/qwen2.5 preset, got %+v", reloaded.Models.Presets)
+		t.Fatalf("the reloaded config should keep the ollama/qwen2.5 preset, got %+v", reloaded.Models.Presets)
 	}
 }
 
@@ -5305,18 +5305,18 @@ func TestAltMNoPresetsShowsGuidance(t *testing.T) {
 func TestAltMBlockedWhileBusy(t *testing.T) {
 	var reloaded bool
 	state := modelTestState(t)
-	m := testModel(state, WithConfigReloader(func(c config.Config) error {
+	m := testModelWith(inproc.Deps{State: state, ReloadConfig: func(c config.Config) error {
 		reloaded = true
 		return nil
-	}))
+	}})
 	m.resize(80, 24)
 	m.busy = true
 
-	// Alt+M while busy should not call configReloader and should show busy msg
+	// Alt+M while busy should not reload and should show busy msg
 	m = sendKey(m, tea.KeyPressMsg{Code: 'm', Mod: tea.ModAlt})
 
 	if reloaded {
-		t.Fatal("configReloader should not be called when busy")
+		t.Fatal("the runtime must not reload when busy")
 	}
 	msgs := state.Messages()
 	if len(msgs) == 0 {
@@ -5609,18 +5609,19 @@ func TestSetCommandPersistsPrivacyToggles(t *testing.T) {
 }
 
 func TestSetCommandReloadsRuntimeBeforeReportingSuccess(t *testing.T) {
-	m := newTestModel(t)
-	m.state.WorkingDir = t.TempDir()
 	var reloaded config.Config
-	m.configReloader = func(cfg config.Config) error {
-		reloaded = cfg
-		return nil
-	}
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(cfg config.Config) error {
+			reloaded = cfg
+			return nil
+		}
+	})
+	m.state.WorkingDir = t.TempDir()
 
 	m.dispatchCommand("/set shell.allow_network on")
 
 	if !reloaded.Tools.Shell.AllowNetwork {
-		t.Fatal("configReloader did not receive the /set config")
+		t.Fatal("the runtime reload did not receive the /set config")
 	}
 	if !m.state.Config.Tools.Shell.AllowNetwork {
 		t.Fatal("successful /set did not apply the config to the session")
@@ -5631,12 +5632,13 @@ func TestSetCommandReloadsRuntimeBeforeReportingSuccess(t *testing.T) {
 }
 
 func TestSetCommandReloadFailureDoesNotReportSuccess(t *testing.T) {
-	m := newTestModel(t)
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(config.Config) error {
+			return errors.New("runtime unavailable")
+		}
+	})
 	m.state.WorkingDir = t.TempDir()
 	m.settingsRegistry()
-	m.configReloader = func(config.Config) error {
-		return errors.New("runtime unavailable")
-	}
 
 	m.dispatchCommand("/set shell.allow_network on")
 
@@ -5661,7 +5663,7 @@ func TestSetCommandReloadFailureDoesNotReportSuccess(t *testing.T) {
 
 // TestSetCommandReloadFailureSyncsStateConfig is the focused regression for
 // the handleSetCommand reload-error path: config.SaveProjectConfig already
-// wrote the new value to disk and m.configReloader already swapped it into
+// wrote the new value to disk and the runtime reload already swapped it into
 // the live runtime before its cleanup failed, so m.state.Config (and
 // everything applyNewConfig invalidates/refreshes) must stay aligned with
 // that saved/live config — exactly like the settings.ChangedMsg handler's
@@ -5670,37 +5672,38 @@ func TestSetCommandReloadFailureDoesNotReportSuccess(t *testing.T) {
 // invalidated, so the next /set would rebuild its registry from the stale
 // config and silently revert the change that was just persisted.
 func TestLayerReloaderFailureDoesNotOverwriteConfigLayers(t *testing.T) {
-	m := newTestModel(t)
+	// The adapter's layer reloader always fails.
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadLayers = func() (config.Layers, bool) {
+			return config.Layers{}, false
+		}
+	})
 	m.state.WorkingDir = t.TempDir()
 
-	// Inject a layerReloader that always fails.
-	m.layerReloader = func() (config.Layers, bool) {
-		return config.Layers{}, false
-	}
-
-	// Seed configLayers with a non-zero Layers value that the model can
+	// Seed the session's layers with a non-zero snapshot that the model can
 	// check remains in place after a failed reload.
-	original := &config.Layers{Default: config.Default(), User: config.Default(), Merged: config.Default()}
-	m.configLayers = &original
+	m.state.SetLayers(config.Layers{Default: config.Default(), User: config.Default(), Merged: config.Default()})
 
 	// Trigger persistAndReload via /set. The save should succeed and
 	// persistAndReload should return nil errors, but the layerReloader
-	// should fail and the model must NOT overwrite *m.configLayers.
+	// should fail and the model must NOT adopt the snapshot it returned.
 	m.dispatchCommand("/set shell.allow_network on")
 
-	// Verify layers were NOT overwritten — they should still point to the
-	// same pointer (original).
-	if *m.configLayers != original {
-		t.Fatal("configLayers was overwritten despite layerReloader reporting failure")
+	// Verify layers were NOT overwritten: the session still serves the seeded
+	// snapshot, not the zero one the failing reloader reported. Mouse capture
+	// is on in the seeded snapshot and off in the zero value.
+	if got := m.sess.Layers(); reflect.ValueOf(got).IsZero() || !got.Merged.TUI.MouseCapture {
+		t.Fatalf("session layers were overwritten despite layerReloader reporting failure: %+v", got)
 	}
 }
 
 func TestSetCommandReloadFailureSyncsStateConfig(t *testing.T) {
-	m := newTestModel(t)
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(config.Config) error {
+			return errors.New("runtime unavailable")
+		}
+	})
 	m.state.WorkingDir = t.TempDir()
-	m.configReloader = func(config.Config) error {
-		return errors.New("runtime unavailable")
-	}
 
 	m.dispatchCommand("/set shell.allow_network on")
 
@@ -6095,12 +6098,13 @@ func TestSetCommandDoesNotMutateWhileSettingsSaveIsBlocked(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m := newTestModel(t)
 			reloads := 0
-			m.configReloader = func(config.Config) error {
-				reloads++
-				return nil
-			}
+			m := newTestModelDeps(t, func(d *inproc.Deps) {
+				d.ReloadConfig = func(config.Config) error {
+					reloads++
+					return nil
+				}
+			})
 			tt.block(&m)
 
 			m.dispatchCommand("/set shell.allow_network on")
@@ -6111,7 +6115,7 @@ func TestSetCommandDoesNotMutateWhileSettingsSaveIsBlocked(t *testing.T) {
 			if reloads != 0 {
 				t.Fatalf("guarded /set reloaded runtime %d times", reloads)
 			}
-			path := projectConfigPath(m.state.WorkingDir)
+			path := config.ProjectConfigPath(m.state.WorkingDir)
 			if _, err := os.Stat(path); !os.IsNotExist(err) {
 				t.Fatalf("guarded /set persisted config, stat error = %v", err)
 			}
@@ -6161,8 +6165,9 @@ func TestTUIRendersSDDPanelWhenActive(t *testing.T) {
 
 // newModelForConfigTest creates a Model with distinct work/home directories
 // for testing config persistence. Caller must not mutate after applyConnectDone
-// since the tests check file contents.
-func newModelForConfigTest(t *testing.T) (m Model, workDir string, homeDir string) {
+// since the tests check file contents. An optional edit adjusts the in-process
+// adapter's dependencies before the adapter is built.
+func newModelForConfigTest(t *testing.T, edit ...func(*inproc.Deps)) (m Model, workDir string, homeDir string) {
 	t.Helper()
 	workDir = t.TempDir()
 	homeDir = t.TempDir()
@@ -6173,7 +6178,11 @@ func newModelForConfigTest(t *testing.T) (m Model, workDir string, homeDir strin
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m = testModelWith(inproc.Deps{State: state, Commands: reg}, WithWorkingDir(workDir))
+	deps := inproc.Deps{State: state, Commands: reg, HomeDir: homeDir}
+	for _, fn := range edit {
+		fn(&deps)
+	}
+	m = testModelWith(deps, WithWorkingDir(workDir))
 	m.resize(80, 24)
 	m.refreshViewport()
 	return
@@ -6557,14 +6566,24 @@ func TestBoxFollowsDrilledSubagentTodos(t *testing.T) {
 	}
 }
 
-func newTestModel(t *testing.T) Model {
+// newTestModelDeps builds the standard test model, letting the caller adjust
+// the in-process adapter's dependencies before the adapter is built.
+// newTestModel is the common case, with no adjustment. The temporary home is
+// shared by the adapter (Deps.HomeDir) and the model (WithHomeDir), so both
+// sides of the seam resolve the same user config.
+func newTestModelDeps(t *testing.T, edit func(*inproc.Deps)) Model {
 	t.Helper()
+	home := t.TempDir()
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	reg := commands.New()
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, Commands: reg, Auth: newMemAuth()}, WithHomeDir(t.TempDir()),
+	deps := inproc.Deps{State: state, Commands: reg, Auth: newMemAuth(), HomeDir: home}
+	if edit != nil {
+		edit(&deps)
+	}
+	m := testModelWith(deps, WithHomeDir(home),
 		// Isolate the auth surfaces by default: no test in this package should
 		// reach the developer's OS keychain or launch a browser just by
 		// constructing or driving the model. Tests that need to observe the
@@ -6575,17 +6594,23 @@ func newTestModel(t *testing.T) Model {
 	return m
 }
 
+func newTestModel(t *testing.T) Model {
+	t.Helper()
+	return newTestModelDeps(t, nil)
+}
+
 // newTestModelInRepo is like newTestModel but with a real repo working dir
 // (a temp dir is fine; the tests write plans into
 // m.state.WorkingDir/.marshal/plans).
 func newTestModelInRepo(t *testing.T) Model {
 	t.Helper()
+	home := t.TempDir()
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	reg := commands.New()
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, Commands: reg, Auth: newMemAuth()}, WithHomeDir(t.TempDir()),
+	m := testModelWith(inproc.Deps{State: state, Commands: reg, Auth: newMemAuth(), HomeDir: home}, WithHomeDir(home),
 		WithOpenBrowser(func(string) error { return nil }))
 	m.resize(80, 24)
 	m.refreshViewport()
@@ -6843,13 +6868,14 @@ func TestModelsEmptyProvidersShowsAddProvider(t *testing.T) {
 }
 
 func TestModelsPickAppliesSwitch(t *testing.T) {
-	m := newTestModel(t)
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(cfg config.Config) error { d.State.Config = cfg; return nil }
+	})
 	m.state.Config.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	}
 	m.discovered["ollama"] = []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}
 	m.state.WorkingDir = t.TempDir()
-	m.configReloader = func(cfg config.Config) error { m.state.Config = cfg; return nil }
 
 	updated, _ := m.dispatchCommand("/models")
 	m = asModel(t, updated)
@@ -6870,7 +6896,7 @@ func TestModelsPickAppliesSwitch(t *testing.T) {
 		Presets: map[string]routing.ModelPreset{
 			"ollama/qwen2.5-coder:7b": {Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b"},
 		},
-		Result: presetsetup.Result{Prepared: 1, Fallback: 1},
+		Setup: acpwire.PresetSetup{Prepared: 1, Fallback: 1},
 	})
 	m = asModel(t, updated)
 
@@ -6916,7 +6942,7 @@ func TestModelsRoutesPreparedMsgToConnectPanel(t *testing.T) {
 
 	updated, _ = m.Update(tea.KeyPressMsg{Code: 110}) // n
 	m = asModel(t, updated)
-	updated, _ = m.Update(connect.PreparedMsg{Provider: "ollama", Result: presetsetup.Result{Prepared: 1, Fallback: 1}})
+	updated, _ = m.Update(connect.PreparedMsg{Provider: "ollama", Setup: acpwire.PresetSetup{Prepared: 1, Fallback: 1}})
 	m = asModel(t, updated)
 	if m.connectModel == nil || !strings.Contains(stripANSI(m.connectModel.View(80, 24)), "Review provider") {
 		t.Fatal("outer model should route PreparedMsg to connect")
@@ -6924,13 +6950,14 @@ func TestModelsRoutesPreparedMsgToConnectPanel(t *testing.T) {
 }
 
 func TestConnectDoneMsgPersistsAgentModel(t *testing.T) {
-	m := newTestModel(t)
-	m.settingsRegistry()
 	reloaded := false
-	m.configReloader = func(cfg config.Config) error { reloaded = true; m.state.Config = cfg; return nil }
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(cfg config.Config) error { reloaded = true; d.State.Config = cfg; return nil }
+	})
+	m.settingsRegistry()
 	updated, _ := m.Update(connect.DoneMsg{Provider: "ollama", Model: "qwen2.5-coder:7b", ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"}})
 	if !reloaded {
-		t.Fatal("DoneMsg should call configReloader")
+		t.Fatal("DoneMsg should reload the runtime")
 	}
 	if updated.(Model).state.Config.Profile.Default != "single" {
 		t.Fatalf("profile default should be %q, got %q", "single", updated.(Model).state.Config.Profile.Default)
@@ -6958,9 +6985,10 @@ func TestConnectDoneMsgPersistsAgentModel(t *testing.T) {
 }
 
 func TestApplyConnectDoneMergesPreparedPresets(t *testing.T) {
-	m := newTestModel(t)
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(cfg config.Config) error { d.State.Config = cfg; return nil }
+	})
 	m.settingsRegistry()
-	m.configReloader = func(cfg config.Config) error { m.state.Config = cfg; return nil }
 
 	updated, _ := m.Update(connect.DoneMsg{
 		Provider:    "ollama",
@@ -6982,9 +7010,10 @@ func TestApplyConnectDoneMergesPreparedPresets(t *testing.T) {
 }
 
 func TestApplyConnectDonePersistsConsent(t *testing.T) {
-	m := newTestModel(t)
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(cfg config.Config) error { d.State.Config = cfg; return nil }
+	})
 	m.settingsRegistry()
-	m.configReloader = func(cfg config.Config) error { m.state.Config = cfg; return nil }
 
 	allow := true
 	updated, _ := m.Update(connect.DoneMsg{
@@ -7009,13 +7038,29 @@ func TestApplyConnectDonePersistsConsent(t *testing.T) {
 }
 
 func TestApplyConnectDoneRefreshesManagedPreset(t *testing.T) {
-	m := newTestModel(t)
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(cfg config.Config) error { d.State.Config = cfg; return nil }
+	})
 	m.settingsRegistry()
-	m.configReloader = func(cfg config.Config) error { m.state.Config = cfg; return nil }
 
 	const name = "ollama/qwen2.5-coder:7b"
 	m.state.Config.Models.Presets = map[string]routing.ModelPreset{
 		name: {Name: name, Provider: "ollama", Model: "qwen2.5-coder:7b", ContextWindow: 8192},
+	}
+
+	// The wizard carries the sidecar back as opaque JSON, with the preset
+	// names it manages alongside it.
+	prov := presetsetup.Provenance{
+		Version: presetsetup.ProvenanceVersion,
+		Presets: map[string]presetsetup.PresetProvenance{
+			name: {Fields: map[string]presetsetup.FieldState{
+				"context_window": {Source: "models.dev", Value: "32768"},
+			}},
+		},
+	}
+	raw, err := json.Marshal(prov)
+	if err != nil {
+		t.Fatalf("marshal provenance: %v", err)
 	}
 
 	updated, _ := m.Update(connect.DoneMsg{
@@ -7025,14 +7070,7 @@ func TestApplyConnectDoneRefreshesManagedPreset(t *testing.T) {
 		Presets: map[string]routing.ModelPreset{
 			name: {Name: name, Provider: "ollama", Model: "qwen2.5-coder:7b", ContextWindow: 32768},
 		},
-		Provenance: &presetsetup.Provenance{
-			Version: presetsetup.ProvenanceVersion,
-			Presets: map[string]presetsetup.PresetProvenance{
-				name: {Fields: map[string]presetsetup.FieldState{
-					"context_window": {Source: "models.dev", Value: "32768"},
-				}},
-			},
-		},
+		Setup: acpwire.PresetSetup{Provenance: raw, Managed: []string{name}},
 	})
 	m = updated.(Model)
 
@@ -7046,9 +7084,10 @@ func TestApplyConnectDoneRefreshesManagedPreset(t *testing.T) {
 }
 
 func TestApplyConnectDonePersistsDenyConsent(t *testing.T) {
-	m := newTestModel(t)
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(cfg config.Config) error { d.State.Config = cfg; return nil }
+	})
 	m.settingsRegistry()
-	m.configReloader = func(cfg config.Config) error { m.state.Config = cfg; return nil }
 
 	deny := false
 	updated, _ := m.Update(connect.DoneMsg{
@@ -7073,22 +7112,27 @@ func TestApplyConnectDonePersistsDenyConsent(t *testing.T) {
 }
 
 func TestApplyConnectDoneWarnsOnProvenanceFailure(t *testing.T) {
-	m := newTestModel(t)
-	m.settingsRegistry()
-	m.configReloader = func(cfg config.Config) error { m.state.Config = cfg; return nil }
-
 	// A regular file where the data dir should be makes MkdirAll fail.
 	blocking := filepath.Join(t.TempDir(), "not-a-dir")
 	if err := os.WriteFile(blocking, nil, 0o644); err != nil {
 		t.Fatalf("create blocking file: %v", err)
 	}
-	m.modelCacheDir = blocking
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(cfg config.Config) error { d.State.Config = cfg; return nil }
+		d.ModelCacheDir = blocking
+	})
+	m.settingsRegistry()
+
+	raw, err := json.Marshal(presetsetup.Provenance{Version: presetsetup.ProvenanceVersion, Presets: map[string]presetsetup.PresetProvenance{}})
+	if err != nil {
+		t.Fatalf("marshal provenance: %v", err)
+	}
 
 	updated, _ := m.Update(connect.DoneMsg{
 		Provider:    "ollama",
 		Model:       "qwen2.5-coder:7b",
 		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
-		Provenance:  &presetsetup.Provenance{Version: presetsetup.ProvenanceVersion, Presets: map[string]presetsetup.PresetProvenance{}},
+		Setup:       acpwire.PresetSetup{Provenance: raw},
 	})
 	m = updated.(Model)
 
@@ -7108,14 +7152,15 @@ func TestApplyConnectDoneWarnsOnProvenanceFailure(t *testing.T) {
 }
 
 func TestConnectReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
-	m := newTestModel(t)
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(cfg config.Config) error {
+			// reloadAgentRuntime installs the config before cleaning up old
+			// resources, whose failure is returned to the TUI.
+			d.State.Config = cfg
+			return errors.New("old runtime cleanup failed")
+		}
+	})
 	m.settingsRegistry()
-	m.configReloader = func(cfg config.Config) error {
-		// reloadAgentRuntime installs the config before cleaning up old
-		// resources, whose failure is returned to the TUI.
-		m.state.Config = cfg
-		return errors.New("old runtime cleanup failed")
-	}
 
 	updated, _ := m.Update(connect.DoneMsg{
 		Provider:    "ollama",
@@ -7136,15 +7181,16 @@ func TestConnectReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
 }
 
 func TestConnectSaveFailureKeepsSessionConfigAndPendingFlag(t *testing.T) {
-	m := newTestModel(t)
+	reloaded := false
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(cfg config.Config) error { reloaded = true; d.State.Config = cfg; return nil }
+	})
 	blockingPath := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(blockingPath, nil, 0o644); err != nil {
 		t.Fatalf("create blocking file: %v", err)
 	}
 	m.state.WorkingDir = blockingPath
 	m.settingsRegistry()
-	reloaded := false
-	m.configReloader = func(cfg config.Config) error { reloaded = true; m.state.Config = cfg; return nil }
 
 	updated, _ := m.Update(connect.DoneMsg{
 		Provider:    "ollama",
@@ -7154,7 +7200,7 @@ func TestConnectSaveFailureKeepsSessionConfigAndPendingFlag(t *testing.T) {
 	m = updated.(Model)
 
 	if reloaded {
-		t.Fatal("save failure must not call configReloader")
+		t.Fatal("save failure must not reload the runtime")
 	}
 	if _, ok := m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
 		t.Fatal("save failure must keep the preset in session config")
@@ -7175,9 +7221,10 @@ func TestConnectSaveFailureKeepsSessionConfigAndPendingFlag(t *testing.T) {
 }
 
 func TestConnectDoneSuccessReceiptHasCheckGlyph(t *testing.T) {
-	m := newTestModel(t)
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(config.Config) error { return nil }
+	})
 	m.state.WorkingDir = t.TempDir()
-	m.configReloader = func(config.Config) error { return nil }
 
 	updated, _ := m.Update(connect.DoneMsg{
 		Provider:    "ollama",
@@ -7193,9 +7240,10 @@ func TestConnectDoneSuccessReceiptHasCheckGlyph(t *testing.T) {
 }
 
 func TestConnectReloadFailureReceiptHasCrossGlyph(t *testing.T) {
-	m := newTestModel(t)
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(config.Config) error { return errors.New("cleanup failed") }
+	})
 	m.state.WorkingDir = t.TempDir()
-	m.configReloader = func(config.Config) error { return errors.New("cleanup failed") }
 
 	updated, _ := m.Update(connect.DoneMsg{
 		Provider:    "ollama",
@@ -7211,7 +7259,9 @@ func TestConnectReloadFailureReceiptHasCrossGlyph(t *testing.T) {
 }
 
 func TestSwitchModelPresetInvalidatesSetRegistry(t *testing.T) {
-	m := newTestModel(t)
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(config.Config) error { return nil }
+	})
 	m.state.Config.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	}
@@ -7219,7 +7269,6 @@ func TestSwitchModelPresetInvalidatesSetRegistry(t *testing.T) {
 		Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b",
 	}
 	m.settingsRegistry()
-	m.configReloader = func(config.Config) error { return nil }
 
 	m.switchModelPreset("ollama/qwen2.5-coder:7b")
 
@@ -7229,7 +7278,14 @@ func TestSwitchModelPresetInvalidatesSetRegistry(t *testing.T) {
 }
 
 func TestModelPresetReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
-	m := newTestModel(t)
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(cfg config.Config) error {
+			// reloadAgentRuntime installs the config before cleaning up old
+			// resources, whose failure is returned to the TUI.
+			d.State.Config = cfg
+			return errors.New("old runtime cleanup failed")
+		}
+	})
 	m.state.Config.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	}
@@ -7237,12 +7293,6 @@ func TestModelPresetReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
 		Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b",
 	}
 	m.settingsRegistry()
-	m.configReloader = func(cfg config.Config) error {
-		// reloadAgentRuntime installs the config before cleaning up old
-		// resources, whose failure is returned to the TUI.
-		m.state.Config = cfg
-		return errors.New("old runtime cleanup failed")
-	}
 
 	m.switchModelPreset("ollama/qwen2.5-coder:7b")
 
@@ -7258,7 +7308,10 @@ func TestModelPresetReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
 }
 
 func TestSwitchModelPresetSaveFailureKeepsSessionConfigAndPendingFlag(t *testing.T) {
-	m := newTestModel(t)
+	reloaded := false
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(cfg config.Config) error { reloaded = true; d.State.Config = cfg; return nil }
+	})
 	m.state.Config.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	}
@@ -7271,13 +7324,11 @@ func TestSwitchModelPresetSaveFailureKeepsSessionConfigAndPendingFlag(t *testing
 	}
 	m.state.WorkingDir = blockingPath
 	m.settingsRegistry()
-	reloaded := false
-	m.configReloader = func(cfg config.Config) error { reloaded = true; m.state.Config = cfg; return nil }
 
 	m.switchModelPreset("ollama/qwen2.5-coder:7b")
 
 	if reloaded {
-		t.Fatal("save failure must not call configReloader")
+		t.Fatal("save failure must not reload the runtime")
 	}
 	if m.state.Config.Profile.Default != singleModelProfileName {
 		t.Fatalf("save failure must keep the switched profile in session, got %q", m.state.Config.Profile.Default)
@@ -7298,7 +7349,9 @@ func TestSwitchModelPresetSaveFailureKeepsSessionConfigAndPendingFlag(t *testing
 }
 
 func TestSwitchModelPresetSuccessReceiptHasCheckGlyph(t *testing.T) {
-	m := newTestModel(t)
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(config.Config) error { return nil }
+	})
 	m.state.Config.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	}
@@ -7306,7 +7359,6 @@ func TestSwitchModelPresetSuccessReceiptHasCheckGlyph(t *testing.T) {
 		Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b",
 	}
 	m.state.WorkingDir = t.TempDir()
-	m.configReloader = func(config.Config) error { return nil }
 
 	m.switchModelPreset("ollama/qwen2.5-coder:7b")
 
@@ -7317,7 +7369,9 @@ func TestSwitchModelPresetSuccessReceiptHasCheckGlyph(t *testing.T) {
 }
 
 func TestSwitchModelPresetReloadFailureReceiptHasCrossGlyph(t *testing.T) {
-	m := newTestModel(t)
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(config.Config) error { return errors.New("cleanup failed") }
+	})
 	m.state.Config.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	}
@@ -7325,7 +7379,6 @@ func TestSwitchModelPresetReloadFailureReceiptHasCrossGlyph(t *testing.T) {
 		Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b",
 	}
 	m.state.WorkingDir = t.TempDir()
-	m.configReloader = func(config.Config) error { return errors.New("cleanup failed") }
 
 	m.switchModelPreset("ollama/qwen2.5-coder:7b")
 
@@ -7383,7 +7436,12 @@ func TestSwitchModelPresetPreservesOtherProfiles(t *testing.T) {
 // already exists) and the stale bindings keep resolving to the old model,
 // so the status bar never updates.
 func TestSwitchModelPresetUpdatesStaleSingleProfile(t *testing.T) {
-	m, _, _ := newModelForConfigTest(t)
+	m, _, _ := newModelForConfigTest(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(cfg config.Config) error {
+			d.State.Config = cfg
+			return nil
+		}
+	})
 	m.state.Config.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	}
@@ -7399,10 +7457,6 @@ func TestSwitchModelPresetUpdatesStaleSingleProfile(t *testing.T) {
 	m.state.Config.Profile.Default = singleModelProfileName
 	m.state.Config.Profile.ActivePreset = "ollama/old-model"
 	m.state.WorkingDir = t.TempDir()
-	m.configReloader = func(cfg config.Config) error {
-		m.state.Config = cfg
-		return nil
-	}
 
 	m.switchModelPreset("ollama/new-model")
 
@@ -7447,10 +7501,10 @@ func TestConnectCancelledClosesOverlay(t *testing.T) {
 func TestDockedSettingsBrowserReloadsAndPrintsReceipts(t *testing.T) {
 	var reloaded bool
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModel(state, WithConfigReloader(func(cfg config.Config) error {
+	m := testModelWith(inproc.Deps{State: state, ReloadConfig: func(cfg config.Config) error {
 		reloaded = true
 		return nil
-	}))
+	}})
 	m.resize(100, 40)
 
 	m.openSettingsBrowser("shell.allow_network")
@@ -7468,7 +7522,7 @@ func TestDockedSettingsBrowserReloadsAndPrintsReceipts(t *testing.T) {
 	m = updated.(Model)
 
 	if !reloaded {
-		t.Fatal("configReloader should have been called")
+		t.Fatal("the runtime reload should have run")
 	}
 	if !m.state.Config.Tools.Shell.AllowNetwork {
 		t.Fatal("ChangedMsg should apply the browser config")
@@ -7484,7 +7538,13 @@ func TestDockedSettingsBrowserReloadsAndPrintsReceipts(t *testing.T) {
 
 func TestBrowserReloadCleanupFailureSynchronizesUIState(t *testing.T) {
 	t.Setenv("TERM", "xterm-256color")
-	m := newTestModel(t)
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(cfg config.Config) error {
+			// reloadAgentRuntime swaps the config before old-resource cleanup.
+			d.State.Config = cfg
+			return errors.New("old runtime cleanup failed")
+		}
+	})
 	m.settingsRegistry()
 	m.setPopup = &completionPopup{}
 	m.lastInputForPopups = "/set shell"
@@ -7492,11 +7552,6 @@ func TestBrowserReloadCleanupFailureSynchronizesUIState(t *testing.T) {
 	reloaded.TUI.Theme = "warm-sunset"
 	reloaded.TUI.Mode = theme.ModeLight
 	expectedTheme := theme.LoadWithConfig(reloaded.TUI.Theme, reloaded.TUI.Mode, theme.DepthFlat, nil)
-	m.configReloader = func(cfg config.Config) error {
-		// reloadAgentRuntime swaps the config before old-resource cleanup.
-		m.state.Config = cfg
-		return errors.New("old runtime cleanup failed")
-	}
 
 	updated, _ := m.Update(settings.ChangedMsg{
 		Cfg:      reloaded,
@@ -8258,13 +8313,14 @@ func TestTrustPromptOpensAtStartupAndDeclineCloses(t *testing.T) {
 }
 
 func TestChangedMsgSavedSkipsProjectWrite(t *testing.T) {
-	m := newViewTestModel(t, 80, 24)
-	m.configReloader = func(config.Config) error { return nil }
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(config.Config) error { return nil }
+	})
 	cfg := m.state.Config
 	cfg.TUI.Theme = "solarized"
 	mm, _ := m.Update(settings.ChangedMsg{Cfg: cfg, Saved: true})
 	m = mm.(Model)
-	if _, err := os.Stat(projectConfigPath(m.state.WorkingDir)); !os.IsNotExist(err) {
+	if _, err := os.Stat(config.ProjectConfigPath(m.state.WorkingDir)); !os.IsNotExist(err) {
 		t.Fatal("model must not save the project config for a Saved ChangedMsg")
 	}
 	if m.state.Config.TUI.Theme != "solarized" {
@@ -8273,8 +8329,9 @@ func TestChangedMsgSavedSkipsProjectWrite(t *testing.T) {
 }
 
 func TestChangedMsgSavedGlobalTargetReceiptBase(t *testing.T) {
-	m := newViewTestModel(t, 80, 24)
-	m.configReloader = func(config.Config) error { return nil }
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(config.Config) error { return nil }
+	})
 	cfg := m.state.Config
 	cfg.TUI.Theme = "solarized"
 	mm, _ := m.Update(settings.ChangedMsg{
@@ -9129,7 +9186,7 @@ func TestDoctorFixSavesKeyAndReloads(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("MARSHAL_CONFIG_DIR", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
-	m := testModelWith(inproc.Deps{State: session.New(config.Default(), work, time.Unix(100, 0), session.Persistence{}), Auth: newMemAuth()},
+	m := testModelWith(inproc.Deps{State: session.New(config.Default(), work, time.Unix(100, 0), session.Persistence{}), Auth: newMemAuth(), HomeDir: home},
 		WithHomeDir(home),
 		WithOpenBrowser(func(string) error { return nil }))
 	m.state.WorkingDir = work

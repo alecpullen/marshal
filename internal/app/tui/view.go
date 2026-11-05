@@ -57,7 +57,7 @@ func (m Model) View() tea.View {
 	// Ctrl+S flips this per session without touching config, so a user who
 	// wants to copy a block of output can release the mouse and take it back
 	// again without editing a TOML file or restarting.
-	if m.mouseReleased || (m.state != nil && !m.state.Config.TUI.MouseCapture) {
+	if m.mouseReleased || !m.sess.Config().TUI.MouseCapture {
 		v.MouseMode = tea.MouseModeNone
 	} else {
 		v.MouseMode = tea.MouseModeCellMotion

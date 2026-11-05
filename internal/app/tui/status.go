@@ -357,7 +357,7 @@ func (m Model) statusLeftSegments() []statusSeg {
 		}
 	} else {
 		segs = append(segs, statusSeg{text: identityStyle().Render("no model"), priority: 1})
-		if !m.state.Config.Privacy.RemoteProvidersAllowed {
+		if !m.sess.Config().Privacy.RemoteProvidersAllowed {
 			segs = append(segs, statusSeg{text: dimStyle().Render("local"), priority: 3})
 		}
 	}
@@ -589,7 +589,7 @@ func (m Model) footerHints() help.FooterHints {
 		PopupOpen:            m.activeCompletionPopup() != nil,
 		IdleRollbackEligible: !m.busy && st.HasBackup,
 		CtrlXHint:            m.ctrlXHint(st),
-		MouseReleased:        m.mouseReleased || !m.state.Config.TUI.MouseCapture,
+		MouseReleased:        m.mouseReleased || !m.sess.Config().TUI.MouseCapture,
 		RunActive:            st.SubagentRunning,
 		Browsing:             m.browsing,
 		// The interruption hint is only advertised when the runtime can honour

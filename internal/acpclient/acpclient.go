@@ -19,9 +19,11 @@ package acpclient
 
 import (
 	"context"
+	"encoding/json"
 
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
+	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 )
 
@@ -110,6 +112,48 @@ type Host interface {
 	// ACP: config/login_provider (new in P3). show is fed by the call's
 	// progress notification.
 	LoginProvider(ctx context.Context, name string, show func(url string)) error
+
+	// SaveUserValue writes value at the dotted TOML path tomlPath of the user
+	// config, leaving the rest of the file alone. value is a bool, string,
+	// integer or string list, or what config.LookupPath returns for one.
+	//
+	// ACP: config/set_value (new in P3). The value travels as JSON, and the
+	// agent converts it by the field's type.
+	SaveUserValue(ctx context.Context, tomlPath string, value any) error
+
+	// SaveUserProviders writes the user config's [providers] section,
+	// credentials included. Entries on disk that are in neither providers nor
+	// baseline survive: another process wrote them after baseline was taken.
+	//
+	// ACP: config/save_providers (new in P3).
+	SaveUserProviders(ctx context.Context, providers, baseline map[string]config.ProviderConfig) error
+
+	// SaveUserPresets writes the user config's [models.presets] section,
+	// merged against baseline as SaveUserProviders is.
+	//
+	// ACP: config/save_presets (new in P3).
+	SaveUserPresets(ctx context.Context, presets, baseline map[string]routing.ModelPreset) error
+
+	// SaveProviderKey stores key as the literal API key of the provider called
+	// name in the user config, keeping the entry's other fields.
+	//
+	// ACP: config/set_provider_key (exists). Its handler writes the provider's
+	// full entry; this call writes only the credential.
+	SaveProviderKey(ctx context.Context, name, key string) error
+
+	// PreparePresets proposes presets for the models a connected provider
+	// reported: cfg's presets with every reported model's preset created or
+	// refreshed from the models.dev catalog (read only when cfg's consent
+	// allows) and the provenance sidecar. cfg is not changed.
+	//
+	// ACP: config/prepare_presets (new in P3).
+	PreparePresets(ctx context.Context, cfg config.Config, provider, baseURL string, models []schema.ModelInfo) (map[string]routing.ModelPreset, acpwire.PresetSetup, error)
+
+	// SaveProvenance writes the provenance sidecar PreparePresets returned.
+	// A nil or empty provenance writes nothing.
+	//
+	// ACP: config/save_provenance (new in P3).
+	SaveProvenance(ctx context.Context, provenance json.RawMessage) error
 }
 
 // Session is one conversation the TUI drives. It gains its groups' methods
@@ -539,4 +583,52 @@ type Session interface {
 	// ACP: session/mcp_login (new in P3). show is fed by the call's progress
 	// notification.
 	LoginMCP(ctx context.Context, server string, show func(url string)) error
+
+	// Config is the session's live config. Until plan 7d redacts them, it
+	// carries literal keys.
+	//
+	// ACP: session/config (new in P3); refreshed by a session_status update.
+	Config() config.Config
+
+	// Layers is the session's config layers, with provenance: the snapshot
+	// the last write or startup loaded. The zero value means none was loaded.
+	//
+	// ACP: session/config (new in P3).
+	Layers() config.Layers
+
+	// ApplyConfig installs cfg as the session's config without saving it or
+	// rebuilding the runtime. A manual mode selection survives, as a reload's
+	// does.
+	//
+	// ACP: session/apply_config (new in P3).
+	ApplyConfig(ctx context.Context, cfg config.Config) error
+
+	// ReloadConfig rebuilds the runtime from cfg. It reports false, and does
+	// nothing, when the session has no reload path; the error is the
+	// rebuild's.
+	//
+	// ACP: session/reload_config (new in P3).
+	ReloadConfig(ctx context.Context, cfg config.Config) (bool, error)
+
+	// ReconnectMCP rebuilds the runtime from the session's current config, so
+	// an MCP server that has just been signed in to connects. It clears the
+	// provider and config notices first, so a fresh notice the rebuild sets
+	// survives. It reports false, and does nothing, when the session has no
+	// reload path.
+	//
+	// ACP: session/mcp_reconnect (new in P3).
+	ReconnectMCP(ctx context.Context) (bool, error)
+
+	// SaveProjectConfig writes cfg's project-scoped values to the session's
+	// project config, diffed against the session's layers, so that no
+	// user-global value is baked into the project file.
+	//
+	// ACP: session/save_project_config (new in P3).
+	SaveProjectConfig(ctx context.Context, cfg config.Config) error
+
+	// SaveVerifyCommands writes the plan run's verify commands to the
+	// session's project config.
+	//
+	// ACP: session/save_verify_commands (new in P3).
+	SaveVerifyCommands(ctx context.Context, build, test string) error
 }

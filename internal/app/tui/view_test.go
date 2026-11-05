@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -615,7 +614,7 @@ func TestFullFrameDockPanelHidesTranscriptAndInput(t *testing.T) {
 	m.state.AddMessage(session.RoleUser, "transcript marker text", session.ContentTypePlain)
 	m.refreshViewport()
 
-	m.dock.Open(settings.NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), ""))
+	m.dock.Open(settings.NewBrowser(config.Default(), ""))
 	out := stripANSI(m.viewString())
 	if !strings.Contains(out, "Settings") {
 		t.Fatalf("expected the settings panel in the view, got:\n%s", out)

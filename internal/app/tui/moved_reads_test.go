@@ -150,6 +150,27 @@ var movedStateReads = map[string]string{
 	"SetNotice":     "6",
 	"ClearNotice":   "6",
 	"DismissNotice": "6",
+
+	// The model reads the layers through the session since 7b, and the
+	// adapter refreshes them after every write: the TUI holds no snapshot of
+	// its own and never installs one. Installing a new config is the same
+	// plan's move: applyNewConfig rebases through Session.ApplyConfig.
+	"Layers":                  "7b",
+	"SetLayers":               "7b",
+	"RebaseInteractionConfig": "7b",
+
+	// Every config read goes through Session.Config since 7b. The skills panel
+	// is the one holdout — plan 8 hands it the session — and deferredStateReads
+	// records that as an exception rather than a hole.
+	"Config": "7b",
+}
+
+// deferredStateReads names, per file, the moved reads that file still makes and
+// the plan that finishes the move. It exists so a move staged across plans is
+// still enforced everywhere else: the guard fails the moment any *other* file
+// reads the name, and an entry fails the guard once its last read disappears.
+var deferredStateReads = map[string]map[string]string{
+	"skills/panel.go": {"Config": "8"},
 }
 
 // movedReadSites returns one "<line>\t<Name>" entry per selector X.Sel in f
@@ -186,6 +207,9 @@ func movedReadSites(fset *token.FileSet, f *ast.File, moved map[string]string) [
 // files the way seamViolations does.
 func TestMovedStateReadsStayMoved(t *testing.T) {
 	fset := token.NewFileSet()
+	// seenDeferred records the staged exemptions this walk actually observed,
+	// so an exemption cannot outlive the read it covers.
+	seenDeferred := map[string]bool{}
 	err := filepath.WalkDir(".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -209,8 +233,17 @@ func TestMovedStateReadsStayMoved(t *testing.T) {
 			return rerr
 		}
 		rel = filepath.ToSlash(rel)
+		deferred := deferredStateReads[rel]
 		for _, site := range movedReadSites(fset, f, movedStateReads) {
 			line, field, _ := strings.Cut(site, "\t")
+			if plan, ok := deferred[field]; ok {
+				// Staged: this file's move finishes in a later plan. Recorded
+				// in deferredStateReads, which TestDeferredStateReadsStaysLive
+				// keeps honest.
+				_ = plan
+				seenDeferred[rel+"\t"+field] = true
+				continue
+			}
 			t.Errorf("%s:%s reads state.%s, which moved behind the seam in plan %s: read it from m.sess",
 				rel, line, field, movedStateReads[field])
 		}
@@ -218,6 +251,14 @@ func TestMovedStateReadsStayMoved(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("walk: %v", err)
+	}
+	for file, names := range deferredStateReads {
+		for name, plan := range names {
+			if !seenDeferred[file+"\t"+name] {
+				t.Errorf("deferredStateReads exempts %s from state.%s until plan %s, but %s no longer reads it: drop the entry",
+					file, name, plan, file)
+			}
+		}
 	}
 }
 
@@ -262,8 +303,8 @@ func f(m *Model, child *session.State) {
 		t.Fatalf("parse fixture: %v", err)
 	}
 	got := movedReadSites(fset, f, movedStateReads)
-	if len(got) != 2 {
-		t.Fatalf("movedReadSites returned %d entries, want 2: %v", len(got), got)
+	if len(got) != 3 {
+		t.Fatalf("movedReadSites returned %d entries, want 3: %v", len(got), got)
 	}
 	var names []string
 	for _, site := range got {
@@ -271,7 +312,7 @@ func f(m *Model, child *session.State) {
 		names = append(names, field)
 	}
 	sort.Strings(names)
-	if want := []string{"Trusted", "WorkingDir"}; !slices.Equal(names, want) {
+	if want := []string{"Config", "Trusted", "WorkingDir"}; !slices.Equal(names, want) {
 		t.Errorf("movedReadSites names = %v, want %v", names, want)
 	}
 }

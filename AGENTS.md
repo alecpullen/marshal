@@ -224,7 +224,9 @@ seams that implement it.
 - **Isolate the environment.** `testenv.Run` in `TestMain` covers the package
   default. Tests that assert database, logging or unrelated runtime behavior
   pass explicit fixtures (`WithWorkingDir`, `WithHomeDir`, `WithConfigLoader`)
-  rather than relying on the ambient environment.
+  rather than relying on the ambient environment. A TUI test that checks a
+  config file the seam writes must set `inproc.Deps.HomeDir` or
+  `UserConfigPath` too: the TUI's own `WithHomeDir` does not reach the adapter.
 - **Inject auth explicitly.** `provider.AuthResolver` is the credential/OAuth
   dependency. `app.WithAuthResolver` pins it for a runtime; it reaches provider
   construction, the OAuth refresh workers, the MCP managers, and the client

@@ -16,6 +16,7 @@ import (
 
 	"marshal/internal/acpclient"
 	"marshal/internal/acpwire"
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/commands"
 	"marshal/internal/interaction"
@@ -103,9 +104,28 @@ type Deps struct {
 	// provider.DefaultAuthResolver(), the substitution tui.New used to make.
 	Auth provider.AuthResolver
 	// ModelCacheDir is the data directory of the model cache and of the
-	// clients the probes build. Empty means no cache: ListModels finds
-	// nothing, and the other cache calls do nothing.
+	// clients the probes build, and where preset setup reads the models.dev
+	// catalog and the provenance sidecar. Empty means no cache: ListModels
+	// finds nothing, and the other cache calls do nothing.
 	ModelCacheDir string
+
+	// ReloadConfig is the runtime's config reloader: it rebuilds the runtime
+	// from cfg. Nil means the session has no reload path: ReloadConfig and
+	// ReconnectMCP report false and change nothing.
+	ReloadConfig func(cfg config.Config) error
+	// ReloadLayers re-reads the config layers from disk. False means the read
+	// failed, and the session keeps the layers it has. Nil means a write
+	// refreshes no layers.
+	ReloadLayers func() (config.Layers, bool)
+	// TrustRefresh advances the permanent-trust record's config hash for dir
+	// after a project save. Nil means no hash is refreshed.
+	TrustRefresh func(dir string)
+	// HomeDir is the home directory the user config is found under. Empty
+	// means os.UserHomeDir().
+	HomeDir string
+	// UserConfigPath is the user config file. Empty means
+	// config.UserConfigPath of the home directory.
+	UserConfigPath string
 }
 
 // ReferenceFinder resolves what references a symbol. ok is false when no
@@ -183,6 +203,18 @@ type Session struct {
 	// auth is the runtime's credential and OAuth dependency: Deps.Auth, or
 	// provider.DefaultAuthResolver() when the caller supplied none. Never nil.
 	auth provider.AuthResolver
+	// reloadConfig, reloadLayers, trustRefresh, homeDir and userConfigFile are
+	// the runtime's config-write dependencies: Deps.ReloadConfig,
+	// Deps.ReloadLayers, Deps.TrustRefresh, Deps.HomeDir and
+	// Deps.UserConfigPath.
+	reloadConfig   func(cfg config.Config) error
+	reloadLayers   func() (config.Layers, bool)
+	trustRefresh   func(dir string)
+	homeDir        string
+	userConfigFile string
+	// modelCacheDir is Deps.ModelCacheDir, for preset setup's catalog and
+	// provenance sidecar.
+	modelCacheDir string
 	// actions holds the row actions of the most recent results that minted
 	// any, by ID; actionResults lists each such result's IDs, oldest first;
 	// actionSeq numbers them. All three are guarded by mu.
@@ -363,6 +395,15 @@ func (s *Session) Status() acpwire.SessionStatus {
 		status.Notice = &n
 	}
 	status.WatchResume = s.watchResume()
+	// The two files a config write changes, when the agent can locate them. A
+	// home it cannot find leaves the user path empty rather than failing a
+	// read that never blocks.
+	if path, err := userConfigPath(Deps{HomeDir: s.homeDir, UserConfigPath: s.userConfigFile}); err == nil {
+		status.UserConfigPath = path
+	}
+	if path := s.projectConfigPath(); path != "" {
+		status.ProjectConfigPath = path
+	}
 	return status
 }
 

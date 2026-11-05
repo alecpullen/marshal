@@ -34,8 +34,9 @@ func TestApplyConnectDoneSuccessClearsProviderNotice(t *testing.T) {
 // provider construction works with the new config — the stale notice must
 // be cleared.
 func TestPersistAndReloadSuccessClearsProviderNotice(t *testing.T) {
-	m := newTestModel(t)
-	m.configReloader = func(config.Config) error { return nil }
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(config.Config) error { return nil }
+	})
 	m.state.SetNotice(session.Notice{Category: session.NoticeProvider, Message: "provider request timed out"})
 
 	saveErr, reloadErr := m.persistAndReload(m.state.Config)
@@ -50,8 +51,9 @@ func TestPersistAndReloadSuccessClearsProviderNotice(t *testing.T) {
 // A failed reload proves nothing about the provider — the notice must
 // stay so the user keeps seeing why the agent is unavailable.
 func TestPersistAndReloadFailureRetainsProviderNotice(t *testing.T) {
-	m := newTestModel(t)
-	m.configReloader = func(config.Config) error { return errors.New("cleanup failed") }
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(config.Config) error { return errors.New("cleanup failed") }
+	})
 	m.state.SetNotice(session.Notice{Category: session.NoticeProvider, Message: "provider request timed out"})
 
 	_, reloadErr := m.persistAndReload(m.state.Config)

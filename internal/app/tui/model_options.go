@@ -130,14 +130,15 @@ func (m *Model) savePresetsAndReload(cfg config.Config, baseline map[string]rout
 		return err, nil
 	}
 	m.configSavePending = false
-	if m.configReloader != nil {
-		// reloadAgentRuntime may install cfg before reporting a cleanup
-		// error; invalidate config-derived state before attempting it.
-		m.setReg = nil
-		if err := m.configReloader(cfg); err != nil {
-			m.applyNewConfig(cfg)
-			return nil, err
-		}
+	// reloadAgentRuntime may install cfg before reporting a cleanup
+	// error; invalidate config-derived state before attempting it.
+	m.setReg = nil
+	reloaded, err := m.sess.ReloadConfig(m.ctx, cfg)
+	if err != nil {
+		m.applyNewConfig(cfg)
+		return nil, err
+	}
+	if reloaded {
 		m.afterRuntimeReload()
 	}
 	m.applyNewConfig(cfg)
@@ -161,7 +162,9 @@ func (m *Model) flushPendingModelOptions() tea.Cmd {
 		return nil
 	}
 	pending := m.pendingModelOptions
-	reloadErr := m.configReloader(pending.cfg)
+	// A session with no reload path reports (false, nil): the change is
+	// activated all the same, which is what the pending entry was for.
+	_, reloadErr := m.sess.ReloadConfig(m.ctx, pending.cfg)
 	if reloadErr != nil {
 		pending.retry = true
 		m.note(fmt.Sprintf("Could not activate %s options: %v", pending.presetName, reloadErr))

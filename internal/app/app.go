@@ -2778,11 +2778,11 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			tuiOpts = append(tuiOpts, tui.WithOpenConnectOnStart())
 		}
 		// Config reloading stays wired even when the initial provider build
-		// failed: /settings, /set and /connect are the recovery path. A
-		// successful reload rebuilds the runtime in place, and the session
-		// reads the runtime's current runner from the next turn on, so a
-		// rebuilt runner needs no adoption here.
-		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
+		// failed: /settings, /set and /connect are the recovery path, and they
+		// reach the reload through deps.ReloadConfig above. A successful
+		// reload rebuilds the runtime in place, and the session reads the
+		// runtime's current runner from the next turn on, so a rebuilt runner
+		// needs no adoption here.
 		tuiOpts = append(tuiOpts, tui.WithHomeDir(homeDir))
 		tuiOpts = append(tuiOpts, tui.WithWorkingDir(workingDir))
 		tuiOpts = append(tuiOpts, tui.WithSkillIndex(rt.SkillIndex))

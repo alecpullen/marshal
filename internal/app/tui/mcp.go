@@ -8,7 +8,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/acpclient"
-	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/mcpauth"
 )
 
@@ -52,24 +51,18 @@ func (m *Model) handleMCPCommand(args []string) (tea.Model, tea.Cmd) {
 // the registry the runner is swapped onto. Without this, /mcp auth would
 // report success while leaving the server's tools unreachable until restart.
 func (m *Model) reconnectMCPServer(name string) {
-	if m.configReloader == nil {
+	cfg := m.sess.Config()
+	reloaded, err := m.sess.ReconnectMCP(m.ctx)
+	if !reloaded {
 		// No reload path (embedded or test models). The token is stored, so a
 		// later runtime build connects the server.
 		return
 	}
-	cfg := m.sess.Config()
-	// Clear the startup notices BEFORE the rebuild, not after. The stale
-	// "needs OAuth" notice is exactly what this flow resolves, so it must go —
-	// but if the server still fails to start, the rebuild sets a fresh notice
-	// of its own, and clearing notices afterwards (as afterRuntimeReload does)
-	// would wipe it and leave the user with a bare success message.
-	_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeProvider)
-	_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeConfig)
 	// reloadAgentRuntime may install cfg before reporting a cleanup error;
 	// invalidate config-derived state before attempting it, mirroring the
 	// settings-browser and /set reload paths.
 	m.setReg = nil
-	if err := m.configReloader(cfg); err != nil {
+	if err != nil {
 		m.applyNewConfig(cfg)
 		m.note("\u2717 Authorized MCP server \"" + name + "\", but it could not be connected: " + err.Error())
 		return

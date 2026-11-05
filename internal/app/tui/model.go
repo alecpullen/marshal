@@ -198,10 +198,9 @@ type Model struct {
 	// a provider-build failure; the LSP queries must outlive a turn but be
 	// cancelled on shutdown so a lingering lookup never leaks past exit.
 	// lspCancel is called from beginShutdown.
-	lspCtx         context.Context
-	lspCancel      context.CancelFunc
-	busy           bool
-	configReloader ConfigReloader
+	lspCtx    context.Context
+	lspCancel context.CancelFunc
+	busy      bool
 	// legacySession re-reads the runtime's current state and tool registry
 	// after Host.NewSession, for the groups not yet behind the seam. Plan 9
 	// deletes it with WithLegacyState.
@@ -607,17 +606,6 @@ func WithLegacyState(state *session.State) Option {
 	return func(m *Model) { m.state = state }
 }
 
-type ConfigReloader func(cfg config.Config) error
-
-func WithConfigReloader(fn ConfigReloader) Option {
-	return func(m *Model) {
-		m.configReloader = fn
-	}
-}
-
-// LegacySession is the runtime's current state and tool registry, which the
-// model re-reads after Host.NewSession for the groups not yet behind the seam.
-// Plan 9 deletes it with WithLegacyState.
 type LegacySession struct {
 	State        *session.State
 	ToolRegistry *registry.Registry
@@ -791,9 +779,10 @@ func relPath(workingDir, path string) string {
 func (m *Model) applyNewConfig(cfg config.Config) {
 	// Rebase rather than assign: the session owns the mode override, so an
 	// unrelated reload must not silently revert a manual selection or an
-	// approved grant. RebaseInteractionConfig installs the new config with the
-	// remaining override applied and preserves the system-access flag.
-	m.state.RebaseInteractionConfig(cfg)
+	// approved grant. ApplyConfig installs the new config with the remaining
+	// override applied and preserves the system-access flag; its error is the
+	// rebase's, which this path has never surfaced.
+	_ = m.sess.ApplyConfig(m.ctx, cfg)
 	m.configViewsChanged(cfg)
 }
 
@@ -853,16 +842,17 @@ func (m *Model) persistAndReload(cfg config.Config) (saveErr, reloadErr error) {
 		return err, nil
 	}
 	m.configSavePending = false
-	if m.configReloader != nil {
-		// reloadAgentRuntime may install cfg before reporting a cleanup
-		// error; invalidate config-derived state before attempting it.
-		m.setReg = nil
-		if err := m.configReloader(cfg); err != nil {
-			// The runtime has already swapped cfg before cleanup can fail.
-			// Keep all TUI-derived state aligned with that live config.
-			m.applyNewConfig(cfg)
-			return nil, err
-		}
+	// reloadAgentRuntime may install cfg before reporting a cleanup
+	// error; invalidate config-derived state before attempting it.
+	m.setReg = nil
+	reloaded, err := m.sess.ReloadConfig(m.ctx, cfg)
+	if err != nil {
+		// The runtime has already swapped cfg before cleanup can fail.
+		// Keep all TUI-derived state aligned with that live config.
+		m.applyNewConfig(cfg)
+		return nil, err
+	}
+	if reloaded {
 		m.afterRuntimeReload()
 	}
 	m.applyNewConfig(cfg)
@@ -954,13 +944,14 @@ func (m *Model) handleSetCommand(args []string) {
 				return
 			}
 			m.configSavePending = false
-			if m.configReloader != nil {
-				m.setReg = nil
-				if err := m.configReloader(reg.Config()); err != nil {
-					m.applyNewConfig(reg.Config())
-					sys(fmt.Sprintf("✗ %s saved, but live reload failed: %v", key, err))
-					return
-				}
+			m.setReg = nil
+			reloaded, err := m.sess.ReloadConfig(m.ctx, reg.Config())
+			if err != nil {
+				m.applyNewConfig(reg.Config())
+				sys(fmt.Sprintf("✗ %s saved, but live reload failed: %v", key, err))
+				return
+			}
+			if reloaded {
 				m.afterRuntimeReload()
 			}
 			m.applyNewConfig(reg.Config())
@@ -1786,13 +1777,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.Saved {
 			// The panel already wrote the target file; reload only.
-			if m.configReloader != nil {
-				m.setReg = nil
-				if err := m.configReloader(msg.Cfg); err != nil {
-					m.note(fmt.Sprintf("✗ settings saved, but live reload failed: %v", err))
-					m.refreshViewport()
-					return m, nil
-				}
+			m.setReg = nil
+			reloaded, err := m.sess.ReloadConfig(m.ctx, msg.Cfg)
+			if err != nil {
+				m.note(fmt.Sprintf("✗ settings saved, but live reload failed: %v", err))
+				m.refreshViewport()
+				return m, nil
+			}
+			if reloaded {
 				m.afterRuntimeReload()
 			}
 			m.applyNewConfig(msg.Cfg)

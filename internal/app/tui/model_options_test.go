@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"marshal/internal/acpclient/inproc"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/modeloptions"
@@ -13,13 +14,14 @@ import (
 )
 
 func TestOptionsIdleChangePersistsAndReloads(t *testing.T) {
-	m, workDir, homeDir := newModelForConfigTest(t)
 	reloads := 0
-	m.configReloader = func(cfg config.Config) error {
-		reloads++
-		m.state.Config = cfg
-		return nil
-	}
+	m, workDir, homeDir := newModelForConfigTest(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(cfg config.Config) error {
+			reloads++
+			d.State.Config = cfg
+			return nil
+		}
+	})
 	m.state.SetActiveRoute(session.RouteInfo{
 		Role: routing.RoleImplementer, Profile: "p", Preset: "coder", Active: true,
 	})
@@ -47,7 +49,7 @@ func TestOptionsIdleChangePersistsAndReloads(t *testing.T) {
 	m = asModel(t, m2)
 
 	if reloads != 1 {
-		t.Fatalf("configReloader called %d times, want 1", reloads)
+		t.Fatalf("the runtime reload ran %d times, want 1", reloads)
 	}
 	if m.pendingModelOptions != nil {
 		t.Fatal("pending state should be nil after idle commit")
@@ -70,9 +72,10 @@ func TestOptionsIdleChangePersistsAndReloads(t *testing.T) {
 }
 
 func TestOptionsBusyChangeSavesWithoutReloading(t *testing.T) {
-	m, workDir, homeDir := newModelForConfigTest(t)
 	reloads := 0
-	m.configReloader = func(config.Config) error { reloads++; return nil }
+	m, workDir, homeDir := newModelForConfigTest(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(config.Config) error { reloads++; return nil }
+	})
 	m.busy = true
 	m.state.SetActiveRoute(session.RouteInfo{
 		Role: routing.RoleImplementer, Profile: "p", Preset: "coder", Active: true,
@@ -101,7 +104,7 @@ func TestOptionsBusyChangeSavesWithoutReloading(t *testing.T) {
 	m = asModel(t, m2)
 
 	if reloads != 0 {
-		t.Fatalf("configReloader called %d times while busy, want 0", reloads)
+		t.Fatalf("the runtime reload ran %d times while busy, want 0", reloads)
 	}
 	if m.state.Config.Models.Presets["coder"].ContextWindow != 32000 {
 		t.Fatalf("live preset changed while busy: got %d, want 32000", m.state.Config.Models.Presets["coder"].ContextWindow)
@@ -127,13 +130,14 @@ func TestOptionsBusyChangeSavesWithoutReloading(t *testing.T) {
 }
 
 func TestOptionsPendingChangeFlushesWhenIdle(t *testing.T) {
-	m, _, _ := newModelForConfigTest(t)
 	reloads := 0
-	m.configReloader = func(cfg config.Config) error {
-		reloads++
-		m.state.Config = cfg
-		return nil
-	}
+	m, _, _ := newModelForConfigTest(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(cfg config.Config) error {
+			reloads++
+			d.State.Config = cfg
+			return nil
+		}
+	})
 	m.busy = true
 	m.state.SetActiveRoute(session.RouteInfo{
 		Role: routing.RoleImplementer, Profile: "p", Preset: "coder", Active: true,
@@ -166,7 +170,7 @@ func TestOptionsPendingChangeFlushesWhenIdle(t *testing.T) {
 	m = asModel(t, m2)
 
 	if reloads != 1 {
-		t.Fatalf("configReloader called %d times on flush, want 1", reloads)
+		t.Fatalf("the runtime reload ran %d times on flush, want 1", reloads)
 	}
 	if m.pendingModelOptions != nil {
 		t.Fatal("pending state should be cleared after flush")
@@ -177,12 +181,13 @@ func TestOptionsPendingChangeFlushesWhenIdle(t *testing.T) {
 }
 
 func TestOptionsReloadFailureRetainsPendingCandidate(t *testing.T) {
-	m, _, _ := newModelForConfigTest(t)
 	reloads := 0
-	m.configReloader = func(config.Config) error {
-		reloads++
-		return errors.New("reload failed")
-	}
+	m, _, _ := newModelForConfigTest(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(config.Config) error {
+			reloads++
+			return errors.New("reload failed")
+		}
+	})
 	m.busy = true
 	m.state.SetActiveRoute(session.RouteInfo{
 		Role: routing.RoleImplementer, Profile: "p", Preset: "coder", Active: true,
@@ -215,7 +220,7 @@ func TestOptionsReloadFailureRetainsPendingCandidate(t *testing.T) {
 	m = asModel(t, m2)
 
 	if reloads != 1 {
-		t.Fatalf("configReloader called %d times, want 1", reloads)
+		t.Fatalf("the runtime reload ran %d times, want 1", reloads)
 	}
 	if m.pendingModelOptions == nil {
 		t.Fatal("pending candidate should be retained after reload failure")

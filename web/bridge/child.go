@@ -18,9 +18,12 @@ import (
 	"time"
 )
 
-// maxFrameBytes bounds one inbound JSON-RPC frame. It matches the ACP
-// server's inbound default (bufio.Scanner, ~1 MiB).
-const maxFrameBytes = 1 << 20
+// maxFrameBytes bounds one inbound JSON-RPC frame from the child. A long
+// session's session/stack result, or the first stack_patch, passes 2 MiB
+// (2,000 calls measured about 2.67 MB), so the cap sits well above that and
+// matches the pipe P3 gives the ACP transport (p3-acp-transport.md, R2). It
+// is a var so tests can shrink it, as restartBackoff is.
+var maxFrameBytes = 64 << 20
 
 // stopGrace is how long Stop waits between SIGTERM and SIGKILL.
 const stopGrace = 2 * time.Second
@@ -437,8 +440,10 @@ func (c *Child) writeFrame(v any) error {
 
 // readLoop demuxes inbound frames: responses (id, no method) go to the
 // pending request, frames with a method go to OnNotification. It
-// returns when the child's stdout closes; the supervision goroutine
-// handles the exit.
+// returns when the child's stdout closes or a frame cannot be read; the
+// supervision goroutine handles the exit. A read failure that is not a
+// shutdown also fails every pending request and kills the generation, so
+// an oversized frame surfaces to its caller instead of wedging the pipe.
 func (c *Child) readLoop(r io.Reader) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64<<10), maxFrameBytes)
@@ -502,6 +507,22 @@ func (c *Child) readLoop(r io.Reader) {
 		c.pendMu.Unlock()
 		if ok {
 			ch <- res
+		}
+	}
+
+	// A scan error that is not a shutdown means the pipe is unusable: the
+	// frame was too long, or the read failed. Fail the pending requests so
+	// the caller waiting on this frame sees it, then kill the generation so
+	// supervise reaps it and respawns, as it does for any exit. On a
+	// shutdown Stop and Detach close the pipe themselves and hand their
+	// pending requests errStopped.
+	if err := sc.Err(); err != nil {
+		c.mu.Lock()
+		stopping := c.stopping
+		c.mu.Unlock()
+		if !stopping {
+			c.failPending(fmt.Errorf("bridge: read child output: %w", err))
+			c.killCurrent()
 		}
 	}
 }

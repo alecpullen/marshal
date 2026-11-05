@@ -279,10 +279,18 @@ Decision: `WireTree`, with the C6 additions.
   `any`: the user-value write's, which carries what `config.LookupPath`
   returns or a bool or string list (plan 7b). P3 sends it as JSON and
   converts it by the field's type.
-- **Secrets.** No read returns one. A literal API key in a config read is
-  replaced by `""`, and its source (`config`, `env`, `keychain`, `oauth`
-  or `none`) is reported alongside, as `config/get` does (plan 7d). Only
-  these calls carry a secret: the provider-key write (C10), the sudo
+- **Secrets.** No read returns one. A literal secret in a config read
+  (each provider's API key, the web search key and the desktop CDP
+  URL's userinfo: `config.MaskSecrets`' set) is replaced by its mask,
+  the `••••` and last four characters the settings browser shows
+  (`strutil.MaskKey`), or the URL with its userinfo masked. No real
+  secret begins with the bullets, and an empty secret stays empty, so
+  every reader that asks whether a key is set reads the mask correctly.
+  A secret's source is already in the config, as `api_key_env` or
+  `auth`. Every config the client hands back (an install, a project
+  save, a user write, a probe) has each mask replaced agent side by the
+  stored secret it stands for; a mask with nothing behind it fails the
+  call (plan 7d). Only these calls carry a secret: the provider-key write (C10), the sudo
   answer (C7), the probes, whose provider config may hold a key typed
   but not yet saved, as `config/probe_provider`'s `config` does (plan
   7a), and the user-value write when its path is a key's, as the
@@ -660,10 +668,10 @@ Decision: `WireTree`, with the C6 additions.
 ### C10. Config, providers and trust
 
 - **Reads.** `Session.Config()` returns the session's effective config
-  with literal keys redacted (C3, plan 7d). `Session.Layers()` returns
-  the layers with provenance, redacted the same way. `config.Diagnose`
-  stays client-side: it is pure over those two values. Until plan 7d
-  both carry literal keys, as the state does (plan 7b).
+  with its secrets masked (C3, plan 7d). `Session.Layers()` returns the
+  layers with provenance, masked the same way. `config.Diagnose` stays
+  client-side: it is pure over those two values, and its key checks
+  only ask whether a key is set, which a mask answers.
 - **Writes** (plan 7b). Each save function the TUI calls today becomes
   one call with the same arguments minus the path, and the same
   semantics:
@@ -682,8 +690,9 @@ Decision: `WireTree`, with the C6 additions.
   own busy check ("Stop the active turn before applying settings"), so
   no write returns the busy code.
 
-  A provider write keeps any stored key it does not name, as
-  `config/set_providers` does (plan 7d).
+  A provider write restores each masked key to the stored key it stands
+  for. The settings browser names the providers it renamed, so a key
+  follows its provider (plan 7d).
 - **Reloads** (plan 7b) are `Session` calls. `ApplyConfig` installs a
   config without saving or rebuilding, the agent half of the TUI's
   `applyNewConfig`. `ReloadConfig` rebuilds the runtime from a config,
@@ -719,11 +728,14 @@ Decision: `WireTree`, with the C6 additions.
   (C12), and the call returns when the callback lands. This matches how
   ACP's `/mcp auth` works today. The reload that reconnects an MCP
   server after its sign-in is `ReconnectMCP` (plan 7b).
-- **Trust.** `Host.DecideTrust(ctx, dir, decision)` replaces the trust
-  prompt callback. A trust refresh happens inside the config reload.
+- **Trust** (plan 7c). `Host.TrustPrompt()` reads the directory whose
+  trust decision is pending, and `Host.DecideTrust(ctx, dir, decision)`
+  answers it, replacing the trust prompt callback. A trust refresh
+  happens inside the project save (plan 7b).
 - **Skill gate settings** (enabled flag, remembered decisions, clearing
-  one) become `Session` calls.
-- **Tools.** The agents panel's tool lookup becomes a `Tools()` read.
+  one) move with the skills panel (plan 8, decided with the user).
+- **Tools** (plan 7c). The agents panel's tool lookup becomes a
+  `Session.Tools()` read of the runtime's current registry.
 
 ### C11. Project data
 
@@ -907,17 +919,20 @@ The TUI works after every plan.
      the three reload calls and preset setup. The adapter refreshes the
      layers and the trust hash after each write. Keys stay literal. The
      bridge's frame cap rides along (decided with the user).
-   - **7c. Trust, skill gates and tools.** `Host.DecideTrust`, the
-     skill-gate settings calls and `Tools()`.
-   - **7d. Secrets.** `Config` and `Layers` redact literal keys and
-     report their sources. Writes and reloads restore the stored keys a
-     config does not name, a renamed provider keeps its key, and the
-     probes fill in a saved provider's key. T7.
+   - **7c. Trust and tools** ([plan](plans/2026-11-05-p2-7c-trust-tools-plan.md)).
+     `Host.TrustPrompt`, `Host.DecideTrust` and `Session.Tools`. The
+     skill-gate settings moved to plan 8.
+   - **7d. Secrets** ([plan](plans/2026-11-05-p2-7d-secrets-plan.md)).
+     `Config` and `Layers` carry each secret's mask in its place.
+     Installs, project saves, user writes and probes restore the stored
+     secret a mask stands for, and the settings browser names its
+     renames so a key follows its provider. T7.
 
    7a comes first: 7d's redacted read leaves the TUI without literal
    keys, so every reader of one must already be agent side. 7c and 7d
    depend only on 7b, and touch different TUI files.
-8. **Project data** (C11).
+8. **Project data** (C11), with the skills panel's skill-gate settings
+   (decided with the user).
 9. **Close-out.** Delete `WithLegacyState`, empty the allowlist, write
    the list of methods P3 must add, and update design §4.5, §7 and §8.
 
@@ -1644,6 +1659,38 @@ writing plan 7b; the base suite passed (117 packages):
   `SaveProviderKey` uses `config/set_provider_key`, which exists.
 - **The bridge's frame cap** (P3 spec G5) is fixed in plan 7b, as
   decided with the user: 64 MiB, and an oversized frame fails the child.
+
+**2026-11-05, against `d9db66e7` (plan 7b merged).** Found while
+writing plans 7c and 7d, which run in parallel (decided with the user):
+- **Skill-gate settings move to plan 8** (C10, Migration order). They
+  live in the skills panel, which plan 8 moves as a whole, so 7c and
+  plan 8 stay disjoint (decided with the user).
+- **The pending trust prompt is a host read** (C10). `Host.TrustPrompt`
+  returns the directory waiting for a decision, which does not change
+  while the host runs: declining left `/trust` able to ask again.
+  `DecideTrust` refuses a decision for another directory, with nothing
+  pending, or with an unknown value.
+- **`Tools` reads the runtime's current registry** (C10). It reports
+  false while no runner is built. A reload that builds the runner now
+  reaches the agents roster at once; before, it waited for `/new`.
+- **The new ACP methods are named** `trust/prompt`, `trust/decide` and
+  `session/tools`.
+- **A secret travels as its mask, in its own place** (C3, C10; decided
+  with the user that nothing visible changes). This replaces "replaced
+  by `""`, its source reported alongside". With the mask in the key's
+  place, the "key stored" label, the wizard's label, the connect flow's
+  env clearing, `config.Diagnose` and the browser's receipts all read it
+  unchanged. The source is already in the config.
+- **Restoring follows a fixed order** (C3). The same path in the live
+  config, then in the last-loaded layers; for a provider the call names
+  as renamed, its old name; then the one stored key whose mask it is. A
+  literal or empty value is kept, so a cleared key stays cleared. A mask
+  with nothing behind it fails a write or install, and a probe drops the
+  key instead.
+- **`SaveUserProviders` gains the renames** (C10). The settings browser
+  records each rename since its baseline.
+- **MCP `env` and `headers` stay in the clear**, a recorded follow-up:
+  they are outside `config.MaskSecrets`' set and C3's.
 
 ## Implementation record
 

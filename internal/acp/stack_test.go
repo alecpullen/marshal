@@ -617,6 +617,104 @@ func TestStackSubagentErrors(t *testing.T) {
 	}
 }
 
+func TestMarshalClientsGetTheFastStackCadence(t *testing.T) {
+	marshalCapable := func() bool { return true }
+	plain := func() bool { return false }
+	for _, c := range []struct {
+		name     string
+		marshal  func() bool
+		wantTurn time.Duration
+		wantIdle time.Duration
+	}{
+		{"marshal client", marshalCapable, 50 * time.Millisecond, 50 * time.Millisecond},
+		{"plain client", plain, 200 * time.Millisecond, 500 * time.Millisecond},
+		{"no capability seam", nil, 200 * time.Millisecond, 500 * time.Millisecond},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m := NewTurnManager(TurnManagerConfig{
+				Lookup:  func(string) (*TurnRuntime, bool) { return nil, false },
+				Notify:  func(string, any) error { return nil },
+				Marshal: c.marshal,
+			})
+			turn, idle := m.stackIntervals()
+			if turn != c.wantTurn || idle != c.wantIdle {
+				t.Fatalf("intervals = %v, %v; want %v, %v", turn, idle, c.wantTurn, c.wantIdle)
+			}
+		})
+	}
+}
+
+func TestStackUnsubscribeStopsASubagentsPatches(t *testing.T) {
+	s := newSyncStack(t)
+	s.st.AddMessage(session.RoleUser, "parent", session.ContentTypePlain)
+	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	child.AddMessage(session.RoleUser, "child prompt", session.ContentTypePlain)
+	v := s.st.RegisterSubagent("worker", child)
+
+	params, _ := json.Marshal(StackParams{SessionID: "s1", SubagentID: v.ID})
+	if _, err := s.Stack(context.Background(), params); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.StackUnsubscribe(context.Background(), params); err != nil {
+		t.Fatal(err)
+	}
+
+	child.AddMessage(session.RoleUser, "second", session.ContentTypePlain)
+	s.flushChildStacks("s1", s.st)
+	if ns := s.notices(); len(ns) != 0 {
+		t.Fatalf("unsubscribed subagent still patched: %+v", ns)
+	}
+
+	got, err := s.Stack(context.Background(), params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := got.(acpwire.StackSnapshot)
+	if snap.Rev != 1 {
+		t.Fatalf("re-read rev = %d, want 1", snap.Rev)
+	}
+	fresh := false
+	for _, n := range snap.Nodes {
+		fresh = fresh || (n.Message != nil && n.Message.Content == "second")
+	}
+	if !fresh {
+		t.Fatalf("re-read snapshot is stale: %+v", snap)
+	}
+
+	child.AddMessage(session.RoleUser, "third", session.ContentTypePlain)
+	s.flushChildStacks("s1", s.st)
+	ns := s.notices()
+	if len(ns) != 1 {
+		t.Fatalf("notices after re-read = %d, want 1", len(ns))
+	}
+	if patch := stackPatchFromNotice(t, ns[0]); patch.SubagentID != v.ID {
+		t.Fatalf("patch subagentId = %d, want %d", patch.SubagentID, v.ID)
+	}
+}
+
+func TestStackUnsubscribeRefusesTheMainTranscript(t *testing.T) {
+	s := newSyncStack(t)
+	main, _ := json.Marshal(StackParams{SessionID: "s1"})
+	if _, err := s.StackUnsubscribe(context.Background(), main); err == nil ||
+		err.Error() != "session/stack_unsubscribe requires subagentId" {
+		t.Fatalf("subagent 0: error = %v", err)
+	}
+	if _, err := s.StackUnsubscribe(context.Background(), json.RawMessage(`{}`)); err == nil ||
+		err.Error() != "session/stack_unsubscribe requires sessionId" {
+		t.Fatalf("missing session: error = %v", err)
+	}
+
+	unknown, _ := json.Marshal(StackParams{SessionID: "s1", SubagentID: 999999})
+	v, err := s.StackUnsubscribe(context.Background(), unknown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(v)
+	if err != nil || string(raw) != "{}" {
+		t.Fatalf("unknown subagent = %s, %v; want {}", raw, err)
+	}
+}
+
 func waitFor(t *testing.T, what string, ok func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)

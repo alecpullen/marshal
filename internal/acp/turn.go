@@ -150,6 +150,9 @@ type TurnManagerConfig struct {
 	Notify    NotifyFunc
 	Perms     PermissionClient
 	Questions QuestionClient
+	// Marshal reports whether the connection's client declared the marshal
+	// capability. Nil reports false.
+	Marshal func() bool
 }
 
 // Turn-stop causes. An explicit cancellation is a request to stop the
@@ -202,6 +205,9 @@ type TurnManager struct {
 	perms   PermissionClient
 	bridge  *PermissionBridge
 	qbridge *QuestionBridge
+	// marshal reports whether the connection's client declared the marshal
+	// capability; it selects the stack flush cadence. Nil reports false.
+	marshal func() bool
 
 	activeTurnsMu sync.Mutex
 	activeTurns   map[string]*activeTurn
@@ -267,6 +273,7 @@ func NewTurnManager(cfg TurnManagerConfig) *TurnManager {
 		lookup:          cfg.Lookup,
 		notify:          cfg.Notify,
 		perms:           cfg.Perms,
+		marshal:         cfg.Marshal,
 		activeTurns:     map[string]*activeTurn{},
 		pipelineRunners: map[string]*sddRun{},
 		baseRefs:        map[string]string{},
@@ -924,7 +931,8 @@ func (m *TurnManager) runTurn(
 		}
 	}
 
-	flush := time.NewTicker(stackFlushInterval)
+	flushInterval, _ := m.stackIntervals()
+	flush := time.NewTicker(flushInterval)
 	defer flush.Stop()
 	forwarding := true
 	var runErrVal error

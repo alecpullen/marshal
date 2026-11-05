@@ -16,8 +16,13 @@ import (
 	"marshal/internal/viewmodel"
 )
 
-// stackFlushInterval bounds the patch rate to five a second.
+// stackFlushInterval is the turn's stack patch rate — five a second — for a
+// client that did not declare the marshal capability.
 const stackFlushInterval = 200 * time.Millisecond
+
+// marshalStackInterval is the turn's stack patch rate for a client that
+// declared the marshal capability.
+const marshalStackInterval = 50 * time.Millisecond
 
 // StackParams is the session/stack request body.
 type StackParams = acpwire.StackParams
@@ -40,8 +45,19 @@ type stackProjector struct {
 	wakeAt time.Time
 }
 
-// stackIdleInterval bounds how stale an idle session's stack can be.
+// stackIdleInterval bounds how stale an idle session's stack can be for a
+// client that did not declare the marshal capability.
 const stackIdleInterval = 500 * time.Millisecond
+
+// stackIntervals reports the turn and idle flush rates for this connection's
+// client: the fast cadence for a marshal client, the rate-limited defaults
+// otherwise. Each loop reads it once, where its ticker is created.
+func (m *TurnManager) stackIntervals() (turn, idle time.Duration) {
+	if m.marshal != nil && m.marshal() {
+		return marshalStackInterval, marshalStackInterval
+	}
+	return stackFlushInterval, stackIdleInterval
+}
 
 // stackKey names a projector: the session ID for the main transcript, and
 // "<session>#<subagent>" for a subagent's own.
@@ -197,7 +213,13 @@ func (m *TurnManager) flushChildStacks(sessionID string, st *session.State) {
 			m.stacksMu.Unlock()
 			continue
 		}
-		cp := m.stackFor(k)
+		m.stacksMu.Lock()
+		cp := m.stacks[k]
+		m.stacksMu.Unlock()
+		if cp == nil {
+			// Unsubscribed since the keys were listed: do not recreate it.
+			continue
+		}
 		cp.mu.Lock()
 		skip := cp.final
 		cp.mu.Unlock()
@@ -256,6 +278,28 @@ func (m *TurnManager) Stack(ctx context.Context, params json.RawMessage) (any, e
 		m.ensureStackIdle(request.SessionID, rt)
 	}
 	return snapshot, nil
+}
+
+// StackUnsubscribe handles session/stack_unsubscribe, stopping the projection
+// of one subagent's stack for this client. The session's own transcript
+// (subagent 0) has no subscription to drop, so that is an invalid request.
+func (m *TurnManager) StackUnsubscribe(ctx context.Context, params json.RawMessage) (any, error) {
+	var request StackParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, invalidParamsError("parse session/stack_unsubscribe params: %v", err)
+		}
+	}
+	if request.SessionID == "" {
+		return nil, invalidParamsError("session/stack_unsubscribe requires sessionId")
+	}
+	if request.SubagentID == 0 {
+		return nil, invalidParamsError("session/stack_unsubscribe requires subagentId")
+	}
+	m.stacksMu.Lock()
+	delete(m.stacks, stackKey(request.SessionID, request.SubagentID))
+	m.stacksMu.Unlock()
+	return struct{}{}, nil
 }
 
 // stackSnapshot builds the snapshot, activating the projector on first use.
@@ -327,7 +371,8 @@ func (m *TurnManager) ensureStackIdle(sessionID string, rt *TurnRuntime) {
 	events := rt.Events.Subscribe(ctx)
 	go func() {
 		defer cancel()
-		ticker := time.NewTicker(stackIdleInterval)
+		_, idleInterval := m.stackIntervals()
+		ticker := time.NewTicker(idleInterval)
 		defer ticker.Stop()
 		for {
 			select {

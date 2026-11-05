@@ -12,19 +12,19 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/trust"
 )
 
 // ClosedMsg asks the host to close the panel (decline path).
 type ClosedMsg struct{}
 
-var decisions = []trust.Decision{
-	trust.DecisionTrustPermanent,
-	trust.DecisionTrustSession,
-	trust.DecisionDontTrust,
+var decisions = []acpwire.TrustDecision{
+	acpwire.TrustPermanent,
+	acpwire.TrustSession,
+	acpwire.TrustDecline,
 }
 
 var labels = []string{
@@ -36,7 +36,7 @@ var labels = []string{
 // Panel is the modal trust question.
 type Panel struct {
 	workingDir string
-	decide     func(trust.Decision)
+	decide     func(acpwire.TrustDecision)
 	cursor     int
 }
 
@@ -44,7 +44,7 @@ var _ dock.Panel = (*Panel)(nil)
 
 // New builds the panel. decide is invoked synchronously on every terminal
 // choice (keys 1-3, Enter, or Esc) before the returned command runs.
-func New(workingDir string, decide func(trust.Decision)) *Panel {
+func New(workingDir string, decide func(acpwire.TrustDecision)) *Panel {
 	return &Panel{workingDir: workingDir, decide: decide}
 }
 
@@ -54,20 +54,20 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 	if !ok {
 		return nil
 	}
-	choose := func(d trust.Decision) tea.Cmd {
+	choose := func(d acpwire.TrustDecision) tea.Cmd {
 		p.decide(d)
-		if d == trust.DecisionDontTrust {
+		if d == acpwire.TrustDecline {
 			return func() tea.Msg { return ClosedMsg{} }
 		}
 		return tea.Quit
 	}
 	switch k.String() {
 	case "1":
-		return choose(trust.DecisionTrustPermanent)
+		return choose(acpwire.TrustPermanent)
 	case "2":
-		return choose(trust.DecisionTrustSession)
+		return choose(acpwire.TrustSession)
 	case "3", "esc":
-		return choose(trust.DecisionDontTrust)
+		return choose(acpwire.TrustDecline)
 	case "up", "k":
 		if p.cursor > 0 {
 			p.cursor--

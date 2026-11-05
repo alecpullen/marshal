@@ -200,6 +200,9 @@ type fakeHost struct {
 
 func (h fakeHost) SharedFilesystem() bool { return h.shared }
 
+// TrustPrompt reports no pending decision: the seam tests never prompt.
+func (h fakeHost) TrustPrompt() string { return "" }
+
 // NewSession refuses: the tests drive one session built by testSession.
 func (h fakeHost) NewSession(context.Context, string) (acpclient.Session, error) {
 	return nil, errors.New("fakeHost creates no sessions")

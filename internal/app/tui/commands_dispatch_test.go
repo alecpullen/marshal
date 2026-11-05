@@ -97,10 +97,16 @@ func TestTrustCommandOpensTrustPanelWhenPending(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
 	reg := commands.New()
 	_ = commands.RegisterAll(reg, nil)
-	m := testModelWith(inproc.Deps{State: state, Commands: reg}, WithHomeDir(t.TempDir()), WithWorkingDir("/some/project"))
-
 	var decided trust.Decision
-	m.trustDecide = func(d trust.Decision) { decided = d }
+	m := testModelWith(
+		inproc.Deps{
+			State:       state,
+			Commands:    reg,
+			TrustPrompt: "/some/project",
+			DecideTrust: func(d trust.Decision) { decided = d },
+		},
+		WithHomeDir(t.TempDir()), WithWorkingDir("/some/project"),
+	)
 
 	m.dispatchCommand("/trust")
 	if !m.dock.IsOpen() {

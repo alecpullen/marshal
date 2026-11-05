@@ -8293,7 +8293,9 @@ func TestDispatchStructuredResultOpensDocPanel(t *testing.T) {
 func TestTrustPromptOpensAtStartupAndDeclineCloses(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
 	var decided trust.Decision
-	m2 := testModel(m.state, WithTrustPrompt("/repo", func(d trust.Decision) { decided = d }))
+	m2 := testModelWith(
+		inproc.Deps{State: m.state, TrustPrompt: "/repo", DecideTrust: func(d trust.Decision) { decided = d }},
+	)
 	if !m2.dock.IsOpen() {
 		t.Fatal("dock should host the trust panel at startup")
 	}
@@ -8377,8 +8379,8 @@ func TestOpenConnectOnStartYieldsToTrustPrompt(t *testing.T) {
 	// pins the ordering: trust panel first.
 	m := newViewTestModel(t, 80, 24)
 	decided := false
-	m2 := testModel(m.state,
-		WithTrustPrompt("/repo", func(trust.Decision) { decided = true }),
+	m2 := testModelWith(
+		inproc.Deps{State: m.state, TrustPrompt: "/repo", DecideTrust: func(trust.Decision) { decided = true }},
 		WithOpenConnectOnStart(),
 	)
 	panel := m2.dock.Panel()

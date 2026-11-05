@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"marshal/internal/acpwire"
 )
 
 type lockedBuffer struct {
@@ -1044,6 +1046,52 @@ func TestDispatchRequestSanitizesWireErrorMessage(t *testing.T) {
 	}
 	if resp.Error.Message != "internal error" {
 		t.Fatalf("error message = %q, want %q", resp.Error.Message, "internal error")
+	}
+}
+
+func TestDispatchRequestCarriesAcpwireErrorData(t *testing.T) {
+	out := &bytes.Buffer{}
+	s := &Server{
+		out:      json.NewEncoder(out),
+		handlers: map[string]Handler{},
+	}
+	s.handlers["turn"] = func(ctx context.Context, params json.RawMessage) (any, error) {
+		return nil, &acpwire.Error{Code: acpwire.CodeBusy, Message: "A turn is running."}
+	}
+	req := Request{
+		JSONRPC: "2.0",
+		Method:  "turn",
+		ID:      rawMessagePtr("7"),
+	}
+	s.handlerWG.Add(1)
+	s.dispatchRequest(context.Background(), req)
+
+	want := `{"jsonrpc":"2.0","id":7,"error":{"code":-32000,"message":"server error: A turn is running.","data":{"code":"busy","message":"A turn is running."}}}`
+	if got := strings.TrimSpace(out.String()); got != want {
+		t.Fatalf("response =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestDispatchRequestKeepsOtherErrorsOpaque(t *testing.T) {
+	out := &bytes.Buffer{}
+	s := &Server{
+		out:      json.NewEncoder(out),
+		handlers: map[string]Handler{},
+	}
+	s.handlers["reveal"] = func(ctx context.Context, params json.RawMessage) (any, error) {
+		return nil, errors.New("open /home/alice/.config/marshal/secrets.json: permission denied")
+	}
+	req := Request{
+		JSONRPC: "2.0",
+		Method:  "reveal",
+		ID:      rawMessagePtr("1"),
+	}
+	s.handlerWG.Add(1)
+	s.dispatchRequest(context.Background(), req)
+
+	want := `{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"internal error"}}`
+	if got := strings.TrimSpace(out.String()); got != want {
+		t.Fatalf("response =\n%s\nwant\n%s", got, want)
 	}
 }
 

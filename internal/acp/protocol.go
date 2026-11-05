@@ -60,6 +60,9 @@ type Response struct {
 type Error struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+	// Data is the error's structured payload, if any. An *acpwire.Error
+	// travels whole here (P3 R2); every other error carries none.
+	Data json.RawMessage `json:"data,omitempty"`
 }
 
 // jsonRPCError is a typed error that carries a JSON-RPC error code.
@@ -67,6 +70,9 @@ type Error struct {
 type jsonRPCError struct {
 	Code    int
 	Message string
+	// Data is the error's structured payload, if any. dispatchRequest
+	// copies it into the response's Error.
+	Data json.RawMessage
 }
 
 func (e *jsonRPCError) Error() string { return e.Message }

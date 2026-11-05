@@ -2,6 +2,7 @@ package acp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"marshal/internal/acpwire"
 )
 
 // nullID is the JSON-RPC "id: null" sentinel used for responses where
@@ -97,6 +100,15 @@ type Server struct {
 	outbound   map[string]chan outboundResult
 	outboundID uint64
 	closed     bool
+
+	// inFlight tracks inbound requests that are still being handled, keyed
+	// by the compact JSON of their id, so a $/cancel_request can end the one
+	// it names (P3 R2). Guarded by stateMu. A notification registers nothing.
+	inFlight map[string]*inflight
+
+	// marshal records whether this connection's client declared the
+	// marshal-only protocol in initialize (P3 R9). Guarded by stateMu.
+	marshal bool
 
 	// handlerWG tracks in-flight handler goroutines so Serve can wait
 	// for them during shutdown.
@@ -327,6 +339,152 @@ func (s *Server) scanLines(serveCtx context.Context, frames chan<- []byte, done 
 	done <- sc.Err()
 }
 
+// inflight is one inbound request the server is still handling. A
+// $/cancel_request for its id closes cancelled, ending any handler context
+// derived with cancellable.
+type inflight struct {
+	id        json.RawMessage
+	srv       *Server
+	cancelled chan struct{}
+	once      sync.Once
+}
+
+// cancel ends the request's cancellable handler contexts. It is safe to call
+// more than once.
+func (f *inflight) cancel() {
+	f.once.Do(func() { close(f.cancelled) })
+}
+
+// inflightKey is a request id's compact JSON, so the registry matches an id
+// however its whitespace is encoded.
+func inflightKey(id json.RawMessage) string {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, id); err != nil {
+		return string(id)
+	}
+	return buf.String()
+}
+
+// requestKey carries an *inflight in a handler's context.
+type requestKey struct{}
+
+// withInflight returns ctx carrying entry. It is a value on the request's own
+// context, so nothing registers with the connection's context and a long
+// connection leaks nothing per request.
+func withInflight(ctx context.Context, entry *inflight) context.Context {
+	return context.WithValue(ctx, requestKey{}, entry)
+}
+
+// inflightFrom returns the request entry ctx carries, or nil when it has none.
+func inflightFrom(ctx context.Context) *inflight {
+	entry, _ := ctx.Value(requestKey{}).(*inflight)
+	return entry
+}
+
+// registerInflight records a request before its handler starts, so a cancel
+// that arrives next finds it.
+func (s *Server) registerInflight(id json.RawMessage) *inflight {
+	entry := &inflight{id: id, srv: s, cancelled: make(chan struct{})}
+	s.stateMu.Lock()
+	if s.inFlight == nil {
+		s.inFlight = make(map[string]*inflight)
+	}
+	s.inFlight[inflightKey(id)] = entry
+	s.stateMu.Unlock()
+	return entry
+}
+
+// unregisterInflight drops a request once its handler has returned.
+func (s *Server) unregisterInflight(id *json.RawMessage) {
+	if id == nil {
+		return
+	}
+	s.stateMu.Lock()
+	delete(s.inFlight, inflightKey(*id))
+	s.stateMu.Unlock()
+}
+
+// handleCancelRequest ends the request the params name. An unknown id, a
+// malformed frame and a repeat cancel are ignored: the method is a
+// notification, so nothing is written back.
+func (s *Server) handleCancelRequest(params json.RawMessage) {
+	var p acpwire.CancelRequestParams
+	if err := json.Unmarshal(params, &p); err != nil || len(p.ID) == 0 {
+		return
+	}
+	s.stateMu.Lock()
+	entry, ok := s.inFlight[inflightKey(p.ID)]
+	s.stateMu.Unlock()
+	if !ok {
+		return
+	}
+	entry.cancel()
+}
+
+// cancellable returns a context for a handler that can be cancelled: it ends
+// when the request is cancelled with $/cancel_request, as well as when ctx
+// ends. Handlers that keep today's context are unaffected, because some flows
+// (an MCP sign-in) outlive their request on purpose. A context carrying no
+// request is simply derived. The caller must call the cancel function.
+func cancellable(ctx context.Context) (context.Context, context.CancelFunc) {
+	derived, cancel := context.WithCancel(ctx)
+	entry := inflightFrom(ctx)
+	if entry == nil {
+		return derived, cancel
+	}
+	// A cancel that arrived before the handler opted in ends the derived
+	// context now, not when the watcher below first runs.
+	select {
+	case <-entry.cancelled:
+		cancel()
+		return derived, cancel
+	default:
+	}
+	go func() {
+		select {
+		case <-entry.cancelled:
+			cancel()
+		case <-derived.Done():
+		}
+	}()
+	return derived, cancel
+}
+
+// reportProgress sends one $/progress value for the request ctx carries. A
+// context with no request (a notification's) sends nothing. The handler sends
+// its progress before it returns and the response is written after, so every
+// value precedes the response on the wire (P3 R2).
+func reportProgress(ctx context.Context, value any) error {
+	entry := inflightFrom(ctx)
+	if entry == nil {
+		return nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return entry.srv.Notify(acpwire.MethodProgress, acpwire.ProgressParams{
+		ID:    entry.id,
+		Value: raw,
+	})
+}
+
+// marshalClient reports whether this connection's client declared the
+// marshal-only protocol in initialize (P3 R9).
+func (s *Server) marshalClient() bool {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.marshal
+}
+
+// setMarshalClient records whether this connection's client declared the
+// marshal-only protocol in initialize (P3 R9).
+func (s *Server) setMarshalClient(v bool) {
+	s.stateMu.Lock()
+	s.marshal = v
+	s.stateMu.Unlock()
+}
+
 // handleFrame classifies a single decoded JSON-RPC frame and
 // dispatches it to the appropriate handler goroutine or outbound
 // response delivery.
@@ -360,6 +518,21 @@ func (s *Server) handleFrame(ctx context.Context, line []byte) {
 	}
 
 	// Frame has a method — inbound request or notification.
+	//
+	// $/cancel_request is the protocol's own notification, so the server
+	// handles it here, on the read goroutine and in arrival order: a cancel
+	// that follows its request is never missed (P3 R2).
+	if req.Method == acpwire.MethodCancelRequest {
+		if req.ID != nil {
+			// Notification-only, like session/cancel.
+			if writeErr := s.writeError(req.ID, invalidRequest, "method is notification-only: "+req.Method); writeErr != nil {
+				s.reportFatal(writeErr)
+			}
+			return
+		}
+		s.handleCancelRequest(req.Params)
+		return
+	}
 	if s.notificationMethods[req.Method] {
 		// Method is registered as notification-only. Reject id-bearing
 		// frames with invalidRequest; accept no-id frames and run the
@@ -376,11 +549,13 @@ func (s *Server) handleFrame(ctx context.Context, line []byte) {
 	}
 	s.handlerWG.Add(1)
 	if req.ID == nil {
-		// Notification — no response expected.
+		// Notification — no response expected, so nothing to cancel.
 		go s.dispatchNotification(ctx, req)
 	} else {
-		// Request — handler writes a response.
-		go s.dispatchRequest(ctx, req)
+		// Request — handler writes a response. Register it before the
+		// handler starts, so a cancel that arrives next finds it.
+		entry := s.registerInflight(*req.ID)
+		go s.dispatchRequest(withInflight(ctx, entry), req)
 	}
 }
 
@@ -484,9 +659,17 @@ func (s *Server) dispatchRequest(ctx context.Context, req Request) {
 	defer s.handlerWG.Done()
 
 	result, err := s.dispatch(ctx, req)
+	// Drop the request from the in-flight registry before the response is
+	// written, so a cancel that arrives after it is ignored (P3 R2).
+	s.unregisterInflight(req.ID)
 	resp := Response{JSONRPC: "2.0", ID: req.ID}
 	if err != nil {
-		resp.Error = &Error{Code: codeFor(err), Message: wireError(err)}
+		var data json.RawMessage
+		var rpcErr *jsonRPCError
+		if errors.As(err, &rpcErr) {
+			data = rpcErr.Data
+		}
+		resp.Error = &Error{Code: codeFor(err), Message: wireError(err), Data: data}
 		// Log the full error server-side for operators. F-SEC-37.
 		s.log().Warn("acp dispatch error", "method", req.Method, "err", err)
 	} else {
@@ -618,6 +801,20 @@ func (s *Server) dispatch(ctx context.Context, req Request) (result any, err err
 	}
 	res, herr := handler(ctx, req.Params)
 	if herr != nil {
+		// An *acpwire.Error travels as itself: code serverError, its own
+		// message, and the whole error as data, so the client rebuilds it and
+		// IsCode, NoticeOf and err.Error() read as they do in process (P3 R2).
+		var wired *acpwire.Error
+		if errors.As(herr, &wired) {
+			data, encErr := json.Marshal(wired)
+			if encErr != nil {
+				return nil, &jsonRPCError{
+					Code:    internalError,
+					Message: "internal error: encode error data: " + encErr.Error(),
+				}
+			}
+			return nil, &jsonRPCError{Code: serverError, Message: wired.Message, Data: data}
+		}
 		return nil, &jsonRPCError{Code: codeFor(herr), Message: herr.Error()}
 	}
 	return res, nil

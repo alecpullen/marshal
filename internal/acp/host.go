@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app"
 	"marshal/internal/app/session"
 	"marshal/internal/credentials"
@@ -306,9 +307,19 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 			return nil, invalidParamsError("protocolVersion is required")
 		}
 
+		// Record whether this client declared the marshal-only protocol (P3
+		// R9). The capability below is advertised to every client, so a client
+		// that does not declare it still sees it.
+		srv.setMarshalClient(p.ClientCapabilities != nil &&
+			p.ClientCapabilities.Marshal != nil &&
+			p.ClientCapabilities.Marshal.ProtocolVersion == acpwire.MarshalProtocolVersion)
+
 		return map[string]any{
 			"protocolVersion": 1,
 			"agentCapabilities": map[string]any{
+				"marshal": map[string]any{
+					"protocolVersion": acpwire.MarshalProtocolVersion,
+				},
 				"loadSession": true,
 				// Not per session: config/* act on the user-global config.
 				"configAccess": map[string]any{},

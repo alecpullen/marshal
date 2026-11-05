@@ -461,3 +461,48 @@ conformance suite (V1) before anything switches.
   client opening a long session could leave the bridge's connection to
   that child stuck. P2 plan 7b fixes it (G5): it raises the cap, and
   treats a scanner error as a child failure.
+
+## Implementation record
+
+### Plan 1 — the client core
+
+- **`internal/acpwire`** gains `initialize.go`: `MarshalProtocolVersion` (1),
+  `MethodProgress` (`$/progress`) and `MethodCancelRequest`
+  (`$/cancel_request`), plus the `initialize` types (`MarshalCapability`,
+  `ClientCapabilities`, `InitializeParams`, `AgentInfo`,
+  `AgentCapabilities`, `InitializeResult`) and the two notification
+  parameter types (`ProgressParams`, `CancelRequestParams`).
+- **`internal/acpclient/rpc`** is the client core:
+  - `Transport` is a framed two-way message stream; `NewStream` frames any
+    reader and writer with newlines (as `marshal acp` speaks on stdio), and
+    `Pipe` returns the client's transport and the agent's byte stream, which
+    `acp.NewServer` reads and writes unchanged. Each end sets its own frame
+    cap: `MaxFrameBytes` (64 MiB) on the client, `Server.MaxLineBytes` on the
+    agent.
+  - `Conn` makes calls, hands the agent's notifications and requests to
+    `Handlers`, maps `*acpwire.Error` back to itself, sends
+    `$/cancel_request` when a call's context ends, receives `$/progress`
+    values before the response, and ends every pending call when the
+    transport breaks.
+  - `Dial` runs `initialize` with
+    `{"protocolVersion":1,"clientCapabilities":{"marshal":{"protocolVersion":1}}}`,
+    refuses an agent that does not advertise marshal protocol 1 (or another
+    version, when `DialOptions.AgentVersion` is set), and returns a `Host`
+    carrying the connection and the agent's info.
+- **The ACP server** gains error data (`*acpwire.Error` travels as code
+  `-32000` with the whole error as `data`), opt-in cancellation
+  (`cancellable`, an in-flight registry filled before each handler starts,
+  and `$/cancel_request` handled on the read goroutine in arrival order),
+  progress (`reportProgress` sends `$/progress` for the handler's request),
+  and the capability record `setMarshalClient` / `marshalClient`.
+  `initialize` advertises `agentCapabilities.marshal` to every client and
+  records whether this one declared it. Handlers that do not opt in see
+  exactly the frames they saw before.
+- **The budget.** `BenchmarkPipeCallRoundTrip` (one trivial call over the
+  pipe to the real server, server logging discarded) measures about
+  **9.7 µs** per call (9,689 ns/op) on the development machine (Apple M5,
+  darwin/arm64). R10 allows 1 ms.
+- **Not yet over the wire.** No `acpclient.Host` method beyond
+  `SharedFilesystem` is implemented by `rpc.Host`; each later plan adds its
+  group's methods.
+

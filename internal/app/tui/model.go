@@ -6837,7 +6837,7 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 		m.note(fmt.Sprintf("✗ Failed to locate home directory: %v", err))
 		return
 	}
-	if err := m.host.SaveUserProviders(m.ctx, newCfg.Providers, cfg.Providers); err != nil {
+	if err := m.host.SaveUserProviders(m.ctx, newCfg.Providers, cfg.Providers, nil); err != nil {
 		m.note(fmt.Sprintf("✗ Failed to save provider: %v", err))
 		return
 	}

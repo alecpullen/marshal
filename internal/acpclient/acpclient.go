@@ -124,9 +124,12 @@ type Host interface {
 	// SaveUserProviders writes the user config's [providers] section,
 	// credentials included. Entries on disk that are in neither providers nor
 	// baseline survive: another process wrote them after baseline was taken.
+	// A masked key is restored to the stored key it stands for; renamed maps a
+	// provider renamed since baseline to its name there, so its key follows
+	// it (plan 7d).
 	//
 	// ACP: config/save_providers (new in P3).
-	SaveUserProviders(ctx context.Context, providers, baseline map[string]config.ProviderConfig) error
+	SaveUserProviders(ctx context.Context, providers, baseline map[string]config.ProviderConfig, renamed map[string]string) error
 
 	// SaveUserPresets writes the user config's [models.presets] section,
 	// merged against baseline as SaveUserProviders is.
@@ -584,14 +587,17 @@ type Session interface {
 	// notification.
 	LoginMCP(ctx context.Context, server string, show func(url string)) error
 
-	// Config is the session's live config. Until plan 7d redacts them, it
-	// carries literal keys.
+	// Config is the session's live config, its secrets masked (C3): each
+	// provider's API key and the web search key as strutil.MaskKey renders
+	// one, and the desktop CDP URL's userinfo masked. An empty secret is
+	// left empty.
 	//
 	// ACP: session/config (new in P3); refreshed by a session_status update.
 	Config() config.Config
 
 	// Layers is the session's config layers, with provenance: the snapshot
 	// the last write or startup loaded. The zero value means none was loaded.
+	// Its configs' secrets are masked as Config's are (C3).
 	//
 	// ACP: session/config (new in P3).
 	Layers() config.Layers

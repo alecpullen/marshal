@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"sort"
+	"strings"
 	"time"
 
 	"marshal/internal/acpwire"
@@ -69,9 +71,15 @@ func (h *Host) clientDeps() Deps {
 
 // SaveUserValue writes value at the dotted TOML path tomlPath of the user
 // config, leaving the rest of the file alone, then refreshes the session's
-// layers.
+// layers. At a secret's path a masked value is restored to the stored secret
+// it stands for; a mask with nothing behind it fails the call and writes
+// nothing.
 func (h *Host) SaveUserValue(ctx context.Context, tomlPath string, value any) error {
 	path, err := userConfigPath(h.clientDeps())
+	if err != nil {
+		return err
+	}
+	value, err = h.restoreSecretValue(tomlPath, value)
 	if err != nil {
 		return err
 	}
@@ -82,14 +90,63 @@ func (h *Host) SaveUserValue(ctx context.Context, tomlPath string, value any) er
 	return nil
 }
 
+// restoreSecretValue replaces a masked value written at a secret's TOML path
+// with the stored secret it stands for. Any other path is returned unchanged,
+// so a typed key is written as given and a cleared one stays cleared.
+func (h *Host) restoreSecretValue(tomlPath string, value any) (any, error) {
+	raw, ok := value.(string)
+	if !ok {
+		return value, nil
+	}
+	cfg, secretValue, ok := secretConfigAt(tomlPath, raw)
+	if !ok {
+		return value, nil
+	}
+	restored, err := config.RestoreSecrets(cfg, nil, h.stored()...)
+	if err != nil {
+		return nil, err
+	}
+	return secretValue(restored), nil
+}
+
+// secretConfigAt reports the one-secret config that carries raw at tomlPath,
+// with a function that reads that secret back. It reports false for any other
+// path.
+func secretConfigAt(tomlPath, raw string) (config.Config, func(config.Config) string, bool) {
+	if rest, ok := strings.CutPrefix(tomlPath, "providers."); ok {
+		name, found := strings.CutSuffix(rest, ".api_key")
+		if !found || name == "" || strings.Contains(name, ".") {
+			return config.Config{}, nil, false
+		}
+		return config.Config{Providers: map[string]config.ProviderConfig{name: {APIKey: raw}}},
+			func(c config.Config) string { return c.Providers[name].APIKey }, true
+	}
+	switch tomlPath {
+	case "web.search_key":
+		return config.Config{Web: config.WebConfig{SearchKey: raw}},
+			func(c config.Config) string { return c.Web.SearchKey }, true
+	case "desktop.cdp_url":
+		return config.Config{Desktop: config.DesktopConfig{CDPURL: raw}},
+			func(c config.Config) string { return c.Desktop.CDPURL }, true
+	}
+	return config.Config{}, nil, false
+}
+
 // SaveUserProviders writes the user config's [providers] section, credentials
-// included, then refreshes the session's layers.
-func (h *Host) SaveUserProviders(ctx context.Context, providers, baseline map[string]config.ProviderConfig) error {
+// included, then refreshes the session's layers. Each masked key is restored
+// to the stored key it stands for, renamed mapping a provider's name here to
+// its name in the stored configs; a mask with nothing behind it fails the call
+// and writes nothing.
+func (h *Host) SaveUserProviders(ctx context.Context, providers, baseline map[string]config.ProviderConfig, renamed map[string]string) error {
 	path, err := userConfigPath(h.clientDeps())
 	if err != nil {
 		return err
 	}
-	if err := config.SaveUserConfigProviders(path, providers, baseline); err != nil {
+	restored, err := config.RestoreSecrets(config.Config{Providers: providers}, renamed, h.stored()...)
+	if err != nil {
+		return err
+	}
+	if err := config.SaveUserConfigProviders(path, restored.Providers, baseline); err != nil {
 		return err
 	}
 	refreshLayers(h.currentState(), h.currentReloadLayers())
@@ -202,27 +259,54 @@ func (h *Host) SaveProvenance(ctx context.Context, provenance json.RawMessage) e
 	return presetsetup.SaveProvenance(dir, &p)
 }
 
-// Config is the session's live config. A closed session keeps answering with
-// its final value (C4).
-func (s *Session) Config() config.Config { return s.state.ConfigSnapshot() }
+// Config is the session's live config, its secrets masked (C3). A closed
+// session keeps answering with its final value (C4).
+func (s *Session) Config() config.Config { return config.RedactSecrets(s.state.ConfigSnapshot()) }
 
-// Layers is the session's config layers, with provenance. A closed session
-// keeps answering with its final value (C4).
-func (s *Session) Layers() config.Layers { return s.state.Layers() }
+// Layers is the session's config layers, with provenance, its secrets masked
+// (C3). A closed session keeps answering with its final value (C4).
+func (s *Session) Layers() config.Layers { return config.RedactLayers(s.state.Layers()) }
+
+// storedConfigs is what a masked secret can be restored from: the state's
+// live config first, because a typed key whose save failed lives only there,
+// then the layers' merged config, because they are fresher than the live
+// config right after a write. Without a state nothing is stored.
+func storedConfigs(state *session.State) []config.Config {
+	if state == nil {
+		return nil
+	}
+	out := []config.Config{state.ConfigSnapshot()}
+	if layers := state.Layers(); !reflect.DeepEqual(layers, config.Layers{}) {
+		out = append(out, layers.Merged)
+	}
+	return out
+}
+
+// stored is storedConfigs over the session's state.
+func (s *Session) stored() []config.Config { return storedConfigs(s.state) }
+
+// stored is storedConfigs over the current session's state.
+func (h *Host) stored() []config.Config { return storedConfigs(h.currentState()) }
 
 // ApplyConfig installs cfg as the session's config without saving it or
-// rebuilding the runtime. A manual mode selection survives, as a reload's
-// does.
+// rebuilding the runtime. A masked secret in cfg is restored to the stored
+// secret it stands for; a mask with nothing behind it fails the call and
+// changes nothing. A manual mode selection survives, as a reload's does.
 func (s *Session) ApplyConfig(ctx context.Context, cfg config.Config) error {
 	if s.closed.Load() {
 		return errSessionClosed
 	}
-	_, err := s.state.RebaseInteractionConfig(cfg)
+	restored, err := config.RestoreSecrets(cfg, nil, s.stored()...)
+	if err != nil {
+		return err
+	}
+	_, err = s.state.RebaseInteractionConfig(restored)
 	return err
 }
 
-// ReloadConfig rebuilds the runtime from cfg. It reports false, and does
-// nothing, when the session has no reload path.
+// ReloadConfig rebuilds the runtime from cfg, its masked secrets restored as
+// ApplyConfig restores them. It reports false, and does nothing, when the
+// session has no reload path; the error is the rebuild's.
 func (s *Session) ReloadConfig(ctx context.Context, cfg config.Config) (bool, error) {
 	if s.closed.Load() {
 		return false, errSessionClosed
@@ -230,7 +314,11 @@ func (s *Session) ReloadConfig(ctx context.Context, cfg config.Config) (bool, er
 	if s.reloadConfig == nil {
 		return false, nil
 	}
-	return true, s.reloadConfig(cfg)
+	restored, err := config.RestoreSecrets(cfg, nil, s.stored()...)
+	if err != nil {
+		return true, err
+	}
+	return true, s.reloadConfig(restored)
 }
 
 // ReconnectMCP rebuilds the runtime from the session's current config, so an
@@ -267,12 +355,18 @@ func (s *Session) projectConfigPath() string {
 
 // SaveProjectConfig writes cfg's project-scoped values to the session's
 // project config, diffed against the session's layers, then refreshes the
-// trust record's hash and the layers.
+// trust record's hash and the layers. A masked secret in cfg is restored to
+// the stored secret it stands for; a mask with nothing behind it fails the
+// call and writes nothing.
 func (s *Session) SaveProjectConfig(ctx context.Context, cfg config.Config) error {
 	if s.closed.Load() {
 		return errSessionClosed
 	}
-	if err := config.SaveProjectConfig(s.projectConfigPath(), cfg, s.state.Layers()); err != nil {
+	restored, err := config.RestoreSecrets(cfg, nil, s.stored()...)
+	if err != nil {
+		return err
+	}
+	if err := config.SaveProjectConfig(s.projectConfigPath(), restored, s.state.Layers()); err != nil {
 		return err
 	}
 	if s.trustRefresh != nil && s.state.WorkingDir != "" {

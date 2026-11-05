@@ -690,7 +690,7 @@ func (b *BrowserPanel) flushChanges(inner tea.Cmd, commitAttempted bool) tea.Cmd
 		// the diff above used. Renames rekey the maps — the old key is in the
 		// baseline but not the write, so the merge drops it; entries another
 		// marshal process persisted meanwhile are in neither and survive.
-		if err := b.reg.st.host.SaveUserProviders(context.Background(), newCfg.Providers, b.baseline.Providers); err != nil {
+		if err := b.reg.st.host.SaveUserProviders(context.Background(), newCfg.Providers, b.baseline.Providers, nil); err != nil {
 			saveErr = err
 		} else if err := b.reg.st.host.SaveUserPresets(context.Background(), newCfg.Models.Presets, b.baseline.Models.Presets); err != nil {
 			saveErr = err

@@ -6896,7 +6896,7 @@ func TestModelsPickAppliesSwitch(t *testing.T) {
 		Presets: map[string]routing.ModelPreset{
 			"ollama/qwen2.5-coder:7b": {Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b"},
 		},
-		Result: presetsetup.Result{Prepared: 1, Fallback: 1},
+		Setup: acpwire.PresetSetup{Prepared: 1, Fallback: 1},
 	})
 	m = asModel(t, updated)
 
@@ -6942,7 +6942,7 @@ func TestModelsRoutesPreparedMsgToConnectPanel(t *testing.T) {
 
 	updated, _ = m.Update(tea.KeyPressMsg{Code: 110}) // n
 	m = asModel(t, updated)
-	updated, _ = m.Update(connect.PreparedMsg{Provider: "ollama", Result: presetsetup.Result{Prepared: 1, Fallback: 1}})
+	updated, _ = m.Update(connect.PreparedMsg{Provider: "ollama", Setup: acpwire.PresetSetup{Prepared: 1, Fallback: 1}})
 	m = asModel(t, updated)
 	if m.connectModel == nil || !strings.Contains(stripANSI(m.connectModel.View(80, 24)), "Review provider") {
 		t.Fatal("outer model should route PreparedMsg to connect")
@@ -7048,6 +7048,21 @@ func TestApplyConnectDoneRefreshesManagedPreset(t *testing.T) {
 		name: {Name: name, Provider: "ollama", Model: "qwen2.5-coder:7b", ContextWindow: 8192},
 	}
 
+	// The wizard carries the sidecar back as opaque JSON, with the preset
+	// names it manages alongside it.
+	prov := presetsetup.Provenance{
+		Version: presetsetup.ProvenanceVersion,
+		Presets: map[string]presetsetup.PresetProvenance{
+			name: {Fields: map[string]presetsetup.FieldState{
+				"context_window": {Source: "models.dev", Value: "32768"},
+			}},
+		},
+	}
+	raw, err := json.Marshal(prov)
+	if err != nil {
+		t.Fatalf("marshal provenance: %v", err)
+	}
+
 	updated, _ := m.Update(connect.DoneMsg{
 		Provider:    "ollama",
 		Model:       "qwen2.5-coder:7b",
@@ -7055,14 +7070,7 @@ func TestApplyConnectDoneRefreshesManagedPreset(t *testing.T) {
 		Presets: map[string]routing.ModelPreset{
 			name: {Name: name, Provider: "ollama", Model: "qwen2.5-coder:7b", ContextWindow: 32768},
 		},
-		Provenance: &presetsetup.Provenance{
-			Version: presetsetup.ProvenanceVersion,
-			Presets: map[string]presetsetup.PresetProvenance{
-				name: {Fields: map[string]presetsetup.FieldState{
-					"context_window": {Source: "models.dev", Value: "32768"},
-				}},
-			},
-		},
+		Setup: acpwire.PresetSetup{Provenance: raw, Managed: []string{name}},
 	})
 	m = updated.(Model)
 
@@ -7104,23 +7112,27 @@ func TestApplyConnectDonePersistsDenyConsent(t *testing.T) {
 }
 
 func TestApplyConnectDoneWarnsOnProvenanceFailure(t *testing.T) {
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
-		d.ReloadConfig = func(cfg config.Config) error { d.State.Config = cfg; return nil }
-	})
-	m.settingsRegistry()
-
 	// A regular file where the data dir should be makes MkdirAll fail.
 	blocking := filepath.Join(t.TempDir(), "not-a-dir")
 	if err := os.WriteFile(blocking, nil, 0o644); err != nil {
 		t.Fatalf("create blocking file: %v", err)
 	}
-	m.modelCacheDir = blocking
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(cfg config.Config) error { d.State.Config = cfg; return nil }
+		d.ModelCacheDir = blocking
+	})
+	m.settingsRegistry()
+
+	raw, err := json.Marshal(presetsetup.Provenance{Version: presetsetup.ProvenanceVersion, Presets: map[string]presetsetup.PresetProvenance{}})
+	if err != nil {
+		t.Fatalf("marshal provenance: %v", err)
+	}
 
 	updated, _ := m.Update(connect.DoneMsg{
 		Provider:    "ollama",
 		Model:       "qwen2.5-coder:7b",
 		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
-		Provenance:  &presetsetup.Provenance{Version: presetsetup.ProvenanceVersion, Presets: map[string]presetsetup.PresetProvenance{}},
+		Setup:       acpwire.PresetSetup{Provenance: raw},
 	})
 	m = updated.(Model)
 

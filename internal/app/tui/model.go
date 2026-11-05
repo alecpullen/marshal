@@ -28,7 +28,6 @@ import (
 	"marshal/internal/acpwire"
 	"marshal/internal/app/clipboard"
 	"marshal/internal/app/config"
-	"marshal/internal/app/presetsetup"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/accesspanel"
 	"marshal/internal/app/tui/activeworkpanel"
@@ -465,10 +464,6 @@ type Model struct {
 	// one. It persists for the model's lifetime — closing and reopening the
 	// picker does not restart the count.
 	modelsProbeGen map[string]uint64
-	// modelCacheDir is the data directory preset setup reads the models.dev
-	// catalog and its provenance from. The model-cache calls themselves go
-	// through m.host. Plan 7b deletes it.
-	modelCacheDir string
 
 	// Picker modal (opened by commands like /rewind, /branches, /mode).
 	// The picker itself is hosted in m.dock; pickerCommand records which
@@ -755,12 +750,6 @@ func WithToolRegistry(reg *registry.Registry) Option {
 	return func(m *Model) {
 		m.toolRegistry = reg
 	}
-}
-
-// WithModelCache sets the data directory preset setup reads the models.dev
-// catalog and its provenance from. Plan 7b deletes it.
-func WithModelCache(dataDir string) Option {
-	return func(m *Model) { m.modelCacheDir = dataDir }
 }
 
 func relPath(workingDir, path string) string {
@@ -6244,7 +6233,6 @@ func (m *Model) openConnect(_ string) {
 	opts := connect.Opts{
 		Cfg:         m.sess.Config(),
 		Discovered:  m.discovered,
-		DataDir:     m.modelCacheDir,
 		OpenBrowser: m.openBrowser,
 		Host:        m.host,
 	}
@@ -6271,7 +6259,6 @@ func (m *Model) openModels() tea.Cmd {
 		SkipToIntroModel: true,
 		AllProviders:     true,
 		ScopedProvider:   names[0],
-		DataDir:          m.modelCacheDir,
 		OpenBrowser:      m.openBrowser,
 		Host:             m.host,
 	})
@@ -6794,15 +6781,15 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 		newCfg.Models.Presets = map[string]routing.ModelPreset{}
 	}
 	// Merge the presets the connect wizard prepared for every reported model.
-	// A preset the prepared provenance manages carries refreshed catalog
+	// A preset the setup's provenance manages carries refreshed catalog
 	// values, so it replaces the live entry; an unmanaged entry is the user's
 	// own and is kept (Apply refuses to mutate those anyway). The active
 	// model's preset is materialized below, which only ever fills or grows a
 	// figure, so it cannot undo a refresh.
 	var managed map[string]bool
-	if msg.Provenance != nil {
-		managed = make(map[string]bool, len(msg.Provenance.Presets))
-		for name := range msg.Provenance.Presets {
+	if len(msg.Setup.Managed) > 0 {
+		managed = make(map[string]bool, len(msg.Setup.Managed))
+		for _, name := range msg.Setup.Managed {
 			managed[name] = true
 		}
 	}
@@ -6834,11 +6821,6 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 	// If that fails, configure nothing rather than leaving a provider entry
 	// pointing at a key that was never saved. The in-memory config keeps the
 	// key so the reloaded runtime can use it.
-	home, err := m.userHome()
-	if err != nil {
-		m.note(fmt.Sprintf("✗ Failed to locate home directory: %v", err))
-		return
-	}
 	// Baseline: the session's config, read once above before any mutation.
 	// The provider/preset maps were copied into newCfg before mutation, so
 	// that snapshot still carries the pre-edit membership: entries another
@@ -6862,13 +6844,10 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 	}
 	// Provenance is written after the presets: if it fails, the presets are
 	// already saved and the next refresh fails safe rather than overwriting a
-	// user edit.
-	dataDir := m.modelCacheDir
-	if dataDir == "" {
-		dataDir = config.DataDir(home)
-	}
-	if msg.Provenance != nil {
-		if err := presetsetup.SaveProvenance(dataDir, msg.Provenance); err != nil {
+	// user edit. An unreadable sidecar gave no raw value, so there is nothing
+	// to save and every preset stays unmanaged.
+	if len(msg.Setup.Provenance) > 0 {
+		if err := m.host.SaveProvenance(m.ctx, msg.Setup.Provenance); err != nil {
 			m.note(fmt.Sprintf("⚠ Presets saved, but models.dev provenance was not: %v", err))
 		}
 	}

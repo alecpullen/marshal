@@ -24,7 +24,6 @@ import (
 	"marshal/internal/acpclient/inproc"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
-	"marshal/internal/app/presetsetup"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/picker"
@@ -207,6 +206,15 @@ func testHost(t *testing.T, auth provider.AuthResolver) acpclient.Host {
 	return host
 }
 
+// testHostIn is testHost with the adapter's model cache directory pinned to
+// dataDir, so preset setup reads its catalog and provenance from there.
+func testHostIn(t *testing.T, dataDir string) acpclient.Host {
+	t.Helper()
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	host, _ := inproc.New(inproc.Deps{State: state, Auth: newMemAuth(), ModelCacheDir: dataDir})
+	return host
+}
+
 // newTestWizard builds a wizard with a test client host when opts named none,
 // so no wizard in this package is built without one.
 func newTestWizard(t *testing.T, opts Opts) *Model {
@@ -291,7 +299,7 @@ func TestPickModelEmitsDone(t *testing.T) {
 		Presets: map[string]routing.ModelPreset{
 			"ollama/qwen2.5-coder:7b": {Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b"},
 		},
-		Result: presetsetup.Result{Prepared: 1, Fallback: 1},
+		Setup: acpwire.PresetSetup{Prepared: 1, Fallback: 1},
 	})
 	if m.step != stepSummary {
 		t.Fatalf("after prepare should be stepSummary, got %v", m.step)
@@ -486,7 +494,7 @@ func TestDoneMsgCarriesEnabledRemote(t *testing.T) {
 	if m.step != stepPreparing {
 		t.Fatalf("after pickModel should be stepPreparing, got %v", m.step)
 	}
-	m, _ = m.Update(PreparedMsg{Provider: m.providerName, Result: presetsetup.Result{Prepared: 1, Fallback: 1}})
+	m, _ = m.Update(PreparedMsg{Provider: m.providerName, Setup: acpwire.PresetSetup{Prepared: 1, Fallback: 1}})
 	if m.step != stepSummary {
 		t.Fatalf("after prepare should be stepSummary, got %v", m.step)
 	}
@@ -617,7 +625,7 @@ func TestScopedModelSwitchPreparesPresets(t *testing.T) {
 	if m.step != stepPreparing {
 		t.Fatalf("expected stepPreparing, got %v", m.step)
 	}
-	m, _ = m.Update(PreparedMsg{Provider: m.providerName, Result: presetsetup.Result{Prepared: 1, Fallback: 1}})
+	m, _ = m.Update(PreparedMsg{Provider: m.providerName, Setup: acpwire.PresetSetup{Prepared: 1, Fallback: 1}})
 	if m.step != stepSummary {
 		t.Fatalf("expected stepSummary, got %v", m.step)
 	}
@@ -832,7 +840,7 @@ func advanceToSummary(m *Model) {
 	if m.step == stepConsent {
 		m.Update(tea.KeyPressMsg{Code: 110}) // n
 	}
-	m.Update(PreparedMsg{Provider: m.providerName, Result: presetsetup.Result{Prepared: 1, Fallback: 1}})
+	m.Update(PreparedMsg{Provider: m.providerName, Setup: acpwire.PresetSetup{Prepared: 1, Fallback: 1}})
 }
 
 // newConnectForModelPick builds a Model at stepPickModel with a discovered
@@ -923,7 +931,7 @@ func TestConnectReachesSummaryWithoutConfirmScreen(t *testing.T) {
 	m := newConnectForModelPick(t)
 	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
 	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // n
-	m, _ = m.Update(PreparedMsg{Provider: m.providerName, Result: presetsetup.Result{Prepared: 1, Fallback: 1}})
+	m, _ = m.Update(PreparedMsg{Provider: m.providerName, Setup: acpwire.PresetSetup{Prepared: 1, Fallback: 1}})
 
 	if m.step != stepSummary {
 		t.Fatalf("step = %v, want stepSummary", m.step)
@@ -940,7 +948,7 @@ func TestConnectDoneCarriesPreparedPresets(t *testing.T) {
 			"openai/gpt-4o":      {Name: "openai/gpt-4o", Provider: "openai", Model: "gpt-4o"},
 			"openai/gpt-4o-mini": {Name: "openai/gpt-4o-mini", Provider: "openai", Model: "gpt-4o-mini"},
 		},
-		Result: presetsetup.Result{Prepared: 2, Matched: 2},
+		Setup: acpwire.PresetSetup{Prepared: 2, Matched: 2},
 	})
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 13})
 	if cmd == nil {
@@ -1694,7 +1702,7 @@ func TestDoneCarriesProbedCaps(t *testing.T) {
 	m, _ = m.Update(PreparedMsg{
 		Provider: m.providerName,
 		Caps:     acpwire.ModelCapabilities{ContextWindow: 32768, ToolCalling: &toolCalling},
-		Result:   presetsetup.Result{Prepared: 1, Fallback: 1},
+		Setup:    acpwire.PresetSetup{Prepared: 1, Fallback: 1},
 	})
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 13})
 	if cmd == nil {
@@ -1719,7 +1727,7 @@ func TestPreparedMsgFromAnotherProviderIsIgnored(t *testing.T) {
 	if m.step != stepPreparing {
 		t.Fatalf("step = %v, want stepPreparing", m.step)
 	}
-	m, _ = m.Update(PreparedMsg{Provider: "some-other-provider", Result: presetsetup.Result{Prepared: 1}})
+	m, _ = m.Update(PreparedMsg{Provider: "some-other-provider", Setup: acpwire.PresetSetup{Prepared: 1}})
 	if m.step != stepPreparing {
 		t.Fatalf("stale PreparedMsg moved the wizard to %v, want stepPreparing", m.step)
 	}
@@ -1740,7 +1748,7 @@ func TestPrepareCmdDoesNotMutateLivePresetMap(t *testing.T) {
 		},
 		SkipToIntroModel: true,
 		ScopedProvider:   "openai",
-		DataDir:          t.TempDir(),
+		Host:             testHostIn(t, t.TempDir()),
 	})
 	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
 	if m.step != stepPreparing {
@@ -1776,7 +1784,7 @@ func TestPrepareCmdSkipsCatalogWhenDenied(t *testing.T) {
 		},
 		SkipToIntroModel: true,
 		ScopedProvider:   "openai",
-		DataDir:          dataDir,
+		Host:             testHostIn(t, dataDir),
 	})
 	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
 	if m.step != stepPreparing {
@@ -1787,8 +1795,10 @@ func TestPrepareCmdSkipsCatalogWhenDenied(t *testing.T) {
 	if !ok {
 		t.Fatalf("prepareCmd produced %T, want PreparedMsg", msg)
 	}
-	if pm.ProvenanceErr != nil {
-		t.Fatalf("ProvenanceErr = %v, want nil for a missing sidecar", pm.ProvenanceErr)
+	// Preset setup still ran agent side: the reported model got its preset,
+	// built from fallbacks rather than a catalog fetch.
+	if pm.Setup.Prepared != 1 || pm.Setup.Fallback != 1 {
+		t.Fatalf("Setup = %+v, want one prepared preset from fallbacks", pm.Setup)
 	}
 	// A denied consent must not touch the network, so no catalog cache is
 	// written.
@@ -2308,7 +2318,7 @@ func TestSetupProbeRejectsSkippedAndSupersededResults(t *testing.T) {
 			Presets: map[string]routing.ModelPreset{
 				"ollama/qwen2.5-coder:7b": {Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b"},
 			},
-			Result: presetsetup.Result{Prepared: 1, Fallback: 1},
+			Setup: acpwire.PresetSetup{Prepared: 1, Fallback: 1},
 		})
 		if m.step != stepSummary {
 			t.Fatalf("step = %v, want stepSummary", m.step)
@@ -2523,7 +2533,7 @@ func TestAllProviderResultDoesNotReopenLaterWizardStep(t *testing.T) {
 	if m.step != stepPreparing {
 		t.Fatalf("step = %v, want stepPreparing", m.step)
 	}
-	m, _ = m.Update(PreparedMsg{Provider: m.providerName, Result: presetsetup.Result{Prepared: 1, Fallback: 1}})
+	m, _ = m.Update(PreparedMsg{Provider: m.providerName, Setup: acpwire.PresetSetup{Prepared: 1, Fallback: 1}})
 	if m.step != stepSummary {
 		t.Fatalf("step = %v, want stepSummary", m.step)
 	}

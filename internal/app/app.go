@@ -2800,9 +2800,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		if rt.TrustPromptPending {
 			tuiOpts = append(tuiOpts, tui.WithTrustPrompt(workingDir, trustDecide))
 		}
-		if rt.DataDir != "" {
-			tuiOpts = append(tuiOpts, tui.WithModelCache(rt.DataDir))
-		}
 		// /new and /clear create a brand-new session through the seam, and the
 		// model re-reads the runtime's current state and tool registry after
 		// the host returns, for the groups not yet behind it. This is wired

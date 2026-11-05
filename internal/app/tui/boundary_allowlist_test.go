@@ -9,12 +9,11 @@ package tui
 var boundaryAllowlist = map[string][]string{
 	"agents/panel.go":             {"marshal/internal/tools/registry"},
 	"commands_dispatch.go":        {"marshal/internal/worktree"},
-	"connect/connect.go":          {"marshal/internal/app/presetsetup", "marshal/internal/llm/modelcatalog"},
 	"doctorpanel/doctorpanel.go":  {"marshal/internal/app/session"},
 	"doctorpanel/intelligence.go": {"marshal/internal/db", "marshal/internal/lsp"},
 	"memory/entries.go":           {"marshal/internal/db"},
 	"memory/panel.go":             {"marshal/internal/db"},
-	"model.go":                    {"config.DataDir", "marshal/internal/app/presetsetup", "marshal/internal/app/session", "marshal/internal/db", "marshal/internal/pubsub", "marshal/internal/sddauthor", "marshal/internal/sddplans", "marshal/internal/skills", "marshal/internal/tools/registry", "marshal/internal/trust", "marshal/internal/watch"},
+	"model.go":                    {"marshal/internal/app/session", "marshal/internal/db", "marshal/internal/pubsub", "marshal/internal/sddauthor", "marshal/internal/sddplans", "marshal/internal/skills", "marshal/internal/tools/registry", "marshal/internal/trust", "marshal/internal/watch"},
 	"plugins/panel.go":            {"marshal/internal/plugins"},
 	"runoutcome.go":               {"marshal/internal/worktree"},
 	"sdd_command.go":              {"marshal/internal/app/session"},

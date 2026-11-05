@@ -16,7 +16,6 @@ import (
 	"marshal/internal/acpclient"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
-	"marshal/internal/app/presetsetup"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/layout"
@@ -25,7 +24,6 @@ import (
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/textfield"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/llm/modelcatalog"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/strutil"
@@ -84,10 +82,6 @@ type Opts struct {
 	ScopedProvider   string
 	CfgPath          string
 	AllProviders     bool
-	// DataDir is the provider data directory: the models.dev catalog cache and
-	// the preset provenance. Model probing is the host's, so the wizard reads
-	// nothing else from it. Plan 7b removes this field.
-	DataDir string
 	// OpenBrowser launches the authorization URL during sign-in. Nil keeps
 	// the production behavior (mcpauth.OpenBrowser). Tests inject a stub so
 	// an executed login command never opens a real browser.
@@ -131,7 +125,6 @@ type Model struct {
 	remoteEnabled bool
 	allProviders  bool
 	probeErrs     map[string]error
-	dataDir       string
 	host          acpclient.Host
 	openBrowser   func(url string) error
 	prepared      PreparedMsg
@@ -166,7 +159,6 @@ func New(opts Opts) *Model {
 		scopedProvider: opts.ScopedProvider,
 		cfgPath:        opts.CfgPath,
 		allProviders:   opts.AllProviders,
-		dataDir:        opts.DataDir,
 		host:           opts.Host,
 		templates:      templates,
 		openBrowser:    openBrowser,
@@ -367,7 +359,7 @@ type DoneMsg struct {
 	ContextWindow     int
 	ToolCalling       *bool
 	Presets           map[string]routing.ModelPreset
-	Provenance        *presetsetup.Provenance
+	Setup             acpwire.PresetSetup
 	EnrichmentConsent *bool
 }
 
@@ -378,16 +370,15 @@ type PreparedMsg struct {
 	// not land in the new instance.
 	Provider string
 	Presets  map[string]routing.ModelPreset
-	// Provenance is nil when the sidecar could not be read. Saving a fresh
-	// one would discard every recorded field, so the caller skips the write.
-	Provenance    *presetsetup.Provenance
-	ProvenanceErr error
+	// Setup is the agent side's report on the run: its counts, the provenance
+	// sidecar (nil when it could not be read, so the caller saves nothing) and
+	// the preset names that sidecar manages.
+	Setup acpwire.PresetSetup
 	// Caps is the active model's probed capabilities. A model the provider
 	// listed already carries them in its preset; a manually typed id has no
 	// entry, so the caps travel back here and reach the preset through
 	// DoneMsg instead.
-	Caps   acpwire.ModelCapabilities
-	Result presetsetup.Result
+	Caps acpwire.ModelCapabilities
 }
 
 // RefreshMsg is emitted when the user presses ctrl+r in the model
@@ -595,8 +586,9 @@ func (m *Model) reportedModels() []schema.ModelInfo {
 	return m.models
 }
 
-// prepareCmd loads the catalog when allowed, applies the active model's
-// capability probe, and bulk-creates presets on a copy of the config.
+// prepareCmd runs preset setup agent side: it probes the active model's
+// capabilities, folds them into the reported models, and asks the host to
+// bulk-create presets on a copy of the config.
 func (m *Model) prepareCmd() tea.Cmd {
 	providerName := m.providerName
 	providerCfg := m.providerCfg
@@ -604,8 +596,8 @@ func (m *Model) prepareCmd() tea.Cmd {
 	modelChosen := m.modelChosen
 	models := append([]schema.ModelInfo(nil), m.reportedModels()...)
 	cfg := m.cfg
-	// The preset map is shared with the TUI's live config. Copy it before
-	// Apply mutates it, or a cancelled connect would still change presets.
+	// The preset map is shared with the TUI's live config. Copy it before the
+	// host mutates it, or a cancelled connect would still change presets.
 	// The copy is shallow, which is enough: Apply copies the pricing struct
 	// it updates rather than writing through the shared pointer.
 	if cfg.Models.Presets != nil {
@@ -615,8 +607,6 @@ func (m *Model) prepareCmd() tea.Cmd {
 		}
 		cfg.Models.Presets = presets
 	}
-	dataDir := m.dataDir
-	allowed := m.cfg.Privacy.ModelsDevEnrichment != nil && *m.cfg.Privacy.ModelsDevEnrichment
 	host := m.host
 	return func() tea.Msg {
 		// The capability probe goes through the host, which builds the client
@@ -642,28 +632,24 @@ func (m *Model) prepareCmd() tea.Cmd {
 			}
 			break
 		}
-		var cat *modelcatalog.Catalog
-		if allowed {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			cat, _ = modelcatalog.NewCache(dataDir).Load(ctx)
-			cancel()
+		// Without a host there is nobody to run preset setup, exactly as the
+		// capability probe above is skipped: report the copy unchanged.
+		if host == nil {
+			return PreparedMsg{Provider: providerName, Presets: cfg.Models.Presets, Caps: caps}
 		}
-		// A missing sidecar is safe to recreate; an unreadable one is not.
-		// Recreating it would discard every recorded field and permanently
-		// untrack presets that are still fine on disk, so leave the file
-		// alone and let the presets be created unmanaged.
-		provenance, provErr := presetsetup.LoadProvenance(dataDir)
-		if provErr != nil {
-			provenance = nil
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		presets, setup, err := host.PreparePresets(ctx, cfg, providerName, baseURL, models)
+		cancel()
+		// A failed setup proposes nothing and manages nothing; the copy still
+		// travels back so the summary and the done message render as today.
+		if err != nil {
+			return PreparedMsg{Provider: providerName, Presets: cfg.Models.Presets, Caps: caps}
 		}
-		res := presetsetup.Apply(&cfg, providerName, baseURL, models, cat, provenance)
 		return PreparedMsg{
-			Provider:      providerName,
-			Presets:       cfg.Models.Presets,
-			Provenance:    provenance,
-			ProvenanceErr: provErr,
-			Caps:          caps,
-			Result:        res,
+			Provider: providerName,
+			Presets:  presets,
+			Setup:    setup,
+			Caps:     caps,
 		}
 	}
 }
@@ -712,10 +698,10 @@ func (m *Model) renderSummary(pw int) string {
 	b.WriteString(mutedStyle().Render("endpoint: ") + titleStyle().Render(strutil.Truncate(m.providerCfg.BaseURL, pw-12, true)) + "\n")
 	b.WriteString(mutedStyle().Render("key:      ") + titleStyle().Render(m.keySourceLabel()) + "\n")
 	b.WriteString(mutedStyle().Render("model:    ") + titleStyle().Render(m.modelChosen) + "\n")
-	if m.prepared.Result.Prepared > 0 {
+	if m.prepared.Setup.Prepared > 0 {
 		b.WriteString(mutedStyle().Render("presets:  ") +
 			titleStyle().Render(fmt.Sprintf("%d prepared · %d models.dev matches · %d using fallbacks",
-				m.prepared.Result.Prepared, m.prepared.Result.Matched, m.prepared.Result.Fallback)) + "\n")
+				m.prepared.Setup.Prepared, m.prepared.Setup.Matched, m.prepared.Setup.Fallback)) + "\n")
 	}
 	if m.cfgPath != "" {
 		b.WriteString(mutedStyle().Render("save to:  ") + titleStyle().Render(strutil.Truncate(m.cfgPath, pw-12, true)) + "\n")
@@ -1355,7 +1341,7 @@ func (m *Model) done() tea.Cmd {
 			ContextWindow:     caps.ContextWindow,
 			ToolCalling:       caps.ToolCalling,
 			Presets:           m.prepared.Presets,
-			Provenance:        m.prepared.Provenance,
+			Setup:             m.prepared.Setup,
 			EnrichmentConsent: m.cfg.Privacy.ModelsDevEnrichment,
 		}
 	}

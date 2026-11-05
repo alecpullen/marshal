@@ -163,12 +163,15 @@ func (s *Stacks) Stack(ctx context.Context, sessionID string, subagentID int64) 
 	}
 
 	s.mu.Lock()
-	again := false
+	installed, again := false, false
 	if s.entries[key] == entry {
 		again = entry.install(snap)
+		installed = true
 	}
 	s.mu.Unlock()
-	s.signal(sessionID)
+	if installed {
+		s.signal(sessionID)
+	}
 	if again {
 		s.refetch(key)
 	}
@@ -238,7 +241,10 @@ func (s *Stacks) refetch(key stackKey) {
 			return
 		}
 		if conn == nil {
-			entry.fetching = false
+			// Nothing can serve the fetch: forget the entry, as a failed fetch
+			// does, so the next read fetches again instead of serving a stack
+			// whose queued patches will never be applied.
+			delete(s.entries, key)
 			s.mu.Unlock()
 			return
 		}
@@ -249,8 +255,11 @@ func (s *Stacks) refetch(key stackKey) {
 		err := conn.Call(context.Background(), acpwire.MethodStack, params, &snap)
 
 		s.mu.Lock()
-		entry, ok = s.entries[key]
-		if !ok {
+		if s.entries[key] != entry {
+			// Released or replaced while the fetch was in flight. Its snapshot
+			// belongs to a mirror that no longer exists: installing it would
+			// overwrite the entry that replaced this one, and resurrect the
+			// one Release dropped.
 			s.mu.Unlock()
 			return
 		}

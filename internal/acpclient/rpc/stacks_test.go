@@ -474,3 +474,235 @@ func TestStacksIgnoreOtherUpdates(t *testing.T) {
 	default:
 	}
 }
+
+// TestStacksUnboundErrors checks the pinned errors a mirror reports before it
+// is bound to a connection.
+func TestStacksUnboundErrors(t *testing.T) {
+	stacks := NewStacks()
+	if _, err := stacks.Stack(context.Background(), "s1", 0); err == nil ||
+		err.Error() != "rpc: stacks are not bound to a connection" {
+		t.Fatalf("unbound read = %v, want the pinned error", err)
+	}
+	if err := stacks.Release(context.Background(), "s1", 1); err == nil ||
+		err.Error() != "rpc: stacks are not bound to a connection" {
+		t.Fatalf("unbound release = %v, want the pinned error", err)
+	}
+}
+
+// TestStacksRefetchAfterAFailedFirstRead checks that a first read whose fetch
+// fails forgets the entry, so the next read asks the agent again.
+func TestStacksRefetchAfterAFailedFirstRead(t *testing.T) {
+	stacks, f := startStacks(t)
+
+	reads := readStack(stacks, "s1", 0)
+	req := f.recv(t)
+	if got := rawString(t, req["method"]); got != acpwire.MethodStack {
+		t.Fatalf("first read method = %q, want %q", got, acpwire.MethodStack)
+	}
+	f.send(t, `{"jsonrpc":"2.0","id":`+rawString(t, req["id"])+`,"error":{"code":-32603,"message":"boom"}}`)
+	if read := <-reads; read.err == nil {
+		t.Fatal("a failed fetch returned no error")
+	}
+
+	// The entry is gone, so the next read fetches again.
+	reads = readStack(stacks, "s1", 0)
+	req = f.recv(t)
+	if got := rawString(t, req["method"]); got != acpwire.MethodStack {
+		t.Fatalf("read after a failed fetch method = %q, want %q", got, acpwire.MethodStack)
+	}
+	f.send(t, resultFrame(t, rawString(t, req["id"]), turnSnapshot("s1", 0, 1, "step:1")))
+	if read := <-reads; read.err != nil {
+		t.Fatalf("read after a failed fetch: %v", read.err)
+	}
+}
+
+// TestStacksSecondGapFetchesAgain checks that a queued patch which does not
+// chain with the fetched snapshot keeps itself and the rest of the queue, and
+// starts exactly one more fetch.
+func TestStacksSecondGapFetchesAgain(t *testing.T) {
+	stacks, f := startStacks(t)
+	readOnce(t, f, stacks, "s1", 0, turnSnapshot("s1", 0, 2, "step:1"))
+
+	// A gap starts the first fetch.
+	f.send(t, patchFrame(t, "s1", acpwire.StackPatch{
+		Rev:     6,
+		BaseRev: 5,
+		Roots:   []string{"turn:1"},
+		Upsert:  []acpwire.WireNode{{ID: "step:5", Kind: acpwire.KindStep, Parent: "turn:1"}},
+	}))
+	req := f.recv(t)
+	if got := rawString(t, req["method"]); got != acpwire.MethodStack {
+		t.Fatalf("gap fetch method = %q, want %q", got, acpwire.MethodStack)
+	}
+
+	// Two patches arrive during it: the first chains with the snapshot's
+	// revision, the second does not chain with the first.
+	f.send(t, patchFrame(t, "s1", acpwire.StackPatch{
+		Rev:     7,
+		BaseRev: 6,
+		Roots:   []string{"turn:1"},
+		Upsert:  []acpwire.WireNode{{ID: "step:6", Kind: acpwire.KindStep, Parent: "turn:1"}},
+	}))
+	f.send(t, patchFrame(t, "s1", acpwire.StackPatch{
+		Rev:     8,
+		BaseRev: 5,
+		Roots:   []string{"turn:1"},
+		Upsert:  []acpwire.WireNode{{ID: "step:7", Kind: acpwire.KindStep, Parent: "turn:1"}},
+	}))
+	f.send(t, resultFrame(t, rawString(t, req["id"]), turnSnapshot("s1", 0, 6, "step:1", "step:5")))
+
+	// The second gap starts exactly one more fetch.
+	again := f.recv(t)
+	if got := rawString(t, again["method"]); got != acpwire.MethodStack {
+		t.Fatalf("second fetch method = %q, want %q", got, acpwire.MethodStack)
+	}
+	f.send(t, resultFrame(t, rawString(t, again["id"]), turnSnapshot("s1", 0, 8, "step:1", "step:5", "step:6", "step:7")))
+
+	// The snapshot carries the kept patch, so nothing more is applied and no
+	// third fetch goes out.
+	got := waitStack(t, stacks, "s1", 0, 8)
+	checkSnapshot(t, got, 8, []string{"turn:1"},
+		[]string{"turn:1", "step:1", "step:5", "step:6", "step:7"})
+	pingConn(t, f)
+}
+
+// TestStacksDropDuplicateQueuedPatches checks that patches queued during a
+// fetch which the snapshot already carries are dropped when it installs.
+func TestStacksDropDuplicateQueuedPatches(t *testing.T) {
+	stacks, f := startStacks(t)
+	readOnce(t, f, stacks, "s1", 0, turnSnapshot("s1", 0, 2, "step:1"))
+
+	f.send(t, patchFrame(t, "s1", acpwire.StackPatch{
+		Rev:     9,
+		BaseRev: 8,
+		Roots:   []string{"turn:1"},
+		Upsert:  []acpwire.WireNode{{ID: "step:8", Kind: acpwire.KindStep, Parent: "turn:1"}},
+	}))
+	req := f.recv(t)
+	if got := rawString(t, req["method"]); got != acpwire.MethodStack {
+		t.Fatalf("gap fetch method = %q, want %q", got, acpwire.MethodStack)
+	}
+	// One patch at the snapshot's revision and one from before it: neither may
+	// move the mirror backwards.
+	f.send(t, patchFrame(t, "s1", acpwire.StackPatch{
+		Rev:     5,
+		BaseRev: 4,
+		Roots:   []string{"turn:1"},
+		Upsert:  []acpwire.WireNode{{ID: "step:4", Kind: acpwire.KindStep, Parent: "turn:1"}},
+	}))
+	f.send(t, patchFrame(t, "s1", acpwire.StackPatch{
+		Rev:     3,
+		BaseRev: 2,
+		Roots:   []string{"stale"},
+		Upsert:  []acpwire.WireNode{{ID: "step:2", Kind: acpwire.KindStep}},
+	}))
+	f.send(t, resultFrame(t, rawString(t, req["id"]), turnSnapshot("s1", 0, 5, "step:1", "step:4")))
+
+	got := waitStack(t, stacks, "s1", 0, 5)
+	checkSnapshot(t, got, 5, []string{"turn:1"}, []string{"turn:1", "step:1", "step:4"})
+	pingConn(t, f)
+}
+
+// TestStacksReleaseDuringAFetchLeavesNoStaleState checks that a fetch in
+// flight when its stack is released cannot install into the entry that a later
+// read creates for the same key.
+func TestStacksReleaseDuringAFetchLeavesNoStaleState(t *testing.T) {
+	stacks, f := startStacks(t)
+	readOnce(t, f, stacks, "s1", 1, turnSnapshot("s1", 1, 1, "step:1"))
+
+	f.send(t, patchFrame(t, "s1", acpwire.StackPatch{
+		SubagentID: 1,
+		Rev:        6,
+		BaseRev:    5,
+		Roots:      []string{"turn:1"},
+		Upsert:     []acpwire.WireNode{{ID: "step:5", Kind: acpwire.KindStep, Parent: "turn:1"}},
+	}))
+	stale := f.recv(t)
+	if got := rawString(t, stale["method"]); got != acpwire.MethodStack {
+		t.Fatalf("gap fetch method = %q, want %q", got, acpwire.MethodStack)
+	}
+
+	// The stack is released while that fetch is in flight.
+	errCh := make(chan error, 1)
+	go func() { errCh <- stacks.Release(context.Background(), "s1", 1) }()
+	req := f.recv(t)
+	if got := rawString(t, req["method"]); got != acpwire.MethodStackUnsubscribe {
+		t.Fatalf("release method = %q, want %q", got, acpwire.MethodStackUnsubscribe)
+	}
+	f.send(t, resultFrame(t, rawString(t, req["id"]), struct{}{}))
+	if err := <-errCh; err != nil {
+		t.Fatalf("release: %v", err)
+	}
+
+	// A later read creates the entry that replaces the released one.
+	reads := readStack(stacks, "s1", 1)
+	fresh := f.recv(t)
+	if got := rawString(t, fresh["method"]); got != acpwire.MethodStack {
+		t.Fatalf("read after release method = %q, want %q", got, acpwire.MethodStack)
+	}
+	// A patch arrives while the replacing entry's fetch is in flight, so the
+	// mirror queues it.
+	f.send(t, patchFrame(t, "s1", acpwire.StackPatch{
+		SubagentID: 1,
+		Rev:        3,
+		BaseRev:    2,
+		Roots:      []string{"turn:1"},
+		Upsert:     []acpwire.WireNode{{ID: "step:2", Kind: acpwire.KindStep, Parent: "turn:1"}},
+	}))
+
+	// The released fetch answers late. Only an install would signal the stack,
+	// so a signal here means the released fetch wrote into the entry that
+	// replaced it.
+	changed := stacks.Changed("s1")
+	drainChanged(t, changed)
+	f.send(t, resultFrame(t, rawString(t, stale["id"]), turnSnapshot("s1", 1, 9, "stale")))
+	select {
+	case <-changed:
+		t.Fatal("the released stack's in-flight fetch installed into the entry that replaced it")
+	case <-time.After(200 * time.Millisecond):
+		// Nothing changed: the released fetch dropped its snapshot.
+	}
+
+	f.send(t, resultFrame(t, rawString(t, fresh["id"]), turnSnapshot("s1", 1, 2, "step:1")))
+
+	if read := <-reads; read.err != nil || read.snap.Rev != 2 {
+		t.Fatalf("read after release = revision %d, %v, want 2", read.snap.Rev, read.err)
+	}
+	// The queued patch applies on the fresh snapshot, and the released fetch's
+	// revision and nodes never reach the mirror.
+	got := waitStack(t, stacks, "s1", 1, 3)
+	checkSnapshot(t, got, 3, []string{"turn:1"}, []string{"turn:1", "step:1", "step:2"})
+	for _, node := range got.Nodes {
+		if node.ID == "stale" {
+			t.Fatal("a released stack's in-flight fetch installed into the entry that replaced it")
+		}
+	}
+}
+
+// TestStacksUnsubscribeParamsArePinned checks that Release sends exactly the
+// session and the subagent, so an omitted subagentId never reaches the agent.
+func TestStacksUnsubscribeParamsArePinned(t *testing.T) {
+	stacks, f := startStacks(t)
+	readOnce(t, f, stacks, "s1", 4, turnSnapshot("s1", 4, 1, "step:1"))
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- stacks.Release(context.Background(), "s1", 4) }()
+	req := f.recv(t)
+	if got := rawString(t, req["method"]); got != acpwire.MethodStackUnsubscribe {
+		t.Fatalf("release method = %q, want %q", got, acpwire.MethodStackUnsubscribe)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(req["params"], &raw); err != nil {
+		t.Fatalf("decode unsubscribe params: %v", err)
+	}
+	if len(raw) != 2 {
+		t.Fatalf("unsubscribe params = %v, want only sessionId and subagentId", raw)
+	}
+	if string(raw["sessionId"]) != `"s1"` || string(raw["subagentId"]) != "4" {
+		t.Fatalf("unsubscribe params = %v, want session s1 and subagent 4", raw)
+	}
+	f.send(t, resultFrame(t, rawString(t, req["id"]), struct{}{}))
+	if err := <-errCh; err != nil {
+		t.Fatalf("release: %v", err)
+	}
+}

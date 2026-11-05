@@ -592,7 +592,7 @@ cadence, and a client mirror fed by the patches the agent already sends. Plan
   - applying a ten-node patch through the mirror, decoding included: median
     **1.03 ms** over 20 runs (benchmark 1.09 ms/op); R10 allows 2 ms.
   - a full `session/stack` round trip to an applied mirror over the pipe:
-    median **32.2 ms** over 10 runs (benchmark 34.2 ms/op); R10 allows 50 ms.
+    median **36.2 ms** over 30 runs (benchmark 34.2 ms/op); R10 allows 50 ms.
   - one agent-side flush of the same session after one new tool call:
     **8.4 ms** (no budget; it is the number plan 4b decides the 50ms cadence
     against).
@@ -601,5 +601,7 @@ cadence, and a client mirror fed by the patches the agent already sends. Plan
 - **Left for plan 4b:** `rpc.Session.Stack`, `StackNode` and `Callers` over
   the wire; the `busy` decision checked against the T6 goldens; when the TUI
   releases a subagent's stack; and any revisit of the 50ms cadence in the
-  light of the flush cost above.
+  light of the flush cost above. `Stacks` also has no session-close hook yet,
+  so each session a connection has signalled keeps one `Changed` channel for
+  the connection's lifetime: 4b's session close is where that goes.
 

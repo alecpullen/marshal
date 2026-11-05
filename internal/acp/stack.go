@@ -35,6 +35,9 @@ type stackProjector struct {
 	rev       uint64
 	sent      map[string][]byte
 	sentOrder []string
+	// sentRoots is the root list of the last patch or snapshot sent, so a
+	// reader can compare against what the client actually holds.
+	sentRoots []string
 	// idleCancel stops the idle flusher; set on a session's parent projector.
 	idleCancel context.CancelFunc
 	// final marks a subagent projector flushed after its subagent stopped
@@ -94,6 +97,7 @@ func (p *stackProjector) diff(tree acpwire.WireTree) (acpwire.StackPatch, bool) 
 	patch.Rev = p.rev
 	patch.Roots = tree.Roots
 	p.sent, p.sentOrder = sent, order
+	p.sentRoots = append([]string(nil), tree.Roots...)
 	return patch, true
 }
 
@@ -171,7 +175,14 @@ func (m *TurnManager) flushDirtyStack(sessionID string, st *session.State) {
 
 // flushProjector diffs one projector against st and notifies on change.
 func (m *TurnManager) flushProjector(sessionID string, subagentID int64, st *session.State, busy, drilled, onlyDirty bool) {
-	p := m.stackFor(stackKey(sessionID, subagentID))
+	m.flushProjectorFor(m.stackFor(stackKey(sessionID, subagentID)), sessionID, subagentID, st, busy, drilled, onlyDirty)
+}
+
+// flushProjectorFor is flushProjector for a projector the caller resolved. An
+// unsubscribe can delete a projector between the resolution and the flush, so
+// a flush never resolves one itself: doing so would recreate a projector
+// nobody subscribes to and leave it in the map.
+func (m *TurnManager) flushProjectorFor(p *stackProjector, sessionID string, subagentID int64, st *session.State, busy, drilled, onlyDirty bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
@@ -227,7 +238,7 @@ func (m *TurnManager) flushChildStacks(sessionID string, st *session.State) {
 			continue
 		}
 		running := v.Status == session.SubagentRunning
-		m.flushProjector(sessionID, id, v.Child, running, true, false)
+		m.flushProjectorFor(cp, sessionID, id, v.Child, running, true, false)
 		if !running {
 			cp.mu.Lock()
 			cp.final = true
@@ -323,6 +334,7 @@ func (m *TurnManager) stackSnapshot(request StackParams, rt *TurnRuntime, src *s
 			p.sent[n.ID], _ = json.Marshal(n)
 			p.sentOrder = append(p.sentOrder, n.ID)
 		}
+		p.sentRoots = append([]string(nil), tree.Roots...)
 	} else if patch, changed := p.diff(tree); changed {
 		patch.SubagentID = request.SubagentID
 		m.notifyStackPatch(request.SessionID, patch)

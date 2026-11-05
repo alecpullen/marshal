@@ -17,6 +17,7 @@ import (
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/pubsub"
 	"marshal/internal/tools/registry"
 	"marshal/internal/viewmodel"
 )
@@ -86,9 +87,11 @@ func startStackAgentBench(b *testing.B, st *session.State) *stackAgent {
 // install registers the stack methods on srv and builds the manager they
 // serve, exactly as registerHandlers does for a marshal client.
 func (a *stackAgent) install(srv *Server) {
+	// The runtime carries an event broker, as the real host's does.
+	broker := pubsub.NewBroker[session.Event]()
 	a.m = NewTurnManager(TurnManagerConfig{
 		Lookup: func(id string) (*TurnRuntime, bool) {
-			return &TurnRuntime{State: a.st}, id == stackWireSession
+			return &TurnRuntime{State: a.st, Events: broker}, id == stackWireSession
 		},
 		Notify:  srv.Notify,
 		Marshal: func() bool { return true },
@@ -173,6 +176,7 @@ func sameAsProjector(t *testing.T, a *stackAgent, subagentID int64, st *session.
 		sent[id] = encoded
 	}
 	order := append([]string(nil), p.sentOrder...)
+	roots := append([]string(nil), p.sentRoots...)
 	p.mu.Unlock()
 
 	snap := readStack(t, a, subagentID)
@@ -194,13 +198,12 @@ func sameAsProjector(t *testing.T, a *stackAgent, subagentID int64, st *session.
 			t.Fatalf("node %q = %s, projector sent %s", id, got, sent[id])
 		}
 	}
-	tree := viewmodel.ProjectState(st, busy, time.Now()).Tree
-	if len(snap.Roots) != len(tree.Roots) {
-		t.Fatalf("mirror roots = %v, projector roots = %v", snap.Roots, tree.Roots)
+	if len(snap.Roots) != len(roots) {
+		t.Fatalf("mirror roots = %v, projector sent %v", snap.Roots, roots)
 	}
-	for i, root := range tree.Roots {
+	for i, root := range roots {
 		if snap.Roots[i] != root {
-			t.Fatalf("mirror roots = %v, projector roots = %v", snap.Roots, tree.Roots)
+			t.Fatalf("mirror roots = %v, projector sent %v", snap.Roots, roots)
 		}
 	}
 }
@@ -531,7 +534,7 @@ func TestStackRoundTripBudget(t *testing.T) {
 	logLargeStackShape(t, st)
 	a := startStackAgent(t, st)
 
-	const runs = 10
+	const runs = 30
 	durations := make([]time.Duration, 0, runs)
 	for i := 0; i < runs; i++ {
 		mirror := rpc.NewStacks()

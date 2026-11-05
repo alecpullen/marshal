@@ -13,6 +13,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"marshal/internal/acpclient"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/presetsetup"
 	"marshal/internal/app/tui/chrome"
@@ -24,10 +26,8 @@ import (
 	"marshal/internal/app/tui/textfield"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/llm/modelcatalog"
-	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
-	"marshal/internal/oauth"
 	"marshal/internal/strutil"
 )
 
@@ -84,19 +84,17 @@ type Opts struct {
 	ScopedProvider   string
 	CfgPath          string
 	AllProviders     bool
-	// DataDir is the provider data directory used for the probe cache and
-	// discovered model metadata.
+	// DataDir is the provider data directory: the models.dev catalog cache and
+	// the preset provenance. Model probing is the host's, so the wizard reads
+	// nothing else from it. Plan 7b removes this field.
 	DataDir string
-	// Auth is the credential/OAuth dependency every provider this wizard
-	// constructs must use — capability/model probes and the sign-in engine.
-	// Nil selects the production adapter (see New); an embedded or test
-	// caller injects an isolated resolver so the wizard never reaches the
-	// real OS keychain.
-	Auth provider.AuthResolver
 	// OpenBrowser launches the authorization URL during sign-in. Nil keeps
 	// the production behavior (mcpauth.OpenBrowser). Tests inject a stub so
 	// an executed login command never opens a real browser.
 	OpenBrowser func(url string) error
+	// Host is the client host the setup probe asks for the provider's model
+	// list. A nil host fails that probe.
+	Host acpclient.Host
 }
 
 type Model struct {
@@ -109,17 +107,20 @@ type Model struct {
 	subtitle         string
 	footer           string
 	err              string
-	template         provider.ProviderTemplate
-	providerName     string
-	providerCfg      config.ProviderConfig
-	models           []schema.ModelInfo
-	cfg              config.Config
-	discovered       map[string][]schema.ModelInfo
-	scopedProvider   string
-	cfgPath          string
-	width            int
-	height           int
-	probeStart       int64
+	template         acpwire.ProviderTemplate
+	// templates is the provider catalog the host served at construction. A
+	// nil host serves none, so the template step offers only the custom row.
+	templates      []acpwire.ProviderTemplate
+	providerName   string
+	providerCfg    config.ProviderConfig
+	models         []schema.ModelInfo
+	cfg            config.Config
+	discovered     map[string][]schema.ModelInfo
+	scopedProvider string
+	cfgPath        string
+	width          int
+	height         int
+	probeStart     int64
 	// probeGen correlates a setup probe result with the wizard instance and
 	// attempt that dispatched it. It increases on every dispatch (including
 	// retries) and on skip or cancel, so a late result can never be mistaken
@@ -131,7 +132,7 @@ type Model struct {
 	allProviders  bool
 	probeErrs     map[string]error
 	dataDir       string
-	auth          provider.AuthResolver
+	host          acpclient.Host
 	openBrowser   func(url string) error
 	prepared      PreparedMsg
 
@@ -147,17 +148,15 @@ func New(opts Opts) *Model {
 	ri := textfield.New()
 	ri.SetVirtualCursor(true)
 	ri.Focus()
-	// Select the production credential/OAuth adapter only when the caller
-	// supplied none. Resolving it here (rather than inside the probe and
-	// sign-in paths) means one wizard has one dependency for its whole
-	// lifetime, including through every step that rebuilds a provider client.
-	auth := opts.Auth
-	if auth == nil {
-		auth = provider.DefaultAuthResolver()
-	}
 	openBrowser := opts.OpenBrowser
 	if openBrowser == nil {
 		openBrowser = mcpauth.OpenBrowser
+	}
+	// The catalog is the host's: reading it once here means every step that
+	// offers a template reads the same list the agent side serves.
+	var templates []acpwire.ProviderTemplate
+	if opts.Host != nil {
+		templates = opts.Host.ProviderTemplates()
 	}
 	m := &Model{
 		cfg:            opts.Cfg,
@@ -168,7 +167,8 @@ func New(opts Opts) *Model {
 		cfgPath:        opts.CfgPath,
 		allProviders:   opts.AllProviders,
 		dataDir:        opts.DataDir,
-		auth:           auth,
+		host:           opts.Host,
+		templates:      templates,
 		openBrowser:    openBrowser,
 	}
 	if opts.SkipToIntroModel {
@@ -179,15 +179,13 @@ func New(opts Opts) *Model {
 	return m
 }
 
-// AuthResolver returns the credential/OAuth dependency this wizard uses. It
-// exposes the selected dependency (never nil — New resolves the production
-// adapter when none was injected) so callers and tests can verify that a
-// panel was built from the intended runtime.
-func (m *Model) AuthResolver() provider.AuthResolver { return m.auth }
-
 // OpenBrowserFn returns the browser launcher the sign-in flow uses, or nil
 // if none was selected (New always selects one).
 func (m *Model) OpenBrowserFn() func(url string) error { return m.openBrowser }
+
+// HostForTest returns the client host the wizard holds. It exists for the TUI's
+// wiring test; production code reaches the host through the wizard's own calls.
+func (m *Model) HostForTest() acpclient.Host { return m.host }
 
 func (m *Model) Init() tea.Cmd { return nil }
 
@@ -388,7 +386,7 @@ type PreparedMsg struct {
 	// listed already carries them in its preset; a manually typed id has no
 	// entry, so the caps travel back here and reach the preset through
 	// DoneMsg instead.
-	Caps   provider.ModelCapabilities
+	Caps   acpwire.ModelCapabilities
 	Result presetsetup.Result
 }
 
@@ -412,22 +410,19 @@ type OAuthDoneMsg struct {
 // CopyLinkMsg asks the app shell to copy the complete authorization URL.
 type CopyLinkMsg struct{ URL string }
 
-// oauthDisplay adapts the engine's Display interface to the connect panel.
-// ShowURL records the URL so the panel can render it; Wait returns
-// immediately because the engine waits on the loopback callback directly and
-// treats Wait as a hint, not a signal.
+// oauthDisplay is the connect panel's record of the running sign-in's
+// authorization URL.
 type oauthDisplay struct {
 	mu  sync.Mutex
 	url string
 }
 
+// ShowURL records the URL so the panel can render it.
 func (d *oauthDisplay) ShowURL(u string) {
 	d.mu.Lock()
 	d.url = u
 	d.mu.Unlock()
 }
-
-func (d *oauthDisplay) Wait(ctx context.Context) error { return nil }
 
 func (d *oauthDisplay) URL() string {
 	d.mu.Lock()
@@ -435,23 +430,24 @@ func (d *oauthDisplay) URL() string {
 	return d.url
 }
 
-// oauthLogin runs the browser flow in a tea.Cmd. The engine blocks on the
+// oauthLogin runs the browser flow in a tea.Cmd. The agent side blocks on the
 // loopback callback, so this Cmd blocks until the user finishes (or the
-// engine's own timeout fires).
+// sign-in's own timeout fires).
 //
-// The engine's Open hook is wired here rather than in the provider package:
-// launching a browser is a UI concern, and internal/llm/provider must not
-// depend on the TUI. Without this the flow would dead-end — Authorize would
-// wait on a loopback callback the user was never told how to trigger.
-func oauthLogin(engine *oauth.Engine, providerName string, display *oauthDisplay, open func(url string) error) tea.Cmd {
+// The URL arrives through show rather than an engine hook: launching a
+// browser is a UI concern, so the TUI opens it and then records the URL for
+// its panel — the order the engine itself used.
+func oauthLogin(host acpclient.Host, providerName string, display *oauthDisplay, open func(url string) error) tea.Cmd {
 	if open == nil {
 		open = mcpauth.OpenBrowser
 	}
-	engine.Open = func(u string) { _ = open(u) }
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), oauthLoginTimeout)
 		defer cancel()
-		err := engine.Authorize(ctx, display)
+		err := host.LoginProvider(ctx, providerName, func(u string) {
+			_ = open(u)
+			display.ShowURL(u)
+		})
 		return OAuthDoneMsg{Provider: providerName, Err: err}
 	}
 }
@@ -502,7 +498,7 @@ func (m *Model) enterPickTemplate() {
 	m.subtitle = ""
 	m.footer = "[↑↓] move [↵] pick [Esc] cancel"
 	m.err = ""
-	all := provider.All()
+	all := m.templates
 	items := make([]picker.Item, 0, len(all)+1)
 	items = append(items, picker.Item{
 		Label:  "New custom provider…",
@@ -621,19 +617,15 @@ func (m *Model) prepareCmd() tea.Cmd {
 	}
 	dataDir := m.dataDir
 	allowed := m.cfg.Privacy.ModelsDevEnrichment != nil && *m.cfg.Privacy.ModelsDevEnrichment
-	margin := m.cfg.Agent.ThinkingBudgetMargin
-	auth := m.auth
+	host := m.host
 	return func() tea.Msg {
-		// Constructing the provider can resolve a credential from the OS
-		// keychain, so it happens here rather than on the UI thread.
-		var caps provider.ModelCapabilities
-		prov, err := provider.NewFromConfigWithAuth(providerName, providerCfg, dataDir, margin, "", auth)
-		if err == nil {
-			if prober, ok := prov.(provider.CapabilityProber); ok {
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				caps = prober.ProbeCapabilities(ctx, modelChosen)
-				cancel()
-			}
+		// The capability probe goes through the host, which builds the client
+		// (and may resolve a credential) agent side.
+		var caps acpwire.ModelCapabilities
+		if host != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			caps, _ = host.ProbeModel(ctx, providerName, providerCfg, modelChosen)
+			cancel()
 		}
 		// Fold the probe into the reported entry when the provider listed the
 		// model. A manually typed id has no entry, so its caps travel back in
@@ -860,7 +852,7 @@ func templateModelsToInfo(ids []string) []schema.ModelInfo {
 	return out
 }
 
-func badgeForTemplate(tpl provider.ProviderTemplate) string {
+func badgeForTemplate(tpl acpwire.ProviderTemplate) string {
 	if tpl.Local {
 		return "local"
 	}
@@ -895,15 +887,15 @@ func (m *Model) handlePickerPicked(value string) (*Model, tea.Cmd) {
 		// summary, but it must not skip this.
 		return m.afterModelChosen()
 	}
-	tpl, ok := provider.Lookup(value)
+	tpl, ok := m.lookupTemplate(value)
 	if !ok {
 		if value == "custom" || strings.HasPrefix(value, "@ai-sdk/") {
-			m.template = provider.ProviderTemplate{ID: "custom", Type: "openai_compatible"}
+			m.template = acpwire.ProviderTemplate{ID: "custom", Type: "openai_compatible"}
 			m.providerCfg = config.ProviderConfig{Type: "openai_compatible", Template: "custom"}
 			enterBaseURLStep(m)
 			return m, nil
 		}
-		m.template = provider.ProviderTemplate{ID: value, Type: "openai_compatible"}
+		m.template = acpwire.ProviderTemplate{ID: value, Type: "openai_compatible"}
 		m.providerCfg = config.ProviderConfig{Type: "openai_compatible", Template: value}
 		enterBaseURLStep(m)
 		return m, nil
@@ -945,27 +937,19 @@ func (m *Model) enterOAuthLogin() (*Model, tea.Cmd) {
 	m.err = ""
 	m.picker = nil
 
-	engine, err := m.codexOAuthEngine()
-	if err != nil {
+	// The catalog is the host's, so a wizard built without one never reaches
+	// an OAuth template. Defend the invariant anyway: the rest of this panel
+	// fails its probes rather than dereferencing a nil host.
+	if m.host == nil {
+		m.err = "sign-in needs the agent side: no client host"
+		return m, nil
+	}
+	if err := m.host.PrepareProviderLogin(context.Background(), m.providerName); err != nil {
 		m.err = err.Error()
 		return m, nil
 	}
 	m.oauthDisplay = &oauthDisplay{}
-	return m, oauthLogin(engine, m.providerName, m.oauthDisplay, m.openBrowser)
-}
-
-// codexOAuthEngine returns the OAuth engine backing this wizard's sign-in,
-// built from the credential dependency the caller supplied. An injected
-// resolver is authoritative: under it the token store stays private to
-// whoever supplied it, so a test or embedded caller cannot reach the real OS
-// keychain. Only a Model built as a bare literal, bypassing New, keeps the
-// legacy process-wide engine — New always selects a resolver, so no wizard
-// reached through the normal constructor takes that branch.
-func (m *Model) codexOAuthEngine() (*oauth.Engine, error) {
-	if m.auth != nil {
-		return m.auth.CodexOAuthEngine(m.providerName)
-	}
-	return provider.CodexOAuthEngine(m.providerName)
+	return m, oauthLogin(m.host, m.providerName, m.oauthDisplay, m.openBrowser)
 }
 
 // oauthURL returns the authorization URL the running flow has produced, or
@@ -1323,7 +1307,7 @@ const parentModelProbeFieldID = "models"
 func (m *Model) runProbe() tea.Cmd {
 	owner := m
 	gen := m.probeGen
-	inner := probe.ProviderWithAuth("connect", m.providerName, m.providerCfg, m.dataDir, m.cfg.Agent.ThinkingBudgetMargin, m.auth)
+	inner := probe.Provider(m.host, "connect", m.providerName, m.providerCfg)
 	return func() tea.Msg {
 		res, ok := inner().(probe.ResultMsg)
 		if !ok {
@@ -1383,7 +1367,7 @@ func (m *Model) uniqueName() string {
 	for k := range m.cfg.Providers {
 		existing[k] = true
 	}
-	return provider.UniqueName(base, existing)
+	return strutil.UniqueName(base, existing)
 }
 
 // nameBase picks the default provider name base. For known templates it uses
@@ -1417,16 +1401,27 @@ func hostBase(baseURL string) string {
 // providerTemplate looks up the catalog template for a configured provider.
 // It prefers the stored template ID so renamed providers still resolve to
 // their original catalog models.
-func (m *Model) providerTemplate(pn string) (provider.ProviderTemplate, bool) {
+func (m *Model) providerTemplate(pn string) (acpwire.ProviderTemplate, bool) {
 	pc, ok := m.cfg.Providers[pn]
 	if !ok {
-		return provider.ProviderTemplate{}, false
+		return acpwire.ProviderTemplate{}, false
 	}
 	id := pn
 	if pc.Template != "" {
 		id = pc.Template
 	}
-	return provider.Lookup(id)
+	return m.lookupTemplate(id)
+}
+
+// lookupTemplate finds a catalog template by ID in the list the host served at
+// construction. A nil host served none, so nothing matches.
+func (m *Model) lookupTemplate(id string) (acpwire.ProviderTemplate, bool) {
+	for _, tpl := range m.templates {
+		if tpl.ID == id {
+			return tpl, true
+		}
+	}
+	return acpwire.ProviderTemplate{}, false
 }
 
 func orDefault(v, def string) string {

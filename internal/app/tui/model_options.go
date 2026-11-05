@@ -10,7 +10,6 @@ import (
 	"marshal/internal/app/tui/modeloptions"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/probe"
-	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 )
@@ -193,7 +192,7 @@ func fieldLabel(id string) string {
 func (m *Model) modelThinkingOptions(presetName string) *schema.ThinkingOptions {
 	preset := m.state.Config.Models.Presets[presetName]
 	pc := m.state.Config.Providers[preset.Provider]
-	return provider.ResolveThinkingOptions(pc.Type, preset.Model, preset.ThinkingOptions, m.discovered[preset.Provider])
+	return schema.ResolveThinkingOptions(pc.Type, preset.Model, preset.ThinkingOptions, m.discovered[preset.Provider])
 }
 
 func (m *Model) probeThinkingOptions(presetName string) tea.Cmd {
@@ -202,5 +201,5 @@ func (m *Model) probeThinkingOptions(presetName string) tea.Cmd {
 	if !ok || (!probe.IsLocalhost(pc.BaseURL) && !m.state.Config.Privacy.RemoteProvidersAllowed) {
 		return nil
 	}
-	return probe.ProviderWithAuth("thinking-options", preset.Provider, pc, m.modelCacheDir, m.state.Config.Agent.ThinkingBudgetMargin, m.auth)
+	return probe.Provider(m.host, "thinking-options", preset.Provider, pc)
 }

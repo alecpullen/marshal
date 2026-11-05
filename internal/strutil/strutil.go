@@ -136,3 +136,17 @@ func lastRuneIndex(s string, b byte) int {
 
 // Ptr returns a pointer to v.
 func Ptr[T any](v T) *T { return &v }
+
+// UniqueName returns base, or base-2, base-3 and on: the first that existing
+// does not hold.
+func UniqueName(base string, existing map[string]bool) string {
+	if !existing[base] {
+		return base
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s-%d", base, i)
+		if !existing[candidate] {
+			return candidate
+		}
+	}
+}

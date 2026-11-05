@@ -1,12 +1,17 @@
 package settings
 
 import (
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpclient/inproc"
 	"marshal/internal/app/config"
+	"marshal/internal/app/session"
+	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 )
@@ -184,12 +189,91 @@ func TestProviderRenameCascadesToPresetsAndDiscovered(t *testing.T) {
 	}
 }
 
+// TestRenameProviderMovesItsCachedModels pins that the rename moves the host's
+// cached model list to the new provider name, and that a cache write failure is
+// reported rather than swallowed.
+func TestRenameProviderMovesItsCachedModels(t *testing.T) {
+	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"}
+
+	// stateWithCache builds a state holding one "ollama" provider whose host
+	// caches model lists under dir, seeded with an "ollama" entry, and returns
+	// the provider detail's Name row.
+	stateWithCache := func(t *testing.T, dir string) *field {
+		t.Helper()
+		cfg := config.Default()
+		cfg.Providers = map[string]config.ProviderConfig{"ollama": pc}
+		if err := modelcache.Save(dir, modelcache.Cache{Providers: map[string]modelcache.Entry{
+			"ollama": {
+				ConfigHash: modelcache.HashProvider(pc),
+				Models:     []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}},
+				FetchedAt:  time.Now(),
+			},
+		}}); err != nil {
+			t.Fatalf("seed cache: %v", err)
+		}
+		st := newState(cfg)
+		host, _ := inproc.New(inproc.Deps{
+			State:         session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{}),
+			ModelCacheDir: dir,
+			Auth:          newMemAuth(),
+		})
+		st.host = host
+
+		var nameRow *field
+		for _, r := range providersFrame(st).List.Rows()[0].Build().List.Rows() {
+			if r.Title == "Name" {
+				nameRow = r
+				break
+			}
+		}
+		if nameRow == nil {
+			t.Fatal("provider detail must have a Name row")
+		}
+		return nameRow
+	}
+
+	t.Run("rename moves the cached entry", func(t *testing.T) {
+		dir := t.TempDir()
+		nameRow := stateWithCache(t, dir)
+		if err := nameRow.SetStr("local"); err != nil {
+			t.Fatalf("rename err = %v", err)
+		}
+		c := modelcache.Load(dir)
+		if _, ok := c.Providers["local"]; !ok {
+			t.Error("the cached entry did not move to the new provider name")
+		}
+		if _, ok := c.Providers["ollama"]; ok {
+			t.Error("the cached entry survived under the old provider name")
+		}
+	})
+
+	t.Run("a cache write failure is reported", func(t *testing.T) {
+		dir := t.TempDir()
+		nameRow := stateWithCache(t, dir)
+		path := modelcache.Path(dir)
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat cache: %v", err)
+		}
+		if err := os.Chmod(path, 0o444); err != nil {
+			t.Fatalf("chmod cache: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(path, info.Mode()) })
+
+		err = nameRow.SetStr("local")
+		if err == nil || !strings.HasPrefix(err.Error(), "rename model cache:") {
+			t.Fatalf("rename err = %v, want a \"rename model cache:\" error", err)
+		}
+	})
+}
+
 func TestSettingsModelPickerUsesStoredTemplateID(t *testing.T) {
 	cfg := config.Default()
 	cfg.Providers = map[string]config.ProviderConfig{
 		"work-openai": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1", Template: "openai"},
 	}
 	st := newState(cfg)
+	st.host = testHost(t, newMemAuth())
 	f := modelPickerField(st, "test.model",
 		func() string { return "work-openai" },
 		func() string { return "gpt-4o" },

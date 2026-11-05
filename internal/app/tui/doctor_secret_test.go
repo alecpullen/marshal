@@ -39,8 +39,8 @@ func newDoctorSecretModel(t *testing.T) (Model, string) {
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, Commands: reg}, WithHomeDir(home),
-		WithAuthResolver(newMemAuth()), WithOpenBrowser(func(string) error { return nil }))
+	m := testModelWith(inproc.Deps{State: state, Commands: reg, Auth: newMemAuth()}, WithHomeDir(home),
+		WithOpenBrowser(func(string) error { return nil }))
 	m.state.WorkingDir = work
 	m.workDir = work
 	m.resize(80, 24)

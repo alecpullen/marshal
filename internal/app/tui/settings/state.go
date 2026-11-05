@@ -6,8 +6,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpclient"
 	"marshal/internal/app/config"
-	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 )
@@ -23,15 +23,9 @@ type state struct {
 	pending          *pendingMaterialization
 	pendingCmd       tea.Cmd
 
-	// dataDir enables on-disk limit resolution for probes launched from
-	// settings. Empty disables it, which silently strips context/output
-	// limits from every discovered model.
-	dataDir string
-	// auth is the credential/OAuth dependency every probe launched from
-	// this state must use. newState selects the production adapter, and
-	// WithAuthResolver overrides it, so a panel built without an injected
-	// resolver keeps the pre-existing production behavior.
-	auth provider.AuthResolver
+	// host is the client host every probe launched from this state asks.
+	// A nil host fails every probe with probe's no-host error.
+	host acpclient.Host
 	// probed records providers already probed during this browser's
 	// lifetime, so rebuilding a frame does not re-probe on every refresh.
 	probed map[string]bool
@@ -48,10 +42,6 @@ func newState(cfg config.Config) *state {
 		discovered:  map[string][]schema.ModelInfo{},
 		actionState: map[string]actionState{},
 		probed:      map[string]bool{},
-		// Select the production credential/OAuth adapter up front so every
-		// probe path has one dependency, and an injected resolver (see
-		// BrowserOption WithAuthResolver) simply replaces it.
-		auth: provider.DefaultAuthResolver(),
 	}
 }
 
@@ -81,10 +71,6 @@ func (s *state) markProbed(provider string) bool {
 	s.probed[provider] = true
 	return true
 }
-
-// SetDataDir sets the limit-resolution data directory. Exported for the
-// agents panel, which builds a state directly.
-func (s *state) SetDataDir(dir string) { s.dataDir = dir }
 
 // NewState is the exported constructor for *State (alias for *state).
 func NewState(cfg config.Config) *state { return newState(cfg) }

@@ -41,6 +41,13 @@ func testModelWith(d inproc.Deps, opts ...Option) Model {
 	return New(host, sess, all...)
 }
 
+// testModelCached builds a model whose host caches discovered model lists
+// under dir, as production wires the runtime's data directory.
+func testModelCached(t *testing.T, state *session.State, dir string, opts ...Option) Model {
+	t.Helper()
+	return testModelWith(inproc.Deps{State: state, ModelCacheDir: dir, Auth: newMemAuth()}, opts...)
+}
+
 // runnerOf returns a Deps.Runner that always returns r.
 func runnerOf(r inproc.Runner) func() inproc.Runner {
 	return func() inproc.Runner { return r }
@@ -185,7 +192,11 @@ func batchResults(t *testing.T, cmd tea.Cmd) []tea.Msg {
 }
 
 // fakeHost is an acpclient.Host whose SharedFilesystem is the test's choice.
-type fakeHost struct{ shared bool }
+// The embedded interface supplies the methods these tests never call.
+type fakeHost struct {
+	acpclient.Host
+	shared bool
+}
 
 func (h fakeHost) SharedFilesystem() bool { return h.shared }
 

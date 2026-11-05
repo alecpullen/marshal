@@ -16,42 +16,6 @@ import (
 	"marshal/internal/llm/schema"
 )
 
-// ResolveThinkingOptions keeps capability policy out of the rendering layer.
-// Explicit configuration wins; discovery wins over conservative fallbacks.
-// nil means unknown, and an empty Levels list means known unsupported.
-func ResolveThinkingOptions(providerType, model string, override *schema.ThinkingOptions, models []schema.ModelInfo) *schema.ThinkingOptions {
-	if override != nil {
-		return cloneThinkingOptions(override)
-	}
-	for _, info := range models {
-		if info.ID == model && info.Thinking != nil {
-			return cloneThinkingOptions(info.Thinking)
-		}
-	}
-	// The Codex transport always uses OpenAI's effort control. Without catalog
-	// metadata, only offer the established three levels, never guess off support.
-	if providerType == "openai_codex" {
-		return &schema.ThinkingOptions{Levels: []string{"low", "medium", "high"}, Mode: "effort"}
-	}
-	return nil
-}
-
-func cloneThinkingOptions(options *schema.ThinkingOptions) *schema.ThinkingOptions {
-	if options == nil {
-		return nil
-	}
-	copy := *options
-	copy.Levels = nil
-	seen := map[string]bool{"": true, "default": true}
-	for _, level := range options.Levels {
-		if !seen[level] {
-			copy.Levels = append(copy.Levels, level)
-			seen[level] = true
-		}
-	}
-	return &copy
-}
-
 // ollamaThinkingMetadata retains booleans as well as model-defined names.
 type ollamaThinkingMetadata struct {
 	Values  []json.RawMessage `json:"values"`
@@ -147,24 +111,6 @@ func (p *OpenAICompatible) ollamaThinkingOptions(ctx context.Context, model stri
 	return nil
 }
 
-// PreserveThinkingOptions retains cached metadata when a model's enrichment
-// fails. Explicit empty controls are authoritative and are never replaced.
-func PreserveThinkingOptions(models, cached []schema.ModelInfo) []schema.ModelInfo {
-	out := append([]schema.ModelInfo(nil), models...)
-	for i := range out {
-		if out[i].Thinking != nil {
-			continue
-		}
-		for _, previous := range cached {
-			if previous.ID == out[i].ID && previous.Thinking != nil {
-				out[i].Thinking = cloneThinkingOptions(previous.Thinking)
-				break
-			}
-		}
-	}
-	return out
-}
-
 // enrichThinkingOptions limits concurrent /api/show requests and bounds each
 // request. Models remain usable if capability discovery is unavailable.
 func enrichThinkingOptions(ctx context.Context, models []schema.ModelInfo, fetch func(context.Context, string) *schema.ThinkingOptions) {
@@ -224,7 +170,7 @@ func ThinkingOptionsFor(dataDir, providerName string, pc config.ProviderConfig, 
 			models = cached
 		}
 	}
-	return ResolveThinkingOptions(pc.Type, model, override, models)
+	return schema.ResolveThinkingOptions(pc.Type, model, override, models)
 }
 
 // ValidEffortLevel reports whether level may be requested for a model with

@@ -7,12 +7,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpclient"
 	"marshal/internal/acpwire"
-	"marshal/internal/app/config"
 	"marshal/internal/app/tui/mcpauth"
-	"marshal/internal/commands"
-	"marshal/internal/credentials"
-	"marshal/internal/oauth"
 )
 
 // handleMCPCommand implements /mcp. Only the "auth <name>" subcommand is
@@ -26,21 +23,8 @@ func (m *Model) handleMCPCommand(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	name := strings.TrimSpace(strings.Join(args[1:], " "))
-	srv, err := commands.ResolveOAuthServer(m.state.Config.MCP.Servers, name)
-	if err != nil {
+	if err := m.sess.PrepareMCPLogin(m.ctx, name); err != nil {
 		m.note(err.Error())
-		m.refreshViewport()
-		return m, nil
-	}
-
-	store, err := m.auth.OpenStore("marshal")
-	if err != nil {
-		if errors.Is(err, credentials.ErrKeyringUnavailable) {
-			m.note("OAuth tokens are stored in the OS keychain, which is unavailable here. " +
-				"Run Marshal on a machine with a working Keychain, Credential Manager, or Secret Service, then retry /mcp auth " + name + ".")
-		} else {
-			m.note("Cannot open the credential store: " + err.Error())
-		}
 		m.refreshViewport()
 		return m, nil
 	}
@@ -51,32 +35,9 @@ func (m *Model) handleMCPCommand(args []string) (tea.Model, tea.Cmd) {
 	panel.SetCancel(cancel)
 	m.mcpAuthServer = name
 
-	eng := m.mcpOAuthEngine(srv, store)
-
 	m.dock.Open(panel)
 	m.refreshViewport()
-	return m, tea.Batch(mcpauth.Tick(), authorizeMCPCmd(ctx, eng, disp, cancel))
-}
-
-// mcpOAuthEngine builds the authorization engine for one MCP server. It is a
-// method rather than an inline literal so the wiring stays inspectable and
-// executable: the token store comes from the resolver the runtime selected,
-// and the browser launcher is the model's injected opener (tests supply a
-// stub, so an executed flow never opens a real browser). A Model built as a
-// bare literal, bypassing New, falls back to the production launcher — the
-// same shape connect.oauthLogin uses.
-func (m *Model) mcpOAuthEngine(srv config.MCPServerConfig, store credentials.Store) *oauth.Engine {
-	open := m.openBrowser
-	if open == nil {
-		open = mcpauth.OpenBrowser
-	}
-	return &oauth.Engine{
-		ServerURL:  srv.URL,
-		ClientName: "marshal",
-		Store:      store,
-		Open:       func(u string) { _ = open(u) },
-		Logger:     m.log(),
-	}
+	return m, tea.Batch(mcpauth.Tick(), authorizeMCPCmd(ctx, m.sess, name, disp, m.openBrowser, cancel))
 }
 
 // reconnectMCPServer rebuilds the runtime so a server that failed to start
@@ -119,14 +80,24 @@ func (m *Model) reconnectMCPServer(name string) {
 	m.refreshDiagnostics()
 }
 
-// authorizeMCPCmd runs the blocking Authorize call off the UI goroutine and
-// reports its terminal error through AuthDoneMsg. The context is cancelled on
-// return so the loopback receiver is always torn down; on cancellation
-// Authorize returns before persisting, so no partial token set is written.
-func authorizeMCPCmd(ctx context.Context, eng *oauth.Engine, disp oauth.Display, cancel context.CancelFunc) tea.Cmd {
+// authorizeMCPCmd runs the blocking sign-in off the UI goroutine and reports
+// its terminal error through AuthDoneMsg. The context is cancelled on return
+// so the loopback receiver is always torn down; on cancellation the agent side
+// returns before persisting, so no partial token set is written.
+//
+// The URL arrives through show: the TUI opens the browser and then records it
+// for the panel, the order the engine itself used.
+func authorizeMCPCmd(ctx context.Context, sess acpclient.Session, server string, disp *mcpauth.Display, open func(url string) error, cancel context.CancelFunc) tea.Cmd {
+	if open == nil {
+		open = mcpauth.OpenBrowser
+	}
 	return func() tea.Msg {
 		defer cancel()
-		return mcpauth.AuthDoneMsg{Err: eng.Authorize(ctx, disp)}
+		err := sess.LoginMCP(ctx, server, func(u string) {
+			_ = open(u)
+			disp.ShowURL(u)
+		})
+		return mcpauth.AuthDoneMsg{Err: err}
 	}
 }
 

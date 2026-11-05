@@ -6,6 +6,7 @@ import (
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/commands"
+	"marshal/internal/llm/provider"
 	"marshal/internal/pubsub"
 	"marshal/internal/repo/gitinfo"
 	"marshal/internal/tools/native"
@@ -26,6 +27,10 @@ func newSession(d Deps) *Session {
 		parent = context.Background()
 	}
 	ctx, cancel := context.WithCancel(parent)
+	auth := d.Auth
+	if auth == nil {
+		auth = provider.DefaultAuthResolver()
+	}
 	s := &Session{
 		state:          d.State,
 		gitInfo:        gitInfo,
@@ -48,6 +53,7 @@ func newSession(d Deps) *Session {
 		authorPlan:     d.AuthorPlan,
 		end:            d.End,
 		cmds:           d.Commands,
+		auth:           auth,
 		ctx:            ctx,
 		cancel:         cancel,
 		changed:        make(chan struct{}, 1),

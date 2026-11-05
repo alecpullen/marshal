@@ -19,6 +19,16 @@ type Method struct {
 var Methods = []Method{
 	{Iface: "Host", Name: "SharedFilesystem"},
 	{Iface: "Host", Name: "NewSession", ACP: "session/new", Exists: true},
+	{Iface: "Host", Name: "ProviderTemplates", ACP: "config/provider_templates"},
+	{Iface: "Host", Name: "ProbeProvider", ACP: "config/probe_provider", Exists: true},
+	{Iface: "Host", Name: "CanProbeModel", ACP: "config/probe_model"},
+	{Iface: "Host", Name: "ProbeModel", ACP: "config/probe_model"},
+	{Iface: "Host", Name: "ListModels", ACP: "config/models_list"},
+	{Iface: "Host", Name: "SaveModels", ACP: "config/models_save"},
+	{Iface: "Host", Name: "ForgetModels", ACP: "config/models_forget"},
+	{Iface: "Host", Name: "RenameModels", ACP: "config/models_rename"},
+	{Iface: "Host", Name: "PrepareProviderLogin", ACP: "config/login_provider"},
+	{Iface: "Host", Name: "LoginProvider", ACP: "config/login_provider"},
 	{Iface: "Session", Name: "ID", ACP: "session/new", Exists: true},
 	{Iface: "Session", Name: "Status", ACP: "session/status"},
 	{Iface: "Session", Name: "Changed"},
@@ -74,4 +84,7 @@ var Methods = []Method{
 	{Iface: "Session", Name: "Commands", ACP: "session/command_list", Exists: true},
 	{Iface: "Session", Name: "Command", ACP: "session/command", Exists: true},
 	{Iface: "Session", Name: "CommandAction", ACP: "session/command_action"},
+
+	{Iface: "Session", Name: "PrepareMCPLogin", ACP: "session/mcp_login"},
+	{Iface: "Session", Name: "LoginMCP", ACP: "session/mcp_login"},
 }

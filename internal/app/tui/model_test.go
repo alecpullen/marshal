@@ -42,7 +42,6 @@ import (
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/interaction"
-	"marshal/internal/llm/provider"
 	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
@@ -6565,12 +6564,12 @@ func newTestModel(t *testing.T) Model {
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, Commands: reg}, WithHomeDir(t.TempDir()),
+	m := testModelWith(inproc.Deps{State: state, Commands: reg, Auth: newMemAuth()}, WithHomeDir(t.TempDir()),
 		// Isolate the auth surfaces by default: no test in this package should
 		// reach the developer's OS keychain or launch a browser just by
 		// constructing or driving the model. Tests that need to observe the
 		// injected dependency replace these directly.
-		WithAuthResolver(newMemAuth()), WithOpenBrowser(func(string) error { return nil }))
+		WithOpenBrowser(func(string) error { return nil }))
 	m.resize(80, 24)
 	m.refreshViewport()
 	return m
@@ -6586,8 +6585,8 @@ func newTestModelInRepo(t *testing.T) Model {
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, Commands: reg}, WithHomeDir(t.TempDir()),
-		WithAuthResolver(newMemAuth()), WithOpenBrowser(func(string) error { return nil }))
+	m := testModelWith(inproc.Deps{State: state, Commands: reg, Auth: newMemAuth()}, WithHomeDir(t.TempDir()),
+		WithOpenBrowser(func(string) error { return nil }))
 	m.resize(80, 24)
 	m.refreshViewport()
 	return m
@@ -6722,35 +6721,29 @@ func TestModelsOpensOverlay(t *testing.T) {
 
 // ── Auth dependency propagation into panels ──────────────────────────
 
-// TestOpenConnectForwardsAuthAndBrowser: the connect wizard must receive the
-// model's resolver and browser opener, or a sign-in launched from the TUI
-// would use the production keychain/browser.
-func TestOpenConnectForwardsAuthAndBrowser(t *testing.T) {
-	auth := newMemAuth()
-	var opened []string
+// TestOpenConnectForwardsTheHostAndBrowser: the connect wizard must receive the
+// model's client host and browser opener, or a probe or sign-in launched from
+// the TUI would bypass the seam.
+func TestOpenConnectForwardsTheHostAndBrowser(t *testing.T) {
 	m := newTestModel(t)
-	m.auth = auth
-	m.openBrowser = func(u string) error { opened = append(opened, u); return nil }
+	m.openBrowser = func(string) error { return nil }
 
 	m.openConnect("")
 	if m.connectModel == nil {
 		t.Fatal("openConnect did not build a panel")
 	}
-	if m.connectModel.AuthResolver() != provider.AuthResolver(auth) {
-		t.Fatal("connect panel did not receive the model's auth resolver")
+	if m.connectModel.HostForTest() != m.host {
+		t.Fatal("connect panel did not receive the model's host")
 	}
 	if m.connectModel.OpenBrowserFn() == nil {
 		t.Fatal("connect panel did not receive a browser opener")
 	}
-	_ = opened
 }
 
-// TestOpenModelsForwardsAuth: the /models panel is built through a separate
+// TestOpenModelsForwardsTheHost: the /models panel is built through a separate
 // call site, so it needs the same coverage.
-func TestOpenModelsForwardsAuth(t *testing.T) {
-	auth := newMemAuth()
+func TestOpenModelsForwardsTheHost(t *testing.T) {
 	m := newTestModel(t)
-	m.auth = auth
 	m.state.Config.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	}
@@ -6760,17 +6753,30 @@ func TestOpenModelsForwardsAuth(t *testing.T) {
 	if m.connectModel == nil {
 		t.Fatal("openModels did not build a panel")
 	}
-	if m.connectModel.AuthResolver() != provider.AuthResolver(auth) {
-		t.Fatal("models panel did not receive the model's auth resolver")
+	if m.connectModel.HostForTest() != m.host {
+		t.Fatal("models panel did not receive the model's host")
 	}
 }
 
-// TestOpenSettingsBrowserForwardsAuth: the settings browser probes providers,
-// so it must receive the model's resolver too.
-func TestOpenSettingsBrowserForwardsAuth(t *testing.T) {
-	auth := newMemAuth()
+// TestModelHostIsTheOneItWasBuiltWith: Host() reports the host New was given.
+func TestModelHostIsTheOneItWasBuiltWith(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	host, sess := inproc.New(inproc.Deps{State: state, Auth: newMemAuth()})
+	m := New(host, sess, WithLegacyState(state), WithHomeDir(t.TempDir()))
+
+	got, ok := m.Host().(*inproc.Host)
+	if !ok || got != host {
+		t.Fatal("Host() did not report the host the model was built with")
+	}
+}
+
+// TestOpenSettingsBrowserForwardsTheHost: the settings browser probes providers
+// through the client host, so it must receive the model's host.
+func TestOpenSettingsBrowserForwardsTheHost(t *testing.T) {
 	m := newTestModel(t)
-	m.auth = auth
+	if m.host == nil {
+		t.Fatal("the test model should hold a client host")
+	}
 
 	m.openSettingsBrowser("")
 
@@ -6778,8 +6784,8 @@ func TestOpenSettingsBrowserForwardsAuth(t *testing.T) {
 	if !ok {
 		t.Fatalf("dock panel = %T, want *settings.BrowserPanel", m.dock.Panel())
 	}
-	if browser.AuthResolver() != provider.AuthResolver(auth) {
-		t.Fatal("settings browser did not receive the model's auth resolver")
+	if browser.HostForTest() != m.host {
+		t.Fatal("settings browser did not receive the model's host")
 	}
 }
 
@@ -6788,8 +6794,9 @@ func TestOpenSettingsBrowserForwardsAuth(t *testing.T) {
 func TestProbeProvidersUsesInjectedResolver(t *testing.T) {
 	auth := newMemAuth()
 	auth.storeErr = errors.New("injected store failure")
-	m := newTestModel(t)
-	m.auth = auth
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := testModelWith(inproc.Deps{State: state, Auth: auth}, WithHomeDir(t.TempDir()))
+	m.resize(80, 24)
 	m.state.Config.Privacy.RemoteProvidersAllowed = true
 	m.state.Config.Providers = map[string]config.ProviderConfig{
 		"codex": {Type: "openai_codex", Template: "openai-codex", BaseURL: "https://chatgpt.com/backend-api", Auth: "oauth"},
@@ -8427,7 +8434,7 @@ func TestModelDiscoveryNewestProbeWins(t *testing.T) {
 	state := newTestState(t)
 	state.Config.Privacy.RemoteProvidersAllowed = true
 	state.Config.Providers = map[string]config.ProviderConfig{"groq": groqCfg, "openai": openaiCfg}
-	m := testModel(state, WithModelCache(dir))
+	m := testModelCached(t, state, dir)
 
 	if cmd := m.openModels(); cmd == nil {
 		t.Fatal("openModels dispatched no probes")
@@ -8580,7 +8587,7 @@ func TestModelSelectionSurvivesHostDiscovery(t *testing.T) {
 			deny := false
 			state.Config.Privacy.ModelsDevEnrichment = &deny
 			state.Config.Providers = map[string]config.ProviderConfig{"groq": groqCfg, "openai": openaiCfg}
-			m := testModel(state, WithModelCache(t.TempDir()))
+			m := testModelCached(t, state, t.TempDir())
 			m.resize(frame.width, frame.height)
 
 			if cmd := m.openModels(); cmd == nil {
@@ -8683,7 +8690,7 @@ func TestModelCacheSeedsDiscoveredAtStartup(t *testing.T) {
 
 	state := newTestState(t)
 	state.Config.Providers = map[string]config.ProviderConfig{"openai": pc}
-	m := testModel(state, WithModelCache(dir))
+	m := testModelCached(t, state, dir)
 
 	got, ok := m.discovered["openai"]
 	if !ok {
@@ -8708,7 +8715,7 @@ func TestModelCacheDoesNotSeedWhenConfigChanged(t *testing.T) {
 	state.Config.Providers = map[string]config.ProviderConfig{
 		"openai": {Type: "openai_compatible", BaseURL: "https://new/v1"},
 	}
-	m := testModel(state, WithModelCache(dir))
+	m := testModelCached(t, state, dir)
 
 	if _, ok := m.discovered["openai"]; ok {
 		t.Error("a changed base URL must not be served from cache")
@@ -8731,7 +8738,7 @@ func TestRawModelsProbeMovesNoState(t *testing.T) {
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://a/v1"}
 	state := newTestState(t)
 	state.Config.Providers = map[string]config.ProviderConfig{"openai": pc}
-	m := testModel(state, WithModelCache(dir))
+	m := testModelCached(t, state, dir)
 	m.modelsProbeGen = map[string]uint64{"openai": 1}
 
 	updated, _ := m.Update(probe.ResultMsg{
@@ -8757,7 +8764,7 @@ func TestModelsProbeResultForRemovedProviderIsDropped(t *testing.T) {
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://a/v1"}
 	state := newTestState(t)
 	state.Config.Providers = map[string]config.ProviderConfig{"openai": pc}
-	m := testModel(state, WithModelCache(dir))
+	m := testModelCached(t, state, dir)
 	m.modelsProbeGen = map[string]uint64{"openai": 1}
 
 	// The probe was dispatched, then the provider was deleted while it ran.
@@ -8783,7 +8790,7 @@ func TestProbeResultWritesThroughToCache(t *testing.T) {
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://a/v1"}
 	state := newTestState(t)
 	state.Config.Providers = map[string]config.ProviderConfig{"openai": pc}
-	m := testModel(state, WithModelCache(dir))
+	m := testModelCached(t, state, dir)
 	m.modelsProbeGen = map[string]uint64{"openai": 1}
 
 	m.Update(modelsResult(m, "openai", probe.ResultMsg{
@@ -8813,7 +8820,7 @@ func TestFailedProbeKeepsCachedEntry(t *testing.T) {
 
 	state := newTestState(t)
 	state.Config.Providers = map[string]config.ProviderConfig{"openai": pc}
-	m := testModel(state, WithModelCache(dir))
+	m := testModelCached(t, state, dir)
 	m.modelsProbeGen = map[string]uint64{"openai": 1}
 
 	m.Update(modelsResult(m, "openai", probe.ResultMsg{FieldID: "models", Provider: "openai", Err: errors.New("network down")}))
@@ -8886,7 +8893,7 @@ func TestStaleWizardProbeCannotPopulateHostCache(t *testing.T) {
 		t.Helper()
 		// No providers configured: the wizard adopts the plain template name.
 		dir := t.TempDir()
-		return testModel(newTestState(t), WithModelCache(dir)), dir
+		return testModelCached(t, newTestState(t), dir), dir
 	}
 	// seedCache plants a good catalog so an eviction or an overwrite is
 	// observable rather than lost against an empty cache.
@@ -9047,7 +9054,7 @@ func TestNoCacheDirIsHarmless(t *testing.T) {
 	// session map refuses results for one that has since been removed, so the
 	// fixture configures it like production does.
 	state.Config.Providers = map[string]config.ProviderConfig{"openai": {Type: "openai_compatible", BaseURL: "https://a/v1"}}
-	m := testModel(state) // no WithModelCache
+	m := testModelCached(t, state, "") // no cache directory
 	m.modelsProbeGen = map[string]uint64{"openai": 1}
 	m.Update(modelsResult(m, "openai", probe.ResultMsg{
 		FieldID: "models", Provider: "openai",
@@ -9122,9 +9129,9 @@ func TestDoctorFixSavesKeyAndReloads(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("MARSHAL_CONFIG_DIR", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
-	m := testModel(session.New(config.Default(), work, time.Unix(100, 0), session.Persistence{}),
+	m := testModelWith(inproc.Deps{State: session.New(config.Default(), work, time.Unix(100, 0), session.Persistence{}), Auth: newMemAuth()},
 		WithHomeDir(home),
-		WithAuthResolver(newMemAuth()), WithOpenBrowser(func(string) error { return nil }))
+		WithOpenBrowser(func(string) error { return nil }))
 	m.state.WorkingDir = work
 	m.workDir = work
 	m.state.Config.Providers = map[string]config.ProviderConfig{
@@ -11788,8 +11795,8 @@ func newSendNowFixture(t *testing.T, width, height int, supported bool) *sendNow
 		f.submits = append(f.submits, req)
 	}}
 	f.stub = stub
-	m := testModelStubWith(inproc.Deps{State: state, Commands: reg}, stub, WithHomeDir(t.TempDir()),
-		WithAuthResolver(newMemAuth()), WithOpenBrowser(func(string) error { return nil }))
+	m := testModelStubWith(inproc.Deps{State: state, Commands: reg, Auth: newMemAuth()}, stub, WithHomeDir(t.TempDir()),
+		WithOpenBrowser(func(string) error { return nil }))
 	m.resize(width, height)
 	m.busy = true
 	m.refreshViewport()

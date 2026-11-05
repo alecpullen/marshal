@@ -89,9 +89,3 @@ func TestMarkProbedIsOnceOnly(t *testing.T) {
 		t.Error("a different provider must still return true")
 	}
 }
-
-func TestStateDataDirDefaultsEmpty(t *testing.T) {
-	if got := newState(config.Default()).dataDir; got != "" {
-		t.Errorf("dataDir = %q, want empty by default", got)
-	}
-}

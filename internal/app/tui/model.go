@@ -57,8 +57,6 @@ import (
 	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/db"
 	"marshal/internal/interaction"
-	"marshal/internal/llm/provider"
-	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/pubsub"
@@ -241,7 +239,6 @@ type Model struct {
 	memoryDB      *db.DB
 	memoryProject int64
 	homeDir       string
-	dataDir       string
 	workDir       string
 	skillIndex    *skills.Index
 	agentCancel   context.CancelFunc
@@ -471,16 +468,9 @@ type Model struct {
 	// one. It persists for the model's lifetime — closing and reopening the
 	// picker does not restart the count.
 	modelsProbeGen map[string]uint64
-	// auth is the credential/OAuth dependency the runtime selected. Every
-	// auth-backed surface this model opens — the connect wizard, provider
-	// probes, the settings browser, /mcp auth — consumes it, so an isolated
-	// runtime (tests, an embedded app) never reaches the developer's real OS
-	// keychain. New selects the production adapter when no option supplies
-	// one.
-	auth provider.AuthResolver
-	// modelCacheDir, when set, enables on-disk caching of the discovered
-	// list via internal/llm/provider/modelcache. Without it discovery is
-	// in-memory only.
+	// modelCacheDir is the data directory preset setup reads the models.dev
+	// catalog and its provenance from. The model-cache calls themselves go
+	// through m.host. Plan 7b deletes it.
 	modelCacheDir string
 
 	// Picker modal (opened by commands like /rewind, /branches, /mode).
@@ -680,23 +670,6 @@ func WithHomeDir(homeDir string) Option {
 	}
 }
 
-// WithDataDir sets the application data directory. The model-options panel
-// reads the on-disk limits cache from it when resolving per-model
-// capability support.
-func WithDataDir(dataDir string) Option {
-	return func(m *Model) { m.dataDir = dataDir }
-}
-
-// WithAuthResolver pins the credential/OAuth dependency the TUI's auth-backed
-// surfaces use: provider/model probes, the connect wizard (including the
-// OAuth sign-in engine and its token store), the settings browser and
-// /mcp auth. app.Run passes the runtime's already-selected resolver, so an
-// app-level injection reaches every one of them. Omitting the option selects
-// the production adapter at construction.
-func WithAuthResolver(auth provider.AuthResolver) Option {
-	return func(m *Model) { m.auth = auth }
-}
-
 // WithOpenBrowser overrides the browser launcher used by /mcp auth and the
 // connect wizard's OAuth sign-in. Production omits it, which selects
 // mcpauth.OpenBrowser; tests inject a recorder so an executed authorization
@@ -705,15 +678,8 @@ func WithOpenBrowser(open func(url string) error) Option {
 	return func(m *Model) { m.openBrowser = open }
 }
 
-// AuthResolver returns the credential/OAuth dependency this model's
-// auth-backed surfaces use. It is never nil — New selects the production
-// adapter when no option supplied one — which lets a caller verify that the
-// runtime's selected resolver actually reached the TUI. That check matters:
-// the app builders refuse an omitted resolver, but the TUI's own constructors
-// substitute the production adapter, so app.Run's WithAuthResolver wiring is
-// the single seam where an isolated runtime could silently regain the real
-// OS keychain.
-func (m Model) AuthResolver() provider.AuthResolver { return m.auth }
+// Host returns the client host the model was built with.
+func (m Model) Host() acpclient.Host { return m.host }
 
 func WithWorkingDir(workDir string) Option {
 	return func(m *Model) {
@@ -832,8 +798,8 @@ func WithLayerReloader(fn func() (config.Layers, bool)) Option {
 	return func(m *Model) { m.layerReloader = fn }
 }
 
-// WithModelCache enables persistent model discovery caching under dataDir.
-// Without it the session behaves as before: discovery is in-memory only.
+// WithModelCache sets the data directory preset setup reads the models.dev
+// catalog and its provenance from. Plan 7b deletes it.
 func WithModelCache(dataDir string) Option {
 	return func(m *Model) { m.modelCacheDir = dataDir }
 }
@@ -1135,8 +1101,7 @@ func (m *Model) provenanceForPath(tomlPath string) string {
 func (m *Model) openSettingsBrowser(query string) {
 	opts := []settings.BrowserOption{
 		settings.WithProvenance(m.provenanceForPath),
-		settings.WithDataDir(m.modelCacheDir),
-		settings.WithAuthResolver(m.auth),
+		settings.WithHost(m.host),
 	}
 	if home, err := m.userHome(); err == nil {
 		opts = append(opts, settings.WithUserConfigPath(config.UserConfigPath(home)))
@@ -1321,13 +1286,6 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 	// starts with nothing held. It is taken after the options run so an
 	// injected clock is used.
 	m.heldSince = m.now()
-	// Select the production adapters only when no option supplied one. Doing
-	// it once here — rather than per call site — means every surface below
-	// (probes, connect, settings, /mcp auth) shares one dependency and an
-	// injected resolver cannot be partially bypassed.
-	if m.auth == nil {
-		m.auth = provider.DefaultAuthResolver()
-	}
 	if m.openBrowser == nil {
 		m.openBrowser = mcpauth.OpenBrowser
 	}
@@ -1343,16 +1301,13 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 	// Update, this covers any other path that forwards mouse messages).
 	m.viewport.SetHorizontalStep(0)
 
-	// Seed the in-session discovered map from the on-disk cache so the
-	// model picker opens instantly with the last-seen lists when the
-	// config hash still matches.
-	if m.modelCacheDir != "" {
-		c := modelcache.Load(m.modelCacheDir)
-		now := time.Now()
-		for name, pc := range state.Config.Providers {
-			if models, ok := c.Lookup(name, pc, modelcache.DefaultTTL, now); ok {
-				m.discovered[name] = models
-			}
+	// Seed the in-session discovered map from the host's cache so the model
+	// picker opens instantly with the last-seen lists when the config hash
+	// still matches. The host reports nothing when no cache directory is
+	// configured.
+	for name := range state.Config.Providers {
+		if models, ok := m.host.ListModels(m.ctx, name); ok {
+			m.discovered[name] = models
 		}
 	}
 
@@ -2188,7 +2143,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the dock hand-off for those, since a panel that asked for the probe
 		// is still the only one that can interpret its result.
 		if pm.Err == nil && pm.Provider != "" {
-			pm.Models = provider.PreserveThinkingOptions(pm.Models, m.discovered[pm.Provider])
+			pm.Models = schema.PreserveThinkingOptions(pm.Models, m.discovered[pm.Provider])
 			m.discovered[pm.Provider] = pm.Models
 			m.persistDiscovered(pm.Provider, pm.Models)
 			if panel, ok := m.dock.Panel().(*modeloptions.Panel); ok {
@@ -6382,8 +6337,8 @@ func (m *Model) openConnect(_ string) {
 		Cfg:         m.state.Config,
 		Discovered:  m.discovered,
 		DataDir:     m.modelCacheDir,
-		Auth:        m.auth,
 		OpenBrowser: m.openBrowser,
+		Host:        m.host,
 	}
 	// Providers are saved to the user-global config; the summary screen's
 	// "save to:" line should name that file.
@@ -6411,8 +6366,8 @@ func (m *Model) openModels() tea.Cmd {
 		AllProviders:     true,
 		ScopedProvider:   names[0],
 		DataDir:          m.modelCacheDir,
-		Auth:             m.auth,
 		OpenBrowser:      m.openBrowser,
+		Host:             m.host,
 	})
 	m.connectModel.SetSize(m.leftWidth, m.height)
 	m.dock.Open(connect.Panel{Model: m.connectModel})
@@ -6457,7 +6412,7 @@ func (m *Model) probeProviders(names []string) tea.Cmd {
 		}
 		m.modelsProbeGen[n]++
 		owner, gen := n, m.modelsProbeGen[n]
-		inner := probe.ProviderWithAuth("models", n, pc, m.modelCacheDir, m.state.Config.Agent.ThinkingBudgetMargin, m.auth)
+		inner := probe.Provider(m.host, "models", n, pc)
 		cmds = append(cmds, func() tea.Msg {
 			res, ok := inner().(probe.ResultMsg)
 			if !ok {
@@ -6490,7 +6445,7 @@ func (m *Model) handleModelsProbeResult(msg modelsProbeResultMsg) (tea.Model, te
 		return m, nil
 	}
 	if msg.Result.Err == nil {
-		msg.Result.Models = provider.PreserveThinkingOptions(msg.Result.Models, m.discovered[msg.Provider])
+		msg.Result.Models = schema.PreserveThinkingOptions(msg.Result.Models, m.discovered[msg.Provider])
 		m.discovered[msg.Provider] = msg.Result.Models
 		m.persistDiscovered(msg.Provider, msg.Result.Models)
 		if panel, ok := m.dock.Panel().(*modeloptions.Panel); ok {
@@ -6526,7 +6481,7 @@ func (m *Model) handleWizardProbeResult(wr connect.WizardProbeResult) (tea.Model
 		return m, nil // a stale attempt within the live wizard
 	}
 	if wr.Result.Err == nil && wr.Result.Provider != "" {
-		wr.Result.Models = provider.PreserveThinkingOptions(wr.Result.Models, m.discovered[wr.Result.Provider])
+		wr.Result.Models = schema.PreserveThinkingOptions(wr.Result.Models, m.discovered[wr.Result.Provider])
 		m.discovered[wr.Result.Provider] = wr.Result.Models
 		m.persistDiscovered(wr.Result.Provider, wr.Result.Models)
 	}
@@ -6534,35 +6489,14 @@ func (m *Model) handleWizardProbeResult(wr connect.WizardProbeResult) (tea.Model
 }
 
 func (m *Model) persistDiscovered(name string, models []schema.ModelInfo) {
-	if m.modelCacheDir == "" || len(models) == 0 {
-		return
-	}
-	pc, ok := m.state.Config.Providers[name]
-	if !ok {
-		return
-	}
-	c := modelcache.Load(m.modelCacheDir)
-	c.Providers[name] = modelcache.Entry{
-		ConfigHash: modelcache.HashProvider(pc),
-		Models:     models,
-		FetchedAt:  time.Now(),
-	}
-	_ = modelcache.Save(m.modelCacheDir, c)
+	_ = m.host.SaveModels(m.ctx, name, models)
 }
 
-// evictDiscovered removes one provider's entry from the on-disk cache.
+// evictDiscovered removes one provider's entry from the host's cache.
 // Used by the manual refresh key — the in-session map is already cleared
 // by the caller. Failures are silent for the same reason as persist.
 func (m *Model) evictDiscovered(name string) {
-	if m.modelCacheDir == "" {
-		return
-	}
-	c := modelcache.Load(m.modelCacheDir)
-	if _, ok := c.Providers[name]; !ok {
-		return
-	}
-	delete(c.Providers, name)
-	_ = modelcache.Save(m.modelCacheDir, c)
+	_ = m.host.ForgetModels(m.ctx, name)
 }
 
 // sortedProviderNames returns provider names sorted alphabetically.

@@ -7,11 +7,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"marshal/internal/acpclient"
+	"marshal/internal/acpclient/inproc"
 	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/presetflow"
 	"marshal/internal/app/tui/probe"
@@ -318,7 +322,7 @@ func TestBrowserEscCancelsCapabilityProbeAndRejectsLateResult(t *testing.T) {
 	cfg.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "ollama", BaseURL: "http://localhost:11434"},
 	}
-	b := NewBrowser(cfg, filepath.Join(t.TempDir(), "config.toml"), "")
+	b := NewBrowser(cfg, filepath.Join(t.TempDir(), "config.toml"), "", WithHost(testHost(t, nil)))
 	b.reg.st.discovered["ollama"] = []schema.ModelInfo{{ID: "qwen3"}}
 	target := pendingMaterialization{
 		Profile: "coding", Role: routing.RoleImplementer,
@@ -884,6 +888,19 @@ type memAuth struct {
 
 func newMemAuth() *memAuth { return &memAuth{store: credentials.NewMemStore()} }
 
+// testHost builds a client host over a fresh test state whose credential/OAuth
+// dependency is auth, or a memory resolver when auth is nil. Probes launched
+// through it never reach the developer's keychain.
+func testHost(t *testing.T, auth provider.AuthResolver) acpclient.Host {
+	t.Helper()
+	if auth == nil {
+		auth = newMemAuth()
+	}
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	host, _ := inproc.New(inproc.Deps{State: state, Auth: auth})
+	return host
+}
+
 func (a *memAuth) OpenStore(string) (credentials.Store, error) {
 	if a.store == nil {
 		return nil, credentials.ErrKeyringUnavailable
@@ -937,10 +954,7 @@ func TestBrowserAuthResolverReachesFrameProbes(t *testing.T) {
 			Auth:     "oauth",
 		},
 	}
-	b := NewBrowser(cfg, filepath.Join(t.TempDir(), "config.toml"), "", WithAuthResolver(auth))
-	if b.reg.st.auth != provider.AuthResolver(auth) {
-		t.Fatal("WithAuthResolver must be retained on the browser's state")
-	}
+	b := NewBrowser(cfg, filepath.Join(t.TempDir(), "config.toml"), "", WithHost(testHost(t, auth)))
 
 	res := probeCmdResult(t, b.reg.st.probeCmd("test.connection", "codex", cfg.Providers["codex"]))
 	if res.Err == nil {
@@ -966,8 +980,7 @@ func TestProbeAllProvidersUsesInjectedResolver(t *testing.T) {
 		"codex": {Type: "openai_codex", BaseURL: "https://chatgpt.com/backend-api"},
 	}
 	s := newState(cfg)
-	s.SetDataDir(t.TempDir())
-	s.auth = auth
+	s.host = testHost(t, auth)
 
 	probeAllProviders(s, false)
 
@@ -989,59 +1002,21 @@ func TestProbeAllProvidersUsesInjectedResolver(t *testing.T) {
 	}
 }
 
-// TestProbeProviderForUsesInjectedResolver covers the capability-probe path
-// (startConfirm): the client built through an isolated resolver must stay
-// usable for capability probing, and must not ask for an OAuth engine it does
-// not need.
-func TestProbeProviderForUsesInjectedResolver(t *testing.T) {
-	auth := newMemAuth()
-	pc := config.ProviderConfig{Type: "ollama", BaseURL: "http://localhost:11434"}
-
-	prov, err := probeProviderFor("ollama", pc, t.TempDir(), 0, auth)
-	if err != nil {
-		t.Fatalf("probeProviderFor: %v", err)
-	}
-	if _, ok := prov.(provider.CapabilityProber); !ok {
-		t.Fatalf("provider = %T, want a CapabilityProber", prov)
-	}
-	if len(auth.engines) != 0 {
-		t.Fatalf("a non-codex provider must not ask for an OAuth engine, got %v", auth.engines)
-	}
-}
-
-// TestProbeProviderForNilResolverFailsClosed: without a resolver the provider
-// build must error rather than selecting the production keychain.
-func TestProbeProviderForNilResolverFailsClosed(t *testing.T) {
-	pc := config.ProviderConfig{Type: "openai_codex", BaseURL: "https://chatgpt.com/backend-api"}
-	if _, err := probeProviderFor("codex", pc, "", 0, nil); err == nil {
-		t.Fatal("a nil resolver must fail the build, not fall back to the real keychain")
-	}
-}
-
-// TestRebuiltBrowserRetainsAuthResolver: refreshOpenSettingsBrowser replaces
-// the whole BrowserPanel, so the replacement must be built with the same
-// resolver — otherwise a probe after /set would bypass an isolated dependency.
-func TestRebuiltBrowserRetainsAuthResolver(t *testing.T) {
-	auth := newMemAuth()
+// TestRebuiltBrowserKeepsTheHost: refreshOpenSettingsBrowser replaces the
+// whole BrowserPanel, so the replacement must be built with the same host —
+// otherwise a probe after /set would ask nothing.
+func TestRebuiltBrowserKeepsTheHost(t *testing.T) {
 	cfg := config.Default()
-	first := NewBrowser(cfg, filepath.Join(t.TempDir(), "config.toml"), "", WithAuthResolver(auth))
+	host := testHost(t, nil)
+	first := NewBrowser(cfg, filepath.Join(t.TempDir(), "config.toml"), "", WithHost(host))
 
 	// Stand in for the model's refresh: rebuild the panel the way the model
 	// does, then confirm the dependency survived.
-	second := NewBrowser(cfg, filepath.Join(t.TempDir(), "config.toml"), first.FilterValue(), WithAuthResolver(auth))
-	if second.reg.st.auth != first.reg.st.auth {
-		t.Fatal("a rebuilt browser must carry the same auth dependency")
+	second := NewBrowser(cfg, filepath.Join(t.TempDir(), "config.toml"), first.FilterValue(), WithHost(host))
+	if second.reg.st.host != first.reg.st.host {
+		t.Fatal("a rebuilt browser must carry the same host")
 	}
-	if second.reg.st.auth != provider.AuthResolver(auth) {
-		t.Fatal("a rebuilt browser must carry the injected resolver, not the production adapter")
-	}
-}
-
-// TestNewBrowserDefaultsToProductionResolver: a panel built without the option
-// keeps the pre-existing production behavior instead of a nil dependency.
-func TestNewBrowserDefaultsToProductionResolver(t *testing.T) {
-	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
-	if b.reg.st.auth == nil {
-		t.Fatal("a browser built without an injected resolver must select the production adapter")
+	if second.reg.st.host != host {
+		t.Fatal("a rebuilt browser must carry the host it was built with")
 	}
 }

@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"fmt"
 	"sort"
 )
 
@@ -255,16 +254,4 @@ func All() []ProviderTemplate {
 		return out[i].ID < out[j].ID
 	})
 	return out
-}
-
-func UniqueName(base string, existing map[string]bool) string {
-	if !existing[base] {
-		return base
-	}
-	for i := 2; ; i++ {
-		candidate := fmt.Sprintf("%s-%d", base, i)
-		if !existing[candidate] {
-			return candidate
-		}
-	}
 }

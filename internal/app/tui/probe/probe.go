@@ -2,17 +2,22 @@ package probe
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpclient"
 	"marshal/internal/app/config"
-	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 )
 
 var Timeout = 5 * time.Second
+
+// errNoHost is what a probe returns when it was given no client host: without
+// the agent side there is no provider client to ask.
+var errNoHost = errors.New("probe: no client host")
 
 // IsLocalhost reports whether baseURL points at the local machine.
 // Empty input is not local. Shares the routing gate's definition.
@@ -23,34 +28,17 @@ func IsLocalhost(baseURL string) bool {
 	return routing.IsLocalProvider(baseURL)
 }
 
-// Provider probes name's model list using the production credential/OAuth
-// dependency. It is the wrapper for callers that have no injected resolver
-// of their own; callers wired from a runtime must use ProviderWithAuth so a
-// probe cannot reach a credential backend the runtime did not select.
-//
-// dataDir enables the on-disk model cache. thinkingBudgetMargin is the
-// AgentConfig value threaded to Anthropic providers.
-func Provider(fieldID, name string, pc config.ProviderConfig, dataDir string, thinkingBudgetMargin int) tea.Cmd {
-	return ProviderWithAuth(fieldID, name, pc, dataDir, thinkingBudgetMargin, provider.DefaultAuthResolver())
-}
-
-// ProviderWithAuth probes name's model list through the explicitly supplied
-// credential/OAuth dependency. An openai_codex provider builds its token
-// store and OAuth engine from auth, so a TUI running under an isolated
-// runtime (tests, an embedded app) never falls back to the real OS keychain.
-//
-// A nil auth fails every probe with an error rather than selecting the
-// production adapter: silently substituting the real keychain is exactly
-// what an injected resolver exists to prevent.
-func ProviderWithAuth(fieldID, name string, pc config.ProviderConfig, dataDir string, thinkingBudgetMargin int, auth provider.AuthResolver) tea.Cmd {
+// Provider probes host for the models pc's endpoint reports, under Timeout,
+// and returns a ResultMsg carrying fieldID and name. A nil host yields a
+// ResultMsg whose Err is errNoHost.
+func Provider(host acpclient.Host, fieldID, name string, pc config.ProviderConfig) tea.Cmd {
 	return func() tea.Msg {
-		p, err := provider.NewFromConfigWithAuth(name, pc, dataDir, thinkingBudgetMargin, "", auth)
-		if err != nil {
-			return ResultMsg{FieldID: fieldID, Provider: name, Err: err}
+		if host == nil {
+			return ResultMsg{FieldID: fieldID, Provider: name, Err: errNoHost}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), Timeout)
 		defer cancel()
-		models, err := p.Models(ctx)
+		models, err := host.ProbeProvider(ctx, name, pc)
 		if err != nil {
 			return ResultMsg{FieldID: fieldID, Provider: name, Err: err}
 		}

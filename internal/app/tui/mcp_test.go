@@ -4,9 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +11,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpclient"
+	"marshal/internal/acpclient/inproc"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/mcpauth"
@@ -383,11 +382,13 @@ func (o *urlRecorder) snapshot() []string {
 }
 
 // mcpAuthModel returns a model wired to isolated auth/browser dependencies and
-// with one OAuth-enabled MCP server configured.
+// with one OAuth-enabled MCP server configured. The seam is rebuilt over the
+// caller's resolver, because /mcp auth takes its token store from the session.
 func mcpAuthModel(t *testing.T, auth provider.AuthResolver, open func(string) error) Model {
 	t.Helper()
 	m := newTestModel(t)
-	m.auth = auth
+	host, sess := inproc.New(inproc.Deps{State: m.state, Auth: auth})
+	m.host, m.sess = host, sess
 	m.openBrowser = open
 	m.state.Config.MCP.Servers = map[string]config.MCPServerConfig{
 		"linear": {URL: "https://mcp.example.com/sse", Auth: "oauth", Trust: "unrestricted"},
@@ -484,59 +485,32 @@ func TestMCPAuthInjectedErrorNeverFallsBackToRealStore(t *testing.T) {
 	}
 }
 
-// TestMCPAuthAuthorizeCommandUsesStubBrowser is the executed-command test: the
-// production engine wiring (mcpOAuthEngine + authorizeMCPCmd) runs against a
-// test-owned authorization server, and the assertion is on the URL handed to
-// the injected opener — the real browser is never launched and the real
-// keychain is never opened.
-//
-// The engine is built directly because ResolveOAuthServer enforces the https
-// remote-endpoint gate that a plain httptest server cannot satisfy; the wiring
-// under test (store, opener, cancellation) is exactly the one handleMCPCommand
-// uses.
-func TestMCPAuthAuthorizeCommandUsesStubBrowser(t *testing.T) {
-	// One test-owned authorization server serves discovery, registration, and
-	// the token endpoint. Nothing in the flow is allowed to reach the
-	// internet.
-	var metadataSrv *httptest.Server
-	metadataSrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		base := "http://" + r.Host
-		switch {
-		// The engine derives the RFC 8414 path from the server URL, so an
-		// endpoint with a path (/mcp) is probed at /.well-known/…/mcp.
-		case strings.HasPrefix(r.URL.Path, "/.well-known/oauth-authorization-server"):
-			io.WriteString(w, `{"issuer":"`+base+`","authorization_endpoint":"`+base+`/authorize","token_endpoint":"`+base+`/token","registration_endpoint":"`+base+`/register"}`)
-		case r.URL.Path == "/register":
-			io.WriteString(w, `{"client_id":"test-client"}`)
-		case r.URL.Path == "/token":
-			io.WriteString(w, `{"access_token":"test-at","token_type":"Bearer","expires_in":3600}`)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer metadataSrv.Close()
+// stubLoginSession overrides LoginMCP: it reports one authorization URL and
+// then blocks until its context ends, as the agent side's sign-in does.
+type stubLoginSession struct {
+	acpclient.Session
+	url string
+}
 
-	auth := newMemAuth()
+func (s *stubLoginSession) LoginMCP(ctx context.Context, _ string, show func(url string)) error {
+	show(s.url)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// TestMCPAuthCommandOpensTheURL: the authorize command hands the URL to the
+// opener and to the panel's display, and cancelling it ends the command with a
+// cancellation rather than a failure.
+func TestMCPAuthCommandOpensTheURL(t *testing.T) {
+	const wantURL = "https://auth.example/authorize?x=1"
 	opened := &urlRecorder{}
-	m := mcpAuthModel(t, auth, func(u string) error { opened.record(u); return nil })
+	m := mcpAuthModel(t, newMemAuth(), func(u string) error { opened.record(u); return nil })
 
-	// Build the engine exactly as handleMCPCommand does, but against the
-	// test-owned metadata host.
-	srv := m.state.Config.MCP.Servers["linear"]
-	srv.URL = metadataSrv.URL + "/mcp"
-	store, err := m.auth.OpenStore("marshal")
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
-	eng := m.mcpOAuthEngine(srv, store)
-	eng.CacheDir = t.TempDir() // never the repo's .marshal/oauth-metadata
-	eng.LoopbackTimeout = 10 * time.Second
-
+	sess := &stubLoginSession{Session: m.sess, url: wantURL}
 	disp := mcpauth.NewDisplay()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan mcpauth.AuthDoneMsg, 1)
-	cmd := authorizeMCPCmd(ctx, eng, disp, cancel)
+	cmd := authorizeMCPCmd(ctx, sess, "linear", disp, m.openBrowser, cancel)
 	go func() { done <- cmd().(mcpauth.AuthDoneMsg) }()
 
 	// Wait for the flow to reach the browser-open step, then cancel it through
@@ -549,23 +523,18 @@ func TestMCPAuthAuthorizeCommandUsesStubBrowser(t *testing.T) {
 
 	select {
 	case msg := <-done:
-		if msg.Err != nil && !errors.Is(msg.Err, context.Canceled) {
-			t.Fatalf("authorize: %v", msg.Err)
+		if !errors.Is(msg.Err, context.Canceled) {
+			t.Fatalf("err = %v, want a cancellation", msg.Err)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("authorize command did not return after cancellation")
 	}
 
 	urls := opened.snapshot()
-	if len(urls) != 1 {
-		t.Fatalf("opener calls = %v, want exactly one authorization URL", urls)
+	if len(urls) != 1 || urls[0] != wantURL {
+		t.Fatalf("opener calls = %v, want exactly [%s]", urls, wantURL)
 	}
-	if !strings.Contains(urls[0], "/authorize?") {
-		t.Fatalf("opened %q, want the authorization endpoint", urls[0])
-	}
-	// The store is the resolver's in-memory one; a cancelled flow writes no
-	// tokens into it.
-	if _, err := store.Get("marshal:mcp:" + srv.URL); err == nil {
-		t.Fatal("a cancelled flow must not persist tokens")
+	if disp.URL() != wantURL {
+		t.Fatalf("display holds %q, want %q", disp.URL(), wantURL)
 	}
 }

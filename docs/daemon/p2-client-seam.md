@@ -2415,3 +2415,58 @@ constants, and `activeSpinnerFrame` takes a string.
 T1b gains six names at plan `6`: `AddMessage` and `Logger` with the notes, and
 `Notice`, `SetNotice`, `ClearNotice` and `DismissNotice` with the banner. The
 allowlist loses 18 entries across 17 files, ten keys entirely.
+
+**Plan 7a (providers and sign-ins), branch `p2-7a-providers`.** Added
+`internal/acpwire/providers.go`: `ProviderTemplate`, the provider catalog's
+twelve fields on the wire, and `ModelCapabilities`, the three fields a per-model
+probe reports beyond the model list. `internal/llm/schema` gained
+`thinking.go`: `ResolveThinkingOptions`, `CloneThinkingOptions` and
+`PreserveThinkingOptions` moved out of `provider` with their bodies unchanged,
+so the TUI's options stay a pure computation. `strutil.UniqueName` moved out of
+`provider/templates.go` with its body unchanged.
+
+`acpclient.Host` gains ten methods with their `Methods` rows: `ProviderTemplates`
+on `config/provider_templates`, `ProbeProvider` on `config/probe_provider`, which
+exists, `CanProbeModel` and `ProbeModel` on `config/probe_model`, `ListModels`,
+`SaveModels`, `ForgetModels` and `RenameModels` on `config/models_list`,
+`..._save`, `..._forget` and `..._rename`, and `PrepareProviderLogin` and
+`LoginProvider` on `config/login_provider`. `acpclient.Session` gains
+`PrepareMCPLogin` and `LoginMCP`, both on `session/mcp_login`. Eleven of the
+twelve ride eight new ACP methods; only `ProbeProvider` reuses one that exists.
+
+The adapter serves them over `Deps.Auth`, the runtime's resolver or
+`provider.DefaultAuthResolver()` when nil, and `Deps.ModelCacheDir`, the data
+directory the TUI passed to the cache. A probe builds its client here, with the
+current session's thinking budget margin, so probing a config that is not saved
+yet — the wizard's typed key, a provider being edited — still works.
+`Host.AuthResolver` exposes the selected resolver for app's wiring test and goes
+with the adapter in P3. The cache is four explicit calls keyed agent side: the
+adapter looks the provider's config up itself, because the entry's hash covers
+the literal key the TUI's config loses in plan 7b. Without a cache directory all
+four do nothing and `ListModels` finds nothing. A sign-in is a check followed by
+a call: the check returns today's sentence when the sign-in cannot start, and the
+call takes a `show` function the adapter invokes once with the authorization URL.
+The engine's `Open` stays nil agent side; the TUI opens the browser and then
+records the URL, the engine's order. A cancelled sign-in still wraps
+`context.Canceled` and stores nothing.
+
+The TUI's probes, model cache, catalog and both sign-ins go through the seam.
+`probe.Provider` takes the host; `presetflow.ProbeCapabilitiesCmdWithCancel`
+takes it with the provider's name and config; the connect wizard reads the
+catalog once from `ProviderTemplates` and looks templates up by ID; the settings
+browser's confirm screen asks `CanProbeModel` before showing "detecting…". The
+wizard and the settings browser keep their in-session discovery maps and their
+newest-attempt guards, so a stale probe moves neither the map nor the disk. The
+wizard's sign-in runs `PrepareProviderLogin` and then `LoginProvider`, and
+`/mcp auth` runs `PrepareMCPLogin` and then `LoginMCP`; the MCP reconnect after a
+successful sign-in stays in the TUI until plan 7b.
+
+Deleted: the model's `WithAuthResolver`, `AuthResolver`, `auth` field, unused
+`dataDir` and `WithDataDir`; the settings browser's `WithAuthResolver`,
+`WithDataDir`, `AuthResolver`, `probeProviderFor` and dead `badgeForTemplate`,
+and the settings state's `auth` and `dataDir`; the wizard's `Opts.Auth`, `auth`
+field and `AuthResolver`; `probe.ProviderWithAuth`, the default-resolver form and
+`presetflow.ProbeCapabilitiesCmd`; and the two engine builders `mcpOAuthEngine`
+and `codexOAuthEngine`. `app.Run` now hands the runtime's resolver to the adapter
+alone. T1 stays green throughout and T1b gained no names, because no `State` read
+moved. T1's allowlist lost 14 entries across 9 files, five keys entirely.

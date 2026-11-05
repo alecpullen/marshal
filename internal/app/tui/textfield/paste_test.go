@@ -4,10 +4,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpclient/inproc"
 	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/app/tui/agents"
 	"marshal/internal/app/tui/connect"
 	"marshal/internal/app/tui/memory"
@@ -48,7 +51,11 @@ func TestPasteReachesSelectedTextInputs(t *testing.T) {
 		"connect api key input": func(t *testing.T) string {
 			cfg := config.Default()
 			cfg.Privacy.RemoteProvidersAllowed = true
-			m := connect.New(connect.Opts{Cfg: cfg})
+			// The wizard reads its catalog from the host; this pick builds no
+			// provider client, so the host needs no resolver.
+			state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+			host, _ := inproc.New(inproc.Deps{State: state})
+			m := connect.New(connect.Opts{Cfg: cfg, Host: host})
 			m, _ = m.Update(picker.PickedMsg{Value: "openrouter"})
 			m, _ = m.Update(tea.PasteMsg{Content: pasted})
 			return m.InputValue()

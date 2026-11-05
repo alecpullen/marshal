@@ -232,24 +232,6 @@ func TestLocalToolCapableTemplatesAdvertiseToolCalling(t *testing.T) {
 	}
 }
 
-func TestUniqueNameNoCollision(t *testing.T) {
-	got := UniqueName("ollama", map[string]bool{})
-	if got != "ollama" {
-		t.Fatalf("UniqueName with no collision = %q, want %q", got, "ollama")
-	}
-}
-
-func TestUniqueNameWithCollision(t *testing.T) {
-	got := UniqueName("ollama", map[string]bool{"ollama": true})
-	if got != "ollama-2" {
-		t.Fatalf("UniqueName with one collision = %q, want %q", got, "ollama-2")
-	}
-	got = UniqueName("ollama", map[string]bool{"ollama": true, "ollama-2": true})
-	if got != "ollama-3" {
-		t.Fatalf("UniqueName with two collisions = %q, want %q", got, "ollama-3")
-	}
-}
-
 func TestOpencodeGoTemplate(t *testing.T) {
 	tmpl, ok := Lookup("opencode-go")
 	if !ok {

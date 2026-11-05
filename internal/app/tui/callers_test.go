@@ -58,8 +58,8 @@ func callersModel(t *testing.T, f *fakeFinder) Model {
 	if f != nil {
 		rf = f
 	}
-	m := testModelWith(inproc.Deps{State: state, ReferenceFinder: rf, Commands: reg}, WithHomeDir(t.TempDir()),
-		WithAuthResolver(newMemAuth()), WithOpenBrowser(func(string) error { return nil }))
+	m := testModelWith(inproc.Deps{State: state, ReferenceFinder: rf, Commands: reg, Auth: newMemAuth()}, WithHomeDir(t.TempDir()),
+		WithOpenBrowser(func(string) error { return nil }))
 	m.resize(80, 24)
 	m.refreshViewport()
 	return m

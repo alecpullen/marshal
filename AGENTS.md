@@ -75,7 +75,7 @@ Runtime & orchestration
 
 App shell & config
   internal/acpwire/        wire types and error codes for the TUI client seam (stdlib only)
-  internal/acpclient/      the TUI's Host/Session interfaces; inproc/ is the in-process adapter (deleted in P3)
+  internal/acpclient/      the TUI's Host/Session interfaces; inproc/ is the in-process adapter (deleted in P3); rpc/ is the JSON-RPC client that replaces it
   internal/app/            Run(), dependency wiring, signal handling, repo instructions
   internal/app/config/     TOML loading, defaults, merge rules
   internal/app/session/    shared mutable state between TUI and agent

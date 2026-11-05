@@ -307,6 +307,34 @@ func TestServerRequestsReachTheClient(t *testing.T) {
 	}
 }
 
+// BenchmarkPipeCallRoundTrip measures R10's budget for one synchronous call
+// over the pipe to the real server.
+func BenchmarkPipeCallRoundTrip(b *testing.B) {
+	client, agent := rpc.Pipe()
+	// The discard logger keeps server logging out of the measurement.
+	srv := NewServer(agent, agent, WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+	srv.MaxLineBytes = rpc.MaxFrameBytes
+	srv.Handle("ping", func(ctx context.Context, params json.RawMessage) (any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = srv.Serve(ctx) }()
+	defer agent.Close()
+
+	conn := rpc.NewConn(client, rpc.Handlers{})
+	defer conn.Close()
+
+	var res map[string]any
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := conn.Call(context.Background(), "ping", nil, &res); err != nil {
+			b.Fatalf("Call: %v", err)
+		}
+	}
+}
+
 // startAgentHost serves the real agent host's handlers on the agent end of a
 // pipe and returns the client's transport with the server, so a test can read
 // the connection's marshal flag. The host is built as acpclient_methods_test.go

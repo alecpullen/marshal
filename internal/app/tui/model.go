@@ -681,6 +681,9 @@ func WithOpenBrowser(open func(url string) error) Option {
 // Host returns the client host the model was built with.
 func (m Model) Host() acpclient.Host { return m.host }
 
+// Session returns the client session the model was built with.
+func (m Model) Session() acpclient.Session { return m.sess }
+
 func WithWorkingDir(workDir string) Option {
 	return func(m *Model) {
 		m.workDir = workDir

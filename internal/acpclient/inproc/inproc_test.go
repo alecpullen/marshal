@@ -88,8 +88,10 @@ func TestStatusOfAFreshState(t *testing.T) {
 // the status with the value it should carry.
 func TestStatusMirrorsTheState(t *testing.T) {
 	state := newState(t, "s1")
+	home := t.TempDir()
 	_, sess := New(Deps{
-		State: state,
+		State:   state,
+		HomeDir: home,
 		GitInfo: func(string) gitinfo.Info {
 			return gitinfo.Info{Branch: "feature", Worktree: "wt", InRepo: true}
 		},
@@ -261,6 +263,10 @@ func TestStatusMirrorsTheState(t *testing.T) {
 			},
 		}},
 		Git: acpwire.Git{Branch: "feature", Worktree: "wt", InRepo: true},
+		// The two files a config write changes come from the session's Deps and
+		// its state's working directory, not from the state's setters.
+		UserConfigPath:    config.UserConfigPath(home),
+		ProjectConfigPath: config.ProjectConfigPath(state.WorkingDir),
 	}
 	// LeafID and Branches are the only expectations the state itself supplies,
 	// so pin that the planted values are non-trivial: a Status() that

@@ -2753,6 +2753,12 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			// OS keychain.
 			Auth:          rt.AuthResolver,
 			ModelCacheDir: rt.DataDir,
+			// The config writes go through the seam, so the runtime's reload
+			// path, the layer reloader and the trust refresh reach it here.
+			ReloadConfig: configReloader,
+			ReloadLayers: layerReloaderFor(homeDir, workingDir, state.Trusted),
+			TrustRefresh: trustRefresh,
+			HomeDir:      homeDir,
 		}
 		if providerReady {
 			deps.Work = rt

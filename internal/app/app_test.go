@@ -6210,6 +6210,95 @@ func TestRunPassesAuthResolverToTheSeam(t *testing.T) {
 	}
 }
 
+// TestRunWiresTheConfigSeam pins the config half of Run's Deps wiring: the
+// session names the files a config write changes, the runtime's reload path
+// reaches ReloadConfig, SaveVerifyCommands' file becomes the session's layers
+// (ReloadLayers), and a project save advances the trust record's hash
+// (TrustRefresh). Each of the three hooks is load-bearing for /settings, the
+// plan-run verify offer and the next launch's trust check, and nothing else in
+// the suite would notice if one were dropped.
+func TestRunWiresTheConfigSeam(t *testing.T) {
+	home := t.TempDir()
+	dir := t.TempDir()
+
+	// The trust record the project save must advance. Its hash is deliberately
+	// stale: RefreshConfigHash only updates an existing permanent record, and
+	// the write below changes the file it hashes.
+	store := trust.NewStore(config.DataDir(home))
+	abs := trust.Canonicalize(dir)
+	if err := store.SetTrust(abs, true, "stale"); err != nil {
+		t.Fatalf("seed the trust record: %v", err)
+	}
+
+	var (
+		userConfigPath string
+		reloaded       bool
+		verifyErr      error
+		layers         config.Layers
+		saveErr        error
+	)
+	err := Run(context.Background(), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return time.Unix(100, 0) }),
+		WithWorkingDir(dir),
+		WithHomeDir(home),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(lo config.LoadOptions) (config.Config, error) {
+			// The real loader reports the project's trust through this pointer,
+			// and the layer reloader replays it through state.Trusted. The
+			// fixture stands in for it so the folder counts as trusted, as the
+			// permanent resolver says.
+			if lo.Trusted != nil {
+				*lo.Trusted = true
+			}
+			return config.Default(), nil
+		}),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+			sess := model.(tui.Model).Session()
+			userConfigPath = sess.Status().UserConfigPath
+			// The fixture configures no provider, so the rebuild fails; only the
+			// reload path's presence is under test here.
+			reloaded, _ = sess.ReloadConfig(ctx, sess.Config())
+			verifyErr = sess.SaveVerifyCommands(ctx, "go build ./...", "go test ./...")
+			layers = sess.Layers()
+			saveErr = sess.SaveProjectConfig(ctx, sess.Config())
+			return ProgramResult{}
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if want := config.UserConfigPath(home); userConfigPath != want {
+		t.Errorf("Status().UserConfigPath = %q, want %q", userConfigPath, want)
+	}
+	if !reloaded {
+		t.Error("ReloadConfig reported no reload path, want the runtime's reloader wired")
+	}
+	if verifyErr != nil {
+		t.Fatalf("SaveVerifyCommands: %v", verifyErr)
+	}
+	if got := layers.Merged.SDD.Verify.Build; got != "go build ./..." {
+		t.Errorf("Layers().Merged.SDD.Verify.Build = %q, want the saved command: ReloadLayers is not wired", got)
+	}
+	if got := layers.Merged.SDD.Verify.Test; got != "go test ./..." {
+		t.Errorf("Layers().Merged.SDD.Verify.Test = %q, want the saved command: ReloadLayers is not wired", got)
+	}
+	if saveErr != nil {
+		t.Fatalf("SaveProjectConfig: %v", saveErr)
+	}
+	stored, err := store.StoredConfigHash(abs)
+	if err != nil {
+		t.Fatalf("read the trust record: %v", err)
+	}
+	hash, err := trust.ConfigHashFor(dir)
+	if err != nil {
+		t.Fatalf("hash the project config: %v", err)
+	}
+	if stored != hash {
+		t.Errorf("stored config hash = %q, want the current %q: TrustRefresh is not wired", stored, hash)
+	}
+}
+
 // TestStartRuntimeRetainsAuthResolverWithoutProvider covers the
 // inactive-provider startup path: a project with no configured provider still
 // gets a Runtime carrying the selected resolver, so a later /connect or config

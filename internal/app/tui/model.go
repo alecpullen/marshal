@@ -64,7 +64,6 @@ import (
 	"marshal/internal/sddplans"
 	"marshal/internal/skills"
 	"marshal/internal/strutil"
-	"marshal/internal/tools/registry"
 	"marshal/internal/watch"
 )
 
@@ -565,10 +564,6 @@ type Model struct {
 	// idle and applies via the configured reloader.
 	pendingModelOptions *pendingModelOptionsState
 
-	// toolRegistry is the live tool registry, used by the agents roster
-	// panel for tool denylist validation. Wired from app.go.
-	toolRegistry *registry.Registry
-
 	// pendingRun holds the pre-flight state while the cast list panel is
 	// open. It is set by openRunPreflight and consumed by the castlist
 	// StartMsg/CancelMsg handlers.
@@ -599,13 +594,12 @@ func WithLegacyState(state *session.State) Option {
 }
 
 type LegacySession struct {
-	State        *session.State
-	ToolRegistry *registry.Registry
+	State *session.State
 }
 
-// WithLegacySession wires the read of the runtime's current state and tool
-// registry that follows Host.NewSession. Without it, a new session leaves the
-// model's legacy state as it was.
+// WithLegacySession wires the read of the runtime's current state that
+// follows Host.NewSession. Without it, a new session leaves the model's legacy
+// state as it was.
 func WithLegacySession(read func() LegacySession) Option {
 	return func(m *Model) { m.legacySession = read }
 }
@@ -728,14 +722,6 @@ func (m *Model) log() *slog.Logger {
 func (m *Model) note(text string) {
 	if err := m.sess.AddNote(m.ctx, acpwire.Note{Text: text, ContentType: acpwire.ContentTypePlain}); err != nil {
 		m.log().Warn("note dropped", "error", err)
-	}
-}
-
-// WithToolRegistry wires the live tool registry into the model so the
-// agents roster panel can validate tool denylist entries.
-func WithToolRegistry(reg *registry.Registry) Option {
-	return func(m *Model) {
-		m.toolRegistry = reg
 	}
 }
 
@@ -1011,12 +997,11 @@ func (m *Model) openSettingsBrowser(query string) {
 }
 
 func (m *Model) openAgentsRoster(arg string) {
-	roster := agents.NewRosterPanelWithRegistry(
+	roster := agents.NewRosterPanel(
 		m.sess.Config(),
 		m.sess,
 		arg,
 		runNowDispatch,
-		m.toolRegistry,
 	)
 	roster.SetQuota(m.sess.Status().Quota)
 	m.dock.Open(roster)

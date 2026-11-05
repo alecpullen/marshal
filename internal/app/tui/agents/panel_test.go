@@ -183,18 +183,18 @@ func TestToolDenylistValidation(t *testing.T) {
 	cfg := config.Default()
 	cfg.CustomAgents = map[string]routing.CustomAgent{"x": {Name: "x", Preset: "p"}}
 	p := NewRosterPanel(cfg, nil, "", nil)
-	// ValidateToolDenylist checks names against a live registry.
-	// With no registry passed, it should still validate (empty registry).
+	// ValidateToolDenylist checks names against the session's tools. With no
+	// session, no tools are known, so no name can be verified.
 	err := p.ValidateToolDenylist([]string{"nonexistent_tool"})
 	if err == nil {
 		t.Fatal("invalid tool name should fail validation")
 	}
-	// With a registry that has the tool, it should pass.
+	// With a session whose registry holds the tool, it should pass.
 	reg := registry.New()
 	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly, Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		return registry.ToolResult{}, nil
 	}})
-	p2 := NewRosterPanelWithRegistry(cfg, nil, "", nil, reg)
+	p2 := NewRosterPanel(cfg, testSessionOverTools(t, registryToolNames(reg), true), "", nil)
 	err2 := p2.ValidateToolDenylist([]string{"file.read"})
 	if err2 != nil {
 		t.Fatalf("valid tool name should pass validation: %v", err2)
@@ -203,6 +203,62 @@ func TestToolDenylistValidation(t *testing.T) {
 	if err3 == nil {
 		t.Fatal("mix of valid and invalid should fail")
 	}
+}
+
+// TestRosterValidationFollowsTheSessionsTools verifies that denylist
+// validation reads the session's Tools, so the roster knows exactly the
+// tools the session reports and nothing else.
+func TestRosterValidationFollowsTheSessionsTools(t *testing.T) {
+	cfg := config.Default()
+
+	// A session with no registry cannot verify a name.
+	unbuilt := NewRosterPanel(cfg, testSessionOverTools(t, nil, false), "", nil)
+	err := unbuilt.ValidateToolDenylist([]string{"file.read"})
+	if err == nil {
+		t.Fatal("a name must fail while the session has no registry")
+	}
+	if want := `unknown tool: "file.read" (no registry available)`; err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+	// An empty list validates either way.
+	if err := unbuilt.ValidateToolDenylist(nil); err != nil {
+		t.Fatalf("an empty denylist should validate: %v", err)
+	}
+
+	// A session that names file.read verifies that name and refuses others.
+	built := NewRosterPanel(cfg, testSessionOverTools(t, []string{"file.read"}, true), "", nil)
+	if err := built.ValidateToolDenylist([]string{"file.read"}); err != nil {
+		t.Fatalf("a listed tool should pass: %v", err)
+	}
+	err = built.ValidateToolDenylist([]string{"nope.tool"})
+	if err == nil {
+		t.Fatal("an unlisted tool must fail")
+	}
+	if want := `unknown tool: "nope.tool"`; err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+}
+
+// testSessionOverTools builds the session a roster validates through, whose
+// Tools reports names and known.
+func testSessionOverTools(t *testing.T, names []string, known bool) acpclient.Session {
+	t.Helper()
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	_, sess := inproc.New(inproc.Deps{
+		State: state,
+		Tools: func() ([]string, bool) { return names, known },
+	})
+	return sess
+}
+
+// registryToolNames is the name list reg holds, in reg's own order.
+func registryToolNames(reg *registry.Registry) []string {
+	tools := reg.List()
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.Name)
+	}
+	return names
 }
 
 func containsGlyph(s string, g string) bool {

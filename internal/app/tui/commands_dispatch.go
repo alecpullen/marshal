@@ -197,9 +197,6 @@ func startNewSession(m *Model, name string) tea.Cmd {
 		if legacy.State != nil {
 			m.state = legacy.State
 		}
-		if legacy.ToolRegistry != nil {
-			m.toolRegistry = legacy.ToolRegistry
-		}
 	}
 
 	// Drop per-message UI state that belongs to the old session.

@@ -275,14 +275,18 @@ Decision: `WireTree`, with the C6 additions.
   types, or `json.RawMessage`.
 - `acpclient` signatures may also use `config.Config` and its parts, the
   `routing` types and the `schema` types. These are data shared within
-  the module, and their JSON round trip is tested (T3).
+  the module, and their JSON round trip is tested (T3). One value is
+  `any`: the user-value write's, which carries what `config.LookupPath`
+  returns or a bool or string list (plan 7b). P3 sends it as JSON and
+  converts it by the field's type.
 - **Secrets.** No read returns one. A literal API key in a config read is
   replaced by `""`, and its source (`config`, `env`, `keychain`, `oauth`
-  or `none`) is reported alongside, as `config/get` does. Only these
-  calls carry a secret: the provider-key write (C10), the sudo answer
-  (C7), and the probes, whose provider config may hold a key typed but
-  not yet saved, as `config/probe_provider`'s `config` does (plan 7a).
-  None is logged.
+  or `none`) is reported alongside, as `config/get` does (plan 7d). Only
+  these calls carry a secret: the provider-key write (C10), the sudo
+  answer (C7), the probes, whose provider config may hold a key typed
+  but not yet saved, as `config/probe_provider`'s `config` does (plan
+  7a), and the user-value write when its path is a key's, as the
+  settings browser's key rows write it (plan 7b). None is logged.
 - **Large text.** The transcript keeps `WireTextCap`. Every other
   result that can be large says how it is capped in its doc comment.
 
@@ -656,24 +660,37 @@ Decision: `WireTree`, with the C6 additions.
 ### C10. Config, providers and trust
 
 - **Reads.** `Session.Config()` returns the session's effective config
-  with literal keys redacted (C3). `Session.Layers()` returns the layers
-  with provenance, redacted the same way. `config.Diagnose` stays
-  client-side: it is pure over those two values.
-- **Writes** are `Host` calls, because they change files every session
-  reads. Each save function the TUI calls today becomes one call with
-  the same semantics:
-  - user value, user providers, user presets, user rule, provider key;
-  - project config and verify commands.
+  with literal keys redacted (C3, plan 7d). `Session.Layers()` returns
+  the layers with provenance, redacted the same way. `config.Diagnose`
+  stays client-side: it is pure over those two values. Until plan 7d
+  both carry literal keys, as the state does (plan 7b).
+- **Writes** (plan 7b). Each save function the TUI calls today becomes
+  one call with the same arguments minus the path, and the same
+  semantics:
+  - user value, user providers, user presets and provider key are `Host`
+    calls, because they change files every session reads;
+  - project config and verify commands are `Session` calls, because they
+    follow the session's working directory and diff against its layers.
 
-  After writing, the adapter reloads the config of the session it
-  serves, as the TUI's `applyNewConfig` (`model.go:1314`), the config
-  reloader and `RebaseInteractionConfig` do today. It returns the path
-  written, the new config and its diagnostics.
+  (Plan 4 already moved the user-rule write into the approval answer.) A
+  write does not reload: a connect makes three writes before one reload,
+  so the TUI keeps its order of saves, reloads and notes. After any
+  successful write, the adapter refreshes the session's layers, and
+  after a project save the permanent-trust hash, as the TUI's
+  `reloadLayers` and `persistAndReload` did. `SessionStatus` names the
+  user and project config files, for the TUI's notes. The TUI keeps its
+  own busy check ("Stop the active turn before applying settings"), so
+  no write returns the busy code.
 
   A provider write keeps any stored key it does not name, as
-  `config/set_providers` does. A write during a turn returns the busy
-  code, and the TUI shows today's "Stop the active turn before applying
-  settings."
+  `config/set_providers` does (plan 7d).
+- **Reloads** (plan 7b) are `Session` calls. `ApplyConfig` installs a
+  config without saving or rebuilding, the agent half of the TUI's
+  `applyNewConfig`. `ReloadConfig` rebuilds the runtime from a config,
+  and reports when the session has no reload path, as a TUI built
+  without a reloader had none. `ReconnectMCP` is the reload after an MCP
+  sign-in: it clears the provider and config notices first, so a fresh
+  notice the rebuild sets survives.
 - **Models and providers** (plan 7a, apart from preset setup).
   - `ProviderTemplates()` reads the catalog (new).
   - `ProbeProvider` lists a provider's models (`config/probe_provider`
@@ -686,11 +703,14 @@ Decision: `WireTree`, with the C6 additions.
     to save or forget an entry, as today.
   - Thinking options stay a TUI computation: the pure helpers move to
     `llm/schema`.
-  - **Preset setup after a connect** (plan 7b) runs agent side as one `Host` call
-    (new). The call loads the models.dev catalog, reads the provenance
-    file and runs `presetsetup.Apply`, then returns the proposed
-    presets. Accepting them saves the presets and the provenance
-    together. Today the TUI does all of this itself.
+  - **Preset setup after a connect** (plan 7b) runs agent side as one
+    `Host` call, `PreparePresets` (new). The call loads the models.dev
+    catalog, reads the provenance file and runs `presetsetup.Apply`,
+    then returns the proposed presets, the names the provenance manages
+    and the updated provenance, which the TUI holds as raw JSON.
+    Accepting them saves the presets with the user writes and the
+    provenance with `SaveProvenance` (new). Until then the TUI did all
+    of this itself.
 - **OAuth logins** (Codex connect, MCP auth) run agent side (plan 7a).
   A check (`PrepareProviderLogin`, `PrepareMCPLogin`) runs what must
   succeed before the panel opens, and returns today's sentence when it
@@ -698,7 +718,7 @@ Decision: `WireTree`, with the C6 additions.
   authorization URL through its `show` function (C2), the TUI opens it
   (C12), and the call returns when the callback lands. This matches how
   ACP's `/mcp auth` works today. The reload that reconnects an MCP
-  server after its sign-in moves with the other reloads (plan 7b).
+  server after its sign-in is `ReconnectMCP` (plan 7b).
 - **Trust.** `Host.DecideTrust(ctx, dir, decision)` replaces the trust
   prompt callback. A trust refresh happens inside the config reload.
 - **Skill gate settings** (enabled flag, remembered decisions, clearing
@@ -877,19 +897,26 @@ The TUI works after every plan.
    through the session, a failed run's error carries its notice, and doc
    panels render wire docs. The TUI gets its own logger, and compares
    wire strings with `acpwire`'s constants.
-7. **Config, providers and trust** (C10), in three plans:
+7. **Config, providers and trust** (C10), in four plans:
    - **7a. Providers and sign-ins** ([plan](plans/2026-11-05-p2-7a-providers-plan.md)).
      `ProviderTemplates`, the probes, the model cache calls and the two
      sign-ins, with the resolver in the adapter's `Deps`. The TUI builds
      no provider client and opens no credential store.
-   - **7b. Config.** `Session.Config` with literal keys redacted,
-     `Session.Layers`, the `Host` writes with the reload agent side, and
-     preset setup with its accept.
+   - **7b. Config** ([plan](plans/2026-11-05-p2-7b-config-plan.md)).
+     `Session.Config` and `Session.Layers`, the user and project writes,
+     the three reload calls and preset setup. The adapter refreshes the
+     layers and the trust hash after each write. Keys stay literal. The
+     bridge's frame cap rides along (decided with the user).
    - **7c. Trust, skill gates and tools.** `Host.DecideTrust`, the
      skill-gate settings calls and `Tools()`.
+   - **7d. Secrets.** `Config` and `Layers` redact literal keys and
+     report their sources. Writes and reloads restore the stored keys a
+     config does not name, a renamed provider keeps its key, and the
+     probes fill in a saved provider's key. T7.
 
-   7a comes first: 7b's redacted read leaves the TUI without literal
-   keys, so every reader of one must already be agent side.
+   7a comes first: 7d's redacted read leaves the TUI without literal
+   keys, so every reader of one must already be agent side. 7c and 7d
+   depend only on 7b, and touch different TUI files.
 8. **Project data** (C11).
 9. **Close-out.** Delete `WithLegacyState`, empty the allowlist, write
    the list of methods P3 must add, and update design §4.5, §7 and §8.
@@ -1569,6 +1596,54 @@ writing plan 7a:
   `config/models_forget`, `config/models_rename`,
   `config/login_provider` and `session/mcp_login`. `ProbeProvider` uses
   `config/probe_provider`, which exists.
+
+**2026-11-05, against `341f1941` (plan 7a merged).** Found while
+writing plan 7b; the base suite passed (117 packages):
+- **Plan 7 is four plans** (Migration order). Redaction moves from 7b to
+  a new 7d. It needs its own rules: a write must keep a stored key it
+  does not name, through a provider rename too; a cleared key must stay
+  cleared; the settings browser shows a key's last four characters; and
+  the probes need a saved provider's key. Nothing else in 7b depends on
+  it.
+- **Writes keep their shape and do not reload** (C10). Each save becomes
+  one call with today's arguments minus the path. The spec's "the
+  adapter reloads after writing and returns the path, the new config and
+  its diagnostics" is replaced: a connect makes three writes before one
+  reload, and the settings browser two, so the TUI keeps its own order.
+  User-global writes are `Host` calls; the project writes are `Session`
+  calls, because they follow the session's working directory and its
+  layers. No write returns the busy code: the TUI's own check runs
+  first, as today.
+- **Layers and trust follow the writes agent side** (C10). After any
+  successful write the adapter refreshes the session's layers, and after
+  a project save the trust hash first. So the TUI's layer refresh and
+  trust hook go, and the panels lose the layer snapshots they kept only
+  for their own project saves.
+- **Reloads are three session calls** (C10): `ApplyConfig`,
+  `ReloadConfig` and `ReconnectMCP`. `ReloadConfig` and `ReconnectMCP`
+  report when there is no reload path, which only a test builds.
+- **Paths come from the status** (C5, C10). `SessionStatus` gains
+  `UserConfigPath` and `ProjectConfigPath`, for the TUI's notes and the
+  connect summary.
+- **`SaveUserValue` takes `any`** (C3).
+- **Preset setup is `PreparePresets`, and the provenance is opaque**
+  (C10). The TUI holds the updated sidecar as raw JSON and hands it back
+  to `SaveProvenance`.
+- **The panels' duplicate project saves stay.** The settings browser and
+  the agents roster save the project file, and the model's handler then
+  saves it again. Removing the first would change when the browser's
+  retry gesture retries.
+- **The skills panel stays for plan 8.** It reads and writes
+  `p.state.Config` directly, so T1b does not gain `Config` until then.
+- **The new ACP methods are named** `session/config`,
+  `session/apply_config`, `session/reload_config`,
+  `session/mcp_reconnect`, `session/save_project_config`,
+  `session/save_verify_commands`, `config/set_value`,
+  `config/save_providers`, `config/save_presets`,
+  `config/prepare_presets` and `config/save_provenance`.
+  `SaveProviderKey` uses `config/set_provider_key`, which exists.
+- **The bridge's frame cap** (P3 spec G5) is fixed in plan 7b, as
+  decided with the user: 64 MiB, and an oversized frame fails the child.
 
 ## Implementation record
 

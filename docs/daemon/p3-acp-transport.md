@@ -4,17 +4,18 @@ Parent: [`design.md`](design.md) §4.5 and §7 (P3). It builds on
 [`p2-client-seam.md`](p2-client-seam.md), whose interface and wire types
 it implements over ACP. Where this spec and design §4.5 differ, this spec
 wins.
-Depends on: P2. Plan 1, the client core, depends on nothing P2 still
-changes and runs alongside P2's last plans. Plans 2 onwards wait for all
-nine P2 plans: the boundary test's allowlist is empty, `WithLegacyState`
-is gone, and P2 plan 9 has written the list of ACP methods the interface
-marks "new in P3".
+Depends on: P2. Plans 1 (the client core) and 4a (the stack over the
+wire) depend on nothing P2 still changes and run alongside P2's last
+plans. The other plans wait for all nine P2 plans: the boundary test's
+allowlist is empty, `WithLegacyState` is gone, and P2 plan 9 has written
+the list of ACP methods the interface marks "new in P3".
 Status: drafted 2026-11-05, while P2 plan 7a ran, and its open questions
 decided the same day (below). The counts were measured at `e671da0d` (P2
 plan 7a's plan commit), and P2 plans 7a to 9 will change them. P3's
-layering plan re-measures them. Plan 1 was written while P2 plan 7b ran
-([plan](plans/2026-11-05-p3-1-client-core-plan.md)); the rest are written
-one at a time once P2 closes.
+layering plan re-measures them. Plans 1 and 4a were written while P2
+plan 7b ran ([plan 1](plans/2026-11-05-p3-1-client-core-plan.md),
+[plan 4a](plans/2026-11-05-p3-4a-stack-wire-plan.md)); the rest are
+written one at a time once P2 closes.
 
 Decided with the user (2026-11-05):
 - **The adapter's logic moves, and is not rewritten.** It becomes the
@@ -35,6 +36,11 @@ Decided with the user (2026-11-05):
   plan still changes. Layering moves `inproc` and splits `app.Run`, which
   every remaining P2 plan touches, so it waits for P2 to close (Migration
   order).
+- **The stack's wire half also goes early** (plan 4a). The mirror, the
+  marshal cadence and subagent unsubscribe need only `session/stack` and
+  `stack_patch`, which the per-connection `TurnManager` already serves,
+  so they run alongside P2 too. The rest of the transcript plan (4b)
+  waits for plan 3.
 
 ## Goal
 
@@ -234,11 +240,22 @@ new client.
 
 - The mirror applies `stack_patch` upserts and removals by revision. A
   patch whose base revision is not the mirror's triggers a fresh
-  `session/stack`, and the patch is dropped.
+  `session/stack`, and the patch is dropped: its content is in the
+  fetched snapshot, because the agent answers a read with a revision at
+  least as new as every patch it sent before. Patches that arrive while
+  the fetch is in flight are queued, and applied after it in order when
+  they chain (plan 4a).
+- **Order.** A patch carries no node order, so the mirror rebuilds the
+  projection's: depth-first from each root through `children`, then the
+  nodes no root reaches, such as the band (plan 4a).
 - **Cadence.** ACP's 200ms flush is slower than the TUI's 150ms tick, and
   streaming text would visibly lag. A marshal client gets a 50ms flush,
   and the agent coalesces anything faster. The client's cost per patch is
-  measured against R10's budget.
+  measured against R10's budget. Both of the agent's loops, the turn's
+  and the idle one, use 50ms for a marshal client; other clients keep
+  200ms and 500ms. Plan 4a also measures the agent's own flush of a
+  2,000-call session, since at 50ms its cost decides whether the
+  interval is affordable.
 - **`busy` goes.** `Stack(subagentID, busy)` loses the parameter. The
   agent's rule decides a tree's busy flag: the session's turn, or a
   subagent's own run. P2 plan 3d recorded that the two rules differ.
@@ -249,8 +266,9 @@ new client.
   is updated.
 - **Subagents.** The first read of a subagent's stack fetches it
   synchronously and subscribes. Later reads come from the mirror. Leaving
-  the drill-in unsubscribes, which keeps the agent from projecting trees
-  nobody reads.
+  the drill-in unsubscribes with `session/stack_unsubscribe` (new, plan
+  4a), which keeps the agent from projecting trees nobody reads. The main
+  transcript cannot be unsubscribed.
 - `StackNode` and `Callers` are plain calls (`session/stack_node` exists;
   `session/callers` is new).
 
@@ -400,9 +418,15 @@ conformance suite (V1) before anything switches.
    read-your-writes guarantee in `Server`, `Changed`, and the notice
    calls. The conformance harness starts here: one test table runs against
    both `inproc` and the client.
-4. **Transcript.** The stack mirror, the marshal flush interval,
-   subagent subscriptions, `StackNode` and `Callers`. The `busy` decision
-   against the goldens (R4).
+4. **Transcript**, in two plans:
+   - **4a. The stack over the wire** ([plan](plans/2026-11-05-p3-4a-stack-wire-plan.md)),
+     alongside P2's last plans. The stack patch types in `acpwire`, the
+     marshal flush interval, `session/stack_unsubscribe`, and the client's
+     stack mirror, proved against the real projector over the pipe and
+     measured against R10 on a 2,000-call session.
+   - **4b. The transcript read**, after plan 3. The session type's
+     `Stack`, `StackNode` and `Callers`, when the TUI releases a
+     subagent, and the `busy` decision against the goldens (R4).
 5. **Requests.** The `request_permission` extensions,
    `request_secret`, `request_settled`, the `Pending` mirror and the
    answer calls.

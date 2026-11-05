@@ -171,8 +171,9 @@ func (h *agentHost) chainedCancel(ctx context.Context, sessionID string) error {
 // the session manager in its Lookup closure. notify is the host-level sink
 // so notifications survive connection changes. perms and questions are the
 // per-connection clients that send outbound JSON-RPC requests to the
-// connected client.
-func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyFunc, perms PermissionClient, questions QuestionClient, alive *atomic.Bool) *TurnManager {
+// connected client. marshal reports whether that client declared the marshal
+// capability, which selects the stack flush cadence.
+func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyFunc, perms PermissionClient, questions QuestionClient, alive *atomic.Bool, marshal func() bool) *TurnManager {
 	// tm is pre-declared so the Lookup closure below can capture it before
 	// the construction call returns: the closure only runs after
 	// construction completes, so the capture is safe.
@@ -276,6 +277,7 @@ func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyF
 		Notify:    notify,
 		Perms:     perms,
 		Questions: questions,
+		Marshal:   marshal,
 	})
 	return tm
 }
@@ -294,7 +296,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 	manager := h.manager
 	turns := newTurnManagerFor(manager, h.log, h.sink.Notify,
 		&serverPermissionClient{server: srv},
-		&serverQuestionClient{server: srv}, alive)
+		&serverQuestionClient{server: srv}, alive, srv.marshalClient)
 
 	srv.Handle("initialize", func(ctx context.Context, params json.RawMessage) (any, error) {
 		var p InitializeParams
@@ -387,6 +389,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 	srv.Handle("session/steer", turns.Steer)
 	srv.Handle("session/steering_status", turns.SteeringStatus)
 	srv.Handle("session/stack", turns.Stack)
+	srv.Handle("session/stack_unsubscribe", turns.StackUnsubscribe)
 	srv.Handle("session/stack_node", turns.StackNode)
 	srv.Handle("session/last_request", turns.LastRequest)
 	srv.Handle("session/step_diffs", turns.StepDiffs)

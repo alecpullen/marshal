@@ -16,24 +16,16 @@ import (
 	"marshal/internal/viewmodel"
 )
 
-// stackFlushInterval bounds the patch rate to five a second.
+// stackFlushInterval is the turn's stack patch rate — five a second — for a
+// client that did not declare the marshal capability.
 const stackFlushInterval = 200 * time.Millisecond
 
-// StackParams is the session/stack request body.
-type StackParams struct {
-	SessionID  string `json:"sessionId"`
-	SubagentID int64  `json:"subagentId,omitempty"`
-}
+// marshalStackInterval is the turn's stack patch rate for a client that
+// declared the marshal capability.
+const marshalStackInterval = 50 * time.Millisecond
 
-type stackPatch struct {
-	Kind       string             `json:"kind"`
-	SubagentID int64              `json:"subagentId,omitempty"`
-	Rev        uint64             `json:"rev"`
-	BaseRev    uint64             `json:"baseRev"`
-	Roots      []string           `json:"roots"`
-	Upsert     []acpwire.WireNode `json:"upsert,omitempty"`
-	Remove     []string           `json:"remove,omitempty"`
-}
+// StackParams is the session/stack request body.
+type StackParams = acpwire.StackParams
 
 // stackProjector tracks the encoded nodes last sent to one session's client.
 type stackProjector struct {
@@ -43,6 +35,9 @@ type stackProjector struct {
 	rev       uint64
 	sent      map[string][]byte
 	sentOrder []string
+	// sentRoots is the root list of the last patch or snapshot sent, so a
+	// reader can compare against what the client actually holds.
+	sentRoots []string
 	// idleCancel stops the idle flusher; set on a session's parent projector.
 	idleCancel context.CancelFunc
 	// final marks a subagent projector flushed after its subagent stopped
@@ -53,8 +48,19 @@ type stackProjector struct {
 	wakeAt time.Time
 }
 
-// stackIdleInterval bounds how stale an idle session's stack can be.
+// stackIdleInterval bounds how stale an idle session's stack can be for a
+// client that did not declare the marshal capability.
 const stackIdleInterval = 500 * time.Millisecond
+
+// stackIntervals reports the turn and idle flush rates for this connection's
+// client: the fast cadence for a marshal client, the rate-limited defaults
+// otherwise. Each loop reads it once, where its ticker is created.
+func (m *TurnManager) stackIntervals() (turn, idle time.Duration) {
+	if m.marshal != nil && m.marshal() {
+		return marshalStackInterval, marshalStackInterval
+	}
+	return stackFlushInterval, stackIdleInterval
+}
 
 // stackKey names a projector: the session ID for the main transcript, and
 // "<session>#<subagent>" for a subagent's own.
@@ -66,8 +72,8 @@ func stackKey(sessionID string, subagentID int64) string {
 }
 
 // diff requires p.mu. Unchanged trees leave the revision and sent state alone.
-func (p *stackProjector) diff(tree acpwire.WireTree) (stackPatch, bool) {
-	patch := stackPatch{Kind: "stack_patch"}
+func (p *stackProjector) diff(tree acpwire.WireTree) (acpwire.StackPatch, bool) {
+	patch := acpwire.StackPatch{Kind: acpwire.UpdateStackPatch}
 	sent := make(map[string][]byte, len(tree.Nodes))
 	order := make([]string, 0, len(tree.Nodes))
 	for _, n := range tree.Nodes {
@@ -91,6 +97,7 @@ func (p *stackProjector) diff(tree acpwire.WireTree) (stackPatch, bool) {
 	patch.Rev = p.rev
 	patch.Roots = tree.Roots
 	p.sent, p.sentOrder = sent, order
+	p.sentRoots = append([]string(nil), tree.Roots...)
 	return patch, true
 }
 
@@ -135,7 +142,7 @@ func (m *TurnManager) markStackDirty(sessionID string) {
 
 // notifyStackPatch adapts the patch to ACP's existing map-shaped envelope.
 // Optional lists are omitted exactly as the patch's JSON tags require.
-func (m *TurnManager) notifyStackPatch(sessionID string, patch stackPatch) {
+func (m *TurnManager) notifyStackPatch(sessionID string, patch acpwire.StackPatch) {
 	update := map[string]any{
 		"kind": patch.Kind, "rev": patch.Rev, "baseRev": patch.BaseRev, "roots": patch.Roots,
 	}
@@ -168,7 +175,14 @@ func (m *TurnManager) flushDirtyStack(sessionID string, st *session.State) {
 
 // flushProjector diffs one projector against st and notifies on change.
 func (m *TurnManager) flushProjector(sessionID string, subagentID int64, st *session.State, busy, drilled, onlyDirty bool) {
-	p := m.stackFor(stackKey(sessionID, subagentID))
+	m.flushProjectorFor(m.stackFor(stackKey(sessionID, subagentID)), sessionID, subagentID, st, busy, drilled, onlyDirty)
+}
+
+// flushProjectorFor is flushProjector for a projector the caller resolved. An
+// unsubscribe can delete a projector between the resolution and the flush, so
+// a flush never resolves one itself: doing so would recreate a projector
+// nobody subscribes to and leave it in the map.
+func (m *TurnManager) flushProjectorFor(p *stackProjector, sessionID string, subagentID int64, st *session.State, busy, drilled, onlyDirty bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
@@ -210,7 +224,13 @@ func (m *TurnManager) flushChildStacks(sessionID string, st *session.State) {
 			m.stacksMu.Unlock()
 			continue
 		}
-		cp := m.stackFor(k)
+		m.stacksMu.Lock()
+		cp := m.stacks[k]
+		m.stacksMu.Unlock()
+		if cp == nil {
+			// Unsubscribed since the keys were listed: do not recreate it.
+			continue
+		}
 		cp.mu.Lock()
 		skip := cp.final
 		cp.mu.Unlock()
@@ -218,7 +238,7 @@ func (m *TurnManager) flushChildStacks(sessionID string, st *session.State) {
 			continue
 		}
 		running := v.Status == session.SubagentRunning
-		m.flushProjector(sessionID, id, v.Child, running, true, false)
+		m.flushProjectorFor(cp, sessionID, id, v.Child, running, true, false)
 		if !running {
 			cp.mu.Lock()
 			cp.final = true
@@ -271,6 +291,28 @@ func (m *TurnManager) Stack(ctx context.Context, params json.RawMessage) (any, e
 	return snapshot, nil
 }
 
+// StackUnsubscribe handles session/stack_unsubscribe, stopping the projection
+// of one subagent's stack for this client. The session's own transcript
+// (subagent 0) has no subscription to drop, so that is an invalid request.
+func (m *TurnManager) StackUnsubscribe(ctx context.Context, params json.RawMessage) (any, error) {
+	var request StackParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, invalidParamsError("parse session/stack_unsubscribe params: %v", err)
+		}
+	}
+	if request.SessionID == "" {
+		return nil, invalidParamsError("session/stack_unsubscribe requires sessionId")
+	}
+	if request.SubagentID == 0 {
+		return nil, invalidParamsError("session/stack_unsubscribe requires subagentId")
+	}
+	m.stacksMu.Lock()
+	delete(m.stacks, stackKey(request.SessionID, request.SubagentID))
+	m.stacksMu.Unlock()
+	return struct{}{}, nil
+}
+
 // stackSnapshot builds the snapshot, activating the projector on first use.
 func (m *TurnManager) stackSnapshot(request StackParams, rt *TurnRuntime, src *session.State, drilled, busy bool) (acpwire.StackSnapshot, bool) {
 	p := m.stackFor(stackKey(request.SessionID, request.SubagentID))
@@ -292,6 +334,7 @@ func (m *TurnManager) stackSnapshot(request StackParams, rt *TurnRuntime, src *s
 			p.sent[n.ID], _ = json.Marshal(n)
 			p.sentOrder = append(p.sentOrder, n.ID)
 		}
+		p.sentRoots = append([]string(nil), tree.Roots...)
 	} else if patch, changed := p.diff(tree); changed {
 		patch.SubagentID = request.SubagentID
 		m.notifyStackPatch(request.SessionID, patch)
@@ -340,7 +383,8 @@ func (m *TurnManager) ensureStackIdle(sessionID string, rt *TurnRuntime) {
 	events := rt.Events.Subscribe(ctx)
 	go func() {
 		defer cancel()
-		ticker := time.NewTicker(stackIdleInterval)
+		_, idleInterval := m.stackIntervals()
+		ticker := time.NewTicker(idleInterval)
 		defer ticker.Stop()
 		for {
 			select {

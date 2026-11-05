@@ -530,3 +530,78 @@ conformance suite (V1) before anything switches.
   `SharedFilesystem` is implemented by `rpc.Host`; each later plan adds its
   group's methods.
 
+### Plan 4a — the stack over the wire
+
+The first half of plan 4: the patch protocol as wire types, a marshal client's
+cadence, and a client mirror fed by the patches the agent already sends. Plan
+4b wires the mirror into `rpc.Session`.
+
+- **`internal/acpwire/stack.go`** gains the stack's names and shapes:
+  `MethodStack`, `MethodStackUnsubscribe`, `MethodSessionUpdate`,
+  `UpdateStackPatch`; `StackParams`; `StackPatch` (the patch's fields moved
+  from `acp`'s unexported type, unchanged); and `SessionUpdate`, the
+  `session/update` envelope with its update left raw for its kind's decoder.
+  `TestStackPatchDecodesAsTheWireType` decodes a flushed patch's real bytes
+  through both types and compares every field with the patch `diff` made, so
+  the envelope cannot drift. `acp.StackParams` is now an alias, and `acp`'s
+  `notifyStackPatch` still builds the same map envelope: the bytes on the wire
+  did not change, and a client without the marshal capability sees exactly
+  what it saw before.
+- **A marshal client's cadence.** `TurnManagerConfig.Marshal` carries
+  `srv.marshalClient`, so the per-connection `TurnManager` knows what the
+  client declared at `initialize`. `stackIntervals` then reports 50ms for both
+  the turn's flush ticker and the session's idle ticker, or the existing 200ms
+  and 500ms for any other client. Each loop reads its interval once, when its
+  ticker is created.
+- **`session/stack_unsubscribe`** forgets one subagent's projector, so no
+  flush projects it again; a later `session/stack` read subscribes again from
+  a fresh snapshot. The main transcript cannot be unsubscribed, and an unknown
+  session or subagent is not an error. `flushChildStacks` now skips a key
+  `m.stacks` no longer holds, so a projector deleted by an unsubscribe is not
+  recreated by the flush that was already listing keys.
+- **`internal/acpclient/rpc.Stacks`** mirrors every stack a connection reads:
+  - `Stack` fetches with `session/stack` on a stack's first read, which
+    subscribes the connection, and serves later reads from the mirror without
+    I/O. The entry is created in the fetching state before the request goes
+    out, so patches arriving meanwhile are queued rather than lost.
+  - `Notify` applies `stack_patch` updates by revision: a patch whose base is
+    the mirror's revision applies, one at or below it is a duplicate and is
+    dropped, and anything else is a gap. A gap marks the entry fetching and
+    starts one `session/stack` fetch on its own goroutine, because `Notify`
+    runs on the read goroutine and must not block on the connection. The
+    fetched snapshot is installed, then every queued patch newer than it is
+    applied in order; one that does not chain starts another fetch.
+  - A read rebuilds the agent's node order: depth-first from each root through
+    `children`, then every node no root reaches in first-arrival order. Nodes
+    are shared with the mirror and replaced on upsert, never changed in place.
+  - `Release` forgets a subagent's stack and calls
+    `session/stack_unsubscribe`; `Changed` returns the session's buffered
+    channel, which fires after any install or applied patch for that session's
+    main stack or any subagent's.
+- **Proved against the real projector.** `internal/acp/stack_wire_test.go`
+  serves a marshal-capable `TurnManager` through `startTestAgent`, binds a
+  `Stacks` to the same pipe, and compares the mirror's read with the
+  projector's own sent nodes, order, roots and revision after each change of a
+  scripted turn, after a dirty flush and a band wake, after a lost patch (the
+  mirror refetches and converges), and for a subagent before and after
+  `Release`.
+- **The 2,000-call session.** 200 turns, each a prompt, one step with ten
+  `shell.run` calls, and a final reply: **1,201 nodes**, a snapshot of
+  **2,534,625 bytes** (2.4 MiB). On the development machine (Apple M5,
+  darwin/arm64):
+  - applying a ten-node patch through the mirror, decoding included: median
+    **1.03 ms** over 20 runs (benchmark 1.09 ms/op); R10 allows 2 ms.
+  - a full `session/stack` round trip to an applied mirror over the pipe:
+    median **36.2 ms** over 30 runs (benchmark 34.2 ms/op); R10 allows 50 ms.
+  - one agent-side flush of the same session after one new tool call:
+    **8.4 ms** (no budget; it is the number plan 4b decides the 50ms cadence
+    against).
+  - The budget tests skip under `-short` and under the race detector, which
+    `stackwired_race_test.go` / `stackwired_norace_test.go` report.
+- **Left for plan 4b:** `rpc.Session.Stack`, `StackNode` and `Callers` over
+  the wire; the `busy` decision checked against the T6 goldens; when the TUI
+  releases a subagent's stack; and any revisit of the 50ms cadence in the
+  light of the flush cost above. `Stacks` also has no session-close hook yet,
+  so each session a connection has signalled keeps one `Changed` channel for
+  the connection's lifetime: 4b's session close is where that goes.
+

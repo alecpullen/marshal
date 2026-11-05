@@ -86,10 +86,11 @@ func TestProjectSaveAfterGlobalSaveDoesNotBakeUserValues(t *testing.T) {
 	}
 }
 
-// TestReloadLayersRefreshesOpenDockPanel pins the panel-refresh half of
-// the fix: a docked settings browser that captured a snapshot at open
-// time must receive the fresh snapshot when layers reload.
-func TestReloadLayersRefreshesOpenDockPanel(t *testing.T) {
+// TestReloadLayersRefreshesSessionWithPanelOpen pins that a layer reload lands
+// on the session snapshot the panels save against, even while a dock panel is
+// open. The panels hold no snapshot of their own any more: they read the
+// session's when they save.
+func TestReloadLayersRefreshesSessionWithPanelOpen(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	work := t.TempDir()
@@ -98,12 +99,11 @@ func TestReloadLayersRefreshesOpenDockPanel(t *testing.T) {
 	wireLayerReloader(&m, home, work)
 
 	m.openSettingsBrowser("")
-	browser, ok := m.dock.Panel().(*settings.BrowserPanel)
-	if !ok {
+	if _, ok := m.dock.Panel().(*settings.BrowserPanel); !ok {
 		t.Fatalf("expected *settings.BrowserPanel, got %T", m.dock.Panel())
 	}
-	if browser.Layers().Merged.TUI.MouseCapture != config.Default().TUI.MouseCapture {
-		t.Fatal("precondition: browser snapshot should start at defaults")
+	if m.sess.Layers().Merged.TUI.MouseCapture != config.Default().TUI.MouseCapture {
+		t.Fatal("precondition: the session snapshot should start at defaults")
 	}
 
 	// Change the user config behind the panel's back, then reload.
@@ -114,9 +114,6 @@ func TestReloadLayersRefreshesOpenDockPanel(t *testing.T) {
 
 	if m.sess.Layers().Merged.TUI.MouseCapture {
 		t.Fatal("session state did not adopt the reloaded layers")
-	}
-	if browser.Layers().Merged.TUI.MouseCapture {
-		t.Fatal("open dock panel kept its stale layer snapshot")
 	}
 }
 

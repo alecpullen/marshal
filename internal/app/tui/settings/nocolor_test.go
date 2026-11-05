@@ -1,7 +1,6 @@
 package settings
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -18,7 +17,7 @@ import (
 func TestViewUsableWhenColorStripped(t *testing.T) {
 	cfg := config.Default()
 	cfg.Tools.Shell.AllowNetwork = false
-	browser := NewBrowser(cfg, filepath.Join(t.TempDir(), "config.toml"), "shell")
+	browser := NewBrowser(cfg, "shell")
 	v := browser.View(80, 12)
 	plain := ansi.Strip(v)
 	// The cursor/border structure and the plain-text toggle glyph must both
@@ -38,7 +37,7 @@ func TestViewNoANSIEscapesUnderNoColor(t *testing.T) {
 	theme.Reload(theme.Load())
 	t.Cleanup(func() { theme.Reload(prev) })
 
-	browser := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+	browser := NewBrowser(config.Default(), "")
 	v := browser.View(80, 12)
 	// The selection style deliberately emits a bold SGR escape under NO_COLOR
 	// (marker + bold weight carry the cursor). Tolerate that one sequence but

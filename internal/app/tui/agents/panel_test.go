@@ -6,18 +6,31 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpclient"
+	"marshal/internal/acpclient/inproc"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
 	"marshal/internal/tools/registry"
 )
+
+// testSession builds the session a roster writes through. Its working
+// directory is workDir, so a project save lands in workDir/.marshal/config.toml.
+func testSession(t *testing.T, workDir string) acpclient.Session {
+	t.Helper()
+	state := session.New(config.Default(), workDir, time.Unix(100, 0), session.Persistence{})
+	_, sess := inproc.New(inproc.Deps{State: state})
+	return sess
+}
 
 func TestRosterRendersPresetBinding(t *testing.T) {
 	cfg := config.Default()
@@ -29,7 +42,7 @@ func TestRosterRendersPresetBinding(t *testing.T) {
 		}},
 	}
 	cfg.Profile.Default = "local_balanced"
-	p := NewRosterPanel(cfg, "", "", nil)
+	p := NewRosterPanel(cfg, nil, "", nil)
 	view := p.View(80, 24)
 	if !containsGlyph(view, "●") {
 		t.Fatalf("preset binding should show ● glyph:\n%s", view)
@@ -40,7 +53,7 @@ func TestRosterRendersPresetBinding(t *testing.T) {
 // windows, which the status line deliberately does not.
 func TestRosterShowsQuotaWhenSet(t *testing.T) {
 	cfg := config.Default()
-	p := NewRosterPanel(cfg, "", "", nil)
+	p := NewRosterPanel(cfg, nil, "", nil)
 	p.SetQuota(&acpwire.Quota{
 		PlanType:              "plus",
 		PrimaryUsedPercent:    50,
@@ -60,7 +73,7 @@ func TestRosterShowsQuotaWhenSet(t *testing.T) {
 // render a quota line.
 func TestRosterOmitsQuotaWhenUnset(t *testing.T) {
 	cfg := config.Default()
-	p := NewRosterPanel(cfg, "", "", nil)
+	p := NewRosterPanel(cfg, nil, "", nil)
 	view := ansi.Strip(p.View(100, 30))
 	if strings.Contains(view, "quota") {
 		t.Fatalf("roster view should not mention quota:\n%s", view)
@@ -70,7 +83,7 @@ func TestRosterOmitsQuotaWhenUnset(t *testing.T) {
 // TestRosterQuotaClearedByNil: a nil reading hides the line again.
 func TestRosterQuotaClearedByNil(t *testing.T) {
 	cfg := config.Default()
-	p := NewRosterPanel(cfg, "", "", nil)
+	p := NewRosterPanel(cfg, nil, "", nil)
 	p.SetQuota(&acpwire.Quota{PrimaryUsedPercent: 50})
 	if view := ansi.Strip(p.View(100, 30)); !strings.Contains(view, "quota") {
 		t.Fatalf("expected a quota line:\n%s", view)
@@ -94,7 +107,7 @@ func TestRosterRendersCustomAgentBinding(t *testing.T) {
 		"strict": {Name: "strict", Preset: "reason"},
 	}
 	cfg.Profile.Default = "local_balanced"
-	p := NewRosterPanel(cfg, "", "", nil)
+	p := NewRosterPanel(cfg, nil, "", nil)
 	view := p.View(80, 24)
 	if !containsGlyph(view, "◆") {
 		t.Fatalf("custom-agent binding should show ◆ glyph:\n%s", view)
@@ -114,7 +127,7 @@ func TestRosterRendersFallbackGlyph(t *testing.T) {
 		}},
 	}
 	cfg.Profile.Default = "local_balanced"
-	p := NewRosterPanel(cfg, "", "", nil)
+	p := NewRosterPanel(cfg, nil, "", nil)
 	view := p.View(80, 24)
 	// The planner role is unset and falls back to implementer → preset.
 	if !containsGlyph(view, "●") {
@@ -127,7 +140,7 @@ func TestRosterRendersUnresolvedGlyph(t *testing.T) {
 	cfg := config.Default()
 	cfg.AgentProfiles = map[string]routing.AgentProfile{}
 	cfg.Profile.Default = "nonexistent"
-	p := NewRosterPanel(cfg, "", "", nil)
+	p := NewRosterPanel(cfg, nil, "", nil)
 	view := p.View(80, 24)
 	if !containsGlyph(view, "⚠") {
 		t.Fatalf("unresolved role should show ⚠ glyph:\n%s", view)
@@ -136,7 +149,7 @@ func TestRosterRendersUnresolvedGlyph(t *testing.T) {
 
 func TestRosterFilterPreFill(t *testing.T) {
 	cfg := config.Default()
-	p := NewRosterPanel(cfg, "", "planner", nil)
+	p := NewRosterPanel(cfg, nil, "planner", nil)
 	if p.FilterValue() != "planner" {
 		t.Fatalf("filter = %q, want planner", p.FilterValue())
 	}
@@ -147,7 +160,7 @@ func TestCustomAgentDrillEditsPreset(t *testing.T) {
 	cfg.Privacy.RemoteProvidersAllowed = true
 	cfg.Models.Presets = map[string]routing.ModelPreset{"fast": {Provider: "ollama", Model: "qwen"}}
 	cfg.CustomAgents = map[string]routing.CustomAgent{"my-scout": {Name: "my-scout", Preset: "fast"}}
-	p := NewRosterPanel(cfg, "", "", nil)
+	p := NewRosterPanel(cfg, nil, "", nil)
 	// Build the custom-agent frame and verify the preset field reads "fast".
 	frame := p.customAgentFrame("my-scout")
 	fields := settings.FrameList(frame).Rows()
@@ -169,7 +182,7 @@ func TestCustomAgentDrillEditsPreset(t *testing.T) {
 func TestToolDenylistValidation(t *testing.T) {
 	cfg := config.Default()
 	cfg.CustomAgents = map[string]routing.CustomAgent{"x": {Name: "x", Preset: "p"}}
-	p := NewRosterPanel(cfg, "", "", nil)
+	p := NewRosterPanel(cfg, nil, "", nil)
 	// ValidateToolDenylist checks names against a live registry.
 	// With no registry passed, it should still validate (empty registry).
 	err := p.ValidateToolDenylist([]string{"nonexistent_tool"})
@@ -181,7 +194,7 @@ func TestToolDenylistValidation(t *testing.T) {
 	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly, Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		return registry.ToolResult{}, nil
 	}})
-	p2 := NewRosterPanelWithRegistry(cfg, "", "", nil, reg)
+	p2 := NewRosterPanelWithRegistry(cfg, nil, "", nil, reg)
 	err2 := p2.ValidateToolDenylist([]string{"file.read"})
 	if err2 != nil {
 		t.Fatalf("valid tool name should pass validation: %v", err2)
@@ -222,7 +235,7 @@ func TestRosterPersistViaDirectPickedMsg(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p := NewRosterPanel(cfg, cfgPath, "", nil)
+	p := NewRosterPanel(cfg, testSession(t, dir), "", nil)
 
 	// Set up pendingPick to mutate the state's config (the one persistNow reads).
 	p.pendingPick = func(v string) error {
@@ -261,7 +274,7 @@ func TestRosterPersistViaDirectPickedMsg(t *testing.T) {
 
 func TestRosterPersistNoopWhenNoCommit(t *testing.T) {
 	cfg := config.Default()
-	p := NewRosterPanel(cfg, "", "", nil)
+	p := NewRosterPanel(cfg, nil, "", nil)
 
 	// A plain key press (filter typing) should NOT trigger persistence.
 	cmd := p.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
@@ -284,7 +297,7 @@ func TestRosterProfilePickerMutatesState(t *testing.T) {
 		"slow": {Name: "slow", Roles: map[routing.AgentRole]routing.RoleBinding{}},
 	}
 	cfg.Profile.Default = "fast"
-	p := NewRosterPanel(cfg, "", "", nil)
+	p := NewRosterPanel(cfg, nil, "", nil)
 
 	// Simulate the profile picker's OnPick callback directly; in the UI this is
 	// invoked via the picker overlay after pressing Enter on the Profile row.
@@ -327,7 +340,7 @@ func TestRosterRolePickerOpensOverlay(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p := NewRosterPanel(cfg, cfgPath, "", nil)
+	p := NewRosterPanel(cfg, testSession(t, dir), "", nil)
 
 	// Navigate down to the Planner role field.
 	// Cursor starts at 0 (Profile). Press down once to reach Planner:
@@ -398,7 +411,7 @@ func TestRosterDrillOpensCustomAgentFrame(t *testing.T) {
 	cfg.CustomAgents = map[string]routing.CustomAgent{
 		"reviewer-x": {Name: "reviewer-x", Preset: ""},
 	}
-	p := NewRosterPanel(cfg, filepath.Join(t.TempDir(), "config.toml"), "", nil)
+	p := NewRosterPanel(cfg, nil, "", nil)
 
 	// Move the cursor onto the custom agent drill row and press enter.
 	drillToRow(t, p, "reviewer-x")
@@ -435,7 +448,7 @@ func drillToRow(t *testing.T, p *Panel, title string) {
 }
 
 func TestRosterCreatesCustomAgent(t *testing.T) {
-	p := NewRosterPanel(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "", nil)
+	p := NewRosterPanel(config.Default(), nil, "", nil)
 	drillToRow(t, p, "＋ New custom agent")
 	enterCmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	// Execute the returned Cmd to deliver createAgentPromptMsg to the panel.
@@ -471,7 +484,7 @@ func TestRosterCreatesCustomAgent(t *testing.T) {
 	}
 
 	// Duplicate names are rejected.
-	p2 := NewRosterPanel(cfg, filepath.Join(t.TempDir(), "config.toml"), "", nil)
+	p2 := NewRosterPanel(cfg, nil, "", nil)
 	drillToRow(t, p2, "＋ New custom agent")
 	enterCmd = p2.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if enterCmd != nil {
@@ -490,7 +503,7 @@ func TestRosterDeletesCustomAgentWithConfirm(t *testing.T) {
 	cfg.CustomAgents = map[string]routing.CustomAgent{
 		"doomed": {Name: "doomed", Preset: ""},
 	}
-	p := NewRosterPanel(cfg, filepath.Join(t.TempDir(), "config.toml"), "", nil)
+	p := NewRosterPanel(cfg, nil, "", nil)
 	drillToRow(t, p, "doomed")
 	p.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // open the agent frame
 
@@ -511,7 +524,7 @@ func TestRosterDeletesCustomAgentWithConfirm(t *testing.T) {
 }
 
 func TestRosterTwoColumnShowsDetailPane(t *testing.T) {
-	p := NewRosterPanel(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "", nil)
+	p := NewRosterPanel(config.Default(), nil, "", nil)
 	out := p.View(140, 20)
 	// Above the breakpoint the panel fills the dock width.
 	// Check a content line (not the title line) to verify width.
@@ -534,7 +547,7 @@ func TestRosterCreateErrorKeepsPickerOpen(t *testing.T) {
 	cfg.CustomAgents = map[string]routing.CustomAgent{
 		"existing": {Name: "existing"},
 	}
-	p := NewRosterPanel(cfg, filepath.Join(t.TempDir(), "config.toml"), "", nil)
+	p := NewRosterPanel(cfg, nil, "", nil)
 
 	openCreatePicker := func(t *testing.T) {
 		t.Helper()
@@ -613,7 +626,7 @@ func TestDrilledFrameRendersHeader(t *testing.T) {
 	cfg.CustomAgents = map[string]routing.CustomAgent{
 		"reviewer-x": {Name: "reviewer-x", Preset: ""},
 	}
-	p := NewRosterPanel(cfg, filepath.Join(t.TempDir(), "config.toml"), "", nil)
+	p := NewRosterPanel(cfg, nil, "", nil)
 
 	drillToRow(t, p, "reviewer-x")
 	p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -631,7 +644,7 @@ func TestDrilledFrameRendersHeader(t *testing.T) {
 // layout, which this renders: in two columns a divider would erase the detail
 // pane's text on its row, so the panel leaves group dividers off.
 func TestRootRosterHeadersUnchanged(t *testing.T) {
-	p := NewRosterPanel(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "", nil)
+	p := NewRosterPanel(config.Default(), nil, "", nil)
 	out := ansi.Strip(p.View(120, 30))
 	if !strings.Contains(out, "Swarm Roles") {
 		t.Fatalf("precondition: root roster missing its section headers:\n%s", out)
@@ -643,7 +656,7 @@ func TestRootRosterHeadersUnchanged(t *testing.T) {
 
 // The roster count is the closed frame's footer, not a content row.
 func TestAgentsCountIsInTheBottomBorder(t *testing.T) {
-	p := NewRosterPanel(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "", nil)
+	p := NewRosterPanel(config.Default(), nil, "", nil)
 	rows := strings.Split(ansi.Strip(p.View(80, 30)), "\n")
 	last := rows[len(rows)-1]
 	if !strings.HasPrefix(last, "╰─ ") || !strings.Contains(last, "entries") {
@@ -657,7 +670,7 @@ func TestAgentsCountIsInTheBottomBorder(t *testing.T) {
 func TestRosterInteractionFieldsUseCanonicalDefaults(t *testing.T) {
 	cfg := config.Default()
 	cfg.CustomAgents = map[string]routing.CustomAgent{"worker": {Name: "worker"}}
-	p := NewRosterPanel(cfg, filepath.Join(t.TempDir(), "config.toml"), "", nil)
+	p := NewRosterPanel(cfg, nil, "", nil)
 
 	var mode, auto *settings.Field
 	for _, f := range p.customAgentFrame("worker").List.Rows() {
@@ -751,7 +764,8 @@ func TestRosterInteractionFieldsUseCanonicalDefaults(t *testing.T) {
 // to land.
 func rosterFixture(t *testing.T) (*Panel, string) {
 	t.Helper()
-	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, ".marshal", "config.toml")
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
 	cfg.Models.Presets = map[string]routing.ModelPreset{
@@ -767,7 +781,7 @@ func rosterFixture(t *testing.T) (*Panel, string) {
 	cfg.CustomAgents = map[string]routing.CustomAgent{
 		"scout": {Name: "scout", Preset: "fast"},
 	}
-	return NewRosterPanel(cfg, cfgPath, "", nil), cfgPath
+	return NewRosterPanel(cfg, testSession(t, dir), "", nil), cfgPath
 }
 
 // openAgentFrame drills into the custom agent "scout" and returns after its

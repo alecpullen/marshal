@@ -3,7 +3,6 @@ package settings
 import (
 	"context"
 	"fmt"
-	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -36,10 +35,17 @@ func WithProvenance(fn func(tomlPath string) string) BrowserOption {
 	return func(b *BrowserPanel) { b.provenance = fn }
 }
 
-// WithUserConfigPath overrides the user config path used for global-target
-// writes. When not set, the browser derives it from os.UserHomeDir.
+// WithUserConfigPath sets the user config path used for global-target writes.
+// It is the only source of that path: a browser without it writes no user
+// config at all.
 func WithUserConfigPath(path string) BrowserOption {
 	return func(b *BrowserPanel) { b.userConfigPath = path }
+}
+
+// WithSession sets the session the browser's project-scope saves go through.
+// Without one, a project save saves nothing and counts as succeeding.
+func WithSession(sess acpclient.Session) BrowserOption {
+	return func(b *BrowserPanel) { b.sess = sess }
 }
 
 // WithHost sets the client host every probe this browser launches asks. Without
@@ -62,12 +68,10 @@ func (s *state) probeCmd(fieldID, name string, pc config.ProviderConfig) tea.Cmd
 // Every config mutation is persisted immediately.
 type BrowserPanel struct {
 	reg      *Registry
-	cfgPath  string
 	filter   textfield.Model
 	list     *fieldList
 	stack    *paneStack
 	baseline config.Config
-	layers   config.Layers
 
 	pickerModel  *picker.Model
 	pickerOnPick func(string) error
@@ -97,6 +101,10 @@ type BrowserPanel struct {
 	// writes fall back to the project config path.
 	userConfigPath string
 
+	// sess is the session the project-scope save goes through. Nil saves
+	// nothing: the project save counts as succeeding, as an empty path did.
+	sess acpclient.Session
+
 	// flipTarget inverts the write target for the next commit gesture. Set by
 	// shift+enter and cleared after each flushChanges call.
 	flipTarget bool
@@ -107,7 +115,7 @@ var _ dock.Panel = (*BrowserPanel)(nil)
 func settingsTheme() theme.Theme { return theme.Current() }
 
 // NewBrowser creates a docked browser pre-filtered by query.
-func NewBrowser(cfg config.Config, cfgPath, query string, opts ...BrowserOption) *BrowserPanel {
+func NewBrowser(cfg config.Config, query string, opts ...BrowserOption) *BrowserPanel {
 	filter := textfield.New()
 	filter.SetVirtualCursor(true)
 	filter.Focus()
@@ -130,14 +138,8 @@ func NewBrowser(cfg config.Config, cfgPath, query string, opts ...BrowserOption)
 
 	browser := &BrowserPanel{
 		reg:      BuildRegistry(cfg),
-		cfgPath:  cfgPath,
 		filter:   filter,
 		baseline: cloneConfig(cfg),
-	}
-	// Resolve the user config path from the home directory, tolerating
-	// errors by leaving it empty (global-target writes fall back to project).
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		browser.userConfigPath = config.UserConfigPath(home)
 	}
 	browser.list = newFieldList(browser.matchedFields)
 	for _, opt := range opts {
@@ -151,14 +153,6 @@ func NewBrowser(cfg config.Config, cfgPath, query string, opts ...BrowserOption)
 // the model's host. It is test-only API: production code reads the host
 // through the state.
 func (b *BrowserPanel) HostForTest() acpclient.Host { return b.reg.st.host }
-
-// SetLayers supplies the load-time config snapshots used by project-scope
-// saves to avoid baking user-layer values into the project file.
-func (b *BrowserPanel) SetLayers(layers config.Layers) { b.layers = layers }
-
-// Layers returns the panel's current snapshot, for tests and for the
-// model's post-save refresh path.
-func (b *BrowserPanel) Layers() config.Layers { return b.layers }
 
 // FilterValue returns the current browser filter text so callers can reopen
 // the browser with the same query after an external config change.
@@ -593,6 +587,16 @@ func (b *BrowserPanel) finishCapabilityProbe() {
 	b.detectingCaps = false
 }
 
+// userPath is the user config path the global writes go to, or "" when there
+// is nowhere to write: a host is what owns that file, so a browser without one
+// falls through to the project save.
+func (b *BrowserPanel) userPath() string {
+	if b.reg.st.host == nil {
+		return ""
+	}
+	return b.userConfigPath
+}
+
 // flushChanges persists mutations and turns the reflected config diff into
 // transcript-ready receipts. The working config stays applied on save error
 // or when a write is temporarily blocked, matching /set's immediate-apply
@@ -637,7 +641,7 @@ func (b *BrowserPanel) flushChanges(inner tea.Cmd, commitAttempted bool) tea.Cmd
 	row := b.activeList().CursorRow()
 	global := row != nil && FieldWriteGlobal(row) != b.flipTarget
 	b.flipTarget = false // one-shot per commit gesture
-	if global && row.TomlPath != "" && b.userConfigPath != "" {
+	if global && row.TomlPath != "" && b.userPath() != "" {
 		value, ok := config.LookupPath(b.reg.Config(), row.TomlPath)
 		if !ok {
 			b.savePending = true
@@ -651,7 +655,7 @@ func (b *BrowserPanel) flushChanges(inner tea.Cmd, commitAttempted bool) tea.Cmd
 			}
 			return tea.Batch(inner, changed)
 		}
-		saveErr := config.SaveUserConfigValue(b.userConfigPath, row.TomlPath, value)
+		saveErr := b.reg.st.host.SaveUserValue(context.Background(), row.TomlPath, value)
 		var receipts []string
 		if saveErr == nil {
 			receipts = b.receipts(lines)
@@ -669,7 +673,7 @@ func (b *BrowserPanel) flushChanges(inner tea.Cmd, commitAttempted bool) tea.Cmd
 	}
 
 	newCfg := b.reg.Config()
-	// Providers and presets are user-global; SaveProjectConfig never emits
+	// Providers and presets are user-global; the project save never emits
 	// them, so persist changed sections to the user config first. DeepEqual
 	// keeps a benign project-only save from rewriting the 0600 user file.
 	// A provider rename rekeys both maps, so either change writes both. The
@@ -679,21 +683,21 @@ func (b *BrowserPanel) flushChanges(inner tea.Cmd, commitAttempted bool) tea.Cmd
 	presetsChanged := !reflect.DeepEqual(b.baseline.Models.Presets, newCfg.Models.Presets)
 	var saveErr error
 	switch {
-	case (providersChanged || presetsChanged) && b.userConfigPath == "":
+	case (providersChanged || presetsChanged) && b.userPath() == "":
 		saveErr = fmt.Errorf("cannot save providers or presets: user config path is unavailable")
-	case providersChanged || presetsChanged || (retry && b.userConfigPath != ""):
+	case providersChanged || presetsChanged || (retry && b.userPath() != ""):
 		// Baseline: the panel-open snapshot (b.baseline), the same reference
 		// the diff above used. Renames rekey the maps — the old key is in the
 		// baseline but not the write, so the merge drops it; entries another
 		// marshal process persisted meanwhile are in neither and survive.
-		if err := config.SaveUserConfigProviders(b.userConfigPath, newCfg.Providers, b.baseline.Providers); err != nil {
+		if err := b.reg.st.host.SaveUserProviders(context.Background(), newCfg.Providers, b.baseline.Providers); err != nil {
 			saveErr = err
-		} else if err := config.SaveUserConfigPresets(b.userConfigPath, newCfg.Models.Presets, b.baseline.Models.Presets); err != nil {
+		} else if err := b.reg.st.host.SaveUserPresets(context.Background(), newCfg.Models.Presets, b.baseline.Models.Presets); err != nil {
 			saveErr = err
 		}
 	}
-	if saveErr == nil {
-		saveErr = config.SaveProjectConfig(b.cfgPath, newCfg, b.layers)
+	if saveErr == nil && b.sess != nil {
+		saveErr = b.sess.SaveProjectConfig(context.Background(), newCfg)
 	}
 	var receipts []string
 	switch {

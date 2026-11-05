@@ -908,14 +908,13 @@ func (m *Model) persistAndReload(cfg config.Config) (saveErr, reloadErr error) {
 }
 
 // reloadLayers refreshes the load-time config snapshots after any save.
-// It publishes the fresh Layers to every consumer: the session state
-// (state.SetLayers) and any open dock panel. The session snapshot is what
-// project-scope saves compare against (see config.SaveProjectConfig), so
-// skipping it makes the next project save diff against a stale user layer
-// and re-bake user-global values into the committable .marshal/config.toml —
-// the exact defect layer-aware saves exist to prevent. Open dock panels that
-// captured a snapshot at open time are refreshed through the
-// setLayersPublisher interface.
+// It publishes the fresh Layers to the session state (state.SetLayers). The
+// session snapshot is what project-scope saves compare against (see
+// config.SaveProjectConfig), so skipping it makes the next project save diff
+// against a stale user layer and re-bake user-global values into the
+// committable .marshal/config.toml — the exact defect layer-aware saves exist
+// to prevent. Dock panels read the snapshot from the session when they save,
+// so they need no refresh of their own.
 func (m *Model) reloadLayers() {
 	if m.layerReloader == nil {
 		return
@@ -927,19 +926,14 @@ func (m *Model) reloadLayers() {
 	m.adoptLayers(&layers)
 }
 
-// adoptLayers installs an externally produced Layers snapshot into every
-// consumer: the session state and any open dock panel that captured a
-// snapshot when it opened.
+// adoptLayers installs an externally produced Layers snapshot into the
+// session state, which is the one consumer left: the panels save through the
+// session and diff against its snapshot.
 func (m *Model) adoptLayers(layers *config.Layers) {
 	if layers == nil {
 		return
 	}
 	m.state.SetLayers(*layers)
-	if panel := m.dock.Panel(); panel != nil {
-		if pub, ok := panel.(interface{ SetLayers(config.Layers) }); ok {
-			pub.SetLayers(*layers)
-		}
-	}
 }
 
 // afterRuntimeReload runs the recovery steps that become valid once the
@@ -1095,13 +1089,13 @@ func (m *Model) openSettingsBrowser(query string) {
 	opts := []settings.BrowserOption{
 		settings.WithProvenance(m.provenanceForPath),
 		settings.WithHost(m.host),
+		settings.WithSession(m.sess),
 	}
-	if home, err := m.userHome(); err == nil {
-		opts = append(opts, settings.WithUserConfigPath(config.UserConfigPath(home)))
+	if userConfig := m.sess.Status().UserConfigPath; userConfig != "" {
+		opts = append(opts, settings.WithUserConfigPath(userConfig))
 	}
 	browser := settings.NewBrowser(
 		m.sess.Config(),
-		projectConfigPath(m.sess.Status().WorkingDir),
 		query,
 		opts...,
 	)
@@ -1112,7 +1106,6 @@ func (m *Model) openSettingsBrowser(query string) {
 	// empty on construction. Seed savePending so a repeated commit still
 	// retries persistence instead of silently no-op'ing (see
 	// BrowserPanel.SetSavePending and flushChanges).
-	browser.SetLayers(m.sess.Layers())
 	browser.SetSavePending(m.configSavePending)
 	m.dock.Open(browser)
 }
@@ -1120,12 +1113,11 @@ func (m *Model) openSettingsBrowser(query string) {
 func (m *Model) openAgentsRoster(arg string) {
 	roster := agents.NewRosterPanelWithRegistry(
 		m.sess.Config(),
-		projectConfigPath(m.sess.Status().WorkingDir),
+		m.sess,
 		arg,
 		runNowDispatch,
 		m.toolRegistry,
 	)
-	roster.SetLayers(m.sess.Layers())
 	roster.SetQuota(m.sess.Status().Quota)
 	m.dock.Open(roster)
 }

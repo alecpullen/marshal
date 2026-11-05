@@ -4,6 +4,7 @@
 package agents
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"marshal/internal/acpclient"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui/chrome"
@@ -42,7 +44,7 @@ type DispatchFn func(agentName, goal string) tea.Cmd
 // built from the resolved cast.
 type Panel struct {
 	state       *settings.State
-	cfgPath     string
+	sess        acpclient.Session
 	filter      textfield.Model
 	list        *settings.FieldList
 	dispatch    DispatchFn
@@ -62,10 +64,6 @@ type Panel struct {
 	// agent's edit frame.
 	deleteArmed bool
 
-	// layers carries the load-time config snapshots for layer-aware
-	// project saves (see config.SaveProjectConfig).
-	layers config.Layers
-
 	// quota is the session's latest subscription quota reading, when the
 	// active provider reports one (OAuth-backed providers). nil hides the
 	// quota line entirely.
@@ -77,32 +75,24 @@ type Panel struct {
 // report none.
 func (p *Panel) SetQuota(q *acpwire.Quota) { p.quota = q }
 
-// SetLayers supplies the load-time config snapshots used by project-scope
-// saves to avoid baking user-layer values into the project file.
-func (p *Panel) SetLayers(layers config.Layers) { p.layers = layers }
-
-// Layers returns the panel's current snapshot, for the model's post-save
-// refresh path and tests.
-func (p *Panel) Layers() config.Layers { return p.layers }
-
 var _ dock.Panel = (*Panel)(nil)
 
 // NewRosterPanel builds the roster panel pre-filtered by `arg` (a role
 // or agent name). dispatch is used for Run-now (may be nil).
-func NewRosterPanel(cfg config.Config, cfgPath, arg string, dispatch DispatchFn) *Panel {
-	return NewRosterPanelWithRegistry(cfg, cfgPath, arg, dispatch, nil)
+func NewRosterPanel(cfg config.Config, sess acpclient.Session, arg string, dispatch DispatchFn) *Panel {
+	return NewRosterPanelWithRegistry(cfg, sess, arg, dispatch, nil)
 }
 
 // NewRosterPanelWithRegistry builds the roster panel with a tool registry
 // for denylist validation. When reg is nil, validation is skipped.
-func NewRosterPanelWithRegistry(cfg config.Config, cfgPath, arg string, dispatch DispatchFn, reg *registry.Registry) *Panel {
+func NewRosterPanelWithRegistry(cfg config.Config, sess acpclient.Session, arg string, dispatch DispatchFn, reg *registry.Registry) *Panel {
 	st := settings.NewState(cfg)
 	f := textfield.New()
 	f.SetVirtualCursor(true)
 	f.Focus()
 	f.SetValue(arg)
 	f.CursorEnd()
-	p := &Panel{state: st, cfgPath: cfgPath, filter: f, dispatch: dispatch, reg: reg}
+	p := &Panel{state: st, sess: sess, filter: f, dispatch: dispatch, reg: reg}
 	p.list = settings.NewFieldList(p.matchedFields)
 	return p
 }
@@ -695,11 +685,12 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 // unconditionally. Used for picker commits and other explicit gestures.
 func (p *Panel) persistNow() tea.Cmd {
 	cfg := settings.StateCfg(p.state)
+	sess := p.sess
 	return func() tea.Msg {
-		if p.cfgPath == "" {
+		if sess == nil {
 			return settings.ChangedMsg{Cfg: cfg, Receipts: nil}
 		}
-		saveErr := config.SaveProjectConfig(p.cfgPath, cfg, p.layers)
+		saveErr := sess.SaveProjectConfig(context.Background(), cfg)
 		return settings.ChangedMsg{Cfg: cfg, Receipts: nil, SaveErr: saveErr}
 	}
 }
@@ -712,11 +703,12 @@ func (p *Panel) maybePersist(inner tea.Cmd) tea.Cmd {
 		return inner
 	}
 	cfg := settings.StateCfg(p.state)
+	sess := p.sess
 	changed := func() tea.Msg {
-		if p.cfgPath == "" {
+		if sess == nil {
 			return settings.ChangedMsg{Cfg: cfg, Receipts: nil}
 		}
-		saveErr := config.SaveProjectConfig(p.cfgPath, cfg, p.layers)
+		saveErr := sess.SaveProjectConfig(context.Background(), cfg)
 		return settings.ChangedMsg{Cfg: cfg, Receipts: nil, SaveErr: saveErr}
 	}
 	if inner == nil {

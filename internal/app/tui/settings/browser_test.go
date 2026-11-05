@@ -32,7 +32,7 @@ import (
 func stripANSI(s string) string { return theme.ANSIRe.ReplaceAllString(s, "") }
 
 func TestBrowserFiltersAndRendersRows(t *testing.T) {
-	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "shell")
+	b := NewBrowser(config.Default(), "shell")
 
 	view := b.View(80, 12)
 	if !strings.Contains(view, "Shell · Allow network") {
@@ -44,7 +44,7 @@ func TestBrowserFiltersAndRendersRows(t *testing.T) {
 }
 
 func TestBrowserGroupsAreDividersInOneColumn(t *testing.T) {
-	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+	b := NewBrowser(config.Default(), "")
 	rows := strings.Split(stripANSI(b.View(80, 40)), "\n")
 	if !strings.HasPrefix(rows[0], "╭─") {
 		t.Fatalf("first row should open the frame, got %q", rows[0])
@@ -64,7 +64,7 @@ func TestBrowserGroupsAreDividersInOneColumn(t *testing.T) {
 		t.Fatalf("last row should be the frame's footer carrying the count, got %q", last)
 	}
 
-	twoCol := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+	twoCol := NewBrowser(config.Default(), "")
 	for _, r := range strings.Split(stripANSI(twoCol.View(140, 40)), "\n") {
 		if strings.HasPrefix(r, "├─ Agent") {
 			t.Fatalf("two-column view must not draw group dividers, got:\n%s", twoCol.View(140, 40))
@@ -73,8 +73,10 @@ func TestBrowserGroupsAreDividersInOneColumn(t *testing.T) {
 }
 
 func TestBrowserToggleSavesAndEmitsChangedMsg(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.toml")
-	b := NewBrowser(config.Default(), path, "shell.allow_network")
+	dir := t.TempDir()
+	host, sess := testSeam(t, dir, "")
+	path := filepath.Join(dir, ".marshal", "config.toml")
+	b := NewBrowser(config.Default(), "shell.allow_network", WithHost(host), WithSession(sess))
 
 	cmd := b.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
 	if cmd == nil {
@@ -104,7 +106,8 @@ func TestBrowserSaveFailurePreservesConfigWithoutReceipt(t *testing.T) {
 	if err := os.WriteFile(blockingPath, nil, 0o644); err != nil {
 		t.Fatalf("create blocking file: %v", err)
 	}
-	b := NewBrowser(config.Default(), filepath.Join(blockingPath, "config.toml"), "shell.allow_network")
+	host, sess := testSeam(t, blockingPath, "")
+	b := NewBrowser(config.Default(), "shell.allow_network", WithHost(host), WithSession(sess))
 
 	cmd := b.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
 	if cmd == nil {
@@ -137,10 +140,11 @@ func TestBrowserRetriesFailedSaveOnRepeatedCommit(t *testing.T) {
 	if err := os.WriteFile(blockingPath, nil, 0o644); err != nil {
 		t.Fatalf("create blocking file: %v", err)
 	}
-	cfgPath := filepath.Join(blockingPath, "config.toml")
+	cfgPath := filepath.Join(blockingPath, ".marshal", "config.toml")
+	host, sess := testSeam(t, blockingPath, filepath.Join(dir, "user-config.toml"))
 
-	b := NewBrowser(config.Default(), cfgPath, "agent.max_retries",
-		WithUserConfigPath(filepath.Join(dir, "user-config.toml")))
+	b := NewBrowser(config.Default(), "agent.max_retries",
+		WithUserConfigPath(filepath.Join(dir, "user-config.toml")), WithHost(host), WithSession(sess))
 	if got := b.list.CursorRow().ID; got != "agent.max_retries" {
 		t.Fatalf("filtered cursor = %q, want agent.max_retries", got)
 	}
@@ -213,9 +217,10 @@ func TestBrowserPendingSaveDoesNotRetryOnNavigationOrFilterTyping(t *testing.T) 
 	if err := os.WriteFile(blockingPath, nil, 0o644); err != nil {
 		t.Fatalf("create blocking file: %v", err)
 	}
-	cfgPath := filepath.Join(blockingPath, "config.toml")
+	cfgPath := filepath.Join(blockingPath, ".marshal", "config.toml")
+	host, sess := testSeam(t, blockingPath, "")
 
-	b := NewBrowser(config.Default(), cfgPath, "shell.allow_network")
+	b := NewBrowser(config.Default(), "shell.allow_network", WithHost(host), WithSession(sess))
 	cmd := b.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
 	changed := cmd().(ChangedMsg)
 	if changed.SaveErr == nil {
@@ -261,7 +266,7 @@ func TestBrowserPendingSaveDoesNotRetryOnNavigationOrFilterTyping(t *testing.T) 
 }
 
 func TestBrowserRowsShowHumanTitlesWithSection(t *testing.T) {
-	b := NewBrowser(config.Default(), "", "remote providers")
+	b := NewBrowser(config.Default(), "remote providers")
 	view := b.View(80, 24)
 	if !strings.Contains(view, "Privacy · Remote providers allowed") {
 		t.Fatalf("row label should show section + human title, got:\n%s", view)
@@ -272,7 +277,7 @@ func TestBrowserRowsShowHumanTitlesWithSection(t *testing.T) {
 }
 
 func TestBrowserCursorDescShowsDottedKey(t *testing.T) {
-	b := NewBrowser(config.Default(), "", "remote providers")
+	b := NewBrowser(config.Default(), "remote providers")
 	view := b.View(80, 24)
 	if !strings.Contains(view, "privacy.remote_providers") {
 		t.Fatalf("dotted key should appear in the description line, got:\n%s", view)
@@ -280,7 +285,7 @@ func TestBrowserCursorDescShowsDottedKey(t *testing.T) {
 }
 
 func TestBrowserCollectionRowShowsSectionTitle(t *testing.T) {
-	b := NewBrowser(config.Default(), "", "providers collection")
+	b := NewBrowser(config.Default(), "providers collection")
 	view := b.View(80, 24)
 	if !strings.Contains(view, "Providers") {
 		t.Fatalf("collection row should show the section title, got:\n%s", view)
@@ -295,7 +300,7 @@ func TestBrowserPasteRoutesToConfirmLimitInput(t *testing.T) {
 	cfg.AgentProfiles = map[string]routing.AgentProfile{
 		"coding": {Name: "coding", Roles: map[routing.AgentRole]routing.RoleBinding{}},
 	}
-	b := NewBrowser(cfg, filepath.Join(t.TempDir(), "config.toml"), "",
+	b := NewBrowser(cfg, "",
 		WithUserConfigPath(filepath.Join(t.TempDir(), "user-config.toml")))
 	b.confirm = presetflow.NewConfirmState(presetflow.Limits{ContextSource: presetflow.SourceUnknown})
 	b.confirmTarget = &pendingMaterialization{
@@ -322,7 +327,7 @@ func TestBrowserEscCancelsCapabilityProbeAndRejectsLateResult(t *testing.T) {
 	cfg.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "ollama", BaseURL: "http://localhost:11434"},
 	}
-	b := NewBrowser(cfg, filepath.Join(t.TempDir(), "config.toml"), "", WithHost(testHost(t, nil)))
+	b := NewBrowser(cfg, "", WithHost(testHost(t, nil)))
 	b.reg.st.discovered["ollama"] = []schema.ModelInfo{{ID: "qwen3"}}
 	target := pendingMaterialization{
 		Profile: "coding", Role: routing.RoleImplementer,
@@ -348,7 +353,7 @@ func TestBrowserEscCancelsCapabilityProbeAndRejectsLateResult(t *testing.T) {
 
 func TestBrowserViewHonorsMaxHeight(t *testing.T) {
 	for _, pickerOpen := range []bool{false, true} {
-		b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+		b := NewBrowser(config.Default(), "")
 		if pickerOpen {
 			b.pickerModel = picker.New("Pick", "", []picker.Item{{Label: "choice", Value: "choice"}})
 		}
@@ -369,7 +374,7 @@ func TestBrowserViewHonorsMaxHeight(t *testing.T) {
 // TestBrowserViewHonorsMaxHeight to the b.stack != nil branch (drilled into
 // a collection), which the original test never exercised.
 func TestBrowserViewHonorsMaxHeightWhileDrilled(t *testing.T) {
-	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "providers")
+	b := NewBrowser(config.Default(), "providers")
 	for index, row := range b.list.Rows() {
 		if row.ID == "section.providers" {
 			b.list.SetCursor(index)
@@ -394,7 +399,7 @@ func TestBrowserViewHonorsMaxHeightWhileDrilled(t *testing.T) {
 }
 
 func TestBrowserDrillsIntoCollectionAndBack(t *testing.T) {
-	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "providers")
+	b := NewBrowser(config.Default(), "providers")
 	for index, row := range b.list.Rows() {
 		if row.ID == "section.providers" {
 			b.list.SetCursor(index)
@@ -423,7 +428,7 @@ func TestBrowserDrillsIntoCollectionAndBack(t *testing.T) {
 }
 
 func TestBrowserEscEmitsClosed(t *testing.T) {
-	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+	b := NewBrowser(config.Default(), "")
 
 	cmd := b.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	if cmd == nil {
@@ -435,7 +440,7 @@ func TestBrowserEscEmitsClosed(t *testing.T) {
 }
 
 func TestUnfilteredBrowserGroupsBySection(t *testing.T) {
-	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+	b := NewBrowser(config.Default(), "")
 	view := b.View(80, 40)
 	if !strings.Contains(view, "Agent") {
 		t.Fatalf("unfiltered view should show Agent section header, got:\n%s", view)
@@ -457,7 +462,7 @@ func TestUnfilteredBrowserGroupsBySection(t *testing.T) {
 }
 
 func TestFilteredBrowserHasNoHeaders(t *testing.T) {
-	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "shell")
+	b := NewBrowser(config.Default(), "shell")
 	// When filtered, the matchedFields path should not produce kindHeader rows.
 	for _, row := range b.list.Rows() {
 		if row.Kind == kindHeader {
@@ -467,7 +472,7 @@ func TestFilteredBrowserHasNoHeaders(t *testing.T) {
 }
 
 func TestCursorSkipsHeaders(t *testing.T) {
-	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+	b := NewBrowser(config.Default(), "")
 	// In the unfiltered view, the first non-header row should be the cursor.
 	rows := b.list.Rows()
 	if len(rows) == 0 {
@@ -494,7 +499,7 @@ func TestCursorSkipsHeaders(t *testing.T) {
 }
 
 func TestHintsFollowCursorRowKind(t *testing.T) {
-	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+	b := NewBrowser(config.Default(), "")
 	rows := b.list.Rows()
 	if len(rows) == 0 {
 		t.Fatal("unfiltered browser should have rows")
@@ -564,7 +569,7 @@ func TestHintsFollowCursorRowKind(t *testing.T) {
 }
 
 func TestBrowserRoutesPasteIntoActiveFieldEdit(t *testing.T) {
-	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+	b := NewBrowser(config.Default(), "")
 	var got string
 	b.list = newFieldList(func() []*field {
 		return []*field{scalarField("t.Paste", "Token",
@@ -585,7 +590,7 @@ func TestBrowserRoutesPasteIntoActiveFieldEdit(t *testing.T) {
 }
 
 func TestBrowserPasteIntoFilter(t *testing.T) {
-	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+	b := NewBrowser(config.Default(), "")
 	if got := b.FilterValue(); got != "" {
 		t.Fatalf("initial filter should be empty, got %q", got)
 	}
@@ -602,7 +607,7 @@ func TestBrowserPasteIntoFilter(t *testing.T) {
 }
 
 func TestBrowserTwoColumnShowsDescInDetailPane(t *testing.T) {
-	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+	b := NewBrowser(config.Default(), "")
 	var got string
 	f := scalarField("t.token", "Token",
 		func() string { return got },
@@ -621,7 +626,7 @@ func TestBrowserTwoColumnShowsDescInDetailPane(t *testing.T) {
 }
 
 func TestBrowserSingleColumnKeepsInlineDesc(t *testing.T) {
-	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+	b := NewBrowser(config.Default(), "")
 	var got string
 	f := scalarField("t.token", "Token",
 		func() string { return got },
@@ -670,8 +675,10 @@ func TestGlobalTargetRowWritesUserConfigOnly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	userPath := config.UserConfigPath(home)
-	projectPath := filepath.Join(t.TempDir(), "config.toml")
-	b := NewBrowser(config.Default(), projectPath, "", WithUserConfigPath(userPath))
+	dir := t.TempDir()
+	projectPath := filepath.Join(dir, ".marshal", "config.toml")
+	host, sess := testSeam(t, dir, userPath)
+	b := NewBrowser(config.Default(), "", WithUserConfigPath(userPath), WithHost(host), WithSession(sess))
 
 	drillBrowserToRow(t, b, "Theme")
 	// Cycle the enum to a new value (interface rows are enum fields).
@@ -707,8 +714,10 @@ func TestGlobalTargetSaveFailureDoesNotWriteProjectConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	userPath := config.UserConfigPath(home)
-	projectPath := filepath.Join(t.TempDir(), "config.toml")
-	b := NewBrowser(config.Default(), projectPath, "", WithUserConfigPath(userPath))
+	dir := t.TempDir()
+	projectPath := filepath.Join(dir, ".marshal", "config.toml")
+	host, sess := testSeam(t, dir, userPath)
+	b := NewBrowser(config.Default(), "", WithUserConfigPath(userPath), WithHost(host), WithSession(sess))
 
 	// Make user-config path unwritable: parent is a regular file so
 	// MkdirAll in SaveUserConfigValue fails.
@@ -732,8 +741,10 @@ func TestFlushChangesWritesProvidersAndPresetsGlobally(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	userPath := config.UserConfigPath(home)
-	projectPath := filepath.Join(t.TempDir(), "config.toml")
-	b := NewBrowser(config.Default(), projectPath, "", WithUserConfigPath(userPath))
+	dir := t.TempDir()
+	projectPath := filepath.Join(dir, ".marshal", "config.toml")
+	host, sess := testSeam(t, dir, userPath)
+	b := NewBrowser(config.Default(), "", WithUserConfigPath(userPath), WithHost(host), WithSession(sess))
 
 	// Simulate a providers-drill edit: mutate the working config, then flush.
 	cfg := b.reg.Config()
@@ -777,8 +788,10 @@ func TestFlushChangesWithoutProviderChangesSkipsUserConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	userPath := config.UserConfigPath(home)
-	projectPath := filepath.Join(t.TempDir(), "config.toml")
-	b := NewBrowser(config.Default(), projectPath, "", WithUserConfigPath(userPath))
+	dir := t.TempDir()
+	projectPath := filepath.Join(dir, ".marshal", "config.toml")
+	host, sess := testSeam(t, dir, userPath)
+	b := NewBrowser(config.Default(), "", WithUserConfigPath(userPath), WithHost(host), WithSession(sess))
 
 	// A benign project-scope edit must not rewrite the user config.
 	b.reg.st.cfg.Agent.PlanFirst = true
@@ -802,7 +815,7 @@ func TestFlushChangesWithoutProviderChangesSkipsUserConfig(t *testing.T) {
 }
 
 func TestHintsShowWriteTarget(t *testing.T) {
-	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+	b := NewBrowser(config.Default(), "")
 	drillBrowserToRow(t, b, "Theme")
 	hints := rowHints(b, b.stack == nil)
 	if !strings.Contains(hints, "user config") {
@@ -811,7 +824,7 @@ func TestHintsShowWriteTarget(t *testing.T) {
 }
 
 func TestDetailPaneShowsProvenance(t *testing.T) {
-	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "",
+	b := NewBrowser(config.Default(), "",
 		WithProvenance(func(tomlPath string) string {
 			if tomlPath == "tui.theme" {
 				return "set by: user config · overrides: default"
@@ -827,7 +840,7 @@ func TestDetailPaneShowsProvenance(t *testing.T) {
 }
 
 func TestUnfilteredBrowserHidesAdvancedSections(t *testing.T) {
-	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+	b := NewBrowser(config.Default(), "")
 	out := stripANSI(b.View(100, 40))
 	if strings.Contains(out, "Profiles") {
 		t.Fatalf("advanced Profiles section should not be listed:\n%s", out)
@@ -835,7 +848,7 @@ func TestUnfilteredBrowserHidesAdvancedSections(t *testing.T) {
 }
 
 func TestSearchReachesAdvancedSections(t *testing.T) {
-	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "profile")
+	b := NewBrowser(config.Default(), "profile")
 	out := stripANSI(b.View(100, 40))
 	if !strings.Contains(out, "Profiles") {
 		t.Fatalf("search should still reach the advanced Profiles section:\n%s", out)
@@ -843,7 +856,7 @@ func TestSearchReachesAdvancedSections(t *testing.T) {
 }
 
 func TestBrowserTwoColumnShowsDescInDetailPaneWhileDrilled(t *testing.T) {
-	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "providers")
+	b := NewBrowser(config.Default(), "providers")
 	for index, row := range b.list.Rows() {
 		if row.ID == "section.providers" {
 			b.list.SetCursor(index)
@@ -901,6 +914,22 @@ func testHost(t *testing.T, auth provider.AuthResolver) acpclient.Host {
 	return host
 }
 
+// testSeam builds the host and session a panel writes through. The session's
+// working directory is workDir, so a project save lands in
+// workDir/.marshal/config.toml; userConfigPath is the host's user config file.
+// The host carries the same memory resolver testHost uses, so nothing reaches
+// the developer's keychain.
+func testSeam(t *testing.T, workDir, userConfigPath string) (acpclient.Host, acpclient.Session) {
+	t.Helper()
+	state := session.New(config.Default(), workDir, time.Unix(100, 0), session.Persistence{})
+	host, sess := inproc.New(inproc.Deps{
+		State:          state,
+		Auth:           newMemAuth(),
+		UserConfigPath: userConfigPath,
+	})
+	return host, sess
+}
+
 func (a *memAuth) OpenStore(string) (credentials.Store, error) {
 	if a.store == nil {
 		return nil, credentials.ErrKeyringUnavailable
@@ -954,7 +983,7 @@ func TestBrowserAuthResolverReachesFrameProbes(t *testing.T) {
 			Auth:     "oauth",
 		},
 	}
-	b := NewBrowser(cfg, filepath.Join(t.TempDir(), "config.toml"), "", WithHost(testHost(t, auth)))
+	b := NewBrowser(cfg, "", WithHost(testHost(t, auth)))
 
 	res := probeCmdResult(t, b.reg.st.probeCmd("test.connection", "codex", cfg.Providers["codex"]))
 	if res.Err == nil {
@@ -1008,11 +1037,11 @@ func TestProbeAllProvidersUsesInjectedResolver(t *testing.T) {
 func TestRebuiltBrowserKeepsTheHost(t *testing.T) {
 	cfg := config.Default()
 	host := testHost(t, nil)
-	first := NewBrowser(cfg, filepath.Join(t.TempDir(), "config.toml"), "", WithHost(host))
+	first := NewBrowser(cfg, "", WithHost(host))
 
 	// Stand in for the model's refresh: rebuild the panel the way the model
 	// does, then confirm the dependency survived.
-	second := NewBrowser(cfg, filepath.Join(t.TempDir(), "config.toml"), first.FilterValue(), WithHost(host))
+	second := NewBrowser(cfg, first.FilterValue(), WithHost(host))
 	if second.reg.st.host != first.reg.st.host {
 		t.Fatal("a rebuilt browser must carry the same host")
 	}

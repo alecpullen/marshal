@@ -54,7 +54,7 @@ func TestProjectSaveAfterGlobalSaveDoesNotBakeUserValues(t *testing.T) {
 	t.Setenv("HOME", home)
 	work := t.TempDir()
 	m := newLayersTestModel(t, work)
-	m.configLayers = new(*config.Layers)
+	m.state.SetLayers(config.Layers{Default: config.Default(), User: config.Default(), Merged: config.Default()})
 	wireLayerReloader(&m, home, work)
 
 	// 1. Global-scope save: tui.mouse_capture is a writeGlobal field.
@@ -68,7 +68,7 @@ func TestProjectSaveAfterGlobalSaveDoesNotBakeUserValues(t *testing.T) {
 	}
 
 	// The session snapshot must now reflect the new user layer.
-	if m.state.Layers().Merged.TUI.MouseCapture {
+	if m.sess.Layers().Merged.TUI.MouseCapture {
 		t.Fatal("session layer snapshot went stale after a global-scope save")
 	}
 
@@ -94,7 +94,7 @@ func TestReloadLayersRefreshesOpenDockPanel(t *testing.T) {
 	t.Setenv("HOME", home)
 	work := t.TempDir()
 	m := newLayersTestModel(t, work)
-	m.configLayers = new(*config.Layers)
+	m.state.SetLayers(config.Layers{Default: config.Default(), User: config.Default(), Merged: config.Default()})
 	wireLayerReloader(&m, home, work)
 
 	m.openSettingsBrowser("")
@@ -112,7 +112,7 @@ func TestReloadLayersRefreshesOpenDockPanel(t *testing.T) {
 	}
 	m.reloadLayers()
 
-	if m.state.Layers().Merged.TUI.MouseCapture {
+	if m.sess.Layers().Merged.TUI.MouseCapture {
 		t.Fatal("session state did not adopt the reloaded layers")
 	}
 	if browser.Layers().Merged.TUI.MouseCapture {

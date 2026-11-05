@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -285,8 +286,9 @@ type Model struct {
 	histIdx int
 	draft   string
 	setReg  *settings.Registry
-	// configSavePending means state.Config contains a change that could not
-	// be persisted. An otherwise unchanged /set retries the full config.
+	// configSavePending means the session's config contains a change that
+	// could not be persisted. An otherwise unchanged /set retries the full
+	// config.
 	configSavePending bool
 
 	// diagnosticCount caches the number of semantic config diagnostics
@@ -585,12 +587,9 @@ type Model struct {
 	// StartMsg/CancelMsg handlers.
 	pendingRun *pendingAgentRun
 
-	// configLayers is a pointer to the runtime's Layers snapshot, shared so
-	// the model can read provenance after each successful persist.
-	configLayers **config.Layers
 	// layerReloader re-runs LoadLayers to refresh the provenance snapshots.
 	// The bool reports whether the reload succeeded; when false the caller
-	// must not write through *m.configLayers.
+	// must not adopt the returned snapshot.
 	layerReloader func() (config.Layers, bool)
 }
 
@@ -786,17 +785,10 @@ func WithToolRegistry(reg *registry.Registry) Option {
 	}
 }
 
-// WithConfigLayers supplies the layered config snapshots used for settings
-// provenance. The pointer is shared; the model replaces what it points to
-// after each successful persist so provenance tracks saves.
-func WithConfigLayers(layers **config.Layers) Option {
-	return func(m *Model) { m.configLayers = layers }
-}
-
 // WithLayerReloader supplies a function that re-runs LoadLayers to refresh
 // the provenance snapshots after a successful persist. The bool reports
-// whether the reload succeeded; when false the model does not overwrite
-// the shared Layers pointer.
+// whether the reload succeeded; when false the model does not adopt the
+// returned snapshot.
 func WithLayerReloader(fn func() (config.Layers, bool)) Option {
 	return func(m *Model) { m.layerReloader = fn }
 }
@@ -845,11 +837,11 @@ func (m *Model) configViewsChanged(cfg config.Config) {
 
 // refreshDiagnostics runs config.Diagnose against the current session config
 // and caches the number of diagnostics found. Real per-layer provenance
-// comes from state.Layers(); when unset (e.g. tests that don't
-// construct via app.Run), the zero value means every Diagnostic.Source
-// reads as "default".
+// comes from the session's layers; when the snapshot is the zero value (e.g.
+// tests that don't construct via app.Run), every Diagnostic.Source reads as
+// "default".
 func (m *Model) refreshDiagnostics() {
-	ds := config.Diagnose(m.state.Config, m.state.Layers())
+	ds := config.Diagnose(m.sess.Config(), m.sess.Layers())
 	// Info-severity entries are hoist notices, not problems; the badge
 	// counts only errors and warnings.
 	n := 0
@@ -885,7 +877,7 @@ func (m *Model) userHome() (string, error) {
 func (m *Model) persistAndReload(cfg config.Config) (saveErr, reloadErr error) {
 	st := m.sess.Status()
 	path := projectConfigPath(st.WorkingDir)
-	if err := config.SaveProjectConfig(path, cfg, m.state.Layers()); err != nil {
+	if err := config.SaveProjectConfig(path, cfg, m.sess.Layers()); err != nil {
 		m.applyNewConfig(cfg)
 		m.configSavePending = true
 		return err, nil
@@ -916,14 +908,14 @@ func (m *Model) persistAndReload(cfg config.Config) (saveErr, reloadErr error) {
 }
 
 // reloadLayers refreshes the load-time config snapshots after any save.
-// It publishes the fresh Layers to both consumers: the provenance pointer
-// (*m.configLayers) and the session state (state.SetLayers). The session
-// snapshot is what project-scope saves compare against (see
-// config.SaveProjectConfig), so skipping it makes the next project save
-// diff against a stale user layer and re-bake user-global values into the
-// committable .marshal/config.toml — the exact defect layer-aware saves
-// exist to prevent. Open dock panels that captured a snapshot at open
-// time are refreshed through the setLayersPublisher interface.
+// It publishes the fresh Layers to every consumer: the session state
+// (state.SetLayers) and any open dock panel. The session snapshot is what
+// project-scope saves compare against (see config.SaveProjectConfig), so
+// skipping it makes the next project save diff against a stale user layer
+// and re-bake user-global values into the committable .marshal/config.toml —
+// the exact defect layer-aware saves exist to prevent. Open dock panels that
+// captured a snapshot at open time are refreshed through the
+// setLayersPublisher interface.
 func (m *Model) reloadLayers() {
 	if m.layerReloader == nil {
 		return
@@ -936,14 +928,11 @@ func (m *Model) reloadLayers() {
 }
 
 // adoptLayers installs an externally produced Layers snapshot into every
-// consumer: the provenance pointer, the session state, and any open dock
-// panel that captured a snapshot when it opened.
+// consumer: the session state and any open dock panel that captured a
+// snapshot when it opened.
 func (m *Model) adoptLayers(layers *config.Layers) {
 	if layers == nil {
 		return
-	}
-	if m.configLayers != nil {
-		*m.configLayers = layers
 	}
 	m.state.SetLayers(*layers)
 	if panel := m.dock.Panel(); panel != nil {
@@ -967,7 +956,7 @@ func (m *Model) afterRuntimeReload() {
 // change invalidates it.
 func (m *Model) settingsRegistry() *settings.Registry {
 	if m.setReg == nil {
-		m.setReg = settings.BuildRegistry(m.state.Config)
+		m.setReg = settings.BuildRegistry(m.sess.Config())
 	}
 	return m.setReg
 }
@@ -1087,10 +1076,11 @@ func (m *Model) reportSetResult(key string, change settings.Change, saveErr, rel
 // provenanceForPath renders the one-line provenance summary for a TOML
 // path, or "" when layers are unavailable.
 func (m *Model) provenanceForPath(tomlPath string) string {
-	if m.configLayers == nil || *m.configLayers == nil {
+	layers := m.sess.Layers()
+	if reflect.ValueOf(layers).IsZero() {
 		return ""
 	}
-	p := (*m.configLayers).ProvenanceOf(tomlPath)
+	p := layers.ProvenanceOf(tomlPath)
 	if p.SetBy == config.LayerDefault && p.Overrides == config.LayerDefault {
 		return "set by: built-in default"
 	}
@@ -1110,32 +1100,32 @@ func (m *Model) openSettingsBrowser(query string) {
 		opts = append(opts, settings.WithUserConfigPath(config.UserConfigPath(home)))
 	}
 	browser := settings.NewBrowser(
-		m.state.Config,
+		m.sess.Config(),
 		projectConfigPath(m.sess.Status().WorkingDir),
 		query,
 		opts...,
 	)
-	// m.state.Config may already hold an unsaved change left behind by a
-	// previous failed save (browser or /set) — applyNewConfig keeps it
+	// The session's config may already hold an unsaved change left behind by
+	// a previous failed save (browser or /set) — applyNewConfig keeps it
 	// applied in-memory so the edit isn't lost, which means this fresh
 	// panel's baseline is cloned from that already-advanced value and diffs
 	// empty on construction. Seed savePending so a repeated commit still
 	// retries persistence instead of silently no-op'ing (see
 	// BrowserPanel.SetSavePending and flushChanges).
-	browser.SetLayers(m.state.Layers())
+	browser.SetLayers(m.sess.Layers())
 	browser.SetSavePending(m.configSavePending)
 	m.dock.Open(browser)
 }
 
 func (m *Model) openAgentsRoster(arg string) {
 	roster := agents.NewRosterPanelWithRegistry(
-		m.state.Config,
+		m.sess.Config(),
 		projectConfigPath(m.sess.Status().WorkingDir),
 		arg,
 		runNowDispatch,
 		m.toolRegistry,
 	)
-	roster.SetLayers(m.state.Layers())
+	roster.SetLayers(m.sess.Layers())
 	roster.SetQuota(m.sess.Status().Quota)
 	m.dock.Open(roster)
 }
@@ -1271,8 +1261,11 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 	}
 	state := m.state
 	st := m.sess.Status()
+	// One session-config read for the whole construction: the reads below
+	// seed theme, discovery and history from the live config.
+	cfg := m.sess.Config()
 
-	loadTheme(state.Config.TUI)
+	loadTheme(cfg.TUI)
 
 	input := newComposerTextarea()
 	input.Placeholder = "Ask Marshal..."
@@ -1308,7 +1301,7 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 	// picker opens instantly with the last-seen lists when the config hash
 	// still matches. The host reports nothing when no cache directory is
 	// configured.
-	for name := range state.Config.Providers {
+	for name := range cfg.Providers {
 		if models, ok := m.host.ListModels(m.ctx, name); ok {
 			m.discovered[name] = models
 		}
@@ -1349,7 +1342,7 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 	}
 
 	m.histIdx = -1
-	if state.Config.History.Enabled {
+	if cfg.History.Enabled {
 		if database := state.DB(); database != nil && m.memoryProject != 0 {
 			if prompts, err := database.RecentPrompts(m.memoryProject, promptHistoryLimit); err == nil {
 				m.history = prompts
@@ -1433,7 +1426,7 @@ func (m *Model) resize(width, height int) {
 // config's [tui.side_panel].hidden names.
 func (m Model) sheetSections() []sessionsheet.Section {
 	hidden := map[string]bool{}
-	for _, id := range m.state.Config.TUI.SidePanel.Hidden {
+	for _, id := range m.sess.Config().TUI.SidePanel.Hidden {
 		hidden[id] = true
 	}
 	all := sessionsheet.DefaultSections()
@@ -2150,7 +2143,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.discovered[pm.Provider] = pm.Models
 			m.persistDiscovered(pm.Provider, pm.Models)
 			if panel, ok := m.dock.Panel().(*modeloptions.Panel); ok {
-				preset := m.state.Config.Models.Presets[panel.PresetName()]
+				preset := m.sess.Config().Models.Presets[panel.PresetName()]
 				if preset.Provider == pm.Provider {
 					panel.SetThinkingOptions(m.modelThinkingOptions(panel.PresetName()))
 				}
@@ -2189,7 +2182,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case cmdName == "model-options":
 			// Open the model-options editor for the picked model pair.
-			m.dock.Open(modeloptions.New(m.state.Config, pm.Value, m.resolveReasoningSupport(pm.Value), m.modelThinkingOptions(pm.Value)))
+			m.dock.Open(modeloptions.New(m.sess.Config(), pm.Value, m.resolveReasoningSupport(pm.Value), m.modelThinkingOptions(pm.Value)))
 			m.refreshViewport()
 			return m, m.probeThinkingOptions(pm.Value)
 		case cmdName == "mode" && pm.Value == "sdd":
@@ -2366,7 +2359,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		path := pm.Panel.CandidatePath()
-		if err := sddauthor.RemoveCandidate(path, m.sess.Status().WorkingDir, m.state.Config.SDD.PlansDir); err != nil {
+		if err := sddauthor.RemoveCandidate(path, m.sess.Status().WorkingDir, m.sess.Config().SDD.PlansDir); err != nil {
 			// The candidate is still on disk: keep the panel open so the user
 			// can retry or keep it, and never claim it was removed.
 			pm.Panel.SetError(err)
@@ -2937,7 +2930,7 @@ func (m Model) handleApproval(msg tea.Msg, a acpwire.ApprovalRequest) (tea.Model
 		// prompt never offers this choice, and a forged one is the adapter's
 		// deny.
 		if err := m.settleApproval(a, acpwire.ApprovalAnswer{Decision: acpwire.ApprovalAlways}); err == nil {
-			m.configViewsChanged(m.state.Config)
+			m.configViewsChanged(m.sess.Config())
 		}
 		m.invalidateTranscript()
 		return m, nil
@@ -3905,13 +3898,14 @@ func (m *Model) syncTranscriptWidth() {
 // the plan's preflight for "sdd", nil for "swarm".
 func (m *Model) openRunPreflight(kind, goal string, pf *acpwire.PlanPreflight) {
 	st := m.sess.Status()
-	router := routing.NewStaticRouter(m.state.Config.RoutingConfig())
+	cfg := m.sess.Config()
+	router := routing.NewStaticRouter(cfg.RoutingConfig())
 	roles := routing.SwarmCastRoles
 	title := "Start swarm run?"
 	meta := []string{
 		"goal: " + strutil.Truncate(goal, 56, true),
 		fmt.Sprintf("fix rounds: %d · token budget: %d",
-			m.state.Config.Swarm.Budget.MaxFixRounds, m.state.Config.Swarm.Budget.MaxTotalTokens),
+			cfg.Swarm.Budget.MaxFixRounds, cfg.Swarm.Budget.MaxTotalTokens),
 	}
 	if kind == "sdd" {
 		roles = routing.SDDCastRoles
@@ -3921,7 +3915,7 @@ func (m *Model) openRunPreflight(kind, goal string, pf *acpwire.PlanPreflight) {
 		// roster matters less than the fact that this is an autonomous,
 		// multi-commit run against a branch the user has not seen.
 		tasks := "unknown task count"
-		for _, c := range sddplans.Discover(st.WorkingDir, m.state.Config.SDD.PlansDir) {
+		for _, c := range sddplans.Discover(st.WorkingDir, cfg.SDD.PlansDir) {
 			if c.Path != goal {
 				continue
 			}
@@ -3934,14 +3928,14 @@ func (m *Model) openRunPreflight(kind, goal string, pf *acpwire.PlanPreflight) {
 		}
 		// Use the shared inspection for strategy selection and metadata.
 		worktree := "off"
-		if m.state.Config.SDD.AutoWorktree {
+		if cfg.SDD.AutoWorktree {
 			worktree = "on"
 		}
 		meta = []string{
 			fmt.Sprintf("%s · %s", strutil.Truncate(filepath.Base(goal), 40, true), tasks),
 			"one commit per task, on a branch — review and merge it yourself",
 			fmt.Sprintf("worktree: %s · fix rounds: %d · verify timeout: %dms",
-				worktree, m.state.Config.SDD.MaxFixRounds, m.state.Config.SDD.VerifyTimeoutMS),
+				worktree, cfg.SDD.MaxFixRounds, cfg.SDD.VerifyTimeoutMS),
 		}
 		// The session's preflight already inspected the plan: render what it
 		// reports instead of re-inspecting here.
@@ -3981,14 +3975,14 @@ func (m *Model) openRunPreflight(kind, goal string, pf *acpwire.PlanPreflight) {
 	panel := castlist.New(title, rows, meta, "agent")
 	// Provide the config's model presets so the castlist's in-panel
 	// override picker can offer them.
-	presetNames := make([]string, 0, len(m.state.Config.Models.Presets))
-	for n := range m.state.Config.Models.Presets {
+	presetNames := make([]string, 0, len(cfg.Models.Presets))
+	for n := range cfg.Models.Presets {
 		presetNames = append(presetNames, n)
 	}
 	sort.Strings(presetNames)
 	pickerItems := make([]picker.Item, 0, len(presetNames))
 	for _, name := range presetNames {
-		preset := m.state.Config.Models.Presets[name]
+		preset := cfg.Models.Presets[name]
 		pickerItems = append(pickerItems, picker.Item{Label: name, Detail: preset.Provider + "/" + preset.Model, Value: name})
 	}
 	panel.SetPickerItems(pickerItems)
@@ -4123,7 +4117,7 @@ func refusedStart(err error) bool {
 // the value-receiver callers. handleWatchMsg passes name/repeat from the
 // event; handleAgentFinished from the latch.
 func (m *Model) startWatchResumeRun(name string, repeat bool) tea.Cmd {
-	if !m.sess.Status().AgentReady || m.busy || m.dock.IsOpen() || !m.state.Config.Watch.ResumeEnabled {
+	if !m.sess.Status().AgentReady || m.busy || m.dock.IsOpen() || !m.sess.Config().Watch.ResumeEnabled {
 		return nil
 	}
 	goal := watch.ResumeGoal(name, m.lastAssistantText(), repeat)
@@ -4911,9 +4905,10 @@ func (m *Model) finishQuit() tea.Cmd {
 // loader deliberately does not reject bad values, so any unrecognised value
 // falls back to "prompt" here at use time.
 func (m *Model) postmortemOnExit() string {
-	switch m.state.Config.Postmortem.OnExit {
+	onExit := m.sess.Config().Postmortem.OnExit
+	switch onExit {
 	case "always", "never":
-		return m.state.Config.Postmortem.OnExit
+		return onExit
 	default:
 		return "prompt"
 	}
@@ -5163,7 +5158,8 @@ func (m *Model) clearSuggestionIfPrefixBroken() {
 func (m *Model) computeSuggestion() tea.Cmd {
 	m.suggestion = ""
 	m.suggestionDismissed = false
-	if m.state.Config.TUI.Suggestions == "off" {
+	suggestions := m.sess.Config().TUI.Suggestions
+	if suggestions == "off" {
 		return nil
 	}
 	msgs := m.state.Messages()
@@ -5185,7 +5181,7 @@ func (m *Model) computeSuggestion() tea.Cmd {
 	if conf == ConfidenceHigh {
 		return nil
 	}
-	if m.state.Config.TUI.Suggestions != "llm" || !m.sess.Status().AgentReady {
+	if suggestions != "llm" || !m.sess.Status().AgentReady {
 		return nil
 	}
 	// The generation counter is bumped so a stale result from an earlier
@@ -6337,7 +6333,7 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 // openConnect opens the connect overlay for adding/reconnecting a provider.
 func (m *Model) openConnect(_ string) {
 	opts := connect.Opts{
-		Cfg:         m.state.Config,
+		Cfg:         m.sess.Config(),
 		Discovered:  m.discovered,
 		DataDir:     m.modelCacheDir,
 		OpenBrowser: m.openBrowser,
@@ -6363,7 +6359,7 @@ func (m *Model) openModels() tea.Cmd {
 		return nil
 	}
 	m.connectModel = connect.New(connect.Opts{
-		Cfg:              m.state.Config,
+		Cfg:              m.sess.Config(),
 		Discovered:       m.discovered,
 		SkipToIntroModel: true,
 		AllProviders:     true,
@@ -6400,12 +6396,13 @@ type modelsProbeResultMsg struct {
 // Used by openModels and by the manual refresh key.
 func (m *Model) probeProviders(names []string) tea.Cmd {
 	var cmds []tea.Cmd
+	cfg := m.sess.Config()
 	for _, n := range names {
-		pc := m.state.Config.Providers[n]
+		pc := cfg.Providers[n]
 		if cached, ok := m.discovered[n]; ok && len(cached) > 0 && pc.Type != "openai_codex" {
 			continue
 		}
-		if !probe.IsLocalhost(pc.BaseURL) && !m.state.Config.Privacy.RemoteProvidersAllowed {
+		if !probe.IsLocalhost(pc.BaseURL) && !cfg.Privacy.RemoteProvidersAllowed {
 			continue
 		}
 		// Count the attempt only when a probe is really dispatched, so a
@@ -6441,7 +6438,7 @@ func (m *Model) handleModelsProbeResult(msg modelsProbeResultMsg) (tea.Model, te
 	if m.modelsProbeGen[msg.Provider] != msg.Generation {
 		return m, nil // a newer attempt for this provider supersedes it
 	}
-	if _, ok := m.state.Config.Providers[msg.Provider]; !ok {
+	if _, ok := m.sess.Config().Providers[msg.Provider]; !ok {
 		// The provider was removed while the probe was in flight. Its result
 		// must not seed a cache entry (or a session map key) for a provider
 		// that no longer exists.
@@ -6452,7 +6449,7 @@ func (m *Model) handleModelsProbeResult(msg modelsProbeResultMsg) (tea.Model, te
 		m.discovered[msg.Provider] = msg.Result.Models
 		m.persistDiscovered(msg.Provider, msg.Result.Models)
 		if panel, ok := m.dock.Panel().(*modeloptions.Panel); ok {
-			preset := m.state.Config.Models.Presets[panel.PresetName()]
+			preset := m.sess.Config().Models.Presets[panel.PresetName()]
 			if preset.Provider == msg.Provider {
 				panel.SetThinkingOptions(m.modelThinkingOptions(panel.PresetName()))
 			}
@@ -6504,8 +6501,9 @@ func (m *Model) evictDiscovered(name string) {
 
 // sortedProviderNames returns provider names sorted alphabetically.
 func (m *Model) sortedProviderNames() []string {
-	names := make([]string, 0, len(m.state.Config.Providers))
-	for k := range m.state.Config.Providers {
+	providers := m.sess.Config().Providers
+	names := make([]string, 0, len(providers))
+	for k := range providers {
 		names = append(names, k)
 	}
 	sort.Strings(names)
@@ -6776,7 +6774,8 @@ func (m *Model) cycleModel(forward bool) {
 // is listed with its error rather than hidden, and a partly-finished run is
 // pinned to the top as an explicit resume.
 func (m *Model) openSDDPlanPicker() {
-	candidates := sddplans.Discover(m.sess.Status().WorkingDir, m.state.Config.SDD.PlansDir)
+	cfg := m.sess.Config()
+	candidates := sddplans.Discover(m.sess.Status().WorkingDir, cfg.SDD.PlansDir)
 
 	var items []picker.Item
 	// Resumable runs first: re-picking the plan is how a stopped run is
@@ -6812,7 +6811,7 @@ func (m *Model) openSDDPlanPicker() {
 	if len(candidates) == 0 {
 		items = append(items, picker.Item{
 			Label:  "Write a starter plan",
-			Detail: "creates a template in " + m.state.Config.SDD.PlansDir,
+			Detail: "creates a template in " + cfg.SDD.PlansDir,
 			Value:  sddScaffoldPlanValue,
 		})
 	}
@@ -6845,7 +6844,10 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 	if msg.Provider == "" || msg.Model == "" {
 		return
 	}
-	newCfg := m.state.Config
+	// One read of the session config: newCfg is mutated below, cfg is the
+	// pre-edit snapshot the saves at the end diff against.
+	cfg := m.sess.Config()
+	newCfg := cfg
 	if newCfg.Providers != nil {
 		copied := make(map[string]config.ProviderConfig, len(newCfg.Providers)+1)
 		for k, v := range newCfg.Providers {
@@ -6931,17 +6933,17 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 		return
 	}
 	userPath := config.UserConfigPath(home)
-	// Baseline: this process's load-time snapshot (m.state.Config). The
-	// provider/preset maps were copied into newCfg before mutation, so
-	// m.state.Config still carries the pre-edit membership: entries another
+	// Baseline: the session's config, read once above before any mutation.
+	// The provider/preset maps were copied into newCfg before mutation, so
+	// that snapshot still carries the pre-edit membership: entries another
 	// marshal process persisted after this process loaded are on disk but in
 	// neither the write nor the baseline, and the merge preserves them
 	// instead of clobbering (the cross-process regression fixed here).
-	if err := config.SaveUserConfigProviders(userPath, newCfg.Providers, m.state.Config.Providers); err != nil {
+	if err := config.SaveUserConfigProviders(userPath, newCfg.Providers, cfg.Providers); err != nil {
 		m.note(fmt.Sprintf("✗ Failed to save provider: %v", err))
 		return
 	}
-	if err := config.SaveUserConfigPresets(userPath, newCfg.Models.Presets, m.state.Config.Models.Presets); err != nil {
+	if err := config.SaveUserConfigPresets(userPath, newCfg.Models.Presets, cfg.Models.Presets); err != nil {
 		m.note(fmt.Sprintf("✗ Failed to save model preset: %v", err))
 		return
 	}
@@ -6985,7 +6987,10 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 // the runtime is asked to reload, matching the /set and settings.ChangedMsg
 // contracts.
 func (m *Model) switchModelPreset(presetName string) {
-	newCfg := m.state.Config
+	// One read of the session config: newCfg is mutated below, cfg is the
+	// pre-edit snapshot the user-config save at the end diffs against.
+	cfg := m.sess.Config()
+	newCfg := cfg
 	provider, model, ok := strings.Cut(presetName, "/")
 	if !ok || provider == "" || model == "" {
 		m.note(fmt.Sprintf("✗ Invalid preset pair: %s", presetName))
@@ -7037,7 +7042,7 @@ func (m *Model) switchModelPreset(presetName string) {
 		// membership equals pre-switch disk membership plus the new key:
 		// the merge keeps presets other marshal processes wrote after this
 		// process loaded its snapshot.
-		if err := config.SaveUserConfigPresets(config.UserConfigPath(home), newCfg.Models.Presets, m.state.Config.Models.Presets); err != nil {
+		if err := config.SaveUserConfigPresets(config.UserConfigPath(home), newCfg.Models.Presets, cfg.Models.Presets); err != nil {
 			m.note(fmt.Sprintf("✗ Failed to save model preset: %v", err))
 			return
 		}
@@ -7059,7 +7064,7 @@ func (m *Model) switchModelPreset(presetName string) {
 // preset's Model field. Model-ID matches scan presets in sorted order so
 // the result is deterministic when several presets share a model.
 func (m *Model) resolveModelArg(arg string) (string, bool) {
-	presets := m.state.Config.Models.Presets
+	presets := m.sess.Config().Models.Presets
 	if _, ok := presets[arg]; ok {
 		return arg, true
 	}
@@ -7075,7 +7080,7 @@ func (m *Model) resolveModelArg(arg string) (string, bool) {
 // matching the order used by modelPickerItems. Shared by the model picker and
 // the Alt+M hotkey so they stay in lock-step.
 func (m *Model) sortedPresetNames() []string {
-	presets := m.state.Config.Models.Presets
+	presets := m.sess.Config().Models.Presets
 	names := make([]string, 0, len(presets))
 	for n := range presets {
 		names = append(names, n)
@@ -7092,7 +7097,7 @@ func (m *Model) sortedPresetNames() []string {
 
 // modelPickerItems builds sorted picker items from configured model presets.
 func (m *Model) modelPickerItems() []picker.Item {
-	presets := m.state.Config.Models.Presets
+	presets := m.sess.Config().Models.Presets
 	names := m.sortedPresetNames()
 	current := m.sess.Status().ActiveRoute.Preset
 	items := make([]picker.Item, 0, len(names))

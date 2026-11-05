@@ -57,7 +57,7 @@ func (m *Model) reconnectMCPServer(name string) {
 		// later runtime build connects the server.
 		return
 	}
-	cfg := m.state.Config
+	cfg := m.sess.Config()
 	// Clear the startup notices BEFORE the rebuild, not after. The stale
 	// "needs OAuth" notice is exactly what this flow resolves, so it must go —
 	// but if the server still fails to start, the rebuild sets a fresh notice

@@ -122,7 +122,7 @@ func (m Model) submitDoctorSecret() (tea.Model, tea.Cmd) {
 	}
 	// The key is on disk from here on. A later failure is a reload problem and
 	// is reported as such: it must never read as the key having been lost.
-	newCfg := m.state.Config
+	newCfg := m.sess.Config()
 	if newCfg.Providers != nil {
 		copied := make(map[string]config.ProviderConfig, len(newCfg.Providers))
 		for k, v := range newCfg.Providers {

@@ -2768,8 +2768,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 
 		tuiOpts := []tui.Option{tui.WithLegacyState(state)}
 		tuiOpts = append(tuiOpts, tui.WithMemoryStore(database, projectID))
-		configLayers := &rt.Layers
-		tuiOpts = append(tuiOpts, tui.WithConfigLayers(&configLayers))
 		tuiOpts = append(tuiOpts, tui.WithLayerReloader(layerReloaderFor(homeDir, workingDir, state.Trusted)))
 		// F18: eager-seed the @file completion popup with the repo file
 		// index. Failures (no DB, empty index) are non-fatal — the TUI

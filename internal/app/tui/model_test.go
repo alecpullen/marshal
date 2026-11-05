@@ -5678,20 +5678,20 @@ func TestLayerReloaderFailureDoesNotOverwriteConfigLayers(t *testing.T) {
 		return config.Layers{}, false
 	}
 
-	// Seed configLayers with a non-zero Layers value that the model can
+	// Seed the session's layers with a non-zero snapshot that the model can
 	// check remains in place after a failed reload.
-	original := &config.Layers{Default: config.Default(), User: config.Default(), Merged: config.Default()}
-	m.configLayers = &original
+	m.state.SetLayers(config.Layers{Default: config.Default(), User: config.Default(), Merged: config.Default()})
 
 	// Trigger persistAndReload via /set. The save should succeed and
 	// persistAndReload should return nil errors, but the layerReloader
-	// should fail and the model must NOT overwrite *m.configLayers.
+	// should fail and the model must NOT adopt the snapshot it returned.
 	m.dispatchCommand("/set shell.allow_network on")
 
-	// Verify layers were NOT overwritten — they should still point to the
-	// same pointer (original).
-	if *m.configLayers != original {
-		t.Fatal("configLayers was overwritten despite layerReloader reporting failure")
+	// Verify layers were NOT overwritten: the session still serves the seeded
+	// snapshot, not the zero one the failing reloader reported. Mouse capture
+	// is on in the seeded snapshot and off in the zero value.
+	if got := m.sess.Layers(); reflect.ValueOf(got).IsZero() || !got.Merged.TUI.MouseCapture {
+		t.Fatalf("session layers were overwritten despite layerReloader reporting failure: %+v", got)
 	}
 }
 

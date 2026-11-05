@@ -27,7 +27,7 @@ type pendingModelOptionsState struct {
 // Unknown models retain a provider-default row; saved values remain editable.
 func (m *Model) resolveReasoningSupport(presetName string) bool {
 	options := m.modelThinkingOptions(presetName)
-	return options == nil || len(options.Levels) > 0 || m.state.Config.Models.Presets[presetName].Thinking != ""
+	return options == nil || len(options.Levels) > 0 || m.sess.Config().Models.Presets[presetName].Thinking != ""
 }
 
 // openModelOptions opens the model-options panel for the active route's preset.
@@ -42,11 +42,11 @@ func (m *Model) openModelOptions() tea.Cmd {
 		m.dock.Open(modeloptions.New(m.pendingModelOptions.cfg, presetName, m.resolveReasoningSupport(presetName), m.modelThinkingOptions(presetName)))
 		return m.probeThinkingOptions(presetName)
 	}
-	if _, ok := m.state.Config.Models.Presets[presetName]; !ok {
+	if _, ok := m.sess.Config().Models.Presets[presetName]; !ok {
 		m.note(fmt.Sprintf("Preset %q is not configured.", presetName))
 		return nil
 	}
-	m.dock.Open(modeloptions.New(m.state.Config, presetName, m.resolveReasoningSupport(presetName), m.modelThinkingOptions(presetName)))
+	m.dock.Open(modeloptions.New(m.sess.Config(), presetName, m.resolveReasoningSupport(presetName), m.modelThinkingOptions(presetName)))
 	return m.probeThinkingOptions(presetName)
 }
 
@@ -55,7 +55,7 @@ func (m *Model) openModelOptions() tea.Cmd {
 // pair. It is wired to the "Model options" action in the provider drill-in.
 func (m *Model) openModelOptionsForProvider(providerName string) {
 	var items []picker.Item
-	for name, preset := range m.state.Config.Models.Presets {
+	for name, preset := range m.sess.Config().Models.Presets {
 		if preset.Provider != providerName {
 			continue
 		}
@@ -76,6 +76,9 @@ func (m *Model) openModelOptionsForProvider(providerName string) {
 // busy. Presets are user-global, so both paths write the user config; the
 // project file carries nothing for this change.
 func (m *Model) handleModelOptionsChanged(msg modeloptions.ChangedMsg) tea.Cmd {
+	// One read of the session config: the panel's candidate is msg.Config, so
+	// this snapshot is the baseline both save paths diff against.
+	cfg := m.sess.Config()
 	if m.pendingModelOptions != nil && m.pendingModelOptions.presetName == msg.PresetName {
 		m.pendingModelOptions.retry = false
 	}
@@ -85,8 +88,8 @@ func (m *Model) handleModelOptionsChanged(msg modeloptions.ChangedMsg) tea.Cmd {
 		return nil
 	}
 	userPath := config.UserConfigPath(home)
-	// Baseline: this process's snapshot (m.state.Config), which seeded the
-	// panel. The panel emitted a mutated clone, so m.state.Config carries the
+	// Baseline: the session's config, read once above, which seeded the
+	// panel. The panel emitted a mutated clone, so that snapshot carries the
 	// pre-edit membership — presets another marshal process persisted after
 	// this process loaded survive the merge.
 	//
@@ -95,7 +98,7 @@ func (m *Model) handleModelOptionsChanged(msg modeloptions.ChangedMsg) tea.Cmd {
 	// captured runner, cwd, output policy and wait, and only future launches
 	// resolve the new defaults.
 	if !m.busy {
-		saveErr, reloadErr := m.savePresetsAndReload(userPath, msg.Config, m.state.Config.Models.Presets)
+		saveErr, reloadErr := m.savePresetsAndReload(userPath, msg.Config, cfg.Models.Presets)
 		if saveErr != nil || reloadErr != nil {
 			m.note(fmt.Sprintf("Could not apply %s option: save=%v reload=%v", msg.FieldID, saveErr, reloadErr))
 			return nil
@@ -104,7 +107,7 @@ func (m *Model) handleModelOptionsChanged(msg modeloptions.ChangedMsg) tea.Cmd {
 		return nil
 	}
 
-	if err := config.SaveUserConfigPresets(userPath, msg.Config.Models.Presets, m.state.Config.Models.Presets); err != nil {
+	if err := config.SaveUserConfigPresets(userPath, msg.Config.Models.Presets, cfg.Models.Presets); err != nil {
 		m.note(fmt.Sprintf("Saved %s option failed: %v", msg.FieldID, err))
 		return nil
 	}
@@ -190,15 +193,17 @@ func fieldLabel(id string) string {
 }
 
 func (m *Model) modelThinkingOptions(presetName string) *schema.ThinkingOptions {
-	preset := m.state.Config.Models.Presets[presetName]
-	pc := m.state.Config.Providers[preset.Provider]
+	cfg := m.sess.Config()
+	preset := cfg.Models.Presets[presetName]
+	pc := cfg.Providers[preset.Provider]
 	return schema.ResolveThinkingOptions(pc.Type, preset.Model, preset.ThinkingOptions, m.discovered[preset.Provider])
 }
 
 func (m *Model) probeThinkingOptions(presetName string) tea.Cmd {
-	preset := m.state.Config.Models.Presets[presetName]
-	pc, ok := m.state.Config.Providers[preset.Provider]
-	if !ok || (!probe.IsLocalhost(pc.BaseURL) && !m.state.Config.Privacy.RemoteProvidersAllowed) {
+	cfg := m.sess.Config()
+	preset := cfg.Models.Presets[presetName]
+	pc, ok := cfg.Providers[preset.Provider]
+	if !ok || (!probe.IsLocalhost(pc.BaseURL) && !cfg.Privacy.RemoteProvidersAllowed) {
 		return nil
 	}
 	return probe.Provider(m.host, "thinking-options", preset.Provider, pc)

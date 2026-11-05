@@ -64,7 +64,7 @@ const sddStarterPlanName = "starter-plan.md"
 // `/sdd generate` and failed with "no such file" — the only action offered
 // to a first-time user was a guaranteed error.
 func (m *Model) scaffoldSDDPlan() {
-	dir := filepath.Join(m.sess.Status().WorkingDir, m.state.Config.SDD.PlansDir)
+	dir := filepath.Join(m.sess.Status().WorkingDir, m.sess.Config().SDD.PlansDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		m.note(fmt.Sprintf("Could not create %s: %v", dir, err))
 		return

@@ -139,3 +139,23 @@ func TestUniqueNameWithCollision(t *testing.T) {
 		t.Fatalf("UniqueName with two collisions = %q, want %q", got, "ollama-3")
 	}
 }
+
+func TestMaskKeyIsStableOnMasks(t *testing.T) {
+	keys := []string{
+		"sk-live-0123456789abcdef", // long
+		"abc",                      // shorter than four
+		"abcd",                     // exactly four
+	}
+	for _, k := range keys {
+		mask := MaskKey(k)
+		if got := MaskKey(mask); got != mask {
+			t.Errorf("MaskKey(MaskKey(%q)) = %q, want %q", k, got, mask)
+		}
+		if !IsMasked(mask) {
+			t.Errorf("IsMasked(MaskKey(%q)) = false", k)
+		}
+		if IsMasked(k) {
+			t.Errorf("IsMasked(%q) = true, want false", k)
+		}
+	}
+}

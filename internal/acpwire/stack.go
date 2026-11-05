@@ -1,5 +1,7 @@
 package acpwire
 
+import "encoding/json"
+
 // The wire projection is the tree as a client outside the process sees it.
 // Clients cannot import this package (web/ is standard library only), so the
 // projection is plain JSON: a flat node list in which each node names its
@@ -276,6 +278,40 @@ type StackSnapshot struct {
 	Rev        uint64     `json:"rev"`
 	Roots      []string   `json:"roots"`
 	Nodes      []WireNode `json:"nodes"`
+}
+
+// The stack's methods and its update kind (P3 R4).
+const (
+	MethodStack            = "session/stack"
+	MethodStackUnsubscribe = "session/stack_unsubscribe"
+	MethodSessionUpdate    = "session/update"
+	UpdateStackPatch       = "stack_patch"
+)
+
+// StackParams is session/stack's and session/stack_unsubscribe's params.
+// SubagentID 0 names the main transcript.
+type StackParams struct {
+	SessionID  string `json:"sessionId"`
+	SubagentID int64  `json:"subagentId,omitempty"`
+}
+
+// StackPatch is a stack_patch update: what changed in one stack since
+// BaseRev. A client whose revision is BaseRev applies it and moves to Rev.
+type StackPatch struct {
+	Kind       string     `json:"kind"`
+	SubagentID int64      `json:"subagentId,omitempty"`
+	Rev        uint64     `json:"rev"`
+	BaseRev    uint64     `json:"baseRev"`
+	Roots      []string   `json:"roots"`
+	Upsert     []WireNode `json:"upsert,omitempty"`
+	Remove     []string   `json:"remove,omitempty"`
+}
+
+// SessionUpdate is a session/update notification's params, with the update
+// left raw for its kind's decoder.
+type SessionUpdate struct {
+	SessionID string          `json:"sessionId"`
+	Update    json.RawMessage `json:"update"`
 }
 
 // Node kinds: the values of WireNode.Kind.

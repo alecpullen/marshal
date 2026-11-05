@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -49,7 +50,7 @@ func takeStack(t *testing.T, m *TurnManager) acpwire.StackSnapshot {
 	return v.(acpwire.StackSnapshot)
 }
 
-func stackPatchFromNotice(t *testing.T, n stackNotice) stackPatch {
+func stackPatchFromNotice(t *testing.T, n stackNotice) acpwire.StackPatch {
 	t.Helper()
 	if n.method != "session/update" {
 		t.Fatalf("method = %s", n.method)
@@ -84,11 +85,11 @@ func stackPatchFromNotice(t *testing.T, n stackNotice) stackPatch {
 			t.Fatalf("unexpected JSON key %s", key)
 		}
 	}
-	var p stackPatch
+	var p acpwire.StackPatch
 	if err := json.Unmarshal(envelope.Update, &p); err != nil {
 		t.Fatal(err)
 	}
-	if p.Kind != "stack_patch" {
+	if p.Kind != acpwire.UpdateStackPatch {
 		t.Fatalf("kind = %q", p.Kind)
 	}
 	return p
@@ -165,6 +166,54 @@ func TestStackFlushEmitsPatchAfterChange(t *testing.T) {
 	data, _ := json.Marshal((*notices)[0].params)
 	if strings.Contains(string(data), `"remove"`) {
 		t.Fatalf("empty remove must be omitted: %s", data)
+	}
+}
+
+// TestStackPatchDecodesAsTheWireType pins the bytes a client receives: a
+// flushed patch's envelope decodes as acpwire.SessionUpdate, and its update as
+// acpwire.StackPatch, field for field as the projector's diff made it.
+func TestStackPatchDecodesAsTheWireType(t *testing.T) {
+	m, st, notices := newStackTestManager(t)
+	st.AddMessage(session.RoleUser, "first turn", session.ContentTypePlain)
+	takeStack(t, m)
+
+	// Copy the projector as it stands, so the expected patch is the one the
+	// flush's own diff produces.
+	p := m.stackFor("s1")
+	p.mu.Lock()
+	before := &stackProjector{rev: p.rev, sent: make(map[string][]byte, len(p.sent)), sentOrder: append([]string(nil), p.sentOrder...)}
+	for id, encoded := range p.sent {
+		before.sent[id] = encoded
+	}
+	p.mu.Unlock()
+
+	st.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	want, changed := before.diff(viewmodel.ProjectState(st, false, time.Now()).Tree)
+	if !changed {
+		t.Fatal("the change produced no patch")
+	}
+	m.flushStack("s1", st, false)
+	if len(*notices) != 1 {
+		t.Fatalf("notifications = %d", len(*notices))
+	}
+
+	raw, err := json.Marshal((*notices)[0].params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope acpwire.SessionUpdate
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatalf("decode envelope %s: %v", raw, err)
+	}
+	if envelope.SessionID != "s1" {
+		t.Fatalf("sessionId = %q", envelope.SessionID)
+	}
+	var got acpwire.StackPatch
+	if err := json.Unmarshal(envelope.Update, &got); err != nil {
+		t.Fatalf("decode update %s: %v", envelope.Update, err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("decoded patch = %+v, want %+v", got, want)
 	}
 }
 
@@ -416,7 +465,7 @@ func TestTurnFlushesStackPatches(t *testing.T) {
 
 func TestFinishTurnFlushSettlesLiveRows(t *testing.T) {
 	notices, _ := runStackTestTurn(t)
-	var last *stackPatch
+	var last *acpwire.StackPatch
 	var telemetry bool
 	for _, n := range notices {
 		if n.params.Update["kind"] == "stack_patch" {

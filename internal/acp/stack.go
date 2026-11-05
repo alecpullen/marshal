@@ -20,20 +20,7 @@ import (
 const stackFlushInterval = 200 * time.Millisecond
 
 // StackParams is the session/stack request body.
-type StackParams struct {
-	SessionID  string `json:"sessionId"`
-	SubagentID int64  `json:"subagentId,omitempty"`
-}
-
-type stackPatch struct {
-	Kind       string             `json:"kind"`
-	SubagentID int64              `json:"subagentId,omitempty"`
-	Rev        uint64             `json:"rev"`
-	BaseRev    uint64             `json:"baseRev"`
-	Roots      []string           `json:"roots"`
-	Upsert     []acpwire.WireNode `json:"upsert,omitempty"`
-	Remove     []string           `json:"remove,omitempty"`
-}
+type StackParams = acpwire.StackParams
 
 // stackProjector tracks the encoded nodes last sent to one session's client.
 type stackProjector struct {
@@ -66,8 +53,8 @@ func stackKey(sessionID string, subagentID int64) string {
 }
 
 // diff requires p.mu. Unchanged trees leave the revision and sent state alone.
-func (p *stackProjector) diff(tree acpwire.WireTree) (stackPatch, bool) {
-	patch := stackPatch{Kind: "stack_patch"}
+func (p *stackProjector) diff(tree acpwire.WireTree) (acpwire.StackPatch, bool) {
+	patch := acpwire.StackPatch{Kind: acpwire.UpdateStackPatch}
 	sent := make(map[string][]byte, len(tree.Nodes))
 	order := make([]string, 0, len(tree.Nodes))
 	for _, n := range tree.Nodes {
@@ -135,7 +122,7 @@ func (m *TurnManager) markStackDirty(sessionID string) {
 
 // notifyStackPatch adapts the patch to ACP's existing map-shaped envelope.
 // Optional lists are omitted exactly as the patch's JSON tags require.
-func (m *TurnManager) notifyStackPatch(sessionID string, patch stackPatch) {
+func (m *TurnManager) notifyStackPatch(sessionID string, patch acpwire.StackPatch) {
 	update := map[string]any{
 		"kind": patch.Kind, "rev": patch.Rev, "baseRev": patch.BaseRev, "roots": patch.Roots,
 	}

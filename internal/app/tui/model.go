@@ -233,16 +233,12 @@ type Model struct {
 	openConnectOnStart bool
 	trustPromptDir     string
 	trustDecide        func(trust.Decision)
-	// trustRefresh, when set, advances the permanent-trust config hash after
-	// an interactive project-config save succeeds: the user approved the new
-	// config from a trusted session, so the next launch must not re-prompt.
-	trustRefresh  func(workingDir string)
-	memoryDB      *db.DB
-	memoryProject int64
-	homeDir       string
-	workDir       string
-	skillIndex    *skills.Index
-	agentCancel   context.CancelFunc
+	memoryDB           *db.DB
+	memoryProject      int64
+	homeDir            string
+	workDir            string
+	skillIndex         *skills.Index
+	agentCancel        context.CancelFunc
 	// syncedAccessMode is the session mode the last reconciliation adopted.
 	// The sync is edge-triggered on it: a mode the model already reflects is
 	// not re-asserted over a value another path set, while a mode the session
@@ -586,11 +582,6 @@ type Model struct {
 	// open. It is set by openRunPreflight and consumed by the castlist
 	// StartMsg/CancelMsg handlers.
 	pendingRun *pendingAgentRun
-
-	// layerReloader re-runs LoadLayers to refresh the provenance snapshots.
-	// The bool reports whether the reload succeeded; when false the caller
-	// must not adopt the returned snapshot.
-	layerReloader func() (config.Layers, bool)
 }
 
 // pendingAgentRun captures the run waiting for the user to confirm it in the
@@ -654,13 +645,6 @@ func WithTrustPrompt(workingDir string, decide func(trust.Decision)) Option {
 		m.trustPromptDir = workingDir
 		m.trustDecide = decide
 	}
-}
-
-// WithTrustRefresh registers a hook invoked after an interactive
-// project-config save succeeds, so permanent trust can track config edits
-// the user made from a trusted session instead of re-prompting next launch.
-func WithTrustRefresh(refresh func(workingDir string)) Option {
-	return func(m *Model) { m.trustRefresh = refresh }
 }
 
 func WithHomeDir(homeDir string) Option {
@@ -785,22 +769,10 @@ func WithToolRegistry(reg *registry.Registry) Option {
 	}
 }
 
-// WithLayerReloader supplies a function that re-runs LoadLayers to refresh
-// the provenance snapshots after a successful persist. The bool reports
-// whether the reload succeeded; when false the model does not adopt the
-// returned snapshot.
-func WithLayerReloader(fn func() (config.Layers, bool)) Option {
-	return func(m *Model) { m.layerReloader = fn }
-}
-
 // WithModelCache sets the data directory preset setup reads the models.dev
 // catalog and its provenance from. Plan 7b deletes it.
 func WithModelCache(dataDir string) Option {
 	return func(m *Model) { m.modelCacheDir = dataDir }
-}
-
-func projectConfigPath(workingDir string) string {
-	return config.ProjectConfigPath(workingDir)
 }
 
 func relPath(workingDir, path string) string {
@@ -875,21 +847,12 @@ func (m *Model) userHome() (string, error) {
 // save failures) so the user can fix the underlying problem and retry
 // without losing their edit. Messaging is the caller's job.
 func (m *Model) persistAndReload(cfg config.Config) (saveErr, reloadErr error) {
-	st := m.sess.Status()
-	path := projectConfigPath(st.WorkingDir)
-	if err := config.SaveProjectConfig(path, cfg, m.sess.Layers()); err != nil {
+	if err := m.sess.SaveProjectConfig(m.ctx, cfg); err != nil {
 		m.applyNewConfig(cfg)
 		m.configSavePending = true
 		return err, nil
 	}
 	m.configSavePending = false
-	if m.trustRefresh != nil {
-		m.trustRefresh(st.WorkingDir)
-	}
-	// The project file changed on disk, so the load-time snapshots are
-	// stale. Refresh them before rebuilding the runtime: the session
-	// snapshot is what the next project-scope save diffs against.
-	m.reloadLayers()
 	if m.configReloader != nil {
 		// reloadAgentRuntime may install cfg before reporting a cleanup
 		// error; invalidate config-derived state before attempting it.
@@ -905,35 +868,6 @@ func (m *Model) persistAndReload(cfg config.Config) (saveErr, reloadErr error) {
 	m.applyNewConfig(cfg)
 	m.refreshDiagnostics()
 	return nil, nil
-}
-
-// reloadLayers refreshes the load-time config snapshots after any save.
-// It publishes the fresh Layers to the session state (state.SetLayers). The
-// session snapshot is what project-scope saves compare against (see
-// config.SaveProjectConfig), so skipping it makes the next project save diff
-// against a stale user layer and re-bake user-global values into the
-// committable .marshal/config.toml — the exact defect layer-aware saves exist
-// to prevent. Dock panels read the snapshot from the session when they save,
-// so they need no refresh of their own.
-func (m *Model) reloadLayers() {
-	if m.layerReloader == nil {
-		return
-	}
-	layers, ok := m.layerReloader()
-	if !ok {
-		return
-	}
-	m.adoptLayers(&layers)
-}
-
-// adoptLayers installs an externally produced Layers snapshot into the
-// session state, which is the one consumer left: the panels save through the
-// session and diff against its snapshot.
-func (m *Model) adoptLayers(layers *config.Layers) {
-	if layers == nil {
-		return
-	}
-	m.state.SetLayers(*layers)
 }
 
 // afterRuntimeReload runs the recovery steps that become valid once the
@@ -1013,8 +947,7 @@ func (m *Model) handleSetCommand(args []string) {
 				m.reportSetResult(key, change, saveErr, reloadErr)
 				return
 			}
-			userPath := config.UserConfigPath(home)
-			if err := config.SaveUserConfigValue(userPath, tomlPath, value); err != nil {
+			if err := m.host.SaveUserValue(m.ctx, tomlPath, value); err != nil {
 				m.applyNewConfig(reg.Config())
 				m.configSavePending = true
 				sys(fmt.Sprintf("✗ %s applied in session, but user config save failed: %v", key, err))
@@ -1031,12 +964,12 @@ func (m *Model) handleSetCommand(args []string) {
 				m.afterRuntimeReload()
 			}
 			m.applyNewConfig(reg.Config())
-			m.reloadLayers()
 			m.refreshOpenSettingsBrowser()
+			userPath := m.sess.Status().UserConfigPath
 			if !change.Changed {
-				sys(fmt.Sprintf("✓ %s persisted · %s", key, relPath(home, config.UserConfigPath(home))))
+				sys(fmt.Sprintf("✓ %s persisted · %s", key, relPath(home, userPath)))
 			} else {
-				sys(fmt.Sprintf("✓ %s: %s → %s · %s", key, change.OldValue, change.NewValue, relPath(home, config.UserConfigPath(home))))
+				sys(fmt.Sprintf("✓ %s: %s → %s · %s", key, change.OldValue, change.NewValue, relPath(home, userPath)))
 			}
 			return
 		}
@@ -1061,9 +994,9 @@ func (m *Model) reportSetResult(key string, change settings.Change, saveErr, rel
 	case reloadErr != nil:
 		sys(fmt.Sprintf("✗ %s saved, but live reload failed: %v", key, reloadErr))
 	case !change.Changed:
-		sys(fmt.Sprintf("✓ %s persisted · %s", key, relPath(st.WorkingDir, projectConfigPath(st.WorkingDir))))
+		sys(fmt.Sprintf("✓ %s persisted · %s", key, relPath(st.WorkingDir, st.ProjectConfigPath)))
 	default:
-		sys(fmt.Sprintf("✓ %s: %s → %s · %s", key, change.OldValue, change.NewValue, relPath(st.WorkingDir, projectConfigPath(st.WorkingDir))))
+		sys(fmt.Sprintf("✓ %s: %s → %s · %s", key, change.OldValue, change.NewValue, relPath(st.WorkingDir, st.ProjectConfigPath)))
 	}
 }
 
@@ -1864,15 +1797,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.applyNewConfig(msg.Cfg)
 			m.configSavePending = false
-			if !msg.GlobalTarget && m.trustRefresh != nil {
-				m.trustRefresh(st.WorkingDir)
-			}
-			m.reloadLayers()
-			cfgPath := projectConfigPath(st.WorkingDir)
+			cfgPath := st.ProjectConfigPath
 			base := st.WorkingDir
 			if msg.GlobalTarget {
 				if home, err := m.userHome(); err == nil {
-					cfgPath = config.UserConfigPath(home)
+					cfgPath = st.UserConfigPath
 					base = home
 				}
 			}
@@ -1888,11 +1817,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.GlobalTarget && !msg.Saved {
 			m.applyNewConfig(msg.Cfg)
 			m.configSavePending = true
-			userPath := ""
-			if home, err := m.userHome(); err == nil {
-				userPath = config.UserConfigPath(home)
-			}
-			m.note(fmt.Sprintf("✗ save failed: %v · %s", msg.SaveErr, relPath(st.WorkingDir, userPath)))
+			m.note(fmt.Sprintf("✗ save failed: %v · %s", msg.SaveErr, relPath(st.WorkingDir, st.UserConfigPath)))
 			m.refreshViewport()
 			return m, nil
 		}
@@ -1909,7 +1834,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// persistAndReload already refreshed the layer snapshots.
 		for _, receipt := range msg.Receipts {
-			m.note("✓ " + receipt + " · " + relPath(st.WorkingDir, projectConfigPath(st.WorkingDir)))
+			m.note("✓ " + receipt + " · " + relPath(st.WorkingDir, st.ProjectConfigPath))
 		}
 		m.refreshViewport()
 		return m, nil
@@ -2250,10 +2175,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Persist proposed verify commands to project config before the run
 		// starts. A write failure warns but never blocks the run.
 		if run.verifyBuild != "" || run.verifyTest != "" {
-			if err := config.SaveVerifyCommands(projectConfigPath(st.WorkingDir), run.verifyBuild, run.verifyTest); err != nil {
+			if err := m.sess.SaveVerifyCommands(m.ctx, run.verifyBuild, run.verifyTest); err != nil {
 				m.note(fmt.Sprintf("✗ verify commands apply to this run but could not be persisted: %v", err))
 			} else {
-				m.note("✓ verify commands persisted to " + relPath(st.WorkingDir, projectConfigPath(st.WorkingDir)))
+				m.note("✓ verify commands persisted to " + relPath(st.WorkingDir, st.ProjectConfigPath))
 			}
 		}
 		// Every run the TUI starts now takes the session's run path: the
@@ -6333,9 +6258,7 @@ func (m *Model) openConnect(_ string) {
 	}
 	// Providers are saved to the user-global config; the summary screen's
 	// "save to:" line should name that file.
-	if home, err := m.userHome(); err == nil {
-		opts.CfgPath = config.UserConfigPath(home)
-	}
+	opts.CfgPath = m.sess.Status().UserConfigPath
 	m.connectModel = connect.New(opts)
 	m.connectModel.SetSize(m.leftWidth, m.height)
 	m.dock.Open(connect.Panel{Model: m.connectModel})
@@ -6924,25 +6847,24 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 		m.note(fmt.Sprintf("✗ Failed to locate home directory: %v", err))
 		return
 	}
-	userPath := config.UserConfigPath(home)
 	// Baseline: the session's config, read once above before any mutation.
 	// The provider/preset maps were copied into newCfg before mutation, so
 	// that snapshot still carries the pre-edit membership: entries another
 	// marshal process persisted after this process loaded are on disk but in
 	// neither the write nor the baseline, and the merge preserves them
 	// instead of clobbering (the cross-process regression fixed here).
-	if err := config.SaveUserConfigProviders(userPath, newCfg.Providers, cfg.Providers); err != nil {
+	if err := m.host.SaveUserProviders(m.ctx, newCfg.Providers, cfg.Providers); err != nil {
 		m.note(fmt.Sprintf("✗ Failed to save provider: %v", err))
 		return
 	}
-	if err := config.SaveUserConfigPresets(userPath, newCfg.Models.Presets, cfg.Models.Presets); err != nil {
+	if err := m.host.SaveUserPresets(m.ctx, newCfg.Models.Presets, cfg.Models.Presets); err != nil {
 		m.note(fmt.Sprintf("✗ Failed to save model preset: %v", err))
 		return
 	}
 	// The consent answer is a user-global preference; persist it only when the
 	// wizard actually asked (nil means the user has never answered).
 	if msg.EnrichmentConsent != nil {
-		if err := config.SaveUserConfigValue(userPath, "privacy.models_dev_enrichment", *msg.EnrichmentConsent); err != nil {
+		if err := m.host.SaveUserValue(m.ctx, "privacy.models_dev_enrichment", *msg.EnrichmentConsent); err != nil {
 			m.note(fmt.Sprintf("⚠ Could not save models.dev preference: %v", err))
 		}
 	}
@@ -7024,8 +6946,7 @@ func (m *Model) switchModelPreset(presetName string) {
 	// Presets are user-global; persist a newly created override to the user
 	// config before the project save ([profile] lives there).
 	if presetCreated {
-		home, err := m.userHome()
-		if err != nil {
+		if _, err := m.userHome(); err != nil {
 			m.note(fmt.Sprintf("✗ Failed to locate home directory: %v", err))
 			return
 		}
@@ -7034,7 +6955,7 @@ func (m *Model) switchModelPreset(presetName string) {
 		// membership equals pre-switch disk membership plus the new key:
 		// the merge keeps presets other marshal processes wrote after this
 		// process loaded its snapshot.
-		if err := config.SaveUserConfigPresets(config.UserConfigPath(home), newCfg.Models.Presets, cfg.Models.Presets); err != nil {
+		if err := m.host.SaveUserPresets(m.ctx, newCfg.Models.Presets, cfg.Models.Presets); err != nil {
 			m.note(fmt.Sprintf("✗ Failed to save model preset: %v", err))
 			return
 		}

@@ -5670,13 +5670,13 @@ func TestSetCommandReloadFailureDoesNotReportSuccess(t *testing.T) {
 // invalidated, so the next /set would rebuild its registry from the stale
 // config and silently revert the change that was just persisted.
 func TestLayerReloaderFailureDoesNotOverwriteConfigLayers(t *testing.T) {
-	m := newTestModel(t)
+	// The adapter's layer reloader always fails.
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadLayers = func() (config.Layers, bool) {
+			return config.Layers{}, false
+		}
+	})
 	m.state.WorkingDir = t.TempDir()
-
-	// Inject a layerReloader that always fails.
-	m.layerReloader = func() (config.Layers, bool) {
-		return config.Layers{}, false
-	}
 
 	// Seed the session's layers with a non-zero snapshot that the model can
 	// check remains in place after a failed reload.
@@ -6111,7 +6111,7 @@ func TestSetCommandDoesNotMutateWhileSettingsSaveIsBlocked(t *testing.T) {
 			if reloads != 0 {
 				t.Fatalf("guarded /set reloaded runtime %d times", reloads)
 			}
-			path := projectConfigPath(m.state.WorkingDir)
+			path := config.ProjectConfigPath(m.state.WorkingDir)
 			if _, err := os.Stat(path); !os.IsNotExist(err) {
 				t.Fatalf("guarded /set persisted config, stat error = %v", err)
 			}
@@ -6173,7 +6173,7 @@ func newModelForConfigTest(t *testing.T) (m Model, workDir string, homeDir strin
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m = testModelWith(inproc.Deps{State: state, Commands: reg}, WithWorkingDir(workDir))
+	m = testModelWith(inproc.Deps{State: state, Commands: reg, HomeDir: homeDir}, WithWorkingDir(workDir))
 	m.resize(80, 24)
 	m.refreshViewport()
 	return
@@ -6557,14 +6557,24 @@ func TestBoxFollowsDrilledSubagentTodos(t *testing.T) {
 	}
 }
 
-func newTestModel(t *testing.T) Model {
+// newTestModelDeps builds the standard test model, letting the caller adjust
+// the in-process adapter's dependencies before the adapter is built.
+// newTestModel is the common case, with no adjustment. The temporary home is
+// shared by the adapter (Deps.HomeDir) and the model (WithHomeDir), so both
+// sides of the seam resolve the same user config.
+func newTestModelDeps(t *testing.T, edit func(*inproc.Deps)) Model {
 	t.Helper()
+	home := t.TempDir()
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	reg := commands.New()
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, Commands: reg, Auth: newMemAuth()}, WithHomeDir(t.TempDir()),
+	deps := inproc.Deps{State: state, Commands: reg, Auth: newMemAuth(), HomeDir: home}
+	if edit != nil {
+		edit(&deps)
+	}
+	m := testModelWith(deps, WithHomeDir(home),
 		// Isolate the auth surfaces by default: no test in this package should
 		// reach the developer's OS keychain or launch a browser just by
 		// constructing or driving the model. Tests that need to observe the
@@ -6575,17 +6585,23 @@ func newTestModel(t *testing.T) Model {
 	return m
 }
 
+func newTestModel(t *testing.T) Model {
+	t.Helper()
+	return newTestModelDeps(t, nil)
+}
+
 // newTestModelInRepo is like newTestModel but with a real repo working dir
 // (a temp dir is fine; the tests write plans into
 // m.state.WorkingDir/.marshal/plans).
 func newTestModelInRepo(t *testing.T) Model {
 	t.Helper()
+	home := t.TempDir()
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	reg := commands.New()
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, Commands: reg, Auth: newMemAuth()}, WithHomeDir(t.TempDir()),
+	m := testModelWith(inproc.Deps{State: state, Commands: reg, Auth: newMemAuth(), HomeDir: home}, WithHomeDir(home),
 		WithOpenBrowser(func(string) error { return nil }))
 	m.resize(80, 24)
 	m.refreshViewport()
@@ -8264,7 +8280,7 @@ func TestChangedMsgSavedSkipsProjectWrite(t *testing.T) {
 	cfg.TUI.Theme = "solarized"
 	mm, _ := m.Update(settings.ChangedMsg{Cfg: cfg, Saved: true})
 	m = mm.(Model)
-	if _, err := os.Stat(projectConfigPath(m.state.WorkingDir)); !os.IsNotExist(err) {
+	if _, err := os.Stat(config.ProjectConfigPath(m.state.WorkingDir)); !os.IsNotExist(err) {
 		t.Fatal("model must not save the project config for a Saved ChangedMsg")
 	}
 	if m.state.Config.TUI.Theme != "solarized" {
@@ -9129,7 +9145,7 @@ func TestDoctorFixSavesKeyAndReloads(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("MARSHAL_CONFIG_DIR", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
-	m := testModelWith(inproc.Deps{State: session.New(config.Default(), work, time.Unix(100, 0), session.Persistence{}), Auth: newMemAuth()},
+	m := testModelWith(inproc.Deps{State: session.New(config.Default(), work, time.Unix(100, 0), session.Persistence{}), Auth: newMemAuth(), HomeDir: home},
 		WithHomeDir(home),
 		WithOpenBrowser(func(string) error { return nil }))
 	m.state.WorkingDir = work

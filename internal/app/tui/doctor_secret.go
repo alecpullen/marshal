@@ -107,14 +107,12 @@ func (m Model) submitDoctorSecret() (tea.Model, tea.Cmd) {
 	if value == "" {
 		return m, nil
 	}
-	home, err := m.userHome()
-	if err != nil {
+	if _, err := m.userHome(); err != nil {
 		m.note(fmt.Sprintf("✗ Failed to locate home directory: %v", err))
 		m.refreshViewport()
 		return m, nil
 	}
-	if err := config.SaveUserConfigProviderAPIKey(config.UserConfigPath(home), provider,
-		config.ProviderConfig{APIKey: value}); err != nil {
+	if err := m.host.SaveProviderKey(m.ctx, provider, value); err != nil {
 		// Nothing was written: the field stays up for a retry.
 		m.note(fmt.Sprintf("✗ Failed to save API key: %v", err))
 		m.refreshViewport()

@@ -2768,7 +2768,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 
 		tuiOpts := []tui.Option{tui.WithLegacyState(state)}
 		tuiOpts = append(tuiOpts, tui.WithMemoryStore(database, projectID))
-		tuiOpts = append(tuiOpts, tui.WithLayerReloader(layerReloaderFor(homeDir, workingDir, state.Trusted)))
 		// F18: eager-seed the @file completion popup with the repo file
 		// index. Failures (no DB, empty index) are non-fatal — the TUI
 		// falls back to a lazy load on the first @-keystroke.
@@ -2801,7 +2800,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		if rt.TrustPromptPending {
 			tuiOpts = append(tuiOpts, tui.WithTrustPrompt(workingDir, trustDecide))
 		}
-		tuiOpts = append(tuiOpts, tui.WithTrustRefresh(trustRefresh))
 		if rt.DataDir != "" {
 			tuiOpts = append(tuiOpts, tui.WithModelCache(rt.DataDir))
 		}

@@ -86,8 +86,8 @@ type BrowserPanel struct {
 	pendingKey  string
 	saveBlocked string
 
-	// savePending mirrors Model's configSavePending: set when
-	// config.SaveProjectConfig fails, cleared on the next successful save.
+	// savePending mirrors Model's configSavePending: set when the session's
+	// project save fails, cleared on the next successful save.
 	// While true, an explicit commit gesture that reproduces the same
 	// (already in-memory, still-unsaved) value — which diffs empty against
 	// baseline — still retries persistence instead of silently no-op'ing.

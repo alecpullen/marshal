@@ -82,12 +82,10 @@ func (m *Model) handleModelOptionsChanged(msg modeloptions.ChangedMsg) tea.Cmd {
 	if m.pendingModelOptions != nil && m.pendingModelOptions.presetName == msg.PresetName {
 		m.pendingModelOptions.retry = false
 	}
-	home, homeErr := m.userHome()
-	if homeErr != nil {
+	if _, homeErr := m.userHome(); homeErr != nil {
 		m.note(fmt.Sprintf("Could not apply %s option: %v", msg.FieldID, homeErr))
 		return nil
 	}
-	userPath := config.UserConfigPath(home)
 	// Baseline: the session's config, read once above, which seeded the
 	// panel. The panel emitted a mutated clone, so that snapshot carries the
 	// pre-edit membership — presets another marshal process persisted after
@@ -98,7 +96,7 @@ func (m *Model) handleModelOptionsChanged(msg modeloptions.ChangedMsg) tea.Cmd {
 	// captured runner, cwd, output policy and wait, and only future launches
 	// resolve the new defaults.
 	if !m.busy {
-		saveErr, reloadErr := m.savePresetsAndReload(userPath, msg.Config, cfg.Models.Presets)
+		saveErr, reloadErr := m.savePresetsAndReload(msg.Config, cfg.Models.Presets)
 		if saveErr != nil || reloadErr != nil {
 			m.note(fmt.Sprintf("Could not apply %s option: save=%v reload=%v", msg.FieldID, saveErr, reloadErr))
 			return nil
@@ -107,7 +105,7 @@ func (m *Model) handleModelOptionsChanged(msg modeloptions.ChangedMsg) tea.Cmd {
 		return nil
 	}
 
-	if err := config.SaveUserConfigPresets(userPath, msg.Config.Models.Presets, cfg.Models.Presets); err != nil {
+	if err := m.host.SaveUserPresets(m.ctx, msg.Config.Models.Presets, cfg.Models.Presets); err != nil {
 		m.note(fmt.Sprintf("Saved %s option failed: %v", msg.FieldID, err))
 		return nil
 	}
@@ -125,16 +123,13 @@ func (m *Model) handleModelOptionsChanged(msg modeloptions.ChangedMsg) tea.Cmd {
 // load-time preset map — the merge keeps presets other marshal processes
 // wrote after it was captured. It returns the save error or, when saving
 // succeeded, the reload error (nil on full success).
-func (m *Model) savePresetsAndReload(userPath string, cfg config.Config, baseline map[string]routing.ModelPreset) (saveErr, reloadErr error) {
-	if err := config.SaveUserConfigPresets(userPath, cfg.Models.Presets, baseline); err != nil {
+func (m *Model) savePresetsAndReload(cfg config.Config, baseline map[string]routing.ModelPreset) (saveErr, reloadErr error) {
+	if err := m.host.SaveUserPresets(m.ctx, cfg.Models.Presets, baseline); err != nil {
 		m.applyNewConfig(cfg)
 		m.configSavePending = true
 		return err, nil
 	}
 	m.configSavePending = false
-	// The user file changed on disk; refresh the load-time snapshots before
-	// rebuilding the runtime so the next save diffs against fresh layers.
-	m.reloadLayers()
 	if m.configReloader != nil {
 		// reloadAgentRuntime may install cfg before reporting a cleanup
 		// error; invalidate config-derived state before attempting it.

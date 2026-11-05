@@ -150,6 +150,12 @@ var movedStateReads = map[string]string{
 	"SetNotice":     "6",
 	"ClearNotice":   "6",
 	"DismissNotice": "6",
+
+	// The model reads the layers through the session since 7b, and the
+	// adapter refreshes them after every write: the TUI holds no snapshot of
+	// its own and never installs one.
+	"Layers":    "7b",
+	"SetLayers": "7b",
 }
 
 // movedReadSites returns one "<line>\t<Name>" entry per selector X.Sel in f

@@ -2732,6 +2732,14 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		if rt.LSPManager != nil {
 			refFinder = lsp.NewSymbolQuery(rt.LSPManager, nil, 0)
 		}
+		// The seam carries the folder-trust prompt: the directory whose
+		// project config waits for a decision, or "" when none does. The TUI
+		// keeps its own trust panel until plan 7c's next task moves it behind
+		// the seam.
+		trustPrompt := ""
+		if rt.TrustPromptPending {
+			trustPrompt = workingDir
+		}
 		deps := inproc.Deps{
 			State:           state,
 			Context:         ctx,
@@ -2759,6 +2767,12 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			ReloadLayers: layerReloaderFor(homeDir, workingDir, state.Trusted),
 			TrustRefresh: trustRefresh,
 			HomeDir:      homeDir,
+			// The folder-trust prompt and its decision reach the seam, and the
+			// session names the runtime's tools. The TUI's own options stay
+			// wired until plan 7c's next tasks delete them.
+			TrustPrompt: trustPrompt,
+			DecideTrust: trustDecide,
+			Tools:       rt.ToolNames,
 		}
 		if providerReady {
 			deps.Work = rt

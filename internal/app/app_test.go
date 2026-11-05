@@ -6210,6 +6210,43 @@ func TestRunPassesAuthResolverToTheSeam(t *testing.T) {
 	}
 }
 
+// TestRunWiresToolNames pins the trust and tools half of Run's Deps wiring: the
+// session names no tools while no provider is built, and the host reports no
+// pending trust decision for a directory with no project config. Both values
+// reach the session from Run, so a dropped field would leave the trust panel
+// and the tool roster reading nothing.
+func TestRunWiresToolNames(t *testing.T) {
+	dir := t.TempDir()
+	var (
+		tools       []string
+		hasTools    bool
+		trustPrompt string
+	)
+	err := Run(context.Background(), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return time.Unix(100, 0) }),
+		WithWorkingDir(dir),
+		WithHomeDir(t.TempDir()),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return config.Default(), nil
+		}),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+			tools, hasTools = model.(tui.Model).Session().Tools()
+			trustPrompt = model.(tui.Model).Host().TrustPrompt()
+			return ProgramResult{}
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if hasTools {
+		t.Errorf("Session().Tools() = %v, true; want false with no provider configured", tools)
+	}
+	if trustPrompt != "" {
+		t.Errorf("Host().TrustPrompt() = %q, want \"\" for a directory with no project config", trustPrompt)
+	}
+}
+
 // TestRunWiresTheConfigSeam pins the config half of Run's Deps wiring: the
 // session names the files a config write changes, the runtime's reload path
 // reaches ReloadConfig, SaveVerifyCommands' file becomes the session's layers

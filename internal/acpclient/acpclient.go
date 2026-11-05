@@ -45,6 +45,20 @@ type Host interface {
 	// ACP: session/new (exists).
 	NewSession(ctx context.Context, name string) (Session, error)
 
+	// TrustPrompt is the directory whose project config waits for a trust
+	// decision, or "" when none does. It does not change while the host
+	// runs.
+	//
+	// ACP: trust/prompt (new in P3).
+	TrustPrompt() string
+
+	// DecideTrust answers the trust prompt for dir. After a trust the client
+	// ends its program, and the app restarts with the project config in
+	// force; after a decline the session carries on.
+	//
+	// ACP: trust/decide (new in P3).
+	DecideTrust(ctx context.Context, dir string, decision acpwire.TrustDecision) error
+
 	// ProviderTemplates lists the provider catalog, sorted by ID, each with
 	// every field.
 	//
@@ -180,6 +194,12 @@ type Session interface {
 	// ACP: none (the client fires it; P3's mirror fires it after applying a
 	// session/update notification).
 	Changed() <-chan struct{}
+
+	// Tools names every tool the session's registry holds, sorted. It reports
+	// false while the session has no registry: its provider is not built.
+	//
+	// ACP: session/tools (new in P3).
+	Tools() ([]string, bool)
 
 	// SendNow submits one Send now request: its text goes to the running
 	// turn at the next safe boundary, interrupting the operation in flight.

@@ -19,6 +19,8 @@ type Method struct {
 var Methods = []Method{
 	{Iface: "Host", Name: "SharedFilesystem"},
 	{Iface: "Host", Name: "NewSession", ACP: "session/new", Exists: true},
+	{Iface: "Host", Name: "TrustPrompt", ACP: "trust/prompt"},
+	{Iface: "Host", Name: "DecideTrust", ACP: "trust/decide"},
 	{Iface: "Host", Name: "ProviderTemplates", ACP: "config/provider_templates"},
 	{Iface: "Host", Name: "ProbeProvider", ACP: "config/probe_provider", Exists: true},
 	{Iface: "Host", Name: "CanProbeModel", ACP: "config/probe_model"},
@@ -38,6 +40,7 @@ var Methods = []Method{
 	{Iface: "Session", Name: "ID", ACP: "session/new", Exists: true},
 	{Iface: "Session", Name: "Status", ACP: "session/status"},
 	{Iface: "Session", Name: "Changed"},
+	{Iface: "Session", Name: "Tools", ACP: "session/tools"},
 	{Iface: "Session", Name: "SendNow", ACP: "session/steer", Exists: true},
 	{Iface: "Session", Name: "Sheet", ACP: "session/sheet"},
 	{Iface: "Session", Name: "RefreshSheet", ACP: "session/sheet"},

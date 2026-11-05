@@ -203,9 +203,10 @@ type Session struct {
 	// auth is the runtime's credential and OAuth dependency: Deps.Auth, or
 	// provider.DefaultAuthResolver() when the caller supplied none. Never nil.
 	auth provider.AuthResolver
-	// reloadConfig, reloadLayers, trustRefresh, homeDir and userConfig are the
-	// runtime's config-write dependencies: Deps.ReloadConfig, Deps.ReloadLayers,
-	// Deps.TrustRefresh, Deps.HomeDir and Deps.UserConfigPath.
+	// reloadConfig, reloadLayers, trustRefresh, homeDir and userConfigFile are
+	// the runtime's config-write dependencies: Deps.ReloadConfig,
+	// Deps.ReloadLayers, Deps.TrustRefresh, Deps.HomeDir and
+	// Deps.UserConfigPath.
 	reloadConfig   func(cfg config.Config) error
 	reloadLayers   func() (config.Layers, bool)
 	trustRefresh   func(dir string)

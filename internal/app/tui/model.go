@@ -1813,7 +1813,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshViewport()
 			return m, nil
 		}
-		// persistAndReload already refreshed the layer snapshots.
+		// The adapter refreshed the layer snapshots when the panel's own
+		// save wrote the file; persistAndReload below only reloads the
+		// runtime.
 		for _, receipt := range msg.Receipts {
 			m.note("✓ " + receipt + " · " + relPath(st.WorkingDir, st.ProjectConfigPath))
 		}
@@ -6827,6 +6829,14 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 	// marshal process persisted after this process loaded are on disk but in
 	// neither the write nor the baseline, and the merge preserves them
 	// instead of clobbering (the cross-process regression fixed here).
+	//
+	// The userHome gate stays even though the adapter resolves the same path
+	// itself: it keeps the miss reported as a missing home directory rather
+	// than as a failed save, matching every other user-global write here.
+	if _, err := m.userHome(); err != nil {
+		m.note(fmt.Sprintf("✗ Failed to locate home directory: %v", err))
+		return
+	}
 	if err := m.host.SaveUserProviders(m.ctx, newCfg.Providers, cfg.Providers); err != nil {
 		m.note(fmt.Sprintf("✗ Failed to save provider: %v", err))
 		return

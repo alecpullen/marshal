@@ -671,6 +671,40 @@ func drillBrowserToRow(t *testing.T, b *BrowserPanel, want string) {
 	t.Fatalf("drillBrowserToRow(%q) exhausted budget; rows: %v", want, ids)
 }
 
+// TestGlobalRowWithoutHostFallsThroughToProjectSave pins userPath()'s host-less
+// rule: a browser built with a session but no host has nowhere to write the
+// user config, so a global-target row falls through to the project save rather
+// than failing or silently doing nothing.
+func TestGlobalRowWithoutHostFallsThroughToProjectSave(t *testing.T) {
+	dir := t.TempDir()
+	projectPath := filepath.Join(dir, ".marshal", "config.toml")
+	_, sess := testSeam(t, dir, "")
+	b := NewBrowser(config.Default(), "", WithSession(sess))
+
+	drillBrowserToRow(t, b, "Theme")
+	cmd := b.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	if cmd == nil {
+		t.Fatal("cycling an enum must produce a command")
+	}
+	changed, ok := cmd().(ChangedMsg)
+	if !ok {
+		t.Fatalf("want ChangedMsg, got %T", cmd())
+	}
+	if changed.SaveErr != nil {
+		t.Fatalf("save failed: %v", changed.SaveErr)
+	}
+	if changed.GlobalTarget {
+		t.Fatal("a global row without a host must take the project path")
+	}
+	data, err := os.ReadFile(projectPath)
+	if err != nil {
+		t.Fatalf("project config was not written: %v", err)
+	}
+	if !strings.Contains(string(data), "theme") {
+		t.Fatalf("theme change missing from project config:\n%s", data)
+	}
+}
+
 func TestGlobalTargetRowWritesUserConfigOnly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

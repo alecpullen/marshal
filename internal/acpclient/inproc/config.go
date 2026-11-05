@@ -275,7 +275,7 @@ func (s *Session) SaveProjectConfig(ctx context.Context, cfg config.Config) erro
 	if err := config.SaveProjectConfig(s.projectConfigPath(), cfg, s.state.Layers()); err != nil {
 		return err
 	}
-	if s.trustRefresh != nil {
+	if s.trustRefresh != nil && s.state.WorkingDir != "" {
 		s.trustRefresh(s.state.WorkingDir)
 	}
 	refreshLayers(s.state, s.reloadLayers)

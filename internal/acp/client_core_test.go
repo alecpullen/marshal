@@ -9,12 +9,14 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"marshal/internal/acpclient"
 	"marshal/internal/acpclient/rpc"
 	"marshal/internal/acpwire"
+	"marshal/internal/app"
 )
 
 // startTestAgent serves a server on the agent end of a pipe and returns the
@@ -303,4 +305,96 @@ func TestServerRequestsReachTheClient(t *testing.T) {
 	if res.N != 42 {
 		t.Fatalf("the agent saw n = %d, want 42", res.N)
 	}
+}
+
+// startAgentHost serves the real agent host's handlers on the agent end of a
+// pipe and returns the client's transport with the server, so a test can read
+// the connection's marshal flag. The host is built as acpclient_methods_test.go
+// builds it.
+func startAgentHost(t *testing.T) (rpc.Transport, *Server) {
+	t.Helper()
+
+	h, err := newAgentHost(runConfig{
+		startRuntime: func(ctx context.Context, opts ...app.Option) (*app.Runtime, error) {
+			return nil, errors.New("no runtime in tests")
+		},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("newAgentHost: %v", err)
+	}
+
+	client, agent := rpc.Pipe()
+	srv := NewServer(agent, agent, WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+	// The agent's end sets its own cap; neither end inherits the default (P3 R2).
+	srv.MaxLineBytes = rpc.MaxFrameBytes
+
+	var alive atomic.Bool
+	alive.Store(true)
+	cleanup := h.registerHandlers(srv, &alive)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = srv.Serve(ctx)
+	}()
+
+	t.Cleanup(func() {
+		cancel()
+		cleanup()
+		_ = agent.Close()
+		_ = client.Close()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("the agent host did not stop")
+		}
+	})
+	return client, srv
+}
+
+// TestDialAgainstTheAgentHost pins both halves of the handshake against the
+// real handlers: Dial declares the capability and the agent records it, and a
+// client that only sends protocolVersion still sees the capability without
+// being recorded as a marshal client.
+func TestDialAgainstTheAgentHost(t *testing.T) {
+	t.Run("dial declares and is recorded", func(t *testing.T) {
+		client, srv := startAgentHost(t)
+
+		host, err := rpc.Dial(context.Background(), client, rpc.DialOptions{AgentVersion: AgentVersion})
+		if err != nil {
+			t.Fatalf("Dial: %v", err)
+		}
+		defer host.Close()
+
+		if got := host.Agent().Name; got != "marshal" {
+			t.Fatalf("Agent().Name = %q, want %q", got, "marshal")
+		}
+		if !srv.marshalClient() {
+			t.Fatal("the agent did not record the client's marshal capability")
+		}
+	})
+
+	t.Run("a plain initialize still sees the capability", func(t *testing.T) {
+		client, srv := startAgentHost(t)
+
+		conn := rpc.NewConn(client, rpc.Handlers{})
+		defer conn.Close()
+
+		var result acpwire.InitializeResult
+		if err := conn.Call(context.Background(), "initialize", map[string]any{"protocolVersion": 1}, &result); err != nil {
+			t.Fatalf("initialize: %v", err)
+		}
+
+		if result.AgentCapabilities.Marshal == nil {
+			t.Fatal("agentCapabilities.marshal is missing for a client without the capability")
+		}
+		if got := result.AgentCapabilities.Marshal.ProtocolVersion; got != acpwire.MarshalProtocolVersion {
+			t.Fatalf("agentCapabilities.marshal.protocolVersion = %d, want %d", got, acpwire.MarshalProtocolVersion)
+		}
+		if srv.marshalClient() {
+			t.Fatal("the agent recorded a marshal client for a client that declared nothing")
+		}
+	})
 }

@@ -273,6 +273,7 @@ func TestSeamImportAllowedClassifies(t *testing.T) {
 	denied := []string{
 		"marshal",
 		"marshal/internal/acpclient/inproc",
+		"marshal/internal/acpclient/rpc",
 		"marshal/internal/app/session",
 		"marshal/internal/viewmodel",
 		"marshal/internal/repo/gitinfo",

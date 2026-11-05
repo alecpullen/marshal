@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app"
 	"marshal/internal/app/config"
 	"marshal/internal/app/logging"
@@ -17,7 +18,8 @@ import (
 
 // InitializeParams is the parameter type for the initialize method.
 type InitializeParams struct {
-	ProtocolVersion int `json:"protocolVersion"`
+	ProtocolVersion    int                         `json:"protocolVersion"`
+	ClientCapabilities *acpwire.ClientCapabilities `json:"clientCapabilities,omitempty"`
 }
 
 // acpLogLevel returns the slog level for the ACP server, controlled by the

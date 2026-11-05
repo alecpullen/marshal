@@ -2545,3 +2545,64 @@ field and `AuthResolver`; `probe.ProviderWithAuth`, the default-resolver form an
 and `codexOAuthEngine`. `app.Run` now hands the runtime's resolver to the adapter
 alone. T1 stays green throughout and T1b gained no names, because no `State` read
 moved. T1's allowlist lost 14 entries across 9 files, five keys entirely.
+
+**Plan 7b (config through the seam), branch `p2-7b-config`.** Added
+`internal/acpwire/config.go`: `PresetSetup`, the preset setup's three counts plus
+the models.dev provenance sidecar as opaque JSON with the sorted names it
+manages. `acpwire.SessionStatus` gains `UserConfigPath` and `ProjectConfigPath`,
+the two files a config write changes.
+
+`acpclient.Host` gains six methods with their `Methods` rows: `SaveUserValue` on
+`config/set_value`, `SaveUserProviders` on `config/save_providers`,
+`SaveUserPresets` on `config/save_presets`, `SaveProviderKey` on
+`config/set_provider_key`, which exists, `PreparePresets` on
+`config/prepare_presets` and `SaveProvenance` on `config/save_provenance`.
+`acpclient.Session` gains seven: `Config` and `Layers`, both on `session/config`,
+`ApplyConfig` on `session/apply_config`, `ReloadConfig` on
+`session/reload_config`, `ReconnectMCP` on `session/mcp_reconnect`,
+`SaveProjectConfig` on `session/save_project_config` and `SaveVerifyCommands` on
+`session/save_verify_commands`. Twelve of the thirteen ride eleven new ACP
+methods; only `SaveProviderKey` reuses one that exists.
+
+`inproc.Deps` gains `ReloadConfig`, `ReloadLayers`, `TrustRefresh`, `HomeDir` and
+`UserConfigPath`, and `tui.Model` gains `Session()`, which app's wiring test
+drives the seam through. A write does not reload — a connect makes three writes
+before one reload — but every successful write refreshes the session's layers
+through `ReloadLayers`, keeping the old snapshot when the read fails, and a
+project save also advances the permanent-trust hash through `TrustRefresh`
+first, the order `persistAndReload` used.
+
+The TUI's config reads, writes and reloads now go through the seam, apart from
+the skills panel's, which plan 8 moves. Reads are `Session.Config` and
+`Session.Layers`, one call per function; writes are the six host calls and the
+two session calls, each keeping the TUI's own order of saves, notes and its busy
+check; reloads are `ApplyConfig`, `ReloadConfig` and `ReconnectMCP`, whose false
+report replaces the TUI's nil-reloader checks. Preset setup runs agent side: the
+wizard keeps its capability probe and hands the folded models to
+`PreparePresets`, which copies the preset map, loads the catalog only when
+consent allows, reads the sidecar and runs `presetsetup.Apply`; the provenance
+comes back as raw JSON that the TUI only stores, through `SaveProvenance`. The
+data directory stays where it was: `PreparePresets` reads `Deps.ModelCacheDir`
+as given, and `SaveProvenance` falls back to `config.DataDir` of the home.
+
+The bridge now reads frames up to 64 MiB, since a long session's
+`session/stack` result or first `stack_patch` passes 2 MiB, and a larger frame
+fails every pending request with `bridge: read child output: …` and kills the
+generation, so `supervise` respawns it instead of the connection wedging.
+
+Deleted: the model's `WithConfigReloader`, `WithConfigLayers`,
+`WithLayerReloader`, `WithTrustRefresh`, `WithModelCache`, `ConfigReloader`,
+`configReloader`, `configLayers`, `layerReloader`, `trustRefresh`,
+`modelCacheDir`, `reloadLayers`, `adoptLayers` and `projectConfigPath`;
+`connect.Opts.DataDir` and the wizard's `dataDir` field; the settings browser's
+`cfgPath`, `layers`, `SetLayers` and `Layers`, the `NewBrowser` path parameter
+and its `os.UserHomeDir` fallback; and the roster's `cfgPath`, `layers`,
+`SetLayers` and `Layers`, replaced by the session its constructors now take.
+`Run` stops passing all five removed options, so the adapter alone holds the
+reload path, the layer reloader and the trust refresh.
+
+T1 stays green throughout. T1b gained three names at plan `7b` — `Layers`,
+`SetLayers` and `RebaseInteractionConfig` — because the model reads the layers
+through the session and the adapter is what refreshes them. T1's allowlist lost
+21 entries across 6 files, four keys entirely (`connect/connect.go`,
+`doctor_secret.go`, `model_options.go` and `settings/browser.go`).

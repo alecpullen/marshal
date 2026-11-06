@@ -273,8 +273,9 @@ New test `TestToolsDocumentationDrift` in `internal/app/tools_doc_test.go`,
 using the `StartRuntime` fixture pattern already established by
 `TestDefaultPromptBudget` and `TestNoToolDescriptionNamesARetiredTool` in the
 same package — that is the only place the *complete* registry exists, since
-`agent.*` is registered by `app.Run` (`app.go:834-863`) and `skill.load` by
-`skills.RegisterTool` (`tool.go:20`).
+`agent.*` is registered by `app.StartRuntime` (`app.go:1145` and the three
+registrations that follow) and `skill.load` by `skills.RegisterTool`
+(`tool.go:20`, called from `app.go:1104`).
 
 The test reads the docs from the repository root via
 `filepath.Join("..", "..", "docs", "tools")`, following the existing precedent

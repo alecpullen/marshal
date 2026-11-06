@@ -37,11 +37,12 @@ runtime can actually serve them — offering a tool that can only answer
 | `web.search` | additionally requires `search_url` | `native.go:254-258` |
 
 **3. App-level additions**, after the policy engine exists — `native` cannot
-reach the engine, so these are registered by `app.Run`:
+reach the engine, so these are registered by the agent builder
+`app.StartRuntime` uses (`buildAgentRunnerWithLock`, `internal/app/app.go:868`):
 
 - `agent.run`, `agent.await`, `agent.kill`, `agent.steer`
-  (`internal/app/app.go:834` and the three registrations that follow).
-- `skill.load` (`internal/skills/tool.go:20`, called from `app.go:799`).
+  (`internal/app/app.go:1145` and the three registrations that follow).
+- `skill.load` (`internal/skills/tool.go:20`, called from `app.go:1104`).
 
 Two further surfaces register outside `native` entirely and are documented in
 their own packages, not here: the desktop `browser.*` tools when

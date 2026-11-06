@@ -117,8 +117,11 @@ func NewEmbedded(ctx context.Context, opts ...Option) (*Embedded, error) {
 	e.trustDecide = func(d trust.Decision) {
 		switch d {
 		case trust.DecisionTrustPermanent:
-			abs := trust.Canonicalize(workingDir)
-			hash, _ := trust.ConfigHashFor(workingDir)
+			// Read the field, not the constructor's local: Start refreshes it
+			// from each runtime it builds, and a permanent decision must name
+			// the directory the current session actually runs in.
+			abs := trust.Canonicalize(e.workingDir)
+			hash, _ := trust.ConfigHashFor(e.workingDir)
 			_ = trust.NewStore(trustStoreDir).SetTrust(abs, true, hash)
 			e.reloadForTrust = true
 		case trust.DecisionTrustSession:

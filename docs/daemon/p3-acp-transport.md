@@ -75,8 +75,8 @@ new client.
   (`NewServer`, `:119`). It reads each inbound frame with a 1 MiB cap
   (`:312`). Handlers run on their own goroutines (`handlerWG`), and nothing
   orders a response after the notifications its handler caused. There is
-  no request cancellation: no `$/cancelRequest` or equivalent. 70 methods
-  are registered (`host.go`).
+  no request cancellation: no `$/cancelRequest` or equivalent. 71 methods
+  are registered (`host.go`), plus the `session/cancel` notification.
 - **What the agent pushes today:**
   - the ACP chunk kinds (`agent_message_chunk`, `agent_thought_chunk`,
     `tool_call`, …);
@@ -909,7 +909,7 @@ the agent sends today. Plan 3b adds `session/status`, `session_status`,
   `WithProgramRunner` (whose nil is ignored) and `WithApp`, which passes
   `app.Option`s through. `app`'s non-test code now imports neither `tui`, nor
   Bubble Tea, nor `inproc`.
-- **Tests moved, not rewritten.** The 27 `TestRun…` tests moved to
+- **Tests moved, not rewritten.** The 24 `TestRun…` tests moved to
   `internal/launch/launch_test.go` with copies of the helpers they use, each
   `app` option wrapped in one `WithApp`. `TestRunResolvesOptionsOnce` stayed in
   `app` as `TestNewEmbeddedResolvesOptionsOnce`, since it counts applications of
@@ -922,7 +922,8 @@ the agent sends today. Plan 3b adds `session/status`, `session_status`,
   ./internal/app` prints none of them.
 - **The counts did not move** (re-measured on this branch):
   `acpclient.Methods` still has 110 rows, 35 of them an existing ACP method and
-  72 new in P3, with 3 carrying none; `acp.Server` still registers 70 methods.
+  72 new in P3, with 3 carrying none; `acp.Server` still registers 71 methods
+  (plus the `session/cancel` notification).
   `internal/acpclient/acpclient.go`, `methods.go`, `internal/acp/host.go` and
   `server.go` are untouched by this plan.
 - **Left for plan 3b:** the first ACP handlers that call the service, and each

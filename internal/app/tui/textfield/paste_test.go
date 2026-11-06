@@ -73,7 +73,9 @@ func TestPasteReachesSelectedTextInputs(t *testing.T) {
 			return fl.InputValue()
 		},
 		"skills panel filter": func(t *testing.T) string {
-			p := skills.NewPanel(t.TempDir(), t.TempDir(), false, nil, nil)
+			state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+			_, sess := inproc.New(inproc.Deps{State: state, HomeDir: t.TempDir()})
+			p := skills.NewPanel(sess, false)
 			p.Update(tea.PasteMsg{Content: pasted})
 			return p.FilterValue()
 		},

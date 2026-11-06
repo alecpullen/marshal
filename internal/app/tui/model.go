@@ -62,7 +62,6 @@ import (
 	"marshal/internal/pubsub"
 	"marshal/internal/sddauthor"
 	"marshal/internal/sddplans"
-	"marshal/internal/skills"
 	"marshal/internal/strutil"
 	"marshal/internal/watch"
 )
@@ -231,7 +230,6 @@ type Model struct {
 	memoryProject      int64
 	homeDir            string
 	workDir            string
-	skillIndex         *skills.Index
 	agentCancel        context.CancelFunc
 	// syncedAccessMode is the session mode the last reconciliation adopted.
 	// The sync is edge-triggered on it: a mode the model already reflects is
@@ -643,15 +641,6 @@ func WithClipboard(w clipboard.Writer, remote func() bool) Option {
 	return func(m *Model) {
 		m.copyWriter = w
 		m.copyRemote = remote
-	}
-}
-
-// WithSkillIndex hands the runtime skill index to the TUI so panels (the
-// skills panel in particular) can load skills the runtime has already
-// loaded, rather than re-reading them from disk.
-func WithSkillIndex(idx *skills.Index) Option {
-	return func(m *Model) {
-		m.skillIndex = idx
 	}
 }
 

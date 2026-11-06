@@ -159,19 +159,24 @@ var movedStateReads = map[string]string{
 	"SetLayers":               "7b",
 	"RebaseInteractionConfig": "7b",
 
-	// Every config read goes through Session.Config since 7b. The skills panel
-	// is the one holdout — plan 8 hands it the session — and deferredStateReads
-	// records that as an exception rather than a hole.
+	// Every config read goes through Session.Config since 7b.
 	"Config": "7b",
+
+	// The skills panel drives the session's skill surfaces through the seam
+	// since 8b: the gate is read from Status and changed through the session,
+	// and "Load now" asks whether the skill is already active agent side.
+	"SkillGateEnabled":       "8b",
+	"SkillGateSetEnabled":    "8b",
+	"SkillGateDecisions":     "8b",
+	"SkillGateClearDecision": "8b",
+	"HasActiveSkill":         "8b",
 }
 
 // deferredStateReads names, per file, the moved reads that file still makes and
 // the plan that finishes the move. It exists so a move staged across plans is
 // still enforced everywhere else: the guard fails the moment any *other* file
 // reads the name, and an entry fails the guard once its last read disappears.
-var deferredStateReads = map[string]map[string]string{
-	"skills/panel.go": {"Config": "8"},
-}
+var deferredStateReads = map[string]map[string]string{}
 
 // movedReadSites returns one "<line>\t<Name>" entry per selector X.Sel in f
 // where X is itself a selector whose Sel is "state" and whose X is an

@@ -16,8 +16,11 @@ down; no P2 plan changes them now. P3's layering plan re-measures them.
 Plans 1 and 4a were written while P2
 plan 7b ran ([plan 1](plans/2026-11-05-p3-1-client-core-plan.md),
 [plan 4a](plans/2026-11-05-p3-4a-stack-wire-plan.md)), and plan 3a while
-P2 plans 8a and 8b ran ([plan 3a](plans/2026-11-06-p3-3a-ordering-plan.md));
-the rest are written one at a time once P2 closes.
+P2 plans 8a and 8b ran ([plan 3a](plans/2026-11-06-p3-3a-ordering-plan.md)).
+Plans 2 and 6a were written once P2 had closed, to run alongside each
+other ([plan 2](plans/2026-11-07-p3-2-layering-plan.md),
+[plan 6a](plans/2026-11-07-p3-6a-async-calls-plan.md)). The rest are
+written one or two at a time, as what they depend on lands.
 
 Decided with the user (2026-11-05):
 - **The adapter's logic moves, and is not rewritten.** It becomes the
@@ -150,7 +153,7 @@ marked new.
 - `session/request_secret` — `Session.AnswerSudo`.
 - `session/rollback` — `Session.Rollback`.
 
-### Plan 6 — turns, runs, the end flow and sessions
+### Plan 6b — turns, runs, the end flow and sessions
 
 - `session/review` — `Session.Review`.
 - `session/agent_run` — `Session.RunAgent`.
@@ -256,7 +259,18 @@ asynchronous call (R6).
   now, and the same methods. Handlers decode the params, call the
   service, and encode the result. `inproc`'s tests move with it as the
   service's parity tests. What gets deleted is the in-process transport
-  of the interface, not the behaviour behind it.
+  of the interface, not the behaviour behind it. Plan 2 refines where it
+  lives:
+  - **It is `internal/acp/service`,** a package of its own that imports
+    neither `app` nor `acp`. `app` builds its `Deps` and its runtime
+    methods return its types, and `acp` imports `app`, so the service
+    cannot sit in `acp` itself. `acp`'s handlers import it from plan 3b.
+  - **`(*app.Runtime).ServiceDeps`** builds the `Deps` from a runtime, as
+    `Run` built them: for embedded mode from plan 2, and for each ACP
+    session from plan 3b. Only the startup trust prompt is the embedding's
+    own.
+  - Until plan 8, `inproc` is aliases for the service's types and its
+    constructor, so the TUI and its tests are unchanged.
 - **`internal/launch`** (new) is the composition root for embedded
   mode:
   - it starts the agent host on one end of a pipe and dials the client on
@@ -268,7 +282,11 @@ asynchronous call (R6).
   `app` keeps building runtimes and stops importing `tui`. The runtime
   options `app_test.go` relies on stay in `app`, and `launch` passes them
   through to the agent host's runtime starter. `cmd/marshal` calls
-  `launch.Run`.
+  `launch.Run`. In plan 2, `app.Embedded` keeps what the loop needs from
+  those options, resolved once: the directories, the host registry, the
+  credential resolver, the trust decision and the shutdown sequence.
+  `launch` keeps the loop, the program and the TUI. Plan 8 puts the pipe
+  between them.
 
 ### R2. Wire protocol
 
@@ -416,18 +434,34 @@ asynchronous call (R6).
   without a provider call, a subprocess or a network round trip, and it
   stays under the budget R10 sets.
 - **Every other call becomes asynchronous.** The TUI sends it from a
-  `tea.Cmd` and acts on a result message. P2 named five:
+  `tea.Cmd` and acts on a result message. P2 named five, and plan 6a's
+  inventory fixed the list at seven:
   - `Command`: its note and any agent goal land when the result arrives;
   - `PlanPreflight`: the cast list opens when the preflight arrives;
   - `Host.NewSession`: the swap happens on its result;
-  - `Postmortem`;
   - `CanProbeModel`: the settings browser shows "detecting…" only once
-    the check says it can probe.
-- **The inventory.** P3's first plan measures every call made in `Update`
-  at its base and fixes this list. In embedded mode a cheap call costs one
-  in-memory round trip, well under a millisecond, so the rest stay
-  synchronous. Making all of them asynchronous for a remote daemon is P4's
-  call (G2).
+    the check says it can probe;
+  - `ReloadConfig`, at its five call sites (plan 6a): it rebuilds the
+    runtime, which starts MCP servers and builds providers;
+  - `ReconnectMCP` (plan 6a): the same rebuild;
+  - `RefreshSheet` when the sheet opens (plan 6a): it runs git. The sheet
+    opens when the refresh returns, so its first frame stays fresh.
+
+  `Postmortem`, the fifth P2 named, already runs in a command.
+- **They keep their order.** The model runs the converted calls it makes
+  one at a time, in the order it made them. Each starts on the `Update`
+  goroutine from the model as it is then, so a call made after `/new`
+  goes to the new session. Its result is handled on the `Update`
+  goroutine. A quit waits for the call in flight, and drops the ones
+  queued behind it. Rendering, scrolling and every synchronous call go on
+  meanwhile. The settings browser's `CanProbeModel` runs as the browser's
+  own command, as its probes already do, and its stale-result guard drops
+  a late answer (plan 6a).
+- **The inventory.** Plan 6a measured every call made on the `Update`
+  goroutine at `1d34fb9a` and fixed the list above. In embedded mode a
+  cheap call costs one in-memory round trip, well under a millisecond, so
+  the rest stay synchronous. Making all of them asynchronous for a remote
+  daemon is P4's call (G2).
 
 ### R7. Sessions
 
@@ -543,11 +577,13 @@ conformance suite (V1) before anything switches.
    `*acpwire.Error`, `$/cancel_request` for handlers that opt in,
    `$/progress`, and the capability. The pipe's round trip is measured
    against R10.
-2. **Layering**, once P2 closes. `launch` takes the TUI half of
-   `app.Run`, and `app` stops importing `tui`. `inproc`'s logic moves
-   into `internal/acp` as the per-session service, and `inproc` becomes a
-   thin wrapper over that service, so the TUI is unchanged. Re-measure the
-   counts above and the R6 inventory.
+2. **Layering** ([plan](plans/2026-11-07-p3-2-layering-plan.md)), once
+   P2 closed, alongside plan 6a. `inproc`'s logic moves to
+   `internal/acp/service`, and `inproc` becomes aliases for it, so the
+   TUI is unchanged. `app.Embedded` and `(*Runtime).ServiceDeps` take the
+   runtime half of `app.Run`, `launch` takes the TUI half, and `app`
+   stops importing `tui`. Re-measure the counts above. (The R6 inventory
+   moved to plan 6a.)
 3. **Status and ordering**, in two plans:
    - **3a. Ordering** ([plan](plans/2026-11-06-p3-3a-ordering-plan.md)),
      alongside P2's close-out. The read-your-writes guarantee in `Server`
@@ -571,9 +607,15 @@ conformance suite (V1) before anything switches.
 5. **Requests.** The `request_permission` extensions,
    `request_secret`, `request_settled`, the `Pending` mirror and the
    answer calls.
-6. **Turns and runs.** Prompt, stop, steering, interaction and effort,
-   the work mirror, pipelines, the end flow and sessions, with the R6
-   asynchronous conversions.
+6. **Turns and runs**, in two plans:
+   - **6a. The asynchronous calls** ([plan](plans/2026-11-07-p3-6a-async-calls-plan.md)),
+     alongside layering. The R6 inventory, and the TUI's conversions of
+     the calls it names, over `inproc`: they need only the TUI, which no
+     other P3 plan before plan 8 changes. In process they still run on a
+     goroutine, so the conversions and their ordering are proved before
+     anything crosses a wire.
+   - **6b. Turns and runs.** Prompt, stop, steering, interaction and
+     effort, the work mirror, pipelines, the end flow and sessions.
 7. **The rest.** Notes, commands, config, providers, trust and project
    data: the remaining new methods, probably as two plans.
 8. **Switch.** `launch` runs the TUI over the pipe, the test helpers build

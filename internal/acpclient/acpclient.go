@@ -676,4 +676,47 @@ type Session interface {
 	//
 	// ACP: session/messages (new in P3).
 	Messages(ctx context.Context, query acpwire.MessageQuery) (acpwire.MessagePage, error)
+
+	// FileIndex returns the repository's indexed file paths, for the @
+	// completion popup. A session without an index returns none.
+	//
+	// ACP: session/file_index (new in P3).
+	FileIndex(ctx context.Context) ([]string, error)
+
+	// Intelligence returns the doctor's intelligence checks: the index, the
+	// embeddings, the language servers and the index watcher.
+	//
+	// ACP: session/intelligence (new in P3).
+	Intelligence(ctx context.Context) ([]acpwire.IntelligenceCheck, error)
+
+	// Plans lists the plans an SDD run can execute, from the configured plans
+	// directory. A plan that does not parse is listed with its error.
+	//
+	// ACP: session/plans (new in P3).
+	Plans(ctx context.Context) ([]acpwire.PlanCandidate, error)
+
+	// DiscardCandidate removes one authored plan candidate. It refuses a path
+	// that is not a regular file directly inside the plans directory.
+	//
+	// ACP: session/sdd_discard (new in P3).
+	DiscardCandidate(ctx context.Context, path string) error
+
+	// ScaffoldPlan writes the runnable starter plan into the plans directory.
+	// It never overwrites a file that is already there.
+	//
+	// ACP: session/sdd_scaffold (new in P3).
+	ScaffoldPlan(ctx context.Context) (acpwire.ScaffoldResult, error)
+
+	// Diff returns the unified diff of query's range in the session's working
+	// directory, with three lines of context. It never changes the
+	// repository.
+	//
+	// ACP: session/diff (exists). P3 gives it an optional head.
+	Diff(ctx context.Context, query acpwire.DiffQuery) (string, error)
+
+	// ReadFile reads one regular file, named relative to the session's
+	// working directory. It refuses a path that leaves the directory.
+	//
+	// ACP: session/file (exists).
+	ReadFile(ctx context.Context, path string) (acpwire.FileContent, error)
 }

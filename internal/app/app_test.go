@@ -6248,6 +6248,41 @@ func TestRunWiresToolNames(t *testing.T) {
 	}
 }
 
+// TestRunWiresTheFileIndex pins the @ popup's seam wiring: Run gives the
+// session the index reader, so the eager seed and the lazy load share one
+// path instead of the model reaching the database itself.
+func TestRunWiresTheFileIndex(t *testing.T) {
+	dir := t.TempDir()
+	var (
+		paths []string
+		err   error
+	)
+	runErr := Run(context.Background(), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return time.Unix(100, 0) }),
+		WithWorkingDir(dir),
+		WithHomeDir(t.TempDir()),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return config.Default(), nil
+		}),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+			paths, err = model.(tui.Model).Session().FileIndex(ctx)
+			return ProgramResult{}
+		}),
+	)
+	if runErr != nil {
+		t.Fatalf("Run returned error: %v", runErr)
+	}
+	if err != nil {
+		t.Fatalf("Session().FileIndex() error = %v, want nil", err)
+	}
+	for _, path := range paths {
+		if path == "" {
+			t.Errorf("Session().FileIndex() = %v, want non-empty paths", paths)
+		}
+	}
+}
+
 // TestRunWiresTheSessionsToolsFromTheRuntime pins the positive half of the
 // tools wiring, which TestRunWiresToolNames cannot: with a provider built, the
 // session names the runtime's registry, so dropping `Tools: rt.ToolNames` from

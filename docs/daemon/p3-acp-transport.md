@@ -646,3 +646,80 @@ cadence, and a client mirror fed by the patches the agent already sends. Plan
   so each session a connection has signalled keeps one `Changed` channel for
   the connection's lifetime: 4b's session close is where that goes.
 
+### Plan 3a — ordering
+
+The first half of plan 3: R2's read-your-writes guarantee for the update kinds
+the agent sends today. Plan 3b adds `session/status`, `session_status`,
+`Changed` and the notice calls, and adds `session_status` to the barrier.
+
+- **`internal/acp/fence.go`** holds the mechanism. A `fence` is an unbuffered
+  channel of requests and a `done` channel closed once by `close`: `ask` hands
+  a request channel over and waits for it to be closed, and returns at once
+  when `ctx` ends or the forwarder closes the fence. A `fenceSet` keeps the
+  live fences of one manager's forwarders by session, in the order they were
+  added; `wait` copies the session's slice under the mutex and asks each fence
+  outside it. Its zero value works, so no constructor changed.
+- **The barrier** is `Server.SetResponseBarrier`, run by `dispatchRequest`
+  after the request leaves the in-flight registry and before its response is
+  built. It runs when all of these hold, and for nothing else (R9): a barrier
+  is installed; `marshalClient()` reports that this connection declared the
+  marshal capability; and the params decode as an object with a non-empty
+  string `sessionId`. It runs for a failed call too, because a failed call may
+  have published. `dispatchNotification` is unchanged, so no notification runs
+  it, and no host call does either: none names a session.
+- **The host's barrier** is `responseBarrier(turns, works, watches)`, handed to
+  the server in `registerHandlers` once all three managers exist. It fences the
+  turn manager's, then the work manager's, then the watch manager's forwarders
+  for the session.
+- **The four forwarders serve fences**, each registering one for its session
+  while its loop runs and removing and closing it when the loop returns:
+  - the turn's forwarder (`runTurn`) forwards the events already buffered in
+    its terminal subscription, then flushes the stacks the turn dirtied, as its
+    ticker does. Its fence is registered after the subscription and removed by
+    a defer, so a fence asked during the final drain waits until `finishTurn`
+    has written everything;
+  - the idle stack loop (`ensureStackIdle`) marks the stack dirty for the
+    buffered events, then does exactly what a tick does when no turn is active:
+    look the session up (dropping the stacks when it has gone), flush the main
+    projector dirty-only, then the subagent projectors and the run detail;
+  - the work forwarder (`runWorkForwarder`) forwards the buffered snapshots
+    through the same epoch check as its loop;
+  - the watch forwarder (`ensureForwarder`) forwards the buffered events
+    through the same `send` as its loop.
+- **Never a hang (R11).** `responseBarrierTimeout` is 2 s, set on the server by
+  `NewServer`. A barrier still running when it expires is reported with
+  `acp: response barrier timed out` and the attributes `method` and
+  `session_id`, then its context is cancelled (releasing the fence it waits on)
+  and the response is written. Tests shorten the bound through the server's own
+  field.
+- **Proved over the pipe.** `internal/acp/ordering_test.go` serves three
+  managers through a server whose every `session/update` frame is slowed by
+  50 ms, with a client that records the updates it applies and feeds an
+  `rpc.Stacks` mirror:
+  - a read after a call already holds the node the call added, and does not
+    fetch again (V3);
+  - `session/steer` returns only after the client has the `steering_state`
+    update it caused, and the work and watch calls likewise for `work_state`
+    and `watch`;
+  - the barrier counts zero runs for a non-marshal client's call, a call naming
+    no session, a call with array params, and a notification, and exactly one
+    for a marshal session call (V6);
+  - a fence nobody serves costs the response its 50 ms bound, not a hang, and
+    is logged with the method and the session.
+  `internal/acp/fence_test.go` proves the mechanism directly, including that a
+  finished turn's fence is gone.
+- **The budget (R10).** On the 2,000-call session (1,201 nodes, a 2,534,638-byte
+  snapshot) with the main stack subscribed, over the pipe, on the development
+  machine (Apple M5, darwin/arm64, Go 1.26.1):
+  - a session call that changes nothing: median **12.5 µs** over 30 calls
+    (benchmark 15.9 µs/op); R10 allows 1 ms.
+  - a session call that adds one message and publishes its event: median
+    **8.47 ms** over 10 calls, no budget. It carries one projection of the
+    session, which the idle tick would have paid 50 ms later.
+  `TestResponseBarrierBudget` skips under `-short` and under the race detector,
+  as the 4a budget tests do.
+- **Left for plan 3b:** `session/status` and `session_status`, `Changed`, the
+  notice calls, and adding `session_status` to the barrier's conditions; the
+  conformance harness. A turn that outlives its connection keeps its fence on
+  the old connection's `TurnManager`, so a new connection's barrier does not
+  wait for it (P4's reattach revisits this).

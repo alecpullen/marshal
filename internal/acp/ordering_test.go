@@ -59,6 +59,11 @@ type orderingAgent struct {
 	turnStarted chan struct{}
 	turnOnce    sync.Once
 
+	// notifyDelay slows every session/update frame, so an ordering test sees
+	// a response that did not wait for its updates. A budget test sets it to
+	// zero: it measures the barrier, not an artificial write cost.
+	notifyDelay time.Duration
+
 	mu      sync.Mutex
 	fetches int
 	barrier int
@@ -67,8 +72,8 @@ type orderingAgent struct {
 // notify is the managers' sink. Every session/update frame is slowed, so a
 // response that did not wait for the updates it caused is written first.
 func (a *orderingAgent) notify(method string, params any) error {
-	if method == acpwire.MethodSessionUpdate {
-		time.Sleep(50 * time.Millisecond)
+	if method == acpwire.MethodSessionUpdate && a.notifyDelay > 0 {
+		time.Sleep(a.notifyDelay)
 	}
 	return a.srv.Notify(method, params)
 }
@@ -230,16 +235,27 @@ func (c *orderingClient) call(ctx context.Context, method string, params any) er
 // startOrderingAgent serves the ordering agent on a pipe and connects a client
 // that records every update, builds a marshal-capable set of managers exactly
 // as registerHandlers does, and installs the host's barrier.
-func startOrderingAgent(t *testing.T) (*orderingAgent, *orderingClient) {
-	t.Helper()
+func startOrderingAgent(tb testing.TB) (*orderingAgent, *orderingClient) {
+	tb.Helper()
+	return startOrderingAgentWith(tb,
+		session.New(config.Default(), tb.TempDir(), time.Now(), session.Persistence{}),
+		50*time.Millisecond)
+}
+
+// startOrderingAgentWith is startOrderingAgent over a caller's session and
+// update delay, so a budget test can use the 2,000-call session and measure the
+// barrier without an artificial write cost.
+func startOrderingAgentWith(tb testing.TB, st *session.State, notifyDelay time.Duration) (*orderingAgent, *orderingClient) {
+	tb.Helper()
 	a := &orderingAgent{
-		st:          session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{}),
+		st:          st,
 		broker:      pubsub.NewBroker[session.Event](),
 		workSvc:     &fakeWorkService{snapshot: viewmodel.WorkSnapshot{RuntimeEpoch: "epoch-1"}, subscription: make(chan pubsub.Event[viewmodel.WorkSnapshot], 4)},
 		watchWM:     watch.NewManager(context.Background(), watch.Deps{}),
 		watchBr:     pubsub.NewBroker[watch.Event](),
 		logs:        &syncBuffer{},
 		turnStarted: make(chan struct{}),
+		notifyDelay: notifyDelay,
 	}
 	c := &orderingClient{mirror: rpc.NewStacks()}
 
@@ -259,7 +275,7 @@ func startOrderingAgent(t *testing.T) (*orderingAgent, *orderingClient) {
 	c.conn = rpc.NewConn(client, rpc.Handlers{Notify: c.notify})
 	c.mirror.Bind(c.conn)
 
-	t.Cleanup(func() {
+	tb.Cleanup(func() {
 		_ = c.conn.Close()
 		stopServe()
 		_ = agentTransport.Close()
@@ -267,7 +283,7 @@ func startOrderingAgent(t *testing.T) (*orderingAgent, *orderingClient) {
 		select {
 		case <-done:
 		case <-time.After(10 * time.Second):
-			t.Error("the server did not stop")
+			tb.Error("the server did not stop")
 		}
 		a.works.Close()
 		watchCtx, cancelWatch := context.WithTimeout(context.Background(), 2*time.Second)
@@ -486,5 +502,70 @@ func TestAStuckFenceDoesNotHoldTheResponse(t *testing.T) {
 	}
 	if !strings.Contains(logs, "test/mutate") || !strings.Contains(logs, orderingSession) {
 		t.Fatalf("the warning names neither the method nor the session: %q", logs)
+	}
+}
+
+// TestResponseBarrierBudget holds R10's synchronous-call budget for a marshal
+// client's session call over the pipe on the 2,000-call session, with the main
+// stack subscribed. A call that changes nothing must round-trip in under 1ms
+// median; a call that adds one message is measured too, with no budget.
+func TestResponseBarrierBudget(t *testing.T) {
+	if testing.Short() || raceEnabled {
+		t.Skip("timing budget: skipped under -short and with the race detector")
+	}
+	st := largeStackSession(t)
+	logLargeStackShape(t, st)
+	_, client := startOrderingAgentWith(t, st, 0)
+	ctx := context.Background()
+
+	// One read subscribes the connection and starts the idle stack loop, which
+	// is the forwarder this call's fence asks.
+	if _, err := client.mirror.Stack(ctx, orderingSession, 0); err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+
+	const noChangeRuns = 30
+	noChange := make([]time.Duration, 0, noChangeRuns)
+	for i := 0; i < noChangeRuns; i++ {
+		start := time.Now()
+		if err := client.call(ctx, "test/ping", map[string]any{"sessionId": orderingSession}); err != nil {
+			t.Fatalf("no-change call: %v", err)
+		}
+		noChange = append(noChange, time.Since(start))
+	}
+	noChangeMedian := medianDuration(noChange)
+
+	const changeRuns = 10
+	change := make([]time.Duration, 0, changeRuns)
+	for i := 0; i < changeRuns; i++ {
+		start := time.Now()
+		if err := client.call(ctx, "test/mutate", map[string]any{"sessionId": orderingSession}); err != nil {
+			t.Fatalf("change call: %v", err)
+		}
+		change = append(change, time.Since(start))
+	}
+	changeMedian := medianDuration(change)
+
+	t.Logf("response barrier: no-change median %v over %d calls (budget 1ms); change median %v over %d calls (no budget)",
+		noChangeMedian, noChangeRuns, changeMedian, changeRuns)
+	if noChangeMedian >= time.Millisecond {
+		t.Fatalf("no-change median = %v, budget 1ms (R10): do not loosen it", noChangeMedian)
+	}
+}
+
+// BenchmarkResponseBarrierNoChange records the same no-change call for the
+// record.
+func BenchmarkResponseBarrierNoChange(b *testing.B) {
+	st := largeStackSession(b)
+	_, client := startOrderingAgentWith(b, st, 0)
+	ctx := context.Background()
+	if _, err := client.mirror.Stack(ctx, orderingSession, 0); err != nil {
+		b.Fatalf("first read: %v", err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := client.call(ctx, "test/ping", map[string]any{"sessionId": orderingSession}); err != nil {
+			b.Fatalf("no-change call: %v", err)
+		}
 	}
 }

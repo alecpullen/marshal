@@ -59,6 +59,13 @@ type Host interface {
 	// ACP: trust/decide (new in P3).
 	DecideTrust(ctx context.Context, dir string, decision acpwire.TrustDecision) error
 
+	// ListSessions lists the stored sessions whose working directory is cwd,
+	// most recent first, at most limit. It fails with CodeNoDatabase when
+	// the agent has no database.
+	//
+	// ACP: session/list (exists).
+	ListSessions(ctx context.Context, cwd string, limit int) ([]acpwire.SessionEntry, error)
+
 	// ProviderTemplates lists the provider catalog, sorted by ID, each with
 	// every field.
 	//
@@ -590,6 +597,90 @@ type Session interface {
 	//
 	// ACP: session/command_action (new in P3).
 	CommandAction(ctx context.Context, id string) (acpwire.CommandResult, error)
+
+	// Memories lists the project's own memories, oldest first. It fails with
+	// CodeNoDatabase when the session has no database.
+	//
+	// ACP: session/memory_list (exists).
+	Memories(ctx context.Context) ([]acpwire.MemoryEntry, error)
+
+	// DeleteMemory deletes one memory. It fails with CodeNoDatabase when the
+	// session has no database.
+	//
+	// ACP: session/memory_delete (exists).
+	DeleteMemory(ctx context.Context, id int64) error
+
+	// Plugins lists the installed plugins: the global lockfile's, then the
+	// project lockfile's when the session is trusted.
+	//
+	// ACP: session/plugins_list (exists).
+	Plugins(ctx context.Context) ([]acpwire.PluginEntry, error)
+
+	// ScanPlugin clones source into a staging directory and scans it, without
+	// installing anything. The result's token names the staged clone until
+	// InstallPlugin or DiscardPluginScan takes it, or the session closes.
+	//
+	// ACP: session/plugins_install_scan (exists).
+	ScanPlugin(ctx context.Context, source string) (acpwire.PluginScan, error)
+
+	// InstallPlugin installs the staged clone token names into scope's store,
+	// if its content still hashes as it did when scanned. The staged clone is
+	// deleted whatever the outcome.
+	//
+	// ACP: session/plugins_install_confirm (exists).
+	InstallPlugin(ctx context.Context, token, scope string) error
+
+	// DiscardPluginScan deletes the staged clone token names.
+	//
+	// ACP: session/plugins_install_discard (exists).
+	DiscardPluginScan(ctx context.Context, token string) error
+
+	// RemovePlugin deletes an installed plugin and its lockfile entry.
+	//
+	// ACP: session/plugins_remove (exists).
+	RemovePlugin(ctx context.Context, name, scope string) error
+
+	// Skills lists both skill stores, and remembers the listing for LoadSkill
+	// and RemoveSkill.
+	//
+	// ACP: session/skills_list (exists).
+	Skills(ctx context.Context) ([]acpwire.SkillEntry, error)
+
+	// LoadSkill injects the listed skill into the session, if the store and
+	// the session's index still hold the content the listing saw. It returns
+	// the skill's name.
+	//
+	// ACP: session/skills_load (exists).
+	LoadSkill(ctx context.Context, scope, source string) (string, error)
+
+	// InstallSkill installs a skill from source into scope's store, and
+	// returns its name.
+	//
+	// ACP: session/skills_install (new in P3).
+	InstallSkill(ctx context.Context, source, scope string) (string, error)
+
+	// RemoveSkill deletes the listed skill's source from its store.
+	//
+	// ACP: session/skills_remove (exists).
+	RemoveSkill(ctx context.Context, scope, source string) error
+
+	// SetSkillAutoload adds name to skills.autoload in the user config, or
+	// removes it, and installs the change in the session's live config.
+	//
+	// ACP: session/skills_autoload (new in P3).
+	SetSkillAutoload(ctx context.Context, name string, on bool) error
+
+	// SetSkillGate turns the session's skill load gate on or off. Turning it
+	// on clears its decisions.
+	//
+	// ACP: session/skill_gate_set (new in P3).
+	SetSkillGate(ctx context.Context, on bool) error
+
+	// ClearSkillGateDecision clears the gate's sticky decision for skill, so
+	// its next load asks again.
+	//
+	// ACP: session/skill_gate_clear (new in P3).
+	ClearSkillGateDecision(ctx context.Context, skill string) error
 
 	// PrepareMCPLogin checks that the OAuth sign-in for the session's MCP
 	// server called server can start: the server resolves and the token store

@@ -636,7 +636,6 @@ func TestNewSubmissionReEnablesFollow(t *testing.T) {
 }
 
 func TestCtrlKOpensMemoryBrowser(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	database, err := db.Open(":memory:")
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
@@ -649,8 +648,12 @@ func TestCtrlKOpensMemoryBrowser(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrCreateProject failed: %v", err)
 	}
+	// The browser lists through the session now, so the state carries the
+	// database and the adapter is told which project it is.
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0),
+		session.Persistence{DB: database, SessionID: "sess-1"})
 
-	m := testModel(state, WithMemoryStore(database, projectID))
+	m := testModelWith(inproc.Deps{State: state, ProjectID: projectID})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
 	updated, _ = m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
@@ -667,7 +670,6 @@ func TestCtrlKOpensMemoryBrowser(t *testing.T) {
 }
 
 func TestMemoryClosedMsgClosesOverlay(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	database, err := db.Open(":memory:")
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
@@ -680,8 +682,10 @@ func TestMemoryClosedMsgClosesOverlay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrCreateProject failed: %v", err)
 	}
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0),
+		session.Persistence{DB: database, SessionID: "sess-1"})
 
-	m := testModel(state, WithMemoryStore(database, projectID))
+	m := testModelWith(inproc.Deps{State: state, ProjectID: projectID})
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
 	m = updated.(Model)
 	if !m.dock.IsOpen() {
@@ -694,25 +698,88 @@ func TestMemoryClosedMsgClosesOverlay(t *testing.T) {
 	}
 }
 
-func TestCtrlKWithoutMemoryStoreDoesNothing(t *testing.T) {
+func TestMemoryWithoutADatabase(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
-
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("Ctrl+K panicked without memory store: %v", r)
-		}
-	}()
+	cmdReg := commands.New()
+	if err := commands.RegisterAll(cmdReg, nil); err != nil {
+		t.Fatalf("RegisterAll() error = %v", err)
+	}
+	m := testModelWith(inproc.Deps{State: state, Commands: cmdReg})
 
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
-	updated, _ = m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
-	m = updated.(Model)
+
+	// /memory says why it cannot open the browser.
+	updated, _ = m.dispatchCommand("/memory")
+	m = asModel(t, updated)
 	if m.dock.IsOpen() {
-		t.Fatal("expected dock to remain closed without memory store")
+		t.Fatal("/memory must not open the memory browser without a database")
 	}
-	if strings.Contains(stripANSI(m.View().Content), "Memory") {
-		t.Fatalf("View() should not show memory browser without memory store:\n%s", stripANSI(m.View().Content))
+	if !strings.Contains(stripANSI(m.View().Content), "Memory browser not available (no database configured).") {
+		t.Fatalf("/memory must report that it is unavailable:\n%s", stripANSI(m.View().Content))
+	}
+
+	// Ctrl+K is a silent shortcut: it opens nothing and notes nothing.
+	quiet := testModel(session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{}))
+	updated, _ = quiet.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	quiet = updated.(Model)
+	updated, _ = quiet.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
+	quiet = updated.(Model)
+	if quiet.dock.IsOpen() {
+		t.Fatal("Ctrl+K must not open the memory browser without a database")
+	}
+	if strings.Contains(stripANSI(quiet.View().Content), "Memory") {
+		t.Fatalf("Ctrl+K must not note anything without a database:\n%s", stripANSI(quiet.View().Content))
+	}
+}
+
+// TestSessionPickerUsesTheSeam covers the two paths openSessionPicker owns now
+// that the listing comes from the host: a missing database becomes the note the
+// database-backed picker gave, and a listing renders the same UTC detail the
+// database produced.
+func TestSessionPickerUsesTheSeam(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: "s1"})
+
+	// No database: the host reports CodeNoDatabase and the picker says why
+	// instead of opening empty.
+	nodb := New(fakeHost{listErr: &acpwire.Error{
+		Code:    acpwire.CodeNoDatabase,
+		Message: "inproc: the session has no database",
+	}}, testSession(state), WithLegacyState(state))
+	updated, _ := nodb.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	nodb = asModel(t, updated)
+	nodb.openSessionPicker("")
+	if nodb.dock.IsOpen() {
+		t.Fatal("the session picker must not open without a database")
+	}
+	nodb.refreshViewport()
+	if view := stripANSI(nodb.View().Content); !strings.Contains(view, "Session list is not available (no database).") {
+		t.Fatalf("the picker must report the missing database:\n%s", view)
+	}
+
+	// A listing renders the detail the database produced: the UTC wall clock
+	// and the message count. The current session carries the now badge.
+	stamp := time.Date(2026, 11, 6, 12, 34, 0, 0, time.UTC)
+	m := New(fakeHost{sessions: []acpwire.SessionEntry{{
+		SessionID:    "s1",
+		Title:        "earlier",
+		UpdatedAt:    acpwire.Millis(stamp),
+		MessageCount: 3,
+	}}}, testSession(state), WithLegacyState(state))
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = asModel(t, updated)
+	m.openSessionPicker("")
+
+	p, ok := m.dock.Panel().(*picker.Model)
+	if !ok {
+		t.Fatalf("expected *picker.Model, got %T", m.dock.Panel())
+	}
+	view := stripANSI(p.View(120, 20))
+	if !strings.Contains(view, "2026-11-06 12:34 · 3 messages") {
+		t.Fatalf("picker must render the UTC detail and count:\n%s", view)
+	}
+	if !strings.Contains(view, "● now") {
+		t.Fatalf("the current session must carry the now badge:\n%s", view)
 	}
 }
 
@@ -2275,21 +2342,22 @@ func TestEscDuringApprovalDenies(t *testing.T) {
 }
 
 func TestCtrlKOpensMemoryAndClosedMsgCloses(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	db, err := db.Open(":memory:")
+	database, err := db.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
-	if err := db.Migrate(); err != nil {
+	defer database.Close()
+	if err := database.Migrate(); err != nil {
 		t.Fatal(err)
 	}
-	pid, err := db.GetOrCreateProject("/repo", "repo")
+	pid, err := database.GetOrCreateProject("/repo", "repo")
 	if err != nil {
 		t.Fatal(err)
 	}
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0),
+		session.Persistence{DB: database, SessionID: "sess-1"})
 
-	model := testModel(state, WithMemoryStore(db, pid))
+	model := testModelWith(inproc.Deps{State: state, ProjectID: pid})
 	updated, _ := model.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
 	model = updated.(Model)
 	if !model.dock.IsOpen() {

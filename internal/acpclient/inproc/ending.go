@@ -114,6 +114,9 @@ func (s *Session) Close(ctx context.Context) error {
 	}
 	s.mu.Unlock()
 
+	// The staged plugin clones belong to a session that no longer exists.
+	s.discardPluginScans()
+
 	if slot != nil {
 		slot.cancel()
 	}

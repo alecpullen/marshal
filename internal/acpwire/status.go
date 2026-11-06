@@ -47,6 +47,8 @@ type SessionStatus struct {
 	ChangedFiles int           `json:"changedFiles,omitempty"` // against the sheet's base; 0 means "no changes", never "not refreshed"
 	WatchResume  *WatchResume  `json:"watchResume,omitempty"`
 	Notice       *Notice       `json:"notice,omitempty"` // the banner; nil when none
+	// SkillGate is the session's skill load gate (C11, plan 8b).
+	SkillGate SkillGateState `json:"skillGate"`
 	// UserConfigPath and ProjectConfigPath are the files the config writes
 	// change: the user config, and the session's project config. Each is
 	// empty when the agent cannot locate it.

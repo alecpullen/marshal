@@ -5,26 +5,21 @@ import (
 	"strings"
 	"time"
 
-	"marshal/internal/db"
+	"marshal/internal/acpwire"
 )
 
-// RenderEntry loads a memory by id and formats it for the transcript: the
-// title (first line of the memory content), a muted metadata line, then the
-// remaining body.
-func RenderEntry(database *db.DB, id int64) string {
-	m, err := database.GetMemory(id)
-	if err != nil {
-		return fmt.Sprintf("Memory #%d\n%s", id, err.Error())
-	}
-	title, body := splitTitleBody(m.Content)
+// RenderEntry formats a listed memory for the transcript: the title (first
+// line of the memory content), a muted metadata line, then the remaining body.
+func RenderEntry(e acpwire.MemoryEntry) string {
+	title, body := splitTitleBody(e.Content)
 	if body != "" {
-		return title + "\n" + formatMeta(m) + "\n" + body
+		return title + "\n" + formatMeta(e) + "\n" + body
 	}
-	return title + "\n" + formatMeta(m)
+	return title + "\n" + formatMeta(e)
 }
 
-func formatMeta(m db.Memory) string {
-	return fmt.Sprintf("%s · %s · %s", m.Kind, m.Confidence, formatAge(m.CreatedAt))
+func formatMeta(m acpwire.MemoryEntry) string {
+	return fmt.Sprintf("%s · %s · %s", m.Kind, m.Confidence, formatAge(acpwire.Time(m.CreatedAt)))
 }
 
 func formatAge(t time.Time) string {

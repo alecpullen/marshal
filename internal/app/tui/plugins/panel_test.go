@@ -2,39 +2,158 @@ package plugins
 
 import (
 	"context"
-	"os"
-	"path/filepath"
+	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"marshal/internal/app/config"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/plugins"
 )
 
-func TestPanelRootList(t *testing.T) {
-	home := t.TempDir()
-	work := t.TempDir()
-	lockPath := plugins.GlobalLockPath(home)
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0755); err != nil {
-		t.Fatal(err)
+// --- the fake session -----------------------------------------------------
+//
+// The panel asks the session for its listing and for every action; it keeps no
+// store paths and no clone of its own. The fake is therefore the whole seam a
+// test needs, and it records what it was asked so a test can prove a staged
+// token was installed or discarded exactly once, never both.
+
+type installCall struct{ Token, Scope string }
+type removeCall struct{ Name, Scope string }
+
+type fakeService struct {
+	mu sync.Mutex
+
+	entries []acpwire.PluginEntry
+	// scan is what ScanPlugin runs. The default stages one hook for the source
+	// it was given, the way a real scan reports what it read.
+	scan func(ctx context.Context, source string) (acpwire.PluginScan, error)
+
+	seq       int
+	scanned   []string
+	installed []installCall
+	discarded []string
+	removed   []removeCall
+}
+
+func newFakeService(entries ...acpwire.PluginEntry) *fakeService {
+	return &fakeService{entries: entries}
+}
+
+func (f *fakeService) Plugins(context.Context) ([]acpwire.PluginEntry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]acpwire.PluginEntry(nil), f.entries...), nil
+}
+
+func (f *fakeService) ScanPlugin(ctx context.Context, source string) (acpwire.PluginScan, error) {
+	f.mu.Lock()
+	f.scanned = append(f.scanned, source)
+	scanFn := f.scan
+	f.mu.Unlock()
+	if scanFn != nil {
+		return scanFn(ctx, source)
 	}
-	lf := plugins.Lockfile{
-		Plugins: []plugins.LockEntry{
-			{Name: "demo", Source: "https://example.com/demo.git", Commit: "abc123def"},
+	return f.stage(source), nil
+}
+
+func (f *fakeService) InstallPlugin(_ context.Context, token, scope string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.installed = append(f.installed, installCall{Token: token, Scope: scope})
+	return nil
+}
+
+func (f *fakeService) DiscardPluginScan(_ context.Context, token string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.discarded = append(f.discarded, token)
+	return nil
+}
+
+func (f *fakeService) RemovePlugin(_ context.Context, name, scope string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removed = append(f.removed, removeCall{Name: name, Scope: scope})
+	kept := f.entries[:0]
+	for _, e := range f.entries {
+		if e.Name == name && e.Scope == scope {
+			continue
+		}
+		kept = append(kept, e)
+	}
+	f.entries = kept
+	return nil
+}
+
+// stage records one successful scan of source and returns it.
+func (f *fakeService) stage(source string) acpwire.PluginScan {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seq++
+	return acpwire.PluginScan{
+		Token:  fmt.Sprintf("scan-%d", f.seq),
+		Name:   "demo",
+		Source: source,
+		Commit: "abc1234",
+		Contents: acpwire.PluginContents{
+			Hooks: []acpwire.PluginHook{{Event: "pre_tool_use", Command: "echo reviewed"}},
 		},
 	}
-	if err := lf.Write(lockPath); err != nil {
-		t.Fatal(err)
-	}
+}
 
-	p := NewPanel(home, work, true, nil)
+// failScans makes every scan fail with err.
+func (f *fakeService) failScans(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.scan = func(context.Context, string) (acpwire.PluginScan, error) {
+		return acpwire.PluginScan{}, err
+	}
+}
+
+func (f *fakeService) scannedSources() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.scanned...)
+}
+
+func (f *fakeService) installedCalls() []installCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]installCall(nil), f.installed...)
+}
+
+func (f *fakeService) discardedTokens() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.discarded...)
+}
+
+func (f *fakeService) removedCalls() []removeCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]removeCall(nil), f.removed...)
+}
+
+func entry(name, scope string) acpwire.PluginEntry {
+	return acpwire.PluginEntry{
+		Name:   name,
+		Source: "https://example.com/" + name + ".git",
+		Commit: "abc1234567",
+		Scope:  scope,
+	}
+}
+
+func TestPanelRootList(t *testing.T) {
+	fake := newFakeService(entry("demo", scopeGlobal))
+	p := NewPanel(fake, true, nil)
+
 	rows := settings.FieldListRows(p.list)
 	found := false
 	for _, r := range rows {
@@ -48,9 +167,7 @@ func TestPanelRootList(t *testing.T) {
 }
 
 func TestPanelViewRendersPushedInstallFrame(t *testing.T) {
-	home := t.TempDir()
-	work := t.TempDir()
-	p := NewPanel(home, work, true, nil)
+	p := NewPanel(newFakeService(), true, nil)
 
 	// With no plugins installed, the only selectable row is "＋ Install plugin".
 	p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -73,7 +190,7 @@ func TestPanelViewRendersPushedInstallFrame(t *testing.T) {
 // The plugins panel is framed, and its frame never renders past the dock's
 // height budget.
 func TestPluginsPanelIsFramed(t *testing.T) {
-	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+	p := NewPanel(newFakeService(), true, nil)
 	const maxHeight = 20
 	view := p.View(80, maxHeight)
 	rows := strings.Split(ansi.Strip(view), "\n")
@@ -90,7 +207,7 @@ func TestPluginsPanelIsFramed(t *testing.T) {
 // cannot route them by type; an unclaimed message is dropped and its Update
 // case becomes dead code, leaving the action silently non-functional.
 func TestPanelOwnsAsyncResults(t *testing.T) {
-	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+	p := NewPanel(newFakeService(), true, nil)
 	for _, msg := range []tea.Msg{
 		installResultMsg{},
 		removeResultMsg{},
@@ -108,7 +225,8 @@ func TestPanelOwnsAsyncResults(t *testing.T) {
 // TestScanWithEmptySourceReportsError pins that an empty source surfaces an
 // error rather than silently returning a nil command.
 func TestScanWithEmptySourceReportsError(t *testing.T) {
-	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+	fake := newFakeService()
+	p := NewPanel(fake, true, nil)
 	p.stack = append(p.stack, p.installFrame())
 	p.installSource = "   "
 
@@ -121,11 +239,15 @@ func TestScanWithEmptySourceReportsError(t *testing.T) {
 	if p.activeList().ErrMsg == "" {
 		t.Error("error was not surfaced on the visible list")
 	}
+	if len(fake.scannedSources()) != 0 {
+		t.Errorf("an empty source still reached the session: %v", fake.scannedSources())
+	}
 }
 
 // TestConfirmInstallWithoutScanReportsError pins the same for the confirm step.
 func TestConfirmInstallWithoutScanReportsError(t *testing.T) {
-	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+	fake := newFakeService()
+	p := NewPanel(fake, true, nil)
 	p.stack = append(p.stack, p.installFrame())
 
 	if cmd := p.runInstallFromScan(); cmd != nil {
@@ -134,18 +256,19 @@ func TestConfirmInstallWithoutScanReportsError(t *testing.T) {
 	if p.activeList().ErrMsg == "" {
 		t.Error("confirming without a scan was silent")
 	}
+	if len(fake.installedCalls()) != 0 {
+		t.Errorf("confirming without a scan installed %v", fake.installedCalls())
+	}
 }
 
 // TestScanErrorIsVisible pins that a failed scan renders. p.installErr used to
 // be assigned and never read, so failures showed nothing at all. The failure is
 // driven through the panel's real scan path, so it also proves the error result
-// belongs to the current frame and that a failed scan keeps no directory.
+// belongs to the current frame and that a failed scan keeps no token.
 func TestScanErrorIsVisible(t *testing.T) {
-	deps := fakeScanDeps(nil)
-	deps.Clone = func(context.Context, *plugins.Installer, string, string, string) (string, error) {
-		return "", errBoom{}
-	}
-	p := newPanelWithScanDeps(t.TempDir(), t.TempDir(), true, nil, deps)
+	fake := newFakeService()
+	fake.failScans(errBoom{})
+	p := NewPanel(fake, true, nil)
 	openInstallFrame(t, p)
 	setInstallField(t, p, "install.source", "https://example.com/demo.git")
 	p.Update(scanMsg(t, p))
@@ -156,15 +279,15 @@ func TestScanErrorIsVisible(t *testing.T) {
 	if !strings.Contains(p.activeList().ErrMsg, "boom") {
 		t.Errorf("scan error not surfaced: %q", p.activeList().ErrMsg)
 	}
-	if p.scanLease != nil || p.scanParent != "" {
-		t.Error("a failed scan kept ownership of a directory")
+	if p.scanLease != nil || p.scanToken != "" {
+		t.Error("a failed scan kept ownership of a staged clone")
 	}
 }
 
 // TestInFlightAndConfirmationAreRendered pins that a slow clone and a
 // completed action both show something, rather than looking like a no-op.
 func TestInFlightAndConfirmationAreRendered(t *testing.T) {
-	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+	p := NewPanel(newFakeService(), true, nil)
 
 	p.busy = "scanning"
 	if out := p.View(60, 12); !strings.Contains(out, "scanning") {
@@ -182,27 +305,25 @@ type errBoom struct{}
 
 func (errBoom) Error() string { return "boom" }
 
-// TestAbandonedScanRemovesTempClone pins A-02: the scan's clone outlives
-// runScan (the confirm step copies from it), so it cannot use a deferred
-// RemoveAll. Every path that abandons the scan must clean it up, or each
-// abandoned install leaks a full repository clone.
-func TestAbandonedScanRemovesTempClone(t *testing.T) {
-	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+// TestAbandonedScanDiscardsItsToken pins A-02: the staged clone outlives
+// runScan (the confirm step installs from it), so it cannot be released by a
+// deferred call inside the scan. Every path that abandons the scan must
+// discard its token, or each abandoned install leaves a full clone staged on
+// the agent side.
+func TestAbandonedScanDiscardsItsToken(t *testing.T) {
+	fake := newFakeService()
+	p := NewPanel(fake, true, nil)
 
-	parent := filepath.Join(t.TempDir(), "scan")
-	if err := os.MkdirAll(filepath.Join(parent, "clone"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	p.scanParent = parent
-	p.scannedContents = &plugins.Contents{}
+	p.scanToken = "scan-99"
+	p.scannedContents = &acpwire.PluginContents{}
 
 	p.resetInstall()
 
-	if p.scanParent != "" {
-		t.Error("scanParent not cleared")
+	if p.scanToken != "" {
+		t.Error("scanToken not cleared")
 	}
-	if _, err := os.Stat(parent); !os.IsNotExist(err) {
-		t.Errorf("temp clone not removed: %v", err)
+	if got := fake.discardedTokens(); len(got) != 1 || got[0] != "scan-99" {
+		t.Errorf("discarded = %v, want [scan-99]", got)
 	}
 }
 
@@ -211,8 +332,8 @@ func TestAbandonedScanRemovesTempClone(t *testing.T) {
 // carrying only policies asked the user to confirm executable content the
 // screen refused to show.
 func TestConfirmScreenListsAllExecutableContent(t *testing.T) {
-	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
-	p.scannedContents = &plugins.Contents{
+	p := NewPanel(newFakeService(), true, nil)
+	p.scannedContents = &acpwire.PluginContents{
 		MCPPolicies: map[string]string{"net-policy": "deny egress"},
 	}
 	p.stack = append(p.stack, p.installFrame())
@@ -253,81 +374,42 @@ var (
 	keyPgUp   = tea.KeyPressMsg{Code: tea.KeyPgUp}
 )
 
-// newRemovalPanel builds a trusted panel over a fresh home/work pair, so both
-// the global and the project lockfile are local temp files.
-func newRemovalPanel(t *testing.T) *Panel {
+// newRemovalPanel builds a trusted panel over a fake listing of demo and, when
+// wanted, other entries, so the removal tests never touch a real store.
+func newRemovalPanel(t *testing.T, entries ...acpwire.PluginEntry) (*Panel, *fakeService) {
 	t.Helper()
-	return NewPanel(t.TempDir(), t.TempDir(), true, nil)
+	fake := newFakeService(entries...)
+	return NewPanel(fake, true, nil), fake
 }
 
-// installFixture writes a store directory and a lockfile entry for name in
-// scope, so a removal has something real to delete and to leave behind.
-// It returns the installed store directory.
-func installFixture(t *testing.T, p *Panel, scope, name string) string {
+// entryFor resolves the listing entry the row for scope/name was built from.
+func entryFor(t *testing.T, p *Panel, scope, name string) acpwire.PluginEntry {
 	t.Helper()
-	storeDir, lockPath := p.globalStoreDir(), p.globalLockPath()
-	if scope == scopeProject {
-		storeDir, lockPath = p.projectStoreDir(), p.projectLockPath()
-	}
-	dir := filepath.Join(storeDir, name)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		t.Fatalf("create plugin store %s: %v", dir, err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "plugin.toml"), []byte("# "+name+"\n"), 0644); err != nil {
-		t.Fatalf("write plugin manifest: %v", err)
-	}
-	lf, err := plugins.ReadLockfile(lockPath)
-	if err != nil {
-		t.Fatalf("read lockfile %s: %v", lockPath, err)
-	}
-	lf.Upsert(plugins.LockEntry{
-		Name:   name,
-		Source: "https://example.com/" + name + ".git",
-		Commit: "abc1234567",
-	})
-	if err := lf.Write(lockPath); err != nil {
-		t.Fatalf("write lockfile %s: %v", lockPath, err)
-	}
-	return dir
-}
-
-// entryFor resolves the scopedEntry a fresh lockfile read reports, the way the
-// list's drill row builds one.
-func entryFor(t *testing.T, p *Panel, scope, name string) scopedEntry {
-	t.Helper()
-	for _, e := range p.lockEntries() {
+	for _, e := range p.entries {
 		if e.Scope == scope && e.Name == name {
 			return e
 		}
 	}
-	t.Fatalf("no lockfile entry scope=%q name=%q in %+v", scope, name, p.lockEntries())
-	return scopedEntry{}
+	t.Fatalf("no listing entry scope=%q name=%q in %+v", scope, name, p.entries)
+	return acpwire.PluginEntry{}
 }
 
-func readLock(t *testing.T, p *Panel, scope string) *plugins.Lockfile {
+func mustListed(t *testing.T, p *Panel, scope, name string) {
 	t.Helper()
-	path := p.globalLockPath()
-	if scope == scopeProject {
-		path = p.projectLockPath()
+	for _, e := range p.entries {
+		if e.Scope == scope && e.Name == name {
+			return
+		}
 	}
-	lf, err := plugins.ReadLockfile(path)
-	if err != nil {
-		t.Fatalf("read lockfile %s: %v", path, err)
-	}
-	return lf
+	t.Fatalf("entry %q (%s) is no longer listed: %+v", name, scope, p.entries)
 }
 
-func mustKeepLockEntry(t *testing.T, p *Panel, scope, name string) {
+func mustNotListed(t *testing.T, p *Panel, scope, name string) {
 	t.Helper()
-	if _, ok := readLock(t, p, scope).Find(name); !ok {
-		t.Fatalf("lockfile entry %q (%s) did not survive", name, scope)
-	}
-}
-
-func mustDropLockEntry(t *testing.T, p *Panel, scope, name string) {
-	t.Helper()
-	if e, ok := readLock(t, p, scope).Find(name); ok {
-		t.Fatalf("lockfile entry %q (%s) survived removal: %+v", name, scope, e)
+	for _, e := range p.entries {
+		if e.Scope == scope && e.Name == name {
+			t.Fatalf("entry %q (%s) survived removal: %+v", name, scope, e)
+		}
 	}
 }
 
@@ -358,24 +440,10 @@ func focusRow(t *testing.T, p *Panel, id string) {
 
 // openRemoveRow stacks e's detail frame with its Remove row focused, the way
 // drilling in from the list does.
-func openRemoveRow(t *testing.T, p *Panel, e scopedEntry) {
+func openRemoveRow(t *testing.T, p *Panel, e acpwire.PluginEntry) {
 	t.Helper()
 	p.stack = append(p.stack, p.detailFrame(e))
 	focusRow(t, p, "action.remove")
-}
-
-func mustExistPath(t *testing.T, path string) {
-	t.Helper()
-	if _, err := os.Lstat(path); err != nil {
-		t.Fatalf("expected %s to survive: %v", path, err)
-	}
-}
-
-func mustBeGonePath(t *testing.T, path string) {
-	t.Helper()
-	if _, err := os.Lstat(path); !os.IsNotExist(err) {
-		t.Fatalf("expected %s to be removed, Lstat error = %v", path, err)
-	}
 }
 
 // TestRemoveConfirmationDisarmsOnNavigationAndEscape pins that an armed
@@ -383,9 +451,7 @@ func mustBeGonePath(t *testing.T, path string) {
 // it would carry into a selection the user was never shown as armed.
 func TestRemoveConfirmationDisarmsOnNavigationAndEscape(t *testing.T) {
 	t.Run("leaving the remove row", func(t *testing.T) {
-		p := newRemovalPanel(t)
-		target := installFixture(t, p, scopeGlobal, "demo")
-		bystander := installFixture(t, p, scopeGlobal, "other")
+		p, fake := newRemovalPanel(t, entry("demo", scopeGlobal), entry("other", scopeGlobal))
 		e := entryFor(t, p, scopeGlobal, "demo")
 		openRemoveRow(t, p, e)
 
@@ -400,26 +466,26 @@ func TestRemoveConfirmationDisarmsOnNavigationAndEscape(t *testing.T) {
 		}
 		press(t, p, keyEnter) // must only arm again
 
-		mustExistPath(t, target)
-		mustExistPath(t, bystander)
-		mustKeepLockEntry(t, p, scopeGlobal, "demo")
-		mustKeepLockEntry(t, p, scopeGlobal, "other")
+		if len(fake.removedCalls()) != 0 {
+			t.Fatalf("a re-armed row already removed %v", fake.removedCalls())
+		}
+		mustListed(t, p, scopeGlobal, "demo")
+		mustListed(t, p, scopeGlobal, "other")
 		if !p.removeArmed[removalIdentity(e)] {
 			t.Fatal("enter after navigation armed nothing — it confirmed instead")
 		}
 
 		// Two consecutive confirmations on the same row still delete.
 		press(t, p, keyEnter)
-		mustBeGonePath(t, target)
-		mustDropLockEntry(t, p, scopeGlobal, "demo")
-		mustExistPath(t, bystander)
-		mustKeepLockEntry(t, p, scopeGlobal, "other")
+		if got := fake.removedCalls(); len(got) != 1 || got[0] != (removeCall{Name: "demo", Scope: scopeGlobal}) {
+			t.Fatalf("removed = %v, want one demo (global) removal", got)
+		}
+		mustNotListed(t, p, scopeGlobal, "demo")
+		mustListed(t, p, scopeGlobal, "other")
 	})
 
 	t.Run("leaving and reopening the detail", func(t *testing.T) {
-		p := newRemovalPanel(t)
-		target := installFixture(t, p, scopeGlobal, "demo")
-		bystander := installFixture(t, p, scopeGlobal, "other")
+		p, fake := newRemovalPanel(t, entry("demo", scopeGlobal), entry("other", scopeGlobal))
 		e := entryFor(t, p, scopeGlobal, "demo")
 		openRemoveRow(t, p, e)
 
@@ -431,32 +497,34 @@ func TestRemoveConfirmationDisarmsOnNavigationAndEscape(t *testing.T) {
 		if p.removeArmed[removalIdentity(e)] {
 			t.Fatal("armed confirmation survived closing the detail frame")
 		}
-		mustExistPath(t, target)
+		if len(fake.removedCalls()) != 0 {
+			t.Fatalf("closing the detail removed %v", fake.removedCalls())
+		}
 
 		openRemoveRow(t, p, e)
 		press(t, p, keyEnter) // must only arm again
-		mustExistPath(t, target)
-		mustExistPath(t, bystander)
-		mustKeepLockEntry(t, p, scopeGlobal, "demo")
+		if len(fake.removedCalls()) != 0 {
+			t.Fatalf("a re-armed row already removed %v", fake.removedCalls())
+		}
+		mustListed(t, p, scopeGlobal, "demo")
 		if !p.removeArmed[removalIdentity(e)] {
 			t.Fatal("enter after reopening the detail armed nothing — it confirmed instead")
 		}
 
 		press(t, p, keyEnter)
-		mustBeGonePath(t, target)
-		mustDropLockEntry(t, p, scopeGlobal, "demo")
-		mustExistPath(t, bystander)
-		mustKeepLockEntry(t, p, scopeGlobal, "other")
+		if got := fake.removedCalls(); len(got) != 1 || got[0] != (removeCall{Name: "demo", Scope: scopeGlobal}) {
+			t.Fatalf("removed = %v, want one demo (global) removal", got)
+		}
+		mustNotListed(t, p, scopeGlobal, "demo")
+		mustListed(t, p, scopeGlobal, "other")
 	})
 }
 
 // TestRemoveConfirmationIsScoped pins that the armed flag belongs to one
-// scoped entry. The lockfile holds the same name per scope, so a name-only key
-// would let the global copy's confirmation delete the project copy.
+// listing entry. The same name can be installed in both scopes, so a name-only
+// key would let the global copy's confirmation delete the project copy.
 func TestRemoveConfirmationIsScoped(t *testing.T) {
-	p := newRemovalPanel(t)
-	globalDir := installFixture(t, p, scopeGlobal, "dup")
-	projectDir := installFixture(t, p, scopeProject, "dup")
+	p, fake := newRemovalPanel(t, entry("dup", scopeGlobal), entry("dup", scopeProject))
 
 	globalEntry := entryFor(t, p, scopeGlobal, "dup")
 	projectEntry := entryFor(t, p, scopeProject, "dup")
@@ -474,27 +542,29 @@ func TestRemoveConfirmationIsScoped(t *testing.T) {
 	// confirming it must not inherit the global confirmation.
 	openRemoveRow(t, p, projectEntry)
 	press(t, p, keyEnter)
-	mustExistPath(t, projectDir)
-	mustExistPath(t, globalDir)
-	mustKeepLockEntry(t, p, scopeProject, "dup")
-	mustKeepLockEntry(t, p, scopeGlobal, "dup")
+	if len(fake.removedCalls()) != 0 {
+		t.Fatalf("the project row confirmed a deletion never armed: %v", fake.removedCalls())
+	}
+	mustListed(t, p, scopeProject, "dup")
+	mustListed(t, p, scopeGlobal, "dup")
 	if !p.removeArmed[removalIdentity(projectEntry)] {
 		t.Fatal("project remove armed nothing — it confirmed a deletion never armed")
 	}
 
 	press(t, p, keyEnter)
-	mustBeGonePath(t, projectDir)
-	mustDropLockEntry(t, p, scopeProject, "dup")
-	mustExistPath(t, globalDir)
-	mustKeepLockEntry(t, p, scopeGlobal, "dup")
+	if got := fake.removedCalls(); len(got) != 1 || got[0] != (removeCall{Name: "dup", Scope: scopeProject}) {
+		t.Fatalf("removed = %v, want one dup (project) removal", got)
+	}
+	mustNotListed(t, p, scopeProject, "dup")
+	mustListed(t, p, scopeGlobal, "dup")
 }
 
 // TestConfirmScreenOrdersMCPEntriesStably pins A-04: map order reshuffled the
 // trust-review list between renders of identical data.
 func TestConfirmScreenOrdersMCPEntriesStably(t *testing.T) {
-	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
-	p.scannedContents = &plugins.Contents{
-		MCPServers: map[string]config.MCPServerConfig{
+	p := NewPanel(newFakeService(), true, nil)
+	p.scannedContents = &acpwire.PluginContents{
+		MCPServers: map[string]acpwire.PluginMCPServer{
 			"zebra": {Command: "z"}, "alpha": {Command: "a"},
 			"mike": {Command: "m"}, "bravo": {Command: "b"},
 		},
@@ -526,32 +596,8 @@ func TestConfirmScreenOrdersMCPEntriesStably(t *testing.T) {
 //
 // These fixtures drive the real install frame: open it from the root list, set
 // the source through the frame's own setter, press Scan, and deliver the
-// worker's message. Only the clone is faked, so no test needs the network, git,
-// or a package-global hook.
-
-// fakeScanDeps fakes the clone, writing one hook into dest, and records that it
-// ran. Scan and Hash stay real: the review's contents and hash are the ones the
-// user decides on.
-func fakeScanDeps(cloned *bool) scanDeps {
-	return scanDeps{
-		NewInstaller: func() (*plugins.Installer, error) { return &plugins.Installer{}, nil },
-		Clone: func(_ context.Context, _ *plugins.Installer, _, _, dest string) (string, error) {
-			if cloned != nil {
-				*cloned = true
-			}
-			if err := os.MkdirAll(dest, 0o755); err != nil {
-				return "", err
-			}
-			hook := "[hooks]\n[[hooks.entries]]\nevent = \"pre_tool_use\"\ncommand = \"echo reviewed\"\n"
-			if err := os.WriteFile(filepath.Join(dest, "hooks.toml"), []byte(hook), 0o644); err != nil {
-				return "", err
-			}
-			return "abc1234", nil
-		},
-		Scan: plugins.ScanPlugin,
-		Hash: plugins.HashDir,
-	}
-}
+// session's message. Only the session is faked, so no test needs the network,
+// git, or a package-global hook.
 
 // hasRow reports whether the active list has a row with this field ID.
 func hasRow(p *Panel, id string) bool {
@@ -604,8 +650,8 @@ func scanMsg(t *testing.T, p *Panel) scanResultMsg {
 		t.Fatal("Scan produced no command")
 	}
 	t.Cleanup(func() {
-		if p.scanLease != nil || p.scanParent != "" {
-			t.Errorf("scan state outlived the test: lease=%v parent=%q", p.scanLease != nil, p.scanParent)
+		if p.scanLease != nil || p.scanToken != "" {
+			t.Errorf("scan state outlived the test: lease=%v token=%q", p.scanLease != nil, p.scanToken)
 		}
 	})
 	msg, ok := cmd().(scanResultMsg)
@@ -615,17 +661,17 @@ func scanMsg(t *testing.T, p *Panel) scanResultMsg {
 	return msg
 }
 
-// scanReview performs a full scan through the panel and returns the temporary
-// parent the review now owns.
+// scanReview performs a full scan through the panel and returns the token the
+// review now owns.
 func scanReview(t *testing.T, p *Panel, source string) string {
 	t.Helper()
 	openInstallFrame(t, p)
 	setInstallField(t, p, "install.source", source)
 	p.Update(scanMsg(t, p))
-	if p.scanParent == "" {
+	if p.scanToken == "" {
 		t.Fatalf("the scan claimed no clone; error %q", p.activeList().ErrMsg)
 	}
-	return p.scanParent
+	return p.scanToken
 }
 
 // replacementPanel is any other dock panel: the test needs a second panel to
@@ -638,29 +684,32 @@ func (replacementPanel) Sizing() dock.Sizing    { return dock.Docked }
 
 // TestScanReviewInvalidatedBySourceOrScope pins that a review belongs to the
 // exact source and scope that were scanned: editing either drops the review,
-// deletes its clone, and removes Confirm, so the user is never asked to confirm
-// an install they did not review.
+// discards its staged clone, and removes Confirm, so the user is never asked to
+// confirm an install they did not review.
 func TestScanReviewInvalidatedBySourceOrScope(t *testing.T) {
 	for _, tc := range []struct{ name, id, value string }{
 		{"source", "install.source", "https://example.com/other.git"},
 		{"scope", "install.scope", scopeProject},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := newPanelWithScanDeps(t.TempDir(), t.TempDir(), true, nil, fakeScanDeps(nil))
-			parent := scanReview(t, p, "https://example.com/demo.git")
+			fake := newFakeService()
+			p := NewPanel(fake, true, nil)
+			token := scanReview(t, p, "https://example.com/demo.git")
 			if !hasRow(p, "install.confirm") {
 				t.Fatal("a successful scan did not offer Confirm")
 			}
 
 			setInstallField(t, p, tc.id, tc.value)
 
-			if p.scannedContents != nil || p.scanParent != "" {
+			if p.scannedContents != nil || p.scanToken != "" {
 				t.Fatal("the review survived an edit to the source or scope")
 			}
 			if hasRow(p, "install.confirm") {
 				t.Fatal("Confirm survived an invalidated review")
 			}
-			mustBeGonePath(t, parent)
+			if got := fake.discardedTokens(); len(got) != 1 || got[0] != token {
+				t.Fatalf("discarded = %v, want [%s]", got, token)
+			}
 
 			if cmd := p.runInstallFromScan(); cmd != nil {
 				t.Fatal("an invalidated review still produced an install command")
@@ -671,17 +720,17 @@ func TestScanReviewInvalidatedBySourceOrScope(t *testing.T) {
 
 // TestAbandonedScanCannotAttachToReopenedFrame pins that a scan result which
 // arrives after its frame was left and reopened cannot become the new frame's
-// review, and that the clone it published is deleted without waiting for that
+// review, and that the token it published is discarded without waiting for that
 // result.
 func TestAbandonedScanCannotAttachToReopenedFrame(t *testing.T) {
-	cloned := false
-	p := newPanelWithScanDeps(t.TempDir(), t.TempDir(), true, nil, fakeScanDeps(&cloned))
+	fake := newFakeService()
+	p := NewPanel(fake, true, nil)
 
 	openInstallFrame(t, p)
 	setInstallField(t, p, "install.source", "https://example.com/demo.git")
 	msg := scanMsg(t, p) // the scan ran; its result is still undelivered
-	if !cloned {
-		t.Fatal("the fake clone never ran")
+	if got := fake.scannedSources(); len(got) != 1 {
+		t.Fatalf("scanned = %v, want one source", got)
 	}
 
 	// Leave the install frame — abandoning the scan — then come back: the
@@ -693,7 +742,7 @@ func TestAbandonedScanCannotAttachToReopenedFrame(t *testing.T) {
 	openInstallFrame(t, p)
 
 	p.Update(msg)
-	if p.scannedContents != nil || p.scanParent != "" {
+	if p.scannedContents != nil || p.scanToken != "" {
 		t.Fatal("an abandoned scan attached to the reopened frame")
 	}
 	if hasRow(p, "install.confirm") {
@@ -702,61 +751,66 @@ func TestAbandonedScanCannotAttachToReopenedFrame(t *testing.T) {
 	if p.busy != "" {
 		t.Fatalf("the panel is still %q after an abandoned scan", p.busy)
 	}
-	// The lease owned the clone, so it is gone whether or not a message
-	// arrived.
-	mustBeGonePath(t, filepath.Dir(msg.CloneDir))
+	// The lease owned the token, so it was discarded whether or not a message
+	// arrived — and the result's delivery must not discard it twice.
+	if got := fake.discardedTokens(); len(got) != 1 || got[0] != msg.Scan.Token {
+		t.Fatalf("discarded = %v, want [%s]", got, msg.Scan.Token)
+	}
 }
 
 // TestPanelReplacementCleansUndeliveredScan pins the dock lifecycle contract:
 // replacing the panel notifies it even though its scan result is still in
-// flight, so the clone is deleted instead of leaking with the message.
+// flight, so the staged clone is discarded instead of leaking with the message.
 func TestPanelReplacementCleansUndeliveredScan(t *testing.T) {
-	p := newPanelWithScanDeps(t.TempDir(), t.TempDir(), true, nil, fakeScanDeps(nil))
+	fake := newFakeService()
+	p := NewPanel(fake, true, nil)
 	openInstallFrame(t, p)
 	setInstallField(t, p, "install.source", "https://example.com/demo.git")
 	msg := scanMsg(t, p) // never delivered to the panel
 
-	parent := filepath.Dir(msg.CloneDir)
-	mustExistPath(t, parent)
-
 	var h dock.Host
 	h.Open(p)
 	h.Open(replacementPanel{})
-	mustBeGonePath(t, parent)
-	if p.scanLease != nil || p.scanParent != "" {
+	if p.scanLease != nil || p.scanToken != "" {
 		t.Fatal("the released panel kept ownership of its scan")
 	}
+	if got := fake.discardedTokens(); len(got) != 1 || got[0] != msg.Scan.Token {
+		t.Fatalf("discarded = %v, want [%s]", got, msg.Scan.Token)
+	}
 
-	// A late delivery finds no frame to attach to and deletes nothing twice.
+	// A late delivery finds no frame to attach to and discards nothing twice.
 	p.Update(msg)
-	mustBeGonePath(t, parent)
+	if got := fake.discardedTokens(); len(got) != 1 {
+		t.Fatalf("discarded = %v after the late delivery, want one", got)
+	}
 }
 
-// TestInstallOwnsCloneAfterConfirm pins the ownership handover: once the user
-// confirms, the worker owns the clone, so closing or replacing the panel must
-// not delete files the worker is still copying — and the worker cleans them
-// itself when it finishes.
-func TestInstallOwnsCloneAfterConfirm(t *testing.T) {
-	home := t.TempDir()
-	p := newPanelWithScanDeps(home, t.TempDir(), true, nil, fakeScanDeps(nil))
-	parent := scanReview(t, p, "https://example.com/demo.git")
-	cloneDir := filepath.Join(parent, "clone")
+// TestInstallConsumesTheToken pins the ownership handover: once the user
+// confirms, the install owns the staged clone, so closing or replacing the
+// panel must not discard a token the worker is installing — and the worker's
+// own call consumes it exactly once.
+func TestInstallConsumesTheToken(t *testing.T) {
+	fake := newFakeService()
+	p := NewPanel(fake, true, nil)
+	token := scanReview(t, p, "https://example.com/demo.git")
 
 	focusRow(t, p, "install.confirm")
 	cmd := p.Update(keyEnter)
 	if cmd == nil {
 		t.Fatal("Confirm produced no command")
 	}
-	if p.scanParent != "" {
-		t.Fatal("the panel still references the clone it handed to the install worker")
+	if p.scanToken != "" {
+		t.Fatal("the panel still references the token it handed to the install worker")
 	}
 
 	// The panel is released while the install is still running: the worker's
-	// input is not the panel's to delete any more.
+	// token is not the panel's to discard any more.
 	var h dock.Host
 	h.Open(p)
 	h.Open(replacementPanel{})
-	mustExistPath(t, cloneDir)
+	if got := fake.discardedTokens(); len(got) != 0 {
+		t.Fatalf("releasing the panel discarded the worker's token: %v", got)
+	}
 
 	msg, ok := cmd().(installResultMsg)
 	if !ok {
@@ -765,49 +819,11 @@ func TestInstallOwnsCloneAfterConfirm(t *testing.T) {
 	if msg.Err != nil {
 		t.Fatalf("install failed: %v", msg.Err)
 	}
-	// The worker cleaned its own clone and committed the plugin.
-	mustBeGonePath(t, cloneDir)
-	mustExistPath(t, filepath.Join(plugins.GlobalStoreDir(home), "demo"))
-}
-
-// TestConfirmRejectsChangedClone pins the guarantee through the real Confirm
-// path: the clone is hashed when the user reviews it and staged again when they
-// confirm, so a clone that changed in between is refused — visibly, and without
-// installing anything over what is already there.
-func TestConfirmRejectsChangedClone(t *testing.T) {
-	home := t.TempDir()
-	p := newPanelWithScanDeps(home, t.TempDir(), true, nil, fakeScanDeps(nil))
-	parent := scanReview(t, p, "https://example.com/demo.git")
-
-	// The clone changes after its hash was shown on the review screen.
-	tampered := filepath.Join(parent, "clone", "hooks.toml")
-	if err := os.WriteFile(tampered, []byte("changed after the review\n"), 0o644); err != nil {
-		t.Fatalf("tamper with the clone: %v", err)
+	if got := fake.installedCalls(); len(got) != 1 || got[0] != (installCall{Token: token, Scope: scopeGlobal}) {
+		t.Fatalf("installed = %v, want one %s (global) install", got, token)
 	}
-
-	focusRow(t, p, "install.confirm")
-	cmd := p.Update(keyEnter)
-	if cmd == nil {
-		t.Fatal("Confirm produced no command")
-	}
-	p.Update(cmd())
-
-	if msg := p.activeList().ErrMsg; !strings.Contains(msg, "changed since the review") {
-		t.Fatalf("the content mismatch is not visible: %q", msg)
-	}
-	if p.busy != "" {
-		t.Errorf("the panel is still %q after a refused install", p.busy)
-	}
-	mustBeGonePath(t, filepath.Join(plugins.GlobalStoreDir(home), "demo"))
-	mustBeGonePath(t, plugins.GlobalLockPath(home))
-
-	// The refused install left no staging directory behind either.
-	entries, err := os.ReadDir(plugins.GlobalStoreDir(home))
-	if err != nil && !os.IsNotExist(err) {
-		t.Fatalf("read the plugin store: %v", err)
-	}
-	if len(entries) != 0 {
-		t.Errorf("the refused install left %d entries in the store: %v", len(entries), entries)
+	if got := fake.discardedTokens(); len(got) != 0 {
+		t.Fatalf("the consumed token was also discarded: %v", got)
 	}
 }
 
@@ -835,15 +851,15 @@ func reviewPages(t *testing.T, p *Panel, width, height int) (plain, raw []string
 // pageable view of its complete text, and terminal controls in that text are
 // shown rather than executed.
 func TestReviewDetailShowsCompleteExecutableContent(t *testing.T) {
-	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+	p := NewPanel(newFakeService(), true, nil)
 	p.stack = append(p.stack, p.installFrame())
 
-	p.scannedContents = &plugins.Contents{
-		Hooks: []config.HookConfig{{
+	p.scannedContents = &acpwire.PluginContents{
+		Hooks: []acpwire.PluginHook{{
 			Event:   "pre_tool_use",
 			Command: "echo " + strings.Repeat("h", 90) + " MARKER_HOOK_END \x1b[2Kwipe",
 		}},
-		MCPServers: map[string]config.MCPServerConfig{
+		MCPServers: map[string]acpwire.PluginMCPServer{
 			"srv": {Command: "server-bin", Args: []string{
 				"--flag",
 				"has space",
@@ -860,7 +876,7 @@ func TestReviewDetailShowsCompleteExecutableContent(t *testing.T) {
 	p.scannedSource = "https://example.com/demo.git"
 	p.scannedScope = scopeGlobal
 	p.installSource = "https://example.com/demo.git"
-	p.scanParent = filepath.Join(t.TempDir(), "scan")
+	p.scanToken = "scan-7"
 
 	// The confirmation states the source and scope the review belongs to, as
 	// the normalized source the scan fetched rather than the typed text.
@@ -965,10 +981,10 @@ func TestReviewDetailShowsCompleteExecutableContent(t *testing.T) {
 // omitted.
 func TestMCPReviewShowsHiddenServerFieldsAndEscapesNames(t *testing.T) {
 	const hostile = "srv\nNAME\x1b[2K"
-	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+	p := NewPanel(newFakeService(), true, nil)
 	p.stack = append(p.stack, p.installFrame())
-	p.scannedContents = &plugins.Contents{
-		MCPServers: map[string]config.MCPServerConfig{
+	p.scannedContents = &acpwire.PluginContents{
+		MCPServers: map[string]acpwire.PluginMCPServer{
 			hostile: {
 				Command: "bin",
 				Trust:   "unrestricted",
@@ -1026,10 +1042,10 @@ func TestReviewDetailResizeAndNoColor(t *testing.T) {
 	theme.Reload(theme.Load())
 	t.Cleanup(func() { theme.Reload(prev) })
 
-	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+	p := NewPanel(newFakeService(), true, nil)
 	p.stack = append(p.stack, p.installFrame())
-	p.scannedContents = &plugins.Contents{
-		Hooks:       []config.HookConfig{{Event: "pre_tool_use", Command: "echo " + strings.Repeat("z", 240)}},
+	p.scannedContents = &acpwire.PluginContents{
+		Hooks:       []acpwire.PluginHook{{Event: "pre_tool_use", Command: "echo " + strings.Repeat("z", 240)}},
 		MCPPolicies: map[string]string{"pol": "deny"},
 	}
 	p.scannedSource = "file:///tmp/plugin"
@@ -1098,7 +1114,7 @@ func TestReviewDetailResizeAndNoColor(t *testing.T) {
 // source never arrived anywhere in the install frame, and nothing stopped a
 // paste from landing in the root filter behind an open edit.
 func TestPluginPasteFollowsFocus(t *testing.T) {
-	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+	p := NewPanel(newFakeService(), true, nil)
 
 	// Nothing is drilled and nothing is being edited, so the root filter owns
 	// the paste and the install working state is untouched.
@@ -1168,8 +1184,8 @@ func TestPluginPasteFollowsFocus(t *testing.T) {
 	}
 
 	// The full-content review owns every key, paste included.
-	p.scannedContents = &plugins.Contents{
-		Hooks: []config.HookConfig{{Event: "pre_tool_use", Command: "echo reviewed"}},
+	p.scannedContents = &acpwire.PluginContents{
+		Hooks: []acpwire.PluginHook{{Event: "pre_tool_use", Command: "echo reviewed"}},
 	}
 	p.activeList().Refresh()
 	focusRow(t, p, "confirm.hook.pre_tool_use")
@@ -1192,13 +1208,15 @@ func TestPluginPasteFollowsFocus(t *testing.T) {
 // TestPluginEscapeCancelsEditBeforeScanAbandonment pins the ownership order of
 // Escape in the install frame. An edit is cancelled first: cancelling one must
 // not leave the frame, so it must not abandon the scan the frame is about to
-// confirm. Only an Escape with no edit open leaves the frame and disposes of
-// the scan. Committing a changed source or scope still invalidates the review.
+// confirm. Only an Escape with no edit open leaves the frame and discards the
+// staged scan. Committing a changed source or scope still invalidates the
+// review.
 func TestPluginEscapeCancelsEditBeforeScanAbandonment(t *testing.T) {
 	const source = "https://example.com/demo.git"
 
 	t.Run("cancelling an edit keeps the scan", func(t *testing.T) {
-		p := newPanelWithScanDeps(t.TempDir(), t.TempDir(), true, nil, fakeScanDeps(nil))
+		fake := newFakeService()
+		p := NewPanel(fake, true, nil)
 		openInstallFrame(t, p)
 		setInstallField(t, p, "install.source", source)
 		msg := scanMsg(t, p) // the scan ran; its result is still undelivered
@@ -1235,7 +1253,7 @@ func TestPluginEscapeCancelsEditBeforeScanAbandonment(t *testing.T) {
 
 		// The scan the cancelled edit left alone still becomes the review.
 		p.Update(msg)
-		if p.scannedContents == nil || p.scanParent == "" {
+		if p.scannedContents == nil || p.scanToken == "" {
 			t.Fatalf("the scan result was discarded after an edit was cancelled: %q", p.activeList().ErrMsg)
 		}
 		if !hasRow(p, "install.confirm") {
@@ -1243,22 +1261,25 @@ func TestPluginEscapeCancelsEditBeforeScanAbandonment(t *testing.T) {
 		}
 
 		// With no edit open, Escape does leave the frame — and only then is
-		// the scan abandoned.
+		// the scan discarded.
 		press(t, p, keyEsc)
 		if len(p.stack) != 0 {
 			t.Fatal("Escape did not leave the install frame once no edit was open")
 		}
-		if p.scannedContents != nil || p.scanParent != "" {
+		if p.scannedContents != nil || p.scanToken != "" {
 			t.Fatal("leaving the frame kept the review")
+		}
+		if got := fake.discardedTokens(); len(got) != 1 || got[0] != msg.Scan.Token {
+			t.Fatalf("discarded = %v, want [%s]", got, msg.Scan.Token)
 		}
 	})
 
 	t.Run("leaving the frame disposes of a late result", func(t *testing.T) {
-		p := newPanelWithScanDeps(t.TempDir(), t.TempDir(), true, nil, fakeScanDeps(nil))
+		fake := newFakeService()
+		p := NewPanel(fake, true, nil)
 		openInstallFrame(t, p)
 		setInstallField(t, p, "install.source", source)
 		msg := scanMsg(t, p) // never delivered before the frame is left
-		cloneParent := filepath.Dir(msg.CloneDir)
 
 		focusRow(t, p, "install.source")
 		press(t, p, keyEnter)
@@ -1272,12 +1293,14 @@ func TestPluginEscapeCancelsEditBeforeScanAbandonment(t *testing.T) {
 		if len(p.stack) != 0 {
 			t.Fatal("the second Escape did not leave the install frame")
 		}
-		// The lease owned the clone, so it is gone without waiting for a
+		// The lease owned the token, so it was discarded without waiting for a
 		// message that now belongs to an abandoned frame.
-		mustBeGonePath(t, cloneParent)
+		if got := fake.discardedTokens(); len(got) != 1 || got[0] != msg.Scan.Token {
+			t.Fatalf("discarded = %v, want [%s]", got, msg.Scan.Token)
+		}
 
 		p.Update(msg)
-		if p.scannedContents != nil || p.scanParent != "" {
+		if p.scannedContents != nil || p.scanToken != "" {
 			t.Fatal("a late scan result attached to the left frame")
 		}
 		if hasRow(p, "install.confirm") {
@@ -1285,6 +1308,9 @@ func TestPluginEscapeCancelsEditBeforeScanAbandonment(t *testing.T) {
 		}
 		if p.busy != "" {
 			t.Fatalf("the panel is still %q after a late result", p.busy)
+		}
+		if got := fake.discardedTokens(); len(got) != 1 {
+			t.Fatalf("discarded = %v after the late result, want one", got)
 		}
 	})
 
@@ -1294,8 +1320,9 @@ func TestPluginEscapeCancelsEditBeforeScanAbandonment(t *testing.T) {
 			{"scope", "install.scope"},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				p := newPanelWithScanDeps(t.TempDir(), t.TempDir(), true, nil, fakeScanDeps(nil))
-				parent := scanReview(t, p, source)
+				fake := newFakeService()
+				p := NewPanel(fake, true, nil)
+				token := scanReview(t, p, source)
 				if !hasRow(p, "install.confirm") {
 					t.Fatal("a successful scan did not offer Confirm")
 				}
@@ -1315,13 +1342,15 @@ func TestPluginEscapeCancelsEditBeforeScanAbandonment(t *testing.T) {
 				}
 				press(t, p, keyEnter) // commit the changed value
 
-				if p.scannedContents != nil || p.scanParent != "" {
+				if p.scannedContents != nil || p.scanToken != "" {
 					t.Fatal("the review survived a committed change to the source or scope")
 				}
 				if hasRow(p, "install.confirm") {
 					t.Fatal("Confirm survived an invalidated review")
 				}
-				mustBeGonePath(t, parent)
+				if got := fake.discardedTokens(); len(got) != 1 || got[0] != token {
+					t.Fatalf("discarded = %v, want [%s]", got, token)
+				}
 				if cmd := p.runInstallFromScan(); cmd != nil {
 					t.Fatal("an invalidated review still produced an install command")
 				}
@@ -1330,7 +1359,7 @@ func TestPluginEscapeCancelsEditBeforeScanAbandonment(t *testing.T) {
 	})
 
 	t.Run("escape cancels the enum picker", func(t *testing.T) {
-		p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+		p := NewPanel(newFakeService(), true, nil)
 		openInstallFrame(t, p)
 		focusRow(t, p, "install.scope")
 		press(t, p, keyEnter)
@@ -1352,8 +1381,7 @@ func TestPluginEscapeCancelsEditBeforeScanAbandonment(t *testing.T) {
 	})
 
 	t.Run("escape still disarms a pending removal", func(t *testing.T) {
-		p := newRemovalPanel(t)
-		target := installFixture(t, p, scopeGlobal, "demo")
+		p, fake := newRemovalPanel(t, entry("demo", scopeGlobal))
 		e := entryFor(t, p, scopeGlobal, "demo")
 		openRemoveRow(t, p, e)
 
@@ -1369,8 +1397,10 @@ func TestPluginEscapeCancelsEditBeforeScanAbandonment(t *testing.T) {
 		if p.removeArmed[removalIdentity(e)] {
 			t.Fatal("the armed confirmation survived leaving the frame")
 		}
-		mustExistPath(t, target)
-		mustKeepLockEntry(t, p, scopeGlobal, "demo")
+		mustListed(t, p, scopeGlobal, "demo")
+		if len(fake.removedCalls()) != 0 {
+			t.Fatalf("leaving the frame removed %v", fake.removedCalls())
+		}
 	})
 }
 
@@ -1378,7 +1408,7 @@ func TestPluginEscapeCancelsEditBeforeScanAbandonment(t *testing.T) {
 // user to restart, through the note function the panel was given.
 func TestRemovingAPluginAsksForARestart(t *testing.T) {
 	var notes []string
-	p := NewPanel(t.TempDir(), t.TempDir(), true, func(text string) {
+	p := NewPanel(newFakeService(), true, func(text string) {
 		notes = append(notes, text)
 	})
 	p.Update(removeResultMsg{Name: "demo", Scope: scopeGlobal})

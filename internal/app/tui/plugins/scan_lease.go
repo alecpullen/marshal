@@ -2,74 +2,79 @@ package plugins
 
 import (
 	"context"
-	"os"
 	"sync"
 )
 
-// scanLease owns the temporary directory a scan produces until exactly one
+// scanLease owns the token naming a staged plugin scan until exactly one
 // claimant takes it, or the lease is closed.
 //
 // A scan runs as a Bubble Tea command, and its result message may never be
 // delivered: the panel can be replaced or closed while the clone is still
-// running, so nothing downstream would ever delete the directory. The lease is
-// the owner that outlives that message — it cancels the scan and deletes what
-// it published, so no cleanup path depends on a message arriving.
+// running, so nothing downstream would ever discard the staged clone. The
+// lease is the owner that outlives that message — it cancels the scan and
+// discards what it published, so no cleanup path depends on a message
+// arriving.
 type scanLease struct {
-	cancel context.CancelFunc
+	cancel  context.CancelFunc
+	discard func(token string)
 
 	mu      sync.Mutex
 	closed  bool
 	claimed bool
-	parent  string
+	token   string
 }
 
-// newScanLease returns a lease that cancels its scan through cancel.
-func newScanLease(cancel context.CancelFunc) *scanLease {
-	return &scanLease{cancel: cancel}
+// newScanLease returns a lease that cancels its scan through cancel and
+// discards an abandoned token through discard. A nil discard is a lease whose
+// tokens nobody can release; production always passes the session's
+// DiscardPluginScan.
+func newScanLease(cancel context.CancelFunc, discard func(token string)) *scanLease {
+	return &scanLease{cancel: cancel, discard: discard}
 }
 
-// Publish transfers cleanup ownership of the complete temporary parent to the
-// lease and reports whether it took it. A closed lease deletes dir immediately
-// and reports false: the work the directory belongs to has been abandoned.
-func (l *scanLease) Publish(dir string) bool {
+// Publish transfers cleanup ownership of the staged scan the token names to
+// the lease and reports whether it took it. A closed lease discards the token
+// immediately and reports false: the work it belongs to has been abandoned.
+// Cleanup runs outside the mutex, because a slow round trip must not block a
+// concurrent publish or claim.
+func (l *scanLease) Publish(token string) bool {
 	l.mu.Lock()
 	if l.closed || l.claimed {
 		// Closed: nobody is waiting for this scan. Claimed: a claimant already
-		// owns the directory this publish would replace.
+		// owns the token this publish would replace.
 		l.mu.Unlock()
-		os.RemoveAll(dir)
+		l.discardToken(token)
 		return false
 	}
-	previous := l.parent
-	l.parent = dir
+	previous := l.token
+	l.token = token
 	l.mu.Unlock()
-	// Cleanup is outside the mutex: a slow delete must not block a concurrent
-	// publish or claim.
-	if previous != "" && previous != dir {
-		os.RemoveAll(previous)
+	if previous != "" && previous != token {
+		l.discardToken(previous)
 	}
 	return true
 }
 
-// Claim takes ownership of the published parent. It succeeds once only, and
+// Claim takes ownership of the published token. It succeeds once only, and
 // only for a published lease that has not been closed; the caller is then
-// responsible for deleting the directory.
+// responsible for installing or discarding that staged scan.
 func (l *scanLease) Claim() (string, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.closed || l.claimed || l.parent == "" {
+	if l.closed || l.claimed || l.token == "" {
 		return "", false
 	}
 	l.claimed = true
-	parent := l.parent
-	l.parent = ""
-	return parent, true
+	token := l.token
+	l.token = ""
+	return token, true
 }
 
 // Close cancels the scan and disposes of whatever the lease still owns: an
-// unclaimed published parent is deleted, and a lease closed before its scan
-// publishes deletes the directory when that publish arrives. A claimed parent
-// belongs to its claimant and is never deleted here. Repeated calls are safe.
+// unclaimed published token is discarded, and a lease closed before its scan
+// publishes discards the token when that publish arrives. A claimed token
+// belongs to its claimant and is never discarded here. Repeated calls are
+// safe.
 func (l *scanLease) Close() {
 	l.mu.Lock()
 	if l.closed {
@@ -78,16 +83,24 @@ func (l *scanLease) Close() {
 	}
 	l.closed = true
 	cancel := l.cancel
-	parent := ""
+	token := ""
 	if !l.claimed {
-		parent = l.parent
-		l.parent = ""
+		token = l.token
+		l.token = ""
 	}
 	l.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
-	if parent != "" {
-		os.RemoveAll(parent)
+	if token != "" {
+		l.discardToken(token)
 	}
+}
+
+// discardToken releases one staged scan, outside every lock the lease holds.
+func (l *scanLease) discardToken(token string) {
+	if token == "" || l.discard == nil {
+		return
+	}
+	l.discard(token)
 }

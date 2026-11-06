@@ -2920,3 +2920,90 @@ checking for an error: removing `Deps.FileIndex` fails it. `ReadFile` gains a
 truncation case and a NUL-past-the-sniff-window case, `Messages` gains
 `Last > Total` and no-match cases, and `PromptParams.WatchResume` says it is
 never combined with `Queued`.
+
+**Plan 8b (browsers), branch `p2-8b-browsers`.** `internal/acpwire/browsers.go` gains
+`SessionEntry` and `MemoryEntry`, the plugin types `PluginEntry`, `PluginScan`,
+`PluginContents`, `PluginItem`, `PluginHook` and `PluginMCPServer`, and the skill types
+`SkillEntry`, `SkillGateState` and `SkillGateDecision`. `acpwire` also gains
+`CodeNoDatabase` (`no_database`), which marks a session without a project database, and
+`SessionStatus.SkillGate` (C5, C11): the session's switch and its sticky decisions, copied
+in the state's sorted order and absent when there are none.
+
+`acpclient.Host` gains `ListSessions`; `acpclient.Session` gains fourteen methods. Eleven
+of the fifteen rows already existed on the ACP side and four are new:
+
+- `ListSessions` → `session/list`; `Memories` → `session/memory_list`; `DeleteMemory` →
+  `session/memory_delete`;
+- `Plugins` → `session/plugins_list`; `ScanPlugin` → `session/plugins_install_scan`;
+  `InstallPlugin` → `session/plugins_install_confirm`; `DiscardPluginScan` →
+  `session/plugins_install_discard`; `RemovePlugin` → `session/plugins_remove`;
+- `Skills` → `session/skills_list`; `LoadSkill` → `session/skills_load`; `RemoveSkill` →
+  `session/skills_remove`;
+- new: `InstallSkill` → `session/skills_install`; `SetSkillAutoload` →
+  `session/skills_autoload`; `SetSkillGate` → `session/skill_gate_set`;
+  `ClearSkillGateDecision` → `session/skill_gate_clear`.
+
+The adapter takes `Deps.SkillIndex`, a function so it reads the runtime's current index
+after a swap. Each session keeps three pieces of state under its lock: `skillListing`, the
+last `Skills` listing by scope and source (joined by a NUL, so no two entries collide);
+`pluginScans`, the staged plugin clones by token; and `pluginSeq`, which numbers the
+tokens.
+
+`Skills` lists both stores — the global one under `config.UserDir(home)/skills`, never
+`skills.ScopeDir`, and the project one under `<work>/.marshal/skills` — records the
+listing, and computes each entry's `LoadBlocked` when it is read: no index, the index lacks
+the name, the index holds a different value for it, or the skill is already active.
+`LoadSkill` re-reads the stores, checks the listed entry is still the same file with the
+same content, then the index, then the active rule, and loads from a one-entry index so a
+concurrent index change cannot swap the body between validation and injection.
+`InstallSkill` keeps the panel's three refusals in the panel's words (`enter a source
+first`, `project scope needs a trusted folder`, `unknown skill scope %q`) and installs
+through `skills.Install`. `RemoveSkill` removes the listed source through
+`skills.RemoveScopedSkill`, confined to that scope's store. `SetSkillAutoload` writes
+`skills.autoload` into the user config with `config.SaveUserConfigValue` and rebases the
+live config; the two gate calls delegate to the state and fire `Changed`.
+
+`ScanPlugin` validates and clones a source into a fresh temp parent, removes `.git`, scans
+it, hashes it and stages both under a token; a closed session discards the scans it still
+holds. `InstallPlugin` installs the staged clone with `plugins.InstallReviewed` against the
+reviewed hash and deletes the clone on every outcome, so a changed clone is refused rather
+than installed. `DiscardPluginScan` removes a token nobody claimed, at most once.
+
+The memory browser now takes the listed `[]acpwire.MemoryEntry` and a delete function;
+`ShowMsg` carries the entry, so it renders from the listing instead of re-reading the row.
+The model lists sessions with `Host.ListSessions` and opens the browser from
+`Session.Memories`, deleting through `Session.DeleteMemory`; a session without a database
+keeps the `CodeNoDatabase` note, and Ctrl+K still does nothing then.
+
+The plugins panel takes a `Service` (`Plugins`, `ScanPlugin`, `InstallPlugin`,
+`DiscardPluginScan`, `RemovePlugin`). It lost its store and lockfile paths, the scoped
+entry and lock-entry helpers, its scan dependencies, and its own clone, hash and install
+logic; `scanLease` now owns a token instead of a directory, and a token is either claimed
+by an install or discarded, never both.
+
+The skills panel takes a `Service` (`Config`, `Status`, `Skills`, `LoadSkill`,
+`InstallSkill`, `RemoveSkill`, `SetSkillAutoload`, `SetSkillGate`,
+`ClearSkillGateDecision`). It lost `homeDir`, `workDir`, `state`, `skillIndex`,
+`homeRoot`, `globalSkillsDir`, `projectSkillsDir`, `activeIndex` and `loadableSelection`,
+and with them its `config.UserDir`, `config.UserConfigPath` and
+`config.SaveUserConfigValue` calls, its `skills` and `app/session` imports, and the `os`
+and `path/filepath` uses. Its detail frame takes an `acpwire.SkillEntry`; the load row
+reads the listing's `LoadBlocked` and loads through the session, removal uses the entry's
+scope and source, and the gate and decision rows read `SessionStatus.SkillGate`. `/skills`
+opens `skills.NewPanel(m.sess, m.sess.Status().Trusted)`; the model's `WithSkillIndex` and
+`skillIndex` field are gone, and `model.go` no longer imports `marshal/internal/skills`.
+
+The adapter's browser, plugin and skill tests are new; the three panels' tests were rebuilt
+over the in-process session, with `testPanel` moving the runtime index through a pointer and
+`discovered` returning the listing's `acpwire.SkillEntry`. The mutation check in the plan
+holds: dropping the adapter's already-active refusal makes the skills panel's
+already-active case fail.
+
+T1's allowlist lost 9 entries across 5 files, four of them keys entirely —
+`memory/entries.go`, `memory/panel.go`, `plugins/panel.go` and `skills/panel.go` — plus
+`model.go`'s `marshal/internal/skills` entry. T1b gains five names at 8b:
+`SkillGateEnabled`, `SkillGateSetEnabled`, `SkillGateDecisions`, `SkillGateClearDecision`
+and `HasActiveSkill`, and `deferredStateReads` is now empty.
+
+No user-visible change. P3 needs handlers for the four new methods, and `session/list`
+results still need converting (RFC 3339 times and the message count in `_meta`).

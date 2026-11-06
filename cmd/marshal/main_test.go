@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"marshal/internal/app"
+	"marshal/internal/launch"
 	"marshal/internal/trust"
 )
 
@@ -159,7 +159,7 @@ func TestRunPrintsVersionAndSkipsApp(t *testing.T) {
 	called := false
 	oldApp := appRunner
 	defer func() { appRunner = oldApp }()
-	appRunner = func(ctx context.Context, out io.Writer, opts ...app.Option) error {
+	appRunner = func(ctx context.Context, out io.Writer, opts ...launch.Option) error {
 		called = true
 		return nil
 	}

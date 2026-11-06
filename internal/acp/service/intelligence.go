@@ -1,0 +1,129 @@
+package service
+
+import (
+	"fmt"
+	"os/exec"
+	"sort"
+	"strings"
+
+	"marshal/internal/acpwire"
+	"marshal/internal/app/config"
+	"marshal/internal/db"
+	"marshal/internal/lsp"
+)
+
+// intelligenceChecks derives subsystem liveness from config and the project
+// DB. It deliberately uses no live runtime state: LSP detection is a PATH
+// probe (no servers are started), and the watcher row reports configured
+// behavior rather than goroutine liveness. The PATH probe is intentionally
+// synchronous on the /doctor dispatch: it only ever stats a handful of
+// default/configured server binaries, which is far cheaper than the async
+// tea.Cmd plumbing it would otherwise need, and it runs only when the user
+// explicitly invokes /doctor.
+func intelligenceChecks(cfg config.Config, database *db.DB, projectID int64) []acpwire.IntelligenceCheck {
+	return []acpwire.IntelligenceCheck{
+		indexCheck(database, projectID),
+		embeddingsCheck(cfg, database, projectID),
+		lspCheck(cfg),
+		watcherCheck(cfg),
+	}
+}
+
+func indexCheck(database *db.DB, projectID int64) acpwire.IntelligenceCheck {
+	if database == nil {
+		return acpwire.IntelligenceCheck{Name: "Index", Status: "off", Detail: "database unavailable"}
+	}
+	files, err := database.CountFiles(projectID)
+	if err != nil {
+		// A real read failure (locked DB, schema mismatch) is a problem to
+		// surface, not something to hide behind "index never ran".
+		return acpwire.IntelligenceCheck{Name: "Index", Status: "warn", Detail: "could not read index: " + err.Error()}
+	}
+	if files == 0 {
+		return acpwire.IntelligenceCheck{Name: "Index", Status: "off", Detail: "index never ran — repo map and symbol tools have no data"}
+	}
+	detail := fmt.Sprintf("%d files", files)
+	if symbols, err := database.CountSymbols(projectID); err == nil {
+		detail += fmt.Sprintf(" · %d symbols", symbols)
+	}
+	if ts, err := database.LatestIndexedAt(projectID); err == nil && !ts.IsZero() {
+		detail += " · last indexed " + ts.Local().Format("2006-01-02 15:04")
+	}
+	return acpwire.IntelligenceCheck{Name: "Index", Status: "ok", Detail: detail}
+}
+
+func embeddingsConfigured(cfg config.Config) bool {
+	return cfg.Indexing.EmbeddingPreset != "" || cfg.Indexing.UseEmbeddings
+}
+
+func embeddingsCheck(cfg config.Config, database *db.DB, projectID int64) acpwire.IntelligenceCheck {
+	if !embeddingsConfigured(cfg) {
+		return acpwire.IntelligenceCheck{Name: "Embeddings", Status: "off", Detail: "semantic search disabled — set indexing.embedding_preset"}
+	}
+	n := 0
+	if database != nil {
+		n, _ = database.CountEmbeddedChunks(projectID)
+	}
+	preset := cfg.Indexing.EmbeddingPreset
+	if preset == "" {
+		preset = "use_embeddings"
+	}
+	if n == 0 {
+		return acpwire.IntelligenceCheck{Name: "Embeddings", Status: "warn", Detail: "configured (" + preset + ") but no embeddings written yet"}
+	}
+	return acpwire.IntelligenceCheck{Name: "Embeddings", Status: "ok", Detail: fmt.Sprintf("%d embedded chunks (%s)", n, preset)}
+}
+
+func lspCheck(cfg config.Config) acpwire.IntelligenceCheck {
+	if cfg.LSP.Enabled != nil && !*cfg.LSP.Enabled {
+		return acpwire.IntelligenceCheck{Name: "LSP", Status: "off", Detail: "disabled — lsp.enabled = false"}
+	}
+	configured := map[string]lsp.ServerSpec{}
+	disabled := map[string]bool{}
+	for lang, sc := range cfg.LSP.Servers {
+		if sc.Disabled {
+			disabled[lang] = true
+			continue
+		}
+		configured[lang] = lsp.ServerSpec{Command: sc.Command, Args: sc.Args}
+	}
+	effective := lsp.DetectServers(configured, disabled)
+	if len(effective) == 0 {
+		// The tree-sitter fallback is itself gated on indexing.use_treesitter;
+		// don't claim a fallback that isn't enabled.
+		if cfg.Indexing.UseTreesitter {
+			return acpwire.IntelligenceCheck{Name: "LSP", Status: "off", Detail: "no language servers found on PATH — symbols fall back to tree-sitter"}
+		}
+		return acpwire.IntelligenceCheck{Name: "LSP", Status: "off", Detail: "no language servers found on PATH and tree-sitter is off — symbol lookup has no source"}
+	}
+	var found, missing []string
+	for lang, spec := range effective {
+		if _, err := exec.LookPath(spec.Command); err == nil {
+			found = append(found, lang)
+		} else {
+			missing = append(missing, lang+" ("+spec.Command+")")
+		}
+	}
+	sort.Strings(found)
+	sort.Strings(missing)
+	if len(found) == 0 {
+		return acpwire.IntelligenceCheck{Name: "LSP", Status: "warn", Detail: "configured but not on PATH: " + strings.Join(missing, ", ")}
+	}
+	detail := "on PATH: " + strings.Join(found, ", ")
+	if len(missing) > 0 {
+		detail += " · missing: " + strings.Join(missing, ", ")
+	}
+	return acpwire.IntelligenceCheck{Name: "LSP", Status: "ok", Detail: detail}
+}
+
+func watcherCheck(cfg config.Config) acpwire.IntelligenceCheck {
+	// Match the runtime rule exactly: an explicit watch value wins; otherwise
+	// the watcher stays off even when embeddings are configured, so indexing
+	// never auto-starts in the background. See config.WatchEnabled. This row
+	// is derived purely from config, not live goroutine state, so it reports
+	// the configured behavior rather than asserting a running process.
+	if config.WatchEnabled(cfg.Indexing.Watch, embeddingsConfigured(cfg)) {
+		return acpwire.IntelligenceCheck{Name: "Watcher", Status: "ok", Detail: "watch = true — index refreshes on file changes when the session runs background workers"}
+	}
+	return acpwire.IntelligenceCheck{Name: "Watcher", Status: "warn", Detail: "off — index refreshes only at startup; set indexing.watch = true"}
+}

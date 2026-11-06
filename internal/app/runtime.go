@@ -1552,7 +1552,7 @@ func (rt *Runtime) Close(ctx context.Context) error {
 // creation, database open/migrate, project/session ensure, logger setup,
 // session.State creation, skill loading, broker construction, and
 // buildAgentRunner. The Bubble Tea onboarding gate and the TUI/program
-// loop are intentionally left to Run.
+// loop are intentionally left to launch.Run.
 //
 // F20: when the project is trusted and the user has configured entries, the
 // project-local hook runner is wired here so the TUI and any future
@@ -1561,7 +1561,6 @@ func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 	runOpts := options{
 		now:                    time.Now,
 		configWithLayersLoader: config.LoadWithLayers,
-		programRunner:          runProgram,
 	}
 	for _, opt := range opts {
 		opt(&runOpts)
@@ -1569,7 +1568,8 @@ func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 	return startRuntime(ctx, runOpts)
 }
 
-// startRuntime is the internal implementation shared by Run and StartRuntime.
+// startRuntime is the internal implementation shared by (*Embedded).Start and
+// StartRuntime.
 // It expects a fully-resolved options struct — no option iteration.
 func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	// Resolve the credential/OAuth dependency first: an explicitly nil

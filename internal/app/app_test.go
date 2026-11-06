@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -6244,6 +6245,43 @@ func TestRunWiresToolNames(t *testing.T) {
 	}
 	if trustPrompt != "" {
 		t.Errorf("Host().TrustPrompt() = %q, want \"\" for a directory with no project config", trustPrompt)
+	}
+}
+
+// TestRunWiresTheSessionsToolsFromTheRuntime pins the positive half of the
+// tools wiring, which TestRunWiresToolNames cannot: with a provider built, the
+// session names the runtime's registry, so dropping `Tools: rt.ToolNames` from
+// Run leaves the roster with nothing to validate against.
+func TestRunWiresTheSessionsToolsFromTheRuntime(t *testing.T) {
+	dir := t.TempDir()
+	var (
+		names []string
+		known bool
+	)
+	err := Run(context.Background(), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return time.Unix(100, 0) }),
+		WithWorkingDir(dir),
+		WithHomeDir(t.TempDir()),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return nativeToolAgentConfig("test-provider"), nil
+		}),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+			names, known = model.(tui.Model).Session().Tools()
+			return ProgramResult{}
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !known {
+		t.Fatalf("Session().Tools() = %v, false; want the runtime's registry", names)
+	}
+	if !slices.Contains(names, "file.read") {
+		t.Fatalf("Session().Tools() = %v, want the runtime's tools including file.read", names)
+	}
+	if !slices.IsSorted(names) {
+		t.Fatalf("Session().Tools() = %v, want sorted names", names)
 	}
 }
 

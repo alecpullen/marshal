@@ -1,7 +1,6 @@
 package agents
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,7 +19,6 @@ import (
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
-	"marshal/internal/tools/registry"
 )
 
 // testSession builds the session a roster writes through. Its working
@@ -189,12 +187,8 @@ func TestToolDenylistValidation(t *testing.T) {
 	if err == nil {
 		t.Fatal("invalid tool name should fail validation")
 	}
-	// With a session whose registry holds the tool, it should pass.
-	reg := registry.New()
-	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly, Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
-		return registry.ToolResult{}, nil
-	}})
-	p2 := NewRosterPanel(cfg, testSessionOverTools(t, registryToolNames(reg), true), "", nil)
+	// With a session that names the tool, it should pass.
+	p2 := NewRosterPanel(cfg, testSessionOverTools(t, []string{"file.read"}, true), "", nil)
 	err2 := p2.ValidateToolDenylist([]string{"file.read"})
 	if err2 != nil {
 		t.Fatalf("valid tool name should pass validation: %v", err2)
@@ -249,16 +243,6 @@ func testSessionOverTools(t *testing.T, names []string, known bool) acpclient.Se
 		Tools: func() ([]string, bool) { return names, known },
 	})
 	return sess
-}
-
-// registryToolNames is the name list reg holds, in reg's own order.
-func registryToolNames(reg *registry.Registry) []string {
-	tools := reg.List()
-	names := make([]string, 0, len(tools))
-	for _, tool := range tools {
-		names = append(names, tool.Name)
-	}
-	return names
 }
 
 func containsGlyph(s string, g string) bool {

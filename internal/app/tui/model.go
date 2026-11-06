@@ -1013,13 +1013,16 @@ func (m *Model) openAgentsRoster(arg string) {
 // app restarts with the project config in force. A refusal here means the
 // wiring is broken, so it is logged rather than shown.
 func (m *Model) openTrustPanel() bool {
-	dir := m.host.TrustPrompt()
+	// The closure runs after Update has returned, so it captures the host,
+	// the context and the logger by value, never the model.
+	host, ctx, log := m.host, m.ctx, m.log()
+	dir := host.TrustPrompt()
 	if dir == "" {
 		return false
 	}
 	m.dock.Open(trustpanel.New(dir, func(decision acpwire.TrustDecision) {
-		if err := m.host.DecideTrust(m.ctx, dir, decision); err != nil {
-			m.log().Warn("trust decision was not recorded", "error", err)
+		if err := host.DecideTrust(ctx, dir, decision); err != nil {
+			log.Warn("trust decision was not recorded", "error", err)
 		}
 	}))
 	return true

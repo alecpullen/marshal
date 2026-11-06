@@ -2732,9 +2732,9 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			refFinder = lsp.NewSymbolQuery(rt.LSPManager, nil, 0)
 		}
 		// The seam carries the folder-trust prompt: the directory whose
-		// project config waits for a decision, or "" when none does. The TUI
-		// keeps its own trust panel until plan 7c's next task moves it behind
-		// the seam.
+		// project config waits for a decision, or "" when none does. The
+		// trust panel asks through it, and a decision recorded here reloads
+		// the runtime with the project config in force.
 		trustPrompt := ""
 		if rt.TrustPromptPending {
 			trustPrompt = workingDir
@@ -2767,8 +2767,8 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			TrustRefresh: trustRefresh,
 			HomeDir:      homeDir,
 			// The folder-trust prompt and its decision reach the seam, and the
-			// session names the runtime's tools. The TUI's own options stay
-			// wired until plan 7c's next tasks delete them.
+			// session names the runtime's current tools. These are the only
+			// paths the TUI has to either.
 			TrustPrompt: trustPrompt,
 			DecideTrust: trustDecide,
 			Tools:       rt.ToolNames,

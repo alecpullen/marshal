@@ -121,6 +121,51 @@ func TestTrustCommandOpensTrustPanelWhenPending(t *testing.T) {
 	}
 }
 
+// TestTrustCommandReopensAfterDecline pins the post-decline path: declining
+// closes the panel, but the host still reports the decision as pending, so
+// /trust asks again instead of falling back to the "nothing pending" note.
+func TestTrustCommandReopensAfterDecline(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	reg := commands.New()
+	_ = commands.RegisterAll(reg, nil)
+	var decided trust.Decision
+	m := testModelWith(
+		inproc.Deps{
+			State:       state,
+			Commands:    reg,
+			TrustPrompt: "/some/project",
+			DecideTrust: func(d trust.Decision) { decided = d },
+		},
+		WithHomeDir(t.TempDir()), WithWorkingDir("/some/project"),
+	)
+	if !m.dock.IsOpen() {
+		t.Fatal("expected the trust panel open at startup")
+	}
+
+	// Decline through the panel, then run the close it queues.
+	mm, cmd := m.Update(tea.KeyPressMsg{Code: '3', Text: "3"})
+	m = asModel(t, mm)
+	if cmd == nil {
+		t.Fatal("decline should yield a ClosedMsg command")
+	}
+	mm, _ = m.Update(cmd())
+	m = asModel(t, mm)
+	if m.dock.IsOpen() {
+		t.Fatal("dock should close after declining")
+	}
+	if decided != trust.DecisionDontTrust {
+		t.Fatalf("decision = %v, want dont_trust", decided)
+	}
+
+	m.dispatchCommand("/trust")
+	if _, ok := m.dock.Panel().(*trustpanel.Panel); !ok {
+		t.Fatalf("expected the trust panel after /trust following a decline, got %T", m.dock.Panel())
+	}
+	if decided != trust.DecisionDontTrust {
+		t.Fatalf("reopening must not decide again, got %q", decided)
+	}
+}
+
 func TestTrustCommandFallsBackWhenNoPendingDecision(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
 	reg := commands.New()

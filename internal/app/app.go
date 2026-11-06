@@ -18,7 +18,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/service"
 	"marshal/internal/agent"
 	"marshal/internal/agent/swarm"
 	"marshal/internal/app/clipboard"
@@ -2727,7 +2727,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// The seam answers Callers through the runtime's one LSP handle. A
 		// runtime without one leaves the finder nil rather than assigning a
 		// nil *lsp.SymbolQuery to the interface.
-		var refFinder inproc.ReferenceFinder
+		var refFinder service.ReferenceFinder
 		if rt.LSPManager != nil {
 			refFinder = lsp.NewSymbolQuery(rt.LSPManager, nil, 0)
 		}
@@ -2739,7 +2739,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		if rt.TrustPromptPending {
 			trustPrompt = workingDir
 		}
-		deps := inproc.Deps{
+		deps := service.Deps{
 			State:           state,
 			Context:         ctx,
 			Jobs:            jobBroker,
@@ -2788,7 +2788,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			deps.Work = rt
 		}
 		bindTurnDeps(&deps, rt)
-		seamHost, seamSession := inproc.New(deps)
+		seamHost, seamSession := service.New(deps)
 
 		var tuiOpts []tui.Option
 		// F18: eager-seed the @file completion popup with the repo file

@@ -742,17 +742,14 @@ func (m *Model) userHome() (string, error) {
 	return home, nil
 }
 
-// persistAndReload saves cfg to the project config file, asks the runtime
-// to reload it, and applies the outcome to TUI state. It returns the save
-// error or, when saving succeeded, the reload error (nil on full success).
-// On any error the in-memory change is kept (and configSavePending set for
-// save failures) so the user can fix the underlying problem and retry
-// without losing their edit. Messaging is the caller's job.
 // persistAndReload persists cfg to the project config and, when the save
 // succeeds, rebuilds the runtime from it. The reload — which starts MCP
 // servers and builds providers — runs from the call queue (P3 R6), so report
 // is called when its result arrives. A failed save happens first, reloads
-// nothing, and is reported at once.
+// nothing, and is reported at once. On any error the in-memory change is kept
+// (and configSavePending set for save failures) so the user can fix the
+// underlying problem and retry without losing their edit. Messaging is the
+// caller's job.
 func (m *Model) persistAndReload(cfg config.Config, report func(m *Model, saveErr, reloadErr error)) {
 	if err := m.sess.SaveProjectConfig(m.ctx, cfg); err != nil {
 		m.applyNewConfig(cfg)
@@ -1528,11 +1525,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		out, cmd := m.handleComposerSubmit(sendNow)
 		m = reconcileIfModel(out)
-		return m, cmd
+		// The queue is served here too: these handlers answer before the
+		// ordinary epilogue below, and an enqueued call would otherwise wait
+		// for an unrelated message.
+		return m, tea.Batch(cmd, m.serveCalls())
 	case steerpanel.CloseMsg:
 		out, cmd := m.handleComposerClose(sendNow)
 		m = reconcileIfModel(out)
-		return m, cmd
+		return m, tea.Batch(cmd, m.serveCalls())
 	}
 	if k, ok := msg.(tea.KeyPressMsg); ok && isSendNowKey(k) && !hidden && m.steeringComposer == nil {
 		// Any key other than a second Ctrl+C disarms the pending interrupt, and
@@ -1540,7 +1540,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ctrlCArmedFor = ctrlCNone
 		out, cmd := m.beginSendNow()
 		m = reconcileIfModel(out)
-		return m, cmd
+		return m, tea.Batch(cmd, m.serveCalls())
 	}
 
 	// The composer owns the input area. Key and paste messages go only to it;

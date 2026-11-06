@@ -169,10 +169,11 @@ func TestOptionsPendingChangeFlushesWhenIdle(t *testing.T) {
 	m = asModel(t, m2)
 
 	m.busy = false
-	// The turn-end flush is what activates the candidate. Calling it directly
-	// keeps the change pump — which blocks until the next signal — out of the
-	// test, and settles the reload it queues.
-	m.flushPendingModelOptions()
+	// The turn-end change is what activates the candidate: a changedMsg lands in
+	// handleChanged, which queues the reload. The pump command it also returns
+	// blocks until the next signal, so it is dropped rather than run; the reload
+	// it queued is settled below.
+	m, _ = m.handleChanged(changedMsg{ch: m.sess.Changed()})
 	m = settleCalls(t, m)
 	if reloads != 1 {
 		t.Fatalf("the runtime reload ran %d times on flush, want 1", reloads)
@@ -221,9 +222,9 @@ func TestOptionsReloadFailureRetainsPendingCandidate(t *testing.T) {
 	m = asModel(t, m2)
 
 	m.busy = false
-	// The turn-end flush is what activates the candidate; calling it directly
-	// keeps the change pump out of the test.
-	m.flushPendingModelOptions()
+	// The turn-end change is what activates the candidate; handleChanged queues
+	// the reload, and its blocking pump command is dropped.
+	m, _ = m.handleChanged(changedMsg{ch: m.sess.Changed()})
 	m = settleCalls(t, m)
 	if reloads != 1 {
 		t.Fatalf("the runtime reload ran %d times, want 1", reloads)

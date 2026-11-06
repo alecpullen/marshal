@@ -110,7 +110,10 @@ func (m *Model) handleCallDone(msg callDoneMsg) tea.Cmd {
 	m.callInFlight = false
 	m.callCancel = nil
 	var cmd tea.Cmd
-	if msg.result != nil {
+	// A quit that is waiting cancelled this call: its outcome would report the
+	// cancellation as a failure against a model that is already shutting down,
+	// so only the quit is served.
+	if msg.result != nil && !m.callQuitWaiting {
 		cmd = msg.result(m)
 	}
 	if m.callQuitWaiting {

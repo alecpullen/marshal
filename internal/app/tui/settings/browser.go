@@ -504,12 +504,16 @@ func (b *BrowserPanel) closePicker() {
 	b.pickerField = ""
 }
 
-// canProbeMsg is the answer to startConfirm's CanProbeModel check.
+// canProbeMsg is the answer to startConfirm's CanProbeModel check. It carries
+// the provider config the check was made against, so the probe that follows
+// uses the entry the picker saw rather than whatever the config holds when the
+// answer lands.
 type canProbeMsg struct {
-	RequestID int
-	Provider  string
-	Model     string
-	CanProbe  bool
+	RequestID   int
+	Provider    string
+	Model       string
+	ProviderCfg config.ProviderConfig
+	CanProbe    bool
 }
 
 // startConfirm opens the shared confirm-limits screen for a just-picked
@@ -538,10 +542,11 @@ func (b *BrowserPanel) startConfirm(pending pendingMaterialization) tea.Cmd {
 	requestID := b.capProbeID
 	return func() tea.Msg {
 		return canProbeMsg{
-			RequestID: int(requestID),
-			Provider:  pending.ProviderName,
-			Model:     pending.ModelID,
-			CanProbe:  host.CanProbeModel(context.Background(), pending.ProviderName, pc),
+			RequestID:   int(requestID),
+			Provider:    pending.ProviderName,
+			Model:       pending.ModelID,
+			ProviderCfg: pc,
+			CanProbe:    host.CanProbeModel(context.Background(), pending.ProviderName, pc),
 		}
 	}
 }
@@ -560,7 +565,7 @@ func (b *BrowserPanel) handleCanProbeAnswered(msg canProbeMsg) tea.Cmd {
 	}
 	b.detectingCaps = true
 	cmd, cancel := presetflow.ProbeCapabilitiesCmdWithCancel(b.reg.st.host, msg.Provider,
-		b.reg.st.cfg.Providers[msg.Provider], msg.Model, b.capProbeID)
+		msg.ProviderCfg, msg.Model, b.capProbeID)
 	b.cancelCapProbe = cancel
 	return cmd
 }

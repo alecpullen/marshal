@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -43,7 +44,8 @@ func settleCalls(t *testing.T, m Model, cmds ...tea.Cmd) Model {
 			return m
 		}
 		if !time.Now().Before(deadline) {
-			t.Fatal("the call queue did not settle within five seconds")
+			t.Fatalf("the call queue did not settle within five seconds (%d queued, in flight=%t, %d command(s) pending)",
+				len(m.calls), m.callInFlight, len(pending))
 		}
 		pending = append(pending, m.serveCalls())
 		for len(pending) > 0 {
@@ -103,21 +105,141 @@ func TestBlockingCallsLeaveTheUpdateGoroutine(t *testing.T) {
 	}
 }
 
+// TestTheGuardCatchesAliasedSeamCallsAndLiteralBodies pins the two escapes a
+// return-type-only check leaves: a seam copied into a local before the call,
+// and a blocking call in a start, step or outcome literal — bodies that run on
+// the Update goroutine even though they are function literals.
+func TestTheGuardCatchesAliasedSeamCallsAndLiteralBodies(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want int
+	}{
+		{
+			name: "direct",
+			body: `m.sess.ReloadConfig(nil, cfg)`,
+			want: 1,
+		},
+		{
+			name: "aliased once",
+			body: `s := m.sess
+	_ = s`,
+			want: 0,
+		},
+		{
+			name: "aliased call",
+			body: `s := m.sess
+	s.ReloadConfig(nil, cfg)`,
+			want: 1,
+		},
+		{
+			name: "aliased with context",
+			body: `sess, ctx := m.sess, m.ctx
+	sess.RefreshSheet(ctx)`,
+			want: 1,
+		},
+		{
+			name: "var alias",
+			body: `var h = m.host
+	h.ReconnectMCP(nil, "x")`,
+			want: 1,
+		},
+		{
+			name: "start body",
+			body: `m.enqueueCall(func(mm *Model) callRun {
+	mm.sess.ReloadConfig(nil, cfg)
+	return nil
+})`,
+			want: 1,
+		},
+		{
+			name: "step body",
+			body: `m.enqueueStep(func(mm *Model) tea.Cmd {
+	mm.host.Postmortem(nil, "x")
+	return nil
+})`,
+			want: 1,
+		},
+		{
+			name: "outcome body",
+			body: `m.enqueueCall(func(mm *Model) callRun {
+	return func(ctx context.Context) callOutcome {
+		return func(mm *Model) tea.Cmd {
+			mm.sess.ReloadConfig(nil, cfg)
+			return nil
+		}
+	}
+})`,
+			want: 1,
+		},
+		{
+			name: "run body",
+			body: `m.enqueueCall(func(mm *Model) callRun {
+	s := mm.sess
+	return func(ctx context.Context) callOutcome {
+		s.ReloadConfig(ctx, cfg)
+		return nil
+	}
+})`,
+			want: 0,
+		},
+		{
+			name: "tea cmd body",
+			body: `return func() tea.Msg {
+	m.sess.ReloadConfig(nil, cfg)
+	return nil
+}`,
+			want: 0,
+		},
+		{
+			name: "go statement",
+			body: `go m.sess.ReloadConfig(nil, cfg)`,
+			want: 0,
+		},
+		{
+			name: "unrelated method",
+			body: `m.sess.Config()`,
+			want: 0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "package tui\n\nfunc probe(m *Model) tea.Cmd {\n" + tc.body + "\n\treturn nil\n}\n"
+			fset := token.NewFileSet()
+			f, err := parser.ParseFile(fset, "probe.go", src, 0)
+			if err != nil {
+				t.Fatalf("parse probe: %v", err)
+			}
+			got := blockingCallSites("probe.go", fset, f)
+			if len(got) != tc.want {
+				t.Fatalf("the guard flagged %d call(s), want %d: %v", len(got), tc.want, got)
+			}
+		})
+	}
+}
+
 // blockingCallSites returns the file's offending calls, one "path:line:
 // receiver.method" line each.
 func blockingCallSites(path string, fset *token.FileSet, f *ast.File) []string {
+	// A seam receiver is the model's field (m.sess, m.host) or a local copy of
+	// one (sess, ctx := m.sess, m.ctx), which is how model.go's older handlers
+	// still reach the session. An aliased receiver is a seam like any other:
+	// the call runs on whichever goroutine the body it sits in runs on.
+	aliases := seamAliases(f)
+
 	// Everything inside an allowed region runs off the Update goroutine: a
-	// tea.Cmd literal, a converted call's run or result, or a go statement.
-	type region struct{ from, to token.Pos }
-	var allowed []region
+	// tea.Cmd literal, a converted call's run, or a go statement.
+	type region struct {
+		from, to token.Pos
+		allowed  bool
+	}
+	var regions []region
 	ast.Inspect(f, func(n ast.Node) bool {
 		switch v := n.(type) {
 		case *ast.FuncLit:
-			if literalReturnsAsync(v) {
-				allowed = append(allowed, region{v.Pos(), v.End()})
-			}
+			regions = append(regions, region{v.Pos(), v.End(), literalReturnsAsync(v)})
 		case *ast.GoStmt:
-			allowed = append(allowed, region{v.Pos(), v.End()})
+			regions = append(regions, region{v.Pos(), v.End(), true})
 		}
 		return true
 	})
@@ -132,13 +254,23 @@ func blockingCallSites(path string, fset *token.FileSet, f *ast.File) []string {
 		if !ok || !isBlockingCall(sel.Sel.Name) {
 			return true
 		}
-		if !receiverEndsInSessionOrHost(sel.X) {
+		if !seamReceiver(sel.X, aliases) {
 			return true
 		}
-		for _, r := range allowed {
-			if call.Pos() >= r.from && call.End() <= r.to {
-				return true
+		// Only the innermost enclosing literal decides: an exempt run literal
+		// must not launder a handler literal nested inside it, which runs back
+		// on the Update goroutine.
+		innermost := -1
+		for i, r := range regions {
+			if call.Pos() < r.from || call.End() > r.to {
+				continue
 			}
+			if innermost < 0 || r.to-r.from < regions[innermost].to-regions[innermost].from {
+				innermost = i
+			}
+		}
+		if innermost >= 0 && regions[innermost].allowed {
+			return true
 		}
 		out = append(out, fmt.Sprintf("%s:%d: %s.%s", path, fset.Position(call.Pos()).Line, exprName(sel.X), sel.Sel.Name))
 		return true
@@ -146,25 +278,97 @@ func blockingCallSites(path string, fset *token.FileSet, f *ast.File) []string {
 	return out
 }
 
-// literalReturnsAsync reports whether fn is a tea.Cmd literal or a converted
-// call's run or result.
+// seamAliases collects the local names a file copies a seam into, the shape
+// model.go's older handlers use: sess, ctx := m.sess, m.ctx.
+func seamAliases(f *ast.File) map[string]bool {
+	aliases := map[string]bool{}
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch v := n.(type) {
+		case *ast.AssignStmt:
+			for i, rhs := range v.Rhs {
+				if i >= len(v.Lhs) || !receiverEndsInSessionOrHost(rhs) {
+					continue
+				}
+				if id, ok := v.Lhs[i].(*ast.Ident); ok {
+					aliases[id.Name] = true
+				}
+			}
+		case *ast.ValueSpec:
+			for i, val := range v.Values {
+				if i >= len(v.Names) || !receiverEndsInSessionOrHost(val) {
+					continue
+				}
+				aliases[v.Names[i].Name] = true
+			}
+		}
+		return true
+	})
+	return aliases
+}
+
+// seamReceiver reports whether the expression names a client seam: the model's
+// session or host, or a local copy of one made earlier in the same file.
+func seamReceiver(x ast.Expr, aliases map[string]bool) bool {
+	if id, ok := x.(*ast.Ident); ok && aliases[id.Name] {
+		return true
+	}
+	return receiverEndsInSessionOrHost(x)
+}
+
+// literalReturnsAsync reports whether fn's body runs off the Update goroutine:
+// a tea.Cmd literal (no parameters, returning tea.Msg) or a converted call's
+// run (one context.Context parameter, returning callOutcome).
+//
+// A start, step or outcome literal is NOT exempt: enqueueCall's start and
+// enqueueStep's step run on the Update goroutine, and an outcome is handled
+// back on it, so their bodies are scanned like any handler's. Only the run
+// literal nested inside a start is exempt, and it is exempt on its own
+// signature.
 func literalReturnsAsync(fn *ast.FuncLit) bool {
 	if fn.Type == nil || fn.Type.Results == nil {
 		return false
 	}
+	params := fn.Type.Params
+	paramCount := 0
+	if params != nil {
+		for _, field := range params.List {
+			if len(field.Names) == 0 {
+				paramCount++
+				continue
+			}
+			paramCount += len(field.Names)
+		}
+	}
 	for _, field := range fn.Type.Results.List {
 		switch typ := field.Type.(type) {
 		case *ast.Ident:
-			if typ.Name == "callOutcome" || typ.Name == "callRun" {
+			// The converted call's run: func(ctx context.Context) callOutcome.
+			if typ.Name == "callOutcome" && paramCount == 1 && paramIsContext(params) {
 				return true
 			}
 		case *ast.SelectorExpr:
-			if ident, ok := typ.X.(*ast.Ident); ok && ident.Name == "tea" && typ.Sel.Name == "Msg" {
+			// A tea.Cmd: func() tea.Msg. A step's func(*Model) tea.Cmd runs on
+			// the Update goroutine and is deliberately not exempt.
+			if ident, ok := typ.X.(*ast.Ident); ok && ident.Name == "tea" && typ.Sel.Name == "Msg" && paramCount == 0 {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// paramIsContext reports whether the literal's single parameter is a
+// context.Context.
+func paramIsContext(params *ast.FieldList) bool {
+	if params == nil || len(params.List) != 1 {
+		return false
+	}
+	sel, ok := params.List[0].Type.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	ident, ok := sel.X.(*ast.Ident)
+	return ok && ident.Name == "context" && sel.Sel.Name == "Context"
 }
 
 func isBlockingCall(name string) bool {
@@ -223,26 +427,48 @@ func runCmdsBounded(t *testing.T, cmd tea.Cmd, deadline time.Time) []tea.Msg {
 // the update returns.
 func feedCallMsg(t *testing.T, m Model, msg tea.Msg) Model {
 	t.Helper()
+	return feedCallMsgDepth(t, m, msg, 0)
+}
+
+// feedCallMsgDepth bounds the follows: an update whose command emits its own
+// message again would otherwise recurse until the stack ran out.
+func feedCallMsgDepth(t *testing.T, m Model, msg tea.Msg, depth int) Model {
+	t.Helper()
+	if depth > maxCallCmdDepth {
+		t.Fatalf("a message fed itself more than %d deep: does an update return a command that emits it again?", maxCallCmdDepth)
+	}
 	updated, next := m.Update(msg)
 	m = mustModel(t, updated)
 	for _, follow := range runCallCmds(next) {
-		m = feedCallMsg(t, m, follow)
+		m = feedCallMsgDepth(t, m, follow, depth+1)
 	}
 	return m
 }
 
+// maxCallCmdDepth bounds how deep a command tree or a chain of self-feeding
+// messages may nest before the test fails instead of exhausting the stack.
+const maxCallCmdDepth = 32
+
 // runCallCmds runs a command tree and returns every message its leaves
 // produce. Unlike runCmdChain it has no timeout: a converted call under test
-// blocks until the test releases it.
+// blocks until the test releases it. Depth is bounded so a command that feeds
+// itself fails the test rather than overflowing the stack.
 func runCallCmds(cmd tea.Cmd) []tea.Msg {
+	return runCallCmdsDepth(cmd, 0)
+}
+
+func runCallCmdsDepth(cmd tea.Cmd, depth int) []tea.Msg {
 	if cmd == nil {
 		return nil
+	}
+	if depth > maxCallCmdDepth {
+		panic("a command tree nested deeper than maxCallCmdDepth: does a command return itself?")
 	}
 	msg := cmd()
 	if batch, ok := msg.(tea.BatchMsg); ok {
 		var out []tea.Msg
 		for _, sub := range batch {
-			out = append(out, runCallCmds(sub)...)
+			out = append(out, runCallCmdsDepth(sub, depth+1)...)
 		}
 		return out
 	}
@@ -497,9 +723,11 @@ func TestAQuitWaitsForTheCallInFlight(t *testing.T) {
 			return func(*Model) tea.Cmd { return nil }
 		}
 	})
-	queuedStarted := false
+	// The start closure runs on the Update goroutine, but the flag is read from
+	// the test goroutine after the queue moved on; atomic keeps that honest.
+	var queuedStarted atomic.Bool
 	m.enqueueCall(func(*Model) callRun {
-		queuedStarted = true
+		queuedStarted.Store(true)
 		return nil
 	})
 
@@ -536,7 +764,7 @@ func TestAQuitWaitsForTheCallInFlight(t *testing.T) {
 	if !sawQuit {
 		t.Fatal("the quit did not finish when the in-flight result arrived")
 	}
-	if queuedStarted {
+	if queuedStarted.Load() {
 		t.Fatal("a call queued behind an in-flight call started after the quit")
 	}
 	if m.callQuitWaiting || m.callInFlight {

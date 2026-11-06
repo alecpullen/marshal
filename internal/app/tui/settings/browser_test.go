@@ -18,6 +18,7 @@ import (
 
 	"marshal/internal/acpclient"
 	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/picker"
@@ -494,6 +495,72 @@ func TestTheProbeCheckRunsOffTheUpdateGoroutine(t *testing.T) {
 	}
 	if view := stripANSI(b.View(80, 24)); !strings.Contains(view, "detecting") {
 		t.Fatalf(`"detecting…" should appear once the host answered yes, got:\n%s`, view)
+	}
+}
+
+// probeConfigHost records the provider config ProbeModel was called with.
+type probeConfigHost struct {
+	acpclient.Host
+
+	mu   sync.Mutex
+	pc   config.ProviderConfig
+	done chan struct{}
+	once sync.Once
+}
+
+func (h *probeConfigHost) CanProbeModel(context.Context, string, config.ProviderConfig) bool {
+	return true
+}
+
+func (h *probeConfigHost) ProbeModel(_ context.Context, _ string, pc config.ProviderConfig, _ string) (acpwire.ModelCapabilities, error) {
+	h.mu.Lock()
+	h.pc = pc
+	h.mu.Unlock()
+	h.once.Do(func() { close(h.done) })
+	return acpwire.ModelCapabilities{}, nil
+}
+
+func (h *probeConfigHost) probed() config.ProviderConfig {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.pc
+}
+
+// TestTheCapabilityProbeUsesTheConfigTheCheckSaw pins the provider entry the
+// confirm screen captured to the probe that follows: the entry can be edited in
+// the same panel between the can-probe check and its answer, and the probe must
+// still run against what the picker saw rather than re-reading the config.
+func TestTheCapabilityProbeUsesTheConfigTheCheckSaw(t *testing.T) {
+	picked := config.ProviderConfig{Type: "ollama", BaseURL: "http://localhost:11434"}
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{"ollama": picked}
+	host := &probeConfigHost{done: make(chan struct{})}
+	b := NewBrowser(cfg, "", WithHost(host))
+	b.reg.st.discovered["ollama"] = []schema.ModelInfo{{ID: "qwen3"}}
+	target := pendingMaterialization{
+		Profile: "coding", Role: routing.RoleImplementer,
+		ProviderName: "ollama", ModelID: "qwen3",
+	}
+
+	check := b.startConfirm(target)
+	if check == nil {
+		t.Fatal("a browser with a host should ask whether the model can be probed")
+	}
+	answer := check()
+
+	// The user edits the provider entry while the check is out.
+	edited := picked
+	edited.BaseURL = "http://elsewhere:1234"
+	b.reg.st.cfg.Providers["ollama"] = edited
+
+	probeCmd := b.Update(answer)
+	if probeCmd == nil {
+		t.Fatal("a yes answer should start the capability probe")
+	}
+	go probeCmd()
+	awaitSignal(t, host.done, "the capability probe to run")
+	if got := host.probed(); got.BaseURL != picked.BaseURL {
+		t.Fatalf("the probe ran against %q, want the config the check saw (%q)", got.BaseURL, picked.BaseURL)
 	}
 }
 

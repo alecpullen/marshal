@@ -918,18 +918,29 @@ file, so it stays synchronous and R10 is unchanged.
   the result opens nothing, as a press after the open would have closed it.
 - **The settings browser's check is its own command.**
   `startConfirm` returns a `canProbeMsg` command carrying the current
-  `capProbeID`, provider and model, and only a matching answer sets
-  `detectingCaps` and starts the probe, so a stale answer after Esc is dropped
-  and "detecting…" never appears for a provider that cannot report
-  capabilities. It does not join the model's queue, which orders nothing else.
+  `capProbeID`, provider, model and the provider config the picker saw, and
+  only a matching answer sets `detectingCaps` and starts the probe, so a stale
+  answer after Esc is dropped and "detecting…" never appears for a provider
+  that cannot report capabilities. The probe reuses that carried config rather
+  than re-reading the live one, which an edit in the same panel could have
+  changed while the answer was out. It does not join the model's queue, which
+  orders nothing else.
 - **The guard.** `TestBlockingCallsLeaveTheUpdateGoroutine` walks every
   non-test file under `internal/app/tui` with `go/parser` and fails on a call of
-  an R6 name whose receiver's last identifier is `sess` or `host`, unless a
-  `func() tea.Msg` literal, a function literal returning `callOutcome` or
-  `callRun`, or a `go` statement encloses it. It caught one site this plan's
-  inventory had assigned to the wrong branch — `settings.ChangedMsg`'s saved
-  branch, which reloaded inline — and that branch now enqueues like the others.
-- **Tests changed only to settle.** 51 test functions across tasks 2 to 5
+  an R6 name made on a seam receiver — the model's `sess`/`host`, or a local
+  copy of one (`sess, ctx := m.sess, m.ctx`) — unless the innermost construct
+  around it runs off the `Update` goroutine: a `func() tea.Msg` literal, a
+  converted call's run (`func(ctx context.Context) callOutcome`), or a `go`
+  statement. Start, step and outcome literals are not exempt, because
+  `serveCalls` runs their bodies on the `Update` goroutine; only the innermost
+  enclosing literal decides, so an exempt run cannot launder a handler nested
+  inside it. It caught one site this plan's inventory had assigned to the wrong
+  branch — `settings.ChangedMsg`'s saved branch, which reloaded inline — and
+  that branch now enqueues like the others.
+  `TestTheGuardCatchesAliasedSeamCallsAndLiteralBodies` parses a fixture per
+  case and pins both escapes a return-type-only check left open: the aliased
+  receiver and the handler literal nested in a run.
+- **Tests changed to settle.** 51 test functions across tasks 2 to 5
   gained a `settleCalls` after the step that made the call, or now pass it the
   command `Update` returned, since a converted call's result lands later.
   `ctrlB` and `runEndCmd` settle inside themselves, because the sheet's opening
@@ -937,4 +948,8 @@ file, so it stays synchronous and R10 is unchanged.
   drive the queue directly so they can assert mid-flight:
   `TestAgentGoalDispatchStartsRun` asserts busy when the goal starts rather than
   after the turn ends, and the new-session and queued-prompt tests hold a call
-  open until they release it. No assertion was weakened.
+  open until they release it. Two options tests first drove
+  `flushPendingModelOptions` directly to keep the blocking change pump out of
+  the test; they now feed a `changedMsg` to `handleChanged` and drop the pump
+  command it returns, so the turn-end path that queues the reload is the one
+  under test. No assertion was weakened.

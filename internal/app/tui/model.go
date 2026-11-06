@@ -59,7 +59,6 @@ import (
 	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
-	"marshal/internal/pubsub"
 	"marshal/internal/skills"
 	"marshal/internal/strutil"
 )
@@ -336,17 +335,6 @@ type Model struct {
 	// quit ahead of the report: the extraction is best-effort, but it is the one
 	// chance to record the session, so it is allowed to finish first.
 	endExtracting bool
-
-	// workspaceBroker, when non-nil, delivers WorkspaceEvents so the
-	// status line's git info follows the session's active root without
-	// waiting for the 5s tick.
-	workspaceBroker *pubsub.Broker[session.WorkspaceEvent]
-	workspaceEvents <-chan pubsub.Event[session.WorkspaceEvent]
-
-	// subagentBroker, when non-nil, delivers SubagentEvents so the TUI
-	// re-renders subagent cards as they are registered or change status.
-	subagentBroker *pubsub.Broker[session.SubagentEvent]
-	subagentEvents <-chan pubsub.Event[session.SubagentEvent]
 
 	// New Layout State
 	rawWidth  int // unclamped terminal dimensions (gate check)

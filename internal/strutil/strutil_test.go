@@ -139,3 +139,38 @@ func TestUniqueNameWithCollision(t *testing.T) {
 		t.Fatalf("UniqueName with two collisions = %q, want %q", got, "ollama-3")
 	}
 }
+
+func TestMaskKeyIsStableOnMasks(t *testing.T) {
+	keys := []string{
+		"sk-live-0123456789abcdef", // long
+		"abc",                      // shorter than four
+		"abcd",                     // exactly four
+		"日本語キー-1234",               // multi-byte
+	}
+	for _, k := range keys {
+		mask := MaskKey(k)
+		if got := MaskKey(mask); got != mask {
+			t.Errorf("MaskKey(MaskKey(%q)) = %q, want %q", k, got, mask)
+		}
+		if !IsMasked(mask) {
+			t.Errorf("IsMasked(MaskKey(%q)) = false", k)
+		}
+		if IsMasked(k) {
+			t.Errorf("IsMasked(%q) = true, want false", k)
+		}
+	}
+}
+
+// TestMaskKeySuffixIsFourRunes pins the suffix in runes, not bytes, so a
+// multi-byte key neither leaks a partial character nor loses one.
+func TestMaskKeySuffixIsFourRunes(t *testing.T) {
+	if got, want := MaskKey("sk-live-0123456789ab"), "••••89ab"; got != want {
+		t.Errorf("MaskKey = %q, want %q", got, want)
+	}
+	if got, want := MaskKey("日本語キー"), "••••本語キー"; got != want {
+		t.Errorf("MaskKey = %q, want %q", got, want)
+	}
+	if got, want := MaskKey("日本語"), "••••"; got != want {
+		t.Errorf("MaskKey(a three-rune key) = %q, want %q", got, want)
+	}
+}

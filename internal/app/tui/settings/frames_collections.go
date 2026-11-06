@@ -78,6 +78,18 @@ func providersFrame(s *state) *frame {
 						if err := config.RenameProvider(&s.cfg, k, v, s.discovered); err != nil {
 							return err
 						}
+						// Record the association as soon as the config carries
+						// it: a later failure (the model-cache rename below)
+						// must not leave a flush writing a mask it cannot
+						// trace back to the key's original name.
+						original := k
+						if prev, ok := s.renamed[k]; ok {
+							original = prev
+							delete(s.renamed, k)
+						}
+						if v != original {
+							s.renamed[v] = original
+						}
 						if s.host != nil {
 							if err := s.host.RenameModels(context.Background(), k, v); err != nil {
 								return fmt.Errorf("rename model cache: %w", err)

@@ -2693,3 +2693,46 @@ state alone.
 T1 stays green throughout. T1b gains no names: no state read moved. T1's
 allowlist lost 4 entries across 3 files — two keys entirely
 (`trustpanel/trustpanel.go` and `agents/panel.go`) and two from `model.go`'s.
+
+**Plan 7d (secrets), branch `p2-7d-secrets`.** `internal/strutil` gains `MaskKey`, moved
+from `listpanel`, which keeps the name as a variable bound to it, and `IsMasked`: true for
+a value that begins with the mask's bullets, which `MaskKey` returns unchanged, so masking
+a mask is stable. No real secret begins with them.
+
+`internal/app/config/mask.go` gains the pair each side of the seam needs. `RedactSecrets`
+and `RedactLayers` replace each provider's API key and the web search key with
+`strutil.MaskKey`'s output and the desktop CDP URL with its userinfo masked, leaving an
+empty secret empty. `RestoreSecrets` and `RestoreProviderKey` put the stored secret back:
+the same path in the session's live config first, then in the last-loaded layers' merged
+config, then, for a provider the call names as renamed, its old name, then the one stored
+key whose mask it is. A literal or empty value is kept, so a typed key is written as given
+and a cleared one stays cleared. A mask matching nothing fails with
+`config: <path>: no stored secret matches its mask`, naming the secret's TOML path; a
+probe drops the key instead and runs unkeyed, as an unconfigured provider would.
+
+`Session.Config` and `Session.Layers` mask what they return (C3), so no config read through
+the seam carries a literal secret. Every config the TUI hands back is restored before it is
+used: `ApplyConfig` before installing it, `ReloadConfig` before the rebuild,
+`SaveProjectConfig` before the diff, `SaveUserValue` when its path is a secret's,
+`SaveUserProviders` for every provider, and `Host.client` for a probe. Each reads the
+stored configs through `stored`, over `storedConfigs`, which takes the state's live config
+and then the layers' merged config.
+
+`SaveUserProviders` gains `renamed`, mapping a provider's name in the write to its name in
+the stored configs, so a renamed provider's key follows it. The settings browser records
+each rename it makes as new name → original, collapsing chains and dropping a rename back
+to the original, and clears the map once the user-config flush succeeds — after both the
+providers and presets writes — so a retry does not resend it. `config/save_providers`
+carries the map in P3. A mask reaching `SaveProviderKey` (the doctor's key write) is
+rejected with the same error rather than persisted, and a stored value that is itself a
+mask is never restored as though it were the secret.
+
+T7 is `TestConfigReadsCarryNoSecret`: both reads, JSON-encoded, hold neither a key nor a
+password but do hold the mask. The restore is pinned per call in
+`internal/acpclient/inproc/secrets_test.go`.
+
+Accepted differences: a rename the browser did not make, such as one through `/set`,
+reaches the agent without a name map, so two stored keys sharing their last four characters
+fail the write instead of picking one. Follow-up: an MCP server's `env` and `headers` can
+hold tokens and still travel in the clear, since they are outside `config.MaskSecrets`' set
+and C3's. No ACP method changes name.

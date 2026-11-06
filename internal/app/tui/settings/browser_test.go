@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -846,6 +847,140 @@ func TestFlushChangesWithoutProviderChangesSkipsUserConfig(t *testing.T) {
 	if _, err := os.Stat(projectPath); err != nil {
 		t.Fatalf("project config not written: %v", err)
 	}
+}
+
+// TestBrowserRenameKeepsTheProvidersKey pins that a provider renamed in the
+// browser takes its stored key with it: the browser opens on the session's
+// masked config, so the mask under the new name is only restorable if the
+// save is told which name it stood for. The old entry must not survive.
+func TestBrowserRenameKeepsTheProvidersKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	userPath := config.UserConfigPath(home)
+	dir := t.TempDir()
+	// A production seam refreshes the layers after every user-config write, so
+	// the project save that follows a rename resolves the key by its new name.
+	// Without that refresh a rename would leave the project save with a mask
+	// nothing stored can answer — an artifact of the fixture, not the flow.
+	state := session.New(config.Default(), dir, time.Unix(100, 0), session.Persistence{})
+	host, sess := inproc.New(inproc.Deps{
+		State:          state,
+		Auth:           newMemAuth(),
+		UserConfigPath: userPath,
+		ReloadLayers: func() (config.Layers, bool) {
+			loaded, err := config.Load(config.LoadOptions{HomeDir: home, WorkingDir: dir})
+			if err != nil {
+				return config.Layers{}, false
+			}
+			return config.Layers{Default: config.Default(), User: loaded, Merged: loaded}, true
+		},
+	})
+	const literalKey = "sk-literal-old-key-1234"
+	// A second provider whose key shares the last four characters makes the
+	// mask ambiguous on its own: passing no name map then fails the write with
+	// the pinned error, so this test pins the plumbing, not just the restore's
+	// unique-suffix fallback.
+	const otherKey = "sk-other-old-key-1234"
+	stored := config.Default()
+	stored.Providers = map[string]config.ProviderConfig{
+		"old":   {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: literalKey},
+		"other": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: otherKey},
+	}
+	if err := sess.ApplyConfig(context.Background(), stored); err != nil {
+		t.Fatalf("apply config: %v", err)
+	}
+
+	// The browser opens on the masked copy the session reports, exactly as a
+	// real one does.
+	b := NewBrowser(sess.Config(), "", WithUserConfigPath(userPath), WithHost(host), WithSession(sess))
+
+	var nameRow *field
+	for _, r := range providersFrame(b.reg.st).List.Rows()[0].Build().List.Rows() {
+		if r.Title == "Name" {
+			nameRow = r
+			break
+		}
+	}
+	if nameRow == nil {
+		t.Fatal("provider detail must have a Name row")
+	}
+	if err := nameRow.SetStr("new"); err != nil {
+		t.Fatalf("rename err = %v", err)
+	}
+
+	cmd := b.flushChanges(nil, true)
+	if cmd == nil {
+		t.Fatal("flush should produce a ChangedMsg command")
+	}
+	changed, ok := cmd().(ChangedMsg)
+	if !ok {
+		t.Fatalf("want ChangedMsg, got %T", cmd())
+	}
+	if changed.SaveErr != nil {
+		t.Fatalf("save failed: %v", changed.SaveErr)
+	}
+
+	cfg, err := config.Load(config.LoadOptions{HomeDir: home, WorkingDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Providers["new"].APIKey; got != literalKey {
+		t.Fatalf("providers.new.api_key = %q, want the literal key %q", got, literalKey)
+	}
+	if got := cfg.Providers["other"].APIKey; got != otherKey {
+		t.Fatalf("providers.other.api_key = %q, want the untouched key %q", got, otherKey)
+	}
+	if _, ok := cfg.Providers["old"]; ok {
+		t.Fatal("the old provider name survived the rename")
+	}
+}
+
+// TestBrowserRenameChainsCollapse pins the map's chain semantics: a → b → c
+// records {c: a}, while a → b → a records nothing.
+func TestBrowserRenameChainsCollapse(t *testing.T) {
+	newNameRow := func(t *testing.T) (*state, *field) {
+		t.Helper()
+		cfg := config.Default()
+		cfg.Providers = map[string]config.ProviderConfig{
+			"a": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+		}
+		st := newState(cfg)
+		var nameRow *field
+		for _, r := range providersFrame(st).List.Rows()[0].Build().List.Rows() {
+			if r.Title == "Name" {
+				nameRow = r
+				break
+			}
+		}
+		if nameRow == nil {
+			t.Fatal("provider detail must have a Name row")
+		}
+		return st, nameRow
+	}
+
+	t.Run("a to b to c records c from a", func(t *testing.T) {
+		st, nameRow := newNameRow(t)
+		for _, to := range []string{"b", "c"} {
+			if err := nameRow.SetStr(to); err != nil {
+				t.Fatalf("rename to %q: %v", to, err)
+			}
+		}
+		if len(st.renamed) != 1 || st.renamed["c"] != "a" {
+			t.Fatalf("renamed = %v, want {c: a}", st.renamed)
+		}
+	})
+
+	t.Run("a to b to a records nothing", func(t *testing.T) {
+		st, nameRow := newNameRow(t)
+		for _, to := range []string{"b", "a"} {
+			if err := nameRow.SetStr(to); err != nil {
+				t.Fatalf("rename to %q: %v", to, err)
+			}
+		}
+		if len(st.renamed) != 0 {
+			t.Fatalf("renamed = %v, want an empty map", st.renamed)
+		}
+	})
 }
 
 func TestHintsShowWriteTarget(t *testing.T) {

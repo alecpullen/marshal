@@ -6,6 +6,7 @@ package strutil
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -133,6 +134,35 @@ func lastRuneIndex(s string, b byte) int {
 	}
 	return -1
 }
+
+// MaskKey renders a secret for display: •••• plus its last four characters,
+// •••• alone for one shorter than four, and "(not set)" for none. A value
+// that is already a mask is returned unchanged.
+//
+// The real value is never rendered; save paths always use the raw value.
+// The last-four suffix is a deliberate design choice (per spec): it
+// helps the user confirm they are looking at the expected key without
+// exposing the full value.
+func MaskKey(key string) string {
+	if IsMasked(key) {
+		return key
+	}
+	if key == "" {
+		return "(not set)"
+	}
+	runes := []rune(key)
+	if len(runes) < 4 {
+		return maskPrefix
+	}
+	return maskPrefix + string(runes[len(runes)-4:])
+}
+
+// maskPrefix is the bullet run every mask begins with.
+const maskPrefix = "••••"
+
+// IsMasked reports whether s is a mask MaskKey produced. No real secret
+// begins with its bullets.
+func IsMasked(s string) bool { return strings.HasPrefix(s, maskPrefix) }
 
 // Ptr returns a pointer to v.
 func Ptr[T any](v T) *T { return &v }

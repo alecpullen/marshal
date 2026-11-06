@@ -33,11 +33,18 @@ func (h *Host) modelCacheDir() string {
 
 // client builds the provider client a probe uses. Name, pc and the resolver
 // are the caller's; the data directory and the thinking budget margin are the
-// runtime's.
+// runtime's. pc's masked key is restored to the stored key it stands for; a
+// mask with nothing behind it drops the key, so the probe runs unkeyed as an
+// unconfigured provider's does.
 func (h *Host) client(name string, pc config.ProviderConfig) (provider.Provider, error) {
 	margin := 0
 	if st := h.currentState(); st != nil {
 		margin = st.ConfigSnapshot().Agent.ThinkingBudgetMargin
+	}
+	if restored, ok := config.RestoreProviderKey(name, pc, nil, h.stored()...); ok {
+		pc = restored
+	} else {
+		pc.APIKey = ""
 	}
 	return provider.NewFromConfigWithAuth(name, pc, h.modelCacheDir(), margin, "", h.AuthResolver())
 }

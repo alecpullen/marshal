@@ -23,6 +23,12 @@ type state struct {
 	pending          *pendingMaterialization
 	pendingCmd       tea.Cmd
 
+	// renamed maps a provider renamed since the browser opened to its name in
+	// the config the save is merged against, so its stored key follows it
+	// through the write. Entries chain-collapse: a rename back to the original
+	// removes the entry rather than recording a no-op.
+	renamed map[string]string
+
 	// host is the client host every probe launched from this state asks.
 	// A nil host fails every probe with probe's no-host error.
 	host acpclient.Host
@@ -41,6 +47,7 @@ func newState(cfg config.Config) *state {
 		cfg:         working,
 		discovered:  map[string][]schema.ModelInfo{},
 		actionState: map[string]actionState{},
+		renamed:     map[string]string{},
 		probed:      map[string]bool{},
 	}
 }

@@ -235,7 +235,7 @@ func TestUserWritesUseTheUserConfigPathAndRefreshLayers(t *testing.T) {
 	}
 	write := map[string]config.ProviderConfig{"alpha": disk["alpha"]}
 	baseline := map[string]config.ProviderConfig{"alpha": disk["alpha"]}
-	if err := host.SaveUserProviders(ctx, write, baseline); err != nil {
+	if err := host.SaveUserProviders(ctx, write, baseline, nil); err != nil {
 		t.Fatalf("SaveUserProviders: %v", err)
 	}
 	got := loadUserConfig(t, home, dir)

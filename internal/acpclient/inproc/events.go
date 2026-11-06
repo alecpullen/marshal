@@ -38,6 +38,7 @@ func newSession(d Deps) *Session {
 		headSHA:        gitinfo.HeadSHA,
 		refs:           d.ReferenceFinder,
 		tools:          d.Tools,
+		skillIndex:     d.SkillIndex,
 		accessRequest:  d.AccessRequest,
 		resolveAccess:  d.ResolveAccess,
 		work:           d.Work,

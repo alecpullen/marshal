@@ -640,6 +640,48 @@ type Session interface {
 	// ACP: session/plugins_remove (exists).
 	RemovePlugin(ctx context.Context, name, scope string) error
 
+	// Skills lists both skill stores, and remembers the listing for LoadSkill
+	// and RemoveSkill.
+	//
+	// ACP: session/skills_list (exists).
+	Skills(ctx context.Context) ([]acpwire.SkillEntry, error)
+
+	// LoadSkill injects the listed skill into the session, if the store and
+	// the session's index still hold the content the listing saw. It returns
+	// the skill's name.
+	//
+	// ACP: session/skills_load (exists).
+	LoadSkill(ctx context.Context, scope, source string) (string, error)
+
+	// InstallSkill installs a skill from source into scope's store, and
+	// returns its name.
+	//
+	// ACP: session/skills_install (new in P3).
+	InstallSkill(ctx context.Context, source, scope string) (string, error)
+
+	// RemoveSkill deletes the listed skill's source from its store.
+	//
+	// ACP: session/skills_remove (exists).
+	RemoveSkill(ctx context.Context, scope, source string) error
+
+	// SetSkillAutoload adds name to skills.autoload in the user config, or
+	// removes it, and installs the change in the session's live config.
+	//
+	// ACP: session/skills_autoload (new in P3).
+	SetSkillAutoload(ctx context.Context, name string, on bool) error
+
+	// SetSkillGate turns the session's skill load gate on or off. Turning it
+	// on clears its decisions.
+	//
+	// ACP: session/skill_gate_set (new in P3).
+	SetSkillGate(ctx context.Context, on bool) error
+
+	// ClearSkillGateDecision clears the gate's sticky decision for skill, so
+	// its next load asks again.
+	//
+	// ACP: session/skill_gate_clear (new in P3).
+	ClearSkillGateDecision(ctx context.Context, skill string) error
+
 	// PrepareMCPLogin checks that the OAuth sign-in for the session's MCP
 	// server called server can start: the server resolves and the token store
 	// opens. Its error is the sentence the client shows.

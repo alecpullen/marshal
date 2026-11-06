@@ -263,6 +263,9 @@ func TestStatusMirrorsTheState(t *testing.T) {
 			},
 		}},
 		Git: acpwire.Git{Branch: "feature", Worktree: "wt", InRepo: true},
+		// The gate is the state's session-scope switch and its sticky
+		// decisions; a fresh state has it on with none recorded.
+		SkillGate: acpwire.SkillGateState{Enabled: state.SkillGateEnabled()},
 		// The two files a config write changes come from the session's Deps and
 		// its state's working directory, not from the state's setters.
 		UserConfigPath:    config.UserConfigPath(home),

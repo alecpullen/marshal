@@ -6248,6 +6248,66 @@ func TestRunWiresToolNames(t *testing.T) {
 	}
 }
 
+// TestRunWiresTheSkillIndex pins the skill-index half of Run's Deps wiring: a
+// skill written under the user config's skills directory reaches the session's
+// listing with nothing blocking its load. Dropping Deps.SkillIndex from Run
+// leaves the session with no index, so every entry would read "this session has
+// no skill index" instead.
+func TestRunWiresTheSkillIndex(t *testing.T) {
+	home := t.TempDir()
+	dir := t.TempDir()
+	// The runtime reads the user config's skills directory, which
+	// config.UserDir resolves against the injected home.
+	store := filepath.Join(config.UserDir(home), "skills")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatalf("create skill store: %v", err)
+	}
+	const raw = "+++\nname = \"wired\"\ndescription = \"wiring fixture\"\n+++\n\n# wired\n"
+	if err := os.WriteFile(filepath.Join(store, "wired.md"), []byte(raw), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+
+	var (
+		entries []acpwire.SkillEntry
+		listErr error
+	)
+	err := Run(context.Background(), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return time.Unix(100, 0) }),
+		WithWorkingDir(dir),
+		WithHomeDir(home),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return config.Default(), nil
+		}),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+			entries, listErr = model.(tui.Model).Session().Skills(ctx)
+			return ProgramResult{}
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if listErr != nil {
+		t.Fatalf("Session().Skills() error: %v", listErr)
+	}
+	found := false
+	for _, e := range entries {
+		if e.Scope != "global" || e.Source != "wired.md" {
+			continue
+		}
+		found = true
+		if e.Name != "wired" {
+			t.Errorf("skill entry name = %q, want wired", e.Name)
+		}
+		if e.LoadBlocked != "" {
+			t.Errorf("skill entry LoadBlocked = %q, want \"\" (the runtime's index holds it)", e.LoadBlocked)
+		}
+	}
+	if !found {
+		t.Fatalf("Session().Skills() = %+v, want the global wired.md entry", entries)
+	}
+}
+
 // TestRunWiresTheSessionsToolsFromTheRuntime pins the positive half of the
 // tools wiring, which TestRunWiresToolNames cannot: with a provider built, the
 // session names the runtime's registry, so dropping `Tools: rt.ToolNames` from

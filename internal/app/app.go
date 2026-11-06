@@ -2772,6 +2772,14 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			TrustPrompt: trustPrompt,
 			DecideTrust: trustDecide,
 			Tools:       rt.ToolNames,
+			// The skill index LoadSkill checks against: the runtime's own,
+			// read under its lock as the legacy-session closure reads State,
+			// so a swap keeps the same Deps working.
+			SkillIndex: func() *skills.Index {
+				rt.mu.Lock()
+				defer rt.mu.Unlock()
+				return rt.SkillIndex
+			},
 		}
 		if providerReady {
 			deps.Work = rt
@@ -2798,7 +2806,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// needs no adoption here.
 		tuiOpts = append(tuiOpts, tui.WithHomeDir(homeDir))
 		tuiOpts = append(tuiOpts, tui.WithWorkingDir(workingDir))
-		tuiOpts = append(tuiOpts, tui.WithSkillIndex(rt.SkillIndex))
 		// Copy prefers a local clipboard helper and falls back to OSC 52 over
 		// SSH or when no helper resolves.
 		tuiOpts = append(tuiOpts, tui.WithClipboard(

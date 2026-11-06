@@ -101,6 +101,13 @@ var Methods = []Method{
 	{Iface: "Session", Name: "InstallPlugin", ACP: "session/plugins_install_confirm", Exists: true},
 	{Iface: "Session", Name: "DiscardPluginScan", ACP: "session/plugins_install_discard", Exists: true},
 	{Iface: "Session", Name: "RemovePlugin", ACP: "session/plugins_remove", Exists: true},
+	{Iface: "Session", Name: "Skills", ACP: "session/skills_list", Exists: true},
+	{Iface: "Session", Name: "LoadSkill", ACP: "session/skills_load", Exists: true},
+	{Iface: "Session", Name: "InstallSkill", ACP: "session/skills_install"},
+	{Iface: "Session", Name: "RemoveSkill", ACP: "session/skills_remove", Exists: true},
+	{Iface: "Session", Name: "SetSkillAutoload", ACP: "session/skills_autoload"},
+	{Iface: "Session", Name: "SetSkillGate", ACP: "session/skill_gate_set"},
+	{Iface: "Session", Name: "ClearSkillGateDecision", ACP: "session/skill_gate_clear"},
 
 	{Iface: "Session", Name: "PrepareMCPLogin", ACP: "session/mcp_login"},
 	{Iface: "Session", Name: "LoginMCP", ACP: "session/mcp_login"},

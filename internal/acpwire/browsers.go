@@ -23,6 +23,33 @@ type MemoryEntry struct {
 	CreatedAt  int64  `json:"createdAt,omitempty"`
 }
 
+// SkillEntry is one skill in the global or the project store. Scope and
+// Source identify it: Source is the store child discovery found, never the
+// frontmatter name. LoadBlocked says why Load now cannot run for it, "" when
+// it can.
+type SkillEntry struct {
+	Scope       string `json:"scope"`
+	Source      string `json:"source"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	LoadBlocked string `json:"loadBlocked,omitempty"`
+}
+
+// SkillGateState is the session's skill load gate: whether it is on, and its
+// sticky decisions, sorted by skill.
+type SkillGateState struct {
+	Enabled   bool                `json:"enabled,omitempty"`
+	Decisions []SkillGateDecision `json:"decisions,omitempty"`
+}
+
+// SkillGateDecision is one sticky decision. Count is the deny counter, 0 for
+// an allowed skill.
+type SkillGateDecision struct {
+	Skill   string `json:"skill"`
+	Allowed bool   `json:"allowed,omitempty"`
+	Count   int    `json:"count,omitempty"`
+}
+
 // PluginEntry is one installed plugin, from the global or the project
 // lockfile. Scope is "global" or "project".
 type PluginEntry struct {

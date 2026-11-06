@@ -24,6 +24,7 @@ import (
 	"marshal/internal/llm/schema"
 	"marshal/internal/pubsub"
 	"marshal/internal/repo/gitinfo"
+	"marshal/internal/skills"
 	"marshal/internal/tools/native"
 	"marshal/internal/trust"
 	"marshal/internal/viewmodel"
@@ -108,6 +109,9 @@ type Deps struct {
 	// Tools reads the runtime's current tool names; false while the runtime
 	// has no runner or no registry. Nil means the session has no tools.
 	Tools func() ([]string, bool)
+	// SkillIndex reads the runtime's skill index, the one LoadSkill checks
+	// against. Nil, or a nil index, means the session has none.
+	SkillIndex func() *skills.Index
 
 	// Auth is the runtime's credential and OAuth dependency: every provider
 	// client and sign-in the adapter builds uses it. Nil means
@@ -173,11 +177,13 @@ type Session struct {
 	// no tools.
 	tools func() ([]string, bool)
 
-	// pluginScans holds the staged plugin scans by token, and pluginSeq
-	// numbers them. Both are guarded by mu, and the map is created by the
-	// first write.
-	pluginScans map[string]*pluginScan
-	pluginSeq   uint64
+	// skillIndex is Deps.SkillIndex. skillListing is the last Skills listing,
+	// by scope and source; pluginScans holds the staged plugin scans by token,
+	// and pluginSeq numbers them. All three of the last are guarded by mu.
+	skillIndex   func() *skills.Index
+	skillListing map[string]skills.ScopedSkill
+	pluginScans  map[string]*pluginScan
+	pluginSeq    uint64
 
 	// accessRequest and resolveAccess are the runtime's access seam. Without
 	// both, ReconcileAccess settles every typed access request as failed
@@ -401,6 +407,10 @@ func (s *Session) Status() acpwire.SessionStatus {
 		// The count the status line shows. The session refreshes it on turn
 		// boundaries and workspace moves, never during render.
 		ChangedFiles: s.changedFiles(),
+		// The skill load gate: whether it is on, and its sticky decisions.
+		// Decisions stay nil when there are none, so an empty gate encodes
+		// as absent under omitempty.
+		SkillGate: skillGateOf(st),
 	}
 	if r, ok := st.TurnRoute(); ok {
 		route := routeOf(r)

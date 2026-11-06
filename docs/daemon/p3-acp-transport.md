@@ -355,7 +355,25 @@ new client.
     `stopReason: "gate"`, which the client maps to
     `CodeHumanGateRequired`;
   - `session/work_*` encode times as RFC 3339 strings, which the client
-    converts to milliseconds (G4).
+    converts to milliseconds (G4);
+  - `session/list` encodes `updatedAt` as RFC 3339 and the message count
+    in `_meta`, which the client converts (P2 plan 8b);
+  - `session/prompt` has no `watchResume`, the watch whose goal the agent
+    writes (P2 plan 8a);
+  - `session/diff` compares a base with the working tree, and the TUI's
+    run outcome needs `base..head`: it gains an optional `head` (P2 plan
+    8a);
+  - `session/memory_list` lists what the session sees, and the TUI lists
+    the project's own rows (P2 plan 8b);
+  - `session/plugins_install_scan` returns content counts, not the
+    contents the TUI's review shows, and `plugins_install_confirm`
+    neither checks the reviewed hash nor rolls back. The handlers move
+    onto the adapter's logic (P2 plan 8b);
+  - `session/skills_*` find the global store with `skills.ScopeDir`,
+    which ignores `MARSHAL_CONFIG_DIR` and `XDG_CONFIG_HOME`, remove a
+    skill by name, and load without checking the store. They move onto
+    the adapter's logic, which keys a skill by scope and source (P2 plan
+    8b).
 - `TestACPClientMethodTableMatchesTheServer` (T4) ends P3 with every row
   marked existing.
 

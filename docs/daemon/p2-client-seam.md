@@ -10,7 +10,7 @@ already exist change only by gaining optional fields (C6).
 Status: drafted 2026-10-20; revised 2026-10-25 against `991c18d7`
 and since, plan by plan (Revision record). Delivered as nine plans
 (Migration order), each written against `main` once the previous one has
-landed; plans 2, 3, 5 and 7 are split into sub-plans.
+landed; plans 2, 3, 5, 7 and 8 are split into sub-plans.
 
 Decided with the user (2026-10-20):
 - **Transcript on the wire:** `WireTree`. The TUI renders the same
@@ -230,8 +230,9 @@ Decision: `WireTree`, with the C6 additions.
 ### C2. The client interface
 
 - **Two interfaces.** `Host` covers the process and user level:
-  sessions, config, providers, trust, history, memory, plugins and
-  skills. `Session` covers one conversation. `tui.New(host, session,
+  sessions, user config, providers and trust. `Session` covers one
+  conversation, with its project's history, memory, plugins and skills
+  (C11). `tui.New(host, session,
   opts...)` replaces `tui.New(state, opts...)`. A swap (`/new`,
   `/clear`, resume) gets a new `Session` from the `Host`.
 - **One ACP method per interface method.** Each method names its ACP
@@ -733,34 +734,67 @@ Decision: `WireTree`, with the C6 additions.
   answers it, replacing the trust prompt callback. A trust refresh
   happens inside the project save (plan 7b).
 - **Skill gate settings** (enabled flag, remembered decisions, clearing
-  one) move with the skills panel (plan 8, decided with the user).
+  one) move with the skills panel (plan 8b, decided with the user). See
+  C11.
 - **Tools** (plan 7c). The agents panel's tool lookup becomes a
   `Session.Tools()` read of the runtime's current registry.
 
 ### C11. Project data
 
-- **History.**
-  - Session list for resume: `Host.ListSessions` (`session/list`
-    exists).
-  - Input history: `RecentPrompts` and `SavePrompt` (new).
-  - Message queries the TUI makes today: the last assistant reply, user
-    turns for rewind, and whether the session has a user turn. These use
-    `Messages(ctx, filter)` (new).
-- **Index facts.**
-  - The `@` file index: `FileIndex()` (new).
-  - The doctor's intelligence counts and detected language servers:
-    `Intelligence()` (new).
-- **Memory, plugins and skills panels** use the existing `memory_*`,
-  `plugins_*` and `skills_*` methods.
-- **Plans and worktrees.**
+Plan 8a moves history, index facts and plan runs. Plan 8b moves the
+browsers: the session list and the memory, plugins and skills panels.
+Memory, plugins and skills are `Session` methods, not `Host` ones: their
+ACP methods are session-scoped, and they read the session's project and
+trust (C2).
+
+- **History** (plan 8a).
+  - Input history: `RecentPrompts(ctx, limit)` and `SavePrompt(ctx,
+    text)` (new). Without a database or a project, the first reads
+    nothing and the second saves nothing, as today.
+  - Message queries: `Messages(ctx, query)` (new). A query selects by
+    role and finality and can keep only the newest N matches; the page
+    also counts every match. It serves the last assistant reply
+    (suggestions), the last final answer (`/sdd new --from-last-plan`),
+    user turns for rewind, whether the session has a user turn, and
+    `/new`'s cleared-message count.
+  - The watch resume's goal is built agent side: `PromptParams` carries
+    the watch, and the session writes the text from its own last reply
+    (C8).
+- **Index facts** (plan 8a).
+  - The `@` file index: `FileIndex(ctx)` (new). `Run` seeds the popup
+    through it, and the first `@` asks when no seed arrived, as today.
+  - The doctor's intelligence checks: `Intelligence(ctx)` (new),
+    computed agent side from the database, the agent's `PATH` and the
+    live config.
+- **Plans and the run outcome** (plan 8a).
   - SDD plan discovery, removing an authored candidate and writing a
-    starter plan: `Plans()`, `DiscardCandidate` and `ScaffoldPlan`
-    (new). The draft path is resolved inside `AuthorPlan` (C8, plan 5d).
-  - Run outcome: the run detail, branch diff and file reads use
-    `session/run`, `session/diff` and `session/file` (exist). This
-    replaces `runOutcomeDoc`'s own git calls (`runoutcome.go:32`).
-  - Fleet rows are in `Sheet`.
-- **Git info and changed files** arrive through `Status` and `Sheet`.
+    starter plan: `Plans(ctx)`, `DiscardCandidate(ctx, path)` and
+    `ScaffoldPlan(ctx)` (new). The draft path is resolved inside
+    `AuthorPlan` (C8, plan 5d).
+  - The outcome doc stays a TUI render of `Status().SDD`. Its two row
+    actions read through `Diff(ctx, query)` and `ReadFile(ctx, path)`,
+    carried by `session/diff` and `session/file` (exist; `session/diff`
+    gains an optional `head`). This replaces `runoutcome.go`'s own git
+    and file reads.
+- **The session list** (plan 8b): `Host.ListSessions(ctx, cwd, limit)`
+  (`session/list` exists).
+- **Memory** (plan 8b): `Memories(ctx)` and `DeleteMemory(ctx, id)`, over
+  `session/memory_list` and `session/memory_delete` (exist). The browser
+  renders a picked entry from the listing it holds.
+- **Plugins** (plan 8b): `Plugins`, `ScanPlugin`, `InstallPlugin`,
+  `DiscardPluginScan` and `RemovePlugin`, over `session/plugins_*`
+  (exist). The scanned clone stays agent side behind a token. The
+  install checks the reviewed hash, and a closed session discards the
+  scans it still holds.
+- **Skills** (plan 8b): `Skills`, `LoadSkill` and `RemoveSkill`, over
+  `session/skills_*` (exist), and `InstallSkill` and `SetSkillAutoload`
+  (new). The skill gate's switch and decisions are read from
+  `Status().SkillGate`, and changed with `SetSkillGate` and
+  `ClearSkillGateDecision` (new).
+- **No database** is the code `CodeNoDatabase` (plan 8b), so the session
+  picker and the memory browser keep their "not available" notes.
+- **Fleet rows** are in `Sheet`, and **git info and changed files**
+  arrive through `Status` and `Sheet`.
 
 ### C12. Client-local
 
@@ -931,10 +965,26 @@ The TUI works after every plan.
    7a comes first: 7d's redacted read leaves the TUI without literal
    keys, so every reader of one must already be agent side. 7c and 7d
    depend only on 7b, and touch different TUI files.
-8. **Project data** (C11), with the skills panel's skill-gate settings
-   (decided with the user).
-9. **Close-out.** Delete `WithLegacyState`, empty the allowlist, write
-   the list of methods P3 must add, and update design §4.5, §7 and §8.
+8. **Project data** (C11), in two plans that run in parallel (decided
+   with the user):
+   - **8a. History, index facts and plan runs** ([plan](plans/2026-11-06-p2-8a-history-plan.md)).
+     Input history, message queries and the watch resume's goal, the
+     file index, the doctor's checks, plan discovery, the starter plan
+     and the run outcome's reads. Dead code found on the way goes too:
+     the todo helpers, two unused state fields and two unused broker
+     fields.
+   - **8b. Browsers** ([plan](plans/2026-11-06-p2-8b-browsers-plan.md)).
+     The session list and the memory, plugins and skills panels, with
+     the skill-gate settings (decided with the user) read from
+     `Status`.
+
+   8a and 8b depend only on plan 7, and touch different TUI files apart
+   from separate functions in `model.go` and `commands_dispatch.go`.
+   Neither deletes what the other still uses, so `WithMemoryStore` and
+   its two fields wait for plan 9.
+9. **Close-out.** Delete `WithLegacyState`, `WithLegacySession` and
+   `WithMemoryStore`, empty the allowlist, write the list of methods P3
+   must add, and update design §4.5, §7 and §8.
 
 Each plan removes its group's allowlist entries.
 
@@ -1691,6 +1741,81 @@ writing plans 7c and 7d, which run in parallel (decided with the user):
   records each rename since its baseline.
 - **MCP `env` and `headers` stay in the clear**, a recorded follow-up:
   they are outside `config.MaskSecrets`' set and C3's.
+
+**2026-11-06, against `6c6d16b2` (plans 7c and 7d merged).** Found while
+writing plans 8a and 8b, which run in parallel (decided with the user):
+- **Plan 8 splits by file** (Migration order). 8a takes the files that
+  read history, the index and plans; 8b takes the session picker and the
+  three panels. The session picker went to 8b because it and the memory
+  browser are the only readers that need `CodeNoDatabase`.
+- **Memory, plugins and skills are `Session` methods** (C2, C11). ACP's
+  methods for them are session-scoped, and each reads the session's
+  project, home directory or trust.
+- **One message query serves six readers** (C11). `Messages` selects by
+  role, by finality (a final answer with text) and by the newest N, and
+  the page counts every match, so `/new`'s cleared count needs no read
+  of its own. It is a call, cheap enough to stay synchronous (R6).
+- **The watch resume's goal is prompt text**, so it moves agent side
+  (C8). `PromptParams.WatchResume` names the watch, and the session
+  writes the goal from its own last reply; the TUI's last-reply scan
+  goes.
+- **The file index keeps its startup seed**, read through the session,
+  and the first `@` still asks when the seed is missing.
+- **The doctor's checks are computed agent side.** The language-server
+  probe reads the agent's `PATH`, which is the one that matters once the
+  agent can run elsewhere.
+- **The starter plan moves to `sddplans.Scaffold`**, beside plan
+  discovery, so its parse and compile tests move with it.
+- **The run outcome's reads take `Diff` and `ReadFile`.** `session/diff`
+  diffs a base against the working tree today, so P3 gives it an
+  optional `head`. `ReadFile` takes a path relative to the working
+  directory, as `session/file` does, so the TUI makes the ledger path
+  relative.
+- **Dead code found.** `todoLine`, `todoProgress` and `todosAllDone` are
+  used only by their tests. The doctor panel and the tasks panel hold a
+  state they never read. The model's workspace and subagent broker
+  fields are unused since plan 2b. Plan 8a deletes them.
+- **Memory keeps listing the project's own rows** (`GetMemories`), where
+  ACP's `memory_list` lists what the session sees (`GetScopedMemories`).
+  P3 gives `memory_list` an optional param for the TUI's listing (R9).
+  A picked entry renders from the listing, so no single-memory read is
+  needed.
+- **The plugin scan stays agent side behind a token.** The adapter keeps
+  the reviewed hash and installs through `plugins.InstallReviewed`, which
+  rolls back on failure. ACP's plugin handlers return only content
+  counts, do not check the hash and copy without rollback, so P3 moves
+  them onto the adapter's logic (R9). The panel's scan lease now owns a
+  token instead of a directory, which keeps its cleanup guarantees.
+- **Skills keep their identity by scope and source** (C11). The adapter
+  keeps its last listing per session, and `LoadSkill` and `RemoveSkill`
+  check the store against it, as the panel checked its snapshot. Why a
+  load is unavailable is worked out when the list is read.
+- **Found by reading, not run:** ACP's skill handlers use
+  `skills.ScopeDir`, whose global path ignores `MARSHAL_CONFIG_DIR` and
+  `XDG_CONFIG_HOME`. They also remove a skill by its frontmatter name and
+  load without checking the store. The adapter keeps the panel's
+  behaviour, and P3 moves ACP's handlers onto it (R9).
+- **A skill install stays one step**, on a new `session/skills_install`.
+  ACP's staged preview stays for other clients.
+- **Autoload is written agent side.** `SetSkillAutoload` writes the user
+  config and installs the change in the live config. Before, the panel
+  edited the state's config without its lock.
+- **The skill gate is in `Status`** (C5): its switch and its sticky
+  decisions. The threshold is read from `Config`.
+- **Panels cache their listings.** A settings list rebuilds its rows on
+  every render, so the skills store and the plugin lockfiles were read
+  on every frame. Each panel now reads its listing when it opens and
+  after each action.
+- **T1b.** 8a adds `Messages`, and 8b adds the skill-gate names and
+  `HasActiveSkill` and drops the skills panel's deferred `Config`. `DB`
+  gets no entry: its readers move in both plans, and plan 9 deletes the
+  test.
+- **The new ACP methods are named** `session/prompt_history`,
+  `session/prompt_history_save`, `session/messages`,
+  `session/file_index`, `session/intelligence`, `session/plans`,
+  `session/sdd_discard`, `session/sdd_scaffold` (8a), and
+  `session/skills_install`, `session/skills_autoload`,
+  `session/skill_gate_set` and `session/skill_gate_clear` (8b).
 
 ## Implementation record
 

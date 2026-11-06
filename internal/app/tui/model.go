@@ -64,8 +64,6 @@ import (
 	"marshal/internal/sddplans"
 	"marshal/internal/skills"
 	"marshal/internal/strutil"
-	"marshal/internal/tools/registry"
-	"marshal/internal/trust"
 	"marshal/internal/watch"
 )
 
@@ -229,8 +227,6 @@ type Model struct {
 	// in-flight analysis pass from being interrupted by a fresh prompt.
 	endAnswered        bool
 	openConnectOnStart bool
-	trustPromptDir     string
-	trustDecide        func(trust.Decision)
 	memoryDB           *db.DB
 	memoryProject      int64
 	homeDir            string
@@ -568,10 +564,6 @@ type Model struct {
 	// idle and applies via the configured reloader.
 	pendingModelOptions *pendingModelOptionsState
 
-	// toolRegistry is the live tool registry, used by the agents roster
-	// panel for tool denylist validation. Wired from app.go.
-	toolRegistry *registry.Registry
-
 	// pendingRun holds the pre-flight state while the cast list panel is
 	// open. It is set by openRunPreflight and consumed by the castlist
 	// StartMsg/CancelMsg handlers.
@@ -602,13 +594,12 @@ func WithLegacyState(state *session.State) Option {
 }
 
 type LegacySession struct {
-	State        *session.State
-	ToolRegistry *registry.Registry
+	State *session.State
 }
 
-// WithLegacySession wires the read of the runtime's current state and tool
-// registry that follows Host.NewSession. Without it, a new session leaves the
-// model's legacy state as it was.
+// WithLegacySession wires the read of the runtime's current state that
+// follows Host.NewSession. Without it, a new session leaves the model's legacy
+// state as it was.
 func WithLegacySession(read func() LegacySession) Option {
 	return func(m *Model) { m.legacySession = read }
 }
@@ -618,16 +609,6 @@ func WithLegacySession(read func() LegacySession) Option {
 // the hundredth.
 func WithOpenConnectOnStart() Option {
 	return func(m *Model) { m.openConnectOnStart = true }
-}
-
-// WithTrustPrompt opens the modal folder-trust panel at startup. decide is
-// called with the user's answer; trusting quits the program so the app can
-// reload with the project config in force.
-func WithTrustPrompt(workingDir string, decide func(trust.Decision)) Option {
-	return func(m *Model) {
-		m.trustPromptDir = workingDir
-		m.trustDecide = decide
-	}
 }
 
 func WithHomeDir(homeDir string) Option {
@@ -741,14 +722,6 @@ func (m *Model) log() *slog.Logger {
 func (m *Model) note(text string) {
 	if err := m.sess.AddNote(m.ctx, acpwire.Note{Text: text, ContentType: acpwire.ContentTypePlain}); err != nil {
 		m.log().Warn("note dropped", "error", err)
-	}
-}
-
-// WithToolRegistry wires the live tool registry into the model so the
-// agents roster panel can validate tool denylist entries.
-func WithToolRegistry(reg *registry.Registry) Option {
-	return func(m *Model) {
-		m.toolRegistry = reg
 	}
 }
 
@@ -1024,15 +997,35 @@ func (m *Model) openSettingsBrowser(query string) {
 }
 
 func (m *Model) openAgentsRoster(arg string) {
-	roster := agents.NewRosterPanelWithRegistry(
+	roster := agents.NewRosterPanel(
 		m.sess.Config(),
 		m.sess,
 		arg,
 		runNowDispatch,
-		m.toolRegistry,
 	)
 	roster.SetQuota(m.sess.Status().Quota)
 	m.dock.Open(roster)
+}
+
+// openTrustPanel opens the modal folder-trust question for the directory the
+// host reports as pending, and reports whether it did. The panel answers
+// through the seam: DecideTrust records the decision and, after a trust, the
+// app restarts with the project config in force. A refusal here means the
+// wiring is broken, so it is logged rather than shown.
+func (m *Model) openTrustPanel() bool {
+	// The closure runs after Update has returned, so it captures the host,
+	// the context and the logger by value, never the model.
+	host, ctx, log := m.host, m.ctx, m.log()
+	dir := host.TrustPrompt()
+	if dir == "" {
+		return false
+	}
+	m.dock.Open(trustpanel.New(dir, func(decision acpwire.TrustDecision) {
+		if err := host.DecideTrust(ctx, dir, decision); err != nil {
+			log.Warn("trust decision was not recorded", "error", err)
+		}
+	}))
+	return true
 }
 
 // runAgentMsg asks the live model to start a Run-now. The roster's dispatch
@@ -1255,9 +1248,7 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 		}
 	}
 
-	if m.trustDecide != nil && m.trustPromptDir != "" {
-		m.dock.Open(trustpanel.New(m.trustPromptDir, m.trustDecide))
-	}
+	m.openTrustPanel()
 
 	if m.openConnectOnStart && !m.dock.IsOpen() {
 		// A pending modal (trust prompt) owns the dock; connect opens after

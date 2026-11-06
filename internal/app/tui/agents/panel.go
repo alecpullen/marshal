@@ -6,6 +6,7 @@ package agents
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,7 +30,6 @@ import (
 	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
 	"marshal/internal/strutil"
-	"marshal/internal/tools/registry"
 )
 
 // createAgentPromptMsg asks the panel to open the name-entry overlay for
@@ -48,7 +48,6 @@ type Panel struct {
 	filter      textfield.Model
 	list        *settings.FieldList
 	dispatch    DispatchFn
-	reg         *registry.Registry // live tool registry for denylist validation
 	showLegend  bool               // ? toggles the glyph legend overlay
 	pendingPick func(string) error // stored from a picker push, consumed by PickedMsg
 
@@ -80,19 +79,13 @@ var _ dock.Panel = (*Panel)(nil)
 // NewRosterPanel builds the roster panel pre-filtered by `arg` (a role
 // or agent name). dispatch is used for Run-now (may be nil).
 func NewRosterPanel(cfg config.Config, sess acpclient.Session, arg string, dispatch DispatchFn) *Panel {
-	return NewRosterPanelWithRegistry(cfg, sess, arg, dispatch, nil)
-}
-
-// NewRosterPanelWithRegistry builds the roster panel with a tool registry
-// for denylist validation. When reg is nil, validation is skipped.
-func NewRosterPanelWithRegistry(cfg config.Config, sess acpclient.Session, arg string, dispatch DispatchFn, reg *registry.Registry) *Panel {
 	st := settings.NewState(cfg)
 	f := textfield.New()
 	f.SetVirtualCursor(true)
 	f.Focus()
 	f.SetValue(arg)
 	f.CursorEnd()
-	p := &Panel{state: st, sess: sess, filter: f, dispatch: dispatch, reg: reg}
+	p := &Panel{state: st, sess: sess, filter: f, dispatch: dispatch}
 	p.list = settings.NewFieldList(p.matchedFields)
 	return p
 }
@@ -317,15 +310,23 @@ func (p *Panel) roleField(cfg config.Config, role routing.AgentRole, ce routing.
 	return f
 }
 
-// validateToolDenylist checks that every name in the list is registered
-// in the panel's tool registry. When reg is nil, no tools are known so
-// every name fails validation.
+// ValidateToolDenylist checks that every name in the list is one of the
+// tools the session reports. A nil session, or a session whose provider is
+// not built yet, knows no tools, so the first name fails as unverifiable.
 func (p *Panel) ValidateToolDenylist(names []string) error {
-	for _, name := range names {
-		if p.reg == nil {
-			return fmt.Errorf("unknown tool: %q (no registry available)", name)
+	var tools []string
+	known := false
+	if p.sess != nil {
+		tools, known = p.sess.Tools()
+	}
+	if !known {
+		if len(names) == 0 {
+			return nil
 		}
-		if _, ok := p.reg.Lookup(name); !ok {
+		return fmt.Errorf("unknown tool: %q (no registry available)", names[0])
+	}
+	for _, name := range names {
+		if !slices.Contains(tools, name) {
 			return fmt.Errorf("unknown tool: %q", name)
 		}
 	}

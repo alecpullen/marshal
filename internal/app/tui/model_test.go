@@ -7985,29 +7985,37 @@ func TestFinishedPlanIsOneIdleRow(t *testing.T) {
 	}
 }
 
-// TestOpenAgentsRosterThreadsToolRegistry verifies that openAgentsRoster
-// passes the model's toolRegistry to the roster panel.
-func TestOpenAgentsRosterThreadsToolRegistry(t *testing.T) {
+// TestOpenAgentsRosterThreadsSessionTools verifies that openAgentsRoster
+// builds the roster over the model's session, so denylist validation reads
+// the tools the session reports.
+func TestOpenAgentsRosterThreadsSessionTools(t *testing.T) {
 	cfg := config.Default()
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
 
-	// Wire a tool registry with a known tool.
+	// A registry supplies the names the session reports.
 	reg := registry.New()
 	_ = reg.Register(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly, Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		return registry.ToolResult{}, nil
 	}})
-	m.toolRegistry = reg
+	tools := reg.List()
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.Name)
+	}
+	m := testModelWith(inproc.Deps{
+		State: state,
+		Tools: func() ([]string, bool) { return names, true },
+	})
 
 	// openAgentsRoster opens the dock with a roster panel.
 	m.openAgentsRoster("")
 
-	// Verify the dock panel is an *agents.Panel with the registry set.
+	// Verify the dock panel is an *agents.Panel that validates through it.
 	p, ok := m.dock.Panel().(*agents.Panel)
 	if !ok {
 		t.Fatal("expected agents.Panel in dock")
 	}
-	// Validate a known tool name against the panel's registry.
+	// Validate a known tool name against the panel's session.
 	if err := p.ValidateToolDenylist([]string{"file.read"}); err != nil {
 		t.Fatalf("valid tool should pass: %v", err)
 	}
@@ -8293,7 +8301,9 @@ func TestDispatchStructuredResultOpensDocPanel(t *testing.T) {
 func TestTrustPromptOpensAtStartupAndDeclineCloses(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
 	var decided trust.Decision
-	m2 := testModel(m.state, WithTrustPrompt("/repo", func(d trust.Decision) { decided = d }))
+	m2 := testModelWith(
+		inproc.Deps{State: m.state, TrustPrompt: "/repo", DecideTrust: func(d trust.Decision) { decided = d }},
+	)
 	if !m2.dock.IsOpen() {
 		t.Fatal("dock should host the trust panel at startup")
 	}
@@ -8377,8 +8387,8 @@ func TestOpenConnectOnStartYieldsToTrustPrompt(t *testing.T) {
 	// pins the ordering: trust panel first.
 	m := newViewTestModel(t, 80, 24)
 	decided := false
-	m2 := testModel(m.state,
-		WithTrustPrompt("/repo", func(trust.Decision) { decided = true }),
+	m2 := testModelWith(
+		inproc.Deps{State: m.state, TrustPrompt: "/repo", DecideTrust: func(trust.Decision) { decided = true }},
 		WithOpenConnectOnStart(),
 	)
 	panel := m2.dock.Panel()

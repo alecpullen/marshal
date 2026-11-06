@@ -6,18 +6,18 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/trust"
+	"marshal/internal/acpwire"
 )
 
 func TestNumberKeysChooseDecision(t *testing.T) {
-	cases := map[string]trust.Decision{
-		"1": trust.DecisionTrustPermanent,
-		"2": trust.DecisionTrustSession,
-		"3": trust.DecisionDontTrust,
+	cases := map[string]acpwire.TrustDecision{
+		"1": acpwire.TrustPermanent,
+		"2": acpwire.TrustSession,
+		"3": acpwire.TrustDecline,
 	}
 	for key, want := range cases {
-		var got trust.Decision
-		p := New("/repo", func(d trust.Decision) { got = d })
+		var got acpwire.TrustDecision
+		p := New("/repo", func(d acpwire.TrustDecision) { got = d })
 		p.Update(tea.KeyPressMsg{Code: rune(key[0]), Text: key})
 		if got != want {
 			t.Errorf("key %s: decision = %v, want %v", key, got, want)
@@ -26,10 +26,10 @@ func TestNumberKeysChooseDecision(t *testing.T) {
 }
 
 func TestEscDeclines(t *testing.T) {
-	var got trust.Decision
-	p := New("/repo", func(d trust.Decision) { got = d })
+	var got acpwire.TrustDecision
+	p := New("/repo", func(d acpwire.TrustDecision) { got = d })
 	cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	if got != trust.DecisionDontTrust {
+	if got != acpwire.TrustDecline {
 		t.Fatalf("esc decision = %v, want dont_trust", got)
 	}
 	if cmd == nil {
@@ -41,7 +41,7 @@ func TestEscDeclines(t *testing.T) {
 }
 
 func TestTrustChoiceQuitsForReload(t *testing.T) {
-	p := New("/repo", func(trust.Decision) {})
+	p := New("/repo", func(acpwire.TrustDecision) {})
 	cmd := p.Update(tea.KeyPressMsg{Code: '1', Text: "1"})
 	if cmd == nil {
 		t.Fatal("trust choice should quit the program for reload")
@@ -52,7 +52,7 @@ func TestTrustChoiceQuitsForReload(t *testing.T) {
 }
 
 func TestViewExplainsRisk(t *testing.T) {
-	p := New("/repo", func(trust.Decision) {})
+	p := New("/repo", func(acpwire.TrustDecision) {})
 	out := p.View(80, 10)
 	for _, want := range []string{"config.toml", "Trust", "model selection", "/repo"} {
 		if !strings.Contains(out, want) {

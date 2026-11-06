@@ -216,8 +216,8 @@ func readLedger(ctx context.Context, sess acpclient.Session, workingDir, ledgerP
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	rel, err := filepath.Rel(workingDir, ledgerPath)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	rel, ok := ledgerRel(workingDir, ledgerPath)
+	if !ok {
 		return fmt.Sprintf("Could not read %s: it is outside the working directory", ledgerPath)
 	}
 	file, err := sess.ReadFile(ctx, rel)
@@ -230,5 +230,39 @@ func readLedger(ctx context.Context, sess acpclient.Session, workingDir, ledgerP
 	if file.Size == 0 {
 		return ledgerPath + " is empty."
 	}
-	return file.Content
+	content := file.Content
+	if file.Truncated {
+		// session/file caps what it returns, so say so rather than presenting
+		// a cut ledger as the whole one.
+		content += "\n\n… (truncated: the ledger is larger than the session's read limit)"
+	}
+	return content
+}
+
+// ledgerRel makes the ledger's path relative to the working directory, which
+// is the form session/file takes. ok is false when the ledger is outside it.
+func ledgerRel(workingDir, ledgerPath string) (string, bool) {
+	if rel, ok := relInside(workingDir, ledgerPath); ok {
+		return rel, true
+	}
+	// A working directory reached through a symlink spells the same place two
+	// ways (/tmp and /private/tmp on macOS), and a lexical Rel calls the
+	// ledger outside it. Resolve both before refusing: session/file's own
+	// containment check still decides whether the read happens.
+	resolvedDir, dirErr := filepath.EvalSymlinks(workingDir)
+	resolvedLedger, ledgerErr := filepath.EvalSymlinks(ledgerPath)
+	if dirErr != nil || ledgerErr != nil {
+		return "", false
+	}
+	return relInside(resolvedDir, resolvedLedger)
+}
+
+// relInside is the lexical half of ledgerRel: the path relative to dir, and
+// whether it stays inside it.
+func relInside(dir, path string) (string, bool) {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return rel, true
 }

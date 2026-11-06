@@ -238,6 +238,26 @@ func TestOutcomeActionsReadThroughTheSession(t *testing.T) {
 		t.Fatalf("ledger action text = %q, want the file's contents", got)
 	}
 
+	// A ledger past the session's read cap says so instead of passing the cut
+	// text off as the whole file.
+	big := filepath.Join(dir, ".marshal", "pipeline", "add-retries", "big.md")
+	if err := os.WriteFile(big, []byte(strings.Repeat("x", (1<<20)+1)), 0o600); err != nil {
+		t.Fatalf("write big ledger: %v", err)
+	}
+	p.LedgerPath = big
+	acts = runOutcomeActions(context.Background(), sess, p, dir, 100)
+	run, ok = acts[outcomeLedgerAction]
+	if !ok {
+		t.Fatalf("no %q action in the map for the big ledger", outcomeLedgerAction)
+	}
+	bigText := run().Text
+	if !strings.Contains(bigText, "(truncated: the ledger is larger than the session's read limit)") {
+		t.Fatalf("big ledger text does not mention the truncation, got %d bytes", len(bigText))
+	}
+	if len(bigText) < 1<<20 {
+		t.Fatalf("big ledger text is %d bytes, want the 1 MiB the session returns", len(bigText))
+	}
+
 	// A ledger outside the working directory is refused, not read.
 	outside := filepath.Join(t.TempDir(), "ledger.md")
 	if err := os.WriteFile(outside, []byte("elsewhere"), 0o600); err != nil {

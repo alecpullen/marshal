@@ -2911,3 +2911,12 @@ plan 9 deletes T1b.
 P3's R9 list carries the differences this plan leaves: the eight new
 methods need handlers, `session/prompt` gains `watchResume`, and
 `session/diff` gains an optional `head`.
+
+Review follow-up (same branch): the outcome's ledger read marks a ledger the
+session's 1 MiB cap cut, and resolves symlinked spellings of the working
+directory before refusing a path as outside it. `TestRunWiresTheFileIndex`
+now writes real files and waits for the startup index pass instead of only
+checking for an error: removing `Deps.FileIndex` fails it. `ReadFile` gains a
+truncation case and a NUL-past-the-sniff-window case, `Messages` gains
+`Last > Total` and no-match cases, and `PromptParams.WatchResume` says it is
+never combined with `Queued`.

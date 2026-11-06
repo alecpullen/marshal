@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -244,5 +245,55 @@ func TestReadFileStaysInTheWorkingDirectory(t *testing.T) {
 	}
 	if bin.Content != "" {
 		t.Errorf("ReadFile(blob.bin) Content = %q, want empty", bin.Content)
+	}
+}
+
+// TestReadFileTruncatesAndSniffsOnlyTheHead pins the two read limits a large
+// file meets: the cut that sets Truncated at exactly maxReadFile bytes, and
+// the binary sniff that only looks at the first 8192 bytes.
+func TestReadFileTruncatesAndSniffsOnlyTheHead(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	big := strings.Repeat("a", maxReadFile+1)
+	if err := os.WriteFile(filepath.Join(dir, "big.txt"), []byte(big), 0o644); err != nil {
+		t.Fatalf("write big.txt: %v", err)
+	}
+	// A NUL past the sniff window leaves the file text: the binary answer
+	// describes what the reader inspects, not the whole file.
+	late := append([]byte(strings.Repeat("a", 8192)), 0x00)
+	if err := os.WriteFile(filepath.Join(dir, "late.bin"), late, 0o644); err != nil {
+		t.Fatalf("write late.bin: %v", err)
+	}
+	sess := newProjectTestSession(t, dir, Deps{})
+
+	got, err := sess.ReadFile(ctx, "big.txt")
+	if err != nil {
+		t.Fatalf("ReadFile(big.txt): %v", err)
+	}
+	if !got.Truncated {
+		t.Error("ReadFile(big.txt) Truncated = false, want true")
+	}
+	if len(got.Content) != maxReadFile {
+		t.Errorf("ReadFile(big.txt) len(Content) = %d, want %d", len(got.Content), maxReadFile)
+	}
+	if got.Size != int64(len(big)) {
+		t.Errorf("ReadFile(big.txt) Size = %d, want %d (the whole file)", got.Size, len(big))
+	}
+	if got.Binary {
+		t.Error("ReadFile(big.txt) Binary = true, want false")
+	}
+
+	lateGot, err := sess.ReadFile(ctx, "late.bin")
+	if err != nil {
+		t.Fatalf("ReadFile(late.bin): %v", err)
+	}
+	if lateGot.Binary {
+		t.Error("ReadFile(late.bin) Binary = true, want false: the sniff stops at 8192 bytes")
+	}
+	if len(lateGot.Content) != len(late) {
+		t.Errorf("ReadFile(late.bin) len(Content) = %d, want %d", len(lateGot.Content), len(late))
+	}
+	if lateGot.Truncated {
+		t.Error("ReadFile(late.bin) Truncated = true, want false for a small file")
 	}
 }

@@ -172,4 +172,30 @@ func TestMessagesSelectsByRoleFinalityAndLast(t *testing.T) {
 			t.Errorf("Total = %d, want every message in the state", got.Total)
 		}
 	})
+
+	t.Run("last beyond the total", func(t *testing.T) {
+		got, err := sess.Messages(ctx, acpwire.MessageQuery{Last: 10})
+		if err != nil {
+			t.Fatalf("Messages: %v", err)
+		}
+		if len(got.Messages) != 5 {
+			t.Errorf("Messages = %+v, want every message, uncut", got.Messages)
+		}
+		if got.Total != 5 {
+			t.Errorf("Total = %d, want 5", got.Total)
+		}
+	})
+
+	t.Run("no matches", func(t *testing.T) {
+		got, err := sess.Messages(ctx, acpwire.MessageQuery{Role: "system"})
+		if err != nil {
+			t.Fatalf("Messages: %v", err)
+		}
+		if len(got.Messages) != 0 {
+			t.Errorf("Messages = %+v, want none", got.Messages)
+		}
+		if got.Total != 0 {
+			t.Errorf("Total = %d, want 0", got.Total)
+		}
+	})
 }

@@ -30,7 +30,7 @@ func TestOptionsIdleChangePersistsAndReloads(t *testing.T) {
 		ContextWindow: 32000, MaxOutputTokens: 2048,
 	}
 
-	m2, _ := m.Update(modeloptions.ChangedMsg{
+	m2, settle := m.Update(modeloptions.ChangedMsg{
 		Config: config.Config{
 			Models: config.ModelsConfig{
 				Presets: map[string]routing.ModelPreset{
@@ -48,6 +48,9 @@ func TestOptionsIdleChangePersistsAndReloads(t *testing.T) {
 	})
 	m = asModel(t, m2)
 
+	// The reload runs from the call queue, so the preset lands when its result
+	// is handled.
+	m = settleCalls(t, m, settle)
 	if reloads != 1 {
 		t.Fatalf("the runtime reload ran %d times, want 1", reloads)
 	}
@@ -166,9 +169,12 @@ func TestOptionsPendingChangeFlushesWhenIdle(t *testing.T) {
 	m = asModel(t, m2)
 
 	m.busy = false
-	m2, _ = m.Update(changedMsg{ch: m.sess.Changed()})
-	m = asModel(t, m2)
-
+	// The turn-end change is what activates the candidate: a changedMsg lands in
+	// handleChanged, which queues the reload. The pump command it also returns
+	// blocks until the next signal, so it is dropped rather than run; the reload
+	// it queued is settled below.
+	m, _ = m.handleChanged(changedMsg{ch: m.sess.Changed()})
+	m = settleCalls(t, m)
 	if reloads != 1 {
 		t.Fatalf("the runtime reload ran %d times on flush, want 1", reloads)
 	}
@@ -216,9 +222,10 @@ func TestOptionsReloadFailureRetainsPendingCandidate(t *testing.T) {
 	m = asModel(t, m2)
 
 	m.busy = false
-	m2, _ = m.Update(changedMsg{ch: m.sess.Changed()})
-	m = asModel(t, m2)
-
+	// The turn-end change is what activates the candidate; handleChanged queues
+	// the reload, and its blocking pump command is dropped.
+	m, _ = m.handleChanged(changedMsg{ch: m.sess.Changed()})
+	m = settleCalls(t, m)
 	if reloads != 1 {
 		t.Fatalf("the runtime reload ran %d times, want 1", reloads)
 	}

@@ -20,6 +20,7 @@ func TestContextRequestOpensTheLastRequestPanel(t *testing.T) {
 
 	updated, _ := m.dispatchCommand("/context request")
 	m = *updated.(*Model)
+	m = settleCalls(t, m)
 
 	view := stripANSI(m.viewString())
 	for _, want := range []string{"Last request", "ollama/qwen3:32b", "dispatched", "1  user"} {

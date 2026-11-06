@@ -187,7 +187,24 @@ type Model struct {
 	// lspCancel is called from beginShutdown.
 	lspCtx    context.Context
 	lspCancel context.CancelFunc
-	busy      bool
+	// calls is the model's call queue (P3 R6): the converted asynchronous
+	// calls and the steps that wait behind them. Update starts the head of
+	// the queue from the Update goroutine; the call itself runs off it.
+	calls []callQueueEntry
+	// callInFlight reports whether a converted call is running off the Update
+	// goroutine. A second call never starts while one is in flight, which is
+	// what keeps the order the calls were made in.
+	callInFlight bool
+	// callCancel cancels the in-flight call's context, so a quit can unblock
+	// a call that respects it.
+	callCancel context.CancelFunc
+	// callQuitWaiting records that a quit arrived while a call was in flight:
+	// the quit finishes when that call's result is handled.
+	callQuitWaiting bool
+	// sheetPending records that the session sheet's open is queued. A second
+	// Ctrl+B clears it, which cancels the open when its refresh returns.
+	sheetPending bool
+	busy         bool
 	// end is the pending interactive end intent, non-nil from the moment the
 	// user asks to exit or replace the conversation until the warning is
 	// declined. It holds the target (a new-session name or a resume ID) so
@@ -725,35 +742,48 @@ func (m *Model) userHome() (string, error) {
 	return home, nil
 }
 
-// persistAndReload saves cfg to the project config file, asks the runtime
-// to reload it, and applies the outcome to TUI state. It returns the save
-// error or, when saving succeeded, the reload error (nil on full success).
-// On any error the in-memory change is kept (and configSavePending set for
-// save failures) so the user can fix the underlying problem and retry
-// without losing their edit. Messaging is the caller's job.
-func (m *Model) persistAndReload(cfg config.Config) (saveErr, reloadErr error) {
+// persistAndReload persists cfg to the project config and, when the save
+// succeeds, rebuilds the runtime from it. The reload — which starts MCP
+// servers and builds providers — runs from the call queue (P3 R6), so report
+// is called when its result arrives. A failed save happens first, reloads
+// nothing, and is reported at once. On any error the in-memory change is kept
+// (and configSavePending set for save failures) so the user can fix the
+// underlying problem and retry without losing their edit. Messaging is the
+// caller's job.
+func (m *Model) persistAndReload(cfg config.Config, report func(m *Model, saveErr, reloadErr error)) {
 	if err := m.sess.SaveProjectConfig(m.ctx, cfg); err != nil {
 		m.applyNewConfig(cfg)
 		m.configSavePending = true
-		return err, nil
+		report(m, err, nil)
+		return
 	}
 	m.configSavePending = false
 	// reloadAgentRuntime may install cfg before reporting a cleanup
 	// error; invalidate config-derived state before attempting it.
 	m.setReg = nil
-	reloaded, err := m.sess.ReloadConfig(m.ctx, cfg)
-	if err != nil {
-		// The runtime has already swapped cfg before cleanup can fail.
-		// Keep all TUI-derived state aligned with that live config.
-		m.applyNewConfig(cfg)
-		return nil, err
-	}
-	if reloaded {
-		m.afterRuntimeReload()
-	}
-	m.applyNewConfig(cfg)
-	m.refreshDiagnostics()
-	return nil, nil
+	m.enqueueCall(func(mm *Model) callRun {
+		sess := mm.sess
+		return func(ctx context.Context) callOutcome {
+			reloaded, err := sess.ReloadConfig(ctx, cfg)
+			return func(mm *Model) tea.Cmd {
+				if err != nil {
+					// The runtime has already swapped cfg before cleanup can
+					// fail. Keep all TUI-derived state aligned with that live
+					// config.
+					mm.applyNewConfig(cfg)
+					report(mm, nil, err)
+					return nil
+				}
+				if reloaded {
+					mm.afterRuntimeReload()
+				}
+				mm.applyNewConfig(cfg)
+				mm.refreshDiagnostics()
+				report(mm, nil, nil)
+				return nil
+			}
+		}
+	})
 }
 
 // afterRuntimeReload runs the recovery steps that become valid once the
@@ -829,8 +859,9 @@ func (m *Model) handleSetCommand(args []string) {
 			home, err := m.userHome()
 			if err != nil {
 				// Fall back to persistAndReload if home is unavailable.
-				saveErr, reloadErr := m.persistAndReload(reg.Config())
-				m.reportSetResult(key, change, saveErr, reloadErr)
+				m.persistAndReload(reg.Config(), func(mm *Model, saveErr, reloadErr error) {
+					mm.reportSetResult(key, change, saveErr, reloadErr)
+				})
 				return
 			}
 			if err := m.host.SaveUserValue(m.ctx, tomlPath, value); err != nil {
@@ -841,28 +872,40 @@ func (m *Model) handleSetCommand(args []string) {
 			}
 			m.configSavePending = false
 			m.setReg = nil
-			reloaded, err := m.sess.ReloadConfig(m.ctx, reg.Config())
-			if err != nil {
-				m.applyNewConfig(reg.Config())
-				sys(fmt.Sprintf("✗ %s saved, but live reload failed: %v", key, err))
-				return
-			}
-			if reloaded {
-				m.afterRuntimeReload()
-			}
-			m.applyNewConfig(reg.Config())
-			m.refreshOpenSettingsBrowser()
-			userPath := m.sess.Status().UserConfigPath
-			if !change.Changed {
-				sys(fmt.Sprintf("✓ %s persisted · %s", key, relPath(home, userPath)))
-			} else {
-				sys(fmt.Sprintf("✓ %s: %s → %s · %s", key, change.OldValue, change.NewValue, relPath(home, userPath)))
-			}
+			// The reload rebuilds the runtime, so it runs from the call queue
+			// and its outcome is reported when it returns (P3 R6).
+			m.enqueueCall(func(mm *Model) callRun {
+				sess := mm.sess
+				cfg := reg.Config()
+				return func(ctx context.Context) callOutcome {
+					reloaded, err := sess.ReloadConfig(ctx, cfg)
+					return func(mm *Model) tea.Cmd {
+						if err != nil {
+							mm.applyNewConfig(cfg)
+							mm.note(fmt.Sprintf("✗ %s saved, but live reload failed: %v", key, err))
+							return nil
+						}
+						if reloaded {
+							mm.afterRuntimeReload()
+						}
+						mm.applyNewConfig(cfg)
+						mm.refreshOpenSettingsBrowser()
+						userPath := mm.sess.Status().UserConfigPath
+						if !change.Changed {
+							mm.note(fmt.Sprintf("✓ %s persisted · %s", key, relPath(home, userPath)))
+						} else {
+							mm.note(fmt.Sprintf("✓ %s: %s → %s · %s", key, change.OldValue, change.NewValue, relPath(home, userPath)))
+						}
+						return nil
+					}
+				}
+			})
 			return
 		}
 
-		saveErr, reloadErr := m.persistAndReload(reg.Config())
-		m.reportSetResult(key, change, saveErr, reloadErr)
+		m.persistAndReload(reg.Config(), func(mm *Model, saveErr, reloadErr error) {
+			mm.reportSetResult(key, change, saveErr, reloadErr)
+		})
 		return
 	}
 }
@@ -1271,19 +1314,49 @@ func (m *Model) openSessionSheet() {
 		m.closeSessionSheet()
 		return
 	}
-	_ = m.sess.RefreshSheet(m.ctx, acpwire.SheetRefresh{Changed: true, Stats: true, Fleet: true})
+	if m.sheetPending {
+		// A second Ctrl+B while the open is queued cancels it, as a press
+		// after the open would have closed the sheet (P3 R6).
+		m.sheetPending = false
+		return
+	}
+	// The refresh runs git, so it runs from the call queue and the sheet opens
+	// when it returns, so its first frame stays fresh (P3 R6).
+	m.sheetPending = true
+	m.enqueueCall(func(mm *Model) callRun {
+		sess := mm.sess
+		return func(ctx context.Context) callOutcome {
+			// The refresh's error stays ignored, as it was when it blocked
+			// Update: an empty sheet reports itself.
+			_ = sess.RefreshSheet(ctx, acpwire.SheetRefresh{Changed: true, Stats: true, Fleet: true})
+			return func(mm *Model) tea.Cmd {
+				return mm.openRefreshedSessionSheet()
+			}
+		}
+	})
+}
+
+// openRefreshedSessionSheet opens the sheet once its refresh has returned. A
+// second Ctrl+B that cancelled the queued open while it was in flight is what
+// makes this do nothing.
+func (m *Model) openRefreshedSessionSheet() tea.Cmd {
+	if !m.sheetPending {
+		return nil
+	}
+	m.sheetPending = false
 	panel := sessionsheet.NewPanel(m.sheetSections(), m.sheetDataFor)
 	// Opening a panel with nothing in it would leave an invisible dock that
 	// swallows keys until Esc (every section hidden or irrelevant).
 	if !panel.HasContent() {
 		m.note("Nothing to show in the session sheet.")
 		m.refreshViewport()
-		return
+		return nil
 	}
 	m.tasksPanel = nil // opening replaces the Tasks panel if it was up
 	m.sheetPanel = panel
 	m.dock.Open(m.sheetPanel)
 	m.refreshViewport()
+	return nil
 }
 
 // sheetOpen reports whether the session sheet is the open dock panel.
@@ -1452,11 +1525,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		out, cmd := m.handleComposerSubmit(sendNow)
 		m = reconcileIfModel(out)
-		return m, cmd
+		// The queue is served here too: these handlers answer before the
+		// ordinary epilogue below, and an enqueued call would otherwise wait
+		// for an unrelated message.
+		return m, tea.Batch(cmd, m.serveCalls())
 	case steerpanel.CloseMsg:
 		out, cmd := m.handleComposerClose(sendNow)
 		m = reconcileIfModel(out)
-		return m, cmd
+		return m, tea.Batch(cmd, m.serveCalls())
 	}
 	if k, ok := msg.(tea.KeyPressMsg); ok && isSendNowKey(k) && !hidden && m.steeringComposer == nil {
 		// Any key other than a second Ctrl+C disarms the pending interrupt, and
@@ -1464,7 +1540,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ctrlCArmedFor = ctrlCNone
 		out, cmd := m.beginSendNow()
 		m = reconcileIfModel(out)
-		return m, cmd
+		return m, tea.Batch(cmd, m.serveCalls())
 	}
 
 	// The composer owns the input area. Key and paste messages go only to it;
@@ -1489,11 +1565,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case Model:
 			next.reconcileAccess()
 			fetch := next.detailQueryCmds()
-			return next, tea.Batch(cmd, fetch)
+			// The call queue is served here too (P3 R6): a handler that
+			// enqueued a call starts it from the epilogue, never inside
+			// itself.
+			calls := next.serveCalls()
+			return next, tea.Batch(cmd, fetch, calls)
 		case *Model:
 			next.reconcileAccess()
 			fetch := next.detailQueryCmds()
-			return next, tea.Batch(cmd, fetch)
+			calls := next.serveCalls()
+			return next, tea.Batch(cmd, fetch, calls)
 		default:
 			return updated, cmd
 		}
@@ -1504,11 +1585,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case Model:
 		next.reconcileAccess()
 		fetch := next.detailQueryCmds()
-		return next, tea.Batch(cmd, fetch)
+		calls := next.serveCalls()
+		return next, tea.Batch(cmd, fetch, calls)
 	case *Model:
 		next.reconcileAccess()
 		fetch := next.detailQueryCmds()
-		return next, tea.Batch(cmd, fetch)
+		calls := next.serveCalls()
+		return next, tea.Batch(cmd, fetch, calls)
 	default:
 		return updated, cmd
 	}
@@ -1672,6 +1755,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleBoxStop(msg)
 	case ctrlCExpiredMsg:
 		return m, nil
+	case callDoneMsg:
+		// A converted call's result is handled here, on the Update goroutine,
+		// and the queue's next entry starts from Update's epilogue.
+		cmd := m.handleCallDone(msg)
+		return m, cmd
 	case settings.ChangedMsg:
 		st := m.sess.Status()
 		if msg.BlockedReason != "" {
@@ -1684,31 +1772,42 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Saved {
-			// The panel already wrote the target file; reload only.
+			// The panel already wrote the target file; reload only. The reload
+			// rebuilds the runtime, so it runs from the call queue and the
+			// receipts land when its result arrives (P3 R6).
 			m.setReg = nil
-			reloaded, err := m.sess.ReloadConfig(m.ctx, msg.Cfg)
-			if err != nil {
-				m.note(fmt.Sprintf("✗ settings saved, but live reload failed: %v", err))
-				m.refreshViewport()
-				return m, nil
-			}
-			if reloaded {
-				m.afterRuntimeReload()
-			}
-			m.applyNewConfig(msg.Cfg)
-			m.configSavePending = false
-			cfgPath := st.ProjectConfigPath
-			base := st.WorkingDir
-			if msg.GlobalTarget {
-				if home, err := m.userHome(); err == nil {
-					cfgPath = st.UserConfigPath
-					base = home
+			m.enqueueCall(func(mm *Model) callRun {
+				sess := mm.sess
+				cfg := msg.Cfg
+				return func(ctx context.Context) callOutcome {
+					reloaded, err := sess.ReloadConfig(ctx, cfg)
+					return func(mm *Model) tea.Cmd {
+						if err != nil {
+							mm.note(fmt.Sprintf("✗ settings saved, but live reload failed: %v", err))
+							mm.refreshViewport()
+							return nil
+						}
+						if reloaded {
+							mm.afterRuntimeReload()
+						}
+						mm.applyNewConfig(cfg)
+						mm.configSavePending = false
+						cfgPath := st.ProjectConfigPath
+						base := st.WorkingDir
+						if msg.GlobalTarget {
+							if home, err := mm.userHome(); err == nil {
+								cfgPath = st.UserConfigPath
+								base = home
+							}
+						}
+						for _, receipt := range msg.Receipts {
+							mm.note("✓ " + receipt + " · " + relPath(base, cfgPath))
+						}
+						mm.refreshViewport()
+						return nil
+					}
 				}
-			}
-			for _, receipt := range msg.Receipts {
-				m.note("✓ " + receipt + " · " + relPath(base, cfgPath))
-			}
-			m.refreshViewport()
+			})
 			return m, nil
 		}
 		// Global-target save failure: apply in memory, mark pending, emit
@@ -1721,24 +1820,22 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshViewport()
 			return m, nil
 		}
-		saveErr, reloadErr := m.persistAndReload(msg.Cfg)
-		if saveErr != nil {
-			m.note(fmt.Sprintf("✗ save failed: %v", saveErr))
-			m.refreshViewport()
-			return m, nil
-		}
-		if reloadErr != nil {
-			m.note(fmt.Sprintf("✗ settings saved, but live reload failed: %v", reloadErr))
-			m.refreshViewport()
-			return m, nil
-		}
-		// The adapter refreshed the layer snapshots when the panel's own
-		// save wrote the file; persistAndReload below only reloads the
-		// runtime.
-		for _, receipt := range msg.Receipts {
-			m.note("✓ " + receipt + " · " + relPath(st.WorkingDir, st.ProjectConfigPath))
-		}
-		m.refreshViewport()
+		m.persistAndReload(msg.Cfg, func(mm *Model, saveErr, reloadErr error) {
+			switch {
+			case saveErr != nil:
+				mm.note(fmt.Sprintf("✗ save failed: %v", saveErr))
+			case reloadErr != nil:
+				mm.note(fmt.Sprintf("✗ settings saved, but live reload failed: %v", reloadErr))
+			default:
+				// The adapter refreshed the layer snapshots when the panel's
+				// own save wrote the file; persistAndReload only reloads the
+				// runtime.
+				for _, receipt := range msg.Receipts {
+					mm.note("✓ " + receipt + " · " + relPath(st.WorkingDir, st.ProjectConfigPath))
+				}
+			}
+			mm.refreshViewport()
+		})
 		return m, nil
 	case mcpauth.AuthDoneMsg:
 		return m.handleMCPAuthDone(msg)
@@ -4679,6 +4776,21 @@ func (m *Model) finishReplacement() tea.Cmd {
 // and the program is exiting, so the agentFinishedMsg path that normally
 // clears busy via state.EndWork() will not run.
 func (m *Model) finishQuit() tea.Cmd {
+	if m.callInFlight {
+		// A quit waits for the call in flight (P3 R6): cancel it so a call
+		// that respects its context returns, drop everything queued behind
+		// it, and finish when its result is handled. A call that ignores its
+		// context is waited for, as a frozen Update waited for it before.
+		if m.callCancel != nil {
+			m.callCancel()
+			m.callCancel = nil
+		}
+		m.calls = nil
+		m.callQuitWaiting = true
+		return nil
+	}
+	// Nothing converted is running, so nothing waits behind it.
+	m.calls = nil
 	m.endStage = endFinishing
 	if m.agentCancel != nil {
 		m.agentCancel()
@@ -4886,10 +4998,15 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	}
 	m.updateViewportHeight()
 	m.refreshViewport()
-	flushCmd := m.flushPendingModelOptions()
+	flushPending := m.pendingModelOptions != nil && !m.busy
+	if flushPending {
+		// The activation's reload runs from the call queue; Update's epilogue
+		// starts it after this handler returns.
+		m.flushPendingModelOptions()
+	}
 	// The session rebases the changed files onto the active root's HEAD, so
 	// committed agent work stops inflating the diff.
-	cmds := []tea.Cmd{tickCmd(), flushCmd, refreshSheetCmd(m.ctx, m.sess, acpwire.SheetRefresh{Rebase: true, Stats: sheetOpen, Fleet: sheetOpen})}
+	cmds := []tea.Cmd{tickCmd(), refreshSheetCmd(m.ctx, m.sess, acpwire.SheetRefresh{Rebase: true, Stats: sheetOpen, Fleet: sheetOpen})}
 	if suggestionCmd != nil {
 		cmds = append(cmds, suggestionCmd)
 	}
@@ -5060,9 +5177,9 @@ func (m Model) handleChanged(msg changedMsg) (Model, tea.Cmd) {
 
 	m.syncWork()
 	m.refreshViewport()
-	if cmd := m.flushPendingModelOptions(); cmd != nil {
-		cmds = append(cmds, cmd)
-	}
+	// A pending options candidate is activated from the call queue; Update's
+	// epilogue starts that call after this handler returns.
+	m.flushPendingModelOptions()
 	return m, tea.Batch(cmds...)
 }
 
@@ -6083,31 +6200,20 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 	}
 
 	if info.HasHandler {
-		res, err := m.sess.Command(m.ctx, info.Name, args)
-		if err != nil {
-			m.note(err.Error())
-			m.refreshViewport()
-			return m, nil
-		}
-		if res.Doc != nil {
-			m.openDocPanel(res.Doc)
-		} else if res.Text != "" {
-			m.note(res.Text)
-		}
-		// AgentGoal hands a follow-up turn back to the agent after Text is
-		// rendered (see CommandResult.AgentGoal). Mirror the PromptBody
-		// branch's busy/steering/runner idiom exactly.
-		if res.AgentGoal != "" {
-			if m.busy {
-				m.sess.Steer(m.ctx, res.AgentGoal)
-				m.refreshViewport()
-				return m, nil
+		// A handler may do anything — a provider call, git, a build — so it
+		// runs from the queue (P3 R6). Its doc, its text, any agent goal and,
+		// for a command that is also TUI-only, its effect land when the
+		// result arrives, in the order this branch used to run them.
+		m.enqueueCall(func(mm *Model) callRun {
+			sess := mm.sess
+			return func(ctx context.Context) callOutcome {
+				res, err := sess.Command(ctx, info.Name, args)
+				return func(mm *Model) tea.Cmd {
+					return mm.handleCommandResult(info, args, res, err)
+				}
 			}
-			if m.sess.Status().AgentReady {
-				mm, goalCmd := m.startPrompt(res.AgentGoal, false)
-				return mm, goalCmd
-			}
-		}
+		})
+		return m, nil
 	}
 
 	if info.TUIOnly {
@@ -6122,6 +6228,50 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 
 	m.refreshViewport()
 	return m, nil
+}
+
+// handleCommandResult handles a command handler's result on the Update
+// goroutine (P3 R6). It does what dispatchCommand's handler branch used to do
+// in place, in the same order, now that the handler runs from the call queue.
+func (m *Model) handleCommandResult(info acpwire.CommandInfo, args []string, res acpwire.CommandResult, err error) tea.Cmd {
+	if err != nil {
+		m.note(err.Error())
+		m.refreshViewport()
+		return nil
+	}
+	if res.Doc != nil {
+		m.openDocPanel(res.Doc)
+	} else if res.Text != "" {
+		m.note(res.Text)
+	}
+	// AgentGoal hands a follow-up turn back to the agent after Text is
+	// rendered (see CommandResult.AgentGoal). Mirror the PromptBody branch's
+	// busy/steering/runner idiom exactly.
+	if res.AgentGoal != "" {
+		if m.busy {
+			m.sess.Steer(m.ctx, res.AgentGoal)
+			m.refreshViewport()
+			return nil
+		}
+		if m.sess.Status().AgentReady {
+			_, goalCmd := m.startPrompt(res.AgentGoal, false)
+			return goalCmd
+		}
+	}
+	if info.TUIOnly {
+		effect, ok := tuiCommandEffects[info.Name]
+		if !ok {
+			m.note("Command /" + info.Name + " is not available in this build.")
+			m.refreshViewport()
+			return nil
+		}
+		// The effect runs after the handler's text was noted, so a command
+		// that reports before it opens a panel keeps that order.
+		_, cmd := effect(m, args)
+		return cmd
+	}
+	m.refreshViewport()
+	return nil
 }
 
 // openConnect opens the connect overlay for adding/reconnecting a provider.
@@ -6784,19 +6934,20 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 		}
 	}
 
-	saveErr, reloadErr := m.persistAndReload(newCfg)
-	switch {
-	case saveErr != nil:
-		m.note(fmt.Sprintf("✗ Failed to save model: %v", saveErr))
-	case reloadErr != nil:
-		m.note(fmt.Sprintf("✗ Failed to switch model: %v", reloadErr))
-	default:
-		// A successful switch proves provider construction works with the
-		// new config — clear any stale provider/config notice.
-		_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeProvider)
-		_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeConfig)
-		m.note(fmt.Sprintf("✓ Switched to model: %s (%s)", msg.Model, msg.Provider))
-	}
+	m.persistAndReload(newCfg, func(mm *Model, saveErr, reloadErr error) {
+		switch {
+		case saveErr != nil:
+			mm.note(fmt.Sprintf("✗ Failed to save model: %v", saveErr))
+		case reloadErr != nil:
+			mm.note(fmt.Sprintf("✗ Failed to switch model: %v", reloadErr))
+		default:
+			// A successful switch proves provider construction works with the
+			// new config — clear any stale provider/config notice.
+			_ = mm.sess.ClearNotice(mm.ctx, acpwire.NoticeProvider)
+			_ = mm.sess.ClearNotice(mm.ctx, acpwire.NoticeConfig)
+			mm.note(fmt.Sprintf("✓ Switched to model: %s (%s)", msg.Model, msg.Provider))
+		}
+	})
 }
 
 // switchModelPreset applies a model switch by binding every role to the given
@@ -6864,15 +7015,16 @@ func (m *Model) switchModelPreset(presetName string) {
 		}
 	}
 
-	saveErr, reloadErr := m.persistAndReload(newCfg)
-	switch {
-	case saveErr != nil:
-		m.note(fmt.Sprintf("✗ Failed to save model preset: %v", saveErr))
-	case reloadErr != nil:
-		m.note(fmt.Sprintf("✗ Failed to switch model: %v", reloadErr))
-	default:
-		m.note(fmt.Sprintf("✓ Switched to model: %s (%s)", presetName, preset.Model))
-	}
+	m.persistAndReload(newCfg, func(mm *Model, saveErr, reloadErr error) {
+		switch {
+		case saveErr != nil:
+			mm.note(fmt.Sprintf("✗ Failed to save model preset: %v", saveErr))
+		case reloadErr != nil:
+			mm.note(fmt.Sprintf("✗ Failed to switch model: %v", reloadErr))
+		default:
+			mm.note(fmt.Sprintf("✓ Switched to model: %s (%s)", presetName, preset.Model))
+		}
+	})
 }
 
 // resolveModelArg maps a /models argument to a preset name: first an exact

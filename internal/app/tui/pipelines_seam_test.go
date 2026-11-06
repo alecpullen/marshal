@@ -105,6 +105,9 @@ func TestTheProposalReachesThePlanRun(t *testing.T) {
 
 	updated, _ := m.dispatchCommand("/sdd plan.md")
 	m = asModel(t, updated)
+	// The preflight runs from the call queue, so the cast list opens when it
+	// returns.
+	m = settleCalls(t, m)
 
 	// Press f to dispatch the proposal.
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'f'})
@@ -147,6 +150,7 @@ func TestAPlanThePreflightRejectsIsReportedNotRun(t *testing.T) {
 
 	updated, cmd := m.dispatchCommand("/sdd missing.md")
 	m = asModel(t, updated)
+	m = settleCalls(t, m)
 	if cmd != nil {
 		t.Fatal("a rejected preflight returned a command")
 	}

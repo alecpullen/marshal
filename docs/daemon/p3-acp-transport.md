@@ -870,6 +870,90 @@ the agent sends today. Plan 3b adds `session/status`, `session_status`,
   the old connection's `TurnManager`, so a new connection's barrier does not
   wait for it (P4's reattach revisits this).
 
+### Plan 6a — the asynchronous calls
+
+R6's list, measured rather than assumed. A `go/ast` scan of every non-test file
+under `internal/app/tui` for the 110 seam method names, read by hand, found
+seven calls made directly on the `Update` goroutine that can block:
+
+- `Session.Command`, from `dispatchCommand`;
+- `Host.NewSession`, from `startNewSession`;
+- `Session.PlanPreflight`, from the `/sdd` effect;
+- `Session.RefreshSheet`, from `openSessionSheet`;
+- `Session.ReloadConfig`, at five sites;
+- `Session.ReconnectMCP`, from `reconnectMCPServer`;
+- `Host.CanProbeModel`, from the settings browser's `startConfirm`.
+
+`Postmortem` was already a command, as were the probes, the sign-ins, the
+plugin scan and install, the skill install and remove, the run outcome's diff,
+`Callers`, the row detail, the runs and the end flow's waits. Every other
+direct call reads or writes in-memory state, a small database row or a small
+file, so it stays synchronous and R10 is unchanged.
+
+- **`internal/app/tui/asynccalls.go`** holds the queue. `callOutcome`,
+  `callRun` and `callDoneMsg` are the plumbing — the result type is not
+  `callResult`, which `spine.go` already uses for a settled tool call's
+  rendered result — while `enqueueCall` and `enqueueStep` append and
+  `serveCalls` starts the head from `Update`'s epilogue, beside
+  `detailQueryCmds`. Four rules:
+  - one call runs at a time, in the order the calls were made, so a call made
+    after another sees the model the first one left;
+  - a call starts from the epilogue, never inside the handler that made it,
+    which is what lets a function that returns nothing enqueue without
+    changing its signature;
+  - a start reads the model when it reaches the head, not when it was queued,
+    so a command entered after `/new` runs on the new session;
+  - a prompt submitted while the queue holds anything waits as a step and does
+    what Enter would have done when it runs: steer when busy, echo when no
+    agent is ready, start a prompt otherwise. A slash command still dispatches
+    at once; only the calls it makes queue.
+- **A quit waits for the call in flight.** `finishQuit` cancels the in-flight
+  call's context, drops everything queued behind it, and returns no command;
+  the call's result is handled and then finishes the quit, so the session it
+  closes is the one the call left. A call that ignores its context is waited
+  for, as a frozen `Update` waited for it before.
+- **The sheet's open is cancellable.** `openSessionSheet` sets a pending flag
+  and enqueues the refresh; the panel is built from the result, so its first
+  frame is fresh. A second Ctrl+B while the open is queued clears the flag, and
+  the result opens nothing, as a press after the open would have closed it.
+- **The settings browser's check is its own command.**
+  `startConfirm` returns a `canProbeMsg` command carrying the current
+  `capProbeID`, provider, model and the provider config the picker saw, and
+  only a matching answer sets `detectingCaps` and starts the probe, so a stale
+  answer after Esc is dropped and "detecting…" never appears for a provider
+  that cannot report capabilities. The probe reuses that carried config rather
+  than re-reading the live one, which an edit in the same panel could have
+  changed while the answer was out. It does not join the model's queue, which
+  orders nothing else.
+- **The guard.** `TestBlockingCallsLeaveTheUpdateGoroutine` walks every
+  non-test file under `internal/app/tui` with `go/parser` and fails on a call of
+  an R6 name made on a seam receiver — the model's `sess`/`host`, or a local
+  copy of one (`sess, ctx := m.sess, m.ctx`) — unless the innermost construct
+  around it runs off the `Update` goroutine: a `func() tea.Msg` literal, a
+  converted call's run (`func(ctx context.Context) callOutcome`), or a `go`
+  statement. Start, step and outcome literals are not exempt, because
+  `serveCalls` runs their bodies on the `Update` goroutine; only the innermost
+  enclosing literal decides, so an exempt run cannot launder a handler nested
+  inside it. It caught one site this plan's inventory had assigned to the wrong
+  branch — `settings.ChangedMsg`'s saved branch, which reloaded inline — and
+  that branch now enqueues like the others.
+  `TestTheGuardCatchesAliasedSeamCallsAndLiteralBodies` parses a fixture per
+  case and pins both escapes a return-type-only check left open: the aliased
+  receiver and the handler literal nested in a run.
+- **Tests changed to settle.** 51 test functions across tasks 2 to 5
+  gained a `settleCalls` after the step that made the call, or now pass it the
+  command `Update` returned, since a converted call's result lands later.
+  `ctrlB` and `runEndCmd` settle inside themselves, because the sheet's opening
+  and the replacement session are part of the flows they drive. Three tests
+  drive the queue directly so they can assert mid-flight:
+  `TestAgentGoalDispatchStartsRun` asserts busy when the goal starts rather than
+  after the turn ends, and the new-session and queued-prompt tests hold a call
+  open until they release it. Two options tests first drove
+  `flushPendingModelOptions` directly to keep the blocking change pump out of
+  the test; they now feed a `changedMsg` to `handleChanged` and drop the pump
+  command it returns, so the turn-end path that queues the reload is the one
+  under test. No assertion was weakened.
+
 ### Plan 2 — layering
 
 - **The service is `internal/acp/service`**, and it is `inproc`'s logic moved:

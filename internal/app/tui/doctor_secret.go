@@ -133,13 +133,16 @@ func (m Model) submitDoctorSecret() (tea.Model, tea.Cmd) {
 		pc.APIKeyEnv = ""
 		newCfg.Providers[provider] = pc
 	}
-	if saveErr, reloadErr := m.persistAndReload(newCfg); saveErr != nil {
-		m.note(fmt.Sprintf("✗ Saved key, but failed to persist project config: %v", saveErr))
-	} else if reloadErr != nil {
-		m.note(fmt.Sprintf("✗ Saved key, but failed to reload runtime: %v", reloadErr))
-	} else {
-		m.note(fmt.Sprintf("✓ Saved API key for %s", provider))
-	}
+	m.persistAndReload(newCfg, func(mm *Model, saveErr, reloadErr error) {
+		switch {
+		case saveErr != nil:
+			mm.note(fmt.Sprintf("✗ Saved key, but failed to persist project config: %v", saveErr))
+		case reloadErr != nil:
+			mm.note(fmt.Sprintf("✗ Saved key, but failed to reload runtime: %v", reloadErr))
+		default:
+			mm.note(fmt.Sprintf("✓ Saved API key for %s", provider))
+		}
+	})
 	// The key is saved, so the field has done its job: clear it and leave the
 	// draft exactly as it was. The diagnostics badge is recomputed here so the
 	// fixed problem stops counting even on the reload-failure paths.

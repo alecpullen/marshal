@@ -21,9 +21,12 @@ import (
 	"marshal/internal/tools/registry"
 )
 
-func ctrlB(m Model) Model {
-	mm, _ := m.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl})
-	return mm.(Model)
+func ctrlB(t *testing.T, m Model) Model {
+	t.Helper()
+	mm, cmd := m.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl})
+	// Opening the sheet runs its refresh from the call queue, so the sheet
+	// opens when that call's result is handled (P3 R6).
+	return settleCalls(t, mm.(Model), cmd)
 }
 
 // gitModel builds a model over a one-commit git repo with a tracked file,
@@ -61,7 +64,7 @@ func TestCtrlBOpensAndClosesSessionSheet(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m = ctrlB(m)
+	m = ctrlB(t, m)
 	if m.sheetPanel == nil || !m.dock.IsOpen() {
 		t.Fatal("Ctrl+B must open the session sheet")
 	}
@@ -72,7 +75,7 @@ func TestCtrlBOpensAndClosesSessionSheet(t *testing.T) {
 		t.Fatalf("sheet should list the changed file:\n%s", view)
 	}
 
-	m = ctrlB(m)
+	m = ctrlB(t, m)
 	if m.dock.IsOpen() || m.sheetPanel != nil {
 		t.Fatal("a second Ctrl+B must close the sheet")
 	}
@@ -81,7 +84,7 @@ func TestCtrlBOpensAndClosesSessionSheet(t *testing.T) {
 func TestEscClosesSessionSheet(t *testing.T) {
 	m, dir := gitModel(t)
 	_ = os.WriteFile(filepath.Join(dir, "a.txt"), []byte("changed\n"), 0o644)
-	m = ctrlB(m)
+	m = ctrlB(t, m)
 	mm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	m = mm.(Model)
 	if cmd == nil {
@@ -97,7 +100,7 @@ func TestEscClosesSessionSheet(t *testing.T) {
 func TestSessionSheetEnterRunsSectionCommand(t *testing.T) {
 	m, dir := gitModel(t)
 	_ = os.WriteFile(filepath.Join(dir, "a.txt"), []byte("changed\n"), 0o644)
-	m = ctrlB(m)
+	m = ctrlB(t, m)
 
 	// Walk the selection to the "changed" section.
 	var cmd tea.Cmd
@@ -133,7 +136,7 @@ func TestSessionSheetHonoursHiddenFilter(t *testing.T) {
 	m, dir := gitModel(t)
 	_ = os.WriteFile(filepath.Join(dir, "a.txt"), []byte("changed\n"), 0o644)
 	stateOf(m).Config.TUI.SidePanel.Hidden = []string{"changed"}
-	m = ctrlB(m)
+	m = ctrlB(t, m)
 	if strings.Contains(stripANSI(m.viewString()), "CHANGED") {
 		t.Fatal("hidden section still rendered in the sheet")
 	}
@@ -219,11 +222,11 @@ func TestCtrlBSwitchesFromWorkToTheSheet(t *testing.T) {
 	if !m.tasksOpen() {
 		t.Fatal("setup: the Work list should be open")
 	}
-	m = ctrlB(m)
+	m = ctrlB(t, m)
 	if !m.sheetOpen() || m.tasksOpen() {
 		t.Fatal("Ctrl+B with the Work list open must switch to the sheet")
 	}
-	m = ctrlB(m)
+	m = ctrlB(t, m)
 	if m.dock.IsOpen() {
 		t.Fatal("Ctrl+B on the open sheet must still close it")
 	}
@@ -236,7 +239,7 @@ func TestSessionSheetWithNothingToShowDoesNotOpen(t *testing.T) {
 		hidden = append(hidden, s.ID())
 	}
 	stateOf(m).Config.TUI.SidePanel.Hidden = hidden
-	m = ctrlB(m)
+	m = ctrlB(t, m)
 	if m.dock.IsOpen() || m.sheetPanel != nil {
 		t.Fatal("an empty sheet must not open: it would swallow keys invisibly")
 	}
@@ -270,7 +273,7 @@ func TestSheetSectionsAreDividers(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	m = ctrlB(m)
+	m = ctrlB(t, m)
 	rows := strings.Split(stripANSI(m.viewString()), "\n")
 
 	// The sheet's top border carries the panel title, and the first section's
@@ -346,7 +349,7 @@ func TestOpeningTheSheetRefreshesIt(t *testing.T) {
 	m := testModelStub(state, stub)
 	m.resize(100, 40)
 
-	ctrlB(m)
+	ctrlB(t, m)
 	if want := []acpwire.SheetRefresh{{Changed: true, Stats: true, Fleet: true}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("RefreshSheet requests = %+v, want %+v", got, want)
 	}
@@ -375,7 +378,7 @@ func TestTurnEndRebasesTheSheet(t *testing.T) {
 
 	// With the sheet open, the turn end also refreshes its turn and fleet
 	// values, still off the UI thread.
-	m = ctrlB(m)
+	m = ctrlB(t, m)
 	if !m.sheetOpen() {
 		t.Fatal("setup: the sheet should be open")
 	}
@@ -410,7 +413,7 @@ func TestRulesDetailThroughModel(t *testing.T) {
 	}
 	before := stateOf(m).SessionRules()
 
-	m = ctrlB(m)
+	m = ctrlB(t, m)
 	if !m.sheetOpen() {
 		t.Fatal("setup: Ctrl+B must open the session sheet")
 	}

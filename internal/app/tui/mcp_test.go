@@ -207,8 +207,10 @@ func TestMCPAuthDoneReconnectsRuntime(t *testing.T) {
 	})
 	m.mcpAuthServer = "linear"
 
-	updated, _ := m.Update(mcpauth.AuthDoneMsg{})
+	updated, settle := m.Update(mcpauth.AuthDoneMsg{})
 	m = asModel(t, updated)
+	// The rebuild runs from the call queue, so settle before counting reloads.
+	m = settleCalls(t, m, settle)
 
 	if len(reloaded) != 1 {
 		t.Fatalf("successful auth should trigger exactly one runtime reload, got %d", len(reloaded))
@@ -231,8 +233,9 @@ func TestMCPAuthDoneReloadFailureIsReported(t *testing.T) {
 	})
 	m.mcpAuthServer = "linear"
 
-	updated, _ := m.Update(mcpauth.AuthDoneMsg{})
+	updated, settle := m.Update(mcpauth.AuthDoneMsg{})
 	m = asModel(t, updated)
+	m = settleCalls(t, m, settle)
 
 	msg := lastMessage(t, m)
 	if !strings.HasPrefix(msg, "\u2717") {
@@ -303,6 +306,8 @@ func TestReconnectKeepsAFreshMCPFailureNotice(t *testing.T) {
 	})
 
 	m.reconnectMCPServer("linear")
+	// The rebuild runs from the call queue, so its notes land when it returns.
+	m = settleCalls(t, m)
 
 	notice, ok := stateOf(m).Notice()
 	if !ok {

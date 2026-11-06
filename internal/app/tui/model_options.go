@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"sort"
 
@@ -96,12 +97,13 @@ func (m *Model) handleModelOptionsChanged(msg modeloptions.ChangedMsg) tea.Cmd {
 	// captured runner, cwd, output policy and wait, and only future launches
 	// resolve the new defaults.
 	if !m.busy {
-		saveErr, reloadErr := m.savePresetsAndReload(msg.Config, cfg.Models.Presets)
-		if saveErr != nil || reloadErr != nil {
-			m.note(fmt.Sprintf("Could not apply %s option: save=%v reload=%v", msg.FieldID, saveErr, reloadErr))
-			return nil
-		}
-		m.note(fmt.Sprintf("%s: %s → %s", fieldLabel(msg.FieldID), msg.OldValue, msg.NewValue))
+		m.savePresetsAndReload(msg.Config, msg.PresetName, cfg.Models.Presets, func(mm *Model, saveErr, reloadErr error) {
+			if saveErr != nil || reloadErr != nil {
+				mm.note(fmt.Sprintf("Could not apply %s option: save=%v reload=%v", msg.FieldID, saveErr, reloadErr))
+				return
+			}
+			mm.note(fmt.Sprintf("%s: %s → %s", fieldLabel(msg.FieldID), msg.OldValue, msg.NewValue))
+		})
 		return nil
 	}
 
@@ -121,59 +123,98 @@ func (m *Model) handleModelOptionsChanged(msg modeloptions.ChangedMsg) tea.Cmd {
 // and reloads the runtime, mirroring persistAndReload minus the project
 // write (SaveProjectConfig never emits presets). baseline is this process's
 // load-time preset map — the merge keeps presets other marshal processes
-// wrote after it was captured. It returns the save error or, when saving
-// succeeded, the reload error (nil on full success).
-func (m *Model) savePresetsAndReload(cfg config.Config, baseline map[string]routing.ModelPreset) (saveErr, reloadErr error) {
+// wrote after it was captured. It reports the save error or, when saving
+// succeeded, the reload error (nil on full success); reporting happens off the
+// blocking path, when the reload's result lands or the save failed.
+//
+// A turn that starts between this call and the reload's turn in the queue keeps
+// the runtime from being rebuilt under it: the candidate is parked as pending
+// options and the next idle turn activates it.
+func (m *Model) savePresetsAndReload(cfg config.Config, presetName string, baseline map[string]routing.ModelPreset, report func(m *Model, saveErr, reloadErr error)) {
 	if err := m.host.SaveUserPresets(m.ctx, cfg.Models.Presets, baseline); err != nil {
 		m.applyNewConfig(cfg)
 		m.configSavePending = true
-		return err, nil
+		report(m, err, nil)
+		return
 	}
 	m.configSavePending = false
 	// reloadAgentRuntime may install cfg before reporting a cleanup
 	// error; invalidate config-derived state before attempting it.
 	m.setReg = nil
-	reloaded, err := m.sess.ReloadConfig(m.ctx, cfg)
-	if err != nil {
-		m.applyNewConfig(cfg)
-		return nil, err
-	}
-	if reloaded {
-		m.afterRuntimeReload()
-	}
-	m.applyNewConfig(cfg)
-	m.refreshDiagnostics()
-	return nil, nil
+	// The reload rebuilds the runtime, so it runs from the call queue and its
+	// outcome is reported when it returns (P3 R6).
+	m.enqueueCall(func(mm *Model) callRun {
+		if mm.busy {
+			// The turn began while this waited its turn in the queue.
+			mm.pendingModelOptions = &pendingModelOptionsState{presetName: presetName, cfg: cfg}
+			return nil
+		}
+		sess := mm.sess
+		return func(ctx context.Context) callOutcome {
+			reloaded, err := sess.ReloadConfig(ctx, cfg)
+			return func(mm *Model) tea.Cmd {
+				if err != nil {
+					mm.applyNewConfig(cfg)
+					report(mm, nil, err)
+					return nil
+				}
+				if reloaded {
+					mm.afterRuntimeReload()
+				}
+				mm.applyNewConfig(cfg)
+				mm.refreshDiagnostics()
+				report(mm, nil, nil)
+				return nil
+			}
+		}
+	})
 }
 
 // flushPendingModelOptions applies a pending options candidate if the model is
-// now idle. Returns a command that emits the result, or nil if no work is
-// needed.
+// now idle. The reload is queued, so the model can become busy again before it
+// starts; that turn keeps the runtime from being rebuilt under it and the
+// candidate stays pending for the next idle turn.
 //
 // Only an active TURN defers the reload. Background commands are not a reason
 // to wait: the conversation's command service survives a reload, so applying
 // the candidate changes future launches without disturbing a command that is
 // already running.
-func (m *Model) flushPendingModelOptions() tea.Cmd {
+func (m *Model) flushPendingModelOptions() {
 	if m.pendingModelOptions == nil {
-		return nil
+		return
 	}
 	if m.busy {
-		return nil
+		return
 	}
 	pending := m.pendingModelOptions
-	// A session with no reload path reports (false, nil): the change is
-	// activated all the same, which is what the pending entry was for.
-	_, reloadErr := m.sess.ReloadConfig(m.ctx, pending.cfg)
-	if reloadErr != nil {
-		pending.retry = true
-		m.note(fmt.Sprintf("Could not activate %s options: %v", pending.presetName, reloadErr))
-		return nil
-	}
-	m.applyNewConfig(pending.cfg)
-	m.pendingModelOptions = nil
-	m.note(fmt.Sprintf("Activated %s options", pending.presetName))
-	return nil
+	// The reload rebuilds the runtime, so it runs from the call queue (P3 R6).
+	// Its result keeps the retry flag, so a failed activation is retried on the
+	// next idle turn.
+	m.enqueueCall(func(mm *Model) callRun {
+		if mm.busy {
+			// A turn began while this waited its turn in the queue: leave the
+			// candidate pending (and its retry flag as it was) for the next
+			// idle turn rather than rebuilding the runtime under the turn.
+			return nil
+		}
+		sess := mm.sess
+		return func(ctx context.Context) callOutcome {
+			// A session with no reload path reports (false, nil): the change is
+			// activated all the same, which is what the pending entry was for.
+			_, reloadErr := sess.ReloadConfig(ctx, pending.cfg)
+			return func(mm *Model) tea.Cmd {
+				if reloadErr != nil {
+					pending.retry = true
+					mm.note(fmt.Sprintf("Could not activate %s options: %v", pending.presetName, reloadErr))
+					return nil
+				}
+				mm.applyNewConfig(pending.cfg)
+				mm.pendingModelOptions = nil
+				mm.note(fmt.Sprintf("Activated %s options", pending.presetName))
+				return nil
+			}
+		}
+	})
 }
 
 func fieldLabel(id string) string {

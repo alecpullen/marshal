@@ -19,7 +19,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-	"unsafe"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -2861,12 +2860,11 @@ func newKnowledgeTestServer(t *testing.T, extraction string) *httptest.Server {
 
 func modelState(t *testing.T, model tea.Model) *session.State {
 	t.Helper()
-	value := reflect.ValueOf(model)
-	field := value.FieldByName("state")
-	if !field.IsValid() || field.IsNil() {
+	state := modelStateOf(model)
+	if state == nil {
 		t.Fatal("tui model has no state")
 	}
-	return (*session.State)(unsafe.Pointer(field.Pointer()))
+	return state
 }
 
 func TestRunMockRepoVerification(t *testing.T) {
@@ -7074,7 +7072,7 @@ func TestAdapterAccessFollowsNewSession(t *testing.T) {
 		Commands:       reg,
 	}
 	host, oldSess := inproc.New(deps)
-	oldModel := tui.New(host, oldSess, tui.WithLegacyState(oldState))
+	oldModel := tui.New(host, oldSess)
 	updated, _ := oldModel.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	oldModel = updated.(tui.Model)
 	if view := ansi.Strip(oldModel.View().Content); !strings.Contains(view, "Allow system access?") {
@@ -7113,7 +7111,7 @@ func TestAdapterAccessFollowsNewSession(t *testing.T) {
 	}
 
 	// The same Deps now drive the replacement session.
-	newModel := tui.New(host, newSess, tui.WithLegacyState(newState))
+	newModel := tui.New(host, newSess)
 	newReq, newDecisions := accessTUIRequest(t, newState, session.AccessIntent{
 		System: true, Reason: "The agent requests system access.",
 	})

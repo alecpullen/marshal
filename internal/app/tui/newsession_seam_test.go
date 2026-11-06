@@ -31,22 +31,12 @@ func (f *fakeNewSession) newSession(name string) (*session.State, error) {
 	return f.newState, nil
 }
 
-// legacy is the read of the runtime's current state and tool registry that the
-// model performs after Host.NewSession.
-func (f *fakeNewSession) legacy() LegacySession {
-	return LegacySession{State: f.newState}
-}
-
 // testModelReplacing builds a model whose host creates sessions through f and
-// whose end service is end, wiring the legacy read the way app.go does.
+// whose end service is end, as app.go wires them.
 func testModelReplacing(t *testing.T, oldState *session.State, f *fakeNewSession, end inproc.EndService, opts ...Option) Model {
 	t.Helper()
 	host, sess := inproc.New(inproc.Deps{State: oldState, NewSession: f.newSession, End: end, Commands: setupCmdReg(t)})
-	all := append([]Option{
-		WithLegacyState(oldState),
-		WithLegacySession(f.legacy),
-	}, opts...)
-	return New(host, sess, all...)
+	return New(host, sess, opts...)
 }
 
 // TestANewSessionLeavesTheEndIdle pins decision 10: a completed replacement is

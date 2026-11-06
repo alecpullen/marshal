@@ -80,8 +80,7 @@ func (r *answerRecorder) Rollback(ctx context.Context) error {
 func testModelRecording(state *session.State, rec *answerRecorder, opts ...Option) Model {
 	host, sess := inproc.New(inproc.Deps{State: state})
 	rec.Session = sess
-	all := append([]Option{WithLegacyState(state)}, opts...)
-	return New(host, rec, all...)
+	return New(host, rec, opts...)
 }
 
 // recordingModel builds a sized model whose session records its answers.

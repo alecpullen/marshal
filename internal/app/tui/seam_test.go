@@ -47,20 +47,18 @@ func stateOfSession(sess acpclient.Session) *session.State {
 }
 
 // testModel is the one place tests build a model: it wires the in-process
-// adapter and hands the state in through WithLegacyState, so P3 changes only
-// this helper.
+// adapter over state, so P3 changes only this helper. The model reads that
+// state through its session; stateOf reaches it.
 func testModel(state *session.State, opts ...Option) Model {
 	host, sess := inproc.New(inproc.Deps{State: state})
-	all := append([]Option{WithLegacyState(state)}, opts...)
-	return New(host, sess, all...)
+	return New(host, sess, opts...)
 }
 
 // testModelWith builds a model over an adapter made from d, as testModel
 // builds one over d.State alone.
 func testModelWith(d inproc.Deps, opts ...Option) Model {
 	host, sess := inproc.New(d)
-	all := append([]Option{WithLegacyState(d.State)}, opts...)
-	return New(host, sess, all...)
+	return New(host, sess, opts...)
 }
 
 // testModelCached builds a model whose host caches discovered model lists
@@ -156,8 +154,7 @@ func testModelStub(state *session.State, stub *stubSession, opts ...Option) Mode
 func testModelStubWith(d inproc.Deps, stub *stubSession, opts ...Option) Model {
 	host, sess := inproc.New(d)
 	stub.Session = sess
-	all := append([]Option{WithLegacyState(d.State)}, opts...)
-	return New(host, stub, all...)
+	return New(host, stub, opts...)
 }
 
 // withCommands replaces m's session with one over m's state whose registry is
@@ -262,20 +259,17 @@ func assertPanics(t *testing.T, want string, fn func()) {
 	fn()
 }
 
-func TestNewRequiresTheLegacyStateUntilPlan9(t *testing.T) {
+func TestNewRequiresAHostAndSession(t *testing.T) {
 	state := seamState(t, "s1")
-	assertPanics(t, "tui.New: WithLegacyState is required until P2 plan 9", func() {
-		New(fakeHost{shared: true}, testSession(state))
-	})
 	assertPanics(t, "tui.New: nil client host or session", func() {
-		New(nil, testSession(state), WithLegacyState(state))
+		New(nil, testSession(state))
 	})
 }
 
 func TestOpenFileNeedsASharedFilesystem(t *testing.T) {
 	t.Setenv("EDITOR", "vi")
 	state := seamState(t, "s1")
-	m := New(fakeHost{shared: false}, testSession(state), WithLegacyState(state))
+	m := New(fakeHost{shared: false}, testSession(state))
 
 	if cmd := m.openFile("main.go", 1); cmd == nil {
 		t.Fatal("openFile returned no command")

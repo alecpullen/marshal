@@ -25,8 +25,7 @@ const (
 // testModelEnding builds a model whose session's end service is end.
 func testModelEnding(state *session.State, end inproc.EndService, opts ...Option) Model {
 	host, sess := inproc.New(inproc.Deps{State: state, End: end})
-	all := append([]Option{WithLegacyState(state)}, opts...)
-	return New(host, sess, all...)
+	return New(host, sess, opts...)
 }
 
 // withEndService replaces m's session with one over m's state whose end service

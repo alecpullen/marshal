@@ -86,8 +86,7 @@ func (r *controlRecorder) SetSudoUnlock(ctx context.Context, on bool) error {
 func testModelControlled(d inproc.Deps, rec *controlRecorder, opts ...Option) Model {
 	host, sess := inproc.New(d)
 	rec.Session = sess
-	all := append([]Option{WithLegacyState(d.State)}, opts...)
-	return New(host, rec, all...)
+	return New(host, rec, opts...)
 }
 
 // controlsState builds a state the way the TUI tests do.

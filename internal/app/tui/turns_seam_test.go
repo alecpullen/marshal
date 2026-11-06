@@ -103,8 +103,7 @@ func testModelTurns(t *testing.T, d inproc.Deps, rec *turnRecorder, opts ...Opti
 	t.Helper()
 	host, sess := inproc.New(d)
 	rec.Session = sess
-	all := append([]Option{WithLegacyState(d.State)}, opts...)
-	m := New(host, rec, all...)
+	m := New(host, rec, opts...)
 	m.resize(80, 24)
 	m.refreshViewport()
 	return m

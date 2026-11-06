@@ -745,7 +745,7 @@ func TestSessionPickerUsesTheSeam(t *testing.T) {
 	nodb := New(fakeHost{listErr: &acpwire.Error{
 		Code:    acpwire.CodeNoDatabase,
 		Message: "inproc: the session has no database",
-	}}, testSession(state), WithLegacyState(state))
+	}}, testSession(state))
 	updated, _ := nodb.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	nodb = asModel(t, updated)
 	nodb.openSessionPicker("")
@@ -765,7 +765,7 @@ func TestSessionPickerUsesTheSeam(t *testing.T) {
 		Title:        "earlier",
 		UpdatedAt:    acpwire.Millis(stamp),
 		MessageCount: 3,
-	}}}, testSession(state), WithLegacyState(state))
+	}}}, testSession(state))
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 	m = asModel(t, updated)
 	m.openSessionPicker("")
@@ -6856,7 +6856,7 @@ func TestOpenModelsForwardsTheHost(t *testing.T) {
 func TestModelHostIsTheOneItWasBuiltWith(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	host, sess := inproc.New(inproc.Deps{State: state, Auth: newMemAuth()})
-	m := New(host, sess, WithLegacyState(state), WithHomeDir(t.TempDir()))
+	m := New(host, sess, WithHomeDir(t.TempDir()))
 
 	got, ok := m.Host().(*inproc.Host)
 	if !ok || got != host {
@@ -7028,13 +7028,13 @@ func TestConnectDoneMsgPersistsAgentModel(t *testing.T) {
 	if !reloaded {
 		t.Fatal("DoneMsg should reload the runtime")
 	}
-	if updated.(Model).state.Config.Profile.Default != "single" {
-		t.Fatalf("profile default should be %q, got %q", "single", updated.(Model).state.Config.Profile.Default)
+	if stateOf(updated.(Model)).Config.Profile.Default != "single" {
+		t.Fatalf("profile default should be %q, got %q", "single", stateOf(updated.(Model)).Config.Profile.Default)
 	}
-	if _, ok := updated.(Model).state.Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
+	if _, ok := stateOf(updated.(Model)).Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
 		t.Fatal("preset ollama/qwen2.5-coder:7b should exist")
 	}
-	prov, ok := updated.(Model).state.Config.Providers["ollama"]
+	prov, ok := stateOf(updated.(Model)).Config.Providers["ollama"]
 	if !ok {
 		t.Fatal(`providers["ollama"] should exist after DoneMsg`)
 	}

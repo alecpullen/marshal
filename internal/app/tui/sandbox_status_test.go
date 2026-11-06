@@ -21,7 +21,7 @@ func sandboxStatusStub() *stubSession {
 // TestTheRunningShellRowReadsTheSandboxFromStatus pins that the isolation line
 // under a running shell row comes from Status, not from the state.
 func TestTheRunningShellRowReadsTheSandboxFromStatus(t *testing.T) {
-	state := newTestModel(t).state
+	state := stateOf(newTestModel(t))
 	stub := sandboxStatusStub()
 	m := testModelStub(state, stub)
 	m.resize(100, 30)
@@ -43,7 +43,7 @@ func TestTheRunningShellRowReadsTheSandboxFromStatus(t *testing.T) {
 // TestTheApprovalPanelReadsTheSandboxFromStatus pins that the approval panel's
 // isolation line comes from Status, not from the state.
 func TestTheApprovalPanelReadsTheSandboxFromStatus(t *testing.T) {
-	state := newTestModel(t).state
+	state := stateOf(newTestModel(t))
 	stub := sandboxStatusStub()
 	m := testModelStub(state, stub)
 	m.resize(120, 40)

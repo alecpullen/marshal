@@ -191,14 +191,6 @@ func startNewSession(m *Model, name string) tea.Cmd {
 	// A replacement session restarts its watch-resume sequence, so the model's
 	// mark restarts with it.
 	m.watchResumeSeq = 0
-	// The groups not yet behind the seam re-read the runtime's current values:
-	// the host built the session over them before it returned.
-	if m.legacySession != nil {
-		legacy := m.legacySession()
-		if legacy.State != nil {
-			m.state = legacy.State
-		}
-	}
 
 	// Drop per-message UI state that belongs to the old session.
 	m.viewStack = nil

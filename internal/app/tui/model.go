@@ -28,7 +28,6 @@ import (
 	"marshal/internal/acpwire"
 	"marshal/internal/app/clipboard"
 	"marshal/internal/app/config"
-	"marshal/internal/app/session"
 	"marshal/internal/app/tui/accesspanel"
 	"marshal/internal/app/tui/activeworkpanel"
 	"marshal/internal/app/tui/agents"
@@ -55,7 +54,6 @@ import (
 	"marshal/internal/app/tui/steerpanel"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/app/tui/trustpanel"
-	"marshal/internal/db"
 	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
@@ -169,11 +167,8 @@ type completionRef struct {
 type Model struct {
 	// host and sess are the client seam (P2): the TUI reaches the agent side
 	// through them, never through the runtime directly.
-	host acpclient.Host
-	sess acpclient.Session
-	// state is the legacy path: the TUI still reads it everywhere, and P2
-	// plans 2 to 9 empty it.
-	state *session.State
+	host  acpclient.Host
+	sess  acpclient.Session
 	input textarea.Model
 	// approvalEdit is the isolated editor for one pending approval's command
 	// or JSON arguments, or nil while no edit is open. It owns its own
@@ -193,10 +188,6 @@ type Model struct {
 	lspCtx    context.Context
 	lspCancel context.CancelFunc
 	busy      bool
-	// legacySession re-reads the runtime's current state and tool registry
-	// after Host.NewSession, for the groups not yet behind the seam. Plan 9
-	// deletes it with WithLegacyState.
-	legacySession func() LegacySession
 	// end is the pending interactive end intent, non-nil from the moment the
 	// user asks to exit or replace the conversation until the warning is
 	// declined. It holds the target (a new-session name or a resume ID) so
@@ -222,8 +213,6 @@ type Model struct {
 	// in-flight analysis pass from being interrupted by a fresh prompt.
 	endAnswered        bool
 	openConnectOnStart bool
-	memoryDB           *db.DB
-	memoryProject      int64
 	homeDir            string
 	workDir            string
 	agentCancel        context.CancelFunc
@@ -567,26 +556,6 @@ type pendingAgentRun struct {
 
 type Option func(*Model)
 
-// WithLegacyState hands the model the session state it still reads directly.
-//
-// It is temporary: plan 1 adds it, and plan 9 deletes it once no group reads
-// the state. Until then it must be the first option, so no later option sees a
-// nil state.
-func WithLegacyState(state *session.State) Option {
-	return func(m *Model) { m.state = state }
-}
-
-type LegacySession struct {
-	State *session.State
-}
-
-// WithLegacySession wires the read of the runtime's current state that
-// follows Host.NewSession. Without it, a new session leaves the model's legacy
-// state as it was.
-func WithLegacySession(read func() LegacySession) Option {
-	return func(m *Model) { m.legacySession = read }
-}
-
 // WithOpenConnectOnStart opens the connect panel as the TUI starts. Used
 // for first run: provider setup is the same flow on the first run and on
 // the hundredth.
@@ -655,15 +624,6 @@ func buildFileIndexItems(paths []string) []completionItem {
 
 func containsRunnerWhitespace(s string) bool {
 	return strings.ContainsAny(s, " \t\n\r\f")
-}
-
-// WithMemoryStore configures the memory browser overlay (Ctrl+K) with the
-// project database it should read from.
-func WithMemoryStore(database *db.DB, projectID int64) Option {
-	return func(m *Model) {
-		m.memoryDB = database
-		m.memoryProject = projectID
-	}
 }
 
 // WithContext carries the program's context. It is the parent of the session's
@@ -1127,9 +1087,6 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 	}
 	for _, opt := range opts {
 		opt(&m)
-	}
-	if m.state == nil {
-		panic("tui.New: WithLegacyState is required until P2 plan 9")
 	}
 	st := m.sess.Status()
 	// One session-config read for the whole construction: the reads below
@@ -2540,9 +2497,6 @@ func accessOutcomeNote(result acpwire.AccessResult) string {
 // request that nothing can answer, and refuses one that belongs to a session
 // this model does not serve.
 func (m *Model) reconcileAccess() {
-	if m.state == nil {
-		return
-	}
 	// The displayed permission state is synchronized here rather than in the
 	// message handlers, so a grant the runtime applied (or a reload that
 	// preserved an override) is reflected on the next update. The sync is

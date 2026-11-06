@@ -2790,8 +2790,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		bindTurnDeps(&deps, rt)
 		seamHost, seamSession := inproc.New(deps)
 
-		tuiOpts := []tui.Option{tui.WithLegacyState(state)}
-		tuiOpts = append(tuiOpts, tui.WithMemoryStore(database, projectID))
+		var tuiOpts []tui.Option
 		// F18: eager-seed the @file completion popup with the repo file
 		// index, read through the session so the popup and the lazy load
 		// share one path. Failures (no DB, empty index) are non-fatal — the
@@ -2818,18 +2817,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		))
 		tuiOpts = append(tuiOpts, tui.WithContext(ctx))
 		tuiOpts = append(tuiOpts, tui.WithLogger(state.Logger()))
-		// /new and /clear create a brand-new session through the seam, and the
-		// model re-reads the runtime's current state after the host returns,
-		// for the groups not yet behind it. This is wired outside the
-		// ProviderError block so the commands stay available even when the
-		// initial provider build failed.
-		tuiOpts = append(tuiOpts, tui.WithLegacySession(func() tui.LegacySession {
-			// The host installed the replacement before it returned, so the
-			// values read here are the new ones.
-			rt.mu.Lock()
-			defer rt.mu.Unlock()
-			return tui.LegacySession{State: rt.State}
-		}))
 
 		logger.Info("marshal started", "project", cfg.Project.Name, "working_dir", workingDir)
 

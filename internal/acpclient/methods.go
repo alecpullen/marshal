@@ -119,4 +119,16 @@ var Methods = []Method{
 	{Iface: "Session", Name: "ReconnectMCP", ACP: "session/mcp_reconnect"},
 	{Iface: "Session", Name: "SaveProjectConfig", ACP: "session/save_project_config"},
 	{Iface: "Session", Name: "SaveVerifyCommands", ACP: "session/save_verify_commands"},
+
+	{Iface: "Session", Name: "RecentPrompts", ACP: "session/prompt_history"},
+	{Iface: "Session", Name: "SavePrompt", ACP: "session/prompt_history_save"},
+	{Iface: "Session", Name: "Messages", ACP: "session/messages"},
+
+	{Iface: "Session", Name: "FileIndex", ACP: "session/file_index"},
+	{Iface: "Session", Name: "Intelligence", ACP: "session/intelligence"},
+	{Iface: "Session", Name: "Plans", ACP: "session/plans"},
+	{Iface: "Session", Name: "DiscardCandidate", ACP: "session/sdd_discard"},
+	{Iface: "Session", Name: "ScaffoldPlan", ACP: "session/sdd_scaffold"},
+	{Iface: "Session", Name: "Diff", ACP: "session/diff", Exists: true},
+	{Iface: "Session", Name: "ReadFile", ACP: "session/file", Exists: true},
 }

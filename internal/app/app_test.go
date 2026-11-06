@@ -6308,6 +6308,61 @@ func TestRunWiresTheSkillIndex(t *testing.T) {
 	}
 }
 
+// TestRunWiresTheFileIndex pins the @ popup's seam wiring: Run gives the
+// session the index reader, and that reader answers from the project database
+// Run itself opened. The files below are what the startup index pass saves, so
+// a session without the FileIndex dep reports no paths at all.
+func TestRunWiresTheFileIndex(t *testing.T) {
+	dir := t.TempDir()
+	// Settle the spelling of the directory once: macOS hands out temp paths
+	// through a symlink, and the seed and the run must name the same root.
+	if resolved, rerr := filepath.EvalSymlinks(dir); rerr == nil {
+		dir = resolved
+	}
+	for _, name := range []string{"a.go", "b.go"} {
+		body := "package x\n\nfunc " + strings.TrimSuffix(name, ".go") + "() {}\n"
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	var (
+		paths []string
+		ioErr error
+	)
+	runErr := Run(context.Background(), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return time.Unix(100, 0) }),
+		WithWorkingDir(dir),
+		WithHomeDir(t.TempDir()),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return config.Default(), nil
+		}),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+			// The startup index pass runs in the background, so wait for it
+			// rather than racing it: an unwired dep never answers with paths,
+			// and the deadline turns that into a failure.
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				paths, ioErr = model.(tui.Model).Session().FileIndex(ctx)
+				if ioErr != nil || len(paths) > 0 || !time.Now().Before(deadline) {
+					return ProgramResult{}
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}),
+	)
+	if runErr != nil {
+		t.Fatalf("Run returned error: %v", runErr)
+	}
+	if ioErr != nil {
+		t.Fatalf("Session().FileIndex() error = %v, want nil", ioErr)
+	}
+	if want := []string{"a.go", "b.go"}; !reflect.DeepEqual(paths, want) {
+		t.Errorf("Session().FileIndex() = %v, want the indexed files %v", paths, want)
+	}
+}
+
 // TestRunWiresTheSessionsToolsFromTheRuntime pins the positive half of the
 // tools wiring, which TestRunWiresToolNames cannot: with a provider built, the
 // session names the runtime's registry, so dropping `Tools: rt.ToolNames` from

@@ -29,6 +29,7 @@ import (
 	"marshal/internal/trust"
 	"marshal/internal/viewmodel"
 	"marshal/internal/watch"
+	"marshal/internal/worktree"
 )
 
 // Deps is what the adapter serves. Each P2 plan adds its group's
@@ -140,6 +141,11 @@ type Deps struct {
 	// UserConfigPath is the user config file. Empty means
 	// config.UserConfigPath of the home directory.
 	UserConfigPath string
+	// FileIndex reads the repository's indexed file paths. Nil means the
+	// session has no index: FileIndex returns none.
+	FileIndex func() ([]string, error)
+	// Git runs Diff. Nil means worktree.CLIGitOps{}.
+	Git worktree.GitOps
 }
 
 // ReferenceFinder resolves what references a symbol. ok is false when no
@@ -241,6 +247,10 @@ type Session struct {
 	// modelCacheDir is Deps.ModelCacheDir, for preset setup's catalog and
 	// provenance sidecar.
 	modelCacheDir string
+	// fileIndex is Deps.FileIndex, and git is Deps.Git or
+	// worktree.CLIGitOps{}, never nil.
+	fileIndex func() ([]string, error)
+	git       worktree.GitOps
 	// actions holds the row actions of the most recent results that minted
 	// any, by ID; actionResults lists each such result's IDs, oldest first;
 	// actionSeq numbers them. All three are guarded by mu.

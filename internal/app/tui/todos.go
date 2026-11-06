@@ -2,20 +2,16 @@ package tui
 
 import (
 	"fmt"
-	"image/color"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/acpclient"
 	"marshal/internal/acpwire"
-	"marshal/internal/app/session"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/docpanel"
-	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/listpanel"
 	"marshal/internal/app/tui/livebox"
@@ -23,52 +19,7 @@ import (
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/progress"
 	"marshal/internal/strutil"
-	"marshal/internal/tools/native"
 )
-
-// todoLine renders one todo row: ✓ teal done, ▸ coral bold in-progress,
-// · muted pending — matching native.TodoItem's statuses exactly.
-func todoLine(t native.TodoItem, width int) string {
-	var g string
-	var c color.Color
-	labelStyle := lipgloss.NewStyle().Foreground(theme.Current().FGDefault)
-	switch t.Status {
-	case native.TodoCompleted:
-		g, c = glyph.OK, theme.Current().StatusSuccess
-		labelStyle = lipgloss.NewStyle().Foreground(theme.Current().FGMuted)
-	case native.TodoInProgress:
-		g, c = glyph.Running, theme.Current().AccentPrimary
-		labelStyle = labelStyle.Bold(true)
-	default:
-		g, c = glyph.Ambient, theme.Current().FGMuted
-	}
-	return gutterPrefix(g, c) + labelStyle.Render(ansi.Truncate(strutil.ScrubText(t.Content), max(width-3, 1), "…"))
-}
-
-// todoProgress returns the completed count and the index of the
-// in-progress item (-1 when there is none).
-func todoProgress(todos []native.TodoItem) (done, inProgress int) {
-	inProgress = -1
-	for i, t := range todos {
-		switch t.Status {
-		case native.TodoCompleted:
-			done++
-		case native.TodoInProgress:
-			if inProgress < 0 {
-				inProgress = i
-			}
-		}
-	}
-	return done, inProgress
-}
-
-func todosAllDone(todos []native.TodoItem) bool {
-	if len(todos) == 0 {
-		return false
-	}
-	done, _ := todoProgress(todos)
-	return done == len(todos)
-}
 
 // tasksOpen reports whether the Tasks panel is the open dock panel.
 func (m Model) tasksOpen() bool {
@@ -119,7 +70,6 @@ type workPending struct {
 // through applyPage/applyDetail, which reconcile by request ID and TaskKey so
 // a page from a superseded request can never corrupt the list.
 type tasksPanelModel struct {
-	state   *session.State
 	panelID string
 
 	// Work availability and identity, refreshed when the panel opens and by
@@ -158,7 +108,6 @@ var _ dock.Panel = (*tasksPanelModel)(nil)
 // projection. It allocates a fresh panel ID from the model's monotonic counter.
 func newTasksPanel(m *Model) *tasksPanelModel {
 	p := &tasksPanelModel{
-		state:          m.state,
 		panelID:        m.nextPanelID(),
 		available:      m.workLaneActive(),
 		conversationID: m.sess.ID(),

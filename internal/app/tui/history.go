@@ -1,7 +1,5 @@
 package tui
 
-import "time"
-
 // promptHistoryLimit caps how many entries are loaded at startup and kept
 // in memory.
 const promptHistoryLimit = 200
@@ -21,9 +19,7 @@ func (m *Model) recordPrompt(value string) {
 			m.history = m.history[:promptHistoryLimit]
 		}
 	}
-	if database := m.state.DB(); database != nil && m.memoryProject != 0 {
-		_ = database.SavePrompt(m.memoryProject, value, time.Now())
-	}
+	_ = m.sess.SavePrompt(m.ctx, value)
 }
 
 // resetHistoryNav exits history-browsing mode (on submit or Esc).

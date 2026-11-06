@@ -13,6 +13,7 @@ import (
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/llm/provider"
+	"marshal/internal/watch"
 )
 
 // fakeRunner is the agent runner the turn tests drive. It records each goal it
@@ -681,6 +682,28 @@ func TestAClosedSessionRunsNothing(t *testing.T) {
 
 	if got := fake.goalsSeen(); len(got) != 0 {
 		t.Errorf("runner goals = %v, want none on a closed session", got)
+	}
+}
+
+// TestPromptWritesTheWatchResumeGoal pins that a resume turn's text comes from
+// the watch and the session's own last assistant reply, not from params.Text.
+func TestPromptWritesTheWatchResumeGoal(t *testing.T) {
+	fake := newFakeRunner()
+	state := newState(t, "s1")
+	state.AddMessageFinal(session.RoleAssistant, "I fixed the build.", session.ContentTypePlain)
+	_, sess := New(Deps{State: state, Runner: func() Runner { return fake }})
+
+	params := acpwire.PromptParams{
+		Text:        "ignored",
+		WatchResume: &acpwire.WatchResume{Name: "ci", Repeat: true},
+	}
+	if _, err := sess.Prompt(context.Background(), params); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+
+	want := watch.ResumeGoal("ci", "I fixed the build.", true)
+	if got := fake.goalsSeen(); !reflect.DeepEqual(got, []string{want}) {
+		t.Errorf("runner goals = %q, want [%q]", got, want)
 	}
 }
 

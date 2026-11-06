@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpclient/inproc"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/db"
@@ -247,7 +248,7 @@ func TestPromptRecordedToDBAndLoadedOnStartup(t *testing.T) {
 
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0),
 		session.Persistence{DB: database, SessionID: "sess-1"})
-	m := testModel(state, WithMemoryStore(database, projectID))
+	m := testModelWith(inproc.Deps{State: state, ProjectID: projectID})
 	m.input.SetValue("remember me")
 	m, _ = pressKey(m, tea.KeyEnter)
 
@@ -262,7 +263,7 @@ func TestPromptRecordedToDBAndLoadedOnStartup(t *testing.T) {
 	// A fresh model for the same project loads history at startup.
 	state2 := session.New(config.Default(), t.TempDir(), time.Unix(200, 0),
 		session.Persistence{DB: database, SessionID: "sess-2"})
-	m2 := testModel(state2, WithMemoryStore(database, projectID))
+	m2 := testModelWith(inproc.Deps{State: state2, ProjectID: projectID})
 	if len(m2.history) != 1 || m2.history[0] != "remember me" {
 		t.Fatalf("startup history = %v, want [remember me]", m2.history)
 	}

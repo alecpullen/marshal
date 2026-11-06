@@ -1,15 +1,16 @@
 package tui
 
 import (
+	"context"
 	"fmt"
-	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"marshal/internal/acpclient"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/diffview"
-	"marshal/internal/worktree"
 )
 
 // sddResumeHint is the single wording for how to continue a stopped run.
@@ -18,12 +19,8 @@ import (
 // whether bare /sdd resumes (it does not — it opens the plan picker).
 const sddResumeHint = "Run /sdd and pick the same plan to resume from the ledger."
 
-// diffContextLines is the context width for the branch diff.
-const diffContextLines = 3
-
-// The two row actions a run outcome doc carries. The TUI builds this doc
-// itself, so its actions run locally until plan 8 moves the reads onto
-// session/diff and session/file.
+// The two row actions a run outcome doc carries. The TUI builds the doc, and
+// both reads go through the session: session/diff and session/file.
 const (
 	outcomeDiffAction   = "diff"
 	outcomeLedgerAction = "ledger"
@@ -139,18 +136,18 @@ func runOutcomeDoc(p acpwire.SDDProgress, now time.Time) acpwire.WireDoc {
 }
 
 // runOutcomeActions returns the actions the outcome doc's action rows run: the
-// branch diff and the ledger read. The TUI builds this doc itself, so they run
-// locally until plan 8 moves the reads onto session/diff and session/file.
-func runOutcomeActions(p acpwire.SDDProgress, git worktree.GitOps, repoRoot string, width int) map[string]func() acpwire.CommandResult {
+// branch diff and the ledger read, both through the session so the TUI makes
+// no git or file read of its own.
+func runOutcomeActions(ctx context.Context, sess acpclient.Session, p acpwire.SDDProgress, workingDir string, width int) map[string]func() acpwire.CommandResult {
 	acts := make(map[string]func() acpwire.CommandResult, 2)
 	if p.Branch != "" && p.BaseRef != "" {
 		acts[outcomeDiffAction] = func() acpwire.CommandResult {
-			return acpwire.CommandResult{Text: branchDiff(git, repoRoot, p.BaseRef, p.Branch, width)}
+			return acpwire.CommandResult{Text: branchDiff(ctx, sess, p.BaseRef, p.Branch, width)}
 		}
 	}
 	if p.LedgerPath != "" {
 		acts[outcomeLedgerAction] = func() acpwire.CommandResult {
-			return acpwire.CommandResult{Text: readFileOrExplain(p.LedgerPath)}
+			return acpwire.CommandResult{Text: readLedger(ctx, sess, workingDir, p.LedgerPath)}
 		}
 	}
 	return acts
@@ -190,10 +187,14 @@ func taskDuration(i int, p acpwire.SDDProgress, now time.Time) string {
 	return ""
 }
 
-// branchDiff renders the run branch's changes against its base. It is
-// strictly read-only: no checkout, no merge, no branch switch.
-func branchDiff(git worktree.GitOps, repoRoot, base, branch string, width int) string {
-	raw, err := git.Diff(repoRoot, base+".."+branch, diffContextLines)
+// branchDiff renders the run branch's changes against its base, read through
+// the session's diff. It is strictly read-only: no checkout, no merge, no
+// branch switch.
+func branchDiff(ctx context.Context, sess acpclient.Session, base, branch string, width int) string {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	raw, err := sess.Diff(ctx, acpwire.DiffQuery{Base: base, Head: branch})
 	if err != nil {
 		return fmt.Sprintf("Could not read the diff for %s..%s: %v", base, branch, err)
 	}
@@ -207,15 +208,61 @@ func branchDiff(git worktree.GitOps, repoRoot, base, branch string, width int) s
 	})
 }
 
-// readFileOrExplain returns a file's contents, or a plain explanation when
-// it is gone — a deleted ledger is an empty state, not an error banner.
-func readFileOrExplain(path string) string {
-	b, err := os.ReadFile(path)
+// readLedger returns the run's ledger, read through the session. session/file
+// takes a path relative to the working directory, so the ledger's own path is
+// made relative first. A path outside the working directory is a refusal, not
+// a read: the ledger belongs to the run's repository.
+func readLedger(ctx context.Context, sess acpclient.Session, workingDir, ledgerPath string) string {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	rel, ok := ledgerRel(workingDir, ledgerPath)
+	if !ok {
+		return fmt.Sprintf("Could not read %s: it is outside the working directory", ledgerPath)
+	}
+	file, err := sess.ReadFile(ctx, rel)
 	if err != nil {
-		return fmt.Sprintf("Could not read %s: %v", path, err)
+		return fmt.Sprintf("Could not read %s: %v", ledgerPath, err)
 	}
-	if len(b) == 0 {
-		return path + " is empty."
+	if file.Binary {
+		return ledgerPath + " is not a text file."
 	}
-	return string(b)
+	if file.Size == 0 {
+		return ledgerPath + " is empty."
+	}
+	content := file.Content
+	if file.Truncated {
+		// session/file caps what it returns, so say so rather than presenting
+		// a cut ledger as the whole one.
+		content += "\n\n… (truncated: the ledger is larger than the session's read limit)"
+	}
+	return content
+}
+
+// ledgerRel makes the ledger's path relative to the working directory, which
+// is the form session/file takes. ok is false when the ledger is outside it.
+func ledgerRel(workingDir, ledgerPath string) (string, bool) {
+	if rel, ok := relInside(workingDir, ledgerPath); ok {
+		return rel, true
+	}
+	// A working directory reached through a symlink spells the same place two
+	// ways (/tmp and /private/tmp on macOS), and a lexical Rel calls the
+	// ledger outside it. Resolve both before refusing: session/file's own
+	// containment check still decides whether the read happens.
+	resolvedDir, dirErr := filepath.EvalSymlinks(workingDir)
+	resolvedLedger, ledgerErr := filepath.EvalSymlinks(ledgerPath)
+	if dirErr != nil || ledgerErr != nil {
+		return "", false
+	}
+	return relInside(resolvedDir, resolvedLedger)
+}
+
+// relInside is the lexical half of ledgerRel: the path relative to dir, and
+// whether it stays inside it.
+func relInside(dir, path string) (string, bool) {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return rel, true
 }

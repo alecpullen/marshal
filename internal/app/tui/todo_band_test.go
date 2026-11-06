@@ -66,8 +66,8 @@ func todoDrivenTurn(t *testing.T, m *Model, todos []native.TodoItem) {
 	m.refreshViewport()
 }
 
-// todoProgress and the todo counters are the band's inputs; the band itself
-// is no longer a surface of its own: the box's plan section draws it, and
+// The todo counters are the band's inputs; the band itself is no longer a
+// surface of its own: the box's plan section draws it, and
 // TestBoxIsBudgetedInTheFrameHeight (livebox_view_test.go) guards its rows in
 // the height budget.
 

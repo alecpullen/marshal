@@ -2780,6 +2780,9 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 				defer rt.mu.Unlock()
 				return rt.SkillIndex
 			},
+			// The @ completion popup's index is read through the session, so
+			// the eager seed below and the first @-keystroke share one path.
+			FileIndex: func() ([]string, error) { return loadFileIndexPaths(database, projectID) },
 		}
 		if providerReady {
 			deps.Work = rt
@@ -2790,9 +2793,10 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		tuiOpts := []tui.Option{tui.WithLegacyState(state)}
 		tuiOpts = append(tuiOpts, tui.WithMemoryStore(database, projectID))
 		// F18: eager-seed the @file completion popup with the repo file
-		// index. Failures (no DB, empty index) are non-fatal — the TUI
-		// falls back to a lazy load on the first @-keystroke.
-		if filePaths, ferr := loadFileIndexPaths(database, projectID); ferr == nil && len(filePaths) > 0 {
+		// index, read through the session so the popup and the lazy load
+		// share one path. Failures (no DB, empty index) are non-fatal — the
+		// TUI falls back to a lazy load on the first @-keystroke.
+		if filePaths, ferr := seamSession.FileIndex(ctx); ferr == nil && len(filePaths) > 0 {
 			tuiOpts = append(tuiOpts, tui.WithFileIndex(filePaths))
 		}
 		if firstRun {

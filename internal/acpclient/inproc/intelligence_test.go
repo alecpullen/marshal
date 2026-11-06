@@ -1,15 +1,16 @@
-package doctorpanel
+package inproc
 
 import (
 	"strings"
 	"testing"
 	"time"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/db"
 )
 
-func testIntelligenceDB(t *testing.T) (*db.DB, int64) {
+func intelligenceTestDB(t *testing.T) (*db.DB, int64) {
 	t.Helper()
 	database, err := db.Open(":memory:")
 	if err != nil {
@@ -26,10 +27,10 @@ func testIntelligenceDB(t *testing.T) (*db.DB, int64) {
 	return database, projectID
 }
 
-// checkByName returns the check with the given name, failing the test if it
-// is missing so a renamed subsystem produces a clear "missing check" error
-// instead of a confusing zero-valued Check comparison.
-func checkByName(t *testing.T, checks []Check, name string) Check {
+// intelligenceCheckByName returns the check with the given name, failing the
+// test if it is missing so a renamed subsystem produces a clear "missing
+// check" error instead of a confusing zero-valued check comparison.
+func intelligenceCheckByName(t *testing.T, checks []acpwire.IntelligenceCheck, name string) acpwire.IntelligenceCheck {
 	t.Helper()
 	for _, c := range checks {
 		if c.Name == name {
@@ -37,33 +38,33 @@ func checkByName(t *testing.T, checks []Check, name string) Check {
 		}
 	}
 	t.Fatalf("no check named %q in %+v", name, checks)
-	return Check{}
+	return acpwire.IntelligenceCheck{}
 }
 
-func TestComputeIntelligenceEmptyProject(t *testing.T) {
+func TestIntelligenceChecksEmptyProject(t *testing.T) {
 	t.Setenv("PATH", t.TempDir()) // no LSP servers on PATH, deterministically
-	database, projectID := testIntelligenceDB(t)
-	checks := ComputeIntelligence(config.Config{}, database, projectID)
+	database, projectID := intelligenceTestDB(t)
+	checks := intelligenceChecks(config.Config{}, database, projectID)
 	if len(checks) != 4 {
 		t.Fatalf("checks = %d, want 4 (Index, Embeddings, LSP, Watcher)", len(checks))
 	}
-	if c := checkByName(t, checks, "Index"); c.Status != "off" {
+	if c := intelligenceCheckByName(t, checks, "Index"); c.Status != "off" {
 		t.Fatalf("Index = %+v, want off (never indexed)", c)
 	}
-	if c := checkByName(t, checks, "Embeddings"); c.Status != "off" {
+	if c := intelligenceCheckByName(t, checks, "Embeddings"); c.Status != "off" {
 		t.Fatalf("Embeddings = %+v, want off (not configured)", c)
 	}
-	if c := checkByName(t, checks, "LSP"); c.Status != "off" {
+	if c := intelligenceCheckByName(t, checks, "LSP"); c.Status != "off" {
 		t.Fatalf("LSP = %+v, want off (nothing on PATH)", c)
 	}
-	if c := checkByName(t, checks, "Watcher"); c.Status != "warn" {
+	if c := intelligenceCheckByName(t, checks, "Watcher"); c.Status != "warn" {
 		t.Fatalf("Watcher = %+v, want warn (off with no embeddings)", c)
 	}
 }
 
-func TestComputeIntelligencePopulatedIndex(t *testing.T) {
+func TestIntelligenceChecksPopulatedIndex(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	database, projectID := testIntelligenceDB(t)
+	database, projectID := intelligenceTestDB(t)
 	indexedAt := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	if err := database.SaveFileIndex(projectID, []db.FileIndex{
 		{Path: "a.go", Language: "go", Hash: "h1", LastIndexedAt: indexedAt},
@@ -71,22 +72,22 @@ func TestComputeIntelligencePopulatedIndex(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SaveFileIndex: %v", err)
 	}
-	checks := ComputeIntelligence(config.Config{}, database, projectID)
-	c := checkByName(t, checks, "Index")
+	checks := intelligenceChecks(config.Config{}, database, projectID)
+	c := intelligenceCheckByName(t, checks, "Index")
 	if c.Status != "ok" || !strings.Contains(c.Detail, "2 files") {
 		t.Fatalf("Index = %+v, want ok with file count", c)
 	}
 }
 
-func TestComputeIntelligenceEmbeddings(t *testing.T) {
+func TestIntelligenceChecksEmbeddings(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	database, projectID := testIntelligenceDB(t)
+	database, projectID := intelligenceTestDB(t)
 	cfg := config.Config{}
 	cfg.Indexing.EmbeddingPreset = "ollama/nomic-embed-text"
 
 	// Configured but nothing embedded yet: warn.
-	checks := ComputeIntelligence(cfg, database, projectID)
-	if c := checkByName(t, checks, "Embeddings"); c.Status != "warn" {
+	checks := intelligenceChecks(cfg, database, projectID)
+	if c := intelligenceCheckByName(t, checks, "Embeddings"); c.Status != "warn" {
 		t.Fatalf("Embeddings = %+v, want warn (configured, no embeddings)", c)
 	}
 
@@ -96,35 +97,35 @@ func TestComputeIntelligenceEmbeddings(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("replace file chunks: %v", err)
 	}
-	checks = ComputeIntelligence(cfg, database, projectID)
-	if c := checkByName(t, checks, "Embeddings"); c.Status != "ok" {
+	checks = intelligenceChecks(cfg, database, projectID)
+	if c := intelligenceCheckByName(t, checks, "Embeddings"); c.Status != "ok" {
 		t.Fatalf("Embeddings = %+v, want ok after an embedding landed", c)
 	}
 
 	// Embeddings alone do NOT enable the watcher (matches config.WatchEnabled:
 	// an explicit watch value wins, otherwise the watcher stays off).
-	if c := checkByName(t, checks, "Watcher"); c.Status != "warn" {
+	if c := intelligenceCheckByName(t, checks, "Watcher"); c.Status != "warn" {
 		t.Fatalf("Watcher = %+v, want warn (embeddings alone do not enable it)", c)
 	}
 
 	// An explicit watch value enables it.
 	on := true
 	cfg.Indexing.Watch = &on
-	checks = ComputeIntelligence(cfg, database, projectID)
-	if c := checkByName(t, checks, "Watcher"); c.Status != "ok" {
+	checks = intelligenceChecks(cfg, database, projectID)
+	if c := intelligenceCheckByName(t, checks, "Watcher"); c.Status != "ok" {
 		t.Fatalf("Watcher = %+v, want ok (explicit watch=true)", c)
 	}
 }
 
-func TestComputeIntelligenceLSPConfiguredButMissing(t *testing.T) {
+func TestIntelligenceChecksLSPConfiguredButMissing(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	database, projectID := testIntelligenceDB(t)
+	database, projectID := intelligenceTestDB(t)
 	cfg := config.Config{}
 	cfg.LSP.Servers = map[string]config.LSPServerConfig{
 		"go": {Command: "definitely-not-a-real-binary-xyz"},
 	}
-	checks := ComputeIntelligence(cfg, database, projectID)
-	c := checkByName(t, checks, "LSP")
+	checks := intelligenceChecks(cfg, database, projectID)
+	c := intelligenceCheckByName(t, checks, "LSP")
 	if c.Status != "warn" || !strings.Contains(c.Detail, "not on PATH") {
 		t.Fatalf("LSP = %+v, want warn naming the missing server", c)
 	}
@@ -132,30 +133,30 @@ func TestComputeIntelligenceLSPConfiguredButMissing(t *testing.T) {
 
 // The LSP "off" detail must not claim a tree-sitter fallback when
 // indexing.use_treesitter is disabled.
-func TestComputeIntelligenceLSPOffRespectsUseTreesitter(t *testing.T) {
+func TestIntelligenceChecksLSPOffRespectsUseTreesitter(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	database, projectID := testIntelligenceDB(t)
+	database, projectID := intelligenceTestDB(t)
 
 	cfg := config.Config{}
 	cfg.Indexing.UseTreesitter = true
-	checks := ComputeIntelligence(cfg, database, projectID)
-	c := checkByName(t, checks, "LSP")
+	checks := intelligenceChecks(cfg, database, projectID)
+	c := intelligenceCheckByName(t, checks, "LSP")
 	if c.Status != "off" || !strings.Contains(c.Detail, "fall back to tree-sitter") {
 		t.Fatalf("LSP = %+v, want off with tree-sitter fallback wording", c)
 	}
 
 	cfg.Indexing.UseTreesitter = false
-	checks = ComputeIntelligence(cfg, database, projectID)
-	c = checkByName(t, checks, "LSP")
+	checks = intelligenceChecks(cfg, database, projectID)
+	c = intelligenceCheckByName(t, checks, "LSP")
 	if c.Status != "off" || strings.Contains(c.Detail, "fall back to tree-sitter") {
 		t.Fatalf("LSP = %+v, want off WITHOUT the tree-sitter fallback claim", c)
 	}
 }
 
-func TestComputeIntelligenceNilDB(t *testing.T) {
+func TestIntelligenceChecksNilDB(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	checks := ComputeIntelligence(config.Config{}, nil, 0)
-	if c := checkByName(t, checks, "Index"); c.Status != "off" || !strings.Contains(c.Detail, "unavailable") {
+	checks := intelligenceChecks(config.Config{}, nil, 0)
+	if c := intelligenceCheckByName(t, checks, "Index"); c.Status != "off" || !strings.Contains(c.Detail, "unavailable") {
 		t.Fatalf("Index = %+v, want off/database-unavailable", c)
 	}
 }

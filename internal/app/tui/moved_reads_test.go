@@ -151,6 +151,11 @@ var movedStateReads = map[string]string{
 	"ClearNotice":   "6",
 	"DismissNotice": "6",
 
+	// Every message scan goes through Session.Messages since 8a: the last
+	// assistant reply, the last final answer, the user turns, the has-a-user-turn
+	// check and /new's cleared count.
+	"Messages": "8a",
+
 	// The model reads the layers through the session since 7b, and the
 	// adapter refreshes them after every write: the TUI holds no snapshot of
 	// its own and never installs one. Installing a new config is the same

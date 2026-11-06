@@ -7,12 +7,10 @@ package tui
 // An entry is never added to make TestTUIStaysOnTheClientSeam pass. A new use
 // belongs behind acpclient.
 var boundaryAllowlist = map[string][]string{
-	"commands_dispatch.go": {"marshal/internal/worktree"},
-	"memory/entries.go":    {"marshal/internal/db"},
-	"memory/panel.go":      {"marshal/internal/db"},
-	"model.go":             {"marshal/internal/app/session", "marshal/internal/db", "marshal/internal/pubsub", "marshal/internal/sddauthor", "marshal/internal/sddplans", "marshal/internal/skills"},
-	"plugins/panel.go":     {"marshal/internal/plugins"},
-	"runoutcome.go":        {"marshal/internal/worktree"},
-	"skills/panel.go":      {"config.SaveUserConfigValue", "config.UserConfigPath", "config.UserDir", "marshal/internal/app/session", "marshal/internal/skills"},
-	"todos.go":             {"marshal/internal/app/session", "marshal/internal/tools/native"},
+	"memory/entries.go": {"marshal/internal/db"},
+	"memory/panel.go":   {"marshal/internal/db"},
+	"model.go":          {"marshal/internal/app/session", "marshal/internal/db", "marshal/internal/pubsub", "marshal/internal/skills"},
+	"plugins/panel.go":  {"marshal/internal/plugins"},
+	"skills/panel.go":   {"config.SaveUserConfigValue", "config.UserConfigPath", "config.UserDir", "marshal/internal/app/session", "marshal/internal/skills"},
+	"todos.go":          {"marshal/internal/app/session", "marshal/internal/tools/native"},
 }

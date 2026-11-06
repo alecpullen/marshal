@@ -60,8 +60,6 @@ import (
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/pubsub"
-	"marshal/internal/sddauthor"
-	"marshal/internal/sddplans"
 	"marshal/internal/skills"
 	"marshal/internal/strutil"
 )
@@ -2246,7 +2244,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		path := pm.Panel.CandidatePath()
-		if err := sddauthor.RemoveCandidate(path, m.sess.Status().WorkingDir, m.sess.Config().SDD.PlansDir); err != nil {
+		if err := m.sess.DiscardCandidate(m.ctx, path); err != nil {
 			// The candidate is still on disk: keep the panel open so the user
 			// can retry or keep it, and never claim it was removed.
 			pm.Panel.SetError(err)
@@ -3776,7 +3774,6 @@ func (m *Model) syncTranscriptWidth() {
 // "swarm") and waits for the user to confirm before starting the run. pf is
 // the plan's preflight for "sdd", nil for "swarm".
 func (m *Model) openRunPreflight(kind, goal string, pf *acpwire.PlanPreflight) {
-	st := m.sess.Status()
 	cfg := m.sess.Config()
 	router := routing.NewStaticRouter(cfg.RoutingConfig())
 	roles := routing.SwarmCastRoles
@@ -3794,14 +3791,16 @@ func (m *Model) openRunPreflight(kind, goal string, pf *acpwire.PlanPreflight) {
 		// roster matters less than the fact that this is an autonomous,
 		// multi-commit run against a branch the user has not seen.
 		tasks := "unknown task count"
-		for _, c := range sddplans.Discover(st.WorkingDir, cfg.SDD.PlansDir) {
-			if c.Path != goal {
-				continue
-			}
-			if c.Err == nil {
-				tasks = fmt.Sprintf("%d tasks", c.Tasks)
-				if c.LedgerErr == nil && c.Done > 0 {
-					tasks += fmt.Sprintf(" · resuming at %d", c.Done+1)
+		if plans, err := m.sess.Plans(m.ctx); err == nil {
+			for _, c := range plans {
+				if c.Path != goal {
+					continue
+				}
+				if c.Error == "" {
+					tasks = fmt.Sprintf("%d tasks", c.Tasks)
+					if c.LedgerError == "" && c.Done > 0 {
+						tasks += fmt.Sprintf(" · resuming at %d", c.Done+1)
+					}
 				}
 			}
 		}
@@ -6636,13 +6635,16 @@ func (m *Model) cycleModel(forward bool) {
 // pinned to the top as an explicit resume.
 func (m *Model) openSDDPlanPicker() {
 	cfg := m.sess.Config()
-	candidates := sddplans.Discover(m.sess.Status().WorkingDir, cfg.SDD.PlansDir)
+	candidates, err := m.sess.Plans(m.ctx)
+	if err != nil {
+		candidates = nil
+	}
 
 	var items []picker.Item
 	// Resumable runs first: re-picking the plan is how a stopped run is
 	// continued, and that was previously undiscoverable.
 	for _, c := range candidates {
-		if !c.Resumable() {
+		if !c.Resumable {
 			continue
 		}
 		items = append(items, picker.Item{
@@ -6655,13 +6657,13 @@ func (m *Model) openSDDPlanPicker() {
 	for _, c := range candidates {
 		item := picker.Item{Label: c.Name, Value: c.Path}
 		switch {
-		case c.Err != nil:
-			item.Detail = c.Err.Error()
+		case c.Error != "":
+			item.Detail = c.Error
 			item.Badge = "unreadable"
-		case c.LedgerErr != nil:
+		case c.LedgerError != "":
 			item.Detail = fmt.Sprintf("%d tasks · ledger unreadable", c.Tasks)
 			item.Badge = "unreadable"
-		case c.Resumable():
+		case c.Resumable:
 			item.Detail = fmt.Sprintf("%d tasks · %d done", c.Tasks, c.Done)
 		default:
 			item.Detail = fmt.Sprintf("%d tasks", c.Tasks)

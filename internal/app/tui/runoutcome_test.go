@@ -1,14 +1,17 @@
 package tui
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"marshal/internal/acpclient/inproc"
 	"marshal/internal/acpwire"
-	"marshal/internal/worktree"
+	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 )
 
 func succeededRun() acpwire.SDDProgress {
@@ -195,27 +198,20 @@ func TestRunOutcomeShowsExecutionType(t *testing.T) {
 	}
 }
 
-func TestBranchDiffReadsWithoutMutating(t *testing.T) {
-	git := worktree.NewFakeGitOps()
-	// A fake that records every call lets us assert we only ever read.
-	_ = branchDiff(git, "/repo", "main", "pipeline/add-retries", 100)
-
-	for _, call := range git.Calls() {
-		switch call {
-		case "WorktreeAdd", "WorktreeRemove", "CommitAll", "WorktreePrune":
-			t.Errorf("branchDiff performed a mutating git operation: %s", call)
-		}
+// The outcome doc is built in the TUI, and both of its action rows read
+// through the session: the ledger row's text is the file's contents.
+func TestOutcomeActionsReadThroughTheSession(t *testing.T) {
+	dir := t.TempDir()
+	ledger := filepath.Join(dir, ".marshal", "pipeline", "add-retries", "progress.md")
+	if err := os.MkdirAll(filepath.Dir(ledger), 0o755); err != nil {
+		t.Fatalf("mkdir ledger dir: %v", err)
 	}
-}
-
-// The outcome doc is built in the TUI, so its rows act through local actions
-// rather than a session: the ledger row's ID reads the ledger, and its text is
-// the file's contents.
-func TestOutcomeActionsRunLocally(t *testing.T) {
-	ledger := filepath.Join(t.TempDir(), "ledger.md")
 	if err := os.WriteFile(ledger, []byte("ledger body"), 0o600); err != nil {
 		t.Fatalf("write ledger: %v", err)
 	}
+	state := session.New(config.Default(), dir, time.Unix(100, 0), session.Persistence{})
+	_, sess := inproc.New(inproc.Deps{State: state})
+
 	p := succeededRun()
 	p.LedgerPath = ledger
 
@@ -233,12 +229,28 @@ func TestOutcomeActionsRunLocally(t *testing.T) {
 		t.Fatal("the outcome doc has no ledger row")
 	}
 
-	acts := runOutcomeActions(p, worktree.NewFakeGitOps(), "/repo", 100)
+	acts := runOutcomeActions(context.Background(), sess, p, dir, 100)
 	run, ok := acts[outcomeLedgerAction]
 	if !ok {
 		t.Fatalf("no %q action in the map", outcomeLedgerAction)
 	}
 	if got := run().Text; got != "ledger body" {
 		t.Fatalf("ledger action text = %q, want the file's contents", got)
+	}
+
+	// A ledger outside the working directory is refused, not read.
+	outside := filepath.Join(t.TempDir(), "ledger.md")
+	if err := os.WriteFile(outside, []byte("elsewhere"), 0o600); err != nil {
+		t.Fatalf("write outside ledger: %v", err)
+	}
+	p.LedgerPath = outside
+	acts = runOutcomeActions(context.Background(), sess, p, dir, 100)
+	run, ok = acts[outcomeLedgerAction]
+	if !ok {
+		t.Fatalf("no %q action in the map for the outside ledger", outcomeLedgerAction)
+	}
+	want := "Could not read " + outside + ": it is outside the working directory"
+	if got := run().Text; got != want {
+		t.Fatalf("outside ledger text = %q, want %q", got, want)
 	}
 }

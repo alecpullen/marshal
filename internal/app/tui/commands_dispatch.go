@@ -15,7 +15,6 @@ import (
 	"marshal/internal/app/tui/plugins"
 	"marshal/internal/app/tui/skills"
 	"marshal/internal/interaction"
-	"marshal/internal/worktree"
 )
 
 // tuiCommandEffects holds the interactive logic for commands registered
@@ -437,7 +436,7 @@ func init() {
 		"run": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
 			st := m.sess.Status()
 			doc := runOutcomeDoc(st.SDD, m.now())
-			acts := runOutcomeActions(st.SDD, worktree.CLIGitOps{}, st.WorkingDir, m.width)
+			acts := runOutcomeActions(m.ctx, m.sess, st.SDD, st.WorkingDir, m.width)
 			m.dock.Open(docpanel.New(doc, localDocActions(acts)))
 			m.refreshViewport()
 			return m, nil

@@ -4,9 +4,9 @@ Parent: [`design.md`](design.md) §4.5 and §7 (P3). It builds on
 [`p2-client-seam.md`](p2-client-seam.md), whose interface and wire types
 it implements over ACP. Where this spec and design §4.5 differ, this spec
 wins.
-Depends on: P2. Plans 1 (the client core) and 4a (the stack over the
-wire) depend on nothing P2 still changes and run alongside P2's last
-plans. The other plans wait for all nine P2 plans: the boundary test's
+Depends on: P2. Plans 1 (the client core), 4a (the stack over the
+wire) and 3a (ordering) depend on nothing P2 still changes and run
+alongside P2's last plans. The other plans wait for all nine P2 plans: the boundary test's
 allowlist is empty, `WithLegacyState` is gone, and P2 plan 9 has written
 the list of ACP methods the interface marks "new in P3".
 Status: drafted 2026-11-05, while P2 plan 7a ran, and its open questions
@@ -14,8 +14,9 @@ decided the same day (below). The counts were measured at `e671da0d` (P2
 plan 7a's plan commit), and P2 plans 7a to 9 will change them. P3's
 layering plan re-measures them. Plans 1 and 4a were written while P2
 plan 7b ran ([plan 1](plans/2026-11-05-p3-1-client-core-plan.md),
-[plan 4a](plans/2026-11-05-p3-4a-stack-wire-plan.md)); the rest are
-written one at a time once P2 closes.
+[plan 4a](plans/2026-11-05-p3-4a-stack-wire-plan.md)), and plan 3a while
+P2 plans 8a and 8b ran ([plan 3a](plans/2026-11-06-p3-3a-ordering-plan.md));
+the rest are written one at a time once P2 closes.
 
 Decided with the user (2026-11-05):
 - **The adapter's logic moves, and is not rewritten.** It becomes the
@@ -210,7 +211,22 @@ new client.
   flushes every update the call caused, on the same connection. The
   client applies frames in arrival order, and a call returns only after
   the frames before its response are applied. A read after a call
-  therefore sees the call's effect, as it does in process.
+  therefore sees the call's effect, as it does in process. How (plan 3a):
+  - Only for a client that declared the marshal capability. Every other
+    client gets its responses exactly as before (R9).
+  - Only for a call whose params name a session (`sessionId`). The
+    server runs a response barrier between the handler and the response,
+    and the barrier fences that session's forwarders. A call naming no
+    session flushes nothing: no host call causes a session update today.
+    Plan 3b revisits this when `session_status` exists.
+  - Each goroutine that forwards a session's events as updates (the
+    turn's forwarder, the idle stack loop, the work and watch forwarders)
+    serves a fence: it handles the events buffered in its channel when
+    asked, which are the ones published before the call returned, flushes
+    what it owns, and answers. A fence lives as long as its forwarder's
+    loop, and one whose forwarder has gone answers at once.
+  - The barrier waits at most two seconds, then logs a warning and
+    writes the response, so a stuck forwarder never hangs a call (R11).
 
 ### R3. The mirror
 
@@ -432,10 +448,17 @@ conformance suite (V1) before anything switches.
    into `internal/acp` as the per-session service, and `inproc` becomes a
    thin wrapper over that service, so the TUI is unchanged. Re-measure the
    counts above and the R6 inventory.
-3. **Status and ordering.** `session/status`, `session_status`, the
-   read-your-writes guarantee in `Server`, `Changed`, and the notice
-   calls. The conformance harness starts here: one test table runs against
-   both `inproc` and the client.
+3. **Status and ordering**, in two plans:
+   - **3a. Ordering** ([plan](plans/2026-11-06-p3-3a-ordering-plan.md)),
+     alongside P2's close-out. The read-your-writes guarantee in `Server`
+     for the update kinds the agent sends today: the response barrier,
+     and a fence on each forwarder. It needs only the server and the
+     forwarders, which exist and which no P2 plan changes. Proved over the
+     pipe with slowed updates, and measured against R10.
+   - **3b. Status**, after layering. `session/status`, `session_status`,
+     `Changed`, and the notice calls, with `session_status` added to the
+     barrier. The conformance harness starts here: one test table runs
+     against both `inproc` and the client.
 4. **Transcript**, in two plans:
    - **4a. The stack over the wire** ([plan](plans/2026-11-05-p3-4a-stack-wire-plan.md)),
      alongside P2's last plans. The stack patch types in `acpwire`, the

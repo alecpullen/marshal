@@ -173,6 +173,12 @@ type Session struct {
 	// no tools.
 	tools func() ([]string, bool)
 
+	// pluginScans holds the staged plugin scans by token, and pluginSeq
+	// numbers them. Both are guarded by mu, and the map is created by the
+	// first write.
+	pluginScans map[string]*pluginScan
+	pluginSeq   uint64
+
 	// accessRequest and resolveAccess are the runtime's access seam. Without
 	// both, ReconcileAccess settles every typed access request as failed
 	// instead of presenting it.

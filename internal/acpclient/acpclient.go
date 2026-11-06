@@ -610,6 +610,36 @@ type Session interface {
 	// ACP: session/memory_delete (exists).
 	DeleteMemory(ctx context.Context, id int64) error
 
+	// Plugins lists the installed plugins: the global lockfile's, then the
+	// project lockfile's when the session is trusted.
+	//
+	// ACP: session/plugins_list (exists).
+	Plugins(ctx context.Context) ([]acpwire.PluginEntry, error)
+
+	// ScanPlugin clones source into a staging directory and scans it, without
+	// installing anything. The result's token names the staged clone until
+	// InstallPlugin or DiscardPluginScan takes it, or the session closes.
+	//
+	// ACP: session/plugins_install_scan (exists).
+	ScanPlugin(ctx context.Context, source string) (acpwire.PluginScan, error)
+
+	// InstallPlugin installs the staged clone token names into scope's store,
+	// if its content still hashes as it did when scanned. The staged clone is
+	// deleted whatever the outcome.
+	//
+	// ACP: session/plugins_install_confirm (exists).
+	InstallPlugin(ctx context.Context, token, scope string) error
+
+	// DiscardPluginScan deletes the staged clone token names.
+	//
+	// ACP: session/plugins_install_discard (exists).
+	DiscardPluginScan(ctx context.Context, token string) error
+
+	// RemovePlugin deletes an installed plugin and its lockfile entry.
+	//
+	// ACP: session/plugins_remove (exists).
+	RemovePlugin(ctx context.Context, name, scope string) error
+
 	// PrepareMCPLogin checks that the OAuth sign-in for the session's MCP
 	// server called server can start: the server resolves and the token store
 	// opens. Its error is the sentence the client shows.

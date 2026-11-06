@@ -96,6 +96,11 @@ var Methods = []Method{
 	{Iface: "Session", Name: "CommandAction", ACP: "session/command_action"},
 	{Iface: "Session", Name: "Memories", ACP: "session/memory_list", Exists: true},
 	{Iface: "Session", Name: "DeleteMemory", ACP: "session/memory_delete", Exists: true},
+	{Iface: "Session", Name: "Plugins", ACP: "session/plugins_list", Exists: true},
+	{Iface: "Session", Name: "ScanPlugin", ACP: "session/plugins_install_scan", Exists: true},
+	{Iface: "Session", Name: "InstallPlugin", ACP: "session/plugins_install_confirm", Exists: true},
+	{Iface: "Session", Name: "DiscardPluginScan", ACP: "session/plugins_install_discard", Exists: true},
+	{Iface: "Session", Name: "RemovePlugin", ACP: "session/plugins_remove", Exists: true},
 
 	{Iface: "Session", Name: "PrepareMCPLogin", ACP: "session/mcp_login"},
 	{Iface: "Session", Name: "LoginMCP", ACP: "session/mcp_login"},

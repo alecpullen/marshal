@@ -204,9 +204,11 @@ func (s *Session) closeSignal() {
 }
 
 // close marks the session closed, releases its subscriptions and closes
-// Changed.
+// Changed. It discards any staged plugin clone once the session is marked
+// closed, so nothing is left in the temporary directory.
 func (s *Session) close() {
 	s.closed.Store(true)
+	s.discardPluginScans()
 	s.cancel()
 	s.closeSignal()
 }

@@ -690,8 +690,12 @@ the agent sends today. Plan 3b adds `session/status`, `session_status`,
   `NewServer`. A barrier still running when it expires is reported with
   `acp: response barrier timed out` and the attributes `method` and
   `session_id`, then its context is cancelled (releasing the fence it waits on)
-  and the response is written. Tests shorten the bound through the server's own
-  field.
+  and the response is written. A barrier that panics is recovered in its own
+  goroutine (where `dispatchRequest`'s recover cannot reach), logged as
+  `acp: response barrier panicked`, and the call is still answered. The
+  barrier's context derives from the handler's request, so a client that
+  disconnects also releases it; tests shorten the bound by setting the
+  server's own `barrierTimeout`.
 - **Proved over the pipe.** `internal/acp/ordering_test.go` serves three
   managers through a server whose every `session/update` frame is slowed by
   50 ms, with a client that records the updates it applies and feeds an

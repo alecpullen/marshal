@@ -7,6 +7,15 @@ import (
 
 // fence lets one forwarder goroutine confirm that it has written the
 // updates for every event published before it was asked (P3 R2).
+//
+// How exact that is depends on the subscription the forwarder drains. The
+// turn forwarder's terminal subscription makes Publish return only after
+// delivery, so a publish that returned before the ask is already in the
+// channel the answer drains. The stack, work and watch forwarders drain a
+// buffered subscription, so an answer covers the events buffered when it was
+// served; an event whose delivery lands after that snapshot is applied by the
+// next loop pass, not by this answer. Those subscriptions are best-effort by
+// construction, and a fence does not make them stronger than Publish is.
 type fence struct {
 	req  chan chan struct{}
 	done chan struct{}
@@ -26,7 +35,9 @@ func newFence() *fence {
 func (f *fence) requests() <-chan chan struct{} { return f.req }
 
 // ask blocks until the forwarder answers, the forwarder closes the fence,
-// or ctx ends.
+// or ctx ends. Once the request has been handed over, the wait is still
+// bounded by both ctx and the fence closing, so a serving loop that
+// disappears mid-drain cannot hang the caller.
 func (f *fence) ask(ctx context.Context) {
 	answer := make(chan struct{})
 	select {

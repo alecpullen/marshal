@@ -505,6 +505,38 @@ func TestAStuckFenceDoesNotHoldTheResponse(t *testing.T) {
 	}
 }
 
+// TestAPanickingBarrierStillAnswersTheCall checks that a barrier which panics
+// costs the call a logged error rather than the server. dispatchRequest's
+// recover runs on the handler goroutine and cannot reach the barrier's own.
+func TestAPanickingBarrierStillAnswersTheCall(t *testing.T) {
+	agent, client := startOrderingAgent(t)
+	agent.srv.SetResponseBarrier(func(context.Context, string) {
+		panic("barrier exploded")
+	})
+
+	start := time.Now()
+	if err := client.call(context.Background(), "test/mutate",
+		map[string]any{"sessionId": orderingSession}); err != nil {
+		t.Fatalf("test/mutate: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("a panicking barrier held the response for %v", elapsed)
+	}
+
+	logs := agent.logs.String()
+	if !strings.Contains(logs, "acp: response barrier panicked") {
+		t.Fatalf("the panic was not logged: %q", logs)
+	}
+	if !strings.Contains(logs, "test/mutate") || !strings.Contains(logs, orderingSession) {
+		t.Fatalf("the panic record names neither the method nor the session: %q", logs)
+	}
+
+	// The server is still serving: a later call answers normally.
+	if err := client.call(context.Background(), "test/ping", nil); err != nil {
+		t.Fatalf("the server did not survive the panic: %v", err)
+	}
+}
+
 // TestResponseBarrierBudget holds R10's synchronous-call budget for a marshal
 // client's session call over the pipe on the 2,000-call session, with the main
 // stack subscribed. A call that changes nothing must round-trip in under 1ms

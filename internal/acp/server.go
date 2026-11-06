@@ -535,7 +535,16 @@ func (s *Server) runResponseBarrier(ctx context.Context, req Request) {
 	defer stop()
 	done := make(chan struct{})
 	go func() {
+		// The deferred close runs last, so a panicking barrier still releases
+		// the select below. dispatchRequest's own recover cannot reach this
+		// goroutine: a barrier panic must not take the server down.
 		defer close(done)
+		defer func() {
+			if r := recover(); r != nil {
+				s.log().Error("acp: response barrier panicked",
+					"method", req.Method, "session_id", sessionID, "panic", r)
+			}
+		}()
 		barrier(barrierCtx, sessionID)
 	}()
 	timer := time.NewTimer(timeout)
@@ -543,6 +552,13 @@ func (s *Server) runResponseBarrier(ctx context.Context, req Request) {
 	select {
 	case <-done:
 	case <-timer.C:
+		// A barrier that finished as the timer fired is not a timeout, and
+		// select chooses at random among ready cases.
+		select {
+		case <-done:
+			return
+		default:
+		}
 		s.log().Warn("acp: response barrier timed out",
 			"method", req.Method, "session_id", sessionID)
 		stop()

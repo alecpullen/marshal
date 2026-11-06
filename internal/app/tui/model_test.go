@@ -3125,8 +3125,11 @@ func TestEnterOnSettingValuePopupSubmits(t *testing.T) {
 	if !found {
 		t.Fatalf("expected 'on' in value matches, got %v", p.matches())
 	}
-	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	updated, settle := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = *asModelForCompletion(updated)
+	// The command's handler and the reload it queues both run from the call
+	// queue, so the receipt lands when they return.
+	m = settleCalls(t, m, settle)
 	// Input should be cleared (command was dispatched).
 	if val := m.input.Value(); val != "" {
 		t.Fatalf("input = %q, want empty (command should have been submitted)", val)
@@ -4978,6 +4981,8 @@ func TestModelsExactPresetArgSwitchesDirectly(t *testing.T) {
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/models anthropic/sonnet-5")
 	m = asModel(t, updated)
+	// The switch's reload runs from the call queue.
+	m = settleCalls(t, m)
 	if m.dock.IsOpen() {
 		t.Fatal("exact preset arg must switch directly, no overlay")
 	}
@@ -4996,6 +5001,8 @@ func TestModelsModelIDArgSwitchesPreset(t *testing.T) {
 	// A bare model ID (not a preset name) resolves to the preset using it.
 	updated, _ := m.dispatchCommand("/models qwen2.5")
 	m = asModel(t, updated)
+	// The switch's reload runs from the call queue.
+	m = settleCalls(t, m)
 	if m.dock.IsOpen() {
 		t.Fatal("model-ID arg must switch directly, no overlay")
 	}
@@ -5022,8 +5029,10 @@ func TestModelPickAppliesSessionSwitch(t *testing.T) {
 	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: setupCmdReg(t), ReloadConfig: func(c config.Config) error { reloaded = &c; return nil }})
 	m.resize(80, 24)
 	m.openPicker("model", "Switch model", "session only — /settings to persist", m.modelPickerItems(), "")
-	updated, _ := m.Update(picker.PickedMsg{Value: "ollama/qwen2.5"})
+	updated, settle := m.Update(picker.PickedMsg{Value: "ollama/qwen2.5"})
 	m = asModel(t, updated)
+	// The switch's reload runs from the call queue.
+	m = settleCalls(t, m, settle)
 	if m.dock.IsOpen() {
 		t.Fatal("pick should close the modal")
 	}
@@ -5655,6 +5664,8 @@ func TestSetCommandAppliesAndPrintsReceipt(t *testing.T) {
 	m := newTestModel(t)
 	stateOf(m).WorkingDir = t.TempDir()
 	m.dispatchCommand("/set shell.allow_network on")
+	// The handler and the reload it queues both run from the call queue.
+	m = settleCalls(t, m)
 	if !stateOf(m).Config.Tools.Shell.AllowNetwork {
 		t.Error("config not applied")
 	}
@@ -5674,8 +5685,13 @@ func TestSetCommandPersistsPrivacyToggles(t *testing.T) {
 	m := newTestModel(t)
 	stateOf(m).WorkingDir = t.TempDir()
 
+	// Each /set is dispatched, saved and reloaded before the next one is made,
+	// so settling in between keeps the second built on the config the first
+	// left (both handlers and their reloads run from the call queue).
 	m.dispatchCommand("/set privacy.redact_secrets off")
+	m = settleCalls(t, m)
 	m.dispatchCommand("/set privacy.include_gitignored on")
+	m = settleCalls(t, m)
 
 	loaded, err := config.Load(config.LoadOptions{
 		HomeDir:    filepath.Join(stateOf(m).WorkingDir, "no-home"),
@@ -5703,6 +5719,8 @@ func TestSetCommandReloadsRuntimeBeforeReportingSuccess(t *testing.T) {
 	stateOf(m).WorkingDir = t.TempDir()
 
 	m.dispatchCommand("/set shell.allow_network on")
+	// The handler and the reload it queues both run from the call queue.
+	m = settleCalls(t, m)
 
 	if !reloaded.Tools.Shell.AllowNetwork {
 		t.Fatal("the runtime reload did not receive the /set config")
@@ -5725,6 +5743,7 @@ func TestSetCommandReloadFailureDoesNotReportSuccess(t *testing.T) {
 	m.settingsRegistry()
 
 	m.dispatchCommand("/set shell.allow_network on")
+	m = settleCalls(t, m)
 
 	// The runtime reloader has already swapped the new config into the live
 	// runtime before its cleanup step failed (same contract as the
@@ -5790,6 +5809,7 @@ func TestSetCommandReloadFailureSyncsStateConfig(t *testing.T) {
 	stateOf(m).WorkingDir = t.TempDir()
 
 	m.dispatchCommand("/set shell.allow_network on")
+	m = settleCalls(t, m)
 
 	if !stateOf(m).Config.Tools.Shell.AllowNetwork {
 		t.Fatal("stateOf(m).Config must reflect the saved value after a reload failure")
@@ -5830,6 +5850,7 @@ func TestSetRefreshesOpenBrowserRegression(t *testing.T) {
 
 	// Apply a /set mutation while the browser is open.
 	m.dispatchCommand("/set shell.allow_network on")
+	m = settleCalls(t, m)
 
 	// The browser must still be open and must now reflect the post-/set config.
 	browser, ok = m.dock.Panel().(*settings.BrowserPanel)
@@ -5920,6 +5941,8 @@ func TestBrowserSaveFailureCanBeRetriedWithUnchangedSet(t *testing.T) {
 	retryDir := t.TempDir()
 	stateOf(m).WorkingDir = retryDir
 	m.dispatchCommand("/set shell.allow_network on")
+	// The handler and the reload it queues both run from the call queue.
+	m = settleCalls(t, m)
 
 	if m.configSavePending {
 		t.Fatal("successful unchanged /set retry must clear pending persistence")
@@ -6272,18 +6295,26 @@ func newModelForConfigTest(t *testing.T, edit ...func(*inproc.Deps)) (m Model, w
 	return
 }
 
+// applyConnectDoneSettled applies a connect result and settles the reload it
+// queues (P3 R6), so a test can assert on what the reload left behind.
+func applyConnectDoneSettled(t *testing.T, m *Model, msg connect.DoneMsg) {
+	t.Helper()
+	m.applyConnectDone(msg)
+	*m = settleCalls(t, *m)
+}
+
 func TestApplyConnectDoneMaterializeCollisionSurfacesError(t *testing.T) {
 	m, _, _ := newModelForConfigTest(t)
 	stateOf(m).Config.Models.Presets = map[string]routing.ModelPreset{
 		"ollama/qwen3": {Name: "ollama/qwen3", Provider: "other", Model: "other"},
 	}
 
-	updated, _ := m.Update(connect.DoneMsg{
+	updated, connectCmd := m.Update(connect.DoneMsg{
 		Provider:    "ollama",
 		Model:       "qwen3",
 		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	})
-	m = asModel(t, updated)
+	m = settleCalls(t, asModel(t, updated), connectCmd)
 	last := stateOf(m).Messages()[len(stateOf(m).Messages())-1]
 	if !strings.HasPrefix(last.Content, "✗") || !strings.Contains(last.Content, "already used") {
 		t.Fatalf("materialize collision should surface an error, got %q", last.Content)
@@ -6295,7 +6326,7 @@ func TestApplyConnectDoneMaterializeCollisionSurfacesError(t *testing.T) {
 
 func TestApplyConnectDoneWritesAPresetAndPair(t *testing.T) {
 	m, workDir, homeDir := newModelForConfigTest(t)
-	m.applyConnectDone(connect.DoneMsg{
+	applyConnectDoneSettled(t, &m, connect.DoneMsg{
 		Provider:    "openai",
 		Model:       "gpt-4o",
 		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
@@ -6362,7 +6393,7 @@ func TestApplyConnectDonePreservesForeignDiskEntries(t *testing.T) {
 		t.Fatalf("seed foreign preset: %v", err)
 	}
 
-	m.applyConnectDone(connect.DoneMsg{
+	applyConnectDoneSettled(t, &m, connect.DoneMsg{
 		Provider:    "openai",
 		Model:       "gpt-4o",
 		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
@@ -6391,7 +6422,7 @@ func TestApplyConnectDonePreservesExistingProfiles(t *testing.T) {
 		}},
 	}
 
-	m.applyConnectDone(connect.DoneMsg{
+	applyConnectDoneSettled(t, &m, connect.DoneMsg{
 		Provider:    "openai",
 		Model:       "gpt-4o",
 		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
@@ -6405,7 +6436,7 @@ func TestApplyConnectDonePreservesExistingProfiles(t *testing.T) {
 func TestApplyConnectDoneKeepsAPIKeyOutOfProjectConfig(t *testing.T) {
 	m, workDir, homeDir := newModelForConfigTest(t)
 
-	m.applyConnectDone(connect.DoneMsg{
+	applyConnectDoneSettled(t, &m, connect.DoneMsg{
 		Provider: "openai",
 		Model:    "gpt-4o",
 		ProviderCfg: config.ProviderConfig{
@@ -6441,7 +6472,7 @@ func TestApplyConnectDoneKeepsAPIKeyOutOfProjectConfig(t *testing.T) {
 func TestApplyConnectDoneKeepsAPIKeyInRuntimeConfig(t *testing.T) {
 	m, workDir, homeDir := newModelForConfigTest(t)
 
-	m.applyConnectDone(connect.DoneMsg{
+	applyConnectDoneSettled(t, &m, connect.DoneMsg{
 		Provider: "openai",
 		Model:    "gpt-4o",
 		ProviderCfg: config.ProviderConfig{
@@ -6478,7 +6509,7 @@ func TestApplyConnectDoneKeepsAPIKeyInRuntimeConfig(t *testing.T) {
 func TestApplyConnectDoneWithoutKeyWritesUserConfig(t *testing.T) {
 	m, workDir, homeDir := newModelForConfigTest(t)
 
-	m.applyConnectDone(connect.DoneMsg{
+	applyConnectDoneSettled(t, &m, connect.DoneMsg{
 		Provider:    "ollama",
 		Model:       "qwen2.5-coder:7b",
 		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
@@ -6503,7 +6534,7 @@ func TestApplyConnectDoneWithoutKeyWritesUserConfig(t *testing.T) {
 func TestApplyConnectDoneWritesLimitsToThePreset(t *testing.T) {
 	m, _, homeDir := newModelForConfigTest(t)
 
-	m.applyConnectDone(connect.DoneMsg{
+	applyConnectDoneSettled(t, &m, connect.DoneMsg{
 		Provider:      "openai",
 		Model:         "gpt-4o",
 		ProviderCfg:   config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
@@ -6534,7 +6565,7 @@ func TestApplyConnectDoneWritesLimitsToThePreset(t *testing.T) {
 func TestApplyConnectDoneUnknownLimitsWriteZero(t *testing.T) {
 	m, _, _ := newModelForConfigTest(t)
 
-	m.applyConnectDone(connect.DoneMsg{
+	applyConnectDoneSettled(t, &m, connect.DoneMsg{
 		Provider:    "local",
 		Model:       "mystery-model",
 		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:8080/v1"},
@@ -6562,7 +6593,7 @@ func TestApplyConnectDoneZeroLimitsPreserveSavedPresetValues(t *testing.T) {
 
 	// Re-picking the same model with unresolved (zero) limits must not
 	// erase the figures saved earlier.
-	m.applyConnectDone(connect.DoneMsg{
+	applyConnectDoneSettled(t, &m, connect.DoneMsg{
 		Provider:    "openai",
 		Model:       "gpt-4o",
 		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
@@ -6582,7 +6613,7 @@ func TestConnectDoneClearsEnvRefWhenSavingLiteralKey(t *testing.T) {
 	m := newTestModel(t)
 	stateOf(m).WorkingDir = work
 	m.workDir = work
-	m.applyConnectDone(connect.DoneMsg{
+	applyConnectDoneSettled(t, &m, connect.DoneMsg{
 		Provider: "openai",
 		Model:    "gpt-4o",
 		ProviderCfg: config.ProviderConfig{
@@ -6991,8 +7022,8 @@ func TestModelsPickAppliesSwitch(t *testing.T) {
 		t.Fatal("Enter on summary should produce a connect.DoneMsg command")
 	}
 	// Run the command to deliver the DoneMsg, just as Bubble Tea would.
-	updated, _ = m.Update(cmd())
-	m = asModel(t, updated)
+	updated, connectSettle := m.Update(cmd())
+	m = settleCalls(t, asModel(t, updated), connectSettle)
 
 	if m.dock.IsOpen() {
 		t.Fatal("selecting a model should close the overlay")
@@ -7039,7 +7070,9 @@ func TestConnectDoneMsgPersistsAgentModel(t *testing.T) {
 		d.ReloadConfig = func(cfg config.Config) error { reloaded = true; d.State.Config = cfg; return nil }
 	})
 	m.settingsRegistry()
-	updated, _ := m.Update(connect.DoneMsg{Provider: "ollama", Model: "qwen2.5-coder:7b", ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"}})
+	updated, connectCmd := m.Update(connect.DoneMsg{Provider: "ollama", Model: "qwen2.5-coder:7b", ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"}})
+	// The DoneMsg's reload runs from the call queue.
+	updated = settleCalls(t, asModel(t, updated), connectCmd)
 	if !reloaded {
 		t.Fatal("DoneMsg should reload the runtime")
 	}
@@ -7074,7 +7107,7 @@ func TestApplyConnectDoneMergesPreparedPresets(t *testing.T) {
 	})
 	m.settingsRegistry()
 
-	updated, _ := m.Update(connect.DoneMsg{
+	updated, connectCmd := m.Update(connect.DoneMsg{
 		Provider:    "ollama",
 		Model:       "qwen2.5-coder:7b",
 		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
@@ -7083,7 +7116,7 @@ func TestApplyConnectDoneMergesPreparedPresets(t *testing.T) {
 			"ollama/llama3.1:8b":      {Name: "ollama/llama3.1:8b", Provider: "ollama", Model: "llama3.1:8b"},
 		},
 	})
-	m = updated.(Model)
+	m = settleCalls(t, updated.(Model), connectCmd)
 
 	if _, ok := stateOf(m).Config.Models.Presets["ollama/llama3.1:8b"]; !ok {
 		t.Fatal("prepared preset ollama/llama3.1:8b should be merged")
@@ -7100,13 +7133,13 @@ func TestApplyConnectDonePersistsConsent(t *testing.T) {
 	m.settingsRegistry()
 
 	allow := true
-	updated, _ := m.Update(connect.DoneMsg{
+	updated, connectCmd := m.Update(connect.DoneMsg{
 		Provider:          "ollama",
 		Model:             "qwen2.5-coder:7b",
 		ProviderCfg:       config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 		EnrichmentConsent: &allow,
 	})
-	m = updated.(Model)
+	m = settleCalls(t, updated.(Model), connectCmd)
 
 	home, err := m.userHome()
 	if err != nil {
@@ -7147,7 +7180,7 @@ func TestApplyConnectDoneRefreshesManagedPreset(t *testing.T) {
 		t.Fatalf("marshal provenance: %v", err)
 	}
 
-	updated, _ := m.Update(connect.DoneMsg{
+	updated, connectCmd := m.Update(connect.DoneMsg{
 		Provider:    "ollama",
 		Model:       "qwen2.5-coder:7b",
 		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
@@ -7156,7 +7189,7 @@ func TestApplyConnectDoneRefreshesManagedPreset(t *testing.T) {
 		},
 		Setup: acpwire.PresetSetup{Provenance: raw, Managed: []string{name}},
 	})
-	m = updated.(Model)
+	m = settleCalls(t, updated.(Model), connectCmd)
 
 	// The prepared preset carries the refreshed catalog value, so it must win
 	// over the stale live entry; otherwise the saved provenance would describe
@@ -7174,13 +7207,13 @@ func TestApplyConnectDonePersistsDenyConsent(t *testing.T) {
 	m.settingsRegistry()
 
 	deny := false
-	updated, _ := m.Update(connect.DoneMsg{
+	updated, connectCmd := m.Update(connect.DoneMsg{
 		Provider:          "ollama",
 		Model:             "qwen2.5-coder:7b",
 		ProviderCfg:       config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 		EnrichmentConsent: &deny,
 	})
-	m = updated.(Model)
+	m = settleCalls(t, updated.(Model), connectCmd)
 
 	home, err := m.userHome()
 	if err != nil {
@@ -7212,13 +7245,13 @@ func TestApplyConnectDoneWarnsOnProvenanceFailure(t *testing.T) {
 		t.Fatalf("marshal provenance: %v", err)
 	}
 
-	updated, _ := m.Update(connect.DoneMsg{
+	updated, connectCmd := m.Update(connect.DoneMsg{
 		Provider:    "ollama",
 		Model:       "qwen2.5-coder:7b",
 		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 		Setup:       acpwire.PresetSetup{Provenance: raw},
 	})
-	m = updated.(Model)
+	m = settleCalls(t, updated.(Model), connectCmd)
 
 	if _, ok := stateOf(m).Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
 		t.Fatal("presets must still be saved when provenance fails")
@@ -7246,12 +7279,12 @@ func TestConnectReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
 	})
 	m.settingsRegistry()
 
-	updated, _ := m.Update(connect.DoneMsg{
+	updated, connectCmd := m.Update(connect.DoneMsg{
 		Provider:    "ollama",
 		Model:       "qwen2.5-coder:7b",
 		ProviderCfg: config.ProviderConfig{Type: "openai_compatible"},
 	})
-	m = updated.(Model)
+	m = settleCalls(t, updated.(Model), connectCmd)
 
 	if m.setReg != nil {
 		t.Fatal("failed connect reload must invalidate the cached /set registry")
@@ -7276,12 +7309,12 @@ func TestConnectSaveFailureKeepsSessionConfigAndPendingFlag(t *testing.T) {
 	stateOf(m).WorkingDir = blockingPath
 	m.settingsRegistry()
 
-	updated, _ := m.Update(connect.DoneMsg{
+	updated, connectCmd := m.Update(connect.DoneMsg{
 		Provider:    "ollama",
 		Model:       "qwen2.5-coder:7b",
 		ProviderCfg: config.ProviderConfig{Type: "openai_compatible"},
 	})
-	m = updated.(Model)
+	m = settleCalls(t, updated.(Model), connectCmd)
 
 	if reloaded {
 		t.Fatal("save failure must not reload the runtime")
@@ -7310,12 +7343,12 @@ func TestConnectDoneSuccessReceiptHasCheckGlyph(t *testing.T) {
 	})
 	stateOf(m).WorkingDir = t.TempDir()
 
-	updated, _ := m.Update(connect.DoneMsg{
+	updated, connectCmd := m.Update(connect.DoneMsg{
 		Provider:    "ollama",
 		Model:       "qwen2.5-coder:7b",
 		ProviderCfg: config.ProviderConfig{Type: "openai_compatible"},
 	})
-	m = updated.(Model)
+	m = settleCalls(t, updated.(Model), connectCmd)
 
 	got := stateOf(m).Messages()[len(stateOf(m).Messages())-1].Content
 	if !strings.HasPrefix(got, "✓") || !strings.Contains(got, "Switched to model") {
@@ -7329,12 +7362,12 @@ func TestConnectReloadFailureReceiptHasCrossGlyph(t *testing.T) {
 	})
 	stateOf(m).WorkingDir = t.TempDir()
 
-	updated, _ := m.Update(connect.DoneMsg{
+	updated, connectCmd := m.Update(connect.DoneMsg{
 		Provider:    "ollama",
 		Model:       "qwen2.5-coder:7b",
 		ProviderCfg: config.ProviderConfig{Type: "openai_compatible"},
 	})
-	m = updated.(Model)
+	m = settleCalls(t, updated.(Model), connectCmd)
 
 	got := stateOf(m).Messages()[len(stateOf(m).Messages())-1].Content
 	if !strings.HasPrefix(got, "✗") || !strings.Contains(got, "Failed to switch model") {
@@ -7355,6 +7388,7 @@ func TestSwitchModelPresetInvalidatesSetRegistry(t *testing.T) {
 	m.settingsRegistry()
 
 	m.switchModelPreset("ollama/qwen2.5-coder:7b")
+	m = settleCalls(t, m)
 
 	if m.setReg != nil {
 		t.Fatal("model switch should invalidate the cached /set registry")
@@ -7379,6 +7413,7 @@ func TestModelPresetReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
 	m.settingsRegistry()
 
 	m.switchModelPreset("ollama/qwen2.5-coder:7b")
+	m = settleCalls(t, m)
 
 	if m.setReg != nil {
 		t.Fatal("failed model reload must invalidate the cached /set registry")
@@ -7410,6 +7445,7 @@ func TestSwitchModelPresetSaveFailureKeepsSessionConfigAndPendingFlag(t *testing
 	m.settingsRegistry()
 
 	m.switchModelPreset("ollama/qwen2.5-coder:7b")
+	m = settleCalls(t, m)
 
 	if reloaded {
 		t.Fatal("save failure must not reload the runtime")
@@ -7445,6 +7481,7 @@ func TestSwitchModelPresetSuccessReceiptHasCheckGlyph(t *testing.T) {
 	stateOf(m).WorkingDir = t.TempDir()
 
 	m.switchModelPreset("ollama/qwen2.5-coder:7b")
+	m = settleCalls(t, m)
 
 	got := stateOf(m).Messages()[len(stateOf(m).Messages())-1].Content
 	if !strings.HasPrefix(got, "✓") || !strings.Contains(got, "Switched to model") {
@@ -7465,6 +7502,7 @@ func TestSwitchModelPresetReloadFailureReceiptHasCrossGlyph(t *testing.T) {
 	stateOf(m).WorkingDir = t.TempDir()
 
 	m.switchModelPreset("ollama/qwen2.5-coder:7b")
+	m = settleCalls(t, m)
 
 	got := stateOf(m).Messages()[len(stateOf(m).Messages())-1].Content
 	if !strings.HasPrefix(got, "✗") || !strings.Contains(got, "Failed to switch model") {
@@ -7482,6 +7520,7 @@ func TestSwitchModelPresetSetsDefaultProfile(t *testing.T) {
 	}
 
 	m.switchModelPreset("openai/gpt-4o")
+	m = settleCalls(t, m)
 
 	if stateOf(m).Config.Profile.Default != singleModelProfileName {
 		t.Fatalf("default profile = %q, want single", stateOf(m).Config.Profile.Default)
@@ -7506,6 +7545,7 @@ func TestSwitchModelPresetPreservesOtherProfiles(t *testing.T) {
 	}
 
 	m.switchModelPreset("openai/gpt-4o")
+	m = settleCalls(t, m)
 
 	if _, ok := stateOf(m).Config.AgentProfiles["handcrafted"]; !ok {
 		t.Error("switching models destroyed a user's existing profile")
@@ -7543,6 +7583,7 @@ func TestSwitchModelPresetUpdatesStaleSingleProfile(t *testing.T) {
 	stateOf(m).WorkingDir = t.TempDir()
 
 	m.switchModelPreset("ollama/new-model")
+	m = settleCalls(t, m)
 
 	// RoutingConfig must (re)synthesize the "single" profile from
 	// ActivePreset, overwriting the stale bindings. The router must resolve
@@ -7602,8 +7643,10 @@ func TestDockedSettingsBrowserReloadsAndPrintsReceipts(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected ChangedMsg, got %T", msg)
 	}
-	updated, _ = m.Update(msg)
+	updated, settle := m.Update(msg)
 	m = updated.(Model)
+	// The settings save's reload runs from the call queue.
+	m = settleCalls(t, m, settle)
 
 	if !reloaded {
 		t.Fatal("the runtime reload should have run")
@@ -7637,11 +7680,14 @@ func TestBrowserReloadCleanupFailureSynchronizesUIState(t *testing.T) {
 	reloaded.TUI.Mode = theme.ModeLight
 	expectedTheme := theme.LoadWithConfig(reloaded.TUI.Theme, reloaded.TUI.Mode, theme.DepthFlat, nil)
 
-	updated, _ := m.Update(settings.ChangedMsg{
+	updated, settle := m.Update(settings.ChangedMsg{
 		Cfg:      reloaded,
 		Receipts: []string{"shell.allow_network: off → on"},
 	})
 	m = updated.(Model)
+	// The reload runs from the call queue, so its cleanup failure is reported
+	// when the result is handled.
+	m = settleCalls(t, m, settle)
 
 	if stateOf(m).Config.TUI.Mode != theme.ModeLight {
 		t.Fatal("post-swap cleanup failure must retain the live config")

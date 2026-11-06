@@ -748,29 +748,45 @@ func (m *Model) userHome() (string, error) {
 // On any error the in-memory change is kept (and configSavePending set for
 // save failures) so the user can fix the underlying problem and retry
 // without losing their edit. Messaging is the caller's job.
-func (m *Model) persistAndReload(cfg config.Config) (saveErr, reloadErr error) {
+// persistAndReload persists cfg to the project config and, when the save
+// succeeds, rebuilds the runtime from it. The reload — which starts MCP
+// servers and builds providers — runs from the call queue (P3 R6), so report
+// is called when its result arrives. A failed save happens first, reloads
+// nothing, and is reported at once.
+func (m *Model) persistAndReload(cfg config.Config, report func(m *Model, saveErr, reloadErr error)) {
 	if err := m.sess.SaveProjectConfig(m.ctx, cfg); err != nil {
 		m.applyNewConfig(cfg)
 		m.configSavePending = true
-		return err, nil
+		report(m, err, nil)
+		return
 	}
 	m.configSavePending = false
 	// reloadAgentRuntime may install cfg before reporting a cleanup
 	// error; invalidate config-derived state before attempting it.
 	m.setReg = nil
-	reloaded, err := m.sess.ReloadConfig(m.ctx, cfg)
-	if err != nil {
-		// The runtime has already swapped cfg before cleanup can fail.
-		// Keep all TUI-derived state aligned with that live config.
-		m.applyNewConfig(cfg)
-		return nil, err
-	}
-	if reloaded {
-		m.afterRuntimeReload()
-	}
-	m.applyNewConfig(cfg)
-	m.refreshDiagnostics()
-	return nil, nil
+	m.enqueueCall(func(mm *Model) callRun {
+		sess := mm.sess
+		return func(ctx context.Context) callOutcome {
+			reloaded, err := sess.ReloadConfig(ctx, cfg)
+			return func(mm *Model) tea.Cmd {
+				if err != nil {
+					// The runtime has already swapped cfg before cleanup can
+					// fail. Keep all TUI-derived state aligned with that live
+					// config.
+					mm.applyNewConfig(cfg)
+					report(mm, nil, err)
+					return nil
+				}
+				if reloaded {
+					mm.afterRuntimeReload()
+				}
+				mm.applyNewConfig(cfg)
+				mm.refreshDiagnostics()
+				report(mm, nil, nil)
+				return nil
+			}
+		}
+	})
 }
 
 // afterRuntimeReload runs the recovery steps that become valid once the
@@ -846,8 +862,9 @@ func (m *Model) handleSetCommand(args []string) {
 			home, err := m.userHome()
 			if err != nil {
 				// Fall back to persistAndReload if home is unavailable.
-				saveErr, reloadErr := m.persistAndReload(reg.Config())
-				m.reportSetResult(key, change, saveErr, reloadErr)
+				m.persistAndReload(reg.Config(), func(mm *Model, saveErr, reloadErr error) {
+					mm.reportSetResult(key, change, saveErr, reloadErr)
+				})
 				return
 			}
 			if err := m.host.SaveUserValue(m.ctx, tomlPath, value); err != nil {
@@ -858,28 +875,40 @@ func (m *Model) handleSetCommand(args []string) {
 			}
 			m.configSavePending = false
 			m.setReg = nil
-			reloaded, err := m.sess.ReloadConfig(m.ctx, reg.Config())
-			if err != nil {
-				m.applyNewConfig(reg.Config())
-				sys(fmt.Sprintf("✗ %s saved, but live reload failed: %v", key, err))
-				return
-			}
-			if reloaded {
-				m.afterRuntimeReload()
-			}
-			m.applyNewConfig(reg.Config())
-			m.refreshOpenSettingsBrowser()
-			userPath := m.sess.Status().UserConfigPath
-			if !change.Changed {
-				sys(fmt.Sprintf("✓ %s persisted · %s", key, relPath(home, userPath)))
-			} else {
-				sys(fmt.Sprintf("✓ %s: %s → %s · %s", key, change.OldValue, change.NewValue, relPath(home, userPath)))
-			}
+			// The reload rebuilds the runtime, so it runs from the call queue
+			// and its outcome is reported when it returns (P3 R6).
+			m.enqueueCall(func(mm *Model) callRun {
+				sess := mm.sess
+				cfg := reg.Config()
+				return func(ctx context.Context) callOutcome {
+					reloaded, err := sess.ReloadConfig(ctx, cfg)
+					return func(mm *Model) tea.Cmd {
+						if err != nil {
+							mm.applyNewConfig(cfg)
+							mm.note(fmt.Sprintf("✗ %s saved, but live reload failed: %v", key, err))
+							return nil
+						}
+						if reloaded {
+							mm.afterRuntimeReload()
+						}
+						mm.applyNewConfig(cfg)
+						mm.refreshOpenSettingsBrowser()
+						userPath := mm.sess.Status().UserConfigPath
+						if !change.Changed {
+							mm.note(fmt.Sprintf("✓ %s persisted · %s", key, relPath(home, userPath)))
+						} else {
+							mm.note(fmt.Sprintf("✓ %s: %s → %s · %s", key, change.OldValue, change.NewValue, relPath(home, userPath)))
+						}
+						return nil
+					}
+				}
+			})
 			return
 		}
 
-		saveErr, reloadErr := m.persistAndReload(reg.Config())
-		m.reportSetResult(key, change, saveErr, reloadErr)
+		m.persistAndReload(reg.Config(), func(mm *Model, saveErr, reloadErr error) {
+			mm.reportSetResult(key, change, saveErr, reloadErr)
+		})
 		return
 	}
 }
@@ -1780,24 +1809,22 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshViewport()
 			return m, nil
 		}
-		saveErr, reloadErr := m.persistAndReload(msg.Cfg)
-		if saveErr != nil {
-			m.note(fmt.Sprintf("✗ save failed: %v", saveErr))
-			m.refreshViewport()
-			return m, nil
-		}
-		if reloadErr != nil {
-			m.note(fmt.Sprintf("✗ settings saved, but live reload failed: %v", reloadErr))
-			m.refreshViewport()
-			return m, nil
-		}
-		// The adapter refreshed the layer snapshots when the panel's own
-		// save wrote the file; persistAndReload below only reloads the
-		// runtime.
-		for _, receipt := range msg.Receipts {
-			m.note("✓ " + receipt + " · " + relPath(st.WorkingDir, st.ProjectConfigPath))
-		}
-		m.refreshViewport()
+		m.persistAndReload(msg.Cfg, func(mm *Model, saveErr, reloadErr error) {
+			switch {
+			case saveErr != nil:
+				mm.note(fmt.Sprintf("✗ save failed: %v", saveErr))
+			case reloadErr != nil:
+				mm.note(fmt.Sprintf("✗ settings saved, but live reload failed: %v", reloadErr))
+			default:
+				// The adapter refreshed the layer snapshots when the panel's
+				// own save wrote the file; persistAndReload only reloads the
+				// runtime.
+				for _, receipt := range msg.Receipts {
+					mm.note("✓ " + receipt + " · " + relPath(st.WorkingDir, st.ProjectConfigPath))
+				}
+			}
+			mm.refreshViewport()
+		})
 		return m, nil
 	case mcpauth.AuthDoneMsg:
 		return m.handleMCPAuthDone(msg)
@@ -4960,10 +4987,15 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	}
 	m.updateViewportHeight()
 	m.refreshViewport()
-	flushCmd := m.flushPendingModelOptions()
+	flushPending := m.pendingModelOptions != nil && !m.busy
+	if flushPending {
+		// The activation's reload runs from the call queue; Update's epilogue
+		// starts it after this handler returns.
+		m.flushPendingModelOptions()
+	}
 	// The session rebases the changed files onto the active root's HEAD, so
 	// committed agent work stops inflating the diff.
-	cmds := []tea.Cmd{tickCmd(), flushCmd, refreshSheetCmd(m.ctx, m.sess, acpwire.SheetRefresh{Rebase: true, Stats: sheetOpen, Fleet: sheetOpen})}
+	cmds := []tea.Cmd{tickCmd(), refreshSheetCmd(m.ctx, m.sess, acpwire.SheetRefresh{Rebase: true, Stats: sheetOpen, Fleet: sheetOpen})}
 	if suggestionCmd != nil {
 		cmds = append(cmds, suggestionCmd)
 	}
@@ -5134,9 +5166,9 @@ func (m Model) handleChanged(msg changedMsg) (Model, tea.Cmd) {
 
 	m.syncWork()
 	m.refreshViewport()
-	if cmd := m.flushPendingModelOptions(); cmd != nil {
-		cmds = append(cmds, cmd)
-	}
+	// A pending options candidate is activated from the call queue; Update's
+	// epilogue starts that call after this handler returns.
+	m.flushPendingModelOptions()
 	return m, tea.Batch(cmds...)
 }
 
@@ -6891,19 +6923,20 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 		}
 	}
 
-	saveErr, reloadErr := m.persistAndReload(newCfg)
-	switch {
-	case saveErr != nil:
-		m.note(fmt.Sprintf("✗ Failed to save model: %v", saveErr))
-	case reloadErr != nil:
-		m.note(fmt.Sprintf("✗ Failed to switch model: %v", reloadErr))
-	default:
-		// A successful switch proves provider construction works with the
-		// new config — clear any stale provider/config notice.
-		_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeProvider)
-		_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeConfig)
-		m.note(fmt.Sprintf("✓ Switched to model: %s (%s)", msg.Model, msg.Provider))
-	}
+	m.persistAndReload(newCfg, func(mm *Model, saveErr, reloadErr error) {
+		switch {
+		case saveErr != nil:
+			mm.note(fmt.Sprintf("✗ Failed to save model: %v", saveErr))
+		case reloadErr != nil:
+			mm.note(fmt.Sprintf("✗ Failed to switch model: %v", reloadErr))
+		default:
+			// A successful switch proves provider construction works with the
+			// new config — clear any stale provider/config notice.
+			_ = mm.sess.ClearNotice(mm.ctx, acpwire.NoticeProvider)
+			_ = mm.sess.ClearNotice(mm.ctx, acpwire.NoticeConfig)
+			mm.note(fmt.Sprintf("✓ Switched to model: %s (%s)", msg.Model, msg.Provider))
+		}
+	})
 }
 
 // switchModelPreset applies a model switch by binding every role to the given
@@ -6971,15 +7004,16 @@ func (m *Model) switchModelPreset(presetName string) {
 		}
 	}
 
-	saveErr, reloadErr := m.persistAndReload(newCfg)
-	switch {
-	case saveErr != nil:
-		m.note(fmt.Sprintf("✗ Failed to save model preset: %v", saveErr))
-	case reloadErr != nil:
-		m.note(fmt.Sprintf("✗ Failed to switch model: %v", reloadErr))
-	default:
-		m.note(fmt.Sprintf("✓ Switched to model: %s (%s)", presetName, preset.Model))
-	}
+	m.persistAndReload(newCfg, func(mm *Model, saveErr, reloadErr error) {
+		switch {
+		case saveErr != nil:
+			mm.note(fmt.Sprintf("✗ Failed to save model preset: %v", saveErr))
+		case reloadErr != nil:
+			mm.note(fmt.Sprintf("✗ Failed to switch model: %v", reloadErr))
+		default:
+			mm.note(fmt.Sprintf("✓ Switched to model: %s (%s)", presetName, preset.Model))
+		}
+	})
 }
 
 // resolveModelArg maps a /models argument to a preset name: first an exact

@@ -52,11 +52,14 @@ func TestSettingsApprovalModeChangeUpdatesFooter(t *testing.T) {
 	cfg.Agent.Mode = interaction.ModeAsk
 	cfg.Agent.Auto = false
 
-	updated, _ := m.Update(settings.ChangedMsg{
+	updated, settle := m.Update(settings.ChangedMsg{
 		Cfg:      cfg,
 		Receipts: []string{"agent.mode = ask"},
 	})
 	m = updated.(Model)
+	// The settings change's reload runs from the call queue, so the config is
+	// applied when its result is handled.
+	m = settleCalls(t, m, settle)
 
 	if got := string(stateOf(m).InteractionState().Mode); got != "ask" {
 		t.Fatalf("approvalMode = %q, want ask after settings change", got)

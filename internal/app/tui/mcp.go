@@ -52,25 +52,37 @@ func (m *Model) handleMCPCommand(args []string) (tea.Model, tea.Cmd) {
 // report success while leaving the server's tools unreachable until restart.
 func (m *Model) reconnectMCPServer(name string) {
 	cfg := m.sess.Config()
-	reloaded, err := m.sess.ReconnectMCP(m.ctx)
-	if !reloaded {
-		// No reload path (embedded or test models). The token is stored, so a
-		// later runtime build connects the server.
-		return
-	}
-	// reloadAgentRuntime may install cfg before reporting a cleanup error;
-	// invalidate config-derived state before attempting it, mirroring the
-	// settings-browser and /set reload paths.
-	m.setReg = nil
-	if err != nil {
-		m.applyNewConfig(cfg)
-		m.note("\u2717 Authorized MCP server \"" + name + "\", but it could not be connected: " + err.Error())
-		return
-	}
-	// A runner the reload builds is used from the next turn: the session reads
-	// the runtime's current runner on each call, so nothing is adopted here.
-	m.applyNewConfig(cfg)
-	m.refreshDiagnostics()
+	// The rebuild starts MCP servers, so it runs from the call queue and its
+	// outcome is reported when it returns (P3 R6).
+	m.enqueueCall(func(mm *Model) callRun {
+		sess := mm.sess
+		return func(ctx context.Context) callOutcome {
+			reloaded, err := sess.ReconnectMCP(ctx)
+			return func(mm *Model) tea.Cmd {
+				if !reloaded {
+					// No reload path (embedded or test models). The token is
+					// stored, so a later runtime build connects the server.
+					return nil
+				}
+				// reloadAgentRuntime may install cfg before reporting a
+				// cleanup error; invalidate config-derived state before
+				// attempting it, mirroring the settings-browser and /set
+				// reload paths.
+				mm.setReg = nil
+				if err != nil {
+					mm.applyNewConfig(cfg)
+					mm.note("\u2717 Authorized MCP server \"" + name + "\", but it could not be connected: " + err.Error())
+					return nil
+				}
+				// A runner the reload builds is used from the next turn: the
+				// session reads the runtime's current runner on each call, so
+				// nothing is adopted here.
+				mm.applyNewConfig(cfg)
+				mm.refreshDiagnostics()
+				return nil
+			}
+		}
+	})
 }
 
 // authorizeMCPCmd runs the blocking sign-in off the UI goroutine and reports

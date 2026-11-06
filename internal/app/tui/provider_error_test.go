@@ -23,7 +23,7 @@ func TestApplyConnectDoneSuccessClearsProviderNotice(t *testing.T) {
 	m := newTestModel(t)
 	stateOf(m).SetNotice(session.Notice{Category: session.NoticeProvider, Severity: session.SeverityError, Message: "provider request timed out"})
 
-	m.applyConnectDone(connect.DoneMsg{Provider: "openai", Model: "gpt-4o"})
+	applyConnectDoneSettled(t, &m, connect.DoneMsg{Provider: "openai", Model: "gpt-4o"})
 
 	if _, ok := stateOf(m).Notice(); ok {
 		t.Fatal("notice should be cleared after successful /connect")
@@ -39,7 +39,11 @@ func TestPersistAndReloadSuccessClearsProviderNotice(t *testing.T) {
 	})
 	stateOf(m).SetNotice(session.Notice{Category: session.NoticeProvider, Message: "provider request timed out"})
 
-	saveErr, reloadErr := m.persistAndReload(stateOf(m).Config)
+	var saveErr, reloadErr error
+	m.persistAndReload(stateOf(m).Config, func(_ *Model, se, re error) { saveErr, reloadErr = se, re })
+	// The reload runs from the call queue, so the notice is cleared when its
+	// result is handled.
+	m = settleCalls(t, m)
 	if saveErr != nil || reloadErr != nil {
 		t.Fatalf("persistAndReload = (%v, %v), want (nil, nil)", saveErr, reloadErr)
 	}
@@ -56,7 +60,11 @@ func TestPersistAndReloadFailureRetainsProviderNotice(t *testing.T) {
 	})
 	stateOf(m).SetNotice(session.Notice{Category: session.NoticeProvider, Message: "provider request timed out"})
 
-	_, reloadErr := m.persistAndReload(stateOf(m).Config)
+	var reloadErr error
+	m.persistAndReload(stateOf(m).Config, func(_ *Model, _ error, re error) { reloadErr = re })
+	// The reload runs from the call queue, so its failure is reported when the
+	// result is handled.
+	m = settleCalls(t, m)
 	if reloadErr == nil {
 		t.Fatal("persistAndReload reloadErr = nil, want the reload error")
 	}

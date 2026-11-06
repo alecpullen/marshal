@@ -381,11 +381,50 @@ func (m *TurnManager) ensureStackIdle(sessionID string, rt *TurnRuntime) {
 	ctx, cancel := context.WithCancel(context.Background())
 	p.idleCancel = cancel
 	events := rt.Events.Subscribe(ctx)
+	// The fence is registered before the loop starts, so a read that arrives
+	// as soon as this call returns already has a fence to ask (P3 R2).
+	idleFence := newFence()
+	m.fences.add(sessionID, idleFence)
 	go func() {
-		defer cancel()
+		defer func() {
+			m.fences.remove(sessionID, idleFence)
+			idleFence.close()
+			cancel()
+		}()
 		_, idleInterval := m.stackIntervals()
 		ticker := time.NewTicker(idleInterval)
 		defer ticker.Stop()
+		// serveFence answers one fence request: it marks the stack dirty for
+		// the events already buffered, then does exactly what a tick does when
+		// no turn is running, so a read after a call sees the change.
+		serveFence := func(answer chan struct{}) {
+		buffered:
+			for n := len(events); n > 0; n-- {
+				select {
+				case _, ok := <-events:
+					if !ok {
+						break buffered
+					}
+					m.markStackDirty(sessionID)
+				case <-ctx.Done():
+					break buffered
+				}
+			}
+			if !m.HasActiveTurn(sessionID) {
+				cur, ok := m.lookup(sessionID)
+				if !ok || cur.State == nil {
+					// The session is gone, so stop, exactly as a tick does.
+					// Answer first: the deferred close is the loop's own.
+					close(answer)
+					m.dropStacks(sessionID)
+					return
+				}
+				m.flushProjector(sessionID, 0, cur.State, false, false, true)
+				m.flushChildStacks(sessionID, cur.State)
+				m.flushRun(sessionID, cur.State)
+			}
+			close(answer)
+		}
 		for {
 			select {
 			case <-ctx.Done():
@@ -395,6 +434,8 @@ func (m *TurnManager) ensureStackIdle(sessionID string, rt *TurnRuntime) {
 					return
 				}
 				m.markStackDirty(sessionID)
+			case answer := <-idleFence.requests():
+				serveFence(answer)
 			case <-ticker.C:
 				if m.HasActiveTurn(sessionID) {
 					continue

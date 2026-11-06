@@ -230,6 +230,11 @@ type TurnManager struct {
 	stacksMu sync.Mutex
 	stacks   map[string]*stackProjector
 
+	// fences holds the live fences of this connection's event forwarders, by
+	// session. The response barrier asks them to confirm that the updates
+	// their events produced are written before a call returns (P3 R2).
+	fences fenceSet
+
 	// runMu guards the run-detail state behind session/run and run_progress:
 	// which sessions a client watches, the hash of the last detail sent, and
 	// the last non-empty swarm progress (the live copy is cleared at run end).
@@ -291,6 +296,13 @@ func NewTurnManager(cfg TurnManagerConfig) *TurnManager {
 		tm.qbridge = NewQuestionBridge(cfg.Questions)
 	}
 	return tm
+}
+
+// fenceSession waits until every forwarder for sessionID has written the
+// updates for the events published before it was asked (P3 R2). A session with
+// no forwarder returns at once.
+func (m *TurnManager) fenceSession(ctx context.Context, sessionID string) {
+	m.fences.wait(ctx, sessionID)
 }
 
 // messageUpdate projects a session.Message into a session/update body.
@@ -729,6 +741,18 @@ func (m *TurnManager) runTurn(
 	defer subCancel()
 	sub := rt.Events.Subscribe(subCtx, pubsub.WithTerminal[session.Event]())
 
+	// This forwarder serves a fence for exactly as long as its loop runs: any
+	// caller can then confirm that the updates for the events published before
+	// it asked are written (P3 R2). The deferred close runs after the return
+	// value is computed, so a fence asked during the final drain waits until
+	// finishTurn has written everything.
+	turnFence := newFence()
+	m.fences.add(sessionID, turnFence)
+	defer func() {
+		m.fences.remove(sessionID, turnFence)
+		turnFence.close()
+	}()
+
 	// Register the turn's stop group now that the turn actually starts —
 	// after admission succeeded, before any work is dispatched. A stop that
 	// arrives while the turn is still starting must have a target, and the
@@ -931,6 +955,30 @@ func (m *TurnManager) runTurn(
 		}
 	}
 
+	// serveFence answers one fence request: it forwards the events already
+	// buffered in the subscription — the ones published before the caller
+	// asked — then flushes the stacks this turn dirtied, as the ticker does,
+	// and answers.
+	serveFence := func(answer chan struct{}) {
+	buffered:
+		for n := len(sub); n > 0; n-- {
+			select {
+			case ev, ok := <-sub:
+				if !ok {
+					sub = nil
+					break buffered
+				}
+				forward(ev)
+			case <-turnCtx.Done():
+				break buffered
+			}
+		}
+		if rt.State != nil {
+			m.flushDirtyStack(sessionID, rt.State)
+		}
+		close(answer)
+	}
+
 	flushInterval, _ := m.stackIntervals()
 	flush := time.NewTicker(flushInterval)
 	defer flush.Stop()
@@ -942,6 +990,8 @@ func (m *TurnManager) runTurn(
 			if rt.State != nil {
 				m.flushDirtyStack(sessionID, rt.State)
 			}
+		case answer := <-turnFence.requests():
+			serveFence(answer)
 		case <-turnCtx.Done():
 			// Turn cancelled (client cancel or parent shutdown).
 			subCancel()

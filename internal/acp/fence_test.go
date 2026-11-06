@@ -2,9 +2,19 @@ package acp
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"marshal/internal/acpwire"
+	"marshal/internal/app/config"
+	"marshal/internal/app/session"
+	"marshal/internal/pubsub"
+	"marshal/internal/viewmodel"
+	"marshal/internal/watch"
 )
 
 // fenceTestTimeout bounds every wait in this file so a broken fence fails
@@ -235,5 +245,310 @@ func TestAFenceSetAsksEveryFenceInOrder(t *testing.T) {
 	s.wait(ctx, "session-1")
 	if got := rec.recorded(); len(got) != 0 {
 		t.Fatalf("wait on a session with no fences served %v, want none", got)
+	}
+}
+
+// The sessions these forwarder tests serve.
+const (
+	fenceTurnSession  = "sess_fence_turn"
+	fenceStackSession = "sess_fence_stack"
+	fenceWorkSession  = "sess_fence_work"
+	fenceWatchSession = "sess_fence_watch"
+	fenceDoneSession  = "sess_fence_done"
+)
+
+// fenceUpdateRecorder records the session/update frames a manager writes, as
+// JSON, so a test can inspect kinds and payloads without depending on each
+// envelope's Go type. delay slows every update, so a fence that did not wait
+// for its forwarder answers before the update lands.
+type fenceUpdateRecorder struct {
+	mu     sync.Mutex
+	delay  time.Duration
+	frames []string
+}
+
+func (r *fenceUpdateRecorder) notify(method string, params any) error {
+	if method == acpwire.MethodSessionUpdate && r.delay > 0 {
+		time.Sleep(r.delay)
+	}
+	encoded, err := json.Marshal(params)
+	if err != nil {
+		return nil
+	}
+	r.mu.Lock()
+	r.frames = append(r.frames, string(encoded))
+	r.mu.Unlock()
+	return nil
+}
+
+// fenceUpdateKind is the update kind a recorded frame carries, or "".
+func fenceUpdateKind(frame string) string {
+	var envelope struct {
+		Update struct {
+			Kind string `json:"kind"`
+		} `json:"update"`
+	}
+	if err := json.Unmarshal([]byte(frame), &envelope); err != nil {
+		return ""
+	}
+	return envelope.Update.Kind
+}
+
+// kinds returns the kind of every recorded frame, in order.
+func (r *fenceUpdateRecorder) kinds() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, 0, len(r.frames))
+	for _, frame := range r.frames {
+		out = append(out, fenceUpdateKind(frame))
+	}
+	return out
+}
+
+// wrote reports whether some recorded frame of kind carries every needle.
+func (r *fenceUpdateRecorder) wrote(kind string, needles ...string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, frame := range r.frames {
+		if fenceUpdateKind(frame) != kind {
+			continue
+		}
+		found := true
+		for _, needle := range needles {
+			if !strings.Contains(frame, needle) {
+				found = false
+				break
+			}
+		}
+		if found {
+			return true
+		}
+	}
+	return false
+}
+
+// fenceSetLen is how many fences are registered for a session.
+func fenceSetLen(s *fenceSet, sessionID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.fences[sessionID])
+}
+
+// TestTheTurnForwarderFenceCoversEventsPublishedBefore checks that a fence
+// asked after an event was published answers only once that event's update is
+// written. Updates are slowed, so a fence that did not drain would return
+// first.
+func TestTheTurnForwarderFenceCoversEventsPublishedBefore(t *testing.T) {
+	broker := pubsub.NewBroker[session.Event]()
+	// A burst: the loop is busy writing the first update while the rest wait in
+	// the subscription's buffer, which is the state the fence must drain.
+	const published = 10
+	turnStarted := make(chan struct{})
+	rec := &fenceUpdateRecorder{delay: 30 * time.Millisecond}
+
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					close(turnStarted)
+					<-ctx.Done()
+					return ctx.Err()
+				}),
+				Events: broker,
+				Steer: func(text string) {
+					// Publish steering snapshots, as the runtime does when
+					// steers are pushed.
+					for i := 0; i < published; i++ {
+						broker.Publish(session.EventSteeringState, session.Event{
+							Steering: &session.SteeringSnapshot{
+								Version:   uint64(i + 1),
+								TurnID:    fmt.Sprintf("turn-%02d", i),
+								Active:    true,
+								Supported: true,
+							},
+						})
+					}
+				},
+			}, sessionID == fenceTurnSession
+		},
+		Notify: rec.notify,
+	})
+	t.Cleanup(func() {
+		_, _ = manager.Cancel(context.Background(), json.RawMessage(`{"sessionId":"`+fenceTurnSession+`"}`))
+	})
+
+	go func() {
+		_, _ = manager.PromptTurn(context.Background(),
+			json.RawMessage(`{"sessionId":"`+fenceTurnSession+`","prompt":[{"type":"text","text":"hi"}]}`))
+	}()
+	select {
+	case <-turnStarted:
+	case <-time.After(fenceTestTimeout):
+		t.Fatal("the turn never started")
+	}
+
+	if _, err := manager.Steer(context.Background(),
+		json.RawMessage(`{"sessionId":"`+fenceTurnSession+`","text":"focus on tests"}`)); err != nil {
+		t.Fatalf("Steer: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), fenceTestTimeout)
+	defer cancel()
+	manager.fenceSession(ctx, fenceTurnSession)
+
+	for i := 0; i < published; i++ {
+		marker := fmt.Sprintf(`"turnId":"turn-%02d"`, i)
+		if !rec.wrote("steering_state", marker) {
+			t.Fatalf("the fence answered before the update for event %d was written: kinds %v", i, rec.kinds())
+		}
+	}
+}
+
+// TestTheIdleStackFenceFlushesAChange checks that a fence on the idle stack
+// loop flushes a change published before it was asked, so a read after the
+// call sees the new node.
+func TestTheIdleStackFenceFlushesAChange(t *testing.T) {
+	rec := &fenceUpdateRecorder{}
+	broker := pubsub.NewBroker[session.Event]()
+	st := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{SessionID: sessionID, State: st, Events: broker}, sessionID == fenceStackSession
+		},
+		Notify: rec.notify,
+	})
+
+	// One main-stack read activates the projector and starts the idle loop.
+	if _, err := manager.Stack(context.Background(),
+		json.RawMessage(`{"sessionId":"`+fenceStackSession+`"}`)); err != nil {
+		t.Fatalf("Stack: %v", err)
+	}
+
+	before := viewmodel.ProjectState(st, false, time.Now()).Tree
+	st.AddMessage(session.RoleAssistant, "after the call", session.ContentTypePlain)
+	after := viewmodel.ProjectState(st, false, time.Now()).Tree
+	known := make(map[string]bool, len(before.Nodes))
+	for _, n := range before.Nodes {
+		known[n.ID] = true
+	}
+	var added []string
+	for _, n := range after.Nodes {
+		if !known[n.ID] {
+			added = append(added, n.ID)
+		}
+	}
+	if len(added) == 0 {
+		t.Fatal("the added message produced no new node")
+	}
+
+	broker.Publish(session.EventMessageAdded, session.Event{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), fenceTestTimeout)
+	defer cancel()
+	manager.fenceSession(ctx, fenceStackSession)
+
+	if !rec.wrote("stack_patch", added[0]) {
+		t.Fatalf("the fence answered before the patch for %q: kinds %v", added[0], rec.kinds())
+	}
+}
+
+// TestTheWorkForwarderFenceCoversASnapshot checks that a fence on the work
+// forwarder covers a snapshot published before it was asked.
+func TestTheWorkForwarderFenceCoversASnapshot(t *testing.T) {
+	rec := &fenceUpdateRecorder{}
+	svc := &fakeWorkService{
+		snapshot:     viewmodel.WorkSnapshot{RuntimeEpoch: "epoch-1"},
+		subscription: make(chan pubsub.Event[viewmodel.WorkSnapshot], 4),
+	}
+	manager := NewWorkManagerACP(func(sessionID string) (viewmodel.WorkService, bool) {
+		return svc, sessionID == fenceWorkSession
+	}, rec.notify)
+	t.Cleanup(manager.Close)
+
+	// One work_list starts the session's forwarder.
+	if _, err := manager.List(context.Background(),
+		json.RawMessage(`{"sessionId":"`+fenceWorkSession+`"}`)); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	svc.subscription <- pubsub.Event[viewmodel.WorkSnapshot]{
+		Type:    "work",
+		Payload: viewmodel.WorkSnapshot{RuntimeEpoch: "epoch-1"},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), fenceTestTimeout)
+	defer cancel()
+	manager.fenceSession(ctx, fenceWorkSession)
+
+	if !rec.wrote("work_state", `"runtimeEpoch":"epoch-1"`) {
+		t.Fatalf("the fence answered before the work_state update: kinds %v", rec.kinds())
+	}
+}
+
+// TestTheWatchForwarderFenceCoversAnEvent checks that a fence on the watch
+// forwarder covers an event published before it was asked.
+func TestTheWatchForwarderFenceCoversAnEvent(t *testing.T) {
+	rec := &fenceUpdateRecorder{}
+	broker := pubsub.NewBroker[watch.Event]()
+	wm := watch.NewManager(context.Background(), watch.Deps{})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = wm.Close(ctx)
+		broker.Close()
+	})
+	manager := NewWatchManagerACP(func(sessionID string) (*watch.Manager, *pubsub.Broker[watch.Event], bool) {
+		return wm, broker, sessionID == fenceWatchSession
+	}, rec.notify)
+
+	// One watch_list starts the session's forwarder.
+	if _, err := manager.List(context.Background(),
+		json.RawMessage(`{"sessionId":"`+fenceWatchSession+`"}`)); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	broker.Publish("watch", watch.Event{WatchID: "watch-1", Name: "build"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), fenceTestTimeout)
+	defer cancel()
+	manager.fenceSession(ctx, fenceWatchSession)
+
+	if !rec.wrote("watch", `"watchId":"watch-1"`) {
+		t.Fatalf("the fence answered before the watch update: kinds %v", rec.kinds())
+	}
+}
+
+// TestAFenceOnAFinishedTurnReturnsAtOnce checks that a turn's fence is gone
+// with its forwarder, so asking it afterwards answers without waiting.
+func TestAFenceOnAFinishedTurnReturnsAtOnce(t *testing.T) {
+	broker := pubsub.NewBroker[session.Event]()
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run:       RunnerFunc(func(context.Context, string) error { return nil }),
+				Events:    broker,
+			}, sessionID == fenceDoneSession
+		},
+		Notify: func(string, any) error { return nil },
+	})
+
+	if _, err := manager.PromptTurn(context.Background(),
+		json.RawMessage(`{"sessionId":"`+fenceDoneSession+`","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
+		t.Fatalf("PromptTurn: %v", err)
+	}
+	if left := fenceSetLen(&manager.fences, fenceDoneSession); left != 0 {
+		t.Fatalf("%d fences left after the turn ended, want none", left)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), fenceTestTimeout)
+	defer cancel()
+	start := time.Now()
+	manager.fenceSession(ctx, fenceDoneSession)
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("the fence on a finished turn took %v", elapsed)
 	}
 }

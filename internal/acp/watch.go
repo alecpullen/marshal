@@ -30,12 +30,22 @@ type WatchManagerACP struct {
 
 	mu         sync.Mutex
 	forwarders map[string]context.CancelFunc
+
+	// fences holds this connection's live watch forwarders, by session, so a
+	// response barrier can confirm their updates are written (P3 R2).
+	fences fenceSet
 }
 
 // NewWatchManagerACP builds the handler set. lookup resolves a session's
 // current watch manager and event broker.
 func NewWatchManagerACP(lookup func(string) (*watch.Manager, *pubsub.Broker[watch.Event], bool), notify NotifyFunc) *WatchManagerACP {
 	return &WatchManagerACP{lookup: lookup, notify: notify, forwarders: map[string]context.CancelFunc{}}
+}
+
+// fenceSession waits until the session's watch forwarder has written the
+// updates for the events published before it was asked (P3 R2).
+func (m *WatchManagerACP) fenceSession(ctx context.Context, sessionID string) {
+	m.fences.wait(ctx, sessionID)
 }
 
 // WatchSamplePoint is one sample in a watch's history; At is Unix ms.
@@ -202,15 +212,51 @@ func (m *WatchManagerACP) ensureForwarder(sessionID string, broker *pubsub.Broke
 	m.mu.Unlock()
 
 	events := broker.Subscribe(ctx)
+	fwdFence := newFence()
+	m.fences.add(sessionID, fwdFence)
 	go func() {
 		defer func() {
 			cancel()
+			m.fences.remove(sessionID, fwdFence)
+			fwdFence.close()
 			m.mu.Lock()
 			delete(m.forwarders, sessionID)
 			m.mu.Unlock()
 		}()
 		ticker := time.NewTicker(watchLiveCheck)
 		defer ticker.Stop()
+		// send writes one event as a session/update. It is shared by the
+		// ordinary event case and the fence's drain.
+		send := func(e watch.Event) {
+			_ = m.notify("session/update", SessionUpdateParams{
+				SessionID: sessionID,
+				Update: map[string]any{
+					"kind": "watch",
+					"event": map[string]any{
+						"watchId": e.WatchID, "name": e.Name, "kind": string(e.Kind),
+						"state": string(e.State), "sample": e.Sample, "owner": e.Owner,
+						"mode": string(e.Mode),
+					},
+				},
+			})
+		}
+		// serveFence forwards the events already buffered in the subscription
+		// — the ones published before the caller asked — then answers.
+		serveFence := func(answer chan struct{}) {
+		buffered:
+			for n := len(events); n > 0; n-- {
+				select {
+				case ev, ok := <-events:
+					if !ok {
+						break buffered
+					}
+					send(ev.Payload)
+				case <-ctx.Done():
+					break buffered
+				}
+			}
+			close(answer)
+		}
 		for {
 			select {
 			case <-ctx.Done():
@@ -219,18 +265,9 @@ func (m *WatchManagerACP) ensureForwarder(sessionID string, broker *pubsub.Broke
 				if !ok {
 					return
 				}
-				e := ev.Payload
-				_ = m.notify("session/update", SessionUpdateParams{
-					SessionID: sessionID,
-					Update: map[string]any{
-						"kind": "watch",
-						"event": map[string]any{
-							"watchId": e.WatchID, "name": e.Name, "kind": string(e.Kind),
-							"state": string(e.State), "sample": e.Sample, "owner": e.Owner,
-							"mode": string(e.Mode),
-						},
-					},
-				})
+				send(ev.Payload)
+			case answer := <-fwdFence.requests():
+				serveFence(answer)
 			case <-ticker.C:
 				if _, _, ok := m.lookup(sessionID); !ok {
 					return
@@ -265,6 +302,10 @@ type WorkManagerACP struct {
 	mu         sync.Mutex
 	forwarders map[string]*workForwarder
 	closed     bool
+
+	// fences holds this connection's live work forwarders, by session, so a
+	// response barrier can confirm their updates are written (P3 R2).
+	fences fenceSet
 }
 
 // workForwarder tracks one session's work-snapshot subscription. Task 22 owns
@@ -273,12 +314,19 @@ type workForwarder struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 	epoch  string
+	fence  *fence
 }
 
 // NewWorkManagerACP builds the handler set. lookup resolves a session's Work
 // facade; notify is the host-level sink for future work_state updates.
 func NewWorkManagerACP(lookup func(string) (viewmodel.WorkService, bool), notify NotifyFunc) *WorkManagerACP {
 	return &WorkManagerACP{lookup: lookup, notify: notify, forwarders: map[string]*workForwarder{}}
+}
+
+// fenceSession waits until the session's work forwarder has written the
+// updates for the snapshots published before it was asked (P3 R2).
+func (m *WorkManagerACP) fenceSession(ctx context.Context, sessionID string) {
+	m.fences.wait(ctx, sessionID)
 }
 
 // service resolves the Work facade for a session. A missing session id is
@@ -474,6 +522,8 @@ func (m *WorkManagerACP) ensureWorkForwarder(sessionID string, service viewmodel
 	// reads it is started.
 	events := service.SubscribeWork(ctx)
 	f.epoch = service.WorkSnapshot().RuntimeEpoch
+	f.fence = newFence()
+	m.fences.add(sessionID, f.fence)
 	go m.runWorkForwarder(sessionID, f, ctx, events)
 }
 
@@ -484,6 +534,38 @@ func (m *WorkManagerACP) ensureWorkForwarder(sessionID string, service viewmodel
 // from work_list rather than from a late delivery.
 func (m *WorkManagerACP) runWorkForwarder(sessionID string, f *workForwarder, ctx context.Context, events <-chan pubsub.Event[viewmodel.WorkSnapshot]) {
 	defer m.retireWorkForwarder(sessionID, f)
+	defer func() {
+		m.fences.remove(sessionID, f.fence)
+		f.fence.close()
+	}()
+	// deliver forwards one snapshot unless its epoch is not the one bound.
+	deliver := func(snap viewmodel.WorkSnapshot) {
+		if snap.RuntimeEpoch != f.epoch {
+			// A stray delivery from a replaced service epoch. Drop it; the
+			// client rebinds through work_list rather than trusting a
+			// snapshot it never bound. Retirement is driven by the
+			// subscription ending, below.
+			return
+		}
+		m.notifyWorkState(sessionID, snap)
+	}
+	// serveFence forwards the snapshots already buffered in the subscription
+	// — the ones published before the caller asked — then answers.
+	serveFence := func(answer chan struct{}) {
+	buffered:
+		for n := len(events); n > 0; n-- {
+			select {
+			case ev, ok := <-events:
+				if !ok {
+					break buffered
+				}
+				deliver(ev.Payload)
+			case <-ctx.Done():
+				break buffered
+			}
+		}
+		close(answer)
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -492,15 +574,9 @@ func (m *WorkManagerACP) runWorkForwarder(sessionID string, f *workForwarder, ct
 			if !ok {
 				return
 			}
-			snap := ev.Payload
-			if snap.RuntimeEpoch != f.epoch {
-				// A stray delivery from a replaced service epoch. Drop it; the
-				// client rebinds through work_list rather than trusting a
-				// snapshot it never bound. Retirement is driven by the
-				// subscription ending, below.
-				continue
-			}
-			m.notifyWorkState(sessionID, snap)
+			deliver(ev.Payload)
+		case answer := <-f.fence.requests():
+			serveFence(answer)
 		}
 	}
 }

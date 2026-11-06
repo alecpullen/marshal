@@ -186,6 +186,10 @@ type fakeWorkService struct {
 	lastRaw    bool
 	lastStop   string
 	lastAck    viewmodel.WorkAck
+
+	// subscription, when set, is the channel SubscribeWork returns instead of
+	// a closed one, so a test can publish snapshots to a running forwarder.
+	subscription chan pubsub.Event[viewmodel.WorkSnapshot]
 }
 
 func (f *fakeWorkService) WorkSnapshot() viewmodel.WorkSnapshot {
@@ -195,6 +199,12 @@ func (f *fakeWorkService) WorkSnapshot() viewmodel.WorkSnapshot {
 }
 
 func (f *fakeWorkService) SubscribeWork(context.Context) <-chan pubsub.Event[viewmodel.WorkSnapshot] {
+	f.mu.Lock()
+	subscription := f.subscription
+	f.mu.Unlock()
+	if subscription != nil {
+		return subscription
+	}
 	ch := make(chan pubsub.Event[viewmodel.WorkSnapshot])
 	close(ch)
 	return ch

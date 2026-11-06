@@ -311,8 +311,13 @@ func init() {
 		"doctor": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
 			cfg := m.sess.Config()
 			diags := config.Diagnose(cfg, m.sess.Layers())
-			checks := doctorpanel.ComputeIntelligence(cfg, m.memoryDB, m.memoryProject)
-			m.dock.Open(doctorpanel.New(m.state, diags, checks))
+			checks, err := m.sess.Intelligence(m.ctx)
+			if err != nil {
+				// A session that cannot report its subsystem health still gets
+				// the config diagnostics; the section simply stays out.
+				checks = nil
+			}
+			m.dock.Open(doctorpanel.New(diags, checks))
 			m.refreshViewport()
 			return m, nil
 		},

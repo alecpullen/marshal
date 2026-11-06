@@ -4,14 +4,13 @@ import (
 	"strings"
 	"testing"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
-	"marshal/internal/app/session"
 	"marshal/internal/app/tui/listpanel"
 )
 
 func TestPanelRendersCleanState(t *testing.T) {
-	state := &session.State{}
-	p := New(state, nil, nil)
+	p := New(nil, nil)
 	if p == nil {
 		t.Fatal("New returned nil")
 	}
@@ -64,7 +63,7 @@ func TestPanelNeverEchoesKeyMaterial(t *testing.T) {
 			Message:  "provider anthropic has an empty base_url",
 		},
 	}
-	p := New(&session.State{}, diags, nil)
+	p := New(diags, nil)
 	if p == nil {
 		t.Fatal("New returned nil")
 	}
@@ -82,7 +81,7 @@ func TestPanelNeverEchoesKeyMaterial(t *testing.T) {
 }
 
 func TestPanelRendersIntelligenceSection(t *testing.T) {
-	checks := []Check{
+	checks := []acpwire.IntelligenceCheck{
 		{Name: "Index", Status: "ok", Detail: "10 files · 42 symbols"},
 		{Name: "Embeddings", Status: "off", Detail: "disabled"},
 		{Name: "LSP", Status: "warn", Detail: "none on PATH"},

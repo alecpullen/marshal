@@ -3447,24 +3447,16 @@ func isAtFileBoundary(b byte) bool {
 
 // populateFileIndexIfNeeded lazy-loads the repo file index on the first
 // @-keystroke. Skipped when the model was constructed with WithFileIndex
-// (eager seed) or when there is no DB / project id wired.
+// (eager seed); otherwise the session supplies the paths.
 func (m *Model) populateFileIndexIfNeeded() {
 	if m.fileIndexLoaded {
 		return
 	}
-	if m.memoryDB == nil || m.memoryProject == 0 {
+	paths, err := m.sess.FileIndex(m.ctx)
+	if err != nil {
 		// No way to populate; mark loaded so we don't keep retrying.
 		m.fileIndexLoaded = true
 		return
-	}
-	index, err := m.memoryDB.GetFileIndex(m.memoryProject, 0)
-	if err != nil {
-		m.fileIndexLoaded = true
-		return
-	}
-	paths := make([]string, 0, len(index))
-	for _, f := range index {
-		paths = append(paths, f.Path)
 	}
 	m.fileIndex = buildFileIndexItems(paths)
 	m.fileIndexLoaded = true

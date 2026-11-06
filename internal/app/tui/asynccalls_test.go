@@ -9,6 +9,7 @@ import (
 	"go/printer"
 	"go/token"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -696,8 +697,177 @@ func TestAPromptWaitsForTheCommandBeforeIt(t *testing.T) {
 	}
 }
 
-// blockingNewSession is the runtime's session factory with a controllable
-// wait, so a test observes the model while the replacement is being built.
+// TestASetReportsWhenItsReloadReturns pins P3 R6 for /set: the save happens at
+// once, and the receipt is written when the reload returns.
+func TestASetReportsWhenItsReloadReturns(t *testing.T) {
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(config.Config) error {
+			entered <- struct{}{}
+			<-release
+			return nil
+		}
+	})
+	stateOf(m).WorkingDir = t.TempDir()
+
+	m.dispatchCommand("/set shell.allow_network on")
+	// The effect runs at dispatch: it saves synchronously and queues the
+	// reload. Serving the queue starts that call, which blocks until released,
+	// so the test runs it off this goroutine.
+	reloadCmd := m.serveCalls()
+
+	// The save is synchronous, so the file is written and the registry
+	// invalidated before any reload runs.
+	if _, err := os.Stat(config.ProjectConfigPath(stateOf(m).WorkingDir)); err != nil {
+		t.Fatalf("the save did not happen before the reload: %v", err)
+	}
+	if n := sessionTextCount(m, "✓ shell.allow_network"); n != 0 {
+		t.Fatalf("the receipt was written %d times before the reload returned", n)
+	}
+
+	done := make(chan []tea.Msg, 1)
+	go func() { done <- runCallCmds(reloadCmd) }()
+	<-entered
+	if n := sessionTextCount(m, "✓ shell.allow_network"); n != 0 {
+		t.Fatalf("the receipt was written %d times while the reload ran", n)
+	}
+
+	close(release)
+	for _, msg := range <-done {
+		m = feedCallMsg(t, m, msg)
+	}
+	if n := sessionTextCount(m, "✓ shell.allow_network"); n != 1 {
+		t.Fatalf("the receipt appears %d times after the reload, want 1", n)
+	}
+	if m.setReg != nil {
+		t.Fatal("the reload should have invalidated the cached settings registry")
+	}
+	// It rebuilds from the live config on the next read, carrying the change.
+	if reg := m.settingsRegistry(); reg == nil || !reg.Config().Tools.Shell.AllowNetwork {
+		t.Fatal("the settings registry should rebuild from the config the reload applied")
+	}
+}
+
+// TestAFailedSaveReportsAtOnce pins the other half of R6's rule for /set: a
+// save that fails is reported before any reload is queued, and none runs.
+func TestAFailedSaveReportsAtOnce(t *testing.T) {
+	reloads := 0
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(config.Config) error {
+			reloads++
+			return nil
+		}
+	})
+	// A path that cannot hold .marshal/config.toml, so the save fails.
+	blockingPath := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blockingPath, nil, 0o644); err != nil {
+		t.Fatalf("create blocking file: %v", err)
+	}
+	stateOf(m).WorkingDir = blockingPath
+
+	m.dispatchCommand("/set shell.allow_network on")
+	m = settleCalls(t, m)
+
+	if reloads != 0 {
+		t.Fatalf("a failed save ran %d reloads, want 0", reloads)
+	}
+	if n := sessionTextCount(m, "save failed"); n != 1 {
+		t.Fatalf("the failed save was reported %d times, want 1", n)
+	}
+}
+
+// TestReloadsRunInTheOrderMade pins the queue's order for two /set commands in
+// a row: their reloads reach the session in the order the commands were made,
+// and their receipts appear in that order.
+func TestReloadsRunInTheOrderMade(t *testing.T) {
+	var order []string
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(cfg config.Config) error {
+			order = append(order, fmt.Sprintf("allow=%v redact=%v",
+				cfg.Tools.Shell.AllowNetwork, cfg.Privacy.RedactSecrets))
+			return nil
+		}
+	})
+	stateOf(m).WorkingDir = t.TempDir()
+
+	m.dispatchCommand("/set shell.allow_network on")
+	m.dispatchCommand("/set privacy.redact_secrets off")
+	m = settleCalls(t, m)
+
+	if len(order) != 2 {
+		t.Fatalf("the reloads ran %d times, want 2: %v", len(order), order)
+	}
+	// The receipts follow the reloads, so their order is the reloads' order.
+	var receipts []string
+	for _, msg := range stateOf(m).Messages() {
+		if strings.Contains(msg.Content, "shell.allow_network") ||
+			strings.Contains(msg.Content, "privacy.redact_secrets") {
+			if strings.Contains(msg.Content, "✓") {
+				receipts = append(receipts, msg.Content)
+			}
+		}
+	}
+	if len(receipts) != 2 {
+		t.Fatalf("found %d receipts, want 2: %v", len(receipts), receipts)
+	}
+	if !strings.Contains(receipts[0], "shell.allow_network") ||
+		!strings.Contains(receipts[1], "privacy.redact_secrets") {
+		t.Fatalf("receipts out of order: %v", receipts)
+	}
+}
+
+// TestAQuitWaitsForAReloadInFlight pins P3 R6's quit rule for a reload: the
+// quit finishes only once the reload it waited for has returned.
+func TestAQuitWaitsForAReloadInFlight(t *testing.T) {
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	m := newTestModelDeps(t, func(d *inproc.Deps) {
+		d.ReloadConfig = func(config.Config) error {
+			entered <- struct{}{}
+			<-release
+			return nil
+		}
+	})
+	stateOf(m).WorkingDir = t.TempDir()
+
+	m.dispatchCommand("/set shell.allow_network on")
+	// The effect already ran and queued the reload; serving the queue starts
+	// it, so run that off this goroutine.
+	reloadCmd := m.serveCalls()
+	done := make(chan []tea.Msg, 1)
+	go func() { done <- runCallCmds(reloadCmd) }()
+	<-entered
+
+	if quit := m.finishQuit(); quit != nil {
+		t.Fatal("finishQuit returned a command while a reload was in flight")
+	}
+	if !m.callQuitWaiting {
+		t.Fatal("finishQuit did not record that a quit is waiting")
+	}
+
+	close(release)
+	msgs := <-done
+	if len(msgs) != 1 {
+		t.Fatalf("the reload produced %d messages, want 1", len(msgs))
+	}
+	updated, quitCmd := m.Update(msgs[0])
+	m = asModel(t, updated)
+
+	var sawQuit bool
+	for _, msg := range runCallCmds(quitCmd) {
+		if _, ok := msg.(tea.QuitMsg); ok {
+			sawQuit = true
+		}
+	}
+	if !sawQuit {
+		t.Fatal("the quit did not finish when the reload returned")
+	}
+	if m.callQuitWaiting || m.callInFlight {
+		t.Fatal("the quit left the queue or the in-flight mark set")
+	}
+}
+
 type blockingNewSession struct {
 	newState *session.State
 	entered  chan struct{}

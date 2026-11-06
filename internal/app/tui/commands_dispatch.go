@@ -274,7 +274,7 @@ func init() {
 			// state it used to hold did.
 			sess, ctx := m.sess, m.ctx
 			log := m.log()
-			m.dock.Open(plugins.NewPanel(m.homeDir, m.workDir, m.sess.Status().Trusted, func(text string) {
+			m.dock.Open(plugins.NewPanel(sess, m.sess.Status().Trusted, func(text string) {
 				if err := sess.AddNote(ctx, acpwire.Note{Text: text, ContentType: acpwire.ContentTypePlain}); err != nil {
 					log.Warn("plugin note dropped", "error", err)
 				}

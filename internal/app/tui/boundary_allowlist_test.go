@@ -11,7 +11,6 @@ var boundaryAllowlist = map[string][]string{
 	"doctorpanel/doctorpanel.go":  {"marshal/internal/app/session"},
 	"doctorpanel/intelligence.go": {"marshal/internal/db", "marshal/internal/lsp"},
 	"model.go":                    {"marshal/internal/app/session", "marshal/internal/db", "marshal/internal/pubsub", "marshal/internal/sddauthor", "marshal/internal/sddplans", "marshal/internal/skills", "marshal/internal/watch"},
-	"plugins/panel.go":            {"marshal/internal/plugins"},
 	"runoutcome.go":               {"marshal/internal/worktree"},
 	"sdd_command.go":              {"marshal/internal/app/session"},
 	"skills/panel.go":             {"config.SaveUserConfigValue", "config.UserConfigPath", "config.UserDir", "marshal/internal/app/session", "marshal/internal/skills"},

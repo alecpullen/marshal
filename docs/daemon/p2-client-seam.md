@@ -9,8 +9,9 @@ change, no new ACP method, no database schema change. ACP messages that
 already exist change only by gaining optional fields (C6).
 Status: drafted 2026-10-20; revised 2026-10-25 against `991c18d7`
 and since, plan by plan (Revision record). Delivered as nine plans
-(Migration order), each written against `main` once the previous one has
-landed; plans 2, 3, 5, 7 and 8 are split into sub-plans.
+(Migration order), each written against `main` once the previous one
+landed; plans 2, 3, 5, 7 and 8 were split into sub-plans, and plan 9
+closed it on 2026-11-06.
 
 Decided with the user (2026-10-20):
 - **Transcript on the wire:** `WireTree`. The TUI renders the same
@@ -3027,3 +3028,33 @@ and `HasActiveSkill`, and `deferredStateReads` is now empty.
 
 No user-visible change. P3 needs handlers for the four new methods, and `session/list`
 results still need converting (RFC 3339 times and the message count in `_meta`).
+
+**Plan 9 (close-out), branch `p2-9-close-out`.** `inproc.Session.State` returns the
+state a session serves, and the tests reach a model's state through one helper,
+`stateOf`, which walks past the recorders that embed the adapter (each gained an
+`Unwrap`). 1,150 reads across 70 test files were rewritten to it; six reads the
+perl rewrite could not see (`f.m.state` and `updated.(Model).state`) went through it by
+hand. `internal/app` gained the counterpart helper `modelStateOf`.
+
+The model's `state`, `legacySession`, `memoryDB` and `memoryProject` fields are gone
+with `WithLegacyState`, `LegacySession`, `WithLegacySession` and `WithMemoryStore`.
+`New` keeps only its nil-host-or-session panic, `reconcileAccess` lost its nil-state
+guard, `startNewSession` lost the legacy re-read, and `app.Run` builds its TUI options
+from an empty list. `model.go` no longer imports `marshal/internal/app/session` or
+`marshal/internal/db`.
+
+T1 has no allowlist: `boundary_test.go` fails on every crossing with "%s uses %s, which
+is agent side (P2 C1): move it behind acpclient", `boundary_allowlist_test.go` and
+`moved_reads_test.go` (T1b, with both maps and its helpers) are deleted, and
+`formatAllowlist` went with them. Both mutation checks held: `State` returning a fresh
+state fails the approval, status and question tests, and a probe file importing
+`marshal/internal/db` fails T1 naming it, with no map to exempt it.
+
+The list of methods P3 must add is the P3 spec's "Methods P3 adds": 72 interface
+methods carried by 64 ACP methods `acp.Server` does not register, grouped by the plan
+that adds each, with the five R6 conversions marked. The interface has 110 methods: 35
+send an ACP method that exists and three have none. Design §4.5 now describes the seam
+as built, §7 marks P2 implemented, §8 marks the transcript question settled and
+implemented, and `AGENTS.md` and `docs/ARCHITECTURE.md` say there is no allowlist.
+
+The Done when section's manual run is left to the user; everything else in it holds.

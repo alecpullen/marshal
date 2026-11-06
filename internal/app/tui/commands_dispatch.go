@@ -175,7 +175,10 @@ func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 // runtime froze the old conversation at acceptance, so the swap acts on a
 // settled membership and no old work is transferred or reopened.
 func startNewSession(m *Model, name string) tea.Cmd {
-	oldCount := len(m.state.Messages())
+	oldCount := 0
+	if page, err := m.sess.Messages(m.ctx, acpwire.MessageQuery{Last: 1}); err == nil {
+		oldCount = page.Total
+	}
 	// Whatever the outcome, the end is over: the old conversation settled and a
 	// failed replacement starts nothing, so a retry begins from idle.
 	m.endStage = endIdle

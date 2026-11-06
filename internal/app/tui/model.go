@@ -64,7 +64,6 @@ import (
 	"marshal/internal/sddplans"
 	"marshal/internal/skills"
 	"marshal/internal/strutil"
-	"marshal/internal/watch"
 )
 
 // endIntent is one pending interactive end request: what the user asked for,
@@ -1157,7 +1156,6 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 	if m.state == nil {
 		panic("tui.New: WithLegacyState is required until P2 plan 9")
 	}
-	state := m.state
 	st := m.sess.Status()
 	// One session-config read for the whole construction: the reads below
 	// seed theme, discovery and history from the live config.
@@ -1241,10 +1239,8 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 
 	m.histIdx = -1
 	if cfg.History.Enabled {
-		if database := state.DB(); database != nil && m.memoryProject != 0 {
-			if prompts, err := database.RecentPrompts(m.memoryProject, promptHistoryLimit); err == nil {
-				m.history = prompts
-			}
+		if prompts, err := m.sess.RecentPrompts(m.ctx, promptHistoryLimit); err == nil {
+			m.history = prompts
 		}
 	}
 
@@ -4011,8 +4007,13 @@ func (m *Model) startWatchResumeRun(name string, repeat bool) tea.Cmd {
 	if !m.sess.Status().AgentReady || m.busy || m.dock.IsOpen() || !m.sess.Config().Watch.ResumeEnabled {
 		return nil
 	}
-	goal := watch.ResumeGoal(name, m.lastAssistantText(), repeat)
-	model, cmd := m.startPrompt(goal, false)
+	sess := m.sess
+	model, cmd := m.startSessionRun("Cannot start work", func(ctx context.Context) error {
+		_, err := sess.Prompt(ctx, acpwire.PromptParams{
+			WatchResume: &acpwire.WatchResume{Name: name, Repeat: repeat},
+		})
+		return err
+	})
 	if cmd == nil {
 		return nil
 	}
@@ -4048,20 +4049,6 @@ func (m *Model) flushQueuedSteering() tea.Cmd {
 	return cmd
 }
 
-// lastAssistantText returns the last RoleAssistant message's content
-// (empty when there is none). Idle means the transcript is frozen, so
-// the backward scan is race-free (same pattern as computeSuggestion and
-// lastFinalAssistantPlan).
-func (m *Model) lastAssistantText() string {
-	msgs := m.state.Messages()
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == session.RoleAssistant {
-			return msgs[i].Content
-		}
-	}
-	return ""
-}
-
 // startSDDAuthoring begins an authoring turn for /sdd new. It builds the
 // scoped authoring runner, resolves the candidate path, and starts the
 // async command. On success the completion handler opens the review panel;
@@ -4087,13 +4074,15 @@ func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
 	goal := parsed.Goal
 	design := goal
 	if parsed.FromLastPlan {
-		last, ok := lastFinalAssistantPlan(m.state)
-		if !ok {
+		page, err := m.sess.Messages(m.ctx, acpwire.MessageQuery{
+			Role: acpwire.RoleAssistant, Final: true, Last: 1,
+		})
+		if err != nil || len(page.Messages) == 0 {
 			m.note("No approved plan found in the last assistant turn. Load the marshal-writing-plans skill, produce an approved plan, then run /sdd new --from-last-plan.")
 			m.refreshViewport()
 			return m, nil
 		}
-		design = last
+		design = page.Messages[0].Content
 		goal = "Convert the approved plan into an executable SDD plan."
 	}
 	if strings.TrimSpace(goal) == "" {
@@ -4808,12 +4797,11 @@ func (m *Model) postmortemOnExit() string {
 // sessionHasUserTurn reports whether the session holds any user-role message.
 // The exit prompt is skipped for a session the user never typed into.
 func (m *Model) sessionHasUserTurn() bool {
-	for _, msg := range m.state.Messages() {
-		if msg.Role == session.RoleUser {
-			return true
-		}
+	page, err := m.sess.Messages(m.ctx, acpwire.MessageQuery{Role: acpwire.RoleUser, Last: 1})
+	if err != nil {
+		return false
 	}
-	return false
+	return page.Total > 0
 }
 
 // extractPostmortemCmd runs the exit postmortem's extraction+write step and
@@ -5053,17 +5041,11 @@ func (m *Model) computeSuggestion() tea.Cmd {
 	if suggestions == "off" {
 		return nil
 	}
-	msgs := m.state.Messages()
-	var last session.Message
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == session.RoleAssistant {
-			last = msgs[i]
-			break
-		}
-	}
-	if last.Role != session.RoleAssistant {
+	page, err := m.sess.Messages(m.ctx, acpwire.MessageQuery{Role: acpwire.RoleAssistant, Last: 1})
+	if err != nil || len(page.Messages) == 0 {
 		return nil
 	}
+	last := page.Messages[len(page.Messages)-1]
 
 	// Show whatever the rules produced right away. ConfidenceNone yields
 	// "", so nothing is shown until the fallback returns.
@@ -7009,12 +6991,11 @@ func (m *Model) modelPickerItems() []picker.Item {
 // rewindPickerItems builds picker items from user turns, newest first.
 // The most recent turn carries a "● last" badge and is the default cursor target.
 func (m *Model) rewindPickerItems() []picker.Item {
-	var turns []session.Message
-	for _, msg := range m.state.Messages() {
-		if msg.Role == session.RoleUser {
-			turns = append(turns, msg)
-		}
+	page, err := m.sess.Messages(m.ctx, acpwire.MessageQuery{Role: acpwire.RoleUser})
+	if err != nil {
+		return nil
 	}
+	turns := page.Messages
 	items := make([]picker.Item, 0, len(turns))
 	for i := len(turns) - 1; i >= 0; i-- {
 		badge := ""

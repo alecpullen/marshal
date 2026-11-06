@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpwire"
 	"marshal/internal/agent/swarm"
 	"marshal/internal/app/config"
@@ -51,7 +51,7 @@ func (rt *Runtime) RunSwarm(ctx context.Context, params acpwire.SwarmParams) err
 
 // NewPlanRun builds the plan run params names over the runtime's current
 // pipeline factory. It does not run it.
-func (rt *Runtime) NewPlanRun(params acpwire.SDDParams) (inproc.PlanRun, error) {
+func (rt *Runtime) NewPlanRun(params acpwire.SDDParams) (service.PlanRun, error) {
 	rt.mu.Lock()
 	factory := rt.PipelineFactory
 	rt.mu.Unlock()
@@ -138,7 +138,7 @@ func (rt *Runtime) AuthorPlan(ctx context.Context, params acpwire.AuthorPlanPara
 	return authoredPlanOf(result), nil
 }
 
-// planRun is one plan-execution run (inproc.PlanRun).
+// planRun is one plan-execution run (service.PlanRun).
 type planRun struct {
 	runner   PipelineRunner
 	planPath string

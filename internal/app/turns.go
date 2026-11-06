@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpwire"
 	"marshal/internal/agent"
 	"marshal/internal/app/session"
@@ -20,7 +20,7 @@ const verifyProposalPrompt = "Inspect this repository and return exactly one JSO
 
 // TurnRunner returns the runtime's current agent runner, or nil while the
 // provider is not built. It never returns a typed nil.
-func (rt *Runtime) TurnRunner() inproc.Runner {
+func (rt *Runtime) TurnRunner() service.Runner {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	if rt.Runner == nil {
@@ -158,7 +158,7 @@ func verifyCommandsFrom(msgs []session.Message) (acpwire.VerifyCommands, error) 
 
 // bindTurnDeps points d's runner, its run calls and its pipeline calls at rt.
 // Run uses it, and so do the tests that build Deps the way Run does.
-func bindTurnDeps(d *inproc.Deps, rt *Runtime) {
+func bindTurnDeps(d *service.Deps, rt *Runtime) {
 	d.Runner = rt.TurnRunner
 	d.Review = rt.RunReview
 	d.RunAgent = rt.RunCustomAgent

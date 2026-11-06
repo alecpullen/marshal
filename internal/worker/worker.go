@@ -1,8 +1,9 @@
 // Package worker defines the minimal lifecycle contract for supervised,
-// long-lived background duties. app.Run starts each Worker in its own goroutine
-// bound to the shutdown context. This is the seam a future background-task
-// subsystem (supervisor/registry, agent dispatch, scheduling) will build on;
-// for now the index watcher is the only implementation.
+// long-lived background duties. The embedded runtime and the project-host
+// registry start each Worker in its own goroutine bound to the shutdown
+// context. This is the seam a future
+// background-task subsystem (supervisor/registry, agent dispatch, scheduling)
+// will build on; for now the index watcher is the only implementation.
 package worker
 
 import "context"

@@ -299,9 +299,9 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		// and by the "query" search that absorbed recall_history.
 		all = append(all, tools.transcriptReadTool())
 	}
-	// agent.run is registered separately by app.Run after the policy engine
-	// is constructed; the native toolset does not have access to the engine
-	// until then. See internal/app/app.go.
+	// agent.run is registered separately by app.StartRuntime after the policy
+	// engine is constructed; the native toolset does not have access to the
+	// engine until then. See internal/app/app.go.
 	all = append(all, tools.configReadTool())
 	if tools.webEnabled {
 		all = append(all, tools.webFetchTool())

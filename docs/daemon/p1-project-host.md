@@ -97,7 +97,7 @@ running. Two processes on one tree run one indexer between them.
   is what `resolveWorkingDir` returns: the git root, or the directory
   itself outside git. Sessions started from subdirectories of one repo,
   or with different `additionalDirectories`, share one host.
-- `acp.Run`, `acp.ListenAndServe` and `app.Run` each create one registry
+- `acp.Run`, `acp.ListenAndServe` and `app.NewEmbedded` each create one registry
   per process with indexing on, pass it to every runtime with
   `app.WithHosts`, and close it after every session has closed.
 - A runtime started without `WithHosts` gets a private registry with

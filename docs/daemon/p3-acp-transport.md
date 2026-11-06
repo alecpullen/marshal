@@ -75,8 +75,8 @@ new client.
   (`NewServer`, `:119`). It reads each inbound frame with a 1 MiB cap
   (`:312`). Handlers run on their own goroutines (`handlerWG`), and nothing
   orders a response after the notifications its handler caused. There is
-  no request cancellation: no `$/cancelRequest` or equivalent. 70 methods
-  are registered (`host.go`).
+  no request cancellation: no `$/cancelRequest` or equivalent. 71 methods
+  are registered (`host.go`), plus the `session/cancel` notification.
 - **What the agent pushes today:**
   - the ACP chunk kinds (`agent_message_chunk`, `agent_thought_chunk`,
     `tool_call`, …);
@@ -869,3 +869,62 @@ the agent sends today. Plan 3b adds `session/status`, `session_status`,
   conformance harness. A turn that outlives its connection keeps its fence on
   the old connection's `TurnManager`, so a new connection's barrier does not
   wait for it (P4's reattach revisits this).
+
+### Plan 2 — layering
+
+- **The service is `internal/acp/service`**, and it is `inproc`'s logic moved:
+  the same eight exported names (`Deps`, `New`, `Host`, `Session`, `Runner`,
+  `PlanRun`, `EndService`, `ReferenceFinder`), the same behaviour, the same
+  `inproc:` error texts (some tests pin them). Only the package clause and the
+  doc comment changed. Its import rule is the point of the package: it must
+  not import `internal/app` or `internal/acp`, because `app` builds its `Deps`
+  and returns its types and `acp` imports `app`.
+- **`internal/acpclient/inproc` is aliases.** Its eight exported names are
+  aliases for the service's, and `New` forwards. The TUI and 34 of its test
+  files compile and behave unchanged; plan 8 deletes the package.
+- **`(*Runtime).ServiceDeps`** builds what the service needs from the runtime,
+  as `Run`'s `Deps` block did: the brokers, the project ID, the reference
+  finder, the access and interaction calls, the commands, the credential
+  resolver, the model cache, `rt.ConfigReloader`, the layer reloader, the trust
+  refresh, the home directory, `rt.ToolNames`, the skill index, the file index,
+  `Work` only when the provider is ready, and `bindTurnDeps`' turn calls. It
+  sets no trust prompt: that belongs to the embedding.
+- **`app.Embedded`** is the runtime half of `app.Run`: `NewEmbedded` applies
+  the options once (after the defaults the loop needs: the
+  template-rebinding config loader and the deferred trust prompt), resolves
+  the credential resolver once, the directories, first run and the project
+  host registry. `Start` starts a runtime and does the start-up work (`marshal
+  started`, the embedding warning, the OAuth workers, the secret prompt and
+  the exit-analysis operation); `SessionDeps` is `ServiceDeps` plus the trust
+  prompt and its decision; `Resume`, `TakeTrustReload` and `Finish` are the
+  loop's three exit branches; `Close` closes the runtime and then the registry
+  it created. The embedding warning and the workers now start before the
+  `Deps` are built rather than after; nothing between the two reads the
+  transcript or the workers.
+- **`internal/launch` is embedded mode's composition root.** `launch.Run` is
+  the rest of `app.Run`: the early return, the signal context, `NewEmbedded`,
+  the deferred `Close`, and the loop that builds the adapter with
+  `inproc.New(embedded.SessionDeps(ctx))`, the TUI options, the program and the
+  resume/trust-reload/finish branches. `launch.Option` carries
+  `WithProgramRunner` (whose nil is ignored) and `WithApp`, which passes
+  `app.Option`s through. `app`'s non-test code now imports neither `tui`, nor
+  Bubble Tea, nor `inproc`.
+- **Tests moved, not rewritten.** The 24 `TestRun…` tests moved to
+  `internal/launch/launch_test.go` with copies of the helpers they use, each
+  `app` option wrapped in one `WithApp`. `TestRunResolvesOptionsOnce` stayed in
+  `app` as `TestNewEmbeddedResolvesOptionsOnce`, since it counts applications of
+  an `app` option. `TestServiceDepsServesTheRuntime` is new. The three
+  TUI-over-runtime tests stayed in `app` because they need its unexported
+  builders.
+- **Two guards.** `TestServiceImportsStayAgentSide` keeps the service off the
+  TUI and off `acpclient/rpc`; `TestAppImportsNoClient` keeps `app`'s non-test
+  files off `internal/app/tui`, Bubble Tea and `inproc`. `go list -deps
+  ./internal/app` prints none of them.
+- **The counts did not move** (re-measured on this branch):
+  `acpclient.Methods` still has 110 rows, 35 of them an existing ACP method and
+  72 new in P3, with 3 carrying none; `acp.Server` still registers 71 methods
+  (plus the `session/cancel` notification).
+  `internal/acpclient/acpclient.go`, `methods.go`, `internal/acp/host.go` and
+  `server.go` are untouched by this plan.
+- **Left for plan 3b:** the first ACP handlers that call the service, and each
+  ACP session's service built with `ServiceDeps`.

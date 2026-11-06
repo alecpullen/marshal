@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"sync"
@@ -12,8 +13,10 @@ import (
 
 	"marshal/internal/acpclient"
 	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/castlist"
 	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/commands"
 )
@@ -542,5 +545,224 @@ func TestAPromptWaitsForTheCommandBeforeIt(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("the prompt did not start after the command's result")
+	}
+}
+
+// blockingNewSession is the runtime's session factory with a controllable
+// wait, so a test observes the model while the replacement is being built.
+type blockingNewSession struct {
+	newState *session.State
+	entered  chan struct{}
+	release  chan struct{}
+	called   int
+}
+
+func (b *blockingNewSession) newSession(string) (*session.State, error) {
+	b.called++
+	b.entered <- struct{}{}
+	<-b.release
+	return b.newState, nil
+}
+
+// TestNewSessionSwapsWhenItsResultArrives pins P3 R6: the replacement's swap
+// happens when its result arrives, and a prompt submitted meanwhile waits for
+// it and lands on the new session.
+func TestNewSessionSwapsWhenItsResultArrives(t *testing.T) {
+	oldState := postmortemTestState(t, "sess-old")
+	newState := postmortemTestState(t, "sess-new")
+	runner := &fakeAgentRunner{called: make(chan string, 1)}
+	block := &blockingNewSession{
+		newState: newState,
+		entered:  make(chan struct{}, 1),
+		release:  make(chan struct{}),
+	}
+	host, sess := inproc.New(inproc.Deps{
+		State:      oldState,
+		NewSession: block.newSession,
+		End:        &endTestController{},
+		Commands:   setupCmdReg(t),
+		Runner:     runnerOf(runner),
+	})
+	m := New(host, sess, WithHomeDir(t.TempDir()))
+	m.resize(80, 24)
+
+	if cmd := startNewSession(&m, "named"); cmd != nil {
+		t.Fatal("startNewSession returned a command")
+	}
+	// A call queued behind the replacement reads the session when it starts,
+	// so it must see the swapped one — the start of a queued call is what the
+	// queue re-reads the model for.
+	var sawSession string
+	m.enqueueCall(func(mm *Model) callRun {
+		sawSession = mm.sess.ID()
+		return func(context.Context) callOutcome { return nil }
+	})
+	serve := m.serveCalls()
+	if serve == nil {
+		t.Fatal("serving the queue started no command")
+	}
+	done := make(chan []tea.Msg, 1)
+	go func() { done <- runCallCmds(serve) }()
+	<-block.entered
+
+	// The old session stays current while the runtime builds the replacement.
+	if got := m.sess.ID(); got != "sess-old" {
+		t.Fatalf("session ID while the replacement runs = %q, want sess-old", got)
+	}
+	// A prompt submitted now waits behind the replacement.
+	m.input.SetValue("hello there")
+	updated, promptCmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = asModel(t, updated)
+	if promptCmd != nil {
+		t.Fatal("the prompt started while the replacement was still being built")
+	}
+
+	close(block.release)
+	msgs := <-done
+	if len(msgs) != 1 {
+		t.Fatalf("the replacement produced %d messages, want 1", len(msgs))
+	}
+	updated, settleAgain := m.Update(msgs[0])
+	m = asModel(t, updated)
+
+	if got := m.sess.ID(); got != "sess-new" {
+		t.Fatalf("session ID after the result = %q, want sess-new", got)
+	}
+	if sawSession != "sess-new" {
+		t.Fatalf("the call queued behind the replacement saw session %q, want sess-new", sawSession)
+	}
+	if !m.busy {
+		// The prompt still waits behind the call queued after the
+		// replacement: run that call and feed its result back.
+		for _, msg := range runCmdChain(t, settleAgain) {
+			if _, ok := msg.(callDoneMsg); !ok {
+				continue
+			}
+			updated, promptStart := m.Update(msg)
+			m = asModel(t, updated)
+			runCmdChain(t, promptStart)
+		}
+	}
+	if !m.busy {
+		t.Fatal("the queued prompt did not start on the new session")
+	}
+	select {
+	case goal := <-runner.called:
+		if goal != "hello there" {
+			t.Fatalf("the queued prompt ran %q, want %q", goal, "hello there")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the queued prompt never reached the runner")
+	}
+}
+
+// TestThePreflightOpensWhenItArrives pins P3 R6 for /sdd: nothing opens while
+// the preflight runs, and its result opens the cast list or reports the plan
+// it rejected.
+func TestThePreflightOpensWhenItArrives(t *testing.T) {
+	accepting := testModelWith(inproc.Deps{
+		State:  session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{}),
+		Runner: runnerOf(&testAgentRunner{}),
+		PlanPreflight: preflightOf(acpwire.PlanPreflight{
+			Inspection: acpwire.PlanInspection{Strategy: acpwire.StrategyAgent},
+		}),
+		Commands: setupCmdReg(t),
+	})
+	accepting.resize(100, 40)
+
+	updated, _ := accepting.dispatchCommand("/sdd plan.md")
+	m := asModel(t, updated)
+	if m.dock.IsOpen() {
+		t.Fatal("the cast list opened before the preflight returned")
+	}
+	m = settleCalls(t, m)
+	if _, ok := m.dock.Panel().(*castlist.Panel); !ok {
+		t.Fatalf("the preflight did not open the cast list, dock holds %T", m.dock.Panel())
+	}
+
+	rejecting := testModelWith(inproc.Deps{
+		State:  session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{}),
+		Runner: runnerOf(&testAgentRunner{}),
+		PlanPreflight: func(context.Context, acpwire.PlanPreflightParams) (acpwire.PlanPreflight, error) {
+			return acpwire.PlanPreflight{}, errors.New("no such plan")
+		},
+		Commands: setupCmdReg(t),
+	})
+	rejecting.resize(100, 40)
+
+	updated, _ = rejecting.dispatchCommand("/sdd missing.md")
+	rejecting = asModel(t, updated)
+	rejecting = settleCalls(t, rejecting)
+	if rejecting.dock.IsOpen() {
+		t.Fatal("a rejected preflight must not open the dock")
+	}
+	if n := sessionTextCount(rejecting, "Cannot start plan run: no such plan"); n != 1 {
+		t.Fatalf("a rejected preflight was reported %d times, want 1", n)
+	}
+}
+
+// TestTheSheetOpensWhenItsRefreshReturns pins P3 R6 for Ctrl+B: the sheet
+// opens when its refresh returns, and a second Ctrl+B while that open is
+// queued cancels it.
+func TestTheSheetOpensWhenItsRefreshReturns(t *testing.T) {
+	stub := &stubSession{}
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	stub.onRefreshSheet = func(acpwire.SheetRefresh) {
+		entered <- struct{}{}
+		<-release
+	}
+	state := seamState(t, "s1")
+	state.AddMessage(session.RoleUser, "a first turn", session.ContentTypePlain)
+	m := testModelStub(state, stub)
+	m.resize(100, 40)
+
+	updated, serve := m.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl})
+	m = asModel(t, updated)
+	if m.dock.IsOpen() {
+		t.Fatal("the sheet opened before its refresh returned")
+	}
+	done := make(chan []tea.Msg, 1)
+	go func() { done <- runCallCmds(serve) }()
+	<-entered
+
+	// A second Ctrl+B while the open is queued cancels it.
+	updated, cancel := m.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl})
+	m = asModel(t, updated)
+	if cancel != nil {
+		t.Fatal("a cancelling Ctrl+B returned a command")
+	}
+	close(release)
+	for _, msg := range <-done {
+		m = feedCallMsg(t, m, msg)
+	}
+	if m.dock.IsOpen() {
+		t.Fatal("a cancelled open must not open the sheet")
+	}
+
+	// Without the cancellation the sheet opens on its refresh's result.
+	stub2 := &stubSession{}
+	entered2 := make(chan struct{}, 1)
+	release2 := make(chan struct{})
+	stub2.onRefreshSheet = func(acpwire.SheetRefresh) {
+		entered2 <- struct{}{}
+		<-release2
+	}
+	state2 := seamState(t, "s2")
+	state2.AddMessage(session.RoleUser, "a first turn", session.ContentTypePlain)
+	m2 := testModelStub(state2, stub2)
+	m2.resize(100, 40)
+
+	updated, serve2 := m2.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl})
+	m2 = asModel(t, updated)
+	done2 := make(chan []tea.Msg, 1)
+	go func() { done2 <- runCallCmds(serve2) }()
+	<-entered2
+	close(release2)
+	for _, msg := range <-done2 {
+		m2 = feedCallMsg(t, m2, msg)
+	}
+	if !m2.sheetOpen() {
+		t.Fatalf("the sheet did not open when its refresh returned, dock holds %T", m2.dock.Panel())
 	}
 }

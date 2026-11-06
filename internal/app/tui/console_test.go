@@ -146,6 +146,9 @@ func TestDockedPanelJoinsTheOutline(t *testing.T) {
 	m.workSnapshot = workSnapOf(workRunningCard("work:01", workT0.Add(-1_000_000_000)))
 	m.busy = true
 	m.openSessionSheet()
+	// The sheet's refresh runs from the call queue, so it opens when that
+	// call's result is handled.
+	m = settleCalls(t, m)
 	if !m.dock.IsOpen() {
 		t.Fatal("fixture: the session sheet should hold the dock")
 	}

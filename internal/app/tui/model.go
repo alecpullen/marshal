@@ -201,7 +201,10 @@ type Model struct {
 	// callQuitWaiting records that a quit arrived while a call was in flight:
 	// the quit finishes when that call's result is handled.
 	callQuitWaiting bool
-	busy            bool
+	// sheetPending records that the session sheet's open is queued. A second
+	// Ctrl+B clears it, which cancels the open when its refresh returns.
+	sheetPending bool
+	busy         bool
 	// end is the pending interactive end intent, non-nil from the moment the
 	// user asks to exit or replace the conversation until the warning is
 	// declined. It holds the target (a new-session name or a resume ID) so
@@ -1285,19 +1288,49 @@ func (m *Model) openSessionSheet() {
 		m.closeSessionSheet()
 		return
 	}
-	_ = m.sess.RefreshSheet(m.ctx, acpwire.SheetRefresh{Changed: true, Stats: true, Fleet: true})
+	if m.sheetPending {
+		// A second Ctrl+B while the open is queued cancels it, as a press
+		// after the open would have closed the sheet (P3 R6).
+		m.sheetPending = false
+		return
+	}
+	// The refresh runs git, so it runs from the call queue and the sheet opens
+	// when it returns, so its first frame stays fresh (P3 R6).
+	m.sheetPending = true
+	m.enqueueCall(func(mm *Model) callRun {
+		sess := mm.sess
+		return func(ctx context.Context) callOutcome {
+			// The refresh's error stays ignored, as it was when it blocked
+			// Update: an empty sheet reports itself.
+			_ = sess.RefreshSheet(ctx, acpwire.SheetRefresh{Changed: true, Stats: true, Fleet: true})
+			return func(mm *Model) tea.Cmd {
+				return mm.openRefreshedSessionSheet()
+			}
+		}
+	})
+}
+
+// openRefreshedSessionSheet opens the sheet once its refresh has returned. A
+// second Ctrl+B that cancelled the queued open while it was in flight is what
+// makes this do nothing.
+func (m *Model) openRefreshedSessionSheet() tea.Cmd {
+	if !m.sheetPending {
+		return nil
+	}
+	m.sheetPending = false
 	panel := sessionsheet.NewPanel(m.sheetSections(), m.sheetDataFor)
 	// Opening a panel with nothing in it would leave an invisible dock that
 	// swallows keys until Esc (every section hidden or irrelevant).
 	if !panel.HasContent() {
 		m.note("Nothing to show in the session sheet.")
 		m.refreshViewport()
-		return
+		return nil
 	}
 	m.tasksPanel = nil // opening replaces the Tasks panel if it was up
 	m.sheetPanel = panel
 	m.dock.Open(m.sheetPanel)
 	m.refreshViewport()
+	return nil
 }
 
 // sheetOpen reports whether the session sheet is the open dock panel.

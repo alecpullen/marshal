@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpclient"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui/docpanel"
@@ -172,15 +173,37 @@ func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 // belonged to the old one. It runs only after an accepted replacement: the
 // runtime froze the old conversation at acceptance, so the swap acts on a
 // settled membership and no old work is transferred or reopened.
+// startNewSession queues the replacement session and returns no command: the
+// runtime builds it off the Update goroutine, and every field the swap
+// re-points changes when its result is handled (P3 R6). It runs only after an
+// accepted replacement: the runtime froze the old conversation at acceptance,
+// so the swap acts on a settled membership and no old work is transferred or
+// reopened.
 func startNewSession(m *Model, name string) tea.Cmd {
-	oldCount := 0
-	if page, err := m.sess.Messages(m.ctx, acpwire.MessageQuery{Last: 1}); err == nil {
-		oldCount = page.Total
-	}
 	// Whatever the outcome, the end is over: the old conversation settled and a
 	// failed replacement starts nothing, so a retry begins from idle.
 	m.endStage = endIdle
-	sess, err := m.host.NewSession(m.ctx, name)
+	m.enqueueCall(func(mm *Model) callRun {
+		host := mm.host
+		oldCount := 0
+		if page, err := mm.sess.Messages(mm.ctx, acpwire.MessageQuery{Last: 1}); err == nil {
+			oldCount = page.Total
+		}
+		return func(ctx context.Context) callOutcome {
+			sess, err := host.NewSession(ctx, name)
+			return func(mm *Model) tea.Cmd {
+				return mm.applyNewSession(name, oldCount, sess, err)
+			}
+		}
+	})
+	return nil
+}
+
+// applyNewSession finishes a replacement whose runtime session has arrived: it
+// reports a failure, or re-points every model field that depends on the new
+// session and drops the per-message UI state that belonged to the old one. A
+// replacement starts a new conversation, so its change pump always starts here.
+func (m *Model) applyNewSession(name string, oldCount int, sess acpclient.Session, err error) tea.Cmd {
 	if err != nil {
 		m.note(fmt.Sprintf("Failed to start new session: %v", err))
 		m.refreshViewport()
@@ -407,16 +430,26 @@ func init() {
 				return m, nil
 			}
 			// The session inspects the plan and resolves the verify gate the
-			// run would use, without writing anything. A plan it rejects is
-			// reported here, before the preflight opens (decisions 3 and 9).
-			pf, err := m.sess.PlanPreflight(m.ctx, acpwire.PlanPreflightParams{PlanPath: planPath, Strategy: parsed.Strategy})
-			if err != nil {
-				m.note("Cannot start plan run: " + err.Error())
-				m.refreshViewport()
-				return m, nil
-			}
-			m.openRunPreflight("sdd", planPath, &pf)
-			m.refreshViewport()
+			// run would use, without writing anything — work that reads the
+			// plan, so it runs from the call queue (P3 R6). A plan it rejects
+			// is reported when the result arrives, before the preflight opens
+			// (decisions 3 and 9).
+			m.enqueueCall(func(mm *Model) callRun {
+				sess := mm.sess
+				return func(ctx context.Context) callOutcome {
+					pf, err := sess.PlanPreflight(ctx, acpwire.PlanPreflightParams{PlanPath: planPath, Strategy: parsed.Strategy})
+					return func(mm *Model) tea.Cmd {
+						if err != nil {
+							mm.note("Cannot start plan run: " + err.Error())
+							mm.refreshViewport()
+							return nil
+						}
+						mm.openRunPreflight("sdd", planPath, &pf)
+						mm.refreshViewport()
+						return nil
+					}
+				}
+			})
 			return m, nil
 		},
 		"run": func(m *Model, _ []string) (tea.Model, tea.Cmd) {

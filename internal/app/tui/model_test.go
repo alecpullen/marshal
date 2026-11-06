@@ -1410,6 +1410,9 @@ func TestSDDCommandOpensPreflightThenStartsRun(t *testing.T) {
 	// /sdd with a plan path should open the cast list panel (not start the run).
 	updated, cmd := model.dispatchCommand("/sdd /repo/docs/plans/feature-plan.md")
 	m := asModel(t, updated)
+	// The preflight runs from the call queue, so the cast list opens when it
+	// returns.
+	m = settleCalls(t, m)
 	if cmd != nil {
 		t.Fatal("dispatchCommand should return nil cmd (preflight panel is modal)")
 	}
@@ -1488,6 +1491,9 @@ func TestSDDCommandPreflightCancelClearsPendingRun(t *testing.T) {
 	// Open the preflight panel.
 	updated, _ := model.dispatchCommand("/sdd /repo/docs/plans/feature-plan.md")
 	m := asModel(t, updated)
+	// The preflight runs from the call queue, so the cast list opens when it
+	// returns.
+	m = settleCalls(t, m)
 	if m.pendingRun == nil {
 		t.Fatal("expected pendingRun to be set")
 	}
@@ -1635,8 +1641,10 @@ func TestSDDCustomPathPickerDispatchesPlanPath(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("enter in custom path picker should return a command")
 	}
-	updated, _ = asModel(t, updated).Update(cmd())
-	m := asModel(t, updated)
+	updated, settle := asModel(t, updated).Update(cmd())
+	// The picked path dispatches /sdd, whose preflight runs from the call
+	// queue: the cast list opens when that call's result is handled.
+	m := settleCalls(t, asModel(t, updated), settle)
 
 	if m.pendingRun == nil {
 		t.Fatal("expected pendingRun after dispatching custom /sdd path")
@@ -9984,6 +9992,9 @@ func TestSDDAuthoringToPreflight(t *testing.T) {
 	// Now run /sdd on the candidate.
 	updated, cmd = m.dispatchCommand("/sdd " + path)
 	m = asModel(t, updated)
+	// The preflight runs from the call queue, so the panel opens when it
+	// returns.
+	m = settleCalls(t, m)
 	if cmd != nil {
 		t.Fatal("preflight is modal; dispatchCommand should return nil cmd")
 	}
@@ -10041,6 +10052,9 @@ func TestSDDStartCarriesTheOverrides(t *testing.T) {
 	// /sdd opens the preflight panel.
 	updated, _ := model.dispatchCommand("/sdd /repo/docs/plans/feature-plan.md")
 	m := asModel(t, updated)
+	// The preflight runs from the call queue, so the panel opens when it
+	// returns.
+	m = settleCalls(t, m)
 	if m.pendingRun == nil {
 		t.Fatal("expected pendingRun to be set")
 	}
@@ -10360,8 +10374,8 @@ func runEndCmd(t *testing.T, m Model, cmd tea.Cmd) (Model, tea.Cmd) {
 		msg := cmd()
 		switch msg.(type) {
 		case nil:
-			return m, nil
-		case endSettledMsg, endAnalysisFinishedMsg, postmortemWrittenMsg:
+			return settleCalls(t, m), nil
+		case endSettledMsg, endAnalysisFinishedMsg, postmortemWrittenMsg, callDoneMsg:
 			updated, next := m.Update(msg)
 			m = asModel(t, updated)
 			cmd = next
@@ -10372,7 +10386,9 @@ func runEndCmd(t *testing.T, m Model, cmd tea.Cmd) (Model, tea.Cmd) {
 			return m, func() tea.Msg { return msg }
 		}
 	}
-	return m, cmd
+	// A replacement session is built from the call queue (P3 R6), so anything
+	// the end flow queued without running is settled here.
+	return settleCalls(t, m), cmd
 }
 
 // answerPostmortem delivers a postmortem panel answer and runs the extraction

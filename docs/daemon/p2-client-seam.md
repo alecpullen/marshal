@@ -996,8 +996,8 @@ Each plan removes its group's allowlist entries.
 
 - **T1. Boundary.** A test in `internal/app/tui` parses every non-test
   file under the tree. It fails on any import or denied `config` function
-  outside C1's rule that is not on the allowlist, and on any allowlist
-  entry that is no longer needed. Plan 9 empties the allowlist.
+  outside C1's rule. There is no allowlist: plan 9 deleted it, so every
+  crossing fails.
 - **T1b. Moved reads.** A test in `internal/app/tui` fails on any
   `<x>.state.<Name>` selector whose `Name` is in its list of `State`
   methods and fields that have moved behind the seam. Plan 2a starts the
@@ -1034,8 +1034,8 @@ Each plan removes its group's allowlist entries.
 ## Done when
 
 - The TUI imports no agent-side package, holds no `*session.State`, and
-  makes no project, config or keychain I/O. T1 passes with an empty
-  allowlist, and `WithLegacyState` is gone.
+  makes no project, config or keychain I/O. T1 passes with no allowlist,
+  and `WithLegacyState` is gone.
 - The transcript renders from the wire projection, and T6 passes.
   Design §8's transcript question is closed.
 - Every `acpclient` method names its ACP method, and T4 passes. The

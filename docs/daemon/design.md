@@ -219,7 +219,8 @@ session screen.
 
 The migration is done. The TUI's only path is `acpclient.Host` and
 `Session`, with `acpwire` for the wire types. `internal/acpclient/inproc`
-implements them in process until P3 deletes it.
+implements them in process until P3 deletes it; P3 plan 2 moved that logic
+to `internal/acp/service`, which `inproc` aliases.
 `TestTUIStaysOnTheClientSeam` fails on any TUI crossing to the agent
 side, with no allowlist. The spec's nine plans did the migration.
 

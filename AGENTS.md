@@ -66,6 +66,7 @@ Runtime & orchestration
   internal/agent/swarm/    multi-agent orchestration, lock, verdict
   internal/pipeline/       plan execution: implementer/reviewer subagents, build+test gate
   internal/acp/            ACP v1 transport (sessions, prompts, permissions)
+  internal/acp/service/    the agent side of the client seam: Host/Session over a runtime (inproc aliases it until P3 plan 8)
   internal/viewmodel/      transcript tree (turn → step → row) + JSON projection, shared with ACP
   internal/worker/         lifecycle contract for supervised background workers
   internal/pubsub/         in-process typed event broker
@@ -75,8 +76,9 @@ Runtime & orchestration
 
 App shell & config
   internal/acpwire/        wire types and error codes for the TUI client seam (stdlib only)
-  internal/acpclient/      the TUI's Host/Session interfaces; inproc/ is the in-process adapter (deleted in P3); rpc/ is the JSON-RPC client that replaces it
-  internal/app/            Run(), dependency wiring, signal handling, repo instructions
+  internal/acpclient/      the TUI's Host/Session interfaces; inproc/ is aliases over internal/acp/service (deleted in P3); rpc/ is the JSON-RPC client that replaces it
+  internal/launch/         embedded mode's composition root: the run loop, the TUI program, the in-process adapter
+  internal/app/            Embedded() and ServiceDeps(): runtimes, dependency wiring, repo instructions
   internal/app/config/     TOML loading, defaults, merge rules
   internal/app/session/    shared mutable state between TUI and agent
   internal/trust/          folder-trust store, resolver, project-config hashing
@@ -200,10 +202,11 @@ project.
 ## Testing notes
 
 - Most packages need cgo, so run the suite with a C toolchain available.
-- `app.Run()` takes functional options (`app.go`) so tests inject fakes
-  instead of starting a real TUI — `WithConfigLoader`, `WithProgramRunner`,
-  `WithNow`, and ten others. `app_test.go` uses this pattern exclusively;
-  prefer it over driving a real program.
+- `launch.Run()` takes functional options (`internal/launch/launch.go`) so tests
+  inject fakes instead of starting a real TUI: `launch.WithProgramRunner`, and
+  `launch.WithApp` wrapping `app`'s runtime options (`WithConfigLoader`,
+  `WithNow`, and ten others). `internal/launch/launch_test.go` uses this pattern
+  exclusively; prefer it over driving a real program.
 - `internal/testenv.Run(m)` is the package entry point: it points `HOME`,
   `USERPROFILE`, the Marshal/XDG config and data dirs and the provider API-key
   variables at a temporary directory, and restores them on return. Use it in

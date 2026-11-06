@@ -1828,8 +1828,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case memory.ShowMsg:
 		m.dock.CloseNow()
-		text := memory.RenderEntry(m.memoryDB, msg.ID)
-		m.note(text)
+		m.note(memory.RenderEntry(msg.Entry))
 		m.refreshViewport()
 		return m, nil
 	case memory.DeletedMsg:
@@ -6468,17 +6467,40 @@ func (m *Model) beginResume(id string) (tea.Model, tea.Cmd) {
 	return m, m.beginEnd(&endIntent{kind: acpwire.EndIntentReplace, resumeID: id})
 }
 
+// openMemory opens the docked memory browser and reports whether it did. The
+// entries come from the session, so the browser lists what the agent side
+// sees. fromKey marks the Ctrl+K shortcut, which is silent: without a
+// database it does nothing rather than noting why.
+func (m *Model) openMemory(fromKey bool) bool {
+	entries, err := m.sess.Memories(m.ctx)
+	if err != nil && acpclient.IsCode(err, acpwire.CodeNoDatabase) {
+		if !fromKey {
+			m.note("Memory browser not available (no database configured).")
+		}
+		return false
+	}
+	// A read failure still opens the browser: the footer reports it, as a
+	// failed listing did before the browser went through the seam.
+	sess, ctx := m.sess, m.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	m.dock.Open(memory.NewPanel(entries, err, func(id int64) error {
+		return sess.DeleteMemory(ctx, id)
+	}))
+	return true
+}
+
 // openSessionPicker opens a picker listing previous sessions for this
 // project. The picked session ID is passed to beginResume.
 func (m *Model) openSessionPicker(prefilter string) {
 	st := m.sess.Status()
-	database := m.state.DB()
-	if database == nil {
-		m.note("Session list is not available (no database).")
-		return
-	}
-	sessions, _, err := database.ListSessions(context.Background(), st.WorkingDir, "", 100)
+	sessions, err := m.host.ListSessions(m.ctx, st.WorkingDir, 100)
 	if err != nil {
+		if acpclient.IsCode(err, acpwire.CodeNoDatabase) {
+			m.note("Session list is not available (no database).")
+			return
+		}
 		m.note(fmt.Sprintf("Could not list sessions: %v", err))
 		return
 	}
@@ -6488,7 +6510,9 @@ func (m *Model) openSessionPicker(prefilter string) {
 		if label == "" {
 			label = s.SessionID
 		}
-		detail := s.UpdatedAt.Format("2006-01-02 15:04") + fmt.Sprintf(" · %d messages", s.MessageCount)
+		// The database keeps the time in UTC; render it the same way so the
+		// picker shows the same clock time it always did.
+		detail := acpwire.Time(s.UpdatedAt).UTC().Format("2006-01-02 15:04") + fmt.Sprintf(" · %d messages", s.MessageCount)
 		badge := ""
 		if s.SessionID == m.sess.ID() {
 			badge = "● now"

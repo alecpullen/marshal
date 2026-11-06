@@ -7,21 +7,20 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/fuzzy"
 	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/textfield"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/db"
 )
 
 // BrowserPanel is the docked memory browser. It presents a filterable list of
 // project memories and emits ShowMsg, DeletedMsg, and ClosedMsg.
 type BrowserPanel struct {
-	db          *db.DB
-	projectID   int64
-	all         []db.Memory
+	all         []acpwire.MemoryEntry
+	del         func(id int64) error
 	filter      textfield.Model
 	matches     []int
 	cursor      int
@@ -31,23 +30,21 @@ type BrowserPanel struct {
 
 var _ dock.Panel = (*BrowserPanel)(nil)
 
-// NewPanel creates a docked memory browser for the given project.
-func NewPanel(database *db.DB, projectID int64) *BrowserPanel {
+// NewPanel creates a docked memory browser over one project's memories. It
+// does not read them: the caller lists them through the session and hands them
+// in, with the error that listing returned (nil when it succeeded). A nil del
+// cannot delete anything, and reports "no database" for a confirmed delete,
+// as a nil database did.
+func NewPanel(entries []acpwire.MemoryEntry, loadErr error, del func(id int64) error) *BrowserPanel {
 	filter := textfield.New()
 	filter.SetVirtualCursor(true)
 	filter.Focus()
 
-	all, err := database.GetMemories(projectID)
-	if err != nil {
-		all = nil
-	}
-
 	p := &BrowserPanel{
-		db:        database,
-		projectID: projectID,
-		all:       all,
-		filter:    filter,
-		loadErr:   err,
+		all:     entries,
+		del:     del,
+		filter:  filter,
+		loadErr: loadErr,
 	}
 	p.refilter()
 	return p
@@ -65,8 +62,8 @@ func (p *BrowserPanel) Update(msg tea.Msg) tea.Cmd {
 			return func() tea.Msg { return ClosedMsg{} }
 		case "enter":
 			if p.cursor < len(p.matches) {
-				id := p.all[p.matches[p.cursor]].ID
-				return func() tea.Msg { return ShowMsg{ID: id} }
+				entry := p.all[p.matches[p.cursor]]
+				return func() tea.Msg { return ShowMsg{Entry: entry} }
 			}
 			return nil
 		case "up":
@@ -127,10 +124,10 @@ func (p *BrowserPanel) deleteSelected() tea.Cmd {
 	mem := p.all[idx]
 	title := memoryTitle(mem.Content)
 
-	if p.db == nil {
+	if p.del == nil {
 		return func() tea.Msg { return DeletedMsg{Title: title, Err: fmt.Errorf("no database")} }
 	}
-	if err := p.db.DeleteMemory(mem.ID); err != nil {
+	if err := p.del(mem.ID); err != nil {
 		return func() tea.Msg { return DeletedMsg{Title: title, Err: err} }
 	}
 
@@ -178,7 +175,7 @@ func (p *BrowserPanel) View(width, maxHeight int) string {
 			focusLine = len(rows)
 		}
 		title := memoryTitle(mem.Content)
-		age := formatAge(mem.CreatedAt) + " · " + mem.Kind
+		age := formatAge(acpwire.Time(mem.CreatedAt)) + " · " + mem.Kind
 		if pos == p.cursor {
 			line := chrome.Row(marker, title, age, "", inner)
 			rows = append(rows, chrome.SelectionStyle().Width(inner).Render(line))

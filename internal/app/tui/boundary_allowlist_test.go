@@ -10,8 +10,6 @@ var boundaryAllowlist = map[string][]string{
 	"commands_dispatch.go":        {"marshal/internal/worktree"},
 	"doctorpanel/doctorpanel.go":  {"marshal/internal/app/session"},
 	"doctorpanel/intelligence.go": {"marshal/internal/db", "marshal/internal/lsp"},
-	"memory/entries.go":           {"marshal/internal/db"},
-	"memory/panel.go":             {"marshal/internal/db"},
 	"model.go":                    {"marshal/internal/app/session", "marshal/internal/db", "marshal/internal/pubsub", "marshal/internal/sddauthor", "marshal/internal/sddplans", "marshal/internal/skills", "marshal/internal/watch"},
 	"plugins/panel.go":            {"marshal/internal/plugins"},
 	"runoutcome.go":               {"marshal/internal/worktree"},

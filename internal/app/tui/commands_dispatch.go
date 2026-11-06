@@ -11,7 +11,6 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/app/tui/doctorpanel"
-	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/plugins"
 	"marshal/internal/app/tui/skills"
 	"marshal/internal/interaction"
@@ -260,12 +259,7 @@ func init() {
 			return m, nil
 		},
 		"memory": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			if m.memoryDB == nil {
-				m.note("Memory browser not available (no database configured).")
-				m.refreshViewport()
-				return m, nil
-			}
-			m.dock.Open(memory.NewPanel(m.memoryDB, m.memoryProject))
+			m.openMemory(false)
 			m.refreshViewport()
 			return m, nil
 		},

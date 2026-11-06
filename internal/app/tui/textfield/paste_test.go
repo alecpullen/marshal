@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/agents"
@@ -16,7 +17,6 @@ import (
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/app/tui/skills"
-	"marshal/internal/db"
 )
 
 // TestPasteReachesSelectedTextInputs samples the TUI surfaces that own a text
@@ -37,8 +37,7 @@ func TestPasteReachesSelectedTextInputs(t *testing.T) {
 			return m.FilterValue()
 		},
 		"memory filter": func(t *testing.T) string {
-			database, projectID := newPasteTestDB(t)
-			p := memory.NewPanel(database, projectID)
+			p := memory.NewPanel([]acpwire.MemoryEntry{{ID: 1, Kind: "fact", Content: "Uses SQLite"}}, nil, nil)
 			p.Update(tea.PasteMsg{Content: pasted})
 			return p.FilterValue()
 		},
@@ -87,21 +86,4 @@ func TestPasteReachesSelectedTextInputs(t *testing.T) {
 			}
 		})
 	}
-}
-
-func newPasteTestDB(t *testing.T) (*db.DB, int64) {
-	t.Helper()
-	database, err := db.Open(":memory:")
-	if err != nil {
-		t.Fatalf("Open failed: %v", err)
-	}
-	t.Cleanup(func() { database.Close() })
-	if err := database.Migrate(); err != nil {
-		t.Fatalf("Migrate failed: %v", err)
-	}
-	projectID, err := database.GetOrCreateProject("/repo", "repo")
-	if err != nil {
-		t.Fatalf("GetOrCreateProject failed: %v", err)
-	}
-	return database, projectID
 }

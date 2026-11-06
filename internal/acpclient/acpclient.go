@@ -657,4 +657,23 @@ type Session interface {
 	//
 	// ACP: session/save_verify_commands (new in P3).
 	SaveVerifyCommands(ctx context.Context, build, test string) error
+
+	// RecentPrompts returns the project's input history, newest first, at
+	// most limit entries. A session without a database or a project returns
+	// none.
+	//
+	// ACP: session/prompt_history (new in P3).
+	RecentPrompts(ctx context.Context, limit int) ([]string, error)
+
+	// SavePrompt adds text to the project's input history. A session without
+	// a database or a project saves nothing and reports no error.
+	//
+	// ACP: session/prompt_history_save (new in P3).
+	SavePrompt(ctx context.Context, text string) error
+
+	// Messages returns the session's transcript messages that query selects.
+	// A closed session keeps answering from its final transcript.
+	//
+	// ACP: session/messages (new in P3).
+	Messages(ctx context.Context, query acpwire.MessageQuery) (acpwire.MessagePage, error)
 }

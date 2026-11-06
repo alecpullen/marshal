@@ -104,4 +104,8 @@ var Methods = []Method{
 	{Iface: "Session", Name: "ReconnectMCP", ACP: "session/mcp_reconnect"},
 	{Iface: "Session", Name: "SaveProjectConfig", ACP: "session/save_project_config"},
 	{Iface: "Session", Name: "SaveVerifyCommands", ACP: "session/save_verify_commands"},
+
+	{Iface: "Session", Name: "RecentPrompts", ACP: "session/prompt_history"},
+	{Iface: "Session", Name: "SavePrompt", ACP: "session/prompt_history_save"},
+	{Iface: "Session", Name: "Messages", ACP: "session/messages"},
 }

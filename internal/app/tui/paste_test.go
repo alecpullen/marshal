@@ -105,7 +105,7 @@ func TestEnterExpandsPasteIntoPrompt(t *testing.T) {
 	if len(mm.pastes) != 0 {
 		t.Fatalf("pastes = %d after submit, want 0", len(mm.pastes))
 	}
-	msgs := mm.state.Messages()
+	msgs := stateOf(mm).Messages()
 	if len(msgs) == 0 {
 		t.Fatal("expected a user message after submit")
 	}
@@ -225,7 +225,7 @@ func TestLargePasteInsertsAtCursor(t *testing.T) {
 			}
 
 			m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
-			msgs := m.state.Messages()
+			msgs := stateOf(m).Messages()
 			if len(msgs) == 0 {
 				t.Fatal("expected a user message after submit")
 			}
@@ -386,7 +386,7 @@ func TestMultiplePastesAndDraftPreservation(t *testing.T) {
 		Questions:    []session.Question{{Question: "Archive or delete?"}},
 		ResponseChan: make(chan []session.Answer, 1),
 	}
-	m.state.SetPendingQuestion(q)
+	stateOf(m).SetPendingQuestion(q)
 	m = answerPendingQuestion(m)
 	if len(m.pastes) != 1 || m.pastes[0].Content != first {
 		t.Fatalf("pastes after the question = %+v, want the first paste only", m.pastes)
@@ -423,7 +423,7 @@ func TestMultiplePastesAndDraftPreservation(t *testing.T) {
 		Reason:       "runs the test suite",
 		ResponseChan: make(chan session.UserApprovalDecision, 1),
 	}
-	m.state.SetPendingApproval(tc)
+	stateOf(m).SetPendingApproval(tc)
 	m = chooseApprovalEdit(t, m)
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEsc}) // abandon the edit
 	if got := m.input.Value(); got != value {
@@ -436,10 +436,10 @@ func TestMultiplePastesAndDraftPreservation(t *testing.T) {
 	// Deny the pending approval so the composer owns Enter again. Right moves
 	// the selection from Approve to Deny; huh finishes over a command round trip.
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyRight})
-	for i := 0; i < 4 && m.state.PendingApproval() != nil; i++ {
+	for i := 0; i < 4 && stateOf(m).PendingApproval() != nil; i++ {
 		m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	}
-	if m.state.PendingApproval() != nil {
+	if stateOf(m).PendingApproval() != nil {
 		t.Fatal("approval still pending after deny")
 	}
 	if got := m.input.Value(); got != value {
@@ -449,7 +449,7 @@ func TestMultiplePastesAndDraftPreservation(t *testing.T) {
 	// The draft submits with both attachments expanded where their chips were.
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	var submitted string
-	for _, msg := range m.state.Messages() {
+	for _, msg := range stateOf(m).Messages() {
 		if msg.Role == session.RoleUser {
 			submitted = msg.Content
 		}
@@ -487,7 +487,7 @@ func TestSecondSubmitAfterPasteIsClean(t *testing.T) {
 	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	mm := updated.(Model)
 
-	msgs := mm.state.Messages()
+	msgs := stateOf(mm).Messages()
 	last := msgs[len(msgs)-1]
 	if last.Content != "second prompt" {
 		t.Fatalf("second prompt = %q, want 'second prompt'", last.Content)

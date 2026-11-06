@@ -43,9 +43,9 @@ func TestRunningToolRendersBelowGroupThenFolds(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 24)
 	base := m.now()
-	m.state.LogToolCall(readEvent("budget.go", base))
-	m.state.LogToolCall(readEvent("runner.go", base.Add(time.Second)))
-	m.state.SetActiveToolCall(session.ActiveToolCall{
+	stateOf(m).LogToolCall(readEvent("budget.go", base))
+	stateOf(m).LogToolCall(readEvent("runner.go", base.Add(time.Second)))
+	stateOf(m).SetActiveToolCall(session.ActiveToolCall{
 		Name:      "file.read",
 		Args:      "chat.go",
 		StartedAt: base.Add(2 * time.Second),
@@ -64,8 +64,8 @@ func TestRunningToolRendersBelowGroupThenFolds(t *testing.T) {
 		t.Errorf("in-flight call must not fold into the group while running:\n%s", running)
 	}
 
-	m.state.ClearActiveToolCall()
-	m.state.LogToolCall(readEvent("chat.go", base.Add(3*time.Second)))
+	stateOf(m).ClearActiveToolCall()
+	stateOf(m).LogToolCall(readEvent("chat.go", base.Add(3*time.Second)))
 	m.refreshViewport()
 
 	done := stripANSI(m.viewport.View())

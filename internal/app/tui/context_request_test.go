@@ -10,7 +10,7 @@ import (
 
 func TestContextRequestOpensTheLastRequestPanel(t *testing.T) {
 	m := newTestModel(t)
-	m.state.SetRequestInspection(session.RequestInspection{
+	stateOf(m).SetRequestInspection(session.RequestInspection{
 		AttemptID: 1,
 		At:        time.Unix(100, 0),
 		Provider:  "ollama",

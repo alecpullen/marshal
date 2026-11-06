@@ -19,7 +19,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-	"unsafe"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -2861,12 +2860,11 @@ func newKnowledgeTestServer(t *testing.T, extraction string) *httptest.Server {
 
 func modelState(t *testing.T, model tea.Model) *session.State {
 	t.Helper()
-	value := reflect.ValueOf(model)
-	field := value.FieldByName("state")
-	if !field.IsValid() || field.IsNil() {
+	state := modelStateOf(model)
+	if state == nil {
 		t.Fatal("tui model has no state")
 	}
-	return (*session.State)(unsafe.Pointer(field.Pointer()))
+	return state
 }
 
 func TestRunMockRepoVerification(t *testing.T) {
@@ -6248,6 +6246,66 @@ func TestRunWiresToolNames(t *testing.T) {
 	}
 }
 
+// TestRunWiresTheSkillIndex pins the skill-index half of Run's Deps wiring: a
+// skill written under the user config's skills directory reaches the session's
+// listing with nothing blocking its load. Dropping Deps.SkillIndex from Run
+// leaves the session with no index, so every entry would read "this session has
+// no skill index" instead.
+func TestRunWiresTheSkillIndex(t *testing.T) {
+	home := t.TempDir()
+	dir := t.TempDir()
+	// The runtime reads the user config's skills directory, which
+	// config.UserDir resolves against the injected home.
+	store := filepath.Join(config.UserDir(home), "skills")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatalf("create skill store: %v", err)
+	}
+	const raw = "+++\nname = \"wired\"\ndescription = \"wiring fixture\"\n+++\n\n# wired\n"
+	if err := os.WriteFile(filepath.Join(store, "wired.md"), []byte(raw), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+
+	var (
+		entries []acpwire.SkillEntry
+		listErr error
+	)
+	err := Run(context.Background(), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return time.Unix(100, 0) }),
+		WithWorkingDir(dir),
+		WithHomeDir(home),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return config.Default(), nil
+		}),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+			entries, listErr = model.(tui.Model).Session().Skills(ctx)
+			return ProgramResult{}
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if listErr != nil {
+		t.Fatalf("Session().Skills() error: %v", listErr)
+	}
+	found := false
+	for _, e := range entries {
+		if e.Scope != "global" || e.Source != "wired.md" {
+			continue
+		}
+		found = true
+		if e.Name != "wired" {
+			t.Errorf("skill entry name = %q, want wired", e.Name)
+		}
+		if e.LoadBlocked != "" {
+			t.Errorf("skill entry LoadBlocked = %q, want \"\" (the runtime's index holds it)", e.LoadBlocked)
+		}
+	}
+	if !found {
+		t.Fatalf("Session().Skills() = %+v, want the global wired.md entry", entries)
+	}
+}
+
 // TestRunWiresTheFileIndex pins the @ popup's seam wiring: Run gives the
 // session the index reader, and that reader answers from the project database
 // Run itself opened. The files below are what the startup index pass saves, so
@@ -7014,7 +7072,7 @@ func TestAdapterAccessFollowsNewSession(t *testing.T) {
 		Commands:       reg,
 	}
 	host, oldSess := inproc.New(deps)
-	oldModel := tui.New(host, oldSess, tui.WithLegacyState(oldState))
+	oldModel := tui.New(host, oldSess)
 	updated, _ := oldModel.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	oldModel = updated.(tui.Model)
 	if view := ansi.Strip(oldModel.View().Content); !strings.Contains(view, "Allow system access?") {
@@ -7053,7 +7111,7 @@ func TestAdapterAccessFollowsNewSession(t *testing.T) {
 	}
 
 	// The same Deps now drive the replacement session.
-	newModel := tui.New(host, newSess, tui.WithLegacyState(newState))
+	newModel := tui.New(host, newSess)
 	newReq, newDecisions := accessTUIRequest(t, newState, session.AccessIntent{
 		System: true, Reason: "The agent requests system access.",
 	})

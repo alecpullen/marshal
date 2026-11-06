@@ -15,7 +15,7 @@ import (
 func registerRunningSubagent(t *testing.T, m *Model, label string) {
 	t.Helper()
 	child := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
-	m.state.RegisterSubagent(label, child)
+	stateOf(m).RegisterSubagent(label, child)
 }
 
 // workT0 is the fixed clock the work-card fixtures are built against.

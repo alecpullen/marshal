@@ -88,9 +88,9 @@ func TestProjectSaveAfterGlobalSaveDoesNotBakeUserValues(t *testing.T) {
 // seam, and the state's layers are left exactly as they were.
 func TestSetWithoutReloaderLeavesLayersAlone(t *testing.T) {
 	m := newTestModel(t)
-	m.state.WorkingDir = t.TempDir()
+	stateOf(m).WorkingDir = t.TempDir()
 	seeded := config.Layers{Default: config.Default(), User: config.Default(), Merged: config.Default()}
-	m.state.SetLayers(seeded)
+	stateOf(m).SetLayers(seeded)
 
 	m.dispatchCommand("/set tui.mouse_capture off")
 

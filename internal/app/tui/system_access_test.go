@@ -76,7 +76,7 @@ func TestStatusBadgeSystemSuffix(t *testing.T) {
 		t.Fatalf("status line shows the system suffix with the flag off:\n%s", line)
 	}
 
-	m.state.SetSystemAccess(true)
+	stateOf(m).SetSystemAccess(true)
 	line = stripANSI(m.renderStatusLine(100))
 	if !strings.Contains(line, "· System") {
 		t.Fatalf("status line missing the system suffix with the flag on:\n%s", line)
@@ -179,7 +179,7 @@ func TestPostmortemAgentPassScopedElevation(t *testing.T) {
 	if state.SystemAccess() {
 		t.Fatal("the model granted system access itself; the elevation belongs to the runtime's scoped pass")
 	}
-	if got := string(m.state.InteractionState().Mode); got != "act" {
+	if got := string(stateOf(m).InteractionState().Mode); got != "act" {
 		t.Fatalf("approvalMode = %q, want the user's own mode preserved", got)
 	}
 	if len(ctrl.analysisGoals) != 1 {

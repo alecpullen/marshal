@@ -21,7 +21,7 @@ import (
 // /effort still finds the command.
 func withEffortSetter(t *testing.T, m Model, set func(string) (string, error)) Model {
 	t.Helper()
-	_, sess := inproc.New(inproc.Deps{State: m.state, SetEffort: set, Commands: setupCmdReg(t)})
+	_, sess := inproc.New(inproc.Deps{State: stateOf(m), SetEffort: set, Commands: setupCmdReg(t)})
 	m.sess = sess
 	return m
 }
@@ -42,7 +42,7 @@ func TestEffortCommandSetsLevel(t *testing.T) {
 	if got != "low" {
 		t.Fatalf("setter got %q, want %q", got, "low")
 	}
-	if note := lastMessageContent(m.state.Messages()); !strings.Contains(note, "Effort set to low (from the next turn).") {
+	if note := lastMessageContent(stateOf(m).Messages()); !strings.Contains(note, "Effort set to low (from the next turn).") {
 		t.Fatalf("transcript note = %q, want the confirmation", note)
 	}
 }
@@ -63,7 +63,7 @@ func TestEffortDefaultClears(t *testing.T) {
 	if got != "" {
 		t.Fatalf("setter got %q, want the empty level", got)
 	}
-	if note := lastMessageContent(m.state.Messages()); !strings.Contains(note, "Effort set to default (from the next turn).") {
+	if note := lastMessageContent(stateOf(m).Messages()); !strings.Contains(note, "Effort set to default (from the next turn).") {
 		t.Fatalf("transcript note = %q, want the clearing confirmation", note)
 	}
 }
@@ -79,7 +79,7 @@ func TestEffortCommandShowsSetterError(t *testing.T) {
 	updated, _ := m.dispatchCommand("/effort max")
 	m = asModel(t, updated)
 
-	if note := lastMessageContent(m.state.Messages()); !strings.Contains(note, `effort "max" is not supported`) {
+	if note := lastMessageContent(stateOf(m).Messages()); !strings.Contains(note, `effort "max" is not supported`) {
 		t.Fatalf("transcript note = %q, want the setter error", note)
 	}
 }
@@ -88,16 +88,16 @@ func TestEffortCommandShowsSetterError(t *testing.T) {
 // applying each step through the setter.
 func TestAltECyclesEffort(t *testing.T) {
 	m := newTestModel(t)
-	m.state.Config.Models.Presets["test"] = routing.ModelPreset{
+	stateOf(m).Config.Models.Presets["test"] = routing.ModelPreset{
 		Provider:        "p",
 		Model:           "m",
 		ThinkingOptions: &schema.ThinkingOptions{Levels: []string{"low", "high"}},
 	}
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Preset: "test", Model: "m", Provider: "p", ReasoningCapable: true})
+	stateOf(m).SetActiveRoute(session.RouteInfo{Active: true, Preset: "test", Model: "m", Provider: "p", ReasoningCapable: true})
 	var got []string
 	m = withEffortSetter(t, m, func(level string) (string, error) {
 		got = append(got, level)
-		m.state.SetEffortOverride(session.EffortOverride{Level: level})
+		stateOf(m).SetEffortOverride(session.EffortOverride{Level: level})
 		return acpwire.EffortAppliesNextStep, nil
 	})
 
@@ -118,8 +118,8 @@ func TestAltECyclesEffort(t *testing.T) {
 // turn's route and points at the pending next-turn route.
 func TestStatusShowsTurnRouteWhileBusy(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Preset: "b", Model: "model-b", Provider: "prov-b"})
-	m.state.SetTurnRoute(session.RouteInfo{Active: true, Preset: "a", Model: "model-a", Provider: "prov-a"})
+	stateOf(m).SetActiveRoute(session.RouteInfo{Active: true, Preset: "b", Model: "model-b", Provider: "prov-b"})
+	stateOf(m).SetTurnRoute(session.RouteInfo{Active: true, Preset: "a", Model: "model-a", Provider: "prov-a"})
 
 	line := m.renderStatusLine(160)
 	for _, want := range []string{"model-a", "→ model-b (next turn)"} {
@@ -134,9 +134,9 @@ func TestStatusShowsTurnRouteWhileBusy(t *testing.T) {
 // takes effect.
 func TestStatusShowsPendingEffort(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Preset: "a", Model: "model-a", Provider: "prov-a", ReasoningCapable: true, Thinking: "high"})
-	m.state.SetTurnRoute(session.RouteInfo{Active: true, Preset: "a", Model: "model-a", Provider: "prov-a", ReasoningCapable: true, Thinking: "high"})
-	m.state.SetEffortOverride(session.EffortOverride{Level: "low", Provider: "prov-a", Model: "model-a"})
+	stateOf(m).SetActiveRoute(session.RouteInfo{Active: true, Preset: "a", Model: "model-a", Provider: "prov-a", ReasoningCapable: true, Thinking: "high"})
+	stateOf(m).SetTurnRoute(session.RouteInfo{Active: true, Preset: "a", Model: "model-a", Provider: "prov-a", ReasoningCapable: true, Thinking: "high"})
+	stateOf(m).SetEffortOverride(session.EffortOverride{Level: "low", Provider: "prov-a", Model: "model-a"})
 
 	line := m.renderStatusLine(160)
 	if want := "think high → low (next step)"; !strings.Contains(line, want) {
@@ -150,9 +150,9 @@ func TestStatusShowsPendingEffort(t *testing.T) {
 // turn will not apply it.
 func TestStatusIgnoresStaleOverride(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Preset: "b", Model: "model-b", Provider: "prov-b", ReasoningCapable: true, Thinking: "high"})
-	m.state.SetTurnRoute(session.RouteInfo{Active: true, Preset: "a", Model: "model-a", Provider: "prov-a", ReasoningCapable: true, Thinking: "high"})
-	m.state.SetEffortOverride(session.EffortOverride{Level: "low", Provider: "prov-b", Model: "model-b"})
+	stateOf(m).SetActiveRoute(session.RouteInfo{Active: true, Preset: "b", Model: "model-b", Provider: "prov-b", ReasoningCapable: true, Thinking: "high"})
+	stateOf(m).SetTurnRoute(session.RouteInfo{Active: true, Preset: "a", Model: "model-a", Provider: "prov-a", ReasoningCapable: true, Thinking: "high"})
+	stateOf(m).SetEffortOverride(session.EffortOverride{Level: "low", Provider: "prov-b", Model: "model-b"})
 
 	line := m.renderStatusLine(160)
 	if strings.Contains(line, "→ low") {
@@ -169,13 +169,13 @@ func TestStatusIgnoresStaleOverride(t *testing.T) {
 // clearing from the picker a silent no-op.
 func TestEffortPickerMarksCurrentAndClears(t *testing.T) {
 	m := newTestModel(t)
-	m.state.Config.Models.Presets["test"] = routing.ModelPreset{
+	stateOf(m).Config.Models.Presets["test"] = routing.ModelPreset{
 		Provider:        "p",
 		Model:           "m",
 		ThinkingOptions: &schema.ThinkingOptions{Levels: []string{"low", "high"}},
 	}
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Preset: "test", Model: "m", Provider: "p", ReasoningCapable: true})
-	m.state.SetEffortOverride(session.EffortOverride{Level: "low", Provider: "p", Model: "m"})
+	stateOf(m).SetActiveRoute(session.RouteInfo{Active: true, Preset: "test", Model: "m", Provider: "p", ReasoningCapable: true})
+	stateOf(m).SetEffortOverride(session.EffortOverride{Level: "low", Provider: "p", Model: "m"})
 
 	m.openEffortPicker()
 

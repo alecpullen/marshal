@@ -199,16 +199,16 @@ func TestLiveThinkingDrawsBelowTheSpine(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
 	m.busy = true
-	id := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(id, "Running the suite.")
+	id := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(id, "Running the suite.")
 	ev := readEvent("a.go")
 	ev.StepID = id
 	ev.ToolCallID = "r"
 	ev.Timestamp = time.Now()
-	m.state.LogToolCall(ev)
-	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StepID: id, ToolCallID: "run", StartedAt: time.Now()})
-	m.state.BeginStreaming()
-	m.state.AppendThinking("weighing the next step\n")
+	stateOf(m).LogToolCall(ev)
+	stateOf(m).SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StepID: id, ToolCallID: "run", StartedAt: time.Now()})
+	stateOf(m).BeginStreaming()
+	stateOf(m).AppendThinking("weighing the next step\n")
 	m.refreshViewport()
 
 	content := stripANSI(m.viewport.GetContent())
@@ -568,13 +568,13 @@ func TestRunningRowsNeverAskForDetail(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
 	m.busy, m.turnStartedAt = true, time.Now()
-	m.state.AddMessage(session.RoleUser, "Run the evals", session.ContentTypePlain)
-	id := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(id, "Running the eval suite now.")
+	stateOf(m).AddMessage(session.RoleUser, "Run the evals", session.ContentTypePlain)
+	id := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(id, "Running the eval suite now.")
 	atc := session.ActiveToolCall{Name: "shell.run", Args: "go test ./evals/...", StepID: id,
 		ToolCallID: "c1", StartedAt: time.Now()}
-	m.state.SetActiveToolCall(atc)
-	m.state.AppendActiveToolCallOutput("c1", strings.Repeat("ok\n", acpwire.WireTextCap))
+	stateOf(m).SetActiveToolCall(atc)
+	stateOf(m).AppendActiveToolCallOutput("c1", strings.Repeat("ok\n", acpwire.WireTextCap))
 	m.toggleExpanded(activeNodeID(atc))
 
 	m.invalidateTranscript()

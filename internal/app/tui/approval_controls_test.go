@@ -89,7 +89,7 @@ func TestExactCommandApprovalOmitsStandingChoices(t *testing.T) {
 		ResponseChan:         make(chan session.UserApprovalDecision, 1),
 	}
 	m := newTestModel(t)
-	m.state.SetPendingApproval(tc)
+	stateOf(m).SetPendingApproval(tc)
 	approvals := m.sess.Pending().Approvals
 	if len(approvals) != 1 || !approvals[0].Forced {
 		t.Fatalf("an exact-command approval must be a forced prompt: %+v", approvals)
@@ -118,7 +118,7 @@ func TestExactCommandApprovalOmitsStandingChoices(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("no decision was delivered")
 	}
-	for _, rule := range m.state.SessionRules() {
+	for _, rule := range stateOf(m).SessionRules() {
 		if rule == tc.Command {
 			t.Fatalf("forged standing choice added session rule %q", rule)
 		}

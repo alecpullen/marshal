@@ -28,7 +28,6 @@ import (
 	"marshal/internal/acpwire"
 	"marshal/internal/app/clipboard"
 	"marshal/internal/app/config"
-	"marshal/internal/app/session"
 	"marshal/internal/app/tui/accesspanel"
 	"marshal/internal/app/tui/activeworkpanel"
 	"marshal/internal/app/tui/agents"
@@ -55,11 +54,9 @@ import (
 	"marshal/internal/app/tui/steerpanel"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/app/tui/trustpanel"
-	"marshal/internal/db"
 	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
-	"marshal/internal/skills"
 	"marshal/internal/strutil"
 )
 
@@ -170,11 +167,8 @@ type completionRef struct {
 type Model struct {
 	// host and sess are the client seam (P2): the TUI reaches the agent side
 	// through them, never through the runtime directly.
-	host acpclient.Host
-	sess acpclient.Session
-	// state is the legacy path: the TUI still reads it everywhere, and P2
-	// plans 2 to 9 empty it.
-	state *session.State
+	host  acpclient.Host
+	sess  acpclient.Session
 	input textarea.Model
 	// approvalEdit is the isolated editor for one pending approval's command
 	// or JSON arguments, or nil while no edit is open. It owns its own
@@ -194,10 +188,6 @@ type Model struct {
 	lspCtx    context.Context
 	lspCancel context.CancelFunc
 	busy      bool
-	// legacySession re-reads the runtime's current state and tool registry
-	// after Host.NewSession, for the groups not yet behind the seam. Plan 9
-	// deletes it with WithLegacyState.
-	legacySession func() LegacySession
 	// end is the pending interactive end intent, non-nil from the moment the
 	// user asks to exit or replace the conversation until the warning is
 	// declined. It holds the target (a new-session name or a resume ID) so
@@ -223,11 +213,8 @@ type Model struct {
 	// in-flight analysis pass from being interrupted by a fresh prompt.
 	endAnswered        bool
 	openConnectOnStart bool
-	memoryDB           *db.DB
-	memoryProject      int64
 	homeDir            string
 	workDir            string
-	skillIndex         *skills.Index
 	agentCancel        context.CancelFunc
 	// syncedAccessMode is the session mode the last reconciliation adopted.
 	// The sync is edge-triggered on it: a mode the model already reflects is
@@ -569,26 +556,6 @@ type pendingAgentRun struct {
 
 type Option func(*Model)
 
-// WithLegacyState hands the model the session state it still reads directly.
-//
-// It is temporary: plan 1 adds it, and plan 9 deletes it once no group reads
-// the state. Until then it must be the first option, so no later option sees a
-// nil state.
-func WithLegacyState(state *session.State) Option {
-	return func(m *Model) { m.state = state }
-}
-
-type LegacySession struct {
-	State *session.State
-}
-
-// WithLegacySession wires the read of the runtime's current state that
-// follows Host.NewSession. Without it, a new session leaves the model's legacy
-// state as it was.
-func WithLegacySession(read func() LegacySession) Option {
-	return func(m *Model) { m.legacySession = read }
-}
-
 // WithOpenConnectOnStart opens the connect panel as the TUI starts. Used
 // for first run: provider setup is the same flow on the first run and on
 // the hundredth.
@@ -631,15 +598,6 @@ func WithClipboard(w clipboard.Writer, remote func() bool) Option {
 	}
 }
 
-// WithSkillIndex hands the runtime skill index to the TUI so panels (the
-// skills panel in particular) can load skills the runtime has already
-// loaded, rather than re-reading them from disk.
-func WithSkillIndex(idx *skills.Index) Option {
-	return func(m *Model) {
-		m.skillIndex = idx
-	}
-}
-
 // WithFileIndex seeds the F18 @file completion popup with a snapshot of
 // the repo's file paths. Eager seeding is preferred when the model is
 // constructed in a context that already holds a db.DB (avoids a
@@ -666,15 +624,6 @@ func buildFileIndexItems(paths []string) []completionItem {
 
 func containsRunnerWhitespace(s string) bool {
 	return strings.ContainsAny(s, " \t\n\r\f")
-}
-
-// WithMemoryStore configures the memory browser overlay (Ctrl+K) with the
-// project database it should read from.
-func WithMemoryStore(database *db.DB, projectID int64) Option {
-	return func(m *Model) {
-		m.memoryDB = database
-		m.memoryProject = projectID
-	}
 }
 
 // WithContext carries the program's context. It is the parent of the session's
@@ -1138,9 +1087,6 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 	}
 	for _, opt := range opts {
 		opt(&m)
-	}
-	if m.state == nil {
-		panic("tui.New: WithLegacyState is required until P2 plan 9")
 	}
 	st := m.sess.Status()
 	// One session-config read for the whole construction: the reads below
@@ -1810,8 +1756,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case memory.ShowMsg:
 		m.dock.CloseNow()
-		text := memory.RenderEntry(m.memoryDB, msg.ID)
-		m.note(text)
+		m.note(memory.RenderEntry(msg.Entry))
 		m.refreshViewport()
 		return m, nil
 	case memory.DeletedMsg:
@@ -2552,9 +2497,6 @@ func accessOutcomeNote(result acpwire.AccessResult) string {
 // request that nothing can answer, and refuses one that belongs to a session
 // this model does not serve.
 func (m *Model) reconcileAccess() {
-	if m.state == nil {
-		return
-	}
 	// The displayed permission state is synchronized here rather than in the
 	// message handlers, so a grant the runtime applied (or a reload that
 	// preserved an override) is reflected on the next update. The sync is
@@ -6429,17 +6371,40 @@ func (m *Model) beginResume(id string) (tea.Model, tea.Cmd) {
 	return m, m.beginEnd(&endIntent{kind: acpwire.EndIntentReplace, resumeID: id})
 }
 
+// openMemory opens the docked memory browser and reports whether it did. The
+// entries come from the session, so the browser lists what the agent side
+// sees. fromKey marks the Ctrl+K shortcut, which is silent: without a
+// database it does nothing rather than noting why.
+func (m *Model) openMemory(fromKey bool) bool {
+	sess, ctx := m.sess, m.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	entries, err := sess.Memories(ctx)
+	if err != nil && acpclient.IsCode(err, acpwire.CodeNoDatabase) {
+		if !fromKey {
+			m.note("Memory browser not available (no database configured).")
+		}
+		return false
+	}
+	// A read failure still opens the browser: the footer reports it, as a
+	// failed listing did before the browser went through the seam.
+	m.dock.Open(memory.NewPanel(entries, err, func(id int64) error {
+		return sess.DeleteMemory(ctx, id)
+	}))
+	return true
+}
+
 // openSessionPicker opens a picker listing previous sessions for this
 // project. The picked session ID is passed to beginResume.
 func (m *Model) openSessionPicker(prefilter string) {
 	st := m.sess.Status()
-	database := m.state.DB()
-	if database == nil {
-		m.note("Session list is not available (no database).")
-		return
-	}
-	sessions, _, err := database.ListSessions(context.Background(), st.WorkingDir, "", 100)
+	sessions, err := m.host.ListSessions(m.ctx, st.WorkingDir, 100)
 	if err != nil {
+		if acpclient.IsCode(err, acpwire.CodeNoDatabase) {
+			m.note("Session list is not available (no database).")
+			return
+		}
 		m.note(fmt.Sprintf("Could not list sessions: %v", err))
 		return
 	}
@@ -6449,7 +6414,9 @@ func (m *Model) openSessionPicker(prefilter string) {
 		if label == "" {
 			label = s.SessionID
 		}
-		detail := s.UpdatedAt.Format("2006-01-02 15:04") + fmt.Sprintf(" · %d messages", s.MessageCount)
+		// The database keeps the time in UTC; render it the same way so the
+		// picker shows the same clock time it always did.
+		detail := acpwire.Time(s.UpdatedAt).UTC().Format("2006-01-02 15:04") + fmt.Sprintf(" · %d messages", s.MessageCount)
 		badge := ""
 		if s.SessionID == m.sess.ID() {
 			badge = "● now"

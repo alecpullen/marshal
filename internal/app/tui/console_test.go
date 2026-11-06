@@ -18,7 +18,7 @@ func consoleTestModel(t *testing.T, width, height int) Model {
 	t.Helper()
 	m := newTestModel(t)
 	m.resize(width, height)
-	m.state.SetTrusted(true)
+	stateOf(m).SetTrusted(true)
 	m.refreshViewport()
 	return m
 }
@@ -189,7 +189,7 @@ func TestFullFrameKeepsThePlainStatusLine(t *testing.T) {
 // violet and the status border still closes the frame.
 func TestPromptStatusRowKeepsTheOutline(t *testing.T) {
 	m := consoleTestModel(t, 80, 24)
-	m.state.SetPendingQuestion(&session.PendingQuestion{
+	stateOf(m).SetPendingQuestion(&session.PendingQuestion{
 		Questions: []session.Question{{Question: "what?"}},
 	})
 	m.refreshViewport()
@@ -206,7 +206,7 @@ func TestPromptStatusRowKeepsTheOutline(t *testing.T) {
 func TestPromptSectionsCarryLabelsAndKeys(t *testing.T) {
 	t.Run("approval", func(t *testing.T) {
 		m := consoleTestModel(t, 80, 24)
-		m.state.SetPendingApproval(&session.PendingToolCall{
+		stateOf(m).SetPendingApproval(&session.PendingToolCall{
 			ID:           "call-console",
 			Name:         "shell.run",
 			Command:      "git push",
@@ -224,7 +224,7 @@ func TestPromptSectionsCarryLabelsAndKeys(t *testing.T) {
 	})
 	t.Run("question", func(t *testing.T) {
 		m := consoleTestModel(t, 80, 24)
-		m.state.SetPendingQuestion(&session.PendingQuestion{
+		stateOf(m).SetPendingQuestion(&session.PendingQuestion{
 			Questions: []session.Question{{Question: "what?"}},
 		})
 		out := stripANSI(m.renderInputArea())
@@ -245,7 +245,7 @@ func TestPromptSectionsCarryLabelsAndKeys(t *testing.T) {
 // stop key while a turn is running.
 func TestPendingPromptKeysLiveOnlyInTheFrameHeader(t *testing.T) {
 	m := consoleTestModel(t, 80, 24)
-	m.state.SetPendingQuestion(&session.PendingQuestion{
+	stateOf(m).SetPendingQuestion(&session.PendingQuestion{
 		Questions: []session.Question{{Question: "what?"}},
 	})
 	m.busy = true
@@ -272,7 +272,7 @@ func TestPendingPromptKeysLiveOnlyInTheFrameHeader(t *testing.T) {
 // through help.Footer's hint cluster — see TestFooterKeysInFrame.)
 func TestStatusLineDropsPromptKeysWhileFramed(t *testing.T) {
 	m := consoleTestModel(t, 80, 24)
-	m.state.SetPendingQuestion(&session.PendingQuestion{
+	stateOf(m).SetPendingQuestion(&session.PendingQuestion{
 		Questions: []session.Question{{Question: "what?"}},
 	})
 	m.busy = true

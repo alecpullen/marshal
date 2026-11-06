@@ -3,8 +3,6 @@ package plugins
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -13,7 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"marshal/internal/app/config"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/fuzzy"
@@ -21,23 +19,38 @@ import (
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/app/tui/textfield"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/plugins"
 	"marshal/internal/strutil"
 )
 
 const scopeGlobal = "global"
 const scopeProject = "project"
 
+// Service is what the panel asks the session for. acpclient.Session satisfies
+// it. The panel keeps no store paths and no clone of its own: the agent side
+// clones, scans, hashes, installs and removes, and a token names a staged scan
+// until it is installed or discarded.
+type Service interface {
+	Plugins(ctx context.Context) ([]acpwire.PluginEntry, error)
+	ScanPlugin(ctx context.Context, source string) (acpwire.PluginScan, error)
+	InstallPlugin(ctx context.Context, token, scope string) error
+	DiscardPluginScan(ctx context.Context, token string) error
+	RemovePlugin(ctx context.Context, name, scope string) error
+}
+
 // Panel is the TUI management surface for installed plugins.
 type Panel struct {
-	homeDir        string
-	workDir        string
+	svc            Service
 	projectTrusted bool
 	note           func(string)
 
 	filter textfield.Model
 	list   *settings.FieldList
 	stack  []*settings.Frame
+
+	// entries is the last listing the session returned. The panel reads it
+	// once when it opens and again after each action that changes it, never
+	// on render: listing is an agent-side call, not a field builder's job.
+	entries []acpwire.PluginEntry
 
 	installSource string
 	installScope  string
@@ -48,7 +61,7 @@ type Panel struct {
 	// status is a transient confirmation line, so a completed action is
 	// never silent.
 	status          string
-	scannedContents *plugins.Contents
+	scannedContents *acpwire.PluginContents
 	scannedName     string
 	scannedSource   string
 	// scannedScope is the scope the review was produced for. It is captured
@@ -60,23 +73,18 @@ type Panel struct {
 	// normalized source so Confirm can prove the fields above still hold the
 	// source the scan actually read.
 	scannedRawSource string
-	// scannedHash is the hash of the scanned clone after .git removal: the
-	// content the user reviewed, and what the install compares against before
-	// it commits anything.
-	scannedHash   string
+	// scannedCommit is the commit the scan fetched, shown in the review.
 	scannedCommit string
-	// scanParent is the temporary parent the claimed scan owns: the clone
-	// lives in <parent>/clone, and the parent is what gets deleted. Empty when
-	// no review is outstanding, or once an install worker has taken it.
-	scanParent string
+	// scanToken names the staged clone the outstanding review holds. The
+	// session owns the clone and its reviewed hash; this token is what an
+	// install or a discard takes. Empty when no review is outstanding, or once
+	// an install worker has taken it.
+	scanToken string
 	// scanLease owns the outstanding scan until this panel claims it.
 	scanLease *scanLease
 	// scanGen identifies the current review. A result whose generation is not
 	// this one cannot become the review, however late it arrives.
 	scanGen int
-	// scanDeps are the external operations a scan performs. Production uses
-	// the real plugins package; tests inject delays and failures per panel.
-	scanDeps scanDeps
 	// reviewDetail is the open full-content view of one executable entry.
 	// While it is open the review list is hidden and no key can reach the
 	// Confirm action.
@@ -119,7 +127,7 @@ type removeIdentity struct {
 
 // removalIdentity derives the confirmation key from the entry's lockfile
 // provenance, so two entries sharing a name never share a confirmation.
-func removalIdentity(e scopedEntry) removeIdentity {
+func removalIdentity(e acpwire.PluginEntry) removeIdentity {
 	return removeIdentity{scope: e.Scope, name: e.Name}
 }
 
@@ -129,52 +137,38 @@ var _ dock.Panel = (*Panel)(nil)
 // released panel never receives the scan's result message.
 var _ dock.CloseAware = (*Panel)(nil)
 
-// scanDeps are the external operations one scan performs. Production uses the
-// plugins package directly; tests inject delays, failures and observations per
-// panel, so no package-global hook is needed to exercise a race.
-type scanDeps struct {
-	NewInstaller func() (*plugins.Installer, error)
-	Clone        func(ctx context.Context, inst *plugins.Installer, source, ref, dest string) (string, error)
-	Scan         func(dir string) (plugins.Contents, error)
-	Hash         func(dir string) (string, error)
-}
-
-// defaultScanDeps is the production scan: a real clone, a real scan, and the
-// same hash the install and startup verification use.
-func defaultScanDeps() scanDeps {
-	return scanDeps{
-		NewInstaller: plugins.NewInstaller,
-		Clone: func(ctx context.Context, inst *plugins.Installer, source, ref, dest string) (string, error) {
-			return inst.Clone(ctx, source, ref, dest)
-		},
-		Scan: plugins.ScanPlugin,
-		Hash: plugins.HashDir,
-	}
-}
-
-// NewPanel builds a plugins panel. note appends a line to the transcript; a
-// nil note writes nothing.
-func NewPanel(homeDir, workDir string, projectTrusted bool, note func(string)) *Panel {
-	return newPanelWithScanDeps(homeDir, workDir, projectTrusted, note, defaultScanDeps())
-}
-
-// newPanelWithScanDeps builds a panel whose scans run through deps. It is the
-// only seam a test needs: everything else about the panel is production code.
-func newPanelWithScanDeps(homeDir, workDir string, projectTrusted bool, note func(string), deps scanDeps) *Panel {
+// NewPanel builds a plugins panel over svc, the session the panel asks for its
+// listing and its actions. note appends a line to the transcript; a nil note
+// writes nothing.
+//
+// The listing is read once here, so the first render shows what is installed
+// instead of an empty list that fills in later.
+func NewPanel(svc Service, projectTrusted bool, note func(string)) *Panel {
 	p := &Panel{
-		homeDir:        homeDir,
-		workDir:        workDir,
+		svc:            svc,
 		projectTrusted: projectTrusted,
 		note:           note,
 		removeArmed:    make(map[removeIdentity]bool),
 		installScope:   scopeGlobal,
-		scanDeps:       deps,
 	}
 	p.filter = textfield.New()
 	p.filter.SetVirtualCursor(true)
 	p.filter.Focus()
 	p.list = settings.NewFieldList(p.buildFields)
+	p.reload()
 	return p
+}
+
+// reload replaces the listing with the session's. A failed read shows an empty
+// list, as an ignored lockfile read error did: the panel reports the failures
+// of its actions, not a listing the user can do nothing about.
+func (p *Panel) reload() {
+	entries, err := p.svc.Plugins(context.Background())
+	if err != nil {
+		p.entries = nil
+		return
+	}
+	p.entries = entries
 }
 
 func (p *Panel) activeList() *settings.FieldList {
@@ -184,52 +178,15 @@ func (p *Panel) activeList() *settings.FieldList {
 	return p.list
 }
 
-func (p *Panel) globalStoreDir() string {
-	home, _ := os.UserHomeDir()
-	if p.homeDir != "" {
-		home = p.homeDir
+// discardScan releases a staged scan the panel no longer holds. It is the
+// panel's cleanup path for a token nobody will install, and it ignores the
+// error: a token the session has already dropped is exactly the state this
+// wants.
+func (p *Panel) discardScan(token string) {
+	if token == "" {
+		return
 	}
-	return plugins.GlobalStoreDir(home)
-}
-
-func (p *Panel) projectStoreDir() string {
-	return plugins.ProjectStoreDir(p.workDir)
-}
-
-func (p *Panel) globalLockPath() string {
-	home, _ := os.UserHomeDir()
-	if p.homeDir != "" {
-		home = p.homeDir
-	}
-	return plugins.GlobalLockPath(home)
-}
-
-func (p *Panel) projectLockPath() string {
-	return plugins.ProjectLockPath(p.workDir)
-}
-
-type scopedEntry struct {
-	plugins.LockEntry
-	Scope string
-}
-
-func (p *Panel) lockEntries() []scopedEntry {
-	var entries []scopedEntry
-	if lf, err := plugins.ReadLockfile(p.globalLockPath()); err == nil {
-		for _, e := range lf.Plugins {
-			e := e
-			entries = append(entries, scopedEntry{LockEntry: e, Scope: scopeGlobal})
-		}
-	}
-	if p.projectTrusted {
-		if lf, err := plugins.ReadLockfile(p.projectLockPath()); err == nil {
-			for _, e := range lf.Plugins {
-				e := e
-				entries = append(entries, scopedEntry{LockEntry: e, Scope: scopeProject})
-			}
-		}
-	}
-	return entries
+	_ = p.svc.DiscardPluginScan(context.Background(), token)
 }
 
 func shortCommit(commit string) string {
@@ -239,7 +196,7 @@ func shortCommit(commit string) string {
 	return commit
 }
 
-func (p *Panel) detailFrame(e scopedEntry) *settings.Frame {
+func (p *Panel) detailFrame(e acpwire.PluginEntry) *settings.Frame {
 	return settings.NewFrame(e.Name, func() []*settings.Field {
 		var fields []*settings.Field
 
@@ -311,20 +268,17 @@ type installResultMsg struct {
 	Err   error
 }
 
+// scanResultMsg carries one scan back to the panel. gen and lease bind the
+// result to the frame that asked for it: a result whose lease or generation is
+// no longer current cannot become a review. Scan holds the staged clone's
+// token and everything the review shows.
 type scanResultMsg struct {
-	// gen and lease bind the result to the frame that asked for it: a result
-	// whose lease or generation is no longer current cannot become a review.
-	gen          int
-	lease        *scanLease
-	RawSource    string
-	Name         string
-	Source       string
-	Scope        string
-	Commit       string
-	ReviewedHash string
-	Contents     plugins.Contents
-	CloneDir     string
-	Err          error
+	gen       int
+	lease     *scanLease
+	RawSource string
+	Scope     string
+	Scan      acpwire.PluginScan
+	Err       error
 }
 
 // OwnsMsg claims this panel's async result messages so the dock host
@@ -346,28 +300,16 @@ func (p *Panel) fail(msg string) {
 	p.activeList().ErrMsg = msg
 }
 
-func (p *Panel) runRemove(e scopedEntry) tea.Cmd {
+// runRemove asks the session to delete an installed plugin and its lockfile
+// entry. The panel no longer touches the store or the lockfile itself, and the
+// worker reports whether it was trusted enough to write the project scope.
+func (p *Panel) runRemove(e acpwire.PluginEntry) tea.Cmd {
 	return func() tea.Msg {
-		var storeDir, lockPath string
-		if e.Scope == scopeGlobal {
-			storeDir = p.globalStoreDir()
-			lockPath = p.globalLockPath()
-		} else {
-			storeDir = p.projectStoreDir()
-			lockPath = p.projectLockPath()
-		}
-		if err := os.RemoveAll(filepath.Join(storeDir, e.Name)); err != nil {
+		name, scope := e.Name, e.Scope
+		if err := p.svc.RemovePlugin(context.Background(), name, scope); err != nil {
 			return removeResultMsg{Err: err}
 		}
-		lf, err := plugins.ReadLockfile(lockPath)
-		if err != nil {
-			return removeResultMsg{Err: err}
-		}
-		lf.Remove(e.Name)
-		if err := lf.Write(lockPath); err != nil {
-			return removeResultMsg{Err: err}
-		}
-		return removeResultMsg{Name: e.Name, Scope: e.Scope}
+		return removeResultMsg{Name: name, Scope: scope}
 	}
 }
 
@@ -558,14 +500,14 @@ func previewLine(lines []string) string {
 // Titles are escaped once, in executableRow, where the detail stores them.
 func hookReviewTitle(event string) string { return "hook · " + event }
 
-func hookReviewLines(h config.HookConfig) []string {
+func hookReviewLines(h acpwire.PluginHook) []string {
 	return []string{
 		"event:", "  " + strutil.ShowControls(h.Event),
 		"command:", "  " + strutil.ShowControls(h.Command),
 	}
 }
 
-func mcpReviewLines(name string, srv config.MCPServerConfig) []string {
+func mcpReviewLines(name string, srv acpwire.PluginMCPServer) []string {
 	lines := []string{"server:", "  " + strutil.ShowControls(name)}
 	// A plugin may set trust itself, and "unrestricted" changes how the
 	// server's tools are gated. It is part of what the user is authorising,
@@ -635,110 +577,67 @@ func (p *Panel) runScan() tea.Cmd {
 	p.installErr = ""
 
 	ctx, cancel := context.WithCancel(context.Background())
-	lease := newScanLease(cancel)
+	lease := newScanLease(cancel, p.discardScan)
 	p.scanLease = lease
-	deps := p.scanDeps
-	workDir := p.workDir
 	return func() tea.Msg {
-		return scanPlugin(ctx, deps, lease, gen, raw, scope, workDir)
+		return scanPlugin(ctx, p.svc, lease, gen, raw, scope)
 	}
 }
 
 // scanPlugin performs one scan and owns the lease: every failure closes it, so
-// a clone that never becomes a review is deleted whether or not this function's
-// message is ever delivered.
-func scanPlugin(ctx context.Context, deps scanDeps, lease *scanLease, gen int, rawSource, scope, workDir string) tea.Msg {
+// a token that never becomes a review is discarded whether or not this
+// function's message is ever delivered. The session does the clone, the scan
+// and the hash; the panel keeps only the token that names them.
+func scanPlugin(ctx context.Context, svc Service, lease *scanLease, gen int, rawSource, scope string) tea.Msg {
 	failed := func(err error) scanResultMsg {
 		lease.Close()
 		return scanResultMsg{gen: gen, lease: lease, Err: err}
 	}
 
-	cloneURL, name, err := plugins.NormalizeSource(rawSource)
+	scan, err := svc.ScanPlugin(ctx, rawSource)
 	if err != nil {
 		return failed(err)
 	}
-	// Every derived name is validated, including the github: branch: a name is
-	// a single directory inside the plugin store.
-	if !plugins.ValidName(name) {
-		return failed(fmt.Errorf("invalid plugin name %q derived from %q", name, rawSource))
-	}
-	// Validate the clone source against the workspace root before cloning,
-	// matching the CLI and ACP install paths.
-	if err := plugins.ValidateCloneSource(cloneURL, workDir); err != nil {
-		return failed(err)
-	}
-	inst, err := deps.NewInstaller()
-	if err != nil {
-		return failed(err)
-	}
-	tmpDir, err := os.MkdirTemp("", "marshal-plugin-tui-*")
-	if err != nil {
-		return failed(err)
-	}
-	// The lease owns the parent from here on: a cancellation or a result that
-	// is never delivered still has an owner that deletes it.
-	if !lease.Publish(tmpDir) {
+	// The lease owns the staged clone from here on: a cancellation or a result
+	// that is never delivered still has an owner that discards it.
+	if !lease.Publish(scan.Token) {
 		return scanResultMsg{gen: gen, lease: lease, Err: context.Canceled}
 	}
-	cloneDest := filepath.Join(tmpDir, "clone")
-	commit, err := deps.Clone(ctx, inst, cloneURL, "", cloneDest)
-	if err != nil {
-		return failed(err)
-	}
-	_ = os.RemoveAll(filepath.Join(cloneDest, ".git"))
-	contents, err := deps.Scan(cloneDest)
-	if err != nil {
-		return failed(err)
-	}
-	// The hash covers exactly what was reviewed: .git is gone, so a re-clone of
-	// the same commit hashes the same.
-	hash, err := deps.Hash(cloneDest)
-	if err != nil {
-		return failed(err)
-	}
 	return scanResultMsg{
-		gen:          gen,
-		lease:        lease,
-		RawSource:    rawSource,
-		Name:         name,
-		Source:       cloneURL,
-		Scope:        scope,
-		Commit:       commit,
-		ReviewedHash: hash,
-		Contents:     contents,
-		CloneDir:     cloneDest,
+		gen:       gen,
+		lease:     lease,
+		RawSource: rawSource,
+		Scope:     scope,
+		Scan:      scan,
 	}
 }
 
 // clearReview drops the review state without touching the entered source or
-// scope. The clone is not deleted here: the caller either already disposed of
-// it or transferred it to an install worker.
+// scope. The staged clone is not discarded here: the caller either already
+// discarded it or transferred its token to an install worker.
 func (p *Panel) clearReview() {
 	p.scannedContents = nil
 	p.scannedName = ""
 	p.scannedSource = ""
 	p.scannedRawSource = ""
 	p.scannedScope = ""
-	p.scannedHash = ""
 	p.scannedCommit = ""
-	p.scanParent = ""
+	p.scanToken = ""
 	p.reviewDetail = nil
 }
 
 // invalidateReview abandons the current review. It advances the generation so a
-// late result cannot attach, cancels and disposes of the outstanding scan or
+// late result cannot attach, cancels and discards the outstanding scan or
 // claimed clone, and drops the review state. It never blocks on a worker: the
-// lease cancels the clone and deletes what the lease still owns.
+// lease cancels the scan and discards the token it still owns.
 func (p *Panel) invalidateReview() {
 	p.scanGen++
 	if p.scanLease != nil {
 		p.scanLease.Close()
 		p.scanLease = nil
 	}
-	if p.scanParent != "" {
-		os.RemoveAll(p.scanParent)
-	}
-	// An install worker owns its clone now: editing the fields above must not
+	p.discardScan(p.scanToken)
+	// An install worker owns its token now: editing the fields above must not
 	// make the panel look idle while it is still writing.
 	if p.busy != "installing" {
 		p.busy = ""
@@ -764,19 +663,11 @@ func (p *Panel) resetInstall() {
 	p.installScope = scopeGlobal
 }
 
-// storePaths resolves the store and lockfile paths for a scope.
-func (p *Panel) storePaths(scope string) (storeDir, lockPath string) {
-	if scope == scopeProject {
-		return p.projectStoreDir(), p.projectLockPath()
-	}
-	return p.globalStoreDir(), p.globalLockPath()
-}
-
 func (p *Panel) runInstallFromScan() tea.Cmd {
 	if p.busy != "" {
 		return nil
 	}
-	if p.scannedContents == nil || p.scanParent == "" {
+	if p.scannedContents == nil || p.scanToken == "" {
 		p.fail("scan a source first")
 		return nil
 	}
@@ -792,33 +683,15 @@ func (p *Panel) runInstallFromScan() tea.Cmd {
 	p.installErr = ""
 	name := p.scannedName
 	scope := p.scannedScope
-	source := p.scannedSource
-	commit := p.scannedCommit
-	reviewed := p.scannedHash
-	cloneDest := filepath.Join(p.scanParent, "clone")
-	// The worker owns the clone from here: clearing the panel's reference
-	// before it starts is what stops a later panel close from deleting files
-	// the worker is still copying.
-	parent := p.scanParent
-	p.scanParent = ""
+	// The install consumes the staged clone whatever the outcome: the session
+	// deletes it after comparing its hash with the one the scan recorded.
+	// Clearing the panel's reference before the worker starts is what stops a
+	// later panel close from discarding a token the worker is installing.
+	token := p.scanToken
+	p.scanToken = ""
 	p.scanLease = nil
-	storeDir, lockPath := p.storePaths(scope)
 	return func() tea.Msg {
-		// The worker always cleans its own clone, on every outcome — including
-		// when this message is never delivered.
-		defer os.RemoveAll(parent)
-		// The install is staged and rolled back by the plugins package: a copy,
-		// hash, rename or lockfile failure must leave the plugin that is
-		// already installed, and its lockfile entry, exactly as they were.
-		if err := plugins.InstallReviewed(context.Background(), plugins.ReviewedInstall{
-			Name:         name,
-			Source:       source,
-			Commit:       commit,
-			ReviewedHash: reviewed,
-			CloneDir:     cloneDest,
-			StoreDir:     storeDir,
-			LockPath:     lockPath,
-		}); err != nil {
+		if err := p.svc.InstallPlugin(context.Background(), token, scope); err != nil {
 			return installResultMsg{Err: err}
 		}
 		return installResultMsg{Name: name, Scope: scope}
@@ -838,7 +711,7 @@ func sortedKeys[V any](m map[string]V) []string {
 
 func (p *Panel) buildFields() []*settings.Field {
 	query := strings.TrimSpace(p.filter.Value())
-	entries := p.lockEntries()
+	entries := p.entries
 
 	fields := []*settings.Field{
 		settings.NewField("header.installed", "Installed plugins", settings.KindHeader),
@@ -977,22 +850,22 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			p.fail("the source or scope changed while scanning; scan again")
 			return nil
 		}
-		parent, ok := msg.lease.Claim()
+		token, ok := msg.lease.Claim()
 		if !ok {
 			p.scanLease = nil
 			return nil
 		}
-		// The claim transfers the clone's ownership to this panel: from here
-		// it belongs to the review, and only an install worker can take it.
+		// The claim transfers the staged scan's ownership to this panel: from
+		// here it belongs to the review, and only an install or a discard can
+		// take it.
 		p.scanLease = nil
-		p.scanParent = parent
-		p.scannedContents = &msg.Contents
-		p.scannedName = msg.Name
-		p.scannedSource = msg.Source
+		p.scanToken = token
+		p.scannedContents = &msg.Scan.Contents
+		p.scannedName = msg.Scan.Name
+		p.scannedSource = msg.Scan.Source
 		p.scannedRawSource = msg.RawSource
 		p.scannedScope = msg.Scope
-		p.scannedHash = msg.ReviewedHash
-		p.scannedCommit = msg.Commit
+		p.scannedCommit = msg.Scan.Commit
 		p.activeList().Refresh()
 		return nil
 	case installResultMsg:
@@ -1007,9 +880,11 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		p.status = fmt.Sprintf("installed %s (%s)", msg.Name, msg.Scope)
-		// The install worker removed the clone; drop the review so nothing
-		// tries to remove it a second time.
+		// The install consumed the staged clone; drop the review so nothing
+		// tries to remove it a second time, and reread the listing the install
+		// just changed.
 		p.resetInstall()
+		p.reload()
 		settings.FieldListRefresh(p.list)
 		if p.note != nil {
 			p.note("Restart Marshal to activate the plugin change.")
@@ -1022,10 +897,11 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		p.status = fmt.Sprintf("removed %s (%s)", msg.Name, msg.Scope)
-		// Pop detail frame and refresh the list.
+		// Pop detail frame and refresh the listing the removal just changed.
 		if len(p.stack) > 0 {
 			p.stack = p.stack[:len(p.stack)-1]
 		}
+		p.reload()
 		p.list.Refresh()
 		if p.note != nil {
 			p.note("Restart Marshal to activate the plugin change.")

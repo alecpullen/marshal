@@ -86,24 +86,24 @@ func TestRenderNoticeClampsMessageToTwoLines(t *testing.T) {
 // dismissed TUI-stamped errors, pinning runtime errors forever.
 func TestTickDismissesRuntimeInjectedNoticeAfterTTL(t *testing.T) {
 	m := newTestModel(t)
-	m.state.SetNotice(session.Notice{Category: session.NoticeProvider, Severity: session.SeverityError, Message: "down", SetAt: time.Unix(100, 0)})
+	stateOf(m).SetNotice(session.Notice{Category: session.NoticeProvider, Severity: session.SeverityError, Message: "down", SetAt: time.Unix(100, 0)})
 	m.now = func() time.Time { return time.Unix(100+int64(noticeBannerDuration/time.Second)+1, 0) }
 
 	updated, _ := m.handleAgentTick(agentTickMsg{})
 	m = updated
-	if _, ok := m.state.Notice(); ok {
+	if _, ok := stateOf(m).Notice(); ok {
 		t.Fatal("notice should be dismissed after the TTL regardless of who set it")
 	}
 }
 
 func TestTickKeepsYoungNotice(t *testing.T) {
 	m := newTestModel(t)
-	m.state.SetNotice(session.Notice{Category: session.NoticeProvider, Message: "down", SetAt: time.Unix(100, 0)})
+	stateOf(m).SetNotice(session.Notice{Category: session.NoticeProvider, Message: "down", SetAt: time.Unix(100, 0)})
 	m.now = func() time.Time { return time.Unix(100, 0) }
 
 	updated, cmd := m.handleAgentTick(agentTickMsg{})
 	m = updated
-	if _, ok := m.state.Notice(); !ok {
+	if _, ok := stateOf(m).Notice(); !ok {
 		t.Fatal("young notice must be retained")
 	}
 	if cmd == nil {
@@ -117,7 +117,7 @@ func TestAgentFinishedErrorSetsNoticeAndCompactRow(t *testing.T) {
 	m := newTestModel(t)
 	updated, _ := m.handleAgentFinished(agentFinishedMsg{err: errors.New("provider request timed out")})
 	m = updated
-	n, ok := m.state.Notice()
+	n, ok := stateOf(m).Notice()
 	if !ok {
 		t.Fatal("Notice() ok = false after a failed turn")
 	}
@@ -125,7 +125,7 @@ func TestAgentFinishedErrorSetsNoticeAndCompactRow(t *testing.T) {
 		t.Fatalf("category = %v, want NoticeInternal", n.Category)
 	}
 	var found bool
-	for _, msg := range m.state.Messages() {
+	for _, msg := range stateOf(m).Messages() {
 		if msg.Role == session.RoleSystem && strings.Contains(msg.Content, "Turn failed: provider request timed out") {
 			found = true
 		}
@@ -142,7 +142,7 @@ func TestPlanAuthorFailureDoesNotDoubleReport(t *testing.T) {
 	updated, _ := m.handlePlanAuthorFinished(planAuthorFinishedMsg{err: errors.New("boom")})
 	m = updated
 	var rows int
-	for _, msg := range m.state.Messages() {
+	for _, msg := range stateOf(m).Messages() {
 		if msg.Role == session.RoleSystem && strings.Contains(msg.Content, "Plan authoring failed") {
 			rows++
 			if strings.Count(msg.Content, "\n") > 0 {
@@ -153,7 +153,7 @@ func TestPlanAuthorFailureDoesNotDoubleReport(t *testing.T) {
 	if rows != 1 {
 		t.Fatalf("plan failure transcript rows = %d, want exactly 1", rows)
 	}
-	if _, ok := m.state.Notice(); !ok {
+	if _, ok := stateOf(m).Notice(); !ok {
 		t.Fatal("plan failure must also set a notice")
 	}
 }
@@ -162,7 +162,7 @@ func TestPlanAuthorFailureDoesNotDoubleReport(t *testing.T) {
 // cancelTurn (which is a no-op when idle anyway).
 func TestEscDismissesNoticeWhenIdle(t *testing.T) {
 	m := newTestModel(t)
-	m.state.SetNotice(session.Notice{Category: session.NoticeInternal, Message: "boom"})
+	stateOf(m).SetNotice(session.Notice{Category: session.NoticeInternal, Message: "boom"})
 
 	updated, cmd, handled := m.handleKeypress(tea.KeyPressMsg{Code: tea.KeyEscape})
 	m = updated.(Model)
@@ -170,7 +170,7 @@ func TestEscDismissesNoticeWhenIdle(t *testing.T) {
 		t.Fatal("esc with a visible notice should be handled")
 	}
 	_ = cmd
-	if _, ok := m.state.Notice(); ok {
+	if _, ok := stateOf(m).Notice(); ok {
 		t.Fatal("esc should dismiss the notice")
 	}
 }
@@ -182,7 +182,7 @@ func TestEscDismissesNoticeWhenIdle(t *testing.T) {
 // auto-dismiss) until an unrelated transcript change forced a repaint.
 func TestEscDismissRepaintsBannerAway(t *testing.T) {
 	m := newTestModel(t)
-	m.state.SetNotice(session.Notice{Category: session.NoticeInternal, Message: "boom"})
+	stateOf(m).SetNotice(session.Notice{Category: session.NoticeInternal, Message: "boom"})
 	m.refreshViewport()
 	if plain := stripANSI(m.viewport.View()); !strings.Contains(plain, "boom") {
 		t.Fatalf("banner should be visible before dismiss:\n%s", plain)
@@ -205,7 +205,7 @@ func TestEscDismissRepaintsBannerAway(t *testing.T) {
 // repaint relies on the notice being folded into the content signature.
 func TestTickDismissRepaintsBannerAway(t *testing.T) {
 	m := newTestModel(t)
-	m.state.SetNotice(session.Notice{Category: session.NoticeProvider, Severity: session.SeverityError, Message: "down", SetAt: time.Unix(100, 0)})
+	stateOf(m).SetNotice(session.Notice{Category: session.NoticeProvider, Severity: session.SeverityError, Message: "down", SetAt: time.Unix(100, 0)})
 	m.now = func() time.Time { return time.Unix(100, 0) }
 	m.refreshViewport()
 	if plain := stripANSI(m.viewport.View()); !strings.Contains(plain, "down") {
@@ -225,7 +225,7 @@ func TestTickDismissRepaintsBannerAway(t *testing.T) {
 // otherwise-dead warn branches in renderNotice and statusRightSegment.
 func TestRenderWarnNotice(t *testing.T) {
 	m := newTestModel(t)
-	m.state.SetNotice(session.Notice{Category: session.NoticeConfig, Severity: session.SeverityWarn, Message: "old config key ignored"})
+	stateOf(m).SetNotice(session.Notice{Category: session.NoticeConfig, Severity: session.SeverityWarn, Message: "old config key ignored"})
 	m.refreshViewport()
 	plain := stripANSI(m.viewport.View())
 	if !strings.Contains(plain, "old config key ignored") {

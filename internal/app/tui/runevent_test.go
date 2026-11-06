@@ -146,7 +146,7 @@ func thousandLineRunEvent(t *testing.T, m *Model) string {
 	for i := 1; i <= 1000; i++ {
 		fmt.Fprintf(&body, "line %04d\n", i)
 	}
-	m.state.AddRunEvent(session.RunEvent{
+	stateOf(m).AddRunEvent(session.RunEvent{
 		Kind: session.RunEventVerifyFailed, TaskN: 1, Title: "go test ./...",
 		Body: body.String(),
 	})

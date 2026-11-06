@@ -16,7 +16,7 @@ import (
 // and the old len(items)==0 gate hid the banner on every first run.
 func TestWelcomeBannerSurvivesBootSystemItems(t *testing.T) {
 	m := newTestModel(t)
-	m.state.AddMessage(session.RoleSystem, "skill body here", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleSystem, "skill body here", session.ContentTypePlain)
 	m.resize(220, 80)
 	m.refreshViewport()
 	plain := stripANSI(m.viewString())
@@ -26,7 +26,7 @@ func TestWelcomeBannerSurvivesBootSystemItems(t *testing.T) {
 
 	// A real conversation turn still suppresses it (resumed sessions don't
 	// get the banner).
-	m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	m2 := m
 	m2.refreshViewport()
 	plain2 := stripANSI(m2.viewString())
@@ -43,26 +43,26 @@ func TestWelcomeBannerReadsTheWire(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(220, 80)
 
-	m.state.AddMessage(session.RoleSystem, "skill body here", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleSystem, "skill body here", session.ContentTypePlain)
 	m.invalidateTranscript()
 	m.refreshViewport()
 	if plain := stripANSI(m.viewString()); !strings.Contains(plain, "Type a question") {
 		t.Fatal("a boot-time system item must not end the welcome banner")
 	}
 
-	step := m.state.BeginStep(session.Actor{})
-	m.state.LogToolCall(registry.AuditEvent{
+	step := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).LogToolCall(registry.AuditEvent{
 		ToolName: "file.read",
 		Args:     json.RawMessage(`{"path":"main.go"}`),
 	})
-	m.state.EndStep(step)
+	stateOf(m).EndStep(step)
 	m.invalidateTranscript()
 	m.refreshViewport()
 	if plain := stripANSI(m.viewString()); !strings.Contains(plain, "Type a question") {
 		t.Fatal("a beat with no narration must not end the welcome banner")
 	}
 
-	m.state.AddMessage(session.RoleAssistant, "Here is the file.", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleAssistant, "Here is the file.", session.ContentTypePlain)
 	m.invalidateTranscript()
 	m.refreshViewport()
 	if plain := stripANSI(m.viewString()); strings.Contains(plain, "Type a question") {

@@ -4,15 +4,16 @@ Parent: [`design.md`](design.md) §4.5 and §7 (P3). It builds on
 [`p2-client-seam.md`](p2-client-seam.md), whose interface and wire types
 it implements over ACP. Where this spec and design §4.5 differ, this spec
 wins.
-Depends on: P2. Plans 1 (the client core), 4a (the stack over the
-wire) and 3a (ordering) depend on nothing P2 still changes and run
-alongside P2's last plans. The other plans wait for all nine P2 plans: the boundary test's
-allowlist is empty, `WithLegacyState` is gone, and P2 plan 9 has written
-the list of ACP methods the interface marks "new in P3".
+Depends on: P2, which closed with plan 9. Plans 1 (the client core), 4a
+(the stack over the wire) and 3a (ordering) depended on nothing P2 still
+changed and ran alongside its last plans. The rest now wait only for each
+other. Plan 9 wrote down the ACP methods the interface marks "new in P3",
+grouped by the plan that implements them in "Methods P3 adds" (below).
 Status: drafted 2026-11-05, while P2 plan 7a ran, and its open questions
 decided the same day (below). The counts were measured at `e671da0d` (P2
-plan 7a's plan commit), and P2 plans 7a to 9 will change them. P3's
-layering plan re-measures them. Plans 1 and 4a were written while P2
+plan 7a's plan commit) and re-measured at P2 plan 9, which wrote them
+down; no P2 plan changes them now. P3's layering plan re-measures them.
+Plans 1 and 4a were written while P2
 plan 7b ran ([plan 1](plans/2026-11-05-p3-1-client-core-plan.md),
 [plan 4a](plans/2026-11-05-p3-4a-stack-wire-plan.md)), and plan 3a while
 P2 plans 8a and 8b ran ([plan 3a](plans/2026-11-06-p3-3a-ordering-plan.md));
@@ -57,9 +58,9 @@ new client.
 
 ## Where the code is today
 
-- **The interface** has 57 methods (69 once plan 7a lands). 20 send an ACP
-  method that exists, and 34 name one that is new in P3: 30 distinct names
-  (38 after 7a). Plans 7b, 7c and 8 add more.
+- **The interface** has 110 methods. 35 send an ACP method that exists,
+  and 72 are carried by one of the 64 ACP methods that are new in P3
+  ("Methods P3 adds", below). Three have no ACP method at all.
 - **The adapter is most of the logic.** `inproc` converts runtime values
   to wire values and applies the policy the TUI used to apply. That
   covers the run-error classification, row-action IDs, the sheet's cache,
@@ -118,6 +119,105 @@ new client.
    that keeps reads consistent after calls.
 4. The adapter's logic moved agent side, behind the ACP handlers.
 5. Embedded mode over the pipe, with `inproc` deleted.
+
+## Methods P3 adds
+
+P2 plan 9 measured them: 72 interface methods are carried by 64 ACP
+methods that `acp.Server` does not register today, grouped below by the
+plan that implements each. The table in `acpclient`
+(`acpclient.Methods`) is the source of every row; T4 ends P3 with no row
+marked new.
+
+### Plan 3b — status and notices
+
+- `session/status` — `Session.Status`, refreshed by a `session_status`
+  update.
+- `session/sheet` — `Session.Sheet`, `Session.RefreshSheet`.
+- `session/notice_set` — `Session.SetNotice`.
+- `session/notice_clear` — `Session.ClearNotice`.
+- `session/notice_dismiss` — `Session.DismissNotice`.
+
+### Plan 4b — the transcript read
+
+- `session/callers` — `Session.Callers`.
+
+### Plan 5 — agent requests
+
+- `session/request_permission` — `Session.Pending`,
+  `Session.AnswerApproval`, `Session.AnswerSkillGate`,
+  `Session.AnswerAccess`.
+- `session/request_question` — `Session.AnswerQuestion`.
+- `session/request_secret` — `Session.AnswerSudo`.
+- `session/rollback` — `Session.Rollback`.
+
+### Plan 6 — turns, runs, the end flow and sessions
+
+- `session/review` — `Session.Review`.
+- `session/agent_run` — `Session.RunAgent`.
+- `session/suggest` — `Session.Suggest`.
+- `session/verify_proposal` — `Session.VerifyProposal`.
+- `session/sdd_preflight` — `Session.PlanPreflight` (asynchronous, R6).
+- `session/sdd_author` — `Session.AuthorPlan`.
+- `session/sdd_stop` — `Session.StopSDD`.
+- `session/sdd_clear` — `Session.ClearFinishedRun`.
+- `session/steering_pop` — `Session.PopSteering`.
+- `session/steering_clear` — `Session.ClearSteering`.
+- `session/set_sudo_unlock` — `Session.SetSudoUnlock`.
+- `session/subagent_cancel` — `Session.CancelSubagent`.
+- `session/watch_resume_take` — `Session.TakeWatchResume`.
+- `session/end_work` — `Session.ActiveWork`, refreshed by an `end_work`
+  update.
+- `session/end_accept` — `Session.AcceptEnd`.
+- `session/end_wait` — `Session.WaitForEnd`.
+- `session/exit_analysis` — `Session.RunExitAnalysis`.
+- `session/postmortem` — `Session.Postmortem` (asynchronous, R6).
+
+`session/new` already exists, but `Host.NewSession` becomes an
+asynchronous call (R6).
+
+### Plan 7 — notes and commands; config, providers and trust; project data
+
+- `session/note` — `Session.AddNote`.
+- `session/command_action` — `Session.CommandAction`.
+- `session/tools` — `Session.Tools`.
+- `config/provider_templates` — `Host.ProviderTemplates`.
+- `config/probe_model` — `Host.CanProbeModel` (asynchronous, R6),
+  `Host.ProbeModel`.
+- `config/models_list` — `Host.ListModels`.
+- `config/models_save` — `Host.SaveModels`.
+- `config/models_forget` — `Host.ForgetModels`.
+- `config/models_rename` — `Host.RenameModels`.
+- `config/login_provider` — `Host.PrepareProviderLogin`,
+  `Host.LoginProvider`.
+- `config/set_value` — `Host.SaveUserValue`.
+- `config/save_providers` — `Host.SaveUserProviders`.
+- `config/save_presets` — `Host.SaveUserPresets`.
+- `config/prepare_presets` — `Host.PreparePresets`.
+- `config/save_provenance` — `Host.SaveProvenance`.
+- `trust/prompt` — `Host.TrustPrompt`.
+- `trust/decide` — `Host.DecideTrust`.
+- `session/mcp_login` — `Session.PrepareMCPLogin`, `Session.LoginMCP`.
+- `session/config` — `Session.Config`, `Session.Layers`.
+- `session/apply_config` — `Session.ApplyConfig`.
+- `session/reload_config` — `Session.ReloadConfig`.
+- `session/mcp_reconnect` — `Session.ReconnectMCP`.
+- `session/save_project_config` — `Session.SaveProjectConfig`.
+- `session/save_verify_commands` — `Session.SaveVerifyCommands`.
+- `session/prompt_history` — `Session.RecentPrompts`.
+- `session/prompt_history_save` — `Session.SavePrompt`.
+- `session/messages` — `Session.Messages`.
+- `session/file_index` — `Session.FileIndex`.
+- `session/intelligence` — `Session.Intelligence`.
+- `session/plans` — `Session.Plans`.
+- `session/sdd_discard` — `Session.DiscardCandidate`.
+- `session/sdd_scaffold` — `Session.ScaffoldPlan`.
+- `session/skills_install` — `Session.InstallSkill`.
+- `session/skills_autoload` — `Session.SetSkillAutoload`.
+- `session/skill_gate_set` — `Session.SetSkillGate`.
+- `session/skill_gate_clear` — `Session.ClearSkillGateDecision`.
+
+`session/command` already exists, but `Session.Command` becomes an
+asynchronous call (R6).
 
 ## Out of scope (follow-ups)
 

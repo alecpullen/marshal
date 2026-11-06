@@ -190,7 +190,7 @@ func TestSDDNewKeepClosesReviewAndKeepsCandidate(t *testing.T) {
 
 	// The transcript has to say what was kept and what to do next.
 	var kept string
-	for _, msg := range m.state.Messages() {
+	for _, msg := range stateOf(m).Messages() {
 		if strings.Contains(msg.Content, path) {
 			kept = msg.Content
 		}
@@ -260,7 +260,7 @@ func TestDiscardFailureKeepsPanelAndCandidate(t *testing.T) {
 	if err := os.Mkdir(path, 0o755); err != nil {
 		t.Fatalf("occupy the candidate path: %v", err)
 	}
-	snapshot := len(m.state.Messages())
+	snapshot := len(stateOf(m).Messages())
 	m.viewString()
 
 	m.Update(tea.KeyPressMsg{Code: 'd'})
@@ -287,7 +287,7 @@ func TestDiscardFailureKeepsPanelAndCandidate(t *testing.T) {
 	if !strings.Contains(view, "discard failed") {
 		t.Fatalf("the panel must report the failure it hit:\n%s", view)
 	}
-	for _, msg := range m.state.Messages()[snapshot:] {
+	for _, msg := range stateOf(m).Messages()[snapshot:] {
 		if strings.Contains(msg.Content, "Discarded") {
 			t.Fatalf("a failed discard must not claim removal: %q", msg.Content)
 		}
@@ -388,7 +388,7 @@ func TestDiscardHiddenOrResizedCannotConfirm(t *testing.T) {
 
 func TestSDDNewFromLastPlanUsesFinalAssistantMessage(t *testing.T) {
 	m, rec := authoringModel(t)
-	m.state.AddMessageFinal(session.RoleAssistant, "approved plan content", session.ContentTypePlain)
+	stateOf(m).AddMessageFinal(session.RoleAssistant, "approved plan content", session.ContentTypePlain)
 	updated, cmd := m.dispatchCommand("/sdd new --from-last-plan")
 	m = asModel(t, updated)
 	if cmd == nil {
@@ -420,7 +420,7 @@ func TestSDDNewFromLastPlanWithoutPlanErrors(t *testing.T) {
 	if m.busy {
 		t.Fatal("model should not be busy when authoring cannot start")
 	}
-	msgs := m.state.Messages()
+	msgs := stateOf(m).Messages()
 	found := false
 	for _, msg := range msgs {
 		if strings.Contains(msg.Content, "No approved plan found") {

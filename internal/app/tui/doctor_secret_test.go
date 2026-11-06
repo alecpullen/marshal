@@ -41,7 +41,7 @@ func newDoctorSecretModel(t *testing.T) (Model, string) {
 	}
 	m := testModelWith(inproc.Deps{State: state, Commands: reg, Auth: newMemAuth(), HomeDir: home}, WithHomeDir(home),
 		WithOpenBrowser(func(string) error { return nil }))
-	m.state.WorkingDir = work
+	stateOf(m).WorkingDir = work
 	m.workDir = work
 	m.resize(80, 24)
 	m.refreshViewport()
@@ -98,7 +98,7 @@ func assertSecretAbsent(t *testing.T, m Model, secret, when string) {
 	if body := stripANSI(m.viewport.View()); strings.Contains(body, secret) {
 		t.Fatalf("%s: the transcript contains the %d-byte key", when, len(secret))
 	}
-	for _, msg := range m.state.Messages() {
+	for _, msg := range stateOf(m).Messages() {
 		if strings.Contains(msg.Content, secret) {
 			t.Fatalf("%s: session history contains the %d-byte key", when, len(secret))
 		}
@@ -264,7 +264,7 @@ func TestDoctorSecretPreservesDraft(t *testing.T) {
 		// No error message may echo key material, and the failure must actually
 		// be reported: a silent save failure would be invisible to the user.
 		reported := false
-		for _, msg := range m.state.Messages() {
+		for _, msg := range stateOf(m).Messages() {
 			if strings.Contains(msg.Content, "sk-retried") {
 				t.Fatal("the failure message carries the key")
 			}

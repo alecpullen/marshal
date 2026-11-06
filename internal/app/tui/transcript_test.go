@@ -874,9 +874,9 @@ func TestExpandedMessageReadsItsWholeReasoning(t *testing.T) {
 		fmt.Fprintf(&reasoning, "thought %04d\n", i)
 	}
 	reasoning.WriteString("REASONING END")
-	m.state.BeginStreaming()
-	m.state.AppendThinking(reasoning.String())
-	m.state.AddMessage(session.RoleAssistant, "Done.", session.ContentTypeMarkdown)
+	stateOf(m).BeginStreaming()
+	stateOf(m).AppendThinking(reasoning.String())
+	stateOf(m).AddMessage(session.RoleAssistant, "Done.", session.ContentTypeMarkdown)
 	m.invalidateTranscript()
 	m.refreshViewport()
 

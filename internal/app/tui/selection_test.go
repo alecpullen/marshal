@@ -20,20 +20,20 @@ func selectionFixture(t *testing.T) (Model, *fakeClipboard) {
 	clip := &fakeClipboard{available: true}
 	m.copyWriter = clip
 	m.copyRemote = func() bool { return false }
-	m.state.AddMessage(session.RoleUser, "first line of the prompt\nsecond line, indented below", session.ContentTypePlain)
-	m.state.AddMessageFinal(session.RoleAssistant, "Summary:\n\n1. raised the timeout\n   - nested item\n\n```go\nfunc g() {\n\tif x {\n\t\treturn\n\t}\n}\n```", session.ContentTypeMarkdown)
-	m.state.AddMessage(session.RoleUser, "next turn", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleUser, "first line of the prompt\nsecond line, indented below", session.ContentTypePlain)
+	stateOf(m).AddMessageFinal(session.RoleAssistant, "Summary:\n\n1. raised the timeout\n   - nested item\n\n```go\nfunc g() {\n\tif x {\n\t\treturn\n\t}\n}\n```", session.ContentTypeMarkdown)
+	stateOf(m).AddMessage(session.RoleUser, "next turn", session.ContentTypePlain)
 	ts := time.Now()
-	id := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(id, "Looking at the failing test. Then:\n\n- check the fixture\n\n```go\nfunc f() {\n    return\n}\n```")
-	m.state.LogThinking(session.ThinkingEntry{Text: "private reasoning text", Duration: 2 * time.Second, StartedAt: ts, StepID: id})
-	m.state.LogToolCall(registry.AuditEvent{ToolName: "file.read", StepID: id, ToolCallID: "c1", Timestamp: ts.Add(1 * time.Millisecond), Args: []byte(`{"path":"a.go"}`), ResultContent: "package a", ResultSummary: "a.go (5 lines)", Approval: registry.ApprovalNotRequired})
-	m.state.LogToolCall(registry.AuditEvent{ToolName: "search.text", StepID: id, ToolCallID: "c2", Timestamp: ts.Add(2 * time.Millisecond), Args: []byte(`{"query":"Timeout"}`), ResultSummary: "3 matches"})
-	m.state.LogToolCall(registry.AuditEvent{ToolName: "search.text", StepID: id, ToolCallID: "c3", Timestamp: ts.Add(3 * time.Millisecond), Args: []byte(`{"query":"hookTimeout"}`), ResultSummary: "1 match"})
+	id := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(id, "Looking at the failing test. Then:\n\n- check the fixture\n\n```go\nfunc f() {\n    return\n}\n```")
+	stateOf(m).LogThinking(session.ThinkingEntry{Text: "private reasoning text", Duration: 2 * time.Second, StartedAt: ts, StepID: id})
+	stateOf(m).LogToolCall(registry.AuditEvent{ToolName: "file.read", StepID: id, ToolCallID: "c1", Timestamp: ts.Add(1 * time.Millisecond), Args: []byte(`{"path":"a.go"}`), ResultContent: "package a", ResultSummary: "a.go (5 lines)", Approval: registry.ApprovalNotRequired})
+	stateOf(m).LogToolCall(registry.AuditEvent{ToolName: "search.text", StepID: id, ToolCallID: "c2", Timestamp: ts.Add(2 * time.Millisecond), Args: []byte(`{"query":"Timeout"}`), ResultSummary: "3 matches"})
+	stateOf(m).LogToolCall(registry.AuditEvent{ToolName: "search.text", StepID: id, ToolCallID: "c3", Timestamp: ts.Add(3 * time.Millisecond), Args: []byte(`{"query":"hookTimeout"}`), ResultSummary: "1 match"})
 	code := 1
-	m.state.LogToolCall(registry.AuditEvent{ToolName: "shell.run", StepID: id, ToolCallID: "c4", Timestamp: ts.Add(4 * time.Millisecond), Args: []byte(`{"command":"go test ./internal/hooks/... -run TestPreToolUseBlockDecision -count=20 -v -timeout 30s"}`), CommandExitCode: &code, Error: "exit status 1", ResultContent: "--- FAIL: TestX (0.01s)\n    hooks_test.go:12: timeout\nFAIL"})
-	m.state.EndStep(id)
-	m.state.AddMessage(session.RoleSystem, "Model switched to gpt-x\nsecond notice line", session.ContentTypePlain)
+	stateOf(m).LogToolCall(registry.AuditEvent{ToolName: "shell.run", StepID: id, ToolCallID: "c4", Timestamp: ts.Add(4 * time.Millisecond), Args: []byte(`{"command":"go test ./internal/hooks/... -run TestPreToolUseBlockDecision -count=20 -v -timeout 30s"}`), CommandExitCode: &code, Error: "exit status 1", ResultContent: "--- FAIL: TestX (0.01s)\n    hooks_test.go:12: timeout\nFAIL"})
+	stateOf(m).EndStep(id)
+	stateOf(m).AddMessage(session.RoleSystem, "Model switched to gpt-x\nsecond notice line", session.ContentTypePlain)
 	m.invalidateTranscript()
 	m.refreshViewport()
 	return m, clip
@@ -169,7 +169,7 @@ func TestSelectionClearsWhenMouseCaptureTurnsOff(t *testing.T) {
 	m, _ := selectionFixture(t)
 	l := lineOf(t, &m, "Model switched")
 	selectRows(t, &m, selPos{l, 0}, selPos{l, 79})
-	m.state.Config.TUI.MouseCapture = false
+	stateOf(m).Config.TUI.MouseCapture = false
 	m.invalidateTranscript()
 	m.refreshViewport()
 	if m.sel != nil {
@@ -183,7 +183,7 @@ func TestSelectionClearsWhenCaptureTurnsOffWithoutAContentChange(t *testing.T) {
 	selectRows(t, &m, selPos{l, 0}, selPos{l, 79})
 	// No invalidate: the content signature still matches, so the rebuild
 	// in refreshViewport short-circuits before its revalidation runs.
-	m.state.Config.TUI.MouseCapture = false
+	stateOf(m).Config.TUI.MouseCapture = false
 	m.refreshViewport()
 	if m.sel != nil {
 		t.Fatal("capture turning off without a content change must clear the selection")

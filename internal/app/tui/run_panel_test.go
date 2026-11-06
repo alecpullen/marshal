@@ -124,12 +124,12 @@ func TestRunPanelFinishedFailureTruncatesHintFirst(t *testing.T) {
 
 func TestNextTurnClearsRunEvents(t *testing.T) {
 	m := newTestModel(t)
-	m.state.AddRunEvent(session.RunEvent{Kind: session.RunEventCommit, TaskN: 1, Title: "a3f9e21"})
-	m.state.FinishSDDRun(true, time.Now(), nil)
+	stateOf(m).AddRunEvent(session.RunEvent{Kind: session.RunEventCommit, TaskN: 1, Title: "a3f9e21"})
+	stateOf(m).FinishSDDRun(true, time.Now(), nil)
 
 	m.clearFinishedRun() // the helper that already calls ClearSDDProgress
 
-	if n := len(m.state.RunEvents()); n != 0 {
+	if n := len(stateOf(m).RunEvents()); n != 0 {
 		t.Errorf("got %d run events after the next turn, want 0 — a second run must not "+
 			"append to the first run's log", n)
 	}
@@ -361,7 +361,7 @@ func TestSDDRunIsTheTraysFirstRow(t *testing.T) {
 	m := newTestModelInRepo(t)
 	m.width, m.height = 100, 40
 	m.leftWidth = 100
-	m.state.SetSDDProgress(session.SDDProgress{
+	stateOf(m).SetSDDProgress(session.SDDProgress{
 		Active: true, TotalTasks: 7, DoneTasks: 3, CurrentTask: 4,
 		Phase: "verifying", PhaseStartedAt: time.Now(), StartedAt: time.Now().Add(-time.Minute),
 		Tasks: []string{"a", "b", "c", "d", "e", "f", "g"},

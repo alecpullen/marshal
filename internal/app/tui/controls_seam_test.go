@@ -32,6 +32,10 @@ type controlRecorder struct {
 	unlocks      []bool
 }
 
+// Unwrap exposes the adapter this recorder wraps, so stateOf reaches the
+// state behind it.
+func (r *controlRecorder) Unwrap() acpclient.Session { return r.Session }
+
 func (r *controlRecorder) Steer(ctx context.Context, text string) error {
 	r.steers = append(r.steers, text)
 	return r.Session.Steer(ctx, text)
@@ -82,8 +86,7 @@ func (r *controlRecorder) SetSudoUnlock(ctx context.Context, on bool) error {
 func testModelControlled(d inproc.Deps, rec *controlRecorder, opts ...Option) Model {
 	host, sess := inproc.New(d)
 	rec.Session = sess
-	all := append([]Option{WithLegacyState(d.State)}, opts...)
-	return New(host, rec, all...)
+	return New(host, rec, opts...)
 }
 
 // controlsState builds a state the way the TUI tests do.
@@ -129,7 +132,7 @@ func TestQueuedInputSteersThroughTheSession(t *testing.T) {
 	if len(rec.steers) != 1 || rec.steers[0] != "next" {
 		t.Fatalf("steers = %v, want [next]", rec.steers)
 	}
-	if q := m.state.SteeringQueue(); len(q) != 1 || q[0] != "next" {
+	if q := stateOf(m).SteeringQueue(); len(q) != 1 || q[0] != "next" {
 		t.Fatalf("queue = %v, want [next]", q)
 	}
 }
@@ -140,14 +143,14 @@ func TestCtrlXClearsTheQueueThroughTheSession(t *testing.T) {
 	rec := &controlRecorder{}
 	m := controlsModel(t, rec)
 	m.busy = true
-	m.state.PushSteering("a")
-	m.state.PushSteering("b")
+	stateOf(m).PushSteering("a")
+	stateOf(m).PushSteering("b")
 	m = sendKey(m, tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
 
 	if rec.clears != 1 {
 		t.Fatalf("clears = %d, want 1", rec.clears)
 	}
-	if q := m.state.SteeringQueue(); len(q) != 0 {
+	if q := stateOf(m).SteeringQueue(); len(q) != 0 {
 		t.Fatalf("queue = %v, want empty", q)
 	}
 }
@@ -160,8 +163,8 @@ func TestADrilledCtrlXCancelsThroughTheSession(t *testing.T) {
 	m.busy = true
 
 	child := newChildState(t)
-	view := m.state.RegisterSubagent("explore repo", child)
-	m.state.SetSubagentCancel(view.ID, func() {})
+	view := stateOf(m).RegisterSubagent("explore repo", child)
+	stateOf(m).SetSubagentCancel(view.ID, func() {})
 	m.drillIntoSubagent(view.ID)
 
 	m = sendKey(m, tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
@@ -177,7 +180,7 @@ func TestAFollowUpPopsThroughTheSession(t *testing.T) {
 	rec := &controlRecorder{}
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
 	m := controlsDispatchModel(t, inproc.Deps{State: controlsState(t), Runner: runnerOf(runner)}, rec)
-	m.state.PushSteering("deliver me after the turn")
+	stateOf(m).PushSteering("deliver me after the turn")
 
 	if cmd := m.flushQueuedSteering(); cmd == nil {
 		t.Fatal("flushQueuedSteering returned nil with an entry queued")
@@ -192,15 +195,15 @@ func TestAFollowUpPopsThroughTheSession(t *testing.T) {
 func TestTheNextTurnClearsTheFinishedRunThroughTheSession(t *testing.T) {
 	rec := &controlRecorder{}
 	m := controlsModel(t, rec)
-	m.state.AddRunEvent(session.RunEvent{Kind: session.RunEventCommit, TaskN: 1, Title: "a3f9e21"})
-	m.state.FinishSDDRun(true, time.Now(), nil)
+	stateOf(m).AddRunEvent(session.RunEvent{Kind: session.RunEventCommit, TaskN: 1, Title: "a3f9e21"})
+	stateOf(m).FinishSDDRun(true, time.Now(), nil)
 
 	m.clearFinishedRun()
 
 	if rec.runClears != 1 {
 		t.Fatalf("run clears = %d, want 1", rec.runClears)
 	}
-	if n := len(m.state.RunEvents()); n != 0 {
+	if n := len(stateOf(m).RunEvents()); n != 0 {
 		t.Fatalf("run events = %d, want 0", n)
 	}
 }
@@ -211,8 +214,8 @@ func TestATurnEndTakesTheLatchThroughTheSession(t *testing.T) {
 	rec := &controlRecorder{}
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
 	m := controlsDispatchModel(t, inproc.Deps{State: controlsState(t), Runner: runnerOf(runner)}, rec)
-	m.state.SetWatchResume("build", false)
-	m.state.AddMessage(session.RoleAssistant, "I'll wait for the build.", session.ContentTypePlain)
+	stateOf(m).SetWatchResume("build", false)
+	stateOf(m).AddMessage(session.RoleAssistant, "I'll wait for the build.", session.ContentTypePlain)
 
 	m2, cmd := m.handleAgentFinished(agentFinishedMsg{})
 	// Count before draining: draining the resumed turn's own completion takes
@@ -270,7 +273,7 @@ func TestEffortGoesThroughTheSession(t *testing.T) {
 	if len(rec.efforts) != 1 || rec.efforts[0] != "low" {
 		t.Fatalf("efforts = %v, want [low]", rec.efforts)
 	}
-	if note := lastMessageContent(m.state.Messages()); !strings.Contains(note, "Effort set to low (from the next turn).") {
+	if note := lastMessageContent(stateOf(m).Messages()); !strings.Contains(note, "Effort set to low (from the next turn).") {
 		t.Fatalf("transcript note = %q, want the confirmation", note)
 	}
 }
@@ -291,7 +294,7 @@ func TestSystemUnlockTogglesThroughTheSession(t *testing.T) {
 	if !m.sess.Status().SudoUnlock {
 		t.Fatal("Status().SudoUnlock = false, want true")
 	}
-	if note := lastMessageContent(m.state.Messages()); !strings.HasPrefix(note, "Privileged unlock enabled") {
+	if note := lastMessageContent(stateOf(m).Messages()); !strings.HasPrefix(note, "Privileged unlock enabled") {
 		t.Fatalf("transcript note = %q, want the enabled note", note)
 	}
 

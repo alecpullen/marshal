@@ -160,10 +160,10 @@ These are load-bearing; code comments and tests point back at them.
   contract; do not share a Go type.
 - **The TUI renders only.** No routing, policy, or prompt logic in
   `internal/app/tui/`. It reaches the agent side through `internal/acpclient`
-  (daemon P2, in progress).
+  (daemon P2).
   `TestTUIStaysOnTheClientSeam` (`internal/app/tui/boundary_test.go`) fails
   on any new direct use. As with `TestWebIsStdlibOnly`, the fix is to move
-  the call behind the interface, never to add an allowlist entry.
+  the call behind the interface; there is no allowlist.
 - **Tool-safe.** Shell execution is risk-classified and approval-gated; file
   writes prefer `file.write` / `file.edit` because they alone give diff
   review, backups, and rollback. (`file.write_patch` still exists, but as an

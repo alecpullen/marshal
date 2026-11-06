@@ -24,7 +24,7 @@ import (
 // lastMessage returns the text of the most recent system message.
 func lastMessage(t *testing.T, m Model) string {
 	t.Helper()
-	msgs := m.state.Messages()
+	msgs := stateOf(m).Messages()
 	if len(msgs) == 0 {
 		t.Fatal("no messages recorded")
 	}
@@ -295,7 +295,7 @@ func TestReconnectKeepsAFreshMCPFailureNotice(t *testing.T) {
 		}
 	})
 	// The stale notice the flow is supposed to resolve.
-	m.state.SetNotice(session.Notice{
+	stateOf(m).SetNotice(session.Notice{
 		Category: session.NoticeConfig,
 		Severity: session.SeverityWarn,
 		Message:  "MCP server 'linear' needs OAuth — run /mcp auth linear",
@@ -304,7 +304,7 @@ func TestReconnectKeepsAFreshMCPFailureNotice(t *testing.T) {
 
 	m.reconnectMCPServer("linear")
 
-	notice, ok := m.state.Notice()
+	notice, ok := stateOf(m).Notice()
 	if !ok {
 		t.Fatal("the reconnect must not clear the fresh failure notice")
 	}
@@ -320,11 +320,11 @@ func TestReconnectKeepsAFreshMCPFailureNotice(t *testing.T) {
 // (tests, embedded use) must not panic or claim a reconnect happened.
 func TestReconnectMCPServerWithoutReloaderIsSafe(t *testing.T) {
 	m := newTestModel(t)
-	before := len(m.state.Messages())
+	before := len(stateOf(m).Messages())
 
 	m.reconnectMCPServer("linear")
 
-	if got := len(m.state.Messages()); got != before {
+	if got := len(stateOf(m).Messages()); got != before {
 		t.Fatalf("reconnect without a reloader should add no messages, got %d new", got-before)
 	}
 }
@@ -390,10 +390,10 @@ func (o *urlRecorder) snapshot() []string {
 func mcpAuthModel(t *testing.T, auth provider.AuthResolver, open func(string) error) Model {
 	t.Helper()
 	m := newTestModel(t)
-	host, sess := inproc.New(inproc.Deps{State: m.state, Auth: auth})
+	host, sess := inproc.New(inproc.Deps{State: stateOf(m), Auth: auth})
 	m.host, m.sess = host, sess
 	m.openBrowser = open
-	m.state.Config.MCP.Servers = map[string]config.MCPServerConfig{
+	stateOf(m).Config.MCP.Servers = map[string]config.MCPServerConfig{
 		"linear": {URL: "https://mcp.example.com/sse", Auth: "oauth", Trust: "unrestricted"},
 	}
 	return m

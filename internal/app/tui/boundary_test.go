@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -181,32 +180,9 @@ func seamViolations(root string, denied map[string]bool) (map[string][]string, e
 	return violations, nil
 }
 
-// formatAllowlist renders violations as the body of the boundaryAllowlist map
-// literal, one sorted line per file, so a failure can be pasted back verbatim.
-func formatAllowlist(v map[string][]string) string {
-	files := make([]string, 0, len(v))
-	for file := range v {
-		files = append(files, file)
-	}
-	sort.Strings(files)
-	var b strings.Builder
-	for _, file := range files {
-		entries := append([]string(nil), v[file]...)
-		sort.Strings(entries)
-		fmt.Fprintf(&b, "%q: {", file)
-		for i, entry := range entries {
-			if i > 0 {
-				b.WriteString(", ")
-			}
-			fmt.Fprintf(&b, "%q", entry)
-		}
-		b.WriteString("},\n")
-	}
-	return b.String()
-}
-
-// TestTUIStaysOnTheClientSeam fails on a new TUI use of the agent side and on
-// an allowlist entry that is no longer needed.
+// TestTUIStaysOnTheClientSeam fails on any TUI use of the agent side. There is
+// no allowlist (P2 plan 9): the fix is always to move the call behind
+// acpclient.
 func TestTUIStaysOnTheClientSeam(t *testing.T) {
 	denied, err := deniedConfigFuncs(filepath.Join("..", "config"))
 	if err != nil {
@@ -216,25 +192,10 @@ func TestTUIStaysOnTheClientSeam(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seamViolations: %v", err)
 	}
-	failed := false
 	for _, file := range sortedKeysOf(found) {
 		for _, entry := range found[file] {
-			if !stringInSlice(boundaryAllowlist[file], entry) {
-				t.Errorf("%s uses %s, which is agent side (P2 C1): move it behind acpclient instead of allowlisting it", file, entry)
-				failed = true
-			}
+			t.Errorf("%s uses %s, which is agent side (P2 C1): move it behind acpclient", file, entry)
 		}
-	}
-	for _, file := range sortedKeysOf(boundaryAllowlist) {
-		for _, entry := range boundaryAllowlist[file] {
-			if !stringInSlice(found[file], entry) {
-				t.Errorf("%s no longer uses %s: delete it from boundaryAllowlist", file, entry)
-				failed = true
-			}
-		}
-	}
-	if failed {
-		t.Logf("current violations:\n\nvar boundaryAllowlist = map[string][]string{\n%s}\n", formatAllowlist(found))
 	}
 }
 

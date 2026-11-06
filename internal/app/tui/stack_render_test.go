@@ -19,6 +19,10 @@ type stackRecorder struct {
 	lastBusy     bool
 }
 
+// Unwrap exposes the adapter this recorder wraps, so stateOf reaches the
+// state behind it.
+func (s *stackRecorder) Unwrap() acpclient.Session { return s.Session }
+
 func (s *stackRecorder) Stack(subagentID int64, busy bool) acpwire.StackSnapshot {
 	s.calls++
 	s.lastSubagent = subagentID
@@ -43,8 +47,8 @@ func TestRefreshAsksTheSessionForItsStack(t *testing.T) {
 		t.Fatalf("refresh asked for subagent %d busy %v, want 0 and true", rec.lastSubagent, rec.lastBusy)
 	}
 
-	child := session.New(m.state.Config, t.TempDir(), m.now(), session.Persistence{})
-	v := m.state.RegisterSubagent("child", child)
+	child := session.New(stateOf(m).Config, t.TempDir(), m.now(), session.Persistence{})
+	v := stateOf(m).RegisterSubagent("child", child)
 	m.drillIntoSubagent(v.ID)
 	m.invalidateTranscript()
 	m.refreshViewport()
@@ -57,16 +61,16 @@ func TestRefreshAsksTheSessionForItsStack(t *testing.T) {
 // index leaves the band out.
 func TestTheBandAndTheIndexComeFromTheStack(t *testing.T) {
 	m := newTestModel(t)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	if err := m.state.SetTodos([]native.TodoItem{
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	if err := stateOf(m).SetTodos([]native.TodoItem{
 		{ID: "t1", Content: "first", Status: native.TodoInProgress},
 		{ID: "t2", Content: "second", Status: native.TodoPending},
 	}); err != nil {
 		t.Fatalf("SetTodos: %v", err)
 	}
-	step := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(step, "Working the first item.")
-	m.state.EndStep(step)
+	step := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(step, "Working the first item.")
+	stateOf(m).EndStep(step)
 
 	m.busy = false
 	m.invalidateTranscript()

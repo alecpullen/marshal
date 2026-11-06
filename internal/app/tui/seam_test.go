@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -24,21 +25,40 @@ func testSession(state *session.State) acpclient.Session {
 	return sess
 }
 
+// stateOf returns the state behind a model's session: the one place TUI
+// tests reach agent-side state, so P3 changes only this helper.
+func stateOf(m interface{ Session() acpclient.Session }) *session.State {
+	return stateOfSession(m.Session())
+}
+
+// stateOfSession walks to the adapter behind sess, past the test recorders
+// that embed it (each exposes the session it wraps through Unwrap).
+func stateOfSession(sess acpclient.Session) *session.State {
+	for {
+		if in, ok := sess.(*inproc.Session); ok {
+			return in.State()
+		}
+		wrapped, ok := sess.(interface{ Unwrap() acpclient.Session })
+		if !ok {
+			panic(fmt.Sprintf("tui.stateOf: session is %T, not *inproc.Session", sess))
+		}
+		sess = wrapped.Unwrap()
+	}
+}
+
 // testModel is the one place tests build a model: it wires the in-process
-// adapter and hands the state in through WithLegacyState, so P3 changes only
-// this helper.
+// adapter over state, so P3 changes only this helper. The model reads that
+// state through its session; stateOf reaches it.
 func testModel(state *session.State, opts ...Option) Model {
 	host, sess := inproc.New(inproc.Deps{State: state})
-	all := append([]Option{WithLegacyState(state)}, opts...)
-	return New(host, sess, all...)
+	return New(host, sess, opts...)
 }
 
 // testModelWith builds a model over an adapter made from d, as testModel
 // builds one over d.State alone.
 func testModelWith(d inproc.Deps, opts ...Option) Model {
 	host, sess := inproc.New(d)
-	all := append([]Option{WithLegacyState(d.State)}, opts...)
-	return New(host, sess, all...)
+	return New(host, sess, opts...)
 }
 
 // testModelCached builds a model whose host caches discovered model lists
@@ -56,7 +76,7 @@ func runnerOf(r inproc.Runner) func() inproc.Runner {
 // withPromptRunner replaces m's session with one over m's state whose runner
 // is r.
 func withPromptRunner(m Model, r inproc.Runner) Model {
-	_, sess := inproc.New(inproc.Deps{State: m.state, Runner: runnerOf(r)})
+	_, sess := inproc.New(inproc.Deps{State: stateOf(m), Runner: runnerOf(r)})
 	m.sess = sess
 	return m
 }
@@ -75,6 +95,10 @@ type stubSession struct {
 	onDismissNote  func()
 	sheetPatch     func(*acpwire.SessionSheet)
 }
+
+// Unwrap exposes the adapter this stub wraps, so stateOf reaches the state
+// behind it.
+func (s *stubSession) Unwrap() acpclient.Session { return s.Session }
 
 func (s *stubSession) Status() acpwire.SessionStatus {
 	st := s.Session.Status()
@@ -130,14 +154,13 @@ func testModelStub(state *session.State, stub *stubSession, opts ...Option) Mode
 func testModelStubWith(d inproc.Deps, stub *stubSession, opts ...Option) Model {
 	host, sess := inproc.New(d)
 	stub.Session = sess
-	all := append([]Option{WithLegacyState(d.State)}, opts...)
-	return New(host, stub, all...)
+	return New(host, stub, opts...)
 }
 
 // withCommands replaces m's session with one over m's state whose registry is
 // reg, as withPromptRunner does for the runner.
 func withCommands(m Model, reg *commands.Registry) Model {
-	_, sess := inproc.New(inproc.Deps{State: m.state, Commands: reg})
+	_, sess := inproc.New(inproc.Deps{State: stateOf(m), Commands: reg})
 	m.sess = sess
 	return m
 }
@@ -195,10 +218,17 @@ func batchResults(t *testing.T, cmd tea.Cmd) []tea.Msg {
 // The embedded interface supplies the methods these tests never call.
 type fakeHost struct {
 	acpclient.Host
-	shared bool
+	shared   bool
+	sessions []acpwire.SessionEntry
+	listErr  error
 }
 
 func (h fakeHost) SharedFilesystem() bool { return h.shared }
+
+// ListSessions hands the tests a listing, or the error the seam would return.
+func (h fakeHost) ListSessions(context.Context, string, int) ([]acpwire.SessionEntry, error) {
+	return h.sessions, h.listErr
+}
 
 // TrustPrompt reports no pending decision: the seam tests never prompt.
 func (h fakeHost) TrustPrompt() string { return "" }
@@ -229,20 +259,17 @@ func assertPanics(t *testing.T, want string, fn func()) {
 	fn()
 }
 
-func TestNewRequiresTheLegacyStateUntilPlan9(t *testing.T) {
+func TestNewRequiresAHostAndSession(t *testing.T) {
 	state := seamState(t, "s1")
-	assertPanics(t, "tui.New: WithLegacyState is required until P2 plan 9", func() {
-		New(fakeHost{shared: true}, testSession(state))
-	})
 	assertPanics(t, "tui.New: nil client host or session", func() {
-		New(nil, testSession(state), WithLegacyState(state))
+		New(nil, testSession(state))
 	})
 }
 
 func TestOpenFileNeedsASharedFilesystem(t *testing.T) {
 	t.Setenv("EDITOR", "vi")
 	state := seamState(t, "s1")
-	m := New(fakeHost{shared: false}, testSession(state), WithLegacyState(state))
+	m := New(fakeHost{shared: false}, testSession(state))
 
 	if cmd := m.openFile("main.go", 1); cmd == nil {
 		t.Fatal("openFile returned no command")
@@ -284,13 +311,13 @@ func TestNewSessionSwapsTheClientSession(t *testing.T) {
 	if f.called == 0 {
 		t.Fatal("expected the host to create a new session")
 	}
-	if m.state != newState {
+	if stateOf(m) != newState {
 		t.Fatal("expected model state to be swapped to the new session")
 	}
 	if got := m.sess.ID(); got != "new" {
 		t.Fatalf("session ID after the swap = %q, want new", got)
 	}
-	if !strings.Contains(m.state.Messages()[0].Content, "Started new conversation") {
-		t.Errorf("expected the new-session system message, got: %s", m.state.Messages()[0].Content)
+	if !strings.Contains(stateOf(m).Messages()[0].Content, "Started new conversation") {
+		t.Errorf("expected the new-session system message, got: %s", stateOf(m).Messages()[0].Content)
 	}
 }

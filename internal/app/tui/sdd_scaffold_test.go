@@ -12,7 +12,7 @@ func TestScaffoldTellsTheUserWhereItWrote(t *testing.T) {
 	m.scaffoldSDDPlan()
 
 	var found bool
-	for _, msg := range m.state.Messages() {
+	for _, msg := range stateOf(m).Messages() {
 		if strings.Contains(msg.Content, "starter-plan.md") {
 			found = true
 		}
@@ -24,7 +24,7 @@ func TestScaffoldTellsTheUserWhereItWrote(t *testing.T) {
 
 func TestScaffoldReportsAnExistingFile(t *testing.T) {
 	m := newTestModelInRepo(t)
-	dir := filepath.Join(m.state.WorkingDir, m.state.Config.SDD.PlansDir)
+	dir := filepath.Join(stateOf(m).WorkingDir, stateOf(m).Config.SDD.PlansDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestScaffoldReportsAnExistingFile(t *testing.T) {
 		t.Error("scaffold must never overwrite an existing plan")
 	}
 	var told bool
-	for _, msg := range m.state.Messages() {
+	for _, msg := range stateOf(m).Messages() {
 		if strings.Contains(msg.Content, "already exists") {
 			told = true
 		}

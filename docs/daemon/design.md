@@ -217,20 +217,11 @@ notifications, answer agent requests. It has two transports:
 Fleet features need the bridge transport. Embedded mode shows only the
 session screen.
 
-During migration, an in-process adapter covers the 82 `session.State`
-calls behind the same interface. Callers move over in groups, and nothing
-breaks in between:
-
-1. transcript snapshot inputs
-2. answers to agent requests (approval, question, sudo, skill gate, access)
-3. turn control (steer, cancel, mode, effort)
-4. config reads and writes (`config/*`)
-5. local notices and command output (`AddMessage` and its variants)
-6. the three direct database reads
-
-When every group runs over ACP, embedded mode switches to the pipe and the
-adapter is deleted. The protocol then cannot drift from what the TUI
-needs, because the TUI has no other path.
+The migration is done. The TUI's only path is `acpclient.Host` and
+`Session`, with `acpwire` for the wire types. `internal/acpclient/inproc`
+implements them in process until P3 deletes it.
+`TestTUIStaysOnTheClientSeam` fails on any TUI crossing to the agent
+side, with no allowlist. The spec's nine plans did the migration.
 
 ### 4.6 Screens
 
@@ -341,7 +332,7 @@ state, not corruption.
 |---|---|---|
 | P0 | Selection handled by the app (§5) — implemented; manual terminal check pending (see the spec's implementation record) | The P0 check in §5 passes in the current TUI |
 | P1 | ProjectHost/Session split and headless indexing (§4.2) — implemented; see the spec's implementation record | Two ACP sessions on one repo in one process share one host, one set of language servers and one watcher. With `indexing.watch = true`, a headless session's edit refreshes its embeddings. Two processes on one tree run one indexer |
-| P2 | TUI client seam with the in-process adapter (§4.5) — specified (revised 2026-10-25), nine plans, with 2, 3 and 5 split into sub-plans; plans 1, 2a–2c, 3a–3d, 4, 5a–5e and 6 implemented (see the spec's implementation record) | Done when: the TUI reaches the agent side only through the client interface — it imports no agent-side package, holds no `session.State`, and does no project, config or keychain I/O (enforced by a boundary test) — and the transcript renders from the wire projection (§8 settled). The boundary test's allowlist is empty and `WithLegacyState` is gone |
+| P2 | TUI client seam with the in-process adapter (§4.5) — implemented (see the spec's implementation record): nine plans, with 2, 3 and 5 split into sub-plans, namely 1, 2a–2c, 3a–3d, 4, 5a–5e, 6, 7a–7d, 8a, 8b and 9 | Done when: the TUI reaches the agent side only through the client interface — it imports no agent-side package, holds no `session.State`, and does no project, config or keychain I/O (enforced by a boundary test) — and the transcript renders from the wire projection (§8 settled). The boundary test's allowlist is empty and `WithLegacyState` is gone |
 | P3 | ACP client transports; embedded mode over the pipe | Embedded mode runs entirely over ACP and the adapter is deleted |
 | P4 | Bridge local profile: user service, unix listener, RPC passthrough, `request_secret`, pinning, environment resolution, OAuth refresh run once, one `marshal acp` child per project for host-process agents | A TUI can quit and reattach to a running turn on the local daemon |
 | P5 | Fleet screen in the Go TUI, shared types, server-computed views | The fleet loop from `docs/fleet-cli/design.md` §1 works from the Go TUI against local and server profiles |
@@ -351,11 +342,12 @@ is useful on its own.
 
 ## 8. Open questions
 
-- **Transcript shape on the wire — settled (P2).** `WireTree`, one
-  format for both clients. The P2 spike found the projection drops some
-  fields collapsed rows read; all are closed with additive fields, and
-  expanded rows use `session/stack_node`
-  ([`p2-client-seam.md`](p2-client-seam.md), C6).
+- **Transcript shape on the wire — settled and implemented (P2).**
+  `WireTree`, one format for both clients. The P2 spike found the
+  projection drops some fields collapsed rows read; all are closed with
+  additive fields, and expanded rows use `session/stack_node`
+  ([`p2-client-seam.md`](p2-client-seam.md), C6). T6's goldens pin the
+  ported renderer.
 - **MCP scope.** Should MCP servers stay per session, or move to the
   ProjectHost behind an opt-in for servers known to be stateless?
 - **Headless credentials.** Where do provider credentials and OAuth

@@ -94,7 +94,7 @@ func TestDragHoldsTheViewWhileOutputStreams(t *testing.T) {
 	}
 	offset, hint := mm.viewport.YOffset(), mm.scrollHintRows()
 	for i := 0; i < 5; i++ {
-		mm.state.AddMessage(session.RoleSystem, "streamed line", session.ContentTypePlain)
+		stateOf(mm).AddMessage(session.RoleSystem, "streamed line", session.ContentTypePlain)
 	}
 	mm.invalidateTranscript()
 	mm.refreshViewport()
@@ -190,7 +190,7 @@ func TestPressDuringADragAbandonsIt(t *testing.T) {
 
 func TestNoSelectionWithoutMouseCapture(t *testing.T) {
 	m, clip := selectionFixture(t)
-	m.state.Config.TUI.MouseCapture = false
+	stateOf(m).Config.TUI.MouseCapture = false
 	l := lineOf(t, &m, "Model switched")
 	m = dragTo(t, m, 0, screenY(&m, l), 79, screenY(&m, l))
 	if m.sel != nil || len(clip.writes) != 0 {
@@ -210,7 +210,7 @@ func TestCaptureTurnedOffMidDragEndsTheDrag(t *testing.T) {
 	// A config reload can turn capture off mid-drag without any content
 	// change. The refresh must end the drag outright: the terminal that
 	// took the mouse back never delivers the release that would.
-	mm.state.Config.TUI.MouseCapture = false
+	stateOf(mm).Config.TUI.MouseCapture = false
 	mm.refreshViewport()
 	if mm.sel != nil || mm.press != nil || mm.drag.ticking {
 		t.Fatalf("capture off mid-drag left state behind: sel=%v press=%v ticking=%v",

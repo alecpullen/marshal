@@ -6,7 +6,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/acpwire"
-	"marshal/internal/app/tui/memory"
 )
 
 // handleKeypress routes the global hotkeys and the Enter-submit flow.
@@ -136,11 +135,9 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		if !readlineShortcutAvailable() {
 			return *m, nil, false
 		}
-		if m.memoryDB == nil {
-			return *m, nil, true
+		if m.openMemory(true) {
+			m.refreshViewport()
 		}
-		m.dock.Open(memory.NewPanel(m.memoryDB, m.memoryProject))
-		m.refreshViewport()
 		return *m, nil, true
 	case "ctrl+g":
 		m.toggleExpandAll()

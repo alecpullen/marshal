@@ -116,7 +116,7 @@ func TestHandleSkillGateAllowOnceRespondsAndClears(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	ch := make(chan session.SkillGateChoice, 1)
 	sg := &session.PendingSkillGate{Skill: "x", ResponseChan: ch}
-	m.state.SetPendingSkillGate(sg)
+	stateOf(m).SetPendingSkillGate(sg)
 
 	// First message lazily builds the dialog; second confirms the default
 	// selection (Allow once).
@@ -125,7 +125,7 @@ func TestHandleSkillGateAllowOnceRespondsAndClears(t *testing.T) {
 	if m.skillGateModel == nil {
 		t.Fatal("first message should lazily build the skill-gate model")
 	}
-	if m.state.PendingSkillGate() == nil {
+	if stateOf(m).PendingSkillGate() == nil {
 		t.Fatal("lazy build must not clear the pending gate")
 	}
 	updated, _ = m.Update(skillGateKeyPress("enter"))
@@ -139,14 +139,14 @@ func TestHandleSkillGateAllowOnceRespondsAndClears(t *testing.T) {
 	default:
 		t.Fatal("pending skill gate was not responded")
 	}
-	if m.state.PendingSkillGate() != nil {
+	if stateOf(m).PendingSkillGate() != nil {
 		t.Fatal("pending skill gate should be cleared after the decision")
 	}
 	if m.skillGateModel != nil {
 		t.Fatal("skill-gate model should be dropped after the decision")
 	}
 	// AllowOnce records nothing.
-	if got := m.state.SkillGateDecisions(); len(got) != 0 {
+	if got := stateOf(m).SkillGateDecisions(); len(got) != 0 {
 		t.Fatalf("SkillGateDecisions() after allow-once = %+v, want empty", got)
 	}
 }
@@ -155,7 +155,7 @@ func TestHandleSkillGateAllowAllDisablesGate(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	ch := make(chan session.SkillGateChoice, 1)
 	sg := &session.PendingSkillGate{Skill: "x", ResponseChan: ch}
-	m.state.SetPendingSkillGate(sg)
+	stateOf(m).SetPendingSkillGate(sg)
 
 	// Lazy build, jump to option 3 (Allow always (all skills)), confirm.
 	updated, _ := m.Update(skillGateKeyPress("enter"))
@@ -173,14 +173,14 @@ func TestHandleSkillGateAllowAllDisablesGate(t *testing.T) {
 	default:
 		t.Fatal("pending skill gate was not responded")
 	}
-	if m.state.PendingSkillGate() != nil {
+	if stateOf(m).PendingSkillGate() != nil {
 		t.Fatal("pending skill gate should be cleared after the decision")
 	}
-	decisions := m.state.SkillGateDecisions()
+	decisions := stateOf(m).SkillGateDecisions()
 	if len(decisions) != 1 || decisions[0].Skill != "x" || !decisions[0].Allowed {
 		t.Fatalf("SkillGateDecisions() = %+v, want one allowed entry for x", decisions)
 	}
-	if m.state.SkillGateEnabled() {
+	if stateOf(m).SkillGateEnabled() {
 		t.Fatal("SkillGateEnabled() = true after allow-all, want false")
 	}
 }
@@ -189,7 +189,7 @@ func TestHandleSkillGateDenyDoesNotRecord(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	ch := make(chan session.SkillGateChoice, 1)
 	sg := &session.PendingSkillGate{Skill: "x", ResponseChan: ch}
-	m.state.SetPendingSkillGate(sg)
+	stateOf(m).SetPendingSkillGate(sg)
 
 	// Lazy build, Esc moves the selection to Deny, Enter confirms.
 	updated, _ := m.Update(skillGateKeyPress("enter"))
@@ -207,7 +207,7 @@ func TestHandleSkillGateDenyDoesNotRecord(t *testing.T) {
 	default:
 		t.Fatal("pending skill gate was not responded")
 	}
-	if got := m.state.SkillGateDecisions(); len(got) != 0 {
+	if got := stateOf(m).SkillGateDecisions(); len(got) != 0 {
 		t.Fatalf("SkillGateDecisions() after deny = %+v, want empty (deny is the runner's counter)", got)
 	}
 }
@@ -215,7 +215,7 @@ func TestHandleSkillGateDenyDoesNotRecord(t *testing.T) {
 func TestSkillGateSuppressesTextareaAndBudget(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	sg := &session.PendingSkillGate{Skill: "x", ResponseChan: make(chan session.SkillGateChoice, 1)}
-	m.state.SetPendingSkillGate(sg)
+	stateOf(m).SetPendingSkillGate(sg)
 	m.skillGateModel = newSkillGateModel(acpwire.SkillGateRequest{Skill: "x"}, max(m.leftWidth-4, 30))
 
 	// While the gate is pending the textarea is suppressed: the input area

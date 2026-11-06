@@ -62,9 +62,9 @@ func newStatusTestModelStub(t *testing.T, stub *stubSession) Model {
 
 func TestStatusLineShowsRouteAndContext(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen2.5-coder:14b", Provider: "ollama", LocalOnly: true})
-	m.state.SetTurnBudget(128000, 100000, "derived")
-	m.state.SetTurnUsage(42000)
+	stateOf(m).SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen2.5-coder:14b", Provider: "ollama", LocalOnly: true})
+	stateOf(m).SetTurnBudget(128000, 100000, "derived")
+	stateOf(m).SetTurnUsage(42000)
 
 	line := m.renderStatusLine(100)
 	for _, want := range []string{"Act", "qwen2.5-coder:14b @ ollama", "local", "ctx 42k/128k"} {
@@ -78,8 +78,8 @@ func TestStatusLineShowsRouteAndContext(t *testing.T) {
 // percent-used plus a reset countdown and the plan tier.
 func TestStatusLineShowsQuota(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "gpt-5.6-luna", Provider: "codex"})
-	m.state.SetTurnQuota(&schema.QuotaInfo{
+	stateOf(m).SetActiveRoute(session.RouteInfo{Active: true, Model: "gpt-5.6-luna", Provider: "codex"})
+	stateOf(m).SetTurnQuota(&schema.QuotaInfo{
 		PlanType:              "plus",
 		PrimaryUsedPercent:    50,
 		PrimaryResetAfterSecs: 14845, // 4h7m
@@ -98,7 +98,7 @@ func TestStatusLineShowsQuota(t *testing.T) {
 // not render an empty or zeroed segment.
 func TestStatusLineOmitsQuotaWhenAbsent(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen3:8b", Provider: "ollama"})
+	stateOf(m).SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen3:8b", Provider: "ollama"})
 
 	line := m.renderStatusLine(120)
 	if strings.Contains(line, "⚡") {
@@ -110,13 +110,13 @@ func TestStatusLineOmitsQuotaWhenAbsent(t *testing.T) {
 // quota must clear the previous reading rather than leaving it stale.
 func TestStatusLineQuotaClearedByNil(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "gpt-5.6-luna", Provider: "codex"})
-	m.state.SetTurnQuota(&schema.QuotaInfo{PrimaryUsedPercent: 50, PrimaryResetAfterSecs: 600})
+	stateOf(m).SetActiveRoute(session.RouteInfo{Active: true, Model: "gpt-5.6-luna", Provider: "codex"})
+	stateOf(m).SetTurnQuota(&schema.QuotaInfo{PrimaryUsedPercent: 50, PrimaryResetAfterSecs: 600})
 	if line := m.renderStatusLine(120); !strings.Contains(line, "⚡") {
 		t.Fatalf("expected a quota segment:\n%s", line)
 	}
 
-	m.state.SetTurnQuota(nil)
+	stateOf(m).SetTurnQuota(nil)
 	if line := m.renderStatusLine(120); strings.Contains(line, "⚡") {
 		t.Fatalf("quota segment should be gone after SetTurnQuota(nil):\n%s", line)
 	}
@@ -140,7 +140,7 @@ func TestQuotaSegmentNilIsEmpty(t *testing.T) {
 
 func TestStatusLineShowsThinkingEffort(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "m", Provider: "p", Thinking: "high", ReasoningCapable: true})
+	stateOf(m).SetActiveRoute(session.RouteInfo{Active: true, Model: "m", Provider: "p", Thinking: "high", ReasoningCapable: true})
 	line := stripANSI(m.renderStatusLine(100))
 	if !strings.Contains(line, "think high") {
 		t.Fatalf("status line missing thinking flag:\n%s", line)
@@ -152,7 +152,7 @@ func TestStatusLineShowsThinkingEffort(t *testing.T) {
 // preset leaves the effort unset and the backend default applies.
 func TestStatusLineShowsThinkingDefaultWhenUnset(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "m", Provider: "p", ReasoningCapable: true})
+	stateOf(m).SetActiveRoute(session.RouteInfo{Active: true, Model: "m", Provider: "p", ReasoningCapable: true})
 	line := stripANSI(m.renderStatusLine(100))
 	if !strings.Contains(line, "think default") {
 		t.Fatalf("status line missing 'think default' for unset effort:\n%s", line)
@@ -163,7 +163,7 @@ func TestStatusLineShowsThinkingDefaultWhenUnset(t *testing.T) {
 // so it must be visible rather than collapsed into the unset case.
 func TestStatusLineShowsThinkingOff(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "m", Provider: "p", Thinking: "off", ReasoningCapable: true})
+	stateOf(m).SetActiveRoute(session.RouteInfo{Active: true, Model: "m", Provider: "p", Thinking: "off", ReasoningCapable: true})
 	line := stripANSI(m.renderStatusLine(100))
 	if !strings.Contains(line, "think off") {
 		t.Fatalf("status line missing 'think off':\n%s", line)
@@ -175,7 +175,7 @@ func TestStatusLineShowsThinkingOff(t *testing.T) {
 // field entirely. The footer must not show a value that is never sent.
 func TestStatusLineHidesThinkingWhenRouteNotReasoningCapable(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "m", Provider: "p", Thinking: "high"})
+	stateOf(m).SetActiveRoute(session.RouteInfo{Active: true, Model: "m", Provider: "p", Thinking: "high"})
 	line := stripANSI(m.renderStatusLine(100))
 	if strings.Contains(line, "think ") {
 		t.Fatalf("status line shows thinking effort the wire would never send:\n%s", line)
@@ -186,7 +186,7 @@ func TestStatusLineShowsToolActivityWithElapsed(t *testing.T) {
 	m := newStatusTestModel(t)
 	m.spinnerFrame = "⠋"
 	m.now = func() time.Time { return time.Unix(104, 0) }
-	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell.run: go test", StartedAt: time.Unix(100, 0)})
+	stateOf(m).SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell.run: go test", StartedAt: time.Unix(100, 0)})
 
 	line := m.renderStatusLine(100)
 	if strings.Contains(line, "shell.run: go test") {
@@ -196,7 +196,7 @@ func TestStatusLineShowsToolActivityWithElapsed(t *testing.T) {
 
 func TestStatusLineShowsApprovalState(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.SetPendingApproval(&session.PendingToolCall{Name: "shell.run", Command: "rm -rf build", ResponseChan: make(chan session.UserApprovalDecision, 1)})
+	stateOf(m).SetPendingApproval(&session.PendingToolCall{Name: "shell.run", Command: "rm -rf build", ResponseChan: make(chan session.UserApprovalDecision, 1)})
 	line := m.renderStatusLine(100)
 	if !strings.Contains(line, "⚠ approval") {
 		t.Fatalf("status line missing approval state:\n%s", line)
@@ -205,7 +205,7 @@ func TestStatusLineShowsApprovalState(t *testing.T) {
 
 func TestStatusLineShowsErrorNotice(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.SetNotice(session.Notice{Category: session.NoticeProvider, Message: "connection refused"})
+	stateOf(m).SetNotice(session.Notice{Category: session.NoticeProvider, Message: "connection refused"})
 	line := m.renderStatusLine(100)
 	if !strings.Contains(line, "✘ error") {
 		t.Fatalf("status line missing error state:\n%s", line)
@@ -215,7 +215,7 @@ func TestStatusLineShowsErrorNotice(t *testing.T) {
 func TestStatusLineOmitsThinkingActivity(t *testing.T) {
 	m := newStatusTestModel(t)
 	m.spinnerFrame = "⠋"
-	m.state.SetActivity(session.Activity{Kind: session.ActivityThinking})
+	stateOf(m).SetActivity(session.Activity{Kind: session.ActivityThinking})
 
 	line := stripANSI(m.renderStatusLine(100))
 	if strings.Contains(line, "thinking") {
@@ -227,8 +227,8 @@ func TestStatusLineShowsToolBudgetCounter(t *testing.T) {
 	m := newStatusTestModel(t)
 	m.spinnerFrame = "⠋"
 	m.now = func() time.Time { return time.Unix(104, 0) }
-	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "file.read", StartedAt: time.Unix(100, 0)})
-	m.state.SetToolBudget(session.ToolBudget{Used: 13, Max: 16})
+	stateOf(m).SetActivity(session.Activity{Kind: session.ActivityTool, Label: "file.read", StartedAt: time.Unix(100, 0)})
+	stateOf(m).SetToolBudget(session.ToolBudget{Used: 13, Max: 16})
 
 	line := m.renderStatusLine(100)
 	if strings.Contains(line, "tools") {
@@ -240,8 +240,8 @@ func TestStatusLineOmitsToolBudgetWhenMaxIsZero(t *testing.T) {
 	m := newStatusTestModel(t)
 	m.spinnerFrame = "⠋"
 	m.now = func() time.Time { return time.Unix(104, 0) }
-	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "file.read", StartedAt: time.Unix(100, 0)})
-	m.state.SetToolBudget(session.ToolBudget{Used: 0, Max: 0})
+	stateOf(m).SetActivity(session.Activity{Kind: session.ActivityTool, Label: "file.read", StartedAt: time.Unix(100, 0)})
+	stateOf(m).SetToolBudget(session.ToolBudget{Used: 0, Max: 0})
 
 	line := m.renderStatusLine(100)
 	if strings.Contains(line, "tools") {
@@ -251,8 +251,8 @@ func TestStatusLineOmitsToolBudgetWhenMaxIsZero(t *testing.T) {
 
 func TestStatusLineFitsWidth(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "a-very-long-model-name:70b-instruct-q4", Provider: "ollama", LocalOnly: true})
-	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: strings.Repeat("x", 80), StartedAt: time.Unix(100, 0)})
+	stateOf(m).SetActiveRoute(session.RouteInfo{Active: true, Model: "a-very-long-model-name:70b-instruct-q4", Provider: "ollama", LocalOnly: true})
+	stateOf(m).SetActivity(session.Activity{Kind: session.ActivityTool, Label: strings.Repeat("x", 80), StartedAt: time.Unix(100, 0)})
 	m.spinnerFrame = "⠋"
 	for _, width := range []int{40, 60, 80, 120} {
 		line := m.renderStatusLine(width)
@@ -266,8 +266,8 @@ func TestStatusLineFitsWidth(t *testing.T) {
 
 func TestStatusLineFitsVeryNarrowWidths(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: strings.Repeat("x", 40), Provider: "ollama", LocalOnly: true})
-	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: strings.Repeat("x", 40), StartedAt: time.Unix(100, 0)})
+	stateOf(m).SetActiveRoute(session.RouteInfo{Active: true, Model: strings.Repeat("x", 40), Provider: "ollama", LocalOnly: true})
+	stateOf(m).SetActivity(session.Activity{Kind: session.ActivityTool, Label: strings.Repeat("x", 40), StartedAt: time.Unix(100, 0)})
 	m.spinnerFrame = "⠋"
 	for _, width := range []int{0, 1} {
 		line := m.renderStatusLine(width)
@@ -281,7 +281,7 @@ func TestStatusLineFitsVeryNarrowWidths(t *testing.T) {
 
 func TestStatusLineShowsSwarmTokenBudget(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.SetSwarmProgress(session.SwarmProgress{
+	stateOf(m).SetSwarmProgress(session.SwarmProgress{
 		Active:     true,
 		Goal:       "test goal",
 		TokensUsed: 5000,
@@ -328,8 +328,8 @@ func TestStatusLineShowsCompletingModeWhenPopupIsVisible(t *testing.T) {
 func TestStatusLinePreservesModeSegmentUnderCollapse(t *testing.T) {
 	m := newStatusTestModel(t)
 	m = openTestApprovalEdit(t, m, "go test")
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: strings.Repeat("model", 8), Provider: strings.Repeat("provider", 6), LocalOnly: true})
-	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: strings.Repeat("very-long-activity ", 3), StartedAt: time.Unix(100, 0)})
+	stateOf(m).SetActiveRoute(session.RouteInfo{Active: true, Model: strings.Repeat("model", 8), Provider: strings.Repeat("provider", 6), LocalOnly: true})
+	stateOf(m).SetActivity(session.Activity{Kind: session.ActivityTool, Label: strings.Repeat("very-long-activity ", 3), StartedAt: time.Unix(100, 0)})
 	m.now = func() time.Time { return time.Unix(105, 0) }
 	m.spinnerFrame = "⠋"
 	line := stripANSI(m.renderStatusLine(80))
@@ -344,10 +344,10 @@ func TestStatusLinePreservesModeSegmentUnderCollapse(t *testing.T) {
 // hints are dropped, something still has to go.
 func TestStatusLineDropsLocalBeforeCtx(t *testing.T) {
 	m := newViewTestModel(t, 50, 24)
-	m.state.SetTrusted(true)
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen2.5-coder-7b", Provider: "ollama", LocalOnly: true})
-	m.state.SetTurnBudget(128000, 100000, "derived")
-	m.state.SetTurnUsage(42000)
+	stateOf(m).SetTrusted(true)
+	stateOf(m).SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen2.5-coder-7b", Provider: "ollama", LocalOnly: true})
+	stateOf(m).SetTurnBudget(128000, 100000, "derived")
+	stateOf(m).SetTurnUsage(42000)
 	line := stripANSI(m.renderStatusLine(55))
 	if !strings.Contains(line, "qwen") || !strings.Contains(line, "ollama") {
 		t.Fatalf("route dropped on narrow line:\n%s", line)
@@ -372,7 +372,7 @@ func TestStatusBorderIsExactlyTheWidth(t *testing.T) {
 	for _, busy := range []bool{false, true} {
 		for _, width := range []int{40, 80, 96, 120} {
 			m := newViewTestModel(t, width, 24)
-			m.state.SetTrusted(true)
+			stateOf(m).SetTrusted(true)
 			m.busy = busy
 			line := stripANSI(m.renderStatusBorder(width, theme.Current().BorderMuted))
 			if !strings.HasPrefix(line, "╰─ ") || !strings.HasSuffix(line, "─╯") {
@@ -390,11 +390,11 @@ func TestStatusBorderIsExactlyTheWidth(t *testing.T) {
 func TestStatusBorderShedsLikeTheStatusLine(t *testing.T) {
 	const width = 80
 	m := newViewTestModel(t, width, 24)
-	m.state.SetTrusted(true)
+	stateOf(m).SetTrusted(true)
 	m.busy = true
 	m.turnStartedAt = m.now().Add(-12 * time.Second)
 	m.spinnerFrame = "⠋"
-	m.state.SetActiveRoute(session.RouteInfo{
+	stateOf(m).SetActiveRoute(session.RouteInfo{
 		Active:    true,
 		Model:     "qwen2.5-coder:14b-instruct-q8_0",
 		Provider:  "ollama",
@@ -415,7 +415,7 @@ func TestStatusBorderShedsLikeTheStatusLine(t *testing.T) {
 
 func TestStatusLineHidesBrowserSegmentWhenNoSession(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.SetBrowserInfo(session.BrowserInfo{SessionOpen: false})
+	stateOf(m).SetBrowserInfo(session.BrowserInfo{SessionOpen: false})
 	line := m.renderStatusLine(100)
 	stripped := stripANSI(line)
 	if strings.Contains(stripped, "🌐") {
@@ -425,9 +425,9 @@ func TestStatusLineHidesBrowserSegmentWhenNoSession(t *testing.T) {
 
 func TestStatusLineDropsBrowserSegmentFirst(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.SetTrusted(true)
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen2.5-coder:14b", Provider: "ollama", LocalOnly: true})
-	m.state.SetBrowserInfo(session.BrowserInfo{
+	stateOf(m).SetTrusted(true)
+	stateOf(m).SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen2.5-coder:14b", Provider: "ollama", LocalOnly: true})
+	stateOf(m).SetBrowserInfo(session.BrowserInfo{
 		SessionOpen: true,
 		URL:         "https://example.com",
 		Mode:        "standalone",
@@ -445,12 +445,12 @@ func TestStatusLineShowsTheBrowserWhileASessionIsOpen(t *testing.T) {
 	for _, height := range []int{24, 40} {
 		m := newStatusTestModel(t)
 		m.resize(120, height)
-		m.state.SetBrowserInfo(session.BrowserInfo{
+		stateOf(m).SetBrowserInfo(session.BrowserInfo{
 			SessionOpen: true,
 			URL:         "https://example.com/docs",
 			Mode:        "standalone",
 		})
-		m.state.SetSwarmProgress(session.SwarmProgress{
+		stateOf(m).SetSwarmProgress(session.SwarmProgress{
 			Active: true,
 			Roles:  []session.SwarmRole{{Name: "planner", Status: session.SwarmRoleActive}},
 		})
@@ -475,7 +475,7 @@ func TestStatusLineHintsYieldToActivity(t *testing.T) {
 	m := newStatusTestModel(t)
 	m.spinnerFrame = "⠋"
 	m.now = func() time.Time { return time.Unix(104, 0) }
-	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell.run: go test", StartedAt: time.Unix(100, 0)})
+	stateOf(m).SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell.run: go test", StartedAt: time.Unix(100, 0)})
 	line := stripANSI(m.renderStatusLine(100))
 	if strings.Contains(line, "shell.run: go test") {
 		t.Fatalf("status line must not show tool activity:\n%s", line)
@@ -495,7 +495,7 @@ func TestStatusLineShowsWorkingDir(t *testing.T) {
 
 func TestStatusLineHasNoBackgroundFill(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama"})
+	stateOf(m).SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama"})
 	out := m.renderStatusLine(80)
 	if strings.Contains(out, "48;5;237") || strings.Contains(out, ";237m") {
 		t.Fatalf("status line still emits statusBar background fill:\n%q", out)
@@ -510,8 +510,8 @@ func TestStatusLineShowsQueueHint(t *testing.T) {
 	// Ctrl+X is only actionable during a turn: the handler declines it while
 	// idle, so the hint belongs to the busy cluster.
 	m.busy = true
-	m.state.PushSteering("a")
-	m.state.PushSteering("b")
+	stateOf(m).PushSteering("a")
+	stateOf(m).PushSteering("b")
 	line := stripANSI(m.renderStatusLine(140))
 	if !strings.Contains(line, "Ctrl+X") || !strings.Contains(line, "clear queue") {
 		t.Fatalf("status line missing queue hint:\n%s", line)
@@ -544,15 +544,15 @@ type ctrlXStatusCase struct {
 func ctrlXStatusModel(t *testing.T, width, height int, c ctrlXStatusCase) Model {
 	t.Helper()
 	m := newViewTestModel(t, width, height)
-	m.state.SetTrusted(true)
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama"})
+	stateOf(m).SetTrusted(true)
+	stateOf(m).SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama"})
 	m.busy = !c.idle
 	for _, msg := range []string{"queued one", "queued two"}[:c.queue] {
-		m.state.PushSteering(msg)
+		stateOf(m).PushSteering(msg)
 	}
 	if c.drill != ctrlXUndrilled {
 		child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-		view := m.state.RegisterSubagent("explore repo", child)
+		view := stateOf(m).RegisterSubagent("explore repo", child)
 		m.drillIntoSubagent(view.ID)
 		m.refreshViewport()
 		if c.drill == ctrlXDrilledDone {
@@ -613,7 +613,7 @@ func TestStatusCtrlXHintMatchesDrillAndWidth(t *testing.T) {
 			queue: 2,
 			own:   true,
 			setup: func(t *testing.T, m *Model) {
-				m.state.SetPendingApproval(&session.PendingToolCall{
+				stateOf(m).SetPendingApproval(&session.PendingToolCall{
 					ID: "call-1", Name: "shell.run",
 					ResponseChan: make(chan session.UserApprovalDecision, 1),
 				})
@@ -624,7 +624,7 @@ func TestStatusCtrlXHintMatchesDrillAndWidth(t *testing.T) {
 			queue: 2,
 			own:   true,
 			setup: func(t *testing.T, m *Model) {
-				m.state.SetPendingQuestion(&session.PendingQuestion{
+				stateOf(m).SetPendingQuestion(&session.PendingQuestion{
 					Questions:    []session.Question{{Question: "Proceed?"}},
 					ResponseChan: make(chan []session.Answer, 1),
 				})
@@ -635,7 +635,7 @@ func TestStatusCtrlXHintMatchesDrillAndWidth(t *testing.T) {
 			queue: 2,
 			own:   true,
 			setup: func(t *testing.T, m *Model) {
-				m.state.SetPendingSkillGate(&session.PendingSkillGate{
+				stateOf(m).SetPendingSkillGate(&session.PendingSkillGate{
 					Skill:        "demo",
 					ResponseChan: make(chan session.SkillGateChoice, 1),
 				})
@@ -646,7 +646,7 @@ func TestStatusCtrlXHintMatchesDrillAndWidth(t *testing.T) {
 			queue: 2,
 			own:   true,
 			setup: func(t *testing.T, m *Model) {
-				m.state.SetPendingSudoAuth(&session.PendingSudoAuth{Command: "id"})
+				stateOf(m).SetPendingSudoAuth(&session.PendingSudoAuth{Command: "id"})
 			},
 		},
 		{
@@ -654,7 +654,7 @@ func TestStatusCtrlXHintMatchesDrillAndWidth(t *testing.T) {
 			queue: 2,
 			own:   true,
 			setup: func(t *testing.T, m *Model) {
-				m.state.SetPendingApproval(&session.PendingToolCall{
+				stateOf(m).SetPendingApproval(&session.PendingToolCall{
 					ID: "call-1", Name: "shell.run",
 					ResponseChan: make(chan session.UserApprovalDecision, 1),
 				})
@@ -803,8 +803,8 @@ func TestStatusLineOmitsGitSegmentsWhenNotInRepo(t *testing.T) {
 func TestStatusLineCollapseDropsWorktreeBeforeBranch(t *testing.T) {
 	git := gitinfo.Info{Branch: "feature", Worktree: "linked", InRepo: true}
 	m := newStatusTestModelWithGit(t, &git)
-	m.state.SetTrusted(true)
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama", LocalOnly: true})
+	stateOf(m).SetTrusted(true)
+	stateOf(m).SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama", LocalOnly: true})
 	line := stripANSI(m.renderStatusLine(58))
 	// branch shares priority 5 with dir; worktree is 6. On a tight width the
 	// worktree should be dropped while the branch survives (branch + dir both 5).
@@ -836,7 +836,7 @@ func TestStatusLineModeIsCoralColored(t *testing.T) {
 
 func TestStatusFooterOmitsToolActivity(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.SetActivity(session.Activity{
+	stateOf(m).SetActivity(session.Activity{
 		Kind:      session.ActivityTool,
 		Label:     "shell.run: go test ./...",
 		StartedAt: time.Now().Add(-time.Second),
@@ -850,7 +850,7 @@ func TestStatusFooterOmitsToolActivity(t *testing.T) {
 
 func TestStatusLineShowsSDDModeOnly(t *testing.T) {
 	m := newTestModel(t)
-	m.state.SetSDDProgress(session.SDDProgress{Active: true, Phase: "branch review", CurrentTask: 2, TotalTasks: 5})
+	stateOf(m).SetSDDProgress(session.SDDProgress{Active: true, Phase: "branch review", CurrentTask: 2, TotalTasks: 5})
 	line := stripANSI(m.renderStatusLine(100))
 	if !strings.Contains(line, "sdd") {
 		t.Errorf("status line missing sdd mode cue: %q", line)
@@ -871,7 +871,7 @@ func TestStatusLineUntrustedIsWarningColored(t *testing.T) {
 	t.Cleanup(func() { theme.Reload(prev) })
 
 	m := newStatusTestModel(t)
-	m.state.SetTrusted(false)
+	stateOf(m).SetTrusted(false)
 
 	// A foreground-colour SGR: 30–37/90–97 plus the 38;5;n and 38;2;r;g;b
 	// extended forms. Bold (1) is deliberately not a match.
@@ -927,7 +927,7 @@ func TestStatusLineUntrustedIsWarningColored(t *testing.T) {
 
 func TestStatusShowsDiagnosticsIndicator(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.Config.Providers = map[string]config.ProviderConfig{
+	stateOf(m).Config.Providers = map[string]config.ProviderConfig{
 		"broken": {Type: "openai_compatible"}, // no base URL -> diagnostic
 	}
 	m.refreshDiagnostics()
@@ -947,7 +947,7 @@ func TestStatusShowsDiagnosticsIndicator(t *testing.T) {
 
 func TestStatusCleanWhenNoDiagnostics(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.Config.Providers = map[string]config.ProviderConfig{
+	stateOf(m).Config.Providers = map[string]config.ProviderConfig{
 		"ok": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	}
 	m.refreshDiagnostics()
@@ -979,7 +979,7 @@ func TestStatusLineFollowsTheActiveRootsBranchWhenDockOpen(t *testing.T) {
 
 	// No message is sent: the status line reads the workspace's active root
 	// through the session on the next render.
-	m.state.SetWorkspace(session.Workspace{ActiveRoot: dir})
+	stateOf(m).SetWorkspace(session.Workspace{ActiveRoot: dir})
 
 	line := stripANSI(m.renderStatusLine(120))
 	if !strings.Contains(line, "⎇ pipeline/feature") {
@@ -1019,7 +1019,7 @@ func initSheetTestRepo(t *testing.T, dir string) string {
 
 func TestStatusLineSDDTokensUnlimited(t *testing.T) {
 	m := newTestModel(t)
-	m.state.SetSDDProgress(session.SDDProgress{
+	stateOf(m).SetSDDProgress(session.SDDProgress{
 		Active:     true,
 		TokensUsed: 886000,
 		TokensMax:  0, // unlimited
@@ -1043,8 +1043,8 @@ func TestStatusLineSDDTokensUnlimited(t *testing.T) {
 func TestStatusLineDropsHintsBeforePathAndWorktree(t *testing.T) {
 	git := gitinfo.Info{Branch: "feature", Worktree: "linked", InRepo: true}
 	m := newStatusTestModelWithGit(t, &git)
-	m.state.SetTrusted(true)
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama", LocalOnly: true})
+	stateOf(m).SetTrusted(true)
+	stateOf(m).SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama", LocalOnly: true})
 
 	// At a wide width, both the worktree segment and the footer hints
 	// (e.g. "Tab mode", "? help") should be visible.
@@ -1072,7 +1072,7 @@ func TestStatusLineDropsHintsBeforePathAndWorktree(t *testing.T) {
 // number next to the live-usage one.
 func TestStatusLineHasNoPackSegment(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.SetContextPack(contextpack.Pack{
+	stateOf(m).SetContextPack(contextpack.Pack{
 		TokenUsage: contextpack.TokenUsage{EstimatedTokens: 18000, MaxTokens: 32000},
 		Sections:   []contextpack.Section{{Title: "x", EstimatedTokens: 18000}},
 	})
@@ -1085,7 +1085,7 @@ func TestStatusLineHasNoPackSegment(t *testing.T) {
 
 func TestStatusShowsGenerationAfterCompaction(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.state.BeginGeneration("gen-3", 3, "digest")
+	stateOf(m).BeginGeneration("gen-3", 3, "digest")
 
 	out := m.renderStatusLine(100)
 
@@ -1123,7 +1123,7 @@ func TestStatusLineShowsChangedFileCount(t *testing.T) {
 func TestStatusLineChangedFileCountDropsBeforeRoute(t *testing.T) {
 	stub := &stubSession{patch: func(st *acpwire.SessionStatus) { st.ChangedFiles = 1 }}
 	m := newStatusTestModelStub(t, stub)
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama"})
+	stateOf(m).SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama"})
 	var sawBoth bool
 	for w := 120; w >= 20; w -= 2 {
 		line := stripANSI(m.renderStatusLine(w))
@@ -1181,7 +1181,7 @@ func TestInteractionStatusSurvivesTransientSurfaces(t *testing.T) {
 
 	t.Run("approval", func(t *testing.T) {
 		m := newInteractionStatusModel(t)
-		m.state.SetPendingApproval(&session.PendingToolCall{
+		stateOf(m).SetPendingApproval(&session.PendingToolCall{
 			ID: "call-1", Name: "shell.run",
 			ResponseChan: make(chan session.UserApprovalDecision, 1),
 		})
@@ -1206,7 +1206,7 @@ func TestInteractionStatusSurvivesTransientSurfaces(t *testing.T) {
 
 	t.Run("answering", func(t *testing.T) {
 		m := newInteractionStatusModel(t)
-		m.state.SetPendingQuestion(&session.PendingQuestion{
+		stateOf(m).SetPendingQuestion(&session.PendingQuestion{
 			Questions:    []session.Question{{Question: "Proceed?"}},
 			ResponseChan: make(chan []session.Answer, 1),
 		})
@@ -1232,7 +1232,7 @@ func TestInteractionStatusSurvivesTransientSurfaces(t *testing.T) {
 
 	t.Run("activity", func(t *testing.T) {
 		m := newInteractionStatusModel(t)
-		m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell.run", StartedAt: time.Now()})
+		stateOf(m).SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell.run", StartedAt: time.Now()})
 		if got := m.modeSegment(); got != want {
 			t.Fatalf("modeSegment = %q, want %q during work", got, want)
 		}
@@ -1248,7 +1248,7 @@ func TestInteractionStatusRetainsModifiersAtMinimumWidth(t *testing.T) {
 		t.Fatalf("minimum-width status line lost the access label:\n%s", got)
 	}
 
-	m.state.SetPendingApproval(&session.PendingToolCall{
+	stateOf(m).SetPendingApproval(&session.PendingToolCall{
 		ID: "call-1", Name: "shell.run",
 		ResponseChan: make(chan session.UserApprovalDecision, 1),
 	})

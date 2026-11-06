@@ -37,7 +37,7 @@ func TestSpinnerHiddenBefore200ms(t *testing.T) {
 	m := testModel(state)
 	m.now = func() time.Time { return now }
 	m.spinnerFrame = "⠋"
-	m.state.SetActivity(session.Activity{Kind: acpwire.ActivityThinking, StartedAt: now})
+	stateOf(m).SetActivity(session.Activity{Kind: acpwire.ActivityThinking, StartedAt: now})
 
 	// With StartedAt == now (0ms elapsed), the gate should hide the spinner.
 	frame := m.activeSpinnerFrame(acpwire.ActivityThinking)
@@ -52,7 +52,7 @@ func TestSpinnerShownAfter200ms(t *testing.T) {
 	m := testModel(state)
 	m.now = func() time.Time { return now }
 	m.spinnerFrame = "⠋"
-	m.state.SetActivity(session.Activity{Kind: acpwire.ActivityThinking, StartedAt: now.Add(-300 * time.Millisecond)})
+	stateOf(m).SetActivity(session.Activity{Kind: acpwire.ActivityThinking, StartedAt: now.Add(-300 * time.Millisecond)})
 
 	// With 300ms elapsed (>= 200ms), the gate should show the spinner.
 	frame := m.activeSpinnerFrame(acpwire.ActivityThinking)
@@ -65,7 +65,7 @@ func TestSpinnerAlwaysHiddenForIdle(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	m := testModel(state)
 	m.spinnerFrame = "⠋"
-	m.state.SetActivity(session.Activity{Kind: acpwire.ActivityIdle, StartedAt: time.Unix(0, 0)})
+	stateOf(m).SetActivity(session.Activity{Kind: acpwire.ActivityIdle, StartedAt: time.Unix(0, 0)})
 
 	frame := m.activeSpinnerFrame(acpwire.ActivityIdle)
 	if frame != "" {
@@ -173,8 +173,8 @@ func TestSpinnerHiddenDuringSDDRun(t *testing.T) {
 	m := testModel(state)
 	m.now = func() time.Time { return now }
 	m.spinnerFrame = "⠋"
-	m.state.SetActivity(session.Activity{Kind: acpwire.ActivityThinking, StartedAt: now.Add(-time.Second)})
-	m.state.SetSDDProgress(session.SDDProgress{Active: true})
+	stateOf(m).SetActivity(session.Activity{Kind: acpwire.ActivityThinking, StartedAt: now.Add(-time.Second)})
+	stateOf(m).SetSDDProgress(session.SDDProgress{Active: true})
 
 	// Past the 200ms gate the spinner would normally show — but during an
 	// SDD run the run panel owns all motion, so transcript activity rows

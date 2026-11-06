@@ -98,7 +98,7 @@ func TestNoCallersLineWhenEmpty(t *testing.T) {
 func TestRendererNeverQueries(t *testing.T) {
 	f := &fakeFinder{ok: true, failIf: func() { t.Fatal("refreshViewport issued a callers lookup") }}
 	m := callersModel(t, f)
-	m.state.LogToolCall(editEvent())
+	stateOf(m).LogToolCall(editEvent())
 	m.refreshViewport()
 	m.refreshViewport()
 	if f.calls != 0 {
@@ -111,7 +111,7 @@ func TestUnresolvedSymbolIsNeverQueried(t *testing.T) {
 	m := callersModel(t, f)
 	e := editEvent()
 	e.Symbols[0].Resolved = false
-	m.state.LogToolCall(e)
+	stateOf(m).LogToolCall(e)
 	m.refreshViewport()
 	if cmd := m.callerQueryCmds(); cmd != nil {
 		cmd()
@@ -124,7 +124,7 @@ func TestUnresolvedSymbolIsNeverQueried(t *testing.T) {
 func TestNegativeResultIsCachedAndNotRetried(t *testing.T) {
 	f := &fakeFinder{ok: false}
 	m := callersModel(t, f)
-	m.state.LogToolCall(editEvent())
+	stateOf(m).LogToolCall(editEvent())
 	m.refreshViewport()
 	cmd := m.callerQueryCmds()
 	if cmd == nil {
@@ -145,7 +145,7 @@ func TestNegativeResultIsCachedAndNotRetried(t *testing.T) {
 
 func TestNoFinderLeavesNoCallersLine(t *testing.T) {
 	m := callersModel(t, nil)
-	m.state.LogToolCall(editEvent())
+	stateOf(m).LogToolCall(editEvent())
 	m.refreshViewport()
 	key := flaggedCallerKey(t, m)
 	cmd := m.callerQueryCmds()
@@ -168,7 +168,7 @@ func TestNoFinderLeavesNoCallersLine(t *testing.T) {
 func TestCallersAreAskedOnceForAFlaggedRow(t *testing.T) {
 	f := &fakeFinder{ok: true, refs: []string{"a.go:10"}}
 	m := callersModel(t, f)
-	m.state.LogToolCall(editEvent())
+	stateOf(m).LogToolCall(editEvent())
 	m.refreshViewport()
 	key := flaggedCallerKey(t, m)
 
@@ -192,8 +192,8 @@ func TestCallersWaitWhileDrilledIn(t *testing.T) {
 	f := &fakeFinder{ok: true, refs: []string{"a.go:10"}}
 	m := callersModel(t, f)
 	child := session.New(config.Default(), t.TempDir(), time.Unix(200, 0), session.Persistence{})
-	v := m.state.RegisterSubagent("scout", child)
-	m.state.LogToolCall(editEvent())
+	v := stateOf(m).RegisterSubagent("scout", child)
+	stateOf(m).LogToolCall(editEvent())
 	m.drillIntoSubagent(v.ID)
 	m.refreshViewport()
 	if cmd := m.callerQueryCmds(); cmd != nil {
@@ -210,12 +210,12 @@ func TestCallersWaitWhileDrilledIn(t *testing.T) {
 // the transcript but living outside items must bust the viewport cache.
 func TestCallersBustTheTranscriptHash(t *testing.T) {
 	m := newTestModel(t)
-	m.state.LogToolCall(editEvent())
+	stateOf(m).LogToolCall(editEvent())
 	m.refreshViewport()
 	before := m.viewport.GetContent()
 
 	var key nodeID
-	for _, item := range m.state.Transcript() {
+	for _, item := range stateOf(m).Transcript() {
 		if item.Kind == session.KindAudit {
 			key = toolNodeID(*item.Audit)
 		}
@@ -232,7 +232,7 @@ func TestStaleCallersArePruned(t *testing.T) {
 	gone := nodeID{Kind: acpwire.KindTool, Key: "tool:gone"}
 	m.callers = map[nodeID][]string{gone: {"a.go:1"}}
 	m.callersAsked = map[nodeID]bool{gone: true}
-	m.state.LogToolCall(editEvent())
+	stateOf(m).LogToolCall(editEvent())
 	m.refreshViewport()
 	if _, still := m.callers[gone]; still {
 		t.Fatal("callers for items no longer in the transcript must be pruned (rollback)")

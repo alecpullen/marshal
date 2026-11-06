@@ -47,18 +47,20 @@ func TestModeSelectionDoesNotLoadPlanningSkill(t *testing.T) {
 		Description: "author a plan",
 		Body:        "Write the plan.",
 	})
-	m := newDispatchModelWith(t, inproc.Deps{State: state, SetInteraction: state.ApplyInteraction},
-		WithSkillIndex(idx),
-	)
+	m := newDispatchModelWith(t, inproc.Deps{
+		State:          state,
+		SetInteraction: state.ApplyInteraction,
+		SkillIndex:     func() *skills.Index { return idx },
+	})
 
 	updated, _ := m.dispatchCommand("/act")
 	m = asModel(t, updated)
-	if m.state.HasActiveSkill("marshal-writing-plans") {
+	if stateOf(m).HasActiveSkill("marshal-writing-plans") {
 		t.Fatal("/act must not load the writing-plans skill")
 	}
 
 	m.cycleMode(true)
-	if m.state.HasActiveSkill("marshal-writing-plans") {
+	if stateOf(m).HasActiveSkill("marshal-writing-plans") {
 		t.Fatal("Tab cycling must not load the writing-plans skill")
 	}
 }

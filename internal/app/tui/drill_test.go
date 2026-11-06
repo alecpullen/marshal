@@ -30,10 +30,10 @@ func newChildStateWithID(t *testing.T, id string) *session.State {
 
 func TestDrillSwapsTranscriptToChildSession(t *testing.T) {
 	m := newTestModel(t)
-	m.state.AddMessage(session.RoleAssistant, "parent normal text", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleAssistant, "parent normal text", session.ContentTypePlain)
 	child := newChildState(t)
 	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
-	view := m.state.RegisterSubagent("explore repo", child)
+	view := stateOf(m).RegisterSubagent("explore repo", child)
 
 	m.drillIntoSubagent(view.ID)
 	m.refreshViewport()
@@ -52,10 +52,10 @@ func TestDrillSwapsTranscriptToChildSession(t *testing.T) {
 
 func TestPopDrillRestoresParentTranscript(t *testing.T) {
 	m := newTestModel(t)
-	m.state.AddMessage(session.RoleAssistant, "parent normal text", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleAssistant, "parent normal text", session.ContentTypePlain)
 	child := newChildState(t)
 	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
-	view := m.state.RegisterSubagent("explore repo", child)
+	view := stateOf(m).RegisterSubagent("explore repo", child)
 
 	m.drillIntoSubagent(view.ID)
 	m.refreshViewport()
@@ -90,7 +90,7 @@ func TestWorkOriginDrillsIntoItsSubagent(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildStateWithID(t, "child-1")
 	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
-	view := m.state.RegisterSubagent("explore repo", child)
+	view := stateOf(m).RegisterSubagent("explore repo", child)
 	m.workSnapshot = acpwire.WorkSnapshot{Items: []acpwire.WorkItem{{
 		TaskKey:   "work:agent",
 		Reference: acpwire.WorkReference{ChildSessionID: "child-1"},
@@ -129,7 +129,7 @@ func TestDrillIntoASubagentReportsThePush(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildState(t)
 	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
-	view := m.state.RegisterSubagent("explore repo", child)
+	view := stateOf(m).RegisterSubagent("explore repo", child)
 
 	if !m.drillIntoSubagent(view.ID) {
 		t.Fatal("drilling into a registered subagent must report the push")
@@ -149,8 +149,8 @@ func TestDrilledViewReadsTheChildsFacts(t *testing.T) {
 	child.SetWorkspace(session.Workspace{ActiveRoot: "/repo/wt"})
 	child.SetActiveRoute(session.RouteInfo{Active: true, Model: "m-child", Provider: "p-child"})
 	child.SetActivity(session.Activity{Kind: session.ActivityReconnecting, Label: "retrying in 2s"})
-	view := m.state.RegisterSubagent("explore repo", child)
-	m.state.SetSandboxInfo(session.SandboxInfo{Backend: "restricted", NetworkIsolation: true})
+	view := stateOf(m).RegisterSubagent("explore repo", child)
+	stateOf(m).SetSandboxInfo(session.SandboxInfo{Backend: "restricted", NetworkIsolation: true})
 
 	m.drillIntoSubagent(view.ID)
 	facts := m.viewFacts()
@@ -180,7 +180,7 @@ func TestDrilledFactsFollowTheLiveChild(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildState(t)
 	child.SetWorkspace(session.Workspace{ActiveRoot: "/repo/wt"})
-	view := m.state.RegisterSubagent("explore repo", child)
+	view := stateOf(m).RegisterSubagent("explore repo", child)
 
 	m.drillIntoSubagent(view.ID)
 	child.SetWorkspace(session.Workspace{ActiveRoot: "/repo/wt2"})
@@ -195,7 +195,7 @@ func TestDrilledFactsFollowTheLiveChild(t *testing.T) {
 func TestEscPopsDrillInsteadOfCancelling(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildState(t)
-	view := m.state.RegisterSubagent("explore repo", child)
+	view := stateOf(m).RegisterSubagent("explore repo", child)
 	m.drillIntoSubagent(view.ID)
 
 	mm, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: tea.KeyEscape})
@@ -211,18 +211,18 @@ func TestEscPopsDrillInsteadOfCancelling(t *testing.T) {
 func TestCtrlXStopsRunningSubagentWhileDrilled(t *testing.T) {
 	m := newTestModel(t)
 	m.busy = true
-	m.state.PushSteering("queued message")
+	stateOf(m).PushSteering("queued message")
 
 	// Two running children: only the drilled-in top may be stopped.
 	other := newChildState(t)
-	otherView := m.state.RegisterSubagent("other task", other)
+	otherView := stateOf(m).RegisterSubagent("other task", other)
 	otherCancelled := false
-	m.state.SetSubagentCancel(otherView.ID, func() { otherCancelled = true })
+	stateOf(m).SetSubagentCancel(otherView.ID, func() { otherCancelled = true })
 
 	child := newChildState(t)
-	view := m.state.RegisterSubagent("explore repo", child)
+	view := stateOf(m).RegisterSubagent("explore repo", child)
 	cancelled := false
-	m.state.SetSubagentCancel(view.ID, func() { cancelled = true })
+	stateOf(m).SetSubagentCancel(view.ID, func() { cancelled = true })
 	m.drillIntoSubagent(view.ID)
 
 	if got := m.ctrlXAction(); got != ctrlXStopAgent {
@@ -240,7 +240,7 @@ func TestCtrlXStopsRunningSubagentWhileDrilled(t *testing.T) {
 		t.Fatal("ctrl+x cancelled the wrong subagent: only the drilled-in top is the target")
 	}
 	m = mm.(Model)
-	if q := m.state.SteeringQueue(); len(q) != 1 || q[0] != "queued message" {
+	if q := stateOf(m).SteeringQueue(); len(q) != 1 || q[0] != "queued message" {
 		t.Fatalf("ctrl+x while drilled must NOT clear the steering queue, queue = %v", q)
 	}
 	if m.flash != "" {
@@ -251,14 +251,14 @@ func TestCtrlXStopsRunningSubagentWhileDrilled(t *testing.T) {
 func TestCtrlXUndrilledClearsSteeringQueue(t *testing.T) {
 	m := newTestModel(t)
 	m.busy = true
-	m.state.PushSteering("queued message")
+	stateOf(m).PushSteering("queued message")
 
 	// A running child exists but is not drilled into: the queue clear must not
 	// stop it.
 	child := newChildState(t)
-	view := m.state.RegisterSubagent("explore repo", child)
+	view := stateOf(m).RegisterSubagent("explore repo", child)
 	cancelled := false
-	m.state.SetSubagentCancel(view.ID, func() { cancelled = true })
+	stateOf(m).SetSubagentCancel(view.ID, func() { cancelled = true })
 
 	if got := m.ctrlXAction(); got != ctrlXClearQueue {
 		t.Fatalf("ctrlXAction = %v, want ctrlXClearQueue while busy and undrilled", got)
@@ -272,7 +272,7 @@ func TestCtrlXUndrilledClearsSteeringQueue(t *testing.T) {
 		t.Fatal("ctrl+x while undrilled must not stop a running subagent")
 	}
 	m = mm.(Model)
-	if len(m.state.SteeringQueue()) != 0 {
+	if len(stateOf(m).SteeringQueue()) != 0 {
 		t.Fatal("ctrl+x while undrilled must clear the steering queue")
 	}
 }
@@ -288,13 +288,13 @@ func TestCtrlXFailedDrilledStopKeepsQueue(t *testing.T) {
 		m.busy = true
 
 		child := newChildState(t)
-		view := m.state.RegisterSubagent("explore repo", child)
+		view := stateOf(m).RegisterSubagent("explore repo", child)
 		cancelled := false
-		m.state.SetSubagentCancel(view.ID, func() { cancelled = true })
+		stateOf(m).SetSubagentCancel(view.ID, func() { cancelled = true })
 		// The snapshot says running, but the child settles before the key.
 		m.drillIntoSubagent(view.ID)
-		m.state.FinishSubagent(view.ID, "finished on its own", nil)
-		m.state.PushSteering("queued message")
+		stateOf(m).FinishSubagent(view.ID, "finished on its own", nil)
+		stateOf(m).PushSteering("queued message")
 
 		if got := m.ctrlXAction(); got != ctrlXStopAgent {
 			t.Fatalf("ctrlXAction = %v, want ctrlXStopAgent for the stale snapshot", got)
@@ -308,7 +308,7 @@ func TestCtrlXFailedDrilledStopKeepsQueue(t *testing.T) {
 			t.Fatal("a child that already finished must not be cancelled")
 		}
 		m = mm.(Model)
-		if q := m.state.SteeringQueue(); len(q) != 1 || q[0] != "queued message" {
+		if q := stateOf(m).SteeringQueue(); len(q) != 1 || q[0] != "queued message" {
 			t.Fatalf("a failed stop must leave the queue intact, queue = %v", q)
 		}
 		if m.flash != wantFlash {
@@ -321,23 +321,23 @@ func TestCtrlXFailedDrilledStopKeepsQueue(t *testing.T) {
 		m.busy = true
 
 		child := newChildState(t)
-		view := m.state.RegisterSubagent("explore repo", child)
+		view := stateOf(m).RegisterSubagent("explore repo", child)
 		// No SetSubagentCancel: the child is running but cannot be stopped.
 		m.drillIntoSubagent(view.ID)
-		m.state.PushSteering("queued message")
+		stateOf(m).PushSteering("queued message")
 
 		mm, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
 		if !handled {
 			t.Fatal("a refused stop must still consume ctrl+x")
 		}
 		m = mm.(Model)
-		if q := m.state.SteeringQueue(); len(q) != 1 || q[0] != "queued message" {
+		if q := stateOf(m).SteeringQueue(); len(q) != 1 || q[0] != "queued message" {
 			t.Fatalf("a failed stop must leave the queue intact, queue = %v", q)
 		}
 		if m.flash != wantFlash {
 			t.Fatalf("flash = %q, want %q", m.flash, wantFlash)
 		}
-		if got := m.state.Subagents()[0].Status; got != session.SubagentRunning {
+		if got := stateOf(m).Subagents()[0].Status; got != session.SubagentRunning {
 			t.Fatalf("subagent status = %v, want it still running", got)
 		}
 	})
@@ -351,11 +351,11 @@ func TestCtrlXCompletedDrillAndIdle(t *testing.T) {
 		m.busy = true
 
 		child := newChildState(t)
-		view := m.state.RegisterSubagent("explore repo", child)
-		m.state.FinishSubagent(view.ID, "done", nil)
-		completed := m.state.Subagents()[0]
+		view := stateOf(m).RegisterSubagent("explore repo", child)
+		stateOf(m).FinishSubagent(view.ID, "done", nil)
+		completed := stateOf(m).Subagents()[0]
 		m.drillIntoSubagent(completed.ID)
-		m.state.PushSteering("queued message")
+		stateOf(m).PushSteering("queued message")
 
 		if got := m.ctrlXAction(); got != ctrlXClearQueue {
 			t.Fatalf("ctrlXAction = %v, want ctrlXClearQueue for a completed snapshot", got)
@@ -366,8 +366,8 @@ func TestCtrlXCompletedDrillAndIdle(t *testing.T) {
 			t.Fatal("ctrl+x must be handled while busy")
 		}
 		m = mm.(Model)
-		if len(m.state.SteeringQueue()) != 0 {
-			t.Fatalf("a completed drill must use the busy queue action, queue = %v", m.state.SteeringQueue())
+		if len(stateOf(m).SteeringQueue()) != 0 {
+			t.Fatalf("a completed drill must use the busy queue action, queue = %v", stateOf(m).SteeringQueue())
 		}
 		if m.flash != "" {
 			t.Fatalf("a completed drill must not flash a stop failure, flash = %q", m.flash)
@@ -376,7 +376,7 @@ func TestCtrlXCompletedDrillAndIdle(t *testing.T) {
 
 	t.Run("idle does not clear the queue", func(t *testing.T) {
 		m := newTestModel(t)
-		m.state.PushSteering("queued message")
+		stateOf(m).PushSteering("queued message")
 
 		if got := m.ctrlXAction(); got != ctrlXNone {
 			t.Fatalf("ctrlXAction = %v, want ctrlXNone while idle", got)
@@ -387,7 +387,7 @@ func TestCtrlXCompletedDrillAndIdle(t *testing.T) {
 			t.Fatal("ctrl+x must fall through to the textarea while idle")
 		}
 		m = mm.(Model)
-		if q := m.state.SteeringQueue(); len(q) != 1 || q[0] != "queued message" {
+		if q := stateOf(m).SteeringQueue(); len(q) != 1 || q[0] != "queued message" {
 			t.Fatalf("idle ctrl+x must not clear the queue, queue = %v", q)
 		}
 	})
@@ -396,7 +396,7 @@ func TestCtrlXCompletedDrillAndIdle(t *testing.T) {
 func TestBreadcrumbShowsPathWhileDrilled(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildState(t)
-	view := m.state.RegisterSubagent("explore repo", child)
+	view := stateOf(m).RegisterSubagent("explore repo", child)
 	m.drillIntoSubagent(view.ID)
 
 	frame := stripANSI(m.renderTranscriptFrame())
@@ -413,7 +413,7 @@ func TestDrillFrameDrawsTheCrumbInTheBorder(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildState(t)
 	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
-	view := m.state.RegisterSubagent("explore repo", child)
+	view := stateOf(m).RegisterSubagent("explore repo", child)
 	m.drillIntoSubagent(view.ID)
 	m.refreshViewport()
 
@@ -447,7 +447,7 @@ func TestDrillNarrowsTheTranscript(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 30)
 	child := newChildState(t)
-	view := m.state.RegisterSubagent("explore repo", child)
+	view := stateOf(m).RegisterSubagent("explore repo", child)
 
 	if got, want := m.viewport.Width(), m.leftWidth; got != want {
 		t.Fatalf("undrilled viewport width = %d, want the full column %d", got, want)
@@ -468,7 +468,7 @@ func TestDrillClickOffsetsTheBorder(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildState(t)
 	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
-	view := m.state.RegisterSubagent("explore repo", child)
+	view := stateOf(m).RegisterSubagent("explore repo", child)
 	m.drillIntoSubagent(view.ID)
 	m.refreshViewport()
 
@@ -487,7 +487,7 @@ func TestDrillClickOffsetsTheBorder(t *testing.T) {
 func TestBreadcrumbShowsDispatchedRole(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildState(t)
-	view := m.state.RegisterSubagentWithMeta("review", child, session.SubagentMeta{
+	view := stateOf(m).RegisterSubagentWithMeta("review", child, session.SubagentMeta{
 		Role: routing.RoleReviewer,
 	})
 	m.drillIntoSubagent(view.ID)
@@ -501,7 +501,7 @@ func TestBreadcrumbShowsDispatchedRole(t *testing.T) {
 func TestBreadcrumbOmitsRoleWhenUnset(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildState(t)
-	view := m.state.RegisterSubagent("explore repo", child)
+	view := stateOf(m).RegisterSubagent("explore repo", child)
 	m.drillIntoSubagent(view.ID)
 
 	frame := stripANSI(m.renderTranscriptFrame())
@@ -521,7 +521,7 @@ func TestDrilledChildAuditEventsRenderNormally(t *testing.T) {
 		ToolName:      "file.read",
 		ResultSummary: "child tool output marker",
 	})
-	view := m.state.RegisterSubagent("explore repo", child)
+	view := stateOf(m).RegisterSubagent("explore repo", child)
 
 	m.drillIntoSubagent(view.ID)
 	m.refreshViewport()
@@ -535,7 +535,7 @@ func TestDrilledChildAuditEventsRenderNormally(t *testing.T) {
 func TestUpArrowPopsDrill(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildState(t)
-	view := m.state.RegisterSubagent("explore repo", child)
+	view := stateOf(m).RegisterSubagent("explore repo", child)
 	m.drillIntoSubagent(view.ID)
 
 	mm, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: tea.KeyUp})
@@ -556,7 +556,7 @@ func TestDrilledChildShowsChildActiveTool(t *testing.T) {
 		Name:      "file.read",
 		StartedAt: time.Now(),
 	})
-	view := m.state.RegisterSubagent("explore repo", child)
+	view := stateOf(m).RegisterSubagent("explore repo", child)
 	m.drillIntoSubagent(view.ID)
 	m.refreshViewport()
 
@@ -568,7 +568,7 @@ func TestDrilledChildShowsChildActiveTool(t *testing.T) {
 
 func TestUpArrowRecallsHistoryWhenNotDrilled(t *testing.T) {
 	m := newTestModel(t)
-	m.state.AddMessage(session.RoleUser, "previous prompt", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleUser, "previous prompt", session.ContentTypePlain)
 	m.resetHistoryNav()
 
 	// Not drilled: up arrow should recall history, not pop drill.
@@ -597,7 +597,7 @@ func TestClickBeatWhileDrilledIntoSubagent(t *testing.T) {
 	child.LogThinking(session.ThinkingEntry{Text: "child reasoning", Duration: time.Second, StartedAt: ts})
 	child.AddMessage(session.RoleAssistant, "child answer", session.ContentTypePlain)
 
-	view := m.state.RegisterSubagent("explore repo", child)
+	view := stateOf(m).RegisterSubagent("explore repo", child)
 	m.drillIntoSubagent(view.ID)
 	m.invalidateTranscript()
 	m.refreshViewport()
@@ -699,19 +699,19 @@ func TestCtrlXDisplayedActionThroughModel(t *testing.T) {
 				// Two live children: only the drilled-in one may ever be the
 				// stop target.
 				child := newChildState(t)
-				view := m.state.RegisterSubagent("explore repo", child)
+				view := stateOf(m).RegisterSubagent("explore repo", child)
 				cancelled := false
-				m.state.SetSubagentCancel(view.ID, func() { cancelled = true })
-				other := m.state.RegisterSubagent("other task", newChildState(t))
+				stateOf(m).SetSubagentCancel(view.ID, func() { cancelled = true })
+				other := stateOf(m).RegisterSubagent("other task", newChildState(t))
 				otherCancelled := false
-				m.state.SetSubagentCancel(other.ID, func() { otherCancelled = true })
+				stateOf(m).SetSubagentCancel(other.ID, func() { otherCancelled = true })
 
 				switch tc.drill {
 				case "running":
 					m.drillIntoSubagent(view.ID)
 				case "done":
-					m.state.FinishSubagent(view.ID, "done", nil)
-					for _, v := range m.state.Subagents() {
+					stateOf(m).FinishSubagent(view.ID, "done", nil)
+					for _, v := range stateOf(m).Subagents() {
 						if v.ID == view.ID {
 							m.drillIntoSubagent(v.ID)
 						}
@@ -719,7 +719,7 @@ func TestCtrlXDisplayedActionThroughModel(t *testing.T) {
 				}
 
 				m.busy = tc.busy
-				m.state.PushSteering("queued message")
+				stateOf(m).PushSteering("queued message")
 				m.refreshViewport()
 
 				frame := stripANSI(m.viewString())
@@ -752,14 +752,14 @@ func TestCtrlXDisplayedActionThroughModel(t *testing.T) {
 				if cancelled != tc.wantCancel {
 					t.Fatalf("drilled child cancelled = %v, want %v", cancelled, tc.wantCancel)
 				}
-				if q := len(m.state.SteeringQueue()); q != tc.wantQueue {
+				if q := len(stateOf(m).SteeringQueue()); q != tc.wantQueue {
 					t.Fatalf("steering queue = %d, want %d", q, tc.wantQueue)
 				}
 				// The displayed hint must name the action the key performed.
 				if stop == 1 && cancelled != true {
 					t.Fatal("frame advertised a stop the key did not perform")
 				}
-				if clear == 1 && len(m.state.SteeringQueue()) != 0 {
+				if clear == 1 && len(stateOf(m).SteeringQueue()) != 0 {
 					t.Fatal("frame advertised a queue clear the key did not perform")
 				}
 			})
@@ -772,9 +772,9 @@ func TestCtrlXDisplayedActionThroughModel(t *testing.T) {
 		for _, g := range geometries {
 			m := newTestModel(t)
 			m.resize(g.w, g.h)
-			m.state.AddMessage(session.RoleAssistant, "hello", session.ContentTypePlain)
+			stateOf(m).AddMessage(session.RoleAssistant, "hello", session.ContentTypePlain)
 			m.busy = true
-			m.state.PushSteering("queued message")
+			stateOf(m).PushSteering("queued message")
 			m.refreshViewport()
 			if !m.enterBrowse() {
 				t.Fatal("could not enter browse mode")
@@ -789,7 +789,7 @@ func TestCtrlXDisplayedActionThroughModel(t *testing.T) {
 			}
 
 			m = sendCtrlX(t, m)
-			if q := len(m.state.SteeringQueue()); q != 0 {
+			if q := len(stateOf(m).SteeringQueue()); q != 0 {
 				t.Fatalf("ctrl+x in browse must reach the global handler, queue = %d", q)
 			}
 		}
@@ -801,7 +801,7 @@ func TestCtrlXDisplayedActionThroughModel(t *testing.T) {
 		m := newTestModel(t)
 		m.resize(200, 50)
 		m.busy = true
-		m.state.PushSteering("queued message")
+		stateOf(m).PushSteering("queued message")
 		m.refreshViewport()
 		if frame := stripANSI(m.viewString()); !strings.Contains(frame, "Ctrl+X clear queue") {
 			t.Fatalf("wide frame lost the whole clear-queue hint:\n%s", frame)
@@ -844,11 +844,11 @@ func TestCtrlXStaleSubagentNeverClearsQueueThroughModel(t *testing.T) {
 		m.busy = true
 
 		child := newChildState(t)
-		view := m.state.RegisterSubagent("explore repo", child)
+		view := stateOf(m).RegisterSubagent("explore repo", child)
 		cancelled := false
-		m.state.SetSubagentCancel(view.ID, func() { cancelled = true })
+		stateOf(m).SetSubagentCancel(view.ID, func() { cancelled = true })
 		m.drillIntoSubagent(view.ID)
-		m.state.PushSteering("queued message")
+		stateOf(m).PushSteering("queued message")
 		m.refreshViewport()
 
 		if frame := stripANSI(m.viewString()); !strings.Contains(frame, "Ctrl+X stop agent") {
@@ -856,13 +856,13 @@ func TestCtrlXStaleSubagentNeverClearsQueueThroughModel(t *testing.T) {
 		}
 
 		// The child settles on its own after the frame was drawn.
-		m.state.FinishSubagent(view.ID, "finished on its own", nil)
+		stateOf(m).FinishSubagent(view.ID, "finished on its own", nil)
 		m = sendCtrlX(t, m)
 
 		if cancelled {
 			t.Fatal("a child that already finished must not be cancelled")
 		}
-		if q := m.state.SteeringQueue(); len(q) != 1 || q[0] != "queued message" {
+		if q := stateOf(m).SteeringQueue(); len(q) != 1 || q[0] != "queued message" {
 			t.Fatalf("a refused stop must leave the queue intact, queue = %v", q)
 		}
 		if frame := stripANSI(m.viewString()); !strings.Contains(frame, "Agent could not be stopped; queue unchanged") {
@@ -874,8 +874,8 @@ func TestCtrlXStaleSubagentNeverClearsQueueThroughModel(t *testing.T) {
 		m := newTestModel(t)
 		m.resize(140, 40)
 		m.busy = true
-		m.state.PushSteering("queued message")
-		m.state.SetPendingQuestion(&session.PendingQuestion{
+		stateOf(m).PushSteering("queued message")
+		stateOf(m).SetPendingQuestion(&session.PendingQuestion{
 			Questions: []session.Question{{Question: "what?"}},
 		})
 		m.refreshViewport()
@@ -884,7 +884,7 @@ func TestCtrlXStaleSubagentNeverClearsQueueThroughModel(t *testing.T) {
 			t.Fatalf("a pending prompt must not advertise the global hint:\n%s", frame)
 		}
 		m = sendCtrlX(t, m)
-		if q := m.state.SteeringQueue(); len(q) != 1 {
+		if q := stateOf(m).SteeringQueue(); len(q) != 1 {
 			t.Fatalf("ctrl+x leaked into the global action under a prompt, queue = %v", q)
 		}
 	})
@@ -893,7 +893,7 @@ func TestCtrlXStaleSubagentNeverClearsQueueThroughModel(t *testing.T) {
 		m := newTestModel(t)
 		m.resize(140, 40)
 		m.busy = true
-		m.state.PushSteering("queued message")
+		stateOf(m).PushSteering("queued message")
 		m.dock.Open(ctrlXStubPanel{})
 		m.refreshViewport()
 
@@ -901,7 +901,7 @@ func TestCtrlXStaleSubagentNeverClearsQueueThroughModel(t *testing.T) {
 			t.Fatalf("an open dock must not advertise the global hint:\n%s", frame)
 		}
 		m = sendCtrlX(t, m)
-		if q := m.state.SteeringQueue(); len(q) != 1 {
+		if q := stateOf(m).SteeringQueue(); len(q) != 1 {
 			t.Fatalf("ctrl+x leaked into the global action behind a dock, queue = %v", q)
 		}
 	})

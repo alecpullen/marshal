@@ -27,7 +27,7 @@ import (
 // called SetTodos would produce a receipt with no task count.
 func scriptedTasks(t *testing.T, m *Model, n, stepsPer int, finish bool) {
 	t.Helper()
-	m.state.AddMessage(session.RoleUser, "build the thing", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleUser, "build the thing", session.ContentTypePlain)
 	todos := make([]db.TodoItem, n)
 	for i := range todos {
 		todos[i] = db.TodoItem{ID: fmt.Sprintf("t%d", i+1), Content: fmt.Sprintf("Task number %d", i+1), Status: "pending"}
@@ -35,36 +35,36 @@ func scriptedTasks(t *testing.T, m *Model, n, stepsPer int, finish bool) {
 	for i := 0; i < n; i++ {
 		todos[i].Status = "in_progress"
 		todos[i].StartedAt = time.Now().Add(-30 * time.Second)
-		if err := m.state.SetTodos(append([]db.TodoItem(nil), todos...)); err != nil {
+		if err := stateOf(m).SetTodos(append([]db.TodoItem(nil), todos...)); err != nil {
 			t.Fatal(err)
 		}
 		for s := 0; s < stepsPer; s++ {
-			id := m.state.BeginStep(session.Actor{})
-			m.state.AddNarration(id, fmt.Sprintf("Working on task %d part %d. Details follow.", i+1, s+1))
-			m.state.LogToolCall(registry.AuditEvent{
+			id := stateOf(m).BeginStep(session.Actor{})
+			stateOf(m).AddNarration(id, fmt.Sprintf("Working on task %d part %d. Details follow.", i+1, s+1))
+			stateOf(m).LogToolCall(registry.AuditEvent{
 				Timestamp: time.Now(), ToolName: "file.read", StepID: id, ToolCallID: fmt.Sprintf("c%d-%d", i, s),
 				Args: []byte(`{"path":"x.go"}`), ResultSummary: "ok",
 			})
 			if s == stepsPer-1 && (i < n-1 || finish) {
 				todos[i].Status = "completed"
 				todos[i].CompletedAt = time.Now()
-				if err := m.state.SetTodos(append([]db.TodoItem(nil), todos...)); err != nil {
+				if err := stateOf(m).SetTodos(append([]db.TodoItem(nil), todos...)); err != nil {
 					t.Fatal(err)
 				}
 				args, err := json.Marshal(map[string]any{"todos": todos})
 				if err != nil {
 					t.Fatal(err)
 				}
-				m.state.LogToolCall(registry.AuditEvent{
+				stateOf(m).LogToolCall(registry.AuditEvent{
 					Timestamp: time.Now(), ToolName: "todo.write", StepID: id, ToolCallID: fmt.Sprintf("w%d", i),
 					Args: args, ResultSummary: fmt.Sprintf("tasks updated · %d items", len(todos)),
 				})
 			}
-			m.state.EndStep(id)
+			stateOf(m).EndStep(id)
 		}
 	}
 	if finish {
-		m.state.AddMessageFinal(session.RoleAssistant, "All done.", session.ContentTypePlain)
+		stateOf(m).AddMessageFinal(session.RoleAssistant, "All done.", session.ContentTypePlain)
 	}
 }
 
@@ -108,15 +108,15 @@ func TestRunningTurnKeepsEveryBeatOpen(t *testing.T) {
 func TestFailedBeatStaysOpen(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(120, 60)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "Make tests pass", Status: "in_progress", StartedAt: time.Now()}})
-	id := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(id, "Running the suite. It may fail.")
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	_ = stateOf(m).SetTodos([]db.TodoItem{{ID: "t1", Content: "Make tests pass", Status: "in_progress", StartedAt: time.Now()}})
+	id := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(id, "Running the suite. It may fail.")
 	exit := 1
-	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "test.run", StepID: id, ToolCallID: "x",
+	stateOf(m).LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "test.run", StepID: id, ToolCallID: "x",
 		Args: []byte(`{"command":"go test ./..."}`), ResultSummary: "exit 1", CommandExitCode: &exit})
-	m.state.EndStep(id)
-	_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "Make tests pass", Status: "completed", StartedAt: time.Now(), CompletedAt: time.Now()}})
+	stateOf(m).EndStep(id)
+	_ = stateOf(m).SetTodos([]db.TodoItem{{ID: "t1", Content: "Make tests pass", Status: "completed", StartedAt: time.Now(), CompletedAt: time.Now()}})
 	text := viewText(&m)
 	if !strings.Contains(text, "Running the suite") || !strings.Contains(text, "exit 1") {
 		t.Fatalf("the failed beat must stay open:\n%s", text)
@@ -126,12 +126,12 @@ func TestFailedBeatStaysOpen(t *testing.T) {
 func TestTodoWriteNeverRendersAsARow(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(120, 40)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	id := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(id, "Planning the work. Three parts.")
-	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "todo.write", StepID: id, ToolCallID: "w",
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	id := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(id, "Planning the work. Three parts.")
+	stateOf(m).LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "todo.write", StepID: id, ToolCallID: "w",
 		Args: []byte(`{"todos":[{"content":"Part one","status":"in_progress"}]}`), ResultSummary: "tasks updated · 1 items"})
-	m.state.EndStep(id)
+	stateOf(m).EndStep(id)
 	text := viewText(&m)
 	if strings.Contains(text, "todo.write") || strings.Contains(text, "tasks updated") {
 		t.Fatalf("todo.write must not render:\n%s", text)
@@ -148,7 +148,7 @@ func TestDroppedTodoGetsNoDivider(t *testing.T) {
 	// The model rewrites its list without task 1, so its beats are bound to
 	// a todo the list no longer holds: no divider names it, and the work
 	// still renders.
-	_ = m.state.SetTodos([]db.TodoItem{{ID: "t2", Content: "Task number 2", Status: "in_progress", StartedAt: time.Now()}})
+	_ = stateOf(m).SetTodos([]db.TodoItem{{ID: "t2", Content: "Task number 2", Status: "in_progress", StartedAt: time.Now()}})
 	text := viewText(&m)
 	if strings.Contains(text, "1/1 Task number 1") || strings.Contains(text, "dropped") {
 		t.Fatalf("a removed todo gets no divider:\n%s", text)
@@ -161,7 +161,7 @@ func TestDroppedTodoGetsNoDivider(t *testing.T) {
 func TestPreTaskSessionsRenderWithoutHeadersOrErrors(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
-	_ = m.state.SetTodos([]db.TodoItem{{Content: "legacy todo without an id", Status: "in_progress"}})
+	_ = stateOf(m).SetTodos([]db.TodoItem{{Content: "legacy todo without an id", Status: "in_progress"}})
 	stepFixture(t, &m, session.Actor{}, "Old-style step. Nothing bound.", readEvent("a.go"))
 	text := viewText(&m)
 	if strings.Contains(text, "1/1") || strings.Contains(text, "dropped") {
@@ -175,14 +175,14 @@ func TestPreTaskSessionsRenderWithoutHeadersOrErrors(t *testing.T) {
 func TestFailedRowShowsItsLastOutputLinesCollapsed(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(120, 40)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
 	exit := 2
-	id := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(id, "Running the build. It may break.")
-	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "shell.run", StepID: id, ToolCallID: "b",
+	id := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(id, "Running the build. It may break.")
+	stateOf(m).LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "shell.run", StepID: id, ToolCallID: "b",
 		Args: []byte(`{"command":"make"}`), ResultSummary: "exit 2", CommandExitCode: &exit,
 		ResultContent: "line1\nline2\nline3\nline4\nboom: the real reason"})
-	m.state.EndStep(id)
+	stateOf(m).EndStep(id)
 	text := viewText(&m)
 	if !strings.Contains(text, "boom: the real reason") || !strings.Contains(text, "line3") {
 		t.Fatalf("a failed row shows its last lines:\n%s", text)
@@ -204,16 +204,16 @@ func TestBeatRowsGolden(t *testing.T) {
 	for _, width := range []int{80, 140} {
 		m := newTestModel(t)
 		m.resize(width, 60)
-		m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-		_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "Wire the parser", Status: "in_progress", StartedAt: start}, {ID: "t2", Content: "Test it", Status: "pending"}})
-		id := m.state.BeginStep(session.Actor{})
-		m.state.AddNarration(id, "Reading the parser. It is small.")
-		m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: id, ToolCallID: "a", Args: []byte(`{"path":"p.go"}`), ResultSummary: "ok"})
-		m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now().Add(time.Millisecond), ToolName: "todo.write", StepID: id, ToolCallID: "w",
+		stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+		_ = stateOf(m).SetTodos([]db.TodoItem{{ID: "t1", Content: "Wire the parser", Status: "in_progress", StartedAt: start}, {ID: "t2", Content: "Test it", Status: "pending"}})
+		id := stateOf(m).BeginStep(session.Actor{})
+		stateOf(m).AddNarration(id, "Reading the parser. It is small.")
+		stateOf(m).LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: id, ToolCallID: "a", Args: []byte(`{"path":"p.go"}`), ResultSummary: "ok"})
+		stateOf(m).LogToolCall(registry.AuditEvent{Timestamp: time.Now().Add(time.Millisecond), ToolName: "todo.write", StepID: id, ToolCallID: "w",
 			Args:          []byte(`{"todos":[{"id":"t1","content":"Wire the parser","status":"completed"},{"id":"t2","content":"Test it","status":"in_progress"}]}`),
 			ResultSummary: "tasks updated · 2 items"})
-		m.state.EndStep(id)
-		_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "Wire the parser", Status: "completed", StartedAt: start, CompletedAt: start.Add(3 * time.Minute)}, {ID: "t2", Content: "Test it", Status: "in_progress", StartedAt: start.Add(3 * time.Minute)}})
+		stateOf(m).EndStep(id)
+		_ = stateOf(m).SetTodos([]db.TodoItem{{ID: "t1", Content: "Wire the parser", Status: "completed", StartedAt: start, CompletedAt: start.Add(3 * time.Minute)}, {ID: "t2", Content: "Test it", Status: "in_progress", StartedAt: start.Add(3 * time.Minute)}})
 		lines := transcriptLines(&m)
 
 		head := -1
@@ -268,13 +268,13 @@ func TestExpandMatrix(t *testing.T) {
 	build := func(all bool) string {
 		m := newTestModel(t)
 		m.resize(120, 80)
-		m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-		id := m.state.BeginStep(session.Actor{})
-		m.state.AddNarration(id, "Reading the config. The second sentence is detail that only full shows in a wrapped block.")
-		m.state.LogThinking(session.ThinkingEntry{Text: "private reasoning text", Duration: 2 * time.Second, StartedAt: time.Now(), StepID: id})
-		m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: id, ToolCallID: "r",
+		stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+		id := stateOf(m).BeginStep(session.Actor{})
+		stateOf(m).AddNarration(id, "Reading the config. The second sentence is detail that only full shows in a wrapped block.")
+		stateOf(m).LogThinking(session.ThinkingEntry{Text: "private reasoning text", Duration: 2 * time.Second, StartedAt: time.Now(), StepID: id})
+		stateOf(m).LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: id, ToolCallID: "r",
 			Args: []byte(`{"path":"cfg.go"}`), ResultSummary: "12 lines", ResultContent: "package cfg\nvar Secret = 1"})
-		m.state.EndStep(id)
+		stateOf(m).EndStep(id)
 		m.expandAll = all
 		return viewText(&m)
 	}
@@ -300,13 +300,13 @@ func TestExpandMatrix(t *testing.T) {
 func TestTaskClockIgnoresIdleTimeBetweenTurns(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(120, 40)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
 	long := time.Now().Add(-5 * time.Hour)
-	_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "Carried over", Status: "in_progress", StartedAt: long}})
-	id := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(id, "Picking it back up. Briefly.")
-	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: id, ToolCallID: "a", Args: []byte(`{"path":"x"}`), ResultSummary: "ok"})
-	m.state.EndStep(id)
+	_ = stateOf(m).SetTodos([]db.TodoItem{{ID: "t1", Content: "Carried over", Status: "in_progress", StartedAt: long}})
+	id := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(id, "Picking it back up. Briefly.")
+	stateOf(m).LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: id, ToolCallID: "a", Args: []byte(`{"path":"x"}`), ResultSummary: "ok"})
+	stateOf(m).EndStep(id)
 	text := viewText(&m)
 	if strings.Contains(text, "5h") || strings.Contains(text, "300m") {
 		t.Fatalf("header clock counted the idle time:\n%s", text)
@@ -314,11 +314,11 @@ func TestTaskClockIgnoresIdleTimeBetweenTurns(t *testing.T) {
 }
 
 func stepUnder(m *Model, narration, call string) {
-	id := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(id, narration)
-	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: id, ToolCallID: call,
+	id := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(id, narration)
+	stateOf(m).LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: id, ToolCallID: call,
 		Args: []byte(`{"path":"x.go"}`), ResultSummary: "ok"})
-	m.state.EndStep(id)
+	stateOf(m).EndStep(id)
 }
 
 func TestTodoDividersOrderTheWorkAndTheBandCarriesProgress(t *testing.T) {
@@ -372,8 +372,8 @@ func TestTodoDividersOrderTheWorkAndTheBandCarriesProgress(t *testing.T) {
 func TestLeftoverPlanShowsItsRows(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
-	_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "A", Status: "pending"}, {ID: "t2", Content: "B", Status: "pending"}})
-	m.state.AddMessage(session.RoleUser, "unrelated", session.ContentTypePlain)
+	_ = stateOf(m).SetTodos([]db.TodoItem{{ID: "t1", Content: "A", Status: "pending"}, {ID: "t2", Content: "B", Status: "pending"}})
+	stateOf(m).AddMessage(session.RoleUser, "unrelated", session.ContentTypePlain)
 	stepUnder(&m, "Just reading. Nothing else.", "a")
 	m.invalidateTranscript()
 	m.refreshViewport()
@@ -398,7 +398,7 @@ func TestLeftoverPlanShowsItsRows(t *testing.T) {
 func TestTransientNarrationFlowsWithoutHeadersWhenThereAreNoTodos(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 60)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
 	stepUnder(&m, "First look. At the lexer.", "a")
 	stepUnder(&m, "Second look. At the parser.", "b")
 	text := viewText(&m)
@@ -421,11 +421,11 @@ func TestTransientNarrationFlowsWithoutHeadersWhenThereAreNoTodos(t *testing.T) 
 func TestBackToBackNarrationReadsAsOneText(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 60)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
 	for _, n := range []string{"One thought. Here.", "Another thought. There."} {
-		id := m.state.BeginStep(session.Actor{})
-		m.state.AddNarration(id, n)
-		m.state.EndStep(id)
+		id := stateOf(m).BeginStep(session.Actor{})
+		stateOf(m).AddNarration(id, n)
+		stateOf(m).EndStep(id)
 	}
 	lines := transcriptLines(&m)
 	a, b := -1, -1
@@ -445,9 +445,9 @@ func TestBackToBackNarrationReadsAsOneText(t *testing.T) {
 func TestMergedToolRunStaysOneRowAsItGrows(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 60)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	id := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(id, "Reading a few files. All small.")
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	id := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(id, "Reading a few files. All small.")
 	count := func() int {
 		n := 0
 		for _, l := range transcriptLines(&m) {
@@ -458,7 +458,7 @@ func TestMergedToolRunStaysOneRowAsItGrows(t *testing.T) {
 		return n
 	}
 	for i := 0; i < 4; i++ {
-		m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now().Add(time.Duration(i) * time.Millisecond), ToolName: "file.read", StepID: id, ToolCallID: fmt.Sprintf("r%d", i),
+		stateOf(m).LogToolCall(registry.AuditEvent{Timestamp: time.Now().Add(time.Duration(i) * time.Millisecond), ToolName: "file.read", StepID: id, ToolCallID: fmt.Sprintf("r%d", i),
 			Args: []byte(fmt.Sprintf(`{"path":"f%d.go"}`, i)), ResultSummary: "ok"})
 		if i > 0 && count() != 1 {
 			t.Fatalf("after %d calls the run is %d rows, want 1", i+1, count())
@@ -472,23 +472,23 @@ func TestMergedToolRunStaysOneRowAsItGrows(t *testing.T) {
 func TestTightJoinsKeepClickAndBrowsePositionsOnTheirRows(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 60)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
 	todos := []db.TodoItem{
 		{ID: "t1", Content: "Read", Status: "in_progress", StartedAt: time.Now()},
 		{ID: "t2", Content: "Write", Status: "pending"},
 		{ID: "t3", Content: "Test", Status: "pending"},
 	}
-	_ = m.state.SetTodos(append([]db.TodoItem(nil), todos...))
+	_ = stateOf(m).SetTodos(append([]db.TodoItem(nil), todos...))
 	stepUnder(&m, "Reading it. Slowly.", "a")
 	todos[0].Status, todos[0].CompletedAt = "completed", time.Now()
 	todos[1].Status, todos[1].StartedAt = "in_progress", time.Now()
-	_ = m.state.SetTodos(append([]db.TodoItem(nil), todos...))
+	_ = stateOf(m).SetTodos(append([]db.TodoItem(nil), todos...))
 	stepUnder(&m, "Writing the first half. Carefully.", "b")
 	stepUnder(&m, "Writing the second half. Quickly.", "c")
 	for _, n := range []string{"One thought. Here.", "Another thought. There."} {
-		id := m.state.BeginStep(session.Actor{})
-		m.state.AddNarration(id, n)
-		m.state.EndStep(id)
+		id := stateOf(m).BeginStep(session.Actor{})
+		stateOf(m).AddNarration(id, n)
+		stateOf(m).EndStep(id)
 	}
 
 	lines := transcriptLines(&m)

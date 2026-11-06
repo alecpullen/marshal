@@ -47,7 +47,7 @@ func TestChangedRepaintsViewport(t *testing.T) {
 
 	// Stand in for whatever the exit callback appended: the point is that a
 	// transcript change that lands with the change signal becomes visible.
-	m.state.AddMessage(session.RoleSystem, notice, session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleSystem, notice, session.ContentTypePlain)
 
 	m2, _ := m.Update(changedMsg{ch: m.sess.Changed()})
 	mm := asModel(t, m2)

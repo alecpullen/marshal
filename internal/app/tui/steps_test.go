@@ -21,12 +21,12 @@ import (
 // and the given tool calls, all stamped with the step.
 func stepFixture(t *testing.T, m *Model, actor session.Actor, narrate string, tools ...registry.AuditEvent) session.StepID {
 	t.Helper()
-	if len(m.state.Messages()) == 0 {
-		m.state.AddMessage(session.RoleUser, "fix the parser", session.ContentTypePlain)
+	if len(stateOf(m).Messages()) == 0 {
+		stateOf(m).AddMessage(session.RoleUser, "fix the parser", session.ContentTypePlain)
 	}
-	id := m.state.BeginStep(actor)
+	id := stateOf(m).BeginStep(actor)
 	if narrate != "" {
-		m.state.AddNarration(id, narrate)
+		stateOf(m).AddNarration(id, narrate)
 	}
 	for i, ev := range tools {
 		ev.StepID = id
@@ -36,9 +36,9 @@ func stepFixture(t *testing.T, m *Model, actor session.Actor, narrate string, to
 		if ev.Timestamp.IsZero() {
 			ev.Timestamp = time.Now().Add(time.Duration(i) * time.Millisecond)
 		}
-		m.state.LogToolCall(ev)
+		stateOf(m).LogToolCall(ev)
 	}
-	m.state.EndStep(id)
+	stateOf(m).EndStep(id)
 	return id
 }
 
@@ -133,7 +133,7 @@ func TestOwnerLabelIsRightAlignedAndSurvivesNoColor(t *testing.T) {
 func TestOrchestratorStepOnDifferentRouteShowsModel(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(120, 30)
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama"})
+	stateOf(m).SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama"})
 	stepFixture(t, &m, session.Actor{Role: "sdd_reviewer", Label: "reviewer", Model: "gpt-5", Provider: "openai"}, "Reviewing the change.", readEvent("x.go"))
 	var header string
 	for _, l := range transcriptLines(&m) {
@@ -147,7 +147,7 @@ func TestOrchestratorStepOnDifferentRouteShowsModel(t *testing.T) {
 	// Same model as the session route: nothing to add.
 	m2 := newTestModel(t)
 	m2.resize(120, 30)
-	m2.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama"})
+	stateOf(m2).SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama"})
 	stepFixture(t, &m2, session.Actor{Role: "sdd_reviewer", Label: "reviewer", Model: "qwen", Provider: "ollama"}, "Reviewing the change.", readEvent("x.go"))
 	for _, l := range transcriptLines(&m2) {
 		if strings.Contains(l, "Reviewing the change.") && strings.Contains(l, "qwen") {
@@ -238,14 +238,14 @@ func TestNarrationMarkdownRemainsWhole(t *testing.T) {
 func TestWrappedNarrationKeepsItsMetaOnTheFirstLine(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(80, 30)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
 	todos := []db.TodoItem{
 		{ID: "t1", Content: "Read", Status: "in_progress", StartedAt: time.Now()},
 		{ID: "t2", Content: "Write", Status: "pending"},
 		{ID: "t3", Content: "Test", Status: "pending"},
 		{ID: "t4", Content: "Ship", Status: "pending"},
 	}
-	if err := m.state.SetTodos(append([]db.TodoItem(nil), todos...)); err != nil {
+	if err := stateOf(m).SetTodos(append([]db.TodoItem(nil), todos...)); err != nil {
 		t.Fatalf("SetTodos: %v", err)
 	}
 	// About 150 characters of plain prose: wide enough to wrap at every
@@ -310,13 +310,13 @@ func TestWrappedNarrationKeepsItsMetaOnTheFirstLine(t *testing.T) {
 func TestThinkingTimeSitsInTheBeatHead(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 30)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	id := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(id, "Looking at the failing test.")
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	id := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(id, "Looking at the failing test.")
 	ts := time.Now()
-	m.state.LogThinking(session.ThinkingEntry{Text: "private reasoning text", Duration: 2 * time.Second, StartedAt: ts, StepID: id})
-	m.state.LogToolCall(registry.AuditEvent{ToolName: "file.read", StepID: id, ToolCallID: "c", Timestamp: ts.Add(time.Millisecond), Args: []byte(`{"path":"a.go"}`)})
-	m.state.EndStep(id)
+	stateOf(m).LogThinking(session.ThinkingEntry{Text: "private reasoning text", Duration: 2 * time.Second, StartedAt: ts, StepID: id})
+	stateOf(m).LogToolCall(registry.AuditEvent{ToolName: "file.read", StepID: id, ToolCallID: "c", Timestamp: ts.Add(time.Millisecond), Args: []byte(`{"path":"a.go"}`)})
+	stateOf(m).EndStep(id)
 	lines := transcriptLines(&m)
 	head := -1
 	for i, l := range lines {
@@ -384,9 +384,9 @@ func TestSettledStepsAreNotReRenderedOnSpinnerTicks(t *testing.T) {
 		stepFixture(t, &m, session.Actor{}, fmt.Sprintf("Step number %d is reading.", i), readEvent(fmt.Sprintf("f%d.go", i)))
 	}
 	// One live step: open, with a running tool.
-	live := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(live, "Still working on it.")
-	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "go test", StartedAt: time.Now(), StepID: live, ToolCallID: "run"})
+	live := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(live, "Still working on it.")
+	stateOf(m).SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "go test", StartedAt: time.Now(), StepID: live, ToolCallID: "run"})
 	m.busy = true
 	m.turnStartedAt = time.Now()
 
@@ -512,9 +512,9 @@ func TestApprovalShowsOwnerAndWhy(t *testing.T) {
 // both, so the dialog names who is asking.
 func TestSubagentApprovalResolvesOwnerAgainstChildState(t *testing.T) {
 	m := newTestModel(t)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	pid := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(pid, "Parent narration that must not leak.")
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	pid := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(pid, "Parent narration that must not leak.")
 
 	child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	child.AddMessage(session.RoleUser, "review", session.ContentTypePlain)
@@ -523,7 +523,7 @@ func TestSubagentApprovalResolvesOwnerAgainstChildState(t *testing.T) {
 	if cid != pid {
 		t.Fatalf("test needs colliding step IDs, got parent %d child %d", pid, cid)
 	}
-	view := m.state.RegisterSubagent("reviewer", child)
+	view := stateOf(m).RegisterSubagent("reviewer", child)
 	child.SetPendingApproval(&session.PendingToolCall{
 		Name: "shell.run", Command: "go vet ./...", Risk: "command", StepID: cid,
 	})
@@ -547,9 +547,9 @@ func TestOlderStepWithRunningCallKeepsRendering(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
 	old := stepFixture(t, &m, session.Actor{}, "Kicking off a build.", readEvent("a.go"))
-	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "make", StartedAt: time.Now(), StepID: old, ToolCallID: "bg"})
-	live := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(live, "Meanwhile reading more.")
+	stateOf(m).SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "make", StartedAt: time.Now(), StepID: old, ToolCallID: "bg"})
+	live := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(live, "Meanwhile reading more.")
 	m.busy, m.turnStartedAt = true, time.Now()
 
 	m.invalidateTranscript()
@@ -573,10 +573,10 @@ func TestOlderStepWithRunningCallKeepsRendering(t *testing.T) {
 func TestRunningToolRowInsideStepExpandsOnClickEvenWithGlobalExpand(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
-	id := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(id, "Running the suite.")
-	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: time.Now(), StepID: id, ToolCallID: "run"})
-	m.state.AppendActiveToolCallOutput("run", "PASS pkg/first\nPASS pkg/b\nPASS pkg/c\nPASS pkg/d\nPASS pkg/e\nPASS pkg/f\nPASS pkg/g\nPASS pkg/h\nPASS pkg/last")
+	id := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(id, "Running the suite.")
+	stateOf(m).SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: time.Now(), StepID: id, ToolCallID: "run"})
+	stateOf(m).AppendActiveToolCallOutput("run", "PASS pkg/first\nPASS pkg/b\nPASS pkg/c\nPASS pkg/d\nPASS pkg/e\nPASS pkg/f\nPASS pkg/g\nPASS pkg/h\nPASS pkg/last")
 	m.busy, m.turnStartedAt = true, time.Now()
 	m.expandAll = true // ctrl+g on: settled rows open, running rows stay closed
 
@@ -599,7 +599,7 @@ func TestRunningToolRowInsideStepExpandsOnClickEvenWithGlobalExpand(t *testing.T
 func TestExpandStateDoesNotLeakIntoSubagentViews(t *testing.T) {
 	m := newTestModel(t)
 	child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	v := m.state.RegisterSubagent("reviewer", child)
+	v := stateOf(m).RegisterSubagent("reviewer", child)
 	step1 := nodeID{Kind: acpwire.KindStep, Key: "step:1"}
 
 	m.toggleExpanded(step1)

@@ -9,8 +9,9 @@ change, no new ACP method, no database schema change. ACP messages that
 already exist change only by gaining optional fields (C6).
 Status: drafted 2026-10-20; revised 2026-10-25 against `991c18d7`
 and since, plan by plan (Revision record). Delivered as nine plans
-(Migration order), each written against `main` once the previous one has
-landed; plans 2, 3, 5, 7 and 8 are split into sub-plans.
+(Migration order), each written against `main` once the previous one
+landed; plans 2, 3, 5, 7 and 8 were split into sub-plans, and plan 9
+closed it on 2026-11-06.
 
 Decided with the user (2026-10-20):
 - **Transcript on the wire:** `WireTree`. The TUI renders the same
@@ -982,9 +983,12 @@ The TUI works after every plan.
    from separate functions in `model.go` and `commands_dispatch.go`.
    Neither deletes what the other still uses, so `WithMemoryStore` and
    its two fields wait for plan 9.
-9. **Close-out.** Delete `WithLegacyState`, `WithLegacySession` and
-   `WithMemoryStore`, empty the allowlist, write the list of methods P3
-   must add, and update design §4.5, §7 and §8.
+9. **Close-out**
+   ([plan](plans/2026-11-06-p2-9-close-out-plan.md)). Delete
+   `WithLegacyState`, `WithLegacySession` and `WithMemoryStore`, delete the
+   allowlist and T1b, route the tests' state reads through the session,
+   write the list of methods P3 must add, and update design §4.5, §7 and
+   §8.
 
 Each plan removes its group's allowlist entries.
 
@@ -992,8 +996,8 @@ Each plan removes its group's allowlist entries.
 
 - **T1. Boundary.** A test in `internal/app/tui` parses every non-test
   file under the tree. It fails on any import or denied `config` function
-  outside C1's rule that is not on the allowlist, and on any allowlist
-  entry that is no longer needed. Plan 9 empties the allowlist.
+  outside C1's rule. There is no allowlist: plan 9 deleted it, so every
+  crossing fails.
 - **T1b. Moved reads.** A test in `internal/app/tui` fails on any
   `<x>.state.<Name>` selector whose `Name` is in its list of `State`
   methods and fields that have moved behind the seam. Plan 2a starts the
@@ -1030,8 +1034,8 @@ Each plan removes its group's allowlist entries.
 ## Done when
 
 - The TUI imports no agent-side package, holds no `*session.State`, and
-  makes no project, config or keychain I/O. T1 passes with an empty
-  allowlist, and `WithLegacyState` is gone.
+  makes no project, config or keychain I/O. T1 passes with no allowlist,
+  and `WithLegacyState` is gone.
 - The transcript renders from the wire projection, and T6 passes.
   Design §8's transcript question is closed.
 - Every `acpclient` method names its ACP method, and T4 passes. The
@@ -1816,6 +1820,23 @@ writing plans 8a and 8b, which run in parallel (decided with the user):
   `session/sdd_discard`, `session/sdd_scaffold` (8a), and
   `session/skills_install`, `session/skills_autoload`,
   `session/skill_gate_set` and `session/skill_gate_clear` (8b).
+
+### 2026-11-06, against `133f005b` and plans 8a and 8b (plan 9)
+
+Plan 9 was written while 8a and 8b ran, against what their plans leave.
+
+- **Tests reach the state through the session** (T1, T8). About 1,160
+  test reads of the model's state go through one helper, `stateOf`, over
+  a new `inproc.Session.State()`. A session's state never changes (a new
+  session is a new value), so the helper returns exactly what the model's
+  field tracked. P3's switch changes only the helper.
+- **The allowlist is deleted, not emptied** (T1). T1 fails on any
+  crossing, and there is no map to add an entry to.
+- **T1b is deleted** with `WithLegacyState`, as T1b says.
+- **The P3 list** is a section of the P3 spec, one row per ACP name
+  marked new, grouped by the P3 plan that adds it.
+- **Design §4.5** now describes the seam as built, and points here for
+  the migration.
 
 ## Implementation record
 
@@ -2920,3 +2941,120 @@ checking for an error: removing `Deps.FileIndex` fails it. `ReadFile` gains a
 truncation case and a NUL-past-the-sniff-window case, `Messages` gains
 `Last > Total` and no-match cases, and `PromptParams.WatchResume` says it is
 never combined with `Queued`.
+
+**Plan 8b (browsers), branch `p2-8b-browsers`.** `internal/acpwire/browsers.go` gains
+`SessionEntry` and `MemoryEntry`, the plugin types `PluginEntry`, `PluginScan`,
+`PluginContents`, `PluginItem`, `PluginHook` and `PluginMCPServer`, and the skill types
+`SkillEntry`, `SkillGateState` and `SkillGateDecision`. `acpwire` also gains
+`CodeNoDatabase` (`no_database`), which marks a session without a project database, and
+`SessionStatus.SkillGate` (C5, C11): the session's switch and its sticky decisions, copied
+in the state's sorted order and absent when there are none.
+
+`acpclient.Host` gains `ListSessions`; `acpclient.Session` gains fourteen methods. Eleven
+of the fifteen rows already existed on the ACP side and four are new:
+
+- `ListSessions` → `session/list`; `Memories` → `session/memory_list`; `DeleteMemory` →
+  `session/memory_delete`;
+- `Plugins` → `session/plugins_list`; `ScanPlugin` → `session/plugins_install_scan`;
+  `InstallPlugin` → `session/plugins_install_confirm`; `DiscardPluginScan` →
+  `session/plugins_install_discard`; `RemovePlugin` → `session/plugins_remove`;
+- `Skills` → `session/skills_list`; `LoadSkill` → `session/skills_load`; `RemoveSkill` →
+  `session/skills_remove`;
+- new: `InstallSkill` → `session/skills_install`; `SetSkillAutoload` →
+  `session/skills_autoload`; `SetSkillGate` → `session/skill_gate_set`;
+  `ClearSkillGateDecision` → `session/skill_gate_clear`.
+
+The adapter takes `Deps.SkillIndex`, a function so it reads the runtime's current index
+after a swap. Each session keeps three pieces of state under its lock: `skillListing`, the
+last `Skills` listing by scope and source (joined by a NUL, so no two entries collide);
+`pluginScans`, the staged plugin clones by token; and `pluginSeq`, which numbers the
+tokens.
+
+`Skills` lists both stores — the global one under `config.UserDir(home)/skills`, never
+`skills.ScopeDir`, and the project one under `<work>/.marshal/skills` — records the
+listing, and computes each entry's `LoadBlocked` when it is read: no index, the index lacks
+the name, the index holds a different value for it, or the skill is already active.
+`LoadSkill` re-reads the stores, checks the listed entry is still the same file with the
+same content, then the index, then the active rule, and loads from a one-entry index so a
+concurrent index change cannot swap the body between validation and injection.
+`InstallSkill` keeps the panel's three refusals in the panel's words (`enter a source
+first`, `project scope needs a trusted folder`, `unknown skill scope %q`) and installs
+through `skills.Install`. `RemoveSkill` removes the listed source through
+`skills.RemoveScopedSkill`, confined to that scope's store. `SetSkillAutoload` writes
+`skills.autoload` into the user config with `config.SaveUserConfigValue` and rebases the
+live config; the two gate calls delegate to the state and fire `Changed`.
+
+`ScanPlugin` validates and clones a source into a fresh temp parent, removes `.git`, scans
+it, hashes it and stages both under a token; a closed session discards the scans it still
+holds. `InstallPlugin` installs the staged clone with `plugins.InstallReviewed` against the
+reviewed hash and deletes the clone on every outcome, so a changed clone is refused rather
+than installed. `DiscardPluginScan` removes a token nobody claimed, at most once.
+
+The memory browser now takes the listed `[]acpwire.MemoryEntry` and a delete function;
+`ShowMsg` carries the entry, so it renders from the listing instead of re-reading the row.
+The model lists sessions with `Host.ListSessions` and opens the browser from
+`Session.Memories`, deleting through `Session.DeleteMemory`; a session without a database
+keeps the `CodeNoDatabase` note, and Ctrl+K still does nothing then.
+
+The plugins panel takes a `Service` (`Plugins`, `ScanPlugin`, `InstallPlugin`,
+`DiscardPluginScan`, `RemovePlugin`). It lost its store and lockfile paths, the scoped
+entry and lock-entry helpers, its scan dependencies, and its own clone, hash and install
+logic; `scanLease` now owns a token instead of a directory, and a token is either claimed
+by an install or discarded, never both.
+
+The skills panel takes a `Service` (`Config`, `Status`, `Skills`, `LoadSkill`,
+`InstallSkill`, `RemoveSkill`, `SetSkillAutoload`, `SetSkillGate`,
+`ClearSkillGateDecision`). It lost `homeDir`, `workDir`, `state`, `skillIndex`,
+`homeRoot`, `globalSkillsDir`, `projectSkillsDir`, `activeIndex` and `loadableSelection`,
+and with them its `config.UserDir`, `config.UserConfigPath` and
+`config.SaveUserConfigValue` calls, its `skills` and `app/session` imports, and the `os`
+and `path/filepath` uses. Its detail frame takes an `acpwire.SkillEntry`; the load row
+reads the listing's `LoadBlocked` and loads through the session, removal uses the entry's
+scope and source, and the gate and decision rows read `SessionStatus.SkillGate`. `/skills`
+opens `skills.NewPanel(m.sess, m.sess.Status().Trusted)`; the model's `WithSkillIndex` and
+`skillIndex` field are gone, and `model.go` no longer imports `marshal/internal/skills`.
+
+The adapter's browser, plugin and skill tests are new; the three panels' tests were rebuilt
+over the in-process session, with `testPanel` moving the runtime index through a pointer and
+`discovered` returning the listing's `acpwire.SkillEntry`. The mutation check in the plan
+holds: dropping the adapter's already-active refusal makes the skills panel's
+already-active case fail.
+
+T1's allowlist lost 9 entries across 5 files, four of them keys entirely —
+`memory/entries.go`, `memory/panel.go`, `plugins/panel.go` and `skills/panel.go` — plus
+`model.go`'s `marshal/internal/skills` entry. T1b gains five names at 8b:
+`SkillGateEnabled`, `SkillGateSetEnabled`, `SkillGateDecisions`, `SkillGateClearDecision`
+and `HasActiveSkill`, and `deferredStateReads` is now empty.
+
+No user-visible change. P3 needs handlers for the four new methods, and `session/list`
+results still need converting (RFC 3339 times and the message count in `_meta`).
+
+**Plan 9 (close-out), branch `p2-9-close-out`.** `inproc.Session.State` returns the
+state a session serves, and the tests reach a model's state through one helper,
+`stateOf`, which walks past the recorders that embed the adapter (each gained an
+`Unwrap`). 1,150 reads across 70 test files were rewritten to it; six reads the
+perl rewrite could not see (`f.m.state` and `updated.(Model).state`) went through it by
+hand. `internal/app` gained the counterpart helper `modelStateOf`.
+
+The model's `state`, `legacySession`, `memoryDB` and `memoryProject` fields are gone
+with `WithLegacyState`, `LegacySession`, `WithLegacySession` and `WithMemoryStore`.
+`New` keeps only its nil-host-or-session panic, `reconcileAccess` lost its nil-state
+guard, `startNewSession` lost the legacy re-read, and `app.Run` builds its TUI options
+from an empty list. `model.go` no longer imports `marshal/internal/app/session` or
+`marshal/internal/db`.
+
+T1 has no allowlist: `boundary_test.go` fails on every crossing with "%s uses %s, which
+is agent side (P2 C1): move it behind acpclient", `boundary_allowlist_test.go` and
+`moved_reads_test.go` (T1b, with both maps and its helpers) are deleted, and
+`formatAllowlist` went with them. Both mutation checks held: `State` returning a fresh
+state fails the approval, status and question tests, and a probe file importing
+`marshal/internal/db` fails T1 naming it, with no map to exempt it.
+
+The list of methods P3 must add is the P3 spec's "Methods P3 adds": 72 interface
+methods carried by 64 ACP methods `acp.Server` does not register, grouped by the plan
+that adds each, with the five R6 conversions marked. The interface has 110 methods: 35
+send an ACP method that exists and three have none. Design §4.5 now describes the seam
+as built, §7 marks P2 implemented, §8 marks the transcript question settled and
+implemented, and `AGENTS.md` and `docs/ARCHITECTURE.md` say there is no allowlist.
+
+The Done when section's manual run is left to the user; everything else in it holds.

@@ -21,7 +21,7 @@ import (
 func TestChildApprovalSurfacedAndAnswered(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildState(t)
-	m.state.RegisterSubagent("child-task", child)
+	stateOf(m).RegisterSubagent("child-task", child)
 
 	ch := make(chan session.UserApprovalDecision, 1)
 	tc := &session.PendingToolCall{
@@ -35,7 +35,7 @@ func TestChildApprovalSurfacedAndAnswered(t *testing.T) {
 	child.SetPendingApproval(tc)
 
 	// The parent must never have a pending approval.
-	if m.state.PendingApproval() != nil {
+	if stateOf(m).PendingApproval() != nil {
 		t.Fatal("parent state should not have a pending approval")
 	}
 
@@ -54,7 +54,7 @@ func TestChildApprovalSurfacedAndAnswered(t *testing.T) {
 	if child.PendingApproval() != nil {
 		t.Fatal("child pending approval should be cleared after decision")
 	}
-	if m.state.PendingApproval() != nil {
+	if stateOf(m).PendingApproval() != nil {
 		t.Fatal("parent pending approval should never have been set")
 	}
 }
@@ -64,7 +64,7 @@ func TestChildApprovalSurfacedAndAnswered(t *testing.T) {
 func TestParentApprovalWinsOverChild(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildState(t)
-	m.state.RegisterSubagent("child-task", child)
+	stateOf(m).RegisterSubagent("child-task", child)
 
 	parentCh := make(chan session.UserApprovalDecision, 1)
 	parentTC := &session.PendingToolCall{
@@ -84,7 +84,7 @@ func TestParentApprovalWinsOverChild(t *testing.T) {
 		Reason:       "child",
 		ResponseChan: childCh,
 	}
-	m.state.SetPendingApproval(parentTC)
+	stateOf(m).SetPendingApproval(parentTC)
 	child.SetPendingApproval(childTC)
 
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -117,7 +117,7 @@ func TestParentApprovalWinsOverChild(t *testing.T) {
 func TestChildApprovalRenderedInInputArea(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildState(t)
-	m.state.RegisterSubagent("child-task", child)
+	stateOf(m).RegisterSubagent("child-task", child)
 
 	tc := &session.PendingToolCall{
 		ID:           "c1",
@@ -129,7 +129,7 @@ func TestChildApprovalRenderedInInputArea(t *testing.T) {
 	}
 	child.SetPendingApproval(tc)
 
-	if m.state.PendingApproval() != nil {
+	if stateOf(m).PendingApproval() != nil {
 		t.Fatal("parent state should not have a pending approval")
 	}
 	if !m.hasPendingApproval() {
@@ -158,7 +158,7 @@ func TestChildApprovalRenderedInInputArea(t *testing.T) {
 func TestChildApprovalDisplayNamesSubagent(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildState(t)
-	m.state.RegisterSubagent("child-task", child)
+	stateOf(m).RegisterSubagent("child-task", child)
 
 	tc := &session.PendingToolCall{
 		ID:           "c1",
@@ -191,7 +191,7 @@ func TestChildApprovalDisplayNamesSubagent(t *testing.T) {
 func TestCanonicalChildApprovalSettlesOnlyChildOwner(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildState(t)
-	m.state.RegisterSubagent("child-task", child)
+	stateOf(m).RegisterSubagent("child-task", child)
 
 	ch := make(chan session.UserApprovalDecision, 1)
 	tc := &session.PendingToolCall{
@@ -224,7 +224,7 @@ func TestCanonicalChildApprovalSettlesOnlyChildOwner(t *testing.T) {
 	if child.PendingApproval() != nil {
 		t.Fatal("child pending approval was not cleared")
 	}
-	if m.state.PendingApproval() != nil {
+	if stateOf(m).PendingApproval() != nil {
 		t.Fatal("the child approval touched the parent pending-approval slot")
 	}
 }
@@ -235,10 +235,10 @@ func TestCanonicalChildApprovalSettlesOnlyChildOwner(t *testing.T) {
 // refuses the destructive command.
 func TestChildDestructiveApprovalAfterAskDoesNotLaunch(t *testing.T) {
 	m := newTestModel(t)
-	child := session.New(m.state.Config, m.state.WorkingDir, time.Unix(100, 0), session.Persistence{},
+	child := session.New(stateOf(m).Config, stateOf(m).WorkingDir, time.Unix(100, 0), session.Persistence{},
 		session.WithDepth(1),
-		session.WithInteractionOwner(m.state, interaction.Ceiling{Act: true, Auto: true, System: true}))
-	m.state.RegisterSubagent("child-task", child)
+		session.WithInteractionOwner(stateOf(m), interaction.Ceiling{Act: true, Auto: true, System: true}))
+	stateOf(m).RegisterSubagent("child-task", child)
 
 	ch := make(chan session.UserApprovalDecision, 1)
 	tc := &session.PendingToolCall{
@@ -253,7 +253,7 @@ func TestChildDestructiveApprovalAfterAskDoesNotLaunch(t *testing.T) {
 	child.SetPendingApproval(tc)
 
 	ask := interaction.ModeAsk
-	if _, err := m.state.ApplyInteraction(interaction.Patch{Mode: &ask}); err != nil {
+	if _, err := stateOf(m).ApplyInteraction(interaction.Patch{Mode: &ask}); err != nil {
 		t.Fatalf("owner Ask: %v", err)
 	}
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -280,13 +280,13 @@ func TestChildDestructiveApprovalAfterAskDoesNotLaunch(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("register shell.run: %v", err)
 	}
-	pol := policy.NewEngine(&m.state.Config, nil)
+	pol := policy.NewEngine(&stateOf(m).Config, nil)
 	pol.WithRegistry(reg)
 	az := policy.NewAuthorizer(pol, child.InteractionAuthority())
 	call := policy.Call{
 		InvocationID: "launch",
 		ToolName:     "shell.run",
-		Shell:        &policy.ShellInput{Command: tc.Command, Dir: m.state.WorkingDir, WorkspaceRoot: m.state.WorkingDir},
+		Shell:        &policy.ShellInput{Command: tc.Command, Dir: stateOf(m).WorkingDir, WorkspaceRoot: stateOf(m).WorkingDir},
 	}
 	proof, evaluation, err := az.Evaluate(context.Background(), call)
 	if err != nil {

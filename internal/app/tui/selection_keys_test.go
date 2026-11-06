@@ -25,12 +25,12 @@ func TestDrillClearsTheSelection(t *testing.T) {
 	m, _ := selectionFixture(t)
 	// The fixture renders no subagent card any more, so this test registers
 	// the child it drills into itself.
-	m.state.RegisterSubagent("explore repo", newChildState(t))
+	stateOf(m).RegisterSubagent("explore repo", newChildState(t))
 	m.invalidateTranscript()
 	m.refreshViewport()
 	l := lineOf(t, &m, "Model switched")
 	selectRows(t, &m, selPos{l, 0}, selPos{l, 79})
-	m.drillIntoSubagent(m.state.Subagents()[0].ID)
+	m.drillIntoSubagent(stateOf(m).Subagents()[0].ID)
 	if m.sel != nil {
 		t.Fatal("drilling in must clear the selection")
 	}
@@ -50,7 +50,7 @@ func TestCtrlSClearsTheSelectionAndNamesDragToCopy(t *testing.T) {
 		t.Fatal("Ctrl+S must clear the selection")
 	}
 	m = pressKeys(m, "ctrl+s")
-	msgs := m.state.Messages()
+	msgs := stateOf(m).Messages()
 	if last := msgs[len(msgs)-1].Content; !strings.Contains(last, "drag selects and copies") {
 		t.Fatalf("re-capture notice = %q, want it to say drag selects and copies", last)
 	}

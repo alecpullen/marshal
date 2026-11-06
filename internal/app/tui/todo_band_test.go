@@ -23,7 +23,7 @@ func todoStack(t *testing.T) Model {
 	t.Helper()
 	m := newTestModel(t)
 	m.resize(100, 60)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
 	m.busy, m.turnStartedAt = true, m.now().Add(-time.Minute)
 	todos := []db.TodoItem{
 		{ID: "t1", Content: "Read", Status: "in_progress", StartedAt: time.Now()},
@@ -31,11 +31,11 @@ func todoStack(t *testing.T) Model {
 		{ID: "t3", Content: "Test", Status: "pending"},
 		{ID: "t4", Content: "Ship", Status: "pending"},
 	}
-	_ = m.state.SetTodos(append([]db.TodoItem(nil), todos...))
+	_ = stateOf(m).SetTodos(append([]db.TodoItem(nil), todos...))
 	stepUnder(&m, "Reading it. Slowly.", "a")
 	todos[0].Status, todos[0].CompletedAt = "completed", time.Now()
 	todos[1].Status, todos[1].StartedAt = "in_progress", time.Now()
-	_ = m.state.SetTodos(append([]db.TodoItem(nil), todos...))
+	_ = stateOf(m).SetTodos(append([]db.TodoItem(nil), todos...))
 	stepUnder(&m, "Writing it. Quickly.", "b")
 	m.invalidateTranscript()
 	m.refreshViewport()
@@ -55,8 +55,8 @@ func todoDrivenTurn(t *testing.T, m *Model, todos []native.TodoItem) {
 			todos[i].ID = fmt.Sprintf("t%d", i+1)
 		}
 	}
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	if err := m.state.SetTodos(todos); err != nil {
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	if err := stateOf(m).SetTodos(todos); err != nil {
 		t.Fatalf("SetTodos: %v", err)
 	}
 	// BeginStep binds the step to the in-progress todo by ID, which is what

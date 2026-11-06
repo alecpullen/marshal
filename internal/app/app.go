@@ -7,24 +7,17 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/google/uuid"
 
-	tea "charm.land/bubbletea/v2"
-
-	"marshal/internal/acp/service"
 	"marshal/internal/agent"
 	"marshal/internal/agent/swarm"
-	"marshal/internal/app/clipboard"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui"
 	"marshal/internal/contextpack"
 	"marshal/internal/credentials"
 	"marshal/internal/db"
@@ -97,17 +90,6 @@ func authorizeWatchSample(ctx context.Context, az *policy.Authorizer, attempt po
 	return admission, nil
 }
 
-// ProgramResult is the value returned by a ProgramRunner. It carries the
-// bubbletea program outcome plus an optional request to resume a different
-// session.
-type ProgramResult struct {
-	Err           error
-	ResumeSession string // non-empty => tear down and restart WithExistingSession
-}
-
-// ProgramRunner runs the TUI program. The default runner adapts tea.Program;
-// tests inject a runner that returns a ProgramResult directly.
-type ProgramRunner func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult
 type configLoader func(config.LoadOptions) (config.Config, error)
 
 // must asserts raw to T, panicking with a descriptive message on mismatch.
@@ -127,7 +109,6 @@ func must[T any](raw any) T {
 type options struct {
 	now                    func() time.Time
 	configWithLayersLoader func(config.LoadOptions) (config.Config, config.Layers, error)
-	programRunner          ProgramRunner
 	trustResolver          trust.Resolver
 	// deferTrustPrompt moves the folder-trust question into the TUI (the
 	// interactive path). sessionTrusted carries an inline session-trust
@@ -216,15 +197,6 @@ func WithNow(now func() time.Time) Option {
 	}
 }
 
-func WithProgramRunner(runner ProgramRunner) Option {
-	return func(opts *options) {
-		if runner == nil {
-			return
-		}
-		opts.programRunner = runner
-	}
-}
-
 func WithConfigLoader(loader configLoader) Option {
 	return func(opts *options) {
 		if loader == nil {
@@ -272,7 +244,7 @@ func WithShutdownHook(hook func(ctx context.Context, state *session.State, datab
 	}
 }
 
-// WithWorker registers a background worker started shutdown-aware by Run.
+// WithWorker registers a background worker started shutdown-aware by launch.Run.
 // Primarily a test seam; production wiring constructs the index watcher.
 func WithWorker(w worker.Worker) Option {
 	return func(o *options) { o.workers = append(o.workers, w) }
@@ -2574,86 +2546,6 @@ func buildOAuthWorkers(cfg config.Config, logger *slog.Logger, auth ...provider.
 	return out
 }
 
-func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
-	if ctx.Err() != nil {
-		return nil
-	}
-
-	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	// Run's own program runner: the caller's, defaulting to the Bubble Tea
-	// program. NewEmbedded applies the rest of the options exactly once.
-	embedded, err := NewEmbedded(ctx, append([]Option{WithProgramRunner(runProgram)}, opts...)...)
-	if err != nil {
-		return err
-	}
-	defer embedded.Close(context.Background())
-
-	for {
-		rt, err := embedded.Start(ctx)
-		if err != nil {
-			return err
-		}
-
-		// The seam is built from the runtime's own service deps plus the
-		// startup trust prompt and its decision, which belong to the
-		// embedding.
-		seamHost, seamSession := service.New(embedded.SessionDeps(ctx))
-
-		var tuiOpts []tui.Option
-		// F18: eager-seed the @file completion popup with the repo file
-		// index, read through the session so the popup and the lazy load
-		// share one path. Failures (no DB, empty index) are non-fatal — the
-		// TUI falls back to a lazy load on the first @-keystroke.
-		if filePaths, ferr := seamSession.FileIndex(ctx); ferr == nil && len(filePaths) > 0 {
-			tuiOpts = append(tuiOpts, tui.WithFileIndex(filePaths))
-		}
-		if embedded.FirstRun() {
-			tuiOpts = append(tuiOpts, tui.WithOpenConnectOnStart())
-		}
-		// Config reloading stays wired even when the initial provider build
-		// failed: /settings, /set and /connect are the recovery path, and they
-		// reach the reload through deps.ReloadConfig above. A successful
-		// reload rebuilds the runtime in place, and the session reads the
-		// runtime's current runner from the next turn on, so a rebuilt runner
-		// needs no adoption here.
-		tuiOpts = append(tuiOpts, tui.WithHomeDir(embedded.HomeDir()))
-		tuiOpts = append(tuiOpts, tui.WithWorkingDir(embedded.WorkingDir()))
-		// Copy prefers a local clipboard helper and falls back to OSC 52 over
-		// SSH or when no helper resolves.
-		tuiOpts = append(tuiOpts, tui.WithClipboard(
-			&clipboard.LocalWriter{},
-			func() bool { return clipboard.Remote(os.Getenv) },
-		))
-		tuiOpts = append(tuiOpts, tui.WithContext(ctx))
-		tuiOpts = append(tuiOpts, tui.WithLogger(rt.State.Logger()))
-
-		select {
-		case <-ctx.Done():
-			return nil
-		default:
-		}
-
-		progResult := embedded.programRunner()(ctx, tui.New(seamHost, seamSession, tuiOpts...), stdout)
-
-		if progResult.ResumeSession != "" && progResult.Err == nil {
-			// User chose to resume a different session. Tear down the
-			// current runtime (the current transcript is already persisted,
-			// and that session is marked ended when it is eventually exited)
-			// and restart startRuntime in
-			// existing-session mode.
-			embedded.Resume(progResult.ResumeSession)
-			continue
-		}
-
-		if embedded.TakeTrustReload() {
-			continue
-		}
-		return embedded.Finish(progResult.Err)
-	}
-}
-
 // layerReloaderFor returns the TUI's layer-reload function: it re-runs
 // LoadLayers with the same home/working context as startup and replays the
 // session's trust decision through config.LoadSessionLayers, which never
@@ -2928,19 +2820,6 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	}
 
 	return cleanupErr
-}
-
-func runProgram(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
-	program := tea.NewProgram(model,
-		tea.WithOutput(output),
-		tea.WithContext(ctx),
-	)
-	finalModel, err := program.Run()
-	res := ProgramResult{Err: err}
-	if signaller, ok := finalModel.(interface{ ResumeSession() string }); ok {
-		res.ResumeSession = signaller.ResumeSession()
-	}
-	return res
 }
 
 // loadFileIndexPaths fetches the repo's known file paths for the

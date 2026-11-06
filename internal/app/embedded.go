@@ -318,7 +318,3 @@ func (e *Embedded) Close(ctx context.Context) error {
 	}
 	return err
 }
-
-// programRunner is the runner Run calls: the program runner the options
-// carry.
-func (e *Embedded) programRunner() ProgramRunner { return e.opts.programRunner }

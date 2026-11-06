@@ -9,15 +9,15 @@ import (
 	"strings"
 
 	"marshal/internal/acp"
-	"marshal/internal/app"
 	"marshal/internal/app/config"
+	"marshal/internal/launch"
 	"marshal/internal/llm/provider"
 	"marshal/internal/procenv"
 	"marshal/internal/repo"
 	"marshal/internal/trust"
 )
 
-var appRunner = app.Run
+var appRunner = launch.Run
 var acpRunner = acp.Run
 var acpListener = acp.ListenAndServe
 var historyRunner = runHistory

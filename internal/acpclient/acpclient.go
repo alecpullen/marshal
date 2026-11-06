@@ -59,6 +59,13 @@ type Host interface {
 	// ACP: trust/decide (new in P3).
 	DecideTrust(ctx context.Context, dir string, decision acpwire.TrustDecision) error
 
+	// ListSessions lists the stored sessions whose working directory is cwd,
+	// most recent first, at most limit. It fails with CodeNoDatabase when
+	// the agent has no database.
+	//
+	// ACP: session/list (exists).
+	ListSessions(ctx context.Context, cwd string, limit int) ([]acpwire.SessionEntry, error)
+
 	// ProviderTemplates lists the provider catalog, sorted by ID, each with
 	// every field.
 	//
@@ -590,6 +597,18 @@ type Session interface {
 	//
 	// ACP: session/command_action (new in P3).
 	CommandAction(ctx context.Context, id string) (acpwire.CommandResult, error)
+
+	// Memories lists the project's own memories, oldest first. It fails with
+	// CodeNoDatabase when the session has no database.
+	//
+	// ACP: session/memory_list (exists).
+	Memories(ctx context.Context) ([]acpwire.MemoryEntry, error)
+
+	// DeleteMemory deletes one memory. It fails with CodeNoDatabase when the
+	// session has no database.
+	//
+	// ACP: session/memory_delete (exists).
+	DeleteMemory(ctx context.Context, id int64) error
 
 	// PrepareMCPLogin checks that the OAuth sign-in for the session's MCP
 	// server called server can start: the server resolves and the token store

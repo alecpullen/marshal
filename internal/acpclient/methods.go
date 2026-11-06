@@ -21,6 +21,7 @@ var Methods = []Method{
 	{Iface: "Host", Name: "NewSession", ACP: "session/new", Exists: true},
 	{Iface: "Host", Name: "TrustPrompt", ACP: "trust/prompt"},
 	{Iface: "Host", Name: "DecideTrust", ACP: "trust/decide"},
+	{Iface: "Host", Name: "ListSessions", ACP: "session/list", Exists: true},
 	{Iface: "Host", Name: "ProviderTemplates", ACP: "config/provider_templates"},
 	{Iface: "Host", Name: "ProbeProvider", ACP: "config/probe_provider", Exists: true},
 	{Iface: "Host", Name: "CanProbeModel", ACP: "config/probe_model"},
@@ -93,6 +94,8 @@ var Methods = []Method{
 	{Iface: "Session", Name: "Commands", ACP: "session/command_list", Exists: true},
 	{Iface: "Session", Name: "Command", ACP: "session/command", Exists: true},
 	{Iface: "Session", Name: "CommandAction", ACP: "session/command_action"},
+	{Iface: "Session", Name: "Memories", ACP: "session/memory_list", Exists: true},
+	{Iface: "Session", Name: "DeleteMemory", ACP: "session/memory_delete", Exists: true},
 
 	{Iface: "Session", Name: "PrepareMCPLogin", ACP: "session/mcp_login"},
 	{Iface: "Session", Name: "LoginMCP", ACP: "session/mcp_login"},

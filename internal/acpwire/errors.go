@@ -31,6 +31,8 @@ const (
 	CodeSessionClosed ErrorCode = "session_closed"
 	// CodeNoRunner means the session has no agent runner: its provider is not built.
 	CodeNoRunner ErrorCode = "no_runner"
+	// CodeNoDatabase means the session has no project database.
+	CodeNoDatabase ErrorCode = "no_database"
 )
 
 // Error is an agent-side error with a code.

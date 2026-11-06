@@ -2579,216 +2579,27 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		return nil
 	}
 
-	runOpts := options{
-		now: time.Now,
-		configWithLayersLoader: func(lo config.LoadOptions) (config.Config, config.Layers, error) {
-			cfg, layers, err := config.LoadWithLayers(lo)
-			if err != nil {
-				return cfg, layers, err
-			}
-			// Re-apply provider template capability defaults (e.g. an
-			// opencode-go template that gained TemperatureLocked after a
-			// user saved their entry). Merge-by-key lets a stale false
-			// clobber the template's true permanently; the template is
-			// authoritative about what the endpoint accepts.
-			provider.RebindTemplateDefaults(&cfg)
-			provider.RebindTemplateDefaults(&layers.Merged)
-			return cfg, layers, nil
-		},
-		programRunner: runProgram,
-	}
-	for _, opt := range opts {
-		opt(&runOpts)
-	}
-	runOpts.deferTrustPrompt = true
-
-	// Resolve the credential/OAuth dependency ONCE, at the outer construction
-	// boundary: an explicitly nil injection is rejected here, and an omitted
-	// one becomes the production default stored back on the options. Every
-	// startRuntime iteration in the resume/restart loop below therefore hands
-	// the very same object to provider construction, the refresh workers and
-	// the MCP managers.
-	authResolver, err := resolveAuthResolver(runOpts)
-	if err != nil {
-		return err
-	}
-	runOpts.authResolver = authResolver
-	runOpts.authResolverSet = true
-
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	workingDir, err := resolveWorkingDir(runOpts.workingDir)
+	// Run's own program runner: the caller's, defaulting to the Bubble Tea
+	// program. NewEmbedded applies the rest of the options exactly once.
+	embedded, err := NewEmbedded(ctx, append([]Option{WithProgramRunner(runProgram)}, opts...)...)
 	if err != nil {
 		return err
 	}
-
-	// Define configReloader before startRuntime so it can be wired into
-	// native.Options. The closure captures rt by reference; rt is set
-	// immediately after startRuntime returns.
-	var rt *Runtime
-	configReloader := func(newCfg config.Config) error {
-		return reloadAgentRuntime(ctx, newCfg, rt)
-	}
-	runOpts.configReloader = configReloader
-
-	var reloadForTrust bool
-	homeDir := runOpts.homeDir
-	if homeDir == "" {
-		var err error
-		homeDir, err = os.UserHomeDir()
-		if err != nil {
-			return err
-		}
-	}
-
-	// First-run detection: when no config exists yet, open the connect
-	// panel in the TUI instead of running a separate onboarding wizard.
-	firstRun := !config.HasConfig(config.LoadOptions{HomeDir: homeDir, WorkingDir: workingDir})
-	trustStoreDir := config.DataDir(homeDir)
-	trustDecide := func(d trust.Decision) {
-		switch d {
-		case trust.DecisionTrustPermanent:
-			abs := trust.Canonicalize(workingDir)
-			hash, _ := trust.ConfigHashFor(workingDir)
-			_ = trust.NewStore(trustStoreDir).SetTrust(abs, true, hash)
-			reloadForTrust = true
-		case trust.DecisionTrustSession:
-			runOpts.sessionTrusted = true
-			reloadForTrust = true
-		}
-	}
-	// Interactive project-config saves (/settings, /set, /agents) made from
-	// a trusted session advance the permanent-trust config hash so the next
-	// launch doesn't re-prompt. RefreshConfigHash is a no-op when the project
-	// has no permanent-trust record, so external or agent-made config edits
-	// (which never hit this path) still force re-trust.
-	trustRefresh := func(dir string) {
-		abs := trust.Canonicalize(dir)
-		hash, err := trust.ConfigHashFor(dir)
-		if err != nil {
-			return
-		}
-		_ = trust.NewStore(trustStoreDir).RefreshConfigHash(abs, hash)
-	}
-
-	// One project-host registry for the TUI process. A resume or a trust
-	// reload closes the runtime and starts the next one on the same host
-	// inside its linger, so the database, index and language servers carry
-	// over. Injected workers (WithWorker) replace the host's index work. The
-	// registry closes after the last runtime (deferred below, so it runs
-	// first).
-	if runOpts.hosts == nil {
-		hosts := NewHosts()
-		hosts.workers = runOpts.workers
-		runOpts.hosts = hosts
-		defer func() {
-			closeCtx, cancel := context.WithTimeout(context.Background(), hostCloseTimeout)
-			defer cancel()
-			_ = hosts.Close(closeCtx)
-		}()
-	}
-
-	defer func() {
-		if rt != nil {
-			_ = rt.Close(context.Background())
-		}
-	}()
+	defer embedded.Close(context.Background())
 
 	for {
-		rt, err = startRuntime(ctx, runOpts)
+		rt, err := embedded.Start(ctx)
 		if err != nil {
 			return err
 		}
 
-		cfg := rt.Config
-		workingDir = rt.WorkingDir
-		database := must[*db.DB](rt.DB)
-		projectID := rt.ProjectID
-		sessionID := rt.SessionID
-		jobBroker := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
-		watchBroker := must[*pubsub.Broker[watch.Event]](rt.WatchBroker)
-		steeringBroker := must[*pubsub.Broker[session.SteeringEvent]](rt.SteeringBroker)
-		workspaceBroker := must[*pubsub.Broker[session.WorkspaceEvent]](rt.WorkspaceBroker)
-		subagentBroker := must[*pubsub.Broker[session.SubagentEvent]](rt.SubagentBroker)
-		state := rt.State
-		logger := rt.Logger
-
-		// The brokers exist whatever the provider's state, so the session's
-		// events flow from the first frame: a start whose initial provider
-		// build failed still repaints on workspace, subagent, job, watch and
-		// steering events.
-		// The seam serves work exactly when the runtime's runner is attached
-		// below: a start whose provider build failed serves no work either.
-		providerReady := true
-		if n, ok := state.Notice(); ok && n.Category == session.NoticeProvider {
-			providerReady = false
-		}
-		// The seam answers Callers through the runtime's one LSP handle. A
-		// runtime without one leaves the finder nil rather than assigning a
-		// nil *lsp.SymbolQuery to the interface.
-		var refFinder service.ReferenceFinder
-		if rt.LSPManager != nil {
-			refFinder = lsp.NewSymbolQuery(rt.LSPManager, nil, 0)
-		}
-		// The seam carries the folder-trust prompt: the directory whose
-		// project config waits for a decision, or "" when none does. The
-		// trust panel asks through it, and a decision recorded here reloads
-		// the runtime with the project config in force.
-		trustPrompt := ""
-		if rt.TrustPromptPending {
-			trustPrompt = workingDir
-		}
-		deps := service.Deps{
-			State:           state,
-			Context:         ctx,
-			Jobs:            jobBroker,
-			Watches:         watchBroker,
-			Steering:        steeringBroker,
-			Workspace:       workspaceBroker,
-			Subagents:       subagentBroker,
-			ProjectID:       projectID,
-			ReferenceFinder: refFinder,
-			AccessRequest:   rt.AccessRequest,
-			ResolveAccess:   rt.ResolveAccess,
-			SetInteraction:  rt.SetInteraction,
-			SetEffort:       rt.SetSessionEffort,
-			Commands:        rt.CommandRegistry,
-			// The adapter builds every provider client and sign-in the TUI
-			// asks for, so an injected resolver must reach it: otherwise a
-			// probe or login under an isolated runtime would reach the real
-			// OS keychain.
-			Auth:          rt.AuthResolver,
-			ModelCacheDir: rt.DataDir,
-			// The config writes go through the seam, so the runtime's reload
-			// path, the layer reloader and the trust refresh reach it here.
-			ReloadConfig: configReloader,
-			ReloadLayers: layerReloaderFor(homeDir, workingDir, state.Trusted),
-			TrustRefresh: trustRefresh,
-			HomeDir:      homeDir,
-			// The folder-trust prompt and its decision reach the seam, and the
-			// session names the runtime's current tools. These are the only
-			// paths the TUI has to either.
-			TrustPrompt: trustPrompt,
-			DecideTrust: trustDecide,
-			Tools:       rt.ToolNames,
-			// The skill index LoadSkill checks against: the runtime's own,
-			// read under its lock as the legacy-session closure reads State,
-			// so a swap keeps the same Deps working.
-			SkillIndex: func() *skills.Index {
-				rt.mu.Lock()
-				defer rt.mu.Unlock()
-				return rt.SkillIndex
-			},
-			// The @ completion popup's index is read through the session, so
-			// the eager seed below and the first @-keystroke share one path.
-			FileIndex: func() ([]string, error) { return loadFileIndexPaths(database, projectID) },
-		}
-		if providerReady {
-			deps.Work = rt
-		}
-		bindTurnDeps(&deps, rt)
-		seamHost, seamSession := service.New(deps)
+		// The seam is built from the runtime's own service deps plus the
+		// startup trust prompt and its decision, which belong to the
+		// embedding.
+		seamHost, seamSession := service.New(embedded.SessionDeps(ctx))
 
 		var tuiOpts []tui.Option
 		// F18: eager-seed the @file completion popup with the repo file
@@ -2798,7 +2609,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		if filePaths, ferr := seamSession.FileIndex(ctx); ferr == nil && len(filePaths) > 0 {
 			tuiOpts = append(tuiOpts, tui.WithFileIndex(filePaths))
 		}
-		if firstRun {
+		if embedded.FirstRun() {
 			tuiOpts = append(tuiOpts, tui.WithOpenConnectOnStart())
 		}
 		// Config reloading stays wired even when the initial provider build
@@ -2807,8 +2618,8 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// reload rebuilds the runtime in place, and the session reads the
 		// runtime's current runner from the next turn on, so a rebuilt runner
 		// needs no adoption here.
-		tuiOpts = append(tuiOpts, tui.WithHomeDir(homeDir))
-		tuiOpts = append(tuiOpts, tui.WithWorkingDir(workingDir))
+		tuiOpts = append(tuiOpts, tui.WithHomeDir(embedded.HomeDir()))
+		tuiOpts = append(tuiOpts, tui.WithWorkingDir(embedded.WorkingDir()))
 		// Copy prefers a local clipboard helper and falls back to OSC 52 over
 		// SSH or when no helper resolves.
 		tuiOpts = append(tuiOpts, tui.WithClipboard(
@@ -2816,31 +2627,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			func() bool { return clipboard.Remote(os.Getenv) },
 		))
 		tuiOpts = append(tuiOpts, tui.WithContext(ctx))
-		tuiOpts = append(tuiOpts, tui.WithLogger(state.Logger()))
-
-		logger.Info("marshal started", "project", cfg.Project.Name, "working_dir", workingDir)
-
-		// ── Worker lifecycle ──────────────────────────────────────────────
-		// The index work runs on the project host, which startRuntime
-		// attached this session to; the language servers are the host's too.
-		// Only the OAuth refresh workers stay per runtime.
-		if len(runOpts.workers) == 0 {
-			// Surface a hint when embedding indexing is enabled but the
-			// embedding route cannot resolve — semantic search reports
-			// "unavailable" until it does. embeddingStartupWarning
-			// distinguishes "nothing configured" from a preset that is
-			// named but unresolvable (e.g. its provider entry vanished),
-			// so the hint points at the actual problem.
-			if msg, ok := embeddingStartupWarning(cfg); ok {
-				logger.Warn("embedding route not resolvable while use_embeddings is enabled")
-				state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
-			}
-		}
-		var workerWG sync.WaitGroup
-		for _, w := range buildOAuthWorkers(cfg, logger, rt.AuthResolver) {
-			startWorker(rt.workCtx, &workerWG, w, logger)
-		}
-		// ── End worker lifecycle ──────────────────────────────────────────
+		tuiOpts = append(tuiOpts, tui.WithLogger(rt.State.Logger()))
 
 		select {
 		case <-ctx.Done():
@@ -2848,32 +2635,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		default:
 		}
 
-		// The TUI can raise a masked secret prompt; ACP/web cannot, so
-		// shell.sudo refuses there rather than blocking on a prompt no
-		// transport can answer.
-		state.SetSecretPromptCapable(true)
-
-		// Exit analysis (Task 8, step 5): the closure's optional postmortem pass
-		// runs as a SCOPED exit-analysis operation. The runtime opens a dedicated
-		// work epoch for it and stamps the authorization onto the context it
-		// hands this operation, so the pass may start only during the postmortem
-		// phase, its commands and children inherit the epoch, and the epoch is
-		// stopped and joined before closure whatever the outcome. It never
-		// reopens ordinary conversation work, and it cannot recursively trigger
-		// the active-work warning.
-		//
-		// RunExitAnalysis owns the temporary Act + System grant and restores it
-		// after the epoch's work is joined. The transport and model never grant
-		// access themselves.
-		rt.SetExitAnalysisOperation(func(analysisCtx context.Context, scope *session.ExitAnalysisScope, goal string) error {
-			runner := rt.TurnRunner()
-			if runner == nil {
-				return fmt.Errorf("exit analysis: no agent runner")
-			}
-			return runner.Run(analysisCtx, goal)
-		})
-
-		progResult := runOpts.programRunner(ctx, tui.New(seamHost, seamSession, tuiOpts...), stdout)
+		progResult := embedded.programRunner()(ctx, tui.New(seamHost, seamSession, tuiOpts...), stdout)
 
 		if progResult.ResumeSession != "" && progResult.Err == nil {
 			// User chose to resume a different session. Tear down the
@@ -2881,50 +2643,14 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			// and that session is marked ended when it is eventually exited)
 			// and restart startRuntime in
 			// existing-session mode.
-			_ = rt.Close(context.Background())
-			runOpts.sessionID = ""
-			runOpts.existingSessionID = progResult.ResumeSession
+			embedded.Resume(progResult.ResumeSession)
 			continue
 		}
 
-		progErr := progResult.Err
-		if !reloadForTrust {
-			// Phase 1: quiesce — cancel and join active work/jobs without
-			// closing persistence so the session can be marked ended.
-			quiesceCtx, cancelQuiesce := context.WithTimeout(context.Background(), 1*time.Second)
-			quiesceErr := rt.Quiesce(quiesceCtx)
-			cancelQuiesce()
-
-			// Workers are cancelled via rt.workCtx (cancelled in Quiesce
-			// above) and reclaimed by process exit — no need to wait.
-
-			// Phase 2: mark the session ended while the DB is still open.
-			if err := database.EndSession(sessionID, runOpts.now(), ""); err != nil {
-				logger.Warn("mark session ended failed", "error", err, "session_id", sessionID)
-			}
-			if runOpts.shutdownHook != nil {
-				runOpts.shutdownHook(context.Background(), state, database)
-			}
-
-			// Clean up spill files from this session.
-			spillDir := filepath.Join(workingDir, ".marshal", "tool-results")
-			if err := agent.CleanupSpillFiles(spillDir); err != nil {
-				logger.Warn("spill file cleanup failed", "error", err)
-			}
-
-			// Phase 3: close — tear down MCP, brokers, snapshots, DB, logger.
-			closeErr := rt.Close(context.Background())
-			return errors.Join(progErr, quiesceErr, closeErr)
+		if embedded.TakeTrustReload() {
+			continue
 		}
-
-		// Trust granted inline: tear down quietly and reinitialise via the
-		// same startRuntime path as startup — now with the project config in
-		// force. No Quiesce: no agent work ever ran.
-		reloadForTrust = false
-		// Use Background: the user may have cancelled ctx during the trust
-		// prompt; the deferred Close covers the final rt, this covers reload
-		// iterations.
-		_ = rt.Close(context.Background())
+		return embedded.Finish(progResult.Err)
 	}
 }
 

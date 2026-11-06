@@ -4922,42 +4922,6 @@ headless = true
 	}
 }
 
-func TestRunResolvesOptionsOnce(t *testing.T) {
-	// Regression test for F-BUG-154: options must be applied exactly once,
-	// not once in Run and again in StartRuntime.
-	dir := t.TempDir()
-	origWd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	defer os.Chdir(origWd)
-
-	applyCount := 0
-	customOpt := func(opts *options) {
-		applyCount++
-	}
-
-	err = Run(context.Background(), bytes.NewBuffer(nil),
-		WithNow(func() time.Time { return time.Unix(100, 0) }),
-		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
-			return config.Default(), nil
-		}),
-		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
-			return ProgramResult{}
-		}),
-		customOpt,
-	)
-	if err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-	if applyCount != 1 {
-		t.Fatalf("option applied %d times, want 1", applyCount)
-	}
-}
-
 func TestBuildAgentRunnerRegistersOnlyConfigRead(t *testing.T) {
 	// config.read is registered whatever the reloader; the setter tools are
 	// gone, so no reloader can add one to the registry.

@@ -982,9 +982,12 @@ The TUI works after every plan.
    from separate functions in `model.go` and `commands_dispatch.go`.
    Neither deletes what the other still uses, so `WithMemoryStore` and
    its two fields wait for plan 9.
-9. **Close-out.** Delete `WithLegacyState`, `WithLegacySession` and
-   `WithMemoryStore`, empty the allowlist, write the list of methods P3
-   must add, and update design §4.5, §7 and §8.
+9. **Close-out**
+   ([plan](plans/2026-11-06-p2-9-close-out-plan.md)). Delete
+   `WithLegacyState`, `WithLegacySession` and `WithMemoryStore`, delete the
+   allowlist and T1b, route the tests' state reads through the session,
+   write the list of methods P3 must add, and update design §4.5, §7 and
+   §8.
 
 Each plan removes its group's allowlist entries.
 
@@ -1816,6 +1819,23 @@ writing plans 8a and 8b, which run in parallel (decided with the user):
   `session/sdd_discard`, `session/sdd_scaffold` (8a), and
   `session/skills_install`, `session/skills_autoload`,
   `session/skill_gate_set` and `session/skill_gate_clear` (8b).
+
+### 2026-11-06, against `133f005b` and plans 8a and 8b (plan 9)
+
+Plan 9 was written while 8a and 8b ran, against what their plans leave.
+
+- **Tests reach the state through the session** (T1, T8). About 1,160
+  test reads of the model's state go through one helper, `stateOf`, over
+  a new `inproc.Session.State()`. A session's state never changes (a new
+  session is a new value), so the helper returns exactly what the model's
+  field tracked. P3's switch changes only the helper.
+- **The allowlist is deleted, not emptied** (T1). T1 fails on any
+  crossing, and there is no map to add an entry to.
+- **T1b is deleted** with `WithLegacyState`, as T1b says.
+- **The P3 list** is a section of the P3 spec, one row per ACP name
+  marked new, grouped by the P3 plan that adds it.
+- **Design §4.5** now describes the seam as built, and points here for
+  the migration.
 
 ## Implementation record
 

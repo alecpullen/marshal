@@ -2681,8 +2681,11 @@ and then the layers' merged config.
 `SaveUserProviders` gains `renamed`, mapping a provider's name in the write to its name in
 the stored configs, so a renamed provider's key follows it. The settings browser records
 each rename it makes as new name → original, collapsing chains and dropping a rename back
-to the original, and clears the map after a providers write succeeds so a retry does not
-resend it. `config/save_providers` carries the map in P3.
+to the original, and clears the map once the user-config flush succeeds — after both the
+providers and presets writes — so a retry does not resend it. `config/save_providers`
+carries the map in P3. A mask reaching `SaveProviderKey` (the doctor's key write) is
+rejected with the same error rather than persisted, and a stored value that is itself a
+mask is never restored as though it were the secret.
 
 T7 is `TestConfigReadsCarryNoSecret`: both reads, JSON-encoded, hold neither a key nor a
 password but do hold the mask. The restore is pinned per call in

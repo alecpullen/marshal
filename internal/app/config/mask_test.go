@@ -211,4 +211,70 @@ func TestRestoreSecretsFailsOnAnUnmatchedMask(t *testing.T) {
 	if err == nil || err.Error() != want {
 		t.Fatalf("search key mask error = %v, want %q", err, want)
 	}
+
+	cdpClient := Config{Desktop: DesktopConfig{CDPURL: "ws://***@10.0.0.9:9222"}}
+	_, err = RestoreSecrets(cdpClient, nil, Config{Desktop: DesktopConfig{CDPURL: "ws://user:pass@127.0.0.1:9222"}})
+	want = "config: desktop.cdp_url: no stored secret matches its mask"
+	if err == nil || err.Error() != want {
+		t.Fatalf("cdp url mask error = %v, want %q", err, want)
+	}
+}
+
+// TestRestoreSecretsSkipsAMaskedStoredSecret pins the circular-match guard: a
+// stored value that is itself a mask never comes back as the secret, because
+// masking it is a no-op.
+func TestRestoreSecretsSkipsAMaskedStoredSecret(t *testing.T) {
+	masked := strutil.MaskKey("sk-real-1234")
+	_, err := RestoreSecrets(
+		Config{Providers: map[string]ProviderConfig{"openai": {APIKey: masked}}},
+		nil,
+		Config{Providers: map[string]ProviderConfig{"openai": {APIKey: masked}}},
+	)
+	want := "config: providers.openai.api_key: no stored secret matches its mask"
+	if err == nil || err.Error() != want {
+		t.Fatalf("provider error = %v, want %q", err, want)
+	}
+
+	searchMask := strutil.MaskKey("search-real-1234")
+	_, err = RestoreSecrets(
+		Config{Web: WebConfig{SearchKey: searchMask}},
+		nil,
+		Config{Web: WebConfig{SearchKey: searchMask}},
+	)
+	want = "config: web.search_key: no stored secret matches its mask"
+	if err == nil || err.Error() != want {
+		t.Fatalf("search key error = %v, want %q", err, want)
+	}
+
+	cdpMask := maskURLUserinfo("ws://user:pass@127.0.0.1:9222")
+	_, err = RestoreSecrets(
+		Config{Desktop: DesktopConfig{CDPURL: cdpMask}},
+		nil,
+		Config{Desktop: DesktopConfig{CDPURL: cdpMask}},
+	)
+	want = "config: desktop.cdp_url: no stored secret matches its mask"
+	if err == nil || err.Error() != want {
+		t.Fatalf("cdp url error = %v, want %q", err, want)
+	}
+}
+
+// TestRedactLayersMasksEveryLayer pins that no layer — including the merged
+// config — hands a literal secret to the caller.
+func TestRedactLayersMasksEveryLayer(t *testing.T) {
+	layer := func() Config {
+		return Config{
+			Providers: map[string]ProviderConfig{"openai": {APIKey: "sk-layer-1234"}},
+			Web:       WebConfig{SearchKey: "search-layer-1234"},
+		}
+	}
+	got := RedactLayers(Layers{Default: layer(), User: layer(), Merged: layer()})
+	keyMask, searchMask := strutil.MaskKey("sk-layer-1234"), strutil.MaskKey("search-layer-1234")
+	for name, cfg := range map[string]Config{"Default": got.Default, "User": got.User, "Merged": got.Merged} {
+		if key := cfg.Providers["openai"].APIKey; key != keyMask {
+			t.Errorf("%s api_key = %q, want %q", name, key, keyMask)
+		}
+		if key := cfg.Web.SearchKey; key != searchMask {
+			t.Errorf("%s search_key = %q, want %q", name, key, searchMask)
+		}
+	}
 }

@@ -145,6 +145,7 @@ func TestMaskKeyIsStableOnMasks(t *testing.T) {
 		"sk-live-0123456789abcdef", // long
 		"abc",                      // shorter than four
 		"abcd",                     // exactly four
+		"日本語キー-1234",               // multi-byte
 	}
 	for _, k := range keys {
 		mask := MaskKey(k)
@@ -157,5 +158,19 @@ func TestMaskKeyIsStableOnMasks(t *testing.T) {
 		if IsMasked(k) {
 			t.Errorf("IsMasked(%q) = true, want false", k)
 		}
+	}
+}
+
+// TestMaskKeySuffixIsFourRunes pins the suffix in runes, not bytes, so a
+// multi-byte key neither leaks a partial character nor loses one.
+func TestMaskKeySuffixIsFourRunes(t *testing.T) {
+	if got, want := MaskKey("sk-live-0123456789ab"), "••••89ab"; got != want {
+		t.Errorf("MaskKey = %q, want %q", got, want)
+	}
+	if got, want := MaskKey("日本語キー"), "••••本語キー"; got != want {
+		t.Errorf("MaskKey = %q, want %q", got, want)
+	}
+	if got, want := MaskKey("日本語"), "••••"; got != want {
+		t.Errorf("MaskKey(a three-rune key) = %q, want %q", got, want)
 	}
 }

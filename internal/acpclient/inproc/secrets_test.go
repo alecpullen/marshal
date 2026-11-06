@@ -198,6 +198,71 @@ func TestSaveUserValueRestoresAMaskedKey(t *testing.T) {
 	if got := loadUserConfig(t, home, dir).Providers["probe"].APIKey; got != "sk-typed-9999" {
 		t.Errorf("saved api_key = %q, want the typed %q", got, "sk-typed-9999")
 	}
+
+	// The other two secret paths are restored the same way.
+	if err := host.SaveUserValue(ctx, "web.search_key", strutil.MaskKey(secretSearch)); err != nil {
+		t.Fatalf("SaveUserValue with a masked search key: %v", err)
+	}
+	if got := loadUserConfig(t, home, dir).Web.SearchKey; got != secretSearch {
+		t.Errorf("saved search_key = %q, want the literal %q", got, secretSearch)
+	}
+
+	maskedCDP := config.MaskSecrets(config.Config{Desktop: config.DesktopConfig{CDPURL: secretCDP}}).Desktop.CDPURL
+	if err := host.SaveUserValue(ctx, "desktop.cdp_url", maskedCDP); err != nil {
+		t.Fatalf("SaveUserValue with a masked cdp url: %v", err)
+	}
+	if got := loadUserConfig(t, home, dir).Desktop.CDPURL; got != secretCDP {
+		t.Errorf("saved cdp_url = %q, want the literal %q", got, secretCDP)
+	}
+}
+
+// TestSaveUserValueRejectsAnUnmatchedMask pins the other half of decision 5:
+// at a secret's path a mask with nothing behind it fails the write and leaves
+// the file byte-identical.
+func TestSaveUserValueRejectsAnUnmatchedMask(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	dir := t.TempDir()
+	path := config.UserConfigPath(home)
+	state := newConfigState(t, "s1", secretConfig(), dir)
+	host, _ := New(Deps{State: state, HomeDir: home, UserConfigPath: path})
+
+	if err := config.SaveUserConfigValue(path, "web.search_key", secretSearch); err != nil {
+		t.Fatalf("seed search key: %v", err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read user config: %v", err)
+	}
+	want := "config: web.search_key: no stored secret matches its mask"
+	if err := host.SaveUserValue(ctx, "web.search_key", "••••zzzz"); err == nil || err.Error() != want {
+		t.Fatalf("SaveUserValue error = %v, want %q", err, want)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read user config: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("a failed write changed the user config:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+// TestSaveProviderKeyRejectsAMask pins decision 5 for the doctor's key write:
+// a mask is never persisted, where it would become the stored key every later
+// restore matches.
+func TestSaveProviderKeyRejectsAMask(t *testing.T) {
+	home := t.TempDir()
+	state := newConfigState(t, "s1", secretConfig(), t.TempDir())
+	host, _ := New(Deps{State: state, HomeDir: home, UserConfigPath: config.UserConfigPath(home)})
+
+	err := host.SaveProviderKey(context.Background(), "probe", strutil.MaskKey(secretKey))
+	want := "config: providers.probe.api_key: no stored secret matches its mask"
+	if err == nil || err.Error() != want {
+		t.Fatalf("SaveProviderKey error = %v, want %q", err, want)
+	}
+	if _, statErr := os.Stat(config.UserConfigPath(home)); !os.IsNotExist(statErr) {
+		t.Errorf("a rejected key wrote the user config: %v", statErr)
+	}
 }
 
 // TestAnUnmatchedMaskChangesNothing pins decision 5: a mask with no stored

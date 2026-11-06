@@ -858,12 +858,33 @@ func TestBrowserRenameKeepsTheProvidersKey(t *testing.T) {
 	t.Setenv("HOME", home)
 	userPath := config.UserConfigPath(home)
 	dir := t.TempDir()
-	host, sess := testSeam(t, dir, userPath)
-
+	// A production seam refreshes the layers after every user-config write, so
+	// the project save that follows a rename resolves the key by its new name.
+	// Without that refresh a rename would leave the project save with a mask
+	// nothing stored can answer — an artifact of the fixture, not the flow.
+	state := session.New(config.Default(), dir, time.Unix(100, 0), session.Persistence{})
+	host, sess := inproc.New(inproc.Deps{
+		State:          state,
+		Auth:           newMemAuth(),
+		UserConfigPath: userPath,
+		ReloadLayers: func() (config.Layers, bool) {
+			loaded, err := config.Load(config.LoadOptions{HomeDir: home, WorkingDir: dir})
+			if err != nil {
+				return config.Layers{}, false
+			}
+			return config.Layers{Default: config.Default(), User: loaded, Merged: loaded}, true
+		},
+	})
 	const literalKey = "sk-literal-old-key-1234"
+	// A second provider whose key shares the last four characters makes the
+	// mask ambiguous on its own: passing no name map then fails the write with
+	// the pinned error, so this test pins the plumbing, not just the restore's
+	// unique-suffix fallback.
+	const otherKey = "sk-other-old-key-1234"
 	stored := config.Default()
 	stored.Providers = map[string]config.ProviderConfig{
-		"old": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: literalKey},
+		"old":   {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: literalKey},
+		"other": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: otherKey},
 	}
 	if err := sess.ApplyConfig(context.Background(), stored); err != nil {
 		t.Fatalf("apply config: %v", err)
@@ -905,6 +926,9 @@ func TestBrowserRenameKeepsTheProvidersKey(t *testing.T) {
 	}
 	if got := cfg.Providers["new"].APIKey; got != literalKey {
 		t.Fatalf("providers.new.api_key = %q, want the literal key %q", got, literalKey)
+	}
+	if got := cfg.Providers["other"].APIKey; got != otherKey {
+		t.Fatalf("providers.other.api_key = %q, want the untouched key %q", got, otherKey)
 	}
 	if _, ok := cfg.Providers["old"]; ok {
 		t.Fatal("the old provider name survived the rename")

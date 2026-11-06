@@ -17,6 +17,7 @@ import (
 	"marshal/internal/llm/modelcatalog"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
+	"marshal/internal/strutil"
 )
 
 // userConfigPath is the user config file the user-config writes change:
@@ -169,7 +170,12 @@ func (h *Host) SaveUserPresets(ctx context.Context, presets, baseline map[string
 
 // SaveProviderKey stores key as the literal API key of the provider called
 // name, keeping the entry's other fields, then refreshes the session's layers.
+// A mask is rejected: written to disk it would become the stored key every
+// later restore matches, and the real key would be lost.
 func (h *Host) SaveProviderKey(ctx context.Context, name, key string) error {
+	if strutil.IsMasked(key) {
+		return config.MaskError("providers." + name + ".api_key")
+	}
 	path, err := userConfigPath(h.clientDeps())
 	if err != nil {
 		return err

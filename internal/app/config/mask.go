@@ -35,10 +35,12 @@ func MaskSecrets(cfg Config) Config {
 	return out
 }
 
-// RedactSecrets returns cfg with every literal secret replaced by its mask
-// (P2 C3, plan 7d): each provider's API key and the web search key by
-// strutil.MaskKey, and the desktop CDP URL's userinfo as MaskSecrets masks it.
-// An empty secret stays empty. cfg and its maps are not changed.
+// RedactSecrets returns cfg with every literal secret of MaskSecrets' set
+// replaced by its mask (P2 C3, plan 7d): each provider's API key and the web
+// search key by strutil.MaskKey, and the desktop CDP URL's userinfo as
+// MaskSecrets masks it. An MCP server's env and headers are outside that set
+// and stay in the clear (a named follow-up in the 7d record). An empty secret
+// stays empty. cfg and its maps are not changed.
 func RedactSecrets(cfg Config) Config {
 	out := cfg
 	if cfg.Providers != nil {
@@ -89,21 +91,21 @@ func RestoreSecrets(client Config, renamed map[string]string, stored ...Config) 
 	for _, name := range names {
 		restored, ok := RestoreProviderKey(name, client.Providers[name], renamed, stored...)
 		if !ok {
-			return client, secretMaskError("providers." + name + ".api_key")
+			return client, MaskError("providers." + name + ".api_key")
 		}
 		out.Providers[name] = restored
 	}
 	if strutil.IsMasked(client.Web.SearchKey) {
 		key, ok := restoreSearchKey(client.Web.SearchKey, stored)
 		if !ok {
-			return client, secretMaskError("web.search_key")
+			return client, MaskError("web.search_key")
 		}
 		out.Web.SearchKey = key
 	}
 	if cdpURLMasked(client.Desktop.CDPURL) {
 		raw, ok := restoreCDPURL(client.Desktop.CDPURL, stored)
 		if !ok {
-			return client, secretMaskError("desktop.cdp_url")
+			return client, MaskError("desktop.cdp_url")
 		}
 		out.Desktop.CDPURL = raw
 	}
@@ -119,9 +121,12 @@ func RestoreProviderKey(name string, pc ProviderConfig, renamed map[string]strin
 	mask := pc.APIKey
 	// match reports the key a stored config holds under the given provider
 	// name when masking it gives this mask.
+	// A stored value that is itself a mask is skipped everywhere below:
+	// masking it is a no-op, so it would match circularly and put a mask back
+	// on the wire as though it were the secret.
 	match := func(cfg Config, provider string) (string, bool) {
 		p, ok := cfg.Providers[provider]
-		if !ok || p.APIKey == "" || strutil.MaskKey(p.APIKey) != mask {
+		if !ok || p.APIKey == "" || strutil.IsMasked(p.APIKey) || strutil.MaskKey(p.APIKey) != mask {
 			return "", false
 		}
 		return p.APIKey, true
@@ -145,7 +150,7 @@ func RestoreProviderKey(name string, pc ProviderConfig, renamed map[string]strin
 	var keys []string
 	for _, cfg := range stored {
 		for _, p := range cfg.Providers {
-			if p.APIKey == "" || seen[p.APIKey] || strutil.MaskKey(p.APIKey) != mask {
+			if p.APIKey == "" || strutil.IsMasked(p.APIKey) || seen[p.APIKey] || strutil.MaskKey(p.APIKey) != mask {
 				continue
 			}
 			seen[p.APIKey] = true
@@ -160,9 +165,10 @@ func RestoreProviderKey(name string, pc ProviderConfig, renamed map[string]strin
 }
 
 // restoreSearchKey returns the first stored search key that masks to masked.
+// A stored key that is itself a mask is skipped, as in RestoreProviderKey.
 func restoreSearchKey(masked string, stored []Config) (string, bool) {
 	for _, cfg := range stored {
-		if cfg.Web.SearchKey == "" {
+		if cfg.Web.SearchKey == "" || strutil.IsMasked(cfg.Web.SearchKey) {
 			continue
 		}
 		if strutil.MaskKey(cfg.Web.SearchKey) == masked {
@@ -173,9 +179,11 @@ func restoreSearchKey(masked string, stored []Config) (string, bool) {
 }
 
 // restoreCDPURL returns the first stored CDP URL whose masked form is masked.
+// A stored URL that already carries the mask is skipped, as in
+// RestoreProviderKey.
 func restoreCDPURL(masked string, stored []Config) (string, bool) {
 	for _, cfg := range stored {
-		if cfg.Desktop.CDPURL == "" {
+		if cfg.Desktop.CDPURL == "" || cdpURLMasked(cfg.Desktop.CDPURL) {
 			continue
 		}
 		if maskURLUserinfo(cfg.Desktop.CDPURL) == masked {
@@ -186,7 +194,9 @@ func restoreCDPURL(masked string, stored []Config) (string, bool) {
 }
 
 // cdpURLMasked reports whether raw carries the CDP URL mask MaskSecrets
-// writes: the userinfo is the username "***" with no password.
+// writes: the userinfo is the username "***" with no password. A deliberate
+// ws://***@host URL is read as a mask; restoring it then either resolves it to
+// a stored URL or fails with the pinned error, so nothing is lost silently.
 func cdpURLMasked(raw string) bool {
 	if raw == "" {
 		return false
@@ -201,8 +211,9 @@ func cdpURLMasked(raw string) bool {
 	return u.User.Username() == "***"
 }
 
-// secretMaskError is the failure a mask with nothing behind it reports.
-func secretMaskError(path string) error {
+// MaskError is the failure a mask with nothing behind it reports at the given
+// TOML path: config: <path>: no stored secret matches its mask.
+func MaskError(path string) error {
 	return fmt.Errorf("config: %s: no stored secret matches its mask", path)
 }
 

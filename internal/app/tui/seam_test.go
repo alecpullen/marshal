@@ -195,10 +195,17 @@ func batchResults(t *testing.T, cmd tea.Cmd) []tea.Msg {
 // The embedded interface supplies the methods these tests never call.
 type fakeHost struct {
 	acpclient.Host
-	shared bool
+	shared   bool
+	sessions []acpwire.SessionEntry
+	listErr  error
 }
 
 func (h fakeHost) SharedFilesystem() bool { return h.shared }
+
+// ListSessions hands the tests a listing, or the error the seam would return.
+func (h fakeHost) ListSessions(context.Context, string, int) ([]acpwire.SessionEntry, error) {
+	return h.sessions, h.listErr
+}
 
 // TrustPrompt reports no pending decision: the seam tests never prompt.
 func (h fakeHost) TrustPrompt() string { return "" }

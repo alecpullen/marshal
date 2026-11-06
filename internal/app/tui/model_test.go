@@ -732,6 +732,56 @@ func TestMemoryWithoutADatabase(t *testing.T) {
 	}
 }
 
+// TestSessionPickerUsesTheSeam covers the two paths openSessionPicker owns now
+// that the listing comes from the host: a missing database becomes the note the
+// database-backed picker gave, and a listing renders the same UTC detail the
+// database produced.
+func TestSessionPickerUsesTheSeam(t *testing.T) {
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: "s1"})
+
+	// No database: the host reports CodeNoDatabase and the picker says why
+	// instead of opening empty.
+	nodb := New(fakeHost{listErr: &acpwire.Error{
+		Code:    acpwire.CodeNoDatabase,
+		Message: "inproc: the session has no database",
+	}}, testSession(state), WithLegacyState(state))
+	updated, _ := nodb.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	nodb = asModel(t, updated)
+	nodb.openSessionPicker("")
+	if nodb.dock.IsOpen() {
+		t.Fatal("the session picker must not open without a database")
+	}
+	nodb.refreshViewport()
+	if view := stripANSI(nodb.View().Content); !strings.Contains(view, "Session list is not available (no database).") {
+		t.Fatalf("the picker must report the missing database:\n%s", view)
+	}
+
+	// A listing renders the detail the database produced: the UTC wall clock
+	// and the message count. The current session carries the now badge.
+	stamp := time.Date(2026, 11, 6, 12, 34, 0, 0, time.UTC)
+	m := New(fakeHost{sessions: []acpwire.SessionEntry{{
+		SessionID:    "s1",
+		Title:        "earlier",
+		UpdatedAt:    acpwire.Millis(stamp),
+		MessageCount: 3,
+	}}}, testSession(state), WithLegacyState(state))
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = asModel(t, updated)
+	m.openSessionPicker("")
+
+	p, ok := m.dock.Panel().(*picker.Model)
+	if !ok {
+		t.Fatalf("expected *picker.Model, got %T", m.dock.Panel())
+	}
+	view := stripANSI(p.View(120, 20))
+	if !strings.Contains(view, "2026-11-06 12:34 · 3 messages") {
+		t.Fatalf("picker must render the UTC detail and count:\n%s", view)
+	}
+	if !strings.Contains(view, "● now") {
+		t.Fatalf("the current session must carry the now badge:\n%s", view)
+	}
+}
+
 func TestDoctorOpensDockPanel(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	cmdReg := commands.New()

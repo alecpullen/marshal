@@ -289,6 +289,9 @@ func (s *Session) SetSkillAutoload(ctx context.Context, name string, on bool) er
 // SetSkillGate turns the session's skill load gate on or off. Turning it on
 // clears its decisions, so a re-tighten starts fresh.
 func (s *Session) SetSkillGate(ctx context.Context, on bool) error {
+	if s.closed.Load() {
+		return errSessionClosed
+	}
 	s.state.SkillGateSetEnabled(on)
 	s.signal()
 	return nil
@@ -297,6 +300,9 @@ func (s *Session) SetSkillGate(ctx context.Context, on bool) error {
 // ClearSkillGateDecision clears the gate's sticky decision for skill, so its
 // next load asks again.
 func (s *Session) ClearSkillGateDecision(ctx context.Context, skill string) error {
+	if s.closed.Load() {
+		return errSessionClosed
+	}
 	s.state.SkillGateClearDecision(skill)
 	s.signal()
 	return nil

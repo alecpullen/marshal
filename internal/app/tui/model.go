@@ -6461,7 +6461,11 @@ func (m *Model) beginResume(id string) (tea.Model, tea.Cmd) {
 // sees. fromKey marks the Ctrl+K shortcut, which is silent: without a
 // database it does nothing rather than noting why.
 func (m *Model) openMemory(fromKey bool) bool {
-	entries, err := m.sess.Memories(m.ctx)
+	sess, ctx := m.sess, m.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	entries, err := sess.Memories(ctx)
 	if err != nil && acpclient.IsCode(err, acpwire.CodeNoDatabase) {
 		if !fromKey {
 			m.note("Memory browser not available (no database configured).")
@@ -6470,10 +6474,6 @@ func (m *Model) openMemory(fromKey bool) bool {
 	}
 	// A read failure still opens the browser: the footer reports it, as a
 	// failed listing did before the browser went through the seam.
-	sess, ctx := m.sess, m.ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	m.dock.Open(memory.NewPanel(entries, err, func(id int64) error {
 		return sess.DeleteMemory(ctx, id)
 	}))

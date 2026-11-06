@@ -183,7 +183,7 @@ func (p *Panel) activeList() *settings.FieldList {
 // error: a token the session has already dropped is exactly the state this
 // wants.
 func (p *Panel) discardScan(token string) {
-	if token == "" || p.svc == nil {
+	if token == "" {
 		return
 	}
 	_ = p.svc.DiscardPluginScan(context.Background(), token)

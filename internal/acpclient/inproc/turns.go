@@ -9,6 +9,7 @@ import (
 	"marshal/internal/acpclient"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
+	"marshal/internal/watch"
 )
 
 // Runner runs one turn of the agent loop. *agent.Runner satisfies it.
@@ -47,8 +48,12 @@ func (s *Session) Prompt(ctx context.Context, params acpwire.PromptParams) (acpw
 		s.requeue(params)
 		return acpwire.PromptResult{}, errNoRunner
 	}
+	text := params.Text
+	if params.WatchResume != nil {
+		text = watch.ResumeGoal(params.WatchResume.Name, s.lastAssistantText(), params.WatchResume.Repeat)
+	}
 	stopped, started, err := s.runTurn(ctx, func(ctx context.Context) error {
-		return runner.Run(ctx, params.Text)
+		return runner.Run(ctx, text)
 	})
 	if err != nil {
 		// The queue is the caller's, not the run's: a turn that never started

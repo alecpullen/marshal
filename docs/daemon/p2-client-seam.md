@@ -2861,3 +2861,62 @@ reaches the agent without a name map, so two stored keys sharing their last four
 fail the write instead of picking one. Follow-up: an MCP server's `env` and `headers` can
 hold tokens and still travel in the clear, since they are outside `config.MaskSecrets`' set
 and C3's. No ACP method changes name.
+
+**Plan 8a (history, index facts and plan runs), branch `p2-8a-history`.**
+`internal/acpwire` gains `history.go` (`MessageQuery`, `MessagePage`,
+`HistoryMessage`) and `project.go` (`IntelligenceCheck`, `PlanCandidate`,
+`ScaffoldResult`, `DiffQuery`, `FileContent`), and `PromptParams` gains
+`WatchResume`. `acpclient.Session` gains ten methods with their `Methods`
+rows: `RecentPrompts` (`session/prompt_history`), `SavePrompt`
+(`session/prompt_history_save`), `Messages` (`session/messages`),
+`FileIndex` (`session/file_index`), `Intelligence`
+(`session/intelligence`), `Plans` (`session/plans`), `DiscardCandidate`
+(`session/sdd_discard`) and `ScaffoldPlan` (`session/sdd_scaffold`) are new
+in P3; `Diff` (`session/diff`) and `ReadFile` (`session/file`) already
+exist. `inproc.Deps` gains `FileIndex` and `Git`, and the session keeps
+`fileIndex` and `git`, the latter defaulting to `worktree.CLIGitOps{}`.
+
+The adapter's `history.go` answers the input history from the project
+database and the message queries from the state; with
+`PromptParams.WatchResume` set, `Prompt` writes the turn's text with
+`watch.ResumeGoal` from its own last assistant reply and ignores `Text`.
+`project.go` serves the file index, plan discovery, the discard guard, the
+starter plan and the outcome reads; `sddplans` gains `Scaffold` and the
+`StarterPlan` template, moved from the TUI byte for byte. The doctor's four
+intelligence checks moved into the adapter unchanged, strings included, as
+`intelligenceChecks`. `ReadFile` resolves through `native.SafeResolve`, caps
+at 1 MiB and reports a binary file with an empty body; `Diff` refuses a
+range without both ends.
+
+The TUI now asks the session for its input history, every message scan (the
+last assistant reply, the last final answer, the rewind turns, the
+has-a-user-turn check and `/new`'s cleared count), the watch resume's goal,
+the `@` popup's file index, the doctor's checks, plan discovery, the
+candidate discard, the starter plan, and the run outcome's branch diff and
+ledger read. `Run` wires the index and eager-seeds the popup through the
+same session call. Deleted: `lastAssistantText`, `lastFinalAssistantPlan`,
+`readFileOrExplain`, `doctorpanel.Check` with `ComputeIntelligence` and its
+file, the scaffold's template constant and its own OS writes, `todoLine`,
+`todoProgress`, `todosAllDone`, `tasksPanelModel.state`,
+`doctorpanel.Panel.state`, and the four unused broker fields.
+
+The allowlist loses 12 entries across 7 files, and 6 keys go entirely:
+`commands_dispatch.go`, `runoutcome.go`, `sdd_command.go` and
+`doctorpanel/doctorpanel.go` lose their only entry,
+`doctorpanel/intelligence.go` goes with the file, `todos.go` loses both,
+and `model.go` loses `pubsub`, `sddauthor`, `sddplans` and `watch`. T1b
+gains `Messages`. `DB` gets no entry: plan 8b moves its other reader, and
+plan 9 deletes T1b.
+
+P3's R9 list carries the differences this plan leaves: the eight new
+methods need handlers, `session/prompt` gains `watchResume`, and
+`session/diff` gains an optional `head`.
+
+Review follow-up (same branch): the outcome's ledger read marks a ledger the
+session's 1 MiB cap cut, and resolves symlinked spellings of the working
+directory before refusing a path as outside it. `TestRunWiresTheFileIndex`
+now writes real files and waits for the startup index pass instead of only
+checking for an error: removing `Deps.FileIndex` fails it. `ReadFile` gains a
+truncation case and a NUL-past-the-sniff-window case, `Messages` gains
+`Last > Total` and no-match cases, and `PromptParams.WatchResume` says it is
+never combined with `Queued`.

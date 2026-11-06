@@ -12,6 +12,7 @@ import (
 	"marshal/internal/tools/native"
 	"marshal/internal/viewmodel"
 	"marshal/internal/watch"
+	"marshal/internal/worktree"
 )
 
 // newSession builds one session over d.State and subscribes it to the
@@ -21,6 +22,10 @@ func newSession(d Deps) *Session {
 	gitInfo := d.GitInfo
 	if gitInfo == nil {
 		gitInfo = gitinfo.Read
+	}
+	git := d.Git
+	if git == nil {
+		git = worktree.CLIGitOps{}
 	}
 	parent := d.Context
 	if parent == nil {
@@ -61,6 +66,8 @@ func newSession(d Deps) *Session {
 		homeDir:        d.HomeDir,
 		userConfigFile: d.UserConfigPath,
 		modelCacheDir:  d.ModelCacheDir,
+		fileIndex:      d.FileIndex,
+		git:            git,
 		ctx:            ctx,
 		cancel:         cancel,
 		changed:        make(chan struct{}, 1),

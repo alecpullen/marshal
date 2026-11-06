@@ -15,7 +15,6 @@ import (
 	"marshal/internal/app/tui/plugins"
 	"marshal/internal/app/tui/skills"
 	"marshal/internal/interaction"
-	"marshal/internal/worktree"
 )
 
 // tuiCommandEffects holds the interactive logic for commands registered
@@ -175,7 +174,10 @@ func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 // runtime froze the old conversation at acceptance, so the swap acts on a
 // settled membership and no old work is transferred or reopened.
 func startNewSession(m *Model, name string) tea.Cmd {
-	oldCount := len(m.state.Messages())
+	oldCount := 0
+	if page, err := m.sess.Messages(m.ctx, acpwire.MessageQuery{Last: 1}); err == nil {
+		oldCount = page.Total
+	}
 	// Whatever the outcome, the end is over: the old conversation settled and a
 	// failed replacement starts nothing, so a retry begins from idle.
 	m.endStage = endIdle
@@ -308,8 +310,13 @@ func init() {
 		"doctor": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
 			cfg := m.sess.Config()
 			diags := config.Diagnose(cfg, m.sess.Layers())
-			checks := doctorpanel.ComputeIntelligence(cfg, m.memoryDB, m.memoryProject)
-			m.dock.Open(doctorpanel.New(m.state, diags, checks))
+			checks, err := m.sess.Intelligence(m.ctx)
+			if err != nil {
+				// A session that cannot report its subsystem health still gets
+				// the config diagnostics; the section simply stays out.
+				checks = nil
+			}
+			m.dock.Open(doctorpanel.New(diags, checks))
 			m.refreshViewport()
 			return m, nil
 		},
@@ -429,7 +436,7 @@ func init() {
 		"run": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
 			st := m.sess.Status()
 			doc := runOutcomeDoc(st.SDD, m.now())
-			acts := runOutcomeActions(st.SDD, worktree.CLIGitOps{}, st.WorkingDir, m.width)
+			acts := runOutcomeActions(m.ctx, m.sess, st.SDD, st.WorkingDir, m.width)
 			m.dock.Open(docpanel.New(doc, localDocActions(acts)))
 			m.refreshViewport()
 			return m, nil

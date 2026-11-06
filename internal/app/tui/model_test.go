@@ -51,6 +51,7 @@ import (
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
+	"marshal/internal/watch"
 )
 
 // drainCmds executes the returned command tree (up to a small bound) and
@@ -11070,6 +11071,41 @@ func TestPostAcceptedPromptCannotReopenWork(t *testing.T) {
 	// Watch auto-resume is refused by the same guard.
 	if cmd := m.startWatchResumeRun("tests", false); cmd != nil {
 		t.Fatal("a watch auto-resume started work after the ending was accepted")
+	}
+}
+
+// TestWatchResumeSendsTheWatchNotTheText pins the agent-side resume goal: the
+// TUI names the watch instead of writing the goal itself, and the session
+// writes it from its own last assistant reply.
+func TestWatchResumeSendsTheWatchNotTheText(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state.AddMessageFinal(session.RoleAssistant, "I fixed the build.", session.ContentTypePlain)
+	m := testModel(state)
+	runner := &fakeAgentRunner{called: make(chan string, 1)}
+	m = withPromptRunner(m, runner)
+
+	cmd := m.startWatchResumeRun("ci", false)
+	if cmd == nil {
+		t.Fatal("startWatchResumeRun returned nil, want the turn's cmd")
+	}
+	// Batch hands the sub-commands back unexecuted; run them the way the
+	// runtime would.
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("startWatchResumeRun's cmd returned %T, want a tea.BatchMsg", msg)
+	}
+	for _, sub := range batch {
+		go sub()
+	}
+
+	select {
+	case got := <-runner.called:
+		if want := watch.ResumeGoal("ci", "I fixed the build.", false); got != want {
+			t.Errorf("runner goal = %q, want %q", got, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the runner was never invoked")
 	}
 }
 

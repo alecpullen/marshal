@@ -7,6 +7,12 @@ type PromptParams struct {
 	// Queued says the text came off the steering queue. When the turn cannot
 	// start, the session puts the text back on the queue.
 	Queued bool `json:"queued,omitempty"`
+	// WatchResume, when set, names the watch whose resume this turn is. The
+	// session writes the turn's text itself, from the watch and its own last
+	// assistant reply, and ignores Text. It is never combined with Queued: a
+	// turn that cannot start puts Text back on the queue, and a resume turn
+	// has no text of its own to requeue.
+	WatchResume *WatchResume `json:"watchResume,omitempty"`
 }
 
 // PromptResult is how a turn ended.

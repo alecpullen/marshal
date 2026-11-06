@@ -59,12 +59,8 @@ import (
 	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
-	"marshal/internal/pubsub"
-	"marshal/internal/sddauthor"
-	"marshal/internal/sddplans"
 	"marshal/internal/skills"
 	"marshal/internal/strutil"
-	"marshal/internal/watch"
 )
 
 // endIntent is one pending interactive end request: what the user asked for,
@@ -339,17 +335,6 @@ type Model struct {
 	// quit ahead of the report: the extraction is best-effort, but it is the one
 	// chance to record the session, so it is allowed to finish first.
 	endExtracting bool
-
-	// workspaceBroker, when non-nil, delivers WorkspaceEvents so the
-	// status line's git info follows the session's active root without
-	// waiting for the 5s tick.
-	workspaceBroker *pubsub.Broker[session.WorkspaceEvent]
-	workspaceEvents <-chan pubsub.Event[session.WorkspaceEvent]
-
-	// subagentBroker, when non-nil, delivers SubagentEvents so the TUI
-	// re-renders subagent cards as they are registered or change status.
-	subagentBroker *pubsub.Broker[session.SubagentEvent]
-	subagentEvents <-chan pubsub.Event[session.SubagentEvent]
 
 	// New Layout State
 	rawWidth  int // unclamped terminal dimensions (gate check)
@@ -1157,7 +1142,6 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 	if m.state == nil {
 		panic("tui.New: WithLegacyState is required until P2 plan 9")
 	}
-	state := m.state
 	st := m.sess.Status()
 	// One session-config read for the whole construction: the reads below
 	// seed theme, discovery and history from the live config.
@@ -1241,10 +1225,8 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 
 	m.histIdx = -1
 	if cfg.History.Enabled {
-		if database := state.DB(); database != nil && m.memoryProject != 0 {
-			if prompts, err := database.RecentPrompts(m.memoryProject, promptHistoryLimit); err == nil {
-				m.history = prompts
-			}
+		if prompts, err := m.sess.RecentPrompts(m.ctx, promptHistoryLimit); err == nil {
+			m.history = prompts
 		}
 	}
 
@@ -2250,7 +2232,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		path := pm.Panel.CandidatePath()
-		if err := sddauthor.RemoveCandidate(path, m.sess.Status().WorkingDir, m.sess.Config().SDD.PlansDir); err != nil {
+		if err := m.sess.DiscardCandidate(m.ctx, path); err != nil {
 			// The candidate is still on disk: keep the panel open so the user
 			// can retry or keep it, and never claim it was removed.
 			pm.Panel.SetError(err)
@@ -3451,24 +3433,16 @@ func isAtFileBoundary(b byte) bool {
 
 // populateFileIndexIfNeeded lazy-loads the repo file index on the first
 // @-keystroke. Skipped when the model was constructed with WithFileIndex
-// (eager seed) or when there is no DB / project id wired.
+// (eager seed); otherwise the session supplies the paths.
 func (m *Model) populateFileIndexIfNeeded() {
 	if m.fileIndexLoaded {
 		return
 	}
-	if m.memoryDB == nil || m.memoryProject == 0 {
+	paths, err := m.sess.FileIndex(m.ctx)
+	if err != nil {
 		// No way to populate; mark loaded so we don't keep retrying.
 		m.fileIndexLoaded = true
 		return
-	}
-	index, err := m.memoryDB.GetFileIndex(m.memoryProject, 0)
-	if err != nil {
-		m.fileIndexLoaded = true
-		return
-	}
-	paths := make([]string, 0, len(index))
-	for _, f := range index {
-		paths = append(paths, f.Path)
 	}
 	m.fileIndex = buildFileIndexItems(paths)
 	m.fileIndexLoaded = true
@@ -3788,7 +3762,6 @@ func (m *Model) syncTranscriptWidth() {
 // "swarm") and waits for the user to confirm before starting the run. pf is
 // the plan's preflight for "sdd", nil for "swarm".
 func (m *Model) openRunPreflight(kind, goal string, pf *acpwire.PlanPreflight) {
-	st := m.sess.Status()
 	cfg := m.sess.Config()
 	router := routing.NewStaticRouter(cfg.RoutingConfig())
 	roles := routing.SwarmCastRoles
@@ -3806,14 +3779,16 @@ func (m *Model) openRunPreflight(kind, goal string, pf *acpwire.PlanPreflight) {
 		// roster matters less than the fact that this is an autonomous,
 		// multi-commit run against a branch the user has not seen.
 		tasks := "unknown task count"
-		for _, c := range sddplans.Discover(st.WorkingDir, cfg.SDD.PlansDir) {
-			if c.Path != goal {
-				continue
-			}
-			if c.Err == nil {
-				tasks = fmt.Sprintf("%d tasks", c.Tasks)
-				if c.LedgerErr == nil && c.Done > 0 {
-					tasks += fmt.Sprintf(" · resuming at %d", c.Done+1)
+		if plans, err := m.sess.Plans(m.ctx); err == nil {
+			for _, c := range plans {
+				if c.Path != goal {
+					continue
+				}
+				if c.Error == "" {
+					tasks = fmt.Sprintf("%d tasks", c.Tasks)
+					if c.LedgerError == "" && c.Done > 0 {
+						tasks += fmt.Sprintf(" · resuming at %d", c.Done+1)
+					}
 				}
 			}
 		}
@@ -4011,8 +3986,13 @@ func (m *Model) startWatchResumeRun(name string, repeat bool) tea.Cmd {
 	if !m.sess.Status().AgentReady || m.busy || m.dock.IsOpen() || !m.sess.Config().Watch.ResumeEnabled {
 		return nil
 	}
-	goal := watch.ResumeGoal(name, m.lastAssistantText(), repeat)
-	model, cmd := m.startPrompt(goal, false)
+	sess := m.sess
+	model, cmd := m.startSessionRun("Cannot start work", func(ctx context.Context) error {
+		_, err := sess.Prompt(ctx, acpwire.PromptParams{
+			WatchResume: &acpwire.WatchResume{Name: name, Repeat: repeat},
+		})
+		return err
+	})
 	if cmd == nil {
 		return nil
 	}
@@ -4048,20 +4028,6 @@ func (m *Model) flushQueuedSteering() tea.Cmd {
 	return cmd
 }
 
-// lastAssistantText returns the last RoleAssistant message's content
-// (empty when there is none). Idle means the transcript is frozen, so
-// the backward scan is race-free (same pattern as computeSuggestion and
-// lastFinalAssistantPlan).
-func (m *Model) lastAssistantText() string {
-	msgs := m.state.Messages()
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == session.RoleAssistant {
-			return msgs[i].Content
-		}
-	}
-	return ""
-}
-
 // startSDDAuthoring begins an authoring turn for /sdd new. It builds the
 // scoped authoring runner, resolves the candidate path, and starts the
 // async command. On success the completion handler opens the review panel;
@@ -4087,13 +4053,15 @@ func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
 	goal := parsed.Goal
 	design := goal
 	if parsed.FromLastPlan {
-		last, ok := lastFinalAssistantPlan(m.state)
-		if !ok {
+		page, err := m.sess.Messages(m.ctx, acpwire.MessageQuery{
+			Role: acpwire.RoleAssistant, Final: true, Last: 1,
+		})
+		if err != nil || len(page.Messages) == 0 {
 			m.note("No approved plan found in the last assistant turn. Load the marshal-writing-plans skill, produce an approved plan, then run /sdd new --from-last-plan.")
 			m.refreshViewport()
 			return m, nil
 		}
-		design = last
+		design = page.Messages[0].Content
 		goal = "Convert the approved plan into an executable SDD plan."
 	}
 	if strings.TrimSpace(goal) == "" {
@@ -4808,12 +4776,11 @@ func (m *Model) postmortemOnExit() string {
 // sessionHasUserTurn reports whether the session holds any user-role message.
 // The exit prompt is skipped for a session the user never typed into.
 func (m *Model) sessionHasUserTurn() bool {
-	for _, msg := range m.state.Messages() {
-		if msg.Role == session.RoleUser {
-			return true
-		}
+	page, err := m.sess.Messages(m.ctx, acpwire.MessageQuery{Role: acpwire.RoleUser, Last: 1})
+	if err != nil {
+		return false
 	}
-	return false
+	return page.Total > 0
 }
 
 // extractPostmortemCmd runs the exit postmortem's extraction+write step and
@@ -5053,17 +5020,11 @@ func (m *Model) computeSuggestion() tea.Cmd {
 	if suggestions == "off" {
 		return nil
 	}
-	msgs := m.state.Messages()
-	var last session.Message
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == session.RoleAssistant {
-			last = msgs[i]
-			break
-		}
-	}
-	if last.Role != session.RoleAssistant {
+	page, err := m.sess.Messages(m.ctx, acpwire.MessageQuery{Role: acpwire.RoleAssistant, Last: 1})
+	if err != nil || len(page.Messages) == 0 {
 		return nil
 	}
+	last := page.Messages[len(page.Messages)-1]
 
 	// Show whatever the rules produced right away. ConfidenceNone yields
 	// "", so nothing is shown until the fallback returns.
@@ -6662,13 +6623,16 @@ func (m *Model) cycleModel(forward bool) {
 // pinned to the top as an explicit resume.
 func (m *Model) openSDDPlanPicker() {
 	cfg := m.sess.Config()
-	candidates := sddplans.Discover(m.sess.Status().WorkingDir, cfg.SDD.PlansDir)
+	candidates, err := m.sess.Plans(m.ctx)
+	if err != nil {
+		candidates = nil
+	}
 
 	var items []picker.Item
 	// Resumable runs first: re-picking the plan is how a stopped run is
 	// continued, and that was previously undiscoverable.
 	for _, c := range candidates {
-		if !c.Resumable() {
+		if !c.Resumable {
 			continue
 		}
 		items = append(items, picker.Item{
@@ -6681,13 +6645,13 @@ func (m *Model) openSDDPlanPicker() {
 	for _, c := range candidates {
 		item := picker.Item{Label: c.Name, Value: c.Path}
 		switch {
-		case c.Err != nil:
-			item.Detail = c.Err.Error()
+		case c.Error != "":
+			item.Detail = c.Error
 			item.Badge = "unreadable"
-		case c.LedgerErr != nil:
+		case c.LedgerError != "":
 			item.Detail = fmt.Sprintf("%d tasks · ledger unreadable", c.Tasks)
 			item.Badge = "unreadable"
-		case c.Resumable():
+		case c.Resumable:
 			item.Detail = fmt.Sprintf("%d tasks · %d done", c.Tasks, c.Done)
 		default:
 			item.Detail = fmt.Sprintf("%d tasks", c.Tasks)
@@ -7009,12 +6973,11 @@ func (m *Model) modelPickerItems() []picker.Item {
 // rewindPickerItems builds picker items from user turns, newest first.
 // The most recent turn carries a "● last" badge and is the default cursor target.
 func (m *Model) rewindPickerItems() []picker.Item {
-	var turns []session.Message
-	for _, msg := range m.state.Messages() {
-		if msg.Role == session.RoleUser {
-			turns = append(turns, msg)
-		}
+	page, err := m.sess.Messages(m.ctx, acpwire.MessageQuery{Role: acpwire.RoleUser})
+	if err != nil {
+		return nil
 	}
+	turns := page.Messages
 	items := make([]picker.Item, 0, len(turns))
 	for i := len(turns) - 1; i >= 0; i-- {
 		badge := ""

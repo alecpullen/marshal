@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"marshal/internal/acpwire"
-	"marshal/internal/app/session"
 )
 
 // parsedSDDArgs is the pure result of parsing /sdd arguments.
@@ -77,18 +76,4 @@ func (p *parsedSDDArgs) setStrategy(val string) error {
 	default:
 		return fmt.Errorf("unknown strategy %q (want agent, adaptive, or strict)", val)
 	}
-}
-
-// lastFinalAssistantPlan walks messages backward and returns the newest
-// RoleAssistant message with Final == true and non-empty content. It does
-// not infer plan content from arbitrary system or tool messages.
-func lastFinalAssistantPlan(state *session.State) (string, bool) {
-	msgs := state.Messages()
-	for i := len(msgs) - 1; i >= 0; i-- {
-		m := msgs[i]
-		if m.Role == session.RoleAssistant && m.Final && strings.TrimSpace(m.Content) != "" {
-			return m.Content, true
-		}
-	}
-	return "", false
 }

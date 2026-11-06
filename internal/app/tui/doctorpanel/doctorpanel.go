@@ -8,8 +8,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
-	"marshal/internal/app/session"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/layout"
@@ -25,7 +25,6 @@ type FixMsg struct{ Provider string }
 
 // Panel renders diagnostics and supports fixing missing env vars.
 type Panel struct {
-	state *session.State
 	diags []config.Diagnostic
 	stack *listpanel.PaneStack
 }
@@ -33,14 +32,14 @@ type Panel struct {
 var _ dock.Panel = (*Panel)(nil)
 
 // New builds a panel from diagnostics and intelligence-subsystem checks.
-func New(state *session.State, diags []config.Diagnostic, checks []Check) *Panel {
+func New(diags []config.Diagnostic, checks []acpwire.IntelligenceCheck) *Panel {
 	root := listpanel.NewFrame("Doctor", func() []*listpanel.Field {
 		return diagsToFields(diags, checks)
 	})
-	return &Panel{state: state, diags: diags, stack: listpanel.NewPaneStack(root)}
+	return &Panel{diags: diags, stack: listpanel.NewPaneStack(root)}
 }
 
-func diagsToFields(diags []config.Diagnostic, checks []Check) []*listpanel.Field {
+func diagsToFields(diags []config.Diagnostic, checks []acpwire.IntelligenceCheck) []*listpanel.Field {
 	out := make([]*listpanel.Field, 0, len(diags)+len(checks)+3)
 	if len(diags) == 0 {
 		// Scoped to config problems: the Intelligence section below can still

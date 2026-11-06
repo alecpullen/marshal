@@ -75,7 +75,7 @@ func TestANewSessionLeavesTheEndIdle(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("a prompt after /new was refused")
 	}
-	if hasSystemLine(m.state, "The conversation is ending; this request was not started.") {
+	if hasSystemLine(stateOf(m), "The conversation is ending; this request was not started.") {
 		t.Fatal("the model still believes the conversation is ending after /new")
 	}
 	m = drainCmds(m, cmd)
@@ -184,7 +184,7 @@ func TestAFailedNewSessionCanBeRetried(t *testing.T) {
 	m = asModel(t, updated)
 	m, _ = runEndCmd(t, m, cmd)
 
-	if !hasSystemLine(m.state, "Failed to start new session: boom") {
+	if !hasSystemLine(stateOf(m), "Failed to start new session: boom") {
 		t.Fatal("the failed replacement wrote no failure note")
 	}
 	if got := m.sess.ID(); got != "sess-old" {
@@ -199,7 +199,7 @@ func TestAFailedNewSessionCanBeRetried(t *testing.T) {
 	m = asModel(t, updated)
 	m, _ = runEndCmd(t, m, cmd)
 
-	if m.state != newState {
+	if stateOf(m) != newState {
 		t.Fatal("the retried /new did not swap in the new state")
 	}
 	if f.called != 2 {

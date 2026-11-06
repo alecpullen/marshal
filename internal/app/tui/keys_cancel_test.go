@@ -27,7 +27,7 @@ func clockedModel(t *testing.T) (Model, *time.Time) {
 func assertNotShutDown(t *testing.T, m Model) {
 	t.Helper()
 	select {
-	case <-m.state.Done():
+	case <-stateOf(m).Done():
 		t.Fatal("session was shut down")
 	default:
 	}
@@ -146,9 +146,9 @@ func TestEscBusyNothingOpenDoesNotCancel(t *testing.T) {
 
 func TestEscBusyDismissesNotice(t *testing.T) {
 	m, _, cancelled := busyModel(t)
-	m.state.SetNotice(session.Notice{Severity: session.SeverityWarn, Message: "heads up"})
+	stateOf(m).SetNotice(session.Notice{Severity: session.SeverityWarn, Message: "heads up"})
 	m, _ = press(m, tea.KeyPressMsg{Code: tea.KeyEsc})
-	if _, ok := m.state.Notice(); ok {
+	if _, ok := stateOf(m).Notice(); ok {
 		t.Fatal("Esc should dismiss the notice while busy")
 	}
 	if *cancelled {
@@ -168,7 +168,7 @@ func TestEscBusyDismissesSuggestion(t *testing.T) {
 func TestEscBusyDrilledPopsDrillWithoutCancel(t *testing.T) {
 	m, _, cancelled := busyModel(t)
 	child := newChildState(t)
-	view := m.state.RegisterSubagent("explore repo", child)
+	view := stateOf(m).RegisterSubagent("explore repo", child)
 	m.drillIntoSubagent(view.ID)
 	m, _ = press(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if len(m.viewStack) != 0 {

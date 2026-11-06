@@ -33,7 +33,7 @@ func newViewTestModel(t *testing.T, width, height int) Model {
 
 func TestViewIsSingleColumn(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
-	m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	m.refreshViewport()
 	view := m.View().Content
 
@@ -49,7 +49,7 @@ func TestViewIsSingleColumn(t *testing.T) {
 
 func TestViewContainsStatusLine(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
-	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama", LocalOnly: true})
+	stateOf(m).SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama", LocalOnly: true})
 	view := m.View().Content
 	if !strings.Contains(view, "qwen @ ollama") {
 		t.Fatalf("view missing status line route info:\n%s", view)
@@ -132,7 +132,7 @@ func TestConnectRendersDockedAboveInput(t *testing.T) {
 
 func TestTranscriptIsBorderless(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
-	m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	m.refreshViewport()
 	transcript := m.renderTranscriptFrame()
 	if strings.Contains(transcript, "╭") || strings.Contains(transcript, "╰") {
@@ -142,11 +142,11 @@ func TestTranscriptIsBorderless(t *testing.T) {
 
 func TestTranscriptFrameDoesNotMoveWhenActivityStarts(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
-	m.state.AddMessage(session.RoleUser, strings.Repeat("hello ", 120), session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleUser, strings.Repeat("hello ", 120), session.ContentTypePlain)
 	m.refreshViewport()
 	idleLines := strings.Split(strings.TrimRight(m.View().Content, "\n"), "\n")
 
-	m.state.SetActivity(session.Activity{Kind: session.ActivityThinking, StartedAt: time.Unix(100, 0)})
+	stateOf(m).SetActivity(session.Activity{Kind: session.ActivityThinking, StartedAt: time.Unix(100, 0)})
 	m.busy = true
 	m.spinnerFrame = "⠋"
 	m.refreshViewport()
@@ -181,7 +181,7 @@ func TestDrilledFrameFitsTheTerminal(t *testing.T) {
 		m.resize(w, h)
 		child := newChildState(t)
 		child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
-		view := m.state.RegisterSubagent("explore repo", child)
+		view := stateOf(m).RegisterSubagent("explore repo", child)
 		m.drillIntoSubagent(view.ID)
 		m.workSnapshot = workSnapOf(workRunningCard("work:01", workT0))
 		m.busy = true
@@ -216,8 +216,8 @@ func TestViewFitsTerminalSizesSingleColumn(t *testing.T) {
 	sizes := [][2]int{{80, 24}, {100, 30}, {120, 40}}
 	for _, size := range sizes {
 		m := newViewTestModel(t, size[0], size[1])
-		m.state.AddMessage(session.RoleUser, strings.Repeat("wide input ", 30), session.ContentTypePlain)
-		m.state.AddMessage(session.RoleAssistant, strings.Repeat("wide answer ", 30), session.ContentTypeMarkdown)
+		stateOf(m).AddMessage(session.RoleUser, strings.Repeat("wide input ", 30), session.ContentTypePlain)
+		stateOf(m).AddMessage(session.RoleAssistant, strings.Repeat("wide answer ", 30), session.ContentTypeMarkdown)
 		m.refreshViewport()
 		view := m.View().Content
 		lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
@@ -234,8 +234,8 @@ func TestViewFitsTerminalSizesSingleColumn(t *testing.T) {
 
 func TestNoticeShowsInlineNotFullScreen(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
-	m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
-	m.state.SetNotice(session.Notice{Category: session.NoticeProvider, Severity: session.SeverityError, Message: "connection refused"})
+	stateOf(m).AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	stateOf(m).SetNotice(session.Notice{Category: session.NoticeProvider, Severity: session.SeverityError, Message: "connection refused"})
 	m.invalidateTranscript()
 	m.refreshViewport()
 	view := m.View().Content
@@ -340,7 +340,7 @@ func TestInputAreaPaintsNoBackground(t *testing.T) {
 		Risk:         "command",
 		ResponseChan: make(chan session.UserApprovalDecision, 1),
 	}
-	m.state.SetPendingApproval(tc)
+	stateOf(m).SetPendingApproval(tc)
 	m.approvalModel = newApprovalModel(m.sess.Pending().Approvals[0], m.sess.Status().Sandbox, false, max(m.width-4, 30))
 	if out := m.renderInputArea(); strings.Contains(out, "48;") {
 		t.Fatalf("input area paints a background SGR while an approval is pending:\n%q", out)
@@ -504,7 +504,7 @@ func TestMouseCaptureOnByDefault(t *testing.T) {
 // text selection.
 func TestMouseCaptureDisabledByConfig(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
-	m.state.Config.TUI.MouseCapture = false
+	stateOf(m).Config.TUI.MouseCapture = false
 	if got := m.View().MouseMode; got != tea.MouseModeNone {
 		t.Fatalf("View().MouseMode = %v, want MouseModeNone (native selection enabled)", got)
 	}
@@ -571,7 +571,7 @@ func TestTooSmallGateFiresOnActualResize(t *testing.T) {
 
 func TestNormalViewRendersAtMinSize(t *testing.T) {
 	m := newViewTestModel(t, minTerminalWidth, minTerminalHeight)
-	m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	m.refreshViewport()
 	view := m.View().Content
 	if strings.Contains(view, "Terminal too small") {
@@ -611,7 +611,7 @@ func TestNoFullScreenTakeovers(t *testing.T) {
 
 func TestFullFrameDockPanelHidesTranscriptAndInput(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
-	m.state.AddMessage(session.RoleUser, "transcript marker text", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleUser, "transcript marker text", session.ContentTypePlain)
 	m.refreshViewport()
 
 	m.dock.Open(settings.NewBrowser(config.Default(), ""))
@@ -738,7 +738,7 @@ func TestTodoPanelIsPinnedBelowTranscript(t *testing.T) {
 
 func TestRunPanelDoesNotPushInputOffScreen(t *testing.T) {
 	m := newTestModel(t)
-	m.state.SetSDDProgress(session.SDDProgress{
+	stateOf(m).SetSDDProgress(session.SDDProgress{
 		Active:      true,
 		PlanName:    "test-plan",
 		Branch:      "feat/test",
@@ -808,7 +808,7 @@ func TestNoBlankRowAboveTheTray(t *testing.T) {
 	// Fill the transcript so its bottom row is real content: an empty
 	// viewport pads with blanks, which would mask the tray's first row.
 	for i := 0; i < 40; i++ {
-		m.state.AddMessage(session.RoleAssistant, fmt.Sprintf("transcript filler %d", i), session.ContentTypePlain)
+		stateOf(m).AddMessage(session.RoleAssistant, fmt.Sprintf("transcript filler %d", i), session.ContentTypePlain)
 	}
 	m.busy, m.turnStartedAt = true, m.now().Add(-time.Second)
 	m.refreshViewport()
@@ -856,13 +856,13 @@ func TestStatusLineKeepsTheTurnStateWhenNarrow(t *testing.T) {
 		m.busy = true
 		m.turnStartedAt = m.now().Add(-12 * time.Second)
 		m.spinnerFrame = "⠋"
-		m.state.SetActiveRoute(session.RouteInfo{
+		stateOf(m).SetActiveRoute(session.RouteInfo{
 			Active:    true,
 			Model:     "qwen2.5-coder:14b-instruct-q8_0",
 			Provider:  "ollama",
 			LocalOnly: true,
 		})
-		m.state.SetActivity(session.Activity{
+		stateOf(m).SetActivity(session.Activity{
 			Kind:      session.ActivityTool,
 			Label:     "checking the auth module",
 			StartedAt: m.now(),
@@ -886,7 +886,7 @@ func TestTurnSpinnerOmitsActivityLabel(t *testing.T) {
 	m.busy = true
 	m.turnStartedAt = m.now().Add(-12 * time.Second)
 	m.spinnerFrame = "⠋"
-	m.state.SetActivity(session.Activity{
+	stateOf(m).SetActivity(session.Activity{
 		Kind:      session.ActivityTool,
 		Label:     "checking the auth module",
 		StartedAt: m.now(),
@@ -916,8 +916,8 @@ func TestTranscriptEntriesSeparatedByOneBlankLine(t *testing.T) {
 	// Two agent messages in a row: agent prose is the renderer that
 	// previously emitted no trailing blank line, so this case only passes
 	// once the caller owns separation.
-	m.state.AddMessage(session.RoleAssistant, "first answer", session.ContentTypeMarkdown)
-	m.state.AddMessage(session.RoleAssistant, "second answer", session.ContentTypeMarkdown)
+	stateOf(m).AddMessage(session.RoleAssistant, "first answer", session.ContentTypeMarkdown)
+	stateOf(m).AddMessage(session.RoleAssistant, "second answer", session.ContentTypeMarkdown)
 	m.refreshViewport()
 
 	lines := strings.Split(stripANSI(m.viewport.View()), "\n")
@@ -948,7 +948,7 @@ func TestTurnSpinnerSpansPhaseGaps(t *testing.T) {
 	m.busy = true
 	m.turnStartedAt = m.now().Add(-24 * time.Second)
 	m.spinnerFrame = "⠹"
-	m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
+	stateOf(m).SetActivity(session.Activity{Kind: session.ActivityIdle})
 
 	row := stripANSI(m.turnStateSegment())
 	if !strings.Contains(row, "24s") {

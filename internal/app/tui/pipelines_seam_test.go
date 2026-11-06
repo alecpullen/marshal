@@ -78,7 +78,7 @@ func pausedGateModel(t *testing.T, gate session.SDDGate) (Model, *fakePlanRun, *
 	if err := m.sess.StartSDD(m.ctx, acpwire.SDDParams{PlanPath: "/plans/p.md"}); !acpclient.IsCode(err, acpwire.CodeHumanGateRequired) {
 		t.Fatalf("StartSDD = %v, want code %q", err, acpwire.CodeHumanGateRequired)
 	}
-	m.state.SetSDDGate(gate)
+	stateOf(m).SetSDDGate(gate)
 	m.dock.Open(gatepanel.New(m.sess.Status().SDDGate))
 	return m, run, rec
 }
@@ -156,7 +156,7 @@ func TestAPlanThePreflightRejectsIsReportedNotRun(t *testing.T) {
 	if m.busy {
 		t.Fatal("a rejected preflight must leave the model idle")
 	}
-	msgs := m.state.Messages()
+	msgs := stateOf(m).Messages()
 	last := ""
 	if len(msgs) > 0 {
 		last = msgs[len(msgs)-1].Content
@@ -182,7 +182,7 @@ func TestTheGateStopsThroughTheSession(t *testing.T) {
 		t.Fatalf("gate question = %q after stop, want it cleared", q)
 	}
 	var stopped bool
-	for _, msg := range m.state.Messages() {
+	for _, msg := range stateOf(m).Messages() {
 		if strings.Contains(msg.Content, "Plan run stopped.") {
 			stopped = true
 		}
@@ -206,7 +206,7 @@ func TestSwarmWithoutAnAgentIsUnavailable(t *testing.T) {
 	if m.dock.IsOpen() {
 		t.Fatal("an unavailable swarm must not open the dock")
 	}
-	msgs := m.state.Messages()
+	msgs := stateOf(m).Messages()
 	last := ""
 	if len(msgs) > 0 {
 		last = msgs[len(msgs)-1].Content
@@ -301,23 +301,23 @@ func TestAStoppedAuthoringIsNotAFailure(t *testing.T) {
 	updated, _ = m.Update(msg)
 	m = asModel(t, updated)
 
-	if n := countContaining(m.state.Messages(), "Plan authoring failed"); n != 0 {
+	if n := countContaining(stateOf(m).Messages(), "Plan authoring failed"); n != 0 {
 		t.Fatalf("a stopped authoring reported %d failure rows, want none", n)
 	}
-	if notice, ok := m.state.Notice(); ok {
+	if notice, ok := stateOf(m).Notice(); ok {
 		t.Fatalf("a stopped authoring set a notice: %+v", notice)
 	}
 	if m.cancelling {
 		t.Fatal("a stopped authoring left the model cancelling")
 	}
-	if n := countContaining(m.state.Messages(), "Agent turn cancelled."); n != 1 {
+	if n := countContaining(stateOf(m).Messages(), "Agent turn cancelled."); n != 1 {
 		t.Fatalf("\"Agent turn cancelled.\" rows = %d, want exactly 1", n)
 	}
 
 	// A later turn end must not report the same cancel a second time.
 	m.busy = true
 	m, _ = m.handleAgentFinished(agentFinishedMsg{})
-	if n := countContaining(m.state.Messages(), "Agent turn cancelled."); n != 1 {
+	if n := countContaining(stateOf(m).Messages(), "Agent turn cancelled."); n != 1 {
 		t.Fatalf("\"Agent turn cancelled.\" rows after the turn end = %d, want exactly 1", n)
 	}
 }
@@ -343,7 +343,7 @@ func TestARefusedAuthoringIsReported(t *testing.T) {
 	}
 	m = runAuthoringCmd(t, m, cmd)
 
-	msgs := m.state.Messages()
+	msgs := stateOf(m).Messages()
 	last := ""
 	if len(msgs) > 0 {
 		last = msgs[len(msgs)-1].Content
@@ -372,7 +372,7 @@ func TestAuthoringWithoutAnAgentIsUnavailable(t *testing.T) {
 	if m.dock.IsOpen() {
 		t.Fatal("an unavailable authoring must not open the dock")
 	}
-	msgs := m.state.Messages()
+	msgs := stateOf(m).Messages()
 	last := ""
 	if len(msgs) > 0 {
 		last = msgs[len(msgs)-1].Content

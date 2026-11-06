@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,27 @@ import (
 func testSession(state *session.State) acpclient.Session {
 	_, sess := inproc.New(inproc.Deps{State: state})
 	return sess
+}
+
+// stateOf returns the state behind a model's session: the one place TUI
+// tests reach agent-side state, so P3 changes only this helper.
+func stateOf(m interface{ Session() acpclient.Session }) *session.State {
+	return stateOfSession(m.Session())
+}
+
+// stateOfSession walks to the adapter behind sess, past the test recorders
+// that embed it (each exposes the session it wraps through Unwrap).
+func stateOfSession(sess acpclient.Session) *session.State {
+	for {
+		if in, ok := sess.(*inproc.Session); ok {
+			return in.State()
+		}
+		wrapped, ok := sess.(interface{ Unwrap() acpclient.Session })
+		if !ok {
+			panic(fmt.Sprintf("tui.stateOf: session is %T, not *inproc.Session", sess))
+		}
+		sess = wrapped.Unwrap()
+	}
 }
 
 // testModel is the one place tests build a model: it wires the in-process
@@ -56,7 +78,7 @@ func runnerOf(r inproc.Runner) func() inproc.Runner {
 // withPromptRunner replaces m's session with one over m's state whose runner
 // is r.
 func withPromptRunner(m Model, r inproc.Runner) Model {
-	_, sess := inproc.New(inproc.Deps{State: m.state, Runner: runnerOf(r)})
+	_, sess := inproc.New(inproc.Deps{State: stateOf(m), Runner: runnerOf(r)})
 	m.sess = sess
 	return m
 }
@@ -75,6 +97,10 @@ type stubSession struct {
 	onDismissNote  func()
 	sheetPatch     func(*acpwire.SessionSheet)
 }
+
+// Unwrap exposes the adapter this stub wraps, so stateOf reaches the state
+// behind it.
+func (s *stubSession) Unwrap() acpclient.Session { return s.Session }
 
 func (s *stubSession) Status() acpwire.SessionStatus {
 	st := s.Session.Status()
@@ -137,7 +163,7 @@ func testModelStubWith(d inproc.Deps, stub *stubSession, opts ...Option) Model {
 // withCommands replaces m's session with one over m's state whose registry is
 // reg, as withPromptRunner does for the runner.
 func withCommands(m Model, reg *commands.Registry) Model {
-	_, sess := inproc.New(inproc.Deps{State: m.state, Commands: reg})
+	_, sess := inproc.New(inproc.Deps{State: stateOf(m), Commands: reg})
 	m.sess = sess
 	return m
 }
@@ -291,13 +317,13 @@ func TestNewSessionSwapsTheClientSession(t *testing.T) {
 	if f.called == 0 {
 		t.Fatal("expected the host to create a new session")
 	}
-	if m.state != newState {
+	if stateOf(m) != newState {
 		t.Fatal("expected model state to be swapped to the new session")
 	}
 	if got := m.sess.ID(); got != "new" {
 		t.Fatalf("session ID after the swap = %q, want new", got)
 	}
-	if !strings.Contains(m.state.Messages()[0].Content, "Started new conversation") {
-		t.Errorf("expected the new-session system message, got: %s", m.state.Messages()[0].Content)
+	if !strings.Contains(stateOf(m).Messages()[0].Content, "Started new conversation") {
+		t.Errorf("expected the new-session system message, got: %s", stateOf(m).Messages()[0].Content)
 	}
 }

@@ -184,7 +184,7 @@ func TestLostJobReportSaysItEndedWithTheSession(t *testing.T) {
 // output was dropped.
 func TestExpandedCompletionReadsItsWholeOutput(t *testing.T) {
 	m := newTestModel(t)
-	st := m.state
+	st := stateOf(m)
 
 	st.AddMessage(session.RoleUser, "Build", session.ContentTypePlain)
 	s1 := st.BeginStep(session.Actor{})

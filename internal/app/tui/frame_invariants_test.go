@@ -66,8 +66,8 @@ func TestFrameInvariants(t *testing.T) {
 			}
 			items = append(items, native.TodoItem{Content: "current", Status: native.TodoInProgress})
 			mustSetTodos(t, m, items...)
-			id := m.state.BeginStep(session.Actor{})
-			m.state.AddNarration(id, "Running the suite. It takes a while.")
+			id := stateOf(m).BeginStep(session.Actor{})
+			stateOf(m).AddNarration(id, "Running the suite. It takes a while.")
 			m.busy, m.turnStartedAt = true, m.now().Add(-12*time.Second)
 			m.invalidateTranscript()
 			m.refreshViewport()
@@ -75,7 +75,7 @@ func TestFrameInvariants(t *testing.T) {
 		{"sdd+todos+agents", func(t *testing.T, m *Model) {
 			m.busy = true
 			m.turnStartedAt = m.now().Add(-72 * time.Second)
-			m.state.SetSDDProgress(session.SDDProgress{Active: true, TotalTasks: 7, DoneTasks: 3, CurrentTask: 4, Phase: "verifying"})
+			stateOf(m).SetSDDProgress(session.SDDProgress{Active: true, TotalTasks: 7, DoneTasks: 3, CurrentTask: 4, Phase: "verifying"})
 			registerRunningSubagent(t, m, "reviewer")
 			registerRunningSubagent(t, m, "tester")
 			mustSetTodos(t, m, native.TodoItem{Content: "a task", Status: native.TodoInProgress})
@@ -84,15 +84,15 @@ func TestFrameInvariants(t *testing.T) {
 			for i := 0; i < 6; i++ {
 				stepFixture(t, m, session.Actor{Role: "sdd_reviewer", Label: "reviewer"}, "Reviewing a rather long sentence about the change under review. More detail follows.", readEvent("a.go"), readEvent("b.go"))
 			}
-			live := m.state.BeginStep(session.Actor{})
-			m.state.AddNarration(live, "Running the tests now.")
-			m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: time.Now(), StepID: live, ToolCallID: "x"})
+			live := stateOf(m).BeginStep(session.Actor{})
+			stateOf(m).AddNarration(live, "Running the tests now.")
+			stateOf(m).SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: time.Now(), StepID: live, ToolCallID: "x"})
 			m.busy = true
 			m.turnStartedAt = time.Now()
 		}},
 		{"selection", func(t *testing.T, m *Model) {
 			stepFixture(t, m, session.Actor{}, "Reading the parser to find the guard.", readEvent("a.go"), readEvent("b.go"))
-			m.state.AddMessageFinal(session.RoleAssistant, "Done. The guard is in the lexer.", session.ContentTypeMarkdown)
+			stateOf(m).AddMessageFinal(session.RoleAssistant, "Done. The guard is in the lexer.", session.ContentTypeMarkdown)
 			m.invalidateTranscript()
 			m.refreshViewport()
 			selectRows(t, m, selPos{0, 0}, selPos{len(m.contentLines) - 1, m.viewport.Width()})
@@ -138,12 +138,12 @@ func TestFrameInvariants(t *testing.T) {
 			m.openSessionSheet()
 		}},
 		{"console+question", func(t *testing.T, m *Model) {
-			m.state.SetPendingQuestion(&session.PendingQuestion{
+			stateOf(m).SetPendingQuestion(&session.PendingQuestion{
 				Questions: []session.Question{{Question: "which approach?"}},
 			})
 		}},
 		{"console+approval", func(t *testing.T, m *Model) {
-			m.state.SetPendingApproval(&session.PendingToolCall{
+			stateOf(m).SetPendingApproval(&session.PendingToolCall{
 				ID:           "call-frame",
 				Name:         "shell.run",
 				Command:      "git push",
@@ -164,12 +164,12 @@ func TestFrameInvariants(t *testing.T) {
 			m.busy = true
 			// The pending prompt is a host read (plan 7c), so open the panel
 			// the way the model does: over a host that names one.
-			host, _ := inproc.New(inproc.Deps{State: m.state, TrustPrompt: "/repo"})
+			host, _ := inproc.New(inproc.Deps{State: stateOf(m), TrustPrompt: "/repo"})
 			m.host = host
 			if !m.openTrustPanel() {
 				t.Fatal("expected a pending trust prompt")
 			}
-			m.state.SetPendingApproval(&session.PendingToolCall{
+			stateOf(m).SetPendingApproval(&session.PendingToolCall{
 				ID:           "call-access-queued",
 				Name:         "mode.request",
 				Reason:       "editing",
@@ -181,7 +181,7 @@ func TestFrameInvariants(t *testing.T) {
 			m.workSnapshot = workSnapOf(workRunningCard("work:01", workT0))
 			m.busy = true
 			m.dock.Open(accesspanel.New(acpwire.AccessRequest{MissingEditing: true}))
-			m.state.SetPendingApproval(&session.PendingToolCall{
+			stateOf(m).SetPendingApproval(&session.PendingToolCall{
 				ID:           "call-access-owner",
 				Name:         "mode.request",
 				Reason:       "editing",
@@ -195,7 +195,7 @@ func TestFrameInvariants(t *testing.T) {
 		{"ending+warning", func(t *testing.T, m *Model) {
 			ctrl := &endTestController{work: longWorkSnapshot(12)}
 			*m = withEndService(*m, ctrl)
-			m.state.Config.Postmortem.OnExit = "never"
+			stateOf(m).Config.Postmortem.OnExit = "never"
 			if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
 				t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
 			}
@@ -208,8 +208,8 @@ func TestFrameInvariants(t *testing.T) {
 			}
 		}},
 		{"ending+postmortem-question", func(t *testing.T, m *Model) {
-			m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
-			m.state.Config.Postmortem.OnExit = "prompt"
+			stateOf(m).AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+			stateOf(m).Config.Postmortem.OnExit = "prompt"
 			*m = withEndService(*m, &endTestController{})
 			m.end = &endIntent{kind: EndIntentExit}
 			m.endAnswered = false
@@ -217,8 +217,8 @@ func TestFrameInvariants(t *testing.T) {
 			m.openPostmortemPrompt()
 		}},
 		{"ending+postmortem-agent-question", func(t *testing.T, m *Model) {
-			m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
-			m.state.Config.Postmortem.OnExit = "prompt"
+			stateOf(m).AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+			stateOf(m).Config.Postmortem.OnExit = "prompt"
 			*m = withEndService(*m, &endTestController{})
 			m.end = &endIntent{kind: EndIntentExit}
 			m.endStage = endPostmortem
@@ -235,7 +235,7 @@ func TestFrameInvariants(t *testing.T) {
 				return acpwire.EndDecision{Accepted: true, Work: longWorkSnapshot(12)}, nil
 			}
 			*m = withEndService(*m, ctrl)
-			m.state.Config.Postmortem.OnExit = "never"
+			stateOf(m).Config.Postmortem.OnExit = "never"
 			if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
 				t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
 			}
@@ -312,7 +312,7 @@ func workIDs(n int) []string {
 
 func mustSetTodos(t *testing.T, m *Model, items ...native.TodoItem) {
 	t.Helper()
-	if err := m.state.SetTodos(items); err != nil {
+	if err := stateOf(m).SetTodos(items); err != nil {
 		t.Fatalf("SetTodos: %v", err)
 	}
 }

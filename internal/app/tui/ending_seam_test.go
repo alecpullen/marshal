@@ -34,7 +34,7 @@ func testModelEnding(state *session.State, end inproc.EndService, opts ...Option
 // was, so it stays paired with the session this replaces: a test that also drives
 // a swap must build both, as TestNewSessionSwapsTheClientSession does.
 func withEndService(m Model, end inproc.EndService) Model {
-	_, sess := inproc.New(inproc.Deps{State: m.state, End: end})
+	_, sess := inproc.New(inproc.Deps{State: stateOf(m), End: end})
 	m.sess = sess
 	return m
 }

@@ -34,7 +34,7 @@ func (s *stackNodeCounter) StackNode(ctx context.Context, nodeID string, subagen
 // viewport, and returns the wire node ID and version the render drew.
 func runEventModel(t *testing.T, m *Model) (string, string) {
 	t.Helper()
-	m.state.AddRunEvent(session.RunEvent{
+	stateOf(m).AddRunEvent(session.RunEvent{
 		Kind:  session.RunEventVerifyFailed,
 		Title: "go test ./...",
 		Body:  "verify failed: two tests failed",
@@ -189,7 +189,7 @@ func TestAStoredDetailRepaintsItsRow(t *testing.T) {
 // not survive with its fetch state.
 func TestDetailOfAGoneNodeIsPruned(t *testing.T) {
 	m := newTestModel(t)
-	m.state.AddRunEvent(session.RunEvent{Kind: session.RunEventCommit, Title: "a3f9e21"})
+	stateOf(m).AddRunEvent(session.RunEvent{Kind: session.RunEventCommit, Title: "a3f9e21"})
 	m.details = map[string]cachedDetail{"run:gone": {version: "v"}}
 	m.detailAsked = map[string]string{"run:gone": "v"}
 

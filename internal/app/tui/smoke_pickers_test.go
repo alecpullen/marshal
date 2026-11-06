@@ -127,8 +127,8 @@ func TestSmokePickersProgrammatic(t *testing.T) {
 	t.Run("/branches with 2+ leaves opens dock panel", func(t *testing.T) {
 		m := makeSmokeModel(t)
 		// Create a second branch by rewinding to before the last user turn.
-		m.state.Rewind(1)
-		m.state.AddMessage(session.RoleUser, "alternate third turn", session.ContentTypePlain)
+		stateOf(m).Rewind(1)
+		stateOf(m).AddMessage(session.RoleUser, "alternate third turn", session.ContentTypePlain)
 		updated, _ := m.dispatchCommand("/branches")
 		mm := *(updated.(*Model))
 		if !mm.dock.IsOpen() {

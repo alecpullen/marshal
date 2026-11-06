@@ -21,11 +21,11 @@ import (
 // remedy, so leaving the notice set afterwards is contradictory.
 func TestApplyConnectDoneSuccessClearsProviderNotice(t *testing.T) {
 	m := newTestModel(t)
-	m.state.SetNotice(session.Notice{Category: session.NoticeProvider, Severity: session.SeverityError, Message: "provider request timed out"})
+	stateOf(m).SetNotice(session.Notice{Category: session.NoticeProvider, Severity: session.SeverityError, Message: "provider request timed out"})
 
 	m.applyConnectDone(connect.DoneMsg{Provider: "openai", Model: "gpt-4o"})
 
-	if _, ok := m.state.Notice(); ok {
+	if _, ok := stateOf(m).Notice(); ok {
 		t.Fatal("notice should be cleared after successful /connect")
 	}
 }
@@ -37,13 +37,13 @@ func TestPersistAndReloadSuccessClearsProviderNotice(t *testing.T) {
 	m := newTestModelDeps(t, func(d *inproc.Deps) {
 		d.ReloadConfig = func(config.Config) error { return nil }
 	})
-	m.state.SetNotice(session.Notice{Category: session.NoticeProvider, Message: "provider request timed out"})
+	stateOf(m).SetNotice(session.Notice{Category: session.NoticeProvider, Message: "provider request timed out"})
 
-	saveErr, reloadErr := m.persistAndReload(m.state.Config)
+	saveErr, reloadErr := m.persistAndReload(stateOf(m).Config)
 	if saveErr != nil || reloadErr != nil {
 		t.Fatalf("persistAndReload = (%v, %v), want (nil, nil)", saveErr, reloadErr)
 	}
-	if _, ok := m.state.Notice(); ok {
+	if _, ok := stateOf(m).Notice(); ok {
 		t.Fatal("notice should be cleared after successful reload")
 	}
 }
@@ -54,13 +54,13 @@ func TestPersistAndReloadFailureRetainsProviderNotice(t *testing.T) {
 	m := newTestModelDeps(t, func(d *inproc.Deps) {
 		d.ReloadConfig = func(config.Config) error { return errors.New("cleanup failed") }
 	})
-	m.state.SetNotice(session.Notice{Category: session.NoticeProvider, Message: "provider request timed out"})
+	stateOf(m).SetNotice(session.Notice{Category: session.NoticeProvider, Message: "provider request timed out"})
 
-	_, reloadErr := m.persistAndReload(m.state.Config)
+	_, reloadErr := m.persistAndReload(stateOf(m).Config)
 	if reloadErr == nil {
 		t.Fatal("persistAndReload reloadErr = nil, want the reload error")
 	}
-	if _, ok := m.state.Notice(); !ok {
+	if _, ok := stateOf(m).Notice(); !ok {
 		t.Fatal("notice = none, want the original notice retained after failed reload")
 	}
 }
@@ -112,13 +112,13 @@ func TestARunnerBuiltAfterStartupIsUsedWithoutAdoption(t *testing.T) {
 func TestStartPromptClearsProviderNotice(t *testing.T) {
 	m := testModelWith(inproc.Deps{State: modelTestState(t), Runner: runnerOf(&testAgentRunner{})})
 	m.resize(80, 24)
-	m.state.SetNotice(session.Notice{Category: session.NoticeProvider, Message: "provider unreachable"})
+	stateOf(m).SetNotice(session.Notice{Category: session.NoticeProvider, Message: "provider unreachable"})
 
 	_, cmd := m.startPrompt("retry", false)
 	if cmd == nil {
 		t.Fatal("startPrompt returned no command")
 	}
-	if _, ok := m.state.Notice(); ok {
+	if _, ok := stateOf(m).Notice(); ok {
 		t.Fatal("provider notice should be cleared on new turn start")
 	}
 }
@@ -128,13 +128,13 @@ func TestStartPromptClearsProviderNotice(t *testing.T) {
 func TestStartPromptKeepsUnrelatedNotice(t *testing.T) {
 	m := testModelWith(inproc.Deps{State: modelTestState(t), Runner: runnerOf(&testAgentRunner{})})
 	m.resize(80, 24)
-	m.state.SetNotice(session.Notice{Category: session.NoticeInternal, Message: "command registration failed"})
+	stateOf(m).SetNotice(session.Notice{Category: session.NoticeInternal, Message: "command registration failed"})
 
 	_, cmd := m.startPrompt("retry", false)
 	if cmd == nil {
 		t.Fatal("startPrompt returned no command")
 	}
-	n, ok := m.state.Notice()
+	n, ok := stateOf(m).Notice()
 	if !ok || n.Category != session.NoticeInternal {
 		t.Fatal("internal notice must survive a new turn start")
 	}
@@ -146,15 +146,15 @@ func TestCancelledTurnClearsProviderNotice(t *testing.T) {
 	m := newTestModel(t)
 	m.busy = true
 	m.cancelling = true
-	m.state.SetNotice(session.Notice{Category: session.NoticeProvider, Message: "stale"})
+	stateOf(m).SetNotice(session.Notice{Category: session.NoticeProvider, Message: "stale"})
 
 	updated, _ := m.handleAgentFinished(agentFinishedMsg{err: errors.New("stream aborted")})
 	m = updated
-	if _, ok := m.state.Notice(); ok {
+	if _, ok := stateOf(m).Notice(); ok {
 		t.Fatal("cancelled turn should clear the stale provider notice, not set a new one")
 	}
 	var found bool
-	for _, msg := range m.state.Messages() {
+	for _, msg := range stateOf(m).Messages() {
 		if strings.Contains(msg.Content, "cancelled") {
 			found = true
 		}

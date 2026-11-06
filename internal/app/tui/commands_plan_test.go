@@ -55,12 +55,12 @@ func TestModeSelectionDoesNotLoadPlanningSkill(t *testing.T) {
 
 	updated, _ := m.dispatchCommand("/act")
 	m = asModel(t, updated)
-	if m.state.HasActiveSkill("marshal-writing-plans") {
+	if stateOf(m).HasActiveSkill("marshal-writing-plans") {
 		t.Fatal("/act must not load the writing-plans skill")
 	}
 
 	m.cycleMode(true)
-	if m.state.HasActiveSkill("marshal-writing-plans") {
+	if stateOf(m).HasActiveSkill("marshal-writing-plans") {
 		t.Fatal("Tab cycling must not load the writing-plans skill")
 	}
 }

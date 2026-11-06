@@ -73,7 +73,7 @@ func generatedReviewFrameModel(t *testing.T, w, h int, result acpwire.AuthoredPl
 	t.Helper()
 	m := newAuthoringModel(t)
 	for i := 0; i < 60; i++ {
-		m.state.AddMessage(session.RoleAssistant, fmt.Sprintf("transcript line %d", i), session.ContentTypePlain)
+		stateOf(m).AddMessage(session.RoleAssistant, fmt.Sprintf("transcript line %d", i), session.ContentTypePlain)
 	}
 	todoDrivenTurn(t, &m, []native.TodoItem{
 		{Content: "first task", Status: native.TodoCompleted},
@@ -228,10 +228,10 @@ func frameRows(m *Model) (rows, widest int) {
 func scrolledModel(t *testing.T, w, h int) *Model {
 	t.Helper()
 	m := newTestModel(t)
-	m.state.Config.TUI.SidePanel.Enabled = true
+	stateOf(m).Config.TUI.SidePanel.Enabled = true
 	m.resize(w, h)
 	for i := 0; i < 200; i++ {
-		m.state.AddMessage(session.RoleAssistant, "line", session.ContentTypePlain)
+		stateOf(m).AddMessage(session.RoleAssistant, "line", session.ContentTypePlain)
 	}
 	m.refreshViewport()
 	m.viewportFollow = false
@@ -255,7 +255,7 @@ func TestScrollHintDoesNotOverflowFrame(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m := scrolledModel(t, 140, 30)
 			if tc.busy {
-				m.state.SetActivity(session.Activity{Kind: session.ActivityThinking})
+				stateOf(m).SetActivity(session.Activity{Kind: session.ActivityThinking})
 				m.refreshViewport()
 			}
 			// Precondition: the hint must actually be showing.
@@ -277,10 +277,10 @@ func TestScrollHintDoesNotOverflowFrame(t *testing.T) {
 // row, and the frame still exactly fills the terminal.
 func TestFollowingFrameFitsTerminal(t *testing.T) {
 	m := newTestModel(t)
-	m.state.Config.TUI.SidePanel.Enabled = true
+	stateOf(m).Config.TUI.SidePanel.Enabled = true
 	m.resize(140, 30)
 	for i := 0; i < 200; i++ {
-		m.state.AddMessage(session.RoleAssistant, "line", session.ContentTypePlain)
+		stateOf(m).AddMessage(session.RoleAssistant, "line", session.ContentTypePlain)
 	}
 	m.refreshViewport()
 	if rows, widest := frameRows(&m); rows != 30 || widest > 140 {
@@ -298,8 +298,8 @@ func TestEndingSurfacesFitTheTerminal(t *testing.T) {
 		t.Run(fmt.Sprintf("%dx%d", size.w, size.h), func(t *testing.T) {
 			// A long membership: the warning must window rather than overflow.
 			m := scrolledModel(t, size.w, size.h)
-			m.state.Config.Postmortem.OnExit = "prompt"
-			m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+			stateOf(m).Config.Postmortem.OnExit = "prompt"
+			stateOf(m).AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 			*m = withEndService(*m, &endTestController{work: longWorkSnapshot(16)})
 			if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
 				t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
@@ -331,9 +331,9 @@ func TestEndingSurfacesFitTheTerminal(t *testing.T) {
 func postmortemConsentFrameModel(t *testing.T, w, h int) *Model {
 	t.Helper()
 	m := scrolledModel(t, w, h)
-	m.state.Config.Postmortem.OnExit = "prompt"
-	m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
-	if err := m.state.SetTodos([]native.TodoItem{
+	stateOf(m).Config.Postmortem.OnExit = "prompt"
+	stateOf(m).AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	if err := stateOf(m).SetTodos([]native.TodoItem{
 		{ID: "t1", Content: "first task", Status: native.TodoInProgress},
 		{ID: "t2", Content: "second task", Status: native.TodoPending},
 	}); err != nil {

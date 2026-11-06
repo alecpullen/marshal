@@ -35,7 +35,7 @@ func primeSudoAuth(t *testing.T, m Model) Model {
 	if m.sudoAuthModel == nil {
 		t.Fatal("first message should lazily build the sudo-auth model")
 	}
-	if m.state.PendingSudoAuth() == nil {
+	if stateOf(m).PendingSudoAuth() == nil {
 		t.Fatal("lazy build must not clear the pending prompt")
 	}
 	return m
@@ -51,7 +51,7 @@ func TestSudoAuthFirstKeystrokeIsNotDropped(t *testing.T) {
 		Command:      "id",
 		ResponseChan: make(chan session.SudoAuthDecision, 1),
 	}
-	m.state.SetPendingSudoAuth(sa)
+	stateOf(m).SetPendingSudoAuth(sa)
 
 	// No priming: the very first keystroke must land in the field.
 	for _, r := range "pw" {
@@ -80,7 +80,7 @@ func TestSudoAuthModalMasksAndShowsCommand(t *testing.T) {
 		Reason:       "restart the web server",
 		ResponseChan: make(chan session.SudoAuthDecision, 1),
 	}
-	m.state.SetPendingSudoAuth(sa)
+	stateOf(m).SetPendingSudoAuth(sa)
 
 	view := stripANSI(m.View().Content)
 	if !strings.Contains(view, "systemctl restart nginx") {
@@ -113,7 +113,7 @@ func TestSudoAuthEscDenies(t *testing.T) {
 		Command:      "id",
 		ResponseChan: make(chan session.SudoAuthDecision, 1),
 	}
-	m.state.SetPendingSudoAuth(sa)
+	stateOf(m).SetPendingSudoAuth(sa)
 	m = primeSudoAuth(t, m)
 
 	updated, _ := m.Update(sudoAuthKeyPress("esc"))
@@ -130,7 +130,7 @@ func TestSudoAuthEscDenies(t *testing.T) {
 	default:
 		t.Fatal("Esc did not respond on the pending prompt")
 	}
-	if m.state.PendingSudoAuth() != nil {
+	if stateOf(m).PendingSudoAuth() != nil {
 		t.Fatal("PendingSudoAuth should be cleared after the decision")
 	}
 	if m.sudoAuthModel != nil {
@@ -144,7 +144,7 @@ func TestSudoAuthEnterSubmitsTypedBytes(t *testing.T) {
 		Command:      "id",
 		ResponseChan: make(chan session.SudoAuthDecision, 1),
 	}
-	m.state.SetPendingSudoAuth(sa)
+	stateOf(m).SetPendingSudoAuth(sa)
 	m = primeSudoAuth(t, m)
 
 	for _, r := range "pw" {
@@ -194,9 +194,9 @@ func sudoLongPendingAuth(t *testing.T, ch chan session.SudoAuthDecision) *sessio
 func TestSudoReviewPagesFullCommandAndReason(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
 	for i := 0; i < 80; i++ {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("history line %d", i), session.ContentTypePlain)
+		stateOf(m).AddMessage(session.RoleSystem, fmt.Sprintf("history line %d", i), session.ContentTypePlain)
 	}
-	m.state.SetPendingSudoAuth(sudoLongPendingAuth(t, make(chan session.SudoAuthDecision, 1)))
+	stateOf(m).SetPendingSudoAuth(sudoLongPendingAuth(t, make(chan session.SudoAuthDecision, 1)))
 	m.refreshViewport()
 	m = primeSudoAuth(t, m)
 	if !m.sudoActionable() {
@@ -267,7 +267,7 @@ func TestSudoReviewPreservesMaskedPasswordAcrossResizeAndScroll(t *testing.T) {
 	const secret = "sudo-pw-8f21-must-stay-masked"
 	ch := make(chan session.SudoAuthDecision, 1)
 	m := newViewTestModel(t, 80, 24)
-	m.state.SetPendingSudoAuth(sudoLongPendingAuth(t, ch))
+	stateOf(m).SetPendingSudoAuth(sudoLongPendingAuth(t, ch))
 	m = primeSudoAuth(t, m)
 
 	for _, r := range secret {
@@ -334,7 +334,7 @@ func TestSudoReviewPreservesMaskedPasswordAcrossResizeAndScroll(t *testing.T) {
 func TestSudoReviewHiddenPromptCannotAuthenticate(t *testing.T) {
 	ch := make(chan session.SudoAuthDecision, 1)
 	m := newViewTestModel(t, 100, 30)
-	m.state.SetPendingSudoAuth(&session.PendingSudoAuth{Command: "id", ResponseChan: ch})
+	stateOf(m).SetPendingSudoAuth(&session.PendingSudoAuth{Command: "id", ResponseChan: ch})
 	m = primeSudoAuth(t, m)
 	for _, r := range "pw" {
 		updated, _ := m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
@@ -377,14 +377,14 @@ func TestSudoReviewHiddenPromptCannotAuthenticate(t *testing.T) {
 	default:
 		t.Fatal("Escape from a hidden prompt did not settle the denial")
 	}
-	if m.state.PendingSudoAuth() != nil || m.sudoAuthModel != nil {
+	if stateOf(m).PendingSudoAuth() != nil || m.sudoAuthModel != nil {
 		t.Fatal("the denied prompt was not cleared")
 	}
 
 	// A replacement request pages normally…
 	ch2 := make(chan session.SudoAuthDecision, 1)
 	sa2 := sudoLongPendingAuth(t, ch2)
-	m.state.SetPendingSudoAuth(sa2)
+	stateOf(m).SetPendingSudoAuth(sa2)
 	m, _ = press(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = primeSudoAuth(t, m)
 	if pending := m.sess.Pending().Sudo; pending == nil || m.sudoAuthModel.sa.Key != pending.Key {
@@ -424,7 +424,7 @@ func TestSudoReviewHiddenPromptCannotAuthenticate(t *testing.T) {
 	}
 	ch3 := make(chan session.SudoAuthDecision, 1)
 	sa3 := &session.PendingSudoAuth{Command: "id", ResponseChan: ch3}
-	m.state.SetPendingSudoAuth(sa3)
+	stateOf(m).SetPendingSudoAuth(sa3)
 	m, _ = press(m, tea.KeyPressMsg{Code: tea.KeyUp})
 	if pending := m.sess.Pending().Sudo; pending == nil || m.sudoAuthModel.sa.Key != pending.Key {
 		t.Fatal("the replacement request did not rebuild the prompt")
@@ -445,16 +445,16 @@ func TestSudoReviewHiddenPromptCannotAuthenticate(t *testing.T) {
 
 func TestSudoAuthBlocksModeCyclingKeys(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
-	m.state.SetPendingSudoAuth(&session.PendingSudoAuth{
+	stateOf(m).SetPendingSudoAuth(&session.PendingSudoAuth{
 		Command:      "id",
 		ResponseChan: make(chan session.SudoAuthDecision, 1),
 	})
 	m = primeSudoAuth(t, m)
 
-	before := m.state.InteractionState().Mode
+	before := stateOf(m).InteractionState().Mode
 	updated, _ := m.Update(sudoAuthKeyPress("tab"))
 	m = updated.(Model)
-	if m.state.InteractionState().Mode != before {
-		t.Fatalf("mode changed from %v to %v while a sudo prompt was pending", before, m.state.InteractionState().Mode)
+	if stateOf(m).InteractionState().Mode != before {
+		t.Fatalf("mode changed from %v to %v while a sudo prompt was pending", before, stateOf(m).InteractionState().Mode)
 	}
 }

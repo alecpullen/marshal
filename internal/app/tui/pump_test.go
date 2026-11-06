@@ -52,7 +52,7 @@ func TestHandleChangedIgnoresAReplacedSession(t *testing.T) {
 	m.refreshViewport()
 	before := m.lastTranscriptHash
 	// A transcript change makes the next refresh produce a different hash.
-	m.state.AddMessage(session.RoleSystem, "changed", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleSystem, "changed", session.ContentTypePlain)
 
 	other := make(chan struct{}, 1)
 	updated, cmd := m.Update(changedMsg{ch: other})
@@ -206,7 +206,7 @@ func (f *fakeWorkService) subscriptionCount() int {
 func newWorkModel(t *testing.T, svc viewmodel.WorkService) Model {
 	t.Helper()
 	m := newTestModel(t)
-	_, sess := inproc.New(inproc.Deps{State: m.state, Work: svc})
+	_, sess := inproc.New(inproc.Deps{State: stateOf(m), Work: svc})
 	m.sess = sess
 	m.resetWork()
 	m.refreshViewport()
@@ -270,7 +270,7 @@ func TestResetWorkStartsTheViewOver(t *testing.T) {
 	}
 
 	svcB := &fakeWorkService{snap: viewmodel.WorkSnapshot{ConversationID: "B", Revision: 1}}
-	_, sessB := inproc.New(inproc.Deps{State: m.state, Work: svcB})
+	_, sessB := inproc.New(inproc.Deps{State: stateOf(m), Work: svcB})
 	m.sess = sessB
 	m.resetWork()
 
@@ -315,7 +315,7 @@ func TestWorkUpdateAcceptsNewRevisionWhilePromptOpen(t *testing.T) {
 		t.Fatal("the Tasks panel did not open")
 	}
 	// A question prompt is pending while the panel is open.
-	m.state.SetPendingQuestion(&session.PendingQuestion{
+	stateOf(m).SetPendingQuestion(&session.PendingQuestion{
 		Key:       session.PromptKey{ID: "q1", Kind: session.PromptQuestion},
 		Questions: []session.Question{{Question: "what?"}},
 	})
@@ -329,7 +329,7 @@ func TestWorkUpdateAcceptsNewRevisionWhilePromptOpen(t *testing.T) {
 	if m.tasksPanel == nil || m.tasksPanel.snapshot.Revision != 7 {
 		t.Fatal("the open panel did not receive the new projection")
 	}
-	if m.state.PendingQuestion() == nil {
+	if stateOf(m).PendingQuestion() == nil {
 		t.Fatal("the pending prompt was cleared by a background work update")
 	}
 }

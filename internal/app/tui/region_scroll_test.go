@@ -30,7 +30,7 @@ func TestSubagentCardDoesNotResizeWhenTailSourceFlips(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		child.AppendThinking(fmt.Sprintf("reasoning line %d\n", i))
 	}
-	m.state.RegisterSubagent("reviewer", child)
+	stateOf(m).RegisterSubagent("reviewer", child)
 	m.refreshViewport()
 	tall := strings.Count(m.viewport.GetContent(), "\n")
 
@@ -62,9 +62,9 @@ func TestRegionScrollRepaintsViewport(t *testing.T) {
 	// The in-progress thinking box: a live region with room to scroll.
 	// A running subagent card no longer scrolls (one body line), so it can
 	// no longer carry this test.
-	m.state.BeginStreaming()
+	stateOf(m).BeginStreaming()
 	for i := 0; i < 40; i++ {
-		m.state.AppendThinking(fmt.Sprintf("reasoning line %d that is long enough to be distinct\n", i))
+		stateOf(m).AppendThinking(fmt.Sprintf("reasoning line %d that is long enough to be distinct\n", i))
 	}
 	m.refreshViewport()
 	before := m.viewport.GetContent()
@@ -87,7 +87,7 @@ func TestHorizontalWheelOverRegionStillSwallowed(t *testing.T) {
 		child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 		child.BeginStreaming()
 		child.AppendThinking("some reasoning\n")
-		m.state.RegisterSubagent("reviewer", child)
+		stateOf(m).RegisterSubagent("reviewer", child)
 		m.refreshViewport()
 		before := m.viewport.XOffset()
 		out, _ := m.Update(tea.MouseWheelMsg{X: 1, Y: 1, Button: btn})
@@ -102,7 +102,7 @@ func TestHorizontalWheelOverRegionStillSwallowed(t *testing.T) {
 func TestWheelOutsideRegionScrollsTranscript(t *testing.T) {
 	m := newTestModel(t)
 	for i := 0; i < 200; i++ {
-		m.state.AddMessage(session.RoleSystem, "filler line", session.ContentTypePlain)
+		stateOf(m).AddMessage(session.RoleSystem, "filler line", session.ContentTypePlain)
 	}
 	m.refreshViewport()
 	m.viewport.GotoBottom()
@@ -129,7 +129,7 @@ func TestRegionOffsetNeverGoesNegative(t *testing.T) {
 	child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	child.BeginStreaming()
 	child.AppendThinking("line\n")
-	v := m.state.RegisterSubagent("reviewer", child)
+	v := stateOf(m).RegisterSubagent("reviewer", child)
 	m.refreshViewport()
 	key := nodeID{Kind: acpwire.KindSubagent, Key: fmt.Sprintf("sub:%d", v.ID)}
 	m.regionOffset = map[nodeID]int{key: 0}
@@ -161,9 +161,9 @@ func screenRowForNode(m *Model, id nodeID) (int, bool) {
 // the transcript underneath it.
 func TestWheelOverTheLiveReasoningRegionScrollsIt(t *testing.T) {
 	m := newTestModel(t)
-	m.state.BeginStreaming()
+	stateOf(m).BeginStreaming()
 	for i := 0; i < 40; i++ {
-		m.state.AppendThinking(fmt.Sprintf("reasoning line %d that is long enough to be distinct\n", i))
+		stateOf(m).AppendThinking(fmt.Sprintf("reasoning line %d that is long enough to be distinct\n", i))
 	}
 	m.refreshViewport()
 
@@ -184,10 +184,10 @@ func TestWheelOverTheLiveReasoningRegionScrollsIt(t *testing.T) {
 func TestClickOnARunningCallRowExpandsIt(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
-	id := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(id, "Running the suite.")
-	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: time.Now(), StepID: id, ToolCallID: "run"})
-	m.state.AppendActiveToolCallOutput("run", "PASS pkg/first\nPASS pkg/b\nPASS pkg/c\nPASS pkg/d\nPASS pkg/e\nPASS pkg/f\nPASS pkg/g\nPASS pkg/h\nPASS pkg/last")
+	id := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(id, "Running the suite.")
+	stateOf(m).SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: time.Now(), StepID: id, ToolCallID: "run"})
+	stateOf(m).AppendActiveToolCallOutput("run", "PASS pkg/first\nPASS pkg/b\nPASS pkg/c\nPASS pkg/d\nPASS pkg/e\nPASS pkg/f\nPASS pkg/g\nPASS pkg/h\nPASS pkg/last")
 	m.busy, m.turnStartedAt = true, time.Now()
 	m.expandAll = true // ctrl+g on: settled rows open, running rows stay closed
 	m.invalidateTranscript()

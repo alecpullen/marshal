@@ -26,6 +26,10 @@ type answerRecorder struct {
 	rollbacks int
 }
 
+// Unwrap exposes the adapter this recorder wraps, so stateOf reaches the
+// state behind it.
+func (r *answerRecorder) Unwrap() acpclient.Session { return r.Session }
+
 type recordedApproval struct {
 	key    string
 	answer acpwire.ApprovalAnswer
@@ -159,7 +163,7 @@ func TestTheQuestionFormAnswersThroughTheSession(t *testing.T) {
 		Questions:    []session.Question{{Question: "Archive or delete?"}},
 		ResponseChan: make(chan []session.Answer, 1),
 	}
-	if _, err := m.state.RegisterQuestion(context.Background(), q); err != nil {
+	if _, err := stateOf(m).RegisterQuestion(context.Background(), q); err != nil {
 		t.Fatalf("RegisterQuestion: %v", err)
 	}
 	pending := m.sess.Pending().Question
@@ -191,7 +195,7 @@ func TestTheSkillGateAnswersThroughTheSession(t *testing.T) {
 	m := recordingModel(t, 100, 30, rec)
 
 	sg := &session.PendingSkillGate{Skill: "review", ResponseChan: make(chan session.SkillGateChoice, 1)}
-	if _, err := m.state.RegisterSkillGate(context.Background(), sg); err != nil {
+	if _, err := stateOf(m).RegisterSkillGate(context.Background(), sg); err != nil {
 		t.Fatalf("RegisterSkillGate: %v", err)
 	}
 	pending := m.sess.Pending().SkillGate
@@ -216,7 +220,7 @@ func TestTheSkillGateAnswersThroughTheSession(t *testing.T) {
 	if got.choice != acpwire.SkillGateAllowSkill {
 		t.Fatalf("recorded choice = %q, want %q", got.choice, acpwire.SkillGateAllowSkill)
 	}
-	decisions := m.state.SkillGateDecisions()
+	decisions := stateOf(m).SkillGateDecisions()
 	if len(decisions) != 1 || decisions[0].Skill != "review" || !decisions[0].Allowed {
 		t.Fatalf("SkillGateDecisions() = %+v, want one allowed entry for review", decisions)
 	}
@@ -230,7 +234,7 @@ func TestTheSudoPromptAnswersThroughTheSession(t *testing.T) {
 	m := recordingModel(t, 100, 30, rec)
 
 	sa := &session.PendingSudoAuth{Command: "id", ResponseChan: make(chan session.SudoAuthDecision, 1)}
-	if _, err := m.state.RegisterSudoAuth(context.Background(), sa); err != nil {
+	if _, err := stateOf(m).RegisterSudoAuth(context.Background(), sa); err != nil {
 		t.Fatalf("RegisterSudoAuth: %v", err)
 	}
 	pending := m.sess.Pending().Sudo

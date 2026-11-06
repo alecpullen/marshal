@@ -59,10 +59,10 @@ func boxRowFor(m *Model, f func(livebox.Row) bool) int {
 func TestLiveBeatRendersInTheViewport(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	id := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(id, "Reading the parser.")
-	m.state.LogToolCall(registry.AuditEvent{Timestamp: m.now(), ToolName: "file.read", StepID: id, ToolCallID: "r",
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	id := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(id, "Reading the parser.")
+	stateOf(m).LogToolCall(registry.AuditEvent{Timestamp: m.now(), ToolName: "file.read", StepID: id, ToolCallID: "r",
 		Args: []byte(`{"path":"p.go"}`), ResultSummary: "ok"})
 	m.busy, m.turnStartedAt = true, m.now()
 	m.invalidateTranscript()
@@ -122,8 +122,8 @@ func TestBoxIsBudgetedInTheFrameHeight(t *testing.T) {
 			}
 			items = append(items, native.TodoItem{Content: "current", Status: native.TodoInProgress})
 			mustSetTodos(t, &m, items...)
-			id := m.state.BeginStep(session.Actor{})
-			m.state.AddNarration(id, "Running the suite.")
+			id := stateOf(m).BeginStep(session.Actor{})
+			stateOf(m).AddNarration(id, "Running the suite.")
 			m.busy, m.turnStartedAt = true, m.now()
 			m.invalidateTranscript()
 			m.refreshViewport()
@@ -192,26 +192,26 @@ func twoItemPlanModel(t *testing.T, gap int) Model {
 	m := newTestModel(t)
 	m.resize(100, 40)
 	for i := range 80 {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("filler %d", i), session.ContentTypePlain)
+		stateOf(m).AddMessage(session.RoleSystem, fmt.Sprintf("filler %d", i), session.ContentTypePlain)
 	}
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
 	mustSetTodos(t, &m,
 		native.TodoItem{ID: "t1", Content: "First", Status: native.TodoInProgress},
 		native.TodoItem{ID: "t2", Content: "Second", Status: native.TodoPending},
 	)
-	done := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(done, "Doing the first thing.")
-	m.state.EndStep(done)
+	done := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(done, "Doing the first thing.")
+	stateOf(m).EndStep(done)
 	for i := range gap {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("between %d", i), session.ContentTypePlain)
+		stateOf(m).AddMessage(session.RoleSystem, fmt.Sprintf("between %d", i), session.ContentTypePlain)
 	}
 	// The list moves on, and the live beat binds to the new item.
 	mustSetTodos(t, &m,
 		native.TodoItem{ID: "t1", Content: "First", Status: native.TodoCompleted},
 		native.TodoItem{ID: "t2", Content: "Second", Status: native.TodoInProgress},
 	)
-	live := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(live, "Doing the second thing.")
+	live := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(live, "Doing the second thing.")
 	m.busy, m.turnStartedAt = true, m.now()
 	m.invalidateTranscript()
 	m.refreshViewport()
@@ -309,17 +309,17 @@ func TestBoxClickOnTheRightPlanColumn(t *testing.T) {
 func TestScrollToPlanItemUsesTheOneBasedSlot(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	a := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(a, "Doing the first thing.")
-	m.state.EndStep(a)
-	b := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(b, "Doing the second thing.")
-	m.state.EndStep(b)
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	a := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(a, "Doing the first thing.")
+	stateOf(m).EndStep(a)
+	b := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(b, "Doing the second thing.")
+	stateOf(m).EndStep(b)
 	// Filler after the beats, so both of them stay inside the scrollable range
 	// and the offsets below are not clamped.
 	for i := range 80 {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("filler %d", i), session.ContentTypePlain)
+		stateOf(m).AddMessage(session.RoleSystem, fmt.Sprintf("filler %d", i), session.ContentTypePlain)
 	}
 	m.invalidateTranscript()
 	m.refreshViewport()
@@ -366,7 +366,7 @@ func TestTraySubagentCardShowsItsModelAndProvider(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(120, 40)
 	child := newChildState(t)
-	view := m.state.RegisterSubagentWithMeta("explore repo", child, session.SubagentMeta{
+	view := stateOf(m).RegisterSubagentWithMeta("explore repo", child, session.SubagentMeta{
 		Model: "kimi-k3", Provider: "kimi",
 	})
 	m.workSnapshot = workSnapOf(acpwire.WorkItem{
@@ -407,7 +407,7 @@ func TestTraySubagentCardShowsItsModelAndProvider(t *testing.T) {
 func TestSwarmIsTheTraysFirstRow(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
-	m.state.SetSwarmProgress(session.SwarmProgress{
+	stateOf(m).SetSwarmProgress(session.SwarmProgress{
 		Active: true,
 		Goal:   "ship the tray",
 		Roles:  []session.SwarmRole{{Name: "implementer", Status: "running"}},
@@ -518,7 +518,7 @@ func TestHeldRowMatchesItsCompletionEvent(t *testing.T) {
 	m.heldSince = base.Add(-time.Minute)
 
 	const conv, epoch, execID = "conv-1", "epoch-1", "exec-1"
-	if err := m.state.AddJobExit(session.JobExit{
+	if err := stateOf(m).AddJobExit(session.JobExit{
 		ID: "job-1", Command: "pytest -q", ExitCode: 1, Output: "boom\n",
 		ExecutionID: execID, ConversationID: conv, SourceEpoch: epoch,
 		At: base.Add(-30 * time.Second),

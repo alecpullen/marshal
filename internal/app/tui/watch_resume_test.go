@@ -39,7 +39,7 @@ func TestWatchResumeWakeOnIdleFire(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
 	m = withPromptRunner(m, runner)
-	m.state.AddMessage(session.RoleAssistant, "I'll wait for the build to finish.", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleAssistant, "I'll wait for the build to finish.", session.ContentTypePlain)
 	m2, cmd := m.handleChanged(withWatchResume(&m, "build", false, 1))
 	if !m2.busy {
 		t.Fatal("auto-resume did not set the busy flag")
@@ -64,7 +64,7 @@ func TestWatchResumeGoalQuoteCapped(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
 	m = withPromptRunner(m, runner)
-	m.state.AddMessage(session.RoleAssistant, strings.Repeat("y", 500), session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleAssistant, strings.Repeat("y", 500), session.ContentTypePlain)
 	m2, cmd := m.handleChanged(withWatchResume(&m, "build", true, 1))
 	drainCmds(m2, cmd)
 	select {
@@ -87,7 +87,7 @@ func TestWatchResumeBusyFireNoWake(t *testing.T) {
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
 	m = withPromptRunner(m, runner)
 	m.busy = true
-	m.state.AddMessage(session.RoleAssistant, "working", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleAssistant, "working", session.ContentTypePlain)
 	m2, _ := m.handleChanged(withWatchResume(&m, "build", false, 1))
 	if !m2.busy {
 		t.Fatal("a refused wake must leave the session busy")
@@ -101,8 +101,8 @@ func TestWatchResumeGateOffNoWake(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
 	m = withPromptRunner(m, runner)
-	m.state.Config.Watch.ResumeEnabled = false
-	m.state.AddMessage(session.RoleAssistant, "waiting", session.ContentTypePlain)
+	stateOf(m).Config.Watch.ResumeEnabled = false
+	stateOf(m).AddMessage(session.RoleAssistant, "waiting", session.ContentTypePlain)
 	m2, _ := m.handleChanged(withWatchResume(&m, "build", false, 1))
 	if m2.busy {
 		t.Fatal("gate-off wake set the busy flag")
@@ -115,7 +115,7 @@ func TestWatchResumeDockOpenNoWake(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
 	m = withPromptRunner(m, runner)
-	m.state.AddMessage(session.RoleAssistant, "waiting", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleAssistant, "waiting", session.ContentTypePlain)
 	m.dock.Open(picker.New("Pick", "", []picker.Item{{Label: "one"}}))
 	m2, _ := m.handleChanged(withWatchResume(&m, "build", false, 1))
 	if m2.busy {
@@ -130,7 +130,7 @@ func TestNoPendingResumeNoWake(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
 	m = withPromptRunner(m, runner)
-	m.state.AddMessage(session.RoleAssistant, "waiting", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleAssistant, "waiting", session.ContentTypePlain)
 	m2, _ := m.handleChanged(changedMsg{ch: m.sess.Changed()})
 	if m2.busy {
 		t.Fatal("a change with no pending resume set the busy flag")
@@ -162,7 +162,7 @@ func TestWatchResumeActsOncePerSequence(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
 	m = withPromptRunner(m, runner)
-	m.state.AddMessage(session.RoleAssistant, "waiting", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleAssistant, "waiting", session.ContentTypePlain)
 
 	// Sequence 1 while busy starts nothing.
 	m.busy = true
@@ -198,8 +198,8 @@ func TestHandleAgentFinishedConsumesLatch(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
 	m = withPromptRunner(m, runner)
-	m.state.SetWatchResume("build", false)
-	m.state.AddMessage(session.RoleAssistant, "I'll wait for the build.", session.ContentTypePlain)
+	stateOf(m).SetWatchResume("build", false)
+	stateOf(m).AddMessage(session.RoleAssistant, "I'll wait for the build.", session.ContentTypePlain)
 	m2, cmd := m.handleAgentFinished(agentFinishedMsg{})
 	drainCmds(m2, cmd)
 	select {
@@ -210,7 +210,7 @@ func TestHandleAgentFinishedConsumesLatch(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("latch did not start a turn")
 	}
-	if _, _, ok := m.state.TakeWatchResume(); ok {
+	if _, _, ok := stateOf(m).TakeWatchResume(); ok {
 		t.Fatal("latch was not cleared by the idle boundary")
 	}
 }
@@ -221,15 +221,15 @@ func TestHandleAgentFinishedLatchSuppressedByDock(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
 	m = withPromptRunner(m, runner)
-	m.state.SetWatchResume("build", false)
-	m.state.AddMessage(session.RoleAssistant, "waiting", session.ContentTypePlain)
+	stateOf(m).SetWatchResume("build", false)
+	stateOf(m).AddMessage(session.RoleAssistant, "waiting", session.ContentTypePlain)
 	m.dock.Open(picker.New("Pick", "", []picker.Item{{Label: "one"}}))
 	m2, _ := m.handleAgentFinished(agentFinishedMsg{})
 	if m2.busy {
 		t.Fatal("dock-open latch wake set the busy flag")
 	}
 	assertNoWake(t, runner)
-	if _, _, ok := m.state.TakeWatchResume(); ok {
+	if _, _, ok := stateOf(m).TakeWatchResume(); ok {
 		t.Fatal("suppressed latch must be cleared, not re-queued")
 	}
 }
@@ -240,15 +240,15 @@ func TestHandleAgentFinishedGateOff(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
 	m = withPromptRunner(m, runner)
-	m.state.Config.Watch.ResumeEnabled = false
-	m.state.SetWatchResume("build", false)
-	m.state.AddMessage(session.RoleAssistant, "waiting", session.ContentTypePlain)
+	stateOf(m).Config.Watch.ResumeEnabled = false
+	stateOf(m).SetWatchResume("build", false)
+	stateOf(m).AddMessage(session.RoleAssistant, "waiting", session.ContentTypePlain)
 	m2, _ := m.handleAgentFinished(agentFinishedMsg{})
 	if m2.busy {
 		t.Fatal("gate-off latch wake set the busy flag")
 	}
 	assertNoWake(t, runner)
-	if _, _, ok := m.state.TakeWatchResume(); ok {
+	if _, _, ok := stateOf(m).TakeWatchResume(); ok {
 		t.Fatal("gate-off latch must be cleared, not re-queued")
 	}
 }

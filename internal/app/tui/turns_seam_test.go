@@ -33,6 +33,10 @@ type turnRecorder struct {
 	authors    []acpwire.AuthorPlanParams    // plan authoring through the session
 }
 
+// Unwrap exposes the adapter this recorder wraps, so stateOf reaches the
+// state behind it.
+func (r *turnRecorder) Unwrap() acpclient.Session { return r.Session }
+
 func (r *turnRecorder) Prompt(ctx context.Context, params acpwire.PromptParams) (acpwire.PromptResult, error) {
 	r.prompts = append(r.prompts, params)
 	return r.Session.Prompt(ctx, params)
@@ -143,7 +147,7 @@ func TestAFollowUpIsAQueuedPrompt(t *testing.T) {
 	rec := &turnRecorder{}
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
 	m := testModelTurns(t, inproc.Deps{State: controlsState(t), Runner: runnerOf(runner)}, rec)
-	m.state.PushSteering("later")
+	stateOf(m).PushSteering("later")
 
 	cmd := m.flushQueuedSteering()
 	if cmd == nil {
@@ -163,8 +167,8 @@ func TestARefusedFollowUpGoesBackOnTheQueue(t *testing.T) {
 	rec := &turnRecorder{}
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
 	m := testModelTurns(t, inproc.Deps{State: controlsState(t), Runner: runnerOf(runner)}, rec)
-	m.state.PushSteering("later")
-	m.state.BeginQuiesce()
+	stateOf(m).PushSteering("later")
+	stateOf(m).BeginQuiesce()
 
 	cmd := m.flushQueuedSteering()
 	if cmd == nil {
@@ -172,13 +176,13 @@ func TestARefusedFollowUpGoesBackOnTheQueue(t *testing.T) {
 	}
 	m = drainCmds(m, cmd)
 
-	if q := m.state.SteeringQueue(); len(q) != 1 || q[0] != "later" {
+	if q := stateOf(m).SteeringQueue(); len(q) != 1 || q[0] != "later" {
 		t.Fatalf("queue = %v, want the refused text back on it", q)
 	}
 	if m.busy {
 		t.Fatal("busy = true, want the refused start to leave the model idle")
 	}
-	msgs := m.state.Messages()
+	msgs := stateOf(m).Messages()
 	last := ""
 	if len(msgs) > 0 {
 		last = msgs[len(msgs)-1].Content
@@ -247,11 +251,11 @@ func TestTheTurnEndLeavesTheActivityToTheSession(t *testing.T) {
 	rec := &turnRecorder{}
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
 	m := testModelTurns(t, inproc.Deps{State: controlsState(t), Runner: runnerOf(runner)}, rec)
-	m.state.SetActivity(session.Activity{Kind: session.ActivityThinking})
+	stateOf(m).SetActivity(session.Activity{Kind: session.ActivityThinking})
 
 	m, _ = m.handleAgentFinished(agentFinishedMsg{})
 
-	if got := m.state.Activity().Kind; got != session.ActivityThinking {
+	if got := stateOf(m).Activity().Kind; got != session.ActivityThinking {
 		t.Fatalf("activity = %q, want the session's own value left alone", got)
 	}
 }
@@ -306,7 +310,7 @@ func TestReviewRefusesABaseAndARangeBeforeStarting(t *testing.T) {
 	if len(rec.reviews) != 0 {
 		t.Fatalf("reviews = %+v, want none", rec.reviews)
 	}
-	msgs := m.state.Messages()
+	msgs := stateOf(m).Messages()
 	last := ""
 	if len(msgs) > 0 {
 		last = msgs[len(msgs)-1].Content
@@ -391,8 +395,8 @@ func TestTheSuggestionGoesThroughTheSession(t *testing.T) {
 			return "yes, go ahead", nil
 		},
 	}, rec)
-	m.state.Config.TUI.Suggestions = "llm"
-	m.state.AddMessageFinalWithUsage(session.RoleAssistant,
+	stateOf(m).Config.TUI.Suggestions = "llm"
+	stateOf(m).AddMessageFinalWithUsage(session.RoleAssistant,
 		"I've finished the refactor and all tests pass.", session.ContentTypeMarkdown, 0, "")
 	m.busy = true
 

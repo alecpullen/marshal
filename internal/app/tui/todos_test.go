@@ -232,8 +232,8 @@ func TestWorkTasksKeyboardEmitsExactTargets(t *testing.T) {
 	if req.kind != workReqInspect || req.taskKey != "work:b" {
 		t.Fatalf("Enter = %s/%s, want inspect/work:b", req.kind, req.taskKey)
 	}
-	if req.conversationID != m.state.SessionID() || req.panelID != p.panelID {
-		t.Fatalf("request identity = %q/%q, want %q/%q", req.conversationID, req.panelID, m.state.SessionID(), p.panelID)
+	if req.conversationID != stateOf(m).SessionID() || req.panelID != p.panelID {
+		t.Fatalf("request identity = %q/%q, want %q/%q", req.conversationID, req.panelID, stateOf(m).SessionID(), p.panelID)
 	}
 
 	// k returns to the first item; Space expands exactly that live target.
@@ -389,7 +389,7 @@ func TestWorkScrollAndMouseTargetsSurviveRefresh(t *testing.T) {
 	// Tall enough that the box expands past its one-row summary.
 	m.resize(120, 40)
 	for i := 0; i < 200; i++ {
-		m.state.AddMessage(session.RoleUser, fmt.Sprintf("line %d", i), session.ContentTypePlain)
+		stateOf(m).AddMessage(session.RoleUser, fmt.Sprintf("line %d", i), session.ContentTypePlain)
 	}
 	m.workSnapshot = acpwire.WorkSnapshot{ConversationID: "conv", Revision: 1, Items: []acpwire.WorkItem{
 		workTask("work:a", "Alpha"), workTask("work:b", "Beta"),

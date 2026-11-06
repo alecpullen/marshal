@@ -132,7 +132,7 @@ func TestSessionSheetEnterRunsSectionCommand(t *testing.T) {
 func TestSessionSheetHonoursHiddenFilter(t *testing.T) {
 	m, dir := gitModel(t)
 	_ = os.WriteFile(filepath.Join(dir, "a.txt"), []byte("changed\n"), 0o644)
-	m.state.Config.TUI.SidePanel.Hidden = []string{"changed"}
+	stateOf(m).Config.TUI.SidePanel.Hidden = []string{"changed"}
 	m = ctrlB(m)
 	if strings.Contains(stripANSI(m.viewString()), "CHANGED") {
 		t.Fatal("hidden section still rendered in the sheet")
@@ -156,8 +156,8 @@ func TestSheetDataCarriesTotals(t *testing.T) {
 // them — the child-scoped sheet must never see a nil child.
 func TestNilChildCardCannotDrillIn(t *testing.T) {
 	m := newTestModel(t)
-	m.state.RegisterSubagent("sdd task card", nil)
-	views := m.state.Subagents()
+	stateOf(m).RegisterSubagent("sdd task card", nil)
+	views := stateOf(m).Subagents()
 	if len(views) != 1 {
 		t.Fatalf("registered subagents = %d, want 1", len(views))
 	}
@@ -176,9 +176,9 @@ func TestSheetDataChildScopedDuringDrillIn(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildState(t)
 	child.LogToolCall(registry.AuditEvent{ToolName: "zchild-only-probe"})
-	m.state.RegisterSubagent("explore repo", child)
-	m.state.LogToolCall(registry.AuditEvent{ToolName: "zparent-only-probe"})
-	m.drillIntoSubagent(m.state.Subagents()[0].ID)
+	stateOf(m).RegisterSubagent("explore repo", child)
+	stateOf(m).LogToolCall(registry.AuditEvent{ToolName: "zparent-only-probe"})
+	m.drillIntoSubagent(stateOf(m).Subagents()[0].ID)
 	if len(m.viewStack) != 1 {
 		t.Fatalf("viewStack len = %d, want 1 after drill-in", len(m.viewStack))
 	}
@@ -196,14 +196,14 @@ func TestSheetDataChildScopedDuringDrillIn(t *testing.T) {
 // to the session.
 func TestChildSheetDataLeavesOutTheRunProgress(t *testing.T) {
 	m := newTestModel(t)
-	m.state.SetSwarmProgress(session.SwarmProgress{Active: true, Goal: "ship it"})
+	stateOf(m).SetSwarmProgress(session.SwarmProgress{Active: true, Goal: "ship it"})
 	child := newChildState(t)
-	m.state.RegisterSubagent("explore repo", child)
+	stateOf(m).RegisterSubagent("explore repo", child)
 
 	if got := m.sheetDataFor().Swarm.Goal; got != "ship it" {
 		t.Fatalf("Swarm.Goal = %q before the drill-in, want %q", got, "ship it")
 	}
-	m.drillIntoSubagent(m.state.Subagents()[0].ID)
+	m.drillIntoSubagent(stateOf(m).Subagents()[0].ID)
 	if got := m.sheetDataFor().Swarm.Goal; got != "" {
 		t.Errorf("Swarm.Goal = %q during the drill-in, want empty", got)
 	}
@@ -235,13 +235,13 @@ func TestSessionSheetWithNothingToShowDoesNotOpen(t *testing.T) {
 	for _, s := range sessionsheet.DefaultSections() {
 		hidden = append(hidden, s.ID())
 	}
-	m.state.Config.TUI.SidePanel.Hidden = hidden
+	stateOf(m).Config.TUI.SidePanel.Hidden = hidden
 	m = ctrlB(m)
 	if m.dock.IsOpen() || m.sheetPanel != nil {
 		t.Fatal("an empty sheet must not open: it would swallow keys invisibly")
 	}
 	var found bool
-	for _, msg := range m.state.Messages() {
+	for _, msg := range stateOf(m).Messages() {
 		if strings.Contains(msg.Content, "Nothing to show in the session sheet.") {
 			found = true
 		}
@@ -406,9 +406,9 @@ func TestRulesDetailThroughModel(t *testing.T) {
 			i, strings.Repeat("allow the shell to run go test and gofmt here ", 2)))
 	}
 	for _, rule := range rules {
-		m.state.AddSessionRule(rule)
+		stateOf(m).AddSessionRule(rule)
 	}
-	before := m.state.SessionRules()
+	before := stateOf(m).SessionRules()
 
 	m = ctrlB(m)
 	if !m.sheetOpen() {
@@ -446,7 +446,7 @@ func TestRulesDetailThroughModel(t *testing.T) {
 	if !m.sheetOpen() {
 		t.Fatal("opening the rules detail view must not close the sheet")
 	}
-	if after := m.state.SessionRules(); !reflect.DeepEqual(after, before) {
+	if after := stateOf(m).SessionRules(); !reflect.DeepEqual(after, before) {
 		t.Fatalf("opening details mutated the session rules:\n%v\n->\n%v", before, after)
 	}
 	if opened := stripANSI(m.viewString()); !strings.Contains(opened, "esc back") {
@@ -500,7 +500,7 @@ func TestRulesDetailThroughModel(t *testing.T) {
 	if !strings.Contains(back, "↑↓ section") {
 		t.Fatalf("the ordinary sheet hints did not come back:\n%s", back)
 	}
-	if after := m.state.SessionRules(); !reflect.DeepEqual(after, before) {
+	if after := stateOf(m).SessionRules(); !reflect.DeepEqual(after, before) {
 		t.Fatalf("scrolling the rules detail view mutated the session rules:\n%v\n->\n%v", before, after)
 	}
 }

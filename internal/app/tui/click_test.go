@@ -16,13 +16,13 @@ import (
 
 func TestClickRegionsCoverABeatThatOnlyReasoned(t *testing.T) {
 	m := newTestModel(t)
-	m.state.AddMessage(session.RoleUser, "hi", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleUser, "hi", session.ContentTypePlain)
 	ts1 := time.Now()
-	m.state.LogThinking(session.ThinkingEntry{Text: "why I did this", Duration: time.Second, StartedAt: ts1})
+	stateOf(m).LogThinking(session.ThinkingEntry{Text: "why I did this", Duration: time.Second, StartedAt: ts1})
 	m.invalidateTranscript()
 	m.refreshViewport()
 
-	r, ok := regionOf(&m, beatWithThinking(&m, m.state, ts1))
+	r, ok := regionOf(&m, beatWithThinking(&m, stateOf(m), ts1))
 	if !ok {
 		t.Fatal("expected a click region for the beat holding the reasoning")
 	}
@@ -96,11 +96,11 @@ func TestMouseClickOnABeatShowsItsReasoning(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(80, 24)
 	ts := time.Unix(700, 0)
-	m.state.LogThinking(session.ThinkingEntry{Text: "click me", Duration: time.Second, StartedAt: ts})
+	stateOf(m).LogThinking(session.ThinkingEntry{Text: "click me", Duration: time.Second, StartedAt: ts})
 	m.invalidateTranscript()
 	m.refreshViewport()
 
-	key := beatWithThinking(&m, m.state, ts)
+	key := beatWithThinking(&m, stateOf(m), ts)
 	region, found := regionOf(&m, key)
 	if !found {
 		t.Fatal("expected a click region for the beat")
@@ -126,7 +126,7 @@ func TestMouseClickActiveToolExpandsPerToolCall(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(80, 24)
 	started := time.Now()
-	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "sleep 999", StartedAt: started, ToolCallID: "call_a"})
+	stateOf(m).SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "sleep 999", StartedAt: started, ToolCallID: "call_a"})
 	m.invalidateTranscript()
 	m.refreshViewport()
 
@@ -162,7 +162,7 @@ func TestMouseClickOutsideViewportIsNoop(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(80, 24)
 	ts := time.Unix(701, 0)
-	m.state.LogThinking(session.ThinkingEntry{Text: "leave me collapsed", Duration: time.Second, StartedAt: ts})
+	stateOf(m).LogThinking(session.ThinkingEntry{Text: "leave me collapsed", Duration: time.Second, StartedAt: ts})
 	m.invalidateTranscript()
 	m.refreshViewport()
 
@@ -179,7 +179,7 @@ func TestMouseClickExpandsFailedToolCall(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(80, 24)
 	ts := time.Unix(702, 0)
-	m.state.LogToolCall(registry.AuditEvent{
+	stateOf(m).LogToolCall(registry.AuditEvent{
 		Timestamp: ts,
 		ToolName:  "shell.run",
 		Error:     "boom",
@@ -211,7 +211,7 @@ func TestBoxSitsBelowTheViewport(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
 	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
-	m.state.RegisterSubagent("reviewer", child)
+	stateOf(m).RegisterSubagent("reviewer", child)
 	m.refreshViewport()
 	if got := m.boxTop(); got != m.scrollHintRows()+m.breadcrumbRows()+m.viewport.Height() {
 		t.Fatalf("box top = %d, want %d", got, m.scrollHintRows()+m.breadcrumbRows()+m.viewport.Height())
@@ -230,14 +230,14 @@ func TestNoBoxWhenIdle(t *testing.T) {
 func TestCompletionClickTogglesItsDisclosure(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 60)
-	m.state.AddMessage(session.RoleUser, "run the gate", session.ContentTypePlain)
-	s1 := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(s1, "Starting the gate.")
-	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "shell.run", StepID: s1, ToolCallID: "j",
+	stateOf(m).AddMessage(session.RoleUser, "run the gate", session.ContentTypePlain)
+	s1 := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(s1, "Starting the gate.")
+	stateOf(m).LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "shell.run", StepID: s1, ToolCallID: "j",
 		Args: []byte(`{"command":"pytest -q","background":true}`), ResultSummary: session.JobStartPrefix + "job-1"})
-	m.state.EndStep(s1)
-	m.state.AddMessageFinal(session.RoleAssistant, "started", session.ContentTypePlain)
-	m.state.AddJobExit(session.JobExit{ID: "job-1", Command: "pytest -q", ExitCode: 1})
+	stateOf(m).EndStep(s1)
+	stateOf(m).AddMessageFinal(session.RoleAssistant, "started", session.ContentTypePlain)
+	stateOf(m).AddJobExit(session.JobExit{ID: "job-1", Command: "pytest -q", ExitCode: 1})
 	m.invalidateTranscript()
 	m.refreshViewport()
 

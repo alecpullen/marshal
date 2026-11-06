@@ -226,7 +226,7 @@ func TestExitCommandsReachTheWarning(t *testing.T) {
 			if len(ctrl.accepted) != 0 {
 				t.Fatalf("%s accepted the ending before the user decided", name)
 			}
-			for _, msg := range m.state.Messages() {
+			for _, msg := range stateOf(m).Messages() {
 				if strings.Contains(msg.Content, "Goodbye") {
 					t.Fatalf("%s wrote the farewell before the user decided", name)
 				}
@@ -437,7 +437,7 @@ func TestWorkPromptNavigationDoesNotResolveOrStealSteering(t *testing.T) {
 	m, p := openWorkDetail(t, m, item)
 
 	// A question with the canonical request ID is pending.
-	m.state.SetPendingQuestion(&session.PendingQuestion{
+	stateOf(m).SetPendingQuestion(&session.PendingQuestion{
 		Key:       session.PromptKey{ID: "q-1", Kind: session.PromptQuestion},
 		Questions: []session.Question{{Question: "what?"}},
 	})
@@ -458,7 +458,7 @@ func TestWorkPromptNavigationDoesNotResolveOrStealSteering(t *testing.T) {
 	}
 
 	// The prompt is still pending: navigation never resolves it.
-	if m.state.PendingQuestion() == nil {
+	if stateOf(m).PendingQuestion() == nil {
 		t.Fatal("prompt navigation resolved the request")
 	}
 	// Steering is untouched.

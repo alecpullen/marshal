@@ -44,9 +44,9 @@ func TestTranscriptRespectsLeftWidth(t *testing.T) {
 		for _, w := range []int{120, 140, 180, 240} {
 			t.Run(c.name, func(t *testing.T) {
 				m := newTestModel(t)
-				m.state.Config.TUI.SidePanel.Enabled = true
+				stateOf(m).Config.TUI.SidePanel.Enabled = true
 				m.resize(w, 30)
-				m.state.AddMessage(session.RoleAssistant, c.body, c.ct)
+				stateOf(m).AddMessage(session.RoleAssistant, c.body, c.ct)
 				m.refreshViewport()
 
 				for i, l := range strings.Split(m.viewport.View(), "\n") {

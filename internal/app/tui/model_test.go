@@ -951,7 +951,7 @@ func TestScrollWorksWhileQuestionPending(t *testing.T) {
 
 func TestReconnectingActivityRendersInViewport(t *testing.T) {
 	m := newTestModel(t)
-	m.state.SetActivity(session.Activity{
+	stateOf(m).SetActivity(session.Activity{
 		Kind:      session.ActivityReconnecting,
 		Label:     "connection lost — retrying in 5s",
 		StartedAt: time.Unix(200, 0), // >200ms ago so the spinner glyph shows
@@ -1461,7 +1461,7 @@ func TestSDDCommandOpensPreflightThenStartsRun(t *testing.T) {
 
 func TestSDDPreflightMetaShowsVerifyTimeout(t *testing.T) {
 	m := newTestModel(t)
-	m.state.Config.SDD.VerifyTimeoutMS = 600000
+	stateOf(m).Config.SDD.VerifyTimeoutMS = 600000
 	m.openRunPreflight("sdd", "/path/plan.md", &acpwire.PlanPreflight{})
 	view := m.dock.View(m.width, m.height)
 	if !strings.Contains(view, "600000") {
@@ -1790,7 +1790,7 @@ func TestAgentFinishedAdvancesSheetBaseRef(t *testing.T) {
 	initSheetTestRepo(t, dir)
 
 	m := newTestModel(t)
-	m.state.SetWorkspace(session.Workspace{ProjectRoot: dir, ActiveRoot: dir})
+	stateOf(m).SetWorkspace(session.Workspace{ProjectRoot: dir, ActiveRoot: dir})
 	m.busy = true
 
 	// Rebase onto the clean repository, then commit a change: the turn end
@@ -1824,8 +1824,8 @@ func TestAgentFinishedAdvancesSheetBaseRef(t *testing.T) {
 
 func TestSuggestionsOffDisablesDeterministicSuggestions(t *testing.T) {
 	m := newTestModel(t)
-	m.state.Config.TUI.Suggestions = "off"
-	m.state.AddMessageFinalWithUsage(session.RoleAssistant, "Should I proceed?", session.ContentTypeMarkdown, 0, "")
+	stateOf(m).Config.TUI.Suggestions = "off"
+	stateOf(m).AddMessageFinalWithUsage(session.RoleAssistant, "Should I proceed?", session.ContentTypeMarkdown, 0, "")
 	m.busy = true
 
 	mm, _ := m.handleAgentFinished(agentFinishedMsg{err: nil})
@@ -1836,9 +1836,9 @@ func TestSuggestionsOffDisablesDeterministicSuggestions(t *testing.T) {
 
 func TestSuggestionUsesLastAssistantMessageBeforePlanHint(t *testing.T) {
 	m := newTestModel(t)
-	m.state.Config.TUI.Suggestions = "rules"
-	m.state.AddMessageFinalWithUsage(session.RoleAssistant, "Should I proceed?", session.ContentTypeMarkdown, 0, "")
-	m.state.AddMessage(session.RoleSystem, "To turn this approved plan into an executable SDD artifact, run /sdd new --from-last-plan.", session.ContentTypePlain)
+	stateOf(m).Config.TUI.Suggestions = "rules"
+	stateOf(m).AddMessageFinalWithUsage(session.RoleAssistant, "Should I proceed?", session.ContentTypeMarkdown, 0, "")
+	stateOf(m).AddMessage(session.RoleSystem, "To turn this approved plan into an executable SDD artifact, run /sdd new --from-last-plan.", session.ContentTypePlain)
 
 	m.computeSuggestion()
 	if m.suggestion != "yes" {
@@ -1848,7 +1848,7 @@ func TestSuggestionUsesLastAssistantMessageBeforePlanHint(t *testing.T) {
 
 func TestSuggestionSetOnTurnFinish(t *testing.T) {
 	m := newTestModel(t)
-	m.state.AddMessageFinalWithUsage(session.RoleAssistant, "Should I proceed with the refactor?", session.ContentTypeMarkdown, 0, "")
+	stateOf(m).AddMessageFinalWithUsage(session.RoleAssistant, "Should I proceed with the refactor?", session.ContentTypeMarkdown, 0, "")
 	m.busy = true
 
 	mm, _ := m.handleAgentFinished(agentFinishedMsg{err: nil})
@@ -1863,7 +1863,7 @@ func TestSuggestionSetOnTurnFinish(t *testing.T) {
 
 func TestSuggestionNotSetOnNonQuestionTurn(t *testing.T) {
 	m := newTestModel(t)
-	m.state.AddMessageFinalWithUsage(session.RoleAssistant, "I've finished the refactor and all tests pass.", session.ContentTypeMarkdown, 0, "")
+	stateOf(m).AddMessageFinalWithUsage(session.RoleAssistant, "I've finished the refactor and all tests pass.", session.ContentTypeMarkdown, 0, "")
 	m.busy = true
 
 	mm, _ := m.handleAgentFinished(agentFinishedMsg{err: nil})
@@ -1875,7 +1875,7 @@ func TestSuggestionNotSetOnNonQuestionTurn(t *testing.T) {
 
 func TestSuggestionNotSetOnFailedTurn(t *testing.T) {
 	m := newTestModel(t)
-	m.state.AddMessageFinalWithUsage(session.RoleAssistant, "Should I proceed?", session.ContentTypeMarkdown, 0, "")
+	stateOf(m).AddMessageFinalWithUsage(session.RoleAssistant, "Should I proceed?", session.ContentTypeMarkdown, 0, "")
 	m.busy = true
 
 	mm, _ := m.handleAgentFinished(agentFinishedMsg{err: errors.New("boom")})
@@ -1990,7 +1990,7 @@ func (f *fakeSuggestionProvider) Provide(ctx context.Context, lastMsg string) (s
 // and calls suggest for Suggest.
 func withSuggester(m Model, suggest func(context.Context, string) (string, error)) Model {
 	_, sess := inproc.New(inproc.Deps{
-		State:   m.state,
+		State:   stateOf(m),
 		Runner:  runnerOf(&testAgentRunner{}),
 		Suggest: suggest,
 	})
@@ -2000,10 +2000,10 @@ func withSuggester(m Model, suggest func(context.Context, string) (string, error
 
 func TestSuggestionLLMFallbackCmd(t *testing.T) {
 	m := newTestModel(t)
-	m.state.Config.TUI.Suggestions = "llm"
+	stateOf(m).Config.TUI.Suggestions = "llm"
 	fp := &fakeSuggestionProvider{response: "yes, go ahead"}
 	m = withSuggester(m, fp.Provide)
-	m.state.AddMessageFinalWithUsage(session.RoleAssistant, "I've finished the refactor and all tests pass.", session.ContentTypeMarkdown, 0, "")
+	stateOf(m).AddMessageFinalWithUsage(session.RoleAssistant, "I've finished the refactor and all tests pass.", session.ContentTypeMarkdown, 0, "")
 	m.busy = true
 
 	mm, cmd := m.handleAgentFinished(agentFinishedMsg{err: nil})
@@ -2049,7 +2049,7 @@ func TestSuggestionLLMFallbackCmd(t *testing.T) {
 
 func TestSuggestionLLMStaleDiscarded(t *testing.T) {
 	m := newTestModel(t)
-	m.state.Config.TUI.Suggestions = "llm"
+	stateOf(m).Config.TUI.Suggestions = "llm"
 	fp := &fakeSuggestionProvider{response: "stale"}
 	m = withSuggester(m, fp.Provide)
 	m.suggestionGen = 5
@@ -2065,10 +2065,10 @@ func TestSuggestionLLMStaleDiscarded(t *testing.T) {
 
 func TestSuggestionLLMOffNoCall(t *testing.T) {
 	m := newTestModel(t)
-	m.state.Config.TUI.Suggestions = "off"
+	stateOf(m).Config.TUI.Suggestions = "off"
 	fp := &fakeSuggestionProvider{response: "yes"}
 	m = withSuggester(m, fp.Provide)
-	m.state.AddMessageFinalWithUsage(session.RoleAssistant, "I've finished the refactor and all tests pass.", session.ContentTypeMarkdown, 0, "")
+	stateOf(m).AddMessageFinalWithUsage(session.RoleAssistant, "I've finished the refactor and all tests pass.", session.ContentTypeMarkdown, 0, "")
 	m.busy = true
 
 	mm, cmd := m.handleAgentFinished(agentFinishedMsg{err: nil})
@@ -2104,7 +2104,7 @@ func TestAgentFinishedAdvancesSheetBaseRefWhenCancelled(t *testing.T) {
 	initSheetTestRepo(t, dir)
 
 	m := newTestModel(t)
-	m.state.SetWorkspace(session.Workspace{ProjectRoot: dir, ActiveRoot: dir})
+	stateOf(m).SetWorkspace(session.Workspace{ProjectRoot: dir, ActiveRoot: dir})
 	m.busy = true
 	m.cancelling = true
 
@@ -2336,7 +2336,7 @@ func TestEscDuringApprovalDenies(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("no decision sent on Esc")
 	}
-	if m.state.PendingApproval() != nil {
+	if stateOf(m).PendingApproval() != nil {
 		t.Fatal("pending approval was not cleared")
 	}
 }
@@ -2676,7 +2676,7 @@ func TestSuccessPulseExpiresAfterDuration(t *testing.T) {
 func TestRefreshViewportCollapsesToolRun(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	for _, p := range []string{"budget.go", "runner.go", "execute.go"} {
-		m.state.LogToolCall(registry.AuditEvent{
+		stateOf(m).LogToolCall(registry.AuditEvent{
 			Timestamp:     time.Now(),
 			ToolName:      "file.read",
 			Args:          json.RawMessage(`{"path":"` + p + `"}`),
@@ -2692,13 +2692,13 @@ func TestRefreshViewportCollapsesToolRun(t *testing.T) {
 
 func TestCtrlGExpandsThinkingAndToolRuns(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
-	m.state.LogThinking(session.ThinkingEntry{
+	stateOf(m).LogThinking(session.ThinkingEntry{
 		Text:      "reasoning about the budget",
 		Duration:  2 * time.Second,
 		StartedAt: time.Unix(100, 0),
 	})
 	for _, p := range []string{"budget.go", "runner.go", "execute.go"} {
-		m.state.LogToolCall(registry.AuditEvent{
+		stateOf(m).LogToolCall(registry.AuditEvent{
 			Timestamp:     time.Now(),
 			ToolName:      "file.read",
 			Args:          json.RawMessage(`{"path":"` + p + `"}`),
@@ -2790,7 +2790,7 @@ func TestSlashCommandUnknown(t *testing.T) {
 	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m := updated.(*Model)
 
-	msgs := m.state.Messages()
+	msgs := stateOf(m).Messages()
 	if len(msgs) == 0 {
 		t.Fatal("expected error message for unknown command")
 	}
@@ -2844,10 +2844,10 @@ func TestSlashCommandClearMessages(t *testing.T) {
 	if f.called == 0 {
 		t.Fatal("expected the host to create a new session")
 	}
-	if m.state != newState {
+	if stateOf(m) != newState {
 		t.Fatal("expected model state to be swapped to the new session")
 	}
-	msgs := m.state.Messages()
+	msgs := stateOf(m).Messages()
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 system message after /new, got %d", len(msgs))
 	}
@@ -2955,7 +2955,7 @@ func TestSlashCommandNewBlockedWhenBusy(t *testing.T) {
 	if f.called > 0 {
 		t.Fatal("expected no new session to be created while busy")
 	}
-	if m.state != oldState {
+	if stateOf(m) != oldState {
 		t.Fatal("expected state to remain unchanged while busy")
 	}
 }
@@ -2980,10 +2980,10 @@ func TestSlashCommandNewWithName(t *testing.T) {
 	if f.lastName != "fix-auth" {
 		t.Fatalf("expected name %q, got %q", "fix-auth", f.lastName)
 	}
-	if m.state != newState {
+	if stateOf(m) != newState {
 		t.Fatal("expected model state to be swapped to the new session")
 	}
-	msgs := m.state.Messages()
+	msgs := stateOf(m).Messages()
 	if len(msgs) != 1 || !strings.Contains(msgs[0].Content, "fix-auth") {
 		t.Fatalf("expected confirmation naming the session, got: %s", msgs[0].Content)
 	}
@@ -3120,7 +3120,7 @@ func TestEnterOnSettingValuePopupSubmits(t *testing.T) {
 		t.Fatalf("input = %q, want empty (command should have been submitted)", val)
 	}
 	// A system message confirming the setting change should be present.
-	msgs := m.state.Messages()
+	msgs := stateOf(m).Messages()
 	var sawSettingMsg bool
 	for _, msg := range msgs {
 		if msg.Role == session.RoleSystem && strings.Contains(msg.Content, "shell.allow_network") {
@@ -3492,7 +3492,7 @@ func openTestApprovalEdit(t *testing.T, m Model, command string) Model {
 		Reason:       "runs a shell command",
 		ResponseChan: make(chan session.UserApprovalDecision, 1),
 	}
-	m.state.SetPendingApproval(tc)
+	stateOf(m).SetPendingApproval(tc)
 	m.approvalEdit = newApprovalEdit(m.sess.Pending().Approvals[0], max(m.leftWidth-4, 30))
 	return m
 }
@@ -3626,10 +3626,10 @@ func TestQuestionSettlementPreservesComposer(t *testing.T) {
 				Questions:    []session.Question{{Question: "Archive or delete?"}},
 				ResponseChan: make(chan []session.Answer, 1),
 			}
-			m.state.SetPendingQuestion(q)
+			stateOf(m).SetPendingQuestion(q)
 			m = tc.drive(m)
 
-			if m.state.PendingQuestion() != nil {
+			if stateOf(m).PendingQuestion() != nil {
 				t.Fatal("pending question not cleared after settlement")
 			}
 			assertDraftIntact(t, m, want, "after settlement")
@@ -3644,7 +3644,7 @@ func TestQuestionSettlementPreservesComposer(t *testing.T) {
 
 			// The draft still submits with the chip expanded, in place.
 			m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
-			msgs := m.state.Messages()
+			msgs := stateOf(m).Messages()
 			if len(msgs) == 0 {
 				t.Fatal("expected a user message after submitting the draft")
 			}
@@ -3681,20 +3681,20 @@ func TestQuestionCancellationAndReplacementKeepDraft(t *testing.T) {
 		Questions:    []session.Question{{Question: "Archive or delete?"}},
 		ResponseChan: make(chan []session.Answer, 1),
 	}
-	if _, err := m.state.RegisterQuestion(context.Background(), q1); err != nil {
+	if _, err := stateOf(m).RegisterQuestion(context.Background(), q1); err != nil {
 		t.Fatalf("RegisterQuestion: %v", err)
 	}
 	// Open the form, then interrupt it: CancelPrompt is the claim Send now makes.
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
 	m = drainCmds(updated.(Model), cmd)
-	if !m.state.CancelPrompt(q1.Key, session.ErrSendNow) {
+	if !stateOf(m).CancelPrompt(q1.Key, session.ErrSendNow) {
 		t.Fatal("CancelPrompt did not win the interrupted question")
 	}
-	if m.state.PendingQuestion() != nil {
+	if stateOf(m).PendingQuestion() != nil {
 		t.Fatal("canceled question still pending")
 	}
 	assertDraftIntact(t, m, want, "after interruption")
-	if n := len(m.state.Messages()); n != 0 {
+	if n := len(stateOf(m).Messages()); n != 0 {
 		t.Fatalf("interruption sent %d message(s); it must not submit the draft", n)
 	}
 
@@ -3717,7 +3717,7 @@ func TestQuestionCancellationAndReplacementKeepDraft(t *testing.T) {
 		Questions:    []session.Question{{Question: "Continue?"}},
 		ResponseChan: make(chan []session.Answer, 1),
 	}
-	m.state.SetPendingQuestion(q2)
+	stateOf(m).SetPendingQuestion(q2)
 	m = answerPendingQuestion(m)
 
 	select {
@@ -3728,17 +3728,17 @@ func TestQuestionCancellationAndReplacementKeepDraft(t *testing.T) {
 	default:
 		t.Fatal("replacement question was never answered")
 	}
-	if m.state.PendingQuestion() != nil {
+	if stateOf(m).PendingQuestion() != nil {
 		t.Fatal("replacement question still pending after settlement")
 	}
 	assertDraftIntact(t, m, want, "after replacement settlement")
-	if n := len(m.state.Messages()); n != 0 {
+	if n := len(stateOf(m).Messages()); n != 0 {
 		t.Fatalf("question settlement sent %d message(s); it must not submit the draft", n)
 	}
 
 	// The preserved draft still submits, expanded, once the user asks for it.
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
-	msgs := m.state.Messages()
+	msgs := stateOf(m).Messages()
 	if len(msgs) != 1 || msgs[0].Role != session.RoleUser {
 		t.Fatalf("messages = %+v, want one user message", msgs)
 	}
@@ -3833,7 +3833,7 @@ func TestQuestionPartialSkipSettlesThroughModel(t *testing.T) {
 				Questions:    questions,
 				ResponseChan: make(chan []session.Answer, 1),
 			}
-			if _, err := m.state.RegisterQuestion(context.Background(), q); err != nil {
+			if _, err := stateOf(m).RegisterQuestion(context.Background(), q); err != nil {
 				t.Fatalf("RegisterQuestion: %v", err)
 			}
 
@@ -3848,14 +3848,14 @@ func TestQuestionPartialSkipSettlesThroughModel(t *testing.T) {
 
 			assertQuestionAnswers(t, questionSettlement(t, q, "after the partial skip"), questions,
 				[]string{"alice", "green", session.AnswerUnanswered}, "after the partial skip")
-			if m.state.PendingQuestion() != nil {
+			if stateOf(m).PendingQuestion() != nil {
 				t.Fatal("the question slot did not clear after settlement")
 			}
 			if m.questionModel != nil {
 				t.Fatal("the question form survived settlement")
 			}
 			assertDraftIntact(t, m, want, "after the partial skip")
-			if n := len(m.state.Messages()); n != 0 {
+			if n := len(stateOf(m).Messages()); n != 0 {
 				t.Fatalf("the partial skip submitted %d message(s); it must not submit the draft", n)
 			}
 		})
@@ -3902,7 +3902,7 @@ func TestQuestionLiteralOtherSettlesThroughModel(t *testing.T) {
 				Questions:    []session.Question{tc.question},
 				ResponseChan: make(chan []session.Answer, 1),
 			}
-			if _, err := m.state.RegisterQuestion(context.Background(), q); err != nil {
+			if _, err := stateOf(m).RegisterQuestion(context.Background(), q); err != nil {
 				t.Fatalf("RegisterQuestion: %v", err)
 			}
 			m = openQuestionThroughModel(t, m)
@@ -3925,7 +3925,7 @@ func TestQuestionLiteralOtherSettlesThroughModel(t *testing.T) {
 			if custom := *qm.others[0]; custom != "" {
 				t.Fatalf("the custom-answer input recorded %q for a listed option", custom)
 			}
-			if m.state.PendingQuestion() != nil {
+			if stateOf(m).PendingQuestion() != nil {
 				t.Fatal("the question slot did not clear after settlement")
 			}
 		})
@@ -3949,7 +3949,7 @@ func TestQuestionPartialSkipCannotSettleReplacement(t *testing.T) {
 		},
 		ResponseChan: make(chan []session.Answer, 1),
 	}
-	if _, err := m.state.RegisterQuestion(context.Background(), first); err != nil {
+	if _, err := stateOf(m).RegisterQuestion(context.Background(), first); err != nil {
 		t.Fatalf("RegisterQuestion: %v", err)
 	}
 	// Complete a prefix: question 1 is submitted and the form moves to
@@ -3963,7 +3963,7 @@ func TestQuestionPartialSkipCannotSettleReplacement(t *testing.T) {
 
 	// Send now claims the interrupted question. The form still holds "alice",
 	// but the cancellation settles the owner with the sentinel.
-	if !m.state.CancelPrompt(first.Key, session.ErrSendNow) {
+	if !stateOf(m).CancelPrompt(first.Key, session.ErrSendNow) {
 		t.Fatal("CancelPrompt did not win the interrupted question")
 	}
 	assertQuestionAnswers(t, questionSettlement(t, first, "after the interruption"), first.Questions,
@@ -3973,10 +3973,10 @@ func TestQuestionPartialSkipCannotSettleReplacement(t *testing.T) {
 		Questions:    []session.Question{{Question: "Continue?"}, {Question: "Where to?"}},
 		ResponseChan: make(chan []session.Answer, 1),
 	}
-	if _, err := m.state.RegisterQuestion(context.Background(), replacement); err != nil {
+	if _, err := stateOf(m).RegisterQuestion(context.Background(), replacement); err != nil {
 		t.Fatalf("RegisterQuestion (replacement): %v", err)
 	}
-	if m.state.PendingQuestion() != replacement {
+	if stateOf(m).PendingQuestion() != replacement {
 		t.Fatal("the replacement does not hold the pending slot")
 	}
 
@@ -3991,7 +3991,7 @@ func TestQuestionPartialSkipCannotSettleReplacement(t *testing.T) {
 	if pending := m.sess.Pending().Question; pending == nil || m.questionModel.q.Key != pending.Key {
 		t.Fatal("the stale form was not rebuilt for the replacement")
 	}
-	if m.state.PendingQuestion() != replacement {
+	if stateOf(m).PendingQuestion() != replacement {
 		t.Fatal("the queued navigation settled or cleared the replacement")
 	}
 	select {
@@ -4003,13 +4003,13 @@ func TestQuestionPartialSkipCannotSettleReplacement(t *testing.T) {
 	// Escape reaches the replacement's own form, so the replacement is skipped
 	// by its own request with its own questions.
 	m = sendMsg(m, tea.KeyPressMsg{Code: tea.KeyEscape})
-	if m.state.PendingQuestion() != nil {
+	if stateOf(m).PendingQuestion() != nil {
 		t.Fatal("the replacement stayed pending after its own Escape")
 	}
 	assertQuestionAnswers(t, questionSettlement(t, replacement, "after the replacement's own Escape"),
 		replacement.Questions, []string{session.AnswerUnanswered, session.AnswerUnanswered},
 		"after the replacement's own Escape")
-	if n := len(m.state.Messages()); n != 0 {
+	if n := len(stateOf(m).Messages()); n != 0 {
 		t.Fatalf("the replacement settlement submitted %d message(s); it must not submit the draft", n)
 	}
 	assertDraftIntact(t, m, want, "after the stale form was retired")
@@ -4092,7 +4092,7 @@ func TestApprovalEditPreservesComposer(t *testing.T) {
 
 		// The preserved draft submits, expanded, and never carries the edit.
 		m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
-		msgs := m.state.Messages()
+		msgs := stateOf(m).Messages()
 		if len(msgs) != 1 || msgs[0].Role != session.RoleUser {
 			t.Fatalf("messages = %+v, want one user message", msgs)
 		}
@@ -4244,7 +4244,7 @@ func TestApprovalEditSendNowKeepsBothDrafts(t *testing.T) {
 	if !f.m.editingApproval() {
 		t.Fatal("the approval editor did not own the input")
 	}
-	tc := f.m.state.PendingApproval()
+	tc := stateOf(f.m).PendingApproval()
 
 	// Accepted Send now: the composer carries only its own text and the edit
 	// keeps both the command and the chat draft.
@@ -4322,7 +4322,7 @@ func TestApprovalEditSendNowKeepsBothDrafts(t *testing.T) {
 // running job count from the session status.
 func TestStatusLineShowsTheRunningJobCount(t *testing.T) {
 	m := newViewTestModel(t, 100, 24)
-	m.state.SetRunningJobsCount(3)
+	stateOf(m).SetRunningJobsCount(3)
 	line := m.renderStatusLine(100)
 	if !strings.Contains(stripANSI(line), "jobs 3") {
 		t.Fatalf("status line missing polled job count:\n%s", line)
@@ -4334,19 +4334,19 @@ func TestEnterWhileBusyEnqueuesSteering(t *testing.T) {
 	m.busy = true
 	m.input.SetValue("also update the README")
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
-	if len(m.state.SteeringQueue()) != 1 {
-		t.Fatalf("queue = %v, want 1 item", m.state.SteeringQueue())
+	if len(stateOf(m).SteeringQueue()) != 1 {
+		t.Fatalf("queue = %v, want 1 item", stateOf(m).SteeringQueue())
 	}
 }
 
 func TestCtrlXClearsSteering(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
 	m.busy = true
-	m.state.PushSteering("a")
-	m.state.PushSteering("b")
+	stateOf(m).PushSteering("a")
+	stateOf(m).PushSteering("b")
 	m = sendKey(m, tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
-	if len(m.state.SteeringQueue()) != 0 {
-		t.Fatalf("queue not cleared: %v", m.state.SteeringQueue())
+	if len(stateOf(m).SteeringQueue()) != 0 {
+		t.Fatalf("queue not cleared: %v", stateOf(m).SteeringQueue())
 	}
 	if n := len(m.sess.Status().Steering.Queue); n != 0 {
 		t.Fatalf("queued = %d, want 0", n)
@@ -4357,17 +4357,17 @@ func TestEnterOnEmptyDrainsQueuedFollowUp(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
 	// runner is nil, so submitTurn just appends the message to state.
 	// We pre-seed the queue and verify Enter pops the oldest.
-	m.state.PushSteering("first follow-up")
-	m.state.PushSteering("second follow-up")
+	stateOf(m).PushSteering("first follow-up")
+	stateOf(m).PushSteering("second follow-up")
 	// Busy must be false for the follow-up path to fire.
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
-	if len(m.state.SteeringQueue()) != 1 {
-		t.Fatalf("queue = %v, want 1 remaining", m.state.SteeringQueue())
+	if len(stateOf(m).SteeringQueue()) != 1 {
+		t.Fatalf("queue = %v, want 1 remaining", stateOf(m).SteeringQueue())
 	}
-	if m.state.SteeringQueue()[0] != "second follow-up" {
-		t.Fatalf("remaining = %q, want %q", m.state.SteeringQueue()[0], "second follow-up")
+	if stateOf(m).SteeringQueue()[0] != "second follow-up" {
+		t.Fatalf("remaining = %q, want %q", stateOf(m).SteeringQueue()[0], "second follow-up")
 	}
-	messages := m.state.Messages()
+	messages := stateOf(m).Messages()
 	if len(messages) != 1 || messages[0].Content != "first follow-up" {
 		t.Fatalf("follow-up not submitted; messages = %v", messages)
 	}
@@ -4376,8 +4376,8 @@ func TestEnterOnEmptyDrainsQueuedFollowUp(t *testing.T) {
 func TestCancelTurnDropsSteeringQueue(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
 	m.busy = true
-	m.state.PushSteering("a")
-	m.state.PushSteering("b")
+	stateOf(m).PushSteering("a")
+	stateOf(m).PushSteering("b")
 	cancelled := false
 	m.agentCancel = func() { cancelled = true }
 	for range 2 {
@@ -4395,8 +4395,8 @@ func TestCancelTurnDropsSteeringQueue(t *testing.T) {
 	// Simulate the agent finishing.
 	updated, _ := m.Update(agentFinishedMsg{err: context.Canceled})
 	m = updated.(Model)
-	if len(m.state.SteeringQueue()) != 0 {
-		t.Fatalf("queue not dropped on agent finish: %v", m.state.SteeringQueue())
+	if len(stateOf(m).SteeringQueue()) != 0 {
+		t.Fatalf("queue not dropped on agent finish: %v", stateOf(m).SteeringQueue())
 	}
 	if n := len(m.sess.Status().Steering.Queue); n != 0 {
 		t.Fatalf("queued = %d, want 0", n)
@@ -4414,7 +4414,7 @@ func TestCancelTurnDoesNotClearSteeringWhenAgentAlreadyFinished(t *testing.T) {
 	m := newTestModel(t)
 	m.busy = true
 	m.cancelling = true // cancelTurn was called, set the flag
-	m.state.PushSteering("pending")
+	stateOf(m).PushSteering("pending")
 	// Simulate agent finishing first (before cancel took effect).
 	updated, _ := m.Update(agentFinishedMsg{err: nil})
 	m = updated.(Model)
@@ -4436,12 +4436,12 @@ func TestAgentFinishedFlushesQueuedSteering(t *testing.T) {
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
 	m = withPromptRunner(m, runner)
 	m.busy = true
-	m.state.PushSteering("deliver me after the turn")
+	stateOf(m).PushSteering("deliver me after the turn")
 
 	updated, cmd := m.Update(agentFinishedMsg{err: nil})
 	m = updated.(Model)
 
-	if q := m.state.SteeringQueue(); len(q) != 0 {
+	if q := stateOf(m).SteeringQueue(); len(q) != 0 {
 		t.Fatalf("queue = %v, want the entry delivered", q)
 	}
 	if n := len(m.sess.Status().Steering.Queue); n != 0 {
@@ -4461,7 +4461,7 @@ func TestFlushQueuedSteeringStartsFollowUpTurn(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
 	m = withPromptRunner(m, runner)
-	m.state.PushSteering("deliver me after the turn")
+	stateOf(m).PushSteering("deliver me after the turn")
 
 	cmd := m.flushQueuedSteering()
 	if cmd == nil {
@@ -4470,7 +4470,7 @@ func TestFlushQueuedSteeringStartsFollowUpTurn(t *testing.T) {
 	if !m.busy {
 		t.Fatal("busy = false, want the follow-up turn to have started")
 	}
-	if q := m.state.SteeringQueue(); len(q) != 0 {
+	if q := stateOf(m).SteeringQueue(); len(q) != 0 {
 		t.Fatalf("queue = %v, want the entry popped", q)
 	}
 
@@ -4507,12 +4507,12 @@ func TestAgentFinishedKeepsQueueOnFailure(t *testing.T) {
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
 	m = withPromptRunner(m, runner)
 	m.busy = true
-	m.state.PushSteering("retry me")
+	stateOf(m).PushSteering("retry me")
 
 	updated, _ := m.Update(agentFinishedMsg{err: errors.New("boom")})
 	m = updated.(Model)
 
-	if q := m.state.SteeringQueue(); len(q) != 1 || q[0] != "retry me" {
+	if q := stateOf(m).SteeringQueue(); len(q) != 1 || q[0] != "retry me" {
 		t.Fatalf("queue = %v, want the entry kept for a deliberate retry", q)
 	}
 	if m.busy {
@@ -4884,12 +4884,12 @@ func TestQuestionMarkTypesLiterallyInNonEmptyInput(t *testing.T) {
 
 	// Type some text first.
 	m = sendKey(m, tea.KeyPressMsg{Text: "hello"})
-	before := len(m.state.Messages())
+	before := len(stateOf(m).Messages())
 
 	// Press ? — should append to the input, NOT print help.
 	m = sendKey(m, tea.KeyPressMsg{Text: "?"})
 
-	if len(m.state.Messages()) != before {
+	if len(stateOf(m).Messages()) != before {
 		t.Fatal("? should not print help when input has content")
 	}
 	if !strings.Contains(m.input.Value(), "?") {
@@ -5141,7 +5141,7 @@ func TestModePickerMarksCurrentAndApplies(t *testing.T) {
 
 	updated, _ = m.Update(picker.PickedMsg{Value: "ask"})
 	m = asModel(t, updated)
-	if got := string(m.state.InteractionState().Mode); got != "ask" {
+	if got := string(stateOf(m).InteractionState().Mode); got != "ask" {
 		t.Fatalf("picking Ask should set approvalMode, got %q", got)
 	}
 	msgs := state.Messages()
@@ -5163,7 +5163,7 @@ func TestModeWithArgDispatchesDirectly(t *testing.T) {
 	if m.dock.IsOpen() {
 		t.Fatal("/mode ask must not open the picker")
 	}
-	if got := string(m.state.InteractionState().Mode); got != "ask" {
+	if got := string(stateOf(m).InteractionState().Mode); got != "ask" {
 		t.Fatalf("approvalMode = %q, want ask", got)
 	}
 }
@@ -5179,7 +5179,7 @@ func TestTabTogglesAskActAndClearsAuto(t *testing.T) {
 	m := testModelWith(inproc.Deps{State: state, SetInteraction: state.ApplyInteraction})
 	m.resize(80, 24)
 
-	if got := string(m.state.InteractionState().Mode); got != "act" {
+	if got := string(stateOf(m).InteractionState().Mode); got != "act" {
 		t.Fatalf("initial approvalMode = %q, want act", got)
 	}
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
@@ -5237,7 +5237,7 @@ func TestTabAcceptsCompletionWhenPopupOpen(t *testing.T) {
 		t.Fatal("cmd popup should be visible after /")
 	}
 
-	initialMode := string(m.state.InteractionState().Mode) // should be "default"
+	initialMode := string(stateOf(m).InteractionState().Mode) // should be "default"
 
 	// Tab should accept the completion, not cycle mode
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
@@ -5245,8 +5245,8 @@ func TestTabAcceptsCompletionWhenPopupOpen(t *testing.T) {
 	if m.cmdPopup.isVisible() {
 		t.Fatal("cmd popup should be dismissed after Tab")
 	}
-	if string(m.state.InteractionState().Mode) != initialMode {
-		t.Fatalf("approvalMode changed from %q to %q, should be unchanged", initialMode, string(m.state.InteractionState().Mode))
+	if string(stateOf(m).InteractionState().Mode) != initialMode {
+		t.Fatalf("approvalMode changed from %q to %q, should be unchanged", initialMode, string(stateOf(m).InteractionState().Mode))
 	}
 	// Input should have been replaced with the accepted command
 	if !strings.HasPrefix(m.input.Value(), "/test") {
@@ -5274,8 +5274,8 @@ func TestTabIgnoredDuringApproval(t *testing.T) {
 
 	sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
 
-	if string(m.state.InteractionState().Mode) != "act" {
-		t.Fatalf("approvalMode = %q, want \"act\" (unchanged during approval)", string(m.state.InteractionState().Mode))
+	if string(stateOf(m).InteractionState().Mode) != "act" {
+		t.Fatalf("approvalMode = %q, want \"act\" (unchanged during approval)", string(stateOf(m).InteractionState().Mode))
 	}
 	if state.PendingApproval() == nil {
 		t.Fatal("pending approval was cleared by Tab")
@@ -5416,14 +5416,14 @@ func TestShiftTabDuringPopupIsNoOp(t *testing.T) {
 		t.Fatal("cmd popup should be visible after /")
 	}
 
-	initialMode := string(m.state.InteractionState().Mode)
+	initialMode := string(stateOf(m).InteractionState().Mode)
 	initialInput := m.input.Value()
 
 	// Shift+Tab while popup is visible should be a no-op
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 
-	if string(m.state.InteractionState().Mode) != initialMode {
-		t.Fatalf("approvalMode changed from %q to %q, should be unchanged", initialMode, string(m.state.InteractionState().Mode))
+	if string(stateOf(m).InteractionState().Mode) != initialMode {
+		t.Fatalf("approvalMode changed from %q to %q, should be unchanged", initialMode, string(stateOf(m).InteractionState().Mode))
 	}
 	if m.input.Value() != initialInput {
 		t.Fatalf("input changed from %q to %q, should be unchanged", initialInput, m.input.Value())
@@ -5498,7 +5498,7 @@ func TestCtrlCCancelsTurn(t *testing.T) {
 			m := testModelWith(deps)
 			m.busy = true
 			m.agentCancel = func() { cancelled = true }
-			m.state.PushSteering("pending")
+			stateOf(m).PushSteering("pending")
 
 			cmd := tt.trigger(&m)
 			// Every ending path settles through the session first: the turn
@@ -5511,7 +5511,7 @@ func TestCtrlCCancelsTurn(t *testing.T) {
 			if m.agentCancel != nil {
 				t.Fatal("agentCancel should be cleared")
 			}
-			if len(m.state.SteeringQueue()) != 0 {
+			if len(stateOf(m).SteeringQueue()) != 0 {
 				t.Fatal("steering queue should be cleared")
 			}
 			if n := len(m.sess.Status().Steering.Queue); n != 0 {
@@ -5586,7 +5586,7 @@ func TestSuccessfulTurnClearsNotice(t *testing.T) {
 
 func TestDockedSettingsBrowserAppliesChangeWhenBlockedAndRetriesOnUnblock(t *testing.T) {
 	m := newTestModel(t)
-	m.state.WorkingDir = t.TempDir()
+	stateOf(m).WorkingDir = t.TempDir()
 	m.busy = true
 	m.resize(100, 40)
 
@@ -5598,13 +5598,13 @@ func TestDockedSettingsBrowserAppliesChangeWhenBlockedAndRetriesOnUnblock(t *tes
 	// Toggle while an agent turn is active: the edit must apply in memory
 	// even though persistence is blocked, and a blocked receipt is emitted.
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
-	if !m.state.Config.Tools.Shell.AllowNetwork {
+	if !stateOf(m).Config.Tools.Shell.AllowNetwork {
 		t.Fatal("blocked browser edit must keep the change in memory")
 	}
 	if !m.configSavePending {
 		t.Fatal("blocked browser edit must mark config save pending")
 	}
-	msgs := m.state.Messages()
+	msgs := stateOf(m).Messages()
 	last := msgs[len(msgs)-1].Content
 	if !strings.Contains(last, "✗") || !strings.Contains(last, "save blocked") {
 		t.Fatalf("blocked edit receipt = %q", last)
@@ -5617,14 +5617,14 @@ func TestDockedSettingsBrowserAppliesChangeWhenBlockedAndRetriesOnUnblock(t *tes
 	if m.configSavePending {
 		t.Fatal("successful unblock retry must clear pending flag")
 	}
-	last = m.state.Messages()[len(m.state.Messages())-1].Content
+	last = stateOf(m).Messages()[len(stateOf(m).Messages())-1].Content
 	if !strings.Contains(last, "✓") {
 		t.Fatalf("unblock retry receipt = %q", last)
 	}
 
 	loaded, err := config.Load(config.LoadOptions{
-		HomeDir:    filepath.Join(m.state.WorkingDir, "no-home"),
-		WorkingDir: m.state.WorkingDir,
+		HomeDir:    filepath.Join(stateOf(m).WorkingDir, "no-home"),
+		WorkingDir: stateOf(m).WorkingDir,
 	})
 	if err != nil {
 		t.Fatalf("load saved config: %v", err)
@@ -5638,33 +5638,33 @@ func TestDockedSettingsBrowserAppliesChangeWhenBlockedAndRetriesOnUnblock(t *tes
 
 func TestSetCommandAppliesAndPrintsReceipt(t *testing.T) {
 	m := newTestModel(t)
-	m.state.WorkingDir = t.TempDir()
+	stateOf(m).WorkingDir = t.TempDir()
 	m.dispatchCommand("/set shell.allow_network on")
-	if !m.state.Config.Tools.Shell.AllowNetwork {
+	if !stateOf(m).Config.Tools.Shell.AllowNetwork {
 		t.Error("config not applied")
 	}
-	msgs := m.state.Messages()
+	msgs := stateOf(m).Messages()
 	last := msgs[len(msgs)-1].Content
 	for _, want := range []string{"✓", "shell.allow_network", "→ on", ".marshal/config.toml"} {
 		if !strings.Contains(last, want) {
 			t.Errorf("receipt %q missing %q", last, want)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(m.state.WorkingDir, ".marshal", "config.toml")); err != nil {
+	if _, err := os.Stat(filepath.Join(stateOf(m).WorkingDir, ".marshal", "config.toml")); err != nil {
 		t.Errorf("project config not written: %v", err)
 	}
 }
 
 func TestSetCommandPersistsPrivacyToggles(t *testing.T) {
 	m := newTestModel(t)
-	m.state.WorkingDir = t.TempDir()
+	stateOf(m).WorkingDir = t.TempDir()
 
 	m.dispatchCommand("/set privacy.redact_secrets off")
 	m.dispatchCommand("/set privacy.include_gitignored on")
 
 	loaded, err := config.Load(config.LoadOptions{
-		HomeDir:    filepath.Join(m.state.WorkingDir, "no-home"),
-		WorkingDir: m.state.WorkingDir,
+		HomeDir:    filepath.Join(stateOf(m).WorkingDir, "no-home"),
+		WorkingDir: stateOf(m).WorkingDir,
 	})
 	if err != nil {
 		t.Fatalf("load saved project config: %v", err)
@@ -5685,17 +5685,17 @@ func TestSetCommandReloadsRuntimeBeforeReportingSuccess(t *testing.T) {
 			return nil
 		}
 	})
-	m.state.WorkingDir = t.TempDir()
+	stateOf(m).WorkingDir = t.TempDir()
 
 	m.dispatchCommand("/set shell.allow_network on")
 
 	if !reloaded.Tools.Shell.AllowNetwork {
 		t.Fatal("the runtime reload did not receive the /set config")
 	}
-	if !m.state.Config.Tools.Shell.AllowNetwork {
+	if !stateOf(m).Config.Tools.Shell.AllowNetwork {
 		t.Fatal("successful /set did not apply the config to the session")
 	}
-	if got := m.state.Messages()[len(m.state.Messages())-1].Content; !strings.Contains(got, "✓") {
+	if got := stateOf(m).Messages()[len(stateOf(m).Messages())-1].Content; !strings.Contains(got, "✓") {
 		t.Fatalf("successful /set receipt = %q, want success", got)
 	}
 }
@@ -5706,7 +5706,7 @@ func TestSetCommandReloadFailureDoesNotReportSuccess(t *testing.T) {
 			return errors.New("runtime unavailable")
 		}
 	})
-	m.state.WorkingDir = t.TempDir()
+	stateOf(m).WorkingDir = t.TempDir()
 	m.settingsRegistry()
 
 	m.dispatchCommand("/set shell.allow_network on")
@@ -5714,17 +5714,17 @@ func TestSetCommandReloadFailureDoesNotReportSuccess(t *testing.T) {
 	// The runtime reloader has already swapped the new config into the live
 	// runtime before its cleanup step failed (same contract as the
 	// settings.ChangedMsg handler) — the save itself succeeded too, so
-	// m.state.Config must reflect what's actually on disk and in the
+	// stateOf(m).Config must reflect what's actually on disk and in the
 	// runtime, not the pre-/set value. See
 	// TestSetCommandReloadFailureSyncsStateConfig for the focused
 	// regression covering this specifically.
-	if !m.state.Config.Tools.Shell.AllowNetwork {
+	if !stateOf(m).Config.Tools.Shell.AllowNetwork {
 		t.Fatal("failed runtime reload must still sync the live session config with what was saved")
 	}
 	if m.setReg != nil {
 		t.Fatal("failed runtime reload must invalidate the stale /set registry")
 	}
-	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	got := stateOf(m).Messages()[len(stateOf(m).Messages())-1].Content
 	if strings.Contains(got, "✓") || !strings.Contains(got, "live reload failed") {
 		t.Fatalf("reload failure receipt = %q", got)
 	}
@@ -5733,11 +5733,11 @@ func TestSetCommandReloadFailureDoesNotReportSuccess(t *testing.T) {
 // TestSetCommandReloadFailureSyncsStateConfig is the focused regression for
 // the handleSetCommand reload-error path: config.SaveProjectConfig already
 // wrote the new value to disk and the runtime reload already swapped it into
-// the live runtime before its cleanup failed, so m.state.Config (and
+// the live runtime before its cleanup failed, so stateOf(m).Config (and
 // everything applyNewConfig invalidates/refreshes) must stay aligned with
 // that saved/live config — exactly like the settings.ChangedMsg handler's
 // reload-error branch already does. Before the fix, handleSetCommand left
-// m.state.Config pointing at the stale pre-/set value while m.setReg was
+// stateOf(m).Config pointing at the stale pre-/set value while m.setReg was
 // invalidated, so the next /set would rebuild its registry from the stale
 // config and silently revert the change that was just persisted.
 func TestLayerReloaderFailureDoesNotOverwriteConfigLayers(t *testing.T) {
@@ -5747,11 +5747,11 @@ func TestLayerReloaderFailureDoesNotOverwriteConfigLayers(t *testing.T) {
 			return config.Layers{}, false
 		}
 	})
-	m.state.WorkingDir = t.TempDir()
+	stateOf(m).WorkingDir = t.TempDir()
 
 	// Seed the session's layers with a non-zero snapshot that the model can
 	// check remains in place after a failed reload.
-	m.state.SetLayers(config.Layers{Default: config.Default(), User: config.Default(), Merged: config.Default()})
+	stateOf(m).SetLayers(config.Layers{Default: config.Default(), User: config.Default(), Merged: config.Default()})
 
 	// Trigger persistAndReload via /set. The save should succeed and
 	// persistAndReload should return nil errors, but the layerReloader
@@ -5772,17 +5772,17 @@ func TestSetCommandReloadFailureSyncsStateConfig(t *testing.T) {
 			return errors.New("runtime unavailable")
 		}
 	})
-	m.state.WorkingDir = t.TempDir()
+	stateOf(m).WorkingDir = t.TempDir()
 
 	m.dispatchCommand("/set shell.allow_network on")
 
-	if !m.state.Config.Tools.Shell.AllowNetwork {
-		t.Fatal("m.state.Config must reflect the saved value after a reload failure")
+	if !stateOf(m).Config.Tools.Shell.AllowNetwork {
+		t.Fatal("stateOf(m).Config must reflect the saved value after a reload failure")
 	}
 
 	loaded, err := config.Load(config.LoadOptions{
-		HomeDir:    filepath.Join(m.state.WorkingDir, "no-home"),
-		WorkingDir: m.state.WorkingDir,
+		HomeDir:    filepath.Join(stateOf(m).WorkingDir, "no-home"),
+		WorkingDir: stateOf(m).WorkingDir,
 	})
 	if err != nil {
 		t.Fatalf("load saved project config: %v", err)
@@ -5790,9 +5790,9 @@ func TestSetCommandReloadFailureSyncsStateConfig(t *testing.T) {
 	if !loaded.Tools.Shell.AllowNetwork {
 		t.Fatal("the value should have been saved to disk before the reload failed")
 	}
-	if m.state.Config.Tools.Shell.AllowNetwork != loaded.Tools.Shell.AllowNetwork {
-		t.Fatalf("m.state.Config (AllowNetwork=%v) diverges from what was saved to disk (AllowNetwork=%v)",
-			m.state.Config.Tools.Shell.AllowNetwork, loaded.Tools.Shell.AllowNetwork)
+	if stateOf(m).Config.Tools.Shell.AllowNetwork != loaded.Tools.Shell.AllowNetwork {
+		t.Fatalf("stateOf(m).Config (AllowNetwork=%v) diverges from what was saved to disk (AllowNetwork=%v)",
+			stateOf(m).Config.Tools.Shell.AllowNetwork, loaded.Tools.Shell.AllowNetwork)
 	}
 }
 
@@ -5801,7 +5801,7 @@ func TestSetCommandReloadFailureSyncsStateConfig(t *testing.T) {
 // so a later edit/save in the browser does not silently revert the /set change.
 func TestSetRefreshesOpenBrowserRegression(t *testing.T) {
 	m := newTestModel(t)
-	m.state.WorkingDir = t.TempDir()
+	stateOf(m).WorkingDir = t.TempDir()
 
 	// Open the browser filtered to a setting other than the one /set will touch.
 	m.openSettingsBrowser("privacy.redact_secrets")
@@ -5829,16 +5829,16 @@ func TestSetRefreshesOpenBrowserRegression(t *testing.T) {
 	// wrote the browser's stale pre-/set config back to disk.
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
 
-	if m.state.Config.Tools.Shell.AllowNetwork != true {
+	if stateOf(m).Config.Tools.Shell.AllowNetwork != true {
 		t.Fatal("/set shell.allow_network on was reverted by the browser save")
 	}
-	if m.state.Config.Privacy.RedactSecrets != false {
+	if stateOf(m).Config.Privacy.RedactSecrets != false {
 		t.Fatal("browser toggle of privacy.redact_secrets did not apply")
 	}
 
 	loaded, err := config.Load(config.LoadOptions{
-		HomeDir:    filepath.Join(m.state.WorkingDir, "no-home"),
-		WorkingDir: m.state.WorkingDir,
+		HomeDir:    filepath.Join(stateOf(m).WorkingDir, "no-home"),
+		WorkingDir: stateOf(m).WorkingDir,
 	})
 	if err != nil {
 		t.Fatalf("load saved project config: %v", err)
@@ -5857,14 +5857,14 @@ func TestSetCommandSaveFailureKeepsSessionConfig(t *testing.T) {
 	if err := os.WriteFile(blockingPath, nil, 0o644); err != nil {
 		t.Fatalf("create blocking file: %v", err)
 	}
-	m.state.WorkingDir = blockingPath
+	stateOf(m).WorkingDir = blockingPath
 
 	m.dispatchCommand("/set shell.allow_network on")
 
-	if !m.state.Config.Tools.Shell.AllowNetwork {
+	if !stateOf(m).Config.Tools.Shell.AllowNetwork {
 		t.Fatal("save failure must keep the /set change in the session")
 	}
-	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	got := stateOf(m).Messages()[len(stateOf(m).Messages())-1].Content
 	if !strings.Contains(got, "applied in session, but save failed") {
 		t.Fatalf("save failure receipt = %q", got)
 	}
@@ -5876,7 +5876,7 @@ func TestBrowserSaveFailureCanBeRetriedWithUnchangedSet(t *testing.T) {
 	if err := os.WriteFile(blockingPath, nil, 0o644); err != nil {
 		t.Fatalf("create blocking file: %v", err)
 	}
-	m.state.WorkingDir = blockingPath
+	stateOf(m).WorkingDir = blockingPath
 	m.openSettingsBrowser("shell.allow_network")
 
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
@@ -5892,24 +5892,24 @@ func TestBrowserSaveFailureCanBeRetriedWithUnchangedSet(t *testing.T) {
 	updated, _ = m.Update(msg)
 	m = updated.(Model)
 
-	if !m.state.Config.Tools.Shell.AllowNetwork {
+	if !stateOf(m).Config.Tools.Shell.AllowNetwork {
 		t.Fatal("browser save failure must preserve the session config")
 	}
 	if !m.configSavePending {
 		t.Fatal("browser save failure must mark the config pending")
 	}
-	if got := m.state.Messages()[len(m.state.Messages())-1].Content; strings.Contains(got, "✓") {
+	if got := stateOf(m).Messages()[len(stateOf(m).Messages())-1].Content; strings.Contains(got, "✓") {
 		t.Fatalf("browser save failure emitted a success receipt: %q", got)
 	}
 
 	retryDir := t.TempDir()
-	m.state.WorkingDir = retryDir
+	stateOf(m).WorkingDir = retryDir
 	m.dispatchCommand("/set shell.allow_network on")
 
 	if m.configSavePending {
 		t.Fatal("successful unchanged /set retry must clear pending persistence")
 	}
-	if got := m.state.Messages()[len(m.state.Messages())-1].Content; !strings.Contains(got, "✓ shell.allow_network persisted") {
+	if got := stateOf(m).Messages()[len(stateOf(m).Messages())-1].Content; !strings.Contains(got, "✓ shell.allow_network persisted") {
 		t.Fatalf("unchanged /set retry receipt = %q", got)
 	}
 	loaded, err := config.Load(config.LoadOptions{
@@ -5926,7 +5926,7 @@ func TestBrowserSaveFailureCanBeRetriedWithUnchangedSet(t *testing.T) {
 
 // TestBrowserRetrySurvivesDockCloseAndReopen is the regression for the gap
 // the reviewer found in the /set-equivalent retry fix: a failed browser save
-// leaves m.state.Config already advanced to the unsaved value (so the user
+// leaves stateOf(m).Config already advanced to the unsaved value (so the user
 // doesn't lose their edit), but closing the dock and reopening it built a
 // brand-new BrowserPanel whose baseline was cloned from that already-advanced
 // config and whose savePending started false. Baseline then diffed empty
@@ -5943,7 +5943,7 @@ func TestBrowserRetrySurvivesDockCloseAndReopen(t *testing.T) {
 	if err := os.WriteFile(blockingPath, nil, 0o644); err != nil {
 		t.Fatalf("create blocking file: %v", err)
 	}
-	m.state.WorkingDir = blockingPath
+	stateOf(m).WorkingDir = blockingPath
 
 	m.openSettingsBrowser("agent.max_retries")
 	if _, ok := m.dock.Panel().(*settings.BrowserPanel); !ok {
@@ -5981,7 +5981,7 @@ func TestBrowserRetrySurvivesDockCloseAndReopen(t *testing.T) {
 			t.Fatalf("want settings.ChangedMsg, got %T", msg)
 		}
 		// Route the ChangedMsg back through the model, exactly like the real
-		// bubbletea runtime would, so m.state.Config/m.configSavePending
+		// bubbletea runtime would, so stateOf(m).Config/m.configSavePending
 		// update the same way they do in production.
 		updated, _ = m.Update(msg)
 		m = updated.(Model)
@@ -5995,8 +5995,8 @@ func TestBrowserRetrySurvivesDockCloseAndReopen(t *testing.T) {
 	if first.SaveErr == nil {
 		t.Fatal("expected the first save to fail (parent path is a file)")
 	}
-	if m.state.Config.Agent.MaxRetries != 9 {
-		t.Fatalf("Agent.MaxRetries = %d, want 9 (save failure must preserve the in-memory edit)", m.state.Config.Agent.MaxRetries)
+	if stateOf(m).Config.Agent.MaxRetries != 9 {
+		t.Fatalf("Agent.MaxRetries = %d, want 9 (save failure must preserve the in-memory edit)", stateOf(m).Config.Agent.MaxRetries)
 	}
 	if !m.configSavePending {
 		t.Fatal("browser save failure must mark the config pending")
@@ -6027,7 +6027,7 @@ func TestBrowserRetrySurvivesDockCloseAndReopen(t *testing.T) {
 
 	// Reopen the dock through the model. This constructs a brand-new
 	// BrowserPanel — not the one used above — whose baseline is cloned from
-	// m.state.Config (already advanced to 9) and therefore diffs empty
+	// stateOf(m).Config (already advanced to 9) and therefore diffs empty
 	// against the field's current value.
 	m.openSettingsBrowser("agent.max_retries")
 	if _, ok := m.dock.Panel().(*settings.BrowserPanel); !ok {
@@ -6062,27 +6062,27 @@ func TestBrowserRetrySurvivesDockCloseAndReopen(t *testing.T) {
 
 func TestSetCommandBadValuePrintsError(t *testing.T) {
 	m := newTestModel(t)
-	m.state.WorkingDir = t.TempDir()
+	stateOf(m).WorkingDir = t.TempDir()
 	m.dispatchCommand("/set shell.allow_network maybe")
-	msgs := m.state.Messages()
+	msgs := stateOf(m).Messages()
 	if !strings.Contains(msgs[len(msgs)-1].Content, "✗") {
 		t.Errorf("want error receipt, got %q", msgs[len(msgs)-1].Content)
 	}
-	if m.state.Config.Tools.Shell.AllowNetwork {
+	if stateOf(m).Config.Tools.Shell.AllowNetwork {
 		t.Error("failed set must not mutate session config")
 	}
 }
 
 func TestSetCommandUnavailableAgentToggleDoesNotSaveOrReportSuccess(t *testing.T) {
 	m := newTestModel(t)
-	m.state.WorkingDir = t.TempDir()
+	stateOf(m).WorkingDir = t.TempDir()
 
 	m.dispatchCommand("/set agent.provider ollama")
 
-	if _, err := os.Stat(filepath.Join(m.state.WorkingDir, ".marshal", "config.toml")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(stateOf(m).WorkingDir, ".marshal", "config.toml")); !os.IsNotExist(err) {
 		t.Fatalf("unavailable setting should not be persisted, stat error = %v", err)
 	}
-	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	got := stateOf(m).Messages()[len(stateOf(m).Messages())-1].Content
 	if strings.Contains(got, "✓") || !strings.Contains(got, "unknown setting") {
 		t.Fatalf("unavailable setting receipt = %q", got)
 	}
@@ -6091,7 +6091,7 @@ func TestSetCommandUnavailableAgentToggleDoesNotSaveOrReportSuccess(t *testing.T
 func TestSetCommandKeyOnlyPrintsCurrentValue(t *testing.T) {
 	m := newTestModel(t)
 	m.dispatchCommand("/set shell.allow_network")
-	msgs := m.state.Messages()
+	msgs := stateOf(m).Messages()
 	last := msgs[len(msgs)-1].Content
 	if !strings.Contains(last, "shell.allow_network") || !strings.Contains(last, "toggle") {
 		t.Errorf("want current-value print with kind, got %q", last)
@@ -6139,7 +6139,7 @@ func TestSetCommandDoesNotMutateWhileSettingsSaveIsBlocked(t *testing.T) {
 		{
 			name: "tool approval pending",
 			block: func(m *Model) {
-				m.state.SetPendingApproval(&session.PendingToolCall{
+				stateOf(m).SetPendingApproval(&session.PendingToolCall{
 					ID:           "pending-approval",
 					Name:         "shell.run",
 					ResponseChan: make(chan session.UserApprovalDecision, 1),
@@ -6150,7 +6150,7 @@ func TestSetCommandDoesNotMutateWhileSettingsSaveIsBlocked(t *testing.T) {
 		{
 			name: "question pending",
 			block: func(m *Model) {
-				m.state.SetPendingQuestion(&session.PendingQuestion{
+				stateOf(m).SetPendingQuestion(&session.PendingQuestion{
 					ResponseChan: make(chan []session.Answer, 1),
 				})
 			},
@@ -6178,17 +6178,17 @@ func TestSetCommandDoesNotMutateWhileSettingsSaveIsBlocked(t *testing.T) {
 
 			m.dispatchCommand("/set shell.allow_network on")
 
-			if m.state.Config.Tools.Shell.AllowNetwork {
+			if stateOf(m).Config.Tools.Shell.AllowNetwork {
 				t.Fatal("guarded /set mutated the live config")
 			}
 			if reloads != 0 {
 				t.Fatalf("guarded /set reloaded runtime %d times", reloads)
 			}
-			path := config.ProjectConfigPath(m.state.WorkingDir)
+			path := config.ProjectConfigPath(stateOf(m).WorkingDir)
 			if _, err := os.Stat(path); !os.IsNotExist(err) {
 				t.Fatalf("guarded /set persisted config, stat error = %v", err)
 			}
-			msgs := m.state.Messages()
+			msgs := stateOf(m).Messages()
 			if got := msgs[len(msgs)-1].Content; got != tt.reason {
 				t.Fatalf("guarded /set message = %q, want %q", got, tt.reason)
 			}
@@ -6199,7 +6199,7 @@ func TestSetCommandDoesNotMutateWhileSettingsSaveIsBlocked(t *testing.T) {
 func TestApplyNewConfigInvalidatesSetRegistry(t *testing.T) {
 	m := newTestModel(t)
 	previous := m.settingsRegistry()
-	cfg := m.state.Config
+	cfg := stateOf(m).Config
 	cfg.Tools.Shell.AllowNetwork = true
 
 	m.applyNewConfig(cfg)
@@ -6218,7 +6218,7 @@ func TestApplyNewConfigInvalidatesSetRegistry(t *testing.T) {
 
 func TestTUIRendersSDDPanelWhenActive(t *testing.T) {
 	m := newTestModel(t)
-	m.state.SetSDDProgress(session.SDDProgress{Active: true, PlanName: "p", TotalTasks: 1, CurrentTask: 1, Phase: "implementing"})
+	stateOf(m).SetSDDProgress(session.SDDProgress{Active: true, PlanName: "p", TotalTasks: 1, CurrentTask: 1, Phase: "implementing"})
 	m.busy, m.turnStartedAt = true, m.now().Add(-time.Minute)
 	m.refreshViewport()
 	// The run summary becomes the tray's plan-run row in Task 6; until then the
@@ -6259,7 +6259,7 @@ func newModelForConfigTest(t *testing.T, edit ...func(*inproc.Deps)) (m Model, w
 
 func TestApplyConnectDoneMaterializeCollisionSurfacesError(t *testing.T) {
 	m, _, _ := newModelForConfigTest(t)
-	m.state.Config.Models.Presets = map[string]routing.ModelPreset{
+	stateOf(m).Config.Models.Presets = map[string]routing.ModelPreset{
 		"ollama/qwen3": {Name: "ollama/qwen3", Provider: "other", Model: "other"},
 	}
 
@@ -6269,11 +6269,11 @@ func TestApplyConnectDoneMaterializeCollisionSurfacesError(t *testing.T) {
 		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	})
 	m = asModel(t, updated)
-	last := m.state.Messages()[len(m.state.Messages())-1]
+	last := stateOf(m).Messages()[len(stateOf(m).Messages())-1]
 	if !strings.HasPrefix(last.Content, "✗") || !strings.Contains(last.Content, "already used") {
 		t.Fatalf("materialize collision should surface an error, got %q", last.Content)
 	}
-	if got := m.state.Config.Models.Presets["ollama/qwen3"].Provider; got != "other" {
+	if got := stateOf(m).Config.Models.Presets["ollama/qwen3"].Provider; got != "other" {
 		t.Fatalf("collision must not overwrite the occupant, got provider %q", got)
 	}
 }
@@ -6286,7 +6286,7 @@ func TestApplyConnectDoneWritesAPresetAndPair(t *testing.T) {
 		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
 	})
 
-	cfg := m.state.Config
+	cfg := stateOf(m).Config
 	if cfg.Profile.Default == "" {
 		t.Fatal("Profile.Default is empty")
 	}
@@ -6370,7 +6370,7 @@ func TestApplyConnectDonePreservesForeignDiskEntries(t *testing.T) {
 
 func TestApplyConnectDonePreservesExistingProfiles(t *testing.T) {
 	m, _, _ := newModelForConfigTest(t)
-	m.state.Config.AgentProfiles = map[string]routing.AgentProfile{
+	stateOf(m).Config.AgentProfiles = map[string]routing.AgentProfile{
 		"handcrafted": {Name: "handcrafted", Roles: map[routing.AgentRole]routing.RoleBinding{
 			routing.RoleImplementer: {Preset: "mine"},
 		}},
@@ -6382,7 +6382,7 @@ func TestApplyConnectDonePreservesExistingProfiles(t *testing.T) {
 		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
 	})
 
-	if _, ok := m.state.Config.AgentProfiles["handcrafted"]; !ok {
+	if _, ok := stateOf(m).Config.AgentProfiles["handcrafted"]; !ok {
 		t.Error("connecting a model destroyed a user's existing profile")
 	}
 }
@@ -6439,7 +6439,7 @@ func TestApplyConnectDoneKeepsAPIKeyInRuntimeConfig(t *testing.T) {
 	// The reload path resolves credentials from the in-memory config, never
 	// re-reading the user config file — stripping the key here would kill
 	// the runtime until restart.
-	if got := m.state.Config.Providers["openai"].APIKey; got != "sk-runtime-must-keep-me" {
+	if got := stateOf(m).Config.Providers["openai"].APIKey; got != "sk-runtime-must-keep-me" {
 		t.Errorf("runtime config APIKey = %q, want the key retained", got)
 	}
 
@@ -6495,7 +6495,7 @@ func TestApplyConnectDoneWritesLimitsToThePreset(t *testing.T) {
 		ContextWindow: 128000,
 	})
 
-	cfg := m.state.Config
+	cfg := stateOf(m).Config
 	preset := cfg.Models.Presets["openai/gpt-4o"]
 
 	if preset.ContextWindow != 128000 {
@@ -6526,7 +6526,7 @@ func TestApplyConnectDoneUnknownLimitsWriteZero(t *testing.T) {
 		// limits left at zero — nothing knew them
 	})
 
-	cfg := m.state.Config
+	cfg := stateOf(m).Config
 	profile := cfg.AgentProfiles[cfg.Profile.Default]
 	preset := cfg.Models.Presets[profile.Roles[routing.RoleImplementer].Preset]
 
@@ -6538,7 +6538,7 @@ func TestApplyConnectDoneUnknownLimitsWriteZero(t *testing.T) {
 
 func TestApplyConnectDoneZeroLimitsPreserveSavedPresetValues(t *testing.T) {
 	m, _, _ := newModelForConfigTest(t)
-	m.state.Config.Models.Presets = map[string]routing.ModelPreset{
+	stateOf(m).Config.Models.Presets = map[string]routing.ModelPreset{
 		"openai/gpt-4o": {
 			Name: "openai/gpt-4o", Provider: "openai", Model: "gpt-4o",
 			ContextWindow: 200000, MaxOutputTokens: 8192,
@@ -6553,7 +6553,7 @@ func TestApplyConnectDoneZeroLimitsPreserveSavedPresetValues(t *testing.T) {
 		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
 	})
 
-	preset := m.state.Config.Models.Presets["openai/gpt-4o"]
+	preset := stateOf(m).Config.Models.Presets["openai/gpt-4o"]
 	if preset.ContextWindow != 200000 || preset.MaxOutputTokens != 8192 {
 		t.Errorf("got %d/%d, want the previously saved 200000/8192",
 			preset.ContextWindow, preset.MaxOutputTokens)
@@ -6565,7 +6565,7 @@ func TestConnectDoneClearsEnvRefWhenSavingLiteralKey(t *testing.T) {
 	work := t.TempDir()
 	t.Setenv("HOME", home)
 	m := newTestModel(t)
-	m.state.WorkingDir = work
+	stateOf(m).WorkingDir = work
 	m.workDir = work
 	m.applyConnectDone(connect.DoneMsg{
 		Provider: "openai",
@@ -6578,7 +6578,7 @@ func TestConnectDoneClearsEnvRefWhenSavingLiteralKey(t *testing.T) {
 			ToolCalling: true,
 		},
 	})
-	pc, ok := m.state.Config.Providers["openai"]
+	pc, ok := stateOf(m).Config.Providers["openai"]
 	if !ok {
 		t.Fatal("expected openai provider in state config")
 	}
@@ -6599,7 +6599,7 @@ func TestBoxFollowsDrilledSubagentTodos(t *testing.T) {
 		{ID: "p2", Content: "parent next", Status: native.TodoPending},
 	})
 
-	childState := session.New(m.state.Config, t.TempDir(), time.Now(), session.Persistence{})
+	childState := session.New(stateOf(m).Config, t.TempDir(), time.Now(), session.Persistence{})
 	childState.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
 	if err := childState.SetTodos([]native.TodoItem{
 		{ID: "c1", Content: "child task", Status: native.TodoInProgress},
@@ -6614,7 +6614,7 @@ func TestBoxFollowsDrilledSubagentTodos(t *testing.T) {
 	m.busy, m.turnStartedAt = true, m.now().Add(-time.Second)
 	// The stack can only read a child the session holds, so it holds the
 	// status view the session carries for it.
-	childView := m.state.RegisterSubagent("child", childState)
+	childView := stateOf(m).RegisterSubagent("child", childState)
 	m.viewStack = append(m.viewStack, statusView(t, &m, childView.ID))
 	m.invalidateTranscript()
 	m.refreshViewport()
@@ -6670,7 +6670,7 @@ func newTestModel(t *testing.T) Model {
 
 // newTestModelInRepo is like newTestModel but with a real repo working dir
 // (a temp dir is fine; the tests write plans into
-// m.state.WorkingDir/.marshal/plans).
+// stateOf(m).WorkingDir/.marshal/plans).
 func newTestModelInRepo(t *testing.T) Model {
 	t.Helper()
 	home := t.TempDir()
@@ -6779,7 +6779,7 @@ func TestConnectRoutesOAuthCompletion(t *testing.T) {
 	for _, failed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("failed=%t", failed), func(t *testing.T) {
 			m := newTestModel(t)
-			m.state.Config.Privacy.RemoteProvidersAllowed = true
+			stateOf(m).Config.Privacy.RemoteProvidersAllowed = true
 			m.openConnect("")
 			updated, _ := m.Update(picker.PickedMsg{Value: "openai-codex"})
 			m = asModel(t, updated)
@@ -6838,7 +6838,7 @@ func TestOpenConnectForwardsTheHostAndBrowser(t *testing.T) {
 // call site, so it needs the same coverage.
 func TestOpenModelsForwardsTheHost(t *testing.T) {
 	m := newTestModel(t)
-	m.state.Config.Providers = map[string]config.ProviderConfig{
+	stateOf(m).Config.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	}
 
@@ -6891,8 +6891,8 @@ func TestProbeProvidersUsesInjectedResolver(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	m := testModelWith(inproc.Deps{State: state, Auth: auth}, WithHomeDir(t.TempDir()))
 	m.resize(80, 24)
-	m.state.Config.Privacy.RemoteProvidersAllowed = true
-	m.state.Config.Providers = map[string]config.ProviderConfig{
+	stateOf(m).Config.Privacy.RemoteProvidersAllowed = true
+	stateOf(m).Config.Providers = map[string]config.ProviderConfig{
 		"codex": {Type: "openai_codex", Template: "openai-codex", BaseURL: "https://chatgpt.com/backend-api", Auth: "oauth"},
 	}
 
@@ -6940,11 +6940,11 @@ func TestModelsPickAppliesSwitch(t *testing.T) {
 	m := newTestModelDeps(t, func(d *inproc.Deps) {
 		d.ReloadConfig = func(cfg config.Config) error { d.State.Config = cfg; return nil }
 	})
-	m.state.Config.Providers = map[string]config.ProviderConfig{
+	stateOf(m).Config.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	}
 	m.discovered["ollama"] = []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}
-	m.state.WorkingDir = t.TempDir()
+	stateOf(m).WorkingDir = t.TempDir()
 
 	updated, _ := m.dispatchCommand("/models")
 	m = asModel(t, updated)
@@ -6982,13 +6982,13 @@ func TestModelsPickAppliesSwitch(t *testing.T) {
 	if m.dock.IsOpen() {
 		t.Fatal("selecting a model should close the overlay")
 	}
-	if m.state.Config.Profile.Default != "single" {
-		t.Fatalf("profile default should be %q, got %q", "single", m.state.Config.Profile.Default)
+	if stateOf(m).Config.Profile.Default != "single" {
+		t.Fatalf("profile default should be %q, got %q", "single", stateOf(m).Config.Profile.Default)
 	}
-	if _, ok := m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
+	if _, ok := stateOf(m).Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
 		t.Fatal("preset ollama/qwen2.5-coder:7b should exist")
 	}
-	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	got := stateOf(m).Messages()[len(stateOf(m).Messages())-1].Content
 	if !strings.HasPrefix(got, "✓") || !strings.Contains(got, "Switched to model") {
 		t.Fatalf("success receipt = %q", got)
 	}
@@ -6996,7 +6996,7 @@ func TestModelsPickAppliesSwitch(t *testing.T) {
 
 func TestModelsRoutesPreparedMsgToConnectPanel(t *testing.T) {
 	m := newTestModel(t)
-	m.state.Config.Providers = map[string]config.ProviderConfig{
+	stateOf(m).Config.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "ollama", BaseURL: "http://localhost:11434"},
 	}
 	m.discovered["ollama"] = []schema.ModelInfo{{ID: "qwen3"}}
@@ -7070,11 +7070,11 @@ func TestApplyConnectDoneMergesPreparedPresets(t *testing.T) {
 	})
 	m = updated.(Model)
 
-	if _, ok := m.state.Config.Models.Presets["ollama/llama3.1:8b"]; !ok {
+	if _, ok := stateOf(m).Config.Models.Presets["ollama/llama3.1:8b"]; !ok {
 		t.Fatal("prepared preset ollama/llama3.1:8b should be merged")
 	}
-	if m.state.Config.Profile.ActivePreset != "ollama/qwen2.5-coder:7b" {
-		t.Fatalf("active preset = %q, want the selected model", m.state.Config.Profile.ActivePreset)
+	if stateOf(m).Config.Profile.ActivePreset != "ollama/qwen2.5-coder:7b" {
+		t.Fatalf("active preset = %q, want the selected model", stateOf(m).Config.Profile.ActivePreset)
 	}
 }
 
@@ -7113,7 +7113,7 @@ func TestApplyConnectDoneRefreshesManagedPreset(t *testing.T) {
 	m.settingsRegistry()
 
 	const name = "ollama/qwen2.5-coder:7b"
-	m.state.Config.Models.Presets = map[string]routing.ModelPreset{
+	stateOf(m).Config.Models.Presets = map[string]routing.ModelPreset{
 		name: {Name: name, Provider: "ollama", Model: "qwen2.5-coder:7b", ContextWindow: 8192},
 	}
 
@@ -7147,7 +7147,7 @@ func TestApplyConnectDoneRefreshesManagedPreset(t *testing.T) {
 	// over the stale live entry; otherwise the saved provenance would describe
 	// a value the preset does not hold and the next reconnect would read the
 	// mismatch as a user edit.
-	if got := m.state.Config.Models.Presets[name].ContextWindow; got != 32768 {
+	if got := stateOf(m).Config.Models.Presets[name].ContextWindow; got != 32768 {
 		t.Fatalf("ContextWindow = %d, want the refreshed 32768", got)
 	}
 }
@@ -7205,11 +7205,11 @@ func TestApplyConnectDoneWarnsOnProvenanceFailure(t *testing.T) {
 	})
 	m = updated.(Model)
 
-	if _, ok := m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
+	if _, ok := stateOf(m).Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
 		t.Fatal("presets must still be saved when provenance fails")
 	}
 	found := false
-	for _, msg := range m.state.Messages() {
+	for _, msg := range stateOf(m).Messages() {
 		if strings.Contains(msg.Content, "provenance was not") {
 			found = true
 			break
@@ -7241,11 +7241,11 @@ func TestConnectReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
 	if m.setReg != nil {
 		t.Fatal("failed connect reload must invalidate the cached /set registry")
 	}
-	if _, ok := m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
+	if _, ok := stateOf(m).Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
 		t.Fatal("failed connect reload must create preset")
 	}
-	if prov, ok := m.state.Config.Providers["ollama"]; !ok || prov.Type != "openai_compatible" {
-		t.Fatal("failed connect reload must align m.state.Config.Providers")
+	if prov, ok := stateOf(m).Config.Providers["ollama"]; !ok || prov.Type != "openai_compatible" {
+		t.Fatal("failed connect reload must align stateOf(m).Config.Providers")
 	}
 }
 
@@ -7258,7 +7258,7 @@ func TestConnectSaveFailureKeepsSessionConfigAndPendingFlag(t *testing.T) {
 	if err := os.WriteFile(blockingPath, nil, 0o644); err != nil {
 		t.Fatalf("create blocking file: %v", err)
 	}
-	m.state.WorkingDir = blockingPath
+	stateOf(m).WorkingDir = blockingPath
 	m.settingsRegistry()
 
 	updated, _ := m.Update(connect.DoneMsg{
@@ -7271,10 +7271,10 @@ func TestConnectSaveFailureKeepsSessionConfigAndPendingFlag(t *testing.T) {
 	if reloaded {
 		t.Fatal("save failure must not reload the runtime")
 	}
-	if _, ok := m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
+	if _, ok := stateOf(m).Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
 		t.Fatal("save failure must keep the preset in session config")
 	}
-	if prov, ok := m.state.Config.Providers["ollama"]; !ok || prov.Type != "openai_compatible" {
+	if prov, ok := stateOf(m).Config.Providers["ollama"]; !ok || prov.Type != "openai_compatible" {
 		t.Fatal("save failure must keep the new provider in session config")
 	}
 	if !m.configSavePending {
@@ -7283,7 +7283,7 @@ func TestConnectSaveFailureKeepsSessionConfigAndPendingFlag(t *testing.T) {
 	if m.setReg != nil {
 		t.Fatal("save failure must invalidate the cached /set registry")
 	}
-	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	got := stateOf(m).Messages()[len(stateOf(m).Messages())-1].Content
 	if !strings.HasPrefix(got, "✗") || !strings.Contains(got, "Failed to save model") {
 		t.Fatalf("save failure receipt = %q", got)
 	}
@@ -7293,7 +7293,7 @@ func TestConnectDoneSuccessReceiptHasCheckGlyph(t *testing.T) {
 	m := newTestModelDeps(t, func(d *inproc.Deps) {
 		d.ReloadConfig = func(config.Config) error { return nil }
 	})
-	m.state.WorkingDir = t.TempDir()
+	stateOf(m).WorkingDir = t.TempDir()
 
 	updated, _ := m.Update(connect.DoneMsg{
 		Provider:    "ollama",
@@ -7302,7 +7302,7 @@ func TestConnectDoneSuccessReceiptHasCheckGlyph(t *testing.T) {
 	})
 	m = updated.(Model)
 
-	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	got := stateOf(m).Messages()[len(stateOf(m).Messages())-1].Content
 	if !strings.HasPrefix(got, "✓") || !strings.Contains(got, "Switched to model") {
 		t.Fatalf("connect success receipt = %q", got)
 	}
@@ -7312,7 +7312,7 @@ func TestConnectReloadFailureReceiptHasCrossGlyph(t *testing.T) {
 	m := newTestModelDeps(t, func(d *inproc.Deps) {
 		d.ReloadConfig = func(config.Config) error { return errors.New("cleanup failed") }
 	})
-	m.state.WorkingDir = t.TempDir()
+	stateOf(m).WorkingDir = t.TempDir()
 
 	updated, _ := m.Update(connect.DoneMsg{
 		Provider:    "ollama",
@@ -7321,7 +7321,7 @@ func TestConnectReloadFailureReceiptHasCrossGlyph(t *testing.T) {
 	})
 	m = updated.(Model)
 
-	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	got := stateOf(m).Messages()[len(stateOf(m).Messages())-1].Content
 	if !strings.HasPrefix(got, "✗") || !strings.Contains(got, "Failed to switch model") {
 		t.Fatalf("connect reload failure receipt = %q", got)
 	}
@@ -7331,10 +7331,10 @@ func TestSwitchModelPresetInvalidatesSetRegistry(t *testing.T) {
 	m := newTestModelDeps(t, func(d *inproc.Deps) {
 		d.ReloadConfig = func(config.Config) error { return nil }
 	})
-	m.state.Config.Providers = map[string]config.ProviderConfig{
+	stateOf(m).Config.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	}
-	m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"] = routing.ModelPreset{
+	stateOf(m).Config.Models.Presets["ollama/qwen2.5-coder:7b"] = routing.ModelPreset{
 		Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b",
 	}
 	m.settingsRegistry()
@@ -7355,10 +7355,10 @@ func TestModelPresetReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
 			return errors.New("old runtime cleanup failed")
 		}
 	})
-	m.state.Config.Providers = map[string]config.ProviderConfig{
+	stateOf(m).Config.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	}
-	m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"] = routing.ModelPreset{
+	stateOf(m).Config.Models.Presets["ollama/qwen2.5-coder:7b"] = routing.ModelPreset{
 		Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b",
 	}
 	m.settingsRegistry()
@@ -7368,10 +7368,10 @@ func TestModelPresetReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
 	if m.setReg != nil {
 		t.Fatal("failed model reload must invalidate the cached /set registry")
 	}
-	if m.state.Config.Profile.Default != singleModelProfileName {
-		t.Fatalf("failed model reload must align m.state.Config profile, got %q", m.state.Config.Profile.Default)
+	if stateOf(m).Config.Profile.Default != singleModelProfileName {
+		t.Fatalf("failed model reload must align stateOf(m).Config profile, got %q", stateOf(m).Config.Profile.Default)
 	}
-	if _, ok := m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
+	if _, ok := stateOf(m).Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
 		t.Fatal("failed model reload must keep the preset")
 	}
 }
@@ -7381,17 +7381,17 @@ func TestSwitchModelPresetSaveFailureKeepsSessionConfigAndPendingFlag(t *testing
 	m := newTestModelDeps(t, func(d *inproc.Deps) {
 		d.ReloadConfig = func(cfg config.Config) error { reloaded = true; d.State.Config = cfg; return nil }
 	})
-	m.state.Config.Providers = map[string]config.ProviderConfig{
+	stateOf(m).Config.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	}
-	m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"] = routing.ModelPreset{
+	stateOf(m).Config.Models.Presets["ollama/qwen2.5-coder:7b"] = routing.ModelPreset{
 		Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b",
 	}
 	blockingPath := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(blockingPath, nil, 0o644); err != nil {
 		t.Fatalf("create blocking file: %v", err)
 	}
-	m.state.WorkingDir = blockingPath
+	stateOf(m).WorkingDir = blockingPath
 	m.settingsRegistry()
 
 	m.switchModelPreset("ollama/qwen2.5-coder:7b")
@@ -7399,10 +7399,10 @@ func TestSwitchModelPresetSaveFailureKeepsSessionConfigAndPendingFlag(t *testing
 	if reloaded {
 		t.Fatal("save failure must not reload the runtime")
 	}
-	if m.state.Config.Profile.Default != singleModelProfileName {
-		t.Fatalf("save failure must keep the switched profile in session, got %q", m.state.Config.Profile.Default)
+	if stateOf(m).Config.Profile.Default != singleModelProfileName {
+		t.Fatalf("save failure must keep the switched profile in session, got %q", stateOf(m).Config.Profile.Default)
 	}
-	if _, ok := m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
+	if _, ok := stateOf(m).Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
 		t.Fatal("save failure must keep the preset in session config")
 	}
 	if !m.configSavePending {
@@ -7411,7 +7411,7 @@ func TestSwitchModelPresetSaveFailureKeepsSessionConfigAndPendingFlag(t *testing
 	if m.setReg != nil {
 		t.Fatal("save failure must invalidate the cached /set registry")
 	}
-	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	got := stateOf(m).Messages()[len(stateOf(m).Messages())-1].Content
 	if !strings.HasPrefix(got, "✗") || !strings.Contains(got, "Failed to save model preset") {
 		t.Fatalf("save failure receipt = %q", got)
 	}
@@ -7421,17 +7421,17 @@ func TestSwitchModelPresetSuccessReceiptHasCheckGlyph(t *testing.T) {
 	m := newTestModelDeps(t, func(d *inproc.Deps) {
 		d.ReloadConfig = func(config.Config) error { return nil }
 	})
-	m.state.Config.Providers = map[string]config.ProviderConfig{
+	stateOf(m).Config.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	}
-	m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"] = routing.ModelPreset{
+	stateOf(m).Config.Models.Presets["ollama/qwen2.5-coder:7b"] = routing.ModelPreset{
 		Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b",
 	}
-	m.state.WorkingDir = t.TempDir()
+	stateOf(m).WorkingDir = t.TempDir()
 
 	m.switchModelPreset("ollama/qwen2.5-coder:7b")
 
-	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	got := stateOf(m).Messages()[len(stateOf(m).Messages())-1].Content
 	if !strings.HasPrefix(got, "✓") || !strings.Contains(got, "Switched to model") {
 		t.Fatalf("preset switch success receipt = %q", got)
 	}
@@ -7441,17 +7441,17 @@ func TestSwitchModelPresetReloadFailureReceiptHasCrossGlyph(t *testing.T) {
 	m := newTestModelDeps(t, func(d *inproc.Deps) {
 		d.ReloadConfig = func(config.Config) error { return errors.New("cleanup failed") }
 	})
-	m.state.Config.Providers = map[string]config.ProviderConfig{
+	stateOf(m).Config.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	}
-	m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"] = routing.ModelPreset{
+	stateOf(m).Config.Models.Presets["ollama/qwen2.5-coder:7b"] = routing.ModelPreset{
 		Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b",
 	}
-	m.state.WorkingDir = t.TempDir()
+	stateOf(m).WorkingDir = t.TempDir()
 
 	m.switchModelPreset("ollama/qwen2.5-coder:7b")
 
-	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	got := stateOf(m).Messages()[len(stateOf(m).Messages())-1].Content
 	if !strings.HasPrefix(got, "✗") || !strings.Contains(got, "Failed to switch model") {
 		t.Fatalf("preset reload failure receipt = %q", got)
 	}
@@ -7459,32 +7459,32 @@ func TestSwitchModelPresetReloadFailureReceiptHasCrossGlyph(t *testing.T) {
 
 func TestSwitchModelPresetSetsDefaultProfile(t *testing.T) {
 	m, _, _ := newModelForConfigTest(t)
-	m.state.Config.Providers = map[string]config.ProviderConfig{
+	stateOf(m).Config.Providers = map[string]config.ProviderConfig{
 		"openai": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
 	}
-	m.state.Config.Models.Presets = map[string]routing.ModelPreset{
+	stateOf(m).Config.Models.Presets = map[string]routing.ModelPreset{
 		"openai/gpt-4o": {Name: "openai/gpt-4o", Provider: "openai", Model: "gpt-4o"},
 	}
 
 	m.switchModelPreset("openai/gpt-4o")
 
-	if m.state.Config.Profile.Default != singleModelProfileName {
-		t.Fatalf("default profile = %q, want single", m.state.Config.Profile.Default)
+	if stateOf(m).Config.Profile.Default != singleModelProfileName {
+		t.Fatalf("default profile = %q, want single", stateOf(m).Config.Profile.Default)
 	}
-	if _, ok := m.state.Config.Models.Presets["openai/gpt-4o"]; !ok {
+	if _, ok := stateOf(m).Config.Models.Presets["openai/gpt-4o"]; !ok {
 		t.Fatal("preset openai/gpt-4o should exist")
 	}
 }
 
 func TestSwitchModelPresetPreservesOtherProfiles(t *testing.T) {
 	m, _, _ := newModelForConfigTest(t)
-	m.state.Config.Providers = map[string]config.ProviderConfig{
+	stateOf(m).Config.Providers = map[string]config.ProviderConfig{
 		"openai": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
 	}
-	m.state.Config.Models.Presets = map[string]routing.ModelPreset{
+	stateOf(m).Config.Models.Presets = map[string]routing.ModelPreset{
 		"openai/gpt-4o": {Name: "openai/gpt-4o", Provider: "openai", Model: "gpt-4o"},
 	}
-	m.state.Config.AgentProfiles = map[string]routing.AgentProfile{
+	stateOf(m).Config.AgentProfiles = map[string]routing.AgentProfile{
 		"handcrafted": {Name: "handcrafted", Roles: map[routing.AgentRole]routing.RoleBinding{
 			routing.RoleImplementer: {Preset: "openai/gpt-4o"},
 		}},
@@ -7492,7 +7492,7 @@ func TestSwitchModelPresetPreservesOtherProfiles(t *testing.T) {
 
 	m.switchModelPreset("openai/gpt-4o")
 
-	if _, ok := m.state.Config.AgentProfiles["handcrafted"]; !ok {
+	if _, ok := stateOf(m).Config.AgentProfiles["handcrafted"]; !ok {
 		t.Error("switching models destroyed a user's existing profile")
 	}
 }
@@ -7511,28 +7511,28 @@ func TestSwitchModelPresetUpdatesStaleSingleProfile(t *testing.T) {
 			return nil
 		}
 	})
-	m.state.Config.Providers = map[string]config.ProviderConfig{
+	stateOf(m).Config.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
 	}
-	m.state.Config.Models.Presets = map[string]routing.ModelPreset{
+	stateOf(m).Config.Models.Presets = map[string]routing.ModelPreset{
 		"ollama/old-model": {Name: "ollama/old-model", Provider: "ollama", Model: "old-model", LocalOnly: true},
 		"ollama/new-model": {Name: "ollama/new-model", Provider: "ollama", Model: "new-model", LocalOnly: true},
 	}
 	// Simulate a stale "single" profile left behind by MigrateLegacyAgentModel,
 	// bound to the old model.
-	m.state.Config.AgentProfiles = map[string]routing.AgentProfile{
+	stateOf(m).Config.AgentProfiles = map[string]routing.AgentProfile{
 		singleModelProfileName: routing.SingleModelProfile(singleModelProfileName, "ollama/old-model"),
 	}
-	m.state.Config.Profile.Default = singleModelProfileName
-	m.state.Config.Profile.ActivePreset = "ollama/old-model"
-	m.state.WorkingDir = t.TempDir()
+	stateOf(m).Config.Profile.Default = singleModelProfileName
+	stateOf(m).Config.Profile.ActivePreset = "ollama/old-model"
+	stateOf(m).WorkingDir = t.TempDir()
 
 	m.switchModelPreset("ollama/new-model")
 
 	// RoutingConfig must (re)synthesize the "single" profile from
 	// ActivePreset, overwriting the stale bindings. The router must resolve
 	// to the new model, not the old one.
-	rc := m.state.Config.RoutingConfig()
+	rc := stateOf(m).Config.RoutingConfig()
 	profile, ok := rc.Profiles[singleModelProfileName]
 	if !ok {
 		t.Fatal("single profile missing from RoutingConfig after switch")
@@ -7593,10 +7593,10 @@ func TestDockedSettingsBrowserReloadsAndPrintsReceipts(t *testing.T) {
 	if !reloaded {
 		t.Fatal("the runtime reload should have run")
 	}
-	if !m.state.Config.Tools.Shell.AllowNetwork {
+	if !stateOf(m).Config.Tools.Shell.AllowNetwork {
 		t.Fatal("ChangedMsg should apply the browser config")
 	}
-	messages := m.state.Messages()
+	messages := stateOf(m).Messages()
 	last := messages[len(messages)-1].Content
 	for _, want := range []string{"✓", "shell.allow_network", ".marshal/config.toml"} {
 		if !strings.Contains(last, want) {
@@ -7617,7 +7617,7 @@ func TestBrowserReloadCleanupFailureSynchronizesUIState(t *testing.T) {
 	m.settingsRegistry()
 	m.setPopup = &completionPopup{}
 	m.lastInputForPopups = "/set shell"
-	reloaded := m.state.Config
+	reloaded := stateOf(m).Config
 	reloaded.TUI.Theme = "warm-sunset"
 	reloaded.TUI.Mode = theme.ModeLight
 	expectedTheme := theme.LoadWithConfig(reloaded.TUI.Theme, reloaded.TUI.Mode, theme.DepthFlat, nil)
@@ -7628,7 +7628,7 @@ func TestBrowserReloadCleanupFailureSynchronizesUIState(t *testing.T) {
 	})
 	m = updated.(Model)
 
-	if m.state.Config.TUI.Mode != theme.ModeLight {
+	if stateOf(m).Config.TUI.Mode != theme.ModeLight {
 		t.Fatal("post-swap cleanup failure must retain the live config")
 	}
 	if m.setReg != nil || m.setPopup != nil || m.lastInputForPopups != "" {
@@ -7637,7 +7637,7 @@ func TestBrowserReloadCleanupFailureSynchronizesUIState(t *testing.T) {
 	if activeTheme.AccentPrimary != expectedTheme.AccentPrimary {
 		t.Fatalf("active theme = %#v, want %#v", activeTheme.AccentPrimary, expectedTheme.AccentPrimary)
 	}
-	got := m.state.Messages()[len(m.state.Messages())-1].Content
+	got := stateOf(m).Messages()[len(stateOf(m).Messages())-1].Content
 	if strings.Contains(got, "✓") || !strings.Contains(got, "live reload failed") {
 		t.Fatalf("reload cleanup failure receipt = %q", got)
 	}
@@ -7947,7 +7947,7 @@ func TestSettingsBlockReason(t *testing.T) {
 
 func TestInputAreaRowsIncludesSDDHint(t *testing.T) {
 	m := newTestModel(t)
-	m.state.SetSDDProgress(session.SDDProgress{Active: true})
+	stateOf(m).SetSDDProgress(session.SDDProgress{Active: true})
 	rows := m.inputAreaRows()
 	if rows < 1 {
 		t.Fatalf("expected SDD hint row, got %d", rows)
@@ -8010,7 +8010,7 @@ func toggleTasks(m Model) Model {
 
 func TestEscClosesTasksPanel(t *testing.T) {
 	m := newTestModel(t)
-	if err := m.state.SetTodos([]native.TodoItem{{Content: "a", Status: native.TodoPending}}); err != nil {
+	if err := stateOf(m).SetTodos([]native.TodoItem{{Content: "a", Status: native.TodoPending}}); err != nil {
 		t.Fatalf("SetTodos: %v", err)
 	}
 	updated, _ := m.dispatchCommand("/work")
@@ -8030,8 +8030,8 @@ func TestEscClosesTasksPanel(t *testing.T) {
 // one row that says so, inside the outline — the item rows are gone.
 func TestFinishedPlanIsOneIdleRow(t *testing.T) {
 	m := newTestModel(t)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	if err := m.state.SetTodos([]native.TodoItem{
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	if err := stateOf(m).SetTodos([]native.TodoItem{
 		{ID: "t1", Content: "scaffold parser", Status: native.TodoCompleted},
 		{ID: "t2", Content: "wire the parser", Status: native.TodoCompleted},
 	}); err != nil {
@@ -8268,7 +8268,7 @@ func TestDispatchReviewCommandNilDispatcherShowsError(t *testing.T) {
 	if m.busy {
 		t.Fatal("busy should remain false")
 	}
-	msgs := m.state.Messages()
+	msgs := stateOf(m).Messages()
 	if len(msgs) == 0 {
 		t.Fatal("expected error message for nil dispatcher")
 	}
@@ -8371,7 +8371,7 @@ func TestTrustPromptOpensAtStartupAndDeclineCloses(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
 	var decided trust.Decision
 	m2 := testModelWith(
-		inproc.Deps{State: m.state, TrustPrompt: "/repo", DecideTrust: func(d trust.Decision) { decided = d }},
+		inproc.Deps{State: stateOf(m), TrustPrompt: "/repo", DecideTrust: func(d trust.Decision) { decided = d }},
 	)
 	if !m2.dock.IsOpen() {
 		t.Fatal("dock should host the trust panel at startup")
@@ -8395,14 +8395,14 @@ func TestChangedMsgSavedSkipsProjectWrite(t *testing.T) {
 	m := newTestModelDeps(t, func(d *inproc.Deps) {
 		d.ReloadConfig = func(config.Config) error { return nil }
 	})
-	cfg := m.state.Config
+	cfg := stateOf(m).Config
 	cfg.TUI.Theme = "solarized"
 	mm, _ := m.Update(settings.ChangedMsg{Cfg: cfg, Saved: true})
 	m = mm.(Model)
-	if _, err := os.Stat(config.ProjectConfigPath(m.state.WorkingDir)); !os.IsNotExist(err) {
+	if _, err := os.Stat(config.ProjectConfigPath(stateOf(m).WorkingDir)); !os.IsNotExist(err) {
 		t.Fatal("model must not save the project config for a Saved ChangedMsg")
 	}
-	if m.state.Config.TUI.Theme != "solarized" {
+	if stateOf(m).Config.TUI.Theme != "solarized" {
 		t.Fatal("config was not applied in memory")
 	}
 }
@@ -8411,7 +8411,7 @@ func TestChangedMsgSavedGlobalTargetReceiptBase(t *testing.T) {
 	m := newTestModelDeps(t, func(d *inproc.Deps) {
 		d.ReloadConfig = func(config.Config) error { return nil }
 	})
-	cfg := m.state.Config
+	cfg := stateOf(m).Config
 	cfg.TUI.Theme = "solarized"
 	mm, _ := m.Update(settings.ChangedMsg{
 		Cfg:          cfg,
@@ -8420,7 +8420,7 @@ func TestChangedMsgSavedGlobalTargetReceiptBase(t *testing.T) {
 		Receipts:     []string{"theme persisted"},
 	})
 	m = mm.(Model)
-	msgs := m.state.Messages()
+	msgs := stateOf(m).Messages()
 	var found bool
 	for _, msg := range msgs {
 		if strings.Contains(msg.Content, "theme persisted") {
@@ -8441,7 +8441,7 @@ func TestChangedMsgSavedGlobalTargetReceiptBase(t *testing.T) {
 
 func TestOpenConnectOnStartOpensConnectPanel(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
-	m2 := testModel(m.state, WithOpenConnectOnStart())
+	m2 := testModel(stateOf(m), WithOpenConnectOnStart())
 	if !m2.dock.IsOpen() {
 		t.Fatal("dock should host the connect panel on first run")
 	}
@@ -8457,7 +8457,7 @@ func TestOpenConnectOnStartYieldsToTrustPrompt(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
 	decided := false
 	m2 := testModelWith(
-		inproc.Deps{State: m.state, TrustPrompt: "/repo", DecideTrust: func(trust.Decision) { decided = true }},
+		inproc.Deps{State: stateOf(m), TrustPrompt: "/repo", DecideTrust: func(trust.Decision) { decided = true }},
 		WithOpenConnectOnStart(),
 	)
 	panel := m2.dock.Panel()
@@ -8496,8 +8496,8 @@ func TestModelsRefreshesCachedCodexAndUpdatesPicker(t *testing.T) {
 
 func TestCodexCachedRefreshRespectsRemotePrivacy(t *testing.T) {
 	m := newTestModel(t)
-	m.state.Config.Privacy.RemoteProvidersAllowed = false
-	m.state.Config.Providers = map[string]config.ProviderConfig{
+	stateOf(m).Config.Privacy.RemoteProvidersAllowed = false
+	stateOf(m).Config.Providers = map[string]config.ProviderConfig{
 		"codex": {Type: "openai_codex", BaseURL: "https://chatgpt.com/backend-api"},
 	}
 	m.discovered["codex"] = []schema.ModelInfo{{ID: "gpt-5.6-luna"}}
@@ -9021,7 +9021,7 @@ func TestStaleWizardProbeCannotPopulateHostCache(t *testing.T) {
 			t.Fatalf("dock panel = %T, want connect.Panel", m.dock.Panel())
 		}
 		if persist {
-			m.state.Config.Providers = map[string]config.ProviderConfig{"ollama": pc}
+			stateOf(m).Config.Providers = map[string]config.ProviderConfig{"ollama": pc}
 		}
 		return m, panel.Model, wizardProbeGeneration(t, cmd)
 	}
@@ -9214,7 +9214,7 @@ func TestCancelledTurnDoesNotSetNotice(t *testing.T) {
 	})
 	m = updated.(Model)
 
-	if n, ok := m.state.Notice(); ok {
+	if n, ok := stateOf(m).Notice(); ok {
 		t.Fatalf("cancelled turn set a notice banner: %v", n)
 	}
 	if m.cancelling {
@@ -9231,7 +9231,7 @@ func TestUncancelledProviderFailureSetsNotice(t *testing.T) {
 	updated, _ := m.Update(agentFinishedMsg{err: errors.New("connection refused")})
 	m = updated.(Model)
 
-	if _, ok := m.state.Notice(); !ok {
+	if _, ok := stateOf(m).Notice(); !ok {
 		t.Fatal("provider failure should set the notice banner")
 	}
 }
@@ -9242,13 +9242,13 @@ func TestRefreshViewportKeepsOverridesAcrossNewTool(t *testing.T) {
 	keyB := nodeID{Kind: acpwire.KindTool, Key: "tool:b"}
 	m.toggleExpanded(keyA) // expand tool A
 
-	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", StartedAt: time.Unix(500, 0), ToolCallID: "a"})
+	stateOf(m).SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", StartedAt: time.Unix(500, 0), ToolCallID: "a"})
 	m.invalidateTranscript()
 	m.refreshViewport()
 
 	// A new tool starts (different StartedAt): the old override must stay
 	// inert in the map, and the new tool must be collapsed.
-	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", StartedAt: time.Unix(501, 0), ToolCallID: "b"})
+	stateOf(m).SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", StartedAt: time.Unix(501, 0), ToolCallID: "b"})
 	m.invalidateTranscript()
 	m.refreshViewport()
 
@@ -9268,9 +9268,9 @@ func TestDoctorFixSavesKeyAndReloads(t *testing.T) {
 	m := testModelWith(inproc.Deps{State: session.New(config.Default(), work, time.Unix(100, 0), session.Persistence{}), Auth: newMemAuth(), HomeDir: home},
 		WithHomeDir(home),
 		WithOpenBrowser(func(string) error { return nil }))
-	m.state.WorkingDir = work
+	stateOf(m).WorkingDir = work
 	m.workDir = work
-	m.state.Config.Providers = map[string]config.ProviderConfig{
+	stateOf(m).Config.Providers = map[string]config.ProviderConfig{
 		"openai": {
 			Type:      "openai_compatible",
 			BaseURL:   "https://api.openai.com/v1",
@@ -9333,7 +9333,7 @@ func TestDoctorFixSavesKeyAndReloads(t *testing.T) {
 func TestDrillIntoLatestRunningSubagentByKey(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildState(t)
-	m.state.RegisterSubagent("sdd_implementer · task 3", child)
+	stateOf(m).RegisterSubagent("sdd_implementer · task 3", child)
 
 	if !m.drillIntoLatestRunningSubagent() {
 		t.Fatal("drill-in must succeed when a subagent is running")
@@ -9361,7 +9361,7 @@ func TestDrilledInChildActiveToolOverrideSurvivesRepaint(t *testing.T) {
 	child := newChildState(t)
 	started := time.Now()
 	child.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "sleep 999", StartedAt: started, ToolCallID: "child_call"})
-	m.state.RegisterSubagent("child", child)
+	stateOf(m).RegisterSubagent("child", child)
 	m.drillIntoLatestRunningSubagent()
 	m.invalidateTranscript()
 	m.refreshViewport()
@@ -9393,7 +9393,7 @@ func TestDrilledInChildActiveToolOverrideSurvivesRepaint(t *testing.T) {
 
 func TestSDDPlanPickerShowsTaskCounts(t *testing.T) {
 	m := newTestModelInRepo(t)
-	writeTestPlan(t, m.state.WorkingDir, "add-retries.md", 3)
+	writeTestPlan(t, stateOf(m).WorkingDir, "add-retries.md", 3)
 
 	m.openSDDPlanPicker()
 
@@ -9408,7 +9408,7 @@ func TestSDDPlanPickerShowsTaskCounts(t *testing.T) {
 
 func TestSDDPlanPickerFlagsUnparseablePlans(t *testing.T) {
 	m := newTestModelInRepo(t)
-	writeRawTestPlan(t, m.state.WorkingDir, "broken.md", "# No tasks here\n")
+	writeRawTestPlan(t, stateOf(m).WorkingDir, "broken.md", "# No tasks here\n")
 
 	m.openSDDPlanPicker()
 
@@ -9430,9 +9430,9 @@ func TestSDDPlanPickerFlagsUnparseablePlans(t *testing.T) {
 
 func TestSDDPlanPickerFlagsUnreadableLedger(t *testing.T) {
 	m := newTestModelInRepo(t)
-	writeTestPlan(t, m.state.WorkingDir, "add-retries.md", 3)
+	writeTestPlan(t, stateOf(m).WorkingDir, "add-retries.md", 3)
 
-	paths, err := pipeline.NewPaths(m.state.WorkingDir, "add-retries")
+	paths, err := pipeline.NewPaths(stateOf(m).WorkingDir, "add-retries")
 	if err != nil {
 		t.Fatalf("NewPaths: %v", err)
 	}
@@ -9464,9 +9464,9 @@ func TestSDDPlanPickerFlagsUnreadableLedger(t *testing.T) {
 
 func TestSDDPlanPickerPinsResumableRunFirst(t *testing.T) {
 	m := newTestModelInRepo(t)
-	writeTestPlan(t, m.state.WorkingDir, "aaa-first-alphabetically.md", 2)
-	writeTestPlan(t, m.state.WorkingDir, "zzz-partly-done.md", 4)
-	markTestLedgerComplete(t, m.state.WorkingDir, "zzz-partly-done", 2)
+	writeTestPlan(t, stateOf(m).WorkingDir, "aaa-first-alphabetically.md", 2)
+	writeTestPlan(t, stateOf(m).WorkingDir, "zzz-partly-done.md", 4)
+	markTestLedgerComplete(t, stateOf(m).WorkingDir, "zzz-partly-done", 2)
 
 	m.openSDDPlanPicker()
 
@@ -9516,10 +9516,10 @@ func TestSDDPlanPickerEmptyStateOffersNoBrokenAction(t *testing.T) {
 
 func TestSDDPreflightStatesRunConsequences(t *testing.T) {
 	m := newTestModelInRepo(t)
-	path := filepath.Join(m.state.WorkingDir, ".marshal", "plans", "add-retries.md")
-	writeTestPlan(t, m.state.WorkingDir, "add-retries.md", 5)
-	m.state.Config.SDD.Verify.Build = "go build ./..."
-	m.state.Config.SDD.Verify.Test = "go test ./..."
+	path := filepath.Join(stateOf(m).WorkingDir, ".marshal", "plans", "add-retries.md")
+	writeTestPlan(t, stateOf(m).WorkingDir, "add-retries.md", 5)
+	stateOf(m).Config.SDD.Verify.Build = "go build ./..."
+	stateOf(m).Config.SDD.Verify.Test = "go test ./..."
 
 	m.openRunPreflight("sdd", path, &acpwire.PlanPreflight{
 		Verify: acpwire.VerifyGate{Build: "go build ./...", Test: "go test ./...", Known: true},
@@ -9535,10 +9535,10 @@ func TestSDDPreflightStatesRunConsequences(t *testing.T) {
 
 func TestSDDPreflightWarnsWhenVerifyIsUnconfigured(t *testing.T) {
 	m := newTestModelInRepo(t)
-	path := filepath.Join(m.state.WorkingDir, ".marshal", "plans", "add-retries.md")
-	writeTestPlan(t, m.state.WorkingDir, "add-retries.md", 2)
-	m.state.Config.SDD.Verify.Build = ""
-	m.state.Config.SDD.Verify.Test = ""
+	path := filepath.Join(stateOf(m).WorkingDir, ".marshal", "plans", "add-retries.md")
+	writeTestPlan(t, stateOf(m).WorkingDir, "add-retries.md", 2)
+	stateOf(m).Config.SDD.Verify.Build = ""
+	stateOf(m).Config.SDD.Verify.Test = ""
 
 	m.openRunPreflight("sdd", path, &acpwire.PlanPreflight{})
 
@@ -9551,8 +9551,8 @@ func TestSDDPreflightWarnsWhenVerifyIsUnconfigured(t *testing.T) {
 
 func TestSDDPreflightStillListsTheCast(t *testing.T) {
 	m := newTestModelInRepo(t)
-	path := filepath.Join(m.state.WorkingDir, ".marshal", "plans", "p.md")
-	writeTestPlan(t, m.state.WorkingDir, "p.md", 1)
+	path := filepath.Join(stateOf(m).WorkingDir, ".marshal", "plans", "p.md")
+	writeTestPlan(t, stateOf(m).WorkingDir, "p.md", 1)
 
 	m.openRunPreflight("sdd", path, &acpwire.PlanPreflight{})
 
@@ -9635,7 +9635,7 @@ func TestActiveAgentRunRowRenderedWhenNoRunningCard(t *testing.T) {
 
 func TestGateOpensPanelNotATranscriptMessage(t *testing.T) {
 	m := newTestModelInRepo(t)
-	m.state.SetSDDGate(session.SDDGate{
+	stateOf(m).SetSDDGate(session.SDDGate{
 		TaskN: 2, TaskTitle: "Wire the resolver", Question: "Which timeout applies?",
 	})
 
@@ -9649,7 +9649,7 @@ func TestGateOpensPanelNotATranscriptMessage(t *testing.T) {
 	if _, ok := m2.dock.Panel().(*gatepanel.Panel); !ok {
 		t.Fatalf("dock holds %T, want *gatepanel.Panel", m2.dock.Panel())
 	}
-	for _, msg := range m2.state.Messages() {
+	for _, msg := range stateOf(m2).Messages() {
 		if strings.Contains(msg.Content, "Which timeout applies?") {
 			t.Error("the question must not also be printed into the transcript — one surface, not two")
 		}
@@ -9680,7 +9680,7 @@ func TestAnswerMsgResumesTheRun(t *testing.T) {
 		t.Errorf("plan run answers = %v, want [\"use 30s\"]", answers)
 	}
 	var sawEcho bool
-	for _, msg := range mm.state.Messages() {
+	for _, msg := range stateOf(mm).Messages() {
 		if msg.Role == session.RoleUser && strings.Contains(msg.Content, "use 30s") {
 			sawEcho = true
 		}
@@ -9794,7 +9794,7 @@ func TestGatePagingThroughModel(t *testing.T) {
 				t.Error("answering must close the gate panel")
 			}
 			var echoed bool
-			for _, msg := range m.state.Messages() {
+			for _, msg := range stateOf(m).Messages() {
 				if msg.Role == session.RoleUser && strings.Contains(msg.Content, answer) {
 					echoed = true
 				}
@@ -9825,7 +9825,7 @@ func TestGatePagingThroughModel(t *testing.T) {
 		if m.dock.IsOpen() {
 			t.Error("stopping must close the gate panel")
 		}
-		if g := m.state.SDDGate(); g.Question != "" {
+		if g := stateOf(m).SDDGate(); g.Question != "" {
 			t.Error("stopping must clear the gate")
 		}
 	})
@@ -9833,7 +9833,7 @@ func TestGatePagingThroughModel(t *testing.T) {
 
 func TestStopMsgEndsTheRun(t *testing.T) {
 	m := newTestModelInRepo(t)
-	m.state.SetSDDGate(session.SDDGate{TaskN: 1, Question: "q"})
+	stateOf(m).SetSDDGate(session.SDDGate{TaskN: 1, Question: "q"})
 	m.dock.Open(gatepanel.New(m.sess.Status().SDDGate))
 
 	m2, _ := m.Update(gatepanel.StopMsg{})
@@ -9842,11 +9842,11 @@ func TestStopMsgEndsTheRun(t *testing.T) {
 	if mm.dock.IsOpen() {
 		t.Error("stopping must close the gate panel")
 	}
-	if g := mm.state.SDDGate(); g.Question != "" {
+	if g := stateOf(mm).SDDGate(); g.Question != "" {
 		t.Error("stopping must clear the gate")
 	}
 	var sawStop bool
-	for _, msg := range mm.state.Messages() {
+	for _, msg := range stateOf(mm).Messages() {
 		if strings.Contains(msg.Content, "stopped") {
 			sawStop = true
 		}
@@ -9858,7 +9858,7 @@ func TestStopMsgEndsTheRun(t *testing.T) {
 
 func TestRunCommandOpensTheOutcomePanel(t *testing.T) {
 	m := newTestModelInRepo(t)
-	m.state.SetSDDProgress(session.SDDProgress{
+	stateOf(m).SetSDDProgress(session.SDDProgress{
 		Finished: true, Succeeded: true, PlanName: "add-retries",
 		Branch: "pipeline/add-retries", BaseRef: "main",
 		TotalTasks: 3, DoneTasks: 3,
@@ -9993,7 +9993,7 @@ func TestSDDAuthoringToPreflight(t *testing.T) {
 // using a seeded final assistant message.
 func TestSDDNewFromLastPlanToPreflight(t *testing.T) {
 	m := newAuthoringModel(t)
-	m.state.AddMessageFinal(session.RoleAssistant, "approved plan content", session.ContentTypePlain)
+	stateOf(m).AddMessageFinal(session.RoleAssistant, "approved plan content", session.ContentTypePlain)
 	updated, cmd := m.dispatchCommand("/sdd new --from-last-plan")
 	m = asModel(t, updated)
 	if cmd == nil {
@@ -10127,7 +10127,7 @@ func TestTurnSpinnerOmitsTheCurrentTool(t *testing.T) {
 	m := newViewTestModelWithRegistry(t, 80, 24)
 	m.busy = true
 	m.turnStartedAt = time.Now()
-	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell: go test"})
+	stateOf(m).SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell: go test"})
 	out := stripANSI(m.turnStateSegment())
 	if strings.Contains(out, "shell: go test") {
 		t.Fatalf("the current tool must not repeat in the status line, got %q", out)
@@ -10143,10 +10143,10 @@ func TestTurnSpinnerOmitsTheCurrentTool(t *testing.T) {
 // the LLM is still asked for something better.
 func TestSuggestionLowConfidenceShowsTextAndCallsLLM(t *testing.T) {
 	m := newTestModel(t)
-	m.state.Config.TUI.Suggestions = "llm"
+	stateOf(m).Config.TUI.Suggestions = "llm"
 	fp := &fakeSuggestionProvider{response: "yes, add the test"}
 	m = withSuggester(m, fp.Provide)
-	m.state.AddMessageFinalWithUsage(session.RoleAssistant, "Want me to add a test for that?", session.ContentTypeMarkdown, 0, "")
+	stateOf(m).AddMessageFinalWithUsage(session.RoleAssistant, "Want me to add a test for that?", session.ContentTypeMarkdown, 0, "")
 
 	cmd := m.computeSuggestion()
 	if m.suggestion != "yes, go ahead" {
@@ -10175,10 +10175,10 @@ func TestSuggestionLowConfidenceShowsTextAndCallsLLM(t *testing.T) {
 // as its answer and there is nothing for a model to improve.
 func TestSuggestionHighConfidenceSkipsLLM(t *testing.T) {
 	m := newTestModel(t)
-	m.state.Config.TUI.Suggestions = "llm"
+	stateOf(m).Config.TUI.Suggestions = "llm"
 	fp := &fakeSuggestionProvider{response: "should not be used"}
 	m = withSuggester(m, fp.Provide)
-	m.state.AddMessageFinalWithUsage(session.RoleAssistant, "Should I proceed with the refactor?", session.ContentTypeMarkdown, 0, "")
+	stateOf(m).AddMessageFinalWithUsage(session.RoleAssistant, "Should I proceed with the refactor?", session.ContentTypeMarkdown, 0, "")
 
 	cmd := m.computeSuggestion()
 	if m.suggestion != "yes" {
@@ -10206,10 +10206,10 @@ func TestSuggestionRulesModeNeverCallsLLM(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newTestModel(t)
-			m.state.Config.TUI.Suggestions = "rules"
+			stateOf(m).Config.TUI.Suggestions = "rules"
 			fp := &fakeSuggestionProvider{response: "should not be used"}
 			m = withSuggester(m, fp.Provide)
-			m.state.AddMessageFinalWithUsage(session.RoleAssistant, tc.msg, session.ContentTypeMarkdown, 0, "")
+			stateOf(m).AddMessageFinalWithUsage(session.RoleAssistant, tc.msg, session.ContentTypeMarkdown, 0, "")
 
 			cmd := m.computeSuggestion()
 			if m.suggestion != tc.want {
@@ -10229,8 +10229,8 @@ func TestSuggestionRulesModeNeverCallsLLM(t *testing.T) {
 // return a cmd. Marshal ships with no providers configured.
 func TestSuggestionNoProviderNoCall(t *testing.T) {
 	m := newTestModel(t)
-	m.state.Config.TUI.Suggestions = "llm"
-	m.state.AddMessageFinalWithUsage(session.RoleAssistant, "Want me to add a test for that?", session.ContentTypeMarkdown, 0, "")
+	stateOf(m).Config.TUI.Suggestions = "llm"
+	stateOf(m).AddMessageFinalWithUsage(session.RoleAssistant, "Want me to add a test for that?", session.ContentTypeMarkdown, 0, "")
 
 	if cmd := m.computeSuggestion(); cmd != nil {
 		t.Fatal("expected no fallback cmd when no suggestion provider is wired")
@@ -10249,10 +10249,10 @@ func TestSuggestionOffAtEveryConfidence(t *testing.T) {
 		"I've finished the refactor and all tests pass.",
 	} {
 		m := newTestModel(t)
-		m.state.Config.TUI.Suggestions = "off"
+		stateOf(m).Config.TUI.Suggestions = "off"
 		fp := &fakeSuggestionProvider{response: "should not be used"}
 		m = withSuggester(m, fp.Provide)
-		m.state.AddMessageFinalWithUsage(session.RoleAssistant, msg, session.ContentTypeMarkdown, 0, "")
+		stateOf(m).AddMessageFinalWithUsage(session.RoleAssistant, msg, session.ContentTypeMarkdown, 0, "")
 
 		cmd := m.computeSuggestion()
 		if m.suggestion != "" || cmd != nil || fp.called {
@@ -10535,7 +10535,7 @@ func TestExitWarnsBeforeStoppingWork(t *testing.T) {
 		t.Fatal("the stop/join pass ran before the user decided")
 	}
 	select {
-	case <-m.state.Done():
+	case <-stateOf(m).Done():
 		t.Fatal("state must not be shut down while the warning is open")
 	default:
 	}
@@ -10565,7 +10565,7 @@ func TestWarningDeclinePreservesWork(t *testing.T) {
 		t.Fatalf("endStage = %v, want idle after a decline", m.endStage)
 	}
 	select {
-	case <-m.state.Done():
+	case <-stateOf(m).Done():
 		t.Fatal("declining shut the session down")
 	default:
 	}
@@ -10739,7 +10739,7 @@ func TestCtrlCReachesTheWarningAndRetriesSettlement(t *testing.T) {
 	if ctrl.waitCalls != 1 {
 		t.Fatalf("stop/join passes = %d, want 1", ctrl.waitCalls)
 	}
-	got := lastMessageContent(m.state.Messages())
+	got := lastMessageContent(stateOf(m).Messages())
 	if !strings.Contains(got, "Could not stop all work") || !strings.Contains(got, "retry") {
 		t.Fatalf("transcript = %q, want an accurate failure and a retry hint", got)
 	}
@@ -10830,7 +10830,7 @@ func TestWarningSurvivesLateApprovalEvents(t *testing.T) {
 	}
 
 	// A gate event arrives while the warning is up.
-	m.state.SetSDDGate(session.SDDGate{TaskN: 1, Question: "Ship it?"})
+	stateOf(m).SetSDDGate(session.SDDGate{TaskN: 1, Question: "Ship it?"})
 	updated, _ := m.Update(agentFinishedMsg{err: &acpwire.Error{
 		Code: acpwire.CodeHumanGateRequired, Message: "pipeline: human gate required",
 	}})
@@ -10893,7 +10893,7 @@ func TestWarningIsIndependentOfPostmortemPolicy(t *testing.T) {
 	for _, policy := range []string{"never", "always", "prompt", "bogus"} {
 		t.Run(policy, func(t *testing.T) {
 			m, _ := warningModel(t, workSnapshot("job-1"))
-			m.state.Config.Postmortem.OnExit = policy
+			stateOf(m).Config.Postmortem.OnExit = policy
 
 			if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
 				t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
@@ -10920,7 +10920,7 @@ func TestWarningIsIndependentOfApprovalMode(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m, _ := warningModel(t, workSnapshot("job-1"))
 			auto := tc.auto
-			if _, err := m.state.ApplyInteraction(interaction.Patch{Mode: &tc.mode, Auto: &auto}); err != nil {
+			if _, err := stateOf(m).ApplyInteraction(interaction.Patch{Mode: &tc.mode, Auto: &auto}); err != nil {
 				t.Fatalf("seed interaction: %v", err)
 			}
 
@@ -11002,7 +11002,7 @@ func TestNewSessionWarnsBeforeReplacing(t *testing.T) {
 // session factory untouched.
 func TestNewSessionDeclineKeepsTheConversation(t *testing.T) {
 	m, _, f := newSessionWarningModel(t, workSnapshot("job-1"))
-	oldState := m.state
+	oldState := stateOf(m)
 
 	updated, _ := m.dispatchCommand("/new fix-auth")
 	m = asModel(t, updated)
@@ -11015,7 +11015,7 @@ func TestNewSessionDeclineKeepsTheConversation(t *testing.T) {
 	if f.called > 0 {
 		t.Fatal("declining still built a new session")
 	}
-	if m.state != oldState {
+	if stateOf(m) != oldState {
 		t.Fatal("declining replaced the model's session state")
 	}
 	if m.ResumeSession() != "" {
@@ -11082,7 +11082,7 @@ func TestResumeDeclineLeavesTheResumeTargetUntouched(t *testing.T) {
 	if m.ResumeSession() != "" {
 		t.Fatalf("ResumeSession() = %q after a decline, want untouched", m.ResumeSession())
 	}
-	if m.state != state {
+	if stateOf(m) != state {
 		t.Fatal("a declined resume replaced the model's session state")
 	}
 }
@@ -11209,7 +11209,7 @@ func TestReplacementNeverRunsExitPostmortem(t *testing.T) {
 			t.Setenv("MARSHAL_CONFIG_DIR", t.TempDir())
 			t.Setenv("XDG_CONFIG_HOME", "")
 			m, _, f := newSessionWarningModel(t, workSnapshot("job-1"))
-			m.state.Config.Postmortem.OnExit = onExit
+			stateOf(m).Config.Postmortem.OnExit = onExit
 
 			updated, _ := m.dispatchCommand("/new")
 			m = asModel(t, updated)
@@ -11223,7 +11223,7 @@ func TestReplacementNeverRunsExitPostmortem(t *testing.T) {
 			if f.called == 0 {
 				t.Fatal("the replacement did not run")
 			}
-			if _, err := os.Stat(postmortemReportPath(t, m.state)); !os.IsNotExist(err) {
+			if _, err := os.Stat(postmortemReportPath(t, stateOf(m))); !os.IsNotExist(err) {
 				t.Fatalf("a replacement wrote a postmortem (stat err = %v)", err)
 			}
 			if cmd == nil {
@@ -11295,7 +11295,7 @@ func TestEndSettledFailureIsReportedAccurately(t *testing.T) {
 	if cmd != nil {
 		t.Fatalf("a failed settlement returned a cmd (%T), want nil", cmd)
 	}
-	if got := lastMessageContent(m.state.Messages()); !strings.Contains(got, detail) {
+	if got := lastMessageContent(stateOf(m).Messages()); !strings.Contains(got, detail) {
 		t.Fatalf("transcript = %q, want the runtime's own failure text", got)
 	}
 	if m.endStage != endStopping {
@@ -12393,7 +12393,7 @@ func TestSendNowPromptAnswerRaceHasNoLateGrant(t *testing.T) {
 	}
 
 	// The form reaches "Always allow" and confirms: the decision must lose.
-	f.m.state.SetPendingApproval(tc)
+	stateOf(f.m).SetPendingApproval(tc)
 	for range 3 {
 		f.send(tea.KeyPressMsg{Code: tea.KeyRight})
 	}
@@ -12566,7 +12566,7 @@ func TestManagementPanelPasteAndEscapeThroughModel(t *testing.T) {
 					name: "agent system prompt",
 					open: func(t *testing.T) Model {
 						m := newTestModel(t)
-						m.state.Config.CustomAgents = map[string]routing.CustomAgent{
+						stateOf(m).Config.CustomAgents = map[string]routing.CustomAgent{
 							"scout": {Name: "scout", Preset: "fast"},
 						}
 						m.dispatchCommand("/agents")
@@ -12639,7 +12639,7 @@ func TestManagementPanelPasteAndEscapeThroughModel(t *testing.T) {
 	// message path, and the roster legend underneath it never turns on.
 	t.Run("agent picker keeps question marks from the legend", func(t *testing.T) {
 		m := newTestModel(t)
-		m.state.Config.CustomAgents = map[string]routing.CustomAgent{
+		stateOf(m).Config.CustomAgents = map[string]routing.CustomAgent{
 			"scout": {Name: "scout", Preset: "fast"},
 		}
 		m.dispatchCommand("/agents")

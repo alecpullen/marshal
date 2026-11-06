@@ -47,26 +47,26 @@ func browseFixture(t *testing.T) Model {
 	t.Helper()
 	m := newTestModel(t)
 	m.resize(120, 50)
-	m.state.AddMessage(session.RoleUser, "ship it", session.ContentTypePlain)
-	_ = m.state.SetTodos([]db.TodoItem{
+	stateOf(m).AddMessage(session.RoleUser, "ship it", session.ContentTypePlain)
+	_ = stateOf(m).SetTodos([]db.TodoItem{
 		{ID: "t1", Content: "Write code", Status: "in_progress", StartedAt: time.Now()},
 		{ID: "t2", Content: "Run tests", Status: "pending"},
 	})
-	a := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(a, "Writing the code. It is short.")
-	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: a, ToolCallID: "r", Args: []byte(`{"path":"main.go"}`), ResultSummary: "ok"})
-	m.state.EndStep(a)
-	_ = m.state.SetTodos([]db.TodoItem{
+	a := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(a, "Writing the code. It is short.")
+	stateOf(m).LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: a, ToolCallID: "r", Args: []byte(`{"path":"main.go"}`), ResultSummary: "ok"})
+	stateOf(m).EndStep(a)
+	_ = stateOf(m).SetTodos([]db.TodoItem{
 		{ID: "t1", Content: "Write code", Status: "completed", StartedAt: time.Now(), CompletedAt: time.Now()},
 		{ID: "t2", Content: "Run tests", Status: "in_progress", StartedAt: time.Now()},
 	})
-	b := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(b, "Running the tests. Expect a failure.")
+	b := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(b, "Running the tests. Expect a failure.")
 	exit := 1
-	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "test.run", StepID: b, ToolCallID: "tr",
+	stateOf(m).LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "test.run", StepID: b, ToolCallID: "tr",
 		Args: []byte(`{"command":"go test ./..."}`), ResultSummary: "exit 1", ResultContent: "FAIL pkg/foo main.go:12: boom", CommandExitCode: &exit})
-	m.state.EndStep(b)
-	m.state.AddMessageFinal(session.RoleAssistant, "Tests fail.", session.ContentTypePlain)
+	stateOf(m).EndStep(b)
+	stateOf(m).AddMessageFinal(session.RoleAssistant, "Tests fail.", session.ContentTypePlain)
 	m.invalidateTranscript()
 	m.refreshViewport()
 	return m
@@ -338,7 +338,7 @@ func TestEditorCommandConstruction(t *testing.T) {
 
 func TestOpenResolvesAPathFromArgsAndFromShellOutput(t *testing.T) {
 	m := browseFixture(t)
-	root := m.state.Workspace().ActiveRoot
+	root := stateOf(m).Workspace().ActiveRoot
 	if err := os.WriteFile(root+"/main.go", []byte("package main\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -385,7 +385,7 @@ func TestFlashClearAndEditorErrorsAreHandledInUpdate(t *testing.T) {
 
 func TestOpenIgnoresDirectoriesAndPathsOutsideTheWorkspace(t *testing.T) {
 	m := browseFixture(t)
-	root := m.state.Workspace().ActiveRoot
+	root := stateOf(m).Workspace().ActiveRoot
 	outside := t.TempDir()
 	for _, p := range []string{".", "/etc", outside} {
 		calls := []openCall{{tool: "search.grep", args: fmt.Sprintf(`{"path":%q}`, p)}}
@@ -398,29 +398,29 @@ func TestOpenIgnoresDirectoriesAndPathsOutsideTheWorkspace(t *testing.T) {
 func TestTaskStepCountsMatchTheTaskHeaders(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(120, 60)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "One", Status: "in_progress", StartedAt: time.Now()}, {ID: "t2", Content: "Two", Status: "pending"}})
-	a := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(a, "Doing one.")
-	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: a, ToolCallID: "a", Args: []byte(`{"path":"x"}`), ResultSummary: "ok"})
-	m.state.EndStep(a)
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	_ = stateOf(m).SetTodos([]db.TodoItem{{ID: "t1", Content: "One", Status: "in_progress", StartedAt: time.Now()}, {ID: "t2", Content: "Two", Status: "pending"}})
+	a := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(a, "Doing one.")
+	stateOf(m).LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: a, ToolCallID: "a", Args: []byte(`{"path":"x"}`), ResultSummary: "ok"})
+	stateOf(m).EndStep(a)
 	// Narrate, then mark task two in progress: this step is stored under t1
 	// but renders under t2.
-	b := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(b, "Moving on to two.")
-	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "todo.write", StepID: b, ToolCallID: "w",
+	b := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(b, "Moving on to two.")
+	stateOf(m).LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "todo.write", StepID: b, ToolCallID: "w",
 		Args: []byte(`{"todos":[{"id":"t1","content":"One","status":"completed"},{"id":"t2","content":"Two","status":"in_progress"}]}`)})
-	_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "One", Status: "completed", StartedAt: time.Now(), CompletedAt: time.Now()}, {ID: "t2", Content: "Two", Status: "in_progress", StartedAt: time.Now()}})
-	m.state.EndStep(b)
-	c := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(c, "Working on two.")
-	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: c, ToolCallID: "c", Args: []byte(`{"path":"y"}`), ResultSummary: "ok"})
-	m.state.EndStep(c)
+	_ = stateOf(m).SetTodos([]db.TodoItem{{ID: "t1", Content: "One", Status: "completed", StartedAt: time.Now(), CompletedAt: time.Now()}, {ID: "t2", Content: "Two", Status: "in_progress", StartedAt: time.Now()}})
+	stateOf(m).EndStep(b)
+	c := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(c, "Working on two.")
+	stateOf(m).LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: c, ToolCallID: "c", Args: []byte(`{"path":"y"}`), ResultSummary: "ok"})
+	stateOf(m).EndStep(c)
 	m.invalidateTranscript()
 	m.refreshViewport()
 	// Build the same snapshot refreshViewport builds, then recompute the
 	// per-task stats through the production path the task headers use.
-	ts := m.state
+	ts := stateOf(m)
 	active := ts.ActiveToolCalls()
 	inProgress := ts.InProgress()
 	snap := viewmodel.Snapshot{
@@ -464,7 +464,7 @@ func TestCursorFollowsNewOutputWhileFollowing(t *testing.T) {
 	m := browseFixture(t)
 	m = pressKeys(m, "esc")
 	m.viewportFollow = true
-	m.state.AddMessage(session.RoleSystem, "late notice", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleSystem, "late notice", session.ContentTypePlain)
 	m.invalidateTranscript()
 	m.refreshViewport()
 	if m.cursor != m.browseItems[len(m.browseItems)-1].id {
@@ -499,11 +499,11 @@ func TestCopyingAStepDoesNotRepeatItsHeadline(t *testing.T) {
 func copyFixture(t *testing.T, events ...registry.AuditEvent) Model {
 	t.Helper()
 	m := newTestModel(t)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	id := m.state.BeginStep(session.Actor{Model: "qwen3"})
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	id := stateOf(m).BeginStep(session.Actor{Model: "qwen3"})
 	for i := range events {
 		events[i].StepID = id
-		m.state.LogToolCall(events[i])
+		stateOf(m).LogToolCall(events[i])
 	}
 	m.refreshViewport()
 	return m
@@ -535,15 +535,15 @@ func TestCopyOfAnEmptyEditTakesItsSummary(t *testing.T) {
 
 func TestOpenFindsAFileInABeatsSecondRow(t *testing.T) {
 	m := newTestModel(t)
-	root := m.state.Workspace().ActiveRoot
+	root := stateOf(m).Workspace().ActiveRoot
 	if err := os.WriteFile(root+"/a.go", []byte("package a\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	id := m.state.BeginStep(session.Actor{Model: "qwen3"})
-	m.state.LogToolCall(registry.AuditEvent{ToolName: "shell.run", StepID: id, ToolCallID: "c1",
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	id := stateOf(m).BeginStep(session.Actor{Model: "qwen3"})
+	stateOf(m).LogToolCall(registry.AuditEvent{ToolName: "shell.run", StepID: id, ToolCallID: "c1",
 		Args: []byte(`{"command":"true"}`)})
-	m.state.LogToolCall(registry.AuditEvent{ToolName: "file.read", StepID: id, ToolCallID: "c2",
+	stateOf(m).LogToolCall(registry.AuditEvent{ToolName: "file.read", StepID: id, ToolCallID: "c2",
 		Args: []byte(`{"path":"a.go"}`), ResultContent: "package a"})
 	m.refreshViewport()
 
@@ -559,13 +559,13 @@ func TestOpenFindsAFileInABeatsSecondRow(t *testing.T) {
 // open one rather than claim there is nothing to open.
 func TestOpenKeepsAChangedFileWhenTheDetailIsGone(t *testing.T) {
 	m := newTestModel(t)
-	root := m.state.Workspace().ActiveRoot
+	root := stateOf(m).Workspace().ActiveRoot
 	if err := os.WriteFile(root+"/a.go", []byte("package a\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	id := m.state.BeginStep(session.Actor{Model: "qwen3"})
-	m.state.LogToolCall(registry.AuditEvent{ToolName: "shell.run", StepID: id, ToolCallID: "c1",
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	id := stateOf(m).BeginStep(session.Actor{Model: "qwen3"})
+	stateOf(m).LogToolCall(registry.AuditEvent{ToolName: "shell.run", StepID: id, ToolCallID: "c1",
 		Args: []byte(`{"command":"true"}`)})
 	m.refreshViewport()
 
@@ -629,15 +629,15 @@ func finishedSubagentFixture(t *testing.T) (Model, *session.State, session.Subag
 	t.Helper()
 	m := newTestModel(t)
 	m.resize(120, 50)
-	m.state.AddMessage(session.RoleUser, "ship it", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleUser, "ship it", session.ContentTypePlain)
 	child := newChildState(t)
 	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
-	view := m.state.RegisterSubagent("explore repo", child)
-	a := m.state.BeginStep(session.Actor{})
-	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "agent.run", StepID: a, ToolCallID: "ar",
+	view := stateOf(m).RegisterSubagent("explore repo", child)
+	a := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "agent.run", StepID: a, ToolCallID: "ar",
 		Args: []byte(`{"task":"explore"}`), ResultSummary: fmt.Sprintf("started as subagent %d", view.ID)})
-	m.state.EndStep(a)
-	m.state.FinishSubagent(view.ID, "found three entry points", nil)
+	stateOf(m).EndStep(a)
+	stateOf(m).FinishSubagent(view.ID, "found three entry points", nil)
 	m.invalidateTranscript()
 	m.refreshViewport()
 	return m, child, view
@@ -663,14 +663,14 @@ func TestBrowseFDrillsFromACompletionEvent(t *testing.T) {
 func TestBrowseFDrillsFromTheDispatchRow(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(120, 50)
-	m.state.AddMessage(session.RoleUser, "ship it", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleUser, "ship it", session.ContentTypePlain)
 	child := newChildState(t)
 	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
-	view := m.state.RegisterSubagent("explore repo", child)
-	a := m.state.BeginStep(session.Actor{})
-	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "agent.run", StepID: a, ToolCallID: "ar",
+	view := stateOf(m).RegisterSubagent("explore repo", child)
+	a := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "agent.run", StepID: a, ToolCallID: "ar",
 		Args: []byte(`{"task":"explore"}`), ResultSummary: fmt.Sprintf("started as subagent %d", view.ID)})
-	m.state.EndStep(a)
+	stateOf(m).EndStep(a)
 	m.invalidateTranscript()
 	m.refreshViewport()
 
@@ -729,10 +729,10 @@ func boxHistoryModel(t *testing.T, items ...acpwire.WorkItem) Model {
 	t.Helper()
 	m := newTestModel(t)
 	m.resize(120, 40)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	a := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(a, "Doing it.")
-	m.state.EndStep(a)
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	a := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(a, "Doing it.")
+	stateOf(m).EndStep(a)
 	m.workSnapshot = workSnapOf(items...)
 	m.invalidateTranscript()
 	m.refreshViewport()
@@ -811,7 +811,7 @@ func TestBrowseSRequestsAStopOnlyWhenAllowed(t *testing.T) {
 	snap.ConversationID = "conv1"
 	m.workSnapshot = snap
 	m.resize(120, 40)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
 	m.invalidateTranscript()
 	m.refreshViewport()
 	m.viewString()
@@ -845,10 +845,10 @@ func TestBrowseSRequestsAStopOnlyWhenAllowed(t *testing.T) {
 func TestBrowseFOpensAnAgentFromTheBox(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(120, 40)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
 	child := newChildState(t)
 	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
-	view := m.state.RegisterSubagent("explore repo", child)
+	view := stateOf(m).RegisterSubagent("explore repo", child)
 	card := workRunningCard("work:agent", workT0)
 	card.Kind = "agent"
 	card.SourceID = strconv.FormatInt(view.ID, 10)
@@ -878,10 +878,10 @@ func TestBrowseFOpensAnAgentFromTheBox(t *testing.T) {
 func TestBrowseFRefusesASecondDrill(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(120, 40)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
 	child := newChildState(t)
 	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
-	view := m.state.RegisterSubagent("explore repo", child)
+	view := stateOf(m).RegisterSubagent("explore repo", child)
 	card := workRunningCard("work:agent", workT0)
 	card.Kind = "agent"
 	card.SourceID = strconv.FormatInt(view.ID, 10)
@@ -918,22 +918,22 @@ func TestBrowseEnterOnAPlanItemScrollsToItsBeat(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 30)
 	for i := range 80 {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("filler %d", i), session.ContentTypePlain)
+		stateOf(m).AddMessage(session.RoleSystem, fmt.Sprintf("filler %d", i), session.ContentTypePlain)
 	}
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
 	mustSetTodos(t, &m,
 		native.TodoItem{ID: "t1", Content: "First", Status: native.TodoInProgress},
 		native.TodoItem{ID: "t2", Content: "Second", Status: native.TodoPending},
 	)
-	done := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(done, "Doing the first thing.")
-	m.state.EndStep(done)
+	done := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(done, "Doing the first thing.")
+	stateOf(m).EndStep(done)
 	mustSetTodos(t, &m,
 		native.TodoItem{ID: "t1", Content: "First", Status: native.TodoCompleted},
 		native.TodoItem{ID: "t2", Content: "Second", Status: native.TodoInProgress},
 	)
-	live := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(live, "Doing the second thing.")
+	live := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(live, "Doing the second thing.")
 	m.busy, m.turnStartedAt = true, m.now()
 	m.invalidateTranscript()
 	m.refreshViewport()
@@ -972,7 +972,7 @@ func TestBrowseEnterOnAPlanItemScrollsToItsBeat(t *testing.T) {
 func TestBrowseGFollowsTheLiveBox(t *testing.T) {
 	m := boxHistoryModel(t, workRunningCard("work:one", workT0))
 	for i := range 40 {
-		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("filler %d", i), session.ContentTypePlain)
+		stateOf(m).AddMessage(session.RoleSystem, fmt.Sprintf("filler %d", i), session.ContentTypePlain)
 	}
 	m.invalidateTranscript()
 	m.refreshViewport()
@@ -1004,7 +1004,7 @@ func TestBrowseEnterOnAHeldRowScrollsToItsEvent(t *testing.T) {
 
 	// Push the event out of view.
 	for i := 0; i < 40; i++ {
-		m.state.AddMessage(session.RoleAssistant, fmt.Sprintf("filler %d", i), session.ContentTypePlain)
+		stateOf(m).AddMessage(session.RoleAssistant, fmt.Sprintf("filler %d", i), session.ContentTypePlain)
 	}
 	item := workRunningCard(view.WorkKey, base.Add(-2*time.Minute))
 	item.Kind = "agent"
@@ -1052,13 +1052,13 @@ func TestBrowseEnterOnAHeldRowScrollsToItsEvent(t *testing.T) {
 func TestNodeIdentityIsTheWireKindAndID(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	id := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(id, "Reading a.go.")
-	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Unix(200, 0), ToolName: "file.read", StepID: id, ToolCallID: "c1",
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	id := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(id, "Reading a.go.")
+	stateOf(m).LogToolCall(registry.AuditEvent{Timestamp: time.Unix(200, 0), ToolName: "file.read", StepID: id, ToolCallID: "c1",
 		Args: []byte(`{"path":"a.go"}`), ResultSummary: "package a"})
-	m.state.EndStep(id)
-	m.state.AddMessageFinal(session.RoleAssistant, "Done reading.", session.ContentTypePlain)
+	stateOf(m).EndStep(id)
+	stateOf(m).AddMessageFinal(session.RoleAssistant, "Done reading.", session.ContentTypePlain)
 	m.invalidateTranscript()
 	m.refreshViewport()
 

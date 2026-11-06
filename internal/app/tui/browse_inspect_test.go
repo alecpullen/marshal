@@ -102,15 +102,15 @@ func wireBeatKey(t *testing.T, m Model) nodeID {
 func withBeat(t *testing.T) Model {
 	t.Helper()
 	m := newTestModel(t)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	id := m.state.BeginStep(session.Actor{Label: "reviewer #1", Model: "qwen3", Provider: "local"})
-	m.state.AddNarration(id, "Checking the **config**. Then more.")
-	m.state.LogToolCall(registry.AuditEvent{
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	id := stateOf(m).BeginStep(session.Actor{Label: "reviewer #1", Model: "qwen3", Provider: "local"})
+	stateOf(m).AddNarration(id, "Checking the **config**. Then more.")
+	stateOf(m).LogToolCall(registry.AuditEvent{
 		Timestamp: time.Unix(102, 0), ToolName: "file.read", StepID: id, ToolCallID: "c1",
 		Args: json.RawMessage(`{"path":"a.go"}`), ResultSummary: "package a",
 	})
 	exit := 1
-	m.state.LogToolCall(registry.AuditEvent{
+	stateOf(m).LogToolCall(registry.AuditEvent{
 		Timestamp: time.Unix(103, 0), ToolName: "shell.run", StepID: id, ToolCallID: "c2",
 		Args: json.RawMessage(`{"command":"go test"}`), ResultContent: "FAIL",
 		CommandExitCode: &exit, Duration: 3 * time.Second,
@@ -154,17 +154,17 @@ func TestInspectorShowsACallsStepAndPlace(t *testing.T) {
 
 func TestInspectorShowsABeatsToolsAndTask(t *testing.T) {
 	m := newTestModel(t)
-	if err := m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "Run the tests", Status: "in_progress"}}); err != nil {
+	if err := stateOf(m).SetTodos([]db.TodoItem{{ID: "t1", Content: "Run the tests", Status: "in_progress"}}); err != nil {
 		t.Fatal(err)
 	}
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	id := m.state.BeginStep(session.Actor{Label: "reviewer #1", Model: "qwen3", Provider: "local"})
-	m.state.AddNarration(id, "Checking the **config**. Then more.")
-	m.state.LogToolCall(registry.AuditEvent{
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	id := stateOf(m).BeginStep(session.Actor{Label: "reviewer #1", Model: "qwen3", Provider: "local"})
+	stateOf(m).AddNarration(id, "Checking the **config**. Then more.")
+	stateOf(m).LogToolCall(registry.AuditEvent{
 		Timestamp: time.Unix(102, 0), ToolName: "file.read", StepID: id, ToolCallID: "c1",
 		Args: json.RawMessage(`{"path":"a.go"}`), ResultSummary: "package a",
 	})
-	m.state.LogToolCall(registry.AuditEvent{
+	stateOf(m).LogToolCall(registry.AuditEvent{
 		Timestamp: time.Unix(103, 0), ToolName: "shell.run", StepID: id, ToolCallID: "c2",
 		Args: json.RawMessage(`{"command":"go test"}`), ResultContent: "FAIL",
 	})
@@ -193,16 +193,16 @@ func TestInspectorShowsABeatsToolsAndTask(t *testing.T) {
 
 func TestInspectorShowsASandboxedHookedCall(t *testing.T) {
 	m := newTestModel(t)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	id := m.state.BeginStep(session.Actor{Model: "qwen3"})
-	m.state.LogToolCall(registry.AuditEvent{
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	id := stateOf(m).BeginStep(session.Actor{Model: "qwen3"})
+	stateOf(m).LogToolCall(registry.AuditEvent{
 		Timestamp: time.Unix(102, 0), ToolName: "shell.run", StepID: id, ToolCallID: "c1",
 		Args:     json.RawMessage(`{"command":"go test"}`),
 		Hooks:    []registry.HookMetadata{{Event: "PreToolUse", Decision: "block"}},
 		Sandbox:  registry.SandboxMeta{Enabled: true, Backend: "restricted", NetworkIsolated: true, KilledReason: "timeout"},
 		Approval: registry.ApprovalApproved,
 	})
-	m.state.LogToolCall(registry.AuditEvent{
+	stateOf(m).LogToolCall(registry.AuditEvent{
 		Timestamp: time.Unix(104, 0), ToolName: "shell.run", StepID: id, ToolCallID: "c2",
 		Args: json.RawMessage(`{"command":"go vet"}`), Approval: registry.ApprovalNotRequired,
 	})

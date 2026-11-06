@@ -22,10 +22,10 @@ func TestOptionsIdleChangePersistsAndReloads(t *testing.T) {
 			return nil
 		}
 	})
-	m.state.SetActiveRoute(session.RouteInfo{
+	stateOf(m).SetActiveRoute(session.RouteInfo{
 		Role: routing.RoleImplementer, Profile: "p", Preset: "coder", Active: true,
 	})
-	m.state.Config.Models.Presets["coder"] = routing.ModelPreset{
+	stateOf(m).Config.Models.Presets["coder"] = routing.ModelPreset{
 		Name: "coder", Provider: "ollama", Model: "qwen2.5-coder:7b",
 		ContextWindow: 32000, MaxOutputTokens: 2048,
 	}
@@ -54,8 +54,8 @@ func TestOptionsIdleChangePersistsAndReloads(t *testing.T) {
 	if m.pendingModelOptions != nil {
 		t.Fatal("pending state should be nil after idle commit")
 	}
-	if m.state.Config.Models.Presets["coder"].ContextWindow != 64000 {
-		t.Fatalf("live preset context window = %d, want 64000", m.state.Config.Models.Presets["coder"].ContextWindow)
+	if stateOf(m).Config.Models.Presets["coder"].ContextWindow != 64000 {
+		t.Fatalf("live preset context window = %d, want 64000", stateOf(m).Config.Models.Presets["coder"].ContextWindow)
 	}
 	// Presets are user-global: the new value lands in the user config and
 	// never in the project file.
@@ -77,10 +77,10 @@ func TestOptionsBusyChangeSavesWithoutReloading(t *testing.T) {
 		d.ReloadConfig = func(config.Config) error { reloads++; return nil }
 	})
 	m.busy = true
-	m.state.SetActiveRoute(session.RouteInfo{
+	stateOf(m).SetActiveRoute(session.RouteInfo{
 		Role: routing.RoleImplementer, Profile: "p", Preset: "coder", Active: true,
 	})
-	m.state.Config.Models.Presets["coder"] = routing.ModelPreset{
+	stateOf(m).Config.Models.Presets["coder"] = routing.ModelPreset{
 		Name: "coder", Provider: "ollama", Model: "qwen2.5-coder:7b",
 		ContextWindow: 32000, MaxOutputTokens: 2048,
 	}
@@ -106,11 +106,11 @@ func TestOptionsBusyChangeSavesWithoutReloading(t *testing.T) {
 	if reloads != 0 {
 		t.Fatalf("the runtime reload ran %d times while busy, want 0", reloads)
 	}
-	if m.state.Config.Models.Presets["coder"].ContextWindow != 32000 {
-		t.Fatalf("live preset changed while busy: got %d, want 32000", m.state.Config.Models.Presets["coder"].ContextWindow)
+	if stateOf(m).Config.Models.Presets["coder"].ContextWindow != 32000 {
+		t.Fatalf("live preset changed while busy: got %d, want 32000", stateOf(m).Config.Models.Presets["coder"].ContextWindow)
 	}
 	if m.pendingModelOptions == nil {
-		msgs := m.state.Messages()
+		msgs := stateOf(m).Messages()
 		last := ""
 		if len(msgs) > 0 {
 			last = msgs[len(msgs)-1].Content
@@ -139,10 +139,10 @@ func TestOptionsPendingChangeFlushesWhenIdle(t *testing.T) {
 		}
 	})
 	m.busy = true
-	m.state.SetActiveRoute(session.RouteInfo{
+	stateOf(m).SetActiveRoute(session.RouteInfo{
 		Role: routing.RoleImplementer, Profile: "p", Preset: "coder", Active: true,
 	})
-	m.state.Config.Models.Presets["coder"] = routing.ModelPreset{
+	stateOf(m).Config.Models.Presets["coder"] = routing.ModelPreset{
 		Name: "coder", Provider: "ollama", Model: "qwen2.5-coder:7b",
 		ContextWindow: 32000, MaxOutputTokens: 2048,
 	}
@@ -175,8 +175,8 @@ func TestOptionsPendingChangeFlushesWhenIdle(t *testing.T) {
 	if m.pendingModelOptions != nil {
 		t.Fatal("pending state should be cleared after flush")
 	}
-	if m.state.Config.Models.Presets["coder"].ContextWindow != 64000 {
-		t.Fatalf("live preset context window = %d, want 64000", m.state.Config.Models.Presets["coder"].ContextWindow)
+	if stateOf(m).Config.Models.Presets["coder"].ContextWindow != 64000 {
+		t.Fatalf("live preset context window = %d, want 64000", stateOf(m).Config.Models.Presets["coder"].ContextWindow)
 	}
 }
 
@@ -189,10 +189,10 @@ func TestOptionsReloadFailureRetainsPendingCandidate(t *testing.T) {
 		}
 	})
 	m.busy = true
-	m.state.SetActiveRoute(session.RouteInfo{
+	stateOf(m).SetActiveRoute(session.RouteInfo{
 		Role: routing.RoleImplementer, Profile: "p", Preset: "coder", Active: true,
 	})
-	m.state.Config.Models.Presets["coder"] = routing.ModelPreset{
+	stateOf(m).Config.Models.Presets["coder"] = routing.ModelPreset{
 		Name: "coder", Provider: "ollama", Model: "qwen2.5-coder:7b",
 		ContextWindow: 32000, MaxOutputTokens: 2048,
 	}
@@ -228,7 +228,7 @@ func TestOptionsReloadFailureRetainsPendingCandidate(t *testing.T) {
 	if !m.pendingModelOptions.retry {
 		t.Fatal("retry flag should be set after reload failure")
 	}
-	if m.state.Config.Models.Presets["coder"].ContextWindow != 32000 {
-		t.Fatalf("live preset should remain usable: got %d, want 32000", m.state.Config.Models.Presets["coder"].ContextWindow)
+	if stateOf(m).Config.Models.Presets["coder"].ContextWindow != 32000 {
+		t.Fatalf("live preset should remain usable: got %d, want 32000", stateOf(m).Config.Models.Presets["coder"].ContextWindow)
 	}
 }

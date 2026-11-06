@@ -91,14 +91,14 @@ func TestCtrlGClearsActiveToolChoices(t *testing.T) {
 func TestExpandingABeatOpensItsRows(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(120, 60)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	id := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(id, "Reading two files.")
-	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: id, ToolCallID: "a",
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	id := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(id, "Reading two files.")
+	stateOf(m).LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: id, ToolCallID: "a",
 		Args: []byte(`{"path":"a.go"}`), ResultSummary: "1 line", ResultContent: "alpha body"})
-	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "git.status", StepID: id, ToolCallID: "b",
+	stateOf(m).LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "git.status", StepID: id, ToolCallID: "b",
 		ResultSummary: "clean", ResultContent: "beta body"})
-	m.state.EndStep(id)
+	stateOf(m).EndStep(id)
 	m.refreshViewport()
 	if text := viewText(&m); strings.Contains(text, "alpha body") || strings.Contains(text, "beta body") {
 		t.Fatalf("rows start collapsed:\n%s", text)
@@ -123,12 +123,12 @@ func TestRefreshViewportShowsReasoningPerBeat(t *testing.T) {
 	m := newTestModel(t)
 	ts1 := time.Unix(300, 0)
 	ts2 := time.Unix(301, 0)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
 	for i, ts := range []time.Time{ts1, ts2} {
-		id := m.state.BeginStep(session.Actor{})
-		m.state.AddNarration(id, fmt.Sprintf("Beat %d.", i+1))
-		m.state.LogThinking(session.ThinkingEntry{Text: []string{"reasoning one", "reasoning two"}[i], Duration: time.Second, StartedAt: ts, StepID: id})
-		m.state.EndStep(id)
+		id := stateOf(m).BeginStep(session.Actor{})
+		stateOf(m).AddNarration(id, fmt.Sprintf("Beat %d.", i+1))
+		stateOf(m).LogThinking(session.ThinkingEntry{Text: []string{"reasoning one", "reasoning two"}[i], Duration: time.Second, StartedAt: ts, StepID: id})
+		stateOf(m).EndStep(id)
 	}
 	m.invalidateTranscript()
 	m.refreshViewport()
@@ -138,7 +138,7 @@ func TestRefreshViewportShowsReasoningPerBeat(t *testing.T) {
 		t.Fatalf("expected both beats' reasoning collapsed by default, got: %s", content)
 	}
 
-	m.toggleExpanded(beatWithThinking(&m, m.state, ts1))
+	m.toggleExpanded(beatWithThinking(&m, stateOf(m), ts1))
 	m.invalidateTranscript()
 	m.refreshViewport()
 
@@ -156,14 +156,14 @@ func TestRefreshViewportShowsReasoningPerBeat(t *testing.T) {
 func TestIsLiveToolNodeReadsTheWire(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	id := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(id, "Reading a.go, then running the suite.")
+	stateOf(m).AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	id := stateOf(m).BeginStep(session.Actor{})
+	stateOf(m).AddNarration(id, "Reading a.go, then running the suite.")
 	read := registry.AuditEvent{Timestamp: time.Unix(200, 0), ToolName: "file.read", StepID: id, ToolCallID: "read",
 		Args: []byte(`{"path":"a.go"}`), ResultSummary: "package a"}
-	m.state.LogToolCall(read)
+	stateOf(m).LogToolCall(read)
 	atc := session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StepID: id, ToolCallID: "live", StartedAt: time.Unix(201, 0)}
-	m.state.SetActiveToolCall(atc)
+	stateOf(m).SetActiveToolCall(atc)
 	m.busy, m.turnStartedAt = true, time.Now()
 	m.invalidateTranscript()
 	m.refreshViewport()

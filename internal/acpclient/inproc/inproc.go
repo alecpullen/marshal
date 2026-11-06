@@ -336,6 +336,10 @@ func (h *Host) AuthResolver() provider.AuthResolver {
 // value (C4), which holds because its state never changes.
 func (s *Session) ID() string { return s.state.SessionID() }
 
+// State returns the session state this session serves. Tests use it to
+// reach the state behind a model, and the TUI cannot: T1 denies it inproc.
+func (s *Session) State() *session.State { return s.state }
+
 // Status is the session's current status (C5). It reads the state one field at
 // a time, as the TUI read them before, so the value is not one atomic
 // snapshot. A closed session keeps answering with its final value (C4).

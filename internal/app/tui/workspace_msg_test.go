@@ -27,7 +27,7 @@ func TestChangedRebasesTheSheetWhenTheWorkspaceMoves(t *testing.T) {
 	}
 
 	m := newTestModel(t)
-	m.state.SetWorkspace(session.Workspace{ProjectRoot: dir, ActiveRoot: wt, Branch: "feat-x"})
+	stateOf(m).SetWorkspace(session.Workspace{ProjectRoot: dir, ActiveRoot: wt, Branch: "feat-x"})
 
 	mm, cmd := m.Update(changedMsg{ch: m.sess.Changed()})
 	m = mm.(Model)
@@ -55,7 +55,7 @@ func TestChangedLeavesTheSheetWhenTheWorkspaceStays(t *testing.T) {
 	stub.onRefreshSheet = func(req acpwire.SheetRefresh) { got = append(got, req) }
 	m := testModelStub(seamState(t, "s1"), stub)
 	m.resize(100, 30)
-	m.state.SetWorkspace(session.Workspace{ProjectRoot: "/repo", ActiveRoot: "/repo", Branch: "main"})
+	stateOf(m).SetWorkspace(session.Workspace{ProjectRoot: "/repo", ActiveRoot: "/repo", Branch: "main"})
 
 	// The first change follows the workspace and records it.
 	mm, cmd := m.Update(changedMsg{ch: m.sess.Changed()})

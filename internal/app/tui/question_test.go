@@ -335,7 +335,7 @@ func TestRenderInputAreaHidesTextareaWhileQuestionPending(t *testing.T) {
 		Questions:    []session.Question{{Question: "What is your name?"}},
 		ResponseChan: make(chan []session.Answer, 1),
 	}
-	m.state.SetPendingQuestion(q)
+	stateOf(m).SetPendingQuestion(q)
 	m.questionModel = newQuestionModel(acpwire.QuestionRequest{
 		Questions: []acpwire.Question{{Question: "What is your name?"}},
 	}, 76)

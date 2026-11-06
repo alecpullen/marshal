@@ -34,8 +34,8 @@ func TestInteractionCommandTransitionTable(t *testing.T) {
 		if got.Mode != mode || got.Auto != auto || got.System != system {
 			t.Fatalf("%s: state = %+v, want mode=%s auto=%v system=%v", label, got, mode, auto, system)
 		}
-		if string(m.state.InteractionState().Mode) != string(mode) {
-			t.Fatalf("%s: displayed mode = %q, want %q", label, m.state.InteractionState().Mode, mode)
+		if string(stateOf(m).InteractionState().Mode) != string(mode) {
+			t.Fatalf("%s: displayed mode = %q, want %q", label, stateOf(m).InteractionState().Mode, mode)
 		}
 	}
 

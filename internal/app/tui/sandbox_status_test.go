@@ -26,7 +26,7 @@ func TestTheRunningShellRowReadsTheSandboxFromStatus(t *testing.T) {
 	m := testModelStub(state, stub)
 	m.resize(100, 30)
 
-	m.state.SetActiveToolCall(session.ActiveToolCall{
+	stateOf(m).SetActiveToolCall(session.ActiveToolCall{
 		Name:       "shell.run",
 		Args:       "go test ./...",
 		StartedAt:  time.Now(),

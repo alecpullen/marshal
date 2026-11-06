@@ -47,6 +47,10 @@ func joinErrors(errs ...error) error {
 // Server.handlerShutdownTimeout.
 const defaultHandlerShutdownTimeout = 5 * time.Second
 
+// responseBarrierTimeout bounds how long a response waits for its session's
+// fences (P3 R11).
+const responseBarrierTimeout = 2 * time.Second
+
 type Handler func(ctx context.Context, params json.RawMessage) (any, error)
 
 // outboundResult carries either a response or a terminal error to a
@@ -110,6 +114,15 @@ type Server struct {
 	// marshal-only protocol in initialize (P3 R9). Guarded by stateMu.
 	marshal bool
 
+	// responseBarrier flushes the updates a call caused before its response is
+	// written, when the client needs the read-your-writes guarantee (P3 R2).
+	// Nil means no barrier. Guarded by stateMu.
+	responseBarrier func(ctx context.Context, sessionID string)
+
+	// barrierTimeout bounds how long a response waits for that flush (P3 R11).
+	// Guarded by stateMu.
+	barrierTimeout time.Duration
+
 	// handlerWG tracks in-flight handler goroutines so Serve can wait
 	// for them during shutdown.
 	handlerWG sync.WaitGroup
@@ -136,6 +149,7 @@ func NewServer(stdin io.Reader, stdout io.Writer, opts ...ServerOption) *Server 
 		notificationMethods:    map[string]bool{},
 		outbound:               map[string]chan outboundResult{},
 		handlerShutdownTimeout: defaultHandlerShutdownTimeout,
+		barrierTimeout:         responseBarrierTimeout,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -485,6 +499,75 @@ func (s *Server) setMarshalClient(v bool) {
 	s.stateMu.Unlock()
 }
 
+// SetResponseBarrier installs fn, which the server runs after a request's
+// handler returns and before its response is written, when the client
+// declared the marshal capability and the request's params name a session
+// (P3 R2). fn returns once every update the call caused is written.
+func (s *Server) SetResponseBarrier(fn func(ctx context.Context, sessionID string)) {
+	s.stateMu.Lock()
+	s.responseBarrier = fn
+	s.stateMu.Unlock()
+}
+
+// runResponseBarrier waits for the session's forwarders to write the updates
+// the call caused, so a marshal client's read after the call sees its effect
+// (P3 R2). Every other request is answered exactly as it was before (R9): the
+// barrier runs only for a marshal client and only for a call whose params name
+// a session. A forwarder that never answers costs the response at most
+// barrierTimeout, then a warning (R11).
+func (s *Server) runResponseBarrier(ctx context.Context, req Request) {
+	s.stateMu.Lock()
+	barrier := s.responseBarrier
+	timeout := s.barrierTimeout
+	s.stateMu.Unlock()
+	if barrier == nil || !s.marshalClient() {
+		return
+	}
+	sessionID, ok := sessionParam(req.Params)
+	if !ok {
+		return
+	}
+	// The barrier's context ends with the handler's request, and the wait is
+	// bounded by the timer below. The barrier is cancelled only after the
+	// warning, so a forwarder that never answers is released with the bound
+	// spent rather than racing the log.
+	barrierCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		barrier(barrierCtx, sessionID)
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		s.log().Warn("acp: response barrier timed out",
+			"method", req.Method, "session_id", sessionID)
+		stop()
+	}
+}
+
+// sessionParam returns the session a request's params name, when they carry a
+// top-level non-empty "sessionId" string. A request with no params, params
+// that are not an object, or a differently typed id names no session.
+func sessionParam(params json.RawMessage) (string, bool) {
+	if len(params) == 0 {
+		return "", false
+	}
+	var named struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(params, &named); err != nil {
+		return "", false
+	}
+	if named.SessionID == "" {
+		return "", false
+	}
+	return named.SessionID, true
+}
+
 // handleFrame classifies a single decoded JSON-RPC frame and
 // dispatches it to the appropriate handler goroutine or outbound
 // response delivery.
@@ -662,6 +745,10 @@ func (s *Server) dispatchRequest(ctx context.Context, req Request) {
 	// Drop the request from the in-flight registry before the response is
 	// written, so a cancel that arrives after it is ignored (P3 R2).
 	s.unregisterInflight(req.ID)
+	// A marshal client's call returns only after every update it caused is
+	// written, so a read after the call sees its effect (P3 R2). The barrier
+	// runs for a failed call too: it may have published before it failed.
+	s.runResponseBarrier(ctx, req)
 	resp := Response{JSONRPC: "2.0", ID: req.ID}
 	if err != nil {
 		var data json.RawMessage

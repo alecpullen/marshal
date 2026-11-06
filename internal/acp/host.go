@@ -282,6 +282,24 @@ func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyF
 	return tm
 }
 
+// responseBarrier is the host's barrier: it fences the turn manager's, then the
+// work manager's, then the watch manager's forwarders for the session, so a
+// marshal client's call returns only after the updates it caused are written
+// (P3 R2). A fence whose forwarder has gone answers at once.
+func responseBarrier(turns *TurnManager, works *WorkManagerACP, watches *WatchManagerACP) func(ctx context.Context, sessionID string) {
+	return func(ctx context.Context, sessionID string) {
+		if turns != nil {
+			turns.fenceSession(ctx, sessionID)
+		}
+		if works != nil {
+			works.fenceSession(ctx, sessionID)
+		}
+		if watches != nil {
+			watches.fenceSession(ctx, sessionID)
+		}
+	}
+}
+
 // registerHandlers registers every JSON-RPC handler on srv, constructing
 // the per-handler managers in the same dependency order as before. The
 // managers are wired to this specific connection's server.
@@ -432,6 +450,11 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 	srv.Handle("session/work_inspect", works.Inspect)
 	srv.Handle("session/work_stop", works.Stop)
 	srv.Handle("session/work_acknowledge", works.Acknowledge)
+
+	// A marshal client's session call returns only after the updates it caused
+	// are written, so a read after the call sees its effect (P3 R2). Install
+	// it once all three managers whose forwarders carry those updates exist.
+	srv.SetResponseBarrier(responseBarrier(turns, works, watches))
 
 	home, _ := os.UserHomeDir()
 	cfgMgr := NewConfigManager(home, nil, nil)

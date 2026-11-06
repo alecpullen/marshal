@@ -67,6 +67,9 @@ func TestSmokePickersProgrammatic(t *testing.T) {
 			m := makeSmokeModel(t)
 			updated, _ := m.dispatchCommand(tc.cmd)
 			mm := *(updated.(*Model))
+			// A command with a handler runs from the call queue, so its
+			// effect and its panel land when the result is handled.
+			mm = settleCalls(t, mm)
 			if tc.expectPicker {
 				if _, ok := mm.dock.Panel().(*picker.Model); !ok {
 					t.Fatalf("%s: expected picker to open", tc.name)
@@ -131,8 +134,11 @@ func TestSmokePickersProgrammatic(t *testing.T) {
 		stateOf(m).AddMessage(session.RoleUser, "alternate third turn", session.ContentTypePlain)
 		updated, _ := m.dispatchCommand("/branches")
 		mm := *(updated.(*Model))
+		// /branches has a handler, so its panel opens when the result lands.
+		mm = settleCalls(t, mm)
 		if !mm.dock.IsOpen() {
-			t.Fatal("2 branches: dock panel should open")
+			t.Fatalf("2 branches: dock panel should open (branches=%d, panel=%T)",
+				len(stateOf(mm).Branches()), mm.dock.Panel())
 		}
 		if _, ok := mm.dock.Panel().(*picker.Model); ok {
 			t.Fatal("2 branches: should NOT open a picker, should open a doc panel")

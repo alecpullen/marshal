@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,23 +14,57 @@ import (
 	"marshal/internal/acpclient/inproc"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/docpanel"
+	"marshal/internal/commands"
 )
 
 // settleCalls serves m's call queue until it is idle, running each command
-// and feeding each message back through Update, and returns the model. It
-// fails t if the queue is not idle within five seconds.
-func settleCalls(t *testing.T, m Model) Model {
+// and feeding each message back through Update, and returns the model. cmds
+// are commands the step that made the call returned — Update's own epilogue
+// starts a queued call, so a test that dropped that command passes it here.
+// It fails t if the queue is not idle within five seconds.
+func settleCalls(t *testing.T, m Model, cmds ...tea.Cmd) Model {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
-	for !m.callsIdle() {
+	pending := append([]tea.Cmd(nil), cmds...)
+	for {
+		if m.callsIdle() && len(pending) == 0 {
+			return m
+		}
 		if !time.Now().Before(deadline) {
 			t.Fatal("the call queue did not settle within five seconds")
 		}
-		for _, msg := range runCallCmds(m.serveCalls()) {
-			m = feedCallMsg(t, m, msg)
+		pending = append(pending, m.serveCalls())
+		for len(pending) > 0 {
+			cmd := pending[0]
+			pending = pending[1:]
+			for _, msg := range runCmdsBounded(t, cmd, deadline) {
+				updated, next := m.Update(msg)
+				m = mustModel(t, updated)
+				pending = append(pending, next)
+			}
 		}
 	}
-	return m
+}
+
+// runCmdsBounded runs a command tree and returns every message it produces,
+// failing t if it has not returned by the deadline. A converted call under
+// test blocks until the test releases it, so the bound is the settle deadline
+// rather than a command's own timeout.
+func runCmdsBounded(t *testing.T, cmd tea.Cmd, deadline time.Time) []tea.Msg {
+	t.Helper()
+	if cmd == nil {
+		return nil
+	}
+	out := make(chan []tea.Msg, 1)
+	go func() { out <- runCallCmds(cmd) }()
+	select {
+	case msgs := <-out:
+		return msgs
+	case <-time.After(time.Until(deadline)):
+		t.Fatal("a command did not return before the settle deadline")
+		return nil
+	}
 }
 
 // feedCallMsg handles one message through Update and follows every command
@@ -359,5 +394,153 @@ func TestAQuitWaitsForTheCallInFlight(t *testing.T) {
 	case <-closed:
 	default:
 		t.Fatal("the quit did not close the session")
+	}
+}
+
+// sessionTextCount counts the session messages that contain want. A converted
+// call's notes are written when its result is handled, so this is how a test
+// sees whether the result has landed yet.
+func sessionTextCount(m Model, want string) int {
+	n := 0
+	for _, msg := range stateOf(m).Messages() {
+		if strings.Contains(msg.Content, want) {
+			n++
+		}
+	}
+	return n
+}
+
+// blockingCommand is a registry command whose handler waits for release, so a
+// test can observe the model while its call is in flight.
+func blockingCommand(t *testing.T, entered chan<- struct{}, release <-chan struct{}) *commands.Registry {
+	t.Helper()
+	reg := commands.New()
+	if err := reg.Register(commands.Command{
+		Name: "slowstub",
+		Handler: func(*session.State, []string) commands.Result {
+			entered <- struct{}{}
+			<-release
+			return commands.Text("slow result")
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	return reg
+}
+
+// TestACommandsResultLandsWhenItArrives pins P3 R6: a command's handler runs
+// off the Update goroutine, so its text lands when the result arrives and the
+// screen keeps routing while it runs.
+func TestACommandsResultLandsWhenItArrives(t *testing.T) {
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	m := testModelWith(inproc.Deps{
+		State:    modelTestState(t),
+		Commands: blockingCommand(t, entered, release),
+	})
+	m.resize(80, 24)
+
+	updated, _ := m.dispatchCommand("/slowstub")
+	m = asModel(t, updated)
+	// The handler is queued by the dispatch; serving the queue starts it.
+	serve := m.serveCalls()
+	done := make(chan []tea.Msg, 1)
+	go func() { done <- runCallCmds(serve) }()
+	<-entered
+
+	if n := sessionTextCount(m, "slow result"); n != 0 {
+		t.Fatalf("the command's text landed %d times before its result arrived", n)
+	}
+	// Update keeps routing while the call runs: a resize still renders.
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = asModel(t, updated)
+	if m.rawWidth != 100 {
+		t.Fatalf("a resize during the call did not render: rawWidth = %d, want 100", m.rawWidth)
+	}
+
+	close(release)
+	for _, msg := range <-done {
+		m = feedCallMsg(t, m, msg)
+	}
+	if n := sessionTextCount(m, "slow result"); n != 1 {
+		t.Fatalf("the command's text appears %d times after settling, want 1", n)
+	}
+}
+
+// TestTrustShowsTheHandlerTextBeforeItsPanel pins P3 R6's ordering for a
+// command that has both a handler and a TUI effect: the handler's panel is
+// docked from the result, and the effect's note follows it.
+func TestTrustShowsTheHandlerTextBeforeItsPanel(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	reg := commands.New()
+	_ = commands.RegisterAll(reg, nil)
+	m := testModelWith(inproc.Deps{State: state, Commands: reg},
+		WithHomeDir(t.TempDir()), WithWorkingDir("/some/project"))
+
+	updated, _ := m.dispatchCommand("/trust")
+	m = asModel(t, updated)
+	// Nothing the handler produces may land inside the dispatch itself.
+	if m.dock.IsOpen() {
+		t.Fatal("the handler's panel opened before its result arrived")
+	}
+	if n := sessionTextCount(m, "marshal --trust"); n != 0 {
+		t.Fatalf("the effect's note was written %d times before the handler's result", n)
+	}
+
+	m = settleCalls(t, m)
+	if _, ok := m.dock.Panel().(*docpanel.Panel); !ok {
+		t.Fatalf("expected the handler's docpanel after settling, got %T", m.dock.Panel())
+	}
+	msgs := stateOf(m).Messages()
+	if len(msgs) == 0 || !strings.Contains(msgs[len(msgs)-1].Content, "marshal --trust") {
+		t.Fatal("the effect's note should follow the handler's panel")
+	}
+}
+
+// TestAPromptWaitsForTheCommandBeforeIt pins P3 R6's step rule: a prompt
+// submitted while a command is in flight waits behind it and starts after the
+// command's result is handled.
+func TestAPromptWaitsForTheCommandBeforeIt(t *testing.T) {
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	runner := &fakeAgentRunner{called: make(chan string, 1)}
+	m := testModelWith(inproc.Deps{
+		State:    modelTestState(t),
+		Commands: blockingCommand(t, entered, release),
+		Runner:   runnerOf(runner),
+	})
+	m.resize(80, 24)
+
+	updated, _ := m.dispatchCommand("/slowstub")
+	m = asModel(t, updated)
+	serve := m.serveCalls()
+	done := make(chan []tea.Msg, 1)
+	go func() { done <- runCallCmds(serve) }()
+	<-entered
+
+	// A prompt submitted while the command is in flight waits behind it.
+	m.input.SetValue("hello there")
+	updated, promptCmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = asModel(t, updated)
+	if promptCmd != nil {
+		t.Fatal("the prompt started while the command was still in flight")
+	}
+	select {
+	case goal := <-runner.called:
+		t.Fatalf("the prompt ran %q before the command's result", goal)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	for _, msg := range <-done {
+		m = feedCallMsg(t, m, msg)
+	}
+	select {
+	case goal := <-runner.called:
+		if goal != "hello there" {
+			t.Fatalf("the prompt ran %q, want %q", goal, "hello there")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the prompt did not start after the command's result")
 	}
 }

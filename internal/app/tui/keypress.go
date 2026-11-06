@@ -373,26 +373,43 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			return mm, cmd, true
 		}
 
-		if m.busy {
-			// F16: turn is running — enqueue as a steering message
-			// instead of dropping the input.
-			m.sess.Steer(m.ctx, value)
-			m.refreshViewport()
+		if !m.callsIdle() {
+			// A prompt submitted while the queue holds anything waits behind
+			// it (P3 R6). When it reaches the head it does what Enter would
+			// have done then, because the calls ahead may swap the session or
+			// leave the agent busy.
+			line := value
+			m.enqueueStep(func(mm *Model) tea.Cmd { return mm.submitLine(line) })
 			return *m, nil, true
 		}
-		if !m.sess.Status().AgentReady {
-			// The echo is the user's own line, so a failed write must be
-			// logged rather than dropping what they typed in silence.
-			if err := m.sess.AddNote(m.ctx, acpwire.Note{Text: value, ContentType: acpwire.ContentTypePlain, Role: acpwire.RoleUser}); err != nil {
-				m.log().Warn("user echo dropped", "error", err)
-			}
-			m.refreshViewport()
-			return *m, nil, true
-		}
-		mm, cmd := m.startPrompt(value, false)
-		return mm, cmd, true
+		return *m, m.submitLine(value), true
 	}
 	return *m, nil, false
+}
+
+// submitLine is what Enter does with a line that is not a command: it steers
+// a busy turn, echoes the line when no agent is ready, and otherwise starts a
+// prompt. A prompt that waited behind the call queue runs this when it reaches
+// the head, so it acts on the model the queued calls left (P3 R6).
+func (m *Model) submitLine(line string) tea.Cmd {
+	if m.busy {
+		// F16: turn is running — enqueue as a steering message
+		// instead of dropping the input.
+		m.sess.Steer(m.ctx, line)
+		m.refreshViewport()
+		return nil
+	}
+	if !m.sess.Status().AgentReady {
+		// The echo is the user's own line, so a failed write must be
+		// logged rather than dropping what they typed in silence.
+		if err := m.sess.AddNote(m.ctx, acpwire.Note{Text: line, ContentType: acpwire.ContentTypePlain, Role: acpwire.RoleUser}); err != nil {
+			m.log().Warn("user echo dropped", "error", err)
+		}
+		m.refreshViewport()
+		return nil
+	}
+	_, cmd := m.startPrompt(line, false)
+	return cmd
 }
 
 // cursorAtEndOfInput reports whether the textarea cursor sits at the end of

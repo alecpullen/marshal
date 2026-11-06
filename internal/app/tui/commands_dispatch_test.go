@@ -158,6 +158,7 @@ func TestTrustCommandReopensAfterDecline(t *testing.T) {
 	}
 
 	m.dispatchCommand("/trust")
+	m = settleCalls(t, m)
 	if _, ok := m.dock.Panel().(*trustpanel.Panel); !ok {
 		t.Fatalf("expected the trust panel after /trust following a decline, got %T", m.dock.Panel())
 	}
@@ -175,6 +176,7 @@ func TestTrustCommandFallsBackWhenNoPendingDecision(t *testing.T) {
 	// No trustDecide wired: the handler's docpanel opens, then the effect
 	// must NOT open a trustpanel and must steer to the shell path.
 	m.dispatchCommand("/trust")
+	m = settleCalls(t, m)
 	if _, ok := m.dock.Panel().(*docpanel.Panel); !ok {
 		t.Fatalf("expected the handler's docpanel to stay docked, got %T", m.dock.Panel())
 	}
@@ -499,6 +501,7 @@ func TestADocActionRunsAgentSide(t *testing.T) {
 
 	updated, _ := m.dispatchCommand("/things")
 	m = asModel(t, updated)
+	m = settleCalls(t, m)
 	if !m.dock.IsOpen() {
 		t.Fatal("/things should open its doc panel")
 	}

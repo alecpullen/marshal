@@ -6124,31 +6124,20 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 	}
 
 	if info.HasHandler {
-		res, err := m.sess.Command(m.ctx, info.Name, args)
-		if err != nil {
-			m.note(err.Error())
-			m.refreshViewport()
-			return m, nil
-		}
-		if res.Doc != nil {
-			m.openDocPanel(res.Doc)
-		} else if res.Text != "" {
-			m.note(res.Text)
-		}
-		// AgentGoal hands a follow-up turn back to the agent after Text is
-		// rendered (see CommandResult.AgentGoal). Mirror the PromptBody
-		// branch's busy/steering/runner idiom exactly.
-		if res.AgentGoal != "" {
-			if m.busy {
-				m.sess.Steer(m.ctx, res.AgentGoal)
-				m.refreshViewport()
-				return m, nil
+		// A handler may do anything — a provider call, git, a build — so it
+		// runs from the queue (P3 R6). Its doc, its text, any agent goal and,
+		// for a command that is also TUI-only, its effect land when the
+		// result arrives, in the order this branch used to run them.
+		m.enqueueCall(func(mm *Model) callRun {
+			sess := mm.sess
+			return func(ctx context.Context) callOutcome {
+				res, err := sess.Command(ctx, info.Name, args)
+				return func(mm *Model) tea.Cmd {
+					return mm.handleCommandResult(info, args, res, err)
+				}
 			}
-			if m.sess.Status().AgentReady {
-				mm, goalCmd := m.startPrompt(res.AgentGoal, false)
-				return mm, goalCmd
-			}
-		}
+		})
+		return m, nil
 	}
 
 	if info.TUIOnly {
@@ -6163,6 +6152,50 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 
 	m.refreshViewport()
 	return m, nil
+}
+
+// handleCommandResult handles a command handler's result on the Update
+// goroutine (P3 R6). It does what dispatchCommand's handler branch used to do
+// in place, in the same order, now that the handler runs from the call queue.
+func (m *Model) handleCommandResult(info acpwire.CommandInfo, args []string, res acpwire.CommandResult, err error) tea.Cmd {
+	if err != nil {
+		m.note(err.Error())
+		m.refreshViewport()
+		return nil
+	}
+	if res.Doc != nil {
+		m.openDocPanel(res.Doc)
+	} else if res.Text != "" {
+		m.note(res.Text)
+	}
+	// AgentGoal hands a follow-up turn back to the agent after Text is
+	// rendered (see CommandResult.AgentGoal). Mirror the PromptBody branch's
+	// busy/steering/runner idiom exactly.
+	if res.AgentGoal != "" {
+		if m.busy {
+			m.sess.Steer(m.ctx, res.AgentGoal)
+			m.refreshViewport()
+			return nil
+		}
+		if m.sess.Status().AgentReady {
+			_, goalCmd := m.startPrompt(res.AgentGoal, false)
+			return goalCmd
+		}
+	}
+	if info.TUIOnly {
+		effect, ok := tuiCommandEffects[info.Name]
+		if !ok {
+			m.note("Command /" + info.Name + " is not available in this build.")
+			m.refreshViewport()
+			return nil
+		}
+		// The effect runs after the handler's text was noted, so a command
+		// that reports before it opens a panel keeps that order.
+		_, cmd := effect(m, args)
+		return cmd
+	}
+	m.refreshViewport()
+	return nil
 }
 
 // openConnect opens the connect overlay for adding/reconnecting a provider.

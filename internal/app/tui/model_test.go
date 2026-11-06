@@ -2771,8 +2771,11 @@ func TestSlashCommandHelp(t *testing.T) {
 	model = updated.(Model)
 
 	model.input.SetValue("/help")
-	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	updated, settle := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m := updated.(*Model)
+	// The handler runs from the call queue, started by Update's epilogue, so
+	// its doc lands when that call's result is handled.
+	*m = settleCalls(t, *m, settle)
 
 	if !m.dock.IsOpen() {
 		t.Fatal("expected dock panel from /help")
@@ -3019,8 +3022,9 @@ func TestSlashCommandBusyStillDispatched(t *testing.T) {
 	if !model.cmdPopup.isVisible() {
 		t.Fatalf("expected cmd popup to be visible for /help, got filtered=%d", len(model.cmdPopup.filtered))
 	}
-	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	updated, settle := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m := asModel(updated)
+	*m = settleCalls(t, *m, settle)
 
 	if !m.dock.IsOpen() {
 		t.Fatal("commands should work even when busy — expected dock panel from /help")
@@ -4854,8 +4858,9 @@ func TestQuestionMarkPrintsHelpToTranscript(t *testing.T) {
 	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: setupCmdReg(t)})
 	m.resize(80, 24)
 
-	updated, _ := m.Update(tea.KeyPressMsg{Code: '?'})
+	updated, settle := m.Update(tea.KeyPressMsg{Code: '?'})
 	m = asModel(t, updated)
+	m = settleCalls(t, m, settle)
 
 	if !m.dock.IsOpen() {
 		t.Fatal("expected dock panel from ? (same as /help)")
@@ -5077,6 +5082,7 @@ func TestBranchesBareOpensDocPanel(t *testing.T) {
 	m := pickerTestModel(t, state)
 	updated, _ := m.dispatchCommand("/branches")
 	m = asModel(t, updated)
+	m = settleCalls(t, m)
 	if !m.dock.IsOpen() {
 		t.Fatal("bare /branches should open a dock panel")
 	}
@@ -5090,6 +5096,7 @@ func TestRewindNoTurnsFallsThroughToHandler(t *testing.T) {
 	m := pickerTestModel(t, state)
 	updated, _ := m.dispatchCommand("/rewind")
 	m = asModel(t, updated)
+	m = settleCalls(t, m)
 	if m.dock.IsOpen() {
 		t.Fatal("no turns: picker must not open")
 	}
@@ -7761,6 +7768,9 @@ func TestDispatchCommand_QuotedArgs(t *testing.T) {
 	m.resize(80, 24)
 
 	_, _ = m.dispatchCommand(`/teststub "my idea"`)
+	// The handler runs from the call queue, so settle before reading what it
+	// captured.
+	m = settleCalls(t, m)
 
 	if len(captured) != 1 || captured[0] != "my idea" {
 		t.Fatalf("captured args = %q, want [\"my idea\"]", captured)
@@ -8358,6 +8368,7 @@ func TestDispatchStructuredResultOpensDocPanel(t *testing.T) {
 	m = withCommands(m, reg)
 	mm, _ := m.dispatchCommand("/things")
 	m = asModel(t, mm)
+	m = settleCalls(t, m)
 	if !m.dock.IsOpen() {
 		t.Fatal("structured result should open a dock panel")
 	}
@@ -11413,22 +11424,22 @@ func TestAgentGoalDispatchStartsRun(t *testing.T) {
 	m := testModelWith(inproc.Deps{State: modelTestState(t), Runner: runnerOf(runner), Commands: reg})
 	m.resize(80, 24)
 
-	updated, cmd := m.dispatchCommand("/pmtest")
+	updated, _ := m.dispatchCommand("/pmtest")
 	m = asModel(t, updated)
 
+	// The handler runs from the call queue; its result hands the goal to a
+	// turn, which is busy from that moment on.
+	msgs := runCallCmds(m.serveCalls())
+	if len(msgs) != 1 {
+		t.Fatalf("the command handler produced %d messages, want 1", len(msgs))
+	}
+	updated, promptCmd := m.Update(msgs[0])
+	m = asModel(t, updated)
 	if !m.busy {
 		t.Fatal("AgentGoal should start an agent run")
 	}
-	if cmd == nil {
-		t.Fatal("dispatchCommand should return a cmd")
-	}
-	batch, ok := cmd().(tea.BatchMsg)
-	if !ok {
-		t.Fatalf("cmd() = %T, want tea.BatchMsg", cmd())
-	}
-	for _, sub := range batch {
-		sub()
-	}
+	// Running the turn's command invokes the runner with the goal.
+	runCallCmds(promptCmd)
 
 	select {
 	case goal := <-runner.called:

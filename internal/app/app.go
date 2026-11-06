@@ -2706,7 +2706,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		database := must[*db.DB](rt.DB)
 		projectID := rt.ProjectID
 		sessionID := rt.SessionID
-		toolReg := rt.ToolRegistry
 		jobBroker := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
 		watchBroker := must[*pubsub.Broker[watch.Event]](rt.WatchBroker)
 		steeringBroker := must[*pubsub.Broker[session.SteeringEvent]](rt.SteeringBroker)
@@ -2731,6 +2730,14 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		var refFinder inproc.ReferenceFinder
 		if rt.LSPManager != nil {
 			refFinder = lsp.NewSymbolQuery(rt.LSPManager, nil, 0)
+		}
+		// The seam carries the folder-trust prompt: the directory whose
+		// project config waits for a decision, or "" when none does. The
+		// trust panel asks through it, and a decision recorded here reloads
+		// the runtime with the project config in force.
+		trustPrompt := ""
+		if rt.TrustPromptPending {
+			trustPrompt = workingDir
 		}
 		deps := inproc.Deps{
 			State:           state,
@@ -2759,6 +2766,12 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			ReloadLayers: layerReloaderFor(homeDir, workingDir, state.Trusted),
 			TrustRefresh: trustRefresh,
 			HomeDir:      homeDir,
+			// The folder-trust prompt and its decision reach the seam, and the
+			// session names the runtime's current tools. These are the only
+			// paths the TUI has to either.
+			TrustPrompt: trustPrompt,
+			DecideTrust: trustDecide,
+			Tools:       rt.ToolNames,
 		}
 		if providerReady {
 			deps.Work = rt
@@ -2794,23 +2807,17 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		))
 		tuiOpts = append(tuiOpts, tui.WithContext(ctx))
 		tuiOpts = append(tuiOpts, tui.WithLogger(state.Logger()))
-		if providerReady {
-			tuiOpts = append(tuiOpts, tui.WithToolRegistry(toolReg))
-		}
-		if rt.TrustPromptPending {
-			tuiOpts = append(tuiOpts, tui.WithTrustPrompt(workingDir, trustDecide))
-		}
 		// /new and /clear create a brand-new session through the seam, and the
-		// model re-reads the runtime's current state and tool registry after
-		// the host returns, for the groups not yet behind it. This is wired
-		// outside the ProviderError block so the commands stay available even
-		// when the initial provider build failed.
+		// model re-reads the runtime's current state after the host returns,
+		// for the groups not yet behind it. This is wired outside the
+		// ProviderError block so the commands stay available even when the
+		// initial provider build failed.
 		tuiOpts = append(tuiOpts, tui.WithLegacySession(func() tui.LegacySession {
 			// The host installed the replacement before it returned, so the
 			// values read here are the new ones.
 			rt.mu.Lock()
 			defer rt.mu.Unlock()
-			return tui.LegacySession{State: rt.State, ToolRegistry: rt.ToolRegistry}
+			return tui.LegacySession{State: rt.State}
 		}))
 
 		logger.Info("marshal started", "project", cfg.Project.Name, "working_dir", workingDir)

@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -6207,6 +6208,80 @@ func TestRunPassesAuthResolverToTheSeam(t *testing.T) {
 	}
 	if engines := auth.enginesRequested(); len(engines) != 0 {
 		t.Fatalf("resolver CodexOAuthEngine calls = %v, want none for a provider-less startup", engines)
+	}
+}
+
+// TestRunWiresToolNames pins the trust and tools half of Run's Deps wiring: the
+// session names no tools while no provider is built, and the host reports no
+// pending trust decision for a directory with no project config. Both values
+// reach the session from Run, so a dropped field would leave the trust panel
+// and the tool roster reading nothing.
+func TestRunWiresToolNames(t *testing.T) {
+	dir := t.TempDir()
+	var (
+		tools       []string
+		hasTools    bool
+		trustPrompt string
+	)
+	err := Run(context.Background(), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return time.Unix(100, 0) }),
+		WithWorkingDir(dir),
+		WithHomeDir(t.TempDir()),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return config.Default(), nil
+		}),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+			tools, hasTools = model.(tui.Model).Session().Tools()
+			trustPrompt = model.(tui.Model).Host().TrustPrompt()
+			return ProgramResult{}
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if hasTools {
+		t.Errorf("Session().Tools() = %v, true; want false with no provider configured", tools)
+	}
+	if trustPrompt != "" {
+		t.Errorf("Host().TrustPrompt() = %q, want \"\" for a directory with no project config", trustPrompt)
+	}
+}
+
+// TestRunWiresTheSessionsToolsFromTheRuntime pins the positive half of the
+// tools wiring, which TestRunWiresToolNames cannot: with a provider built, the
+// session names the runtime's registry, so dropping `Tools: rt.ToolNames` from
+// Run leaves the roster with nothing to validate against.
+func TestRunWiresTheSessionsToolsFromTheRuntime(t *testing.T) {
+	dir := t.TempDir()
+	var (
+		names []string
+		known bool
+	)
+	err := Run(context.Background(), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return time.Unix(100, 0) }),
+		WithWorkingDir(dir),
+		WithHomeDir(t.TempDir()),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return nativeToolAgentConfig("test-provider"), nil
+		}),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+			names, known = model.(tui.Model).Session().Tools()
+			return ProgramResult{}
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !known {
+		t.Fatalf("Session().Tools() = %v, false; want the runtime's registry", names)
+	}
+	if !slices.Contains(names, "file.read") {
+		t.Fatalf("Session().Tools() = %v, want the runtime's tools including file.read", names)
+	}
+	if !slices.IsSorted(names) {
+		t.Fatalf("Session().Tools() = %v, want sorted names", names)
 	}
 }
 

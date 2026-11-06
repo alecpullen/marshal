@@ -25,6 +25,7 @@ import (
 	"marshal/internal/pubsub"
 	"marshal/internal/repo/gitinfo"
 	"marshal/internal/tools/native"
+	"marshal/internal/trust"
 	"marshal/internal/viewmodel"
 	"marshal/internal/watch"
 )
@@ -98,6 +99,15 @@ type Deps struct {
 	// NewSession creates a session in the runtime and returns its state.
 	// Without it, Host.NewSession fails.
 	NewSession func(name string) (*session.State, error)
+	// TrustPrompt is the directory whose trust decision is pending, "" when
+	// none is.
+	TrustPrompt string
+	// DecideTrust records the user's trust decision, as Run's trustDecide
+	// does. Without it, DecideTrust fails.
+	DecideTrust func(trust.Decision)
+	// Tools reads the runtime's current tool names; false while the runtime
+	// has no runner or no registry. Nil means the session has no tools.
+	Tools func() ([]string, bool)
 
 	// Auth is the runtime's credential and OAuth dependency: every provider
 	// client and sign-in the adapter builds uses it. Nil means
@@ -158,6 +168,10 @@ type Session struct {
 
 	// refs answers Callers. Nil means no callers lookups.
 	refs ReferenceFinder
+
+	// tools reads the runtime's current tool names. Nil means the session has
+	// no tools.
+	tools func() ([]string, bool)
 
 	// accessRequest and resolveAccess are the runtime's access seam. Without
 	// both, ReconcileAccess settles every typed access request as failed

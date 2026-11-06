@@ -10,6 +10,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpclient/inproc"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/accesspanel"
@@ -17,7 +18,6 @@ import (
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/postmortempanel"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/tools/native"
 )
 
@@ -162,7 +162,13 @@ func TestFrameInvariants(t *testing.T) {
 		{"console+access+queued", func(t *testing.T, m *Model) {
 			m.workSnapshot = workSnapOf(workRunningCard("work:01", workT0))
 			m.busy = true
-			m.dock.Open(trustpanel.New(m.workDir, m.trustDecide))
+			// The pending prompt is a host read (plan 7c), so open the panel
+			// the way the model does: over a host that names one.
+			host, _ := inproc.New(inproc.Deps{State: m.state, TrustPrompt: "/repo"})
+			m.host = host
+			if !m.openTrustPanel() {
+				t.Fatal("expected a pending trust prompt")
+			}
 			m.state.SetPendingApproval(&session.PendingToolCall{
 				ID:           "call-access-queued",
 				Name:         "mode.request",

@@ -29,6 +29,23 @@ func (rt *Runtime) TurnRunner() inproc.Runner {
 	return rt.Runner
 }
 
+// ToolNames names every tool the runtime's current registry holds, sorted, as
+// the session reports them. It reports false while the runtime has no runner or
+// no registry: its provider is not built.
+func (rt *Runtime) ToolNames() ([]string, bool) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if rt.Runner == nil || rt.ToolRegistry == nil {
+		return nil, false
+	}
+	tools := rt.ToolRegistry.List()
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.Name)
+	}
+	return names, true
+}
+
 // RunReview runs a reviewer subagent over the runtime's current session.
 func (rt *Runtime) RunReview(ctx context.Context, params acpwire.ReviewParams) error {
 	rt.mu.Lock()

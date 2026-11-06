@@ -2653,3 +2653,43 @@ T1 stays green throughout. T1b gained three names at plan `7b` — `Layers`,
 through the session and the adapter is what refreshes them. T1's allowlist lost
 21 entries across 6 files, four keys entirely (`connect/connect.go`,
 `doctor_secret.go`, `model_options.go` and `settings/browser.go`).
+
+**Plan 7c (trust and tools), branch `p2-7c-trust-tools`.** Added
+`internal/acpwire/trust.go`: `TrustDecision` with `trust_permanent`,
+`trust_session` and `dont_trust`. They are `trust.Decision`'s own strings, so
+the adapter converts by value.
+
+`acpclient.Host` gains two methods and `acpclient.Session` one, each on a new
+ACP method: `TrustPrompt` on `trust/prompt`, `DecideTrust` on `trust/decide`
+and `Tools` on `session/tools`. `TrustPrompt` returns the directory whose
+project config waits for a decision, or "" when none does, and does not change
+while the host runs. `DecideTrust` refuses a call with nothing pending, a
+directory other than the pending one, or a decision outside the three values;
+otherwise it records the decision through the runtime's `trustDecide`
+unchanged, so a trust still restarts the app with the project config in force
+and a decline still does nothing.
+
+`inproc.Deps` gains `TrustPrompt`, `DecideTrust` and `Tools`, and
+`(*app.Runtime).ToolNames` reads the runtime's current registry under its
+mutex, reporting false while the runner or the registry is nil. Because the
+session reads the registry on every call instead of a value copied at startup,
+a reload that builds the runner makes the roster's denylist validation work at
+once rather than after `/new`: the plan's one visible change, and a fix.
+
+The trust panel takes a `func(acpwire.TrustDecision)` and answers through
+`DecideTrust`. `Model.openTrustPanel` opens it for the directory the host
+reports as pending and reports whether it did; `New` and `/trust` both call it,
+and `/trust` keeps its no-pending-decision note for the false case. The agents
+roster reads `Session.Tools()` once per validation: a nil session or a false
+report gives the "no registry available" message for the first name, and a name
+the session does not list gets the plain message.
+
+Deleted: the model's `WithTrustPrompt`, `trustPromptDir` and `trustDecide`;
+`WithToolRegistry`, the `toolRegistry` field and `LegacySession.ToolRegistry`;
+and `agents.NewRosterPanelWithRegistry`, which leaves `NewRosterPanel` the only
+constructor. `Run` stops passing all four and builds `LegacySession` with the
+state alone.
+
+T1 stays green throughout. T1b gains no names: no state read moved. T1's
+allowlist lost 4 entries across 3 files — two keys entirely
+(`trustpanel/trustpanel.go` and `agents/panel.go`) and two from `model.go`'s.

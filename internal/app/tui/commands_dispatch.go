@@ -14,7 +14,6 @@ import (
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/plugins"
 	"marshal/internal/app/tui/skills"
-	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/interaction"
 	"marshal/internal/worktree"
 )
@@ -198,9 +197,6 @@ func startNewSession(m *Model, name string) tea.Cmd {
 		if legacy.State != nil {
 			m.state = legacy.State
 		}
-		if legacy.ToolRegistry != nil {
-			m.toolRegistry = legacy.ToolRegistry
-		}
 	}
 
 	// Drop per-message UI state that belongs to the old session.
@@ -300,15 +296,12 @@ func init() {
 				m.refreshViewport()
 				return m, nil
 			}
-			if m.trustDecide == nil || m.workDir == "" {
-				// No pending decision (or none wired): the informative panel from
-				// the handler already rendered; steer to the shell path instead
-				// of opening a panel whose callback would panic on nil.
+			if !m.openTrustPanel() {
+				// No pending decision: the informative panel from the handler
+				// already rendered; steer to the shell path instead of opening
+				// a panel that would answer nothing.
 				m.note("No trust decision pending. Grant permanent trust with `marshal --trust`, or restart in this directory to re-prompt once `.marshal/config.toml` exists here.")
-				m.refreshViewport()
-				return m, nil
 			}
-			m.dock.Open(trustpanel.New(m.workDir, m.trustDecide))
 			m.refreshViewport()
 			return m, nil
 		},

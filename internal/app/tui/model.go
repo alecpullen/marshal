@@ -187,7 +187,21 @@ type Model struct {
 	// lspCancel is called from beginShutdown.
 	lspCtx    context.Context
 	lspCancel context.CancelFunc
-	busy      bool
+	// calls is the model's call queue (P3 R6): the converted asynchronous
+	// calls and the steps that wait behind them. Update starts the head of
+	// the queue from the Update goroutine; the call itself runs off it.
+	calls []callQueueEntry
+	// callInFlight reports whether a converted call is running off the Update
+	// goroutine. A second call never starts while one is in flight, which is
+	// what keeps the order the calls were made in.
+	callInFlight bool
+	// callCancel cancels the in-flight call's context, so a quit can unblock
+	// a call that respects it.
+	callCancel context.CancelFunc
+	// callQuitWaiting records that a quit arrived while a call was in flight:
+	// the quit finishes when that call's result is handled.
+	callQuitWaiting bool
+	busy            bool
 	// end is the pending interactive end intent, non-nil from the moment the
 	// user asks to exit or replace the conversation until the warning is
 	// declined. It holds the target (a new-session name or a resume ID) so
@@ -1489,11 +1503,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case Model:
 			next.reconcileAccess()
 			fetch := next.detailQueryCmds()
-			return next, tea.Batch(cmd, fetch)
+			// The call queue is served here too (P3 R6): a handler that
+			// enqueued a call starts it from the epilogue, never inside
+			// itself.
+			calls := next.serveCalls()
+			return next, tea.Batch(cmd, fetch, calls)
 		case *Model:
 			next.reconcileAccess()
 			fetch := next.detailQueryCmds()
-			return next, tea.Batch(cmd, fetch)
+			calls := next.serveCalls()
+			return next, tea.Batch(cmd, fetch, calls)
 		default:
 			return updated, cmd
 		}
@@ -1504,11 +1523,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case Model:
 		next.reconcileAccess()
 		fetch := next.detailQueryCmds()
-		return next, tea.Batch(cmd, fetch)
+		calls := next.serveCalls()
+		return next, tea.Batch(cmd, fetch, calls)
 	case *Model:
 		next.reconcileAccess()
 		fetch := next.detailQueryCmds()
-		return next, tea.Batch(cmd, fetch)
+		calls := next.serveCalls()
+		return next, tea.Batch(cmd, fetch, calls)
 	default:
 		return updated, cmd
 	}
@@ -1672,6 +1693,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleBoxStop(msg)
 	case ctrlCExpiredMsg:
 		return m, nil
+	case callDoneMsg:
+		// A converted call's result is handled here, on the Update goroutine,
+		// and the queue's next entry starts from Update's epilogue.
+		cmd := m.handleCallDone(msg)
+		return m, cmd
 	case settings.ChangedMsg:
 		st := m.sess.Status()
 		if msg.BlockedReason != "" {
@@ -4679,6 +4705,21 @@ func (m *Model) finishReplacement() tea.Cmd {
 // and the program is exiting, so the agentFinishedMsg path that normally
 // clears busy via state.EndWork() will not run.
 func (m *Model) finishQuit() tea.Cmd {
+	if m.callInFlight {
+		// A quit waits for the call in flight (P3 R6): cancel it so a call
+		// that respects its context returns, drop everything queued behind
+		// it, and finish when its result is handled. A call that ignores its
+		// context is waited for, as a frozen Update waited for it before.
+		if m.callCancel != nil {
+			m.callCancel()
+			m.callCancel = nil
+		}
+		m.calls = nil
+		m.callQuitWaiting = true
+		return nil
+	}
+	// Nothing converted is running, so nothing waits behind it.
+	m.calls = nil
 	m.endStage = endFinishing
 	if m.agentCancel != nil {
 		m.agentCancel()

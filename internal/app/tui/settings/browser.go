@@ -357,6 +357,8 @@ func (b *BrowserPanel) Update(msg tea.Msg) tea.Cmd {
 			b.reg.st.discovered[msg.Provider] = msg.Models
 		}
 		return nil
+	case canProbeMsg:
+		return b.handleCanProbeAnswered(msg)
 	case presetflow.CapabilityProbedMsg:
 		return b.handleCapabilityProbed(msg)
 	case actionResultMsg:
@@ -502,11 +504,20 @@ func (b *BrowserPanel) closePicker() {
 	b.pickerField = ""
 }
 
+// canProbeMsg is the answer to startConfirm's CanProbeModel check.
+type canProbeMsg struct {
+	RequestID int
+	Provider  string
+	Model     string
+	CanProbe  bool
+}
+
 // startConfirm opens the shared confirm-limits screen for a just-picked
-// discovered model. It probes the model's capabilities asynchronously through
-// the client host only when the host can tell anything about it, so the
-// "detecting…" state never appears, and never hangs, for providers that can't
-// report anything beyond their bulk model list.
+// discovered model. It asks whether the client host can tell anything about
+// the model through a command rather than inline, so the Update loop never
+// waits on the host while the screen opens. Only a yes answer starts the
+// capability probe; that keeps the "detecting…" state from ever appearing for
+// providers that can't report anything beyond their bulk model list.
 func (b *BrowserPanel) startConfirm(pending pendingMaterialization) tea.Cmd {
 	b.cancelCapabilityProbe()
 	pc := b.reg.st.cfg.Providers[pending.ProviderName]
@@ -520,11 +531,36 @@ func (b *BrowserPanel) startConfirm(pending pendingMaterialization) tea.Cmd {
 	// Capability probing only needs the client host. Limit-table discovery
 	// already happened during model-list discovery and must not block the TUI
 	// while this confirmation screen is opening.
-	if b.reg.st.host == nil || !b.reg.st.host.CanProbeModel(context.Background(), pending.ProviderName, pc) {
+	host := b.reg.st.host
+	if host == nil {
+		return nil
+	}
+	requestID := b.capProbeID
+	return func() tea.Msg {
+		return canProbeMsg{
+			RequestID: int(requestID),
+			Provider:  pending.ProviderName,
+			Model:     pending.ModelID,
+			CanProbe:  host.CanProbeModel(context.Background(), pending.ProviderName, pc),
+		}
+	}
+}
+
+// handleCanProbeAnswered acts on startConfirm's check: a stale answer — one for
+// a confirm screen that has since been abandoned or replaced — is dropped, and
+// only a "yes" starts the capability probe.
+func (b *BrowserPanel) handleCanProbeAnswered(msg canProbeMsg) tea.Cmd {
+	if uint64(msg.RequestID) != b.capProbeID || b.confirm == nil || b.confirmTarget == nil ||
+		msg.Provider != b.confirmTarget.ProviderName || msg.Model != b.confirmTarget.ModelID ||
+		b.detectingCaps {
+		return nil // stale answer from an abandoned confirm
+	}
+	if !msg.CanProbe {
 		return nil
 	}
 	b.detectingCaps = true
-	cmd, cancel := presetflow.ProbeCapabilitiesCmdWithCancel(b.reg.st.host, pending.ProviderName, pc, pending.ModelID, b.capProbeID)
+	cmd, cancel := presetflow.ProbeCapabilitiesCmdWithCancel(b.reg.st.host, msg.Provider,
+		b.reg.st.cfg.Providers[msg.Provider], msg.Model, b.capProbeID)
 	b.cancelCapProbe = cancel
 	return cmd
 }

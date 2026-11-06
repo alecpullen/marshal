@@ -8462,8 +8462,10 @@ func TestChangedMsgSavedSkipsProjectWrite(t *testing.T) {
 	})
 	cfg := stateOf(m).Config
 	cfg.TUI.Theme = "solarized"
-	mm, _ := m.Update(settings.ChangedMsg{Cfg: cfg, Saved: true})
+	mm, settle := m.Update(settings.ChangedMsg{Cfg: cfg, Saved: true})
 	m = mm.(Model)
+	// A saved change reloads only, and the reload runs from the call queue.
+	m = settleCalls(t, m, settle)
 	if _, err := os.Stat(config.ProjectConfigPath(stateOf(m).WorkingDir)); !os.IsNotExist(err) {
 		t.Fatal("model must not save the project config for a Saved ChangedMsg")
 	}
@@ -8478,13 +8480,15 @@ func TestChangedMsgSavedGlobalTargetReceiptBase(t *testing.T) {
 	})
 	cfg := stateOf(m).Config
 	cfg.TUI.Theme = "solarized"
-	mm, _ := m.Update(settings.ChangedMsg{
+	mm, settle := m.Update(settings.ChangedMsg{
 		Cfg:          cfg,
 		Saved:        true,
 		GlobalTarget: true,
 		Receipts:     []string{"theme persisted"},
 	})
 	m = mm.(Model)
+	// The receipts are written when the queued reload returns.
+	m = settleCalls(t, m, settle)
 	msgs := stateOf(m).Messages()
 	var found bool
 	for _, msg := range msgs {

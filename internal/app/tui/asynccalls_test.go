@@ -3,6 +3,13 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/printer"
+	"go/token"
+	"io/fs"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -48,6 +55,147 @@ func settleCalls(t *testing.T, m Model, cmds ...tea.Cmd) Model {
 			}
 		}
 	}
+}
+
+// blockingCalls are the seam methods R6 says must not run on the Update
+// goroutine.
+var blockingCalls = []string{
+	"Command", "NewSession", "PlanPreflight", "RefreshSheet",
+	"ReloadConfig", "ReconnectMCP", "CanProbeModel", "Postmortem",
+}
+
+// TestBlockingCallsLeaveTheUpdateGoroutine fails when a non-test file under
+// internal/app/tui calls one of blockingCalls on a receiver ending in sess or
+// host outside a func() tea.Msg literal, a function literal returning
+// callOutcome, or a go statement. It is a syntax check on the tree, so a
+// converted call cannot drift back onto the Update goroutine unnoticed.
+func TestBlockingCallsLeaveTheUpdateGoroutine(t *testing.T) {
+	t.Helper()
+	var offenders []string
+	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == "testdata" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		fset := token.NewFileSet()
+		f, perr := parser.ParseFile(fset, path, nil, 0)
+		if perr != nil {
+			return perr
+		}
+		offenders = append(offenders, blockingCallSites(path, fset, f)...)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk internal/app/tui: %v", err)
+	}
+	if len(offenders) > 0 {
+		t.Fatalf("these calls run on the Update goroutine (P3 R6); move them into the call queue:\n%s",
+			strings.Join(offenders, "\n"))
+	}
+}
+
+// blockingCallSites returns the file's offending calls, one "path:line:
+// receiver.method" line each.
+func blockingCallSites(path string, fset *token.FileSet, f *ast.File) []string {
+	// Everything inside an allowed region runs off the Update goroutine: a
+	// tea.Cmd literal, a converted call's run or result, or a go statement.
+	type region struct{ from, to token.Pos }
+	var allowed []region
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch v := n.(type) {
+		case *ast.FuncLit:
+			if literalReturnsAsync(v) {
+				allowed = append(allowed, region{v.Pos(), v.End()})
+			}
+		case *ast.GoStmt:
+			allowed = append(allowed, region{v.Pos(), v.End()})
+		}
+		return true
+	})
+
+	var out []string
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || !isBlockingCall(sel.Sel.Name) {
+			return true
+		}
+		if !receiverEndsInSessionOrHost(sel.X) {
+			return true
+		}
+		for _, r := range allowed {
+			if call.Pos() >= r.from && call.End() <= r.to {
+				return true
+			}
+		}
+		out = append(out, fmt.Sprintf("%s:%d: %s.%s", path, fset.Position(call.Pos()).Line, exprName(sel.X), sel.Sel.Name))
+		return true
+	})
+	return out
+}
+
+// literalReturnsAsync reports whether fn is a tea.Cmd literal or a converted
+// call's run or result.
+func literalReturnsAsync(fn *ast.FuncLit) bool {
+	if fn.Type == nil || fn.Type.Results == nil {
+		return false
+	}
+	for _, field := range fn.Type.Results.List {
+		switch typ := field.Type.(type) {
+		case *ast.Ident:
+			if typ.Name == "callOutcome" || typ.Name == "callRun" {
+				return true
+			}
+		case *ast.SelectorExpr:
+			if ident, ok := typ.X.(*ast.Ident); ok && ident.Name == "tea" && typ.Sel.Name == "Msg" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isBlockingCall(name string) bool {
+	for _, want := range blockingCalls {
+		if name == want {
+			return true
+		}
+	}
+	return false
+}
+
+// receiverEndsInSessionOrHost reports whether the expression's last identifier
+// is sess or host, which is what makes a call one of the queue's.
+func receiverEndsInSessionOrHost(x ast.Expr) bool {
+	switch v := x.(type) {
+	case *ast.Ident:
+		return v.Name == "sess" || v.Name == "host"
+	case *ast.SelectorExpr:
+		return v.Sel.Name == "sess" || v.Sel.Name == "host"
+	case *ast.ParenExpr:
+		return receiverEndsInSessionOrHost(v.X)
+	}
+	return false
+}
+
+// exprName is the receiver rendered for the failure message.
+func exprName(x ast.Expr) string {
+	var b strings.Builder
+	if printer.Fprint(&b, token.NewFileSet(), x) != nil {
+		return "?"
+	}
+	return b.String()
 }
 
 // runCmdsBounded runs a command tree and returns every message it produces,

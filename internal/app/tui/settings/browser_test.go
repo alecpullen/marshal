@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -334,7 +337,11 @@ func TestBrowserEscCancelsCapabilityProbeAndRejectsLateResult(t *testing.T) {
 		Profile: "coding", Role: routing.RoleImplementer,
 		ProviderName: "ollama", ModelID: "qwen3",
 	}
-	if cmd := b.startConfirm(target); cmd == nil || !b.detectingCaps {
+	check := b.startConfirm(target)
+	if check == nil || b.detectingCaps {
+		t.Fatal("Ollama confirm should check probeability off the Update goroutine")
+	}
+	if cmd := b.Update(check()); cmd == nil || !b.detectingCaps {
 		t.Fatal("Ollama confirm should start capability detection")
 	}
 	oldRequestID := b.capProbeID
@@ -343,12 +350,150 @@ func TestBrowserEscCancelsCapabilityProbeAndRejectsLateResult(t *testing.T) {
 		t.Fatal("Esc should cancel the active capability probe")
 	}
 
-	if cmd := b.startConfirm(target); cmd == nil || !b.detectingCaps {
+	check = b.startConfirm(target)
+	if check == nil || b.detectingCaps {
+		t.Fatal("restarting confirm should check probeability again")
+	}
+	if cmd := b.Update(check()); cmd == nil || !b.detectingCaps {
 		t.Fatal("restarting confirm should start a new capability probe")
 	}
 	b.Update(presetflow.CapabilityProbedMsg{Provider: "ollama", Model: "qwen3", RequestID: oldRequestID})
 	if !b.detectingCaps {
 		t.Fatal("late result from the canceled request must not clear new detection")
+	}
+}
+
+// canProbeGateHost answers CanProbeModel only once release is closed, and
+// records the goroutine the call ran on. Every other Host method is unused by
+// these tests, so the embedded interface stays nil.
+type canProbeGateHost struct {
+	acpclient.Host
+
+	started chan struct{}
+	release chan struct{}
+	answer  bool
+
+	once sync.Once
+	gid  uint64
+}
+
+func newCanProbeGateHost(answer bool) *canProbeGateHost {
+	return &canProbeGateHost{started: make(chan struct{}), release: make(chan struct{}), answer: answer}
+}
+
+func (h *canProbeGateHost) CanProbeModel(context.Context, string, config.ProviderConfig) bool {
+	h.once.Do(func() {
+		h.gid = currentGoroutineID()
+		close(h.started)
+	})
+	<-h.release
+	return h.answer
+}
+
+// canProbeGoroutine is the goroutine the gated check ran on. Only read it after
+// started is closed.
+func (h *canProbeGateHost) canProbeGoroutine() uint64 { return h.gid }
+
+// currentGoroutineID parses the id out of the runtime's stack header
+// ("goroutine 18 [running]:").
+func currentGoroutineID() uint64 {
+	buf := make([]byte, 64)
+	fields := strings.Fields(string(buf[:runtime.Stack(buf, false)]))
+	if len(fields) < 2 {
+		return 0
+	}
+	id, err := strconv.ParseUint(fields[1], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return id
+}
+
+func awaitSignal(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+// TestTheProbeCheckRunsOffTheUpdateGoroutine pins startConfirm's CanProbeModel
+// check to its own command: opening the confirm screen must not wait on the
+// host, "detecting…" must appear only once a yes answer arrives, and an answer
+// for a screen Esc abandoned in the meantime is dropped.
+func TestTheProbeCheckRunsOffTheUpdateGoroutine(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "ollama", BaseURL: "http://localhost:11434"},
+	}
+	host := newCanProbeGateHost(true)
+	b := NewBrowser(cfg, "", WithHost(host))
+	b.reg.st.discovered["ollama"] = []schema.ModelInfo{{ID: "qwen3"}}
+	target := pendingMaterialization{
+		Profile: "coding", Role: routing.RoleImplementer,
+		ProviderName: "ollama", ModelID: "qwen3",
+	}
+
+	updateGID := currentGoroutineID()
+	startConfirmCmd := make(chan tea.Cmd, 1)
+	go func() { startConfirmCmd <- b.startConfirm(target) }()
+	var check tea.Cmd
+	select {
+	case check = <-startConfirmCmd:
+	case <-time.After(2 * time.Second):
+		t.Fatal("startConfirm blocked: the can-probe check must not run inline")
+	}
+	if check == nil {
+		t.Fatal("a browser with a host should ask it whether the model can be probed")
+	}
+	if b.detectingCaps {
+		t.Fatal(`"detecting…" must not appear before the host answers`)
+	}
+	if view := stripANSI(b.View(80, 24)); strings.Contains(view, "detecting") {
+		t.Fatalf(`confirm screen should still render its limits form, got:\n%s`, view)
+	}
+	select {
+	case <-host.started:
+		t.Fatal("startConfirm called CanProbeModel on the Update goroutine")
+	default:
+	}
+
+	answer := make(chan tea.Msg, 1)
+	go func() { answer <- check() }()
+	awaitSignal(t, host.started, "the can-probe check to run")
+	if gid := host.canProbeGoroutine(); gid == updateGID {
+		t.Fatalf("CanProbeModel ran on the Update goroutine (%d)", gid)
+	}
+
+	// Esc abandons the screen while the host is still thinking.
+	b.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if b.confirm != nil || b.detectingCaps {
+		t.Fatal("Esc should close the confirm screen")
+	}
+	close(host.release)
+	select {
+	case stale := <-answer:
+		if next := b.Update(stale); next != nil || b.detectingCaps {
+			t.Fatal("a can-probe answer for an abandoned confirm must not start a probe")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the can-probe answer")
+	}
+
+	// A confirm that is still open sees the yes answer, and only then detects.
+	openHost := newCanProbeGateHost(true)
+	close(openHost.release)
+	b.reg.st.host = openHost
+	check = b.startConfirm(target)
+	if check == nil || b.detectingCaps {
+		t.Fatal("reopened confirm should check probeability off the Update goroutine")
+	}
+	if cmd := b.Update(check()); cmd == nil || !b.detectingCaps {
+		t.Fatal("a yes answer should start capability detection")
+	}
+	if view := stripANSI(b.View(80, 24)); !strings.Contains(view, "detecting") {
+		t.Fatalf(`"detecting…" should appear once the host answered yes, got:\n%s`, view)
 	}
 }
 

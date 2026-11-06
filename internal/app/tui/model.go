@@ -1772,31 +1772,42 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Saved {
-			// The panel already wrote the target file; reload only.
+			// The panel already wrote the target file; reload only. The reload
+			// rebuilds the runtime, so it runs from the call queue and the
+			// receipts land when its result arrives (P3 R6).
 			m.setReg = nil
-			reloaded, err := m.sess.ReloadConfig(m.ctx, msg.Cfg)
-			if err != nil {
-				m.note(fmt.Sprintf("✗ settings saved, but live reload failed: %v", err))
-				m.refreshViewport()
-				return m, nil
-			}
-			if reloaded {
-				m.afterRuntimeReload()
-			}
-			m.applyNewConfig(msg.Cfg)
-			m.configSavePending = false
-			cfgPath := st.ProjectConfigPath
-			base := st.WorkingDir
-			if msg.GlobalTarget {
-				if home, err := m.userHome(); err == nil {
-					cfgPath = st.UserConfigPath
-					base = home
+			m.enqueueCall(func(mm *Model) callRun {
+				sess := mm.sess
+				cfg := msg.Cfg
+				return func(ctx context.Context) callOutcome {
+					reloaded, err := sess.ReloadConfig(ctx, cfg)
+					return func(mm *Model) tea.Cmd {
+						if err != nil {
+							mm.note(fmt.Sprintf("✗ settings saved, but live reload failed: %v", err))
+							mm.refreshViewport()
+							return nil
+						}
+						if reloaded {
+							mm.afterRuntimeReload()
+						}
+						mm.applyNewConfig(cfg)
+						mm.configSavePending = false
+						cfgPath := st.ProjectConfigPath
+						base := st.WorkingDir
+						if msg.GlobalTarget {
+							if home, err := mm.userHome(); err == nil {
+								cfgPath = st.UserConfigPath
+								base = home
+							}
+						}
+						for _, receipt := range msg.Receipts {
+							mm.note("✓ " + receipt + " · " + relPath(base, cfgPath))
+						}
+						mm.refreshViewport()
+						return nil
+					}
 				}
-			}
-			for _, receipt := range msg.Receipts {
-				m.note("✓ " + receipt + " · " + relPath(base, cfgPath))
-			}
-			m.refreshViewport()
+			})
 			return m, nil
 		}
 		// Global-target save failure: apply in memory, mark pending, emit

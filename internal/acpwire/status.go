@@ -157,3 +157,24 @@ type Sandbox struct {
 	NetworkIsolation bool   `json:"networkIsolation,omitempty"`
 	AllowNetwork     bool   `json:"allowNetwork,omitempty"` // tools.shell.allow_network
 }
+
+// The status methods and update kind (P3 R3).
+const (
+	MethodStatus        = "session/status"
+	MethodNoticeSet     = "session/notice_set"
+	MethodNoticeClear   = "session/notice_clear"
+	MethodNoticeDismiss = "session/notice_dismiss"
+	UpdateSessionStatus = "session_status"
+)
+
+// StatusParams is session/status's and session/notice_dismiss's params.
+type StatusParams struct {
+	SessionID string `json:"sessionId"`
+}
+
+// StatusUpdate is a session_status update: the session's whole status,
+// sent whenever it differs from the last one sent on the connection.
+type StatusUpdate struct {
+	Kind   string        `json:"kind"`
+	Status SessionStatus `json:"status"`
+}

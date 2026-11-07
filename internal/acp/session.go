@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"marshal/internal/acp/service"
 	"marshal/internal/app"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -108,6 +109,15 @@ type SessionManager struct {
 	// pointer create a fresh guard and re-close the runtime.
 	closeMu   sync.Mutex
 	closeOnce map[*app.Runtime]*sync.Once
+
+	// services holds each session's client-seam service, keyed by the
+	// runtime pointer it was built from. A session outlives its connection,
+	// so its service does too: closeRuntimeOnce releases it before it closes
+	// the runtime, and a runtime replaced on load or resume gets a fresh one.
+	// servicesMu is a lock of its own; the only order it takes part in is
+	// servicesMu then closeMu.
+	servicesMu sync.Mutex
+	services   map[*app.Runtime]*service.Session
 }
 
 // SessionResponse is the successful result shape for session/new.
@@ -205,7 +215,13 @@ func (m *SessionManager) closeRuntimeOnce(ctx context.Context, rt *app.Runtime) 
 	m.closeMu.Unlock()
 
 	var closeErr error
-	once.Do(func() { closeErr = m.close(ctx, rt) })
+	once.Do(func() {
+		// Release the session's client-seam service before the runtime
+		// closes: the service's event loop reads the state, so it must stop
+		// first. A runtime whose service was never built releases nothing.
+		m.releaseService(rt)
+		closeErr = m.close(ctx, rt)
+	})
 	return closeErr
 	// Known limitation: this map (SessionManager.closeOnce) never drops
 	// entries, so it grows by one entry per distinct runtime pointer ever
@@ -690,6 +706,50 @@ func (m *SessionManager) Get(id string) (*app.Runtime, bool) {
 	defer m.mu.RUnlock()
 	rt, ok := m.sessions[id]
 	return rt, ok
+}
+
+// Service returns the client-seam service of the session's current
+// runtime, building it with the runtime's ServiceDeps on first use. It
+// reports false for an unknown session, a runtime with no state, and a
+// runtime that is closing.
+func (m *SessionManager) Service(id string) (*service.Session, bool) {
+	rt, ok := m.Get(id)
+	if !ok || rt == nil || rt.State == nil {
+		return nil, false
+	}
+	m.servicesMu.Lock()
+	defer m.servicesMu.Unlock()
+	if m.services == nil {
+		m.services = map[*app.Runtime]*service.Session{}
+	}
+	if sess, ok := m.services[rt]; ok {
+		return sess, true
+	}
+	// Refuse a runtime that is already closing. closeRuntimeOnce registers its
+	// guard under closeMu before the close runs, and its release takes
+	// servicesMu, so a build that races a close is either refused here or
+	// released there.
+	m.closeMu.Lock()
+	_, closing := m.closeOnce[rt]
+	m.closeMu.Unlock()
+	if closing {
+		return nil, false
+	}
+	_, sess := service.New(rt.ServiceDeps(context.Background()))
+	m.services[rt] = sess
+	return sess, true
+}
+
+// releaseService removes rt's service from the registry and releases it. A
+// runtime whose service was never built releases nothing.
+func (m *SessionManager) releaseService(rt *app.Runtime) {
+	m.servicesMu.Lock()
+	sess := m.services[rt]
+	delete(m.services, rt)
+	m.servicesMu.Unlock()
+	if sess != nil {
+		sess.Release()
+	}
 }
 
 // All returns every published runtime. Used by worktree orphan detection,

@@ -150,7 +150,7 @@ func (a *orderingAgent) install(srv *Server) {
 		return struct{}{}, nil
 	})
 
-	srv.SetResponseBarrier(responseBarrier(a.turns, a.works, a.watches))
+	srv.SetResponseBarrier(responseBarrier(a.turns, a.works, a.watches, nil))
 	srv.setMarshalClient(true)
 }
 

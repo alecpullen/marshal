@@ -68,3 +68,15 @@ type Notice struct {
 type ErrorData struct {
 	Notice *Notice `json:"notice,omitempty"`
 }
+
+// NoticeSetParams is session/notice_set's params.
+type NoticeSetParams struct {
+	SessionID string `json:"sessionId"`
+	Notice    Notice `json:"notice"`
+}
+
+// NoticeClearParams is session/notice_clear's params.
+type NoticeClearParams struct {
+	SessionID string `json:"sessionId"`
+	Category  string `json:"category"`
+}

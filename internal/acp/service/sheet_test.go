@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,158 +13,9 @@ import (
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
-	"marshal/internal/contextpack"
-	"marshal/internal/db"
 	"marshal/internal/repo/gitinfo"
 	"marshal/internal/tools/registry"
 )
-
-// TestSheetCarriesTheSessionsActivity pins every in-memory value the sheet
-// reads: the tool-call log, the files it touched, the rules, the skills, the
-// budget, the loaded tools, the sandbox and the context pack.
-func TestSheetCarriesTheSessionsActivity(t *testing.T) {
-	state := newState(t, "s1")
-	state.LogToolCall(registry.AuditEvent{
-		Timestamp: time.Unix(10, 0),
-		ToolName:  "file.read",
-		Args:      json.RawMessage(`{"path":"a.go"}`),
-		Duration:  10 * time.Millisecond,
-	})
-	state.LogToolCall(registry.AuditEvent{
-		Timestamp:    time.Unix(20, 0),
-		ToolName:     "file.write_patch",
-		FilesChanged: []string{"b.go"},
-		Duration:     30 * time.Millisecond,
-	})
-	state.LogToolCall(registry.AuditEvent{
-		Timestamp: time.Unix(30, 0),
-		ToolName:  "shell.run",
-		Error:     "exit 1",
-		Duration:  50 * time.Millisecond,
-	})
-	state.AddSessionRule("go test")
-	state.ActivateSkill("tdd")
-	state.SetToolBudget(session.ToolBudget{Used: 3, Max: 100})
-	state.AddLoadedToolNames([]string{"web.fetch"})
-	state.SetSandboxInfo(session.SandboxInfo{Backend: "restricted"})
-	state.Config.Tools.Shell.AllowNetwork = true
-	state.SetContextPack(contextpack.Pack{
-		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000, EstimatedTokens: 3400},
-		Sections: []contextpack.Section{
-			{Title: "repo map", EstimatedTokens: 2400},
-			{Title: "todos"},
-		},
-	})
-
-	_, sess := New(Deps{State: state})
-	got := sess.Sheet(0)
-	want := acpwire.SessionSheet{
-		StartedAt: 100000,
-		Context: acpwire.SheetContext{
-			MaxTokens:       12000,
-			EstimatedTokens: 3400,
-			Sections: []acpwire.SheetContextSection{
-				{Title: "repo map", EstimatedTokens: 2400},
-				{Title: "todos"},
-			},
-		},
-		Tools: []acpwire.SheetTool{
-			{Name: "file.read", Calls: 1, SlowestMs: 10},
-			{Name: "file.write_patch", Calls: 1, SlowestMs: 30},
-			{Name: "shell.run", Calls: 1, Errors: 1, SlowestMs: 50},
-		},
-		Files: []acpwire.SheetFile{
-			{Path: "b.go", Edits: 1, LastAt: 20000},
-			{Path: "a.go", Reads: 1, LastAt: 10000},
-		},
-		Rules:       []string{"go test"},
-		Skills:      []string{"tdd"},
-		ToolBudget:  acpwire.SheetToolBudget{Used: 3, Max: 100},
-		LoadedTools: 1,
-		Sandbox:     acpwire.SheetSandbox{Backend: "restricted", AllowNetwork: true},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("Sheet(0) =\n%+v\nwant\n%+v", got, want)
-	}
-}
-
-// TestSheetReadsASubagentsOwnActivity pins that a subagent's ID reads the
-// child's activity, not the parent's, and that only the session's own sheet
-// carries a context pack.
-func TestSheetReadsASubagentsOwnActivity(t *testing.T) {
-	parent := newState(t, "parent")
-	parent.LogToolCall(registry.AuditEvent{Timestamp: time.Unix(10, 0), ToolName: "parent-probe"})
-	parent.SetContextPack(contextpack.Pack{
-		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000, EstimatedTokens: 100},
-		Sections:   []contextpack.Section{{Title: "repo map", EstimatedTokens: 100}},
-	})
-
-	child := session.New(config.Default(), t.TempDir(), time.Unix(200, 0), session.Persistence{SessionID: "child"})
-	child.LogToolCall(registry.AuditEvent{Timestamp: time.Unix(20, 0), ToolName: "child-probe"})
-	child.AddSessionRule("child rule")
-	view := parent.RegisterSubagent("scout", child)
-
-	_, sess := New(Deps{State: parent})
-	got := sess.Sheet(view.ID)
-
-	if got.SubagentID != view.ID {
-		t.Errorf("SubagentID = %d, want the view's %d", got.SubagentID, view.ID)
-	}
-	if want := []acpwire.SheetTool{{Name: "child-probe", Calls: 1}}; !reflect.DeepEqual(got.Tools, want) {
-		t.Errorf("Tools = %+v, want only the child's %+v", got.Tools, want)
-	}
-	if want := []string{"child rule"}; !reflect.DeepEqual(got.Rules, want) {
-		t.Errorf("Rules = %v, want %v", got.Rules, want)
-	}
-	if got.StartedAt != 200000 {
-		t.Errorf("StartedAt = %d, want the child's 200000", got.StartedAt)
-	}
-	if !reflect.DeepEqual(got.Context, acpwire.SheetContext{}) {
-		t.Errorf("Context = %+v, want empty for a subagent", got.Context)
-	}
-}
-
-// TestSheetFindsANestedSubagent pins that the search descends into a child's
-// own subagents.
-func TestSheetFindsANestedSubagent(t *testing.T) {
-	parent := newState(t, "parent")
-	child := newState(t, "child")
-	parent.RegisterSubagent("scout", child)
-
-	grandchild := newState(t, "grandchild")
-	grandchild.LogToolCall(registry.AuditEvent{Timestamp: time.Unix(30, 0), ToolName: "grandchild-probe"})
-	grandView := child.RegisterSubagent("scout-of-scout", grandchild)
-
-	_, sess := New(Deps{State: parent})
-	got := sess.Sheet(grandView.ID)
-
-	if got.SubagentID != grandView.ID {
-		t.Errorf("SubagentID = %d, want the grandchild's %d", got.SubagentID, grandView.ID)
-	}
-	if want := []acpwire.SheetTool{{Name: "grandchild-probe", Calls: 1}}; !reflect.DeepEqual(got.Tools, want) {
-		t.Errorf("Tools = %+v, want the grandchild's %+v", got.Tools, want)
-	}
-}
-
-// TestSheetReadsAnUnknownSubagentAsTheSession pins that an ID naming no child
-// session, and a card registered with no child, both read as the session's own
-// sheet.
-func TestSheetReadsAnUnknownSubagentAsTheSession(t *testing.T) {
-	parent := newState(t, "parent")
-	parent.LogToolCall(registry.AuditEvent{Timestamp: time.Unix(10, 0), ToolName: "parent-probe"})
-	card := parent.RegisterSubagent("pipeline", nil)
-
-	_, sess := New(Deps{State: parent})
-	for _, id := range []int64{999999, card.ID} {
-		got := sess.Sheet(id)
-		if got.SubagentID != 0 {
-			t.Errorf("Sheet(%d).SubagentID = %d, want 0", id, got.SubagentID)
-		}
-		if want := []acpwire.SheetTool{{Name: "parent-probe", Calls: 1}}; !reflect.DeepEqual(got.Tools, want) {
-			t.Errorf("Sheet(%d).Tools = %+v, want the parent's %+v", id, got.Tools, want)
-		}
-	}
-}
 
 // TestSheetOfAReplacedSessionKeepsItsFinalValues pins C4 for the sheet: a
 // session a swap replaced keeps answering with its own state's values.
@@ -219,39 +69,6 @@ func sheetSession(t *testing.T, repo string) *Session {
 	t.Helper()
 	_, sess := New(Deps{State: session.New(config.Default(), repo, time.Unix(100, 0), session.Persistence{SessionID: "s1"})})
 	return sess
-}
-
-// TestRefreshSheetRebasesOntoHead pins that a Rebase reads HEAD and the
-// changed files against it, and that the status line's count follows.
-func TestRefreshSheetRebasesOntoHead(t *testing.T) {
-	requireGit(t)
-	repo := sheetRepo(t)
-	sess := sheetSession(t, repo)
-
-	if err := os.WriteFile(filepath.Join(repo, "a.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
-		t.Fatalf("write a.txt: %v", err)
-	}
-	if err := sess.RefreshSheet(context.Background(), acpwire.SheetRefresh{Rebase: true}); err != nil {
-		t.Fatalf("RefreshSheet: %v", err)
-	}
-	want := []acpwire.SheetChangedFile{{Path: "a.txt", Status: "M", Added: 1}}
-	if got := sess.Sheet(0).Changed; !reflect.DeepEqual(got, want) {
-		t.Errorf("Changed = %+v, want %+v", got, want)
-	}
-	if got := sess.Status().ChangedFiles; got != 1 {
-		t.Errorf("Status().ChangedFiles = %d, want 1", got)
-	}
-
-	runGit(t, repo, "commit", "-qam", "change")
-	if err := sess.RefreshSheet(context.Background(), acpwire.SheetRefresh{Rebase: true}); err != nil {
-		t.Fatalf("RefreshSheet: %v", err)
-	}
-	if got := sess.Sheet(0).Changed; len(got) != 0 {
-		t.Errorf("Changed after the commit = %+v, want none", got)
-	}
-	if got := sess.Status().ChangedFiles; got != 0 {
-		t.Errorf("Status().ChangedFiles after the commit = %d, want 0", got)
-	}
 }
 
 // TestRefreshSheetChangedKeepsTheBase pins that a Changed read diffs against
@@ -406,70 +223,6 @@ func TestRefreshSheetReadsTheActiveRoot(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("Changed = %+v, want the worktree's a.txt", sess.Sheet(0).Changed)
-	}
-}
-
-// TestRefreshSheetReadsTurnsTotalsAndRepoCounts pins the Stats refresh: the
-// recent turn metrics, the session's usage totals and the repo's counts.
-func TestRefreshSheetReadsTurnsTotalsAndRepoCounts(t *testing.T) {
-	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { database.Close() })
-	if err := database.Migrate(); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	projectID, err := database.GetOrCreateProject("/repo", "repo")
-	if err != nil {
-		t.Fatalf("GetOrCreateProject: %v", err)
-	}
-	if err := database.CreateSession("s1", projectID, "", time.Now()); err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
-	for _, row := range []db.TurnMetricsRow{
-		{ProjectID: projectID, SessionID: "s1", StartedAt: time.Unix(1000, 0).UTC(), PromptTokens: 100, CompletionTokens: 20, CacheReadTokens: 50},
-		{ProjectID: projectID, SessionID: "s1", StartedAt: time.Unix(2000, 0).UTC(), PromptTokens: 200, CompletionTokens: 40},
-	} {
-		if _, err := database.InsertTurnMetrics(row); err != nil {
-			t.Fatalf("InsertTurnMetrics: %v", err)
-		}
-	}
-	indexedAt := time.Unix(3000, 0).UTC()
-	if err := database.SaveFileIndex(projectID, []db.FileIndex{
-		{Path: "a.go", Language: "go", Hash: "h1", LastIndexedAt: indexedAt},
-		{Path: "b.go", Language: "go", Hash: "h2", LastIndexedAt: indexedAt},
-	}); err != nil {
-		t.Fatalf("SaveFileIndex: %v", err)
-	}
-	if err := database.SaveSymbols(projectID, []db.Symbol{
-		{FilePath: "a.go", Kind: "function", Name: "A"},
-		{FilePath: "a.go", Kind: "function", Name: "B"},
-		{FilePath: "b.go", Kind: "type", Name: "C"},
-	}); err != nil {
-		t.Fatalf("SaveSymbols: %v", err)
-	}
-
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{DB: database, SessionID: "s1"})
-	_, sess := New(Deps{State: state, ProjectID: projectID})
-
-	if err := sess.RefreshSheet(context.Background(), acpwire.SheetRefresh{Stats: true}); err != nil {
-		t.Fatalf("RefreshSheet: %v", err)
-	}
-	got := sess.Sheet(0)
-	wantTurns := []acpwire.SheetTurn{
-		{StartedAt: 2000000, PromptTokens: 200, CompletionTokens: 40},
-		{StartedAt: 1000000, PromptTokens: 100, CompletionTokens: 20, CacheReadTokens: 50},
-	}
-	if !reflect.DeepEqual(got.Turns, wantTurns) {
-		t.Errorf("Turns = %+v, want %+v", got.Turns, wantTurns)
-	}
-	wantTotals := acpwire.SheetTotals{Turns: 2, PromptTokens: 300, CompletionTokens: 60, CacheReadTokens: 50}
-	if got.Totals != wantTotals {
-		t.Errorf("Totals = %+v, want %+v", got.Totals, wantTotals)
-	}
-	if want := (acpwire.SheetRepo{Files: 2, Symbols: 3}); got.Repo != want {
-		t.Errorf("Repo = %+v, want %+v", got.Repo, want)
 	}
 }
 

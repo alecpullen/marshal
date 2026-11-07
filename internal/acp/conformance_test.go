@@ -16,6 +16,7 @@ import (
 	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
+	"marshal/internal/pubsub"
 	"marshal/internal/repo/gitinfo"
 )
 
@@ -28,6 +29,12 @@ type seam interface {
 	SetNotice(ctx context.Context, notice acpwire.Notice) error
 	ClearNotice(ctx context.Context, category string) error
 	DismissNotice(ctx context.Context) error
+	Stack(subagentID int64, busy bool) acpwire.StackSnapshot
+	StackNode(ctx context.Context, nodeID string, subagentID int64) (acpwire.StackNodeResult, error)
+	Callers(ctx context.Context, nodeID string) ([]string, error)
+	Sheet(subagentID int64) acpwire.SessionSheet
+	RefreshSheet(ctx context.Context, req acpwire.SheetRefresh) error
+	ReleaseSubagent(ctx context.Context, subagentID int64) error
 }
 
 // seamArm opens one implementation of the seam over d.
@@ -92,7 +99,8 @@ func openPipeSeamTB(tb testing.TB, d service.Deps) seam {
 		Marshal: srv.marshalClient,
 	})
 	registerStatus(srv, statuses)
-	srv.SetResponseBarrier(responseBarrier(nil, nil, nil, statuses))
+	turns, sheets := serveTranscript(tb, srv, d, served, sessionID)
+	srv.SetResponseBarrier(responseBarrier(turns, statuses, sheets))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -126,6 +134,36 @@ func openPipeSeamTB(tb testing.TB, d service.Deps) seam {
 		tb.Fatalf("attach %q: %v", sessionID, err)
 	}
 	return sess
+}
+
+// serveTranscript registers the transcript handlers on the pipe arm's server
+// over the served state and service, and returns the managers the barrier
+// fences. The runtime it serves carries no runner: the transcript reads need
+// the session's state and events, not a runner (P3 R4).
+func serveTranscript(tb testing.TB, srv *Server, d service.Deps, served *service.Session, sessionID string) (*TurnManager, *SheetManager) {
+	tb.Helper()
+	// The runtime carries an event broker, as stackAgent.install makes one.
+	broker := pubsub.NewBroker[session.Event]()
+	runtime := func(id string) (*TurnRuntime, bool) {
+		return &TurnRuntime{SessionID: sessionID, State: d.State, Events: broker}, id == sessionID
+	}
+	lookup := func(id string) (*service.Session, bool) {
+		return served, id == sessionID
+	}
+	turns := NewTurnManager(TurnManagerConfig{
+		Lookup:  runtime,
+		Reads:   runtime,
+		Notify:  srv.Notify,
+		Marshal: srv.marshalClient,
+	})
+	sheets := NewSheetManager(SheetManagerConfig{
+		Lookup:  lookup,
+		Notify:  srv.Notify,
+		Marshal: srv.marshalClient,
+	})
+	tb.Cleanup(sheets.Close)
+	registerTranscript(srv, turns, sheets, lookup)
+	return turns, sheets
 }
 
 // seamState builds a state the way the TUI tests do. It is the service's

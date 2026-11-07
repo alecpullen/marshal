@@ -272,6 +272,22 @@ func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyF
 			}
 			return crt, true
 		},
+		// Reads serves the transcript reads for a session whose runner was
+		// never built: it checks nothing but the state, so session/stack and
+		// session/stack_node answer for a session that has a transcript and no
+		// agent (P3 R4).
+		Reads: func(sessionID string) (*TurnRuntime, bool) {
+			rt, ok := manager.Get(sessionID)
+			if !ok || rt == nil || rt.State == nil {
+				return nil, false
+			}
+			evBroker, _ := rt.EventBroker.(*pubsub.Broker[session.Event])
+			return &TurnRuntime{
+				SessionID: sessionID,
+				State:     rt.State,
+				Events:    evBroker,
+			}, true
+		},
 		Notify:    notify,
 		Perms:     perms,
 		Questions: questions,
@@ -343,6 +359,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 	srv.Handle("session/stack", turns.Stack)
 	srv.Handle("session/stack_unsubscribe", turns.StackUnsubscribe)
 	srv.Handle("session/stack_node", turns.StackNode)
+	srv.Handle("session/stack_busy", turns.StackBusy)
 	srv.Handle("session/last_request", turns.LastRequest)
 	srv.Handle("session/step_diffs", turns.StepDiffs)
 	srv.Handle("session/run", turns.Run)

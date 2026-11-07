@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -351,4 +352,66 @@ func TestWorkACPFinalUpdateBeforeClose(t *testing.T) {
 		t.Fatalf("final delivery = %+v", got)
 	}
 	m.Close()
+}
+
+// TestStackServesASessionWithoutARunner pins decision 7: the transcript reads
+// resolve a session through Reads, so a session whose provider never built a
+// runner still serves its stack and its row detail, where the prompt path
+// stays gated on the runner.
+func TestStackServesASessionWithoutARunner(t *testing.T) {
+	h, err := newAgentHost(runConfig{
+		startRuntime: func(ctx context.Context, opts ...app.Option) (*app.Runtime, error) {
+			return nil, errors.New("no runtime in tests")
+		},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("newAgentHost: %v", err)
+	}
+
+	fixed := time.Unix(1_700_000_000, 0)
+	st := session.New(config.Default(), t.TempDir(), fixed, session.Persistence{SessionID: "s1"},
+		session.WithClock(func() time.Time { return fixed }))
+	st.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	st.AddMessageFinal(session.RoleAssistant, "done", session.ContentTypeMarkdown)
+
+	// A runner-less runtime: the state exists, the provider never built one.
+	h.manager.sessions["s1"] = &app.Runtime{State: st}
+
+	srv := NewServer(strings.NewReader(""), io.Discard)
+	var alive atomic.Bool
+	alive.Store(true)
+	cleanup := h.registerHandlers(srv, &alive)
+	defer cleanup()
+
+	res, err := srv.handlers["session/stack"](context.Background(), json.RawMessage(`{"sessionId":"s1"}`))
+	if err != nil {
+		t.Fatalf("session/stack for a runner-less session = %v, want the state's snapshot", err)
+	}
+	snap, ok := res.(acpwire.StackSnapshot)
+	if !ok {
+		t.Fatalf("session/stack result = %T, want acpwire.StackSnapshot", res)
+	}
+	if len(snap.Nodes) == 0 {
+		t.Fatalf("the stack is empty; want the state's transcript")
+	}
+
+	nodeID := ""
+	for _, n := range snap.Nodes {
+		if n.Kind != acpwire.KindBand {
+			nodeID = n.ID
+			break
+		}
+	}
+	if nodeID == "" {
+		t.Fatalf("the snapshot carries no node to read: %+v", snap.Nodes)
+	}
+	res, err = srv.handlers["session/stack_node"](context.Background(),
+		json.RawMessage(`{"sessionId":"s1","nodeId":"`+nodeID+`"}`))
+	if err != nil {
+		t.Fatalf("session/stack_node(%q) for a runner-less session = %v", nodeID, err)
+	}
+	if node, ok := res.(acpwire.StackNodeResult); !ok || node.Node.ID != nodeID {
+		t.Fatalf("session/stack_node result = %#v, want the node %q", res, nodeID)
+	}
 }

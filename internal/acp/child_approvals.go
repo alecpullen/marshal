@@ -49,6 +49,12 @@ func (m *TurnManager) ensureChildApprovals(sessionID string, rt *TurnRuntime) {
 	if rt == nil || rt.State == nil || rt.Events == nil {
 		return
 	}
+	// A marshal client's requests are the request mirror's (P3 R5): the
+	// mirror shows the request, and nothing here may answer it, deny it or
+	// fail it.
+	if m.isMarshal() {
+		return
+	}
 	m.childMu.Lock()
 	defer m.childMu.Unlock()
 	if existing, ok := m.childApprovals[sessionID]; ok {

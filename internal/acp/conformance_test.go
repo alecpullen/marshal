@@ -35,6 +35,15 @@ type seam interface {
 	Sheet(subagentID int64) acpwire.SessionSheet
 	RefreshSheet(ctx context.Context, req acpwire.SheetRefresh) error
 	ReleaseSubagent(ctx context.Context, subagentID int64) error
+
+	Pending() acpwire.PendingRequests
+	ReconcileAccess(ctx context.Context) (acpwire.AccessRequest, bool)
+	AnswerApproval(ctx context.Context, key string, answer acpwire.ApprovalAnswer) error
+	AnswerQuestion(ctx context.Context, key string, answers []acpwire.Answer) error
+	AnswerSkillGate(ctx context.Context, key string, choice acpwire.SkillGateChoice) error
+	AnswerSudo(ctx context.Context, key string, answer acpwire.SudoAnswer) error
+	AnswerAccess(ctx context.Context, choice acpwire.AccessChoice) (acpwire.AccessResult, error)
+	Rollback(ctx context.Context) error
 }
 
 // seamArm opens one implementation of the seam over d.
@@ -100,7 +109,10 @@ func openPipeSeamTB(tb testing.TB, d service.Deps) seam {
 	})
 	registerStatus(srv, statuses)
 	turns, sheets := serveTranscript(tb, srv, d, served, sessionID)
-	srv.SetResponseBarrier(responseBarrier(turns, statuses, sheets))
+	// The request manager's forwarders carry pending_requests, so they join
+	// the barrier after the sheet manager's (P3 plan 5).
+	requests := serveRequests(tb, srv, served, sessionID)
+	srv.SetResponseBarrier(responseBarrier(turns, nil, nil, statuses, sheets, requests))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -171,6 +183,22 @@ func serveTranscript(tb testing.TB, srv *Server, d service.Deps, served *service
 func seamState(t *testing.T, id string) *session.State {
 	t.Helper()
 	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: id})
+}
+
+// serveRequests registers the request handlers on the pipe arm's server over
+// the served service, and returns the manager the barrier fences.
+func serveRequests(tb testing.TB, srv *Server, served *service.Session, sessionID string) *RequestManager {
+	tb.Helper()
+	requests := NewRequestManager(RequestManagerConfig{
+		Lookup: func(id string) (*service.Session, bool) {
+			return served, id == sessionID
+		},
+		Notify:  srv.Notify,
+		Marshal: srv.marshalClient,
+	})
+	registerRequests(srv, requests)
+	tb.Cleanup(requests.Close)
+	return requests
 }
 
 // seamPtr is the address of v, for the interaction patch's optional fields.

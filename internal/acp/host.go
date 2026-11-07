@@ -303,9 +303,9 @@ type sessionFencer interface {
 }
 
 // responseBarrier is the host's barrier: it fences each manager's forwarders
-// for the session, in the order given, so a marshal client's call returns only
-// after the updates it caused are written (P3 R2). It skips a nil manager, and
-// a fence whose forwarder has gone answers at once.
+// for the session, in the order given, skipping a nil one, so a marshal
+// client's call returns only after the updates it caused are written (P3 R2).
+// A fence whose forwarder has gone answers at once.
 func responseBarrier(fencers ...sessionFencer) func(ctx context.Context, sessionID string) {
 	return func(ctx context.Context, sessionID string) {
 		for _, f := range fencers {
@@ -415,8 +415,16 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 		Notify:  h.sink.Notify,
 		Marshal: srv.marshalClient,
 	})
+	// The request manager's forwarders carry pending_requests the same way, so
+	// they join the barrier after the sheet manager's.
+	requests := NewRequestManager(RequestManagerConfig{
+		Lookup:  manager.Service,
+		Notify:  h.sink.Notify,
+		Marshal: srv.marshalClient,
+	})
 	registerTranscript(srv, turns, sheets, manager.Service)
-	srv.SetResponseBarrier(responseBarrier(turns, works, watches, statuses, sheets))
+	registerRequests(srv, requests)
+	srv.SetResponseBarrier(responseBarrier(turns, works, watches, statuses, sheets, requests))
 
 	home, _ := os.UserHomeDir()
 	cfgMgr := NewConfigManager(home, nil, nil)
@@ -570,8 +578,8 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 
 	// The work controller is per-connection: its forwarders (Task 22) push
 	// work_state updates to this connection's sink and must stop with it.
-	// The status manager's forwarders push session_status the same way, and
-	// the sheet manager's push sheet updates.
+	// The status, sheet and request managers' forwarders push session_status,
+	// sheet and pending_requests the same way.
 	// The child approval collectors are per-connection too: they answer
 	// through this connection's permission bridge, so they end with it.
 	return func() {
@@ -579,6 +587,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 		works.Close()
 		statuses.Close()
 		sheets.Close()
+		requests.Close()
 	}
 }
 

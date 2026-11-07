@@ -60,7 +60,7 @@ const stackIdleInterval = 500 * time.Millisecond
 // client: the fast cadence for a marshal client, the rate-limited defaults
 // otherwise. Each loop reads it once, where its ticker is created.
 func (m *TurnManager) stackIntervals() (turn, idle time.Duration) {
-	if m.marshal != nil && m.marshal() {
+	if m.isMarshal() {
 		return marshalStackInterval, marshalStackInterval
 	}
 	return stackFlushInterval, stackIdleInterval

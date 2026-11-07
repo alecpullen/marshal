@@ -169,3 +169,72 @@ const (
 	AccessRefresh   = "refresh_required"
 	AccessExpired   = "expired"
 )
+
+// The request methods and update kind (P3 R5).
+const (
+	MethodPending         = "session/pending"
+	MethodAnswerApproval  = "session/answer_approval"
+	MethodAnswerQuestion  = "session/answer_question"
+	MethodAnswerSkillGate = "session/answer_skill_gate"
+	MethodAnswerSudo      = "session/answer_sudo"
+	MethodAnswerAccess    = "session/answer_access"
+	MethodRollback        = "session/rollback"
+	UpdatePending         = "pending_requests"
+)
+
+// PendingParams is session/pending's and session/rollback's params.
+type PendingParams struct {
+	SessionID string `json:"sessionId"`
+}
+
+// PendingState is what the request mirror holds: the open requests, and the
+// typed access request the access panel presents (ReconcileAccess's answer),
+// read after a request that asked for nothing was settled.
+type PendingState struct {
+	Requests PendingRequests `json:"requests"`
+	Access   *AccessRequest  `json:"access,omitempty"`
+}
+
+// PendingUpdate is a pending_requests update: the whole state, sent whenever
+// it differs from the last one sent on the connection.
+type PendingUpdate struct {
+	Kind    string       `json:"kind"`
+	Pending PendingState `json:"pending"`
+}
+
+// AnswerApprovalParams is session/answer_approval's params.
+type AnswerApprovalParams struct {
+	SessionID string         `json:"sessionId"`
+	Key       string         `json:"key"`
+	Answer    ApprovalAnswer `json:"answer"`
+}
+
+// AnswerQuestionParams is session/answer_question's params: one answer per
+// question, in order.
+type AnswerQuestionParams struct {
+	SessionID string   `json:"sessionId"`
+	Key       string   `json:"key"`
+	Answers   []Answer `json:"answers"`
+}
+
+// AnswerSkillGateParams is session/answer_skill_gate's params.
+type AnswerSkillGateParams struct {
+	SessionID string          `json:"sessionId"`
+	Key       string          `json:"key"`
+	Choice    SkillGateChoice `json:"choice"`
+}
+
+// AnswerSudoParams is session/answer_sudo's params. They carry a password:
+// neither end logs them (P3 R8).
+type AnswerSudoParams struct {
+	SessionID string     `json:"sessionId"`
+	Key       string     `json:"key"`
+	Answer    SudoAnswer `json:"answer"`
+}
+
+// AnswerAccessParams is session/answer_access's params. The call answers an
+// AccessResult.
+type AnswerAccessParams struct {
+	SessionID string       `json:"sessionId"`
+	Choice    AccessChoice `json:"choice"`
+}

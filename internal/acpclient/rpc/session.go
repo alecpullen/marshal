@@ -26,6 +26,9 @@ type Session struct {
 	busySent bool
 	// sheets mirrors one sheet per subagent ID the session has read.
 	sheets map[int64]*sheetEntry
+	// pending is the request mirror (requests.go): nil until its first read
+	// creates it.
+	pending *pendingMirror
 	// closed says the connection ended, so changed is closed and nothing
 	// may be sent on it.
 	closed  bool
@@ -191,9 +194,10 @@ func (s *Session) closeLocked() {
 }
 
 // routeNotify hands every session/update to the host's stack mirror, then
-// applies a session_status update or a sheet update to the attached session it
-// names and drops one for a session that is not attached. It runs on the read
-// goroutine, before the caller's Notify sees the frame.
+// applies a session_status, sheet or pending_requests update to the attached
+// session it names and drops one for a session that is not attached. Any other
+// kind is ignored. It runs on the read goroutine, before the caller's Notify
+// sees the frame.
 func (h *Host) routeNotify(method string, params json.RawMessage) {
 	if method != acpwire.MethodSessionUpdate {
 		return
@@ -233,6 +237,16 @@ func (h *Host) routeNotify(method string, params json.RawMessage) {
 			return
 		}
 		session.applySheet(sheet)
+	case acpwire.UpdatePending:
+		var pending acpwire.PendingUpdate
+		if err := json.Unmarshal(update.Update, &pending); err != nil {
+			return
+		}
+		session := h.session(update.SessionID)
+		if session == nil {
+			return
+		}
+		session.applyPending(pending.Pending)
 	}
 }
 

@@ -2,7 +2,6 @@ package acp
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,7 +11,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"marshal/internal/acpwire"
 	"marshal/internal/app"
 	"marshal/internal/app/session"
 	"marshal/internal/credentials"
@@ -283,10 +281,11 @@ func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyF
 }
 
 // responseBarrier is the host's barrier: it fences the turn manager's, then the
-// work manager's, then the watch manager's forwarders for the session, so a
-// marshal client's call returns only after the updates it caused are written
-// (P3 R2). A fence whose forwarder has gone answers at once.
-func responseBarrier(turns *TurnManager, works *WorkManagerACP, watches *WatchManagerACP) func(ctx context.Context, sessionID string) {
+// work manager's, then the watch manager's, then the status manager's
+// forwarders for the session, so a marshal client's call returns only after the
+// updates it caused are written (P3 R2). A fence whose forwarder has gone
+// answers at once.
+func responseBarrier(turns *TurnManager, works *WorkManagerACP, watches *WatchManagerACP, statuses *StatusManager) func(ctx context.Context, sessionID string) {
 	return func(ctx context.Context, sessionID string) {
 		if turns != nil {
 			turns.fenceSession(ctx, sessionID)
@@ -296,6 +295,9 @@ func responseBarrier(turns *TurnManager, works *WorkManagerACP, watches *WatchMa
 		}
 		if watches != nil {
 			watches.fenceSession(ctx, sessionID)
+		}
+		if statuses != nil {
+			statuses.fenceSession(ctx, sessionID)
 		}
 	}
 }
@@ -316,75 +318,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 		&serverPermissionClient{server: srv},
 		&serverQuestionClient{server: srv}, alive, srv.marshalClient)
 
-	srv.Handle("initialize", func(ctx context.Context, params json.RawMessage) (any, error) {
-		var p InitializeParams
-		if len(params) > 0 {
-			if err := json.Unmarshal(params, &p); err != nil {
-				return nil, invalidParamsError("parse initialize params: %v", err)
-			}
-		}
-		if p.ProtocolVersion == 0 {
-			return nil, invalidParamsError("protocolVersion is required")
-		}
-
-		// Record whether this client declared the marshal-only protocol (P3
-		// R9). The capability below is advertised to every client, so a client
-		// that does not declare it still sees it.
-		srv.setMarshalClient(p.ClientCapabilities != nil &&
-			p.ClientCapabilities.Marshal != nil &&
-			p.ClientCapabilities.Marshal.ProtocolVersion == acpwire.MarshalProtocolVersion)
-
-		return map[string]any{
-			"protocolVersion": 1,
-			"agentCapabilities": map[string]any{
-				"marshal": map[string]any{
-					"protocolVersion": acpwire.MarshalProtocolVersion,
-				},
-				"loadSession": true,
-				// Not per session: config/* act on the user-global config.
-				"configAccess": map[string]any{},
-				// workspace/parse, /patch and /format (no session needed).
-				"workspaceFiles": map[string]any{},
-				"sessionCapabilities": map[string]any{
-					"close":                 map[string]any{},
-					"list":                  map[string]any{},
-					"resume":                map[string]any{},
-					"additionalDirectories": map[string]any{},
-					"delete":                map[string]any{},
-					"commandDispatch":       map[string]any{},
-					"swarmDispatch":         map[string]any{},
-					"sddDispatch":           map[string]any{},
-					"sessionTelemetry":      map[string]any{},
-					"stackView":             map[string]any{},
-					"stackNode":             map[string]any{},
-					"subagentStacks":        map[string]any{},
-					"lastRequest":           map[string]any{},
-					"filesView":             map[string]any{},
-					"commitDraft":           map[string]any{},
-					"stepDiffs":             map[string]any{},
-					"runDetail":             map[string]any{},
-					"watchAccess":           map[string]any{},
-					"memoryAccess":          map[string]any{},
-					"holdControl":           map[string]any{},
-					"memoryScopes":          map[string]any{},
-					"agentsRoster":          map[string]any{},
-					"skillsAccess":          map[string]any{},
-					"pluginsAccess":         map[string]any{},
-					// session/new isolation plus session/diff, /merge,
-					// /discard and /worktree_prune.
-					"worktreeIsolation": map[string]any{},
-					// session/commit for non-isolated sessions.
-					"exitPath": map[string]any{},
-				},
-			},
-			"agentInfo": map[string]any{
-				"name":    "marshal",
-				"title":   "Marshal",
-				"version": AgentVersion,
-			},
-			"authMethods": []any{},
-		}, nil
-	})
+	registerInitialize(srv)
 
 	// workspace/* are stateless and need no session, like the control
 	// agent's other connection-level methods.
@@ -453,8 +387,14 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 
 	// A marshal client's session call returns only after the updates it caused
 	// are written, so a read after the call sees its effect (P3 R2). Install
-	// it once all three managers whose forwarders carry those updates exist.
-	srv.SetResponseBarrier(responseBarrier(turns, works, watches))
+	// it once all four managers whose forwarders carry those updates exist.
+	statuses := NewStatusManager(StatusManagerConfig{
+		Lookup:  manager.Service,
+		Notify:  h.sink.Notify,
+		Marshal: srv.marshalClient,
+	})
+	registerStatus(srv, statuses)
+	srv.SetResponseBarrier(responseBarrier(turns, works, watches, statuses))
 
 	home, _ := os.UserHomeDir()
 	cfgMgr := NewConfigManager(home, nil, nil)
@@ -608,11 +548,13 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 
 	// The work controller is per-connection: its forwarders (Task 22) push
 	// work_state updates to this connection's sink and must stop with it.
+	// The status manager's forwarders push session_status the same way.
 	// The child approval collectors are per-connection too: they answer
 	// through this connection's permission bridge, so they end with it.
 	return func() {
 		turns.CloseChildApprovals()
 		works.Close()
+		statuses.Close()
 	}
 }
 

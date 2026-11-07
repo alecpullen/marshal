@@ -63,8 +63,8 @@ new client.
 
 ## Where the code is today
 
-- **The interface** has 110 methods. 35 send an ACP method that exists,
-  and 72 are carried by one of the 64 ACP methods that are new in P3
+- **The interface** has 110 methods. 39 send an ACP method that exists,
+  and 68 are carried by one of the 60 ACP methods that are new in P3
   ("Methods P3 adds", below). Three have no ACP method at all.
 - **The adapter is most of the logic.** `inproc` converts runtime values
   to wire values and applies the policy the TUI used to apply. That
@@ -77,7 +77,7 @@ new client.
   (`NewServer`, `:119`). It reads each inbound frame with a 1 MiB cap
   (`:312`). Handlers run on their own goroutines (`handlerWG`), and nothing
   orders a response after the notifications its handler caused. There is
-  no request cancellation: no `$/cancelRequest` or equivalent. 71 methods
+  no request cancellation: no `$/cancelRequest` or equivalent. 75 methods
   are registered (`host.go`), plus the `session/cancel` notification.
 - **What the agent pushes today:**
   - the ACP chunk kinds (`agent_message_chunk`, `agent_thought_chunk`,
@@ -1040,3 +1040,99 @@ file, so it stays synchronous and R10 is unchanged.
   `server.go` are untouched by this plan.
 - **Left for plan 3b:** the first ACP handlers that call the service, and each
   ACP session's service built with `ServiceDeps`.
+
+### Plan 3b — status
+
+The first ACP handlers that call the client seam's service, the status the
+agent pushes, and the client's mirror of it. Nothing a user sees changed: the
+TUI still runs on `inproc`, in process, until plan 8.
+
+- **Each ACP session's service** is the session manager's. `(*SessionManager).
+  Service(id)` resolves a session's runtime as `Get` does and builds
+  `service.New(rt.ServiceDeps(context.Background()))` on first use, keyed by the
+  runtime pointer, under a mutex of its own. It refuses an unknown session, a
+  runtime with no `State`, and a runtime that is closing (its `closeOnce` entry
+  already exists, read under `closeMu`; the lock order is services, then
+  `closeMu`, and `closeRuntimeOnce` never holds `closeMu` while taking the
+  services mutex). `closeRuntimeOnce` releases the runtime's service inside its
+  `once.Do`, before `m.close`, so a session's service never outlives the
+  runtime whose state it reads; a build that races a close is refused or
+  released, never leaked.
+- **`(*service.Session).Release`** is the new export: it is `close` — the
+  session marked closed, its subscriptions cancelled, `Changed` closed — and it
+  leaves the state to the runtime that owns it. Releasing twice does nothing.
+- **`internal/acp/status.go`** holds the connection's `StatusManager`: one
+  `session/status` and three notice handlers over `Lookup` (the session
+  manager's `Service`), `Notify` (the connection's sink) and `Marshal` (the
+  connection's capability record). A missing `sessionId` is invalid params and
+  an unknown session is `unknown session: <id>`; the notice handlers return the
+  service's error unchanged, so its code travels as error data.
+- **The forwarder polls, one per session per connection.** It starts on the
+  first `session/status` from a marshal client, registers its fence before its
+  goroutine starts, and wakes every `statusInterval` (50 ms) and on its fence.
+  Each pass resolves the session through `Lookup` (so a runtime replaced on load
+  or resume is followed), reads `Status()`, encodes it, and sends a
+  `session_status` update only when the encoding differs from the last one it
+  sent. Most status fields (usage, activity, the notice) change without a broker
+  event, so polling is what keeps the mirror current; it never reads the
+  service's `Changed`, which has one buffer and a second reader would steal.
+  When the session goes it answers a pending fence, then stops and drops the
+  fence. `Close` cancels every forwarder and makes later starts do nothing; the
+  connection's cleanup calls it.
+- **The first value arrives as an update, before the response.** `session/status`
+  starts the forwarder before it returns, and `responseBarrier` — now fencing
+  turns, works, watches, then statuses — asks it, so the forwarder writes the
+  current status before the response is written. The response still carries the
+  status for clients without the capability. No revision number is needed:
+  every update for a session on a connection comes from that one goroutine, in
+  order.
+- **`registerInitialize`** is `registerHandlers`' own inline `initialize`
+  handler, moved out unchanged so a test can serve the real handshake.
+- **`internal/acpclient/rpc/session.go`** adds `Host.Attach` and `Session`:
+  `Attach` registers the session before it sends `session/status`, so an update
+  that arrives during the call is applied (and the result, which the agent
+  computed first, is then ignored); attaching twice sends nothing. `Dial` builds
+  the host first and installs its own `Handlers`: notifications go to the host's
+  router (which applies `session_status` to the attached session it names and
+  drops one for a session that is not attached) and then to the caller's
+  `Notify` unchanged, while agent requests reach the caller's `Request` as
+  before. `Status` reads the mirror without I/O; applying an update replaces it
+  and fires `Changed` (buffer of one). One goroutine waits on the connection's
+  `Done` and closes every attached session's `Changed`.
+- **The conformance harness** (`internal/acp/conformance_test.go`) opens one
+  `seam` two ways: the service itself, and the client over a pipe (`rpc.Dial`
+  plus `Host.Attach` to a `StatusManager` built over `service.New`). Four cases
+  moved into it from the service's tests — "a fresh state", "the status mirrors
+  the state", "the notice calls change the banner" and "the runtime's notice
+  reaches the status" — and run as `arm/case`, eight subtests. Both arms agree,
+  so no value needed a wire or service change. `Changed`, a closed session and a
+  swap stay service-only (decision 7).
+- **The budget.** `TestNoticeCallBudget` drives 30 `SetNotice` calls that
+  alternate between two notices over the 4a large session (2,000 calls, 1,201
+  nodes, a 2.5 MB snapshot); each call includes its barrier and its update. The
+  median is **45.7 µs** (39.5 µs on a second run), against R10's 1 ms.
+- **The counts moved** (re-measured on this branch): `acpclient.Methods` still
+  has 110 rows, now 39 of them an existing ACP method (four more: `Status`,
+  `SetNotice`, `ClearNotice`, `DismissNotice`), 68 new in P3 carried by 60
+  distinct new methods, and 3 carrying none; `acp.Server` registers 75 methods
+  (71 plus the four).
+- **Review fixes** (branch review after task 5): `Host.Attach` now returns the
+  first call's outcome to a caller that arrives while it is in flight — it
+  waits on the entry's `ready` channel and shares its value and error — where
+  before a second caller got an empty mirror, and a refused attach settles the
+  waiters with its error and leaves no entry, so a later `Attach` retries
+  instead of inheriting it. `closeSessions` unregisters what it closes, so on a
+  dead connection an id that was attached fails its call like one that was not.
+  `service.Session.ClearNotice` refuses a category the wire does not carry
+  (`errNoticeCategory`) rather than reporting a success that dismissed no
+  banner; `""` still means internal, so a notice set without a category can be
+  cleared without one. The forwarder's unused `done` channel is gone. The
+  harness now serves each state under the state's own session id and asserts
+  the service agrees (only the 4a fixture, which has no id, falls back), and a
+  fifth conformance case covers the refused category on both arms.
+- **Left for later plans:** the sheet and `RefreshSheet` (plan 4b, which needs
+  the subscribe-and-release rule for a subagent's stack), `Changed` for the
+  other update kinds (each mirror's own plan), `Host.NewSession` and closing a
+  session over the wire (plan 6b), and host calls that change a session's status
+  (plan 7). An ACP session's `ChangedFiles` stays 0, because nothing over the
+  wire refreshes the sheet cache that counts them.

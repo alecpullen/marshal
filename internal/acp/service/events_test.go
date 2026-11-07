@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -196,4 +197,40 @@ func TestRunEndsWhenItsBrokersClose(t *testing.T) {
 
 	broker.Close()
 	waitClosed(t, sess)
+}
+
+// TestReleaseLeavesTheStateRunning pins Release's contract: it stops the
+// session's event loop and closes Changed, but it never shuts the state down —
+// the runtime that owns the state closes it. A second Release does nothing.
+func TestReleaseLeavesTheStateRunning(t *testing.T) {
+	st := newState(t, "s1")
+	_, sess := New(Deps{State: st})
+
+	sess.Release()
+	waitClosed(t, sess)
+
+	err := sess.SetNotice(context.Background(), acpwire.Notice{
+		Category: acpwire.NoticeInternal,
+		Severity: acpwire.NoticeError,
+		Message:  "after release",
+	})
+	var coded *acpwire.Error
+	if !errors.As(err, &coded) || coded.Code != acpwire.CodeSessionClosed {
+		t.Fatalf("SetNotice after Release = %v, want the session-closed error", err)
+	}
+
+	// The state is still the runtime's: a message added now reaches its
+	// transcript.
+	st.AddMessage(session.RoleSystem, "still alive", session.ContentTypePlain)
+	found := false
+	for _, msg := range st.Messages() {
+		if msg.Content == "still alive" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the state was shut down: a message added after Release is missing")
+	}
+
+	sess.Release() // releasing twice must not panic
 }

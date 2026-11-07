@@ -193,7 +193,7 @@ type Session interface {
 	// blocking: the in-process adapter builds it from the state on each call,
 	// and P3 serves it from a mirror.
 	//
-	// ACP: session/status (new in P3). A session_status update refreshes it.
+	// ACP: session/status (exists). A session_status update refreshes it.
 	Status() acpwire.SessionStatus
 
 	// Changed fires after anything Status or Work returns may have changed. It
@@ -561,18 +561,18 @@ type Session interface {
 	// SetNotice makes notice the session's banner, replacing any other. A zero
 	// SetAt is stamped with the agent's clock.
 	//
-	// ACP: session/notice_set (new in P3). Status carries the current notice.
+	// ACP: session/notice_set (exists). Status carries the current notice.
 	SetNotice(ctx context.Context, notice acpwire.Notice) error
 
 	// ClearNotice removes the banner only when its category is category, so a
 	// success in one subsystem never dismisses another's notice.
 	//
-	// ACP: session/notice_clear (new in P3).
+	// ACP: session/notice_clear (exists).
 	ClearNotice(ctx context.Context, category string) error
 
 	// DismissNotice removes the banner, whatever its category.
 	//
-	// ACP: session/notice_dismiss (new in P3).
+	// ACP: session/notice_dismiss (exists).
 	DismissNotice(ctx context.Context) error
 
 	// Commands lists the session's slash commands in name order, hidden ones

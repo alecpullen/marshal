@@ -700,8 +700,10 @@ conformance suite (V1) before anything switches.
   branch, alone on the machine). With every node's wire form and encoding
   remembered, one flush of the 2,000-call session after a new tool call costs
   4.3ms. The snapshot (0.24ms) and the build (2.54ms) are about two thirds of
-  that: the projection reuses all 1,201 nodes, but the turn tree is rebuilt from
-  the transcript on every call. Making that incremental needs stable identities
+  that: the projection reuses every settled node — only the newly logged call,
+  which is in flight, and its live beat re-project — but the turn tree is
+  rebuilt from the transcript on every call. Making that incremental needs
+  stable identities
   for transcript items, which `session.State` does not give — every
   `Transcript()` call copies every item, so nothing a build walks survives from
   one call to the next. Plan 4b decides R4's cadence with plan 4c's numbers, and
@@ -1095,7 +1097,9 @@ file, so it stays synchronous and R10 is unchanged.
     the no-change median 13.4µs (budget 1ms).
   - `TestStackRoundTripBudget` 26.6ms (budget 50ms) and
     `TestStackPatchApplyBudget` 956µs (budget 2ms): neither got slower, since a
-    first read encodes every node once, as before.
+    first read encodes every node once, as before. That first read now carries
+    its own 50ms budget (33.2ms measured): the memo makes the median warm, so
+    the median alone would let a pathological activation through.
 - **Proof.** `TestFlushedPatchesMatchAFreshProjection` compares what the client
   holds with a fresh `viewmodel.ProjectState` after every flush of a scripted
   turn, so a memo holding a stale encoding cannot hide behind the projector's

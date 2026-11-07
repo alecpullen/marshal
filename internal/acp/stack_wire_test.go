@@ -498,7 +498,6 @@ func medianDuration(runs []time.Duration) time.Duration {
 // BenchmarkStackPatchApply measures applying a ten-node patch through the
 // mirror, decoding included, with each iteration chaining the revision.
 func BenchmarkStackPatchApply(b *testing.B) {
-	withoutMemoCheck(b)
 	st := largeStackSession(b)
 	logLargeStackShape(b, st)
 	a := startStackAgentBench(b, st)
@@ -623,7 +622,6 @@ func BenchmarkWireMemoLargeSession(b *testing.B) {
 // TestStackPatchApplyBudget holds R10's 2ms budget for applying a ten-node
 // patch, decoding included (P3 plan 4a).
 func TestStackPatchApplyBudget(t *testing.T) {
-	withoutMemoCheck(t)
 	if testing.Short() || raceEnabled {
 		t.Skip("timing budget: skipped under -short and with the race detector")
 	}
@@ -655,7 +653,10 @@ func TestStackPatchApplyBudget(t *testing.T) {
 }
 
 // TestStackRoundTripBudget holds R10's 50ms budget for a full session/stack
-// round trip to an applied mirror over the pipe (P3 plan 4a).
+// round trip to an applied mirror over the pipe (P3 plan 4a). The first read
+// activates the projector and encodes every node once, as every read did
+// before the memo (P3 plan 4c), so it is budgeted on its own: the median over
+// the rest would let a pathological first read through on 29 warm samples.
 func TestStackRoundTripBudget(t *testing.T) {
 	withoutMemoCheck(t)
 	if testing.Short() || raceEnabled {
@@ -677,8 +678,12 @@ func TestStackRoundTripBudget(t *testing.T) {
 		durations = append(durations, time.Since(start))
 	}
 	median := medianDuration(durations)
-	t.Logf("round trip: median %v over %d runs (budget 50ms)", median, runs)
+	cold := durations[0]
+	t.Logf("round trip: median %v over %d runs, first read %v (budget 50ms)", median, runs, cold)
 	if median >= 50*time.Millisecond {
 		t.Fatalf("round trip median = %v, budget 50ms (R10): do not loosen it", median)
+	}
+	if cold >= 50*time.Millisecond {
+		t.Fatalf("first read, projector activation and every node's first encode = %v, budget 50ms (R10): the memo must not hide it", cold)
 	}
 }

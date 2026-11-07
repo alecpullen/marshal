@@ -176,6 +176,15 @@ func checkAgainstFresh(got, want acpwire.WireTree) {
 	if reflect.DeepEqual(got, want) {
 		return
 	}
+	if len(got.Nodes) == len(want.Nodes) {
+		// Same nodes, different order: name the index rather than claim the
+		// roots differ, which they need not.
+		for i, w := range got.Nodes {
+			if w.ID != want.Nodes[i].ID {
+				panic(fmt.Sprintf("viewmodel: WireMemo put node %q at index %d, a fresh projection has %q there", w.ID, i, want.Nodes[i].ID))
+			}
+		}
+	}
 	fresh := make(map[string]acpwire.WireNode, len(want.Nodes))
 	for _, w := range want.Nodes {
 		fresh[w.ID] = w

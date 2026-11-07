@@ -413,3 +413,40 @@ func TestTheCheckPanicsOnAStaleEntry(t *testing.T) {
 
 	mustPanicNaming(t, stale, func() { m.ProjectState(st, false, at(1000)) })
 }
+
+// matches reads a node's children in order: the wire form's Children are
+// ordered, so an entry may not be served to a node whose children moved.
+func TestAMemoEntryIsNotReusedForReorderedChildren(t *testing.T) {
+	beat := &Node{
+		ID: NodeID{Kind: KindStep, Key: "step:1"},
+		Children: []*Node{
+			{ID: NodeID{Kind: KindMessage, Key: "msg:1"}},
+			{ID: NodeID{Kind: KindMessage, Key: "msg:2"}},
+		},
+	}
+	e := &memoEntry{key: memoKeyOf(beat, "", "/repo")}
+	if !e.matches(beat, "", "/repo") {
+		t.Fatal("the entry does not match the node it was made from")
+	}
+
+	// Same ID, version and children, in the other order: only the order
+	// comparison can tell this node from the one the entry was made under.
+	swapped := &Node{
+		ID:       beat.ID,
+		Version:  beat.Version,
+		Children: []*Node{beat.Children[1], beat.Children[0]},
+	}
+	if e.matches(swapped, "", "/repo") {
+		t.Fatal("the entry matched a node whose children are in another order")
+	}
+}
+
+// The check names an ordering difference as one, rather than claiming the
+// roots differ when only the nodes' order does.
+func TestTheCheckNamesAnOrderingDifference(t *testing.T) {
+	a := acpwire.WireNode{ID: "a"}
+	b := acpwire.WireNode{ID: "b"}
+	got := acpwire.WireTree{Nodes: []acpwire.WireNode{b, a}}
+	want := acpwire.WireTree{Nodes: []acpwire.WireNode{a, b}}
+	mustPanicNaming(t, `put node "b" at index 0`, func() { checkAgainstFresh(got, want) })
+}

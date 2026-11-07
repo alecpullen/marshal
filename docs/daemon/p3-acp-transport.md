@@ -19,7 +19,9 @@ plan 7b ran ([plan 1](plans/2026-11-05-p3-1-client-core-plan.md),
 P2 plans 8a and 8b ran ([plan 3a](plans/2026-11-06-p3-3a-ordering-plan.md)).
 Plans 2 and 6a were written once P2 had closed, to run alongside each
 other ([plan 2](plans/2026-11-07-p3-2-layering-plan.md),
-[plan 6a](plans/2026-11-07-p3-6a-async-calls-plan.md)). The rest are
+[plan 6a](plans/2026-11-07-p3-6a-async-calls-plan.md)), and plans 3b and
+4c once those two had merged ([plan 3b](plans/2026-11-07-p3-3b-status-plan.md),
+[plan 4c](plans/2026-11-07-p3-4c-projection-memo-plan.md)). The rest are
 written one or two at a time, as what they depend on lands.
 
 Decided with the user (2026-11-05):
@@ -135,14 +137,16 @@ marked new.
 
 - `session/status` — `Session.Status`, refreshed by a `session_status`
   update.
-- `session/sheet` — `Session.Sheet`, `Session.RefreshSheet`.
 - `session/notice_set` — `Session.SetNotice`.
 - `session/notice_clear` — `Session.ClearNotice`.
 - `session/notice_dismiss` — `Session.DismissNotice`.
 
-### Plan 4b — the transcript read
+### Plan 4b — the transcript read and the sheet
 
 - `session/callers` — `Session.Callers`.
+- `session/sheet` — `Session.Sheet`, `Session.RefreshSheet`. Plan 3b
+  moved it here: a subagent's sheet needs the subscribe-and-release rule
+  plan 4b gives a subagent's stack.
 
 ### Plan 5 — agent requests
 
@@ -336,7 +340,9 @@ asynchronous call (R6).
     server runs a response barrier between the handler and the response,
     and the barrier fences that session's forwarders. A call naming no
     session flushes nothing: no host call causes a session update today.
-    Plan 3b revisits this when `session_status` exists.
+    Plan 3b found that this still holds with `session_status`: no host
+    call changes a session's status yet. Plan 7's config calls are the
+    first that can, and plan 7 decides how they flush.
   - Each goroutine that forwards a session's events as updates (the
     turn's forwarder, the idle stack loop, the work and watch forwarders)
     serves a fence: it handles the events buffered in its channel when
@@ -367,6 +373,15 @@ asynchronous call (R6).
   | `Commands` | `session/command_list` (exists, with P2's dispatch fields) | `commands_changed` (new), sent when the registry changes |
   | `Sheet` | `session/sheet` (new) | the result of each `RefreshSheet`, and `sheet` (new) |
 
+- **How the status arrives (plan 3b).** `Host.Attach` binds a session
+  the agent already holds by sending `session/status`. For a marshal
+  client that starts the session's status forwarder on the connection.
+  The barrier fences it last, so it sends the current status before the
+  response, and then sends it again whenever it differs, checking every
+  50ms. One goroutine sends every status update for the session, so they
+  arrive in order and need no revision. The response carries the status
+  for other clients; a marshal client uses it only when no update came
+  first. The sheet's row is plan 4b's.
 - **Host reads** (`ProviderTemplates`, `SharedFilesystem`) are fetched at
   dial time. `SharedFilesystem` is true for the pipe.
 
@@ -591,19 +606,32 @@ conformance suite (V1) before anything switches.
      and a fence on each forwarder. It needs only the server and the
      forwarders, which exist and which no P2 plan changes. Proved over the
      pipe with slowed updates, and measured against R10.
-   - **3b. Status**, after layering. `session/status`, `session_status`,
-     `Changed`, and the notice calls, with `session_status` added to the
-     barrier. The conformance harness starts here: one test table runs
-     against both `inproc` and the client.
+   - **3b. Status** ([plan](plans/2026-11-07-p3-3b-status-plan.md)),
+     after layering, alongside plan 4c. Each ACP session's service, built
+     with `ServiceDeps`; `session/status`, `session_status` and its
+     forwarder, added to the barrier; the notice calls; and `rpc.Session`
+     with `Attach`, the status mirror and `Changed`. The conformance
+     harness starts here: one table of status cases runs against the
+     service (which `inproc` aliases) and the client. The sheet moved to
+     plan 4b.
 4. **Transcript**, in two plans:
    - **4a. The stack over the wire** ([plan](plans/2026-11-05-p3-4a-stack-wire-plan.md)),
      alongside P2's last plans. The stack patch types in `acpwire`, the
      marshal flush interval, `session/stack_unsubscribe`, and the client's
      stack mirror, proved against the real projector over the pipe and
      measured against R10 on a 2,000-call session.
-   - **4b. The transcript read**, after plan 3. The session type's
-     `Stack`, `StackNode` and `Callers`, when the TUI releases a
-     subagent, and the `busy` decision against the goldens (R4).
+   - **4b. The transcript read and the sheet**, after plans 3 and 4c.
+     The session type's `Stack`, `StackNode` and `Callers`; the sheet
+     (`Sheet` and `RefreshSheet`), whose subagent reads share the stack's
+     subscribe-and-release rule; when the TUI releases a subagent; the
+     `busy` decision against the goldens (R4); and R4's cadence, decided
+     with plan 4c's numbers.
+   - **4c. The projection's cost** ([plan](plans/2026-11-07-p3-4c-projection-memo-plan.md)),
+     alongside plan 3b. A memo of each node's wire form and encoding, so
+     a projection after a change re-projects and re-encodes only the
+     nodes that changed, in the agent's projector and in the service's
+     `Stack`. `Build` stays whole: making it incremental needs stable
+     transcript identities from `session.State`.
 5. **Requests.** The `request_permission` extensions,
    `request_secret`, `request_settled`, the `Pending` mirror and the
    answer calls.

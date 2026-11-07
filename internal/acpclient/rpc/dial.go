@@ -25,6 +25,9 @@ type Host struct {
 	conn   *Conn
 	agent  acpwire.AgentInfo
 	shared bool
+	// stacks mirrors the transcripts this connection has read. Every session
+	// reads through it, and routeNotify feeds it.
+	stacks *Stacks
 
 	mu       sync.Mutex
 	sessions map[string]*Session
@@ -33,7 +36,11 @@ type Host struct {
 // Dial starts a connection over t, runs initialize, and returns the host. On
 // any failure it closes the connection.
 func Dial(ctx context.Context, t Transport, opts DialOptions) (*Host, error) {
-	host := &Host{shared: opts.SharedFilesystem, sessions: make(map[string]*Session)}
+	host := &Host{
+		shared:   opts.SharedFilesystem,
+		sessions: make(map[string]*Session),
+		stacks:   NewStacks(),
+	}
 
 	// The connection's handlers are the host's own: notifications pass through
 	// its router before the caller sees them, and agent requests go to the
@@ -48,6 +55,10 @@ func Dial(ctx context.Context, t Transport, opts DialOptions) (*Host, error) {
 		Request: opts.Handlers.Request,
 	})
 	host.conn = conn
+	// The mirror fetches through this connection, and every change it applies
+	// reaches the attached session's Changed as well as its own.
+	host.stacks.Bind(conn)
+	host.stacks.OnChange(host.tapSession)
 	// One goroutine ends every attached session's Changed when the connection
 	// does.
 	go func() {

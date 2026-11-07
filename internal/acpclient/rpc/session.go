@@ -12,14 +12,20 @@ import (
 // the agent pushes, and calls that send their ACP methods. Each P3 group plan
 // adds its methods.
 type Session struct {
-	id   string
-	conn *Conn
+	id     string
+	conn   *Conn
+	stacks *Stacks
 
 	mu     sync.Mutex
 	status acpwire.SessionStatus
 	// updated says an update arrived, so Attach's result, which the agent
 	// computed before sending it, is stale.
 	updated bool
+	// busy is the turn flag last sent to the agent, and busySent says one was.
+	busy     bool
+	busySent bool
+	// sheets mirrors one sheet per subagent ID the session has read.
+	sheets map[int64]*sheetEntry
 	// closed says the connection ended, so changed is closed and nothing
 	// may be sent on it.
 	closed  bool
@@ -49,8 +55,10 @@ func (h *Host) Attach(ctx context.Context, sessionID string) (*Session, error) {
 	session := &Session{
 		id:      sessionID,
 		conn:    h.conn,
+		stacks:  h.stacks,
 		changed: make(chan struct{}, 1),
 		ready:   make(chan struct{}),
+		sheets:  make(map[int64]*sheetEntry),
 	}
 	h.sessions[sessionID] = session
 	h.mu.Unlock()
@@ -182,12 +190,16 @@ func (s *Session) closeLocked() {
 	close(s.changed)
 }
 
-// routeNotify applies a session_status update to the attached session it
+// routeNotify hands every session/update to the host's stack mirror, then
+// applies a session_status update or a sheet update to the attached session it
 // names and drops one for a session that is not attached. It runs on the read
 // goroutine, before the caller's Notify sees the frame.
 func (h *Host) routeNotify(method string, params json.RawMessage) {
 	if method != acpwire.MethodSessionUpdate {
 		return
+	}
+	if h.stacks != nil {
+		h.stacks.Notify(method, params)
 	}
 	var update acpwire.SessionUpdate
 	if err := json.Unmarshal(params, &update); err != nil {
@@ -196,21 +208,52 @@ func (h *Host) routeNotify(method string, params json.RawMessage) {
 	var kind struct {
 		Kind string `json:"kind"`
 	}
-	if err := json.Unmarshal(update.Update, &kind); err != nil || kind.Kind != acpwire.UpdateSessionStatus {
-		return
-	}
-	var status acpwire.StatusUpdate
-	if err := json.Unmarshal(update.Update, &status); err != nil {
+	if err := json.Unmarshal(update.Update, &kind); err != nil {
 		return
 	}
 
+	switch kind.Kind {
+	case acpwire.UpdateSessionStatus:
+		var status acpwire.StatusUpdate
+		if err := json.Unmarshal(update.Update, &status); err != nil {
+			return
+		}
+		session := h.session(update.SessionID)
+		if session == nil {
+			return
+		}
+		session.apply(status.Status)
+	case acpwire.UpdateSheet:
+		var sheet acpwire.SheetUpdate
+		if err := json.Unmarshal(update.Update, &sheet); err != nil {
+			return
+		}
+		session := h.session(update.SessionID)
+		if session == nil {
+			return
+		}
+		session.applySheet(sheet)
+	}
+}
+
+// session returns the attached session with id, or nil.
+func (h *Host) session(id string) *Session {
 	h.mu.Lock()
-	session := h.sessions[update.SessionID]
-	h.mu.Unlock()
+	defer h.mu.Unlock()
+	return h.sessions[id]
+}
+
+// tapSession taps the attached session's Changed after a change the stack
+// mirror applied, as apply does: under the session's mutex, and never after the
+// close. It is the mirror's OnChange.
+func (h *Host) tapSession(sessionID string) {
+	session := h.session(sessionID)
 	if session == nil {
 		return
 	}
-	session.apply(status.Status)
+	session.mu.Lock()
+	session.signalLocked()
+	session.mu.Unlock()
 }
 
 // closeSessions closes every attached session's Changed, once the connection

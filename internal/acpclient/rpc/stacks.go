@@ -49,6 +49,8 @@ type Stacks struct {
 	conn    *Conn
 	entries map[stackKey]*stackEntry
 	changed map[string]chan struct{}
+	// onChange, when set, runs beside every change's own Changed signal.
+	onChange func(sessionID string)
 }
 
 // NewStacks returns an empty mirror. Bind it before the first read.
@@ -63,6 +65,14 @@ func NewStacks() *Stacks {
 func (s *Stacks) Bind(c *Conn) {
 	s.mu.Lock()
 	s.conn = c
+	s.mu.Unlock()
+}
+
+// OnChange sets a function the mirror calls, with the session's ID, after
+// every change it applies to that session's stacks, beside its own Changed.
+func (s *Stacks) OnChange(f func(sessionID string)) {
+	s.mu.Lock()
+	s.onChange = f
 	s.mu.Unlock()
 }
 
@@ -218,14 +228,19 @@ func (s *Stacks) changedLocked(sessionID string) chan struct{} {
 	return ch
 }
 
-// signal taps a session's Changed channel without blocking.
+// signal taps a session's Changed channel without blocking, then hands the
+// change to OnChange's function, if one is set.
 func (s *Stacks) signal(sessionID string) {
 	s.mu.Lock()
 	ch := s.changedLocked(sessionID)
+	onChange := s.onChange
 	s.mu.Unlock()
 	select {
 	case ch <- struct{}{}:
 	default:
+	}
+	if onChange != nil {
+		onChange(sessionID)
 	}
 }
 

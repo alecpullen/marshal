@@ -314,6 +314,52 @@ func TestWireMemoNeverReusesLiveOrUnversionedNodes(t *testing.T) {
 	}
 }
 
+// A beat projected while it was live is not reused once it settles: the wire
+// form carries Live, and no version covers it, so a settled beat would keep
+// the live flag (found by the TUI's live region, P3 plan 4c).
+func TestWireMemoDoesNotReuseAnEntryCapturedWhileLive(t *testing.T) {
+	st, clk := memoTestState(t)
+	clk.next()
+	st.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	step := st.BeginStep(session.Actor{})
+	clk.next()
+	st.LogToolCall(registry.AuditEvent{
+		ToolName: "shell.run", StepID: step, ToolCallID: "c1",
+		Args: json.RawMessage(`{"command":"go build ./..."}`), ResultSummary: "ok",
+	})
+	clk.next()
+	st.AddNarration(step, "building")
+
+	m := &WireMemo{}
+	now := at(1000)
+	busy := checkMemo(t, m, st, true, now)
+	beatID := ""
+	for _, n := range busy.Tree.Nodes {
+		if n.Kind != acpwire.KindStep {
+			continue
+		}
+		if !n.Live {
+			t.Fatalf("the open beat %q is not live; the fixture needs a live one", n.ID)
+		}
+		beatID = n.ID
+		break
+	}
+	if beatID == "" {
+		t.Fatal("the projection has no beat node")
+	}
+
+	// The turn stops with the state untouched: only the beat's Live moves,
+	// and no version covers it.
+	idle := checkMemo(t, m, st, false, now)
+	was, is := nodeByID(t, busy.Tree, beatID), nodeByID(t, idle.Tree, beatID)
+	if was.Version != is.Version || was.Version == "" {
+		t.Fatalf("the beat's version moved from %q to %q; the fixture needs an unchanged one", was.Version, is.Version)
+	}
+	if is.Live {
+		t.Fatalf("beat %q stayed live once the turn stopped", beatID)
+	}
+}
+
 // The band is not the memo's, and an unknown ID has no entry.
 func TestEncodedReportsUnknownIDs(t *testing.T) {
 	st, clk := memoTestState(t)

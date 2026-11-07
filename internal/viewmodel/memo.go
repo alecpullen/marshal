@@ -21,8 +21,11 @@ var CheckWireMemo atomic.Bool
 // projected to, so a projection after a change re-projects only the nodes
 // that changed. A node is reused when it is not live, its Version is not
 // zero, and its Version, Parent, children IDs and the working directory
-// are what they were. Reused values share their slices and pointers with
-// earlier results: callers must not change a returned node.
+// are what they were. An entry made while its node was live is never
+// reused: the wire form carries Live and no version covers it, so a beat
+// that settles with an unchanged version would otherwise keep its live
+// flag. Reused values share their slices and pointers with earlier results:
+// callers must not change a returned node.
 //
 // The zero value is ready. A WireMemo is not safe for concurrent use.
 type WireMemo struct {
@@ -45,9 +48,13 @@ type memoEntry struct {
 
 // memoKey is everything a node's wire form reads. Kind is part of the ID's
 // identity and the payload is covered by Version, so the key names it all.
+// Live is in the key because a node's wire form carries it and no version
+// covers it: an entry made from a live node must not be served to the same
+// node once it settles.
 type memoKey struct {
 	id       NodeID
 	version  uint64
+	live     bool
 	parent   string
 	children []string
 	workdir  string
@@ -60,7 +67,7 @@ func reusable(n *Node) bool { return !n.Live && n.Version != 0 }
 
 // matches reports whether the node's key is the one the entry was made under.
 func (e *memoEntry) matches(n *Node, parent, workdir string) bool {
-	if e.key.id != n.ID || e.key.version != n.Version || e.key.parent != parent || e.key.workdir != workdir {
+	if e.key.id != n.ID || e.key.version != n.Version || e.key.live != n.Live || e.key.parent != parent || e.key.workdir != workdir {
 		return false
 	}
 	if len(e.key.children) != len(n.Children) {
@@ -76,7 +83,7 @@ func (e *memoEntry) matches(n *Node, parent, workdir string) bool {
 
 // memoKeyOf is the key n projects under.
 func memoKeyOf(n *Node, parent, workdir string) memoKey {
-	k := memoKey{id: n.ID, version: n.Version, parent: parent, workdir: workdir}
+	k := memoKey{id: n.ID, version: n.Version, live: n.Live, parent: parent, workdir: workdir}
 	if len(n.Children) > 0 {
 		k.children = make([]string, len(n.Children))
 		for i, c := range n.Children {

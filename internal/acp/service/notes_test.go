@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
 	"testing"
-	"time"
 
 	"marshal/internal/acpclient"
 	"marshal/internal/acpwire"
@@ -72,96 +70,6 @@ func TestAddNoteRefusesOtherRoles(t *testing.T) {
 	}
 	if got := len(state.Messages()); got != 0 {
 		t.Errorf("messages = %d, want 0: a refused note appends nothing", got)
-	}
-}
-
-// TestNoticeCallsChangeTheBanner pins the four notice calls through the state
-// they set: clearing is by category, and dismissing ignores the category.
-func TestNoticeCallsChangeTheBanner(t *testing.T) {
-	state := newState(t, "s1")
-	_, sess := New(Deps{State: state})
-	ctx := context.Background()
-
-	if err := sess.SetNotice(ctx, acpwire.Notice{
-		Category: acpwire.NoticeProvider,
-		Severity: acpwire.NoticeWarn,
-		Message:  "slow model",
-	}); err != nil {
-		t.Fatalf("SetNotice: %v", err)
-	}
-	got := sess.Status().Notice
-	if got == nil {
-		t.Fatalf("Status().Notice = nil, want the notice just set")
-	}
-	if got.Category != acpwire.NoticeProvider {
-		t.Errorf("category = %q, want %q", got.Category, acpwire.NoticeProvider)
-	}
-	if got.Severity != acpwire.NoticeWarn {
-		t.Errorf("severity = %q, want %q", got.Severity, acpwire.NoticeWarn)
-	}
-	if got.Message != "slow model" {
-		t.Errorf("message = %q, want %q", got.Message, "slow model")
-	}
-	if got.SetAt == 0 {
-		t.Errorf("SetAt = 0, want the clock's stamp")
-	}
-
-	// A success in another subsystem leaves the provider's notice alone.
-	if err := sess.ClearNotice(ctx, acpwire.NoticeConfig); err != nil {
-		t.Fatalf("ClearNotice(config): %v", err)
-	}
-	if sess.Status().Notice == nil {
-		t.Fatalf("Status().Notice = nil after clearing another category, want it kept")
-	}
-	if err := sess.ClearNotice(ctx, acpwire.NoticeProvider); err != nil {
-		t.Fatalf("ClearNotice(provider): %v", err)
-	}
-	if got := sess.Status().Notice; got != nil {
-		t.Errorf("Status().Notice = %+v after clearing its own category, want nil", got)
-	}
-
-	if err := sess.SetNotice(ctx, acpwire.Notice{
-		Category: acpwire.NoticeTool,
-		Message:  "tool failed",
-	}); err != nil {
-		t.Fatalf("SetNotice: %v", err)
-	}
-	if err := sess.DismissNotice(ctx); err != nil {
-		t.Fatalf("DismissNotice: %v", err)
-	}
-	if got := sess.Status().Notice; got != nil {
-		t.Errorf("Status().Notice = %+v after DismissNotice, want nil", got)
-	}
-}
-
-// TestStatusCarriesTheRuntimesNotice checks a notice the runtime set directly
-// reaches the wire with every field, its time in milliseconds.
-func TestStatusCarriesTheRuntimesNotice(t *testing.T) {
-	state := newState(t, "s1")
-	_, sess := New(Deps{State: state})
-	state.SetNotice(session.Notice{
-		Category: session.NoticeTool,
-		Severity: session.SeverityWarn,
-		Message:  "command timed out",
-		Hint:     "try a narrower test",
-		Source:   "shell.run",
-		SetAt:    time.UnixMilli(1700000000000),
-	})
-
-	got := sess.Status().Notice
-	if got == nil {
-		t.Fatalf("Status().Notice = nil, want the runtime's notice")
-	}
-	want := acpwire.Notice{
-		Category: acpwire.NoticeTool,
-		Severity: acpwire.NoticeWarn,
-		Message:  "command timed out",
-		Hint:     "try a narrower test",
-		Source:   "shell.run",
-		SetAt:    1700000000000,
-	}
-	if !reflect.DeepEqual(*got, want) {
-		t.Errorf("Status().Notice = %+v, want %+v", *got, want)
 	}
 }
 

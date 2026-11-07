@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/acp/service"
 	"marshal/internal/agent"
 	"marshal/internal/app"
 	"marshal/internal/app/config"
@@ -1781,5 +1782,144 @@ test = "fixture-test-cmd"
 	}
 	if got := len(auth.opened()); got != 1 {
 		t.Fatalf("resolver OpenStore calls = %d, want exactly the explicit one", got)
+	}
+}
+
+// serviceState returns a state with the session ID the service tests use.
+func serviceState(t *testing.T, id string) *session.State {
+	t.Helper()
+	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: id})
+}
+
+// installRuntime publishes rt under id without going through a lifecycle call.
+func installRuntime(m *SessionManager, id string, rt *app.Runtime) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sessions[id] = rt
+}
+
+// TestServiceIsBuiltOncePerRuntime pins that a session's service is built on
+// first use and reused: two calls over one runtime answer with one session,
+// whose ID is the state's.
+func TestServiceIsBuiltOncePerRuntime(t *testing.T) {
+	var idSeq atomic.Int64
+	m := NewSessionManager(SessionManagerConfig{StartRuntime: fakeRuntimeStart(&idSeq, nil)})
+	m.SetTurnCanceller(noopCancel())
+	installRuntime(m, "s1", &app.Runtime{State: serviceState(t, "s1")})
+
+	first, ok := m.Service("s1")
+	if !ok {
+		t.Fatal("Service(s1) reported false for a published runtime")
+	}
+	if first.ID() != "s1" {
+		t.Fatalf("Service(s1).ID() = %q, want s1", first.ID())
+	}
+	second, ok := m.Service("s1")
+	if !ok || second != first {
+		t.Fatalf("Service(s1) built %p then %p, want one session per runtime", first, second)
+	}
+}
+
+// TestServiceIsReleasedBeforeTheRuntimeCloses pins the teardown order: the
+// session's service is released first, so its Changed is already closed when
+// the runtime's closer runs.
+func TestServiceIsReleasedBeforeTheRuntimeCloses(t *testing.T) {
+	st := serviceState(t, "s1")
+	rt := &app.Runtime{State: st}
+
+	var sess *service.Session
+	var atClose atomic.Bool
+	m := NewSessionManager(SessionManagerConfig{
+		StartRuntime: fakeStartFixed(rt),
+		CloseRuntime: func(ctx context.Context, closed *app.Runtime) error {
+			atClose.Store(true)
+			if sess == nil {
+				t.Error("CloseRuntime ran before Service built the service")
+				return nil
+			}
+			select {
+			case _, ok := <-sess.Changed():
+				if ok {
+					t.Error("the service's Changed carried a signal during close, want closed")
+				}
+			default:
+				t.Error("the service was not released before the runtime closed")
+			}
+			return nil
+		},
+	})
+	m.SetTurnCanceller(noopCancel())
+	installRuntime(m, "s1", rt)
+
+	built, ok := m.Service("s1")
+	if !ok {
+		t.Fatal("Service(s1) reported false")
+	}
+	sess = built
+
+	if err := m.Close(context.Background(), "s1"); err != nil {
+		t.Fatalf("Close(s1): %v", err)
+	}
+	if !atClose.Load() {
+		t.Fatal("the runtime was never closed")
+	}
+	select {
+	case _, ok := <-sess.Changed():
+		if ok {
+			t.Fatal("the service's Changed carried a signal after close, want closed")
+		}
+	default:
+		t.Fatal("the service's Changed is still open after the runtime closed")
+	}
+}
+
+// TestAReplacedRuntimeGetsAFreshService pins that replacing a session's runtime
+// (on load or resume) releases the old service and builds a new one.
+func TestAReplacedRuntimeGetsAFreshService(t *testing.T) {
+	var idSeq atomic.Int64
+	m := NewSessionManager(SessionManagerConfig{
+		StartRuntime: fakeRuntimeStart(&idSeq, nil),
+		CloseRuntime: noopClose(),
+	})
+	installRuntime(m, "s1", &app.Runtime{State: serviceState(t, "s1")})
+
+	first, ok := m.Service("s1")
+	if !ok {
+		t.Fatal("Service(s1) reported false for the first runtime")
+	}
+
+	next := &app.Runtime{State: serviceState(t, "s1")}
+	m.publishReplacement(context.Background(), "s1", next)
+
+	second, ok := m.Service("s1")
+	if !ok {
+		t.Fatal("Service(s1) reported false for the replaced runtime")
+	}
+	if second == first {
+		t.Fatal("the replaced runtime answered with the old runtime's service")
+	}
+	select {
+	case _, ok := <-first.Changed():
+		if ok {
+			t.Fatal("the old service's Changed carried a signal, want closed")
+		}
+	default:
+		t.Fatal("the old runtime's service was not released by the replacement")
+	}
+}
+
+// TestServiceRefusesUnknownAndStatelessRuntimes pins both refusals: an id the
+// manager does not hold, and a runtime literal with no state.
+func TestServiceRefusesUnknownAndStatelessRuntimes(t *testing.T) {
+	var idSeq atomic.Int64
+	m := NewSessionManager(SessionManagerConfig{StartRuntime: fakeRuntimeStart(&idSeq, nil)})
+
+	if _, ok := m.Service("nope"); ok {
+		t.Fatal("Service reported true for an unknown session")
+	}
+
+	installRuntime(m, "bare", &app.Runtime{})
+	if sess, ok := m.Service("bare"); ok {
+		t.Fatalf("Service built %p over a runtime with no state", sess)
 	}
 }

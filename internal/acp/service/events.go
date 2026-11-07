@@ -221,6 +221,14 @@ func (s *Session) close() {
 	s.closeSignal()
 }
 
+// Release marks the session closed and releases its event subscriptions and
+// Changed, leaving the state to the runtime that owns it. The ACP host
+// releases a session's service before it closes the runtime. Releasing twice
+// does nothing.
+func (s *Session) Release() {
+	s.close()
+}
+
 // absorbReceipt keeps r unless the stored receipt for its request ID has a
 // version at least as high.
 func (s *Session) absorbReceipt(r session.SteeringReceipt) {

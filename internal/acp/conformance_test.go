@@ -69,10 +69,14 @@ func openPipeSeamTB(tb testing.TB, d service.Deps) seam {
 	_, served := service.New(d)
 	// A state built without a persisted session ID — the 4a fixture's — has no
 	// ID setter, so it is served under the fixture ID the stack tests use.
-	// Every other state is served under its own.
+	// Every other state is served under its own, and the two must agree: a
+	// case that attached an id the agent never had would pass for the wrong
+	// reason.
 	sessionID := served.ID()
 	if sessionID == "" {
 		sessionID = stackWireSession
+	} else if want := d.State.SessionID(); sessionID != want {
+		tb.Fatalf("the seam serves %q but the state's session ID is %q", sessionID, want)
 	}
 
 	client, agent := rpc.Pipe()
@@ -145,6 +149,7 @@ func TestStatusConformance(t *testing.T) {
 		{name: "a fresh state", run: statusOfAFreshState},
 		{name: "the status mirrors the state", run: statusMirrorsTheState},
 		{name: "the notice calls change the banner", run: noticeCallsChangeTheBanner},
+		{name: "a notice category that matches nothing is refused", run: aNoticeCategoryThatMatchesNothingIsRefused},
 		{name: "the runtime's notice reaches the status", run: statusCarriesTheRuntimesNotice},
 	}
 	for _, arm := range seamArms() {
@@ -443,6 +448,35 @@ func noticeCallsChangeTheBanner(t *testing.T, open func(t *testing.T, d service.
 	}
 	if got := sess.Status().Notice; got != nil {
 		t.Errorf("Status().Notice = %+v after DismissNotice, want nil", got)
+	}
+}
+
+// aNoticeCategoryThatMatchesNothingIsRefused pins that clearing by a category
+// the wire does not carry is an error, not a silent success: the banner is
+// kept, and the caller learns the call dismissed nothing.
+func aNoticeCategoryThatMatchesNothingIsRefused(t *testing.T, open func(t *testing.T, d service.Deps) seam) {
+	state := seamState(t, "s1")
+	sess := open(t, service.Deps{State: state})
+	ctx := context.Background()
+
+	if err := sess.SetNotice(ctx, acpwire.Notice{
+		Category: acpwire.NoticeProvider,
+		Severity: acpwire.NoticeError,
+		Message:  "boom",
+	}); err != nil {
+		t.Fatalf("SetNotice: %v", err)
+	}
+	if err := sess.ClearNotice(ctx, "Provider "); err == nil {
+		t.Fatalf("ClearNotice(%q) succeeded, want an error: it matches no banner", "Provider ")
+	}
+	if got := sess.Status().Notice; got == nil {
+		t.Fatalf("Status().Notice = nil after a refused clear, want the provider's banner kept")
+	}
+	if err := sess.ClearNotice(ctx, acpwire.NoticeProvider); err != nil {
+		t.Fatalf("ClearNotice(provider): %v", err)
+	}
+	if got := sess.Status().Notice; got != nil {
+		t.Fatalf("Status().Notice = %+v after clearing the provider's, want nil", got)
 	}
 }
 

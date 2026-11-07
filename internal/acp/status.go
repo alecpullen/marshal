@@ -56,7 +56,6 @@ type statusEnvelope struct {
 // statusForwarder tracks one session's status forwarder goroutine.
 type statusForwarder struct {
 	cancel context.CancelFunc
-	done   chan struct{}
 	fence  *fence
 }
 
@@ -204,7 +203,7 @@ func (m *StatusManager) ensureForwarder(sessionID string) {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	f := &statusForwarder{cancel: cancel, done: make(chan struct{}), fence: newFence()}
+	f := &statusForwarder{cancel: cancel, fence: newFence()}
 	m.forwarders[sessionID] = f
 	m.fences.add(sessionID, f.fence)
 	m.mu.Unlock()
@@ -218,7 +217,6 @@ func (m *StatusManager) ensureForwarder(sessionID string) {
 // without a broker event, so polling is what keeps the mirror current. It
 // stops when the connection closes or the session goes away.
 func (m *StatusManager) runForwarder(sessionID string, f *statusForwarder, ctx context.Context) {
-	defer close(f.done)
 	defer func() {
 		m.mu.Lock()
 		delete(m.forwarders, sessionID)

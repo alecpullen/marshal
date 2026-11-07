@@ -24,37 +24,81 @@ type Session struct {
 	// may be sent on it.
 	closed  bool
 	changed chan struct{}
+
+	// ready is closed once Attach's call has settled, and err is its outcome,
+	// so a caller that arrives while the call is in flight waits for it
+	// instead of returning an empty mirror.
+	ready chan struct{}
+	err   error
 }
 
 // Attach binds a session the agent already holds. It sends session/status,
 // which subscribes this connection to the session's status, and returns once
 // the mirror holds a value. Attaching a session that is already attached
-// returns the same Session and sends nothing.
+// returns the same Session and sends nothing; a caller that arrives while the
+// first call is still in flight waits for it and gets its outcome, so it never
+// sees a mirror the agent has not filled yet, nor a session the agent refused.
 func (h *Host) Attach(ctx context.Context, sessionID string) (*Session, error) {
 	h.mu.Lock()
 	if session, ok := h.sessions[sessionID]; ok {
 		h.mu.Unlock()
-		return session, nil
+		return session.await(ctx)
 	}
 	// The session is registered before the call goes out, so an update that
 	// arrives while the call waits is applied instead of dropped.
-	session := &Session{id: sessionID, conn: h.conn, changed: make(chan struct{}, 1)}
+	session := &Session{
+		id:      sessionID,
+		conn:    h.conn,
+		changed: make(chan struct{}, 1),
+		ready:   make(chan struct{}),
+	}
 	h.sessions[sessionID] = session
 	h.mu.Unlock()
 
 	var status acpwire.SessionStatus
 	params := acpwire.StatusParams{SessionID: sessionID}
 	if err := h.conn.Call(ctx, acpwire.MethodStatus, params, &status); err != nil {
+		// The entry goes even when an update arrived first: a later Attach
+		// retries and re-subscribes, where keeping the entry would answer
+		// every later caller with this error for good.
 		h.mu.Lock()
 		if h.sessions[sessionID] == session {
 			delete(h.sessions, sessionID)
 		}
 		h.mu.Unlock()
+		session.settle(err)
 		return nil, err
 	}
 
 	session.install(status)
+	session.settle(nil)
 	return session, nil
+}
+
+// await waits for the Attach that registered the session to settle and
+// returns its outcome, so a second caller shares the first one's value and
+// error rather than reading a mirror no call has filled.
+func (s *Session) await(ctx context.Context) (*Session, error) {
+	select {
+	case <-s.ready:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	s.mu.Lock()
+	err := s.err
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// settle records Attach's outcome and releases every caller waiting on it.
+func (s *Session) settle(err error) {
+	s.mu.Lock()
+	s.err = err
+	s.mu.Unlock()
+	close(s.ready)
 }
 
 // ID is the agent's session ID.
@@ -170,12 +214,14 @@ func (h *Host) routeNotify(method string, params json.RawMessage) {
 }
 
 // closeSessions closes every attached session's Changed, once the connection
-// has ended.
+// has ended, and unregisters them: on a dead connection every id then fails
+// its call, rather than a known one returning a closed session.
 func (h *Host) closeSessions() {
 	h.mu.Lock()
 	sessions := make([]*Session, 0, len(h.sessions))
-	for _, session := range h.sessions {
+	for id, session := range h.sessions {
 		sessions = append(sessions, session)
+		delete(h.sessions, id)
 	}
 	h.mu.Unlock()
 

@@ -352,6 +352,109 @@ func TestAttachingTwiceSendsOneCall(t *testing.T) {
 	}
 }
 
+// TestAConcurrentAttachWaitsForTheFirst pins Attach's contract for a second
+// caller: it gets the first caller's value, not a mirror the agent has not
+// filled yet.
+func TestAConcurrentAttachWaitsForTheFirst(t *testing.T) {
+	host, a := dialScripted(t, DialOptions{})
+
+	first := startAttach(host, "s1")
+	req := a.next(t)
+
+	// The second caller arrives while the first call is still in flight.
+	second := startAttach(host, "s1")
+	select {
+	case res := <-second:
+		t.Fatalf("the second Attach returned %+v before the first settled", res)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	a.answer(t, req, acpwire.SessionStatus{WorkingDir: "B"})
+
+	res := awaitAttach(t, first)
+	if res.err != nil {
+		t.Fatalf("the first Attach: %v", res.err)
+	}
+	other := awaitAttach(t, second)
+	if other.err != nil {
+		t.Fatalf("the second Attach: %v", other.err)
+	}
+	if other.session != res.session {
+		t.Fatal("the second Attach returned a different Session")
+	}
+	if got := other.session.Status().WorkingDir; got != "B" {
+		t.Fatalf("the second Attach's Status().WorkingDir = %q, want B", got)
+	}
+}
+
+// TestAFailedAttachReportsItsErrorToAConcurrentCaller pins that a refusal is
+// shared rather than hidden: the waiting caller gets the error, and a later
+// Attach retries instead of inheriting it.
+func TestAFailedAttachReportsItsErrorToAConcurrentCaller(t *testing.T) {
+	host, a := dialScripted(t, DialOptions{})
+
+	first := startAttach(host, "missing")
+	req := a.next(t)
+	second := startAttach(host, "missing")
+	select {
+	case res := <-second:
+		t.Fatalf("the second Attach returned %+v before the first settled", res)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	a.send(t, codedErrorFrame(t, string(req.ID), acpwire.Error{
+		Code:    acpwire.CodeSessionClosed,
+		Message: "unknown session",
+	}))
+
+	res := awaitAttach(t, first)
+	if !acpclient.IsCode(res.err, acpwire.CodeSessionClosed) {
+		t.Fatalf("the first Attach error = %v, want code %q", res.err, acpwire.CodeSessionClosed)
+	}
+	other := awaitAttach(t, second)
+	if !acpclient.IsCode(other.err, acpwire.CodeSessionClosed) {
+		t.Fatalf("the second Attach error = %v, want code %q", other.err, acpwire.CodeSessionClosed)
+	}
+	if other.session != nil {
+		t.Fatalf("the second Attach returned a session alongside its error")
+	}
+
+	// The entry is gone, so a later Attach retries: the agent sees a second
+	// session/status for the same id.
+	retry := startAttach(host, "missing")
+	req = a.next(t)
+	if got := string(req.Method); got != acpwire.MethodStatus {
+		t.Fatalf("the retry sent %q, want %q", got, acpwire.MethodStatus)
+	}
+	a.answer(t, req, acpwire.SessionStatus{WorkingDir: "B"})
+	if res := awaitAttach(t, retry); res.err != nil {
+		t.Fatalf("the retried Attach: %v", res.err)
+	}
+}
+
+// TestAttachAfterTheConnectionEndedFails pins a dead connection's uniform
+// behavior: an id that was attached fails like one that was not, instead of
+// returning a closed session as if the attach had succeeded.
+func TestAttachAfterTheConnectionEndedFails(t *testing.T) {
+	host, a := dialScripted(t, DialOptions{})
+	session := attachScripted(t, host, a, "s1", acpwire.SessionStatus{WorkingDir: "B"})
+
+	if err := host.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// Changed closes after the attached session is unregistered.
+	select {
+	case <-session.Changed():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Changed did not close when the connection ended")
+	}
+
+	got, err := host.Attach(context.Background(), "s1")
+	if err == nil {
+		t.Fatalf("Attach after the connection ended returned %v, want an error", got)
+	}
+}
+
 func TestChangedClosesWhenTheConnectionEnds(t *testing.T) {
 	host, a := dialScripted(t, DialOptions{})
 	session := attachScripted(t, host, a, "s1", acpwire.SessionStatus{WorkingDir: "B"})

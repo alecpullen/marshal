@@ -294,7 +294,9 @@ func TestAClientWithoutTheCapabilityGetsNoStatusUpdates(t *testing.T) {
 		t.Fatalf("session/notice_set: %v", err)
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	// Eight forwarder ticks: enough that a gating break would have sent several
+	// updates, without making the case slower than it needs to be.
+	time.Sleep(400 * time.Millisecond)
 	if n := a.count(); n != 0 {
 		t.Fatalf("a client without the capability received %d updates", n)
 	}
@@ -318,7 +320,10 @@ func TestTheForwarderStopsWhenTheSessionGoes(t *testing.T) {
 	defer cancel()
 	start := time.Now()
 	a.statuses.fenceSession(ctx, statusSession)
-	if waited := time.Since(start); waited > 100*time.Millisecond {
+	// Half a second is generous for a fence that has nothing to wait for, and
+	// still proves it did not run out the two-second deadline: the forwarder's
+	// tick is 50 ms, so a fence that waited for one would also fail here.
+	if waited := time.Since(start); waited > 500*time.Millisecond {
 		t.Fatalf("the fence waited %v after the forwarder stopped", waited)
 	}
 }

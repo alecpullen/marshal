@@ -1116,6 +1116,20 @@ TUI still runs on `inproc`, in process, until plan 8.
   `SetNotice`, `ClearNotice`, `DismissNotice`), 68 new in P3 carried by 60
   distinct new methods, and 3 carrying none; `acp.Server` registers 75 methods
   (71 plus the four).
+- **Review fixes** (branch review after task 5): `Host.Attach` now returns the
+  first call's outcome to a caller that arrives while it is in flight — it
+  waits on the entry's `ready` channel and shares its value and error — where
+  before a second caller got an empty mirror, and a refused attach settles the
+  waiters with its error and leaves no entry, so a later `Attach` retries
+  instead of inheriting it. `closeSessions` unregisters what it closes, so on a
+  dead connection an id that was attached fails its call like one that was not.
+  `service.Session.ClearNotice` refuses a category the wire does not carry
+  (`errNoticeCategory`) rather than reporting a success that dismissed no
+  banner; `""` still means internal, so a notice set without a category can be
+  cleared without one. The forwarder's unused `done` channel is gone. The
+  harness now serves each state under the state's own session id and asserts
+  the service agrees (only the 4a fixture, which has no id, falls back), and a
+  fifth conformance case covers the refused category on both arms.
 - **Left for later plans:** the sheet and `RefreshSheet` (plan 4b, which needs
   the subscribe-and-release rule for a subagent's stack), `Changed` for the
   other update kinds (each mirror's own plan), `Host.NewSession` and closing a

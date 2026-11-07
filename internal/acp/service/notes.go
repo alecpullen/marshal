@@ -16,6 +16,11 @@ import (
 // either the agent's system message or text the user typed.
 var errNoteRole = errors.New("inproc: a note's role must be system or user")
 
+// errNoticeCategory is what ClearNotice returns for a category the wire does
+// not carry: clearing by a category that matches no banner would report a
+// success that dismissed nothing.
+var errNoticeCategory = errors.New("inproc: a notice's category must be provider, config, tool or internal")
+
 // AddNote appends note to the transcript without starting a turn, and does not
 // fire Changed (decision 2).
 func (s *Session) AddNote(ctx context.Context, note acpwire.Note) error {
@@ -50,12 +55,17 @@ func (s *Session) SetNotice(ctx context.Context, notice acpwire.Notice) error {
 }
 
 // ClearNotice removes the banner only when its category is category, and does
-// not fire Changed (decision 2).
+// not fire Changed (decision 2). A category the wire does not carry is an
+// error rather than a success: it matches no banner.
 func (s *Session) ClearNotice(ctx context.Context, category string) error {
 	if s.closed.Load() {
 		return errSessionClosed
 	}
-	s.state.ClearNotice(noticeCategory(category))
+	mapped, ok := noticeCategory(category)
+	if !ok {
+		return errNoticeCategory
+	}
+	s.state.ClearNotice(mapped)
 	return nil
 }
 
@@ -92,8 +102,10 @@ func noticeState(n acpwire.Notice) session.Notice {
 	if n.Severity == acpwire.NoticeWarn {
 		severity = session.SeverityWarn
 	}
+	// Setting keeps an unknown category as internal; only clearing refuses one.
+	category, _ := noticeCategory(n.Category)
 	return session.Notice{
-		Category: noticeCategory(n.Category),
+		Category: category,
 		Severity: severity,
 		Message:  n.Message,
 		Hint:     n.Hint,
@@ -102,18 +114,22 @@ func noticeState(n acpwire.Notice) session.Notice {
 	}
 }
 
-// noticeCategory maps a wire category onto the session's. Anything unknown is
-// internal.
-func noticeCategory(category string) session.NoticeCategory {
+// noticeCategory maps a wire category onto the session's. An empty category is
+// internal, so a notice set without one can be cleared without one; anything
+// else unknown is internal too but reports ok false, because clearing by a
+// category that matches no banner is an error.
+func noticeCategory(category string) (session.NoticeCategory, bool) {
 	switch category {
+	case "", acpwire.NoticeInternal:
+		return session.NoticeInternal, true
 	case acpwire.NoticeProvider:
-		return session.NoticeProvider
+		return session.NoticeProvider, true
 	case acpwire.NoticeConfig:
-		return session.NoticeConfig
+		return session.NoticeConfig, true
 	case acpwire.NoticeTool:
-		return session.NoticeTool
+		return session.NoticeTool, true
 	default:
-		return session.NoticeInternal
+		return session.NoticeInternal, false
 	}
 }
 

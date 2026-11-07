@@ -225,14 +225,14 @@ type Session interface {
 	// Sheet does not block: its database and git values are the ones the
 	// last RefreshSheet read.
 	//
-	// ACP: session/sheet (new in P3). P3 serves it from a mirror that
-	// RefreshSheet fills.
+	// ACP: session/sheet (exists). P3 serves it from a mirror that a sheet
+	// update keeps current.
 	Sheet(subagentID int64) acpwire.SessionSheet
 
 	// RefreshSheet re-reads the sheet values req names from the database and
 	// git, then fires Changed. It blocks on those reads.
 	//
-	// ACP: session/sheet (new in P3), sent with the refresh flags.
+	// ACP: session/sheet (exists), sent with the refresh flags.
 	RefreshSheet(ctx context.Context, req acpwire.SheetRefresh) error
 
 	// Stack is the transcript the TUI renders (C6): the session's own when
@@ -267,7 +267,7 @@ type Session interface {
 	// no language server is wired or ready, and when the node is gone. A
 	// caller asks once per row and keeps the answer, a nil one included.
 	//
-	// ACP: session/callers (new in P3).
+	// ACP: session/callers (exists).
 	Callers(ctx context.Context, nodeID string) ([]string, error)
 
 	// Pending lists every open request a person can answer (C7): the

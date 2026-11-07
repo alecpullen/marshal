@@ -296,24 +296,22 @@ func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyF
 	return tm
 }
 
-// responseBarrier is the host's barrier: it fences the turn manager's, then the
-// work manager's, then the watch manager's, then the status manager's
-// forwarders for the session, so a marshal client's call returns only after the
-// updates it caused are written (P3 R2). A fence whose forwarder has gone
-// answers at once.
-func responseBarrier(turns *TurnManager, works *WorkManagerACP, watches *WatchManagerACP, statuses *StatusManager) func(ctx context.Context, sessionID string) {
+// sessionFencer is a manager whose forwarders serve the response barrier
+// (P3 R2).
+type sessionFencer interface {
+	fenceSession(ctx context.Context, sessionID string)
+}
+
+// responseBarrier is the host's barrier: it fences each manager's forwarders
+// for the session, in the order given, so a marshal client's call returns only
+// after the updates it caused are written (P3 R2). It skips a nil manager, and
+// a fence whose forwarder has gone answers at once.
+func responseBarrier(fencers ...sessionFencer) func(ctx context.Context, sessionID string) {
 	return func(ctx context.Context, sessionID string) {
-		if turns != nil {
-			turns.fenceSession(ctx, sessionID)
-		}
-		if works != nil {
-			works.fenceSession(ctx, sessionID)
-		}
-		if watches != nil {
-			watches.fenceSession(ctx, sessionID)
-		}
-		if statuses != nil {
-			statuses.fenceSession(ctx, sessionID)
+		for _, f := range fencers {
+			if f != nil {
+				f.fenceSession(ctx, sessionID)
+			}
 		}
 	}
 }
@@ -356,10 +354,6 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 	srv.Handle("session/set_effort", turns.SetEffort)
 	srv.Handle("session/steer", turns.Steer)
 	srv.Handle("session/steering_status", turns.SteeringStatus)
-	srv.Handle("session/stack", turns.Stack)
-	srv.Handle("session/stack_unsubscribe", turns.StackUnsubscribe)
-	srv.Handle("session/stack_node", turns.StackNode)
-	srv.Handle("session/stack_busy", turns.StackBusy)
 	srv.Handle("session/last_request", turns.LastRequest)
 	srv.Handle("session/step_diffs", turns.StepDiffs)
 	srv.Handle("session/run", turns.Run)
@@ -404,14 +398,25 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 
 	// A marshal client's session call returns only after the updates it caused
 	// are written, so a read after the call sees its effect (P3 R2). Install
-	// it once all four managers whose forwarders carry those updates exist.
+	// it once every manager whose forwarders carry those updates exists.
 	statuses := NewStatusManager(StatusManagerConfig{
 		Lookup:  manager.Service,
 		Notify:  h.sink.Notify,
 		Marshal: srv.marshalClient,
 	})
 	registerStatus(srv, statuses)
-	srv.SetResponseBarrier(responseBarrier(turns, works, watches, statuses))
+
+	// The transcript's handlers move together: the stack reads, the sheet a
+	// connection subscribes to, and the callers lookup. A sheet update keeps a
+	// marshal client's subscription current, so the sheet manager holds this
+	// connection's forwarders.
+	sheets := NewSheetManager(SheetManagerConfig{
+		Lookup:  manager.Service,
+		Notify:  h.sink.Notify,
+		Marshal: srv.marshalClient,
+	})
+	registerTranscript(srv, turns, sheets, manager.Service)
+	srv.SetResponseBarrier(responseBarrier(turns, works, watches, statuses, sheets))
 
 	home, _ := os.UserHomeDir()
 	cfgMgr := NewConfigManager(home, nil, nil)
@@ -565,13 +570,15 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 
 	// The work controller is per-connection: its forwarders (Task 22) push
 	// work_state updates to this connection's sink and must stop with it.
-	// The status manager's forwarders push session_status the same way.
+	// The status manager's forwarders push session_status the same way, and
+	// the sheet manager's push sheet updates.
 	// The child approval collectors are per-connection too: they answer
 	// through this connection's permission bridge, so they end with it.
 	return func() {
 		turns.CloseChildApprovals()
 		works.Close()
 		statuses.Close()
+		sheets.Close()
 	}
 }
 

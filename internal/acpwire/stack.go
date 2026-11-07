@@ -284,9 +284,19 @@ type StackSnapshot struct {
 const (
 	MethodStack            = "session/stack"
 	MethodStackUnsubscribe = "session/stack_unsubscribe"
+	MethodStackBusy        = "session/stack_busy"
+	MethodStackNode        = "session/stack_node"
+	MethodCallers          = "session/callers"
 	MethodSessionUpdate    = "session/update"
 	UpdateStackPatch       = "stack_patch"
 )
+
+// StackBusyParams is session/stack_busy's params: the busy flag every stack
+// of the session is projected with for this connection from now on (P3 R4).
+type StackBusyParams struct {
+	SessionID string `json:"sessionId"`
+	Busy      bool   `json:"busy"`
+}
 
 // StackParams is session/stack's and session/stack_unsubscribe's params.
 // SubagentID 0 names the main transcript.

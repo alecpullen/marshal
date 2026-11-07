@@ -2,6 +2,7 @@ package acpwire
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -61,5 +62,52 @@ func TestSessionSheetJSON(t *testing.T) {
 				t.Errorf("%s JSON:\n got: %s\nwant: %s", tc.name, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestSheetUpdateRoundTrips pins the sheet update: the subscription's ID
+// travels beside the sheet, which carries the reading subagent's own ID.
+func TestSheetUpdateRoundTrips(t *testing.T) {
+	update := SheetUpdate{
+		Kind:       UpdateSheet,
+		SubagentID: 7,
+		Sheet: SessionSheet{
+			Tools:   []SheetTool{{Name: "file.read", Calls: 2}},
+			Files:   []SheetFile{{Path: "a.go", Reads: 1}},
+			Context: SheetContext{MaxTokens: 128000, Sections: []SheetContextSection{{Title: "system"}}},
+		},
+	}
+	raw, err := json.Marshal(update)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got := update.Kind; got != "sheet" {
+		t.Errorf("Kind = %q, want %q", got, "sheet")
+	}
+	var decoded SheetUpdate
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(decoded, update) {
+		t.Errorf("round trip =\n%+v\nwant\n%+v", decoded, update)
+	}
+}
+
+// TestSheetParamsOmitAnAbsentRefresh pins the refresh pointer: a read that
+// re-reads nothing carries no refresh key at all.
+func TestSheetParamsOmitAnAbsentRefresh(t *testing.T) {
+	without, err := json.Marshal(SheetParams{SessionID: "s1"})
+	if err != nil {
+		t.Fatalf("marshal without refresh: %v", err)
+	}
+	if want := `{"sessionId":"s1"}`; string(without) != want {
+		t.Errorf("SheetParams JSON =\n%s\nwant\n%s", without, want)
+	}
+	with, err := json.Marshal(SheetParams{SessionID: "s1", Refresh: &SheetRefresh{Stats: true}})
+	if err != nil {
+		t.Fatalf("marshal with refresh: %v", err)
+	}
+	if want := `{"sessionId":"s1","refresh":{"stats":true}}`; string(with) != want {
+		t.Errorf("SheetParams JSON =\n%s\nwant\n%s", with, want)
 	}
 }

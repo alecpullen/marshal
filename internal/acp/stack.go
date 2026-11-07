@@ -38,6 +38,10 @@ type stackProjector struct {
 	// sentRoots is the root list of the last patch or snapshot sent, so a
 	// reader can compare against what the client actually holds.
 	sentRoots []string
+	// memo remembers each node's wire form and encoding from the projector's
+	// last projection, so a flush re-projects and re-encodes only the nodes
+	// that changed. It is used and kept under mu, like sent.
+	memo viewmodel.WireMemo
 	// idleCancel stops the idle flusher; set on a session's parent projector.
 	idleCancel context.CancelFunc
 	// final marks a subagent projector flushed after its subagent stopped
@@ -71,13 +75,24 @@ func stackKey(sessionID string, subagentID int64) string {
 	return sessionID + "#" + strconv.FormatInt(subagentID, 10)
 }
 
+// encode is a node's JSON encoding from the projection the memo holds. The
+// memo carries every turn node; the band is not its, so it is encoded here as
+// the wire requires.
+func (p *stackProjector) encode(n acpwire.WireNode) []byte {
+	if data, ok := p.memo.Encoded(n.ID); ok {
+		return data
+	}
+	data, _ := json.Marshal(n)
+	return data
+}
+
 // diff requires p.mu. Unchanged trees leave the revision and sent state alone.
 func (p *stackProjector) diff(tree acpwire.WireTree) (acpwire.StackPatch, bool) {
 	patch := acpwire.StackPatch{Kind: acpwire.UpdateStackPatch}
 	sent := make(map[string][]byte, len(tree.Nodes))
 	order := make([]string, 0, len(tree.Nodes))
 	for _, n := range tree.Nodes {
-		encoded, _ := json.Marshal(n)
+		encoded := p.encode(n)
 		sent[n.ID] = encoded
 		order = append(order, n.ID)
 		if !bytes.Equal(encoded, p.sent[n.ID]) {
@@ -190,7 +205,7 @@ func (m *TurnManager) flushProjectorFor(p *stackProjector, sessionID string, sub
 	if !p.active || (onlyDirty && !p.dirty && !due) {
 		return
 	}
-	proj := viewmodel.ProjectState(st, busy, now)
+	proj := p.memo.ProjectState(st, busy, now)
 	patch, changed := p.diff(proj.Tree)
 	p.dirty = false
 	p.wakeAt = proj.Band.StaleAt
@@ -321,7 +336,7 @@ func (m *TurnManager) stackSnapshot(request StackParams, rt *TurnRuntime, src *s
 	// The band rides along as an extra node. It is not in roots, so a
 	// transcript walk never sees it, but the projector carries it to web
 	// clients like any other node.
-	tree := viewmodel.ProjectState(src, busy, time.Now()).Tree
+	tree := p.memo.ProjectState(src, busy, time.Now()).Tree
 	activated := false
 	if !p.active {
 		activated = true
@@ -331,7 +346,7 @@ func (m *TurnManager) stackSnapshot(request StackParams, rt *TurnRuntime, src *s
 		p.sentOrder = make([]string, 0, len(tree.Nodes))
 		p.rev = 1
 		for _, n := range tree.Nodes {
-			p.sent[n.ID], _ = json.Marshal(n)
+			p.sent[n.ID] = p.encode(n)
 			p.sentOrder = append(p.sentOrder, n.ID)
 		}
 		p.sentRoots = append([]string(nil), tree.Roots...)

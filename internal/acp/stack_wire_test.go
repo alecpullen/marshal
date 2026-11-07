@@ -263,6 +263,83 @@ func TestStackMirrorConvergesThroughATurn(t *testing.T) {
 	sameAsProjector(t, a, 0, st, true)
 }
 
+// freshAndCheck flushes, waits for the patches to land, and compares the mirror
+// node for node with a fresh projection of the state: not with what the
+// projector says it sent, which a stale memo would keep agreeing with.
+func freshAndCheck(t *testing.T, a *stackAgent, st *session.State, busy bool) {
+	t.Helper()
+	a.m.flushStack(stackWireSession, st, busy)
+	settle(t, a.conn)
+	fresh := viewmodel.ProjectState(st, busy, time.Now()).Tree
+	snap := readStack(t, a, 0)
+	byID := make(map[string]acpwire.WireNode, len(fresh.Nodes))
+	for _, n := range fresh.Nodes {
+		byID[n.ID] = n
+	}
+	if len(snap.Nodes) != len(fresh.Nodes) {
+		t.Fatalf("mirror has %d nodes, a fresh projection has %d", len(snap.Nodes), len(fresh.Nodes))
+	}
+	for _, n := range snap.Nodes {
+		if n.ID == acpwire.BandID {
+			continue // the band is not the memo's and its stale age moves
+		}
+		f, ok := byID[n.ID]
+		if !ok {
+			t.Fatalf("mirror holds node %q, which a fresh projection does not", n.ID)
+		}
+		got, err := json.Marshal(n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err := json.Marshal(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("node %q = %s, a fresh projection has %s", n.ID, got, want)
+		}
+	}
+}
+
+// TestFlushedPatchesMatchAFreshProjection walks the same turn as
+// TestStackMirrorConvergesThroughATurn and compares what the client holds with
+// a fresh projection at every step, so a memo that kept a stale encoding
+// cannot hide behind the projector's own record of what it sent.
+func TestFlushedPatchesMatchAFreshProjection(t *testing.T) {
+	st := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	a := startStackAgent(t, st)
+
+	st.AddMessage(session.RoleUser, "first prompt", session.ContentTypePlain)
+	readStack(t, a, 0)
+	freshAndCheck(t, a, st, true)
+
+	step := st.BeginStep(session.Actor{})
+	freshAndCheck(t, a, st, true)
+
+	for _, call := range []string{"c1", "c2", "c3"} {
+		st.LogToolCall(registry.AuditEvent{
+			ToolName:      "shell.run",
+			StepID:        step,
+			ToolCallID:    call,
+			Args:          json.RawMessage(`{"command":"echo ` + call + `"}`),
+			ResultContent: "ok",
+		})
+	}
+	freshAndCheck(t, a, st, true)
+
+	st.AddNarration(step, "three calls done")
+	freshAndCheck(t, a, st, true)
+
+	st.EndStep(step)
+	freshAndCheck(t, a, st, false)
+
+	st.AddMessageFinal(session.RoleAssistant, "all done", session.ContentTypePlain)
+	freshAndCheck(t, a, st, false)
+
+	st.AddMessage(session.RoleUser, "second prompt", session.ContentTypePlain)
+	freshAndCheck(t, a, st, true)
+}
+
 func TestStackMirrorRecoversFromALostPatch(t *testing.T) {
 	st := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
 	a := startStackAgent(t, st)
@@ -275,7 +352,7 @@ func TestStackMirrorRecoversFromALostPatch(t *testing.T) {
 	st.AddMessage(session.RoleUser, "silent", session.ContentTypePlain)
 	p := a.m.stackFor(stackKey(stackWireSession, 0))
 	p.mu.Lock()
-	if _, changed := p.diff(viewmodel.ProjectState(st, false, time.Now()).Tree); !changed {
+	if _, changed := p.diff(p.memo.ProjectState(st, false, time.Now()).Tree); !changed {
 		p.mu.Unlock()
 		t.Fatal("the lost change produced no patch")
 	}
@@ -421,6 +498,7 @@ func medianDuration(runs []time.Duration) time.Duration {
 // BenchmarkStackPatchApply measures applying a ten-node patch through the
 // mirror, decoding included, with each iteration chaining the revision.
 func BenchmarkStackPatchApply(b *testing.B) {
+	withoutMemoCheck(b)
 	st := largeStackSession(b)
 	logLargeStackShape(b, st)
 	a := startStackAgentBench(b, st)
@@ -444,6 +522,7 @@ func BenchmarkStackPatchApply(b *testing.B) {
 // BenchmarkStackRoundTrip measures a fresh mirror's read of the large session,
 // from the request to the installed snapshot, over the pipe.
 func BenchmarkStackRoundTrip(b *testing.B) {
+	withoutMemoCheck(b)
 	st := largeStackSession(b)
 	logLargeStackShape(b, st)
 	a := startStackAgentBench(b, st)
@@ -462,6 +541,7 @@ func BenchmarkStackRoundTrip(b *testing.B) {
 // one new tool call, on the agent alone. It has no budget; it decides whether
 // R4's interval is affordable (plan 4b).
 func BenchmarkStackFlushLargeSession(b *testing.B) {
+	withoutMemoCheck(b)
 	st := largeStackSession(b)
 	logLargeStackShape(b, st)
 	m := NewTurnManager(TurnManagerConfig{
@@ -491,9 +571,59 @@ func BenchmarkStackFlushLargeSession(b *testing.B) {
 	}
 }
 
+// addOneCall adds one tool call to a large session's step with the timer
+// stopped, so a benchmark measures the projection and not the fixture.
+func addOneCall(b *testing.B, st *session.State, step session.StepID, i int) {
+	b.Helper()
+	b.StopTimer()
+	st.LogToolCall(registry.AuditEvent{
+		ToolName:      "shell.run",
+		StepID:        step,
+		ToolCallID:    fmt.Sprintf("bench-%d", i),
+		Args:          json.RawMessage(`{"command":"echo bench"}`),
+		ResultContent: "ok",
+	})
+	b.StartTimer()
+}
+
+// BenchmarkProjectStateLargeSession measures the package-level projection the
+// TUI's in-process Stack made before this plan: every node built and projected
+// afresh on each call (P3 plan 4c).
+func BenchmarkProjectStateLargeSession(b *testing.B) {
+	withoutMemoCheck(b)
+	st := largeStackSession(b)
+	logLargeStackShape(b, st)
+	step := st.BeginStep(session.Actor{})
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		addOneCall(b, st, step, i)
+		_ = viewmodel.ProjectState(st, true, time.Now())
+	}
+}
+
+// BenchmarkWireMemoLargeSession measures the same projection through one memo,
+// warmed by a projection before the timer starts, so the reuse of every
+// unchanged node is what the loop spends nothing on (P3 plan 4c).
+func BenchmarkWireMemoLargeSession(b *testing.B) {
+	withoutMemoCheck(b)
+	st := largeStackSession(b)
+	logLargeStackShape(b, st)
+	var m viewmodel.WireMemo
+	_ = m.ProjectState(st, true, time.Now())
+	step := st.BeginStep(session.Actor{})
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		addOneCall(b, st, step, i)
+		_ = m.ProjectState(st, true, time.Now())
+	}
+}
+
 // TestStackPatchApplyBudget holds R10's 2ms budget for applying a ten-node
 // patch, decoding included (P3 plan 4a).
 func TestStackPatchApplyBudget(t *testing.T) {
+	withoutMemoCheck(t)
 	if testing.Short() || raceEnabled {
 		t.Skip("timing budget: skipped under -short and with the race detector")
 	}
@@ -527,6 +657,7 @@ func TestStackPatchApplyBudget(t *testing.T) {
 // TestStackRoundTripBudget holds R10's 50ms budget for a full session/stack
 // round trip to an applied mirror over the pipe (P3 plan 4a).
 func TestStackRoundTripBudget(t *testing.T) {
+	withoutMemoCheck(t)
 	if testing.Short() || raceEnabled {
 		t.Skip("timing budget: skipped under -short and with the race detector")
 	}

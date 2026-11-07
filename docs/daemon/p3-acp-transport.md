@@ -1332,8 +1332,9 @@ client without the capability nothing changed (R9); the TUI still runs on
   Each pass resolves the session through `Lookup`, reads the state, and sends a
   `pending_requests` update only when the encoding differs from the last one
   sent. Requests open and settle without a broker event this manager sees, so
-  polling is what keeps the mirror current; a pass costs 0.13 µs on the largest
-  fixture. It never sends under its own mutex, and `Close` stops every forwarder.
+  polling is what keeps the mirror current; the plan measured a pass at 0.13 µs
+  on the largest fixture at its base commit (nothing re-measures it here). It
+  never sends under its own mutex, and `Close` stops every forwarder.
 - **`responseBarrier` is variadic now.** A `sessionFencer` interface names the
   one method the barrier calls, and the host passes `turns, works, watches,
   statuses, requests` in that order; a nil is skipped, so plan 3a's and 3b's
@@ -1382,10 +1383,10 @@ client without the capability nothing changed (R9); the TUI still runs on
   prompt's handler, so the person's password was cleared before it was used.
   The transport handler must not touch it.
 - **The budget (R10).** `TestAnswerCallBudget` drives 30 `AnswerApproval` calls
-  over the 4a large session (2,000 calls, 1,201 nodes, a 2,534,633-byte
-  snapshot); each call includes its barrier and its update. The median is
-  **79.5 µs**, against R10's 1 ms. It skips under `-short` and with the race
-  detector.
+  over the 4a large session (2,000 calls, 1,201 nodes, a ~2.5 MB snapshot; the
+  exact byte count moves with the fixture's timestamps); each call includes its
+  barrier and its update. The median is **79.5 µs**, against R10's 1 ms. It
+  skips under `-short` and with the race detector.
 - **The counts moved** (re-measured on this branch): `acpclient.Methods` still
   has 110 rows, now 47 of them an existing ACP method (eight more: `Pending`,
   the five answers, `ReconcileAccess` and `Rollback`), 61 new in P3 carried by

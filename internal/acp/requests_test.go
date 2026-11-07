@@ -3,10 +3,10 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"reflect"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -481,14 +481,20 @@ func TestRequestsRefuseBadParams(t *testing.T) {
 	}
 	for _, method := range methods {
 		err := conn.Call(ctx, method, map[string]any{}, nil)
-		if err == nil || !strings.Contains(err.Error(), "invalid params") {
-			t.Errorf("%s with no sessionId = %v, want invalid params", method, err)
+		if !isRPCError(err, invalidParams) {
+			t.Errorf("%s with no sessionId = %v, want JSON-RPC %d (invalid params)", method, err, invalidParams)
 		}
 		err = conn.Call(ctx, method, map[string]any{"sessionId": "nope"}, nil)
-		if err == nil || !strings.Contains(err.Error(), "unknown session") {
-			t.Errorf("%s for an unknown session = %v, want the unknown-session error", method, err)
+		if !isRPCError(err, serverError) {
+			t.Errorf("%s for an unknown session = %v, want JSON-RPC %d (server error)", method, err, serverError)
 		}
 	}
+}
+
+// isRPCError reports whether err is the connection's *rpc.Error with code.
+func isRPCError(err error, code int) bool {
+	var rerr *rpc.Error
+	return errors.As(err, &rerr) && rerr.Code == code
 }
 
 // TestTheRequestForwarderStopsWhenTheSessionGoes pins that a vanished session

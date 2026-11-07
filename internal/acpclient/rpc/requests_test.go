@@ -105,6 +105,29 @@ func TestPendingFetchesOnItsFirstRead(t *testing.T) {
 	}
 }
 
+// TestAFailedFirstReadAsksAgain pins what a failed first read leaves behind:
+// nothing. The entry goes with the failure, so the read after it asks the
+// agent again instead of answering every later read with that error.
+func TestAFailedFirstReadAsksAgain(t *testing.T) {
+	host, a := dialScripted(t, DialOptions{})
+	session := attachScripted(t, host, a, "s1", acpwire.SessionStatus{WorkingDir: "B"})
+
+	out := readPending(session)
+	req := nextPending(t, a, session)
+	a.send(t, codedErrorFrame(t, string(req.ID), acpwire.Error{
+		Code:    acpwire.CodeBusy,
+		Message: "a turn is running",
+	}))
+	if got := awaitPending(t, out); questionKey(got) != "" {
+		t.Fatalf("a failed read reported question %q, want none", questionKey(got))
+	}
+
+	// The next read is a fresh one: it sends session/pending again.
+	if key := questionKey(firstRead(t, session, a, pendingState("q1"))); key != "q1" {
+		t.Fatalf("the read after the failure = %q, want q1", key)
+	}
+}
+
 // TestPendingInstallsTheUpdateThatPrecedesTheResponse pins the barrier: the
 // agent answers session/pending with the state it had, so an update that
 // reaches the client before the response is newer and must be kept.

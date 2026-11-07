@@ -37,7 +37,7 @@ func TestATurnAsksAMarshalClientNothing(t *testing.T) {
 		ResponseChan: gateCh,
 	}
 
-	perms := &fakePermissionClient{decision: PermissionDecision{Approved: true}}
+	perms := &recordingPermissionClient{decision: PermissionDecision{Approved: true}}
 	questions := &fakeQuestionClient{resp: QuestionResponse{
 		Answers: []session.Answer{{Question: "pick", Answer: "a"}},
 	}}
@@ -84,8 +84,8 @@ func TestATurnAsksAMarshalClientNothing(t *testing.T) {
 		t.Fatalf("the marshal client's skill gate was settled: %v", got)
 	default:
 	}
-	if perms.calls != 0 {
-		t.Fatalf("permission client calls = %d, want 0", perms.calls)
+	if n := perms.count(); n != 0 {
+		t.Fatalf("permission client calls = %d, want 0", n)
 	}
 	if questions.calls != 0 {
 		t.Fatalf("question client calls = %d, want 0", questions.calls)
@@ -116,7 +116,7 @@ func TestATurnStillAsksAClientWithoutTheCapability(t *testing.T) {
 		ResponseChan: gateCh,
 	}
 
-	perms := &fakePermissionClient{decision: PermissionDecision{Approved: true}}
+	perms := &recordingPermissionClient{decision: PermissionDecision{Approved: true}}
 	questions := &fakeQuestionClient{resp: QuestionResponse{
 		Answers: []session.Answer{{Question: "pick", Answer: "a"}},
 	}}
@@ -171,8 +171,8 @@ func TestATurnStillAsksAClientWithoutTheCapability(t *testing.T) {
 	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
 		t.Fatalf("PromptTurn() error = %v", err)
 	}
-	if perms.calls != 2 {
-		t.Fatalf("permission client calls = %d, want 2 (the approval and the skill gate)", perms.calls)
+	if n := perms.count(); n != 2 {
+		t.Fatalf("permission client calls = %d, want 2 (the approval and the skill gate)", n)
 	}
 	if questions.calls != 1 {
 		t.Fatalf("question client calls = %d, want 1", questions.calls)

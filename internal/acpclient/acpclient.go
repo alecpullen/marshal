@@ -273,8 +273,9 @@ type Session interface {
 	// Pending lists every open request a person can answer (C7): the
 	// session's own, and the approvals of its running subagents. Pending does
 	// not block and settles nothing, so it is safe to read while rendering.
-	// Changed does not fire when a request opens or settles: the TUI reads
-	// Pending on every update and tick.
+	// A pending_requests update keeps the mirror current, but Changed does not
+	// fire for every request change on every implementation, so a reader
+	// re-reads Pending on every update and tick rather than relying on it.
 	//
 	// ACP: session/pending (exists). A pending_requests update refreshes it;
 	// the first read subscribes.

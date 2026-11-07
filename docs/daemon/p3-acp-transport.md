@@ -21,7 +21,9 @@ Plans 2 and 6a were written once P2 had closed, to run alongside each
 other ([plan 2](plans/2026-11-07-p3-2-layering-plan.md),
 [plan 6a](plans/2026-11-07-p3-6a-async-calls-plan.md)), and plans 3b and
 4c once those two had merged ([plan 3b](plans/2026-11-07-p3-3b-status-plan.md),
-[plan 4c](plans/2026-11-07-p3-4c-projection-memo-plan.md)). The rest are
+[plan 4c](plans/2026-11-07-p3-4c-projection-memo-plan.md)), and plans 4b
+and 5 once those two had merged ([plan 4b](plans/2026-11-07-p3-4b-transcript-plan.md),
+[plan 5](plans/2026-11-07-p3-5-requests-plan.md)). The rest are
 written one or two at a time, as what they depend on lands.
 
 Decided with the user (2026-11-05):
@@ -48,6 +50,18 @@ Decided with the user (2026-11-05):
   `stack_patch`, which the per-connection `TurnManager` already serves,
   so they run alongside P2 too. The rest of the transcript plan (4b)
   waits for plan 3.
+
+Decided with the user (2026-11-07):
+- **A marshal client's requests are a pushed mirror, and its answers are
+  calls** (R5). This replaces the draft's agent-to-client requests for that
+  client: the TUI needs each answer's outcome (`AnswerAccess` returns a
+  result, and an always answer is followed by a read of the config), which a
+  JSON-RPC response cannot carry back, and an agent request handled on its
+  own goroutine could race the update that settles it. The mirror reuses
+  plan 3b's forwarder and barrier, and P4's bridge passes it through without
+  brokering anything. `session/request_secret` and `request_settled` are
+  dropped; clients without the capability keep today's
+  `session/request_permission` and `session/request_question`.
 
 ## Goal
 
@@ -144,17 +158,27 @@ marked new.
 ### Plan 4b — the transcript read and the sheet
 
 - `session/callers` — `Session.Callers`.
-- `session/sheet` — `Session.Sheet`, `Session.RefreshSheet`. Plan 3b
-  moved it here: a subagent's sheet needs the subscribe-and-release rule
-  plan 4b gives a subagent's stack.
+- `session/sheet` — `Session.Sheet`, `Session.RefreshSheet`, refreshed by
+  a `sheet` update. Plan 3b moved it here: a subagent's sheet needs the
+  subscribe-and-release rule plan 4b gives a subagent's stack.
+
+Plan 4b also adds `session/stack_busy`, which carries no interface method
+of its own: `Session.Stack` sends it when the TUI's busy flag changes
+(R4). `Session.ReleaseSubagent`, new in the interface, sends
+`session/stack_unsubscribe`, which exists.
 
 ### Plan 5 — agent requests
 
-- `session/request_permission` — `Session.Pending`,
-  `Session.AnswerApproval`, `Session.AnswerSkillGate`,
-  `Session.AnswerAccess`.
-- `session/request_question` — `Session.AnswerQuestion`.
-- `session/request_secret` — `Session.AnswerSudo`.
+These replace the draft's `session/request_permission` extension,
+`session/request_secret` and `request_settled` (decided 2026-11-07, R5).
+
+- `session/pending` — `Session.Pending` and `Session.ReconcileAccess`,
+  refreshed by a `pending_requests` update.
+- `session/answer_approval` — `Session.AnswerApproval`.
+- `session/answer_question` — `Session.AnswerQuestion`.
+- `session/answer_skill_gate` — `Session.AnswerSkillGate`.
+- `session/answer_sudo` — `Session.AnswerSudo`.
+- `session/answer_access` — `Session.AnswerAccess`.
 - `session/rollback` — `Session.Rollback`.
 
 ### Plan 6b — turns, runs, the end flow and sessions
@@ -228,8 +252,9 @@ asynchronous call (R6).
 
 ## Out of scope (follow-ups)
 
-- **G1.** The bridge transport, the RPC passthrough, brokering
-  `session/request_secret`, and reattaching to a running turn. P4.
+- **G1.** The bridge transport, the RPC passthrough (which carries the
+  answer calls, `session/answer_sudo` included, R5), and reattaching to a
+  running turn. P4.
 - **G2.** Making every call asynchronous for a remote daemon (R6). P4
   revisits the calls this spec leaves synchronous.
 - **G3.** Resuming a session in place. Resume stays a restart of the
@@ -367,11 +392,11 @@ asynchronous call (R6).
   |---|---|---|
   | `Status` | `session/status` (new) | `session_status` (new): the full value whenever it differs from the last one sent, at most every 50ms, and before any call's response |
   | `Stack` | `session/stack` (exists) | `stack_patch` (exists), at the marshal client's flush interval (R4) |
-  | `Pending` | the requests the agent sends | each request's arrival, its answer, and `request_settled` (new) |
+  | `Pending` | `session/pending` (new) | `pending_requests` (new): the full value whenever it differs from the last one sent, at most every 50ms, and before any call's response (plan 5) |
   | `Work` | `session/work_list`'s live view (exists) | `work_state` (exists) |
   | `ActiveWork` | `session/end_work` (new) | `end_work` (new) |
   | `Commands` | `session/command_list` (exists, with P2's dispatch fields) | `commands_changed` (new), sent when the registry changes |
-  | `Sheet` | `session/sheet` (new) | the result of each `RefreshSheet`, and `sheet` (new) |
+  | `Sheet` | `session/sheet` (new) | `sheet` (new): each sheet the client has read, whenever it differs from the last one sent, at most every 50ms, and before any call's response (plan 4b) |
 
 - **How the status arrives (plan 3b).** `Host.Attach` binds a session
   the agent already holds by sending `session/status`. For a marshal
@@ -381,7 +406,26 @@ asynchronous call (R6).
   50ms. One goroutine sends every status update for the session, so they
   arrive in order and need no revision. The response carries the status
   for other clients; a marshal client uses it only when no update came
-  first. The sheet's row is plan 4b's.
+  first.
+- **How the sheet arrives (plan 4b).** The first read of a sheet (the
+  session's, or a subagent's) sends `session/sheet`, which subscribes the
+  connection to that sheet; `RefreshSheet` sends it with the refresh flags.
+  The session's sheet forwarder checks every subscribed sheet every 50ms,
+  and when the barrier asks, and sends a `sheet` update for each one whose
+  encoding changed. Most of a sheet is computed from the state on every
+  read (the tool and file aggregates, the rules, the budget), so polling is
+  what keeps it current, as for the status. A subagent's sheet is released
+  with its stack (R4).
+- **How the requests arrive (plan 5).** The first read of `Pending` (or
+  of `ReconcileAccess`) sends `session/pending`, which for a marshal client
+  starts the session's request forwarder; later reads come from the
+  mirror, as for the stack and the sheet. Every 50ms, and when the
+  barrier asks, the forwarder settles a typed access request that no
+  longer asks for anything (as the TUI's per-update `ReconcileAccess`
+  did), reads the open requests, and sends them whole as a
+  `pending_requests` update when the encoding changed. The
+  update carries `Pending`'s value and the access request `ReconcileAccess`
+  presents, so both reads come from the mirror (R5).
 - **Host reads** (`ProviderTemplates`, `SharedFilesystem`) are fetched at
   dial time. `SharedFilesystem` is true for the pipe.
 
@@ -405,43 +449,74 @@ asynchronous call (R6).
   200ms and 500ms. Plan 4a also measures the agent's own flush of a
   2,000-call session, since at 50ms its cost decides whether the
   interval is affordable.
-- **`busy` goes.** `Stack(subagentID, busy)` loses the parameter. The
-  agent's rule decides a tree's busy flag: the session's turn, or a
-  subagent's own run. P2 plan 3d recorded that the two rules differ.
-  P3's transcript plan checks every T6 golden against the agent's rule
-  before the parameter goes. If any golden changes, the parameter stays
-  as an optional `session/stack` param carrying the TUI's rule, and the
-  agent's rule serves only the clients that omit it (decided). No golden
-  is updated.
+  - **Decided (plan 4b): 50ms stays.** After plan 4c, one flush of the
+    2,000-call session costs 4.3ms. A streaming turn on that session
+    spends about 9% of one core on the agent's goroutine, and the idle
+    loop projects only when an event marked the stack dirty. The client
+    applies each patch in about 1ms, where in process the TUI spent about
+    4ms of its `Update` goroutine on every refresh.
+- **`busy` stays (plan 4b).** The agent's rule (the session's turn, or a
+  subagent's own run) would change two T6 goldens: the `live` and `tray`
+  scenes set the TUI's busy flag with nothing running
+  (`transcript_golden_test.go`'s `buildLive` and `buildTray`), and an
+  agent reading its own turn would build both trees as idle. So, as
+  decided, the parameter stays:
+  - A new `session/stack_busy` sets the busy flag every stack of that
+    session is projected with for this connection, the subagents'
+    included, as the TUI's rule does, and flushes them before it answers.
+    The agent's rule serves a connection that never sets it.
+  - The client's `Stack(subagentID, busy)` sends `session/stack_busy`
+    when `busy` differs from the flag it last sent, and returns once the
+    patch it caused is applied. So `Stack` blocks only at a flip, twice a
+    turn, for one flush (R10).
 - **Subagents.** The first read of a subagent's stack fetches it
   synchronously and subscribes. Later reads come from the mirror. Leaving
   the drill-in unsubscribes with `session/stack_unsubscribe` (new, plan
   4a), which keeps the agent from projecting trees nobody reads. The main
-  transcript cannot be unsubscribed.
+  transcript cannot be unsubscribed. Plan 4b gives the interface
+  `ReleaseSubagent`, which the TUI calls when it pops a drill-in, and the
+  unsubscribe releases that subagent's sheet with its stack.
+- **Reads need no runner (plan 4b).** `session/stack`, `session/stack_node`
+  and the idle loop resolve a session without requiring its agent runner,
+  so a session whose provider failed to build still shows its transcript,
+  as it does in process. They also project at the state's clock, as the
+  service does. (They still find only the session's own subagents, where
+  the service searches the whole tree: children never dispatch subagents,
+  so no drill-in reaches a grandchild.)
 - `StackNode` and `Callers` are plain calls (`session/stack_node` exists;
   `session/callers` is new).
 
 ### R5. Agent requests
 
-- **Approvals and gates** use `session/request_permission`, extended
-  additively:
-  - `kind` (`approval`, `skill_gate` or `access`), the owner (session or
-    subagent ID, C7) and the choices offered;
-  - a response may carry the TUI's richer choices: once, for the session
-    or always for an approval, and the skill gate's choices.
-
-  A client that sends only approve or deny gets today's behaviour.
-- **Questions** use `session/request_question` (exists).
-- **Sudo** uses `session/request_secret` (new): an agent-to-client
-  request whose response carries the password. Design §6.3 defines it for
-  P4's broker. P3 gives it its shape and its rules: never logged, never
-  in an update.
-- **The mirror's `Pending`** lists the requests the client has received
-  and not yet answered, keyed as C7 keys them. Answering sends the
-  response. A request the agent settles another way (a cancelled turn, a
-  timeout, or in P4 another client's answer) arrives as `request_settled`,
-  and an answer after that returns `CodeRequestSettled`.
-- `ReconcileAccess`, `AnswerAccess` and `Rollback` are calls (new).
+Decided with the user, 2026-11-07 (it replaces the draft's extended
+`session/request_permission`, `session/request_secret` and
+`request_settled`):
+- **A marshal client's open requests are a mirror.** The agent's request
+  forwarder (R3) sends the whole `PendingRequests` value, keyed as C7 keys
+  them, whenever it changes. It reads the service's `Pending`, so every
+  request any part of the session raises reaches the client: the turn's,
+  a subagent's, a pipeline's, a sudo prompt, a typed access request.
+- **Answers are calls:** `session/answer_approval`,
+  `session/answer_question`, `session/answer_skill_gate`,
+  `session/answer_sudo` and `session/answer_access`, each handled by the
+  service's own answer. The response carries the answer's error or the
+  access result, and comes after the update that removes the request
+  (R2), so the next read shows it gone. A key that names nothing open
+  returns `CodeRequestSettled`, which in P4 is what a second viewer's late
+  answer gets.
+- **Sudo.** The prompt is in the open requests, which carry no password.
+  The password travels only in `session/answer_sudo`'s params, and the
+  client zeroes the caller's copy once the call returns, as the in-process
+  handler did. Never logged, never in an update (R8).
+- **`ReconcileAccess` reads the mirror.** The forwarder does what the
+  TUI's per-update call did, settling a satisfied access request before it
+  reads, and the update carries the access request to present.
+- **The turn no longer asks a marshal client.** For a marshal client the
+  turn's forwarder and the child-approval collector do not send
+  `session/request_permission` or `session/request_question`, and do not
+  deny for want of a bridge: the requests are the mirror's to show.
+  Clients without the capability get exactly today's requests (R9).
+- `Rollback` is a call (`session/rollback`, new).
 
 ### R6. Calls on the Update goroutine
 
@@ -495,11 +570,12 @@ asynchronous call (R6).
 - These calls carry a secret:
   - the provider-key write (C10);
   - the probes, whose config may hold a typed key (C3, plan 7a);
-  - the answer to `session/request_secret`.
+  - `session/answer_sudo`'s params (R5).
 - Neither end logs their params or that response, at any level. If frame
   logging is added, it redacts these methods by name.
 - T7 extends to the wire. A sudo password appears in no frame except
-  that response, and in no update, notification or log line.
+  the `session/answer_sudo` request that carries it, and in no update,
+  notification or log line.
 
 ### R9. Compatibility with existing ACP clients
 
@@ -538,7 +614,15 @@ asynchronous call (R6).
     which ignores `MARSHAL_CONFIG_DIR` and `XDG_CONFIG_HOME`, remove a
     skill by name, and load without checking the store. They move onto
     the adapter's logic, which keys a skill by scope and source (P2 plan
-    8b).
+    8b);
+  - `session/stack` and `session/stack_node` refuse a subagent ID that
+    names no child with invalid params, where the service reads an empty
+    stack; the client reads the refusal as the empty snapshot (plan 4b);
+  - `session/stack` builds a session's trees with the agent's busy rule;
+    `session/stack_busy` selects the TUI's (R4, plan 4b);
+  - a marshal client gets no `session/request_permission` or
+    `session/request_question` from a turn or a subagent: its requests
+    are the `pending_requests` mirror (R5, plan 5).
 - `TestACPClientMethodTableMatchesTheServer` (T4) ends P3 with every row
   marked existing.
 
@@ -551,6 +635,13 @@ Measured on the 2,000-call fixture, on the development machine:
 - a synchronous call in `Update` adds under 1ms over the pipe;
 - the time from a key press to the next frame does not grow measurably.
   Reads are local, so only calls can move it.
+
+The 1ms is for a call that changes nothing the agent projects. A call that
+changes the transcript pays one flush of the stack before it answers (4.2ms
+on the 2,000-call session after plan 4c), and R6 makes such a call
+asynchronous when it is frequent (`AddNote`, plan 7). `Stack`'s busy flip
+is the one read that pays it (plan 4b, R4): it happens twice a turn, at a
+moment the transcript changes anyway, and it is measured against 10ms.
 
 A plan that misses a budget stops and reports. It does not loosen the
 budget.
@@ -620,21 +711,26 @@ conformance suite (V1) before anything switches.
      marshal flush interval, `session/stack_unsubscribe`, and the client's
      stack mirror, proved against the real projector over the pipe and
      measured against R10 on a 2,000-call session.
-   - **4b. The transcript read and the sheet**, after plans 3 and 4c.
-     The session type's `Stack`, `StackNode` and `Callers`; the sheet
-     (`Sheet` and `RefreshSheet`), whose subagent reads share the stack's
-     subscribe-and-release rule; when the TUI releases a subagent; the
-     `busy` decision against the goldens (R4); and R4's cadence, decided
-     with plan 4c's numbers.
+   - **4b. The transcript read and the sheet** ([plan](plans/2026-11-07-p3-4b-transcript-plan.md)),
+     after plans 3 and 4c, alongside plan 5. The session type's `Stack`,
+     `StackNode` and `Callers`; the sheet (`Sheet` and `RefreshSheet`),
+     whose subagent reads share the stack's subscribe-and-release rule;
+     `ReleaseSubagent`, which the TUI calls when it pops a drill-in; the
+     `busy` decision against the goldens (it stays, R4); stack reads that
+     need no runner; and R4's cadence, decided with plan 4c's numbers (50ms
+     stays).
    - **4c. The projection's cost** ([plan](plans/2026-11-07-p3-4c-projection-memo-plan.md)),
      alongside plan 3b. A memo of each node's wire form and encoding, so
      a projection after a change re-projects and re-encodes only the
      nodes that changed, in the agent's projector and in the service's
      `Stack`. `Build` stays whole: making it incremental needs stable
      transcript identities from `session.State`.
-5. **Requests.** The `request_permission` extensions,
-   `request_secret`, `request_settled`, the `Pending` mirror and the
-   answer calls.
+5. **Requests** ([plan](plans/2026-11-07-p3-5-requests-plan.md)),
+   alongside plan 4b. `session/pending` and the request forwarder, the
+   `pending_requests` update, the answer calls and `session/rollback`, all
+   over the service's own request logic; the turn and the child collector
+   leave a marshal client's requests to the mirror; and `rpc.Session`'s
+   `Pending` mirror and answer calls (R5, decided 2026-11-07).
 6. **Turns and runs**, in two plans:
    - **6a. The asynchronous calls** ([plan](plans/2026-11-07-p3-6a-async-calls-plan.md)),
      alongside layering. The R6 inventory, and the TUI's conversions of

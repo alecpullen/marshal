@@ -186,8 +186,11 @@ project.
   Existing typed routes stay, and `api.ts` can wrap the passthrough.
 - **Agent to client:** the session SSE stream carries ACP notifications.
   Agent requests stay brokered by the bridge, so every viewer sees them,
-  the first answer wins, and the others see the request settle. The
-  brokered set gains `session/request_secret` (§6.3).
+  the first answer wins, and the others see the request settle. A client
+  that declares the marshal capability gets no agent requests at all: it
+  reads the open requests from a `pending_requests` update, and answers each
+  with a call, so the bridge passes both through and brokers nothing for it
+  (P3 R5, decided 2026-11-07).
 - **Fleet:** the existing REST routes. Their request and response types
   move into one standard-library-only package under `web/bridge/` that
   both the bridge and the Go TUI import, and the TypeScript types are
@@ -297,10 +300,10 @@ re-prompts. The prompt goes to whichever client starts the session.
 
 ### 6.3 Flows that need the user
 
-- **Secret prompt (sudo).** A new brokered request,
-  `session/request_secret`. The answer travels only on the request's
-  response. It is never put on an SSE stream or the replay ring, and never
-  logged. It is allowed over the unix socket and over TLS. In the server
+- **Secret prompt (sudo).** The prompt is listed in the open requests
+  (P3 R5), which carry no secret. The password travels only in the params
+  of the `session/answer_sudo` call that answers it. It is never put on an
+  SSE stream or the replay ring, and never logged. It is allowed over the unix socket and over TLS. In the server
   profile it is the server's sudo.
 - **OAuth loopback logins.** These work in the local profile. In the
   server profile the redirect would land on the server's loopback address,
@@ -335,7 +338,7 @@ state, not corruption.
 | P1 | ProjectHost/Session split and headless indexing (§4.2) — implemented; see the spec's implementation record | Two ACP sessions on one repo in one process share one host, one set of language servers and one watcher. With `indexing.watch = true`, a headless session's edit refreshes its embeddings. Two processes on one tree run one indexer |
 | P2 | TUI client seam with the in-process adapter (§4.5) — implemented (see the spec's implementation record): nine plans, with 2, 3 and 5 split into sub-plans, namely 1, 2a–2c, 3a–3d, 4, 5a–5e, 6, 7a–7d, 8a, 8b and 9 | Done when: the TUI reaches the agent side only through the client interface — it imports no agent-side package, holds no `session.State`, and does no project, config or keychain I/O (enforced by a boundary test) — and the transcript renders from the wire projection (§8 settled). The boundary test's allowlist is empty and `WithLegacyState` is gone |
 | P3 | ACP client transports; embedded mode over the pipe | Embedded mode runs entirely over ACP and the adapter is deleted |
-| P4 | Bridge local profile: user service, unix listener, RPC passthrough, `request_secret`, pinning, environment resolution, OAuth refresh run once, one `marshal acp` child per project for host-process agents | A TUI can quit and reattach to a running turn on the local daemon |
+| P4 | Bridge local profile: user service, unix listener, RPC passthrough (the sudo answer included), pinning, environment resolution, OAuth refresh run once, one `marshal acp` child per project for host-process agents | A TUI can quit and reattach to a running turn on the local daemon |
 | P5 | Fleet screen in the Go TUI, shared types, server-computed views | The fleet loop from `docs/fleet-cli/design.md` §1 works from the Go TUI against local and server profiles |
 
 P0 and P1 are independent of each other and of the later phases, and each

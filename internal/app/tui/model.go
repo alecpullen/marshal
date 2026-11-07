@@ -3739,15 +3739,21 @@ func (m *Model) drillIntoLatestRunningSubagent() bool {
 }
 
 // popDrill pops one level of subagent drill-down, returning false when the
-// viewport was already showing the orchestrator's transcript.
+// viewport was already showing the orchestrator's transcript. Leaving a
+// drill-in releases what the session kept for that subagent: its projection
+// memo in process, and over the wire the stack and the sheet.
 func (m *Model) popDrill() bool {
 	if len(m.viewStack) == 0 {
 		return false
 	}
+	popped := m.viewStack[len(m.viewStack)-1]
 	m.viewStack = m.viewStack[:len(m.viewStack)-1]
 	m.syncTranscriptWidth()
 	m.clearSelection()
 	m.invalidateTranscript()
+	// A failed release leaves only a projection nobody reads, so the error is
+	// not worth surfacing.
+	_ = m.sess.ReleaseSubagent(m.ctx, popped.ID)
 	return true
 }
 

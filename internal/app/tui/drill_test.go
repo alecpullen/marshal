@@ -1,12 +1,14 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpclient"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -83,6 +85,49 @@ func TestDrillIntoAnUnknownSubagentDoesNothing(t *testing.T) {
 	}
 	if len(m.viewStack) != 0 {
 		t.Fatal("drilling into an ID Status does not name must not push the view stack")
+	}
+}
+
+// releaseRecorder is a session whose ReleaseSubagent calls are recorded, as
+// stackRecorder records Stack: every other method is the wrapped session's.
+type releaseRecorder struct {
+	acpclient.Session
+	released []int64
+}
+
+// Unwrap exposes the adapter this recorder wraps, so stateOf reaches the
+// state behind it.
+func (r *releaseRecorder) Unwrap() acpclient.Session { return r.Session }
+
+func (r *releaseRecorder) ReleaseSubagent(ctx context.Context, subagentID int64) error {
+	r.released = append(r.released, subagentID)
+	return r.Session.ReleaseSubagent(ctx, subagentID)
+}
+
+// TestPopDrillReleasesTheSubagent pins that leaving a drill-in tells the
+// session, and that popping with nothing drilled tells it nothing.
+func TestPopDrillReleasesTheSubagent(t *testing.T) {
+	m := newTestModel(t)
+	child := newChildState(t)
+	view := stateOf(m).RegisterSubagent("explore repo", child)
+	rec := &releaseRecorder{Session: m.sess}
+	m.sess = rec
+
+	if m.popDrill() {
+		t.Fatal("popDrill on an empty stack must return false")
+	}
+	if len(rec.released) != 0 {
+		t.Fatalf("released %v with nothing drilled, want none", rec.released)
+	}
+
+	if !m.drillIntoSubagent(view.ID) {
+		t.Fatalf("drillIntoSubagent(%d) = false, want true for the registered child", view.ID)
+	}
+	if !m.popDrill() {
+		t.Fatal("popDrill returned false while drilled")
+	}
+	if len(rec.released) != 1 || rec.released[0] != view.ID {
+		t.Fatalf("released %v, want [%d]", rec.released, view.ID)
 	}
 }
 

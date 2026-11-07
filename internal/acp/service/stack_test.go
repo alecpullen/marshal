@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"reflect"
 	"testing"
 	"time"
@@ -318,5 +319,68 @@ func TestStackReadsTheStatesClock(t *testing.T) {
 	clock = clock.Add(session.TodoStaleAfter + time.Minute)
 	if got := band(); !got.Stale {
 		t.Errorf("band is not stale after TodoStaleAfter plus a minute; want stale")
+	}
+}
+
+// TestReleaseSubagentDropsItsMemo pins that leaving a drill-in forgets the
+// subagent's projection.
+func TestReleaseSubagentDropsItsMemo(t *testing.T) {
+	fixed := time.Unix(1_700_000_000, 0)
+	state := stackState(t, "s1", fixed)
+	child := stackState(t, "child", fixed)
+	child.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	view := state.RegisterSubagent("scout", child)
+
+	_, sess := New(Deps{State: state})
+	sess.Stack(view.ID, false)
+	sess.stackMu.Lock()
+	kept := sess.subMemoID
+	sess.stackMu.Unlock()
+	if kept != view.ID {
+		t.Fatalf("subMemoID = %d, want %d", kept, view.ID)
+	}
+
+	if err := sess.ReleaseSubagent(context.Background(), view.ID); err != nil {
+		t.Fatalf("ReleaseSubagent(%d) = %v, want nil", view.ID, err)
+	}
+	sess.stackMu.Lock()
+	after := sess.subMemoID
+	sess.stackMu.Unlock()
+	if after != 0 {
+		t.Errorf("subMemoID = %d after the release, want 0", after)
+	}
+}
+
+// TestReleaseSubagentOfAnotherChildKeepsTheMemo pins that a release names one
+// subagent: another child's memo survives it.
+func TestReleaseSubagentOfAnotherChildKeepsTheMemo(t *testing.T) {
+	fixed := time.Unix(1_700_000_000, 0)
+	state := stackState(t, "s1", fixed)
+	child := stackState(t, "child", fixed)
+	child.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	view := state.RegisterSubagent("scout", child)
+
+	_, sess := New(Deps{State: state})
+	sess.Stack(view.ID, false)
+
+	if err := sess.ReleaseSubagent(context.Background(), view.ID+1); err != nil {
+		t.Fatalf("ReleaseSubagent = %v, want nil", err)
+	}
+	sess.stackMu.Lock()
+	after := sess.subMemoID
+	sess.stackMu.Unlock()
+	if after != view.ID {
+		t.Errorf("subMemoID = %d after releasing another child, want %d", after, view.ID)
+	}
+}
+
+// TestReleaseSubagentOnAClosedSessionFails pins the closed-session contract
+// the other methods share.
+func TestReleaseSubagentOnAClosedSessionFails(t *testing.T) {
+	state := stackState(t, "s1", time.Unix(1_700_000_000, 0))
+	_, sess := New(Deps{State: state})
+	sess.close()
+	if err := sess.ReleaseSubagent(context.Background(), 1); err != errSessionClosed {
+		t.Errorf("ReleaseSubagent on a closed session = %v, want errSessionClosed", err)
 	}
 }

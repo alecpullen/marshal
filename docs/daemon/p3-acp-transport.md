@@ -77,9 +77,9 @@ new client.
 
 ## Where the code is today
 
-- **The interface** has 110 methods. 39 send an ACP method that exists,
-  and 68 are carried by one of the 60 ACP methods that are new in P3
-  ("Methods P3 adds", below). Three have no ACP method at all.
+- **The interface** has 110 methods. 47 send an ACP method that exists,
+  and 61 are carried by one of the 56 ACP methods that are new in P3
+  ("Methods P3 adds", below). Two have no ACP method at all.
 - **The adapter is most of the logic.** `inproc` converts runtime values
   to wire values and applies the policy the TUI used to apply. That
   covers the run-error classification, row-action IDs, the sheet's cache,
@@ -91,7 +91,7 @@ new client.
   (`NewServer`, `:119`). It reads each inbound frame with a 1 MiB cap
   (`:312`). Handlers run on their own goroutines (`handlerWG`), and nothing
   orders a response after the notifications its handler caused. There is
-  no request cancellation: no `$/cancelRequest` or equivalent. 75 methods
+  no request cancellation: no `$/cancelRequest` or equivalent. 82 methods
   are registered (`host.go`), plus the `session/cancel` notification.
 - **What the agent pushes today:**
   - the ACP chunk kinds (`agent_message_chunk`, `agent_thought_chunk`,
@@ -101,12 +101,13 @@ new client.
     idle;
   - `work_state`, `steering_state` and `steering_receipt`.
 
-  Nothing pushes status, pending requests, the end flow's active work or
-  the sheet.
-- **What the agent asks today:** `session/request_permission` (approve or
-  deny, tagged for skill gates and mode access) and
-  `session/request_question`. Sudo has no ACP form, and an approval cannot
-  say "for the session" or "always".
+  A marshal client also receives `session_status` and `pending_requests`;
+  nothing pushes the end flow's active work or the sheet.
+- **What the agent asks today:** a client that has not declared the marshal
+  capability is asked with `session/request_permission` (approve or deny,
+  tagged for skill gates and mode access) and `session/request_question`.
+  A marshal client is asked nothing: it reads `session/pending`, and answers
+  through the answer calls.
 - **The layering forbids the obvious wiring.** `acp` imports `app`
   (`run.go:12`), and `app` imports `tui` (`app.Run`, `app.go:2577`), so
   `app.Run` cannot start an ACP host. `cmd/marshal` imports both
@@ -1304,3 +1305,89 @@ TUI still runs on `inproc`, in process, until plan 8.
   session over the wire (plan 6b), and host calls that change a session's status
   (plan 7). An ACP session's `ChangedFiles` stays 0, because nothing over the
   wire refreshes the sheet cache that counts them.
+
+### Plan 5 — agent requests
+
+The third ACP handlers that call the client seam's service: the session's open
+requests, the calls that answer them, and the client's mirror of them. For a
+client without the capability nothing changed (R9); the TUI still runs on
+`inproc`, in process, until plan 8.
+
+- **`internal/acp/requests.go`** holds the connection's `RequestManager`: one
+  `session/pending`, five answer calls and `session/rollback`, over `Lookup`
+  (the session manager's `Service`), `Notify` (the connection's sink) and
+  `Marshal` (the connection's capability record). Each handler decodes its
+  params, refuses an empty `sessionId` as invalid params, resolves the session
+  (`unknown session: <id>`), and returns the service's answer or its error
+  unchanged, so `CodeRequestSettled` travels as error data.
+- **The update carries two things.** `pendingState` calls the service's
+  `ReconcileAccess` — which settles a typed access request that asks for
+  nothing through the runtime's own reader — and then `Pending`, and returns
+  both halves: `Requests` is the read, `Access` is what the access panel should
+  present. `Pending` returns the first and `ReconcileAccess` the second, so both
+  are the service's answers exactly.
+- **The forwarder polls, one per session per connection.** It starts on the
+  first `session/pending` from a marshal client, registers its fence before its
+  goroutine starts, and wakes every `requestInterval` (50 ms) and on its fence.
+  Each pass resolves the session through `Lookup`, reads the state, and sends a
+  `pending_requests` update only when the encoding differs from the last one
+  sent. Requests open and settle without a broker event this manager sees, so
+  polling is what keeps the mirror current; a pass costs 0.13 µs on the largest
+  fixture. It never sends under its own mutex, and `Close` stops every forwarder.
+- **`responseBarrier` is variadic now.** A `sessionFencer` interface names the
+  one method the barrier calls, and the host passes `turns, works, watches,
+  statuses, requests` in that order; a nil is skipped, so plan 3a's and 3b's
+  call sites (untyped nils) compile unchanged. Never pass a typed nil manager.
+- **An answer is a call whose response follows its update.** The barrier fences
+  the request forwarder, so the update that removes an answered request is
+  written before the answer's response, and a `Pending` read after the call no
+  longer shows it.
+- **The turn leaves a marshal client alone.** `TurnManager.isMarshal` (and
+  `stackIntervals` now) reports the capability; `runTurn`'s `forward` returns
+  right after the event's `session/update`, and `ensureChildApprovals` starts no
+  collector for such a client. Neither denies for want of a bridge: the request
+  stays open for the mirror, which reads the state, so a turn's, a subagent's, a
+  pipeline's and a sudo prompt all reach the client.
+- **`internal/acpclient/rpc/requests.go`** is the client's mirror: one
+  `PendingState` entry, absent until its first read. `Pending` sends
+  `session/pending` under a 5 s `pendingCallTimeout` on that first read (it
+  takes no context), installs the result unless an update arrived first, and
+  removes the entry on failure so the next read asks again; `ReconcileAccess`
+  reads the same entry with the caller's context. `routeNotify` gained the
+  `pending_requests` case beside `session_status`, applied to the attached
+  session it names and dropped for one that is not attached; applying replaces
+  the entry and fires `Changed`. The six answers send their methods; `AnswerSudo`
+  zeroes the caller's slice when the call returns, whatever its outcome.
+- **The conformance harness** (`internal/acp/conformance_requests_test.go`)
+  opens the same two arms with eight more seam methods and a `serveRequests`
+  that adds its manager to the pipe arm's barrier. Thirteen cases moved in from
+  the service's tests or joined them, and each arm agrees, so no value needed a
+  wire or service change: the session's requests are listed, a running
+  subagent's approval is listed, a forced approval is marked, the state's access
+  request is listed, the access request to present, once and deny, a child's
+  approval settles on the child, an answer to a settled approval is
+  request-settled, a question's answers are delivered, a skill gate's choice is
+  recorded, an access answer resolves through the runtime, a sudo answer reaches
+  the prompt, and a rollback restores and logs. The forwarder reconciles on
+  every pass, so the service keeps the read-count assertion for
+  `ReconcileAccess`; the skill gate's "unknown choice" row also stays in the
+  service package, where the vocabulary check belongs.
+- **The secret (V5).** `TestASudoPasswordCrossesTheWireOnce` wraps the agent's
+  end of the pipe and the server's logger, answers with a canary password, and
+  asserts its base64 form appears exactly once in the bytes the agent read —
+  inside the `session/answer_sudo` request — and never in the bytes it wrote or
+  in the log, while a `pending_requests` update listing the prompt was written.
+  The canary caught a real defect in the first draft: the handler zeroed the
+  decoded slice after answering, which is the same slice the service hands the
+  prompt's handler, so the person's password was cleared before it was used.
+  The transport handler must not touch it.
+- **The budget (R10).** `TestAnswerCallBudget` drives 30 `AnswerApproval` calls
+  over the 4a large session (2,000 calls, 1,201 nodes, a 2,534,633-byte
+  snapshot); each call includes its barrier and its update. The median is
+  **79.5 µs**, against R10's 1 ms. It skips under `-short` and with the race
+  detector.
+- **The counts moved** (re-measured on this branch): `acpclient.Methods` still
+  has 110 rows, now 47 of them an existing ACP method (eight more: `Pending`,
+  the five answers, `ReconcileAccess` and `Rollback`), 61 new in P3 carried by
+  56 distinct new methods, and 2 carrying none; `acp.Server` registers 82
+  methods (75 plus the seven).

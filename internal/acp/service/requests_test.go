@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -14,164 +13,6 @@ import (
 // needs.
 func approvalChan() chan session.UserApprovalDecision {
 	return make(chan session.UserApprovalDecision, 1)
-}
-
-// TestPendingListsTheSessionsRequests registers one prompt of each kind and
-// pins what Pending reports: every slot, in wire form, each keyed by the ID its
-// registration returned.
-func TestPendingListsTheSessionsRequests(t *testing.T) {
-	state := newState(t, "s1")
-	_, sess := New(Deps{State: state})
-
-	approvalKey, err := state.RegisterApproval(context.Background(), &session.PendingToolCall{
-		ID:           "call-1",
-		Name:         "shell.run",
-		Command:      "go test ./...",
-		Risk:         "command",
-		Reason:       "policy: ask",
-		ResponseChan: approvalChan(),
-	})
-	if err != nil {
-		t.Fatalf("RegisterApproval: %v", err)
-	}
-	questionKey, err := state.RegisterQuestion(context.Background(), &session.PendingQuestion{
-		Questions: []session.Question{{
-			Question: "Which?",
-			Options: []session.QuestionOption{
-				{Label: "A", Description: "first"},
-				{Label: "B"},
-			},
-			Multi: true,
-		}},
-		ResponseChan: make(chan []session.Answer, 1),
-	})
-	if err != nil {
-		t.Fatalf("RegisterQuestion: %v", err)
-	}
-	skillKey, err := state.RegisterSkillGate(context.Background(), &session.PendingSkillGate{
-		Skill:        "tdd",
-		Description:  "Test first",
-		Reason:       "Loading skills consumes context.",
-		ResponseChan: make(chan session.SkillGateChoice, 1),
-	})
-	if err != nil {
-		t.Fatalf("RegisterSkillGate: %v", err)
-	}
-	sudoKey, err := state.RegisterSudoAuth(context.Background(), &session.PendingSudoAuth{
-		Command:         "apt install jq",
-		Reason:          "needs root",
-		StepID:          7,
-		AllowUnlock:     true,
-		Error:           "Sorry, try again.",
-		CommandApproval: true,
-		ResponseChan:    make(chan session.SudoAuthDecision, 1),
-	})
-	if err != nil {
-		t.Fatalf("RegisterSudoAuth: %v", err)
-	}
-
-	want := acpwire.PendingRequests{
-		Approvals: []acpwire.ApprovalRequest{{
-			Key:        approvalKey.ID,
-			ToolCallID: "call-1",
-			Tool:       "shell.run",
-			ToolLabel:  "Run command",
-			Command:    "go test ./...",
-			Risk:       "command",
-			Reason:     "policy: ask",
-		}},
-		Question: &acpwire.QuestionRequest{
-			Key: questionKey.ID,
-			Questions: []acpwire.Question{{
-				Question: "Which?",
-				Options: []acpwire.QuestionOption{
-					{Label: "A", Description: "first"},
-					{Label: "B"},
-				},
-				Multi: true,
-			}},
-		},
-		SkillGate: &acpwire.SkillGateRequest{
-			Key:         skillKey.ID,
-			Skill:       "tdd",
-			Description: "Test first",
-			Reason:      "Loading skills consumes context.",
-		},
-		Sudo: &acpwire.SudoRequest{
-			Key:             sudoKey.ID,
-			Command:         "apt install jq",
-			Reason:          "needs root",
-			StepID:          7,
-			AllowUnlock:     true,
-			Error:           "Sorry, try again.",
-			CommandApproval: true,
-		},
-	}
-	if got := sess.Pending(); !reflect.DeepEqual(got, want) {
-		t.Errorf("Pending() =\n%+v\nwant\n%+v", got, want)
-	}
-}
-
-// TestPendingAddsTheRunningSubagentsApprovals pins the approval list: the
-// session's own first, then each running subagent's in registration order. A
-// finished subagent's approval and a subagent without one add nothing.
-func TestPendingAddsTheRunningSubagentsApprovals(t *testing.T) {
-	state := newState(t, "s1")
-	_, sess := New(Deps{State: state})
-
-	sessionKey, err := state.RegisterApproval(context.Background(), &session.PendingToolCall{
-		ID:           "call-s",
-		Name:         "shell.run",
-		Command:      "go build ./...",
-		Risk:         "command",
-		ResponseChan: approvalChan(),
-	})
-	if err != nil {
-		t.Fatalf("RegisterApproval: %v", err)
-	}
-
-	a := newState(t, "a")
-	viewA := state.RegisterSubagent("a", a)
-	aKey, err := a.RegisterApproval(context.Background(), &session.PendingToolCall{
-		ID:           "call-a",
-		Name:         "file.edit",
-		Args:         `{"path":"a.go"}`,
-		ResponseChan: approvalChan(),
-	})
-	if err != nil {
-		t.Fatalf("child a RegisterApproval: %v", err)
-	}
-
-	b := newState(t, "b")
-	viewB := state.RegisterSubagent("b", b)
-	if _, err := b.RegisterApproval(context.Background(), &session.PendingToolCall{
-		ID:           "call-b",
-		Name:         "shell.run",
-		Command:      "go vet ./...",
-		ResponseChan: approvalChan(),
-	}); err != nil {
-		t.Fatalf("child b RegisterApproval: %v", err)
-	}
-	state.FinishSubagent(viewB.ID, "", nil)
-
-	state.RegisterSubagent("c", newState(t, "c"))
-
-	got := sess.Pending().Approvals
-	if len(got) != 2 {
-		t.Fatalf("Pending().Approvals = %+v, want the session's approval and child a's", got)
-	}
-	if got[0].Key != sessionKey.ID {
-		t.Errorf("Approvals[0].Key = %q, want the session's %q", got[0].Key, sessionKey.ID)
-	}
-	if got[1].Key != aKey.ID {
-		t.Errorf("Approvals[1].Key = %q, want child a's %q", got[1].Key, aKey.ID)
-	}
-	if got[1].SubagentID != viewA.ID {
-		t.Errorf("Approvals[1].SubagentID = %d, want child a's %d", got[1].SubagentID, viewA.ID)
-	}
-	if got[1].Subagent != "a" {
-		t.Errorf("Approvals[1].Subagent = %q, want a", got[1].Subagent)
-	}
 }
 
 // TestPendingApprovalCarriesItsStepsOwnerAndWhy checks the derivation of the
@@ -253,38 +94,6 @@ func TestASubagentApprovalReadsItsOwnerFromTheChild(t *testing.T) {
 	}
 }
 
-// TestPendingMarksForcedApprovals pins decision 4's rule: a prompt only an
-// exact decision may answer is marked forced.
-func TestPendingMarksForcedApprovals(t *testing.T) {
-	cases := []struct {
-		name string
-		call *session.PendingToolCall
-		want bool
-	}{
-		{name: "privileged command", call: &session.PendingToolCall{Name: "shell.sudo", Command: "apt install jq"}, want: true},
-		{name: "cost consent", call: &session.PendingToolCall{Name: "shell.run", Risk: "model-cost-consent"}, want: true},
-		{name: "exact command", call: &session.PendingToolCall{Name: "shell.run", ExactCommandApproval: true}, want: true},
-		{name: "mode request", call: &session.PendingToolCall{Name: "mode.request"}, want: true},
-		{name: "mode elevation reason", call: &session.PendingToolCall{Name: "file.write", Reason: "mode-elevation: needs act"}, want: true},
-		{name: "ordinary command", call: &session.PendingToolCall{Name: "shell.run", Risk: "command"}, want: false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			state := newState(t, "s1")
-			_, sess := New(Deps{State: state})
-			state.SetPendingApproval(tc.call)
-
-			approvals := sess.Pending().Approvals
-			if len(approvals) != 1 {
-				t.Fatalf("Pending().Approvals = %+v, want the one call", approvals)
-			}
-			if got := approvals[0].Forced; got != tc.want {
-				t.Errorf("Forced = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
 // TestAnUnregisteredPromptKeepsOneKeyWhileOpen pins the minted key: it stays
 // the same while the prompt is open, and a prompt that replaced it gets its
 // own.
@@ -335,42 +144,6 @@ func TestATypedAccessApprovalIsKeyedByItsRequest(t *testing.T) {
 	}
 	if approvals[0].Key != req.RequestID {
 		t.Errorf("Approvals[0].Key = %q, want the request's ID %q", approvals[0].Key, req.RequestID)
-	}
-}
-
-// TestPendingListsTheStatesAccessRequest pins the wire form of the waiting
-// access request, with the tuple it was raised against.
-func TestPendingListsTheStatesAccessRequest(t *testing.T) {
-	state := newState(t, "s1")
-	_, sess := New(Deps{State: state})
-
-	req, _, err := state.RegisterAccess(context.Background(), &session.PendingToolCall{
-		ID:           "call-1",
-		Name:         "mode.request",
-		ResponseChan: approvalChan(),
-	}, session.AccessIntent{System: true, Reason: "read outside"})
-	if err != nil {
-		t.Fatalf("RegisterAccess: %v", err)
-	}
-	current := state.InteractionState()
-
-	want := &acpwire.AccessRequest{
-		RequestID: req.RequestID,
-		SessionID: "s1",
-		Actor:     req.Actor,
-		StepID:    int64(req.StepID),
-		Reason:    "read outside",
-		Current: acpwire.AccessState{
-			Mode:     string(current.Mode),
-			Auto:     current.Auto,
-			System:   current.System,
-			Revision: current.Revision,
-		},
-		MissingEditing: req.MissingEditing,
-		MissingSystem:  true,
-	}
-	if got := sess.Pending().Access; !reflect.DeepEqual(got, want) {
-		t.Errorf("Pending().Access =\n%+v\nwant\n%+v", got, want)
 	}
 }
 

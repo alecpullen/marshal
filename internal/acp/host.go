@@ -280,24 +280,22 @@ func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyF
 	return tm
 }
 
-// responseBarrier is the host's barrier: it fences the turn manager's, then the
-// work manager's, then the watch manager's, then the status manager's
-// forwarders for the session, so a marshal client's call returns only after the
-// updates it caused are written (P3 R2). A fence whose forwarder has gone
-// answers at once.
-func responseBarrier(turns *TurnManager, works *WorkManagerACP, watches *WatchManagerACP, statuses *StatusManager) func(ctx context.Context, sessionID string) {
+// sessionFencer is a manager whose forwarders serve the response barrier
+// (P3 R2).
+type sessionFencer interface {
+	fenceSession(ctx context.Context, sessionID string)
+}
+
+// responseBarrier is the host's barrier: it fences each manager's forwarders
+// for the session, in the order given, skipping a nil one, so a marshal
+// client's call returns only after the updates it caused are written (P3 R2).
+// A fence whose forwarder has gone answers at once.
+func responseBarrier(fencers ...sessionFencer) func(ctx context.Context, sessionID string) {
 	return func(ctx context.Context, sessionID string) {
-		if turns != nil {
-			turns.fenceSession(ctx, sessionID)
-		}
-		if works != nil {
-			works.fenceSession(ctx, sessionID)
-		}
-		if watches != nil {
-			watches.fenceSession(ctx, sessionID)
-		}
-		if statuses != nil {
-			statuses.fenceSession(ctx, sessionID)
+		for _, f := range fencers {
+			if f != nil {
+				f.fenceSession(ctx, sessionID)
+			}
 		}
 	}
 }
@@ -394,7 +392,15 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 		Marshal: srv.marshalClient,
 	})
 	registerStatus(srv, statuses)
-	srv.SetResponseBarrier(responseBarrier(turns, works, watches, statuses))
+	// The request manager's forwarders carry pending_requests the same way, so
+	// they join the barrier after the status manager's.
+	requests := NewRequestManager(RequestManagerConfig{
+		Lookup:  manager.Service,
+		Notify:  h.sink.Notify,
+		Marshal: srv.marshalClient,
+	})
+	registerRequests(srv, requests)
+	srv.SetResponseBarrier(responseBarrier(turns, works, watches, statuses, requests))
 
 	home, _ := os.UserHomeDir()
 	cfgMgr := NewConfigManager(home, nil, nil)
@@ -548,13 +554,15 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 
 	// The work controller is per-connection: its forwarders (Task 22) push
 	// work_state updates to this connection's sink and must stop with it.
-	// The status manager's forwarders push session_status the same way.
+	// The status and request managers' forwarders push session_status and
+	// pending_requests the same way.
 	// The child approval collectors are per-connection too: they answer
 	// through this connection's permission bridge, so they end with it.
 	return func() {
 		turns.CloseChildApprovals()
 		works.Close()
 		statuses.Close()
+		requests.Close()
 	}
 }
 

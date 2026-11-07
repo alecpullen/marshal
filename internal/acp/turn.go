@@ -298,6 +298,12 @@ func NewTurnManager(cfg TurnManagerConfig) *TurnManager {
 	return tm
 }
 
+// isMarshal reports whether the connection's client declared the marshal
+// capability. A marshal client's requests are the request mirror's (P3 R5).
+func (m *TurnManager) isMarshal() bool {
+	return m.marshal != nil && m.marshal()
+}
+
 // fenceSession waits until every forwarder for sessionID has written the
 // updates for the events published before it was asked (P3 R2). A session with
 // no forwarder returns at once.
@@ -823,6 +829,13 @@ func (m *TurnManager) runTurn(
 				slotCancel()
 				subCancel()
 			}
+		}
+
+		// A marshal client's requests are the request mirror's (P3 R5): the
+		// mirror shows the request, and nothing here may answer it, deny it
+		// or fail it.
+		if m.isMarshal() {
+			return
 		}
 
 		// Drive pending approvals through the permission bridge

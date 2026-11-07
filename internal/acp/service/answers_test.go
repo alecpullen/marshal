@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -40,39 +39,6 @@ func approvalDecision(t *testing.T, ch chan session.UserApprovalDecision) sessio
 	case <-time.After(5 * time.Second):
 		t.Fatal("the approval was never settled; the tool would block forever")
 		return session.UserApprovalDecision{}
-	}
-}
-
-// TestAnswerApprovalOnceAndDeny pins the two exact decisions: once approves,
-// deny does not, and each settles the request.
-func TestAnswerApprovalOnceAndDeny(t *testing.T) {
-	for _, tc := range []struct {
-		decision acpwire.ApprovalDecision
-		approved bool
-	}{
-		{decision: acpwire.ApprovalOnce, approved: true},
-		{decision: acpwire.ApprovalDeny, approved: false},
-	} {
-		t.Run(string(tc.decision), func(t *testing.T) {
-			state := newState(t, "s1")
-			_, sess := New(Deps{State: state})
-			key, ch := registerApproval(t, state, &session.PendingToolCall{
-				ID:      "call-1",
-				Name:    "shell.run",
-				Command: "go test ./...",
-				Risk:    "command",
-			})
-
-			if err := sess.AnswerApproval(context.Background(), key.ID, acpwire.ApprovalAnswer{Decision: tc.decision}); err != nil {
-				t.Fatalf("AnswerApproval: %v", err)
-			}
-			if got := approvalDecision(t, ch); got.Approved != tc.approved {
-				t.Errorf("delivered decision = %+v, want Approved %v", got, tc.approved)
-			}
-			if got := sess.Pending().Approvals; len(got) != 0 {
-				t.Errorf("Pending().Approvals = %+v after the answer, want none", got)
-			}
-		})
 	}
 }
 
@@ -152,58 +118,6 @@ func TestASessionAnswerAddsASessionRule(t *testing.T) {
 	}
 	if got := state.SessionRules(); len(got) != 1 || got[0] != "go build ./..." {
 		t.Errorf("SessionRules() = %v, want the answered command", got)
-	}
-}
-
-// TestAChildsApprovalSettlesOnTheChild pins decision 6: the settlement goes to
-// the state that raised the call, and the rule lands on the session.
-func TestAChildsApprovalSettlesOnTheChild(t *testing.T) {
-	parent := newState(t, "s1")
-	_, sess := New(Deps{State: parent})
-
-	child := newState(t, "child")
-	parent.RegisterSubagent("reviewer", child)
-	key, ch := registerApproval(t, child, &session.PendingToolCall{
-		ID:      "call-c",
-		Name:    "shell.run",
-		Command: "go vet ./...",
-		Risk:    "command",
-	})
-
-	if err := sess.AnswerApproval(context.Background(), key.ID, acpwire.ApprovalAnswer{Decision: acpwire.ApprovalSession}); err != nil {
-		t.Fatalf("AnswerApproval: %v", err)
-	}
-	if got := approvalDecision(t, ch); !got.Approved {
-		t.Errorf("delivered decision = %+v, want an approval", got)
-	}
-	if got := parent.SessionRules(); len(got) != 1 || got[0] != "go vet ./..." {
-		t.Errorf("the parent's SessionRules() = %v, want the child's command", got)
-	}
-	if got := child.SessionRules(); len(got) != 0 {
-		t.Errorf("the child's SessionRules() = %v, want none", got)
-	}
-}
-
-// TestAnAnswerToASettledApprovalIsRequestSettled pins the key of an answer to
-// a request that is no longer open.
-func TestAnAnswerToASettledApprovalIsRequestSettled(t *testing.T) {
-	state := newState(t, "s1")
-	_, sess := New(Deps{State: state})
-	key, ch := registerApproval(t, state, &session.PendingToolCall{
-		ID:      "call-1",
-		Name:    "shell.run",
-		Command: "go test ./...",
-		Risk:    "command",
-	})
-
-	if err := sess.AnswerApproval(context.Background(), key.ID, acpwire.ApprovalAnswer{Decision: acpwire.ApprovalOnce}); err != nil {
-		t.Fatalf("AnswerApproval: %v", err)
-	}
-	approvalDecision(t, ch)
-
-	err := sess.AnswerApproval(context.Background(), key.ID, acpwire.ApprovalAnswer{Decision: acpwire.ApprovalDeny})
-	if !acpclient.IsCode(err, acpwire.CodeRequestSettled) {
-		t.Errorf("second AnswerApproval = %v, want a request-settled code", err)
 	}
 }
 
@@ -348,130 +262,24 @@ func TestAnAlwaysAnswerFallsBackToASessionRule(t *testing.T) {
 	}
 }
 
-// TestAnswerQuestionDeliversTheAnswers pins the question answer: one answer
-// per question, in order, and a second answer to the settled question.
-func TestAnswerQuestionDeliversTheAnswers(t *testing.T) {
+// TestAnswerSkillGateRefusesAnUnknownChoice keeps the service's vocabulary
+// check: a choice the wire does not carry settles nothing.
+func TestAnswerSkillGateRefusesAnUnknownChoice(t *testing.T) {
 	state := newState(t, "s1")
 	_, sess := New(Deps{State: state})
-	ch := make(chan []session.Answer, 1)
-	key, err := state.RegisterQuestion(context.Background(), &session.PendingQuestion{
-		Questions: []session.Question{
-			{Question: "Which file?"},
-			{Question: "Which mode?"},
-		},
-		ResponseChan: ch,
+	key, err := state.RegisterSkillGate(context.Background(), &session.PendingSkillGate{
+		Skill:        "tdd",
+		ResponseChan: make(chan session.SkillGateChoice, 1),
 	})
 	if err != nil {
-		t.Fatalf("RegisterQuestion: %v", err)
+		t.Fatalf("RegisterSkillGate: %v", err)
 	}
-
-	answers := []acpwire.Answer{
-		{Question: "Which file?", Answer: "app.go"},
-		{Question: "Which mode?", Answer: "act"},
+	if err := sess.AnswerSkillGate(context.Background(), key.ID, acpwire.SkillGateChoice("maybe")); err == nil {
+		t.Fatal("AnswerSkillGate accepted an unknown choice")
 	}
-	if err := sess.AnswerQuestion(context.Background(), key.ID, answers); err != nil {
-		t.Fatalf("AnswerQuestion: %v", err)
+	if sess.Pending().SkillGate == nil {
+		t.Error("the gate settled on an unknown choice, want it still pending")
 	}
-	select {
-	case got := <-ch:
-		want := []session.Answer{
-			{Question: "Which file?", Answer: "app.go"},
-			{Question: "Which mode?", Answer: "act"},
-		}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("delivered answers = %+v, want %+v", got, want)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the question was never answered; the tool would block forever")
-	}
-
-	err = sess.AnswerQuestion(context.Background(), key.ID, answers)
-	if !acpclient.IsCode(err, acpwire.CodeRequestSettled) {
-		t.Errorf("second AnswerQuestion = %v, want a request-settled code", err)
-	}
-}
-
-// TestAnswerSkillGateRecordsTheChoice pins each skill-gate answer's delivery
-// and the sticky record the allow choices leave behind. The row that names no
-// choice settles nothing.
-func TestAnswerSkillGateRecordsTheChoice(t *testing.T) {
-	for _, tc := range []struct {
-		choice acpwire.SkillGateChoice
-		mapped session.SkillGateChoice
-	}{
-		{choice: acpwire.SkillGateAllowOnce, mapped: session.SkillGateAllowOnce},
-		{choice: acpwire.SkillGateAllowSkill, mapped: session.SkillGateAllowSkill},
-		{choice: acpwire.SkillGateAllowAll, mapped: session.SkillGateAllowAll},
-		{choice: acpwire.SkillGateDeny, mapped: session.SkillGateDeny},
-	} {
-		t.Run(string(tc.choice), func(t *testing.T) {
-			state := newState(t, "s1")
-			_, sess := New(Deps{State: state})
-			ch := make(chan session.SkillGateChoice, 1)
-			key, err := state.RegisterSkillGate(context.Background(), &session.PendingSkillGate{
-				Skill:        "tdd",
-				Description:  "Test first",
-				Reason:       "Loading skills consumes context.",
-				ResponseChan: ch,
-			})
-			if err != nil {
-				t.Fatalf("RegisterSkillGate: %v", err)
-			}
-
-			if err := sess.AnswerSkillGate(context.Background(), key.ID, tc.choice); err != nil {
-				t.Fatalf("AnswerSkillGate: %v", err)
-			}
-			select {
-			case got := <-ch:
-				if got != tc.mapped {
-					t.Errorf("delivered choice = %v, want %v", got, tc.mapped)
-				}
-			case <-time.After(5 * time.Second):
-				t.Fatal("the gate was never answered; the runner would block forever")
-			}
-
-			switch tc.choice {
-			case acpwire.SkillGateAllowSkill:
-				got := state.SkillGateDecisions()
-				if len(got) != 1 || got[0].Skill != "tdd" || !got[0].Allowed {
-					t.Errorf("SkillGateDecisions() = %+v, want tdd allowed", got)
-				}
-			case acpwire.SkillGateAllowAll:
-				if state.SkillGateEnabled() {
-					t.Error("SkillGateEnabled() = true after allow_all, want the gate off")
-				}
-			default:
-				if got := state.SkillGateDecisions(); len(got) != 0 {
-					t.Errorf("SkillGateDecisions() = %+v, want none recorded", got)
-				}
-				if !state.SkillGateEnabled() {
-					t.Error("SkillGateEnabled() = false, want the gate untouched")
-				}
-			}
-
-			if err := sess.AnswerSkillGate(context.Background(), key.ID, tc.choice); !acpclient.IsCode(err, acpwire.CodeRequestSettled) {
-				t.Errorf("second AnswerSkillGate = %v, want a request-settled code", err)
-			}
-		})
-	}
-
-	t.Run("unknown choice", func(t *testing.T) {
-		state := newState(t, "s1")
-		_, sess := New(Deps{State: state})
-		key, err := state.RegisterSkillGate(context.Background(), &session.PendingSkillGate{
-			Skill:        "tdd",
-			ResponseChan: make(chan session.SkillGateChoice, 1),
-		})
-		if err != nil {
-			t.Fatalf("RegisterSkillGate: %v", err)
-		}
-		if err := sess.AnswerSkillGate(context.Background(), key.ID, acpwire.SkillGateChoice("maybe")); err == nil {
-			t.Fatal("AnswerSkillGate accepted an unknown choice")
-		}
-		if sess.Pending().SkillGate == nil {
-			t.Error("the gate settled on an unknown choice, want it still pending")
-		}
-	})
 }
 
 // TestAnswerSudoHandsThePasswordOver pins that the handler receives the very
@@ -684,67 +492,6 @@ func TestReconcileAccessNeedsBothCallbacks(t *testing.T) {
 
 // TestAnswerAccessResolvesThroughTheRuntime pins the answer's round trip: the
 // choice reaches the runtime converted, and the result comes back in wire form.
-func TestAnswerAccessResolvesThroughTheRuntime(t *testing.T) {
-	state := newState(t, "s1")
-	var recorded session.AccessChoice
-	_, sess := New(Deps{
-		State: state,
-		AccessRequest: func() (session.AccessRequest, bool) {
-			return state.AccessRequest()
-		},
-		ResolveAccess: func(choice session.AccessChoice) (session.AccessResult, error) {
-			recorded = choice
-			return session.AccessResult{
-				RequestID: choice.RequestID,
-				SessionID: choice.SessionID,
-				Status:    session.AccessGranted,
-				Effective: session.AccessState{Mode: "act", System: true},
-				Message:   "access granted",
-			}, nil
-		},
-	})
-	req, waiting, err := state.RegisterAccess(context.Background(), &session.PendingToolCall{
-		ID:           "call-1",
-		Name:         "mode.request",
-		ResponseChan: approvalChan(),
-	}, session.AccessIntent{System: true, Reason: "read outside"})
-	if err != nil || !waiting {
-		t.Fatalf("RegisterAccess = (%v, %v), want a published request", waiting, err)
-	}
-
-	choice := acpwire.AccessChoice{
-		RequestID: req.RequestID,
-		SessionID: req.SessionID,
-		Current: acpwire.AccessState{
-			Mode: req.Current.Mode, Auto: req.Current.Auto,
-			System: req.Current.System, Revision: req.Current.Revision,
-		},
-		Approved: true,
-	}
-	result, err := sess.AnswerAccess(context.Background(), choice)
-	if err != nil {
-		t.Fatalf("AnswerAccess: %v", err)
-	}
-	if result.Status != acpwire.AccessGranted {
-		t.Errorf("result.Status = %q, want %q", result.Status, acpwire.AccessGranted)
-	}
-	if got := result.Effective; got.Mode != "act" || !got.System {
-		t.Errorf("result.Effective = %+v, want act with system access", got)
-	}
-	want := session.AccessChoice{
-		RequestID: choice.RequestID,
-		SessionID: choice.SessionID,
-		Current: session.AccessState{
-			Mode: choice.Current.Mode, Auto: choice.Current.Auto,
-			System: choice.Current.System, Revision: choice.Current.Revision,
-		},
-		Approved: choice.Approved,
-	}
-	if !reflect.DeepEqual(recorded, want) {
-		t.Errorf("the runtime recorded %+v, want the wire choice converted %+v", recorded, want)
-	}
-}
-
 // TestAnswerAccessWithoutAResolverFailsClosed pins that an answer the session
 // cannot resolve settles the request as failed and reports why.
 func TestAnswerAccessWithoutAResolverFailsClosed(t *testing.T) {
@@ -783,50 +530,6 @@ func TestAnswerAccessWithoutAResolverFailsClosed(t *testing.T) {
 
 // TestRollbackRestoresAndLogs pins the two rollback paths: the restore and its
 // audit row, whether the restore succeeded or failed.
-func TestRollbackRestoresAndLogs(t *testing.T) {
-	state := newState(t, "s1")
-	_, sess := New(Deps{State: state})
-
-	state.StoreBackup([]session.BackupFile{{Path: "app.go", Content: "original", Exists: true, Mode: 0o644}})
-	path := filepath.Join(state.WorkingDir, "app.go")
-	if err := os.WriteFile(path, []byte("changed"), 0o644); err != nil {
-		t.Fatalf("write app.go: %v", err)
-	}
-	if err := sess.Rollback(context.Background()); err != nil {
-		t.Fatalf("Rollback: %v", err)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read app.go: %v", err)
-	}
-	if string(data) != "original" {
-		t.Errorf("app.go = %q after the rollback, want the backed-up content", data)
-	}
-	log := state.AuditLog()
-	if len(log) == 0 {
-		t.Fatal("the rollback logged no audit row")
-	}
-	last := log[len(log)-1]
-	if last.ToolName != "rollback" || last.ResultSummary != "Rollback applied successfully" {
-		t.Errorf("last audit row = %+v, want a successful rollback", last)
-	}
-
-	// A path this session cannot write makes the restore fail, and the failure
-	// reaches the audit trail rather than being hidden.
-	if err := os.WriteFile(filepath.Join(state.WorkingDir, "blocker"), []byte("regular file"), 0o644); err != nil {
-		t.Fatalf("write the blocker: %v", err)
-	}
-	state.StoreBackup([]session.BackupFile{{Path: "blocker/x.go", Content: "restored", Exists: true, Mode: 0o644}})
-	if err := sess.Rollback(context.Background()); err == nil {
-		t.Fatal("Rollback reported success for a restore that could not succeed")
-	}
-	log = state.AuditLog()
-	last = log[len(log)-1]
-	if last.ToolName != "rollback" || last.ResultSummary != "Rollback failed" || last.Error == "" {
-		t.Errorf("last audit row = %+v, want a failed rollback carrying its error", last)
-	}
-}
-
 // TestAClosedSessionAnswersNothing pins the closed-session check every answer
 // call makes before anything else.
 func TestAClosedSessionAnswersNothing(t *testing.T) {

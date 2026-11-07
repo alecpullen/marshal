@@ -20,6 +20,9 @@ type Session struct {
 	// updated says an update arrived, so Attach's result, which the agent
 	// computed before sending it, is stale.
 	updated bool
+	// pending is the request mirror (requests.go): nil until its first read
+	// creates it.
+	pending *pendingMirror
 	// closed says the connection ended, so changed is closed and nothing
 	// may be sent on it.
 	closed  bool
@@ -182,9 +185,10 @@ func (s *Session) closeLocked() {
 	close(s.changed)
 }
 
-// routeNotify applies a session_status update to the attached session it
-// names and drops one for a session that is not attached. It runs on the read
-// goroutine, before the caller's Notify sees the frame.
+// routeNotify applies a session_status or pending_requests update to the
+// attached session it names, and drops one for a session that is not attached.
+// Any other kind is ignored. It runs on the read goroutine, before the
+// caller's Notify sees the frame.
 func (h *Host) routeNotify(method string, params json.RawMessage) {
 	if method != acpwire.MethodSessionUpdate {
 		return
@@ -196,11 +200,7 @@ func (h *Host) routeNotify(method string, params json.RawMessage) {
 	var kind struct {
 		Kind string `json:"kind"`
 	}
-	if err := json.Unmarshal(update.Update, &kind); err != nil || kind.Kind != acpwire.UpdateSessionStatus {
-		return
-	}
-	var status acpwire.StatusUpdate
-	if err := json.Unmarshal(update.Update, &status); err != nil {
+	if err := json.Unmarshal(update.Update, &kind); err != nil {
 		return
 	}
 
@@ -210,7 +210,21 @@ func (h *Host) routeNotify(method string, params json.RawMessage) {
 	if session == nil {
 		return
 	}
-	session.apply(status.Status)
+
+	switch kind.Kind {
+	case acpwire.UpdateSessionStatus:
+		var status acpwire.StatusUpdate
+		if err := json.Unmarshal(update.Update, &status); err != nil {
+			return
+		}
+		session.apply(status.Status)
+	case acpwire.UpdatePending:
+		var pending acpwire.PendingUpdate
+		if err := json.Unmarshal(update.Update, &pending); err != nil {
+			return
+		}
+		session.applyPending(pending.Pending)
+	}
 }
 
 // closeSessions closes every attached session's Changed, once the connection

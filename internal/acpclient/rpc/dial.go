@@ -2,7 +2,9 @@ package rpc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"sync"
 
 	"marshal/internal/acpwire"
 )
@@ -23,12 +25,35 @@ type Host struct {
 	conn   *Conn
 	agent  acpwire.AgentInfo
 	shared bool
+
+	mu       sync.Mutex
+	sessions map[string]*Session
 }
 
 // Dial starts a connection over t, runs initialize, and returns the host. On
 // any failure it closes the connection.
 func Dial(ctx context.Context, t Transport, opts DialOptions) (*Host, error) {
-	conn := NewConn(t, opts.Handlers)
+	host := &Host{shared: opts.SharedFilesystem, sessions: make(map[string]*Session)}
+
+	// The connection's handlers are the host's own: notifications pass through
+	// its router before the caller sees them, and agent requests go to the
+	// caller's handler unchanged.
+	conn := NewConn(t, Handlers{
+		Notify: func(method string, params json.RawMessage) {
+			host.routeNotify(method, params)
+			if opts.Handlers.Notify != nil {
+				opts.Handlers.Notify(method, params)
+			}
+		},
+		Request: opts.Handlers.Request,
+	})
+	host.conn = conn
+	// One goroutine ends every attached session's Changed when the connection
+	// does.
+	go func() {
+		<-conn.Done()
+		host.closeSessions()
+	}()
 
 	params := acpwire.InitializeParams{
 		ProtocolVersion: acpwire.MarshalProtocolVersion,
@@ -53,7 +78,8 @@ func Dial(ctx context.Context, t Transport, opts DialOptions) (*Host, error) {
 		return nil, fmt.Errorf("rpc: agent version %q, want %q", result.AgentInfo.Version, opts.AgentVersion)
 	}
 
-	return &Host{conn: conn, agent: result.AgentInfo, shared: opts.SharedFilesystem}, nil
+	host.agent = result.AgentInfo
+	return host, nil
 }
 
 // SharedFilesystem reports whether the agent reads the same filesystem as the

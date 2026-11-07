@@ -119,6 +119,11 @@ func keepLastPlanRow(beat *Node) {
 	beat.Children = kept
 }
 
+// versionOfPlan hashes the plan's content. Done and Total are counts of
+// Status, so WirePlan reads nothing here that a change to Status cannot move:
+// a plan node's payload comes from the one audit event that gives the node its
+// identity and nothing rewrites it. If a plan ever becomes mutable after the
+// fact, this must hash the counts too.
 func versionOfPlan(p *PlanUpdate) uint64 {
 	b := newHash()
 	b.f("plan|%v|%d|%s|%v|", p.Status, p.Active, p.ActiveText, p.Cleared)

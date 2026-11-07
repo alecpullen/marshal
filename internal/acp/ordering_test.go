@@ -542,6 +542,7 @@ func TestAPanickingBarrierStillAnswersTheCall(t *testing.T) {
 // stack subscribed. A call that changes nothing must round-trip in under 1ms
 // median; a call that adds one message is measured too, with no budget.
 func TestResponseBarrierBudget(t *testing.T) {
+	withoutMemoCheck(t)
 	if testing.Short() || raceEnabled {
 		t.Skip("timing budget: skipped under -short and with the race detector")
 	}
@@ -588,6 +589,7 @@ func TestResponseBarrierBudget(t *testing.T) {
 // BenchmarkResponseBarrierNoChange records the same no-change call for the
 // record.
 func BenchmarkResponseBarrierNoChange(b *testing.B) {
+	withoutMemoCheck(b)
 	st := largeStackSession(b)
 	_, client := startOrderingAgentWith(b, st, 0)
 	ctx := context.Background()

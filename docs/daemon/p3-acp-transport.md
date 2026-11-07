@@ -696,6 +696,18 @@ conformance suite (V1) before anything switches.
   client opening a long session could leave the bridge's connection to
   that child stuck. P2 plan 7b fixes it (G5): it raises the cap, and
   treats a scanner error as a child failure.
+- **`Build` and `SnapshotOf` are now most of a flush** (measured on plan 4c's
+  branch, alone on the machine). With every node's wire form and encoding
+  remembered, one flush of the 2,000-call session after a new tool call costs
+  4.3ms. The snapshot (0.24ms) and the build (2.54ms) are about two thirds of
+  that: the projection reuses every settled node — only the newly logged call,
+  which is in flight, and its live beat re-project — but the turn tree is
+  rebuilt from the transcript on every call. Making that incremental needs
+  stable identities
+  for transcript items, which `session.State` does not give — every
+  `Transcript()` call copies every item, so nothing a build walks survives from
+  one call to the next. Plan 4b decides R4's cadence with plan 4c's numbers, and
+  plan 7 decides whether `AddNote` stays synchronous (R6, R10).
 
 ## Implementation record
 
@@ -1040,6 +1052,66 @@ file, so it stays synchronous and R10 is unchanged.
   `server.go` are untouched by this plan.
 - **Left for plan 3b:** the first ACP handlers that call the service, and each
   ACP session's service built with `ServiceDeps`.
+
+### Plan 4c — the projection's cost
+
+- **`viewmodel.WireMemo`** (`internal/viewmodel/memo.go`) remembers each node's
+  wire form, and its encoding once asked for, from the transcript's last
+  projection. A node is reused when it is not live, its `Version` is not zero,
+  and its ID, `Version`, `Live`, parent, children IDs and the working directory
+  are what they were: the key names everything `wireNode` reads. Turn nodes and
+  in-flight calls carry no version, so they are always projected afresh, and an
+  entry captured while its node was live is never reused either — `Live` is part
+  of the wire form and no version covers it, so a beat that settles with an
+  unchanged version would otherwise keep the live flag. (The TUI's own
+  `TestLiveBeatRendersInTheViewport`, run against the memo, found that during
+  the run; `TestWireMemoDoesNotReuseAnEntryCapturedWhileLive` now pins it.) The
+  memo holds only its last projection, and a reused node's slices and pointers
+  are the ones handed out before, so a caller must not change a node it is
+  given — what `rpc.Stacks` already requires of its readers.
+- **`WireMemo.Encoded`** encodes a node on the first ask and keeps the bytes, so
+  the agent's diff pays for the nodes that changed and no others. The service
+  never asks, so the TUI's path pays no encoding at all.
+- **`viewmodel.CheckWireMemo`** makes every memoized projection also project
+  afresh and panic on a difference, naming the first node that differs. The
+  `TestMain` of `viewmodel`, `acp`, `acp/service` and `app/tui` sets it, so the
+  whole TUI suite — T6's goldens included — runs against it; the budget tests
+  and benchmarks turn it off while they measure.
+- **The projectors.** Each `stackProjector` (`internal/acp/stack.go`) projects
+  through its own memo under its mutex, and `diff` and the activation take each
+  node's encoding from it, the band aside (the band is not the memo's). Every
+  path that projects still records what the client holds, so the memo's last
+  projection is always the one `sent` describes.
+- **The service's `Stack`** (`internal/acp/service/stack.go`) keeps two memos per
+  session under their own mutex, not `mu`: one for the main transcript, one for
+  the subagent read last, reset when another child is read. An ID that names no
+  child still returns the empty snapshot before either memo is touched.
+- **The numbers, at this branch's development machine**, on the 2,000-call
+  session (`largeStackSession`, 1,201 nodes):
+  - `BenchmarkStackFlushLargeSession`: 7.84ms/op and 23.1MB before → **4.3ms/op**
+    (4.27–4.36 over three runs), 14.5MB, 28.7k allocations.
+  - `BenchmarkProjectStateLargeSession`, the TUI's path before this plan: 6.5ms,
+    20.3MB, 91.3k allocations. `BenchmarkWireMemoLargeSession`, the same
+    projection through one memo: **4.1ms**, 14.4MB, 28.5k allocations.
+  - `TestResponseBarrierBudget`: the changing call's median 8.47ms → **4.18ms**;
+    the no-change median 13.4µs (budget 1ms).
+  - `TestStackRoundTripBudget` 26.6ms (budget 50ms) and
+    `TestStackPatchApplyBudget` 956µs (budget 2ms): neither got slower, since a
+    first read encodes every node once, as before. That first read now carries
+    its own 50ms budget (33.2ms measured): the memo makes the median warm, so
+    the median alone would let a pathological activation through.
+- **Proof.** `TestFlushedPatchesMatchAFreshProjection` compares what the client
+  holds with a fresh `viewmodel.ProjectState` after every flush of a scripted
+  turn, so a memo holding a stale encoding cannot hide behind the projector's
+  own record of what it sent. `TestWireMemoMatchesAFreshProjection` drives one
+  memo through a whole session — merged runs, an in-flight call, streaming
+  reasoning, a settling call, a second turn, todos, a job exit, a subagent card
+  and a moved active root — and `TestWireMemoReusesUnchangedNodes` pins the
+  reuse. `TestStackReusesTheMainMemo`, `TestStackReusesTheSubagentMemo` and
+  `TestStackResetsTheSubagentMemoForAnotherChild` pin the service's two memos.
+- **What it leaves.** `Build` and `SnapshotOf` are now most of a flush (a finding
+  above), and no node version, no `Build`, no `session.State` call and no wire
+  byte changed.
 
 ### Plan 3b — status
 

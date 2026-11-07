@@ -273,6 +273,17 @@ type Session struct {
 	// prompt's pointer; localSeq numbers them. Both are guarded by mu.
 	localKeys map[any]string
 	localSeq  uint64
+
+	// stackMu guards the projection memos below. It is separate from mu so a
+	// stack read never waits on the event loop's values or the sheet cache.
+	stackMu sync.Mutex
+	// mainMemo remembers the session's own transcript's last projection.
+	mainMemo viewmodel.WireMemo
+	// subMemo remembers the last drilled subagent's projection, and subMemoID
+	// names the subagent it serves. The TUI reads one subagent at a time, so a
+	// read of another one resets it.
+	subMemo   viewmodel.WireMemo
+	subMemoID int64
 }
 
 var (

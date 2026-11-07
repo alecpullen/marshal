@@ -110,6 +110,112 @@ func TestStackBuildsWithTheBusyFlagItIsGiven(t *testing.T) {
 	}
 }
 
+// stackCallNode finds the tool node the snapshot carries for the finished call
+// callID.
+func stackCallNode(t *testing.T, snap acpwire.StackSnapshot, callID string) acpwire.WireNode {
+	t.Helper()
+	for _, n := range snap.Nodes {
+		if n.Kind != acpwire.KindTool || n.Tool == nil {
+			continue
+		}
+		for _, c := range n.Tool.Calls {
+			if c.CallID == callID {
+				return n
+			}
+		}
+	}
+	t.Fatalf("no tool node carries call %q", callID)
+	return acpwire.WireNode{}
+}
+
+// recordCall runs one finished tool call as its own step on st.
+func recordCall(st *session.State, name, callID string, at time.Time) {
+	beat := st.BeginStep(session.Actor{Model: "qwen3-coder"})
+	st.LogToolCall(registry.AuditEvent{
+		Timestamp: at, ToolName: name, StepID: beat, ToolCallID: callID,
+		ResultSummary: "ok",
+	})
+	st.EndStep(beat)
+}
+
+// TestStackReusesTheMainMemo pins that the session's own transcript is read
+// through a memo: an unchanged node comes back as it was, and a call made since
+// the last read is in the tree the next one returns.
+func TestStackReusesTheMainMemo(t *testing.T) {
+	fixed := time.Unix(1_700_000_000, 0)
+	state := stackState(t, "s1", fixed)
+	state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	recordCall(state, "file.read", "c1", fixed)
+
+	_, sess := New(Deps{State: state})
+	first := stackCallNode(t, sess.Stack(0, true), "c1")
+	if first.Version == "" {
+		t.Fatalf("node %q carries no version; want one the memo may keep", first.ID)
+	}
+	second := stackCallNode(t, sess.Stack(0, true), "c1")
+	if first.Tool != second.Tool {
+		t.Errorf("Stack(0, true) projected unchanged node %q afresh; want the memo's reuse", first.ID)
+	}
+
+	recordCall(state, "shell", "c2", fixed.Add(time.Second))
+	stackCallNode(t, sess.Stack(0, true), "c2")
+}
+
+// TestStackReusesTheSubagentMemo pins that a drilled subagent's transcript is
+// read through its own memo: two reads of the same child, unchanged, hand back
+// the node the first read projected.
+func TestStackReusesTheSubagentMemo(t *testing.T) {
+	fixed := time.Unix(1_700_000_000, 0)
+	parent := stackState(t, "s1", fixed)
+	child := stackState(t, "child", fixed)
+	child.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	recordCall(child, "file.read", "c1", fixed)
+	view := parent.RegisterSubagent("scout", child)
+
+	_, sess := New(Deps{State: parent})
+	first := stackCallNode(t, sess.Stack(view.ID, true), "c1")
+	if first.Version == "" {
+		t.Fatalf("node %q carries no version; want one the memo may keep", first.ID)
+	}
+	second := stackCallNode(t, sess.Stack(view.ID, true), "c1")
+	if first.Tool != second.Tool {
+		t.Errorf("Stack(%d, true) projected unchanged node %q afresh; want the memo's reuse", view.ID, first.ID)
+	}
+}
+
+// TestStackResetsTheSubagentMemoForAnotherChild pins that the subagent memo
+// serves the child read last: reading another child and then the first again
+// still returns each child's own tree, as a fresh projection of it builds.
+func TestStackResetsTheSubagentMemoForAnotherChild(t *testing.T) {
+	fixed := time.Unix(1_700_000_000, 0)
+	parent := stackState(t, "s1", fixed)
+	one := stackState(t, "child-one", fixed)
+	one.AddMessage(session.RoleUser, "one says hi", session.ContentTypePlain)
+	two := stackState(t, "child-two", fixed)
+	two.AddMessage(session.RoleUser, "two says hi", session.ContentTypePlain)
+	first := parent.RegisterSubagent("scout", one)
+	second := parent.RegisterSubagent("scout", two)
+
+	_, sess := New(Deps{State: parent})
+	readsChild := func(id int64, src *session.State) {
+		t.Helper()
+		got := sess.Stack(id, false)
+		if got.SubagentID != id {
+			t.Errorf("SubagentID = %d, want %d", got.SubagentID, id)
+		}
+		want := viewmodel.ProjectState(src, false, src.Now()).Tree
+		if !reflect.DeepEqual(got.Roots, want.Roots) {
+			t.Errorf("Stack(%d) Roots =\n%v\nwant\n%v", id, got.Roots, want.Roots)
+		}
+		if !reflect.DeepEqual(got.Nodes, want.Nodes) {
+			t.Errorf("Stack(%d) Nodes =\n%+v\nwant\n%+v", id, got.Nodes, want.Nodes)
+		}
+	}
+	readsChild(first.ID, one)
+	readsChild(second.ID, two)
+	readsChild(first.ID, one)
+}
+
 // TestStackOfASubagentReadsItsTranscript pins that a subagent ID reads the
 // child's transcript, not the session's, and keeps the session's identity.
 func TestStackOfASubagentReadsItsTranscript(t *testing.T) {

@@ -272,6 +272,22 @@ func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyF
 			}
 			return crt, true
 		},
+		// Reads serves the transcript reads for a session whose runner was
+		// never built: it checks nothing but the state, so session/stack and
+		// session/stack_node answer for a session that has a transcript and no
+		// agent (P3 R4).
+		Reads: func(sessionID string) (*TurnRuntime, bool) {
+			rt, ok := manager.Get(sessionID)
+			if !ok || rt == nil || rt.State == nil {
+				return nil, false
+			}
+			evBroker, _ := rt.EventBroker.(*pubsub.Broker[session.Event])
+			return &TurnRuntime{
+				SessionID: sessionID,
+				State:     rt.State,
+				Events:    evBroker,
+			}, true
+		},
 		Notify:    notify,
 		Perms:     perms,
 		Questions: questions,
@@ -338,9 +354,6 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 	srv.Handle("session/set_effort", turns.SetEffort)
 	srv.Handle("session/steer", turns.Steer)
 	srv.Handle("session/steering_status", turns.SteeringStatus)
-	srv.Handle("session/stack", turns.Stack)
-	srv.Handle("session/stack_unsubscribe", turns.StackUnsubscribe)
-	srv.Handle("session/stack_node", turns.StackNode)
 	srv.Handle("session/last_request", turns.LastRequest)
 	srv.Handle("session/step_diffs", turns.StepDiffs)
 	srv.Handle("session/run", turns.Run)
@@ -385,22 +398,33 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 
 	// A marshal client's session call returns only after the updates it caused
 	// are written, so a read after the call sees its effect (P3 R2). Install
-	// it once all four managers whose forwarders carry those updates exist.
+	// it once every manager whose forwarders carry those updates exists.
 	statuses := NewStatusManager(StatusManagerConfig{
 		Lookup:  manager.Service,
 		Notify:  h.sink.Notify,
 		Marshal: srv.marshalClient,
 	})
 	registerStatus(srv, statuses)
+
+	// The transcript's handlers move together: the stack reads, the sheet a
+	// connection subscribes to, and the callers lookup. A sheet update keeps a
+	// marshal client's subscription current, so the sheet manager holds this
+	// connection's forwarders.
+	sheets := NewSheetManager(SheetManagerConfig{
+		Lookup:  manager.Service,
+		Notify:  h.sink.Notify,
+		Marshal: srv.marshalClient,
+	})
 	// The request manager's forwarders carry pending_requests the same way, so
-	// they join the barrier after the status manager's.
+	// they join the barrier after the sheet manager's.
 	requests := NewRequestManager(RequestManagerConfig{
 		Lookup:  manager.Service,
 		Notify:  h.sink.Notify,
 		Marshal: srv.marshalClient,
 	})
+	registerTranscript(srv, turns, sheets, manager.Service)
 	registerRequests(srv, requests)
-	srv.SetResponseBarrier(responseBarrier(turns, works, watches, statuses, requests))
+	srv.SetResponseBarrier(responseBarrier(turns, works, watches, statuses, sheets, requests))
 
 	home, _ := os.UserHomeDir()
 	cfgMgr := NewConfigManager(home, nil, nil)
@@ -554,14 +578,15 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 
 	// The work controller is per-connection: its forwarders (Task 22) push
 	// work_state updates to this connection's sink and must stop with it.
-	// The status and request managers' forwarders push session_status and
-	// pending_requests the same way.
+	// The status, sheet and request managers' forwarders push session_status,
+	// sheet and pending_requests the same way.
 	// The child approval collectors are per-connection too: they answer
 	// through this connection's permission bridge, so they end with it.
 	return func() {
 		turns.CloseChildApprovals()
 		works.Close()
 		statuses.Close()
+		sheets.Close()
 		requests.Close()
 	}
 }

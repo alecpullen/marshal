@@ -5,20 +5,17 @@ import (
 	"encoding/json"
 	"time"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/viewmodel"
 )
 
 // StackNodeParams is the session/stack_node request body.
-type StackNodeParams struct {
-	SessionID  string `json:"sessionId"`
-	NodeID     string `json:"nodeId"`
-	SubagentID int64  `json:"subagentId,omitempty"`
-}
+type StackNodeParams = acpwire.StackNodeParams
 
 // treeFor builds the full view-model tree of a session or subagent.
 func (m *TurnManager) treeFor(sessionID string, subagentID int64) (*TurnRuntime, *session.State, []*viewmodel.Node, error) {
-	rt, ok := m.lookup(sessionID)
+	rt, ok := m.readLookup()(sessionID)
 	if !ok || rt.State == nil {
 		return nil, nil, nil, serverErrorf("unknown session: %s", sessionID)
 	}

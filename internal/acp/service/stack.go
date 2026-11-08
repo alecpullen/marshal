@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+
 	"marshal/internal/acpwire"
 	"marshal/internal/viewmodel"
 )
@@ -46,4 +48,23 @@ func (s *Session) Stack(subagentID int64, busy bool) acpwire.StackSnapshot {
 		Roots:      tree.Roots,
 		Nodes:      tree.Nodes,
 	}
+}
+
+// ReleaseSubagent drops the subagent's projection memo, if it is the one
+// the session keeps. The next read of the subagent starts the memo afresh.
+// Releasing 0, the session's own transcript, does nothing.
+func (s *Session) ReleaseSubagent(ctx context.Context, subagentID int64) error {
+	if s.closed.Load() {
+		return errSessionClosed
+	}
+	if subagentID == 0 {
+		return nil
+	}
+	s.stackMu.Lock()
+	defer s.stackMu.Unlock()
+	if s.subMemoID == subagentID {
+		s.subMemo = viewmodel.WireMemo{}
+		s.subMemoID = 0
+	}
+	return nil
 }

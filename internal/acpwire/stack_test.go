@@ -200,3 +200,16 @@ func TestCollapsedRowFieldsJSON(t *testing.T) {
 		}
 	}
 }
+
+// TestStackBusyParamsEncodeBusyFalse pins the busy flag's field: it carries no
+// omitempty, because false is a value the agent must receive.
+func TestStackBusyParamsEncodeBusyFalse(t *testing.T) {
+	got, err := json.Marshal(StackBusyParams{SessionID: "s1", Busy: false})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	const want = `{"sessionId":"s1","busy":false}`
+	if string(got) != want {
+		t.Errorf("StackBusyParams JSON =\n%s\nwant\n%s", got, want)
+	}
+}

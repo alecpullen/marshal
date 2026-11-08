@@ -146,7 +146,11 @@ type NotifyFunc func(method string, params any) error
 
 // TurnManagerConfig wires a TurnManager to external dependencies.
 type TurnManagerConfig struct {
-	Lookup    Lookup
+	Lookup Lookup
+	// Reads resolves a session for the transcript reads (session/stack,
+	// session/stack_node and the idle loop): its state and events, whether or
+	// not its runner is built. Nil means Lookup.
+	Reads     Lookup
 	Notify    NotifyFunc
 	Perms     PermissionClient
 	Questions QuestionClient
@@ -200,7 +204,10 @@ type activeTurn struct {
 // TurnManager dispatches session/prompt and session/cancel. At most one
 // prompt may run per session; different sessions may run concurrently.
 type TurnManager struct {
-	lookup  Lookup
+	lookup Lookup
+	// reads resolves a session for the transcript reads, whether or not its
+	// runner is built. It is lookup unless the config gave another (P3 R4).
+	reads   Lookup
 	notify  NotifyFunc
 	perms   PermissionClient
 	bridge  *PermissionBridge
@@ -229,6 +236,15 @@ type TurnManager struct {
 	// stacksMu guards per-session stack projectors (foundation spec §5).
 	stacksMu sync.Mutex
 	stacks   map[string]*stackProjector
+
+	// busyMu guards clientBusy, the busy flag each connection's client set per
+	// session: the flag every stack of that session is projected with for this
+	// connection, in place of the agent's own rule (P3 R4).
+	busyMu     sync.Mutex
+	clientBusy map[string]bool
+	// busySet records the sessions whose flag a client actually sent, which
+	// "projected with false" cannot express.
+	busySet map[string]bool
 
 	// fences holds the live fences of this connection's event forwarders, by
 	// session. The response barrier asks them to confirm that the updates
@@ -276,6 +292,7 @@ func NewTurnManager(cfg TurnManagerConfig) *TurnManager {
 	}
 	tm := &TurnManager{
 		lookup:          cfg.Lookup,
+		reads:           cfg.Reads,
 		notify:          cfg.Notify,
 		perms:           cfg.Perms,
 		marshal:         cfg.Marshal,
@@ -288,6 +305,8 @@ func NewTurnManager(cfg TurnManagerConfig) *TurnManager {
 		runHashes:       map[string]uint64{},
 		lastSwarm:       map[string]session.SwarmProgress{},
 		childApprovals:  map[string]*childApprovals{},
+		clientBusy:      map[string]bool{},
+		busySet:         map[string]bool{},
 	}
 	if cfg.Perms != nil {
 		tm.bridge = NewPermissionBridge(cfg.Perms)

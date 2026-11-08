@@ -103,6 +103,7 @@ func (a *stackAgent) install(srv *Server) {
 		return a.m.Stack(ctx, params)
 	})
 	srv.Handle(acpwire.MethodStackUnsubscribe, a.m.StackUnsubscribe)
+	srv.Handle(acpwire.MethodStackBusy, a.m.StackBusy)
 	srv.Handle("test/ping", func(ctx context.Context, params json.RawMessage) (any, error) {
 		return struct{}{}, nil
 	})

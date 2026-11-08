@@ -109,6 +109,31 @@ type SheetSandbox struct {
 	AllowNetwork bool   `json:"allowNetwork,omitempty"`
 }
 
+// The sheet's method and update kind (P3 R3).
+const (
+	MethodSheet = "session/sheet"
+	UpdateSheet = "sheet"
+)
+
+// SheetParams is session/sheet's params. With Refresh it re-reads the values
+// Refresh names first, as RefreshSheet does. Either way it answers the sheet
+// of SubagentID, and subscribes a marshal client to it.
+type SheetParams struct {
+	SessionID  string        `json:"sessionId"`
+	SubagentID int64         `json:"subagentId,omitempty"`
+	Refresh    *SheetRefresh `json:"refresh,omitempty"`
+}
+
+// SheetUpdate is a sheet update: the whole sheet of one subscription,
+// sent whenever it differs from the last one sent. SubagentID is the ID the
+// client read, which can differ from Sheet.SubagentID: an ID that names no
+// child reads as the session's own sheet.
+type SheetUpdate struct {
+	Kind       string       `json:"kind"`
+	SubagentID int64        `json:"subagentId,omitempty"`
+	Sheet      SessionSheet `json:"sheet"`
+}
+
 // SheetRefresh names the sheet values a RefreshSheet call re-reads.
 type SheetRefresh struct {
 	Rebase  bool `json:"rebase,omitempty"`  // HEAD of the active root as the base, then the changed files

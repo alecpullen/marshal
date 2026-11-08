@@ -136,6 +136,25 @@ type StackNodeResult struct {
 	Node   WireNode   `json:"node"`
 }
 
+// StackNodeParams is session/stack_node's params. SubagentID 0 names the
+// main transcript.
+type StackNodeParams struct {
+	SessionID  string `json:"sessionId"`
+	NodeID     string `json:"nodeId"`
+	SubagentID int64  `json:"subagentId,omitempty"`
+}
+
+// CallersParams is session/callers' params.
+type CallersParams struct {
+	SessionID string `json:"sessionId"`
+	NodeID    string `json:"nodeId"`
+}
+
+// CallersResult is session/callers' answer. An empty list is omitted.
+type CallersResult struct {
+	Refs []string `json:"refs,omitempty"`
+}
+
 // HookDetail is what a client reads of one hook run in CallDetail.Hooks.
 type HookDetail struct {
 	Event    string `json:"event"`

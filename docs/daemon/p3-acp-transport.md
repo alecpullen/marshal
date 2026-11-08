@@ -77,8 +77,8 @@ new client.
 
 ## Where the code is today
 
-- **The interface** has 110 methods. 47 send an ACP method that exists,
-  and 61 are carried by one of the 56 ACP methods that are new in P3
+- **The interface** has 111 methods. 51 send an ACP method that exists,
+  and 58 are carried by one of the 54 ACP methods that are new in P3
   ("Methods P3 adds", below). Two have no ACP method at all.
 - **The adapter is most of the logic.** `inproc` converts runtime values
   to wire values and applies the policy the TUI used to apply. That
@@ -91,7 +91,7 @@ new client.
   (`NewServer`, `:119`). It reads each inbound frame with a 1 MiB cap
   (`:312`). Handlers run on their own goroutines (`handlerWG`), and nothing
   orders a response after the notifications its handler caused. There is
-  no request cancellation: no `$/cancelRequest` or equivalent. 82 methods
+  no request cancellation: no `$/cancelRequest` or equivalent. 85 methods
   are registered (`host.go`), plus the `session/cancel` notification.
 - **What the agent pushes today:**
   - the ACP chunk kinds (`agent_message_chunk`, `agent_thought_chunk`,
@@ -1392,3 +1392,74 @@ client without the capability nothing changed (R9); the TUI still runs on
   the five answers, `ReconcileAccess` and `Rollback`), 61 new in P3 carried by
   56 distinct new methods, and 2 carrying none; `acp.Server` registers 82
   methods (75 plus the seven).
+
+### Plan 4b — the transcript read and the sheet
+
+The transcript's four reads over one connection: the stack, a row's detail, a
+node's callers and the sheet, with the busy flag the TUI used to own and a
+release when a drill-in ends. For a client without the capability nothing
+changed (R9); the TUI still runs on `inproc`, in process, until plan 8.
+
+- **The reads need no runner.** `TurnManagerConfig` gained `Reads`, a lookup
+  that returns the session's state and events without the prompt path's
+  runner check; `Stack`, `treeFor` and both idle-loop lookups use it, and a
+  nil `Reads` means `Lookup` at call time, so a caller that swaps `Lookup`
+  after construction still reaches them. A session whose provider failed to
+  build now serves `session/stack` and `session/stack_node`, where it answered
+  "unknown session".
+- **The agent projects at the state's clock.** `flushProjectorFor` and
+  `stackSnapshot` take `now` from `State.Now()` instead of `time.Now()`, so the
+  two arms agree under a test clock and nothing changes in production.
+- **The busy flag stays, as a connection's flag for a session.** The
+  connection-level `busy` field is gone: `session/stack_busy` sets the flag
+  every stack of that session is projected with for this connection, in place
+  of the agent's rule, and the client sends it only when it changes. The flag
+  had to stay on the wire because `buildLive` and `buildTray` set `m.busy` with
+  no run in flight, so an agent reading its own run slot would rebuild the
+  `live` and `tray` goldens as idle. A flip re-projects every active stack of
+  the session before it answers, clearing `final` on settled subagent
+  projectors first, so the flip is read-your-writes without the barrier.
+- **`internal/acp/sheet.go`** holds the connection's `SheetManager`: one
+  `session/sheet`, a `sheet` forwarder per session a marshal client reads, and
+  `session/callers`. The forwarder polls at `sheetInterval` (50 ms) and on its
+  fence, because most of a sheet is computed from the state on every read and
+  no event says it changed; it sends the whole sheet of each subscription only
+  when its encoding moved. The session's own sheet is never released.
+- **`registerTranscript`** owns the six transcript handlers, and
+  `session/stack_unsubscribe` now releases the subagent's sheet with its stack,
+  so leaving a drill-in stops both forwarders' work for that ID.
+- **`responseBarrier` is variadic**, as plan 5 made it; this branch's
+  registration order is `turns, works, watches, statuses, sheets, requests`.
+- **`internal/acpclient/rpc`** mirrors what it reads. `Host` builds one
+  `rpc.Stacks` in `Dial`, binds it to the connection and installs `OnChange` so
+  every change it applies taps the attached session's `Changed`; `routeNotify`
+  hands every `session/update` to it before decoding the kind, and applies a
+  `sheet` update to the sheet mirror. `Stack` sends `session/stack_busy` on a
+  flip and then reads the mirror, which fetches a tree on its first read; a
+  refused read is an empty snapshot with that ID and keeps no entry, so the
+  next read asks again. The sheet mirror keeps one entry per subagent ID read,
+  installing the result unless an update replaced it mid-call.
+- **`ReleaseSubagent`** is in the interface, the service and `popDrill`. Over
+  the wire it forgets the sheet entry and sends `session/stack_unsubscribe`; in
+  process it drops the service's subagent memo. Releasing 0 does nothing.
+- **The conformance harness** (`internal/acp/conformance_transcript_test.go`)
+  opens the same two arms with six more seam methods and a `serveTranscript`
+  that adds both managers to the pipe arm's barrier. Seventeen cases run on
+  each arm and agree; node lists compare by their JSON encodings, because the
+  wire does not keep a nil slice apart from an empty one. One case needed a
+  test-only concession: over the wire the client reads a mirror, and a band
+  that goes stale with time alone pushes nothing, so "the stack reads the
+  state's clock" flips the busy flag to make the agent re-project at the new
+  clock. The gap it exposes — a time-only change never reaching a cached
+  client — is plan 4a's caching design, not the wire type, the agent or the
+  service, so it was left alone.
+- **The budget (R10).** `TestStackBusyFlipBudget` alternates the flag over the
+  2,000-call session (1,201 nodes, a 2,534,626-byte snapshot). The median is
+  **4.1 ms** over 20 flips, against R10's 10 ms and plan 4c's 4.3 ms flush —
+  the flip costs one flush, which is what it does.
+- **The counts moved** (re-measured on the merged tree, after plan 5):
+  `acpclient.Methods` has 111 rows, now 51 of them an existing ACP method
+  (four more: `Sheet`, `RefreshSheet`, `Callers` and `ReleaseSubagent`), 58 new
+  in P3 carried by 54 distinct new methods, and 2 carrying none; `acp.Server`
+  registers 85 methods (82 plus `session/stack_busy`, `session/sheet` and
+  `session/callers`).

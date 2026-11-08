@@ -225,14 +225,14 @@ type Session interface {
 	// Sheet does not block: its database and git values are the ones the
 	// last RefreshSheet read.
 	//
-	// ACP: session/sheet (new in P3). P3 serves it from a mirror that
-	// RefreshSheet fills.
+	// ACP: session/sheet (exists). P3 serves it from a mirror that a sheet
+	// update keeps current.
 	Sheet(subagentID int64) acpwire.SessionSheet
 
 	// RefreshSheet re-reads the sheet values req names from the database and
 	// git, then fires Changed. It blocks on those reads.
 	//
-	// ACP: session/sheet (new in P3), sent with the refresh flags.
+	// ACP: session/sheet (exists), sent with the refresh flags.
 	RefreshSheet(ctx context.Context, req acpwire.SheetRefresh) error
 
 	// Stack is the transcript the TUI renders (C6): the session's own when
@@ -240,13 +240,15 @@ type Session interface {
 	// session's tree. Roots are the turns in order. Nodes hold every node of
 	// the tree, then the band node, which is not in Roots. An ID that names no
 	// child the session keeps reads as an empty snapshot with that SubagentID.
-	// Stack does not block.
+	// Stack does not block in process. Over the wire it makes a call only on a
+	// tree's first read and when busy changes.
 	//
 	// busy says a turn is running, which decides the live beat and the turn's
 	// receipt. Until plan 5 moves turns behind Prompt the TUI owns turns, so it
 	// passes its own flag, and the tree is built with it whatever subagentID
-	// names. P3 drops the parameter: session/stack builds a session's tree as
-	// busy while its turn runs, and a subagent's while the subagent runs.
+	// names. P3 keeps it (R4): over the wire the client sends the flag with
+	// session/stack_busy when it changes, and every stack of the session is
+	// projected with it.
 	//
 	// ACP: session/stack (exists). A stack_patch update refreshes it.
 	Stack(subagentID int64, busy bool) acpwire.StackSnapshot
@@ -267,8 +269,17 @@ type Session interface {
 	// no language server is wired or ready, and when the node is gone. A
 	// caller asks once per row and keeps the answer, a nil one included.
 	//
-	// ACP: session/callers (new in P3).
+	// ACP: session/callers (exists).
 	Callers(ctx context.Context, nodeID string) ([]string, error)
+
+	// ReleaseSubagent says the caller stopped reading the subagent's
+	// transcript and sheet, as the TUI does when it leaves a drill-in. The
+	// next read of either starts afresh. Releasing 0, the session's own,
+	// does nothing.
+	//
+	// ACP: session/stack_unsubscribe (exists), which also releases the
+	// subagent's sheet.
+	ReleaseSubagent(ctx context.Context, subagentID int64) error
 
 	// Pending lists every open request a person can answer (C7): the
 	// session's own, and the approvals of its running subagents. Pending does

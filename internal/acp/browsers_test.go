@@ -5,6 +5,10 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -13,8 +17,10 @@ import (
 	"marshal/internal/acp/service"
 	"marshal/internal/acpclient/rpc"
 	"marshal/internal/acpwire"
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/commands"
+	"marshal/internal/db"
 )
 
 // browserSession is the session every browser test serves.
@@ -307,6 +313,356 @@ func TestTheNoteAndCommandCallsRefuseBadParams(t *testing.T) {
 		t.Run(tc.method+" for an unknown session", func(t *testing.T) {
 			// A server error's sentence is client-safe, so it survives the
 			// server's rewrite with "server error: " in front of it.
+			err := callEmpty(t, conn, tc.method, tc.params("nope"))
+			if err == nil || !strings.Contains(err.Error(), "unknown session") {
+				t.Fatalf("%s = %v, want the unknown-session refusal", tc.method, err)
+			}
+		})
+	}
+}
+
+// browserHistoryDB opens a migrated database with one project, as the
+// service's history tests build theirs.
+func browserHistoryDB(t *testing.T) (*db.DB, int64) {
+	t.Helper()
+	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	projectID, err := database.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	return database, projectID
+}
+
+// browserWritePlan writes a plan file into dir's plans directory.
+func browserWritePlan(t *testing.T, dir, name, body string) string {
+	t.Helper()
+	plansDir := filepath.Join(dir, ".marshal", "plans")
+	if err := os.MkdirAll(plansDir, 0o755); err != nil {
+		t.Fatalf("mkdir plans: %v", err)
+	}
+	path := filepath.Join(plansDir, name)
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write plan: %v", err)
+	}
+	return path
+}
+
+// browserRepo returns a repository with two commits on main and their SHAs.
+func browserRepo(t *testing.T) (dir, base, head string) {
+	t.Helper()
+	dir = t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		cmdArgs := append([]string{"-C", dir}, args...)
+		out, err := exec.Command("git", cmdArgs...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run("init", "-q", "-b", "main")
+	run("config", "user.email", "test@example.com")
+	run("config", "user.name", "test")
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatalf("write a.txt: %v", err)
+	}
+	run("add", ".")
+	run("commit", "-q", "-m", "first")
+	base = run("rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("two\n"), 0o644); err != nil {
+		t.Fatalf("rewrite a.txt: %v", err)
+	}
+	run("commit", "-q", "-am", "second")
+	head = run("rev-parse", "HEAD")
+	return dir, base, head
+}
+
+// TestThePromptHistoryRoundTrips pins the two history calls over the wire
+// against a real database: a saved prompt comes back newest first.
+func TestThePromptHistoryRoundTrips(t *testing.T) {
+	database, projectID := browserHistoryDB(t)
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0),
+		session.Persistence{DB: database, SessionID: browserSession})
+	conn, _ := startBrowserAgent(t, true, service.Deps{State: state, ProjectID: projectID}, nil)
+
+	for _, text := range []string{"first", "second"} {
+		err := callEmpty(t, conn, acpwire.MethodPromptHistorySave, acpwire.PromptSaveParams{
+			SessionID: browserSession,
+			Text:      text,
+		})
+		if err != nil {
+			t.Fatalf("session/prompt_history_save(%q): %v", text, err)
+		}
+	}
+
+	var res acpwire.PromptHistoryResult
+	err := conn.Call(context.Background(), acpwire.MethodPromptHistory,
+		acpwire.PromptHistoryParams{SessionID: browserSession, Limit: 10}, &res)
+	if err != nil {
+		t.Fatalf("session/prompt_history: %v", err)
+	}
+	if want := []string{"second", "first"}; !reflect.DeepEqual(res.Prompts, want) {
+		t.Errorf("prompts = %v, want %v", res.Prompts, want)
+	}
+}
+
+// TestMessagesSelectsOverTheWire checks the query crosses the call intact: a
+// role filter with a cap answers the newest match and the total it cut.
+func TestMessagesSelectsOverTheWire(t *testing.T) {
+	state := seamState(t, browserSession)
+	state.AddMessage(session.RoleUser, "one", session.ContentTypePlain)
+	state.AddMessageFinal(session.RoleAssistant, "answer", session.ContentTypePlain)
+	state.AddMessage(session.RoleUser, "two", session.ContentTypePlain)
+	conn, _ := startBrowserAgent(t, true, service.Deps{State: state}, nil)
+
+	var res acpwire.MessagePage
+	err := conn.Call(context.Background(), acpwire.MethodMessages, acpwire.MessagesParams{
+		SessionID: browserSession,
+		Query:     acpwire.MessageQuery{Role: acpwire.RoleUser, Last: 1},
+	}, &res)
+	if err != nil {
+		t.Fatalf("session/messages: %v", err)
+	}
+	want := []acpwire.HistoryMessage{{Role: acpwire.RoleUser, Content: "two"}}
+	if !reflect.DeepEqual(res.Messages, want) {
+		t.Errorf("messages = %+v, want %+v", res.Messages, want)
+	}
+	if res.Total != 2 {
+		t.Errorf("total = %d, want 2", res.Total)
+	}
+}
+
+// TestTheProjectReadsReachTheService checks the four project calls: the file
+// index, plan discovery, the starter plan and the discard refusal.
+func TestTheProjectReadsReachTheService(t *testing.T) {
+	dir := t.TempDir()
+	state := session.New(config.Default(), dir, time.Unix(100, 0), session.Persistence{})
+	browserWritePlan(t, dir, "candidate.md", "# Plan\n\n## Task 1: Do it\n")
+	conn, _ := startBrowserAgent(t, true, service.Deps{
+		State:     state,
+		FileIndex: func() ([]string, error) { return []string{"a.go", "b.go"}, nil },
+	}, nil)
+	ctx := context.Background()
+
+	var index acpwire.FileIndexResult
+	if err := conn.Call(ctx, acpwire.MethodFileIndex, acpwire.ControlParams{SessionID: browserSession}, &index); err != nil {
+		t.Fatalf("session/file_index: %v", err)
+	}
+	if want := []string{"a.go", "b.go"}; !reflect.DeepEqual(index.Paths, want) {
+		t.Errorf("paths = %v, want %v", index.Paths, want)
+	}
+
+	var plans acpwire.PlansResult
+	if err := conn.Call(ctx, acpwire.MethodPlans, acpwire.ControlParams{SessionID: browserSession}, &plans); err != nil {
+		t.Fatalf("session/plans: %v", err)
+	}
+	names := make([]string, 0, len(plans.Plans))
+	for _, plan := range plans.Plans {
+		names = append(names, plan.Name)
+	}
+	if want := []string{"candidate.md"}; !reflect.DeepEqual(names, want) {
+		t.Errorf("plans = %v, want %v", names, want)
+	}
+
+	var first acpwire.ScaffoldResult
+	if err := conn.Call(ctx, acpwire.MethodSDDScaffold, acpwire.ControlParams{SessionID: browserSession}, &first); err != nil {
+		t.Fatalf("session/sdd_scaffold: %v", err)
+	}
+	if first.Path == "" || first.Existed {
+		t.Errorf("scaffold = %+v, want a new plan's path", first)
+	}
+	var second acpwire.ScaffoldResult
+	if err := conn.Call(ctx, acpwire.MethodSDDScaffold, acpwire.ControlParams{SessionID: browserSession}, &second); err != nil {
+		t.Fatalf("session/sdd_scaffold: %v", err)
+	}
+	if !second.Existed {
+		t.Error("second scaffold Existed = false, want true")
+	}
+
+	outside := filepath.Join(dir, "outside.md")
+	if err := os.WriteFile(outside, []byte("# Plan\n\n## Task 1: Do it\n"), 0o644); err != nil {
+		t.Fatalf("write outside plan: %v", err)
+	}
+	err := callEmpty(t, conn, acpwire.MethodSDDDiscard, acpwire.PathParams{
+		SessionID: browserSession,
+		Path:      outside,
+	})
+	if err == nil {
+		t.Fatal("session/sdd_discard(outside) = nil, want the service's refusal")
+	}
+	if _, statErr := os.Stat(outside); statErr != nil {
+		t.Errorf("the outside file is gone after a refused discard: %v", statErr)
+	}
+}
+
+// TestAMarshalDiffTakesTheHead proves the routed diff names the range's head:
+// the answer is the diff between the two commits, and ACP's handler, which
+// cannot name one, is not called.
+func TestAMarshalDiffTakesTheHead(t *testing.T) {
+	dir, base, head := browserRepo(t)
+	state := session.New(config.Default(), dir, time.Unix(100, 0), session.Persistence{})
+	var acpCalled atomic.Bool
+	others := map[string]Handler{
+		acpwire.MethodDiff: func(context.Context, json.RawMessage) (any, error) {
+			acpCalled.Store(true)
+			return acpwire.DiffResult{Diff: "acp"}, nil
+		},
+	}
+	conn, _ := startBrowserAgent(t, true, service.Deps{State: state}, others)
+
+	var res acpwire.DiffResult
+	err := conn.Call(context.Background(), acpwire.MethodDiff, acpwire.DiffCallParams{
+		SessionID: browserSession,
+		Base:      base,
+		Head:      head,
+	}, &res)
+	if err != nil {
+		t.Fatalf("session/diff: %v", err)
+	}
+	if acpCalled.Load() {
+		t.Error("the ACP handler served a marshal client's session/diff")
+	}
+	if !strings.Contains(res.Diff, "-one") || !strings.Contains(res.Diff, "+two") {
+		t.Errorf("diff = %q, want the change between the two commits", res.Diff)
+	}
+}
+
+// TestAMarshalReadFileStaysInTheDirectory checks a marshal client's file read
+// keeps the service's containment rule.
+func TestAMarshalReadFileStaysInTheDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write a.txt: %v", err)
+	}
+	state := session.New(config.Default(), dir, time.Unix(100, 0), session.Persistence{})
+	conn, _ := startBrowserAgent(t, true, service.Deps{State: state}, nil)
+
+	var res acpwire.FileContent
+	err := conn.Call(context.Background(), acpwire.MethodFile, acpwire.PathParams{
+		SessionID: browserSession,
+		Path:      "a.txt",
+	}, &res)
+	if err != nil {
+		t.Fatalf("session/file: %v", err)
+	}
+	if res.Content != "hello" {
+		t.Errorf("content = %q, want %q", res.Content, "hello")
+	}
+
+	err = callEmpty(t, conn, acpwire.MethodFile, acpwire.PathParams{
+		SessionID: browserSession,
+		Path:      "../outside",
+	})
+	if err == nil {
+		t.Fatal("session/file(../outside) = nil, want the service's refusal")
+	}
+}
+
+// TestADiffWithoutTheCapabilityReachesItsOtherHandler is V6 for the two routed
+// project methods: a client that did not declare the capability reaches ACP's
+// handler, unchanged.
+func TestADiffWithoutTheCapabilityReachesItsOtherHandler(t *testing.T) {
+	dir, base, head := browserRepo(t)
+	var diffCalled, fileCalled atomic.Bool
+	others := map[string]Handler{
+		acpwire.MethodDiff: func(context.Context, json.RawMessage) (any, error) {
+			diffCalled.Store(true)
+			return acpwire.DiffResult{Diff: "acp"}, nil
+		},
+		acpwire.MethodFile: func(context.Context, json.RawMessage) (any, error) {
+			fileCalled.Store(true)
+			return acpwire.FileContent{Path: "acp.txt", Content: "acp"}, nil
+		},
+	}
+	state := session.New(config.Default(), dir, time.Unix(100, 0), session.Persistence{})
+	conn, _ := startBrowserAgent(t, false, service.Deps{State: state}, others)
+	ctx := context.Background()
+
+	var diff acpwire.DiffResult
+	if err := conn.Call(ctx, acpwire.MethodDiff, acpwire.DiffCallParams{
+		SessionID: browserSession,
+		Base:      base,
+		Head:      head,
+	}, &diff); err != nil {
+		t.Fatalf("session/diff: %v", err)
+	}
+	if !diffCalled.Load() {
+		t.Error("session/diff did not reach ACP's handler")
+	}
+	if diff.Diff != "acp" {
+		t.Errorf("diff = %q, want ACP's %q", diff.Diff, "acp")
+	}
+
+	var file acpwire.FileContent
+	if err := conn.Call(ctx, acpwire.MethodFile, acpwire.PathParams{
+		SessionID: browserSession,
+		Path:      "a.txt",
+	}, &file); err != nil {
+		t.Fatalf("session/file: %v", err)
+	}
+	if !fileCalled.Load() {
+		t.Error("session/file did not reach ACP's handler")
+	}
+	if file.Content != "acp" {
+		t.Errorf("content = %q, want ACP's %q", file.Content, "acp")
+	}
+}
+
+// TestTheProjectCallsRefuseBadParams pins the same two refusals for the history
+// and project calls.
+func TestTheProjectCallsRefuseBadParams(t *testing.T) {
+	conn, _ := startBrowserAgent(t, true, service.Deps{State: seamState(t, browserSession)}, nil)
+
+	cases := []struct {
+		method string
+		params func(sessionID string) any
+	}{
+		{acpwire.MethodPromptHistory, func(id string) any {
+			return acpwire.PromptHistoryParams{SessionID: id, Limit: 5}
+		}},
+		{acpwire.MethodPromptHistorySave, func(id string) any {
+			return acpwire.PromptSaveParams{SessionID: id, Text: "hi"}
+		}},
+		{acpwire.MethodMessages, func(id string) any {
+			return acpwire.MessagesParams{SessionID: id, Query: acpwire.MessageQuery{Role: acpwire.RoleUser}}
+		}},
+		{acpwire.MethodFileIndex, func(id string) any {
+			return acpwire.ControlParams{SessionID: id}
+		}},
+		{acpwire.MethodIntelligence, func(id string) any {
+			return acpwire.ControlParams{SessionID: id}
+		}},
+		{acpwire.MethodPlans, func(id string) any {
+			return acpwire.ControlParams{SessionID: id}
+		}},
+		{acpwire.MethodSDDDiscard, func(id string) any {
+			return acpwire.PathParams{SessionID: id, Path: "x.md"}
+		}},
+		{acpwire.MethodSDDScaffold, func(id string) any {
+			return acpwire.ControlParams{SessionID: id}
+		}},
+		{acpwire.MethodDiff, func(id string) any {
+			return acpwire.DiffCallParams{SessionID: id, Base: "a", Head: "b"}
+		}},
+		{acpwire.MethodFile, func(id string) any {
+			return acpwire.PathParams{SessionID: id, Path: "a.txt"}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method+" without a session ID", func(t *testing.T) {
+			err := callEmpty(t, conn, tc.method, tc.params(""))
+			if err == nil || err.Error() != "invalid params" {
+				t.Fatalf("%s = %v, want the invalid-params refusal", tc.method, err)
+			}
+		})
+		t.Run(tc.method+" for an unknown session", func(t *testing.T) {
 			err := callEmpty(t, conn, tc.method, tc.params("nope"))
 			if err == nil || !strings.Contains(err.Error(), "unknown session") {
 				t.Fatalf("%s = %v, want the unknown-session refusal", tc.method, err)

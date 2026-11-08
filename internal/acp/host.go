@@ -561,7 +561,6 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 			return out
 		},
 	})
-	srv.Handle("session/diff", wtMgr.Diff)
 	srv.Handle("session/merge", wtMgr.Merge)
 	srv.Handle("session/discard", wtMgr.Discard)
 	srv.Handle("session/worktree_prune", wtMgr.Prune)
@@ -587,7 +586,6 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 		return rt.State, true
 	})
 	srv.Handle("session/files", filesMgr.Files)
-	srv.Handle("session/file", filesMgr.File)
 
 	skillsMgr := NewSkillsManager(SkillsManagerConfig{
 		Lookup: func(sessionID string) (*SkillsRuntime, bool) {
@@ -629,6 +627,8 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 	registerBrowsers(srv, browsers, map[string]Handler{
 		acpwire.MethodCommand:     cmds.Command,
 		acpwire.MethodCommandList: cmds.CommandList,
+		acpwire.MethodDiff:        wtMgr.Diff,
+		acpwire.MethodFile:        filesMgr.File,
 	})
 
 	// Follow-ups doc item #5: this used to overwrite the manager's

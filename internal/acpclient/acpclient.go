@@ -790,61 +790,64 @@ type Session interface {
 	// most limit entries. A session without a database or a project returns
 	// none.
 	//
-	// ACP: session/prompt_history (new in P3).
+	// ACP: session/prompt_history (exists).
 	RecentPrompts(ctx context.Context, limit int) ([]string, error)
 
 	// SavePrompt adds text to the project's input history. A session without
 	// a database or a project saves nothing and reports no error.
 	//
-	// ACP: session/prompt_history_save (new in P3).
+	// ACP: session/prompt_history_save (exists).
 	SavePrompt(ctx context.Context, text string) error
 
 	// Messages returns the session's transcript messages that query selects.
 	// A closed session keeps answering from its final transcript.
 	//
-	// ACP: session/messages (new in P3).
+	// ACP: session/messages (exists).
 	Messages(ctx context.Context, query acpwire.MessageQuery) (acpwire.MessagePage, error)
 
 	// FileIndex returns the repository's indexed file paths, for the @
 	// completion popup. A session without an index returns none.
 	//
-	// ACP: session/file_index (new in P3).
+	// ACP: session/file_index (exists).
 	FileIndex(ctx context.Context) ([]string, error)
 
 	// Intelligence returns the doctor's intelligence checks: the index, the
 	// embeddings, the language servers and the index watcher.
 	//
-	// ACP: session/intelligence (new in P3).
+	// ACP: session/intelligence (exists).
 	Intelligence(ctx context.Context) ([]acpwire.IntelligenceCheck, error)
 
 	// Plans lists the plans an SDD run can execute, from the configured plans
 	// directory. A plan that does not parse is listed with its error.
 	//
-	// ACP: session/plans (new in P3).
+	// ACP: session/plans (exists).
 	Plans(ctx context.Context) ([]acpwire.PlanCandidate, error)
 
 	// DiscardCandidate removes one authored plan candidate. It refuses a path
 	// that is not a regular file directly inside the plans directory.
 	//
-	// ACP: session/sdd_discard (new in P3).
+	// ACP: session/sdd_discard (exists).
 	DiscardCandidate(ctx context.Context, path string) error
 
 	// ScaffoldPlan writes the runnable starter plan into the plans directory.
 	// It never overwrites a file that is already there.
 	//
-	// ACP: session/sdd_scaffold (new in P3).
+	// ACP: session/sdd_scaffold (exists).
 	ScaffoldPlan(ctx context.Context) (acpwire.ScaffoldResult, error)
 
 	// Diff returns the unified diff of query's range in the session's working
 	// directory, with three lines of context. It never changes the
 	// repository.
 	//
-	// ACP: session/diff (exists). P3 gives it an optional head.
+	// ACP: session/diff (exists). A marshal client's call is served by the
+	// session's service, which takes the range's head; ACP's handler, which
+	// takes none, serves every other client.
 	Diff(ctx context.Context, query acpwire.DiffQuery) (string, error)
 
 	// ReadFile reads one regular file, named relative to the session's
 	// working directory. It refuses a path that leaves the directory.
 	//
-	// ACP: session/file (exists).
+	// ACP: session/file (exists). A marshal client's call is served by the
+	// session's service.
 	ReadFile(ctx context.Context, path string) (acpwire.FileContent, error)
 }

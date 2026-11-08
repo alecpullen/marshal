@@ -31,8 +31,8 @@ const (
 )
 
 // HostCallParams names the session whose runtime serves a host call: the
-// client's current session. config/provider_templates, trust/prompt and
-// config/models_forget take only this.
+// client's current session. config/provider_templates and trust/prompt take
+// only this.
 type HostCallParams struct {
 	SessionID string `json:"sessionId"`
 }

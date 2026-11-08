@@ -30,6 +30,9 @@ import (
 // Host is the transport the TUI holds: what the agent side is, independent of
 // any one session. It gains its groups' methods plan by plan (spec Migration
 // order).
+//
+// Over ACP every host call but SharedFilesystem names the client's current
+// session, whose runtime serves it.
 type Host interface {
 	// SharedFilesystem reports whether a path the agent names is also a
 	// path on this machine, so the TUI may open it in $EDITOR (C12).
@@ -49,14 +52,15 @@ type Host interface {
 	// decision, or "" when none does. It does not change while the host
 	// runs.
 	//
-	// ACP: trust/prompt (new in P3).
+	// ACP: trust/prompt (exists). Read once, after the first attach, and
+	// kept.
 	TrustPrompt() string
 
 	// DecideTrust answers the trust prompt for dir. After a trust the client
 	// ends its program, and the app restarts with the project config in
 	// force; after a decline the session carries on.
 	//
-	// ACP: trust/decide (new in P3).
+	// ACP: trust/decide (exists).
 	DecideTrust(ctx context.Context, dir string, decision acpwire.TrustDecision) error
 
 	// ListSessions lists the stored sessions whose working directory is cwd,
@@ -69,7 +73,8 @@ type Host interface {
 	// ProviderTemplates lists the provider catalog, sorted by ID, each with
 	// every field.
 	//
-	// ACP: config/provider_templates (new in P3).
+	// ACP: config/provider_templates (exists). Read once, after the first
+	// attach, and kept.
 	ProviderTemplates() []acpwire.ProviderTemplate
 
 	// ProbeProvider lists the models pc's endpoint reports, for a provider
@@ -79,58 +84,59 @@ type Host interface {
 	// entry keyed by pc, which SaveModels then overwrites with the saved
 	// config's.
 	//
-	// ACP: config/probe_provider (exists).
+	// ACP: config/probe_provider (exists). A marshal client's call is served
+	// by the session's service.
 	ProbeProvider(ctx context.Context, name string, pc config.ProviderConfig) ([]schema.ModelInfo, error)
 
 	// CanProbeModel reports whether ProbeModel can tell anything about a model
 	// of pc: false when pc's client cannot be built or cannot probe a model.
 	//
-	// ACP: config/probe_model (new in P3).
+	// ACP: config/probe_model (exists).
 	CanProbeModel(ctx context.Context, name string, pc config.ProviderConfig) bool
 
 	// ProbeModel probes one model's capabilities. A client that cannot probe
 	// returns zero capabilities and no error; one that cannot be built returns
 	// zero capabilities and the error.
 	//
-	// ACP: config/probe_model (new in P3).
+	// ACP: config/probe_model (exists).
 	ProbeModel(ctx context.Context, name string, pc config.ProviderConfig, model string) (acpwire.ModelCapabilities, error)
 
 	// ListModels returns the cached model list for the provider called name,
 	// when the cache holds one for the provider's current config that is still
 	// fresh.
 	//
-	// ACP: config/models_list (new in P3).
+	// ACP: config/models_list (exists).
 	ListModels(ctx context.Context, name string) ([]schema.ModelInfo, bool)
 
 	// SaveModels caches models for the provider called name, keyed by its
 	// current config. An empty list, or a name the session's config does not
 	// have, changes nothing.
 	//
-	// ACP: config/models_save (new in P3).
+	// ACP: config/models_save (exists).
 	SaveModels(ctx context.Context, name string, models []schema.ModelInfo) error
 
 	// ForgetModels drops the cached list for the provider called name.
 	//
-	// ACP: config/models_forget (new in P3).
+	// ACP: config/models_forget (exists).
 	ForgetModels(ctx context.Context, name string) error
 
 	// RenameModels moves the cached list of the provider called from to the
 	// name to. A from the cache does not hold changes nothing.
 	//
-	// ACP: config/models_rename (new in P3).
+	// ACP: config/models_rename (exists).
 	RenameModels(ctx context.Context, from, to string) error
 
 	// PrepareProviderLogin checks that the browser sign-in for the provider
 	// called name can start, and returns why not.
 	//
-	// ACP: config/login_provider (new in P3).
+	// ACP: config/login_provider (exists).
 	PrepareProviderLogin(ctx context.Context, name string) error
 
 	// LoginProvider runs the browser sign-in for the provider called name and
 	// stores its tokens. It calls show once with the authorization URL, which
 	// the client opens, and returns when the sign-in ends.
 	//
-	// ACP: config/login_provider (new in P3). show is fed by the call's
+	// ACP: config/login_provider (exists). show is fed by the call's
 	// progress notification.
 	LoginProvider(ctx context.Context, name string, show func(url string)) error
 
@@ -138,7 +144,7 @@ type Host interface {
 	// config, leaving the rest of the file alone. value is a bool, string,
 	// integer or string list, or what config.LookupPath returns for one.
 	//
-	// ACP: config/set_value (new in P3). The value travels as JSON, and the
+	// ACP: config/set_value (exists). The value travels as JSON, and the
 	// agent converts it by the field's type.
 	SaveUserValue(ctx context.Context, tomlPath string, value any) error
 
@@ -149,20 +155,21 @@ type Host interface {
 	// provider renamed since baseline to its name there, so its key follows
 	// it (plan 7d).
 	//
-	// ACP: config/save_providers (new in P3).
+	// ACP: config/save_providers (exists).
 	SaveUserProviders(ctx context.Context, providers, baseline map[string]config.ProviderConfig, renamed map[string]string) error
 
 	// SaveUserPresets writes the user config's [models.presets] section,
 	// merged against baseline as SaveUserProviders is.
 	//
-	// ACP: config/save_presets (new in P3).
+	// ACP: config/save_presets (exists).
 	SaveUserPresets(ctx context.Context, presets, baseline map[string]routing.ModelPreset) error
 
 	// SaveProviderKey stores key as the literal API key of the provider called
 	// name in the user config, keeping the entry's other fields.
 	//
-	// ACP: config/set_provider_key (exists). Its handler writes the provider's
-	// full entry; this call writes only the credential.
+	// ACP: config/set_provider_key (exists). A marshal client's call is served
+	// by the session's service. Its handler writes the provider's full entry;
+	// this call writes only the credential.
 	SaveProviderKey(ctx context.Context, name, key string) error
 
 	// PreparePresets proposes presets for the models a connected provider
@@ -170,13 +177,13 @@ type Host interface {
 	// refreshed from the models.dev catalog (read only when cfg's consent
 	// allows) and the provenance sidecar. cfg is not changed.
 	//
-	// ACP: config/prepare_presets (new in P3).
+	// ACP: config/prepare_presets (exists).
 	PreparePresets(ctx context.Context, cfg config.Config, provider, baseURL string, models []schema.ModelInfo) (map[string]routing.ModelPreset, acpwire.PresetSetup, error)
 
 	// SaveProvenance writes the provenance sidecar PreparePresets returned.
 	// A nil or empty provenance writes nothing.
 	//
-	// ACP: config/save_provenance (new in P3).
+	// ACP: config/save_provenance (exists).
 	SaveProvenance(ctx context.Context, provenance json.RawMessage) error
 }
 

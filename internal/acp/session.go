@@ -110,14 +110,23 @@ type SessionManager struct {
 	closeMu   sync.Mutex
 	closeOnce map[*app.Runtime]*sync.Once
 
-	// services holds each session's client-seam service, keyed by the
-	// runtime pointer it was built from. A session outlives its connection,
-	// so its service does too: closeRuntimeOnce releases it before it closes
-	// the runtime, and a runtime replaced on load or resume gets a fresh one.
+	// services holds each session's client-seam pair, keyed by the runtime
+	// pointer it was built from: the host and the session service.New returns
+	// together, because they are one view of that runtime. A session outlives
+	// its connection, so its service does too: closeRuntimeOnce releases it
+	// before it closes the runtime, and a runtime replaced on load or resume
+	// gets a fresh one.
 	// servicesMu is a lock of its own; the only order it takes part in is
 	// servicesMu then closeMu.
 	servicesMu sync.Mutex
-	services   map[*app.Runtime]*service.Session
+	services   map[*app.Runtime]*servicePair
+}
+
+// servicePair is what service.New builds for one runtime: the host a
+// session's settings calls act through, and the session itself.
+type servicePair struct {
+	host *service.Host
+	sess *service.Session
 }
 
 // SessionResponse is the successful result shape for session/new.
@@ -713,17 +722,33 @@ func (m *SessionManager) Get(id string) (*app.Runtime, bool) {
 // reports false for an unknown session, a runtime with no state, and a
 // runtime that is closing.
 func (m *SessionManager) Service(id string) (*service.Session, bool) {
+	_, sess, ok := m.servicePair(id)
+	return sess, ok
+}
+
+// ServiceHost returns the service host built with the session's service: the
+// host its settings calls act through. It builds both on first use, as
+// Service does.
+func (m *SessionManager) ServiceHost(id string) (*service.Host, bool) {
+	host, _, ok := m.servicePair(id)
+	return host, ok
+}
+
+// servicePair returns the pair built for the session's current runtime,
+// building it on first use under Service's rules: an unknown session, a
+// runtime with no state and a runtime that is closing report false.
+func (m *SessionManager) servicePair(id string) (*service.Host, *service.Session, bool) {
 	rt, ok := m.Get(id)
 	if !ok || rt == nil || rt.State == nil {
-		return nil, false
+		return nil, nil, false
 	}
 	m.servicesMu.Lock()
 	defer m.servicesMu.Unlock()
 	if m.services == nil {
-		m.services = map[*app.Runtime]*service.Session{}
+		m.services = map[*app.Runtime]*servicePair{}
 	}
-	if sess, ok := m.services[rt]; ok {
-		return sess, true
+	if pair, ok := m.services[rt]; ok {
+		return pair.host, pair.sess, true
 	}
 	// Refuse a runtime that is already closing. closeRuntimeOnce registers its
 	// guard under closeMu before the close runs, and its release takes
@@ -733,22 +758,22 @@ func (m *SessionManager) Service(id string) (*service.Session, bool) {
 	_, closing := m.closeOnce[rt]
 	m.closeMu.Unlock()
 	if closing {
-		return nil, false
+		return nil, nil, false
 	}
-	_, sess := service.New(rt.ServiceDeps(context.Background()))
-	m.services[rt] = sess
-	return sess, true
+	host, sess := service.New(rt.ServiceDeps(context.Background()))
+	m.services[rt] = &servicePair{host: host, sess: sess}
+	return host, sess, true
 }
 
-// releaseService removes rt's service from the registry and releases it. A
-// runtime whose service was never built releases nothing.
+// releaseService removes rt's pair from the registry and releases its
+// session. A runtime whose service was never built releases nothing.
 func (m *SessionManager) releaseService(rt *app.Runtime) {
 	m.servicesMu.Lock()
-	sess := m.services[rt]
+	pair := m.services[rt]
 	delete(m.services, rt)
 	m.servicesMu.Unlock()
-	if sess != nil {
-		sess.Release()
+	if pair != nil && pair.sess != nil {
+		pair.sess.Release()
 	}
 }
 

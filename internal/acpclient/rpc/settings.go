@@ -388,3 +388,265 @@ func providerParams(sessionID, name string, pc config.ProviderConfig) (acpwire.P
 	}
 	return acpwire.ProviderParams{SessionID: sessionID, Name: name, Provider: raw}, nil
 }
+
+// The session calls. The three reads answer from the config mirror, which one
+// session/config read fills; the rest send their session methods.
+
+// configMirror is the session's mirror of its config, layers and tools
+// (decision 3): one entry, created by its first read and replaced by each
+// session_config update.
+type configMirror struct {
+	value acpwire.SessionConfig
+	// cfg is value.Config decoded, with each preset's Pricing restored, so a
+	// read does not decode it again.
+	cfg config.Config
+	// updated says an update arrived, so the first read's result, which the
+	// agent computed before sending it, is stale.
+	updated bool
+	// ready is closed once the first read's call has settled, and err is its
+	// outcome, so a caller that arrives while the call is in flight waits for
+	// it instead of sending a second session/config.
+	ready chan struct{}
+	err   error
+}
+
+// settle records the first read's outcome and releases every caller waiting
+// on it.
+func (c *configMirror) settle(err error) {
+	c.err = err
+	close(c.ready)
+}
+
+// Config is the session's live config, its secrets masked: no I/O once the
+// mirror holds a value, and never a read the agent has to answer. It is a
+// clone, so a caller that changes what it got cannot change the mirror.
+func (s *Session) Config() config.Config {
+	ctx, cancel := context.WithTimeout(context.Background(), hostReadTimeout)
+	defer cancel()
+	entry, err := s.configEntry(ctx)
+	if err != nil {
+		return config.Config{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return config.Clone(entry.cfg)
+}
+
+// Layers is the session's config layers, with provenance: no I/O once the
+// mirror holds a value. The mirror keeps their raw value and each read decodes
+// it, so a caller that changes what it got cannot change the mirror.
+func (s *Session) Layers() config.Layers {
+	ctx, cancel := context.WithTimeout(context.Background(), hostReadTimeout)
+	defer cancel()
+	entry, err := s.configEntry(ctx)
+	if err != nil {
+		return config.Layers{}
+	}
+	s.mu.Lock()
+	raw := entry.value.Layers
+	s.mu.Unlock()
+
+	var layers config.Layers
+	if err := config.UnmarshalLayersJSON(raw, &layers); err != nil {
+		return config.Layers{}
+	}
+	return layers
+}
+
+// Tools names every tool the session's registry holds, sorted, and reports
+// false while it has no registry: no I/O once the mirror holds a value. The
+// slice is a copy, so a caller that changes it cannot change the mirror.
+func (s *Session) Tools() ([]string, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), hostReadTimeout)
+	defer cancel()
+	entry, err := s.configEntry(ctx)
+	if err != nil {
+		return nil, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), entry.value.Tools...), entry.value.ToolsReady
+}
+
+// configEntry returns the config mirror, fetching it with ctx when this is its
+// first read. On a failed read the entry is removed, so the next read asks
+// again, as a failed Attach's is.
+func (s *Session) configEntry(ctx context.Context) (*configMirror, error) {
+	s.mu.Lock()
+	if entry := s.config; entry != nil {
+		s.mu.Unlock()
+		select {
+		case <-entry.ready:
+			if entry.err != nil {
+				return nil, entry.err
+			}
+			return entry, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	// The entry is installed before the call goes out, so an update that
+	// arrives while the call waits is applied instead of dropped.
+	entry := &configMirror{ready: make(chan struct{})}
+	s.config = entry
+	s.mu.Unlock()
+
+	var value acpwire.SessionConfig
+	params := acpwire.ConfigParams{SessionID: s.id}
+	if err := s.conn.Call(ctx, acpwire.MethodSessionConfig, params, &value); err != nil {
+		// The entry goes even when an update arrived first: a later read asks
+		// again, where keeping it would answer every later read with this
+		// error for good.
+		s.mu.Lock()
+		if s.config == entry {
+			s.config = nil
+		}
+		s.mu.Unlock()
+		entry.settle(err)
+		return nil, err
+	}
+
+	if err := s.installConfig(entry, value); err != nil {
+		// A value that does not decode is not kept either: the next read asks
+		// again rather than answering with a config the mirror cannot hold.
+		s.mu.Lock()
+		if s.config == entry {
+			s.config = nil
+		}
+		s.mu.Unlock()
+		entry.settle(err)
+		return nil, err
+	}
+	entry.settle(nil)
+	return entry, nil
+}
+
+// installConfig sets the mirror from session/config's result, unless an update
+// already arrived: that update is newer than the result the agent computed
+// before sending it. It reports the error of a result whose config does not
+// decode, which is not installed.
+func (s *Session) installConfig(entry *configMirror, value acpwire.SessionConfig) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.config != entry || entry.updated {
+		return nil
+	}
+	var cfg config.Config
+	if err := config.UnmarshalConfigJSON(value.Config, &cfg); err != nil {
+		return err
+	}
+	entry.value = value
+	entry.cfg = cfg
+	return nil
+}
+
+// applyConfig replaces the mirror with an update's value and fires Changed. An
+// update for a session that has not read its config is dropped: the first read
+// asks the agent, and gets it. It runs on the connection's read goroutine and
+// never blocks on it.
+func (s *Session) applyConfig(value acpwire.SessionConfig) {
+	var cfg config.Config
+	if err := config.UnmarshalConfigJSON(value.Config, &cfg); err != nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.config == nil {
+		return
+	}
+	s.config.value = value
+	s.config.cfg = cfg
+	s.config.updated = true
+	s.signalLocked()
+}
+
+// ApplyConfig installs cfg as the session's config, without saving it or
+// rebuilding the runtime.
+func (s *Session) ApplyConfig(ctx context.Context, cfg config.Config) error {
+	params, err := configParams(s.id, cfg)
+	if err != nil {
+		return err
+	}
+	return s.conn.Call(ctx, acpwire.MethodApplyConfig, params, nil)
+}
+
+// ReloadConfig rebuilds the runtime from cfg. It reports false, and does
+// nothing, when the session has no reload path; the reload's own error travels
+// with the flag (decision 6).
+func (s *Session) ReloadConfig(ctx context.Context, cfg config.Config) (bool, error) {
+	params, err := configParams(s.id, cfg)
+	if err != nil {
+		return false, err
+	}
+	return s.reloadResult(ctx, acpwire.MethodReloadConfig, params)
+}
+
+// ReconnectMCP rebuilds the runtime from the session's current config, so an
+// MCP server that has just been signed in to connects. The flag travels with
+// the error, as ReloadConfig's does.
+func (s *Session) ReconnectMCP(ctx context.Context) (bool, error) {
+	params := acpwire.ConfigParams{SessionID: s.id}
+	return s.reloadResult(ctx, acpwire.MethodMCPReconnect, params)
+}
+
+// reloadResult sends one of the two reload calls and splits its result into
+// the flag and the error the agent reported with it.
+func (s *Session) reloadResult(ctx context.Context, method string, params acpwire.ConfigParams) (bool, error) {
+	var result acpwire.ReloadResult
+	if err := s.conn.Call(ctx, method, params, &result); err != nil {
+		return false, err
+	}
+	if result.Error != nil {
+		return result.Reloaded, result.Error
+	}
+	return result.Reloaded, nil
+}
+
+// SaveProjectConfig writes cfg's project-scoped values to the session's
+// project config.
+func (s *Session) SaveProjectConfig(ctx context.Context, cfg config.Config) error {
+	params, err := configParams(s.id, cfg)
+	if err != nil {
+		return err
+	}
+	return s.conn.Call(ctx, acpwire.MethodSaveProjectConfig, params, nil)
+}
+
+// SaveVerifyCommands writes the plan run's verify commands to the session's
+// project config.
+func (s *Session) SaveVerifyCommands(ctx context.Context, build, test string) error {
+	params := acpwire.VerifyCommandsParams{SessionID: s.id, Build: build, Test: test}
+	return s.conn.Call(ctx, acpwire.MethodSaveVerifyCommands, params, nil)
+}
+
+// PrepareMCPLogin checks that the browser sign-in for the MCP server called
+// server can start.
+func (s *Session) PrepareMCPLogin(ctx context.Context, server string) error {
+	params := acpwire.LoginParams{SessionID: s.id, Name: server, Prepare: true}
+	return s.conn.Call(ctx, acpwire.MethodMCPLogin, params, nil)
+}
+
+// LoginMCP runs the browser sign-in for the MCP server called server, handing
+// each progress value's URL to show. show runs on the connection's read
+// goroutine as the value arrives, before the response does, so it must return
+// promptly and must not call back into this connection.
+func (s *Session) LoginMCP(ctx context.Context, server string, show func(url string)) error {
+	params := acpwire.LoginParams{SessionID: s.id, Name: server}
+	progress := func(value json.RawMessage) {
+		var p acpwire.LoginProgress
+		if err := json.Unmarshal(value, &p); err != nil {
+			return
+		}
+		show(p.URL)
+	}
+	return s.conn.CallWithProgress(ctx, acpwire.MethodMCPLogin, params, nil, progress)
+}
+
+// configParams is the params of a session call that carries cfg.
+func configParams(sessionID string, cfg config.Config) (acpwire.ConfigParams, error) {
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		return acpwire.ConfigParams{}, err
+	}
+	return acpwire.ConfigParams{SessionID: sessionID, Config: raw}, nil
+}

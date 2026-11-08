@@ -754,3 +754,410 @@ func TestTheHostCallsReturnCodedErrors(t *testing.T) {
 
 // boolPtr is a pointer to v, for the optional flags of a capability result.
 func boolPtr(v bool) *bool { return &v }
+
+// configFrame builds the session/update notification carrying one
+// session_config update.
+func configFrame(t *testing.T, sessionID string, value acpwire.SessionConfig) string {
+	t.Helper()
+	return updateFrame(t, sessionID, acpwire.SessionConfigUpdate{
+		Kind:   acpwire.UpdateSessionConfig,
+		Config: value,
+	})
+}
+
+// mirrorValue is a mirror value the tests recognize by the provider its config
+// and layers name and by its tools.
+func mirrorValue(t *testing.T, provider string, tools ...string) acpwire.SessionConfig {
+	t.Helper()
+	cfg := config.Config{Providers: map[string]config.ProviderConfig{
+		provider: {Type: "openai_compatible"},
+	}}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	layers, err := json.Marshal(config.Layers{User: cfg, Merged: cfg})
+	if err != nil {
+		t.Fatalf("marshal layers: %v", err)
+	}
+	return acpwire.SessionConfig{Config: raw, Layers: layers, Tools: tools, ToolsReady: true}
+}
+
+// providerName is the one provider cfg names, and "" when it names none or
+// several.
+func providerName(cfg config.Config) string {
+	if len(cfg.Providers) != 1 {
+		return ""
+	}
+	for name := range cfg.Providers {
+		return name
+	}
+	return ""
+}
+
+// awaitConfig waits for one config read's value.
+func awaitConfig(t *testing.T, out <-chan config.Config) config.Config {
+	t.Helper()
+	select {
+	case got := <-out:
+		return got
+	case <-time.After(5 * time.Second):
+		t.Fatal("Config did not return")
+		return config.Config{}
+	}
+}
+
+// firstConfigRead performs the config mirror's first read, answering
+// session/config with value, and returns what that read reported.
+func firstConfigRead(t *testing.T, session *Session, a *scriptedAgent, value acpwire.SessionConfig) config.Config {
+	t.Helper()
+	out := make(chan config.Config, 1)
+	go func() { out <- session.Config() }()
+
+	req := a.next(t)
+	if got := string(req.Method); got != acpwire.MethodSessionConfig {
+		t.Fatalf("the client sent %q, want %q", got, acpwire.MethodSessionConfig)
+	}
+	var params acpwire.ConfigParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		t.Fatalf("decode session/config params: %v", err)
+	}
+	if params.SessionID != session.ID() {
+		t.Fatalf("session/config params = %+v, want session %q", params, session.ID())
+	}
+	a.answer(t, req, value)
+	return awaitConfig(t, out)
+}
+
+// TestConfigFetchesOnItsFirstRead pins the two halves of the mirror's read:
+// the first one asks the agent, and every later one answers from the mirror.
+func TestConfigFetchesOnItsFirstRead(t *testing.T) {
+	host, a := dialScripted(t, DialOptions{})
+	session := attachScripted(t, host, a, "s1", acpwire.SessionStatus{WorkingDir: "B"})
+
+	if name := providerName(firstConfigRead(t, session, a, mirrorValue(t, "probe"))); name != "probe" {
+		t.Fatalf("the first read's provider = %q, want probe", name)
+	}
+	if name := providerName(session.Config()); name != "probe" {
+		t.Fatalf("the second read's provider = %q, want probe", name)
+	}
+	expectNoFrame(t, a, "the second Config read")
+}
+
+// TestConfigInstallsTheUpdateThatPrecedesTheResponse pins the barrier: the
+// agent answers session/config with the config it had, so an update that
+// reaches the client before the response is newer and must be kept.
+func TestConfigInstallsTheUpdateThatPrecedesTheResponse(t *testing.T) {
+	host, a := dialScripted(t, DialOptions{})
+	session := attachScripted(t, host, a, "s1", acpwire.SessionStatus{WorkingDir: "B"})
+
+	out := make(chan config.Config, 1)
+	go func() { out <- session.Config() }()
+	req := a.next(t)
+	if got := string(req.Method); got != acpwire.MethodSessionConfig {
+		t.Fatalf("the client sent %q, want %q", got, acpwire.MethodSessionConfig)
+	}
+	a.send(t, configFrame(t, "s1", mirrorValue(t, "A")))
+	a.answer(t, req, mirrorValue(t, "B"))
+
+	if name := providerName(awaitConfig(t, out)); name != "A" {
+		t.Fatalf("the read's provider = %q, want A: the update that preceded the response is newer", name)
+	}
+}
+
+// TestASessionConfigUpdateReplacesTheMirrorAndFiresChanged pins the mirror's
+// other half: an update replaces the value and taps Changed.
+func TestASessionConfigUpdateReplacesTheMirrorAndFiresChanged(t *testing.T) {
+	host, a := dialScripted(t, DialOptions{})
+	session := attachScripted(t, host, a, "s1", acpwire.SessionStatus{WorkingDir: "B"})
+
+	firstConfigRead(t, session, a, mirrorValue(t, "A"))
+	changed := session.Changed()
+	drainChanged(t, changed)
+
+	a.send(t, configFrame(t, "s1", mirrorValue(t, "B")))
+	select {
+	case <-changed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Changed did not fire for the update")
+	}
+	if name := providerName(session.Config()); name != "B" {
+		t.Fatalf("the mirror's provider = %q, want B", name)
+	}
+}
+
+// TestConfigReturnsACopy pins that a caller cannot reach the mirror through
+// what it got: changing the returned config's provider map leaves the next
+// read unchanged.
+func TestConfigReturnsACopy(t *testing.T) {
+	host, a := dialScripted(t, DialOptions{})
+	session := attachScripted(t, host, a, "s1", acpwire.SessionStatus{WorkingDir: "B"})
+
+	firstConfigRead(t, session, a, mirrorValue(t, "probe"))
+
+	first := session.Config()
+	first.Providers["added"] = config.ProviderConfig{Type: "ollama"}
+	delete(first.Providers, "probe")
+
+	if name := providerName(session.Config()); name != "probe" {
+		t.Fatalf("the second read's provider = %q, want probe: the first read's map must not reach the mirror", name)
+	}
+	expectNoFrame(t, a, "the second Config read")
+}
+
+// TestLayersAndToolsReadTheMirror pins decision 3: one session/config read
+// subscribes, and a session_config update then serves Layers and Tools with no
+// call.
+func TestLayersAndToolsReadTheMirror(t *testing.T) {
+	host, a := dialScripted(t, DialOptions{})
+	session := attachScripted(t, host, a, "s1", acpwire.SessionStatus{WorkingDir: "B"})
+
+	firstConfigRead(t, session, a, mirrorValue(t, "A"))
+	a.send(t, configFrame(t, "s1", mirrorValue(t, "B", "file_read", "shell_run")))
+	// The ping proves the read goroutine dispatched the update already.
+	pingScripted(t, host, a)
+
+	if name := providerName(session.Layers().Merged); name != "B" {
+		t.Fatalf("Layers' merged provider = %q, want B", name)
+	}
+	names, ready := session.Tools()
+	if !ready {
+		t.Fatal("Tools reports no registry, want the update's flag")
+	}
+	if len(names) != 2 || names[0] != "file_read" || names[1] != "shell_run" {
+		t.Fatalf("Tools = %v, want the update's two tools", names)
+	}
+	expectNoFrame(t, a, "Layers and Tools after the update")
+}
+
+// reloadOutcome is one reload call's flag and error.
+type reloadOutcome struct {
+	reloaded bool
+	err      error
+}
+
+// awaitReload waits for one reload call's outcome.
+func awaitReload(t *testing.T, out <-chan reloadOutcome) reloadOutcome {
+	t.Helper()
+	select {
+	case got := <-out:
+		return got
+	case <-time.After(5 * time.Second):
+		t.Fatal("the reload call did not return")
+		return reloadOutcome{}
+	}
+}
+
+// TestTheReloadCallsReturnTheFlagWithTheError pins decision 6: the result's
+// flag comes back with the result's error, which a JSON-RPC error response
+// could not carry.
+func TestTheReloadCallsReturnTheFlagWithTheError(t *testing.T) {
+	host, a := dialScripted(t, DialOptions{})
+	session := attachScripted(t, host, a, "s1", acpwire.SessionStatus{WorkingDir: "B"})
+	ctx := context.Background()
+
+	cases := []struct {
+		name   string
+		method string
+		call   func(context.Context) (bool, error)
+	}{
+		{
+			name:   "ReloadConfig",
+			method: acpwire.MethodReloadConfig,
+			call:   func(ctx context.Context) (bool, error) { return session.ReloadConfig(ctx, config.Config{}) },
+		},
+		{
+			name:   "ReconnectMCP",
+			method: acpwire.MethodMCPReconnect,
+			call:   session.ReconnectMCP,
+		},
+	}
+	for _, tc := range cases {
+		// The flag and the error travel together.
+		out := make(chan reloadOutcome, 1)
+		go func() {
+			reloaded, err := tc.call(ctx)
+			out <- reloadOutcome{reloaded: reloaded, err: err}
+		}()
+		req := a.next(t)
+		if got := string(req.Method); got != tc.method {
+			t.Fatalf("%s sent %q, want %q", tc.name, got, tc.method)
+		}
+		a.answer(t, req, acpwire.ReloadResult{
+			Reloaded: true,
+			Error:    &acpwire.Error{Message: "the runtime did not rebuild"},
+		})
+		got := awaitReload(t, out)
+		if !got.reloaded {
+			t.Fatalf("%s = false, want the result's flag", tc.name)
+		}
+		if got.err == nil || got.err.Error() != "the runtime did not rebuild" {
+			t.Fatalf("%s error = %v, want the result's error", tc.name, got.err)
+		}
+
+		// A flag without an error is a plain answer.
+		go func() {
+			reloaded, err := tc.call(ctx)
+			out <- reloadOutcome{reloaded: reloaded, err: err}
+		}()
+		req = a.next(t)
+		if got := string(req.Method); got != tc.method {
+			t.Fatalf("%s sent %q, want %q", tc.name, got, tc.method)
+		}
+		a.answer(t, req, acpwire.ReloadResult{})
+		got = awaitReload(t, out)
+		if got.reloaded || got.err != nil {
+			t.Fatalf("%s = %v, %v; want false and no error", tc.name, got.reloaded, got.err)
+		}
+	}
+}
+
+// sendCall starts one session call on its own goroutine, checks the method it
+// sent, answers it with result, and returns the params the frame carried.
+func sendCall(t *testing.T, a *scriptedAgent, method string, result any, fn func() error) json.RawMessage {
+	t.Helper()
+	out := make(chan error, 1)
+	go func() { out <- fn() }()
+
+	req := a.next(t)
+	if got := string(req.Method); got != method {
+		t.Fatalf("the client sent %q, want %q", got, method)
+	}
+	a.answer(t, req, result)
+	if err := awaitCall(t, out); err != nil {
+		t.Fatalf("%s: %v", method, err)
+	}
+	return req.Params
+}
+
+// configParam decodes one call's params and reports the session and the config
+// they carry.
+func configParam(t *testing.T, params json.RawMessage, method string) (string, config.Config) {
+	t.Helper()
+	var sent acpwire.ConfigParams
+	if err := json.Unmarshal(params, &sent); err != nil {
+		t.Fatalf("decode %s params: %v", method, err)
+	}
+	var cfg config.Config
+	if err := config.UnmarshalConfigJSON(sent.Config, &cfg); err != nil {
+		t.Fatalf("decode %s' config: %v", method, err)
+	}
+	return sent.SessionID, cfg
+}
+
+// TestTheSessionConfigCallsSendTheirMethods pins each session call's method and
+// params.
+func TestTheSessionConfigCallsSendTheirMethods(t *testing.T) {
+	host, a := dialScripted(t, DialOptions{})
+	session := attachScripted(t, host, a, "s1", acpwire.SessionStatus{WorkingDir: "B"})
+	ctx := context.Background()
+	cfg := config.Config{Providers: map[string]config.ProviderConfig{"probe": {Type: "ollama"}}}
+
+	// session/apply_config carries the config.
+	params := sendCall(t, a, acpwire.MethodApplyConfig, struct{}{}, func() error {
+		return session.ApplyConfig(ctx, cfg)
+	})
+	sessionID, applied := configParam(t, params, acpwire.MethodApplyConfig)
+	if sessionID != "s1" || providerName(applied) != "probe" {
+		t.Fatalf("session/apply_config params carry session %q and provider %q, want s1 and probe",
+			sessionID, providerName(applied))
+	}
+
+	// session/save_project_config carries the config too.
+	params = sendCall(t, a, acpwire.MethodSaveProjectConfig, struct{}{}, func() error {
+		return session.SaveProjectConfig(ctx, cfg)
+	})
+	sessionID, saved := configParam(t, params, acpwire.MethodSaveProjectConfig)
+	if sessionID != "s1" || providerName(saved) != "probe" {
+		t.Fatalf("session/save_project_config params carry session %q and provider %q, want s1 and probe",
+			sessionID, providerName(saved))
+	}
+
+	// session/reload_config carries the config and returns the result's flag.
+	reloads := make(chan reloadOutcome, 1)
+	go func() {
+		reloaded, err := session.ReloadConfig(ctx, cfg)
+		reloads <- reloadOutcome{reloaded: reloaded, err: err}
+	}()
+	req := a.next(t)
+	if got := string(req.Method); got != acpwire.MethodReloadConfig {
+		t.Fatalf("ReloadConfig sent %q, want %q", got, acpwire.MethodReloadConfig)
+	}
+	sessionID, reloadedCfg := configParam(t, req.Params, acpwire.MethodReloadConfig)
+	if sessionID != "s1" || providerName(reloadedCfg) != "probe" {
+		t.Fatalf("session/reload_config params carry session %q and provider %q, want s1 and probe",
+			sessionID, providerName(reloadedCfg))
+	}
+	a.answer(t, req, acpwire.ReloadResult{Reloaded: true})
+	if got := awaitReload(t, reloads); got.err != nil || !got.reloaded {
+		t.Fatalf("ReloadConfig = %v, %v; want the result's flag", got.reloaded, got.err)
+	}
+
+	// session/mcp_reconnect names the session and carries no config.
+	params = sendCall(t, a, acpwire.MethodMCPReconnect, acpwire.ReloadResult{Reloaded: true}, func() error {
+		_, err := session.ReconnectMCP(ctx)
+		return err
+	})
+	var reconnect acpwire.ConfigParams
+	if err := json.Unmarshal(params, &reconnect); err != nil {
+		t.Fatalf("decode session/mcp_reconnect params: %v", err)
+	}
+	if reconnect.SessionID != "s1" || len(reconnect.Config) != 0 {
+		t.Fatalf("session/mcp_reconnect params = %+v, want session s1 and no config", reconnect)
+	}
+
+	// session/save_verify_commands carries both commands.
+	params = sendCall(t, a, acpwire.MethodSaveVerifyCommands, struct{}{}, func() error {
+		return session.SaveVerifyCommands(ctx, "go build ./...", "go test ./...")
+	})
+	var verify acpwire.VerifyCommandsParams
+	if err := json.Unmarshal(params, &verify); err != nil {
+		t.Fatalf("decode session/save_verify_commands params: %v", err)
+	}
+	if verify.SessionID != "s1" || verify.Build != "go build ./..." || verify.Test != "go test ./..." {
+		t.Fatalf("session/save_verify_commands params = %+v, want the two commands", verify)
+	}
+
+	// session/mcp_login's prepare.
+	params = sendCall(t, a, acpwire.MethodMCPLogin, struct{}{}, func() error {
+		return session.PrepareMCPLogin(ctx, "server1")
+	})
+	var prepare acpwire.LoginParams
+	if err := json.Unmarshal(params, &prepare); err != nil {
+		t.Fatalf("decode session/mcp_login params: %v", err)
+	}
+	if prepare.SessionID != "s1" || prepare.Name != "server1" || !prepare.Prepare {
+		t.Fatalf("session/mcp_login params = %+v, want a prepare for server1", prepare)
+	}
+
+	// session/mcp_login's sign-in, whose URL goes to show.
+	urls := make(chan string, 4)
+	out := make(chan error, 1)
+	go func() {
+		out <- session.LoginMCP(ctx, "server1", func(url string) { urls <- url })
+	}()
+	req = a.next(t)
+	if got := string(req.Method); got != acpwire.MethodMCPLogin {
+		t.Fatalf("LoginMCP sent %q, want %q", got, acpwire.MethodMCPLogin)
+	}
+	var login acpwire.LoginParams
+	if err := json.Unmarshal(req.Params, &login); err != nil {
+		t.Fatalf("decode session/mcp_login params: %v", err)
+	}
+	if login.SessionID != "s1" || login.Name != "server1" || login.Prepare {
+		t.Fatalf("session/mcp_login params = %+v, want a sign-in for server1", login)
+	}
+	a.send(t, progressFrame(t, string(req.ID), acpwire.LoginProgress{URL: "https://example.test/auth"}))
+	a.answer(t, req, struct{}{})
+	if err := awaitCall(t, out); err != nil {
+		t.Fatalf("LoginMCP: %v", err)
+	}
+	select {
+	case got := <-urls:
+		if got != "https://example.test/auth" {
+			t.Fatalf("show saw %q, want the authorization URL", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("show was never called")
+	}
+}

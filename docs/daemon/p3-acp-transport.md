@@ -99,8 +99,8 @@ new client.
 
 ## Where the code is today
 
-- **The interface** has 111 methods. 87 send an ACP method that exists,
-  and 22 are carried by one of the 22 ACP methods that are new in P3
+- **The interface** has 111 methods. 95 send an ACP method that exists,
+  and 14 are carried by one of the 14 ACP methods that are new in P3
   ("Methods P3 adds", below). Two have no ACP method at all.
 - **The adapter is most of the logic.** `inproc` converts runtime values
   to wire values and applies the policy the TUI used to apply. That
@@ -114,7 +114,7 @@ new client.
   (`:312`). Handlers run on their own goroutines (`handlerWG`), and nothing
   orders a response after the notifications its handler caused. A
   long-running handler runs in a `cancellable` context, so the client's
-  `$/cancel_request` ends the run in flight. 117 methods are registered
+  `$/cancel_request` ends the run in flight. 125 methods are registered
   (`host.go`), plus the `session/cancel` notification.
 - **What the agent pushes today:**
   - the ACP chunk kinds (`agent_message_chunk`, `agent_thought_chunk`,
@@ -125,8 +125,8 @@ new client.
   - `work_state`, `steering_state` and `steering_receipt`.
 
   A marshal client also receives `session_status`, `sheet`,
-  `pending_requests`, `session_config` and `work_snapshot`; nothing pushes the
-  end flow's active work yet (plan 6c).
+  `pending_requests`, `session_config`, `work_snapshot` and `end_work`, the
+  last carrying what an end would stop (plan 6c).
 - **What the agent asks today:** a client that has not declared the marshal
   capability is asked with `session/request_permission` (approve or deny,
   tagged for skill gates and mode access) and `session/request_question`.
@@ -1809,3 +1809,83 @@ changed (R9); the TUI still runs on `inproc`, in process, until plan 8.
   plan 6b's eleven and plan 7a's 21), plus the `session/cancel` notification.
   Plans 6b and 7a each measured the counts on their own branch; these are the
   numbers after both.
+
+### Plan 6c — pipelines, the end flow and sessions
+
+- **A marshal client's error keeps its sentence.** `Server.dispatch` passes a
+  handler's error through `settingsFailure` before it converts it, when the
+  client declared the capability, so a plain error travels as
+  `&acpwire.Error{Message: …}` with no code and every other error, JSON-RPC
+  error and cancellation travels as before. The client rebuilds an
+  `*acpwire.Error` from a `-32000` response's data when it carries a code *or*
+  a message, so `err.Error()` is the sentence the TUI shows in process. The
+  two cases plan 6b had narrowed — `promptPassesOtherErrorsThrough` and
+  `reviewRunsOnTheRunPath` — assert their text again, and
+  `TestSetEffortAnswersWhenItApplies`, `aStaleCursorIsCoded` and
+  `TestSetProviderKeyForAMarshalClientRejectsAMask` were narrowed to expect
+  the sentence instead of an opaque code.
+- **The pipelines run on the service.** `registerControls` registers fourteen
+  methods unconditionally and ten through `marshalOr`: `session/swarm_start`,
+  `sdd_start` and `sdd_answer` route to the `ControlManager` over the session's
+  service, and ACP's own handlers move into the `others` map, so a client
+  without the capability keeps them byte for byte. Three new methods join
+  them: `session/sdd_preflight`, `sdd_stop` and `sdd_author`. A gate crosses as
+  `CodeHumanGateRequired`, the service's own `*acpwire.Error`.
+- **The long calls are cancellable.** `swarm_start`, `sdd_start`,
+  `sdd_answer`, `sdd_preflight`, `sdd_author`, `end_wait` and `exit_analysis`
+  take `cancellable`'s context, so `$/cancel_request` ends the run in flight;
+  `sdd_stop` does not, because it only drops a paused run.
+- **The end flow is a manager beside the controls.**
+  `internal/acp/ending.go` adds `EndManager` with `endInterval` (50ms), the
+  five new methods (`session/end_work`, `end_accept`, `end_wait`,
+  `exit_analysis`, `postmortem`), and `registerEnds`, which also routes
+  `session/close` and `session/list` through `marshalOr`. The first
+  `session/end_work` starts one forwarder per session, which polls every 50ms
+  and when the barrier fences it, resolves its session on each pass and
+  stops when the id goes, and sends `end_work` only when the membership's
+  encoding changed — never under the manager's mutex.
+- **The barrier has a new fence.** `responseBarrier` gains `ends` last, after
+  `controls`, so every call's response follows the `end_work` it caused (R2,
+  V3).
+- **A marshal client's close ends the conversation.** `session/close` is
+  served by the service's `Close`: the run cancelled, the requests settled,
+  the state shut down. The runtime stays registered for the embedding to
+  close (plan 8) or the host's `CloseAll`. A marshal client's `session/list`
+  names its current session, whose service host answers with the stored
+  sessions.
+- **A replacement is `session/new` with `replaces`.** `SessionManager.replace`
+  asks the session's service host for `NewSession`, which builds the new state
+  inside the same runtime as in process, then re-keys the runtime under the
+  new id and points the runtime's service pair at the new session. It holds
+  `lifecycleMu` for the whole replacement. Without `replaces`, `session/new`
+  starts a runtime, unchanged, for every client.
+- **The client sends the group and mirrors the end flow.** `rpc.Session` gains
+  the six pipeline calls (`pipelines.go`), the four end calls, `Close` and the
+  end mirror (`ending.go`), which fetches `session/end_work` on its first read
+  under a 5s timeout and is refreshed by each `end_work` update — an update
+  for a session that has not read its membership is dropped. `rpc.Host` gains
+  `ListSessions` and the unexported `replaceSession`, with `retire` behind both
+  close paths and `Stacks.forget` for a replaced session's stacks. `NewSession`
+  and the two interface checks are left to whichever of plans 6c and 7b merges
+  second.
+- **The harness runs the group on both arms.** `conformance_ending_test.go`
+  adds `serveEnds` for the pipe arm, `TestEndingConformance` (16 session cases
+  over `seamArms()`, 2 host cases over `hostArms()`, including
+  `listSessionsWithoutADatabaseIsCoded`) and `TestEndCallBudget`; the cases
+  moved out of `internal/acp/service` with their fixtures. The tests that
+  drive the in-process `swap` or read the paused run stay in the service's
+  package.
+- **The budget (R10).** `TestEndCallBudget` over the 2,000-call session:
+  `AcceptEnd` medians **23.8µs** over 30 calls, its barrier and the end
+  forwarder's fence included, against R10's 1ms.
+- **The counts moved** (re-measured on this tree, after plans 6b and 7a):
+  `acpclient.Methods` has 111 rows, now 95 of them an existing ACP method
+  (eight more: `PlanPreflight`, `StopSDD`, `AuthorPlan`, `ActiveWork`,
+  `AcceptEnd`, `WaitForEnd`, `RunExitAnalysis` and `Postmortem`), 14 new in P3
+  carried by 14 distinct new methods, and 2 carrying none; `acp.Server`
+  registers 125 methods (117 plus the eight), plus the `session/cancel`
+  notification. These supersede the 6b-and-7a numbers above.
+- **Open for P4.** A replacement holds `lifecycleMu` while it builds the
+  runner, so a close or a load of another session waits for it; and a marshal
+  client's `session/list` reads the project database for any `cwd` it names,
+  where ACP's own handler checks the trusted roots (F-SEC-33).

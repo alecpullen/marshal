@@ -425,17 +425,17 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 		}
 		return rt, true
 	}, h.sink.Notify)
-	srv.Handle("session/work_list", works.List)
-	srv.Handle("session/work_inspect", works.Inspect)
-	srv.Handle("session/work_stop", works.Stop)
 	srv.Handle("session/work_acknowledge", works.Acknowledge)
 	// The control methods: a marshal client's turn runs on the service, and a
 	// client without the capability reaches today's handler in others.
 	registerControls(srv, controls, map[string]Handler{
-		acpwire.MethodPrompt:    turns.PromptTurn,
-		acpwire.MethodSteer:     turns.Steer,
-		acpwire.MethodSetMode:   turns.SetMode,
-		acpwire.MethodSetEffort: turns.SetEffort,
+		acpwire.MethodPrompt:      turns.PromptTurn,
+		acpwire.MethodSteer:       turns.Steer,
+		acpwire.MethodSetMode:     turns.SetMode,
+		acpwire.MethodSetEffort:   turns.SetEffort,
+		acpwire.MethodWorkList:    works.List,
+		acpwire.MethodWorkInspect: works.Inspect,
+		acpwire.MethodWorkStop:    works.Stop,
 	})
 
 	// A marshal client's session call returns only after the updates it caused
@@ -466,7 +466,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 	})
 	registerTranscript(srv, turns, sheets, manager.Service)
 	registerRequests(srv, requests)
-	srv.SetResponseBarrier(responseBarrier(turns, works, watches, statuses, sheets, requests))
+	srv.SetResponseBarrier(responseBarrier(turns, works, watches, statuses, sheets, requests, controls))
 
 	home, _ := os.UserHomeDir()
 	cfgMgr := NewConfigManager(home, nil, nil)

@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"strings"
@@ -330,6 +331,167 @@ func (m *ControlManager) WatchResumeTake(ctx context.Context, params json.RawMes
 	return acpwire.WatchResumeTakeResult{Name: name, Repeat: repeat, OK: ok}, nil
 }
 
+// WorkList handles session/work_list: the live view answers the service's work
+// and, for a marshal client, starts the forwarder that keeps it current (P3
+// R3). The attention and history views are pages, and the service codes a stale
+// cursor, so its error travels as it is.
+func (m *ControlManager) WorkList(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.WorkListParams
+	if err := decodeParams(params, &p, acpwire.MethodWorkList); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	sess, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	if p.View == "" || p.View == "live" {
+		if m.isMarshal() {
+			m.ensureForwarder(p.SessionID)
+		}
+		snap, exists := sess.Work()
+		return acpwire.WorkState{Exists: exists, Snapshot: snap}, nil
+	}
+	return sess.ListWork(ctx, acpwire.WorkQuery{
+		View:   p.View,
+		Query:  p.Query,
+		Cursor: p.Cursor,
+		Limit:  p.Limit,
+	})
+}
+
+// WorkInspect handles session/work_inspect.
+func (m *ControlManager) WorkInspect(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.WorkTargetParams
+	if err := decodeParams(params, &p, acpwire.MethodWorkInspect); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	sess, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	return sess.InspectWork(ctx, p.TaskKey, p.Raw)
+}
+
+// WorkStop handles session/work_stop.
+func (m *ControlManager) WorkStop(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.WorkTargetParams
+	if err := decodeParams(params, &p, acpwire.MethodWorkStop); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	sess, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	return sess.StopWork(ctx, p.TaskKey, p.Reason)
+}
+
+// workUpdateEnvelope is the session/update body a work_snapshot update travels
+// in. It is a dedicated struct, as the status and pending envelopes are:
+// SessionUpdateParams' Update is a map[string]any, which would lose the
+// snapshot's typed fields.
+type workUpdateEnvelope struct {
+	SessionID string             `json:"sessionId"`
+	Update    acpwire.WorkUpdate `json:"update"`
+}
+
+// ensureForwarder starts one work forwarder for a session, unless the
+// connection is closed or the session already has one. Its fence is registered
+// before its goroutine starts, so a barrier that follows cannot miss it.
+func (m *ControlManager) ensureForwarder(sessionID string) {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	if _, ok := m.forwarders[sessionID]; ok {
+		m.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	f := &controlForwarder{cancel: cancel, fence: newFence()}
+	m.forwarders[sessionID] = f
+	m.fences.add(sessionID, f.fence)
+	m.mu.Unlock()
+
+	go m.runForwarder(sessionID, f, ctx)
+}
+
+// runForwarder keeps the session's work mirror current: every workInterval, and
+// whenever its fence is asked, it reads the service's work and sends it when the
+// encoding differs from the last one it sent. The work changes without a broker
+// event this manager sees, so polling is what keeps the mirror current. It stops
+// when the connection closes or the session goes away.
+func (m *ControlManager) runForwarder(sessionID string, f *controlForwarder, ctx context.Context) {
+	defer func() {
+		m.mu.Lock()
+		delete(m.forwarders, sessionID)
+		m.mu.Unlock()
+		m.fences.remove(sessionID, f.fence)
+		f.fence.close()
+	}()
+
+	// sent says a state has been sent on this connection, so last is the
+	// encoding to compare against.
+	var (
+		last []byte
+		sent bool
+	)
+	// send reads the state, encodes it and sends it when the encoding differs
+	// from the last one sent. It reports whether the session still exists.
+	send := func() bool {
+		// Resolve the service on every pass, so a runtime replaced on load or
+		// resume is followed.
+		sess, ok := m.lookupService(sessionID)
+		if !ok || sess == nil {
+			return false
+		}
+		snap, exists := sess.Work()
+		state := acpwire.WorkState{Exists: exists, Snapshot: snap}
+		encoded, err := json.Marshal(state)
+		if err != nil {
+			return true
+		}
+		if sent && bytes.Equal(encoded, last) {
+			return true
+		}
+		// Nothing is sent under the manager's mutex.
+		if m.notify == nil {
+			return true
+		}
+		if err := m.notify(acpwire.MethodSessionUpdate, workUpdateEnvelope{
+			SessionID: sessionID,
+			Update: acpwire.WorkUpdate{
+				Kind: acpwire.UpdateWork,
+				Work: state,
+			},
+		}); err != nil {
+			return true
+		}
+		last = encoded
+		sent = true
+		return true
+	}
+
+	ticker := time.NewTicker(workInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if !send() {
+				return
+			}
+		case answer := <-f.fence.requests():
+			alive := send()
+			close(answer)
+			if !alive {
+				return
+			}
+		}
+	}
+}
+
 // Close stops every work forwarder. The connection's cleanup calls it.
 func (m *ControlManager) Close() {
 	m.mu.Lock()
@@ -402,4 +564,7 @@ func registerControls(srv *Server, controls *ControlManager, others map[string]H
 	srv.Handle(acpwire.MethodSteer, marshalOr(srv.marshalClient, controls.Steer, others[acpwire.MethodSteer]))
 	srv.Handle(acpwire.MethodSetMode, marshalOr(srv.marshalClient, controls.SetMode, others[acpwire.MethodSetMode]))
 	srv.Handle(acpwire.MethodSetEffort, marshalOr(srv.marshalClient, controls.SetEffort, others[acpwire.MethodSetEffort]))
+	srv.Handle(acpwire.MethodWorkList, marshalOr(srv.marshalClient, controls.WorkList, others[acpwire.MethodWorkList]))
+	srv.Handle(acpwire.MethodWorkInspect, marshalOr(srv.marshalClient, controls.WorkInspect, others[acpwire.MethodWorkInspect]))
+	srv.Handle(acpwire.MethodWorkStop, marshalOr(srv.marshalClient, controls.WorkStop, others[acpwire.MethodWorkStop]))
 }

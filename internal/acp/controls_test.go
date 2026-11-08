@@ -22,6 +22,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/interaction"
 	"marshal/internal/pubsub"
+	"marshal/internal/viewmodel"
 	"marshal/internal/watch"
 )
 
@@ -97,6 +98,8 @@ type controlAgent struct {
 	controls *ControlManager
 	statuses *StatusManager
 	state    *session.State
+	// served is the service the connection's managers resolve.
+	served *service.Session
 
 	// lookup is what the managers' Lookup reports for the session.
 	lookup atomic.Bool
@@ -167,6 +170,9 @@ type controlSetup struct {
 	// test can publish the events the idle stack loop drains (P3 plan 6b
 	// decision 4).
 	broker *pubsub.Broker[session.Event]
+	// delay slows every session/update frame, so a call that returns before
+	// its update is written shows up as an ordering failure.
+	delay time.Duration
 }
 
 // startControlAgent serves the control handlers and the status handlers on the
@@ -182,7 +188,7 @@ func startControlAgentWith(t *testing.T, setup controlSetup) (*rpc.Conn, *contro
 	t.Helper()
 
 	_, served := service.New(setup.deps)
-	a := &controlAgent{state: setup.deps.State}
+	a := &controlAgent{state: setup.deps.State, served: served}
 	a.lookup.Store(true)
 
 	client, agent := rpc.Pipe()
@@ -191,7 +197,12 @@ func startControlAgentWith(t *testing.T, setup controlSetup) (*rpc.Conn, *contro
 	srv.MaxLineBytes = rpc.MaxFrameBytes
 	registerInitialize(srv)
 
-	notify := srv.Notify
+	notify := func(method string, params any) error {
+		if setup.delay > 0 && method == acpwire.MethodSessionUpdate {
+			time.Sleep(setup.delay)
+		}
+		return srv.Notify(method, params)
+	}
 	lookup := func(id string) (*service.Session, bool) {
 		if id != controlSession || !a.lookup.Load() {
 			return nil, false
@@ -199,8 +210,6 @@ func startControlAgentWith(t *testing.T, setup controlSetup) (*rpc.Conn, *contro
 		return served, true
 	}
 
-	// A setup that serves the transcript gets a runtime over its own broker, so
-	// a test's runner can publish the events the idle stack loop drains.
 	var turns *TurnManager
 	if setup.broker != nil {
 		runtime := func(id string) (*TurnRuntime, bool) {
@@ -237,7 +246,14 @@ func startControlAgentWith(t *testing.T, setup controlSetup) (*rpc.Conn, *contro
 		Marshal: srv.marshalClient,
 	})
 	registerControls(srv, a.controls, setup.others)
-	srv.SetResponseBarrier(responseBarrier(turns, a.statuses, a.controls))
+	// A typed nil *TurnManager is not a nil interface, so responseBarrier would
+	// call it and panic; keep the turn manager out of the list when the setup did
+	// not serve the transcript.
+	var turnFencer sessionFencer
+	if turns != nil {
+		turnFencer = turns
+	}
+	srv.SetResponseBarrier(responseBarrier(turnFencer, a.statuses, a.controls))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -723,6 +739,386 @@ func TestAConnectionWithoutTheCapabilityBindsWatchResume(t *testing.T) {
 	case <-goals:
 	case <-time.After(2 * time.Second):
 		t.Fatal("the hook started no turn for a client without the capability")
+	}
+}
+
+// workUpdates returns the work_snapshot frames the client recorded, decoded.
+func (a *controlAgent) workUpdates() []acpwire.WorkUpdate {
+	var out []acpwire.WorkUpdate
+	for _, f := range a.recorded() {
+		var peek struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal(f.Update, &peek); err != nil || peek.Kind != acpwire.UpdateWork {
+			continue
+		}
+		var u acpwire.WorkUpdate
+		if err := json.Unmarshal(f.Update, &u); err != nil {
+			continue
+		}
+		out = append(out, u)
+	}
+	return out
+}
+
+// forwarderRunning reports whether the manager still holds a work forwarder for
+// the session.
+func (m *ControlManager) forwarderRunning(sessionID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.forwarders[sessionID]
+	return ok
+}
+
+// controlStop is one recorded work_stop call.
+type controlStop struct {
+	target viewmodel.WorkTarget
+	reason string
+}
+
+// controlWork is a viewmodel.WorkService for the control tests: it records each
+// call, and publish sends a snapshot to every open subscription.
+type controlWork struct {
+	mu      sync.Mutex
+	snap    viewmodel.WorkSnapshot
+	open    []chan pubsub.Event[viewmodel.WorkSnapshot]
+	queries []viewmodel.WorkQuery
+	page    viewmodel.WorkPage
+	pageErr error
+	stops   []controlStop
+	stop    viewmodel.WorkStopResult
+	stopErr error
+	// onStop runs at the start of StopWork, so a test can publish a snapshot
+	// before the call answers.
+	onStop func()
+}
+
+func (f *controlWork) WorkSnapshot() viewmodel.WorkSnapshot {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.snap
+}
+
+// setSnapshot replaces the snapshot a later seed reads.
+func (f *controlWork) setSnapshot(snap viewmodel.WorkSnapshot) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.snap = snap
+}
+
+// SubscribeWork closes the channel when the context ends.
+func (f *controlWork) SubscribeWork(ctx context.Context) <-chan pubsub.Event[viewmodel.WorkSnapshot] {
+	f.mu.Lock()
+	ch := make(chan pubsub.Event[viewmodel.WorkSnapshot], 16)
+	f.open = append(f.open, ch)
+	f.mu.Unlock()
+	go func() {
+		<-ctx.Done()
+		f.mu.Lock()
+		for i, c := range f.open {
+			if c == ch {
+				f.open = append(f.open[:i], f.open[i+1:]...)
+				break
+			}
+		}
+		close(ch)
+		f.mu.Unlock()
+	}()
+	return ch
+}
+
+// publish delivers a snapshot on the newest open subscription without blocking.
+func (f *controlWork) publish(snap viewmodel.WorkSnapshot) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.open) == 0 {
+		return
+	}
+	ch := f.open[len(f.open)-1]
+	select {
+	case ch <- pubsub.Event[viewmodel.WorkSnapshot]{Type: "work", Payload: snap}:
+	default:
+	}
+}
+
+func (f *controlWork) ListWork(_ context.Context, q viewmodel.WorkQuery) (viewmodel.WorkPage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.queries = append(f.queries, q)
+	return f.page, f.pageErr
+}
+
+func (f *controlWork) InspectWork(context.Context, viewmodel.WorkTarget, bool) (viewmodel.WorkDetail, error) {
+	return viewmodel.WorkDetail{}, nil
+}
+
+func (f *controlWork) StopWork(_ context.Context, target viewmodel.WorkTarget, reason string) (viewmodel.WorkStopResult, error) {
+	f.mu.Lock()
+	hook := f.onStop
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stops = append(f.stops, controlStop{target: target, reason: reason})
+	return f.stop, f.stopErr
+}
+
+func (f *controlWork) AcknowledgeWork(context.Context, viewmodel.WorkAck) error { return nil }
+
+// setPage replaces the page a later ListWork returns.
+func (f *controlWork) setPage(page viewmodel.WorkPage) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.page = page
+}
+
+// setPageErr replaces the error a later ListWork returns.
+func (f *controlWork) setPageErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pageErr = err
+}
+
+// setOnStop installs the hook StopWork runs before it answers.
+func (f *controlWork) setOnStop(hook func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.onStop = hook
+}
+
+// controlSnapshot is one work snapshot of the served conversation.
+func controlSnapshot(rev uint64, active int) viewmodel.WorkSnapshot {
+	return viewmodel.WorkSnapshot{
+		Version:        1,
+		ConversationID: controlSession,
+		RuntimeEpoch:   "e1",
+		Revision:       rev,
+		ActiveCount:    active,
+	}
+}
+
+// TestTheFirstWorkListArrivesBeforeTheResponse pins R2 and R3 for the work
+// mirror: the first live read returns only after its work_snapshot update.
+func TestTheFirstWorkListArrivesBeforeTheResponse(t *testing.T) {
+	work := &controlWork{}
+	work.setSnapshot(controlSnapshot(1, 1))
+	conn, a := startControlAgent(t, true, service.Deps{State: seamState(t, controlSession), Work: work}, nil)
+
+	var got acpwire.WorkState
+	if err := conn.Call(context.Background(), acpwire.MethodWorkList, acpwire.WorkListParams{
+		SessionID: controlSession,
+	}, &got); err != nil {
+		t.Fatalf("session/work_list: %v", err)
+	}
+	if !got.Exists {
+		t.Fatal("exists = false, want true for a session that serves work")
+	}
+
+	updates := a.workUpdates()
+	if len(updates) != 1 {
+		t.Fatalf("recorded %d work_snapshot updates, want exactly 1 before the response", len(updates))
+	}
+	if !reflect.DeepEqual(updates[0].Work, got) {
+		t.Fatalf("update = %+v, want the response's %+v", updates[0].Work, got)
+	}
+}
+
+// TestANewWorkSnapshotIsSentWithinTheInterval pins the forwarder's cadence: a
+// newer snapshot reaches the client within one interval, and a quiet session
+// sends nothing.
+func TestANewWorkSnapshotIsSentWithinTheInterval(t *testing.T) {
+	work := &controlWork{}
+	work.setSnapshot(controlSnapshot(1, 0))
+	conn, a := startControlAgent(t, true, service.Deps{State: seamState(t, controlSession), Work: work}, nil)
+
+	var got acpwire.WorkState
+	if err := conn.Call(context.Background(), acpwire.MethodWorkList, acpwire.WorkListParams{
+		SessionID: controlSession,
+	}, &got); err != nil {
+		t.Fatalf("session/work_list: %v", err)
+	}
+
+	work.publish(controlSnapshot(2, 3))
+	waitForFrame(t, 500*time.Millisecond, "a work_snapshot carrying the newer revision", func() bool {
+		for _, u := range a.workUpdates() {
+			if u.Work.Snapshot.Revision == 2 {
+				return true
+			}
+		}
+		return false
+	})
+
+	before := len(a.workUpdates())
+	time.Sleep(3*workInterval + 30*time.Millisecond)
+	if after := len(a.workUpdates()); after != before {
+		t.Fatalf("a quiet session sent %d more updates", after-before)
+	}
+}
+
+// TestAWorkCallReturnsAfterItsUpdate is V3's ordering check for the work
+// mirror: a call whose effect publishes a snapshot returns only after the
+// update carrying it was written.
+func TestAWorkCallReturnsAfterItsUpdate(t *testing.T) {
+	work := &controlWork{}
+	work.setSnapshot(controlSnapshot(1, 1))
+	conn, a := startControlAgentWith(t, controlSetup{
+		marshal: true,
+		deps:    service.Deps{State: seamState(t, controlSession), Work: work},
+		// Every session/update frame is slowed, so a call that returns before
+		// the update was written shows up as an ordering failure.
+		delay: 50 * time.Millisecond,
+	})
+
+	var got acpwire.WorkState
+	if err := conn.Call(context.Background(), acpwire.MethodWorkList, acpwire.WorkListParams{
+		SessionID: controlSession,
+	}, &got); err != nil {
+		t.Fatalf("session/work_list: %v", err)
+	}
+
+	// The fake publishes a newer snapshot before it answers, so the call's
+	// effect is exactly what the barrier must have carried. Absorbing it is the
+	// service's event loop's job, so wait for it rather than race it.
+	work.setOnStop(func() {
+		work.publish(controlSnapshot(2, 0))
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if snap, _ := a.served.Work(); snap.Revision == 2 {
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	})
+
+	var stop acpwire.WorkStopResult
+	if err := conn.Call(context.Background(), acpwire.MethodWorkStop, acpwire.WorkTargetParams{
+		SessionID: controlSession,
+		TaskKey:   "task-1",
+		Reason:    "done",
+	}, &stop); err != nil {
+		t.Fatalf("session/work_stop: %v", err)
+	}
+
+	found := false
+	for _, u := range a.workUpdates() {
+		if u.Work.Snapshot.Revision == 2 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the call returned before the update its snapshot caused was written")
+	}
+}
+
+// TestWorkPagesComeFromTheService pins the page views and the stale cursor's
+// code travelling to the client.
+func TestWorkPagesComeFromTheService(t *testing.T) {
+	work := &controlWork{}
+	work.setSnapshot(controlSnapshot(1, 0))
+	work.setPage(viewmodel.WorkPage{RuntimeEpoch: "e1", Revision: 3, NextCursor: "c2"})
+	conn, _ := startControlAgent(t, true, service.Deps{State: seamState(t, controlSession), Work: work}, nil)
+
+	var page acpwire.WorkPage
+	if err := conn.Call(context.Background(), acpwire.MethodWorkList, acpwire.WorkListParams{
+		SessionID: controlSession,
+		View:      "attention",
+	}, &page); err != nil {
+		t.Fatalf("session/work_list: %v", err)
+	}
+	if page.NextCursor != "c2" {
+		t.Fatalf("page = %+v, want the fake's page", page)
+	}
+
+	work.setPageErr(viewmodel.ErrWorkStaleCursor)
+	var stale acpwire.WorkPage
+	err := conn.Call(context.Background(), acpwire.MethodWorkList, acpwire.WorkListParams{
+		SessionID: controlSession,
+		View:      "history",
+		Cursor:    "old",
+	}, &stale)
+	if !acpclient.IsCode(err, acpwire.CodeStaleWorkCursor) {
+		t.Fatalf("err = %v, want CodeStaleWorkCursor", err)
+	}
+}
+
+// TestASessionWithoutWorkSaysSo pins the live view's "serves no work" answer.
+func TestASessionWithoutWorkSaysSo(t *testing.T) {
+	conn, _ := startControlAgent(t, true, service.Deps{State: seamState(t, controlSession)}, nil)
+
+	var got acpwire.WorkState
+	if err := conn.Call(context.Background(), acpwire.MethodWorkList, acpwire.WorkListParams{
+		SessionID: controlSession,
+	}, &got); err != nil {
+		t.Fatalf("session/work_list: %v", err)
+	}
+	if got.Exists {
+		t.Fatal("exists = true for a session with no work service")
+	}
+}
+
+// TestAClientWithoutTheCapabilityKeepsWorkState is V6: a client without the
+// capability reaches today's handler and receives no work_snapshot.
+func TestAClientWithoutTheCapabilityKeepsWorkState(t *testing.T) {
+	work := &controlWork{}
+	work.setSnapshot(controlSnapshot(1, 0))
+	var calls atomic.Int64
+	others := map[string]Handler{
+		acpwire.MethodWorkList: func(ctx context.Context, params json.RawMessage) (any, error) {
+			calls.Add(1)
+			return acpwire.WorkState{}, nil
+		},
+	}
+	conn, a := startControlAgent(t, false, service.Deps{State: seamState(t, controlSession), Work: work}, others)
+
+	var got acpwire.WorkState
+	if err := conn.Call(context.Background(), acpwire.MethodWorkList, acpwire.WorkListParams{
+		SessionID: controlSession,
+	}, &got); err != nil {
+		t.Fatalf("session/work_list: %v", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("the other handler ran %d times, want 1", calls.Load())
+	}
+	if a.hasKind(acpwire.UpdateWork) {
+		t.Fatal("a client without the capability received a work_snapshot update")
+	}
+	time.Sleep(200 * time.Millisecond)
+	if a.hasKind(acpwire.UpdateWork) {
+		t.Fatal("a work_snapshot update arrived after a delay for a client without the capability")
+	}
+}
+
+// TestTheWorkForwarderStopsWhenTheSessionGoes pins the forwarder's retirement:
+// when the session is gone it stops and its fence goes with it.
+func TestTheWorkForwarderStopsWhenTheSessionGoes(t *testing.T) {
+	work := &controlWork{}
+	work.setSnapshot(controlSnapshot(1, 0))
+	conn, a := startControlAgent(t, true, service.Deps{State: seamState(t, controlSession), Work: work}, nil)
+
+	var got acpwire.WorkState
+	if err := conn.Call(context.Background(), acpwire.MethodWorkList, acpwire.WorkListParams{
+		SessionID: controlSession,
+	}, &got); err != nil {
+		t.Fatalf("session/work_list: %v", err)
+	}
+	if !a.controls.forwarderRunning(controlSession) {
+		t.Fatal("the work forwarder never started")
+	}
+
+	a.lookup.Store(false)
+	waitForFrame(t, 500*time.Millisecond, "the work forwarder to stop", func() bool {
+		return !a.controls.forwarderRunning(controlSession)
+	})
+
+	// Its fence is gone, so a barrier for the session answers at once.
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	a.controls.fenceSession(ctx, controlSession)
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("the fence outlived its forwarder by %v", elapsed)
 	}
 }
 

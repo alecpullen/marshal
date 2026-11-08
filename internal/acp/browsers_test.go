@@ -15,12 +15,14 @@ import (
 	"time"
 
 	"marshal/internal/acp/service"
+	"marshal/internal/acpclient"
 	"marshal/internal/acpclient/rpc"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/commands"
 	"marshal/internal/db"
+	"marshal/internal/skills"
 )
 
 // browserSession is the session every browser test serves.
@@ -615,8 +617,455 @@ func TestADiffWithoutTheCapabilityReachesItsOtherHandler(t *testing.T) {
 	}
 }
 
-// TestTheProjectCallsRefuseBadParams pins the same two refusals for the history
-// and project calls.
+// browserPluginRepo returns a local plugin repository with one command,
+// committed, the way the service's plugin tests build theirs.
+func browserPluginRepo(t *testing.T) (src, commit string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not available: %v", err)
+	}
+	src = filepath.Join(t.TempDir(), "hello-plugin")
+	run := func(args ...string) {
+		t.Helper()
+		cmdArgs := append([]string{"-C", src}, args...)
+		if out, err := exec.Command("git", cmdArgs...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(src, "commands"), 0o755); err != nil {
+		t.Fatalf("mkdir commands: %v", err)
+	}
+	const command = "+++\nname = \"hello\"\ndescription = \"says hello\"\n+++\necho hello\n"
+	if err := os.WriteFile(filepath.Join(src, "commands", "hello.md"), []byte(command), 0o644); err != nil {
+		t.Fatalf("write command: %v", err)
+	}
+	run("init")
+	run("config", "user.email", "test@example.com")
+	run("config", "user.name", "Test")
+	run("add", "-A")
+	run("commit", "-m", "initial")
+	out, err := exec.Command("git", "-C", src, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse HEAD: %v", err)
+	}
+	return src, strings.TrimSpace(string(out))
+}
+
+// TestAMarshalMemoryListIsTheProjectsOwn pins decision 1 for the memory
+// browser: a marshal client reads the project's own rows, oldest first, in
+// Unix milliseconds, and without a database both calls answer CodeNoDatabase.
+func TestAMarshalMemoryListIsTheProjectsOwn(t *testing.T) {
+	database, projectID := browserHistoryDB(t)
+	otherID, err := database.GetOrCreateProject("/other", "other")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject other: %v", err)
+	}
+	if err := database.CreateSession(browserSession, projectID, "", time.Unix(1000, 0)); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := database.CreateSession("s9", otherID, "", time.Unix(1000, 0)); err != nil {
+		t.Fatalf("CreateSession other: %v", err)
+	}
+	created := time.Unix(4000, 0).UTC()
+	if err := database.SaveMemory(projectID, "fact", "the repo uses sqlite.", browserSession, created); err != nil {
+		t.Fatalf("SaveMemory: %v", err)
+	}
+	if err := database.SaveMemory(otherID, "fact", "another project's memory.", "s9", created); err != nil {
+		t.Fatalf("SaveMemory other: %v", err)
+	}
+
+	state := session.New(config.Default(), "/repo", time.Unix(500, 0),
+		session.Persistence{DB: database, SessionID: browserSession})
+	conn, _ := startBrowserAgent(t, true, service.Deps{State: state, ProjectID: projectID}, nil)
+	ctx := context.Background()
+
+	var res acpwire.MemoriesResult
+	if err := conn.Call(ctx, acpwire.MethodMemoryList, acpwire.ControlParams{SessionID: browserSession}, &res); err != nil {
+		t.Fatalf("session/memory_list: %v", err)
+	}
+	if len(res.Memories) != 1 {
+		t.Fatalf("memories = %+v, want the project's one row", res.Memories)
+	}
+	entry := res.Memories[0]
+	if entry.Content != "the repo uses sqlite." {
+		t.Errorf("content = %q, want the saved text", entry.Content)
+	}
+	if want := acpwire.Millis(created); entry.CreatedAt != want {
+		t.Errorf("createdAt = %d, want %d", entry.CreatedAt, want)
+	}
+
+	if err := callEmpty(t, conn, acpwire.MethodMemoryDelete, acpwire.MemoryDeleteParams{
+		SessionID: browserSession,
+		ID:        entry.ID,
+	}); err != nil {
+		t.Fatalf("session/memory_delete: %v", err)
+	}
+	var after acpwire.MemoriesResult
+	if err := conn.Call(ctx, acpwire.MethodMemoryList, acpwire.ControlParams{SessionID: browserSession}, &after); err != nil {
+		t.Fatalf("session/memory_list after delete: %v", err)
+	}
+	if len(after.Memories) != 0 {
+		t.Errorf("memories after delete = %+v, want none", after.Memories)
+	}
+
+	bare, _ := startBrowserAgent(t, true, service.Deps{State: seamState(t, browserSession)}, nil)
+	if err := callEmpty(t, bare, acpwire.MethodMemoryList, acpwire.ControlParams{SessionID: browserSession}); !acpclient.IsCode(err, acpwire.CodeNoDatabase) {
+		t.Errorf("session/memory_list without a database = %v, want CodeNoDatabase", err)
+	}
+	if err := callEmpty(t, bare, acpwire.MethodMemoryDelete, acpwire.MemoryDeleteParams{SessionID: browserSession, ID: 1}); !acpclient.IsCode(err, acpwire.CodeNoDatabase) {
+		t.Errorf("session/memory_delete without a database = %v, want CodeNoDatabase", err)
+	}
+}
+
+// TestAMarshalPluginScanCarriesTheContents checks the plugin browser end to
+// end: the scan's contents and token, the install, the listing and the remove.
+func TestAMarshalPluginScanCarriesTheContents(t *testing.T) {
+	home, work := t.TempDir(), t.TempDir()
+	state := session.New(config.Default(), work, time.Unix(100, 0), session.Persistence{SessionID: browserSession})
+	conn, _ := startBrowserAgent(t, true, service.Deps{State: state, HomeDir: home}, nil)
+	src, commit := browserPluginRepo(t)
+	ctx := context.Background()
+
+	var scan acpwire.PluginScan
+	err := conn.Call(ctx, acpwire.MethodPluginsInstallScan, acpwire.PluginScanParams{
+		SessionID: browserSession,
+		Source:    src,
+	}, &scan)
+	if err != nil {
+		t.Fatalf("session/plugins_install_scan: %v", err)
+	}
+	if scan.Token == "" {
+		t.Fatal("the scan carries no token")
+	}
+	if scan.Commit != commit {
+		t.Errorf("commit = %q, want the repository's %q", scan.Commit, commit)
+	}
+	if len(scan.Contents.Commands) != 1 || scan.Contents.Commands[0].Name != "hello" {
+		t.Errorf("contents = %+v, want the hello command", scan.Contents)
+	}
+
+	err = callEmpty(t, conn, acpwire.MethodPluginsInstallConfirm, acpwire.PluginInstallParams{
+		SessionID: browserSession,
+		ScanToken: scan.Token,
+		Scope:     "global",
+	})
+	if err != nil {
+		t.Fatalf("session/plugins_install_confirm: %v", err)
+	}
+
+	var list acpwire.PluginsResult
+	if err := conn.Call(ctx, acpwire.MethodPluginsList, acpwire.ControlParams{SessionID: browserSession}, &list); err != nil {
+		t.Fatalf("session/plugins_list: %v", err)
+	}
+	if len(list.Plugins) != 1 || list.Plugins[0].Name != scan.Name {
+		t.Fatalf("plugins = %+v, want the installed %q", list.Plugins, scan.Name)
+	}
+
+	err = callEmpty(t, conn, acpwire.MethodPluginsRemove, acpwire.PluginRemoveParams{
+		SessionID: browserSession,
+		Name:      scan.Name,
+		Scope:     "global",
+	})
+	if err != nil {
+		t.Fatalf("session/plugins_remove: %v", err)
+	}
+	var after acpwire.PluginsResult
+	if err := conn.Call(ctx, acpwire.MethodPluginsList, acpwire.ControlParams{SessionID: browserSession}, &after); err != nil {
+		t.Fatalf("session/plugins_list after remove: %v", err)
+	}
+	if len(after.Plugins) != 0 {
+		t.Errorf("plugins after remove = %+v, want none", after.Plugins)
+	}
+}
+
+// TestADiscardedScanCannotBeInstalled keeps the discard's effect: a token it
+// deleted cannot install.
+func TestADiscardedScanCannotBeInstalled(t *testing.T) {
+	home, work := t.TempDir(), t.TempDir()
+	state := session.New(config.Default(), work, time.Unix(100, 0), session.Persistence{SessionID: browserSession})
+	conn, _ := startBrowserAgent(t, true, service.Deps{State: state, HomeDir: home}, nil)
+	src, _ := browserPluginRepo(t)
+	ctx := context.Background()
+
+	var scan acpwire.PluginScan
+	err := conn.Call(ctx, acpwire.MethodPluginsInstallScan, acpwire.PluginScanParams{
+		SessionID: browserSession,
+		Source:    src,
+	}, &scan)
+	if err != nil {
+		t.Fatalf("session/plugins_install_scan: %v", err)
+	}
+	if err := callEmpty(t, conn, acpwire.MethodPluginsInstallDiscard, acpwire.PluginDiscardParams{
+		SessionID: browserSession,
+		ScanToken: scan.Token,
+	}); err != nil {
+		t.Fatalf("session/plugins_install_discard: %v", err)
+	}
+
+	err = callEmpty(t, conn, acpwire.MethodPluginsInstallConfirm, acpwire.PluginInstallParams{
+		SessionID: browserSession,
+		ScanToken: scan.Token,
+		Scope:     "global",
+	})
+	if err == nil {
+		t.Fatal("confirming a discarded scan = nil, want the service's refusal")
+	}
+}
+
+// TestAMarshalSkillIsKeyedByItsSource pins the skill browser's key: a skill is
+// listed, loaded and removed by its store and source, never by its name.
+func TestAMarshalSkillIsKeyedByItsSource(t *testing.T) {
+	home, work := t.TempDir(), t.TempDir()
+	store := filepath.Join(config.UserDir(home), "skills")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatalf("create the skill store: %v", err)
+	}
+	const body = "+++\nname = \"alpha\"\ndescription = \"global fixture\"\n+++\n\n# alpha\n"
+	path := filepath.Join(store, "alpha.md")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	parsed, err := skills.Parse(body)
+	if err != nil {
+		t.Fatalf("parse skill: %v", err)
+	}
+	idx := skills.NewIndex()
+	idx.Set("alpha", parsed)
+
+	state := session.New(config.Default(), work, time.Unix(100, 0), session.Persistence{SessionID: browserSession})
+	conn, _ := startBrowserAgent(t, true, service.Deps{
+		State:      state,
+		HomeDir:    home,
+		SkillIndex: func() *skills.Index { return idx },
+	}, nil)
+	ctx := context.Background()
+
+	var list acpwire.SkillsResult
+	if err := conn.Call(ctx, acpwire.MethodSkillsList, acpwire.ControlParams{SessionID: browserSession}, &list); err != nil {
+		t.Fatalf("session/skills_list: %v", err)
+	}
+	if len(list.Skills) != 1 {
+		t.Fatalf("skills = %+v, want the one global entry", list.Skills)
+	}
+	entry := list.Skills[0]
+	if entry.Scope != "global" || entry.Source != "alpha.md" || entry.Name != "alpha" {
+		t.Errorf("entry = %+v, want the global alpha.md keyed by its source", entry)
+	}
+
+	var loaded acpwire.SkillNameResult
+	err = conn.Call(ctx, acpwire.MethodSkillsLoad, acpwire.SkillParams{
+		SessionID: browserSession,
+		Scope:     entry.Scope,
+		Source:    entry.Source,
+	}, &loaded)
+	if err != nil {
+		t.Fatalf("session/skills_load: %v", err)
+	}
+	if loaded.Name != "alpha" {
+		t.Errorf("loaded name = %q, want alpha", loaded.Name)
+	}
+	if !state.HasActiveSkill("alpha") {
+		t.Error("the skill was not loaded into the session")
+	}
+
+	err = callEmpty(t, conn, acpwire.MethodSkillsRemove, acpwire.SkillParams{
+		SessionID: browserSession,
+		Scope:     entry.Scope,
+		Source:    entry.Source,
+	})
+	if err != nil {
+		t.Fatalf("session/skills_remove: %v", err)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Errorf("the skill's source is still there after remove: %v", statErr)
+	}
+}
+
+// TestTheSkillSettingsReachTheService checks the three settings calls: the user
+// config's autoload list, the session's gate and a cleared decision.
+func TestTheSkillSettingsReachTheService(t *testing.T) {
+	home, work := t.TempDir(), t.TempDir()
+	userConfig := filepath.Join(home, "config.toml")
+	state := session.New(config.Default(), work, time.Unix(100, 0), session.Persistence{SessionID: browserSession})
+	conn, _ := startBrowserAgent(t, true, service.Deps{
+		State:          state,
+		HomeDir:        home,
+		UserConfigPath: userConfig,
+	}, nil)
+
+	err := callEmpty(t, conn, acpwire.MethodSkillsAutoload, acpwire.SkillAutoloadParams{
+		SessionID: browserSession,
+		Name:      "alpha",
+		On:        true,
+	})
+	if err != nil {
+		t.Fatalf("session/skills_autoload: %v", err)
+	}
+	raw, err := os.ReadFile(userConfig)
+	if err != nil {
+		t.Fatalf("read the user config: %v", err)
+	}
+	if !strings.Contains(string(raw), "alpha") {
+		t.Errorf("the user config does not hold alpha:\n%s", raw)
+	}
+
+	if err := callEmpty(t, conn, acpwire.MethodSkillGateSet, acpwire.SkillGateParams{
+		SessionID: browserSession,
+		On:        true,
+	}); err != nil {
+		t.Fatalf("session/skill_gate_set: %v", err)
+	}
+	if !state.SkillGateEnabled() {
+		t.Error("the session's gate is off after session/skill_gate_set(on)")
+	}
+
+	state.SkillGateRecordDeny("alpha")
+	if got := state.SkillGateDecisions(); len(got) != 1 {
+		t.Fatalf("gate decisions = %+v, want the recorded deny", got)
+	}
+	if err := callEmpty(t, conn, acpwire.MethodSkillGateClear, acpwire.SkillGateClearParams{
+		SessionID: browserSession,
+		Skill:     "alpha",
+	}); err != nil {
+		t.Fatalf("session/skill_gate_clear: %v", err)
+	}
+	if got := state.SkillGateDecisions(); len(got) != 0 {
+		t.Errorf("gate decisions after clear = %+v, want none", got)
+	}
+}
+
+// TestABrowserWithoutTheCapabilityReachesItsOtherHandler is V6 for the ten
+// routed browser methods: a client that did not declare the capability reaches
+// ACP's handler, unchanged.
+func TestABrowserWithoutTheCapabilityReachesItsOtherHandler(t *testing.T) {
+	routed := []struct {
+		method string
+		params func(id string) any
+	}{
+		{acpwire.MethodMemoryList, func(id string) any {
+			return acpwire.ControlParams{SessionID: id}
+		}},
+		{acpwire.MethodMemoryDelete, func(id string) any {
+			return acpwire.MemoryDeleteParams{SessionID: id, ID: 1}
+		}},
+		{acpwire.MethodPluginsList, func(id string) any {
+			return acpwire.ControlParams{SessionID: id}
+		}},
+		{acpwire.MethodPluginsInstallScan, func(id string) any {
+			return acpwire.PluginScanParams{SessionID: id, Source: "src"}
+		}},
+		{acpwire.MethodPluginsInstallConfirm, func(id string) any {
+			return acpwire.PluginInstallParams{SessionID: id, ScanToken: "t", Scope: "global"}
+		}},
+		{acpwire.MethodPluginsInstallDiscard, func(id string) any {
+			return acpwire.PluginDiscardParams{SessionID: id, ScanToken: "t"}
+		}},
+		{acpwire.MethodPluginsRemove, func(id string) any {
+			return acpwire.PluginRemoveParams{SessionID: id, Name: "n", Scope: "global"}
+		}},
+		{acpwire.MethodSkillsList, func(id string) any {
+			return acpwire.ControlParams{SessionID: id}
+		}},
+		{acpwire.MethodSkillsLoad, func(id string) any {
+			return acpwire.SkillParams{SessionID: id, Scope: "global", Source: "s.md"}
+		}},
+		{acpwire.MethodSkillsRemove, func(id string) any {
+			return acpwire.SkillParams{SessionID: id, Scope: "global", Source: "s.md"}
+		}},
+	}
+
+	called := map[string]*atomic.Bool{}
+	others := map[string]Handler{}
+	for _, tc := range routed {
+		flag := &atomic.Bool{}
+		called[tc.method] = flag
+		others[tc.method] = func(context.Context, json.RawMessage) (any, error) {
+			flag.Store(true)
+			return struct{}{}, nil
+		}
+	}
+	conn, _ := startBrowserAgent(t, false, service.Deps{State: seamState(t, browserSession)}, others)
+
+	for _, tc := range routed {
+		t.Run(tc.method, func(t *testing.T) {
+			if err := callEmpty(t, conn, tc.method, tc.params(browserSession)); err != nil {
+				t.Fatalf("%s: %v", tc.method, err)
+			}
+			if !called[tc.method].Load() {
+				t.Errorf("%s did not reach ACP's handler", tc.method)
+			}
+		})
+	}
+}
+
+// TestTheBrowserCallsRefuseBadParams pins the same two refusals for the memory,
+// plugin and skill calls.
+func TestTheBrowserCallsRefuseBadParams(t *testing.T) {
+	conn, _ := startBrowserAgent(t, true, service.Deps{State: seamState(t, browserSession)}, nil)
+
+	cases := []struct {
+		method string
+		params func(sessionID string) any
+	}{
+		{acpwire.MethodMemoryList, func(id string) any {
+			return acpwire.ControlParams{SessionID: id}
+		}},
+		{acpwire.MethodMemoryDelete, func(id string) any {
+			return acpwire.MemoryDeleteParams{SessionID: id, ID: 1}
+		}},
+		{acpwire.MethodPluginsList, func(id string) any {
+			return acpwire.ControlParams{SessionID: id}
+		}},
+		{acpwire.MethodPluginsInstallScan, func(id string) any {
+			return acpwire.PluginScanParams{SessionID: id, Source: "src"}
+		}},
+		{acpwire.MethodPluginsInstallConfirm, func(id string) any {
+			return acpwire.PluginInstallParams{SessionID: id, ScanToken: "t", Scope: "global"}
+		}},
+		{acpwire.MethodPluginsInstallDiscard, func(id string) any {
+			return acpwire.PluginDiscardParams{SessionID: id, ScanToken: "t"}
+		}},
+		{acpwire.MethodPluginsRemove, func(id string) any {
+			return acpwire.PluginRemoveParams{SessionID: id, Name: "n", Scope: "global"}
+		}},
+		{acpwire.MethodSkillsList, func(id string) any {
+			return acpwire.ControlParams{SessionID: id}
+		}},
+		{acpwire.MethodSkillsLoad, func(id string) any {
+			return acpwire.SkillParams{SessionID: id, Scope: "global", Source: "s.md"}
+		}},
+		{acpwire.MethodSkillsInstall, func(id string) any {
+			return acpwire.SkillInstallParams{SessionID: id, Source: "s", Scope: "global"}
+		}},
+		{acpwire.MethodSkillsRemove, func(id string) any {
+			return acpwire.SkillParams{SessionID: id, Scope: "global", Source: "s.md"}
+		}},
+		{acpwire.MethodSkillsAutoload, func(id string) any {
+			return acpwire.SkillAutoloadParams{SessionID: id, Name: "alpha", On: true}
+		}},
+		{acpwire.MethodSkillGateSet, func(id string) any {
+			return acpwire.SkillGateParams{SessionID: id, On: true}
+		}},
+		{acpwire.MethodSkillGateClear, func(id string) any {
+			return acpwire.SkillGateClearParams{SessionID: id, Skill: "alpha"}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method+" without a session ID", func(t *testing.T) {
+			err := callEmpty(t, conn, tc.method, tc.params(""))
+			if err == nil || err.Error() != "invalid params" {
+				t.Fatalf("%s = %v, want the invalid-params refusal", tc.method, err)
+			}
+		})
+		t.Run(tc.method+" for an unknown session", func(t *testing.T) {
+			err := callEmpty(t, conn, tc.method, tc.params("nope"))
+			if err == nil || !strings.Contains(err.Error(), "unknown session") {
+				t.Fatalf("%s = %v, want the unknown-session refusal", tc.method, err)
+			}
+		})
+	}
+}
+
 func TestTheProjectCallsRefuseBadParams(t *testing.T) {
 	conn, _ := startBrowserAgent(t, true, service.Deps{State: seamState(t, browserSession)}, nil)
 

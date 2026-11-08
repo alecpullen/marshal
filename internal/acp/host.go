@@ -526,11 +526,9 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 			return &MemoryRuntime{DB: dbHandle, ProjectID: rt.ProjectID, State: rt.State}, true
 		},
 	})
-	srv.Handle("session/memory_list", mem.MemoryList)
 	srv.Handle("session/memory_suggestions", mem.MemorySuggestions)
 	srv.Handle("session/memory_promote", mem.MemoryPromote)
 	srv.Handle("session/memory_confirm", mem.MemoryConfirm)
-	srv.Handle("session/memory_delete", mem.MemoryDelete)
 	srv.Handle("session/memory_set_confidence", mem.MemorySetConfidence)
 	srv.Handle("session/agents_roster", mem.AgentsRoster)
 
@@ -596,12 +594,9 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 			return &SkillsRuntime{HomeDir: rt.HomeDir, WorkingDir: rt.WorkingDir, State: rt.State}, true
 		},
 	})
-	srv.Handle("session/skills_list", skillsMgr.SkillsList)
 	srv.Handle("session/skills_install_preview", skillsMgr.SkillsInstallPreview)
 	srv.Handle("session/skills_install_confirm", skillsMgr.SkillsInstallConfirm)
 	srv.Handle("session/skills_install_discard", skillsMgr.SkillsInstallDiscard)
-	srv.Handle("session/skills_remove", skillsMgr.SkillsRemove)
-	srv.Handle("session/skills_load", skillsMgr.SkillsLoad)
 
 	pluginsMgr := NewPluginsManager(PluginsManagerConfig{
 		Lookup: func(sessionID string) (*PluginsRuntime, bool) {
@@ -625,10 +620,20 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 	// registerBrowsers routes to.
 	browsers := NewBrowserManager(BrowserManagerConfig{Lookup: manager.Service})
 	registerBrowsers(srv, browsers, map[string]Handler{
-		acpwire.MethodCommand:     cmds.Command,
-		acpwire.MethodCommandList: cmds.CommandList,
-		acpwire.MethodDiff:        wtMgr.Diff,
-		acpwire.MethodFile:        filesMgr.File,
+		acpwire.MethodCommand:               cmds.Command,
+		acpwire.MethodCommandList:           cmds.CommandList,
+		acpwire.MethodDiff:                  wtMgr.Diff,
+		acpwire.MethodFile:                  filesMgr.File,
+		acpwire.MethodMemoryList:            mem.MemoryList,
+		acpwire.MethodMemoryDelete:          mem.MemoryDelete,
+		acpwire.MethodPluginsList:           pluginsMgr.PluginsList,
+		acpwire.MethodPluginsInstallScan:    pluginsMgr.PluginsInstallScan,
+		acpwire.MethodPluginsInstallConfirm: pluginsMgr.PluginsInstallConfirm,
+		acpwire.MethodPluginsInstallDiscard: pluginsMgr.PluginsInstallDiscard,
+		acpwire.MethodPluginsRemove:         pluginsMgr.PluginsRemove,
+		acpwire.MethodSkillsList:            skillsMgr.SkillsList,
+		acpwire.MethodSkillsLoad:            skillsMgr.SkillsLoad,
+		acpwire.MethodSkillsRemove:          skillsMgr.SkillsRemove,
 	})
 
 	// Follow-ups doc item #5: this used to overwrite the manager's

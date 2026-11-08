@@ -834,23 +834,58 @@ func registerSettings(srv *Server, settings *SettingsManager, others map[string]
 	srv.Handle(acpwire.MethodModelsSave, settings.ModelsSave)
 	srv.Handle(acpwire.MethodModelsForget, settings.ModelsForget)
 	srv.Handle(acpwire.MethodModelsRename, settings.ModelsRename)
-	srv.Handle(acpwire.MethodLoginProvider, settings.LoginProvider)
-	srv.Handle(acpwire.MethodSetValue, settings.SetValue)
-	srv.Handle(acpwire.MethodSaveProviders, settings.SaveProviders)
+	srv.Handle(acpwire.MethodLoginProvider, settingsFailureOf(settings.LoginProvider))
+	srv.Handle(acpwire.MethodSetValue, settingsFailureOf(settings.SetValue))
+	srv.Handle(acpwire.MethodSaveProviders, settingsFailureOf(settings.SaveProviders))
 	srv.Handle(acpwire.MethodSavePresets, settings.SavePresets)
 	srv.Handle(acpwire.MethodPreparePresets, settings.PreparePresets)
 	srv.Handle(acpwire.MethodSaveProvenance, settings.SaveProvenance)
 	srv.Handle(acpwire.MethodTrustPrompt, settings.TrustPrompt)
-	srv.Handle(acpwire.MethodTrustDecide, settings.TrustDecide)
+	srv.Handle(acpwire.MethodTrustDecide, settingsFailureOf(settings.TrustDecide))
 	srv.Handle(acpwire.MethodSessionConfig, settings.SessionConfig)
-	srv.Handle(acpwire.MethodApplyConfig, settings.ApplyConfig)
+	srv.Handle(acpwire.MethodApplyConfig, settingsFailureOf(settings.ApplyConfig))
 	srv.Handle(acpwire.MethodReloadConfig, settings.ReloadConfig)
 	srv.Handle(acpwire.MethodMCPReconnect, settings.MCPReconnect)
-	srv.Handle(acpwire.MethodSaveProjectConfig, settings.SaveProjectConfig)
+	srv.Handle(acpwire.MethodSaveProjectConfig, settingsFailureOf(settings.SaveProjectConfig))
 	srv.Handle(acpwire.MethodSaveVerifyCommands, settings.SaveVerifyCommands)
-	srv.Handle(acpwire.MethodMCPLogin, settings.MCPLogin)
+	srv.Handle(acpwire.MethodMCPLogin, settingsFailureOf(settings.MCPLogin))
 	srv.Handle(acpwire.MethodProbeProvider,
-		marshalOr(srv.marshalClient, settings.ProbeProvider, others[acpwire.MethodProbeProvider]))
+		settingsFailureOf(marshalOr(srv.marshalClient, settings.ProbeProvider, others[acpwire.MethodProbeProvider])))
 	srv.Handle(acpwire.MethodSetProviderKey,
-		marshalOr(srv.marshalClient, settings.SetProviderKey, others[acpwire.MethodSetProviderKey]))
+		settingsFailureOf(marshalOr(srv.marshalClient, settings.SetProviderKey, others[acpwire.MethodSetProviderKey])))
+}
+
+// settingsFailureOf wraps one settings handler so a failure keeps the sentence
+// the client shows. The server writes every other error as its code's fixed
+// string (F-SEC-37), so a plain error would arrive as "internal error"; these
+// sentences are client-facing, and the settings browser reads them.
+func settingsFailureOf(h Handler) Handler {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		result, err := h(ctx, params)
+		return result, settingsFailure(err)
+	}
+}
+
+// settingsFailure is settingsFailureOf's conversion: an *acpwire.Error and a
+// JSON-RPC error travel as they are, so their code and message survive, and any
+// other error travels as an *acpwire.Error carrying its message, the form
+// reloadResult gives a reload's error (decision 6).
+func settingsFailure(err error) error {
+	if err == nil {
+		return nil
+	}
+	var coded *acpwire.Error
+	if errors.As(err, &coded) {
+		return err
+	}
+	var rpcErr *jsonRPCError
+	if errors.As(err, &rpcErr) {
+		return err
+	}
+	// A cancelled call keeps its own code: requestCancelled is what the client
+	// acts on (P3 R2).
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return &acpwire.Error{Message: err.Error()}
 }

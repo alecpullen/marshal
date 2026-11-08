@@ -1095,6 +1095,106 @@ func TestDispatchRequestKeepsOtherErrorsOpaque(t *testing.T) {
 	}
 }
 
+// declareMarshalClient answers initialize as a client that declared the
+// marshal capability, and empties out so the caller reads only its own
+// response.
+func declareMarshalClient(t *testing.T, s *Server, out *bytes.Buffer) {
+	t.Helper()
+	s.handlerWG.Add(1)
+	s.dispatchRequest(context.Background(), Request{
+		JSONRPC: "2.0",
+		Method:  "initialize",
+		ID:      rawMessagePtr("0"),
+		Params:  json.RawMessage(`{"protocolVersion":1,"clientCapabilities":{"marshal":{"protocolVersion":1}}}`),
+	})
+	if !s.marshalClient() {
+		t.Fatal("initialize did not declare the marshal client")
+	}
+	out.Reset()
+}
+
+// TestAMarshalClientsPlainErrorKeepsItsSentence pins decision 1's agent half: a
+// marshal client's plain handler error travels as an *acpwire.Error with no
+// code and its own sentence, where every other client gets F-SEC-37's fixed
+// text (TestDispatchRequestKeepsOtherErrorsOpaque).
+func TestAMarshalClientsPlainErrorKeepsItsSentence(t *testing.T) {
+	out := &bytes.Buffer{}
+	s := &Server{
+		out:      json.NewEncoder(out),
+		handlers: map[string]Handler{},
+	}
+	registerInitialize(s)
+	s.handlers["plan/parse"] = func(ctx context.Context, params json.RawMessage) (any, error) {
+		return nil, errors.New("the plan does not parse")
+	}
+	declareMarshalClient(t, s, out)
+
+	s.handlerWG.Add(1)
+	s.dispatchRequest(context.Background(), Request{
+		JSONRPC: "2.0",
+		Method:  "plan/parse",
+		ID:      rawMessagePtr("1"),
+	})
+
+	var resp Response
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Error == nil {
+		t.Fatal("expected an error in the response")
+	}
+	if resp.Error.Code != serverError {
+		t.Fatalf("code = %d, want %d", resp.Error.Code, serverError)
+	}
+	var wired acpwire.Error
+	if err := json.Unmarshal(resp.Error.Data, &wired); err != nil {
+		t.Fatalf("data %s is not an *acpwire.Error: %v", resp.Error.Data, err)
+	}
+	if wired.Message != "the plan does not parse" {
+		t.Fatalf("data message = %q, want the handler's sentence", wired.Message)
+	}
+	if wired.Code != "" {
+		t.Fatalf("data code = %q, want none: the error is uncoded", wired.Code)
+	}
+}
+
+// TestAMarshalClientsCancellationStaysACancellation pins that a marshal client
+// keeps a cancellation's own code: settingsFailure leaves it alone, so the
+// response is the request-cancelled error, with no data.
+func TestAMarshalClientsCancellationStaysACancellation(t *testing.T) {
+	out := &bytes.Buffer{}
+	s := &Server{
+		out:      json.NewEncoder(out),
+		handlers: map[string]Handler{},
+	}
+	registerInitialize(s)
+	s.handlers["plan/parse"] = func(ctx context.Context, params json.RawMessage) (any, error) {
+		return nil, context.Canceled
+	}
+	declareMarshalClient(t, s, out)
+
+	s.handlerWG.Add(1)
+	s.dispatchRequest(context.Background(), Request{
+		JSONRPC: "2.0",
+		Method:  "plan/parse",
+		ID:      rawMessagePtr("1"),
+	})
+
+	var resp Response
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Error == nil {
+		t.Fatal("expected an error in the response")
+	}
+	if resp.Error.Code != requestCancelled {
+		t.Fatalf("code = %d, want %d", resp.Error.Code, requestCancelled)
+	}
+	if len(resp.Error.Data) != 0 {
+		t.Fatalf("data = %s, want none for a cancellation", resp.Error.Data)
+	}
+}
+
 func TestWireErrorPreservesServerError(t *testing.T) {
 	err := &jsonRPCError{Code: serverError, Message: "session not found: sess_abc"}
 	got := wireError(err)

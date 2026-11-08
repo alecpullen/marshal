@@ -904,6 +904,15 @@ func (s *Server) dispatch(ctx context.Context, req Request) (result any, err err
 	}
 	res, herr := handler(ctx, req.Params)
 	if herr != nil {
+		// A marshal client's error keeps its sentence (decision 1). The marshal
+		// client is the embedding's own TUI, which shows these sentences in
+		// process, so a plain error is sent as the uncoded *acpwire.Error
+		// settingsFailure builds; a coded error, a JSON-RPC error and a
+		// cancellation pass through unchanged. Every other client keeps
+		// F-SEC-37's fixed text.
+		if s.marshalClient() {
+			herr = settingsFailure(herr)
+		}
 		// An *acpwire.Error travels as itself: code serverError, its own
 		// message, and the whole error as data, so the client rebuilds it and
 		// IsCode, NoticeOf and err.Error() read as they do in process (P3 R2).

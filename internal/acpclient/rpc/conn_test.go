@@ -173,6 +173,68 @@ func TestCallReturnsAcpwireErrors(t *testing.T) {
 	})
 }
 
+// TestAnUncodedAgentErrorKeepsItsMessage pins decision 1's client half: a
+// -32000 whose data carries a message but no code becomes that *acpwire.Error,
+// so err.Error() is the sentence the TUI shows in process. A -32000 whose data
+// carries neither stays an *Error.
+func TestAnUncodedAgentErrorKeepsItsMessage(t *testing.T) {
+	call := func(t *testing.T, frame string) error {
+		t.Helper()
+		f := start(t, Handlers{})
+		errCh := make(chan error, 1)
+		go func() { errCh <- f.conn.Call(context.Background(), "x", nil, nil) }()
+		if req := f.recv(t); rawString(t, req["id"]) != "1" {
+			t.Fatalf("call id = %q, want 1", req["id"])
+		}
+		f.send(t, frame)
+		return <-errCh
+	}
+
+	t.Run("uncoded", func(t *testing.T) {
+		err := call(t, `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"server error: boom","data":{"message":"boom"}}}`)
+		var wired *acpwire.Error
+		if !errors.As(err, &wired) {
+			t.Fatalf("err = %T %v, want *acpwire.Error", err, err)
+		}
+		if got := err.Error(); got != "boom" {
+			t.Fatalf("err.Error() = %q, want %q", got, "boom")
+		}
+		if wired.Code != "" {
+			t.Fatalf("code = %q, want none", wired.Code)
+		}
+		codes := []acpwire.ErrorCode{
+			acpwire.CodeQuiescing,
+			acpwire.CodeNoTurnStop,
+			acpwire.CodeHumanGateRequired,
+			acpwire.CodeKeyringUnavailable,
+			acpwire.CodeAuthRequired,
+			acpwire.CodeProviderError,
+			acpwire.CodeStaleWorkCursor,
+			acpwire.CodeRequestSettled,
+			acpwire.CodeBusy,
+			acpwire.CodeSessionClosed,
+			acpwire.CodeNoRunner,
+			acpwire.CodeNoDatabase,
+		}
+		for _, code := range codes {
+			if acpclient.IsCode(err, code) {
+				t.Fatalf("IsCode(%v, %q) = true, want false for an uncoded error", err, code)
+			}
+		}
+	})
+
+	t.Run("empty data", func(t *testing.T) {
+		err := call(t, `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"server error: boom","data":{}}}`)
+		var rerr *Error
+		if !errors.As(err, &rerr) {
+			t.Fatalf("err = %T %v, want *Error", err, err)
+		}
+		if rerr.Code != -32000 || rerr.Message != "server error: boom" {
+			t.Fatalf("*Error = %+v, want code -32000 and message %q", rerr, "server error: boom")
+		}
+	})
+}
+
 // TestCallSendsCancelWhenTheContextEnds checks that a cancelled call returns
 // context.Canceled, sends $/cancel_request, drops the late response, and
 // leaves the connection usable.

@@ -1249,15 +1249,16 @@ func TestSetEffortAnswersWhenItApplies(t *testing.T) {
 		SessionID: controlSession,
 		Effort:    "low",
 	}, &res)
-	var rpcErr *rpc.Error
-	if err == nil || !errors.As(err, &rpcErr) {
+	var wired *acpwire.Error
+	if err == nil || !errors.As(err, &wired) {
 		t.Fatalf("err = %v, want the setter's error to travel", err)
 	}
-	// The setter's error is not reframed as a bad request: the server carries
-	// it as an internal error, and the canonical text replaces its message.
-	if rpcErr.Code != internalError {
-		t.Fatalf("err = %v (code %d), want the setter's error at code %d, not invalid params",
-			err, rpcErr.Code, internalError)
+	// The setter's error is not reframed as a bad request, and a marshal
+	// client gets its sentence: the server sends it as an uncoded
+	// *acpwire.Error (decision 1), not as the canonical internal-error text.
+	if wired.Code != "" || wired.Message != "effort refused" {
+		t.Fatalf("err = %v (code %q), want an uncoded error carrying the setter's sentence %q, not invalid params",
+			err, wired.Code, "effort refused")
 	}
 }
 

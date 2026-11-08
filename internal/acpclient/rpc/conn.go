@@ -403,8 +403,10 @@ func answerError(err error) map[string]any {
 }
 
 // decodeResponseError maps a response error object to its Go error: a
-// -32000 whose data is an *acpwire.Error with a code is that error, anything
-// else is an *Error.
+// -32000 whose data is an *acpwire.Error carrying a code or a message is that
+// error, anything else is an *Error. An uncoded error is how a marshal client
+// gets a plain failure's own sentence (decision 1): the agent sends it with an
+// empty code, so err.Error() reads as it does in process.
 func decodeResponseError(raw json.RawMessage) error {
 	var obj struct {
 		Code    int             `json:"code"`
@@ -416,7 +418,7 @@ func decodeResponseError(raw json.RawMessage) error {
 	}
 	if obj.Code == -32000 && len(obj.Data) > 0 {
 		var wired acpwire.Error
-		if uerr := json.Unmarshal(obj.Data, &wired); uerr == nil && wired.Code != "" {
+		if uerr := json.Unmarshal(obj.Data, &wired); uerr == nil && (wired.Code != "" || wired.Message != "") {
 			return &wired
 		}
 	}

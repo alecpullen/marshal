@@ -453,7 +453,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 		Marshal:    srv.marshalClient,
 	})
 
-	srv.SetResponseBarrier(responseBarrier(turns, works, watches, statuses, sheets, requests))
+	srv.SetResponseBarrier(responseBarrier(turns, works, watches, statuses, sheets, requests, settings))
 
 	home, _ := os.UserHomeDir()
 	cfgMgr := NewConfigManager(home, nil, nil)

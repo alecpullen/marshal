@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,9 +23,12 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/credentials"
+	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
+	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/oauth"
+	"marshal/internal/tools/mcp"
 	"marshal/internal/trust"
 )
 
@@ -90,6 +94,70 @@ type settingsAgent struct {
 	srv      *Server
 	settings *SettingsManager
 	sessions map[string]*settingsSession
+
+	// lookup is what the managers' Lookup reports for every session.
+	lookup atomic.Bool
+
+	mu      sync.Mutex
+	updates []recordedConfig
+}
+
+// recordedConfig is one session_config update the client received.
+type recordedConfig struct {
+	sessionID string
+	config    acpwire.SessionConfig
+}
+
+// recordConfig keeps one received session_config update.
+func (a *settingsAgent) recordConfig(sessionID string, cfg acpwire.SessionConfig) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.updates = append(a.updates, recordedConfig{sessionID: sessionID, config: cfg})
+}
+
+// configs returns the session_config updates received so far, in arrival order.
+func (a *settingsAgent) configs() []recordedConfig {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]recordedConfig, len(a.updates))
+	copy(out, a.updates)
+	return out
+}
+
+// configCount is how many session_config updates the client has received.
+func (a *settingsAgent) configCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.updates)
+}
+
+// notifyClient decodes a notification the agent sent, keeping each
+// session_config update.
+func (a *settingsAgent) notifyClient(method string, params json.RawMessage) {
+	if method != acpwire.MethodSessionUpdate {
+		return
+	}
+	var env struct {
+		SessionID string          `json:"sessionId"`
+		Update    json.RawMessage `json:"update"`
+	}
+	if err := json.Unmarshal(params, &env); err != nil {
+		return
+	}
+	var peek struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(env.Update, &peek); err != nil {
+		return
+	}
+	if peek.Kind != acpwire.UpdateSessionConfig {
+		return
+	}
+	var u acpwire.SessionConfigUpdate
+	if err := json.Unmarshal(env.Update, &u); err != nil {
+		return
+	}
+	a.recordConfig(env.SessionID, u.Config)
 }
 
 // startSettingsAgent serves a SettingsManager and a StatusManager on a pipe,
@@ -98,20 +166,29 @@ type settingsAgent struct {
 // without the capability.
 func startSettingsAgent(t *testing.T, marshal bool, sessions []*settingsSession, others map[string]Handler) *settingsAgent {
 	t.Helper()
+	return startSettingsAgentDelay(t, 0, marshal, sessions, others)
+}
+
+// startSettingsAgentDelay is startSettingsAgent with every session/update
+// frame slowed, so a call that returns before its update is written shows up
+// as an ordering failure.
+func startSettingsAgentDelay(t *testing.T, delay time.Duration, marshal bool, sessions []*settingsSession, others map[string]Handler) *settingsAgent {
+	t.Helper()
 	a := &settingsAgent{t: t, sessions: map[string]*settingsSession{}}
+	a.lookup.Store(true)
 	for _, s := range sessions {
 		a.sessions[s.id] = s
 	}
 	lookup := func(id string) (*service.Session, bool) {
 		s, ok := a.sessions[id]
-		if !ok {
+		if !ok || !a.lookup.Load() {
 			return nil, false
 		}
 		return s.sess, true
 	}
 	hostLookup := func(id string) (*service.Host, bool) {
 		s, ok := a.sessions[id]
-		if !ok {
+		if !ok || !a.lookup.Load() {
 			return nil, false
 		}
 		return s.host, true
@@ -120,24 +197,30 @@ func startSettingsAgent(t *testing.T, marshal bool, sessions []*settingsSession,
 	client := startTestAgent(t, func(srv *Server) {
 		a.srv = srv
 		registerInitialize(srv)
+		notify := func(method string, params any) error {
+			if delay > 0 && method == acpwire.MethodSessionUpdate {
+				time.Sleep(delay)
+			}
+			return srv.Notify(method, params)
+		}
 		statuses := NewStatusManager(StatusManagerConfig{
 			Lookup:  lookup,
-			Notify:  srv.Notify,
+			Notify:  notify,
 			Marshal: srv.marshalClient,
 		})
 		registerStatus(srv, statuses)
 		settings := NewSettingsManager(SettingsManagerConfig{
 			Lookup:     lookup,
 			HostLookup: hostLookup,
-			Notify:     srv.Notify,
+			Notify:     notify,
 			Marshal:    srv.marshalClient,
 		})
 		registerSettings(srv, settings, others)
-		srv.SetResponseBarrier(responseBarrier(statuses))
+		srv.SetResponseBarrier(responseBarrier(statuses, settings))
 		a.settings = settings
 	})
 
-	a.conn = rpc.NewConn(client, rpc.Handlers{})
+	a.conn = rpc.NewConn(client, rpc.Handlers{Notify: a.notifyClient})
 	t.Cleanup(func() {
 		_ = a.conn.Close()
 		if a.settings != nil {
@@ -734,4 +817,330 @@ func TestTheHostCallsRefuseBadParams(t *testing.T) {
 			}
 		})
 	}
+}
+
+// waitForSettings polls cond until it reports true or timeout expires.
+func waitForSettings(t *testing.T, timeout time.Duration, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out after %v waiting for %s", timeout, what)
+}
+
+// readSessionConfig calls session/config and returns its result.
+func readSessionConfig(t *testing.T, a *settingsAgent, id string) acpwire.SessionConfig {
+	t.Helper()
+	var got acpwire.SessionConfig
+	a.mustCall(acpwire.MethodSessionConfig, acpwire.ConfigParams{SessionID: id}, &got)
+	return got
+}
+
+// forwarderRunning reports whether the manager holds a config forwarder for the
+// session, and how many fences are registered for it.
+func (a *settingsAgent) forwarderRunning(id string) (running bool, fences int) {
+	m := a.settings
+	m.mu.Lock()
+	_, running = m.forwarders[id]
+	m.mu.Unlock()
+	m.fences.mu.Lock()
+	fences = len(m.fences.fences[id])
+	m.fences.mu.Unlock()
+	return running, fences
+}
+
+// TestTheFirstSessionConfigArrivesBeforeTheResponse pins R2's subscription: the
+// first marshal session/config returns after exactly one session_config update
+// for the session was recorded, and that update carries the call's own result.
+func TestTheFirstSessionConfigArrivesBeforeTheResponse(t *testing.T) {
+	s := newSettingsSession(t, "s1", nil)
+	a := startSettingsAgent(t, true, []*settingsSession{s}, nil)
+
+	got := readSessionConfig(t, a, "s1")
+
+	updates := a.configs()
+	if len(updates) != 1 {
+		t.Fatalf("recorded %d session_config updates before the response, want exactly 1", len(updates))
+	}
+	if updates[0].sessionID != "s1" {
+		t.Errorf("update sessionId = %q, want %q", updates[0].sessionID, "s1")
+	}
+	if !reflect.DeepEqual(updates[0].config, got) {
+		t.Errorf("the update = %+v, want the call's result %+v", updates[0].config, got)
+	}
+}
+
+// TestAConfigChangeIsSentWithinTheInterval pins the forwarder's cadence: a
+// config change reaches the client by the next tick, and a quiet session sends
+// nothing.
+func TestAConfigChangeIsSentWithinTheInterval(t *testing.T) {
+	s := newSettingsSession(t, "s1", nil)
+	a := startSettingsAgent(t, true, []*settingsSession{s}, nil)
+	readSessionConfig(t, a, "s1")
+
+	// The state's layers change the way a reload changes them, without a call.
+	layers := s.state.Layers()
+	layers.Merged.Project.Name = "layers-changed"
+	s.state.SetLayers(layers)
+
+	waitForSettings(t, 500*time.Millisecond, "the layer change to arrive", func() bool {
+		for _, u := range a.configs() {
+			var got config.Layers
+			if err := config.UnmarshalLayersJSON(u.config.Layers, &got); err != nil {
+				continue
+			}
+			if got.Merged.Project.Name == "layers-changed" {
+				return true
+			}
+		}
+		return false
+	})
+
+	// Three quiet intervals send nothing: the encoding is unchanged.
+	quiet := a.configCount()
+	time.Sleep(3*configInterval + 50*time.Millisecond)
+	if n := a.configCount(); n != quiet {
+		t.Fatalf("a quiet session sent %d more updates, want none", n-quiet)
+	}
+}
+
+// TestAHostWriteReturnsAfterItsConfigUpdate pins R2's barrier for a host write:
+// with every session/update frame slowed, config/set_value returns only after a
+// session_config update carrying the new value was recorded.
+func TestAHostWriteReturnsAfterItsConfigUpdate(t *testing.T) {
+	s := newSettingsSession(t, "s1", nil)
+	a := startSettingsAgentDelay(t, 50*time.Millisecond, true, []*settingsSession{s}, nil)
+	// The first read subscribes the mirror, so the barrier has a forwarder to
+	// fence.
+	readSessionConfig(t, a, "s1")
+
+	a.mustCall(acpwire.MethodSetValue, acpwire.SetValueParams{
+		SessionID: "s1",
+		Path:      "project.name",
+		Value:     json.RawMessage(`"written-by-host"`),
+	}, nil)
+
+	// The call has returned: the update it caused must already be recorded.
+	for _, u := range a.configs() {
+		var layers config.Layers
+		if err := config.UnmarshalLayersJSON(u.config.Layers, &layers); err != nil {
+			continue
+		}
+		if layers.Merged.Project.Name == "written-by-host" {
+			return
+		}
+	}
+	t.Fatalf("config/set_value returned before a session_config update carrying the new value was recorded: %+v", a.configs())
+}
+
+// TestApplyConfigInstallsTheDecodedConfig pins the decode path: a config with a
+// priced preset, applied over the wire, is the state's config and its Pricing
+// is the typed pricing rather than the map a JSON decode into `any` produces.
+func TestApplyConfigInstallsTheDecodedConfig(t *testing.T) {
+	s := newSettingsSession(t, "s1", nil)
+	a := startSettingsAgent(t, true, []*settingsSession{s}, nil)
+
+	cfg := config.Default()
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"priced": {
+			Provider: "testprov",
+			Model:    "priced-model",
+			Pricing:  &pricing.ModelPricing{InputPerMTokCents: 250, OutputPerMTokCents: 1000},
+		},
+	}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("encode config: %v", err)
+	}
+
+	a.mustCall(acpwire.MethodApplyConfig, acpwire.ConfigParams{SessionID: "s1", Config: raw}, nil)
+
+	installed := s.state.ConfigSnapshot()
+	preset, ok := installed.Models.Presets["priced"]
+	if !ok {
+		t.Fatal("the applied config is not the state's config: the priced preset is absent")
+	}
+	priced, ok := preset.Pricing.(*pricing.ModelPricing)
+	if !ok {
+		t.Fatalf("Pricing = %T, want a *pricing.ModelPricing", preset.Pricing)
+	}
+	if priced.InputPerMTokCents != 250 || priced.OutputPerMTokCents != 1000 {
+		t.Fatalf("Pricing = %+v, want the applied rates", priced)
+	}
+}
+
+// TestTheReloadFlagTravelsWithItsError pins decision 6: the reload's flag and
+// its error travel together in the result, not as a JSON-RPC error.
+func TestTheReloadFlagTravelsWithItsError(t *testing.T) {
+	s := newSettingsSession(t, "s1", func(d *service.Deps) {
+		d.ReloadConfig = func(config.Config) error { return errors.New("reload boom") }
+	})
+	a := startSettingsAgent(t, true, []*settingsSession{s}, nil)
+
+	raw, err := json.Marshal(config.Default())
+	if err != nil {
+		t.Fatalf("encode config: %v", err)
+	}
+	var res acpwire.ReloadResult
+	a.mustCall(acpwire.MethodReloadConfig, acpwire.ConfigParams{SessionID: "s1", Config: raw}, &res)
+	if !res.Reloaded {
+		t.Error("reloaded = false, want true: the session has a reload path")
+	}
+	if res.Error == nil || res.Error.Message != "reload boom" {
+		t.Errorf("error = %+v, want the reload's own message", res.Error)
+	}
+
+	// A session with no reload path answers the flag without an error.
+	plain := newSettingsSession(t, "s1", nil)
+	b := startSettingsAgent(t, true, []*settingsSession{plain}, nil)
+	var none acpwire.ReloadResult
+	b.mustCall(acpwire.MethodReloadConfig, acpwire.ConfigParams{SessionID: "s1", Config: raw}, &none)
+	if none.Reloaded {
+		t.Error("reloaded = true, want false: the session has no reload path")
+	}
+	if none.Error != nil {
+		t.Errorf("error = %+v, want none", none.Error)
+	}
+}
+
+// TestAnMCPLoginReportsTheURLAsProgress pins decision 7 for the MCP sign-in: the
+// authorization URL travels as this call's $/progress value, against a
+// test-owned authorization server, and it precedes the response.
+func TestAnMCPLoginReportsTheURLAsProgress(t *testing.T) {
+	// The engine writes its on-disk metadata cache relative to the working
+	// directory; chdir into a temp dir so the test is hermetic.
+	t.Chdir(t.TempDir())
+	mcp.AllowInsecureHTTP(true)
+	t.Cleanup(func() { mcp.AllowInsecureHTTP(false) })
+
+	metadataSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		base := "http://" + r.Host
+		switch {
+		// The engine derives the RFC 8414 path from the server URL, so an
+		// endpoint with a path (/mcp) is probed at /.well-known/…/mcp.
+		case strings.HasPrefix(r.URL.Path, "/.well-known/oauth-authorization-server"):
+			io.WriteString(w, `{"issuer":"`+base+`","authorization_endpoint":"`+base+`/authorize","token_endpoint":"`+base+`/token","registration_endpoint":"`+base+`/register"}`)
+		case r.URL.Path == "/register":
+			io.WriteString(w, `{"client_id":"test-client"}`)
+		case r.URL.Path == "/token":
+			io.WriteString(w, `{"access_token":"test-at","token_type":"Bearer","expires_in":3600}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(metadataSrv.Close)
+
+	s := newSettingsSession(t, "s1", func(d *service.Deps) {
+		d.State.Config.MCP.Servers = map[string]config.MCPServerConfig{
+			"linear": {URL: metadataSrv.URL + "/mcp", Type: "http", Auth: "oauth", Trust: "unrestricted"},
+		}
+	})
+	a := startSettingsAgent(t, true, []*settingsSession{s}, nil)
+
+	var (
+		mu  sync.Mutex
+		got []acpwire.LoginProgress
+	)
+	done := make(chan error, 1)
+	go func() {
+		done <- a.conn.CallWithProgress(context.Background(), acpwire.MethodMCPLogin,
+			acpwire.LoginParams{SessionID: "s1", Name: "linear"}, nil,
+			func(value json.RawMessage) {
+				var p acpwire.LoginProgress
+				if err := json.Unmarshal(value, &p); err != nil {
+					return
+				}
+				mu.Lock()
+				got = append(got, p)
+				mu.Unlock()
+				completeSignIn(t, p.URL)
+			})
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("session/mcp_login: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("session/mcp_login did not return")
+	}
+
+	mu.Lock()
+	values := append([]acpwire.LoginProgress(nil), got...)
+	mu.Unlock()
+	if len(values) != 1 {
+		t.Fatalf("progress values = %+v, want exactly one", values)
+	}
+	if !strings.Contains(values[0].URL, "/authorize?") {
+		t.Fatalf("progress URL %q, want an authorization URL", values[0].URL)
+	}
+}
+
+// TestAClientWithoutTheCapabilityGetsNoConfigUpdates pins V6's second half: a
+// client that did not declare the capability reads the config, and nothing is
+// pushed to it.
+func TestAClientWithoutTheCapabilityGetsNoConfigUpdates(t *testing.T) {
+	s := newSettingsSession(t, "s1", nil)
+	a := startSettingsAgent(t, false, []*settingsSession{s}, nil)
+
+	got := readSessionConfig(t, a, "s1")
+	if len(got.Config) == 0 || len(got.Layers) == 0 {
+		t.Fatalf("session/config = %+v, want the session's config and layers", got)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+	if n := a.configCount(); n != 0 {
+		t.Fatalf("recorded %d session_config updates, want none for a client without the capability", n)
+	}
+}
+
+// TestTheSessionCallsRefuseBadParams pins the shared guard: every session call
+// names its session, and a call without one is invalid params.
+func TestTheSessionCallsRefuseBadParams(t *testing.T) {
+	s := newSettingsSession(t, "s1", nil)
+	a := startSettingsAgent(t, true, []*settingsSession{s}, nil)
+
+	calls := map[string]string{
+		acpwire.MethodSessionConfig:      `{}`,
+		acpwire.MethodApplyConfig:        `{"config":{}}`,
+		acpwire.MethodReloadConfig:       `{"config":{}}`,
+		acpwire.MethodMCPReconnect:       `{}`,
+		acpwire.MethodSaveProjectConfig:  `{"config":{}}`,
+		acpwire.MethodSaveVerifyCommands: `{"build":"b","test":"t"}`,
+		acpwire.MethodMCPLogin:           `{"name":"linear"}`,
+	}
+	for method, params := range calls {
+		t.Run(method, func(t *testing.T) {
+			err := a.call(method, json.RawMessage(params), nil)
+			if code := rpcCode(t, err); code != invalidParams {
+				t.Fatalf("%s without sessionId: code = %d, want %d", method, code, invalidParams)
+			}
+		})
+	}
+}
+
+// TestTheConfigForwarderStopsWhenTheSessionGoes pins the forwarder's own end: a
+// session the lookup no longer reports stops its forwarder and drops its fence.
+func TestTheConfigForwarderStopsWhenTheSessionGoes(t *testing.T) {
+	s := newSettingsSession(t, "s1", nil)
+	a := startSettingsAgent(t, true, []*settingsSession{s}, nil)
+	readSessionConfig(t, a, "s1")
+
+	waitForSettings(t, 500*time.Millisecond, "the config forwarder to start", func() bool {
+		running, fences := a.forwarderRunning("s1")
+		return running && fences == 1
+	})
+
+	a.lookup.Store(false)
+
+	waitForSettings(t, 500*time.Millisecond, "the config forwarder to stop", func() bool {
+		running, fences := a.forwarderRunning("s1")
+		return !running && fences == 0
+	})
 }

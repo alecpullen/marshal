@@ -1,8 +1,10 @@
 package acp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"sync"
@@ -431,6 +433,149 @@ func (m *SettingsManager) SaveProvenance(ctx context.Context, params json.RawMes
 	return struct{}{}, nil
 }
 
+// SessionConfig handles session/config: it returns the session's config,
+// layers and tools, and for a marshal client it first makes sure the session's
+// config forwarder is running, so the config arrives as an update before this
+// call's response (P3 R2, R3).
+func (m *SettingsManager) SessionConfig(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.ConfigParams
+	if err := decodeParams(params, &p, acpwire.MethodSessionConfig); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	svc, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	if m.isMarshal() {
+		m.ensureForwarder(p.SessionID)
+	}
+	return sessionConfig(svc)
+}
+
+// ApplyConfig handles session/apply_config: it installs cfg as the session's
+// config, without saving it or rebuilding the runtime.
+func (m *SettingsManager) ApplyConfig(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.ConfigParams
+	if err := decodeParams(params, &p, acpwire.MethodApplyConfig); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	svc, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := decodeConfig(p.Config, acpwire.MethodApplyConfig)
+	if err != nil {
+		return nil, err
+	}
+	if err := svc.ApplyConfig(ctx, cfg); err != nil {
+		return nil, err
+	}
+	return struct{}{}, nil
+}
+
+// ReloadConfig handles session/reload_config: the flag travels with the
+// error, so a client without a reload path is not told the reload failed
+// (decision 6).
+func (m *SettingsManager) ReloadConfig(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.ConfigParams
+	if err := decodeParams(params, &p, acpwire.MethodReloadConfig); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	svc, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := decodeConfig(p.Config, acpwire.MethodReloadConfig)
+	if err != nil {
+		return nil, err
+	}
+	reloaded, reloadErr := svc.ReloadConfig(ctx, cfg)
+	return reloadResult(reloaded, reloadErr), nil
+}
+
+// MCPReconnect handles session/mcp_reconnect: it rebuilds the runtime from the
+// session's current config, so an MCP server that has just been signed in to
+// connects. The flag travels with the error, as ReloadConfig's does.
+func (m *SettingsManager) MCPReconnect(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.ConfigParams
+	if err := decodeParams(params, &p, acpwire.MethodMCPReconnect); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	svc, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	reloaded, reloadErr := svc.ReconnectMCP(ctx)
+	return reloadResult(reloaded, reloadErr), nil
+}
+
+// SaveProjectConfig handles session/save_project_config: it writes cfg's
+// project-scoped values to the session's project config.
+func (m *SettingsManager) SaveProjectConfig(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.ConfigParams
+	if err := decodeParams(params, &p, acpwire.MethodSaveProjectConfig); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	svc, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := decodeConfig(p.Config, acpwire.MethodSaveProjectConfig)
+	if err != nil {
+		return nil, err
+	}
+	if err := svc.SaveProjectConfig(ctx, cfg); err != nil {
+		return nil, err
+	}
+	return struct{}{}, nil
+}
+
+// SaveVerifyCommands handles session/save_verify_commands: it writes the plan
+// run's verify commands to the session's project config.
+func (m *SettingsManager) SaveVerifyCommands(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.VerifyCommandsParams
+	if err := decodeParams(params, &p, acpwire.MethodSaveVerifyCommands); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	svc, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	if err := svc.SaveVerifyCommands(ctx, p.Build, p.Test); err != nil {
+		return nil, err
+	}
+	return struct{}{}, nil
+}
+
+// MCPLogin handles session/mcp_login: with Prepare it answers whether the
+// browser sign-in can start, and otherwise runs it, reporting the
+// authorization URL as this call's progress, as LoginProvider does
+// (decision 7).
+func (m *SettingsManager) MCPLogin(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.LoginParams
+	if err := decodeParams(params, &p, acpwire.MethodMCPLogin); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	svc, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	if p.Prepare {
+		return struct{}{}, svc.PrepareMCPLogin(ctx, p.Name)
+	}
+	// The sign-in is cancellable, and the progress value is sent on the
+	// request's own context so it precedes the response (P3 R2).
+	loginCtx, cancel := cancellable(ctx)
+	defer cancel()
+	show := func(url string) {
+		_ = reportProgress(ctx, acpwire.LoginProgress{URL: url})
+	}
+	if err := svc.LoginMCP(loginCtx, p.Name, show); err != nil {
+		return nil, err
+	}
+	return struct{}{}, nil
+}
+
 // Close stops every config forwarder. The connection's cleanup calls it.
 func (m *SettingsManager) Close() {
 	m.mu.Lock()
@@ -448,6 +593,189 @@ func (m *SettingsManager) Close() {
 	for _, cancel := range cancels {
 		cancel()
 	}
+}
+
+// configEnvelope is the session/update body a session_config update travels
+// in. It is a dedicated struct, not SessionUpdateParams, because the latter's
+// Update is a map[string]any: a config carried through a map would not keep
+// its typed fields.
+type configEnvelope struct {
+	SessionID string                      `json:"sessionId"`
+	Update    acpwire.SessionConfigUpdate `json:"update"`
+}
+
+// fenceSession waits until the session's config forwarder has sent the config
+// as it is now, if it differs from the last one sent (P3 R2).
+func (m *SettingsManager) fenceSession(ctx context.Context, sessionID string) {
+	m.fences.wait(ctx, sessionID)
+}
+
+// isMarshal reports whether the connection's client declared the marshal
+// capability.
+func (m *SettingsManager) isMarshal() bool {
+	return m.marshal != nil && m.marshal()
+}
+
+// service resolves a session's client-seam service. An empty id is invalid
+// params and an unknown session is a server error.
+func (m *SettingsManager) service(sessionID string) (*service.Session, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, invalidParamsError("sessionId is required")
+	}
+	sess, ok := m.lookupService(sessionID)
+	if !ok || sess == nil {
+		return nil, serverErrorf("unknown session: %s", sessionID)
+	}
+	return sess, nil
+}
+
+// lookupService resolves a session's service without reporting why it failed.
+func (m *SettingsManager) lookupService(sessionID string) (*service.Session, bool) {
+	if m.lookup == nil {
+		return nil, false
+	}
+	return m.lookup(sessionID)
+}
+
+// ensureForwarder starts one config forwarder for a session, unless the
+// connection is closed or the session already has one. Its fence is registered
+// before its goroutine starts, so a barrier that follows cannot miss it.
+func (m *SettingsManager) ensureForwarder(sessionID string) {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	if _, ok := m.forwarders[sessionID]; ok {
+		m.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	f := &configForwarder{cancel: cancel, fence: newFence()}
+	m.forwarders[sessionID] = f
+	m.fences.add(sessionID, f.fence)
+	m.mu.Unlock()
+
+	go m.runForwarder(sessionID, f, ctx)
+}
+
+// runForwarder keeps the session's config mirror current: every
+// configInterval, and whenever its fence is asked, it reads the config and
+// sends it when the encoding differs from the last one it sent. Config
+// changes without a broker event this manager sees (a host write, a reload),
+// so polling is what keeps the mirror current. It stops when the connection
+// closes or the session goes away.
+func (m *SettingsManager) runForwarder(sessionID string, f *configForwarder, ctx context.Context) {
+	defer func() {
+		m.mu.Lock()
+		delete(m.forwarders, sessionID)
+		m.mu.Unlock()
+		m.fences.remove(sessionID, f.fence)
+		f.fence.close()
+	}()
+
+	// sent says a config has been sent on this connection, so last is the
+	// encoding to compare against.
+	var (
+		last []byte
+		sent bool
+	)
+	// send reads the config, encodes it and sends it when the encoding differs
+	// from the last one sent. It reports whether the session still exists.
+	send := func() bool {
+		// Resolve the service on every pass, so a runtime replaced on load or
+		// resume is followed.
+		svc, ok := m.lookupService(sessionID)
+		if !ok || svc == nil {
+			return false
+		}
+		cfg, err := sessionConfig(svc)
+		if err != nil {
+			return true
+		}
+		encoded, err := json.Marshal(cfg)
+		if err != nil {
+			return true
+		}
+		if sent && bytes.Equal(encoded, last) {
+			return true
+		}
+		if err := m.notify(acpwire.MethodSessionUpdate, configEnvelope{
+			SessionID: sessionID,
+			Update: acpwire.SessionConfigUpdate{
+				Kind:   acpwire.UpdateSessionConfig,
+				Config: cfg,
+			},
+		}); err != nil {
+			return true
+		}
+		last = encoded
+		sent = true
+		return true
+	}
+
+	ticker := time.NewTicker(configInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if !send() {
+				return
+			}
+		case answer := <-f.fence.requests():
+			alive := send()
+			close(answer)
+			if !alive {
+				return
+			}
+		}
+	}
+}
+
+// sessionConfig is what one pass reads: the session's config, layers and
+// tools.
+func sessionConfig(svc *service.Session) (acpwire.SessionConfig, error) {
+	cfg, err := json.Marshal(svc.Config())
+	if err != nil {
+		return acpwire.SessionConfig{}, err
+	}
+	layers, err := json.Marshal(svc.Layers())
+	if err != nil {
+		return acpwire.SessionConfig{}, err
+	}
+	tools, ready := svc.Tools()
+	return acpwire.SessionConfig{Config: cfg, Layers: layers, Tools: tools, ToolsReady: ready}, nil
+}
+
+// reloadResult carries a reload's flag with its error: a JSON-RPC error
+// response could not carry both (decision 6).
+func reloadResult(reloaded bool, err error) acpwire.ReloadResult {
+	res := acpwire.ReloadResult{Reloaded: reloaded}
+	if err == nil {
+		return res
+	}
+	var coded *acpwire.Error
+	if errors.As(err, &coded) {
+		res.Error = coded
+	} else {
+		res.Error = &acpwire.Error{Message: err.Error()}
+	}
+	return res
+}
+
+// decodeConfig decodes a config a session call carries. A missing config is
+// invalid params: every one of these calls has something to install.
+func decodeConfig(raw json.RawMessage, method string) (config.Config, error) {
+	var cfg config.Config
+	if len(raw) == 0 {
+		return config.Config{}, invalidParamsError("%s: config is required", method)
+	}
+	if err := config.UnmarshalConfigJSON(raw, &cfg); err != nil {
+		return config.Config{}, invalidParamsError("%s: malformed config", method)
+	}
+	return cfg, nil
 }
 
 // host resolves the service host of the session's runtime: the host the
@@ -514,6 +842,13 @@ func registerSettings(srv *Server, settings *SettingsManager, others map[string]
 	srv.Handle(acpwire.MethodSaveProvenance, settings.SaveProvenance)
 	srv.Handle(acpwire.MethodTrustPrompt, settings.TrustPrompt)
 	srv.Handle(acpwire.MethodTrustDecide, settings.TrustDecide)
+	srv.Handle(acpwire.MethodSessionConfig, settings.SessionConfig)
+	srv.Handle(acpwire.MethodApplyConfig, settings.ApplyConfig)
+	srv.Handle(acpwire.MethodReloadConfig, settings.ReloadConfig)
+	srv.Handle(acpwire.MethodMCPReconnect, settings.MCPReconnect)
+	srv.Handle(acpwire.MethodSaveProjectConfig, settings.SaveProjectConfig)
+	srv.Handle(acpwire.MethodSaveVerifyCommands, settings.SaveVerifyCommands)
+	srv.Handle(acpwire.MethodMCPLogin, settings.MCPLogin)
 	srv.Handle(acpwire.MethodProbeProvider,
 		marshalOr(srv.marshalClient, settings.ProbeProvider, others[acpwire.MethodProbeProvider]))
 	srv.Handle(acpwire.MethodSetProviderKey,

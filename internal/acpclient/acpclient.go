@@ -215,7 +215,8 @@ type Session interface {
 	// Tools names every tool the session's registry holds, sorted. It reports
 	// false while the session has no registry: its provider is not built.
 	//
-	// ACP: session/tools (new in P3).
+	// ACP: session/config (exists). A session_config update refreshes it; the
+	// first read subscribes.
 	Tools() ([]string, bool)
 
 	// SendNow submits one Send now request: its text goes to the running
@@ -703,7 +704,7 @@ type Session interface {
 	// server called server can start: the server resolves and the token store
 	// opens. Its error is the sentence the client shows.
 	//
-	// ACP: session/mcp_login (new in P3).
+	// ACP: session/mcp_login (exists).
 	PrepareMCPLogin(ctx context.Context, server string) error
 
 	// LoginMCP runs the OAuth sign-in for the MCP server called server and
@@ -711,7 +712,7 @@ type Session interface {
 	// the client opens, and returns when the sign-in ends. A cancelled
 	// sign-in's error wraps context.Canceled and stores nothing.
 	//
-	// ACP: session/mcp_login (new in P3). show is fed by the call's progress
+	// ACP: session/mcp_login (exists). show is fed by the call's progress
 	// notification.
 	LoginMCP(ctx context.Context, server string, show func(url string)) error
 
@@ -720,28 +721,31 @@ type Session interface {
 	// one, and the desktop CDP URL's userinfo masked. An empty secret is
 	// left empty.
 	//
-	// ACP: session/config (new in P3); refreshed by a session_status update.
+	// ACP: session/config (exists). A session_config update refreshes it; the
+	// first read subscribes.
 	Config() config.Config
 
 	// Layers is the session's config layers, with provenance: the snapshot
 	// the last write or startup loaded. The zero value means none was loaded.
 	// Its configs' secrets are masked as Config's are (C3).
 	//
-	// ACP: session/config (new in P3).
+	// ACP: session/config (exists). A session_config update refreshes it; the
+	// first read subscribes.
 	Layers() config.Layers
 
 	// ApplyConfig installs cfg as the session's config without saving it or
 	// rebuilding the runtime. A manual mode selection survives, as a reload's
 	// does.
 	//
-	// ACP: session/apply_config (new in P3).
+	// ACP: session/apply_config (exists).
 	ApplyConfig(ctx context.Context, cfg config.Config) error
 
 	// ReloadConfig rebuilds the runtime from cfg. It reports false, and does
 	// nothing, when the session has no reload path; the error is the
 	// rebuild's.
 	//
-	// ACP: session/reload_config (new in P3).
+	// ACP: session/reload_config (exists). The result carries the flag with
+	// the error.
 	ReloadConfig(ctx context.Context, cfg config.Config) (bool, error)
 
 	// ReconnectMCP rebuilds the runtime from the session's current config, so
@@ -750,20 +754,21 @@ type Session interface {
 	// survives. It reports false, and does nothing, when the session has no
 	// reload path.
 	//
-	// ACP: session/mcp_reconnect (new in P3).
+	// ACP: session/mcp_reconnect (exists). The result carries the flag with
+	// the error.
 	ReconnectMCP(ctx context.Context) (bool, error)
 
 	// SaveProjectConfig writes cfg's project-scoped values to the session's
 	// project config, diffed against the session's layers, so that no
 	// user-global value is baked into the project file.
 	//
-	// ACP: session/save_project_config (new in P3).
+	// ACP: session/save_project_config (exists).
 	SaveProjectConfig(ctx context.Context, cfg config.Config) error
 
 	// SaveVerifyCommands writes the plan run's verify commands to the
 	// session's project config.
 	//
-	// ACP: session/save_verify_commands (new in P3).
+	// ACP: session/save_verify_commands (exists).
 	SaveVerifyCommands(ctx context.Context, build, test string) error
 
 	// RecentPrompts returns the project's input history, newest first, at

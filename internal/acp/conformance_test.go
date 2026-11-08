@@ -43,6 +43,7 @@ type hostSeam interface {
 	SaveProviderKey(ctx context.Context, name, key string) error
 	PreparePresets(ctx context.Context, cfg config.Config, provider, baseURL string, models []schema.ModelInfo) (map[string]routing.ModelPreset, acpwire.PresetSetup, error)
 	SaveProvenance(ctx context.Context, provenance json.RawMessage) error
+	ListSessions(ctx context.Context, cwd string, limit int) ([]acpwire.SessionEntry, error)
 }
 
 // seam is the part of acpclient.Session that both arms implement (spec V1).
@@ -90,6 +91,20 @@ type seam interface {
 	ListWork(ctx context.Context, query acpwire.WorkQuery) (acpwire.WorkPage, error)
 	InspectWork(ctx context.Context, taskKey string, raw bool) (acpwire.WorkDetail, error)
 	StopWork(ctx context.Context, taskKey, reason string) (acpwire.WorkStopResult, error)
+
+	StartSwarm(ctx context.Context, params acpwire.SwarmParams) error
+	PlanPreflight(ctx context.Context, params acpwire.PlanPreflightParams) (acpwire.PlanPreflight, error)
+	StartSDD(ctx context.Context, params acpwire.SDDParams) error
+	AnswerSDDGate(ctx context.Context, answer string) error
+	StopSDD(ctx context.Context) error
+	AuthorPlan(ctx context.Context, params acpwire.AuthorPlanParams) (acpwire.AuthoredPlan, error)
+
+	ActiveWork() acpwire.EndWork
+	AcceptEnd(ctx context.Context, params acpwire.EndAcceptParams) (acpwire.EndDecision, error)
+	WaitForEnd(ctx context.Context) error
+	RunExitAnalysis(ctx context.Context, goal string) error
+	Postmortem(ctx context.Context) (string, error)
+	Close(ctx context.Context) error
 
 	Tools() ([]string, bool)
 	PrepareMCPLogin(ctx context.Context, server string) error
@@ -215,7 +230,10 @@ func openPipeArmsTB(tb testing.TB, d service.Deps) (hostSeam, seam) {
 	// and this fixture has none.
 	settings := serveSettings(tb, srv, servedHost, served, sessionID)
 	controls := serveControls(tb, srv, served, sessionID)
-	srv.SetResponseBarrier(responseBarrier(turns, nil, nil, statuses, sheets, requests, settings, controls))
+	// The end manager's forwarder carries end_work (P3 plan 6c), so it fences
+	// after the control manager's.
+	ends := serveEnds(tb, srv, servedHost, served, sessionID)
+	srv.SetResponseBarrier(responseBarrier(turns, nil, nil, statuses, sheets, requests, settings, controls, ends))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

@@ -584,7 +584,8 @@ type Session interface {
 	// system message unless its role is user. It is persisted with the session,
 	// and every client sees it.
 	//
-	// ACP: session/note (new in P3).
+	// ACP: session/note (exists). Synchronous: the call returns once the
+	// note's stack patch is applied (R6).
 	AddNote(ctx context.Context, note acpwire.Note) error
 
 	// SetNotice makes notice the session's banner, replacing any other. A zero
@@ -607,7 +608,9 @@ type Session interface {
 	// Commands lists the session's slash commands in name order, hidden ones
 	// included. It is empty when the session has no command registry.
 	//
-	// ACP: session/command_list (exists).
+	// ACP: session/command_list (exists). Read once, on the first read, and
+	// kept: the registry does not change while the runtime runs. A marshal
+	// client's call is served by the session's service.
 	Commands() []acpwire.CommandInfo
 
 	// Command runs the named command's handler over the session with args and
@@ -617,14 +620,15 @@ type Session interface {
 	// returns an error instead. The row actions of a returned doc carry IDs
 	// CommandAction runs.
 	//
-	// ACP: session/command (exists).
+	// ACP: session/command (exists). A marshal client's call is served by the
+	// session's service.
 	Command(ctx context.Context, name string, args []string) (acpwire.CommandResult, error)
 
 	// CommandAction runs the row action id names, from a recent Command or
 	// CommandAction result, and returns its output. An ID the session no
 	// longer keeps returns an error.
 	//
-	// ACP: session/command_action (new in P3).
+	// ACP: session/command_action (exists).
 	CommandAction(ctx context.Context, id string) (acpwire.CommandResult, error)
 
 	// Memories lists the project's own memories, oldest first. It fails with

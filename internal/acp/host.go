@@ -515,8 +515,6 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 		Notify: h.sink.Notify,
 	})
 	srv.Handle("session/hold", turns.Hold)
-	srv.Handle("session/command", cmds.Command)
-	srv.Handle("session/command_list", cmds.CommandList)
 
 	mem := NewMemoryManager(MemoryManagerConfig{
 		Lookup: func(sessionID string) (*MemoryRuntime, bool) {
@@ -622,6 +620,16 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 	srv.Handle("session/plugins_install_confirm", pluginsMgr.PluginsInstallConfirm)
 	srv.Handle("session/plugins_install_discard", pluginsMgr.PluginsInstallDiscard)
 	srv.Handle("session/plugins_remove", pluginsMgr.PluginsRemove)
+
+	// The browser handlers serve a marshal client's notes, commands, browsers
+	// and project reads on the session's service (P3 plan 7b decision 1). The
+	// handlers every other client keeps are the managers' above, which
+	// registerBrowsers routes to.
+	browsers := NewBrowserManager(BrowserManagerConfig{Lookup: manager.Service})
+	registerBrowsers(srv, browsers, map[string]Handler{
+		acpwire.MethodCommand:     cmds.Command,
+		acpwire.MethodCommandList: cmds.CommandList,
+	})
 
 	// Follow-ups doc item #5: this used to overwrite the manager's
 	// single canceller on every connection, so a turn that outlived a

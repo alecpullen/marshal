@@ -209,6 +209,19 @@ func (s *Stacks) Release(ctx context.Context, sessionID string, subagentID int64
 	return conn.Call(ctx, acpwire.MethodStackUnsubscribe, params, nil)
 }
 
+// forget drops every mirrored stack of sessionID without sending anything: the
+// agent's loops for that ID stop when the ID goes.
+func (s *Stacks) forget(sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key := range s.entries {
+		if key.session == sessionID {
+			delete(s.entries, key)
+		}
+	}
+	delete(s.changed, sessionID)
+}
+
 // Changed signals, with a buffer of one, after any stack of sessionID changes
 // in the mirror.
 func (s *Stacks) Changed(sessionID string) <-chan struct{} {

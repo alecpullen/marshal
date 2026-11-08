@@ -15,6 +15,8 @@ type Session struct {
 	id     string
 	conn   *Conn
 	stacks *Stacks
+	// host owns this session's registry entry: Close retires it through it.
+	host *Host
 
 	mu     sync.Mutex
 	status acpwire.SessionStatus
@@ -80,6 +82,7 @@ func (h *Host) Attach(ctx context.Context, sessionID string) (*Session, error) {
 	session := &Session{
 		id:      sessionID,
 		conn:    h.conn,
+		host:    h,
 		stacks:  h.stacks,
 		changed: make(chan struct{}, 1),
 		ready:   make(chan struct{}),

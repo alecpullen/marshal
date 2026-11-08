@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"marshal/internal/acpclient"
 	"marshal/internal/acpwire"
 )
 
@@ -115,6 +116,32 @@ func (s *Session) WaitForEnd(ctx context.Context) error {
 func (s *Session) RunExitAnalysis(ctx context.Context, goal string) error {
 	params := acpwire.ExitAnalysisParams{SessionID: s.id, Goal: goal}
 	return s.conn.Call(ctx, acpwire.MethodExitAnalysis, params, nil)
+}
+
+// Close ends the session's conversation and retires it: after a successful
+// close the session is unregistered from its host and its Changed is closed,
+// so its reads answer the mirror's final values and its calls reach the agent,
+// which answers CodeSessionClosed (decision 6). An agent that reports the
+// session already closed retires it too, and any other error leaves it as it
+// was. Closing a session that is already closed sends nothing.
+func (s *Session) Close(ctx context.Context) error {
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		return nil
+	}
+
+	params := acpwire.ControlParams{SessionID: s.id}
+	if err := s.conn.Call(ctx, acpwire.MethodSessionClose, params, nil); err != nil {
+		if !acpclient.IsCode(err, acpwire.CodeSessionClosed) {
+			return err
+		}
+	}
+	if s.host != nil {
+		s.host.retire(s)
+	}
+	return nil
 }
 
 // Postmortem returns the path of the session's exit postmortem report.

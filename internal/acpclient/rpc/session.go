@@ -54,6 +54,7 @@ type Session struct {
 func (h *Host) Attach(ctx context.Context, sessionID string) (*Session, error) {
 	h.mu.Lock()
 	if session, ok := h.sessions[sessionID]; ok {
+		h.current = sessionID
 		h.mu.Unlock()
 		return session.await(ctx)
 	}
@@ -87,7 +88,21 @@ func (h *Host) Attach(ctx context.Context, sessionID string) (*Session, error) {
 
 	session.install(status)
 	session.settle(nil)
+	h.mu.Lock()
+	h.current = sessionID
+	h.mu.Unlock()
 	return session, nil
+}
+
+// currentID is the ID of the client's current session: the one every host call
+// names. It is the error errNoSession until an Attach has succeeded.
+func (h *Host) currentID() (string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.current == "" {
+		return "", errNoSession
+	}
+	return h.current, nil
 }
 
 // await waits for the Attach that registered the session to settle and

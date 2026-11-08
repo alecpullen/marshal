@@ -2,6 +2,7 @@ package acp
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"reflect"
@@ -19,6 +20,30 @@ import (
 	"marshal/internal/pubsub"
 	"marshal/internal/repo/gitinfo"
 )
+
+// hostSeam is the part of acpclient.Host that both arms implement (spec V1).
+// Each group's plan adds its methods; plan 8 replaces it with
+// acpclient.Host.
+type hostSeam interface {
+	TrustPrompt() string
+	DecideTrust(ctx context.Context, dir string, decision acpwire.TrustDecision) error
+	ProviderTemplates() []acpwire.ProviderTemplate
+	ProbeProvider(ctx context.Context, name string, pc config.ProviderConfig) ([]schema.ModelInfo, error)
+	CanProbeModel(ctx context.Context, name string, pc config.ProviderConfig) bool
+	ProbeModel(ctx context.Context, name string, pc config.ProviderConfig, model string) (acpwire.ModelCapabilities, error)
+	ListModels(ctx context.Context, name string) ([]schema.ModelInfo, bool)
+	SaveModels(ctx context.Context, name string, models []schema.ModelInfo) error
+	ForgetModels(ctx context.Context, name string) error
+	RenameModels(ctx context.Context, from, to string) error
+	PrepareProviderLogin(ctx context.Context, name string) error
+	LoginProvider(ctx context.Context, name string, show func(url string)) error
+	SaveUserValue(ctx context.Context, tomlPath string, value any) error
+	SaveUserProviders(ctx context.Context, providers, baseline map[string]config.ProviderConfig, renamed map[string]string) error
+	SaveUserPresets(ctx context.Context, presets, baseline map[string]routing.ModelPreset) error
+	SaveProviderKey(ctx context.Context, name, key string) error
+	PreparePresets(ctx context.Context, cfg config.Config, provider, baseURL string, models []schema.ModelInfo) (map[string]routing.ModelPreset, acpwire.PresetSetup, error)
+	SaveProvenance(ctx context.Context, provenance json.RawMessage) error
+}
 
 // seam is the part of acpclient.Session that both arms implement (spec V1).
 // Each group's plan adds its methods; plan 8 replaces it with
@@ -44,6 +69,17 @@ type seam interface {
 	AnswerSudo(ctx context.Context, key string, answer acpwire.SudoAnswer) error
 	AnswerAccess(ctx context.Context, choice acpwire.AccessChoice) (acpwire.AccessResult, error)
 	Rollback(ctx context.Context) error
+
+	Tools() ([]string, bool)
+	PrepareMCPLogin(ctx context.Context, server string) error
+	LoginMCP(ctx context.Context, server string, show func(url string)) error
+	Config() config.Config
+	Layers() config.Layers
+	ApplyConfig(ctx context.Context, cfg config.Config) error
+	ReloadConfig(ctx context.Context, cfg config.Config) (bool, error)
+	ReconnectMCP(ctx context.Context) (bool, error)
+	SaveProjectConfig(ctx context.Context, cfg config.Config) error
+	SaveVerifyCommands(ctx context.Context, build, test string) error
 }
 
 // seamArm opens one implementation of the seam over d.
@@ -61,12 +97,36 @@ func seamArms() []seamArm {
 	}
 }
 
+// hostArm opens both implementations of the two seams over d: the host's calls
+// need the session's, so one arm hands back the pair.
+type hostArm struct {
+	name string
+	open func(t *testing.T, d service.Deps) (hostSeam, seam)
+}
+
+// hostArms returns the two implementations of both seams, as seamArms does for
+// the session's alone (V1).
+func hostArms() []hostArm {
+	return []hostArm{
+		{name: "service", open: openServiceArms},
+		{name: "pipe", open: openPipeArms},
+	}
+}
+
 // openServiceSeam is the service arm: the session service.New builds for d.
 func openServiceSeam(t *testing.T, d service.Deps) seam {
 	t.Helper()
-	_, sess := service.New(d)
-	t.Cleanup(sess.Release)
+	_, sess := openServiceArms(t, d)
 	return sess
+}
+
+// openServiceArms is the service arm for both seams: the host and the session
+// service.New builds for d.
+func openServiceArms(t *testing.T, d service.Deps) (hostSeam, seam) {
+	t.Helper()
+	host, sess := service.New(d)
+	t.Cleanup(sess.Release)
+	return host, sess
 }
 
 // openPipeSeam is the pipe arm: a server serving the status handlers over d's
@@ -76,13 +136,29 @@ func openPipeSeam(t *testing.T, d service.Deps) seam {
 	return openPipeSeamTB(t, d)
 }
 
+// openPipeArms is the pipe arm for both seams: the client's host and its
+// session, over a server serving d's state.
+func openPipeArms(t *testing.T, d service.Deps) (hostSeam, seam) {
+	t.Helper()
+	return openPipeArmsTB(t, d)
+}
+
 // openPipeSeamTB is openPipeSeam for a benchmark, whose *testing.B the arm's
 // *testing.T does not accept. Both ends close with the test, as
 // startTestAgent closes them.
 func openPipeSeamTB(tb testing.TB, d service.Deps) seam {
 	tb.Helper()
+	_, sess := openPipeArmsTB(tb, d)
+	return sess
+}
 
-	_, served := service.New(d)
+// openPipeArmsTB is openPipeArms for a benchmark, whose *testing.B the arm's
+// *testing.T does not accept. Both ends close with the test, as
+// startTestAgent closes them.
+func openPipeArmsTB(tb testing.TB, d service.Deps) (hostSeam, seam) {
+	tb.Helper()
+
+	servedHost, served := service.New(d)
 	// A state built without a persisted session ID — the 4a fixture's — has no
 	// ID setter, so it is served under the fixture ID the stack tests use.
 	// Every other state is served under its own, and the two must agree: a
@@ -112,7 +188,10 @@ func openPipeSeamTB(tb testing.TB, d service.Deps) seam {
 	// The request manager's forwarders carry pending_requests, so they join
 	// the barrier after the sheet manager's (P3 plan 5).
 	requests := serveRequests(tb, srv, served, sessionID)
-	srv.SetResponseBarrier(responseBarrier(turns, nil, nil, statuses, sheets, requests))
+	// The settings manager's config forwarder carries session_config, so it
+	// joins the barrier last (P3 plan 7a).
+	settings := serveSettings(tb, srv, servedHost, served, sessionID)
+	srv.SetResponseBarrier(responseBarrier(turns, nil, nil, statuses, sheets, requests, settings))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -145,7 +224,29 @@ func openPipeSeamTB(tb testing.TB, d service.Deps) seam {
 	if err != nil {
 		tb.Fatalf("attach %q: %v", sessionID, err)
 	}
-	return sess
+	return host, sess
+}
+
+// serveSettings registers the settings handlers on the pipe arm's server over
+// the served host and service, and returns the manager the barrier fences
+// (P3 plan 7a).
+func serveSettings(tb testing.TB, srv *Server, servedHost *service.Host, served *service.Session, sessionID string) *SettingsManager {
+	tb.Helper()
+	settings := NewSettingsManager(SettingsManagerConfig{
+		Lookup: func(id string) (*service.Session, bool) {
+			return served, id == sessionID
+		},
+		HostLookup: func(id string) (*service.Host, bool) {
+			return servedHost, id == sessionID
+		},
+		Notify:  srv.Notify,
+		Marshal: srv.marshalClient,
+	})
+	// No other handlers: this arm's client declares the marshal capability, so
+	// every settings method reaches the session's service.
+	registerSettings(srv, settings, nil)
+	tb.Cleanup(settings.Close)
+	return settings
 }
 
 // serveTranscript registers the transcript handlers on the pipe arm's server

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"testing"
 	"time"
@@ -532,5 +533,51 @@ func TestNoticeCallsSendTheirMethods(t *testing.T) {
 	a.answer(t, req, nil)
 	if err := awaitCall(t, out); err != nil {
 		t.Fatalf("DismissNotice: %v", err)
+	}
+}
+
+// TestAFailedAttachLeavesNoCurrentSession pins that the current session moves
+// only when an Attach succeeds. The entry exists the moment the first Attach
+// registers it, so a caller that waits on a call that then fails must not leave
+// host calls naming a session the agent refused (decision 1).
+func TestAFailedAttachLeavesNoCurrentSession(t *testing.T) {
+	host, _ := dialScripted(t, DialOptions{})
+
+	// The entry a first Attach registers before its call settles, settled with
+	// the failure: exactly what a concurrent caller waits on.
+	failed := &Session{
+		id:      "s1",
+		conn:    host.conn,
+		stacks:  host.stacks,
+		changed: make(chan struct{}, 1),
+		ready:   make(chan struct{}),
+		sheets:  make(map[int64]*sheetEntry),
+	}
+	failed.settle(errors.New("session/status: boom"))
+	host.mu.Lock()
+	host.sessions["s1"] = failed
+	host.mu.Unlock()
+
+	if _, err := host.Attach(context.Background(), "s1"); err == nil {
+		t.Fatal("Attach on a session whose call failed succeeded")
+	}
+	if id, err := host.currentID(); !errors.Is(err, errNoSession) {
+		t.Fatalf("currentID() = %q, %v after a failed Attach, want %v", id, err, errNoSession)
+	}
+}
+
+// TestClosingTheConnectionClearsTheCurrentSession pins that a host call after
+// the connection ends asks for a session instead of naming a dead one.
+func TestClosingTheConnectionClearsTheCurrentSession(t *testing.T) {
+	host, a := dialScripted(t, DialOptions{})
+	attachScripted(t, host, a, "s1", acpwire.SessionStatus{WorkingDir: "B"})
+	if _, err := host.currentID(); err != nil {
+		t.Fatalf("currentID() = %v after an Attach, want a session", err)
+	}
+
+	_ = host.Close()
+	host.closeSessions()
+	if id, err := host.currentID(); !errors.Is(err, errNoSession) {
+		t.Fatalf("currentID() = %q, %v after the connection ended, want %v", id, err, errNoSession)
 	}
 }

@@ -33,6 +33,9 @@ type Session struct {
 	// pending is the request mirror (requests.go): nil until its first read
 	// creates it.
 	pending *pendingMirror
+	// config is the config mirror (settings.go): nil until its first read
+	// creates it.
+	config *configMirror
 	// closed says the connection ended, so changed is closed and nothing
 	// may be sent on it.
 	closed  bool
@@ -55,7 +58,17 @@ func (h *Host) Attach(ctx context.Context, sessionID string) (*Session, error) {
 	h.mu.Lock()
 	if session, ok := h.sessions[sessionID]; ok {
 		h.mu.Unlock()
-		return session.await(ctx)
+		// The current session moves only once this call is satisfied. The
+		// entry exists the moment the first Attach registered it, so a caller
+		// that waits here must not name a session whose Attach then fails
+		// (decision 1).
+		if _, err := session.await(ctx); err != nil {
+			return nil, err
+		}
+		h.mu.Lock()
+		h.current = sessionID
+		h.mu.Unlock()
+		return session, nil
 	}
 	// The session is registered before the call goes out, so an update that
 	// arrives while the call waits is applied instead of dropped.
@@ -87,7 +100,21 @@ func (h *Host) Attach(ctx context.Context, sessionID string) (*Session, error) {
 
 	session.install(status)
 	session.settle(nil)
+	h.mu.Lock()
+	h.current = sessionID
+	h.mu.Unlock()
 	return session, nil
+}
+
+// currentID is the ID of the client's current session: the one every host call
+// names. It is the error errNoSession until an Attach has succeeded.
+func (h *Host) currentID() (string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.current == "" {
+		return "", errNoSession
+	}
+	return h.current, nil
 }
 
 // await waits for the Attach that registered the session to settle and
@@ -198,10 +225,10 @@ func (s *Session) closeLocked() {
 }
 
 // routeNotify hands every session/update to the host's stack mirror, then
-// applies a session_status, sheet or pending_requests update to the attached
-// session it names and drops one for a session that is not attached. Any other
-// kind is ignored. It runs on the read goroutine, before the caller's Notify
-// sees the frame.
+// applies a session_status, sheet, pending_requests or session_config update to
+// the attached session it names and drops one for a session that is not
+// attached. Any other kind is ignored. It runs on the read goroutine, before
+// the caller's Notify sees the frame.
 func (h *Host) routeNotify(method string, params json.RawMessage) {
 	if method != acpwire.MethodSessionUpdate {
 		return
@@ -251,6 +278,16 @@ func (h *Host) routeNotify(method string, params json.RawMessage) {
 			return
 		}
 		session.applyPending(pending.Pending)
+	case acpwire.UpdateSessionConfig:
+		var value acpwire.SessionConfigUpdate
+		if err := json.Unmarshal(update.Update, &value); err != nil {
+			return
+		}
+		session := h.session(update.SessionID)
+		if session == nil {
+			return
+		}
+		session.applyConfig(value.Config)
 	}
 }
 
@@ -279,6 +316,9 @@ func (h *Host) tapSession(sessionID string) {
 // its call, rather than a known one returning a closed session.
 func (h *Host) closeSessions() {
 	h.mu.Lock()
+	// The connection is gone, so no session is current: a host call now fails
+	// with errNoSession instead of naming a session on a dead connection.
+	h.current = ""
 	sessions := make([]*Session, 0, len(h.sessions))
 	for id, session := range h.sessions {
 		sessions = append(sessions, session)

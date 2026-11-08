@@ -97,8 +97,8 @@ new client.
 
 ## Where the code is today
 
-- **The interface** has 111 methods. 61 send an ACP method that exists,
-  and 48 are carried by one of the 44 ACP methods that are new in P3
+- **The interface** has 111 methods. 87 send an ACP method that exists,
+  and 22 are carried by one of the 22 ACP methods that are new in P3
   ("Methods P3 adds", below). Two have no ACP method at all.
 - **The adapter is most of the logic.** `inproc` converts runtime values
   to wire values and applies the policy the TUI used to apply. That
@@ -112,7 +112,7 @@ new client.
   (`:312`). Handlers run on their own goroutines (`handlerWG`), and nothing
   orders a response after the notifications its handler caused. A
   long-running handler runs in a `cancellable` context, so the client's
-  `$/cancel_request` ends the run in flight. 96 methods are registered
+  `$/cancel_request` ends the run in flight. 117 methods are registered
   (`host.go`), plus the `session/cancel` notification.
 - **What the agent pushes today:**
   - the ACP chunk kinds (`agent_message_chunk`, `agent_thought_chunk`,
@@ -123,7 +123,9 @@ new client.
   - `work_state`, `steering_state` and `steering_receipt`.
 
   A marshal client also receives `session_status`, `pending_requests` and
-  `work_snapshot`; nothing pushes the end flow's active work or the sheet.
+  A marshal client also receives `session_status`, `pending_requests`,
+  `session_config` and `work_snapshot`; nothing pushes the end flow's active
+  work or the sheet.
 - **What the agent asks today:** a client that has not declared the marshal
   capability is asked with `session/request_permission` (approve or deny,
   tagged for skill gates and mode access) and `session/request_question`.
@@ -1644,3 +1646,106 @@ changed (R9); the TUI still runs on `inproc`, in process, until plan 8.
   `Stop` moved from one existing method to another), 48 new in P3 carried by
   44 distinct new methods, and 2 carrying none; `acp.Server` registers 96
   methods (85 plus the eleven), plus the `session/cancel` notification.
+
+### Plan 7a — config, providers and trust
+
+- **A host call names the client's current session.** `rpc.Host` remembers the
+  session its last successful `Attach` bound, and every host call but
+  `SharedFilesystem` carries that ID; a call before any attach fails with
+  `rpc: no session attached` without sending. The agent resolves that
+  runtime's service host, which acts on that session exactly as it does in
+  process, and the barrier fences that session, so a read after a write sees
+  the refreshed layers (R2).
+- **`SessionManager` keeps the host with its session.** `services` holds a
+  small unexported pair of the host and the session `service.New` returned;
+  `Service` and the new `ServiceHost` share one lookup that builds the pair on
+  first use under the rules `Service` already had (refusing a closing
+  runtime), and `releaseService` releases the pair's session.
+- **Two host reads are fetched once and kept.** `ProviderTemplates` and
+  `TrustPrompt` send their method on their first read after an attach, under a
+  5s timeout, and keep the answer; a failed read returns nothing and asks
+  again next time. An empty catalog or no pending prompt is a kept answer too,
+  so each read carries a set flag instead of inferring "unread" from nil.
+- **`internal/acp/settings.go` holds the connection's `SettingsManager`**: the
+  sixteen host methods, the seven session methods, `Close`, `fenceSession` and
+  `sessionConfig`. `registerSettings` registers them; `config/probe_provider`
+  and `config/set_provider_key` go through `marshalOr`, so a client without
+  the capability reaches `ConfigManager`'s handler, unchanged (R9).
+- **The config mirror.** `session/config` answers a `SessionConfig` and, for a
+  marshal client, starts a forwarder per session that polls at
+  `configInterval` (50ms) and on its fence, sending `session_config` with the
+  whole value only when its encoding moved. `Tools` reads the same mirror, so
+  the method table's row moved from `session/tools` to `session/config` and
+  `session/tools` is not registered. `responseBarrier` gained the manager
+  after `requests`.
+- **The config package carries the JSON.** `internal/app/config/wirejson.go`
+  adds `UnmarshalConfigJSON`, `UnmarshalLayersJSON` and
+  `UnmarshalPresetsJSON`, each restoring a preset's `Pricing` from the
+  `map[string]any` a JSON decode leaves to a `*pricing.ModelPricing` — the
+  counterpart of `coercePresetPricing` — and `PathType`, the Go type of the
+  `Config` field at a dotted TOML path with pointers removed.
+  `Layers.HoistError` gained `json:"-"`: it is an `error`, which JSON cannot
+  decode, and nothing outside the package reads it. `config/set_value` decodes
+  its value into that field's own type, so `SaveUserValue` receives the value
+  a working in-process call passes.
+- **The reload flag rides in its result.** `session/reload_config` and
+  `session/mcp_reconnect` answer a `ReloadResult` carrying the flag and the
+  error as an `*acpwire.Error`, because a JSON-RPC error response carries no
+  result (decision 6).
+- **A sign-in's URL is progress.** `config/login_provider` and
+  `session/mcp_login` report the URL as a `$/progress` value, handed to the
+  client's `show` on its read goroutine, and take their context from
+  `cancellable`, so the client's context ending stops the flow (R2). Probes and
+  the preset setup are cancellable too.
+- **A settings failure keeps its sentence.** The server writes every error that
+  is not an `*acpwire.Error` as its code's fixed string (F-SEC-37), so a plain
+  handler error arrives as `internal error`. The nine handlers whose sentences
+  the client shows and the conformance cases read back (`trust/decide`,
+  `config/set_value`, `config/save_providers`, `config/login_provider`,
+  `config/probe_provider`, `config/set_provider_key`, `session/apply_config`,
+  `session/save_project_config`, `session/mcp_login`) pass a failure through
+  `settingsFailure`, which returns `&acpwire.Error{Message: err.Error()}` — the
+  form the reload already gives its error — and leaves an `*acpwire.Error`, a
+  JSON-RPC error and a cancellation unchanged. Nothing in process changes.
+- **The client mirrors the session's config.**
+  `internal/acpclient/rpc/settings.go` holds `Host`'s eighteen calls and
+  `Session`'s ten. `Config` fetches the mirror on its first read and returns a
+  clone; `Layers` decodes the raw layers on each read; `Tools` returns a copy;
+  `routeNotify` applies `session_config` to the attached session, which
+  replaces the entry and taps `Changed`. `SaveUserValue` refuses a nil or
+  pointer value before sending, with the message an in-process call fails
+  with.
+- **The conformance harness has a host arm.** `openPipeArmsTB` returns the
+  client's host as well as its session, `serveSettings` serves the settings
+  manager on the pipe arm, and `hostArms` opens both. The new
+  `conformance_settings_test.go` runs 37 cases on each arm and they agree; the
+  cases moved out of `internal/acp/service` with their fixtures. Where a case
+  compared a plain error with `errors.Is`, it compares the sentence instead,
+  because only an `*acpwire.Error` keeps a code across the wire (plan 1);
+  the reload's and the reconnect's errors ride in their result, so those keep
+  exact equality.
+- **The secrets (V5).** `TestASecretCrossesTheWireOnlyInItsCall` copies every
+  byte the agent reads and writes: a saved key and a typed probe key each
+  appear exactly once, inside its own call's params, and neither appears in
+  what the agent writes or logs — the pushed `session_config` carries the
+  mask.
+- **The budget (R10).** `TestSettingsCallBudget` over the 2,000-call session:
+  `ApplyConfig` medians **256µs**, and `SaveUserValue`'s pipe arm costs
+  **101µs** more than its service arm, both against R10's 1ms.
+- **The counts moved** (re-measured on this tree, after plan 5):
+  `acpclient.Methods` has 111 rows, now 77 of them an existing ACP method (26
+  more: the sixteen host rows from `TrustPrompt` to `SaveProvenance` other
+  than `ProbeProvider` and `SaveProviderKey`, and `Tools`, `Config`, `Layers`,
+  `ApplyConfig`, `ReloadConfig`, `ReconnectMCP`, `SaveProjectConfig`,
+  `SaveVerifyCommands`, `PrepareMCPLogin` and `LoginMCP`), 32 new in P3
+  carried by 32 distinct new methods, and 2 carrying none; `acp.Server`
+  registers 106 methods (85 plus the 21).
+
+### The counts after both plans
+
+- **Re-measured on the merged tree.** `acpclient.Methods` has 111 rows: 87
+  send an existing ACP method, 22 are carried by one of the 22 ACP methods
+  new in P3, and 2 carry none. `acp.Server` registers 117 methods (85, plus
+  plan 6b's eleven and plan 7a's 21), plus the `session/cancel` notification.
+  Plans 6b and 7a each measured the counts on their own branch; these are the
+  numbers after both.

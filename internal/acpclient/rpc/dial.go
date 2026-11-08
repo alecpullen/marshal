@@ -3,11 +3,16 @@ package rpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 
 	"marshal/internal/acpwire"
 )
+
+// errNoSession is what a host call returns before any session is attached:
+// every host call names the client's current session (decision 1).
+var errNoSession = errors.New("rpc: no session attached")
 
 // DialOptions configure Dial.
 type DialOptions struct {
@@ -31,6 +36,17 @@ type Host struct {
 
 	mu       sync.Mutex
 	sessions map[string]*Session
+	// current is the ID of the session every host call names: the last
+	// successful Attach's (decision 1).
+	current string
+	// templates and trustPrompt are the two host reads, kept once a read has
+	// answered (decision 2). Their flags say an answer arrived, so an empty one
+	// is kept too: nil templates or "" is what the agent reported, not a
+	// read that has yet to happen.
+	templates    []acpwire.ProviderTemplate
+	templatesSet bool
+	trustPrompt  string
+	trustSet     bool
 }
 
 // Dial starts a connection over t, runs initialize, and returns the host. On

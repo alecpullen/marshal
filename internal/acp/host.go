@@ -466,17 +466,34 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 	})
 	registerTranscript(srv, turns, sheets, manager.Service)
 	registerRequests(srv, requests)
-	srv.SetResponseBarrier(responseBarrier(turns, works, watches, statuses, sheets, requests, controls))
+
+	// The settings manager serves the user's and the session's config, the
+	// provider and model calls, the sign-ins and the trust prompt. It is built
+	// here, before the barrier below, so Task 3's own forwarders join it.
+	settings := NewSettingsManager(SettingsManagerConfig{
+		Lookup:     manager.Service,
+		HostLookup: manager.ServiceHost,
+		Notify:     h.sink.Notify,
+		Marshal:    srv.marshalClient,
+	})
+
+	srv.SetResponseBarrier(responseBarrier(turns, works, watches, statuses, sheets, requests, settings, controls))
 
 	home, _ := os.UserHomeDir()
 	cfgMgr := NewConfigManager(home, nil, nil)
 	srv.Handle("config/get", cfgMgr.Get)
 	srv.Handle("config/set_providers", cfgMgr.SetProviders)
-	srv.Handle("config/set_provider_key", cfgMgr.SetProviderKey)
 	srv.Handle("config/set_presets", cfgMgr.SetPresets)
 	srv.Handle("config/set_routing", cfgMgr.SetRouting)
 	srv.Handle("config/set_budgets", cfgMgr.SetBudgets)
-	srv.Handle("config/probe_provider", cfgMgr.ProbeProvider)
+
+	// A marshal client's config/probe_provider and config/set_provider_key
+	// reach the session's service; every other client keeps ConfigManager's
+	// handlers unchanged (P3 R9).
+	registerSettings(srv, settings, map[string]Handler{
+		acpwire.MethodSetProviderKey: cfgMgr.SetProviderKey,
+		acpwire.MethodProbeProvider:  cfgMgr.ProbeProvider,
+	})
 
 	srv.Handle("session/swarm_start", turns.SwarmStart)
 	srv.Handle("session/swarm_status", turns.SwarmStatus)
@@ -620,8 +637,8 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 
 	// The work controller is per-connection: its forwarders (Task 22) push
 	// work_state updates to this connection's sink and must stop with it.
-	// The status, sheet and request managers' forwarders push session_status,
-	// sheet and pending_requests the same way.
+	// The status, sheet, request and settings managers' forwarders push
+	// session_status, sheet, pending_requests and session_config the same way.
 	// The child approval collectors are per-connection too: they answer
 	// through this connection's permission bridge, so they end with it.
 	return func() {
@@ -630,6 +647,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 		statuses.Close()
 		sheets.Close()
 		requests.Close()
+		settings.Close()
 		controls.Close()
 	}
 }

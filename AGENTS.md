@@ -65,7 +65,7 @@ Runtime & orchestration
   internal/agent/          single-agent loop (runner, tools, protocol, budget)
   internal/agent/swarm/    multi-agent orchestration, lock, verdict
   internal/pipeline/       plan execution: implementer/reviewer subagents, build+test gate
-  internal/acp/            ACP v1 transport (sessions, prompts, permissions, status, sheet, requests, controls)
+  internal/acp/            ACP v1 transport (sessions, prompts, permissions, status, sheet, requests, settings, controls)
   internal/acp/service/    the agent side of the client seam: Host/Session over a runtime (inproc aliases it until P3 plan 8)
   internal/viewmodel/      transcript tree (turn → step → row) + JSON projection, shared with ACP
   internal/worker/         lifecycle contract for supervised background workers

@@ -53,7 +53,10 @@ type Layers struct {
 	// HoistError is set when the hoist migration failed to persist. The
 	// merged config is unaffected (it was built from both files before the
 	// hoist ran) and the next load retries.
-	HoistError error
+	//
+	// It is an error, which JSON cannot decode, and nothing outside this
+	// package reads it, so it never crosses the wire.
+	HoistError error `json:"-"`
 	// SidePanelIgnoredBy lists the file layers that set a [tui.side_panel]
 	// key other than hidden. Those keys sized the removed side rail and now
 	// do nothing; presence is read from the raw file mirrors because a

@@ -45,7 +45,8 @@ type Host interface {
 	// closing the session it replaces. A name that is not empty is the new
 	// session's title. A failure leaves the current session as it was.
 	//
-	// ACP: session/new (exists).
+	// ACP: session/new (exists), with replaces naming the current session: the
+	// agent builds the new session inside the same runtime. Asynchronous (R6).
 	NewSession(ctx context.Context, name string) (Session, error)
 
 	// TrustPrompt is the directory whose project config waits for a trust

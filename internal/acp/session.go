@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"marshal/internal/acp/service"
+	"marshal/internal/acpwire"
 	"marshal/internal/app"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -402,7 +403,17 @@ func (m *SessionManager) startRuntime(ctx context.Context, p sessionParams, extr
 // under that id. If a pointer is already registered for the generated id
 // (an unlikely race in tests), the existing runtime is cancelled and
 // closed before the new one is published.
+//
+// A params blob carrying replaces names a session to swap inside its own
+// runtime instead (P3 R7, plan 6c decision 5): the runtime builds the new
+// session as the in-process host does and stays registered under the new id.
 func (m *SessionManager) Create(ctx context.Context, params json.RawMessage) (any, error) {
+	// A decode failure falls through to the lifecycle decoding below, which
+	// reports it as it reports every other bad session/new blob.
+	var replacing acpwire.NewSessionParams
+	if err := json.Unmarshal(params, &replacing); err == nil && replacing.Replaces != "" {
+		return m.replace(ctx, replacing.Replaces, replacing.Name)
+	}
 	p, err := m.decodeLifecycleParams(params, "session/new", false)
 	if err != nil {
 		return nil, err
@@ -462,6 +473,58 @@ func (m *SessionManager) Create(ctx context.Context, params json.RawMessage) (an
 	}
 	m.publishReplacement(ctx, rt.SessionID, rt)
 	return resp, nil
+}
+
+// replace serves session/new with replaces: the replaced session's service
+// host builds the new session inside the same runtime, and the manager then
+// files the runtime under the new session's ID (P3 R7, plan 6c decision 5).
+//
+// The replacement holds lifecycleMu for its whole length, so a close or a load
+// of the same session cannot interleave with it. It builds a runner and can
+// take seconds, and the other lifecycle calls wait for it; embedded mode has
+// one session, so nothing else waits on a key of its own.
+func (m *SessionManager) replace(ctx context.Context, replaces, name string) (any, error) {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+
+	rt, ok := m.Get(replaces)
+	if !ok || rt == nil {
+		return nil, serverErrorf("unknown session: %s", replaces)
+	}
+	host, _, ok := m.servicePair(replaces)
+	if !ok || host == nil {
+		// A runtime with no state, or one that is already closing, refuses as
+		// Service does.
+		return nil, serverErrorf("unknown session: %s", replaces)
+	}
+	swapped, err := host.NewSession(ctx, name)
+	if err != nil {
+		// Nothing changed: the runtime's old session stays registered and
+		// current, as in process.
+		return nil, err
+	}
+	next, ok := swapped.(*service.Session)
+	if !ok {
+		return nil, serverErrorf("acp: session/new with replaces answered %T, want *service.Session", swapped)
+	}
+	newID := next.ID()
+
+	m.mu.Lock()
+	delete(m.sessions, replaces)
+	m.sessions[newID] = rt
+	m.mu.Unlock()
+
+	// The host's swap already closed the replaced session, so the pair points
+	// at the new one: Service(newID) answers it, and the replaced one is never
+	// served again.
+	m.servicesMu.Lock()
+	if pair, ok := m.services[rt]; ok {
+		pair.sess = next
+	}
+	m.servicesMu.Unlock()
+
+	m.log().Debug("session replaced", "replaced_session_id", replaces, "session_id", newID)
+	return SessionResponse{SessionID: newID, InteractionState: sessionInteractionState(rt)}, nil
 }
 
 // Load handles session/load. It validates the params, cancels and closes

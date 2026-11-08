@@ -386,10 +386,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 	srv.Handle("session/resume", manager.Resume)
 	srv.Handle("session/delete", manager.Delete)
 
-	srv.Handle("session/set_mode", turns.SetMode)
 	srv.Handle("session/access_state", turns.AccessState)
-	srv.Handle("session/set_effort", turns.SetEffort)
-	srv.Handle("session/steer", turns.Steer)
 	srv.Handle("session/steering_status", turns.SteeringStatus)
 	srv.Handle("session/last_request", turns.LastRequest)
 	srv.Handle("session/step_diffs", turns.StepDiffs)
@@ -435,7 +432,10 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 	// The control methods: a marshal client's turn runs on the service, and a
 	// client without the capability reaches today's handler in others.
 	registerControls(srv, controls, map[string]Handler{
-		acpwire.MethodPrompt: turns.PromptTurn,
+		acpwire.MethodPrompt:    turns.PromptTurn,
+		acpwire.MethodSteer:     turns.Steer,
+		acpwire.MethodSetMode:   turns.SetMode,
+		acpwire.MethodSetEffort: turns.SetEffort,
 	})
 
 	// A marshal client's session call returns only after the updates it caused

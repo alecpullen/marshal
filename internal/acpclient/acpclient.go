@@ -215,7 +215,8 @@ type Session interface {
 	// turn at the next safe boundary, interrupting the operation in flight.
 	// The receipt is in Status before SendNow returns.
 	//
-	// ACP: session/steer (exists), with delivery "now".
+	// ACP: session/steer (exists), with delivery "now". A marshal client's
+	// call is served by the session's service.
 	SendNow(ctx context.Context, req acpwire.SendNowRequest) (acpwire.SteeringReceipt, error)
 
 	// Sheet is what the session sheet's sections read (C5): the session's
@@ -381,57 +382,60 @@ type Session interface {
 	// Steer queues text for the running turn to read at its next step. In
 	// process it queues even when no turn runs.
 	//
-	// ACP: session/steer (exists), with the queued delivery.
+	// ACP: session/steer (exists), with the queued delivery. A marshal
+	// client's call is served by the session's service.
 	Steer(ctx context.Context, text string) error
 
 	// PopSteering removes and returns the oldest queued steering text. It
 	// reports false when the queue is empty, and on a closed session.
 	//
-	// ACP: session/steering_pop (new in P3).
+	// ACP: session/steering_pop (exists).
 	PopSteering(ctx context.Context) (string, bool)
 
 	// ClearSteering drops the queued steering text. An accepted Send now
 	// request keeps the entry it covers.
 	//
-	// ACP: session/steering_clear (new in P3).
+	// ACP: session/steering_clear (exists).
 	ClearSteering(ctx context.Context) error
 
 	// SetInteraction applies one interaction patch and returns the committed
 	// state. A nil field is left alone.
 	//
-	// ACP: session/set_mode (exists).
+	// ACP: session/set_mode (exists). A marshal client's call is served by
+	// the session's service.
 	SetInteraction(ctx context.Context, patch acpwire.InteractionPatch) (acpwire.Interaction, error)
 
 	// SetEffort sets the session's effort override for the active route, or
 	// clears it for "", and returns when the change applies:
 	// EffortAppliesNextStep or EffortAppliesNextTurn.
 	//
-	// ACP: session/set_effort (exists).
+	// ACP: session/set_effort (exists). A marshal client's call is served by
+	// the session's service.
 	SetEffort(ctx context.Context, level string) (string, error)
 
 	// SetSudoUnlock turns sudo's own timestamp grace on or off for the
 	// session. Status().SudoUnlock reports it.
 	//
-	// ACP: session/set_sudo_unlock (new in P3).
+	// ACP: session/set_sudo_unlock (exists).
 	SetSudoUnlock(ctx context.Context, on bool) error
 
 	// CancelSubagent asks the running subagent with that ID to stop. It
 	// reports false when no running subagent has the ID, and on a closed
 	// session.
 	//
-	// ACP: session/subagent_cancel (new in P3).
+	// ACP: session/subagent_cancel (exists).
 	CancelSubagent(ctx context.Context, subagentID int64) bool
 
 	// ClearFinishedRun clears a finished run's progress and its event log.
 	//
-	// ACP: session/sdd_clear (new in P3).
+	// ACP: session/sdd_clear (exists).
 	ClearFinishedRun(ctx context.Context) error
 
 	// TakeWatchResume takes the watch-resume latch: the watch a resume fire
 	// named when it landed too late for the turn that just ended. ok is false
 	// when the latch is not set, and on a closed session.
 	//
-	// ACP: session/watch_resume_take (new in P3).
+	// ACP: session/watch_resume_take (exists).
 	TakeWatchResume(ctx context.Context) (name string, repeat bool, ok bool)
 
 	// Prompt runs one turn with params.Text as the user's message and returns

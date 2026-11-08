@@ -174,6 +174,162 @@ func (m *ControlManager) VerifyProposal(ctx context.Context, params json.RawMess
 	return sess.VerifyProposal(runCtx)
 }
 
+// Steer handles session/steer: a delivery of "now" submits a Send now request
+// and answers its receipt, and an empty or "queued" delivery queues the text,
+// which the service accepts with no turn in flight.
+func (m *ControlManager) Steer(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.SteerCallParams
+	if err := decodeParams(params, &p, acpwire.MethodSteer); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	sess, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	switch p.Delivery {
+	case acpwire.SteerDeliveryNow:
+		return sess.SendNow(ctx, acpwire.SendNowRequest{
+			SessionID: p.SessionID,
+			TurnID:    p.TurnID,
+			RequestID: p.RequestID,
+			Text:      p.Text,
+		})
+	case "", "queued":
+		if err := sess.Steer(ctx, p.Text); err != nil {
+			return nil, err
+		}
+		return struct{}{}, nil
+	default:
+		return nil, invalidParamsError("session/steer: unknown delivery %q: want queued or now", p.Delivery)
+	}
+}
+
+// SteeringPop handles session/steering_pop.
+func (m *ControlManager) SteeringPop(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.ControlParams
+	if err := decodeParams(params, &p, acpwire.MethodSteeringPop); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	sess, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	text, ok := sess.PopSteering(ctx)
+	return acpwire.SteeringPopResult{Text: text, OK: ok}, nil
+}
+
+// SteeringClear handles session/steering_clear.
+func (m *ControlManager) SteeringClear(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.ControlParams
+	if err := decodeParams(params, &p, acpwire.MethodSteeringClear); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	sess, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	if err := sess.ClearSteering(ctx); err != nil {
+		return nil, err
+	}
+	return struct{}{}, nil
+}
+
+// SetMode handles session/set_mode: it decodes ACP's own params, whose patch
+// fields are pointers so a revocation stays distinguishable from an omission.
+func (m *ControlManager) SetMode(ctx context.Context, params json.RawMessage) (any, error) {
+	var p SetModeParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, invalidParamsError("session/set_mode: %v", err)
+		}
+	}
+	sess, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	return sess.SetInteraction(ctx, acpwire.InteractionPatch{
+		Mode:   p.Mode,
+		Auto:   p.Auto,
+		System: p.System,
+	})
+}
+
+// SetEffort handles session/set_effort.
+func (m *ControlManager) SetEffort(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.EffortParams
+	if err := decodeParams(params, &p, acpwire.MethodSetEffort); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	sess, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	applies, err := sess.SetEffort(ctx, p.Effort)
+	if err != nil {
+		return nil, err
+	}
+	return acpwire.EffortResult{Effort: p.Effort, AppliesFrom: applies}, nil
+}
+
+// SetSudoUnlock handles session/set_sudo_unlock.
+func (m *ControlManager) SetSudoUnlock(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.SudoUnlockParams
+	if err := decodeParams(params, &p, acpwire.MethodSetSudoUnlock); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	sess, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	if err := sess.SetSudoUnlock(ctx, p.On); err != nil {
+		return nil, err
+	}
+	return struct{}{}, nil
+}
+
+// SubagentCancel handles session/subagent_cancel.
+func (m *ControlManager) SubagentCancel(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.SubagentCancelParams
+	if err := decodeParams(params, &p, acpwire.MethodSubagentCancel); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	sess, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	return acpwire.SubagentCancelResult{Cancelled: sess.CancelSubagent(ctx, p.SubagentID)}, nil
+}
+
+// SDDClear handles session/sdd_clear: the service calls it ClearFinishedRun.
+func (m *ControlManager) SDDClear(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.ControlParams
+	if err := decodeParams(params, &p, acpwire.MethodSDDClear); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	sess, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	if err := sess.ClearFinishedRun(ctx); err != nil {
+		return nil, err
+	}
+	return struct{}{}, nil
+}
+
+// WatchResumeTake handles session/watch_resume_take.
+func (m *ControlManager) WatchResumeTake(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.ControlParams
+	if err := decodeParams(params, &p, acpwire.MethodWatchResumeTake); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	sess, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	name, repeat, ok := sess.TakeWatchResume(ctx)
+	return acpwire.WatchResumeTakeResult{Name: name, Repeat: repeat, OK: ok}, nil
+}
+
 // Close stops every work forwarder. The connection's cleanup calls it.
 func (m *ControlManager) Close() {
 	m.mu.Lock()
@@ -226,7 +382,7 @@ func (m *ControlManager) lookupService(sessionID string) (*service.Session, bool
 	return m.lookup(sessionID)
 }
 
-// registerControls registers this plan's control methods on srv, and the seven
+// registerControls registers this plan's control methods on srv, and the
 // existing ones through marshalOr: a client without the capability reaches
 // others[method], unchanged. A method missing from others refuses such a client
 // as method-not-found.
@@ -236,5 +392,14 @@ func registerControls(srv *Server, controls *ControlManager, others map[string]H
 	srv.Handle(acpwire.MethodAgentRun, controls.AgentRun)
 	srv.Handle(acpwire.MethodSuggest, controls.Suggest)
 	srv.Handle(acpwire.MethodVerifyProposal, controls.VerifyProposal)
+	srv.Handle(acpwire.MethodSteeringPop, controls.SteeringPop)
+	srv.Handle(acpwire.MethodSteeringClear, controls.SteeringClear)
+	srv.Handle(acpwire.MethodSetSudoUnlock, controls.SetSudoUnlock)
+	srv.Handle(acpwire.MethodSubagentCancel, controls.SubagentCancel)
+	srv.Handle(acpwire.MethodSDDClear, controls.SDDClear)
+	srv.Handle(acpwire.MethodWatchResumeTake, controls.WatchResumeTake)
 	srv.Handle(acpwire.MethodPrompt, marshalOr(srv.marshalClient, controls.Prompt, others[acpwire.MethodPrompt]))
+	srv.Handle(acpwire.MethodSteer, marshalOr(srv.marshalClient, controls.Steer, others[acpwire.MethodSteer]))
+	srv.Handle(acpwire.MethodSetMode, marshalOr(srv.marshalClient, controls.SetMode, others[acpwire.MethodSetMode]))
+	srv.Handle(acpwire.MethodSetEffort, marshalOr(srv.marshalClient, controls.SetEffort, others[acpwire.MethodSetEffort]))
 }

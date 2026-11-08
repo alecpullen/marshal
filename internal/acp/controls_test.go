@@ -20,6 +20,7 @@ import (
 	"marshal/internal/app"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/interaction"
 	"marshal/internal/pubsub"
 	"marshal/internal/watch"
 )
@@ -723,4 +724,331 @@ func TestAConnectionWithoutTheCapabilityBindsWatchResume(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("the hook started no turn for a client without the capability")
 	}
+}
+
+// TestSteerQueuesWithNoTurnInFlight pins the difference from ACP's own handler:
+// the service's Steer queues even when no turn runs, and the call answers {}.
+func TestSteerQueuesWithNoTurnInFlight(t *testing.T) {
+	state := seamState(t, controlSession)
+	conn, _ := startControlAgent(t, true, service.Deps{State: state}, nil)
+
+	var res json.RawMessage
+	if err := conn.Call(context.Background(), acpwire.MethodSteer, acpwire.SteerCallParams{
+		SessionID: controlSession,
+		Text:      "queued with no turn",
+	}, &res); err != nil {
+		t.Fatalf("session/steer: %v", err)
+	}
+	if got := strings.TrimSpace(string(res)); got != "{}" {
+		t.Fatalf("session/steer result = %s, want {}", got)
+	}
+	queue := state.SteeringQueue()
+	if len(queue) != 1 || queue[0] != "queued with no turn" {
+		t.Fatalf("steering queue = %v, want the queued text", queue)
+	}
+}
+
+// TestSendNowAnswersTheReceipt pins the Send now delivery: with a turn the
+// state reports active and supported, the call answers the receipt.
+func TestSendNowAnswersTheReceipt(t *testing.T) {
+	state := seamState(t, controlSession)
+	state.SetOperationInterrupt(func(context.Context, session.OperationRef) (session.OperationStop, error) {
+		return session.OperationStop{}, nil
+	})
+	turn, err := state.BeginSteeringTurn(context.Background())
+	if err != nil {
+		t.Fatalf("BeginSteeringTurn: %v", err)
+	}
+	if snap := state.SteeringSnapshot(); !snap.Active || !snap.Supported || snap.TurnID != turn {
+		t.Fatalf("steering snapshot = %+v, want the active, supported turn %s", snap, turn)
+	}
+
+	conn, _ := startControlAgent(t, true, service.Deps{State: state}, nil)
+
+	var res acpwire.SteeringReceipt
+	if err := conn.Call(context.Background(), acpwire.MethodSteer, acpwire.SteerCallParams{
+		SessionID: controlSession,
+		Text:      "do this instead",
+		Delivery:  acpwire.SteerDeliveryNow,
+		TurnID:    turn,
+		RequestID: "r1",
+	}, &res); err != nil {
+		t.Fatalf("session/steer delivery=now: %v", err)
+	}
+	if res.RequestID != "r1" || res.TurnID != turn || res.Status != acpwire.SteeringAccepted {
+		t.Fatalf("receipt = %+v, want r1 on turn %s, status %q", res, turn, acpwire.SteeringAccepted)
+	}
+}
+
+// TestSetModeTakesSystemAccess pins that the handler decodes ACP's own params,
+// which name system access "system_access", and answers the committed state.
+func TestSetModeTakesSystemAccess(t *testing.T) {
+	var recorded interaction.Patch
+	conn, _ := startControlAgent(t, true, service.Deps{
+		State: seamState(t, controlSession),
+		SetInteraction: func(p interaction.Patch) (interaction.State, error) {
+			recorded = p
+			return interaction.State{Mode: interaction.ModeAct, System: true, Revision: 7}, nil
+		},
+	}, nil)
+
+	var res acpwire.Interaction
+	if err := conn.Call(context.Background(), acpwire.MethodSetMode,
+		json.RawMessage(`{"sessionId":"s1","system_access":true}`), &res); err != nil {
+		t.Fatalf("session/set_mode: %v", err)
+	}
+	if recorded.System == nil || !*recorded.System {
+		t.Fatalf("the setter saw system %v, want true", recorded.System)
+	}
+	if recorded.Mode != nil || recorded.Auto != nil {
+		t.Fatalf("the setter saw mode %v and auto %v, want both nil", recorded.Mode, recorded.Auto)
+	}
+	want := acpwire.Interaction{Mode: "act", System: true, Revision: 7}
+	if res != want {
+		t.Fatalf("interaction = %+v, want %+v", res, want)
+	}
+
+	err := conn.Call(context.Background(), acpwire.MethodSetMode,
+		json.RawMessage(`{"sessionId":"s1","bogus":true}`), &res)
+	var rpcErr *rpc.Error
+	if err == nil || !errors.As(err, &rpcErr) || rpcErr.Code != invalidParams {
+		t.Fatalf("err = %v, want the invalid-params refusal for an unknown key", err)
+	}
+}
+
+// TestSetEffortAnswersWhenItApplies pins both arms: the setter's applies value
+// comes back as appliesFrom, and the setter's own error is not reframed.
+func TestSetEffortAnswersWhenItApplies(t *testing.T) {
+	var got string
+	conn, _ := startControlAgent(t, true, service.Deps{
+		State: seamState(t, controlSession),
+		SetEffort: func(level string) (string, error) {
+			got = level
+			return session.EffortAppliesNextTurn, nil
+		},
+	}, nil)
+
+	var res acpwire.EffortResult
+	if err := conn.Call(context.Background(), acpwire.MethodSetEffort, acpwire.EffortParams{
+		SessionID: controlSession,
+		Effort:    "high",
+	}, &res); err != nil {
+		t.Fatalf("session/set_effort: %v", err)
+	}
+	if got != "high" {
+		t.Fatalf("the setter saw level %q, want high", got)
+	}
+	if res.Effort != "high" || res.AppliesFrom != session.EffortAppliesNextTurn {
+		t.Fatalf("effort result = %+v, want high from %q", res, session.EffortAppliesNextTurn)
+	}
+
+	refused := errors.New("effort refused")
+	refusing, _ := startControlAgent(t, true, service.Deps{
+		State: seamState(t, controlSession),
+		SetEffort: func(string) (string, error) {
+			return "", refused
+		},
+	}, nil)
+	err := refusing.Call(context.Background(), acpwire.MethodSetEffort, acpwire.EffortParams{
+		SessionID: controlSession,
+		Effort:    "low",
+	}, &res)
+	var rpcErr *rpc.Error
+	if err == nil || !errors.As(err, &rpcErr) {
+		t.Fatalf("err = %v, want the setter's error to travel", err)
+	}
+	// The setter's error is not reframed as a bad request: the server carries
+	// it as an internal error, and the canonical text replaces its message.
+	if rpcErr.Code != internalError {
+		t.Fatalf("err = %v (code %d), want the setter's error at code %d, not invalid params",
+			err, rpcErr.Code, internalError)
+	}
+}
+
+// TestTheControlsReachTheService pins that each of the six new control methods
+// reaches the service and answers what it returned.
+func TestTheControlsReachTheService(t *testing.T) {
+	state := seamState(t, controlSession)
+	view := state.RegisterSubagent("task 1", seamState(t, "child"))
+	cancelled := false
+	state.SetSubagentCancel(view.ID, func() { cancelled = true })
+	state.SetWatchResume("ci", true)
+	state.SetSDDProgress(session.SDDProgress{PlanName: "a plan"})
+	state.AddRunEvent(session.RunEvent{Kind: session.RunEventTaskDone})
+	state.PushSteering("first")
+	state.PushSteering("second")
+
+	deps := service.Deps{State: state}
+	conn, _ := startControlAgent(t, true, deps, nil)
+	ctx := context.Background()
+	params := acpwire.ControlParams{SessionID: controlSession}
+
+	// steering_pop answers the oldest text, then reports an empty queue.
+	for _, want := range []string{"first", "second"} {
+		var pop acpwire.SteeringPopResult
+		if err := conn.Call(ctx, acpwire.MethodSteeringPop, params, &pop); err != nil {
+			t.Fatalf("session/steering_pop: %v", err)
+		}
+		if !pop.OK || pop.Text != want {
+			t.Fatalf("pop = %+v, want %q with ok", pop, want)
+		}
+	}
+	var empty acpwire.SteeringPopResult
+	if err := conn.Call(ctx, acpwire.MethodSteeringPop, params, &empty); err != nil {
+		t.Fatalf("session/steering_pop on an empty queue: %v", err)
+	}
+	if empty.OK || empty.Text != "" {
+		t.Fatalf("pop on an empty queue = %+v, want ok false", empty)
+	}
+
+	// steering_clear empties the queue.
+	state.PushSteering("drop me")
+	var cleared json.RawMessage
+	if err := conn.Call(ctx, acpwire.MethodSteeringClear, params, &cleared); err != nil {
+		t.Fatalf("session/steering_clear: %v", err)
+	}
+	if got := state.SteeringQueue(); len(got) != 0 {
+		t.Fatalf("steering queue = %v, want it empty", got)
+	}
+
+	// set_sudo_unlock reaches Status().SudoUnlock.
+	var unlocked json.RawMessage
+	if err := conn.Call(ctx, acpwire.MethodSetSudoUnlock, acpwire.SudoUnlockParams{
+		SessionID: controlSession,
+		On:        true,
+	}, &unlocked); err != nil {
+		t.Fatalf("session/set_sudo_unlock: %v", err)
+	}
+	_, probe := service.New(deps)
+	t.Cleanup(func() { _ = probe.Close(context.Background()) })
+	if !probe.Status().SudoUnlock {
+		t.Fatal("Status().SudoUnlock = false, want true")
+	}
+
+	// subagent_cancel stops the running child, and reports false for a
+	// subagent that is not running.
+	var cancel acpwire.SubagentCancelResult
+	if err := conn.Call(ctx, acpwire.MethodSubagentCancel, acpwire.SubagentCancelParams{
+		SessionID:  controlSession,
+		SubagentID: view.ID,
+	}, &cancel); err != nil {
+		t.Fatalf("session/subagent_cancel: %v", err)
+	}
+	if !cancel.Cancelled || !cancelled {
+		t.Fatalf("cancel = %+v with cancel ran %v, want both true", cancel, cancelled)
+	}
+	var unknown acpwire.SubagentCancelResult
+	if err := conn.Call(ctx, acpwire.MethodSubagentCancel, acpwire.SubagentCancelParams{
+		SessionID:  controlSession,
+		SubagentID: 999,
+	}, &unknown); err != nil {
+		t.Fatalf("session/subagent_cancel for an unknown ID: %v", err)
+	}
+	if unknown.Cancelled {
+		t.Fatalf("cancel for an unknown ID = %+v, want false", unknown)
+	}
+
+	// sdd_clear clears the finished run's progress and event log.
+	var sddCleared json.RawMessage
+	if err := conn.Call(ctx, acpwire.MethodSDDClear, params, &sddCleared); err != nil {
+		t.Fatalf("session/sdd_clear: %v", err)
+	}
+	if got := state.SDDProgress().PlanName; got != "" {
+		t.Fatalf("SDDProgress().PlanName = %q, want empty", got)
+	}
+	if got := state.RunEvents(); len(got) != 0 {
+		t.Fatalf("RunEvents() = %v, want empty", got)
+	}
+
+	// watch_resume_take takes the latch once.
+	var take acpwire.WatchResumeTakeResult
+	if err := conn.Call(ctx, acpwire.MethodWatchResumeTake, params, &take); err != nil {
+		t.Fatalf("session/watch_resume_take: %v", err)
+	}
+	if !take.OK || take.Name != "ci" || !take.Repeat {
+		t.Fatalf("take = %+v, want ci, repeat, ok", take)
+	}
+	var again acpwire.WatchResumeTakeResult
+	if err := conn.Call(ctx, acpwire.MethodWatchResumeTake, params, &again); err != nil {
+		t.Fatalf("session/watch_resume_take again: %v", err)
+	}
+	if again.OK {
+		t.Fatalf("take = %+v, want ok false the second time", again)
+	}
+}
+
+// TestAControlWithoutTheCapabilityReachesTheTurnManager pins R9's compatibility
+// arm for session/steer: without the capability ACP's own handler answers, and
+// a queued text with no turn in flight is its refusal.
+func TestAControlWithoutTheCapabilityReachesTheTurnManager(t *testing.T) {
+	state := seamState(t, controlSession)
+	turns := NewTurnManager(TurnManagerConfig{
+		Lookup: func(id string) (*TurnRuntime, bool) {
+			return &TurnRuntime{SessionID: id}, id == controlSession
+		},
+		Notify: func(string, any) error { return nil },
+	})
+	conn, _ := startControlAgent(t, false, service.Deps{State: state},
+		map[string]Handler{acpwire.MethodSteer: turns.Steer})
+
+	var res json.RawMessage
+	err := conn.Call(context.Background(), acpwire.MethodSteer, acpwire.SteerCallParams{
+		SessionID: controlSession,
+		Text:      "queued with no turn",
+	}, &res)
+	if err == nil || !strings.Contains(err.Error(), "has no active turn") {
+		t.Fatalf("err = %v, want ACP's no-active-turn refusal", err)
+	}
+	if got := state.SteeringQueue(); len(got) != 0 {
+		t.Fatalf("steering queue = %v, want the service never to have seen it", got)
+	}
+}
+
+// TestTheControlsRefuseBadParams pins the refusals the controls share: a
+// missing session id is invalid params, an unknown one is the unknown-session
+// error, and an unknown steer delivery is invalid params.
+func TestTheControlsRefuseBadParams(t *testing.T) {
+	conn, _ := startControlAgent(t, true, service.Deps{State: seamState(t, controlSession)}, nil)
+
+	methods := []struct {
+		name   string
+		method string
+	}{
+		{"steer", acpwire.MethodSteer},
+		{"steering_pop", acpwire.MethodSteeringPop},
+		{"steering_clear", acpwire.MethodSteeringClear},
+		{"set_mode", acpwire.MethodSetMode},
+		{"set_effort", acpwire.MethodSetEffort},
+		{"set_sudo_unlock", acpwire.MethodSetSudoUnlock},
+		{"subagent_cancel", acpwire.MethodSubagentCancel},
+		{"sdd_clear", acpwire.MethodSDDClear},
+		{"watch_resume_take", acpwire.MethodWatchResumeTake},
+	}
+	for _, m := range methods {
+		t.Run(m.name, func(t *testing.T) {
+			var res json.RawMessage
+			err := conn.Call(context.Background(), m.method, json.RawMessage(`{}`), &res)
+			var rpcErr *rpc.Error
+			if err == nil || !errors.As(err, &rpcErr) || rpcErr.Code != invalidParams {
+				t.Fatalf("err = %v, want the invalid-params refusal", err)
+			}
+			err = conn.Call(context.Background(), m.method, json.RawMessage(`{"sessionId":"nope"}`), &res)
+			if err == nil || !strings.Contains(err.Error(), "unknown session") {
+				t.Fatalf("err = %v, want the unknown-session refusal", err)
+			}
+		})
+	}
+
+	t.Run("steer_delivery", func(t *testing.T) {
+		var res json.RawMessage
+		err := conn.Call(context.Background(), acpwire.MethodSteer, acpwire.SteerCallParams{
+			SessionID: controlSession,
+			Text:      "x",
+			Delivery:  "later",
+		}, &res)
+		var rpcErr *rpc.Error
+		if err == nil || !errors.As(err, &rpcErr) || rpcErr.Code != invalidParams {
+			t.Fatalf("err = %v, want the invalid-params refusal for an unknown delivery", err)
+		}
+	})
 }

@@ -381,8 +381,6 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 
 	srv.Handle("session/new", manager.Create)
 	srv.Handle("session/load", manager.Load)
-	srv.Handle("session/close", manager.CloseSession)
-	srv.Handle("session/list", manager.List)
 	srv.Handle("session/resume", manager.Resume)
 	srv.Handle("session/delete", manager.Delete)
 
@@ -482,8 +480,27 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 		Notify:     h.sink.Notify,
 		Marshal:    srv.marshalClient,
 	})
+	// The end manager serves a marshal client's end flow, its close and the
+	// host's session list over the session's service, and runs one end
+	// forwarder per session a marshal client reads (plan 6c decision 7). It is
+	// built here, before the barrier below, so its forwarders join it.
+	ends := NewEndManager(EndManagerConfig{
+		Lookup:     manager.Service,
+		HostLookup: manager.ServiceHost,
+		Notify:     h.sink.Notify,
+		Marshal:    srv.marshalClient,
+	})
 
-	srv.SetResponseBarrier(responseBarrier(turns, works, watches, statuses, sheets, requests, settings, controls))
+	srv.SetResponseBarrier(responseBarrier(turns, works, watches, statuses, sheets, requests, settings, controls, ends))
+
+	// A marshal client's close ends the conversation, not the runtime, and its
+	// session/list names its current session, whose service host serves it
+	// (plan 6c decisions 4, 7). Every other client keeps the session manager's
+	// handlers, unchanged.
+	registerEnds(srv, ends, map[string]Handler{
+		acpwire.MethodSessionClose: manager.CloseSession,
+		acpwire.MethodSessionList:  manager.List,
+	})
 
 	home, _ := os.UserHomeDir()
 	cfgMgr := NewConfigManager(home, nil, nil)
@@ -652,6 +669,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 		requests.Close()
 		settings.Close()
 		controls.Close()
+		ends.Close()
 	}
 }
 

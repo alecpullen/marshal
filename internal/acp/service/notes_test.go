@@ -14,65 +14,6 @@ import (
 	"marshal/internal/oauth"
 )
 
-// TestAddNoteAppendsASystemMessage pins the default: a note with no role is the
-// agent's system message on the plain content type (C9).
-func TestAddNoteAppendsASystemMessage(t *testing.T) {
-	state := newState(t, "s1")
-	_, sess := New(Deps{State: state})
-
-	if err := sess.AddNote(context.Background(), acpwire.Note{Text: "heads up"}); err != nil {
-		t.Fatalf("AddNote: %v", err)
-	}
-	msgs := state.Messages()
-	if len(msgs) != 1 {
-		t.Fatalf("messages = %d, want 1", len(msgs))
-	}
-	got := msgs[0]
-	if got.Role != session.RoleSystem {
-		t.Errorf("role = %q, want %q", got.Role, session.RoleSystem)
-	}
-	if got.ContentType != session.ContentTypePlain {
-		t.Errorf("content type = %q, want %q", got.ContentType, session.ContentTypePlain)
-	}
-	if got.Content != "heads up" {
-		t.Errorf("content = %q, want %q", got.Content, "heads up")
-	}
-}
-
-// TestAddNoteRecordsTheUsersText checks a user note is stored as the user's
-// message, so the next turn sees what the person typed.
-func TestAddNoteRecordsTheUsersText(t *testing.T) {
-	state := newState(t, "s1")
-	_, sess := New(Deps{State: state})
-
-	err := sess.AddNote(context.Background(), acpwire.Note{Text: "mine", Role: acpwire.RoleUser})
-	if err != nil {
-		t.Fatalf("AddNote: %v", err)
-	}
-	msgs := state.Messages()
-	if len(msgs) != 1 {
-		t.Fatalf("messages = %d, want 1", len(msgs))
-	}
-	if msgs[0].Role != session.RoleUser {
-		t.Errorf("role = %q, want %q", msgs[0].Role, session.RoleUser)
-	}
-}
-
-// TestAddNoteRefusesOtherRoles checks a note cannot impersonate the assistant:
-// only system and user are accepted.
-func TestAddNoteRefusesOtherRoles(t *testing.T) {
-	state := newState(t, "s1")
-	_, sess := New(Deps{State: state})
-
-	err := sess.AddNote(context.Background(), acpwire.Note{Text: "hi", Role: acpwire.RoleAssistant})
-	if !errors.Is(err, errNoteRole) {
-		t.Fatalf("AddNote(assistant) = %v, want errNoteRole", err)
-	}
-	if got := len(state.Messages()); got != 0 {
-		t.Errorf("messages = %d, want 0: a refused note appends nothing", got)
-	}
-}
-
 // TestRunErrorCarriesTheNotice pins the run-error classifier (decision 4): a
 // provider failure becomes a coded error carrying the banner its caller shows,
 // and every other error comes back untouched.

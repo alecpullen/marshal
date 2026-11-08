@@ -342,20 +342,6 @@ func browserHistoryDB(t *testing.T) (*db.DB, int64) {
 	return database, projectID
 }
 
-// browserWritePlan writes a plan file into dir's plans directory.
-func browserWritePlan(t *testing.T, dir, name, body string) string {
-	t.Helper()
-	plansDir := filepath.Join(dir, ".marshal", "plans")
-	if err := os.MkdirAll(plansDir, 0o755); err != nil {
-		t.Fatalf("mkdir plans: %v", err)
-	}
-	path := filepath.Join(plansDir, name)
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatalf("write plan: %v", err)
-	}
-	return path
-}
-
 // browserRepo returns a repository with two commits on main and their SHAs.
 func browserRepo(t *testing.T) (dir, base, head string) {
 	t.Helper()
@@ -617,39 +603,8 @@ func TestADiffWithoutTheCapabilityReachesItsOtherHandler(t *testing.T) {
 	}
 }
 
-// browserPluginRepo returns a local plugin repository with one command,
-// committed, the way the service's plugin tests build theirs.
-func browserPluginRepo(t *testing.T) (src, commit string) {
-	t.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skipf("git not available: %v", err)
-	}
-	src = filepath.Join(t.TempDir(), "hello-plugin")
-	run := func(args ...string) {
-		t.Helper()
-		cmdArgs := append([]string{"-C", src}, args...)
-		if out, err := exec.Command("git", cmdArgs...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
-	if err := os.MkdirAll(filepath.Join(src, "commands"), 0o755); err != nil {
-		t.Fatalf("mkdir commands: %v", err)
-	}
-	const command = "+++\nname = \"hello\"\ndescription = \"says hello\"\n+++\necho hello\n"
-	if err := os.WriteFile(filepath.Join(src, "commands", "hello.md"), []byte(command), 0o644); err != nil {
-		t.Fatalf("write command: %v", err)
-	}
-	run("init")
-	run("config", "user.email", "test@example.com")
-	run("config", "user.name", "Test")
-	run("add", "-A")
-	run("commit", "-m", "initial")
-	out, err := exec.Command("git", "-C", src, "rev-parse", "HEAD").Output()
-	if err != nil {
-		t.Fatalf("rev-parse HEAD: %v", err)
-	}
-	return src, strings.TrimSpace(string(out))
-}
+// browserWritePlan and browserPluginRepo live in conformance_browsers_test.go,
+// which every browser case in this package shares.
 
 // TestAMarshalMemoryListIsTheProjectsOwn pins decision 1 for the memory
 // browser: a marshal client reads the project's own rows, oldest first, in

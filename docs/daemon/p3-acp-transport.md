@@ -23,7 +23,9 @@ other ([plan 2](plans/2026-11-07-p3-2-layering-plan.md),
 4c once those two had merged ([plan 3b](plans/2026-11-07-p3-3b-status-plan.md),
 [plan 4c](plans/2026-11-07-p3-4c-projection-memo-plan.md)), and plans 4b
 and 5 once those two had merged ([plan 4b](plans/2026-11-07-p3-4b-transcript-plan.md),
-[plan 5](plans/2026-11-07-p3-5-requests-plan.md)). The rest are
+[plan 5](plans/2026-11-07-p3-5-requests-plan.md)), and plans 6b and 7a
+once those two had merged ([plan 6b](plans/2026-11-08-p3-6b-controls-plan.md),
+[plan 7a](plans/2026-11-08-p3-7a-settings-plan.md)). The rest are
 written one or two at a time, as what they depend on lands.
 
 Decided with the user (2026-11-05):
@@ -62,6 +64,24 @@ Decided with the user (2026-11-07):
   brokering anything. `session/request_secret` and `request_settled` are
   dropped; clients without the capability keep today's
   `session/request_permission` and `session/request_question`.
+
+Decided with the user (2026-11-08):
+- **A marshal client's turns and controls run on the session's service.**
+  For a client that declared the marshal capability, `session/prompt`,
+  `session/steer`, `session/set_mode`, `session/set_effort` and
+  `session/work_list`, `work_inspect` and `work_stop` reach the service, the
+  logic moved from `inproc`, and every other client reaches today's
+  handlers. This replaces R9's optional params for these methods: ACP's turn
+  differs from the service's in too many ways to patch (the queued text put
+  back, the codes, the stop's cause, the watch resume, the work's guard), and
+  the service's own tests then prove the wire. A marshal connection binds no
+  watch-resume hook, because the TUI resumes a watch itself (plan 6b).
+- **Plans 6 and 7 are four plans, run as two pairs:** 6b (turns and
+  controls) alongside 7a (config, providers and trust), then 6c (pipelines,
+  the end flow and sessions) alongside 7b (notes, commands, browsers and
+  project data). In each pair one plan works on the turn's path and the
+  other on plain calls, so their conflicts are the shared registration and
+  harness lines.
 
 ## Goal
 
@@ -182,21 +202,32 @@ These replace the draft's `session/request_permission` extension,
 - `session/answer_access` — `Session.AnswerAccess`.
 - `session/rollback` — `Session.Rollback`.
 
-### Plan 6b — turns, runs, the end flow and sessions
+### Plan 6b — turns and controls
 
+- `session/stop` — `Session.Stop`, which `session/cancel` carried before:
+  that method is a notification, so it can carry no answer for the barrier
+  to follow, and no cause. It stays for other clients.
 - `session/review` — `Session.Review`.
 - `session/agent_run` — `Session.RunAgent`.
 - `session/suggest` — `Session.Suggest`.
 - `session/verify_proposal` — `Session.VerifyProposal`.
-- `session/sdd_preflight` — `Session.PlanPreflight` (asynchronous, R6).
-- `session/sdd_author` — `Session.AuthorPlan`.
-- `session/sdd_stop` — `Session.StopSDD`.
 - `session/sdd_clear` — `Session.ClearFinishedRun`.
 - `session/steering_pop` — `Session.PopSteering`.
 - `session/steering_clear` — `Session.ClearSteering`.
 - `session/set_sudo_unlock` — `Session.SetSudoUnlock`.
 - `session/subagent_cancel` — `Session.CancelSubagent`.
 - `session/watch_resume_take` — `Session.TakeWatchResume`.
+
+Plan 6b also adds the `work_snapshot` update, which carries the service's
+work to a marshal client (R3), and serves a marshal client's
+`session/prompt`, `steer`, `set_mode`, `set_effort` and `work_*` on the
+service (decided with the user, 2026-11-08).
+
+### Plan 6c — pipelines, the end flow and sessions
+
+- `session/sdd_preflight` — `Session.PlanPreflight` (asynchronous, R6).
+- `session/sdd_author` — `Session.AuthorPlan`.
+- `session/sdd_stop` — `Session.StopSDD`.
 - `session/end_work` — `Session.ActiveWork`, refreshed by an `end_work`
   update.
 - `session/end_accept` — `Session.AcceptEnd`.
@@ -207,11 +238,8 @@ These replace the draft's `session/request_permission` extension,
 `session/new` already exists, but `Host.NewSession` becomes an
 asynchronous call (R6).
 
-### Plan 7 — notes and commands; config, providers and trust; project data
+### Plan 7a — config, providers and trust
 
-- `session/note` — `Session.AddNote`.
-- `session/command_action` — `Session.CommandAction`.
-- `session/tools` — `Session.Tools`.
 - `config/provider_templates` — `Host.ProviderTemplates`.
 - `config/probe_model` — `Host.CanProbeModel` (asynchronous, R6),
   `Host.ProbeModel`.
@@ -229,12 +257,23 @@ asynchronous call (R6).
 - `trust/prompt` — `Host.TrustPrompt`.
 - `trust/decide` — `Host.DecideTrust`.
 - `session/mcp_login` — `Session.PrepareMCPLogin`, `Session.LoginMCP`.
-- `session/config` — `Session.Config`, `Session.Layers`.
+- `session/config` — `Session.Config`, `Session.Layers` and
+  `Session.Tools`, refreshed by a `session_config` update. Plan 7a folded
+  `session/tools` into it: `Tools` takes no context, so it needs a mirror,
+  and it changes with the runtime the config rebuilds.
 - `session/apply_config` — `Session.ApplyConfig`.
 - `session/reload_config` — `Session.ReloadConfig`.
 - `session/mcp_reconnect` — `Session.ReconnectMCP`.
 - `session/save_project_config` — `Session.SaveProjectConfig`.
 - `session/save_verify_commands` — `Session.SaveVerifyCommands`.
+
+For a marshal client, `config/probe_provider` and `config/set_provider_key`
+are served by the session's service host too.
+
+### Plan 7b — notes, commands, browsers and project data
+
+- `session/note` — `Session.AddNote`.
+- `session/command_action` — `Session.CommandAction`.
 - `session/prompt_history` — `Session.RecentPrompts`.
 - `session/prompt_history_save` — `Session.SavePrompt`.
 - `session/messages` — `Session.Messages`.
@@ -261,7 +300,9 @@ asynchronous call (R6).
 - **G3.** Resuming a session in place. Resume stays a restart of the
   program, as in P2 (R7).
 - **G4.** Moving ACP's own `Work*Wire` and `PermissionRequest` types onto
-  `acpwire`. They stay, and the client converts (R9).
+  `acpwire`. They stay for clients without the capability. A marshal client
+  reads the service's own values instead: its requests (plan 5) and its work
+  (plan 6b).
 - **G5.** Fixing the bridge's own 1 MiB reader (Findings). It does not
   wait for P3: P2 plan 7b carries it (decided with the user, 2026-11-05).
 
@@ -368,7 +409,11 @@ asynchronous call (R6).
     session flushes nothing: no host call causes a session update today.
     Plan 3b found that this still holds with `session_status`: no host
     call changes a session's status yet. Plan 7's config calls are the
-    first that can, and plan 7 decides how they flush.
+    first that can, and plan 7a decides how they flush: every host call but
+    `SharedFilesystem` names the client's current session, the one its last
+    attach bound. That runtime's service host serves the call, as the
+    in-process host acts on its current session, and the barrier fences
+    that session as it fences any session call.
   - Each goroutine that forwards a session's events as updates (the
     turn's forwarder, the idle stack loop, the work and watch forwarders)
     serves a fence: it handles the events buffered in its channel when
@@ -382,8 +427,9 @@ asynchronous call (R6).
 
 - **Each session holds a mirror:** status, the stack of the main
   transcript and of each subagent that is read, pending requests, work,
-  the end flow's active work, the command list and the sheet. Reads
-  return the mirror's value, without I/O, as C2 requires.
+  the end flow's active work, the command list, the sheet, and the config
+  with its layers and tools. Reads return the mirror's value, without I/O,
+  as C2 requires.
 - **`Changed` fires** after the client applies any update for the
   session, coalesced into its buffer of one as today. The TUI's 150ms
   tick stays, for clocks.
@@ -394,7 +440,8 @@ asynchronous call (R6).
   | `Status` | `session/status` (new) | `session_status` (new): the full value whenever it differs from the last one sent, at most every 50ms, and before any call's response |
   | `Stack` | `session/stack` (exists) | `stack_patch` (exists), at the marshal client's flush interval (R4) |
   | `Pending` | `session/pending` (new) | `pending_requests` (new): the full value whenever it differs from the last one sent, at most every 50ms, and before any call's response (plan 5) |
-  | `Work` | `session/work_list`'s live view (exists) | `work_state` (exists) |
+  | `Work` | `session/work_list`'s live view (exists): for a marshal client the service's `WorkState` | `work_snapshot` (new, marshal only): the service's work whenever it differs from the last one sent, at most every 50ms, and before any call's response (plan 6b). Other clients keep `work_state` |
+  | `Config`, `Layers`, `Tools` | `session/config` (new) | `session_config` (new): the config and layers with every secret masked, and the tools, whenever they differ from the last ones sent, at most every 50ms, and before any call's response (plan 7a) |
   | `ActiveWork` | `session/end_work` (new) | `end_work` (new) |
   | `Commands` | `session/command_list` (exists, with P2's dispatch fields) | `commands_changed` (new), sent when the registry changes |
   | `Sheet` | `session/sheet` (new) | `sheet` (new): each sheet the client has read, whenever it differs from the last one sent, at most every 50ms, and before any call's response (plan 4b) |
@@ -427,8 +474,17 @@ asynchronous call (R6).
   `pending_requests` update when the encoding changed. The
   update carries `Pending`'s value and the access request `ReconcileAccess`
   presents, so both reads come from the mirror (R5).
-- **Host reads** (`ProviderTemplates`, `SharedFilesystem`) are fetched at
-  dial time. `SharedFilesystem` is true for the pipe.
+- **How the work and the config arrive (plans 6b and 7a).** Each comes as
+  the requests do: the first read sends its method (`session/work_list`'s
+  live view, `session/config`), which for a marshal client starts the
+  session's forwarder for it, polling every 50ms and when the barrier asks,
+  and sending the whole value when its encoding changed. The work is the
+  service's, guarded as in process, and the config is its masked reads, so
+  no update carries a secret (R8).
+- **Host reads.** `SharedFilesystem` is set at dial time, and is true for
+  the pipe. `ProviderTemplates` and `TrustPrompt` never change while the
+  host runs, so each is fetched on its first read after an attach, with
+  the current session, and kept (plan 7a).
 
 ### R4. The transcript
 
@@ -570,13 +626,17 @@ Decided with the user, 2026-11-07 (it replaces the draft's extended
 
 - These calls carry a secret:
   - the provider-key write (C10);
-  - the probes, whose config may hold a typed key (C3, plan 7a);
+  - the probes, whose config may hold a typed key (C3, P2 plan 7a);
+  - the user-config writes, whose providers or value may hold a typed key
+    (plan 7a);
   - `session/answer_sudo`'s params (R5).
 - Neither end logs their params or that response, at any level. If frame
   logging is added, it redacts these methods by name.
 - T7 extends to the wire. A sudo password appears in no frame except
   the `session/answer_sudo` request that carries it, and in no update,
-  notification or log line.
+  notification or log line. A provider key likewise appears only in the
+  call that writes or probes with it: the config mirror carries its mask
+  (plan 7a).
 
 ### R9. Compatibility with existing ACP clients
 
@@ -587,21 +647,42 @@ Decided with the user, 2026-11-07 (it replaces the draft's extended
     capability (R2);
   - no default changes.
 - **Where the TUI's semantics differ from an existing method,** the
-  method gains an optional param that selects the TUI's. The known
+  method gains an optional param that selects the TUI's, or, where the
+  differences are too many to patch, a marshal client's call is served by
+  the session's service and every other client keeps today's handler
+  (decided with the user, 2026-11-08, for the turn's methods). The known
   differences, from P2's records:
   - `session/command` refuses during a turn, and the TUI never did;
   - `session/command` mints no action IDs and returns no agent goal;
-  - `session/set_mode` names system access `system_access`;
-  - `session/steer` delivers Send now as `now`;
+  - `session/set_mode` names system access `system_access`, which the
+    client sends (plan 6b);
+  - `session/steer` delivers Send now as `now`, and refuses a queued text
+    with no turn in flight, where the service queues it: a marshal client's
+    call is served by the service (plan 6b);
+  - `session/prompt` runs ACP's own turn slot, codes nothing as an
+    `*acpwire.Error`, puts no queued text back and auto-resumes watches
+    itself; `session/set_effort` wraps the setter's error as invalid params.
+    A marshal client's calls are served by the service, and a marshal
+    connection binds no watch-resume hook (plan 6b);
+  - `session/cancel` is a notification, with no answer and no cause; a
+    marshal client stops a run with `session/stop` (plan 6b);
   - `session/sdd_start` and `session/sdd_answer` report a gate as
     `stopReason: "gate"`, which the client maps to
     `CodeHumanGateRequired`;
-  - `session/work_*` encode times as RFC 3339 strings, which the client
-    converts to milliseconds (G4);
+  - `session/work_*` encode times as RFC 3339 strings, code a stale
+    cursor as invalid params, and serve work while the provider is not
+    built. A marshal client's calls are served by the service, which
+    answers in milliseconds and codes the cursor, and its live view is the
+    `work_snapshot` mirror (plan 6b; G4);
   - `session/list` encodes `updatedAt` as RFC 3339 and the message count
     in `_meta`, which the client converts (P2 plan 8b);
   - `session/prompt` has no `watchResume`, the watch whose goal the agent
-    writes (P2 plan 8a);
+    writes (P2 plan 8a), and no `queued`: both are optional params, and a
+    marshal client sends its text as one text block (plan 6b);
+  - `config/probe_provider` answers a failed probe as a result, and
+    `config/set_provider_key` takes no mask check; both read the process's
+    home directory. A marshal client's calls name its session, and are
+    served by that session's service host (plan 7a);
   - `session/diff` compares a base with the working tree, and the TUI's
     run outcome needs `base..head`: it gains an optional `head` (P2 plan
     8a);
@@ -640,7 +721,7 @@ Measured on the 2,000-call fixture, on the development machine:
 The 1ms is for a call that changes nothing the agent projects. A call that
 changes the transcript pays one flush of the stack before it answers (4.2ms
 on the 2,000-call session after plan 4c), and R6 makes such a call
-asynchronous when it is frequent (`AddNote`, plan 7). `Stack`'s busy flip
+asynchronous when it is frequent (`AddNote`, plan 7b). `Stack`'s busy flip
 is the one read that pays it (plan 4b, R4): it happens twice a turn, at a
 moment the transcript changes anyway, and it is measured against 10ms.
 
@@ -732,17 +813,34 @@ conformance suite (V1) before anything switches.
    over the service's own request logic; the turn and the child collector
    leave a marshal client's requests to the mirror; and `rpc.Session`'s
    `Pending` mirror and answer calls (R5, decided 2026-11-07).
-6. **Turns and runs**, in two plans:
+6. **Turns and runs**, in three plans:
    - **6a. The asynchronous calls** ([plan](plans/2026-11-07-p3-6a-async-calls-plan.md)),
      alongside layering. The R6 inventory, and the TUI's conversions of
      the calls it names, over `inproc`: they need only the TUI, which no
      other P3 plan before plan 8 changes. In process they still run on a
      goroutine, so the conversions and their ordering are proved before
      anything crosses a wire.
-   - **6b. Turns and runs.** Prompt, stop, steering, interaction and
-     effort, the work mirror, pipelines, the end flow and sessions.
-7. **The rest.** Notes, commands, config, providers, trust and project
-   data: the remaining new methods, probably as two plans.
+   - **6b. Turns and controls** ([plan](plans/2026-11-08-p3-6b-controls-plan.md)),
+     after plans 4b and 5, alongside plan 7a. A marshal client's prompt,
+     steering, interaction, effort and work calls served by the session's
+     service through `marshalOr`; `session/stop` and the other new control
+     calls; the work mirror and its `work_snapshot` forwarder; no
+     watch-resume hook on a marshal connection; and a released service
+     stopping its run (decided with the user, 2026-11-08).
+   - **6c. Pipelines, the end flow and sessions**, alongside plan 7b. Swarm,
+     SDD and plan authoring, the end flow and its `end_work` mirror,
+     `Close`, and `Host.NewSession` and `ListSessions`.
+7. **The rest**, in two plans:
+   - **7a. Config, providers and trust** ([plan](plans/2026-11-08-p3-7a-settings-plan.md)),
+     after plans 4b and 5, alongside plan 6b. The host's settings calls,
+     each naming the client's current session; the session's config writes
+     and the MCP sign-in; the config mirror and its `session_config`
+     forwarder, which carries the tools too; and the config package's JSON
+     helpers, so a config crosses the wire unchanged.
+   - **7b. Notes, commands, browsers and project data**, alongside plan 6c.
+     `AddNote` (and whether it stays synchronous, R10), the command list's
+     mirror and `commands_changed`, the command actions, the prompt
+     history, the messages, the project reads and the skill settings.
 8. **Switch.** `launch` runs the TUI over the pipe, the test helpers build
    pipe-connected agents, and `inproc` is deleted.
 
@@ -804,7 +902,7 @@ conformance suite (V1) before anything switches.
   for transcript items, which `session.State` does not give — every
   `Transcript()` call copies every item, so nothing a build walks survives from
   one call to the next. Plan 4b decides R4's cadence with plan 4c's numbers, and
-  plan 7 decides whether `AddNote` stays synchronous (R6, R10).
+  plan 7b decides whether `AddNote` stays synchronous (R6, R10).
 
 ## Implementation record
 

@@ -441,39 +441,46 @@ type Session interface {
 	// the steering queue. A stopped turn returns StopReasonCancelled and no
 	// error; a failed one returns the runner's error.
 	//
-	// ACP: session/prompt (exists).
+	// ACP: session/prompt (exists). The text travels as one text block, with
+	// queued and watchResume; a marshal client's turn runs on the session's
+	// service.
 	Prompt(ctx context.Context, params acpwire.PromptParams) (acpwire.PromptResult, error)
 
 	// Stop stops the session's run: the commands attached to it first, then
 	// the run itself. With nothing running it does nothing.
 	//
-	// ACP: session/cancel (exists).
+	// ACP: session/stop (exists). session/cancel, a notification, stays for
+	// other clients.
 	Stop(ctx context.Context, cause string) error
 
 	// Review runs a reviewer subagent over what params names and returns when
 	// it ends. It starts, refuses and stops as Prompt does; a stopped review
 	// returns no error.
 	//
-	// ACP: session/review (new in P3).
+	// ACP: session/review (exists). A marshal client's call is served by the
+	// session's service.
 	Review(ctx context.Context, params acpwire.ReviewParams) error
 
 	// RunAgent runs the named custom agent with the goal, as a subagent the
 	// session shows, and returns when it ends. It starts, refuses and stops as
 	// Prompt does; a stopped run returns no error.
 	//
-	// ACP: session/agent_run (new in P3).
+	// ACP: session/agent_run (exists). A marshal client's call is served by the
+	// session's service.
 	RunAgent(ctx context.Context, params acpwire.AgentRunParams) error
 
 	// Suggest asks the session's model for the user's most likely next reply
 	// to lastMessage. "" means it has none.
 	//
-	// ACP: session/suggest (new in P3).
+	// ACP: session/suggest (exists). A marshal client's call is served by the
+	// session's service.
 	Suggest(ctx context.Context, lastMessage string) (string, error)
 
 	// VerifyProposal runs a one-shot subagent that inspects the repository
 	// and proposes the commands that build and test it.
 	//
-	// ACP: session/verify_proposal (new in P3).
+	// ACP: session/verify_proposal (exists). A marshal client's call is served
+	// by the session's service.
 	VerifyProposal(ctx context.Context) (acpwire.VerifyCommands, error)
 
 	// StartSwarm runs a swarm over params.Goal, with params' role overrides

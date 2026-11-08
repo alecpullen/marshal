@@ -225,7 +225,13 @@ func (s *Session) close() {
 // Changed, leaving the state to the runtime that owns it. The ACP host
 // releases a session's service before it closes the runtime. Releasing twice
 // does nothing.
+//
+// A run in flight is stopped first (P3 plan 6b decision 5): the runtime
+// quiesces after its service is released, and a run nobody can stop any more
+// would make that quiesce wait it out. With nothing running, Stop does nothing,
+// so every other release is unchanged.
 func (s *Session) Release() {
+	_ = s.Stop(context.Background(), "conversation ended")
 	s.close()
 }
 

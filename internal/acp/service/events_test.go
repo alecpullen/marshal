@@ -234,3 +234,40 @@ func TestReleaseLeavesTheStateRunning(t *testing.T) {
 
 	sess.Release() // releasing twice must not panic
 }
+
+// TestReleaseStopsTheRunInFlight pins decision 5: a service released under a
+// run stops it, so a runtime that quiesces after the release does not wait the
+// run out.
+func TestReleaseStopsTheRunInFlight(t *testing.T) {
+	fake := newFakeRunner()
+	fake.setBody(func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	_, sess := New(Deps{State: newState(t, "s1"), Runner: func() Runner { return fake }})
+
+	done := make(chan acpwire.PromptResult, 1)
+	go func() {
+		res, _ := sess.Prompt(context.Background(), acpwire.PromptParams{Text: "hold this open"})
+		done <- res
+	}()
+	fake.waitStart(t)
+
+	sess.Release()
+
+	select {
+	case res := <-done:
+		if res.StopReason != acpwire.StopReasonCancelled {
+			t.Fatalf("stop reason = %q, want %q", res.StopReason, acpwire.StopReasonCancelled)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the prompt did not return after Release")
+	}
+
+	// A release with nothing running returns at once.
+	start := time.Now()
+	sess.Release()
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("a second Release took %v, want it to return at once", elapsed)
+	}
+}

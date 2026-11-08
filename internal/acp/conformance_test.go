@@ -44,6 +44,27 @@ type seam interface {
 	AnswerSudo(ctx context.Context, key string, answer acpwire.SudoAnswer) error
 	AnswerAccess(ctx context.Context, choice acpwire.AccessChoice) (acpwire.AccessResult, error)
 	Rollback(ctx context.Context) error
+
+	Prompt(ctx context.Context, params acpwire.PromptParams) (acpwire.PromptResult, error)
+	Stop(ctx context.Context, cause string) error
+	Review(ctx context.Context, params acpwire.ReviewParams) error
+	RunAgent(ctx context.Context, params acpwire.AgentRunParams) error
+	Suggest(ctx context.Context, lastMessage string) (string, error)
+	VerifyProposal(ctx context.Context) (acpwire.VerifyCommands, error)
+	Steer(ctx context.Context, text string) error
+	SendNow(ctx context.Context, req acpwire.SendNowRequest) (acpwire.SteeringReceipt, error)
+	PopSteering(ctx context.Context) (string, bool)
+	ClearSteering(ctx context.Context) error
+	SetInteraction(ctx context.Context, patch acpwire.InteractionPatch) (acpwire.Interaction, error)
+	SetEffort(ctx context.Context, level string) (string, error)
+	SetSudoUnlock(ctx context.Context, on bool) error
+	CancelSubagent(ctx context.Context, subagentID int64) bool
+	ClearFinishedRun(ctx context.Context) error
+	TakeWatchResume(ctx context.Context) (name string, repeat bool, ok bool)
+	Work() (acpwire.WorkSnapshot, bool)
+	ListWork(ctx context.Context, query acpwire.WorkQuery) (acpwire.WorkPage, error)
+	InspectWork(ctx context.Context, taskKey string, raw bool) (acpwire.WorkDetail, error)
+	StopWork(ctx context.Context, taskKey, reason string) (acpwire.WorkStopResult, error)
 }
 
 // seamArm opens one implementation of the seam over d.
@@ -112,7 +133,11 @@ func openPipeSeamTB(tb testing.TB, d service.Deps) seam {
 	// The request manager's forwarders carry pending_requests, so they join
 	// the barrier after the sheet manager's (P3 plan 5).
 	requests := serveRequests(tb, srv, served, sessionID)
-	srv.SetResponseBarrier(responseBarrier(turns, nil, nil, statuses, sheets, requests))
+	// The control manager's forwarder carries work_snapshot, so it fences last
+	// (P3 plan 6b). The pipe arm serves no works or watches: those are the
+	// host's, and this fixture has none.
+	controls := serveControls(tb, srv, served, sessionID)
+	srv.SetResponseBarrier(responseBarrier(turns, nil, nil, statuses, sheets, requests, controls))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -199,6 +224,25 @@ func serveRequests(tb testing.TB, srv *Server, served *service.Session, sessionI
 	registerRequests(srv, requests)
 	tb.Cleanup(requests.Close)
 	return requests
+}
+
+// serveControls registers the control handlers on the pipe arm's server over
+// the served service, and returns the manager the barrier fences.
+func serveControls(tb testing.TB, srv *Server, served *service.Session, sessionID string) *ControlManager {
+	tb.Helper()
+	controls := NewControlManager(ControlManagerConfig{
+		Lookup: func(id string) (*service.Session, bool) {
+			return served, id == sessionID
+		},
+		Notify:  srv.Notify,
+		Marshal: srv.marshalClient,
+	})
+	// A nil others map is what the pipe arm wants: every marshalOr method
+	// answers a non-marshal client method-not-found. This arm's client always
+	// declares the capability, so it reaches the control manager.
+	registerControls(srv, controls, nil)
+	tb.Cleanup(controls.Close)
+	return controls
 }
 
 // seamPtr is the address of v, for the interaction patch's optional fields.

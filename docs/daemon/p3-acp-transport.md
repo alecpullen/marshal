@@ -110,9 +110,10 @@ new client.
   newline-delimited JSON-RPC 2.0 on any reader and writer
   (`NewServer`, `:119`). It reads each inbound frame with a 1 MiB cap
   (`:312`). Handlers run on their own goroutines (`handlerWG`), and nothing
-  orders a response after the notifications its handler caused. There is
-  no request cancellation: no `$/cancelRequest` or equivalent. 96 methods
-  are registered (`host.go`), plus the `session/cancel` notification.
+  orders a response after the notifications its handler caused. A
+  long-running handler runs in a `cancellable` context, so the client's
+  `$/cancel_request` ends the run in flight. 96 methods are registered
+  (`host.go`), plus the `session/cancel` notification.
 - **What the agent pushes today:**
   - the ACP chunk kinds (`agent_message_chunk`, `agent_thought_chunk`,
     `tool_call`, …);
@@ -1611,7 +1612,8 @@ changed (R9); the TUI still runs on `inproc`, in process, until plan 8.
   barrier last, so a call returns only after the `work_snapshot` it caused is
   written (P3 R2, V3).
 - **The client** (`internal/acpclient/rpc/turns.go`, `work.go`) sends the
-  twenty calls and mirrors the work in `rpc.Session`: an entry absent until
+  twenty seam calls (eighteen ACP methods) and mirrors the work in
+  `rpc.Session`: an entry absent until
   the first read, its result installed unless an update arrived first, and
   `work_snapshot` replacing the state and tapping `Changed`. `session/set_mode`
   sends `system_access`, not `system` — `acpwire` allows only camelCase tags.

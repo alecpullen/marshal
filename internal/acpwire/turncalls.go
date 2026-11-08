@@ -24,6 +24,10 @@ const (
 
 	// SteerDeliveryNow is session/steer's delivery for Send now.
 	SteerDeliveryNow = "now"
+	// SteerDeliveryQueued is session/steer's delivery for the queued request.
+	// It is the empty string, which the client omits on the wire; the server
+	// also accepts ACP's own "queued".
+	SteerDeliveryQueued = ""
 )
 
 // ControlParams is the params of a call that names only its session:

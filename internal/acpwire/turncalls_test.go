@@ -43,6 +43,15 @@ func TestPromptCallParamsCarryTheTextAsOneBlock(t *testing.T) {
 	if want := `"watchResume":{"name":"build","seq":7}`; !strings.Contains(string(got), want) {
 		t.Errorf("prompt JSON %s does not carry %s", got, want)
 	}
+	// The pointer round-trips too: an absent watch resume and an empty one stay
+	// distinguishable, so the service can tell "no resume" from "resume build".
+	var back2 PromptCallParams
+	if err := json.Unmarshal(got, &back2); err != nil {
+		t.Fatalf("unmarshal prompt with a watch resume: %v", err)
+	}
+	if !reflect.DeepEqual(back2, params) {
+		t.Errorf("prompt round trip with a watch resume:\n got: %+v\nwant: %+v", back2, params)
+	}
 }
 
 // TestWorkUpdateRoundTrips pins the work_snapshot update: the whole work state

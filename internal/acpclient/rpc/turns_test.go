@@ -239,6 +239,24 @@ func TestSetInteractionNamesSystemAccess(t *testing.T) {
 	if got.value != want {
 		t.Fatalf("SetInteraction = %+v, want %+v", got.value, want)
 	}
+
+	// The other half of the nil rule: a patch that sets only System omits mode,
+	// so a system toggle cannot carry a mode the caller never asked for.
+	only := startCall(func() (acpwire.Interaction, error) {
+		return session.SetInteraction(context.Background(), acpwire.InteractionPatch{System: &on})
+	})
+	bare := nextMethod(t, a, acpwire.MethodSetMode)
+	var bareRaw map[string]any
+	if err := json.Unmarshal(bare.Params, &bareRaw); err != nil {
+		t.Fatalf("decode set_mode params: %v", err)
+	}
+	if _, ok := bareRaw["mode"]; ok {
+		t.Fatalf("set_mode params = %s carry mode, want the nil field omitted", bare.Params)
+	}
+	a.answer(t, bare, acpwire.Interaction{System: true})
+	if got := awaitValue(t, only); got.err != nil {
+		t.Fatalf("SetInteraction with only System: %v", got.err)
+	}
 }
 
 // popAnswer is one PopSteering call's outcome.

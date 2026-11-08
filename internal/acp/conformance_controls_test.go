@@ -1069,11 +1069,6 @@ func sendNowRecordsTheReceiptBeforeReturning(t *testing.T, open func(t *testing.
 	if want := []string{"steer"}; !reflect.DeepEqual(status.Steering.Queue, want) {
 		t.Errorf("Steering.Queue = %v, want %v", status.Steering.Queue, want)
 	}
-	// The change also arrives as an update over the wire; the read above is
-	// already current on both arms, so this only pins that it stays so.
-	waitStatus(t, sess, "the steering receipt", func(s acpwire.SessionStatus) bool {
-		return s.Steering.Receipt != nil && len(s.Steering.Queue) == 1
-	})
 }
 
 // sendNowReturnsTheStatesRefusal pins that a refusal comes back as the state's

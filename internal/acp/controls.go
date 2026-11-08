@@ -44,10 +44,12 @@ type ControlManager struct {
 	fences fenceSet
 }
 
-// workForwarder tracks one session's work forwarder goroutine.
+// workForwarder tracks one session's work forwarder goroutine. done closes when
+// the goroutine returns, so Close can wait for it as the work manager does.
 type controlForwarder struct {
 	cancel context.CancelFunc
 	fence  *fence
+	done   chan struct{}
 }
 
 // NewControlManager builds one connection's control handlers.
@@ -195,7 +197,7 @@ func (m *ControlManager) Steer(ctx context.Context, params json.RawMessage) (any
 			RequestID: p.RequestID,
 			Text:      p.Text,
 		})
-	case "", "queued":
+	case acpwire.SteerDeliveryQueued, "queued":
 		if err := sess.Steer(ctx, p.Text); err != nil {
 			return nil, err
 		}
@@ -239,10 +241,8 @@ func (m *ControlManager) SteeringClear(ctx context.Context, params json.RawMessa
 // fields are pointers so a revocation stays distinguishable from an omission.
 func (m *ControlManager) SetMode(ctx context.Context, params json.RawMessage) (any, error) {
 	var p SetModeParams
-	if len(params) > 0 {
-		if err := json.Unmarshal(params, &p); err != nil {
-			return nil, invalidParamsError("session/set_mode: %v", err)
-		}
+	if err := decodeParams(params, &p, acpwire.MethodSetMode); err != nil {
+		return nil, invalidParamsError("%v", err)
 	}
 	sess, err := m.service(p.SessionID)
 	if err != nil {
@@ -334,7 +334,8 @@ func (m *ControlManager) WatchResumeTake(ctx context.Context, params json.RawMes
 // WorkList handles session/work_list: the live view answers the service's work
 // and, for a marshal client, starts the forwarder that keeps it current (P3
 // R3). The attention and history views are pages, and the service codes a stale
-// cursor, so its error travels as it is.
+// cursor, so its error travels as it is. A page argument on the live view, or a
+// view this does not know, is invalid params, as the work manager answers.
 func (m *ControlManager) WorkList(ctx context.Context, params json.RawMessage) (any, error) {
 	var p acpwire.WorkListParams
 	if err := decodeParams(params, &p, acpwire.MethodWorkList); err != nil {
@@ -344,19 +345,27 @@ func (m *ControlManager) WorkList(ctx context.Context, params json.RawMessage) (
 	if err != nil {
 		return nil, err
 	}
-	if p.View == "" || p.View == "live" {
+	switch p.View {
+	case "", "live":
+		if p.Query != "" || p.Cursor != "" || p.Limit != 0 {
+			return nil, invalidParamsError("session/work_list: the live view does not accept query, cursor or limit")
+		}
+		snap, exists := sess.Work()
+		state := acpwire.WorkState{Exists: exists, Snapshot: snap}
 		if m.isMarshal() {
 			m.ensureForwarder(p.SessionID)
 		}
-		snap, exists := sess.Work()
-		return acpwire.WorkState{Exists: exists, Snapshot: snap}, nil
+		return state, nil
+	case "attention", "history":
+		return sess.ListWork(ctx, acpwire.WorkQuery{
+			View:   p.View,
+			Query:  p.Query,
+			Cursor: p.Cursor,
+			Limit:  p.Limit,
+		})
+	default:
+		return nil, invalidParamsError("session/work_list: unknown view %q", p.View)
 	}
-	return sess.ListWork(ctx, acpwire.WorkQuery{
-		View:   p.View,
-		Query:  p.Query,
-		Cursor: p.Cursor,
-		Limit:  p.Limit,
-	})
 }
 
 // WorkInspect handles session/work_inspect.
@@ -408,7 +417,7 @@ func (m *ControlManager) ensureForwarder(sessionID string) {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	f := &controlForwarder{cancel: cancel, fence: newFence()}
+	f := &controlForwarder{cancel: cancel, fence: newFence(), done: make(chan struct{})}
 	m.forwarders[sessionID] = f
 	m.fences.add(sessionID, f.fence)
 	m.mu.Unlock()
@@ -423,15 +432,21 @@ func (m *ControlManager) ensureForwarder(sessionID string) {
 // when the connection closes or the session goes away.
 func (m *ControlManager) runForwarder(sessionID string, f *controlForwarder, ctx context.Context) {
 	defer func() {
+		f.cancel()
 		m.mu.Lock()
 		delete(m.forwarders, sessionID)
 		m.mu.Unlock()
 		m.fences.remove(sessionID, f.fence)
 		f.fence.close()
+		// done closes last: Close waits on it, so everything above has run when
+		// the connection's cleanup goes on to stop writing.
+		close(f.done)
 	}()
 
 	// sent says a state has been sent on this connection, so last is the
-	// encoding to compare against.
+	// encoding to compare against. A fresh forwarder sends the state once even
+	// when it matches work_list's response: that first update is what installs
+	// the client's mirror, and a barrier-fenced work_list depends on it.
 	var (
 		last []byte
 		sent bool
@@ -492,7 +507,9 @@ func (m *ControlManager) runForwarder(sessionID string, f *controlForwarder, ctx
 	}
 }
 
-// Close stops every work forwarder. The connection's cleanup calls it.
+// Close stops every work forwarder and waits for each one to return, so the
+// connection's cleanup can stop writing as the work manager does. The
+// connection's cleanup calls it.
 func (m *ControlManager) Close() {
 	m.mu.Lock()
 	if m.closed {
@@ -500,14 +517,17 @@ func (m *ControlManager) Close() {
 		return
 	}
 	m.closed = true
-	cancels := make([]context.CancelFunc, 0, len(m.forwarders))
+	forwards := make([]*controlForwarder, 0, len(m.forwarders))
 	for id, f := range m.forwarders {
-		cancels = append(cancels, f.cancel)
+		forwards = append(forwards, f)
 		delete(m.forwarders, id)
 	}
 	m.mu.Unlock()
-	for _, cancel := range cancels {
-		cancel()
+	for _, f := range forwards {
+		f.cancel()
+	}
+	for _, f := range forwards {
+		<-f.done
 	}
 }
 
@@ -548,6 +568,11 @@ func (m *ControlManager) lookupService(sessionID string) (*service.Session, bool
 // existing ones through marshalOr: a client without the capability reaches
 // others[method], unchanged. A method missing from others refuses such a client
 // as method-not-found.
+//
+// The eleven methods registered unconditionally are new surface: no client had
+// them at the plan's base, so there is no earlier behaviour to preserve and no
+// reason to gate them. Only a method that already had a handler for another
+// client goes through marshalOr.
 func registerControls(srv *Server, controls *ControlManager, others map[string]Handler) {
 	srv.Handle(acpwire.MethodStop, controls.Stop)
 	srv.Handle(acpwire.MethodReview, controls.Review)

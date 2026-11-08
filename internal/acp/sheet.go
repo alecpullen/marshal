@@ -211,7 +211,11 @@ func (m *SheetManager) ensureForwarder(sessionID string) *sheetForwarder {
 func (m *SheetManager) runForwarder(sessionID string, f *sheetForwarder, ctx context.Context) {
 	defer func() {
 		m.mu.Lock()
-		delete(m.forwarders, sessionID)
+		// Retire only this forwarder's own registration. A later forwarder for
+		// the same session must keep the map entry its subscriptions are on.
+		if m.forwarders[sessionID] == f {
+			delete(m.forwarders, sessionID)
+		}
 		m.mu.Unlock()
 		m.fences.remove(sessionID, f.fence)
 		f.fence.close()
@@ -348,16 +352,21 @@ func registerTranscript(srv *Server, turns *TurnManager, sheets *SheetManager, l
 	srv.Handle(acpwire.MethodSheet, sheets.Sheet)
 	srv.Handle(acpwire.MethodCallers, callersHandler(lookup))
 	srv.Handle(acpwire.MethodStackUnsubscribe, func(ctx context.Context, params json.RawMessage) (any, error) {
-		res, err := turns.StackUnsubscribe(ctx, params)
-		if err != nil {
-			return nil, err
-		}
-		// The stack is gone, so this connection no longer reads its sheet.
+		// Decode once, before the release: a decode that ran after the stack
+		// was already gone would report invalid params for a call whose
+		// subscription had been dropped.
 		var p acpwire.StackParams
 		if err := decodeParams(params, &p, acpwire.MethodStackUnsubscribe); err != nil {
 			return nil, invalidParamsError("%v", err)
 		}
+		res, err := turns.StackUnsubscribe(ctx, params)
+		// The stack is gone either way, so this connection no longer reads its
+		// sheet: a refused unsubscribe must not leave the forwarder polling a
+		// subtree the client has already forgotten.
 		sheets.Release(p.SessionID, p.SubagentID)
+		if err != nil {
+			return nil, err
+		}
 		return res, nil
 	})
 }

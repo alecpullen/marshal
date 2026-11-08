@@ -3751,9 +3751,12 @@ func (m *Model) popDrill() bool {
 	m.syncTranscriptWidth()
 	m.clearSelection()
 	m.invalidateTranscript()
-	// A failed release leaves only a projection nobody reads, so the error is
-	// not worth surfacing.
-	_ = m.sess.ReleaseSubagent(m.ctx, popped.ID)
+	// A failed release leaves the subagent's memo behind, and over the wire a
+	// stack and sheet the agent keeps polling, so it is logged rather than
+	// dropped silently.
+	if err := m.sess.ReleaseSubagent(m.ctx, popped.ID); err != nil {
+		m.log().Warn("release subagent failed", "subagent", popped.ID, "error", err)
+	}
 	return true
 }
 

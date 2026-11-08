@@ -75,6 +75,17 @@ func TestStackBusyFlipBudget(t *testing.T) {
 	// the flips are measured.
 	sess.Stack(0, false)
 
+	// Prove a flip round-trips before timing them: a flip the agent never
+	// received sends no patch, so the mirror would answer byte-identical. (The
+	// session has 200 finished turns, so receipts alone prove nothing.)
+	idle := sess.Stack(0, false)
+	sess.Stack(0, true)
+	busy := sess.Stack(0, true)
+	if reflect.DeepEqual(idle, busy) {
+		t.Fatal("the flip did not change the projection: the mirror saw no patch")
+	}
+	sess.Stack(0, false)
+
 	const runs = 20
 	durations := make([]time.Duration, 0, runs)
 	for i := 0; i < runs; i++ {
@@ -277,6 +288,13 @@ func stackOfAnUnknownSubagentIsEmpty(t *testing.T, open func(t *testing.T, d ser
 	state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
 	sess := open(t, service.Deps{State: state})
 
+	// The session's own stack answers first. On the pipe arm a refused read and
+	// a missing handler are both an empty snapshot, so without this the empty
+	// read below would pass with session/stack deleted.
+	if own := sess.Stack(0, false); len(own.Nodes) == 0 {
+		t.Fatalf("the session's own stack = %+v, want nodes", own)
+	}
+
 	got := sess.Stack(987654321, false)
 	if got.SubagentID != 987654321 {
 		t.Errorf("SubagentID = %d, want 987654321", got.SubagentID)
@@ -406,10 +424,17 @@ func stackNodeFailsForAnUnknownNodeOrSubagent(t *testing.T, open func(t *testing
 	st := seamState(t, "s1")
 	st.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
 	step := st.BeginStep(session.Actor{Model: "qwen3"})
-	st.LogToolCall(registry.AuditEvent{Timestamp: time.Unix(2, 0), ToolName: "shell.run",
-		StepID: step, ToolCallID: "c1", ResultSummary: "ok"})
+	ev := registry.AuditEvent{Timestamp: time.Unix(2, 0), ToolName: "shell.run",
+		StepID: step, ToolCallID: "c1", ResultSummary: "ok"}
+	st.LogToolCall(ev)
 
 	sess := open(t, service.Deps{State: st})
+	// A known node answers first: a deleted session/stack_node would otherwise
+	// make both misses below pass as method-not-found.
+	key := viewmodel.ToolKey(ev)
+	if _, err := sess.StackNode(context.Background(), key, 0); err != nil {
+		t.Fatalf("StackNode(%q, 0) = %v, want the known node", key, err)
+	}
 	if _, err := sess.StackNode(context.Background(), "tool:999:c9", 0); err == nil {
 		t.Fatal(`StackNode("tool:999:c9", 0) = nil error, want a miss`)
 	}

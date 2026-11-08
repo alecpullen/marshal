@@ -2,10 +2,11 @@ package acp
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
+	"marshal/internal/acpclient/rpc"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -117,17 +118,32 @@ func TestTheSameBusyFlagSendsNoPatch(t *testing.T) {
 	}
 }
 
-// TestStackBusyRefusesBadParams pins the two rejections: no session ID is
-// invalid params, an unknown session is the unknown-session error.
+// TestStackBusyRefusesBadParams pins the two rejections on the wire: no
+// session ID is invalid params, an unknown session is the unknown-session
+// error. Both are asserted by code, which is what a client sees.
 func TestStackBusyRefusesBadParams(t *testing.T) {
 	a := startStackAgent(t, busyStackState(t, stackWireSession))
 
-	if _, err := a.m.StackBusy(context.Background(), json.RawMessage(`{"busy":true}`)); err == nil ||
-		err.Error() != "session/stack_busy requires sessionId" {
-		t.Errorf("session/stack_busy without a session id = %v, want the requires-sessionId error", err)
-	}
-	if _, err := a.m.StackBusy(context.Background(), json.RawMessage(`{"sessionId":"nope","busy":true}`)); err == nil ||
-		err.Error() != "unknown session: nope" {
-		t.Errorf("session/stack_busy for an unknown session = %v, want the unknown-session error", err)
+	for _, tc := range []struct {
+		name   string
+		params acpwire.StackBusyParams
+		code   int
+	}{
+		{name: "no session id", params: acpwire.StackBusyParams{Busy: true}, code: invalidParams},
+		{name: "unknown session", params: acpwire.StackBusyParams{SessionID: "nope", Busy: true}, code: serverError},
+	} {
+		err := a.conn.Call(context.Background(), acpwire.MethodStackBusy, tc.params, nil)
+		if err == nil {
+			t.Errorf("%s: session/stack_busy = nil error, want code %d", tc.name, tc.code)
+			continue
+		}
+		var rpcErr *rpc.Error
+		if !errors.As(err, &rpcErr) {
+			t.Errorf("%s: session/stack_busy error = %v, want an RPC error", tc.name, err)
+			continue
+		}
+		if rpcErr.Code != tc.code {
+			t.Errorf("%s: session/stack_busy code = %d, want %d", tc.name, rpcErr.Code, tc.code)
+		}
 	}
 }

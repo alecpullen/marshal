@@ -334,6 +334,89 @@ func TestRefreshSheetSendsItsFlagsAndFiresChanged(t *testing.T) {
 	}
 }
 
+// TestAFailedBusyFlipIsNotRecorded pins the flip's failure path: the read still
+// answers from the mirror, and the unrecorded flag goes out again next time.
+func TestAFailedBusyFlipIsNotRecorded(t *testing.T) {
+	host, a := dialScripted(t, DialOptions{})
+	session := attachScripted(t, host, a, "s1", acpwire.SessionStatus{WorkingDir: "B"})
+
+	reads := startStack(session, 0, true)
+	req := a.next(t)
+	if got := string(req.Method); got != acpwire.MethodStackBusy {
+		t.Fatalf("the client's next frame = %q, want %q", got, acpwire.MethodStackBusy)
+	}
+	a.send(t, `{"jsonrpc":"2.0","id":`+string(req.ID)+`,"error":{"code":-32603,"message":"no runtime"}}`)
+	answerStack(t, a, "s1", 0, turnSnapshot("s1", 0, 3, "step:1"))
+
+	checkSnapshot(t, awaitSnapshot(t, reads), 3, []string{"turn:1"}, []string{"turn:1", "step:1"})
+
+	// The flag was never delivered, so the same one goes out again.
+	reads = startStack(session, 0, true)
+	answerBusy(t, a, "s1", true)
+	checkSnapshot(t, awaitSnapshot(t, reads), 3, []string{"turn:1"}, []string{"turn:1", "step:1"})
+	pingScripted(t, host, a)
+}
+
+// TestAFailedSheetReadLeavesNoEntry pins the sheet fetch's failure path: the
+// read answers a zero sheet and keeps no entry, so the next read asks again.
+func TestAFailedSheetReadLeavesNoEntry(t *testing.T) {
+	host, a := dialScripted(t, DialOptions{})
+	session := attachScripted(t, host, a, "s1", acpwire.SessionStatus{WorkingDir: "B"})
+
+	out := startSheet(session, 4)
+	req := a.next(t)
+	if got := string(req.Method); got != acpwire.MethodSheet {
+		t.Fatalf("Sheet sent %q, want %q", got, acpwire.MethodSheet)
+	}
+	a.send(t, `{"jsonrpc":"2.0","id":`+string(req.ID)+`,"error":{"code":-32602,"message":"no such subagent"}}`)
+
+	if got := awaitSheet(t, out); got.SubagentID != 0 || got.StartedAt != 0 {
+		t.Fatalf("failed Sheet() = %+v, want the zero sheet", got)
+	}
+
+	// No entry was kept, so the next read goes to the agent.
+	out = startSheet(session, 4)
+	req = a.next(t)
+	if got := string(req.Method); got != acpwire.MethodSheet {
+		t.Fatalf("the read after a failed fetch sent %q, want %q", got, acpwire.MethodSheet)
+	}
+	a.answer(t, req, sheet(4, 5))
+	if got := awaitSheet(t, out); got.StartedAt != 5 {
+		t.Fatalf("Sheet().StartedAt = %d, want 5", got.StartedAt)
+	}
+}
+
+// TestAnUpdateDuringARefreshIsNotOverwritten pins that an update which reaches
+// the client before the refresh's response is newer than it, so the mirror
+// keeps the update.
+func TestAnUpdateDuringARefreshIsNotOverwritten(t *testing.T) {
+	host, a := dialScripted(t, DialOptions{})
+	session := attachScripted(t, host, a, "s1", acpwire.SessionStatus{WorkingDir: "B"})
+
+	seeded := startSheet(session, 0)
+	req := a.next(t)
+	a.answer(t, req, sheet(0, 1))
+	awaitSheet(t, seeded)
+
+	out := make(chan error, 1)
+	go func() {
+		out <- session.RefreshSheet(context.Background(), acpwire.SheetRefresh{Changed: true})
+	}()
+	req = a.next(t)
+	if got := string(req.Method); got != acpwire.MethodSheet {
+		t.Fatalf("RefreshSheet sent %q, want %q", got, acpwire.MethodSheet)
+	}
+	a.send(t, sheetFrame(t, "s1", acpwire.SheetUpdate{Sheet: sheet(0, 9)}))
+	a.answer(t, req, sheet(0, 2))
+
+	if err := awaitCall(t, out); err != nil {
+		t.Fatalf("RefreshSheet: %v", err)
+	}
+	if got := session.Sheet(0); got.StartedAt != 9 {
+		t.Fatalf("Sheet().StartedAt = %d, want the update's 9", got.StartedAt)
+	}
+}
+
 // TestReleaseSubagentUnsubscribesAndForgetsTheSheet pins that a subagent's
 // release unsubscribes its stack and drops its sheet, and that releasing the
 // main transcript sends nothing.

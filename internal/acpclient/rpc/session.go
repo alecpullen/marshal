@@ -24,6 +24,10 @@ type Session struct {
 	// busy is the turn flag last sent to the agent, and busySent says one was.
 	busy     bool
 	busySent bool
+	// busyGen counts the flags sent. A reader records its flag only when no
+	// later reader claimed the flip, so two concurrent reads cannot leave the
+	// record disagreeing with the flag the agent ended on.
+	busyGen uint64
 	// sheets mirrors one sheet per subagent ID the session has read.
 	sheets map[int64]*sheetEntry
 	// pending is the request mirror (requests.go): nil until its first read

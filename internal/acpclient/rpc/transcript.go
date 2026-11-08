@@ -33,6 +33,12 @@ func (s *Session) Stack(subagentID int64, busy bool) acpwire.StackSnapshot {
 
 	s.mu.Lock()
 	flip := !s.busySent || s.busy != busy
+	if flip {
+		// Claim the flip. A later claim owns the record, so this reader's
+		// result cannot overwrite a newer flag with an older one.
+		s.busyGen++
+	}
+	gen := s.busyGen
 	s.mu.Unlock()
 	if flip {
 		params := acpwire.StackBusyParams{SessionID: s.id, Busy: busy}
@@ -40,8 +46,10 @@ func (s *Session) Stack(subagentID int64, busy bool) acpwire.StackSnapshot {
 			// Only a delivered flag is recorded: a failed flip leaves the old
 			// record, so the next read tries again.
 			s.mu.Lock()
-			s.busy = busy
-			s.busySent = true
+			if s.busyGen == gen {
+				s.busy = busy
+				s.busySent = true
+			}
 			s.mu.Unlock()
 		}
 	}

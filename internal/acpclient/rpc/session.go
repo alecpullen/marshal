@@ -30,6 +30,10 @@ type Session struct {
 	busyGen uint64
 	// sheets mirrors one sheet per subagent ID the session has read.
 	sheets map[int64]*sheetEntry
+	// commands is the command list (browsers.go), kept by the first read and
+	// commandsSet saying one answered.
+	commands    []acpwire.CommandInfo
+	commandsSet bool
 	// pending is the request mirror (requests.go): nil until its first read
 	// creates it.
 	pending *pendingMirror

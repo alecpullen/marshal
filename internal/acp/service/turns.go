@@ -30,7 +30,7 @@ var (
 	errNoRunner     = &acpwire.Error{Code: acpwire.CodeNoRunner, Message: "inproc: no agent runner"}
 	errNoReview     = &acpwire.Error{Code: acpwire.CodeNoRunner, Message: "inproc: no review runner"}
 	errNoAgentRun   = &acpwire.Error{Code: acpwire.CodeNoRunner, Message: "inproc: no agent runner for custom agents"}
-	errNoSuggest    = errors.New("inproc: no suggestion provider")
+	errNoSuggest    = &acpwire.Error{Code: acpwire.CodeNoRunner, Message: "inproc: no suggestion provider"}
 	errNoProposal   = errors.New("no subagent factory wired")
 	errRangeAndBase = errors.New("review: --base and an explicit range are mutually exclusive")
 	errNoAgentName  = errors.New("inproc: an agent run needs an agent name")

@@ -257,20 +257,7 @@ func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyF
 			// answerable after that turn ends. Idempotent per captured runtime.
 			tm.ensureChildApprovals(sessionID, crt)
 			if rt.WatchResume != nil {
-				// Idempotent: a later Lookup on this connection re-sets the
-				// cell with an equivalent fn, and a fresh connection's first
-				// Lookup re-binds with its own alive flag, so the binding
-				// always follows the most recent live connection. The hook
-				// must return promptly (OnFire runs on the watch goroutine);
-				// ResumeIfIdle is non-blocking — it spawns the turn goroutine
-				// itself. The Lookup closure must NOT defer anything and needs
-				// no once-guard: Set is replace-on-write.
-				rt.WatchResume.Set(func(r watch.Report) {
-					if !alive.Load() || !r.Resume {
-						return
-					}
-					tm.ResumeIfIdle(sessionID, r.Name, r.Mode == watch.ModeRepeat)
-				})
+				bindWatchResume(rt.WatchResume, tm, sessionID, alive, marshal)
 			}
 			return crt, true
 		},
@@ -298,6 +285,47 @@ func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyF
 	return tm
 }
 
+// marshalOr serves one method two ways: forMarshal for a client that declared
+// the marshal capability, which reaches the session's service (P3 R1, R9), and
+// other for every other client, unchanged. A nil other answers such a client
+// with method-not-found.
+func marshalOr(marshal func() bool, forMarshal, other Handler) Handler {
+	return func(ctx context.Context, params json.RawMessage) (any, error) {
+		if marshal != nil && marshal() {
+			return forMarshal(ctx, params)
+		}
+		if other == nil {
+			return nil, &jsonRPCError{Code: methodNotFound, Message: "method not found"}
+		}
+		return other(ctx, params)
+	}
+}
+
+// bindWatchResume points the runtime's watch-resume hook at this connection's
+// turn manager, unless the client declared the marshal capability: a marshal
+// client resumes a watch itself, with TakeWatchResume and a Prompt that names
+// the watch, so a bound hook would resume it twice (P3 plan 6b).
+func bindWatchResume(hook *app.WatchResumeHook, tm *TurnManager, sessionID string, alive *atomic.Bool, marshal func() bool) {
+	if marshal != nil && marshal() {
+		// A marshal client resumes a watch itself (P3 plan 6b decision 3): its
+		// TUI reads Status().WatchResume, takes the latch and sends the prompt.
+		return
+	}
+	// Idempotent: a later Lookup on this connection re-sets the cell with an
+	// equivalent fn, and a fresh connection's first Lookup re-binds with its
+	// own alive flag, so the binding always follows the most recent live
+	// connection. The hook must return promptly (OnFire runs on the watch
+	// goroutine); ResumeIfIdle is non-blocking — it spawns the turn goroutine
+	// itself. The Lookup closure must NOT defer anything and needs no
+	// once-guard: Set is replace-on-write.
+	hook.Set(func(r watch.Report) {
+		if !alive.Load() || !r.Resume {
+			return
+		}
+		tm.ResumeIfIdle(sessionID, r.Name, r.Mode == watch.ModeRepeat)
+	})
+}
+
 // sessionFencer is a manager whose forwarders serve the response barrier
 // (P3 R2).
 type sessionFencer interface {
@@ -318,22 +346,6 @@ func responseBarrier(fencers ...sessionFencer) func(ctx context.Context, session
 	}
 }
 
-// marshalOr serves one method two ways: forMarshal for a client that declared
-// the marshal capability, which reaches the session's service (P3 R1, R9), and
-// other for every other client, unchanged. A nil other answers such a client
-// with method-not-found.
-func marshalOr(marshal func() bool, forMarshal, other Handler) Handler {
-	return func(ctx context.Context, params json.RawMessage) (any, error) {
-		if marshal != nil && marshal() {
-			return forMarshal(ctx, params)
-		}
-		if other == nil {
-			return nil, &jsonRPCError{Code: methodNotFound, Message: "method not found"}
-		}
-		return other(ctx, params)
-	}
-}
-
 // registerHandlers registers every JSON-RPC handler on srv, constructing
 // the per-handler managers in the same dependency order as before. The
 // managers are wired to this specific connection's server.
@@ -349,6 +361,14 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 	turns := newTurnManagerFor(manager, h.log, h.sink.Notify,
 		&serverPermissionClient{server: srv},
 		&serverQuestionClient{server: srv}, alive, srv.marshalClient)
+	// The control manager serves a marshal client's turns, controls and work on
+	// the session's service (P3 plan 6b decision 1). A client without the
+	// capability keeps today's handlers, which registerControls routes to.
+	controls := NewControlManager(ControlManagerConfig{
+		Lookup:  manager.Service,
+		Notify:  h.sink.Notify,
+		Marshal: srv.marshalClient,
+	})
 
 	registerInitialize(srv)
 
@@ -366,11 +386,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 	srv.Handle("session/resume", manager.Resume)
 	srv.Handle("session/delete", manager.Delete)
 
-	srv.Handle("session/prompt", turns.PromptTurn)
-	srv.Handle("session/set_mode", turns.SetMode)
 	srv.Handle("session/access_state", turns.AccessState)
-	srv.Handle("session/set_effort", turns.SetEffort)
-	srv.Handle("session/steer", turns.Steer)
 	srv.Handle("session/steering_status", turns.SteeringStatus)
 	srv.Handle("session/last_request", turns.LastRequest)
 	srv.Handle("session/step_diffs", turns.StepDiffs)
@@ -409,10 +425,18 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 		}
 		return rt, true
 	}, h.sink.Notify)
-	srv.Handle("session/work_list", works.List)
-	srv.Handle("session/work_inspect", works.Inspect)
-	srv.Handle("session/work_stop", works.Stop)
 	srv.Handle("session/work_acknowledge", works.Acknowledge)
+	// The control methods: a marshal client's turn runs on the service, and a
+	// client without the capability reaches today's handler in others.
+	registerControls(srv, controls, map[string]Handler{
+		acpwire.MethodPrompt:      turns.PromptTurn,
+		acpwire.MethodSteer:       turns.Steer,
+		acpwire.MethodSetMode:     turns.SetMode,
+		acpwire.MethodSetEffort:   turns.SetEffort,
+		acpwire.MethodWorkList:    works.List,
+		acpwire.MethodWorkInspect: works.Inspect,
+		acpwire.MethodWorkStop:    works.Stop,
+	})
 
 	// A marshal client's session call returns only after the updates it caused
 	// are written, so a read after the call sees its effect (P3 R2). Install
@@ -453,7 +477,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 		Marshal:    srv.marshalClient,
 	})
 
-	srv.SetResponseBarrier(responseBarrier(turns, works, watches, statuses, sheets, requests, settings))
+	srv.SetResponseBarrier(responseBarrier(turns, works, watches, statuses, sheets, requests, settings, controls))
 
 	home, _ := os.UserHomeDir()
 	cfgMgr := NewConfigManager(home, nil, nil)
@@ -624,6 +648,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 		sheets.Close()
 		requests.Close()
 		settings.Close()
+		controls.Close()
 	}
 }
 

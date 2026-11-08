@@ -499,13 +499,14 @@ type Session interface {
 	// for this run only, and returns when it ends. It starts, refuses and stops
 	// as Prompt does; a stopped run returns no error.
 	//
-	// ACP: session/swarm_start (exists).
+	// ACP: session/swarm_start (exists). A marshal client's call is served by
+	// the session's service.
 	StartSwarm(ctx context.Context, params acpwire.SwarmParams) error
 
 	// PlanPreflight inspects the plan a run would execute and resolves the
 	// verify gate it would use, without running or writing anything.
 	//
-	// ACP: session/sdd_preflight (new in P3).
+	// ACP: session/sdd_preflight (exists).
 	PlanPreflight(ctx context.Context, params acpwire.PlanPreflightParams) (acpwire.PlanPreflight, error)
 
 	// StartSDD runs the plan at params.PlanPath with params' strategy, role
@@ -514,27 +515,29 @@ type Session interface {
 	// its human gate pauses returns CodeHumanGateRequired: the question is in
 	// Status, and AnswerSDDGate resumes the run.
 	//
-	// ACP: session/sdd_start (exists).
+	// ACP: session/sdd_start (exists). A marshal client's call is served by
+	// the session's service.
 	StartSDD(ctx context.Context, params acpwire.SDDParams) error
 
 	// AnswerSDDGate records answer as the user's message and resumes the plan
 	// run paused at its human gate, and returns when that run ends again, as
 	// StartSDD does.
 	//
-	// ACP: session/sdd_answer (exists).
+	// ACP: session/sdd_answer (exists). A marshal client's call is served by
+	// the session's service.
 	AnswerSDDGate(ctx context.Context, answer string) error
 
 	// StopSDD abandons the plan run paused at its human gate: the question
 	// clears and the run can no longer be answered.
 	//
-	// ACP: session/sdd_stop (new in P3).
+	// ACP: session/sdd_stop (exists).
 	StopSDD(ctx context.Context) error
 
 	// AuthorPlan runs the plan author over params and returns the candidate it
 	// wrote, for review. It starts, refuses and stops as Prompt does; a stopped
 	// run returns StopReasonCancelled and no error.
 	//
-	// ACP: session/sdd_author (new in P3).
+	// ACP: session/sdd_author (exists).
 	AuthorPlan(ctx context.Context, params acpwire.AuthorPlanParams) (acpwire.AuthoredPlan, error)
 
 	// ActiveWork is the work an end of the session would stop, as the

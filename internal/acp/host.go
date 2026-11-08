@@ -436,6 +436,12 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 		acpwire.MethodWorkList:    works.List,
 		acpwire.MethodWorkInspect: works.Inspect,
 		acpwire.MethodWorkStop:    works.Stop,
+		// A marshal client's pipelines are served by the session's service
+		// (plan 6c decision 2); every other client keeps ACP's handler, which
+		// takes no role overrides, strategy or verify commands.
+		acpwire.MethodSwarmStart: turns.SwarmStart,
+		acpwire.MethodSDDStart:   turns.SDDStart,
+		acpwire.MethodSDDAnswer:  turns.SDDAnswer,
 	})
 
 	// A marshal client's session call returns only after the updates it caused
@@ -495,10 +501,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 		acpwire.MethodProbeProvider:  cfgMgr.ProbeProvider,
 	})
 
-	srv.Handle("session/swarm_start", turns.SwarmStart)
 	srv.Handle("session/swarm_status", turns.SwarmStatus)
-	srv.Handle("session/sdd_start", turns.SDDStart)
-	srv.Handle("session/sdd_answer", turns.SDDAnswer)
 	srv.Handle("session/sdd_status", turns.SDDStatus)
 
 	cmds := NewCommandManager(CommandManagerConfig{

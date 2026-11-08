@@ -569,10 +569,11 @@ func (m *ControlManager) lookupService(sessionID string) (*service.Session, bool
 // others[method], unchanged. A method missing from others refuses such a client
 // as method-not-found.
 //
-// The eleven methods registered unconditionally are new surface: no client had
+// The fourteen methods registered unconditionally are new surface: no client had
 // them at the plan's base, so there is no earlier behaviour to preserve and no
 // reason to gate them. Only a method that already had a handler for another
-// client goes through marshalOr.
+// client goes through marshalOr: the ten below, ACP's turn, work and pipeline
+// handlers, which a client without the capability keeps.
 func registerControls(srv *Server, controls *ControlManager, others map[string]Handler) {
 	srv.Handle(acpwire.MethodStop, controls.Stop)
 	srv.Handle(acpwire.MethodReview, controls.Review)
@@ -585,6 +586,9 @@ func registerControls(srv *Server, controls *ControlManager, others map[string]H
 	srv.Handle(acpwire.MethodSubagentCancel, controls.SubagentCancel)
 	srv.Handle(acpwire.MethodSDDClear, controls.SDDClear)
 	srv.Handle(acpwire.MethodWatchResumeTake, controls.WatchResumeTake)
+	srv.Handle(acpwire.MethodSDDPreflight, controls.SDDPreflight)
+	srv.Handle(acpwire.MethodSDDStop, controls.SDDStop)
+	srv.Handle(acpwire.MethodSDDAuthor, controls.SDDAuthor)
 	srv.Handle(acpwire.MethodPrompt, marshalOr(srv.marshalClient, controls.Prompt, others[acpwire.MethodPrompt]))
 	srv.Handle(acpwire.MethodSteer, marshalOr(srv.marshalClient, controls.Steer, others[acpwire.MethodSteer]))
 	srv.Handle(acpwire.MethodSetMode, marshalOr(srv.marshalClient, controls.SetMode, others[acpwire.MethodSetMode]))
@@ -592,4 +596,7 @@ func registerControls(srv *Server, controls *ControlManager, others map[string]H
 	srv.Handle(acpwire.MethodWorkList, marshalOr(srv.marshalClient, controls.WorkList, others[acpwire.MethodWorkList]))
 	srv.Handle(acpwire.MethodWorkInspect, marshalOr(srv.marshalClient, controls.WorkInspect, others[acpwire.MethodWorkInspect]))
 	srv.Handle(acpwire.MethodWorkStop, marshalOr(srv.marshalClient, controls.WorkStop, others[acpwire.MethodWorkStop]))
+	srv.Handle(acpwire.MethodSwarmStart, marshalOr(srv.marshalClient, controls.SwarmStart, others[acpwire.MethodSwarmStart]))
+	srv.Handle(acpwire.MethodSDDStart, marshalOr(srv.marshalClient, controls.SDDStart, others[acpwire.MethodSDDStart]))
+	srv.Handle(acpwire.MethodSDDAnswer, marshalOr(srv.marshalClient, controls.SDDAnswer, others[acpwire.MethodSDDAnswer]))
 }

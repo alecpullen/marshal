@@ -112,6 +112,13 @@ func PathType(dottedPath string) (reflect.Type, bool) {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
+	if t.Kind() == reflect.Interface {
+		// A field typed any (a preset's Pricing) has no type to decode into: a
+		// JSON value would arrive as a map[string]any and silently lose the
+		// pointer the field holds. Reporting no type makes the write fail
+		// loudly instead.
+		return nil, false
+	}
 	return t, true
 }
 

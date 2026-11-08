@@ -1330,8 +1330,9 @@ func trustPromptIsTheDeps(t *testing.T, open openSettings) {
 // toolsReadsTheRuntime pins both halves of the read: without Deps.Tools the
 // session reports no registry, and with it the session reports the runtime's
 // names, copied so a caller cannot change what the next read returns. The
-// closed-session half of the service's own case stays there: it drives the
-// in-process host's current session.
+// closed-session half stays with the service's own case
+// (TestClosedSessionConfigCallsFail): it drives the in-process host's current
+// session.
 func toolsReadsTheRuntime(t *testing.T, open openSettings) {
 	_, sess := open(t, service.Deps{State: newConfigState(t, "s1", config.Default(), t.TempDir())})
 	if names, ok := sess.Tools(); ok {

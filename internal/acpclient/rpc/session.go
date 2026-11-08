@@ -57,9 +57,18 @@ type Session struct {
 func (h *Host) Attach(ctx context.Context, sessionID string) (*Session, error) {
 	h.mu.Lock()
 	if session, ok := h.sessions[sessionID]; ok {
+		h.mu.Unlock()
+		// The current session moves only once this call is satisfied. The
+		// entry exists the moment the first Attach registered it, so a caller
+		// that waits here must not name a session whose Attach then fails
+		// (decision 1).
+		if _, err := session.await(ctx); err != nil {
+			return nil, err
+		}
+		h.mu.Lock()
 		h.current = sessionID
 		h.mu.Unlock()
-		return session.await(ctx)
+		return session, nil
 	}
 	// The session is registered before the call goes out, so an update that
 	// arrives while the call waits is applied instead of dropped.
@@ -307,6 +316,9 @@ func (h *Host) tapSession(sessionID string) {
 // its call, rather than a known one returning a closed session.
 func (h *Host) closeSessions() {
 	h.mu.Lock()
+	// The connection is gone, so no session is current: a host call now fails
+	// with errNoSession instead of naming a session on a dead connection.
+	h.current = ""
 	sessions := make([]*Session, 0, len(h.sessions))
 	for id, session := range h.sessions {
 		sessions = append(sessions, session)

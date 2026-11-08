@@ -55,7 +55,11 @@ func TestClosedSessionConfigCallsFail(t *testing.T) {
 	layers := config.Default()
 	layers.Project.Name = "merged"
 	state.SetLayers(config.Layers{Default: config.Default(), Merged: layers})
-	h, old := New(Deps{State: state})
+	names := []string{"file.read", "shell.run"}
+	h, old := New(Deps{
+		State: state,
+		Tools: func() ([]string, bool) { return names, true },
+	})
 	h.swap(newConfigState(t, "s2", config.Default(), t.TempDir()))
 
 	calls := map[string]error{
@@ -80,5 +84,9 @@ func TestClosedSessionConfigCallsFail(t *testing.T) {
 	}
 	if got := old.Layers().Merged.Project.Name; got != "merged" {
 		t.Errorf("closed session Layers().Merged.Project.Name = %q, want its final value %q", got, "merged")
+	}
+	// The tools read answers from the runtime after the close too.
+	if got, ok := old.Tools(); !ok || len(got) != 2 || got[0] != "file.read" || got[1] != "shell.run" {
+		t.Errorf("closed session Tools() = %v, %v, want its final names", got, ok)
 	}
 }

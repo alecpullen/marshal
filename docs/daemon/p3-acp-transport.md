@@ -98,7 +98,7 @@ new client.
 ## Where the code is today
 
 - **The interface** has 111 methods. 77 send an ACP method that exists,
-  and 34 are carried by one of the 32 ACP methods that are new in P3
+  and 32 are carried by one of the 32 ACP methods that are new in P3
   ("Methods P3 adds", below). Two have no ACP method at all.
 - **The adapter is most of the logic.** `inproc` converts runtime values
   to wire values and applies the policy the TUI used to apply. That
@@ -1652,6 +1652,6 @@ changed (R9); the TUI still runs on `inproc`, in process, until plan 8.
   more: the sixteen host rows from `TrustPrompt` to `SaveProvenance` other
   than `ProbeProvider` and `SaveProviderKey`, and `Tools`, `Config`, `Layers`,
   `ApplyConfig`, `ReloadConfig`, `ReconnectMCP`, `SaveProjectConfig`,
-  `SaveVerifyCommands`, `PrepareMCPLogin` and `LoginMCP`), 34 new in P3
+  `SaveVerifyCommands`, `PrepareMCPLogin` and `LoginMCP`), 32 new in P3
   carried by 32 distinct new methods, and 2 carrying none; `acp.Server`
   registers 106 methods (85 plus the 21).

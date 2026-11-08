@@ -213,4 +213,9 @@ func TestPathTypeNamesTheFieldsType(t *testing.T) {
 	if got, ok := PathType("nope.nope"); ok {
 		t.Fatalf("PathType(unknown) = %s, true, want false", got)
 	}
+	// A field typed any has no type to decode into: a value would arrive as a
+	// map and lose the pointer, so the path reports no type.
+	if got, ok := PathType("models.presets.newname.pricing"); ok {
+		t.Fatalf("PathType(an any field) = %s, true, want false", got)
+	}
 }

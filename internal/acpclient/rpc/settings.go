@@ -547,6 +547,9 @@ func (s *Session) installConfig(entry *configMirror, value acpwire.SessionConfig
 func (s *Session) applyConfig(value acpwire.SessionConfig) {
 	var cfg config.Config
 	if err := config.UnmarshalConfigJSON(value.Config, &cfg); err != nil {
+		// A value that does not decode is not kept: the mirror keeps the last
+		// one it could read, and the update does not fire Changed. It must not
+		// be installed as raw JSON, which no reader could use.
 		return
 	}
 	s.mu.Lock()

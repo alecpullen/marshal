@@ -97,8 +97,8 @@ new client.
 
 ## Where the code is today
 
-- **The interface** has 111 methods. 51 send an ACP method that exists,
-  and 58 are carried by one of the 54 ACP methods that are new in P3
+- **The interface** has 111 methods. 61 send an ACP method that exists,
+  and 48 are carried by one of the 44 ACP methods that are new in P3
   ("Methods P3 adds", below). Two have no ACP method at all.
 - **The adapter is most of the logic.** `inproc` converts runtime values
   to wire values and applies the policy the TUI used to apply. That
@@ -111,7 +111,7 @@ new client.
   (`NewServer`, `:119`). It reads each inbound frame with a 1 MiB cap
   (`:312`). Handlers run on their own goroutines (`handlerWG`), and nothing
   orders a response after the notifications its handler caused. There is
-  no request cancellation: no `$/cancelRequest` or equivalent. 85 methods
+  no request cancellation: no `$/cancelRequest` or equivalent. 96 methods
   are registered (`host.go`), plus the `session/cancel` notification.
 - **What the agent pushes today:**
   - the ACP chunk kinds (`agent_message_chunk`, `agent_thought_chunk`,
@@ -121,8 +121,8 @@ new client.
     idle;
   - `work_state`, `steering_state` and `steering_receipt`.
 
-  A marshal client also receives `session_status` and `pending_requests`;
-  nothing pushes the end flow's active work or the sheet.
+  A marshal client also receives `session_status`, `pending_requests` and
+  `work_snapshot`; nothing pushes the end flow's active work or the sheet.
 - **What the agent asks today:** a client that has not declared the marshal
   capability is asked with `session/request_permission` (approve or deny,
   tagged for skill gates and mode access) and `session/request_question`.
@@ -1561,3 +1561,84 @@ changed (R9); the TUI still runs on `inproc`, in process, until plan 8.
   in P3 carried by 54 distinct new methods, and 2 carrying none; `acp.Server`
   registers 85 methods (82 plus `session/stack_busy`, `session/sheet` and
   `session/callers`).
+
+### Plan 6b — turns and controls
+
+- **A marshal client's turns and controls run on the session's service**
+  (decided with the user, 2026-11-08). `marshalOr` (`host.go`) serves one
+  method two ways: the service for a client that declared the capability,
+  today's handler for every other client, and method-not-found when no other
+  handler exists. Seven methods route through it: `session/prompt`, `steer`,
+  `set_mode`, `set_effort`, `work_list`, `work_inspect` and `work_stop`.
+  Nothing in the turn was rewritten, so the service's own tests moved into the
+  conformance harness and pass on both arms.
+- **The control manager** (`internal/acp/controls.go`) decodes each call's
+  params, resolves the session's service and returns the service's answer or
+  its error unchanged. It serves the turn calls; eleven new methods —
+  `session/stop`, `review`, `agent_run`, `suggest`, `verify_proposal`,
+  `steering_pop`, `steering_clear`, `set_sudo_unlock`, `subagent_cancel`,
+  `sdd_clear` and `watch_resume_take`; and the work calls above.
+- **`session/stop` is a call, `session/cancel` stays a notification.**
+  A notification can carry no answer for the barrier to follow, and no cause.
+  The method table's `Stop` row moved from `session/cancel` to `session/stop`.
+- **The long calls are cancellable.** `session/prompt`, `review`,
+  `agent_run`, `suggest` and `verify_proposal` take their context from
+  `cancellable`, so the client's `$/cancel_request` stops the run, as in
+  process.
+- **The prompt's params are ACP's plus two optional fields.** The client sends
+  its text as one text block, with `queued` and `watchResume`; the handler
+  joins the block texts with a blank line and checks nothing, because the
+  service decides what an empty text means and a watch resume has none.
+- **`bindWatchResume` skips a marshal connection.** The TUI resumes a watch
+  itself — it reads `Status().WatchResume`, takes the latch and sends a prompt
+  that names the watch — so a bound hook would resume it twice. Every other
+  connection keeps the binding.
+- **`Release` stops the run in flight** with the cause `conversation ended`
+  before it closes the session. The ACP host releases a service before the
+  runtime closes, and the runtime's quiesce would otherwise wait for a run
+  nobody can stop any more. With nothing running it does nothing.
+- **The idle stack loop carries a service turn's transcript.** Nothing changed
+  in the loop: it flushes while `HasActiveTurn` reports no turn, and the
+  service's slot is not the `TurnManager`'s. A test pins that a marshal
+  client's `stack_patch` arrives while its prompt is still in flight.
+- **The work mirror's agent half.** One forwarder per session per connection
+  polls the service's `Work()` every `workInterval` (50ms) and on its fence,
+  and sends a `work_snapshot` update only when the encoding changed. The
+  service owns the conversation and revision guard and the "serves no work"
+  answer, so a marshal client reads exactly what the TUI reads in process.
+  Other clients keep `work_state` and ACP's `Work*Wire` types (G4).
+- **The barrier gained a fence.** `control`'s forwarders join the response
+  barrier last, so a call returns only after the `work_snapshot` it caused is
+  written (P3 R2, V3).
+- **The client** (`internal/acpclient/rpc/turns.go`, `work.go`) sends the
+  twenty calls and mirrors the work in `rpc.Session`: an entry absent until
+  the first read, its result installed unless an update arrived first, and
+  `work_snapshot` replacing the state and tapping `Changed`. `session/set_mode`
+  sends `system_access`, not `system` — `acpwire` allows only camelCase tags.
+- **The conformance harness** (`internal/acp/conformance_controls_test.go`)
+  adds the twenty seam methods and a `serveControls` for the pipe arm's
+  manager and barrier. Thirty cases run on each arm and agree. Two moved
+  cases could not carry an assertion across the wire, and each is narrower
+  rather than stronger:
+  - an unclassified error's *text* is replaced by the canonical "internal
+    error" on the wire (F-SEC-37), so those cases assert the call fails with
+    no agent code, not the message;
+  - a refused `work_stop`'s summary cannot ride a JSON-RPC error response, so
+    that assertion stays in `internal/acp/service/work_test.go` as a service
+    rule, and the conformance case asserts the target naming both arms share.
+    Putting it on the wire would need a coded error carrying the result.
+- **The budget (R10).** `TestControlCallBudget` alternates 30
+  `SetSudoUnlock` calls over the 2,000-call session; each includes its barrier
+  and the `session_status` update. The median is **58 µs** against R10's 1ms.
+- **Open point: two turn slots.** A marshal client's turn takes the service's
+  slot, not the `TurnManager`'s, so a client without the capability on another
+  connection could start a second turn on the same session. Embedded mode has
+  one connection; P4's multi-viewer design decides how the two slots exclude
+  each other.
+- **The counts moved** (re-measured on this branch): `acpclient.Methods` has
+  111 rows, now 61 of them an existing ACP method (ten more: `Review`,
+  `RunAgent`, `Suggest`, `VerifyProposal`, `PopSteering`, `ClearSteering`,
+  `SetSudoUnlock`, `CancelSubagent`, `ClearFinishedRun` and `TakeWatchResume`;
+  `Stop` moved from one existing method to another), 48 new in P3 carried by
+  44 distinct new methods, and 2 carrying none; `acp.Server` registers 96
+  methods (85 plus the eleven), plus the `session/cancel` notification.

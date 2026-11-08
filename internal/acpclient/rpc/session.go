@@ -35,6 +35,9 @@ type Session struct {
 	pending *pendingMirror
 	// work is the work mirror (work.go): nil until its first read creates it.
 	work *workMirror
+	// end is the end-flow mirror (ending.go): nil until its first read
+	// creates it.
+	end *endMirror
 	// config is the config mirror (settings.go): nil until its first read
 	// creates it.
 	config *configMirror
@@ -227,11 +230,10 @@ func (s *Session) closeLocked() {
 }
 
 // routeNotify hands every session/update to the host's stack mirror, then
-// applies a session_status, sheet, pending_requests, session_config or
-// work_snapshot update to
-// the attached session it names and drops one for a session that is not
-// attached. Any other kind is ignored. It runs on the read goroutine, before
-// the caller's Notify sees the frame.
+// applies a session_status, sheet, pending_requests, session_config,
+// work_snapshot or end_work update to the attached session it names and drops
+// one for a session that is not attached. Any other kind is ignored. It runs
+// on the read goroutine, before the caller's Notify sees the frame.
 func (h *Host) routeNotify(method string, params json.RawMessage) {
 	if method != acpwire.MethodSessionUpdate {
 		return
@@ -301,6 +303,16 @@ func (h *Host) routeNotify(method string, params json.RawMessage) {
 			return
 		}
 		session.applyConfig(value.Config)
+	case acpwire.UpdateEndWork:
+		var work acpwire.EndWorkUpdate
+		if err := json.Unmarshal(update.Update, &work); err != nil {
+			return
+		}
+		session := h.session(update.SessionID)
+		if session == nil {
+			return
+		}
+		session.applyEnd(work.Work)
 	}
 }
 

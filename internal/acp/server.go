@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -135,6 +136,12 @@ type Server struct {
 	// in scanLines. If zero or negative, a default of 1 MiB is used.
 	// Set this before calling Serve (F-POL-60).
 	MaxLineBytes int
+
+	// EndOnPanic makes a handler's panic end the connection: the panic is
+	// logged with its stack, the call is answered as before, and Serve returns
+	// an error naming the method. The embedding sets it (P3 R11). Set it before
+	// Serve.
+	EndOnPanic bool
 
 	// fatalErr is a buffered channel that handler goroutines use to
 	// report fatal write errors to the Serve loop. Created in Serve.
@@ -884,11 +891,18 @@ func (s *Server) dispatch(ctx context.Context, req Request) (result any, err err
 			s.log().Error("acp: handler panicked",
 				"method", req.Method,
 				"panic", r,
+				"stack", string(debug.Stack()),
 			)
 			result = nil
 			err = &jsonRPCError{
 				Code:    internalError,
 				Message: "internal error: handler panicked",
+			}
+			// An embedded connection has nobody to report a broken call to:
+			// ending it with the panic's method lets the TUI end with the error
+			// (P3 R11). Every other client keeps recovering call by call.
+			if s.EndOnPanic {
+				s.reportFatal(fmt.Errorf("acp: %s panicked: %v", req.Method, r))
 			}
 		}
 		s.log().Info("acp dispatch",

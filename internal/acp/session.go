@@ -797,6 +797,36 @@ func (m *SessionManager) ServiceHost(id string) (*service.Host, bool) {
 	return host, ok
 }
 
+// adopt registers rt under rt.SessionID with the pair its embedding built, so
+// the pair is never built from rt.ServiceDeps. It refuses an empty ID and an
+// ID already registered.
+func (m *SessionManager) adopt(rt *app.Runtime, host *service.Host, sess *service.Session) error {
+	if rt == nil || rt.SessionID == "" {
+		return errors.New("acp: adopt requires a runtime with a session ID")
+	}
+	if host == nil || sess == nil {
+		return fmt.Errorf("acp: adopt %s requires the service pair the embedding built", rt.SessionID)
+	}
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	m.mu.Lock()
+	_, taken := m.sessions[rt.SessionID]
+	if !taken {
+		m.sessions[rt.SessionID] = rt
+	}
+	m.mu.Unlock()
+	if taken {
+		return fmt.Errorf("acp: session %s is already registered", rt.SessionID)
+	}
+	m.servicesMu.Lock()
+	if m.services == nil {
+		m.services = map[*app.Runtime]*servicePair{}
+	}
+	m.services[rt] = &servicePair{host: host, sess: sess}
+	m.servicesMu.Unlock()
+	return nil
+}
+
 // servicePair returns the pair built for the session's current runtime,
 // building it on first use under Service's rules: an unknown session, a
 // runtime with no state and a runtime that is closing report false.

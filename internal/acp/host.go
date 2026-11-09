@@ -709,7 +709,16 @@ func commandRuntimeFor(rt *app.Runtime) *CommandRuntime {
 // connection's canceller stays in the host chain: a turn that outlives
 // the connection must remain cancellable (follow-ups doc item #5).
 func (h *agentHost) serveConn(ctx context.Context, stdin io.Reader, stdout io.Writer) error {
+	return h.serveConnWith(ctx, stdin, stdout, nil)
+}
+
+// serveConnWith is serveConn with configure applied to the connection's server
+// before its handlers are registered; serveConn passes nil.
+func (h *agentHost) serveConnWith(ctx context.Context, stdin io.Reader, stdout io.Writer, configure func(*Server)) error {
 	srv := NewServer(stdin, stdout, WithLogger(h.log))
+	if configure != nil {
+		configure(srv)
+	}
 	// The liveness flag inerting this connection's watch-resume binding on
 	// teardown: after the connection dies the flag goes false, so a stale
 	// binding on the Runtime cannot start a turn.

@@ -124,3 +124,43 @@ type WatchResume struct {
 	Repeat bool   `json:"repeat,omitempty"`
 	Seq    uint64 `json:"seq"`
 }
+
+// RunKind names what a run on the session's run path is (P4 D4).
+type RunKind string
+
+const (
+	RunTurn   RunKind = "turn"   // session/prompt, a watch resume included
+	RunReview RunKind = "review" // session/review
+	RunAgent  RunKind = "agent"  // session/agent_run
+	RunSwarm  RunKind = "swarm"  // session/swarm_start
+	RunSDD    RunKind = "sdd"    // session/sdd_start and session/sdd_answer
+	RunAuthor RunKind = "author" // session/sdd_author
+)
+
+// RunOutcome is how a finished run ended (P4 D4).
+type RunOutcome string
+
+const (
+	RunDone      RunOutcome = "done"
+	RunCancelled RunOutcome = "cancelled"
+	RunFailed    RunOutcome = "failed"
+	RunGated     RunOutcome = "gated"
+)
+
+// Run is the run in flight. ID is its stop group's turn ID; StartedAt is Unix
+// milliseconds.
+type Run struct {
+	ID        string  `json:"id"`
+	Kind      RunKind `json:"kind"`
+	StartedAt int64   `json:"startedAt"`
+}
+
+// RunResult is the last finished run. Error is set for RunFailed only.
+type RunResult struct {
+	ID        string     `json:"id"`
+	Kind      RunKind    `json:"kind"`
+	StartedAt int64      `json:"startedAt"`
+	EndedAt   int64      `json:"endedAt"`
+	Outcome   RunOutcome `json:"outcome"`
+	Error     *Error     `json:"error,omitempty"`
+}

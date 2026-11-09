@@ -31,6 +31,10 @@ type SessionStatus struct {
 	HasBackup       bool        `json:"hasBackup,omitempty"`
 	Activity        Activity    `json:"activity"`
 	SubagentRunning bool        `json:"subagentRunning,omitempty"`
+	// Run is the run in flight, nil when none; LastRun is the last finished
+	// run, nil until one finishes (P4 D4).
+	Run     *Run       `json:"run,omitempty"`
+	LastRun *RunResult `json:"lastRun,omitempty"`
 	// AgentReady says the session's agent runner is built, so Prompt, Review
 	// and RunAgent can start. It is false while the provider is not built.
 	AgentReady   bool          `json:"agentReady,omitempty"`

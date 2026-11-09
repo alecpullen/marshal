@@ -13,7 +13,7 @@ import (
 // way the rest of the package does.
 func promptTestState(t *testing.T) *session.State {
 	t.Helper()
-	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 }
 
 // TestFocusedPromptKeyFollowsTheRoutingOrder pins that the focused request is
@@ -21,7 +21,7 @@ func promptTestState(t *testing.T) *session.State {
 // question — and that its identity is the wire key Pending reports.
 func TestFocusedPromptKeyFollowsTheRoutingOrder(t *testing.T) {
 	state := promptTestState(t)
-	m := testModel(state)
+	m := testModel(t, state)
 
 	questionKey, err := state.RegisterQuestion(context.Background(), &session.PendingQuestion{
 		Questions:    []session.Question{{Question: "Which?"}},
@@ -59,7 +59,7 @@ func TestFocusedPromptKeyFollowsTheRoutingOrder(t *testing.T) {
 // Pending lists, not only the session's own.
 func TestPromptKeyByIDFindsASubagentsApproval(t *testing.T) {
 	state := promptTestState(t)
-	m := testModel(state)
+	m := testModel(t, state)
 
 	child := promptTestState(t)
 	state.RegisterSubagent("scout", child)
@@ -86,7 +86,7 @@ func TestPromptKeyByIDFindsASubagentsApproval(t *testing.T) {
 // matching as soon as it settles.
 func TestPromptStillPendingFollowsTheRequest(t *testing.T) {
 	state := promptTestState(t)
-	m := testModel(state)
+	m := testModel(t, state)
 
 	key, err := state.RegisterQuestion(context.Background(), &session.PendingQuestion{
 		Questions:    []session.Question{{Question: "Which?"}},

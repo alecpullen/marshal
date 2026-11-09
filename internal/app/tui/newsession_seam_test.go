@@ -7,7 +7,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/acptest"
+	"marshal/internal/acp/service"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/activeworkpanel"
 )
@@ -33,9 +34,9 @@ func (f *fakeNewSession) newSession(name string) (*session.State, error) {
 
 // testModelReplacing builds a model whose host creates sessions through f and
 // whose end service is end, as app.go wires them.
-func testModelReplacing(t *testing.T, oldState *session.State, f *fakeNewSession, end inproc.EndService, opts ...Option) Model {
+func testModelReplacing(t *testing.T, oldState *session.State, f *fakeNewSession, end service.EndService, opts ...Option) Model {
 	t.Helper()
-	host, sess := inproc.New(inproc.Deps{State: oldState, NewSession: f.newSession, End: end, Commands: setupCmdReg(t)})
+	host, sess := acptest.Open(t, service.Deps{State: oldState, NewSession: f.newSession, End: end, Commands: setupCmdReg(t)})
 	return New(host, sess, opts...)
 }
 
@@ -59,7 +60,7 @@ func TestANewSessionLeavesTheEndIdle(t *testing.T) {
 	}
 
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m = withPromptRunner(m, runner)
+	m = withPromptRunner(t, m, runner)
 	updated, cmd = m.startPrompt("hello after the swap", false)
 	m = asModel(t, updated)
 	if cmd == nil {

@@ -25,7 +25,7 @@ import (
 // body without also restoring the padding that made it stable.
 func TestSubagentCardDoesNotResizeWhenTailSourceFlips(t *testing.T) {
 	m := newTestModel(t)
-	child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	// Phase 1: the child streams several lines of reasoning.
 	for i := 0; i < 10; i++ {
 		child.AppendThinking(fmt.Sprintf("reasoning line %d\n", i))
@@ -84,7 +84,7 @@ func TestRegionScrollRepaintsViewport(t *testing.T) {
 func TestHorizontalWheelOverRegionStillSwallowed(t *testing.T) {
 	for _, btn := range []tea.MouseButton{tea.MouseWheelLeft, tea.MouseWheelRight} {
 		m := newTestModel(t)
-		child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+		child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 		child.BeginStreaming()
 		child.AppendThinking("some reasoning\n")
 		stateOf(m).RegisterSubagent("reviewer", child)
@@ -126,7 +126,7 @@ func TestStaleRegionOffsetsArePruned(t *testing.T) {
 
 func TestRegionOffsetNeverGoesNegative(t *testing.T) {
 	m := newTestModel(t)
-	child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	child.BeginStreaming()
 	child.AppendThinking("line\n")
 	v := stateOf(m).RegisterSubagent("reviewer", child)

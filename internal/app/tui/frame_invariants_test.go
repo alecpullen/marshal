@@ -10,7 +10,8 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/acptest"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/accesspanel"
@@ -164,7 +165,7 @@ func TestFrameInvariants(t *testing.T) {
 			m.busy = true
 			// The pending prompt is a host read (plan 7c), so open the panel
 			// the way the model does: over a host that names one.
-			host, _ := inproc.New(inproc.Deps{State: stateOf(m), TrustPrompt: "/repo"})
+			host, _ := acptest.Open(t, service.Deps{State: stateOf(m), TrustPrompt: "/repo"})
 			m.host = host
 			if !m.openTrustPanel() {
 				t.Fatal("expected a pending trust prompt")
@@ -194,7 +195,7 @@ func TestFrameInvariants(t *testing.T) {
 		// described beneath them.
 		{"ending+warning", func(t *testing.T, m *Model) {
 			ctrl := &endTestController{work: longWorkSnapshot(12)}
-			*m = withEndService(*m, ctrl)
+			*m = withEndService(t, *m, ctrl)
 			stateOf(m).Config.Postmortem.OnExit = "never"
 			if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
 				t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
@@ -202,7 +203,7 @@ func TestFrameInvariants(t *testing.T) {
 		}},
 		{"ending+warning+replacement", func(t *testing.T, m *Model) {
 			ctrl := &endTestController{work: longWorkSnapshot(12)}
-			*m = withEndService(*m, ctrl)
+			*m = withEndService(t, *m, ctrl)
 			if cmd := m.beginEnd(&endIntent{kind: EndIntentReplace}); cmd != nil {
 				t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
 			}
@@ -210,7 +211,7 @@ func TestFrameInvariants(t *testing.T) {
 		{"ending+postmortem-question", func(t *testing.T, m *Model) {
 			stateOf(m).AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 			stateOf(m).Config.Postmortem.OnExit = "prompt"
-			*m = withEndService(*m, &endTestController{})
+			*m = withEndService(t, *m, &endTestController{})
 			m.end = &endIntent{kind: EndIntentExit}
 			m.endAnswered = false
 			m.endStage = endPostmortem
@@ -219,7 +220,7 @@ func TestFrameInvariants(t *testing.T) {
 		{"ending+postmortem-agent-question", func(t *testing.T, m *Model) {
 			stateOf(m).AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 			stateOf(m).Config.Postmortem.OnExit = "prompt"
-			*m = withEndService(*m, &endTestController{})
+			*m = withEndService(t, *m, &endTestController{})
 			m.end = &endIntent{kind: EndIntentExit}
 			m.endStage = endPostmortem
 			m.openPostmortemPrompt()
@@ -234,7 +235,7 @@ func TestFrameInvariants(t *testing.T) {
 			ctrl.acceptFn = func(acpwire.EndAcceptParams) (acpwire.EndDecision, error) {
 				return acpwire.EndDecision{Accepted: true, Work: longWorkSnapshot(12)}, nil
 			}
-			*m = withEndService(*m, ctrl)
+			*m = withEndService(t, *m, ctrl)
 			stateOf(m).Config.Postmortem.OnExit = "never"
 			if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
 				t.Fatalf("warning path returned a cmd (%T), want nil", cmd)

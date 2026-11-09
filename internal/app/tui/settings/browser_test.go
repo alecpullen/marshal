@@ -2,7 +2,6 @@ package settings
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,8 +15,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"marshal/internal/acp/acptest"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpclient"
-	"marshal/internal/acpclient/inproc"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -1075,7 +1075,7 @@ func TestBrowserRenameKeepsTheProvidersKey(t *testing.T) {
 	// Without that refresh a rename would leave the project save with a mask
 	// nothing stored can answer — an artifact of the fixture, not the flow.
 	state := session.New(config.Default(), dir, time.Unix(100, 0), session.Persistence{})
-	host, sess := inproc.New(inproc.Deps{
+	host, sess := acptest.Open(t, service.Deps{
 		State:          state,
 		Auth:           newMemAuth(),
 		UserConfigPath: userPath,
@@ -1291,7 +1291,7 @@ func testHost(t *testing.T, auth provider.AuthResolver) acpclient.Host {
 		auth = newMemAuth()
 	}
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	host, _ := inproc.New(inproc.Deps{State: state, Auth: auth})
+	host, _ := acptest.Open(t, service.Deps{State: state, Auth: auth})
 	return host
 }
 
@@ -1303,7 +1303,7 @@ func testHost(t *testing.T, auth provider.AuthResolver) acpclient.Host {
 func testSeam(t *testing.T, workDir, userConfigPath string) (acpclient.Host, acpclient.Session) {
 	t.Helper()
 	state := session.New(config.Default(), workDir, time.Unix(100, 0), session.Persistence{})
-	host, sess := inproc.New(inproc.Deps{
+	host, sess := acptest.Open(t, service.Deps{
 		State:          state,
 		Auth:           newMemAuth(),
 		UserConfigPath: userConfigPath,
@@ -1370,7 +1370,9 @@ func TestBrowserAuthResolverReachesFrameProbes(t *testing.T) {
 	if res.Err == nil {
 		t.Fatal("the injected resolver failure must reach the probe result")
 	}
-	if !errors.Is(res.Err, credentials.ErrKeyringUnavailable) {
+	// Over the wire the sentinel does not survive: the agent's answer carries
+	// its sentence, so the sentence is what a client can compare (P3 plan 8).
+	if !strings.Contains(res.Err.Error(), credentials.ErrKeyringUnavailable.Error()) {
 		t.Fatalf("err = %v, want the injected keychain failure", res.Err)
 	}
 	if len(auth.engines) != 1 || auth.engines[0] != "codex" {
@@ -1404,7 +1406,8 @@ func TestProbeAllProvidersUsesInjectedResolver(t *testing.T) {
 	if res.Err == nil {
 		t.Fatal("the injected resolver failure must reach the probe result")
 	}
-	if !errors.Is(res.Err, credentials.ErrKeyringUnavailable) {
+	// As above: the sentence is what crosses the wire, not the sentinel.
+	if !strings.Contains(res.Err.Error(), credentials.ErrKeyringUnavailable.Error()) {
 		t.Fatalf("err = %v, want the injected keychain failure", res.Err)
 	}
 	if len(auth.engines) != 1 {

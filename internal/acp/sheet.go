@@ -349,6 +349,7 @@ func registerTranscript(srv *Server, turns *TurnManager, sheets *SheetManager, l
 	srv.Handle(acpwire.MethodStack, turns.Stack)
 	srv.Handle(acpwire.MethodStackNode, turns.StackNode)
 	srv.Handle(acpwire.MethodStackBusy, turns.StackBusy)
+	srv.Handle(acpwire.MethodSync, turns.Sync)
 	srv.Handle(acpwire.MethodSheet, sheets.Sheet)
 	srv.Handle(acpwire.MethodCallers, callersHandler(lookup))
 	srv.Handle(acpwire.MethodStackUnsubscribe, func(ctx context.Context, params json.RawMessage) (any, error) {

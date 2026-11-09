@@ -15,11 +15,11 @@ import (
 // with a provider notice already up.
 func noticeOnState(t *testing.T) (Model, *session.State, *int) {
 	t.Helper()
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	stub := &stubSession{}
 	dismissals := new(int)
 	stub.onDismissNote = func() { *dismissals++ }
-	m := testModelStub(state, stub)
+	m := testModelStub(t, state, stub)
 	state.SetNotice(session.Notice{
 		Category: session.NoticeProvider,
 		Severity: session.SeverityError,

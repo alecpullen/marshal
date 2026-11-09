@@ -497,10 +497,11 @@ func (s *State) rebuildActiveBranch() {
 // (/rewind) does that via Snapshotter.
 func (s *State) Rewind(turnMsgID int64) int64 {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	parent, ok := s.parentOf[turnMsgID]
 	if !ok {
-		return s.leafID
+		leaf := s.leafID
+		s.mu.Unlock()
+		return leaf
 	}
 	s.leafID = parent
 	s.leafDBID = 0
@@ -515,6 +516,8 @@ func (s *State) Rewind(turnMsgID int64) int64 {
 			s.logger.Error("set branch leaf failed", "error", err, "session_id", s.sessionID, "leaf", s.leafDBID)
 		}
 	}
+	s.mu.Unlock()
+	s.publishEvent(EventTranscriptChanged, Event{})
 	return parent
 }
 
@@ -551,6 +554,7 @@ func (s *State) SwitchBranch(leafID int64) {
 			s.logger.Error("set branch leaf failed", "error", err, "session_id", s.sessionID, "leaf", leafDBID)
 		}
 	}
+	s.publishEvent(EventTranscriptChanged, Event{})
 }
 
 // LeafID returns the active-branch leaf id.
@@ -577,8 +581,9 @@ func (s *State) LeafID() int64 {
 // pack.
 func (s *State) ClearMessages() int {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	count := len(s.messages)
 	s.messages = nil
+	s.mu.Unlock()
+	s.publishEvent(EventTranscriptChanged, Event{})
 	return count
 }

@@ -10,8 +10,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acp/acptest"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpclient"
-	"marshal/internal/acpclient/inproc"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -26,7 +27,7 @@ import (
 func testSession(t *testing.T, workDir string) acpclient.Session {
 	t.Helper()
 	state := session.New(config.Default(), workDir, time.Unix(100, 0), session.Persistence{})
-	_, sess := inproc.New(inproc.Deps{State: state})
+	_, sess := acptest.Open(t, service.Deps{State: state})
 	return sess
 }
 
@@ -238,7 +239,7 @@ func TestRosterValidationFollowsTheSessionsTools(t *testing.T) {
 func testSessionOverTools(t *testing.T, names []string, known bool) acpclient.Session {
 	t.Helper()
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	_, sess := inproc.New(inproc.Deps{
+	_, sess := acptest.Open(t, service.Deps{
 		State: state,
 		Tools: func() ([]string, bool) { return names, known },
 	})

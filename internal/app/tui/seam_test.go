@@ -10,18 +10,25 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acp/acptest"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpclient"
-	"marshal/internal/acpclient/inproc"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/commands"
 )
 
-// testSession returns the client session the in-process adapter builds over
-// state.
-func testSession(state *session.State) acpclient.Session {
-	_, sess := inproc.New(inproc.Deps{State: state})
+// unnamedSessionID is the ID a state built without one is served under. A
+// fixture without an ID names its state with this too, so the state's own ID
+// and the served one agree: product code validates a call's session against
+// the state's (P3 plan 8 decision 9).
+const unnamedSessionID = acptest.UnnamedSessionID
+
+// testSession returns the client session the test agent builds over state.
+func testSession(t testing.TB, state *session.State) acpclient.Session {
+	t.Helper()
+	_, sess := acptest.Open(t, service.Deps{State: state})
 	return sess
 }
 
@@ -31,33 +38,35 @@ func stateOf(m interface{ Session() acpclient.Session }) *session.State {
 	return stateOfSession(m.Session())
 }
 
-// stateOfSession walks to the adapter behind sess, past the test recorders
+// stateOfSession walks to the test agent behind sess, past the test recorders
 // that embed it (each exposes the session it wraps through Unwrap).
 func stateOfSession(sess acpclient.Session) *session.State {
 	for {
-		if in, ok := sess.(*inproc.Session); ok {
+		if in, ok := sess.(*acptest.Session); ok {
 			return in.State()
 		}
 		wrapped, ok := sess.(interface{ Unwrap() acpclient.Session })
 		if !ok {
-			panic(fmt.Sprintf("tui.stateOf: session is %T, not *inproc.Session", sess))
+			panic(fmt.Sprintf("tui.stateOf: session is %T, not *acptest.Session", sess))
 		}
 		sess = wrapped.Unwrap()
 	}
 }
 
-// testModel is the one place tests build a model: it wires the in-process
-// adapter over state, so P3 changes only this helper. The model reads that
-// state through its session; stateOf reaches it.
-func testModel(state *session.State, opts ...Option) Model {
-	host, sess := inproc.New(inproc.Deps{State: state})
+// testModel is the one place tests build a model: it serves state through the
+// test agent, so P3 changes only this helper. The model reads that state
+// through its session; stateOf reaches it.
+func testModel(t testing.TB, state *session.State, opts ...Option) Model {
+	t.Helper()
+	host, sess := acptest.Open(t, service.Deps{State: state})
 	return New(host, sess, opts...)
 }
 
-// testModelWith builds a model over an adapter made from d, as testModel
+// testModelWith builds a model over a session served from d, as testModel
 // builds one over d.State alone.
-func testModelWith(d inproc.Deps, opts ...Option) Model {
-	host, sess := inproc.New(d)
+func testModelWith(t testing.TB, d service.Deps, opts ...Option) Model {
+	t.Helper()
+	host, sess := acptest.Open(t, d)
 	return New(host, sess, opts...)
 }
 
@@ -65,18 +74,19 @@ func testModelWith(d inproc.Deps, opts ...Option) Model {
 // under dir, as production wires the runtime's data directory.
 func testModelCached(t *testing.T, state *session.State, dir string, opts ...Option) Model {
 	t.Helper()
-	return testModelWith(inproc.Deps{State: state, ModelCacheDir: dir, Auth: newMemAuth()}, opts...)
+	return testModelWith(t, service.Deps{State: state, ModelCacheDir: dir, Auth: newMemAuth()}, opts...)
 }
 
 // runnerOf returns a Deps.Runner that always returns r.
-func runnerOf(r inproc.Runner) func() inproc.Runner {
-	return func() inproc.Runner { return r }
+func runnerOf(r service.Runner) func() service.Runner {
+	return func() service.Runner { return r }
 }
 
 // withPromptRunner replaces m's session with one over m's state whose runner
 // is r.
-func withPromptRunner(m Model, r inproc.Runner) Model {
-	_, sess := inproc.New(inproc.Deps{State: stateOf(m), Runner: runnerOf(r)})
+func withPromptRunner(t testing.TB, m Model, r service.Runner) Model {
+	t.Helper()
+	_, sess := acptest.Open(t, service.Deps{State: stateOf(m), Runner: runnerOf(r)})
 	m.sess = sess
 	return m
 }
@@ -144,23 +154,26 @@ func (s *stubSession) Sheet(subagentID int64) acpwire.SessionSheet {
 	return sheet
 }
 
-// testModelStub builds a model whose session is stub, wrapped around an
-// adapter session over state.
-func testModelStub(state *session.State, stub *stubSession, opts ...Option) Model {
-	return testModelStubWith(inproc.Deps{State: state}, stub, opts...)
+// testModelStub builds a model whose session is stub, wrapped around a test
+// agent session over state.
+func testModelStub(t testing.TB, state *session.State, stub *stubSession, opts ...Option) Model {
+	t.Helper()
+	return testModelStubWith(t, service.Deps{State: state}, stub, opts...)
 }
 
-// testModelStubWith is testModelStub over an adapter made from d.
-func testModelStubWith(d inproc.Deps, stub *stubSession, opts ...Option) Model {
-	host, sess := inproc.New(d)
+// testModelStubWith is testModelStub over a session served from d.
+func testModelStubWith(t testing.TB, d service.Deps, stub *stubSession, opts ...Option) Model {
+	t.Helper()
+	host, sess := acptest.Open(t, d)
 	stub.Session = sess
 	return New(host, stub, opts...)
 }
 
 // withCommands replaces m's session with one over m's state whose registry is
 // reg, as withPromptRunner does for the runner.
-func withCommands(m Model, reg *commands.Registry) Model {
-	_, sess := inproc.New(inproc.Deps{State: stateOf(m), Commands: reg})
+func withCommands(t testing.TB, m Model, reg *commands.Registry) Model {
+	t.Helper()
+	_, sess := acptest.Open(t, service.Deps{State: stateOf(m), Commands: reg})
 	m.sess = sess
 	return m
 }
@@ -262,14 +275,14 @@ func assertPanics(t *testing.T, want string, fn func()) {
 func TestNewRequiresAHostAndSession(t *testing.T) {
 	state := seamState(t, "s1")
 	assertPanics(t, "tui.New: nil client host or session", func() {
-		New(nil, testSession(state))
+		New(nil, testSession(t, state))
 	})
 }
 
 func TestOpenFileNeedsASharedFilesystem(t *testing.T) {
 	t.Setenv("EDITOR", "vi")
 	state := seamState(t, "s1")
-	m := New(fakeHost{shared: false}, testSession(state))
+	m := New(fakeHost{shared: false}, testSession(t, state))
 
 	if cmd := m.openFile("main.go", 1); cmd == nil {
 		t.Fatal("openFile returned no command")
@@ -281,7 +294,7 @@ func TestOpenFileNeedsASharedFilesystem(t *testing.T) {
 
 func TestOpenFileWithASharedFilesystemReachesTheEditorChecks(t *testing.T) {
 	t.Setenv("EDITOR", "")
-	m := testModel(seamState(t, "s1"))
+	m := testModel(t, seamState(t, "s1"))
 
 	m.openFile("main.go", 1)
 	if want := "$EDITOR is not set"; m.flash != want {

@@ -13,8 +13,8 @@ import (
 
 // TestClientImportsStayOnTheWireSide keeps this package's non-test files on the
 // wire side of the seam: the standard library, acpwire, and the data packages
-// C3 allows in signatures. Subdirectories are not walked; inproc is an
-// implementation and may import more.
+// C3 allows in signatures. Subdirectories are not walked; rpc is the client the
+// TUI runs on and may import more.
 func TestClientImportsStayOnTheWireSide(t *testing.T) {
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {

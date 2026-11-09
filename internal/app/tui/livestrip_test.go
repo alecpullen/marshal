@@ -13,8 +13,8 @@ import (
 
 func newLiveStripTestModel(t *testing.T) Model {
 	t.Helper()
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.resize(100, 30)
 	return m
 }

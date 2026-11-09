@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpwire"
 	"marshal/internal/agent"
 	"marshal/internal/app/config"
@@ -219,10 +219,10 @@ func TestTheRuntimeCallsFailWithoutAFactory(t *testing.T) {
 func TestBindTurnDepsServesTheRuntime(t *testing.T) {
 	state := turnState(t)
 	rt := &Runtime{State: state}
-	d := inproc.Deps{State: state}
+	d := service.Deps{State: state}
 	bindTurnDeps(&d, rt)
 
-	_, sess := inproc.New(d)
+	_, sess := service.New(d)
 	if sess.Status().AgentReady {
 		t.Fatal("AgentReady = true before the runtime has a runner")
 	}

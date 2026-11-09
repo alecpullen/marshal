@@ -211,10 +211,10 @@ func TestCtrlCArmReturnsRepaintTick(t *testing.T) {
 // warning instead of exiting, and the program does not quit until the user has
 // answered it.
 func TestCtrlCQuitsOnlyAfterTheWarningIsAnswered(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(1000, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(1000, 0), session.Persistence{SessionID: unnamedSessionID})
 	state.Config.Postmortem.OnExit = "never"
 	ctrl := &endTestController{work: workSnapshot("job-1")}
-	m := testModelEnding(state, ctrl)
+	m := testModelEnding(t, state, ctrl)
 	m.resize(80, 24)
 	m.now = func() time.Time { return time.Unix(1000, 0) }
 
@@ -245,10 +245,10 @@ func TestCtrlCQuitsOnlyAfterTheWarningIsAnswered(t *testing.T) {
 // stopped by the first firing Ctrl+C, and only the second firing reaches the
 // warning: the ending path must not swallow the turn stop.
 func TestCtrlCStopsTheRightThingBeforeTheWarning(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(1000, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(1000, 0), session.Persistence{SessionID: unnamedSessionID})
 	state.Config.Postmortem.OnExit = "never"
 	ctrl := &endTestController{work: workSnapshot("job-1")}
-	m := testModelEnding(state, ctrl)
+	m := testModelEnding(t, state, ctrl)
 	m.resize(80, 24)
 	m.now = func() time.Time { return time.Unix(1000, 0) }
 	cancelled := false

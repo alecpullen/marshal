@@ -32,8 +32,8 @@ func TestApprovalModeSeededFromCanonicalState(t *testing.T) {
 			cfg := config.Default()
 			cfg.Agent.Mode = tc.mode
 			cfg.Agent.Auto = tc.auto
-			state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-			m := testModel(state)
+			state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+			m := testModel(t, state)
 			if got := string(stateOf(m).InteractionState().Mode); got != tc.want {
 				t.Fatalf("approvalMode = %q, want %q", got, tc.want)
 			}

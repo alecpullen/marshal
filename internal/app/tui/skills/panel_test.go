@@ -12,7 +12,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/acptest"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -30,7 +31,7 @@ func testPanel(t *testing.T, home, work string, trusted bool, idx *skills.Index)
 	state.SetTrusted(trusted)
 	index := new(*skills.Index)
 	*index = idx
-	_, sess := inproc.New(inproc.Deps{
+	_, sess := acptest.Open(t, service.Deps{
 		State:      state,
 		HomeDir:    home,
 		SkillIndex: func() *skills.Index { return *index },

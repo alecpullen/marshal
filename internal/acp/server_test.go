@@ -989,6 +989,60 @@ func TestDispatchRecoversFromHandlerPanic(t *testing.T) {
 	}
 }
 
+// TestAPanicIsAnsweredWithoutEndOnPanic pins the recovering default: the call
+// is answered "internal error" and the connection keeps serving.
+func TestAPanicIsAnsweredWithoutEndOnPanic(t *testing.T) {
+	frames := `{"jsonrpc":"2.0","id":1,"method":"panic"}
+{"jsonrpc":"2.0","id":2,"method":"ping"}
+`
+	var out bytes.Buffer
+	var logs bytes.Buffer
+	srv := NewServer(strings.NewReader(frames), &out, WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))
+	srv.Handle("panic", func(ctx context.Context, params json.RawMessage) (any, error) {
+		panic("handler bug")
+	})
+	srv.Handle("ping", func(ctx context.Context, params json.RawMessage) (any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+	if err := srv.Serve(context.Background()); err != nil {
+		t.Fatalf("Serve = %v, want nil: a panic must not end the connection", err)
+	}
+	if got := out.String(); !strings.Contains(got, `"code":-32603`) {
+		t.Errorf("output = %q, want the internal error code", got)
+	}
+	if got := out.String(); !strings.Contains(got, `"ok":true`) {
+		t.Errorf("output = %q, want the next call answered", got)
+	}
+}
+
+// TestAPanicEndsTheConnectionWithEndOnPanic pins the embedding's behaviour: the
+// panic is logged with its stack, the call is answered as before, and Serve
+// returns an error naming the method (P3 R11).
+func TestAPanicEndsTheConnectionWithEndOnPanic(t *testing.T) {
+	frames := `{"jsonrpc":"2.0","id":1,"method":"panic"}
+`
+	var out bytes.Buffer
+	var logs bytes.Buffer
+	srv := NewServer(strings.NewReader(frames), &out, WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))
+	srv.EndOnPanic = true
+	srv.Handle("panic", func(ctx context.Context, params json.RawMessage) (any, error) {
+		panic("handler bug")
+	})
+	err := srv.Serve(context.Background())
+	if err == nil {
+		t.Fatal("Serve = nil, want the panic's error")
+	}
+	if !strings.Contains(err.Error(), "panic") || !strings.Contains(err.Error(), "panicked") {
+		t.Errorf("Serve error = %v, want it to name the method and the panic", err)
+	}
+	if got := out.String(); !strings.Contains(got, `"code":-32603`) {
+		t.Errorf("output = %q, want the call answered as before", got)
+	}
+	if got := logs.String(); !strings.Contains(got, "handler panicked") || !strings.Contains(got, "goroutine") {
+		t.Errorf("logs = %q, want the panic and its stack", got)
+	}
+}
+
 func TestServerDispatchLogs(t *testing.T) {
 	var buf bytes.Buffer
 	s := NewServer(strings.NewReader(""), &bytes.Buffer{},

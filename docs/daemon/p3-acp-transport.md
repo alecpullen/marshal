@@ -9,10 +9,10 @@ Depends on: P2, which closed with plan 9. Plans 1 (the client core), 4a
 changed and ran alongside its last plans. The rest now wait only for each
 other. Plan 9 wrote down the ACP methods the interface marks "new in P3",
 grouped by the plan that implements them in "Methods P3 adds" (below).
-Status: drafted 2026-11-05, while P2 plan 7a ran, and its open questions
-decided the same day (below). The counts were measured at `e671da0d` (P2
-plan 7a's plan commit) and re-measured at P2 plan 9, which wrote them
-down; no P2 plan changes them now. P3's layering plan re-measures them.
+Status: implemented (P3 plan 8). P3 is complete: embedded mode runs the TUI
+over ACP on an in-memory pipe, and `internal/acpclient/inproc` is deleted.
+The implementation record below carries each plan's measurement; the counts
+were first measured at `e671da0d` and are re-measured in each plan's record.
 Plans 1 and 4a were written while P2
 plan 7b ran ([plan 1](plans/2026-11-05-p3-1-client-core-plan.md),
 [plan 4a](plans/2026-11-05-p3-4a-stack-wire-plan.md)), and plan 3a while
@@ -102,19 +102,20 @@ new client.
 - **The interface** has 111 methods. 109 send an ACP method that exists, so
   every one of the 22 methods "Methods P3 adds" (below) is registered, and
   two have no ACP method at all.
-- **The adapter is most of the logic.** `inproc` converts runtime values
-  to wire values and applies the policy the TUI used to apply. That
-  covers the run-error classification, row-action IDs, the sheet's cache,
-  the work pump, Send-now receipts, the watch resume, access
+- **The service is most of the logic.** `internal/acp/service` converts
+  runtime values to wire values and applies the policy the TUI used to
+  apply. That covers the run-error classification, row-action IDs, the
+  sheet's cache, the work pump, Send-now receipts, the watch resume, access
   reconciliation and the model cache. C4 requires that it behave exactly
-  like the code it replaced. Deleting it must not delete that behaviour.
+  like the code it replaced, and it does: the TUI reads it over ACP now, and
+  `internal/acpclient/inproc` is deleted (plan 8).
 - **The ACP server** (`internal/acp/server.go`) reads and writes
   newline-delimited JSON-RPC 2.0 on any reader and writer
   (`NewServer`, `:119`). It reads each inbound frame with a 1 MiB cap
   (`:312`). Handlers run on their own goroutines (`handlerWG`), and nothing
   orders a response after the notifications its handler caused. A
   long-running handler runs in a `cancellable` context, so the client's
-  `$/cancel_request` ends the run in flight. 139 methods are registered
+  `$/cancel_request` ends the run in flight. 140 methods are registered
   (`host.go`), plus the `session/cancel` notification.
 - **What the agent pushes today:**
   - the ACP chunk kinds (`agent_message_chunk`, `agent_thought_chunk`,
@@ -148,10 +149,12 @@ new client.
   calls. P2's plans name the ones that must become asynchronous
   over a wire: `Command`, `PlanPreflight`, `Host.NewSession`,
   `Postmortem` and `CanProbeModel`.
-- **TUI tests build state, not runtimes.** About 225 `tui.New` calls go
-  through helpers (`testModel`, `testModelWith`, …) that build an adapter
-  over a `session.State` and a `Deps`. P2 placed every test behind those
-  helpers so that P3 changes only the helpers.
+- **TUI tests serve state over the pipe.** About 225 `tui.New` calls go
+  through helpers (`testModel`, `testModelWith`, …) that serve a
+  `session.State` and a `Deps` through `acptest.Open`, the test agent P3
+  plan 8 added; each helper takes the test so its agent closes with it. P2
+  placed every test behind those helpers, which is what let plan 8 change
+  only the helpers.
 
 ## In scope
 
@@ -2035,3 +2038,94 @@ changed (R9); the TUI still runs on `inproc`, in process, until plan 8.
   `ClearSkillGateDecision`), 8 new in P3 carried by 8 distinct new methods,
   and 2 carrying none; `acp.Server` registers 131 methods (117 plus the
   fourteen), plus the `session/cancel` notification.
+
+### Plan 8 — the switch
+
+- **The wire is the only path.** `internal/acpclient/inproc` is deleted.
+  Embedded mode builds the service pair from `embedded.SessionDeps(ctx)`,
+  adopts the runtime with it (`acp.Embedding.Adopt`), serves it on one end of
+  an in-memory pipe through `marshal acp`'s handlers, dials the other end and
+  runs the TUI over the client. `internal/launch` and `internal/acp/acptest`
+  are the only dialers, and `TestOnlyTheEmbeddingDials` keeps it that way.
+- **The embedding adopts, never starts.** `acp.NewEmbedding` builds an
+  `agentHost` whose runtime starter refuses and whose closer closes nothing.
+  `Adopt` registers the runtime under its session ID with the embedding's own
+  pair, so the trust prompt and its decision are the embedding's, and `Close`
+  is `CloseAll`: it releases the service and closes no runtime, because the
+  embedding closes its own afterwards. A handler's panic ends the connection
+  (`Server.EndOnPanic`): it is logged with its stack, the call is answered as
+  before, and `Serve` returns an error naming the method.
+- **The transcript's silent changes publish.** The eight state calls that
+  change what the projection reads and published no event — `Rewind`,
+  `SwitchBranch`, `ClearMessages`, `LogThinking`, `SetTodos`, `AddRunEvent`,
+  `ClearRunEvents` and `SetWorkspace` — publish `transcript_changed`, a
+  session event no ACP update carries. `Rewind` publishes only when it moved
+  the leaf and `SetWorkspace` only when the workspace changed.
+- **A busy client's tick flushes every time.** For a marshal client the idle
+  loop re-projects the main stack on every tick while the client's busy flag
+  for the session is set or a subagent runs, which covers a running call's
+  streaming output and a running subagent's card. A fence still flushes only
+  what is dirty, so no call's budget moves: the 2,000-call session costs one
+  4.3ms flush every 50ms while busy, the share plan 4b accepted.
+- **`session/sync`** marks the session's stacks dirty and answers, so the
+  response barrier flushes them and fences every other forwarder before the
+  response is written. `rpc.Session.Sync` sends it; it is not part of
+  `acpclient.Session`.
+- **The test agent** (`internal/acp/acptest`) serves a test's state through
+  the embedding over a pipe. Its ten mirror reads compare the client's answer
+  with the service's own, encode both, and send `session/sync` only when they
+  differ — up to three times — so a test that changes the state and then
+  renders sees the change, and the TUI always renders what crossed the wire.
+  Comparing first is what keeps the suite affordable: syncing before every
+  read would have added about 53s.
+- **The TUI suite runs over the pipe.** Every TUI test builds its model
+  through `acptest.Open`; the helpers took a `testing.TB` first parameter, so
+  each test's agent closes with it. The suite took **33.3s** before and
+  **39.1s** after on this machine, 1.17× and inside the plan's 2× limit. The
+  key press (R10) medians **603.5µs in process** and **519.2µs over the
+  pipe**, inside R10's +1ms.
+- **Triage made no production change.** Every failure the switch produced was
+  a distinction the wire legitimately makes, fixed in the test: an error's
+  identity (only an `*acpwire.Error` keeps a code, so the two settings
+  assertions compare the sentence — case 2); a state built without a session
+  ID (fixtures now name it with the served ID — case 3); a change signal that
+  any mirror fires (the work helper waits on the value with a deadline — case
+  4); and the wire's password wipe after a sudo answer (the recorder keeps a
+  copy).
+- **`launch`'s pipe and its teardown order.** Each pass builds one pipe,
+  serves it on a context that does not end with the signal context, and runs
+  the program on a context that ends when the connection does. After the
+  program: the client closes, the server stops and is waited for (5s), the
+  embedding releases the service, and only then does the runtime close through
+  `Finish` or `Resume`. A lost connection returns
+  `launch: the agent's connection closed: <the agent's error>` and takes no
+  resume or reload branch.
+- **The guard.** `TestOnlyTheEmbeddingDials` walks the module's non-test Go
+  files: only `internal/launch` and `internal/acp/acptest` import
+  `internal/acpclient/rpc`, nothing imports the test agent, and nothing
+  imports the deleted transport.
+- **The counts.** `acpclient.Methods` still has 111 rows (109 existing, none
+  new, 2 carrying none); `acp.Server` registers **140** methods (139 plus
+  `session/sync`), plus the `session/cancel` notification.
+- **Review pass.** Three reviewers, one per slice of the branch (the transport
+  and the session's publishes, launch and the embedding, the test agent and the
+  docs), found no blocker and no major defect. The fixes they earned: `adopt`
+  installs its pair before the session becomes visible and refuses a runtime
+  that already has one, so a repeated or refused adopt can never overwrite a
+  pair that then leaks its service; `SetWorkspace` publishes after releasing
+  `accessMu`, because the session broker's terminal subscriber blocks its
+  publisher; `close` records a connection that died in the window between the
+  caller's last look at `lost()` and the shutdown claim, so that loss is
+  reported instead of a clean exit; `dialAgent` closes the embedding when
+  `Adopt` refuses it. Pins were added for `adopt`'s three refusals and for
+  `settle`'s three-sync bound. One finding was declined: a TUI-level test
+  cannot prove that a publish carried a change, because the idle ticker's
+  `due` flush picks the change up anyway (`flushProjectorFor` flushes when
+  `due` regardless of `dirty`), so the contract stays pinned by
+  `TestTheSilentTranscriptCallsPublish` and the conformance row.
+- **Open for P4.** The test agent's settle can hide a push the agent never
+  makes after a call, because a read that disagrees syncs; the conformance
+  cases prove each call's push, and the usability suite and the manual run
+  exercise real pushes. And the service's error texts still start `inproc:`
+  (about forty of them): users see them, tests pin some, and renaming them is
+  a follow-up.

@@ -11,7 +11,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -30,8 +30,8 @@ func newStatusTestModel(t *testing.T) Model {
 	// warm-sunset palette even when the outer environment sets NO_COLOR,
 	// which would otherwise resolve every slot to NoColor{} and emit no SGR.
 	t.Setenv("NO_COLOR", "")
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.resize(100, 30)
 	return m
 }
@@ -40,8 +40,8 @@ func newStatusTestModel(t *testing.T) Model {
 func newStatusTestModelWithGit(t *testing.T, git *gitinfo.Info) Model {
 	t.Helper()
 	t.Setenv("NO_COLOR", "")
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModelWith(inproc.Deps{
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModelWith(t, service.Deps{
 		State:   state,
 		GitInfo: func(string) gitinfo.Info { return *git },
 	})
@@ -54,8 +54,8 @@ func newStatusTestModelWithGit(t *testing.T, git *gitinfo.Info) Model {
 func newStatusTestModelStub(t *testing.T, stub *stubSession) Model {
 	t.Helper()
 	t.Setenv("NO_COLOR", "")
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModelStub(state, stub)
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModelStub(t, state, stub)
 	m.resize(100, 30)
 	return m
 }
@@ -484,8 +484,8 @@ func TestStatusLineHintsYieldToActivity(t *testing.T) {
 
 func TestStatusLineShowsWorkingDir(t *testing.T) {
 	dir := t.TempDir()
-	state := session.New(config.Default(), dir, time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), dir, time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.resize(100, 30)
 	line := stripANSI(m.renderStatusLine(100))
 	if !strings.Contains(line, filepath.Base(dir)) {
@@ -551,7 +551,7 @@ func ctrlXStatusModel(t *testing.T, width, height int, c ctrlXStatusCase) Model 
 		stateOf(m).PushSteering(msg)
 	}
 	if c.drill != ctrlXUndrilled {
-		child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+		child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 		view := stateOf(m).RegisterSubagent("explore repo", child)
 		m.drillIntoSubagent(view.ID)
 		m.refreshViewport()
@@ -1163,12 +1163,12 @@ func TestChangedFileCountAppearsAfterTurn(t *testing.T) {
 func newInteractionStatusModel(t *testing.T) Model {
 	t.Helper()
 	t.Setenv("NO_COLOR", "")
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	on := true
 	if _, err := state.ApplyInteraction(interaction.Patch{Auto: &on, System: &on}); err != nil {
 		t.Fatalf("seed interaction: %v", err)
 	}
-	m := testModel(state)
+	m := testModel(t, state)
 	m.resize(100, 30)
 	return m
 }

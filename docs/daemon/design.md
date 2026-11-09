@@ -221,9 +221,10 @@ Fleet features need the bridge transport. Embedded mode shows only the
 session screen.
 
 The migration is done. The TUI's only path is `acpclient.Host` and
-`Session`, with `acpwire` for the wire types. `internal/acpclient/inproc`
-implements them in process until P3 deletes it; P3 plan 2 moved that logic
-to `internal/acp/service`, which `inproc` aliases.
+`Session`, with `acpwire` for the wire types. P3 deleted
+`internal/acpclient/inproc`: embedded mode runs the TUI over ACP on an
+in-memory pipe (`internal/launch/pipe.go`), served by `internal/acp`'s
+embedding, and the logic lives in `internal/acp/service`.
 `TestTUIStaysOnTheClientSeam` fails on any TUI crossing to the agent
 side, with no allowlist. The spec's nine plans did the migration.
 
@@ -337,7 +338,7 @@ state, not corruption.
 | P0 | Selection handled by the app (§5) — implemented; manual terminal check pending (see the spec's implementation record) | The P0 check in §5 passes in the current TUI |
 | P1 | ProjectHost/Session split and headless indexing (§4.2) — implemented; see the spec's implementation record | Two ACP sessions on one repo in one process share one host, one set of language servers and one watcher. With `indexing.watch = true`, a headless session's edit refreshes its embeddings. Two processes on one tree run one indexer |
 | P2 | TUI client seam with the in-process adapter (§4.5) — implemented (see the spec's implementation record): nine plans, with 2, 3 and 5 split into sub-plans, namely 1, 2a–2c, 3a–3d, 4, 5a–5e, 6, 7a–7d, 8a, 8b and 9 | Done when: the TUI reaches the agent side only through the client interface — it imports no agent-side package, holds no `session.State`, and does no project, config or keychain I/O (enforced by a boundary test) — and the transcript renders from the wire projection (§8 settled). The boundary test's allowlist is empty and `WithLegacyState` is gone |
-| P3 | ACP client transports; embedded mode over the pipe | Embedded mode runs entirely over ACP and the adapter is deleted |
+| P3 | ACP client transports; embedded mode over the pipe — implemented (see the spec's implementation record) | Embedded mode runs entirely over ACP and the adapter is deleted |
 | P4 | Bridge local profile: user service, unix listener, RPC passthrough (the sudo answer included), pinning, environment resolution, OAuth refresh run once, one `marshal acp` child per project for host-process agents | A TUI can quit and reattach to a running turn on the local daemon |
 | P5 | Fleet screen in the Go TUI, shared types, server-computed views | The fleet loop from `docs/fleet-cli/design.md` §1 works from the Go TUI against local and server profiles |
 

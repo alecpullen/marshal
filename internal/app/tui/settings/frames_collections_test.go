@@ -8,7 +8,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/acptest"
+	"marshal/internal/acp/service"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/llm/provider/modelcache"
@@ -212,7 +213,7 @@ func TestRenameProviderMovesItsCachedModels(t *testing.T) {
 			t.Fatalf("seed cache: %v", err)
 		}
 		st := newState(cfg)
-		host, _ := inproc.New(inproc.Deps{
+		host, _ := acptest.Open(t, service.Deps{
 			State:         session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{}),
 			ModelCacheDir: dir,
 			Auth:          newMemAuth(),

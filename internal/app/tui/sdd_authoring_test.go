@@ -10,7 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -50,9 +50,9 @@ func fakeAuthorPlan(state *session.State) func(context.Context, acpwire.AuthorPl
 // path, and returns it with the recorder that saw the call.
 func authoringModel(t *testing.T) (Model, *turnRecorder) {
 	t.Helper()
-	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{SessionID: unnamedSessionID})
 	rec := &turnRecorder{}
-	m := testModelTurns(t, inproc.Deps{
+	m := testModelTurns(t, service.Deps{
 		State:  state,
 		Runner: runnerOf(&testAgentRunner{}),
 		PlanPreflight: preflightOf(acpwire.PlanPreflight{

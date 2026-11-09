@@ -8,7 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -94,12 +94,12 @@ func TestParseReviewArgs(t *testing.T) {
 }
 
 func TestTrustCommandOpensTrustPanelWhenPending(t *testing.T) {
-	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{SessionID: unnamedSessionID})
 	reg := commands.New()
 	_ = commands.RegisterAll(reg, nil)
 	var decided trust.Decision
-	m := testModelWith(
-		inproc.Deps{
+	m := testModelWith(t,
+		service.Deps{
 			State:       state,
 			Commands:    reg,
 			TrustPrompt: "/some/project",
@@ -125,12 +125,12 @@ func TestTrustCommandOpensTrustPanelWhenPending(t *testing.T) {
 // closes the panel, but the host still reports the decision as pending, so
 // /trust asks again instead of falling back to the "nothing pending" note.
 func TestTrustCommandReopensAfterDecline(t *testing.T) {
-	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{SessionID: unnamedSessionID})
 	reg := commands.New()
 	_ = commands.RegisterAll(reg, nil)
 	var decided trust.Decision
-	m := testModelWith(
-		inproc.Deps{
+	m := testModelWith(t,
+		service.Deps{
 			State:       state,
 			Commands:    reg,
 			TrustPrompt: "/some/project",
@@ -168,10 +168,10 @@ func TestTrustCommandReopensAfterDecline(t *testing.T) {
 }
 
 func TestTrustCommandFallsBackWhenNoPendingDecision(t *testing.T) {
-	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{SessionID: unnamedSessionID})
 	reg := commands.New()
 	_ = commands.RegisterAll(reg, nil)
-	m := testModelWith(inproc.Deps{State: state, Commands: reg}, WithHomeDir(t.TempDir()), WithWorkingDir("/some/project"))
+	m := testModelWith(t, service.Deps{State: state, Commands: reg}, WithHomeDir(t.TempDir()), WithWorkingDir("/some/project"))
 
 	// No trustDecide wired: the handler's docpanel opens, then the effect
 	// must NOT open a trustpanel and must steer to the shell path.
@@ -194,11 +194,11 @@ func TestTrustCommandFallsBackWhenNoPendingDecision(t *testing.T) {
 }
 
 func TestTrustCommandTrustedDoesNothingExtra(t *testing.T) {
-	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{SessionID: unnamedSessionID})
 	state.SetTrusted(true)
 	reg := commands.New()
 	_ = commands.RegisterAll(reg, nil)
-	m := testModelWith(inproc.Deps{State: state, Commands: reg}, WithHomeDir(t.TempDir()), WithWorkingDir("/some/project"))
+	m := testModelWith(t, service.Deps{State: state, Commands: reg}, WithHomeDir(t.TempDir()), WithWorkingDir("/some/project"))
 
 	m.dispatchCommand("/trust")
 	if _, ok := m.dock.Panel().(*trustpanel.Panel); ok {
@@ -246,7 +246,7 @@ func TestExitCommandsWithoutWorkExitDirectly(t *testing.T) {
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, End: &endTestController{}, Commands: reg})
+	m := testModelWith(t, service.Deps{State: state, End: &endTestController{}, Commands: reg})
 	m.resize(80, 24)
 
 	updated, cmd := m.dispatchCommand("/quit")
@@ -321,7 +321,7 @@ func TestSendNowCommandTokenBoundary(t *testing.T) {
 		t.Fatal("/send-now was not recognized")
 	}
 	// A registry without the entry refuses the recognition too.
-	bare := testModelWith(inproc.Deps{State: newTestState(t), Commands: commands.New()})
+	bare := testModelWith(t, service.Deps{State: newTestState(t), Commands: commands.New()})
 	if bare.isSendNowCommand("/send-now text") {
 		t.Fatal("recognized /send-now without the registry entry")
 	}
@@ -496,7 +496,7 @@ func TestADocActionRunsAgentSide(t *testing.T) {
 			}})
 		},
 	})
-	m := testModelWith(inproc.Deps{State: state, Commands: reg})
+	m := testModelWith(t, service.Deps{State: state, Commands: reg})
 	m.resize(80, 24)
 
 	updated, _ := m.dispatchCommand("/things")

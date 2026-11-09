@@ -576,3 +576,46 @@ func TestStackNodeAndCallersSendTheirMethods(t *testing.T) {
 		t.Fatalf("Callers with no refs = %v, want nil", callers.refs)
 	}
 }
+
+// TestSyncSendsTheSessionsMethod pins session/sync on the client: it names the
+// session, and an agent error is returned (P3 plan 8).
+func TestSyncSendsTheSessionsMethod(t *testing.T) {
+	host, a := dialScripted(t, DialOptions{})
+	session := attachScripted(t, host, a, "s1", acpwire.SessionStatus{WorkingDir: "B"})
+
+	synced := make(chan error, 1)
+	go func() { synced <- session.Sync(context.Background()) }()
+	req := a.next(t)
+	if got := string(req.Method); got != acpwire.MethodSync {
+		t.Fatalf("Sync sent %q, want %q", got, acpwire.MethodSync)
+	}
+	var params acpwire.ControlParams
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		t.Fatalf("decode session/sync params: %v", err)
+	}
+	if params.SessionID != "s1" {
+		t.Fatalf("session/sync params = %+v, want session s1", params)
+	}
+	a.answer(t, req, struct{}{})
+	select {
+	case err := <-synced:
+		if err != nil {
+			t.Fatalf("Sync = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Sync did not return")
+	}
+
+	failed := make(chan error, 1)
+	go func() { failed <- session.Sync(context.Background()) }()
+	req = a.next(t)
+	a.send(t, codedErrorFrame(t, string(req.ID), acpwire.Error{Message: "no sync for you"}))
+	select {
+	case err := <-failed:
+		if err == nil {
+			t.Fatal("Sync = nil error, want the agent's")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the failing Sync did not return")
+	}
+}

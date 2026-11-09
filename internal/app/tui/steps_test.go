@@ -516,7 +516,7 @@ func TestSubagentApprovalResolvesOwnerAgainstChildState(t *testing.T) {
 	pid := stateOf(m).BeginStep(session.Actor{})
 	stateOf(m).AddNarration(pid, "Parent narration that must not leak.")
 
-	child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	child.AddMessage(session.RoleUser, "review", session.ContentTypePlain)
 	cid := child.BeginStep(session.Actor{Role: "reviewer", Label: "reviewer"})
 	child.AddNarration(cid, "Checking the migration. It touches two tables.")
@@ -598,7 +598,7 @@ func TestRunningToolRowInsideStepExpandsOnClickEvenWithGlobalExpand(t *testing.T
 // transcript must not expand step 1 inside a subagent's view.
 func TestExpandStateDoesNotLeakIntoSubagentViews(t *testing.T) {
 	m := newTestModel(t)
-	child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	v := stateOf(m).RegisterSubagent("reviewer", child)
 	step1 := nodeID{Kind: acpwire.KindStep, Key: "step:1"}
 

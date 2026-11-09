@@ -286,6 +286,7 @@ const (
 	MethodStackUnsubscribe = "session/stack_unsubscribe"
 	MethodStackBusy        = "session/stack_busy"
 	MethodStackNode        = "session/stack_node"
+	MethodSync             = "session/sync"
 	MethodCallers          = "session/callers"
 	MethodSessionUpdate    = "session/update"
 	UpdateStackPatch       = "stack_patch"

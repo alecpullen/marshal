@@ -20,7 +20,7 @@ import (
 
 func newChildState(t *testing.T) *session.State {
 	t.Helper()
-	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 }
 
 // newChildStateWithID is newChildState with the child's session ID set: a work

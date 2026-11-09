@@ -9,7 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -404,9 +404,9 @@ func TestApprovalReviewShowsOperationAndReason(t *testing.T) {
 		Risk:   "medium",
 		Reason: "model-cost-consent: this spends $0.40 of the budget",
 	}
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	state.SetPendingApproval(tc)
-	m := testModelWith(inproc.Deps{State: state, Auth: newMemAuth()}, WithHomeDir(t.TempDir()),
+	m := testModelWith(t, service.Deps{State: state, Auth: newMemAuth()}, WithHomeDir(t.TempDir()),
 		WithOpenBrowser(func(string) error { return nil }))
 	m, _ = press(m, tea.WindowSizeMsg{Width: 100, Height: 32})
 	// The requester and the model's own "why" ride on the wire; supply them as
@@ -472,9 +472,9 @@ func TestApprovalReviewPagesFullCommandAndDiff(t *testing.T) {
 		Risk:    "high",
 		Diff:    diff.String(),
 	}
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	state.SetPendingApproval(tc)
-	m := testModelWith(inproc.Deps{State: state, Auth: newMemAuth()}, WithHomeDir(t.TempDir()),
+	m := testModelWith(t, service.Deps{State: state, Auth: newMemAuth()}, WithHomeDir(t.TempDir()),
 		WithOpenBrowser(func(string) error { return nil }))
 	m, _ = press(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	if m.approvalModel == nil {
@@ -532,9 +532,9 @@ func TestApprovalReviewResizeAndVisibility(t *testing.T) {
 		Risk:         "high",
 		ResponseChan: ch,
 	}
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	state.SetPendingApproval(tc)
-	m := testModelWith(inproc.Deps{State: state, Auth: newMemAuth()}, WithHomeDir(t.TempDir()),
+	m := testModelWith(t, service.Deps{State: state, Auth: newMemAuth()}, WithHomeDir(t.TempDir()),
 		WithOpenBrowser(func(string) error { return nil }))
 	m, _ = press(m, tea.WindowSizeMsg{Width: 120, Height: 40})
 	m.workSnapshot = workSnapOf(workRunningCard("work:01", workT0.Add(-time.Second)))
@@ -653,12 +653,12 @@ func TestApprovalReviewKeepsTranscriptNavigation(t *testing.T) {
 		Risk:         "high",
 		ResponseChan: ch,
 	}
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	for i := 0; i < 80; i++ {
 		state.AddMessage(session.RoleSystem, fmt.Sprintf("history line %d", i), session.ContentTypePlain)
 	}
 	state.SetPendingApproval(tc)
-	m := testModelWith(inproc.Deps{State: state, Auth: newMemAuth()}, WithHomeDir(t.TempDir()),
+	m := testModelWith(t, service.Deps{State: state, Auth: newMemAuth()}, WithHomeDir(t.TempDir()),
 		WithOpenBrowser(func(string) error { return nil }))
 	m, _ = press(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	m.invalidateTranscript()
@@ -760,9 +760,9 @@ func TestApprovalReviewKeepsTranscriptNavigation(t *testing.T) {
 
 	// A forced prompt offers only the choices it may offer: allow, deny, edit.
 	sudo := &session.PendingToolCall{ID: "tc-sudo", Name: "shell.sudo", Args: `{"command":"id"}`}
-	state2 := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state2 := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	state2.SetPendingApproval(sudo)
-	f := testModelWith(inproc.Deps{State: state2, Auth: newMemAuth()}, WithHomeDir(t.TempDir()),
+	f := testModelWith(t, service.Deps{State: state2, Auth: newMemAuth()}, WithHomeDir(t.TempDir()),
 		WithOpenBrowser(func(string) error { return nil }))
 	f, _ = press(f, tea.WindowSizeMsg{Width: 80, Height: 24})
 	if f.approvalModel == nil {

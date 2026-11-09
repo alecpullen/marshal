@@ -7,7 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/service"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/db"
@@ -15,8 +15,8 @@ import (
 
 func newHistoryTestModel(t *testing.T, history ...string) Model {
 	t.Helper()
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.history = history
 	m.histIdx = -1
 	return m
@@ -167,9 +167,9 @@ func TestRecordPromptCollapsesDuplicatesAndSkipsEmpty(t *testing.T) {
 }
 
 func TestHistoryDisabledToggle(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	state.Config.History.Enabled = false
-	m := testModel(state)
+	m := testModel(t, state)
 	m.history = []string{"newest"}
 	m.histIdx = -1
 	if m.recallOlder() {
@@ -248,7 +248,7 @@ func TestPromptRecordedToDBAndLoadedOnStartup(t *testing.T) {
 
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0),
 		session.Persistence{DB: database, SessionID: "sess-1"})
-	m := testModelWith(inproc.Deps{State: state, ProjectID: projectID})
+	m := testModelWith(t, service.Deps{State: state, ProjectID: projectID})
 	m.input.SetValue("remember me")
 	m, _ = pressKey(m, tea.KeyEnter)
 
@@ -263,7 +263,7 @@ func TestPromptRecordedToDBAndLoadedOnStartup(t *testing.T) {
 	// A fresh model for the same project loads history at startup.
 	state2 := session.New(config.Default(), t.TempDir(), time.Unix(200, 0),
 		session.Persistence{DB: database, SessionID: "sess-2"})
-	m2 := testModelWith(inproc.Deps{State: state2, ProjectID: projectID})
+	m2 := testModelWith(t, service.Deps{State: state2, ProjectID: projectID})
 	if len(m2.history) != 1 || m2.history[0] != "remember me" {
 		t.Fatalf("startup history = %v, want [remember me]", m2.history)
 	}

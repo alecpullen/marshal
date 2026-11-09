@@ -9,7 +9,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/acptest"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/postmortem"
@@ -23,8 +24,9 @@ const (
 )
 
 // testModelEnding builds a model whose session's end service is end.
-func testModelEnding(state *session.State, end inproc.EndService, opts ...Option) Model {
-	host, sess := inproc.New(inproc.Deps{State: state, End: end})
+func testModelEnding(t testing.TB, state *session.State, end service.EndService, opts ...Option) Model {
+	t.Helper()
+	host, sess := acptest.Open(t, service.Deps{State: state, End: end})
 	return New(host, sess, opts...)
 }
 
@@ -32,8 +34,9 @@ func testModelEnding(state *session.State, end inproc.EndService, opts ...Option
 // is end, as withPromptRunner does for the runner. The model's host is left as it
 // was, so it stays paired with the session this replaces: a test that also drives
 // a swap must build both, as TestNewSessionSwapsTheClientSession does.
-func withEndService(m Model, end inproc.EndService) Model {
-	_, sess := inproc.New(inproc.Deps{State: stateOf(m), End: end})
+func withEndService(t testing.TB, m Model, end service.EndService) Model {
+	t.Helper()
+	_, sess := acptest.Open(t, service.Deps{State: stateOf(m), End: end})
 	m.sess = sess
 	return m
 }
@@ -61,7 +64,7 @@ func hasSystemLine(state *session.State, content string) bool {
 func TestQuitClosesTheSession(t *testing.T) {
 	state := postmortemTestState(t, "sess-close")
 	state.Config.Postmortem.OnExit = "never"
-	m := testModelEnding(state, &endTestController{})
+	m := testModelEnding(t, state, &endTestController{})
 
 	responses := make(chan session.UserApprovalDecision, 1)
 	state.SetPendingApproval(&session.PendingToolCall{
@@ -102,7 +105,7 @@ func TestQuitClosesTheSession(t *testing.T) {
 func TestAnExitWithoutAnEndServiceStillQuits(t *testing.T) {
 	state := postmortemTestState(t, "sess-noend")
 	state.Config.Postmortem.OnExit = "never"
-	m := testModel(state)
+	m := testModel(t, state)
 
 	settle := m.beginEnd(&endIntent{kind: acpwire.EndIntentExit})
 	if settle == nil {
@@ -126,7 +129,7 @@ func TestTheExitPostmortemIsWrittenThroughTheSession(t *testing.T) {
 	state := postmortemTestState(t, "sess-written")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "always"
-	m := testModelEnding(state, &endTestController{})
+	m := testModelEnding(t, state, &endTestController{})
 
 	m, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: acpwire.EndIntentExit}))
 	if cmd == nil {

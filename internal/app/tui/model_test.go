@@ -17,7 +17,8 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/acptest"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/presetsetup"
@@ -115,7 +116,7 @@ func asModel(t *testing.T, updated tea.Model) Model {
 // approval, so the session refuses the answer and the replacement stays
 // pending.
 func TestHandleApprovalRejectsForeignPending(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	ch := make(chan session.UserApprovalDecision, 1)
 	P1 := &session.PendingToolCall{
 		ID:           "p1",
@@ -134,7 +135,7 @@ func TestHandleApprovalRejectsForeignPending(t *testing.T) {
 
 	// Set P1 as the pending approval and create a model.
 	state.SetPendingApproval(P1)
-	m := testModel(state)
+	m := testModel(t, state)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
 	stale := m.sess.Pending().Approvals[0]
@@ -172,7 +173,7 @@ func TestHandleApprovalRejectsForeignPending(t *testing.T) {
 // so a subsequent Enter falls through to the regular keypress switch and is a
 // safe no-op.
 func TestHandleApprovalDoubleEnterAfterComplete(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	ch := make(chan session.UserApprovalDecision, 1)
 	tc := &session.PendingToolCall{
 		ID:           "p1",
@@ -182,7 +183,7 @@ func TestHandleApprovalDoubleEnterAfterComplete(t *testing.T) {
 		ResponseChan: ch,
 	}
 	state.SetPendingApproval(tc)
-	m := testModel(state)
+	m := testModel(t, state)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
 
@@ -271,8 +272,8 @@ func TestRespondIsIdempotent(t *testing.T) {
 }
 
 func TestEnterAppendsInputAndClearsPrompt(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	model := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	model := testModel(t, state)
 
 	updated, _ := model.Update(tea.KeyPressMsg{Text: "hello"})
 	model = updated.(Model)
@@ -292,8 +293,8 @@ func TestEnterAppendsInputAndClearsPrompt(t *testing.T) {
 }
 
 func TestEnterOnWhitespaceDoesNotAppendMessage(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	model := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	model := testModel(t, state)
 
 	updated, _ := model.Update(tea.KeyPressMsg{Code: tea.KeySpace})
 	model = updated.(Model)
@@ -306,8 +307,8 @@ func TestEnterOnWhitespaceDoesNotAppendMessage(t *testing.T) {
 }
 
 func TestCtrlCQuits(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	model := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	model := testModel(t, state)
 
 	updated, cmd := model.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	select {
@@ -337,8 +338,8 @@ func TestCtrlCQuits(t *testing.T) {
 }
 
 func TestEscDoesNotCancelInFlightTurn(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.resize(80, 24)
 	m.busy = true
 	cancelled := false
@@ -353,8 +354,8 @@ func TestEscDoesNotCancelInFlightTurn(t *testing.T) {
 }
 
 func TestEscWhenIdleDoesNotQuit(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.resize(80, 24)
 
 	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
@@ -369,8 +370,8 @@ func TestEscWhenIdleDoesNotQuit(t *testing.T) {
 }
 
 func TestTypingIsAlwaysCaptured(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.resize(80, 24)
 
 	for _, r := range "123r" {
@@ -383,7 +384,7 @@ func TestTypingIsAlwaysCaptured(t *testing.T) {
 }
 
 func TestSlashCommandsShowSuggestionsAndTabCompletes(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	reg := commands.New()
 	if err := reg.Register(commands.Command{Name: "settings", Description: "Open settings", Handler: func(*session.State, []string) commands.Result { return commands.Text("") }}); err != nil {
 		t.Fatalf("Register settings failed: %v", err)
@@ -391,7 +392,7 @@ func TestSlashCommandsShowSuggestionsAndTabCompletes(t *testing.T) {
 	if err := reg.Register(commands.Command{Name: "swarm", Description: "Run swarm", Args: "<goal>", Handler: func(*session.State, []string) commands.Result { return commands.Text("") }}); err != nil {
 		t.Fatalf("Register swarm failed: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, Commands: reg})
+	m := testModelWith(t, service.Deps{State: state, Commands: reg})
 	m.resize(80, 24)
 
 	for _, r := range "/se" {
@@ -415,13 +416,13 @@ func TestSlashCommandsShowSuggestionsAndTabCompletes(t *testing.T) {
 }
 
 func TestSlashCommandSuggestionsIncludeHiddenCommands(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	reg := commands.New()
 	hidden := commands.Command{Name: "settings", Description: "Open settings", Hidden: true, Handler: func(*session.State, []string) commands.Result { return commands.Text("") }}
 	if err := reg.Register(hidden); err != nil {
 		t.Fatalf("Register settings failed: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, Commands: reg})
+	m := testModelWith(t, service.Deps{State: state, Commands: reg})
 	m.resize(80, 24)
 
 	for _, r := range "/se" {
@@ -438,11 +439,11 @@ func TestSlashCommandSuggestionsIncludeHiddenCommands(t *testing.T) {
 }
 
 func TestPageKeysScrollViewport(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	for i := 0; i < 100; i++ {
 		state.AddMessage(session.RoleUser, fmt.Sprintf("message %d", i), session.ContentTypePlain)
 	}
-	m := testModel(state)
+	m := testModel(t, state)
 	m.resize(80, 24)
 	m.refreshViewport()
 	bottom := m.viewport.YOffset()
@@ -461,11 +462,11 @@ func TestPageKeysScrollViewport(t *testing.T) {
 }
 
 func TestCtrlUCtrlDScrollViewport(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	for i := 0; i < 100; i++ {
 		state.AddMessage(session.RoleUser, fmt.Sprintf("message %d", i), session.ContentTypePlain)
 	}
-	m := testModel(state)
+	m := testModel(t, state)
 	m.resize(80, 24)
 	m.refreshViewport()
 	bottom := m.viewport.YOffset()
@@ -491,11 +492,11 @@ func TestCtrlUCtrlDScrollViewport(t *testing.T) {
 }
 
 func TestCtrlDAtBottomReEnablesFollow(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	for i := 0; i < 100; i++ {
 		state.AddMessage(session.RoleUser, fmt.Sprintf("message %d", i), session.ContentTypePlain)
 	}
-	m := testModel(state)
+	m := testModel(t, state)
 	m.resize(80, 60)
 	m.refreshViewport()
 	bottom := m.viewport.YOffset()
@@ -526,11 +527,11 @@ func TestCtrlDAtBottomReEnablesFollow(t *testing.T) {
 }
 
 func TestEndKeyReEnablesFollow(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	for i := 0; i < 100; i++ {
 		state.AddMessage(session.RoleUser, fmt.Sprintf("message %d", i), session.ContentTypePlain)
 	}
-	m := testModel(state)
+	m := testModel(t, state)
 	m.resize(80, 24)
 	m.refreshViewport()
 
@@ -547,11 +548,11 @@ func TestEndKeyReEnablesFollow(t *testing.T) {
 }
 
 func TestScrollUpPreventsAutoBottomOnRefresh(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	for i := 0; i < 100; i++ {
 		state.AddMessage(session.RoleUser, fmt.Sprintf("message %d", i), session.ContentTypePlain)
 	}
-	m := testModel(state)
+	m := testModel(t, state)
 	m.resize(80, 24)
 	m.refreshViewport()
 
@@ -571,11 +572,11 @@ func TestScrollUpPreventsAutoBottomOnRefresh(t *testing.T) {
 }
 
 func TestMouseWheelScrollsViewport(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	for i := 0; i < 100; i++ {
 		state.AddMessage(session.RoleUser, fmt.Sprintf("message %d", i), session.ContentTypePlain)
 	}
-	m := testModel(state)
+	m := testModel(t, state)
 	m.resize(80, 24)
 	m.refreshViewport()
 	bottom := m.viewport.YOffset()
@@ -593,11 +594,11 @@ func TestMouseWheelScrollsViewport(t *testing.T) {
 // Wheeling back down to the bottom re-arms follow, so new output resumes
 // auto-scrolling without a keypress.
 func TestMouseWheelDownAtBottomReEnablesFollow(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	for i := 0; i < 100; i++ {
 		state.AddMessage(session.RoleUser, fmt.Sprintf("message %d", i), session.ContentTypePlain)
 	}
-	m := testModel(state)
+	m := testModel(t, state)
 	m.resize(80, 24)
 	m.refreshViewport()
 
@@ -616,11 +617,11 @@ func TestMouseWheelDownAtBottomReEnablesFollow(t *testing.T) {
 }
 
 func TestNewSubmissionReEnablesFollow(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	for i := 0; i < 100; i++ {
 		state.AddMessage(session.RoleUser, fmt.Sprintf("message %d", i), session.ContentTypePlain)
 	}
-	m := testModel(state)
+	m := testModel(t, state)
 	m.resize(80, 24)
 	m.refreshViewport()
 	m.viewportFollow = false
@@ -653,7 +654,7 @@ func TestCtrlKOpensMemoryBrowser(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0),
 		session.Persistence{DB: database, SessionID: "sess-1"})
 
-	m := testModelWith(inproc.Deps{State: state, ProjectID: projectID})
+	m := testModelWith(t, service.Deps{State: state, ProjectID: projectID})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
 	updated, _ = m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
@@ -685,7 +686,7 @@ func TestMemoryClosedMsgClosesOverlay(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0),
 		session.Persistence{DB: database, SessionID: "sess-1"})
 
-	m := testModelWith(inproc.Deps{State: state, ProjectID: projectID})
+	m := testModelWith(t, service.Deps{State: state, ProjectID: projectID})
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
 	m = updated.(Model)
 	if !m.dock.IsOpen() {
@@ -699,12 +700,12 @@ func TestMemoryClosedMsgClosesOverlay(t *testing.T) {
 }
 
 func TestMemoryWithoutADatabase(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	cmdReg := commands.New()
 	if err := commands.RegisterAll(cmdReg, nil); err != nil {
 		t.Fatalf("RegisterAll() error = %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, Commands: cmdReg})
+	m := testModelWith(t, service.Deps{State: state, Commands: cmdReg})
 
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
@@ -720,7 +721,7 @@ func TestMemoryWithoutADatabase(t *testing.T) {
 	}
 
 	// Ctrl+K is a silent shortcut: it opens nothing and notes nothing.
-	quiet := testModel(session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{}))
+	quiet := testModel(t, session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID}))
 	updated, _ = quiet.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	quiet = updated.(Model)
 	updated, _ = quiet.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
@@ -745,7 +746,7 @@ func TestSessionPickerUsesTheSeam(t *testing.T) {
 	nodb := New(fakeHost{listErr: &acpwire.Error{
 		Code:    acpwire.CodeNoDatabase,
 		Message: "inproc: the session has no database",
-	}}, testSession(state))
+	}}, testSession(t, state))
 	updated, _ := nodb.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	nodb = asModel(t, updated)
 	nodb.openSessionPicker("")
@@ -765,7 +766,7 @@ func TestSessionPickerUsesTheSeam(t *testing.T) {
 		Title:        "earlier",
 		UpdatedAt:    acpwire.Millis(stamp),
 		MessageCount: 3,
-	}}}, testSession(state))
+	}}}, testSession(t, state))
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 	m = asModel(t, updated)
 	m.openSessionPicker("")
@@ -784,12 +785,12 @@ func TestSessionPickerUsesTheSeam(t *testing.T) {
 }
 
 func TestDoctorOpensDockPanel(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	cmdReg := commands.New()
 	if err := commands.RegisterAll(cmdReg, nil); err != nil {
 		t.Fatalf("RegisterAll() error = %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, Commands: cmdReg})
+	m := testModelWith(t, service.Deps{State: state, Commands: cmdReg})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = updated.(Model)
 	if m.dock.IsOpen() {
@@ -818,12 +819,12 @@ func TestDoctorOpensDockPanel(t *testing.T) {
 // stayed open forever. Driving the real key path (not handleKeypress) pins
 // the fix.
 func TestDoctorPanelEscClosesDock(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	cmdReg := commands.New()
 	if err := commands.RegisterAll(cmdReg, nil); err != nil {
 		t.Fatalf("RegisterAll() error = %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, Commands: cmdReg})
+	m := testModelWith(t, service.Deps{State: state, Commands: cmdReg})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = asModel(t, updated)
 	updated, _ = m.dispatchCommand("/doctor")
@@ -852,7 +853,7 @@ func TestDoctorPanelEscClosesDock(t *testing.T) {
 }
 
 func TestPolishedViewPreservesPendingApprovalContent(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	tc := &session.PendingToolCall{
 		ID:      "approval-1",
 		Name:    "shell.run",
@@ -862,7 +863,7 @@ func TestPolishedViewPreservesPendingApprovalContent(t *testing.T) {
 		Diff:    "--- a/app.go\n+++ b/app.go\n+added line",
 	}
 	state.SetPendingApproval(tc)
-	m := testModel(state)
+	m := testModel(t, state)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = updated.(Model)
 
@@ -888,7 +889,7 @@ func TestPolishedViewPreservesPendingApprovalContent(t *testing.T) {
 }
 
 func TestScrollWorksWhileApprovalPending(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	for i := 0; i < 100; i++ {
 		state.AddMessage(session.RoleUser, fmt.Sprintf("message %d", i), session.ContentTypePlain)
 	}
@@ -900,7 +901,7 @@ func TestScrollWorksWhileApprovalPending(t *testing.T) {
 	}
 	state.SetPendingApproval(tc)
 
-	m := testModel(state)
+	m := testModel(t, state)
 	m.resize(80, 24)
 	m.refreshViewport()
 	bottom := m.viewport.YOffset()
@@ -925,7 +926,7 @@ func TestScrollWorksWhileApprovalPending(t *testing.T) {
 }
 
 func TestScrollWorksWhileQuestionPending(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	for i := 0; i < 100; i++ {
 		state.AddMessage(session.RoleUser, fmt.Sprintf("message %d", i), session.ContentTypePlain)
 	}
@@ -934,7 +935,7 @@ func TestScrollWorksWhileQuestionPending(t *testing.T) {
 	}
 	state.SetPendingQuestion(q)
 
-	m := testModel(state)
+	m := testModel(t, state)
 	m.resize(80, 24)
 	m.refreshViewport()
 	bottom := m.viewport.YOffset()
@@ -969,13 +970,13 @@ func TestReconnectingActivityRendersInViewport(t *testing.T) {
 }
 
 func TestPolishedTranscriptReflowsAfterResize(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	message := "This transcript line should be wide enough to wrap differently after resizing from a wide terminal down to a narrow terminal."
 	thinking := "The live thinking copy should also be rebuilt after resize so it follows the narrowed viewport width instead of keeping stale wrapping."
 	state.AddMessage(session.RoleUser, message, session.ContentTypePlain)
 	state.BeginStreaming()
 	state.AppendThinking(thinking)
-	m := testModel(state)
+	m := testModel(t, state)
 
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 	m = updated.(Model)
@@ -1020,11 +1021,11 @@ func TestPolishedTranscriptReflowsAfterResize(t *testing.T) {
 }
 
 func TestPolishedTranscriptShowsRolesThinkingAndInput(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	state.AddMessage(session.RoleUser, "fix the layout", session.ContentTypePlain)
 	state.BeginStreaming()
 	state.AppendThinking("I need to inspect the render bounds and keep the newest reasoning visible.")
-	m := testModel(state)
+	m := testModel(t, state)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = updated.(Model)
 	m.busy = true
@@ -1044,7 +1045,7 @@ func TestPolishedTranscriptShowsRolesThinkingAndInput(t *testing.T) {
 }
 
 func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 
 	// Each sub-test needs a fresh PendingToolCall because Respond uses
 	// sync.Once and closes the channel.
@@ -1064,7 +1065,7 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	// 1. Test Deny.
 	tc, respChan := makeTC()
 	state.SetPendingApproval(tc)
-	m := testModel(state)
+	m := testModel(t, state)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
 
@@ -1095,7 +1096,7 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	// 2. Test Approve.
 	tc, respChan = makeTC()
 	state.SetPendingApproval(tc)
-	m = testModel(state)
+	m = testModel(t, state)
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
 
@@ -1114,7 +1115,7 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	// 3. Test Edit.
 	tc, respChan = makeTC()
 	state.SetPendingApproval(tc)
-	m = testModel(state)
+	m = testModel(t, state)
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
 
@@ -1151,7 +1152,7 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	// 4. Test Always Allow.
 	tc, respChan = makeTC()
 	state.SetPendingApproval(tc)
-	m = testModel(state)
+	m = testModel(t, state)
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
 
@@ -1173,7 +1174,7 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	// 5. Test Allow this session.
 	tc, respChan = makeTC()
 	state.SetPendingApproval(tc)
-	m = testModel(state)
+	m = testModel(t, state)
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	m = updated.(Model)
 
@@ -1202,12 +1203,12 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 
 func TestTUIRollbackFlow(t *testing.T) {
 	tmpDir := t.TempDir()
-	state := session.New(config.Default(), tmpDir, time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), tmpDir, time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	state.StoreBackup([]session.BackupFile{
 		{Path: "app.go", Content: "original content", Exists: true},
 	})
 
-	model := testModel(state)
+	model := testModel(t, state)
 
 	// Ctrl+R arms; a second Ctrl+R performs the rollback.
 	updated, _ := model.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
@@ -1264,13 +1265,13 @@ func (b *blockingAgentRunner) SetForceClass(string) {}
 func (b *blockingAgentRunner) AnswerGate(string)    {}
 
 func TestSwarmCommandOpensPreflightThenStartsRun(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{SessionID: unnamedSessionID})
 	var got []acpwire.SwarmParams
 	cmdReg := commands.New()
 	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
 		t.Fatal(err)
 	}
-	model := testModelWith(inproc.Deps{
+	model := testModelWith(t, service.Deps{
 		State:  state,
 		Runner: runnerOf(&testAgentRunner{}),
 		Swarm: func(_ context.Context, params acpwire.SwarmParams) error {
@@ -1328,12 +1329,12 @@ func TestSwarmCommandOpensPreflightThenStartsRun(t *testing.T) {
 }
 
 func TestSwarmCommandPreflightCancelClearsPendingRun(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{SessionID: unnamedSessionID})
 	cmdReg := commands.New()
 	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
 		t.Fatal(err)
 	}
-	model := testModelWith(inproc.Deps{
+	model := testModelWith(t, service.Deps{
 		State:    state,
 		Runner:   runnerOf(&testAgentRunner{}),
 		Swarm:    func(context.Context, acpwire.SwarmParams) error { return nil },
@@ -1366,12 +1367,12 @@ func TestSwarmCommandPreflightCancelClearsPendingRun(t *testing.T) {
 }
 
 func TestSwarmCommandWithoutGoalShowsUsage(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{SessionID: unnamedSessionID})
 	cmdReg := commands.New()
 	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
 		t.Fatal(err)
 	}
-	model := testModelWith(inproc.Deps{
+	model := testModelWith(t, service.Deps{
 		State:    state,
 		Runner:   runnerOf(&testAgentRunner{}),
 		Commands: cmdReg,
@@ -1389,14 +1390,14 @@ func TestSwarmCommandWithoutGoalShowsUsage(t *testing.T) {
 }
 
 func TestSDDCommandOpensPreflightThenStartsRun(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{SessionID: unnamedSessionID})
 	run := &fakePlanRun{}
 	var got []acpwire.SDDParams
 	cmdReg := commands.New()
 	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
 		t.Fatal(err)
 	}
-	model := testModelWith(inproc.Deps{
+	model := testModelWith(t, service.Deps{
 		State:  state,
 		Runner: runnerOf(&testAgentRunner{}),
 		PlanPreflight: preflightOf(acpwire.PlanPreflight{
@@ -1473,12 +1474,12 @@ func TestSDDPreflightMetaShowsVerifyTimeout(t *testing.T) {
 }
 
 func TestSDDCommandPreflightCancelClearsPendingRun(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{SessionID: unnamedSessionID})
 	cmdReg := commands.New()
 	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
 		t.Fatal(err)
 	}
-	model := testModelWith(inproc.Deps{
+	model := testModelWith(t, service.Deps{
 		State:  state,
 		Runner: runnerOf(&testAgentRunner{}),
 		PlanPreflight: preflightOf(acpwire.PlanPreflight{
@@ -1516,12 +1517,12 @@ func TestSDDCommandPreflightCancelClearsPendingRun(t *testing.T) {
 }
 
 func TestSDDCommandWithoutPlanOpensPlanPicker(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{SessionID: unnamedSessionID})
 	cmdReg := commands.New()
 	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
 		t.Fatal(err)
 	}
-	model := testModelWith(inproc.Deps{
+	model := testModelWith(t, service.Deps{
 		State:  state,
 		Runner: runnerOf(&testAgentRunner{}),
 		PlanPreflight: preflightOf(acpwire.PlanPreflight{
@@ -1553,12 +1554,12 @@ func TestSDDCommandWithoutPlanOpensPlanPicker(t *testing.T) {
 }
 
 func TestSDDCommandWithoutRunnerReportsUnavailable(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{SessionID: unnamedSessionID})
 	cmdReg := commands.New()
 	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
 		t.Fatal(err)
 	}
-	model := testModelWith(inproc.Deps{State: state, Commands: cmdReg})
+	model := testModelWith(t, service.Deps{State: state, Commands: cmdReg})
 
 	_, _ = model.dispatchCommand("/sdd")
 	messages := state.Messages()
@@ -1572,8 +1573,8 @@ func TestSDDCommandWithoutRunnerReportsUnavailable(t *testing.T) {
 }
 
 func TestSDDPlanPickerIncludesCustomPathOption(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
-	model := testModel(state)
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{SessionID: unnamedSessionID})
+	model := testModel(t, state)
 	model.resize(100, 40)
 	model.openSDDPlanPicker()
 
@@ -1588,8 +1589,8 @@ func TestSDDPlanPickerIncludesCustomPathOption(t *testing.T) {
 }
 
 func TestSDDPlanPickerCustomPathOpensCustomPathPicker(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
-	model := testModel(state)
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{SessionID: unnamedSessionID})
+	model := testModel(t, state)
 	model.resize(100, 40)
 	model.openSDDPlanPicker()
 
@@ -1610,12 +1611,12 @@ func TestSDDPlanPickerCustomPathOpensCustomPathPicker(t *testing.T) {
 }
 
 func TestSDDCustomPathPickerDispatchesPlanPath(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{SessionID: unnamedSessionID})
 	cmdReg := commands.New()
 	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
 		t.Fatal(err)
 	}
-	model := testModelWith(inproc.Deps{
+	model := testModelWith(t, service.Deps{
 		State:  state,
 		Runner: runnerOf(&testAgentRunner{}),
 		PlanPreflight: preflightOf(acpwire.PlanPreflight{
@@ -1658,8 +1659,8 @@ func TestSDDCustomPathPickerDispatchesPlanPath(t *testing.T) {
 }
 
 func TestModePickerContainsOnlyAskAct(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
-	model := testModel(state)
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{SessionID: unnamedSessionID})
+	model := testModel(t, state)
 	items := model.modePickerItems()
 	if len(items) != 2 {
 		t.Fatalf("modePickerItems has %d entries, want 2: %+v", len(items), items)
@@ -1674,9 +1675,9 @@ func TestModePickerContainsOnlyAskAct(t *testing.T) {
 }
 
 func TestEnterWithRunnerDispatchesAgentRunAndTick(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	model := testModelWith(inproc.Deps{State: state, Runner: runnerOf(runner)})
+	model := testModelWith(t, service.Deps{State: state, Runner: runnerOf(runner)})
 
 	updated, _ := model.Update(tea.KeyPressMsg{Text: "hello"})
 	model = updated.(Model)
@@ -1729,8 +1730,8 @@ func TestEnterWithRunnerDispatchesAgentRunAndTick(t *testing.T) {
 }
 
 func TestAgentFinishedMsgClearsBusyAndRecordsNotice(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	model := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	model := testModel(t, state)
 	model.busy = true
 
 	updated, cmd := model.Update(agentFinishedMsg{err: errors.New("boom")})
@@ -1996,8 +1997,9 @@ func (f *fakeSuggestionProvider) Provide(ctx context.Context, lastMsg string) (s
 
 // withSuggester replaces m's session with one over m's state that has a runner
 // and calls suggest for Suggest.
-func withSuggester(m Model, suggest func(context.Context, string) (string, error)) Model {
-	_, sess := inproc.New(inproc.Deps{
+func withSuggester(t testing.TB, m Model, suggest func(context.Context, string) (string, error)) Model {
+	t.Helper()
+	_, sess := acptest.Open(t, service.Deps{
 		State:   stateOf(m),
 		Runner:  runnerOf(&testAgentRunner{}),
 		Suggest: suggest,
@@ -2010,7 +2012,7 @@ func TestSuggestionLLMFallbackCmd(t *testing.T) {
 	m := newTestModel(t)
 	stateOf(m).Config.TUI.Suggestions = "llm"
 	fp := &fakeSuggestionProvider{response: "yes, go ahead"}
-	m = withSuggester(m, fp.Provide)
+	m = withSuggester(t, m, fp.Provide)
 	stateOf(m).AddMessageFinalWithUsage(session.RoleAssistant, "I've finished the refactor and all tests pass.", session.ContentTypeMarkdown, 0, "")
 	m.busy = true
 
@@ -2059,7 +2061,7 @@ func TestSuggestionLLMStaleDiscarded(t *testing.T) {
 	m := newTestModel(t)
 	stateOf(m).Config.TUI.Suggestions = "llm"
 	fp := &fakeSuggestionProvider{response: "stale"}
-	m = withSuggester(m, fp.Provide)
+	m = withSuggester(t, m, fp.Provide)
 	m.suggestionGen = 5
 
 	// A result from an older generation (e.g. the user typed or started a
@@ -2075,7 +2077,7 @@ func TestSuggestionLLMOffNoCall(t *testing.T) {
 	m := newTestModel(t)
 	stateOf(m).Config.TUI.Suggestions = "off"
 	fp := &fakeSuggestionProvider{response: "yes"}
-	m = withSuggester(m, fp.Provide)
+	m = withSuggester(t, m, fp.Provide)
 	stateOf(m).AddMessageFinalWithUsage(session.RoleAssistant, "I've finished the refactor and all tests pass.", session.ContentTypeMarkdown, 0, "")
 	m.busy = true
 
@@ -2149,8 +2151,8 @@ func TestAgentCommandRegistersAndReleasesSessionWork(t *testing.T) {
 	block := make(chan struct{})
 	started := make(chan struct{})
 	runner := &blockingAgentRunner{block: block, started: started}
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	model := testModelWith(inproc.Deps{State: state, Runner: runnerOf(runner)})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	model := testModelWith(t, service.Deps{State: state, Runner: runnerOf(runner)})
 	model.resize(80, 24)
 
 	// Submit a turn. The runner blocks in Run, so the run command
@@ -2217,8 +2219,8 @@ func TestAgentCommandRegistersAndReleasesSessionWork(t *testing.T) {
 }
 
 func TestEnterWithoutRunnerFallsBackToPlainAppend(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	model := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	model := testModel(t, state)
 
 	updated, _ := model.Update(tea.KeyPressMsg{Text: "hi"})
 	model = updated.(Model)
@@ -2235,9 +2237,9 @@ func TestEnterWithoutRunnerFallsBackToPlainAppend(t *testing.T) {
 }
 
 func TestEnterWhileBusyIsIgnored(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	model := testModelWith(inproc.Deps{State: state, Runner: runnerOf(runner)})
+	model := testModelWith(t, service.Deps{State: state, Runner: runnerOf(runner)})
 	model.busy = true
 
 	updated, _ := model.Update(tea.KeyPressMsg{Text: "hello"})
@@ -2258,8 +2260,8 @@ func TestEnterWhileBusyIsIgnored(t *testing.T) {
 }
 
 func TestCtrlOOpensDockedSettingsBrowserAndEscClosesIt(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.resize(100, 40)
 
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
@@ -2281,7 +2283,7 @@ func TestCtrlOOpensDockedSettingsBrowserAndEscClosesIt(t *testing.T) {
 }
 
 func TestGlobalKeysDoNotLeakDuringApproval(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	tc := &session.PendingToolCall{
 		ID:           "1",
 		Name:         "shell.run",
@@ -2291,7 +2293,7 @@ func TestGlobalKeysDoNotLeakDuringApproval(t *testing.T) {
 		ResponseChan: make(chan session.UserApprovalDecision, 1),
 	}
 	state.SetPendingApproval(tc)
-	model := testModel(state)
+	model := testModel(t, state)
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -2312,7 +2314,7 @@ func TestGlobalKeysDoNotLeakDuringApproval(t *testing.T) {
 }
 
 func TestEscDuringApprovalDenies(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	tc := &session.PendingToolCall{
 		ID:           "1",
 		Name:         "shell.run",
@@ -2322,7 +2324,7 @@ func TestEscDuringApprovalDenies(t *testing.T) {
 		ResponseChan: make(chan session.UserApprovalDecision, 1),
 	}
 	state.SetPendingApproval(tc)
-	model := testModel(state)
+	model := testModel(t, state)
 	// First Esc arms the pending deny.
 	updated, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	m := updated.(Model)
@@ -2365,7 +2367,7 @@ func TestCtrlKOpensMemoryAndClosedMsgCloses(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0),
 		session.Persistence{DB: database, SessionID: "sess-1"})
 
-	model := testModelWith(inproc.Deps{State: state, ProjectID: pid})
+	model := testModelWith(t, service.Deps{State: state, ProjectID: pid})
 	updated, _ := model.Update(tea.KeyPressMsg{Code: 'k', Mod: tea.ModCtrl})
 	model = updated.(Model)
 	if !model.dock.IsOpen() {
@@ -2378,9 +2380,9 @@ func TestCtrlKOpensMemoryAndClosedMsgCloses(t *testing.T) {
 	}
 }
 func TestBusyTickRefreshesViewport(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	model := testModelWith(inproc.Deps{State: state, Runner: runnerOf(runner)})
+	model := testModelWith(t, service.Deps{State: state, Runner: runnerOf(runner)})
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -2404,8 +2406,8 @@ func TestBusyTickRefreshesViewport(t *testing.T) {
 }
 
 func TestChatMessagesWrapWithinViewportWidth(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	model := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	model := testModel(t, state)
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -2435,7 +2437,7 @@ func TestChatMessagesWrapWithinViewportWidth(t *testing.T) {
 }
 
 func TestApprovalBannerHasSingleBorder(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	tc := &session.PendingToolCall{
 		ID:           "1",
 		Name:         "shell.run",
@@ -2445,7 +2447,7 @@ func TestApprovalBannerHasSingleBorder(t *testing.T) {
 		ResponseChan: make(chan session.UserApprovalDecision, 1),
 	}
 	state.SetPendingApproval(tc)
-	model := testModel(state)
+	model := testModel(t, state)
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -2464,8 +2466,8 @@ func TestApprovalBannerHasSingleBorder(t *testing.T) {
 }
 
 func TestRenderWhileStateMutatedDoesNotRace(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	model := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	model := testModel(t, state)
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -2487,8 +2489,8 @@ func TestRenderWhileStateMutatedDoesNotRace(t *testing.T) {
 }
 
 func TestThinkingBoxRendersWhileStreaming(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	model := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	model := testModel(t, state)
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -2507,8 +2509,8 @@ func TestThinkingBoxRendersWhileStreaming(t *testing.T) {
 }
 
 func TestThinkingDoesNotRenderBeforeReasoningStreams(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	model := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	model := testModel(t, state)
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -2523,8 +2525,8 @@ func TestThinkingDoesNotRenderBeforeReasoningStreams(t *testing.T) {
 }
 
 func TestFinishedMessageShowsCollapsedThinkingSummary(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	model := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	model := testModel(t, state)
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -2544,8 +2546,8 @@ func TestFinishedMessageShowsCollapsedThinkingSummary(t *testing.T) {
 }
 
 func TestCtrlGTogglesThinkingExpansion(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	model := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	model := testModel(t, state)
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -2573,8 +2575,8 @@ func TestCtrlGTogglesThinkingExpansion(t *testing.T) {
 }
 
 func TestBusyTickRefreshesViewportOnReasoningGrowthAlone(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	model := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	model := testModel(t, state)
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 	model.busy = true
@@ -2596,7 +2598,7 @@ func TestBusyTickRefreshesViewportOnReasoningGrowthAlone(t *testing.T) {
 }
 
 func TestPolishedApprovalStateShowsCommandReasonRiskAndActions(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	state.SetPendingApproval(&session.PendingToolCall{
 		Name:         "shell.run",
 		Command:      "go test ./internal/app/tui/...",
@@ -2605,7 +2607,7 @@ func TestPolishedApprovalStateShowsCommandReasonRiskAndActions(t *testing.T) {
 		Diff:         "- old\n+ new\n",
 		ResponseChan: make(chan session.UserApprovalDecision, 1),
 	})
-	m := testModel(state)
+	m := testModel(t, state)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = updated.(Model)
 
@@ -2635,8 +2637,8 @@ func TestPolishedApprovalStateShowsCommandReasonRiskAndActions(t *testing.T) {
 }
 
 func TestActivityRowShowsSpinnerAndThinkingWhenBusy(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.spinnerFrame = "⠋"
 	m.busy = true
 	m.turnStartedAt = m.now().Add(-time.Second)
@@ -2653,8 +2655,8 @@ func TestActivityRowShowsSpinnerAndThinkingWhenBusy(t *testing.T) {
 }
 
 func TestStatusLineOmitsCompletedToolBadge(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = updated.(Model)
 
@@ -2739,8 +2741,8 @@ func TestCtrlGExpandsThinkingAndToolRuns(t *testing.T) {
 }
 
 func TestFinalAnswerRendersWithGutter(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.resize(100, 30)
 
 	state.AddMessageFinal(session.RoleAssistant, "here is the answer", session.ContentTypeMarkdown)
@@ -2757,9 +2759,9 @@ func TestFinalAnswerRendersWithGutter(t *testing.T) {
 }
 
 func TestSlashCommandExit(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	cmdReg := setupCmdReg(t)
-	model := testModelWith(inproc.Deps{State: state, Commands: cmdReg})
+	model := testModelWith(t, service.Deps{State: state, Commands: cmdReg})
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -2772,9 +2774,9 @@ func TestSlashCommandExit(t *testing.T) {
 }
 
 func TestSlashCommandHelp(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	cmdReg := setupCmdReg(t)
-	model := testModelWith(inproc.Deps{State: state, Commands: cmdReg})
+	model := testModelWith(t, service.Deps{State: state, Commands: cmdReg})
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -2791,9 +2793,9 @@ func TestSlashCommandHelp(t *testing.T) {
 }
 
 func TestSlashCommandUnknown(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	cmdReg := setupCmdReg(t)
-	model := testModelWith(inproc.Deps{State: state, Commands: cmdReg})
+	model := testModelWith(t, service.Deps{State: state, Commands: cmdReg})
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -2811,10 +2813,10 @@ func TestSlashCommandUnknown(t *testing.T) {
 }
 
 func TestSlashCommandNotSentToAgent(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	cmdReg := setupCmdReg(t)
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	model := testModelWith(inproc.Deps{State: state, Runner: runnerOf(runner), Commands: cmdReg})
+	model := testModelWith(t, service.Deps{State: state, Runner: runnerOf(runner), Commands: cmdReg})
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
@@ -2829,7 +2831,7 @@ func TestSlashCommandNotSentToAgent(t *testing.T) {
 }
 
 func TestSlashCommandClearMessages(t *testing.T) {
-	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	oldState.AddMessage(session.RoleUser, "one", session.ContentTypePlain)
 	oldState.AddMessage(session.RoleUser, "two", session.ContentTypePlain)
 	oldState.SetContextPack(contextpack.Pack{
@@ -2839,7 +2841,7 @@ func TestSlashCommandClearMessages(t *testing.T) {
 	oldState.SetTurnUsage(123)
 	oldState.SetTurnContextWindow(1000)
 
-	newState := session.New(config.Default(), "/repo", time.Unix(200, 0), session.Persistence{})
+	newState := session.New(config.Default(), "/repo", time.Unix(200, 0), session.Persistence{SessionID: unnamedSessionID})
 
 	f := &fakeNewSession{newState: newState}
 	model := testModelReplacing(t, oldState, f, &endTestController{})
@@ -2895,8 +2897,8 @@ func TestNewSessionRereadsGitInfo(t *testing.T) {
 		t.Fatalf("git checkout -b: %v\n%s", err, out)
 	}
 
-	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	newState := session.New(config.Default(), dir, time.Unix(200, 0), session.Persistence{})
+	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	newState := session.New(config.Default(), dir, time.Unix(200, 0), session.Persistence{SessionID: unnamedSessionID})
 	f := &fakeNewSession{newState: newState}
 	model := testModelReplacing(t, oldState, f, &endTestController{})
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -2933,8 +2935,8 @@ func TestNewSessionRereadsGitInfo(t *testing.T) {
 }
 
 func TestSlashCommandClearAlias(t *testing.T) {
-	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	newState := session.New(config.Default(), "/repo", time.Unix(200, 0), session.Persistence{})
+	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	newState := session.New(config.Default(), "/repo", time.Unix(200, 0), session.Persistence{SessionID: unnamedSessionID})
 	f := &fakeNewSession{newState: newState}
 	model := testModelReplacing(t, oldState, f, &endTestController{})
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -2951,8 +2953,8 @@ func TestSlashCommandClearAlias(t *testing.T) {
 }
 
 func TestSlashCommandNewBlockedWhenBusy(t *testing.T) {
-	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	newState := session.New(config.Default(), "/repo", time.Unix(200, 0), session.Persistence{})
+	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	newState := session.New(config.Default(), "/repo", time.Unix(200, 0), session.Persistence{SessionID: unnamedSessionID})
 	f := &fakeNewSession{newState: newState}
 	model := testModelReplacing(t, oldState, f, &endTestController{})
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -2972,8 +2974,8 @@ func TestSlashCommandNewBlockedWhenBusy(t *testing.T) {
 }
 
 func TestSlashCommandNewWithName(t *testing.T) {
-	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	newState := session.New(config.Default(), "/repo", time.Unix(200, 0), session.Persistence{})
+	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	newState := session.New(config.Default(), "/repo", time.Unix(200, 0), session.Persistence{SessionID: unnamedSessionID})
 	f := &fakeNewSession{newState: newState}
 	model := testModelReplacing(t, oldState, f, &endTestController{})
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -3001,9 +3003,9 @@ func TestSlashCommandNewWithName(t *testing.T) {
 }
 
 func TestSlashCommandBusyStillDispatched(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	cmdReg := setupCmdReg(t)
-	model := testModelWith(inproc.Deps{State: state, Commands: cmdReg})
+	model := testModelWith(t, service.Deps{State: state, Commands: cmdReg})
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 	model.busy = true
@@ -3165,8 +3167,8 @@ func TestRenderCodeBlockWrapsInBorder(t *testing.T) {
 }
 
 func TestApprovalRendersInlineInChat(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.resize(100, 30)
 
 	state.AddMessage(session.RoleUser, "run the tests", session.ContentTypePlain)
@@ -3194,8 +3196,8 @@ func TestApprovalRendersInlineInChat(t *testing.T) {
 }
 
 func TestApprovalKeyHandlingStillWorksInline(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.resize(100, 30)
 
 	ch := make(chan session.UserApprovalDecision, 1)
@@ -3225,8 +3227,8 @@ func TestApprovalKeyHandlingStillWorksInline(t *testing.T) {
 }
 
 func TestActiveToolCallRendersInline(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.resize(100, 30)
 	m.busy = true
 	m.spinnerFrame = "⠹"
@@ -3249,8 +3251,8 @@ func TestActiveToolCallRendersInline(t *testing.T) {
 }
 
 func TestRecentToolCallRendersInlineAfterFastToolCompletes(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.resize(100, 30)
 	m.busy = true
 	m.now = func() time.Time { return time.Unix(105, 0) }
@@ -3273,8 +3275,8 @@ func TestRecentToolCallRendersInlineAfterFastToolCompletes(t *testing.T) {
 }
 
 func TestCompletedToolCallsRemainInTranscriptLog(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.resize(100, 30)
 	m.now = func() time.Time { return time.Unix(200, 0) }
 
@@ -3305,8 +3307,8 @@ func TestCompletedToolCallsRemainInTranscriptLog(t *testing.T) {
 }
 
 func TestCompletedToolCallsRenderInMessageTimeline(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.resize(120, 40)
 	m.now = func() time.Time { return time.Unix(200, 0) }
 
@@ -3340,8 +3342,8 @@ func TestCompletedToolCallsRenderInMessageTimeline(t *testing.T) {
 }
 
 func TestActiveToolCallClearsFromView(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.resize(100, 30)
 	m.busy = true
 
@@ -3364,8 +3366,8 @@ func TestActiveToolCallClearsFromView(t *testing.T) {
 }
 
 func TestTUIRichMCPApprovalStates(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.resize(100, 30)
 
 	ch := make(chan session.UserApprovalDecision, 1)
@@ -3423,8 +3425,8 @@ func TestTUIRichMCPApprovalStates(t *testing.T) {
 }
 
 func TestPendingQuestionEnterSubmitsAnswer(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 
 	q := &session.PendingQuestion{
 		Questions:    []session.Question{{Question: "Archive or delete?"}},
@@ -3463,8 +3465,8 @@ func TestPendingQuestionEnterSubmitsAnswer(t *testing.T) {
 }
 
 func TestPendingQuestionEscDeclines(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	q := &session.PendingQuestion{
 		Questions:    []session.Question{{Question: "Archive or delete?"}},
 		ResponseChan: make(chan []session.Answer, 1),
@@ -4065,8 +4067,8 @@ func TestApprovalEditPreservesComposer(t *testing.T) {
 	}
 
 	t.Run("save", func(t *testing.T) {
-		state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-		m := testModel(state)
+		state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+		m := testModel(t, state)
 		m.resize(100, 40)
 		m.refreshViewport()
 		// The draft (and its paste chip) exists before the approval arrives.
@@ -4120,8 +4122,8 @@ func TestApprovalEditPreservesComposer(t *testing.T) {
 	})
 
 	t.Run("cancel", func(t *testing.T) {
-		state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-		m := testModel(state)
+		state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+		m := testModel(t, state)
 		m.resize(100, 40)
 		m.refreshViewport()
 		var want composerDraft
@@ -4180,8 +4182,8 @@ func TestApprovalEditPreservesComposer(t *testing.T) {
 // whose request was interrupted can never answer, clear or submit anything:
 // the edit is retired, the replacement stays pending, and the draft survives.
 func TestApprovalEditStaleRequestCannotSettleReplacement(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.resize(100, 40)
 	m.refreshViewport()
 	var want composerDraft
@@ -4449,7 +4451,7 @@ func TestCancelTurnDoesNotClearSteeringWhenAgentAlreadyFinished(t *testing.T) {
 func TestAgentFinishedFlushesQueuedSteering(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m = withPromptRunner(m, runner)
+	m = withPromptRunner(t, m, runner)
 	m.busy = true
 	stateOf(m).PushSteering("deliver me after the turn")
 
@@ -4475,7 +4477,7 @@ func TestAgentFinishedFlushesQueuedSteering(t *testing.T) {
 func TestFlushQueuedSteeringStartsFollowUpTurn(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m = withPromptRunner(m, runner)
+	m = withPromptRunner(t, m, runner)
 	stateOf(m).PushSteering("deliver me after the turn")
 
 	cmd := m.flushQueuedSteering()
@@ -4520,7 +4522,7 @@ func TestFlushQueuedSteeringStartsFollowUpTurn(t *testing.T) {
 func TestAgentFinishedKeepsQueueOnFailure(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m = withPromptRunner(m, runner)
+	m = withPromptRunner(t, m, runner)
 	m.busy = true
 	stateOf(m).PushSteering("retry me")
 
@@ -4573,7 +4575,7 @@ func TestSlashCompletionAcceptsPlan(t *testing.T) {
 // resets the popup's index to 0 — so the user could only "scroll" one
 // entry before the selector snapped back to the top.
 func TestArrowKeysSurviveKeyReleaseEvent(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	reg := commands.New()
 	for _, name := range []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"} {
 		mustRegister(t, reg, commands.Command{
@@ -4581,7 +4583,7 @@ func TestArrowKeysSurviveKeyReleaseEvent(t *testing.T) {
 			Handler: func(s *session.State, args []string) commands.Result { return commands.Text("") },
 		})
 	}
-	m := testModelWith(inproc.Deps{State: state, Commands: reg})
+	m := testModelWith(t, service.Deps{State: state, Commands: reg})
 	m.resize(80, 24)
 	m.refreshViewport()
 
@@ -4607,7 +4609,7 @@ func TestArrowKeysSurviveKeyReleaseEvent(t *testing.T) {
 // updateCompletionPopups idempotent — skip when the input value hasn't
 // actually changed.
 func TestCompletionPopupSurvivesNonKeyEvents(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	reg := commands.New()
 	for _, name := range []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"} {
 		mustRegister(t, reg, commands.Command{
@@ -4615,7 +4617,7 @@ func TestCompletionPopupSurvivesNonKeyEvents(t *testing.T) {
 			Handler: func(s *session.State, args []string) commands.Result { return commands.Text("") },
 		})
 	}
-	m := testModelWith(inproc.Deps{State: state, Commands: reg})
+	m := testModelWith(t, service.Deps{State: state, Commands: reg})
 	m.resize(80, 24)
 	m.refreshViewport()
 
@@ -4652,7 +4654,7 @@ func TestCompletionPopupSurvivesNonKeyEvents(t *testing.T) {
 // popup suppressed until the input value changes. Without this, the next
 // keystroke re-runs updateCompletionPopups and immediately re-shows it.
 func TestCompletionPopupEscStaysSuppressedUntilInputChanges(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	reg := commands.New()
 	for _, name := range []string{"alpha", "beta", "gamma"} {
 		mustRegister(t, reg, commands.Command{
@@ -4660,7 +4662,7 @@ func TestCompletionPopupEscStaysSuppressedUntilInputChanges(t *testing.T) {
 			Handler: func(s *session.State, args []string) commands.Result { return commands.Text("") },
 		})
 	}
-	m := testModelWith(inproc.Deps{State: state, Commands: reg})
+	m := testModelWith(t, service.Deps{State: state, Commands: reg})
 	m.resize(80, 24)
 	m.refreshViewport()
 
@@ -4866,7 +4868,7 @@ func TestCommandTriggerDismissesFilePopup(t *testing.T) {
 // behaves like typing /help: it opens the help doc panel instead of typing
 // a literal ?.
 func TestQuestionMarkPrintsHelpToTranscript(t *testing.T) {
-	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: setupCmdReg(t)})
+	m := testModelWith(t, service.Deps{State: modelTestState(t), Commands: setupCmdReg(t)})
 	m.resize(80, 24)
 
 	updated, settle := m.Update(tea.KeyPressMsg{Code: '?'})
@@ -4879,7 +4881,7 @@ func TestQuestionMarkPrintsHelpToTranscript(t *testing.T) {
 }
 
 func TestQuestionMarkDoesNotLeakIntoInput(t *testing.T) {
-	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: setupCmdReg(t)})
+	m := testModelWith(t, service.Deps{State: modelTestState(t), Commands: setupCmdReg(t)})
 	m.resize(80, 24)
 
 	// Press ? — it should print help, not type ? into the textarea.
@@ -4895,7 +4897,7 @@ func TestQuestionMarkDoesNotLeakIntoInput(t *testing.T) {
 // fire in that case, because ? is a very common character in chat prompts
 // (e.g. "What is X? How do I Y?").
 func TestQuestionMarkTypesLiterallyInNonEmptyInput(t *testing.T) {
-	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: setupCmdReg(t)})
+	m := testModelWith(t, service.Deps{State: modelTestState(t), Commands: setupCmdReg(t)})
 	m.resize(80, 24)
 
 	// Type some text first.
@@ -4914,8 +4916,8 @@ func TestQuestionMarkTypesLiterallyInNonEmptyInput(t *testing.T) {
 }
 
 func TestPickerRoutingOpenPickCancel(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.resize(80, 24)
 
 	// open a picker directly via the helper
@@ -4960,11 +4962,11 @@ func modelTestState(t *testing.T) *session.State {
 	}
 	cfg.Models.Presets["ollama/qwen2.5"] = routing.ModelPreset{Name: "ollama/qwen2.5", Provider: "ollama", Model: "qwen2.5", LocalOnly: true}
 	cfg.Models.Presets["anthropic/sonnet-5"] = routing.ModelPreset{Name: "anthropic/sonnet-5", Provider: "anthropic", Model: "sonnet-5"}
-	return session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	return session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 }
 
 func TestModelsBareOpensConnectOverlay(t *testing.T) {
-	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: setupCmdReg(t)})
+	m := testModelWith(t, service.Deps{State: modelTestState(t), Commands: setupCmdReg(t)})
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/models")
 	m = asModel(t, updated)
@@ -4977,7 +4979,7 @@ func TestModelsBareOpensConnectOverlay(t *testing.T) {
 
 func TestModelsExactPresetArgSwitchesDirectly(t *testing.T) {
 	var reloaded *config.Config
-	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: setupCmdReg(t), ReloadConfig: func(c config.Config) error { reloaded = &c; return nil }})
+	m := testModelWith(t, service.Deps{State: modelTestState(t), Commands: setupCmdReg(t), ReloadConfig: func(c config.Config) error { reloaded = &c; return nil }})
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/models anthropic/sonnet-5")
 	m = asModel(t, updated)
@@ -4996,7 +4998,7 @@ func TestModelsExactPresetArgSwitchesDirectly(t *testing.T) {
 
 func TestModelsModelIDArgSwitchesPreset(t *testing.T) {
 	var reloaded *config.Config
-	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: setupCmdReg(t), ReloadConfig: func(c config.Config) error { reloaded = &c; return nil }})
+	m := testModelWith(t, service.Deps{State: modelTestState(t), Commands: setupCmdReg(t), ReloadConfig: func(c config.Config) error { reloaded = &c; return nil }})
 	m.resize(80, 24)
 	// A bare model ID (not a preset name) resolves to the preset using it.
 	updated, _ := m.dispatchCommand("/models qwen2.5")
@@ -5015,7 +5017,7 @@ func TestModelsModelIDArgSwitchesPreset(t *testing.T) {
 }
 
 func TestModelsUnknownArgOpensConnectOverlay(t *testing.T) {
-	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: setupCmdReg(t)})
+	m := testModelWith(t, service.Deps{State: modelTestState(t), Commands: setupCmdReg(t)})
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/models test-a-typo-b")
 	m = asModel(t, updated)
@@ -5026,7 +5028,7 @@ func TestModelsUnknownArgOpensConnectOverlay(t *testing.T) {
 
 func TestModelPickAppliesSessionSwitch(t *testing.T) {
 	var reloaded *config.Config
-	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: setupCmdReg(t), ReloadConfig: func(c config.Config) error { reloaded = &c; return nil }})
+	m := testModelWith(t, service.Deps{State: modelTestState(t), Commands: setupCmdReg(t), ReloadConfig: func(c config.Config) error { reloaded = &c; return nil }})
 	m.resize(80, 24)
 	m.openPicker("model", "Switch model", "session only — /settings to persist", m.modelPickerItems(), "")
 	updated, settle := m.Update(picker.PickedMsg{Value: "ollama/qwen2.5"})
@@ -5052,13 +5054,13 @@ func pickerTestModel(t *testing.T, state *session.State) Model {
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, Commands: reg})
+	m := testModelWith(t, service.Deps{State: state, Commands: reg})
 	m.resize(80, 24)
 	return m
 }
 
 func TestRewindBareOpensPickerNewestFirst(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	state.AddMessage(session.RoleUser, "first question", session.ContentTypePlain)
 	state.AddMessage(session.RoleUser, "second question about parsing", session.ContentTypePlain)
 	m := pickerTestModel(t, state)
@@ -5080,7 +5082,7 @@ func TestRewindBareOpensPickerNewestFirst(t *testing.T) {
 }
 
 func TestRewindWithArgSkipsPicker(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	state.AddMessage(session.RoleUser, "only turn", session.ContentTypePlain)
 	m := pickerTestModel(t, state)
 	updated, _ := m.dispatchCommand("/rewind 1")
@@ -5091,7 +5093,7 @@ func TestRewindWithArgSkipsPicker(t *testing.T) {
 }
 
 func TestBranchesBareOpensDocPanel(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	state.AddMessage(session.RoleUser, "first turn", session.ContentTypePlain)
 	state.Rewind(1) // create a fork at the root
 	state.AddMessage(session.RoleUser, "second turn", session.ContentTypePlain)
@@ -5109,7 +5111,7 @@ func TestBranchesBareOpensDocPanel(t *testing.T) {
 }
 
 func TestRewindNoTurnsFallsThroughToHandler(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	m := pickerTestModel(t, state)
 	updated, _ := m.dispatchCommand("/rewind")
 	m = asModel(t, updated)
@@ -5143,12 +5145,12 @@ func TestActiveThemeValuesAreCorrectFor256Color(t *testing.T) {
 // ── /mode picker (Task 8) ────────────────────────────────────────────────
 
 func TestModePickerMarksCurrentAndApplies(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	reg := commands.New()
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, SetInteraction: state.ApplyInteraction, Commands: reg})
+	m := testModelWith(t, service.Deps{State: state, SetInteraction: state.ApplyInteraction, Commands: reg})
 	m.resize(80, 24)
 
 	updated, _ := m.dispatchCommand("/mode")
@@ -5175,12 +5177,12 @@ func TestModePickerMarksCurrentAndApplies(t *testing.T) {
 }
 
 func TestModeWithArgDispatchesDirectly(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	reg := commands.New()
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, SetInteraction: state.ApplyInteraction, Commands: reg})
+	m := testModelWith(t, service.Deps{State: state, SetInteraction: state.ApplyInteraction, Commands: reg})
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/mode ask")
 	m = asModel(t, updated)
@@ -5195,12 +5197,12 @@ func TestModeWithArgDispatchesDirectly(t *testing.T) {
 // ── Tab/Shift+Tab mode cycling and Alt+M model cycling (Task 8) ─────────
 
 func TestTabTogglesAskActAndClearsAuto(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	on := true
 	if _, err := state.ApplyInteraction(interaction.Patch{Auto: &on}); err != nil {
 		t.Fatalf("seed Auto: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, SetInteraction: state.ApplyInteraction})
+	m := testModelWith(t, service.Deps{State: state, SetInteraction: state.ApplyInteraction})
 	m.resize(80, 24)
 
 	if got := string(stateOf(m).InteractionState().Mode); got != "act" {
@@ -5228,8 +5230,8 @@ func TestTabTogglesAskActAndClearsAuto(t *testing.T) {
 }
 
 func TestShiftTabTogglesAskAct(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModelWith(inproc.Deps{State: state, SetInteraction: state.ApplyInteraction})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModelWith(t, service.Deps{State: state, SetInteraction: state.ApplyInteraction})
 	m.resize(80, 24)
 
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
@@ -5249,8 +5251,8 @@ func TestTabAcceptsCompletionWhenPopupOpen(t *testing.T) {
 		Description: "test command",
 		Handler:     func(s *session.State, args []string) commands.Result { return commands.Text("") },
 	})
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModelWith(inproc.Deps{State: state, Commands: reg})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModelWith(t, service.Deps{State: state, Commands: reg})
 	m.resize(80, 24)
 	m.refreshViewport()
 
@@ -5279,7 +5281,7 @@ func TestTabAcceptsCompletionWhenPopupOpen(t *testing.T) {
 }
 
 func TestTabIgnoredDuringApproval(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	tc := &session.PendingToolCall{
 		ID:           "1",
 		Name:         "shell.run",
@@ -5289,7 +5291,7 @@ func TestTabIgnoredDuringApproval(t *testing.T) {
 		ResponseChan: make(chan session.UserApprovalDecision, 1),
 	}
 	state.SetPendingApproval(tc)
-	m := testModel(state)
+	m := testModel(t, state)
 	m.resize(80, 24)
 	act := interaction.ModeAct
 	if _, err := state.ApplyInteraction(interaction.Patch{Mode: &act}); err != nil {
@@ -5309,7 +5311,7 @@ func TestTabIgnoredDuringApproval(t *testing.T) {
 func TestAltMCyclesModelForward(t *testing.T) {
 	var reloaded *config.Config
 	state := modelTestState(t)
-	m := testModelWith(inproc.Deps{State: state, ReloadConfig: func(c config.Config) error {
+	m := testModelWith(t, service.Deps{State: state, ReloadConfig: func(c config.Config) error {
 		reloaded = &c
 		return nil
 	}})
@@ -5346,7 +5348,7 @@ func TestAltMCyclesModelForward(t *testing.T) {
 func TestAltShiftMCyclesModelBackward(t *testing.T) {
 	var reloaded *config.Config
 	state := modelTestState(t)
-	m := testModelWith(inproc.Deps{State: state, ReloadConfig: func(c config.Config) error {
+	m := testModelWith(t, service.Deps{State: state, ReloadConfig: func(c config.Config) error {
 		reloaded = &c
 		return nil
 	}})
@@ -5375,8 +5377,8 @@ func TestAltShiftMCyclesModelBackward(t *testing.T) {
 }
 
 func TestAltMNoPresetsShowsGuidance(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.resize(80, 24)
 
 	// No model presets configured; Alt+M should not panic and show guidance
@@ -5398,7 +5400,7 @@ func TestAltMNoPresetsShowsGuidance(t *testing.T) {
 func TestAltMBlockedWhileBusy(t *testing.T) {
 	var reloaded bool
 	state := modelTestState(t)
-	m := testModelWith(inproc.Deps{State: state, ReloadConfig: func(c config.Config) error {
+	m := testModelWith(t, service.Deps{State: state, ReloadConfig: func(c config.Config) error {
 		reloaded = true
 		return nil
 	}})
@@ -5428,8 +5430,8 @@ func TestShiftTabDuringPopupIsNoOp(t *testing.T) {
 		Description: "test command",
 		Handler:     func(s *session.State, args []string) commands.Result { return commands.Text("") },
 	})
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModelWith(inproc.Deps{State: state, Commands: reg})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModelWith(t, service.Deps{State: state, Commands: reg})
 	m.resize(80, 24)
 	m.refreshViewport()
 
@@ -5501,7 +5503,7 @@ func TestCtrlCCancelsTurn(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+			state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 
 			approvalCh := make(chan session.UserApprovalDecision, 1)
 			state.SetPendingApproval(&session.PendingToolCall{
@@ -5515,11 +5517,11 @@ func TestCtrlCCancelsTurn(t *testing.T) {
 			})
 
 			cancelled := false
-			deps := inproc.Deps{State: state}
+			deps := service.Deps{State: state}
 			if tt.name != "ctrl+c" {
 				deps.Commands = setupCmdReg(t)
 			}
-			m := testModelWith(deps)
+			m := testModelWith(t, deps)
 			m.busy = true
 			m.agentCancel = func() { cancelled = true }
 			stateOf(m).PushSteering("pending")
@@ -5576,8 +5578,8 @@ func TestCtrlCCancelsTurn(t *testing.T) {
 }
 
 func TestIntentionalAgentCancellationDoesNotSetNotice(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	model := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	model := testModel(t, state)
 	model.busy = true
 
 	updated, _ := model.Update(agentFinishedMsg{err: context.Canceled})
@@ -5592,8 +5594,8 @@ func TestIntentionalAgentCancellationDoesNotSetNotice(t *testing.T) {
 }
 
 func TestSuccessfulTurnClearsNotice(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	model := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	model := testModel(t, state)
 	model.busy = true
 	state.SetNotice(session.Notice{Category: session.NoticeProvider, Message: "provider request timed out"})
 
@@ -5710,7 +5712,7 @@ func TestSetCommandPersistsPrivacyToggles(t *testing.T) {
 
 func TestSetCommandReloadsRuntimeBeforeReportingSuccess(t *testing.T) {
 	var reloaded config.Config
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(cfg config.Config) error {
 			reloaded = cfg
 			return nil
@@ -5734,7 +5736,7 @@ func TestSetCommandReloadsRuntimeBeforeReportingSuccess(t *testing.T) {
 }
 
 func TestSetCommandReloadFailureDoesNotReportSuccess(t *testing.T) {
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(config.Config) error {
 			return errors.New("runtime unavailable")
 		}
@@ -5776,7 +5778,7 @@ func TestSetCommandReloadFailureDoesNotReportSuccess(t *testing.T) {
 // config and silently revert the change that was just persisted.
 func TestLayerReloaderFailureDoesNotOverwriteConfigLayers(t *testing.T) {
 	// The adapter's layer reloader always fails.
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadLayers = func() (config.Layers, bool) {
 			return config.Layers{}, false
 		}
@@ -5801,7 +5803,7 @@ func TestLayerReloaderFailureDoesNotOverwriteConfigLayers(t *testing.T) {
 }
 
 func TestSetCommandReloadFailureSyncsStateConfig(t *testing.T) {
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(config.Config) error {
 			return errors.New("runtime unavailable")
 		}
@@ -6206,7 +6208,7 @@ func TestSetCommandDoesNotMutateWhileSettingsSaveIsBlocked(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			reloads := 0
-			m := newTestModelDeps(t, func(d *inproc.Deps) {
+			m := newTestModelDeps(t, func(d *service.Deps) {
 				d.ReloadConfig = func(config.Config) error {
 					reloads++
 					return nil
@@ -6274,22 +6276,22 @@ func TestTUIRendersSDDPanelWhenActive(t *testing.T) {
 // for testing config persistence. Caller must not mutate after applyConnectDone
 // since the tests check file contents. An optional edit adjusts the in-process
 // adapter's dependencies before the adapter is built.
-func newModelForConfigTest(t *testing.T, edit ...func(*inproc.Deps)) (m Model, workDir string, homeDir string) {
+func newModelForConfigTest(t *testing.T, edit ...func(*service.Deps)) (m Model, workDir string, homeDir string) {
 	t.Helper()
 	workDir = t.TempDir()
 	homeDir = t.TempDir()
 	t.Setenv("HOME", homeDir)
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	state.WorkingDir = workDir
 	reg := commands.New()
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	deps := inproc.Deps{State: state, Commands: reg, HomeDir: homeDir}
+	deps := service.Deps{State: state, Commands: reg, HomeDir: homeDir}
 	for _, fn := range edit {
 		fn(&deps)
 	}
-	m = testModelWith(deps, WithWorkingDir(workDir))
+	m = testModelWith(t, deps, WithWorkingDir(workDir))
 	m.resize(80, 24)
 	m.refreshViewport()
 	return
@@ -6645,7 +6647,7 @@ func TestBoxFollowsDrilledSubagentTodos(t *testing.T) {
 		{ID: "p2", Content: "parent next", Status: native.TodoPending},
 	})
 
-	childState := session.New(stateOf(m).Config, t.TempDir(), time.Now(), session.Persistence{})
+	childState := session.New(stateOf(m).Config, t.TempDir(), time.Now(), session.Persistence{SessionID: unnamedSessionID})
 	childState.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
 	if err := childState.SetTodos([]native.TodoItem{
 		{ID: "c1", Content: "child task", Status: native.TodoInProgress},
@@ -6686,19 +6688,19 @@ func TestBoxFollowsDrilledSubagentTodos(t *testing.T) {
 // newTestModel is the common case, with no adjustment. The temporary home is
 // shared by the adapter (Deps.HomeDir) and the model (WithHomeDir), so both
 // sides of the seam resolve the same user config.
-func newTestModelDeps(t *testing.T, edit func(*inproc.Deps)) Model {
+func newTestModelDeps(t *testing.T, edit func(*service.Deps)) Model {
 	t.Helper()
 	home := t.TempDir()
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	reg := commands.New()
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	deps := inproc.Deps{State: state, Commands: reg, Auth: newMemAuth(), HomeDir: home}
+	deps := service.Deps{State: state, Commands: reg, Auth: newMemAuth(), HomeDir: home}
 	if edit != nil {
 		edit(&deps)
 	}
-	m := testModelWith(deps, WithHomeDir(home),
+	m := testModelWith(t, deps, WithHomeDir(home),
 		// Isolate the auth surfaces by default: no test in this package should
 		// reach the developer's OS keychain or launch a browser just by
 		// constructing or driving the model. Tests that need to observe the
@@ -6720,12 +6722,12 @@ func newTestModel(t *testing.T) Model {
 func newTestModelInRepo(t *testing.T) Model {
 	t.Helper()
 	home := t.TempDir()
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	reg := commands.New()
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, Commands: reg, Auth: newMemAuth(), HomeDir: home}, WithHomeDir(home),
+	m := testModelWith(t, service.Deps{State: state, Commands: reg, Auth: newMemAuth(), HomeDir: home}, WithHomeDir(home),
 		WithOpenBrowser(func(string) error { return nil }))
 	m.resize(80, 24)
 	m.refreshViewport()
@@ -6786,7 +6788,7 @@ func pickerItems(t *testing.T, m Model) []picker.Item {
 // need to mutate the config before constructing the TUI.
 func newTestState(t *testing.T) *session.State {
 	t.Helper()
-	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 }
 
 func TestAgentsCommandOpensRoster(t *testing.T) {
@@ -6900,11 +6902,11 @@ func TestOpenModelsForwardsTheHost(t *testing.T) {
 
 // TestModelHostIsTheOneItWasBuiltWith: Host() reports the host New was given.
 func TestModelHostIsTheOneItWasBuiltWith(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	host, sess := inproc.New(inproc.Deps{State: state, Auth: newMemAuth()})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	host, sess := acptest.Open(t, service.Deps{State: state, Auth: newMemAuth()})
 	m := New(host, sess, WithHomeDir(t.TempDir()))
 
-	got, ok := m.Host().(*inproc.Host)
+	got, ok := m.Host().(*acptest.Host)
 	if !ok || got != host {
 		t.Fatal("Host() did not report the host the model was built with")
 	}
@@ -6934,8 +6936,8 @@ func TestOpenSettingsBrowserForwardsTheHost(t *testing.T) {
 func TestProbeProvidersUsesInjectedResolver(t *testing.T) {
 	auth := newMemAuth()
 	auth.storeErr = errors.New("injected store failure")
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModelWith(inproc.Deps{State: state, Auth: auth}, WithHomeDir(t.TempDir()))
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModelWith(t, service.Deps{State: state, Auth: auth}, WithHomeDir(t.TempDir()))
 	m.resize(80, 24)
 	stateOf(m).Config.Privacy.RemoteProvidersAllowed = true
 	stateOf(m).Config.Providers = map[string]config.ProviderConfig{
@@ -6983,7 +6985,7 @@ func TestModelsEmptyProvidersShowsAddProvider(t *testing.T) {
 }
 
 func TestModelsPickAppliesSwitch(t *testing.T) {
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(cfg config.Config) error { d.State.Config = cfg; return nil }
 	})
 	stateOf(m).Config.Providers = map[string]config.ProviderConfig{
@@ -7066,7 +7068,7 @@ func TestModelsRoutesPreparedMsgToConnectPanel(t *testing.T) {
 
 func TestConnectDoneMsgPersistsAgentModel(t *testing.T) {
 	reloaded := false
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(cfg config.Config) error { reloaded = true; d.State.Config = cfg; return nil }
 	})
 	m.settingsRegistry()
@@ -7102,7 +7104,7 @@ func TestConnectDoneMsgPersistsAgentModel(t *testing.T) {
 }
 
 func TestApplyConnectDoneMergesPreparedPresets(t *testing.T) {
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(cfg config.Config) error { d.State.Config = cfg; return nil }
 	})
 	m.settingsRegistry()
@@ -7127,7 +7129,7 @@ func TestApplyConnectDoneMergesPreparedPresets(t *testing.T) {
 }
 
 func TestApplyConnectDonePersistsConsent(t *testing.T) {
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(cfg config.Config) error { d.State.Config = cfg; return nil }
 	})
 	m.settingsRegistry()
@@ -7155,7 +7157,7 @@ func TestApplyConnectDonePersistsConsent(t *testing.T) {
 }
 
 func TestApplyConnectDoneRefreshesManagedPreset(t *testing.T) {
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(cfg config.Config) error { d.State.Config = cfg; return nil }
 	})
 	m.settingsRegistry()
@@ -7201,7 +7203,7 @@ func TestApplyConnectDoneRefreshesManagedPreset(t *testing.T) {
 }
 
 func TestApplyConnectDonePersistsDenyConsent(t *testing.T) {
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(cfg config.Config) error { d.State.Config = cfg; return nil }
 	})
 	m.settingsRegistry()
@@ -7234,7 +7236,7 @@ func TestApplyConnectDoneWarnsOnProvenanceFailure(t *testing.T) {
 	if err := os.WriteFile(blocking, nil, 0o644); err != nil {
 		t.Fatalf("create blocking file: %v", err)
 	}
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(cfg config.Config) error { d.State.Config = cfg; return nil }
 		d.ModelCacheDir = blocking
 	})
@@ -7269,7 +7271,7 @@ func TestApplyConnectDoneWarnsOnProvenanceFailure(t *testing.T) {
 }
 
 func TestConnectReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(cfg config.Config) error {
 			// reloadAgentRuntime installs the config before cleaning up old
 			// resources, whose failure is returned to the TUI.
@@ -7299,7 +7301,7 @@ func TestConnectReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
 
 func TestConnectSaveFailureKeepsSessionConfigAndPendingFlag(t *testing.T) {
 	reloaded := false
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(cfg config.Config) error { reloaded = true; d.State.Config = cfg; return nil }
 	})
 	blockingPath := filepath.Join(t.TempDir(), "not-a-directory")
@@ -7338,7 +7340,7 @@ func TestConnectSaveFailureKeepsSessionConfigAndPendingFlag(t *testing.T) {
 }
 
 func TestConnectDoneSuccessReceiptHasCheckGlyph(t *testing.T) {
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(config.Config) error { return nil }
 	})
 	stateOf(m).WorkingDir = t.TempDir()
@@ -7357,7 +7359,7 @@ func TestConnectDoneSuccessReceiptHasCheckGlyph(t *testing.T) {
 }
 
 func TestConnectReloadFailureReceiptHasCrossGlyph(t *testing.T) {
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(config.Config) error { return errors.New("cleanup failed") }
 	})
 	stateOf(m).WorkingDir = t.TempDir()
@@ -7376,7 +7378,7 @@ func TestConnectReloadFailureReceiptHasCrossGlyph(t *testing.T) {
 }
 
 func TestSwitchModelPresetInvalidatesSetRegistry(t *testing.T) {
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(config.Config) error { return nil }
 	})
 	stateOf(m).Config.Providers = map[string]config.ProviderConfig{
@@ -7396,7 +7398,7 @@ func TestSwitchModelPresetInvalidatesSetRegistry(t *testing.T) {
 }
 
 func TestModelPresetReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(cfg config.Config) error {
 			// reloadAgentRuntime installs the config before cleaning up old
 			// resources, whose failure is returned to the TUI.
@@ -7428,7 +7430,7 @@ func TestModelPresetReloadCleanupFailureInvalidatesSetRegistry(t *testing.T) {
 
 func TestSwitchModelPresetSaveFailureKeepsSessionConfigAndPendingFlag(t *testing.T) {
 	reloaded := false
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(cfg config.Config) error { reloaded = true; d.State.Config = cfg; return nil }
 	})
 	stateOf(m).Config.Providers = map[string]config.ProviderConfig{
@@ -7469,7 +7471,7 @@ func TestSwitchModelPresetSaveFailureKeepsSessionConfigAndPendingFlag(t *testing
 }
 
 func TestSwitchModelPresetSuccessReceiptHasCheckGlyph(t *testing.T) {
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(config.Config) error { return nil }
 	})
 	stateOf(m).Config.Providers = map[string]config.ProviderConfig{
@@ -7490,7 +7492,7 @@ func TestSwitchModelPresetSuccessReceiptHasCheckGlyph(t *testing.T) {
 }
 
 func TestSwitchModelPresetReloadFailureReceiptHasCrossGlyph(t *testing.T) {
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(config.Config) error { return errors.New("cleanup failed") }
 	})
 	stateOf(m).Config.Providers = map[string]config.ProviderConfig{
@@ -7560,7 +7562,7 @@ func TestSwitchModelPresetPreservesOtherProfiles(t *testing.T) {
 // already exists) and the stale bindings keep resolving to the old model,
 // so the status bar never updates.
 func TestSwitchModelPresetUpdatesStaleSingleProfile(t *testing.T) {
-	m, _, _ := newModelForConfigTest(t, func(d *inproc.Deps) {
+	m, _, _ := newModelForConfigTest(t, func(d *service.Deps) {
 		d.ReloadConfig = func(cfg config.Config) error {
 			d.State.Config = cfg
 			return nil
@@ -7625,8 +7627,8 @@ func TestConnectCancelledClosesOverlay(t *testing.T) {
 
 func TestDockedSettingsBrowserReloadsAndPrintsReceipts(t *testing.T) {
 	var reloaded bool
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModelWith(inproc.Deps{State: state, ReloadConfig: func(cfg config.Config) error {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModelWith(t, service.Deps{State: state, ReloadConfig: func(cfg config.Config) error {
 		reloaded = true
 		return nil
 	}})
@@ -7665,7 +7667,7 @@ func TestDockedSettingsBrowserReloadsAndPrintsReceipts(t *testing.T) {
 
 func TestBrowserReloadCleanupFailureSynchronizesUIState(t *testing.T) {
 	t.Setenv("TERM", "xterm-256color")
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(cfg config.Config) error {
 			// reloadAgentRuntime swaps the config before old-resource cleanup.
 			d.State.Config = cfg
@@ -7705,8 +7707,8 @@ func TestBrowserReloadCleanupFailureSynchronizesUIState(t *testing.T) {
 }
 
 func TestDockedSettingsBrowserDoesNotSwallowRuntimeMessages(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.resize(100, 40)
 	m.busy = true
 
@@ -7818,7 +7820,7 @@ func TestDispatchCommand_QuotedArgs(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: cmdReg})
+	m := testModelWith(t, service.Deps{State: modelTestState(t), Commands: cmdReg})
 	m.resize(80, 24)
 
 	_, _ = m.dispatchCommand(`/teststub "my idea"`)
@@ -7860,7 +7862,7 @@ func TestPatternForApproval_SecurityProperty(t *testing.T) {
 // TestSettingsBlockedByApproval verifies that Ctrl+O does not open the
 // settings browser when a tool approval is pending (F-BUG-147).
 func TestSettingsBlockedByApproval(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	tc := &session.PendingToolCall{
 		ID:           "block-1",
 		Name:         "shell.run",
@@ -7870,7 +7872,7 @@ func TestSettingsBlockedByApproval(t *testing.T) {
 		ResponseChan: make(chan session.UserApprovalDecision, 1),
 	}
 	state.SetPendingApproval(tc)
-	m := testModel(state)
+	m := testModel(t, state)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
 
@@ -7899,7 +7901,7 @@ func TestSettingsBlockedByApproval(t *testing.T) {
 // TestMemoryBlockedByApproval verifies that Ctrl+K does not open the
 // memory browser overlay when a tool approval is pending (F-BUG-147).
 func TestMemoryBlockedByApproval(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	tc := &session.PendingToolCall{
 		ID:           "block-2",
 		Name:         "shell.run",
@@ -7909,7 +7911,7 @@ func TestMemoryBlockedByApproval(t *testing.T) {
 		ResponseChan: make(chan session.UserApprovalDecision, 1),
 	}
 	state.SetPendingApproval(tc)
-	m := testModel(state)
+	m := testModel(t, state)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
 
@@ -7938,10 +7940,10 @@ func TestMemoryBlockedByApproval(t *testing.T) {
 // TestSettingsBlockReason verifies that settingsBlockReason returns the
 // correct blocking message for each condition (F-BUG-153).
 func TestSettingsBlockReason(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 
 	t.Run("busy", func(t *testing.T) {
-		m := testModel(state)
+		m := testModel(t, state)
 		m.busy = true
 		if got := m.settingsBlockReason(); got != settingsBusyMessage {
 			t.Fatalf("settingsBlockReason = %q, want %q", got, settingsBusyMessage)
@@ -7952,7 +7954,7 @@ func TestSettingsBlockReason(t *testing.T) {
 		// A background command no longer blocks a settings write: the
 		// conversation's command service survives the reload, so the save
 		// changes only what FUTURE launches resolve.
-		m := testModel(state)
+		m := testModel(t, state)
 		state.SetRunningJobsCount(1)
 		if got := m.settingsBlockReason(); got != "" {
 			t.Fatalf("settingsBlockReason = %q, want no block while a command runs in the background", got)
@@ -7970,7 +7972,7 @@ func TestSettingsBlockReason(t *testing.T) {
 			ResponseChan: make(chan session.UserApprovalDecision, 1),
 		}
 		state.SetPendingApproval(tc)
-		m := testModel(state)
+		m := testModel(t, state)
 		want := "Resolve the pending tool approval to save."
 		if got := m.settingsBlockReason(); got != want {
 			t.Fatalf("settingsBlockReason = %q, want %q", got, want)
@@ -7984,7 +7986,7 @@ func TestSettingsBlockReason(t *testing.T) {
 			ResponseChan: make(chan []session.Answer, 1),
 		}
 		state.SetPendingQuestion(q)
-		m := testModel(state)
+		m := testModel(t, state)
 		want := "Answer the pending question to save."
 		if got := m.settingsBlockReason(); got != want {
 			t.Fatalf("settingsBlockReason = %q, want %q", got, want)
@@ -7993,7 +7995,7 @@ func TestSettingsBlockReason(t *testing.T) {
 	})
 
 	t.Run("picker open", func(t *testing.T) {
-		m := testModel(state)
+		m := testModel(t, state)
 		m.dock.Open(&picker.Model{})
 		want := "Close the picker to save."
 		if got := m.settingsBlockReason(); got != want {
@@ -8002,7 +8004,7 @@ func TestSettingsBlockReason(t *testing.T) {
 	})
 
 	t.Run("no block", func(t *testing.T) {
-		m := testModel(state)
+		m := testModel(t, state)
 		if got := m.settingsBlockReason(); got != "" {
 			t.Fatalf("settingsBlockReason = %q, want empty string", got)
 		}
@@ -8019,12 +8021,12 @@ func TestInputAreaRowsIncludesSDDHint(t *testing.T) {
 }
 
 func TestModeCycleContainsOnlyAskActAndClearsAuto(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	on := true
 	if _, err := state.ApplyInteraction(interaction.Patch{Auto: &on}); err != nil {
 		t.Fatalf("seed Auto: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, SetInteraction: state.ApplyInteraction})
+	m := testModelWith(t, service.Deps{State: state, SetInteraction: state.ApplyInteraction})
 	m.resize(80, 24)
 
 	m.cycleMode(true)
@@ -8123,7 +8125,7 @@ func TestFinishedPlanIsOneIdleRow(t *testing.T) {
 // the tools the session reports.
 func TestOpenAgentsRosterThreadsSessionTools(t *testing.T) {
 	cfg := config.Default()
-	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 
 	// A registry supplies the names the session reports.
 	reg := registry.New()
@@ -8135,7 +8137,7 @@ func TestOpenAgentsRosterThreadsSessionTools(t *testing.T) {
 	for _, tool := range tools {
 		names = append(names, tool.Name)
 	}
-	m := testModelWith(inproc.Deps{
+	m := testModelWith(t, service.Deps{
 		State: state,
 		Tools: func() ([]string, bool) { return names, true },
 	})
@@ -8190,7 +8192,7 @@ func TestDispatchPromptCommandStartsAgentRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m := testModelWith(inproc.Deps{State: modelTestState(t), Runner: runnerOf(runner), Commands: reg})
+	m := testModelWith(t, service.Deps{State: modelTestState(t), Runner: runnerOf(runner), Commands: reg})
 	m.resize(80, 24)
 
 	updated, cmd := m.dispatchCommand("/revcheck main.go")
@@ -8230,7 +8232,7 @@ func TestDispatchPromptCommandBusySteers(t *testing.T) {
 	if err := reg.Register(commands.Command{Name: "revcheck", Description: "Review code", Group: "plugins", PromptBody: "Review the current diff."}); err != nil {
 		t.Fatal(err)
 	}
-	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: reg})
+	m := testModelWith(t, service.Deps{State: modelTestState(t), Commands: reg})
 	m.resize(80, 24)
 	m.busy = true
 
@@ -8252,7 +8254,7 @@ func TestDispatchPromptCommandPreservesQuotedArgs(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m := testModelWith(inproc.Deps{State: modelTestState(t), Runner: runnerOf(runner), Commands: reg})
+	m := testModelWith(t, service.Deps{State: modelTestState(t), Runner: runnerOf(runner), Commands: reg})
 	m.resize(80, 24)
 
 	updated, cmd := m.dispatchCommand(`/greet "hello world" 'single'`)
@@ -8293,7 +8295,7 @@ func TestDispatchReviewCommandWhileBusyIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := modelTestState(t)
-	m := testModelWith(inproc.Deps{
+	m := testModelWith(t, service.Deps{
 		State:  state,
 		Runner: runnerOf(&testAgentRunner{}),
 		Review: func(ctx context.Context, params acpwire.ReviewParams) error {
@@ -8320,7 +8322,7 @@ func TestDispatchReviewCommandNilDispatcherShowsError(t *testing.T) {
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatal(err)
 	}
-	m := testModelWith(inproc.Deps{State: modelTestState(t), Commands: reg})
+	m := testModelWith(t, service.Deps{State: modelTestState(t), Commands: reg})
 	m.resize(80, 24)
 
 	updated, cmd := m.dispatchCommand("/review main.go")
@@ -8348,7 +8350,7 @@ func TestDispatchReviewCommandStartsSubagent(t *testing.T) {
 	}
 	dispatched := make(chan string, 1)
 	state := modelTestState(t)
-	m := testModelWith(inproc.Deps{
+	m := testModelWith(t, service.Deps{
 		State:  state,
 		Runner: runnerOf(&testAgentRunner{}),
 		Review: func(ctx context.Context, params acpwire.ReviewParams) error {
@@ -8419,7 +8421,7 @@ func TestDispatchStructuredResultOpensDocPanel(t *testing.T) {
 			return commands.Panel("Things", false, []commands.Row{{Text: "one", Detail: "first"}})
 		},
 	})
-	m = withCommands(m, reg)
+	m = withCommands(t, m, reg)
 	mm, _ := m.dispatchCommand("/things")
 	m = asModel(t, mm)
 	m = settleCalls(t, m)
@@ -8435,8 +8437,8 @@ func TestDispatchStructuredResultOpensDocPanel(t *testing.T) {
 func TestTrustPromptOpensAtStartupAndDeclineCloses(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
 	var decided trust.Decision
-	m2 := testModelWith(
-		inproc.Deps{State: stateOf(m), TrustPrompt: "/repo", DecideTrust: func(d trust.Decision) { decided = d }},
+	m2 := testModelWith(t,
+		service.Deps{State: stateOf(m), TrustPrompt: "/repo", DecideTrust: func(d trust.Decision) { decided = d }},
 	)
 	if !m2.dock.IsOpen() {
 		t.Fatal("dock should host the trust panel at startup")
@@ -8457,7 +8459,7 @@ func TestTrustPromptOpensAtStartupAndDeclineCloses(t *testing.T) {
 }
 
 func TestChangedMsgSavedSkipsProjectWrite(t *testing.T) {
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(config.Config) error { return nil }
 	})
 	cfg := stateOf(m).Config
@@ -8475,7 +8477,7 @@ func TestChangedMsgSavedSkipsProjectWrite(t *testing.T) {
 }
 
 func TestChangedMsgSavedGlobalTargetReceiptBase(t *testing.T) {
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(config.Config) error { return nil }
 	})
 	cfg := stateOf(m).Config
@@ -8510,7 +8512,7 @@ func TestChangedMsgSavedGlobalTargetReceiptBase(t *testing.T) {
 
 func TestOpenConnectOnStartOpensConnectPanel(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
-	m2 := testModel(stateOf(m), WithOpenConnectOnStart())
+	m2 := testModel(t, stateOf(m), WithOpenConnectOnStart())
 	if !m2.dock.IsOpen() {
 		t.Fatal("dock should host the connect panel on first run")
 	}
@@ -8525,8 +8527,8 @@ func TestOpenConnectOnStartYieldsToTrustPrompt(t *testing.T) {
 	// pins the ordering: trust panel first.
 	m := newViewTestModel(t, 80, 24)
 	decided := false
-	m2 := testModelWith(
-		inproc.Deps{State: stateOf(m), TrustPrompt: "/repo", DecideTrust: func(trust.Decision) { decided = true }},
+	m2 := testModelWith(t,
+		service.Deps{State: stateOf(m), TrustPrompt: "/repo", DecideTrust: func(trust.Decision) { decided = true }},
 		WithOpenConnectOnStart(),
 	)
 	panel := m2.dock.Panel()
@@ -8542,7 +8544,7 @@ func TestModelsRefreshesCachedCodexAndUpdatesPicker(t *testing.T) {
 	state.Config.Providers = map[string]config.ProviderConfig{
 		"codex": {Type: "openai_codex", Template: "openai-codex", BaseURL: "https://chatgpt.com/backend-api", Auth: "oauth"},
 	}
-	m := testModel(state)
+	m := testModel(t, state)
 	m.discovered["codex"] = []schema.ModelInfo{{ID: "gpt-5.6-luna"}}
 	if cmd := m.openModels(); cmd == nil {
 		t.Fatal("cached Codex catalog prevented a live refresh")
@@ -9334,7 +9336,7 @@ func TestDoctorFixSavesKeyAndReloads(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("MARSHAL_CONFIG_DIR", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
-	m := testModelWith(inproc.Deps{State: session.New(config.Default(), work, time.Unix(100, 0), session.Persistence{}), Auth: newMemAuth(), HomeDir: home},
+	m := testModelWith(t, service.Deps{State: session.New(config.Default(), work, time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID}), Auth: newMemAuth(), HomeDir: home},
 		WithHomeDir(home),
 		WithOpenBrowser(func(string) error { return nil }))
 	stateOf(m).WorkingDir = work
@@ -9642,11 +9644,11 @@ func TestSwarmPreflightUnchanged(t *testing.T) {
 }
 
 func TestChangedRefreshesTheViewportForANewSubagent(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.resize(80, 24)
 
-	child := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	child := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	state.RegisterSubagentWithMeta("review", child, session.SubagentMeta{})
 	before := m.lastTranscriptHash
 
@@ -9658,12 +9660,12 @@ func TestChangedRefreshesTheViewportForANewSubagent(t *testing.T) {
 }
 
 func TestActiveAgentRunRowSuppressedWhenSubagentCardRunning(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.resize(80, 24)
 
 	// Register a running subagent card.
-	child := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	child := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	state.RegisterSubagentWithMeta("review · main.go", child, session.SubagentMeta{})
 
 	// Set an active agent.run tool call on the parent.
@@ -9684,8 +9686,8 @@ func TestActiveAgentRunRowSuppressedWhenSubagentCardRunning(t *testing.T) {
 }
 
 func TestActiveAgentRunRowRenderedWhenNoRunningCard(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.resize(80, 24)
 
 	state.SetActiveToolCall(session.ActiveToolCall{
@@ -10081,14 +10083,14 @@ func TestSDDNewFromLastPlanToPreflight(t *testing.T) {
 // per-run model overrides hands them to the session on the run's parameters,
 // converted to the wire's role-name keys.
 func TestSDDStartCarriesTheOverrides(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{SessionID: unnamedSessionID})
 	run := &fakePlanRun{}
 	var got []acpwire.SDDParams
 	cmdReg := commands.New()
 	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
 		t.Fatal(err)
 	}
-	model := testModelWith(inproc.Deps{
+	model := testModelWith(t, service.Deps{
 		State:  state,
 		Runner: runnerOf(&testAgentRunner{}),
 		PlanPreflight: preflightOf(acpwire.PlanPreflight{
@@ -10220,7 +10222,7 @@ func TestSuggestionLowConfidenceShowsTextAndCallsLLM(t *testing.T) {
 	m := newTestModel(t)
 	stateOf(m).Config.TUI.Suggestions = "llm"
 	fp := &fakeSuggestionProvider{response: "yes, add the test"}
-	m = withSuggester(m, fp.Provide)
+	m = withSuggester(t, m, fp.Provide)
 	stateOf(m).AddMessageFinalWithUsage(session.RoleAssistant, "Want me to add a test for that?", session.ContentTypeMarkdown, 0, "")
 
 	cmd := m.computeSuggestion()
@@ -10252,7 +10254,7 @@ func TestSuggestionHighConfidenceSkipsLLM(t *testing.T) {
 	m := newTestModel(t)
 	stateOf(m).Config.TUI.Suggestions = "llm"
 	fp := &fakeSuggestionProvider{response: "should not be used"}
-	m = withSuggester(m, fp.Provide)
+	m = withSuggester(t, m, fp.Provide)
 	stateOf(m).AddMessageFinalWithUsage(session.RoleAssistant, "Should I proceed with the refactor?", session.ContentTypeMarkdown, 0, "")
 
 	cmd := m.computeSuggestion()
@@ -10283,7 +10285,7 @@ func TestSuggestionRulesModeNeverCallsLLM(t *testing.T) {
 			m := newTestModel(t)
 			stateOf(m).Config.TUI.Suggestions = "rules"
 			fp := &fakeSuggestionProvider{response: "should not be used"}
-			m = withSuggester(m, fp.Provide)
+			m = withSuggester(t, m, fp.Provide)
 			stateOf(m).AddMessageFinalWithUsage(session.RoleAssistant, tc.msg, session.ContentTypeMarkdown, 0, "")
 
 			cmd := m.computeSuggestion()
@@ -10326,7 +10328,7 @@ func TestSuggestionOffAtEveryConfidence(t *testing.T) {
 		m := newTestModel(t)
 		stateOf(m).Config.TUI.Suggestions = "off"
 		fp := &fakeSuggestionProvider{response: "should not be used"}
-		m = withSuggester(m, fp.Provide)
+		m = withSuggester(t, m, fp.Provide)
 		stateOf(m).AddMessageFinalWithUsage(session.RoleAssistant, msg, session.ContentTypeMarkdown, 0, "")
 
 		cmd := m.computeSuggestion()
@@ -10356,7 +10358,7 @@ func postmortemTestState(t *testing.T, sessionID string) *session.State {
 	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: sessionID})
 }
 
-// endTestController is a scriptable inproc.EndService. It records what the
+// endTestController is a scriptable service.EndService. It records what the
 // model submitted, returns a configured membership/decision, and reports a
 // configurable settlement error — the whole runtime end contract in one fake.
 type endTestController struct {
@@ -10468,7 +10470,7 @@ func TestExitPromptsPostmortemPerConfig(t *testing.T) {
 	state.Config.Postmortem.OnExit = "prompt"
 	// A controller with no active work: the warning is skipped (nothing would
 	// be stopped) and the postmortem policy applies directly.
-	m := testModelEnding(state, &endTestController{})
+	m := testModelEnding(t, state, &endTestController{})
 
 	m, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
 
@@ -10491,7 +10493,7 @@ func TestExitAlwaysRunsPostmortem(t *testing.T) {
 	state := postmortemTestState(t, "sess-always")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "always"
-	m := testModelEnding(state, &endTestController{})
+	m := testModelEnding(t, state, &endTestController{})
 
 	_, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
 
@@ -10516,7 +10518,7 @@ func TestExitNeverSkipsPostmortem(t *testing.T) {
 	state := postmortemTestState(t, "sess-never")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "never"
-	m := testModelEnding(state, &endTestController{})
+	m := testModelEnding(t, state, &endTestController{})
 
 	_, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
 
@@ -10537,7 +10539,7 @@ func TestExitNeverSkipsPostmortem(t *testing.T) {
 func TestExitSkipsPromptOnEmptySession(t *testing.T) {
 	state := postmortemTestState(t, "sess-empty")
 	state.Config.Postmortem.OnExit = "prompt"
-	m := testModelEnding(state, &endTestController{})
+	m := testModelEnding(t, state, &endTestController{})
 
 	_, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
 
@@ -10556,7 +10558,7 @@ func TestResumeShutdownDoesNotPrompt(t *testing.T) {
 	state := postmortemTestState(t, "sess-resume")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "prompt"
-	f := &fakeNewSession{newState: session.New(config.Default(), t.TempDir(), time.Unix(200, 0), session.Persistence{})}
+	f := &fakeNewSession{newState: session.New(config.Default(), t.TempDir(), time.Unix(200, 0), session.Persistence{SessionID: unnamedSessionID})}
 	m := testModelReplacing(t, state, f, &endTestController{})
 
 	updated, cmd := m.beginResume("sess-target")
@@ -10587,7 +10589,7 @@ func warningModel(t *testing.T, work acpwire.EndWork) (Model, *endTestController
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "never"
 	ctrl := &endTestController{work: work}
-	m := testModelEnding(state, ctrl)
+	m := testModelEnding(t, state, ctrl)
 	m.resize(80, 24)
 	return m, ctrl
 }
@@ -10707,7 +10709,7 @@ func TestWarningRefusalPreservesTheChoiceAndExplainsTheGrowth(t *testing.T) {
 	}
 	state := postmortemTestState(t, "sess-refusal")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
-	m := testModelEnding(state, ctrl)
+	m := testModelEnding(t, state, ctrl)
 	m.resize(80, 24)
 
 	if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
@@ -10846,7 +10848,7 @@ func TestFailedJoinNeverAdvancesAsSettled(t *testing.T) {
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "always"
 	ctrl := &endTestController{work: workSnapshot("job-1"), waitErr: errors.New("outstanding: job-1")}
-	m := testModelEnding(state, ctrl)
+	m := testModelEnding(t, state, ctrl)
 	m.resize(80, 24)
 
 	if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
@@ -11042,9 +11044,9 @@ func TestWarningShowsParentChildAndJobWork(t *testing.T) {
 // membership and a wired session factory.
 func newSessionWarningModel(t *testing.T, work acpwire.EndWork) (Model, *endTestController, *fakeNewSession) {
 	t.Helper()
-	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	oldState.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
-	f := &fakeNewSession{newState: session.New(config.Default(), "/repo", time.Unix(200, 0), session.Persistence{})}
+	f := &fakeNewSession{newState: session.New(config.Default(), "/repo", time.Unix(200, 0), session.Persistence{SessionID: unnamedSessionID})}
 	ctrl := &endTestController{work: work}
 	m := testModelReplacing(t, oldState, f, ctrl)
 	m.resize(80, 24)
@@ -11136,7 +11138,7 @@ func TestResumeDeclineLeavesTheResumeTargetUntouched(t *testing.T) {
 	state := postmortemTestState(t, "sess-resume-decline")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	ctrl := &endTestController{work: workSnapshot("job-1")}
-	m := testModelEnding(state, ctrl)
+	m := testModelEnding(t, state, ctrl)
 	m.resize(80, 24)
 
 	updated, cmd := m.beginResume("sess-other")
@@ -11202,7 +11204,7 @@ func TestPostAcceptedPromptCannotReopenWork(t *testing.T) {
 
 	// The stop/join pass is running: an ordinary prompt must be refused.
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m = withPromptRunner(m, runner)
+	m = withPromptRunner(t, m, runner)
 	_, cmd := m.startPrompt("do more work", false)
 
 	if cmd != nil {
@@ -11223,11 +11225,11 @@ func TestPostAcceptedPromptCannotReopenWork(t *testing.T) {
 // TUI names the watch instead of writing the goal itself, and the session
 // writes it from its own last assistant reply.
 func TestWatchResumeSendsTheWatchNotTheText(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	state.AddMessageFinal(session.RoleAssistant, "I fixed the build.", session.ContentTypePlain)
-	m := testModel(state)
+	m := testModel(t, state)
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m = withPromptRunner(m, runner)
+	m = withPromptRunner(t, m, runner)
 
 	cmd := m.startWatchResumeRun("ci", false)
 	if cmd == nil {
@@ -11320,7 +11322,7 @@ func TestAnalysisCannotRetriggerTheWarning(t *testing.T) {
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "prompt"
 	ctrl := &endTestController{work: workSnapshot("job-1")}
-	m := testModelEnding(state, ctrl)
+	m := testModelEnding(t, state, ctrl)
 	m.resize(80, 24)
 
 	if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
@@ -11487,7 +11489,7 @@ func TestAgentGoalDispatchStartsRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m := testModelWith(inproc.Deps{State: modelTestState(t), Runner: runnerOf(runner), Commands: reg})
+	m := testModelWith(t, service.Deps{State: modelTestState(t), Runner: runnerOf(runner), Commands: reg})
 	m.resize(80, 24)
 
 	updated, _ := m.dispatchCommand("/pmtest")
@@ -11524,7 +11526,7 @@ func TestEndAnalysisFinishedQuitsOnSuccess(t *testing.T) {
 	state := postmortemTestState(t, "sess-agentpass")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	ctrl := &endTestController{}
-	m := testModelEnding(state, ctrl)
+	m := testModelEnding(t, state, ctrl)
 	m.resize(80, 24)
 	m.endAnalyzing = true
 
@@ -11558,7 +11560,7 @@ func TestPostmortemPanelDoneWithAgentRunsScopedAnalysis(t *testing.T) {
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "prompt"
 	ctrl := &endTestController{}
-	m := testModelEnding(state, ctrl)
+	m := testModelEnding(t, state, ctrl)
 	m.resize(80, 24)
 
 	m, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
@@ -11606,7 +11608,7 @@ func TestEndAnalysisFailureStillQuits(t *testing.T) {
 	state := postmortemTestState(t, "sess-refused")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	ctrl := &endTestController{analysisErr: errors.New("the conversation is ending")}
-	m := testModelEnding(state, ctrl)
+	m := testModelEnding(t, state, ctrl)
 	m.resize(80, 24)
 	m.endAnalyzing = true
 
@@ -11639,7 +11641,7 @@ func TestExitPostmortemUnknownPolicyPrompts(t *testing.T) {
 	state := postmortemTestState(t, "sess-bogus-policy")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "bogus"
-	m := testModelEnding(state, &endTestController{})
+	m := testModelEnding(t, state, &endTestController{})
 
 	m, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
 
@@ -11666,7 +11668,7 @@ func TestExitQuestionIsAskedOnce(t *testing.T) {
 	state := postmortemTestState(t, "sess-asked-once")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "prompt"
-	m := testModelEnding(state, &endTestController{})
+	m := testModelEnding(t, state, &endTestController{})
 	m.resize(80, 24)
 
 	m, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
@@ -11736,7 +11738,7 @@ func TestPostmortemConsentResizeInvalidatesVisibility(t *testing.T) {
 		state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 		state.Config.Postmortem.OnExit = "prompt"
 		ctrl := &endTestController{}
-		m := testModelWith(inproc.Deps{
+		m := testModelWith(t, service.Deps{
 			State: state,
 			End:   ctrl,
 			// Wire the access seam so a request queued behind the exit question
@@ -12024,7 +12026,7 @@ func newSendNowFixture(t *testing.T, width, height int, supported bool) *sendNow
 	t.Helper()
 	t.Setenv("MARSHAL_CONFIG_DIR", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", "")
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	if supported {
 		state.SetOperationInterrupt(func(context.Context, session.OperationRef) (session.OperationStop, error) {
 			return session.OperationStop{}, nil
@@ -12043,7 +12045,7 @@ func newSendNowFixture(t *testing.T, width, height int, supported bool) *sendNow
 		f.submits = append(f.submits, req)
 	}}
 	f.stub = stub
-	m := testModelStubWith(inproc.Deps{State: state, Commands: reg, Auth: newMemAuth()}, stub, WithHomeDir(t.TempDir()),
+	m := testModelStubWith(t, service.Deps{State: state, Commands: reg, Auth: newMemAuth()}, stub, WithHomeDir(t.TempDir()),
 		WithOpenBrowser(func(string) error { return nil }))
 	m.resize(width, height)
 	m.busy = true
@@ -12248,7 +12250,7 @@ func TestSendNowComposerRoutesSuspendedAsyncResultsOnce(t *testing.T) {
 	// Expiry: an access request cancelled while the composer was up must not be
 	// resurrected on close.
 	g := newSendNowFixture(t, 120, 40, true)
-	_, sess := inproc.New(inproc.Deps{
+	_, sess := acptest.Open(t, service.Deps{
 		State:         g.state,
 		AccessRequest: func() (session.AccessRequest, bool) { return g.state.AccessRequest() },
 		ResolveAccess: func(session.AccessChoice) (session.AccessResult, error) {

@@ -8,7 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/service"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/connect"
@@ -34,7 +34,7 @@ func TestApplyConnectDoneSuccessClearsProviderNotice(t *testing.T) {
 // provider construction works with the new config — the stale notice must
 // be cleared.
 func TestPersistAndReloadSuccessClearsProviderNotice(t *testing.T) {
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(config.Config) error { return nil }
 	})
 	stateOf(m).SetNotice(session.Notice{Category: session.NoticeProvider, Message: "provider request timed out"})
@@ -55,7 +55,7 @@ func TestPersistAndReloadSuccessClearsProviderNotice(t *testing.T) {
 // A failed reload proves nothing about the provider — the notice must
 // stay so the user keeps seeing why the agent is unavailable.
 func TestPersistAndReloadFailureRetainsProviderNotice(t *testing.T) {
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(config.Config) error { return errors.New("cleanup failed") }
 	})
 	stateOf(m).SetNotice(session.Notice{Category: session.NoticeProvider, Message: "provider request timed out"})
@@ -77,10 +77,10 @@ func TestPersistAndReloadFailureRetainsProviderNotice(t *testing.T) {
 // session reads the runtime's current runner on each call, so a model that
 // started without one recovers as soon as the runtime has one.
 func TestARunnerBuiltAfterStartupIsUsedWithoutAdoption(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	var built inproc.Runner
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	var built service.Runner
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m := testModelWith(inproc.Deps{State: state, Runner: func() inproc.Runner { return built }})
+	m := testModelWith(t, service.Deps{State: state, Runner: func() service.Runner { return built }})
 	m.resize(80, 24)
 
 	// No runner is built yet: the text echoes locally and no turn starts.
@@ -118,7 +118,7 @@ func TestARunnerBuiltAfterStartupIsUsedWithoutAdoption(t *testing.T) {
 // submitting another prompt is trying again, and if this turn also fails
 // the finished handler re-sets it.
 func TestStartPromptClearsProviderNotice(t *testing.T) {
-	m := testModelWith(inproc.Deps{State: modelTestState(t), Runner: runnerOf(&testAgentRunner{})})
+	m := testModelWith(t, service.Deps{State: modelTestState(t), Runner: runnerOf(&testAgentRunner{})})
 	m.resize(80, 24)
 	stateOf(m).SetNotice(session.Notice{Category: session.NoticeProvider, Message: "provider unreachable"})
 
@@ -134,7 +134,7 @@ func TestStartPromptClearsProviderNotice(t *testing.T) {
 // ClearNotice is category-scoped: a new turn must NOT clear an unrelated
 // internal notice.
 func TestStartPromptKeepsUnrelatedNotice(t *testing.T) {
-	m := testModelWith(inproc.Deps{State: modelTestState(t), Runner: runnerOf(&testAgentRunner{})})
+	m := testModelWith(t, service.Deps{State: modelTestState(t), Runner: runnerOf(&testAgentRunner{})})
 	m.resize(80, 24)
 	stateOf(m).SetNotice(session.Notice{Category: session.NoticeInternal, Message: "command registration failed"})
 
@@ -181,7 +181,7 @@ func TestAProviderErrorFromATurnSetsTheProviderNotice(t *testing.T) {
 		err:    &provider.ProviderError{Provider: "openai", StatusCode: 500, Body: "boom"},
 	}
 	state := modelTestState(t)
-	m := testModelWith(inproc.Deps{State: state, Runner: runnerOf(r)})
+	m := testModelWith(t, service.Deps{State: state, Runner: runnerOf(r)})
 	m.resize(80, 24)
 
 	m.input.SetValue("hello")
@@ -216,7 +216,7 @@ func TestALoginErrorFromATurnHintsSignIn(t *testing.T) {
 		err:    &oauth.ErrAuthRequired{ServerName: "codex", Reason: "no stored tokens"},
 	}
 	state := modelTestState(t)
-	m := testModelWith(inproc.Deps{State: state, Runner: runnerOf(r)})
+	m := testModelWith(t, service.Deps{State: state, Runner: runnerOf(r)})
 	m.resize(80, 24)
 
 	m.input.SetValue("hello")

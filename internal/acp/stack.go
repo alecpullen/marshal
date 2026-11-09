@@ -421,6 +421,19 @@ func (m *TurnManager) projectBusy(sessionID string, rule bool) bool {
 	return m.clientBusy[sessionID]
 }
 
+// flushesEveryTick reports whether the idle loop flushes the session's main
+// stack on every tick, dirty or not: for a marshal client, while its busy
+// flag for the session is set or a subagent of st runs (P3 R4).
+func (m *TurnManager) flushesEveryTick(sessionID string, st *session.State) bool {
+	if !m.isMarshal() {
+		return false
+	}
+	m.busyMu.Lock()
+	busy := m.busySet[sessionID] && m.clientBusy[sessionID]
+	m.busyMu.Unlock()
+	return busy || st.HasRunningSubagent()
+}
+
 // StackBusy handles session/stack_busy: it sets the session's busy flag for
 // this connection and, when it changed, re-projects every active stack of
 // the session with it and sends their patches before answering.
@@ -467,9 +480,32 @@ func (m *TurnManager) StackBusy(ctx context.Context, params json.RawMessage) (an
 	return struct{}{}, nil
 }
 
+// Sync handles session/sync: it marks the session's stacks dirty and
+// answers, so the response barrier flushes them, and fences every other
+// forwarder, before the response is written.
+func (m *TurnManager) Sync(ctx context.Context, params json.RawMessage) (any, error) {
+	var request acpwire.ControlParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, invalidParamsError("parse session/sync params: %v", err)
+		}
+	}
+	if request.SessionID == "" {
+		return nil, invalidParamsError("session/sync requires sessionId")
+	}
+	rt, ok := m.readLookup()(request.SessionID)
+	if !ok || rt.State == nil {
+		return nil, serverErrorf("unknown session: %s", request.SessionID)
+	}
+	m.markStackDirty(request.SessionID)
+	return struct{}{}, nil
+}
+
 // ensureStackIdle starts the session's idle flusher unless one is running:
 // session events mark the main stack dirty and a ticker flushes it and every
-// subagent stack while no turn runs.
+// subagent stack while no turn runs. A marker client's tick re-projects the
+// main stack every time while it is busy or a subagent runs, and a fence
+// always flushes only what is dirty (P3 R4).
 func (m *TurnManager) ensureStackIdle(sessionID string, rt *TurnRuntime) {
 	if rt.Events == nil {
 		return
@@ -547,7 +583,7 @@ func (m *TurnManager) ensureStackIdle(sessionID string, rt *TurnRuntime) {
 					m.dropStacks(sessionID)
 					return
 				}
-				m.flushProjector(sessionID, 0, cur.State, false, false, true)
+				m.flushProjector(sessionID, 0, cur.State, false, false, !m.flushesEveryTick(sessionID, cur.State))
 				m.flushChildStacks(sessionID, cur.State)
 				m.flushRun(sessionID, cur.State)
 			}

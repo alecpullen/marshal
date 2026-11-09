@@ -19,11 +19,11 @@ import (
 // through the session: the stub records one plain note with no role, and the
 // state's last message carries the same text.
 func TestNotesGoThroughTheSession(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	stub := &stubSession{}
 	var notes []acpwire.Note
 	stub.onAddNote = func(note acpwire.Note) { notes = append(notes, note) }
-	m := testModelStub(state, stub)
+	m := testModelStub(t, state, stub)
 
 	// No command registry: /help can only note that it has none.
 	m.dispatchCommand("/help")
@@ -51,11 +51,11 @@ func TestNotesGoThroughTheSession(t *testing.T) {
 // line is still echoed as the user's message, through a user note, and no turn
 // starts.
 func TestTheNoRunnerEchoIsAUserNote(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	stub := &stubSession{}
 	var notes []acpwire.Note
 	stub.onAddNote = func(note acpwire.Note) { notes = append(notes, note) }
-	m := testModelStub(state, stub)
+	m := testModelStub(t, state, stub)
 
 	updated, _ := m.Update(tea.KeyPressMsg{Text: "hi"})
 	m = updated.(Model)
@@ -79,16 +79,16 @@ func TestTheNoRunnerEchoIsAUserNote(t *testing.T) {
 
 // TestWithLoggerSetsTheModelsLogger pins WithLogger and the never-nil log.
 func TestWithLoggerSetsTheModelsLogger(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	logger := slog.New(slog.DiscardHandler)
 
-	m := testModel(state, WithLogger(logger))
+	m := testModel(t, state, WithLogger(logger))
 	if m.log() != logger {
 		t.Fatal("log() did not return the logger WithLogger set")
 	}
 
 	// Without the option the model still logs somewhere, to a discard logger.
-	if plain := testModel(state); plain.log() == nil {
+	if plain := testModel(t, state); plain.log() == nil {
 		t.Fatal("log() = nil for a model with no WithLogger")
 	}
 }

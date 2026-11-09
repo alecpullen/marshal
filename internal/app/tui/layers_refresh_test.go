@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/service"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/commands"
@@ -19,13 +19,13 @@ import (
 // the given home directory — the same shape the production wiring produces.
 func newLayersTestModel(t *testing.T, home, work string) Model {
 	t.Helper()
-	state := session.New(config.Default(), work, time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), work, time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	state.SetLayers(config.Layers{Default: config.Default(), User: config.Default(), Merged: config.Default()})
 	reg := commands.New()
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelWith(inproc.Deps{
+	m := testModelWith(t, service.Deps{
 		State:    state,
 		Commands: reg,
 		HomeDir:  home,

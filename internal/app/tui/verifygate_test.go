@@ -9,7 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -44,12 +44,12 @@ func TestVerifyGateRowStates(t *testing.T) {
 
 func TestProposalPersistsOnApprove(t *testing.T) {
 	workDir := t.TempDir()
-	state := session.New(config.Default(), workDir, time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), workDir, time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	reg := commands.New()
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelWith(inproc.Deps{
+	m := testModelWith(t, service.Deps{
 		State: state,
 		VerifyProposal: func(context.Context) (acpwire.VerifyCommands, error) {
 			return acpwire.VerifyCommands{Build: "make build", Test: "make test"}, nil

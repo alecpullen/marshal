@@ -38,6 +38,7 @@ func TestTranscriptConformance(t *testing.T) {
 		{name: "a subagent's stack reads its transcript", run: stackOfASubagentReadsItsTranscript},
 		{name: "an unknown subagent's stack is empty", run: stackOfAnUnknownSubagentIsEmpty},
 		{name: "the stack reads the state's clock", run: stackReadsTheStatesClock},
+		{name: "a silent change reaches the mirror", run: transcriptChangesReachTheMirror},
 		{name: "a call's detail", run: stackNodeReturnsACallsDetail},
 		{name: "a subagent's detail", run: stackNodeReadsASubagentsTranscript},
 		{name: "an unknown node or subagent fails", run: stackNodeFailsForAnUnknownNodeOrSubagent},
@@ -202,6 +203,151 @@ func stackIsTheSharedProjection(t *testing.T, open func(t *testing.T, d service.
 	sameJSON(t, "Nodes", got.Nodes, want.Nodes)
 	if len(got.Nodes) == 0 || got.Nodes[len(got.Nodes)-1].Kind != acpwire.KindBand {
 		t.Errorf("last node = %+v, want the band", got.Nodes)
+	}
+}
+
+// transcriptChangesReachTheMirror pins R4 for the eight state calls that
+// change what the projection reads and publish no update of their own: each
+// publishes transcript_changed, so the agent re-projects and the client's next
+// read shows the change (P3 plan 8).
+//
+// Each row reads once, makes its change directly on the state, proves the
+// change moved the projection (a row whose change was invisible could pass
+// without any push), then makes a call that changes nothing and reads again.
+func transcriptChangesReachTheMirror(t *testing.T, open func(t *testing.T, d service.Deps) seam) {
+	fixed := time.Unix(1_700_000_000, 0)
+	root := t.TempDir()
+	const elsewhere = "/elsewhere-wt"
+
+	// build makes two turns, one shell call inside the second root: moving the
+	// workspace elides its "cd" prefix, so the projection moves with it.
+	build := func(t *testing.T) (*session.State, func(string) int64) {
+		t.Helper()
+		st := stackState(t, "s1", fixed)
+		st.SetWorkspace(session.Workspace{ProjectRoot: root, ActiveRoot: root})
+		st.AddMessage(session.RoleUser, "turn one", session.ContentTypePlain)
+		beat := st.BeginStep(session.Actor{Model: "qwen3-coder"})
+		st.LogToolCall(registry.AuditEvent{
+			Timestamp: fixed, ToolName: "shell.run", StepID: beat, ToolCallID: "c1",
+			Args:          json.RawMessage(`{"command":"cd ` + elsewhere + ` && go test ./..."}`),
+			ResultSummary: "ok",
+		})
+		st.EndStep(beat)
+		st.AddMessageFinal(session.RoleAssistant, "done", session.ContentTypeMarkdown)
+		st.AddMessage(session.RoleUser, "turn two", session.ContentTypePlain)
+		beat2 := st.BeginStep(session.Actor{Model: "qwen3-coder"})
+		st.AddNarration(beat2, "Thinking it over.")
+		st.EndStep(beat2)
+		st.AddMessageFinal(session.RoleAssistant, "done again", session.ContentTypeMarkdown)
+		idOf := func(content string) int64 {
+			t.Helper()
+			for _, m := range st.Messages() {
+				if m.Content == content {
+					return m.ID
+				}
+			}
+			t.Fatalf("no message %q", content)
+			return 0
+		}
+		return st, idOf
+	}
+
+	rows := []struct {
+		name    string
+		prepare func(t *testing.T, st *session.State, idOf func(string) int64)
+		change  func(t *testing.T, st *session.State, idOf func(string) int64)
+	}{
+		{
+			name:   "rewind",
+			change: func(t *testing.T, st *session.State, idOf func(string) int64) { st.Rewind(idOf("turn two")) },
+		},
+		{
+			name:    "switch branch",
+			prepare: func(t *testing.T, st *session.State, idOf func(string) int64) { st.Rewind(idOf("turn two")) },
+			change: func(t *testing.T, st *session.State, idOf func(string) int64) {
+				branches := st.Branches()
+				st.SwitchBranch(branches[len(branches)-1])
+			},
+		},
+		{
+			name:   "clear messages",
+			change: func(t *testing.T, st *session.State, idOf func(string) int64) { st.ClearMessages() },
+		},
+		{
+			name: "log thinking",
+			change: func(t *testing.T, st *session.State, idOf func(string) int64) {
+				st.LogThinking(session.ThinkingEntry{Text: "weighing it"})
+			},
+		},
+		{
+			name: "set todos",
+			change: func(t *testing.T, st *session.State, idOf func(string) int64) {
+				if err := st.SetTodos([]db.TodoItem{{ID: "t1", Content: "a", Status: "pending"}}); err != nil {
+					t.Fatalf("SetTodos: %v", err)
+				}
+			},
+		},
+		{
+			name: "add a run event",
+			change: func(t *testing.T, st *session.State, idOf func(string) int64) {
+				st.AddRunEvent(session.RunEvent{Kind: session.RunEventCommit, Title: "abc123"})
+			},
+		},
+		{
+			name: "clear the run events",
+			prepare: func(t *testing.T, st *session.State, idOf func(string) int64) {
+				st.AddRunEvent(session.RunEvent{Kind: session.RunEventCommit, Title: "abc123"})
+			},
+			change: func(t *testing.T, st *session.State, idOf func(string) int64) { st.ClearRunEvents() },
+		},
+		{
+			name: "move the workspace",
+			change: func(t *testing.T, st *session.State, idOf func(string) int64) {
+				st.SetWorkspace(session.Workspace{ProjectRoot: root, ActiveRoot: elsewhere})
+			},
+		},
+	}
+
+	ctx := context.Background()
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			st, idOf := build(t)
+			// The row's setup runs before the first read, so its own change is
+			// the one the read below must reflect: "switch branch back" and
+			// "clear the run events" restore what the setup left.
+			if row.prepare != nil {
+				row.prepare(t, st, idOf)
+			}
+			sess := open(t, service.Deps{State: st})
+			first := sess.Stack(0, false)
+
+			row.change(t, st, idOf)
+
+			want := viewmodel.ProjectState(st, false, st.Now()).Tree
+			sameEncoded := func(a, b any) bool {
+				aJSON, err := json.Marshal(a)
+				if err != nil {
+					t.Fatalf("marshal: %v", err)
+				}
+				bJSON, err := json.Marshal(b)
+				if err != nil {
+					t.Fatalf("marshal: %v", err)
+				}
+				return bytes.Equal(aJSON, bJSON)
+			}
+			if sameEncoded(first.Roots, want.Roots) && sameEncoded(first.Nodes, want.Nodes) {
+				t.Fatal("the change did not move the projection: the row cannot prove its push")
+			}
+
+			// A call that changes nothing: its barrier (on the pipe arm) is what
+			// delivers the patch the change published.
+			if err := sess.ClearNotice(ctx, ""); err != nil {
+				t.Fatalf("ClearNotice: %v", err)
+			}
+			got := sess.Stack(0, false)
+			sameJSON(t, "Roots", got.Roots, want.Roots)
+			sameJSON(t, "Nodes", got.Nodes, want.Nodes)
+		})
 	}
 }
 

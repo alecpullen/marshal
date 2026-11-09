@@ -27,8 +27,8 @@ and 5 once those two had merged ([plan 4b](plans/2026-11-07-p3-4b-transcript-pla
 once those two had merged ([plan 6b](plans/2026-11-08-p3-6b-controls-plan.md),
 [plan 7a](plans/2026-11-08-p3-7a-settings-plan.md)), and plans 6c and 7b
 once those two had merged ([plan 6c](plans/2026-11-09-p3-6c-ending-plan.md),
-[plan 7b](plans/2026-11-09-p3-7b-browsers-plan.md)). Plan 8, the switch, is
-written once those two have merged.
+[plan 7b](plans/2026-11-09-p3-7b-browsers-plan.md)), and plan 8, the switch,
+once those two had merged ([plan 8](plans/2026-11-09-p3-8-switch-plan.md)).
 
 Decided with the user (2026-11-05):
 - **The adapter's logic moves, and is not rewritten.** It becomes the
@@ -304,6 +304,14 @@ served by the session's service, as plan 6b serves the turn's methods. Plan 7b
 drops `commands_changed`: the runtime's command registry never changes after
 startup, so the client reads the list once (R3).
 
+### Plan 8 — the switch
+
+- `session/sync` carries no interface method, as `session/stack_busy` does
+  not. `rpc.Session.Sync` sends it: the agent marks the session's stacks
+  dirty, and the response barrier then fences every forwarder, so the
+  response follows every update the session's state calls for (R4). The test
+  agent's reads use it to catch up with a state a test changed directly (V2).
+
 ## Out of scope (follow-ups)
 
 - **G1.** The bridge transport, the RPC passthrough (which carries the
@@ -372,6 +380,20 @@ startup, so the client reads the list once (R3).
   credential resolver, the trust decision and the shutdown sequence.
   `launch` keeps the loop, the program and the TUI. Plan 8 puts the pipe
   between them.
+- **How the pipe is served (plan 8).** `acp.Embedding` is `marshal acp`'s
+  agent host serving the runtime the embedding started, so both modes run the
+  same handlers (R11):
+  - `Adopt` registers the runtime under its session ID with the service pair
+    `launch` built from `SessionDeps`, so the trust prompt and its decision
+    are the embedding's;
+  - `Serve` serves one connection with the pipe's frame cap;
+  - `Close` releases the session's service and closes no runtime: the
+    embedding closes its own, after the program, as it does today.
+
+  A `session/new` without `replaces` is refused, because embedded mode starts
+  no runtime but its own. `launch` builds one embedding for each pass of its
+  loop, dials it over `rpc.Pipe`, attaches the runtime's session and runs the
+  TUI over the client.
 
 ### R2. Wire protocol
 
@@ -535,6 +557,20 @@ startup, so the client reads the list once (R3).
     loop projects only when an event marked the stack dirty. The client
     applies each patch in about 1ms, where in process the TUI spent about
     4ms of its `Update` goroutine on every refresh.
+- **Every change reaches the mirror (plan 8).** The idle loop projects only
+  when a session event marked the stack dirty. In process the TUI projected the
+  state on every refresh, so a change that publishes nothing still showed.
+  - **Eight state calls change what the projection reads and publish
+    nothing:** `Rewind`, `SwitchBranch`, `ClearMessages`, `LogThinking`,
+    `SetTodos`, `AddRunEvent`, `ClearRunEvents` and `SetWorkspace`. Each now
+    publishes `transcript_changed`, which no ACP update carries. Over the pipe
+    a `/rewind` would otherwise leave the old transcript on screen.
+  - **A running call's output stays silent.** `AppendActiveToolCallOutput`
+    would flood the broker. Instead, for a marshal client, the idle loop
+    flushes on every tick, dirty or not, while the client's busy flag for the
+    session is set or a subagent runs. That is the TUI's own rule: it
+    re-projected on every tick then.
+  - **A fence still flushes only what is dirty,** so no call's budget moves.
 - **`busy` stays (plan 4b).** The agent's rule (the session's turn, or a
   subagent's own run) would change two T6 goldens: the `live` and `tray`
   scenes set the TUI's busy flag with nothing running
@@ -781,6 +817,10 @@ moment the transcript changes anyway. `AddNote` is the other (plan 7b): it
 stays synchronous, for the order R6 gives, and in process the TUI paid the
 same projection on its next refresh.
 
+Plan 8 measures the key press. On the 2,000-call session, one typed
+character's `Update` and `View` over the pipe take no longer than in
+process, plus 1ms.
+
 A plan that misses a budget stops and reports. It does not loosen the
 budget.
 
@@ -790,9 +830,20 @@ budget.
   log file and its data directory.
 - An agent-side panic still ends the process, as today. A pipe that
   closes unexpectedly ends the TUI with the agent's error, never with a
-  hang.
+  hang. How (plan 8):
+  - **The connection's end ends the program.** `launch` cancels the
+    program's context when the client's connection ends, then returns the
+    agent's error.
+  - **A handler panic ends the embedding's connection.** The ACP server
+    recovers a handler's panic and answers the call with an error, so a
+    panicking agent would leave the TUI running. In process, a panic in a
+    seam call ended the program. So the embedding's server ends the
+    connection instead, and logs the panic with its stack.
 - `marshal acp` and embedded `marshal` run the same agent host code. The
   only difference is the transport.
+- **The session log gains one `acp dispatch` line per call the TUI makes**
+  (plan 8): the method, its duration and its error, never its params. The
+  server logs every request it serves, as `marshal acp` does.
 
 ## Design
 
@@ -804,6 +855,8 @@ budget.
 | `internal/launch` (new) | Embedded mode's composition root. |
 | `internal/app` | Stops importing `tui`. `Run`'s TUI half moves to `launch`. |
 | `internal/app/tui` | Asynchronous forms of the R6 calls. The test helpers build a pipe-connected agent over a test state. |
+| `internal/acp/acptest` (new) | The test agent: a test state served over a pipe by the embedding's agent host, whose reads settle (V2). Only tests import it. |
+| `internal/app/session/sessiontest` (new) | The 2,000-call session, shared by `internal/acp`'s budgets and the TUI's. |
 | `internal/acpclient/inproc` | Deleted. |
 | `cmd/marshal` | Calls `launch.Run`. |
 
@@ -904,18 +957,34 @@ conformance suite (V1) before anything switches.
      all served by the service for a marshal client. Whichever of 6c and 7b
      merges second adds `Host.NewSession` and the checks that `rpc.Host` and
      `rpc.Session` implement the interfaces (R1).
-8. **Switch.** `launch` runs the TUI over the pipe, the test helpers build
-   pipe-connected agents, and `inproc` is deleted.
+8. **Switch** ([plan](plans/2026-11-09-p3-8-switch-plan.md)), after plans
+   6c and 7b:
+   - every change reaches the mirror (R4): the eight silent state calls
+     publish, and the busy flag drives the idle flush;
+   - `session/sync`;
+   - `acp.Embedding` (R1, R11);
+   - the test agent, `acptest`, whose reads settle against the service, and
+     every TUI test over the pipe, its helpers taking the test (V2);
+   - `launch` runs the TUI over the pipe;
+   - `inproc` is deleted.
 
 ## Tests
 
 - **V1. Conformance.** One table of tests per interface group, moved from
   `inproc`'s tests, runs against every implementation, from plan 3 on.
   Until plan 8 those are `inproc` and the client over a pipe to an agent
-  host over a test state. After plan 8, only the client remains. Plan 1
-  proves the protocol itself against the real server.
+  host over a test state. After plan 8 the TUI has only the client. The
+  harness keeps both arms: the service is still the agent's logic, and the
+  two arms agreeing is what proves the wire. Plan 1 proves the protocol
+  itself against the real server.
 - **V2. TUI suite.** Every TUI test passes over the pipe, with only the
-  helpers changed. T6's goldens are unchanged.
+  helpers changed. T6's goldens are unchanged. How (plan 8):
+  - **The helpers take the test,** so each test's agent closes with it.
+  - **A test that changes the state directly sees the change.** Each mirror
+    read of the test agent compares the mirror with the service's own answer.
+    When they differ, it sends `session/sync` and returns the mirror's value.
+  - **A state built without a session ID** is served under a fixed one,
+    because every call names its session.
 - **V3. Ordering.** For each call that changes state, a read right after
   it sees the change, under `-race` and with the agent's handlers
   deliberately slowed.
@@ -926,7 +995,8 @@ conformance suite (V1) before anything switches.
   end-to-end tests pass unchanged, and a client without the capability
   receives none of the new update kinds.
 - **V7. Boundary.** Nothing imports `acpclient/inproc`, and the TUI
-  imports `acpclient` but not `acpclient/rpc`. Only `launch` dials.
+  imports `acpclient` but not `acpclient/rpc`. Only `launch` dials, and the
+  test agent, `acptest`, which only tests import (plan 8).
 - **V8. Suite.** Every plan keeps `go test ./...` green, apart from the
   known local failures.
 
@@ -966,6 +1036,19 @@ conformance suite (V1) before anything switches.
   `Transcript()` call copies every item, so nothing a build walks survives from
   one call to the next. Plan 4b decides R4's cadence with plan 4c's numbers, and
   plan 7b decides whether `AddNote` stays synchronous (R6, R10).
+- **Some transcript changes would never reach the mirror** (by reading, while
+  writing plan 8). The agent's idle loop projects a session's transcript only
+  when a session event marked it dirty, and a fence flushes only what is dirty.
+  - **Eight state calls publish nothing:** `Rewind`, `SwitchBranch`,
+    `ClearMessages`, `LogThinking`, `SetTodos`, `AddRunEvent`,
+    `ClearRunEvents` and `SetWorkspace`, the last on its own workspace broker
+    only.
+  - **A running call's streaming output publishes nothing either,** by design.
+
+  In process the TUI re-projected on every refresh, so none of this showed.
+  Over the pipe, a `/rewind` would leave the old transcript on screen until an
+  unrelated event, and a running call's output would stop moving. Plan 8 fixes
+  both (R4).
 
 ## Implementation record
 

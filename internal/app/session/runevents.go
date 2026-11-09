@@ -54,8 +54,9 @@ func (s *State) AddRunEvent(ev RunEvent) {
 		ev.At = s.clockNow()
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.runEvents = append(s.runEvents, ev)
+	s.mu.Unlock()
+	s.publishEvent(EventTranscriptChanged, Event{})
 }
 
 // RunEvents returns a copy of the run log.
@@ -71,6 +72,7 @@ func (s *State) RunEvents() []RunEvent {
 // turn clears the collapsed run summary.
 func (s *State) ClearRunEvents() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.runEvents = nil
+	s.mu.Unlock()
+	s.publishEvent(EventTranscriptChanged, Event{})
 }

@@ -57,6 +57,11 @@ const (
 	// not know them ignores them.
 	EventSteeringState   = "steering_state"
 	EventSteeringReceipt = "steering_receipt"
+	// EventTranscriptChanged says something the transcript's projection reads
+	// changed without an event of its own: the active branch, the thinking log,
+	// the run events, the todos or the workspace (P3 plan 8). It carries no
+	// payload, and no ACP update carries it.
+	EventTranscriptChanged = "transcript_changed"
 )
 
 // Event is the union payload published on the session event broker
@@ -3741,6 +3746,7 @@ func (s *State) SetTodos(todos []db.TodoItem) error {
 			s.logger.Warn("failed to persist todos", "error", err)
 		}
 	}
+	s.publishEvent(EventTranscriptChanged, Event{})
 	return nil
 }
 

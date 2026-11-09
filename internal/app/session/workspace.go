@@ -90,6 +90,7 @@ func (s *State) SetWorkspace(w Workspace) {
 	if broker != nil {
 		broker.Publish("workspace", WorkspaceEvent{Workspace: w})
 	}
+	s.publishEvent(EventTranscriptChanged, Event{})
 }
 
 // SetWorkspaceBroker wires the broker SetWorkspace publishes to. Mirrors

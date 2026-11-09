@@ -61,6 +61,7 @@ func (s *State) LogThinking(entry ThinkingEntry) {
 	s.mu.Lock()
 	s.thinkingLog = append(s.thinkingLog, entry)
 	s.mu.Unlock()
+	s.publishEvent(EventTranscriptChanged, Event{})
 }
 
 // InProgress returns a copy of the current in-progress message.

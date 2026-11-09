@@ -515,8 +515,6 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 		Notify: h.sink.Notify,
 	})
 	srv.Handle("session/hold", turns.Hold)
-	srv.Handle("session/command", cmds.Command)
-	srv.Handle("session/command_list", cmds.CommandList)
 
 	mem := NewMemoryManager(MemoryManagerConfig{
 		Lookup: func(sessionID string) (*MemoryRuntime, bool) {
@@ -528,11 +526,9 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 			return &MemoryRuntime{DB: dbHandle, ProjectID: rt.ProjectID, State: rt.State}, true
 		},
 	})
-	srv.Handle("session/memory_list", mem.MemoryList)
 	srv.Handle("session/memory_suggestions", mem.MemorySuggestions)
 	srv.Handle("session/memory_promote", mem.MemoryPromote)
 	srv.Handle("session/memory_confirm", mem.MemoryConfirm)
-	srv.Handle("session/memory_delete", mem.MemoryDelete)
 	srv.Handle("session/memory_set_confidence", mem.MemorySetConfidence)
 	srv.Handle("session/agents_roster", mem.AgentsRoster)
 
@@ -563,7 +559,6 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 			return out
 		},
 	})
-	srv.Handle("session/diff", wtMgr.Diff)
 	srv.Handle("session/merge", wtMgr.Merge)
 	srv.Handle("session/discard", wtMgr.Discard)
 	srv.Handle("session/worktree_prune", wtMgr.Prune)
@@ -589,7 +584,6 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 		return rt.State, true
 	})
 	srv.Handle("session/files", filesMgr.Files)
-	srv.Handle("session/file", filesMgr.File)
 
 	skillsMgr := NewSkillsManager(SkillsManagerConfig{
 		Lookup: func(sessionID string) (*SkillsRuntime, bool) {
@@ -600,12 +594,9 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 			return &SkillsRuntime{HomeDir: rt.HomeDir, WorkingDir: rt.WorkingDir, State: rt.State}, true
 		},
 	})
-	srv.Handle("session/skills_list", skillsMgr.SkillsList)
 	srv.Handle("session/skills_install_preview", skillsMgr.SkillsInstallPreview)
 	srv.Handle("session/skills_install_confirm", skillsMgr.SkillsInstallConfirm)
 	srv.Handle("session/skills_install_discard", skillsMgr.SkillsInstallDiscard)
-	srv.Handle("session/skills_remove", skillsMgr.SkillsRemove)
-	srv.Handle("session/skills_load", skillsMgr.SkillsLoad)
 
 	pluginsMgr := NewPluginsManager(PluginsManagerConfig{
 		Lookup: func(sessionID string) (*PluginsRuntime, bool) {
@@ -617,11 +608,27 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 			return &PluginsRuntime{HomeDir: rt.HomeDir, WorkingDir: rt.WorkingDir, Trusted: trusted}, true
 		},
 	})
-	srv.Handle("session/plugins_list", pluginsMgr.PluginsList)
-	srv.Handle("session/plugins_install_scan", pluginsMgr.PluginsInstallScan)
-	srv.Handle("session/plugins_install_confirm", pluginsMgr.PluginsInstallConfirm)
-	srv.Handle("session/plugins_install_discard", pluginsMgr.PluginsInstallDiscard)
-	srv.Handle("session/plugins_remove", pluginsMgr.PluginsRemove)
+	// The browser handlers serve a marshal client's notes, commands, browsers
+	// and project reads on the session's service (P3 plan 7b decision 1). The
+	// handlers every other client keeps are the managers' own, which
+	// registerBrowsers routes to.
+	browsers := NewBrowserManager(BrowserManagerConfig{Lookup: manager.Service})
+	registerBrowsers(srv, browsers, map[string]Handler{
+		acpwire.MethodCommand:               cmds.Command,
+		acpwire.MethodCommandList:           cmds.CommandList,
+		acpwire.MethodDiff:                  wtMgr.Diff,
+		acpwire.MethodFile:                  filesMgr.File,
+		acpwire.MethodMemoryList:            mem.MemoryList,
+		acpwire.MethodMemoryDelete:          mem.MemoryDelete,
+		acpwire.MethodPluginsList:           pluginsMgr.PluginsList,
+		acpwire.MethodPluginsInstallScan:    pluginsMgr.PluginsInstallScan,
+		acpwire.MethodPluginsInstallConfirm: pluginsMgr.PluginsInstallConfirm,
+		acpwire.MethodPluginsInstallDiscard: pluginsMgr.PluginsInstallDiscard,
+		acpwire.MethodPluginsRemove:         pluginsMgr.PluginsRemove,
+		acpwire.MethodSkillsList:            skillsMgr.SkillsList,
+		acpwire.MethodSkillsLoad:            skillsMgr.SkillsLoad,
+		acpwire.MethodSkillsRemove:          skillsMgr.SkillsRemove,
+	})
 
 	// Follow-ups doc item #5: this used to overwrite the manager's
 	// single canceller on every connection, so a turn that outlived a

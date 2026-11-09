@@ -2,6 +2,7 @@ package acp
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pelletier/go-toml/v2"
 
 	"marshal/internal/acp/service"
 	"marshal/internal/acpclient"
@@ -74,6 +77,7 @@ func TestBrowserConformance(t *testing.T) {
 		{name: "the intelligence checks answer four", run: theIntelligenceChecksAnswerFour},
 		{name: "a plugin's project scope needs trust", run: aPluginsProjectScopeNeedsTrust},
 		{name: "a scanned plugin installs and lists", run: aScannedPluginInstallsAndLists},
+		{name: "a discarded scan installs nothing", run: aDiscardedScanInstallsNothing},
 		{name: "the skills list both stores with reasons", run: theSkillsListBothStoresWithReasons},
 		{name: "a load checks the store against the listing", run: aLoadChecksTheStoreAgainstTheListing},
 		{name: "a removal uses the listed source", run: aRemovalUsesTheListedSource},
@@ -703,10 +707,12 @@ func theFileIndexReadsTheDeps(t *testing.T, open func(t *testing.T, d service.De
 
 	sess = open(t, service.Deps{
 		State:     seamState(t, stackWireSession),
-		FileIndex: func() ([]string, error) { return nil, os.ErrNotExist },
+		FileIndex: func() ([]string, error) { return nil, errors.New("boom") },
 	})
 	if _, err := sess.FileIndex(ctx); err == nil {
 		t.Error("FileIndex() with a failing dep = nil, want the dep's error")
+	} else if !strings.Contains(err.Error(), "boom") {
+		t.Errorf("FileIndex() error = %v, want it to carry the dep's sentence", err)
 	}
 }
 
@@ -1077,6 +1083,36 @@ func aScannedPluginInstallsAndLists(t *testing.T, open func(t *testing.T, d serv
 	}
 }
 
+// aDiscardedScanInstallsNothing keeps the discard's effect on the seam: a token
+// it deleted cannot install, and nothing lands on either arm.
+func aDiscardedScanInstallsNothing(t *testing.T, open func(t *testing.T, d service.Deps) seam) {
+	home := t.TempDir()
+	src, _ := browserPluginRepo(t)
+	sess := open(t, service.Deps{State: browserWorkState(t, t.TempDir()), HomeDir: home})
+	ctx := context.Background()
+
+	scan, err := sess.ScanPlugin(ctx, src)
+	if err != nil {
+		t.Fatalf("ScanPlugin: %v", err)
+	}
+	if scan.Token == "" {
+		t.Fatalf("scan = %+v, want a token to discard", scan)
+	}
+	if err := sess.DiscardPluginScan(ctx, scan.Token); err != nil {
+		t.Fatalf("DiscardPluginScan(%q): %v", scan.Token, err)
+	}
+	if err := sess.InstallPlugin(ctx, scan.Token, "global"); err == nil {
+		t.Error("InstallPlugin on a discarded scan = nil, want the service's refusal")
+	}
+	entries, err := sess.Plugins(ctx)
+	if err != nil {
+		t.Fatalf("Plugins: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("Plugins after a discarded install = %+v, want none", entries)
+	}
+}
+
 func theSkillsListBothStoresWithReasons(t *testing.T, open func(t *testing.T, d service.Deps) seam) {
 	home, work := t.TempDir(), t.TempDir()
 	global, project := browserSkillStores(t, home, work)
@@ -1239,30 +1275,50 @@ func autoloadWritesTheUserConfig(t *testing.T, open func(t *testing.T, d service
 	if err := sess.SetSkillAutoload(ctx, "alpha", true); err != nil {
 		t.Fatalf("SetSkillAutoload(alpha, true): %v", err)
 	}
-	raw, err := os.ReadFile(userConfig)
-	if err != nil {
-		t.Fatalf("read the user config: %v", err)
-	}
-	if !strings.Contains(string(raw), "alpha") {
-		t.Errorf("skills.autoload in the user config does not hold alpha:\n%s", raw)
+	if got := userConfigAutoload(t, userConfig); !containsString(got, "alpha") {
+		t.Errorf("skills.autoload in the user config = %v, want it to hold alpha", got)
 	}
 	if got := sess.Config().Skills.Autoload; !containsString(got, "alpha") {
 		t.Errorf("Config().Skills.Autoload = %v, want it to hold alpha", got)
+	}
+	// Writing one name leaves the list's other entries alone.
+	for _, name := range config.Default().Skills.Autoload {
+		if got := userConfigAutoload(t, userConfig); !containsString(got, name) {
+			t.Errorf("skills.autoload in the user config = %v, want it to keep %q", got, name)
+		}
+		if got := sess.Config().Skills.Autoload; !containsString(got, name) {
+			t.Errorf("Config().Skills.Autoload = %v, want it to keep %q", got, name)
+		}
 	}
 
 	if err := sess.SetSkillAutoload(ctx, "alpha", false); err != nil {
 		t.Fatalf("SetSkillAutoload(alpha, false): %v", err)
 	}
-	raw, err = os.ReadFile(userConfig)
-	if err != nil {
-		t.Fatalf("read the user config: %v", err)
-	}
-	if strings.Contains(string(raw), "alpha") {
-		t.Errorf("skills.autoload in the user config still holds alpha:\n%s", raw)
+	if got := userConfigAutoload(t, userConfig); containsString(got, "alpha") {
+		t.Errorf("skills.autoload in the user config = %v, want no alpha", got)
 	}
 	if got := sess.Config().Skills.Autoload; containsString(got, "alpha") {
 		t.Errorf("Config().Skills.Autoload = %v, want no alpha", got)
 	}
+}
+
+// userConfigAutoload reads skills.autoload out of a user config file as TOML,
+// so a stray substring elsewhere in the file cannot stand in for the entry.
+func userConfigAutoload(t *testing.T, path string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the user config: %v", err)
+	}
+	var file struct {
+		Skills struct {
+			Autoload []string `toml:"autoload"`
+		} `toml:"skills"`
+	}
+	if err := toml.Unmarshal(raw, &file); err != nil {
+		t.Fatalf("parse the user config: %v", err)
+	}
+	return file.Skills.Autoload
 }
 
 func theSkillGateIsInTheStatus(t *testing.T, open func(t *testing.T, d service.Deps) seam) {

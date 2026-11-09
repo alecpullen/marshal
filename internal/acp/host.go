@@ -608,15 +608,9 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 			return &PluginsRuntime{HomeDir: rt.HomeDir, WorkingDir: rt.WorkingDir, Trusted: trusted}, true
 		},
 	})
-	srv.Handle("session/plugins_list", pluginsMgr.PluginsList)
-	srv.Handle("session/plugins_install_scan", pluginsMgr.PluginsInstallScan)
-	srv.Handle("session/plugins_install_confirm", pluginsMgr.PluginsInstallConfirm)
-	srv.Handle("session/plugins_install_discard", pluginsMgr.PluginsInstallDiscard)
-	srv.Handle("session/plugins_remove", pluginsMgr.PluginsRemove)
-
 	// The browser handlers serve a marshal client's notes, commands, browsers
 	// and project reads on the session's service (P3 plan 7b decision 1). The
-	// handlers every other client keeps are the managers' above, which
+	// handlers every other client keeps are the managers' own, which
 	// registerBrowsers routes to.
 	browsers := NewBrowserManager(BrowserManagerConfig{Lookup: manager.Service})
 	registerBrowsers(srv, browsers, map[string]Handler{

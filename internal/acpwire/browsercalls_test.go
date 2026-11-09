@@ -104,7 +104,7 @@ func TestTheBrowserResultsRoundTrip(t *testing.T) {
 		},
 		{
 			name:  "file index",
-			value: FileIndexResult{Paths: []string{"internal/acpwire/browsers.go"}},
+			value: FileIndexResult{Paths: []string{"internal/acpwire/browsercalls.go"}},
 			into:  &FileIndexResult{},
 		},
 		{

@@ -82,13 +82,3 @@ func entryFor(t *testing.T, entries []acpwire.SkillEntry, scope, source string) 
 	t.Fatalf("no %s entry %q in %+v", scope, source, entries)
 	return acpwire.SkillEntry{}
 }
-
-// awaitChanged fails unless the session fires Changed within a short window.
-func awaitChanged(t *testing.T, s *Session) {
-	t.Helper()
-	select {
-	case <-s.Changed():
-	case <-time.After(2 * time.Second):
-		t.Fatal("Changed did not fire")
-	}
-}

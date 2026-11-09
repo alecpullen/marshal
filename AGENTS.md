@@ -65,8 +65,9 @@ Runtime & orchestration
   internal/agent/          single-agent loop (runner, tools, protocol, budget)
   internal/agent/swarm/    multi-agent orchestration, lock, verdict
   internal/pipeline/       plan execution: implementer/reviewer subagents, build+test gate
-  internal/acp/            ACP v1 transport (sessions, prompts, permissions, status, sheet, requests, settings, controls, browsers, end flow)
-  internal/acp/service/    the agent side of the client seam: Host/Session over a runtime (inproc aliases it until P3 plan 8)
+  internal/acp/            ACP v1 transport (sessions, prompts, permissions, status, sheet, requests, settings, controls, browsers, end flow, embedding)
+  internal/acp/service/    the agent side of the client seam: Host/Session over a runtime
+  internal/acp/acptest/    the test agent: a test state served over a pipe, for TUI tests
   internal/viewmodel/      transcript tree (turn → step → row) + JSON projection, shared with ACP
   internal/worker/         lifecycle contract for supervised background workers
   internal/pubsub/         in-process typed event broker
@@ -76,8 +77,8 @@ Runtime & orchestration
 
 App shell & config
   internal/acpwire/        wire types and error codes for the TUI client seam (stdlib only)
-  internal/acpclient/      the TUI's Host/Session interfaces; inproc/ is aliases over internal/acp/service (deleted in P3); rpc/ is the JSON-RPC client that replaces it
-  internal/launch/         embedded mode's composition root: the run loop, the TUI program, the in-process adapter
+  internal/acpclient/      the TUI's Host/Session interfaces; rpc/ is the JSON-RPC client the TUI runs on
+  internal/launch/         embedded mode's composition root: the run loop, the agent host on a pipe, the TUI over its client
   internal/app/            Embedded() and ServiceDeps(): runtimes, dependency wiring, repo instructions
   internal/app/config/     TOML loading, defaults, merge rules
   internal/app/session/    shared mutable state between TUI and agent
@@ -228,12 +229,12 @@ seams that implement it.
   default. Tests that assert database, logging or unrelated runtime behavior
   pass explicit fixtures (`WithWorkingDir`, `WithHomeDir`, `WithConfigLoader`)
   rather than relying on the ambient environment. A TUI test that checks a
-  config file the seam writes must set `inproc.Deps.HomeDir` or
-  `UserConfigPath` too: the TUI's own `WithHomeDir` does not reach the adapter.
+  config file the seam writes must set `service.Deps.HomeDir` or
+  `UserConfigPath` too: the TUI's own `WithHomeDir` does not reach the session.
 - **Inject auth explicitly.** `provider.AuthResolver` is the credential/OAuth
   dependency. `app.WithAuthResolver` pins it for a runtime; it reaches provider
-  construction, the OAuth refresh workers, the MCP managers, and the client
-  seam's adapter, which builds the probes and sign-ins the TUI asks for.
+  construction, the OAuth refresh workers, the MCP managers, and the session's
+  service, which builds the probes and sign-ins the TUI asks for.
   `provider.NewAuthResolver(open)` builds an isolated one
   over in-memory stores. An explicitly nil resolver is rejected; an *omitted*
   one in the internal builders fails closed rather than selecting the real

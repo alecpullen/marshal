@@ -5,7 +5,7 @@ Marshal is a terminal-native coding agent built in Go. It wires together a Bubbl
 ## High-level flow
 
 1. `cmd/marshal/main.go` calls `internal/launch.Run()`.
-2. `launch.Run()` builds an `app.Embedded` (which loads merged config and builds the runtimes) and runs the TUI program over it, in process.
+2. `launch.Run()` builds an `app.Embedded` (which loads merged config and builds the runtimes), serves each runtime with the ACP agent host on an in-memory pipe, and runs the TUI over the client.
 3. The TUI (`internal/app/tui/`) collects input and dispatches it to the agent runtime.
 4. The agent (`internal/agent/`) runs a loop: build prompt → call LLM → parse tool calls → execute tools → render results.
 5. Tools (`internal/tools/`) operate on the working tree under policy and approval.
@@ -76,10 +76,10 @@ plans retain the legacy agent strategy.
 
 | Layer | Packages | Responsibility |
 |-------|----------|----------------|
-| Entrypoint | `cmd/marshal/`, `internal/launch/` | Thin main that delegates to `internal/launch`, embedded mode's composition root: the run loop, the TUI program, and the in-process adapter. |
+| Entrypoint | `cmd/marshal/`, `internal/launch/` | Thin main that delegates to `internal/launch`, embedded mode's composition root: the run loop, the agent host on a pipe, and the TUI over its client. |
 | App shell | `internal/app/`, `internal/app/session/` | Dependency wiring, config, logging, shared session state: `app.Embedded` owns the runtimes and the host registry, and `(*Runtime).ServiceDeps` builds what the client seam's service needs. It imports no TUI. |
 | TUI | `internal/app/tui/` | Bubble Tea model, panels, settings, chrome, themes, help footer. |
-| Client seam | `internal/acpwire/`, `internal/acpclient/`, `internal/acp/service/`, `internal/acpclient/inproc/`, `internal/acpclient/rpc/` | The TUI's only path to the agent side: the wire types and error codes, the `Host` and `Session` interfaces, their implementation in `internal/acp/service/`, `inproc` as its in-process transport until P3 plan 8, and the JSON-RPC client P3 is building. `TestTUIStaysOnTheClientSeam` enforces it with no allowlist. |
+| Client seam | `internal/acpwire/`, `internal/acpclient/`, `internal/acp/service/`, `internal/acpclient/rpc/` | The TUI's only path to the agent side: the wire types and error codes, the `Host` and `Session` interfaces, their implementation in `internal/acp/service/`, and `rpc`, the JSON-RPC client the TUI runs on; `internal/acp/acptest` is the test agent. `TestTUIStaysOnTheClientSeam` enforces it with no allowlist. |
 | Agent | `internal/agent/`, `internal/agent/swarm/` | Single-agent loop and multi-agent swarm orchestration. |
 | Pipeline | `internal/pipeline/` | Plan execution with implementer/reviewer subagents. |
 | LLM | `internal/llm/`, `internal/llm/routing/` | Provider abstraction, model presets, role-based routing. Assistant messages carry provider-bound reasoning (`schema.ChatMessage.Reasoning`) that each adapter replays in its own wire format. |

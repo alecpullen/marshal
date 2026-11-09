@@ -226,6 +226,10 @@ type Session struct {
 	paused PlanRun
 	// turn is the run in flight, nil when none. It is guarded by mu.
 	turn *turnSlot
+	// lastRun is the last finished run, nil until one finishes. It is guarded
+	// by mu, and set in the same critical section that releases turn, so a
+	// status read never shows neither or both (P4 D4).
+	lastRun *acpwire.RunResult
 
 	// cmds is the runtime's slash-command registry. Nil means the session
 	// lists no commands and runs none.
@@ -370,6 +374,20 @@ func (s *Session) Status() acpwire.SessionStatus {
 		queue = nil
 	}
 	snap := st.SteeringSnapshot()
+	// The run in flight and the last finished run are set and cleared together
+	// under mu, so one read sees one run's worth of both (P4 D4).
+	s.mu.Lock()
+	var run *acpwire.Run
+	if s.turn != nil && s.turn.run != nil {
+		cp := *s.turn.run
+		run = &cp
+	}
+	var lastRun *acpwire.RunResult
+	if s.lastRun != nil {
+		cp := *s.lastRun
+		lastRun = &cp
+	}
+	s.mu.Unlock()
 
 	status := acpwire.SessionStatus{
 		WorkingDir:    st.WorkingDir,
@@ -391,6 +409,8 @@ func (s *Session) Status() acpwire.SessionStatus {
 		HasBackup:       st.HasBackup(),
 		Activity:        activityWire(act),
 		SubagentRunning: st.HasRunningSubagent(),
+		Run:             run,
+		LastRun:         lastRun,
 		AgentReady:      s.currentRunner() != nil,
 		Workspace: acpwire.Workspace{
 			ProjectRoot:  ws.ProjectRoot,

@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"sort"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/session/sessiontest"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/registry"
 	"marshal/internal/viewmodel"
@@ -27,8 +27,8 @@ const stackWireSession = "s1"
 
 // The 2,000-call session R10's budgets are measured on.
 const (
-	largeStackTurns = 200
-	largeStackCalls = 10
+	largeStackTurns = sessiontest.LargeTurns
+	largeStackCalls = sessiontest.LargeCalls
 )
 
 // stackAgent is a marshal-capable TurnManager served over a pipe, with a
@@ -412,24 +412,7 @@ func TestStackMirrorFollowsASubagent(t *testing.T) {
 // one step with ten shell.run calls, and a final reply.
 func largeStackSession(tb testing.TB) *session.State {
 	tb.Helper()
-	st := session.New(config.Default(), tb.TempDir(), time.Now(), session.Persistence{})
-	for turn := 0; turn < largeStackTurns; turn++ {
-		st.AddMessage(session.RoleUser, fmt.Sprintf("turn %d", turn), session.ContentTypePlain)
-		step := st.BeginStep(session.Actor{})
-		for call := 0; call < largeStackCalls; call++ {
-			id := fmt.Sprintf("t%03d-c%02d", turn, call)
-			st.LogToolCall(registry.AuditEvent{
-				ToolName:      "shell.run",
-				StepID:        step,
-				ToolCallID:    id,
-				Args:          json.RawMessage(fmt.Sprintf(`{"command":"echo %s"}`, id)),
-				ResultContent: strings.Repeat("x", 1024),
-			})
-		}
-		st.EndStep(step)
-		st.AddMessageFinal(session.RoleAssistant, "done", session.ContentTypePlain)
-	}
-	return st
+	return sessiontest.LargeSession(tb)
 }
 
 // logLargeStackShape records the fixture's size once, for the implementation

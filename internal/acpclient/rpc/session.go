@@ -45,7 +45,11 @@ type Session struct {
 	config *configMirror
 	// closed says the connection ended, so changed is closed and nothing
 	// may be sent on it.
-	closed  bool
+	closed bool
+	// closing says a Close's session/close is in flight, so a second caller
+	// does not send a second one. It is cleared when the call fails, so a
+	// refused close can be tried again.
+	closing bool
 	changed chan struct{}
 
 	// ready is closed once Attach's call has settled, and err is its outcome,

@@ -321,15 +321,13 @@ func TestCancellingAPlanRunStopsIt(t *testing.T) {
 	// The run's own Run returned because its context ended; the fake only
 	// leaves Run once that happens.
 	deadline := time.Now().Add(2 * time.Second)
-	for fake.answers != nil || true {
-		if time.Now().After(deadline) {
-			t.Fatal("the plan run's context never ended")
-		}
+	for time.Now().Before(deadline) {
 		if fake.runs == 1 {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	t.Fatal("the plan run's context never ended")
 }
 
 // TestThePipelineCallsRefuseBadParams pins the two refusals the six pipeline

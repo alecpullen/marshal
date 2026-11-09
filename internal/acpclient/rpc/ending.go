@@ -19,13 +19,27 @@ type endMirror struct {
 	// updated says an update arrived, so the first read's result, which the
 	// agent computed before sending it, is stale.
 	updated bool
+	// ready is closed once the first read's call has settled, and err is its
+	// outcome, so a caller that arrives while the call is in flight waits for
+	// it instead of reading a membership no call has filled.
+	ready chan struct{}
+	err   error
+}
+
+// settle records the first read's outcome and releases every caller waiting on
+// it.
+func (e *endMirror) settle(err error) {
+	e.err = err
+	close(e.ready)
 }
 
 // ActiveWork is the work an end would stop, oldest first: no I/O once the
 // mirror holds a value, and never a read the agent has to answer. Its slices
 // are shared with the mirror, so a caller must not change them.
 func (s *Session) ActiveWork() acpwire.EndWork {
-	entry, err := s.endEntry()
+	ctx, cancel := context.WithTimeout(context.Background(), endCallTimeout)
+	defer cancel()
+	entry, err := s.endEntry(ctx)
 	if err != nil {
 		return acpwire.EndWork{}
 	}
@@ -34,22 +48,28 @@ func (s *Session) ActiveWork() acpwire.EndWork {
 	return entry.work
 }
 
-// endEntry returns the end mirror, fetching it when this is its first read. On
-// a failed read the entry is removed, so the next read asks again.
-func (s *Session) endEntry() (*endMirror, error) {
+// endEntry returns the end mirror, fetching it with ctx when this is its first
+// read. On a failed read the entry is removed, so the next read asks again.
+func (s *Session) endEntry(ctx context.Context) (*endMirror, error) {
 	s.mu.Lock()
 	if entry := s.end; entry != nil {
 		s.mu.Unlock()
-		return entry, nil
+		select {
+		case <-entry.ready:
+			if entry.err != nil {
+				return nil, entry.err
+			}
+			return entry, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 	// The entry is installed before the call goes out, so an update that
 	// arrives while the call waits is applied instead of dropped.
-	entry := &endMirror{}
+	entry := &endMirror{ready: make(chan struct{})}
 	s.end = entry
 	s.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), endCallTimeout)
-	defer cancel()
 	var work acpwire.EndWork
 	params := acpwire.ControlParams{SessionID: s.id}
 	if err := s.conn.Call(ctx, acpwire.MethodEndWork, params, &work); err != nil {
@@ -61,10 +81,12 @@ func (s *Session) endEntry() (*endMirror, error) {
 			s.end = nil
 		}
 		s.mu.Unlock()
+		entry.settle(err)
 		return nil, err
 	}
 
 	s.installEnd(entry, work)
+	entry.settle(nil)
 	return entry, nil
 }
 
@@ -125,16 +147,23 @@ func (s *Session) RunExitAnalysis(ctx context.Context, goal string) error {
 // session already closed retires it too, and any other error leaves it as it
 // was. Closing a session that is already closed sends nothing.
 func (s *Session) Close(ctx context.Context) error {
+	// The flag is taken under the lock before the call goes out, so two
+	// concurrent closes cannot both send one.
 	s.mu.Lock()
-	closed := s.closed
-	s.mu.Unlock()
-	if closed {
+	if s.closed || s.closing {
+		s.mu.Unlock()
 		return nil
 	}
+	s.closing = true
+	s.mu.Unlock()
 
 	params := acpwire.ControlParams{SessionID: s.id}
 	if err := s.conn.Call(ctx, acpwire.MethodSessionClose, params, nil); err != nil {
 		if !acpclient.IsCode(err, acpwire.CodeSessionClosed) {
+			// The session was not closed, so a later call may try again.
+			s.mu.Lock()
+			s.closing = false
+			s.mu.Unlock()
 			return err
 		}
 	}

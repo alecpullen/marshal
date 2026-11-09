@@ -701,3 +701,31 @@ func TestTheEndCallsRefuseBadParams(t *testing.T) {
 		})
 	}
 }
+
+// TestClosingTheEndManagerTwiceIsSafe pins Close's idempotency: the second
+// close returns instead of waiting on a forwarder the first one already
+// cancelled.
+func TestClosingTheEndManagerTwiceIsSafe(t *testing.T) {
+	_, a := startEndAgent(t, endSetup{
+		marshal: true,
+		deps:    service.Deps{State: seamState(t, controlSession), End: &endFake{}},
+	})
+
+	// A forwarder, so the close has one to stop and wait for.
+	a.ends.ensureForwarder(controlSession)
+
+	a.ends.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.ends.Close()
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the second Close did not return")
+	}
+	if !a.forwarderGone(controlSession) {
+		t.Fatal("the forwarder survived the close")
+	}
+}

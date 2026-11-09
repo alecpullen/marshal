@@ -61,6 +61,94 @@ func TestCloseRetiresTheSession(t *testing.T) {
 	}
 }
 
+// TestACloseTheAgentReportsClosedRetiresIt pins the other success: an agent
+// that answers session/close with CodeSessionClosed retires the session too,
+// and the close after it sends nothing.
+func TestACloseTheAgentReportsClosedRetiresIt(t *testing.T) {
+	host, a := dialScripted(t, DialOptions{})
+	session := attachScripted(t, host, a, "s1", acpwire.SessionStatus{WorkingDir: "B"})
+	drainChanged(t, session.Changed())
+
+	out := startErr(func() error { return session.Close(context.Background()) })
+	req := nextMethod(t, a, acpwire.MethodSessionClose)
+	a.send(t, codedErrorFrame(t, string(req.ID), acpwire.Error{
+		Code:    acpwire.CodeSessionClosed,
+		Message: "the session is already closed",
+	}))
+	if err := awaitCall(t, out); err != nil {
+		t.Fatalf("Close of a session the agent reports closed = %v, want nil", err)
+	}
+
+	select {
+	case _, ok := <-session.Changed():
+		if ok {
+			t.Fatal("Changed fired instead of closing when the session was retired")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Changed did not close for a session the agent reports closed")
+	}
+	if got := host.session("s1"); got != nil {
+		t.Fatalf("the session the agent reports closed is still registered: %v", got)
+	}
+
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatalf("the second Close: %v", err)
+	}
+	select {
+	case req := <-a.reqs:
+		t.Fatalf("the second Close sent %q", req.Method)
+	case <-time.After(250 * time.Millisecond):
+	}
+}
+
+// TestACloseInFlightIsNotSentAgain pins the guard: a Close that arrives while
+// another one is still waiting for its answer sends nothing.
+func TestACloseInFlightIsNotSentAgain(t *testing.T) {
+	host, a := dialScripted(t, DialOptions{})
+	session := attachScripted(t, host, a, "s1", acpwire.SessionStatus{WorkingDir: "B"})
+
+	first := startErr(func() error { return session.Close(context.Background()) })
+	req := nextMethod(t, a, acpwire.MethodSessionClose)
+
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatalf("the Close that arrived while one was in flight = %v, want nil", err)
+	}
+	select {
+	case extra := <-a.reqs:
+		t.Fatalf("the second Close sent %q", extra.Method)
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	a.answer(t, req, struct{}{})
+	if err := awaitCall(t, first); err != nil {
+		t.Fatalf("the first Close: %v", err)
+	}
+}
+
+// TestACloseThatFailsCanBeTriedAgain pins that a refused close clears the
+// in-flight flag, so the next one is sent.
+func TestACloseThatFailsCanBeTriedAgain(t *testing.T) {
+	host, a := dialScripted(t, DialOptions{})
+	session := attachScripted(t, host, a, "s1", acpwire.SessionStatus{WorkingDir: "B"})
+
+	first := startErr(func() error { return session.Close(context.Background()) })
+	req := nextMethod(t, a, acpwire.MethodSessionClose)
+	a.send(t, codedErrorFrame(t, string(req.ID), acpwire.Error{
+		Code:    acpwire.CodeBusy,
+		Message: "a turn is running",
+	}))
+	if err := awaitCall(t, first); err == nil {
+		t.Fatal("the refused Close returned no error")
+	}
+
+	second := startErr(func() error { return session.Close(context.Background()) })
+	req = nextMethod(t, a, acpwire.MethodSessionClose)
+	a.answer(t, req, struct{}{})
+	if err := awaitCall(t, second); err != nil {
+		t.Fatalf("the Close after a refused one: %v", err)
+	}
+}
+
 // TestACloseThatFailsKeepsTheSession pins that only success and
 // CodeSessionClosed retire a session: any other error is the caller's, and the
 // session keeps its mirror and its open Changed.

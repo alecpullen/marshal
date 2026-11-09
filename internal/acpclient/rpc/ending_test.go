@@ -89,6 +89,34 @@ func TestActiveWorkFetchesOnItsFirstRead(t *testing.T) {
 	}
 }
 
+// TestASecondActiveWorkWaitsForTheFirstRead pins the in-flight gate: a caller
+// that arrives while the first read is waiting shares its outcome instead of
+// reading the empty membership the first read installed.
+func TestASecondActiveWorkWaitsForTheFirstRead(t *testing.T) {
+	host, a := dialScripted(t, DialOptions{})
+	session := attachScripted(t, host, a, "s1", acpwire.SessionStatus{WorkingDir: "B"})
+
+	first := readActiveWork(session)
+	req := nextEndWork(t, a, session)
+	second := readActiveWork(session)
+
+	// The second read must not send a call of its own: it waits on the first.
+	select {
+	case extra := <-a.reqs:
+		t.Fatalf("the second read sent %q", extra.Method)
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	want := endWorkOf("w1", "w2")
+	a.answer(t, req, want)
+	if got := awaitActiveWork(t, first); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the first read = %+v, want %+v", got, want)
+	}
+	if got := awaitActiveWork(t, second); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the second read = %+v, want %+v: it must share the first read's value", got, want)
+	}
+}
+
 // TestActiveWorkInstallsTheUpdateThatPrecedesTheResponse pins the barrier: the
 // agent answers session/end_work with the membership it had, so an update that
 // reaches the client before the response is newer and must be kept.

@@ -184,6 +184,12 @@ project.
   where the bridge decides what clients may call. Without the passthrough,
   matching the TUI's features would take about 60 new hand-written routes.
   Existing typed routes stay, and `api.ts` can wrap the passthrough.
+  The Go TUI does not use it: it reaches its agent through a frame relay
+  instead, its own ACP connection to the project's `marshal acp` child,
+  carried over the daemon's unix socket ([`p4-local-daemon.md`](p4-local-daemon.md),
+  decision 1). One ordered stream keeps P3's read-your-writes, which a
+  response over HTTP and its updates over SSE would split. The passthrough
+  stays the web UI's, for P5.
 - **Agent to client:** the session SSE stream carries ACP notifications.
   Agent requests stay brokered by the bridge, so every viewer sees them,
   the first answer wins, and the others see the request settle. A client
@@ -326,10 +332,12 @@ their version with the daemon's (the bridge build version and ACP
 ### 6.5 Embedded mode next to a daemon
 
 Embedded `marshal` checks whether a daemon is hosting the project. If it
-is, it offers to attach rather than open a second runtime on the same
-database. SQLite with WAL already tolerates two processes, as the TUI and
-an ACP child do today, so this is about duplicated work and confusing
-state, not corruption.
+is, it starts its new session there rather than open a second runtime on
+the same database, and `marshal attach` reattaches to a session running
+there; `--embedded` forces the in-process runtime (P4, decision 3). SQLite
+with WAL already tolerates two processes, as the TUI and an ACP child do
+today, so this is about duplicated work and confusing state, not
+corruption.
 
 ## 7. Phases
 
@@ -339,7 +347,7 @@ state, not corruption.
 | P1 | ProjectHost/Session split and headless indexing (§4.2) — implemented; see the spec's implementation record | Two ACP sessions on one repo in one process share one host, one set of language servers and one watcher. With `indexing.watch = true`, a headless session's edit refreshes its embeddings. Two processes on one tree run one indexer |
 | P2 | TUI client seam with the in-process adapter (§4.5) — implemented (see the spec's implementation record): nine plans, with 2, 3 and 5 split into sub-plans, namely 1, 2a–2c, 3a–3d, 4, 5a–5e, 6, 7a–7d, 8a, 8b and 9 | Done when: the TUI reaches the agent side only through the client interface — it imports no agent-side package, holds no `session.State`, and does no project, config or keychain I/O (enforced by a boundary test) — and the transcript renders from the wire projection (§8 settled). The boundary test's allowlist is empty and `WithLegacyState` is gone |
 | P3 | ACP client transports; embedded mode over the pipe — implemented (see the spec's implementation record) | Embedded mode runs entirely over ACP and the adapter is deleted |
-| P4 | Bridge local profile: user service, unix listener, RPC passthrough (the sudo answer included), pinning, environment resolution, OAuth refresh run once, one `marshal acp` child per project for host-process agents | A TUI can quit and reattach to a running turn on the local daemon |
+| P4 | Bridge local profile ([`p4-local-daemon.md`](p4-local-daemon.md)): user service, unix listener, the attach relay (the sudo answer included), turns that outlive their caller, pinning, environment resolution, OAuth refresh run once, one `marshal acp` child per project for host-process agents | A TUI can quit and reattach to a running turn on the local daemon |
 | P5 | Fleet screen in the Go TUI, shared types, server-computed views | The fleet loop from `docs/fleet-cli/design.md` §1 works from the Go TUI against local and server profiles |
 
 P0 and P1 are independent of each other and of the later phases, and each
@@ -361,12 +369,14 @@ is useful on its own.
   readable only by its owner.
 - **Remote OAuth.** Should server-profile logins use a device-code grant
   or a callback forwarded by the client?
-- **Local-profile auth.** Is socket permission enough, or should the local
-  listener also require the token for defence in depth?
-- **Bridge startup without containers.** Confirm that the egress, secrets
-  and container subsystems stay inactive, and cheap, when no container
-  runtime is present.
-- **Service install.** How is the daemon installed (`marshal daemon
-  install` writing the launchd/systemd unit?), and is it `webbridge` or a
-  `marshal` subcommand that runs it? Both binaries already ship through
-  `.goreleaser.yaml`.
+- **Local-profile auth — settled (P4, decision 7).** The socket's
+  permissions are the auth: a `0600` socket in a `0700` directory, plus a
+  check of the peer's user ID. The loopback TCP listener keeps its token.
+- **Bridge startup without containers — settled (P4 D1).** The local
+  profile never probes for a container runtime, runs agents as host
+  processes, keeps the egress proxy off and uses the `env` secrets backend,
+  and a test pins it.
+- **Service install — settled (P4, decision 2).** `marshal daemon install`
+  writes a launchd agent or a systemd user unit that runs
+  `webbridge --profile local`, the binary shipped beside `marshal`, and
+  `start`, `stop`, `status` and `uninstall` manage it.

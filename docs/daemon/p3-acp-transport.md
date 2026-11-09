@@ -429,7 +429,10 @@ startup, so the client reads the list once (R3).
 - **Cancellation (new).** When a call's context ends, the client sends
   `$/cancel_request {"id": <id>}` and returns at once. The agent cancels
   that handler's context. This is how Esc cancels an MCP sign-in, and how
-  a stopped preflight stops.
+  a stopped preflight stops. (P4 D4 changes this for the run calls: a
+  cancelled `session/prompt`, `review`, `agent_run`, `swarm_start`,
+  `sdd_start` or `sdd_answer` stops waiting, and its run goes on until
+  `session/stop`.)
   - A handler opts in by deriving its context through the server. The
     others keep the connection's context, as today: some start work that
     outlives the request (`/mcp auth`'s flow, `mcpauth.go:124`), which

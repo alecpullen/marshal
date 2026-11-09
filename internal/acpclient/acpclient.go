@@ -10,8 +10,8 @@
 // Methods carries the same mapping as data, so the seam can be checked against
 // acp.Server without reading the docs.
 //
-// The TUI may import this package and acpwire, never inproc: the in-process
-// adapter is an implementation, and the wire types are the only values that
+// The TUI may import this package and acpwire, never the transport: rpc is the
+// JSON-RPC client the TUI runs on, and the wire types are the only values that
 // cross. The interfaces gain their groups' methods plan by plan (spec
 // Migration order); a method added here needs a row in Methods and an ACP:
 // line in its doc.

@@ -22,7 +22,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpwire"
 	"marshal/internal/agent"
 	"marshal/internal/agent/agenttest"
@@ -5518,7 +5518,7 @@ func TestAdapterAccessResolvesWithoutConfigReload(t *testing.T) {
 		return nil
 	}
 
-	m := testTUIModelWith(inproc.Deps{
+	m := testTUIModelWith(service.Deps{
 		State:          state,
 		AccessRequest:  rt.AccessRequest,
 		ResolveAccess:  rt.ResolveAccess,
@@ -5604,7 +5604,7 @@ func TestAdapterAccessFollowsNewSession(t *testing.T) {
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	deps := inproc.Deps{
+	deps := service.Deps{
 		State:          oldState,
 		AccessRequest:  rt.AccessRequest,
 		ResolveAccess:  rt.ResolveAccess,
@@ -5613,7 +5613,7 @@ func TestAdapterAccessFollowsNewSession(t *testing.T) {
 		NewSession:     rt.NewSession,
 		Commands:       reg,
 	}
-	host, oldSess := inproc.New(deps)
+	host, oldSess := service.New(deps)
 	oldModel := tui.New(host, oldSess)
 	updated, _ := oldModel.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	oldModel = updated.(tui.Model)
@@ -5776,9 +5776,9 @@ func TestRuntimeSendNowTUIOptionsExerciseRealFacade(t *testing.T) {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
-	model := testTUIModelWith(inproc.Deps{
+	model := testTUIModelWith(service.Deps{
 		State:    state,
-		Runner:   func() inproc.Runner { return agentProcess },
+		Runner:   func() service.Runner { return agentProcess },
 		Commands: reg,
 	},
 		tui.WithContext(runCtx),

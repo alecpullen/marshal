@@ -16,8 +16,7 @@ import (
 
 // noticeForError takes the notice the agent attached to a failed run's error
 // (C9). Provider and login classification lives agent side, where the typed
-// errors are; internal/acpclient/inproc's TestRunErrorCarriesTheNotice pins
-// those rules.
+// errors are; the service's runError pins those rules.
 func TestNoticeForErrorTakesTheAgentsNotice(t *testing.T) {
 	agentNotice := acpwire.Notice{
 		Category: acpwire.NoticeProvider,

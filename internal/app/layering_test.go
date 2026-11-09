@@ -56,5 +56,6 @@ func staysOnTheAgentSide(path string) bool {
 	if path == "charm.land/bubbletea/v2" {
 		return false
 	}
-	return path != "marshal/internal/acpclient/inproc"
+	// app never dials: the transport is launch's, which owns the pipe (P3 R1).
+	return path != "marshal/internal/acpclient/rpc"
 }

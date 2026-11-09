@@ -1,7 +1,7 @@
 // Package service is the agent side of the client seam (P3 R1): it
 // implements acpclient.Host and acpclient.Session over a runtime's state
-// and the functions its Deps carry. inproc calls it in process until P3
-// plan 8; acp's handlers call it from plan 3b.
+// and the functions its Deps carry. acp's handlers call it, and embedded mode
+// serves it over an in-memory pipe (P3 plan 8).
 //
 // It must not import internal/app or internal/acp: app builds its Deps
 // and returns its types, and acp imports app.
@@ -346,7 +346,8 @@ func (h *Host) AuthResolver() provider.AuthResolver {
 func (s *Session) ID() string { return s.state.SessionID() }
 
 // State returns the session state this session serves. Tests use it to
-// reach the state behind a model, and the TUI cannot: T1 denies it inproc.
+// reach the state behind a model, and the TUI cannot: it holds only the wire
+// types.
 func (s *Session) State() *session.State { return s.state }
 
 // Status is the session's current status (C5). It reads the state one field at

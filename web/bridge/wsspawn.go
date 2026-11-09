@@ -54,10 +54,11 @@ type wsExtras struct {
 // runtimeInfo is the container runtime to use for workspace work. Under a
 // fake runner (tests) it is "docker".
 func (f *Fleet) runtimeInfo() (path, name string, ok bool) {
-	if f.runner != nil {
+	// Host-only outranks the fake-runner shortcut (decision 4).
+	if f.runner != nil && !f.hostOnly {
 		return "docker", "docker", true
 	}
-	return detectedRuntime()
+	return f.containerRuntime()
 }
 
 func wsRefOf(w *AgentWorkspace) WSRef {

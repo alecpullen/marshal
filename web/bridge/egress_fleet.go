@@ -38,10 +38,12 @@ func (f *Fleet) egressRuntimeName() (string, bool) {
 	if f.egressRuntime != nil {
 		return f.egressRuntime()
 	}
-	if f.runner != nil {
+	// Host-only outranks the fake-runner shortcut: a host-only fleet
+	// never answers "docker", even in tests (decision 4).
+	if f.runner != nil && !f.hostOnly {
 		return "docker", true // tests: the fake runner intercepts everything
 	}
-	_, name, ok := detectedRuntime()
+	_, name, ok := f.containerRuntime()
 	return name, ok
 }
 

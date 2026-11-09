@@ -41,6 +41,9 @@ type Server struct {
 	// previewPort is the port of the separate preview listener, 0 until
 	// the host has started one (see SetPreviewPort).
 	previewPort atomic.Int32
+	// daemonInfo, when set, is what GET /api/daemon answers. Nil on a
+	// server that is not a daemon, which answers 404 (decision 8).
+	daemonInfo *DaemonInfo
 }
 
 func NewServer(target any, args ...any) *Server {
@@ -96,6 +99,22 @@ func (s *Server) publicURL(path string) string {
 // go through the mux (with optional bearer auth) so method mismatches
 // still produce 405.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.route(s.http, w, r)
+}
+
+// SocketHandler is the server's handler for the local socket: ServeHTTP's
+// routing without the bearer check (decision 7). /mcp keeps its own
+// per-client auth, so it is on the bare mux here either way.
+func (s *Server) SocketHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.route(s.mux, w, r)
+	})
+}
+
+// route is ServeHTTP's routing with api in place of the wrapped mux: the
+// token-checked handler for the network listener, the bare mux for the
+// local socket.
+func (s *Server) route(api http.Handler, w http.ResponseWriter, r *http.Request) {
 	// /mcp joins /api/ on the mux side. It is not under /api/ because it
 	// authenticates per client rather than with the shared bearer token,
 	// but it must still reach the mux rather than the SPA fallback.
@@ -118,10 +137,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		staticHandler().ServeHTTP(w, r)
 		return
 	}
-	s.http.ServeHTTP(w, r)
+	api.ServeHTTP(w, r)
 }
 
 func (s *Server) routes() {
+	s.mux.HandleFunc("GET /api/daemon", s.daemon)
 	s.mux.HandleFunc("GET /api/config", s.config)
 	s.mux.HandleFunc("GET /api/projects", s.listProjects)
 	s.mux.HandleFunc("POST /api/projects", s.addProject)

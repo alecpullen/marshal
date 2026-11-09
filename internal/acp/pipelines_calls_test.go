@@ -31,6 +31,10 @@ type callPlanRun struct {
 	// block makes Run wait for its context after it signals, and return the
 	// context's error.
 	block bool
+	// done, when non-nil, is closed once when a blocking Run returns, so a
+	// test can show the run is still going and not merely still reported.
+	done     chan struct{}
+	doneOnce sync.Once
 }
 
 func (f *callPlanRun) Run(ctx context.Context) error {
@@ -40,6 +44,9 @@ func (f *callPlanRun) Run(ctx context.Context) error {
 	}
 	if f.block {
 		<-ctx.Done()
+		if f.done != nil {
+			f.doneOnce.Do(func() { close(f.done) })
+		}
 		return ctx.Err()
 	}
 	if f.runs <= f.gates {
@@ -287,11 +294,12 @@ func TestThePreflightAndTheAuthorReachTheService(t *testing.T) {
 	}
 }
 
-// TestCancellingAPlanRunStopsIt pins decision 3: a cancelled client context
-// ends the plan run's own context.
-func TestCancellingAPlanRunStopsIt(t *testing.T) {
-	fake := &callPlanRun{started: make(chan struct{}), block: true}
-	conn, _ := startControlAgent(t, true, service.Deps{
+// TestCancellingAPlanRunLeavesItGoing pins P4 D4: the client's context ending
+// stops its call's wait, not the plan run. The run goes on until session/stop,
+// which reports it cancelled.
+func TestCancellingAPlanRunLeavesItGoing(t *testing.T) {
+	fake := &callPlanRun{started: make(chan struct{}), done: make(chan struct{}), block: true}
+	conn, a := startControlAgent(t, true, service.Deps{
 		State:      seamState(t, controlSession),
 		NewPlanRun: func(acpwire.SDDParams) (service.PlanRun, error) { return fake, nil },
 	}, nil)
@@ -318,16 +326,30 @@ func TestCancellingAPlanRunStopsIt(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the cancelled call did not return")
 	}
-	// The run's own Run returned because its context ended; the fake only
-	// leaves Run once that happens.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if fake.runs == 1 {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+
+	// The call's context ending stops the wait, and the run goes on: its work
+	// has not returned, and the status still reports it.
+	time.Sleep(200 * time.Millisecond)
+	select {
+	case <-fake.done:
+		t.Fatal("the plan run returned after its call's context ended, want it still going")
+	default:
 	}
-	t.Fatal("the plan run's context never ended")
+	if flight := a.served.Status().Run; flight == nil || flight.Kind != acpwire.RunSDD {
+		t.Fatalf("the status carries %+v, want the plan run still in flight", flight)
+	}
+
+	// Only session/stop ends it.
+	if err := conn.Call(context.Background(), acpwire.MethodStop, acpwire.StopParams{
+		SessionID: controlSession,
+		Cause:     "plan run stopped",
+	}, nil); err != nil {
+		t.Fatalf("session/stop: %v", err)
+	}
+	waitForFrame(t, 2*time.Second, "the cancelled plan run in the status", func() bool {
+		last := a.served.Status().LastRun
+		return last != nil && last.Outcome == acpwire.RunCancelled
+	})
 }
 
 // TestThePipelineCallsRefuseBadParams pins the two refusals the six pipeline

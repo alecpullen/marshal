@@ -228,10 +228,13 @@ func (s *Session) close() {
 //
 // A run in flight is stopped first (P3 plan 6b decision 5): the runtime
 // quiesces after its service is released, and a run nobody can stop any more
-// would make that quiesce wait it out. With nothing running, Stop does nothing,
-// so every other release is unchanged.
+// would make that quiesce wait it out. With nothing running, the stop does
+// nothing, so every other release is unchanged.
+//
+// The stop is marked as the session's end, so a run it ends writes no cancel
+// note: the user did not cancel it (P4 D4 decision 6).
 func (s *Session) Release() {
-	_ = s.Stop(context.Background(), "conversation ended")
+	_ = s.stopRun("conversation ended", true)
 	s.close()
 }
 

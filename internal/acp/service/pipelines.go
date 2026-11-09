@@ -30,7 +30,7 @@ var (
 )
 
 // StartSwarm runs a swarm over params.Goal on the run path. A stopped run
-// returns no error.
+// returns no error. A caller that leaves does not stop the swarm (P4 D4).
 func (s *Session) StartSwarm(ctx context.Context, params acpwire.SwarmParams) error {
 	if s.closed.Load() {
 		return errSessionClosed
@@ -41,8 +41,12 @@ func (s *Session) StartSwarm(ctx context.Context, params acpwire.SwarmParams) er
 	if strings.TrimSpace(params.Goal) == "" {
 		return errNoGoal
 	}
-	stopped, _, err := s.runTurn(ctx, func(ctx context.Context) error {
-		return s.swarm(ctx, params)
+	stopped, _, err := s.runTurn(ctx, runSpec{
+		kind:   acpwire.RunSwarm,
+		detach: true,
+		work: func(ctx context.Context) error {
+			return s.swarm(ctx, params)
+		},
 	})
 	// A stopped swarm is not an error: the stop already reported the cancel,
 	// and the swarm's own context error is that stop, not a failure.
@@ -73,7 +77,8 @@ func (s *Session) PlanPreflight(ctx context.Context, params acpwire.PlanPrefligh
 
 // StartSDD runs the plan params names on the run path. A run its human gate
 // pauses returns CodeHumanGateRequired and becomes the session's paused run;
-// a stopped run returns no error.
+// a stopped run returns no error. A caller that leaves does not stop the run
+// (P4 D4).
 func (s *Session) StartSDD(ctx context.Context, params acpwire.SDDParams) error {
 	if s.closed.Load() {
 		return errSessionClosed
@@ -87,22 +92,26 @@ func (s *Session) StartSDD(ctx context.Context, params acpwire.SDDParams) error 
 	if err := checkStrategy(params.Strategy); err != nil {
 		return err
 	}
-	stopped, _, err := s.runTurn(ctx, func(ctx context.Context) error {
-		run, err := s.newPlanRun(params)
-		if err != nil {
+	stopped, _, err := s.runTurn(ctx, runSpec{
+		kind:   acpwire.RunSDD,
+		detach: true,
+		work: func(ctx context.Context) error {
+			run, err := s.newPlanRun(params)
+			if err != nil {
+				return err
+			}
+			if run == nil {
+				return errNoPlanRunner
+			}
+			// A new run replaces one paused at its gate: the older run can no
+			// longer be answered.
+			s.mu.Lock()
+			s.paused = nil
+			s.mu.Unlock()
+			err = run.Run(ctx)
+			s.settlePlan(run, err)
 			return err
-		}
-		if run == nil {
-			return errNoPlanRunner
-		}
-		// A new run replaces one paused at its gate: the older run can no
-		// longer be answered.
-		s.mu.Lock()
-		s.paused = nil
-		s.mu.Unlock()
-		err = run.Run(ctx)
-		s.settlePlan(run, err)
-		return err
+		},
 	})
 	// A stopped run is not an error, with one exception: a run that reached
 	// its human gate is paused and awaiting an answer, which the stop did not
@@ -125,7 +134,8 @@ func stoppedErr(err error) error {
 
 // AnswerSDDGate records answer as the user's message and resumes the paused
 // plan run on the run path. A refusal at admission never reaches the run, so
-// the run stays paused (decision 5).
+// the run stays paused (decision 5). A caller that leaves does not stop the
+// resumed run (P4 D4).
 func (s *Session) AnswerSDDGate(ctx context.Context, answer string) error {
 	if s.closed.Load() {
 		return errSessionClosed
@@ -139,21 +149,25 @@ func (s *Session) AnswerSDDGate(ctx context.Context, answer string) error {
 	if run == nil {
 		return errNoPausedPlan
 	}
-	stopped, _, err := s.runTurn(ctx, func(ctx context.Context) error {
-		s.mu.Lock()
-		// A stop or a newer run that landed first dropped this one: it can no
-		// longer be answered.
-		if s.paused != run {
+	stopped, _, err := s.runTurn(ctx, runSpec{
+		kind:   acpwire.RunSDD,
+		detach: true,
+		work: func(ctx context.Context) error {
+			s.mu.Lock()
+			// A stop or a newer run that landed first dropped this one: it can
+			// no longer be answered.
+			if s.paused != run {
+				s.mu.Unlock()
+				return errNoPausedPlan
+			}
+			s.paused = nil
 			s.mu.Unlock()
-			return errNoPausedPlan
-		}
-		s.paused = nil
-		s.mu.Unlock()
-		s.state.AddMessage(session.RoleUser, answer, session.ContentTypePlain)
-		run.Answer(answer)
-		err := run.Run(ctx)
-		s.settlePlan(run, err)
-		return err
+			s.state.AddMessage(session.RoleUser, answer, session.ContentTypePlain)
+			run.Answer(answer)
+			err := run.Run(ctx)
+			s.settlePlan(run, err)
+			return err
+		},
 	})
 	if stopped {
 		return stoppedErr(err)
@@ -187,10 +201,14 @@ func (s *Session) AuthorPlan(ctx context.Context, params acpwire.AuthorPlanParam
 		return acpwire.AuthoredPlan{}, errNoGoal
 	}
 	var out acpwire.AuthoredPlan
-	stopped, _, err := s.runTurn(ctx, func(ctx context.Context) error {
-		var runErr error
-		out, runErr = s.authorPlan(ctx, params)
-		return runErr
+	stopped, _, err := s.runTurn(ctx, runSpec{
+		kind:   acpwire.RunAuthor,
+		detach: false,
+		work: func(ctx context.Context) error {
+			var runErr error
+			out, runErr = s.authorPlan(ctx, params)
+			return runErr
+		},
 	})
 	if stopped {
 		return acpwire.AuthoredPlan{StopReason: acpwire.StopReasonCancelled}, nil

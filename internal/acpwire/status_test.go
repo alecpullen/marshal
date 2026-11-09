@@ -26,6 +26,19 @@ func TestStatusUpdateRoundTrips(t *testing.T) {
 				Hint:     "a hint",
 				SetAt:    1700000000000,
 			},
+			Run: &Run{ID: "turn-2", Kind: RunTurn, StartedAt: 1700000000000},
+			LastRun: &RunResult{
+				ID:        "turn-1",
+				Kind:      RunReview,
+				StartedAt: 1699999999000,
+				EndedAt:   1700000000000,
+				Outcome:   RunFailed,
+				Error: &Error{
+					Code:    CodeProviderError,
+					Message: "the provider rejected the call",
+					Data:    json.RawMessage(`{"notice":{"message":"a failed run"}}`),
+				},
+			},
 		},
 	}
 	raw, err := json.Marshal(want)
@@ -41,5 +54,24 @@ func TestStatusUpdateRoundTrips(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("round trip =\n%#v\nwant\n%#v", got, want)
+	}
+}
+
+// TestAStatusWithoutRunsOmitsThem pins the absent case: a session with no run
+// in flight and no finished run carries neither key, so a reader sees them
+// missing rather than zero (P4 D4).
+func TestAStatusWithoutRunsOmitsThem(t *testing.T) {
+	raw, err := json.Marshal(SessionStatus{WorkingDir: "/tmp/w"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, key := range []string{"run", "lastRun"} {
+		if _, ok := fields[key]; ok {
+			t.Errorf("%q is present in %s, want it omitted", key, raw)
+		}
 	}
 }

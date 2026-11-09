@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,8 +11,10 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acp/service"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
+	"marshal/internal/llm/provider"
 )
 
 // noticeForError takes the notice the agent attached to a failed run's error
@@ -110,9 +113,10 @@ func TestTickKeepsYoungNotice(t *testing.T) {
 	}
 }
 
-// A failed turn sets a provider/internal notice AND appends one compact
-// transcript row — the banner is the live surface, the row is the record.
-func TestAgentFinishedErrorSetsNoticeAndCompactRow(t *testing.T) {
+// A failed turn sets a provider/internal notice. The transcript row is the
+// agent's (P4 D6), so this handler asserts only the banner; the row is pinned
+// against a real failing run in TestAFailedTurnWritesOneCompactRow.
+func TestAgentFinishedErrorSetsTheNotice(t *testing.T) {
 	m := newTestModel(t)
 	updated, _ := m.handleAgentFinished(agentFinishedMsg{err: errors.New("provider request timed out")})
 	m = updated
@@ -123,23 +127,54 @@ func TestAgentFinishedErrorSetsNoticeAndCompactRow(t *testing.T) {
 	if n.Category != session.NoticeInternal { // plain error, not provider-typed
 		t.Fatalf("category = %v, want NoticeInternal", n.Category)
 	}
-	var found bool
-	for _, msg := range stateOf(m).Messages() {
-		if msg.Role == session.RoleSystem && strings.Contains(msg.Content, "Turn failed: provider request timed out") {
-			found = true
+}
+
+// A failing turn appends exactly one compact transcript row, written by the
+// agent: the TUI adding its own would double it (P4 D6).
+func TestAFailedTurnWritesOneCompactRow(t *testing.T) {
+	r := &fakeAgentRunner{
+		called: make(chan string, 1),
+		err:    &provider.ProviderError{Provider: "openai", StatusCode: 500, Body: "boom"},
+	}
+	state := modelTestState(t)
+	m := testModelWith(t, service.Deps{State: state, Runner: runnerOf(r)})
+	m.resize(80, 24)
+
+	m.input.SetValue("hello")
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = asModel(t, updated)
+	m = drainCmds(m, cmd)
+
+	var rows int
+	for _, msg := range state.Messages() {
+		if msg.Role == session.RoleSystem && strings.Contains(msg.Content, "Turn failed") {
+			rows++
 		}
 	}
-	if !found {
-		t.Fatal("failed turn must append a compact 'Turn failed' transcript row")
+	if rows != 1 {
+		t.Fatalf("\"Turn failed\" transcript rows = %d, want exactly 1", rows)
 	}
 }
 
-// Plan-author failure reports once: notice + compact row, no second
-// verbose transcript message.
+// Plan-author failure reports once: a notice and one compact agent-written
+// row, driven through a real failing authoring run.
 func TestPlanAuthorFailureDoesNotDoubleReport(t *testing.T) {
-	m := newTestModel(t)
-	updated, _ := m.handlePlanAuthorFinished(planAuthorFinishedMsg{err: errors.New("boom")})
-	m = updated
+	m := testModelTurns(t, service.Deps{
+		State:  controlsState(t),
+		Runner: runnerOf(&testAgentRunner{}),
+		AuthorPlan: func(context.Context, acpwire.AuthorPlanParams) (acpwire.AuthoredPlan, error) {
+			return acpwire.AuthoredPlan{}, errors.New("boom")
+		},
+		Commands: setupCmdReg(t),
+	}, &turnRecorder{})
+
+	updated, cmd := m.dispatchCommand("/sdd new x")
+	m = asModel(t, updated)
+	if cmd == nil {
+		t.Fatal("/sdd new returned no command")
+	}
+	m = runAuthoringCmd(t, m, cmd)
+
 	var rows int
 	for _, msg := range stateOf(m).Messages() {
 		if msg.Role == session.RoleSystem && strings.Contains(msg.Content, "Plan authoring failed") {

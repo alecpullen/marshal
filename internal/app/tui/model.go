@@ -4965,7 +4965,8 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 		// for: the user asked explicitly for those to be delivered, and a UI
 		// cleanup must not silently revoke the request.
 		m.sess.ClearSteering(m.ctx)
-		m.note("Agent turn cancelled.")
+		// The cancel note is the agent's (P4 D6): the service writes it when
+		// the run ends, so it lands even for a client that is no longer here.
 		_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeProvider)
 		m.cancelling = false
 	}
@@ -4990,7 +4991,8 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 			}
 		}
 		_ = m.sess.SetNotice(m.ctx, noticeForError(msg.err, "turn"))
-		m.note("✘ Turn failed: " + firstLine(msg.err.Error()))
+		// The failure note is the agent's too (P4 D6): the service writes
+		// "✘ Turn failed: …" when the run ends, so the TUI would double it.
 		m.successPulse = false
 	} else if msg.err == nil {
 		// A completed turn proves the provider is reachable again — clear
@@ -5134,14 +5136,15 @@ func (m Model) handlePlanAuthorFinished(msg planAuthorFinishedMsg) (Model, tea.C
 	if m.cancelling || msg.result.StopReason == acpwire.StopReasonCancelled {
 		m.cancelling = false
 		_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeProvider)
-		m.note("Agent turn cancelled.")
+		// The cancel note is the agent's (P4 D6): the service writes it when
+		// the run ends, so the TUI would double it.
 		m.updateViewportHeight()
 		m.refreshViewport()
 		return m, nil
 	}
 	if msg.err != nil {
 		_ = m.sess.SetNotice(m.ctx, noticeForError(msg.err, "plan-author"))
-		m.note("✘ Plan authoring failed: " + firstLine(msg.err.Error()))
+		// The failure note is the agent's too (P4 D6).
 		m.updateViewportHeight()
 		m.refreshViewport()
 		return m, nil

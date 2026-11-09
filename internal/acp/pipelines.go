@@ -23,6 +23,8 @@ func (m *ControlManager) SwarmStart(ctx context.Context, params json.RawMessage)
 	if err != nil {
 		return nil, err
 	}
+	// The call's context ending stops the wait, and the run goes on until
+	// session/stop (P4 D4).
 	runCtx, cancel := cancellable(ctx)
 	defer cancel()
 	if err := sess.StartSwarm(runCtx, acpwire.SwarmParams{
@@ -45,6 +47,8 @@ func (m *ControlManager) SDDStart(ctx context.Context, params json.RawMessage) (
 	if err != nil {
 		return nil, err
 	}
+	// The call's context ending stops the wait, and the run goes on until
+	// session/stop (P4 D4).
 	runCtx, cancel := cancellable(ctx)
 	defer cancel()
 	if err := sess.StartSDD(runCtx, acpwire.SDDParams{
@@ -68,6 +72,8 @@ func (m *ControlManager) SDDAnswer(ctx context.Context, params json.RawMessage) 
 	if err != nil {
 		return nil, err
 	}
+	// The call's context ending stops the wait, and the run goes on until
+	// session/stop (P4 D4).
 	runCtx, cancel := cancellable(ctx)
 	defer cancel()
 	if err := sess.AnswerSDDGate(runCtx, p.Answer); err != nil {
@@ -108,7 +114,8 @@ func (m *ControlManager) SDDStop(ctx context.Context, params json.RawMessage) (a
 	return struct{}{}, nil
 }
 
-// SDDAuthor handles session/sdd_author.
+// SDDAuthor handles session/sdd_author. Its run is the caller's, unlike every
+// other kind: the call's context ending ends the authoring run (P4 D4).
 func (m *ControlManager) SDDAuthor(ctx context.Context, params json.RawMessage) (any, error) {
 	var p acpwire.AuthorCallParams
 	if err := decodeParams(params, &p, acpwire.MethodSDDAuthor); err != nil {

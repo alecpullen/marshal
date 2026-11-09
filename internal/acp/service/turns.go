@@ -23,6 +23,28 @@ type turnSlot struct {
 	cancel  context.CancelFunc
 	token   *session.TurnStopToken // nil until the run registers its stop group
 	stopped bool                   // Stop reached the run
+	// ending marks a stop that is the session's end, which writes no cancel
+	// note (P4 D4 decision 6).
+	ending bool
+	// run is the run in flight as the status reports it. It is set once the
+	// run is admitted, and read back when the run ends (P4 D4).
+	run *acpwire.Run
+}
+
+// runSpec says what runTurn runs: its kind, whether it detaches from its
+// caller's context, and the work. finish, when set, runs on the run's own
+// goroutine after the work returns and before the note: Prompt's put-back.
+type runSpec struct {
+	kind   acpwire.RunKind
+	detach bool
+	work   func(context.Context) error
+	finish func(stopped, started bool, err error)
+}
+
+// runResult is what a finished run reports to the caller still waiting.
+type runResult struct {
+	stopped, started bool
+	err              error
 }
 
 var (
@@ -39,6 +61,10 @@ var (
 // Prompt runs one turn with params.Text as the user's message. A run that
 // cannot start puts a queued text back on the steering queue, so the caller's
 // next attempt still has it.
+//
+// The turn is the session's, not this call's (P4 D4): a caller that leaves
+// stops waiting, not the turn. Only Stop, the end flow or the session's close
+// ends it.
 func (s *Session) Prompt(ctx context.Context, params acpwire.PromptParams) (acpwire.PromptResult, error) {
 	if s.closed.Load() {
 		return acpwire.PromptResult{}, errSessionClosed
@@ -52,23 +78,29 @@ func (s *Session) Prompt(ctx context.Context, params acpwire.PromptParams) (acpw
 	if params.WatchResume != nil {
 		text = watch.ResumeGoal(params.WatchResume.Name, s.lastAssistantText(), params.WatchResume.Repeat)
 	}
-	stopped, started, err := s.runTurn(ctx, func(ctx context.Context) error {
-		return runner.Run(ctx, text)
+	stopped, _, err := s.runTurn(ctx, runSpec{
+		kind:   acpwire.RunTurn,
+		detach: true,
+		work: func(ctx context.Context) error {
+			return runner.Run(ctx, text)
+		},
+		// The queue is the caller's, not the run's: a turn a stop skipped
+		// before its work began never consumed the text, so it goes back even
+		// when the caller is no longer there to ask for it.
+		finish: func(stopped, started bool, _ error) {
+			if stopped && !started {
+				s.requeue(params)
+			}
+		},
 	})
 	if err != nil {
-		// The queue is the caller's, not the run's: a turn that never started
-		// puts a queued text back.
+		// A refusal never reached the run, so its put-back stays here.
 		if code, ok := acpclient.CodeOf(err); ok && (code == acpwire.CodeBusy || code == acpwire.CodeQuiescing) {
 			s.requeue(params)
 			return acpwire.PromptResult{}, err
 		}
 	}
 	if stopped {
-		// A stop that landed before the run began never consumed the text, so
-		// put a queued text back rather than dropping it silently.
-		if !started {
-			s.requeue(params)
-		}
 		return acpwire.PromptResult{StopReason: acpwire.StopReasonCancelled}, nil
 	}
 	if err != nil {
@@ -88,6 +120,13 @@ func (s *Session) Stop(ctx context.Context, cause string) error {
 	if s.closed.Load() {
 		return errSessionClosed
 	}
+	return s.stopRun(cause, false)
+}
+
+// stopRun is Stop's body. ending marks the stop as the session's end, which
+// writes no cancel note (P4 D4 decision 6). Stop passes false; Release passes
+// true. Neither changes what the stop does.
+func (s *Session) stopRun(cause string, ending bool) error {
 	s.mu.Lock()
 	slot := s.turn
 	if slot == nil {
@@ -95,6 +134,9 @@ func (s *Session) Stop(ctx context.Context, cause string) error {
 		return nil
 	}
 	slot.stopped = true
+	if ending {
+		slot.ending = true
+	}
 	token := slot.token
 	s.mu.Unlock()
 
@@ -110,7 +152,7 @@ func (s *Session) Stop(ctx context.Context, cause string) error {
 }
 
 // Review runs a reviewer subagent over what params names. A stopped review
-// returns no error.
+// returns no error. A caller that leaves does not stop the review (P4 D4).
 func (s *Session) Review(ctx context.Context, params acpwire.ReviewParams) error {
 	if s.closed.Load() {
 		return errSessionClosed
@@ -121,8 +163,12 @@ func (s *Session) Review(ctx context.Context, params acpwire.ReviewParams) error
 	if params.Range != "" && params.Base != "" {
 		return errRangeAndBase
 	}
-	stopped, _, err := s.runTurn(ctx, func(ctx context.Context) error {
-		return s.review(ctx, params)
+	stopped, _, err := s.runTurn(ctx, runSpec{
+		kind:   acpwire.RunReview,
+		detach: true,
+		work: func(ctx context.Context) error {
+			return s.review(ctx, params)
+		},
 	})
 	// A stopped review is not an error: the stop already reported the cancel,
 	// and the reviewer's own context error is that stop, not a failure.
@@ -133,7 +179,7 @@ func (s *Session) Review(ctx context.Context, params acpwire.ReviewParams) error
 }
 
 // RunAgent runs the named custom agent with the goal. A stopped run returns no
-// error.
+// error. A caller that leaves does not stop the run (P4 D4).
 func (s *Session) RunAgent(ctx context.Context, params acpwire.AgentRunParams) error {
 	if s.closed.Load() {
 		return errSessionClosed
@@ -144,8 +190,12 @@ func (s *Session) RunAgent(ctx context.Context, params acpwire.AgentRunParams) e
 	if strings.TrimSpace(params.Agent) == "" {
 		return errNoAgentName
 	}
-	stopped, _, err := s.runTurn(ctx, func(ctx context.Context) error {
-		return s.runAgent(ctx, params)
+	stopped, _, err := s.runTurn(ctx, runSpec{
+		kind:   acpwire.RunAgent,
+		detach: true,
+		work: func(ctx context.Context) error {
+			return s.runAgent(ctx, params)
+		},
 	})
 	// A stopped run is not an error: the stop already reported the cancel, and
 	// the agent's own context error is that stop, not a failure.
@@ -183,11 +233,22 @@ func (s *Session) VerifyProposal(ctx context.Context) (acpwire.VerifyCommands, e
 // Stop reached the run, whether the run's work began at all, and the run's
 // error or the refusal.
 //
-// started is false when a stop (or a pending one) skipped the turn before it
-// reached run, so a caller holding the text can put it back: nothing consumed
-// it. It is true once run has been entered, even if the stop then cancels it.
-func (s *Session) runTurn(ctx context.Context, run func(context.Context) error) (stopped bool, started bool, err error) {
-	runCtx, cancel := context.WithCancel(ctx)
+// A run is the session's, not its caller's (P4 D4). A detaching kind — every
+// kind but author — runs on the session's context, so a caller whose call ends
+// answers at once and leaves the run going; only Stop, the end flow or the
+// session's close ends it. An authoring run stays its caller's, because only
+// that caller reads its result.
+//
+// started is false when a stop (or a pending one) skipped the run before it
+// reached the work, so a caller holding the text can put it back: nothing
+// consumed it. It is true once the work has been entered, even if the stop
+// then cancels it.
+func (s *Session) runTurn(ctx context.Context, spec runSpec) (stopped bool, started bool, err error) {
+	parent := ctx
+	if spec.detach {
+		parent = s.ctx
+	}
+	runCtx, cancel := context.WithCancel(parent)
 	slot := &turnSlot{cancel: cancel}
 
 	// One run at a time: the slot is taken before any work registers, so a
@@ -208,7 +269,11 @@ func (s *Session) runTurn(ctx context.Context, run func(context.Context) error) 
 	s.turn = slot
 	s.mu.Unlock()
 
-	if err := s.state.BeginWork(); err != nil {
+	// The run is registered as a cancellable parent operation, so the
+	// conversation's end pass (stopEndWork) cancels the run's context through
+	// this hook. Without it, a run that outlives its caller would leave the
+	// runtime's quiesce waiting on work nothing can stop (P4 D4).
+	if err := s.state.BeginWorkCancelable(cancel); err != nil {
 		s.mu.Lock()
 		if s.turn == slot {
 			s.turn = nil
@@ -223,43 +288,167 @@ func (s *Session) runTurn(ctx context.Context, run func(context.Context) error) 
 		return false, false, err
 	}
 
-	// The cleanup runs in the order the turn's readers expect: the session is
-	// idle first, the slot is released next, then the stop group and the work
-	// registration are cleared and the run's context is cancelled last.
-	defer func() {
-		s.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
-		s.mu.Lock()
-		stopped = slot.stopped
-		if s.turn == slot {
-			s.turn = nil
-		}
-		token := slot.token
-		s.mu.Unlock()
-		s.state.EndTurnStop(token)
-		s.state.EndWork()
-		cancel()
-	}()
-
+	// Admission stays on the caller's goroutine, so every refusal and every
+	// stop that skipped the run is still answered synchronously.
 	token, pendingCause := s.state.BeginTurnStop("")
 	s.mu.Lock()
 	slot.token = token
+	// The run is in flight from here: its ID is its stop group's turn ID.
+	slot.run = &acpwire.Run{
+		ID:        token.TurnID(),
+		Kind:      spec.kind,
+		StartedAt: acpwire.Millis(s.state.Now()),
+	}
 	if pendingCause != "" {
 		// BeginTurnStop has already stopped the group for that cause, so a
 		// stop that landed before this run started skips it outright.
 		slot.stopped = true
 	}
-	stopped = slot.stopped
 	s.mu.Unlock()
 
-	if stopped {
-		return true, false, nil
+	// The run and its whole ending belong to the session, so a caller that
+	// leaves cannot truncate them (P4 D4 decision 1).
+	done := make(chan runResult, 1)
+	go func() {
+		done <- s.endRun(slot, spec, runCtx)
+	}()
+
+	select {
+	case res := <-done:
+		return res.stopped, res.started, res.err
+	case <-ctx.Done():
+		// The caller left: its call answers with its context's error, and the
+		// run goes on until the session stops it.
+		return false, true, ctx.Err()
 	}
-	if err := runCtx.Err(); err != nil {
-		return false, false, err
+}
+
+// endRun runs a run's work and then its whole ending on the run's own
+// goroutine (P4 D4 decision 8): the finish hook, the outcome note, the last
+// run, and then today's cleanup — idle, the stop group, the work registration
+// and the run's context.
+func (s *Session) endRun(slot *turnSlot, spec runSpec, runCtx context.Context) runResult {
+	s.mu.Lock()
+	skipped := slot.stopped
+	s.mu.Unlock()
+
+	var err error
+	started := false
+	if !skipped {
+		if ctxErr := runCtx.Err(); ctxErr != nil {
+			err = ctxErr
+		} else {
+			// The run's work begins here: from this point the text is consumed
+			// even if a stop cancels it.
+			started = true
+			err = runError(callRun(runCtx, spec.work))
+		}
 	}
-	// The run's work begins here: from this point the text is consumed even if
-	// a stop cancels it.
-	return false, true, runError(callRun(runCtx, run))
+
+	s.mu.Lock()
+	stopped := slot.stopped
+	s.mu.Unlock()
+	if spec.finish != nil {
+		spec.finish(stopped, started, err)
+	}
+
+	outcome := runOutcome(stopped, runCtx, err)
+	endedAt := acpwire.Millis(s.state.Now())
+
+	// The note is the agent's, not the caller's (P4 D6): it is written here,
+	// on the run's own goroutine, so it lands even when the caller has gone.
+	// A user's stop is the only stop that writes the cancel note, and a
+	// failure is the only outcome that writes the failure note.
+	s.mu.Lock()
+	userStop := stopped && !slot.ending && !s.closed.Load()
+	s.mu.Unlock()
+	if note := runNote(spec.kind, outcome, userStop, err); note != "" {
+		s.state.AddMessage(session.RoleSystem, note, session.ContentTypePlain)
+	}
+
+	// lastRun and the slot's release happen in one critical section, so a
+	// status read never shows neither or both.
+	s.mu.Lock()
+	slotRun := slot.run
+	if slotRun != nil {
+		result := &acpwire.RunResult{
+			ID:        slotRun.ID,
+			Kind:      slotRun.Kind,
+			StartedAt: slotRun.StartedAt,
+			EndedAt:   endedAt,
+			Outcome:   outcome,
+		}
+		if outcome == acpwire.RunFailed {
+			result.Error = wireErrorOf(err)
+		}
+		s.lastRun = result
+	}
+	if s.turn == slot {
+		s.turn = nil
+	}
+	token := slot.token
+	s.mu.Unlock()
+
+	// The rest of the cleanup runs in the order the turn's readers expect: the
+	// session is idle, then the stop group and the work registration are
+	// cleared, and the run's context is cancelled last.
+	s.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
+	s.state.EndTurnStop(token)
+	s.state.EndWork()
+	slot.cancel()
+
+	return runResult{stopped: stopped, started: started, err: err}
+}
+
+// runOutcome is how a finished run ended, in the order the plan checks them
+// (P4 D4 decision 5): a run its gate paused is gated even when stopped, and a
+// stopped or context-cancelled run is cancelled whatever it returned.
+func runOutcome(stopped bool, runCtx context.Context, err error) acpwire.RunOutcome {
+	switch {
+	case acpclient.IsCode(err, acpwire.CodeHumanGateRequired):
+		return acpwire.RunGated
+	case stopped || errors.Is(err, context.Canceled) || runCtx.Err() != nil:
+		return acpwire.RunCancelled
+	case err != nil:
+		return acpwire.RunFailed
+	default:
+		return acpwire.RunDone
+	}
+}
+
+// runNote is the outcome note a run of kind writes, or "" for none (P4 D6).
+// The cancel note is the user's stop and nothing else; the failure note is
+// every failed run, worded for the kind that failed.
+func runNote(kind acpwire.RunKind, outcome acpwire.RunOutcome, userStop bool, err error) string {
+	switch outcome {
+	case acpwire.RunCancelled:
+		if userStop {
+			return "Agent turn cancelled."
+		}
+	case acpwire.RunFailed:
+		if err == nil {
+			return ""
+		}
+		if kind == acpwire.RunAuthor {
+			return "✘ Plan authoring failed: " + firstLine(err.Error())
+		}
+		return "✘ Turn failed: " + firstLine(err.Error())
+	}
+	return ""
+}
+
+// wireErrorOf is err as the wire reports a failed run's error: a coded error
+// as itself, and any other as an uncoded one with its own sentence (P4 D4
+// decision 5).
+func wireErrorOf(err error) *acpwire.Error {
+	if err == nil {
+		return nil
+	}
+	var coded *acpwire.Error
+	if errors.As(err, &coded) {
+		return coded
+	}
+	return &acpwire.Error{Message: err.Error()}
 }
 
 // callRun runs one turn's work. A panic fails the turn, as runAgentCmd has it,

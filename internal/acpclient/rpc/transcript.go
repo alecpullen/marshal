@@ -76,6 +76,14 @@ func (s *Session) StackNode(ctx context.Context, nodeID string, subagentID int64
 	return result, nil
 }
 
+// Sync returns once every update the agent has for this session is applied:
+// session/sync's response follows them (P3 plan 8). It is not part of
+// acpclient.Session.
+func (s *Session) Sync(ctx context.Context) error {
+	params := acpwire.ControlParams{SessionID: s.id}
+	return s.conn.Call(ctx, acpwire.MethodSync, params, nil)
+}
+
 // Callers lists what references the symbol a call row changed. It returns nil
 // when the agent omits the list, which is what a row that changed no resolved
 // symbol reads as.

@@ -263,6 +263,12 @@ func applyProfile(cfg *config, given givenSettings) error {
 	if cfg.secrets != "env" {
 		return fmt.Errorf("--secrets %s: the local profile takes secrets from the environment", cfg.secrets)
 	}
+	// A token belongs to the TCP listener, which --addr off does not
+	// open. Refusing beats accepting it and never using it, which is
+	// the rule the rest of this function follows.
+	if cfg.addr == "off" && given.set("token", "WEBBRIDGE_TOKEN", cfg.token) {
+		return fmt.Errorf("--token is for the TCP listener, and --addr off opens none")
+	}
 
 	// Decision 2: the local profile's defaults, each applying only when
 	// its flag and its variable are both unset.
@@ -519,6 +525,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	api := bridge.NewServer(fleet, cfg.token, cfg.publicURL)
 
+	// serveErr carries the first listener to stop serving. The socket and
+	// the TCP listener can both exist, so it holds two, and each goroutine
+	// parks its answer here rather than dropping it.
+	serveErr := make(chan error, 2)
+
 	// The local profile listens on a unix socket of the user's own: the
 	// same routes as ServeHTTP without the bearer check, peer-checked
 	// instead, so a client on the same account drives it without a
@@ -544,7 +555,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			Handler:           api.SocketHandler(),
 			ReadHeaderTimeout: 10 * time.Second,
 		}
-		go func() { _ = socketSrv.Serve(bridge.PeerChecked(sln, os.Getuid(), slog.Default())) }()
+		go func() {
+			err := socketSrv.Serve(bridge.PeerChecked(sln, os.Getuid(), slog.Default()))
+			if errors.Is(err, http.ErrServerClosed) {
+				err = nil
+			}
+			serveErr <- err
+		}()
 		fmt.Fprintf(stderr, "webbridge: listening on unix://%s\n", cfg.socket)
 	}
 
@@ -596,7 +613,6 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	// prune cannot delay accepting requests.
 	go fleet.ReconcileWorktrees(context.Background())
 
-	serveErr := make(chan error, 1)
 	if srv != nil {
 		go func() {
 			err := serveHTTP(srv, ln, cfg.tlsCert, cfg.tlsKey)
@@ -618,6 +634,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		// listener itself fails, which net.Listen above has already
 		// ruled out — in practice err is always nil here. The channel
 		// exists so the serve goroutine has a buffered parking spot.
+		// Whichever listener failed, the other one is still up: close
+		// it too, so the socket file is removed and the process does
+		// not linger answering nothing.
+		if socketSrv != nil {
+			_ = socketSrv.Close()
+		}
+		if srv != nil {
+			_ = srv.Close()
+		}
 		fleet.Close()
 		return err
 	case <-sigCtx.Done():

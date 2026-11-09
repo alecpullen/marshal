@@ -34,6 +34,13 @@ var daemonClientFor = func(socket string) daemonClient {
 // when the service is wedged, so a silent socket is reported, not waited on.
 const daemonStatusTimeout = 2 * time.Second
 
+// daemonReadyPoll is the gap between readiness probes, and daemonStartTimeout
+// the longest wait for a freshly loaded service to answer. It is a var so a
+// test can shorten it.
+const daemonReadyPoll = 100 * time.Millisecond
+
+var daemonStartTimeout = 5 * time.Second
+
 // runDaemon implements `marshal daemon <install|start|stop|status|uninstall>`.
 //
 // It owns the user-facing half of the local daemon: it resolves the binaries
@@ -94,8 +101,9 @@ func runDaemonInstall(ctx context.Context, args []string, stdout, stderr io.Writ
 	if err := m.Install(ctx, spec); err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "unit: %s\n", daemonUnitPath(m))
+	fmt.Fprintf(stdout, "unit: %s\n", m.UnitPath())
 	fmt.Fprintf(stdout, "socket: %s\n", spec.Paths.Socket)
+	daemonReadyNote(ctx, spec.Paths, stdout)
 	return nil
 }
 
@@ -136,11 +144,14 @@ func resolvedExecutable() (string, error) {
 }
 
 // daemonEnv is the installing process's PATH plus the location variables that
-// were set (decision 10). An unset variable is omitted rather than written
-// empty, so the daemon inherits Marshal's own defaults for it.
+// were set (decision 10). An unset or empty variable is omitted rather than
+// written empty, so the daemon inherits Marshal's own defaults for it — and
+// so an install from a context with no PATH does not hand the service an
+// empty one, which would leave every command its agents spawn unresolvable.
 func daemonEnv() map[string]string {
-	env := map[string]string{"PATH": os.Getenv("PATH")}
+	env := make(map[string]string, 5)
 	for _, key := range []string{
+		"PATH",
 		"MARSHAL_CONFIG_DIR",
 		"MARSHAL_DATA_DIR",
 		"XDG_CONFIG_HOME",
@@ -151,17 +162,6 @@ func daemonEnv() map[string]string {
 		}
 	}
 	return env
-}
-
-// daemonUnitPath is the file the manager writes and removes. It is derived
-// from the manager's own platform and unit directory rather than opening
-// internal/daemon's unexported unitPath.
-func daemonUnitPath(m *daemon.Manager) string {
-	name := daemon.Unit
-	if m.GOOS == "darwin" {
-		name = daemon.Label + ".plist"
-	}
-	return filepath.Join(m.UnitDir, name)
 }
 
 // ---------------------------------------------------------------------------
@@ -196,6 +196,7 @@ func runDaemonService(ctx context.Context, sub string, args []string, stdout, st
 			return err
 		}
 		fmt.Fprintln(stdout, "started")
+		daemonReadyNote(ctx, daemon.PathsFor(home), stdout)
 	case "stop":
 		if err := m.Stop(ctx); err != nil {
 			return err
@@ -208,6 +209,42 @@ func runDaemonService(ctx context.Context, sub string, args []string, stdout, st
 		fmt.Fprintf(stdout, "uninstalled; data kept in %s\n", daemon.PathsFor(home).Dir)
 	}
 	return nil
+}
+
+// daemonReadyNote says whether the daemon answered after being loaded, and
+// names its log when it has not yet started answering. It reports nothing as
+// an error: the service manager owns the process, so a slow start is a
+// warning, not a failure — but `install && status` in one script must not
+// exit non-zero only because launchd is still starting the daemon.
+func daemonReadyNote(ctx context.Context, paths daemon.Paths, stdout io.Writer) {
+	if daemonAnswers(ctx, paths.Socket) {
+		fmt.Fprintln(stdout, "answering")
+		return
+	}
+	fmt.Fprintf(stdout, "not answering yet; its log is %s\n", paths.Log)
+}
+
+// daemonAnswers polls the socket until the daemon answers or the wait runs
+// out.
+func daemonAnswers(ctx context.Context, socket string) bool {
+	client := daemonClientFor(socket)
+	deadline := time.Now().Add(daemonStartTimeout)
+	for {
+		infoCtx, cancel := context.WithTimeout(ctx, daemonStatusTimeout)
+		_, err := client.Info(infoCtx)
+		cancel()
+		if err == nil {
+			return true
+		}
+		if ctx.Err() != nil || !time.Now().Before(deadline) {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(daemonReadyPoll):
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -277,7 +314,9 @@ func daemonServiceLine(state daemon.ServiceState) string {
 func daemonInfoLine(info daemon.Info, marshalVersion string) string {
 	started := "unknown"
 	if info.StartedAt > 0 {
-		started = time.Unix(info.StartedAt, 0).UTC().Format(time.RFC3339)
+		// startedAt is Unix milliseconds on the wire, which is what the
+		// bridge sends (web/bridge/daemoninfo.go).
+		started = time.UnixMilli(info.StartedAt).UTC().Format(time.RFC3339)
 	}
 	projects := "(none)"
 	if len(info.Projects) > 0 {

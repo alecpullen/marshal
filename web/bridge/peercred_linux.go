@@ -5,9 +5,12 @@ package bridge
 import (
 	"fmt"
 	"net"
-	"os"
 	"syscall"
 )
+
+// peerCredsSupported says SO_PEERCRED answers here, which is what lets
+// the local profile serve at all (decision 7).
+const peerCredsSupported = true
 
 // peerUID is the user ID of the process on the other end of conn, a unix
 // socket connection. SO_PEERCRED is recorded by the kernel when the
@@ -42,16 +45,4 @@ func peerUID(conn net.Conn) (int, error) {
 		return 0, fmt.Errorf("bridge: peer credentials: %w", credErr)
 	}
 	return uid, nil
-}
-
-// dirOwnedBy reports whether fi belongs to uid. The stat layout behind
-// os.FileInfo is per system, so this sits beside the other per-system
-// credential check: the same systems that can vouch for a peer can vouch
-// for a directory.
-func dirOwnedBy(fi os.FileInfo, uid int) bool {
-	st, ok := fi.Sys().(*syscall.Stat_t)
-	if !ok {
-		return false
-	}
-	return int(st.Uid) == uid
 }

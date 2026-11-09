@@ -5,16 +5,20 @@ package bridge
 import (
 	"fmt"
 	"net"
-	"os"
 	"syscall"
 	"unsafe"
 )
 
-// darwin's socket level and peer-credential option. syscall does not
-// declare them.
+// peerCredsSupported says LOCAL_PEERCRED answers here, which is what
+// lets the local profile serve at all (decision 7).
+const peerCredsSupported = true
+
+// darwin's socket level, its peer-credential option, and the only
+// defined version of xucred. syscall does not declare them.
 const (
 	solLocal      = 0 // SOL_LOCAL
 	localPeerCred = 1 // LOCAL_PEERCRED
+	xucredVersion = 0 // XUCRED_VERSION
 )
 
 // xucred is darwin's struct xucred, which LOCAL_PEERCRED fills.
@@ -67,22 +71,16 @@ func peerUID(conn net.Conn) (int, error) {
 	if credErr != nil {
 		return 0, fmt.Errorf("bridge: peer credentials: %w", credErr)
 	}
+	// The kernel writes the struct's length back through size. A short
+	// answer would leave cred zeroed — version 0, uid 0, the peer a
+	// root daemon accepts — so the length is checked, not trusted.
+	if want := uintptr(unsafe.Sizeof(cred)); size != want {
+		return 0, fmt.Errorf("bridge: peer credentials came back as %d bytes, want %d", size, want)
+	}
 	// The only defined version of xucred is the one getsockopt returned
 	// here; anything else is a struct we do not understand.
-	if cred.Version != 0 {
+	if cred.Version != xucredVersion {
 		return 0, fmt.Errorf("bridge: unexpected peer credential version %d", cred.Version)
 	}
 	return int(cred.UID), nil
-}
-
-// dirOwnedBy reports whether fi belongs to uid. The stat layout behind
-// os.FileInfo is per system, so this sits beside the other per-system
-// credential check: the same systems that can vouch for a peer can vouch
-// for a directory.
-func dirOwnedBy(fi os.FileInfo, uid int) bool {
-	st, ok := fi.Sys().(*syscall.Stat_t)
-	if !ok {
-		return false
-	}
-	return int(st.Uid) == uid
 }

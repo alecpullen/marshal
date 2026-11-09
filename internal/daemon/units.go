@@ -61,8 +61,12 @@ func SystemdUnit(u UnitSpec) []byte {
 		b.WriteString("Environment=" + systemdQuote(key+"="+u.Env[key]) + "\n")
 	}
 	b.WriteString("Restart=on-failure\n")
-	b.WriteString("StandardOutput=append:" + u.Paths.Log + "\n")
-	b.WriteString("StandardError=append:" + u.Paths.Log + "\n")
+	// These two take a bare prefix ("append:") and a path, so the value
+	// is not a quoted word: a leading quote would hide the prefix. The
+	// percent is still escaped, because systemd expands specifiers in
+	// the path.
+	b.WriteString("StandardOutput=append:" + systemdSpecifier(u.Paths.Log) + "\n")
+	b.WriteString("StandardError=append:" + systemdSpecifier(u.Paths.Log) + "\n")
 
 	b.WriteString("\n[Install]\n")
 	b.WriteString("WantedBy=default.target\n")
@@ -99,6 +103,17 @@ func systemdQuote(s string) string {
 	}
 	b.WriteByte('"')
 	return b.String()
+}
+
+// systemdSpecifier escapes the one character systemd interprets in a
+// value that is not a quoted word: the percent that opens a specifier.
+// It exists for StandardOutput= and StandardError=, which take a bare
+// prefix followed by a path and so cannot be quoted as a whole.
+func systemdSpecifier(s string) string {
+	if !strings.ContainsRune(s, '%') {
+		return s
+	}
+	return strings.ReplaceAll(s, "%", "%%")
 }
 
 // sortedEnvKeys keeps a render stable: the same spec always produces the

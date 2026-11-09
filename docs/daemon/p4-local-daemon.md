@@ -157,7 +157,7 @@ against.
 7. **The socket's permissions are the local profile's auth.**
    The socket sits in a `0700` directory in the data dir, with mode `0600`.
    The bridge also checks the peer's user ID (`SO_PEERCRED` on Linux,
-   `getpeereid` on macOS) and refuses any other user, which is cheap defence
+   `LOCAL_PEERCRED` on macOS) and refuses any other user, which is cheap defence
    in depth. No token is needed on the socket. The loopback TCP listener the
    browser uses keeps its bearer token, unchanged. This answers design §8's
    "local-profile auth".
@@ -611,9 +611,9 @@ be a directory (`... is not a directory`), the user's own (`... belongs to
 another user`), and closed to group and other (`... is open to other users
 (mode %04o, want 0700)`). A refused directory is left exactly as it was — it
 never chmods one it did not create — and a regular file at the path is refused
-and kept. `net.ListenUnix` then sets `SetUnlinkOnClose`, so `Close` removes the
-socket. A path longer than the platform's limit fails at listen with the
-system's own error, unchanged. `ErrDaemonRunning` comes from a real dial, not
+and kept. `net.Listen` yields a `*net.UnixListener`, which sets
+`SetUnlinkOnClose`, so `Close` removes the socket. A path longer than the
+platform's limit fails at listen with the system's own error, unchanged. `ErrDaemonRunning` comes from a real dial, not
 from the file's existence: an answered dial means a live daemon (`a daemon is
 already listening on <path>`, the smoke run's step 5), and a refused one means
 a stale socket, which is removed and replaced.
@@ -628,7 +628,8 @@ and lose what the kernel recorded against it.
   through `syscall.Syscall6` with the struct's address and size, and refuses a
   `Version` other than 0. This is the one call outside `syscall`'s typed
   wrappers, and `TestPeerUIDIsOurs` runs it on this machine.
-- other systems: no answer, so no connection is served there.
+- other systems: no answer, so `ListenLocal` refuses before it creates a
+  directory or binds, and the local profile does not start.
 
 `PeerChecked` keeps the wrapped listener's `Close`, `Addr` and its failed
 `Accept` unchanged; a connection from another uid, or one whose peer cannot be
@@ -645,6 +646,12 @@ command, and both the agent factory and `buildControlChild` build a
 host-process `Child`. In the smoke run, the machine's own nine Docker Desktop
 processes were the same before and after the daemon started and stopped.
 
+Every container-only operation therefore answers `501 Not Implemented`:
+`ErrWorkspaceNeedsRuntime` (`wsspawn.go`) is what a workspace spawn returns,
+`runtimeName` wraps it for a workspace build, and `writeErr` maps it rather
+than letting it fall through to `502`, which would report a profile limitation
+as a gateway fault.
+
 **`SocketHandler`** (`web/bridge/http.go`). `ServeHTTP`'s routing moved into an
 unexported method taking the API handler: `ServeHTTP` calls it with the
 token-checked mux and `SocketHandler` with the bare one. Nothing `ServeHTTP`
@@ -653,7 +660,11 @@ answers changed, and the existing bridge tests pass unchanged.
 **`GET /api/daemon`** (`web/bridge/daemoninfo.go`). `DaemonInfo` and
 `SetDaemonInfo`; the handler copies the info and fills `Projects` from the
 workspace per request, sorted and never nil so it encodes `[]` rather than
-`null`. Registering without info answers 404 `not a daemon`.
+`null`. Registering without info answers 404 `not a daemon`. `StartedAt` is
+Unix milliseconds, which is what `marshal daemon status` formats, and `Socket`
+is the daemon's own path — under the default data dir that contains the
+username, the same class of path `/api/projects` already returns, with the
+route bearer-gated on TCP and peer-checked on the socket.
 
 **`internal/daemon`** (`daemon.go`, `units.go`, `manager.go`, `client.go`,
 `find.go`) and `config.DaemonDir`/`DaemonSocketPath` beside `DataDir`.
@@ -680,7 +691,14 @@ transport bounded by the caller's context, and `FindWebbridge` prefers
   on darwin and `systemctl --user show|daemon-reload|enable --now|restart|stop|
   disable --now` on linux, every command through `Run` with its full command
   line; a "not loaded" or "not found" answer counts as done. `NewManager`
-  refuses any `GOOS` but darwin and linux.
+  refuses any `GOOS` but darwin and linux. `stop` is not durable on either:
+  the unit stays installed and enabled, so the service returns at the next
+  login, and `uninstall` is the only lasting stop.
+- `install` and `start` then wait up to five seconds for `/api/daemon` to
+  answer and print `answering`, or print `not answering yet` and name the log.
+  Neither fails and neither stops the service, which the manager owns: the
+  point is that `install && status` in one script does not fail only because
+  launchd is still starting the process.
 
 **The smoke run.** Both binaries built into `/private/tmp/p4-2-suite/bin`, then:
 

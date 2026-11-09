@@ -188,7 +188,7 @@ func TestTheManagerRunsTheRightCommands(t *testing.T) {
 			runner := &fakeRunner{answers: tc.answers}
 			m.Run = runner.run
 
-			unitPath := m.unitPath()
+			unitPath := m.UnitPath()
 			if tc.goos == "darwin" {
 				wantPlist := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
 				if unitPath != wantPlist {
@@ -319,13 +319,13 @@ func TestStopAndUninstallTolerateANotLoadedService(t *testing.T) {
 			if err := os.MkdirAll(m.UnitDir, 0o755); err != nil {
 				t.Fatalf("make unit dir: %v", err)
 			}
-			if err := os.WriteFile(m.unitPath(), []byte("unit\n"), 0o644); err != nil {
+			if err := os.WriteFile(m.UnitPath(), []byte("unit\n"), 0o644); err != nil {
 				t.Fatalf("write unit: %v", err)
 			}
 			if err := m.Uninstall(context.Background()); err != nil {
 				t.Errorf("Uninstall() on a service that is not loaded: %v", err)
 			}
-			if _, err := os.Stat(m.unitPath()); !os.IsNotExist(err) {
+			if _, err := os.Stat(m.UnitPath()); !os.IsNotExist(err) {
 				t.Errorf("Uninstall left the unit behind (stat error %v)", err)
 			}
 
@@ -393,8 +393,8 @@ func TestStateReadsTheServiceManager(t *testing.T) {
 			name: "linux running",
 			goos: "linux",
 			answers: map[string]scripted{
-				"systemctl --user show --property=ActiveState,MainPID " + Unit: {
-					out: "ActiveState=active\nMainPID=9876\n",
+				"systemctl --user show --property=ActiveState,MainPID,LoadState " + Unit: {
+					out: "LoadState=loaded\nActiveState=active\nMainPID=9876\n",
 				},
 			},
 			want: ServiceState{Installed: true, Running: true, PID: 9876},
@@ -403,17 +403,30 @@ func TestStateReadsTheServiceManager(t *testing.T) {
 			name: "linux stopped",
 			goos: "linux",
 			answers: map[string]scripted{
-				"systemctl --user show --property=ActiveState,MainPID " + Unit: {
-					out: "ActiveState=inactive\nMainPID=0\n",
+				"systemctl --user show --property=ActiveState,MainPID,LoadState " + Unit: {
+					out: "LoadState=loaded\nActiveState=inactive\nMainPID=0\n",
 				},
 			},
 			want: ServiceState{Installed: true},
 		},
 		{
-			name: "linux not installed",
+			// What systemctl really answers for a unit that was never
+			// installed: exit 0, LoadState=not-found. The row below it
+			// covers a systemctl that fails instead.
+			name: "linux never installed",
 			goos: "linux",
 			answers: map[string]scripted{
-				"systemctl --user show --property=ActiveState,MainPID " + Unit: {
+				"systemctl --user show --property=ActiveState,MainPID,LoadState " + Unit: {
+					out: "LoadState=not-found\nActiveState=inactive\nMainPID=0\n",
+				},
+			},
+			want: ServiceState{},
+		},
+		{
+			name: "linux unit unknown to systemd",
+			goos: "linux",
+			answers: map[string]scripted{
+				"systemctl --user show --property=ActiveState,MainPID,LoadState " + Unit: {
 					out: "Failed to get properties: Unit " + Unit + " not found.",
 					err: errors.New("exit status 1"),
 				},

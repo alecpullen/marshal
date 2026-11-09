@@ -63,6 +63,61 @@ func fakeDaemonManager(t *testing.T, run daemon.Runner) {
 	}
 }
 
+// fakeDaemonSocket replaces the socket seam. Every path that loads or starts
+// the service now waits, briefly, for the daemon to answer, so a test that
+// left the real client in place would dial a path nothing listens on.
+func fakeDaemonSocket(t *testing.T, c daemonClient) {
+	t.Helper()
+	oldClient, oldTimeout := daemonClientFor, daemonStartTimeout
+	t.Cleanup(func() { daemonClientFor, daemonStartTimeout = oldClient, oldTimeout })
+	daemonClientFor = func(string) daemonClient { return c }
+	daemonStartTimeout = 50 * time.Millisecond
+}
+
+// TestDaemonStartReportsWhetherItAnswers: start says so when the daemon is
+// answering, and names its log when it is not, without failing — the service
+// manager owns the process, so a slow start is a warning.
+func TestDaemonStartReportsWhetherItAnswers(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		client  daemonClient
+		want    string
+		wantLog bool
+	}{
+		{name: "answering", client: fakeDaemonClient{}, want: "answering"},
+		{
+			name:    "not answering yet",
+			client:  fakeDaemonClient{err: errors.New("dial unix: no such file or directory")},
+			want:    "not answering yet",
+			wantLog: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := daemonTestEnv(t)
+			fakeDaemonManager(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
+				return []byte("state = not running\n"), nil
+			})
+			fakeDaemonSocket(t, tc.client)
+
+			var stdout, stderr bytes.Buffer
+			if err := runDaemon(context.Background(), []string{"start"},
+				strings.NewReader(""), &stdout, &stderr); err != nil {
+				t.Fatalf("runDaemon start: %v\nstderr: %s", err, stderr.String())
+			}
+			out := stdout.String()
+			if !strings.Contains(out, "started") {
+				t.Errorf("start printed %q, want it to say started", out)
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("start printed %q, want it to contain %q", out, tc.want)
+			}
+			if tc.wantLog && !strings.Contains(out, daemon.PathsFor(home).Log) {
+				t.Errorf("start printed %q, want it to name the log %q", out, daemon.PathsFor(home).Log)
+			}
+		})
+	}
+}
+
 // TestDaemonInstallPassesExplicitPaths pins decision 10: the unit the manager
 // receives is built from resolved absolute paths and carries PATH plus the
 // location variables that were set, and only those.
@@ -91,6 +146,9 @@ func TestDaemonInstallPassesExplicitPaths(t *testing.T) {
 			calls = append(calls, name+" "+strings.Join(args, " "))
 			return nil, nil
 		})
+		// install waits, briefly, for the daemon to answer; nothing is
+		// listening here, which is the "not answering yet" path.
+		fakeDaemonSocket(t, fakeDaemonClient{err: errors.New("dial unix: no such file or directory")})
 		var out, errOut bytes.Buffer
 		if err := runDaemon(context.Background(), []string{"install", "--webbridge", webbridge},
 			strings.NewReader(""), &out, &errOut); err != nil {
@@ -180,7 +238,7 @@ func TestDaemonStatusReportsARunningDaemon(t *testing.T) {
 				Version:   "1.4.0",
 				Profile:   "local",
 				PID:       4242,
-				StartedAt: 1700000000,
+				StartedAt: 1700000000000,
 				Projects:  []string{"/work/one", "/work/two"},
 			},
 			onInfo: func(ctx context.Context) {

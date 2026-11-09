@@ -147,8 +147,8 @@ func TestTheSystemdUnitNamesEverything(t *testing.T) {
 		"[Unit]\nDescription=Marshal daemon\n",
 		"[Service]\n",
 		"Restart=on-failure\n",
-		"StandardOutput=append:" + spec.Paths.Log + "\n",
-		"StandardError=append:" + spec.Paths.Log + "\n",
+		`StandardOutput=append:/data/a & b/daemon/webbridge 100%%.log` + "\n",
+		`StandardError=append:/data/a & b/daemon/webbridge 100%%.log` + "\n",
 		"[Install]\nWantedBy=default.target\n",
 	} {
 		if !strings.Contains(unit, line) {

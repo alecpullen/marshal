@@ -321,6 +321,10 @@ func writeErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrOutsideWorkspace):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrWorkspaceNeedsRuntime):
+		// The bridge has no container runtime: a limitation of how it
+		// was started (a host-only daemon), not a gateway fault.
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": err.Error()})
 	case errors.As(err, &unsupported):
 		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": unsupported.Error()})
 	case errors.As(err, &rpc) && rpc.Code == rpcInvalidParams:

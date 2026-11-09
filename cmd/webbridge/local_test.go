@@ -36,7 +36,7 @@ func isolateWebbridgeEnv(t *testing.T) {
 // can exceed.
 func localSocketPath(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/private/tmp/p4-2-suite", "local-")
+	dir, err := os.MkdirTemp("/tmp", "marshal-local-")
 	if err != nil {
 		t.Fatalf("create socket directory: %v", err)
 	}

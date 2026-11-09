@@ -1,6 +1,10 @@
 package bridge
 
 import (
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -68,8 +72,29 @@ func TestAHostOnlyFleetNeverProbes(t *testing.T) {
 	}
 }
 
-// TestAFleetProbesOnceByDefault guards the other half: without host-only,
-// the fleet asks its probe rather than assuming an answer.
+// TestAHostOnlyFleetAnswers501ForContainerOnlyOperations: a bridge started
+// without a container runtime reports a limitation, not a gateway fault.
+// Every container-only operation returns ErrWorkspaceNeedsRuntime — a
+// workspace spawn, a workspace build (wsbuild.go) — and writeErr maps it to
+// 501 rather than falling through to 502.
+func TestAHostOnlyFleetAnswers501ForContainerOnlyOperations(t *testing.T) {
+	f, _, _ := hostOnlyFleet(t)
+
+	_, err := f.runtimeName()
+	if err == nil {
+		t.Fatal("a host-only fleet named a runtime to build a workspace with")
+	}
+	if !errors.Is(err, ErrWorkspaceNeedsRuntime) {
+		t.Fatalf("runtimeName error = %v, want it to wrap ErrWorkspaceNeedsRuntime", err)
+	}
+
+	rec := httptest.NewRecorder()
+	writeErr(rec, fmt.Errorf("build workspace w1: %w", err))
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501; body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAFleetProbesOnceByDefault(t *testing.T) {
 	f := testFleetWithRunner(t, func(string, ...string) ([]byte, error) { return nil, nil })
 	probes := 0

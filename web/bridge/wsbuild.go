@@ -250,7 +250,7 @@ func (f *Fleet) runtimeName() (string, error) {
 	}
 	_, name, ok := f.containerRuntime()
 	if !ok {
-		return "", errors.New("bridge: no container runtime to build workspaces")
+		return "", fmt.Errorf("%w: cannot build workspaces", ErrWorkspaceNeedsRuntime)
 	}
 	return name, nil
 }

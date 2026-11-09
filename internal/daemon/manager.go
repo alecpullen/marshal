@@ -63,8 +63,10 @@ func execRunner(ctx context.Context, name string, args ...string) ([]byte, error
 	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
-// unitPath is the file Install writes and Uninstall removes.
-func (m *Manager) unitPath() string {
+// UnitPath is the file Install writes and Uninstall removes. It is
+// exported so the command names the same file the manager manages,
+// instead of re-deriving the platform's unit directory beside it.
+func (m *Manager) UnitPath() string {
 	if m.GOOS == "darwin" {
 		return filepath.Join(m.UnitDir, Label+".plist")
 	}
@@ -94,13 +96,14 @@ func (m *Manager) Install(ctx context.Context, u UnitSpec) error {
 	if m.GOOS == "darwin" {
 		rendered = LaunchdPlist(u)
 	}
-	path := m.unitPath()
+	path := m.UnitPath()
 	if err := os.WriteFile(path, rendered, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 
 	if m.GOOS == "darwin" {
-		if m.loaded(ctx) {
+		wasLoaded := m.loaded(ctx)
+		if wasLoaded {
 			// An agent that is already loaded keeps the old
 			// program until it is unloaded and loaded again.
 			if _, err := m.Run(ctx, "launchctl", "bootout", m.target()); err != nil {
@@ -108,6 +111,11 @@ func (m *Manager) Install(ctx context.Context, u UnitSpec) error {
 			}
 		}
 		if _, err := m.Run(ctx, "launchctl", "bootstrap", m.domain(), path); err != nil {
+			if wasLoaded {
+				// The bootout above already stopped a working agent,
+				// so the error has to say the service is now down.
+				return fmt.Errorf("launchctl bootstrap: %w (the agent was unloaded and is not running; `marshal daemon start` loads it again)", err)
+			}
 			return fmt.Errorf("launchctl bootstrap: %w", err)
 		}
 		return nil
@@ -134,7 +142,7 @@ func (m *Manager) Start(ctx context.Context) error {
 			}
 			return nil
 		}
-		if _, err := m.Run(ctx, "launchctl", "bootstrap", m.domain(), m.unitPath()); err != nil {
+		if _, err := m.Run(ctx, "launchctl", "bootstrap", m.domain(), m.UnitPath()); err != nil {
 			return fmt.Errorf("launchctl bootstrap: %w", err)
 		}
 		return nil
@@ -168,8 +176,8 @@ func (m *Manager) Uninstall(ctx context.Context) error {
 			return err
 		}
 	}
-	if err := os.Remove(m.unitPath()); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove %s: %w", m.unitPath(), err)
+	if err := os.Remove(m.UnitPath()); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove %s: %w", m.UnitPath(), err)
 	}
 	return nil
 }
@@ -193,7 +201,7 @@ func (m *Manager) State(ctx context.Context) (ServiceState, error) {
 		return parseLaunchdPrint(string(out)), nil
 	}
 
-	out, err := m.Run(ctx, "systemctl", "--user", "show", "--property=ActiveState,MainPID", Unit)
+	out, err := m.Run(ctx, "systemctl", "--user", "show", "--property=ActiveState,MainPID,LoadState", Unit)
 	if err != nil {
 		if notLoaded(out, err) {
 			return ServiceState{}, nil
@@ -237,9 +245,17 @@ func parseLaunchdPrint(out string) ServiceState {
 	return state
 }
 
-// parseSystemctlShow reads ActiveState= and MainPID=.
+// parseSystemctlShow reads ActiveState=, MainPID= and LoadState=.
+//
+// LoadState decides Installed; an ActiveState line alone does not.
+// `systemctl --user show` on a unit that was never installed exits 0 and
+// answers ActiveState=inactive, so without LoadState a fresh machine
+// reports "stopped" for ever. An answer that omits LoadState falls back
+// to the ActiveState test, so a systemd that cannot report it is not
+// mistaken for an uninstalled unit.
 func parseSystemctlShow(out string) ServiceState {
 	state := ServiceState{}
+	load, activeAnswered := "", false
 	for _, line := range strings.Split(out, "\n") {
 		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
 		if !ok {
@@ -247,14 +263,24 @@ func parseSystemctlShow(out string) ServiceState {
 		}
 		switch key {
 		case "ActiveState":
-			state.Installed = true
+			activeAnswered = true
 			state.Running = value == "active"
 		case "MainPID":
 			if pid, err := strconv.Atoi(value); err == nil && pid > 0 {
 				state.PID = pid
 				state.Running = true
 			}
+		case "LoadState":
+			load = value
 		}
+	}
+	if load == "" {
+		state.Installed = activeAnswered
+	} else {
+		state.Installed = load != "not-found"
+	}
+	if !state.Installed {
+		state.Running, state.PID = false, 0
 	}
 	return state
 }

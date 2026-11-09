@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 )
 
@@ -45,6 +46,12 @@ func DefaultDaemonDir() (string, error) {
 // stale socket removed, the socket 0600 (decision 5). Closing the
 // listener removes the socket.
 func ListenLocal(path string) (net.Listener, error) {
+	// A daemon that cannot tell who is on the other end of its socket
+	// must not serve one, so this refuses before creating anything
+	// (decision 7) rather than accepting and closing every connection.
+	if !peerCredsSupported {
+		return nil, errors.New("bridge: the local profile needs peer credentials, which this system does not provide")
+	}
 	if err := prepareLocalDir(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
@@ -66,7 +73,9 @@ func ListenLocal(path string) (net.Listener, error) {
 		if fi.Mode()&os.ModeSocket == 0 {
 			return nil, fmt.Errorf("bridge: %s exists and is not a socket; refusing to remove it", path)
 		}
-		if err := os.Remove(path); err != nil {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			// A concurrent start that removed it first is not a
+			// failure: the path is free, which is all this needs.
 			return nil, fmt.Errorf("bridge: remove stale socket %s: %w", path, err)
 		}
 	case errors.Is(err, os.ErrNotExist):
@@ -76,6 +85,11 @@ func ListenLocal(path string) (net.Listener, error) {
 
 	ln, err := net.Listen("unix", path)
 	if err != nil {
+		// Another daemon that bound between the remove above and here
+		// owns the path, which is the same refusal as a live one.
+		if errors.Is(err, syscall.EADDRINUSE) {
+			return nil, fmt.Errorf("%w on %s", ErrDaemonRunning, path)
+		}
 		// A path over the platform's limit fails here with the system's
 		// own error; the path is named, the reason is not rewritten.
 		return nil, fmt.Errorf("bridge: listen on %s: %w", path, err)

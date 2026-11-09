@@ -33,7 +33,7 @@ func unixServer(t *testing.T, handler http.Handler) string {
 
 func TestTheClientReadsTheDaemon(t *testing.T) {
 	const body = `{"version":"1.2.3","profile":"local","pid":4242,` +
-		`"startedAt":1700000000,"socket":"/tmp/marshal.sock",` +
+		`"startedAt":1700000000000,"socket":"/tmp/marshal.sock",` +
 		`"projects":["/work/one","/work/two"]}`
 
 	for _, tc := range []struct {
@@ -58,7 +58,7 @@ func TestTheClientReadsTheDaemon(t *testing.T) {
 				Version:   "1.2.3",
 				Profile:   "local",
 				PID:       4242,
-				StartedAt: 1700000000,
+				StartedAt: 1700000000000,
 				Socket:    "/tmp/marshal.sock",
 				Projects:  []string{"/work/one", "/work/two"},
 			},

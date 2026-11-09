@@ -354,6 +354,17 @@ func (s *Session) endRun(slot *turnSlot, spec runSpec, runCtx context.Context) r
 	outcome := runOutcome(stopped, runCtx, err)
 	endedAt := acpwire.Millis(s.state.Now())
 
+	// The note is the agent's, not the caller's (P4 D6): it is written here,
+	// on the run's own goroutine, so it lands even when the caller has gone.
+	// A user's stop is the only stop that writes the cancel note, and a
+	// failure is the only outcome that writes the failure note.
+	s.mu.Lock()
+	userStop := stopped && !slot.ending && !s.closed.Load()
+	s.mu.Unlock()
+	if note := runNote(spec.kind, outcome, userStop, err); note != "" {
+		s.state.AddMessage(session.RoleSystem, note, session.ContentTypePlain)
+	}
+
 	// lastRun and the slot's release happen in one critical section, so a
 	// status read never shows neither or both.
 	s.mu.Lock()
@@ -402,6 +413,27 @@ func runOutcome(stopped bool, runCtx context.Context, err error) acpwire.RunOutc
 	default:
 		return acpwire.RunDone
 	}
+}
+
+// runNote is the outcome note a run of kind writes, or "" for none (P4 D6).
+// The cancel note is the user's stop and nothing else; the failure note is
+// every failed run, worded for the kind that failed.
+func runNote(kind acpwire.RunKind, outcome acpwire.RunOutcome, userStop bool, err error) string {
+	switch outcome {
+	case acpwire.RunCancelled:
+		if userStop {
+			return "Agent turn cancelled."
+		}
+	case acpwire.RunFailed:
+		if err == nil {
+			return ""
+		}
+		if kind == acpwire.RunAuthor {
+			return "✘ Plan authoring failed: " + firstLine(err.Error())
+		}
+		return "✘ Turn failed: " + firstLine(err.Error())
+	}
+	return ""
 }
 
 // wireErrorOf is err as the wire reports a failed run's error: a coded error

@@ -150,6 +150,11 @@ func TestStartPromptKeepsUnrelatedNotice(t *testing.T) {
 
 // A cancelled turn clears a stale provider notice (the user retried);
 // the cancellation itself never sets one.
+//
+// The cancel note is not asserted here: it is the agent's now (P4 D6), so the
+// service writes it when the run ends (see the service's
+// TestAUserStopWritesTheCancelNote). This handler clears only what is the
+// TUI's own.
 func TestCancelledTurnClearsProviderNotice(t *testing.T) {
 	m := newTestModel(t)
 	m.busy = true
@@ -161,14 +166,8 @@ func TestCancelledTurnClearsProviderNotice(t *testing.T) {
 	if _, ok := stateOf(m).Notice(); ok {
 		t.Fatal("cancelled turn should clear the stale provider notice, not set a new one")
 	}
-	var found bool
-	for _, msg := range stateOf(m).Messages() {
-		if strings.Contains(msg.Content, "cancelled") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("cancelled turn should still add the 'Agent turn cancelled.' message")
+	if m.cancelling {
+		t.Fatal("a cancelled turn left the model cancelling")
 	}
 }
 

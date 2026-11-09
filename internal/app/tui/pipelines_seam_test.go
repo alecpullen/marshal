@@ -231,6 +231,19 @@ func countContaining(msgs []session.Message, want string) int {
 	return n
 }
 
+// waitRunClear polls until the session reports no run in flight, so a test can
+// read what the run's own ending wrote (P4 D6).
+func waitRunClear(t *testing.T, m Model) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for m.sess.Status().Run != nil {
+		if time.Now().After(deadline) {
+			t.Fatal("the run never cleared")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 // TestAuthoringGoesThroughTheSession pins decision 6 at the TUI: /sdd new is
 // one session call on the run path, carrying the goal and the design, and the
 // review opens on the candidate the session returned.
@@ -304,6 +317,11 @@ func TestAStoppedAuthoringIsNotAFailure(t *testing.T) {
 	}
 	updated, _ = m.Update(msg)
 	m = asModel(t, updated)
+
+	// The cancel note is the agent's now (P4 D6), written by the run's own
+	// ending, so the authoring call can return before it lands. Wait for the
+	// run to clear before reading the transcript.
+	waitRunClear(t, m)
 
 	if n := countContaining(stateOf(m).Messages(), "Plan authoring failed"); n != 0 {
 		t.Fatalf("a stopped authoring reported %d failure rows, want none", n)

@@ -79,8 +79,8 @@ func (m *ControlManager) Prompt(ctx context.Context, params json.RawMessage) (an
 	for _, block := range p.Prompt {
 		texts = append(texts, block.Text)
 	}
-	// The turn is cancellable: the client's context ending stops the run, as in
-	// process (P3 plan 6b decision 7).
+	// The turn is cancellable: the client's context ending stops this call's
+	// wait, and the run goes on until session/stop (P4 D4).
 	runCtx, cancel := cancellable(ctx)
 	defer cancel()
 	return sess.Prompt(runCtx, acpwire.PromptParams{
@@ -117,6 +117,8 @@ func (m *ControlManager) Review(ctx context.Context, params json.RawMessage) (an
 	if err != nil {
 		return nil, err
 	}
+	// The call's context ending stops the wait, and the run goes on until
+	// session/stop (P4 D4).
 	runCtx, cancel := cancellable(ctx)
 	defer cancel()
 	if err := sess.Review(runCtx, p.Review); err != nil {
@@ -135,6 +137,8 @@ func (m *ControlManager) AgentRun(ctx context.Context, params json.RawMessage) (
 	if err != nil {
 		return nil, err
 	}
+	// The call's context ending stops the wait, and the run goes on until
+	// session/stop (P4 D4).
 	runCtx, cancel := cancellable(ctx)
 	defer cancel()
 	if err := sess.RunAgent(runCtx, p.Run); err != nil {

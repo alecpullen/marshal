@@ -187,6 +187,30 @@ func startControlAgent(t *testing.T, marshal bool, deps service.Deps, others map
 func startControlAgentWith(t *testing.T, setup controlSetup) (*rpc.Conn, *controlAgent) {
 	t.Helper()
 
+	client, a := serveControl(t, setup)
+
+	conn := rpc.NewConn(client, rpc.Handlers{Notify: a.notifyClient})
+	t.Cleanup(func() { _ = conn.Close() })
+
+	p := acpwire.InitializeParams{ProtocolVersion: acpwire.MarshalProtocolVersion}
+	if setup.marshal {
+		p.ClientCapabilities = &acpwire.ClientCapabilities{
+			Marshal: &acpwire.MarshalCapability{ProtocolVersion: acpwire.MarshalProtocolVersion},
+		}
+	}
+	var res acpwire.InitializeResult
+	if err := conn.Call(context.Background(), "initialize", p, &res); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	return conn, a
+}
+
+// serveControl builds the agent end of a control test: the pipe's server with
+// the handlers every control test serves. It returns the client's transport and
+// the agent, and stops the server with the test.
+func serveControl(t *testing.T, setup controlSetup) (rpc.Transport, *controlAgent) {
+	t.Helper()
+
 	_, served := service.New(setup.deps)
 	a := &controlAgent{state: setup.deps.State, served: served}
 	a.lookup.Store(true)
@@ -262,10 +286,7 @@ func startControlAgentWith(t *testing.T, setup controlSetup) (*rpc.Conn, *contro
 		_ = srv.Serve(ctx)
 	}()
 
-	conn := rpc.NewConn(client, rpc.Handlers{Notify: a.notifyClient})
-
 	t.Cleanup(func() {
-		_ = conn.Close()
 		a.controls.Close()
 		a.statuses.Close()
 		cancel()
@@ -278,17 +299,7 @@ func startControlAgentWith(t *testing.T, setup controlSetup) (*rpc.Conn, *contro
 		}
 	})
 
-	p := acpwire.InitializeParams{ProtocolVersion: acpwire.MarshalProtocolVersion}
-	if setup.marshal {
-		p.ClientCapabilities = &acpwire.ClientCapabilities{
-			Marshal: &acpwire.MarshalCapability{ProtocolVersion: acpwire.MarshalProtocolVersion},
-		}
-	}
-	var res acpwire.InitializeResult
-	if err := conn.Call(ctx, "initialize", p, &res); err != nil {
-		t.Fatalf("initialize: %v", err)
-	}
-	return conn, a
+	return client, a
 }
 
 // controlReply is one call's answer, made from a goroutine.
@@ -482,17 +493,18 @@ func TestStopStopsAServiceTurnWithItsCause(t *testing.T) {
 	}
 }
 
-// TestCancellingThePromptStopsTheRun pins R2's cancellation for the long calls:
-// the client's context ending stops the run, as in process.
-func TestCancellingThePromptStopsTheRun(t *testing.T) {
-	ended := make(chan struct{})
+// TestCancellingThePromptLeavesTheRunGoing pins P4 D4: the client's context
+// ending stops its call's wait, not the run. The run goes on until
+// session/stop, which reports it cancelled.
+func TestCancellingThePromptLeavesTheRunGoing(t *testing.T) {
+	runs := make(chan context.Context, 1)
 	runner := newControlRunner()
 	runner.setBody(func(ctx context.Context) error {
+		runs <- ctx
 		<-ctx.Done()
-		close(ended)
 		return ctx.Err()
 	})
-	conn, _ := startControlAgent(t, true,
+	conn, a := startControlAgent(t, true,
 		service.Deps{State: seamState(t, controlSession), Runner: func() service.Runner { return runner }},
 		nil)
 
@@ -505,13 +517,35 @@ func TestCancellingThePromptStopsTheRun(t *testing.T) {
 		}, &res)
 	}()
 	runner.waitStart(t)
+	var run context.Context
+	select {
+	case run = <-runs:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the runner never got its context")
+	}
 	cancel()
 
-	select {
-	case <-ended:
-	case <-time.After(2 * time.Second):
-		t.Fatal("the run's context never ended after the client cancelled the prompt")
+	// The call's context ending stops the wait, and the run goes on: it still
+	// has its own context, and the status still reports it.
+	time.Sleep(200 * time.Millisecond)
+	if err := run.Err(); err != nil {
+		t.Fatalf("the run's context ended with its caller's: %v", err)
 	}
+	if flight := a.served.Status().Run; flight == nil || flight.Kind != acpwire.RunTurn {
+		t.Fatalf("the status carries %+v, want the turn still in flight", flight)
+	}
+
+	// Only session/stop ends it.
+	if err := conn.Call(context.Background(), acpwire.MethodStop, acpwire.StopParams{
+		SessionID: controlSession,
+		Cause:     "turn stopped",
+	}, nil); err != nil {
+		t.Fatalf("session/stop: %v", err)
+	}
+	waitForFrame(t, 2*time.Second, "the cancelled run in the status", func() bool {
+		last := a.served.Status().LastRun
+		return last != nil && last.Outcome == acpwire.RunCancelled
+	})
 }
 
 // TestTheTurnCallsReachTheService pins that the five calls reach the service's

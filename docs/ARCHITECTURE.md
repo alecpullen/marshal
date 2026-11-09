@@ -76,7 +76,7 @@ plans retain the legacy agent strategy.
 
 | Layer | Packages | Responsibility |
 |-------|----------|----------------|
-| Entrypoint | `cmd/marshal/`, `internal/launch/` | Thin main that delegates to `internal/launch`, embedded mode's composition root: the run loop, the agent host on a pipe, and the TUI over its client. |
+| Entrypoint | `cmd/marshal/`, `internal/launch/` | Thin main that delegates to `internal/launch`, embedded mode's composition root: the run loop, the agent host on a pipe, and the TUI over its client. `marshal daemon` installs and drives the user's local daemon through `internal/daemon`. |
 | App shell | `internal/app/`, `internal/app/session/` | Dependency wiring, config, logging, shared session state: `app.Embedded` owns the runtimes and the host registry, and `(*Runtime).ServiceDeps` builds what the client seam's service needs. It imports no TUI. |
 | TUI | `internal/app/tui/` | Bubble Tea model, panels, settings, chrome, themes, help footer. |
 | Client seam | `internal/acpwire/`, `internal/acpclient/`, `internal/acp/service/`, `internal/acpclient/rpc/` | The TUI's only path to the agent side: the wire types and error codes, the `Host` and `Session` interfaces, their implementation in `internal/acp/service/`, and `rpc`, the JSON-RPC client the TUI runs on; `internal/acp/acptest` is the test agent. `TestTUIStaysOnTheClientSeam` enforces it with no allowlist. |
@@ -89,7 +89,7 @@ plans retain the legacy agent strategy.
 | Work projection | `internal/progress/`, `internal/viewmodel/` (work projection), `internal/app/runtime.go` | Bounded progress values and the conversation work projection: one pinned gutter-card surface over the existing command, watch and subagent owners, which stay the sole lifecycle owners. `internal/progress` owns decoding, display safety and estimation only; it never owns execution. |
 | Persistence | `internal/db/`, `internal/snapshot/`, `internal/filetrack/` | SQLite schema, workspace snapshots, file access tracking. |
 | ACP | `internal/acp/` | Headless JSON-RPC server for editor/IDE integration. |
-| Web bridge | `web/bridge/`, `cmd/webbridge/` | Fleet control plane: supervises one `marshal acp` child per project, brokers approvals, serves the REST API and SSE streams, and drives per-agent worktree isolation, diff, merge and discard entirely over ACP. |
+| Web bridge | `web/bridge/`, `cmd/webbridge/` | Fleet control plane: supervises one `marshal acp` child per project, brokers approvals, serves the REST API and SSE streams, and drives per-agent worktree isolation, diff, merge and discard entirely over ACP. With `--profile local` it is the user's daemon: a user service on a unix socket, host processes only. |
 | Web UI | `web/ui/` | Svelte 5 + Vite + TypeScript SPA: fleet dashboard, spawn composer, and per-agent chat (dev-only Node toolchain; build output is embedded by `web/bridge`). |
 
 ## Data flow of a single turn

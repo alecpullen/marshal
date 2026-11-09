@@ -574,4 +574,157 @@ Not yet run.
 
 ### Plan 2 — the local profile
 
-Not yet run.
+Run as tasks 1 to 5 of
+[`plans/2026-11-09-p4-2-local-profile-plan.md`](plans/2026-11-09-p4-2-local-profile-plan.md),
+one commit each, then the smoke run and the full suite below.
+
+**The flags and their refusals** (`cmd/webbridge/main.go`, `applyProfile`):
+
+- `--profile` (`WEBBRIDGE_PROFILE`), default `server`; any other value is
+  `--profile %q: expected server or local`.
+- `--socket` and `--addr off` are refused under the server profile with
+  `... is for --profile local`, so a setting that belongs to the local profile
+  cannot be given and silently ignored.
+- Under `local`: `--egress on` is refused (`the local profile runs no egress
+  proxy`) and any `--secrets` but `env` is refused (`the local profile takes
+  secrets from the environment`). Each refusal fires only when the setting was
+  given by its flag or its variable; otherwise egress is quietly `off`.
+- The defaults apply only when both the flag and its variable are unset, all
+  under `bridge.DefaultDaemonDir`: `--socket` `<data>/daemon/marshal.sock`,
+  `--state-dir` `<data>/daemon/state`, `--workspace`
+  `<data>/daemon/fleet.json`. The working directory is registered as a project
+  only when `--cwd-root` or its variable was given; otherwise `cwdRoot` stays
+  empty and `run` skips it.
+- In `run`: `SetHostProcessesOnly` before the fleet starts anything, then
+  `PeerChecked(ListenLocal(cfg.socket))` served by `SocketHandler()` on its own
+  `http.Server`; `DaemonInfo` set to the build's version (`dev` when
+  unstamped), `local`, the pid, the start time and the socket;
+  `webbridge: listening on unix://<path>` printed to stderr. Under `--addr off`
+  no TCP or preview listener opens and no token is generated. The socket's
+  server shuts down beside the TCP one, which closes and removes the socket. A
+  refusal from `ListenLocal` closes the fleet and returns the error, as a
+  failed TCP listen does.
+
+**The socket's checks** (`web/bridge/localsocket.go`). `prepareLocalDir` runs
+before the listen: an absent directory is created `0700`; an existing one must
+be a directory (`... is not a directory`), the user's own (`... belongs to
+another user`), and closed to group and other (`... is open to other users
+(mode %04o, want 0700)`). A refused directory is left exactly as it was — it
+never chmods one it did not create — and a regular file at the path is refused
+and kept. `net.ListenUnix` then sets `SetUnlinkOnClose`, so `Close` removes the
+socket. A path longer than the platform's limit fails at listen with the
+system's own error, unchanged. `ErrDaemonRunning` comes from a real dial, not
+from the file's existence: an answered dial means a live daemon (`a daemon is
+already listening on <path>`, the smoke run's step 5), and a refused one means
+a stale socket, which is removed and replaced.
+
+**The peer check, per system** (`web/bridge/peercred_{linux,darwin,other}.go`).
+`peerUID(conn)` reaches the descriptor through the connection's `SyscallConn`
+and its `Control`, never through `File`, which would duplicate the descriptor
+and lose what the kernel recorded against it.
+
+- linux: `SO_PEERCRED` and its `ucred`.
+- darwin: declares `xucred` and calls `getsockopt(SOL_LOCAL, LOCAL_PEERCRED)`
+  through `syscall.Syscall6` with the struct's address and size, and refuses a
+  `Version` other than 0. This is the one call outside `syscall`'s typed
+  wrappers, and `TestPeerUIDIsOurs` runs it on this machine.
+- other systems: no answer, so no connection is served there.
+
+`PeerChecked` keeps the wrapped listener's `Close`, `Addr` and its failed
+`Accept` unchanged; a connection from another uid, or one whose peer cannot be
+read, is closed and logged, and the loop accepts again.
+
+**The host-only fleet** (`web/bridge/fleet.go`). `SetHostProcessesOnly` sets
+`hostOnly`, and `f.containerRuntime()` answers none before any probe. Its six
+callers are the agent factory (`fleet.go:400`), `buildControlChild`
+(`control.go:65`), `derive.go:109`, `egress_fleet.go:46`, `wsbuild.go:251` and
+`wsspawn.go:61`. `detectedRuntime` stays as the default probe, and the
+`egressRuntime` override still wins first. `TestAHostOnlyFleetNeverProbes` pins
+the whole set: the counting probe is never asked, the fake runner records no
+command, and both the agent factory and `buildControlChild` build a
+host-process `Child`. In the smoke run, the machine's own nine Docker Desktop
+processes were the same before and after the daemon started and stopped.
+
+**`SocketHandler`** (`web/bridge/http.go`). `ServeHTTP`'s routing moved into an
+unexported method taking the API handler: `ServeHTTP` calls it with the
+token-checked mux and `SocketHandler` with the bare one. Nothing `ServeHTTP`
+answers changed, and the existing bridge tests pass unchanged.
+
+**`GET /api/daemon`** (`web/bridge/daemoninfo.go`). `DaemonInfo` and
+`SetDaemonInfo`; the handler copies the info and fills `Projects` from the
+workspace per request, sorted and never nil so it encodes `[]` rather than
+`null`. Registering without info answers 404 `not a daemon`.
+
+**`internal/daemon`** (`daemon.go`, `units.go`, `manager.go`, `client.go`,
+`find.go`) and `config.DaemonDir`/`DaemonSocketPath` beside `DataDir`.
+`PathsFor` gives the directory, `marshal.sock`, `state`, `fleet.json` and
+`webbridge.log`; the label is `dev.marshal.daemon` and the unit
+`marshal-daemon.service`. The client reads `GET /api/daemon` over a socket
+transport bounded by the caller's context, and `FindWebbridge` prefers
+`--webbridge`, then the `webbridge` beside the symlink-resolved `marshal`, then
+`PATH`.
+
+**The unit's contents** (decision 10). The arguments are `--profile local
+--socket … --state-dir … --workspace … --addr off --marshal-bin <marshal>`.
+
+- The plist: `Label`, `ProgramArguments` (the webbridge, then those arguments),
+  `EnvironmentVariables`, `RunAtLoad`, `KeepAlive` with `SuccessfulExit` false,
+  and `StandardOutPath` and `StandardErrorPath` both the daemon's log. Every
+  string is XML-escaped, so a path holding `&`, `<` or a quote still parses.
+- The systemd unit: `[Unit] Description=Marshal daemon`; `ExecStart` with each
+  argument double-quoted and `\`, `"` and `%` escaped as systemd requires; one
+  `Environment=` per variable; `Restart=on-failure`; `StandardOutput` and
+  `StandardError` at `append:<log>`; `[Install] WantedBy=default.target`.
+  Variables are sorted in both formats, so a render is stable.
+- The manager (decision 11) runs `launchctl print|bootout|bootstrap|kickstart`
+  on darwin and `systemctl --user show|daemon-reload|enable --now|restart|stop|
+  disable --now` on linux, every command through `Run` with its full command
+  line; a "not loaded" or "not found" answer counts as done. `NewManager`
+  refuses any `GOOS` but darwin and linux.
+
+**The smoke run.** Both binaries built into `/private/tmp/p4-2-suite/bin`, then:
+
+```console
+$ webbridge --profile local --addr off \
+    --socket /private/tmp/p4-2-suite/d/marshal.sock \
+    --state-dir /private/tmp/p4-2-suite/d/state \
+    --workspace /private/tmp/p4-2-suite/d/fleet.json \
+    --marshal-bin /private/tmp/p4-2-suite/bin/marshal &
+webbridge pid=10178
+webbridge: listening on unix:///private/tmp/p4-2-suite/d/marshal.sock
+
+$ curl -sS --unix-socket /private/tmp/p4-2-suite/d/marshal.sock http://daemon/api/daemon
+{"version":"dev","profile":"local","pid":10178,"startedAt":1794261567935,"socket":"/private/tmp/p4-2-suite/d/marshal.sock","projects":[]}
+
+$ stat -f '%N mode=%Sp (%Lp)' /private/tmp/p4-2-suite/d /private/tmp/p4-2-suite/d/marshal.sock
+/private/tmp/p4-2-suite/d mode=drwx------ (700)
+/private/tmp/p4-2-suite/d/marshal.sock mode=srw------- (600)
+
+$ webbridge --profile local --addr off --socket .../d/marshal.sock ...   # a second one
+webbridge: a daemon is already listening on /private/tmp/p4-2-suite/d/marshal.sock
+second exit=1
+first still answers
+
+$ kill -TERM 10178; wait
+first exit=0
+socket removed: /private/tmp/p4-2-suite/d/marshal.sock
+2026/11/10 08:59:28 INFO webbridge: shutting down
+```
+
+The curl was token-free, the directory and the socket were the modes above, the
+refused second daemon left the first answering, SIGTERM exited 0 with the
+socket unlinked, and no docker or podman process started (nine before, nine
+after; all Docker Desktop's own). A first attempt that created the socket's
+directory by hand at `0755` was refused — `socket directory ... is open to
+other users (mode 0755, want 0700)` — which is the directory check refusing on
+a real socket rather than only in `TestListenLocalRefusesAnOpenDirectory`.
+
+**Full verification** in the worktree, at `b35748ce` plus these docs: `gofmt -l
+internal cmd test web` printed nothing; `go vet ./...` and `GOOS=linux go vet
+./web/... ./internal/daemon/ ./cmd/webbridge/` were both clean; `go test ./...
+-timeout 20m` passed 121 packages with no failure. The first pass failed in
+`internal/acp` — one of the plan's known `*Budget` load flakes — and that
+package alone re-ran green (23.3s) on the second pass, with every other package
+cached, so no new failure remains. `TestWebIsStdlibOnly` passed.
+
+**Open for plan 4:** project children will listen in `<data>/daemon/state`.

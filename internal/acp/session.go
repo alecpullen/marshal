@@ -798,8 +798,10 @@ func (m *SessionManager) ServiceHost(id string) (*service.Host, bool) {
 }
 
 // adopt registers rt under rt.SessionID with the pair its embedding built, so
-// the pair is never built from rt.ServiceDeps. It refuses an empty ID and an
-// ID already registered.
+// the pair is never built from rt.ServiceDeps. It refuses an empty ID, an ID
+// already registered, and a runtime that already has a pair: an adopted pair
+// is never overwritten, because the pair it would replace is unreachable by
+// then and would leak its service.
 func (m *SessionManager) adopt(rt *app.Runtime, host *service.Host, sess *service.Session) error {
 	if rt == nil || rt.SessionID == "" {
 		return errors.New("acp: adopt requires a runtime with a session ID")
@@ -809,6 +811,24 @@ func (m *SessionManager) adopt(rt *app.Runtime, host *service.Host, sess *servic
 	}
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
+
+	// Install the pair before the session becomes visible. Registering the ID
+	// first would let a concurrent Service(id) find the session with no pair
+	// and build one from rt.ServiceDeps, which is exactly what adopt exists to
+	// prevent (P3 plan 8 decision 5).
+	m.servicesMu.Lock()
+	if m.services == nil {
+		m.services = map[*app.Runtime]*servicePair{}
+	}
+	_, paired := m.services[rt]
+	if !paired {
+		m.services[rt] = &servicePair{host: host, sess: sess}
+	}
+	m.servicesMu.Unlock()
+	if paired {
+		return fmt.Errorf("acp: adopt %s: the runtime already has a service pair", rt.SessionID)
+	}
+
 	m.mu.Lock()
 	_, taken := m.sessions[rt.SessionID]
 	if !taken {
@@ -816,14 +836,12 @@ func (m *SessionManager) adopt(rt *app.Runtime, host *service.Host, sess *servic
 	}
 	m.mu.Unlock()
 	if taken {
+		// The pair is the caller's and no reader ever saw it, so drop it and
+		// release its session: a refused adopt must not leave a service
+		// running that nothing can reach.
+		m.releaseService(rt)
 		return fmt.Errorf("acp: session %s is already registered", rt.SessionID)
 	}
-	m.servicesMu.Lock()
-	if m.services == nil {
-		m.services = map[*app.Runtime]*servicePair{}
-	}
-	m.services[rt] = &servicePair{host: host, sess: sess}
-	m.servicesMu.Unlock()
 	return nil
 }
 

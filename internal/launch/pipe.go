@@ -34,6 +34,7 @@ type agentConn struct {
 	mu       sync.Mutex
 	serveErr error
 	closed   bool
+	lostFlag bool
 }
 
 // loggerOf is the runtime's logger, or the default one when it has none.
@@ -53,6 +54,7 @@ func dialAgent(ctx context.Context, rt *app.Runtime, host *service.Host, sess *s
 		return nil, fmt.Errorf("launch: build the embedding: %w", err)
 	}
 	if err := emb.Adopt(rt, host, sess); err != nil {
+		_ = emb.Close(context.Background())
 		return nil, fmt.Errorf("launch: adopt the runtime: %w", err)
 	}
 
@@ -88,23 +90,48 @@ func dialAgent(ctx context.Context, rt *app.Runtime, host *service.Host, sess *s
 	}
 	c.sess = clientSess
 
-	// lost closes when the connection ends on its own, before close was called.
+	// lost closes when the connection ends on its own, before close claims the
+	// shutdown. close records a loss that lands in the window between the
+	// caller's last look and the claim (see markLost), so a connection that
+	// dies just as the user quits is still reported.
 	go func() {
 		select {
 		case <-clientHost.Done():
 			c.mu.Lock()
-			if !c.closed {
-				close(c.lostCh)
-			}
+			claimed := c.closed
 			c.mu.Unlock()
+			if !claimed {
+				c.markLost()
+			}
 		case <-c.done:
 		}
 	}()
 	return c, nil
 }
 
-// lost is closed when the connection ended before close was called.
+// lost is closed when the connection ended before close claimed the shutdown.
 func (c *agentConn) lost() <-chan struct{} { return c.lostCh }
+
+// connectionLost reports whether the connection ended on its own. Read it
+// after close: close records a loss that landed while it was claiming the
+// shutdown, which a look beforehand would miss.
+func (c *agentConn) connectionLost() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lostFlag
+}
+
+// markLost closes lostCh at most once, so the watcher and close can both
+// record the same loss.
+func (c *agentConn) markLost() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.lostFlag {
+		return
+	}
+	c.lostFlag = true
+	close(c.lostCh)
+}
 
 // err is the agent's error once the connection is lost: the server's, or else
 // the client's.
@@ -126,10 +153,26 @@ func (c *agentConn) err() error {
 func (c *agentConn) close(ctx context.Context) error {
 	c.mu.Lock()
 	alreadyClosed := c.closed
-	c.closed = true
+	lostBefore := false
+	if !alreadyClosed {
+		c.closed = true
+		// The connection may have died between the caller's last look at lost
+		// and this claim, and host.Close below would then make it look like a
+		// shutdown we asked for. Record it here, where the claim is made.
+		if c.host != nil {
+			select {
+			case <-c.host.Done():
+				lostBefore = true
+			default:
+			}
+		}
+	}
 	c.mu.Unlock()
 	if alreadyClosed {
 		return nil
+	}
+	if lostBefore {
+		c.markLost()
 	}
 
 	var errs []error

@@ -152,13 +152,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		progResult := runOpts.programRunner(progCtx, tui.New(conn.host, conn.sess, tuiOpts...), stdout)
 		progCancel()
 
-		connectionLost := false
-		select {
-		case <-conn.lost():
-			connectionLost = true
-		default:
-		}
-
 		// The service is released before the runtime closes, as the ACP host
 		// closes a session (decision 7).
 		closeCtx, closeCancel := context.WithTimeout(context.Background(), serverStopTimeout)
@@ -167,7 +160,11 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		}
 		closeCancel()
 
-		if connectionLost {
+		// Read the loss after the close: close also records a connection that
+		// died in the window between a look beforehand and its own claim, which
+		// a look beforehand would miss. A shutdown the TUI asked for is never a
+		// loss, because close claims the connection before it closes it.
+		if conn.connectionLost() {
 			agentErr := conn.err()
 			if agentErr == nil {
 				agentErr = errors.New("the connection closed")

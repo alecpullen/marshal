@@ -2107,6 +2107,22 @@ changed (R9); the TUI still runs on `inproc`, in process, until plan 8.
 - **The counts.** `acpclient.Methods` still has 111 rows (109 existing, none
   new, 2 carrying none); `acp.Server` registers **140** methods (139 plus
   `session/sync`), plus the `session/cancel` notification.
+- **Review pass.** Three reviewers, one per slice of the branch (the transport
+  and the session's publishes, launch and the embedding, the test agent and the
+  docs), found no blocker and no major defect. The fixes they earned: `adopt`
+  installs its pair before the session becomes visible and refuses a runtime
+  that already has one, so a repeated or refused adopt can never overwrite a
+  pair that then leaks its service; `SetWorkspace` publishes after releasing
+  `accessMu`, because the session broker's terminal subscriber blocks its
+  publisher; `close` records a connection that died in the window between the
+  caller's last look at `lost()` and the shutdown claim, so that loss is
+  reported instead of a clean exit; `dialAgent` closes the embedding when
+  `Adopt` refuses it. Pins were added for `adopt`'s three refusals and for
+  `settle`'s three-sync bound. One finding was declined: a TUI-level test
+  cannot prove that a publish carried a change, because the idle ticker's
+  `due` flush picks the change up anyway (`flushProjectorFor` flushes when
+  `due` regardless of `dirty`), so the contract stays pinned by
+  `TestTheSilentTranscriptCallsPublish` and the conformance row.
 - **Open for P4.** The test agent's settle can hide a push the agent never
   makes after a call, because a read that disagrees syncs; the conformance
   cases prove each call's push, and the usability suite and the manual run

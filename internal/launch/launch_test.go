@@ -587,13 +587,13 @@ func TestRunWiresMemoryBrowserOpensWithCtrlK(t *testing.T) {
 }
 
 // TestRunWiresSharedWorkService pins that Run's session serves the same Work
-// facade the runtime and ACP use: the adapter's Deps.Work is the runtime
+// facade the runtime and ACP use: the service host's Deps.Work is the runtime
 // pointer itself. With a Work service attached, the now bar's project-owned
 // work lane is active, so Ctrl+T opens the Tasks panel on the Work tab and
 // renders its empty state. A nil service (the pre-change wiring) leaves the
 // work lane inactive and produces a notice instead of the panel, so the "No
-// work yet" assertion is what proves the adapter's work service reached the
-// model.
+// work yet" assertion is what proves the service host's work service reached
+// the model.
 func TestRunWiresSharedWorkService(t *testing.T) {
 	dir := t.TempDir()
 
@@ -1202,10 +1202,10 @@ func TestEndedSessionStillResumes(t *testing.T) {
 }
 
 // TestRunPassesAuthResolverToTheSeam closes the one fail-open seam in the
-// isolation design. The adapter builds every provider client and sign-in the
-// TUI asks for, so launch.Run's Auth wiring is the single place where an isolated
-// runtime could silently regain the real OS keychain, and nothing else in the
-// suite would notice if it were dropped.
+// isolation design. The service host builds every provider client and sign-in
+// the TUI asks for, so launch.Run's Auth wiring is the single place where an
+// isolated runtime could silently regain the real OS keychain, and nothing
+// else in the suite would notice if it were dropped.
 func TestRunPassesAuthResolverToTheSeam(t *testing.T) {
 	auth := &countingAuthResolver{}
 	served := &servedPair{}

@@ -52,7 +52,6 @@ func (s *State) SetWorkspace(w Workspace) {
 	// accessMu → mu.
 	owner := s.ownerState()
 	owner.accessMu.Lock()
-	defer owner.accessMu.Unlock()
 	s.mu.Lock()
 	if w.ProjectRoot == "" {
 		w.ProjectRoot = s.workspace.ProjectRoot
@@ -75,6 +74,13 @@ func (s *State) SetWorkspace(w Workspace) {
 		owner.access.Revision++
 		owner.signalInteractionLocked()
 	}
+	// Release accessMu before publishing or writing anything: the session
+	// broker's terminal subscriber blocks the publisher until it drains, and
+	// holding accessMu across that would stall every concurrent authority,
+	// steering and interaction read for as long as the subscriber is stalled.
+	// Only the revision bump and the interaction signal need the lock.
+	owner.accessMu.Unlock()
+
 	if !changed {
 		return
 	}

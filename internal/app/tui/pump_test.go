@@ -236,6 +236,11 @@ func deliverWork(t *testing.T, m Model, svc *fakeWorkService, snap viewmodel.Wor
 	// what bounds the wait (P3 plan 8, Task 5 case 4).
 	deadline := time.Now().Add(5 * time.Second)
 	for {
+		// Check the deadline before the next wait, or a pass that starts after
+		// it expired would get another 5s inside runCmdOnce.
+		if time.Now().After(deadline) {
+			t.Fatalf("the work never arrived: revision %d, want %d", m.workSnapshot.Revision, snap.Revision)
+		}
 		msg := runCmdOnce(pumpChanged(m.sess.Changed()), 5*time.Second)
 		if _, ok := msg.(changedMsg); !ok {
 			t.Fatalf("the session did not signal the work change: got %#v", msg)
@@ -244,9 +249,6 @@ func deliverWork(t *testing.T, m Model, svc *fakeWorkService, snap viewmodel.Wor
 		m = updated.(Model)
 		if m.workSnapshot.Revision >= snap.Revision {
 			return m
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the work never arrived: revision %d, want %d", m.workSnapshot.Revision, snap.Revision)
 		}
 	}
 }

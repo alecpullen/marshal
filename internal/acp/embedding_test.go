@@ -256,8 +256,9 @@ func TestAnEmbeddingsCloseKeepsTheRuntime(t *testing.T) {
 	}
 }
 
-// TestAdoptRefusesAnEmptyOrTakenID pins adopt's two refusals.
-func TestAdoptRefusesAnEmptyOrTakenID(t *testing.T) {
+// TestAdoptRefusesAnEmptyIDATakenIDAndAPairedRuntime pins adopt's refusals:
+// none of them may overwrite or drop the pair that already serves the session.
+func TestAdoptRefusesAnEmptyIDATakenIDAndAPairedRuntime(t *testing.T) {
 	emb, err := NewEmbedding(EmbeddingConfig{Logger: discardLogger(), MaxFrameBytes: rpc.MaxFrameBytes})
 	if err != nil {
 		t.Fatalf("NewEmbedding: %v", err)
@@ -272,6 +273,15 @@ func TestAdoptRefusesAnEmptyOrTakenID(t *testing.T) {
 		t.Fatalf("adopt: %v", err)
 	}
 	if err := emb.Adopt(rt, servedHost, served); err == nil {
+		t.Fatal("adopt of a paired runtime = nil error, want a refusal")
+	}
+	// A second runtime under the taken ID is refused too, and the refusal must
+	// leave the adopted pair serving the session rather than installing it.
+	otherHost, otherSession := service.New(service.Deps{State: st})
+	if err := emb.Adopt(&app.Runtime{State: st, SessionID: "s1"}, otherHost, otherSession); err == nil {
 		t.Fatal("adopt of a taken ID = nil error, want a refusal")
+	}
+	if got, ok := emb.Service("s1"); !ok || got != served {
+		t.Fatalf("the session serves its pair: %v, want the adopted one", ok)
 	}
 }

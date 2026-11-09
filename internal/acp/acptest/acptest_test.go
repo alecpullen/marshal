@@ -3,6 +3,7 @@ package acptest
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -382,5 +383,49 @@ func TestUnsettledReadsDoNotSync(t *testing.T) {
 	_ = sess.Status()
 	if got := sess.Syncs(); got != 0 {
 		t.Fatalf("Unsettled synced %d times, want none", got)
+	}
+}
+
+// countingEnd is an EndService whose active work changes on every read, so a
+// read's two answers never agree.
+type countingEnd struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (c *countingEnd) ActiveWork() acpwire.EndWork {
+	c.mu.Lock()
+	c.n++
+	n := c.n
+	c.mu.Unlock()
+	return acpwire.EndWork{Items: []acpwire.EndWorkItem{{ID: fmt.Sprintf("w%d", n), Label: "running"}}}
+}
+
+func (c *countingEnd) AcceptEnd(acpwire.EndAcceptParams) (acpwire.EndDecision, error) {
+	return acpwire.EndDecision{}, nil
+}
+
+func (c *countingEnd) WaitForEnd(context.Context) error { return nil }
+
+func (c *countingEnd) RunExitAnalysis(context.Context, string) error { return nil }
+
+// TestAReadThatNeverSettlesGivesUp pins settle's bound: a read whose two
+// answers never agree syncs exactly three times and returns, so a permanently
+// disagreeing read costs a bounded number of syncs instead of looping, and a
+// read never hangs.
+func TestAReadThatNeverSettlesGivesUp(t *testing.T) {
+	_, sess := Open(t, service.Deps{State: acptestState(t, "s1"), End: &countingEnd{}})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = sess.ActiveWork()
+	}()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("a read that never settles did not return")
+	}
+	if got := sess.Syncs(); got != 3 {
+		t.Fatalf("the read synced %d times, want 3 (settle's bound)", got)
 	}
 }

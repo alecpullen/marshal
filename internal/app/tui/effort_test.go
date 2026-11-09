@@ -8,7 +8,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/acptest"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/picker"
@@ -21,7 +22,7 @@ import (
 // /effort still finds the command.
 func withEffortSetter(t *testing.T, m Model, set func(string) (string, error)) Model {
 	t.Helper()
-	_, sess := inproc.New(inproc.Deps{State: stateOf(m), SetEffort: set, Commands: setupCmdReg(t)})
+	_, sess := acptest.Open(t, service.Deps{State: stateOf(m), SetEffort: set, Commands: setupCmdReg(t)})
 	m.sess = sess
 	return m
 }

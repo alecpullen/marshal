@@ -235,7 +235,7 @@ func TestCanonicalChildApprovalSettlesOnlyChildOwner(t *testing.T) {
 // refuses the destructive command.
 func TestChildDestructiveApprovalAfterAskDoesNotLaunch(t *testing.T) {
 	m := newTestModel(t)
-	child := session.New(stateOf(m).Config, stateOf(m).WorkingDir, time.Unix(100, 0), session.Persistence{},
+	child := session.New(stateOf(m).Config, stateOf(m).WorkingDir, time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID},
 		session.WithDepth(1),
 		session.WithInteractionOwner(stateOf(m), interaction.Ceiling{Act: true, Auto: true, System: true}))
 	stateOf(m).RegisterSubagent("child-task", child)

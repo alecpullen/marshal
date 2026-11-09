@@ -11,8 +11,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acp/acptest"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpclient"
-	"marshal/internal/acpclient/inproc"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/mcpauth"
@@ -199,7 +200,7 @@ func TestMCPAuthCopyThroughModel(t *testing.T) {
 
 func TestMCPAuthDoneReconnectsRuntime(t *testing.T) {
 	var reloaded []config.Config
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(cfg config.Config) error {
 			reloaded = append(reloaded, cfg)
 			return nil
@@ -228,7 +229,7 @@ func TestMCPAuthDoneReconnectsRuntime(t *testing.T) {
 // reported as a clean success. The user needs to know the server is still
 // unreachable even though the token was stored.
 func TestMCPAuthDoneReloadFailureIsReported(t *testing.T) {
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(config.Config) error { return errors.New("provider build failed") }
 	})
 	m.mcpAuthServer = "linear"
@@ -259,7 +260,7 @@ func TestMCPAuthDoneNoReconnectOnNonSuccess(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			reloads := 0
-			m := newTestModelDeps(t, func(d *inproc.Deps) {
+			m := newTestModelDeps(t, func(d *service.Deps) {
 				d.ReloadConfig = func(config.Config) error {
 					reloads++
 					return nil
@@ -283,7 +284,7 @@ func TestMCPAuthDoneNoReconnectOnNonSuccess(t *testing.T) {
 // afterwards would wipe that notice and tell the user the reconnect worked when
 // the server is still unreachable.
 func TestReconnectKeepsAFreshMCPFailureNotice(t *testing.T) {
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		// Stand in for the real rebuild: it starts the server, it fails again
 		// for a different reason, and buildAgentRunnerWithLock sets a fresh
 		// notice.
@@ -395,7 +396,7 @@ func (o *urlRecorder) snapshot() []string {
 func mcpAuthModel(t *testing.T, auth provider.AuthResolver, open func(string) error) Model {
 	t.Helper()
 	m := newTestModel(t)
-	host, sess := inproc.New(inproc.Deps{State: stateOf(m), Auth: auth})
+	host, sess := acptest.Open(t, service.Deps{State: stateOf(m), Auth: auth})
 	m.host, m.sess = host, sess
 	m.openBrowser = open
 	stateOf(m).Config.MCP.Servers = map[string]config.MCPServerConfig{

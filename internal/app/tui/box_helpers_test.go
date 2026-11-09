@@ -14,7 +14,7 @@ import (
 // pipeline/SDD cards (Child == nil) are already pinned by the progress row.
 func registerRunningSubagent(t *testing.T, m *Model, label string) {
 	t.Helper()
-	child := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	child := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{SessionID: unnamedSessionID})
 	stateOf(m).RegisterSubagent(label, child)
 }
 

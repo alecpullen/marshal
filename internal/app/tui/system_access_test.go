@@ -14,7 +14,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -28,12 +28,12 @@ import (
 // TestSystemCommandTogglesFlagAndNotes pins the /system command: it flips the
 // session flag and confirms the new state in the transcript.
 func TestSystemCommandTogglesFlagAndNotes(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	reg := commands.New()
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, SetInteraction: state.ApplyInteraction, Commands: reg})
+	m := testModelWith(t, service.Deps{State: state, SetInteraction: state.ApplyInteraction, Commands: reg})
 	m.resize(80, 24)
 
 	if state.SystemAccess() {
@@ -86,8 +86,8 @@ func TestStatusBadgeSystemSuffix(t *testing.T) {
 // TestModePickerExcludesSystemModifier pins that the modifier is not offered
 // as a rung on the mode ladder — it must not be confusable with a mode.
 func TestModePickerExcludesSystemModifier(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
-	model := testModel(state)
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{SessionID: unnamedSessionID})
+	model := testModel(t, state)
 	for _, item := range model.modePickerItems() {
 		if item.Value == "system" {
 			t.Fatal("modePickerItems must not offer the system modifier as a mode")
@@ -155,7 +155,7 @@ func TestPostmortemAgentPassScopedElevation(t *testing.T) {
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "prompt"
 	ctrl := &endTestController{}
-	m := testModelEnding(state, ctrl)
+	m := testModelEnding(t, state, ctrl)
 	m.resize(80, 24)
 	act := interaction.ModeAct
 	if _, err := state.ApplyInteraction(interaction.Patch{Mode: &act}); err != nil {
@@ -196,7 +196,7 @@ func TestEndAnalysisFailureLeavesNoElevation(t *testing.T) {
 	state := postmortemTestState(t, "sess-sysrefused")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	ctrl := &endTestController{analysisErr: errors.New("refused")}
-	m := testModelEnding(state, ctrl)
+	m := testModelEnding(t, state, ctrl)
 	m.resize(80, 24)
 	m.endAnalyzing = true
 
@@ -235,9 +235,9 @@ type accessTestFixture struct {
 
 func newAccessTestFixture(t *testing.T, width, height int, cfg config.Config) *accessTestFixture {
 	t.Helper()
-	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	f := &accessTestFixture{t: t, state: state}
-	m := testModelWith(inproc.Deps{
+	m := testModelWith(t, service.Deps{
 		State: state,
 		AccessRequest: func() (session.AccessRequest, bool) {
 			return state.AccessRequest()
@@ -676,18 +676,18 @@ func TestAccessPanelGrantOrderingAndNoPersistence(t *testing.T) {
 func TestAccessPanelUnavailableResolverFailsClosed(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		deps inproc.Deps
+		deps service.Deps
 	}{
 		{name: "no callbacks"},
-		{name: "getter only", deps: inproc.Deps{
+		{name: "getter only", deps: service.Deps{
 			AccessRequest: func() (session.AccessRequest, bool) { return session.AccessRequest{}, false }}},
-		{name: "resolver only", deps: inproc.Deps{
+		{name: "resolver only", deps: service.Deps{
 			ResolveAccess: func(session.AccessChoice) (session.AccessResult, error) {
 				return session.AccessResult{}, nil
 			}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+			state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 			call := &session.PendingToolCall{
 				ID:           "call-1",
 				Name:         "mode.request",
@@ -700,7 +700,7 @@ func TestAccessPanelUnavailableResolverFailsClosed(t *testing.T) {
 
 			deps := tc.deps
 			deps.State = state
-			m := testModelWith(deps)
+			m := testModelWith(t, deps)
 			m.resize(120, 40)
 			updated, _ := m.Update(agentTickMsg{})
 			m = updated.(Model)

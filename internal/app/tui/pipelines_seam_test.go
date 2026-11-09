@@ -11,8 +11,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acp/service"
 	"marshal/internal/acpclient"
-	"marshal/internal/acpclient/inproc"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/castlist"
@@ -55,8 +55,8 @@ func preflightOf(pf acpwire.PlanPreflight) func(context.Context, acpwire.PlanPre
 
 // planRunOf returns a Deps.NewPlanRun that appends each params to *got (when
 // got is not nil) and returns run.
-func planRunOf(run *fakePlanRun, got *[]acpwire.SDDParams) func(acpwire.SDDParams) (inproc.PlanRun, error) {
-	return func(params acpwire.SDDParams) (inproc.PlanRun, error) {
+func planRunOf(run *fakePlanRun, got *[]acpwire.SDDParams) func(acpwire.SDDParams) (service.PlanRun, error) {
+	return func(params acpwire.SDDParams) (service.PlanRun, error) {
 		if got != nil {
 			*got = append(*got, params)
 		}
@@ -70,7 +70,7 @@ func pausedGateModel(t *testing.T, gate session.SDDGate) (Model, *fakePlanRun, *
 	t.Helper()
 	run := &fakePlanRun{gates: 1}
 	rec := &turnRecorder{}
-	m := testModelTurns(t, inproc.Deps{
+	m := testModelTurns(t, service.Deps{
 		State:      controlsState(t),
 		Runner:     runnerOf(&testAgentRunner{}),
 		NewPlanRun: planRunOf(run, nil),
@@ -90,7 +90,7 @@ func TestTheProposalReachesThePlanRun(t *testing.T) {
 	var got []acpwire.SDDParams
 	run := &fakePlanRun{}
 	rec := &turnRecorder{}
-	m := testModelTurns(t, inproc.Deps{
+	m := testModelTurns(t, service.Deps{
 		State:  controlsState(t),
 		Runner: runnerOf(&testAgentRunner{}),
 		VerifyProposal: func(context.Context) (acpwire.VerifyCommands, error) {
@@ -139,7 +139,7 @@ func TestTheProposalReachesThePlanRun(t *testing.T) {
 // and nothing runs.
 func TestAPlanThePreflightRejectsIsReportedNotRun(t *testing.T) {
 	rec := &turnRecorder{}
-	m := testModelTurns(t, inproc.Deps{
+	m := testModelTurns(t, service.Deps{
 		State:  controlsState(t),
 		Runner: runnerOf(&testAgentRunner{}),
 		PlanPreflight: func(context.Context, acpwire.PlanPreflightParams) (acpwire.PlanPreflight, error) {
@@ -200,7 +200,7 @@ func TestTheGateStopsThroughTheSession(t *testing.T) {
 // says so and opens nothing.
 func TestSwarmWithoutAnAgentIsUnavailable(t *testing.T) {
 	rec := &turnRecorder{}
-	m := testModelTurns(t, inproc.Deps{State: controlsState(t), Commands: setupCmdReg(t)}, rec)
+	m := testModelTurns(t, service.Deps{State: controlsState(t), Commands: setupCmdReg(t)}, rec)
 
 	updated, cmd := m.dispatchCommand("/swarm fix it")
 	m = asModel(t, updated)
@@ -265,7 +265,7 @@ func TestAuthoringGoesThroughTheSession(t *testing.T) {
 // stopped authoring run is a stop, not a failure, and it is reported once.
 func TestAStoppedAuthoringIsNotAFailure(t *testing.T) {
 	started := make(chan struct{})
-	m := testModelTurns(t, inproc.Deps{
+	m := testModelTurns(t, service.Deps{
 		State:  controlsState(t),
 		Runner: runnerOf(&testAgentRunner{}),
 		AuthorPlan: func(ctx context.Context, _ acpwire.AuthorPlanParams) (acpwire.AuthoredPlan, error) {
@@ -332,7 +332,7 @@ func TestAStoppedAuthoringIsNotAFailure(t *testing.T) {
 func TestARefusedAuthoringIsReported(t *testing.T) {
 	state := controlsState(t)
 	rec := &turnRecorder{}
-	m := testModelTurns(t, inproc.Deps{
+	m := testModelTurns(t, service.Deps{
 		State:      state,
 		Runner:     runnerOf(&testAgentRunner{}),
 		AuthorPlan: fakeAuthorPlan(state),
@@ -363,7 +363,7 @@ func TestARefusedAuthoringIsReported(t *testing.T) {
 // TestAuthoringWithoutAnAgentIsUnavailable pins the refusal: /sdd new with no
 // runner says so and starts nothing.
 func TestAuthoringWithoutAnAgentIsUnavailable(t *testing.T) {
-	m := testModelTurns(t, inproc.Deps{State: controlsState(t), Commands: setupCmdReg(t)}, &turnRecorder{})
+	m := testModelTurns(t, service.Deps{State: controlsState(t), Commands: setupCmdReg(t)}, &turnRecorder{})
 
 	updated, cmd := m.dispatchCommand("/sdd new x")
 	m = asModel(t, updated)

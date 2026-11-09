@@ -47,7 +47,7 @@ func TestRefreshAsksTheSessionForItsStack(t *testing.T) {
 		t.Fatalf("refresh asked for subagent %d busy %v, want 0 and true", rec.lastSubagent, rec.lastBusy)
 	}
 
-	child := session.New(stateOf(m).Config, t.TempDir(), m.now(), session.Persistence{})
+	child := session.New(stateOf(m).Config, t.TempDir(), m.now(), session.Persistence{SessionID: unnamedSessionID})
 	v := stateOf(m).RegisterSubagent("child", child)
 	m.drillIntoSubagent(v.ID)
 	m.invalidateTranscript()

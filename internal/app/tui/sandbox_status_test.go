@@ -23,7 +23,7 @@ func sandboxStatusStub() *stubSession {
 func TestTheRunningShellRowReadsTheSandboxFromStatus(t *testing.T) {
 	state := stateOf(newTestModel(t))
 	stub := sandboxStatusStub()
-	m := testModelStub(state, stub)
+	m := testModelStub(t, state, stub)
 	m.resize(100, 30)
 
 	stateOf(m).SetActiveToolCall(session.ActiveToolCall{
@@ -45,7 +45,7 @@ func TestTheRunningShellRowReadsTheSandboxFromStatus(t *testing.T) {
 func TestTheApprovalPanelReadsTheSandboxFromStatus(t *testing.T) {
 	state := stateOf(newTestModel(t))
 	stub := sandboxStatusStub()
-	m := testModelStub(state, stub)
+	m := testModelStub(t, state, stub)
 	m.resize(120, 40)
 
 	state.SetPendingApproval(&session.PendingToolCall{

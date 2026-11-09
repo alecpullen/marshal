@@ -21,8 +21,9 @@ import (
 
 	"charm.land/bubbles/v2/textinput"
 
+	"marshal/internal/acp/acptest"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpclient"
-	"marshal/internal/acpclient/inproc"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -203,7 +204,7 @@ func testHost(t *testing.T, auth provider.AuthResolver) acpclient.Host {
 		auth = newMemAuth()
 	}
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	host, _ := inproc.New(inproc.Deps{State: state, Auth: auth})
+	host, _ := acptest.Open(t, service.Deps{State: state, Auth: auth})
 	return host
 }
 
@@ -212,7 +213,7 @@ func testHost(t *testing.T, auth provider.AuthResolver) acpclient.Host {
 func testHostIn(t *testing.T, dataDir string) acpclient.Host {
 	t.Helper()
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	host, _ := inproc.New(inproc.Deps{State: state, Auth: newMemAuth(), ModelCacheDir: dataDir})
+	host, _ := acptest.Open(t, service.Deps{State: state, Auth: newMemAuth(), ModelCacheDir: dataDir})
 	return host
 }
 

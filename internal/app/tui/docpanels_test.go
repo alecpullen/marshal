@@ -7,7 +7,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/acptest"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/docpanel"
@@ -101,7 +102,7 @@ func TestSessionDocActionsRunThroughTheSession(t *testing.T) {
 			}})
 		},
 	})
-	_, sess := inproc.New(inproc.Deps{State: state, Commands: reg})
+	_, sess := acptest.Open(t, service.Deps{State: state, Commands: reg})
 
 	res, err := sess.Command(context.Background(), "things", nil)
 	if err != nil {

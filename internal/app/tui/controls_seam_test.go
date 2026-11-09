@@ -8,8 +8,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acp/acptest"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpclient"
-	"marshal/internal/acpclient/inproc"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -81,10 +82,11 @@ func (r *controlRecorder) SetSudoUnlock(ctx context.Context, on bool) error {
 	return r.Session.SetSudoUnlock(ctx, on)
 }
 
-// testModelControlled builds a model over an adapter made from d whose
-// session is rec, wrapped around the adapter's session.
-func testModelControlled(d inproc.Deps, rec *controlRecorder, opts ...Option) Model {
-	host, sess := inproc.New(d)
+// testModelControlled builds a model over a session served from d whose
+// session is rec, wrapped around the test agent's session.
+func testModelControlled(t testing.TB, d service.Deps, rec *controlRecorder, opts ...Option) Model {
+	t.Helper()
+	host, sess := acptest.Open(t, d)
 	rec.Session = sess
 	return New(host, rec, opts...)
 }
@@ -92,14 +94,14 @@ func testModelControlled(d inproc.Deps, rec *controlRecorder, opts ...Option) Mo
 // controlsState builds a state the way the TUI tests do.
 func controlsState(t *testing.T) *session.State {
 	t.Helper()
-	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 }
 
 // controlsModel builds a sized model over that state whose session records its
 // control calls.
 func controlsModel(t *testing.T, rec *controlRecorder) Model {
 	t.Helper()
-	m := testModelControlled(inproc.Deps{State: controlsState(t)}, rec)
+	m := testModelControlled(t, service.Deps{State: controlsState(t)}, rec)
 	m.resize(80, 24)
 	m.refreshViewport()
 	return m
@@ -107,14 +109,14 @@ func controlsModel(t *testing.T, rec *controlRecorder) Model {
 
 // controlsDispatchModel is controlsModel over an adapter made from d, with the
 // real command registry so /mode, /effort and /system dispatch.
-func controlsDispatchModel(t *testing.T, d inproc.Deps, rec *controlRecorder) Model {
+func controlsDispatchModel(t *testing.T, d service.Deps, rec *controlRecorder) Model {
 	t.Helper()
 	reg := commands.New()
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 	d.Commands = reg
-	m := testModelControlled(d, rec)
+	m := testModelControlled(t, d, rec)
 	m.resize(80, 24)
 	m.refreshViewport()
 	return m
@@ -179,7 +181,7 @@ func TestADrilledCtrlXCancelsThroughTheSession(t *testing.T) {
 func TestAFollowUpPopsThroughTheSession(t *testing.T) {
 	rec := &controlRecorder{}
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m := controlsDispatchModel(t, inproc.Deps{State: controlsState(t), Runner: runnerOf(runner)}, rec)
+	m := controlsDispatchModel(t, service.Deps{State: controlsState(t), Runner: runnerOf(runner)}, rec)
 	stateOf(m).PushSteering("deliver me after the turn")
 
 	if cmd := m.flushQueuedSteering(); cmd == nil {
@@ -213,7 +215,7 @@ func TestTheNextTurnClearsTheFinishedRunThroughTheSession(t *testing.T) {
 func TestATurnEndTakesTheLatchThroughTheSession(t *testing.T) {
 	rec := &controlRecorder{}
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
-	m := controlsDispatchModel(t, inproc.Deps{State: controlsState(t), Runner: runnerOf(runner)}, rec)
+	m := controlsDispatchModel(t, service.Deps{State: controlsState(t), Runner: runnerOf(runner)}, rec)
 	stateOf(m).SetWatchResume("build", false)
 	stateOf(m).AddMessage(session.RoleAssistant, "I'll wait for the build.", session.ContentTypePlain)
 
@@ -238,7 +240,7 @@ func TestATurnEndTakesTheLatchThroughTheSession(t *testing.T) {
 func TestModeChangesGoThroughTheSession(t *testing.T) {
 	state := controlsState(t)
 	rec := &controlRecorder{}
-	m := controlsDispatchModel(t, inproc.Deps{State: state, SetInteraction: state.ApplyInteraction}, rec)
+	m := controlsDispatchModel(t, service.Deps{State: state, SetInteraction: state.ApplyInteraction}, rec)
 
 	updated, _ := m.dispatchCommand("/act")
 	m = asModel(t, updated)
@@ -260,7 +262,7 @@ func TestModeChangesGoThroughTheSession(t *testing.T) {
 func TestEffortGoesThroughTheSession(t *testing.T) {
 	state := controlsState(t)
 	rec := &controlRecorder{}
-	m := controlsDispatchModel(t, inproc.Deps{
+	m := controlsDispatchModel(t, service.Deps{
 		State: state,
 		SetEffort: func(string) (string, error) {
 			return session.EffortAppliesNextTurn, nil
@@ -283,7 +285,7 @@ func TestEffortGoesThroughTheSession(t *testing.T) {
 func TestSystemUnlockTogglesThroughTheSession(t *testing.T) {
 	state := controlsState(t)
 	rec := &controlRecorder{}
-	m := controlsDispatchModel(t, inproc.Deps{State: state}, rec)
+	m := controlsDispatchModel(t, service.Deps{State: state}, rec)
 
 	updated, _ := m.dispatchCommand("/system unlock")
 	m = asModel(t, updated)

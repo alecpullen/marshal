@@ -8,7 +8,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/acptest"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/pubsub"
@@ -206,7 +207,7 @@ func (f *fakeWorkService) subscriptionCount() int {
 func newWorkModel(t *testing.T, svc viewmodel.WorkService) Model {
 	t.Helper()
 	m := newTestModel(t)
-	_, sess := inproc.New(inproc.Deps{State: stateOf(m), Work: svc})
+	_, sess := acptest.Open(t, service.Deps{State: stateOf(m), Work: svc})
 	m.sess = sess
 	m.resetWork()
 	m.refreshViewport()
@@ -230,12 +231,24 @@ func vmWorkTask(key, label string) viewmodel.WorkItem {
 func deliverWork(t *testing.T, m Model, svc *fakeWorkService, snap viewmodel.WorkSnapshot) Model {
 	t.Helper()
 	svc.publish(snap)
-	msg := runCmdOnce(pumpChanged(m.sess.Changed()), 5*time.Second)
-	if _, ok := msg.(changedMsg); !ok {
-		t.Fatalf("the session did not signal the work change: got %#v", msg)
+	// The connection signals a change in any mirror, and attach-time updates can
+	// arrive first, so wait until the work itself has arrived; the deadline is
+	// what bounds the wait (P3 plan 8, Task 5 case 4).
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		msg := runCmdOnce(pumpChanged(m.sess.Changed()), 5*time.Second)
+		if _, ok := msg.(changedMsg); !ok {
+			t.Fatalf("the session did not signal the work change: got %#v", msg)
+		}
+		updated, _ := m.Update(msg)
+		m = updated.(Model)
+		if m.workSnapshot.Revision >= snap.Revision {
+			return m
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the work never arrived: revision %d, want %d", m.workSnapshot.Revision, snap.Revision)
+		}
 	}
-	updated, _ := m.Update(msg)
-	return updated.(Model)
 }
 
 // TestWorkArrivesOnChanged pins that a snapshot the session keeps reaches the
@@ -270,7 +283,7 @@ func TestResetWorkStartsTheViewOver(t *testing.T) {
 	}
 
 	svcB := &fakeWorkService{snap: viewmodel.WorkSnapshot{ConversationID: "B", Revision: 1}}
-	_, sessB := inproc.New(inproc.Deps{State: stateOf(m), Work: svcB})
+	_, sessB := acptest.Open(t, service.Deps{State: stateOf(m), Work: svcB})
 	m.sess = sessB
 	m.resetWork()
 

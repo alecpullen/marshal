@@ -7,7 +7,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/acptest"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -52,7 +53,7 @@ func TestPasteReachesSelectedTextInputs(t *testing.T) {
 			// The wizard reads its catalog from the host; this pick builds no
 			// provider client, so the host needs no resolver.
 			state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-			host, _ := inproc.New(inproc.Deps{State: state})
+			host, _ := acptest.Open(t, service.Deps{State: state})
 			m := connect.New(connect.Opts{Cfg: cfg, Host: host})
 			m, _ = m.Update(picker.PickedMsg{Value: "openrouter"})
 			m, _ = m.Update(tea.PasteMsg{Content: pasted})
@@ -74,7 +75,7 @@ func TestPasteReachesSelectedTextInputs(t *testing.T) {
 		},
 		"skills panel filter": func(t *testing.T) string {
 			state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-			_, sess := inproc.New(inproc.Deps{State: state, HomeDir: t.TempDir()})
+			_, sess := acptest.Open(t, service.Deps{State: state, HomeDir: t.TempDir()})
 			p := skills.NewPanel(sess, false)
 			p.Update(tea.PasteMsg{Content: pasted})
 			return p.FilterValue()

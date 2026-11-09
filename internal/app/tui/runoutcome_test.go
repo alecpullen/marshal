@@ -8,7 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/acptest"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -209,8 +210,8 @@ func TestOutcomeActionsReadThroughTheSession(t *testing.T) {
 	if err := os.WriteFile(ledger, []byte("ledger body"), 0o600); err != nil {
 		t.Fatalf("write ledger: %v", err)
 	}
-	state := session.New(config.Default(), dir, time.Unix(100, 0), session.Persistence{})
-	_, sess := inproc.New(inproc.Deps{State: state})
+	state := session.New(config.Default(), dir, time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	_, sess := acptest.Open(t, service.Deps{State: state})
 
 	p := succeededRun()
 	p.LedgerPath = ledger

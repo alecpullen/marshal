@@ -82,7 +82,7 @@ func renderScene(t *testing.T, sc goldenScene) (string, int) {
 		clk := &goldenClock{t: goldenT0}
 		root := t.TempDir()
 		st := goldenState(t, clk, root)
-		m := testModel(st)
+		m := testModel(t, st)
 		m.now = clk.now
 		updated, _ := m.Update(tea.WindowSizeMsg{Width: goldenWidth, Height: 40})
 		m = updated.(Model)
@@ -176,7 +176,7 @@ func checkGolden(t *testing.T, name, got string) {
 // sequentially: no t.Parallel in this file.
 func burnSubagentIDs(t *testing.T) {
 	t.Helper()
-	scratch := session.New(config.Default(), t.TempDir(), goldenT0, session.Persistence{}, session.WithClock(func() time.Time { return goldenT0 }))
+	scratch := session.New(config.Default(), t.TempDir(), goldenT0, session.Persistence{SessionID: unnamedSessionID}, session.WithClock(func() time.Time { return goldenT0 }))
 	for {
 		v := scratch.RegisterSubagent("burn", nil)
 		if v.ID > 999 {
@@ -632,7 +632,7 @@ func buildCompletions(t *testing.T, clk *goldenClock, st *session.State, m *Mode
 
 	clk.advance(time.Second)
 	burnSubagentIDs(t)
-	child := session.New(config.Default(), root, clk.now(), session.Persistence{}, session.WithClock(clk.now))
+	child := session.New(config.Default(), root, clk.now(), session.Persistence{SessionID: unnamedSessionID}, session.WithClock(clk.now))
 	v := st.RegisterSubagent("review the config change", child)
 	st.LogToolCall(registry.AuditEvent{
 		ToolName:      "agent.run",

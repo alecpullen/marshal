@@ -12,7 +12,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -47,12 +47,12 @@ func gitModel(t *testing.T) (Model, string) {
 	}
 	run("add", ".")
 	run("commit", "-q", "-m", "init")
-	state := session.New(config.Default(), dir, time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), dir, time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	reg := commands.New()
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, Commands: reg}, WithHomeDir(t.TempDir()))
+	m := testModelWith(t, service.Deps{State: state, Commands: reg}, WithHomeDir(t.TempDir()))
 	m.resize(100, 40)
 	m.refreshViewport()
 	return m, dir
@@ -148,7 +148,7 @@ func TestSheetDataCarriesTotals(t *testing.T) {
 	stub := &stubSession{sheetPatch: func(sh *acpwire.SessionSheet) {
 		sh.Totals = acpwire.SheetTotals{Turns: 5, PromptTokens: 1000, CompletionTokens: 200}
 	}}
-	m := testModelStub(seamState(t, "s1"), stub)
+	m := testModelStub(t, seamState(t, "s1"), stub)
 	got := m.sheetDataFor()
 	if got.Totals.Turns != 5 || got.Totals.PromptTokens != 1000 {
 		t.Errorf("Totals = %+v, want the session's aggregate", got.Totals)
@@ -346,7 +346,7 @@ func TestOpeningTheSheetRefreshesIt(t *testing.T) {
 	stub := &stubSession{}
 	var got []acpwire.SheetRefresh
 	stub.onRefreshSheet = func(req acpwire.SheetRefresh) { got = append(got, req) }
-	m := testModelStub(state, stub)
+	m := testModelStub(t, state, stub)
 	m.resize(100, 40)
 
 	ctrlB(t, m)
@@ -362,7 +362,7 @@ func TestTurnEndRebasesTheSheet(t *testing.T) {
 	stub := &stubSession{}
 	var got []acpwire.SheetRefresh
 	stub.onRefreshSheet = func(req acpwire.SheetRefresh) { got = append(got, req) }
-	m := testModelStub(state, stub)
+	m := testModelStub(t, state, stub)
 	m.resize(100, 40)
 	m.busy = true
 

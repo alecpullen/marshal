@@ -9,7 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/service"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/doctorpanel"
@@ -27,7 +27,7 @@ func newDoctorSecretModel(t *testing.T) (Model, string) {
 	work := t.TempDir()
 	t.Setenv("MARSHAL_CONFIG_DIR", filepath.Join(home, ".config", "marshal"))
 	t.Setenv("XDG_CONFIG_HOME", "")
-	state := session.New(config.Default(), work, time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), work, time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	state.Config.Providers = map[string]config.ProviderConfig{
 		"openai": {
 			Type:      "openai_compatible",
@@ -39,7 +39,7 @@ func newDoctorSecretModel(t *testing.T) (Model, string) {
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, Commands: reg, Auth: newMemAuth(), HomeDir: home}, WithHomeDir(home),
+	m := testModelWith(t, service.Deps{State: state, Commands: reg, Auth: newMemAuth(), HomeDir: home}, WithHomeDir(home),
 		WithOpenBrowser(func(string) error { return nil }))
 	stateOf(m).WorkingDir = work
 	m.workDir = work

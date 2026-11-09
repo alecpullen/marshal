@@ -9,7 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -24,8 +24,8 @@ func newViewTestModel(t *testing.T, width, height int) Model {
 	// View tests assert on color styling; force the default warm-sunset
 	// palette even when the outer environment sets NO_COLOR.
 	t.Setenv("NO_COLOR", "")
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.resize(width, height)
 	m.refreshViewport()
 	return m
@@ -638,7 +638,7 @@ func TestFullFrameDockPanelHidesTranscriptAndInput(t *testing.T) {
 // /command source to fuzzy-filter against.
 func newViewTestModelWithRegistry(t *testing.T, width, height int) Model {
 	t.Helper()
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	reg := commands.New()
 	mustRegister(t, reg, commands.Command{
 		Name: "plan", Description: "Plan a task", Args: "<goal>",
@@ -652,7 +652,7 @@ func newViewTestModelWithRegistry(t *testing.T, width, height int) Model {
 		Name: "tools", Description: "List tools", Args: "",
 		Handler: func(s *session.State, args []string) commands.Result { return commands.Text("") },
 	})
-	m := testModelWith(inproc.Deps{State: state, Commands: reg})
+	m := testModelWith(t, service.Deps{State: state, Commands: reg})
 	m.resize(width, height)
 	m.refreshViewport()
 	return m
@@ -663,8 +663,8 @@ func newViewTestModelWithRegistry(t *testing.T, width, height int) Model {
 // WithFileIndex; no DB is required.
 func newViewTestModelWithFileIndex(t *testing.T, width, height int, paths []string) Model {
 	t.Helper()
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModel(state, WithFileIndex(paths))
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state, WithFileIndex(paths))
 	m.resize(width, height)
 	m.refreshViewport()
 	return m
@@ -682,7 +682,7 @@ func mustRegister(t *testing.T, reg *commands.Registry, c commands.Command) {
 // exercise the mutual exclusion between the F18 cmd and file popups.
 func newViewTestModelWithRegistryAndFileIndex(t *testing.T, width, height int, paths []string) Model {
 	t.Helper()
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	reg := commands.New()
 	mustRegister(t, reg, commands.Command{
 		Name: "plan", Description: "Plan a task", Args: "<goal>",
@@ -692,7 +692,7 @@ func newViewTestModelWithRegistryAndFileIndex(t *testing.T, width, height int, p
 		Name: "help", Description: "Show help", Args: "",
 		Handler: func(s *session.State, args []string) commands.Result { return commands.Text("") },
 	})
-	m := testModelWith(inproc.Deps{State: state, Commands: reg}, WithFileIndex(paths))
+	m := testModelWith(t, service.Deps{State: state, Commands: reg}, WithFileIndex(paths))
 	m.resize(width, height)
 	m.refreshViewport()
 	return m

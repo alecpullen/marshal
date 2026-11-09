@@ -7,7 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/service"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/picker"
@@ -29,14 +29,14 @@ func makeSmokeModel(t *testing.T) Model {
 	cfg.Models.Presets["sonnet"] = routing.ModelPreset{
 		Name: "sonnet", Provider: "anthropic", Model: "sonnet-5",
 	}
-	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	state.AddMessage(session.RoleUser, "first turn", session.ContentTypePlain)
 	state.AddMessage(session.RoleUser, "second turn about parsing", session.ContentTypePlain)
 	reg := commands.New()
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModelWith(inproc.Deps{State: state, Commands: reg})
+	m := testModelWith(t, service.Deps{State: state, Commands: reg})
 	m.resize(120, 40)
 	return m
 }
@@ -109,12 +109,12 @@ func TestSmokePickersProgrammatic(t *testing.T) {
 	t.Run("/models with no presets opens connect overlay", func(t *testing.T) {
 		emptyCfg := config.Default()
 		emptyCfg.Models.Presets = map[string]routing.ModelPreset{}
-		emptyState := session.New(emptyCfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+		emptyState := session.New(emptyCfg, t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 		emptyReg := commands.New()
 		if err := commands.RegisterAll(emptyReg, nil); err != nil {
 			t.Fatalf("RegisterAll: %v", err)
 		}
-		mm := testModelWith(inproc.Deps{State: emptyState, Commands: emptyReg})
+		mm := testModelWith(t, service.Deps{State: emptyState, Commands: emptyReg})
 		mm.resize(120, 40)
 		updated, _ := mm.dispatchCommand("/models")
 		mm2 := *(updated.(*Model))

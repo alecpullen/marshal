@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/service"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/modeloptions"
@@ -15,7 +15,7 @@ import (
 
 func TestOptionsIdleChangePersistsAndReloads(t *testing.T) {
 	reloads := 0
-	m, workDir, homeDir := newModelForConfigTest(t, func(d *inproc.Deps) {
+	m, workDir, homeDir := newModelForConfigTest(t, func(d *service.Deps) {
 		d.ReloadConfig = func(cfg config.Config) error {
 			reloads++
 			d.State.Config = cfg
@@ -76,7 +76,7 @@ func TestOptionsIdleChangePersistsAndReloads(t *testing.T) {
 
 func TestOptionsBusyChangeSavesWithoutReloading(t *testing.T) {
 	reloads := 0
-	m, workDir, homeDir := newModelForConfigTest(t, func(d *inproc.Deps) {
+	m, workDir, homeDir := newModelForConfigTest(t, func(d *service.Deps) {
 		d.ReloadConfig = func(config.Config) error { reloads++; return nil }
 	})
 	m.busy = true
@@ -134,7 +134,7 @@ func TestOptionsBusyChangeSavesWithoutReloading(t *testing.T) {
 
 func TestOptionsPendingChangeFlushesWhenIdle(t *testing.T) {
 	reloads := 0
-	m, _, _ := newModelForConfigTest(t, func(d *inproc.Deps) {
+	m, _, _ := newModelForConfigTest(t, func(d *service.Deps) {
 		d.ReloadConfig = func(cfg config.Config) error {
 			reloads++
 			d.State.Config = cfg
@@ -188,7 +188,7 @@ func TestOptionsPendingChangeFlushesWhenIdle(t *testing.T) {
 
 func TestOptionsReloadFailureRetainsPendingCandidate(t *testing.T) {
 	reloads := 0
-	m, _, _ := newModelForConfigTest(t, func(d *inproc.Deps) {
+	m, _, _ := newModelForConfigTest(t, func(d *service.Deps) {
 		d.ReloadConfig = func(config.Config) error {
 			reloads++
 			return errors.New("reload failed")

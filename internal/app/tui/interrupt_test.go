@@ -7,7 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/service"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 )
@@ -16,9 +16,9 @@ import (
 // every readline shell, so it gets pressed reflexively. It used to rewrite the
 // working tree on that single keystroke.
 func TestRollbackRequiresConfirmation(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	state.StoreBackup([]session.BackupFile{{Path: "app.go", Content: "original", Exists: true}})
-	m := testModel(state)
+	m := testModel(t, state)
 
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
 	m = updated.(Model)
@@ -90,7 +90,7 @@ func (f *fakeTUISessionStopService) targetSnapshot() []string {
 func runningPrompt(t *testing.T, state *session.State) (Model, *contextRunner) {
 	t.Helper()
 	runner := &contextRunner{started: make(chan struct{}), done: make(chan struct{})}
-	m := testModelTurns(t, inproc.Deps{State: state, Runner: runnerOf(runner)}, &turnRecorder{})
+	m := testModelTurns(t, service.Deps{State: state, Runner: runnerOf(runner)}, &turnRecorder{})
 
 	updated, cmd := m.startPrompt("hello", false)
 	m = asModel(t, updated)
@@ -116,7 +116,7 @@ func runningPrompt(t *testing.T, state *session.State) (Model, *contextRunner) {
 // and only then cancels the agent context. Cancelling first would leave a
 // foreground command running with no stop request against it.
 func TestCancelTurnStopsTurnWorkBeforeCancelling(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	svc := &fakeTUISessionStopService{}
 	state.SetTurnStopService(svc)
 
@@ -165,10 +165,10 @@ func TestCancelTurnStopsTurnWorkBeforeCancelling(t *testing.T) {
 // group cannot reach the next turn: cancelTurn asks the session, not the state,
 // so no pending cause is left behind for a later registration to adopt.
 func TestCancelTurnLeavesNoPendingStop(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	svc := &fakeTUISessionStopService{}
 	state.SetTurnStopService(svc)
-	m := testModel(state)
+	m := testModel(t, state)
 	m.busy = true
 
 	if !m.cancelTurn() {
@@ -186,12 +186,12 @@ func TestCancelTurnLeavesNoPendingStop(t *testing.T) {
 // ends normally clears its registration and never asks the service to stop
 // anything, so background work left running survives its turn.
 func TestNormalFinishUnregistersWithoutStopping(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	svc := &fakeTUISessionStopService{}
 	state.SetTurnStopService(svc)
 
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m := testModelTurns(t, inproc.Deps{State: state, Runner: runnerOf(runner)}, &turnRecorder{})
+	m := testModelTurns(t, service.Deps{State: state, Runner: runnerOf(runner)}, &turnRecorder{})
 
 	updated, cmd := m.startPrompt("hello", false)
 	m = asModel(t, updated)
@@ -212,7 +212,7 @@ func TestNormalFinishUnregistersWithoutStopping(t *testing.T) {
 // session with no service still cancels its agent context, so a turn with no
 // commands behaves exactly as it did before explicit stop targeting existed.
 func TestCancelTurnWithoutServiceStillCancels(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	m, runner := runningPrompt(t, state)
 
 	if !m.cancelTurn() {
@@ -230,7 +230,7 @@ func TestCancelTurnWithoutServiceStillCancels(t *testing.T) {
 // belonging to another turn — is still alive after the stop, and the TUI's
 // projected job list keeps showing it.
 func TestCancelTurnLeavesDetachedWorkRunning(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	svc := &fakeTUISessionStopService{}
 	state.SetTurnStopService(svc)
 

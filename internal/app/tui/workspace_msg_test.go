@@ -53,7 +53,7 @@ func TestChangedLeavesTheSheetWhenTheWorkspaceStays(t *testing.T) {
 	stub := &stubSession{}
 	var got []acpwire.SheetRefresh
 	stub.onRefreshSheet = func(req acpwire.SheetRefresh) { got = append(got, req) }
-	m := testModelStub(seamState(t, "s1"), stub)
+	m := testModelStub(t, seamState(t, "s1"), stub)
 	m.resize(100, 30)
 	stateOf(m).SetWorkspace(session.Workspace{ProjectRoot: "/repo", ActiveRoot: "/repo", Branch: "main"})
 

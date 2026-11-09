@@ -210,7 +210,7 @@ func TestMouseClickExpandsFailedToolCall(t *testing.T) {
 func TestBoxSitsBelowTheViewport(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
-	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{SessionID: unnamedSessionID})
 	stateOf(m).RegisterSubagent("reviewer", child)
 	m.refreshViewport()
 	if got := m.boxTop(); got != m.scrollHintRows()+m.breadcrumbRows()+m.viewport.Height() {

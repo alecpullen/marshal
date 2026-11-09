@@ -32,9 +32,9 @@ func TestSpinnerFramesAreNotEmpty(t *testing.T) {
 }
 
 func TestSpinnerHiddenBefore200ms(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	now := time.Unix(100, 0) // anchors time at 0
-	m := testModel(state)
+	m := testModel(t, state)
 	m.now = func() time.Time { return now }
 	m.spinnerFrame = "⠋"
 	stateOf(m).SetActivity(session.Activity{Kind: acpwire.ActivityThinking, StartedAt: now})
@@ -47,9 +47,9 @@ func TestSpinnerHiddenBefore200ms(t *testing.T) {
 }
 
 func TestSpinnerShownAfter200ms(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	now := time.Unix(100, 0) // anchors time at 0
-	m := testModel(state)
+	m := testModel(t, state)
 	m.now = func() time.Time { return now }
 	m.spinnerFrame = "⠋"
 	stateOf(m).SetActivity(session.Activity{Kind: acpwire.ActivityThinking, StartedAt: now.Add(-300 * time.Millisecond)})
@@ -62,8 +62,8 @@ func TestSpinnerShownAfter200ms(t *testing.T) {
 }
 
 func TestSpinnerAlwaysHiddenForIdle(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.spinnerFrame = "⠋"
 	stateOf(m).SetActivity(session.Activity{Kind: acpwire.ActivityIdle, StartedAt: time.Unix(0, 0)})
 
@@ -90,8 +90,8 @@ func TestSpinnerTickCmdArmsCorrectly(t *testing.T) {
 }
 
 func TestSpinnerTickMsgAdvancesFrameWhenBusy(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.busy = true
 	m.spinnerFrame = ""
 
@@ -113,8 +113,8 @@ func TestSpinnerTickMsgAdvancesFrameWhenBusy(t *testing.T) {
 }
 
 func TestSpinnerTickMsgDoesNotAdvanceOrReArmWhenNotBusy(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.busy = false
 	m.spinnerFrame = ""
 
@@ -130,8 +130,8 @@ func TestSpinnerTickMsgDoesNotAdvanceOrReArmWhenNotBusy(t *testing.T) {
 }
 
 func TestSpinnerContinuesAfterParentFinishesWhileSubagentRuns(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.resize(100, 40)
 	m.busy = true
 	registerRunningSubagent(t, &m, "reviewer")
@@ -168,9 +168,9 @@ func TestSpinnerContinuesAfterParentFinishesWhileSubagentRuns(t *testing.T) {
 }
 
 func TestSpinnerHiddenDuringSDDRun(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	now := time.Unix(100, 0)
-	m := testModel(state)
+	m := testModel(t, state)
 	m.now = func() time.Time { return now }
 	m.spinnerFrame = "⠋"
 	stateOf(m).SetActivity(session.Activity{Kind: acpwire.ActivityThinking, StartedAt: now.Add(-time.Second)})
@@ -186,8 +186,8 @@ func TestSpinnerHiddenDuringSDDRun(t *testing.T) {
 
 func TestAgentTickNoLongerAdvancesSpinner(t *testing.T) {
 	// Verify that the agentTickMsg handler no longer calls m.spinner.Next().
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
+	m := testModel(t, state)
 	m.busy = true
 	m.spinnerFrame = ""
 

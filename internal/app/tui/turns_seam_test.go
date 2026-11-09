@@ -7,8 +7,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acp/acptest"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpclient"
-	"marshal/internal/acpclient/inproc"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/agents"
@@ -97,11 +98,11 @@ func (r *turnRecorder) AuthorPlan(ctx context.Context, params acpwire.AuthorPlan
 	return r.Session.AuthorPlan(ctx, params)
 }
 
-// testModelTurns builds a sized model over an adapter made from d whose
-// session is rec, wrapped around the adapter's session.
-func testModelTurns(t *testing.T, d inproc.Deps, rec *turnRecorder, opts ...Option) Model {
+// testModelTurns builds a sized model over a session served from d whose
+// session is rec, wrapped around the test agent's session.
+func testModelTurns(t *testing.T, d service.Deps, rec *turnRecorder, opts ...Option) Model {
 	t.Helper()
-	host, sess := inproc.New(d)
+	host, sess := acptest.Open(t, d)
 	rec.Session = sess
 	m := New(host, rec, opts...)
 	m.resize(80, 24)
@@ -114,7 +115,7 @@ func testModelTurns(t *testing.T, d inproc.Deps, rec *turnRecorder, opts ...Opti
 func TestASubmitPromptsThroughTheSession(t *testing.T) {
 	rec := &turnRecorder{}
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m := testModelTurns(t, inproc.Deps{State: controlsState(t), Runner: runnerOf(runner)}, rec)
+	m := testModelTurns(t, service.Deps{State: controlsState(t), Runner: runnerOf(runner)}, rec)
 
 	m.input.SetValue("hello")
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -145,7 +146,7 @@ func TestASubmitPromptsThroughTheSession(t *testing.T) {
 func TestAFollowUpIsAQueuedPrompt(t *testing.T) {
 	rec := &turnRecorder{}
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m := testModelTurns(t, inproc.Deps{State: controlsState(t), Runner: runnerOf(runner)}, rec)
+	m := testModelTurns(t, service.Deps{State: controlsState(t), Runner: runnerOf(runner)}, rec)
 	stateOf(m).PushSteering("later")
 
 	cmd := m.flushQueuedSteering()
@@ -165,7 +166,7 @@ func TestAFollowUpIsAQueuedPrompt(t *testing.T) {
 func TestARefusedFollowUpGoesBackOnTheQueue(t *testing.T) {
 	rec := &turnRecorder{}
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m := testModelTurns(t, inproc.Deps{State: controlsState(t), Runner: runnerOf(runner)}, rec)
+	m := testModelTurns(t, service.Deps{State: controlsState(t), Runner: runnerOf(runner)}, rec)
 	stateOf(m).PushSteering("later")
 	stateOf(m).BeginQuiesce()
 
@@ -213,7 +214,7 @@ func (r *contextRunner) AnswerGate(string)    {}
 func TestCancelTurnStopsThroughTheSession(t *testing.T) {
 	rec := &turnRecorder{}
 	runner := &contextRunner{started: make(chan struct{}), done: make(chan struct{})}
-	m := testModelTurns(t, inproc.Deps{State: controlsState(t), Runner: runnerOf(runner)}, rec)
+	m := testModelTurns(t, service.Deps{State: controlsState(t), Runner: runnerOf(runner)}, rec)
 
 	updated, cmd := m.startPrompt("hello", false)
 	m = asModel(t, updated)
@@ -249,7 +250,7 @@ func TestCancelTurnStopsThroughTheSession(t *testing.T) {
 func TestTheTurnEndLeavesTheActivityToTheSession(t *testing.T) {
 	rec := &turnRecorder{}
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m := testModelTurns(t, inproc.Deps{State: controlsState(t), Runner: runnerOf(runner)}, rec)
+	m := testModelTurns(t, service.Deps{State: controlsState(t), Runner: runnerOf(runner)}, rec)
 	stateOf(m).SetActivity(session.Activity{Kind: session.ActivityThinking})
 
 	m, _ = m.handleAgentFinished(agentFinishedMsg{})
@@ -263,7 +264,7 @@ func TestTheTurnEndLeavesTheActivityToTheSession(t *testing.T) {
 // path, with the base and the range kept apart.
 func TestReviewGoesThroughTheSession(t *testing.T) {
 	rec := &turnRecorder{}
-	m := testModelTurns(t, inproc.Deps{
+	m := testModelTurns(t, service.Deps{
 		State:    controlsState(t),
 		Runner:   runnerOf(&testAgentRunner{}),
 		Review:   func(context.Context, acpwire.ReviewParams) error { return nil },
@@ -290,7 +291,7 @@ func TestReviewGoesThroughTheSession(t *testing.T) {
 // happens before anything starts, so no work and no stop group are taken.
 func TestReviewRefusesABaseAndARangeBeforeStarting(t *testing.T) {
 	rec := &turnRecorder{}
-	m := testModelTurns(t, inproc.Deps{
+	m := testModelTurns(t, service.Deps{
 		State:    controlsState(t),
 		Runner:   runnerOf(&testAgentRunner{}),
 		Review:   func(context.Context, acpwire.ReviewParams) error { return nil },
@@ -325,7 +326,7 @@ func TestReviewRefusesABaseAndARangeBeforeStarting(t *testing.T) {
 func TestRunNowStartsOnTheLiveModel(t *testing.T) {
 	rec := &turnRecorder{}
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m := testModelTurns(t, inproc.Deps{
+	m := testModelTurns(t, service.Deps{
 		State:    controlsState(t),
 		Runner:   runnerOf(runner),
 		RunAgent: func(context.Context, acpwire.AgentRunParams) error { return nil },
@@ -365,7 +366,7 @@ func TestRunNowStartsOnTheLiveModel(t *testing.T) {
 // turn is dropped rather than queued behind it.
 func TestRunNowWhileBusyStartsNothing(t *testing.T) {
 	rec := &turnRecorder{}
-	m := testModelTurns(t, inproc.Deps{
+	m := testModelTurns(t, service.Deps{
 		State:    controlsState(t),
 		Runner:   runnerOf(&testAgentRunner{}),
 		RunAgent: func(context.Context, acpwire.AgentRunParams) error { return nil },
@@ -387,7 +388,7 @@ func TestRunNowWhileBusyStartsNothing(t *testing.T) {
 // session's model, with the last assistant message.
 func TestTheSuggestionGoesThroughTheSession(t *testing.T) {
 	rec := &turnRecorder{}
-	m := testModelTurns(t, inproc.Deps{
+	m := testModelTurns(t, service.Deps{
 		State:  controlsState(t),
 		Runner: runnerOf(&testAgentRunner{}),
 		Suggest: func(context.Context, string) (string, error) {
@@ -414,7 +415,7 @@ func TestTheSuggestionGoesThroughTheSession(t *testing.T) {
 // session call, driven exactly as /sdd's preflight drives it.
 func TestTheProposalGoesThroughTheSession(t *testing.T) {
 	rec := &turnRecorder{}
-	m := testModelTurns(t, inproc.Deps{
+	m := testModelTurns(t, service.Deps{
 		State:  controlsState(t),
 		Runner: runnerOf(&testAgentRunner{}),
 		VerifyProposal: func(context.Context) (acpwire.VerifyCommands, error) {

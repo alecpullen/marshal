@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/service"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/interaction"
@@ -16,11 +16,11 @@ import (
 // supplied session state, plus the real command registry.
 func newInteractionDispatchModel(t *testing.T, state *session.State, opts ...Option) Model {
 	t.Helper()
-	return newDispatchModelWith(t, inproc.Deps{State: state, SetInteraction: state.ApplyInteraction}, opts...)
+	return newDispatchModelWith(t, service.Deps{State: state, SetInteraction: state.ApplyInteraction}, opts...)
 }
 
 func TestInteractionCommandTransitionTable(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	m := newInteractionDispatchModel(t, state)
 
 	dispatch := func(cmd string) {
@@ -73,9 +73,9 @@ func TestInteractionCommandTransitionTable(t *testing.T) {
 }
 
 func TestInteractionCommandFailureDoesNotClaimSuccess(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	before := state.InteractionState()
-	m := newDispatchModelWith(t, inproc.Deps{
+	m := newDispatchModelWith(t, service.Deps{
 		State: state,
 		SetInteraction: func(interaction.Patch) (interaction.State, error) {
 			return interaction.State{}, errors.New("runtime refused the patch")
@@ -100,7 +100,7 @@ func TestInteractionCommandFailureDoesNotClaimSuccess(t *testing.T) {
 }
 
 func TestRetiredModeCommandReceiptsDoNotChangeAccess(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	on := true
 	if _, err := state.ApplyInteraction(interaction.Patch{Auto: &on}); err != nil {
 		t.Fatalf("seed Auto: %v", err)
@@ -129,7 +129,7 @@ func TestRetiredModeCommandReceiptsDoNotChangeAccess(t *testing.T) {
 }
 
 func TestAskReceiptReportsAlreadyRunningWork(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	m := newInteractionDispatchModel(t, state)
 	m.busy = true
 

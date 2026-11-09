@@ -20,8 +20,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acp/acptest"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpclient"
-	"marshal/internal/acpclient/inproc"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -709,8 +710,8 @@ func (c *closeRecorder) Close(ctx context.Context) error {
 // TestAQuitWaitsForTheCallInFlight proves a quit cancels the call in flight,
 // drops everything queued behind it, and finishes when its result arrives.
 func TestAQuitWaitsForTheCallInFlight(t *testing.T) {
-	host, sess := inproc.New(inproc.Deps{
-		State: session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{}),
+	host, sess := acptest.Open(t, service.Deps{
+		State: session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID}),
 	})
 	closed := make(chan struct{})
 	m := New(host, &closeRecorder{Session: sess, closed: closed}, WithHomeDir(t.TempDir()))
@@ -814,7 +815,7 @@ func blockingCommand(t *testing.T, entered chan<- struct{}, release <-chan struc
 func TestACommandsResultLandsWhenItArrives(t *testing.T) {
 	entered := make(chan struct{}, 1)
 	release := make(chan struct{})
-	m := testModelWith(inproc.Deps{
+	m := testModelWith(t, service.Deps{
 		State:    modelTestState(t),
 		Commands: blockingCommand(t, entered, release),
 	})
@@ -851,10 +852,10 @@ func TestACommandsResultLandsWhenItArrives(t *testing.T) {
 // command that has both a handler and a TUI effect: the handler's panel is
 // docked from the result, and the effect's note follows it.
 func TestTrustShowsTheHandlerTextBeforeItsPanel(t *testing.T) {
-	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{SessionID: unnamedSessionID})
 	reg := commands.New()
 	_ = commands.RegisterAll(reg, nil)
-	m := testModelWith(inproc.Deps{State: state, Commands: reg},
+	m := testModelWith(t, service.Deps{State: state, Commands: reg},
 		WithHomeDir(t.TempDir()), WithWorkingDir("/some/project"))
 
 	updated, _ := m.dispatchCommand("/trust")
@@ -884,7 +885,7 @@ func TestAPromptWaitsForTheCommandBeforeIt(t *testing.T) {
 	entered := make(chan struct{}, 1)
 	release := make(chan struct{})
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m := testModelWith(inproc.Deps{
+	m := testModelWith(t, service.Deps{
 		State:    modelTestState(t),
 		Commands: blockingCommand(t, entered, release),
 		Runner:   runnerOf(runner),
@@ -930,7 +931,7 @@ func TestAPromptWaitsForTheCommandBeforeIt(t *testing.T) {
 func TestASetReportsWhenItsReloadReturns(t *testing.T) {
 	entered := make(chan struct{}, 1)
 	release := make(chan struct{})
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(config.Config) error {
 			entered <- struct{}{}
 			<-release
@@ -981,7 +982,7 @@ func TestASetReportsWhenItsReloadReturns(t *testing.T) {
 // save that fails is reported before any reload is queued, and none runs.
 func TestAFailedSaveReportsAtOnce(t *testing.T) {
 	reloads := 0
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(config.Config) error {
 			reloads++
 			return nil
@@ -1010,7 +1011,7 @@ func TestAFailedSaveReportsAtOnce(t *testing.T) {
 // and their receipts appear in that order.
 func TestReloadsRunInTheOrderMade(t *testing.T) {
 	var order []string
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(cfg config.Config) error {
 			order = append(order, fmt.Sprintf("allow=%v redact=%v",
 				cfg.Tools.Shell.AllowNetwork, cfg.Privacy.RedactSecrets))
@@ -1050,7 +1051,7 @@ func TestReloadsRunInTheOrderMade(t *testing.T) {
 func TestAQuitWaitsForAReloadInFlight(t *testing.T) {
 	entered := make(chan struct{}, 1)
 	release := make(chan struct{})
-	m := newTestModelDeps(t, func(d *inproc.Deps) {
+	m := newTestModelDeps(t, func(d *service.Deps) {
 		d.ReloadConfig = func(config.Config) error {
 			entered <- struct{}{}
 			<-release
@@ -1122,7 +1123,7 @@ func TestNewSessionSwapsWhenItsResultArrives(t *testing.T) {
 		entered:  make(chan struct{}, 1),
 		release:  make(chan struct{}),
 	}
-	host, sess := inproc.New(inproc.Deps{
+	host, sess := acptest.Open(t, service.Deps{
 		State:      oldState,
 		NewSession: block.newSession,
 		End:        &endTestController{},
@@ -1206,8 +1207,8 @@ func TestNewSessionSwapsWhenItsResultArrives(t *testing.T) {
 // the preflight runs, and its result opens the cast list or reports the plan
 // it rejected.
 func TestThePreflightOpensWhenItArrives(t *testing.T) {
-	accepting := testModelWith(inproc.Deps{
-		State:  session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{}),
+	accepting := testModelWith(t, service.Deps{
+		State:  session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{SessionID: unnamedSessionID}),
 		Runner: runnerOf(&testAgentRunner{}),
 		PlanPreflight: preflightOf(acpwire.PlanPreflight{
 			Inspection: acpwire.PlanInspection{Strategy: acpwire.StrategyAgent},
@@ -1226,8 +1227,8 @@ func TestThePreflightOpensWhenItArrives(t *testing.T) {
 		t.Fatalf("the preflight did not open the cast list, dock holds %T", m.dock.Panel())
 	}
 
-	rejecting := testModelWith(inproc.Deps{
-		State:  session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{}),
+	rejecting := testModelWith(t, service.Deps{
+		State:  session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{SessionID: unnamedSessionID}),
 		Runner: runnerOf(&testAgentRunner{}),
 		PlanPreflight: func(context.Context, acpwire.PlanPreflightParams) (acpwire.PlanPreflight, error) {
 			return acpwire.PlanPreflight{}, errors.New("no such plan")
@@ -1260,7 +1261,7 @@ func TestTheSheetOpensWhenItsRefreshReturns(t *testing.T) {
 	}
 	state := seamState(t, "s1")
 	state.AddMessage(session.RoleUser, "a first turn", session.ContentTypePlain)
-	m := testModelStub(state, stub)
+	m := testModelStub(t, state, stub)
 	m.resize(100, 40)
 
 	updated, serve := m.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl})
@@ -1296,7 +1297,7 @@ func TestTheSheetOpensWhenItsRefreshReturns(t *testing.T) {
 	}
 	state2 := seamState(t, "s2")
 	state2.AddMessage(session.RoleUser, "a first turn", session.ContentTypePlain)
-	m2 := testModelStub(state2, stub2)
+	m2 := testModelStub(t, state2, stub2)
 	m2.resize(100, 40)
 
 	updated, serve2 := m2.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl})

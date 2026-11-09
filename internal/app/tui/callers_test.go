@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/service"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -49,16 +49,16 @@ func editEvent() registry.AuditEvent {
 // non-nil interface.
 func callersModel(t *testing.T, f *fakeFinder) Model {
 	t.Helper()
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: unnamedSessionID})
 	reg := commands.New()
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	var rf inproc.ReferenceFinder
+	var rf service.ReferenceFinder
 	if f != nil {
 		rf = f
 	}
-	m := testModelWith(inproc.Deps{State: state, ReferenceFinder: rf, Commands: reg, Auth: newMemAuth()}, WithHomeDir(t.TempDir()),
+	m := testModelWith(t, service.Deps{State: state, ReferenceFinder: rf, Commands: reg, Auth: newMemAuth()}, WithHomeDir(t.TempDir()),
 		WithOpenBrowser(func(string) error { return nil }))
 	m.resize(80, 24)
 	m.refreshViewport()
@@ -191,7 +191,7 @@ func TestCallersAreAskedOnceForAFlaggedRow(t *testing.T) {
 func TestCallersWaitWhileDrilledIn(t *testing.T) {
 	f := &fakeFinder{ok: true, refs: []string{"a.go:10"}}
 	m := callersModel(t, f)
-	child := session.New(config.Default(), t.TempDir(), time.Unix(200, 0), session.Persistence{})
+	child := session.New(config.Default(), t.TempDir(), time.Unix(200, 0), session.Persistence{SessionID: unnamedSessionID})
 	v := stateOf(m).RegisterSubagent("scout", child)
 	stateOf(m).LogToolCall(editEvent())
 	m.drillIntoSubagent(v.ID)

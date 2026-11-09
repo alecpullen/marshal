@@ -570,7 +570,114 @@ Two plans at a time where they share no files, as in P3.
 
 ### Plan 1 — turns outlive their caller
 
-Not yet run.
+Run 2026-11-09 from [the plan](plans/2026-11-09-p4-1-runs-plan.md) on branch
+`p4-1-runs`, one commit per task, mixed execution: tasks 1 and 4 delegated,
+tasks 2, 3 and 5 inline. `main` did not move while it ran.
+
+**The run path.** `runTurn` (`internal/acp/service/turns.go`) takes a
+`runSpec`: its kind, whether it detaches, the work, and an optional `finish`
+hook. The five detaching kinds — `turn`, `review`, `agent`, `swarm` and `sdd` —
+derive the run's context from `s.ctx`, so a caller whose call ends (a
+`$/cancel_request`, a closed connection) answers at once with its context's
+error and leaves the run going. `author` keeps deriving it from the call's
+context, because only its caller reads the result. Admission — the slot,
+`BeginWork`, `BeginTurnStop` — stays on the caller's goroutine, so every
+refusal and every stop that skipped the run is still answered synchronously.
+
+The run and its whole ending run on a goroutine of their own, and the caller
+waits on a buffered channel of one or on its own context. `endRun` does the
+work, then `finish` (Prompt's put-back of a queued text a stop skipped), then
+the outcome note, then sets `lastRun` and releases the slot in one critical
+section, and only then returns the session to idle, ends the stop group and
+the work, and cancels the run's context.
+
+**The status.** The slot carries an `acpwire.Run`, set at admission from the
+stop group's turn ID, the spec's kind and `state.Now()`. `lastRun` is set from
+it when the ending releases the slot, so a status read never shows neither or
+both. A refused start sets neither. The outcome is checked in this order:
+`gated` (the error carries `CodeHumanGateRequired`, even when stopped),
+`cancelled` (the slot was stopped, the error is `context.Canceled`, or the
+run's context ended), `failed` (any other error), `done`. `lastRun.error` is
+set for `failed` only, as `runError`'s result: a coded error kept as itself,
+any other wrapped uncoded with its own sentence.
+
+**The notes are the agent's (D6).** `runNote` writes "Agent turn cancelled."
+for a cancellation whose stop was the user's — the slot was stopped, its
+`ending` flag clear, and the session not closed — and "✘ Turn failed: …" or,
+for an authoring run, "✘ Plan authoring failed: …" with the first line of the
+sentence. `stopRun(cause, ending)` is `Stop`'s body; `Stop` passes `false` and
+`Release` passes `true`, so a release, a swap, a close and the end flow (which
+never calls `Stop`) write nothing.
+
+The TUI keeps what is its own: `handleAgentFinished` no longer writes the
+cancel note or the failure note, and `handlePlanAuthorFinished` no longer
+writes either of its own. Both keep the steering clear, the notice work, the
+success pulse and the refusal note — nothing ran behind a refusal, so it stays
+the TUI's.
+
+**Embedded mode is unchanged for a user.** Esc still stops a run at once,
+through `session/stop`; the notes keep their sentences and the transcript
+keeps its rows, except that the cancel note now lands when the run has
+actually ended, a moment after the TUI goes idle.
+
+**Tests.** New: `internal/acpwire`'s `TestAStatusWithoutRunsOmitsThem`, with
+`TestStatusUpdateRoundTrips` extended to carry both fields and a coded error;
+`internal/acp/service`'s `TestACallerThatLeavesDoesNotStopTheTurn`,
+`TestAStopEndsADetachedRun`, `TestEachDetachingKindOutlivesItsCaller` (one row
+per detaching kind), `TestAnAuthoringRunEndsWithItsCaller`,
+`TestAQueuedTextIsPutBackWhenItsCallerLeft`, `TestOutcomesAreRecorded`,
+`TestARefusalLeavesTheRunsAlone`, `TestAReleaseEndsARunWithoutAUserStop`,
+`TestASwapEndsADetachedRun`, `TestAUserStopWritesTheCancelNote`,
+`TestAFailedRunWritesItsNote`, `TestNoNoteForAnEndingOrAGate`,
+`TestTheNoteLandsWhenTheCallerLeft` and `TestARunNoteIsWrittenOnce`; and
+`internal/acp`'s `TestARunOutlivesItsConnection`, `TestTheStatusCarriesTheRun`
+and `TestTheCancelNoteReachesTheCaller`, over a dialed client host.
+
+Inverted and moved: `TestCancellingThePromptStopsTheRun` became
+`TestCancellingThePromptLeavesTheRunGoing`, and `TestCancellingAPlanRunStopsIt`
+became `TestCancellingAPlanRunLeavesItGoing`.
+`TestAgentFinishedErrorSetsNoticeAndCompactRow` became
+`TestAgentFinishedErrorSetsTheNotice` (the handler and the banner) plus
+`TestAFailedTurnWritesOneCompactRow` (a real failing turn through `Update`), and
+`TestPlanAuthorFailureDoesNotDoubleReport` now drives a real failing authoring
+run through `/sdd new`. `TestCancelledTurnClearsProviderNotice` dropped its note
+assertion, and `TestAStoppedAuthoringIsNotAFailure` waits for `Status().Run` to
+clear before counting, because the authoring call now returns before the
+run's ending writes the note. No other TUI test needed a fix: none of the
+triage cases (a note asserted through a handler call, a transcript read
+straight after a stopped run, a fake run ended only by its call's context)
+turned up outside the tests named above.
+
+**Where the plan was short.** Three gaps were filled:
+- The run registers with `BeginWorkCancelable(slot.cancel)` rather than
+  `BeginWork`. The plan's premise — "the end flow stops a run through the
+  runtime" — was only true of the caller's context before this plan: the
+  runtime's stop pass cancels a parent operation's work hook, and the service
+  registered none. Without the hook, a run whose caller had left made
+  `Runtime.Quiesce` wait on work nothing could stop, which the full suite
+  caught as a 20-minute hang in `internal/app`'s
+  `TestRuntimeSendNowTUIOptionsExerciseRealFacade`. With it, the end pass
+  cancels the run's context exactly as the plan assumed, the outcome is
+  `cancelled`, and no note is written.
+- The control test harness was split into `serveControl` (the agent end, over
+  the pipe's client transport) and `startControlAgentWith` (which wraps it in
+  `rpc.NewConn` exactly as before), because `TestTheStatusCarriesTheRun` and
+  `TestTheCancelNoteReachesTheCaller` need a dialed `rpc.Host` to read the
+  client's own mirror and transcript. Test-only, every existing call site
+  unchanged.
+- Task 4's mutation check ("make the caller wait for the run even after its
+  context ends") is caught by `TestACallerThatLeavesDoesNotStopTheTurn`, not by
+  `TestARunOutlivesItsConnection`: the wire test starts the prompt on its own
+  goroutine, so a blocked caller does not fail it.
+
+Task 3's `./internal/acp/...` leg was red on exactly the two tests Task 4
+inverts (`TestCancellingThePromptStopsTheRun`, and `TestStackRoundTripBudget`
+as the known load flake), which the plan's task order makes unavoidable since
+Task 4 follows Task 3.
+
+**Open for plan 5.** The TUI reads neither `run` nor `lastRun` yet: it drives
+stops with `session/stop` and its own `cancelling` flag, which is what a
+reattaching TUI's finishing (D5) builds on.
 
 ### Plan 2 — the local profile
 

@@ -272,7 +272,11 @@ func (s *Session) runTurn(ctx context.Context, spec runSpec) (stopped bool, star
 	s.turn = slot
 	s.mu.Unlock()
 
-	if err := s.state.BeginWork(); err != nil {
+	// The run is registered as a cancellable parent operation, so the
+	// conversation's end pass (stopEndWork) cancels the run's context through
+	// this hook. Without it, a run that outlives its caller would leave the
+	// runtime's quiesce waiting on work nothing can stop (P4 D4).
+	if err := s.state.BeginWorkCancelable(cancel); err != nil {
 		s.mu.Lock()
 		if s.turn == slot {
 			s.turn = nil

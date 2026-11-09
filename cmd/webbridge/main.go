@@ -31,11 +31,17 @@ var version = ""
 
 // versionString renders the one-line version banner printed by --version.
 func versionString() string {
-	v := version
-	if v == "" {
-		v = "dev"
+	return fmt.Sprintf("webbridge %s", daemonVersion())
+}
+
+// daemonVersion is the bare version, "dev" when the build was not
+// stamped. The local profile reports it through GET /api/daemon, which
+// wants the version itself rather than the banner around it.
+func daemonVersion() string {
+	if version == "" {
+		return "dev"
 	}
-	return fmt.Sprintf("webbridge %s", v)
+	return version
 }
 
 // defaultStateDir is the in-container mount point for the state volume.
@@ -51,7 +57,11 @@ func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
 // config holds the resolved flag/env settings.
 type config struct {
-	addr string
+	// profile is "server" (the default) or "local" (P4 D1).
+	profile string
+	// socket is the local profile's unix listener.
+	socket string
+	addr   string
 	// previewAddr is where previews are served, on an origin of their own.
 	// Empty means the --addr host on an automatic port; "off" disables.
 	previewAddr string
@@ -100,6 +110,8 @@ type config struct {
 func parseConfig(args []string, stderr io.Writer) (config, error) {
 	fs := flag.NewFlagSet("webbridge", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	profile := fs.String("profile", envOr("WEBBRIDGE_PROFILE", "server"), "profile: server (network listeners, container-capable) or local (unix socket, host processes)")
+	socket := fs.String("socket", envOr("WEBBRIDGE_SOCKET", ""), "unix socket to serve on (--profile local)")
 	addr := fs.String("addr", envOr("WEBBRIDGE_ADDR", "127.0.0.1:7700"), "listen address")
 	previewAddr := fs.String("preview-addr", envOr("WEBBRIDGE_PREVIEW_ADDR", ""), "listen address for previews, served from a separate origin (default: the --addr host on a free port; \"off\" disables)")
 	token := fs.String("token", envOr("WEBBRIDGE_TOKEN", ""), "bearer token for /api routes (generated when empty)")
@@ -135,7 +147,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	if fs.NArg() > 0 {
 		return config{}, fmt.Errorf("unknown argument %q", fs.Arg(0))
 	}
-	cfg := config{addr: *addr, previewAddr: *previewAddr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, stateVolume: *stateVolume, agentEnv: agentEnv, tlsCert: *tlsCert, tlsKey: *tlsKey, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB,
+	cfg := config{profile: *profile, socket: *socket, addr: *addr, previewAddr: *previewAddr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, stateVolume: *stateVolume, agentEnv: agentEnv, tlsCert: *tlsCert, tlsKey: *tlsKey, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB,
 		secrets: *secrets, secretsKeyFile: *secretsKeyFile, baoAddr: *baoAddr, baoMount: *baoMount,
 		baoRoleIDFile: *baoRoleIDFile, baoSecretIDFile: *baoSecretIDFile, baoCAFile: *baoCAFile, egress: *egress, publicURL: *publicURL}
 	pm, err := parseProjectMounts(projectMounts)
@@ -143,6 +155,9 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 		return config{}, err
 	}
 	cfg.projectMounts = pm
+	if err := applyProfile(&cfg, givenFrom(fs)); err != nil {
+		return config{}, err
+	}
 	// Half-configured TLS fails loudly. Serving plaintext because one
 	// flag name was mistyped is the failure nobody notices.
 	if (cfg.tlsCert == "") != (cfg.tlsKey == "") {
@@ -171,7 +186,9 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 		}
 		cfg.workspace = p
 	}
-	if cfg.cwdRoot == "" {
+	// The working-directory project is a server-profile convenience:
+	// the local profile registers no project unless it was named.
+	if cfg.cwdRoot == "" && cfg.profile != "local" {
 		cwd, err := os.Getwd()
 		if err != nil {
 			return config{}, fmt.Errorf("--cwd-root unset and cannot determine working directory: %w", err)
@@ -179,6 +196,96 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 		cfg.cwdRoot = cwd
 	}
 	return cfg, nil
+}
+
+// givenSettings records which flags the command line set, so a setting
+// is told apart from its default. Whether a variable was set is
+// consulted per setting, from the environment.
+type givenSettings struct {
+	flags map[string]bool
+}
+
+// givenFrom collects the flags present in args. It must run after the
+// flag set parses: Visit reports only flags actually given.
+func givenFrom(fs *flag.FlagSet) givenSettings {
+	g := givenSettings{flags: make(map[string]bool)}
+	fs.Visit(func(f *flag.Flag) { g.flags[f.Name] = true })
+	return g
+}
+
+// given reports whether a setting reached the command line or its
+// variable is set to something. An empty variable means unset, as envOr
+// treats it: os.Getenv cannot tell unset from set-and-blank, and this
+// file has always read them the same way.
+func (g givenSettings) given(flagName, env string) bool {
+	if g.flags[flagName] {
+		return true
+	}
+	return os.Getenv(env) != ""
+}
+
+// set is given plus "and not empty": an empty value means unset, as
+// envOr treats it, so an explicitly blank flag falls back to the
+// default rather than selecting nothing.
+func (g givenSettings) set(flagName, env, value string) bool {
+	return value != "" && g.given(flagName, env)
+}
+
+// applyProfile validates --profile and applies the local profile's
+// defaults and refusals (decisions 1-3). The server profile is today's
+// bridge and is left alone apart from the settings that belong to the
+// local profile and would silently do nothing here.
+func applyProfile(cfg *config, given givenSettings) error {
+	switch cfg.profile {
+	case "server":
+		if cfg.socket != "" {
+			return fmt.Errorf("--socket is for --profile local")
+		}
+		if cfg.addr == "off" {
+			return fmt.Errorf("--addr off is for --profile local")
+		}
+		return nil
+	case "local":
+	default:
+		return fmt.Errorf("--profile %q: expected server or local", cfg.profile)
+	}
+
+	// Decision 3: no egress proxy, and no secret backend but the
+	// environment. Each refusal fires only when the setting was given;
+	// the quiet answers below are the defaults.
+	if given.given("egress", "WEBBRIDGE_EGRESS") {
+		if cfg.egress == "on" {
+			return fmt.Errorf("--egress on: the local profile runs no egress proxy")
+		}
+	} else {
+		cfg.egress = "off"
+	}
+	if cfg.secrets != "env" {
+		return fmt.Errorf("--secrets %s: the local profile takes secrets from the environment", cfg.secrets)
+	}
+	// A token belongs to the TCP listener, which --addr off does not
+	// open. Refusing beats accepting it and never using it, which is
+	// the rule the rest of this function follows.
+	if cfg.addr == "off" && given.set("token", "WEBBRIDGE_TOKEN", cfg.token) {
+		return fmt.Errorf("--token is for the TCP listener, and --addr off opens none")
+	}
+
+	// Decision 2: the local profile's defaults, each applying only when
+	// its flag and its variable are both unset.
+	dir, err := bridge.DefaultDaemonDir()
+	if err != nil {
+		return err
+	}
+	if !given.set("socket", "WEBBRIDGE_SOCKET", cfg.socket) {
+		cfg.socket = filepath.Join(dir, "marshal.sock")
+	}
+	if !given.set("state-dir", "WEBBRIDGE_STATE_DIR", cfg.stateDir) {
+		cfg.stateDir = filepath.Join(dir, "state")
+	}
+	if !given.set("workspace", "WEBBRIDGE_WORKSPACE", cfg.workspace) {
+		cfg.workspace = filepath.Join(dir, "fleet.json")
+	}
+	return nil
 }
 
 // buildSecretProvider constructs the backend the flags select.
@@ -295,6 +402,10 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	// The local profile reports when it started, and the plan dates that
+	// from the start of run rather than from the listener.
+	startedAt := time.Now()
+
 	// --version is handled before flag parsing: parseConfig uses
 	// flag.ContinueOnError and would reject the flag as unknown. The
 	// banner goes to stdout (the caller's writer), never os.Stdout.
@@ -325,7 +436,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if cfg.token == "" {
+	// --addr off means the local socket is the only listener, and the
+	// socket is peer-checked rather than token-checked: there is no
+	// bearer token to generate.
+	if cfg.token == "" && cfg.addr != "off" {
 		cfg.token, err = genToken()
 		if err != nil {
 			return fmt.Errorf("generate token: %w", err)
@@ -376,6 +490,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		MaxCloneMB:    cfg.maxCloneMB,
 	}, version, cfg.projectMounts, cfg.stateVolume)
 
+	// The local profile runs its fleet as host processes (decision 4).
+	// This must precede every start below — egress, reattach, the poller
+	// and the scheduler — so no agent or probe sees a container runtime.
+	if cfg.profile == "local" {
+		fleet.SetHostProcessesOnly()
+	}
+
 	secrets, err := buildSecretProvider(cfg)
 	if err != nil {
 		return fmt.Errorf("secrets backend: %w", err)
@@ -403,29 +524,80 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fleet.StartScheduler(nil)
 
 	api := bridge.NewServer(fleet, cfg.token, cfg.publicURL)
-	srv := &http.Server{
-		Addr:              cfg.addr,
-		Handler:           api,
-		ReadHeaderTimeout: 10 * time.Second,
+
+	// serveErr carries the first listener to stop serving. The socket and
+	// the TCP listener can both exist, so it holds two, and each goroutine
+	// parks its answer here rather than dropping it.
+	serveErr := make(chan error, 2)
+
+	// The local profile listens on a unix socket of the user's own: the
+	// same routes as ServeHTTP without the bearer check, peer-checked
+	// instead, so a client on the same account drives it without a
+	// secret on the command line (decisions 5-7).
+	var socketSrv *http.Server
+	if cfg.profile == "local" {
+		api.SetDaemonInfo(bridge.DaemonInfo{
+			Version:   daemonVersion(),
+			Profile:   "local",
+			PID:       os.Getpid(),
+			StartedAt: startedAt.UnixMilli(),
+			Socket:    cfg.socket,
+		})
+		sln, lerr := bridge.ListenLocal(cfg.socket)
+		if lerr != nil {
+			// A refused socket — another daemon, a directory open to
+			// other users — leaves nothing to serve. Close the fleet as
+			// a failed TCP listen does below.
+			fleet.Close()
+			return lerr
+		}
+		socketSrv = &http.Server{
+			Handler:           api.SocketHandler(),
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+		go func() {
+			err := socketSrv.Serve(bridge.PeerChecked(sln, os.Getuid(), slog.Default()))
+			if errors.Is(err, http.ErrServerClosed) {
+				err = nil
+			}
+			serveErr <- err
+		}()
+		fmt.Fprintf(stderr, "webbridge: listening on unix://%s\n", cfg.socket)
 	}
+
+	// --addr off leaves the socket as the only listener: no TCP, no
+	// previews, no token. The scheme and the TCP listener exist only
+	// when one is opened.
+	var srv *http.Server
+	var ln net.Listener
 	scheme := "http"
 	if cfg.tlsCert != "" {
 		scheme = "https"
 	}
-	ln, err := net.Listen("tcp", cfg.addr)
-	if err != nil {
-		// Stop escalates SIGTERM→SIGKILL over stopGrace, so a stubborn
-		// child delays the error return slightly; correct cleanup beats
-		// a faster failure here.
-		fleet.Close()
-		return fmt.Errorf("listen %s: %w", cfg.addr, err)
+	if cfg.addr != "off" {
+		srv = &http.Server{
+			Addr:              cfg.addr,
+			Handler:           api,
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+		ln, err = net.Listen("tcp", cfg.addr)
+		if err != nil {
+			// Stop escalates SIGTERM→SIGKILL over stopGrace, so a stubborn
+			// child delays the error return slightly; correct cleanup beats
+			// a faster failure here.
+			if socketSrv != nil {
+				_ = socketSrv.Close()
+			}
+			fleet.Close()
+			return fmt.Errorf("listen %s: %w", cfg.addr, err)
+		}
+		fmt.Fprintf(stderr, "webbridge: listening on %s://%s (%d project(s))\n", scheme, ln.Addr(), len(ws.Projects()))
 	}
-	fmt.Fprintf(stderr, "webbridge: listening on %s://%s (%d project(s))\n", scheme, ln.Addr(), len(ws.Projects()))
 
 	// Previews get a listener, and so an origin, of their own: a page the
 	// agent serves must not share storage with the UI that holds the token.
 	var previewSrv *http.Server
-	if cfg.previewAddr != "off" {
+	if cfg.addr != "off" && cfg.previewAddr != "off" {
 		pln, perr := listenPreview(cfg.addr, cfg.previewAddr)
 		if perr != nil {
 			slog.Default().Warn("webbridge: previews unavailable", "err", perr)
@@ -441,14 +613,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	// prune cannot delay accepting requests.
 	go fleet.ReconcileWorktrees(context.Background())
 
-	serveErr := make(chan error, 1)
-	go func() {
-		err := serveHTTP(srv, ln, cfg.tlsCert, cfg.tlsKey)
-		if errors.Is(err, http.ErrServerClosed) {
-			err = nil
-		}
-		serveErr <- err
-	}()
+	if srv != nil {
+		go func() {
+			err := serveHTTP(srv, ln, cfg.tlsCert, cfg.tlsKey)
+			if errors.Is(err, http.ErrServerClosed) {
+				err = nil
+			}
+			serveErr <- err
+		}()
+	}
 
 	// SIGINT/SIGTERM (or the caller's ctx) triggers shutdown: HTTP
 	// first, then the child.
@@ -461,6 +634,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		// listener itself fails, which net.Listen above has already
 		// ruled out — in practice err is always nil here. The channel
 		// exists so the serve goroutine has a buffered parking spot.
+		// Whichever listener failed, the other one is still up: close
+		// it too, so the socket file is removed and the process does
+		// not linger answering nothing.
+		if socketSrv != nil {
+			_ = socketSrv.Close()
+		}
+		if srv != nil {
+			_ = srv.Close()
+		}
 		fleet.Close()
 		return err
 	case <-sigCtx.Done():
@@ -473,8 +655,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if previewSrv != nil {
 		_ = previewSrv.Shutdown(shutdownCtx)
 	}
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		slog.Default().Warn("webbridge: HTTP shutdown", "err", err)
+	if socketSrv != nil {
+		// Closing the socket server closes the unix listener, which is
+		// what removes the socket file.
+		_ = socketSrv.Shutdown(shutdownCtx)
+	}
+	if srv != nil {
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			slog.Default().Warn("webbridge: HTTP shutdown", "err", err)
+		}
 	}
 	fleet.Close()
 	return nil

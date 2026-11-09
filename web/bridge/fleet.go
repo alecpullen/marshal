@@ -135,6 +135,15 @@ type Fleet struct {
 	// Nil means the real runner (exec.Command); tests inject a fake so the
 	// derive path is exercisable without a daemon.
 	runner commandRunner
+	// hostOnly makes every agent, the control agent included, a host
+	// process, and stops the fleet from probing for a container runtime at
+	// all (decision 4). Set through SetHostProcessesOnly before anything
+	// starts.
+	hostOnly bool
+	// probe answers the container runtime for this fleet. Nil means
+	// detectedRuntime, the process-wide probe; tests inject one to see
+	// whether the fleet asked.
+	probe func() (path, name string, ok bool)
 	// streamer starts long-lived runtime processes (terminals). Nil means
 	// the real starter; tests inject a fake.
 	streamer streamStarter
@@ -388,7 +397,7 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		if err != nil {
 			return nil, err
 		}
-		runtime, name, ok := detectedRuntime()
+		runtime, name, ok := f.containerRuntime()
 		if !ok {
 			// No container runtime: fall back to a host process so a
 			// laptop without docker still works.
@@ -691,6 +700,23 @@ var probeRuntime = sync.OnceValue(func() runtimeProbe {
 func detectedRuntime() (path, name string, ok bool) {
 	p := probeRuntime()
 	return p.path, p.name, p.ok
+}
+
+// SetHostProcessesOnly makes every agent, the control agent included, a
+// host process, and stops the fleet from ever probing for a container
+// runtime (decision 4). Call it before anything starts.
+func (f *Fleet) SetHostProcessesOnly() { f.hostOnly = true }
+
+// containerRuntime is the fleet's container runtime: none when host-only,
+// without probing; otherwise the probe's answer.
+func (f *Fleet) containerRuntime() (path, name string, ok bool) {
+	if f.hostOnly {
+		return "", "", false
+	}
+	if f.probe != nil {
+		return f.probe()
+	}
+	return detectedRuntime()
 }
 
 // socketDirFor is the per-agent ACP socket directory.

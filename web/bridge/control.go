@@ -62,7 +62,7 @@ func (f *Fleet) buildControlChild() (*Child, []string, error) {
 		child, err := f.newControl()
 		return child, nil, err
 	}
-	runtime, name, ok := detectedRuntime()
+	runtime, name, ok := f.containerRuntime()
 	if !ok {
 		return &Child{MarshalBin: f.marshalBin}, nil, nil
 	}

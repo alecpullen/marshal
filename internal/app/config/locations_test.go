@@ -50,3 +50,35 @@ func TestDataDirFallsBackToHome(t *testing.T) {
 		t.Errorf("DataDir = %q", got)
 	}
 }
+
+func TestDaemonDirIsUnderTheDataDir(t *testing.T) {
+	t.Setenv("MARSHAL_DATA_DIR", "/custom/data")
+	if got := DaemonDir("/home/u"); got != "/custom/data/daemon" {
+		t.Errorf("DaemonDir = %q", got)
+	}
+	if got := DaemonSocketPath("/home/u"); got != "/custom/data/daemon/marshal.sock" {
+		t.Errorf("DaemonSocketPath = %q", got)
+	}
+}
+
+func TestDaemonDirFollowsXDGDataHome(t *testing.T) {
+	t.Setenv("MARSHAL_DATA_DIR", "")
+	t.Setenv("XDG_DATA_HOME", "/xdg/data")
+	if got := DaemonDir("/home/u"); got != filepath.Join("/xdg/data", "marshal", "daemon") {
+		t.Errorf("DaemonDir = %q", got)
+	}
+	if got := DaemonSocketPath("/home/u"); got != filepath.Join("/xdg/data", "marshal", "daemon", "marshal.sock") {
+		t.Errorf("DaemonSocketPath = %q", got)
+	}
+}
+
+func TestDaemonDirFallsBackToHome(t *testing.T) {
+	t.Setenv("MARSHAL_DATA_DIR", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	if got := DaemonDir("/home/u"); got != "/home/u/.local/share/marshal/daemon" {
+		t.Errorf("DaemonDir = %q", got)
+	}
+	if got := DaemonSocketPath("/home/u"); got != "/home/u/.local/share/marshal/daemon/marshal.sock" {
+		t.Errorf("DaemonSocketPath = %q", got)
+	}
+}

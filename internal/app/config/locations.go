@@ -42,3 +42,13 @@ func DataDir(home string) string {
 	}
 	return filepath.Join(home, ".local", "share", "marshal")
 }
+
+// DaemonDir is the local daemon's directory: DataDir(home)/daemon.
+func DaemonDir(home string) string {
+	return filepath.Join(DataDir(home), "daemon")
+}
+
+// DaemonSocketPath is the local daemon's socket: DaemonDir(home)/marshal.sock.
+func DaemonSocketPath(home string) string {
+	return filepath.Join(DaemonDir(home), "marshal.sock")
+}

@@ -22,12 +22,18 @@ import (
 
 func TestParseConfigDefaults(t *testing.T) {
 	// Ensure env vars do not leak host state into the defaults test.
-	for _, k := range []string{"WEBBRIDGE_ADDR", "WEBBRIDGE_TOKEN", "WEBBRIDGE_MARSHAL_BIN", "WEBBRIDGE_CWD_ROOT"} {
+	for _, k := range []string{"WEBBRIDGE_ADDR", "WEBBRIDGE_TOKEN", "WEBBRIDGE_MARSHAL_BIN", "WEBBRIDGE_CWD_ROOT", "WEBBRIDGE_PROFILE", "WEBBRIDGE_SOCKET"} {
 		t.Setenv(k, "")
 	}
 	cfg, err := parseConfig(nil, io.Discard)
 	if err != nil {
 		t.Fatalf("parseConfig: %v", err)
+	}
+	if cfg.profile != "server" {
+		t.Errorf("profile = %q, want server", cfg.profile)
+	}
+	if cfg.socket != "" {
+		t.Errorf("socket = %q, want empty in the server profile", cfg.socket)
 	}
 	if cfg.addr != "127.0.0.1:7700" {
 		t.Errorf("addr = %q, want 127.0.0.1:7700", cfg.addr)

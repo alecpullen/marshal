@@ -31,8 +31,9 @@ gofmt -w .
 ```
 
 `marshal` also dispatches subcommands: `acp` (headless JSON-RPC server),
-`history`, `plugin`, `snapshots`, `calibrate-tokens`. Top-level flags are
-`--trust` and `--version`.
+`daemon` (install and drive the local daemon), `history`, `plugin`,
+`snapshots`, `calibrate-tokens`. Top-level flags are `--trust` and
+`--version`.
 
 ### Web control plane
 
@@ -43,6 +44,9 @@ go build ./cmd/webbridge                    # embeds the built assets
 
 The SPA is baked in with `//go:embed`, so a change under `web/ui/src` is
 **invisible until `npm run build` reruns and the binary is rebuilt**.
+
+`webbridge --profile local` is the user's local daemon (P4): a unix socket,
+host processes only, and no container machinery.
 
 ### End-to-end and usability suites
 
@@ -79,6 +83,7 @@ App shell & config
   internal/acpwire/        wire types and error codes for the TUI client seam (stdlib only)
   internal/acpclient/      the TUI's Host/Session interfaces; rpc/ is the JSON-RPC client the TUI runs on
   internal/launch/         embedded mode's composition root: the run loop, the agent host on a pipe, the TUI over its client
+  internal/daemon/         the local daemon's paths, service units and commands, and its socket's client
   internal/app/            Embedded() and ServiceDeps(): runtimes, dependency wiring, repo instructions
   internal/app/config/     TOML loading, defaults, merge rules
   internal/app/session/    shared mutable state between TUI and agent

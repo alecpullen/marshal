@@ -30,7 +30,7 @@ var (
 )
 
 // StartSwarm runs a swarm over params.Goal on the run path. A stopped run
-// returns no error.
+// returns no error. A caller that leaves does not stop the swarm (P4 D4).
 func (s *Session) StartSwarm(ctx context.Context, params acpwire.SwarmParams) error {
 	if s.closed.Load() {
 		return errSessionClosed
@@ -77,7 +77,8 @@ func (s *Session) PlanPreflight(ctx context.Context, params acpwire.PlanPrefligh
 
 // StartSDD runs the plan params names on the run path. A run its human gate
 // pauses returns CodeHumanGateRequired and becomes the session's paused run;
-// a stopped run returns no error.
+// a stopped run returns no error. A caller that leaves does not stop the run
+// (P4 D4).
 func (s *Session) StartSDD(ctx context.Context, params acpwire.SDDParams) error {
 	if s.closed.Load() {
 		return errSessionClosed
@@ -133,7 +134,8 @@ func stoppedErr(err error) error {
 
 // AnswerSDDGate records answer as the user's message and resumes the paused
 // plan run on the run path. A refusal at admission never reaches the run, so
-// the run stays paused (decision 5).
+// the run stays paused (decision 5). A caller that leaves does not stop the
+// resumed run (P4 D4).
 func (s *Session) AnswerSDDGate(ctx context.Context, answer string) error {
 	if s.closed.Load() {
 		return errSessionClosed

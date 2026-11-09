@@ -581,7 +581,7 @@ derive the run's context from `s.ctx`, so a caller whose call ends (a
 `$/cancel_request`, a closed connection) answers at once with its context's
 error and leaves the run going. `author` keeps deriving it from the call's
 context, because only its caller reads the result. Admission — the slot,
-`BeginWork`, `BeginTurnStop` — stays on the caller's goroutine, so every
+`BeginWorkCancelable`, `BeginTurnStop` — stays on the caller's goroutine, so every
 refusal and every stop that skipped the run is still answered synchronously.
 
 The run and its whole ending run on a goroutine of their own, and the caller
@@ -611,14 +611,15 @@ never calls `Stop`) write nothing.
 
 The TUI keeps what is its own: `handleAgentFinished` no longer writes the
 cancel note or the failure note, and `handlePlanAuthorFinished` no longer
-writes either of its own. Both keep the steering clear, the notice work, the
-success pulse and the refusal note — nothing ran behind a refusal, so it stays
-the TUI's.
+writes either of its own. Both keep the notice work and the refusal note;
+`handleAgentFinished` also keeps the steering clear and the success pulse,
+and `handlePlanAuthorFinished` keeps the review-panel finishing. Nothing ran
+behind a refusal, so the refusal note stays the TUI's.
 
 **Embedded mode is unchanged for a user.** Esc still stops a run at once,
 through `session/stop`; the notes keep their sentences and the transcript
 keeps its rows, except that the cancel note now lands when the run has
-actually ended, a moment after the TUI goes idle.
+actually ended, arriving with (not before) the TUI going idle.
 
 **Tests.** New: `internal/acpwire`'s `TestAStatusWithoutRunsOmitsThem`, with
 `TestStatusUpdateRoundTrips` extended to carry both fields and a coded error;

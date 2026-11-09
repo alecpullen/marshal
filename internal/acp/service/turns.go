@@ -61,9 +61,6 @@ var (
 // Prompt runs one turn with params.Text as the user's message. A run that
 // cannot start puts a queued text back on the steering queue, so the caller's
 // next attempt still has it.
-// Prompt runs one turn with params.Text as the user's message. A run that
-// cannot start puts a queued text back on the steering queue, so the caller's
-// next attempt still has it.
 //
 // The turn is the session's, not this call's (P4 D4): a caller that leaves
 // stops waiting, not the turn. Only Stop, the end flow or the session's close

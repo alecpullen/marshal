@@ -31,6 +31,10 @@ type callPlanRun struct {
 	// block makes Run wait for its context after it signals, and return the
 	// context's error.
 	block bool
+	// done, when non-nil, is closed once when a blocking Run returns, so a
+	// test can show the run is still going and not merely still reported.
+	done     chan struct{}
+	doneOnce sync.Once
 }
 
 func (f *callPlanRun) Run(ctx context.Context) error {
@@ -40,6 +44,9 @@ func (f *callPlanRun) Run(ctx context.Context) error {
 	}
 	if f.block {
 		<-ctx.Done()
+		if f.done != nil {
+			f.doneOnce.Do(func() { close(f.done) })
+		}
 		return ctx.Err()
 	}
 	if f.runs <= f.gates {
@@ -291,7 +298,7 @@ func TestThePreflightAndTheAuthorReachTheService(t *testing.T) {
 // stops its call's wait, not the plan run. The run goes on until session/stop,
 // which reports it cancelled.
 func TestCancellingAPlanRunLeavesItGoing(t *testing.T) {
-	fake := &callPlanRun{started: make(chan struct{}), block: true}
+	fake := &callPlanRun{started: make(chan struct{}), done: make(chan struct{}), block: true}
 	conn, a := startControlAgent(t, true, service.Deps{
 		State:      seamState(t, controlSession),
 		NewPlanRun: func(acpwire.SDDParams) (service.PlanRun, error) { return fake, nil },
@@ -323,6 +330,11 @@ func TestCancellingAPlanRunLeavesItGoing(t *testing.T) {
 	// The call's context ending stops the wait, and the run goes on: its work
 	// has not returned, and the status still reports it.
 	time.Sleep(200 * time.Millisecond)
+	select {
+	case <-fake.done:
+		t.Fatal("the plan run returned after its call's context ended, want it still going")
+	default:
+	}
 	if flight := a.served.Status().Run; flight == nil || flight.Kind != acpwire.RunSDD {
 		t.Fatalf("the status carries %+v, want the plan run still in flight", flight)
 	}

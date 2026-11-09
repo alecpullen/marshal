@@ -67,6 +67,23 @@ func TestAFailedRunWritesItsNote(t *testing.T) {
 		}
 	})
 
+	t.Run("swarm", func(t *testing.T) {
+		state := newState(t, "s1")
+		_, sess := New(Deps{
+			State: state,
+			Swarm: func(context.Context, acpwire.SwarmParams) error {
+				return errors.New("the swarm said no\nand gave a reason")
+			},
+		})
+
+		if err := sess.StartSwarm(context.Background(), acpwire.SwarmParams{Goal: "add a test"}); err == nil {
+			t.Fatal("StartSwarm = nil, want the swarm's error")
+		}
+		if got, want := systemNotes(state), []string{"✘ Turn failed: the swarm said no"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("system notes = %q, want %q", got, want)
+		}
+	})
+
 	t.Run("author", func(t *testing.T) {
 		state := newState(t, "s1")
 		_, sess := New(Deps{

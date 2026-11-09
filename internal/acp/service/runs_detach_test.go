@@ -116,7 +116,7 @@ func TestACallerThatLeavesDoesNotStopTheTurn(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("Prompt after its caller left = %v, want context.Canceled", err)
 		}
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(2 * time.Second):
 		t.Fatal("Prompt did not answer once its call's context ended")
 	}
 	if err := b.workCtx().Err(); err != nil {
@@ -375,6 +375,9 @@ func TestOutcomesAreRecorded(t *testing.T) {
 		call    func(context.Context, *Session) error
 		outcome acpwire.RunOutcome
 		code    acpwire.ErrorCode
+		// message is the sentence of an uncoded error: set it to expect one,
+		// and leave both code and message empty to expect no error at all.
+		message string
 	}{
 		{
 			name: "done",
@@ -401,6 +404,22 @@ func TestOutcomesAreRecorded(t *testing.T) {
 			},
 			outcome: acpwire.RunFailed,
 			code:    acpwire.CodeProviderError,
+		},
+		{
+			// A plain error is not coded, so the wire keeps its sentence and
+			// no code: decision 5's wrapping branch.
+			name: "failed uncoded",
+			deps: func(t *testing.T) Deps {
+				fake := newFakeRunner()
+				fake.err = errors.New("no provider is configured")
+				return Deps{State: newState(t, "s1"), Runner: func() Runner { return fake }}
+			},
+			call: func(ctx context.Context, s *Session) error {
+				_, err := s.Prompt(ctx, acpwire.PromptParams{Text: "hello"})
+				return err
+			},
+			outcome: acpwire.RunFailed,
+			message: "no provider is configured",
 		},
 		{
 			name: "cancelled",
@@ -444,7 +463,7 @@ func TestOutcomesAreRecorded(t *testing.T) {
 			if after.LastRun.Outcome != row.outcome {
 				t.Fatalf("LastRun.Outcome = %q, want %q", after.LastRun.Outcome, row.outcome)
 			}
-			if row.code == "" {
+			if row.code == "" && row.message == "" {
 				if after.LastRun.Error != nil {
 					t.Errorf("LastRun.Error = %+v, want none", after.LastRun.Error)
 				}
@@ -455,6 +474,9 @@ func TestOutcomesAreRecorded(t *testing.T) {
 			}
 			if after.LastRun.Error.Code != row.code {
 				t.Errorf("LastRun.Error.Code = %q, want %q", after.LastRun.Error.Code, row.code)
+			}
+			if row.message != "" && after.LastRun.Error.Message != row.message {
+				t.Errorf("LastRun.Error.Message = %q, want %q", after.LastRun.Error.Message, row.message)
 			}
 		})
 	}

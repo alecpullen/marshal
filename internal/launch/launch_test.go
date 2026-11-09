@@ -20,8 +20,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"marshal/internal/acpclient"
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/service"
+	"marshal/internal/acpclient/rpc"
 	"marshal/internal/acpwire"
 	"marshal/internal/app"
 	"marshal/internal/app/config"
@@ -118,11 +118,42 @@ func knowledgeEnabledConfig(baseURL, providerName string) config.Config {
 	return cfg
 }
 
-func modelState(t *testing.T, model tea.Model) *session.State {
+// servedPair records the pass's served service pair, for the tests that drive
+// agent-side state. The pair is the one launch built before the program ran.
+type servedPair struct {
+	mu   sync.Mutex
+	host *service.Host
+	sess *service.Session
+}
+
+func (p *servedPair) option() Option {
+	return withServed(func(host *service.Host, sess *service.Session) {
+		p.mu.Lock()
+		p.host, p.sess = host, sess
+		p.mu.Unlock()
+	})
+}
+
+func (p *servedPair) state() *session.State {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.sess == nil {
+		return nil
+	}
+	return p.sess.State()
+}
+
+func (p *servedPair) serviceHost() *service.Host {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.host
+}
+
+// modelState is the pass's served state, or a fatal when it served none.
+func modelState(t *testing.T, state *session.State) *session.State {
 	t.Helper()
-	state := modelStateOf(model)
 	if state == nil {
-		t.Fatal("tui model has no state")
+		t.Fatal("the pass served no session state")
 	}
 	return state
 }
@@ -184,28 +215,6 @@ func (r *countingAuthResolver) enginesRequested() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.engines...)
-}
-
-// modelStateOf returns the agent-side state behind a seam model's session, or
-// nil when the model is not built over an in-process adapter. It is this
-// package's counterpart of the tui package's stateOf, and it walks past the
-// recorders a test may wrap the adapter's session in.
-func modelStateOf(model tea.Model) *session.State {
-	m, ok := model.(interface{ Session() acpclient.Session })
-	if !ok {
-		return nil
-	}
-	sess := m.Session()
-	for {
-		if in, ok := sess.(*inproc.Session); ok {
-			return in.State()
-		}
-		wrapped, ok := sess.(interface{ Unwrap() acpclient.Session })
-		if !ok {
-			return nil
-		}
-		sess = wrapped.Unwrap()
-	}
 }
 
 func TestRunSkipsProgramAndConfigLoadWhenContextIsCancelled(t *testing.T) {
@@ -742,8 +751,9 @@ func TestRunMarksSessionEndedEvenWhenProgramRunnerFails(t *testing.T) {
 
 	now := time.Unix(100, 0)
 	wantErr := errors.New("program runner failed")
-	err = Run(context.Background(), bytes.NewBuffer(nil), WithApp(app.WithNow(func() time.Time { return now })), WithApp(app.WithConfigLoader(func(config.LoadOptions) (config.Config, error) { return config.Default(), nil })), WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
-		modelState(t, model).AddMessage(session.RoleUser, "keep session history", session.ContentTypePlain)
+	served := &servedPair{}
+	err = Run(context.Background(), bytes.NewBuffer(nil), WithApp(app.WithNow(func() time.Time { return now })), WithApp(app.WithConfigLoader(func(config.LoadOptions) (config.Config, error) { return config.Default(), nil })), served.option(), WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+		modelState(t, served.state()).AddMessage(session.RoleUser, "keep session history", session.ContentTypePlain)
 		return ProgramResult{Err: wantErr}
 	}),
 	)
@@ -820,9 +830,10 @@ security_reviewer = "mock/mock-model"
 	stdout := bytes.NewBuffer(nil)
 
 	called := false
-	err = Run(context.Background(), stdout, WithApp(app.WithNow(func() time.Time { return time.Unix(100, 0) })), WithApp(app.WithHomeDir(t.TempDir())), WithApp(app.WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent})), WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+	served := &servedPair{}
+	err = Run(context.Background(), stdout, WithApp(app.WithNow(func() time.Time { return time.Unix(100, 0) })), WithApp(app.WithHomeDir(t.TempDir())), WithApp(app.WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent})), served.option(), WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
 		called = true
-		state := modelState(t, model)
+		state := modelState(t, served.state())
 		if state == nil {
 			t.Fatal("expected non-nil session.State in TUI model")
 		}
@@ -862,6 +873,7 @@ func TestRunQuiescesBeforeShutdownHookAndClosesAfter(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	now := time.Unix(100, 0)
+	served := &servedPair{}
 
 	// Program runner: start tracked work and add a message so the runtime
 	// has a turn to quiesce. The work ends when quiesce cancels
@@ -870,7 +882,7 @@ func TestRunQuiescesBeforeShutdownHookAndClosesAfter(t *testing.T) {
 	workEnded := make(chan struct{})
 
 	programRunner := func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
-		statePtr = modelState(t, model)
+		statePtr = modelState(t, served.state())
 		statePtr.AddMessage(session.RoleUser, "summarise this turn", session.ContentTypePlain)
 		if err := statePtr.BeginWork(); err != nil {
 			return ProgramResult{Err: err}
@@ -898,7 +910,7 @@ func TestRunQuiescesBeforeShutdownHookAndClosesAfter(t *testing.T) {
 		close(hookRan)
 	}
 
-	err = Run(context.Background(), bytes.NewBuffer(nil), WithApp(app.WithNow(func() time.Time { return now })), WithApp(app.WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent})), WithProgramRunner(programRunner), WithApp(app.WithShutdownHook(shutdownHook)))
+	err = Run(context.Background(), bytes.NewBuffer(nil), WithApp(app.WithNow(func() time.Time { return now })), WithApp(app.WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent})), served.option(), WithProgramRunner(programRunner), WithApp(app.WithShutdownHook(shutdownHook)))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -948,9 +960,10 @@ func TestRunReloadsAfterInlineTrust(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	var runs int
+	served := &servedPair{}
 	programRunner := func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
 		runs++
-		st := modelState(t, model)
+		st := modelState(t, served.state())
 		switch runs {
 		case 1:
 			if st.Config.Project.Name == "trusted-inline" {
@@ -971,7 +984,7 @@ func TestRunReloadsAfterInlineTrust(t *testing.T) {
 	}
 
 	var nowUnix int64 = 100
-	err := Run(context.Background(), bytes.NewBuffer(nil), WithApp(app.WithNow(func() time.Time { nowUnix++; return time.Unix(nowUnix, 0) })), WithProgramRunner(programRunner))
+	err := Run(context.Background(), bytes.NewBuffer(nil), WithApp(app.WithNow(func() time.Time { nowUnix++; return time.Unix(nowUnix, 0) })), served.option(), WithProgramRunner(programRunner))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -1079,10 +1092,11 @@ func TestRunShutdownQuiesceBoundedToOneSecond(t *testing.T) {
 	now := time.Unix(100, 0)
 
 	start := time.Now()
+	served := &servedPair{}
 	err = Run(context.Background(), bytes.NewBuffer(nil), WithApp(app.WithNow(func() time.Time { return now })), WithApp(app.WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 		return knowledgeEnabledConfig(server.URL, "test-provider"), nil
-	})), WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
-		state := modelState(t, model)
+	})), served.option(), WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+		state := modelState(t, served.state())
 		state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 		return ProgramResult{}
 	}),
@@ -1116,10 +1130,11 @@ func TestRunShutdownDoesNotWaitForWorkers(t *testing.T) {
 	now := time.Unix(100, 0)
 
 	start := time.Now()
+	served := &servedPair{}
 	err = Run(context.Background(), bytes.NewBuffer(nil), WithApp(app.WithNow(func() time.Time { return now })), WithApp(app.WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 		return knowledgeEnabledConfig(server.URL, "test-provider"), nil
-	})), WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
-		state := modelState(t, model)
+	})), served.option(), WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+		state := modelState(t, served.state())
 		state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 		return ProgramResult{}
 	}),
@@ -1143,6 +1158,7 @@ func TestEndedSessionStillResumes(t *testing.T) {
 	defer os.Chdir(origWd)
 	now := time.Unix(100, 0)
 	run := func(extra ...app.Option) {
+		served := &servedPair{}
 		base := []app.Option{
 			app.WithNow(func() time.Time { return now }),
 			app.WithConfigLoader(func(config.LoadOptions) (config.Config, error) { return config.Default(), nil }),
@@ -1150,9 +1166,10 @@ func TestEndedSessionStillResumes(t *testing.T) {
 		}
 		opts := []Option{
 			WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
-				modelState(t, model).AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+				modelState(t, served.state()).AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 				return ProgramResult{}
 			}),
+			served.option(),
 			WithApp(base...),
 			WithApp(extra...),
 		}
@@ -1191,15 +1208,15 @@ func TestEndedSessionStillResumes(t *testing.T) {
 // suite would notice if it were dropped.
 func TestRunPassesAuthResolverToTheSeam(t *testing.T) {
 	auth := &countingAuthResolver{}
+	served := &servedPair{}
 	var got provider.AuthResolver
-	var isAdapter bool
+	var isPipe bool
 	err := Run(context.Background(), bytes.NewBuffer(nil), WithApp(app.WithNow(func() time.Time { return time.Unix(100, 0) })), WithApp(app.WithWorkingDir(t.TempDir())), WithApp(app.WithHomeDir(t.TempDir())), WithApp(app.WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent})), WithApp(app.WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
 		return config.Default(), nil
-	})), WithApp(app.WithAuthResolver(auth)), WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
-		host, ok := model.(tui.Model).Host().(*inproc.Host)
-		isAdapter = ok
-		if ok {
-			got = host.AuthResolver()
+	})), WithApp(app.WithAuthResolver(auth)), served.option(), WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+		_, isPipe = model.(tui.Model).Host().(*rpc.Host)
+		if isPipe {
+			got = served.serviceHost().AuthResolver()
 		}
 		return ProgramResult{}
 	}),
@@ -1207,8 +1224,8 @@ func TestRunPassesAuthResolverToTheSeam(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
-	if !isAdapter {
-		t.Fatal("the TUI model does not hold the in-process adapter")
+	if !isPipe {
+		t.Fatal("the TUI model does not hold the pipe's client")
 	}
 	if got == nil {
 		t.Fatal("the seam carries no auth resolver")

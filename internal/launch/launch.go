@@ -1,9 +1,11 @@
 // Package launch is embedded mode's composition root (P3 R1): it runs the
-// TUI over the agent side, in process, and owns the loop around it.
+// TUI over the agent host on an in-memory pipe, and owns the loop around it.
 package launch
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/signal"
@@ -11,7 +13,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acp/service"
 	"marshal/internal/app"
 	"marshal/internal/app/clipboard"
 	"marshal/internal/app/tui"
@@ -31,6 +33,12 @@ type ProgramRunner func(ctx context.Context, model tea.Model, output io.Writer) 
 type options struct {
 	programRunner ProgramRunner
 	appOpts       []app.Option
+	// agentConnWrap wraps the agent's end of each pass's pipe; tests use it to
+	// close the connection under the program.
+	agentConnWrap func(io.ReadWriteCloser) io.ReadWriteCloser
+	// onServed hands each pass's service pair to the test before the program
+	// runs.
+	onServed func(*service.Host, *service.Session)
 }
 
 type Option func(*options)
@@ -80,17 +88,25 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			return err
 		}
 
-		// The seam is built from the runtime's own service deps plus the
+		// The pair is built from the runtime's own service deps plus the
 		// startup trust prompt and its decision, which belong to the
-		// embedding.
-		seamHost, seamSession := inproc.New(embedded.SessionDeps(ctx))
+		// embedding. The TUI reaches it through marshal acp's agent host on
+		// one end of an in-memory pipe, as one ACP client of its own agent.
+		seamHost, seamSession := service.New(embedded.SessionDeps(ctx))
+		if runOpts.onServed != nil {
+			runOpts.onServed(seamHost, seamSession)
+		}
+		conn, err := dialAgent(ctx, rt, seamHost, seamSession, runOpts.agentConnWrap)
+		if err != nil {
+			return err
+		}
 
 		var tuiOpts []tui.Option
 		// F18: eager-seed the @file completion popup with the repo file
 		// index, read through the session so the popup and the lazy load
 		// share one path. Failures (no DB, empty index) are non-fatal — the
 		// TUI falls back to a lazy load on the first @-keystroke.
-		if filePaths, ferr := seamSession.FileIndex(ctx); ferr == nil && len(filePaths) > 0 {
+		if filePaths, ferr := conn.sess.FileIndex(ctx); ferr == nil && len(filePaths) > 0 {
 			tuiOpts = append(tuiOpts, tui.WithFileIndex(filePaths))
 		}
 		if embedded.FirstRun() {
@@ -115,11 +131,49 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 
 		select {
 		case <-ctx.Done():
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), serverStopTimeout)
+			_ = conn.close(closeCtx)
+			closeCancel()
 			return nil
 		default:
 		}
 
-		progResult := runOpts.programRunner(ctx, tui.New(seamHost, seamSession, tuiOpts...), stdout)
+		// The program's context ends when the agent's connection does, so a
+		// connection that closes ends the program with the agent's error (R11).
+		progCtx, progCancel := context.WithCancel(ctx)
+		go func() {
+			select {
+			case <-conn.lost():
+				progCancel()
+			case <-progCtx.Done():
+			}
+		}()
+
+		progResult := runOpts.programRunner(progCtx, tui.New(conn.host, conn.sess, tuiOpts...), stdout)
+		progCancel()
+
+		connectionLost := false
+		select {
+		case <-conn.lost():
+			connectionLost = true
+		default:
+		}
+
+		// The service is released before the runtime closes, as the ACP host
+		// closes a session (decision 7).
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), serverStopTimeout)
+		if cerr := conn.close(closeCtx); cerr != nil {
+			loggerOf(rt).Warn("launch: closing the connection", "error", cerr)
+		}
+		closeCancel()
+
+		if connectionLost {
+			agentErr := conn.err()
+			if agentErr == nil {
+				agentErr = errors.New("the connection closed")
+			}
+			return embedded.Finish(errors.Join(progResult.Err, fmt.Errorf("launch: the agent's connection closed: %w", agentErr)))
+		}
 
 		if progResult.ResumeSession != "" && progResult.Err == nil {
 			// User chose to resume a different session. Tear down the

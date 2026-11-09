@@ -28,6 +28,71 @@ func browserDB(t *testing.T) *db.DB {
 	return database
 }
 
+// TestMemoriesListsTheProjectsOwnRows pins Memories' mapping and DeleteMemory:
+// the session's project rows with their kind, content, confidence and creation
+// time, and none of another project's.
+func TestMemoriesListsTheProjectsOwnRows(t *testing.T) {
+	database := browserDB(t)
+	cwd := "/repo"
+	projectID, err := database.GetOrCreateProject(cwd, "repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	otherID, err := database.GetOrCreateProject("/other", "other")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject other: %v", err)
+	}
+	if err := database.CreateSession("s1", projectID, "", time.Unix(1000, 0)); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := database.CreateSession("s9", otherID, "", time.Unix(1000, 0)); err != nil {
+		t.Fatalf("CreateSession other: %v", err)
+	}
+
+	created := time.Unix(4000, 0).UTC()
+	if err := database.SaveMemory(projectID, "fact", "the repo uses sqlite.", "s1", created); err != nil {
+		t.Fatalf("SaveMemory: %v", err)
+	}
+	if err := database.SaveMemory(otherID, "fact", "another project's memory.", "s9", created); err != nil {
+		t.Fatalf("SaveMemory other: %v", err)
+	}
+
+	state := session.New(config.Default(), cwd, time.Unix(500, 0), session.Persistence{DB: database, SessionID: "s1"})
+	_, sess := New(Deps{State: state, ProjectID: projectID})
+
+	got, err := sess.Memories(context.Background())
+	if err != nil {
+		t.Fatalf("Memories: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("Memories = %+v, want the session project's one row", got)
+	}
+	entry := got[0]
+	if entry.Kind != "fact" {
+		t.Errorf("Kind = %q, want fact", entry.Kind)
+	}
+	if entry.Content != "the repo uses sqlite." {
+		t.Errorf("Content = %q, want the saved text", entry.Content)
+	}
+	if entry.Confidence != "tentative" {
+		t.Errorf("Confidence = %q, want tentative", entry.Confidence)
+	}
+	if want := acpwire.Millis(created); entry.CreatedAt != want {
+		t.Errorf("CreatedAt = %d, want %d", entry.CreatedAt, want)
+	}
+
+	if err := sess.DeleteMemory(context.Background(), entry.ID); err != nil {
+		t.Fatalf("DeleteMemory: %v", err)
+	}
+	after, err := sess.Memories(context.Background())
+	if err != nil {
+		t.Fatalf("Memories after delete: %v", err)
+	}
+	if len(after) != 0 {
+		t.Errorf("Memories after delete = %+v, want none", after)
+	}
+}
+
 // TestListSessionsReadsTheDatabase pins ListSessions' mapping: the sessions of
 // one working directory, in order, with their IDs, titles and message counts,
 // and none of another directory's.

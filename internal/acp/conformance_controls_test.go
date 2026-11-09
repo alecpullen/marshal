@@ -632,11 +632,18 @@ func reviewRunsOnTheRunPath(t *testing.T, open func(t *testing.T, d service.Deps
 		t.Error("no stop group was registered while the review ran")
 	}
 
-	// The refusal is unclassified, and the wire answers an unclassified error
-	// with its own opaque text, so the two arms agree on the refusal itself:
-	// the call fails, and it is not one of the agent's coded refusals.
-	if err := sess.Review(ctx, acpwire.ReviewParams{Range: "a..b", Base: "main"}); err == nil || closedCode(err) != "" {
+	// The refusal is unclassified, and the wire now carries an unclassified
+	// error's message (decision 1), so both arms agree on the refusal itself:
+	// the call fails, it keeps the service's own sentence, and it is not one of
+	// the agent's coded refusals.
+	const refusal = "review: --base and an explicit range are mutually exclusive"
+	switch err := sess.Review(ctx, acpwire.ReviewParams{Range: "a..b", Base: "main"}); {
+	case err == nil:
+		t.Errorf("Review with a range and a base = nil, want an unclassified refusal")
+	case closedCode(err) != "":
 		t.Errorf("Review with a range and a base = %v, want an unclassified refusal", err)
+	case err.Error() != refusal:
+		t.Errorf("refusal = %q, want the service's %q", err.Error(), refusal)
 	}
 	if len(calls) != 1 {
 		t.Errorf("review calls = %+v, want the refused review to call nothing", calls)
@@ -802,9 +809,8 @@ func promptCodesAProviderError(t *testing.T, open func(t *testing.T, d service.D
 
 // promptPassesOtherErrorsThrough pins the other half of decision 4: an error
 // the agent did not classify reaches the caller as itself, not reframed as one
-// of its coded refusals. The wire answers an unclassified error with its own
-// opaque text (F-SEC-37), so what both arms agree on is that the run's failure
-// is neither swallowed nor coded.
+// of its coded refusals. The wire now carries an unclassified error's message
+// (decision 1), so both arms also agree on the run's own sentence.
 func promptPassesOtherErrorsThrough(t *testing.T, open func(t *testing.T, d service.Deps) seam) {
 	fake := newFakeRunner()
 	fake.err = errors.New("boom")
@@ -816,6 +822,9 @@ func promptPassesOtherErrorsThrough(t *testing.T, open func(t *testing.T, d serv
 	}
 	if code := closedCode(err); code != "" {
 		t.Errorf("err = %v carries code %q, want an unclassified error", err, code)
+	}
+	if got := err.Error(); got != "boom" {
+		t.Errorf("err = %q, want the run's own sentence %q", got, "boom")
 	}
 }
 
@@ -1195,8 +1204,8 @@ func listWorkNamesTheSessionsConversation(t *testing.T, open func(t *testing.T, 
 // aStaleCursorIsCoded pins that a stale work cursor crosses the seam as
 // CodeStaleWorkCursor, and that any other failure reaches the caller as
 // itself: not swallowed, and not reframed as the stale-cursor code. The wire
-// answers an unclassified error with its own opaque text (F-SEC-37), so the
-// service's message stays its own only in process.
+// now carries an unclassified error's message (decision 1), so the service's
+// sentence survives both arms.
 func aStaleCursorIsCoded(t *testing.T, open func(t *testing.T, d service.Deps) seam) {
 	f := &fakeWork{pageErr: viewmodel.ErrWorkStaleCursor}
 	sess := open(t, service.Deps{State: seamState(t, "s1"), Work: f})
@@ -1212,8 +1221,11 @@ func aStaleCursorIsCoded(t *testing.T, open func(t *testing.T, d service.Deps) s
 	if err == nil {
 		t.Fatalf("other err = nil, want the service's failure")
 	}
-	if got, ok := acpclient.CodeOf(err); ok {
-		t.Fatalf("other err = %v carries code %q, want none", err, got)
+	if acpclient.IsCode(err, acpwire.CodeStaleWorkCursor) {
+		t.Fatalf("other err = %v carries the stale-cursor code, want none", err)
+	}
+	if got := err.Error(); got != "boom" {
+		t.Fatalf("other err = %q, want the service's sentence %q", got, "boom")
 	}
 }
 

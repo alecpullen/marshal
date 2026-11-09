@@ -514,7 +514,15 @@ func TestSetProviderKeyForAMarshalClientRejectsAMask(t *testing.T) {
 	err = a.call(acpwire.MethodSetProviderKey, acpwire.ProviderKeyParams{
 		SessionID: "s1", Name: "local", Key: "••••-key",
 	}, nil)
-	rpcCode(t, err)
+	// A marshal client's unclassified failure keeps its sentence (decision 1),
+	// so the wire carries the service's refusal rather than a fixed text.
+	var refused *acpwire.Error
+	if !errors.As(err, &refused) || refused.Code != "" {
+		t.Fatalf("err = %v, want the service's uncoded refusal", err)
+	}
+	if !strings.Contains(err.Error(), "no stored secret matches its mask") {
+		t.Fatalf("err = %q, want the service's mask sentence", err.Error())
+	}
 	after, err := os.ReadFile(s.user)
 	if err != nil {
 		t.Fatalf("read user config: %v", err)
@@ -523,8 +531,8 @@ func TestSetProviderKeyForAMarshalClientRejectsAMask(t *testing.T) {
 		t.Fatalf("the refused write changed the file:\n%s\nwant\n%s", after, data)
 	}
 
-	// Over the wire the failure is opaque (F-SEC-37), so the manager is asked
-	// directly for the sentence the service refused with.
+	// The manager answers with the same sentence in process, so the two arms
+	// agree on the refusal (decision 1).
 	raw := json.RawMessage(`{"sessionId":"s1","name":"local","key":"••••-key"}`)
 	_, derErr := a.settings.SetProviderKey(context.Background(), raw)
 	if derErr == nil || !strings.Contains(derErr.Error(), "no stored secret matches its mask") {

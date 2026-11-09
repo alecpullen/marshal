@@ -15,6 +15,8 @@ type Session struct {
 	id     string
 	conn   *Conn
 	stacks *Stacks
+	// host owns this session's registry entry: Close retires it through it.
+	host *Host
 
 	mu     sync.Mutex
 	status acpwire.SessionStatus
@@ -39,12 +41,19 @@ type Session struct {
 	pending *pendingMirror
 	// work is the work mirror (work.go): nil until its first read creates it.
 	work *workMirror
+	// end is the end-flow mirror (ending.go): nil until its first read
+	// creates it.
+	end *endMirror
 	// config is the config mirror (settings.go): nil until its first read
 	// creates it.
 	config *configMirror
 	// closed says the connection ended, so changed is closed and nothing
 	// may be sent on it.
-	closed  bool
+	closed bool
+	// closing says a Close's session/close is in flight, so a second caller
+	// does not send a second one. It is cleared when the call fails, so a
+	// refused close can be tried again.
+	closing bool
 	changed chan struct{}
 
 	// ready is closed once Attach's call has settled, and err is its outcome,
@@ -81,6 +90,7 @@ func (h *Host) Attach(ctx context.Context, sessionID string) (*Session, error) {
 	session := &Session{
 		id:      sessionID,
 		conn:    h.conn,
+		host:    h,
 		stacks:  h.stacks,
 		changed: make(chan struct{}, 1),
 		ready:   make(chan struct{}),
@@ -231,11 +241,10 @@ func (s *Session) closeLocked() {
 }
 
 // routeNotify hands every session/update to the host's stack mirror, then
-// applies a session_status, sheet, pending_requests, session_config or
-// work_snapshot update to
-// the attached session it names and drops one for a session that is not
-// attached. Any other kind is ignored. It runs on the read goroutine, before
-// the caller's Notify sees the frame.
+// applies a session_status, sheet, pending_requests, session_config,
+// work_snapshot or end_work update to the attached session it names and drops
+// one for a session that is not attached. Any other kind is ignored. It runs
+// on the read goroutine, before the caller's Notify sees the frame.
 func (h *Host) routeNotify(method string, params json.RawMessage) {
 	if method != acpwire.MethodSessionUpdate {
 		return
@@ -305,6 +314,16 @@ func (h *Host) routeNotify(method string, params json.RawMessage) {
 			return
 		}
 		session.applyConfig(value.Config)
+	case acpwire.UpdateEndWork:
+		var work acpwire.EndWorkUpdate
+		if err := json.Unmarshal(update.Update, &work); err != nil {
+			return
+		}
+		session := h.session(update.SessionID)
+		if session == nil {
+			return
+		}
+		session.applyEnd(work.Work)
 	}
 }
 

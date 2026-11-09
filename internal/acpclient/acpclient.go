@@ -45,7 +45,8 @@ type Host interface {
 	// closing the session it replaces. A name that is not empty is the new
 	// session's title. A failure leaves the current session as it was.
 	//
-	// ACP: session/new (exists).
+	// ACP: session/new (exists), with replaces naming the current session: the
+	// agent builds the new session inside the same runtime. Asynchronous (R6).
 	NewSession(ctx context.Context, name string) (Session, error)
 
 	// TrustPrompt is the directory whose project config waits for a trust
@@ -67,7 +68,8 @@ type Host interface {
 	// most recent first, at most limit. It fails with CodeNoDatabase when
 	// the agent has no database.
 	//
-	// ACP: session/list (exists).
+	// ACP: session/list (exists). A marshal client's call names its current
+	// session, whose service host serves it.
 	ListSessions(ctx context.Context, cwd string, limit int) ([]acpwire.SessionEntry, error)
 
 	// ProviderTemplates lists the provider catalog, sorted by ID, each with
@@ -499,13 +501,14 @@ type Session interface {
 	// for this run only, and returns when it ends. It starts, refuses and stops
 	// as Prompt does; a stopped run returns no error.
 	//
-	// ACP: session/swarm_start (exists).
+	// ACP: session/swarm_start (exists). A marshal client's call is served by
+	// the session's service.
 	StartSwarm(ctx context.Context, params acpwire.SwarmParams) error
 
 	// PlanPreflight inspects the plan a run would execute and resolves the
 	// verify gate it would use, without running or writing anything.
 	//
-	// ACP: session/sdd_preflight (new in P3).
+	// ACP: session/sdd_preflight (exists).
 	PlanPreflight(ctx context.Context, params acpwire.PlanPreflightParams) (acpwire.PlanPreflight, error)
 
 	// StartSDD runs the plan at params.PlanPath with params' strategy, role
@@ -514,34 +517,37 @@ type Session interface {
 	// its human gate pauses returns CodeHumanGateRequired: the question is in
 	// Status, and AnswerSDDGate resumes the run.
 	//
-	// ACP: session/sdd_start (exists).
+	// ACP: session/sdd_start (exists). A marshal client's call is served by
+	// the session's service.
 	StartSDD(ctx context.Context, params acpwire.SDDParams) error
 
 	// AnswerSDDGate records answer as the user's message and resumes the plan
 	// run paused at its human gate, and returns when that run ends again, as
 	// StartSDD does.
 	//
-	// ACP: session/sdd_answer (exists).
+	// ACP: session/sdd_answer (exists). A marshal client's call is served by
+	// the session's service.
 	AnswerSDDGate(ctx context.Context, answer string) error
 
 	// StopSDD abandons the plan run paused at its human gate: the question
 	// clears and the run can no longer be answered.
 	//
-	// ACP: session/sdd_stop (new in P3).
+	// ACP: session/sdd_stop (exists).
 	StopSDD(ctx context.Context) error
 
 	// AuthorPlan runs the plan author over params and returns the candidate it
 	// wrote, for review. It starts, refuses and stops as Prompt does; a stopped
 	// run returns StopReasonCancelled and no error.
 	//
-	// ACP: session/sdd_author (new in P3).
+	// ACP: session/sdd_author (exists).
 	AuthorPlan(ctx context.Context, params acpwire.AuthorPlanParams) (acpwire.AuthoredPlan, error)
 
 	// ActiveWork is the work an end of the session would stop, as the
 	// active-work warning shows it. It is read without blocking; AcceptEnd
 	// checks the user's choice against the live membership.
 	//
-	// ACP: session/end_work (new in P3). An end_work update refreshes it.
+	// ACP: session/end_work (exists). An end_work update refreshes it; the
+	// first read subscribes.
 	ActiveWork() acpwire.EndWork
 
 	// AcceptEnd accepts an end of the session for params' intent. It checks
@@ -550,26 +556,26 @@ type Session interface {
 	// reports that work in Expanded. Accepting an end already accepted changes
 	// nothing.
 	//
-	// ACP: session/end_accept (new in P3).
+	// ACP: session/end_accept (exists).
 	AcceptEnd(ctx context.Context, params acpwire.EndAcceptParams) (acpwire.EndDecision, error)
 
 	// WaitForEnd stops and joins the accepted end's work. It may be retried: a
 	// failure reports the work still outstanding and never latches success.
 	//
-	// ACP: session/end_wait (new in P3).
+	// ACP: session/end_wait (exists).
 	WaitForEnd(ctx context.Context) error
 
 	// RunExitAnalysis runs the exit postmortem's agent pass with goal, after an
 	// accepted exit has settled. The agent grants the pass its access, restores
 	// it afterwards, and joins the pass's work before returning.
 	//
-	// ACP: session/exit_analysis (new in P3).
+	// ACP: session/exit_analysis (exists).
 	RunExitAnalysis(ctx context.Context, goal string) error
 
 	// Postmortem writes the session's postmortem report and returns the path
 	// it wrote.
 	//
-	// ACP: session/postmortem (new in P3).
+	// ACP: session/postmortem (exists).
 	Postmortem(ctx context.Context) (string, error)
 
 	// Close ends the session: it cancels the run in flight, settles every
@@ -577,7 +583,9 @@ type Session interface {
 	// answering with their final values, and calls fail. Closing a closed
 	// session does nothing.
 	//
-	// ACP: session/close (exists).
+	// ACP: session/close (exists). A marshal client's call is served by the
+	// session's service: it ends the conversation and leaves the runtime to
+	// the embedding.
 	Close(ctx context.Context) error
 
 	// AddNote appends note to the transcript without starting a turn: a

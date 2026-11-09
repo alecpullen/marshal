@@ -99,9 +99,9 @@ new client.
 
 ## Where the code is today
 
-- **The interface** has 111 methods. 95 send an ACP method that exists,
-  and 14 are carried by one of the 14 ACP methods that are new in P3
-  ("Methods P3 adds", below). Two have no ACP method at all.
+- **The interface** has 111 methods. 109 send an ACP method that exists, so
+  every one of the 22 methods "Methods P3 adds" (below) is registered, and
+  two have no ACP method at all.
 - **The adapter is most of the logic.** `inproc` converts runtime values
   to wire values and applies the policy the TUI used to apply. That
   covers the run-error classification, row-action IDs, the sheet's cache,
@@ -114,7 +114,7 @@ new client.
   (`:312`). Handlers run on their own goroutines (`handlerWG`), and nothing
   orders a response after the notifications its handler caused. A
   long-running handler runs in a `cancellable` context, so the client's
-  `$/cancel_request` ends the run in flight. 125 methods are registered
+  `$/cancel_request` ends the run in flight. 139 methods are registered
   (`host.go`), plus the `session/cancel` notification.
 - **What the agent pushes today:**
   - the ACP chunk kinds (`agent_message_chunk`, `agent_thought_chunk`,
@@ -1865,9 +1865,9 @@ changed (R9); the TUI still runs on `inproc`, in process, until plan 8.
   under a 5s timeout and is refreshed by each `end_work` update — an update
   for a session that has not read its membership is dropped. `rpc.Host` gains
   `ListSessions` and the unexported `replaceSession`, with `retire` behind both
-  close paths and `Stacks.forget` for a replaced session's stacks. `NewSession`
-  and the two interface checks are left to whichever of plans 6c and 7b merges
-  second.
+  close paths and `Stacks.forget` for a replaced session's stacks. Plan 7b
+  merged first, so this plan also adds `Host.NewSession`, a wrapper over
+  `replaceSession`, and the two compile-time interface checks (decision 8).
 - **The harness runs the group on both arms.** `conformance_ending_test.go`
   adds `serveEnds` for the pipe arm, `TestEndingConformance` (16 session cases
   over `seamArms()`, 2 host cases over `hostArms()`, including
@@ -1878,14 +1878,77 @@ changed (R9); the TUI still runs on `inproc`, in process, until plan 8.
 - **The budget (R10).** `TestEndCallBudget` over the 2,000-call session:
   `AcceptEnd` medians **23.8µs** over 30 calls, its barrier and the end
   forwarder's fence included, against R10's 1ms.
-- **The counts moved** (re-measured on this tree, after plans 6b and 7a):
-  `acpclient.Methods` has 111 rows, now 95 of them an existing ACP method
-  (eight more: `PlanPreflight`, `StopSDD`, `AuthorPlan`, `ActiveWork`,
-  `AcceptEnd`, `WaitForEnd`, `RunExitAnalysis` and `Postmortem`), 14 new in P3
-  carried by 14 distinct new methods, and 2 carrying none; `acp.Server`
-  registers 125 methods (117 plus the eight), plus the `session/cancel`
-  notification. These supersede the 6b-and-7a numbers above.
+- **The counts moved** (re-measured on the merged tree, plans 6c and 7b):
+  `acpclient.Methods` has 111 rows, now 109 of them an existing ACP method
+  (this plan's eight: `PlanPreflight`, `StopSDD`, `AuthorPlan`, `ActiveWork`,
+  `AcceptEnd`, `WaitForEnd`, `RunExitAnalysis` and `Postmortem`), none carried
+  by a method new in P3, and 2 carrying none; `acp.Server` registers 139
+  methods (117 plus this plan's eight and plan 7b's fourteen), plus the
+  `session/cancel` notification. These supersede the 6b-and-7a numbers above
+  and plan 7b's branch measurement below, which was taken before this plan
+  merged.
 - **Open for P4.** A replacement holds `lifecycleMu` while it builds the
   runner, so a close or a load of another session waits for it; and a marshal
   client's `session/list` reads the project database for any `cwd` it names,
   where ACP's own handler checks the trusted roots (F-SEC-33).
+### Plan 7b — notes, commands, browsers and project data
+
+- **`internal/acp/browsers.go` holds the connection's `BrowserManager`**: the
+  fourteen new methods (`session/note`, `session/command_action`,
+  `session/prompt_history`, `prompt_history_save`, `messages`, `file_index`,
+  `intelligence`, `plans`, `sdd_discard`, `sdd_scaffold`, `skills_install`,
+  `skills_autoload`, `skill_gate_set`, `skill_gate_clear`) and, through
+  `marshalOr`, the fourteen existing ones (`session/command`,
+  `command_list`, `diff`, `file`, `memory_list`, `memory_delete`, the five
+  `plugins_*`, `skills_list`, `skills_load`, `skills_remove`). It resolves a
+  session's service with `RequestManager.service`'s two refusals, holds no
+  forwarders and contributes nothing to the barrier.
+- **Every browser handler keeps its sentence.** Each new method registers
+  through `settingsFailureOf`, and each `marshalOr` method's marshal branch
+  is wrapped in it, so a plain service error reaches the client as an
+  `*acpwire.Error` carrying its text rather than the server's fixed
+  `internal error` (F-SEC-37). A client without the capability keeps ACP's
+  handler, byte for byte (R9): the fourteen lines it used to register are
+  gone from `registerHandlers`, and the managers they belonged to are handed
+  to `registerBrowsers` as the `others` map.
+- **The two installs and the two scans are cancellable.** `plugins_install_scan`,
+  `plugins_install_confirm` and `skills_install` take their context from
+  `cancellable`, so the client's context ending stops a clone or an install
+  (R2). No test can hold a clone open — `plugins.NewInstaller` offers no seam
+  for it — so the service's `TestPluginScanWithAnEndedContextStagesNothing`
+  keeps pinning what an ended context does.
+- **A note is synchronous.** `AddNote` returns once the response barrier
+  flushed the note's stack patch, so a read after it shows the note, as in
+  process (R6). It stays a call rather than a push because the agent runs each
+  request on its own goroutine: only a returned call orders the note before a
+  later call's effect.
+- **The command list is fetched once and kept.** `rpc.Session.Commands()`
+  sends `session/command_list` on its first read under `commandsCallTimeout`
+  (5s) and keeps the answer, a failed read not kept; the registry does not
+  change while the runtime runs, and a replacement shares it. `commands_changed`
+  was dropped for that reason, as plan 7a dropped `session/tools`.
+- **`internal/acpclient/rpc/browsers.go` holds the session's twenty-eight
+  calls**, each sending its method with its params type and the session's ID,
+  as the turn calls do.
+- **The harness's pipe arm serves the browsers and flushes the transcript.**
+  `serveBrowsers` registers the manager over the served service with a nil
+  `others`; `serveTranscript` now attaches its event broker to the served
+  state (decision 6), without which a note marks nothing dirty and the idle
+  stack loop never flushes it. `conformance_browsers_test.go` runs 31 cases on
+  each arm and they agree; the cases moved out of `internal/acp/service` with
+  their fixtures, and where one compared a plain error with `errors.Is` it
+  compares the sentence instead, because only an `*acpwire.Error` keeps a code
+  across the wire.
+- **The budgets (R10).** Over the 2,000-call session, `AddNote` on the pipe arm
+  medians **4.56ms** over 30 runs against R10's 10ms — one flush, which the TUI
+  already paid in process: the in-process call and its read median **4.32ms**
+  beside it. `TestBrowserCallBudget`'s `SetSkillGate`, whose answer carries a
+  `session_status` update, medians **96µs** against R10's 1ms.
+- **The counts moved** (re-measured on this branch, plan 6c not merged):
+  `acpclient.Methods` has 111 rows, now 101 of them an existing ACP method
+  (fourteen more: `AddNote`, `CommandAction`, `RecentPrompts`, `SavePrompt`,
+  `Messages`, `FileIndex`, `Intelligence`, `Plans`, `DiscardCandidate`,
+  `ScaffoldPlan`, `InstallSkill`, `SetSkillAutoload`, `SetSkillGate` and
+  `ClearSkillGateDecision`), 8 new in P3 carried by 8 distinct new methods,
+  and 2 carrying none; `acp.Server` registers 131 methods (117 plus the
+  fourteen), plus the `session/cancel` notification.

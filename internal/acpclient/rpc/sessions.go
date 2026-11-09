@@ -3,8 +3,20 @@ package rpc
 import (
 	"context"
 
+	"marshal/internal/acpclient"
 	"marshal/internal/acpwire"
 )
+
+// NewSession creates a session in the agent that replaces the current one,
+// attaches it, and makes it current. A failure leaves the current session as
+// it was.
+func (h *Host) NewSession(ctx context.Context, name string) (acpclient.Session, error) {
+	session, err := h.replaceSession(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return session, nil
+}
 
 // ListSessions lists the stored sessions the resume picker offers. The agent
 // serves the call from the current session's project, so it names that session
@@ -66,3 +78,8 @@ func (h *Host) retire(s *Session) {
 	s.closeLocked()
 	s.mu.Unlock()
 }
+
+var (
+	_ acpclient.Host    = (*Host)(nil)
+	_ acpclient.Session = (*Session)(nil)
+)

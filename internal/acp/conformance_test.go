@@ -116,6 +116,37 @@ type seam interface {
 	ReconnectMCP(ctx context.Context) (bool, error)
 	SaveProjectConfig(ctx context.Context, cfg config.Config) error
 	SaveVerifyCommands(ctx context.Context, build, test string) error
+
+	AddNote(ctx context.Context, note acpwire.Note) error
+	Commands() []acpwire.CommandInfo
+	Command(ctx context.Context, name string, args []string) (acpwire.CommandResult, error)
+	CommandAction(ctx context.Context, id string) (acpwire.CommandResult, error)
+
+	RecentPrompts(ctx context.Context, limit int) ([]string, error)
+	SavePrompt(ctx context.Context, text string) error
+	Messages(ctx context.Context, query acpwire.MessageQuery) (acpwire.MessagePage, error)
+	FileIndex(ctx context.Context) ([]string, error)
+	Intelligence(ctx context.Context) ([]acpwire.IntelligenceCheck, error)
+	Plans(ctx context.Context) ([]acpwire.PlanCandidate, error)
+	DiscardCandidate(ctx context.Context, path string) error
+	ScaffoldPlan(ctx context.Context) (acpwire.ScaffoldResult, error)
+	Diff(ctx context.Context, query acpwire.DiffQuery) (string, error)
+	ReadFile(ctx context.Context, path string) (acpwire.FileContent, error)
+
+	Memories(ctx context.Context) ([]acpwire.MemoryEntry, error)
+	DeleteMemory(ctx context.Context, id int64) error
+	Plugins(ctx context.Context) ([]acpwire.PluginEntry, error)
+	ScanPlugin(ctx context.Context, source string) (acpwire.PluginScan, error)
+	InstallPlugin(ctx context.Context, token, scope string) error
+	DiscardPluginScan(ctx context.Context, token string) error
+	RemovePlugin(ctx context.Context, name, scope string) error
+	Skills(ctx context.Context) ([]acpwire.SkillEntry, error)
+	LoadSkill(ctx context.Context, scope, source string) (string, error)
+	InstallSkill(ctx context.Context, source, scope string) (string, error)
+	RemoveSkill(ctx context.Context, scope, source string) error
+	SetSkillAutoload(ctx context.Context, name string, on bool) error
+	SetSkillGate(ctx context.Context, on bool) error
+	ClearSkillGateDecision(ctx context.Context, skill string) error
 }
 
 // seamArm opens one implementation of the seam over d.
@@ -230,6 +261,10 @@ func openPipeArmsTB(tb testing.TB, d service.Deps) (hostSeam, seam) {
 	// and this fixture has none.
 	settings := serveSettings(tb, srv, servedHost, served, sessionID)
 	controls := serveControls(tb, srv, served, sessionID)
+	// The browser handlers serve the notes, commands, browsers and project
+	// reads on the same service, and run no forwarders: they add nothing to
+	// the barrier (P3 plan 7b).
+	serveBrowsers(tb, srv, served, sessionID)
 	// The end manager's forwarder carries end_work (P3 plan 6c), so it fences
 	// after the control manager's.
 	ends := serveEnds(tb, srv, servedHost, served, sessionID)
@@ -299,6 +334,11 @@ func serveTranscript(tb testing.TB, srv *Server, d service.Deps, served *service
 	tb.Helper()
 	// The runtime carries an event broker, as stackAgent.install makes one.
 	broker := pubsub.NewBroker[session.Event]()
+	// A runtime attaches its broker to its state. Without it, a call that
+	// changes the transcript marks nothing dirty here, so the idle stack loop
+	// would never flush the patch and a read after a note would miss it (P3
+	// plan 7b decision 6).
+	d.State.SetEventBroker(broker)
 	runtime := func(id string) (*TurnRuntime, bool) {
 		return &TurnRuntime{SessionID: sessionID, State: d.State, Events: broker}, id == sessionID
 	}

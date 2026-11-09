@@ -592,7 +592,8 @@ type Session interface {
 	// system message unless its role is user. It is persisted with the session,
 	// and every client sees it.
 	//
-	// ACP: session/note (new in P3).
+	// ACP: session/note (exists). Synchronous: the call returns once the
+	// note's stack patch is applied (R6).
 	AddNote(ctx context.Context, note acpwire.Note) error
 
 	// SetNotice makes notice the session's banner, replacing any other. A zero
@@ -615,7 +616,9 @@ type Session interface {
 	// Commands lists the session's slash commands in name order, hidden ones
 	// included. It is empty when the session has no command registry.
 	//
-	// ACP: session/command_list (exists).
+	// ACP: session/command_list (exists). Read once, on the first read, and
+	// kept: the registry does not change while the runtime runs. A marshal
+	// client's call is served by the session's service.
 	Commands() []acpwire.CommandInfo
 
 	// Command runs the named command's handler over the session with args and
@@ -625,98 +628,110 @@ type Session interface {
 	// returns an error instead. The row actions of a returned doc carry IDs
 	// CommandAction runs.
 	//
-	// ACP: session/command (exists).
+	// ACP: session/command (exists). A marshal client's call is served by the
+	// session's service.
 	Command(ctx context.Context, name string, args []string) (acpwire.CommandResult, error)
 
 	// CommandAction runs the row action id names, from a recent Command or
 	// CommandAction result, and returns its output. An ID the session no
 	// longer keeps returns an error.
 	//
-	// ACP: session/command_action (new in P3).
+	// ACP: session/command_action (exists).
 	CommandAction(ctx context.Context, id string) (acpwire.CommandResult, error)
 
 	// Memories lists the project's own memories, oldest first. It fails with
 	// CodeNoDatabase when the session has no database.
 	//
-	// ACP: session/memory_list (exists).
+	// ACP: session/memory_list (exists). A marshal client's call is served by
+	// the session's service.
 	Memories(ctx context.Context) ([]acpwire.MemoryEntry, error)
 
 	// DeleteMemory deletes one memory. It fails with CodeNoDatabase when the
 	// session has no database.
 	//
-	// ACP: session/memory_delete (exists).
+	// ACP: session/memory_delete (exists). A marshal client's call is served by
+	// the session's service.
 	DeleteMemory(ctx context.Context, id int64) error
 
 	// Plugins lists the installed plugins: the global lockfile's, then the
 	// project lockfile's when the session is trusted.
 	//
-	// ACP: session/plugins_list (exists).
+	// ACP: session/plugins_list (exists). A marshal client's call is served by
+	// the session's service.
 	Plugins(ctx context.Context) ([]acpwire.PluginEntry, error)
 
 	// ScanPlugin clones source into a staging directory and scans it, without
 	// installing anything. The result's token names the staged clone until
 	// InstallPlugin or DiscardPluginScan takes it, or the session closes.
 	//
-	// ACP: session/plugins_install_scan (exists).
+	// ACP: session/plugins_install_scan (exists). A marshal client's call is
+	// served by the session's service, and its clone is cancellable.
 	ScanPlugin(ctx context.Context, source string) (acpwire.PluginScan, error)
 
 	// InstallPlugin installs the staged clone token names into scope's store,
 	// if its content still hashes as it did when scanned. The staged clone is
 	// deleted whatever the outcome.
 	//
-	// ACP: session/plugins_install_confirm (exists).
+	// ACP: session/plugins_install_confirm (exists). A marshal client's call is
+	// served by the session's service, and its install is cancellable.
 	InstallPlugin(ctx context.Context, token, scope string) error
 
 	// DiscardPluginScan deletes the staged clone token names.
 	//
-	// ACP: session/plugins_install_discard (exists).
+	// ACP: session/plugins_install_discard (exists). A marshal client's call is
+	// served by the session's service.
 	DiscardPluginScan(ctx context.Context, token string) error
 
 	// RemovePlugin deletes an installed plugin and its lockfile entry.
 	//
-	// ACP: session/plugins_remove (exists).
+	// ACP: session/plugins_remove (exists). A marshal client's call is served
+	// by the session's service.
 	RemovePlugin(ctx context.Context, name, scope string) error
 
 	// Skills lists both skill stores, and remembers the listing for LoadSkill
 	// and RemoveSkill.
 	//
-	// ACP: session/skills_list (exists).
+	// ACP: session/skills_list (exists). A marshal client's call is served by
+	// the session's service.
 	Skills(ctx context.Context) ([]acpwire.SkillEntry, error)
 
 	// LoadSkill injects the listed skill into the session, if the store and
 	// the session's index still hold the content the listing saw. It returns
 	// the skill's name.
 	//
-	// ACP: session/skills_load (exists).
+	// ACP: session/skills_load (exists). A marshal client's call is served by
+	// the session's service, which keys the skill by its store and source.
 	LoadSkill(ctx context.Context, scope, source string) (string, error)
 
 	// InstallSkill installs a skill from source into scope's store, and
 	// returns its name.
 	//
-	// ACP: session/skills_install (new in P3).
+	// ACP: session/skills_install (exists). A marshal client's call is served
+	// by the session's service, and its install is cancellable.
 	InstallSkill(ctx context.Context, source, scope string) (string, error)
 
 	// RemoveSkill deletes the listed skill's source from its store.
 	//
-	// ACP: session/skills_remove (exists).
+	// ACP: session/skills_remove (exists). A marshal client's call is served by
+	// the session's service.
 	RemoveSkill(ctx context.Context, scope, source string) error
 
 	// SetSkillAutoload adds name to skills.autoload in the user config, or
 	// removes it, and installs the change in the session's live config.
 	//
-	// ACP: session/skills_autoload (new in P3).
+	// ACP: session/skills_autoload (exists).
 	SetSkillAutoload(ctx context.Context, name string, on bool) error
 
 	// SetSkillGate turns the session's skill load gate on or off. Turning it
 	// on clears its decisions.
 	//
-	// ACP: session/skill_gate_set (new in P3).
+	// ACP: session/skill_gate_set (exists).
 	SetSkillGate(ctx context.Context, on bool) error
 
 	// ClearSkillGateDecision clears the gate's sticky decision for skill, so
 	// its next load asks again.
 	//
-	// ACP: session/skill_gate_clear (new in P3).
+	// ACP: session/skill_gate_clear (exists).
 	ClearSkillGateDecision(ctx context.Context, skill string) error
 
 	// PrepareMCPLogin checks that the OAuth sign-in for the session's MCP
@@ -794,61 +809,64 @@ type Session interface {
 	// most limit entries. A session without a database or a project returns
 	// none.
 	//
-	// ACP: session/prompt_history (new in P3).
+	// ACP: session/prompt_history (exists).
 	RecentPrompts(ctx context.Context, limit int) ([]string, error)
 
 	// SavePrompt adds text to the project's input history. A session without
 	// a database or a project saves nothing and reports no error.
 	//
-	// ACP: session/prompt_history_save (new in P3).
+	// ACP: session/prompt_history_save (exists).
 	SavePrompt(ctx context.Context, text string) error
 
 	// Messages returns the session's transcript messages that query selects.
 	// A closed session keeps answering from its final transcript.
 	//
-	// ACP: session/messages (new in P3).
+	// ACP: session/messages (exists).
 	Messages(ctx context.Context, query acpwire.MessageQuery) (acpwire.MessagePage, error)
 
 	// FileIndex returns the repository's indexed file paths, for the @
 	// completion popup. A session without an index returns none.
 	//
-	// ACP: session/file_index (new in P3).
+	// ACP: session/file_index (exists).
 	FileIndex(ctx context.Context) ([]string, error)
 
 	// Intelligence returns the doctor's intelligence checks: the index, the
 	// embeddings, the language servers and the index watcher.
 	//
-	// ACP: session/intelligence (new in P3).
+	// ACP: session/intelligence (exists).
 	Intelligence(ctx context.Context) ([]acpwire.IntelligenceCheck, error)
 
 	// Plans lists the plans an SDD run can execute, from the configured plans
 	// directory. A plan that does not parse is listed with its error.
 	//
-	// ACP: session/plans (new in P3).
+	// ACP: session/plans (exists).
 	Plans(ctx context.Context) ([]acpwire.PlanCandidate, error)
 
 	// DiscardCandidate removes one authored plan candidate. It refuses a path
 	// that is not a regular file directly inside the plans directory.
 	//
-	// ACP: session/sdd_discard (new in P3).
+	// ACP: session/sdd_discard (exists).
 	DiscardCandidate(ctx context.Context, path string) error
 
 	// ScaffoldPlan writes the runnable starter plan into the plans directory.
 	// It never overwrites a file that is already there.
 	//
-	// ACP: session/sdd_scaffold (new in P3).
+	// ACP: session/sdd_scaffold (exists).
 	ScaffoldPlan(ctx context.Context) (acpwire.ScaffoldResult, error)
 
 	// Diff returns the unified diff of query's range in the session's working
 	// directory, with three lines of context. It never changes the
 	// repository.
 	//
-	// ACP: session/diff (exists). P3 gives it an optional head.
+	// ACP: session/diff (exists). A marshal client's call is served by the
+	// session's service, which takes the range's head; ACP's handler, which
+	// takes none, serves every other client.
 	Diff(ctx context.Context, query acpwire.DiffQuery) (string, error)
 
 	// ReadFile reads one regular file, named relative to the session's
 	// working directory. It refuses a path that leaves the directory.
 	//
-	// ACP: session/file (exists).
+	// ACP: session/file (exists). A marshal client's call is served by the
+	// session's service.
 	ReadFile(ctx context.Context, path string) (acpwire.FileContent, error)
 }

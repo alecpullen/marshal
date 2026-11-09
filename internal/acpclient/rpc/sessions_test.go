@@ -346,3 +346,62 @@ func TestAFailedReplacementKeepsTheCurrentSession(t *testing.T) {
 	case <-time.After(250 * time.Millisecond):
 	}
 }
+
+// TestNewSessionIsTheReplacement pins the interface's NewSession: it is the
+// replacement, and a refusal answers a nil interface rather than a typed nil
+// (decision 8).
+func TestNewSessionIsTheReplacement(t *testing.T) {
+	host, a := dialScripted(t, DialOptions{})
+	attachScripted(t, host, a, "s1", acpwire.SessionStatus{WorkingDir: "B"})
+
+	out := startCall(func() (acpclient.Session, error) {
+		return host.NewSession(context.Background(), "continued")
+	})
+	req := nextMethod(t, a, acpwire.MethodSessionNew)
+	want := acpwire.NewSessionParams{Replaces: "s1", Name: "continued"}
+	if got := decodeCall[acpwire.NewSessionParams](t, req); got != want {
+		t.Fatalf("session/new params = %+v, want %+v", got, want)
+	}
+	a.answer(t, req, acpwire.NewSessionResult{SessionID: "s2"})
+
+	statusReq := nextMethod(t, a, acpwire.MethodStatus)
+	if got := decodeCall[acpwire.StatusParams](t, statusReq); got.SessionID != "s2" {
+		t.Fatalf("session/status named %q, want s2: the new session is attached", got.SessionID)
+	}
+	a.answer(t, statusReq, acpwire.SessionStatus{WorkingDir: "D"})
+
+	res := awaitValue(t, out)
+	if res.err != nil {
+		t.Fatalf("NewSession: %v", res.err)
+	}
+	if res.value == nil {
+		t.Fatal("NewSession returned a nil session")
+	}
+	if got := res.value.ID(); got != "s2" {
+		t.Fatalf("NewSession's session ID = %q, want s2", got)
+	}
+	if got := res.value.Status().WorkingDir; got != "D" {
+		t.Fatalf("NewSession's Status().WorkingDir = %q, want D", got)
+	}
+	if id, err := host.currentID(); err != nil || id != "s2" {
+		t.Fatalf("currentID() = %q, %v after NewSession, want s2", id, err)
+	}
+
+	// A refusal answers a nil interface, not a typed nil a caller could not
+	// tell from a session.
+	failed := startCall(func() (acpclient.Session, error) {
+		return host.NewSession(context.Background(), "again")
+	})
+	refused := nextMethod(t, a, acpwire.MethodSessionNew)
+	a.send(t, codedErrorFrame(t, string(refused.ID), acpwire.Error{
+		Code:    acpwire.CodeBusy,
+		Message: "a turn is running",
+	}))
+	failure := awaitValue(t, failed)
+	if !acpclient.IsCode(failure.err, acpwire.CodeBusy) {
+		t.Fatalf("NewSession error = %v, want code %q", failure.err, acpwire.CodeBusy)
+	}
+	if failure.value != nil {
+		t.Fatalf("NewSession returned %#v alongside its error, want a nil interface", failure.value)
+	}
+}

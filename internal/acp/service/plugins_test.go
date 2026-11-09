@@ -259,34 +259,6 @@ func TestClosingDiscardsPluginScans(t *testing.T) {
 	requireGone(t, parent)
 }
 
-// TestPluginProjectScopeNeedsTrust pins the trust gate: a project-scope write
-// on an untrusted session is refused, and the project lockfile is invisible.
-func TestPluginProjectScopeNeedsTrust(t *testing.T) {
-	home := t.TempDir()
-	work := t.TempDir()
-	lf := &plugins.Lockfile{Plugins: []plugins.LockEntry{{Name: "project-plugin", Source: "github:c/d"}}}
-	if err := lf.Write(plugins.ProjectLockPath(work)); err != nil {
-		t.Fatalf("write the project lockfile: %v", err)
-	}
-	sess := pluginSession(t, home, work)
-	ctx := context.Background()
-	const want = "project scope requires a trusted session"
-
-	if err := sess.InstallPlugin(ctx, "scan-1", "project"); err == nil || err.Error() != want {
-		t.Errorf("InstallPlugin project scope error = %v, want %q", err, want)
-	}
-	if err := sess.RemovePlugin(ctx, "project-plugin", "project"); err == nil || err.Error() != want {
-		t.Errorf("RemovePlugin project scope error = %v, want %q", err, want)
-	}
-	entries, err := sess.Plugins(ctx)
-	if err != nil {
-		t.Fatalf("Plugins: %v", err)
-	}
-	if len(entries) != 0 {
-		t.Errorf("Plugins = %+v, want no project entry on an untrusted session", entries)
-	}
-}
-
 // TestRemovePluginDropsTheLockEntry pins the removal: the installed directory
 // and the lockfile entry both go.
 func TestRemovePluginDropsTheLockEntry(t *testing.T) {

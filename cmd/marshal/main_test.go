@@ -154,6 +154,34 @@ func TestRunDispatchesSnapshotsSubcommand(t *testing.T) {
 	}
 }
 
+// TestDaemonDispatches pins the dispatch anchor: `marshal daemon` must reach
+// the daemon runner with its remaining arguments and all three streams,
+// exactly like `snapshots`. It is asserted through the package-level seam so
+// the test never opens a socket or touches a service manager.
+func TestDaemonDispatches(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	called := false
+	oldDaemon := daemonRunner
+	defer func() { daemonRunner = oldDaemon }()
+	daemonRunner = func(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+		called = true
+		if len(args) != 1 || args[0] != "status" {
+			t.Errorf("args = %v, want [status]", args)
+		}
+		fmt.Fprintln(stdout, "daemon ran")
+		return nil
+	}
+	if err := run(context.Background(), []string{"daemon", "status"}, bytes.NewBuffer(nil), &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if !called {
+		t.Fatal("daemonRunner was not called")
+	}
+	if !strings.Contains(stdout.String(), "daemon ran") {
+		t.Errorf("stdout = %q, want the subcommand's output", stdout.String())
+	}
+}
+
 func TestRunPrintsVersionAndSkipsApp(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	called := false

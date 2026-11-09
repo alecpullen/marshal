@@ -24,6 +24,7 @@ var historyRunner = runHistory
 var calibrateRunner = runCalibrateTokens
 var pluginRunner = runPlugin
 var snapshotsRunner = runSnapshots
+var daemonRunner = runDaemon
 
 func main() {
 	// Drop libmalloc's debugging knobs before anything spawns a child.
@@ -97,6 +98,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	if len(args) > 0 && args[0] == "snapshots" {
 		return snapshotsRunner(ctx, args[1:], stdin, stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "daemon" {
+		return daemonRunner(ctx, args[1:], stdin, stdout, stderr)
 	}
 	if len(args) > 0 {
 		return fmt.Errorf("unknown argument %q", args[0])

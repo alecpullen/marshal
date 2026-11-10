@@ -258,6 +258,14 @@ type Fleet struct {
 	// behaviour; tests inject a fake transport here.
 	newControl func() (*Child, error)
 
+	// newProjectChild builds a project's Child. Nil means a local process
+	// running marshalBin. Tests inject a fake transport here.
+	newProjectChild func(root, socket string) (*Child, error)
+	// projMu guards projects, the lazily started project children, keyed
+	// by their cleaned root.
+	projMu   sync.Mutex
+	projects map[string]*projectChild
+
 	// newRuntime builds the Child for an agent. Tests inject a fake
 	// transport here; production returns a container-backed Child.
 	newRuntime func(a Agent) (*Child, error)
@@ -1952,6 +1960,7 @@ func (f *Fleet) Close() {
 	f.closeOnce.Do(func() { close(f.done) })
 	f.closeAllTerminals()
 	f.stopControl()
+	f.stopProjectChildren()
 	f.stopEgress()
 	f.mu.Lock()
 	rts := make([]*agentRuntime, 0, len(f.runtimes))

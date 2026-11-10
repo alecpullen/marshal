@@ -37,6 +37,7 @@ type agentTransport interface {
 // behaviour Child had before the seam existed.
 type processTransport struct {
 	bin  string
+	dir  string
 	args []string
 	env  []string
 
@@ -44,15 +45,18 @@ type processTransport struct {
 	cmd *exec.Cmd
 }
 
-func newProcessTransport(bin string, args, env []string) *processTransport {
+func newProcessTransport(bin, dir string, args, env []string) *processTransport {
 	if bin == "" {
 		bin = "marshal"
 	}
-	return &processTransport{bin: bin, args: args, env: env}
+	return &processTransport{bin: bin, dir: dir, args: args, env: env}
 }
 
 func (p *processTransport) Open() (io.WriteCloser, io.ReadCloser, io.ReadCloser, error) {
 	cmd := exec.Command(p.bin, p.args...)
+	if p.dir != "" {
+		cmd.Dir = p.dir
+	}
 	if p.env != nil {
 		cmd.Env = append([]string(nil), p.env...)
 	} else {

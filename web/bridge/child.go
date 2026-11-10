@@ -69,8 +69,11 @@ type Child struct {
 	Args []string
 	// Env is the child environment. Nil inherits os.Environ().
 	Env []string
+	// Dir is a local process's working directory. Empty means the bridge's
+	// own.
+	Dir string
 	// Transport supplies each generation's streams and lifecycle. Nil
-	// means a local process built from MarshalBin, Args, and Env.
+	// means a local process built from MarshalBin, Args, Dir, and Env.
 	Transport agentTransport
 	// Containerized reports whether this child runs in a container whose
 	// filesystem view differs from the bridge's, so paths crossing the
@@ -298,7 +301,7 @@ func (c *Child) spawn() error {
 		tr = c.Transport
 		if tr == nil {
 			args := append([]string{"acp"}, c.Args...)
-			tr = newProcessTransport(c.MarshalBin, args, c.Env)
+			tr = newProcessTransport(c.MarshalBin, c.Dir, args, c.Env)
 		}
 	}
 

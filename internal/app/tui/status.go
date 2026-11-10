@@ -505,6 +505,9 @@ func (m Model) statusRightSegment() string {
 	case ctrlCStop:
 		return warningStyle().Render("Ctrl+C again to stop the turn")
 	case ctrlCQuit:
+		if m.detachOnQuit {
+			return warningStyle().Render("Ctrl+C again to detach")
+		}
 		return warningStyle().Render("Ctrl+C again to quit")
 	}
 	// A typed access request queued behind another dock panel is disclosed

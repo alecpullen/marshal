@@ -441,6 +441,12 @@ type Model struct {
 	ctrlCArmedFor  ctrlCAction
 	viewportFollow bool
 
+	// detachOnQuit makes the quit key and /detach leave the session running
+	// (P4 D5): launch passes it in daemon mode, where the session outlives
+	// this program. detached records that this program ended that way.
+	detachOnQuit bool
+	detached     bool
+
 	// Connect panel (docked; opened by /connect, /models, Ctrl+P).
 	connectModel *connect.Model
 	discovered   map[string][]schema.ModelInfo
@@ -584,6 +590,13 @@ func WithHomeDir(homeDir string) Option {
 	return func(m *Model) {
 		m.homeDir = homeDir
 	}
+}
+
+// WithDetachOnQuit makes the quit key and /detach leave the session running
+// (P4 D5): launch passes it in daemon mode. Without it the quit key ends the
+// session as it always has.
+func WithDetachOnQuit() Option {
+	return func(m *Model) { m.detachOnQuit = true }
 }
 
 // WithOpenBrowser overrides the browser launcher used by /mcp auth and the
@@ -1694,6 +1707,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.note("Turn stopped.")
 					m.refreshViewport()
 					return m, nil
+				}
+				if m.detachOnQuit {
+					return m, m.detach()
 				}
 				return m, m.beginEnd(nil)
 			}
@@ -4823,6 +4839,35 @@ func (m *Model) finishQuit() tea.Cmd {
 	return tea.Quit
 }
 
+// detach leaves the session running and quits this program (P4 D5). It is the
+// daemon mode's quit: the session's work belongs to the daemon, so nothing
+// here stops it. It therefore does not close the session, does not cancel
+// agentCancel and does not enter the end flow — the connection's own close is
+// what ends the client's call.
+//
+// The call in flight is cancelled without waiting: unlike finishQuit, there is
+// no result the user is waiting to see, and the daemon keeps the run.
+func (m *Model) detach() tea.Cmd {
+	if m.callInFlight {
+		if m.callCancel != nil {
+			m.callCancel()
+			m.callCancel = nil
+		}
+		m.calls = nil
+	}
+	if m.lspCancel != nil {
+		m.lspCancel()
+		m.lspCancel = nil
+	}
+	// Release the dock's surfaces exactly as finishQuit does: they are
+	// permanently gone once the program stops.
+	m.dock.ReleaseRetained(m.dock.Panel())
+	m.dock.ReleaseRetained(m.composerDisplaced)
+	m.dock.ReleaseRetained(m.endDisplaced)
+	m.detached = true
+	return tea.Quit
+}
+
 // postmortemOnExit returns the configured exit postmortem policy. The config
 // loader deliberately does not reject bad values, so any unrecognised value
 // falls back to "prompt" here at use time.
@@ -6518,6 +6563,16 @@ func (m *Model) newSessionEffect(args []string) tea.Cmd {
 // ResumeSession returns the session ID the user chose to resume, or "" if
 // the program ended normally. It is read by the app.Run program runner.
 func (m Model) ResumeSession() string { return m.resumeSession }
+
+// Detached is the ID of the session a detach left running, or "" when the
+// program did not end by detaching. The launch loop reads it from the final
+// model, as it reads ResumeSession.
+func (m Model) Detached() string {
+	if !m.detached {
+		return ""
+	}
+	return m.sess.ID()
+}
 
 // beginResume records a pending REPLACEMENT for the requested session. The
 // resume ID is applied and announced only after the runtime accepts the work

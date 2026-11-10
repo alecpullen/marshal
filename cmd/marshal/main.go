@@ -18,6 +18,7 @@ import (
 )
 
 var appRunner = launch.Run
+var attachRunner = launch.Attach
 var acpRunner = acp.Run
 var acpListener = acp.ListenAndServe
 var acpViewersRunner = acp.RunWithViewers
@@ -46,6 +47,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	fs.SetOutput(stderr)
 	trustFlag := fs.Bool("trust", false, "trust the current project permanently")
 	versionFlag := fs.Bool("version", false, "print version information and exit")
+	embeddedFlag := fs.Bool("embedded", false, "run the session in this process, without the daemon")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -120,10 +122,47 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	if len(args) > 0 && args[0] == "daemon" {
 		return daemonRunner(ctx, args[1:], stdin, stdout, stderr)
 	}
+	if len(args) > 0 && args[0] == "attach" {
+		return runAttach(ctx, args[1:], stdout, *embeddedFlag)
+	}
 	if len(args) > 0 {
 		return fmt.Errorf("unknown argument %q", args[0])
 	}
-	return appRunner(ctx, stdout)
+	// Daemon mode is the default for a plain launch (P4 D5): when a local
+	// daemon answers and the project needs no trust question, the session runs
+	// there and outlives this program. --embedded keeps today's mode, and so
+	// does a missing home, which leaves no socket to look for.
+	if *embeddedFlag {
+		return appRunner(ctx, stdout)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return appRunner(ctx, stdout)
+	}
+	return appRunner(ctx, stdout, launch.WithDaemon(config.DaemonSocketPath(home)))
+}
+
+// runAttach dispatches `marshal attach [session-id]`: it reattaches the TUI to
+// a daemon session, the project's most recently active one when no ID is given.
+func runAttach(ctx context.Context, args []string, stdout io.Writer, embedded bool) error {
+	if embedded {
+		return fmt.Errorf("marshal attach: --embedded cannot be combined with attach")
+	}
+	if len(args) > 1 {
+		return fmt.Errorf("marshal attach: at most one session ID")
+	}
+	sessionID := ""
+	if len(args) == 1 {
+		if strings.HasPrefix(args[0], "-") {
+			return fmt.Errorf("marshal attach: unexpected flag %q", args[0])
+		}
+		sessionID = args[0]
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("marshal attach: find home directory: %w", err)
+	}
+	return attachRunner(ctx, stdout, config.DaemonSocketPath(home), sessionID)
 }
 
 // acpListenSpec extracts the value of --listen (or --listen=VALUE) from

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"marshal/internal/app/config"
 	"marshal/internal/launch"
 	"marshal/internal/trust"
 )
@@ -260,5 +261,122 @@ func TestVersionStringFallsBackToDev(t *testing.T) {
 	got := versionString()
 	if !strings.Contains(got, "dev") {
 		t.Errorf("versionString() = %q, want it to mention %q", got, "dev")
+	}
+}
+
+// isolateHome points HOME, the data dir and XDG's data dir at a fresh
+// directory, so the daemon socket a launch asks for is under the test's home
+// and never the developer's.
+func isolateHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("MARSHAL_DATA_DIR", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	return home
+}
+
+// TestPlainMarshalTriesTheDaemon pins P4 D5's default: a plain launch offers
+// the daemon socket to launch.Run, which decides between daemon and embedded.
+func TestPlainMarshalTriesTheDaemon(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	isolateHome(t)
+	got := -1
+	oldApp := appRunner
+	defer func() { appRunner = oldApp }()
+	appRunner = func(ctx context.Context, out io.Writer, opts ...launch.Option) error {
+		got = len(opts)
+		return nil
+	}
+
+	if err := run(context.Background(), nil, bytes.NewBuffer(nil), &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if got != 1 {
+		t.Fatalf("appRunner got %d options, want 1 (the daemon socket)", got)
+	}
+}
+
+// TestEmbeddedSkipsTheDaemon pins --embedded: the option is never offered, so
+// the session stays in this process.
+func TestEmbeddedSkipsTheDaemon(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	isolateHome(t)
+	got := -1
+	oldApp := appRunner
+	defer func() { appRunner = oldApp }()
+	appRunner = func(ctx context.Context, out io.Writer, opts ...launch.Option) error {
+		got = len(opts)
+		return nil
+	}
+
+	if err := run(context.Background(), []string{"--embedded"}, bytes.NewBuffer(nil), &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("appRunner got %d options, want 0 with --embedded", got)
+	}
+}
+
+// TestAttachRoutesToTheAttachRunner pins `marshal attach [session-id]`: no ID
+// means the project's most recently active session, and the socket is the
+// daemon's under this home.
+func TestAttachRoutesToTheAttachRunner(t *testing.T) {
+	home := isolateHome(t)
+	wantSocket := config.DaemonSocketPath(home)
+
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{args: []string{"attach"}, want: ""},
+		{args: []string{"attach", "abc"}, want: "abc"},
+	} {
+		var stdout, stderr bytes.Buffer
+		called := false
+		var gotSocket, gotID string
+		oldAttach := attachRunner
+		attachRunner = func(ctx context.Context, out io.Writer, socket, sessionID string, opts ...launch.Option) error {
+			called = true
+			gotSocket, gotID = socket, sessionID
+			return nil
+		}
+
+		err := run(context.Background(), tc.args, bytes.NewBuffer(nil), &stdout, &stderr)
+		attachRunner = oldAttach
+		if err != nil {
+			t.Fatalf("run(%v) error = %v", tc.args, err)
+		}
+		if !called {
+			t.Fatalf("run(%v) did not reach the attach runner", tc.args)
+		}
+		if gotID != tc.want {
+			t.Errorf("run(%v) session ID = %q, want %q", tc.args, gotID, tc.want)
+		}
+		if gotSocket != wantSocket {
+			t.Errorf("run(%v) socket = %q, want %q", tc.args, gotSocket, wantSocket)
+		}
+		if !strings.HasPrefix(gotSocket, home) {
+			t.Errorf("run(%v) socket = %q, want it under the test's home %q", tc.args, gotSocket, home)
+		}
+	}
+}
+
+// TestAttachRefusesExtraArgumentsAndEmbedded pins the refusals: attach takes at
+// most one ID, and an embedded launch has no daemon session to attach to.
+func TestAttachRefusesExtraArgumentsAndEmbedded(t *testing.T) {
+	isolateHome(t)
+	oldAttach := attachRunner
+	defer func() { attachRunner = oldAttach }()
+	attachRunner = func(ctx context.Context, out io.Writer, socket, sessionID string, opts ...launch.Option) error {
+		t.Fatal("attach runner was called for a refused invocation")
+		return nil
+	}
+
+	for _, args := range [][]string{{"attach", "a", "b"}, {"--embedded", "attach"}} {
+		var stdout, stderr bytes.Buffer
+		if err := run(context.Background(), args, bytes.NewBuffer(nil), &stdout, &stderr); err == nil {
+			t.Fatalf("run(%v) returned no error, want a refusal", args)
+		}
 	}
 }

@@ -1380,4 +1380,173 @@ Not yet run. [The plan](plans/2026-11-11-p4-5-daemon-mode-plan.md) fills this re
 
 ### Plan 6 — the project environment and idle sessions
 
-Not yet run. [The plan](plans/2026-11-11-p4-6-environment-plan.md) fills this record.
+Run and merged as `p4-6-environment`, eight tasks, one verified commit each,
+in a worktree off `main` at `29851a61`. [The plan](plans/2026-11-11-p4-6-environment-plan.md)
+holds the task list.
+
+**What was built.**
+
+- `web/bridge/projectenv.go`, beside `projectenv_unix.go` (`linux || darwin`)
+  and `projectenv_other.go`: `EnvMarker`, `WriteEnv` and `parseEnv`;
+  `ProjectEnv` and its `Resolve`. A resolution is the login shell, then the
+  direnv overlay, then the bridge's four location variables, with each step
+  bounded at 10s and standard output capped at 4 MiB. Only a clean resolution
+  is cached, under a fingerprint of the project's five files and the home's
+  nine startup files.
+- `webbridge print-env`: the shell runs `exec '<webbridge>' 'print-env'`, so
+  whatever a startup file prints first is skipped by the last marker, and the
+  format lives only in `web/bridge`.
+- The fleet: `SetProjectEnv`, `buildProjectChild(ctx, root, socket) (*Child,
+  string, error)` — the resolver applies to whatever was built, a test's fake
+  included — `projectChild.envWarning`, and `DaemonChild.EnvWarning` on
+  `GET /api/daemon`.
+- The idle sweep (`web/bridge/idle.go`): `SetIdleSessionTimeout`,
+  `RunIdleSweep` and `sweepIdleSessions`, with `Registry.idleCandidates` and
+  `Registry.closeIfIdle` rechecking viewers and last activity under the
+  registry's own lock.
+- `[daemon] idle_session_timeout` in the user config, default `30m`, `0` never.
+- `webbridge --idle-session-timeout` (`WEBBRIDGE_IDLE_SESSION_TIMEOUT`),
+  refused under the server profile and refused when negative under the local
+  one.
+- `marshal daemon install` writes `SHELL` and the timeout into the unit;
+  `marshal daemon status` prints a line per child with its version and session
+  count, and the environment warning on a second, indented line.
+- `cmd/webbridge/README.md` gains "The local profile", stating D1, D7 and D7a
+  only.
+
+**Where the plan was short, and how it was filled.**
+
+1. *The platform split.* The plan named a file per platform for `runEnvStep`,
+   but the capture, the cap and the error classification are identical on
+   every system. One shared `runEnvStep` calls a per-platform
+   `configureEnvStep` that carries only decision 2's settings (own process
+   group plus a group `SIGKILL`, or `WaitDelay` alone).
+2. *Classifying a step's failure.* `runEnvStep` reports a step timeout only
+   when that step's own deadline passed; any other kill falls through to the
+   exit-status branch, so a parent cancellation is not reported as "timed out".
+   A direnv that cannot start has no warning string of its own in the plan and
+   lands on "direnv export printed something other than JSON"; no new string was
+   invented.
+3. *The mutation check's bound.* Dropping only `Setpgid`/`Cancel` while
+   keeping `WaitDelay` resolves at timeout+1s — inside the plan's "timeout plus
+   two seconds" bound — because `WaitDelay` closes the pipes a second after the
+   deadline. The unix block owns the kill and its `WaitDelay` together, so the
+   mutation the bound catches is removing that block, and the fixtures' sleeps
+   were shortened from 30s to 5s so the mutated run ends quickly.
+4. *What a failed overlay keeps.* Step 6 follows step 5, so a login
+   environment whose direnv overlay failed still gets the bridge's location
+   variables; only a login-shell failure returns `Base` untouched.
+5. *`Registry.Close`'s body.* The plan said `closeIfIdle` "calls `Close`'s
+   body". The body became `closeTracked`, so `Close` and `closeIfIdle` share one
+   implementation and nothing is duplicated.
+6. *Task 3's Verify regex.* It names no `Unreadable`, so it never runs
+   `TestAnUnreadableStatusKeepsTheSession`; that test was run alone (`ok
+   0.414s`). The plan's regex, not the test, was short.
+7. *The negative timeout's message.* `[daemon]` reuses `web.fetch_timeout`'s
+   `parse <key>: %w` shape, so a negative value fails as `parse
+   daemon.idle_session_timeout: must not be negative`. The save trigger is the
+   plain equality comparison `web` and `desktop` use, since the section is one
+   comparable duration. No merge- or save-completeness test walks the new
+   section, so none needed extending.
+8. *The flag's environment default.* `envOr` is string-only, so
+   `WEBBRIDGE_IDLE_SESSION_TIMEOUT` is parsed once before `fs.Duration` is
+   declared: a variable that does not parse fails `parseConfig` rather than
+   silently falling back. The negative refusal lives in `applyProfile`'s local
+   refusals and names the profile, as `TestTheLocalProfileRefuses` requires.
+   `isolateWebbridgeEnv` gained the variable so a host's setting cannot leak
+   into a parse under test.
+9. *The unit's test values.* The renderer tests carry `45m` (rendered `45m0s`)
+   so the pair is visible as a non-default. The install test sets `SHELL` and
+   clears it in the neighbouring subtest, so the result does not depend on the
+   developer's shell, and it writes its user config under the test's home while
+   a project config in a temporary working directory holds another value.
+10. *The status line.* `child <root>: version <v>, <n> session(s)`, with real
+    pluralisation (`1 session`, `3 sessions`), the aside `(this marshal
+    <ours>)` only when the *rendered* versions differ (so `dev` against `dev`
+    has none), and `  environment: <warning>` for a non-blank warning. An empty
+    child version renders `dev`, as `daemonVersion` does.
+11. *The resolver's wiring.* The seam-versus-local build is one unexported
+    `projectChildForRoot`, so `buildProjectChild` stays a short read;
+    `localProjectEnv` tolerates a failed `EvalSymlinks` exactly as
+    `resolvedExecutable` does, and only an `os.Executable` failure leaves
+    children inheriting.
+
+**The smoke run** (built `webbridge` and `CGO_ENABLED=1` `marshal`, a scratch
+`HOME` whose `.profile` exports `P6_SMOKE`, `SHELL=/bin/sh`, a `git init`ed
+project, `--profile local --addr off --idle-session-timeout 1m`). `direnv` is
+not installed on this machine, so the overlay was proved by Task 1's fake
+`direnv` and the smoke run proved the login-shell half:
+
+```
+=== attach handshake
+HTTP/1.1 101 Switching Protocols
+Connection: Upgrade
+Upgrade: marshal-acp
+Marshal-Session: sess_1794342868901363000
+
+=== child pid 15524; P6_SMOKE=yes entries in its environment:
+1
+=== GET /api/daemon at t+2s
+{"version":"dev","profile":"local",…,"children":[{"root":"…/proj","version":"",
+ "sessions":[{"id":"sess_1794342868901363000","viewers":0,"lastActive":1794342871805}]}]}
+=== GET /api/daemon at t+109s
+{"version":"dev","profile":"local",…,"children":[{"root":"…/proj","version":"","sessions":[]}]}
+=== bridge log
+INFO webbridge: resolved project environment root=…/proj variables=8
+INFO webbridge: closed idle session root=…/proj session=sess_… reason=idle
+children now: ''
+```
+
+The child carried the login shell's variable, `GET /api/daemon` reported no
+`envWarning`, the sweep closed the session, and the child was gone after the
+linger. Two things the plan's smoke step did not say, both found by running it:
+the socket's parent directory must be `0700` or the bridge refuses to start at
+all (the first attempt died on this), and with a 1m timeout and a 30s tick the
+close lands at about t+90s, so "wait just over a minute" reads the daemon too
+early. `marshal daemon status` against an installed service was not run: this
+machine has none installed.
+
+**Verification** (worktree, `TMPDIR=/private/tmp/p4-6-suite`; the baseline at
+the starting commit had every package below passing, so no failure here is
+pre-existing):
+
+- Task 1: `go test ./web/bridge/ -run 'WriteEnv|LoginShell|Direnv|TimedOutShell|FailingShell|FailedOverlay|LocationVariables|ChangedEnvrc|FallbackIsNot'`
+  — `ok 2.222s`, with `TestATimedOutShellFallsBack` failing as required when
+  the process-group kill is removed. `GOOS=linux go vet ./web/...` and
+  `GOOS=windows go vet ./web/bridge/` are clean; `TestWebIsStdlibOnly` `ok
+  0.176s`.
+- Task 2: the three runs — `ok 0.891s`, `./cmd/webbridge` `ok 0.459s`, and
+  `./web/bridge/` whole `ok 82.621s` (no hang).
+- Task 3: `ok 2.018s`, `-race` `ok 2.804s`, and both mutation checks failed as
+  stated (`closed = [s1], want nothing`; `closeIfIdle closed a session a viewer
+  attached to after the candidate list`).
+- Task 4: `./internal/app/config` `ok 0.421s`.
+- Task 5: `./cmd/webbridge` `ok 0.355s`; `go build ./cmd/webbridge` clean.
+- Task 6: `./internal/daemon` `ok 1.097s`, `./cmd/marshal` `ok 2.478s`.
+- Task 7: `./internal/daemon` `ok 1.371s`, `./cmd/marshal` `ok 3.148s`.
+- `gofmt -l internal cmd test web` — no output.
+- `go vet ./...` — clean; `GOOS=linux go vet ./web/... ./internal/daemon/
+  ./cmd/webbridge/` — clean.
+- `go test ./web/bridge/ -run TestWebIsStdlibOnly -count=1` — `ok 0.665s`.
+- `go test ./... -timeout 20m` — one failing package, `internal/acp`, with
+  `TestStackPatchApplyBudget` (2.073ms against a 2ms budget) and
+  `TestStackRoundTripBudget` (88.176ms against 50ms): the load flakes the base
+  commit recorded. Alone, `go test ./internal/acp/ -count=1` is `ok 22.753s`.
+- `go test -race ./web/bridge/ -skip TestRecipeRunMaxUSDSetsAPausingCapForTheRun
+  -count=1` — `ok 90.508s`, no data race.
+
+**Open for plan 7.**
+
+- H9 is unchanged: the attach answer does not carry `envWarning`, so a TUI
+  attached to a project whose environment fell back cannot show it. `GET
+  /api/daemon` and `marshal daemon status` do. Whoever wires the TUI warning
+  must add it to the attach answer rather than re-resolving on the TUI side.
+- The sweep is a 30s tick with a 5s status bound, so a close can lag the
+  timeout by up to that tick. A future plan that wants tighter idle ends needs
+  its own scheduling, not a shorter timeout.
+- Only a fleet given a resolver resolves: the local profile does, the server
+  profile and the end-to-end harness do not. A plan that needs project
+  environments under the server profile must give that fleet one.
+- `marshal daemon install` reads `[daemon] idle_session_timeout` with the
+  project config skipped, so no project can retune the daemon; nothing reads
+  it at runtime from the unit's flag but `webbridge` itself.

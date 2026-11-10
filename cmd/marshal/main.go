@@ -20,6 +20,7 @@ import (
 var appRunner = launch.Run
 var acpRunner = acp.Run
 var acpListener = acp.ListenAndServe
+var acpViewersRunner = acp.RunWithViewers
 var historyRunner = runHistory
 var calibrateRunner = runCalibrateTokens
 var pluginRunner = runPlugin
@@ -84,6 +85,23 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		if err != nil {
 			return err
 		}
+		viewers, err := acpViewersSpec(args[1:])
+		if err != nil {
+			return err
+		}
+		if spec != "" && viewers != "" {
+			return fmt.Errorf("marshal acp: --viewers cannot be combined with --listen")
+		}
+		if viewers != "" {
+			network, path, err := acp.ParseListenAddr(viewers)
+			if err != nil {
+				return err
+			}
+			if network != "unix" {
+				return fmt.Errorf("marshal acp: --viewers takes a unix socket, got %s://", network)
+			}
+			return acpViewersRunner(ctx, stdin, stdout, stderr, path)
+		}
 		if spec == "" {
 			return acpRunner(ctx, stdin, stdout, stderr)
 		}
@@ -120,6 +138,23 @@ func acpListenSpec(args []string) (string, error) {
 			return args[i+1], nil
 		case strings.HasPrefix(args[i], "--listen="):
 			return strings.TrimPrefix(args[i], "--listen="), nil
+		}
+	}
+	return "", nil
+}
+
+// acpViewersSpec extracts --viewers (or --viewers=VALUE) from the acp
+// subcommand's arguments. An empty return means no viewer socket.
+func acpViewersSpec(args []string) (string, error) {
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--viewers":
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("marshal acp: --viewers requires a unix:// address")
+			}
+			return args[i+1], nil
+		case strings.HasPrefix(args[i], "--viewers="):
+			return strings.TrimPrefix(args[i], "--viewers="), nil
 		}
 	}
 	return "", nil

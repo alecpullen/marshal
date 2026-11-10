@@ -3,8 +3,11 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -434,5 +437,171 @@ func TestCloseStopsTheStackLoops(t *testing.T) {
 func TestViewerMaxFrameBytesIsTheClientsCap(t *testing.T) {
 	if viewerMaxFrameBytes != rpc.MaxFrameBytes {
 		t.Fatalf("viewerMaxFrameBytes = %d, want rpc.MaxFrameBytes (%d)", viewerMaxFrameBytes, rpc.MaxFrameBytes)
+	}
+}
+
+// shortTempDir is a temporary directory whose path is short enough for a unix
+// socket path on macOS (about 104 bytes).
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "acp")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
+// socketViewer is one viewer connected over the real unix socket.
+type socketViewer struct {
+	conn   net.Conn
+	client *rpc.Conn
+}
+
+// dialViewerSocket dials path as a marshal client and leaves the connection
+// open until the test ends.
+func dialViewerSocket(t *testing.T, path string) *socketViewer {
+	t.Helper()
+	conn, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatalf("dial %s: %v", path, err)
+	}
+	client := rpc.NewConn(rpc.NewStream(conn, conn, rpc.MaxFrameBytes), rpc.Handlers{})
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = conn.Close()
+	})
+	return &socketViewer{conn: conn, client: client}
+}
+
+// initializeErr runs the marshal handshake and reports its error.
+func (v *socketViewer) initializeErr() error {
+	var res acpwire.InitializeResult
+	return v.client.Call(context.Background(), "initialize", map[string]any{
+		"protocolVersion": 1,
+		"clientCapabilities": map[string]any{
+			"marshal": map[string]any{"protocolVersion": acpwire.MarshalProtocolVersion},
+		},
+	}, &res)
+}
+
+// TestViewersAreServedAtOnce pins decision 7: over a real socket, two viewer
+// connections initialize concurrently beside stdio. On --listen the second
+// would wait in the backlog until the first hung up.
+func TestViewersAreServedAtOnce(t *testing.T) {
+	path := filepath.Join(shortTempDir(t), "viewers.sock")
+	ln, err := listenUnix(path)
+	if err != nil {
+		t.Fatalf("listenUnix: %v", err)
+	}
+
+	// stdio stays connected for the whole test.
+	stdinR, stdinW := io.Pipe()
+	t.Cleanup(func() { _ = stdinW.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- runWithViewersConfig(ctx, stdinR, io.Discard, ln, testRunConfig(t)) }()
+
+	first := dialViewerSocket(t, path)
+	second := dialViewerSocket(t, path)
+
+	errs := make(chan error, 2)
+	go func() { errs <- first.initializeErr() }()
+	go func() { errs <- second.initializeErr() }()
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-errs:
+			if err != nil {
+				t.Fatalf("a viewer's initialize: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("a viewer's initialize did not answer while the other stayed connected")
+		}
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runWithViewersConfig did not return after the context ended")
+	}
+}
+
+// TestTheViewerSocketIsTheOwnersOnly pins decision 7's socket: 0600 in a 0700
+// directory, and a stale file at the path is replaced.
+func TestTheViewerSocketIsTheOwnersOnly(t *testing.T) {
+	dir := shortTempDir(t)
+	path := filepath.Join(dir, "viewers.sock")
+
+	// A file left at the path by a crashed generation must not stop the bind.
+	if err := os.WriteFile(path, []byte("stale"), 0o600); err != nil {
+		t.Fatalf("write the stale file: %v", err)
+	}
+
+	ln, err := listenUnix(path)
+	if err != nil {
+		t.Fatalf("listenUnix: %v", err)
+	}
+	defer ln.Close()
+
+	sock, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat the socket: %v", err)
+	}
+	if got := sock.Mode().Perm(); got != 0o600 {
+		t.Fatalf("socket mode = %o, want 0600", got)
+	}
+
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat the directory: %v", err)
+	}
+	if got := dirInfo.Mode().Perm(); got != 0o700 {
+		t.Fatalf("directory mode = %o, want 0700", got)
+	}
+}
+
+// TestStdioEndingClosesTheViewers pins decision 7's shutdown: stdio ending
+// closes every viewer, removes the socket, and returns once the sessions are
+// closed.
+func TestStdioEndingClosesTheViewers(t *testing.T) {
+	path := filepath.Join(shortTempDir(t), "viewers.sock")
+	ln, err := listenUnix(path)
+	if err != nil {
+		t.Fatalf("listenUnix: %v", err)
+	}
+
+	stdinR, stdinW := io.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- runWithViewersConfig(ctx, stdinR, io.Discard, ln, testRunConfig(t)) }()
+
+	viewer := dialViewerSocket(t, path)
+	if err := viewer.initializeErr(); err != nil {
+		t.Fatalf("the viewer's initialize: %v", err)
+	}
+
+	// stdio ends: the bridge's own connection goes away.
+	_ = stdinW.Close()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runWithViewersConfig: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runWithViewersConfig did not return after stdio ended")
+	}
+
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the socket still exists after the run returned: %v", err)
+	}
+
+	var res acpwire.SessionStatus
+	err = viewer.client.Call(context.Background(), acpwire.MethodStatus, acpwire.StatusParams{SessionID: "s1"}, &res)
+	if err == nil {
+		t.Fatal("the viewer was still served after stdio ended")
 	}
 }

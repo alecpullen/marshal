@@ -1052,4 +1052,131 @@ that shows an error's message reads the refusal rather than the generic text.
 
 ### Plan 4 — project children and the relay
 
-Not yet run.
+**Status:** done. Branch `p4-4-relay`, based on `59e0611d`, with `main` merged
+at `2d26190e` (P4 plan 3) before task 6. One commit per task; tasks 1 and 5 ran
+in parallel.
+
+**What was built.**
+
+- *The project child* (`web/bridge/projectchild.go`, `child.go`,
+  `transport.go`). One `marshal acp --viewers` process per project root, started
+  on first attach, running in that root, with its viewer socket at
+  `<stateDir>/v/<first 16 hex digits of sha256(root)>.sock`. `Child` gained
+  `Dir`, and the process transport runs the child there. A restarted child
+  re-runs `initialize` and then `session/resume` for the sessions the registry
+  holds. A failed handshake stops the child, so the next caller does not take
+  over a socket the dead process still holds. The child stops 30s after its
+  last session closes, or with the fleet.
+- *The registry follows the viewers* (`registry.go`). `sessionInfo` gained
+  `viewers` and `lastActive`; `Registry` gained `Resume`, `Close`, `rename`,
+  `attachViewer`, `detachViewer`, `touch`, `summaries` and `count`. A close
+  sends `session/close` and then untracks; a rename keeps the same record,
+  directory, busy flag, generation, context and viewer count.
+- *The attach handshake* (`attach.go`, `daemoninfo.go`, `http.go`).
+  `POST /api/projects/attach` on the socket, with `Connection: Upgrade` and
+  `Upgrade: marshal-acp`, takes `{root, sessionId?}`, resolves or starts that
+  project's child, resolves the session (new, tracked or resumed), dials the
+  child's viewer socket, and answers `101` with `Marshal-Session`. The TCP
+  handler has no attach route, so it stays 404 there. `GET /api/daemon` lists
+  the children, their sessions, viewer counts and last-active times.
+- *The relay* (`relay.go`). Frames cross unchanged, both ways, newline
+  included. A watch is decoded only while one is pending: `session/new` with
+  `replaces` renames the tracked session on success, and a successful
+  `session/close` is forwarded before the bridge closes the runtime through its
+  own connection. An oversize frame (over 64MiB) ends the relay, and either
+  side ending ends the other.
+- *The client's half* (`internal/daemon/client.go`). `ChildInfo`,
+  `SessionInfo`, `Info.Children`, `Attachment` and `AttachError`, and
+  `Client.Attach`: a raw unix connection carrying `http.Request.Write`, because
+  the response is hijacked. The deadline bounds the handshake only and is
+  cleared before the stream is handed over, and bytes the reader buffered
+  behind the `101` are returned before the connection's own.
+- *The end-to-end proof* (`test/daemon`). Four tests drive a real client
+  through a real bridge to a real child: a new session with read-your-writes
+  (W4), a session that outlives its viewer and is resumed by ID, two viewers
+  sharing one session, and a close that untracks it.
+
+**Where the plan was short, and how it was filled.**
+
+1. `Child` had no working directory. It gained `Dir`, and
+   `newProcessTransport` took `(bin, dir, args, env)`.
+2. The child's environment. It inherits the bridge's (`Child.Env` nil) rather
+   than `agentEnv`; that is also what lets `test/daemon` re-exec itself as the
+   child.
+3. Restart ordering. `OnRestart` is set before `NewRegistry`, so `initialize`
+   precedes `session/resume` in the restarted child.
+4. A failed handshake's child. Stopping it under `pc.mu` would hold the lock
+   across a process wait, so the caller stops it off the lock, before the next
+   caller takes the same socket path.
+5. Summary order. `summaries` sorts by `LastActive` descending and by session
+   ID ascending, so a timestamp tie is stable.
+6. Attach refusals. The message is the JSON `error`, else the trimmed body,
+   else the status text; the statuses are 400, 404, 405, 500, 501 and 502.
+7. The relay's decoding. The plan said the relay watches frames; decoding every
+   agent frame would cost every one, so a frame is decoded only while a watch
+   is pending, and watches carry compact JSON IDs.
+8. Test fixtures. `fakeAgent.Kill()` did not hang up its streams and
+   `fakeProjectChild.Signal()` left stdio open, so `Fleet.Close` could wait
+   forever for a generation spawned after `Stop`. Both now end their streams.
+9. The task 6 harness. The bridge prepends `acp` to `Child.Args`, so `TestMain`
+   accepts exactly `acp --viewers unix://<path>`. The socket's directory must
+   be `0700`: the smoke run's first attempt was refused for precisely that. The
+   detach is asynchronous, so the session-outlives-its-viewer test polls
+   `GET /api/daemon`.
+
+**The smoke run** (built binaries, `--profile local --addr off`, one project):
+
+```
+=== attach handshake
+HTTP/1.1 101 Switching Protocols
+Connection: Upgrade
+Upgrade: marshal-acp
+Marshal-Session: sess_1794320219740098000
+
+=== child processes while the daemon runs
+       1
+=== GET /api/daemon
+{"version":"dev","profile":"local","pid":89320,"startedAt":1794320219533,
+ "socket":"…/smoke/daemon.sock","projects":["…/smoke/project"],
+ "children":[{"root":"…/smoke/project","version":"","sessions":[
+   {"id":"sess_1794320219740098000","viewers":0,"lastActive":1794320222641}]}]}
+=== SIGTERM
+=== child processes after
+       0
+```
+
+The bridge logged `attach attached … reason=requested`, then
+`attach detached … reason="client: closed"` when curl's `--max-time` ended the
+stream, then `shutting down`.
+
+**Verification** (in the worktree, `TMPDIR=/private/tmp/p4-4-suite`):
+
+- `go test ./test/daemon/ -count=1` — 4 tests, `ok 2.318s`, with
+  `MARSHAL_DAEMON_TEST_MARSHAL` pointing at the built `marshal` (`1.649s` with
+  the test binary as the child).
+- `go test ./web/bridge/ -count=1` — `ok 101.527s`.
+- `go test ./internal/daemon/ -count=1` — `ok 1.002s`.
+- `go test ./web/bridge/ -run TestWebIsStdlibOnly -count=1` — `ok 0.170s`.
+- `gofmt -l internal cmd test web` — no output.
+- `go vet ./...` — clean.
+- `GOOS=linux go vet ./web/... ./internal/daemon/ ./cmd/webbridge/` — clean.
+- `go test ./... -timeout 20m` — one failing package, `internal/acp`, with the
+  two known load flakes `TestStackPatchApplyBudget` and
+  `TestStackRoundTripBudget`; alone, `go test ./internal/acp/ -count=1` is
+  `ok 24.043s`. Everything else passed, `web/bridge` (101.5s) and
+  `test/daemon` included.
+
+**Open for plan 5.**
+
+- The bridge's connection cannot read a session's `run`: it declares no
+  capability, so the run methods are refused on its own stdio connection. Plan
+  5's idle rule needs that read.
+- `GET /api/daemon` is where `marshal attach` with no ID finds the most
+  recently active session. It reports `lastActive` per session and no
+  cross-project ordering.
+- The linger is a fixed 30s. Nothing configures it, and only a new attach or
+  the fleet closing cancels it.
+- An attach naming a session the child no longer holds answers 404, so the
+  client must ask for a new session rather than resume one.
+- The relay has no flow control beyond the 64MiB frame cap: a viewer that reads
+  slowly blocks only its own pump.

@@ -88,8 +88,8 @@ plans retain the legacy agent strategy.
 | Knowledge | `internal/contextpack/`, `internal/rollover/` | Curated memory injection, context budget, long-session rollover. |
 | Work projection | `internal/progress/`, `internal/viewmodel/` (work projection), `internal/app/runtime.go` | Bounded progress values and the conversation work projection: one pinned gutter-card surface over the existing command, watch and subagent owners, which stay the sole lifecycle owners. `internal/progress` owns decoding, display safety and estimation only; it never owns execution. |
 | Persistence | `internal/db/`, `internal/snapshot/`, `internal/filetrack/` | SQLite schema, workspace snapshots, file access tracking. |
-| ACP | `internal/acp/` | Headless JSON-RPC server for editor/IDE integration. |
-| Web bridge | `web/bridge/`, `cmd/webbridge/` | Fleet control plane: supervises one `marshal acp` child per project, brokers approvals, serves the REST API and SSE streams, and drives per-agent worktree isolation, diff, merge and discard entirely over ACP. With `--profile local` it is the user's daemon: a user service on a unix socket, host processes only. |
+| ACP | `internal/acp/` | Headless JSON-RPC server for editor/IDE integration. `--viewers` serves the daemon's concurrent marshal connections: stdio for the bridge's own connection, a unix socket for every attached client, over one project host. |
+| Web bridge | `web/bridge/`, `cmd/webbridge/` | Fleet control plane: supervises one `marshal acp` child per project, brokers approvals, serves the REST API and SSE streams, and drives per-agent worktree isolation, diff, merge and discard entirely over ACP. Each project's child is a `marshal acp --viewers` process on its own socket. With `--profile local` it is the user's daemon: a user service on a unix socket, host processes only, where `POST /api/projects/attach` upgrades a marshal client onto that project's child and relays its frames unchanged. |
 | Web UI | `web/ui/` | Svelte 5 + Vite + TypeScript SPA: fleet dashboard, spawn composer, and per-agent chat (dev-only Node toolchain; build output is embedded by `web/bridge`). |
 
 ## Data flow of a single turn

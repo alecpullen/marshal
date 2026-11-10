@@ -5,6 +5,7 @@ package daemon
 
 import (
 	"path/filepath"
+	"time"
 
 	"marshal/internal/app/config"
 )
@@ -34,10 +35,11 @@ func PathsFor(home string) Paths {
 
 // UnitSpec is what a service unit runs.
 type UnitSpec struct {
-	Webbridge string // absolute path of the webbridge binary
-	Marshal   string // absolute path of the marshal binary
-	Paths     Paths
-	Env       map[string]string // PATH and the location variables that were set
+	Webbridge          string // absolute path of the webbridge binary
+	Marshal            string // absolute path of the marshal binary
+	Paths              Paths
+	Env                map[string]string // PATH and the location variables that were set
+	IdleSessionTimeout time.Duration     // written as --idle-session-timeout
 }
 
 // Args are the daemon's arguments, in the order decision 10 gives.
@@ -49,5 +51,6 @@ func (u UnitSpec) Args() []string {
 		"--workspace", u.Paths.Registry,
 		"--addr", "off",
 		"--marshal-bin", u.Marshal,
+		"--idle-session-timeout", u.IdleSessionTimeout.String(),
 	}
 }

@@ -172,6 +172,7 @@ func TestDaemonInstallPassesExplicitPaths(t *testing.T) {
 	t.Run("data dir set", func(t *testing.T) {
 		dataDir := t.TempDir()
 		t.Setenv("MARSHAL_DATA_DIR", dataDir)
+		t.Setenv("SHELL", "/bin/zsh")
 
 		unit, stdout := install(t)
 		paths := daemon.PathsFor(home)
@@ -187,6 +188,8 @@ func TestDaemonInstallPassesExplicitPaths(t *testing.T) {
 			"<string>--marshal-bin</string>",
 			"<key>MARSHAL_DATA_DIR</key>",
 			"<string>" + dataDir + "</string>",
+			"<key>SHELL</key>",
+			"<string>/bin/zsh</string>",
 		} {
 			if !strings.Contains(unit, want) {
 				t.Errorf("unit does not carry %q:\n%s", want, unit)
@@ -200,6 +203,7 @@ func TestDaemonInstallPassesExplicitPaths(t *testing.T) {
 	})
 
 	t.Run("data dir unset", func(t *testing.T) {
+		t.Setenv("SHELL", "")
 		unit, _ := install(t)
 		paths := daemon.PathsFor(home)
 		if want := filepath.Join(home, ".local", "share", "marshal", "daemon", "marshal.sock"); paths.Socket != want {
@@ -211,12 +215,76 @@ func TestDaemonInstallPassesExplicitPaths(t *testing.T) {
 		if !strings.Contains(unit, "<key>PATH</key>") {
 			t.Errorf("unit does not carry PATH:\n%s", unit)
 		}
-		for _, absent := range []string{"MARSHAL_DATA_DIR", "MARSHAL_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME"} {
+		for _, absent := range []string{"MARSHAL_DATA_DIR", "MARSHAL_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "SHELL"} {
 			if strings.Contains(unit, absent) {
 				t.Errorf("unit carries %q although it was unset:\n%s", absent, unit)
 			}
 		}
 	})
+}
+
+// TestDaemonInstallWritesTheIdleTimeout pins decision 9: [daemon]
+// idle_session_timeout is read from the user config alone and written into
+// the unit, so a change takes effect at the next install and a project
+// config cannot change the daemon's behaviour.
+func TestDaemonInstallWritesTheIdleTimeout(t *testing.T) {
+	home := daemonTestEnv(t)
+	t.Setenv("PATH", "/usr/bin:/bin")
+
+	userConfig := filepath.Join(home, ".config", "marshal", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(userConfig), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(userConfig, []byte("[daemon]\nidle_session_timeout = \"10m\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A project config in the working directory carries another value; the
+	// unit must not pick it up.
+	work := t.TempDir()
+	projectConfig := filepath.Join(work, ".marshal", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(projectConfig), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(projectConfig, []byte("[daemon]\nidle_session_timeout = \"99m\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(work)
+
+	webbridge := filepath.Join(t.TempDir(), "webbridge")
+	if err := os.WriteFile(webbridge, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeDaemonManager(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return nil, nil
+	})
+	// install waits, briefly, for the daemon to answer; nothing is
+	// listening here, which is the "not answering yet" path.
+	fakeDaemonSocket(t, fakeDaemonClient{err: errors.New("dial unix: no such file or directory")})
+
+	var out, errOut bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"install", "--webbridge", webbridge},
+		strings.NewReader(""), &out, &errOut); err != nil {
+		t.Fatalf("runDaemon install: %v\nstderr: %s", err, errOut.String())
+	}
+
+	unitPath := filepath.Join(home, "Library", "LaunchAgents", "dev.marshal.daemon.plist")
+	body, err := os.ReadFile(unitPath)
+	if err != nil {
+		t.Fatalf("read the installed unit: %v", err)
+	}
+	unit := string(body)
+	for _, want := range []string{
+		"<string>--idle-session-timeout</string>",
+		"<string>10m0s</string>",
+	} {
+		if !strings.Contains(unit, want) {
+			t.Errorf("unit does not carry %q:\n%s", want, unit)
+		}
+	}
+	if strings.Contains(unit, "99m0s") {
+		t.Errorf("unit carries the project config's timeout:\n%s", unit)
+	}
 }
 
 // TestDaemonStatusReportsARunningDaemon pins decision 12's happy path: three

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"marshal/internal/app/config"
 	"marshal/internal/daemon"
 )
 
@@ -108,7 +109,8 @@ func runDaemonInstall(ctx context.Context, args []string, stdout, stderr io.Writ
 }
 
 // daemonUnitSpec is decision 10's unit: the webbridge, the resolved marshal,
-// the paths internal/daemon resolves, and the location environment.
+// the paths internal/daemon resolves, the location environment, and the idle
+// session timeout the user config gives.
 func daemonUnitSpec(webbridgeOverride, home string) (daemon.UnitSpec, error) {
 	webbridge, err := daemon.FindWebbridge(webbridgeOverride)
 	if err != nil {
@@ -118,11 +120,19 @@ func daemonUnitSpec(webbridgeOverride, home string) (daemon.UnitSpec, error) {
 	if err != nil {
 		return daemon.UnitSpec{}, err
 	}
+	// Decision 9: the timeout is read from the user config alone, so a
+	// project cannot change the daemon's behaviour, and a change takes
+	// effect at the next install.
+	cfg, err := config.Load(config.LoadOptions{HomeDir: home, SkipProjectConfig: true})
+	if err != nil {
+		return daemon.UnitSpec{}, fmt.Errorf("read the user config: %w", err)
+	}
 	return daemon.UnitSpec{
-		Webbridge: webbridge,
-		Marshal:   marshal,
-		Paths:     daemon.PathsFor(home),
-		Env:       daemonEnv(),
+		Webbridge:          webbridge,
+		Marshal:            marshal,
+		Paths:              daemon.PathsFor(home),
+		Env:                daemonEnv(),
+		IdleSessionTimeout: cfg.Daemon.IdleSessionTimeout,
 	}, nil
 }
 
@@ -143,15 +153,17 @@ func resolvedExecutable() (string, error) {
 	return exe, nil
 }
 
-// daemonEnv is the installing process's PATH plus the location variables that
-// were set (decision 10). An unset or empty variable is omitted rather than
-// written empty, so the daemon inherits Marshal's own defaults for it — and
-// so an install from a context with no PATH does not hand the service an
-// empty one, which would leave every command its agents spawn unresolvable.
+// daemonEnv is the installing process's PATH and SHELL plus the location
+// variables that were set (decision 10). An unset or empty variable is
+// omitted rather than written empty, so the daemon inherits Marshal's own
+// defaults for it — and so an install from a context with no PATH does not
+// hand the service an empty one, which would leave every command its agents
+// spawn unresolvable.
 func daemonEnv() map[string]string {
-	env := make(map[string]string, 5)
+	env := make(map[string]string, 6)
 	for _, key := range []string{
 		"PATH",
+		"SHELL",
 		"MARSHAL_CONFIG_DIR",
 		"MARSHAL_DATA_DIR",
 		"XDG_CONFIG_HOME",

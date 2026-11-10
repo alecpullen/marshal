@@ -102,6 +102,10 @@ type config struct {
 	// publicURL is the externally reachable base URL, used for the links
 	// in outbound notifications. Empty yields relative links.
 	publicURL string
+	// idleSessionTimeout is how long a project session with no viewer
+	// and no run lives on in the local profile (P4 D7a); zero never
+	// ends one.
+	idleSessionTimeout time.Duration
 }
 
 // parseConfig resolves flags over environment variables over defaults.
@@ -141,6 +145,14 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	egress := fs.String("egress", envOr("WEBBRIDGE_EGRESS", "on"), "egress proxy for agents: on or off")
 	baoCAFile := fs.String("bao-ca-file", envOr("WEBBRIDGE_BAO_CA_FILE", ""), "extra CA certificate to trust for OpenBao")
 	publicURL := fs.String("public-url", envOr("WEBBRIDGE_PUBLIC_URL", ""), "externally reachable base URL, used for links in outbound notifications")
+	// The duration flags read their variable through envOr like the rest,
+	// then hand the text to the parser: a variable that does not parse is
+	// a configuration error rather than a silent fallback.
+	idleTimeoutDefault, err := time.ParseDuration(envOr("WEBBRIDGE_IDLE_SESSION_TIMEOUT", "30m"))
+	if err != nil {
+		return config{}, fmt.Errorf("WEBBRIDGE_IDLE_SESSION_TIMEOUT: %w", err)
+	}
+	idleSessionTimeout := fs.Duration("idle-session-timeout", idleTimeoutDefault, "how long a project session with no viewer and no run lives on (--profile local; 0 never ends one)")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
@@ -149,7 +161,8 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	}
 	cfg := config{profile: *profile, socket: *socket, addr: *addr, previewAddr: *previewAddr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, stateVolume: *stateVolume, agentEnv: agentEnv, tlsCert: *tlsCert, tlsKey: *tlsKey, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB,
 		secrets: *secrets, secretsKeyFile: *secretsKeyFile, baoAddr: *baoAddr, baoMount: *baoMount,
-		baoRoleIDFile: *baoRoleIDFile, baoSecretIDFile: *baoSecretIDFile, baoCAFile: *baoCAFile, egress: *egress, publicURL: *publicURL}
+		baoRoleIDFile: *baoRoleIDFile, baoSecretIDFile: *baoSecretIDFile, baoCAFile: *baoCAFile, egress: *egress, publicURL: *publicURL,
+		idleSessionTimeout: *idleSessionTimeout}
 	pm, err := parseProjectMounts(projectMounts)
 	if err != nil {
 		return config{}, err
@@ -244,6 +257,9 @@ func applyProfile(cfg *config, given givenSettings) error {
 		if cfg.addr == "off" {
 			return fmt.Errorf("--addr off is for --profile local")
 		}
+		if given.given("idle-session-timeout", "WEBBRIDGE_IDLE_SESSION_TIMEOUT") {
+			return fmt.Errorf("--idle-session-timeout is for --profile local")
+		}
 		return nil
 	case "local":
 	default:
@@ -268,6 +284,9 @@ func applyProfile(cfg *config, given givenSettings) error {
 	// the rule the rest of this function follows.
 	if cfg.addr == "off" && given.set("token", "WEBBRIDGE_TOKEN", cfg.token) {
 		return fmt.Errorf("--token is for the TCP listener, and --addr off opens none")
+	}
+	if cfg.idleSessionTimeout < 0 {
+		return fmt.Errorf("--idle-session-timeout %s: the local profile waits a negative time for an idle session", cfg.idleSessionTimeout)
 	}
 
 	// Decision 2: the local profile's defaults, each applying only when
@@ -527,6 +546,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		} else {
 			fleet.SetProjectEnv(projectEnv)
 		}
+		// A session with no viewer and no run is ended after the idle
+		// timeout (P4 D7a), swept on its own goroutine; zero never ends
+		// one, and the sweep returns at once.
+		fleet.SetIdleSessionTimeout(cfg.idleSessionTimeout)
+		go fleet.RunIdleSweep(ctx)
 	}
 
 	secrets, err := buildSecretProvider(cfg)

@@ -269,8 +269,8 @@ func TestAViewersCloseClosesTheRuntime(t *testing.T) {
 			armed = append(armed, fn)
 			n := len(armed)
 			mu.Unlock()
-			if d != projectLinger {
-				t.Errorf("linger armed for %v, want %v", d, projectLinger)
+			if want := h.fleet.lingerDuration(); d != want {
+				t.Errorf("linger armed for %v, want %v", d, want)
 			}
 			_ = n
 			return func() {}
@@ -373,12 +373,12 @@ func TestAViewersCloseClosesTheRuntime(t *testing.T) {
 }
 
 func TestAnOversizeFrameEndsTheRelay(t *testing.T) {
-	prev := maxFrameBytes
-	maxFrameBytes = 1024
-	t.Cleanup(func() { maxFrameBytes = prev })
-
+	const cap = 1024
 	root := t.TempDir()
 	h := newAttachHarness(t)
+	// The cap belongs to this fleet rather than the package: a neighbouring
+	// test's relay pumps may still be reading the global.
+	h.fleet.relayFrameCap = cap
 	res := h.attach(http.MethodPost, root, "", true)
 	if res.status != http.StatusSwitchingProtocols {
 		t.Fatalf("attach = %d, want 101", res.status)
@@ -390,7 +390,7 @@ func TestAnOversizeFrameEndsTheRelay(t *testing.T) {
 	}
 
 	// A frame past the cap ends both sides rather than forwarding a prefix.
-	relayWrite(t, res.conn, padFrame(maxFrameBytes+8)+"\n")
+	relayWrite(t, res.conn, padFrame(cap+8)+"\n")
 
 	_ = res.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if _, err := res.reader.ReadByte(); err == nil {
@@ -481,7 +481,7 @@ func TestTheRelayTouchesTheSession(t *testing.T) {
 	})
 }
 
-// syncBuffer is a log sink two relay pumps may write to at once.
+// syncBuffer is a log sink a test reads while another goroutine writes to it.
 type syncBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer

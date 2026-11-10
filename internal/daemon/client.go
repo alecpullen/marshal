@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -155,18 +156,41 @@ func (c *Client) Attach(ctx context.Context, root, sessionID string) (*Attachmen
 	if err != nil {
 		return nil, fmt.Errorf("daemon at %s: %w", c.socket, err)
 	}
-	// The caller's context bounds the handshake, not the stream, so its
-	// deadline becomes the connection's for the handshake and is cleared
-	// again before the stream is handed over.
+	// The caller's context bounds the handshake, not the stream: its deadline
+	// becomes the connection's for the handshake and is cleared again before
+	// the stream is handed over. A cancellation with no deadline ends the
+	// handshake too, by closing the connection: a caller that has stopped
+	// waiting must not be left holding one the daemon may answer on later.
 	if deadline, ok := ctx.Deadline(); ok {
 		if err := conn.SetDeadline(deadline); err != nil {
 			_ = conn.Close()
 			return nil, fmt.Errorf("bound attach handshake: %w", err)
 		}
 	}
+	handshakeDone := make(chan struct{})
+	defer close(handshakeDone)
+	var (
+		hsMu       sync.Mutex
+		handedOver bool
+	)
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-handshakeDone:
+			return
+		}
+		hsMu.Lock()
+		if !handedOver {
+			_ = conn.Close()
+		}
+		hsMu.Unlock()
+	}()
 
 	if err := req.Write(conn); err != nil {
 		_ = conn.Close()
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, fmt.Errorf("attach handshake: %w", cerr)
+		}
 		return nil, fmt.Errorf("write attach request: %w", err)
 	}
 
@@ -176,6 +200,11 @@ func (c *Client) Attach(ctx context.Context, root, sessionID string) (*Attachmen
 	resp, err := http.ReadResponse(reader, req)
 	if err != nil {
 		_ = conn.Close()
+		// A cancelled handshake closes the connection under this read. The
+		// caller's own cancellation says why better than the socket error does.
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, fmt.Errorf("attach handshake: %w", cerr)
+		}
 		return nil, fmt.Errorf("read attach answer: %w", err)
 	}
 
@@ -212,6 +241,15 @@ func (c *Client) Attach(ctx context.Context, root, sessionID string) (*Attachmen
 	if err := conn.SetDeadline(time.Time{}); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("release attach handshake: %w", err)
+	}
+	hsMu.Lock()
+	handedOver = true
+	hsMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		// The caller gave up as the handshake completed: the stream is not
+		// theirs to keep.
+		_ = conn.Close()
+		return nil, fmt.Errorf("attach handshake: %w", err)
 	}
 	return &Attachment{
 		SessionID: attached,

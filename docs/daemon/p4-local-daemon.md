@@ -1124,6 +1124,61 @@ in parallel.
    detach is asynchronous, so the session-outlives-its-viewer test polls
    `GET /api/daemon`.
 
+**Review response.** A three-way branch review (relay core; registry, client and
+the end-to-end suite; boundaries, docs and plan conformance) returned no
+blockers. These findings were acted on in this pass:
+
+- A child whose linger an attach had cancelled was never reaped when that
+  attach then failed — at `session/new`, at the resume, at the dial, at the
+  hijack or at the `101` write. Every post-resolve failure path now calls
+  `rearmLinger`, which arms only when the registry is empty, and a session
+  opened for an attach whose `101` write fails is closed again.
+- `Registry.track` replaced an existing record, so two attaches resolving one
+  stored id lost the first's viewer count and leaked its cancel context. It
+  now updates the live record in place.
+- `armLinger`'s fire deleted the entry before stopping the child, and a
+  resolve could start a replacement against a viewer socket the dying process
+  still held. The fire stops before it forgets, and `stopChild` keeps a marker
+  open until the process is gone; `startProjectChild` waits on it.
+- A resolve in flight across `Fleet.Close` could start a child that nothing
+  would ever reap. `startProjectChild` now checks that the entry is still the
+  fleet's live one, and that the fleet has not closed, and stops the child
+  otherwise.
+- A relayed watch whose answer never came kept every later agent frame on the
+  decode path for the life of the attach. The relay clears its watches when
+  both pumps have returned.
+- A malformed `initialize` answer was reported as a child with no version; it
+  now fails the handshake like any other unusable child.
+- `Client.Attach` ignored cancellation that carried no deadline. It now closes
+  the handshake's connection and reports the caller's own cancellation.
+- The relay's frame cap was a package variable the oversize test wrote while a
+  neighbouring test's pumps read it, which `go test -race` caught. The cap is
+  now the fleet's (`relayFrameCap`, zero meaning `maxFrameBytes`) and travels
+  to the relay once, so no pump reads shared state per frame. The linger's
+  duration had the same shape and the same defect — a harness cleanup restoring
+  `projectLinger` while a relay's `finish` read it — and is now the fleet's
+  `lingerDur` for the same reason.
+- `unixServer` bound its socket under `t.TempDir()` beneath a comment citing
+  the `sun_path` cap; both fixtures now share `shortSocket`, which falls back
+  to `/tmp` as well as macOS's `/private/tmp`.
+- `TestPeerCheckedRefusesAnotherUser` read a bare `bytes.Buffer` while the
+  listener's `Accept` goroutine wrote its log line — pre-existing, and found by
+  the same `-race` run. It uses the package's `syncBuffer` now.
+- `AGENTS.md` and `docs/ARCHITECTURE.md` said each project "runs" its child,
+  which reads as always-on. Both now say it starts on the first attach and
+  stops 30s after its last session.
+
+Two findings were left open deliberately:
+
+- The fire's ordering is improved but not serialised completely: closing it
+  fully would mean holding `pc.mu` across `Child.Stop`, which can deadlock
+  against a restart's handshake on the child's supervision goroutine. A
+  resolve already holding the entry can therefore still race a reap and fail
+  that one attach; the next attach builds a fresh child.
+- The end-to-end suite has no case for the untracked-session resume path: the
+  bridge untracks only on close, so the harness cannot reach that state. The
+  `web/bridge` unit tests cover it.
+
 **The smoke run** (built binaries, `--profile local --addr off`, one project):
 
 ```
@@ -1165,6 +1220,15 @@ stream, then `shutting down`.
   `TestStackRoundTripBudget`; alone, `go test ./internal/acp/ -count=1` is
   `ok 24.043s`. Everything else passed, `web/bridge` (101.5s) and
   `test/daemon` included.
+
+After the review-response pass the same suites were run again:
+`go test ./web/bridge/ ./internal/daemon/ ./test/daemon/ -count=1` is
+`ok 90.651s`, `ok 1.342s` and `ok 1.117s`, and
+`go test -race ./web/bridge/ -skip TestRecipeRunMaxUSDSetsAPausingCapForTheRun
+-count=1` is `ok 105.329s` with no data race. That test is the intermittent hang
+plan 2 recorded; a `-race` run that included it hung there, and the goroutine
+dump landed in `blockPrompt` → `fakeAgent.reply` with no frame of this branch's
+code anywhere in it.
 
 **Open for plan 5.**
 

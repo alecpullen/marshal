@@ -32,6 +32,14 @@ type projectChild struct {
 	mu     sync.Mutex
 	ready  bool
 	linger func() // stops the armed linger timer; nil when none
+
+	// stopMu guards stopping, the marker a resolver waits on so no
+	// replacement child is started while the previous process still holds the
+	// viewer socket path. It is separate from mu because a stop blocks on the
+	// old child exiting, and a restart's handshake takes mu on the child's own
+	// supervision goroutine: holding one across the other would deadlock.
+	stopMu   sync.Mutex
+	stopping chan struct{}
 }
 
 // viewerSocketPath is <stateDir>/v/<first 16 hex digits of sha256(root)>.sock.
@@ -116,15 +124,43 @@ func (f *Fleet) forgetProjectChild(pc *projectChild) {
 // startProjectChild builds, starts and handshakes pc's child, once. Concurrent
 // callers share one start through pc.mu.
 func (f *Fleet) startProjectChild(ctx context.Context, pc *projectChild) error {
+	// A stop in flight keeps the viewer socket until its process is gone, so
+	// wait it out rather than start a replacement that cannot bind.
+	pc.waitStop()
+
 	child, err := f.startProjectChildLocked(ctx, pc)
 	if child != nil {
 		// A child whose handshake failed is unusable. It is stopped here, off
 		// the lock, before the next caller tries the same viewer socket path:
 		// a process that has not let go of its socket yet would make the
 		// replacement fail to bind.
-		child.Stop()
+		pc.stopChild(child)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	if err := f.projectChildUsable(pc); err != nil {
+		// The fleet closed, or this entry was reaped, while the start was in
+		// flight: nothing would ever stop this child, so end it here rather
+		// than leave a marshal acp process with no owner.
+		pc.stop()
+		return err
+	}
+	return nil
+}
+
+// projectChildUsable reports whether pc is still the fleet's live entry for
+// its root. A nil projects map means the fleet is closing.
+func (f *Fleet) projectChildUsable(pc *projectChild) error {
+	f.projMu.Lock()
+	defer f.projMu.Unlock()
+	if f.projects == nil {
+		return fmt.Errorf("bridge: fleet is closing")
+	}
+	if f.projects[pc.root] != pc {
+		return fmt.Errorf("bridge: project child for %s was reaped", pc.root)
+	}
+	return nil
 }
 
 // startProjectChildLocked is startProjectChild's body under pc.mu. It returns a
@@ -191,7 +227,12 @@ func (f *Fleet) projectHandshake(ctx context.Context, pc *projectChild) error {
 			Version string `json:"version"`
 		} `json:"agentInfo"`
 	}
-	_ = json.Unmarshal(raw, &res)
+	if err := json.Unmarshal(raw, &res); err != nil {
+		// A child that answers its handshake with something that is not the
+		// initialize result is unusable, the same as one that does not answer.
+		pc.ready = false
+		return fmt.Errorf("bridge: decode project initialize for %s: %w", pc.root, err)
+	}
 	pc.version = res.AgentInfo.Version
 	pc.ready = true
 	return nil
@@ -215,6 +256,15 @@ func (f *Fleet) reinitProjectChild(pc *projectChild) {
 	}
 }
 
+// lingerDuration is how long an empty project child lives on: the fleet's own
+// duration when a test set one, else projectLinger.
+func (f *Fleet) lingerDuration() time.Duration {
+	if f.lingerDur > 0 {
+		return f.lingerDur
+	}
+	return projectLinger
+}
+
 // armLinger arms the stop timer for a child with no tracked session, through
 // the fleet's deadline seam when one is set (decision 4). It is a no-op when a
 // timer is already armed. The caller holds pc.mu.
@@ -222,6 +272,7 @@ func (f *Fleet) armLinger(pc *projectChild) {
 	if pc.linger != nil {
 		return
 	}
+	d := f.lingerDuration()
 	fire := func() {
 		// The timer has fired, so nothing is armed any more. Read the
 		// registry under the same lock the start path uses: a session that
@@ -236,26 +287,32 @@ func (f *Fleet) armLinger(pc *projectChild) {
 			return
 		}
 		// Only the child still registered for its root is reaped: a child that
-		// a later resolve has already replaced must be left alone.
+		// a later resolve has already replaced must be left alone. It is
+		// stopped before it is forgotten, so a resolver arriving in between
+		// waits for the process (waitStop) instead of racing it for the
+		// viewer socket path.
 		f.projMu.Lock()
 		current := f.projects[pc.root] == pc
-		if current {
+		f.projMu.Unlock()
+		if !current {
+			return
+		}
+		pc.stop()
+		f.projMu.Lock()
+		if f.projects[pc.root] == pc {
 			delete(f.projects, pc.root)
 		}
 		f.projMu.Unlock()
-		if current {
-			pc.stop()
-		}
 	}
 	if f.afterFunc != nil {
-		stop := f.afterFunc(projectLinger, fire)
+		stop := f.afterFunc(d, fire)
 		if stop == nil {
 			stop = func() {}
 		}
 		pc.linger = stop
 		return
 	}
-	timer := time.AfterFunc(projectLinger, fire)
+	timer := time.AfterFunc(d, fire)
 	pc.linger = func() { timer.Stop() }
 }
 
@@ -292,9 +349,51 @@ func (pc *projectChild) stop() {
 	child := pc.child
 	pc.child, pc.ready = nil, false
 	pc.mu.Unlock()
-	if child != nil {
-		child.Stop()
+	pc.stopChild(child)
+}
+
+// stopChild ends one child and keeps a marker open until its process is gone,
+// so a resolver that arrives meanwhile waits for the viewer socket path rather
+// than starting a replacement whose process cannot bind it.
+func (pc *projectChild) stopChild(child *Child) {
+	if child == nil {
+		return
 	}
+	pc.stopMu.Lock()
+	if pc.stopping == nil {
+		pc.stopping = make(chan struct{})
+	}
+	marker := pc.stopping
+	pc.stopMu.Unlock()
+	child.Stop()
+	pc.stopMu.Lock()
+	if pc.stopping == marker {
+		close(marker)
+		pc.stopping = nil
+	}
+	pc.stopMu.Unlock()
+}
+
+// waitStop blocks while a stop of this child is in flight. A stop is bounded by
+// Child.Stop's own grace period, so this cannot wait forever.
+func (pc *projectChild) waitStop() {
+	pc.stopMu.Lock()
+	marker := pc.stopping
+	pc.stopMu.Unlock()
+	if marker != nil {
+		<-marker
+	}
+}
+
+// rearmLinger restores the linger an attach cancelled when it resolved this
+// child. Resolving cancels the timer (decision 4), so an attach that fails
+// afterwards must put it back: otherwise the child is left with no tracked
+// session and nothing armed to reap it.
+func (f *Fleet) rearmLinger(pc *projectChild) {
+	if pc.reg == nil || pc.reg.count() > 0 {
+		return
+	}
+	f.armProjectLinger(pc)
 }
 
 // stopProjectChildren stops every project child; Close calls it.

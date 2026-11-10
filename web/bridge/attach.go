@@ -78,6 +78,9 @@ func (s *Server) attachProject(w http.ResponseWriter, r *http.Request) {
 	case sessionID == "":
 		id, err := pc.reg.New(ctx, AgentPath(root), "")
 		if err != nil {
+			// Resolving the child cancelled its linger; an attach that leaves
+			// nothing behind must arm it again or the child is never reaped.
+			s.fleet.rearmLinger(pc)
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "open a session: " + err.Error()})
 			return
 		}
@@ -87,6 +90,7 @@ func (s *Server) attachProject(w http.ResponseWriter, r *http.Request) {
 			if err := pc.reg.Resume(ctx, AgentPath(root), sessionID); err != nil {
 				// The agent does not know the session either, so this is a
 				// stale ID rather than a bridge fault.
+				s.fleet.rearmLinger(pc)
 				writeErr(w, ErrUnknownSession)
 				return
 			}
@@ -101,6 +105,7 @@ func (s *Server) attachProject(w http.ResponseWriter, r *http.Request) {
 		if created {
 			_ = pc.reg.Close(ctx, sessionID)
 		}
+		s.fleet.rearmLinger(pc)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "dial the project child: " + err.Error()})
 		return
 	}
@@ -111,6 +116,7 @@ func (s *Server) attachProject(w http.ResponseWriter, r *http.Request) {
 		if created {
 			_ = pc.reg.Close(ctx, sessionID)
 		}
+		s.fleet.rearmLinger(pc)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "attach needs a hijackable connection"})
 		return
 	}
@@ -120,6 +126,7 @@ func (s *Server) attachProject(w http.ResponseWriter, r *http.Request) {
 		if created {
 			_ = pc.reg.Close(ctx, sessionID)
 		}
+		s.fleet.rearmLinger(pc)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "hijack the connection: " + err.Error()})
 		return
 	}
@@ -132,11 +139,19 @@ func (s *Server) attachProject(w http.ResponseWriter, r *http.Request) {
 		"Upgrade: " + attachProtocol + "\r\n" +
 		sessionHeader + ": " + sessionID + "\r\n\r\n"
 	if _, err := io.WriteString(client, head); err != nil {
+		// The client is gone before the stream began, so a session opened for
+		// it has no viewer and must not stay open.
 		_ = client.Close()
 		_ = conn.Close()
+		if created {
+			_ = pc.reg.Close(ctx, sessionID)
+		}
+		s.fleet.rearmLinger(pc)
 		return
 	}
 
+	// A viewer that arrives while the session is being closed attaches to
+	// nothing: the relay still runs for it, and detach/touch become no-ops.
 	pc.reg.attachViewer(sessionID)
 	go s.fleet.relay(pc, sessionID, client, buffered.Reader, conn)
 }

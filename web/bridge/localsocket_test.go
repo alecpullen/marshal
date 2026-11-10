@@ -1,7 +1,6 @@
 package bridge
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -282,8 +282,8 @@ func TestPeerCheckedRefusesAnotherUser(t *testing.T) {
 		t.Fatalf("ListenLocal(%s): %v", path, err)
 	}
 
-	var logs bytes.Buffer
-	refusing := PeerChecked(base, os.Getuid()+1, slog.New(slog.NewTextHandler(&logs, nil)))
+	logs := &syncBuffer{}
+	refusing := PeerChecked(base, os.Getuid()+1, slog.New(slog.NewTextHandler(logs, nil)))
 
 	type result struct {
 		conn net.Conn
@@ -323,7 +323,7 @@ func TestPeerCheckedRefusesAnotherUser(t *testing.T) {
 	}
 
 	// The log names the peer — us — not the uid that was wanted.
-	if !bytes.Contains(logs.Bytes(), []byte(fmt.Sprintf("uid=%d", os.Getuid()))) {
+	if !strings.Contains(logs.String(), fmt.Sprintf("uid=%d", os.Getuid())) {
 		t.Errorf("refusal was not logged with the peer's uid; log: %s", logs.String())
 	}
 

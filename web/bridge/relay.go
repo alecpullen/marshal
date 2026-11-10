@@ -12,14 +12,14 @@ import (
 	"sync"
 )
 
-// readFrame reads one newline-terminated frame, newline included, up to
-// maxFrameBytes. A frame over the cap is an error rather than a truncation:
-// the relay ends instead of forwarding half a message.
-func readFrame(src *bufio.Reader) ([]byte, error) {
+// readFrame reads one newline-terminated frame, newline included, up to cap. A
+// frame over the cap is an error rather than a truncation: the relay ends
+// instead of forwarding half a message.
+func readFrame(src *bufio.Reader, cap int) ([]byte, error) {
 	var frame []byte
 	for {
 		chunk, err := src.ReadSlice('\n')
-		if len(frame)+len(chunk) > maxFrameBytes {
+		if len(frame)+len(chunk) > cap {
 			return nil, errFrameTooLarge
 		}
 		frame = append(frame, chunk...)
@@ -35,6 +35,15 @@ func readFrame(src *bufio.Reader) ([]byte, error) {
 
 // errFrameTooLarge ends a relay whose frame exceeds the cap.
 var errFrameTooLarge = errors.New("bridge: relay frame over the cap")
+
+// frameCap is the largest frame a relay forwards: the fleet's own cap when a
+// test set one, else maxFrameBytes.
+func (f *Fleet) frameCap() int {
+	if f.relayFrameCap > 0 {
+		return f.relayFrameCap
+	}
+	return maxFrameBytes
+}
 
 // relay kinds a watched request can be.
 const (
@@ -61,6 +70,7 @@ func (f *Fleet) relay(pc *projectChild, sessionID string, client net.Conn, buffe
 		agent:   agent,
 		session: sessionID,
 		watches: make(map[string]*relayWatch),
+		cap:     f.frameCap(),
 	}
 	logAttach("attached", pc.root, sessionID, "requested")
 
@@ -84,6 +94,10 @@ type relay struct {
 
 	sessMu  sync.Mutex
 	session string
+
+	// cap is the largest frame this relay forwards, read once so no pump
+	// consults shared state per frame.
+	cap int
 
 	watchMu sync.Mutex
 	watches map[string]*relayWatch
@@ -119,9 +133,10 @@ func (r *relay) finish(reason string) {
 	id := r.currentSession()
 	r.pc.reg.detachViewer(id)
 	r.pc.reg.touch(id)
-	if r.pc.reg.count() == 0 {
-		r.fleet.armProjectLinger(r.pc)
-	}
+	// Neither pump is running now, so an answer that has not arrived cannot
+	// arrive: drop the watches rather than keep decoding every frame for them.
+	r.clearWatches()
+	r.fleet.rearmLinger(r.pc)
 	logAttach("detached", r.pc.root, id, reason)
 }
 
@@ -130,7 +145,7 @@ func (r *relay) finish(reason string) {
 // the request goes first.
 func (r *relay) pumpClient(src *bufio.Reader) string {
 	for {
-		frame, err := readFrame(src)
+		frame, err := readFrame(src, r.cap)
 		if err != nil {
 			return "client: " + frameErrReason(err)
 		}
@@ -150,7 +165,7 @@ func (r *relay) pumpClient(src *bufio.Reader) string {
 // to the requests the client's pump watched for.
 func (r *relay) pumpAgent(src *bufio.Reader) string {
 	for {
-		frame, err := readFrame(src)
+		frame, err := readFrame(src, r.cap)
 		if err != nil {
 			return "child: " + frameErrReason(err)
 		}
@@ -256,7 +271,19 @@ func (f *Fleet) closeRelayedSession(pc *projectChild, id string) {
 
 func (r *relay) addWatch(key string, watch *relayWatch) {
 	r.watchMu.Lock()
+	if r.watches == nil {
+		r.watches = make(map[string]*relayWatch)
+	}
 	r.watches[key] = watch
+	r.watchMu.Unlock()
+}
+
+// clearWatches drops every pending watch. The relay calls it once both pumps
+// have returned: a watched request whose answer never came would otherwise keep
+// every later agent frame on the decode path for the life of the attach.
+func (r *relay) clearWatches() {
+	r.watchMu.Lock()
+	r.watches = nil
 	r.watchMu.Unlock()
 }
 

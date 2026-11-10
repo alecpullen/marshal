@@ -232,3 +232,28 @@ func summaryIDs(list []DaemonSession) []string {
 	}
 	return out
 }
+
+// Two attaches resolving one stored id can both reach track; the second must
+// not replace the live record, or the first viewer is stranded on a session
+// with no viewer and the record's cancel context is leaked.
+func TestTrackingATrackedSessionKeepsItsViewers(t *testing.T) {
+	reg, _ := viewersRegistry(t)
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	if err := reg.Resume(ctx, AgentPath("/home/u/repo"), "s1"); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	reg.attachViewer("s1")
+	if err := reg.Resume(ctx, AgentPath("/home/u/repo"), "s1"); err != nil {
+		t.Fatalf("Resume again: %v", err)
+	}
+
+	got := reg.summaries()
+	if len(got) != 1 {
+		t.Fatalf("summaries listed %d sessions, want 1", len(got))
+	}
+	if got[0].Viewers != 1 {
+		t.Errorf("viewers = %d after a second resolve, want 1", got[0].Viewers)
+	}
+}

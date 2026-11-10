@@ -330,6 +330,18 @@ type Fleet struct {
 	// afterFunc schedules a deadline; tests replace it. Nil is time.AfterFunc.
 	afterFunc func(d time.Duration, fn func()) (stop func())
 
+	// relayFrameCap is the largest frame a relay forwards; zero means
+	// maxFrameBytes. A field rather than the package variable so a test can
+	// lower it without writing state a neighbouring test's relay pumps are
+	// still reading.
+	relayFrameCap int
+
+	// lingerDur is how long a project child with no tracked session lives on;
+	// zero means projectLinger. A field for the same reason as relayFrameCap:
+	// a relay's own goroutine reads it while the test that started the relay
+	// is already cleaning up.
+	lingerDur time.Duration
+
 	// pruneMu serializes prune callers against each other: the HTTP
 	// prune endpoint and the spawn-path enforceDisk prune both call
 	// Prune, and a removeTree racing itself on an already-vanished

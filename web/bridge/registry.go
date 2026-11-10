@@ -206,9 +206,20 @@ func (r *Registry) Load(ctx context.Context, cwd AgentPath, id string) error {
 
 // track registers a session with a fresh cancel context so pending
 // permission/question waits can be drained on cancel/delete/disconnect.
+//
+// A session already tracked is updated, not replaced: two attaches resolving
+// one stored id can both reach here, and the record's viewer count, generation
+// and cancel context belong to the live session rather than to the newer
+// resolve. Replacing it would strand a viewer and leak the old context.
 func (r *Registry) track(id string, cwd AgentPath) {
-	ctx, cancel := context.WithCancel(context.Background())
 	r.mu.Lock()
+	if info, ok := r.sessions[id]; ok {
+		info.Cwd = cwd
+		info.lastActive = time.Now()
+		r.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
 	r.sessions[id] = &sessionInfo{
 		Cwd:        cwd,
 		ctx:        ctx,

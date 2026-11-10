@@ -41,16 +41,15 @@ func newAttachHarness(t *testing.T) *attachHarness {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
-	// No test may be reaped by the production linger while it is running.
-	prevLinger := projectLinger
-	projectLinger = 5 * time.Minute
-	t.Cleanup(func() { projectLinger = prevLinger })
-
+	// No test may be reaped by the production linger while it is running. The
+	// duration is the fleet's, not a package variable: a relay goroutine can
+	// still read it while this test's cleanups run.
 	ws := NewWorkspace(filepath.Join(dir, "fleet.json"))
 	if _, err := ws.Load(); err != nil {
 		t.Fatal(err)
 	}
 	f := NewFleet(ws, "unused", nil, filepath.Join(dir, "state"), Limits{}, "", nil, "marshal-state")
+	f.lingerDur = 5 * time.Minute
 	t.Cleanup(f.Close)
 
 	h := &attachHarness{

@@ -25,12 +25,11 @@ func shortStateDir(t *testing.T) string {
 }
 
 // shortenLinger makes the linger short enough that a test never keeps a timer
-// alive for the production 30 seconds.
-func shortenLinger(t *testing.T) {
+// alive for the production 30 seconds. The duration is the fleet's: a relay's
+// own goroutine reads it while the test is cleaning up.
+func shortenLinger(t *testing.T, f *Fleet) {
 	t.Helper()
-	prev := projectLinger
-	projectLinger = 50 * time.Millisecond
-	t.Cleanup(func() { projectLinger = prev })
+	f.lingerDur = 50 * time.Millisecond
 }
 
 // projectFleet builds a fleet whose project children are fake transports over
@@ -323,8 +322,8 @@ func TestAFailedHandshakeDropsTheChild(t *testing.T) {
 // TestAnEmptyChildLingersThenStops: a child with no session arms the linger,
 // and when it fires the child stops and the fleet forgets it.
 func TestAnEmptyChildLingersThenStops(t *testing.T) {
-	shortenLinger(t)
 	f, fakeFor := projectFleet(t)
+	shortenLinger(t, f)
 	timers := captureTimers(f)
 	ctx := ctlContext(t)
 	root := t.TempDir()
@@ -341,8 +340,8 @@ func TestAnEmptyChildLingersThenStops(t *testing.T) {
 		t.Fatalf("armed timers = %d, want 1", n)
 	}
 	timer := timers.at(0)
-	if timer.d != projectLinger {
-		t.Fatalf("linger = %v, want %v", timer.d, projectLinger)
+	if want := f.lingerDuration(); timer.d != want {
+		t.Fatalf("linger = %v, want %v", timer.d, want)
 	}
 
 	timer.fire()
@@ -369,11 +368,55 @@ func TestAnEmptyChildLingersThenStops(t *testing.T) {
 	}
 }
 
+// TestARearmArmsOnlyAnEmptyChild: an attach that fails after resolving a
+// child must put the linger back, and a child a session keeps alive must not
+// get one. Without the re-arm the child has no session and no timer, so
+// nothing ever reaps it.
+func TestARearmArmsOnlyAnEmptyChild(t *testing.T) {
+	f, _ := projectFleet(t)
+	shortenLinger(t, f)
+	timers := captureTimers(f)
+	ctx := ctlContext(t)
+	root := t.TempDir()
+
+	pc, err := f.projectChildFor(ctx, root)
+	if err != nil {
+		t.Fatalf("projectChildFor: %v", err)
+	}
+	first := timers.at(0)
+	if first == nil {
+		t.Fatal("starting the child armed no linger")
+	}
+
+	// Resolving a child calls its linger off, which is what a failing attach
+	// does before it gives up.
+	pc.cancelLinger()
+	if !first.wasStopped() {
+		t.Fatal("cancelLinger left the timer armed")
+	}
+	f.rearmLinger(pc)
+	if n := timers.count(); n != 2 {
+		t.Fatalf("armed timers = %d, want the linger re-armed for an empty child", n)
+	}
+
+	// A tracked session keeps the child alive on its own; no timer is needed.
+	pc.reg.track("s1", AgentPath(root))
+	second := timers.at(1)
+	pc.cancelLinger()
+	f.rearmLinger(pc)
+	if !second.wasStopped() {
+		t.Fatal("cancelLinger left the second timer armed")
+	}
+	if n := timers.count(); n != 2 {
+		t.Errorf("armed timers = %d, want no re-arm while a session is tracked", n)
+	}
+}
+
 // TestAnAttachCancelsTheLinger: resolving the child again before the timer
 // fires calls the timer off.
 func TestAnAttachCancelsTheLinger(t *testing.T) {
-	shortenLinger(t)
 	f, fakeFor := projectFleet(t)
+	shortenLinger(t, f)
 	timers := captureTimers(f)
 	ctx := ctlContext(t)
 	root := t.TempDir()

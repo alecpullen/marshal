@@ -47,7 +47,8 @@ The SPA is baked in with `//go:embed`, so a change under `web/ui/src` is
 
 `webbridge --profile local` is the user's local daemon (P4): a unix socket,
 host processes only, and no container machinery. Each project runs its own
-`marshal acp --viewers` child, and `POST /api/projects/attach` upgrades a marshal
+`marshal acp --viewers` child, started on the first attach and stopped 30s
+after its last session closes; `POST /api/projects/attach` upgrades a marshal
 client onto that child's viewer socket, relaying its frames unchanged.
 
 ### End-to-end and usability suites

@@ -21,7 +21,7 @@ import (
 // socket path is capped at 104 bytes on macOS.
 func unixServer(t *testing.T, handler http.Handler) string {
 	t.Helper()
-	socket := filepath.Join(t.TempDir(), "marshal.sock")
+	socket := shortSocket(t)
 
 	srv := httptest.NewUnstartedServer(handler)
 	// Replace the TCP listener the server made for itself with the
@@ -128,12 +128,18 @@ func shortSocket(t *testing.T) string {
 	if len(path) < 100 {
 		return path
 	}
-	dir, err := os.MkdirTemp("/private/tmp", "marshal-attach-")
-	if err != nil {
-		t.Fatalf("make a short temp dir: %v", err)
+	// A long TMPDIR pushes the socket path over the sun_path cap. Both macOS
+	// (/private/tmp) and Linux (/tmp) have a short one; take whichever exists.
+	for _, root := range []string{"/private/tmp", "/tmp"} {
+		dir, err := os.MkdirTemp(root, "m-attach-")
+		if err != nil {
+			continue
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(dir) })
+		return filepath.Join(dir, "d.sock")
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	return filepath.Join(dir, "d.sock")
+	t.Fatalf("no short temp dir for a unix socket (path would be %d bytes)", len(path))
+	return ""
 }
 
 // attachStub listens on a unix socket and hands the one connection a client
@@ -403,6 +409,32 @@ func TestTheContextBoundsTheHandshakeOnly(t *testing.T) {
 		t.Fatalf("read the stream after the handshake's deadline: %v", err)
 	case <-time.After(10 * time.Second):
 		t.Fatal("the stream stalled past the handshake's deadline")
+	}
+}
+
+func TestACancelledHandshakeEndsTheAttach(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	socket := attachStub(t, func(conn net.Conn, req *http.Request) {
+		_ = req.Body.Close()
+		// Never answer: the handshake can only end by the caller giving up.
+		_, _ = io.Copy(io.Discard, conn)
+	})
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	if _, err := NewClient(socket).Attach(ctx, "/work/root", ""); err == nil {
+		t.Fatal("a cancelled attach returned a stream")
+	} else if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Attach() error = %v, want a cancellation", err)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("attach took %s to notice the cancellation", elapsed)
 	}
 }
 

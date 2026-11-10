@@ -144,20 +144,38 @@ func acpListenSpec(args []string) (string, error) {
 }
 
 // acpViewersSpec extracts --viewers (or --viewers=VALUE) from the acp
-// subcommand's arguments. An empty return means no viewer socket.
+// subcommand's arguments. An empty return means no viewer socket. A repeated
+// flag is refused rather than silently using the first: the viewer socket is a
+// path the operator means to bind, and a second one is a mistake worth naming.
 func acpViewersSpec(args []string) (string, error) {
+	var spec string
+	set := func(value string) error {
+		if value == "" {
+			return fmt.Errorf("marshal acp: --viewers requires a unix:// address")
+		}
+		if spec != "" {
+			return fmt.Errorf("marshal acp: --viewers given more than once")
+		}
+		spec = value
+		return nil
+	}
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--viewers":
 			if i+1 >= len(args) {
 				return "", fmt.Errorf("marshal acp: --viewers requires a unix:// address")
 			}
-			return args[i+1], nil
+			if err := set(args[i+1]); err != nil {
+				return "", err
+			}
+			i++
 		case strings.HasPrefix(args[i], "--viewers="):
-			return strings.TrimPrefix(args[i], "--viewers="), nil
+			if err := set(strings.TrimPrefix(args[i], "--viewers=")); err != nil {
+				return "", err
+			}
 		}
 	}
-	return "", nil
+	return spec, nil
 }
 
 // recordPermanentTrust writes a permanent trust record for the current

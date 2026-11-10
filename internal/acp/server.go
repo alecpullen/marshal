@@ -740,9 +740,11 @@ func wireError(err error) string {
 		case parseError:
 			return "parse error"
 		case invalidRequest:
-			// invalid-request messages are server-generated refusals, not
-			// client input, so they are safe to expose; a viewer's refusal
-			// carries its sentence to the client this way (P4 D2). F-SEC-37.
+			// invalid-request messages are server-authored refusals, so they
+			// are safe to expose; a viewer's refusal carries its sentence to
+			// the client this way (P4 D2). The notification-only refusals
+			// (server.go:639, :652) do echo the sender's own method name, and
+			// go through writeError rather than here. F-SEC-37.
 			return "invalid request: " + rpcErr.Message
 		case methodNotFound:
 			return "method not found"

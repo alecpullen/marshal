@@ -331,6 +331,14 @@ func (s *Session) runTurn(ctx context.Context, spec runSpec) (stopped bool, star
 	// leaves cannot truncate them (P4 D4 decision 1).
 	done := make(chan runResult, 1)
 	go func() {
+		// A panic in the run's ending is answered as a failed run rather than
+		// taking the process down: the caller is waiting on done, and endRun's
+		// own net has freed the run slot by the time this recover runs.
+		defer func() {
+			if r := recover(); r != nil {
+				done <- runResult{started: true, err: fmt.Errorf("run ending panicked: %v", r)}
+			}
+		}()
 		done <- s.endRun(slot, spec, runCtx)
 	}()
 
@@ -349,6 +357,24 @@ func (s *Session) runTurn(ctx context.Context, spec runSpec) (stopped bool, star
 // run, and then today's cleanup — idle, the stop group, the work registration
 // and the run's context.
 func (s *Session) endRun(slot *turnSlot, spec runSpec, runCtx context.Context) runResult {
+	// A panic after the work — in the finish hook, the note, or the cleanup
+	// below — would otherwise leave the session's run slot claimed for good.
+	// The work itself is already panic-safe (callRun recovers); this is the net
+	// for everything after it. The normal path nils the claim when it releases
+	// it, so the two can never both free the slot.
+	defer func() {
+		s.mu.Lock()
+		releaseRun := slot.releaseRun
+		slot.releaseRun = nil
+		if s.turn == slot {
+			s.turn = nil
+		}
+		s.mu.Unlock()
+		if releaseRun != nil {
+			releaseRun()
+		}
+	}()
+
 	s.mu.Lock()
 	skipped := slot.stopped
 	s.mu.Unlock()

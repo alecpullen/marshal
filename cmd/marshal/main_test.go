@@ -155,6 +155,7 @@ func TestACPViewersFlagRoutesToTheViewersRunner(t *testing.T) {
 		{"acp", "--viewers", "tcp://127.0.0.1:1"},
 		{"acp", "--viewers"},
 		{"acp", "--viewers", "unix:///x/v.sock", "--listen", "unix:///y/a.sock"},
+		{"acp", "--viewers", "unix:///x/v.sock", "--viewers=unix:///y/w.sock"},
 	}
 	for _, args := range refused {
 		gotPath = ""

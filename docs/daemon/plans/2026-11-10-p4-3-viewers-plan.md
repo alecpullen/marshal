@@ -221,7 +221,7 @@ func acpViewersSpec(args []string) (string, error)
 
 ## Task 3 — `marshal acp --viewers`
 
-**Files:** `internal/acp/listen.go`, `internal/acp/viewers.go`, `internal/acp/run.go`, `internal/acp/viewers_test.go`, `cmd/marshal/main.go`, `cmd/marshal/main_test.go`.
+**Files:** `internal/acp/listen.go`, `internal/acp/viewers.go`, `internal/acp/viewers_test.go`, `cmd/marshal/main.go`, `cmd/marshal/main_test.go`.
 
 1. Move `ListenAndServe`'s socket preparation into `listenUnix` (decision 7) and call it from there. Nothing `ListenAndServe` does changes: `TestListenAndServeAcceptsSuccessiveConnections` and `TestListenAndServeCutsIdleConnections` pass unchanged.
 2. Add `RunWithViewers`. It builds the same trust resolver and project-host registry `Run` does, binds the socket with `listenUnix`, and calls `runWithViewersConfig`. Then it closes the hosts, as `Run` does.

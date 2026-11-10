@@ -342,6 +342,11 @@ type Fleet struct {
 	// is already cleaning up.
 	lingerDur time.Duration
 
+	// idleTimeout is how long a project session with no viewer and no run
+	// lives on (P4 D7a); zero never ends one. SetIdleSessionTimeout sets it
+	// before serving.
+	idleTimeout time.Duration
+
 	// pruneMu serializes prune callers against each other: the HTTP
 	// prune endpoint and the spawn-path enforceDisk prune both call
 	// Prune, and a removeTree racing itself on an already-vanished

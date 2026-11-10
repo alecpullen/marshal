@@ -248,7 +248,14 @@ func (r *Registry) Close(ctx context.Context, id string) error {
 	if !ok {
 		return ErrUnknownSession
 	}
-	if _, err := r.child.Request(ctx, "session/close", sessionParams{Cwd: info.Cwd, SessionID: id}); err != nil {
+	return r.closeTracked(ctx, id, info.Cwd)
+}
+
+// closeTracked is Close's body: it ends the session's agent-side runtime,
+// drains its waits and untracks it. The caller has already resolved the
+// session and its directory.
+func (r *Registry) closeTracked(ctx context.Context, id string, cwd AgentPath) error {
+	if _, err := r.child.Request(ctx, "session/close", sessionParams{Cwd: cwd, SessionID: id}); err != nil {
 		return err
 	}
 	r.cancelSession(id)
@@ -256,6 +263,41 @@ func (r *Registry) Close(ctx context.Context, id string) error {
 	delete(r.sessions, id)
 	r.mu.Unlock()
 	return nil
+}
+
+// idleCandidates lists the tracked sessions with no viewer whose last
+// activity is at or before cutoff.
+func (r *Registry) idleCandidates(cutoff time.Time) []string {
+	r.mu.Lock()
+	out := make([]string, 0, len(r.sessions))
+	for id, info := range r.sessions {
+		if info.viewers > 0 || info.lastActive.After(cutoff) {
+			continue
+		}
+		out = append(out, id)
+	}
+	r.mu.Unlock()
+	// A stable order, so a sweep logs and closes in the same order twice.
+	sort.Strings(out)
+	return out
+}
+
+// closeIfIdle closes id as Close does when, under the registry's lock, it
+// still has no viewer and its last activity is at or before cutoff. It
+// reports whether it closed the session.
+func (r *Registry) closeIfIdle(ctx context.Context, id string, cutoff time.Time) (bool, error) {
+	r.mu.Lock()
+	info, ok := r.sessions[id]
+	if !ok || info.viewers > 0 || info.lastActive.After(cutoff) {
+		r.mu.Unlock()
+		return false, nil
+	}
+	cwd := info.Cwd
+	r.mu.Unlock()
+	if err := r.closeTracked(ctx, id, cwd); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // rename moves a tracked session to its replacement's ID, keeping its

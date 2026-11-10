@@ -715,6 +715,25 @@ func (m *TurnManager) runTurn(
 	m.activeTurns[sessionID] = slot
 	m.activeTurnsMu.Unlock()
 
+	// The session's one run slot is claimed at admission (P4 D2): the
+	// service's run path holds the same claim, so a session runs one run at a
+	// time whichever connection started it. A runtime with no state has no
+	// slot to share, and is served exactly as before.
+	var releaseRun func()
+	if slotState != nil {
+		var claimed bool
+		releaseRun, claimed = slotState.ClaimRun()
+		if !claimed {
+			m.activeTurnsMu.Lock()
+			if m.activeTurns[sessionID] == slot {
+				delete(m.activeTurns, sessionID)
+			}
+			m.activeTurnsMu.Unlock()
+			slotCancel()
+			return nil, serverErrorf("session %s already has an active turn", sessionID)
+		}
+	}
+
 	// Cleanup: cancel slot, remove from map, close done channel.
 	//
 	// This is ordinary slot cleanup, not an explicit stop: the turn's stop
@@ -731,6 +750,13 @@ func (m *TurnManager) runTurn(
 		m.activeTurnsMu.Unlock()
 		if token := slot.stopGroup.Load(); token != nil && slotState != nil {
 			slotState.EndTurnStop(token)
+		}
+		// The claim is released after the slot is deleted and before done
+		// closes, so the post-turn watch-resume waiter below finds the
+		// session's run slot free (P4 D2).
+		if releaseRun != nil {
+			releaseRun()
+			releaseRun = nil
 		}
 		close(slot.done)
 	}()

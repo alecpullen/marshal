@@ -491,6 +491,13 @@ type State struct {
 	workWG    sync.WaitGroup
 	quiescing bool
 
+	// runMu guards the session's one run slot (P4 D2). The service's run
+	// path and ACP's turn path both claim it at admission, so a session runs
+	// one run at a time whichever connection started it. It is a leaf lock:
+	// nothing is called while it is held.
+	runMu   sync.Mutex
+	runHeld bool
+
 	// Task 5: the registered operation stop group — the target an explicit
 	// turn stop reaches. turnStopService is the conversation's command
 	// service, installed by app construction; turnStopPendingCause retains a
@@ -1889,6 +1896,35 @@ func (s *State) BeginWorkCancelable(cancel func()) error {
 	s.end.rememberParent(id)
 	s.workWG.Add(1)
 	return nil
+}
+
+// ClaimRun reserves the session's one run (P4 D2): the service's run path and
+// ACP's turn path both take it at admission, so a session runs one run at a
+// time whichever connection started it. ok is false while another claim is
+// held. release is idempotent.
+//
+// A nil state claims nothing and always succeeds, as its other nil-tolerant
+// methods do: a runtime without a state (the existing fakes) has no run slot
+// to share.
+func (s *State) ClaimRun() (release func(), ok bool) {
+	if s == nil {
+		return func() {}, true
+	}
+	s.runMu.Lock()
+	if s.runHeld {
+		s.runMu.Unlock()
+		return nil, false
+	}
+	s.runHeld = true
+	s.runMu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.runMu.Lock()
+			s.runHeld = false
+			s.runMu.Unlock()
+		})
+	}, true
 }
 
 // EndWork signals that a unit of work registered via BeginWork has

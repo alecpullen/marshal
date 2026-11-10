@@ -940,7 +940,115 @@ cached, so no new failure remains. `TestWebIsStdlibOnly` passed.
 
 ### Plan 3 — concurrent viewer connections
 
-Not yet run.
+Implemented in the worktree `p4-3-viewers`, one commit per task: `cf369d54`
+(task 1), `540878f3` (task 2), `dd8dd151` (task 3).
+
+**What was built.**
+
+- **One run slot.** `session.State.ClaimRun` (beside `BeginWork`) reserves the
+  session's single run behind its own leaf lock and returns an idempotent
+  release; a nil state claims nothing. The service's `runTurn` claims it right
+  after taking `s.turn`, gives the slot back and refuses with `errTurnBusy`
+  when the claim is taken, and releases it in the critical section that clears
+  `s.turn` — and on the `BeginWorkCancelable` refusal. ACP's `runTurn` claims
+  it after reserving the connection's slot, deletes that slot and refuses with
+  its existing sentence when the claim is taken, and releases before
+  `close(slot.done)`, so the post-turn watch-resume waiter finds the slot free.
+- **Viewer connections.** `registerHandlers` takes the notify function and a
+  viewer flag. The stdio, `--listen` and embedding paths pass `h.sink.Notify`
+  and false, so what they register is unchanged. `serveViewer` (`viewers.go`)
+  builds a `Server` over the connection with `MaxLineBytes =
+  viewerMaxFrameBytes` (64 MiB), `MarshalOnly` set and the host's logger,
+  registers the handlers with the server's own `Notify` and true, and never
+  sets the host's sink.
+- **What a viewer refuses.** `Server.MarshalOnly` refuses a client that did not
+  declare the marshal capability at `initialize` (recording nothing) and every
+  call before a marshal `initialize` has been answered. A viewer's
+  `session/new` serves only a blob with `replaces`; `session/load`,
+  `session/resume` and `session/delete` answer the refusal.
+- **Teardown.** `TurnManager.Close` collects every session with a projector
+  under `stacksMu` (a subagent key is trimmed to its session) and drops each
+  outside the lock. A viewer's cleanup calls it after today's cleanup; the
+  stdio and `--listen` paths do not. A viewer also stays out of the host's
+  canceller chain.
+- **`--viewers`.** `listenUnix` is `ListenAndServe`'s socket preparation,
+  shared. `RunWithViewers` binds the socket before serving stdio and runs
+  `runWithViewersConfig`, which accepts viewers on their own goroutines with no
+  idle deadline while stdio serves the bridge's connection; when stdio ends or
+  the context does, it closes the listener, cancels and waits for the viewers
+  (bounded by the host's shutdown), closes the sessions and the lister, and
+  joins every error. `cmd/marshal` parses `--viewers` / `--viewers=VALUE`,
+  refuses it beside `--listen`, without a value, and for a network other than
+  `unix`, and routes the path to `acp.RunWithViewers`.
+
+**Where the plan was short, and how it was filled.**
+
+1. **The refusal sentences did not travel.** Task 2 says both refusals are a
+   `jsonRPCError` with the invalid-request code "so the sentence travels";
+   `wireError` collapsed every invalid-request message to the fixed string
+   `invalid request` (F-SEC-37). Decided with the user, 2026-11-10: pass
+   server-authored invalid-request messages through as `serverError` already
+   is. `wireError` now returns `invalid request: <message>`,
+   `TestWireErrorPreservesInvalidRequest` pins it, and the opaque-code table in
+   `server_test.go` lost its invalid-request row. This is the plan's one
+   deviation into a shared error path; no code, method or frame shape changed.
+2. **Four test files changed with `registerHandlers`.** The two new parameters
+   break the call sites in `host_test.go`, `acpclient_methods_test.go` and
+   `client_core_test.go`; they pass `h.sink.Notify, false`, which is what they
+   meant before.
+3. **The watch-resume anchor is in the session package.**
+   `SetWatchResume` is at `internal/app/session/watch_resume.go:17`, not
+   `internal/acp/watch_resume.go` as the plan's text implies.
+4. **Two viewers each see every update, without a transcript write.** A viewer
+   cannot add a transcript message — a prompt needs a runner these tests do not
+   build — so `TestTwoViewersEachSeeEveryUpdate` pins the same guarantee
+   through the status mirror: A sets a notice and both viewers see it, then B
+   changes it and A sees the change.
+5. **The viewer tests need a `net.Conn`.** `serveViewer` takes one as
+   contracted, but the in-memory tests drive an `rpc.Pipe`; they wrap its agent
+   end in `pipeNetConn`, a `net.Conn` with no addresses and no deadlines.
+
+**Manual run** — the built `./marshal`, its stdin held open by a FIFO, two
+`nc -U` viewers initializing at once, then stdin closed. The capability lists
+are elided with `…`; nothing else is cut:
+
+```
+--- socket ---
+srw-------@ 1 alecpullen  wheel  0 Nov 10 15:50 /private/tmp/p4-3-suite/v.sock
+--- A ---
+{"jsonrpc":"2.0","id":1,"result":{"agentCapabilities":{…,"loadSession":true,"marshal":{"protocolVersion":1},…},"agentInfo":{"name":"marshal","title":"Marshal","version":""},"authMethods":[],"protocolVersion":1}}
+--- B ---
+{"jsonrpc":"2.0","id":1,"result":{"agentCapabilities":{…,"loadSession":true,"marshal":{"protocolVersion":1},…},"agentInfo":{"name":"marshal","title":"Marshal","version":""},"authMethods":[],"protocolVersion":1}}
+agent exited after stdin closed
+agent exit: 0
+--- socket after stdio end ---
+ls: /private/tmp/p4-3-suite/v.sock: No such file or directory
+socket gone
+--- agent log ---
+time=2026-11-10T15:50:09.910+11:00 level=INFO msg="acp dispatch" method="initialize" id=&[49] duration_ms=0 error=<nil>
+time=2026-11-10T15:50:09.910+11:00 level=INFO msg="acp dispatch" method="initialize" id=&[49] duration_ms=0 error=<nil>
+```
+
+**Full verification** in the worktree, at `dd8dd151` plus this record: `gofmt
+-l internal cmd test web` printed nothing; `go vet ./...` was clean;
+`go test ./... -timeout 20m -count=1` ran 126 packages and failed only
+`internal/acp`, with three of the plan's known `*Budget` load flakes
+(`TestStackBusyFlipBudget` 0.35s, `TestStackPatchApplyBudget` 0.17s,
+`TestStackRoundTripBudget` 4.14s). Each re-ran green alone: 0.933s, 0.398s and
+1.444s. Every other package passed, `web/bridge` (182.7s) included, and the
+baseline's own load flake (`TestACPSendNowCancelsPromptRPCWithoutCancelingTurn`)
+did not recur. `TestWebIsStdlibOnly` (`web/bridge`) and
+`TestTUIStaysOnTheClientSeam` (`internal/app/tui`) both passed on their own.
+`CGO_ENABLED=1 go build -o marshal ./cmd/marshal` succeeded, and
+`go test ./test/usability/... -run TestScripted -timeout 5m -count=1` passed
+(45.3s, every usability sub-package ok).
+
+**Open for plan 4:** the child's contract is D2's, unchanged:
+`marshal acp --viewers unix://<path>`, a socket `0600` in a directory `0700`,
+whose viewers serve marshal clients only and share the session's one run slot
+with the service. One wire detail plan 4 should know: an invalid-request
+refusal now carries its sentence (`invalid request: <message>`), so a relay
+that shows an error's message reads the refusal rather than the generic text.
 
 ### Plan 4 — project children and the relay
 

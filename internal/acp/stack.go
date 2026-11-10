@@ -387,6 +387,26 @@ func (m *TurnManager) dropStacks(sessionID string) {
 	}
 }
 
+// Close drops every session's stacks and run watchers, stopping their idle
+// loops. A viewer connection's cleanup calls it.
+func (m *TurnManager) Close() {
+	m.stacksMu.Lock()
+	ids := make(map[string]struct{}, len(m.stacks))
+	for k := range m.stacks {
+		// A subagent stack's key is "sessionID#subagentID"; dropStacks takes
+		// the session and removes every stack under it.
+		if i := strings.IndexByte(k, '#'); i >= 0 {
+			k = k[:i]
+		}
+		ids[k] = struct{}{}
+	}
+	m.stacksMu.Unlock()
+	// dropStacks takes stacksMu itself, so it runs outside the lock above.
+	for id := range ids {
+		m.dropStacks(id)
+	}
+}
+
 // readLookup is the lookup the transcript reads use: Reads when the config
 // gave one, Lookup otherwise. Resolving it per call keeps a caller that swaps
 // Lookup after construction reaching the same lookups the prompts do (P3 R4).

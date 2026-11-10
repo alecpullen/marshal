@@ -356,9 +356,14 @@ func responseBarrier(fencers ...sessionFencer) func(ctx context.Context, session
 // (Task 22). Keeping it a returned func, rather than a side effect inside
 // registerHandlers, makes the connection's ownership of those goroutines
 // explicit at the call site.
-func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
+// registerHandlers registers every handler on srv. notify is where this
+// connection's managers send their updates: the host's sink for the stdio,
+// --listen and embedding connections, the server's own Notify for a viewer.
+// viewer refuses the lifecycle calls a viewer may not make and keeps the
+// connection's canceller out of the host's chain (P4 D2).
+func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool, notify NotifyFunc, viewer bool) func() {
 	manager := h.manager
-	turns := newTurnManagerFor(manager, h.log, h.sink.Notify,
+	turns := newTurnManagerFor(manager, h.log, notify,
 		&serverPermissionClient{server: srv},
 		&serverQuestionClient{server: srv}, alive, srv.marshalClient)
 	// The control manager serves a marshal client's turns, controls and work on
@@ -366,7 +371,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 	// capability keeps today's handlers, which registerControls routes to.
 	controls := NewControlManager(ControlManagerConfig{
 		Lookup:  manager.Service,
-		Notify:  h.sink.Notify,
+		Notify:  notify,
 		Marshal: srv.marshalClient,
 	})
 
@@ -379,10 +384,29 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 	srv.Handle("workspace/patch", wsFiles.Patch)
 	srv.Handle("workspace/format", wsFiles.Format)
 
-	srv.Handle("session/new", manager.Create)
-	srv.Handle("session/load", manager.Load)
-	srv.Handle("session/resume", manager.Resume)
-	srv.Handle("session/delete", manager.Delete)
+	if viewer {
+		// A viewer cannot start, load, resume or delete a runtime: the bridge
+		// owns sessions' lifecycles (P4 D2). Its session/new serves only a
+		// replacement inside an existing runtime, through the same Create.
+		srv.Handle("session/new", func(ctx context.Context, params json.RawMessage) (any, error) {
+			var p acpwire.NewSessionParams
+			if err := json.Unmarshal(params, &p); err != nil || p.Replaces == "" {
+				return nil, viewerLifecycleRefusal()
+			}
+			return manager.Create(ctx, params)
+		})
+		refuse := func(context.Context, json.RawMessage) (any, error) {
+			return nil, viewerLifecycleRefusal()
+		}
+		srv.Handle("session/load", refuse)
+		srv.Handle("session/resume", refuse)
+		srv.Handle("session/delete", refuse)
+	} else {
+		srv.Handle("session/new", manager.Create)
+		srv.Handle("session/load", manager.Load)
+		srv.Handle("session/resume", manager.Resume)
+		srv.Handle("session/delete", manager.Delete)
+	}
 
 	srv.Handle("session/access_state", turns.AccessState)
 	srv.Handle("session/steering_status", turns.SteeringStatus)
@@ -398,7 +422,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 		}
 		broker, _ := rt.WatchBroker.(*pubsub.Broker[watch.Event])
 		return rt.CurrentWatchManager(), broker, true
-	}, h.sink.Notify)
+	}, notify)
 	srv.Handle("session/watch_list", watches.List)
 	srv.Handle("session/watch_start", watches.Start)
 	srv.Handle("session/watch_stop", watches.Stop)
@@ -422,7 +446,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 			return nil, false
 		}
 		return rt, true
-	}, h.sink.Notify)
+	}, notify)
 	srv.Handle("session/work_acknowledge", works.Acknowledge)
 	// The control methods: a marshal client's turn runs on the service, and a
 	// client without the capability reaches today's handler in others.
@@ -447,7 +471,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 	// it once every manager whose forwarders carry those updates exists.
 	statuses := NewStatusManager(StatusManagerConfig{
 		Lookup:  manager.Service,
-		Notify:  h.sink.Notify,
+		Notify:  notify,
 		Marshal: srv.marshalClient,
 	})
 	registerStatus(srv, statuses)
@@ -458,14 +482,14 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 	// connection's forwarders.
 	sheets := NewSheetManager(SheetManagerConfig{
 		Lookup:  manager.Service,
-		Notify:  h.sink.Notify,
+		Notify:  notify,
 		Marshal: srv.marshalClient,
 	})
 	// The request manager's forwarders carry pending_requests the same way, so
 	// they join the barrier after the sheet manager's.
 	requests := NewRequestManager(RequestManagerConfig{
 		Lookup:  manager.Service,
-		Notify:  h.sink.Notify,
+		Notify:  notify,
 		Marshal: srv.marshalClient,
 	})
 	registerTranscript(srv, turns, sheets, manager.Service)
@@ -477,7 +501,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 	settings := NewSettingsManager(SettingsManagerConfig{
 		Lookup:     manager.Service,
 		HostLookup: manager.ServiceHost,
-		Notify:     h.sink.Notify,
+		Notify:     notify,
 		Marshal:    srv.marshalClient,
 	})
 	// The end manager serves a marshal client's end flow, its close and the
@@ -487,7 +511,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 	ends := NewEndManager(EndManagerConfig{
 		Lookup:     manager.Service,
 		HostLookup: manager.ServiceHost,
-		Notify:     h.sink.Notify,
+		Notify:     notify,
 		Marshal:    srv.marshalClient,
 	})
 
@@ -530,9 +554,9 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 			return commandRuntimeFor(rt), true
 		},
 		HasActive: turns.HasActiveTurn,
-		// The host-level sink so a headless command's mid-flight notice (the
-		// /mcp auth authorization URL) survives a dropped connection.
-		Notify: h.sink.Notify,
+		// This connection's notify: a headless command's mid-flight notice
+		// (the /mcp auth authorization URL) reaches the client that asked.
+		Notify: notify,
 	})
 	srv.Handle("session/hold", turns.Hold)
 
@@ -654,13 +678,17 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 	// single canceller on every connection, so a turn that outlived a
 	// previous connection's bounded shutdown wait became uncancellable
 	// through the manager. The host-level canceller (registered once)
-	// fans out to this chain entry instead.
-	h.addTurnCanceller(func(ctx context.Context, sessionID string) error {
-		err := turns.CancelAndWait(ctx, sessionID)
-		skillsMgr.CloseSession(sessionID)
-		pluginsMgr.CloseSession(sessionID)
-		return err
-	})
+	// fans out to this chain entry instead. A viewer stays out of the
+	// chain (P4 D2): its connection is not the project's driver, and its
+	// manager is torn down with it.
+	if !viewer {
+		h.addTurnCanceller(func(ctx context.Context, sessionID string) error {
+			err := turns.CancelAndWait(ctx, sessionID)
+			skillsMgr.CloseSession(sessionID)
+			pluginsMgr.CloseSession(sessionID)
+			return err
+		})
+	}
 
 	// The work controller is per-connection: its forwarders (Task 22) push
 	// work_state updates to this connection's sink and must stop with it.
@@ -677,6 +705,12 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 		settings.Close()
 		controls.Close()
 		ends.Close()
+		if viewer {
+			// A viewer's teardown stops its stack loops and run watchers: their
+			// idle loops run on context.Background() and would otherwise
+			// outlive the connection (P4 D2).
+			turns.Close()
+		}
 	}
 }
 
@@ -724,7 +758,7 @@ func (h *agentHost) serveConnWith(ctx context.Context, stdin io.Reader, stdout i
 	// binding on the Runtime cannot start a turn.
 	alive := &atomic.Bool{}
 	alive.Store(true)
-	cleanup := h.registerHandlers(srv, alive)
+	cleanup := h.registerHandlers(srv, alive, h.sink.Notify, false)
 	defer cleanup()
 	h.sink.Set(srv.Notify)
 	defer h.sink.Clear()

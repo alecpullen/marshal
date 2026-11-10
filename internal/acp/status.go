@@ -304,12 +304,20 @@ func registerInitialize(srv *Server) {
 			return nil, invalidParamsError("protocolVersion is required")
 		}
 
+		declared := p.ClientCapabilities != nil &&
+			p.ClientCapabilities.Marshal != nil &&
+			p.ClientCapabilities.Marshal.ProtocolVersion == acpwire.MarshalProtocolVersion
+		// A viewer connection serves marshal clients only (P4 D2): a client
+		// that did not declare the capability is refused here, and nothing is
+		// recorded, so every later call is refused too.
+		if srv.MarshalOnly && !declared {
+			return nil, viewerCapabilityRefusal()
+		}
+
 		// Record whether this client declared the marshal-only protocol (P3
 		// R9). The capability below is advertised to every client, so a client
 		// that does not declare it still sees it.
-		srv.setMarshalClient(p.ClientCapabilities != nil &&
-			p.ClientCapabilities.Marshal != nil &&
-			p.ClientCapabilities.Marshal.ProtocolVersion == acpwire.MarshalProtocolVersion)
+		srv.setMarshalClient(declared)
 
 		return map[string]any{
 			"protocolVersion": 1,

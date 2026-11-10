@@ -179,8 +179,13 @@ func (a *fakeAgent) generations() int {
 
 func (a *fakeAgent) Wait() error                { return nil }
 func (a *fakeAgent) Signal(sig os.Signal) error { return nil }
-func (a *fakeAgent) Kill() error                { return nil }
-func (a *fakeAgent) Detach() error              { return nil }
+
+// Kill force-terminates the current generation, as a real SIGKILL does: the
+// streams go with the process, so the read loop ends. A no-op here would let
+// a generation spawned after Stop's signal outlive the stop and hang it.
+func (a *fakeAgent) Kill() error { a.die(); return nil }
+
+func (a *fakeAgent) Detach() error { return nil }
 
 // frameAt is one recorded frame and the connection it arrived on.
 type frameAt struct {
@@ -279,11 +284,14 @@ func (p *fakeProjectChild) die() {
 	p.fakeAgent.die()
 }
 
-// Signal records the stop the bridge asked for and drops the socket, the way a
-// real process would on SIGTERM, so a test can tell a stop from a detach.
+// Signal records the stop the bridge asked for and takes the streams with
+// it, the way a real process does when it dies on SIGTERM. Hanging up stdio
+// closes this generation's readDone; without that, a Child whose generation
+// was replaced while Stop ran would wait forever on a pipe nothing will ever
+// close, because the fake's Kill is a no-op.
 func (p *fakeProjectChild) Signal(sig os.Signal) error {
 	p.stopOnce.Do(func() { close(p.stopped) })
-	p.closeSocket()
+	p.die()
 	return nil
 }
 

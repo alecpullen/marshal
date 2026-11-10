@@ -1,7 +1,6 @@
 package bridge
 
 import (
-	"bufio"
 	"context"
 	"io"
 	"log/slog"
@@ -140,26 +139,6 @@ func (s *Server) attachProject(w http.ResponseWriter, r *http.Request) {
 
 	pc.reg.attachViewer(sessionID)
 	go s.fleet.relay(pc, sessionID, client, buffered.Reader, conn)
-}
-
-// relay copies frames between an attached client and its viewer connection
-// until either side ends (P4 D3). It is a plain copy for now: task 4 replaces
-// it with the relay that follows a replacement and a close.
-func (f *Fleet) relay(pc *projectChild, sessionID string, client net.Conn, buffered *bufio.Reader, agent net.Conn) {
-	defer client.Close()
-	defer agent.Close()
-
-	done := make(chan struct{}, 2)
-	go func() {
-		_, _ = io.Copy(agent, buffered)
-		done <- struct{}{}
-	}()
-	go func() {
-		_, _ = io.Copy(client, agent)
-		done <- struct{}{}
-	}()
-	<-done
-	pc.reg.detachViewer(sessionID)
 }
 
 // hasToken reports whether a comma-separated header value carries want, case

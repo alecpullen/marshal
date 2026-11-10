@@ -259,6 +259,14 @@ func (f *Fleet) armLinger(pc *projectChild) {
 	pc.linger = func() { timer.Stop() }
 }
 
+// armProjectLinger arms the linger on a project child that tracks no
+// session, taking the child's own lock (the relay end path has none).
+func (f *Fleet) armProjectLinger(pc *projectChild) {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	f.armLinger(pc)
+}
+
 // cancelLinger disarms an armed linger timer, if any (decision 4).
 func (pc *projectChild) cancelLinger() {
 	pc.mu.Lock()

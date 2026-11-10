@@ -6,9 +6,11 @@ puts the bridge between. Where this spec and the design differ, this spec
 wins. Each difference is listed under "Decisions".
 Depends on: P3, implemented (its plan 8 merged at `40dc0eff`).
 Status: approved 2026-11-09, with every recommendation under "Decisions"
-accepted. The line anchors were re-checked at `40dc0eff` for plans 1 and 2.
-Plans 1 and 2 share no code and can run side by side; each records itself
-under its own heading in the Implementation record.
+accepted. The line anchors were re-checked at `40dc0eff` for plans 1 and 2,
+and at `7802701f` (plans 1 and 2 merged) for plans 3 and 4. Plans 1 and 2
+shared no code and ran side by side. Plans 3 and 4 do the same, except plan
+4's last task, which needs plan 3 on `main`. Each plan records itself under
+its own heading in the Implementation record.
 
 ## Goal
 
@@ -265,13 +267,55 @@ against.
   notify on that connection only, never through the host's sink. A turn on
   ACP's own path (the bridge's connection) keeps the sink, so its
   orphaned-turn rule is unchanged (`addTurnCanceller`, `host.go:143`).
+- **The viewer socket** (plan 3).
+  - `--viewers` is valid only in stdio mode; with `--listen` it is an error.
+  - The child creates the socket's directory `0700`, removes a stale socket,
+    listens, makes the socket `0600`, and removes it when it exits, as
+    `--listen` does. It binds before it serves stdio, so by the time the
+    bridge's `initialize` is answered, the socket accepts.
+  - A viewer connection reads frames with P3's 64 MiB cap, as the embedding's
+    pipe does, and has no idle deadline: a TUI can sit idle for hours, and its
+    process closing the socket ends the connection.
+  - When stdio ends, the child stops accepting, closes every viewer
+    connection, and then closes its sessions, as today.
+- **A viewer connection serves marshal clients only.**
+  - An `initialize` that does not declare the marshal capability is refused,
+    and so is every call before a marshal `initialize`.
+  - A viewer cannot start, load, resume or delete a runtime. `session/new` is
+    served only with `replaces` (the TUI's `/new`), and `session/load`,
+    `session/resume` and `session/delete` are refused. The bridge owns
+    sessions' lifecycles (D3), and `session/load`'s replay would go to the
+    host's sink, the bridge's connection.
+  - A marshal client's runs are the service's, so a viewer never owns a turn
+    on ACP's path. Its canceller therefore never joins the host's chain, and
+    an attach does not grow the chain. When the connection ends, its cleanup
+    also stops its stack loops, which today outlive their connection.
 - **One run slot per session.** The service's turn slot and ACP's
   `TurnManager` slot exclude each other (P3 plan 6b's open point): a session
   runs one turn at a time, whichever connection started it, and the second
   caller is refused with the code its path already uses (`CodeBusy` for a
-  marshal client, ACP's "turn already in flight" otherwise).
+  marshal client, ACP's "already has an active turn" otherwise).
+  - The slot is a claim on the session state, the one object both paths
+    hold. Each path takes it at admission, after its own slot and before
+    `BeginWork`, and releases it when its run ends. ACP releases it before
+    the post-turn watch resume looks for a free slot.
+  - `run` and `lastRun` (D4) show the service's runs only. A turn on ACP's
+    path holds the claim but does not show in `run`; showing it is P5's, with
+    H3.
+- **The project child** (plan 4).
+  - The bridge runs it as `marshal acp --viewers unix://<state>/v/<id>.sock`,
+    where `<id>` is the first 16 hex digits of the root's SHA-256. The short
+    name keeps the path under the platform's socket-path limit.
+  - It runs in the project root, with the bridge's environment until D7.
+  - The bridge's own connection declares no capability. On a TUI's session it
+    calls only `session/new`, `session/resume` and `session/close`, so it never
+    binds that session's watch resume or child approvals. Its notifications
+    are dropped in P4: nothing reads them until the web UI does (P5).
+  - The fleet's close stops each project child; it does not detach it.
 - A child that exits unexpectedly is restarted, as `Child.supervise` does
-  today. Its viewers' connections close, and their TUIs reattach (D5).
+  today. Its viewers' connections close, and their TUIs reattach (D5). The
+  bridge resumes the sessions it tracks on the new generation, as
+  `Registry.resumeAll` does.
 
 ### D3. The attach relay
 
@@ -295,6 +339,40 @@ against.
   frame unchanged. It watches the responses to `session/new` with
   `replaces` and to `session/close`, so its registry follows a replacement's
   new ID and a close. It logs no params (P3 R8).
+- **The handshake's details** (plan 4).
+  - The route is served on the socket only, never on the TCP listener: an
+    attached stream is a full marshal connection, and the remote TUI is H1's.
+  - The body is JSON: `root` and an optional `sessionId`. The root must be
+    absolute and a directory, and is cleaned; plan 5's client sends
+    `repo.FindRoot`'s root. The project is not added to the workspace
+    registry: the daemon's children and their sessions are reported by
+    `GET /api/daemon` instead.
+  - An ID the bridge tracks is attached at once. An ID it does not track is
+    resumed through the bridge's own connection (`session/resume`, which
+    replays nothing) and tracked. A resume that fails is refused with 404.
+  - The answer carries the session's ID in `Marshal-Session`. The client
+    writes nothing after its request until it has read the `101`, and the
+    relay still forwards any bytes it had already buffered.
+- **The relay's costs.** It decodes the ID and method of every frame the TUI
+  sends, because they are small. It decodes the agent's frames only while
+  one of the two watched calls is waiting for its answer, because the
+  agent's stack patches can be megabytes. IDs are compared by their compact
+  JSON.
+- **The registry follows the viewers.**
+  - A replacement renames the tracked session. A viewer's successful
+    `session/close` has ended the conversation, not the runtime (P3 plan 6c),
+    so the bridge then closes the runtime through its own connection and
+    stops tracking the session.
+  - Each tracked session counts its attached viewers and records when it was
+    last active: an attach, a detach, or a frame relayed either way.
+    `GET /api/daemon` lists each child's root, version and sessions with
+    those two values. Plan 5's `marshal attach` with no ID reads it.
+  - A child with no tracked session stops after the 30s linger. In P4 a
+    session leaves the registry only by a close, until plan 5's idle timeout
+    and plan 7's pins.
+- **The client's half** is `internal/daemon`'s `Client.Attach`. It sends the
+  handshake and returns the upgraded stream and the session ID, which plan 5
+  wraps in `rpc.NewStream`.
 - **When either side goes,** the relay closes the other. A TUI that loses
   the daemon reports it and exits (as P3 R11 does for the pipe), and can be
   reattached.
@@ -464,7 +542,7 @@ against.
 |---|---|
 | `cmd/webbridge`, `web/bridge` | `--profile local`; the unix listener and the peer check; project children; the attach handshake and the relay; the environment resolver; pins; host-process agents on project children; the refresh helper's supervision. Standard library only, as ever. |
 | `cmd/marshal` | `marshal attach`, `marshal daemon install/uninstall/start/stop/status/pin/unpin/refresh`, `--embedded`. |
-| `internal/daemon` (new) | The service units and the commands that drive them, and the socket's HTTP client, which plan 5's daemon mode reuses. |
+| `internal/daemon` (new) | The service units and the commands that drive them, and the socket's HTTP client with its attach handshake, which plan 5's daemon mode reuses. |
 | `internal/app/config` | `DaemonDir` and `DaemonSocketPath`, beside `DataDir`. |
 | `internal/acp` | `--viewers`: concurrent marshal connections that notify on their own connection; one run slot per session; `project/hold` and `project/release`; the deferring trust resolver for marshal-driven sessions. |
 | `internal/acp/service` | Runs on the session's context; `run` and `lastRun` in the status; run outcome notes. |
@@ -473,6 +551,8 @@ against.
 | `internal/launch` | The daemon check, the attach handshake, daemon mode's loop and its detach, and the client log. |
 | `internal/app/tui` | Quit detaches in daemon mode; `busy` follows a run it did not start; the outcome notes leave `handleAgentFinished` and `handlePlanAuthorFinished`. |
 | `internal/app` | The refresh lock around the OAuth workers. |
+| `internal/app/session` | The run claim both run slots take (plan 3). |
+| `test/daemon` (new) | The end-to-end attach test: a real bridge and a real child in one test process, driven by a scripted client (plan 4). |
 
 ## Migration order
 
@@ -487,11 +567,14 @@ Two plans at a time where they share no files, as in P3.
    `marshal daemon install/start/stop/status/uninstall`. The bridge,
    `cmd/marshal`, `internal/daemon` and `config` only. Alongside plan 1.
 3. **Concurrent viewer connections** (D2's `--viewers` and the single run
-   slot), in `internal/acp`, proved with two marshal clients on one session.
-   Alongside plan 4's bridge half, if that half is split.
+   slot), in `internal/acp`, `internal/app/session` and `cmd/marshal`'s `acp`
+   dispatch, proved with two marshal clients on one session. Alongside plan
+   4.
 4. **Project children and the relay** (D2, D3): the per-project child, the
-   handshake, the relay and its registry tracking. Proved with a scripted
-   client over the socket.
+   handshake, the relay and its registry tracking, in the bridge and
+   `internal/daemon`. Proved against a fake child in the bridge's own tests.
+   Its last task, run once plan 3 is on `main`, proves it with a scripted
+   client over the socket against a real child (`test/daemon`).
 5. **The TUI's daemon mode** (D5, D11): the check, `marshal attach`,
    detaching, following a run, `/resume` and the version warning. The
    done-when test lives here. Alongside plan 6.
@@ -854,3 +937,11 @@ package alone re-ran green (23.3s) on the second pass, with every other package
 cached, so no new failure remains. `TestWebIsStdlibOnly` passed.
 
 **Open for plan 4:** project children will listen in `<data>/daemon/state`.
+
+### Plan 3 — concurrent viewer connections
+
+Not yet run.
+
+### Plan 4 — project children and the relay
+
+Not yet run.

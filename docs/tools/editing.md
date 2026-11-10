@@ -99,6 +99,28 @@ A file whose modification time is newer than the recorded read is rejected as
 stale, with a `changedOnDiskError` naming the change. The point is that an edit
 is applied against content the agent has actually seen, not content it assumed.
 
+The ledger is **per conversation, not per agent**: `file_reads` and `file_writes`
+are keyed by `session_id`, and every agent in the conversation — the main agent
+and each `agent.run` child — writes through the same `filetrack.Service`. One
+read of a path satisfies the guard for all of them, because there is one working
+tree and one truth about it.
+
+When the staleness check does fire, the error carries what the caller needs to
+act on it instead of paying for a whole-file re-read:
+
+- the writer, when the ledger knows one — `(last written by a subagent)`. A path
+  with no session write says nothing rather than guessing, which is itself the
+  signal that something outside the session (a checkout, a formatter) changed it;
+- the displayed region pinned to exact line numbers;
+- for the exact-match patch path (`file.edit`, `file.write_patch`), a refreshed
+  read mark: the caller has just been shown the current bytes for the region it
+  is editing, and a retried patch is still validated byte-for-byte against
+  disk, so retrying from that text costs no extra tool call. A whole-file
+  `file.write` cannot retry from one region and keeps the full re-read.
+
+`native.Options.AgentLabel` names the writer ("the main agent", "a subagent",
+"the plan author", "a pipeline worker"), recorded with each committed write.
+
 ### Doubled worktree paths
 
 A path that repeats the `.marshal/worktrees/<branch>/` prefix is rejected with a

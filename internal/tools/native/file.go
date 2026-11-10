@@ -490,8 +490,17 @@ func (t *toolSet) readWorkspaceFile(requestedPath string, maxBytes int64) ([]byt
 // against a file that changed on disk the earlier chunks frequently still
 // apply, and showing the model chunk 0's region for a failure that happened
 // in chunk 5 points it at content that is not the problem.
-func changedOnDiskError(path string, fp patch.FilePatch) error {
-	base := fmt.Errorf("file %s changed on disk since last read; re-read it before editing", fp.Path)
+//
+// The error names the writer when the session ledger knows one, and pins the
+// displayed region to its exact line range. refreshRead marks this path read at
+// the current revision once that content has been shown; only the exact-match
+// patch path asks for it, because a retried patch is validated byte-for-byte
+// against the bytes on disk, so having seen them is what the guard is asking
+// for. A whole-file overwrite cannot retry from one region and keeps the full
+// re-read.
+func (t *toolSet) changedOnDiskError(path string, fp patch.FilePatch, refreshRead bool) error {
+	base := fmt.Errorf("file %s changed on disk since last read%s; re-read it before editing",
+		fp.Path, t.writerNote(path))
 	if len(fp.Chunks) == 0 {
 		return base
 	}
@@ -503,11 +512,50 @@ func changedOnDiskError(path string, fp patch.FilePatch) error {
 	if !failed {
 		search = fp.Chunks[0].Search
 	}
-	region := patch.NearestRegion(string(data), search, patch.NearestRegionWindowSize(search))
+	region, start, end := patch.NearestRegionLines(string(data), search, patch.NearestRegionWindowSize(search))
 	if region == "" {
 		return base
 	}
-	return fmt.Errorf("%s\n\n%s\n%s", base, currentContentHeader, region)
+	header := fmt.Sprintf("%s lines %d-%d", currentContentHeader, start, end)
+	if !refreshRead || t.fileTracker == nil {
+		return fmt.Errorf("%s\n\n%s\n%s", base, header, region)
+	}
+	// The caller is about to be handed the current bytes for the exact region it
+	// is editing, so record that as this path's read. Without it the same agent
+	// (and every sibling) is forced through a full file.read for content it has
+	// now been shown, which was the dominant cost in the field reports.
+	_ = t.fileTracker.RecordRead(path, time.Now())
+	return fmt.Errorf("%s\n\n%s\n%s\n\n%s", base, header, region,
+		"Retry with an old_string taken from those lines: this path's read mark is now current, so the edit is accepted without a separate file.read.")
+}
+
+// writerNote names the agent whose write invalidated this reader's view, when
+// the session ledger knows one. An empty string means the change came from
+// outside the session (a checkout, a formatter, another process) or the ledger
+// has no record, and the error says nothing rather than guessing.
+func (t *toolSet) writerNote(path string) string {
+	if t.fileTracker == nil {
+		return ""
+	}
+	writer, _, ok, err := t.fileTracker.LastWriter(path)
+	if err != nil || !ok || writer == "" {
+		return ""
+	}
+	return fmt.Sprintf(" (last written by %s)", writer)
+}
+
+// recordWrite records a committed write in the session ledger, naming the
+// agent that made it, and refreshes that path's read mark — the writer has just
+// seen the bytes it produced. The ledger is per conversation, not per agent, so
+// one recorded read satisfies every agent in the session: there is one working
+// tree and one truth about it.
+func (t *toolSet) recordWrite(path string) {
+	if t.fileTracker == nil {
+		return
+	}
+	now := time.Now()
+	_ = t.fileTracker.RecordWrite(path, now, t.agentLabel)
+	_ = t.fileTracker.RecordRead(path, now)
 }
 
 // currentContentHeader introduces an embedded snapshot of the bytes currently
@@ -629,7 +677,7 @@ func (t *toolSet) applyFilePatches(ctx context.Context, patches []patch.FilePatc
 				return registry.ToolResult{}, fmt.Errorf("stat %s: %w", fp.Path, statErr)
 			}
 			if hasRead && info.ModTime().After(lastRead) {
-				return registry.ToolResult{}, changedOnDiskError(path, fp)
+				return registry.ToolResult{}, t.changedOnDiskError(path, fp, true)
 			}
 			if !hasRead {
 				return registry.ToolResult{}, fmt.Errorf(
@@ -778,7 +826,7 @@ func (t *toolSet) applyFilePatches(ctx context.Context, patches []patch.FilePatc
 				if lrErr == nil && hasRead {
 					writeStat, statErr := os.Stat(path)
 					if statErr == nil && writeStat.ModTime().After(lastRead) {
-						return changedOnDiskError(path, fp)
+						return t.changedOnDiskError(path, fp, true)
 					}
 				}
 			} else {
@@ -799,10 +847,7 @@ func (t *toolSet) applyFilePatches(ctx context.Context, patches []patch.FilePatc
 				return fmt.Errorf("write file %s: %w", fp.Path, err)
 			}
 
-			if t.fileTracker != nil {
-				_ = t.fileTracker.RecordWrite(path, time.Now())
-				_ = t.fileTracker.RecordRead(path, time.Now())
-			}
+			t.recordWrite(path)
 
 			// Evidence is recorded only for a file that actually committed, so
 			// the result names exactly the files on disk.
@@ -923,7 +968,10 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 				return registry.ToolResult{}, fmt.Errorf("stat %s: %w", args.Path, statErr)
 			}
 			if hasRead && info.ModTime().After(lastRead) {
-				return registry.ToolResult{}, changedOnDiskError(path, patch.FilePatch{Path: args.Path, Chunks: []patch.PatchChunk{{Search: original}}})
+				// A whole-file overwrite cannot retry from one region, so the
+				// read mark is not refreshed here: file.write needs the whole
+				// file in context.
+				return registry.ToolResult{}, t.changedOnDiskError(path, patch.FilePatch{Path: args.Path, Chunks: []patch.PatchChunk{{Search: original}}}, false)
 			}
 			if !hasRead {
 				return registry.ToolResult{}, fmt.Errorf(
@@ -976,7 +1024,7 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 			if lrErr == nil && hasRead {
 				writeStat, statErr := os.Stat(path)
 				if statErr == nil && writeStat.ModTime().After(lastRead) {
-					return registry.ToolResult{}, changedOnDiskError(path, fp)
+					return registry.ToolResult{}, t.changedOnDiskError(path, fp, false)
 				}
 			}
 		}
@@ -1013,10 +1061,7 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 			return registry.ToolResult{}, fmt.Errorf("write file %s: %w", args.Path, err)
 		}
 
-		if t.fileTracker != nil {
-			_ = t.fileTracker.RecordWrite(path, time.Now())
-			_ = t.fileTracker.RecordRead(path, time.Now())
-		}
+		t.recordWrite(path)
 
 		if ws := t.wsState(); ws != nil {
 			ws.StoreBackup([]session.BackupFile{{

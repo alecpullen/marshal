@@ -1628,6 +1628,90 @@ func TestWritePatch_ChangedOnDiskErrorIncludesCurrentContent(t *testing.T) {
 	}
 }
 
+// TestStaleEditErrorNamesWriterAndLineRange pins what a stale-file error must
+// carry once several agents write the same tree. Field reports showed the
+// failure being paid for twice: the error said only "changed on disk", so the
+// caller had to re-read the whole file to rebuild an old_string, and it could
+// not tell whether its own delegate or something outside the session had
+// written. The error now names the writer, pins the region it prints to exact
+// line numbers, and refreshes the read mark so a retry against that displayed
+// text is accepted without a separate file.read.
+func TestStaleEditErrorNamesWriterAndLineRange(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	filePath := filepath.Join(root, "app.txt")
+	if err := os.WriteFile(filePath, []byte("alpha\nbeta\ngamma\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	database, err := db.Open(filepath.Join(t.TempDir(), "filetrack.db"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	ft := filetrack.New(database.SQLDB(), "test-session")
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot: root,
+		CommandRunner: &fakeRunner{},
+		FileTracker:   ft,
+		AgentLabel:    "a subagent",
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	// This reader's view predates a sibling's write: an old read mark, and a
+	// fresh write in the ledger naming the agent that made it.
+	if err := ft.RecordRead(filePath, time.Now().Add(-time.Hour)); err != nil {
+		t.Fatalf("RecordRead: %v", err)
+	}
+	if err := ft.RecordWrite(filePath, time.Now(), "a subagent"); err != nil {
+		t.Fatalf("RecordWrite: %v", err)
+	}
+
+	args := `{"path":"app.txt","old_string":"beta","new_string":"BETA"}`
+	if _, err := invokeTool(t, reg, "file.edit", args); err == nil {
+		t.Fatal("expected a stale-file error, got nil")
+	} else {
+		msg := err.Error()
+		if !strings.Contains(msg, "changed on disk") {
+			t.Fatalf("error should mention 'changed on disk', got: %v", msg)
+		}
+		if !strings.Contains(msg, "last written by a subagent") {
+			t.Errorf("error should name the writer, got: %v", msg)
+		}
+		if !strings.Contains(msg, "lines 1-4") {
+			t.Errorf("error should pin the displayed region to its line range, got: %v", msg)
+		}
+		if !strings.Contains(msg, "alpha") || !strings.Contains(msg, "gamma") {
+			t.Errorf("error should embed the current region, got: %v", msg)
+		}
+	}
+
+	// The same edit, retried against the text the error just showed, must cost
+	// no extra read: that is the whole point of refreshing the mark.
+	res, err := invokeTool(t, reg, "file.edit", args)
+	if err != nil {
+		t.Fatalf("retry after a stale error should be accepted without a file.read, got: %v", err)
+	}
+	if !strings.Contains(res.Summary, "app.txt") {
+		t.Fatalf("retry summary = %q, want it to name the edited file", res.Summary)
+	}
+	got, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != "alpha\nBETA\ngamma\n" {
+		t.Fatalf("file content = %q, want the edit applied", got)
+	}
+}
+
 // TestValidatePatchErrorMatchesFailureGate is the cross-package contract test
 // for the failure gate. Agent-side coaching decides whether to intervene by
 // asking patch.FailureGateMatches about a raw error string, so the producer and
@@ -2446,8 +2530,8 @@ type interruptingTracker struct {
 	onRecord func()
 }
 
-func (t *interruptingTracker) RecordWrite(path string, at time.Time) error {
-	err := t.FileTracker.RecordWrite(path, at)
+func (t *interruptingTracker) RecordWrite(path string, at time.Time, writer string) error {
+	err := t.FileTracker.RecordWrite(path, at, writer)
 	t.once.Do(func() {
 		if t.onRecord != nil {
 			t.onRecord()

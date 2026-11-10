@@ -1077,6 +1077,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		DB:                database,
 		ProjectID:         projectID,
 		FileTracker:       fileTracker,
+		AgentLabel:        "the main agent",
 		Config:            cfg,
 		JobManager:        jobManager,
 		JobBroker:         jobBroker,
@@ -1931,6 +1932,7 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 			MaxOutputBytes: cfg.Tools.Shell.MaxOutputBytes,
 			SessionState:   childState,
 			Config:         cfg,
+			AgentLabel:     "the plan author",
 			NamedRoots:     map[string]string{"@plan": plansDir},
 		}
 		// The plan-author's own engine reads the owner's live config/rules and
@@ -2021,6 +2023,7 @@ func makePipelineRegistryFactory(cfg config.Config, state *session.State, pol *p
 			MaxOutputBytes: cfg.Tools.Shell.MaxOutputBytes,
 			SessionState:   childState,
 			Config:         cfg,
+			AgentLabel:     "a pipeline worker",
 			JobManager:     jobManager,
 			// A dispatch's commands belong to THIS dispatch's worktree, not to
 			// whatever the session's active root happens to be later. Capturing
@@ -2245,6 +2248,11 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 			childOpts := baseNativeOpts
 			childOpts.SessionState = childState    // per-agent: active call, output, approvals
 			childOpts.WorkspaceState = parentState // per-workspace: backups, active root
+			// The child writes into the parent's file ledger (there is one
+			// working tree), so it names itself as the writer: a stale-file
+			// error can then say "last written by a subagent", which is what
+			// tells the orchestrator to serialise instead of guessing.
+			childOpts.AgentLabel = "a subagent"
 			// A child's commands belong to the conversation that spawned it,
 			// so the child borrows the conversation's command service rather
 			// than owning one. Its output stays child-local (SessionState is

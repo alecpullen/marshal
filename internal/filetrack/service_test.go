@@ -30,6 +30,7 @@ func testDB(t *testing.T) *sql.DB {
 			session_id TEXT NOT NULL,
 			path TEXT NOT NULL,
 			written_at TEXT NOT NULL,
+			written_by TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY(session_id, path)
 		);
 	`)
@@ -104,11 +105,49 @@ func TestRecordWrite(t *testing.T) {
 	svc := New(db, "session-1")
 	now := time.Now()
 
-	if err := svc.RecordWrite("src/main.go", now); err != nil {
+	if err := svc.RecordWrite("src/main.go", now, "the main agent"); err != nil {
 		t.Fatalf("RecordWrite: %v", err)
 	}
-	if err := svc.RecordWrite("src/lib.go", now); err != nil {
+	if err := svc.RecordWrite("src/lib.go", now, "a subagent"); err != nil {
 		t.Fatalf("RecordWrite: %v", err)
+	}
+}
+
+// TestLastWriterNamesTheAgent pins the writer attribution a stale-file error
+// now reports: the reader is told which agent invalidated its view, and a path
+// the session never wrote reports no writer rather than a guess.
+func TestLastWriterNamesTheAgent(t *testing.T) {
+	db := testDB(t)
+	svc := New(db, "session-1")
+	first := time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC)
+	second := time.Date(2025, 1, 15, 11, 0, 0, 0, time.UTC)
+
+	if err := svc.RecordWrite("src/main.go", first, "the main agent"); err != nil {
+		t.Fatalf("first RecordWrite: %v", err)
+	}
+	writer, at, ok, err := svc.LastWriter("src/main.go")
+	if err != nil {
+		t.Fatalf("LastWriter: %v", err)
+	}
+	if !ok || writer != "the main agent" || !at.Equal(first) {
+		t.Fatalf("LastWriter = %q @ %v (ok=%v), want \"the main agent\" @ %v", writer, at, ok, first)
+	}
+
+	// An upsert must replace the writer, not keep the first one.
+	if err := svc.RecordWrite("src/main.go", second, "a subagent"); err != nil {
+		t.Fatalf("second RecordWrite: %v", err)
+	}
+	writer, at, ok, err = svc.LastWriter("src/main.go")
+	if err != nil {
+		t.Fatalf("LastWriter after upsert: %v", err)
+	}
+	if !ok || writer != "a subagent" || !at.Equal(second) {
+		t.Fatalf("LastWriter = %q @ %v (ok=%v), want \"a subagent\" @ %v", writer, at, ok, second)
+	}
+
+	// A path written outside the session has no session writer.
+	if _, _, ok, err := svc.LastWriter("src/untouched.go"); err != nil || ok {
+		t.Fatalf("LastWriter for an unwritten path = ok %v, err %v; want ok=false, err=nil", ok, err)
 	}
 }
 
@@ -148,10 +187,10 @@ func TestRecordWriteUpsert(t *testing.T) {
 	first := time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC)
 	second := time.Date(2025, 1, 15, 11, 0, 0, 0, time.UTC)
 
-	if err := svc.RecordWrite("src/main.go", first); err != nil {
+	if err := svc.RecordWrite("src/main.go", first, "the main agent"); err != nil {
 		t.Fatalf("first RecordWrite: %v", err)
 	}
-	if err := svc.RecordWrite("src/main.go", second); err != nil {
+	if err := svc.RecordWrite("src/main.go", second, "a subagent"); err != nil {
 		t.Fatalf("second RecordWrite: %v", err)
 	}
 }

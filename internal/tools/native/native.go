@@ -28,10 +28,19 @@ const (
 	defaultTestCommand    = "go test ./..."
 )
 
+// FileTracker is the session's file ledger: one row per path for reads and one
+// for writes, keyed by the conversation (not by the agent). A read by any agent
+// — the main agent, an agent.run child — satisfies the read-before-write guard
+// for all of them, because there is one working tree and one conversation.
 type FileTracker interface {
 	RecordRead(path string, at time.Time) error
 	LastReadTime(path string) (time.Time, bool, error)
-	RecordWrite(path string, at time.Time) error
+	// RecordWrite records a committed write and names the writer, so a later
+	// stale-file error can say which agent invalidated the reader's view.
+	RecordWrite(path string, at time.Time, writer string) error
+	// LastWriter names the agent that last wrote path through this session.
+	// ok is false when no session write is recorded for the path.
+	LastWriter(path string) (writer string, at time.Time, ok bool, err error)
 }
 
 // LSPSync is the live language-server seam (lsp.Sync): BeginEdit brackets a
@@ -67,7 +76,12 @@ type Options struct {
 	DB             *db.DB
 	ProjectID      int64
 	FileTracker    FileTracker
-	Config         config.Config
+	// AgentLabel names the agent this toolset belongs to ("main agent", "a
+	// subagent", "the plan author", …). It is written into the file ledger with
+	// each committed write so a later stale-file error can say which writer
+	// invalidated the reader's view. Empty means an unnamed writer.
+	AgentLabel string
+	Config     config.Config
 	// JobManager is the conversation's command service: the owner every
 	// ordinary shell.run/test.run admission goes through, and the target an
 	// explicit turn stop reaches. It is injected, never created here, so a
@@ -192,6 +206,10 @@ type toolSet struct {
 	db             *db.DB
 	projectID      int64
 	fileTracker    FileTracker
+	// agentLabel names this toolset's agent in the file ledger, so a stale-file
+	// error can say which writer invalidated the reader's view. Empty for a
+	// registration that does not carry one.
+	agentLabel string
 	// jobManager is the conversation's command service, injected through
 	// Options. nil for a registry that exposes no ordinary command execution
 	// (a filtered read-only scope); such a registry reports a clear owner error
@@ -441,6 +459,7 @@ func newToolSet(opts Options) (*toolSet, error) {
 		db:              opts.DB,
 		projectID:       opts.ProjectID,
 		fileTracker:     opts.FileTracker,
+		agentLabel:      opts.AgentLabel,
 		jobManager:      jobManager,
 		commandDir:      opts.CommandDir,
 		diagnostics:     newDiagnosticsChecker(opts),

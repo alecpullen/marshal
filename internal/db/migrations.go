@@ -150,6 +150,7 @@ CREATE TABLE IF NOT EXISTS file_writes (
     session_id TEXT NOT NULL,
     path TEXT NOT NULL,
     written_at TEXT NOT NULL,
+    written_by TEXT NOT NULL DEFAULT '',
     PRIMARY KEY(session_id, path)
 );
 

@@ -258,6 +258,14 @@ type Fleet struct {
 	// behaviour; tests inject a fake transport here.
 	newControl func() (*Child, error)
 
+	// newProjectChild builds a project's Child. Nil means a local process
+	// running marshalBin. Tests inject a fake transport here.
+	newProjectChild func(root, socket string) (*Child, error)
+	// projMu guards projects, the lazily started project children, keyed
+	// by their cleaned root.
+	projMu   sync.Mutex
+	projects map[string]*projectChild
+
 	// newRuntime builds the Child for an agent. Tests inject a fake
 	// transport here; production returns a container-backed Child.
 	newRuntime func(a Agent) (*Child, error)
@@ -321,6 +329,18 @@ type Fleet struct {
 	wsExtras map[string]wsExtras
 	// afterFunc schedules a deadline; tests replace it. Nil is time.AfterFunc.
 	afterFunc func(d time.Duration, fn func()) (stop func())
+
+	// relayFrameCap is the largest frame a relay forwards; zero means
+	// maxFrameBytes. A field rather than the package variable so a test can
+	// lower it without writing state a neighbouring test's relay pumps are
+	// still reading.
+	relayFrameCap int
+
+	// lingerDur is how long a project child with no tracked session lives on;
+	// zero means projectLinger. A field for the same reason as relayFrameCap:
+	// a relay's own goroutine reads it while the test that started the relay
+	// is already cleaning up.
+	lingerDur time.Duration
 
 	// pruneMu serializes prune callers against each other: the HTTP
 	// prune endpoint and the spawn-path enforceDisk prune both call
@@ -1952,6 +1972,7 @@ func (f *Fleet) Close() {
 	f.closeOnce.Do(func() { close(f.done) })
 	f.closeAllTerminals()
 	f.stopControl()
+	f.stopProjectChildren()
 	f.stopEgress()
 	f.mu.Lock()
 	rts := make([]*agentRuntime, 0, len(f.runtimes))

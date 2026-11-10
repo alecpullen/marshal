@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -84,6 +85,20 @@ type sessionInfo struct {
 	// Not serialized.
 	ctx    context.Context
 	cancel context.CancelFunc
+	// viewers is how many clients are attached to the session through
+	// the relay. Not serialized: summaries reports it explicitly.
+	viewers int
+	// lastActive is when the session last carried a relayed frame or was
+	// tracked, and is what summaries sorts by. Not serialized.
+	lastActive time.Time
+}
+
+// DaemonSession is one tracked session of a project child, as
+// GET /api/daemon reports it.
+type DaemonSession struct {
+	ID         string `json:"id"`
+	Viewers    int    `json:"viewers"`
+	LastActive int64  `json:"lastActive"` // Unix milliseconds
 }
 
 // Registry tracks active sessions and brokers the child-initiated
@@ -191,11 +206,137 @@ func (r *Registry) Load(ctx context.Context, cwd AgentPath, id string) error {
 
 // track registers a session with a fresh cancel context so pending
 // permission/question waits can be drained on cancel/delete/disconnect.
+//
+// A session already tracked is updated, not replaced: two attaches resolving
+// one stored id can both reach here, and the record's viewer count, generation
+// and cancel context belong to the live session rather than to the newer
+// resolve. Replacing it would strand a viewer and leak the old context.
 func (r *Registry) track(id string, cwd AgentPath) {
-	ctx, cancel := context.WithCancel(context.Background())
 	r.mu.Lock()
-	r.sessions[id] = &sessionInfo{Cwd: cwd, ctx: ctx, cancel: cancel, accepting: true}
+	if info, ok := r.sessions[id]; ok {
+		info.Cwd = cwd
+		info.lastActive = time.Now()
+		r.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	r.sessions[id] = &sessionInfo{
+		Cwd:        cwd,
+		ctx:        ctx,
+		cancel:     cancel,
+		accepting:  true,
+		lastActive: time.Now(),
+	}
 	r.mu.Unlock()
+}
+
+// Resume resumes a stored session (session/resume, which replays nothing)
+// and tracks it.
+func (r *Registry) Resume(ctx context.Context, cwd AgentPath, id string) error {
+	if _, err := r.child.Request(ctx, "session/resume", sessionParams{Cwd: cwd, SessionID: id, MCPServers: &[]json.RawMessage{}}); err != nil {
+		return err
+	}
+	r.track(id, cwd)
+	return nil
+}
+
+// Close closes a session's runtime through the registry's own connection
+// (session/close), then drains its waits and untracks it. Unlike Delete it
+// ends the agent-side runtime, not just the stored record.
+func (r *Registry) Close(ctx context.Context, id string) error {
+	info, ok := r.lookup(id)
+	if !ok {
+		return ErrUnknownSession
+	}
+	if _, err := r.child.Request(ctx, "session/close", sessionParams{Cwd: info.Cwd, SessionID: id}); err != nil {
+		return err
+	}
+	r.cancelSession(id)
+	r.mu.Lock()
+	delete(r.sessions, id)
+	r.mu.Unlock()
+	return nil
+}
+
+// rename moves a tracked session to its replacement's ID, keeping its
+// state: the entry is the same record, so its directory, busy flag,
+// generation, cancel context and viewer count all come along. It reports
+// false when the old ID is not tracked or the new one already is.
+func (r *Registry) rename(oldID, newID string) bool {
+	if oldID == "" || newID == "" || oldID == newID {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	info, ok := r.sessions[oldID]
+	if !ok {
+		return false
+	}
+	if _, taken := r.sessions[newID]; taken {
+		return false
+	}
+	delete(r.sessions, oldID)
+	r.sessions[newID] = info
+	return true
+}
+
+// attachViewer counts a viewer on a tracked session; false when untracked.
+func (r *Registry) attachViewer(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	info, ok := r.sessions[id]
+	if !ok {
+		return false
+	}
+	info.viewers++
+	return true
+}
+
+// detachViewer uncounts a viewer.
+func (r *Registry) detachViewer(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if info, ok := r.sessions[id]; ok && info.viewers > 0 {
+		info.viewers--
+	}
+}
+
+// touch records that the session was active now.
+func (r *Registry) touch(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if info, ok := r.sessions[id]; ok {
+		info.lastActive = time.Now()
+	}
+}
+
+// summaries lists the tracked sessions, most recently active first. Ties
+// break by ID so the order is stable across calls.
+func (r *Registry) summaries() []DaemonSession {
+	r.mu.Lock()
+	out := make([]DaemonSession, 0, len(r.sessions))
+	for id, info := range r.sessions {
+		out = append(out, DaemonSession{
+			ID:         id,
+			Viewers:    info.viewers,
+			LastActive: info.lastActive.UnixMilli(),
+		})
+	}
+	r.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].LastActive != out[j].LastActive {
+			return out[i].LastActive > out[j].LastActive
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
+// count is the number of tracked sessions.
+func (r *Registry) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.sessions)
 }
 
 // Delete removes the session record (session/delete) and stops tracking

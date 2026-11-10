@@ -296,14 +296,38 @@ func (t *toolSet) searchFiles(ctx context.Context, start string, match lineMatch
 		if matchCount >= limit {
 			return filepath.SkipAll
 		}
+		// The path argument may name a single file. WalkDir visits that file
+		// as the root entry too, so only a root *directory* is skipped here:
+		// returning early for every root entry made an explicit file path
+		// answer "found 0 matches" even when the queried lines were in the
+		// file the caller had just read (search.go's own docstring promises
+		// "directory or file").
+		if isRoot := path == start; isRoot {
+			if entry.IsDir() {
+				return nil
+			}
+			// An explicitly named file is an explicit instruction, so the
+			// walk's filters do not apply to it: a .gitignore pattern, the
+			// .gitignore-name rule, and the symlink refusal would each turn
+			// the request into a silent "found 0 matches". searchFile
+			// resolves a symlink target and reports the workspace-relative
+			// path, and the include glob still filters it.
+			if entry.Type().IsRegular() || entry.Type()&os.ModeSymlink != 0 {
+				fileLines, n := t.searchFile(path, match, include, ctxLines, limit-matchCount)
+				matches = append(matches, fileLines...)
+				matchCount += n
+				if matchCount >= limit {
+					capped = true
+				}
+			}
+			return nil
+		}
+
 		// Skip all symlinks — WalkDir does not follow directory symlinks on
 		// most platforms, but this explicit check is an extra
 		// defense so we never accidentally descend into or read a symlink.
 		if entry.Type()&os.ModeSymlink != 0 {
 			symlinksSkipped++
-			return nil
-		}
-		if path == start {
 			return nil
 		}
 

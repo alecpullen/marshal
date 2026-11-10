@@ -50,7 +50,7 @@ retrying.
 | "patch validation failed: search block not found" | Search blocks authored from assumed content. | Re-read the exact region first; verify tabs from the file content, not assumed counts. |
 | REPLACE block closed with `=======` instead of `>>>>>>> REPLACE` | Patch format. | Close every block with `>>>>>>> REPLACE`. |
 | `file.read` on a postmortem report fails: outside workspace root | Reports live in `~/.config/marshal/postmortems/<project-slug>/`. | Use `shell.run` with `cat`/`jq` — never `file.read`, not even once to check. The failure is already documented; verifying it yourself burns a call. |
-| `repo.search` returns 0 matches for a term you can see in the file | `path` filters to a directory; a file path yields nothing. | Use `include` for a file glob, `path` for a directory. |
+| `repo.search` returns 0 matches for a term you can see in the file | Until 2026-11-10 a `path` naming a **file** was silently skipped: the walk discarded every root entry, so a file path answered "found 0 matches". Fixed on main (`search.go`, `TestRepoSearchSearchesAnExplicitFilePath`). Remaining silent-zero causes: `mode:"substring"` with `\|` is a literal (not alternation), and files over the 1 MiB search cap are skipped. | `path` may now name a file. If a zero-match persists, check `mode`, `include`, and file size — not the path. |
 | `ls "$HOME/..."` → `No such file or directory` | `$HOME` is empty in `shell.run`. | Use `~` (tilde expansion works), not `"$HOME"`. |
 
 ## Consulting the postmortem record

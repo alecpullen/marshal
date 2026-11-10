@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 // awkwardSpec is a spec whose every string needs escaping: a space, a
@@ -26,6 +27,7 @@ func awkwardSpec() UnitSpec {
 			"PATH":             "/usr/bin:/opt/a & b/bin",
 			"MARSHAL_DATA_DIR": "/data/a & b",
 		},
+		IdleSessionTimeout: 45 * time.Minute,
 	}
 }
 
@@ -56,6 +58,17 @@ func TestThePlistNamesEverything(t *testing.T) {
 	for i, expected := range want {
 		if values[i] != expected {
 			t.Errorf("string %d = %q, want %q", i, values[i], expected)
+		}
+	}
+
+	// The idle session timeout is always written into the unit, so the
+	// unit states the value it runs with.
+	for _, pair := range []string{
+		"<string>--idle-session-timeout</string>",
+		"<string>" + spec.IdleSessionTimeout.String() + "</string>",
+	} {
+		if !strings.Contains(plist, pair) {
+			t.Errorf("the plist does not carry %q:\n%s", pair, plist)
 		}
 	}
 
@@ -120,7 +133,8 @@ func TestTheSystemdUnitNamesEverything(t *testing.T) {
 		` "--state-dir" "/data/a & b/daemon/state 50%%"` +
 		` "--workspace" "/data/a & b/daemon/fleet.json"` +
 		` "--addr" "off"` +
-		` "--marshal-bin" "/opt/ma%%rshal's \"marshal\" & co/bin/marshal"`
+		` "--marshal-bin" "/opt/ma%%rshal's \"marshal\" & co/bin/marshal"` +
+		` "--idle-session-timeout" "45m0s"`
 	if !strings.Contains(unit, wantExec) {
 		t.Errorf("ExecStart line missing or mis-escaped:\nwant: %s\ngot:\n%s", wantExec, unit)
 	}

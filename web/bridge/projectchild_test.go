@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -211,9 +212,15 @@ func TestTheChildRunsInTheRootWithItsSocket(t *testing.T) {
 	root := t.TempDir()
 
 	socket := viewerSocketPath(f.stateDir, root)
-	child, err := f.buildProjectChild(root, socket)
+	child, warning, err := f.buildProjectChild(ctlContext(t), root, socket)
 	if err != nil {
 		t.Fatalf("buildProjectChild: %v", err)
+	}
+	if warning != "" {
+		t.Fatalf("warning = %q, want none without a resolver", warning)
+	}
+	if child.Env != nil {
+		t.Fatalf("Env = %q, want nil without a resolver", child.Env)
 	}
 	if child.Dir != root {
 		t.Fatalf("Dir = %q, want the project root %q", child.Dir, root)
@@ -568,4 +575,94 @@ func resumedSessions(fake *fakeProjectChild) map[string]bool {
 		}
 	}
 	return out
+}
+
+// projectEnvFixture is a resolver whose login shell is a script: it ignores
+// its arguments and prints what body says, so a test decides what the shell
+// resolves without starting a login shell of its own.
+func projectEnvFixture(t *testing.T, body string) (*ProjectEnv, []string) {
+	t.Helper()
+	dir := p6Dir(t)
+	base := []string{"HOME=" + dir, "PATH=/usr/bin:/bin"}
+	return &ProjectEnv{
+		PrintEnv: []string{p6Script(t, dir, "printer", p6PrinterScript)},
+		Shell:    p6Script(t, dir, "shell", body),
+		Base:     base,
+		Timeout:  10 * time.Second,
+	}, base
+}
+
+// TestAProjectChildStartsWithTheProjectsEnvironment: with a resolver, the
+// built child runs with the environment it resolved, and the daemon reports
+// no fallback for it.
+func TestAProjectChildStartsWithTheProjectsEnvironment(t *testing.T) {
+	f, _ := projectFleet(t)
+	res, _ := projectEnvFixture(t, "#!/bin/sh\nprintf '\\000marshal-env\\000P6=1\\000'\n")
+	f.SetProjectEnv(res)
+	ctx := ctlContext(t)
+	root := t.TempDir()
+
+	pc, err := f.projectChildFor(ctx, root)
+	if err != nil {
+		t.Fatalf("projectChildFor: %v", err)
+	}
+	if v, ok := p6Value(pc.child.Env, "P6"); !ok || v != "1" {
+		t.Fatalf("the child's Env = %q, want P6=1 from the project environment", pc.child.Env)
+	}
+
+	children := f.projectChildren()
+	if len(children) != 1 {
+		t.Fatalf("projectChildren() = %+v, want one child", children)
+	}
+	if children[0].Root != pc.root {
+		t.Fatalf("projectChildren() root = %q, want %q", children[0].Root, pc.root)
+	}
+	if children[0].EnvWarning != "" {
+		t.Fatalf("EnvWarning = %q, want none for a resolved environment", children[0].EnvWarning)
+	}
+}
+
+// TestAFallbackIsReportedOnTheChild: a login shell that fails leaves the child
+// with the resolver's base environment, and the daemon reports why.
+func TestAFallbackIsReportedOnTheChild(t *testing.T) {
+	f, _ := projectFleet(t)
+	res, base := projectEnvFixture(t, "#!/bin/sh\nexit 2\n")
+	f.SetProjectEnv(res)
+	ctx := ctlContext(t)
+	root := t.TempDir()
+
+	pc, err := f.projectChildFor(ctx, root)
+	if err != nil {
+		t.Fatalf("projectChildFor: %v", err)
+	}
+	if !slices.Equal(pc.child.Env, base) {
+		t.Fatalf("the child's Env = %q, want the resolver's Base %q", pc.child.Env, base)
+	}
+
+	children := f.projectChildren()
+	if len(children) != 1 {
+		t.Fatalf("projectChildren() = %+v, want one child", children)
+	}
+	if !strings.Contains(children[0].EnvWarning, "2") {
+		t.Fatalf("EnvWarning = %q, want the login shell's exit status", children[0].EnvWarning)
+	}
+}
+
+// TestWithoutAResolverChildrenInherit: a fleet nothing configured with a
+// resolver leaves Env nil, which is the child inheriting the bridge's.
+func TestWithoutAResolverChildrenInherit(t *testing.T) {
+	f, _ := projectFleet(t)
+	ctx := ctlContext(t)
+	root := t.TempDir()
+
+	pc, err := f.projectChildFor(ctx, root)
+	if err != nil {
+		t.Fatalf("projectChildFor: %v", err)
+	}
+	if pc.child.Env != nil {
+		t.Fatalf("the child's Env = %q, want nil so it inherits", pc.child.Env)
+	}
+	if children := f.projectChildren(); len(children) != 1 || children[0].EnvWarning != "" {
+		t.Fatalf("projectChildren() = %+v, want one child with no warning", children)
+	}
 }

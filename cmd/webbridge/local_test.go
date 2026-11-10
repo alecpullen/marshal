@@ -25,6 +25,7 @@ func isolateWebbridgeEnv(t *testing.T) {
 		"WEBBRIDGE_PROFILE", "WEBBRIDGE_SOCKET", "WEBBRIDGE_ADDR", "WEBBRIDGE_TOKEN",
 		"WEBBRIDGE_CWD_ROOT", "WEBBRIDGE_STATE_DIR", "WEBBRIDGE_WORKSPACE",
 		"WEBBRIDGE_EGRESS", "WEBBRIDGE_SECRETS", "WEBBRIDGE_SECRETS_KEY_FILE",
+		"WEBBRIDGE_IDLE_SESSION_TIMEOUT",
 	} {
 		t.Setenv(k, "")
 	}
@@ -112,6 +113,9 @@ func TestTheLocalProfilesDefaults(t *testing.T) {
 	if cfg.cwdRoot != "" {
 		t.Errorf("cwdRoot = %q, want empty: the local profile registers no working-directory project", cfg.cwdRoot)
 	}
+	if want := 30 * time.Minute; cfg.idleSessionTimeout != want {
+		t.Errorf("idleSessionTimeout = %s, want %s", cfg.idleSessionTimeout, want)
+	}
 }
 
 // TestTheLocalProfileRefuses pins decision 3 and the settings that only
@@ -134,6 +138,8 @@ func TestTheLocalProfileRefuses(t *testing.T) {
 		{"secrets local", []string{"--profile", "local", "--secrets", "local", "--secrets-key-file", keyFile}, nil},
 		{"socket without the profile", []string{"--socket", "/tmp/x.sock"}, nil},
 		{"addr off without the profile", []string{"--addr", "off"}, nil},
+		{"idle timeout without the profile", []string{"--idle-session-timeout", "5m"}, nil},
+		{"idle timeout negative", []string{"--profile", "local", "--idle-session-timeout", "-5m"}, nil},
 		{"profile cloud", []string{"--profile", "cloud"}, nil},
 	}
 	for _, tc := range cases {
@@ -150,6 +156,33 @@ func TestTheLocalProfileRefuses(t *testing.T) {
 			// profile.
 			if !strings.Contains(err.Error(), "local") {
 				t.Errorf("error %q does not name the local profile", err)
+			}
+		})
+	}
+}
+
+// TestTheIdleTimeoutParses pins that --idle-session-timeout reaches the
+// config as a duration, and that zero is a value rather than "unset":
+// it means a session is never ended for being idle.
+func TestTheIdleTimeoutParses(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want time.Duration
+	}{
+		{"five minutes", []string{"--profile", "local", "--idle-session-timeout", "5m"}, 5 * time.Minute},
+		{"zero", []string{"--profile", "local", "--idle-session-timeout", "0"}, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateWebbridgeEnv(t)
+			t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
+			cfg, err := parseConfig(tc.args, io.Discard)
+			if err != nil {
+				t.Fatalf("parseConfig(%v): %v", tc.args, err)
+			}
+			if cfg.idleSessionTimeout != tc.want {
+				t.Errorf("idleSessionTimeout = %s, want %s", cfg.idleSessionTimeout, tc.want)
 			}
 		})
 	}

@@ -18,6 +18,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"marshal/web/bridge"
 )
 
 func TestParseConfigDefaults(t *testing.T) {
@@ -417,5 +419,55 @@ func TestListenPreviewNeedsADifferentOriginFromTheAPI(t *testing.T) {
 	if ln, err := listenPreview("127.0.0.1:7700", "127.0.0.1:7700"); err == nil {
 		ln.Close()
 		t.Fatal("preview shared the API's port")
+	}
+}
+
+// TestPrintEnvWritesTheMarkerAndTheEnvironment: the subcommand prints the
+// marker and then the environment, NUL-terminated, and nothing else, so the
+// login shell that runs it can parse the lot (P4 D7).
+func TestPrintEnvWritesTheMarkerAndTheEnvironment(t *testing.T) {
+	t.Setenv("P6_PRINTED", "yes")
+
+	var out strings.Builder
+	handled, err := runSubcommand(context.Background(), []string{"print-env"}, &out)
+	if err != nil || !handled {
+		t.Fatalf("print-env: handled = %v, err = %v", handled, err)
+	}
+	got := out.String()
+	at := strings.Index(got, bridge.EnvMarker)
+	if at < 0 {
+		t.Fatalf("output = %q, want the environment marker", got)
+	}
+	want := "P6_PRINTED=yes\x00"
+	if rest := got[at+len(bridge.EnvMarker):]; !strings.Contains(rest, want) {
+		t.Fatalf("output after the marker holds no %q", want)
+	}
+	if !strings.HasSuffix(got, "\x00") {
+		t.Fatalf("output does not end with a NUL: %q", got)
+	}
+
+	if handled, err := runSubcommand(context.Background(), []string{"print-env", "extra"}, io.Discard); !handled || err == nil {
+		t.Fatalf("print-env extra: handled = %v, err = %v, want a refusal", handled, err)
+	}
+}
+
+// TestTheLocalResolverPrintsWithThisBinary: the local profile's resolver runs
+// this executable with print-env, so a project child prints the environment
+// its own bridge sees.
+func TestTheLocalResolverPrintsWithThisBinary(t *testing.T) {
+	env, err := localProjectEnv()
+	if err != nil {
+		t.Fatalf("localProjectEnv: %v", err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	want := []string{exe, "print-env"}
+	if len(env.PrintEnv) != len(want) || env.PrintEnv[0] != want[0] || env.PrintEnv[1] != want[1] {
+		t.Fatalf("PrintEnv = %q, want %q", env.PrintEnv, want)
 	}
 }

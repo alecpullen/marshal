@@ -471,3 +471,33 @@ func TestInfoDecodesTheChildren(t *testing.T) {
 		t.Errorf("Children[1] = %+v, want /work/two 2.0.1 with no sessions", second)
 	}
 }
+
+// TestInfoDecodesTheEnvironmentWarning: a child that reports an environment
+// warning carries it off the wire, and a child that reports none stays empty,
+// so `status` can tell the two apart.
+func TestInfoDecodesTheEnvironmentWarning(t *testing.T) {
+	const warning = "MARSHAL_CONFIG_DIR is not set in the child"
+	const body = `{"version":"1.0.0","profile":"local","pid":7,"startedAt":1,` +
+		`"socket":"/tmp/marshal.sock","projects":["/work/one","/work/two"],"children":[` +
+		`{"root":"/work/one","version":"2.0.0","sessions":[],"envWarning":"` + warning + `"},` +
+		`{"root":"/work/two","version":"2.0.1","sessions":[]}]}`
+
+	socket := unixServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+
+	info, err := NewClient(socket).Info(context.Background())
+	if err != nil {
+		t.Fatalf("Info(): %v", err)
+	}
+	if len(info.Children) != 2 {
+		t.Fatalf("Children = %+v, want two", info.Children)
+	}
+	if got := info.Children[0].EnvWarning; got != warning {
+		t.Errorf("Children[0].EnvWarning = %q, want %q", got, warning)
+	}
+	if got := info.Children[1].EnvWarning; got != "" {
+		t.Errorf("Children[1].EnvWarning = %q, want it empty for a child with no warning", got)
+	}
+}

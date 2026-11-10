@@ -140,6 +140,10 @@ type Fleet struct {
 	// all (decision 4). Set through SetHostProcessesOnly before anything
 	// starts.
 	hostOnly bool
+	// projectEnv resolves a project's environment for its child (P4 D7).
+	// Nil means children inherit the bridge's environment. Set through
+	// SetProjectEnv before anything starts.
+	projectEnv *ProjectEnv
 	// probe answers the container runtime for this fleet. Nil means
 	// detectedRuntime, the process-wide probe; tests inject one to see
 	// whether the fleet asked.
@@ -341,6 +345,11 @@ type Fleet struct {
 	// a relay's own goroutine reads it while the test that started the relay
 	// is already cleaning up.
 	lingerDur time.Duration
+
+	// idleTimeout is how long a project session with no viewer and no run
+	// lives on (P4 D7a); zero never ends one. SetIdleSessionTimeout sets it
+	// before serving.
+	idleTimeout time.Duration
 
 	// pruneMu serializes prune callers against each other: the HTTP
 	// prune endpoint and the spawn-path enforceDisk prune both call
@@ -726,6 +735,10 @@ func detectedRuntime() (path, name string, ok bool) {
 // host process, and stops the fleet from ever probing for a container
 // runtime (decision 4). Call it before anything starts.
 func (f *Fleet) SetHostProcessesOnly() { f.hostOnly = true }
+
+// SetProjectEnv makes project children start with their project's
+// environment (P4 D7). Without it they inherit the bridge's.
+func (f *Fleet) SetProjectEnv(p *ProjectEnv) { f.projectEnv = p }
 
 // containerRuntime is the fleet's container runtime: none when host-only,
 // without probing; otherwise the probe's answer.

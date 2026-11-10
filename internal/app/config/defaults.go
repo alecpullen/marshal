@@ -127,6 +127,9 @@ func Default() Config {
 			Enabled:      true,
 			FetchTimeout: 30 * time.Second,
 		},
+		Daemon: DaemonConfig{
+			IdleSessionTimeout: 30 * time.Minute,
+		},
 		Desktop: DesktopConfig{
 			Enabled:          false,
 			Mode:             "standalone",

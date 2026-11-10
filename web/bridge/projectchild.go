@@ -28,10 +28,14 @@ type projectChild struct {
 	child   *Child
 	reg     *Registry
 	version string
-	// mu guards ready and linger.
-	mu     sync.Mutex
-	ready  bool
-	linger func() // stops the armed linger timer; nil when none
+	// envWarning is why the environment the started child runs with fell
+	// back, empty when it resolved (P4 D7). It belongs to the generation
+	// that was built, so a restart keeps it.
+	// mu guards ready, linger and envWarning.
+	mu         sync.Mutex
+	ready      bool
+	linger     func() // stops the armed linger timer; nil when none
+	envWarning string
 
 	// stopMu guards stopping, the marker a resolver waits on so no
 	// replacement child is started while the previous process still holds the
@@ -54,15 +58,34 @@ func viewerSocketPath(stateDir, root string) string {
 }
 
 // buildProjectChild returns root's Child, unstarted: newProjectChild's when
-// set, else a local process running marshalBin in root with --viewers.
+// set, else a local process running marshalBin in root with --viewers. The
+// warning is the environment's: why the child's Env fell back, empty when it
+// resolved or when the fleet has no resolver (P4 D7).
 //
 // It is to project children what buildControlChild is to the control agent. The
 // socket's directory is created before anything can listen on it, so a caller
 // that only builds the child still finds it (decision 3).
-func (f *Fleet) buildProjectChild(root, socket string) (*Child, error) {
+func (f *Fleet) buildProjectChild(ctx context.Context, root, socket string) (*Child, string, error) {
 	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
-		return nil, fmt.Errorf("bridge: create viewer socket dir: %w", err)
+		return nil, "", fmt.Errorf("bridge: create viewer socket dir: %w", err)
 	}
+	child, err := f.projectChildForRoot(root, socket)
+	if err != nil {
+		return nil, "", err
+	}
+	if f.projectEnv == nil {
+		return child, "", nil
+	}
+	// The resolver applies to whatever was built, the test seam's fake
+	// included, so the wiring is testable without a process (decision 7).
+	env, warning := f.projectEnv.Resolve(ctx, root)
+	child.Env = env
+	return child, warning, nil
+}
+
+// projectChildForRoot builds root's child from the seam when a test set one,
+// else the local process a project child normally is.
+func (f *Fleet) projectChildForRoot(root, socket string) (*Child, error) {
 	if f.newProjectChild != nil {
 		return f.newProjectChild(root, socket)
 	}
@@ -174,10 +197,14 @@ func (f *Fleet) startProjectChildLocked(ctx context.Context, pc *projectChild) (
 	}
 	child := pc.child
 	if child == nil {
-		built, err := f.buildProjectChild(pc.root, pc.socket)
+		built, warning, err := f.buildProjectChild(ctx, pc.root, pc.socket)
 		if err != nil {
 			return nil, err
 		}
+		// The warning belongs to the generation being built: a restart keeps
+		// the same Child and Env, so it keeps the warning it started with
+		// (P4 D7).
+		pc.envWarning = warning
 		// A restarted child has forgotten every session. Re-run initialize on
 		// the new generation before NewRegistry chains resumeAll after this
 		// handler, so each session/resume is ordered after the re-initialize

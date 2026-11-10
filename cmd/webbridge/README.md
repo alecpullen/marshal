@@ -43,6 +43,46 @@ address.
 > Behind a terminating proxy this never comes up; hitting the bridge
 > directly over HTTP on such a name will simply fail to load.
 
+## The local profile
+
+`webbridge --profile local` is the user's own daemon, not a fleet: host
+processes only, no container machinery, and a unix socket instead of a bearer
+token.
+
+```bash
+webbridge --profile local --socket ~/.local/share/marshal/daemon/marshal.sock --addr off
+```
+
+- `--socket <path>` names the listener (also `WEBBRIDGE_SOCKET`). Its default
+  is `<data>/daemon/marshal.sock`, where `<data>` is `MARSHAL_DATA_DIR`, else
+  `$XDG_DATA_HOME/marshal`, else `~/.local/share/marshal`. The directory is
+  created `0700`, and the socket is `0600` and peer-checked by user ID, so it
+  needs no token.
+- `--addr off` disables the loopback TCP listener, and the preview listener
+  with it; with the TCP listener on, its bearer token still applies.
+- The state directory defaults to `<data>/daemon/state` and the fleet registry
+  to `<data>/daemon/fleet.json`, so a daemon and a bridge run by hand never
+  share either.
+- `--idle-session-timeout <duration>` (also
+  `WEBBRIDGE_IDLE_SESSION_TIMEOUT`, default `30m`) ends a project session that
+  has no viewer and no run after that long; `0` never ends one. The bridge
+  sweeps every 30s and closes what it has just read as idle. `marshal daemon
+  install` writes this flag into the unit from `[daemon]
+  idle_session_timeout` in the user config, so a change takes effect at the
+  next install.
+
+Each project child starts with the project's own environment, as a terminal in
+that project would give it: the user's login shell (`$SHELL`, else `/bin/sh`)
+is run in the project directory, and a `.envrc` is overlaid through `direnv`
+when it is on the resolved `PATH`. `webbridge print-env`, a subcommand of this
+binary, is what prints it, so whatever a startup file prints first is skipped.
+Each step is bounded at 10s. The bridge keeps its own `MARSHAL_CONFIG_DIR`,
+`MARSHAL_DATA_DIR`, `XDG_CONFIG_HOME` and `XDG_DATA_HOME` over the resolved
+values. A resolution that fails or times out falls back to the bridge's
+environment and records a warning naming the step and how it failed — never
+the step's output — which `GET /api/daemon` reports per child as `envWarning`
+and `marshal daemon status` prints.
+
 ## Secrets
 
 Credential values (git tokens, provider keys, workspace CA keys) live in

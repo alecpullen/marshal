@@ -18,9 +18,10 @@ type DaemonInfo struct {
 
 // DaemonChild is one project child as GET /api/daemon reports it.
 type DaemonChild struct {
-	Root     string          `json:"root"`
-	Version  string          `json:"version"`
-	Sessions []DaemonSession `json:"sessions"`
+	Root       string          `json:"root"`
+	Version    string          `json:"version"`
+	EnvWarning string          `json:"envWarning,omitempty"`
+	Sessions   []DaemonSession `json:"sessions"`
 }
 
 // SetDaemonInfo makes GET /api/daemon answer info; without it the route
@@ -65,7 +66,8 @@ func (s *Server) projectChildren() []DaemonChild {
 }
 
 // projectChildren reports the live project children, sorted by root, each
-// with its initialize version and its tracked sessions (decision 9).
+// with its initialize version, why its environment fell back, and its tracked
+// sessions (decisions 9 and 7).
 func (f *Fleet) projectChildren() []DaemonChild {
 	f.projMu.Lock()
 	children := make([]*projectChild, 0, len(f.projects))
@@ -77,9 +79,14 @@ func (f *Fleet) projectChildren() []DaemonChild {
 	out := make([]DaemonChild, 0, len(children))
 	for _, pc := range children {
 		pc.mu.Lock()
-		version, reg := pc.version, pc.reg
+		version, envWarning, reg := pc.version, pc.envWarning, pc.reg
 		pc.mu.Unlock()
-		child := DaemonChild{Root: pc.root, Version: version, Sessions: []DaemonSession{}}
+		child := DaemonChild{
+			Root:       pc.root,
+			Version:    version,
+			EnvWarning: envWarning,
+			Sessions:   []DaemonSession{},
+		}
 		if reg != nil {
 			child.Sessions = reg.summaries()
 		}

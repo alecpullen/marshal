@@ -300,9 +300,18 @@ func buildSecretProvider(cfg config) (bridge.SecretProvider, error) {
 	}
 }
 
-// runSubcommand handles "webbridge secrets init-key FILE". It reports
-// whether args named a subcommand.
+// runSubcommand handles "webbridge print-env", "webbridge egress" and
+// "webbridge secrets init-key FILE". It reports whether args named a
+// subcommand.
 func runSubcommand(ctx context.Context, args []string, stdout io.Writer) (bool, error) {
+	if len(args) >= 1 && args[0] == "print-env" {
+		if len(args) != 1 {
+			return true, fmt.Errorf("usage: webbridge print-env")
+		}
+		// The environment goes to stdout and nothing else does: the login
+		// shell parses everything this process prints (P4 D7).
+		return true, bridge.WriteEnv(stdout, os.Environ())
+	}
 	if len(args) >= 1 && args[0] == "egress" {
 		fs := flag.NewFlagSet("webbridge egress", flag.ContinueOnError)
 		listen := fs.String("listen", ":3128", "proxy listen address")
@@ -329,6 +338,21 @@ func runSubcommand(ctx context.Context, args []string, stdout io.Writer) (bool, 
 		return true, nil
 	}
 	return false, nil
+}
+
+// localProjectEnv is the local profile's project environment resolver: project
+// children print their environment by re-running this binary with "print-env"
+// (P4 D7). Symlinks are resolved, so a login shell that starts elsewhere still
+// reaches the binary.
+func localProjectEnv() (*bridge.ProjectEnv, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("find the webbridge binary: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	return bridge.NewProjectEnv([]string{exe, "print-env"}), nil
 }
 
 // parseProjectMounts parses repeatable --project-mount HOST:CONTAINER
@@ -495,6 +519,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	// and the scheduler — so no agent or probe sees a container runtime.
 	if cfg.profile == "local" {
 		fleet.SetHostProcessesOnly()
+		// A project child starts with its project's environment (decision
+		// 7). A bridge that cannot name its own binary leaves children
+		// inheriting the bridge's environment instead.
+		if projectEnv, err := localProjectEnv(); err != nil {
+			slog.Default().Warn("webbridge: project children inherit the bridge's environment", "err", err)
+		} else {
+			fleet.SetProjectEnv(projectEnv)
+		}
 	}
 
 	secrets, err := buildSecretProvider(cfg)

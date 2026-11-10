@@ -24,6 +24,7 @@ type Config struct {
 	Tools         ToolsConfig                           `toml:"tools"`
 	Web           WebConfig                             `toml:"web"`
 	Desktop       DesktopConfig                         `toml:"desktop"`
+	Daemon        DaemonConfig                          `toml:"daemon"`
 	Swarm         SwarmConfig                           `toml:"swarm"`
 	SDD           SDDConfig                             `toml:"sdd"`
 	Worktree      WorktreeConfig                        `toml:"worktree"`
@@ -428,6 +429,13 @@ type WebConfig struct {
 	SearchProvider string        `toml:"search_provider"`
 	SearchURL      string        `toml:"search_url"`
 	SearchKey      string        `toml:"search_key"`
+}
+
+// DaemonConfig is the local daemon's user settings (P4 D7a).
+type DaemonConfig struct {
+	// IdleSessionTimeout ends a daemon session with no viewer and no run
+	// after this long; zero never ends one. Default 30m.
+	IdleSessionTimeout time.Duration `toml:"idle_session_timeout"`
 }
 
 type DesktopConfig struct {

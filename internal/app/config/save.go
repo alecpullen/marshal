@@ -331,6 +331,11 @@ func writeSections(file *configFile, cfg Config, def Config) {
 			LoadGateThresholdTokens: strutil.Ptr(cfg.Skills.LoadGateThresholdTokens),
 		}
 	}
+	if cfg.Daemon != def.Daemon {
+		file.Daemon = &fileDaemon{
+			IdleSessionTimeout: strutil.Ptr(cfg.Daemon.IdleSessionTimeout.String()),
+		}
+	}
 	if cfg.Web != def.Web {
 		file.Web = &fileWeb{
 			Enabled:        strutil.Ptr(cfg.Web.Enabled),

@@ -153,6 +153,10 @@ type fileWeb struct {
 	SearchKey      *string `toml:"search_key"`
 }
 
+type fileDaemon struct {
+	IdleSessionTimeout *string `toml:"idle_session_timeout"`
+}
+
 type fileDesktop struct {
 	Enabled          *bool    `toml:"enabled"`
 	Mode             *string  `toml:"mode"`
@@ -360,6 +364,7 @@ type configFile struct {
 	Tools       *fileTools       `toml:"tools"`
 	Web         *fileWeb         `toml:"web"`
 	Desktop     *fileDesktop     `toml:"desktop"`
+	Daemon      *fileDaemon      `toml:"daemon"`
 	Swarm       *fileSwarm       `toml:"swarm"`
 	SDD         *fileSDD         `toml:"sdd"`
 	Worktree    *fileWorktree    `toml:"worktree"`

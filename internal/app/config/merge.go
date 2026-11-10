@@ -1,12 +1,17 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"marshal/internal/llm/routing"
 )
+
+// errNegativeDuration is the cause reported for a duration key that parses
+// but carries a negative value; callers wrap it with the key's name.
+var errNegativeDuration = errors.New("must not be negative")
 
 // set assigns *src to *dst when src is non-nil. It collapses the
 // nullable-mirror merge stanzas to one line per field.
@@ -383,6 +388,18 @@ func merge(cfg *Config, file configFile) error {
 		}
 		for k, v := range file.Diagnostics.Commands {
 			cfg.Diagnostics.Commands[k] = v
+		}
+	}
+	if file.Daemon != nil {
+		if file.Daemon.IdleSessionTimeout != nil && *file.Daemon.IdleSessionTimeout != "" {
+			d, err := time.ParseDuration(*file.Daemon.IdleSessionTimeout)
+			if err != nil {
+				return fmt.Errorf("parse daemon.idle_session_timeout: %w", err)
+			}
+			if d < 0 {
+				return fmt.Errorf("parse daemon.idle_session_timeout: %w", errNegativeDuration)
+			}
+			cfg.Daemon.IdleSessionTimeout = d
 		}
 	}
 	if file.Web != nil {

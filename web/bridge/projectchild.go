@@ -223,6 +223,18 @@ func (f *Fleet) armLinger(pc *projectChild) {
 		return
 	}
 	fire := func() {
+		// The timer has fired, so nothing is armed any more. Read the
+		// registry under the same lock the start path uses: a session that
+		// arrived while the timer was armed keeps the child alive, because
+		// the linger is for a project child with no tracked session
+		// (decision 4) and a session only ever leaves through the registry.
+		pc.mu.Lock()
+		pc.linger = nil
+		reg := pc.reg
+		pc.mu.Unlock()
+		if reg != nil && reg.count() > 0 {
+			return
+		}
 		// Only the child still registered for its root is reaped: a child that
 		// a later resolve has already replaced must be left alone.
 		f.projMu.Lock()

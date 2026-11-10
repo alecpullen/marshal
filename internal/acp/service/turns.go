@@ -20,9 +20,12 @@ type Runner interface {
 // turnSlot is the run a session has in flight. Its fields are guarded by
 // Session.mu.
 type turnSlot struct {
-	cancel  context.CancelFunc
-	token   *session.TurnStopToken // nil until the run registers its stop group
-	stopped bool                   // Stop reached the run
+	cancel context.CancelFunc
+	token  *session.TurnStopToken // nil until the run registers its stop group
+	// releaseRun frees the session's one run slot (P4 D2). It is nil when the
+	// session has no state, as some tests' sessions do.
+	releaseRun func()
+	stopped    bool // Stop reached the run
 	// ending marks a stop that is the session's end, which writes no cancel
 	// note (P4 D4 decision 6).
 	ending bool
@@ -269,6 +272,22 @@ func (s *Session) runTurn(ctx context.Context, spec runSpec) (stopped bool, star
 	s.turn = slot
 	s.mu.Unlock()
 
+	// The session's one run slot is claimed at admission (P4 D2): a run on
+	// ACP's turn path holds the same claim, so a second run is refused here
+	// rather than running beside the first. A state with no claim (nil) always
+	// succeeds, as it has no slot to share.
+	releaseRun, claimed := s.state.ClaimRun()
+	if !claimed {
+		s.mu.Lock()
+		if s.turn == slot {
+			s.turn = nil
+		}
+		s.mu.Unlock()
+		cancel()
+		return false, false, errTurnBusy
+	}
+	slot.releaseRun = releaseRun
+
 	// The run is registered as a cancellable parent operation, so the
 	// conversation's end pass (stopEndWork) cancels the run's context through
 	// this hook. Without it, a run that outlives its caller would leave the
@@ -279,6 +298,8 @@ func (s *Session) runTurn(ctx context.Context, spec runSpec) (stopped bool, star
 			s.turn = nil
 		}
 		s.mu.Unlock()
+		slot.releaseRun()
+		slot.releaseRun = nil
 		cancel()
 		// A session that is ending refuses the turn as quiescing does: both
 		// are admission refusals the TUI names, not failed turns.
@@ -385,6 +406,13 @@ func (s *Session) endRun(slot *turnSlot, spec runSpec, runCtx context.Context) r
 	}
 	if s.turn == slot {
 		s.turn = nil
+	}
+	// The run's claim is released in the same critical section that clears
+	// the slot (P4 D2): a refused start sees the slot free the moment the run
+	// has ended, and a status read never shows a run with no slot.
+	if slot.releaseRun != nil {
+		slot.releaseRun()
+		slot.releaseRun = nil
 	}
 	token := slot.token
 	s.mu.Unlock()

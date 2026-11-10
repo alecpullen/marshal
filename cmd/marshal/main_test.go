@@ -126,6 +126,47 @@ func TestACPListenFlagRoutesToListener(t *testing.T) {
 	}
 }
 
+// TestACPViewersFlagRoutesToTheViewersRunner pins P4 plan 3's dispatch: both
+// --viewers forms reach the viewers runner with the socket path, and every
+// other form is refused before it runs.
+func TestACPViewersFlagRoutesToTheViewersRunner(t *testing.T) {
+	var gotPath string
+	orig := acpViewersRunner
+	acpViewersRunner = func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, path string) error {
+		gotPath = path
+		return nil
+	}
+	t.Cleanup(func() { acpViewersRunner = orig })
+
+	for _, args := range [][]string{
+		{"acp", "--viewers", "unix:///x/v.sock"},
+		{"acp", "--viewers=unix:///x/v.sock"},
+	} {
+		gotPath = ""
+		if err := run(context.Background(), args, strings.NewReader(""), io.Discard, io.Discard); err != nil {
+			t.Fatalf("%v: run: %v", args, err)
+		}
+		if gotPath != "/x/v.sock" {
+			t.Fatalf("%v: path = %q, want /x/v.sock", args, gotPath)
+		}
+	}
+
+	refused := [][]string{
+		{"acp", "--viewers", "tcp://127.0.0.1:1"},
+		{"acp", "--viewers"},
+		{"acp", "--viewers", "unix:///x/v.sock", "--listen", "unix:///y/a.sock"},
+	}
+	for _, args := range refused {
+		gotPath = ""
+		if err := run(context.Background(), args, strings.NewReader(""), io.Discard, io.Discard); err == nil {
+			t.Errorf("%v: run succeeded, want a refusal", args)
+		}
+		if gotPath != "" {
+			t.Errorf("%v: the viewers runner ran with %q, want a refusal first", args, gotPath)
+		}
+	}
+}
+
 // TestRunDispatchesSnapshotsSubcommand pins the dispatch anchor: `marshal
 // snapshots` must reach the snapshots runner with its remaining arguments and
 // all three streams, exactly like `plugin`. It is asserted through the

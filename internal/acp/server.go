@@ -143,6 +143,11 @@ type Server struct {
 	// Serve.
 	EndOnPanic bool
 
+	// MarshalOnly refuses a client that did not declare the marshal
+	// capability, and every call before a marshal initialize (P4 D2). Set it
+	// before Serve.
+	MarshalOnly bool
+
 	// fatalErr is a buffered channel that handler goroutines use to
 	// report fatal write errors to the Serve loop. Created in Serve.
 	fatalErr chan error
@@ -735,7 +740,10 @@ func wireError(err error) string {
 		case parseError:
 			return "parse error"
 		case invalidRequest:
-			return "invalid request"
+			// invalid-request messages are server-generated refusals, not
+			// client input, so they are safe to expose; a viewer's refusal
+			// carries its sentence to the client this way (P4 D2). F-SEC-37.
+			return "invalid request: " + rpcErr.Message
 		case methodNotFound:
 			return "method not found"
 		case invalidParams:
@@ -912,6 +920,11 @@ func (s *Server) dispatch(ctx context.Context, req Request) (result any, err err
 			"error", err,
 		)
 	}()
+	// A viewer serves marshal clients only (P4 D2): until a marshal initialize
+	// has been answered, every other call is refused the same way.
+	if s.MarshalOnly && req.Method != "initialize" && !s.marshalClient() {
+		return nil, viewerCapabilityRefusal()
+	}
 	handler, ok := s.handlers[req.Method]
 	if !ok {
 		return nil, &jsonRPCError{Code: methodNotFound, Message: "method not found: " + req.Method}

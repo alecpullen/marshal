@@ -1257,13 +1257,22 @@ func TestWireErrorPreservesServerError(t *testing.T) {
 	}
 }
 
+// TestWireErrorPreservesInvalidRequest pins the one code whose message the
+// server authors itself: a viewer's refusal sentence reaches the client (P4 D2).
+func TestWireErrorPreservesInvalidRequest(t *testing.T) {
+	err := &jsonRPCError{Code: invalidRequest, Message: "a viewer connection serves marshal clients only"}
+	got := wireError(err)
+	if !strings.Contains(got, "a viewer connection serves marshal clients only") {
+		t.Fatalf("wireError should preserve invalidRequest message, got %q", got)
+	}
+}
+
 func TestWireErrorStillOpaqueForKnownCodes(t *testing.T) {
 	cases := []struct {
 		code int
 		want string
 	}{
 		{parseError, "parse error"},
-		{invalidRequest, "invalid request"},
 		{methodNotFound, "method not found"},
 		{invalidParams, "invalid params"},
 		{internalError, "internal error"},

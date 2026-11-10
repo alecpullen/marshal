@@ -278,7 +278,7 @@ func TestWorkACPAvailableWithoutModelRunner(t *testing.T) {
 	srv := NewServer(strings.NewReader(""), io.Discard)
 	var alive atomic.Bool
 	alive.Store(true)
-	cleanup := h.registerHandlers(srv, &alive)
+	cleanup := h.registerHandlers(srv, &alive, h.sink.Notify, false)
 	defer cleanup()
 
 	for _, method := range []string{"session/work_list", "session/work_inspect", "session/work_stop", "session/work_acknowledge"} {
@@ -381,7 +381,7 @@ func TestStackServesASessionWithoutARunner(t *testing.T) {
 	srv := NewServer(strings.NewReader(""), io.Discard)
 	var alive atomic.Bool
 	alive.Store(true)
-	cleanup := h.registerHandlers(srv, &alive)
+	cleanup := h.registerHandlers(srv, &alive, h.sink.Notify, false)
 	defer cleanup()
 
 	res, err := srv.handlers["session/stack"](context.Background(), json.RawMessage(`{"sessionId":"s1"}`))

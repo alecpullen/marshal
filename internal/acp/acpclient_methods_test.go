@@ -31,7 +31,7 @@ func TestACPClientMethodTableMatchesTheServer(t *testing.T) {
 	srv := NewServer(strings.NewReader(""), io.Discard)
 	var alive atomic.Bool
 	alive.Store(true)
-	cleanup := h.registerHandlers(srv, &alive)
+	cleanup := h.registerHandlers(srv, &alive, h.sink.Notify, false)
 	defer cleanup()
 
 	for _, row := range acpclient.Methods {

@@ -7,9 +7,11 @@ wins. Each difference is listed under "Decisions".
 Depends on: P3, implemented (its plan 8 merged at `40dc0eff`).
 Status: approved 2026-11-09, with every recommendation under "Decisions"
 accepted. The line anchors were re-checked at `40dc0eff` for plans 1 and 2,
-and at `7802701f` (plans 1 and 2 merged) for plans 3 and 4. Plans 1 and 2
+and at `7802701f` (plans 1 and 2 merged) for plans 3 and 4, and at
+`29851a61` (plans 3 and 4 merged) for plans 5 and 6. Plans 1 and 2
 shared no code and ran side by side. Plans 3 and 4 do the same, except plan
-4's last task, which needs plan 3 on `main`. Each plan records itself under
+4's last task, which needs plan 3 on `main`. Plans 5 and 6 share no file but
+this spec, each filling its own record. Each plan records itself under
 its own heading in the Implementation record.
 
 ## Goal
@@ -143,6 +145,10 @@ against.
    after `daemon.idle_session_timeout` (default 30 minutes), so detached idle
    sessions do not pile up; its transcript stays resumable. The alternative,
    quit ending an idle session at once, would make "quit" mean two things.
+   (Plan 5 corrects the keys: the TUI has no Ctrl+D quit, and its quit key is
+   Ctrl+C pressed twice while no run is in flight. Pressed twice during a run,
+   Ctrl+C still stops the run, so `/detach` is added for leaving mid-run. See
+   D5.)
 5. **A run's outcome is written by the agent.** The notes the
    TUI writes when its own run returns ("✘ Turn failed: …", "Agent turn
    cancelled.", a refusal's sentence) move into the service, which writes
@@ -185,6 +191,13 @@ against.
 - **H6.** Design §8's open questions on MCP scope, headless credentials and
   remote OAuth. They are server-profile concerns.
 - **H7.** Worktree indexes (design §4.2).
+- **H8.** A watch wake while no viewer is attached. The wake is the TUI's
+  (P3: `bindWatchResume` skips marshal connections, and the bridge's own
+  connection binds none on a TUI's session), so a wake that fires while the
+  session is detached is not resumed; its report stays in the transcript.
+- **H9.** The project environment's warning in the TUI. Plan 6 reports it
+  on `GET /api/daemon` and in `marshal daemon status`; the attach answer
+  does not carry it yet.
 
 ## Behaviour
 
@@ -368,7 +381,7 @@ against.
     `GET /api/daemon` lists each child's root, version and sessions with
     those two values. Plan 5's `marshal attach` with no ID reads it.
   - A child with no tracked session stops after the 30s linger. In P4 a
-    session leaves the registry only by a close, until plan 5's idle timeout
+    session leaves the registry only by a close, until plan 6's idle timeout
     and plan 7's pins.
 - **The client's half** is `internal/daemon`'s `Client.Attach`. It sends the
   handshake and returns the upgraded stream and the session ID, which plan 5
@@ -432,6 +445,60 @@ against.
 - **What stays local.** The clipboard, `$EDITOR` (the daemon is on the same
   machine, so `SharedFilesystem` is true), the browser for sign-ins and the
   terminal.
+- **The details** (plan 5).
+  - *The check.* `cmd/marshal` hands `launch.Run` the daemon socket
+    (`config.DaemonSocketPath`) unless `--embedded` is given. `launch` reads
+    `GET /api/daemon` once, bounded at 500ms. Daemon mode needs an answer
+    whose profile is `local`, and a project whose trust needs no question:
+    `trust.Evaluate` on the project root reports no prompt (no project config,
+    or a permanent record whose hash still matches). An untrusted project runs
+    embedded, where the question is asked, until plan 7 brings D8. Any other
+    outcome runs embedded too, silently: no daemon is the ordinary case.
+  - *The root.* The TUI attaches with `repo.Root` of its working directory,
+    and its working directory becomes the session's (`Status().WorkingDir`),
+    the project root the child runs in. A launch from a subdirectory starts
+    its daemon session at the root.
+  - *The connection.* `Client.Attach` with a 30s handshake bound, then
+    `rpc.Dial` over `rpc.NewStream` with P3's frame cap and
+    `SharedFilesystem`, with no version demand, then `Host.Attach` of the
+    session the daemon named. The TUI's context, not the handshake's, carries
+    the stream afterwards.
+  - *The client log* is `<data>/daemon/tui.log`, mode `0600`, appended.
+  - *The quit key.* Ctrl+C pressed twice while no run is in flight and no
+    ending is under way detaches: no warning, no end flow, no close. Pressed
+    twice during a run it stops the run, as in embedded mode. A new TUI-only
+    command, `/detach`, detaches at any time, a run in flight included. In
+    embedded mode `/detach` explains that only a daemon session can be
+    detached, and the quit key keeps running the end flow. `/exit` and `/quit`
+    end the session in both modes.
+  - *After the program.* A detach prints the session's ID and
+    `marshal attach <id>` to the terminal. A lost connection returns an error
+    that names the same command. A `/resume` reattaches to the chosen session
+    after the end flow closed the current one, as embedded mode restarts its
+    runtime.
+  - *`marshal attach`* needs a daemon: without one it fails and says how to
+    start one. With no ID it attaches to the first session of the project's
+    child in `GET /api/daemon` (most recently active first), and fails when
+    the child has none. It skips the trust condition: the session exists
+    already.
+  - *Following.* A run is followed when the status shows one while the TUI
+    is not busy and holds no run call of its own. `busy` and the turn's start
+    follow it, and its ticks start. When the status's run is gone, or is
+    another, the TUI finishes it through the same handler its own run's end
+    uses, with the error `lastRun` describes: none for `done`, the cancelled
+    context for `cancelled`, `lastRun.error` for `failed`, a
+    `CodeHumanGateRequired` error for `gated`. A stop the user asks for while
+    following is the TUI's own stop, so its steering clear applies. The check
+    runs on every change and at the end of the TUI's own run's finishing, so a
+    run another viewer started just as this TUI's ended is not missed.
+  - *Watch resumes.* A new model takes the status's watch-resume sequence as
+    already seen, so attaching never replays a wake that fired before it. A
+    watch resume the session refuses because another run holds the slot
+    writes no note: two viewers can both answer one wake, and one wins. A wake
+    that fires while no viewer is attached is not resumed (H8).
+  - *Versions* (D11). A daemon-mode TUI whose agent reports another
+    `agentInfo.version` writes one note naming both versions before the
+    program starts.
 
 ### D6. A run's notes are the agent's
 
@@ -476,6 +543,60 @@ against.
   change.
 - Secrets in the environment never reach a log or an event. The server
   profile keeps supplying environments explicitly (design §6.1).
+- **The details** (plan 6).
+  - *The printer.* The shell runs `exec '<webbridge>' print-env`, a new
+    `webbridge` subcommand that writes a marker and then the environment,
+    NUL-separated, so whatever a startup file prints before it is skipped. The
+    format lives in one place, `bridge.WriteEnv`, beside the parser. A
+    webbridge path holding a single quote cannot be quoted for every shell and
+    falls back with a warning.
+  - *Two steps, each bounded at 10s:* the login shell, then the direnv
+    overlay. direnv is looked up on the resolved `PATH`, not the bridge's. Its
+    JSON's `null` unsets a variable. A failed overlay keeps the login
+    environment and warns.
+  - *What the bridge keeps.* `MARSHAL_CONFIG_DIR`, `MARSHAL_DATA_DIR`,
+    `XDG_CONFIG_HOME` and `XDG_DATA_HOME`, when the bridge has them, override
+    the resolved values, so a child resolves the directories the TUI does.
+  - *`$SHELL` reaches the daemon.* `marshal daemon install` adds `SHELL` to
+    the unit's environment, beside `PATH` and the location variables. A user
+    service has no `SHELL` of its own.
+  - *The startup files* are a fixed list stat'ed whatever the shell:
+    `~/.profile`, `~/.bash_profile`, `~/.bash_login`, `~/.bashrc`,
+    `~/.zshenv`, `~/.zprofile`, `~/.zshrc`, `~/.zlogin` and
+    `~/.config/fish/config.fish`. A file appearing or disappearing changes
+    the fingerprint as a changed time does. Only a successful resolution is
+    cached, so a failure is retried at the next start.
+  - *The warning* names what failed ("the login shell timed out after 10s",
+    "direnv export exited with status 1") and never carries the commands'
+    output. `GET /api/daemon` reports it per child as `envWarning`, and
+    `marshal daemon status` prints it. The TUI does not show it yet (H9).
+  - *Where it applies.* Only a fleet given a resolver resolves. The local
+    profile gives its fleet one; the server profile and the end-to-end
+    harness do not, so their children inherit the bridge's environment as
+    before.
+
+### D7a. Idle sessions end (plan 6)
+
+- The bridge enforces decision 4's `daemon.idle_session_timeout`, because it
+  is what knows a session's viewers. Every 30s it looks at each project
+  child's tracked sessions. A session with no viewer whose last activity is
+  older than the timeout is asked for its status on the bridge's own
+  connection (`session/status`, which serves a client without the marshal
+  capability). A session with a `run` is left alone. Its idle time runs from
+  the later of its last activity and `lastRun.endedAt`, so a run that ends
+  while no one watches gets the full timeout. An idle session is closed as a
+  viewer's close is (`Registry.Close`), and a child left with no session
+  starts its linger.
+- **The value** is `[daemon] idle_session_timeout` in the user config, a
+  duration, default `30m`; `0` never ends a session. `webbridge` takes it as
+  `--idle-session-timeout` (local profile only), and `marshal daemon install`
+  writes the user config's value into the unit, so a change takes effect at
+  the next install.
+- **A known race.** An attach that resolves a session just as the sweep
+  closes it gets a session the child no longer holds, and the TUI reports
+  that the session is gone; the next `marshal attach <id>` resumes it.
+- The status line `marshal daemon status` prints per child (D11) is written
+  here too: its root, version, session count and environment warning.
 
 ### D8. Trust for daemon sessions
 
@@ -521,7 +642,8 @@ against.
   refuse, when the agent's `agentInfo.version` differs from its own build
   (design §6.4). Embedded mode keeps refusing a mismatch, since both ends are
   one binary.
-- `marshal daemon status` reports the daemon's and the children's versions.
+- `marshal daemon status` reports the daemon's and the children's versions
+  (plan 6, D7a).
 
 ### D12. OAuth refresh runs once
 
@@ -540,19 +662,20 @@ against.
 
 | Area | Change |
 |---|---|
-| `cmd/webbridge`, `web/bridge` | `--profile local`; the unix listener and the peer check; project children; the attach handshake and the relay; the environment resolver; pins; host-process agents on project children; the refresh helper's supervision. Standard library only, as ever. |
-| `cmd/marshal` | `marshal attach`, `marshal daemon install/uninstall/start/stop/status/pin/unpin/refresh`, `--embedded`. |
+| `cmd/webbridge`, `web/bridge` | `--profile local`; the unix listener and the peer check; project children; the attach handshake and the relay; the environment resolver and `webbridge print-env`; the idle-session sweep and `--idle-session-timeout`; pins; host-process agents on project children; the refresh helper's supervision. Standard library only, as ever. |
+| `cmd/marshal` | `marshal attach`, `marshal daemon install/uninstall/start/stop/status/pin/unpin/refresh`, `--embedded`. Install writes `SHELL` and the idle timeout into the unit; status prints each child. |
+| `internal/commands` | The TUI-only `/detach` (plan 5). |
 | `internal/daemon` (new) | The service units and the commands that drive them, and the socket's HTTP client with its attach handshake, which plan 5's daemon mode reuses. |
-| `internal/app/config` | `DaemonDir` and `DaemonSocketPath`, beside `DataDir`. |
+| `internal/app/config` | `DaemonDir` and `DaemonSocketPath`, beside `DataDir`; the `[daemon]` section's `idle_session_timeout` (plan 6). |
 | `internal/acp` | `--viewers`: concurrent marshal connections that notify on their own connection; one run slot per session; `project/hold` and `project/release`; the deferring trust resolver for marshal-driven sessions. |
 | `internal/acp/service` | Runs on the session's context; `run` and `lastRun` in the status; run outcome notes. |
 | `internal/acpwire` | `SessionStatus.Run`, `LastRun`; the hold methods. |
 | `internal/acpclient/rpc` | Nothing new in the protocol; the relay is a byte stream `rpc.NewStream` already frames. |
 | `internal/launch` | The daemon check, the attach handshake, daemon mode's loop and its detach, and the client log. |
-| `internal/app/tui` | Quit detaches in daemon mode; `busy` follows a run it did not start; the outcome notes leave `handleAgentFinished` and `handlePlanAuthorFinished`. |
+| `internal/app/tui` | Quit and `/detach` detach in daemon mode; `busy` follows a run it did not start; an attach never replays an old wake; the outcome notes leave `handleAgentFinished` and `handlePlanAuthorFinished`. |
 | `internal/app` | The refresh lock around the OAuth workers. |
 | `internal/app/session` | The run claim both run slots take (plan 3). |
-| `test/daemon` (new) | The end-to-end attach test: a real bridge and a real child in one test process, driven by a scripted client (plan 4). |
+| `test/daemon` (new) | The end-to-end attach test: a real bridge and a real child in one test process, driven by a scripted client (plan 4); the reattach to a running turn against a test-owned provider, and `launch`'s daemon mode detaching from it (plan 5). |
 
 ## Migration order
 
@@ -575,10 +698,16 @@ Two plans at a time where they share no files, as in P3.
    `internal/daemon`. Proved against a fake child in the bridge's own tests.
    Its last task, run once plan 3 is on `main`, proves it with a scripted
    client over the socket against a real child (`test/daemon`).
-5. **The TUI's daemon mode** (D5, D11): the check, `marshal attach`,
-   detaching, following a run, `/resume` and the version warning. The
+5. **The TUI's daemon mode** (D5, D11's warning): the check, `marshal
+   attach`, detaching and `/detach`, following a run, `/resume` and the
+   version warning, in `internal/launch`, `internal/app/tui`,
+   `internal/commands`, `cmd/marshal`'s dispatch and `test/daemon`. The
    done-when test lives here. Alongside plan 6.
-6. **The project environment** (D7), in the bridge. Alongside plan 5.
+6. **The project environment and idle sessions** (D7, D7a, D11's status
+   lines), in the bridge, `cmd/webbridge`, `internal/daemon`, `config` and
+   `cmd/marshal`'s `daemon` command. The idle timeout moved here from plan 5
+   because the bridge enforces it, and plan 5 then touches no bridge file.
+   Alongside plan 5.
 7. **Trust and pins** (D8, D9). Alongside plan 8.
 8. **OAuth refresh once** (D12). Alongside plan 7.
 9. **Fleet agents on the project's child** (D10). Last: it changes the
@@ -1244,3 +1373,11 @@ code anywhere in it.
   client must ask for a new session rather than resume one.
 - The relay has no flow control beyond the 64MiB frame cap: a viewer that reads
   slowly blocks only its own pump.
+
+### Plan 5 — the TUI's daemon mode
+
+Not yet run. [The plan](plans/2026-11-11-p4-5-daemon-mode-plan.md) fills this record.
+
+### Plan 6 — the project environment and idle sessions
+
+Not yet run. [The plan](plans/2026-11-11-p4-6-environment-plan.md) fills this record.

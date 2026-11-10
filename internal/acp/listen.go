@@ -31,27 +31,17 @@ func ListenAndServe(ctx context.Context, network, addr string, stderr io.Writer)
 	}
 	trustStore := trust.NewStore(config.DataDir(home))
 
+	var ln net.Listener
 	if network == "unix" {
-		if err := os.MkdirAll(filepath.Dir(addr), 0o700); err != nil {
-			return fmt.Errorf("acp: create socket directory: %w", err)
-		}
-		// A leftover socket from a crashed generation would make Listen
-		// fail with EADDRINUSE even though nothing holds it.
-		if err := os.Remove(addr); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("acp: remove stale socket: %w", err)
+		ln, err = listenUnix(addr)
+	} else {
+		ln, err = net.Listen(network, addr)
+		if err != nil {
+			return fmt.Errorf("acp: listen on %s://%s: %w", network, addr, err)
 		}
 	}
-
-	ln, err := net.Listen(network, addr)
 	if err != nil {
-		return fmt.Errorf("acp: listen on %s://%s: %w", network, addr, err)
-	}
-	if network == "unix" {
-		// Only the owner may drive the agent.
-		if err := os.Chmod(addr, 0o600); err != nil {
-			_ = ln.Close()
-			return fmt.Errorf("acp: restrict socket permissions: %w", err)
-		}
+		return err
 	}
 
 	// One project-host registry for the process, shared by every
@@ -67,6 +57,30 @@ func ListenAndServe(ctx context.Context, network, addr string, stderr io.Writer)
 		logger:   log,
 	})
 	return errors.Join(err, closeHosts(hosts))
+}
+
+// listenUnix prepares and binds a unix socket the way ListenAndServe always
+// has: the directory 0700, a stale socket removed, the socket 0600. Closing
+// the listener unlinks it.
+func listenUnix(path string) (net.Listener, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("acp: create socket directory: %w", err)
+	}
+	// A leftover socket from a crashed generation would make Listen fail with
+	// EADDRINUSE even though nothing holds it.
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("acp: remove stale socket: %w", err)
+	}
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, fmt.Errorf("acp: listen on unix://%s: %w", path, err)
+	}
+	// Only the owner may drive the agent.
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = ln.Close()
+		return nil, fmt.Errorf("acp: restrict socket permissions: %w", err)
+	}
+	return ln, nil
 }
 
 // listenAndServeWithConfig owns the accept loop. Exactly one connection

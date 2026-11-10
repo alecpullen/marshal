@@ -359,7 +359,7 @@ func startAgentHost(t *testing.T) (rpc.Transport, *Server) {
 
 	var alive atomic.Bool
 	alive.Store(true)
-	cleanup := h.registerHandlers(srv, &alive)
+	cleanup := h.registerHandlers(srv, &alive, h.sink.Notify, false)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

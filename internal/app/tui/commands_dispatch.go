@@ -505,7 +505,7 @@ func init() {
 			focus := strings.TrimSpace(strings.Join(remaining, " "))
 			sess := m.sess
 			params := acpwire.ReviewParams{Focus: focus, Model: model, Range: reviewRange, Base: base}
-			return m.startSessionRun("Cannot start review", func(ctx context.Context) error {
+			return m.startSessionRun("Cannot start review", false, func(ctx context.Context) error {
 				return sess.Review(ctx, params)
 			})
 		},

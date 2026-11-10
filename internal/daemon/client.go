@@ -24,9 +24,10 @@ const (
 
 // ChildInfo mirrors the bridge's DaemonChild on the wire.
 type ChildInfo struct {
-	Root     string        `json:"root"`
-	Version  string        `json:"version"`
-	Sessions []SessionInfo `json:"sessions"`
+	Root       string        `json:"root"`
+	Version    string        `json:"version"`
+	Sessions   []SessionInfo `json:"sessions"`
+	EnvWarning string        `json:"envWarning,omitempty"`
 }
 
 // SessionInfo mirrors the bridge's DaemonSession on the wire.

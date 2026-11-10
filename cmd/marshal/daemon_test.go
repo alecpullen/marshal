@@ -289,12 +289,17 @@ func TestDaemonInstallWritesTheIdleTimeout(t *testing.T) {
 
 // TestDaemonStatusReportsARunningDaemon pins decision 12's happy path: three
 // lines, the daemon's version beside this marshal's, its start time, and its
-// projects — and a socket call bounded at two seconds.
+// projects — and a socket call bounded at two seconds. Under the daemon's line
+// it reports each child on a line of its own, with the child's environment
+// warning indented beneath it.
 func TestDaemonStatusReportsARunningDaemon(t *testing.T) {
 	home := daemonTestEnv(t)
 	fakeDaemonManager(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		return []byte("state = running\npid = 4242\n"), nil
 	})
+
+	// The warning is compared verbatim below, so both ends read the one string.
+	const warning = "MARSHAL_CONFIG_DIR is not set for this child"
 
 	var gotSocket string
 	oldClient := daemonClientFor
@@ -308,6 +313,23 @@ func TestDaemonStatusReportsARunningDaemon(t *testing.T) {
 				PID:       4242,
 				StartedAt: 1700000000000,
 				Projects:  []string{"/work/one", "/work/two"},
+				Children: []daemon.ChildInfo{
+					{
+						// Another build, with a warning: the line has to
+						// name both versions and the warning follows.
+						Root:       "/work/three",
+						Version:    "2.0.0",
+						Sessions:   []daemon.SessionInfo{{ID: "sess-1", Viewers: 1}},
+						EnvWarning: warning,
+					},
+					{
+						// This marshal's own version, no warning, no
+						// sessions: no "(this marshal ...)" and no
+						// second line.
+						Root:    "/work/four",
+						Version: "0.9.0",
+					},
+				},
 			},
 			onInfo: func(ctx context.Context) {
 				deadline, ok := ctx.Deadline()
@@ -337,8 +359,10 @@ func TestDaemonStatusReportsARunningDaemon(t *testing.T) {
 		t.Errorf("client socket = %q, want %q", gotSocket, socket)
 	}
 	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("status printed %d lines, want 3:\n%s", len(lines), stdout.String())
+	// The daemon's three lines, then each child's, the warned child's
+	// second one included.
+	if len(lines) != 6 {
+		t.Fatalf("status printed %d lines, want 6:\n%s", len(lines), stdout.String())
 	}
 	if !strings.Contains(lines[0], "running") || !strings.Contains(lines[0], "4242") {
 		t.Errorf("service line = %q, want the running state and its pid", lines[0])
@@ -358,6 +382,68 @@ func TestDaemonStatusReportsARunningDaemon(t *testing.T) {
 		if !strings.Contains(lines[2], want) {
 			t.Errorf("version line = %q, want it to contain %q", lines[2], want)
 		}
+	}
+
+	// The first child runs another build and carries a warning: its line
+	// names its own version, this marshal's, and its one session, and the
+	// warning follows indented on a line of its own.
+	if want := "child /work/three: version 2.0.0, 1 session (this marshal 0.9.0)"; lines[3] != want {
+		t.Errorf("child line = %q, want %q", lines[3], want)
+	}
+	if want := "  environment: " + warning; lines[4] != want {
+		t.Errorf("warning line = %q, want %q", lines[4], want)
+	}
+	// The second child runs this marshal's version with no sessions and no
+	// warning: no "(this marshal ...)" aside, and no second line.
+	if want := "child /work/four: version 0.9.0, 0 sessions"; lines[5] != want {
+		t.Errorf("child line = %q, want %q", lines[5], want)
+	}
+	for _, line := range lines[3:] {
+		if strings.Contains(line, "/work/four") && strings.Contains(line, "this marshal") {
+			t.Errorf("child line = %q, want no version aside for a child running this marshal", line)
+		}
+		if strings.Contains(line, "environment:") && !strings.HasPrefix(line, "  ") {
+			t.Errorf("warning line = %q, want it indented under its child", line)
+		}
+	}
+}
+
+// TestDaemonChildLine pins the child line the plan settles: the root, the
+// version, and the session count, with this marshal's version beside a child
+// that runs another build — and an unstamped child reported as `dev`, as
+// daemonVersion reports this marshal.
+func TestDaemonChildLine(t *testing.T) {
+	cases := []struct {
+		name           string
+		child          daemon.ChildInfo
+		marshalVersion string
+		want           string
+	}{
+		{
+			name:           "another build, one session",
+			child:          daemon.ChildInfo{Root: "/work/one", Version: "2.0.0", Sessions: []daemon.SessionInfo{{ID: "s"}}},
+			marshalVersion: "0.9.0",
+			want:           "child /work/one: version 2.0.0, 1 session (this marshal 0.9.0)",
+		},
+		{
+			name:           "the same build, no sessions",
+			child:          daemon.ChildInfo{Root: "/work/two", Version: "0.9.0"},
+			marshalVersion: "0.9.0",
+			want:           "child /work/two: version 0.9.0, 0 sessions",
+		},
+		{
+			name:           "an unstamped child reads as dev",
+			child:          daemon.ChildInfo{Root: "/work/three"},
+			marshalVersion: "dev",
+			want:           "child /work/three: version dev, 0 sessions",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := daemonChildLine(c.child, c.marshalVersion); got != c.want {
+				t.Errorf("daemonChildLine() = %q, want %q", got, c.want)
+			}
+		})
 	}
 }
 

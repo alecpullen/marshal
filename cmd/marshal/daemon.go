@@ -304,7 +304,14 @@ func runDaemonStatus(ctx context.Context, args []string, stdout, stderr io.Write
 		return fmt.Errorf("the daemon is not answering on %s", paths.Socket)
 	}
 	fmt.Fprintf(stdout, "socket: %s (answering)\n", paths.Socket)
-	fmt.Fprintln(stdout, daemonInfoLine(info, daemonVersion()))
+	marshalVersion := daemonVersion()
+	fmt.Fprintln(stdout, daemonInfoLine(info, marshalVersion))
+	for _, child := range info.Children {
+		fmt.Fprintln(stdout, daemonChildLine(child, marshalVersion))
+		if warning := strings.TrimSpace(child.EnvWarning); warning != "" {
+			fmt.Fprintf(stdout, "  environment: %s\n", warning)
+		}
+	}
 	return nil
 }
 
@@ -336,6 +343,34 @@ func daemonInfoLine(info daemon.Info, marshalVersion string) string {
 	}
 	return fmt.Sprintf("daemon: version %s (this marshal %s), started %s, projects: %s",
 		info.Version, marshalVersion, started, projects)
+}
+
+// daemonChildLine is one project child's line under the daemon's: its root,
+// its version and its session count, and — when the child runs another
+// build — this marshal's version beside it, as the daemon's line does.
+//
+// An unstamped child build reports `dev` for the same reason daemonVersion
+// does: the child is a marshal, and an empty version is a build with no
+// stamp, not an unknown one.
+func daemonChildLine(child daemon.ChildInfo, marshalVersion string) string {
+	childVersion := child.Version
+	if childVersion == "" {
+		childVersion = "dev"
+	}
+	line := fmt.Sprintf("child %s: version %s, %d %s",
+		child.Root, childVersion, len(child.Sessions), sessionCount(len(child.Sessions)))
+	if childVersion != marshalVersion {
+		line += fmt.Sprintf(" (this marshal %s)", marshalVersion)
+	}
+	return line
+}
+
+// sessionCount is the noun for n sessions.
+func sessionCount(n int) string {
+	if n == 1 {
+		return "session"
+	}
+	return "sessions"
 }
 
 // daemonVersion is this marshal's version, with the same `dev` fallback

@@ -251,10 +251,19 @@ func (f *Fleet) checkBudgets(row UsageRow) {
 	}
 	if cancelAgent != "" {
 		if rt, err := f.runtimeForAgent(cancelAgent); err == nil {
-			// Detached from any request: pausing is the bridge's own act.
-			if err := rt.reg.Cancel(context.Background(), f.sessionIDFor(rt)); err != nil {
-				slog.Default().Warn("webbridge: cancel paused agent failed", "agent", cancelAgent, "err", err)
-			}
+			// Detached from any request, so from this goroutine too:
+			// pausing is the bridge's own act. Cancel writes a
+			// session/cancel frame to the child's stdin, which blocks
+			// until the child reads it, and the accounting path must not
+			// wait on that. The pause itself is already recorded under
+			// the lock above, so budgetGate refuses new work whichever of
+			// the two lands first.
+			agent, sessionID := cancelAgent, f.sessionIDFor(rt)
+			go func() {
+				if err := rt.reg.Cancel(context.Background(), sessionID); err != nil {
+					slog.Default().Warn("webbridge: cancel paused agent failed", "agent", agent, "err", err)
+				}
+			}()
 		}
 	}
 }

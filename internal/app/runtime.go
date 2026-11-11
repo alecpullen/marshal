@@ -183,6 +183,11 @@ type Runtime struct {
 	// applied because the trust question was deferred to the TUI.
 	TrustPromptPending bool
 
+	// clientTrust is WithClientTrust's answer: the session's marshal client
+	// answers the trust question and a trust applies in place (P4 D8).
+	// Unexported: ServiceDeps is the only reader.
+	clientTrust bool
+
 	// LSPManager is the runtime's one LSP handle, created in startRuntime
 	// and kept for the runtime's whole life. bindLSP points it at the host's
 	// pooled manager for the session's active root and server set (nil when
@@ -1620,8 +1625,12 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	var cfg config.Config
 	var layers config.Layers
 	var projectTrusted, trustPromptPending bool
-	if runOpts.trustResolver == nil && runOpts.deferTrustPrompt {
-		// Interactive TUI: decide without prompting; the TUI asks inline.
+	if (runOpts.trustResolver == nil && runOpts.deferTrustPrompt) || runOpts.clientTrust {
+		// Interactive TUI, or a session whose marshal client answers: decide
+		// without prompting, and let the client ask inline. WithClientTrust
+		// wins over a resolver (P4 D8, decision 2), so a project child's
+		// headless resolver cannot refuse the question on the client's
+		// behalf.
 		store := trust.NewStore(dataDir)
 		decision, needsPrompt, derr := trust.Evaluate(store, workingDir)
 		if derr != nil {
@@ -1889,6 +1898,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		PluginCommands:       pluginCommands,
 		CommandRegistry:      cmdReg,
 		TrustPromptPending:   trustPromptPending,
+		clientTrust:          runOpts.clientTrust,
 		LSPManager:           lspHandle,
 		Host:                 host,
 		ConfigReloader:       runOpts.configReloader,

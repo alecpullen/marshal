@@ -90,6 +90,14 @@ func (rt *Runtime) ServiceDeps(ctx context.Context) service.Deps {
 		// the eager seed and the first @-keystroke share one path.
 		FileIndex: func() ([]string, error) { return loadFileIndexPaths(database, projectID) },
 	}
+	// A session whose marshal client answers the trust question carries the
+	// prompt and the in-place apply (P4 D8). Embedded mode sets TrustPrompt
+	// itself afterwards and never sees ApplyTrust, because its runtimes are
+	// not client-trust ones.
+	if rt.clientTrust && rt.TrustPromptPending {
+		deps.TrustPrompt = rt.WorkingDir
+		deps.ApplyTrust = rt.applyClientTrust
+	}
 	if providerReady {
 		deps.Work = rt
 	}

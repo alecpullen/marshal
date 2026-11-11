@@ -79,6 +79,23 @@ func BuildFactoryPrompt(item FactoryItem, effect FactoryEffect) (string, error) 
 		fmt.Fprintf(&b, "Review base SHA: %s\nCandidate head SHA: %s\nReviewer instructions:\n%s\nRead the diff and approved inputs. Use ask mode; do not edit files. Report inputsAccessible, baseSha, headSha, and findings (possibly []).\n", effect.ExpectedBase, effect.ExpectedHead, a.Config.ReviewerInstructions)
 	} else {
 		b.WriteString("Implement the approved scope, run relevant tests, and provide a concise engineering report. Do not push or merge. If blocked, return needs_input with a question and reason.\n")
+		if effect.Round > 1 && len(item.Rounds) > 0 {
+			prev := item.Rounds[len(item.Rounds)-1]
+			fmt.Fprintf(&b, "Repair round %d from reviewed head %s. Diagnose and address the combined evidence below.\n", effect.Round, prev.HeadSHA)
+			if prev.CI != nil {
+				for _, check := range prev.CI.Checks {
+					if check.Conclusion == "failure" || check.Conclusion == "error" {
+						fmt.Fprintf(&b, "CI failure %s (%s): %s\n", check.Key.Name, check.URL, check.LogTail)
+					}
+				}
+			}
+			if prev.Review != nil {
+				for _, finding := range prev.Review.Findings {
+					fmt.Fprintf(&b, "Review finding [%s] %s %s:%d: %s\n", finding.Severity, finding.Title, finding.Path, finding.Line, finding.Body)
+				}
+			}
+			b.WriteString("For failed checks, reproduce or investigate before changing code. If not reproducible or infrastructure is suspected, return needs_input with reason not_reproducible or infrastructure_suspected. Do not disable checks to claim success.\n")
+		}
 	}
 	b.WriteString("Finish with a fenced JSON block containing operationId, outcome (complete or needs_input), summary, question, reason, baseSha, headSha, inputsAccessible, and findings.\n")
 	return b.String(), nil

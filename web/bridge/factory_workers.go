@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -27,6 +28,9 @@ func (f *Fleet) SpawnFactoryWorker(ctx context.Context, item FactoryItem, role, 
 		return FactoryWorker{}, fmt.Errorf("factory: repository and base SHA required")
 	}
 	ref := item.BaseSHA
+	if role == "implementer" && len(item.PRs) > 0 && len(item.Rounds) > 0 && item.Rounds[len(item.Rounds)-1].HeadSHA != "" {
+		ref = item.Rounds[len(item.Rounds)-1].HeadSHA
+	}
 	mode := "act"
 	auto := conf.ImplementerAuto
 	routing := conf.ImplementerRouting
@@ -51,8 +55,18 @@ func (f *Fleet) SpawnFactoryWorker(ctx context.Context, item FactoryItem, role, 
 	return FactoryWorker{AgentID: id, SessionID: a.SessionID, Role: role, SpawnEffectID: effectID}, nil
 }
 
-func (w *factoryWorkers) Execute(ctx context.Context, item FactoryItem, effect FactoryEffect) (FactoryOutcome, error) {
-	result := FactoryOutcome{EffectID: effect.ID}
+func (w *factoryWorkers) Execute(ctx context.Context, item FactoryItem, effect FactoryEffect) (result FactoryOutcome, err error) {
+	result = FactoryOutcome{EffectID: effect.ID}
+	dispatched := false
+	defer func() {
+		if err != nil && !errors.Is(err, ErrFactoryRefused) && !errors.Is(err, ErrFactoryUncertain) && !errors.Is(err, ErrFactoryInvalidResult) && !errors.Is(err, ErrFactoryWorkerFailed) {
+			if dispatched {
+				err = fmt.Errorf("%w: %v", ErrFactoryUncertain, err)
+			} else {
+				err = fmt.Errorf("%w: %v", ErrFactoryRefused, err)
+			}
+		}
+	}()
 	if effect.Kind != "implement" && effect.Kind != "review" {
 		return result, fmt.Errorf("factory: unsupported worker effect %s", effect.Kind)
 	}
@@ -83,13 +97,14 @@ func (w *factoryWorkers) Execute(ctx context.Context, item FactoryItem, effect F
 		return result, fmt.Errorf("factory: read pre-turn stack: %w", err)
 	}
 	oldFinal, _, _ := factoryFinal(before)
+	dispatched = true
 	turn, err := rt.reg.PromptResult(ctx, worker.SessionID, prompt)
 	result.StopReason = turn.StopReason
 	if err != nil {
 		return result, err
 	}
 	if turn.StopReason != "end_turn" {
-		return result, fmt.Errorf("factory: worker turn ended with %q", turn.StopReason)
+		return result, fmt.Errorf("%w: worker turn ended with %q", ErrFactoryWorkerFailed, turn.StopReason)
 	}
 	after, err := rt.reg.Stack(ctx, worker.SessionID, 0)
 	if err != nil {
@@ -97,11 +112,11 @@ func (w *factoryWorkers) Execute(ctx context.Context, item FactoryItem, effect F
 	}
 	final, message, hasMessage := factoryFinal(after)
 	if final == "" || final == oldFinal || !hasMessage || strings.TrimSpace(message) == "" {
-		return result, fmt.Errorf("factory: no new final report in turn")
+		return result, fmt.Errorf("%w: no new final report in turn", ErrFactoryInvalidResult)
 	}
 	report, err := ParseFactoryReport(message, effect.ID, worker.Role, effect.ExpectedBase, effect.ExpectedHead)
 	if err != nil {
-		return result, err
+		return result, fmt.Errorf("%w: %v", ErrFactoryInvalidResult, err)
 	}
 	result.Report = &report
 	result.Worker = &worker

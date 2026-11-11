@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/app"
 	"marshal/internal/daemon"
 )
 
@@ -484,6 +485,81 @@ func TestDaemonStatusFailsWhenTheSocketIsSilent(t *testing.T) {
 	}
 	if !strings.Contains(lines[1], socket) || !strings.Contains(lines[1], "not answering") {
 		t.Errorf("socket line = %q, want %q reported as not answering", lines[1], socket)
+	}
+}
+
+// fakeOAuthRefreshRunner replaces the refresh helper's body and counts its
+// calls. The real helper blocks until its context ends, so a fake that returns
+// at once would let a test finish while pretending it had run the daemon's
+// forever-loop; each test decides what its fake does.
+func fakeOAuthRefreshRunner(t *testing.T, run func(context.Context, app.OAuthRefreshOptions) error) *int {
+	t.Helper()
+	old := oauthRefreshRunner
+	t.Cleanup(func() { oauthRefreshRunner = old })
+	calls := 0
+	oauthRefreshRunner = func(ctx context.Context, opts app.OAuthRefreshOptions) error {
+		calls++
+		return run(ctx, opts)
+	}
+	return &calls
+}
+
+// TestDaemonRefreshRunsTheHelper: `marshal daemon refresh` runs the helper
+// once, with the resolved home and a real auth resolver, and installs its own
+// signal context — the fake ends when the context the test cancels ends.
+func TestDaemonRefreshRunsTheHelper(t *testing.T) {
+	home := daemonTestEnv(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var got app.OAuthRefreshOptions
+	calls := fakeOAuthRefreshRunner(t, func(runCtx context.Context, opts app.OAuthRefreshOptions) error {
+		got = opts
+		// The helper refreshes until its context ends; the daemon ends it by
+		// signalling it, which the test stands in for by cancelling.
+		cancel()
+		<-runCtx.Done()
+		return nil
+	})
+
+	var stderr bytes.Buffer
+	if err := runDaemon(ctx, []string{"refresh"}, strings.NewReader(""), io.Discard, &stderr); err != nil {
+		t.Fatalf("runDaemon refresh: %v\nstderr: %s", err, stderr.String())
+	}
+	if *calls != 1 {
+		t.Fatalf("the refresh helper ran %d times, want once", *calls)
+	}
+	if got.HomeDir != home {
+		t.Errorf("helper home = %q, want the test's home %q", got.HomeDir, home)
+	}
+	if got.Auth == nil {
+		t.Error("helper auth resolver is nil")
+	}
+	if got.Logger == nil {
+		t.Error("helper logger is nil")
+	}
+}
+
+// TestDaemonRefreshRefusesArguments: refresh takes no arguments, so a stray
+// one is refused by name and the helper never runs.
+func TestDaemonRefreshRefusesArguments(t *testing.T) {
+	daemonTestEnv(t)
+	calls := fakeOAuthRefreshRunner(t, func(context.Context, app.OAuthRefreshOptions) error {
+		t.Error("the refresh helper ran for an invocation with an argument")
+		return nil
+	})
+
+	err := runDaemon(context.Background(), []string{"refresh", "extra"},
+		strings.NewReader(""), io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("refresh with an argument succeeded, want an error")
+	}
+	if !strings.Contains(err.Error(), "extra") {
+		t.Errorf("error = %q, want it to name %q", err, "extra")
+	}
+	if *calls != 0 {
+		t.Errorf("the refresh helper ran %d times, want none", *calls)
 	}
 }
 

@@ -6,13 +6,18 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
+	"marshal/internal/app"
 	"marshal/internal/app/config"
 	"marshal/internal/daemon"
+	"marshal/internal/llm/provider"
 )
 
 // daemonClient is the part of daemon.Client that `status` needs, so a test
@@ -42,13 +47,18 @@ const daemonReadyPoll = 100 * time.Millisecond
 
 var daemonStartTimeout = 5 * time.Second
 
-// runDaemon implements `marshal daemon <install|start|stop|status|uninstall>`.
+// runDaemon implements `marshal daemon <install|start|stop|status|uninstall>`,
+// and dispatches `refresh` as well.
 //
 // It owns the user-facing half of the local daemon: it resolves the binaries
 // and paths decision 10 names, renders them into a unit through
 // internal/daemon, and reports what the service manager and the socket say.
 // It never writes a unit itself and never runs a service-manager command —
 // that is all daemon.Manager, behind the daemonManagerFor seam.
+//
+// `refresh` is dispatched but left out of the usage hint: the daemon's unit
+// runs it, so it is an internal half of the daemon rather than a subcommand a
+// user is meant to type.
 //
 // The I/O shape follows runSnapshots exactly (ctx, args, stdin, stdout,
 // stderr) so main.go's dispatch is uniform and tests can substitute streams.
@@ -64,9 +74,46 @@ func runDaemon(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		return runDaemonService(ctx, sub, rest, stdout, stderr)
 	case "status":
 		return runDaemonStatus(ctx, rest, stdout, stderr)
+	case "refresh":
+		return runDaemonRefresh(ctx, rest, stderr)
 	default:
 		return fmt.Errorf("marshal daemon: unknown subcommand %q (install|start|stop|status|uninstall)", sub)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// refresh
+// ---------------------------------------------------------------------------
+
+// oauthRefreshRunner is the helper's body; tests replace it.
+var oauthRefreshRunner = app.RunOAuthRefresh
+
+// runDaemonRefresh implements `marshal daemon refresh`: it runs the OAuth
+// refresh helper the daemon's unit starts, which keeps the user config's
+// OAuth providers refreshed until the helper is interrupted.
+//
+// Usage: marshal daemon refresh
+func runDaemonRefresh(ctx context.Context, args []string, stderr io.Writer) error {
+	if len(args) != 0 {
+		return fmt.Errorf("marshal daemon refresh: unexpected argument %q", args[0])
+	}
+	home, err := daemonHome()
+	if err != nil {
+		return err
+	}
+	// Decision 9: main passes a background context, so the helper installs
+	// its own signal context: the daemon stops the helper by signalling it,
+	// and SIGTERM from the service manager is an orderly stop, not a failure.
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	// Decision 7: a text logger on standard error at info, so the helper's
+	// lines land in the daemon's log.
+	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	return oauthRefreshRunner(ctx, app.OAuthRefreshOptions{
+		HomeDir: home,
+		Auth:    provider.DefaultAuthResolver(),
+		Logger:  logger,
+	})
 }
 
 // ---------------------------------------------------------------------------

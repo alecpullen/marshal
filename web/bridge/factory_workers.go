@@ -82,7 +82,7 @@ func (w *factoryWorkers) Execute(ctx context.Context, item FactoryItem, effect F
 	if err != nil {
 		return result, fmt.Errorf("factory: read pre-turn stack: %w", err)
 	}
-	oldFinal := factoryFinalID(before)
+	oldFinal, _, _ := factoryFinal(before)
 	turn, err := rt.reg.PromptResult(ctx, worker.SessionID, prompt)
 	result.StopReason = turn.StopReason
 	if err != nil {
@@ -95,11 +95,11 @@ func (w *factoryWorkers) Execute(ctx context.Context, item FactoryItem, effect F
 	if err != nil {
 		return result, fmt.Errorf("factory: read post-turn stack: %w", err)
 	}
-	final := factoryFinalID(after)
-	if final == "" || final == oldFinal {
+	final, message, hasMessage := factoryFinal(after)
+	if final == "" || final == oldFinal || !hasMessage || strings.TrimSpace(message) == "" {
 		return result, fmt.Errorf("factory: no new final report in turn")
 	}
-	report, err := ParseFactoryReport(lastFinalMessage(after), effect.ID, worker.Role, effect.ExpectedBase, effect.ExpectedHead)
+	report, err := ParseFactoryReport(message, effect.ID, worker.Role, effect.ExpectedBase, effect.ExpectedHead)
 	if err != nil {
 		return result, err
 	}
@@ -127,19 +127,53 @@ func (w *factoryWorkers) Execute(ctx context.Context, item FactoryItem, effect F
 	return result, nil
 }
 
-func factoryFinalID(raw json.RawMessage) string {
+func factoryFinal(raw json.RawMessage) (id, message string, hasMessage bool) {
 	var tree struct {
-		Nodes []struct{ ID, Kind string } `json:"nodes"`
+		Nodes []struct {
+			ID, Kind string
+			Message  *struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"nodes"`
 	}
 	if json.Unmarshal(raw, &tree) != nil {
-		return ""
+		return "", "", false
 	}
 	for i := len(tree.Nodes) - 1; i >= 0; i-- {
 		if tree.Nodes[i].Kind == "final" {
-			return tree.Nodes[i].ID
+			if tree.Nodes[i].Message == nil {
+				return tree.Nodes[i].ID, "", false
+			}
+			return tree.Nodes[i].ID, tree.Nodes[i].Message.Content, true
 		}
 	}
-	return ""
+	return "", "", false
+}
+
+// EndWork.Items is omitempty in the existing ACP wire contract: {} is a
+// successful empty snapshot. A present items field must be an array; null or
+// an unrelated object cannot establish idleness.
+func decodeFactoryWork(raw json.RawMessage) (known, idle bool) {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || fields == nil {
+		return false, false
+	}
+	if len(fields) == 0 {
+		return true, true
+	}
+	items, ok := fields["items"]
+	if !ok || len(fields) != 1 {
+		return false, false
+	}
+	items = []byte(strings.TrimSpace(string(items)))
+	if len(items) == 0 || items[0] != '[' {
+		return false, false
+	}
+	var entries []json.RawMessage
+	if json.Unmarshal(items, &entries) != nil {
+		return false, false
+	}
+	return true, len(entries) == 0
 }
 
 func (w *factoryWorkers) Observe(ctx context.Context, item FactoryItem) (FactoryObservation, error) {
@@ -163,13 +197,7 @@ func (w *factoryWorkers) Observe(ctx context.Context, item FactoryItem) (Factory
 			obs.TurnIdle = !info.Busy && rt.reg.Pending(worker.SessionID) == ""
 		}
 		if raw, err := rt.child.Request(ctx, "session/end_work", map[string]any{"sessionId": worker.SessionID}); err == nil {
-			var work struct {
-				Items []json.RawMessage `json:"items"`
-			}
-			if len(raw) > 0 && string(raw) != "null" && json.Unmarshal(raw, &work) == nil {
-				obs.ActiveWorkKnown = true
-				obs.WorkIdle = len(work.Items) == 0
-			}
+			obs.ActiveWorkKnown, obs.WorkIdle = decodeFactoryWork(raw)
 		}
 		if w.fleet.git != nil {
 			out, err := w.fleet.git.runCtx(ctx, a.Project, Credential{}, "rev-parse", "HEAD")
@@ -216,10 +244,8 @@ func (f *Fleet) ParkFactoryWorker(ctx context.Context, worker FactoryWorker) err
 	if err != nil {
 		return fmt.Errorf("factory: active work unknown: %w", err)
 	}
-	var work struct {
-		Items []json.RawMessage `json:"items"`
-	}
-	if len(raw) == 0 || string(raw) == "null" || json.Unmarshal(raw, &work) != nil || len(work.Items) > 0 {
+	known, idle := decodeFactoryWork(raw)
+	if !known || !idle {
 		return fmt.Errorf("factory: active work is unknown or non-idle")
 	}
 	if err := rt.child.stopConfirmed(); err != nil {
@@ -247,6 +273,43 @@ func (f *Fleet) ParkFactoryWorker(ctx context.Context, worker FactoryWorker) err
 		delete(f.runtimes, worker.AgentID)
 		delete(f.sessionAgent, worker.SessionID)
 	}
+	f.mu.Unlock()
+	f.slots.release()
+	return nil
+}
+
+// stopFactoryRuntimeForRetry removes only the newly started compute after a
+// saved-session load failure. The parked workspace and session record survive.
+func (f *Fleet) stopFactoryRuntimeForRetry(rt *agentRuntime, a Agent) error {
+	if rt == nil || rt.child == nil {
+		return fmt.Errorf("factory: missing runtime to stop")
+	}
+	if err := rt.child.stopConfirmed(); err != nil {
+		return err
+	}
+	if c, ok := rt.child.Transport.(*containerTransport); ok {
+		names, err := c.listAgentContainers()
+		if err != nil {
+			return err
+		}
+		for _, name := range names {
+			if name == c.cfg.Name {
+				return fmt.Errorf("factory: resumed container still running")
+			}
+		}
+	}
+	f.closeTerminals(a.ID)
+	rt.stopTimeout()
+	if f.egress != nil {
+		f.egress.remove(a.ID)
+	}
+	f.mu.Lock()
+	if f.runtimes[a.ID] != rt {
+		f.mu.Unlock()
+		return fmt.Errorf("factory: runtime bookkeeping changed during failed resume")
+	}
+	delete(f.runtimes, a.ID)
+	delete(f.sessionAgent, a.SessionID)
 	f.mu.Unlock()
 	f.slots.release()
 	return nil

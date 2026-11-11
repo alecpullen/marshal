@@ -1902,6 +1902,9 @@ func (f *Fleet) Pause(id string) error {
 // Resume restarts a paused agent against its existing workspace.
 func (f *Fleet) Resume(ctx context.Context, id string) error {
 	if _, err := f.runtimeForAgent(id); err == nil {
+		if a, ok := f.ws.Agent(id); ok && a.FactoryItemID != "" && a.FactoryParked {
+			return fmt.Errorf("factory: parked worker has a live or uncertain runtime; cannot resume")
+		}
 		return nil // already running
 	}
 	a, ok := f.ws.Agent(id)
@@ -1919,6 +1922,8 @@ func (f *Fleet) Resume(ctx context.Context, id string) error {
 	if err := f.restoreSession(ctx, rt, a); err != nil {
 		if a.FactoryItemID == "" {
 			f.stopAgent(id)
+		} else if stopErr := f.stopFactoryRuntimeForRetry(rt, a); stopErr != nil {
+			return fmt.Errorf("restore saved factory session: %w; runtime stop unconfirmed: %v", err, stopErr)
 		}
 		return err
 	}

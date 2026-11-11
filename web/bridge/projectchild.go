@@ -213,6 +213,10 @@ func (f *Fleet) startProjectChildLocked(ctx context.Context, pc *projectChild) (
 		child = built
 		pc.child = child
 		pc.reg = NewRegistry(child)
+		// A project child's sessions belong to a marshal client (the fleet's
+		// viewers, or the TUI over the attach relay), so the child lets that
+		// client answer the trust question (P4 D8).
+		pc.reg.ClientTrust = true
 		pc.ready, pc.version = false, ""
 		if err := child.Start(); err != nil {
 			pc.child = nil

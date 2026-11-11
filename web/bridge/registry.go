@@ -125,6 +125,12 @@ type Registry struct {
 	// explicit cwd in the request body.
 	RootCwd string
 
+	// ClientTrust marks every session/new and session/resume this registry
+	// sends, a restart's resumes included, so the child lets the session's
+	// marshal client answer the trust question (P4 D8). A project child's
+	// registry sets it; the fleet's and the control agent's do not.
+	ClientTrust bool
+
 	mu       sync.Mutex
 	sessions map[string]*sessionInfo
 
@@ -169,15 +175,16 @@ func NewRegistry(child *Child) *Registry {
 // and session/resume; it is omitted on session/delete, whose validation
 // does not require it.
 type sessionParams struct {
-	Cwd        AgentPath          `json:"cwd"`
-	SessionID  string             `json:"sessionId,omitempty"`
-	MCPServers *[]json.RawMessage `json:"mcpServers,omitempty"`
+	Cwd         AgentPath          `json:"cwd"`
+	SessionID   string             `json:"sessionId,omitempty"`
+	MCPServers  *[]json.RawMessage `json:"mcpServers,omitempty"`
+	ClientTrust bool               `json:"clientTrust,omitempty"`
 }
 
 // New creates a session (session/new), or resumes an existing one when
 // sessionId is non-empty. Returns the active session id.
 func (r *Registry) New(ctx context.Context, cwd AgentPath, sessionId string) (string, error) {
-	res, err := r.child.Request(ctx, "session/new", sessionParams{Cwd: cwd, SessionID: sessionId, MCPServers: &[]json.RawMessage{}})
+	res, err := r.child.Request(ctx, "session/new", sessionParams{Cwd: cwd, SessionID: sessionId, MCPServers: &[]json.RawMessage{}, ClientTrust: r.ClientTrust})
 	if err != nil {
 		return "", err
 	}
@@ -233,7 +240,7 @@ func (r *Registry) track(id string, cwd AgentPath) {
 // Resume resumes a stored session (session/resume, which replays nothing)
 // and tracks it.
 func (r *Registry) Resume(ctx context.Context, cwd AgentPath, id string) error {
-	if _, err := r.child.Request(ctx, "session/resume", sessionParams{Cwd: cwd, SessionID: id, MCPServers: &[]json.RawMessage{}}); err != nil {
+	if _, err := r.child.Request(ctx, "session/resume", sessionParams{Cwd: cwd, SessionID: id, MCPServers: &[]json.RawMessage{}, ClientTrust: r.ClientTrust}); err != nil {
 		return err
 	}
 	r.track(id, cwd)
@@ -912,7 +919,7 @@ func (r *Registry) resumeAll() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	for _, id := range ids {
-		_, _ = r.child.Request(ctx, "session/resume", sessionParams{Cwd: cwds[id], SessionID: id, MCPServers: &[]json.RawMessage{}})
+		_, _ = r.child.Request(ctx, "session/resume", sessionParams{Cwd: cwds[id], SessionID: id, MCPServers: &[]json.RawMessage{}, ClientTrust: r.ClientTrust})
 		r.emitEvent(id, map[string]any{"type": "bridge_restarted"})
 	}
 }

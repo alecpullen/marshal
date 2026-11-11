@@ -363,6 +363,53 @@ func TestAttachingAStoredSessionResumesIt(t *testing.T) {
 	})
 }
 
+// TestAnAttachedSessionAsksItsClientAboutTrust: a project child's registry
+// marks every session it opens or resumes, so the child lets the session's
+// marshal client answer the trust question (P4 D8).
+func TestAnAttachedSessionAsksItsClientAboutTrust(t *testing.T) {
+	t.Run("a new session", func(t *testing.T) {
+		root := t.TempDir()
+		h := newAttachHarness(t)
+
+		res := h.attach(http.MethodPost, root, "", true)
+		if res.status != http.StatusSwitchingProtocols {
+			t.Fatalf("attach = %d, want 101", res.status)
+		}
+		fake := h.fake(root)
+		if fake == nil {
+			t.Fatal("no project child was built for the root")
+		}
+		news := framesOf(t, fake, stdioConn, "session/new")
+		if len(news) != 1 {
+			t.Fatalf("session/new sent %d times, want 1", len(news))
+		}
+		if got := paramsOf(t, news[0].params)["clientTrust"]; got != true {
+			t.Errorf("session/new clientTrust = %v, want true", got)
+		}
+	})
+
+	t.Run("a stored session", func(t *testing.T) {
+		root := t.TempDir()
+		h := newAttachHarness(t)
+
+		res := h.attach(http.MethodPost, root, "stored-session", true)
+		if res.status != http.StatusSwitchingProtocols {
+			t.Fatalf("attach = %d, want 101", res.status)
+		}
+		fake := h.fake(root)
+		if fake == nil {
+			t.Fatal("no project child was built for the root")
+		}
+		resumes := framesOf(t, fake, stdioConn, "session/resume")
+		if len(resumes) != 1 {
+			t.Fatalf("session/resume sent %d times, want 1", len(resumes))
+		}
+		if got := paramsOf(t, resumes[0].params)["clientTrust"]; got != true {
+			t.Errorf("session/resume clientTrust = %v, want true", got)
+		}
+	})
+}
+
 func TestTheAttachRefusals(t *testing.T) {
 	t.Run("a wrong method", func(t *testing.T) {
 		h := newAttachHarness(t)

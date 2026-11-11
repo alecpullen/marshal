@@ -69,6 +69,11 @@ type SubagentRequest struct {
 	// system access: the factory ANDs the two, so a child can never widen
 	// its own scope.
 	System bool
+	// ActorID is the child's end-gate WorkID: the identity the child's tool
+	// writes are attributed to in the session's write ledger.
+	ActorID string
+	// ActorLabel is the human writer name shown alongside ActorID.
+	ActorLabel string
 }
 
 // SubagentModelPreview describes what model a subagent will use before it
@@ -306,7 +311,15 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			}
 		}
 
-		child, childState, err := factory(SubagentRequest{Agent: args.Agent, Model: args.Model, Temperature: args.Temperature, Thinking: args.Thinking, System: args.System})
+		actorLabel := "a subagent"
+		if args.Description != "" {
+			actorLabel = fmt.Sprintf("a subagent (%s)", args.Description)
+		}
+		child, childState, err := factory(SubagentRequest{
+			Agent: args.Agent, Model: args.Model,
+			Temperature: args.Temperature, Thinking: args.Thinking, System: args.System,
+			ActorID: string(workID), ActorLabel: actorLabel,
+		})
 		if err != nil {
 			state.ExitSubagentWork(workID)
 			return registry.ToolResult{}, fmt.Errorf("agent.run: build child: %w", err)

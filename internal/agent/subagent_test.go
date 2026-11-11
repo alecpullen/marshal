@@ -479,6 +479,35 @@ func TestNewSubagentToolForwardsExplicitModel(t *testing.T) {
 	}
 }
 
+// TestAgentRunRequestCarriesActorIdentity verifies that the agent.run handler
+// stamps the child's end-gate WorkID and a human writer label onto the factory
+// request, so a child's writes are attributed to that child rather than to an
+// unnamed writer.
+func TestAgentRunRequestCarriesActorIdentity(t *testing.T) {
+	var got SubagentRequest
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	factory := func(req SubagentRequest) (*Runner, *session.State, error) {
+		got = req
+		return &Runner{State: state}, state, nil
+	}
+	tool := NewSubagentTool(factory, nil, registry.New(), state,
+		WithSubagentExec(func(context.Context, *Runner, string) (string, string, error) {
+			return "done", "", nil
+		}),
+	)
+	if _, err := tool.Handler(t.Context(), registry.ToolCall{
+		Args: json.RawMessage(`{"prompt":"review","description":"branch review"}`),
+	}); err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if got.ActorID == "" {
+		t.Fatal("req.ActorID is empty, want the child's end-gate WorkID")
+	}
+	if got.ActorLabel != "a subagent (branch review)" {
+		t.Fatalf("req.ActorLabel = %q, want %q", got.ActorLabel, "a subagent (branch review)")
+	}
+}
+
 // TestNewSubagentToolRecordsMetaFromRunner verifies that the handler records
 // the child runner's resolved model and provider onto the registered
 // SubagentView via RegisterSubagentWithMeta, so the TUI card can display

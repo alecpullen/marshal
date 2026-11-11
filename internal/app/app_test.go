@@ -6067,3 +6067,19 @@ func TestRuntimeCommandLifecycleSurvivesReloadAndSettlesOnce(t *testing.T) {
 		t.Fatalf("running jobs after settlement = %d, want 0", got)
 	}
 }
+
+// TestNewWorkerActorIDIsUnique verifies that each pipeline worker registry gets
+// its own actor identity: two workers writing in one conversation must not be
+// recorded as the same writer, or a stale-file error would name the wrong one.
+func TestNewWorkerActorIDIsUnique(t *testing.T) {
+	first := newWorkerActorID("pipeline")
+	second := newWorkerActorID("pipeline")
+	if first == second {
+		t.Fatalf("newWorkerActorID returned %q twice, want unique IDs", first)
+	}
+	for _, id := range []string{first, second} {
+		if !strings.HasPrefix(id, "pipeline-") {
+			t.Fatalf("newWorkerActorID = %q, want a pipeline- prefix", id)
+		}
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -1077,6 +1078,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		DB:                database,
 		ProjectID:         projectID,
 		FileTracker:       fileTracker,
+		AgentID:           "main",
 		AgentLabel:        "the main agent",
 		Config:            cfg,
 		JobManager:        jobManager,
@@ -1932,6 +1934,7 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 			MaxOutputBytes: cfg.Tools.Shell.MaxOutputBytes,
 			SessionState:   childState,
 			Config:         cfg,
+			AgentID:        "plan-author",
 			AgentLabel:     "the plan author",
 			NamedRoots:     map[string]string{"@plan": plansDir},
 		}
@@ -2023,6 +2026,7 @@ func makePipelineRegistryFactory(cfg config.Config, state *session.State, pol *p
 			MaxOutputBytes: cfg.Tools.Shell.MaxOutputBytes,
 			SessionState:   childState,
 			Config:         cfg,
+			AgentID:        newWorkerActorID("pipeline"),
 			AgentLabel:     "a pipeline worker",
 			JobManager:     jobManager,
 			// A dispatch's commands belong to THIS dispatch's worktree, not to
@@ -2252,7 +2256,8 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 			// working tree), so it names itself as the writer: a stale-file
 			// error can then say "last written by a subagent", which is what
 			// tells the orchestrator to serialise instead of guessing.
-			childOpts.AgentLabel = "a subagent"
+			childOpts.AgentID = req.ActorID
+			childOpts.AgentLabel = req.ActorLabel
 			// A child's commands belong to the conversation that spawned it,
 			// so the child borrows the conversation's command service rather
 			// than owning one. Its output stays child-local (SessionState is
@@ -2910,4 +2915,15 @@ func disabledLangs(cfgServers map[string]config.LSPServerConfig) map[string]bool
 		}
 	}
 	return out
+}
+
+// workerActorSeq mints the per-registry actor identities pipeline workers
+// write under. IDs only need to be unique within the process/conversation,
+// because the write ledger they name is session-scoped.
+var workerActorSeq atomic.Int64
+
+// newWorkerActorID returns a fresh actor ID for a pipeline worker registry,
+// unique for the life of the process.
+func newWorkerActorID(prefix string) string {
+	return fmt.Sprintf("%s-%d", prefix, workerActorSeq.Add(1))
 }

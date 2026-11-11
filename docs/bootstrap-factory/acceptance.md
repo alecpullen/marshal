@@ -22,11 +22,38 @@ go build ./cmd/webbridge
 
 The full Go suite runs with `-p=1`, which serializes package test binaries so the ACP wall-clock timing budgets are not measured while other packages' tests compete for the same CPUs, and with `-timeout 20m` to accommodate that serialization. No ACP budget threshold (2 ms, 10 ms or 50 ms) was loosened, no timing test was skipped or quarantined, and every package and every assertion still runs. Isolated runs of the four budget tests (`TestNoteCallBudget`, `TestStackBusyFlipBudget`, `TestStackPatchApplyBudget`, `TestStackRoundTripBudget`) pass, which is what identifies package-level contention rather than a production regression as the cause of their earlier failures.
 
-Local result on this branch: the targeted factory integration test passed; `web/bridge` passed in the full Go run; `go vet ./...`, 933 UI tests, the UI build, and `go build ./cmd/webbridge` passed. The UI build emitted Vite's nonblocking warning that some chunks exceed 500 kB after minification (largest generated JS chunk about 1.28 MB). The full Go suite failed in unchanged internal ACP, LSP, pipeline, snapshot, native tools and worktree packages. A narrow run at base commit reproduced all those failing tests except one native tools event test, which passed in that rerun. The overall full-suite result remains **FAIL**. The required full race gate timed out after 10 minutes in unchanged `TestRecipeRunMaxUSDSetsAPausingCapForTheRun` under `web/bridge`; `cmd/webbridge` passed. A focused race run of `TestFactoryEndToEnd` passed (8.745 seconds, no race report). The full race gate is **FAIL**.
+## Final merged-head automated acceptance: 2026-11-12
 
-The final local fixwave added controller and effects regressions for same-SHA CI reruns, PR closure and external movement during checking/review, exact ref and PR identity readiness, and retargeting immediately before or after the ready mutation. Focused controller/effects tests passed; the local Git/GitHub integration group passed (9.573 seconds); and `go test -race ./web/bridge -run 'TestFactoryEndToEnd' -count=1 -timeout 5m` passed again after the final controller change (17.202 seconds, no race report). These focused results do not change the recorded full-suite or full-race failures above. Live provider, deployed host, Podman, and ARM64 gates remain pending.
+This run integrated `p4-8-refresh` and the factory branch before validating, so the result below is for the head that would merge after `p4-8-refresh`, not the older PR head alone.
 
-The external-closure cleanup follow-up now durably records PR closure, retains ownership in `stopping`, cancels an active turn, checks turn and detached-work idleness for each worker, and parks every unparked worker before recording `closed`. Its deterministic regression first failed against the prior implementation (both closed/merged cases released ownership immediately), then passed after the fix. The focused controller group passed (`go test ./web/bridge -run 'TestFactory(ExternalClosure|Loop|ReadyMonitor)' -count=1`, 0.078 seconds). The affected factory race group passed (`go test -race ./web/bridge -run '^TestFactory' -count=1 -timeout 5m`, 16.039 seconds, no race report), including the external-closure active-turn cancellation regression. These focused checks do not change the full Go or full bridge race failures above; those broad gates were not rerun. All live and deployment gates below remain pending.
+- Locally validated head: `5271c9d839bbad1ad7bb6d7941663da8be6b655e`
+- Integrated branches: `main` `ab935334f59171d0b9d03acab595901023b7c44f`, `p4-8-refresh` `7ca77cf4ffadbd3283114093023a162191607ef5`, factory head `a596bdb8d7f22ad68fdff87af3babf08bf750be7`
+
+| Command | Result |
+|---|---|
+| `CGO_ENABLED=1 go build ./cmd/marshal` | pass |
+| `CGO_ENABLED=1 go build ./cmd/webbridge` | pass |
+| `CGO_ENABLED=1 go test -p=1 ./... -count=1 -timeout 20m` | **exit 0**, every package `ok`, no `FAIL` |
+| `CGO_ENABLED=1 go vet ./...` | pass |
+| `go test -race ./web/bridge ./cmd/webbridge -count=1 -timeout 10m` | **exit 0**, `web/bridge` 121.9 s, `cmd/webbridge` 1.9 s, no race report |
+| `go test ./web/bridge -run '^TestFactoryEndToEnd' -count=1` | pass: `TestFactoryEndToEnd` 2.54 s, `TestFactoryEndToEndInterrupted` 18.53 s (all nine injected-loss subtests) |
+| `(cd web/ui && npm test && npm run build)` | 88 files / 933 tests pass; production build succeeds |
+| `go test ./test/usability/... -run TestScripted -v -timeout 5m` | pass, 45.1 s |
+| `git diff --check` | clean |
+
+The only UI build diagnostic is the already-documented nonblocking chunk-size warning (`index` chunk 1,281.72 kB after minification); `web/ui` is unchanged by this work.
+
+Focused evidence for the three repairs in this run:
+
+| Command | Result |
+|---|---|
+| `CGO_ENABLED=1 go test ./internal/acp -run '^(TestNoteCallBudget\|TestStackBusyFlipBudget\|TestStackPatchApplyBudget\|TestStackRoundTripBudget)$' -count=10` | pass in 16.6 s, thresholds unchanged |
+| `go test ./internal/lsp -run '^TestRescanResyncsOpenDocumentChangedOnDisk$' -count=100` | pass with both original assertions |
+| `go test -race ./web/bridge -run '^TestRecipeRunMaxUSDSetsAPausingCapForTheRun$' -count=20 -timeout 5m` | pass in 2.5 s (previously hung to the 90 s deadline) |
+
+Historical note: the earlier PR head failed the full suite on unchanged ACP budget, LSP rescan, pipeline, snapshot, native-tools and worktree packages, and its required race gate timed out in `TestRecipeRunMaxUSDSetsAPausingCapForTheRun`. Those are now resolved rather than outstanding: package-level contention in the ACP budgets is isolated by `-p=1`, the LSP rescan fixture no longer depends on filesystem timestamp granularity, and the budget pause no longer applies its cancel synchronously on the caller's goroutine. The earlier fixwave's focused regressions for same-SHA CI reruns, PR closure and external movement, exact ref/PR identity readiness, retargeting around the ready mutation, and external-closure cleanup remain in place and are covered by the passing suite above.
+
+Live provider/GitHub execution and the ARM64 OrbStack deployment gates are **not** part of these automated results and remain pending, as recorded below. Nothing here claims live, deployment, Podman or merge readiness.
 
 ## Opt-in live acceptance: pending
 

@@ -2,7 +2,9 @@
 // modal: the dock routes all key input to it while it is open. Declining
 // closes the panel and the session proceeds with the phase-1 config;
 // trusting quits the program so the app can reinitialise with the project
-// config in force.
+// config in force. Trusting quits only when the prompt was not in place: an
+// in-place panel (a daemon session, P4 D8) sends its choice to the model,
+// which makes the call and lets the running program carry on.
 package trustpanel
 
 import (
@@ -21,6 +23,13 @@ import (
 // ClosedMsg asks the host to close the panel (decline path).
 type ClosedMsg struct{}
 
+// DecidedMsg asks the host to send the decision the user chose and close the
+// panel. Only an in-place panel sends it.
+type DecidedMsg struct {
+	Dir      string
+	Decision acpwire.TrustDecision
+}
+
 var decisions = []acpwire.TrustDecision{
 	acpwire.TrustPermanent,
 	acpwire.TrustSession,
@@ -38,6 +47,9 @@ type Panel struct {
 	workingDir string
 	decide     func(acpwire.TrustDecision)
 	cursor     int
+	// inPlace is set by NewInPlace: a choice calls nothing and sends
+	// DecidedMsg instead.
+	inPlace bool
 }
 
 var _ dock.Panel = (*Panel)(nil)
@@ -48,6 +60,12 @@ func New(workingDir string, decide func(acpwire.TrustDecision)) *Panel {
 	return &Panel{workingDir: workingDir, decide: decide}
 }
 
+// NewInPlace builds the panel for a prompt the agent applies in place: a
+// choice calls nothing and sends DecidedMsg, so the program keeps running.
+func NewInPlace(workingDir string) *Panel {
+	return &Panel{workingDir: workingDir, inPlace: true}
+}
+
 // Update handles the choice keys. All other input is swallowed.
 func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 	k, ok := msg.(tea.KeyPressMsg)
@@ -55,6 +73,12 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	}
 	choose := func(d acpwire.TrustDecision) tea.Cmd {
+		if p.inPlace {
+			// The model makes the call off the Update goroutine: a config
+			// reload over the relay can take seconds (P4 D8, decision 7).
+			dir, decision := p.workingDir, d
+			return func() tea.Msg { return DecidedMsg{Dir: dir, Decision: decision} }
+		}
 		p.decide(d)
 		if d == acpwire.TrustDecline {
 			return func() tea.Msg { return ClosedMsg{} }

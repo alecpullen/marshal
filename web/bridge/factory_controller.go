@@ -402,6 +402,7 @@ type FactoryController struct {
 	now        func() time.Time
 	mu         sync.Mutex
 	ready      bool
+	closing    bool
 	wake       chan struct{}
 	readyWake  chan struct{}
 	after      func(time.Duration) <-chan time.Time
@@ -430,7 +431,37 @@ func (c *FactoryController) admitAfterRecovery() {
 	c.mu.Unlock()
 	c.Wake()
 }
-func (c *FactoryController) isReady() bool { c.mu.Lock(); defer c.mu.Unlock(); return c.ready }
+func (c *FactoryController) isReady() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ready && !c.closing
+}
+
+// Quiesce closes dispatch admission and journals unresolved effect outcomes
+// before the owning process releases the factory store.
+func (c *FactoryController) Quiesce() error {
+	c.mu.Lock()
+	c.closing = true
+	c.mu.Unlock()
+	for _, item := range c.store.List() {
+		if len(item.Effects) == 0 {
+			continue
+		}
+		e := item.Effects[len(item.Effects)-1]
+		if e.Status != "dispatched" {
+			continue
+		}
+		_, err := c.internalUpdate(item, "shutdown_uncertain", func(dst *FactoryItem) error {
+			dst.Effects[len(dst.Effects)-1].Status = "uncertain"
+			factoryDecision(dst, "recovery", "bridge shut down before effect outcome was confirmed", c.now())
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
 func (c *FactoryController) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -607,10 +638,17 @@ func (c *FactoryController) tick(ctx context.Context) error {
 	return nil
 }
 func (c *FactoryController) dispatch(ctx context.Context, i FactoryItem, e FactoryEffect) error {
+	c.mu.Lock()
+	if c.closing {
+		c.mu.Unlock()
+		return nil
+	}
 	if e.Status != "prepared" {
+		c.mu.Unlock()
 		return nil
 	}
 	dispatched, err := c.internalUpdate(i, "dispatch", func(dst *FactoryItem) error { dst.Effects[len(dst.Effects)-1].Status = "dispatched"; return nil })
+	c.mu.Unlock()
 	if err != nil {
 		return err
 	}

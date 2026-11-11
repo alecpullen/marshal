@@ -381,6 +381,30 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("secrets backend: %w", err)
 	}
 	fleet.SetSecrets(secrets)
+	// Recovery owns factory workers before ordinary reattachment or scheduled
+	// work is admitted. A journal or ownership failure stops startup.
+	factoryStore, err := bridge.OpenFactoryStore(filepath.Join(cfg.stateDir, "factory", "v1"))
+	if err != nil {
+		fleet.Close()
+		return fmt.Errorf("open factory: %w", err)
+	}
+	factoryController := bridge.NewFactoryController(factoryStore, bridge.NewFactoryEffects(fleet), nil)
+	fleet.SetFactoryController(factoryController)
+	if err := factoryController.Recover(ctx); err != nil {
+		_ = factoryStore.Close()
+		fleet.Close()
+		return fmt.Errorf("recover factory: %w", err)
+	}
+	factoryCtx, stopFactory := context.WithCancel(ctx)
+	factoryDone := make(chan struct{})
+	defer func() {
+		if err := factoryController.Quiesce(); err != nil {
+			slog.Default().Error("webbridge: factory shutdown persistence", "err", err)
+		}
+		stopFactory()
+		<-factoryDone
+		_ = factoryStore.Close()
+	}()
 	if cfg.egress == "on" {
 		// A failure leaves open-network workspaces unproxied, as before
 		// the proxy existed; workspaces that restrict the network or
@@ -395,6 +419,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			slog.Default().Warn("webbridge: reattach agent", "err", err)
 		}
 	}
+	go func() {
+		defer close(factoryDone)
+		if err := factoryController.Run(factoryCtx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Default().Error("webbridge: factory scheduler stopped", "err", err)
+		}
+	}()
 
 	// Watch labelled issues on registered repos. Off by default; only
 	// repos with Watch set are polled.
@@ -402,7 +432,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	// Run due schedules. Fleet mode only: registry mode has no scheduler.
 	fleet.StartScheduler(nil)
 
-	api := bridge.NewServer(fleet, cfg.token, cfg.publicURL)
+	api := bridge.NewServer(fleet, cfg.token, cfg.publicURL, bridge.NewFactoryAPI(factoryStore, factoryController, fleet))
 	srv := &http.Server{
 		Addr:              cfg.addr,
 		Handler:           api,
@@ -461,6 +491,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		// listener itself fails, which net.Listen above has already
 		// ruled out — in practice err is always nil here. The channel
 		// exists so the serve goroutine has a buffered parking spot.
+		if stopErr := factoryController.Quiesce(); stopErr != nil {
+			slog.Default().Error("webbridge: factory shutdown persistence", "err", stopErr)
+		}
+		stopFactory()
+		<-factoryDone
 		fleet.Close()
 		return err
 	case <-sigCtx.Done():
@@ -476,6 +511,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Default().Warn("webbridge: HTTP shutdown", "err", err)
 	}
+	if err := factoryController.Quiesce(); err != nil {
+		slog.Default().Error("webbridge: factory shutdown persistence", "err", err)
+	}
+	stopFactory()
+	<-factoryDone
 	fleet.Close()
 	return nil
 }

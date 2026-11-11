@@ -74,6 +74,11 @@ func NewServer(target any, args ...any) *Server {
 	}
 	s := &Server{fleet: fleet, reg: reg, log: log, publicURLBase: publicURLBase, mux: http.NewServeMux()}
 	s.routes()
+	for _, arg := range args {
+		if factory, ok := arg.(FactoryAPI); ok {
+			s.factoryRoutes(factory)
+		}
+	}
 	s.http = s.mux
 	if token != "" {
 		s.http = bearerAuth(token, s.mux)

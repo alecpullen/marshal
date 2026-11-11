@@ -1,0 +1,195 @@
+package bridge
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestFactoryHTTP(t *testing.T) {
+	store, err := OpenFactoryStore(filepath.Join(t.TempDir(), "factory"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	fleet := NewFleet(NewWorkspace(t.TempDir()), "", nil, t.TempDir(), Limits{}, "", nil, "")
+	defer fleet.Close()
+	srv := NewServer(fleet, "secret")
+	srv.factoryRoutes(NewFactoryAPI(store, nil, fleet))
+	request := func(method, path, body, token string) *httptest.ResponseRecorder {
+		t.Helper()
+		r := httptest.NewRequest(method, path, bytes.NewBufferString(body))
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
+		}
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, r)
+		return w
+	}
+	if got := request("GET", "/api/factory/items", "", ""); got.Code != http.StatusUnauthorized {
+		t.Fatalf("auth %d", got.Code)
+	}
+	if got := request("POST", "/api/factory/items", `{"title":"x"}`, "secret"); got.Code != http.StatusBadRequest {
+		t.Fatalf("identity %d: %s", got.Code, got.Body.String())
+	}
+	if got := request("POST", "/api/factory/items", `{"requestId":"x","title":"x","plan":"p","config":{"repoId":"missing"}}`, "secret"); got.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("repo %d: %s", got.Code, got.Body.String())
+	}
+	if got := request("POST", "/api/factory/items", strings.Repeat("x", factoryRequestLimit+1), "secret"); got.Code != http.StatusBadRequest {
+		t.Fatalf("body limit %d", got.Code)
+	}
+	var list struct {
+		Items []FactoryItem `json:"items"`
+	}
+	got := request("GET", "/api/factory/items", "", "secret")
+	if got.Code != 200 || json.Unmarshal(got.Body.Bytes(), &list) != nil || len(list.Items) != 0 {
+		t.Fatalf("list %d: %s", got.Code, got.Body.String())
+	}
+}
+
+func TestFactoryHTTPCreateApprovalAndReplay(t *testing.T) {
+	agent := newFakeAgent()
+	fleet := ctlFleet(t, agent)
+	root := t.TempDir()
+	if err := fleet.ws.AddProject(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := fleet.ws.PutRepo(Repo{ID: "repo", URL: "https://example.invalid/repo.git", Branch: "main", OwnerID: DefaultOwnerID, Forge: "github", CredRef: "test-pat"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FACTORY_TEST_PAT", "fixture-only")
+	fleet.creds = NewCredentialStore([]Credential{{ID: "test-pat", Kind: "pat", OwnerID: DefaultOwnerID, EnvVar: "FACTORY_TEST_PAT"}})
+	agent.results["config/get"] = map[string]any{"providers": map[string]any{"test": map[string]any{"type": "openai_compatible", "hasKey": true}}, "presets": map[string]any{"test/model": map[string]any{"provider": "test", "model": "model"}}, "profiles": map[string]any{"chosen": map[string]any{"implementer": map[string]any{"preset": "test/model"}, "reviewer": map[string]any{"preset": "test/model"}}}, "defaultProfile": "chosen"}
+	store, err := OpenFactoryStore(filepath.Join(t.TempDir(), "factory"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	controller := NewFactoryController(store, nil, nil)
+	srv := NewServer(fleet, "secret", "", NewFactoryAPI(store, controller, fleet))
+	req := FactoryCreate{RequestID: "create-1", Title: "Task", Plan: "build", Config: FactoryConfig{RepoID: "repo", ProjectRoot: root, TargetBranch: "main", Native: true, ImplementerRouting: json.RawMessage(`{"profile":"chosen"}`), ReviewerRouting: json.RawMessage(`{"profile":"chosen"}`)}}
+	post := func(v any, path string) *httptest.ResponseRecorder {
+		t.Helper()
+		raw, _ := json.Marshal(v)
+		r := httptest.NewRequest("POST", path, bytes.NewReader(raw))
+		r.Header.Set("Authorization", "Bearer secret")
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, r)
+		return w
+	}
+	created := post(req, "/api/factory/items")
+	if created.Code != 201 {
+		t.Fatalf("create %d: %s", created.Code, created.Body.String())
+	}
+	var result struct {
+		Item FactoryItem `json:"item"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Item.State != "draft" || result.Item.Draft.Config.ImplementerAuto {
+		t.Fatalf("preview started or auto selected: %+v", result.Item)
+	}
+	if replay := post(req, "/api/factory/items"); replay.Code != 200 {
+		t.Fatalf("replay %d: %s", replay.Code, replay.Body.String())
+	}
+	changed := req
+	changed.Title = "different"
+	if conflict := post(changed, "/api/factory/items"); conflict.Code != 409 {
+		t.Fatalf("request identity conflict %d: %s", conflict.Code, conflict.Body.String())
+	}
+	stale := post(FactoryCommand{RequestID: "stale", Kind: "stop", ExpectedVersion: 2}, "/api/factory/items/"+result.Item.ID+"/commands")
+	if stale.Code != 409 || !strings.Contains(stale.Body.String(), `"currentVersion":1`) {
+		t.Fatalf("version conflict %d: %s", stale.Code, stale.Body.String())
+	}
+	if bad := post(FactoryCommand{RequestID: "approve-1", Kind: "approve", ExpectedVersion: 1}, "/api/factory/items/"+result.Item.ID+"/commands"); bad.Code != 422 {
+		t.Fatalf("CI acknowledgement %d: %s", bad.Code, bad.Body.String())
+	}
+	if latest, err := store.Get(result.Item.ID); err != nil || latest.Version != 1 {
+		t.Fatalf("invalid approval changed journal: %v %+v", err, latest)
+	}
+	approved := req
+	approved.RequestID = "create-2"
+	approved.Config.NoRequiredCIAcknowledged = true
+	approved.Config.ImplementerAuto = true
+	second := post(approved, "/api/factory/items")
+	if second.Code != 201 || json.Unmarshal(second.Body.Bytes(), &result) != nil {
+		t.Fatalf("second create %d: %s", second.Code, second.Body.String())
+	}
+	command := FactoryCommand{RequestID: "approve-2", Kind: "approve", ExpectedVersion: 1}
+	accepted := post(command, "/api/factory/items/"+result.Item.ID+"/commands")
+	if accepted.Code != 200 || json.Unmarshal(accepted.Body.Bytes(), &result) != nil || result.Item.State != "queued" || !result.Item.Approvals[0].Config.ImplementerAuto {
+		t.Fatalf("approve %d: %s", accepted.Code, accepted.Body.String())
+	}
+	if replay := post(command, "/api/factory/items/"+result.Item.ID+"/commands"); replay.Code != 200 {
+		t.Fatalf("command replay %d: %s", replay.Code, replay.Body.String())
+	}
+	invalidModel := req
+	invalidModel.RequestID = "bad-model"
+	invalidModel.Config.ImplementerRouting = json.RawMessage(`{"profile":"missing"}`)
+	if bad := post(invalidModel, "/api/factory/items"); bad.Code != 422 {
+		t.Fatalf("model %d: %s", bad.Code, bad.Body.String())
+	}
+	invalidEnvironment := req
+	invalidEnvironment.RequestID = "bad-environment"
+	invalidEnvironment.Config.Native = false
+	invalidEnvironment.Config.Workspace = "unbuilt"
+	if bad := post(invalidEnvironment, "/api/factory/items"); bad.Code != 422 {
+		t.Fatalf("environment %d: %s", bad.Code, bad.Body.String())
+	}
+	if strings.Contains(created.Body.String(), "fixture-only") || strings.Contains(accepted.Body.String(), "fixture-only") {
+		t.Fatal("credential value leaked in response")
+	}
+}
+
+func TestFactoryStartupQuiescePersistsUncertainty(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "factory")
+	store, err := OpenFactoryStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := factoryReq()
+	item, err := store.Create(req, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err = store.Update(item.ID, "effect", item.Version, json.RawMessage(`{"effect":true}`), func(i *FactoryItem) error {
+		i.State = "implementing"
+		i.Effects = []FactoryEffect{{ID: "effect-1", Kind: "implement", Status: "dispatched"}}
+		return nil
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller := NewFactoryController(store, nil, nil)
+	if err := controller.Quiesce(); err != nil {
+		t.Fatal(err)
+	}
+	if controller.isReady() {
+		t.Fatal("dispatch admitted after shutdown")
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = OpenFactoryStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	recovered, err := store.Get(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recovered.Effects) != 1 || recovered.Effects[0].Status != "uncertain" || recovered.Decision == nil || recovered.Decision.Kind != "recovery" {
+		t.Fatalf("shutdown evidence lost: %+v", recovered)
+	}
+	if _, err = store.Create(FactoryCreate{RequestID: "effect"}, time.Now()); !errors.Is(err, ErrFactoryConflict) {
+		t.Fatalf("journal request identity lost: %v", err)
+	}
+}

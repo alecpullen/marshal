@@ -383,17 +383,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fleet.SetSecrets(secrets)
 	// Recovery owns factory workers before ordinary reattachment or scheduled
 	// work is admitted. A journal or ownership failure stops startup.
-	factoryStore, err := bridge.OpenFactoryStore(filepath.Join(cfg.stateDir, "factory", "v1"))
+	factoryStore, factoryController, err := openRecoveredFactory(ctx, fleet, cfg.stateDir, bridge.NewFactoryEffects(fleet))
 	if err != nil {
 		fleet.Close()
-		return fmt.Errorf("open factory: %w", err)
-	}
-	factoryController := bridge.NewFactoryController(factoryStore, bridge.NewFactoryEffects(fleet), nil)
-	fleet.SetFactoryController(factoryController)
-	if err := factoryController.Recover(ctx); err != nil {
-		_ = factoryStore.Close()
-		fleet.Close()
-		return fmt.Errorf("recover factory: %w", err)
+		return err
 	}
 	factoryCtx, stopFactory := context.WithCancel(ctx)
 	factoryDone := make(chan struct{})
@@ -518,6 +511,20 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	<-factoryDone
 	fleet.Close()
 	return nil
+}
+
+func openRecoveredFactory(ctx context.Context, fleet *bridge.Fleet, stateDir string, effects bridge.FactoryEffects) (*bridge.FactoryStore, *bridge.FactoryController, error) {
+	store, err := bridge.OpenFactoryStore(filepath.Join(stateDir, "factory", "v1"))
+	if err != nil {
+		return nil, nil, fmt.Errorf("open factory: %w", err)
+	}
+	controller := bridge.NewFactoryController(store, effects, nil)
+	fleet.SetFactoryController(controller)
+	if err := controller.Recover(ctx); err != nil {
+		_ = store.Close()
+		return nil, nil, fmt.Errorf("recover factory: %w", err)
+	}
+	return store, controller, nil
 }
 
 // serveHTTP serves srv on ln, using TLS when both a certificate and a

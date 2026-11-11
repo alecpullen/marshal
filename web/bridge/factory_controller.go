@@ -403,6 +403,7 @@ type FactoryController struct {
 	mu         sync.Mutex
 	ready      bool
 	closing    bool
+	active     sync.WaitGroup
 	wake       chan struct{}
 	readyWake  chan struct{}
 	after      func(time.Duration) <-chan time.Time
@@ -441,31 +442,38 @@ func (c *FactoryController) isReady() bool {
 // before the owning process releases the factory store.
 func (c *FactoryController) Quiesce() error {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.closing = true
-	c.mu.Unlock()
-	for _, item := range c.store.List() {
-		if len(item.Effects) == 0 {
-			continue
-		}
-		e := item.Effects[len(item.Effects)-1]
-		if e.Status != "dispatched" {
-			continue
-		}
-		_, err := c.internalUpdate(item, "shutdown_uncertain", func(dst *FactoryItem) error {
-			dst.Effects[len(dst.Effects)-1].Status = "uncertain"
-			factoryDecision(dst, "recovery", "bridge shut down before effect outcome was confirmed", c.now())
-			return nil
-		})
-		if err != nil {
-			return err
+	for _, snapshot := range c.store.List() {
+		for {
+			item, err := c.store.Get(snapshot.ID)
+			if err != nil {
+				return err
+			}
+			if len(item.Effects) == 0 || item.Effects[len(item.Effects)-1].Status != "dispatched" {
+				break
+			}
+			_, err = c.internalUpdate(item, "shutdown_uncertain", func(dst *FactoryItem) error {
+				dst.Effects[len(dst.Effects)-1].Status = "uncertain"
+				factoryDecision(dst, "recovery", "bridge shut down before effect outcome was confirmed", c.now())
+				return nil
+			})
+			if errors.Is(err, ErrFactoryConflict) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			break
 		}
 	}
 	return nil
 }
 func (c *FactoryController) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	go c.monitorReady(runCtx)
+	monitorDone := make(chan struct{})
+	go func() { defer close(monitorDone); c.monitorReady(runCtx) }()
+	defer func() { cancel(); <-monitorDone }()
 	for {
 		if c.isReady() {
 			if err := c.tick(runCtx); err != nil {
@@ -506,9 +514,15 @@ func (c *FactoryController) monitorReadyOnce(ctx context.Context) {
 		if err != nil || reflect.DeepEqual(next, i) {
 			continue
 		}
+		c.mu.Lock()
+		if c.closing {
+			c.mu.Unlock()
+			return
+		}
 		if _, err = c.internalUpdate(i, "ready_observe", func(dst *FactoryItem) error { *dst = next; dst.Version = i.Version; return nil }); err == nil {
 			c.Wake()
 		}
+		c.mu.Unlock()
 	}
 }
 func (c *FactoryController) pollDelay() time.Duration {
@@ -653,13 +667,19 @@ func (c *FactoryController) dispatch(ctx context.Context, i FactoryItem, e Facto
 		return err
 	}
 	if e.Kind == "implement" || e.Kind == "review" {
-		go func() { _ = c.finishDispatch(ctx, dispatched, e) }()
+		c.active.Add(1)
+		go func() { defer c.active.Done(); _ = c.finishDispatch(ctx, dispatched, e) }()
 		return nil
 	}
 	return c.finishDispatch(ctx, dispatched, e)
 }
 func (c *FactoryController) finishDispatch(ctx context.Context, dispatched FactoryItem, e FactoryEffect) error {
 	out, runErr := c.effects.Execute(ctx, dispatched, e)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closing {
+		return nil
+	}
 	latest, getErr := c.store.Get(dispatched.ID)
 	if getErr != nil {
 		return getErr

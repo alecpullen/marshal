@@ -138,18 +138,16 @@ func (a *factoryAPI) preflight(ctx context.Context, c FactoryConfig, _ bool) err
 		return fmt.Errorf("%w: select native or a published workspace", errFactoryConfig)
 	}
 	if c.Workspace != "" {
-		entries, err := a.fleet.ListWorkspaces()
+		ref, err := ParseWSRef(c.Workspace)
 		if err != nil {
-			return fmt.Errorf("%w: workspace unavailable", ErrFactoryUnavailable)
+			return fmt.Errorf("%w: invalid workspace reference", errFactoryConfig)
 		}
-		ready := false
-		for _, e := range entries {
-			if e.Name == c.Workspace && e.Source == "studio" && e.Published > 0 {
-				ready = true
-			}
+		resolved, err := a.fleet.ResolveWorkspace(ctx, ref, c.ProjectRoot)
+		if err != nil {
+			return fmt.Errorf("%w: workspace unavailable: %v", errFactoryConfig, err)
 		}
-		if !ready {
-			return fmt.Errorf("%w: workspace is not published", errFactoryConfig)
+		if _, err = a.fleet.builtImage(resolved); err != nil {
+			return fmt.Errorf("%w: workspace image unavailable: %v", errFactoryConfig, err)
 		}
 	}
 	raw, err := a.fleet.controlCall(ctx, "config/get", nil, false)
@@ -158,8 +156,9 @@ func (a *factoryAPI) preflight(ctx context.Context, c FactoryConfig, _ bool) err
 	}
 	var modelConfig struct {
 		Providers map[string]struct {
-			HasKey bool   `json:"hasKey"`
-			Type   string `json:"type"`
+			HasKey    bool   `json:"hasKey"`
+			Type      string `json:"type"`
+			APIKeyEnv string `json:"apiKeyEnv"`
 		} `json:"providers"`
 		Presets map[string]struct {
 			Provider string `json:"provider"`
@@ -208,7 +207,9 @@ func (a *factoryAPI) preflight(ctx context.Context, c FactoryConfig, _ bool) err
 		if !ok || provider.Type == "" {
 			return fmt.Errorf("%w: %s provider unavailable", errFactoryConfig, role)
 		}
-		_ = provider
+		if (provider.Type == "anthropic" || provider.APIKeyEnv != "") && !provider.HasKey {
+			return fmt.Errorf("%w: %s provider credential unavailable", errFactoryConfig, role)
+		}
 	}
 	forge, _, err := a.fleet.forgeFor(ctx, repo)
 	if err != nil {

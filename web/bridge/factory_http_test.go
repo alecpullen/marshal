@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -123,7 +124,13 @@ func TestFactoryHTTPCreateApprovalAndReplay(t *testing.T) {
 		t.Fatalf("second create %d: %s", second.Code, second.Body.String())
 	}
 	command := FactoryCommand{RequestID: "approve-2", Kind: "approve", ExpectedVersion: 1}
-	accepted := post(command, "/api/factory/items/"+result.Item.ID+"/commands")
+	commandBody, _ := json.Marshal(command)
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	acceptedRequest := httptest.NewRequest("POST", "/api/factory/items/"+result.Item.ID+"/commands", bytes.NewReader(commandBody)).WithContext(requestCtx)
+	acceptedRequest.Header.Set("Authorization", "Bearer secret")
+	accepted := httptest.NewRecorder()
+	srv.ServeHTTP(accepted, acceptedRequest)
+	cancelRequest()
 	if accepted.Code != 200 || json.Unmarshal(accepted.Body.Bytes(), &result) != nil || result.Item.State != "queued" || !result.Item.Approvals[0].Config.ImplementerAuto {
 		t.Fatalf("approve %d: %s", accepted.Code, accepted.Body.String())
 	}
@@ -143,9 +150,70 @@ func TestFactoryHTTPCreateApprovalAndReplay(t *testing.T) {
 	if bad := post(invalidEnvironment, "/api/factory/items"); bad.Code != 422 {
 		t.Fatalf("environment %d: %s", bad.Code, bad.Body.String())
 	}
+	if _, err := fleet.templates.Create("pending", []byte("fixture"), "test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fleet.templates.Publish("pending", "test"); err != nil {
+		t.Fatal(err)
+	}
+	agent.results["workspace/parse"] = map[string]any{"doc": map[string]any{"workspace": map[string]any{"name": "pending"}}}
+	invalidEnvironment.RequestID = "pending-image"
+	invalidEnvironment.Config.Workspace = "pending"
+	if bad := post(invalidEnvironment, "/api/factory/items"); bad.Code != 422 {
+		t.Fatalf("pending build %d: %s", bad.Code, bad.Body.String())
+	}
+	agent.results["config/get"] = map[string]any{"providers": map[string]any{"test": map[string]any{"type": "anthropic", "hasKey": false}}, "presets": map[string]any{"test/model": map[string]any{"provider": "test", "model": "model"}}, "profiles": map[string]any{"chosen": map[string]any{"implementer": map[string]any{"preset": "test/model"}, "reviewer": map[string]any{"preset": "test/model"}}}}
+	missingKey := req
+	missingKey.RequestID = "missing-key"
+	if bad := post(missingKey, "/api/factory/items"); bad.Code != 422 {
+		t.Fatalf("missing provider key %d: %s", bad.Code, bad.Body.String())
+	}
 	if strings.Contains(created.Body.String(), "fixture-only") || strings.Contains(accepted.Body.String(), "fixture-only") {
 		t.Fatal("credential value leaked in response")
 	}
+	// The accepted approval belongs to the process controller. Closing the
+	// request above must not cancel its later dispatch.
+	effects := &httpContinuationEffects{started: make(chan context.Context, 1), release: make(chan struct{})}
+	processController := NewFactoryController(store, effects, nil)
+	if err := processController.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	processCtx, cancelProcess := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- processController.Run(processCtx) }()
+	select {
+	case effectCtx := <-effects.started:
+		select {
+		case <-effectCtx.Done():
+			t.Fatal("request cancellation stopped accepted work")
+		default:
+		}
+	case <-time.After(time.Second):
+		t.Fatal("accepted work was not dispatched")
+	}
+	if err := processController.Quiesce(); err != nil {
+		t.Fatal(err)
+	}
+	close(effects.release)
+	cancelProcess()
+	<-done
+}
+
+type httpContinuationEffects struct {
+	started chan context.Context
+	release chan struct{}
+}
+
+func (f *httpContinuationEffects) Observe(context.Context, FactoryItem) (FactoryObservation, error) {
+	return FactoryObservation{BaseSHA: "base", RuntimeKnown: true, TurnIdle: true, ActiveWorkKnown: true, WorkIdle: true}, nil
+}
+func (f *httpContinuationEffects) Execute(ctx context.Context, _ FactoryItem, e FactoryEffect) (FactoryOutcome, error) {
+	select {
+	case f.started <- ctx:
+	default:
+	}
+	<-f.release
+	return FactoryOutcome{EffectID: e.ID, Confirmed: true}, nil
 }
 
 func TestFactoryStartupQuiescePersistsUncertainty(t *testing.T) {
@@ -191,5 +259,47 @@ func TestFactoryStartupQuiescePersistsUncertainty(t *testing.T) {
 	}
 	if _, err = store.Create(FactoryCreate{RequestID: "effect"}, time.Now()); !errors.Is(err, ErrFactoryConflict) {
 		t.Fatalf("journal request identity lost: %v", err)
+	}
+}
+
+func TestFactoryStartupQuiesceConcurrentFinish(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "factory")
+	store, err := OpenFactoryStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effects := &blockedLoopEffects{started: make(chan struct{}, 2), release: make(chan struct{}), cancelled: make(chan struct{}, 1)}
+	controller := NewFactoryController(store, effects, nil)
+	for _, id := range []string{"first", "second"} {
+		item := blockedFactoryItem(t, store, id)
+		if err := controller.dispatch(context.Background(), item, item.Effects[len(item.Effects)-1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for n := 0; n < 2; n++ {
+		select {
+		case <-effects.started:
+		case <-time.After(time.Second):
+			t.Fatal("effect did not start")
+		}
+	}
+	close(effects.release)
+	if err := controller.Quiesce(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	controller.active.Wait()
+	store, err = OpenFactoryStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for _, item := range store.List() {
+		status := item.Effects[len(item.Effects)-1].Status
+		if status == "dispatched" {
+			t.Fatalf("unsettled effect after shutdown: %s", item.ID)
+		}
 	}
 }

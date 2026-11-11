@@ -8,27 +8,47 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 type deliveryHarness struct {
-	t                                       *testing.T
-	store                                   *FactoryStore
-	fleet                                   *Fleet
-	effects                                 *factoryEffects
-	controller                              *FactoryController
-	bare, base, id, firstHead               string
-	server                                  *httptest.Server
-	created, draft                          bool
-	creates, implements, reviews, mutations int
-	loseKind                                string
-	cancelTurn, readyRace                   bool
+	t                                         *testing.T
+	store                                     *FactoryStore
+	fleet                                     *Fleet
+	effects                                   *factoryEffects
+	controller                                *FactoryController
+	bare, base, id, firstHead                 string
+	seedHead                                  string
+	server                                    *httptest.Server
+	created, draft                            bool
+	creates, implements, reviews, mutations   int
+	loseKind                                  string
+	cancelTurn, readyRace                     bool
+	forcePRHead, loseCompensation, loseCancel bool
+	cancelCalls                               int
+	order                                     []string
+	prompts                                   []string
+	mu                                        sync.Mutex
+	activePrompts, maxActivePrompts           int
 }
 
 type deliveryAdapter struct{ h *deliveryHarness }
+
+func (d deliveryAdapter) Cancel(ctx context.Context, i FactoryItem) error {
+	err := d.h.effects.Cancel(ctx, i)
+	if err == nil {
+		d.h.cancelCalls++
+		if d.h.loseCancel {
+			return fmt.Errorf("%w: cancel acknowledgement lost", ErrFactoryUncertain)
+		}
+	}
+	return err
+}
 
 func (d deliveryAdapter) Observe(ctx context.Context, i FactoryItem) (FactoryObservation, error) {
 	return d.h.effects.Observe(ctx, i)
@@ -50,9 +70,15 @@ func (d deliveryAdapter) Execute(ctx context.Context, i FactoryItem, e FactoryEf
 		out = FactoryOutcome{EffectID: e.ID, Confirmed: true}
 	default:
 		out, err = h.effects.Execute(ctx, i, e)
+		if e.Kind == "publish" && err == nil && len(i.PRs) == 0 {
+			h.seedHead = out.HeadSHA
+		}
 		if e.Kind == "publish" && err == nil && len(i.PRs) > 0 && h.firstHead == "" {
 			h.firstHead = out.HeadSHA
 		}
+	}
+	if err == nil {
+		h.order = append(h.order, e.Kind)
 	}
 	if err == nil && h.loseKind == e.Kind {
 		return out, fmt.Errorf("%w: simulated lost %s response", ErrFactoryUncertain, e.Kind)
@@ -85,6 +111,12 @@ func (h *deliveryHarness) github(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&q)
 		h.draft = strings.Contains(q.Query, "convertPullRequestToDraft")
 		h.mutations++
+		if h.loseCompensation && h.draft {
+			if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+				_ = conn.Close()
+				return
+			}
+		}
 		fmt.Fprintf(w, `{"data":{"mutation":{"pullRequest":{"id":"node","isDraft":%t}}}}`, h.draft)
 		return
 	}
@@ -107,7 +139,7 @@ func (h *deliveryHarness) github(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		head := gitText(h.t, h.bare, "rev-parse", "refs/heads/marshal/factory/"+h.id)
-		if h.readyRace && !h.draft {
+		if h.readyRace && !h.draft || h.forcePRHead {
 			head = "external-head"
 		}
 		p := fmt.Sprintf(`{"number":1,"html_url":"https://github.com/o/r/pull/1","node_id":"node","state":"open","draft":%t,"head":{"ref":%q,"sha":%q},"base":{"ref":"main","sha":%q}}`, h.draft, "marshal/factory/"+h.id, head, h.base)
@@ -169,6 +201,7 @@ func newDeliveryHarness(t *testing.T) *deliveryHarness {
 func (h *deliveryHarness) spawn(e FactoryEffect) FactoryWorker {
 	t := h.t
 	role := e.WorkerRole
+	h.assertOneActiveWorker()
 	work := filepath.Join(t.TempDir(), role)
 	gitText(t, "", "clone", h.bare, work)
 	gitText(t, work, "config", "user.email", "fixture@example.com")
@@ -182,6 +215,7 @@ func (h *deliveryHarness) spawn(e FactoryEffect) FactoryWorker {
 	if err := h.fleet.ws.PutAgent(a); err != nil {
 		t.Fatal(err)
 	}
+	h.assertOneActiveWorker()
 	tr := &captureTransport{stackResult: json.RawMessage(`{"nodes":[]}`), results: map[string]json.RawMessage{"session/prompt": json.RawMessage(`{"stopReason":"end_turn"}`)}}
 	tr.onRequest = func(method string) error {
 		switch method {
@@ -189,6 +223,18 @@ func (h *deliveryHarness) spawn(e FactoryEffect) FactoryWorker {
 			gitText(t, work, "add", "-A")
 			gitText(t, work, "commit", "-m", "fixture agent commit")
 		case "session/prompt":
+			h.assertOneActiveWorker()
+			h.mu.Lock()
+			h.activePrompts++
+			if h.activePrompts > h.maxActivePrompts {
+				h.maxActivePrompts = h.activePrompts
+			}
+			h.mu.Unlock()
+			defer func() { h.mu.Lock(); h.activePrompts--; h.mu.Unlock() }()
+			tr.mu.Lock()
+			params := tr.seen[len(tr.seen)-1].params
+			tr.mu.Unlock()
+			h.prompts = append(h.prompts, role+":"+params)
 			if h.cancelTurn && role == "implementer" {
 				tr.results["session/prompt"] = json.RawMessage(`{"stopReason":"cancelled"}`)
 			}
@@ -226,6 +272,19 @@ func (h *deliveryHarness) spawn(e FactoryEffect) FactoryWorker {
 	h.fleet.sessionAgent[worker.SessionID] = worker.AgentID
 	return worker
 }
+
+func (h *deliveryHarness) assertOneActiveWorker() {
+	h.t.Helper()
+	active := 0
+	for _, a := range h.fleet.ws.Agents() {
+		if a.FactoryItemID == h.id && !a.FactoryParked {
+			active++
+		}
+	}
+	if active > 1 {
+		h.t.Fatalf("%d factory model workers active together", active)
+	}
+}
 func (h *deliveryHarness) tick() FactoryItem {
 	h.t.Helper()
 	if err := h.controller.tick(context.Background()); err != nil {
@@ -255,8 +314,56 @@ func TestFactoryEndToEnd(t *testing.T) {
 	if h.creates != 1 || h.implements != 2 || h.reviews != 2 || h.mutations != 1 || len(i.PRs) != 1 || len(i.Rounds) != 2 {
 		t.Fatalf("creates=%d implement=%d review=%d mutations=%d PRs=%d rounds=%d", h.creates, h.implements, h.reviews, h.mutations, len(i.PRs), len(i.Rounds))
 	}
+	for name, want := range map[string]string{"plan.md": i.Approvals[0].Plan, "spec.md": i.Approvals[0].Spec} {
+		cmd := exec.Command("git", "show", h.seedHead+":docs/marshal-factory/"+i.ID+"/"+name)
+		cmd.Dir = h.bare
+		got, err := cmd.Output()
+		if err != nil || string(got) != want {
+			t.Fatalf("approved seed %s changed: %q, %v", name, got, err)
+		}
+	}
+	seed, draft, implement := -1, -1, -1
+	for n, kind := range h.order {
+		if kind == "publish" && seed < 0 {
+			seed = n
+		}
+		if kind == "create_pr" {
+			draft = n
+		}
+		if kind == "implement" && implement < 0 {
+			implement = n
+		}
+	}
+	if seed < 0 || draft <= seed || implement <= draft {
+		t.Fatalf("seed/draft/implementation order: %v", h.order)
+	}
+	if h.maxActivePrompts != 1 {
+		t.Fatalf("model prompt concurrency = %d", h.maxActivePrompts)
+	}
+	var repairPrompt string
+	for _, prompt := range h.prompts {
+		if strings.HasPrefix(prompt, "implementer:") {
+			repairPrompt = prompt
+		}
+	}
+	if !strings.Contains(repairPrompt, "fixture failure") || !strings.Contains(repairPrompt, "repair feature") {
+		t.Fatalf("repair omitted CI or review evidence: %s", repairPrompt)
+	}
 	if i.Rounds[0].CI == nil || i.Rounds[0].CI.Checks[0].Conclusion != "failure" || i.Rounds[1].CI == nil || i.Rounds[1].CI.Checks[0].Conclusion != "success" || i.Rounds[0].HeadSHA != h.firstHead || i.Rounds[1].HeadSHA != gitText(t, h.bare, "rev-parse", "refs/heads/"+i.Branch) {
 		t.Fatal("CI and round SHAs do not match published commits")
+	}
+	if i.Rounds[0].HeadSHA == i.Rounds[1].HeadSHA {
+		t.Fatal("repair did not produce a distinct published head")
+	}
+	for _, round := range i.Rounds {
+		if round.CI.HeadSHA != round.HeadSHA || len(round.CI.Checks) == 0 {
+			t.Fatalf("round CI revision mismatch: %+v", round)
+		}
+		for _, check := range round.CI.Checks {
+			if check.SHA != round.HeadSHA {
+				t.Fatalf("check revision %q != published %q", check.SHA, round.HeadSHA)
+			}
+		}
 	}
 	if i.PRs[0].State != "open" || i.PRs[0].Draft {
 		t.Fatal("PR not left ready for human merge")
@@ -270,6 +377,9 @@ func TestFactoryEndToEnd(t *testing.T) {
 		if r.Review == nil || r.Review.HeadSHA != r.HeadSHA || r.Review.BaseSHA != r.BaseSHA || r.Implementation == nil || r.ImplementEffectID != r.Implementation.OperationID {
 			t.Fatalf("round evidence mismatch: %+v", r)
 		}
+	}
+	if len(i.Rounds[0].Review.Findings) != 1 || i.Rounds[0].Review.Findings[0].Title != "repair feature" || len(i.Rounds[1].Review.Findings) != 0 {
+		t.Fatal("review finding did not drive a clean repair review")
 	}
 	h.fleet.SetFactoryController(h.controller)
 	if _, err := h.fleet.Merge(context.Background(), i.Workers[0].AgentID, ""); !errors.Is(err, ErrFactoryConflict) {
@@ -292,6 +402,89 @@ func TestFactoryEndToEnd(t *testing.T) {
 	}
 }
 func TestFactoryEndToEndInterrupted(t *testing.T) {
+	t.Run("lost cancellation acknowledgement is not replayed", func(t *testing.T) {
+		h := newDeliveryHarness(t)
+		h.loseCancel = true
+		i := h.tick()
+		if len(i.Workers) != 1 {
+			t.Fatalf("spawn did not complete: %+v", i.Workers)
+		}
+		cmd := FactoryCommand{RequestID: "stop-lost", Kind: "stop", ExpectedVersion: i.Version}
+		if _, err := h.controller.Command(context.Background(), i.ID, cmd); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.controller.Command(context.Background(), i.ID, cmd); err != nil {
+			t.Fatal(err)
+		}
+		latest, _ := h.store.Get(i.ID)
+		if h.cancelCalls != 1 {
+			t.Fatalf("cancel dispatched %d times", h.cancelCalls)
+		}
+		found := false
+		for _, event := range latest.History {
+			if event.Kind == "cancel_uncertain" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("lost cancellation acknowledgement not journaled")
+		}
+	})
+	t.Run("lost set draft response is not replayed", func(t *testing.T) {
+		h := newDeliveryHarness(t)
+		var i FactoryItem
+		for n := 0; n < 80; n++ {
+			i = h.tick()
+			if i.State == "ready" || i.Decision != nil {
+				break
+			}
+			if len(i.Effects) > 0 && i.Effects[len(i.Effects)-1].Status == "dispatched" {
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+		if i.State != "ready" {
+			t.Fatalf("fixture never ready: %+v", i.Decision)
+		}
+		h.forcePRHead = true
+		h.loseKind = "set_draft"
+		h.controller.monitorReadyOnce(context.Background())
+		i = h.tick()
+		last := factoryLastEffect(i)
+		if last == nil || last.Kind != "set_draft" || last.Status != "uncertain" || h.mutations != 2 || !h.draft {
+			t.Fatalf("lost set draft: state=%s effect=%+v mutations=%d draft=%t", i.State, last, h.mutations, h.draft)
+		}
+		for n := 0; n < 3; n++ {
+			h.tick()
+		}
+		if h.mutations != 2 {
+			t.Fatal("set draft mutation replayed")
+		}
+	})
+	t.Run("lost ready compensation response remains uncertain", func(t *testing.T) {
+		h := newDeliveryHarness(t)
+		h.readyRace = true
+		h.loseCompensation = true
+		var i FactoryItem
+		for n := 0; n < 80; n++ {
+			i = h.tick()
+			if i.Decision != nil || i.State == "ready" {
+				break
+			}
+			if len(i.Effects) > 0 && i.Effects[len(i.Effects)-1].Status == "dispatched" {
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+		last := factoryLastEffect(i)
+		if i.State == "ready" || last == nil || last.Kind != "set_ready" || last.Status != "uncertain" || h.mutations != 2 || !h.draft {
+			t.Fatalf("lost compensation: state=%s effect=%+v mutations=%d draft=%t", i.State, last, h.mutations, h.draft)
+		}
+		for n := 0; n < 3; n++ {
+			h.tick()
+		}
+		if h.mutations != 2 {
+			t.Fatal("ready or compensation replayed")
+		}
+	})
 	t.Run("journal failure stops dispatch", func(t *testing.T) {
 		h := newDeliveryHarness(t)
 		h.store.write = func([]byte) (int, error) { return 0, os.ErrPermission }

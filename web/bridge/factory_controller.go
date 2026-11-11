@@ -90,6 +90,14 @@ func factoryNext(i *FactoryItem, kind, role string, round int, now time.Time) *F
 	}
 	return &e
 }
+func factoryPRMatches(i FactoryItem, p FactoryPR) bool {
+	if len(i.PRs) == 0 || len(i.Approvals) == 0 {
+		return false
+	}
+	saved := i.PRs[len(i.PRs)-1]
+	target := i.Approvals[len(i.Approvals)-1].Config.TargetBranch
+	return p.Number == saved.Number && p.NodeID == saved.NodeID && p.HeadRef == i.Branch && p.BaseRef == target && saved.HeadRef == i.Branch && saved.BaseRef == target
+}
 
 // AdvanceFactory derives one next effect from durable state and fresh observations.
 func AdvanceFactory(item FactoryItem, observed FactoryObservation, now time.Time) (FactoryItem, *FactoryEffect, error) {
@@ -109,15 +117,53 @@ func AdvanceFactory(item FactoryItem, observed FactoryObservation, now time.Time
 			return i, nil, nil
 		}
 	}
+	if len(i.PRs) > 0 && observed.PR == nil && i.State != "ready" && observed.Error != "" {
+		factoryDecision(&i, "ci_unavailable", "PR ownership evidence unavailable: "+observed.Error, now)
+		return i, nil, nil
+	}
+	if len(i.PRs) > 0 && observed.PR != nil {
+		if observed.PR.State == "closed" || observed.PR.State == "merged" {
+			i.State = "closed"
+			i.Decision = nil
+			return i, nil, nil
+		}
+		if observed.Error != "" {
+			if i.State == "ready" {
+				e := factoryNext(&i, "set_draft", "", 0, now)
+				i.State = "checking"
+				return i, e, nil
+			}
+			factoryDecision(&i, "ci_unavailable", "PR or remote evidence unavailable: "+observed.Error, now)
+			return i, nil, nil
+		}
+		p := i.PRs[len(i.PRs)-1]
+		if !factoryPRMatches(i, *observed.PR) || observed.PR.State != "open" || observed.PR.BaseSHA != p.BaseSHA || observed.RemoteHead != "" && observed.RemoteHead != observed.PR.HeadSHA || i.State != "ready" && observed.PR.HeadSHA != p.HeadSHA {
+			if i.State == "ready" {
+				e := factoryNext(&i, "set_draft", "", 0, now)
+				i.State = "checking"
+				return i, e, nil
+			}
+			factoryDecision(&i, "conflict", "PR identity, branch, base, or remote head changed outside factory ownership", now)
+			return i, nil, nil
+		}
+	}
 	if i.State == "ready" {
 		if len(i.PRs) == 0 {
 			return i, nil, fmt.Errorf("factory: ready item has no PR")
 		}
-		if observed.PR != nil && observed.PR.State != "open" {
-			i.State = "closed"
-			return i, nil, nil
+		if observed.PR != nil && observed.PR.HeadSHA != i.PRs[len(i.PRs)-1].HeadSHA {
+			e := factoryNext(&i, "set_draft", "", 0, now)
+			i.State = "checking"
+			return i, e, nil
 		}
-		if observed.PR != nil && (observed.PR.HeadSHA != i.PRs[len(i.PRs)-1].HeadSHA || observed.PR.BaseSHA != i.PRs[len(i.PRs)-1].BaseSHA) {
+		if observed.PR == nil || observed.CI == nil {
+			e := factoryNext(&i, "set_draft", "", 0, now)
+			i.State = "checking"
+			return i, e, nil
+		}
+		conf := i.Approvals[len(i.Approvals)-1].Config
+		ciState, _ := EvaluateFactoryCI(*observed.CI, conf.ExpectedChecks, conf.NoRequiredCIAcknowledged)
+		if observed.CI.HeadSHA != i.PRs[len(i.PRs)-1].HeadSHA || ciState != "passed" {
 			e := factoryNext(&i, "set_draft", "", 0, now)
 			i.State = "checking"
 			return i, e, nil
@@ -265,7 +311,7 @@ func AdvanceFactory(item FactoryItem, observed FactoryObservation, now time.Time
 	}
 	if kind == "set_ready" {
 		if !factoryReadyEvidence(i, observed) {
-			if observed.PR != nil && len(i.Rounds) > 0 && (observed.PR.HeadSHA != i.Rounds[len(i.Rounds)-1].HeadSHA || observed.PR.BaseSHA != i.Rounds[len(i.Rounds)-1].BaseSHA) {
+			if observed.PR != nil && len(i.Rounds) > 0 && (!factoryPRMatches(i, *observed.PR) || observed.PR.HeadSHA != i.Rounds[len(i.Rounds)-1].HeadSHA || observed.PR.BaseSHA != i.Rounds[len(i.Rounds)-1].BaseSHA) {
 				factoryDecision(&i, "conflict", "PR revision changed after review", now)
 			} else {
 				i.State = "checking"
@@ -287,7 +333,7 @@ func factoryReadyEvidence(i FactoryItem, o FactoryObservation) bool {
 	if r.ApprovalRevision != approval.Revision {
 		return false
 	}
-	if p.State != "open" || !p.Draft || p.HeadSHA == "" || p.BaseSHA == "" || p.HeadSHA != r.HeadSHA || p.BaseSHA != r.BaseSHA || o.CI.HeadSHA != r.HeadSHA || r.Review == nil || r.Review.Outcome != "complete" || !r.Review.InputsAccessible || r.Review.BaseSHA != r.BaseSHA || r.Review.HeadSHA != r.HeadSHA || r.Review.Findings == nil || len(r.Review.Findings) != 0 {
+	if !factoryPRMatches(i, *p) || p.State != "open" || !p.Draft || p.HeadSHA == "" || p.BaseSHA == "" || p.HeadSHA != r.HeadSHA || p.BaseSHA != r.BaseSHA || o.CI.HeadSHA != r.HeadSHA || r.Review == nil || r.Review.Outcome != "complete" || !r.Review.InputsAccessible || r.Review.BaseSHA != r.BaseSHA || r.Review.HeadSHA != r.HeadSHA || r.Review.Findings == nil || len(r.Review.Findings) != 0 {
 		return false
 	}
 	status, _ := EvaluateFactoryCI(*o.CI, conf.ExpectedChecks, conf.NoRequiredCIAcknowledged)
@@ -380,7 +426,7 @@ func CompleteFactoryEffect(item FactoryItem, effectID string, outcome FactoryOut
 			}
 		}
 	case "set_ready":
-		if outcome.PR == nil || outcome.PR.Draft || outcome.PR.HeadSHA != e.ExpectedHead || outcome.PR.BaseSHA != e.ExpectedBase {
+		if outcome.PR == nil || !factoryPRMatches(i, *outcome.PR) || outcome.PR.Draft || outcome.PR.HeadSHA != e.ExpectedHead || outcome.PR.BaseSHA != e.ExpectedBase {
 			return item, fmt.Errorf("factory: ready confirmation mismatched")
 		}
 		i.PRs[len(i.PRs)-1] = *outcome.PR
@@ -389,7 +435,7 @@ func CompleteFactoryEffect(item FactoryItem, effectID string, outcome FactoryOut
 		if outcome.PR != nil && len(i.PRs) > 0 {
 			i.PRs[len(i.PRs)-1] = *outcome.PR
 		}
-		factoryDecision(&i, "conflict", "PR revision changed while marking ready", now)
+		factoryDecision(&i, "conflict", "PR readiness revoked after revision or CI evidence changed", now)
 	}
 	i.History = append(i.History, FactoryEvent{At: now, Kind: "effect_completed", EffectID: effectID, Message: e.Kind})
 	return i, nil
@@ -518,8 +564,11 @@ func (c *FactoryController) monitorReadyOnce(ctx context.Context) {
 			continue
 		}
 		o, err := c.effects.Observe(ctx, i)
-		if err != nil {
+		if ctx.Err() != nil {
 			continue
+		}
+		if err != nil && o.Error == "" {
+			o.Error = err.Error()
 		}
 		next, _, err := AdvanceFactory(i, o, c.now())
 		if err != nil || reflect.DeepEqual(next, i) {
@@ -639,6 +688,14 @@ func (c *FactoryController) tick(ctx context.Context) error {
 	}
 	obs, err := c.effects.Observe(ctx, i)
 	if err != nil {
+		if obs.PR != nil && (obs.PR.State == "closed" || obs.PR.State == "merged") {
+			next, _, advanceErr := AdvanceFactory(i, obs, c.now())
+			if advanceErr != nil {
+				return advanceErr
+			}
+			_, updateErr := c.internalUpdate(i, "closed_observe", func(dst *FactoryItem) error { *dst = next; dst.Version = i.Version; return nil })
+			return updateErr
+		}
 		if delay, ok := retryAfterDuration(err); ok {
 			c.pauseUntil = c.now().Add(delay)
 			return nil

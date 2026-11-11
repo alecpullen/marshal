@@ -14,6 +14,7 @@ func loopItem() FactoryItem {
 	now := time.Date(2026, 11, 11, 0, 0, 0, 0, time.UTC)
 	req := factoryReq()
 	req.Config.MaxRounds = 5
+	req.Config.TargetBranch = "main"
 	return FactoryItem{ID: "item", Title: req.Title, State: "queued", Draft: req, RepoID: req.Config.RepoID, Branch: "marshal/factory/item", BaseSHA: "base", Approvals: []FactoryApproval{{Revision: 1, Plan: req.Plan, Spec: req.Spec, PlanHash: FactoryPlanHash(req.Plan, req.Spec), Config: req.Config, ApprovedAt: now}}, Grants: []FactoryGrant{{ID: "initial", AdditionalRounds: 5, At: now}}, ApprovedAt: now}
 }
 func TestFactoryLoopHappyAndRepair(t *testing.T) {
@@ -40,7 +41,7 @@ func TestFactoryLoopHappyAndRepair(t *testing.T) {
 			outcome.Worker = &w
 		}
 		if kind == "create_pr" {
-			p := FactoryPR{Number: 1, State: "open", Draft: true, HeadSHA: "head", BaseSHA: "base"}
+			p := FactoryPR{Number: 1, HeadRef: "marshal/factory/item", BaseRef: "main", State: "open", Draft: true, HeadSHA: "head", BaseSHA: "base"}
 			outcome.PR = &p
 		}
 		if kind == "implement" {
@@ -102,7 +103,7 @@ func TestFactoryLoopEvidenceAndRevision(t *testing.T) {
 	i.State = "reviewing"
 	i.Stage = "review"
 	i.Rounds = []FactoryRound{{Number: 1, BaseSHA: "base", HeadSHA: "head", CI: &FactoryCI{HeadSHA: "head", Complete: false}, Review: &FactoryReport{Outcome: "complete", InputsAccessible: true, BaseSHA: "base", HeadSHA: "head", Findings: []ReviewFinding{}}}}
-	i.PRs = []FactoryPR{{Number: 1, State: "open", Draft: true, HeadSHA: "head", BaseSHA: "base"}}
+	i.PRs = []FactoryPR{{Number: 1, HeadRef: "marshal/factory/item", BaseRef: "main", State: "open", Draft: true, HeadSHA: "head", BaseSHA: "base"}}
 	n, e, err := AdvanceFactory(i, FactoryObservation{HeadSHA: "head", BaseSHA: "base", PR: &i.PRs[0], CI: i.Rounds[0].CI}, now)
 	if err != nil || e != nil || n.State == "ready" {
 		t.Fatalf("incomplete CI passed: %s %+v %v", n.State, e, err)
@@ -130,11 +131,80 @@ type loopEffects struct {
 	store          *FactoryStore
 	seen           []string
 	observation    FactoryObservation
+	observeErr     error
 	stopOnDispatch bool
 }
 
 func (f *loopEffects) Observe(_ context.Context, _ FactoryItem) (FactoryObservation, error) {
-	return f.observation, nil
+	return f.observation, f.observeErr
+}
+func TestFactoryReadyMonitorPersistsDraftOnUnavailableCI(t *testing.T) {
+	s, err := OpenFactoryStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	i, err := s.Create(factoryReq(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	i, err = s.Update(i.ID, "ready", i.Version, json.RawMessage(`{"ready":true}`), func(dst *FactoryItem) error {
+		dst.State = "ready"
+		dst.Branch = "marshal/factory/item"
+		req := factoryReq()
+		req.Config.TargetBranch = "main"
+		dst.Approvals = []FactoryApproval{{Revision: 1, Plan: req.Plan, Spec: req.Spec, PlanHash: FactoryPlanHash(req.Plan, req.Spec), Config: req.Config, ApprovedAt: time.Now()}}
+		dst.PRs = []FactoryPR{{Number: 1, NodeID: "node", HeadRef: dst.Branch, BaseRef: "main", State: "open", HeadSHA: "head", BaseSHA: "base"}}
+		return nil
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := i.PRs[0]
+	f := &loopEffects{store: s, observation: FactoryObservation{PR: &p, Error: "CI unavailable"}, observeErr: errors.New("CI unavailable")}
+	c := NewFactoryController(s, f, time.Now)
+	c.admitAfterRecovery()
+	c.monitorReadyOnce(context.Background())
+	saved, err := s.Get(i.ID)
+	if err != nil || saved.State == "ready" || len(saved.Effects) != 1 || saved.Effects[0].Kind != "set_draft" || saved.Effects[0].Status != "prepared" {
+		t.Fatalf("durable revocation: %+v %v", saved, err)
+	}
+}
+func TestFactoryActiveTickClosesPRDespiteCIError(t *testing.T) {
+	s, err := OpenFactoryStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	i, err := s.Create(factoryReq(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	i, err = s.Update(i.ID, "checking", i.Version, json.RawMessage(`{"checking":true}`), func(dst *FactoryItem) error {
+		req := factoryReq()
+		req.Config.TargetBranch = "main"
+		dst.Approvals = []FactoryApproval{{Revision: 1, Plan: req.Plan, Spec: req.Spec, PlanHash: FactoryPlanHash(req.Plan, req.Spec), Config: req.Config, ApprovedAt: time.Now()}}
+		dst.State = "checking"
+		dst.Branch = "marshal/factory/item"
+		dst.PRs = []FactoryPR{{Number: 1, NodeID: "node", HeadRef: dst.Branch, BaseRef: "main", State: "open", Draft: true, HeadSHA: "head", BaseSHA: "base"}}
+		dst.Effects = []FactoryEffect{{ID: "park", Kind: "park", WorkerRole: "implementer", Status: "completed"}}
+		return nil
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := i.PRs[0]
+	p.State = "merged"
+	f := &loopEffects{store: s, observation: FactoryObservation{PR: &p, Error: "CI fetch failed"}, observeErr: errors.New("CI fetch failed")}
+	c := NewFactoryController(s, f, time.Now)
+	c.admitAfterRecovery()
+	if err := c.tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := s.Get(i.ID)
+	if err != nil || saved.State != "closed" || saved.Decision != nil {
+		t.Fatalf("closed PR was stranded: %+v %v", saved, err)
+	}
 }
 func (f *loopEffects) Execute(_ context.Context, i FactoryItem, e FactoryEffect) (FactoryOutcome, error) {
 	saved, err := f.store.Get(i.ID)
@@ -292,13 +362,106 @@ func TestFactoryLoopReadyRevisionRevokesAndDrafts(t *testing.T) {
 	now := time.Now().UTC()
 	i := loopItem()
 	i.State = "ready"
-	i.PRs = []FactoryPR{{Number: 1, State: "open", Draft: false, HeadSHA: "old", BaseSHA: "base"}}
+	i.PRs = []FactoryPR{{Number: 1, HeadRef: "marshal/factory/item", BaseRef: "main", State: "open", Draft: false, HeadSHA: "old", BaseSHA: "base"}}
 	i.Effects = []FactoryEffect{{ID: "ready", Kind: "set_ready", Status: "completed", Outcome: &FactoryOutcome{EffectID: "ready", Confirmed: true}}}
 	moved := i.PRs[0]
 	moved.HeadSHA = "new"
 	next, e, err := AdvanceFactory(i, FactoryObservation{PR: &moved}, now)
 	if err != nil || e == nil || e.Kind != "set_draft" || next.State == "ready" {
 		t.Fatalf("ready not revoked: %s %+v %v", next.State, e, err)
+	}
+}
+func TestFactoryReadyRerunRevokes(t *testing.T) {
+	now := time.Now().UTC()
+	for _, state := range []string{"failed", "blocked", "unavailable"} {
+		t.Run(state, func(t *testing.T) {
+			i := loopItem()
+			i.State = "ready"
+			i.PRs = []FactoryPR{{Number: 1, NodeID: "node", HeadRef: i.Branch, BaseRef: "main", State: "open", HeadSHA: "head", BaseSHA: "base"}}
+			p := i.PRs[0]
+			ci := FactoryCI{HeadSHA: "head", Complete: state != "unavailable"}
+			if state != "unavailable" {
+				ci.Checks = []FactoryCheck{{Key: FactoryCheckKey{Kind: "check_run", Name: "build", AppID: 1}, SHA: "head", Status: "completed", Conclusion: "failure"}}
+			}
+			if state == "blocked" {
+				ci.Checks[0].Conclusion = "cancelled"
+			}
+			n, e, err := AdvanceFactory(i, FactoryObservation{PR: &p, CI: &ci}, now)
+			if err != nil || n.State == "ready" {
+				t.Fatalf("stale readiness: state=%s effect=%+v err=%v", n.State, e, err)
+			}
+			if e == nil || e.Kind != "set_draft" {
+				t.Fatalf("rerun did not draft: %+v", e)
+			}
+		})
+	}
+}
+func TestFactoryActivePRMovement(t *testing.T) {
+	now := time.Now().UTC()
+	for _, stage := range []string{"checking", "reviewing"} {
+		for _, movement := range []string{"closed", "head", "base", "remote", "identity"} {
+			t.Run(stage+"/"+movement, func(t *testing.T) {
+				i := loopItem()
+				i.State = stage
+				i.PRs = []FactoryPR{{Number: 1, NodeID: "node", HeadRef: i.Branch, BaseRef: "main", State: "open", Draft: true, HeadSHA: "head", BaseSHA: "base"}}
+				i.Rounds = []FactoryRound{{Number: 1, ApprovalRevision: 1, HeadSHA: "head", BaseSHA: "base", CI: &FactoryCI{HeadSHA: "head", Complete: true}, Review: &FactoryReport{Outcome: "complete", InputsAccessible: true, HeadSHA: "head", BaseSHA: "base", Findings: []ReviewFinding{}}}}
+				role := "implementer"
+				if stage == "reviewing" {
+					role = "reviewer"
+				}
+				i.Effects = []FactoryEffect{{ID: "park", Kind: "park", WorkerRole: role, Status: "completed"}}
+				p := i.PRs[0]
+				obs := FactoryObservation{PR: &p, RemoteHead: "head", CI: &FactoryCI{HeadSHA: "head", Complete: true}}
+				switch movement {
+				case "closed":
+					p.State = "merged"
+				case "head":
+					p.HeadSHA = "other"
+				case "base":
+					p.BaseSHA = "other"
+				case "remote":
+					obs.RemoteHead = "other"
+				case "identity":
+					p.NodeID = "other"
+				}
+				n, e, err := AdvanceFactory(i, obs, now)
+				if err != nil || e != nil {
+					t.Fatalf("advanced moved PR: %+v %v", e, err)
+				}
+				if movement == "closed" {
+					if n.State != "closed" {
+						t.Fatalf("state=%s", n.State)
+					}
+				} else if n.Decision == nil || n.Decision.Kind != "conflict" {
+					t.Fatalf("decision=%+v", n.Decision)
+				}
+			})
+		}
+	}
+}
+func TestFactoryReadyRejectsSameSHAChangedRefs(t *testing.T) {
+	i := loopItem()
+	i.State = "reviewing"
+	i.PRs = []FactoryPR{{Number: 1, NodeID: "node", HeadRef: i.Branch, BaseRef: "main", State: "open", Draft: true, HeadSHA: "head", BaseSHA: "base"}}
+	i.Rounds = []FactoryRound{{Number: 1, ApprovalRevision: 1, HeadSHA: "head", BaseSHA: "base", CI: &FactoryCI{HeadSHA: "head", Complete: true}, Review: &FactoryReport{Outcome: "complete", InputsAccessible: true, HeadSHA: "head", BaseSHA: "base", Findings: []ReviewFinding{}}}}
+	i.Effects = []FactoryEffect{{Kind: "park", WorkerRole: "reviewer", Status: "completed"}}
+	for _, ref := range []string{"head", "base", "identity"} {
+		t.Run(ref, func(t *testing.T) {
+			p := i.PRs[0]
+			switch ref {
+			case "head":
+				p.HeadRef = "other"
+			case "base":
+				p.BaseRef = "other"
+			case "identity":
+				p.Number = 2
+			}
+			ci := FactoryCI{HeadSHA: "head", Complete: true}
+			n, e, err := AdvanceFactory(i, FactoryObservation{PR: &p, CI: &ci}, time.Now())
+			if err != nil || e != nil || n.Decision == nil || n.Decision.Kind != "conflict" {
+				t.Fatalf("retarget accepted: %+v %+v %v", n.Decision, e, err)
+			}
+		})
 	}
 }
 func TestFactoryLoopCommandReplayAndConflict(t *testing.T) {
@@ -380,7 +543,7 @@ func TestFactoryLoopFreshEvidenceMarksReady(t *testing.T) {
 	now := time.Now().UTC()
 	i := loopItem()
 	i.State = "reviewing"
-	i.PRs = []FactoryPR{{Number: 1, State: "open", Draft: true, HeadSHA: "head", BaseSHA: "base"}}
+	i.PRs = []FactoryPR{{Number: 1, HeadRef: "marshal/factory/item", BaseRef: "main", State: "open", Draft: true, HeadSHA: "head", BaseSHA: "base"}}
 	i.Rounds = []FactoryRound{{Number: 1, ApprovalRevision: 1, BaseSHA: "base", HeadSHA: "head", CI: &FactoryCI{HeadSHA: "head", Complete: true}, Review: &FactoryReport{Outcome: "complete", InputsAccessible: true, BaseSHA: "base", HeadSHA: "head", Findings: []ReviewFinding{}}}}
 	i.Effects = []FactoryEffect{{ID: "park", Kind: "park", WorkerRole: "reviewer", Status: "completed"}}
 	p := i.PRs[0]
@@ -519,14 +682,14 @@ func TestFactoryLoopReadyMonitorDuringModelTurn(t *testing.T) {
 	ready, err = s.Update(ready.ID, "ready-state", ready.Version, json.RawMessage(`{"ready":true}`), func(dst *FactoryItem) error {
 		dst.State = "ready"
 		dst.BaseSHA = "base"
-		dst.PRs = []FactoryPR{{Number: 1, State: "open", Draft: false, HeadSHA: "old", BaseSHA: "base"}}
+		dst.PRs = []FactoryPR{{Number: 1, HeadRef: "marshal/factory/item", BaseRef: "main", State: "open", Draft: false, HeadSHA: "old", BaseSHA: "base"}}
 		dst.Effects = []FactoryEffect{{ID: "ready", Kind: "set_ready", Status: "completed", Outcome: &FactoryOutcome{EffectID: "ready", Confirmed: true}}}
 		return nil
 	}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &blockedLoopEffects{started: make(chan struct{}, 1), release: make(chan struct{}), cancelled: make(chan struct{}, 1), readyPR: FactoryPR{Number: 1, State: "open", Draft: false, HeadSHA: "new", BaseSHA: "base"}}
+	f := &blockedLoopEffects{started: make(chan struct{}, 1), release: make(chan struct{}), cancelled: make(chan struct{}, 1), readyPR: FactoryPR{Number: 1, HeadRef: "marshal/factory/item", BaseRef: "main", State: "open", Draft: false, HeadSHA: "new", BaseSHA: "base"}}
 	c := NewFactoryController(s, f, time.Now)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

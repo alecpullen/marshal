@@ -69,6 +69,21 @@ func (f *factoryEffects) Observe(ctx context.Context, item FactoryItem) (Factory
 		o.Error = err.Error()
 		return o, err
 	}
+	if item.Branch != "" && o.RemoteHead == "" && f.fleet.git != nil {
+		gitRepo, ok := f.fleet.ws.Repo(item.RepoID)
+		if !ok {
+			return o, fmt.Errorf("%w: repository unavailable", ErrFactoryRefused)
+		}
+		raw, e := f.fleet.git.runCtx(ctx, "", cred, "ls-remote", gitRepo.URL, "refs/heads/"+item.Branch)
+		if e != nil {
+			o.Error = e.Error()
+		} else {
+			fields := strings.Fields(string(raw))
+			if len(fields) == 2 && fields[1] == "refs/heads/"+item.Branch {
+				o.RemoteHead = fields[0]
+			}
+		}
+	}
 	if item.BaseSHA == "" && len(item.Approvals) > 0 && f.fleet.git != nil {
 		branch := item.Approvals[len(item.Approvals)-1].Config.TargetBranch
 		if branch == "" {
@@ -236,7 +251,11 @@ func (f *factoryEffects) Execute(ctx context.Context, item FactoryItem, e Factor
 		if err != nil {
 			return out, fmt.Errorf("%w: PR precheck: %v", ErrFactoryUncertain, err)
 		}
-		if e.Kind == "set_ready" && (before.HeadSHA != e.ExpectedHead || before.BaseSHA != e.ExpectedBase || !before.Draft) {
+		stored := item.PRs[len(item.PRs)-1]
+		if before.Number != stored.Number || before.NodeID != stored.NodeID || before.State != "open" {
+			return out, fmt.Errorf("%w: PR identity or state changed", ErrFactoryRefused)
+		}
+		if e.Kind == "set_ready" && (!factoryPRMatches(item, before) || before.HeadSHA != e.ExpectedHead || before.BaseSHA != e.ExpectedBase || !before.Draft) {
 			return out, fmt.Errorf("%w: PR revision changed", ErrFactoryRefused)
 		}
 		draft := e.Kind == "set_draft"
@@ -248,11 +267,14 @@ func (f *factoryEffects) Execute(ctx context.Context, item FactoryItem, e Factor
 			return out, fmt.Errorf("%w: PR postcheck: %v", ErrFactoryUncertain, err)
 		}
 		out.PR = &after
+		if after.Number != stored.Number || after.NodeID != stored.NodeID {
+			return out, fmt.Errorf("%w: PR identity changed after mutation", ErrFactoryUncertain)
+		}
 		if !draft {
 			ci, ciErr := forge.ObserveFactoryCI(ctx, repo, e.ExpectedHead, cred)
 			conf := item.Approvals[len(item.Approvals)-1].Config
 			ciState, _ := EvaluateFactoryCI(ci, conf.ExpectedChecks, conf.NoRequiredCIAcknowledged)
-			if after.HeadSHA != e.ExpectedHead || after.BaseSHA != e.ExpectedBase || ciErr != nil || ciState != "passed" {
+			if !factoryPRMatches(item, after) || after.State != "open" || after.HeadSHA != e.ExpectedHead || after.BaseSHA != e.ExpectedBase || ciErr != nil || ciState != "passed" {
 				if err := forge.SetFactoryDraft(ctx, repo, after, true, cred); err != nil {
 					return out, fmt.Errorf("%w: ready race, draft compensation failed: %v", ErrFactoryUncertain, err)
 				}

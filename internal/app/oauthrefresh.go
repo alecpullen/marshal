@@ -53,6 +53,7 @@ func (l oauthLease) hold(ctx context.Context, work func(ctx context.Context)) {
 	if retry <= 0 {
 		retry = oauthLeaseRetry
 	}
+	waiting := false
 	for {
 		if ctx.Err() != nil {
 			return
@@ -69,7 +70,12 @@ func (l oauthLease) hold(ctx context.Context, work func(ctx context.Context)) {
 			return
 		}
 		// Another process holds the lease: wait and try again, so this
-		// process takes over when that one exits.
+		// process takes over when that one exits. Said once, not on every
+		// retry: at one attempt a minute a repeating line is noise.
+		if !waiting {
+			log.Info("oauth refresh: another process holds the refresh lease; waiting for it", "retry", retry)
+			waiting = true
+		}
 		t := time.NewTimer(retry)
 		select {
 		case <-ctx.Done():
@@ -208,38 +214,35 @@ func refreshUnderLease(ctx context.Context, configPath, stamp string, workers []
 	log.Info("oauth refresh: holding the refresh lease", "providers", len(workers))
 	defer log.Info("oauth refresh: released the refresh lease", "providers", len(workers))
 
-	runCtx, cancel := context.WithCancel(ctx)
-	var wg sync.WaitGroup
-	start := func(set []worker.Worker) {
-		for _, w := range set {
-			startWorker(runCtx, &wg, w, log)
-		}
-	}
-	start(workers)
-	defer func() {
-		cancel()
-		wg.Wait()
-	}()
-
-	stamp = configStamp(configPath)
 	for ctx.Err() == nil {
-		if !waitForConfigStamp(ctx, configPath, stamp, poll) {
+		changed := runGeneration(ctx, workers, configPath, poll, log)
+		if !changed {
+			// ctx ended; the caller's release follows this return.
 			return
 		}
-		// The config changed: stop this set before reading the new one, so
-		// two sets never refresh the same provider at once.
-		cancel()
-		wg.Wait()
+		// The config changed: the previous set has stopped, so read the new
+		// one and never refresh the same provider from two sets at once.
 		workers = load()
 		if len(workers) == 0 {
 			return
 		}
 		log.Info("oauth refresh: rebuilding for a changed config", "providers", len(workers))
-		runCtx, cancel = context.WithCancel(ctx)
-		wg = sync.WaitGroup{}
-		start(workers)
-		stamp = configStamp(configPath)
 	}
+}
+
+// runGeneration runs one set of workers until the user config's stamp changes
+// or ctx ends, and reports whether the config changed. It always stops and
+// joins its workers before returning.
+func runGeneration(ctx context.Context, workers []worker.Worker, configPath string, poll time.Duration, log *slog.Logger) bool {
+	runCtx, cancel := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	for _, w := range workers {
+		startWorker(runCtx, &wg, w, log)
+	}
+	changed := waitForConfigStamp(ctx, configPath, configStamp(configPath), poll)
+	cancel()
+	wg.Wait()
+	return changed
 }
 
 // waitForConfigStamp waits until path's stamp differs from stamp, checking

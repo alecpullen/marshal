@@ -211,3 +211,15 @@ describe('W5.5 routes', () => {
     expect(_pc('#chat/a1?tab=preview')?.tab).toBe('preview')
   })
 })
+
+describe('factory routes', () => {
+  it('parses list, creation and encoded item IDs', async () => {
+    const { parseFactoryRoute, formatFactoryRoute, pageFromHash } = await import('./routes')
+    expect(parseFactoryRoute('#factory')).toEqual({})
+    expect(parseFactoryRoute('#factory/new')).toEqual({ create: true })
+    expect(parseFactoryRoute('#factory/a%2Fb')).toEqual({ itemId: 'a/b' })
+    expect(formatFactoryRoute({ itemId: 'a/b' })).toBe('#factory/a%2Fb')
+    expect(parseFactoryRoute('#factory/a/b')).toBeNull()
+    expect(pageFromHash('#factory/new')).toBe('factory')
+  })
+})

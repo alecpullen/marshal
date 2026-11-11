@@ -416,9 +416,18 @@ func (r *Registry) Delete(ctx context.Context, id string) error {
 // before dispatch and cleared when the turn ends, however it ends; a
 // bridge-side turn_end event carries the stop reason, since ACP
 // signals turn completion only via this request's response.
+type PromptResult struct {
+	StopReason string `json:"stopReason"`
+}
+
 func (r *Registry) Prompt(ctx context.Context, id, text string) error {
+	_, err := r.PromptResult(ctx, id, text)
+	return err
+}
+
+func (r *Registry) PromptResult(ctx context.Context, id, text string) (PromptResult, error) {
 	if _, ok := r.lookup(id); !ok {
-		return ErrUnknownSession
+		return PromptResult{}, ErrUnknownSession
 	}
 	params := map[string]any{
 		"sessionId": id,
@@ -432,14 +441,15 @@ func (r *Registry) Prompt(ctx context.Context, id, text string) error {
 	r.endTurn(id)
 	if err != nil {
 		r.emitEvent(id, map[string]any{"type": "turn_end", "error": err.Error()})
-		return err
+		return PromptResult{}, err
 	}
-	var out struct {
-		StopReason string `json:"stopReason"`
+	var out PromptResult
+	if err := json.Unmarshal(res, &out); err != nil {
+		r.emitEvent(id, map[string]any{"type": "turn_end", "error": err.Error()})
+		return PromptResult{}, fmt.Errorf("bridge: decode session/prompt result: %w", err)
 	}
-	_ = json.Unmarshal(res, &out)
 	r.emitEvent(id, map[string]any{"type": "turn_end", "stopReason": out.StopReason})
-	return nil
+	return out, nil
 }
 
 // Cancel interrupts the in-flight turn (session/cancel notification)

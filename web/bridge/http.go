@@ -80,6 +80,11 @@ func NewServer(target any, args ...any) *Server {
 	}
 	s := &Server{fleet: fleet, reg: reg, log: log, publicURLBase: publicURLBase, mux: http.NewServeMux()}
 	s.routes()
+	for _, arg := range args {
+		if factory, ok := arg.(FactoryAPI); ok {
+			s.factoryRoutes(factory)
+		}
+	}
 	s.http = s.mux
 	if token != "" {
 		s.http = bearerAuth(token, s.mux)
@@ -275,6 +280,8 @@ func writeErr(w http.ResponseWriter, err error) {
 	var setup ErrSetupFailed
 	var merge ErrWorkspaceMerge
 	switch {
+	case errors.Is(err, ErrFactoryConflict):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrUnknownRecipe), errors.Is(err, ErrUnknownSchedule):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrInvalidRecipe), errors.Is(err, ErrRecipeBuiltin), errors.Is(err, errInvalidSchedule):
@@ -406,7 +413,10 @@ func (s *Server) removeProject(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "root is required"})
 		return
 	}
-	s.fleet.StopProject(body.Root)
+	if err := s.fleet.StopProject(body.Root); err != nil {
+		writeErr(w, err)
+		return
+	}
 	for _, a := range s.fleet.ws.Agents() {
 		if a.Project == body.Root {
 			s.fleet.dropGate(a.ID)

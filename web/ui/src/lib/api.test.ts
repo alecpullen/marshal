@@ -564,3 +564,28 @@ describe('W5 ops API', () => {
   })
 
 })
+
+describe('factory API', () => {
+  beforeEach(() => setToken('t'))
+  afterEach(() => vi.unstubAllGlobals())
+  it('unwraps list and item responses, preserving request identity on replay', async () => {
+    const { listFactoryItems, createFactoryItem, commandFactoryItem } = await import('./api')
+    const fetcher = vi.fn().mockResolvedValueOnce({ ok: true, status: 200, text: async () => JSON.stringify({ items: [] }) })
+      .mockResolvedValue({ ok: true, status: 200, text: async () => JSON.stringify({ item: { id: 'x' } }) })
+    vi.stubGlobal('fetch', fetcher)
+    expect(await listFactoryItems()).toEqual([])
+    const req = { requestId: 'same', title: 'Task', plan: 'Plan', spec: '', config: {} } as never
+    await createFactoryItem(req); await createFactoryItem(req)
+    expect(JSON.parse(fetcher.mock.calls[1][1].body).requestId).toBe('same')
+    expect(JSON.parse(fetcher.mock.calls[2][1].body).requestId).toBe('same')
+    await commandFactoryItem('a/b', { requestId: 'command', kind: 'stop', expectedVersion: 7 })
+    expect(fetcher.mock.calls[3][0]).toBe('/api/factory/items/a%2Fb/commands')
+  })
+  it('surfaces stale version and safe auth rejection', async () => {
+    const { commandFactoryItem } = await import('./api')
+    vi.stubGlobal('fetch', reply(409, { error: 'stale version', currentVersion: 8 }))
+    await expect(commandFactoryItem('x', { requestId: 'r', kind: 'stop', expectedVersion: 7 })).rejects.toMatchObject({ status: 409, body: { currentVersion: 8 } })
+    vi.stubGlobal('fetch', reply(401))
+    await expect(commandFactoryItem('x', { requestId: 'r2', kind: 'stop', expectedVersion: 7 })).rejects.toMatchObject({ name: 'AuthError' })
+  })
+})

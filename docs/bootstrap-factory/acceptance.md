@@ -13,21 +13,24 @@ export PATH=/workspace/toolchains/go/bin:$PATH
 export GOCACHE=/tmp/factory-go-cache
 export CGO_ENABLED=1
 go test ./web/bridge -run '^TestFactoryEndToEnd' -count=1
-CGO_ENABLED=1 go test -p=1 ./... -count=1 -timeout 20m
+go test ./... -count=1 -timeout 5m
 go vet ./...
 go test -race ./web/bridge ./cmd/webbridge -count=1
 (cd web/ui && npm test && npm run build)
 go build ./cmd/webbridge
 ```
 
-The full Go suite runs with `-p=1`, which serializes package test binaries so the ACP wall-clock timing budgets are not measured while other packages' tests compete for the same CPUs, and with `-timeout 20m` to accommodate that serialization. No ACP budget threshold (2 ms, 10 ms or 50 ms) was loosened, no timing test was skipped or quarantined, and every package and every assertion still runs. Isolated runs of the four budget tests (`TestNoteCallBudget`, `TestStackBusyFlipBudget`, `TestStackPatchApplyBudget`, `TestStackRoundTripBudget`) pass, which is what identifies package-level contention rather than a production regression as the cause of their earlier failures.
+Serializing the package test binaries with `-p=1` was tried and **rejected as the fix**. Locally it passes (and the four budget tests pass in isolation, ten runs each), but on GitHub's `ubuntu-latest` the CI run that already used `-p=1` still failed `TestStackRoundTripBudget` with `round trip: median 50.963111ms over 30 runs, first read 68.705206ms (budget 50ms)`. With no other package test binary running, that is an absolute budget breach on the runner rather than package-level contention, so the workflow keeps its original `go test ./... -count=1 -timeout 5m` form. No ACP budget threshold (2 ms, 10 ms or 50 ms) was loosened, no timing test was skipped or quarantined, and every package and every assertion still runs. Nothing in this branch touches the stack/projector path: `git diff ab935334..HEAD` over `internal/acp`, `internal/viewmodel` and `internal/acpwire` lists no stack, mirror or projector file, so the breach is pre-existing on CI hardware and not introduced here.
 
 ## Final merged-head automated acceptance: 2026-11-12
 
 This run integrated `p4-8-refresh` and the factory branch before validating, so the result below is for the head that would merge after `p4-8-refresh`, not the older PR head alone.
 
 - Locally validated head: `5271c9d839bbad1ad7bb6d7941663da8be6b655e`
+- Pushed head (PR 57): `15d59a3505cc8723cf4b744e22c4108a149fef9d`
 - Integrated branches: `main` `ab935334f59171d0b9d03acab595901023b7c44f`, `p4-8-refresh` `7ca77cf4ffadbd3283114093023a162191607ef5`, factory head `a596bdb8d7f22ad68fdff87af3babf08bf750be7`
+
+The local gates below ran on their own with package execution serialized (`-p=1`); the workflow itself is unchanged and still runs `go test ./... -count=1 -timeout 5m`. The CI result further down is the authoritative gate.
 
 | Command | Result |
 |---|---|
@@ -51,7 +54,31 @@ Focused evidence for the three repairs in this run:
 | `go test ./internal/lsp -run '^TestRescanResyncsOpenDocumentChangedOnDisk$' -count=100` | pass with both original assertions |
 | `go test -race ./web/bridge -run '^TestRecipeRunMaxUSDSetsAPausingCapForTheRun$' -count=20 -timeout 5m` | pass in 2.5 s (previously hung to the 90 s deadline) |
 
-Historical note: the earlier PR head failed the full suite on unchanged ACP budget, LSP rescan, pipeline, snapshot, native-tools and worktree packages, and its required race gate timed out in `TestRecipeRunMaxUSDSetsAPausingCapForTheRun`. Those are now resolved rather than outstanding: package-level contention in the ACP budgets is isolated by `-p=1`, the LSP rescan fixture no longer depends on filesystem timestamp granularity, and the budget pause no longer applies its cancel synchronously on the caller's goroutine. The earlier fixwave's focused regressions for same-SHA CI reruns, PR closure and external movement, exact ref/PR identity readiness, retargeting around the ready mutation, and external-closure cleanup remain in place and are covered by the passing suite above.
+### CI on the pushed head: full-suite RED
+
+`scripted` passed (1 m 19 s). `full-suite` failed (7 m 1 s) on `15d59a35`, with two failures, neither of them disguisable and neither of them a threshold change:
+
+| Failing test | Observed | Disposition |
+|---|---|---|
+| `TestStackRoundTripBudget` (`internal/acp`) | `median 50.963111ms over 30 runs, first read 68.705206ms (budget 50ms)` — the CI run that already used `-p=1` | Pre-existing on CI hardware. The test, `internal/acp/stack*.go`, `internal/viewmodel` and `internal/acpwire` are byte-identical to `main` across this branch (`git diff ab935334..HEAD` lists no stack, mirror or projector file), so this is an absolute budget breach on the runner, not contention and not a regression from this work. Fixing it belongs in `internal/acp` as a performance change to the projector path, or is a runner-capacity limit; it must not be fixed by loosening the 50 ms budget. |
+| `TestASecondEmbeddingWaitsAndTakesOver` (`internal/app`) | `embedded_refresh_test.go:142: no runtime took the refresh lease within 2s` | Timing-sensitive lease test introduced by `p4-8-refresh`'s fixups commit `7ca77cf4`. It passes 5/5 locally. Not part of this plan's task scope; recorded as an open flake for `p4-8-refresh` to own. |
+
+Because a required check is red, PR 57 is **not** marked ready in this run, and the plan's Task 5 step 4 / Task 8 step 4 cannot complete on this head. Locally the same architecture and tests are green, which is why the local table above is not the acceptance evidence for the gate.
+
+### Independent review
+
+An independent reviewer reviewed `origin/main...HEAD` against design §§3–7 with no blocker found and four MINOR findings, each recorded here with an explicit disposition rather than a silent waiver:
+
+| Finding | Class | Disposition |
+|---|---|---|
+| `factory_controller.go:538` + `factory_recovery.go:158`: `Quiesce` journals `shutdown_uncertain` through `factoryDecision`, which sets `needs_input`, so a stopped item returns as `recovering` rather than `stopping` across a restart | MINOR | Accepted as a real deviation from design §7. Not fixed here: it is pre-existing factory behaviour outside this plan's task scope, and `needs_input`/`recovering` both still block dispatch and still accept a `stop` command. Left for a follow-up in the factory branch. |
+| `factory_ownership.go:55`: `factoryInternalContext` is defined and never called, so `factoryOwnershipKey` is never set and the bypass guard cannot currently be reached | MINOR | Accepted. Unreachable today, so not a live hole, but it is an unused escape hatch in front of the human-merge guard. Deleting dead code in the factory design is out of scope for this plan; recorded for the factory owner. |
+| `forge_github.go:59`: `retryAfterDuration` parses only the seconds form of `Retry-After`, not the HTTP-date form | MINOR | Accepted. A date-form secondary rate limit would park the item in `needs_input` instead of backing off. Out of this plan's scope; recorded for the factory owner. |
+| `factory_controller.go`: a `tick` racing `Quiesce` can surface `ErrFactoryConflict`, logged as `"factory scheduler stopped"` on a clean shutdown | MINOR | Accepted as cosmetic. No state is resurrected: the store closes after `<-factoryDone`. Out of scope. |
+
+The reviewer independently confirmed all five Task 1 lifecycle requirements, the three replay/identity/parking priorities, the stdlib-only `web/` boundary, and each of the four fixes as correct and minimal.
+
+Historical note: the earlier PR head failed the full suite on unchanged ACP budget, LSP rescan, pipeline, snapshot, native-tools and worktree packages, and its required race gate timed out in `TestRecipeRunMaxUSDSetsAPausingCapForTheRun`. The LSP rescan fixture no longer depends on filesystem timestamp granularity, and the budget pause no longer applies its cancel synchronously on the caller's goroutine; both are resolved and covered by the passing local suite and the CI `scripted` job. The ACP budget failures were **not** resolved by serialization: `-p=1` was tried, rejected, and reverted, and the one surviving failure is recorded above as a CI-hardware budget breach. The earlier fixwave's focused regressions for same-SHA CI reruns, PR closure and external movement, exact ref/PR identity readiness, retargeting around the ready mutation, and external-closure cleanup remain in place.
 
 Live provider/GitHub execution and the ARM64 OrbStack deployment gates are **not** part of these automated results and remain pending, as recorded below. Nothing here claims live, deployment, Podman or merge readiness.
 

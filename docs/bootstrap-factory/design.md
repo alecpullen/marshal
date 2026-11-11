@@ -1,7 +1,7 @@
 # Bootstrap factory design
 
 Date: 2026-11-11 (Australia/Sydney)
-Status: approved for implementation with the companion [implementation plan](implementation-plan.md). Deployment and live acceptance remain separately gated.
+Status: implemented and locally tested with the companion [implementation plan](implementation-plan.md). The [acceptance record](acceptance.md) tracks pending live and ARM64 deployment gates.
 Baseline: alecpullen/marshal main at bff50180cf1e282430d20eeccb0d508850ba88d7. Recheck before implementation. Sources and limitations: [compatibility assessment](compatibility.md).
 
 ## 1. Goal and scope

@@ -1258,7 +1258,7 @@ func TestRunWiresToolNames(t *testing.T) {
 		return config.Default(), nil
 	})), WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
 		tools, hasTools = model.(tui.Model).Session().Tools()
-		trustPrompt = model.(tui.Model).Host().TrustPrompt()
+		trustPrompt = model.(tui.Model).Host().TrustPrompt().Dir
 		return ProgramResult{}
 	}),
 	)

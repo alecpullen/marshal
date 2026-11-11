@@ -1014,7 +1014,8 @@ func (m *Model) openTrustPanel() bool {
 	// The closure runs after Update has returned, so it captures the host,
 	// the context and the logger by value, never the model.
 	host, ctx, log := m.host, m.ctx, m.log()
-	dir := host.TrustPrompt()
+	prompt := host.TrustPrompt()
+	dir := prompt.Dir
 	if dir == "" {
 		return false
 	}

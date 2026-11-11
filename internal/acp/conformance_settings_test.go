@@ -181,6 +181,7 @@ func TestSettingsConformance(t *testing.T) {
 		{name: "a prepared mcp login says why", run: prepareMCPLoginSentences},
 		{name: "a trust decision passes through", run: decideTrustPassesTheDecision},
 		{name: "a trust decision for what is not pending is refused", run: decideTrustRefusesWhatIsNotPending},
+		{name: "a trust applied in place is settled by a trust", run: trustInPlaceIsSettledByATrust},
 		{name: "the trust prompt is the deps", run: trustPromptIsTheDeps},
 		{name: "tools reads the runtime", run: toolsReadsTheRuntime},
 		{name: "the config reads carry no secret", run: configReadsCarryNoSecret},
@@ -1308,8 +1309,50 @@ func decideTrustRefusesWhatIsNotPending(t *testing.T, open openSettings) {
 	}
 }
 
+// trustInPlaceIsSettledByATrust pins the in-place half (P4 D8): with
+// Deps.ApplyTrust the prompt reports InPlace, a trust reaches the apply once,
+// and a second answer changes nothing. The settled prompt is asserted on the
+// service arm only: a client keeps the answer it read once (Host.TrustPrompt's
+// contract), and the status's trusted field is where the pipe arm sees it.
+func trustInPlaceIsSettledByATrust(t *testing.T, open openSettings) {
+	dir := t.TempDir()
+	var applied []trust.Decision
+	host, _ := open(t, service.Deps{
+		State:       newConfigState(t, "s1", config.Default(), t.TempDir()),
+		TrustPrompt: dir,
+		ApplyTrust: func(_ context.Context, d trust.Decision) error {
+			applied = append(applied, d)
+			return nil
+		},
+	})
+
+	if got := host.TrustPrompt(); got.Dir != dir || !got.InPlace {
+		t.Fatalf("TrustPrompt() = %+v, want %q in place", got, dir)
+	}
+	ctx := context.Background()
+	if err := host.DecideTrust(ctx, dir, acpwire.TrustPermanent); err != nil {
+		t.Fatalf("DecideTrust: %v", err)
+	}
+	want := []trust.Decision{trust.Decision(acpwire.TrustPermanent)}
+	if !reflect.DeepEqual(applied, want) {
+		t.Fatalf("applied decisions = %v, want %v", applied, want)
+	}
+	if h, ok := host.(*service.Host); ok {
+		if got := h.TrustPrompt(); got.Dir != "" || got.InPlace {
+			t.Fatalf("TrustPrompt() after the apply = %+v, want no prompt", got)
+		}
+	}
+	if err := host.DecideTrust(ctx, dir, acpwire.TrustSession); err != nil {
+		t.Fatalf("second DecideTrust: %v", err)
+	}
+	if !reflect.DeepEqual(applied, want) {
+		t.Fatalf("applied decisions after the second answer = %v, want only the first", applied)
+	}
+}
+
 // trustPromptIsTheDeps pins the read: the host reports the prompt it was built
-// with, and "" when it was built with none.
+// with, and "" when it was built with none. Without Deps.ApplyTrust the prompt
+// is never in place.
 func trustPromptIsTheDeps(t *testing.T, open openSettings) {
 	dir := t.TempDir()
 
@@ -1317,13 +1360,16 @@ func trustPromptIsTheDeps(t *testing.T, open openSettings) {
 		State:       newConfigState(t, "s1", config.Default(), t.TempDir()),
 		TrustPrompt: dir,
 	})
-	if got := withPrompt.TrustPrompt(); got != dir {
-		t.Errorf("TrustPrompt() = %q, want %q", got, dir)
+	if got := withPrompt.TrustPrompt(); got.Dir != dir {
+		t.Errorf("TrustPrompt() = %+v, want %q", got, dir)
+	}
+	if got := withPrompt.TrustPrompt(); got.InPlace {
+		t.Errorf("TrustPrompt() = %+v, want no in-place trust without ApplyTrust", got)
 	}
 
 	without, _ := open(t, service.Deps{State: newConfigState(t, "s1", config.Default(), t.TempDir())})
-	if got := without.TrustPrompt(); got != "" {
-		t.Errorf("TrustPrompt() = %q, want \"\"", got)
+	if got := without.TrustPrompt(); got.Dir != "" {
+		t.Errorf("TrustPrompt() = %+v, want \"\"", got)
 	}
 }
 

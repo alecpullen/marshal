@@ -773,6 +773,9 @@ func TestTrustCallsReachTheHost(t *testing.T) {
 	if res.Dir != pending {
 		t.Fatalf("trust/prompt dir = %q, want %q", res.Dir, pending)
 	}
+	if res.InPlace {
+		t.Fatalf("trust/prompt = %+v, want no in-place trust without ApplyTrust", res)
+	}
 
 	a.mustCall(acpwire.MethodTrustDecide, acpwire.TrustDecideParams{
 		SessionID: "s1", Dir: pending, Decision: acpwire.TrustPermanent,
@@ -790,6 +793,53 @@ func TestTrustCallsReachTheHost(t *testing.T) {
 	}, nil)
 	if err == nil {
 		t.Fatal("trust/decide accepted a directory that is not pending")
+	}
+}
+
+// TestTheTrustCallsServeMarshalClientsOnly pins decision 3: a client without
+// the marshal capability reads no prompt, and its decision is refused. The
+// bridge's own connection is such a client, so it can neither read the prompt
+// nor answer it (P4 W11).
+func TestTheTrustCallsServeMarshalClientsOnly(t *testing.T) {
+	pending := t.TempDir()
+	var (
+		mu      sync.Mutex
+		applied []trust.Decision
+	)
+	s := newSettingsSession(t, "s1", func(d *service.Deps) {
+		d.TrustPrompt = pending
+		d.ApplyTrust = func(_ context.Context, dec trust.Decision) error {
+			mu.Lock()
+			defer mu.Unlock()
+			applied = append(applied, dec)
+			return nil
+		}
+	})
+	a := startSettingsAgent(t, false, []*settingsSession{s}, nil)
+
+	var res acpwire.TrustPromptResult
+	a.mustCall(acpwire.MethodTrustPrompt, acpwire.HostCallParams{SessionID: "s1"}, &res)
+	if res.Dir != "" || res.InPlace {
+		t.Fatalf("trust/prompt = %+v for a client without the capability, want no prompt", res)
+	}
+
+	err := a.call(acpwire.MethodTrustDecide, acpwire.TrustDecideParams{
+		SessionID: "s1", Dir: pending, Decision: acpwire.TrustPermanent,
+	}, nil)
+	if err == nil {
+		t.Fatal("trust/decide accepted a client without the capability")
+	}
+	if code := rpcCode(t, err); code != int(invalidRequest) {
+		t.Fatalf("trust/decide code = %d, want invalid request (%d)", code, invalidRequest)
+	}
+	if !strings.Contains(err.Error(), "trust/decide serves marshal clients only") {
+		t.Fatalf("trust/decide error = %q, want the marshal-client refusal", err)
+	}
+	mu.Lock()
+	got := append([]trust.Decision(nil), applied...)
+	mu.Unlock()
+	if len(got) != 0 {
+		t.Fatalf("applied decisions = %v, want none", got)
 	}
 }
 

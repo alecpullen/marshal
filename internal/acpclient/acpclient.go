@@ -49,17 +49,21 @@ type Host interface {
 	// agent builds the new session inside the same runtime. Asynchronous (R6).
 	NewSession(ctx context.Context, name string) (Session, error)
 
-	// TrustPrompt is the directory whose project config waits for a trust
-	// decision, or "" when none does. It does not change while the host
-	// runs.
+	// TrustPrompt is the trust prompt's answer: the directory whose project
+	// config waits for a trust decision ("" when none does), and whether a
+	// trust applies to the running session in place rather than through the
+	// client's restart. A daemon session's prompt settles after a trust, and
+	// the status's trusted field says so from then on.
 	//
 	// ACP: trust/prompt (exists). Read once, after the first attach, and
 	// kept.
-	TrustPrompt() string
+	TrustPrompt() acpwire.TrustPromptResult
 
 	// DecideTrust answers the trust prompt for dir. After a trust the client
-	// ends its program, and the app restarts with the project config in
-	// force; after a decline the session carries on.
+	// ends its program only when the prompt was not InPlace, and the app
+	// restarts with the project config in force; a daemon session's trust
+	// applies to the running session instead; after a decline the session
+	// carries on.
 	//
 	// ACP: trust/decide (exists).
 	DecideTrust(ctx context.Context, dir string, decision acpwire.TrustDecision) error

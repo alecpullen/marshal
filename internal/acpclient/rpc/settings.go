@@ -56,15 +56,15 @@ func (h *Host) ProviderTemplates() []acpwire.ProviderTemplate {
 	return templates
 }
 
-// TrustPrompt is the directory whose trust decision is pending, "" when none
-// is. It sends trust/prompt on its first read and keeps the answer, which does
-// not change while the host runs (decision 2).
-func (h *Host) TrustPrompt() string {
+// TrustPrompt is the trust prompt's whole answer. It sends trust/prompt on its
+// first read and keeps the answer, which is the agent's first answer for the
+// connection (decision 2).
+func (h *Host) TrustPrompt() acpwire.TrustPromptResult {
 	h.mu.Lock()
 	if h.trustSet {
-		dir := h.trustPrompt
+		result := h.trustPrompt
 		h.mu.Unlock()
-		return dir
+		return result
 	}
 	h.mu.Unlock()
 
@@ -72,12 +72,12 @@ func (h *Host) TrustPrompt() string {
 	defer cancel()
 	sessionID, err := h.currentID()
 	if err != nil {
-		return ""
+		return acpwire.TrustPromptResult{}
 	}
 	var result acpwire.TrustPromptResult
 	if err := h.conn.Call(ctx, acpwire.MethodTrustPrompt, acpwire.HostCallParams{SessionID: sessionID}, &result); err != nil {
 		// The read is not kept, so the next one asks again.
-		return ""
+		return acpwire.TrustPromptResult{}
 	}
 
 	h.mu.Lock()
@@ -86,9 +86,9 @@ func (h *Host) TrustPrompt() string {
 		// A concurrent first read answered already, and its answer stands.
 		return h.trustPrompt
 	}
-	h.trustPrompt = result.Dir
+	h.trustPrompt = result
 	h.trustSet = true
-	return result.Dir
+	return result
 }
 
 // DecideTrust answers the trust prompt for dir.

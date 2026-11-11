@@ -148,9 +148,12 @@ type ProvenanceParams struct {
 }
 
 // TrustPromptResult is trust/prompt's result: the directory whose trust
-// decision is pending, empty when none is.
+// decision is pending, empty when none is, and whether a trust applies to the
+// running session in place (a daemon session) rather than through the
+// client's restart (embedded mode).
 type TrustPromptResult struct {
-	Dir string `json:"dir,omitempty"`
+	Dir     string `json:"dir,omitempty"`
+	InPlace bool   `json:"inPlace,omitempty"`
 }
 
 // TrustDecideParams is trust/decide's params.

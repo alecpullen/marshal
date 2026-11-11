@@ -70,8 +70,8 @@ func TestAHostCallBeforeAnAttachFails(t *testing.T) {
 	if got := host.ProviderTemplates(); got != nil {
 		t.Fatalf("ProviderTemplates before an attach = %+v, want nil", got)
 	}
-	if got := host.TrustPrompt(); got != "" {
-		t.Fatalf("TrustPrompt before an attach = %q, want empty", got)
+	if got := host.TrustPrompt(); got != (acpwire.TrustPromptResult{}) {
+		t.Fatalf("TrustPrompt before an attach = %+v, want empty", got)
 	}
 
 	wantNoSession := func(name string, err error) {
@@ -153,7 +153,7 @@ func TestHostCallsNameTheCurrentSession(t *testing.T) {
 		t.Fatalf("ProviderTemplates = %+v, want the probe template", templates)
 	}
 
-	var prompt string
+	var prompt acpwire.TrustPromptResult
 	if _, err := callHost(t, a, acpwire.MethodTrustPrompt, "s1",
 		acpwire.TrustPromptResult{Dir: "/w"}, func() error {
 			prompt = host.TrustPrompt()
@@ -161,8 +161,8 @@ func TestHostCallsNameTheCurrentSession(t *testing.T) {
 		}); err != nil {
 		t.Fatalf("TrustPrompt: %v", err)
 	}
-	if prompt != "/w" {
-		t.Fatalf("TrustPrompt = %q, want /w", prompt)
+	if prompt.Dir != "/w" {
+		t.Fatalf("TrustPrompt = %+v, want /w", prompt)
 	}
 
 	// trust/decide.
@@ -564,7 +564,7 @@ func TestTheHostReadsAreFetchedOnce(t *testing.T) {
 	expectNoFrame(t, a, "the second successful ProviderTemplates")
 
 	// TrustPrompt's first read fails too, and answers nothing.
-	promptOut := make(chan string, 1)
+	promptOut := make(chan acpwire.TrustPromptResult, 1)
 	go func() { promptOut <- host.TrustPrompt() }()
 	req = a.next(t)
 	if got := string(req.Method); got != acpwire.MethodTrustPrompt {
@@ -576,15 +576,15 @@ func TestTheHostReadsAreFetchedOnce(t *testing.T) {
 	}))
 	select {
 	case got := <-promptOut:
-		if got != "" {
-			t.Fatalf("a failed TrustPrompt = %q, want empty", got)
+		if got != (acpwire.TrustPromptResult{}) {
+			t.Fatalf("a failed TrustPrompt = %+v, want empty", got)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("TrustPrompt did not return")
 	}
 
 	// The next read asks again, and its answer is kept.
-	promptOut = make(chan string, 1)
+	promptOut = make(chan acpwire.TrustPromptResult, 1)
 	go func() { promptOut <- host.TrustPrompt() }()
 	req = a.next(t)
 	if got := string(req.Method); got != acpwire.MethodTrustPrompt {
@@ -593,15 +593,15 @@ func TestTheHostReadsAreFetchedOnce(t *testing.T) {
 	a.answer(t, req, acpwire.TrustPromptResult{Dir: "/w"})
 	select {
 	case got := <-promptOut:
-		if got != "/w" {
-			t.Fatalf("TrustPrompt = %q, want /w", got)
+		if got.Dir != "/w" {
+			t.Fatalf("TrustPrompt = %+v, want /w", got)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("TrustPrompt did not return")
 	}
 
-	if got := host.TrustPrompt(); got != "/w" {
-		t.Fatalf("the kept TrustPrompt = %q, want /w", got)
+	if got := host.TrustPrompt(); got.Dir != "/w" {
+		t.Fatalf("the kept TrustPrompt = %+v, want /w", got)
 	}
 	expectNoFrame(t, a, "the second successful TrustPrompt")
 }

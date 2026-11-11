@@ -141,8 +141,11 @@ func TestAnEmbeddingServesTheEmbeddingsTrustPrompt(t *testing.T) {
 	p := openEmbedding(t, rt, service.Deps{State: st, TrustPrompt: dir})
 	p.attach(t, "s1")
 
-	if got := p.host.TrustPrompt(); got != dir {
-		t.Fatalf("TrustPrompt() = %q, want the embedding's %q", got, dir)
+	if got := p.host.TrustPrompt(); got.Dir != dir {
+		t.Fatalf("TrustPrompt() = %+v, want the embedding's %q", got, dir)
+	}
+	if got := p.host.TrustPrompt(); got.InPlace {
+		t.Errorf("TrustPrompt() = %+v, want no in-place trust in embedded mode", got)
 	}
 }
 

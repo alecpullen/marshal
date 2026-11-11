@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -106,6 +107,9 @@ type config struct {
 	// and no run lives on in the local profile (P4 D7a); zero never
 	// ends one.
 	idleSessionTimeout time.Duration
+	// oauthRefresh runs `<marshal-bin> daemon refresh` beside the local
+	// profile's bridge (P4 D12). Off unless asked.
+	oauthRefresh bool
 }
 
 // parseConfig resolves flags over environment variables over defaults.
@@ -153,6 +157,13 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 		return config{}, fmt.Errorf("WEBBRIDGE_IDLE_SESSION_TIMEOUT: %w", err)
 	}
 	idleSessionTimeout := fs.Duration("idle-session-timeout", idleTimeoutDefault, "how long a project session with no viewer and no run lives on (--profile local; 0 never ends one)")
+	// The boolean flag reads its variable the same way, before it is
+	// declared: a variable that does not parse is a configuration error.
+	oauthRefreshDefault, err := strconv.ParseBool(envOr("WEBBRIDGE_OAUTH_REFRESH", "false"))
+	if err != nil {
+		return config{}, fmt.Errorf("WEBBRIDGE_OAUTH_REFRESH: %w", err)
+	}
+	oauthRefresh := fs.Bool("oauth-refresh", oauthRefreshDefault, "run <marshal-bin> daemon refresh alongside the bridge (--profile local)")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
@@ -162,7 +173,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	cfg := config{profile: *profile, socket: *socket, addr: *addr, previewAddr: *previewAddr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, stateVolume: *stateVolume, agentEnv: agentEnv, tlsCert: *tlsCert, tlsKey: *tlsKey, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB,
 		secrets: *secrets, secretsKeyFile: *secretsKeyFile, baoAddr: *baoAddr, baoMount: *baoMount,
 		baoRoleIDFile: *baoRoleIDFile, baoSecretIDFile: *baoSecretIDFile, baoCAFile: *baoCAFile, egress: *egress, publicURL: *publicURL,
-		idleSessionTimeout: *idleSessionTimeout}
+		idleSessionTimeout: *idleSessionTimeout, oauthRefresh: *oauthRefresh}
 	pm, err := parseProjectMounts(projectMounts)
 	if err != nil {
 		return config{}, err
@@ -259,6 +270,9 @@ func applyProfile(cfg *config, given givenSettings) error {
 		}
 		if given.given("idle-session-timeout", "WEBBRIDGE_IDLE_SESSION_TIMEOUT") {
 			return fmt.Errorf("--idle-session-timeout is for --profile local")
+		}
+		if given.given("oauth-refresh", "WEBBRIDGE_OAUTH_REFRESH") {
+			return fmt.Errorf("--oauth-refresh is for --profile local")
 		}
 		return nil
 	case "local":
@@ -599,6 +613,27 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			StartedAt: startedAt.UnixMilli(),
 			Socket:    cfg.socket,
 		})
+		if cfg.oauthRefresh {
+			// The refresh helper (P4 D12): `<marshal-bin> daemon refresh`
+			// beside the bridge, on the run's context. run waits for it to
+			// return before it returns, so the bridge never leaves a
+			// helper behind.
+			helper := &bridge.Helper{
+				Argv:   []string{cfg.marshalBin, "daemon", "refresh"},
+				Stderr: stderr,
+			}
+			api.SetRefreshHelper(helper)
+			helperCtx, stopHelper := context.WithCancel(ctx)
+			helperDone := make(chan struct{})
+			go func() {
+				defer close(helperDone)
+				helper.Run(helperCtx)
+			}()
+			defer func() {
+				stopHelper()
+				<-helperDone
+			}()
+		}
 		sln, lerr := bridge.ListenLocal(cfg.socket)
 		if lerr != nil {
 			// A refused socket — another daemon, a directory open to

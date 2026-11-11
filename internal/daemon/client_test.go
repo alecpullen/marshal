@@ -40,7 +40,8 @@ func unixServer(t *testing.T, handler http.Handler) string {
 func TestTheClientReadsTheDaemon(t *testing.T) {
 	const body = `{"version":"1.2.3","profile":"local","pid":4242,` +
 		`"startedAt":1700000000000,"socket":"/tmp/marshal.sock",` +
-		`"projects":["/work/one","/work/two"]}`
+		`"projects":["/work/one","/work/two"],` +
+		`"refresh":{"pid":5151,"restarts":2}}`
 
 	for _, tc := range []struct {
 		name    string
@@ -67,6 +68,7 @@ func TestTheClientReadsTheDaemon(t *testing.T) {
 				StartedAt: 1700000000000,
 				Socket:    "/tmp/marshal.sock",
 				Projects:  []string{"/work/one", "/work/two"},
+				Refresh:   &RefreshInfo{PID: 5151, Restarts: 2},
 			},
 		},
 		{
@@ -108,6 +110,16 @@ func TestTheClientReadsTheDaemon(t *testing.T) {
 				if got.Projects[i] != tc.want.Projects[i] {
 					t.Errorf("Projects[%d] = %q, want %q", i, got.Projects[i], tc.want.Projects[i])
 				}
+			}
+			// The refresh helper comes off the wire as its own object, so
+			// `status` can tell a supervised helper from none at all.
+			switch {
+			case tc.want.Refresh == nil && got.Refresh != nil:
+				t.Errorf("Refresh = %+v, want none", *got.Refresh)
+			case tc.want.Refresh != nil && got.Refresh == nil:
+				t.Errorf("Refresh = none, want %+v", *tc.want.Refresh)
+			case tc.want.Refresh != nil && *got.Refresh != *tc.want.Refresh:
+				t.Errorf("Refresh = %+v, want %+v", *got.Refresh, *tc.want.Refresh)
 			}
 		})
 	}

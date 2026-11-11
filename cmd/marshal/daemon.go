@@ -353,6 +353,7 @@ func runDaemonStatus(ctx context.Context, args []string, stdout, stderr io.Write
 	fmt.Fprintf(stdout, "socket: %s (answering)\n", paths.Socket)
 	marshalVersion := daemonVersion()
 	fmt.Fprintln(stdout, daemonInfoLine(info, marshalVersion))
+	fmt.Fprintln(stdout, daemonRefreshLine(info))
 	for _, child := range info.Children {
 		fmt.Fprintln(stdout, daemonChildLine(child, marshalVersion))
 		if warning := strings.TrimSpace(child.EnvWarning); warning != "" {
@@ -390,6 +391,29 @@ func daemonInfoLine(info daemon.Info, marshalVersion string) string {
 	}
 	return fmt.Sprintf("daemon: version %s (this marshal %s), started %s, projects: %s",
 		info.Version, marshalVersion, started, projects)
+}
+
+// daemonRefreshLine renders info's refresh helper: its pid, and its restart
+// count when it has restarted. A daemon that reports no helper — an older
+// build, or one run without --oauth-refresh — says `off`, so the absence is
+// stated rather than left to be inferred from a missing line.
+func daemonRefreshLine(info daemon.Info) string {
+	if info.Refresh == nil {
+		return "refresh: off"
+	}
+	line := fmt.Sprintf("refresh: running (pid %d)", info.Refresh.PID)
+	if info.Refresh.Restarts != 0 {
+		line += fmt.Sprintf(", restarted %d %s", info.Refresh.Restarts, restartCount(info.Refresh.Restarts))
+	}
+	return line
+}
+
+// restartCount is the noun for n restarts.
+func restartCount(n int) string {
+	if n == 1 {
+		return "time"
+	}
+	return "times"
 }
 
 // daemonChildLine is one project child's line under the daemon's: its root,

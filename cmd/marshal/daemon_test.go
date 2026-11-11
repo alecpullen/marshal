@@ -187,6 +187,9 @@ func TestDaemonInstallPassesExplicitPaths(t *testing.T) {
 			"<string>--addr</string>",
 			"<string>off</string>",
 			"<string>--marshal-bin</string>",
+			// The installed daemon always refreshes (decision 5), so the
+			// flag is written into the unit rather than configured.
+			"<string>--oauth-refresh</string>",
 			"<key>MARSHAL_DATA_DIR</key>",
 			"<string>" + dataDir + "</string>",
 			"<key>SHELL</key>",
@@ -314,6 +317,7 @@ func TestDaemonStatusReportsARunningDaemon(t *testing.T) {
 				PID:       4242,
 				StartedAt: 1700000000000,
 				Projects:  []string{"/work/one", "/work/two"},
+				Refresh:   &daemon.RefreshInfo{PID: 5151, Restarts: 2},
 				Children: []daemon.ChildInfo{
 					{
 						// Another build, with a warning: the line has to
@@ -360,10 +364,10 @@ func TestDaemonStatusReportsARunningDaemon(t *testing.T) {
 		t.Errorf("client socket = %q, want %q", gotSocket, socket)
 	}
 	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
-	// The daemon's three lines, then each child's, the warned child's
-	// second one included.
-	if len(lines) != 6 {
-		t.Fatalf("status printed %d lines, want 6:\n%s", len(lines), stdout.String())
+	// The daemon's three lines, then its refresh helper's, then each
+	// child's, the warned child's second one included.
+	if len(lines) != 7 {
+		t.Fatalf("status printed %d lines, want 7:\n%s", len(lines), stdout.String())
 	}
 	if !strings.Contains(lines[0], "running") || !strings.Contains(lines[0], "4242") {
 		t.Errorf("service line = %q, want the running state and its pid", lines[0])
@@ -385,21 +389,27 @@ func TestDaemonStatusReportsARunningDaemon(t *testing.T) {
 		}
 	}
 
+	// The refresh helper sits under the daemon's line and above the
+	// children's: its pid, and its restarts when it has restarted.
+	if want := "refresh: running (pid 5151), restarted 2 times"; lines[3] != want {
+		t.Errorf("refresh line = %q, want %q", lines[3], want)
+	}
+
 	// The first child runs another build and carries a warning: its line
 	// names its own version, this marshal's, and its one session, and the
 	// warning follows indented on a line of its own.
-	if want := "child /work/three: version 2.0.0, 1 session (this marshal 0.9.0)"; lines[3] != want {
-		t.Errorf("child line = %q, want %q", lines[3], want)
+	if want := "child /work/three: version 2.0.0, 1 session (this marshal 0.9.0)"; lines[4] != want {
+		t.Errorf("child line = %q, want %q", lines[4], want)
 	}
-	if want := "  environment: " + warning; lines[4] != want {
-		t.Errorf("warning line = %q, want %q", lines[4], want)
+	if want := "  environment: " + warning; lines[5] != want {
+		t.Errorf("warning line = %q, want %q", lines[5], want)
 	}
 	// The second child runs this marshal's version with no sessions and no
 	// warning: no "(this marshal ...)" aside, and no second line.
-	if want := "child /work/four: version 0.9.0, 0 sessions"; lines[5] != want {
-		t.Errorf("child line = %q, want %q", lines[5], want)
+	if want := "child /work/four: version 0.9.0, 0 sessions"; lines[6] != want {
+		t.Errorf("child line = %q, want %q", lines[6], want)
 	}
-	for _, line := range lines[3:] {
+	for _, line := range lines[4:] {
 		if strings.Contains(line, "/work/four") && strings.Contains(line, "this marshal") {
 			t.Errorf("child line = %q, want no version aside for a child running this marshal", line)
 		}
@@ -443,6 +453,45 @@ func TestDaemonChildLine(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			if got := daemonChildLine(c.child, c.marshalVersion); got != c.want {
 				t.Errorf("daemonChildLine() = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// TestDaemonRefreshLine pins the refresh line's three shapes: no helper at
+// all reads `off`, a helper that has not restarted names only its pid, and a
+// helper that has restarted adds its count with a real plural.
+func TestDaemonRefreshLine(t *testing.T) {
+	cases := []struct {
+		name    string
+		refresh *daemon.RefreshInfo
+		want    string
+	}{
+		{
+			name:    "no helper",
+			refresh: nil,
+			want:    "refresh: off",
+		},
+		{
+			name:    "running, never restarted",
+			refresh: &daemon.RefreshInfo{PID: 5151},
+			want:    "refresh: running (pid 5151)",
+		},
+		{
+			name:    "running, restarted once",
+			refresh: &daemon.RefreshInfo{PID: 5151, Restarts: 1},
+			want:    "refresh: running (pid 5151), restarted 1 time",
+		},
+		{
+			name:    "running, restarted thrice",
+			refresh: &daemon.RefreshInfo{PID: 5151, Restarts: 3},
+			want:    "refresh: running (pid 5151), restarted 3 times",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := daemonRefreshLine(daemon.Info{Refresh: c.refresh}); got != c.want {
+				t.Errorf("daemonRefreshLine() = %q, want %q", got, c.want)
 			}
 		})
 	}

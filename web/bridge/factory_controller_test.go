@@ -19,9 +19,14 @@ func loopItem() FactoryItem {
 func TestFactoryLoopHappyAndRepair(t *testing.T) {
 	now := time.Now().UTC()
 	i := loopItem()
-	steps := []string{"spawn", "seed", "publish", "create_pr", "implement", "publish", "park", "spawn", "review", "park", "resume", "implement"}
+	steps := []string{"spawn", "seed", "publish", "create_pr", "implement", "publish", "park", "spawn", "review", "park", "resume", "implement", "publish", "park", "spawn", "review", "park", "set_ready"}
 	for _, kind := range steps {
-		n, e, err := AdvanceFactory(i, FactoryObservation{RuntimeKnown: true, TurnIdle: true, ActiveWorkKnown: true, WorkIdle: true, HeadSHA: "head", TreeSHA: "tree", RemoteHead: "head", BaseSHA: "base", CI: &FactoryCI{HeadSHA: "head", Complete: true}, ObservedAt: now}, now)
+		obs := FactoryObservation{RuntimeKnown: true, TurnIdle: true, ActiveWorkKnown: true, WorkIdle: true, HeadSHA: "head", TreeSHA: "tree", RemoteHead: "head", BaseSHA: "base", CI: &FactoryCI{HeadSHA: "head", Complete: true}, ObservedAt: now}
+		if len(i.PRs) > 0 {
+			p := i.PRs[len(i.PRs)-1]
+			obs.PR = &p
+		}
+		n, e, err := AdvanceFactory(i, obs, now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -42,15 +47,24 @@ func TestFactoryLoopHappyAndRepair(t *testing.T) {
 			outcome.Report = &FactoryReport{OperationID: e.ID, Outcome: "complete", Summary: "done"}
 		}
 		if kind == "review" {
-			outcome.Report = &FactoryReport{OperationID: e.ID, Outcome: "complete", Summary: "findings", InputsAccessible: true, BaseSHA: "base", HeadSHA: "head", Findings: []ReviewFinding{{Title: "bug", Severity: "blocking"}}}
+			findings := []ReviewFinding{}
+			if len(i.Rounds) == 1 {
+				findings = []ReviewFinding{{Title: "bug", Severity: "blocking"}}
+			}
+			outcome.Report = &FactoryReport{OperationID: e.ID, Outcome: "complete", Summary: "findings", InputsAccessible: true, BaseSHA: "base", HeadSHA: "head", Findings: findings}
+		}
+		if kind == "set_ready" {
+			p := i.PRs[len(i.PRs)-1]
+			p.Draft = false
+			outcome.PR = &p
 		}
 		i, err = CompleteFactoryEffect(i, e.ID, outcome, now)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	if len(i.Rounds) != 2 {
-		t.Fatalf("rounds=%d", len(i.Rounds))
+	if len(i.Rounds) != 2 || i.State != "ready" {
+		t.Fatalf("final state=%s rounds=%d", i.State, len(i.Rounds))
 	}
 }
 func TestFactoryLoopLimitsAndNoProgress(t *testing.T) {
@@ -76,7 +90,7 @@ func TestFactoryLoopLimitsAndNoProgress(t *testing.T) {
 	i.State = "repairing"
 	i.Stage = "resume"
 	i.Effects = []FactoryEffect{{ID: "resume", Kind: "resume", Status: "completed"}}
-	i.Rounds = []FactoryRound{{Number: 1, TreeSHA: "same"}, {Number: 2, TreeSHA: "same", Review: &FactoryReport{Findings: []ReviewFinding{{Title: "bug", Severity: "blocking"}}}}}
+	i.Rounds = []FactoryRound{{Number: 1, ApprovalRevision: 1, TreeSHA: "same"}, {Number: 2, ApprovalRevision: 1, TreeSHA: "same", Review: &FactoryReport{Findings: []ReviewFinding{{Title: "bug", Severity: "blocking"}}}}}
 	got, e, err = AdvanceFactory(i, FactoryObservation{}, now)
 	if err != nil || e != nil || got.Decision == nil || got.Decision.Kind != "no_progress" {
 		t.Fatalf("no progress: %+v %+v %v", got.Decision, e, err)
@@ -237,7 +251,7 @@ func TestFactoryLoopNeedsInputAnswerUsesNextRound(t *testing.T) {
 	i.State = "needs_input"
 	i.Rounds = []FactoryRound{{Number: 1, ImplementEffectID: "first"}}
 	i.Effects = []FactoryEffect{{ID: "first", Kind: "implement", Status: "completed", Outcome: &FactoryOutcome{EffectID: "first", Confirmed: true, Report: &FactoryReport{Outcome: "needs_input", Question: "which?", Reason: "ambiguous"}}}}
-	i.Decision = &FactoryDecision{ID: "q", Kind: "question"}
+	i.Decision = &FactoryDecision{ID: "q", Kind: "question", EffectID: "first"}
 	if err := factoryApplyCommand(&i, FactoryCommand{Kind: "answer", DecisionID: "old", Answer: "yes"}, now); err == nil {
 		t.Fatal("stale decision accepted")
 	}
@@ -323,7 +337,7 @@ func TestFactoryLoopExhaustedAnswerWaitsForGrant(t *testing.T) {
 	i.Rounds = []FactoryRound{{Number: 1, Implementation: &FactoryReport{Outcome: "needs_input"}}}
 	i.Effects = []FactoryEffect{{ID: "first", Kind: "implement", Status: "completed", Outcome: &FactoryOutcome{EffectID: "first", Confirmed: true, Report: &FactoryReport{Outcome: "needs_input"}}}}
 	i.Grants = []FactoryGrant{{ID: "initial", AdditionalRounds: 1}}
-	i.Decision = &FactoryDecision{ID: "q"}
+	i.Decision = &FactoryDecision{ID: "q", Kind: "question", EffectID: "first"}
 	if err := factoryApplyCommand(&i, FactoryCommand{Kind: "answer", DecisionID: "q", Answer: "use A"}, now); err != nil {
 		t.Fatal(err)
 	}
@@ -426,6 +440,7 @@ func blockedFactoryItem(t *testing.T, s *FactoryStore, request string) FactoryIt
 		dst.Approvals = []FactoryApproval{a}
 		dst.Grants = []FactoryGrant{{ID: "initial", AdditionalRounds: 5}}
 		dst.State = "implementing"
+		dst.ApprovedAt = time.Now().Add(-time.Hour)
 		dst.BaseSHA = "base"
 		dst.Workers = []FactoryWorker{{AgentID: "w", SessionID: "s", Role: "implementer"}}
 		dst.Rounds = []FactoryRound{{Number: 1, ApprovalRevision: 1, ImplementEffectID: "impl", BaseSHA: "base"}}
@@ -535,5 +550,77 @@ func TestFactoryLoopReadyMonitorDuringModelTurn(t *testing.T) {
 		case <-time.After(time.Millisecond * 10):
 			c.Wake()
 		}
+	}
+}
+func TestFactoryLoopFailedCICleanReviewRepairs(t *testing.T) {
+	now := time.Now().UTC()
+	i := loopItem()
+	i.State = "reviewing"
+	i.Rounds = []FactoryRound{{Number: 1, ApprovalRevision: 1, BaseSHA: "base", HeadSHA: "head", CI: &FactoryCI{HeadSHA: "head", Complete: true, Checks: []FactoryCheck{{Key: FactoryCheckKey{Kind: "check_run", Name: "build", AppID: 1}, SHA: "head", Status: "completed", Conclusion: "failure", LogTail: "build failed"}}}, Review: &FactoryReport{Outcome: "complete", InputsAccessible: true, BaseSHA: "base", HeadSHA: "head", Findings: []ReviewFinding{}}}}
+	i.Effects = []FactoryEffect{{ID: "park", Kind: "park", WorkerRole: "reviewer", Status: "completed"}}
+	n, e, err := AdvanceFactory(i, FactoryObservation{}, now)
+	if err != nil || e == nil || e.Kind != "resume" || n.State == "ready" {
+		t.Fatalf("failed CI escaped repair: %+v state=%s err=%v", e, n.State, err)
+	}
+	n, err = CompleteFactoryEffect(n, e.ID, FactoryOutcome{EffectID: e.ID, Confirmed: true}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, e, err = AdvanceFactory(n, FactoryObservation{}, now)
+	if err != nil || e == nil || e.Kind != "implement" || e.Round != 2 {
+		t.Fatalf("CI repair not dispatched: %+v %v", e, err)
+	}
+	prompt, err := BuildFactoryPrompt(n, *e)
+	if err != nil || !strings.Contains(prompt, "build failed") {
+		t.Fatalf("CI repair prompt=%s err=%v", prompt, err)
+	}
+}
+func TestFactoryLoopAnswerOnlyCurrentQuestion(t *testing.T) {
+	now := time.Now().UTC()
+	for _, kind := range []string{"recovery", "exhausted", "conflict", "question"} {
+		i := loopItem()
+		i.State = "needs_input"
+		i.Effects = []FactoryEffect{{ID: "current", Kind: "implement", Status: "completed", Outcome: &FactoryOutcome{EffectID: "current", Confirmed: true, Report: &FactoryReport{Outcome: "needs_input"}}}}
+		i.Decision = &FactoryDecision{ID: "q", Kind: kind, EffectID: "current"}
+		err := factoryApplyCommand(&i, FactoryCommand{Kind: "answer", DecisionID: "q", Answer: "A"}, now)
+		if kind == "question" && err != nil || kind != "question" && err == nil {
+			t.Fatalf("kind=%s answer err=%v", kind, err)
+		}
+	}
+	i := loopItem()
+	i.State = "needs_input"
+	i.Decision = &FactoryDecision{ID: "q", Kind: "question", EffectID: "old"}
+	i.Effects = []FactoryEffect{{ID: "current", Kind: "implement", Status: "completed"}}
+	if err := factoryApplyCommand(&i, FactoryCommand{Kind: "answer", DecisionID: "q", Answer: "A"}, now); err == nil {
+		t.Fatal("stale effect question accepted")
+	}
+}
+func TestFactoryLoopReplacementSupersedesReview(t *testing.T) {
+	now := time.Now().UTC()
+	i := loopItem()
+	i.State = "needs_input"
+	i.Rounds = []FactoryRound{{Number: 1, ApprovalRevision: 1, BaseSHA: "base", HeadSHA: "head", Review: &FactoryReport{Outcome: "complete", Findings: []ReviewFinding{}}}}
+	i.Effects = []FactoryEffect{{ID: "park", Kind: "park", WorkerRole: "reviewer", Status: "completed"}}
+	i.Decision = &FactoryDecision{ID: "block", Kind: "conflict"}
+	r := factoryReq()
+	r.RequestID = "replacement"
+	r.Plan = "replacement plan"
+	if err := factoryApplyCommand(&i, FactoryCommand{Kind: "retry", DecisionID: "block", RequestID: "retry", Reason: "new plan", AdditionalRounds: 1, Replacement: &r}, now); err != nil {
+		t.Fatal(err)
+	}
+	n, e, err := AdvanceFactory(i, FactoryObservation{}, now)
+	if err != nil || e == nil || e.Kind == "set_ready" || n.State == "checking" {
+		t.Fatalf("replacement reused old evidence: %+v state=%s err=%v", e, n.State, err)
+	}
+	if len(n.Approvals) != 2 || n.Approvals[1].Revision != 2 {
+		t.Fatalf("approval history: %+v", n.Approvals)
+	}
+	n, err = CompleteFactoryEffect(n, e.ID, FactoryOutcome{EffectID: e.ID, Confirmed: true}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, e, err = AdvanceFactory(n, FactoryObservation{}, now)
+	if err != nil || e == nil || e.Kind != "implement" || e.ApprovalRevision != 2 || e.Round != 2 {
+		t.Fatalf("new approval did not restart implementation: %+v %v", e, err)
 	}
 }

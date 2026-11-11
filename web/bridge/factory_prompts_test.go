@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestFactoryPromptCompletion(t *testing.T) {
@@ -44,5 +45,17 @@ func TestFactoryPromptResultStopReason(t *testing.T) {
 				t.Fatalf("Prompt changed signature behavior: %v", err)
 			}
 		})
+	}
+}
+func TestFactoryPromptDispatchedRepairUsesPreviousRound(t *testing.T) {
+	i := loopItem()
+	i.Rounds = []FactoryRound{{Number: 1, HeadSHA: "prior-head", CI: &FactoryCI{HeadSHA: "prior-head", Complete: true, Checks: []FactoryCheck{{Key: FactoryCheckKey{Kind: "check_run", Name: "build", AppID: 1}, Conclusion: "failure", LogTail: "compile failed"}}}, Review: &FactoryReport{Findings: []ReviewFinding{{Title: "broken API", Severity: "blocking"}}}}}
+	e := factoryNext(&i, "implement", "implementer", 2, time.Now())
+	prompt, err := BuildFactoryPrompt(i, *e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "prior-head") || !strings.Contains(prompt, "compile failed") || !strings.Contains(prompt, "broken API") {
+		t.Fatalf("dispatched repair lost evidence: %s", prompt)
 	}
 }

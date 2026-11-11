@@ -79,8 +79,19 @@ func BuildFactoryPrompt(item FactoryItem, effect FactoryEffect) (string, error) 
 		fmt.Fprintf(&b, "Review base SHA: %s\nCandidate head SHA: %s\nReviewer instructions:\n%s\nRead the diff and approved inputs. Use ask mode; do not edit files. Report inputsAccessible, baseSha, headSha, and findings (possibly []).\n", effect.ExpectedBase, effect.ExpectedHead, a.Config.ReviewerInstructions)
 	} else {
 		b.WriteString("Implement the approved scope, run relevant tests, and provide a concise engineering report. Do not push or merge. If blocked, return needs_input with a question and reason.\n")
-		if effect.Round > 1 && len(item.Rounds) > 0 {
-			prev := item.Rounds[len(item.Rounds)-1]
+		if effect.Round > 1 {
+			var prev FactoryRound
+			found := false
+			for _, r := range item.Rounds {
+				if r.Number == effect.Round-1 {
+					prev = r
+					found = true
+					break
+				}
+			}
+			if !found {
+				return "", fmt.Errorf("factory: missing previous round evidence")
+			}
 			fmt.Fprintf(&b, "Repair round %d from reviewed head %s. Diagnose and address the combined evidence below.\n", effect.Round, prev.HeadSHA)
 			if prev.CI != nil {
 				for _, check := range prev.CI.Checks {

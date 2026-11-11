@@ -13,6 +13,14 @@ import (
 	"time"
 )
 
+func factoryRoundCIState(i FactoryItem, r FactoryRound) string {
+	if r.CI == nil || len(i.Approvals) == 0 || r.CI.HeadSHA != r.HeadSHA {
+		return "unavailable"
+	}
+	conf := i.Approvals[len(i.Approvals)-1].Config
+	state, _ := EvaluateFactoryCI(*r.CI, conf.ExpectedChecks, conf.NoRequiredCIAcknowledged)
+	return state
+}
 func factoryAllowance(i FactoryItem) int {
 	n := 0
 	for _, g := range i.Grants {
@@ -200,10 +208,10 @@ func AdvanceFactory(item FactoryItem, observed FactoryObservation, now time.Time
 			} else {
 				if len(i.Rounds) > 0 {
 					r := i.Rounds[len(i.Rounds)-1]
-					if r.Review != nil && r.Review.Outcome == "complete" && len(r.Review.Findings) == 0 {
+					if r.Review != nil && r.ApprovalRevision == i.Approvals[len(i.Approvals)-1].Revision && r.Review.Outcome == "complete" && len(r.Review.Findings) == 0 && factoryRoundCIState(i, r) == "passed" {
 						kind = "set_ready"
 					} else {
-						if factoryImplementerRouteChanged(i) {
+						if r.ApprovalRevision != i.Approvals[len(i.Approvals)-1].Revision && factoryImplementerRouteChanged(i) {
 							kind = "spawn"
 							role = "implementer"
 						} else {
@@ -219,10 +227,17 @@ func AdvanceFactory(item FactoryItem, observed FactoryObservation, now time.Time
 			kind = "park"
 			role = "reviewer"
 		case "set_ready":
-			if last.Outcome != nil && last.Outcome.Confirmed {
+			if last.Outcome != nil && last.Outcome.Confirmed && last.Outcome.Error == "" && last.ApprovalRevision == i.Approvals[len(i.Approvals)-1].Revision {
 				i.State = "ready"
+				return i, nil, nil
 			}
-			return i, nil, nil
+			if w := factoryWorker(i, "implementer"); w != nil && w.Parked {
+				kind = "resume"
+				role = "implementer"
+			} else {
+				kind = "implement"
+				role = "implementer"
+			}
 		case "set_draft":
 			i.State = "needs_input"
 			return i, nil, nil
@@ -234,11 +249,11 @@ func AdvanceFactory(item FactoryItem, observed FactoryObservation, now time.Time
 		round = len(i.Rounds) + 1
 		if len(i.Rounds) > 0 {
 			prev := i.Rounds[len(i.Rounds)-1]
-			if prev.Review != nil && prev.Review.Outcome == "complete" && len(prev.Review.Findings) == 0 {
+			if prev.Review != nil && prev.ApprovalRevision == i.Approvals[len(i.Approvals)-1].Revision && prev.Review.Outcome == "complete" && len(prev.Review.Findings) == 0 && factoryRoundCIState(i, prev) == "passed" {
 				kind = "set_ready"
 				role = ""
 				round = 0
-			} else if len(i.Rounds) > 1 && prev.TreeSHA != "" && prev.TreeSHA == i.Rounds[len(i.Rounds)-2].TreeSHA && prev.Review != nil && len(prev.Review.Findings) > 0 && (len(i.Grants) < 2 || !i.Grants[len(i.Grants)-1].At.After(prev.FinishedAt)) {
+			} else if prev.ApprovalRevision == i.Approvals[len(i.Approvals)-1].Revision && len(i.Rounds) > 1 && prev.TreeSHA != "" && prev.TreeSHA == i.Rounds[len(i.Rounds)-2].TreeSHA && prev.Review != nil && len(prev.Review.Findings) > 0 && (len(i.Grants) < 2 || !i.Grants[len(i.Grants)-1].At.After(prev.FinishedAt)) {
 				factoryDecision(&i, "no_progress", "repair did not change the tracked tree", now)
 				return i, nil, nil
 			}
@@ -705,7 +720,11 @@ func factoryApplyCommand(i *FactoryItem, c FactoryCommand, now time.Time) error 
 		i.State = "queued"
 		i.ApprovedAt = now
 	case "answer":
-		if i.Decision == nil || i.Decision.ID != c.DecisionID || strings.TrimSpace(c.Answer) == "" {
+		if i.Decision == nil || i.Decision.ID != c.DecisionID || i.Decision.Kind != "question" || strings.TrimSpace(c.Answer) == "" || len(i.Effects) == 0 {
+			return ErrFactoryConflict
+		}
+		e := i.Effects[len(i.Effects)-1]
+		if i.Decision.EffectID == "" || i.Decision.EffectID != e.ID || e.Status != "completed" || e.Outcome == nil || e.Outcome.Report == nil || e.Outcome.Report.Outcome != "needs_input" {
 			return ErrFactoryConflict
 		}
 		i.History = append(i.History, FactoryEvent{At: now, Kind: "answer", Message: c.Answer})

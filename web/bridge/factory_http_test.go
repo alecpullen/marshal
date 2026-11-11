@@ -197,10 +197,10 @@ func TestFactoryHTTPCreateApprovalAndReplay(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("accepted work was not dispatched")
 	}
+	close(effects.release)
 	if err := processController.Quiesce(); err != nil {
 		t.Fatal(err)
 	}
-	close(effects.release)
 	cancelProcess()
 	<-done
 }
@@ -347,6 +347,59 @@ func TestFactoryStartupQuiesceBeforeExecution(t *testing.T) {
 	}
 	if got.Effects[len(got.Effects)-1].Status != "uncertain" {
 		t.Fatalf("effect status %q", got.Effects[len(got.Effects)-1].Status)
+	}
+}
+
+func TestFactoryStartupQuiesceAfterAdmissionBeforeAdapter(t *testing.T) {
+	store, err := OpenFactoryStore(filepath.Join(t.TempDir(), "factory"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	item := blockedFactoryItem(t, store, "admitted-boundary")
+	effects := &dispatchBoundaryEffects{executed: make(chan struct{}, 1)}
+	controller := NewFactoryController(store, effects, nil)
+	admitted := make(chan context.Context, 1)
+	release := make(chan struct{})
+	controller.afterAdmission = func(ctx context.Context) { admitted <- ctx; <-release }
+	if err := controller.dispatch(context.Background(), item, item.Effects[len(item.Effects)-1]); err != nil {
+		t.Fatal(err)
+	}
+	var executionCtx context.Context
+	select {
+	case executionCtx = <-admitted:
+	case <-time.After(time.Second):
+		t.Fatal("effect not admitted")
+	}
+	quiesced := make(chan error, 1)
+	go func() { quiesced <- controller.Quiesce() }()
+	select {
+	case <-executionCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("shutdown did not cancel admitted effect")
+	}
+	before, err := store.Get(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Effects[len(before.Effects)-1].Status != "dispatched" {
+		t.Fatalf("uncertainty persisted before admitted execution joined: %s", before.Effects[len(before.Effects)-1].Status)
+	}
+	close(release)
+	if err := <-quiesced; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-effects.executed:
+		t.Fatal("adapter ran after cancellation")
+	default:
+	}
+	after, err := store.Get(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Effects[len(after.Effects)-1].Status != "uncertain" {
+		t.Fatalf("shutdown status %s", after.Effects[len(after.Effects)-1].Status)
 	}
 }
 

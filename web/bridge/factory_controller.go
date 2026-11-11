@@ -397,26 +397,29 @@ func CompleteFactoryEffect(item FactoryItem, effectID string, outcome FactoryOut
 
 // FactoryController owns scheduling after Task 5 explicitly opens its recovery gate.
 type FactoryController struct {
-	store   *FactoryStore
-	effects FactoryEffects
-	now     func() time.Time
-	mu      sync.Mutex
-	ready   bool
-	closing bool
-	active  sync.WaitGroup
+	store       *FactoryStore
+	effects     FactoryEffects
+	now         func() time.Time
+	mu          sync.Mutex
+	ready       bool
+	closing     bool
+	active      sync.WaitGroup
+	execCancels map[string]context.CancelFunc
 	// Tests may pause after durable dispatch and before execution admission.
 	beforeExecute func()
-	wake          chan struct{}
-	readyWake     chan struct{}
-	after         func(time.Duration) <-chan time.Time
-	pauseUntil    time.Time
+	// Tests may pause an admitted goroutine before its adapter call.
+	afterAdmission func(context.Context)
+	wake           chan struct{}
+	readyWake      chan struct{}
+	after          func(time.Duration) <-chan time.Time
+	pauseUntil     time.Time
 }
 
 func NewFactoryController(store *FactoryStore, effects FactoryEffects, now func() time.Time) *FactoryController {
 	if now == nil {
 		now = time.Now
 	}
-	return &FactoryController{store: store, effects: effects, now: now, wake: make(chan struct{}, 1), readyWake: make(chan struct{}, 1), after: time.After}
+	return &FactoryController{store: store, effects: effects, now: now, execCancels: map[string]context.CancelFunc{}, wake: make(chan struct{}, 1), readyWake: make(chan struct{}, 1), after: time.After}
 }
 func (c *FactoryController) Wake() {
 	select {
@@ -444,8 +447,14 @@ func (c *FactoryController) isReady() bool {
 // before the owning process releases the factory store.
 func (c *FactoryController) Quiesce() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.closing = true
+	for _, cancel := range c.execCancels {
+		cancel()
+	}
+	c.mu.Unlock()
+	c.active.Wait()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	for _, snapshot := range c.store.List() {
 		for {
 			item, err := c.store.Get(snapshot.ID)
@@ -676,11 +685,22 @@ func (c *FactoryController) dispatch(ctx context.Context, i FactoryItem, e Facto
 		c.mu.Unlock()
 		return nil
 	}
-	started := make(chan struct{})
 	done := make(chan error, 1)
+	execCtx, cancel := context.WithCancel(ctx)
+	c.execCancels[e.ID] = cancel
 	c.active.Add(1)
-	go func() { defer c.active.Done(); close(started); done <- c.finishDispatch(ctx, dispatched, e) }()
-	<-started // execution admission precedes any shutdown journal transition
+	go func() {
+		defer c.active.Done()
+		defer func() { c.mu.Lock(); delete(c.execCancels, e.ID); c.mu.Unlock(); cancel() }()
+		if c.afterAdmission != nil {
+			c.afterAdmission(execCtx)
+		}
+		if execCtx.Err() != nil {
+			done <- nil
+			return
+		}
+		done <- c.finishDispatch(execCtx, dispatched, e)
+	}()
 	c.mu.Unlock()
 	if e.Kind == "implement" || e.Kind == "review" {
 		return nil

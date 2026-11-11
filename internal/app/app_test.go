@@ -35,6 +35,7 @@ import (
 	"marshal/internal/contextpack"
 	"marshal/internal/credentials"
 	"marshal/internal/db"
+	"marshal/internal/filetrack"
 	"marshal/internal/interaction"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
@@ -4570,6 +4571,69 @@ func TestSubagentChildRegistryKeepsSymbolsTool(t *testing.T) {
 	}
 	if _, ok := child.Registry.Lookup("symbols"); !ok {
 		t.Fatal("child registry must retain the parent's symbols tool")
+	}
+}
+
+// TestSubagentWritesUnderRequestedActor proves the actor identity survives the
+// factory boundary, not merely the SubagentRequest struct: a child toolset's
+// committed write must land in the shared ledger under the child's ID and
+// label. This is the wiring the writer exemption depends on.
+func TestSubagentWritesUnderRequestedActor(t *testing.T) {
+	cfg := config.Default()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	parentState := session.New(cfg, root, time.Unix(100, 0), session.Persistence{})
+	parentReg := registry.New()
+
+	database, err := db.Open(filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	ft := filetrack.New(database.SQLDB(), "test-session")
+
+	factory, _ := buildSubagentFactoryWithLock(cfg, parentState, nil, parentReg, nil, "m", nil, nil, database, 0, pricing.ModelPricing{}, &swarm.WriteLock{}, native.Options{
+		WorkspaceRoot: root,
+		Config:        cfg,
+		FileTracker:   ft,
+		AgentID:       "main",
+		AgentLabel:    "the main agent",
+	}, nil, nil)
+	child, _, err := factory(agent.SubagentRequest{
+		ActorID:    "child-42",
+		ActorLabel: "a subagent (review)",
+	})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	tool, ok := child.Registry.Lookup("file.write")
+	if !ok {
+		t.Fatal("child registry has no file.write")
+	}
+	if _, err := tool.Handler(context.Background(), registry.ToolCall{
+		Name: "file.write",
+		Args: []byte(`{"path":"probe.txt","content":"hello"}`),
+	}); err != nil {
+		t.Fatalf("child file.write: %v", err)
+	}
+
+	write, err := ft.WriteState(filepath.Join(root, "probe.txt"))
+	if err != nil {
+		t.Fatalf("WriteState: %v", err)
+	}
+	if !write.OK {
+		t.Fatal("child write was not recorded in the shared ledger")
+	}
+	if write.Actor.ID != "child-42" {
+		t.Fatalf("actor ID = %q, want child-42", write.Actor.ID)
+	}
+	if write.Actor.Label != "a subagent (review)" {
+		t.Fatalf("actor label = %q, want the child's display label", write.Actor.Label)
 	}
 }
 

@@ -247,7 +247,7 @@ logged and do not fail the read itself, matching current behavior.
 | Agent | Actor ID | Label |
 |---|---|---|
 | Main agent | `main` | `the main agent` |
-| Plan author | `plan-author` | `the plan author` |
+| Plan author | unique per constructed author | `the plan author` |
 | Pipeline worker | unique per constructed worker | `a pipeline worker` |
 | `agent.run` child | the child's `WorkID` | `a subagent (<description>)` |
 
@@ -260,6 +260,9 @@ stable and more useful in an error. Numeric card IDs are a non-goal.
 
 Pipeline workers are concurrent, so each constructed worker mints a unique ID
 (an atomic counter in the factory is sufficient; the ledger is session-scoped).
+Plan authors mint a unique ID per constructed author for the same reason: the
+fixed-ID design relied on an unenforced “one author per conversation”
+assumption, and two authors sharing an ID would exempt each other's writes.
 
 ### Migration and docs
 
@@ -340,9 +343,9 @@ CGO_ENABLED=1 go test ./...
   needed.
 - Revision 0 is the correct “no epoch” value for rows created before this
   feature.
-- At most one plan author is active per conversation; its fixed actor ID is
-  therefore unique enough. Pipeline workers, which are concurrent, mint unique
-  IDs.
+- Plan authors and pipeline workers mint a unique actor ID per constructed
+  runner; neither relies on a concurrency assumption. The main agent keeps the
+  fixed `main` ID because there is exactly one per conversation.
 - `WorkID` is unique for the life of an `agent.run` child and is available
   before the child runner is built.
 - File modification times remain the external-change signal; the existing

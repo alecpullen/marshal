@@ -523,6 +523,27 @@ const (
 	readStale
 )
 
+// isNewestWriter reports whether this toolset made the ledger's latest write
+// to the path. The writer is exempt from the revision epoch because it already
+// knows the bytes it committed; an external change after that write is still
+// checked by the caller against the recorded write time.
+func (t *toolSet) isNewestWriter(write filetrack.WriteState) bool {
+	if !write.OK {
+		return false
+	}
+	actor := t.actor()
+	if actor.ID == "" {
+		return false
+	}
+	if write.Actor.ID != "" {
+		return write.Actor.ID == actor.ID
+	}
+	// Rows written before written_id existed carry no stable identity. Match
+	// the label only when this toolset also has no explicit ID; otherwise two
+	// agents sharing a display label would exempt each other.
+	return t.agentID == "" && write.Actor.Label != "" && write.Actor.Label == actor.Label
+}
+
 func (t *toolSet) checkFileRead(path string, info os.FileInfo) (filetrack.WriteState, readStatus, error) {
 	if t.fileTracker == nil {
 		return filetrack.WriteState{}, readAllowed, nil
@@ -535,8 +556,7 @@ func (t *toolSet) checkFileRead(path string, info os.FileInfo) (filetrack.WriteS
 	if err != nil {
 		return filetrack.WriteState{}, readAllowed, err
 	}
-	actorID := t.actor().ID
-	if write.OK && actorID != "" && write.Actor.ID == actorID {
+	if t.isNewestWriter(write) {
 		if info.ModTime().After(write.At) {
 			return write, readStale, nil
 		}
@@ -552,6 +572,39 @@ func (t *toolSet) checkFileRead(path string, info os.FileInfo) (filetrack.WriteS
 		return write, readStale, nil
 	}
 	return write, readAllowed, nil
+}
+
+// recheckWriteGuard re-runs the read/staleness check immediately before a
+// commit, after the earlier check and any directory creation. A path that
+// existed at admission but disappeared, or whose stat fails, fails closed
+// instead of being written through an unverified window. A path that did not
+// exist at admission may remain absent; if another writer created it in the
+// window, the ordinary read guard rejects the write.
+func (t *toolSet) recheckWriteGuard(path, displayPath string, fp patch.FilePatch, existed, refreshRead bool) error {
+	if t.fileTracker == nil {
+		return nil
+	}
+	info, statErr := os.Stat(path)
+	if statErr != nil {
+		if os.IsNotExist(statErr) {
+			if existed {
+				return fmt.Errorf("file %s disappeared while editing; re-read it before editing", displayPath)
+			}
+			return nil
+		}
+		return fmt.Errorf("stat %s: %w", displayPath, statErr)
+	}
+	write, status, err := t.checkFileRead(path, info)
+	if err != nil {
+		return fmt.Errorf("cannot verify read state for %s: %w; re-read it before editing", displayPath, err)
+	}
+	switch status {
+	case readNever:
+		return fmt.Errorf("file %s was never read this session; read it before editing", displayPath)
+	case readStale:
+		return t.changedOnDiskError(path, fp, write, info.ModTime(), refreshRead)
+	}
+	return nil
 }
 
 // changedOnDiskError builds the "file changed on disk" error, embedding the
@@ -639,7 +692,12 @@ func (t *toolSet) recordWrite(path string) {
 	if t.fileTracker == nil {
 		return
 	}
-	_ = t.fileTracker.RecordWrite(path, time.Now(), t.actor())
+	if err := t.fileTracker.RecordWrite(path, time.Now(), t.actor()); err != nil {
+		// The write itself committed. A ledger failure must not fail the tool
+		// call, but it does mean the next edit may be treated as stale, so
+		// leave a trace instead of silently degrading the writer exemption.
+		slog.Warn("record write", "path", path, "error", err)
+	}
 }
 
 // currentContentHeader introduces an embedded snapshot of the bytes currently
@@ -747,25 +805,15 @@ func (t *toolSet) applyFilePatches(ctx context.Context, patches []patch.FilePatc
 		}
 
 		if t.fileTracker != nil {
-			info, statErr := os.Stat(path)
-			if statErr != nil {
+			if _, statErr := os.Stat(path); statErr != nil {
 				if os.IsNotExist(statErr) {
 					// New file creation: no on-disk version to be stale against.
 					continue
 				}
 				return registry.ToolResult{}, fmt.Errorf("stat %s: %w", fp.Path, statErr)
 			}
-			write, status, err := t.checkFileRead(path, info)
-			if err != nil {
-				return registry.ToolResult{}, fmt.Errorf(
-					"cannot verify read state for %s: %w; re-read it before editing", fp.Path, err)
-			}
-			switch status {
-			case readNever:
-				return registry.ToolResult{}, fmt.Errorf(
-					"file %s was never read this session; read it before editing", fp.Path)
-			case readStale:
-				return registry.ToolResult{}, t.changedOnDiskError(path, fp, write, info.ModTime(), true)
+			if err := t.recheckWriteGuard(path, fp.Path, fp, true, true); err != nil {
+				return registry.ToolResult{}, err
 			}
 		} else {
 			slog.Warn("file.write_patch with nil fileTracker; TOCTOU check skipped",
@@ -932,6 +980,15 @@ func (t *toolSet) applyFilePatches(ctx context.Context, patches []patch.FilePatc
 			if !fileExists {
 				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 					return fmt.Errorf("create parent directory for %s: %w", fp.Path, err)
+				}
+			}
+
+			// Re-check immediately before the commit: directory creation and
+			// diff generation above take time, and a sibling or external writer
+			// must not slip between the first TOCTOU check and this write.
+			if t.fileTracker != nil {
+				if err := t.recheckWriteGuard(path, fp.Path, fp, fileExists, true); err != nil {
+					return err
 				}
 			}
 
@@ -1110,22 +1167,11 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 		}
 
 		// TOCTOU re-check for existing files: verify the file hasn't changed
-		// between the read above and this write.
-		if t.fileTracker != nil && exists {
-			writeStat, statErr := os.Stat(path)
-			if statErr == nil {
-				write, status, lrErr := t.checkFileRead(path, writeStat)
-				if lrErr != nil {
-					return registry.ToolResult{}, fmt.Errorf(
-						"cannot verify read state for %s: %w; re-read it before editing", args.Path, lrErr)
-				}
-				switch status {
-				case readNever:
-					return registry.ToolResult{}, fmt.Errorf(
-						"file %s was never read this session; read it before editing", args.Path)
-				case readStale:
-					return registry.ToolResult{}, t.changedOnDiskError(path, fp, write, writeStat.ModTime(), false)
-				}
+		// between the read above and this write. A file that appears between
+		// admission and this check is rejected by the ordinary read guard.
+		if t.fileTracker != nil {
+			if err := t.recheckWriteGuard(path, args.Path, fp, exists, false); err != nil {
+				return registry.ToolResult{}, err
 			}
 		}
 
@@ -1154,6 +1200,15 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 		if !exists {
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 				return registry.ToolResult{}, fmt.Errorf("create parent directory for %s: %w", args.Path, err)
+			}
+		}
+
+		// Re-check immediately before the commit: admission and directory
+		// creation above take time, and a sibling or external writer must not
+		// slip between the first TOCTOU check and this write.
+		if t.fileTracker != nil {
+			if err := t.recheckWriteGuard(path, args.Path, fp, exists, false); err != nil {
+				return registry.ToolResult{}, err
 			}
 		}
 

@@ -2783,6 +2783,48 @@ func TestWholeFileWriteDoesNotRefreshStaleRead(t *testing.T) {
 	}
 }
 
+// TestWriterExemptionAllowsOwnRewrite pins the two halves of the writer
+// exemption: the newest writer may edit again without a fresh read, while a
+// different agent carrying the same display label is still stale. Identity is
+// the actor ID, never the human-readable label.
+func TestWriterExemptionAllowsOwnRewrite(t *testing.T) {
+	root, _ := sharedEpochFixture(t)
+	ft := testFileLedger(t)
+	mainReg := testActorRegistry(t, root, ft, "main", "the main agent")
+	sibling := testActorRegistry(t, root, ft, "child", "the main agent")
+
+	mustInvoke(t, mainReg, "file.read", `{"path":"app.txt"}`)
+	mustInvoke(t, sibling, "file.read", `{"path":"app.txt"}`)
+	mustInvoke(t, mainReg, "file.write", `{"path":"app.txt","content":"alpha\nbeta\ngamma\n"}`)
+
+	// No read between the write and this edit: the writer exemption must let
+	// the agent continue with the bytes it just committed.
+	mustInvoke(t, mainReg, "file.edit", editArgs("app.txt", "beta", "BETA"))
+
+	// The sibling shares the display label but not the stable ID, so the
+	// writer's exemption must not cover it.
+	if _, err := invokeTool(t, sibling, "file.edit", editArgs("app.txt", "BETA", "beta")); err == nil {
+		t.Fatal("a different agent with the same label must not inherit the writer exemption")
+	} else if !strings.Contains(err.Error(), "changed on disk") {
+		t.Fatalf("error should report a stale file, got: %v", err)
+	}
+}
+
+// TestLegacyWriteWithoutActorIDFallsBackToLabel covers rows created before
+// written_id existed. Such a row can only be matched by its display label, and
+// only when the toolset itself has no stable ID; a toolset with an ID must not
+// fall back to label matching.
+func TestLegacyWriteWithoutActorIDFallsBackToLabel(t *testing.T) {
+	root, filePath := sharedEpochFixture(t)
+	ft := testFileLedger(t)
+	reg := testActorRegistry(t, root, ft, "", "legacy agent")
+
+	if err := ft.RecordWrite(filePath, time.Now(), filetrack.Actor{Label: "legacy agent"}); err != nil {
+		t.Fatalf("RecordWrite: %v", err)
+	}
+	mustInvoke(t, reg, "file.edit", editArgs("app.txt", "beta", "BETA"))
+}
+
 // interruptingTracker wraps a real FileTracker and runs a hook once, after the
 // first write it records. For a one-file commit unit that is the instant the
 // file is already on disk and the handler has not yet finished; for a multi-file

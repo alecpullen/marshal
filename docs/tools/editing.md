@@ -95,9 +95,11 @@ An existing file must have been read this session before it can be edited
 					"file %s was never read this session; read it before editing", fp.Path)
 ```
 
-A file whose modification time is newer than the recorded read is rejected as
-stale, with a `changedOnDiskError` naming the change. The point is that an edit
-is applied against content the agent has actually seen, not content it assumed.
+The read/staleness guard is re-run immediately before each commit, after
+admission and directory creation, so a path that disappeared or changed in the
+window fails closed. An external writer that changes the file after that final
+check and before `os.WriteFile` is the remaining check-vs-commit window; session
+agents are additionally serialized by the global write gate.
 
 The ledger is **per conversation, not per agent**: `file_reads` and `file_writes`
 are keyed by `session_id`, and every agent in the conversation — the main agent
@@ -111,10 +113,14 @@ ordered.
 The newest writer is exempt from its own write: a path whose recorded writer is
 the calling agent needs no re-read. An external change after that write still
 makes it stale, because the recorded write time no longer matches the file's
-modification time. Any read clears the epoch for all agents: a full `file.read`
-and the region embedded in a stale error both record the revision they observed
-for the path (at least its current write revision) together with the time they
-observed it, so one agent's read satisfies the guard for the rest.
+modification time. The exemption compares modification time with the recorded
+write time; on a filesystem whose timestamps are too coarse to separate an
+external write from the recorded one, that change is indistinguishable from the
+writer's own commit, while the revision epoch still orders session writes. Any
+read clears the epoch for all agents: a full `file.read` and the region embedded
+in a stale error both record the write revision they observed for the path,
+together with the time they observed it, so one agent's read satisfies the guard
+for the rest.
 
 When the staleness check does fire, the error carries what the caller needs to
 act on it instead of paying for a whole-file re-read:

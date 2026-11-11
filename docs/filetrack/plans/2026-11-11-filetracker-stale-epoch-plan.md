@@ -19,7 +19,7 @@
 
 - SQLite serializes the revision upsert; no extra service-level lock is needed.
 - Revision 0 is the “no epoch” value for pre-existing rows.
-- One plan author is active per conversation, so `plan-author` is unique enough. Pipeline workers are concurrent and get unique IDs.
+- Plan authors and pipeline workers are concurrent-capable and each constructed runner mints a unique ID; no single-plan-author assumption is required.
 - `WorkID` is available before an `agent.run` child toolset is registered.
 - The modification time remains the external-change detector.
 
@@ -678,3 +678,22 @@ git diff --check
 Expected: formatting is clean, the build passes, every package test passes, and `git diff --check` reports no whitespace errors. Report any pre-existing failure separately; do not hide it.
 
 **Commit:** `filetrack-stale-epoch: task 4 — document the shared epoch`
+
+## Post-execution review adjustments
+
+A branch review after task 4 approved the feature and produced these
+follow-ups, applied in one review-response commit:
+
+- Plan authors mint `newWorkerActorID("plan-author")` instead of the fixed
+  `plan-author`, removing the single-author assumption.
+- `buildSubagentFactoryWithLock` mints a unique child ID when `ActorID` is
+  empty, so two agents cannot collapse into one label.
+- The read/staleness guard re-runs immediately before each commit; a path that
+  existed then disappeared, or whose stat fails, fails closed.
+- `RecordRead` keeps `read_at` monotone at equal revisions, so an out-of-order
+  read cannot clear a newer clearance.
+- Legacy `written_id=''` rows fall back to the label only for toolsets without
+  a stable ID.
+- `recordWrite` logs ledger failures instead of silently swallowing them.
+- Added coverage for concurrent revision increments, the writer exemption,
+  legacy label fallback, and child actor identity through the factory.

@@ -2,8 +2,10 @@ package filetrack
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -93,6 +95,11 @@ func TestRecordReadUpsert(t *testing.T) {
 	if err := svc.RecordRead("src/main.go", second, 0); err != nil {
 		t.Fatalf("second RecordRead: %v", err)
 	}
+	// An out-of-order read at the same revision must not move the timestamp
+	// backwards and clear a later reader's clearance.
+	if err := svc.RecordRead("src/main.go", first, 0); err != nil {
+		t.Fatalf("third RecordRead: %v", err)
+	}
 
 	got, err := svc.ReadState("src/main.go")
 	if err != nil {
@@ -116,6 +123,52 @@ func TestRecordWrite(t *testing.T) {
 	}
 	if err := svc.RecordWrite("src/lib.go", now, Actor{ID: "subagent-1", Label: "a subagent"}); err != nil {
 		t.Fatalf("RecordWrite: %v", err)
+	}
+}
+
+// TestRecordWriteRevisionIsAtomic pins that concurrent writers never lose an
+// increment. The upsert must stay one SQL statement; splitting it into a
+// SELECT followed by an UPDATE would silently reintroduce lost updates. The
+// single connection deliberately still permits interleaving between separate
+// statements, while avoiding SQLITE_BUSY.
+func TestRecordWriteRevisionIsAtomic(t *testing.T) {
+	db := testDB(t)
+	db.SetMaxOpenConns(1)
+	svc := New(db, "session-1")
+
+	const writers = 25
+	start := make(chan struct{})
+	errs := make(chan error, writers)
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			if err := svc.RecordWrite("src/main.go", time.Now(), Actor{
+				ID:    fmt.Sprintf("writer-%d", i),
+				Label: fmt.Sprintf("writer %d", i),
+			}); err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("RecordWrite: %v", err)
+	}
+
+	write, err := svc.WriteState("src/main.go")
+	if err != nil {
+		t.Fatalf("WriteState: %v", err)
+	}
+	if !write.OK {
+		t.Fatal("expected a write state")
+	}
+	if write.Revision != writers {
+		t.Fatalf("revision = %d, want exactly %d", write.Revision, writers)
 	}
 }
 

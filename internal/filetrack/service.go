@@ -39,7 +39,10 @@ func (s *Service) RecordRead(path string, at time.Time, revision int64) error {
 		 ON CONFLICT(session_id, path) DO UPDATE SET
 			revision = MAX(file_reads.revision, excluded.revision),
 			read_at = CASE
-				WHEN excluded.revision >= file_reads.revision
+				WHEN excluded.revision > file_reads.revision
+					THEN excluded.read_at
+				WHEN excluded.revision = file_reads.revision
+					AND excluded.read_at > file_reads.read_at
 					THEN excluded.read_at
 				ELSE file_reads.read_at
 			END`,

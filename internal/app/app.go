@@ -1934,7 +1934,7 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 			MaxOutputBytes: cfg.Tools.Shell.MaxOutputBytes,
 			SessionState:   childState,
 			Config:         cfg,
-			AgentID:        "plan-author",
+			AgentID:        newWorkerActorID("plan-author"),
 			AgentLabel:     "the plan author",
 			NamedRoots:     map[string]string{"@plan": plansDir},
 		}
@@ -2257,6 +2257,11 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 			// error can then say "last written by a subagent", which is what
 			// tells the orchestrator to serialise instead of guessing.
 			childOpts.AgentID = req.ActorID
+			if childOpts.AgentID == "" {
+				// Never let an unidentified child collapse into its label: two
+				// same-label agents would then exempt each other's writes.
+				childOpts.AgentID = newWorkerActorID("subagent")
+			}
 			childOpts.AgentLabel = req.ActorLabel
 			// A child's commands belong to the conversation that spawned it,
 			// so the child borrows the conversation's command service rather

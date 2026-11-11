@@ -1948,7 +1948,17 @@ func (f *Fleet) Resume(ctx context.Context, id string) error {
 	return nil
 }
 
-func (f *Fleet) StopProject(root string) {
+func (f *Fleet) StopProject(root string) error {
+	for _, a := range f.ws.Agents() {
+		if a.Project == root {
+			if a.FactoryItemID != "" {
+				return fmt.Errorf("%w: remove factory worker %s through its work item before deleting project", ErrFactoryConflict, a.ID)
+			}
+			if err := f.checkFactoryAction(a.ID, "delete project"); err != nil {
+				return err
+			}
+		}
+	}
 	f.mu.Lock()
 	var toStop []string
 	var removed []string
@@ -1965,6 +1975,7 @@ func (f *Fleet) StopProject(root string) {
 		f.stopAgent(id)
 	}
 	f.live.removeProject(removed)
+	return nil
 }
 
 func (f *Fleet) Close() {

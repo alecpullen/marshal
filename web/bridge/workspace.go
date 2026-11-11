@@ -590,6 +590,11 @@ func (w *Workspace) AddProject(root string) error {
 func (w *Workspace) RemoveProject(root string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	for _, a := range w.agents {
+		if a.Project == root && a.FactoryItemID != "" {
+			return fmt.Errorf("%w: factory worker %s must be removed through its work item before project deletion", ErrFactoryConflict, a.ID)
+		}
+	}
 	kept := w.projects[:0:0]
 	for _, p := range w.projects {
 		if p != root {

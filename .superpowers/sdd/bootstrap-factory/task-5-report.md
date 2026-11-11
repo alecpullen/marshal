@@ -46,3 +46,26 @@ ok marshal/web/bridge 0.179s
 PATH=/workspace/toolchains/go/bin:$PATH GOCACHE=/tmp/factory-go-cache go test -race ./web/bridge -run 'TestFactory(Recovery|Ownership)|TestReviewBot|TestCIFixer|TestSchedule|TestReattach' -count=1
 ok marshal/web/bridge 4.785s
 ```
+
+## Fix round 1 — project deletion and recovery evidence
+
+The scoped review found that deleting a project could remove an active factory worker record, and that the required recovery tests did not cover lost publish/PR outcomes, report evidence, or parked restart. The findings match design §7 and the Task 5 brief, so both were fixed. The review's minor duplicate reattach observation remains deferred for the whole-branch review.
+
+`TestFactoryOwnershipGuardsProjectDeletion` failed at compilation before the shared `StopProject` guard existed. The fleet now refuses to stop a project containing a factory-tagged agent; `Workspace.RemoveProject` also refuses direct deletion of that record, and HTTP returns 409. Ordinary project deletion continues to use its previous path.
+
+`TestFactoryRecoveryLostOutcomes` now checks exact remote/local head and tree for a lost publish, dirty or divergent branches, and exact draft PR branch/base identity before completing a journaled intent. `TestFactoryRecoveryReportStopReasonEvidence` checks a fresh matching `end_turn` report against cancelled and stale-operation results. `TestFactoryRecoveryParkedAndStopped` checks that startup leaves parked history alone, reconnect loads the saved session without a new prompt, and a second store open exposes the explicit stale-lock procedure. `TestFactoryRecoveryStoppingWaitsForWork` initially failed because a recovery decision changed `stopping` to `recovering`; it now keeps `stopping` and records an unknown prompt as interrupted only after turn and detached work are observed idle. Neither observation claims prompt success.
+
+Focused red and green commands:
+
+```
+PATH=/workspace/toolchains/go/bin:$PATH GOCACHE=/tmp/factory-go-cache go test ./web/bridge -run '^TestFactoryOwnershipGuardsProjectDeletion$' -count=1
+# web/bridge/factory_ownership_test.go:42:12: f.StopProject(root) (no value) used as value
+FAIL marshal/web/bridge [build failed]
+
+PATH=/workspace/toolchains/go/bin:$PATH GOCACHE=/tmp/factory-go-cache go test ./web/bridge -run '^TestFactoryRecoveryStoppingWaitsForWork$' -count=1
+# stop settled unknown work: State:recovering, Effect:dispatched
+FAIL marshal/web/bridge
+
+PATH=/workspace/toolchains/go/bin:$PATH GOCACHE=/tmp/factory-go-cache go test -race ./web/bridge -run 'TestFactory(Recovery|Ownership)|TestWorkspaceRemoveProject|TestReattach' -count=1
+ok marshal/web/bridge 3.579s
+```

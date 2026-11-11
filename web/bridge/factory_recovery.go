@@ -115,6 +115,16 @@ func (c *FactoryController) reconcile(ctx context.Context, item FactoryItem, att
 	if len(item.Effects) > 0 {
 		e := item.Effects[len(item.Effects)-1]
 		if e.Status == "dispatched" || e.Status == "uncertain" {
+			if item.State == "stopping" && (e.Kind == "implement" || e.Kind == "review") && len(item.Workers) > 0 && recoveryStopConfirmed(item, obs) {
+				return c.internalUpdate(item, "stop_confirmed_idle", func(dst *FactoryItem) error {
+					last := &dst.Effects[len(dst.Effects)-1]
+					last.Status = "completed"
+					last.Outcome = &FactoryOutcome{EffectID: e.ID, Error: "stopped after turn and active work observed idle", Confirmed: false}
+					dst.Decision = nil
+					dst.History = append(dst.History, FactoryEvent{At: c.now(), Kind: "stop_observed_idle", EffectID: e.ID, Message: "turn and active work observed idle; prompt outcome unknown"})
+					return nil
+				})
+			}
 			if out, ok := c.recoveryOutcome(item, e, obs); ok {
 				// CompleteFactoryEffect only accepts a dispatched intent.
 				copy := factoryCopy(item)
@@ -145,12 +155,15 @@ func (c *FactoryController) reconcile(ctx context.Context, item FactoryItem, att
 				})
 			}
 			return c.internalUpdate(item, "recovering", func(dst *FactoryItem) error {
+				stopping := dst.State == "stopping"
 				msg := fmt.Sprintf("%s outcome or worker ownership unconfirmed", e.Kind)
 				if obs.Error != "" {
 					msg += ": " + obs.Error
 				}
 				factoryDecision(dst, "recovery", msg, c.now())
-				if dst.State != "stopping" {
+				if stopping {
+					dst.State = "stopping"
+				} else {
 					dst.State = "recovering"
 				}
 				return nil

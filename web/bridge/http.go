@@ -374,7 +374,10 @@ func (s *Server) removeProject(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "root is required"})
 		return
 	}
-	s.fleet.StopProject(body.Root)
+	if err := s.fleet.StopProject(body.Root); err != nil {
+		writeErr(w, err)
+		return
+	}
 	for _, a := range s.fleet.ws.Agents() {
 		if a.Project == body.Root {
 			s.fleet.dropGate(a.ID)

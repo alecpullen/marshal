@@ -199,6 +199,31 @@ func (c *Child) Stop() {
 	<-c.done
 }
 
+// stopConfirmed disables supervision and waits for the generation to exit.
+// A failed stop signal is returned so callers retaining work never free a slot
+// while the runtime may still be alive.
+func (c *Child) stopConfirmed() error {
+	c.mu.Lock()
+	if !c.started || c.stopping {
+		c.mu.Unlock()
+		return errors.New("bridge: runtime state is not confirmable for parking")
+	}
+	c.stopping = true
+	stdin := c.stdin
+	c.mu.Unlock()
+	if stdin != nil {
+		_ = stdin.Close()
+	}
+	err := c.signalCurrentResult(syscall.SIGTERM)
+	if err != nil {
+		return err
+	}
+	kill := time.AfterFunc(stopGrace, c.killCurrent)
+	defer kill.Stop()
+	<-c.done
+	return nil
+}
+
 // Detach releases the agent without ending it: the container keeps
 // running under its name so a later Open reattaches instead of starting
 // a duplicate. Used when the bridge is going away and the agent is not.
@@ -330,13 +355,18 @@ func (c *Child) spawn() error {
 // the mutex instead of captured once: signalling a stale generation
 // leaves the replacement running and nothing ever ends supervision.
 func (c *Child) signalCurrent(sig os.Signal) {
+	_ = c.signalCurrentResult(sig)
+}
+
+func (c *Child) signalCurrentResult(sig os.Signal) error {
 	c.mu.Lock()
 	tr := c.transport
 	c.mu.Unlock()
 	if tr != nil {
 		// Racing with an already-exited generation is benign.
-		_ = tr.Signal(sig)
+		return tr.Signal(sig)
 	}
+	return errors.New("bridge: missing runtime transport")
 }
 
 // killCurrent SIGKILLs the generation that is live right now. Kill is a

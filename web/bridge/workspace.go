@@ -39,9 +39,13 @@ const (
 )
 
 type Agent struct {
-	ID      string `json:"id"`
-	Project string `json:"project"`
-	Name    string `json:"name,omitempty"`
+	ID                   string `json:"id"`
+	FactoryItemID        string `json:"factoryItemId,omitempty"`
+	FactoryRole          string `json:"factoryRole,omitempty"`
+	FactorySpawnEffectID string `json:"factorySpawnEffectId,omitempty"`
+	FactoryParked        bool   `json:"factoryParked,omitempty"`
+	Project              string `json:"project"`
+	Name                 string `json:"name,omitempty"`
 	// Mode and Auto are the starting interaction defaults this agent was
 	// spawned with, never its current grants. Auto is optional: nil means the
 	// spawn named no Auto, which is not the same as an explicit false.

@@ -992,6 +992,15 @@ func (f *Fleet) resolveSource(opts SpawnOptions, origin string) (gitSource, erro
 }
 
 func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (string, error) {
+	return f.spawn(ctx, root, opts, nil)
+}
+
+type factorySpawnTag struct {
+	itemID, role, effectID string
+	native                 bool
+}
+
+func (f *Fleet) spawn(ctx context.Context, root string, opts SpawnOptions, tag *factorySpawnTag) (string, error) {
 	// The daily cap gates every way an agent can start: the UI, an issue,
 	// an approved intake submission and MCP all come through here. There is
 	// no agent yet, so only the daily cap can apply.
@@ -1024,6 +1033,9 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 		OwnerID:   DefaultOwnerID,
 		Origin:    origin,
 	}
+	if tag != nil {
+		a.FactoryItemID, a.FactoryRole, a.FactorySpawnEffectID = tag.itemID, tag.role, tag.effectID
+	}
 	a.SourceKind = src.kind
 	a.SourceRef = src.ref
 	a.ReadOnly = src.readOnly
@@ -1037,7 +1049,7 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	// state exists; a repo reference needs the checkout and resolves once
 	// workDir is known.
 	wsRefText := opts.Workspace
-	if wsRefText == "" {
+	if wsRefText == "" && (tag == nil || !tag.native) {
 		wsRefText = f.ws.ProjectSettingsFor(root).Workspace
 	}
 	var wsRef WSRef
@@ -1129,7 +1141,7 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 			src.gitRef = head
 		}
 		a.TargetBranch = src.gitRef
-		if wsRes != nil && wsRes.Source == "studio" {
+		if tag == nil && wsRes != nil && wsRes.Source == "studio" {
 			if e, ok := f.pools.take(wsRes.ImageName, wsRes.ImageVersion); ok {
 				pooled = &e
 			}
@@ -1256,6 +1268,14 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	if err := f.slots.acquire(slotCtx); err != nil {
 		cleanTree()
 		return "", fmt.Errorf("wait for an agent slot: %w", err)
+	}
+	if tag != nil {
+		// Persist ownership before any runtime can begin work.
+		if err := f.ws.PutAgent(a); err != nil {
+			f.slots.release()
+			cleanTree()
+			return "", fmt.Errorf("persist factory worker: %w", err)
+		}
 	}
 
 	rt, err := f.startRuntime(ctx, a)
@@ -1897,8 +1917,16 @@ func (f *Fleet) Resume(ctx context.Context, id string) error {
 		return err
 	}
 	if err := f.restoreSession(ctx, rt, a); err != nil {
-		f.stopAgent(id)
+		if a.FactoryItemID == "" {
+			f.stopAgent(id)
+		}
 		return err
+	}
+	if a.FactoryItemID != "" {
+		a.FactoryParked = false
+		if err := f.ws.PutAgent(a); err != nil {
+			return fmt.Errorf("persist resumed factory worker: %w", err)
+		}
 	}
 	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -1905,6 +1906,153 @@ func TestAReplacedRuntimeGetsAFreshService(t *testing.T) {
 		}
 	default:
 		t.Fatal("the old runtime's service was not released by the replacement")
+	}
+}
+
+// clientTrustManager returns a SessionManager over real runtimes. Its
+// StartRuntime appends the child's headless resolver after the options it is
+// given and then calls app.StartRuntime, as RunWithViewers does, so a session
+// that must answer its own trust question has to win over that resolver.
+func clientTrustManager(t *testing.T, home string) *SessionManager {
+	t.Helper()
+	store := trust.NewStore(config.DataDir(home))
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := NewSessionManager(SessionManagerConfig{
+		StartRuntime: func(ctx context.Context, opts ...app.Option) (*app.Runtime, error) {
+			opts = append(opts, app.WithTrustResolver(trust.NewHeadlessResolver(store, logger)))
+			return app.StartRuntime(ctx, opts...)
+		},
+		CloseRuntime: func(ctx context.Context, rt *app.Runtime) error { return rt.Close(ctx) },
+		Notify:       func(method string, params any) error { return nil },
+		Options:      []app.Option{app.WithHomeDir(home)},
+	})
+	m.SetTurnCanceller(noopCancel())
+	return m
+}
+
+// TestClientTrustLetsTheClientAnswer: session/new with clientTrust starts a
+// runtime whose trust question the session's marshal client answers, even
+// though the child appends the headless resolver after the manager's options.
+func TestClientTrustLetsTheClientAnswer(t *testing.T) {
+	home := t.TempDir()
+	dir := t.TempDir()
+	if err := writeMarshalConfig(t, dir); err != nil {
+		t.Fatalf("write project config: %v", err)
+	}
+	m := clientTrustManager(t, home)
+	ctx := context.Background()
+
+	res, err := m.Create(ctx, json.RawMessage(`{"cwd":"`+dir+`","mcpServers":[],"clientTrust":true}`))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	resp, ok := res.(SessionResponse)
+	if !ok {
+		t.Fatalf("result type %T", res)
+	}
+	t.Cleanup(func() { _ = m.Close(context.Background(), resp.SessionID) })
+
+	rt, ok := m.Get(resp.SessionID)
+	if !ok {
+		t.Fatalf("Get(%s) ok=false", resp.SessionID)
+	}
+	if !rt.TrustPromptPending {
+		t.Fatal("TrustPromptPending = false, want the client to be asked")
+	}
+	host, ok := m.ServiceHost(resp.SessionID)
+	if !ok {
+		t.Fatalf("ServiceHost(%s) ok=false", resp.SessionID)
+	}
+	prompt := host.TrustPrompt()
+	if prompt.Dir != rt.WorkingDir {
+		t.Errorf("TrustPrompt.Dir = %q, want the runtime's working directory %q", prompt.Dir, rt.WorkingDir)
+	}
+	if !prompt.InPlace {
+		t.Error("TrustPrompt.InPlace = false, want the client's trust to apply in place")
+	}
+}
+
+// TestWithoutClientTrustTheChildFailsClosed: the same session/new without the
+// mark keeps the headless rule, so no prompt pends and nothing is asked.
+func TestWithoutClientTrustTheChildFailsClosed(t *testing.T) {
+	home := t.TempDir()
+	dir := t.TempDir()
+	if err := writeMarshalConfig(t, dir); err != nil {
+		t.Fatalf("write project config: %v", err)
+	}
+	m := clientTrustManager(t, home)
+	ctx := context.Background()
+
+	res, err := m.Create(ctx, json.RawMessage(`{"cwd":"`+dir+`","mcpServers":[]}`))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	resp, ok := res.(SessionResponse)
+	if !ok {
+		t.Fatalf("result type %T", res)
+	}
+	t.Cleanup(func() { _ = m.Close(context.Background(), resp.SessionID) })
+
+	rt, ok := m.Get(resp.SessionID)
+	if !ok {
+		t.Fatalf("Get(%s) ok=false", resp.SessionID)
+	}
+	if rt.TrustPromptPending {
+		t.Fatal("TrustPromptPending = true without clientTrust, want the headless rule")
+	}
+	host, ok := m.ServiceHost(resp.SessionID)
+	if !ok {
+		t.Fatalf("ServiceHost(%s) ok=false", resp.SessionID)
+	}
+	if prompt := host.TrustPrompt(); prompt.Dir != "" || prompt.InPlace {
+		t.Fatalf("TrustPrompt = {Dir: %q, InPlace: %v}, want no prompt", prompt.Dir, prompt.InPlace)
+	}
+}
+
+// TestAResumeKeepsClientTrust: a session created with clientTrust still asks
+// its client after close and session/resume.
+func TestAResumeKeepsClientTrust(t *testing.T) {
+	home := t.TempDir()
+	dir := t.TempDir()
+	if err := writeMarshalConfig(t, dir); err != nil {
+		t.Fatalf("write project config: %v", err)
+	}
+	m := clientTrustManager(t, home)
+	ctx := context.Background()
+
+	res, err := m.Create(ctx, json.RawMessage(`{"cwd":"`+dir+`","mcpServers":[],"clientTrust":true}`))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	resp, ok := res.(SessionResponse)
+	if !ok {
+		t.Fatalf("result type %T", res)
+	}
+	if err := m.Close(ctx, resp.SessionID); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close(context.Background(), resp.SessionID) })
+
+	if _, err := m.Resume(ctx, json.RawMessage(`{"cwd":"`+dir+`","sessionId":"`+resp.SessionID+`","mcpServers":[],"clientTrust":true}`)); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	rt, ok := m.Get(resp.SessionID)
+	if !ok {
+		t.Fatalf("Get(%s) ok=false after Resume", resp.SessionID)
+	}
+	if !rt.TrustPromptPending {
+		t.Fatal("TrustPromptPending = false after Resume, want the prompt pending again")
+	}
+	host, ok := m.ServiceHost(resp.SessionID)
+	if !ok {
+		t.Fatalf("ServiceHost(%s) ok=false after Resume", resp.SessionID)
+	}
+	prompt := host.TrustPrompt()
+	if prompt.Dir != rt.WorkingDir {
+		t.Errorf("TrustPrompt.Dir = %q, want the resumed runtime's working directory %q", prompt.Dir, rt.WorkingDir)
+	}
+	if !prompt.InPlace {
+		t.Error("TrustPrompt.InPlace = false after Resume, want the client's trust to apply in place")
 	}
 }
 

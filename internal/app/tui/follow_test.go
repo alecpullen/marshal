@@ -289,6 +289,36 @@ func TestARefusedStartFollowsTheRunThatHoldsTheSlot(t *testing.T) {
 	}
 }
 
+// TestARefusedStartKeepsTheFollowedRunBusy: a refusal of this TUI's own that is
+// not a follow-on — a gate answer, say — writes its note, and must not clear
+// the busy state of the run the TUI is already following: that run is still in
+// flight, and the session's refusal did not stop it.
+func TestARefusedStartKeepsTheFollowedRunBusy(t *testing.T) {
+	runner := &blockingAgentRunner{block: make(chan struct{}), started: make(chan struct{})}
+	m := followingModel(t, runner)
+	id := startOtherRun(t, m, runner)
+	defer close(runner.block)
+
+	m, _ = deliverChange(t, m)
+	if m.following != id || !m.busy {
+		t.Fatalf("the change did not follow the run: following=%q busy=%v", m.following, m.busy)
+	}
+
+	busy := &acpwire.Error{Code: acpwire.CodeBusy, Message: "a turn is running"}
+	updated, _ := m.Update(agentFinishedMsg{err: busy, refusal: "Cannot start work"})
+	m = asModel(t, updated)
+
+	if !m.busy {
+		t.Fatal("a refused start of this TUI's own stopped following the run in flight")
+	}
+	if m.following != id {
+		t.Fatalf("following = %q after the refusal, want the run still followed as %q", m.following, id)
+	}
+	if n := countContaining(stateOf(m).Messages(), "Cannot start work"); n != 1 {
+		t.Fatalf("\"Cannot start work\" rows = %d, want exactly 1", n)
+	}
+}
+
 // TestAQuietWakeRefusalWritesNoNote: a follow-on start refused with CodeBusy is
 // quiet; the same refusal on an ordinary start still names itself.
 func TestAQuietWakeRefusalWritesNoNote(t *testing.T) {

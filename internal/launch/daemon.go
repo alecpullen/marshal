@@ -117,18 +117,29 @@ func chooseDaemon(ctx context.Context, opts *options) (root, home string, useDae
 	if info.Profile != daemonProfileLocal {
 		return root, home, false
 	}
-	if _, needsPrompt, terr := trust.Evaluate(trust.NewStore(config.DataDir(home)), root); terr != nil || needsPrompt {
+	if daemonTrustNeedsAsking(home, root) {
 		return root, home, false
 	}
 	return root, home, true
 }
 
+// daemonTrustNeedsAsking reports whether root needs the trust question before
+// a daemon may serve it (decision 2): trust-gated project config that was never
+// trusted, trust recorded against a config hash the project no longer has, or a
+// trust store that cannot be read. A store error counts as "ask", so a broken
+// store never skips the question.
+func daemonTrustNeedsAsking(home, root string) bool {
+	_, needsPrompt, err := trust.Evaluate(trust.NewStore(config.DataDir(home)), root)
+	return err != nil || needsPrompt
+}
+
 // Attach runs the TUI on a daemon session (marshal attach): sessionID, or the
 // project's most recently active session when it is empty. It fails when no
-// daemon answers on socket.
+// daemon answers on socket, and when the project needs the trust question a
+// daemon session must not answer for it.
 func Attach(ctx context.Context, stdout io.Writer, socket, sessionID string, opts ...Option) error {
-	if ctx.Err() != nil {
-		return nil
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	runOpts := options{programRunner: runProgram}
@@ -138,9 +149,17 @@ func Attach(ctx context.Context, stdout io.Writer, socket, sessionID string, opt
 	// The explicit socket wins over one an option carried.
 	runOpts.daemonSocket = socket
 
-	root, _, err := daemonTarget(&runOpts)
+	root, home, err := daemonTarget(&runOpts)
 	if err != nil {
 		return err
+	}
+
+	// attach cannot ask the trust question — it runs no embedded startup — so
+	// an untrusted project is refused here for the same reason chooseDaemon
+	// leaves it embedded: the daemon must never serve a project that has not
+	// been trusted on this machine.
+	if daemonTrustNeedsAsking(home, root) {
+		return fmt.Errorf("launch: %s needs trust before a daemon session can serve it; `marshal` there answers the question, then `marshal attach` reattaches", root)
 	}
 
 	probeCtx, cancel := context.WithTimeout(ctx, daemonProbeTimeout)
@@ -323,7 +342,7 @@ func dialDaemon(ctx context.Context, opts *options, root, sessionID string) (*da
 
 	attachment, err := opts.daemonClientFor().Attach(handshakeCtx, root, sessionID)
 	if err != nil {
-		return nil, err
+		return nil, daemonServingError(opts, "it could not be asked for a session", err)
 	}
 
 	stream := rpc.NewStream(attachment.Conn, attachment.Conn, rpc.MaxFrameBytes)
@@ -334,15 +353,29 @@ func dialDaemon(ctx context.Context, opts *options, root, sessionID string) (*da
 	host, err := rpc.Dial(handshakeCtx, stream, rpc.DialOptions{SharedFilesystem: true})
 	if err != nil {
 		_ = stream.Close()
-		return nil, fmt.Errorf("launch: dial the daemon's agent: %w", err)
+		return nil, daemonServingError(opts, "its agent could not be dialled", err)
 	}
 
 	sess, err := host.Attach(handshakeCtx, attachment.SessionID)
 	if err != nil {
 		_ = stream.Close()
-		return nil, fmt.Errorf("launch: attach %q on the daemon: %w", attachment.SessionID, err)
+		return nil, daemonServingError(opts, fmt.Sprintf("session %q could not be attached", attachment.SessionID), err)
 	}
 	return newDaemonConn(host, sess), nil
+}
+
+// daemonServingError wraps a failure that lands after the daemon answered the
+// probe. Because a daemon is demonstrably there, the message names it and says
+// how to get a working session either way, as the probe's own error does.
+func daemonServingError(opts *options, what string, err error) error {
+	where := "the daemon"
+	if opts.daemonSocket != "" {
+		where = "the daemon at " + opts.daemonSocket
+	}
+	return fmt.Errorf(
+		"launch: %s answered, but %s: %w; `marshal attach` retries once it is serving, `marshal --embedded` runs without it",
+		where, what, err,
+	)
 }
 
 // newDaemonConn tracks the connection's end: lost closes when it ends on its

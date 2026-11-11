@@ -5150,27 +5150,38 @@ func (m Model) syncFollowedRun(st acpwire.SessionStatus) (Model, tea.Cmd) {
 	if m.ignoreRun != "" && (st.Run == nil || st.Run.ID != m.ignoreRun) {
 		m.ignoreRun = ""
 	}
-	if id := m.following; id != "" && (st.Run == nil || st.Run.ID != id) {
-		// The followed run has ended. Its outcome arrives in lastRun, which
-		// every viewer reads, so the model finishes it locally instead of
-		// waiting for a call result it never had.
-		m.following = ""
-		var err error
-		if last := st.LastRun; last != nil && last.ID == id {
-			switch last.Outcome {
-			case acpwire.RunCancelled:
-				err = context.Canceled
-			case acpwire.RunFailed:
-				if last.Error != nil {
-					err = last.Error
-				} else {
-					err = &acpwire.Error{Code: acpwire.CodeProviderError, Message: "the run failed"}
+	if id := m.following; id != "" {
+		if st.Run == nil || st.Run.ID != id {
+			// The followed run has ended. Its outcome arrives in lastRun, which
+			// every viewer reads, so the model finishes it locally instead of
+			// waiting for a call result it never had.
+			m.following = ""
+			var err error
+			if last := st.LastRun; last != nil && last.ID == id {
+				switch last.Outcome {
+				case acpwire.RunCancelled:
+					err = context.Canceled
+				case acpwire.RunFailed:
+					if last.Error != nil {
+						err = last.Error
+					} else {
+						err = &acpwire.Error{Code: acpwire.CodeProviderError, Message: "the run failed"}
+					}
+				case acpwire.RunGated:
+					err = &acpwire.Error{Code: acpwire.CodeHumanGateRequired, Message: "the run needs a person's answer"}
 				}
-			case acpwire.RunGated:
-				err = &acpwire.Error{Code: acpwire.CodeHumanGateRequired, Message: "the run needs a person's answer"}
 			}
+			return m.handleAgentFinished(agentFinishedMsg{err: err, followed: true})
 		}
-		return m.handleAgentFinished(agentFinishedMsg{err: err, followed: true})
+		// The followed run is still in flight, so the model is busy on its
+		// behalf. A start of this TUI's own that the session refused cleared
+		// the busy state on the way here; the run this TUI follows did not
+		// stop because its own start was refused.
+		m.busy = true
+		if m.turnStartedAt.IsZero() {
+			m.turnStartedAt = acpwire.Time(st.Run.StartedAt)
+		}
+		return m, nil
 	}
 	// Nothing is in flight in this TUI, but the session is working: a run
 	// another viewer started, or one the session admitted right after this

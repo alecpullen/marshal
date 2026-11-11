@@ -363,7 +363,8 @@ func TestAttachRoutesToTheAttachRunner(t *testing.T) {
 }
 
 // TestAttachRefusesExtraArgumentsAndEmbedded pins the refusals: attach takes at
-// most one ID, and an embedded launch has no daemon session to attach to.
+// most one ID, --embedded is refused wherever it appears, and a flag-shaped ID
+// is named as a flag.
 func TestAttachRefusesExtraArgumentsAndEmbedded(t *testing.T) {
 	isolateHome(t)
 	oldAttach := attachRunner
@@ -373,10 +374,24 @@ func TestAttachRefusesExtraArgumentsAndEmbedded(t *testing.T) {
 		return nil
 	}
 
-	for _, args := range [][]string{{"attach", "a", "b"}, {"--embedded", "attach"}} {
+	cases := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"attach", "a", "b"}, "at most one session ID"},
+		{[]string{"--embedded", "attach"}, "--embedded cannot be combined"},
+		{[]string{"attach", "--embedded"}, "--embedded cannot be combined"},
+		{[]string{"attach", "abc", "--embedded"}, "--embedded cannot be combined"},
+		{[]string{"attach", "-abc"}, "unexpected flag"},
+	}
+	for _, tc := range cases {
 		var stdout, stderr bytes.Buffer
-		if err := run(context.Background(), args, bytes.NewBuffer(nil), &stdout, &stderr); err == nil {
-			t.Fatalf("run(%v) returned no error, want a refusal", args)
+		err := run(context.Background(), tc.args, bytes.NewBuffer(nil), &stdout, &stderr)
+		if err == nil {
+			t.Fatalf("run(%v) returned no error, want a refusal", tc.args)
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("run(%v) error = %q, want it to name %q", tc.args, err, tc.want)
 		}
 	}
 }

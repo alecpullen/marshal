@@ -479,8 +479,11 @@ against.
   - *`marshal attach`* needs a daemon: without one it fails and says how to
     start one. With no ID it attaches to the first session of the project's
     child in `GET /api/daemon` (most recently active first), and fails when
-    the child has none. It skips the trust condition: the session exists
-    already.
+    the child has none. It holds the same trust condition as `chooseDaemon`,
+    through the same predicate (`daemonTrustNeedsAsking`): a project whose
+    trust needs the question is refused before the daemon is even probed —
+    attach runs no embedded startup, so it cannot ask it — with a message
+    naming the root and saying `marshal` there answers the question.
   - *Following.* A run is followed when the status shows one while the TUI
     is not busy and holds no run call of its own. `busy` and the turn's start
     follow it, and its ticks start. When the status's run is gone, or is
@@ -1460,9 +1463,10 @@ environment allows:
   socket listed it with `"viewers": 0`, which is D5's premise observed directly.
 - `marshal attach` with that session left found it and started the TUI, which a
   terminal-less run cannot drive.
-- `marshal --embedded attach` → `marshal attach: --embedded cannot be combined
-  with attach`; `marshal attach --embedded` → `marshal attach: unexpected flag
-  "--embedded"`.
+- `marshal --embedded attach` and `marshal attach --embedded` both →
+  `marshal attach: --embedded cannot be combined with attach`; a flag-shaped
+  session ID, `marshal attach -abc`, → `marshal attach: unexpected flag
+  "-abc"`.
 - `marshal attach` with no daemon → names the socket and ends with
   `` `marshal daemon install` starts one ``.
 
@@ -1498,8 +1502,67 @@ through W1/W5 and `detach_test.go`, not by hand.
   trust condition fails `TestRunStaysEmbeddedForAProjectThatNeedsTrust`; making
   detaching runs derive from the call again fails both `test/daemon` journeys.
 
-**Open for plan 7:** the trust condition in `chooseDaemon`. D8 removes it, and
-daemon mode then needs no trust question in either direction.
+**Review fixes.** A post-merge branch review of `c680de4e..HEAD` found
+nothing blocking and two majors; both are fixed on the same branch, with the
+three minors and one nit beside them.
+
+- *`marshal attach` never consulted the trust store.* The plan told `Attach` to
+  skip the trust condition (Task 3, "It skips the trust condition"), and it did
+  — but attach runs no embedded startup, so it cannot ask the question either.
+  An untrusted project, or one whose config hash changed since it was trusted,
+  was served by the daemon with no question asked anywhere. `Attach` now
+  refuses such a project with a message naming the root and saying `marshal`
+  there answers the question, then `marshal attach` reattaches. This is a
+  deliberate deviation from the plan, recorded here rather than in the plan
+  file. `daemonTrustNeedsAsking` is now the one predicate both paths consult,
+  so the launch path and the attach path cannot drift apart;
+  `TestAttachRefusesAProjectThatNeedsTrust` pins the refusal and that the
+  daemon is never asked for an attach.
+- *A failure after the probe answered named neither the socket nor a way
+  forward.* A refused attach, a failed dial and a handshake timeout printed
+  bare errors such as "launch: attach \"abc\" on the daemon: …", while the
+  probe's own error names the socket and `marshal daemon install`. Every
+  post-probe failure now goes through `daemonServingError`: it names the
+  daemon (its socket when the client was built from one) and both ways
+  forward — `marshal attach` retries, `marshal --embedded` runs without it —
+  and keeps the underlying error wrapped.
+  `TestAServingFailureNamesTheDaemonAndTheWayOut` pins the socket, the status,
+  and both commands. The review also asked whether a probe-ok launch should
+  fall back to embedded when the daemon then lets it down; it does not, on the
+  record's own rule that a daemon which answers owns the session, and a silent
+  mode switch would hide a child that cannot start. The message is the fix.
+- *`Attach` returned `nil` for an already-cancelled context* — exit 0, no
+  output, indistinguishable from success. It returns the context's error and
+  probes nothing (`TestAttachReturnsTheContextsError`).
+- *A refused start of the model's own stranded a followed run in the TUI.* The
+  quiet follow-on path was handled, but a non-quiet refusal — a gate answer,
+  say — cleared `busy` while `m.following` still named a run in flight, and
+  `syncFollowedRun` re-adopts only when nothing is followed, so the model
+  rendered idle under a running session until the run ended. A followed run
+  still in the status now restores the busy state and the turn's clock
+  (`TestARefusedStartKeepsTheFollowedRunBusy`).
+- *`marshal attach` misdescribed its own refusals.* `attach --embedded` said
+  `unexpected flag "--embedded"`, and `attach abc --embedded` said `at most one
+  session ID`. `--embedded` is refused as a conflict wherever it appears, and a
+  flag-shaped ID is the only remaining "unexpected flag"; the table test covers
+  all five invocations, including `attach -abc`.
+
+**Verification of the review fixes** (same branch, `TMPDIR=/private/tmp/p4-5-suite`):
+`gofmt -l internal cmd test web` prints nothing; `go vet ./...` clean;
+`CGO_ENABLED=1 go build ./cmd/marshal ./cmd/webbridge` ok;
+`go test ./internal/launch/ ./internal/app/tui/ ./cmd/marshal/ ./test/daemon/ -count=1`
+all ok; `go test ./... -timeout 20m` passed with no failures;
+`TestWebIsStdlibOnly` and `TestTUIStaysOnTheClientSeam` pass;
+`go test ./test/usability/... -run TestScripted -timeout 5m` passes. Mutation
+checks: dropping `Attach`'s trust condition fails
+`TestAttachRefusesAProjectThatNeedsTrust`; returning `nil` for a cancelled
+context fails `TestAttachReturnsTheContextsError`; clearing `busy` in the
+refusal branch without the follow restore fails
+`TestARefusedStartKeepsTheFollowedRunBusy`.
+
+**Open for plan 7:** the trust condition the two paths now share — `chooseDaemon`
+and `Attach`, through `daemonTrustNeedsAsking`. D8 removes it, and daemon mode
+then needs no trust question in either direction.
 
 
 ### Plan 6 — the project environment and idle sessions

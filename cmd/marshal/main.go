@@ -145,8 +145,16 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 // runAttach dispatches `marshal attach [session-id]`: it reattaches the TUI to
 // a daemon session, the project's most recently active one when no ID is given.
 func runAttach(ctx context.Context, args []string, stdout io.Writer, embedded bool) error {
+	// --embedded is refused wherever it appears in the invocation, and says
+	// why: attach has no embedded mode, so "unexpected flag" would misdescribe
+	// the mistake.
 	if embedded {
 		return fmt.Errorf("marshal attach: --embedded cannot be combined with attach")
+	}
+	for _, arg := range args {
+		if arg == "--embedded" || strings.HasPrefix(arg, "--embedded=") {
+			return fmt.Errorf("marshal attach: --embedded cannot be combined with attach")
+		}
 	}
 	if len(args) > 1 {
 		return fmt.Errorf("marshal attach: at most one session ID")

@@ -65,8 +65,11 @@ type fakeDaemon struct {
 	home    string
 	info    daemon.Info
 	infoErr error
-	ctx     context.Context
-	cancel  context.CancelFunc
+	// attachErr makes Attach fail: a daemon that answers the probe but cannot
+	// serve a session.
+	attachErr error
+	ctx       context.Context
+	cancel    context.CancelFunc
 
 	mu        sync.Mutex
 	infoCalls int
@@ -116,6 +119,11 @@ func (f *fakeDaemon) Info(ctx context.Context) (daemon.Info, error) {
 func (f *fakeDaemon) Attach(ctx context.Context, root, sessionID string) (*daemon.Attachment, error) {
 	f.mu.Lock()
 	f.attaches = append(f.attaches, fakeAttach{root: root, sessionID: sessionID})
+	attachErr := f.attachErr
+	if attachErr != nil {
+		f.mu.Unlock()
+		return nil, attachErr
+	}
 	previous := f.current
 	f.current = nil
 	// Each attach's runtime gets its own clock: the session ID derives from it,
@@ -296,13 +304,10 @@ func runEmbeddedBeside(t *testing.T, fake *fakeDaemon) {
 	}
 }
 
-func TestRunStaysEmbeddedForAProjectThatNeedsTrust(t *testing.T) {
-	dir := t.TempDir()
-	home := t.TempDir()
-	fake := newFakeDaemon(t, dir, home)
-
-	// A project config with no trust record asks the user a question, and a
-	// daemon must never answer it (decision 2).
+// writeProjectConfig gives dir trust-gated project config, which makes the
+// project's trust a question until a record is written for it.
+func writeProjectConfig(t *testing.T, dir string) {
+	t.Helper()
 	projectCfg := config.ProjectConfigPath(dir)
 	if err := os.MkdirAll(filepath.Dir(projectCfg), 0o755); err != nil {
 		t.Fatalf("create the project config directory: %v", err)
@@ -310,6 +315,16 @@ func TestRunStaysEmbeddedForAProjectThatNeedsTrust(t *testing.T) {
 	if err := os.WriteFile(projectCfg, []byte("[project]\nname = \"trust-me\"\n"), 0o644); err != nil {
 		t.Fatalf("write the project config: %v", err)
 	}
+}
+
+func TestRunStaysEmbeddedForAProjectThatNeedsTrust(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	fake := newFakeDaemon(t, dir, home)
+
+	// A project config with no trust record asks the user a question, and a
+	// daemon must never answer it (decision 2).
+	writeProjectConfig(t, dir)
 
 	served := false
 	err := Run(context.Background(), io.Discard,
@@ -439,6 +454,83 @@ func TestAttachWithNoSessionFails(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestAttachRefusesAProjectThatNeedsTrust: attach runs no embedded startup, so
+// it cannot ask the trust question. A project whose trust needs asking is
+// refused rather than served by the daemon unasked.
+func TestAttachRefusesAProjectThatNeedsTrust(t *testing.T) {
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, t.TempDir())
+	writeProjectConfig(t, dir)
+	root := filepath.Clean(dir)
+	fake.info = daemon.Info{
+		Profile:  "local",
+		Children: []daemon.ChildInfo{{Root: root, Sessions: []daemon.SessionInfo{{ID: "existing"}}}},
+	}
+
+	err := Attach(context.Background(), io.Discard, "/tmp/marshal-test-daemon.sock", "",
+		withDaemonClient(fake),
+		withWorkingDir(root),
+		WithProgramRunner(func(context.Context, tea.Model, io.Writer) ProgramResult { return ProgramResult{} }),
+	)
+	if err == nil {
+		t.Fatal("Attach served a project that needs the trust question")
+	}
+	for _, want := range []string{root, "needs trust", "`marshal`"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Attach error = %q, want it to name %q", err, want)
+		}
+	}
+	if calls := fake.attachCalls(); len(calls) != 0 {
+		t.Errorf("the untrusted project was attached: %+v", calls)
+	}
+}
+
+// TestAttachReturnsTheContextsError: an attach whose context is already done is
+// a failure, not a silent success that exits zero with no output.
+func TestAttachReturnsTheContextsError(t *testing.T) {
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, t.TempDir())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := Attach(ctx, io.Discard, "/tmp/marshal-test-daemon.sock", "",
+		withDaemonClient(fake),
+		withWorkingDir(dir),
+		WithProgramRunner(func(context.Context, tea.Model, io.Writer) ProgramResult { return ProgramResult{} }),
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Attach error = %v, want context.Canceled", err)
+	}
+	if n := fake.infoCount(); n != 0 {
+		t.Errorf("a cancelled attach probed the daemon %d times, want none", n)
+	}
+}
+
+// TestAServingFailureNamesTheDaemonAndTheWayOut: a daemon that answers the
+// probe but cannot serve a session leaves the user with the socket to look at
+// and both ways forward.
+func TestAServingFailureNamesTheDaemonAndTheWayOut(t *testing.T) {
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, t.TempDir())
+	fake.attachErr = &daemon.AttachError{Status: 503, Message: "the child is not up yet"}
+
+	const socket = "/tmp/marshal-test-serving.sock"
+	err := Run(context.Background(), io.Discard,
+		WithDaemon(socket),
+		withDaemonClient(fake),
+		withWorkingDir(dir),
+		WithProgramRunner(func(context.Context, tea.Model, io.Writer) ProgramResult { return ProgramResult{} }),
+	)
+	if err == nil {
+		t.Fatal("Run succeeded although the daemon could not serve a session")
+	}
+	for _, want := range []string{socket, "503", "`marshal attach`", "`marshal --embedded`"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Run error = %q, want it to name %q", err, want)
+		}
 	}
 }
 

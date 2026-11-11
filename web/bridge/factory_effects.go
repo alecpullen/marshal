@@ -52,6 +52,18 @@ func (f *factoryEffects) Observe(ctx context.Context, item FactoryItem) (Factory
 	if err != nil {
 		return o, err
 	}
+	// A spawn response can be lost before the worker is copied into the
+	// item. The persisted agent tag is the only acceptable recovery match.
+	for _, e := range item.Effects {
+		if e.Kind != "spawn" || (e.Status != "dispatched" && e.Status != "uncertain") {
+			continue
+		}
+		for _, a := range f.fleet.ws.Agents() {
+			if a.FactoryItemID == item.ID && a.FactorySpawnEffectID == e.ID && a.FactoryRole == e.WorkerRole {
+				o.Workers = append(o.Workers, FactoryWorker{AgentID: a.ID, SessionID: a.SessionID, Role: a.FactoryRole, SpawnEffectID: e.ID, Parked: a.FactoryParked})
+			}
+		}
+	}
 	repo, _, forge, cred, err := f.forge(ctx, item)
 	if err != nil {
 		o.Error = err.Error()

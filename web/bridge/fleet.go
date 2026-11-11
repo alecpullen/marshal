@@ -115,6 +115,7 @@ type ProjectStatus struct {
 }
 
 type Fleet struct {
+	factory    *FactoryController
 	ws         *Workspace
 	marshalBin string
 	agentEnv   map[string]string
@@ -325,6 +326,8 @@ type Fleet struct {
 	// taken in.
 	pruneMu sync.Mutex
 }
+
+func (f *Fleet) SetFactoryController(c *FactoryController) { f.factory = c }
 
 func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stateDir string, limits Limits, buildVersion string, projectMounts []ProjectMount, stateVolume string) *Fleet {
 	if stateDir == "" {
@@ -1451,6 +1454,9 @@ func (f *Fleet) Diff(ctx context.Context, id, path string) (json.RawMessage, err
 }
 
 func (f *Fleet) Merge(ctx context.Context, id, commitMessage string) (json.RawMessage, error) {
+	if err := f.checkFactoryActionContext(ctx, id, "merge"); err != nil {
+		return nil, err
+	}
 	rt, err := f.RuntimeForSession(id)
 	if err != nil {
 		return nil, err
@@ -1486,6 +1492,9 @@ func (f *Fleet) Merge(ctx context.Context, id, commitMessage string) (json.RawMe
 }
 
 func (f *Fleet) Discard(ctx context.Context, id string) error {
+	if err := f.checkFactoryActionContext(ctx, id, "discard"); err != nil {
+		return err
+	}
 	rt, err := f.RuntimeForSession(id)
 	if err != nil {
 		// The runtime could not be resolved: the session is gone, or
@@ -1865,6 +1874,9 @@ func (f *Fleet) restoreSession(ctx context.Context, rt *agentRuntime, a Agent) e
 func (f *Fleet) ReattachAll(ctx context.Context) []error {
 	var errs []error
 	for _, a := range f.ws.Agents() {
+		if a.FactoryItemID != "" {
+			continue
+		}
 		if _, err := f.runtimeForAgent(a.ID); err == nil {
 			continue // already live
 		}

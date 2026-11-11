@@ -197,6 +197,9 @@ func (f *Fleet) onCheckEvent(ctx context.Context, ev checkEvent) {
 }
 
 func (f *Fleet) fixCI(ctx context.Context, ev checkEvent) error {
+	if f.factoryOwnsBranch(ev.repoID, ev.ref) {
+		return nil
+	}
 	root, ci, ok := f.ciFixerSettings(ev.repoID)
 	// An event with no branch cannot be matched against the watched ones.
 	if !ok || ev.ref == "" || !matchesAny(ci.Branches, ev.ref) {

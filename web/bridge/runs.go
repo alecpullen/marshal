@@ -55,6 +55,9 @@ func (f *Fleet) StartRun(ctx context.Context, agentID string, req RunRequest) er
 // startRun is StartRun with the plan file's name chosen by the caller, so
 // intake keeps naming plans after their pending submission.
 func (f *Fleet) startRun(ctx context.Context, agentID string, req RunRequest, planID string) error {
+	if err := f.checkFactoryActionContext(ctx, agentID, "new run"); err != nil {
+		return err
+	}
 	a, ok := f.ws.Agent(agentID)
 	if !ok {
 		return fmt.Errorf("%w: agent %s", ErrUnknownAgent, agentID)

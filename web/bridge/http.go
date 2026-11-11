@@ -245,6 +245,8 @@ func writeErr(w http.ResponseWriter, err error) {
 	var setup ErrSetupFailed
 	var merge ErrWorkspaceMerge
 	switch {
+	case errors.Is(err, ErrFactoryConflict):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrUnknownRecipe), errors.Is(err, ErrUnknownSchedule):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrInvalidRecipe), errors.Is(err, ErrRecipeBuiltin), errors.Is(err, errInvalidSchedule):

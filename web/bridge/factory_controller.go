@@ -665,10 +665,42 @@ func (c *FactoryController) finishDispatch(ctx context.Context, dispatched Facto
 	return err
 }
 func (c *FactoryController) Command(ctx context.Context, itemID string, cmd FactoryCommand) (FactoryItem, error) {
+	if cmd.Kind == "reconcile" || cmd.Kind == "recover" {
+		before, err := c.store.Get(itemID)
+		if err != nil {
+			return FactoryItem{}, err
+		}
+		if cmd.ConfirmPreviousWorkerStopped {
+			if len(before.Workers) == 0 || !strings.Contains(cmd.Reason, before.Workers[len(before.Workers)-1].AgentID) {
+				return FactoryItem{}, ErrFactoryConflict
+			}
+		}
+		raw, err := json.Marshal(cmd)
+		if err != nil {
+			return FactoryItem{}, err
+		}
+		saved, err := c.store.Update(itemID, cmd.RequestID, cmd.ExpectedVersion, raw, func(dst *FactoryItem) error { return nil }, c.now())
+		if err != nil || before.Version != cmd.ExpectedVersion {
+			return saved, err
+		}
+		result, err := c.reconcile(ctx, saved, cmd.ConfirmPreviousWorkerStopped, cmd.Reason)
+		if err == nil {
+			c.Wake()
+		}
+		return result, err
+	}
 	if cmd.Kind == "retry" {
 		current, err := c.store.Get(itemID)
 		if err != nil {
 			return FactoryItem{}, err
+		}
+		if current.State == "recovering" {
+			return FactoryItem{}, ErrFactoryConflict
+		}
+		for _, effect := range current.Effects {
+			if effect.Status == "dispatched" || effect.Status == "uncertain" {
+				return FactoryItem{}, ErrFactoryConflict
+			}
 		}
 		active := false
 		for _, w := range current.Workers {

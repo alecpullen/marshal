@@ -11,7 +11,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/acp/service"
-	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/connect"
@@ -102,7 +101,7 @@ func TestAnInPlaceTrustKeepsTheProgram(t *testing.T) {
 	mu.Lock()
 	got := append([]trust.Decision(nil), applied...)
 	mu.Unlock()
-	want := []trust.Decision{trust.Decision(acpwire.TrustPermanent)}
+	want := []trust.Decision{trust.DecisionTrustPermanent}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("applied decisions = %v, want %v", got, want)
 	}
@@ -176,5 +175,33 @@ func TestAFailedInPlaceTrustKeepsTheProgram(t *testing.T) {
 	m = settleCalls(t, m)
 	if _, ok := m.dock.Panel().(*trustpanel.Panel); !ok {
 		t.Fatalf("/trust should ask again after a failed trust, got %T", m.dock.Panel())
+	}
+}
+
+// TestATrustedSessionAsksNoTrustQuestionAgain: the client keeps the host's
+// first trust/prompt answer for the connection's life, so a settled trust
+// still leaves the prompt's directory in the client's cache. /trust must read
+// the status rather than that cache, or a project the user just trusted would
+// show the panel again.
+func TestATrustedSessionAsksNoTrustQuestionAgain(t *testing.T) {
+	state := newTrustInPlaceState(t)
+	apply := func(context.Context, trust.Decision) error {
+		state.SetTrusted(true)
+		return nil
+	}
+	m := trustInPlaceModel(t, state, apply)
+
+	m = chooseTrustPanel(t, m, '1')
+	if !state.Trusted() {
+		t.Fatal("the in-place trust did not take")
+	}
+	if m.dock.IsOpen() {
+		t.Fatal("the dock reopened after the trust")
+	}
+
+	m.dispatchCommand("/trust")
+	m = settleCalls(t, m)
+	if _, ok := m.dock.Panel().(*trustpanel.Panel); ok {
+		t.Fatal("/trust reopened the trust prompt for a trusted session")
 	}
 }

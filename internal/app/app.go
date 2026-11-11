@@ -229,6 +229,11 @@ func WithTrustResolver(r trust.Resolver) Option {
 // question (P4 D8): the runtime evaluates trust as embedded mode does, its
 // service deps carry the prompt, and a trust applies in place. It wins over
 // WithTrustResolver.
+//
+// Never pass it to an embedding. Embedded mode restarts the process for a
+// trust and sets its own prompt, but it does not clear ServiceDeps' ApplyTrust,
+// so an embedding that took this option would apply in place instead of
+// re-prompting on the next start. Only the daemon's child sessions set it.
 func WithClientTrust() Option {
 	return func(opts *options) {
 		opts.clientTrust = true

@@ -122,7 +122,7 @@ func TestAnUntrustedDaemonSessionAsksItsClient(t *testing.T) {
 		t.Fatal("the session started trusted")
 	}
 	if got := a.session.Config().Project.Name; got == "daemon-trust" {
-		t.Fatal("the untrusted project config was applied before the answer")
+		t.Fatalf("the untrusted project config was applied before the answer: project name is %q", got)
 	}
 
 	ctx := callCtx(t)

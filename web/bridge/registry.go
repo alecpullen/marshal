@@ -203,6 +203,11 @@ func (r *Registry) New(ctx context.Context, cwd AgentPath, sessionId string) (st
 
 // Load attaches to an existing session (session/load) and starts
 // tracking it.
+//
+// It does not send ClientTrust, unlike New, Resume and resumeAll: its callers
+// restore sessions on registries that carry no mark. Do not call it on a
+// project child's registry while the mark is registry-wide — a child session
+// loaded that way answers no trust question and fails closed.
 func (r *Registry) Load(ctx context.Context, cwd AgentPath, id string) error {
 	if _, err := r.child.Request(ctx, "session/load", sessionParams{Cwd: cwd, SessionID: id, MCPServers: &[]json.RawMessage{}}); err != nil {
 		return err

@@ -1985,6 +1985,36 @@ unreproduced `internal/acp` budget flake aside (the plan's recorded flakes).
   (H5): a trust made by another process is not seen until the session reloads
   or restarts.
 
+**Branch review.**
+
+Three reviewers read the branch in disjoint slices — the agent side
+(`internal/acp*`, `internal/acpclient`), the app/TUI/launch side, and the
+bridge, end-to-end test and docs — and all three returned ship without a
+blocker or major finding. They confirmed the settled semantics by inspection
+(one-answer-wins under `trustMu`, a failed apply leaving the prompt pending,
+embedded mode's prompt unchanged, the mark reaching only the project child)
+and re-ran the suites for their slices. Four findings stood up and are fixed:
+
+- `WithClientTrust`'s doc comment now forbids an embedding: embedded mode
+  overrides the prompt but not `ServiceDeps.ApplyTrust`, so an embedding that
+  took the option would apply in place instead of re-prompting on the next
+  start.
+- `Registry.Load`'s doc comment records that it sends no `ClientTrust`, unlike
+  `New`/`Resume`/`resumeAll`, so a later caller cannot load a child session
+  unmarked by accident.
+- `TestATrustedSessionAsksNoTrustQuestionAgain` pins `/trust` against the
+  client's read-once cache of `trust/prompt`: the cached directory outlives a
+  settled trust, so the command must consult the status, not the cache. It
+  fails with the status guard removed and passes with it (checked by mutation).
+  The same file now names `trust.DecisionTrustPermanent` rather than casting
+  the wire constant.
+- The end-to-end test's failure message prints the project name it observed.
+
+Three nits were judged not worth changing: an invalid decision kind still
+errors on an already-settled prompt (a bad kind is a caller bug either way);
+`trust/prompt` validates no params for a non-marshal client (the fixed empty
+answer is the contract); and `applyClientTrust` ignores the config-hash error
+exactly as embedded mode's `trustDecide` does.
 
 ### Plan 8 — OAuth refresh once
 

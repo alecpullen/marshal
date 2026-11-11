@@ -8,11 +8,12 @@ Depends on: P3, implemented (its plan 8 merged at `40dc0eff`).
 Status: approved 2026-11-09, with every recommendation under "Decisions"
 accepted. The line anchors were re-checked at `40dc0eff` for plans 1 and 2,
 and at `7802701f` (plans 1 and 2 merged) for plans 3 and 4, and at
-`29851a61` (plans 3 and 4 merged) for plans 5 and 6. Plans 1 and 2
+`29851a61` (plans 3 and 4 merged) for plans 5 and 6, and at `87c0ad10`
+(plans 5 and 6 merged) for plans 7 and 8. Plans 1 and 2
 shared no code and ran side by side. Plans 3 and 4 do the same, except plan
 4's last task, which needs plan 3 on `main`. Plans 5 and 6 share no file but
-this spec, each filling its own record. Each plan records itself under
-its own heading in the Implementation record.
+this spec, each filling its own record, and so do plans 7 and 8. Each plan
+records itself under its own heading in the Implementation record.
 
 ## Goal
 
@@ -198,6 +199,11 @@ against.
 - **H9.** The project environment's warning in the TUI. Plan 6 reports it
   on `GET /api/daemon` and in `marshal daemon status`; the attach answer
   does not carry it yet.
+- **H10.** A project's plugins after a trust applied in place. A daemon
+  session's trust reloads its config in place (D8), but project plugins are
+  loaded only when a runtime starts, so they arrive at the session's next
+  start. An ordinary config reload already drops plugin-applied hooks and
+  MCP entries the same way.
 
 ## Behaviour
 
@@ -267,7 +273,7 @@ against.
 
 - **One child per project root** (`repo.FindRoot`'s root, as P1 keys project
   hosts) hosts every host-process session on that project: the TUI's, and
-  from plan 8 of this phase the fleet's host-process agents (D10). The bridge
+  from plan 10 of this phase the fleet's host-process agents (D10). The bridge
   starts it on first use (an attach or new session, a spawn, a pin), in the
   project directory, with the project's environment (D7). It stops a child
   that has no session and no pin after a linger of 30s, the project host's
@@ -382,7 +388,7 @@ against.
     those two values. Plan 5's `marshal attach` with no ID reads it.
   - A child with no tracked session stops after the 30s linger. In P4 a
     session leaves the registry only by a close, until plan 6's idle timeout
-    and plan 7's pins.
+    and plan 9's pins.
 - **The client's half** is `internal/daemon`'s `Client.Attach`. It sends the
   handshake and returns the upgraded stream and the session ID, which plan 5
   wraps in `rpc.NewStream`.
@@ -483,7 +489,8 @@ against.
     through the same predicate (`daemonTrustNeedsAsking`): a project whose
     trust needs the question is refused before the daemon is even probed —
     attach runs no embedded startup, so it cannot ask it — with a message
-    naming the root and saying `marshal` there answers the question.
+    naming the root and saying `marshal` there answers the question. (Plan 7
+    removes this refusal with the launch's condition.)
   - *Following.* A run is followed when the status shows one while the TUI
     is not busy and holds no run call of its own. `busy` and the turn's start
     follow it, and its ticks start. When the status's run is gone, or is
@@ -611,6 +618,51 @@ against.
 - The child gets a resolver that defers in this way only for sessions a
   marshal client will drive. For every other session (fleet agents, the
   control agent) the headless rule stays: fail closed, record nothing.
+- **The details** (plan 7).
+  - *Which sessions.* The bridge marks the sessions it opens for an attach:
+    on a project child's registry, `session/new` and `session/resume` carry
+    `clientTrust: true`, and so does the resume after a child restarts. The
+    child honours the mark on `session/new`, `session/load` and
+    `session/resume` with `app.WithClientTrust`, which wins over the headless
+    resolver the child gives every runtime. A viewer's `/new` (`session/new`
+    with `replaces`) builds its session inside the same runtime, so it keeps
+    the runtime's answer. The mark is per registry in P4, because every
+    session on a project child is a TUI's until plan 10 (D10) brings fleet
+    agents there; that plan must mark sessions one by one.
+  - *Starting.* A client-trust runtime evaluates trust as embedded mode does
+    (`trust.Evaluate`): a stored permanent record whose hash matches applies
+    the project config, and a needed question skips it and leaves the prompt
+    pending.
+  - *Who answers.* `trust/prompt` and `trust/decide` serve marshal clients
+    only. The bridge's own connection reads no prompt and has its decision
+    refused, so the web UI cannot answer a TUI's question (decision 8).
+  - *The prompt says how a trust applies.* `trust/prompt` answers
+    `inPlace: true` for a daemon session. The TUI's trust panel then closes
+    after a trust instead of ending the program, and opens the connect panel
+    if the TUI was to open it at start, as embedded mode's restart does.
+    Embedded mode keeps its restart.
+  - *Applying a trust in place.* The project's layers are loaded with trust
+    first, so a project config that does not load is refused before anything
+    is recorded. Then a permanent answer is recorded in the trust store with
+    the config's hash, the session is marked trusted, the runtime is reloaded
+    from the new merged config (its `ConfigReloader`), and the session's
+    layers are replaced. The agent writes one note saying the project config
+    is in force. A reload that fails marks the session untrusted again and
+    leaves the prompt pending; a permanent answer already recorded stays
+    recorded, since embedded mode's restart would fail the same way.
+  - *Settled.* After a trust the prompt answers no directory, and another
+    viewer's answer to the same prompt is accepted without effect: one wins.
+    A decline records nothing and keeps the prompt pending, as in embedded
+    mode, so `/trust` asks again, and so does a later attach, as embedded
+    mode's `/resume` does.
+  - *A session-only trust* lasts as long as the session's runtime. A detach
+    and a reattach keep it. A session resumed after a close (an idle end
+    included), or after its child restarted, starts untrusted and asks
+    again.
+  - *What does not reload in place:* project plugins (H10).
+  - *`launch`* drops `daemonTrustNeedsAsking`: `chooseDaemon` no longer
+    weighs trust, and `marshal attach` no longer refuses an untrusted
+    project.
 
 ### D9. Pinned projects
 
@@ -660,25 +712,60 @@ against.
   two embedded TUIs no longer race.
 - A process that loses the lock does nothing else: every process still reads
   tokens from the keychain on use.
+- **The details** (plan 8).
+  - *The lease.* `oauthworker.TryLease` takes an exclusive, non-blocking
+    `flock` on `<data>/oauth-refresh.lock` (mode `0600`), as `index.TryLease`
+    does for a project's index. The kernel drops it when its holder exits,
+    however it exits.
+  - *Embedded mode* takes the lease only when its runtime has a refresh
+    worker to run (an `openai_codex` provider signed in with OAuth), so a TUI
+    without one never touches the file. Holding it, the runtime's workers run
+    until the runtime closes, and the lease is released after they return.
+    Not holding it, the runtime tries again every 30s, so an embedded TUI
+    takes over when the daemon stops. The process's next runtime (a resume, a
+    trust reload) waits up to 2s for the previous one's release before it
+    tries.
+  - *A lease that cannot be taken* for any reason other than another holder
+    (the file cannot be opened, or the platform has no lock binding) is
+    logged, and the workers run without it, as before P4.
+  - *`marshal daemon refresh`* runs until it is signalled. Every 5s it reads
+    the user config's modification time and size; the project config is
+    never read, since providers are user-global. While the config names an
+    OAuth provider it holds the lease (trying every 30s while another process
+    holds it) and runs one worker per provider. A change rebuilds the workers
+    under the same lease, and a config that names none releases the lease. It
+    logs to standard error.
+  - *The daemon supervises it* only when started with `--oauth-refresh`
+    (local profile only), which `marshal daemon install` writes into the
+    unit. A bridge the user runs by hand, and every test, starts no helper
+    unless asked. The bridge runs `<marshal-bin> daemon refresh` with its own
+    environment and standard error. It restarts the helper after a backoff
+    that starts at 1s, doubles to at most 1m, and resets after a run that
+    lasted a minute, and it stops the helper (SIGTERM, then SIGKILL after 5s)
+    when the bridge stops.
+  - *`GET /api/daemon`* reports the helper as `refresh` (its process ID and
+    its restart count) when the bridge supervises one, and `marshal daemon
+    status` prints a `refresh:` line saying whether it runs.
 
 ## Design
 
 | Area | Change |
 |---|---|
-| `cmd/webbridge`, `web/bridge` | `--profile local`; the unix listener and the peer check; project children; the attach handshake and the relay; the environment resolver and `webbridge print-env`; the idle-session sweep and `--idle-session-timeout`; pins; host-process agents on project children; the refresh helper's supervision. Standard library only, as ever. |
-| `cmd/marshal` | `marshal attach`, `marshal daemon install/uninstall/start/stop/status/pin/unpin/refresh`, `--embedded`. Install writes `SHELL` and the idle timeout into the unit; status prints each child. |
+| `cmd/webbridge`, `web/bridge` | `--profile local`; the unix listener and the peer check; project children; the attach handshake and the relay; the environment resolver and `webbridge print-env`; the idle-session sweep and `--idle-session-timeout`; the client-trust mark on a project child's sessions (plan 7); the refresh helper's supervision behind `--oauth-refresh` and its `refresh` report (plan 8); pins; host-process agents on project children. Standard library only, as ever. |
+| `cmd/marshal` | `marshal attach`, `marshal daemon install/uninstall/start/stop/status/pin/unpin/refresh`, `--embedded`. Install writes `SHELL`, the idle timeout and `--oauth-refresh` into the unit; status prints each child and the refresh helper. |
 | `internal/commands` | The TUI-only `/detach` (plan 5). |
-| `internal/daemon` (new) | The service units and the commands that drive them, and the socket's HTTP client with its attach handshake, which plan 5's daemon mode reuses. |
+| `internal/daemon` (new) | The service units and the commands that drive them, and the socket's HTTP client with its attach handshake, which plan 5's daemon mode reuses; the unit's `--oauth-refresh` and the answer's `refresh` (plan 8). |
 | `internal/app/config` | `DaemonDir` and `DaemonSocketPath`, beside `DataDir`; the `[daemon]` section's `idle_session_timeout` (plan 6). |
-| `internal/acp` | `--viewers`: concurrent marshal connections that notify on their own connection; one run slot per session; `project/hold` and `project/release`; the deferring trust resolver for marshal-driven sessions. |
-| `internal/acp/service` | Runs on the session's context; `run` and `lastRun` in the status; run outcome notes. |
-| `internal/acpwire` | `SessionStatus.Run`, `LastRun`; the hold methods. |
-| `internal/acpclient/rpc` | Nothing new in the protocol; the relay is a byte stream `rpc.NewStream` already frames. |
-| `internal/launch` | The daemon check, the attach handshake, daemon mode's loop and its detach, and the client log. |
-| `internal/app/tui` | Quit and `/detach` detach in daemon mode; `busy` follows a run it did not start; an attach never replays an old wake; the outcome notes leave `handleAgentFinished` and `handlePlanAuthorFinished`. |
-| `internal/app` | The refresh lock around the OAuth workers. |
+| `internal/acp` | `--viewers`: concurrent marshal connections that notify on their own connection; one run slot per session; `project/hold` and `project/release`; `clientTrust` on the lifecycle calls, and the trust calls served to marshal clients only (plan 7). |
+| `internal/acp/service` | Runs on the session's context; `run` and `lastRun` in the status; run outcome notes; a trust applied in place and its settled prompt (plan 7). |
+| `internal/acpwire` | `SessionStatus.Run`, `LastRun`; `TrustPromptResult.InPlace` (plan 7); the hold methods. |
+| `internal/acpclient`, `internal/acpclient/rpc` | No new method; the relay is a byte stream `rpc.NewStream` already frames. `Host.TrustPrompt` returns the whole prompt, its `InPlace` included (plan 7). |
+| `internal/launch` | The daemon check, the attach handshake, daemon mode's loop and its detach, and the client log; plan 7 drops the check's trust condition. |
+| `internal/app/tui` | Quit and `/detach` detach in daemon mode; `busy` follows a run it did not start; an attach never replays an old wake; the outcome notes leave `handleAgentFinished` and `handlePlanAuthorFinished`; the trust panel closes after a trust applied in place (plan 7). |
+| `internal/app` | `WithClientTrust` and the trust applied in place (plan 7); the refresh lease around the OAuth workers, and `RunOAuthRefresh` for `marshal daemon refresh` (plan 8). |
+| `internal/llm/provider/oauthworker` | The refresh lease, `TryLease` (plan 8). |
 | `internal/app/session` | The run claim both run slots take (plan 3). |
-| `test/daemon` (new) | The end-to-end attach test: a real bridge and a real child in one test process, driven by a scripted client (plan 4); the reattach to a running turn against a test-owned provider, and `launch`'s daemon mode detaching from it (plan 5). |
+| `test/daemon` (new) | The end-to-end attach test: a real bridge and a real child in one test process, driven by a scripted client (plan 4); the reattach to a running turn against a test-owned provider, and `launch`'s daemon mode detaching from it (plan 5); a daemon session asking its client about trust (plan 7). |
 
 ## Migration order
 
@@ -711,10 +798,23 @@ Two plans at a time where they share no files, as in P3.
    `cmd/marshal`'s `daemon` command. The idle timeout moved here from plan 5
    because the bridge enforces it, and plan 5 then touches no bridge file.
    Alongside plan 5.
-7. **Trust and pins** (D8, D9). Alongside plan 8.
-8. **OAuth refresh once** (D12). Alongside plan 7.
-9. **Fleet agents on the project's child** (D10). Last: it changes the
-   fleet's lifecycle, which every earlier plan leaves alone.
+7. **Trust for daemon sessions** (D8), in `internal/app`, `internal/acp`,
+   `internal/acp/service`, `internal/acpwire`, `internal/acpclient`,
+   `internal/app/tui`, `internal/launch`, the bridge's registry,
+   `cmd/marshal/main.go`'s comment and `test/daemon`. Alongside plan 8.
+8. **OAuth refresh once** (D12), in `internal/llm/provider/oauthworker`,
+   `internal/app`'s embedding and a new refresh file, `cmd/marshal`'s `daemon`
+   command, `internal/daemon`, the bridge's new helper supervisor and
+   daemon answer, and `cmd/webbridge`. Alongside plan 7.
+9. **Pinned projects** (D9). Pins moved here from plan 7: their
+   `marshal daemon pin`, the bridge's start-up of pinned children and the
+   unit's environment share `cmd/marshal/daemon.go`, `cmd/webbridge/main.go`
+   and `internal/daemon` with plan 8, while trust and the refresh share no
+   file.
+10. **Fleet agents on the project's child** (D10). Last: it changes the
+    fleet's lifecycle, which every earlier plan leaves alone. Plans 9 and 10
+    both change a project child's lifecycle, so they run one after the
+    other.
 
 ## Tests
 
@@ -745,7 +845,15 @@ Two plans at a time where they share no files, as in P3.
   overlay reach the child, a timeout falls back with a warning, and a changed
   `.envrc` changes the next start's environment.
 - **W9. Refresh once.** Two processes contend for the lock and only one runs
-  workers; the holder exiting lets the other take over.
+  workers; the holder exiting lets the other take over. An embedded runtime
+  with no OAuth provider never takes the lock, and the helper rebuilds its
+  workers when the user config changes.
+- **W11. Trust over the daemon.** A daemon session on an untrusted project
+  starts without the project config and its marshal client is asked. A
+  permanent answer records the trust and loads the config in place, with the
+  session kept and the client's program still running; a second session
+  starts trusted and asks nothing. A session-only answer records nothing,
+  and the bridge's own connection can neither read the prompt nor answer it.
 - **W10. Suite.** Every plan keeps `go test ./...` green, apart from the known
   local failures, and `TestWebIsStdlibOnly` passes.
 
@@ -758,7 +866,7 @@ Two plans at a time where they share no files, as in P3.
   and, when it ends, its outcome, as if it had never left.
 - Plain `marshal --embedded`, and `marshal` with no daemon, behave as after
   P3.
-- W1 to W10 pass. A manual run covers the above, plus a sudo prompt and an
+- W1 to W11 pass. A manual run covers the above, plus a sudo prompt and an
   MCP sign-in through the daemon, a pinned project's embeddings refreshing
   after an edit with no session open, and a project whose `.envrc` sets the
   toolchain.
@@ -1737,3 +1845,12 @@ pre-existing):
 - `marshal daemon install` reads `[daemon] idle_session_timeout` with the
   project config skipped, so no project can retune the daemon; nothing reads
   it at runtime from the unit's flag but `webbridge` itself.
+
+
+### Plan 7 — trust for daemon sessions
+
+Not yet run. [The plan](plans/2026-11-11-p4-7-trust-plan.md) fills this record.
+
+### Plan 8 — OAuth refresh once
+
+Not yet run. [The plan](plans/2026-11-11-p4-8-refresh-plan.md) fills this record.

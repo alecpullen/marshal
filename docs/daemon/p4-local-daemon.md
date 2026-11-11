@@ -2018,4 +2018,224 @@ exactly as embedded mode's `trustDecide` does.
 
 ### Plan 8 — OAuth refresh once
 
-Not yet run. [The plan](plans/2026-11-11-p4-8-refresh-plan.md) fills this record.
+Run in a worktree as `p4-8-refresh`, eight tasks, one verified commit each.
+[The plan](plans/2026-11-11-p4-8-refresh-plan.md) holds the task list. The
+worktree came off `main` at `ef471346` (`docs/daemon: record P4 plans 7 and 8`);
+the plan's base `87c0ad10` had moved on to `4be1f4e8`, another session's
+`filetrack-stale-epoch` work, which touches none of this plan's files. Every
+anchor was re-checked against the new HEAD before the first task.
+
+**What was built.**
+
+- `internal/llm/provider/oauthworker`: `lease.go`, `lease_unix.go` and
+  `lease_other.go` — `LeaseFile` (`oauth-refresh.lock`) and `TryLease(dataDir)`,
+  an exclusive non-blocking `flock` on a file created `0600` in a data dir
+  created `0700`, split per platform exactly as `internal/index` splits its own.
+  `main_test.go` gives the package a `TestMain` that doubles as the second
+  process W9 needs (`OAUTHWORKER_LEASE_HOLDER`).
+- `internal/app/oauthrefresh.go`: `oauthLease` and its `hold`, `runWorkers`,
+  `configStamp`, `OAuthRefreshOptions` and `RunOAuthRefresh`, and the
+  `refreshUnderLease`/`runGeneration` pair that rebuilds the workers under one
+  lease.
+- `internal/app/embedded.go`: `Embedded.refreshDone`, `Embedded.leaseRetry` and
+  `startRefresh`. The old unconditional worker loop is gone: a runtime with no
+  worker takes no lease and touches no file.
+- `cmd/marshal`: `refresh` in `runDaemon`'s switch (deliberately absent from
+  the usage hint), the `oauthRefreshRunner` seam, `runDaemonRefresh` with its
+  own signal context and a text logger on stderr, `daemonRefreshLine` and
+  `restartCount`; `status` prints the refresh line between the daemon's and the
+  children's.
+- `web/bridge/helper.go`: `Helper`, one long-lived process with a restart
+  backoff (1s doubling to 1m, reset after a minute-long run) and SIGTERM then
+  SIGKILL after 5s; `DaemonInfo.Refresh`, `DaemonRefresh` and
+  `SetRefreshHelper`, filled per request by `GET /api/daemon`.
+- `cmd/webbridge`: `--oauth-refresh` (`WEBBRIDGE_OAUTH_REFRESH`), refused under
+  the server profile and off unless asked; the local profile supervises
+  `<marshal-bin> daemon refresh` with the bridge's stderr and joins it before
+  `run` returns.
+- `internal/daemon`: `UnitSpec.Args` ends with `--oauth-refresh`, written by
+  every install and configured by nothing; `RefreshInfo` and `Info.Refresh`.
+- `cmd/webbridge/README.md` gains a paragraph under "The local profile" that
+  states D12 only.
+
+**Where the plan was short, and how it was filled.**
+
+1. *One build per refresh, not two.* The plan has the outer loop build the
+   workers to learn whether the config names any, then the work load the config
+   again under the lease. Building twice per iteration created a set nothing
+   started — the probe's workers were thrown away and the tests' first worker
+   never ran. The probe's set is now handed to the work, which reloads only
+   when the config's stamp changed while it waited for the lease: the case the
+   plan's second read exists for.
+2. *A line the smoke step expects.* Decision 2's contract does not mention
+   logging a held-elsewhere lease, but the smoke step reads "logs that another
+   process holds the lease". `hold` logs it once per wait rather than on every
+   30s retry, which at one attempt a minute would be noise.
+3. *`go vet`'s lostcancel.* The rebuild loop reassigned `cancel`, and vet
+   refused it ("the cancel function is not used on all paths"). The loop became
+   `runGeneration`: one function per set, which always cancels and joins its
+   workers before returning. The cancel now has a single owner on every path.
+4. *Fixture names.* `internal/app` already had a `fakeLease`
+   (`host_index_test.go`, with a different signature) and a `discardLogger`, so
+   the refresh lease's fake is `fakeRefreshLease` and the package's existing
+   `discardLogger` is reused.
+5. *Task 3's mutation check.* A single `os.Stat` after `Start` missed the
+   goroutine that would take the lease, so the mutation passed when it had to
+   fail. `TestAnEmbeddedRuntimeWithoutOAuthTakesNoLease` now watches for the
+   file over a 100ms window; with the mutation the file appears and the test
+   fails, and the restored code is green.
+6. *Task 3's resume assertion.* The plan asks that a resume leave "no gap a
+   test `TryLease` could take". The predecessor releases before the successor's
+   first attempt, so a gap of one goroutine scheduling exists by construction.
+   The test asserts a sustained hold instead: fifty probes after the handoff
+   all find the lease taken.
+7. *Task 4's home.* `daemonHome` reads `os.UserHomeDir`, so the refresh tests
+   use the package's existing `daemonTestEnv` rather than a new seam.
+8. *Task 6's helper context.* `run` has two early-error returns after the
+   helper starts (a refused socket, a failed listen), so the helper runs on a
+   child context that the deferred waiter cancels and joins; handing it the
+   run's own context would have blocked on those paths.
+9. *Task 8's commit carries a fix to Task 2's file.* The held-elsewhere log
+   line and the `runGeneration` restructure landed after Task 2 was committed,
+   so they are in the Task 8 commit rather than rewriting that history.
+
+**The smoke run** (built `webbridge` and `CGO_ENABLED=1` `marshal`; a scratch
+`MARSHAL_DATA_DIR` whose `daemon` directory is `0700`, and a scratch
+`MARSHAL_CONFIG_DIR` whose `config.toml` names one provider —
+`type = "openai_codex"`, `auth = "oauth"` — with no stored token, so its worker
+only waits and nothing reaches a token endpoint):
+
+```text
+$ ./webbridge --profile local --addr off --oauth-refresh --marshal-bin $PWD/marshal
+webbridge: listening on unix:///private/tmp/p4-8-smoke.6PaM/data/daemon/marshal.sock
+level=INFO msg="oauth refresh: holding the refresh lease" providers=1
+
+$ curl --unix-socket …/data/daemon/marshal.sock http://daemon/api/daemon
+{"version":"dev","profile":"local","pid":69159,…,"projects":[],"children":[],
+ "refresh":{"pid":69187,"restarts":0}}
+
+# SIGINT to the helper alone (the pid the first attempt killed was its own):
+level=INFO msg="oauth refresh: released the refresh lease" providers=1
+WARN webbridge: refresh helper exited status="exit status 0" restartIn=1s
+level=INFO msg="oauth refresh: holding the refresh lease" providers=1
+# GET /api/daemon then: "refresh":{"pid":80626,"restarts":1}
+
+$ ./marshal daemon refresh            # a second helper, started by hand
+level=INFO msg="oauth refresh: another process holds the refresh lease; waiting for it" retry=30s
+
+# SIGINT to the bridge (15:19:08): it released the lease and stopped its helper
+level=INFO msg="oauth refresh: released the refresh lease" providers=1
+# the hand-run helper took it at 15:19:36, 28s later
+level=INFO msg="oauth refresh: holding the refresh lease" providers=1
+```
+
+`marshal daemon status` against an installed service is still unavailable on
+this machine: it reports `service: not installed` and a socket that is not
+answering. The keychain reached from a *user service* was not exercised either:
+the token-less provider only makes a worker wait, and no real signed-in provider
+was tried, so a launchd agent's or a session bus's keychain access remains
+unproven.
+
+**Verification** (worktree, `TMPDIR=/private/tmp/p4-8-suite`; at the starting
+commit all six packages this plan touches were passing, so no failure below is
+pre-existing):
+
+- Task 1: `go test ./internal/llm/provider/oauthworker/ -run 'Lease|Holder'` —
+  `ok 0.409s`; `GOOS=windows go vet ./internal/llm/provider/oauthworker/`
+  clean.
+- Task 2: `go test ./internal/app/ -run 'TestHold|TestTheHelper'` —
+  `ok 0.666s` (`ok 0.944s` over the same and Task 3's patterns after the
+  restructure).
+- Task 3: `-run 'Embedded|Lease|Resume'` `ok 0.811s`; the whole package
+  `ok 6.108s`; the mutation (take the lease with or without a worker) failed
+  `TestAnEmbeddedRuntimeWithoutOAuthTakesNoLease` as required, and the restore
+  is green.
+- Task 4: `./cmd/marshal -run 'DaemonRefresh|DaemonRejects'` `ok 0.327s`; the
+  package `ok 2.302s`.
+- Task 5: `./web/bridge -run 'Helper|ReportsItsHelper'` `ok 0.764s`;
+  `-run TestWebIsStdlibOnly` `ok 0.181s`; `GOOS=windows go vet ./web/bridge/`
+  and `GOOS=linux go vet ./web/...` clean; the mutation (drop the kill after
+  `StopTimeout`) failed `TestAHelperIgnoringSIGTERMIsKilled`, and the restore is
+  green.
+- Task 6: `./cmd/webbridge` `ok 0.368s`; `go build ./cmd/webbridge` clean.
+- Task 7: `./internal/daemon` `ok 1.104s`, `./cmd/marshal` `ok 2.472s`.
+- `gofmt -l internal cmd test web` — no output.
+- `go vet ./...` — clean, and so are `GOOS=linux go vet ./web/...
+  ./internal/daemon/ ./cmd/webbridge/ ./internal/llm/provider/oauthworker/` and
+  `GOOS=windows go vet ./web/bridge/ ./internal/llm/provider/oauthworker/`.
+  This is the check that caught item 3's lostcancel shape.
+- `go test ./web/bridge/ -run TestWebIsStdlibOnly -count=1` — `ok 0.184s`.
+- `go test -race ./internal/app/ -run 'TestHold|TestTheHelper|Lease' -count=1`
+  — `ok 3.067s`; `go test -race ./web/bridge/ -run Helper -count=1` —
+  `ok 2.020s`; no data race.
+- `go test ./... -timeout 20m` — the run against the finished tree is clean:
+  no `FAIL`, `internal/acp` included. Two earlier runs were clean too. A first
+  run exited non-zero while the "another process holds" log line was half
+  applied (`internal/app/oauthrefresh.go` briefly did not compile); that output
+  was truncated to its last 60 lines, so the failing package's name was not
+  captured, and the two later runs cover the same tree.
+- `CGO_ENABLED=1 go build -o marshal ./cmd/marshal` — clean;
+  `go test ./test/usability/... -run TestScripted -timeout 5m` — exit 0, every
+  package `ok`.
+
+**Open for later plans.**
+
+- The keychain from a user service is unproven (above). A real signed-in
+  provider refreshed by an installed launchd agent or systemd user unit is the
+  case to try; nothing here exercises it.
+- `marshal daemon status`'s refresh line is covered by unit tests only, since
+  this machine has no installed service to print it.
+- A resume's handoff bounds its gap rather than closing it: if the successor's
+  first attempt loses, it retries after `leaseRetry` (30s in production).
+  Closing the window needs the release handed over, not re-taken.
+- The helper's watch is a 5s poll of modification time and size, so an edit
+  that keeps the size and backdates the mtime would be missed. An editor's
+  atomic rename is covered, which is why a watch was rejected (decision 6).
+
+**Branch review** (three reviewer subagents over disjoint slices: the lease and
+`internal/app`, `cmd/marshal` and `internal/daemon`, and `web/bridge`,
+`cmd/webbridge` and this record). All three returned SHIP. The one major and
+three minors they raised are fixed here, each with the test that would have
+caught it:
+
+- `daemonRefreshLine` printed `refresh: running (pid 0)` while the supervisor
+  waited out a restart backoff — the line a user reads precisely when
+  refreshing has stopped working. A mixed-version install (a `<marshal-bin>`
+  without the `refresh` subcommand) puts it there for minutes at a time. A
+  helper between runs now reports `refresh: not running` with its restart
+  count.
+- `Helper`'s reset of the delay after a steady run had no coverage:
+  `TestAnExitingHelperIsRestarted` puts `SteadyRun` beyond its runs, so the
+  branch could be deleted silently. `TestASteadyRunResetsTheBackoff` runs a
+  script that always outlives `SteadyRun`; with the reset removed its last gap
+  is 589ms against a 280ms limit.
+- Decision 4's handoff wait had no test that could fail: with the 1ms retry
+  the existing resume test takes the lease either way.
+  `TestAStartWaitsForThePriorRefreshBoundedly` gives `Start` a previous work
+  channel that never closes, and asserts it waits `oauthHandoffWait` and no
+  longer. Removing the wait returns in 17ms.
+- Decision 9's signal context was unverified: the fake cancelled the parent
+  context, which succeeds with or without `signal.NotifyContext`. The context
+  now sits behind `daemonSignalContext`, and
+  `TestDaemonRefreshInstallsItsSignalContext` asserts it is installed, derived
+  from the caller's context, and stopped. Its wait is bounded, so a regression
+  fails in 5s rather than hanging the package.
+
+One gap no reviewer reported is closed too. `load` stamped the user config
+*after* reading it, so a save that landed during the read became the baseline
+and the change was never rebuilt: an added provider would not be refreshed
+until the next edit. The stamp is now taken before the read
+(`TestTheHelperRebuildsWhenTheConfigChangesDuringALoad`, which fails with the
+old order).
+
+Two findings were declined. The unlocked `Server.refresh` read mirrors
+`daemonInfo` and is set before the listeners start. The plan's remark that
+nothing in `cmd/webbridge` imports `marshal/internal/...` is inaccurate —
+`procenv` predates this plan — but the boundary rule covers `web/` only.
+
+Verification after the fixups, in the worktree with `TMPDIR=/private/tmp/p4-8-fix`:
+`go test ./internal/app/ ./cmd/marshal/ ./internal/daemon/
+./internal/llm/provider/oauthworker/ ./cmd/webbridge/ -count=1` all `ok`;
+`go test ./web/bridge/ -count=1` `ok 82.647s`; `gofmt -l cmd internal web`
+empty; `go vet` on the same five packages clean.
+

@@ -72,6 +72,13 @@ func TestThePlistNamesEverything(t *testing.T) {
 		}
 	}
 
+	// --oauth-refresh closes the argument list: the installed daemon
+	// always supervises the refresh helper (decision 5), so the flag is
+	// written and is the last element of the array.
+	if !strings.Contains(plist, "<string>--oauth-refresh</string>\n\t</array>") {
+		t.Errorf("the plist does not end ProgramArguments with --oauth-refresh:\n%s", plist)
+	}
+
 	// The escaping is what made that decode possible: the raw text must
 	// hold the entities and not the characters they stand for.
 	for _, tc := range []struct{ raw, escaped string }{
@@ -134,9 +141,18 @@ func TestTheSystemdUnitNamesEverything(t *testing.T) {
 		` "--workspace" "/data/a & b/daemon/fleet.json"` +
 		` "--addr" "off"` +
 		` "--marshal-bin" "/opt/ma%%rshal's \"marshal\" & co/bin/marshal"` +
-		` "--idle-session-timeout" "45m0s"`
+		` "--idle-session-timeout" "45m0s"` +
+		` "--oauth-refresh"`
 	if !strings.Contains(unit, wantExec) {
 		t.Errorf("ExecStart line missing or mis-escaped:\nwant: %s\ngot:\n%s", wantExec, unit)
+	}
+
+	// --oauth-refresh is the last word of ExecStart: the installed daemon
+	// always supervises the refresh helper (decision 5).
+	for _, line := range strings.Split(unit, "\n") {
+		if strings.HasPrefix(line, "ExecStart=") && !strings.HasSuffix(line, ` "--oauth-refresh"`) {
+			t.Errorf("ExecStart does not end with --oauth-refresh: %s", line)
+		}
 	}
 
 	// One Environment= line per variable, quoted the same way, sorted.

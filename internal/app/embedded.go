@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -15,7 +16,9 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/db"
 	"marshal/internal/llm/provider"
+	"marshal/internal/llm/provider/oauthworker"
 	"marshal/internal/trust"
+	"marshal/internal/worker"
 )
 
 // Embedded runs embedded mode's runtimes: one at a time, over options
@@ -41,10 +44,20 @@ type Embedded struct {
 	trustDecide    func(trust.Decision)
 	reloadForTrust bool
 
-	// workers tracks the OAuth refresh workers of every runtime started so
-	// far. They are cancelled through their runtime's workCtx and reclaimed by
-	// process exit, so nothing waits on this group.
+	// workers tracks the OAuth refresh work of every runtime started so far:
+	// the workers run only while their runtime holds the refresh lease (P4
+	// D12), and the lease is released when the runtime's work context ends.
+	// Nothing waits on this group at exit; the goroutines are reclaimed by
+	// process exit.
 	workers sync.WaitGroup
+
+	// refreshDone is closed when the current runtime's refresh work has
+	// returned, its lease released; nil until a runtime has a worker.
+	refreshDone chan struct{}
+
+	// leaseRetry is how often a runtime retries a held refresh lease; zero
+	// means oauthLeaseRetry. Tests shorten it.
+	leaseRetry time.Duration
 }
 
 // NewEmbedded applies opts once, after embedded mode's defaults (the
@@ -175,7 +188,10 @@ func (e *Embedded) Start(ctx context.Context) (*Runtime, error) {
 	// ── Worker lifecycle ──────────────────────────────────────────────
 	// The index work runs on the project host, which startRuntime attached
 	// this session to; the language servers are the host's too. Only the
-	// OAuth refresh workers stay per runtime.
+	// OAuth refresh workers stay per runtime, and they run only while this
+	// runtime holds the refresh lease (P4 D12, decision 3): a runtime with no
+	// worker takes no lease and touches no lock file, so the daemon's helper
+	// is never kept from refreshing by a session that would refresh nothing.
 	if len(e.opts.workers) == 0 {
 		// Surface a hint when embedding indexing is enabled but the
 		// embedding route cannot resolve — semantic search reports
@@ -188,8 +204,8 @@ func (e *Embedded) Start(ctx context.Context) (*Runtime, error) {
 			rt.State.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
 		}
 	}
-	for _, w := range buildOAuthWorkers(rt.Config, logger, rt.AuthResolver) {
-		startWorker(rt.workCtx, &e.workers, w, logger)
+	if workers := buildOAuthWorkers(rt.Config, logger, rt.AuthResolver); len(workers) > 0 {
+		e.startRefresh(rt, workers, logger)
 	}
 	// ── End worker lifecycle ──────────────────────────────────────────
 
@@ -219,6 +235,41 @@ func (e *Embedded) Start(ctx context.Context) (*Runtime, error) {
 	})
 
 	return rt, nil
+}
+
+// startRefresh runs one runtime's OAuth refresh work under the refresh lease
+// (P4 D12, decisions 3 and 4).
+//
+// The lease is a lock file, and a second open of it in one process is excluded
+// too, so this waits for the previous runtime's work to return rather than
+// waiting out the retry: without the wait every resume would leave the lease
+// free for oauthLeaseRetry, and another process could take it in the gap.
+func (e *Embedded) startRefresh(rt *Runtime, workers []worker.Worker, logger *slog.Logger) {
+	if e.refreshDone != nil {
+		t := time.NewTimer(oauthHandoffWait)
+		select {
+		case <-e.refreshDone:
+			t.Stop()
+		case <-t.C:
+			logger.Warn("the previous oauth refresh did not release the lease in time",
+				"waited", oauthHandoffWait)
+		}
+	}
+	done := make(chan struct{})
+	e.refreshDone = done
+	dataDir := config.DataDir(e.homeDir)
+	e.workers.Add(1)
+	go func() {
+		defer e.workers.Done()
+		defer close(done)
+		oauthLease{
+			tryLease: func() (func(), bool, error) { return oauthworker.TryLease(dataDir) },
+			retry:    e.leaseRetry,
+			log:      logger,
+		}.hold(rt.workCtx, func(ctx context.Context) {
+			runWorkers(ctx, workers, logger)
+		})
+	}()
 }
 
 // SessionDeps is the current runtime's ServiceDeps plus the startup trust

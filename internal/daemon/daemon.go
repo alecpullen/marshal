@@ -52,5 +52,9 @@ func (u UnitSpec) Args() []string {
 		"--addr", "off",
 		"--marshal-bin", u.Marshal,
 		"--idle-session-timeout", u.IdleSessionTimeout.String(),
+		// The installed daemon always supervises a refresh helper, so the
+		// flag is written rather than configured (decision 5). It comes
+		// last: it is the one argument that is not a value the user set.
+		"--oauth-refresh",
 	}
 }

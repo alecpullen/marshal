@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/app"
 	"marshal/internal/daemon"
 )
 
@@ -186,6 +187,9 @@ func TestDaemonInstallPassesExplicitPaths(t *testing.T) {
 			"<string>--addr</string>",
 			"<string>off</string>",
 			"<string>--marshal-bin</string>",
+			// The installed daemon always refreshes (decision 5), so the
+			// flag is written into the unit rather than configured.
+			"<string>--oauth-refresh</string>",
 			"<key>MARSHAL_DATA_DIR</key>",
 			"<string>" + dataDir + "</string>",
 			"<key>SHELL</key>",
@@ -313,6 +317,7 @@ func TestDaemonStatusReportsARunningDaemon(t *testing.T) {
 				PID:       4242,
 				StartedAt: 1700000000000,
 				Projects:  []string{"/work/one", "/work/two"},
+				Refresh:   &daemon.RefreshInfo{PID: 5151, Restarts: 2},
 				Children: []daemon.ChildInfo{
 					{
 						// Another build, with a warning: the line has to
@@ -359,10 +364,10 @@ func TestDaemonStatusReportsARunningDaemon(t *testing.T) {
 		t.Errorf("client socket = %q, want %q", gotSocket, socket)
 	}
 	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
-	// The daemon's three lines, then each child's, the warned child's
-	// second one included.
-	if len(lines) != 6 {
-		t.Fatalf("status printed %d lines, want 6:\n%s", len(lines), stdout.String())
+	// The daemon's three lines, then its refresh helper's, then each
+	// child's, the warned child's second one included.
+	if len(lines) != 7 {
+		t.Fatalf("status printed %d lines, want 7:\n%s", len(lines), stdout.String())
 	}
 	if !strings.Contains(lines[0], "running") || !strings.Contains(lines[0], "4242") {
 		t.Errorf("service line = %q, want the running state and its pid", lines[0])
@@ -384,21 +389,27 @@ func TestDaemonStatusReportsARunningDaemon(t *testing.T) {
 		}
 	}
 
+	// The refresh helper sits under the daemon's line and above the
+	// children's: its pid, and its restarts when it has restarted.
+	if want := "refresh: running (pid 5151), restarted 2 times"; lines[3] != want {
+		t.Errorf("refresh line = %q, want %q", lines[3], want)
+	}
+
 	// The first child runs another build and carries a warning: its line
 	// names its own version, this marshal's, and its one session, and the
 	// warning follows indented on a line of its own.
-	if want := "child /work/three: version 2.0.0, 1 session (this marshal 0.9.0)"; lines[3] != want {
-		t.Errorf("child line = %q, want %q", lines[3], want)
+	if want := "child /work/three: version 2.0.0, 1 session (this marshal 0.9.0)"; lines[4] != want {
+		t.Errorf("child line = %q, want %q", lines[4], want)
 	}
-	if want := "  environment: " + warning; lines[4] != want {
-		t.Errorf("warning line = %q, want %q", lines[4], want)
+	if want := "  environment: " + warning; lines[5] != want {
+		t.Errorf("warning line = %q, want %q", lines[5], want)
 	}
 	// The second child runs this marshal's version with no sessions and no
 	// warning: no "(this marshal ...)" aside, and no second line.
-	if want := "child /work/four: version 0.9.0, 0 sessions"; lines[5] != want {
-		t.Errorf("child line = %q, want %q", lines[5], want)
+	if want := "child /work/four: version 0.9.0, 0 sessions"; lines[6] != want {
+		t.Errorf("child line = %q, want %q", lines[6], want)
 	}
-	for _, line := range lines[3:] {
+	for _, line := range lines[4:] {
 		if strings.Contains(line, "/work/four") && strings.Contains(line, "this marshal") {
 			t.Errorf("child line = %q, want no version aside for a child running this marshal", line)
 		}
@@ -447,6 +458,55 @@ func TestDaemonChildLine(t *testing.T) {
 	}
 }
 
+// TestDaemonRefreshLine pins the refresh line's three shapes: no helper at
+// all reads `off`, a helper that has not restarted names only its pid, and a
+// helper that has restarted adds its count with a real plural.
+func TestDaemonRefreshLine(t *testing.T) {
+	cases := []struct {
+		name    string
+		refresh *daemon.RefreshInfo
+		want    string
+	}{
+		{
+			name:    "no helper",
+			refresh: nil,
+			want:    "refresh: off",
+		},
+		{
+			name:    "running, never restarted",
+			refresh: &daemon.RefreshInfo{PID: 5151},
+			want:    "refresh: running (pid 5151)",
+		},
+		{
+			name:    "running, restarted once",
+			refresh: &daemon.RefreshInfo{PID: 5151, Restarts: 1},
+			want:    "refresh: running (pid 5151), restarted 1 time",
+		},
+		{
+			name:    "running, restarted thrice",
+			refresh: &daemon.RefreshInfo{PID: 5151, Restarts: 3},
+			want:    "refresh: running (pid 5151), restarted 3 times",
+		},
+		{
+			name:    "between runs",
+			refresh: &daemon.RefreshInfo{},
+			want:    "refresh: not running",
+		},
+		{
+			name:    "between runs after a restart",
+			refresh: &daemon.RefreshInfo{Restarts: 2},
+			want:    "refresh: not running, restarted 2 times",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := daemonRefreshLine(daemon.Info{Refresh: c.refresh}); got != c.want {
+				t.Errorf("daemonRefreshLine() = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
 // TestDaemonStatusFailsWhenTheSocketIsSilent pins decision 12's failure case:
 // the service line is still printed, the socket is reported as not answering,
 // and only then does status return an error naming the socket.
@@ -484,6 +544,132 @@ func TestDaemonStatusFailsWhenTheSocketIsSilent(t *testing.T) {
 	}
 	if !strings.Contains(lines[1], socket) || !strings.Contains(lines[1], "not answering") {
 		t.Errorf("socket line = %q, want %q reported as not answering", lines[1], socket)
+	}
+}
+
+// fakeOAuthRefreshRunner replaces the refresh helper's body and counts its
+// calls. The real helper blocks until its context ends, so a fake that returns
+// at once would let a test finish while pretending it had run the daemon's
+// forever-loop; each test decides what its fake does.
+func fakeOAuthRefreshRunner(t *testing.T, run func(context.Context, app.OAuthRefreshOptions) error) *int {
+	t.Helper()
+	old := oauthRefreshRunner
+	t.Cleanup(func() { oauthRefreshRunner = old })
+	calls := 0
+	oauthRefreshRunner = func(ctx context.Context, opts app.OAuthRefreshOptions) error {
+		calls++
+		return run(ctx, opts)
+	}
+	return &calls
+}
+
+// TestDaemonRefreshRunsTheHelper: `marshal daemon refresh` runs the helper
+// once, with the resolved home and a real auth resolver, and installs its own
+// signal context — the fake ends when the context the test cancels ends.
+func TestDaemonRefreshRunsTheHelper(t *testing.T) {
+	home := daemonTestEnv(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var got app.OAuthRefreshOptions
+	calls := fakeOAuthRefreshRunner(t, func(runCtx context.Context, opts app.OAuthRefreshOptions) error {
+		got = opts
+		// The helper refreshes until its context ends; the daemon ends it by
+		// signalling it, which the test stands in for by cancelling.
+		cancel()
+		<-runCtx.Done()
+		return nil
+	})
+
+	var stderr bytes.Buffer
+	if err := runDaemon(ctx, []string{"refresh"}, strings.NewReader(""), io.Discard, &stderr); err != nil {
+		t.Fatalf("runDaemon refresh: %v\nstderr: %s", err, stderr.String())
+	}
+	if *calls != 1 {
+		t.Fatalf("the refresh helper ran %d times, want once", *calls)
+	}
+	if got.HomeDir != home {
+		t.Errorf("helper home = %q, want the test's home %q", got.HomeDir, home)
+	}
+	if got.Auth == nil {
+		t.Error("helper auth resolver is nil")
+	}
+	if got.Logger == nil {
+		t.Error("helper logger is nil")
+	}
+}
+
+// TestDaemonRefreshInstallsItsSignalContext is decision 9: main passes a
+// background context, so the helper's own signal context is what stops it, and
+// its stop runs before the helper returns. The test replaces the signal seam
+// rather than signalling the test process.
+func TestDaemonRefreshInstallsItsSignalContext(t *testing.T) {
+	daemonTestEnv(t)
+
+	parent := context.Background()
+	helperCtx, cancelHelper := context.WithCancel(parent)
+	defer cancelHelper()
+
+	installs := 0
+	stopped := false
+	restore := daemonSignalContext
+	daemonSignalContext = func(ctx context.Context) (context.Context, context.CancelFunc) {
+		installs++
+		if ctx != parent {
+			t.Error("the signal context was not derived from the caller's context")
+		}
+		return helperCtx, func() { stopped = true }
+	}
+	defer func() { daemonSignalContext = restore }()
+
+	calls := fakeOAuthRefreshRunner(t, func(runCtx context.Context, _ app.OAuthRefreshOptions) error {
+		if runCtx != helperCtx {
+			t.Error("the helper ran on a context the signal seam did not return")
+		}
+		// The service manager's SIGTERM ends the context the seam returned.
+		cancelHelper()
+		select {
+		case <-runCtx.Done():
+		case <-time.After(5 * time.Second):
+			t.Error("the helper's context never ended: the signal context was not installed")
+		}
+		return nil
+	})
+
+	if err := runDaemon(parent, []string{"refresh"}, strings.NewReader(""), io.Discard, io.Discard); err != nil {
+		t.Fatalf("runDaemon refresh: %v", err)
+	}
+	if *calls != 1 {
+		t.Fatalf("the refresh helper ran %d times, want once", *calls)
+	}
+	if installs != 1 {
+		t.Fatalf("the signal context was installed %d times, want once", installs)
+	}
+	if !stopped {
+		t.Error("the signal context's stop was not called")
+	}
+}
+
+// TestDaemonRefreshRefusesArguments: refresh takes no arguments, so a stray
+// one is refused by name and the helper never runs.
+func TestDaemonRefreshRefusesArguments(t *testing.T) {
+	daemonTestEnv(t)
+	calls := fakeOAuthRefreshRunner(t, func(context.Context, app.OAuthRefreshOptions) error {
+		t.Error("the refresh helper ran for an invocation with an argument")
+		return nil
+	})
+
+	err := runDaemon(context.Background(), []string{"refresh", "extra"},
+		strings.NewReader(""), io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("refresh with an argument succeeded, want an error")
+	}
+	if !strings.Contains(err.Error(), "extra") {
+		t.Errorf("error = %q, want it to name %q", err, "extra")
+	}
+	if *calls != 0 {
+		t.Errorf("the refresh helper ran %d times, want none", *calls)
 	}
 }
 

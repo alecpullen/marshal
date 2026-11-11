@@ -71,6 +71,18 @@ webbridge --profile local --socket ~/.local/share/marshal/daemon/marshal.sock --
   idle_session_timeout` in the user config, so a change takes effect at the
   next install.
 
+`--oauth-refresh` (also `WEBBRIDGE_OAUTH_REFRESH`, off unless asked; local
+profile only) supervises `marshal daemon refresh` beside the bridge. That
+helper holds `<data>/oauth-refresh.lock` and, every few seconds, re-reads the
+user config's modification time and size, refreshing the OAuth providers it
+names and rebuilding its workers when the file changes. One process refreshes:
+an embedded `marshal` runs its own refresh workers only while it holds the same
+lock, so with a daemon running no embedded TUI refreshes, and two TUIs no
+longer race the same grant. A process that loses the lock still refreshes
+inline when the token is used. `marshal daemon install` always writes
+`--oauth-refresh` into the unit, so an installed daemon refreshes; a bridge
+started by hand, and every test, starts no helper unless asked.
+
 Each project child starts with the project's own environment, as a terminal in
 that project would give it: the user's login shell (`$SHELL`, else `/bin/sh`)
 is run in the project directory, and a `.envrc` is overlaid through `direnv`

@@ -37,15 +37,22 @@ type SessionInfo struct {
 	LastActive int64  `json:"lastActive"`
 }
 
+// RefreshInfo is the refresh helper the daemon supervises.
+type RefreshInfo struct {
+	PID      int `json:"pid"`
+	Restarts int `json:"restarts"`
+}
+
 // Info mirrors the bridge's DaemonInfo on the wire.
 type Info struct {
-	Version   string      `json:"version"`
-	Profile   string      `json:"profile"`
-	PID       int         `json:"pid"`
-	StartedAt int64       `json:"startedAt"`
-	Socket    string      `json:"socket"`
-	Projects  []string    `json:"projects"`
-	Children  []ChildInfo `json:"children"`
+	Version   string       `json:"version"`
+	Profile   string       `json:"profile"`
+	PID       int          `json:"pid"`
+	StartedAt int64        `json:"startedAt"`
+	Socket    string       `json:"socket"`
+	Projects  []string     `json:"projects"`
+	Children  []ChildInfo  `json:"children"`
+	Refresh   *RefreshInfo `json:"refresh,omitempty"`
 }
 
 // Client talks HTTP to the daemon over its socket.

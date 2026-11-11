@@ -25,7 +25,7 @@ import (
 // Each group's plan adds its methods; plan 8 replaces it with
 // acpclient.Host.
 type hostSeam interface {
-	TrustPrompt() string
+	TrustPrompt() acpwire.TrustPromptResult
 	DecideTrust(ctx context.Context, dir string, decision acpwire.TrustDecision) error
 	ProviderTemplates() []acpwire.ProviderTemplate
 	ProbeProvider(ctx context.Context, name string, pc config.ProviderConfig) ([]schema.ModelInfo, error)

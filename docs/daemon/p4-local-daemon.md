@@ -1849,7 +1849,172 @@ pre-existing):
 
 ### Plan 7 — trust for daemon sessions
 
-Not yet run. [The plan](plans/2026-11-11-p4-7-trust-plan.md) fills this record.
+Run and committed on `p4-7-trust`. [The plan](plans/2026-11-11-p4-7-trust-plan.md)
+holds the task list; this record says what landed, where the plan was short and
+how it was filled, and what is still open.
+
+**What was built.**
+
+- `trust/prompt` answers `acpwire.TrustPromptResult{Dir, InPlace}`: `InPlace` is
+  true when a directory pends and `service.Deps.ApplyTrust` is set, so a
+  daemon session's choice applies to the running session instead of ending the
+  client's program (`internal/acp/service/trust.go`).
+- `service.Deps.ApplyTrust` applies a permanent or session trust in place:
+  load the trusted layers (template defaults rebound), record a permanent
+  trust exactly as embedded mode records it, mark the session trusted, reload
+  the runtime, replace the layers, write one note. A failure before the reload
+  changes nothing; a failed reload unmarks the session and leaves a recorded
+  permanent trust recorded; every failure writes `✗ Trust not applied: ` and
+  the error's first line (`internal/app/clienttrust.go`).
+- A prompt settles after one answer: `Host.trustSettled` makes `TrustPrompt`
+  answer no directory and a later answer succeed without effect, while a
+  decline changes nothing and leaves the prompt pending.
+- `app.WithClientTrust` makes the runtime take embedded mode's evaluating trust
+  path whatever resolver it was given, so the child's headless resolver can no
+  longer refuse on the client's behalf; `ServiceDeps` then carries the prompt
+  and the apply while the prompt is pending.
+- The trust calls are a marshal client's: a client without the capability
+  reads no prompt, and `trust/decide` is refused with `invalidRequest` and
+  `trust/decide serves marshal clients only` (`registerSettings` via
+  `marshalOr`).
+- The bridge marks every `session/new` and `session/resume` a project child's
+  registry sends, a restart's resumes included (`Registry.ClientTrust`); the
+  fleet's and the control agent's registries send nothing. The child adds
+  `app.WithClientTrust` from `sessionParams.ClientTrust`, so `session/new`,
+  `session/load` and `session/resume` honour it and `replace` keeps the
+  runtime's answer.
+- The TUI's in-place panel calls nothing: it sends `DecidedMsg` and the model
+  makes the `trust/decide` call off the Update goroutine, closing the dock at
+  once, logging a failure (the agent has written the note), and opening the
+  connect panel a first-run start deferred once a trust frees the dock.
+- `launch` no longer keeps an untrusted project embedded
+  (`daemonTrustNeedsAsking` is gone), and `marshal attach` no longer refuses
+  one.
+
+**Where the plan was short, and how it was filled.**
+
+- Task 1's conformance case asked both arms to prove the prompt settles after
+  the apply. The plan's own client contract keeps the first `trust/prompt`
+  answer for the connection, so the pipe arm cannot observe settling. The case
+  asserts the settled prompt on the in-process arm and the second answer's
+  no-op on both arms, with a comment saying why.
+- The plan named a new `internal/acp/service/trust_test.go`; the file existed
+  as a pointer to the conformance suite. The five cases were added to it
+  rather than a new file being created.
+- Task 2's and Task 7's fixtures must apply a trust in place, which reloads the
+  runtime, whose dry run needs a configured route. Both write a user config
+  with a mock provider, preset and profile; without it the apply failed with
+  `no model configured`.
+- `/trust` dispatches through the call queue (its doc and TUI effect land from
+  the queued call), so the two model tests that reopen it settle the queue
+  after dispatching, as the existing reopen test does.
+- `internal/launch/launch.go`'s comment still named the removed trust
+  condition; it was updated with Task 6.
+
+**The manual run.** Scratch data dir (`/private/tmp/p4-7-data.ALzN`, its
+`daemon/` at `0700`), `marshal` and `webbridge` built at the worktree root,
+`webbridge --profile local --addr off --marshal-bin <worktree>/marshal
+--socket <data>/daemon/marshal.sock`, and a scratch `git init` project whose
+`.marshal/config.toml` names `manual-trust`.
+
+```text
+=== GET /api/daemon before any attach
+{"version":"dev","profile":"local",…,"projects":[],"children":[]}
+=== GET /api/daemon after ./marshal (pty) + "1"
+{"…","children":[{"root":"…/p4-7-proj.svpu","version":"","sessions":
+ [{"id":"sess_1794373163246048000","viewers":0,"lastActive":1794373225450}]}]}
+=== <data>/trust.json
+{"/private/tmp/p4-7-proj.svpu":{"trusted":true,"config_hash":"387a00b2…","trusted_at":"2026-11-11T15:59:23.394661+11:00"}}
+```
+
+The TUI ran on the daemon (the child and its session are in the listing) and
+its panel's permanent choice reached the running session's store without the
+program restarting: an embedded run would have ended the program, and the
+daemon kept the session. **Could not be driven without a terminal:** the
+panel's rendered state and the transcript note as the user sees them (the pty
+was fed a blind `1`), detach and `marshal attach` opening no panel, and the
+session-only second project. `<data>/daemon/tui.log` exists but was empty, so
+the client log is not the evidence used; the listing is. The equivalent flows
+are covered by `test/daemon`'s W11 cases, which drive the real bridge and, with
+`MARSHAL_DAEMON_TEST_MARSHAL`, the real binary.
+
+**Verification** (worktree `p4-7-trust`, `TMPDIR=/private/tmp/p4-7-suite`). The
+baseline at the starting commit was clean: the full suite passed, one
+unreproduced `internal/acp` budget flake aside (the plan's recorded flakes).
+
+- Task 1: `./internal/acp/service/` `ok 0.462s`; `./internal/acp/ -run
+  'Trust|Conformance|Embedding'` `ok 1.737s`; `./internal/acpclient/...
+  ./internal/app/tui/` `ok 0.323s`/`ok 4.849s`/`ok 34.558s`. Mutation check
+  (register `trust/decide` without `marshalOr`): `TestTheTrustCallsServeMarshalClientsOnly`
+  failed with `trust/decide accepted a client without the capability`.
+- Task 2: `./internal/app/ -run 'ClientTrust|…|Trust'` `ok 0.728s`; whole
+  `./internal/app/` `ok 5.835s`. Mutation check (drop the option from the trust
+  branch): `TestAClientTrustRuntimeLeavesThePromptPending` failed with
+  `TrustPromptPending = false`.
+- Task 3: `./internal/acp/ -run 'ClientTrust|FailsClosed'` `ok 0.607s`; whole
+  package `ok 22.405s`, no budget flakes.
+- Task 4: `./internal/app/tui/trustpanel/` `ok 0.380s`; `./internal/app/tui/
+  -run 'Trust|InPlace'` `ok 0.714s`; `./internal/app/tui/...` all `ok`
+  (`./internal/app/tui` `ok 34.415s`); `TestTUIStaysOnTheClientSeam`
+  `ok 0.408s`.
+- Task 5: `./web/bridge/ -run 'AsksItsClient|RestartedChild|SendNoMark|Attach'`
+  `ok 1.007s`; `TestWebIsStdlibOnly` `ok 0.196s`; whole package `ok 78.817s`
+  (no hang).
+- Task 6: `./internal/launch/` `ok 1.250s`; `./cmd/marshal/` `ok 2.902s`;
+  `grep -rn daemonTrustNeedsAsking internal cmd` printed nothing.
+- Task 7: `./test/daemon/` `ok 1.681s`; with the built binary (`ok 2.213s`).
+  Mutation check (drop the mark from `Registry.New`):
+  `TestAnUntrustedDaemonSessionAsksItsClient` failed with
+  `trust/prompt = {Dir: InPlace:false}`.
+- `gofmt -l internal cmd test web` — no output.
+- `go vet ./...` — clean.
+- `go test ./... -timeout 20m` — no failing package.
+- `CGO_ENABLED=1 go build -o marshal ./cmd/marshal` — clean.
+- `go test ./test/usability/... -run TestScripted -timeout 5m` — `ok 44.524s`
+  (W6).
+
+**Open for later plans.**
+
+- The mark is the registry's (plan decision 1). Plan 10 must add the per-session
+  mark when the fleet's and the control agent's sessions move onto that
+  registry; until then those sessions keep the headless rule.
+- H10 is unchanged: project plugins do not reload in place. A trust applies the
+  config and reloads the runtime, but plugin commands and hooks still come from
+  startup.
+- Nothing watches the trust store or the config files while a session runs
+  (H5): a trust made by another process is not seen until the session reloads
+  or restarts.
+
+**Branch review.**
+
+Three reviewers read the branch in disjoint slices — the agent side
+(`internal/acp*`, `internal/acpclient`), the app/TUI/launch side, and the
+bridge, end-to-end test and docs — and all three returned ship without a
+blocker or major finding. They confirmed the settled semantics by inspection
+(one-answer-wins under `trustMu`, a failed apply leaving the prompt pending,
+embedded mode's prompt unchanged, the mark reaching only the project child)
+and re-ran the suites for their slices. Four findings stood up and are fixed:
+
+- `WithClientTrust`'s doc comment now forbids an embedding: embedded mode
+  overrides the prompt but not `ServiceDeps.ApplyTrust`, so an embedding that
+  took the option would apply in place instead of re-prompting on the next
+  start.
+- `Registry.Load`'s doc comment records that it sends no `ClientTrust`, unlike
+  `New`/`Resume`/`resumeAll`, so a later caller cannot load a child session
+  unmarked by accident.
+- `TestATrustedSessionAsksNoTrustQuestionAgain` pins `/trust` against the
+  client's read-once cache of `trust/prompt`: the cached directory outlives a
+  settled trust, so the command must consult the status, not the cache. It
+  fails with the status guard removed and passes with it (checked by mutation).
+  The same file now names `trust.DecisionTrustPermanent` rather than casting
+  the wire constant.
+- The end-to-end test's failure message prints the project name it observed.
+
+Three nits were judged not worth changing: an invalid decision kind still
+errors on an already-settled prompt (a bad kind is a caller bug either way);
+`trust/prompt` validates no params for a non-marshal client (the fixed empty
+answer is the contract); and `applyClientTrust` ignores the config-hash error
+exactly as embedded mode's `trustDecide` does.
 
 ### Plan 8 — OAuth refresh once
 

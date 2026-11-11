@@ -41,11 +41,11 @@ type Host struct {
 	current string
 	// templates and trustPrompt are the two host reads, kept once a read has
 	// answered (decision 2). Their flags say an answer arrived, so an empty one
-	// is kept too: nil templates or "" is what the agent reported, not a
-	// read that has yet to happen.
+	// is kept too: nil templates or an empty result is what the agent reported,
+	// not a read that has yet to happen.
 	templates    []acpwire.ProviderTemplate
 	templatesSet bool
-	trustPrompt  string
+	trustPrompt  acpwire.TrustPromptResult
 	trustSet     bool
 }
 

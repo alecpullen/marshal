@@ -114,8 +114,13 @@ type options struct {
 	// deferTrustPrompt moves the folder-trust question into the TUI (the
 	// interactive path). sessionTrusted carries an inline session-trust
 	// answer across the reload loop.
+	//
+	// clientTrust is WithClientTrust's answer: the session's marshal client
+	// answers the trust question, and a trust applies in place (P4 D8). It
+	// wins over trustResolver.
 	deferTrustPrompt  bool
 	sessionTrusted    bool
+	clientTrust       bool
 	workingDir        string
 	homeDir           string
 	sessionID         string
@@ -217,6 +222,21 @@ func WithConfigLoader(loader configLoader) Option {
 func WithTrustResolver(r trust.Resolver) Option {
 	return func(opts *options) {
 		opts.trustResolver = r
+	}
+}
+
+// WithClientTrust makes the session's marshal client answer the folder-trust
+// question (P4 D8): the runtime evaluates trust as embedded mode does, its
+// service deps carry the prompt, and a trust applies in place. It wins over
+// WithTrustResolver.
+//
+// Never pass it to an embedding. Embedded mode restarts the process for a
+// trust and sets its own prompt, but it does not clear ServiceDeps' ApplyTrust,
+// so an embedding that took this option would apply in place instead of
+// re-prompting on the next start. Only the daemon's child sessions set it.
+func WithClientTrust() Option {
+	return func(opts *options) {
+		opts.clientTrust = true
 	}
 }
 
@@ -2570,9 +2590,11 @@ func buildOAuthWorkers(cfg config.Config, logger *slog.Logger, auth ...provider.
 // prompts and never persists. The interactive TerminalResolver must never
 // run here: the reloader executes inside the TUI event loop, where its
 // stdin prompt would freeze the interface (the TUI owns stdin, and the fd
-// is still a terminal in a real launch). A session that answered the trust
-// question at startup — permanently, per-session, or not at all — keeps
-// that answer for the rest of the session.
+// is still a terminal in a real launch). The reloader reads the state's
+// current answer, so a session that starts untrusted and gains a trust while
+// it runs (a daemon session, P4 D8) picks the project layer up on its next
+// reload. A session that answered at startup keeps that answer unless a
+// client trust replaces it.
 func layerReloaderFor(homeDir, workingDir string, trusted func() bool) func() (config.Layers, bool) {
 	return func() (config.Layers, bool) {
 		t := false

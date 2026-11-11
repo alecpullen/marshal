@@ -161,6 +161,10 @@ type sessionParams struct {
 	// Policy, when present, sets the new session's approval mode and
 	// pre-approved commands. Honored by session/new only.
 	Policy *PolicyParams `json:"policy,omitempty"`
+	// ClientTrust starts the runtime with app.WithClientTrust, so the session's
+	// marshal client answers the trust question (P4 D8). Honoured by
+	// session/new, session/load and session/resume.
+	ClientTrust bool `json:"clientTrust,omitempty"`
 }
 
 // RoutingParams is the session/new routing parameter. Overrides maps role
@@ -387,6 +391,11 @@ func (m *SessionManager) startRuntime(ctx context.Context, p sessionParams, extr
 	}
 	opts := append([]app.Option{}, m.options...)
 	opts = append(opts, app.WithWorkingDir(p.Cwd))
+	if p.ClientTrust {
+		// The client answers the trust question (P4 D8). The option wins over
+		// the headless resolver the child appends after these options.
+		opts = append(opts, app.WithClientTrust())
+	}
 	opts = append(opts, extra...)
 	if len(p.AdditionalDirectories) > 0 {
 		opts = append(opts, app.WithAdditionalDirectories(p.AdditionalDirectories))

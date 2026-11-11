@@ -105,6 +105,12 @@ type Deps struct {
 	// DecideTrust records the user's trust decision, as Run's trustDecide
 	// does. Without it, DecideTrust fails.
 	DecideTrust func(trust.Decision)
+	// ApplyTrust applies a trust decision to the running session in place (a
+	// daemon session, P4 D8): it records a permanent trust, marks the session
+	// trusted and reloads its config with the project layer. Nil means a trust
+	// takes effect through the app's restart, which DecideTrust asks for
+	// (embedded mode).
+	ApplyTrust func(ctx context.Context, decision trust.Decision) error
 	// Tools reads the runtime's current tool names; false while the runtime
 	// has no runner or no registry. Nil means the session has no tools.
 	Tools func() ([]string, bool)
@@ -159,6 +165,11 @@ type Host struct {
 	mu      sync.Mutex
 	deps    Deps
 	current *Session
+	// trustSettled records that a trust was applied in place; the prompt then
+	// answers no directory.
+	trustSettled bool
+	// trustMu serializes in-place applies, so one answer wins.
+	trustMu sync.Mutex
 }
 
 // Session is one conversation over a session.State.

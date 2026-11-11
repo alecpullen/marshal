@@ -31,7 +31,9 @@ also stores the SHA-256 hash of `.marshal/config.toml` at trust time;
 `trust.Evaluate` revalidates it on every launch and re-prompts when the
 file changed outside a trusted session. Interactive project-config saves
 (`/settings`, `/set`, `/agents`) advance the stored hash via
-`RefreshConfigHash`, so a user's own edit does not force a re-prompt.
+`RefreshConfigHash`, so a user's own edit does not force a re-prompt. A
+daemon session records a permanent trust exactly as embedded mode does, and
+applies it to the running session without a restart.
 
 **Committable project config.** `.marshal/config.toml` is a shared,
 often-committed file: it travels with the clone so commands, diagnostics,
@@ -89,7 +91,7 @@ plans retain the legacy agent strategy.
 | Work projection | `internal/progress/`, `internal/viewmodel/` (work projection), `internal/app/runtime.go` | Bounded progress values and the conversation work projection: one pinned gutter-card surface over the existing command, watch and subagent owners, which stay the sole lifecycle owners. `internal/progress` owns decoding, display safety and estimation only; it never owns execution. |
 | Persistence | `internal/db/`, `internal/snapshot/`, `internal/filetrack/` | SQLite schema, workspace snapshots, file access tracking. |
 | ACP | `internal/acp/` | Headless JSON-RPC server for editor/IDE integration. `--viewers` serves the daemon's concurrent marshal connections: stdio for the bridge's own connection, a unix socket for every attached client, over one project host. |
-| Web bridge | `web/bridge/`, `cmd/webbridge/` | Fleet control plane: supervises one `marshal acp` child per project, brokers approvals, serves the REST API and SSE streams, and drives per-agent worktree isolation, diff, merge and discard entirely over ACP. Each project's child is a `marshal acp --viewers` process on its own socket, started on the first attach and stopped 30s after its last session closes. With `--profile local` it is the user's daemon: a user service on a unix socket, host processes only, where `POST /api/projects/attach` upgrades a marshal client onto that project's child and relays its frames unchanged. Plain `marshal` prefers that daemon (P4 D5): `launch` probes it once, attaches over the relay and runs the TUI on the attached stream, so a session and its run outlive the terminal; the quit key and `/detach` leave them running and `marshal attach [id]` returns to them. A local answer and a project whose trust needs no question are required, and anything else runs embedded, as `--embedded` always does. |
+| Web bridge | `web/bridge/`, `cmd/webbridge/` | Fleet control plane: supervises one `marshal acp` child per project, brokers approvals, serves the REST API and SSE streams, and drives per-agent worktree isolation, diff, merge and discard entirely over ACP. Each project's child is a `marshal acp --viewers` process on its own socket, started on the first attach and stopped 30s after its last session closes. With `--profile local` it is the user's daemon: a user service on a unix socket, host processes only, where `POST /api/projects/attach` upgrades a marshal client onto that project's child and relays its frames unchanged. Plain `marshal` prefers that daemon (P4 D5): `launch` probes it once, attaches over the relay and runs the TUI on the attached stream, so a session and its run outlive the terminal; the quit key and `/detach` leave them running and `marshal attach [id]` returns to them. A local answer alone is required, and anything else runs embedded, as `--embedded` always does. A daemon session on an untrusted project asks its attached client for the trust decision, as embedded mode asks its TUI, and applies the answer to the running session in place. |
 | Web UI | `web/ui/` | Svelte 5 + Vite + TypeScript SPA: fleet dashboard, spawn composer, and per-agent chat (dev-only Node toolchain; build output is embedded by `web/bridge`). |
 
 ## Data flow of a single turn

@@ -244,7 +244,7 @@ func (h fakeHost) ListSessions(context.Context, string, int) ([]acpwire.SessionE
 }
 
 // TrustPrompt reports no pending decision: the seam tests never prompt.
-func (h fakeHost) TrustPrompt() string { return "" }
+func (h fakeHost) TrustPrompt() acpwire.TrustPromptResult { return acpwire.TrustPromptResult{} }
 
 // NewSession refuses: the tests drive one session built by testSession.
 func (h fakeHost) NewSession(context.Context, string) (acpclient.Session, error) {

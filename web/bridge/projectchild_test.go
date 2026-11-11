@@ -540,6 +540,18 @@ func TestARestartedChildResumesItsSessions(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
+	// A restart's resumes carry the same mark: the fresh generation must let
+	// each session's marshal client answer the trust question (P4 D8).
+	resumes := fake.calls("session/resume")
+	if len(resumes) == 0 {
+		t.Fatal("no session/resume was recorded")
+	}
+	for _, params := range resumes {
+		if got := paramsOf(t, params)["clientTrust"]; got != true {
+			t.Errorf("session/resume clientTrust = %v, want true (params %s)", got, params)
+		}
+	}
+
 	if gens := fake.generations(); gens < 2 {
 		t.Fatalf("generations = %d, want the child to have restarted", gens)
 	}
@@ -560,6 +572,26 @@ func TestARestartedChildResumesItsSessions(t *testing.T) {
 	}
 	if firstResume < lastInit {
 		t.Fatal("session/resume ran before the restarted generation was initialized")
+	}
+}
+
+// TestOtherRegistriesSendNoMark: only a project child's registry marks its
+// sessions. A registry built for anything else — the fleet's, the control
+// agent's — sends session/new without the field.
+func TestOtherRegistriesSendNoMark(t *testing.T) {
+	reg, fa := viewersRegistry(t)
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	if _, err := reg.New(ctx, AgentPath("/home/u/repo"), ""); err != nil {
+		t.Fatalf("session/new: %v", err)
+	}
+	calls := fa.calls("session/new")
+	if len(calls) != 1 {
+		t.Fatalf("session/new sent %d times, want 1", len(calls))
+	}
+	if _, ok := paramsOf(t, calls[0])["clientTrust"]; ok {
+		t.Errorf("session/new carried clientTrust, want the field omitted: %s", calls[0])
 	}
 }
 

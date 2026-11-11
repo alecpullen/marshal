@@ -86,8 +86,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		opt(&runOpts)
 	}
 
-	// P4 D5: a local daemon that answers serves the TUI over its relay, and
-	// the project needs no trust question to be served by it (decision 2).
+	// P4 D5: a local daemon that answers serves the TUI over its relay.
 	// Anything else runs embedded, exactly as it did before.
 	if runOpts.daemonSocket != "" {
 		if _, _, onDaemon := chooseDaemon(ctx, &runOpts); onDaemon {

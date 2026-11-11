@@ -51,6 +51,41 @@ func TestTrustChoiceQuitsForReload(t *testing.T) {
 	}
 }
 
+// TestAnInPlaceChoiceSendsTheDecision pins the in-place panel: every terminal
+// choice, a decline included, calls nothing and reports the decision to the
+// model instead of quitting (P4 D8, decision 7).
+func TestAnInPlaceChoiceSendsTheDecision(t *testing.T) {
+	cases := map[string]acpwire.TrustDecision{
+		"1":   acpwire.TrustPermanent,
+		"2":   acpwire.TrustSession,
+		"3":   acpwire.TrustDecline,
+		"esc": acpwire.TrustDecline,
+	}
+	for key, want := range cases {
+		p := NewInPlace("/repo")
+		var cmd tea.Cmd
+		if key == "esc" {
+			cmd = p.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+		} else {
+			cmd = p.Update(tea.KeyPressMsg{Code: rune(key[0]), Text: key})
+		}
+		if cmd == nil {
+			t.Fatalf("key %s produced no command", key)
+		}
+		msg := cmd()
+		if _, ok := msg.(tea.QuitMsg); ok {
+			t.Fatalf("key %s quit the program from an in-place panel", key)
+		}
+		got, ok := msg.(DecidedMsg)
+		if !ok {
+			t.Fatalf("key %s produced %T, want DecidedMsg", key, msg)
+		}
+		if got.Dir != "/repo" || got.Decision != want {
+			t.Errorf("key %s produced %+v, want %s at /repo", key, got, want)
+		}
+	}
+}
+
 func TestViewExplainsRisk(t *testing.T) {
 	p := New("/repo", func(acpwire.TrustDecision) {})
 	out := p.View(80, 10)

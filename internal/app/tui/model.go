@@ -1006,24 +1006,59 @@ func (m *Model) openAgentsRoster(arg string) {
 }
 
 // openTrustPanel opens the modal folder-trust question for the directory the
-// host reports as pending, and reports whether it did. The panel answers
-// through the seam: DecideTrust records the decision and, after a trust, the
-// app restarts with the project config in force. A refusal here means the
-// wiring is broken, so it is logged rather than shown.
+// host reports as pending, and reports whether it did. An in-place prompt (a
+// daemon session, P4 D8) opens the panel that reports the choice back to the
+// model; otherwise the panel answers through the seam: DecideTrust records the
+// decision and, after a trust, the app restarts with the project config in
+// force. A refusal here means the wiring is broken, so it is logged rather
+// than shown.
 func (m *Model) openTrustPanel() bool {
-	// The closure runs after Update has returned, so it captures the host,
-	// the context and the logger by value, never the model.
-	host, ctx, log := m.host, m.ctx, m.log()
-	dir := host.TrustPrompt()
+	prompt := m.host.TrustPrompt()
+	dir := prompt.Dir
 	if dir == "" {
 		return false
 	}
+	if prompt.InPlace {
+		m.dock.Open(trustpanel.NewInPlace(dir))
+		return true
+	}
+	// The closure runs after Update has returned, so it captures the host,
+	// the context and the logger by value, never the model.
+	host, ctx, log := m.host, m.ctx, m.log()
 	m.dock.Open(trustpanel.New(dir, func(decision acpwire.TrustDecision) {
 		if err := host.DecideTrust(ctx, dir, decision); err != nil {
 			log.Warn("trust decision was not recorded", "error", err)
 		}
 	}))
 	return true
+}
+
+// decideTrustInPlace queues the in-place trust/decide call and handles its
+// outcome on the Update goroutine. The agent applies the trust itself, so the
+// call runs off Update: a config reload over the relay can take seconds (P4
+// D8, decision 7). A failure is logged, not shown: the agent has written the
+// note that says why.
+func (m *Model) decideTrustInPlace(msg trustpanel.DecidedMsg) tea.Cmd {
+	host, log := m.host, m.log()
+	m.enqueueCall(func(mm *Model) callRun {
+		return func(ctx context.Context) callOutcome {
+			err := host.DecideTrust(ctx, msg.Dir, msg.Decision)
+			return func(mm *Model) tea.Cmd {
+				if err != nil {
+					log.Warn("trust decision was not recorded", "error", err)
+					return nil
+				}
+				// A trust frees the dock, so a connect panel the startup path
+				// deferred to the prompt opens now, as it does after embedded
+				// mode's restart. A decline carries on with the phase-1 config.
+				if msg.Decision != acpwire.TrustDecline && mm.openConnectOnStart && !mm.dock.IsOpen() {
+					mm.openConnect("/")
+				}
+				return nil
+			}
+		}
+	})
+	return nil
 }
 
 // runAgentMsg asks the live model to start a Run-now. The roster's dispatch
@@ -1901,6 +1936,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dock.CloseNow()
 		m.refreshViewport()
 		return m, nil
+	case trustpanel.DecidedMsg:
+		// The agent applies an in-place decision, so the panel closes at once
+		// and the call goes on the queue (P4 D8, decision 7).
+		m.dock.CloseNow()
+		m.refreshViewport()
+		return m, m.decideTrustInPlace(msg)
 	case sessionsheet.ClosedMsg:
 		m.closeSessionSheet()
 		return m, nil

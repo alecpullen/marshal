@@ -82,8 +82,9 @@ func (m *SettingsManager) ProviderTemplates(ctx context.Context, params json.Raw
 	return host.ProviderTemplates(), nil
 }
 
-// TrustPrompt handles trust/prompt: the directory whose trust decision is
-// pending, "" when none is.
+// TrustPrompt handles trust/prompt: the trust prompt's whole answer, the
+// directory whose trust decision is pending and whether a trust applies in
+// place.
 func (m *SettingsManager) TrustPrompt(ctx context.Context, params json.RawMessage) (any, error) {
 	var p acpwire.HostCallParams
 	if err := decodeParams(params, &p, acpwire.MethodTrustPrompt); err != nil {
@@ -93,7 +94,22 @@ func (m *SettingsManager) TrustPrompt(ctx context.Context, params json.RawMessag
 	if err != nil {
 		return nil, err
 	}
-	return acpwire.TrustPromptResult{Dir: host.TrustPrompt()}, nil
+	return host.TrustPrompt(), nil
+}
+
+// trustPromptForOthers answers trust/prompt for a client without the marshal
+// capability: no prompt.
+func trustPromptForOthers(ctx context.Context, params json.RawMessage) (any, error) {
+	return acpwire.TrustPromptResult{}, nil
+}
+
+// trustDecideForOthers refuses trust/decide for a client without the marshal
+// capability.
+func trustDecideForOthers(ctx context.Context, params json.RawMessage) (any, error) {
+	return nil, &jsonRPCError{
+		Code:    invalidRequest,
+		Message: "trust/decide serves marshal clients only",
+	}
 }
 
 // TrustDecide handles trust/decide.
@@ -826,7 +842,9 @@ func modelsResult(models []schema.ModelInfo) (acpwire.ModelsResult, error) {
 
 // registerSettings registers the new methods on srv, and the two existing ones
 // through marshalOr: a client without the capability reaches others[method],
-// unchanged.
+// unchanged. The trust calls are marshalOr's too, but a client without the
+// capability reaches the fixed handlers below: no prompt, and a refusal
+// (P4 D8, decision 3).
 func registerSettings(srv *Server, settings *SettingsManager, others map[string]Handler) {
 	srv.Handle(acpwire.MethodProviderTemplates, settings.ProviderTemplates)
 	srv.Handle(acpwire.MethodProbeModel, settings.ProbeModel)
@@ -840,8 +858,10 @@ func registerSettings(srv *Server, settings *SettingsManager, others map[string]
 	srv.Handle(acpwire.MethodSavePresets, settings.SavePresets)
 	srv.Handle(acpwire.MethodPreparePresets, settings.PreparePresets)
 	srv.Handle(acpwire.MethodSaveProvenance, settings.SaveProvenance)
-	srv.Handle(acpwire.MethodTrustPrompt, settings.TrustPrompt)
-	srv.Handle(acpwire.MethodTrustDecide, settingsFailureOf(settings.TrustDecide))
+	srv.Handle(acpwire.MethodTrustPrompt,
+		marshalOr(srv.marshalClient, settings.TrustPrompt, trustPromptForOthers))
+	srv.Handle(acpwire.MethodTrustDecide,
+		settingsFailureOf(marshalOr(srv.marshalClient, settings.TrustDecide, trustDecideForOthers)))
 	srv.Handle(acpwire.MethodSessionConfig, settings.SessionConfig)
 	srv.Handle(acpwire.MethodApplyConfig, settingsFailureOf(settings.ApplyConfig))
 	srv.Handle(acpwire.MethodReloadConfig, settings.ReloadConfig)

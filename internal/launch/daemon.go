@@ -19,7 +19,6 @@ import (
 	"marshal/internal/app/tui"
 	"marshal/internal/daemon"
 	"marshal/internal/repo"
-	"marshal/internal/trust"
 )
 
 const (
@@ -42,8 +41,8 @@ type daemonClient interface {
 }
 
 // WithDaemon makes Run try the local daemon on socket first (P4 D5): when a
-// local-profile daemon answers and the project needs no trust question, the
-// TUI runs over the relay; otherwise Run runs embedded.
+// local-profile daemon answers, the TUI runs over the relay; otherwise Run
+// runs embedded.
 func WithDaemon(socket string) Option {
 	return func(o *options) { o.daemonSocket = socket }
 }
@@ -100,8 +99,8 @@ func daemonTarget(opts *options) (root, home string, err error) {
 
 // chooseDaemon reports whether Run should run on the daemon instead of
 // embedded, and the root and home it resolved (P4 D5, decision 2): a daemon
-// answers on the socket, it is the local profile, and the project's trust
-// needs no question. Anything else runs embedded, silently.
+// answers on the socket and it is the local profile. Anything else runs
+// embedded, silently.
 func chooseDaemon(ctx context.Context, opts *options) (root, home string, useDaemon bool) {
 	root, home, err := daemonTarget(opts)
 	if err != nil {
@@ -117,26 +116,12 @@ func chooseDaemon(ctx context.Context, opts *options) (root, home string, useDae
 	if info.Profile != daemonProfileLocal {
 		return root, home, false
 	}
-	if daemonTrustNeedsAsking(home, root) {
-		return root, home, false
-	}
 	return root, home, true
-}
-
-// daemonTrustNeedsAsking reports whether root needs the trust question before
-// a daemon may serve it (decision 2): trust-gated project config that was never
-// trusted, trust recorded against a config hash the project no longer has, or a
-// trust store that cannot be read. A store error counts as "ask", so a broken
-// store never skips the question.
-func daemonTrustNeedsAsking(home, root string) bool {
-	_, needsPrompt, err := trust.Evaluate(trust.NewStore(config.DataDir(home)), root)
-	return err != nil || needsPrompt
 }
 
 // Attach runs the TUI on a daemon session (marshal attach): sessionID, or the
 // project's most recently active session when it is empty. It fails when no
-// daemon answers on socket, and when the project needs the trust question a
-// daemon session must not answer for it.
+// daemon answers on socket.
 func Attach(ctx context.Context, stdout io.Writer, socket, sessionID string, opts ...Option) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -149,17 +134,9 @@ func Attach(ctx context.Context, stdout io.Writer, socket, sessionID string, opt
 	// The explicit socket wins over one an option carried.
 	runOpts.daemonSocket = socket
 
-	root, home, err := daemonTarget(&runOpts)
+	root, _, err := daemonTarget(&runOpts)
 	if err != nil {
 		return err
-	}
-
-	// attach cannot ask the trust question — it runs no embedded startup — so
-	// an untrusted project is refused here for the same reason chooseDaemon
-	// leaves it embedded: the daemon must never serve a project that has not
-	// been trusted on this machine.
-	if daemonTrustNeedsAsking(home, root) {
-		return fmt.Errorf("launch: %s needs trust before a daemon session can serve it; `marshal` there answers the question, then `marshal attach` reattaches", root)
 	}
 
 	probeCtx, cancel := context.WithTimeout(ctx, daemonProbeTimeout)

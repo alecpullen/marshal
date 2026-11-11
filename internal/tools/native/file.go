@@ -201,6 +201,19 @@ func (t *toolSet) fileReadOversizedHead(requestedPath string) (registry.ToolResu
 	if err != nil {
 		return registry.ToolResult{}, err
 	}
+	// Observe the write revision whose bytes this read is about to see, before
+	// opening: recording a newer revision than the bytes shown would clear the
+	// shared epoch for content the reader never saw.
+	var observedRevision int64
+	if t.fileTracker != nil {
+		write, werr := t.fileTracker.WriteState(path)
+		if werr != nil {
+			slog.Warn("observe write revision", "path", path, "error", werr)
+		} else if write.OK {
+			observedRevision = write.Revision
+		}
+	}
+
 	f, err := os.Open(path)
 	if err != nil {
 		return registry.ToolResult{}, fmt.Errorf("read %s: %w", requestedPath, err)
@@ -254,7 +267,7 @@ func (t *toolSet) fileReadOversizedHead(requestedPath string) (registry.ToolResu
 	}
 
 	if t.fileTracker != nil {
-		_ = t.fileTracker.RecordRead(path, time.Now())
+		_ = t.fileTracker.RecordRead(path, time.Now(), observedRevision)
 	}
 
 	return registry.ToolResult{
@@ -284,6 +297,18 @@ func (t *toolSet) fileReadOversizedRange(requestedPath string, startLine, endLin
 	if err != nil {
 		return registry.ToolResult{}, err
 	}
+	// Observe the write revision before opening, for the same reason as the head
+	// fallback: the read records the bytes it was shown, never a newer write.
+	var observedRevision int64
+	if t.fileTracker != nil {
+		write, werr := t.fileTracker.WriteState(path)
+		if werr != nil {
+			slog.Warn("observe write revision", "path", path, "error", werr)
+		} else if write.OK {
+			observedRevision = write.Revision
+		}
+	}
+
 	f, err := os.Open(path)
 	if err != nil {
 		return registry.ToolResult{}, fmt.Errorf("read %s: %w", requestedPath, err)
@@ -341,7 +366,7 @@ func (t *toolSet) fileReadOversizedRange(requestedPath string, startLine, endLin
 	// Record the read exactly as the head path does: file.write_patch's
 	// freshness guard depends on it.
 	if t.fileTracker != nil {
-		_ = t.fileTracker.RecordRead(path, time.Now())
+		_ = t.fileTracker.RecordRead(path, time.Now(), observedRevision)
 	}
 
 	// A start past the end of the file is an empty window, not an error —
@@ -449,6 +474,16 @@ func (t *toolSet) readWorkspaceFile(requestedPath string, maxBytes int64) ([]byt
 		return nil, fmt.Errorf("%s is not a regular file", requestedPath)
 	}
 
+	var observedRevision int64
+	if t.fileTracker != nil {
+		write, err := t.fileTracker.WriteState(path)
+		if err != nil {
+			slog.Warn("observe write revision", "path", path, "error", err)
+		} else if write.OK {
+			observedRevision = write.Revision
+		}
+	}
+
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", requestedPath, err)
@@ -474,7 +509,7 @@ func (t *toolSet) readWorkspaceFile(requestedPath string, maxBytes int64) ([]byt
 	}
 
 	if t.fileTracker != nil {
-		_ = t.fileTracker.RecordRead(path, time.Now())
+		_ = t.fileTracker.RecordRead(path, time.Now(), observedRevision)
 	}
 	return data, nil
 }
@@ -524,7 +559,11 @@ func (t *toolSet) changedOnDiskError(path string, fp patch.FilePatch, refreshRea
 	// is editing, so record that as this path's read. Without it the same agent
 	// (and every sibling) is forced through a full file.read for content it has
 	// now been shown, which was the dominant cost in the field reports.
-	_ = t.fileTracker.RecordRead(path, time.Now())
+	var revision int64
+	if write, werr := t.fileTracker.WriteState(path); werr == nil && write.OK {
+		revision = write.Revision
+	}
+	_ = t.fileTracker.RecordRead(path, time.Now(), revision)
 	return fmt.Errorf("%s\n\n%s\n%s\n\n%s", base, header, region,
 		"Retry with an old_string taken from those lines: this path's read mark is now current, so the edit is accepted without a separate file.read.")
 }
@@ -537,8 +576,15 @@ func (t *toolSet) writerNote(path string) string {
 	if t.fileTracker == nil {
 		return ""
 	}
-	writer, _, ok, err := t.fileTracker.LastWriter(path)
-	if err != nil || !ok || writer == "" {
+	write, err := t.fileTracker.WriteState(path)
+	if err != nil || !write.OK {
+		return ""
+	}
+	writer := write.Actor.Label
+	if writer == "" {
+		writer = write.Actor.ID
+	}
+	if writer == "" {
 		return ""
 	}
 	return fmt.Sprintf(" (last written by %s)", writer)
@@ -554,8 +600,12 @@ func (t *toolSet) recordWrite(path string) {
 		return
 	}
 	now := time.Now()
-	_ = t.fileTracker.RecordWrite(path, now, t.agentLabel)
-	_ = t.fileTracker.RecordRead(path, now)
+	_ = t.fileTracker.RecordWrite(path, now, t.actor())
+	// Temporary: Task 2 removes this refresh and replaces it with the writer
+	// exemption plus a shared stale epoch.
+	if write, err := t.fileTracker.WriteState(path); err == nil && write.OK {
+		_ = t.fileTracker.RecordRead(path, now, write.Revision)
+	}
 }
 
 // currentContentHeader introduces an embedded snapshot of the bytes currently
@@ -663,7 +713,7 @@ func (t *toolSet) applyFilePatches(ctx context.Context, patches []patch.FilePatc
 		}
 
 		if t.fileTracker != nil {
-			lastRead, hasRead, err := t.fileTracker.LastReadTime(path)
+			read, err := t.fileTracker.ReadState(path)
 			if err != nil {
 				return registry.ToolResult{}, fmt.Errorf(
 					"cannot verify read state for %s: %w; re-read it before editing", fp.Path, err)
@@ -676,10 +726,10 @@ func (t *toolSet) applyFilePatches(ctx context.Context, patches []patch.FilePatc
 				}
 				return registry.ToolResult{}, fmt.Errorf("stat %s: %w", fp.Path, statErr)
 			}
-			if hasRead && info.ModTime().After(lastRead) {
+			if read.OK && info.ModTime().After(read.At) {
 				return registry.ToolResult{}, t.changedOnDiskError(path, fp, true)
 			}
-			if !hasRead {
+			if !read.OK {
 				return registry.ToolResult{}, fmt.Errorf(
 					"file %s was never read this session; read it before editing", fp.Path)
 			}
@@ -822,10 +872,10 @@ func (t *toolSet) applyFilePatches(ctx context.Context, patches []patch.FilePatc
 			// write. When fileTracker is nil (e.g. no session active) the check
 			// is skipped, which is a known gap.
 			if t.fileTracker != nil {
-				lastRead, hasRead, lrErr := t.fileTracker.LastReadTime(path)
-				if lrErr == nil && hasRead {
+				read, lrErr := t.fileTracker.ReadState(path)
+				if lrErr == nil && read.OK {
 					writeStat, statErr := os.Stat(path)
-					if statErr == nil && writeStat.ModTime().After(lastRead) {
+					if statErr == nil && writeStat.ModTime().After(read.At) {
 						return t.changedOnDiskError(path, fp, true)
 					}
 				}
@@ -958,7 +1008,7 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 				return registry.ToolResult{}, fmt.Errorf(
 					"file %s already exists; file.write requires a tracker-backed session to overwrite an existing file", args.Path)
 			}
-			lastRead, hasRead, lrErr := t.fileTracker.LastReadTime(path)
+			read, lrErr := t.fileTracker.ReadState(path)
 			if lrErr != nil {
 				return registry.ToolResult{}, fmt.Errorf(
 					"cannot verify read state for %s: %w; re-read it before editing", args.Path, lrErr)
@@ -967,13 +1017,13 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 			if statErr != nil {
 				return registry.ToolResult{}, fmt.Errorf("stat %s: %w", args.Path, statErr)
 			}
-			if hasRead && info.ModTime().After(lastRead) {
+			if read.OK && info.ModTime().After(read.At) {
 				// A whole-file overwrite cannot retry from one region, so the
 				// read mark is not refreshed here: file.write needs the whole
 				// file in context.
 				return registry.ToolResult{}, t.changedOnDiskError(path, patch.FilePatch{Path: args.Path, Chunks: []patch.PatchChunk{{Search: original}}}, false)
 			}
-			if !hasRead {
+			if !read.OK {
 				return registry.ToolResult{}, fmt.Errorf(
 					"file %s was never read this session; read it before editing", args.Path)
 			}
@@ -1020,10 +1070,10 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 		// TOCTOU re-check for existing files: verify the file hasn't changed
 		// between the read above and this write.
 		if t.fileTracker != nil && exists {
-			lastRead, hasRead, lrErr := t.fileTracker.LastReadTime(path)
-			if lrErr == nil && hasRead {
+			read, lrErr := t.fileTracker.ReadState(path)
+			if lrErr == nil && read.OK {
 				writeStat, statErr := os.Stat(path)
-				if statErr == nil && writeStat.ModTime().After(lastRead) {
+				if statErr == nil && writeStat.ModTime().After(read.At) {
 					return registry.ToolResult{}, t.changedOnDiskError(path, fp, false)
 				}
 			}

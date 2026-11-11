@@ -14,6 +14,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/db"
 	"marshal/internal/diagnostics"
+	"marshal/internal/filetrack"
 	"marshal/internal/index"
 	"marshal/internal/llm/embedding"
 	"marshal/internal/llm/routing"
@@ -33,14 +34,10 @@ const (
 // — the main agent, an agent.run child — satisfies the read-before-write guard
 // for all of them, because there is one working tree and one conversation.
 type FileTracker interface {
-	RecordRead(path string, at time.Time) error
-	LastReadTime(path string) (time.Time, bool, error)
-	// RecordWrite records a committed write and names the writer, so a later
-	// stale-file error can say which agent invalidated the reader's view.
-	RecordWrite(path string, at time.Time, writer string) error
-	// LastWriter names the agent that last wrote path through this session.
-	// ok is false when no session write is recorded for the path.
-	LastWriter(path string) (writer string, at time.Time, ok bool, err error)
+	RecordRead(path string, at time.Time, revision int64) error
+	ReadState(path string) (filetrack.ReadState, error)
+	RecordWrite(path string, at time.Time, actor filetrack.Actor) error
+	WriteState(path string) (filetrack.WriteState, error)
 }
 
 // LSPSync is the live language-server seam (lsp.Sync): BeginEdit brackets a
@@ -81,7 +78,10 @@ type Options struct {
 	// each committed write so a later stale-file error can say which writer
 	// invalidated the reader's view. Empty means an unnamed writer.
 	AgentLabel string
-	Config     config.Config
+	// AgentID is the stable writer identity recorded alongside AgentLabel. It
+	// falls back to the label when empty.
+	AgentID string
+	Config  config.Config
 	// JobManager is the conversation's command service: the owner every
 	// ordinary shell.run/test.run admission goes through, and the target an
 	// explicit turn stop reaches. It is injected, never created here, so a
@@ -210,6 +210,9 @@ type toolSet struct {
 	// error can say which writer invalidated the reader's view. Empty for a
 	// registration that does not carry one.
 	agentLabel string
+	// agentID is the stable writer identity recorded alongside agentLabel. It
+	// falls back to the label when empty.
+	agentID string
 	// jobManager is the conversation's command service, injected through
 	// Options. nil for a registry that exposes no ordinary command execution
 	// (a filtered read-only scope); such a registry reports a clear owner error
@@ -460,6 +463,7 @@ func newToolSet(opts Options) (*toolSet, error) {
 		projectID:       opts.ProjectID,
 		fileTracker:     opts.FileTracker,
 		agentLabel:      opts.AgentLabel,
+		agentID:         opts.AgentID,
 		jobManager:      jobManager,
 		commandDir:      opts.CommandDir,
 		diagnostics:     newDiagnosticsChecker(opts),
@@ -491,4 +495,15 @@ func newToolSet(opts Options) (*toolSet, error) {
 		ts.gitOps = worktree.CLIGitOps{}
 	}
 	return ts, nil
+}
+
+// actor is the identity recorded with every committed write: the stable agent
+// ID when the toolset carries one, falling back to the label, plus the label
+// for display in a stale-file error.
+func (t *toolSet) actor() filetrack.Actor {
+	id := t.agentID
+	if id == "" {
+		id = t.agentLabel
+	}
+	return filetrack.Actor{ID: id, Label: t.agentLabel}
 }

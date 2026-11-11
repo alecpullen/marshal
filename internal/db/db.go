@@ -95,6 +95,9 @@ var migrationColumns = []columnAdd{
 	{"turn_metrics", "reasoning_trimmed", "INTEGER NOT NULL DEFAULT 0"},
 	// Which agent committed a write, so a stale-file error can name the writer.
 	{"file_writes", "written_by", "TEXT NOT NULL DEFAULT ''"},
+	{"file_reads", "revision", "INTEGER NOT NULL DEFAULT 0"},
+	{"file_writes", "written_id", "TEXT NOT NULL DEFAULT ''"},
+	{"file_writes", "revision", "INTEGER NOT NULL DEFAULT 0"},
 }
 
 func (db *DB) Migrate() error {
@@ -216,6 +219,7 @@ var allowedTableInfo = map[string]bool{
 	"turn_metrics":   true,
 	"symbols":        true,
 	"file_writes":    true,
+	"file_reads":     true,
 }
 
 // tableColumns returns the set of column names for the given table.

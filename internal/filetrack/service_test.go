@@ -24,6 +24,7 @@ func testDB(t *testing.T) *sql.DB {
 			session_id TEXT NOT NULL,
 			path TEXT NOT NULL,
 			read_at TEXT NOT NULL,
+			revision INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY(session_id, path)
 		);
 		CREATE TABLE IF NOT EXISTS file_writes (
@@ -31,6 +32,8 @@ func testDB(t *testing.T) *sql.DB {
 			path TEXT NOT NULL,
 			written_at TEXT NOT NULL,
 			written_by TEXT NOT NULL DEFAULT '',
+			written_id TEXT NOT NULL DEFAULT '',
+			revision INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY(session_id, path)
 		);
 	`)
@@ -40,37 +43,40 @@ func testDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func TestRecordReadAndLastReadTime(t *testing.T) {
+func TestRecordReadAndReadState(t *testing.T) {
 	db := testDB(t)
 	svc := New(db, "session-1")
 	now := time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC)
 
-	err := svc.RecordRead("src/main.go", now)
+	err := svc.RecordRead("src/main.go", now, 0)
 	if err != nil {
 		t.Fatalf("RecordRead: %v", err)
 	}
 
-	got, ok, err := svc.LastReadTime("src/main.go")
+	got, err := svc.ReadState("src/main.go")
 	if err != nil {
-		t.Fatalf("LastReadTime: %v", err)
+		t.Fatalf("ReadState: %v", err)
 	}
-	if !ok {
+	if !got.OK {
 		t.Fatal("expected file to be found")
 	}
-	if !got.Equal(now) {
-		t.Fatalf("expected %v, got %v", now, got)
+	if got.Revision != 0 {
+		t.Fatalf("revision = %d, want 0", got.Revision)
+	}
+	if !got.At.Equal(now) {
+		t.Fatalf("expected %v, got %v", now, got.At)
 	}
 }
 
-func TestLastReadTimeNotFound(t *testing.T) {
+func TestReadStateNotFound(t *testing.T) {
 	db := testDB(t)
 	svc := New(db, "session-1")
 
-	_, ok, err := svc.LastReadTime("nonexistent.go")
+	got, err := svc.ReadState("nonexistent.go")
 	if err != nil {
-		t.Fatalf("LastReadTime: %v", err)
+		t.Fatalf("ReadState: %v", err)
 	}
-	if ok {
+	if got.OK {
 		t.Fatal("expected file not found")
 	}
 }
@@ -81,22 +87,22 @@ func TestRecordReadUpsert(t *testing.T) {
 	first := time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC)
 	second := time.Date(2025, 1, 15, 11, 0, 0, 0, time.UTC)
 
-	if err := svc.RecordRead("src/main.go", first); err != nil {
+	if err := svc.RecordRead("src/main.go", first, 0); err != nil {
 		t.Fatalf("first RecordRead: %v", err)
 	}
-	if err := svc.RecordRead("src/main.go", second); err != nil {
+	if err := svc.RecordRead("src/main.go", second, 0); err != nil {
 		t.Fatalf("second RecordRead: %v", err)
 	}
 
-	got, ok, err := svc.LastReadTime("src/main.go")
+	got, err := svc.ReadState("src/main.go")
 	if err != nil {
-		t.Fatalf("LastReadTime: %v", err)
+		t.Fatalf("ReadState: %v", err)
 	}
-	if !ok {
+	if !got.OK {
 		t.Fatal("expected file to be found")
 	}
-	if !got.Equal(second) {
-		t.Fatalf("expected %v, got %v", second, got)
+	if !got.At.Equal(second) {
+		t.Fatalf("expected %v, got %v", second, got.At)
 	}
 }
 
@@ -105,49 +111,150 @@ func TestRecordWrite(t *testing.T) {
 	svc := New(db, "session-1")
 	now := time.Now()
 
-	if err := svc.RecordWrite("src/main.go", now, "the main agent"); err != nil {
+	if err := svc.RecordWrite("src/main.go", now, Actor{ID: "main", Label: "the main agent"}); err != nil {
 		t.Fatalf("RecordWrite: %v", err)
 	}
-	if err := svc.RecordWrite("src/lib.go", now, "a subagent"); err != nil {
+	if err := svc.RecordWrite("src/lib.go", now, Actor{ID: "subagent-1", Label: "a subagent"}); err != nil {
 		t.Fatalf("RecordWrite: %v", err)
 	}
 }
 
-// TestLastWriterNamesTheAgent pins the writer attribution a stale-file error
+// TestWriteStateNamesTheAgent pins the writer attribution a stale-file error
 // now reports: the reader is told which agent invalidated its view, and a path
 // the session never wrote reports no writer rather than a guess.
-func TestLastWriterNamesTheAgent(t *testing.T) {
+func TestWriteStateNamesTheAgent(t *testing.T) {
 	db := testDB(t)
 	svc := New(db, "session-1")
 	first := time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC)
 	second := time.Date(2025, 1, 15, 11, 0, 0, 0, time.UTC)
 
-	if err := svc.RecordWrite("src/main.go", first, "the main agent"); err != nil {
+	if err := svc.RecordWrite("src/main.go", first, Actor{ID: "main", Label: "the main agent"}); err != nil {
 		t.Fatalf("first RecordWrite: %v", err)
 	}
-	writer, at, ok, err := svc.LastWriter("src/main.go")
+	write, err := svc.WriteState("src/main.go")
 	if err != nil {
-		t.Fatalf("LastWriter: %v", err)
+		t.Fatalf("WriteState: %v", err)
 	}
-	if !ok || writer != "the main agent" || !at.Equal(first) {
-		t.Fatalf("LastWriter = %q @ %v (ok=%v), want \"the main agent\" @ %v", writer, at, ok, first)
+	if !write.OK || write.Actor != (Actor{ID: "main", Label: "the main agent"}) || !write.At.Equal(first) {
+		t.Fatalf("WriteState = %+v, want the main agent @ %v", write, first)
+	}
+	if write.Revision != 1 {
+		t.Fatalf("revision = %d, want 1", write.Revision)
 	}
 
-	// An upsert must replace the writer, not keep the first one.
-	if err := svc.RecordWrite("src/main.go", second, "a subagent"); err != nil {
+	// An upsert must replace the writer and advance the revision.
+	if err := svc.RecordWrite("src/main.go", second, Actor{ID: "subagent-1", Label: "a subagent"}); err != nil {
 		t.Fatalf("second RecordWrite: %v", err)
 	}
-	writer, at, ok, err = svc.LastWriter("src/main.go")
+	write, err = svc.WriteState("src/main.go")
 	if err != nil {
-		t.Fatalf("LastWriter after upsert: %v", err)
+		t.Fatalf("WriteState after upsert: %v", err)
 	}
-	if !ok || writer != "a subagent" || !at.Equal(second) {
-		t.Fatalf("LastWriter = %q @ %v (ok=%v), want \"a subagent\" @ %v", writer, at, ok, second)
+	if !write.OK || write.Actor.Label != "a subagent" || !write.At.Equal(second) {
+		t.Fatalf("WriteState = %+v, want a subagent @ %v", write, second)
+	}
+	if write.Actor.ID != "subagent-1" {
+		t.Fatalf("actor ID = %q, want subagent-1", write.Actor.ID)
+	}
+	if write.Revision != 2 {
+		t.Fatalf("revision after upsert = %d, want 2", write.Revision)
 	}
 
 	// A path written outside the session has no session writer.
-	if _, _, ok, err := svc.LastWriter("src/untouched.go"); err != nil || ok {
-		t.Fatalf("LastWriter for an unwritten path = ok %v, err %v; want ok=false, err=nil", ok, err)
+	if write, err := svc.WriteState("src/untouched.go"); err != nil || write.OK {
+		t.Fatalf("WriteState for an unwritten path = %+v, err %v; want OK=false, err=nil", write, err)
+	}
+}
+
+// TestRecordWriteAdvancesRevision pins the monotonic write counter: each
+// committed write bumps it, so a reader can tell which write its view predates.
+func TestRecordWriteAdvancesRevision(t *testing.T) {
+	db := testDB(t)
+	svc := New(db, "session-1")
+	first := time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC)
+	second := time.Date(2025, 1, 15, 11, 0, 0, 0, time.UTC)
+
+	if err := svc.RecordWrite("src/main.go", first, Actor{ID: "main", Label: "the main agent"}); err != nil {
+		t.Fatalf("first RecordWrite: %v", err)
+	}
+	write, err := svc.WriteState("src/main.go")
+	if err != nil {
+		t.Fatalf("WriteState: %v", err)
+	}
+	if write.Revision != 1 {
+		t.Fatalf("revision after first write = %d, want 1", write.Revision)
+	}
+
+	if err := svc.RecordWrite("src/main.go", second, Actor{ID: "subagent-1", Label: "a subagent"}); err != nil {
+		t.Fatalf("second RecordWrite: %v", err)
+	}
+	write, err = svc.WriteState("src/main.go")
+	if err != nil {
+		t.Fatalf("WriteState: %v", err)
+	}
+	if write.Revision != 2 {
+		t.Fatalf("revision after second write = %d, want 2", write.Revision)
+	}
+}
+
+// TestRecordWriteDoesNotCreateRead pins that a write is not a read: the writer
+// exemption (not a fabricated read mark) is what lets the writer edit again.
+func TestRecordWriteDoesNotCreateRead(t *testing.T) {
+	db := testDB(t)
+	svc := New(db, "session-1")
+
+	if err := svc.RecordWrite("src/main.go", time.Now(), Actor{ID: "main", Label: "the main agent"}); err != nil {
+		t.Fatalf("RecordWrite: %v", err)
+	}
+	read, err := svc.ReadState("src/main.go")
+	if err != nil {
+		t.Fatalf("ReadState: %v", err)
+	}
+	if read.OK {
+		t.Fatalf("ReadState after RecordWrite = %+v, want OK=false", read)
+	}
+}
+
+// TestRecordReadStoresObservedRevision pins the conservative read semantics: the
+// read records the revision it observed, an existing higher revision is never
+// regressed, and a lower-revision read does not move the timestamp forward.
+func TestRecordReadStoresObservedRevision(t *testing.T) {
+	db := testDB(t)
+	svc := New(db, "session-1")
+	first := time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC)
+	second := time.Date(2025, 1, 15, 11, 0, 0, 0, time.UTC)
+
+	if err := svc.RecordWrite("src/main.go", first, Actor{ID: "main", Label: "the main agent"}); err != nil {
+		t.Fatalf("RecordWrite: %v", err)
+	}
+	if err := svc.RecordRead("src/main.go", first, 1); err != nil {
+		t.Fatalf("RecordRead at revision 1: %v", err)
+	}
+	read, err := svc.ReadState("src/main.go")
+	if err != nil {
+		t.Fatalf("ReadState: %v", err)
+	}
+	if !read.OK || read.Revision != 1 {
+		t.Fatalf("ReadState = %+v, want revision 1", read)
+	}
+	if !read.At.Equal(first) {
+		t.Fatalf("read time = %v, want %v", read.At, first)
+	}
+
+	// A later read that observed an older revision must not regress the
+	// recorded revision, and must not move the timestamp forward either.
+	if err := svc.RecordRead("src/main.go", second, 0); err != nil {
+		t.Fatalf("RecordRead at revision 0: %v", err)
+	}
+	read, err = svc.ReadState("src/main.go")
+	if err != nil {
+		t.Fatalf("ReadState after lower-revision read: %v", err)
+	}
+	if read.Revision != 1 {
+		t.Fatalf("revision = %d, want it to stay 1", read.Revision)
+	}
+	if read.At.After(first) {
+		t.Fatalf("read time = %v, want it not to regress past %v", read.At, first)
 	}
 }
 
@@ -157,41 +264,27 @@ func TestSessionIsolation(t *testing.T) {
 	svc2 := New(db, "session-2")
 	now := time.Now()
 
-	svc1.RecordRead("a.go", now)
-	svc2.RecordRead("b.go", now)
+	svc1.RecordRead("a.go", now, 0)
+	svc2.RecordRead("b.go", now, 0)
 
 	// svc1 should see a.go but not b.go
-	_, ok1, _ := svc1.LastReadTime("a.go")
-	if !ok1 {
+	read1, _ := svc1.ReadState("a.go")
+	if !read1.OK {
 		t.Fatal("session-1 should have a.go")
 	}
-	_, ok1b, _ := svc1.LastReadTime("b.go")
-	if ok1b {
+	read1b, _ := svc1.ReadState("b.go")
+	if read1b.OK {
 		t.Fatal("session-1 should NOT have b.go")
 	}
 
 	// svc2 should see b.go but not a.go
-	_, ok2, _ := svc2.LastReadTime("b.go")
-	if !ok2 {
+	read2, _ := svc2.ReadState("b.go")
+	if !read2.OK {
 		t.Fatal("session-2 should have b.go")
 	}
-	_, ok2b, _ := svc2.LastReadTime("a.go")
-	if ok2b {
+	read2b, _ := svc2.ReadState("a.go")
+	if read2b.OK {
 		t.Fatal("session-2 should NOT have a.go")
-	}
-}
-
-func TestRecordWriteUpsert(t *testing.T) {
-	db := testDB(t)
-	svc := New(db, "session-1")
-	first := time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC)
-	second := time.Date(2025, 1, 15, 11, 0, 0, 0, time.UTC)
-
-	if err := svc.RecordWrite("src/main.go", first, "the main agent"); err != nil {
-		t.Fatalf("first RecordWrite: %v", err)
-	}
-	if err := svc.RecordWrite("src/main.go", second, "a subagent"); err != nil {
-		t.Fatalf("second RecordWrite: %v", err)
 	}
 }
 
@@ -200,11 +293,11 @@ func init() {
 	_ = os.RemoveAll
 }
 
-// TestLastReadTimeRejectsUnparseableTimestamp covers a row whose read_at is
-// not valid RFC3339. The parse error used to be discarded, so the caller was
-// handed a zero time reported as a genuine read time — and the read-before-
-// write staleness gate has no way to tell that apart from a real timestamp.
-func TestLastReadTimeRejectsUnparseableTimestamp(t *testing.T) {
+// TestReadStateRejectsUnparseableTimestamp covers a row whose read_at is not
+// valid RFC3339. The parse error used to be discarded, so the caller was handed
+// a zero time reported as a genuine read time — and the read-before-write
+// staleness gate has no way to tell that apart from a real timestamp.
+func TestReadStateRejectsUnparseableTimestamp(t *testing.T) {
 	db := testDB(t)
 	svc := New(db, "session-1")
 	if _, err := db.Exec(
@@ -213,14 +306,14 @@ func TestLastReadTimeRejectsUnparseableTimestamp(t *testing.T) {
 		t.Fatalf("seed row: %v", err)
 	}
 
-	got, ok, err := svc.LastReadTime("/tmp/x.go")
+	got, err := svc.ReadState("/tmp/x.go")
 	if err == nil {
 		t.Fatal("expected an error for an unparseable read_at, got nil")
 	}
-	if ok {
-		t.Error("ok = true, want false when the timestamp cannot be parsed")
+	if got.OK {
+		t.Error("OK = true, want false when the timestamp cannot be parsed")
 	}
-	if !got.IsZero() {
-		t.Errorf("time = %v, want zero", got)
+	if !got.At.IsZero() {
+		t.Errorf("time = %v, want zero", got.At)
 	}
 }

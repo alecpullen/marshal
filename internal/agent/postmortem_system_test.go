@@ -102,7 +102,7 @@ func TestPostmortemSystemAccessWritePath(t *testing.T) {
 	}
 
 	// The write must be file-tracked under the resolved absolute path.
-	if _, hasRead, err := ft.LastReadTime(report); err != nil || !hasRead {
-		t.Fatalf("filetrack LastReadTime(%q) = (_, %v, %v), want the write recorded", report, hasRead, err)
+	if read, err := ft.ReadState(report); err != nil || !read.OK {
+		t.Fatalf("filetrack ReadState(%q) = (%+v, %v), want the write recorded", report, read, err)
 	}
 }

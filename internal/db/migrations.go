@@ -143,6 +143,7 @@ CREATE TABLE IF NOT EXISTS file_reads (
     session_id TEXT NOT NULL,
     path TEXT NOT NULL,
     read_at TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(session_id, path)
 );
 
@@ -151,6 +152,8 @@ CREATE TABLE IF NOT EXISTS file_writes (
     path TEXT NOT NULL,
     written_at TEXT NOT NULL,
     written_by TEXT NOT NULL DEFAULT '',
+    written_id TEXT NOT NULL DEFAULT '',
+    revision INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(session_id, path)
 );
 

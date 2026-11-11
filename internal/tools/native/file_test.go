@@ -1525,13 +1525,14 @@ func TestWritePatch_RejectsFileChangedSinceRead(t *testing.T) {
 	if _, err := invokeTool(t, reg, "file.read", `{"path":"test.txt"}`); err != nil {
 		t.Fatalf("file.read failed: %v", err)
 	}
-	lastRead, ok, err := ft.LastReadTime(trackedPath)
+	read, err := ft.ReadState(trackedPath)
 	if err != nil {
-		t.Fatalf("LastReadTime: %v", err)
+		t.Fatalf("ReadState: %v", err)
 	}
-	if !ok {
+	if !read.OK {
 		t.Fatal("file.read did not record a read time for the file")
 	}
+	lastRead := read.At
 
 	// Apply the external edit now, synchronously, before file.write_patch is
 	// invoked, and stamp its mtime strictly later than the recorded read. The
@@ -1668,10 +1669,10 @@ func TestStaleEditErrorNamesWriterAndLineRange(t *testing.T) {
 
 	// This reader's view predates a sibling's write: an old read mark, and a
 	// fresh write in the ledger naming the agent that made it.
-	if err := ft.RecordRead(filePath, time.Now().Add(-time.Hour)); err != nil {
+	if err := ft.RecordRead(filePath, time.Now().Add(-time.Hour), 0); err != nil {
 		t.Fatalf("RecordRead: %v", err)
 	}
-	if err := ft.RecordWrite(filePath, time.Now(), "a subagent"); err != nil {
+	if err := ft.RecordWrite(filePath, time.Now(), filetrack.Actor{ID: "subagent", Label: "a subagent"}); err != nil {
 		t.Fatalf("RecordWrite: %v", err)
 	}
 
@@ -2530,8 +2531,8 @@ type interruptingTracker struct {
 	onRecord func()
 }
 
-func (t *interruptingTracker) RecordWrite(path string, at time.Time, writer string) error {
-	err := t.FileTracker.RecordWrite(path, at, writer)
+func (t *interruptingTracker) RecordWrite(path string, at time.Time, actor filetrack.Actor) error {
+	err := t.FileTracker.RecordWrite(path, at, actor)
 	t.once.Do(func() {
 		if t.onRecord != nil {
 			t.onRecord()

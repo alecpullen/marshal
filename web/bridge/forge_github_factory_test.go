@@ -66,6 +66,44 @@ func TestFactoryGitHubEvidence(t *testing.T) {
 	}
 }
 
+func TestFactoryGitHubQueuedAttemptOutranksSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "check-runs") {
+			fmt.Fprint(w, `{"total_count":2,"check_runs":[{"id":10,"name":"build","head_sha":"sha","status":"completed","conclusion":"success","started_at":"2026-01-01T00:00:00Z","app":{"id":1}},{"id":11,"name":"build","head_sha":"sha","status":"queued","conclusion":null,"started_at":null,"app":{"id":1}}]}`)
+			return
+		}
+		fmt.Fprint(w, `[]`)
+	}))
+	defer srv.Close()
+	ci, err := (&githubForge{srv.Client()}).ObserveFactoryCI(context.Background(), Repo{URL: "https://github.com/o/r", APIBase: srv.URL}, "sha", Credential{})
+	if err != nil || !ci.Complete || len(ci.Checks) != 1 || ci.Checks[0].ID != "11" {
+		t.Fatalf("ci=%+v err=%v", ci, err)
+	}
+	if state, _ := EvaluateFactoryCI(ci, []FactoryCheckKey{{Kind: "check_run", Name: "build", AppID: 1}}, false); state != "waiting" {
+		t.Fatalf("newest queued attempt gave state %q", state)
+	}
+}
+
+func TestFactoryGitHubDraftMutationRejectsMismatchedConfirmation(t *testing.T) {
+	for _, tc := range []struct {
+		name, response string
+		draft          bool
+	}{
+		{"wrong_node", `{"data":{"mutation":{"pullRequest":{"id":"other","isDraft":true}}}}`, true},
+		{"wrong_draft_state", `{"data":{"mutation":{"pullRequest":{"id":"node","isDraft":false}}}}`, true},
+		{"wrong_ready_state", `{"data":{"mutation":{"pullRequest":{"id":"node","isDraft":true}}}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, tc.response) }))
+			defer srv.Close()
+			err := (&githubForge{srv.Client()}).SetFactoryDraft(context.Background(), Repo{URL: "https://github.com/o/r", APIBase: srv.URL}, FactoryPR{NodeID: "node"}, tc.draft, Credential{})
+			if err == nil {
+				t.Fatal("accepted mismatched mutation confirmation")
+			}
+		})
+	}
+}
+
 func TestFactoryGitHubPRLifecycle(t *testing.T) {
 	creates := 0
 	mutations := 0
@@ -77,7 +115,8 @@ func TestFactoryGitHubPRLifecycle(t *testing.T) {
 				t.Error(p)
 			}
 			mutations++
-			fmt.Fprint(w, `{"data":{"mutation":{"pullRequest":{"id":"node","isDraft":false}}}}`)
+			draft := strings.Contains(p["query"].(string), "convertPullRequestToDraft")
+			fmt.Fprintf(w, `{"data":{"mutation":{"pullRequest":{"id":"node","isDraft":%t}}}}`, draft)
 			return
 		}
 		if r.Method == "POST" {

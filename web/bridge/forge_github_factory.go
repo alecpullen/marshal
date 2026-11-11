@@ -107,7 +107,8 @@ func (g *githubForge) ObserveFactoryCI(ctx context.Context, repo Repo, sha strin
 		for _, r := range page.Runs {
 			k := FactoryCheckKey{Kind: "check_run", Name: r.Name, AppID: r.App.ID}
 			old, ok := runs[k]
-			if !ok || r.Started.After(old.Started) || (r.Started.Equal(old.Started) && r.ID > old.ID) {
+			// Check run IDs reflect creation order; a queued retry may not have started_at yet.
+			if !ok || r.ID > old.ID {
 				runs[k] = r
 			}
 		}
@@ -290,6 +291,9 @@ func (g *githubForge) SetFactoryDraft(ctx context.Context, repo Repo, pr Factory
 	}
 	if len(response.Errors) > 0 || response.Data.Mutation == nil || response.Data.Mutation.PR == nil {
 		return fmt.Errorf("GitHub draft mutation failed or returned no confirmation")
+	}
+	if response.Data.Mutation.PR.ID != pr.NodeID || response.Data.Mutation.PR.Draft != draft {
+		return fmt.Errorf("GitHub draft mutation returned mismatched PR confirmation")
 	}
 	return nil
 }

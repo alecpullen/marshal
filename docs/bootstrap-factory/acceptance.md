@@ -13,14 +13,14 @@ export PATH=/workspace/toolchains/go/bin:$PATH
 export GOCACHE=/tmp/factory-go-cache
 export CGO_ENABLED=1
 go test ./web/bridge -run '^TestFactoryEndToEnd' -count=1
-go test ./... -count=1 -timeout 5m
+CGO_ENABLED=1 go test -p=1 ./... -count=1 -timeout 20m
 go vet ./...
 go test -race ./web/bridge ./cmd/webbridge -count=1
 (cd web/ui && npm test && npm run build)
 go build ./cmd/webbridge
 ```
 
-Serializing the package test binaries with `-p=1` was tried and **rejected as the fix**. Locally it passes (and the four budget tests pass in isolation, ten runs each), but on GitHub's `ubuntu-latest` the CI run that already used `-p=1` still failed `TestStackRoundTripBudget` with `round trip: median 50.963111ms over 30 runs, first read 68.705206ms (budget 50ms)`. With no other package test binary running, that is an absolute budget breach on the runner rather than package-level contention, so the workflow keeps its original `go test ./... -count=1 -timeout 5m` form. No ACP budget threshold (2 ms, 10 ms or 50 ms) was loosened, no timing test was skipped or quarantined, and every package and every assertion still runs. Nothing in this branch touches the stack/projector path: `git diff ab935334..HEAD` over `internal/acp`, `internal/viewmodel` and `internal/acpwire` lists no stack, mirror or projector file, so the breach is pre-existing on CI hardware and not introduced here.
+Serializing the package test binaries with `-p=1` is kept, because CI measured it working. Two runs on this branch isolate its effect: without `-p=1` (`go test ./... -count=1 -timeout 5m`) `full-suite` failed three ACP budget tests — `TestStackBusyFlipBudget`, `TestStackPatchApplyBudget` and `TestStackRoundTripBudget`; with `-p=1` the first two pass and only `TestStackRoundTripBudget` fails, at `median 50.963111ms over 30 runs, first read 68.705206ms (budget 50ms)`. That 1.9% breach cannot be explained by package contention, and serialization neither causes nor fixes it — it is an absolute breach on the runner, for `internal/acp` to address as a projector-path performance change or for runner capacity to absorb. It must not be fixed by loosening the 50 ms budget. No ACP threshold (2 ms, 10 ms or 50 ms) was loosened, no timing test was skipped or quarantined, and every package and every assertion still runs. Nothing in this branch touches the stack/projector path either: `git diff ab935334..HEAD` over `internal/acp`, `internal/viewmodel` and `internal/acpwire` lists no stack, mirror or projector file.
 
 ## Final merged-head automated acceptance: 2026-11-12
 
@@ -56,14 +56,22 @@ Focused evidence for the three repairs in this run:
 
 ### CI on the pushed head: full-suite RED
 
-`scripted` passed (1 m 19 s). `full-suite` failed (7 m 1 s) on `15d59a35`, with two failures, neither of them disguisable and neither of them a threshold change:
+`scripted` passed on both heads (1 m 19 s, then 1 m 20 s). `full-suite` is red, and the two runs isolate what each change did:
+
+| Head | Workflow | `full-suite` | ACP budget tests failing |
+|---|---|---|---|
+| `15d59a35` | `-p=1`, 20 m | FAIL, 7 m 1 s | 1 — `TestStackRoundTripBudget` |
+| `433bfb70` | plain, 5 m | FAIL, 3 m 29 s | 3 — `TestStackBusyFlipBudget`, `TestStackPatchApplyBudget`, `TestStackRoundTripBudget` |
+
+`TestStackRoundTripBudget` fails either way; `TestASecondEmbeddingWaitsAndTakesOver` failed once, in the serialized run only.
 
 | Failing test | Observed | Disposition |
 |---|---|---|
-| `TestStackRoundTripBudget` (`internal/acp`) | `median 50.963111ms over 30 runs, first read 68.705206ms (budget 50ms)` — the CI run that already used `-p=1` | Pre-existing on CI hardware. The test, `internal/acp/stack*.go`, `internal/viewmodel` and `internal/acpwire` are byte-identical to `main` across this branch (`git diff ab935334..HEAD` lists no stack, mirror or projector file), so this is an absolute budget breach on the runner, not contention and not a regression from this work. Fixing it belongs in `internal/acp` as a performance change to the projector path, or is a runner-capacity limit; it must not be fixed by loosening the 50 ms budget. |
-| `TestASecondEmbeddingWaitsAndTakesOver` (`internal/app`) | `embedded_refresh_test.go:142: no runtime took the refresh lease within 2s` | Timing-sensitive lease test introduced by `p4-8-refresh`'s fixups commit `7ca77cf4`. It passes 5/5 locally. Not part of this plan's task scope; recorded as an open flake for `p4-8-refresh` to own. |
+| `TestStackRoundTripBudget` (`internal/acp`) | `median 50.963111ms over 30 runs, first read 68.705206ms (budget 50ms)` | The residual. A 1.9% breach present with and without `-p=1`, so it is an absolute budget breach on `ubuntu-latest` rather than contention. The test, `internal/acp/stack*.go`, `internal/viewmodel` and `internal/acpwire` are byte-identical to `main` across this branch (`git diff ab935334..HEAD` lists no stack, mirror or projector file), so it is not a regression from this work. Belongs in `internal/acp` as a projector-path performance change, or is a runner-capacity limit; it must not be fixed by loosening the 50 ms budget. |
+| `TestStackBusyFlipBudget`, `TestStackPatchApplyBudget` (`internal/acp`) | Fail only in the non-serialized run | Resolved by `-p=1`: this is the package-level contention the task targeted. |
+| `TestASecondEmbeddingWaitsAndTakesOver` (`internal/app`) | `embedded_refresh_test.go:142: no runtime took the refresh lease within 2s`, once | Timing-sensitive lease test introduced by `p4-8-refresh`'s fixups commit `7ca77cf4`; passes 5/5 locally. Not part of this plan's task scope; recorded as an open flake for `p4-8-refresh` to own. |
 
-Because a required check is red, PR 57 is **not** marked ready in this run, and the plan's Task 5 step 4 / Task 8 step 4 cannot complete on this head. Locally the same architecture and tests are green, which is why the local table above is not the acceptance evidence for the gate.
+Because a required check is red, PR 57 is **not** marked ready in this run, and the plan's Task 5 step 4 / Task 8 step 4 cannot complete on this head. Locally the same tests are green, which is why the local table above is not the acceptance evidence for the gate.
 
 ### Independent review
 
@@ -78,7 +86,7 @@ An independent reviewer reviewed `origin/main...HEAD` against design §§3–7 w
 
 The reviewer independently confirmed all five Task 1 lifecycle requirements, the three replay/identity/parking priorities, the stdlib-only `web/` boundary, and each of the four fixes as correct and minimal.
 
-Historical note: the earlier PR head failed the full suite on unchanged ACP budget, LSP rescan, pipeline, snapshot, native-tools and worktree packages, and its required race gate timed out in `TestRecipeRunMaxUSDSetsAPausingCapForTheRun`. The LSP rescan fixture no longer depends on filesystem timestamp granularity, and the budget pause no longer applies its cancel synchronously on the caller's goroutine; both are resolved and covered by the passing local suite and the CI `scripted` job. The ACP budget failures were **not** resolved by serialization: `-p=1` was tried, rejected, and reverted, and the one surviving failure is recorded above as a CI-hardware budget breach. The earlier fixwave's focused regressions for same-SHA CI reruns, PR closure and external movement, exact ref/PR identity readiness, retargeting around the ready mutation, and external-closure cleanup remain in place.
+Historical note: the earlier PR head failed the full suite on unchanged ACP budget, LSP rescan, pipeline, snapshot, native-tools and worktree packages, and its required race gate timed out in `TestRecipeRunMaxUSDSetsAPausingCapForTheRun`. Resolved here: the LSP rescan fixture no longer depends on filesystem timestamp granularity, the budget pause no longer applies its cancel synchronously on the caller's goroutine, and `-p=1` removes the package-level contention that made two of the three ACP budget tests fail on CI. The one surviving ACP failure is recorded above as an absolute CI-runner budget breach, not contention. The earlier fixwave's focused regressions for same-SHA CI reruns, PR closure and external movement, exact ref/PR identity readiness, retargeting around the ready mutation, and external-closure cleanup remain in place.
 
 Live provider/GitHub execution and the ARM64 OrbStack deployment gates are **not** part of these automated results and remain pending, as recorded below. Nothing here claims live, deployment, Podman or merge readiness.
 

@@ -479,8 +479,11 @@ against.
   - *`marshal attach`* needs a daemon: without one it fails and says how to
     start one. With no ID it attaches to the first session of the project's
     child in `GET /api/daemon` (most recently active first), and fails when
-    the child has none. It skips the trust condition: the session exists
-    already.
+    the child has none. It holds the same trust condition as `chooseDaemon`,
+    through the same predicate (`daemonTrustNeedsAsking`): a project whose
+    trust needs the question is refused before the daemon is even probed —
+    attach runs no embedded startup, so it cannot ask it — with a message
+    naming the root and saying `marshal` there answers the question.
   - *Following.* A run is followed when the status shows one while the TUI
     is not busy and holds no run call of its own. `busy` and the turn's start
     follow it, and its ticks start. When the status's run is gone, or is
@@ -1376,7 +1379,191 @@ code anywhere in it.
 
 ### Plan 5 — the TUI's daemon mode
 
-Not yet run. [The plan](plans/2026-11-11-p4-5-daemon-mode-plan.md) fills this record.
+Built and verified on branch `p4-5-daemon-mode`, from `c680de4e`; one commit per
+task. [The plan](plans/2026-11-11-p4-5-daemon-mode-plan.md) holds the design and
+the task list; this section records what it produced, where it was short, and
+what was measured.
+
+**What was built.**
+
+- `launch` gained the daemon mode (`WithDaemon`, `Attach`, `chooseDaemon`,
+  `runDaemon`, a `daemonClient` seam, and `ProgramResult.Detached`). A plain
+  launch offers the socket to `Run`, which probes it once with a 500ms budget
+  and takes the relay only when the profile is `local` and
+  `trust.Evaluate(...)` needs no question; everything else stays embedded, as
+  `--embedded` always does.
+- The TUI detaches (`WithDetachOnQuit`, `Detached()`, `/detach`, and the quit
+  key at idle), leaves the session and its run going, and ends with `/exit` as
+  before.
+- The TUI follows a run it did not start (`syncFollowedRun`, `afterRun`,
+  `ignoreRun`), so a run admitted for another viewer, or admitted right after
+  its own refusal, drives the same busy state, spinner and clock; a follow-on
+  start refused with `CodeBusy` is quiet.
+- A new model seeds `watchResumeSeq` from the status, so attaching never
+  replays a wake that fired before.
+- `marshal attach [id]` and `marshal --embedded` exist; `attach` takes at most
+  one ID, refuses `--embedded` and refuses flag-shaped arguments.
+- `test/daemon` gained a test-owned OpenAI-compatible provider with a gate per
+  scripted turn, and two end-to-end journeys: W1 (a run followed to its outcome
+  by a second client) and W5 (a TUI that detaches from a running turn).
+
+**Where the plan was short, and how it was filled.**
+
+- *Order.* The plan runs tasks in order. Task 3 consumes `tui.WithDetachOnQuit`,
+  which Task 2 adds, so Task 2 ran first. Tasks 1 and 3 then ran concurrently,
+  each in its own worktree (`p4-5-task1`, `p4-5-task3`) because their file sets
+  are disjoint, and were cherry-picked back onto the plan branch. The commits
+  are still one per task; only their order differs.
+- *A signature change ripples.* Task 1's `quietBusy` parameter reaches
+  `commands_dispatch.go`'s `/review` caller, which the task's Files list does not
+  name. The one-word edit was made there.
+- *`flushQueuedSteering`* calls `startSessionRun(..., true, …)` directly rather
+  than routing through `startPrompt`, which keeps its signature: the plan names
+  only `startSessionRun` and `sessionRunCmd`.
+- *Error shapes the plan left open:* a `failed` `lastRun` with no error becomes
+  `&acpwire.Error{Code: CodeProviderError, Message: "the run failed"}`, and a
+  `gated` one carries `CodeHumanGateRequired` with "the run needs a person's
+  answer".
+- *Loss bookkeeping.* `daemonConn` mirrors `agentConn`'s `lost`/`markLost`/
+  `connectionLost`/`close` rather than reusing it, which is bound to an
+  embedding and a runtime.
+- *Root and home* are re-resolved inside `runDaemon` through one helper instead
+  of being threaded through, keeping the plan's four-argument signature;
+  `chooseDaemon`'s returned pair is discarded by `Run`.
+- *The version note is best-effort:* a failed `AddNote` is logged to the client
+  log rather than aborting the run.
+- *`Attach` installs no signal context*, which the plan scopes to `Run`; it uses
+  its caller's context.
+- *The child config's `base_url` carries the `/v1` suffix.* The client appends
+  only the operation's path, so the fixture's first attempt was refused at
+  `/chat/completions`.
+- *An approval needs a rule.* Act mode with Auto off does not by itself ask for
+  a shell command. The W1 test writes the project's confirmation rule for
+  exactly `rm -f approval-marker.txt` and seeds the trust record that makes the
+  project layer apply, as `test/usability`'s approval journey does.
+- *A gated turn the run abandoned* is recorded as a refusal by the fixture, so a
+  scripted reply lost to a dying run fails loudly instead of shifting the script.
+- *The fixture's fake client* gives each attach its own clock (a pinned clock
+  made the second attach derive the first session's ID and trip the
+  `agent_sessions.id` constraint) and closes the previous runtime on the next
+  attach.
+- *A missing home* runs embedded, and `attach` says so, because neither has a
+  socket to look for.
+
+**The manual run.** The plan asks for a by-hand TUI run. The interactive keys
+were exercised through Task 5's end-to-end journeys (W1, W5) and Task 2's model
+tests instead; the real binaries were driven as far as a terminal-less
+environment allows:
+
+- `webbridge --profile local --addr off --marshal-bin ./marshal` with a scratch
+  `MARSHAL_DATA_DIR` listened on `<data>/daemon/marshal.sock`.
+- `marshal --trust` in a project records the trust and then falls through into
+  the launch, as it always has; headless, that launch starts the TUI and waits.
+  Its daemon session survived the killed process: `GET /api/daemon` over the
+  socket listed it with `"viewers": 0`, which is D5's premise observed directly.
+- `marshal attach` with that session left found it and started the TUI, which a
+  terminal-less run cannot drive.
+- `marshal --embedded attach` and `marshal attach --embedded` both →
+  `marshal attach: --embedded cannot be combined with attach`; a flag-shaped
+  session ID, `marshal attach -abc`, → `marshal attach: unexpected flag
+  "-abc"`.
+- `marshal attach` with no daemon → names the socket and ends with
+  `` `marshal daemon install` starts one ``.
+
+The Ctrl+C-twice, `/detach` and reattach key sequences were therefore verified
+through W1/W5 and `detach_test.go`, not by hand.
+
+**Verification** (all on the plan branch, `TMPDIR=/private/tmp/p4-5-suite`):
+
+- Task 2: `go test ./internal/app/tui/ -run 'Detach|QuitKey|ExitStillEnds|ArmedHint'`
+  ok (0.7s); `go test ./internal/app/tui/... ./internal/commands/... -count=1`
+  all packages ok (`internal/app/tui` 34.2s); `TestTUIStaysOnTheClientSeam` ok.
+- Task 1: `go test ./internal/app/tui/ -run 'Follow|Followed|OwnStopping|RefusedStartFollows|QuietWake|OldWake'`
+  ok (1.1s); `go test ./internal/app/tui/... -count=1` all packages ok
+  (`internal/app/tui` 35.9s).
+- Task 3: `go test ./internal/launch/ -run 'Daemon|Embedded|NeverDials|Attach|Detach|Resume|LostConnection|VersionSkew|ClientLog'`
+  ok (0.8s); `go test ./internal/launch/ -count=1` ok (1.1s); the merged tree's
+  `internal/launch` + `internal/app/tui` + `internal/commands` all ok.
+- Task 4: `go test ./cmd/marshal/ -count=1` ok (2.7s);
+  `CGO_ENABLED=1 go build ./cmd/marshal` ok.
+- Task 5: `go test ./test/daemon/ -count=1` ok (1.4s), and again with
+  `MARSHAL_DAEMON_TEST_MARSHAL=$PWD/marshal` ok (2.8s).
+- Task 6: `gofmt -l internal cmd test web` prints nothing; `go vet ./...` is
+  clean; `go test ./... -timeout 20m` passed 122 packages with no failures and
+  exit 0 (the base commit's `internal/acp` load flake did not recur);
+  `TestWebIsStdlibOnly` and `TestTUIStaysOnTheClientSeam` pass;
+  `CGO_ENABLED=1 go build -o marshal ./cmd/marshal` succeeds and
+  `go test ./test/usability/... -run TestScripted -timeout 5m` passes.
+- Mutation checks, each applied, observed and restored: `detach` closing the
+  session fails `TestTheQuitKeyDetachesAnIdleDaemonSession`; dropping
+  `ignoreRun` fails `TestTheTUIsOwnStoppingRunIsNotFollowed`; dropping the
+  follow check at the end of `handleAgentFinished` fails
+  `TestARefusedStartFollowsTheRunThatHoldsTheSlot`; dropping `chooseDaemon`'s
+  trust condition fails `TestRunStaysEmbeddedForAProjectThatNeedsTrust`; making
+  detaching runs derive from the call again fails both `test/daemon` journeys.
+
+**Review fixes.** A post-merge branch review of `c680de4e..HEAD` found
+nothing blocking and two majors; both are fixed on the same branch, with the
+three minors and one nit beside them.
+
+- *`marshal attach` never consulted the trust store.* The plan told `Attach` to
+  skip the trust condition (Task 3, "It skips the trust condition"), and it did
+  — but attach runs no embedded startup, so it cannot ask the question either.
+  An untrusted project, or one whose config hash changed since it was trusted,
+  was served by the daemon with no question asked anywhere. `Attach` now
+  refuses such a project with a message naming the root and saying `marshal`
+  there answers the question, then `marshal attach` reattaches. This is a
+  deliberate deviation from the plan, recorded here rather than in the plan
+  file. `daemonTrustNeedsAsking` is now the one predicate both paths consult,
+  so the launch path and the attach path cannot drift apart;
+  `TestAttachRefusesAProjectThatNeedsTrust` pins the refusal and that the
+  daemon is never asked for an attach.
+- *A failure after the probe answered named neither the socket nor a way
+  forward.* A refused attach, a failed dial and a handshake timeout printed
+  bare errors such as "launch: attach \"abc\" on the daemon: …", while the
+  probe's own error names the socket and `marshal daemon install`. Every
+  post-probe failure now goes through `daemonServingError`: it names the
+  daemon (its socket when the client was built from one) and both ways
+  forward — `marshal attach` retries, `marshal --embedded` runs without it —
+  and keeps the underlying error wrapped.
+  `TestAServingFailureNamesTheDaemonAndTheWayOut` pins the socket, the status,
+  and both commands. The review also asked whether a probe-ok launch should
+  fall back to embedded when the daemon then lets it down; it does not, on the
+  record's own rule that a daemon which answers owns the session, and a silent
+  mode switch would hide a child that cannot start. The message is the fix.
+- *`Attach` returned `nil` for an already-cancelled context* — exit 0, no
+  output, indistinguishable from success. It returns the context's error and
+  probes nothing (`TestAttachReturnsTheContextsError`).
+- *A refused start of the model's own stranded a followed run in the TUI.* The
+  quiet follow-on path was handled, but a non-quiet refusal — a gate answer,
+  say — cleared `busy` while `m.following` still named a run in flight, and
+  `syncFollowedRun` re-adopts only when nothing is followed, so the model
+  rendered idle under a running session until the run ended. A followed run
+  still in the status now restores the busy state and the turn's clock
+  (`TestARefusedStartKeepsTheFollowedRunBusy`).
+- *`marshal attach` misdescribed its own refusals.* `attach --embedded` said
+  `unexpected flag "--embedded"`, and `attach abc --embedded` said `at most one
+  session ID`. `--embedded` is refused as a conflict wherever it appears, and a
+  flag-shaped ID is the only remaining "unexpected flag"; the table test covers
+  all five invocations, including `attach -abc`.
+
+**Verification of the review fixes** (same branch, `TMPDIR=/private/tmp/p4-5-suite`):
+`gofmt -l internal cmd test web` prints nothing; `go vet ./...` clean;
+`CGO_ENABLED=1 go build ./cmd/marshal ./cmd/webbridge` ok;
+`go test ./internal/launch/ ./internal/app/tui/ ./cmd/marshal/ ./test/daemon/ -count=1`
+all ok; `go test ./... -timeout 20m` passed with no failures;
+`TestWebIsStdlibOnly` and `TestTUIStaysOnTheClientSeam` pass;
+`go test ./test/usability/... -run TestScripted -timeout 5m` passes. Mutation
+checks: dropping `Attach`'s trust condition fails
+`TestAttachRefusesAProjectThatNeedsTrust`; returning `nil` for a cancelled
+context fails `TestAttachReturnsTheContextsError`; clearing `busy` in the
+refusal branch without the follow restore fails
+`TestARefusedStartKeepsTheFollowedRunBusy`.
+
+**Open for plan 7:** the trust condition the two paths now share — `chooseDaemon`
+and `Attach`, through `daemonTrustNeedsAsking`. D8 removes it, and daemon mode
+then needs no trust question in either direction.
+
 
 ### Plan 6 — the project environment and idle sessions
 

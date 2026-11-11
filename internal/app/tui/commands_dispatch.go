@@ -255,6 +255,24 @@ func init() {
 		"quit": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
 			return m, m.beginEnd(&endIntent{kind: acpwire.EndIntentExit})
 		},
+		"detach": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
+			// Detaching belongs to the daemon's sessions: an embedded
+			// session's work dies with this program, so there is nothing to
+			// come back to.
+			if !m.detachOnQuit {
+				m.note("Only a daemon session can be detached; /exit ends this one.")
+				m.refreshViewport()
+				return m, nil
+			}
+			// An ending is already settling the session; leaving now would
+			// strand it half-ended with no one to read the outcome.
+			if m.endStage != endIdle {
+				m.note("The conversation is ending; it cannot be detached now.")
+				m.refreshViewport()
+				return m, nil
+			}
+			return m, m.detach()
+		},
 		"effort": func(m *Model, args []string) (tea.Model, tea.Cmd) {
 			if len(args) == 0 {
 				m.openEffortPicker()
@@ -487,7 +505,7 @@ func init() {
 			focus := strings.TrimSpace(strings.Join(remaining, " "))
 			sess := m.sess
 			params := acpwire.ReviewParams{Focus: focus, Model: model, Range: reviewRange, Base: base}
-			return m.startSessionRun("Cannot start review", func(ctx context.Context) error {
+			return m.startSessionRun("Cannot start review", false, func(ctx context.Context) error {
 				return sess.Review(ctx, params)
 			})
 		},

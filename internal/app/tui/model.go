@@ -298,6 +298,14 @@ type Model struct {
 	suggestionGen int
 
 	cancelling bool
+	// following is the ID of the run this TUI follows; "" when none. A run
+	// another viewer started (or one the session admitted right after a
+	// refusal) is mirrored here, so the model's busy state matches the
+	// session's without the model holding a run call of its own.
+	following string
+	// ignoreRun is the ID of the TUI's own run that is still stopping: the
+	// TUI stopped it, so a status that still shows it is not a run to follow.
+	ignoreRun string
 	// watchResumeSeq is the last watch-resume sequence the model acted on, so
 	// one fire wakes the session once.
 	watchResumeSeq uint64
@@ -440,6 +448,12 @@ type Model struct {
 	ctrlCArmedAt   time.Time
 	ctrlCArmedFor  ctrlCAction
 	viewportFollow bool
+
+	// detachOnQuit makes the quit key and /detach leave the session running
+	// (P4 D5): launch passes it in daemon mode, where the session outlives
+	// this program. detached records that this program ended that way.
+	detachOnQuit bool
+	detached     bool
 
 	// Connect panel (docked; opened by /connect, /models, Ctrl+P).
 	connectModel *connect.Model
@@ -584,6 +598,13 @@ func WithHomeDir(homeDir string) Option {
 	return func(m *Model) {
 		m.homeDir = homeDir
 	}
+}
+
+// WithDetachOnQuit makes the quit key and /detach leave the session running
+// (P4 D5): launch passes it in daemon mode. Without it the quit key ends the
+// session as it always has.
+func WithDetachOnQuit() Option {
+	return func(m *Model) { m.detachOnQuit = true }
 }
 
 // WithOpenBrowser overrides the browser launcher used by /mcp auth and the
@@ -1132,6 +1153,11 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 		opt(&m)
 	}
 	st := m.sess.Status()
+	// Decision 7: a new model starts with the status's watch-resume sequence,
+	// so attaching never replays a wake that fired before this model existed.
+	if r := st.WatchResume; r != nil {
+		m.watchResumeSeq = r.Seq
+	}
 	// One session-config read for the whole construction: the reads below
 	// seed theme, discovery and history from the live config.
 	cfg := m.sess.Config()
@@ -1695,6 +1721,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.refreshViewport()
 					return m, nil
 				}
+				if m.detachOnQuit {
+					return m, m.detach()
+				}
 				return m, m.beginEnd(nil)
 			}
 			m.ctrlCArmedFor = want
@@ -2148,7 +2177,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// run it paused; the TUI only starts that resumption on the run path
 		// (decision 5).
 		sess := m.sess
-		return m.startSessionRun("Cannot start work", func(ctx context.Context) error {
+		return m.startSessionRun("Cannot start work", false, func(ctx context.Context) error {
 			return sess.AnswerSDDGate(ctx, pm.Text)
 		})
 
@@ -2187,7 +2216,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch run.kind {
 		case "swarm":
 			params := acpwire.SwarmParams{Goal: run.goal, Overrides: overrides}
-			return m.startSessionRun("Cannot start work", func(ctx context.Context) error {
+			return m.startSessionRun("Cannot start work", false, func(ctx context.Context) error {
 				return sess.StartSwarm(ctx, params)
 			})
 		case "sdd":
@@ -2199,7 +2228,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if run.verifyBuild != "" || run.verifyTest != "" {
 				params.Verify = &acpwire.VerifyCommands{Build: run.verifyBuild, Test: run.verifyTest}
 			}
-			return m.startSessionRun("Cannot start work", func(ctx context.Context) error {
+			return m.startSessionRun("Cannot start work", false, func(ctx context.Context) error {
 				return sess.StartSDD(ctx, params)
 			})
 		}
@@ -2220,7 +2249,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		sess := m.sess
 		params := acpwire.AgentRunParams{Agent: pm.agent, Goal: pm.goal}
-		return m.startSessionRun("Cannot start work", func(ctx context.Context) error {
+		return m.startSessionRun("Cannot start work", false, func(ctx context.Context) error {
 			return sess.RunAgent(ctx, params)
 		})
 	case verifyProposeMsg:
@@ -3980,8 +4009,10 @@ func (m *Model) beginTurn() context.Context {
 // startSessionRun starts a run the session owns. The session takes the run's
 // work membership, its stop group and the idle reset at its end, so the model
 // only marks the turn started and holds the context that a local cancel
-// reaches. refusal is the note a refused start writes.
-func (m *Model) startSessionRun(refusal string, run func(context.Context) error) (tea.Model, tea.Cmd) {
+// reaches. refusal is the note a refused start writes. quietBusy marks a
+// follow-on start: a start the session refuses with CodeBusy writes no note,
+// because the run it collided with is one the model is already following.
+func (m *Model) startSessionRun(refusal string, quietBusy bool, run func(context.Context) error) (tea.Model, tea.Cmd) {
 	if m.endStage != endIdle {
 		m.note("The conversation is ending; this request was not started.")
 		m.busy = false
@@ -3989,20 +4020,20 @@ func (m *Model) startSessionRun(refusal string, run func(context.Context) error)
 		return *m, nil
 	}
 	ctx := m.beginTurn()
-	return *m, tea.Batch(sessionRunCmd(ctx, refusal, run), tickCmd(), spinnerTickCmd())
+	return *m, tea.Batch(sessionRunCmd(ctx, refusal, quietBusy, run), tickCmd(), spinnerTickCmd())
 }
 
 // sessionRunCmd runs run under ctx and reports its end.
-func sessionRunCmd(ctx context.Context, refusal string, run func(context.Context) error) tea.Cmd {
+func sessionRunCmd(ctx context.Context, refusal string, quietBusy bool, run func(context.Context) error) tea.Cmd {
 	return func() tea.Msg {
-		return agentFinishedMsg{err: run(ctx), refusal: refusal}
+		return agentFinishedMsg{err: run(ctx), refusal: refusal, quietBusy: quietBusy}
 	}
 }
 
 // startPrompt starts a prompt turn through the session.
 func (m *Model) startPrompt(text string, queued bool) (tea.Model, tea.Cmd) {
 	sess := m.sess
-	return m.startSessionRun("Cannot start work", func(ctx context.Context) error {
+	return m.startSessionRun("Cannot start work", false, func(ctx context.Context) error {
 		_, err := sess.Prompt(ctx, acpwire.PromptParams{Text: text, Queued: queued})
 		return err
 	})
@@ -4035,7 +4066,10 @@ func (m *Model) startWatchResumeRun(name string, repeat bool) tea.Cmd {
 		return nil
 	}
 	sess := m.sess
-	model, cmd := m.startSessionRun("Cannot start work", func(ctx context.Context) error {
+	// A watch resume is a follow-on start (decision 6): the run it collides
+	// with is one the model is about to follow, so a CodeBusy refusal is
+	// quiet.
+	model, cmd := m.startSessionRun("Cannot start work", true, func(ctx context.Context) error {
 		_, err := sess.Prompt(ctx, acpwire.PromptParams{
 			WatchResume: &acpwire.WatchResume{Name: name, Repeat: repeat},
 		})
@@ -4068,7 +4102,15 @@ func (m *Model) flushQueuedSteering() tea.Cmd {
 	if !ok {
 		return nil
 	}
-	model, cmd := m.startPrompt(followUp, true)
+	// The steering flush is a follow-on start (decision 6): the run it may
+	// collide with is the one the model is about to follow, so a CodeBusy
+	// refusal writes no note. The session puts the text back on the steering
+	// queue agent side, so it is never silently lost.
+	sess := m.sess
+	model, cmd := m.startSessionRun("Cannot start work", true, func(ctx context.Context) error {
+		_, err := sess.Prompt(ctx, acpwire.PromptParams{Text: followUp, Queued: true})
+		return err
+	})
 	if cmd == nil {
 		return nil
 	}
@@ -4134,8 +4176,10 @@ func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
 // writes, as "Cannot start work"; it is empty for swarm and SDD runs, which
 // the TUI refuses before it starts them.
 type agentFinishedMsg struct {
-	err     error
-	refusal string
+	err       error
+	refusal   string
+	quietBusy bool // a follow-on start: a CodeBusy refusal writes no note
+	followed  bool // the end of a followed run, built from lastRun
 }
 type agentTickMsg struct{}
 type spinnerTickMsg struct{}
@@ -4823,6 +4867,35 @@ func (m *Model) finishQuit() tea.Cmd {
 	return tea.Quit
 }
 
+// detach leaves the session running and quits this program (P4 D5). It is the
+// daemon mode's quit: the session's work belongs to the daemon, so nothing
+// here stops it. It therefore does not close the session, does not cancel
+// agentCancel and does not enter the end flow — the connection's own close is
+// what ends the client's call.
+//
+// The call in flight is cancelled without waiting: unlike finishQuit, there is
+// no result the user is waiting to see, and the daemon keeps the run.
+func (m *Model) detach() tea.Cmd {
+	if m.callInFlight {
+		if m.callCancel != nil {
+			m.callCancel()
+			m.callCancel = nil
+		}
+		m.calls = nil
+	}
+	if m.lspCancel != nil {
+		m.lspCancel()
+		m.lspCancel = nil
+	}
+	// Release the dock's surfaces exactly as finishQuit does: they are
+	// permanently gone once the program stops.
+	m.dock.ReleaseRetained(m.dock.Panel())
+	m.dock.ReleaseRetained(m.composerDisplaced)
+	m.dock.ReleaseRetained(m.endDisplaced)
+	m.detached = true
+	return tea.Quit
+}
+
 // postmortemOnExit returns the configured exit postmortem policy. The config
 // loader deliberately does not reject bad values, so any unrecognised value
 // falls back to "prompt" here at use time.
@@ -4933,6 +5006,18 @@ func (m Model) settingsBlockReason() string {
 // handleAgentFinished handles an agentFinishedMsg, shared by Update and
 // handleRuntimeMessage.
 func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
+	// A follow-on start the session refused because a run holds the slot is
+	// quiet (decision 6): the run it collided with is the one to follow now,
+	// so the model goes idle without a note and follows it.
+	if msg.quietBusy && acpclient.IsCode(msg.err, acpwire.CodeBusy) {
+		m.busy = false
+		m.turnStartedAt = time.Time{}
+		m.agentCancel = nil
+		m.cancelling = false
+		m.updateViewportHeight()
+		m.refreshViewport()
+		return m.syncFollowedRun(m.sess.Status())
+	}
 	// The exit postmortem's agent pass no longer runs here: it is a scoped
 	// exit-analysis operation owned by the end controller (runExitAnalysis),
 	// so it reports through endAnalysisFinishedMsg and never re-enters the
@@ -4951,7 +5036,7 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 		m.note(msg.refusal + ": " + msg.err.Error())
 		m.updateViewportHeight()
 		m.refreshViewport()
-		return m, nil
+		return m.afterRun(msg.err, msg.followed, nil)
 	}
 	// A cancelled turn's error is an artifact of the cancellation, not a
 	// provider fault. It does not reliably wrap context.Canceled: a stream
@@ -4987,7 +5072,7 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 				m.dock.Open(gatepanel.New(gate))
 				m.updateViewportHeight()
 				m.refreshViewport()
-				return m, nil
+				return m.afterRun(msg.err, msg.followed, nil)
 			}
 		}
 		_ = m.sess.SetNotice(m.ctx, noticeForError(msg.err, "turn"))
@@ -5052,7 +5137,86 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 	}
-	return m, tea.Batch(cmds...)
+	return m.afterRun(msg.err, msg.followed, tea.Batch(cmds...))
+}
+
+// syncFollowedRun starts following a run the status shows that this TUI did
+// not start, or finishes the one it follows once the status no longer shows it.
+// The status is the single source of truth for a run's life: for a run it
+// follows, the model holds no run call of its own.
+func (m Model) syncFollowedRun(st acpwire.SessionStatus) (Model, tea.Cmd) {
+	// A run the TUI itself stopped is its own: it stays in the status until
+	// the session's stop settles it, and is never one to follow (decision 5).
+	if m.ignoreRun != "" && (st.Run == nil || st.Run.ID != m.ignoreRun) {
+		m.ignoreRun = ""
+	}
+	if id := m.following; id != "" {
+		if st.Run == nil || st.Run.ID != id {
+			// The followed run has ended. Its outcome arrives in lastRun, which
+			// every viewer reads, so the model finishes it locally instead of
+			// waiting for a call result it never had.
+			m.following = ""
+			var err error
+			if last := st.LastRun; last != nil && last.ID == id {
+				switch last.Outcome {
+				case acpwire.RunCancelled:
+					err = context.Canceled
+				case acpwire.RunFailed:
+					if last.Error != nil {
+						err = last.Error
+					} else {
+						err = &acpwire.Error{Code: acpwire.CodeProviderError, Message: "the run failed"}
+					}
+				case acpwire.RunGated:
+					err = &acpwire.Error{Code: acpwire.CodeHumanGateRequired, Message: "the run needs a person's answer"}
+				}
+			}
+			return m.handleAgentFinished(agentFinishedMsg{err: err, followed: true})
+		}
+		// The followed run is still in flight, so the model is busy on its
+		// behalf. A start of this TUI's own that the session refused cleared
+		// the busy state on the way here; the run this TUI follows did not
+		// stop because its own start was refused.
+		m.busy = true
+		if m.turnStartedAt.IsZero() {
+			m.turnStartedAt = acpwire.Time(st.Run.StartedAt)
+		}
+		return m, nil
+	}
+	// Nothing is in flight in this TUI, but the session is working: a run
+	// another viewer started, or one the session admitted right after this
+	// TUI's own refusal. Follow it so the model's busy state, spinner and
+	// clock match the session's.
+	if m.following == "" && st.Run != nil && st.Run.ID != m.ignoreRun &&
+		!m.busy && m.agentCancel == nil && m.endStage == endIdle {
+		m.following = st.Run.ID
+		m.busy = true
+		m.turnStartedAt = acpwire.Time(st.Run.StartedAt)
+		m.startHeldWindow()
+		return m, tea.Batch(tickCmd(), spinnerTickCmd())
+	}
+	return m, nil
+}
+
+// afterRun ends every return path of the two finish handlers: it records the
+// TUI's own still-stopping run (decision 5), runs the follow check while the
+// model is idle, and batches what that returns with cmd.
+func (m Model) afterRun(err error, followed bool, cmd tea.Cmd) (Model, tea.Cmd) {
+	st := m.sess.Status()
+	// A run still in the status after the TUI's own call ended by its own
+	// cancellation is the TUI's own run: the session's stop settles it a
+	// moment later, so it is ignored rather than followed.
+	if !followed && errors.Is(err, context.Canceled) && st.Run != nil {
+		m.ignoreRun = st.Run.ID
+	}
+	if !m.busy {
+		var followCmd tea.Cmd
+		m, followCmd = m.syncFollowedRun(m.sess.Status())
+		if followCmd != nil {
+			cmd = tea.Batch(cmd, followCmd)
+		}
+	}
+	return m, cmd
 }
 
 // clearSuggestionIfPrefixBroken clears the active suggestion when the typed
@@ -5128,7 +5292,7 @@ func (m Model) handlePlanAuthorFinished(msg planAuthorFinishedMsg) (Model, tea.C
 		m.note(msg.refusal + ": " + msg.err.Error())
 		m.updateViewportHeight()
 		m.refreshViewport()
-		return m, nil
+		return m.afterRun(msg.err, false, nil)
 	}
 	// A stopped authoring is not a failure. The stop already reported the
 	// cancel, and the run's context error is that stop; clearing cancelling
@@ -5140,14 +5304,14 @@ func (m Model) handlePlanAuthorFinished(msg planAuthorFinishedMsg) (Model, tea.C
 		// the run ends, so the TUI would double it.
 		m.updateViewportHeight()
 		m.refreshViewport()
-		return m, nil
+		return m.afterRun(msg.err, false, nil)
 	}
 	if msg.err != nil {
 		_ = m.sess.SetNotice(m.ctx, noticeForError(msg.err, "plan-author"))
 		// The failure note is the agent's too (P4 D6).
 		m.updateViewportHeight()
 		m.refreshViewport()
-		return m, nil
+		return m.afterRun(msg.err, false, nil)
 	}
 	_ = m.sess.ClearNotice(m.ctx, acpwire.NoticeProvider)
 	if msg.result.AutoAccepted {
@@ -5157,7 +5321,7 @@ func (m Model) handlePlanAuthorFinished(msg planAuthorFinishedMsg) (Model, tea.C
 	}
 	m.updateViewportHeight()
 	m.refreshViewport()
-	return m, nil
+	return m.afterRun(msg.err, false, nil)
 }
 
 // handleChanged handles a changedMsg: the session signalled that its status
@@ -5188,6 +5352,14 @@ func (m Model) handleChanged(msg changedMsg) (Model, tea.Cmd) {
 	}
 
 	m.syncWork()
+	// A run the model did not start (another viewer's prompt, or one admitted
+	// right after this TUI's own refusal) is mirrored here: the status is the
+	// one source of truth for whether work is in flight.
+	var followCmd tea.Cmd
+	m, followCmd = m.syncFollowedRun(st)
+	if followCmd != nil {
+		cmds = append(cmds, followCmd)
+	}
 	m.refreshViewport()
 	// A pending options candidate is activated from the call queue; Update's
 	// epilogue starts that call after this handler returns.
@@ -6518,6 +6690,16 @@ func (m *Model) newSessionEffect(args []string) tea.Cmd {
 // ResumeSession returns the session ID the user chose to resume, or "" if
 // the program ended normally. It is read by the app.Run program runner.
 func (m Model) ResumeSession() string { return m.resumeSession }
+
+// Detached is the ID of the session a detach left running, or "" when the
+// program did not end by detaching. The launch loop reads it from the final
+// model, as it reads ResumeSession.
+func (m Model) Detached() string {
+	if !m.detached {
+		return ""
+	}
+	return m.sess.ID()
+}
 
 // beginResume records a pending REPLACEMENT for the requested session. The
 // resume ID is applied and announced only after the runtime accepts the work

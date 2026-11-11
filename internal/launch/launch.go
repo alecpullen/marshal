@@ -24,6 +24,7 @@ import (
 type ProgramResult struct {
 	Err           error
 	ResumeSession string // non-empty => tear down and restart WithExistingSession
+	Detached      string // the session a detach left running; "" otherwise
 }
 
 // ProgramRunner runs the TUI program. The default runs a tea.Program; tests
@@ -39,6 +40,15 @@ type options struct {
 	// onServed hands each pass's service pair to the test before the program
 	// runs.
 	onServed func(*service.Host, *service.Session)
+
+	// daemonSocket is the local daemon Run tries first; "" runs embedded.
+	daemonSocket string
+	// daemon replaces the client built for the socket; tests inject it.
+	daemon daemonClient
+	// workingDir replaces os.Getwd for daemon mode's project lookup.
+	workingDir string
+	// agentVersion replaces acp.AgentVersion as this build's version.
+	agentVersion string
 }
 
 type Option func(*options)
@@ -74,6 +84,15 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 	runOpts := options{programRunner: runProgram}
 	for _, opt := range opts {
 		opt(&runOpts)
+	}
+
+	// P4 D5: a local daemon that answers serves the TUI over its relay, and
+	// the project needs no trust question to be served by it (decision 2).
+	// Anything else runs embedded, exactly as it did before.
+	if runOpts.daemonSocket != "" {
+		if _, _, onDaemon := chooseDaemon(ctx, &runOpts); onDaemon {
+			return runDaemon(ctx, stdout, &runOpts, "")
+		}
 	}
 
 	embedded, err := app.NewEmbedded(ctx, runOpts.appOpts...)
@@ -198,6 +217,9 @@ func runProgram(ctx context.Context, model tea.Model, output io.Writer) ProgramR
 	res := ProgramResult{Err: err}
 	if signaller, ok := finalModel.(interface{ ResumeSession() string }); ok {
 		res.ResumeSession = signaller.ResumeSession()
+	}
+	if detacher, ok := finalModel.(interface{ Detached() string }); ok {
+		res.Detached = detacher.Detached()
 	}
 	return res
 }

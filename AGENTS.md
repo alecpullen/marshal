@@ -31,8 +31,9 @@ gofmt -w .
 ```
 
 `marshal` also dispatches subcommands: `acp` (headless JSON-RPC server),
-`daemon` (install and drive the local daemon), `history`, `plugin`,
-`snapshots`, `calibrate-tokens`. Top-level flags are `--trust` and
+`attach` (reattach to a daemon session), `daemon` (install and drive the local
+daemon), `history`, `plugin`, `snapshots`, `calibrate-tokens`. Top-level flags
+are `--trust`, `--embedded` (run in this process, without the daemon) and
 `--version`.
 
 ### Web control plane
@@ -49,7 +50,10 @@ The SPA is baked in with `//go:embed`, so a change under `web/ui/src` is
 host processes only, and no container machinery. Each project runs its own
 `marshal acp --viewers` child, started on the first attach and stopped 30s
 after its last session closes; `POST /api/projects/attach` upgrades a marshal
-client onto that child's viewer socket, relaying its frames unchanged.
+client onto that child's viewer socket, relaying its frames unchanged. Plain
+`marshal` starts its session on that daemon when one answers and the project's
+trust needs no question, the quit key and `/detach` leave it running, and
+`marshal attach [id]` comes back to it.
 
 ### End-to-end and usability suites
 

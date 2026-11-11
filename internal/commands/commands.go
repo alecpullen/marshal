@@ -70,6 +70,12 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			TUIOnly:     true,
 		},
 		{
+			Name:        "detach",
+			Description: "Leave this daemon session running and quit",
+			Group:       groupChat,
+			TUIOnly:     true,
+		},
+		{
 			Name:        "new",
 			Description: "Start a new conversation",
 			Args:        "[name]",

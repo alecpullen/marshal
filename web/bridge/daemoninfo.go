@@ -7,13 +7,20 @@ import (
 
 // DaemonInfo is what GET /api/daemon answers about the local daemon.
 type DaemonInfo struct {
-	Version   string        `json:"version"`
-	Profile   string        `json:"profile"`
-	PID       int           `json:"pid"`
-	StartedAt int64         `json:"startedAt"` // Unix milliseconds
-	Socket    string        `json:"socket"`
-	Projects  []string      `json:"projects"` // filled per request
-	Children  []DaemonChild `json:"children"` // filled per request
+	Version   string         `json:"version"`
+	Profile   string         `json:"profile"`
+	PID       int            `json:"pid"`
+	StartedAt int64          `json:"startedAt"` // Unix milliseconds
+	Socket    string         `json:"socket"`
+	Projects  []string       `json:"projects"`          // filled per request
+	Children  []DaemonChild  `json:"children"`          // filled per request
+	Refresh   *DaemonRefresh `json:"refresh,omitempty"` // filled per request
+}
+
+// DaemonRefresh is the refresh helper as GET /api/daemon reports it.
+type DaemonRefresh struct {
+	PID      int `json:"pid"`
+	Restarts int `json:"restarts"`
 }
 
 // DaemonChild is one project child as GET /api/daemon reports it.
@@ -30,10 +37,15 @@ func (s *Server) SetDaemonInfo(info DaemonInfo) {
 	s.daemonInfo = &info
 }
 
+// SetRefreshHelper makes GET /api/daemon report h.
+func (s *Server) SetRefreshHelper(h *Helper) {
+	s.refresh = h
+}
+
 // daemon answers what this daemon is. The info is copied and its projects
 // replaced with the workspace's current list, so a project added or
 // removed since startup is reported without restarting the daemon. The
-// children are current for the same reason.
+// children are current for the same reason, and so is the refresh helper.
 func (s *Server) daemon(w http.ResponseWriter, r *http.Request) {
 	if s.daemonInfo == nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not a daemon"})
@@ -42,6 +54,11 @@ func (s *Server) daemon(w http.ResponseWriter, r *http.Request) {
 	out := *s.daemonInfo
 	out.Projects = s.projectRoots()
 	out.Children = s.projectChildren()
+	out.Refresh = nil
+	if s.refresh != nil {
+		pid, restarts := s.refresh.State()
+		out.Refresh = &DaemonRefresh{PID: pid, Restarts: restarts}
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 

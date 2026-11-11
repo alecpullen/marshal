@@ -397,17 +397,19 @@ func CompleteFactoryEffect(item FactoryItem, effectID string, outcome FactoryOut
 
 // FactoryController owns scheduling after Task 5 explicitly opens its recovery gate.
 type FactoryController struct {
-	store      *FactoryStore
-	effects    FactoryEffects
-	now        func() time.Time
-	mu         sync.Mutex
-	ready      bool
-	closing    bool
-	active     sync.WaitGroup
-	wake       chan struct{}
-	readyWake  chan struct{}
-	after      func(time.Duration) <-chan time.Time
-	pauseUntil time.Time
+	store   *FactoryStore
+	effects FactoryEffects
+	now     func() time.Time
+	mu      sync.Mutex
+	ready   bool
+	closing bool
+	active  sync.WaitGroup
+	// Tests may pause after durable dispatch and before execution admission.
+	beforeExecute func()
+	wake          chan struct{}
+	readyWake     chan struct{}
+	after         func(time.Duration) <-chan time.Time
+	pauseUntil    time.Time
 }
 
 func NewFactoryController(store *FactoryStore, effects FactoryEffects, now func() time.Time) *FactoryController {
@@ -666,12 +668,24 @@ func (c *FactoryController) dispatch(ctx context.Context, i FactoryItem, e Facto
 	if err != nil {
 		return err
 	}
-	if e.Kind == "implement" || e.Kind == "review" {
-		c.active.Add(1)
-		go func() { defer c.active.Done(); _ = c.finishDispatch(ctx, dispatched, e) }()
+	if c.beforeExecute != nil {
+		c.beforeExecute()
+	}
+	c.mu.Lock()
+	if c.closing {
+		c.mu.Unlock()
 		return nil
 	}
-	return c.finishDispatch(ctx, dispatched, e)
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	c.active.Add(1)
+	go func() { defer c.active.Done(); close(started); done <- c.finishDispatch(ctx, dispatched, e) }()
+	<-started // execution admission precedes any shutdown journal transition
+	c.mu.Unlock()
+	if e.Kind == "implement" || e.Kind == "review" {
+		return nil
+	}
+	return <-done
 }
 func (c *FactoryController) finishDispatch(ctx context.Context, dispatched FactoryItem, e FactoryEffect) error {
 	out, runErr := c.effects.Execute(ctx, dispatched, e)

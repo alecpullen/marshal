@@ -168,6 +168,12 @@ func TestFactoryHTTPCreateApprovalAndReplay(t *testing.T) {
 	if bad := post(missingKey, "/api/factory/items"); bad.Code != 422 {
 		t.Fatalf("missing provider key %d: %s", bad.Code, bad.Body.String())
 	}
+	agent.results["config/get"] = map[string]any{"providers": map[string]any{"oauth": map[string]any{"type": "openai_codex", "auth": "oauth", "apiKeyEnv": "FACTORY_STALE_OPTIONAL_KEY", "hasKey": false}}, "presets": map[string]any{"test/model": map[string]any{"provider": "oauth", "model": "model"}}, "profiles": map[string]any{"chosen": map[string]any{"implementer": map[string]any{"preset": "test/model"}, "reviewer": map[string]any{"preset": "test/model"}}}}
+	oauth := req
+	oauth.RequestID = "oauth-with-stale-env"
+	if accepted := post(oauth, "/api/factory/items"); accepted.Code != 201 {
+		t.Fatalf("OAuth route with optional stale key %d: %s", accepted.Code, accepted.Body.String())
+	}
 	if strings.Contains(created.Body.String(), "fixture-only") || strings.Contains(accepted.Body.String(), "fixture-only") {
 		t.Fatal("credential value leaked in response")
 	}
@@ -302,4 +308,54 @@ func TestFactoryStartupQuiesceConcurrentFinish(t *testing.T) {
 			t.Fatalf("unsettled effect after shutdown: %s", item.ID)
 		}
 	}
+}
+
+func TestFactoryStartupQuiesceBeforeExecution(t *testing.T) {
+	store, err := OpenFactoryStore(filepath.Join(t.TempDir(), "factory"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	item := blockedFactoryItem(t, store, "boundary")
+	effects := &dispatchBoundaryEffects{executed: make(chan struct{}, 1)}
+	controller := NewFactoryController(store, effects, nil)
+	paused := make(chan struct{})
+	release := make(chan struct{})
+	controller.beforeExecute = func() { close(paused); <-release }
+	done := make(chan error, 1)
+	go func() { done <- controller.dispatch(context.Background(), item, item.Effects[len(item.Effects)-1]) }()
+	select {
+	case <-paused:
+	case <-time.After(time.Second):
+		t.Fatal("dispatch did not reach admission boundary")
+	}
+	if err := controller.Quiesce(); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-effects.executed:
+		t.Fatal("effect executed after shutdown marked it uncertain")
+	default:
+	}
+	got, err := store.Get(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Effects[len(got.Effects)-1].Status != "uncertain" {
+		t.Fatalf("effect status %q", got.Effects[len(got.Effects)-1].Status)
+	}
+}
+
+type dispatchBoundaryEffects struct{ executed chan struct{} }
+
+func (f *dispatchBoundaryEffects) Observe(context.Context, FactoryItem) (FactoryObservation, error) {
+	return FactoryObservation{}, nil
+}
+func (f *dispatchBoundaryEffects) Execute(context.Context, FactoryItem, FactoryEffect) (FactoryOutcome, error) {
+	f.executed <- struct{}{}
+	return FactoryOutcome{}, nil
 }

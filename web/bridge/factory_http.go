@@ -207,7 +207,7 @@ func (a *factoryAPI) preflight(ctx context.Context, c FactoryConfig, _ bool) err
 		if !ok || provider.Type == "" {
 			return fmt.Errorf("%w: %s provider unavailable", errFactoryConfig, role)
 		}
-		if (provider.Type == "anthropic" || provider.APIKeyEnv != "") && !provider.HasKey {
+		if provider.Type != "openai_codex" && (provider.Type == "anthropic" || provider.APIKeyEnv != "") && !provider.HasKey {
 			return fmt.Errorf("%w: %s provider credential unavailable", errFactoryConfig, role)
 		}
 	}

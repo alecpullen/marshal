@@ -249,3 +249,43 @@ func TestTheDaemonReportsItsHelper(t *testing.T) {
 		t.Fatalf("a daemon with no helper reported refresh: %s", rec.Body.String())
 	}
 }
+
+// TestASteadyRunResetsTheBackoff: decision 7's reset. A run that lasted at
+// least SteadyRun sends the delay back to Backoff, so a helper that fails
+// after long runs is retried promptly instead of settling at MaxBackoff.
+// TestAnExitingHelperIsRestarted puts SteadyRun beyond its runs, so it cannot
+// see this branch.
+func TestASteadyRunResetsTheBackoff(t *testing.T) {
+	requireHelperShell(t)
+	const scriptRun = 100 * time.Millisecond
+	h := &Helper{
+		Argv:       scriptArgv("sleep 0.1; exit 1"),
+		Backoff:    60 * time.Millisecond,
+		MaxBackoff: 2 * time.Second,
+		SteadyRun:  50 * time.Millisecond, // every run outlives this
+	}
+	runHelper(t, h)
+
+	// The times at which the restart count rises. Each gap is one run plus
+	// the delay the supervisor waited after it.
+	var stamps []time.Time
+	seen := 0
+	began := time.Now()
+	for len(stamps) < 5 && time.Since(began) < 30*time.Second {
+		if _, restarts := h.State(); restarts > seen {
+			seen = restarts
+			stamps = append(stamps, time.Now())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if len(stamps) < 5 {
+		t.Fatalf("the helper restarted %d times, want 5", len(stamps))
+	}
+	// Every run was steady, so every gap is the script's own run plus Backoff.
+	// A supervisor that let the delay grow would be four doublings along by
+	// the fifth restart, at MaxBackoff.
+	last := stamps[len(stamps)-1].Sub(stamps[len(stamps)-2])
+	if limit := scriptRun + 3*h.Backoff; last > limit {
+		t.Fatalf("the gap before the last restart was %s, over %s: the steady run did not reset the backoff", last, limit)
+	}
+}

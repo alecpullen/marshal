@@ -134,6 +134,13 @@ func (b *recordingBuilder) lastRequest() []string {
 	return append([]string(nil), b.requests[len(b.requests)-1]...)
 }
 
+// requestCount is how many times a config has been built.
+func (b *recordingBuilder) requestCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.requests)
+}
+
 // workerAt waits for the build that produces the index'th worker.
 func (b *recordingBuilder) workerAt(t *testing.T, i int) *fakeWorker {
 	t.Helper()
@@ -388,6 +395,63 @@ func TestTheHelperRebuildsOnAChange(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("RunOAuthRefresh: %v", err)
+	}
+}
+
+// TestTheHelperRebuildsWhenTheConfigChangesDuringALoad is decision 6's other
+// half: the stamp a worker set is built for is read before the file, so a write
+// that lands while the config is being read is the next change rather than a
+// missed one. Stamping after the read would keep the providers of the config
+// that was just replaced until the following edit.
+func TestTheHelperRebuildsWhenTheConfigChangesDuringALoad(t *testing.T) {
+	home := t.TempDir()
+	writeUserConfig(t, home, 0, oneProviderConfig)
+	lease := &fakeRefreshLease{granted: true}
+	builder := &recordingBuilder{}
+	auth, _ := memoryAuthResolver(t)
+
+	// The rebuild's own build rewrites the config, standing in for an editor
+	// that saves between the file being read and the stamp the new workers are
+	// built for.
+	build := func(cfg config.Config) []worker.Worker {
+		workers := builder.build(cfg)
+		if builder.requestCount() == 2 {
+			writeUserConfig(t, home, 10*time.Second, noProvidersConfig)
+		}
+		return workers
+	}
+
+	_, cancel := startHelper(t, OAuthRefreshOptions{
+		HomeDir:  home,
+		Auth:     auth,
+		Logger:   discardLogger(),
+		tryLease: lease.try,
+		workers:  build,
+		retry:    time.Millisecond,
+		poll:     5 * time.Millisecond,
+	})
+	defer cancel()
+
+	first := builder.workerAt(t, 0)
+	waitClosed(t, first.started, "the first worker to start")
+
+	// The change the rebuild answers.
+	writeUserConfig(t, home, 5*time.Second, twoProvidersConfig)
+	waitClosed(t, first.stopped, "the first config's worker to stop")
+
+	// The rebuild's config was replaced while it was read, and that second
+	// change is not lost: a config naming no provider gives up the lease.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		grants, releases := lease.counts()
+		if releases >= 1 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the lease was not released: %d builds, %d grants, %d releases, last build %v",
+				builder.requestCount(), grants, releases, builder.lastRequest())
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

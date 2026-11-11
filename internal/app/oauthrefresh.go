@@ -167,22 +167,28 @@ func RunOAuthRefresh(ctx context.Context, opts OAuthRefreshOptions) error {
 		poll = oauthConfigPoll
 	}
 
-	// load builds the workers the user config names. A config that cannot be
-	// read is logged and counts as naming none: the provider still refreshes
-	// inline when it is used, so a helper that gives up its lease is safe.
-	load := func() []worker.Worker {
+	// load builds the workers the user config names, with the stamp the file
+	// had before it was read. A config that cannot be read is logged and
+	// counts as naming none: the provider still refreshes inline when it is
+	// used, so a helper that gives up its lease is safe.
+	//
+	// The stamp comes first on purpose. A write that lands while the file is
+	// being read then differs from the stamp the workers were built for, so
+	// the poll fires and rebuilds; stamping after the read would miss that
+	// change and keep the old providers until the next edit.
+	load := func() ([]worker.Worker, string) {
+		stamp := configStamp(configPath)
 		cfg, err := config.Load(config.LoadOptions{HomeDir: opts.HomeDir, SkipProjectConfig: true})
 		if err != nil {
 			log.Warn("oauth refresh: cannot read the user config", "path", configPath, "error", err)
-			return nil
+			return nil, stamp
 		}
-		return build(cfg)
+		return build(cfg), stamp
 	}
 
 	lease := oauthLease{tryLease: tryLease, retry: retry, log: log}
 	for ctx.Err() == nil {
-		stamp := configStamp(configPath)
-		workers := load()
+		workers, stamp := load()
 		if len(workers) == 0 {
 			if !waitForConfigStamp(ctx, configPath, stamp, poll) {
 				break
@@ -201,12 +207,12 @@ func RunOAuthRefresh(ctx context.Context, opts OAuthRefreshOptions) error {
 //
 // It returns when ctx ends, or when a changed config names no OAuth provider:
 // that return releases the lease, so another process can take it over.
-func refreshUnderLease(ctx context.Context, configPath, stamp string, workers []worker.Worker, load func() []worker.Worker, poll time.Duration, log *slog.Logger) {
+func refreshUnderLease(ctx context.Context, configPath, stamp string, workers []worker.Worker, load func() ([]worker.Worker, string), poll time.Duration, log *slog.Logger) {
 	// The config may have changed while another process held the lease, so a
 	// set built before the wait is not trusted: rebuild it before starting
 	// anything, rather than refreshing a token for a provider that is gone.
 	if configStamp(configPath) != stamp {
-		workers = load()
+		workers, stamp = load()
 	}
 	if len(workers) == 0 {
 		return
@@ -215,14 +221,15 @@ func refreshUnderLease(ctx context.Context, configPath, stamp string, workers []
 	defer log.Info("oauth refresh: released the refresh lease", "providers", len(workers))
 
 	for ctx.Err() == nil {
-		changed := runGeneration(ctx, workers, configPath, poll, log)
-		if !changed {
+		if !runGeneration(ctx, workers, configPath, stamp, poll, log) {
 			// ctx ended; the caller's release follows this return.
 			return
 		}
 		// The config changed: the previous set has stopped, so read the new
-		// one and never refresh the same provider from two sets at once.
-		workers = load()
+		// one and never refresh the same provider from two sets at once. The
+		// stamp a set is built for comes from load, so a write during that
+		// read is the next change rather than a missed one.
+		workers, stamp = load()
 		if len(workers) == 0 {
 			return
 		}
@@ -230,16 +237,16 @@ func refreshUnderLease(ctx context.Context, configPath, stamp string, workers []
 	}
 }
 
-// runGeneration runs one set of workers until the user config's stamp changes
-// or ctx ends, and reports whether the config changed. It always stops and
-// joins its workers before returning.
-func runGeneration(ctx context.Context, workers []worker.Worker, configPath string, poll time.Duration, log *slog.Logger) bool {
+// runGeneration runs one set of workers until the user config's stamp differs
+// from stamp — the one the set was built for — or ctx ends, and reports whether
+// the config changed. It always stops and joins its workers before returning.
+func runGeneration(ctx context.Context, workers []worker.Worker, configPath, stamp string, poll time.Duration, log *slog.Logger) bool {
 	runCtx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
 	for _, w := range workers {
 		startWorker(runCtx, &wg, w, log)
 	}
-	changed := waitForConfigStamp(ctx, configPath, configStamp(configPath), poll)
+	changed := waitForConfigStamp(ctx, configPath, stamp, poll)
 	cancel()
 	wg.Wait()
 	return changed

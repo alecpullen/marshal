@@ -209,3 +209,33 @@ func TestAResumeHandsTheLeaseOver(t *testing.T) {
 	}
 	waitForLeaseFree(t, home)
 }
+
+// TestAStartWaitsForThePriorRefreshBoundedly pins decision 4's wait rather
+// than its fallback: a runtime waits for the previous one's refresh work to
+// release the lease, and gives up after oauthHandoffWait instead of blocking
+// the session. A previous work channel that never closes stands in for a
+// release that is slow to land: with the wait removed Start returns at once.
+func TestAStartWaitsForThePriorRefreshBoundedly(t *testing.T) {
+	home, work := t.TempDir(), t.TempDir()
+	cfg := codexOAuthProviderConfig("codex", "https://example.invalid/backend-api")
+	embedded := newRefreshEmbedded(t, home, work, cfg)
+	// The previous runtime's work has not returned, and never will.
+	embedded.refreshDone = make(chan struct{})
+
+	began := time.Now()
+	if _, err := embedded.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	took := time.Since(began)
+	if took < oauthHandoffWait {
+		t.Fatalf("Start returned after %s, before the %s handoff wait", took, oauthHandoffWait)
+	}
+	if took > oauthHandoffWait+2*time.Second {
+		t.Fatalf("Start waited %s, far past the %s handoff wait", took, oauthHandoffWait)
+	}
+
+	if err := embedded.Finish(nil); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	waitForLeaseFree(t, home)
+}

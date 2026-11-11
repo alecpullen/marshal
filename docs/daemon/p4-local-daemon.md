@@ -2027,3 +2027,50 @@ pre-existing):
   that keeps the size and backdates the mtime would be missed. An editor's
   atomic rename is covered, which is why a watch was rejected (decision 6).
 
+**Branch review** (three reviewer subagents over disjoint slices: the lease and
+`internal/app`, `cmd/marshal` and `internal/daemon`, and `web/bridge`,
+`cmd/webbridge` and this record). All three returned SHIP. The one major and
+three minors they raised are fixed here, each with the test that would have
+caught it:
+
+- `daemonRefreshLine` printed `refresh: running (pid 0)` while the supervisor
+  waited out a restart backoff — the line a user reads precisely when
+  refreshing has stopped working. A mixed-version install (a `<marshal-bin>`
+  without the `refresh` subcommand) puts it there for minutes at a time. A
+  helper between runs now reports `refresh: not running` with its restart
+  count.
+- `Helper`'s reset of the delay after a steady run had no coverage:
+  `TestAnExitingHelperIsRestarted` puts `SteadyRun` beyond its runs, so the
+  branch could be deleted silently. `TestASteadyRunResetsTheBackoff` runs a
+  script that always outlives `SteadyRun`; with the reset removed its last gap
+  is 589ms against a 280ms limit.
+- Decision 4's handoff wait had no test that could fail: with the 1ms retry
+  the existing resume test takes the lease either way.
+  `TestAStartWaitsForThePriorRefreshBoundedly` gives `Start` a previous work
+  channel that never closes, and asserts it waits `oauthHandoffWait` and no
+  longer. Removing the wait returns in 17ms.
+- Decision 9's signal context was unverified: the fake cancelled the parent
+  context, which succeeds with or without `signal.NotifyContext`. The context
+  now sits behind `daemonSignalContext`, and
+  `TestDaemonRefreshInstallsItsSignalContext` asserts it is installed, derived
+  from the caller's context, and stopped. Its wait is bounded, so a regression
+  fails in 5s rather than hanging the package.
+
+One gap no reviewer reported is closed too. `load` stamped the user config
+*after* reading it, so a save that landed during the read became the baseline
+and the change was never rebuilt: an added provider would not be refreshed
+until the next edit. The stamp is now taken before the read
+(`TestTheHelperRebuildsWhenTheConfigChangesDuringALoad`, which fails with the
+old order).
+
+Two findings were declined. The unlocked `Server.refresh` read mirrors
+`daemonInfo` and is set before the listeners start. The plan's remark that
+nothing in `cmd/webbridge` imports `marshal/internal/...` is inaccurate —
+`procenv` predates this plan — but the boundary rule covers `web/` only.
+
+Verification after the fixups, in the worktree with `TMPDIR=/private/tmp/p4-8-fix`:
+`go test ./internal/app/ ./cmd/marshal/ ./internal/daemon/
+./internal/llm/provider/oauthworker/ ./cmd/webbridge/ -count=1` all `ok`;
+`go test ./web/bridge/ -count=1` `ok 82.647s`; `gofmt -l cmd internal web`
+empty; `go vet` on the same five packages clean.
+

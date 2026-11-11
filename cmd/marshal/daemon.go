@@ -88,6 +88,13 @@ func runDaemon(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 // oauthRefreshRunner is the helper's body; tests replace it.
 var oauthRefreshRunner = app.RunOAuthRefresh
 
+// daemonSignalContext is the helper's own signal context (decision 9). Tests
+// replace it rather than signalling the test process, which would kill it if
+// the seam were ever removed.
+var daemonSignalContext = func(ctx context.Context) (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+}
+
 // runDaemonRefresh implements `marshal daemon refresh`: it runs the OAuth
 // refresh helper the daemon's unit starts, which keeps the user config's
 // OAuth providers refreshed until the helper is interrupted.
@@ -104,7 +111,7 @@ func runDaemonRefresh(ctx context.Context, args []string, stderr io.Writer) erro
 	// Decision 9: main passes a background context, so the helper installs
 	// its own signal context: the daemon stops the helper by signalling it,
 	// and SIGTERM from the service manager is an orderly stop, not a failure.
-	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	ctx, stop := daemonSignalContext(ctx)
 	defer stop()
 	// Decision 7: a text logger on standard error at info, so the helper's
 	// lines land in the daemon's log.
@@ -397,11 +404,18 @@ func daemonInfoLine(info daemon.Info, marshalVersion string) string {
 // count when it has restarted. A daemon that reports no helper — an older
 // build, or one run without --oauth-refresh — says `off`, so the absence is
 // stated rather than left to be inferred from a missing line.
+//
+// A helper between runs reports no process, because its supervisor is waiting
+// out a restart backoff: calling that "running" would misinform exactly the
+// reader who consults this line because refreshing is not working.
 func daemonRefreshLine(info daemon.Info) string {
 	if info.Refresh == nil {
 		return "refresh: off"
 	}
-	line := fmt.Sprintf("refresh: running (pid %d)", info.Refresh.PID)
+	line := "refresh: not running"
+	if info.Refresh.PID > 0 {
+		line = fmt.Sprintf("refresh: running (pid %d)", info.Refresh.PID)
+	}
 	if info.Refresh.Restarts != 0 {
 		line += fmt.Sprintf(", restarted %d %s", info.Refresh.Restarts, restartCount(info.Refresh.Restarts))
 	}

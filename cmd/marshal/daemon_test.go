@@ -487,6 +487,16 @@ func TestDaemonRefreshLine(t *testing.T) {
 			refresh: &daemon.RefreshInfo{PID: 5151, Restarts: 3},
 			want:    "refresh: running (pid 5151), restarted 3 times",
 		},
+		{
+			name:    "between runs",
+			refresh: &daemon.RefreshInfo{},
+			want:    "refresh: not running",
+		},
+		{
+			name:    "between runs after a restart",
+			refresh: &daemon.RefreshInfo{Restarts: 2},
+			want:    "refresh: not running, restarted 2 times",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -587,6 +597,57 @@ func TestDaemonRefreshRunsTheHelper(t *testing.T) {
 	}
 	if got.Logger == nil {
 		t.Error("helper logger is nil")
+	}
+}
+
+// TestDaemonRefreshInstallsItsSignalContext is decision 9: main passes a
+// background context, so the helper's own signal context is what stops it, and
+// its stop runs before the helper returns. The test replaces the signal seam
+// rather than signalling the test process.
+func TestDaemonRefreshInstallsItsSignalContext(t *testing.T) {
+	daemonTestEnv(t)
+
+	parent := context.Background()
+	helperCtx, cancelHelper := context.WithCancel(parent)
+	defer cancelHelper()
+
+	installs := 0
+	stopped := false
+	restore := daemonSignalContext
+	daemonSignalContext = func(ctx context.Context) (context.Context, context.CancelFunc) {
+		installs++
+		if ctx != parent {
+			t.Error("the signal context was not derived from the caller's context")
+		}
+		return helperCtx, func() { stopped = true }
+	}
+	defer func() { daemonSignalContext = restore }()
+
+	calls := fakeOAuthRefreshRunner(t, func(runCtx context.Context, _ app.OAuthRefreshOptions) error {
+		if runCtx != helperCtx {
+			t.Error("the helper ran on a context the signal seam did not return")
+		}
+		// The service manager's SIGTERM ends the context the seam returned.
+		cancelHelper()
+		select {
+		case <-runCtx.Done():
+		case <-time.After(5 * time.Second):
+			t.Error("the helper's context never ended: the signal context was not installed")
+		}
+		return nil
+	})
+
+	if err := runDaemon(parent, []string{"refresh"}, strings.NewReader(""), io.Discard, io.Discard); err != nil {
+		t.Fatalf("runDaemon refresh: %v", err)
+	}
+	if *calls != 1 {
+		t.Fatalf("the refresh helper ran %d times, want once", *calls)
+	}
+	if installs != 1 {
+		t.Fatalf("the signal context was installed %d times, want once", installs)
+	}
+	if !stopped {
+		t.Error("the signal context's stop was not called")
 	}
 }
 

@@ -317,32 +317,34 @@ func writeProjectConfig(t *testing.T, dir string) {
 	}
 }
 
-func TestRunStaysEmbeddedForAProjectThatNeedsTrust(t *testing.T) {
+// TestAnUntrustedProjectRunsOnTheDaemon: the trust question belongs to the
+// daemon's session now, so a project whose trust needs asking runs on the
+// daemon like any other.
+func TestAnUntrustedProjectRunsOnTheDaemon(t *testing.T) {
 	dir := t.TempDir()
 	home := t.TempDir()
 	fake := newFakeDaemon(t, dir, home)
 
-	// A project config with no trust record asks the user a question, and a
-	// daemon must never answer it (decision 2).
 	writeProjectConfig(t, dir)
 
-	served := false
-	err := Run(context.Background(), io.Discard,
-		WithApp(pipeAppOptions(dir, home)...),
-		WithDaemon("/tmp/marshal-test-daemon.sock"),
-		withDaemonClient(fake),
-		withWorkingDir(dir),
-		withServed(func(*service.Host, *service.Session) { served = true }),
-		WithProgramRunner(func(context.Context, tea.Model, io.Writer) ProgramResult { return ProgramResult{} }),
+	loaderCalled := false
+	model, err := daemonModeRun(t, fake, dir, home,
+		WithApp(app.WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			loaderCalled = true
+			return config.Default(), nil
+		})),
 	)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if !served {
-		t.Error("Run did not run embedded")
+	if _, ok := model.Session().(*rpc.Session); !ok {
+		t.Fatalf("the daemon's model session is %T, want *rpc.Session", model.Session())
 	}
-	if calls := fake.attachCalls(); len(calls) != 0 {
-		t.Errorf("the untrusted project was attached: %+v", calls)
+	if loaderCalled {
+		t.Error("Run started an embedded runtime for a project that needs trust")
+	}
+	if calls := fake.attachCalls(); len(calls) != 1 {
+		t.Fatalf("attaches = %d, want 1: %+v", len(calls), calls)
 	}
 }
 
@@ -457,10 +459,10 @@ func TestAttachWithNoSessionFails(t *testing.T) {
 	}
 }
 
-// TestAttachRefusesAProjectThatNeedsTrust: attach runs no embedded startup, so
-// it cannot ask the trust question. A project whose trust needs asking is
-// refused rather than served by the daemon unasked.
-func TestAttachRefusesAProjectThatNeedsTrust(t *testing.T) {
+// TestAttachServesAnUntrustedProject: attach has no trust gate of its own —
+// the daemon session asks its TUI — so a project whose trust needs asking
+// still probes the daemon and attaches.
+func TestAttachServesAnUntrustedProject(t *testing.T) {
 	dir := t.TempDir()
 	fake := newFakeDaemon(t, dir, t.TempDir())
 	writeProjectConfig(t, dir)
@@ -475,16 +477,21 @@ func TestAttachRefusesAProjectThatNeedsTrust(t *testing.T) {
 		withWorkingDir(root),
 		WithProgramRunner(func(context.Context, tea.Model, io.Writer) ProgramResult { return ProgramResult{} }),
 	)
-	if err == nil {
-		t.Fatal("Attach served a project that needs the trust question")
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
 	}
-	for _, want := range []string{root, "needs trust", "`marshal`"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("Attach error = %q, want it to name %q", err, want)
-		}
+	if n := fake.infoCount(); n != 1 {
+		t.Errorf("attach probed the daemon %d times, want 1", n)
 	}
-	if calls := fake.attachCalls(); len(calls) != 0 {
-		t.Errorf("the untrusted project was attached: %+v", calls)
+	calls := fake.attachCalls()
+	if len(calls) != 1 {
+		t.Fatalf("attaches = %d, want 1: %+v", len(calls), calls)
+	}
+	if calls[0].root != root {
+		t.Errorf("attach root = %q, want %q", calls[0].root, root)
+	}
+	if calls[0].sessionID != "existing" {
+		t.Errorf("attach session ID = %q, want %q", calls[0].sessionID, "existing")
 	}
 }
 

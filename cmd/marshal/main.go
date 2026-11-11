@@ -129,9 +129,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return fmt.Errorf("unknown argument %q", args[0])
 	}
 	// Daemon mode is the default for a plain launch (P4 D5): when a local
-	// daemon answers and the project needs no trust question, the session runs
-	// there and outlives this program. --embedded keeps today's mode, and so
-	// does a missing home, which leaves no socket to look for.
+	// daemon answers, the session runs there and outlives this program.
+	// --embedded keeps today's mode, and so does a missing home, which leaves
+	// no socket to look for.
 	if *embeddedFlag {
 		return appRunner(ctx, stdout)
 	}

@@ -51,9 +51,11 @@ host processes only, and no container machinery. Each project runs its own
 `marshal acp --viewers` child, started on the first attach and stopped 30s
 after its last session closes; `POST /api/projects/attach` upgrades a marshal
 client onto that child's viewer socket, relaying its frames unchanged. Plain
-`marshal` starts its session on that daemon when one answers and the project's
-trust needs no question, the quit key and `/detach` leave it running, and
-`marshal attach [id]` comes back to it.
+`marshal` starts its session on that daemon when one answers, the quit key and
+`/detach` leave it running, and `marshal attach [id]` comes back to it. A
+daemon session on an untrusted project asks its TUI, as embedded mode does,
+and a trust there applies to the running session without restarting the
+program.
 
 ### End-to-end and usability suites
 

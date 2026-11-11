@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"marshal/internal/app/session"
+	"marshal/internal/filetrack"
 	"marshal/internal/tools/patch"
 	"marshal/internal/tools/registry"
 )
@@ -514,6 +515,45 @@ func (t *toolSet) readWorkspaceFile(requestedPath string, maxBytes int64) ([]byt
 	return data, nil
 }
 
+type readStatus int
+
+const (
+	readAllowed readStatus = iota
+	readNever
+	readStale
+)
+
+func (t *toolSet) checkFileRead(path string, info os.FileInfo) (filetrack.WriteState, readStatus, error) {
+	if t.fileTracker == nil {
+		return filetrack.WriteState{}, readAllowed, nil
+	}
+	read, err := t.fileTracker.ReadState(path)
+	if err != nil {
+		return filetrack.WriteState{}, readAllowed, err
+	}
+	write, err := t.fileTracker.WriteState(path)
+	if err != nil {
+		return filetrack.WriteState{}, readAllowed, err
+	}
+	actorID := t.actor().ID
+	if write.OK && actorID != "" && write.Actor.ID == actorID {
+		if info.ModTime().After(write.At) {
+			return write, readStale, nil
+		}
+		return write, readAllowed, nil
+	}
+	if !read.OK {
+		return write, readNever, nil
+	}
+	if write.OK && write.Revision > read.Revision {
+		return write, readStale, nil
+	}
+	if info.ModTime().After(read.At) {
+		return write, readStale, nil
+	}
+	return write, readAllowed, nil
+}
+
 // changedOnDiskError builds the "file changed on disk" error, embedding the
 // current on-disk content's nearest-matching region for the chunk that
 // actually went stale (mirroring patch.ValidatePatch's "search block not
@@ -533,79 +573,73 @@ func (t *toolSet) readWorkspaceFile(requestedPath string, maxBytes int64) ([]byt
 // against the bytes on disk, so having seen them is what the guard is asking
 // for. A whole-file overwrite cannot retry from one region and keeps the full
 // re-read.
-func (t *toolSet) changedOnDiskError(path string, fp patch.FilePatch, refreshRead bool) error {
-	base := fmt.Errorf("file %s changed on disk since last read%s; re-read it before editing",
-		fp.Path, t.writerNote(path))
-	if len(fp.Chunks) == 0 {
-		return base
+func writerNote(write filetrack.WriteState, mod time.Time) string {
+	if !write.OK {
+		return ""
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return base
+	label := write.Actor.Label
+	if label == "" {
+		label = write.Actor.ID
 	}
-	search, _, failed := patch.FindFailingChunk(string(data), fp)
-	if !failed {
-		search = fp.Chunks[0].Search
+	if label == "" {
+		return ""
 	}
-	region, start, end := patch.NearestRegionLines(string(data), search, patch.NearestRegionWindowSize(search))
+	ts := write.At.UTC().Format("2006-01-02 15:04:05Z")
+	if mod.After(write.At) {
+		return fmt.Sprintf(" (last written by %s at %s; the file changed again after that write)", label, ts)
+	}
+	return fmt.Sprintf(" (last written by %s at %s)", label, ts)
+}
+
+func (t *toolSet) changedOnDiskError(path string, fp patch.FilePatch, write filetrack.WriteState, mod time.Time, refreshRead bool) error {
+	var region string
+	var start, end int
+	if len(fp.Chunks) > 0 {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			search, _, failed := patch.FindFailingChunk(string(data), fp)
+			if !failed {
+				search = fp.Chunks[0].Search
+			}
+			region, start, end = patch.NearestRegionLines(
+				string(data), search, patch.NearestRegionWindowSize(search))
+		}
+	}
+
+	refresh := false
+	if region != "" && refreshRead && t.fileTracker != nil {
+		if err := t.fileTracker.RecordRead(path, time.Now(), write.Revision); err == nil {
+			refresh = true
+		}
+	}
+
+	suffix := "; re-read it before editing"
+	if refresh {
+		suffix = "; the current region is shown below"
+	}
+	base := fmt.Errorf("file %s changed on disk since last read%s%s",
+		fp.Path, writerNote(write, mod), suffix)
 	if region == "" {
 		return base
 	}
 	header := fmt.Sprintf("%s lines %d-%d", currentContentHeader, start, end)
-	if !refreshRead || t.fileTracker == nil {
+	if !refresh {
 		return fmt.Errorf("%s\n\n%s\n%s", base, header, region)
 	}
-	// The caller is about to be handed the current bytes for the exact region it
-	// is editing, so record that as this path's read. Without it the same agent
-	// (and every sibling) is forced through a full file.read for content it has
-	// now been shown, which was the dominant cost in the field reports.
-	var revision int64
-	if write, werr := t.fileTracker.WriteState(path); werr == nil && write.OK {
-		revision = write.Revision
-	}
-	_ = t.fileTracker.RecordRead(path, time.Now(), revision)
 	return fmt.Errorf("%s\n\n%s\n%s\n\n%s", base, header, region,
-		"Retry with an old_string taken from those lines: this path's read mark is now current, so the edit is accepted without a separate file.read.")
-}
-
-// writerNote names the agent whose write invalidated this reader's view, when
-// the session ledger knows one. An empty string means the change came from
-// outside the session (a checkout, a formatter, another process) or the ledger
-// has no record, and the error says nothing rather than guessing.
-func (t *toolSet) writerNote(path string) string {
-	if t.fileTracker == nil {
-		return ""
-	}
-	write, err := t.fileTracker.WriteState(path)
-	if err != nil || !write.OK {
-		return ""
-	}
-	writer := write.Actor.Label
-	if writer == "" {
-		writer = write.Actor.ID
-	}
-	if writer == "" {
-		return ""
-	}
-	return fmt.Sprintf(" (last written by %s)", writer)
+		"Retry with an old_string taken from those lines; the read mark was refreshed with that region, so the edit is accepted without a separate file.read.")
 }
 
 // recordWrite records a committed write in the session ledger, naming the
-// agent that made it, and refreshes that path's read mark — the writer has just
-// seen the bytes it produced. The ledger is per conversation, not per agent, so
-// one recorded read satisfies every agent in the session: there is one working
-// tree and one truth about it.
+// agent that made it. The ledger is per conversation, not per agent, so one
+// recorded read satisfies every agent in the session: there is one working
+// tree and one truth about it. The writer is exempted from its own write by
+// checkFileRead, not by refreshing the read mark here.
 func (t *toolSet) recordWrite(path string) {
 	if t.fileTracker == nil {
 		return
 	}
-	now := time.Now()
-	_ = t.fileTracker.RecordWrite(path, now, t.actor())
-	// Temporary: Task 2 removes this refresh and replaces it with the writer
-	// exemption plus a shared stale epoch.
-	if write, err := t.fileTracker.WriteState(path); err == nil && write.OK {
-		_ = t.fileTracker.RecordRead(path, now, write.Revision)
-	}
+	_ = t.fileTracker.RecordWrite(path, time.Now(), t.actor())
 }
 
 // currentContentHeader introduces an embedded snapshot of the bytes currently
@@ -713,11 +747,6 @@ func (t *toolSet) applyFilePatches(ctx context.Context, patches []patch.FilePatc
 		}
 
 		if t.fileTracker != nil {
-			read, err := t.fileTracker.ReadState(path)
-			if err != nil {
-				return registry.ToolResult{}, fmt.Errorf(
-					"cannot verify read state for %s: %w; re-read it before editing", fp.Path, err)
-			}
 			info, statErr := os.Stat(path)
 			if statErr != nil {
 				if os.IsNotExist(statErr) {
@@ -726,12 +755,17 @@ func (t *toolSet) applyFilePatches(ctx context.Context, patches []patch.FilePatc
 				}
 				return registry.ToolResult{}, fmt.Errorf("stat %s: %w", fp.Path, statErr)
 			}
-			if read.OK && info.ModTime().After(read.At) {
-				return registry.ToolResult{}, t.changedOnDiskError(path, fp, true)
+			write, status, err := t.checkFileRead(path, info)
+			if err != nil {
+				return registry.ToolResult{}, fmt.Errorf(
+					"cannot verify read state for %s: %w; re-read it before editing", fp.Path, err)
 			}
-			if !read.OK {
+			switch status {
+			case readNever:
 				return registry.ToolResult{}, fmt.Errorf(
 					"file %s was never read this session; read it before editing", fp.Path)
+			case readStale:
+				return registry.ToolResult{}, t.changedOnDiskError(path, fp, write, info.ModTime(), true)
 			}
 		} else {
 			slog.Warn("file.write_patch with nil fileTracker; TOCTOU check skipped",
@@ -872,11 +906,19 @@ func (t *toolSet) applyFilePatches(ctx context.Context, patches []patch.FilePatc
 			// write. When fileTracker is nil (e.g. no session active) the check
 			// is skipped, which is a known gap.
 			if t.fileTracker != nil {
-				read, lrErr := t.fileTracker.ReadState(path)
-				if lrErr == nil && read.OK {
-					writeStat, statErr := os.Stat(path)
-					if statErr == nil && writeStat.ModTime().After(read.At) {
-						return t.changedOnDiskError(path, fp, true)
+				writeStat, statErr := os.Stat(path)
+				if statErr == nil {
+					write, status, lrErr := t.checkFileRead(path, writeStat)
+					if lrErr != nil {
+						return fmt.Errorf(
+							"cannot verify read state for %s: %w; re-read it before editing", fp.Path, lrErr)
+					}
+					switch status {
+					case readNever:
+						return fmt.Errorf(
+							"file %s was never read this session; read it before editing", fp.Path)
+					case readStale:
+						return t.changedOnDiskError(path, fp, write, writeStat.ModTime(), true)
 					}
 				}
 			} else {
@@ -1008,24 +1050,24 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 				return registry.ToolResult{}, fmt.Errorf(
 					"file %s already exists; file.write requires a tracker-backed session to overwrite an existing file", args.Path)
 			}
-			read, lrErr := t.fileTracker.ReadState(path)
-			if lrErr != nil {
-				return registry.ToolResult{}, fmt.Errorf(
-					"cannot verify read state for %s: %w; re-read it before editing", args.Path, lrErr)
-			}
 			info, statErr := os.Stat(path)
 			if statErr != nil {
 				return registry.ToolResult{}, fmt.Errorf("stat %s: %w", args.Path, statErr)
 			}
-			if read.OK && info.ModTime().After(read.At) {
+			write, status, lrErr := t.checkFileRead(path, info)
+			if lrErr != nil {
+				return registry.ToolResult{}, fmt.Errorf(
+					"cannot verify read state for %s: %w; re-read it before editing", args.Path, lrErr)
+			}
+			switch status {
+			case readNever:
+				return registry.ToolResult{}, fmt.Errorf(
+					"file %s was never read this session; read it before editing", args.Path)
+			case readStale:
 				// A whole-file overwrite cannot retry from one region, so the
 				// read mark is not refreshed here: file.write needs the whole
 				// file in context.
-				return registry.ToolResult{}, t.changedOnDiskError(path, patch.FilePatch{Path: args.Path, Chunks: []patch.PatchChunk{{Search: original}}}, false)
-			}
-			if !read.OK {
-				return registry.ToolResult{}, fmt.Errorf(
-					"file %s was never read this session; read it before editing", args.Path)
+				return registry.ToolResult{}, t.changedOnDiskError(path, patch.FilePatch{Path: args.Path, Chunks: []patch.PatchChunk{{Search: original}}}, write, info.ModTime(), false)
 			}
 		}
 
@@ -1070,11 +1112,19 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 		// TOCTOU re-check for existing files: verify the file hasn't changed
 		// between the read above and this write.
 		if t.fileTracker != nil && exists {
-			read, lrErr := t.fileTracker.ReadState(path)
-			if lrErr == nil && read.OK {
-				writeStat, statErr := os.Stat(path)
-				if statErr == nil && writeStat.ModTime().After(read.At) {
-					return registry.ToolResult{}, t.changedOnDiskError(path, fp, false)
+			writeStat, statErr := os.Stat(path)
+			if statErr == nil {
+				write, status, lrErr := t.checkFileRead(path, writeStat)
+				if lrErr != nil {
+					return registry.ToolResult{}, fmt.Errorf(
+						"cannot verify read state for %s: %w; re-read it before editing", args.Path, lrErr)
+				}
+				switch status {
+				case readNever:
+					return registry.ToolResult{}, fmt.Errorf(
+						"file %s was never read this session; read it before editing", args.Path)
+				case readStale:
+					return registry.ToolResult{}, t.changedOnDiskError(path, fp, write, writeStat.ModTime(), false)
 				}
 			}
 		}

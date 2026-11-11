@@ -1684,14 +1684,20 @@ func TestStaleEditErrorNamesWriterAndLineRange(t *testing.T) {
 		if !strings.Contains(msg, "changed on disk") {
 			t.Fatalf("error should mention 'changed on disk', got: %v", msg)
 		}
-		if !strings.Contains(msg, "last written by a subagent") {
-			t.Errorf("error should name the writer, got: %v", msg)
+		if !strings.Contains(msg, "last written by a subagent at ") {
+			t.Errorf("error should name the writer and the write time, got: %v", msg)
+		}
+		if !strings.Contains(msg, "the current region is shown below") {
+			t.Errorf("error should say the current region is shown, got: %v", msg)
 		}
 		if !strings.Contains(msg, "lines 1-4") {
 			t.Errorf("error should pin the displayed region to its line range, got: %v", msg)
 		}
 		if !strings.Contains(msg, "alpha") || !strings.Contains(msg, "gamma") {
 			t.Errorf("error should embed the current region, got: %v", msg)
+		}
+		if !strings.Contains(msg, "read mark was refreshed with that region") {
+			t.Errorf("error should say a retry needs no separate read, got: %v", msg)
 		}
 	}
 
@@ -2518,6 +2524,263 @@ func testTrackedRegistry(t *testing.T, root string, state *session.State, wrap f
 		t.Fatalf("RegisterAll: %v", err)
 	}
 	return reg
+}
+
+// testFileLedger builds a real filetrack ledger over a temp database, so a
+// test can hand the same ledger to several toolsets and exercise the shared
+// per-conversation epoch.
+func testFileLedger(t *testing.T) *filetrack.Service {
+	t.Helper()
+	database, err := db.Open(filepath.Join(t.TempDir(), "filetrack.db"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	return filetrack.New(database.SQLDB(), "test-session")
+}
+
+// testActorRegistry builds a write-capable registry whose toolset carries a
+// stable agent identity, so the writer exemption can tell one agent's writes
+// from another's.
+func testActorRegistry(t *testing.T, root string, tracker FileTracker, agentID, label string) *registry.Registry {
+	t.Helper()
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot: root,
+		CommandRunner: &fakeRunner{},
+		FileTracker:   tracker,
+		AgentID:       agentID,
+		AgentLabel:    label,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	return reg
+}
+
+// sharedEpochFixture writes the three-line app.txt every cross-agent case
+// edits, under a symlink-resolved temp dir so tool paths and os paths match.
+func sharedEpochFixture(t *testing.T) (root, filePath string) {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	filePath = filepath.Join(root, "app.txt")
+	if err := os.WriteFile(filePath, []byte("alpha\nbeta\ngamma\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	return root, filePath
+}
+
+// mustInvoke dispatches a tool and fails the test on an error.
+func mustInvoke(t *testing.T, reg *registry.Registry, name, args string) registry.ToolResult {
+	t.Helper()
+	res, err := invokeTool(t, reg, name, args)
+	if err != nil {
+		t.Fatalf("%s(%s): %v", name, args, err)
+	}
+	return res
+}
+
+// editArgs renders a file.edit call.
+func editArgs(path, oldString, newString string) string {
+	return fmt.Sprintf(`{"path":%q,"old_string":%q,"new_string":%q}`, path, oldString, newString)
+}
+
+// TestSharedStaleEpochBlocksSibling pins the shared-ledger rule: one agent's
+// write makes the same path stale for every other agent, even when the write
+// touched no bytes the reader's view is missing. The error must name the writer
+// and the region, and must not claim the path was never read — it was.
+func TestSharedStaleEpochBlocksSibling(t *testing.T) {
+	root, _ := sharedEpochFixture(t)
+	ft := testFileLedger(t)
+	parent := testActorRegistry(t, root, ft, "parent", "main agent")
+	child := testActorRegistry(t, root, ft, "child", "a subagent (review)")
+
+	mustInvoke(t, parent, "file.read", `{"path":"app.txt"}`)
+	mustInvoke(t, child, "file.read", `{"path":"app.txt"}`)
+	mustInvoke(t, child, "file.write", `{"path":"app.txt","content":"alpha\nbeta\ngamma\n"}`)
+
+	_, err := invokeTool(t, parent, "file.edit", editArgs("app.txt", "beta", "BETA"))
+	if err == nil {
+		t.Fatal("expected the parent's edit to be stale after a sibling write, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "last written by a subagent (review)") {
+		t.Errorf("error should name the sibling writer, got: %v", msg)
+	}
+	if !strings.Contains(msg, "lines 1-4") {
+		t.Errorf("error should pin the displayed region to its line range, got: %v", msg)
+	}
+	if strings.Contains(msg, "was never read") {
+		t.Errorf("the parent read the file; the error must not claim it was never read, got: %v", msg)
+	}
+}
+
+// TestSharedReadClearsSiblingEpoch pins that the epoch is per conversation:
+// once any agent has read at the current revision, a sibling's edit is stale
+// only if another write lands after that read.
+func TestSharedReadClearsSiblingEpoch(t *testing.T) {
+	root, filePath := sharedEpochFixture(t)
+	ft := testFileLedger(t)
+	parent := testActorRegistry(t, root, ft, "parent", "main agent")
+	child := testActorRegistry(t, root, ft, "child", "a subagent (review)")
+	third := testActorRegistry(t, root, ft, "third", "another subagent")
+
+	mustInvoke(t, parent, "file.read", `{"path":"app.txt"}`)
+	mustInvoke(t, third, "file.read", `{"path":"app.txt"}`)
+	mustInvoke(t, child, "file.read", `{"path":"app.txt"}`)
+	mustInvoke(t, child, "file.write", `{"path":"app.txt","content":"alpha\nbeta\ngamma\n"}`)
+
+	// The parent's re-read advances the shared epoch past the sibling's write.
+	mustInvoke(t, parent, "file.read", `{"path":"app.txt"}`)
+
+	mustInvoke(t, third, "file.edit", editArgs("app.txt", "beta", "BETA"))
+	got, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != "alpha\nBETA\ngamma\n" {
+		t.Fatalf("file content = %q, want the third agent's edit applied", got)
+	}
+}
+
+// TestEmbeddedRegionClearsSiblingEpoch pins that the region a stale error
+// embeds counts as a read for every agent: showing the current bytes and
+// pinning their line range is the same information a file.read would give.
+func TestEmbeddedRegionClearsSiblingEpoch(t *testing.T) {
+	root, filePath := sharedEpochFixture(t)
+	ft := testFileLedger(t)
+	parent := testActorRegistry(t, root, ft, "parent", "main agent")
+	child := testActorRegistry(t, root, ft, "child", "a subagent (review)")
+	third := testActorRegistry(t, root, ft, "third", "another subagent")
+
+	mustInvoke(t, parent, "file.read", `{"path":"app.txt"}`)
+	mustInvoke(t, third, "file.read", `{"path":"app.txt"}`)
+	mustInvoke(t, child, "file.read", `{"path":"app.txt"}`)
+	mustInvoke(t, child, "file.write", `{"path":"app.txt","content":"alpha\nbeta\ngamma\n"}`)
+
+	if _, err := invokeTool(t, parent, "file.edit", editArgs("app.txt", "beta", "BETA")); err == nil {
+		t.Fatal("expected the parent's edit to be stale, got nil")
+	}
+
+	mustInvoke(t, third, "file.edit", editArgs("app.txt", "beta", "BETA"))
+	got, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != "alpha\nBETA\ngamma\n" {
+		t.Fatalf("file content = %q, want the third agent's edit applied", got)
+	}
+}
+
+// TestNewerWriteAfterEmbeddedRegionLeavesStale pins that the region refresh
+// does not license stale content: a write that lands after it makes every
+// agent stale again.
+func TestNewerWriteAfterEmbeddedRegionLeavesStale(t *testing.T) {
+	root, _ := sharedEpochFixture(t)
+	ft := testFileLedger(t)
+	parent := testActorRegistry(t, root, ft, "parent", "main agent")
+	child := testActorRegistry(t, root, ft, "child", "a subagent (review)")
+	third := testActorRegistry(t, root, ft, "third", "another subagent")
+
+	mustInvoke(t, parent, "file.read", `{"path":"app.txt"}`)
+	mustInvoke(t, third, "file.read", `{"path":"app.txt"}`)
+	mustInvoke(t, child, "file.read", `{"path":"app.txt"}`)
+	mustInvoke(t, child, "file.write", `{"path":"app.txt","content":"alpha\nbeta\ngamma\n"}`)
+
+	if _, err := invokeTool(t, parent, "file.edit", editArgs("app.txt", "beta", "BETA")); err == nil {
+		t.Fatal("expected the parent's edit to be stale, got nil")
+	}
+
+	// The writer's own exemption lets it write again without a fresh read.
+	mustInvoke(t, child, "file.write", `{"path":"app.txt","content":"alpha\nbeta\ngamma\n"}`)
+
+	if _, err := invokeTool(t, third, "file.edit", editArgs("app.txt", "beta", "BETA")); err == nil {
+		t.Fatal("expected the third agent's edit to be stale after a newer write, got nil")
+	} else if !strings.Contains(err.Error(), "changed on disk") {
+		t.Fatalf("error should report a stale file, got: %v", err)
+	}
+}
+
+// TestWriterExemptionAllowsOwnWrite pins that the newest writer can keep
+// editing its own output without a second read: it knows what it wrote.
+func TestWriterExemptionAllowsOwnWrite(t *testing.T) {
+	root, filePath := sharedEpochFixture(t)
+	ft := testFileLedger(t)
+	child := testActorRegistry(t, root, ft, "child", "a subagent (review)")
+
+	mustInvoke(t, child, "file.read", `{"path":"app.txt"}`)
+	mustInvoke(t, child, "file.write", `{"path":"app.txt","content":"alpha\nbeta\ngamma\n"}`)
+	mustInvoke(t, child, "file.edit", editArgs("app.txt", "beta", "BETA"))
+
+	got, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != "alpha\nBETA\ngamma\n" {
+		t.Fatalf("file content = %q, want the writer's edit applied", got)
+	}
+}
+
+// TestExternalChangeAfterWriterIsStale pins that the writer exemption covers
+// exactly the bytes the writer produced: a change from outside the session
+// after that write makes even the writer stale.
+func TestExternalChangeAfterWriterIsStale(t *testing.T) {
+	root, filePath := sharedEpochFixture(t)
+	ft := testFileLedger(t)
+	child := testActorRegistry(t, root, ft, "child", "a subagent (review)")
+
+	mustInvoke(t, child, "file.read", `{"path":"app.txt"}`)
+	mustInvoke(t, child, "file.write", `{"path":"app.txt","content":"alpha\nbeta\ngamma\n"}`)
+
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(filePath, future, future); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+
+	_, err := invokeTool(t, child, "file.edit", editArgs("app.txt", "beta", "BETA"))
+	if err == nil {
+		t.Fatal("expected the writer's edit to be stale after an external change, got nil")
+	}
+	if !strings.Contains(err.Error(), "changed on disk") {
+		t.Fatalf("error should report a stale file, got: %v", err)
+	}
+}
+
+// TestWholeFileWriteDoesNotRefreshStaleRead pins that a whole-file overwrite
+// cannot be retried from one embedded region, so it never refreshes the read
+// mark: the caller still has to re-read the file it is about to replace.
+func TestWholeFileWriteDoesNotRefreshStaleRead(t *testing.T) {
+	root, _ := sharedEpochFixture(t)
+	ft := testFileLedger(t)
+	parent := testActorRegistry(t, root, ft, "parent", "main agent")
+	child := testActorRegistry(t, root, ft, "child", "a subagent (review)")
+
+	mustInvoke(t, parent, "file.read", `{"path":"app.txt"}`)
+	mustInvoke(t, child, "file.read", `{"path":"app.txt"}`)
+	mustInvoke(t, child, "file.write", `{"path":"app.txt","content":"alpha\nbeta\ngamma\n"}`)
+
+	args := `{"path":"app.txt","content":"alpha\nBETA\ngamma\n"}`
+	if _, err := invokeTool(t, parent, "file.write", args); err == nil {
+		t.Fatal("expected the parent's overwrite to be stale after a sibling write, got nil")
+	} else {
+		msg := err.Error()
+		if !strings.Contains(msg, "changed on disk") {
+			t.Fatalf("error should report a stale file, got: %v", msg)
+		}
+		if strings.Contains(msg, "read mark was refreshed") {
+			t.Errorf("a whole-file overwrite must not refresh the read mark, got: %v", msg)
+		}
+	}
+
+	// Nothing was refreshed, so the retry is still stale.
+	if _, err := invokeTool(t, parent, "file.write", args); err == nil {
+		t.Fatal("retrying the overwrite without a read must still be stale, got nil")
+	}
 }
 
 // interruptingTracker wraps a real FileTracker and runs a hook once, after the

@@ -787,3 +787,129 @@ func TestFactoryLoopReplacementSupersedesReview(t *testing.T) {
 		t.Fatalf("new approval did not restart implementation: %+v %v", e, err)
 	}
 }
+
+// Closure must retain ownership until every runtime has been confirmed idle
+// (including detached work) and parked.
+func TestFactoryExternalClosureCleansWorkers(t *testing.T) {
+	for _, state := range []string{"closed", "merged"} {
+		t.Run(state, func(t *testing.T) {
+			s, err := OpenFactoryStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			i, err := s.Create(factoryReq(), time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			i, err = s.Update(i.ID, "fixture", i.Version, json.RawMessage(`{}`), func(d *FactoryItem) error {
+				d.State = "reviewing"
+				d.Workers = []FactoryWorker{{AgentID: "implementer", Role: "implementer"}, {AgentID: "reviewer", Role: "reviewer"}}
+				d.PRs = []FactoryPR{{Number: 1, State: "open"}}
+				d.Effects = []FactoryEffect{{ID: "review", Kind: "review", WorkerRole: "reviewer", Status: "completed"}}
+				return nil
+			}, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := &loopEffects{store: s, observation: FactoryObservation{PR: &FactoryPR{Number: 1, State: state}}}
+			c := NewFactoryController(s, f, time.Now)
+			c.admitAfterRecovery()
+			if err := c.tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := s.Get(i.ID)
+			if got.State != "stopping" || !c.OwnsBranch(got.RepoID, got.Branch) {
+				t.Fatalf("closure released ownership: %+v", got)
+			}
+			for _, obs := range []FactoryObservation{
+				{RuntimeKnown: true, TurnIdle: false, ActiveWorkKnown: true, WorkIdle: true},
+				{RuntimeKnown: true, TurnIdle: true, ActiveWorkKnown: true, WorkIdle: false},
+				{RuntimeKnown: true, TurnIdle: true},
+			} {
+				f.observation = obs
+				if err := c.tick(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				got, _ = s.Get(i.ID)
+				if got.State != "stopping" || len(f.seen) != 0 {
+					t.Fatalf("unsafe cleanup: %+v %v", got, f.seen)
+				}
+			}
+			f.observation = FactoryObservation{RuntimeKnown: true, TurnIdle: true, ActiveWorkKnown: true, WorkIdle: true}
+			for n := 0; n < 3; n++ {
+				if err := c.tick(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, _ = s.Get(i.ID)
+			if got.State != "closed" || len(f.seen) != 2 || !got.Workers[0].Parked || !got.Workers[1].Parked {
+				t.Fatalf("cleanup incomplete: %+v %v", got, f.seen)
+			}
+			if _, owned := c.OwnsAgent("reviewer"); owned {
+				t.Fatal("closed worker still owned")
+			}
+		})
+	}
+}
+
+type closureActiveEffects struct {
+	*blockedLoopEffects
+	closed bool // accessed only by the scheduler test goroutine
+}
+
+func (f *closureActiveEffects) Observe(context.Context, FactoryItem) (FactoryObservation, error) {
+	p := FactoryPR{Number: 1, State: "open"}
+	if f.closed {
+		p.State = "closed"
+	}
+	return FactoryObservation{PR: &p, RuntimeKnown: true, TurnIdle: !f.closed, ActiveWorkKnown: true, WorkIdle: true}, nil
+}
+func TestFactoryExternalClosureCancelsDispatchedTurn(t *testing.T) {
+	s, err := OpenFactoryStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	i := blockedFactoryItem(t, s, "closure-active")
+	i, err = s.Update(i.ID, "pr", i.Version, json.RawMessage(`{}`), func(d *FactoryItem) error { d.PRs = []FactoryPR{{Number: 1, State: "open"}}; return nil }, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &closureActiveEffects{blockedLoopEffects: &blockedLoopEffects{started: make(chan struct{}, 1), release: make(chan struct{}), cancelled: make(chan struct{}, 1)}}
+	c := NewFactoryController(s, f, time.Now)
+	c.admitAfterRecovery()
+	defer c.Quiesce()
+	defer close(f.release)
+	if err = c.tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-f.started:
+	case <-time.After(time.Second):
+		t.Fatal("turn did not start")
+	}
+	f.closed = true
+	if err = c.tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-f.cancelled:
+	default:
+		t.Fatal("external closure did not cancel active turn")
+	}
+	got, _ := s.Get(i.ID)
+	if got.State != "stopping" || got.Effects[len(got.Effects)-1].Status != "dispatched" {
+		t.Fatalf("active turn released: %+v", got)
+	}
+	if _, owned := c.OwnsAgent("w"); !owned {
+		t.Fatal("active worker lost ownership")
+	}
+	if err = c.tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.Get(i.ID)
+	if got.State != "stopping" {
+		t.Fatalf("active turn closed: %+v", got)
+	}
+}

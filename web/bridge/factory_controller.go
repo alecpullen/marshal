@@ -99,6 +99,30 @@ func factoryPRMatches(i FactoryItem, p FactoryPR) bool {
 	return p.Number == saved.Number && p.NodeID == saved.NodeID && p.HeadRef == i.Branch && p.BaseRef == target && saved.HeadRef == i.Branch && saved.BaseRef == target
 }
 
+// Record external closure before cleanup; stopping retains worker and branch
+// ownership across cancellation, uncertain observations, and process restart.
+func factoryBeginClosure(i *FactoryItem, p FactoryPR, now time.Time) {
+	i.PRs[len(i.PRs)-1].State = p.State
+	i.State = "closed"
+	i.Decision = nil
+	for n := range i.Effects {
+		e := &i.Effects[n]
+		if e.Status == "prepared" {
+			e.Status = "completed"
+			e.Outcome = &FactoryOutcome{EffectID: e.ID, Confirmed: true, Error: "PR closed before dispatch"}
+		}
+		if e.Status == "dispatched" || e.Status == "uncertain" {
+			i.State = "stopping"
+		}
+	}
+	for _, w := range i.Workers {
+		if !w.Parked {
+			i.State = "stopping"
+		}
+	}
+	i.History = append(i.History, FactoryEvent{At: now, Kind: "pr_closed", Message: "external PR " + p.State + "; cleaning up owned workers"})
+}
+
 // AdvanceFactory derives one next effect from durable state and fresh observations.
 func AdvanceFactory(item FactoryItem, observed FactoryObservation, now time.Time) (FactoryItem, *FactoryEffect, error) {
 	i := factoryCopy(item)
@@ -108,6 +132,10 @@ func AdvanceFactory(item FactoryItem, observed FactoryObservation, now time.Time
 			return i, nil, nil
 		}
 		i.BaseSHA = observed.BaseSHA
+	}
+	if len(i.PRs) > 0 && observed.PR != nil && (observed.PR.State == "closed" || observed.PR.State == "merged") && i.State != "closed" && i.State != "stopping" {
+		factoryBeginClosure(&i, *observed.PR, now)
+		return i, nil, nil
 	}
 	if i.Decision != nil || i.State == "draft" || i.State == "stopped" || i.State == "stopping" || i.State == "recovering" || i.State == "closed" {
 		return i, nil, nil
@@ -122,11 +150,6 @@ func AdvanceFactory(item FactoryItem, observed FactoryObservation, now time.Time
 		return i, nil, nil
 	}
 	if len(i.PRs) > 0 && observed.PR != nil {
-		if observed.PR.State == "closed" || observed.PR.State == "merged" {
-			i.State = "closed"
-			i.Decision = nil
-			return i, nil, nil
-		}
 		if observed.Error != "" {
 			if i.State == "ready" {
 				e := factoryNext(&i, "set_draft", "", 0, now)
@@ -636,6 +659,38 @@ func (c *FactoryController) tick(ctx context.Context) error {
 		return nil
 	}
 	items := c.store.List()
+	// Observe closure even while a turn is dispatched or a stage is prepared.
+	// Persist stopping before cancellation so completion cannot restart stages.
+	for _, item := range items {
+		if !factoryOwnsState(item.State) || item.State == "stopping" || len(item.PRs) == 0 {
+			continue
+		}
+		o, _ := c.effects.Observe(ctx, item)
+		if o.PR == nil || (o.PR.State != "closed" && o.PR.State != "merged") {
+			continue
+		}
+		saved, err := c.internalUpdate(item, "external_closure", func(dst *FactoryItem) error { factoryBeginClosure(dst, *o.PR, c.now()); return nil })
+		if errors.Is(err, ErrFactoryConflict) {
+			return nil
+		} // A completion won; observe again next tick.
+		if err != nil {
+			return err
+		}
+		if saved.State == "stopping" {
+			if canceler, ok := c.effects.(interface {
+				Cancel(context.Context, FactoryItem) error
+			}); ok {
+				if err := canceler.Cancel(ctx, saved); err != nil {
+					_, err = c.internalUpdate(saved, "cancel_error", func(dst *FactoryItem) error {
+						dst.History = append(dst.History, FactoryEvent{At: c.now(), Kind: "cancel_uncertain", Message: err.Error()})
+						return nil
+					})
+					return err
+				}
+			}
+		}
+		return nil
+	}
 	for _, item := range items {
 		for _, effect := range item.Effects {
 			if effect.Status == "dispatched" || effect.Status == "uncertain" {
@@ -670,12 +725,17 @@ func (c *FactoryController) tick(ctx context.Context) error {
 	if i.State == "stopping" {
 		for _, w := range i.Workers {
 			if !w.Parked {
-				o, err := c.effects.Observe(ctx, i)
+				workerItem := factoryCopy(i)
+				workerItem.Workers = []FactoryWorker{w}
+				o, err := c.effects.Observe(ctx, workerItem)
 				if err != nil || !o.RuntimeKnown || !o.TurnIdle || !o.ActiveWorkKnown || !o.WorkIdle {
 					return nil
 				}
 				next := factoryCopy(i)
 				e := factoryNext(&next, "park", w.Role, 0, c.now())
+				// Select this exact worker, including historical workers of the same role.
+				e.Worker = &w
+				next.Effects[len(next.Effects)-1].Worker = &w
 				saved, err := c.internalUpdate(i, "stop_park", func(dst *FactoryItem) error { *dst = next; dst.Version = i.Version; return nil })
 				if err != nil {
 					return err
@@ -683,7 +743,16 @@ func (c *FactoryController) tick(ctx context.Context) error {
 				return c.dispatch(ctx, saved, *e)
 			}
 		}
-		_, err := c.internalUpdate(i, "stopped", func(dst *FactoryItem) error { dst.State = "stopped"; return nil })
+		_, err := c.internalUpdate(i, "stopped", func(dst *FactoryItem) error {
+			dst.State = "stopped"
+			if len(dst.PRs) > 0 {
+				p := dst.PRs[len(dst.PRs)-1]
+				if p.State == "closed" || p.State == "merged" {
+					dst.State = "closed"
+				}
+			}
+			return nil
+		})
 		return err
 	}
 	obs, err := c.effects.Observe(ctx, i)

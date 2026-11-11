@@ -87,8 +87,8 @@ Both model-facing write tools enforce the same two guards.
 ### Read before edit
 
 An existing file must have been read this session before it can be edited
-(`internal/tools/native/file.go:601` for the patch path, `file.go:811` for
-`file.write`):
+(`applyFilePatches` in `internal/tools/native/file.go` for the patch path,
+`fileWriteTool` for `file.write`):
 
 ```go
 				return registry.ToolResult{}, fmt.Errorf(
@@ -102,24 +102,42 @@ is applied against content the agent has actually seen, not content it assumed.
 The ledger is **per conversation, not per agent**: `file_reads` and `file_writes`
 are keyed by `session_id`, and every agent in the conversation — the main agent
 and each `agent.run` child — writes through the same `filetrack.Service`. One
-read of a path satisfies the guard for all of them, because there is one working
-tree and one truth about it.
+working tree, one truth about it. Alongside the timestamps, both tables carry a
+per-path revision: every committed write bumps `file_writes.revision`, so a
+write by one agent invalidates every other agent's view of that path even when
+the clock cannot separate them — two writes inside the same second are still
+ordered.
+
+The newest writer is exempt from its own write: a path whose recorded writer is
+the calling agent needs no re-read. An external change after that write still
+makes it stale, because the recorded write time no longer matches the file's
+modification time. Any read clears the epoch for all agents: a full `file.read`
+and the region embedded in a stale error both record the revision they observed
+for the path (at least its current write revision) together with the time they
+observed it, so one agent's read satisfies the guard for the rest.
 
 When the staleness check does fire, the error carries what the caller needs to
 act on it instead of paying for a whole-file re-read:
 
-- the writer, when the ledger knows one — `(last written by a subagent)`. A path
-  with no session write says nothing rather than guessing, which is itself the
-  signal that something outside the session (a checkout, a formatter) changed it;
+- the writer and the time it wrote — `(last written by a subagent at
+  2026-01-02 03:04:05Z)`, with `; the file changed again after that write`
+  appended when disk moved on after the write. A path with no session write
+  says nothing rather than guessing, which is itself the signal that something
+  outside the session (a checkout, a formatter) changed it;
 - the displayed region pinned to exact line numbers;
 - for the exact-match patch path (`file.edit`, `file.write_patch`), a refreshed
   read mark: the caller has just been shown the current bytes for the region it
   is editing, and a retried patch is still validated byte-for-byte against
-  disk, so retrying from that text costs no extra tool call. A whole-file
-  `file.write` cannot retry from one region and keeps the full re-read.
+  disk, so retrying from that text costs no extra tool call. The suffix says
+  which it is — `; the current region is shown below` when the mark was
+  refreshed, `; re-read it before editing` otherwise. A whole-file `file.write`
+  cannot retry from one region and does not refresh: it keeps the full re-read.
 
-`native.Options.AgentLabel` names the writer ("the main agent", "a subagent",
-"the plan author", "a pipeline worker"), recorded with each committed write.
+`native.Options.AgentID` is the writer's stable identity and
+`native.Options.AgentLabel` its display name ("the main agent", "a subagent",
+"the plan author", "a pipeline worker"). Both are recorded with each committed
+write: the label is what the error prints, the id is what the own-write
+exemption compares, and an empty `AgentID` falls back to the label.
 
 ### Doubled worktree paths
 

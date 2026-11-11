@@ -15,6 +15,13 @@ func TestFactoryRecoveryLostOutcomes(t *testing.T) {
 	if _, ok := c.recoveryOutcome(i, i.Effects[0], FactoryObservation{RuntimeKnown: true, TurnIdle: true, ActiveWorkKnown: true, WorkIdle: true}); ok {
 		t.Fatal("idle prompt must not be accepted as completed")
 	}
+	spawn := FactoryEffect{ID: "spawn-id", Kind: "spawn", Status: "dispatched", WorkerRole: "implementer"}
+	duplicate := FactoryWorker{AgentID: "one", SessionID: "s1", Role: "implementer", SpawnEffectID: spawn.ID}
+	second := duplicate
+	second.AgentID, second.SessionID = "two", "s2"
+	if _, ok := c.recoveryOutcome(i, spawn, FactoryObservation{Workers: []FactoryWorker{duplicate, second}}); ok {
+		t.Fatal("duplicate live workers accepted")
+	}
 }
 
 func TestFactoryRecoveryParkedAndStopped(t *testing.T) {
@@ -118,6 +125,7 @@ func TestFactoryRecoveryAttestationNamesWorker(t *testing.T) {
 	}
 	i, err = s.Update(i.ID, "prepare-attest", i.Version, json.RawMessage(`{"kind":"prepare"}`), func(dst *FactoryItem) error {
 		dst.State = "recovering"
+		dst.Approvals = loopItem().Approvals
 		dst.Workers = []FactoryWorker{{AgentID: "known-worker", SessionID: "session", Role: "implementer", SpawnEffectID: "spawn"}}
 		dst.Effects = []FactoryEffect{{ID: "prompt-id", Kind: "implement", Status: "uncertain"}}
 		return nil
@@ -134,5 +142,28 @@ func TestFactoryRecoveryAttestationNamesWorker(t *testing.T) {
 	got, err := c.Command(context.Background(), i.ID, cmd)
 	if err != nil || got.Effects[0].Status != "completed" || got.Effects[0].Outcome == nil || got.Effects[0].Outcome.Confirmed || got.Decision == nil || got.Decision.Kind != "worker_failed" {
 		t.Fatalf("attestation: item=%+v err=%v", got, err)
+	}
+	f := testFleetWithVersion(t, "dev")
+	f.git = nil // the retained checkout is a fixture, not a remote repository
+	work := t.TempDir()
+	if err := f.ws.PutAgent(Agent{ID: "known-worker", Project: work, FactoryItemID: got.ID, FactoryRole: "implementer", FactorySpawnEffectID: "spawn", SessionID: "session"}); err != nil {
+		t.Fatal(err)
+	}
+	retry := FactoryCommand{Kind: "retry", RequestID: "retry-attested", ExpectedVersion: got.Version, DecisionID: got.Decision.ID, AdditionalRounds: 1, Reason: "continue retained work"}
+	got, err = c.Command(context.Background(), i.ID, retry)
+	if err != nil || len(got.Effects) != 2 || got.Effects[1].Kind != "resume" || got.Effects[1].Status != "prepared" || !factoryFreshResume(got, got.Effects[1]) {
+		t.Fatalf("fresh resume intent: %+v %v", got.Effects, err)
+	}
+	worker, err := f.ResumeFactoryWorkerFresh(context.Background(), got, got.Workers[0])
+	if err != nil || worker.AgentID != "known-worker" || worker.SessionID == "session" || worker.SessionID == "" {
+		t.Fatalf("fresh worker: %+v %v", worker, err)
+	}
+	a, _ := f.ws.Agent(worker.AgentID)
+	if a.Project != work || a.SessionID != worker.SessionID {
+		t.Fatalf("retained checkout or session lost: %+v", a)
+	}
+	completed, err := CompleteFactoryEffect(got, got.Effects[1].ID, FactoryOutcome{EffectID: got.Effects[1].ID, Worker: &worker, Confirmed: true}, time.Now())
+	if err != nil || completed.Workers[0].SessionID != worker.SessionID || completed.Effects[0].Outcome == nil || completed.Effects[0].Outcome.Confirmed {
+		t.Fatalf("resume history: %+v %v", completed, err)
 	}
 }

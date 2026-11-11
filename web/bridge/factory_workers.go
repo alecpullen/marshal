@@ -195,9 +195,10 @@ func (w *factoryWorkers) Observe(ctx context.Context, item FactoryItem) (Factory
 	obs := FactoryObservation{ObservedAt: time.Now().UTC(), BaseSHA: item.BaseSHA}
 	for _, worker := range item.Workers {
 		a, ok := w.fleet.ws.Agent(worker.AgentID)
-		if !ok || a.FactoryItemID != item.ID {
+		if !ok || a.FactoryItemID != item.ID || a.FactoryRole != worker.Role || a.FactorySpawnEffectID != worker.SpawnEffectID {
 			continue
 		}
+		worker.SessionID = a.SessionID
 		worker.Parked = a.FactoryParked
 		obs.Workers = append(obs.Workers, worker)
 		if worker.Parked {

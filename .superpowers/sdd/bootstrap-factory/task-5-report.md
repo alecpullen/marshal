@@ -32,5 +32,17 @@ The first race invocation in the sandbox could not bind `httptest` sockets; it w
 - Reconciliation requires observed identity; no model effect is completed from idle status alone. A located spawn remains recovering until its runtime and active work are observed. An explicit operator attestation must name the previous worker and is refused for an unidentified spawn.
 - Retry refuses any dispatched/uncertain effect and all recovering items. This prevents a new worker from starting against a possibly active old worker.
 - Task 6 must construct and attach the controller, call `Recover` before bots/schedules, and expose its routes; `cmd/webbridge` does not yet construct a factory controller.
-- The current ACP contract has no durable completion receipt for a prompt interrupted across restart. The conservative recovery decision reflects that limit. The attestation path records the assertion, but a fresh-session resume after attestation is not yet implemented; retry remains blocked if active work cannot be observed idle. This needs a follow-up before claiming full Task 5 acceptance.
+- The current ACP contract has no durable completion receipt for a prompt interrupted across restart. The conservative recovery decision reflects that limit. A named-worker operator attestation records the prior worker and permits an explicit retry with additional allowance. Retry persists a fresh `resume` intent, starts a new ACP session in the retained checkout using approved routing and policy, records the new session ID, and preserves the prior effect and attestation. An unidentifiable spawn or an unattested unknown prompt cannot take that path. If a fresh session response is lost, recovery checks its persisted identity rather than replaying the session creation blindly.
 - No live runtime, model, credential, or forge service was used in tests.
+
+## Attestation continuation follow-up
+
+Added `TestFactoryRecoveryAttestationNamesWorker` coverage for refusal of an unnamed attestation, journaled retry intent, fresh session identity, retained checkout, and prior history. `TestFactoryRecoveryLostOutcomes` rejects duplicate tagged workers. The focused non-race attestation test and final required race command passed:
+
+```
+PATH=/workspace/toolchains/go/bin:$PATH GOCACHE=/tmp/factory-go-cache go test ./web/bridge -run '^TestFactoryRecoveryAttestationNamesWorker$' -count=1
+ok marshal/web/bridge 0.179s
+
+PATH=/workspace/toolchains/go/bin:$PATH GOCACHE=/tmp/factory-go-cache go test -race ./web/bridge -run 'TestFactory(Recovery|Ownership)|TestReviewBot|TestCIFixer|TestSchedule|TestReattach' -count=1
+ok marshal/web/bridge 4.785s
+```

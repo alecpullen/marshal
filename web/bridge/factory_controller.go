@@ -374,6 +374,9 @@ func CompleteFactoryEffect(item FactoryItem, effectID string, outcome FactoryOut
 		for n := range i.Workers {
 			if e.Worker != nil && i.Workers[n].AgentID == e.Worker.AgentID {
 				i.Workers[n].Parked = e.Kind == "park"
+				if e.Kind == "resume" && outcome.Worker != nil && outcome.Worker.AgentID == e.Worker.AgentID && outcome.Worker.SessionID != "" {
+					i.Workers[n].SessionID = outcome.Worker.SessionID
+				}
 			}
 		}
 	case "set_ready":
@@ -703,13 +706,14 @@ func (c *FactoryController) Command(ctx context.Context, itemID string, cmd Fact
 			}
 		}
 		active := false
+		attested := factoryLastAttested(current)
 		for _, w := range current.Workers {
 			if !w.Parked {
 				active = true
 				break
 			}
 		}
-		if active {
+		if active && !attested {
 			obs, err := c.effects.Observe(ctx, current)
 			if err != nil || !obs.RuntimeKnown || !obs.TurnIdle || !obs.ActiveWorkKnown || !obs.WorkIdle {
 				return FactoryItem{}, ErrFactoryConflict
@@ -785,8 +789,12 @@ func factoryApplyCommand(i *FactoryItem, c FactoryCommand, now time.Time) error 
 			a := FactoryApproval{Revision: uint64(len(i.Approvals) + 1), Plan: r.Plan, Spec: r.Spec, PlanHash: FactoryPlanHash(r.Plan, r.Spec), Config: r.Config, ApprovedAt: now}
 			i.Approvals = append(i.Approvals, a)
 		}
+		attested := factoryLastAttested(*i)
 		i.Decision = nil
 		i.State = "repairing"
+		if attested {
+			factoryNext(i, "resume", "implementer", 0, now)
+		}
 	case "reconcile", "recover":
 		return ErrFactoryConflict
 	default:

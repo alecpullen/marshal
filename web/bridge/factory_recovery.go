@@ -75,8 +75,15 @@ func (c *FactoryController) recoveryOutcome(item FactoryItem, e FactoryEffect, o
 		}
 		found := false
 		for _, w := range o.Workers {
-			if w.AgentID == e.Worker.AgentID && w.SessionID == e.Worker.SessionID && w.SpawnEffectID == e.Worker.SpawnEffectID && w.Parked == (e.Kind == "park") {
+			matchingSession := w.SessionID == e.Worker.SessionID
+			if e.Kind == "resume" && factoryFreshResume(item, e) {
+				matchingSession = w.SessionID != "" && w.SessionID != e.Worker.SessionID
+			}
+			if w.AgentID == e.Worker.AgentID && matchingSession && w.SpawnEffectID == e.Worker.SpawnEffectID && w.Parked == (e.Kind == "park") {
 				found = true
+				if e.Kind == "resume" {
+					out.Worker = &w
+				}
 			}
 		}
 		if !found {
@@ -114,8 +121,8 @@ func (c *FactoryController) reconcile(ctx context.Context, item FactoryItem, att
 				copy.Effects[len(copy.Effects)-1].Status = "dispatched"
 				next, err := CompleteFactoryEffect(copy, e.ID, out, c.now())
 				if err == nil {
-					if e.Kind == "spawn" && !obs.RuntimeKnown {
-						factoryDecision(&next, "recovery", "spawned worker found; runtime and active work remain unconfirmed", c.now())
+					if (e.Kind == "spawn" || e.Kind == "resume") && !obs.RuntimeKnown {
+						factoryDecision(&next, "recovery", "worker found; runtime and active work remain unconfirmed", c.now())
 						next.State = "recovering"
 					} else if item.State == "recovering" && next.State == "recovering" {
 						next.State = factoryStateAfterRecovery(e)
@@ -197,4 +204,29 @@ func factoryStateAfterRecovery(e FactoryEffect) string {
 	default:
 		return "checking"
 	}
+}
+
+func factoryLastAttested(i FactoryItem) bool {
+	if len(i.Effects) == 0 {
+		return false
+	}
+	e := i.Effects[len(i.Effects)-1]
+	if e.Status != "completed" || e.Outcome == nil || e.Outcome.Confirmed || !strings.HasPrefix(e.Outcome.Error, "operator attested previous worker stopped: ") {
+		return false
+	}
+	for _, h := range i.History {
+		if h.Kind == "operator_attestation" && h.EffectID == e.ID {
+			return true
+		}
+	}
+	return false
+}
+
+func factoryFreshResume(i FactoryItem, e FactoryEffect) bool {
+	if e.Kind != "resume" || len(i.Effects) < 2 || i.Effects[len(i.Effects)-1].ID != e.ID {
+		return false
+	}
+	previous := factoryCopy(i)
+	previous.Effects = previous.Effects[:len(previous.Effects)-1]
+	return factoryLastAttested(previous)
 }

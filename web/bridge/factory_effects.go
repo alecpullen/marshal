@@ -215,7 +215,13 @@ func (f *factoryEffects) Execute(ctx context.Context, item FactoryItem, e Factor
 		if e.Worker == nil {
 			return out, fmt.Errorf("%w: resume worker missing", ErrFactoryRefused)
 		}
-		if err := f.fleet.Resume(ctx, e.Worker.AgentID); err != nil {
+		if factoryFreshResume(item, e) {
+			w, err := f.fleet.ResumeFactoryWorkerFresh(ctx, item, *e.Worker)
+			if err != nil {
+				return out, fmt.Errorf("%w: fresh resume: %v", ErrFactoryUncertain, err)
+			}
+			out.Worker = &w
+		} else if err := f.fleet.Resume(ctx, e.Worker.AgentID); err != nil {
 			return out, fmt.Errorf("%w: resume: %v", ErrFactoryUncertain, err)
 		}
 	case "set_ready", "set_draft":

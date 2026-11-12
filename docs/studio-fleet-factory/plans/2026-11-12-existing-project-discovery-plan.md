@@ -714,10 +714,10 @@ resolved in one fix commit, test-first.
 
 | Review finding | Resolution | Commit |
 |---|---|---|
-| GitHub `ci_checks` never read commit statuses | The combined commit status is read and merged with check-runs, newest per context wins | `ccff7a86` |
-| `git status` output was read unboundedly | `runCtxLimited` caps stdout/stderr at 1 MiB; a cut output drops its partial trailing line and reports `at least <n>` omitted entries | `ccff7a86` |
-| Porcelain quoting was ignored | `-c core.quotepath=false` is passed to the status verb; remaining quoted paths are unquoted | `ccff7a86` |
-| Forge collections were single-page and silently truncated | Both adapters paginate up to five pages and return `errDiscoveryTruncated`; the report keeps the items and records a `temporarily_unavailable` gap, never an absence | `ccff7a86` |
-| The gap fix told an operator to declare an already-declared forge | A declared forge's unsupported fix names adapter support; only an undeclared forge is told to declare one | `ccff7a86` |
-| The dirty-file parser had no direct table test | A direct table test covers rename, quoted path, at-cap and cap-plus-one | `ccff7a86` |
-| A symlinked environment definition produced a recommendation | A skipped symlink qualifies the absence fact and suppresses the recommendation; the symlink is not read or reported | `ccff7a86` |
+| GitHub `ci_checks` never read commit statuses | The combined commit status is read and merged with check-runs, newest per context wins | `0d1be4ac` |
+| `git status` output was read unboundedly | `runCtxLimited` caps stdout/stderr at 1 MiB; a cut output drops its partial trailing line and reports `at least <n>` omitted entries | `0d1be4ac` |
+| Porcelain quoting was ignored | `-c core.quotepath=false` is passed to the status verb; remaining quoted paths are unquoted | `0d1be4ac` |
+| Forge collections were single-page and silently truncated | Both adapters paginate up to five pages and return `errDiscoveryTruncated`; the report keeps the items and records a `temporarily_unavailable` gap, never an absence | `0d1be4ac` |
+| The gap fix told an operator to declare an already-declared forge | A declared forge's unsupported fix names adapter support; only an undeclared forge is told to declare one | `0d1be4ac` |
+| The dirty-file parser had no direct table test | A direct table test covers rename, quoted path, at-cap and cap-plus-one | `0d1be4ac` |
+| A symlinked environment definition produced a recommendation | A skipped symlink qualifies the absence fact and suppresses the recommendation; the symlink is not read or reported | `0d1be4ac` |

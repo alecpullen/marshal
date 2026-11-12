@@ -613,13 +613,13 @@ pass resolves all seven, each covered by a named test.
 
 | # | Finding | Resolution | Commit |
 |---|---|---|---|
-| 1 | GitHub `ci_checks` read only check-runs, so a status-only repo yielded a false "no checks" | `Checks` now reads the combined commit status (`/commits/{ref}/status`), merges the newest status per context (by status id, else last seen) alongside check-runs, and sets the context as the check identity | `ccff7a86` |
-| 2 | `git status` output was read unboundedly | A new additive `runCtxLimited` caps stdout and stderr at 1 MiB; the status read drops a truncated trailing partial line and reports `at least <n>` omitted entries when the output was cut | `ccff7a86` |
-| 3 | Porcelain quoting was ignored | The status invocation adds `-c core.quotepath=false` (an argument to the status verb, not a new verb); remaining C-quoted paths are unquoted so `dirtyFiles` carries real paths | `ccff7a86` |
-| 4 | Forge collections were single-page and silently truncated | Branches, pull requests and checks paginate up to five pages on both adapters; a full final page returns the items plus `errDiscoveryTruncated`, and the report keeps them, stays `supported`, and records a `temporarily_unavailable` gap instead of an absence fact | `ccff7a86` |
-| 5 | The gap fix told an operator to declare an already-declared forge | The unsupported fix now says the declared forge does not expose the capability and adapter support would be needed; only an undeclared forge is told to declare one | `ccff7a86` |
-| 6 | The dirty-file parser had no direct table test | `TestDiscoveryDirtyFilesPorcelainTable` exercises rename, quoted path, exactly-at-cap and cap-plus-one records directly, without a git binary | `ccff7a86` |
-| 7 | A symlinked environment definition produced a "define a development environment" recommendation | A skipped symlink qualifies the section's absence fact; the recommendation pass ignores qualified absence. The symlink is never read or reported as a fact | `ccff7a86` |
+| 1 | GitHub `ci_checks` read only check-runs, so a status-only repo yielded a false "no checks" | `Checks` now reads the combined commit status (`/commits/{ref}/status`), merges the newest status per context (by status id, else last seen) alongside check-runs, and sets the context as the check identity | `0d1be4ac` |
+| 2 | `git status` output was read unboundedly | A new additive `runCtxLimited` caps stdout and stderr at 1 MiB; the status read drops a truncated trailing partial line and reports `at least <n>` omitted entries when the output was cut | `0d1be4ac` |
+| 3 | Porcelain quoting was ignored | The status invocation adds `-c core.quotepath=false` (an argument to the status verb, not a new verb); remaining C-quoted paths are unquoted so `dirtyFiles` carries real paths | `0d1be4ac` |
+| 4 | Forge collections were single-page and silently truncated | Branches, pull requests and checks paginate up to five pages on both adapters; a full final page returns the items plus `errDiscoveryTruncated`, and the report keeps them, stays `supported`, and records a `temporarily_unavailable` gap instead of an absence fact | `0d1be4ac` |
+| 5 | The gap fix told an operator to declare an already-declared forge | The unsupported fix now says the declared forge does not expose the capability and adapter support would be needed; only an undeclared forge is told to declare one | `0d1be4ac` |
+| 6 | The dirty-file parser had no direct table test | `TestDiscoveryDirtyFilesPorcelainTable` exercises rename, quoted path, exactly-at-cap and cap-plus-one records directly, without a git binary | `0d1be4ac` |
+| 7 | A symlinked environment definition produced a "define a development environment" recommendation | A skipped symlink qualifies the section's absence fact; the recommendation pass ignores qualified absence. The symlink is never read or reported as a fact | `0d1be4ac` |
 
 Verification for this pass: `go test ./web/bridge -run
 'Discovery|DiscoverRoute|InspectCheckout|WebIsStdlibOnly' -count=1` PASS,

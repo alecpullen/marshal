@@ -51,34 +51,47 @@ change. The following points resolve their differences.
 3. **Capability set.** Use the ten keys below, always present and always in
    this order. They map directly to the specification's independently
    observable reads; `issues`, `reviews`, and previews are not invented.
-4. **Capability state mapping.** Classification is contextual, not a blanket
+4. **Report status.** `unavailable` means a declared forge could not complete
+   its orchestration because the service was temporarily unreachable; the
+   report still preserves locally observable checkout facts and carries a
+   top-level error. Otherwise, `degraded` means at least one capability is
+   not `supported` or at least one gap exists; `ok` means every capability is
+   supported and no gaps exist. A Git-only report is therefore `degraded`
+   because its forge capabilities are `unsupported`.
+5. **Capability state mapping.** Classification is contextual, not a blanket
    HTTP-status table. An absent, non-PAT, invalid, or expired credential is
    `unconfigured`; a declared Gitea/Forgejo instance with no `APIBase` is also
-   `unconfigured` with an actionable detail. HTTP 401 is `unconfigured`; HTTP
-   403 is `insufficient_permission`. HTTP 404 is `insufficient_permission`
+   `unconfigured` with an actionable detail. HTTP 401 is `unconfigured`. HTTP
+   403 with a retry signal is `temporarily_unavailable`; HTTP 403 without one
+   is `insufficient_permission`. HTTP 404 is `insufficient_permission`
    unless the same credential has already read repository metadata, in which
-   case it means that endpoint is genuinely `unsupported` for this
-   adapter/instance. HTTP 429, 5xx, and transport failures are
-   `temporarily_unavailable`; a successful probe is `supported`. A capability
-   with no matching resource to exercise is `supported` with a detail that
-   says it was not exercised.
-5. **Absent versus unreadable.** Absence is emitted only after a successful
+   case it is interpreted as `unsupported` for this adapter/instance. HTTP
+   429, 5xx, and transport failures are `temporarily_unavailable`; a
+   successful probe is `supported`. A capability with no matching resource to
+   exercise is `supported` with a detail that says it was not exercised.
+6. **Absent versus unreadable.** Absence is emitted only after a successful
    search: a detected fact with `value: "absent"`. An unreadable target is a
    gap with no absence fact. The two outcomes must be textually distinct.
-6. **File reads.** Known instruction/document targets are opened with a
-   bounded read to prove readability, but their contents are never returned.
-   Manifests are inspected only for the minimum fields needed to identify
-   language/tooling. No arbitrary tree walk and no symlink following occur.
-7. **Revision.** Forge facts carry the default-branch head observed during
-   the probe; checkout facts carry the checkout `HEAD`. This makes a stale
-   forge fact detectable when the default branch advances without requiring a
+7. **File reads.** Known instruction, documentation, and manifest targets are
+   opened through `io.LimitReader` with a 1 MiB limit. The implementation reads
+   at most one byte beyond that limit to detect overflow; content beyond the
+   limit is treated as an unreadable inspection target and reported as a gap,
+   and contents are never returned. Manifests are inspected only for the
+   minimum fields needed to identify language/tooling. No arbitrary tree walk
+   and no symlink following occur.
+8. **Revision.** Forge facts carry the default-branch head observed during
+   the probe; checkout facts carry the checkout `HEAD`. The top-level
+   `revision` is the checkout `HEAD` when a checkout was inspected, otherwise
+   the forge default-branch head, otherwise empty. This makes a stale forge
+   fact detectable when the default branch advances without requiring a
    forbidden fetch.
-8. **Report errors.** Unknown repository is 404; missing fleet is 503;
-   malformed request is 400; an unexpected internal failure is 502. A declared
-   forge outage is a successful report whose `status`/`error` visibly say it
-   failed, because checkout discovery remains independently useful.
-9. **No persistence or audit event.** Discovery is observational. It does not
-   rewrite the workspace, bump its version, or create an audit record.
+9. **Report errors.** Unknown repository is 404; missing fleet is 503;
+   malformed request is 400; an unexpected in-process discovery failure is
+   500. A declared forge outage is a successful report whose
+   `status`/`error` visibly say it failed, because checkout discovery remains
+   independently useful.
+10. **No persistence or audit event.** Discovery is observational. It does not
+    rewrite the workspace, bump its version, or create an audit record.
 
 ## HTTP and JSON contract
 
@@ -153,9 +166,13 @@ The body is empty. The repository id comes from the registered `Repo` record.
 }
 ```
 
-All slices are non-nil. `status` is `ok`, `degraded`, or `unavailable`.
+All slices are non-nil. `status` is `ok`, `degraded`, or `unavailable` under
+the explicit boundary in Reconciled implementation decision 4.
 `worktree.dirty` is a pointer: `null` means not determined, which differs
-from a known clean checkout.
+from a known clean checkout. `worktree.branch` is empty for a detached HEAD,
+while `worktree.head` still carries its SHA and `worktree.detail` says
+`detached HEAD`. `dirtyFiles` is capped at 100 entries; when truncated,
+`worktree.detail` states how many additional entries were omitted.
 
 ### Capability order and meanings
 
@@ -225,6 +242,7 @@ type DiscoveryWorktree struct {
     Head       string   `json:"head,omitempty"`
     Dirty      *bool    `json:"dirty"`
     DirtyFiles []string `json:"dirtyFiles,omitempty"`
+    Detail     string   `json:"detail,omitempty"`
 }
 
 type DiscoveryReport struct {
@@ -286,7 +304,8 @@ func discoveryCapabilityState(err error, metadataReadable bool) (DiscoveryCapabi
 
 `metadataReadable` is true only after the same credential has successfully
 read repository metadata. The classifier uses `errors.As` with the existing
-`*forgeAPIError`, maps 401 to `unconfigured`, 403 to
+`*forgeAPIError`, maps 401 to `unconfigured`, maps a 403 carrying
+`Retry-After` to `temporarily_unavailable` and other 403 responses to
 `insufficient_permission`, maps 404 to `unsupported` only when
 `metadataReadable` is true and otherwise to `insufficient_permission`, and
 maps 429, 5xx, and transport failures to `temporarily_unavailable`.
@@ -319,10 +338,10 @@ at the same time.
 - [ ] Write `TestDiscoveryCapabilityOrderIsStable`: pin the ten keys and their
   order from the table above.
 - [ ] Write `TestDiscoveryCapabilityStateForForgeErrors`: table-drive nil,
-  HTTP 401, 403, 404 with `metadataReadable` false, 404 with
-  `metadataReadable` true, 429, 500, transport failure,
-  `errDiscoveryUnconfigured`, and `errDiscoveryUnsupported` to the agreed
-  state.
+  HTTP 401, 403 without a retry signal, 403 with `Retry-After`, 404 with
+  `metadataReadable` false, 404 with `metadataReadable` true, 429, 500,
+  transport failure, `errDiscoveryUnconfigured`, and
+  `errDiscoveryUnsupported` to the agreed state.
 - [ ] Write `TestDiscoveryReportJSONUsesStableShape`: assert non-nil slices,
   the `dirty` tri-state, and absence of a credential literal.
 - [ ] Run
@@ -396,6 +415,9 @@ type DiscoveryForge interface {
 - [ ] Write `TestInspectCheckoutFindsKnownSetup`: a temporary tree containing
   instruction, docs, manifest, environment, and workflow files yields the
   expected sections and `checkout:<relative-path>` sources.
+- [ ] Write `TestInspectCheckoutBoundsEveryFileRead`: an oversized instruction,
+  documentation, or manifest target produces a gap and no fact rather than
+  being read or decoded without a limit.
 - [ ] Write `TestInspectCheckoutDistinguishesAbsentFromUnreadable`: an absent
   instruction produces an `absent` fact and no gap; a directory named
   `AGENTS.md` or an unreadable known file produces a gap and no absence fact.
@@ -412,19 +434,29 @@ type DiscoveryForge interface {
   tracked file and add one untracked file; assert dirty status and unchanged
   working-tree bytes/status afterwards. Assert the allowed git verbs are only
   `rev-parse`, `symbolic-ref`, `status`, and `for-each-ref`.
+- [ ] Write `TestDiscoveryGitStateBoundsDirtyFilesAndRepresentsDetachedHead`:
+  create more than 100 dirty entries and assert the list is capped with the
+  omitted count in `worktree.detail`; use a detached checkout and assert
+  `branch` is empty, `head` is present, and `detail` says `detached HEAD`.
 - [ ] Run
   `go test ./web/bridge -run '^(TestInspectCheckout|TestDiscoveryGitState)' -count=1`;
   confirm failure.
 - [ ] Implement bounded inspection of the exact known paths. Use `os.Lstat`
-  and do not follow symlinks. Open known instruction/docs files with a bounded
-  read to distinguish readable from unreadable, but return no content. Read
-  only the minimum manifest fields needed for language/tooling facts. Use the
-  existing hardened git runner with an empty `Credential{}` for every local
-  read, so no forge PAT is placed in the child environment, for
-  `rev-parse HEAD`, `symbolic-ref --quiet --short HEAD`,
+  and do not follow symlinks. Open every known instruction, documentation,
+  and manifest target through `io.LimitReader` with a 1 MiB limit (read at
+  most 1 MiB plus one byte so exceeding the limit is detectable); report an
+  oversized target as a gap
+  and return no content. Read only the minimum manifest fields needed for
+  language/tooling facts. Use the existing hardened git runner with an empty
+  `Credential{}` for every local read, so no forge PAT is placed in the child
+  environment, for `rev-parse HEAD`, `symbolic-ref --quiet --short HEAD`,
   `--no-optional-locks status --porcelain --untracked-files=all`, and
-  `for-each-ref --format=%(refname:short) refs/heads`. Never use fetch,
-  checkout, switch, reset, clean, clone, pull, push, or write git commands.
+  `for-each-ref --format=%(refname:short) refs/heads`. Represent a detached
+  HEAD with an empty branch, its SHA in `head`, and `detached HEAD` in
+  `detail`. Cap `dirtyFiles` at 100 and state the omitted count in `detail`;
+  when detached HEAD and truncation apply together, `detail` contains both
+  clauses. Never use fetch, checkout, switch, reset, clean, clone, pull, push,
+  or write git commands.
 - [ ] Run the named tests; require PASS. Run `gofmt -l` on the two task files;
   require no output.
 - [ ] Commit only this task: `feat(discovery): inspect existing checkouts read-only`.
@@ -443,7 +475,8 @@ type DiscoveryForge interface {
   capabilities/gaps, and preserved checkout facts.
 - [ ] Write `TestDiscoverReportDegradesOnlyTheDeniedSection`: return 403 for
   CI checks only; assert CI is `insufficient_permission` with an actionable
-  gap while repository, branch, PR, and checkout sections remain present.
+  gap, report status is `degraded`, and repository, branch, PR, and checkout
+  sections remain present.
 - [ ] Write `TestDiscoverReportClassifiesHiddenResourceAsPermissionDenied`:
   make repository metadata readable but a section endpoint return 404; assert
   that section is `insufficient_permission`, not `unsupported`, because the
@@ -471,8 +504,9 @@ type DiscoveryForge interface {
   read it into `discoveryCapabilityState` for later sections. Probe each forge
   section independently, map failures to gaps, and never convert a declared
   forge failure into Git-only. Derive recommendations only from successfully
-  inspected sections. Sort facts, recommendations, and gaps for deterministic
-  output; keep the fixed capability order.
+  inspected sections. Set top-level `revision` from the checkout `HEAD` first,
+  then the forge default-branch head. Sort facts, recommendations, and gaps
+  for deterministic output; keep the fixed capability order.
 - [ ] Run the named tests; require PASS. Run `gofmt -l` on the two task files;
   require no output.
 - [ ] Commit only this task: `feat(discovery): assemble partial access reports`.
@@ -494,13 +528,17 @@ one route-registration line.
   unauthenticated request returns 401 and an authenticated request succeeds.
 - [ ] Write `TestDiscoverRouteDoesNotPersistState`: the workspace file bytes
   and version are unchanged before and after a successful call.
+- [ ] Write `TestDiscoverRouteInternalFailureIs500`: force an in-process
+  discovery failure and assert 500, not the child-failure 502 convention.
 - [ ] Run
   `go test ./web/bridge -run '^TestDiscoverRoute' -count=1`; confirm failure.
 - [ ] Implement `discoveryRoutes()` and `discoverRepo` in the new file. The
   handler requires fleet mode, resolves the registered repo, calls
   `Fleet.DiscoverRepo`, and writes JSON. It accepts an empty body. Add exactly
-  `s.discoveryRoutes()` beside the other route groups in `routes()`; do not
-  reorder existing lines.
+  one `s.discoveryRoutes()` call at the end of the flat registration list in
+  `routes()`; do not reorder existing lines. Return 500 directly for an
+  unexpected in-process discovery error rather than using `writeErr`, whose
+  502 convention denotes a child-process failure.
 - [ ] Run
   `go test ./web/bridge -run '^(TestDiscoverRoute|TestWebIsStdlibOnly)' -count=1`;
   require PASS. Inspect this task's commit with
@@ -518,9 +556,9 @@ first exposes a defect.
 
 - [ ] Update specification §5 from “Proposed” to the implemented contract,
   document the ten capability keys, the registered-`repoId` identity, the
-  checkout-source rule, the unavailable-report rule, the contextual
-  401/403/404 classification, the missing-Gitea-`APIBase` case, the
-  `supported` not-exercised detail convention, and the
+  checkout-source rule, the `ok`/`degraded`/`unavailable` boundary, the
+  contextual 401/403/404 classification, the missing-Gitea-`APIBase` case,
+  the `supported` not-exercised detail convention, and the
   bounded-read/symlink guarantees.
 - [ ] Keep the plan link in the README's `Active specification` section.
 - [ ] Run the complete feature suite:
@@ -613,3 +651,11 @@ focused re-review is recorded in the PR review thread.
 | Adapter result shapes were not frozen | Task 1 now owns the four adapter result types and their fields |
 | The README section and route-diff check were imprecise | The plan names the actual `Active specification` section and checks the task commit rather than a moving base diff |
 | Local Git reads could carry a PAT or compare `.git` cache files | The plan requires `Credential{}` for local reads and compares working-tree content outside `.git/` |
+| Report status had no `ok`/`degraded` boundary | The plan now defines `unavailable`, `degraded`, and `ok` explicitly and requires the degraded-section test to assert `degraded` |
+| A rate-limited 403 could be misreported as missing permission | A 403 carrying `Retry-After` is now `temporarily_unavailable`, with a classifier test case |
+| Git-only capability meaning was implicit | The spec and plan now distinguish an unengaged Git-only adapter (`unsupported`) from missing declared-forge setup (`unconfigured`) |
+| Checkout and manifest reads were not uniformly bounded | Every known file target now has a 1 MiB limit and an oversized-target test |
+| Dirty output and detached HEAD were underspecified | `dirtyFiles` is capped at 100 with an omitted count; detached HEAD has empty branch, SHA in `head`, and `detached HEAD` detail |
+| Top-level revision priority was ambiguous | Checkout `HEAD` wins, then the forge default-branch head, otherwise empty |
+| In-process failures reused the child-failure 502 convention | The route now returns 500 for an unexpected in-process discovery failure and has a named test |
+| Route registration referenced nonexistent route groups | The plan now says one `s.discoveryRoutes()` call at the end of the flat registration list |

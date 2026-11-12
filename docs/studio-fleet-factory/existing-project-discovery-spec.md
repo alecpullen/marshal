@@ -99,11 +99,16 @@ forge name. Each reported capability carries one of five states:
 
 Classification is contextual rather than a blanket HTTP-status mapping. An
 invalid or absent credential is `unconfigured`; a valid credential receiving
-403, or a 404 for a resource hidden from it, is `insufficient_permission`; a
-404 is `unsupported` only when the same credential has already proved that
-repository metadata is readable and the missing endpoint is genuinely
-unsupported by this adapter/instance. HTTP 429, 5xx, and transport failures
-are `temporarily_unavailable`.
+403 without a `Retry-After` signal, or a 404 for a resource hidden from it, is
+`insufficient_permission`; a 404 after the same credential has proved that
+repository metadata is readable is interpreted as the endpoint not being
+implemented for this adapter/instance, and is `unsupported`. A 403 carrying
+`Retry-After`, HTTP 429, 5xx, and transport failures are
+`temporarily_unavailable`.
+
+A repository with no declared forge uses the sanctioned Git-only path. Its
+forge capabilities are `unsupported` because no forge adapter is engaged,
+while a declared forge with missing setup is `unconfigured`.
 
 A failed API connection on a **supported** forge stays a visible error and does
 not silently downgrade to generic Git (approved in §6).

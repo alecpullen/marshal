@@ -47,6 +47,11 @@ overrides it for every field it does. The resolved configuration is snapshotted
 into the work item when the handoff is created, so editing a project's defaults
 later never changes work that is already approved or running.
 
+That snapshot behaviour follows the recorded proposal to save effective handoff
+settings with each execution so later project-default changes do not silently
+alter running work. It is consistent with that proposal, but is not itself an
+approved decision.
+
 ## 3. What exists today
 
 Measured on `main` at `907730fb`, with the bootstrap factory merged.
@@ -55,7 +60,7 @@ Measured on `main` at `907730fb`, with the bootstrap factory merged.
 |---|---|---|
 | Factory configuration | `web/bridge/factory_types.go:8` | `FactoryConfig` carries the whole per-handoff configuration: repository, project root, host, target branch, workspace, native flag, implementer/reviewer routing, reviewer instructions, implementer-auto flag, expected CI checks, no-required-CI acknowledgement, and the round/CI limits |
 | Handoff creation | `web/bridge/factory_types.go:26` | `FactoryCreate` carries a request id, title, plan, specification and the configuration |
-| Create path | `web/bridge/factory_http.go:52` | `Create` normalises, preflights, then stores the item |
+| Create path | `web/bridge/factory_http.go:54` | `Create` normalises, preflights, then stores the item |
 | Normalisation | `web/bridge/factory_store.go:240` | `factoryNormalize` requires a request id, title, plan and repository; applies the built-in defaults (host `local`, five rounds, 15 s CI poll, 1800 s CI wait); rejects a native/workspace combination and a non-local host |
 | Preflight | `web/bridge/factory_http.go:113` | Requires a registered GitHub repository, a target branch, a trusted registered project root, and either native execution or a resolvable published workspace |
 | Project settings | `web/bridge/workspace.go:122` | `ProjectSettings` is "a project's defaults for new agents and runs, and its intake wiring"; it already carries pointer-typed tri-state booleans (`Auto`, `Isolated`) |
@@ -97,6 +102,12 @@ The defaults are read and written through the **existing** project-settings
 surface (`GET`/`PUT /api/projects/settings?root=`). No new route is added, and
 the SPA needs no change to carry them.
 
+That last part holds only because the project-settings views read the record
+and write it back unchanged. `PUT /api/projects/settings` replaces the whole
+record, so a view that rebuilds the settings object from scratch would erase
+`factoryDefaults` silently. Any future settings view must round-trip the
+fetched record rather than reconstruct it.
+
 ### 4.2 Which fields are inheritable
 
 The `FactoryDefaults` type contains exactly the fields that describe *how work
@@ -119,7 +130,10 @@ never be inherited.
   false" cannot be told apart in the handoff's plain `FactoryConfig`. Making
   them inheritable would need a tri-state field on the shipped `FactoryConfig`
   contract. `ProjectSettings.Auto` and `ProjectSettings.Isolated` show the
-  pointer pattern for when that is done; it is deferred (§9).
+  pointer pattern for when that is done; it is deferred (§8 item 2).
+  `NoRequiredCIAcknowledged` has a second reason to stay per-handoff: it
+  records a human acknowledgement that no CI checks are required, which is a
+  decision about one handoff rather than a property of the project.
 
 ### 4.3 How an override is expressed
 
@@ -133,9 +147,11 @@ per-type, and is unambiguous for every inheritable field:
 | `json.RawMessage` | `nil` | any non-nil value, including `{}` |
 | `[]FactoryCheckKey` | `nil` | any non-nil slice, **including an empty one** |
 
-The slice case matters: an explicitly empty `expectedChecks` means "no checks
-are required", which is different from "inherit the project's expected checks",
-and the existing approval rule distinguishes them.
+The slice case matters: an explicitly empty `expectedChecks` means
+"intentionally require no checks", which is distinct from "inherit the
+project's expected checks". Resolution must preserve that distinction. It does
+not bypass the existing approval rule, which tests the list's length: an empty
+list is approved only when the handoff also sets `noRequiredCiAcknowledged`.
 
 ### 4.4 Resolution
 
@@ -166,23 +182,60 @@ snapshots the draft's configuration, **editing a project's defaults later never
 changes work that already exists**. The defaults are a convenience for the
 next handoff, not a live link to existing work.
 
-A `retry` command that carries a replacement configuration is an explicit,
-operator-authored configuration and is **not** re-resolved against the current
-defaults: the operator is deliberately changing the handoff, and the resolved
-configuration of the existing draft is the baseline they are editing.
+**Proposed default:** a `retry` command that carries a replacement
+configuration is an explicit, operator-authored configuration and is **not**
+re-resolved against the current defaults: the operator is deliberately
+changing the handoff, and the resolved configuration of the existing draft is
+the baseline they are editing. This is the proposed behaviour for now; §8 item
+4 asks the user whether a replacement should instead re-resolve.
 
 ### 4.5 Which project's defaults apply
 
-The project is resolved in this order:
+A valid handoff always names a registered, trusted `ProjectRoot`: the existing
+preflight rejects a handoff without one, and `ProjectRoot` is deliberately not
+inheritable, so the defaults can never supply it. The named root is therefore
+the only live resolution path, and **the named root's defaults apply**.
 
-1. `Config.ProjectRoot`, when the handoff names one;
-2. otherwise the project whose intake names the repository
-   (`Workspace.ProjectRootByRepo`), the same resolution the discovery slice
-   uses;
-3. otherwise no defaults apply and the handoff behaves exactly as it does
-   today.
+When the named root and the repository's intake project differ — a handoff may
+name a project other than the one whose intake names the repository — the
+named root wins, because the handoff is the primary place configuration is
+selected.
 
-### 4.6 Conflicts
+The intake mapping (`Workspace.ProjectRootByRepo`) is retained only as a
+defensive fallback for a handoff that names no root. Such a handoff is
+rejected by preflight before any work item exists, so that fallback can only
+ever choose which defaults are consulted for a handoff that is about to be
+rejected; it never creates a work item and never supplies a root.
+
+### 4.6 Validating the defaults
+
+The defaults are validated when they are written, through the existing
+`PUT /api/projects/settings` surface, and again when they are resolved.
+
+**At write time**, the defaults are checked with the parts of
+`factoryNormalize` that do not depend on a handoff:
+
+- the limits are not negative;
+- `HostID`, when set, is `local` — the factory requires a local host;
+- `Workspace` and `Native` are not both set;
+- every expected check carries a valid identity: a name, a kind of
+  `check_run` or `commit_status`, and an app id that is present exactly for
+  `check_run`.
+
+A default that fails any of these is rejected when it is written, with an
+error naming the offending field. The identity requirements — a request id, a
+title, a plan and a repository — do not apply to defaults, because a default
+describes how work runs, not what work is.
+
+**At resolve time**, the defaults are validated again, because a workspace
+file can be written by an older binary or edited by hand. A default that is
+invalid on its own is an error that names the project's defaults as the
+source, not a silent fallback to the handoff's own values.
+
+**Conflicts** between a default and a handoff are reported the same way: the
+error names both sources.
+
+### 4.7 Conflicts
 
 The resolved configuration must be valid, exactly as a hand-written one must
 be. A project default that conflicts with the handoff is rejected with an
@@ -190,7 +243,7 @@ error that names the conflict and both sources — for example a project default
 `workspace` combined with a handoff `native: true`, which the existing
 normalisation already rejects as mutually exclusive.
 
-### 4.7 What this does not change
+### 4.8 What this does not change
 
 The bootstrap factory's acceptance contract is untouched:
 
@@ -250,8 +303,8 @@ values.
 ## 6. Missing access and partial failure
 
 - A project with no defaults behaves exactly as it does today.
-- A project whose defaults are unreadable or invalid is a configuration error
-  at the point the defaults are written, not a silent fallback.
+- A project whose defaults are invalid is rejected when they are written,
+  and again when they are resolved (§4.6); it is never a silent fallback.
 - A handoff that cannot be resolved (no project, no defaults) is not an error:
   it is the current behaviour.
 - A conflict between a default and a handoff is an error naming both sources.
@@ -314,7 +367,14 @@ For this slice:
 - changing a project's defaults after a work item exists does not change that
   work item's stored or approved configuration;
 - a project default that conflicts with the handoff is rejected with an error
-  naming the conflict;
+  naming both sources;
+- a project default that is invalid on its own is rejected when it is written,
+  and a default that reaches the workspace file another way is rejected when it
+  is resolved, naming the project's defaults as the source;
+- the defaults applied are the ones of the project named by `Config.ProjectRoot`,
+  even when the repository's intake names a different project (§4.5);
+- a `retry` replacement is taken as written and is not re-resolved against the
+  current defaults (§4.4);
 - a project with no defaults produces exactly the behaviour it produces today;
 - the defaults are read and written through the existing project-settings
   surface, with no new route;

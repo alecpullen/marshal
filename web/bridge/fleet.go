@@ -97,6 +97,10 @@ type agentRuntime struct {
 	// Set once during startRuntime, before the runtime is published.
 	caps map[string]bool
 
+	// project is the project child the agent's session runs on; nil for an
+	// agent with a child of its own (P4 D10).
+	project *projectChild
+
 	spawnErr error
 }
 
@@ -798,9 +802,78 @@ func (f *Fleet) runtimeForRoot(root string) (*agentRuntime, error) {
 	return rt, nil
 }
 
+// onProjectChild reports whether a runs on its project's child (P4 D10
+// decision 2): the local profile's plain host agents only. A git agent's tree
+// is deleted with the agent, a workspace needs a container, and a proxied
+// agent needs an environment of its own, so each of those keeps a child of its
+// own.
+func (f *Fleet) onProjectChild(a Agent) bool {
+	if !f.hostOnly || a.Project == "" {
+		return false
+	}
+	if a.SourceKind == "git" || a.Workspace != nil {
+		return false
+	}
+	f.egressMu.Lock()
+	proxied := f.egress != nil
+	f.egressMu.Unlock()
+	return !proxied
+}
+
+// projectRuntime is startRuntime for an agent whose session runs on its
+// project's child (P4 D10).
+//
+// The child is resolved first, so a project whose child cannot start is
+// recorded as a failed runtime with its error, exactly as a child of an
+// agent's own that cannot be built is. Nothing is attached and nothing is
+// started: the project child has its own event log and classifier, and the
+// agent has no workspace to arm a timeout for.
+func (f *Fleet) projectRuntime(ctx context.Context, a Agent) (*agentRuntime, error) {
+	fail := func(err error) (*agentRuntime, error) {
+		rt := &agentRuntime{id: a.ID, root: a.Project, spawnErr: err}
+		f.mu.Lock()
+		f.runtimes[a.ID] = rt
+		f.mu.Unlock()
+		return rt, err
+	}
+	pc, err := f.projectChildFor(ctx, a.Project)
+	if err != nil {
+		return fail(err)
+	}
+	pc.mu.Lock()
+	child, reg, log := pc.child, pc.reg, pc.log
+	version := pc.version
+	caps := make(map[string]bool, len(pc.caps))
+	for k := range pc.caps {
+		caps[k] = true
+	}
+	pc.mu.Unlock()
+	if child == nil || reg == nil {
+		return fail(fmt.Errorf("bridge: project child for %s is not running", pc.root))
+	}
+
+	rt := &agentRuntime{id: a.ID, root: a.Project, profile: a.Profile,
+		child: child, reg: reg, log: log, sourceKind: a.SourceKind,
+		project: pc, caps: caps}
+	// The child's version is the rule checkAgentVersion applies to a child of
+	// an agent's own: a mismatch is a warning, never a refusal.
+	if versionSkew(version, f.buildVersion) {
+		rt.versionWarning = true
+		slog.Default().Warn("webbridge: agent version differs from bridge",
+			"agent", a.ID, "agentVersion", version, "bridgeVersion", f.buildVersion)
+	}
+	f.mu.Lock()
+	f.runtimes[a.ID] = rt
+	f.mu.Unlock()
+	return rt, nil
+}
+
 // startRuntime builds and starts one agent's runtime. The caller owns
 // persisting the Agent record. ctx bounds the initialize handshake.
 func (f *Fleet) startRuntime(ctx context.Context, a Agent) (*agentRuntime, error) {
+	if f.onProjectChild(a) {
+		return f.projectRuntime(ctx, a)
+	}
 	child, err := f.newRuntime(a)
 	if err != nil {
 		// Build a runtime that records the spawn error so ProjectStatus can report it.
@@ -873,18 +946,22 @@ func (f *Fleet) checkAgentVersion(ctx context.Context, rt *agentRuntime) {
 	for k := range res.SessionCapabilities {
 		rt.caps[k] = true
 	}
-	agentVersion := res.AgentInfo.Version
-	// Both sides must carry a real version; an empty or "dev" value on
-	// either side means a source build, where skew is meaningless.
-	if agentVersion == "" || agentVersion == "dev" ||
-		f.buildVersion == "" || f.buildVersion == "dev" {
-		return
-	}
-	if agentVersion != f.buildVersion {
+	if versionSkew(res.AgentInfo.Version, f.buildVersion) {
 		rt.versionWarning = true
 		slog.Default().Warn("webbridge: agent version differs from bridge",
-			"agent", rt.id, "agentVersion", agentVersion, "bridgeVersion", f.buildVersion)
+			"agent", rt.id, "agentVersion", res.AgentInfo.Version, "bridgeVersion", f.buildVersion)
 	}
+}
+
+// versionSkew is checkAgentVersion's rule: both versions real and different.
+// Both sides must carry a real version; an empty or "dev" value on either side
+// means a source build, where skew is meaningless.
+func versionSkew(agentVersion, bridgeVersion string) bool {
+	if agentVersion == "" || agentVersion == "dev" ||
+		bridgeVersion == "" || bridgeVersion == "dev" {
+		return false
+	}
+	return agentVersion != bridgeVersion
 }
 
 func (f *Fleet) liveRuntimeForSession(sessionID string) (*agentRuntime, error) {
@@ -1435,7 +1512,10 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	// can restore the mapping. Must be set before the copy below.
 	a.SessionID = out.SessionID
 
-	rt.reg.track(out.SessionID, agentCwd)
+	// TrackFleet, not track: on a child of the agent's own the flag changes
+	// nothing, and on a project child it is what tells the fleet's session
+	// from a client's (P4 D10 decision 1).
+	rt.reg.TrackFleet(out.SessionID, agentCwd)
 	agent := a // copy the resolved agent
 	if out.Workspace != nil {
 		agent.Isolated = true

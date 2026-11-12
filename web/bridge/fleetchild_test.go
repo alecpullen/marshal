@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -121,6 +122,221 @@ func TestAProjectChildClassifiesByAgent(t *testing.T) {
 			t.Fatalf("activity deltas = %v, want one under agent-a", got)
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// hostOnlyProjectFleet is projectFleet made host-only, with newRuntime failing
+// the test: a local agent on a project child must never build a child of its
+// own (P4 D10 decision 2).
+func hostOnlyProjectFleet(t *testing.T) (*Fleet, func(root string) *fakeProjectChild) {
+	t.Helper()
+	f, fakeFor := projectFleet(t)
+	f.SetHostProcessesOnly()
+	f.newRuntime = func(a Agent) (*Child, error) {
+		t.Errorf("newRuntime was called for agent %s on project %s; a host-only local agent runs on its project's child", a.ID, a.Project)
+		return nil, fmt.Errorf("newRuntime must not be called")
+	}
+	return f, fakeFor
+}
+
+// TestALocalAgentRunsOnItsProjectsChild: Spawn starts one project child and
+// records the agent's session/new on its stdio, with no client-trust mark, and
+// the session is tracked as the fleet's on that child's registry (P4 D10).
+func TestALocalAgentRunsOnItsProjectsChild(t *testing.T) {
+	f, fakeFor := hostOnlyProjectFleet(t)
+	ctx := ctlContext(t)
+	root := t.TempDir()
+
+	id, err := f.Spawn(ctx, root, SpawnOptions{Name: "one"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	fake := fakeFor(root)
+	if fake == nil {
+		t.Fatal("no project child was built for the root")
+	}
+	if gens := fake.generations(); gens != 1 {
+		t.Fatalf("generations = %d, want exactly one project child", gens)
+	}
+
+	newCalls := fake.calls("session/new")
+	if len(newCalls) != 1 {
+		t.Fatalf("session/new calls = %v, want exactly one on the project child", newCalls)
+	}
+	if got := paramsOf(t, newCalls[0])["clientTrust"]; got != nil {
+		t.Errorf("session/new clientTrust = %v, want none: an agent's session is not a client's", got)
+	}
+	for _, rec := range fake.record() {
+		if rec.frame.method == "session/new" && rec.conn != stdioConn {
+			t.Fatalf("session/new arrived on connection %d, want the child's stdio", rec.conn)
+		}
+	}
+
+	pc, ok := projectEntry(f, root)
+	if !ok {
+		t.Fatal("the project child is not in the fleet's map")
+	}
+	a, ok := f.ws.Agent(id)
+	if !ok {
+		t.Fatalf("agent %s was not recorded", id)
+	}
+	if !pc.reg.IsFleet(a.SessionID) {
+		t.Fatalf("session %s is not tracked as the fleet's on the project child", a.SessionID)
+	}
+}
+
+// TestAnAgentAndAClientShareTheChild: an agent and a client session on one
+// project share its child, and the daemon's listing leaves the agent's session
+// out (P4 D10 decision 1).
+func TestAnAgentAndAClientShareTheChild(t *testing.T) {
+	f, fakeFor := hostOnlyProjectFleet(t)
+	ctx := ctlContext(t)
+	root := t.TempDir()
+
+	pc, err := f.projectChildFor(ctx, root)
+	if err != nil {
+		t.Fatalf("projectChildFor: %v", err)
+	}
+	clientSID, err := pc.reg.New(ctx, AgentPath(root), "")
+	if err != nil {
+		t.Fatalf("session/new: %v", err)
+	}
+
+	if _, err := f.Spawn(ctx, root, SpawnOptions{Name: "one"}); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	fake := fakeFor(root)
+	if gens := fake.generations(); gens != 1 {
+		t.Fatalf("generations = %d, want one child shared by both sessions", gens)
+	}
+	if got := pc.reg.count(); got != 2 {
+		t.Fatalf("the child tracks %d sessions, want two", got)
+	}
+
+	var listed []string
+	for _, s := range pc.reg.summaries() {
+		listed = append(listed, s.ID)
+	}
+	if len(listed) != 1 || listed[0] != clientSID {
+		t.Fatalf("the daemon's listing = %v, want only the client's session", listed)
+	}
+}
+
+// TestOnlyPlainLocalAgentsMove: every agent that is not a plain local host
+// agent keeps a child of its own (P4 D10 decision 2).
+func TestOnlyPlainLocalAgentsMove(t *testing.T) {
+	f, _ := projectFleet(t)
+	local := Agent{ID: "a1", Project: t.TempDir(), SourceKind: "local", Profile: DefaultRuntimeProfile()}
+
+	if f.onProjectChild(local) {
+		t.Error("a fleet that is not host-only moved a local agent onto a project child")
+	}
+
+	f.SetHostProcessesOnly()
+	if !f.onProjectChild(local) {
+		t.Error("a plain local agent did not move onto its project's child")
+	}
+
+	git := local
+	git.SourceKind = "git"
+	if f.onProjectChild(git) {
+		t.Error("a git-sourced agent moved onto a project child")
+	}
+
+	workspace := local
+	workspace.Workspace = &AgentWorkspace{Name: "w1", Source: "studio"}
+	if f.onProjectChild(workspace) {
+		t.Error("a workspace agent moved onto a project child")
+	}
+
+	f.egressMu.Lock()
+	f.egress = &egressHost{}
+	f.egressMu.Unlock()
+	t.Cleanup(func() {
+		f.egressMu.Lock()
+		f.egress = nil
+		f.egressMu.Unlock()
+	})
+	if f.onProjectChild(local) {
+		t.Error("an agent moved onto a project child while the egress proxy runs")
+	}
+}
+
+// TestAnAgentsEventsReachItsOwnLog: an agent on a project child reads the
+// child's log and the fleet's deltas under its own id (P4 D10 decision 3).
+func TestAnAgentsEventsReachItsOwnLog(t *testing.T) {
+	f, fakeFor := hostOnlyProjectFleet(t)
+	ctx := ctlContext(t)
+	root := t.TempDir()
+
+	id, err := f.Spawn(ctx, root, SpawnOptions{Name: "one"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	a, ok := f.ws.Agent(id)
+	if !ok || a.SessionID == "" {
+		t.Fatalf("agent %s has no recorded session", id)
+	}
+	fake := fakeFor(root)
+
+	log, err := f.LogForSession(a.SessionID)
+	if err != nil {
+		t.Fatalf("LogForSession: %v", err)
+	}
+	pc, _ := projectEntry(f, root)
+	if log != pc.log {
+		t.Fatal("the agent's log is not the project child's log")
+	}
+
+	fake.notify("session/update", map[string]any{
+		"sessionId": a.SessionID,
+		"update":    map[string]any{"kind": "tool_call", "toolName": "file.read"},
+	})
+	waitLogged(t, log, a.SessionID)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if got := activityDeltas(f); got[id] == "file.read" {
+			return
+		} else if time.Now().After(deadline) {
+			t.Fatalf("activity deltas = %v, want one under agent %s", got, id)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestTheAgentTakesTheChildsVersion: an agent on a project child carries the
+// child's version skew warning, which is checkAgentVersion's rule (P4 D10).
+func TestTheAgentTakesTheChildsVersion(t *testing.T) {
+	f, fakeFor := projectFleetWith(t, func(fake *fakeProjectChild) {
+		fake.fakeAgent.mu.Lock()
+		fake.fakeAgent.results["initialize"] = map[string]any{
+			"protocolVersion": 1,
+			"agentInfo":       map[string]any{"version": "v2.0.0"},
+		}
+		fake.fakeAgent.mu.Unlock()
+	})
+	f.SetHostProcessesOnly()
+	f.buildVersion = "v1.0.0"
+	ctx := ctlContext(t)
+	root := t.TempDir()
+
+	id, err := f.Spawn(ctx, root, SpawnOptions{Name: "one"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if fakeFor(root) == nil {
+		t.Fatal("no project child was built for the root")
+	}
+
+	f.mu.Lock()
+	rt := f.runtimes[id]
+	f.mu.Unlock()
+	if rt == nil {
+		t.Fatalf("agent %s has no runtime", id)
+	}
+	if !rt.versionWarning {
+		t.Fatalf("versionWarning = false, want true: the child reports v2.0.0 and the bridge v1.0.0")
 	}
 }
 

@@ -91,6 +91,10 @@ type sessionInfo struct {
 	// lastActive is when the session last carried a relayed frame or was
 	// tracked, and is what summaries sorts by. Not serialized.
 	lastActive time.Time
+	// fleet is true for a fleet agent's session (P4 D10). It keeps a project
+	// child running, but the idle sweep, the daemon's listing, an attach and
+	// the client-trust mark all leave it alone. Not serialized.
+	fleet bool
 }
 
 // DaemonSession is one tracked session of a project child, as
@@ -205,14 +209,26 @@ func (r *Registry) New(ctx context.Context, cwd AgentPath, sessionId string) (st
 // tracking it.
 //
 // It does not send ClientTrust, unlike New, Resume and resumeAll: its callers
-// restore sessions on registries that carry no mark. Do not call it on a
-// project child's registry while the mark is registry-wide — a child session
-// loaded that way answers no trust question and fails closed.
+// restore sessions on registries that carry no mark. A fleet agent's restore
+// uses LoadFleet, which is Load tracked as the fleet's; do not call Load for
+// one. Do not call either on a project child's registry for a client's
+// session while the mark is registry-wide — a child session loaded that way
+// answers no trust question and fails closed.
 func (r *Registry) Load(ctx context.Context, cwd AgentPath, id string) error {
 	if _, err := r.child.Request(ctx, "session/load", sessionParams{Cwd: cwd, SessionID: id, MCPServers: &[]json.RawMessage{}}); err != nil {
 		return err
 	}
 	r.track(id, cwd)
+	return nil
+}
+
+// LoadFleet is Load for a fleet agent's session: session/load without the
+// mark, then tracked as the fleet's.
+func (r *Registry) LoadFleet(ctx context.Context, cwd AgentPath, id string) error {
+	if _, err := r.child.Request(ctx, "session/load", sessionParams{Cwd: cwd, SessionID: id, MCPServers: &[]json.RawMessage{}}); err != nil {
+		return err
+	}
+	r.TrackFleet(id, cwd)
 	return nil
 }
 
@@ -240,6 +256,33 @@ func (r *Registry) track(id string, cwd AgentPath) {
 		lastActive: time.Now(),
 	}
 	r.mu.Unlock()
+}
+
+// TrackFleet tracks id as a fleet agent's session.
+func (r *Registry) TrackFleet(id string, cwd AgentPath) {
+	r.track(id, cwd)
+	r.mu.Lock()
+	if info, ok := r.sessions[id]; ok {
+		info.fleet = true
+	}
+	r.mu.Unlock()
+}
+
+// IsFleet reports whether id is tracked as a fleet agent's session.
+func (r *Registry) IsFleet(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	info, ok := r.sessions[id]
+	return ok && info.fleet
+}
+
+// tracksClient reports whether id is tracked and is not the fleet's: a
+// client's session, whose events a project child does not log.
+func (r *Registry) tracksClient(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	info, ok := r.sessions[id]
+	return ok && !info.fleet
 }
 
 // Resume resumes a stored session (session/resume, which replays nothing)
@@ -277,13 +320,22 @@ func (r *Registry) closeTracked(ctx context.Context, id string, cwd AgentPath) e
 	return nil
 }
 
+// forget untracks id and drains its waits without asking the child, for a
+// session whose close failed.
+func (r *Registry) forget(id string) {
+	r.cancelSession(id)
+	r.mu.Lock()
+	delete(r.sessions, id)
+	r.mu.Unlock()
+}
+
 // idleCandidates lists the tracked sessions with no viewer whose last
 // activity is at or before cutoff.
 func (r *Registry) idleCandidates(cutoff time.Time) []string {
 	r.mu.Lock()
 	out := make([]string, 0, len(r.sessions))
 	for id, info := range r.sessions {
-		if info.viewers > 0 || info.lastActive.After(cutoff) {
+		if info.fleet || info.viewers > 0 || info.lastActive.After(cutoff) {
 			continue
 		}
 		out = append(out, id)
@@ -300,7 +352,7 @@ func (r *Registry) idleCandidates(cutoff time.Time) []string {
 func (r *Registry) closeIfIdle(ctx context.Context, id string, cutoff time.Time) (bool, error) {
 	r.mu.Lock()
 	info, ok := r.sessions[id]
-	if !ok || info.viewers > 0 || info.lastActive.After(cutoff) {
+	if !ok || info.fleet || info.viewers > 0 || info.lastActive.After(cutoff) {
 		r.mu.Unlock()
 		return false, nil
 	}
@@ -365,11 +417,15 @@ func (r *Registry) touch(id string) {
 }
 
 // summaries lists the tracked sessions, most recently active first. Ties
-// break by ID so the order is stable across calls.
+// break by ID so the order is stable across calls. A fleet agent's session
+// is left out: it is not a client's session a daemon listing offers (P4 D10).
 func (r *Registry) summaries() []DaemonSession {
 	r.mu.Lock()
 	out := make([]DaemonSession, 0, len(r.sessions))
 	for id, info := range r.sessions {
+		if info.fleet {
+			continue
+		}
 		out = append(out, DaemonSession{
 			ID:         id,
 			Viewers:    info.viewers,
@@ -914,9 +970,11 @@ func (r *Registry) resumeAll() {
 	r.mu.Lock()
 	ids := make([]string, 0, len(r.sessions))
 	cwds := make(map[string]AgentPath, len(r.sessions))
+	fleets := make(map[string]bool, len(r.sessions))
 	for id, info := range r.sessions {
 		ids = append(ids, id)
 		cwds[id] = info.Cwd
+		fleets[id] = info.fleet
 		info.Busy = false // in-flight turn was interrupted by the restart
 	}
 	r.mu.Unlock()
@@ -924,7 +982,10 @@ func (r *Registry) resumeAll() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	for _, id := range ids {
-		_, _ = r.child.Request(ctx, "session/resume", sessionParams{Cwd: cwds[id], SessionID: id, MCPServers: &[]json.RawMessage{}, ClientTrust: r.ClientTrust})
+		// The mark is per session (P4 D10 decision 1): a client's session
+		// keeps the registry-wide one, a fleet agent's omits it.
+		trust := r.ClientTrust && !fleets[id]
+		_, _ = r.child.Request(ctx, "session/resume", sessionParams{Cwd: cwds[id], SessionID: id, MCPServers: &[]json.RawMessage{}, ClientTrust: trust})
 		r.emitEvent(id, map[string]any{"type": "bridge_restarted"})
 	}
 }

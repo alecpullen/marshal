@@ -87,6 +87,11 @@ tests, so `-short` is not a comprehensive fast-suite switch. The serialized
 CI command (`-p=1`) trades speed for reduced concurrency; do not copy it as
 the default local command without measuring on the laptop.
 
+The first GitHub run exposed a race in `TestASecondEmbeddingWaitsAndTakesOver`:
+its first runtime retried at the production 30-second interval after a probe
+won the lease, but the test waited only two seconds. Both runtimes now retry
+within the test deadline; the corrected test passed 20 consecutive runs.
+
 The full suite omits real-provider tests and real keyring access by default;
 see `AGENTS.md` for their explicit opt-in requirements. The ordinary suite
 also skips usability scenarios when no binary exists, which is why CI has a
@@ -99,8 +104,9 @@ shared cloud run with concurrent work, `TestStackBusyFlipBudget`,
 `TestStackPatchApplyBudget`, and `TestStackRoundTripBudget` exceeded their
 10 ms, 2 ms, and 50 ms median budgets respectively. This is an observed
 failure, not proof of a regression: runner load was uncontrolled. They remain
-in CI and can fail there; investigate isolated baselines before moving or
-changing these tests. A second run also exceeded two of these budgets.
+in CI. On the first GitHub Actions run all three also failed (10.73 ms,
+2.57 ms and 69.09 ms). A controlled baseline is needed before moving or
+changing these tests.
 
 Existing ACP benchmarks (`go test ./internal/acp -run '^$' -bench .`) can
 track trends on a controlled machine. Shared runners vary in load and CPU, so

@@ -134,6 +134,9 @@ func TestASecondEmbeddingWaitsAndTakesOver(t *testing.T) {
 	cfg := codexOAuthProviderConfig("codex", "https://example.invalid/backend-api")
 	first := newRefreshEmbedded(t, home, t.TempDir(), cfg)
 	second := newRefreshEmbedded(t, home, t.TempDir(), cfg)
+	// The probe can briefly win the first attempt, so both runtimes must retry
+	// within the test deadline rather than the production 30-second interval.
+	first.leaseRetry = time.Millisecond
 	second.leaseRetry = time.Millisecond
 
 	if _, err := first.Start(context.Background()); err != nil {

@@ -436,17 +436,27 @@ Git state is read through the hardened runner with an **empty** credential, so
 no forge PAT reaches a local read's environment, and only four allowlisted
 verbs are used: `rev-parse HEAD`, `symbolic-ref --quiet --short HEAD`,
 `for-each-ref --format=%(refname:short) refs/heads`, and
-`--no-optional-locks status --porcelain --untracked-files=all`. Nothing that
-fetches, checks out, switches, resets, cleans, clones, pulls or pushes is ever
-run, and `--no-optional-locks` keeps `git status` from refreshing the index.
+`-c core.quotepath=false --no-optional-locks status --porcelain
+--untracked-files=all`. `core.quotepath=false` is an argument to the status
+verb, not a new verb: it makes non-ASCII dirty paths arrive literal instead of
+C-quoted escapes. Nothing that fetches, checks out, switches, resets, cleans,
+clones, pulls or pushes is ever run, and `--no-optional-locks` keeps
+`git status` from refreshing the index.
 
 - A **detached HEAD** is an empty `worktree.branch`, the SHA in
   `worktree.head`, and `detached HEAD` in `worktree.detail` — plus
   `no local branches` when the checkout has none. Clauses are joined with
   `; `, so a detached, truncated checkout states both.
-- `worktree.dirtyFiles` is capped at **100** entries. Beyond the cap the detail
-  adds `<n> additional dirty entries omitted (dirtyFiles is capped at 100)`.
-  Renames and copies report their destination path.
+- `worktree.dirtyFiles` is capped at **100** entries. The status output itself
+  is read through a bounded runner at **1 MiB** (stdout and stderr), so a
+  heavily dirty checkout cannot materialise an unbounded string before the cap
+  applies. When the output was not truncated, the detail adds the exact
+  `<n> additional dirty entries omitted (dirtyFiles is capped at 100)`. When it
+  was truncated, the trailing partial porcelain line is dropped and the detail
+  says `at least <n> additional dirty entries omitted`, because the exact count
+  is unknowable once the output is cut. Renames and copies report their
+  destination path; any path git still C-quotes (one containing a space or a
+  quote) is unquoted, so `dirtyFiles` carries real paths.
 - A dirty checkout is reported, never repaired, and its working tree is
   untouched.
 - **Top-level `revision` and `branch` source priority** is frozen: the checkout
@@ -595,3 +605,23 @@ only real subprocess is local `git` against a disposable repository. No test
 reads developer credentials, calls a live forge, or contacts a model provider.
 The whole-repository suite is run by the coordinator separately, not by this
 slice.
+
+### Branch-review fix pass (PR #60)
+
+Two independent `glm-5.3-flash` reviews of PR #60 raised seven findings. This
+pass resolves all seven, each covered by a named test.
+
+| # | Finding | Resolution | Commit |
+|---|---|---|---|
+| 1 | GitHub `ci_checks` read only check-runs, so a status-only repo yielded a false "no checks" | `Checks` now reads the combined commit status (`/commits/{ref}/status`), merges the newest status per context (by status id, else last seen) alongside check-runs, and sets the context as the check identity | `ccff7a86` |
+| 2 | `git status` output was read unboundedly | A new additive `runCtxLimited` caps stdout and stderr at 1 MiB; the status read drops a truncated trailing partial line and reports `at least <n>` omitted entries when the output was cut | `ccff7a86` |
+| 3 | Porcelain quoting was ignored | The status invocation adds `-c core.quotepath=false` (an argument to the status verb, not a new verb); remaining C-quoted paths are unquoted so `dirtyFiles` carries real paths | `ccff7a86` |
+| 4 | Forge collections were single-page and silently truncated | Branches, pull requests and checks paginate up to five pages on both adapters; a full final page returns the items plus `errDiscoveryTruncated`, and the report keeps them, stays `supported`, and records a `temporarily_unavailable` gap instead of an absence fact | `ccff7a86` |
+| 5 | The gap fix told an operator to declare an already-declared forge | The unsupported fix now says the declared forge does not expose the capability and adapter support would be needed; only an undeclared forge is told to declare one | `ccff7a86` |
+| 6 | The dirty-file parser had no direct table test | `TestDiscoveryDirtyFilesPorcelainTable` exercises rename, quoted path, exactly-at-cap and cap-plus-one records directly, without a git binary | `ccff7a86` |
+| 7 | A symlinked environment definition produced a "define a development environment" recommendation | A skipped symlink qualifies the section's absence fact; the recommendation pass ignores qualified absence. The symlink is never read or reported as a fact | `ccff7a86` |
+
+Verification for this pass: `go test ./web/bridge -run
+'Discovery|DiscoverRoute|InspectCheckout|WebIsStdlibOnly' -count=1` PASS,
+`go test ./web/bridge -count=1` PASS, `gofmt -l web/bridge` no output,
+`go vet ./web/bridge/...` clean, `git diff --check` clean.

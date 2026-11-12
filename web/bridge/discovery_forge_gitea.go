@@ -97,83 +97,103 @@ func (g *discoveryGiteaForge) RepositoryMetadata(ctx context.Context, repo Repo,
 	}, nil
 }
 
-// Branches reads GET /repos/{owner}/{repo}/branches. Gitea names the head
-// revision commit.id; older shapes use commit.sha, so both are accepted.
+// Branches reads GET /repos/{owner}/{repo}/branches, following pages until a
+// short page or the page bound. Gitea names the head revision commit.id; older
+// shapes use commit.sha, so both are accepted.
 func (g *discoveryGiteaForge) Branches(ctx context.Context, repo Repo, cred Credential) ([]DiscoveryBranch, error) {
 	base, err := g.repoPath(repo)
 	if err != nil {
 		return nil, err
 	}
-	req, err := g.newRequest(repo, base+"/branches?limit=100", cred)
-	if err != nil {
-		return nil, err
-	}
-	var resp []struct {
-		Name   string `json:"name"`
-		Commit struct {
-			ID  string `json:"id"`
-			SHA string `json:"sha"`
-		} `json:"commit"`
-	}
-	if err := doJSON(ctx, g.client, req, &resp); err != nil {
-		return nil, err
-	}
-	branches := make([]DiscoveryBranch, 0, len(resp))
-	for _, b := range resp {
-		sha := b.Commit.ID
-		if sha == "" {
-			sha = b.Commit.SHA
+	branches := make([]DiscoveryBranch, 0, discoveryForgePageSize)
+	for page := 1; page <= discoveryForgeMaxPages; page++ {
+		req, err := g.newRequest(repo, fmt.Sprintf("%s/branches?limit=%d&page=%d",
+			base, discoveryForgePageSize, page), cred)
+		if err != nil {
+			return nil, err
 		}
-		branches = append(branches, DiscoveryBranch{Name: b.Name, SHA: sha})
+		var resp []struct {
+			Name   string `json:"name"`
+			Commit struct {
+				ID  string `json:"id"`
+				SHA string `json:"sha"`
+			} `json:"commit"`
+		}
+		if err := doJSON(ctx, g.client, req, &resp); err != nil {
+			return nil, err
+		}
+		for _, b := range resp {
+			sha := b.Commit.ID
+			if sha == "" {
+				sha = b.Commit.SHA
+			}
+			branches = append(branches, DiscoveryBranch{Name: b.Name, SHA: sha})
+		}
+		if len(resp) < discoveryForgePageSize {
+			return branches, nil
+		}
+		if page == discoveryForgeMaxPages {
+			return branches, fmt.Errorf("branches for %s: %w", repo.URL, errDiscoveryTruncated)
+		}
 	}
 	return branches, nil
 }
 
-// PullRequests reads GET /repos/{owner}/{repo}/pulls?state=open. Gitea names
-// the PR identifier "index"; "number" is accepted too because both appear in
-// the wild.
+// PullRequests reads GET /repos/{owner}/{repo}/pulls?state=open, following
+// pages until a short page or the page bound. Gitea names the PR identifier
+// "index"; "number" is accepted too because both appear in the wild.
 func (g *discoveryGiteaForge) PullRequests(ctx context.Context, repo Repo, cred Credential) ([]DiscoveryPullRequest, error) {
 	base, err := g.repoPath(repo)
 	if err != nil {
 		return nil, err
 	}
-	req, err := g.newRequest(repo, base+"/pulls?state=open&limit=100", cred)
-	if err != nil {
-		return nil, err
-	}
-	var resp []struct {
-		Number int    `json:"number"`
-		Index  int    `json:"index"`
-		State  string `json:"state"`
-		Title  string `json:"title"`
-		Head   struct {
-			SHA string `json:"sha"`
-		} `json:"head"`
-	}
-	if err := doJSON(ctx, g.client, req, &resp); err != nil {
-		return nil, err
-	}
-	prs := make([]DiscoveryPullRequest, 0, len(resp))
-	for _, p := range resp {
-		number := p.Number
-		if number == 0 {
-			number = p.Index
+	prs := make([]DiscoveryPullRequest, 0, discoveryForgePageSize)
+	for page := 1; page <= discoveryForgeMaxPages; page++ {
+		req, err := g.newRequest(repo, fmt.Sprintf("%s/pulls?state=open&limit=%d&page=%d",
+			base, discoveryForgePageSize, page), cred)
+		if err != nil {
+			return nil, err
 		}
-		prs = append(prs, DiscoveryPullRequest{
-			Number:  number,
-			State:   p.State,
-			Title:   p.Title,
-			HeadSHA: p.Head.SHA,
-		})
+		var resp []struct {
+			Number int    `json:"number"`
+			Index  int    `json:"index"`
+			State  string `json:"state"`
+			Title  string `json:"title"`
+			Head   struct {
+				SHA string `json:"sha"`
+			} `json:"head"`
+		}
+		if err := doJSON(ctx, g.client, req, &resp); err != nil {
+			return nil, err
+		}
+		for _, p := range resp {
+			number := p.Number
+			if number == 0 {
+				number = p.Index
+			}
+			prs = append(prs, DiscoveryPullRequest{
+				Number:  number,
+				State:   p.State,
+				Title:   p.Title,
+				HeadSHA: p.Head.SHA,
+			})
+		}
+		if len(resp) < discoveryForgePageSize {
+			return prs, nil
+		}
+		if page == discoveryForgeMaxPages {
+			return prs, fmt.Errorf("pull requests for %s: %w", repo.URL, errDiscoveryTruncated)
+		}
 	}
 	return prs, nil
 }
 
-// Checks reads GET /repos/{owner}/{repo}/commits/{ref}/statuses. A commit
-// status carries its identity in "context" and its conclusion in "status"; the
-// newest status per context wins, so an older pass cannot mask a newer failure.
+// Checks reads GET /repos/{owner}/{repo}/commits/{ref}/statuses, following
+// pages until a short page or the page bound. A commit status carries its
+// identity in "context" and its conclusion in "status"; the newest status per
+// context wins, so an older pass cannot mask a newer failure.
 func (g *discoveryGiteaForge) Checks(ctx context.Context, repo Repo, ref string, cred Credential) ([]DiscoveryCheck, error) {
-	statuses, err := g.statuses(ctx, repo, ref, cred)
+	statuses, truncated, err := g.statuses(ctx, repo, ref, cred)
 	if err != nil {
 		return nil, err
 	}
@@ -187,6 +207,9 @@ func (g *discoveryGiteaForge) Checks(ctx context.Context, repo Repo, ref string,
 			URL:        s.TargetURL,
 			Context:    s.Context,
 		})
+	}
+	if truncated {
+		return checks, fmt.Errorf("checks on %s: %w", ref, errDiscoveryTruncated)
 	}
 	return checks, nil
 }
@@ -212,21 +235,34 @@ type giteaStatus struct {
 	TargetURL   string `json:"target_url"`
 }
 
-// statuses reads GET /repos/{owner}/{repo}/commits/{ref}/statuses.
-func (g *discoveryGiteaForge) statuses(ctx context.Context, repo Repo, ref string, cred Credential) ([]giteaStatus, error) {
+// statuses reads GET /repos/{owner}/{repo}/commits/{ref}/statuses, following
+// pages until a short page or the page bound. A full final page means the
+// instance has more statuses than discovery reads.
+func (g *discoveryGiteaForge) statuses(ctx context.Context, repo Repo, ref string, cred Credential) ([]giteaStatus, bool, error) {
 	base, err := g.repoPath(repo)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	req, err := g.newRequest(repo, base+"/commits/"+url.PathEscape(ref)+"/statuses", cred)
-	if err != nil {
-		return nil, err
+	statuses := make([]giteaStatus, 0, discoveryForgePageSize)
+	for page := 1; page <= discoveryForgeMaxPages; page++ {
+		req, err := g.newRequest(repo, fmt.Sprintf("%s/commits/%s/statuses?limit=%d&page=%d",
+			base, url.PathEscape(ref), discoveryForgePageSize, page), cred)
+		if err != nil {
+			return nil, false, err
+		}
+		var resp []giteaStatus
+		if err := doJSON(ctx, g.client, req, &resp); err != nil {
+			return nil, false, err
+		}
+		statuses = append(statuses, resp...)
+		if len(resp) < discoveryForgePageSize {
+			return statuses, false, nil
+		}
+		if page == discoveryForgeMaxPages {
+			return statuses, true, nil
+		}
 	}
-	var resp []giteaStatus
-	if err := doJSON(ctx, g.client, req, &resp); err != nil {
-		return nil, err
-	}
-	return resp, nil
+	return statuses, false, nil
 }
 
 // newestStatusPerContext keeps the highest-id status for each context. Contexts

@@ -745,6 +745,9 @@ func TestDiscoveryGitStateReportsDirtyWithoutRepair(t *testing.T) {
 		if verb == "status" && !discoveryHasArg(call.args, "--no-optional-locks") {
 			t.Fatalf("status ran without --no-optional-locks: %v", call.args)
 		}
+		if verb == "status" && !discoveryHasArg(call.args, "core.quotepath=false") {
+			t.Fatalf("status ran without core.quotepath=false: %v", call.args)
+		}
 		for _, kv := range call.env {
 			if strings.HasPrefix(kv, "MARSHAL_ASKPASS") || strings.HasPrefix(kv, "GIT_ASKPASS") {
 				t.Fatalf("local read carried credential environment %q", kv)
@@ -834,5 +837,196 @@ func TestDiscoveryGitStateBoundsDirtyFilesAndRepresentsDetachedHead(t *testing.T
 	}
 	if !strings.Contains(detail, wantOmitted) {
 		t.Fatalf("detail = %q, want it to state %q", detail, wantOmitted)
+	}
+}
+
+// TestGitRunnerRunCtxLimitedCapsSeamOutput covers finding 2: the bounded
+// runner must honour the same hardened invocation and truncate the seam's
+// returned bytes at the limit.
+func TestGitRunnerRunCtxLimitedCapsSeamOutput(t *testing.T) {
+	var gotArgs, gotEnv []string
+	g := &gitRunner{exec: func(dir string, env []string, args ...string) ([]byte, error) {
+		gotArgs = append([]string(nil), args...)
+		gotEnv = append([]string(nil), env...)
+		return []byte("0123456789"), nil
+	}}
+
+	out, truncated, err := g.runCtxLimited(context.Background(), "", Credential{}, 4, "status", "--porcelain")
+	if err != nil {
+		t.Fatalf("runCtxLimited: %v", err)
+	}
+	if string(out) != "0123" {
+		t.Fatalf("out = %q, want the first 4 bytes", out)
+	}
+	if !truncated {
+		t.Fatal("truncated = false, want true for output past the limit")
+	}
+	if !discoveryHasArg(gotArgs, "core.hooksPath=/dev/null") ||
+		!discoveryHasArg(gotArgs, "protocol.ext.allow=never") {
+		t.Fatalf("args = %v, want the hardened git flags", gotArgs)
+	}
+	for _, kv := range gotEnv {
+		if kv == "MARSHAL_ASKPASS_SECRET="+discoveryTestToken {
+			t.Fatalf("env carries the credential: %q", kv)
+		}
+	}
+
+	out, truncated, err = g.runCtxLimited(context.Background(), "", Credential{}, 16, "status")
+	if err != nil {
+		t.Fatalf("runCtxLimited: %v", err)
+	}
+	if truncated {
+		t.Fatal("truncated = true, want false for output under the limit")
+	}
+	if string(out) != "0123456789" {
+		t.Fatalf("out = %q, want the whole seam output", out)
+	}
+}
+
+// TestDiscoveryGitStateReportsAtLeastWhenStatusTruncated covers finding 2: a
+// cut status output drops its trailing partial line and reports the omitted
+// count as a lower bound, not as an exact number.
+func TestDiscoveryGitStateReportsAtLeastWhenStatusTruncated(t *testing.T) {
+	dir := t.TempDir()
+	var b strings.Builder
+	for i := 0; b.Len() < discoveryStatusLimit+512; i++ {
+		fmt.Fprintf(&b, "?? dirty-%06d.txt\n", i)
+	}
+	rec := newDiscoveryRecordingFleet(t, map[string]string{
+		"rev-parse":    "abc123\n",
+		"symbolic-ref": "main\n",
+		"for-each-ref": "main\n",
+		"status":       b.String(),
+	})
+
+	_, _, dirty, files, detail, err := rec.fleet.discoveryGitState(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("discoveryGitState: %v", err)
+	}
+	if dirty == nil || !*dirty {
+		t.Fatalf("dirty = %v, want true", dirty)
+	}
+	if len(files) != discoveryDirtyFileLimit {
+		t.Fatalf("dirtyFiles = %d, want the %d-entry cap", len(files), discoveryDirtyFileLimit)
+	}
+	if !strings.Contains(detail, "at least") {
+		t.Fatalf("detail = %q, want the omitted count as a lower bound", detail)
+	}
+	if !strings.Contains(detail, "additional dirty entries omitted") {
+		t.Fatalf("detail = %q, want the cap clause", detail)
+	}
+	for _, file := range files {
+		if !strings.HasPrefix(file, "dirty-") || strings.HasSuffix(file, "\x00") {
+			t.Fatalf("dirty file %q is not a complete porcelain path", file)
+		}
+	}
+}
+
+// TestDiscoveryDirtyFilesPorcelainTable exercises the parser directly, so its
+// porcelain handling is covered even when no git binary is installed.
+func TestDiscoveryDirtyFilesPorcelainTable(t *testing.T) {
+	line := func(state, path string) string { return state + " " + path + "\n" }
+	many := func(n int) string {
+		var b strings.Builder
+		for i := 0; i < n; i++ {
+			fmt.Fprintf(&b, "?? file-%03d.txt\n", i)
+		}
+		return b.String()
+	}
+	numbered := func(n int) []string {
+		files := make([]string, 0, n)
+		for i := 0; i < n; i++ {
+			files = append(files, fmt.Sprintf("file-%03d.txt", i))
+		}
+		return files
+	}
+
+	tests := []struct {
+		name    string
+		status  string
+		want    []string
+		omitted int
+	}{
+		{
+			name:   "rename reports the destination",
+			status: line("R", "old.txt -> new.txt"),
+			want:   []string{"new.txt"},
+		},
+		{
+			name:   "quoted path is unquoted",
+			status: line("??", `"a b.txt"`),
+			want:   []string{"a b.txt"},
+		},
+		{
+			name:   "exactly at the cap omits nothing",
+			status: many(discoveryDirtyFileLimit),
+			want:   numbered(discoveryDirtyFileLimit),
+		},
+		{
+			name:    "one past the cap omits one",
+			status:  many(discoveryDirtyFileLimit + 1),
+			want:    numbered(discoveryDirtyFileLimit),
+			omitted: 1,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			files, omitted := discoveryDirtyFiles(tc.status)
+			if !reflect.DeepEqual(files, tc.want) {
+				t.Fatalf("files = %v, want %v", files, tc.want)
+			}
+			if omitted != tc.omitted {
+				t.Fatalf("omitted = %d, want %d", omitted, tc.omitted)
+			}
+		})
+	}
+}
+
+// TestInspectCheckoutQualifiesAbsenceForSkippedSymlink covers finding 7: a
+// skipped symlinked candidate means the search did not establish absence, so
+// the absence fact must say a candidate was skipped.
+func TestInspectCheckoutQualifiesAbsenceForSkippedSymlink(t *testing.T) {
+	outside := t.TempDir()
+	for _, tc := range []struct {
+		name   string
+		rel    string
+		isfile bool
+	}{
+		{name: "environment file", rel: "Dockerfile", isfile: true},
+		{name: "devcontainer directory", rel: ".devcontainer"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			target := filepath.Join(outside, filepath.FromSlash(tc.rel))
+			if tc.isfile {
+				discoveryWriteFile(t, outside, tc.rel, []byte("FROM outside\n"))
+			} else if err := os.MkdirAll(target, 0o755); err != nil {
+				t.Fatalf("mkdir target: %v", err)
+			}
+			if err := os.Symlink(target, filepath.Join(root, filepath.FromSlash(tc.rel))); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+
+			got, err := inspectCheckout(root)
+			if err != nil {
+				t.Fatalf("inspectCheckout: %v", err)
+			}
+			if len(got.Gaps) != 0 {
+				t.Fatalf("gaps = %+v, want none: a symlink is skipped, not failed", got.Gaps)
+			}
+			discoveryRequireFactValues(t, "environment", got.Environment, "absent")
+			absence := got.Environment[0]
+			if !strings.Contains(absence.Detail, "skipped") {
+				t.Fatalf("absence detail = %q, want it to record the skipped candidate", absence.Detail)
+			}
+			for _, fact := range got.facts() {
+				if fact.Value == tc.rel || fact.Value == tc.rel+"/" {
+					t.Fatalf("a skipped symlink was reported as a fact: %+v", fact)
+				}
+				if strings.Contains(fact.Source, outside) {
+					t.Fatalf("a fact leaked the symlink target: %+v", fact)
+				}
+			}
+		})
 	}
 }

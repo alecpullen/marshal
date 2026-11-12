@@ -2,8 +2,10 @@ package bridge
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 )
 
@@ -87,110 +89,224 @@ func (g *discoveryGitHubForge) RepositoryMetadata(ctx context.Context, repo Repo
 	}, nil
 }
 
-// Branches reads GET /repos/{owner}/{repo}/branches.
+// Branches reads GET /repos/{owner}/{repo}/branches, following pages until a
+// short page or the page bound. A full final page means the forge has more
+// branches than discovery reads, which is reported as truncation.
 func (g *discoveryGitHubForge) Branches(ctx context.Context, repo Repo, cred Credential) ([]DiscoveryBranch, error) {
 	base, err := g.repoPath(repo)
 	if err != nil {
 		return nil, err
 	}
-	req, err := g.newRequest(repo, base+"/branches?per_page=100", cred)
-	if err != nil {
-		return nil, err
-	}
-	var resp []struct {
-		Name   string `json:"name"`
-		Commit struct {
-			SHA string `json:"sha"`
-		} `json:"commit"`
-	}
-	if err := doJSON(ctx, g.client, req, &resp); err != nil {
-		return nil, err
-	}
-	branches := make([]DiscoveryBranch, 0, len(resp))
-	for _, b := range resp {
-		branches = append(branches, DiscoveryBranch{Name: b.Name, SHA: b.Commit.SHA})
+	branches := make([]DiscoveryBranch, 0, discoveryForgePageSize)
+	for page := 1; page <= discoveryForgeMaxPages; page++ {
+		req, err := g.newRequest(repo, fmt.Sprintf("%s/branches?per_page=%d&page=%d",
+			base, discoveryForgePageSize, page), cred)
+		if err != nil {
+			return nil, err
+		}
+		var resp []struct {
+			Name   string `json:"name"`
+			Commit struct {
+				SHA string `json:"sha"`
+			} `json:"commit"`
+		}
+		if err := doJSON(ctx, g.client, req, &resp); err != nil {
+			return nil, err
+		}
+		for _, b := range resp {
+			branches = append(branches, DiscoveryBranch{Name: b.Name, SHA: b.Commit.SHA})
+		}
+		if len(resp) < discoveryForgePageSize {
+			return branches, nil
+		}
+		if page == discoveryForgeMaxPages {
+			return branches, fmt.Errorf("branches for %s: %w", repo.URL, errDiscoveryTruncated)
+		}
 	}
 	return branches, nil
 }
 
-// PullRequests reads GET /repos/{owner}/{repo}/pulls?state=open.
+// PullRequests reads GET /repos/{owner}/{repo}/pulls?state=open, following
+// pages until a short page or the page bound.
 func (g *discoveryGitHubForge) PullRequests(ctx context.Context, repo Repo, cred Credential) ([]DiscoveryPullRequest, error) {
 	base, err := g.repoPath(repo)
 	if err != nil {
 		return nil, err
 	}
-	req, err := g.newRequest(repo, base+"/pulls?state=open&per_page=100", cred)
-	if err != nil {
-		return nil, err
-	}
-	var resp []struct {
-		Number int    `json:"number"`
-		State  string `json:"state"`
-		Title  string `json:"title"`
-		Head   struct {
-			SHA string `json:"sha"`
-		} `json:"head"`
-	}
-	if err := doJSON(ctx, g.client, req, &resp); err != nil {
-		return nil, err
-	}
-	prs := make([]DiscoveryPullRequest, 0, len(resp))
-	for _, p := range resp {
-		prs = append(prs, DiscoveryPullRequest{
-			Number:  p.Number,
-			State:   p.State,
-			Title:   p.Title,
-			HeadSHA: p.Head.SHA,
-		})
+	prs := make([]DiscoveryPullRequest, 0, discoveryForgePageSize)
+	for page := 1; page <= discoveryForgeMaxPages; page++ {
+		req, err := g.newRequest(repo, fmt.Sprintf("%s/pulls?state=open&per_page=%d&page=%d",
+			base, discoveryForgePageSize, page), cred)
+		if err != nil {
+			return nil, err
+		}
+		var resp []struct {
+			Number int    `json:"number"`
+			State  string `json:"state"`
+			Title  string `json:"title"`
+			Head   struct {
+				SHA string `json:"sha"`
+			} `json:"head"`
+		}
+		if err := doJSON(ctx, g.client, req, &resp); err != nil {
+			return nil, err
+		}
+		for _, p := range resp {
+			prs = append(prs, DiscoveryPullRequest{
+				Number:  p.Number,
+				State:   p.State,
+				Title:   p.Title,
+				HeadSHA: p.Head.SHA,
+			})
+		}
+		if len(resp) < discoveryForgePageSize {
+			return prs, nil
+		}
+		if page == discoveryForgeMaxPages {
+			return prs, fmt.Errorf("pull requests for %s: %w", repo.URL, errDiscoveryTruncated)
+		}
 	}
 	return prs, nil
 }
 
-// Checks reads GET /repos/{owner}/{repo}/commits/{ref}/check-runs. Every check
-// on the ref is reported, not only the failed ones: discovery describes what
-// the credential can see, and the caller decides what matters.
+// Checks reads the CI identity a repo reports for ref. GitHub has two: check
+// runs (GET .../check-runs) and legacy commit statuses (GET .../status). Both
+// are read and merged, because a repo whose CI reports only commit statuses
+// would otherwise yield a false "no checks" fact. Newest status per context
+// wins. Every check on the ref is reported, not only the failed ones.
 func (g *discoveryGitHubForge) Checks(ctx context.Context, repo Repo, ref string, cred Credential) ([]DiscoveryCheck, error) {
 	base, err := g.repoPath(repo)
 	if err != nil {
 		return nil, err
 	}
-	req, err := g.newRequest(repo, base+"/commits/"+url.PathEscape(ref)+"/check-runs?per_page=100", cred)
+	checks := make([]DiscoveryCheck, 0, discoveryForgePageSize)
+	truncated := false
+	for page := 1; page <= discoveryForgeMaxPages; page++ {
+		req, err := g.newRequest(repo, fmt.Sprintf("%s/commits/%s/check-runs?per_page=%d&page=%d",
+			base, url.PathEscape(ref), discoveryForgePageSize, page), cred)
+		if err != nil {
+			return nil, err
+		}
+		var resp struct {
+			CheckRuns []struct {
+				ID         int64  `json:"id"`
+				Name       string `json:"name"`
+				Conclusion string `json:"conclusion"`
+				Status     string `json:"status"`
+				HTMLURL    string `json:"html_url"`
+				DetailsURL string `json:"details_url"`
+				App        struct {
+					ID int64 `json:"id"`
+				} `json:"app"`
+			} `json:"check_runs"`
+		}
+		if err := doJSON(ctx, g.client, req, &resp); err != nil {
+			return nil, err
+		}
+		for _, c := range resp.CheckRuns {
+			check := DiscoveryCheck{
+				Name:       c.Name,
+				Conclusion: c.Conclusion,
+				Status:     c.Status,
+				URL:        c.HTMLURL,
+				AppID:      c.App.ID,
+			}
+			// An Actions check run links its job in details_url; that job id is
+			// what the log endpoint needs.
+			if m := githubJobRe.FindStringSubmatch(c.DetailsURL); m != nil {
+				check.JobID, _ = strconv.ParseInt(m[1], 10, 64)
+			}
+			checks = append(checks, check)
+		}
+		if len(resp.CheckRuns) < discoveryForgePageSize {
+			break
+		}
+		if page == discoveryForgeMaxPages {
+			truncated = true
+		}
+	}
+
+	statusChecks, err := g.commitStatuses(ctx, repo, ref, cred)
+	if err != nil {
+		return nil, err
+	}
+	checks = append(checks, statusChecks...)
+
+	if truncated {
+		return checks, fmt.Errorf("checks on %s: %w", ref, errDiscoveryTruncated)
+	}
+	return checks, nil
+}
+
+// githubCommitStatus is one commit status as GitHub reports it.
+type githubCommitStatus struct {
+	ID          int64  `json:"id"`
+	Context     string `json:"context"`
+	State       string `json:"state"`
+	Description string `json:"description"`
+	TargetURL   string `json:"target_url"`
+}
+
+// commitStatuses reads GET /repos/{owner}/{repo}/commits/{ref}/status and
+// normalises its newest status per context into checks. The status id is the
+// order when present; otherwise the last status seen wins.
+func (g *discoveryGitHubForge) commitStatuses(ctx context.Context, repo Repo, ref string, cred Credential) ([]DiscoveryCheck, error) {
+	base, err := g.repoPath(repo)
+	if err != nil {
+		return nil, err
+	}
+	req, err := g.newRequest(repo, base+"/commits/"+url.PathEscape(ref)+"/status", cred)
 	if err != nil {
 		return nil, err
 	}
 	var resp struct {
-		CheckRuns []struct {
-			ID         int64  `json:"id"`
-			Name       string `json:"name"`
-			Conclusion string `json:"conclusion"`
-			Status     string `json:"status"`
-			HTMLURL    string `json:"html_url"`
-			DetailsURL string `json:"details_url"`
-			App        struct {
-				ID int64 `json:"id"`
-			} `json:"app"`
-		} `json:"check_runs"`
+		State    string               `json:"state"`
+		Statuses []githubCommitStatus `json:"statuses"`
 	}
 	if err := doJSON(ctx, g.client, req, &resp); err != nil {
 		return nil, err
 	}
-	checks := make([]DiscoveryCheck, 0, len(resp.CheckRuns))
-	for _, c := range resp.CheckRuns {
-		check := DiscoveryCheck{
-			Name:       c.Name,
-			Conclusion: c.Conclusion,
-			Status:     c.Status,
-			URL:        c.HTMLURL,
-			AppID:      c.App.ID,
-		}
-		// An Actions check run links its job in details_url; that job id is
-		// what the log endpoint needs.
-		if m := githubJobRe.FindStringSubmatch(c.DetailsURL); m != nil {
-			check.JobID, _ = strconv.ParseInt(m[1], 10, 64)
-		}
-		checks = append(checks, check)
+	newest := newestGitHubStatusPerContext(resp.Statuses)
+	checks := make([]DiscoveryCheck, 0, len(newest))
+	for _, s := range newest {
+		checks = append(checks, DiscoveryCheck{
+			Name:       s.Context,
+			Conclusion: s.State,
+			Status:     s.State,
+			URL:        s.TargetURL,
+			Context:    s.Context,
+		})
 	}
 	return checks, nil
+}
+
+// newestGitHubStatusPerContext keeps the newest status for each context. The
+// status id orders them when the forge reports one; a status without an id can
+// only be ordered by arrival, so the last one seen wins. Contexts are returned
+// in sorted order for a deterministic report.
+func newestGitHubStatusPerContext(statuses []githubCommitStatus) []githubCommitStatus {
+	winner := make(map[string]githubCommitStatus, len(statuses))
+	contexts := make([]string, 0, len(statuses))
+	for _, s := range statuses {
+		current, seen := winner[s.Context]
+		if !seen {
+			contexts = append(contexts, s.Context)
+			winner[s.Context] = s
+			continue
+		}
+		switch {
+		case s.ID == 0:
+			winner[s.Context] = s // no id: the last one seen wins
+		case current.ID == 0 || s.ID > current.ID:
+			winner[s.Context] = s
+		}
+	}
+	sort.Strings(contexts)
+	out := make([]githubCommitStatus, 0, len(contexts))
+	for _, context := range contexts {
+		out = append(out, winner[context])
+	}
+	return out
 }
 
 // CheckLogs returns the tail of an Actions job's log. A check that is not a

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -26,6 +27,12 @@ const (
 	// discoveryDirtyFileLimit caps a worktree's dirtyFiles list. The worktree
 	// detail states how many entries the cap left out.
 	discoveryDirtyFileLimit = 100
+
+	// discoveryStatusLimit bounds the porcelain status output discovery reads.
+	// status --untracked-files=all enumerates every untracked file, so a
+	// heavily dirty checkout must not materialise an unbounded string before
+	// the dirty-file cap applies.
+	discoveryStatusLimit = 1 << 20
 )
 
 // Checkout sections, as they appear in a fact's section and kind.
@@ -161,6 +168,11 @@ func discoveryFact(section, rel, detail string, size int64) DiscoveryFact {
 	}
 }
 
+// discoverySkippedCandidateNote qualifies an absence fact whose search
+// skipped a symlinked candidate. The symlink itself is neither read nor
+// reported, but the search did not establish that the thing is missing.
+const discoverySkippedCandidateNote = "a candidate was skipped because it is a symlink"
+
 // absentFact records that a search completed and found nothing. It is emitted
 // only when every candidate in the section was inspected: an unreadable or
 // oversized target produces a gap instead, so absence is never inferred from a
@@ -174,6 +186,15 @@ func absentFact(section, root string, searched ...string) DiscoveryFact {
 		Source:  discoverySourcePrefix + root,
 		Detail:  "searched " + strings.Join(searched, ", ") + " in the checkout",
 	}
+}
+
+// absentFactSkipped records a completed search that skipped a symlinked
+// candidate. The fact stays an absence fact, but its detail says the search
+// was not exhaustive, so no recommendation is derived from it.
+func absentFactSkipped(section, root string, searched ...string) DiscoveryFact {
+	fact := absentFact(section, root, searched...)
+	fact.Detail += "; " + discoverySkippedCandidateNote
+	return fact
 }
 
 // unreadableCause names why one known target could not be inspected. The cause
@@ -248,8 +269,10 @@ func gapFor(key, section, rel string, u unreadable) DiscoveryGap {
 }
 
 // inspectFiles inspects one section's known files and records a gap for every
-// target that exists but cannot be read.
-func (in checkoutInspector) inspectFiles(section, key string, targets []fileTarget) (facts []DiscoveryFact, gaps []DiscoveryGap) {
+// target that exists but cannot be read. It also reports whether any candidate
+// was skipped because it is a symlink, so the caller can qualify its absence
+// fact.
+func (in checkoutInspector) inspectFiles(section, key string, targets []fileTarget) (facts []DiscoveryFact, gaps []DiscoveryGap, skipped bool) {
 	for _, target := range targets {
 		fact, outcome, u := in.inspectFile(section, target.rel, target.detail, target.read)
 		switch outcome {
@@ -257,9 +280,11 @@ func (in checkoutInspector) inspectFiles(section, key string, targets []fileTarg
 			facts = append(facts, fact)
 		case targetUnreadable:
 			gaps = append(gaps, gapFor(key, section, target.rel, u))
+		case targetSkipped:
+			skipped = true
 		}
 	}
-	return facts, gaps
+	return facts, gaps, skipped
 }
 
 // inspectFile reports one known file. A symlink is skipped without a read; a
@@ -338,14 +363,18 @@ func (in checkoutInspector) instructions() ([]DiscoveryFact, []DiscoveryGap) {
 	searched := append(append([]string(nil), discoveryInstructionFiles...), discoveryReadmePrefix+"*")
 
 	listErr := error(nil)
+	readmeSkipped := false
 	entries, err := os.ReadDir(in.dir)
 	if err != nil {
 		listErr = err
 	} else {
 		for _, entry := range entries {
 			name := entry.Name()
-			if !strings.HasPrefix(name, discoveryReadmePrefix) || entry.IsDir() ||
-				entry.Type()&os.ModeSymlink != 0 {
+			if !strings.HasPrefix(name, discoveryReadmePrefix) || entry.IsDir() {
+				continue
+			}
+			if entry.Type()&os.ModeSymlink != 0 {
+				readmeSkipped = true
 				continue
 			}
 			names = append(names, name)
@@ -358,7 +387,8 @@ func (in checkoutInspector) instructions() ([]DiscoveryFact, []DiscoveryGap) {
 	for _, name := range names {
 		targets = append(targets, fileTarget{rel: name, read: true})
 	}
-	facts, gaps := in.inspectFiles(section, discoveryKeyInstructions, targets)
+	facts, gaps, skipped := in.inspectFiles(section, discoveryKeyInstructions, targets)
+	skipped = skipped || readmeSkipped
 	if listErr != nil {
 		// The fixed names may have been inspected, but README* is unknown, so
 		// the search did not complete: a gap, never an absence fact.
@@ -367,7 +397,11 @@ func (in checkoutInspector) instructions() ([]DiscoveryFact, []DiscoveryGap) {
 		return facts, gaps
 	}
 	if len(facts) == 0 && len(gaps) == 0 {
-		facts = append(facts, absentFact(section, ".", searched...))
+		if skipped {
+			facts = append(facts, absentFactSkipped(section, ".", searched...))
+		} else {
+			facts = append(facts, absentFact(section, ".", searched...))
+		}
 	}
 	return facts, gaps
 }
@@ -380,8 +414,10 @@ func (in checkoutInspector) docs() ([]DiscoveryFact, []DiscoveryGap) {
 	searched := append([]string(nil), discoveryDocFiles...)
 	_, outcome := in.dirTarget("docs")
 	switch outcome {
-	case targetMissing, targetSkipped:
+	case targetMissing:
 		return []DiscoveryFact{absentFact(section, "docs", searched...)}, nil
+	case targetSkipped:
+		return []DiscoveryFact{absentFactSkipped(section, "docs", searched...)}, nil
 	case targetUnreadable:
 		return nil, []DiscoveryGap{gapFor(discoveryKeyDocs, section, "docs",
 			unreadableAccess("it cannot be inspected"))}
@@ -391,9 +427,13 @@ func (in checkoutInspector) docs() ([]DiscoveryFact, []DiscoveryGap) {
 	for _, rel := range discoveryDocFiles {
 		targets = append(targets, fileTarget{rel: rel, read: true})
 	}
-	facts, gaps := in.inspectFiles(section, discoveryKeyDocs, targets)
+	facts, gaps, skipped := in.inspectFiles(section, discoveryKeyDocs, targets)
 	if len(facts) == 0 && len(gaps) == 0 {
-		facts = append(facts, absentFact(section, "docs", searched...))
+		if skipped {
+			facts = append(facts, absentFactSkipped(section, "docs", searched...))
+		} else {
+			facts = append(facts, absentFact(section, "docs", searched...))
+		}
 	}
 	return facts, gaps
 }
@@ -408,9 +448,13 @@ func (in checkoutInspector) tooling() ([]DiscoveryFact, []DiscoveryGap) {
 	for _, rel := range discoveryManifestFiles {
 		targets = append(targets, fileTarget{rel: rel, detail: discoveryManifestLanguage(rel, typescript), read: true})
 	}
-	facts, gaps := in.inspectFiles(section, discoveryKeyTooling, targets)
+	facts, gaps, skipped := in.inspectFiles(section, discoveryKeyTooling, targets)
 	if len(facts) == 0 && len(gaps) == 0 {
-		facts = append(facts, absentFact(section, ".", discoveryManifestFiles...))
+		if skipped {
+			facts = append(facts, absentFactSkipped(section, ".", discoveryManifestFiles...))
+		} else {
+			facts = append(facts, absentFact(section, ".", discoveryManifestFiles...))
+		}
 	}
 	return facts, gaps
 }
@@ -442,6 +486,7 @@ func (in checkoutInspector) environment() ([]DiscoveryFact, []DiscoveryGap) {
 	const section = discoverySectionEnvironment
 	var facts []DiscoveryFact
 	var gaps []DiscoveryGap
+	skipped := false
 
 	_, outcome := in.dirTarget(discoveryDevcontainerDir)
 	switch outcome {
@@ -451,19 +496,26 @@ func (in checkoutInspector) environment() ([]DiscoveryFact, []DiscoveryGap) {
 	case targetUnreadable:
 		gaps = append(gaps, gapFor(discoveryKeyEnvironment, section, discoveryDevcontainerDir+"/",
 			unreadableAccess("it cannot be inspected")))
+	case targetSkipped:
+		skipped = true
 	}
 
 	targets := make([]fileTarget, 0, len(discoveryEnvironmentFiles))
 	for _, rel := range discoveryEnvironmentFiles {
 		targets = append(targets, fileTarget{rel: rel})
 	}
-	fileFacts, fileGaps := in.inspectFiles(section, discoveryKeyEnvironment, targets)
+	fileFacts, fileGaps, fileSkipped := in.inspectFiles(section, discoveryKeyEnvironment, targets)
 	facts = append(facts, fileFacts...)
 	gaps = append(gaps, fileGaps...)
+	skipped = skipped || fileSkipped
 
 	if len(facts) == 0 && len(gaps) == 0 {
 		searched := append([]string{discoveryDevcontainerDir + "/"}, discoveryEnvironmentFiles...)
-		facts = append(facts, absentFact(section, ".", searched...))
+		if skipped {
+			facts = append(facts, absentFactSkipped(section, ".", searched...))
+		} else {
+			facts = append(facts, absentFact(section, ".", searched...))
+		}
 	}
 	return facts, gaps
 }
@@ -477,27 +529,38 @@ func (in checkoutInspector) ci() ([]DiscoveryFact, []DiscoveryGap) {
 
 	entries, outcome := in.readDirTarget(discoveryWorkflowsDir)
 	switch outcome {
-	case targetMissing, targetSkipped:
+	case targetMissing:
 		return []DiscoveryFact{absentFact(section, discoveryWorkflowsDir, searched...)}, nil
+	case targetSkipped:
+		return []DiscoveryFact{absentFactSkipped(section, discoveryWorkflowsDir, searched...)}, nil
 	case targetUnreadable:
 		return nil, []DiscoveryGap{gapFor(discoveryKeyCI, section, discoveryWorkflowsDir,
 			unreadableAccess("it cannot be inspected"))}
 	}
 
 	var facts []DiscoveryFact
+	skipped := false
 	for _, entry := range entries {
 		name := entry.Name()
 		if !strings.HasSuffix(name, ".yml") && !strings.HasSuffix(name, ".yaml") {
 			continue
 		}
-		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+		if entry.IsDir() {
+			continue
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			skipped = true
 			continue
 		}
 		rel := discoveryWorkflowsDir + "/" + name
 		facts = append(facts, discoveryFact(section, rel, "", 0))
 	}
 	if len(facts) == 0 {
-		facts = append(facts, absentFact(section, discoveryWorkflowsDir, searched...))
+		if skipped {
+			facts = append(facts, absentFactSkipped(section, discoveryWorkflowsDir, searched...))
+		} else {
+			facts = append(facts, absentFact(section, discoveryWorkflowsDir, searched...))
+		}
 	}
 	return facts, nil
 }
@@ -576,15 +639,6 @@ func (f *Fleet) discoveryGitState(ctx context.Context, dir string) (head, branch
 		}
 		return strings.TrimSpace(string(out)), nil
 	}
-	// Porcelain status leads with a two-column state field, so its first space
-	// is significant: only trailing line breaks may be trimmed.
-	readRaw := func(args ...string) (string, error) {
-		out, err := f.git.runCtx(ctx, dir, Credential{}, args...)
-		if err != nil {
-			return "", err
-		}
-		return strings.TrimRight(string(out), "\r\n"), nil
-	}
 
 	headSHA, err := read("rev-parse", "HEAD")
 	if err != nil {
@@ -606,11 +660,27 @@ func (f *Fleet) discoveryGitState(ctx context.Context, dir string) (head, branch
 	// by name, which is worth saying in the detail.
 	localBranches, _ := read("for-each-ref", "--format=%(refname:short)", "refs/heads")
 
-	status, err := readRaw("--no-optional-locks", "status", "--porcelain", "--untracked-files=all")
+	statusOut, statusTruncated, err := f.git.runCtxLimited(ctx, dir, Credential{}, discoveryStatusLimit,
+		"-c", "core.quotepath=false",
+		"--no-optional-locks", "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
 		return head, branch, nil, nil, "", fmt.Errorf("bridge: read checkout status: %w", err)
 	}
-	isDirty := status != ""
+	// Porcelain status leads with a two-column state field, so its first space
+	// is significant: only trailing line breaks may be trimmed.
+	status := string(statusOut)
+	if statusTruncated {
+		// A cut last line is not a complete porcelain record: drop it rather
+		// than report a partial path.
+		if i := strings.LastIndexByte(status, '\n'); i >= 0 {
+			status = status[:i+1]
+		} else {
+			status = ""
+		}
+	}
+	status = strings.TrimRight(status, "\r\n")
+
+	isDirty := status != "" || statusTruncated
 	dirty = &isDirty
 	files, omitted := discoveryDirtyFiles(status)
 
@@ -622,9 +692,15 @@ func (f *Fleet) discoveryGitState(ctx context.Context, dir string) (head, branch
 		}
 	}
 	if omitted > 0 {
+		count := fmt.Sprintf("%d", omitted)
+		if statusTruncated {
+			// The cut output may hide further entries, so the exact count is
+			// unknowable: the parsed count is a lower bound.
+			count = "at least " + count
+		}
 		clauses = append(clauses, fmt.Sprintf(
-			"%d additional dirty entries omitted (dirtyFiles is capped at %d)",
-			omitted, discoveryDirtyFileLimit))
+			"%s additional dirty entries omitted (dirtyFiles is capped at %d)",
+			count, discoveryDirtyFileLimit))
 	}
 	return head, branch, dirty, files, strings.Join(clauses, "; "), nil
 }
@@ -642,6 +718,7 @@ func discoveryDirtyFiles(status string) (files []string, omitted int) {
 			// entry that exists now.
 			path = path[i+len(" -> "):]
 		}
+		path = discoveryUnquotePath(path)
 		if path == "" {
 			continue
 		}
@@ -652,4 +729,18 @@ func discoveryDirtyFiles(status string) (files []string, omitted int) {
 		files = append(files, path)
 	}
 	return files, omitted
+}
+
+// discoveryUnquotePath decodes git's C-style quoting for a path that porcelain
+// still escapes. status runs with core.quotepath=false, so non-ASCII paths
+// arrive literal; this handles the remaining quoted forms (a space or a quote
+// in the name) so dirtyFiles carries real paths.
+func discoveryUnquotePath(path string) string {
+	if len(path) < 2 || path[0] != '"' || path[len(path)-1] != '"' {
+		return path
+	}
+	if unquoted, err := strconv.Unquote(path); err == nil {
+		return unquoted
+	}
+	return path
 }

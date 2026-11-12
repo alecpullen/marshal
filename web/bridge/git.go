@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -140,4 +141,62 @@ func (g *gitRunner) runCtx(ctx context.Context, dir string, cred Credential, arg
 // runCtx.
 func (g *gitRunner) run(dir string, cred Credential, args ...string) ([]byte, error) {
 	return g.runCtx(context.Background(), dir, cred, args...)
+}
+
+// cappedBuffer keeps at most limit bytes of what is written to it while still
+// accepting every write, so a flooding child is never blocked and its output
+// never materialises in memory. It records whether anything was dropped.
+type cappedBuffer struct {
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	remaining := c.limit - c.buf.Len()
+	if remaining <= 0 {
+		c.truncated = c.truncated || len(p) > 0
+		return len(p), nil
+	}
+	if len(p) > remaining {
+		_, _ = c.buf.Write(p[:remaining])
+		c.truncated = true
+		return len(p), nil
+	}
+	_, _ = c.buf.Write(p)
+	return len(p), nil
+}
+
+// runCtxLimited is runCtx with bounded output: it performs the same hardened
+// git invocation, but captures at most limit bytes of stdout and reports
+// whether the child produced more. Stderr is capped the same way, so a noisy
+// or hostile process cannot grow the child's output without bound. It honours
+// the g.exec test seam, truncating the seam's bytes the same way so the limit
+// holds on both paths.
+func (g *gitRunner) runCtxLimited(ctx context.Context, dir string, cred Credential, limit int, args ...string) (out []byte, truncated bool, err error) {
+	if limit < 0 {
+		limit = 0
+	}
+	full := hardenedGitArgs(args...)
+	env := gitEnv(g.askpassBin, cred)
+	if g.exec != nil {
+		out, err = g.exec(dir, env, full...)
+		if len(out) > limit {
+			out = out[:limit]
+			truncated = true
+		}
+		return out, truncated, err
+	}
+	stdout := &cappedBuffer{limit: limit}
+	stderr := &cappedBuffer{limit: limit}
+	cmd := exec.CommandContext(ctx, g.bin, full...)
+	cmd.Dir = dir
+	cmd.Env = env
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	if runErr := cmd.Run(); runErr != nil {
+		return stdout.buf.Bytes(), stdout.truncated,
+			fmt.Errorf("git %s: %w", strings.Join(args, " "), runErr)
+	}
+	return stdout.buf.Bytes(), stdout.truncated, nil
 }

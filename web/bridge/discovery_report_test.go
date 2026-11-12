@@ -124,6 +124,9 @@ func (g discoveryReportGitHub) handler(t *testing.T) http.HandlerFunc {
 				"status":"completed","html_url":"https://ci.example.com/build/9",
 				"details_url":"https://github.com/acme/widgets/actions/runs/77/job/42",
 				"app":{"id":15368}}]}`)
+		case strings.HasPrefix(r.URL.Path, base+"/commits/") &&
+			strings.HasSuffix(r.URL.Path, "/status"):
+			fmt.Fprint(w, `{"state":"success","statuses":[]}`)
 		default:
 			http.Error(w, `{"message":"unexpected path"}`, http.StatusNotFound)
 		}
@@ -321,8 +324,8 @@ func TestDiscoverReportReportsSupportedGitHubWithPAT(t *testing.T) {
 	}
 
 	reqs := requests()
-	if len(reqs) != 4 {
-		t.Fatalf("requests = %d, want metadata, branches, pulls and checks: %+v", len(reqs), reqs)
+	if len(reqs) != 5 {
+		t.Fatalf("requests = %d, want metadata, branches, pulls, check-runs and commit status: %+v", len(reqs), reqs)
 	}
 	for _, r := range reqs {
 		if r.Method != http.MethodGet {
@@ -845,5 +848,171 @@ func TestDiscoverReportRevisionAdvancesWithDefaultBranch(t *testing.T) {
 	}
 	if !reflect.DeepEqual(treeBefore, treeAfter) {
 		t.Errorf("working tree changed:\n before %v\n after  %v", treeBefore, treeAfter)
+	}
+}
+
+// TestDiscoverReportTruncatedCollectionRecordsGapNotAbsence covers finding 4:
+// a collection the forge reports as larger than discovery reads keeps the
+// items it did read, stays supported, and records a gap rather than claiming
+// the collection is absent.
+func TestDiscoverReportTruncatedCollectionRecordsGapNotAbsence(t *testing.T) {
+	dir, _ := discoveryReportCheckout(t, map[string]string{
+		"AGENTS.md": "# agents\n",
+		"go.mod":    "module example.com/widgets\n\ngo 1.22\n",
+	})
+	srv, _ := discoveryRecordingServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		base := "/repos/acme/widgets"
+		switch {
+		case r.URL.Path == base:
+			fmt.Fprint(w, `{"default_branch":"main","private":false,"visibility":"public"}`)
+		case r.URL.Path == base+"/branches":
+			page := discoveryPageParam(r.URL.Query().Get("page"))
+			fmt.Fprint(w, discoveryGitHubBranchPage(page*100, 100))
+		case r.URL.Path == base+"/pulls":
+			fmt.Fprint(w, `[]`)
+		case strings.HasSuffix(r.URL.Path, "/check-runs"):
+			fmt.Fprint(w, `{"check_runs":[]}`)
+		case strings.HasSuffix(r.URL.Path, "/status"):
+			fmt.Fprint(w, `{"state":"success","statuses":[]}`)
+		default:
+			http.Error(w, `{"message":"unexpected path"}`, http.StatusNotFound)
+		}
+	})
+	repo := discoveryTestRepo("github", srv.URL)
+	fleet, _ := discoveryReportFleet(t, repo, dir)
+
+	report, err := fleet.discoverRepo(context.Background(), repo, srv.Client())
+	if err != nil {
+		t.Fatalf("discoverRepo: %v", err)
+	}
+	discoveryReportRequireContract(t, report)
+
+	if got := discoveryReportCapability(t, report, "branches").State; got != DiscoveryCapabilitySupported {
+		t.Errorf("branches state = %q, want supported (the probe worked)", got)
+	}
+	gap := discoveryReportGap(t, report, "branches")
+	if gap.State != DiscoveryCapabilityTemporarilyUnavailable {
+		t.Errorf("branches gap state = %q, want temporarily_unavailable", gap.State)
+	}
+	if !strings.Contains(gap.Detail, "not exhaustive") {
+		t.Errorf("branches gap detail = %q, want it to say the list is not exhaustive", gap.Detail)
+	}
+	for _, fact := range report.Facts {
+		if fact.Section == "branches" && fact.Value == "absent" {
+			t.Errorf("truncated branches produced an absence fact: %+v", fact)
+		}
+	}
+	branchFacts := 0
+	for _, fact := range report.Facts {
+		if fact.Section == "branches" && fact.Kind == "branch" {
+			branchFacts++
+		}
+	}
+	if branchFacts == 0 {
+		t.Error("no branch facts survived the truncated collection")
+	}
+	if report.Status != "degraded" {
+		t.Errorf("status = %q, want degraded for a truncated collection", report.Status)
+	}
+}
+
+// TestDiscoverReportFixTextDistinguishesDeclaredForge covers finding 5: only an
+// undeclared forge may be told to declare one.
+func TestDiscoverReportFixTextDistinguishesDeclaredForge(t *testing.T) {
+	dir := t.TempDir()
+	discoveryWriteFile(t, dir, "AGENTS.md", []byte("# agents\n"))
+	discoveryWriteFile(t, dir, "go.mod", []byte("module example.com/widgets\n"))
+
+	ctx := context.Background()
+
+	// Declared forge: a 404 on branches after readable metadata is
+	// unsupported, which is adapter support, not a missing declaration.
+	srv, _ := discoveryRecordingServer(t, discoveryReportGitHub{
+		branchesStatus: http.StatusNotFound,
+	}.handler(t))
+	declaredRepo := discoveryTestRepo("github", srv.URL)
+	declaredFleet, _ := discoveryReportFleet(t, declaredRepo, dir)
+	declared, err := declaredFleet.DiscoverRepo(ctx, declaredRepo)
+	if err != nil {
+		t.Fatalf("DiscoverRepo (declared): %v", err)
+	}
+	discoveryReportRequireContract(t, declared)
+	gap := discoveryReportGap(t, declared, "branches")
+	if gap.State != DiscoveryCapabilityUnsupported {
+		t.Fatalf("branches gap state = %q, want unsupported", gap.State)
+	}
+	if strings.Contains(gap.Detail, "declare github or gitea") {
+		t.Errorf("declared-forge gap detail = %q, must not tell the operator to declare a forge", gap.Detail)
+	}
+	if !strings.Contains(gap.Detail, "adapter support") {
+		t.Errorf("declared-forge gap detail = %q, want it to name adapter support", gap.Detail)
+	}
+
+	// Undeclared forge: the Git-only path, where declaring one is the fix.
+	gitRepo := Repo{ID: "repo-1", URL: "https://forge.example.com/acme/widgets.git", OwnerID: "local"}
+	gitFleet, _ := discoveryReportFleet(t, gitRepo, dir)
+	gitOnly, err := gitFleet.DiscoverRepo(ctx, gitRepo)
+	if err != nil {
+		t.Fatalf("DiscoverRepo (undeclared): %v", err)
+	}
+	discoveryReportRequireContract(t, gitOnly)
+	gitGap := discoveryReportGap(t, gitOnly, "branches")
+	if !strings.Contains(gitGap.Detail, "declare github or gitea") {
+		t.Errorf("undeclared-forge gap detail = %q, want the declare-a-forge fix", gitGap.Detail)
+	}
+}
+
+// TestDiscoverReportDoesNotRecommendEnvironmentBehindSymlink covers finding 7:
+// a skipped symlink means the search did not establish absence, so no
+// "define a development environment" recommendation is offered.
+func TestDiscoverReportDoesNotRecommendEnvironmentBehindSymlink(t *testing.T) {
+	outside := t.TempDir()
+	discoveryWriteFile(t, outside, "devcontainer.json", []byte(`{"image":"x"}`))
+
+	dir := t.TempDir()
+	discoveryWriteFile(t, dir, "README.md", []byte("# readme\n"))
+	discoveryWriteFile(t, dir, "AGENTS.md", []byte("# agents\n"))
+	discoveryWriteFile(t, dir, "docs/README.md", []byte("# docs\n"))
+	discoveryWriteFile(t, dir, "go.mod", []byte("module example.com/widgets\n"))
+	discoveryWriteFile(t, dir, ".github/workflows/ci.yml", []byte("on: push\n"))
+	if err := os.Symlink(filepath.Join(outside, "devcontainer.json"),
+		filepath.Join(dir, ".devcontainer")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	repo := Repo{ID: "repo-1", URL: "https://forge.example.com/acme/widgets.git", OwnerID: "local"}
+	fleet, _ := discoveryReportFleet(t, repo, dir)
+	report, err := fleet.discoverRepo(context.Background(), repo, nil)
+	if err != nil {
+		t.Fatalf("discoverRepo: %v", err)
+	}
+	discoveryReportRequireContract(t, report)
+
+	for _, recommendation := range report.Recommended {
+		if recommendation.Section == "environment" {
+			t.Fatalf("a symlinked environment definition produced a recommendation: %+v", recommendation)
+		}
+	}
+	if got := discoveryReportCapability(t, report, "checkout_environment").State; got != DiscoveryCapabilitySupported {
+		t.Errorf("checkout_environment state = %q, want supported", got)
+	}
+	found := false
+	for _, fact := range report.Facts {
+		if fact.Section != "environment" || fact.Value != "absent" {
+			continue
+		}
+		found = true
+		if !strings.Contains(fact.Detail, "skipped") {
+			t.Errorf("environment absence detail = %q, want it to record the skipped candidate", fact.Detail)
+		}
+	}
+	if !found {
+		t.Error("no environment absence fact was reported")
+	}
+	for _, fact := range report.Facts {
+		if fact.Section == "environment" && fact.Value == ".devcontainer/" {
+			t.Errorf("the skipped symlink was reported as a fact: %+v", fact)
+		}
 	}
 }

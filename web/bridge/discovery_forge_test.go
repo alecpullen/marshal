@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -182,6 +183,8 @@ func TestDiscoveryForgeGitHubListsBranchesPullRequestsAndChecks(t *testing.T) {
 				"details_url": "https://github.com/acme/widgets/actions/runs/77/job/42",
 				"app": {"id": 15368}
 			}]}`)
+		case "/repos/acme/widgets/commits/" + ref + "/status":
+			fmt.Fprint(w, `{"state":"success","statuses":[]}`)
 		default:
 			http.Error(w, `{"message":"unexpected path"}`, http.StatusNotFound)
 		}
@@ -230,8 +233,8 @@ func TestDiscoveryForgeGitHubListsBranchesPullRequestsAndChecks(t *testing.T) {
 	}
 
 	reqs := requests()
-	if len(reqs) != 3 {
-		t.Fatalf("requests = %d, want one per collection: %v", len(reqs), reqs)
+	if len(reqs) != 4 {
+		t.Fatalf("requests = %d, want branches, pulls, check-runs and commit status: %v", len(reqs), reqs)
 	}
 	for _, r := range reqs {
 		if r.Auth != "Bearer "+discoveryTestToken {
@@ -624,4 +627,411 @@ func assertNoCredential(t *testing.T, what, got string) {
 	if strings.Contains(got, discoveryTestToken) {
 		t.Fatalf("%s echoes the credential: %s", what, got)
 	}
+}
+
+// discoveryGitHubBranchPage renders n GitHub branch objects starting at id.
+func discoveryGitHubBranchPage(start, n int) string {
+	var b strings.Builder
+	b.WriteString("[")
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `{"name":"branch-%03d","commit":{"sha":"sha-%03d"}}`, start+i, start+i)
+	}
+	b.WriteString("]")
+	return b.String()
+}
+
+// discoveryGiteaBranchPage renders n Gitea branch objects starting at id.
+func discoveryGiteaBranchPage(start, n int) string {
+	var b strings.Builder
+	b.WriteString("[")
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `{"name":"branch-%03d","commit":{"id":"sha-%03d"}}`, start+i, start+i)
+	}
+	b.WriteString("]")
+	return b.String()
+}
+
+// discoveryGitHubCheckRunPage renders n GitHub check-run objects.
+func discoveryGitHubCheckRunPage(start, n int) string {
+	var b strings.Builder
+	b.WriteString(`{"check_runs":[`)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `{"id":%d,"name":"check-%03d","conclusion":"success","status":"completed"}`, start+i, start+i)
+	}
+	b.WriteString("]}")
+	return b.String()
+}
+
+// discoveryGiteaStatusPage renders n distinct-context commit statuses.
+func discoveryGiteaStatusPage(start, n int) string {
+	var b strings.Builder
+	b.WriteString("[")
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b,
+			`{"id":%d,"status":"success","context":"ci/%03d","target_url":"https://ci.example.com/%03d"}`,
+			start+i, start+i, start+i)
+	}
+	b.WriteString("]")
+	return b.String()
+}
+
+// discoveryPageParam reads a forge page parameter, defaulting to page one.
+func discoveryPageParam(raw string) int {
+	page, err := strconv.Atoi(raw)
+	if err != nil || page < 1 {
+		return 1
+	}
+	return page
+}
+
+// TestDiscoveryForgeGitHubMergesCommitStatuses covers finding 1: a repo whose
+// CI reports only commit statuses must yield checks, a repo with both must
+// yield both, and the newest status per context must win.
+func TestDiscoveryForgeGitHubMergesCommitStatuses(t *testing.T) {
+	const ref = "abc123"
+
+	t.Run("status-only repo yields status checks", func(t *testing.T) {
+		srv, _ := discoveryRecordingServer(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/repos/acme/widgets/commits/" + ref + "/check-runs":
+				fmt.Fprint(w, `{"check_runs":[]}`)
+			case "/repos/acme/widgets/commits/" + ref + "/status":
+				fmt.Fprint(w, `{"state":"failure","statuses":[
+					{"id":7,"context":"ci/build","state":"failure","description":"build failed","target_url":"https://ci.example.com/build/7"}
+				]}`)
+			default:
+				http.Error(w, `{"message":"unexpected path"}`, http.StatusNotFound)
+			}
+		})
+		repo := discoveryTestRepo("github", srv.URL)
+		forge, err := DiscoveryForgeFor(repo, srv.Client())
+		if err != nil {
+			t.Fatalf("DiscoveryForgeFor(github) error: %v", err)
+		}
+		checks, err := forge.Checks(context.Background(), repo, ref, discoveryTestCredential())
+		if err != nil {
+			t.Fatalf("Checks error: %v", err)
+		}
+		want := []DiscoveryCheck{{
+			Name:       "ci/build",
+			Conclusion: "failure",
+			Status:     "failure",
+			URL:        "https://ci.example.com/build/7",
+			Context:    "ci/build",
+		}}
+		if !reflect.DeepEqual(checks, want) {
+			t.Fatalf("checks = %v, want %v", checks, want)
+		}
+	})
+
+	t.Run("check-runs and statuses are both reported", func(t *testing.T) {
+		srv, _ := discoveryRecordingServer(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/repos/acme/widgets/commits/" + ref + "/check-runs":
+				fmt.Fprint(w, `{"check_runs":[{"id":9,"name":"build","conclusion":"success",
+					"status":"completed","html_url":"https://github.com/acme/widgets/runs/9",
+					"app":{"id":15368}}]}`)
+			case "/repos/acme/widgets/commits/" + ref + "/status":
+				fmt.Fprint(w, `{"state":"failure","statuses":[
+					{"id":4,"context":"ci/lint","state":"failure","description":"lint failed","target_url":"https://ci.example.com/lint/4"}
+				]}`)
+			default:
+				http.Error(w, `{"message":"unexpected path"}`, http.StatusNotFound)
+			}
+		})
+		repo := discoveryTestRepo("github", srv.URL)
+		forge, err := DiscoveryForgeFor(repo, srv.Client())
+		if err != nil {
+			t.Fatalf("DiscoveryForgeFor(github) error: %v", err)
+		}
+		checks, err := forge.Checks(context.Background(), repo, ref, discoveryTestCredential())
+		if err != nil {
+			t.Fatalf("Checks error: %v", err)
+		}
+		want := []DiscoveryCheck{
+			{
+				Name:       "build",
+				Conclusion: "success",
+				Status:     "completed",
+				URL:        "https://github.com/acme/widgets/runs/9",
+				AppID:      15368,
+			},
+			{
+				Name:       "ci/lint",
+				Conclusion: "failure",
+				Status:     "failure",
+				URL:        "https://ci.example.com/lint/4",
+				Context:    "ci/lint",
+			},
+		}
+		if !reflect.DeepEqual(checks, want) {
+			t.Fatalf("checks = %v, want %v", checks, want)
+		}
+	})
+
+	t.Run("newest status per context wins", func(t *testing.T) {
+		srv, _ := discoveryRecordingServer(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/repos/acme/widgets/commits/" + ref + "/check-runs":
+				fmt.Fprint(w, `{"check_runs":[]}`)
+			case "/repos/acme/widgets/commits/" + ref + "/status":
+				// The older success is listed after the newer failure; the
+				// status id, not listing order, decides.
+				fmt.Fprint(w, `{"state":"failure","statuses":[
+					{"id":7,"context":"ci/build","state":"failure","target_url":"https://ci.example.com/build/7"},
+					{"id":3,"context":"ci/build","state":"success","target_url":"https://ci.example.com/build/3"}
+				]}`)
+			default:
+				http.Error(w, `{"message":"unexpected path"}`, http.StatusNotFound)
+			}
+		})
+		repo := discoveryTestRepo("github", srv.URL)
+		forge, err := DiscoveryForgeFor(repo, srv.Client())
+		if err != nil {
+			t.Fatalf("DiscoveryForgeFor(github) error: %v", err)
+		}
+		checks, err := forge.Checks(context.Background(), repo, ref, discoveryTestCredential())
+		if err != nil {
+			t.Fatalf("Checks error: %v", err)
+		}
+		want := []DiscoveryCheck{{
+			Name:       "ci/build",
+			Conclusion: "failure",
+			Status:     "failure",
+			URL:        "https://ci.example.com/build/7",
+			Context:    "ci/build",
+		}}
+		if !reflect.DeepEqual(checks, want) {
+			t.Fatalf("checks = %v, want %v (newest status by id wins)", checks, want)
+		}
+	})
+
+	t.Run("neither check-runs nor statuses reports no checks", func(t *testing.T) {
+		srv, _ := discoveryRecordingServer(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/repos/acme/widgets/commits/" + ref + "/check-runs":
+				fmt.Fprint(w, `{"check_runs":[]}`)
+			case "/repos/acme/widgets/commits/" + ref + "/status":
+				fmt.Fprint(w, `{"state":"pending","statuses":[]}`)
+			default:
+				http.Error(w, `{"message":"unexpected path"}`, http.StatusNotFound)
+			}
+		})
+		repo := discoveryTestRepo("github", srv.URL)
+		forge, err := DiscoveryForgeFor(repo, srv.Client())
+		if err != nil {
+			t.Fatalf("DiscoveryForgeFor(github) error: %v", err)
+		}
+		checks, err := forge.Checks(context.Background(), repo, ref, discoveryTestCredential())
+		if err != nil {
+			t.Fatalf("Checks error: %v", err)
+		}
+		if len(checks) != 0 {
+			t.Fatalf("checks = %v, want none (genuine absence)", checks)
+		}
+	})
+}
+
+// TestDiscoveryForgeGitHubPaginatesCollections covers finding 4 for GitHub: a
+// full page followed by a short page is complete, while a full page every time
+// is truncated.
+func TestDiscoveryForgeGitHubPaginatesCollections(t *testing.T) {
+	const ref = "abc123"
+
+	t.Run("full then short page is not truncated", func(t *testing.T) {
+		srv, _ := discoveryRecordingServer(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			page := discoveryPageParam(r.URL.Query().Get("page"))
+			switch r.URL.Path {
+			case "/repos/acme/widgets/branches":
+				if page == 1 {
+					fmt.Fprint(w, discoveryGitHubBranchPage(0, 100))
+				} else {
+					fmt.Fprint(w, discoveryGitHubBranchPage(100, 2))
+				}
+			case "/repos/acme/widgets/pulls":
+				fmt.Fprint(w, `[]`)
+			case "/repos/acme/widgets/commits/" + ref + "/check-runs":
+				if page == 1 {
+					fmt.Fprint(w, discoveryGitHubCheckRunPage(0, 100))
+				} else {
+					fmt.Fprint(w, discoveryGitHubCheckRunPage(100, 1))
+				}
+			case "/repos/acme/widgets/commits/" + ref + "/status":
+				fmt.Fprint(w, `{"state":"success","statuses":[]}`)
+			default:
+				http.Error(w, `{"message":"unexpected path"}`, http.StatusNotFound)
+			}
+		})
+		repo := discoveryTestRepo("github", srv.URL)
+		forge, err := DiscoveryForgeFor(repo, srv.Client())
+		if err != nil {
+			t.Fatalf("DiscoveryForgeFor(github) error: %v", err)
+		}
+		ctx := context.Background()
+		branches, err := forge.Branches(ctx, repo, discoveryTestCredential())
+		if err != nil {
+			t.Fatalf("Branches error: %v", err)
+		}
+		if len(branches) != 102 {
+			t.Fatalf("branches = %d, want 102 (page 1 full, page 2 short)", len(branches))
+		}
+		checks, err := forge.Checks(ctx, repo, ref, discoveryTestCredential())
+		if err != nil {
+			t.Fatalf("Checks error: %v", err)
+		}
+		if len(checks) != 101 {
+			t.Fatalf("checks = %d, want 101 (page 1 full, page 2 short)", len(checks))
+		}
+	})
+
+	t.Run("full page every time is truncated", func(t *testing.T) {
+		srv, _ := discoveryRecordingServer(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/repos/acme/widgets/branches":
+				page := discoveryPageParam(r.URL.Query().Get("page"))
+				fmt.Fprint(w, discoveryGitHubBranchPage(page*100, 100))
+			case "/repos/acme/widgets/pulls":
+				fmt.Fprint(w, `[]`)
+			case "/repos/acme/widgets/commits/" + ref + "/check-runs":
+				page := discoveryPageParam(r.URL.Query().Get("page"))
+				fmt.Fprint(w, discoveryGitHubCheckRunPage(page*100, 100))
+			case "/repos/acme/widgets/commits/" + ref + "/status":
+				fmt.Fprint(w, `{"state":"success","statuses":[]}`)
+			default:
+				http.Error(w, `{"message":"unexpected path"}`, http.StatusNotFound)
+			}
+		})
+		repo := discoveryTestRepo("github", srv.URL)
+		forge, err := DiscoveryForgeFor(repo, srv.Client())
+		if err != nil {
+			t.Fatalf("DiscoveryForgeFor(github) error: %v", err)
+		}
+		ctx := context.Background()
+		branches, err := forge.Branches(ctx, repo, discoveryTestCredential())
+		if !errors.Is(err, errDiscoveryTruncated) {
+			t.Fatalf("Branches error = %v, want errDiscoveryTruncated", err)
+		}
+		if len(branches) != discoveryForgeMaxPages*discoveryForgePageSize {
+			t.Fatalf("branches = %d, want the %d-page bound", len(branches), discoveryForgeMaxPages)
+		}
+		checks, err := forge.Checks(ctx, repo, ref, discoveryTestCredential())
+		if !errors.Is(err, errDiscoveryTruncated) {
+			t.Fatalf("Checks error = %v, want errDiscoveryTruncated", err)
+		}
+		if len(checks) != discoveryForgeMaxPages*discoveryForgePageSize {
+			t.Fatalf("checks = %d, want the %d-page bound", len(checks), discoveryForgeMaxPages)
+		}
+	})
+}
+
+// TestDiscoveryForgeGiteaPaginatesCollections covers finding 4 for Gitea.
+func TestDiscoveryForgeGiteaPaginatesCollections(t *testing.T) {
+	const ref = "abc123"
+
+	t.Run("full then short page is not truncated", func(t *testing.T) {
+		var apiBase string
+		srv, _ := discoveryRecordingServer(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			page := discoveryPageParam(r.URL.Query().Get("page"))
+			base := "/api/v1/repos/acme/widgets"
+			switch r.URL.Path {
+			case base + "/branches":
+				if page == 1 {
+					fmt.Fprint(w, discoveryGiteaBranchPage(0, 100))
+				} else {
+					fmt.Fprint(w, discoveryGiteaBranchPage(100, 2))
+				}
+			case base + "/pulls":
+				fmt.Fprint(w, `[]`)
+			case base + "/commits/" + ref + "/statuses":
+				if page == 1 {
+					fmt.Fprint(w, discoveryGiteaStatusPage(0, 100))
+				} else {
+					fmt.Fprint(w, discoveryGiteaStatusPage(100, 1))
+				}
+			default:
+				http.Error(w, `{"message":"unexpected path"}`, http.StatusNotFound)
+			}
+		})
+		apiBase = srv.URL + "/api/v1"
+		repo := discoveryTestRepo("gitea", apiBase)
+		forge, err := DiscoveryForgeFor(repo, srv.Client())
+		if err != nil {
+			t.Fatalf("DiscoveryForgeFor(gitea) error: %v", err)
+		}
+		ctx := context.Background()
+		branches, err := forge.Branches(ctx, repo, discoveryTestCredential())
+		if err != nil {
+			t.Fatalf("Branches error: %v", err)
+		}
+		if len(branches) != 102 {
+			t.Fatalf("branches = %d, want 102", len(branches))
+		}
+		checks, err := forge.Checks(ctx, repo, ref, discoveryTestCredential())
+		if err != nil {
+			t.Fatalf("Checks error: %v", err)
+		}
+		if len(checks) != 101 {
+			t.Fatalf("checks = %d, want 101", len(checks))
+		}
+	})
+
+	t.Run("full page every time is truncated", func(t *testing.T) {
+		var apiBase string
+		srv, _ := discoveryRecordingServer(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			base := "/api/v1/repos/acme/widgets"
+			switch r.URL.Path {
+			case base + "/branches":
+				page := discoveryPageParam(r.URL.Query().Get("page"))
+				fmt.Fprint(w, discoveryGiteaBranchPage(page*100, 100))
+			case base + "/pulls":
+				fmt.Fprint(w, `[]`)
+			case base + "/commits/" + ref + "/statuses":
+				page := discoveryPageParam(r.URL.Query().Get("page"))
+				fmt.Fprint(w, discoveryGiteaStatusPage(page*100, 100))
+			default:
+				http.Error(w, `{"message":"unexpected path"}`, http.StatusNotFound)
+			}
+		})
+		apiBase = srv.URL + "/api/v1"
+		repo := discoveryTestRepo("gitea", apiBase)
+		forge, err := DiscoveryForgeFor(repo, srv.Client())
+		if err != nil {
+			t.Fatalf("DiscoveryForgeFor(gitea) error: %v", err)
+		}
+		ctx := context.Background()
+		branches, err := forge.Branches(ctx, repo, discoveryTestCredential())
+		if !errors.Is(err, errDiscoveryTruncated) {
+			t.Fatalf("Branches error = %v, want errDiscoveryTruncated", err)
+		}
+		if len(branches) != discoveryForgeMaxPages*discoveryForgePageSize {
+			t.Fatalf("branches = %d, want the %d-page bound", len(branches), discoveryForgeMaxPages)
+		}
+		checks, err := forge.Checks(ctx, repo, ref, discoveryTestCredential())
+		if !errors.Is(err, errDiscoveryTruncated) {
+			t.Fatalf("Checks error = %v, want errDiscoveryTruncated", err)
+		}
+		if len(checks) != discoveryForgeMaxPages*discoveryForgePageSize {
+			t.Fatalf("checks = %d, want the %d-page bound", len(checks), discoveryForgeMaxPages)
+		}
+	})
 }

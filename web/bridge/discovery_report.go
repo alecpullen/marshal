@@ -137,7 +137,7 @@ func (a *discoveryAssembler) set(key string, state DiscoveryCapabilityState, det
 // what would fix it.
 func (a *discoveryAssembler) degrade(key, section string, state DiscoveryCapabilityState, detail string) {
 	a.set(key, state, detail)
-	a.addGap(key, section, state, discoveryGapDetail(detail, key, state))
+	a.addGap(key, section, state, discoveryGapDetail(detail, key, state, a.repo.Forge != ""))
 }
 
 // addGap records one gap per capability key: the plan allows one gap per
@@ -307,7 +307,8 @@ func (a *discoveryAssembler) probeForge(ctx context.Context, f *Fleet, client *h
 	}
 
 	branches, branchErr := probe.Branches(ctx, repo, cred)
-	if branchErr != nil {
+	branchTruncated := errors.Is(branchErr, errDiscoveryTruncated)
+	if branchErr != nil && !branchTruncated {
 		state, detail := discoveryProbeOutcome(branchErr, metadataReadable)
 		a.degrade("branches", discoverySectionBranches, state, detail)
 	} else {
@@ -319,15 +320,22 @@ func (a *discoveryAssembler) probeForge(ctx context.Context, f *Fleet, client *h
 			}
 			a.addForgeFact(discoverySectionBranches, "branch", branch.Name, "forge:branches", detail, 0)
 		}
-		if len(branches) == 0 {
+		// A truncated collection is not evidence of absence: the forge has
+		// more branches than discovery reads.
+		if len(branches) == 0 && !branchTruncated {
 			a.addForgeFact(discoverySectionBranches, "branch", discoveryAbsenceValue, "forge:branches",
 				"the forge reported no branches", 0)
 		}
 		a.forgeHead = branchHead(branches, meta.DefaultBranch, repo.Branch)
+		if branchTruncated {
+			a.addGap("branches", discoverySectionBranches, DiscoveryCapabilityTemporarilyUnavailable,
+				discoveryTruncatedDetail("branches"))
+		}
 	}
 
 	pulls, pullErr := probe.PullRequests(ctx, repo, cred)
-	if pullErr != nil {
+	pullTruncated := errors.Is(pullErr, errDiscoveryTruncated)
+	if pullErr != nil && !pullTruncated {
 		state, detail := discoveryProbeOutcome(pullErr, metadataReadable)
 		a.degrade("pull_requests", discoverySectionPullRequests, state, detail)
 	} else {
@@ -340,9 +348,13 @@ func (a *discoveryAssembler) probeForge(ctx context.Context, f *Fleet, client *h
 			a.addForgeFact(discoverySectionPullRequests, "pull_request",
 				fmt.Sprintf("#%d %s", pull.Number, pull.Title), "forge:pulls", detail, 0)
 		}
-		if len(pulls) == 0 {
+		if len(pulls) == 0 && !pullTruncated {
 			a.addForgeFact(discoverySectionPullRequests, "pull_request", discoveryAbsenceValue,
 				"forge:pulls", "the forge reported no open pull requests", 0)
+		}
+		if pullTruncated {
+			a.addGap("pull_requests", discoverySectionPullRequests, DiscoveryCapabilityTemporarilyUnavailable,
+				discoveryTruncatedDetail("pull requests"))
 		}
 	}
 
@@ -372,7 +384,8 @@ func (a *discoveryAssembler) probeChecks(
 	}
 
 	checks, checkErr := probe.Checks(ctx, repo, ref, cred)
-	if checkErr != nil {
+	truncated := errors.Is(checkErr, errDiscoveryTruncated)
+	if checkErr != nil && !truncated {
 		state, detail := discoveryProbeOutcome(checkErr, metadataReadable)
 		a.degrade("ci_checks", discoverySectionCI, state, detail)
 		a.set("ci_logs", DiscoveryCapabilitySupported,
@@ -383,9 +396,13 @@ func (a *discoveryAssembler) probeChecks(
 	for _, check := range checks {
 		a.addForgeFact(discoverySectionCI, "check", check.Name, "forge:checks", checkDetail(check), 0)
 	}
-	if len(checks) == 0 {
+	if len(checks) == 0 && !truncated {
 		a.addForgeFact(discoverySectionCI, "check", discoveryAbsenceValue, "forge:checks",
 			"the forge reported no checks on "+ref, 0)
+	}
+	if truncated {
+		a.addGap("ci_checks", discoverySectionCI, DiscoveryCapabilityTemporarilyUnavailable,
+			discoveryTruncatedDetail("checks"))
 	}
 
 	failing := failingChecks(checks)
@@ -474,8 +491,10 @@ func discoveryProbeOutcome(err error, metadataReadable bool) (DiscoveryCapabilit
 }
 
 // discoveryFix names what would resolve a capability in this state. It is
-// appended to a gap's detail, never to a supported capability's.
-func discoveryFix(key string, state DiscoveryCapabilityState) string {
+// appended to a gap's detail, never to a supported capability's. forgeDeclared
+// distinguishes a repository that already names a forge (which needs adapter
+// support, not a declaration) from the Git-only path (which needs one).
+func discoveryFix(key string, state DiscoveryCapabilityState, forgeDeclared bool) string {
 	switch state {
 	case DiscoveryCapabilityUnconfigured:
 		return "configure this capability for the repository and retry"
@@ -487,14 +506,17 @@ func discoveryFix(key string, state DiscoveryCapabilityState) string {
 		if strings.HasPrefix(key, "checkout_") {
 			return "replace the target with a regular file this adapter reads"
 		}
+		if forgeDeclared {
+			return "the declared forge does not expose this capability; adapter support would be needed"
+		}
 		return "declare github or gitea for this repository"
 	}
 	return ""
 }
 
 // discoveryGapDetail joins a cause with the fix that would remove it.
-func discoveryGapDetail(detail, key string, state DiscoveryCapabilityState) string {
-	fix := discoveryFix(key, state)
+func discoveryGapDetail(detail, key string, state DiscoveryCapabilityState, forgeDeclared bool) string {
+	fix := discoveryFix(key, state, forgeDeclared)
 	switch {
 	case fix == "":
 		return detail
@@ -565,6 +587,16 @@ func branchHead(branches []DiscoveryBranch, names ...string) string {
 	return ""
 }
 
+// discoveryTruncatedDetail explains a collection the forge reported as larger
+// than discovery reads. The items read are still usable; only the tail is
+// missing, so the capability stays supported and the gap is a retryable
+// warning rather than an absence of the capability.
+func discoveryTruncatedDetail(noun string) string {
+	return fmt.Sprintf(
+		"the forge reported more %s than discovery reads; the list is not exhaustive and adapter support would be needed to read the rest",
+		noun)
+}
+
 // checkDetail describes one check without inventing a field it did not report.
 func checkDetail(check DiscoveryCheck) string {
 	parts := make([]string, 0, 4)
@@ -628,9 +660,14 @@ func (a *discoveryAssembler) recommend() {
 }
 
 // hasAbsence reports whether a section completed its search and found nothing.
+// An absence qualified by a skipped symlinked candidate is not evidence that
+// the thing is missing, so it does not count.
 func (a *discoveryAssembler) hasAbsence(section string) bool {
 	for _, fact := range a.facts {
 		if fact.Section == section && fact.Value == discoveryAbsenceValue {
+			if strings.Contains(fact.Detail, discoverySkippedCandidateNote) {
+				continue
+			}
 			return true
 		}
 	}

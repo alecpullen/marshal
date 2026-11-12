@@ -2,9 +2,23 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+)
+
+// errDiscoveryTruncated signals that a forge collection has more items than
+// discovery reads. An adapter returns the items it did collect together with
+// an error wrapping this sentinel, so the report can keep those items and
+// record a gap instead of reporting the collection as absent.
+var errDiscoveryTruncated = errors.New("bridge: discovery forge collection is truncated")
+
+// discoveryForgePageSize and discoveryForgeMaxPages bound collection reads.
+// A full final page means the forge has more items than discovery reads.
+const (
+	discoveryForgePageSize = 100
+	discoveryForgeMaxPages = 5
 )
 
 // DiscoveryForge is the read-only forge surface discovery probes. It is

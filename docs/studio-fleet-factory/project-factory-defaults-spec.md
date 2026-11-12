@@ -217,10 +217,13 @@ The defaults are validated when they are written, through the existing
 
 - the limits are not negative;
 - `HostID`, when set, is `local` — the factory requires a local host;
-- `Workspace` and `Native` are not both set;
 - every expected check carries a valid identity: a name, a kind of
   `check_run` or `commit_status`, and an app id that is present exactly for
   `check_run`.
+
+The `workspace`/`native` exclusivity is not checked here: the defaults carry
+no `native` field, so that conflict can only arise at resolve time against the
+merged configuration (§4.7).
 
 A default that fails any of these is rejected when it is written, with an
 error naming the offending field. The identity requirements — a request id, a
@@ -392,3 +395,21 @@ For this slice:
 - inheritable boolean configuration (§4.2);
 - changing the factory loop, its CI evidence, its review/repair semantics, or
   its acceptance contract.
+
+## Branch review record
+
+This specification received two independent `glm-5.3-flash` reviews through
+`ollama-cloud` on 2026-11-13, followed by a focused re-review of the fix
+commit. All findings are resolved.
+
+| Review finding | Resolution |
+|---|---|
+| The project-resolution order had an unreachable intake fallback | §4.5 now states that a valid handoff always names a registered, trusted `ProjectRoot`, that the named root is the only live resolution path and wins over the repository's intake project, and that the intake mapping is a defensive fallback that never creates a work item or supplies a root |
+| Write-time validation of the defaults was promised but undefined | §4.6 now defines the write-time subset, the resolve-time behaviour for defaults that are invalid on their own, and the conflict reporting; §10 gained the matching criteria |
+| The boolean-deferral cross-reference pointed at the adoption deferral | §4.2 now points at §8 item 2 and adds the per-handoff acknowledgement reason for `NoRequiredCIAcknowledged` |
+| §4.3 misstated what the approval rule distinguishes | It now states that the rule tests the list's length, and that an empty list is approved only with `noRequiredCiAcknowledged` |
+| The retry rule was stated as settled while §8 reopened it | §4.4 now marks it a proposed default and cross-links §8 item 4 |
+| The snapshot semantics adopted a recorded proposal without saying so | §2 now marks it as consistent with the recorded proposal, not an approved decision |
+| The create-path citation was off by two | §3 now cites `factory_http.go:54` |
+| "The SPA needs no change" hid a whole-record-replacement caveat | §4.1 now states that the defaults survive only because the settings views round-trip the fetched record |
+| A write-time check could not apply to the defaults | The `workspace`/`native` bullet was removed from §4.6's write-time list and the conflict left to §4.7 |

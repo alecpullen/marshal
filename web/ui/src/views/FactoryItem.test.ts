@@ -126,3 +126,57 @@ it('previews material environment and permission settings before approval', asyn
   expect(await screen.findByText(/Environment: go-dev · Implementer auto permission: on/)).toBeTruthy()
   expect(screen.getByText('Reviewer instructions: Check migration safety')).toBeTruthy()
 })
+const narration = {
+  issue: 'The report hides the reasoning', approach: 'Narrate the change in the report',
+  existingBehaviour: 'Only a summary paragraph existed', alternatives: 'Extend the summary',
+  tradeoffs: 'A longer report body', choice: 'Add a structured narration',
+  verification: 'go test ./web/bridge', limitations: 'Excerpts are selections, not diffs',
+  excerpts: [{ path: 'web/bridge/factory_types.go', lang: 'go', code: 'type FactoryNarration struct{}' }],
+}
+it('renders the narration sections in order', async () => {
+  const item = { ...base, state: 'checking', rounds: [{ implementation: { summary: 'Bare summary', narration } }] } as unknown as Item
+  vi.mocked(api.getFactoryItem).mockResolvedValue(item)
+  render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
+  await screen.findByText('Issue')
+  expect(screen.getAllByRole('heading', { level: 3 }).map((heading) => heading.textContent)).toEqual([
+    'Issue', 'Approach', 'Existing behaviour', 'Alternatives and trade-offs', 'Implementation choice', 'Verification', 'Limitations', 'Selected code',
+  ])
+  expect(screen.getByText('The report hides the reasoning')).toBeTruthy()
+  expect(screen.getByText('Narrate the change in the report')).toBeTruthy()
+  expect(screen.getByText('Extend the summary')).toBeTruthy()
+  expect(screen.getByText('A longer report body')).toBeTruthy()
+  expect(screen.getByText('Add a structured narration')).toBeTruthy()
+  expect(screen.getByText('go test ./web/bridge')).toBeTruthy()
+  expect(screen.getByText('Excerpts are selections, not diffs')).toBeTruthy()
+})
+it('renders each excerpt with its path and code', async () => {
+  const item = { ...base, state: 'checking', rounds: [{ implementation: { summary: 'Bare summary', narration: { ...narration,
+    excerpts: [{ path: 'web/bridge/factory_types.go', lang: 'go', code: 'type FactoryNarration struct{}' }, { path: 'web/ui/src/lib/factory.ts', code: 'interface FactoryExcerpt {}' }] } } }] } as unknown as Item
+  vi.mocked(api.getFactoryItem).mockResolvedValue(item)
+  render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
+  await screen.findByText('web/bridge/factory_types.go')
+  expect(screen.getByText('type FactoryNarration struct{}')).toBeTruthy()
+  expect(screen.getByText('web/ui/src/lib/factory.ts')).toBeTruthy()
+  expect(screen.getByText('interface FactoryExcerpt {}')).toBeTruthy()
+  expect(screen.getByText('go')).toBeTruthy()
+})
+it('renders the narration alongside the CI card', async () => {
+  const item = { ...base, state: 'checking', rounds: [{
+    ci: { complete: true, checks: [{ key: { name: 'fail' }, conclusion: 'failure', logTail: 'trace' }, { key: { name: 'pass' }, conclusion: 'success' }] },
+    implementation: { summary: 'Bare summary', narration },
+  }] } as unknown as Item
+  vi.mocked(api.getFactoryItem).mockResolvedValue(item)
+  render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
+  expect((await screen.findByText(/fail: failure/)).textContent).toContain('failure')
+  expect(screen.getByText('trace')).toBeTruthy()
+  expect(screen.getByText('1 passing checks').closest('details')?.hasAttribute('open')).toBe(false)
+  expect(screen.getByText('Issue')).toBeTruthy()
+  expect(screen.getByText('The report hides the reasoning')).toBeTruthy()
+})
+it('falls back to the summary when there is no narration', async () => {
+  const item = { ...base, state: 'checking', rounds: [{ implementation: { summary: 'Bare summary' } }] } as unknown as Item
+  vi.mocked(api.getFactoryItem).mockResolvedValue(item)
+  render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
+  expect(await screen.findByText('Bare summary')).toBeTruthy()
+  expect(screen.queryByText('Issue')).toBeNull()
+})

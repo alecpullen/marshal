@@ -56,7 +56,9 @@ client onto that child's viewer socket, relaying its frames unchanged. Plain
 daemon session on an untrusted project asks its TUI, as embedded mode does,
 and a trust there applies to the running session without restarting the
 program. `marshal daemon pin [dir]` keeps a project's child running with no
-session, with its index watched, until `marshal daemon unpin`.
+session, with its index watched, until `marshal daemon unpin`. A fleet agent
+the local daemon starts on a local project runs on that project's child,
+beside the TUI's sessions.
 
 ### End-to-end and usability suites
 

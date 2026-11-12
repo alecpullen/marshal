@@ -70,6 +70,10 @@ webbridge --profile local --socket ~/.local/share/marshal/daemon/marshal.sock --
   install` writes this flag into the unit from `[daemon]
   idle_session_timeout` in the user config, so a change takes effect at the
   next install.
+- A fleet agent the daemon starts on a local project runs on that project's
+  child, beside the TUI's sessions; only plain local host agents move, and a
+  git-sourced, workspace or containerized agent keeps a child each. Releasing
+  an agent closes its session, never the child.
 
 A project can be pinned, which keeps its child running with no session:
 `marshal daemon pin [dir]` and `marshal daemon unpin [dir]` change the pins

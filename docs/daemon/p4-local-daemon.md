@@ -2494,4 +2494,97 @@ pre-existing):
 
 ### Plan 10 — fleet agents on the project's child
 
-Not yet run. [The plan](plans/2026-11-12-p4-10-fleet-plan.md) fills this record.
+Run 2026-11-12 on `p4-10-fleet`, based on `c0fe0b03` plus a merge of
+`p4-9-pins` (plan 9 was complete but still under review, so its branch was
+merged into the plan-10 branch rather than into `main`; nothing here reaches
+`main` until plan 9 does). [The plan](plans/2026-11-12-p4-10-fleet-plan.md).
+
+**What was built.**
+
+- **The registry marks the fleet's sessions** (decision 1). `sessionInfo.fleet`,
+  `TrackFleet`, `LoadFleet`, `IsFleet`, `tracksClient` and `forget`;
+  `resumeAll` sends the client-trust mark per session, and the idle sweep, the
+  daemon's listing and `closeIfIdle` leave a fleet session alone. `count` still
+  counts it, so a child with an agent on it does not linger.
+- **An attach never takes a fleet session** (decision 6): 409 with
+  `session <id> belongs to a fleet agent`, refused before the viewer socket is
+  dialled.
+- **One classifier and one event log per project child** (decision 3),
+  installed before `child.Start`. `attachSessions` is `Attach` with a `keep`
+  predicate, and `installClassifier(child, reg, agentOf)` keys every delta by
+  the fleet's session map, so an unknown session is classified no further.
+  `projectHandshake` records the child's capabilities.
+- **A local agent runs on its project's child** (decision 2):
+  `onProjectChild` is true only for a host-only fleet, a non-git source, no
+  workspace and no egress proxy. `projectRuntime` builds the runtime on the
+  child's `Child`/`Registry`/log with the child's version and capabilities,
+  and `Spawn` tracks with `TrackFleet` for every runtime.
+- **Releasing closes the session, not the child** (decision 5):
+  `releaseProjectAgent` closes with the registry's `Close` under a 30s bound,
+  forgets a session whose close failed, rearms the linger and never stops or
+  detaches the child. `restoreSession` maps the session before `LoadFleet`, and
+  `Close` skips the detach for a runtime on a project child.
+
+**Where the plan was short, and how it was filled.**
+
+- Task 5's `onProjectChild` also refuses an agent with no project root: a
+  project child is keyed by root, so there is none to share. The plan's four
+  conditions did not name it.
+- Task 5 reuses `versionSkew` for the project child's version, so the rule
+  `checkAgentVersion` applies to an agent's own child applies verbatim.
+- Task 6 needed a bound the plan named but did not declare: `projectCloseTimeout`
+  (`30 * time.Second`), next to `spawnSlotTimeout`.
+- Task 6's `Close` also skips a runtime whose child is nil, a dereference that
+  predated this plan; leaving it would panic while detaching a failed runtime.
+- Task 7's harness gained the `ws` field the plan asked for, so a test reads an
+  agent's record.
+
+**The manual run.** A scratch data dir (`/private/tmp/p4-10-data.5sIL`, `0700`),
+a scratch `git init` project, the built `marshal` and `webbridge`:
+
+- `webbridge --profile local --socket <data>/daemon/marshal.sock --addr off
+  --marshal-bin ./marshal` came up on the socket.
+- `POST /api/projects` registered the project (`available: true`, `trust:
+  "na"`); `POST /api/agents` spawned an agent (`40ad029bc5375da9`).
+- `GET /api/daemon` listed **one** child for the project with `sessions: []`:
+  the agent's session was on it and hidden from the listing (decision 1).
+- `ps` showed one `marshal acp --viewers unix://<data>/daemon/state/v/…sock`
+  for that state dir — the project's child, not a child of the agent's own.
+- `POST /api/sessions/<id>/prompt` answered `{"status":"started"}`. No provider
+  was configured for the scratch run, so the turn itself produced no reply to
+  transcribe; the event stream was not read.
+- `POST /api/agents/<id>/exit` retired the agent; `GET /api/daemon` still
+  listed the child and its process was still alive, waiting on its linger
+  (decision 5).
+- **What could not be driven:** the TUI half — `marshal attach [id]` and an
+  SSE viewer — needs a terminal or a browser, and a scripted reply needs a
+  provider. W13's in-process test (`test/daemon`) covers both, attach
+  refusal included.
+
+**Verification**, each command with its result:
+
+- `gofmt -l internal cmd test web` — no output.
+- `go vet ./...` — clean; `GOOS=linux go vet ./web/...` — clean;
+  `GOOS=windows go vet ./web/bridge/` — clean.
+- `go test ./... -timeout 20m` (`TMPDIR=/private/tmp/p4-10-suite`) — **122
+  packages ok, no failures**; `web/bridge` alone `ok 103.624s`. Neither of the
+  base commit's two known failures (the `internal/acp` budget test and the
+  `web/bridge` recipe hang) reproduced.
+- `go test ./web/bridge/ -run TestWebIsStdlibOnly -count=1` — `ok 0.434s`.
+- `go test -race ./web/bridge/ -run 'Fleet|ProjectChild|Attach' -count=1` —
+  `ok 5.881s`, no data race.
+- `CGO_ENABLED=1 go build -o marshal ./cmd/marshal`, then
+  `go test ./test/usability/... -run TestScripted -timeout 5m` — `ok 45.377s`.
+- Each task's own Verify and mutation check passed: the registry-wide mark in
+  `resumeAll`, `track` for `TrackFleet` in `Spawn`, a `Stop()` in the project
+  branch of `releaseAgent`, and fleet sessions listed in `summaries` each
+  failed the test the plan names, at the step it names.
+
+**Open after P4.**
+
+- H11 is unchanged: the server profile and containerized agents keep a child
+  each, as do git-sourced and workspace agents.
+- A TUI that resumes a paused agent's stored session is not prevented; only a
+  live fleet session is refused to an attach.
+- A fleet agent's session is logged on the project child's log, so that log
+  grows with the agent's turns until the child restarts.

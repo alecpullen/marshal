@@ -312,7 +312,7 @@ and `web/bridge/factory_defaults.go`; create
     both the request) and `CreateResolved(req, resolved, now)` (identity the
     request, content the resolved configuration), so the create-replay hash
     stays over the operator's request.
-- [ ] Run the named tests; require PASS. Run `gofmt -l` on the three task
+- [ ] Run the named tests; require PASS. Run `gofmt -l` on the four task
   files; require no output.
 - [ ] Commit only this task: `feat(factory): resolve project factory defaults on handoff create`.
 

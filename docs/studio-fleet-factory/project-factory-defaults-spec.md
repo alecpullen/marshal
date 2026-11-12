@@ -329,9 +329,9 @@ POST /api/factory/items
      }
 ```
 
-The handoff in that request set only `repoId`, `projectRoot` and `title`; the
-rest came from the project's defaults, and the stored draft shows the resolved
-values.
+The handoff in that request set only `repoId`, `projectRoot`, `title` and the
+two routings; the rest came from the project's defaults, and the stored draft
+shows the resolved values.
 
 The shapes above match the real surfaces: the settings response omits empty
 optional fields rather than rendering them, a routing object must carry a

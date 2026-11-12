@@ -32,12 +32,22 @@ And the paragraph that follows them:
   narrating every changed line."
 
 The §6 "Proposals to refine" list is **not** approved and is therefore out of
-scope: storing narration as structured content, tying explanations and excerpts
-to exact revisions, asking reviewers to check the report's claims, linking the
-account back to recorded planning decisions, and surfacing preview/test
-environment links. This slice implements the approved *behaviour*; the shape it
-uses to carry that behaviour is this slice's own implementation choice, and it
-happens to be consistent with the first of those proposals.
+scope: tying explanations and excerpts to exact revisions, asking reviewers to
+check the report's claims, linking the account back to recorded planning
+decisions, and the refined form of surfacing preview/test environment links
+with their provider-reported status.
+
+Two items need a more careful statement. Surfacing a repository's existing
+branch testing, preview deployments or test environments in the pull request
+experience is an **agreed** priority; only the refinement of it — showing the
+links with their provider-reported status and associated revision — is a
+proposal, and its discovery mechanism is explicitly open. That capability is
+therefore **deferred pending the provider-capability discovery the proposal
+leaves open**, not rejected. Separately, storing narration as structured
+content while generating Markdown for external forges is a proposal; this
+slice's own transport choice happens to match it, and the fuller proposal —
+regenerating the description after repairs and tying passages to exact
+revisions — stays out of scope.
 
 The two earlier slices are implemented and their contracts are recorded in
 [the discovery spec](existing-project-discovery-spec.md) and
@@ -68,7 +78,7 @@ Measured on the reviewed stack head `09d6636b`.
 | Prompt building | `web/bridge/factory_prompts.go:68` | `BuildFactoryPrompt` asks the implementer for "a concise engineering report" and lists the JSON block's fields |
 | Optional forge capability | `web/bridge/factory_forge.go:9` | `FactoryForge` covers CI observation, PR lookup and the draft/ready mutation; `FactoryForgeFor` (`factory_forge.go:18`) type-asserts it and reports `ErrFactoryForgeUnsupported` |
 | Forge implementations | `web/bridge/forge_github_factory.go:73` | Only `*githubForge` implements `FactoryForge`. `giteaForge` does not, so the factory loop is GitHub-only today, matching the bootstrap scope |
-| PR creation | `web/bridge/factory_effects.go:188` | The draft PR is created with the fixed body "Factory plan and specification are seeded. Implementation is in progress." and is never rewritten |
+| PR creation | `web/bridge/factory_effects.go:199` | The draft PR is created with the fixed body "Factory plan and specification are seeded. Implementation is in progress." and is never rewritten |
 | Marking ready | `web/bridge/factory_effects.go:242` | The `set_ready`/`set_draft` effect re-reads the PR, checks its identity, state and revision, mutates the draft flag, re-reads it, then observes CI and compensates back to draft if the revision or the CI moved |
 | Round assembly | `web/bridge/factory_controller.go:83`, `:252`, `:439` | The round is appended when the implement effect starts; its CI evidence is stored when the observation matches the round's head; its implementation report is stored when the effect completes |
 | Studio rendering | `web/ui/src/lib/factory.ts:17`, `web/ui/src/views/FactoryItem.svelte:118` | The report is mirrored as a hand-written TypeScript interface, and the studio renders `round.implementation.summary` as one paragraph beside a CI card that already expands failing checks and collapses passing ones |
@@ -140,10 +150,31 @@ will read.
 - every other section may be empty. A change with no meaningful alternatives
   says so by leaving them empty; the bridge does not invent content.
 - excerpts are optional. Each excerpt's `path` must be repository-relative: not
-  absolute, no leading `/`, no `..` segment, and no backslash. Each excerpt's
-  `code` is bounded, and the number of excerpts is bounded, so a report cannot
-  carry an unbounded payload.
+  absolute, no leading `/`, no `..` segment, and no backslash.
 - a reviewer report and an implementer `needs_input` report need no narration.
+
+The bounds are fixed, so that an oversized report fails at parse time rather
+than at publish time:
+
+```go
+const (
+	// factoryNarrationMaxExcerpts is how many excerpts one narration may
+	// carry. The narration is a selection, not a diff.
+	factoryNarrationMaxExcerpts = 8
+	// factoryNarrationMaxSectionRunes bounds each narration section.
+	factoryNarrationMaxSectionRunes = 8_000
+	// factoryNarrationMaxExcerptRunes bounds one excerpt's code.
+	factoryNarrationMaxExcerptRunes = 4_000
+	// factoryNarrationMaxTotalRunes bounds the whole narration.
+	factoryNarrationMaxTotalRunes = 64_000
+)
+```
+
+A section over its bound, an excerpt over its bound, more than
+`factoryNarrationMaxExcerpts` excerpts, or a narration over
+`factoryNarrationMaxTotalRunes` is a report failure. The bounds are checked in
+`ParseFactoryReport`, so an oversized narration never reaches the store, the
+journal or the pull request.
 
 A completed implementer report without a usable narration is a **report
 failure**, exactly as a missing summary is today. It is never silently
@@ -168,10 +199,16 @@ follow from that position:
 - the body is written for the exact head SHA the pre-check confirmed, so it
   cannot describe a revision the item did not review.
 
-The `set_draft` path does not write a body. The compensation path — the
-`set_ready` effect returning the pull request to draft because the revision or
-the CI moved — leaves the body as written, which still describes the reviewed
-head: the code did not move in that case, only the CI result did.
+The `set_draft` path does not write a body.
+
+The compensation path — the `set_ready` effect returning the pull request to
+draft because the revision or the CI moved — leaves the body as written. That
+body describes the head the item reviewed, which is the reviewed head when only
+the CI result moved. When the **revision** raced, the pull request now points
+at a different head and the body describes the previously reviewed one until
+the next round republishes it. The item is back in draft, so the body is not
+presented as ready evidence; it is transient, and the next round's
+`set_ready` rewrites it.
 
 **What.** The body is composed from the newest round:
 
@@ -215,6 +252,11 @@ absence is never silent.
 The body is composed from the newest round only. Earlier rounds' narration
 stays in the journal, and the published body always describes the revision the
 item is presenting.
+
+A work item whose newest round carries no narration — a pre-upgrade item
+whose journal predates this slice — cannot produce a body. `set_ready` is
+refused with a recorded reason, mirroring the unsupported-capability
+handling, rather than publishing a narration-less description.
 
 ### 4.4 The forge capability
 
@@ -280,7 +322,9 @@ Proposed, not approved. Shapes follow the existing `FactoryReport` and
 
 ```
 POST /api/factory/items/{id}/commands   (kind: "retry" with a replacement)
-  -> the replacement's report may carry a narration
+  -> the replacement is a handoff (requestId, title, plan, spec, config);
+     it carries no report. The narration arrives with the new round's
+     implementer report.
 
 GET /api/factory/items/{id}
   -> 200 {
@@ -371,7 +415,10 @@ For this slice:
   rejected as a report failure — the round does not advance and no
   summary-only description is published;
 - an excerpt with an absolute path, a `..` segment, a backslash, an
-  over-long body, or too many excerpts is rejected rather than published;
+  over-long body, or too many excerpts is rejected rather than published, and
+  so is an over-long narration section or an over-long narration as a whole;
+- a forge that cannot update a pull request description refuses `set_ready`
+  with a recorded reason, and the pull request stays a draft;
 - the description is written for the reviewed head SHA, and a pull request
   whose revision has moved is refused before any body is written;
 - a body write that fails leaves the pull request a draft and the item not
@@ -385,16 +432,20 @@ For this slice:
 - `TestWebIsStdlibOnly` passes, and no new `marshal/internal` import appears
   under `web/`;
 - the bootstrap factory's existing acceptance contract is unchanged: the same
-  required fields, size limit, host rules, built-in defaults, CI-acknowledgement
-  rule, readiness gate and draft-compensation path.
+  handoff required fields, size limit, host rules, built-in defaults,
+  CI-acknowledgement rule, readiness gate and draft-compensation path.
 
 ## 10. Non-goals
 
-- storing narration as structured content with Markdown regeneration as a
-  separate proposal, tying explanations and excerpts to exact revisions, asking
-  reviewers to check the report's claims, linking the account to recorded
-  planning decisions, and surfacing preview/test environment links — all §6
-  proposals, not approved;
+- the fuller §6 proposals: regenerating the description after repairs, tying
+  explanations and excerpts to exact revisions, asking reviewers to check the
+  report's claims, linking the account to recorded planning decisions, and
+  showing preview/test environment links with their provider-reported status.
+  This slice's structured narration and generated Markdown are its own transport
+  choice, not an implementation of those proposals;
+- surfacing a repository's existing branch testing, preview deployments or test
+  environments in the pull request experience — an agreed priority, deferred
+  pending the provider-capability discovery its refinement leaves open;
 - automatic merging, GitLab, specialist review focuses, notifications, and
   workflow extensibility — each recorded with its own decision status;
 - changing the factory loop, its effect kinds, its state machine, its recovery
@@ -402,3 +453,21 @@ For this slice:
 - a new HTTP route, a new forge, or a change to the `Forge` interface;
 - editing narration by the operator, or showing earlier rounds' narration
   beside the newest.
+
+## Branch review record
+
+This specification received an independent `glm-5.3-flash` review through
+`ollama-cloud` on 2026-11-13, followed by a focused re-review of the fix
+commit.
+
+| Review finding | Resolution |
+|---|---|
+| The compensation-path claim was wrong for the revision race | §4.3 now states that after a revision-race compensation the body describes the previously reviewed head until the next round republishes it, and that the item is back in draft meanwhile |
+| The promised bounds were never named, and the narration sections were unbounded | §4.2 now fixes the four bounds — eight excerpts, 8,000 runes per section, 4,000 runes per excerpt, 64,000 runes per narration — and requires them to be checked in `ParseFactoryReport`, so an oversized report fails at parse time |
+| The preview/test-environment capability was misclassified as unapproved | §1 and §10 now record it as an agreed priority deferred pending the provider-capability discovery its refinement leaves open |
+| A promised behaviour had no acceptance criterion | §9 now covers a forge that cannot update a description refusing `set_ready` with a recorded reason |
+| The `create_pr` citation pointed at the case label | §3 now cites `factory_effects.go:199`, the fixed-body `CreatePR` call |
+| The §5 sketch described a report on a retry replacement | §5 now states that a replacement is a handoff carrying no report, and that the narration arrives with the new round's implementer report |
+| §10 contradicted §1 about structured narration | §10 now excludes the fuller proposals and states that this slice's structured narration and generated Markdown are its own transport choice |
+| A pre-upgrade item with no narration had no defined outcome | §4.3 now refuses `set_ready` with a recorded reason rather than publishing a narration-less description |
+| The final acceptance bullet read as if the report contract were untouched | §9 now says "the handoff required fields" |

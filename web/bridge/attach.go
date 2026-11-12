@@ -86,6 +86,15 @@ func (s *Server) attachProject(w http.ResponseWriter, r *http.Request) {
 		}
 		sessionID, created = id, true
 	default:
+		// A live fleet agent's session belongs to that agent: an attach would
+		// take its relay and answer its client as if it were the TUI (P4 D10
+		// decision 6). Refused before any viewer connection opens; the child
+		// keeps its session, so no linger is rearmed.
+		if pc.reg.IsFleet(sessionID) {
+			logAttach("refused", root, sessionID, "fleet session")
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "session " + sessionID + " belongs to a fleet agent"})
+			return
+		}
 		if _, tracked := pc.reg.lookup(sessionID); !tracked {
 			if err := pc.reg.Resume(ctx, AgentPath(root), sessionID); err != nil {
 				// The agent does not know the session either, so this is a

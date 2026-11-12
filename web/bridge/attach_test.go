@@ -494,6 +494,47 @@ func TestTheAttachRefusals(t *testing.T) {
 	})
 }
 
+// TestAnAttachToAFleetSessionIsRefused: a live fleet agent's session belongs
+// to that agent, so an attach naming it is refused before any viewer
+// connection opens (P4 D10 decision 6).
+func TestAnAttachToAFleetSessionIsRefused(t *testing.T) {
+	root := t.TempDir()
+	h := newAttachHarness(t)
+
+	// A client's session starts the child and holds one viewer, so the
+	// refusal below is measured against a live relay.
+	first := h.attach(http.MethodPost, root, "", true)
+	if first.status != http.StatusSwitchingProtocols {
+		t.Fatalf("opening attach = %d, want 101", first.status)
+	}
+	pc, err := h.fleet.projectChildFor(context.Background(), root)
+	if err != nil {
+		t.Fatalf("projectChildFor: %v", err)
+	}
+	pc.reg.TrackFleet("fleet-1", AgentPath(root))
+
+	fake := h.fake(root)
+	if fake == nil {
+		t.Fatal("no fake was built for the project child")
+	}
+	eventually(t, "the first viewer to connect", func() bool { return fake.viewers() == 1 })
+	viewers := fake.viewers()
+
+	res := h.attach(http.MethodPost, root, "fleet-1", true)
+	if res.status != http.StatusConflict {
+		t.Fatalf("attach to a fleet session = %d, want 409", res.status)
+	}
+	if got, want := res.refusal(t), "session fleet-1 belongs to a fleet agent"; got != want {
+		t.Errorf("409 refusal = %q, want %q", got, want)
+	}
+	if got := fake.viewers(); got != viewers {
+		t.Errorf("a refused attach opened a viewer connection: %d before, %d after", viewers, got)
+	}
+	if !pc.reg.IsFleet("fleet-1") {
+		t.Error("the refusal untracked the fleet's session")
+	}
+}
+
 func TestAFailedDialClosesTheNewSession(t *testing.T) {
 	root := t.TempDir()
 	h := newAttachHarness(t)

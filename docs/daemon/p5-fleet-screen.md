@@ -10,9 +10,9 @@ Builds on [`p4-local-daemon.md`](p4-local-daemon.md): its daemon, its attach
 relay and its fleet agents on project children.
 Depends on: P4, implemented (all ten plans merged at `7ae94a9b`; its hands-on
 acceptance run is still to do).
-Status: approved, 2026-11-12, with all ten decisions as recommended. The
-Behaviour section is still headings only and is written before the first plan.
-The line anchors were checked at `7ae94a9b`.
+Status: approved, 2026-11-12, with all ten decisions as recommended.
+Behaviour written 2026-11-13; plans 1 and 2 are written. The line anchors were
+checked at `d5e63dcd`.
 
 ## Goal
 
@@ -56,6 +56,14 @@ The design's done-when for P5: the fleet loop from `docs/fleet-cli/design.md`
   - Grouping and urgency order are `groupAgents` (`web/ui/src/lib/fleet.ts:74`),
     and the needs-you list is `buildInbox` (`web/ui/src/lib/inbox.ts:23`).
   - Both run over rows that `applyDeltaTo` keeps current from the deltas.
+  - Some changes reach the browser only on a refetch, because no delta carries
+    them: a turn starting or ending, a request being answered, and an intake
+    submission arriving.
+- **`web/` may not import itself, and its types are never checked.**
+  - `TestWebIsStdlibOnly` refuses every `marshal/` import
+    (`web/bridge/boundary_test.go:68`), including a package under `web/`.
+  - The web UI's build and tests strip its types without checking them, and
+    `svelte-check` reports 6 errors.
 - **The TUI has no fleet client, and it may not import one freely.**
   - Its boundary test allows only `acpclient`, `acpwire` and a short list of
     data packages (`internal/app/tui/boundary_test.go:27`).
@@ -297,39 +305,481 @@ first, then the alternative it was weighed against.
 
 ## Behaviour
 
-The decisions are settled; this section is written next, before the first
-plan, as P4's was. Each heading below says what it will pin.
+### F1. The contract
 
-- **F1. The contract.** Which types move; byte-identical encoding; the
-  generator and its staleness test; the TUI's one new allowed import.
-- **F2. The inbox.** The group rules (today's `groupAgents`: pending, then
-  running, then idle with changes and no PR, else earlier; urgency by
-  approval before question, then status, then most recent); intake items in
-  needs-you, oldest first; when the delta is sent.
-- **F3. The fleet client.** Transports, reconnect with backoff (1s to 30s),
-  the snapshot refetch on overflow and on reconnect, how a 401 stops the
-  streams without prompting (fleet-cli §5).
-- **F4. The fleet screen.** Fleet-cli §3's panels, widths, glyphs and keys,
-  with decision 4's changes; the Sessions group; `marshal fleet` and `/fleet`.
-- **F5. Opening an agent.** The agent attach, the relay's refusals, the
-  `Marshal-Agent` header, the session screen's `/exit` and `/new` for an
-  agent, and the way back to the fleet.
-- **F6. Viewer sockets.** Paths, permissions and cleanup for own-child and
-  container viewers; the container allowlist at both ends.
-- **F7. Server profiles.** The file's shape and checks, the token sources,
-  `marshal fleet login`, TLS, and the attach over TLS.
-- **F8. Needs you and notifications.** The status line count, transition
-  detection and burst collapse, and the notifier seam.
+- **The package.** `web/bridge/contract` holds the fleet loop's wire types and
+  nothing else: no functions, no methods and no state. Beside the types it
+  declares only the constants of its enumerations and one list of method names
+  (F6). It imports only the standard library.
+- **What moves in plan 1** (decision 1's list):
+  - agents: `AgentStatus`, with `AccessState`, `PendingRequest`,
+    `GateOverride` and `AgentWorkspace`;
+  - the fleet stream: `FleetDelta`, which is today's `fleetDelta` with its
+    wire fields in today's order; `BudgetDelta`; and `ProjectRemovedDelta`, in
+    place of the map at `http.go:434`;
+  - intake: `PendingSubmission`, in place of the map `listPending` builds
+    (`http.go:1248`), and the approve and deny answers;
+  - projects: `ProjectStatus`;
+  - spawn: the request body, which `spawnAgent` decodes into an anonymous
+    struct today, and its answer, a map today (`http.go:540`);
+  - finishing: `DiffFile` and `DiffResult`, the commit draft, `GateResult` and
+    `GateRecord`, the exit request and `ExitResult`, the merge request and
+    `MergeResult`, and the discard answer;
+  - budgets: `Budgets`, and the report `GET /api/budgets` answers, with its
+    per-agent rows;
+  - the daemon: `DaemonInfo`, `DaemonChild`, `DaemonSession`, `DaemonRefresh`
+    and `PinState`.
+
+  Answers to permissions and questions move in plan 5, which is their first Go
+  client.
+- **The bytes do not change.**
+  - The bridge keeps its names through type aliases, so moving a type changes
+    no code that uses it. That includes the unexported ones: `gateRecord`
+    becomes an alias of `contract.GateRecord`.
+  - `fleetDelta` keeps two fields off the wire (the access state's session,
+    and the usage rows). It becomes a bridge type that embeds
+    `contract.FleetDelta` and keeps those two unexported, so they are never
+    encoded, as today.
+  - Where today's encoder is a map, the struct declares its fields in the
+    map's sorted key order, which is the order `encoding/json` writes a map
+    in. None of those fields is `omitempty`, because the map writes every
+    entry today.
+  - The bridge forwards some of the agent's replies unread: the diff, the
+    commit draft and the merge. It keeps doing so. The contract describes them
+    for the clients, and a test in `internal/acp` checks that the agent's reply
+    types decode into the contract's types without loss.
+  - W1 records today's answers before anything moves, and compares every later
+    answer with them byte for byte.
+- **Enumerations are named string types.** These each get a named string type
+  with a constant per value: an agent's status, a pending request's kind, a
+  project's trust, a delta's kind, and a workspace's source. Go code cannot
+  misspell one, and the generator turns each into a TypeScript union of its
+  values, as `api.ts` declares them by hand today.
+- **The generator** is `web/bridge/contract/tsgen`. It is a standard-library
+  package that parses the contract package's source with `go/parser` and
+  writes `web/ui/src/lib/contract.ts`.
+  - A struct becomes an interface, keyed by the JSON names. A field that is
+    `omitempty` is optional. A pointer that is not `omitempty` may be `null`. A
+    field tagged `-`, or unexported, is left out.
+  - The basic types map as follows:
+    - `string`, `bool` and every number type become `string`, `boolean` and
+      `number`;
+    - `time.Time` becomes `string`;
+    - `json.RawMessage` becomes `unknown`;
+    - a slice becomes an array;
+    - a map with string keys becomes a `Record`.
+  - A named string type with constants becomes a union of their values. Any
+    other named type keeps its name.
+  - Doc comments carry over. The file starts with a line saying it is
+    generated, and by what.
+  - The output is deterministic: files in name order, and declarations in
+    source order.
+- **Staleness.** `TestTypeScriptContractIsCurrent` fails when the checked-in
+  file differs from the generator's output. Its message gives the command that
+  rewrites the file: the same test run with `-update`. Nothing in the build runs
+  the generator.
+- **The TypeScript side.**
+  - `api.ts` deletes its own declarations of the moved types, and re-exports
+    the generated ones under the names its callers use today.
+  - Where a generated name would clash with a web UI name, the re-export
+    renames it. For example, `AccessState` is already the parsed state in
+    `interaction.ts`.
+  - `fleet.ts` keeps its union of per-kind deltas, but declares each member
+    from the generated `FleetDelta`. A field renamed in Go then fails the type
+    check there too.
+- **The type check.**
+  - The web UI has no type-check step: `vite build` and `vitest` strip types
+    without checking them.
+  - `svelte-check` reports 6 errors today: four in test files, and one each in
+    `Chat.svelte` and `Run.svelte`.
+  - Plan 1 adds `npm run check`, which runs `svelte-check`. Its gate is that the
+    count does not rise. Fixing the six is not P5's work.
+- **Who imports the package.**
+  - The bridge, through the aliases.
+  - `internal/daemon`. Its mirrored types (`client.go:27`, `:49`) become
+    aliases of the contract's, so `cmd/marshal` and `internal/launch` do not
+    change.
+  - The fleet client (plan 3), and the TUI, which renders from these types.
+    The TUI's import is one new entry in `seamImportAllowed`, added by plan 3,
+    the first TUI code to need it.
+- **The web boundary.** `TestWebIsStdlibOnly` forbids every `marshal/` import
+  today (`web/bridge/boundary_test.go:68`). It would therefore refuse the
+  bridge's own import of the contract.
+  - Plan 1 changes it so a package under `web/` may import another one under
+    `marshal/web/`. Every other module path is still refused.
+  - That keeps the rule's intent: `web/` must not depend on the agent's
+    packages, and the contract is not one of them.
+
+### F2. The inbox
+
+- **The value.** `contract.Inbox` has two parts.
+  - `groups` is four ordered lists of agent IDs: `needsYou`, `running`,
+    `ready` and `earlier`.
+    - An agent goes in the first group it qualifies for. Needs you: it has a
+      pending request. Running: its status is `running`. Ready: it is idle, has
+      changed files, and has no pull request. Otherwise it goes in earlier.
+    - Within a group, agents are ordered by pending kind (approval, then
+      question, then none). Then by status, awaiting first, then error, then
+      running, then idle. Then the most recently updated comes first.
+    - Ties keep the snapshot's order.
+
+    These are `groupAgents`' rules (`web/ui/src/lib/fleet.ts:74`).
+  - `queue` is what needs the user, oldest first.
+    - It has one item per agent in `groups.needsYou`, dated by its
+      `updatedAt`.
+    - It has one item per intake submission, dated by its `createdAt`. The
+      item carries the submission itself.
+    - On a tie, agents come before submissions, each kind in its own order.
+
+    These are `buildInbox`'s rules (`web/ui/src/lib/inbox.ts:23`).
+
+  Times are compared as times. The browser compares them as strings, which
+  misorders two times in the same second when only one has a fraction.
+- **Owners.** The inbox covers every owner.
+  - The web UI's Home keeps its "Mine" scope by dropping the items another
+    owner has, which keeps the bridge's order. An unset owner, or `local`, is
+    the user's.
+  - The Go client has one owner, and no scope.
+- **The route.** `GET /api/inbox` answers the current value. It is on both
+  listeners, with the bearer check on TCP, as `GET /api/agents` is.
+- **The delta.** An `inbox` delta on the fleet stream carries the whole value.
+  - A fleet event wakes the bridge's inbox loop, which recomputes 250ms later,
+    so a burst of events costs one recompute.
+  - The loop also recomputes every second. Some changes emit no event:
+    - a turn starting or ending;
+    - a request being answered;
+    - an intake submission arriving or expiring.
+  - It sends the value only when the value's encoding differs from the last one
+    sent. Every activity, telemetry and run delta moves its agent's
+    `updatedAt` (`fleetevents.go:216`). So with agents running, the order
+    changes, and inbox deltas follow, often.
+  - It goes through the fleet's `emit`, as every other delta does. It takes a
+    slot in the ring, and a client that falls behind gets a `replay_overflow`.
+- **The clients.**
+  - A client takes membership and order from the inbox. It takes the rows
+    themselves from `GET /api/agents` and the deltas it applies today.
+  - The client does not show an ID it has no row for. Instead it refetches
+    the agents, at most once a second. That is how an agent spawned elsewhere,
+    such as an approved intake or an MCP spawn, appears without a reload.
+  - On connect, and after a `replay_overflow`, it fetches `GET /api/inbox`
+    with the agents.
+- **The web UI on it.**
+  - These now come from the inbox:
+    - the sidebar's groups;
+    - its needs-you count;
+    - Home's lists;
+    - Home's intake items, from the queue.
+  - `groupAgents` and `buildInbox` are deleted. Their tests are ported to Go as
+    W2's cases.
+  - `sortAttentionFirst` orders the Dashboard, which is not grouping, so it
+    stays.
+  - Intake submissions also stop waiting for a `pending` delta, or an approve
+    or a deny, to refetch them. That is when `App.svelte:189` refetches them
+    today.
+
+### F3. The fleet client
+
+- **The package.** `internal/fleetclient` is the Go client. It speaks REST and
+  the fleet stream over a transport it is given:
+  - locally, the daemon's socket, dialled as `internal/daemon.Client` dials it,
+    with no token;
+  - remotely (plan 7), HTTPS with the profile's bearer token on every request.
+- **The interface.** `acpclient.Fleet` sits beside `Host` and `Session`.
+  - Reads are answered from the client's own state, without blocking:
+    - the rows;
+    - the inbox;
+    - the projects;
+    - the budgets;
+    - locally, the daemon's sessions;
+    - the connection state;
+    - the last action's error.
+  - `Changed()` fires after anything those reads return may have changed, as
+    `Session.Changed` does.
+  - The actions are calls that block until the bridge answers:
+    - spawn;
+    - answer a permission or a question;
+    - read a diff and a commit draft;
+    - verify, exit, merge and discard;
+    - cancel an agent's turn;
+    - approve or deny an intake.
+  - A table maps each method to its route, as `acpclient.Methods` maps the
+    session's methods to ACP. A test keeps the table complete.
+  - The TUI sees only the interface and the contract's types.
+- **The stream.**
+  - On connect, the client reads the agents, the inbox, the projects and the
+    budgets, plus the daemon's info when local. Then it opens
+    `GET /api/events?stream=fleet`.
+  - It applies deltas to its rows by the rules `applyDeltaTo` uses today
+    (`fleet.ts:86`).
+  - It refetches the agents on a `pending` delta, because the request's payload
+    is only in the snapshot, as the web UI does. It refetches the budgets on a
+    `budget` delta.
+  - It ignores delta kinds outside the loop: watches, reroutes, automations and
+    network blocks.
+  - A `replay_overflow` makes it refetch everything it read on connect.
+- **Reconnecting.**
+  - A dropped stream reconnects with backoff: 1s, doubling to 30s, reset after a
+    minute connected.
+  - Each reconnect resumes with `Last-Event-ID`, and refetches what it read on
+    connect, since the ring may have moved past it.
+  - The connection state is one of three:
+    - connected;
+    - reconnecting, while the retries run;
+    - down, once retries have failed for a minute. It keeps retrying every 30s.
+- **A 401.**
+  - A 401 on any request stops the stream and every retry.
+  - The state says "token rejected for <profile>".
+  - The client never asks for a token. The user fixes the profile and starts
+    the screen again (fleet-cli §5).
+- **Action errors.** An action returns the bridge's refusal: its status and
+  its `error` text. A budget refusal keeps the budget's own sentence.
+
+### F4. The fleet screen
+
+- **Starting it.**
+  - `marshal fleet` uses the local daemon, or the server `--server NAME` names
+    (plan 7).
+  - With no daemon answering and no server named, it says to start or install
+    the daemon, and exits non-zero. It never falls back to embedded mode.
+  - `/fleet` exists only on a daemon session screen, as `/detach` does. It
+    detaches the session and runs the fleet program in the same loop.
+- **The model.**
+  - `internal/app/tui/fleet` is a Bubble Tea model.
+  - It renders from `acpclient.Fleet`, under the TUI's boundary rule.
+  - It reuses the TUI's theme, glyph and layout packages.
+- **The layout** is fleet-cli §3's.
+  - It is one screen, with a left column of Agents, Needs you and Events, and a
+    tabbed panel on the right.
+  - `tab` and `shift-tab` move focus, and `z` zooms the focused panel.
+  - Widths, columns and glyphs follow fleet-cli §3.1:
+    - below 80×24 it shows "terminal too small (80×24)";
+    - every glyph is paired with a colour;
+    - every state is still legible under `NO_COLOR`.
+- **The Agents panel**
+  - It lists `groups` in order, with a header line before each group that has
+    agents in it, as the web UI's sidebar does.
+  - Below them is a Sessions group (decision 9), local only. It lists the
+    daemon's TUI sessions from `GET /api/daemon`, with each one's project,
+    session ID, viewers and last activity. Its rows have no Diff or Info tab.
+  - `/` filters by name or project.
+- **The Needs you panel**
+  - It is the queue, oldest first (fleet-cli §3.2).
+  - An agent item shows its pending kind. An intake item shows its origin and
+    title.
+- **The Events panel**
+  - It is a ring of the last 200 lines, newest at the bottom (fleet-cli §3.3):
+    - agents becoming ready, failing, or needing the user;
+    - action failures;
+    - connection changes.
+- **The right panel** (decision 4) has three tabs, picked with `1` to `3`:
+  - Activity: the agent's activity line, its status, and what it is waiting on;
+  - Diff (fleet-cli §3.5);
+  - Info (fleet-cli §3.6).
+
+  The full transcript is the session screen.
+- **Keys.** Fleet-cli §3.9's keys, with these changes:
+  - `⏎` opens the selected agent's or session's session screen (F5). On an
+    intake item, `⏎` opens approve and deny.
+  - The composer keys (`i`, `ctrl-x`, `ctrl-o`) belong to the session screen.
+    `x` still cancels the selected agent's turn.
+  - `a` answers the selected agent's request:
+    - an approval inline in the Activity tab, with `y` or `n`;
+    - a question in a modal.
+  - `n` opens the spawn modal (fleet-cli §3.8).
+  - `f` opens the finish modal (fleet-cli §3.7). A discard needs the agent's
+    name typed.
+  - `s` does not switch servers in P5. A server is chosen when the screen
+    starts.
+  - `q` and `ctrl-c` leave the fleet program for the shell.
+- **Connection and failures** follow fleet-cli §5.
+  - The footer shows the state as a dot: `●` connected, `◌` reconnecting, `✗`
+    down.
+  - While down, the panels keep the last state, dimmed. Actions are refused
+    with a status-line message.
+  - A failed action shows on the status line for 4s, and as a line in Events.
+
+### F5. Opening an agent
+
+- **The route** is `POST /api/agents/{id}/attach`.
+  - It takes the project attach's upgrade headers and no body.
+  - The bridge resolves the agent's runtime and session, and dials its child's
+    viewer socket. It answers `101`, with the session's ID in `Marshal-Session`
+    and the agent's in `Marshal-Agent`.
+  - Before plan 6, an agent with no viewer socket (one with its own child) is
+    refused with 409 and a sentence saying so.
+  - A paused agent is refused with 409. An unknown agent gets 404.
+  - Plan 4 serves the route on the socket. Plan 7 adds it on the TLS listener,
+    with the bearer token.
+- **The relay** is P4's. For an agent's session it refuses two calls:
+  `session/close` for that session, and `session/new` with `replaces`.
+  - It answers each itself, with an error whose message says to finish the
+    agent from the fleet screen. It never forwards them to the agent.
+  - Every other frame passes unchanged.
+  - When the viewer goes, the relay never closes the agent's session:
+    detaching is closing the stream.
+- **The TUI** learns from `Marshal-Agent` that the session is an agent's.
+  `internal/daemon`'s attachment gains the agent's ID.
+  - `/exit` and `/new` then say "This is agent <name>'s session: finish it from
+    the fleet screen", and do nothing else.
+  - The status line names the agent.
+- **The loop.** Launch's daemon loop gains a fleet pass.
+  - The fleet program ends with what to open: an agent, a daemon session, or
+    nothing, which means quit.
+  - The loop dials what it names and runs the session screen.
+  - When the session screen ends, the loop runs the fleet program again, with
+    the agent just left still selected. It ends by quitting, by `/detach` or by
+    `/fleet`.
+  - `/exit` on a daemon session that is not an agent's ends that session, and
+    returns to the fleet too.
+  - A lost connection on the session screen returns to the fleet with a line in
+    Events, not to the shell.
+- **Answers.**
+  - The fleet screen answers through `POST /api/permissions/{id}` and
+    `POST /api/questions/{id}`. The session screen answers through its mirror
+    (P3 R5).
+  - Plan 4 first tests that the first answer settles the request on both paths,
+    and that the other path is then told it was already answered.
+  - If that does not hold, plan 4 makes it hold before relying on it.
+- **The project attach widens** (closing P4 H15). It refuses with 409 any
+  session ID an agent record names, live or paused. Today it refuses only the
+  live fleet sessions (`attach.go:101`).
+
+### F6. Viewer sockets
+
+- **A host-process agent with its own child** (plan 6) starts that child with
+  `--viewers` on `<state>/v/a-<16 hex>.sock`.
+  - The hex is from the SHA-256 of the agent's ID, as the project children's
+    sockets use the root's. That keeps the path inside the unix-socket length
+    limit.
+  - The directory is `0700` and the socket `0600`, as P4's are.
+  - The bridge removes a stale socket before starting, and the socket after the
+    child stops.
+- **A containerized agent** (plan 8) runs `marshal acp --listen` on
+  `agent.sock`, as today, and `--viewers` on `viewers.sock`. Both are in the
+  mounted socket directory.
+  - The bridge dials `viewers.sock` from the host side of the mount
+    (`SocketDir`).
+  - `cmd/marshal` accepts `--viewers` with `--listen`. Each serves its own
+    connections, as each does alone today.
+- **Which agents a viewer reaches.** After plan 6, every host-process agent's
+  session can be opened; after plan 8, every agent's.
+- **The container allowlist** (decision 6).
+  - The list holds the methods the session screen needs:
+    - its turns, controls and answers;
+    - its reads;
+    - its notes;
+    - its browse calls.
+  - It leaves out every `Host` method except reading the agent's info, and
+    every method that writes user config or credentials.
+  - It is data in the contract package, so the relay and the agent read one
+    list.
+  - Plan 8 pins it against `acpclient.Methods`. A test in `internal/acp` checks
+    that each method on it is one the session screen calls, and none is a
+    config or credential write.
+  - The allowlist is enforced twice:
+    - the relay answers a method that is not on the list with an error and
+      never forwards it;
+    - `marshal acp` refuses it on the viewer connection too. The bridge starts
+      a container's agent with a flag that turns the viewers' allowlist on.
+  - The error says the method "is not available for a containerized agent".
+    The session screen shows it as it shows any error.
+
+### F7. Server profiles
+
+- **The file** is `fleet.toml` in the user's config directory: `MARSHAL_CONFIG_DIR`, else
+  `$XDG_CONFIG_HOME/marshal`, else `~/.config/marshal`.
+  - It holds a `servers` table of named profiles. Each profile has:
+    - `url`: `https`, or `http` for a loopback address only;
+    - optionally `token_cmd`;
+    - optionally `ca_file`;
+    - `notify`, true by default.
+  - A `local` table holds `notify` for the local daemon.
+  - A `token` field is an error, saying to use `marshal fleet login` or
+    `token_cmd`. Any other unknown field is also an error.
+  - The file must belong to the user, with mode `0600` or tighter. Otherwise
+    the fleet refuses to read it and says what the mode is.
+- **The token.**
+  - `token_cmd` runs once per connect through `/bin/sh -c`, with a 10s limit.
+    Its trimmed output is the token. A failure, or empty output, is reported
+    with the first line of its stderr.
+  - Without `token_cmd`, the token is the keychain entry
+    `marshal fleet login NAME` stored through `internal/credentials`. Login
+    reads the token without echoing it, and refuses a profile the file does not
+    name.
+  - With neither, the screen says "no token for <name>: run `marshal fleet
+    login <name>`".
+- **TLS** uses the system roots plus the certificates in `ca_file`. There is no
+  option to skip verification. The bridge already serves TLS with `--tls-cert`
+  and `--tls-key` (`cmd/webbridge/main.go:134`).
+- **The attach over TLS.**
+  - The network listener serves `POST /api/agents/{id}/attach`, with the bearer
+    token, over TLS.
+  - It serves it over plain HTTP only on a loopback address. Anywhere else the
+    answer is 403, "the agent attach needs TLS".
+  - The project attach and pin stay socket-only, answering 404 on TCP as today.
+- **A remote session** is dialled with `SharedFilesystem: false`.
+
+### F8. Needs you and notifications
+
+- **The count.**
+  - A daemon session screen gets an `acpclient.Fleet` from launch. It is the
+    fleet program's client when the screen was opened from the fleet.
+    Otherwise it is a client of the local daemon.
+  - When the count is more than zero, the status line shows `needs you N`:
+    the queue's items, not counting the shown agent's own.
+  - It shows nothing at zero, and nothing in embedded mode.
+- **Transitions.** The notifier watches the client's state for two
+  transitions:
+  - **Needs you:** an agent enters `groups.needsYou`, or a submission enters
+    the queue.
+  - **Ready:** an agent goes from running to idle with changed files.
+
+  The first state after a connect or a refetch is the baseline, and notifies
+  nothing.
+- **The burst.** Notifications for one agent within 2s collapse into one.
+- **The side effect.**
+  - Each notification rings the terminal bell and shows a desktop
+    notification:
+    - `osascript`'s `display notification` on macOS;
+    - `notify-send` on Linux;
+    - nothing on other systems.
+  - The desktop half is a notifier that launch passes to the TUI, as it passes
+    the clipboard. The TUI only decides when to notify.
+  - The text is "<agent> needs you: approval", or "… question", or "<agent> is
+    ready".
+- **Off.** `notify = false` turns notifications off for a profile, or for the
+  daemon in the file's `local` table.
+- **Not suppressed for the shown agent**, for fleet-cli §4's reason: the client
+  cannot tell whether its terminal is in front. The count leaves the shown
+  agent out, because the user is already looking at it.
+
+## Design
+
+| Area | Change |
+|---|---|
+| `web/bridge/contract` (new) | The fleet loop's wire types, their enumerations and the container viewers' method list (plans 1, 2, 5, 8); `tsgen`, the TypeScript generator, and its staleness test (plan 1). |
+| `web/bridge` | Type aliases onto the contract (plan 1); the inbox, its loop, route and delta (plan 2); the agent attach and the relay's refusals, and the widened project attach (plan 4); viewer sockets on agents' own children (plan 6); the attach on the TLS listener (plan 7); container viewers and the allowlist in the relay (plan 8). `TestWebIsStdlibOnly` allows `marshal/web/` imports (plan 1). |
+| `web/ui` | `contract.ts`, generated; `api.ts` and `fleet.ts` re-export it; `npm run check` (plan 1). The sidebar and Home on the inbox; `groupAgents` and `buildInbox` deleted (plan 2). |
+| `internal/daemon` | Its mirrored types become contract aliases (plan 1); the attachment's agent ID (plan 4). |
+| `internal/fleetclient` (new) | The fleet client over the socket (plan 3) and HTTPS (plan 7). |
+| `internal/acpclient` | The `Fleet` interface and its route table (plan 3). |
+| `internal/app/tui` | The fleet model in `fleet/` (plans 3, 5); `/fleet`, and `/exit` and `/new` on an agent's session (plan 4); the needs-you count and notifications (plan 6). The boundary test allows the contract package (plan 3). |
+| `internal/launch` | The fleet pass in daemon mode's loop (plans 3, 4); the notifier (plan 6); remote profiles (plan 7). |
+| `cmd/marshal` | `marshal fleet` (plan 3), `--server` and `marshal fleet login` (plan 7); `acp --listen` with `--viewers` (plan 8). |
+| `internal/acp` | The test that the agent's forwarded replies decode into the contract (plan 1); the viewers' allowlist when started for a container (plan 8). |
+| `test/daemon` | The fleet loop against a real bridge (plans 4, 5, 6); a server profile over TLS (plan 7). |
 
 ## Migration order
 
-The plans are written in this order once the Behaviour section is.
-
 1. **The contract.** The package, the generator, the bridge and
    `internal/daemon` moved onto it, with the bytes on the wire pinned by
-   recorded responses. It runs beside plan 2.
-2. **The inbox.** `GET /api/inbox` and the `inbox` delta; the web UI's sidebar
-   and Home on it.
+   recorded responses. The web boundary rule and `npm run check`.
+2. **The inbox.** `GET /api/inbox`, the inbox loop and the `inbox` delta; the
+   web UI's sidebar and Home on it.
+   - Its bridge side runs beside plan 1, with the inbox's types in the bridge.
+   - Its last tasks wait for plan 1 on `main`: they move those types into the
+     contract, carry each intake item's whole submission, and move the web UI
+     onto the inbox.
 3. **The fleet client and a read-only fleet screen.**
    - `internal/fleetclient` and `acpclient.Fleet`.
    - `marshal fleet` showing the agents, needs you and events, local only.
@@ -401,7 +851,26 @@ The plans are written in this order once the Behaviour section is.
 - **The intake list is untyped** (`http.go:1248`), and `fleetDelta` is
   unexported, with fields that are kept off the wire (`json:"-"`). The
   contract has to type both without changing the bytes.
+- **The contract package would fail the web boundary test** as it stands,
+  since the test refuses `marshal/web/` imports too. Plan 1 narrows the rule to
+  what it is for (F1).
+- **The browser's views go stale between refetches.** Nothing announces a turn
+  ending or a request answered, so the sidebar can show an agent in the wrong
+  group until something refetches. The inbox loop's one-second recompute closes
+  that.
+- **The browser orders times as strings.** Two times in the same second sort
+  wrongly when only one has a fraction. The bridge compares them as times.
 - **Not yet checked:** whether a viewer's answer settles the bridge's brokered
   request for the same approval, so that the fleet screen stops listing it.
   Decision 5 assumes the first answer wins on both paths. Plan 4 must test
   it before relying on it.
+
+## Implementation record
+
+### Plan 1 — the contract
+
+To be filled by plan 1's executor.
+
+### Plan 2 — the inbox
+
+To be filled by plan 2's executor.

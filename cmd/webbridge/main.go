@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -572,6 +573,27 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("secrets backend: %w", err)
 	}
 	fleet.SetSecrets(secrets)
+	// Recovery owns factory workers before ordinary reattachment or scheduled
+	// work is admitted. A journal or ownership failure stops startup.
+	factoryStore, factoryController, err := openRecoveredFactory(ctx, fleet, cfg.stateDir, bridge.NewFactoryEffects(fleet))
+	if err != nil {
+		fleet.Close()
+		return err
+	}
+	factoryCtx, stopFactory := context.WithCancel(ctx)
+	factoryDone := make(chan struct{})
+	// Factory shutdown is one idempotent sequence: persist what the
+	// controller owns, cancel the scheduler, wait for Run to return, then
+	// close the journal. Every path that closes the fleet after this point
+	// runs it first; the defer below is the backstop.
+	shutdownFactory := sync.OnceFunc(func() {
+		if err := factoryController.Quiesce(); err != nil {
+			slog.Default().Error("webbridge: factory shutdown persistence", "err", err)
+		}
+		stopFactory()
+		<-factoryDone
+		_ = factoryStore.Close()
+	})
 	if cfg.egress == "on" {
 		// A failure leaves open-network workspaces unproxied, as before
 		// the proxy existed; workspaces that restrict the network or
@@ -586,6 +608,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			slog.Default().Warn("webbridge: reattach agent", "err", err)
 		}
 	}
+	go func() {
+		defer close(factoryDone)
+		if err := factoryController.Run(factoryCtx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Default().Error("webbridge: factory scheduler stopped", "err", err)
+		}
+	}()
+	// The backstop for every return below: Run is started above, so waiting
+	// on factoryDone here is always safe.
+	defer shutdownFactory()
 
 	// Watch labelled issues on registered repos. Off by default; only
 	// repos with Watch set are polled.
@@ -593,7 +624,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	// Run due schedules. Fleet mode only: registry mode has no scheduler.
 	fleet.StartScheduler(nil)
 
-	api := bridge.NewServer(fleet, cfg.token, cfg.publicURL)
+	api := bridge.NewServer(fleet, cfg.token, cfg.publicURL, bridge.NewFactoryAPI(factoryStore, factoryController, fleet))
 
 	// serveErr carries the first listener to stop serving. The socket and
 	// the TCP listener can both exist, so it holds two, and each goroutine
@@ -637,8 +668,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		sln, lerr := bridge.ListenLocal(cfg.socket)
 		if lerr != nil {
 			// A refused socket — another daemon, a directory open to
-			// other users — leaves nothing to serve. Close the fleet as
-			// a failed TCP listen does below.
+			// other users — leaves nothing to serve. Stop the factory
+			// before closing the fleet, as a failed TCP listen does
+			// below: quiescing first releases the journal lock the next
+			// start has to take.
+			shutdownFactory()
 			fleet.Close()
 			return lerr
 		}
@@ -679,6 +713,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			if socketSrv != nil {
 				_ = socketSrv.Close()
 			}
+			shutdownFactory()
 			fleet.Close()
 			return fmt.Errorf("listen %s: %w", cfg.addr, err)
 		}
@@ -727,13 +762,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		// exists so the serve goroutine has a buffered parking spot.
 		// Whichever listener failed, the other one is still up: close
 		// it too, so the socket file is removed and the process does
-		// not linger answering nothing.
+		// not linger answering nothing. Stopping the factory before the
+		// fleet releases its journal lock.
 		if socketSrv != nil {
 			_ = socketSrv.Close()
 		}
 		if srv != nil {
 			_ = srv.Close()
 		}
+		shutdownFactory()
 		fleet.Close()
 		return err
 	case <-sigCtx.Done():
@@ -756,8 +793,23 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			slog.Default().Warn("webbridge: HTTP shutdown", "err", err)
 		}
 	}
+	shutdownFactory()
 	fleet.Close()
 	return nil
+}
+
+func openRecoveredFactory(ctx context.Context, fleet *bridge.Fleet, stateDir string, effects bridge.FactoryEffects) (*bridge.FactoryStore, *bridge.FactoryController, error) {
+	store, err := bridge.OpenFactoryStore(filepath.Join(stateDir, "factory", "v1"))
+	if err != nil {
+		return nil, nil, fmt.Errorf("open factory: %w", err)
+	}
+	controller := bridge.NewFactoryController(store, effects, nil)
+	fleet.SetFactoryController(controller)
+	if err := controller.Recover(ctx); err != nil {
+		_ = store.Close()
+		return nil, nil, fmt.Errorf("recover factory: %w", err)
+	}
+	return store, controller, nil
 }
 
 // serveHTTP serves srv on ln, using TLS when both a certificate and a

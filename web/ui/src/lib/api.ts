@@ -1397,3 +1397,18 @@ export async function createStatusLink(agentId: string, ttlHours: number): Promi
 export async function listStatusLinks(): Promise<StatusLink[]> { return (await request<StatusLink[] | null>('GET', '/api/status-links')) ?? [] }
 export async function revokeStatusLink(id: string): Promise<void> { await request('DELETE', `/api/status-links/${q(id)}`) }
 
+
+import type { FactoryItem, FactoryCreate, FactoryCommand } from './factory'
+export async function listFactoryItems(): Promise<FactoryItem[]> {
+  return (await request<{ items: FactoryItem[] | null }>('GET', '/api/factory/items')).items ?? []
+}
+export async function getFactoryItem(id: string): Promise<FactoryItem> {
+  return (await request<{ item: FactoryItem }>('GET', `/api/factory/items/${encodeURIComponent(id)}`)).item
+}
+/** Pass the same request object on a network retry to preserve its requestId. */
+export async function createFactoryItem(req: FactoryCreate): Promise<FactoryItem> {
+  return (await request<{ item: FactoryItem }>('POST', '/api/factory/items', req)).item
+}
+export async function commandFactoryItem(id: string, cmd: FactoryCommand): Promise<FactoryItem> {
+  return (await request<{ item: FactoryItem }>('POST', `/api/factory/items/${encodeURIComponent(id)}/commands`, cmd)).item
+}

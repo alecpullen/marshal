@@ -28,12 +28,13 @@ export function isScopedSessions(hash: string): boolean {
 }
 
 /** The old Dashboard now lives at #fleet; the empty hash is Home. */
-export type Page = 'home' | 'fleet' | 'new' | 'chat' | 'sessions' | 'runs' | 'run' | 'live' | 'library' | 'settings' | 'usage' | 'watches' | 'workspaces' | 'network' | 'project' | 'other'
+export type Page = 'home' | 'fleet' | 'new' | 'chat' | 'sessions' | 'runs' | 'run' | 'live' | 'library' | 'settings' | 'usage' | 'watches' | 'workspaces' | 'network' | 'project' | 'factory' | 'other'
 
 export function pageFromHash(hash: string): Page {
   if (hash === '' || hash === '#') return 'home'
   if (hash === '#fleet') return 'fleet'
   if (hash === '#new') return 'new'
+  if (parseFactoryRoute(hash)) return 'factory'
   if (parseChatRoute(hash)) return 'chat'
   if (hash === '#sessions' || isScopedSessions(hash)) return 'sessions'
   if (parseRunRoute(hash)) return 'run'
@@ -267,4 +268,18 @@ export function redirectLegacy(hash: string): string | null {
     default:
       return null
   }
+}
+
+/** Factory list, creation, and one encoded item segment. */
+export function parseFactoryRoute(hash: string): import('./factory').FactoryRoute | null {
+  if (hash === '#factory') return {}
+  if (/^#factory\/new(?:\?project=[^#]+)?$/.test(hash)) return { create: true }
+  const match = /^#factory\/([^/?#]+)$/.exec(hash)
+  if (!match) return null
+  try { return { itemId: decodeURIComponent(match[1]) } } catch { return null }
+}
+export function formatFactoryRoute(route: import('./factory').FactoryRoute): string {
+  if (route.create) return '#factory/new'
+  if (route.itemId) return `#factory/${encodeURIComponent(route.itemId)}`
+  return '#factory'
 }

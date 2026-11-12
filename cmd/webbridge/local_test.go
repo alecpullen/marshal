@@ -231,6 +231,27 @@ func TestTheLocalProfileServesItsSocket(t *testing.T) {
 		t.Errorf("socket = %q, want %q", info.Socket, socket)
 	}
 
+	// The peer-checked socket serves the factory's routes as well: the SPA
+	// and the local daemon speak one API, and the factory is part of it.
+	resp, err := socketClient(socket).Get("http://daemon/api/factory/items")
+	if err != nil {
+		t.Fatalf("GET /api/factory/items over the socket: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/factory/items status = %d, want 200", resp.StatusCode)
+	}
+	var items struct {
+		Items []bridge.FactoryItem `json:"items"`
+	}
+	derr := json.NewDecoder(resp.Body).Decode(&items)
+	_ = resp.Body.Close()
+	if derr != nil {
+		t.Fatalf("decode factory items: %v", derr)
+	}
+	if len(items.Items) != 0 {
+		t.Fatalf("factory items = %d on a fresh daemon, want 0", len(items.Items))
+	}
+
 	cancel()
 	select {
 	case err := <-done:
@@ -386,8 +407,28 @@ func TestASecondLocalDaemonRefusesToStart(t *testing.T) {
 	client := socketClient(socket)
 	first := waitForDaemon(t, client)
 
-	if err := run(context.Background(), args, io.Discard, io.Discard); !errors.Is(err, bridge.ErrDaemonRunning) {
+	// The second daemon takes its own state directory and workspace.
+	// Sharing the first one's would make the factory journal lock, not the
+	// socket, the error this test is about — the lock is taken during
+	// startup, before the socket is ever opened.
+	secondRoot := t.TempDir()
+	secondState := filepath.Join(secondRoot, "state")
+	secondArgs := []string{
+		"--profile", "local", "--addr", "off", "--socket", socket,
+		"--state-dir", secondState,
+		"--workspace", filepath.Join(secondRoot, "workspace.json"),
+	}
+	if err := run(context.Background(), secondArgs, io.Discard, io.Discard); !errors.Is(err, bridge.ErrDaemonRunning) {
 		t.Fatalf("second run error = %v, want bridge.ErrDaemonRunning", err)
+	}
+	// The refused start released its own journal: a later process can take
+	// it, so a failed socket startup leaves nothing locked.
+	store, err := bridge.OpenFactoryStore(filepath.Join(secondState, "factory", "v1"))
+	if err != nil {
+		t.Fatalf("reopen the second daemon's factory store: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close the reopened factory store: %v", err)
 	}
 	// The refusal left the first daemon answering.
 	if again := waitForDaemon(t, client); again.PID != first.PID {

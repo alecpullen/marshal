@@ -18,6 +18,9 @@
   import Builds from './views/workspaces/Builds.svelte'
   import Network from './views/Network.svelte'
   import Project from './views/Project.svelte'
+  import Factory from './views/Factory.svelte'
+  import FactoryNew from './views/FactoryNew.svelte'
+  import FactoryItem from './views/FactoryItem.svelte'
   import ReviewBot from './views/automations/ReviewBot.svelte'
   import CIFixer from './views/automations/CIFixer.svelte'
   import Sidebar from './lib/Sidebar.svelte'
@@ -33,7 +36,7 @@
   import { loadPrefs, maybeNotify, show as showNotification, type FleetLike } from './lib/notify'
   import DecisionOutcomeView from './lib/inbox/DecisionOutcome.svelte'
   import { outcomeFor, type DecisionOutcome } from './lib/inbox/decision'
-  import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, parseRunRoute, parseLiveRoute, parseLibraryRoute, parseSettingsRoute, parseUsageRoute, parseWorkspacesRoute, parseNetworkRoute, parseProjectRoute, parseWatchesRoute, redirectLegacy } from './lib/routes'
+  import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, parseRunRoute, parseLiveRoute, parseLibraryRoute, parseSettingsRoute, parseUsageRoute, parseWorkspacesRoute, parseNetworkRoute, parseProjectRoute, parseWatchesRoute, parseFactoryRoute, redirectLegacy } from './lib/routes'
   import { isTokenRejected, listPending, listClients, requestToken, type PendingSubmission, type MCPClient, type NetDecisionKind } from './lib/api'
 
   let hash = $state('#')
@@ -213,6 +216,7 @@
   const watchesRoute = $derived(parseWatchesRoute(hash))
   const networkRoute = $derived(parseNetworkRoute(hash))
   const projectRoute = $derived(parseProjectRoute(hash))
+  const factoryRoute = $derived(parseFactoryRoute(hash))
 
   /*
     Sessions open either unscoped (#sessions — the project picker) or
@@ -305,6 +309,14 @@
         {#key `${networkRoute.workspace ?? ''}|${networkRoute.agent ?? ''}`}
           <Network workspace={networkRoute.workspace} agent={networkRoute.agent} onNavigate={navigate} />
         {/key}
+      </div>
+    {:else if factoryRoute}
+      <div class="h-full overflow-y-auto">
+        {#if factoryRoute.create}
+          <FactoryNew projectRoot={new URLSearchParams(hash.split('?')[1] ?? '').get('project') ?? ''} onNavigate={navigate} />
+        {:else if factoryRoute.itemId}
+          {#key factoryRoute.itemId}<FactoryItem itemId={factoryRoute.itemId} onNavigate={navigate} />{/key}
+        {:else}<Factory onNavigate={navigate} />{/if}
       </div>
     {:else if projectRoute}
       <div class="h-full overflow-y-auto">

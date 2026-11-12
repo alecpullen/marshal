@@ -198,6 +198,9 @@ func (f *Fleet) runSchedule(ctx context.Context, id string, now time.Time) (stri
 	if !ok {
 		return "", fmt.Errorf("%w: %s", ErrUnknownSchedule, id)
 	}
+	if f.factoryOwnsBranch(s.RepoID, s.Ref) {
+		return "", fmt.Errorf("%w: schedule targets factory branch %s", ErrFactoryConflict, s.Ref)
+	}
 	f.sched.mu.Lock()
 	if f.sched.inflight == nil {
 		f.sched.inflight = map[string]string{}

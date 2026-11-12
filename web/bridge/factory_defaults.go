@@ -1,0 +1,87 @@
+package bridge
+
+import "fmt"
+
+// factoryMergeDefaults applies a project's defaults to a handoff's
+// configuration. The handoff wins for every field it sets; "unset" is
+// per-type, as the specification's §4.3 defines it: an empty string, a zero
+// int, a nil or zero-length raw message, and a nil check list. A non-nil empty
+// check list is an explicit choice and survives.
+//
+// The defaults are never mutated: the inherited check list is copied rather
+// than aliased.
+func factoryMergeDefaults(c FactoryConfig, d *FactoryDefaults) FactoryConfig {
+	if d == nil {
+		return c
+	}
+	if c.TargetBranch == "" {
+		c.TargetBranch = d.TargetBranch
+	}
+	if c.Workspace == "" {
+		c.Workspace = d.Workspace
+	}
+	if c.HostID == "" {
+		c.HostID = d.HostID
+	}
+	if len(c.ImplementerRouting) == 0 {
+		c.ImplementerRouting = d.ImplementerRouting
+	}
+	if len(c.ReviewerRouting) == 0 {
+		c.ReviewerRouting = d.ReviewerRouting
+	}
+	if c.ReviewerInstructions == "" {
+		c.ReviewerInstructions = d.ReviewerInstructions
+	}
+	if c.ExpectedChecks == nil {
+		// make, not append, so an inherited empty list stays non-nil.
+		if d.ExpectedChecks != nil {
+			c.ExpectedChecks = make([]FactoryCheckKey, len(d.ExpectedChecks))
+			copy(c.ExpectedChecks, d.ExpectedChecks)
+		}
+	}
+	if c.MaxRounds == 0 {
+		c.MaxRounds = d.MaxRounds
+	}
+	if c.CIPollSeconds == 0 {
+		c.CIPollSeconds = d.CIPollSeconds
+	}
+	if c.CIWaitSeconds == 0 {
+		c.CIWaitSeconds = d.CIWaitSeconds
+	}
+	return c
+}
+
+// factoryValidateDefaults checks a project's factory defaults on their own.
+// It covers the parts of factoryNormalize that do not depend on a handoff:
+// the limits, the local-host rule, and every expected check's identity.
+//
+// It never fills anything in. A zero limit means "unset" and stays unset, so
+// a handoff can inherit it; the built-in limits are applied later, to the
+// merged configuration.
+//
+// The checks run in a fixed order so the error is deterministic.
+func factoryValidateDefaults(d *FactoryDefaults) error {
+	if d == nil {
+		return nil
+	}
+	if d.MaxRounds < 0 {
+		return fmt.Errorf("factory defaults: maxRounds must not be negative")
+	}
+	if d.CIPollSeconds < 0 {
+		return fmt.Errorf("factory defaults: ciPollSeconds must not be negative")
+	}
+	if d.CIWaitSeconds < 0 {
+		return fmt.Errorf("factory defaults: ciWaitSeconds must not be negative")
+	}
+	if d.HostID != "" && d.HostID != "local" {
+		return fmt.Errorf("factory defaults: hostId must be local, got %q", d.HostID)
+	}
+	for n, k := range d.ExpectedChecks {
+		// Duplicated from factoryNormalize deliberately: that function is
+		// untouched by this slice, so the rule is not extracted from it.
+		if k.Name == "" || (k.Kind != "check_run" && k.Kind != "commit_status") || (k.Kind == "check_run" && k.AppID <= 0) || (k.Kind == "commit_status" && k.AppID != 0) {
+			return fmt.Errorf("factory defaults: expectedChecks[%d] has an invalid check identity", n)
+		}
+	}
+	return nil
+}

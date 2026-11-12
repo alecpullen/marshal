@@ -16,6 +16,14 @@ import "fmt"
 // does not know the field, or edited by hand. A default that is invalid on its
 // own is an error naming the project's defaults as the source, never a silent
 // fallback to the handoff's own values.
+//
+// The only cross-source conflict — a default workspace against a handoff that
+// asks for a native run — is reported with both sources. A handoff that sets
+// both fields itself is a handoff-internal conflict and is left to
+// factoryNormalize, because the project's defaults are not involved.
+//
+// The retry path never calls this function: a retry replacement is an
+// explicit, operator-authored configuration and is taken as written.
 func (a *factoryAPI) factoryResolveDefaults(req FactoryCreate) (FactoryCreate, error) {
 	if a == nil || a.fleet == nil || a.fleet.ws == nil {
 		return req, nil
@@ -35,6 +43,15 @@ func (a *factoryAPI) factoryResolveDefaults(req FactoryCreate) (FactoryCreate, e
 	}
 	if err := factoryValidateDefaults(defaults); err != nil {
 		return FactoryCreate{}, fmt.Errorf("%w: project factory defaults for %s: %v", errFactoryConfig, root, err)
+	}
+	// The only cross-source conflict is a project default workspace against a
+	// handoff that asks for a native run. Native is the only non-inheritable
+	// field that can collide with an inheritable one, so it is the only
+	// conflict resolution has to report. A handoff that sets both itself is a
+	// handoff-internal conflict: the project's defaults are not involved, and
+	// factoryNormalize stays responsible for it unchanged.
+	if req.Config.Native && req.Config.Workspace == "" && defaults.Workspace != "" {
+		return FactoryCreate{}, fmt.Errorf("%w: factory configuration conflict: workspace and native are mutually exclusive (project defaults for %s set workspace; handoff sets native)", errFactoryInput, root)
 	}
 	req.Config = factoryMergeDefaults(req.Config, defaults)
 	return req, nil

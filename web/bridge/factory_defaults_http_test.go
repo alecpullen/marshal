@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // factoryDefaultsFixture is the offline harness these tests share: a fake
@@ -21,8 +23,11 @@ import (
 type factoryDefaultsFixture struct {
 	fleet *Fleet
 	store *FactoryStore
-	srv   *Server
-	root  string
+	// api is the transport-free surface the routes serve, so a test can drive
+	// the layer that normalises and preflights a retry replacement directly.
+	api  FactoryAPI
+	srv  *Server
+	root string
 }
 
 // factoryDefaultsRouting is the routing profile the canned config/get result
@@ -65,8 +70,9 @@ func newFactoryDefaultsFixture(t *testing.T) *factoryDefaultsFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	srv := NewServer(fleet, "secret", "", NewFactoryAPI(store, NewFactoryController(store, nil, nil), fleet))
-	return &factoryDefaultsFixture{fleet: fleet, store: store, srv: srv, root: root}
+	api := NewFactoryAPI(store, NewFactoryController(store, nil, nil), fleet)
+	srv := NewServer(fleet, "secret", "", api)
+	return &factoryDefaultsFixture{fleet: fleet, store: store, api: api, srv: srv, root: root}
 }
 
 func (f *factoryDefaultsFixture) headers() map[string]string {
@@ -431,5 +437,153 @@ func TestFactoryCreateReplayReturnsTheOriginalItem(t *testing.T) {
 	fresh.RequestID = "create-fresh"
 	if rec := f.create(t, fresh); rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("fresh request against invalid defaults: status %d, body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestFactoryDefaultsConflictNamesBothSources(t *testing.T) {
+	f := newFactoryDefaultsFixture(t)
+	f.putSettings(t, f.root, ProjectSettings{FactoryDefaults: &FactoryDefaults{
+		Workspace:          "ws://published/example",
+		ImplementerRouting: factoryDefaultsRouting(),
+		ReviewerRouting:    factoryDefaultsRouting(),
+	}})
+	// The handoff asks for a native run, which the inherited workspace cannot
+	// satisfy. The defaults are not at fault on their own, so this is a
+	// conflict between two sources and must name both of them.
+	rec := f.create(t, f.handoff("create-conflict", f.root))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("default workspace with a native handoff: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"conflict", "workspace", "native", "mutually exclusive", f.root, "handoff", `"code":"invalid_input"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("conflict error does not name %q: %s", want, body)
+		}
+	}
+	if items := f.store.List(); len(items) != 0 {
+		t.Fatalf("conflicting handoff created %d work items", len(items))
+	}
+	// A handoff that sets both native and workspace itself is a
+	// handoff-internal conflict: the project's defaults are not involved, so
+	// the unchanged normalisation reports it rather than resolution.
+	clean := t.TempDir()
+	if err := f.fleet.ws.AddProject(clean); err != nil {
+		t.Fatal(err)
+	}
+	internal := f.handoff("create-native-and-workspace", clean)
+	internal.Config.Workspace = "ws://published/example"
+	rec = f.create(t, internal)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("handoff-internal conflict: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Body.String(); strings.Contains(got, "project defaults") || !strings.Contains(got, "mutually exclusive") {
+		t.Fatalf("handoff-internal conflict reported as a defaults conflict: %s", got)
+	}
+}
+
+func TestFactoryDefaultsRejectInvalidDefaultsAtResolveTime(t *testing.T) {
+	f := newFactoryDefaultsFixture(t)
+	// Written straight into the workspace file, the way an older binary or a
+	// hand edit can leave a default the write-time validator would reject.
+	if err := f.fleet.ws.PutProjectSettings(f.root, ProjectSettings{FactoryDefaults: &FactoryDefaults{
+		MaxRounds:          -1,
+		ImplementerRouting: factoryDefaultsRouting(),
+		ReviewerRouting:    factoryDefaultsRouting(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	check := func(t *testing.T, rec *httptest.ResponseRecorder, label string) {
+		t.Helper()
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("%s: status %d, body %s", label, rec.Code, rec.Body.String())
+		}
+		body := rec.Body.String()
+		for _, want := range []string{"project factory defaults", f.root, "maxRounds", `"code":"unsupported"`} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("%s: error does not name %q: %s", label, want, body)
+			}
+		}
+	}
+	check(t, f.create(t, f.handoff("create-invalid", f.root)), "invalid defaults")
+	// A handoff that sets the offending field does not rescue the defaults:
+	// they are validated on their own, never as a silent fallback.
+	override := f.handoff("create-override", f.root)
+	override.Config.MaxRounds = 3
+	check(t, f.create(t, override), "handoff overrides the offending field")
+	if items := f.store.List(); len(items) != 0 {
+		t.Fatalf("invalid defaults created %d work items", len(items))
+	}
+}
+
+func TestFactoryRetryReplacementIsNotReResolved(t *testing.T) {
+	f := newFactoryDefaultsFixture(t)
+	routing := factoryDefaultsRouting()
+	f.putSettings(t, f.root, ProjectSettings{FactoryDefaults: &FactoryDefaults{
+		TargetBranch:         "main",
+		ImplementerRouting:   routing,
+		ReviewerRouting:      routing,
+		ReviewerInstructions: "be terse",
+		MaxRounds:            9,
+		CIPollSeconds:        30,
+		CIWaitSeconds:        900,
+	}})
+	item := f.created(t, f.handoff("create-1", f.root))
+	if item.Draft.Config.ReviewerInstructions != "be terse" || item.Draft.Config.MaxRounds != 9 {
+		t.Fatalf("create did not resolve the defaults: %+v", item.Draft.Config)
+	}
+	// The retry path needs a decision, a positive round grant and a reason;
+	// the decision is set through the store's public mutation path, so no
+	// effect, forge or loop is involved.
+	item, err := f.store.Update(item.ID, "park-for-question", item.Version, json.RawMessage(`{"decision":"question"}`), func(dst *FactoryItem) error {
+		dst.State = "needs_input"
+		dst.Decision = &FactoryDecision{ID: "q", Kind: "question", Question: "continue?", Reason: "implementer needs input"}
+		return nil
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := FactoryCreate{
+		RequestID: "replacement",
+		Title:     "Add the thing",
+		Plan:      "implement the thing a different way",
+		Config: FactoryConfig{
+			RepoID:                   "repo-1",
+			ProjectRoot:              f.root,
+			TargetBranch:             "release",
+			Native:                   true,
+			ImplementerRouting:       routing,
+			ReviewerRouting:          routing,
+			NoRequiredCIAcknowledged: true,
+		},
+	}
+	got, err := f.api.Command(context.Background(), item.ID, FactoryCommand{
+		RequestID:        "retry-1",
+		Kind:             "retry",
+		DecisionID:       "q",
+		Reason:           "restart with a replacement",
+		ExpectedVersion:  item.Version,
+		AdditionalRounds: 1,
+		Replacement:      &replacement,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Approvals) != 1 {
+		t.Fatalf("approvals = %+v, want the replacement's single approval", got.Approvals)
+	}
+	snapshot := got.Approvals[0].Config
+	// The replacement is taken as written: a field the project default sets
+	// and the replacement omits stays empty instead of being inherited.
+	if snapshot.ReviewerInstructions != "" {
+		t.Fatalf("reviewer instructions = %q, want the replacement's empty value", snapshot.ReviewerInstructions)
+	}
+	// Normalisation still fills the built-in limits, which is what separates
+	// an un-resolved replacement from a resolved one: the project's 9 and 30
+	// would have won had resolution run.
+	if snapshot.MaxRounds != 5 || snapshot.CIPollSeconds != 15 || snapshot.CIWaitSeconds != 1800 {
+		t.Fatalf("limits = %d/%d/%d, want the built-in 5/15/1800", snapshot.MaxRounds, snapshot.CIPollSeconds, snapshot.CIWaitSeconds)
+	}
+	if snapshot.TargetBranch != "release" || snapshot.ProjectRoot != f.root {
+		t.Fatalf("replacement configuration was not taken as written: %+v", snapshot)
 	}
 }

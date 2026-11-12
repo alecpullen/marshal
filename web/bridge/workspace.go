@@ -237,6 +237,8 @@ type workspaceFile struct {
 	Notifications NotifyConfig `json:"notifications,omitzero"`
 	// StatusLinks are revocable public status page tokens, stored hashed (v11).
 	StatusLinks []StatusLink `json:"statusLinks,omitempty"`
+	// Pinned are the project roots the local daemon keeps running (P4 D9).
+	Pinned []string `json:"pinned,omitempty"`
 }
 
 // WatchRule is what the bridge does when a Studio watch fires.
@@ -273,6 +275,7 @@ type Workspace struct {
 	schedules       map[string]Schedule
 	notifications   NotifyConfig
 	statusLinks     map[string]StatusLink
+	pinned          []string
 }
 
 func NewWorkspace(path string) *Workspace {
@@ -367,6 +370,19 @@ func (w *Workspace) Load() (string, error) {
 	w.statusLinks = make(map[string]StatusLink, len(f.StatusLinks))
 	for _, l := range f.StatusLinks {
 		w.statusLinks[l.ID] = l
+	}
+	w.pinned = make([]string, 0, len(f.Pinned))
+	seenPins := make(map[string]bool, len(f.Pinned))
+	for _, p := range f.Pinned {
+		if p == "" {
+			continue
+		}
+		p = filepath.Clean(p)
+		if seenPins[p] {
+			continue
+		}
+		seenPins[p] = true
+		w.pinned = append(w.pinned, p)
 	}
 	return "", nil
 }
@@ -471,6 +487,8 @@ func normalizeStoredInteraction(f *workspaceFile) {
 
 func (w *Workspace) save() error {
 	f := workspaceFile{Version: workspaceVersion, Projects: w.projects, Repos: make([]Repo, 0, len(w.repos)), Agents: make([]Agent, 0, len(w.agents))}
+	f.Pinned = append([]string(nil), w.pinned...)
+	sort.Strings(f.Pinned)
 	for _, r := range w.repos {
 		f.Repos = append(f.Repos, r)
 	}
@@ -600,6 +618,59 @@ func (w *Workspace) RemoveProject(root string) error {
 		}
 	}
 	delete(w.projectSettings, root)
+	return w.save()
+}
+
+// Pinned returns the project roots the local daemon keeps running, sorted.
+// The result is never nil.
+func (w *Workspace) Pinned() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([]string, len(w.pinned))
+	copy(out, w.pinned)
+	sort.Strings(out)
+	return out
+}
+
+// IsPinned reports whether root is pinned.
+func (w *Workspace) IsPinned(root string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, p := range w.pinned {
+		if p == root {
+			return true
+		}
+	}
+	return false
+}
+
+// SetPinned adds or removes root and saves; a change that changes nothing
+// saves nothing.
+func (w *Workspace) SetPinned(root string, pinned bool) error {
+	root = filepath.Clean(root)
+	if !filepath.IsAbs(root) {
+		return fmt.Errorf("pin root %q is not absolute", root)
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	idx := -1
+	for i, p := range w.pinned {
+		if p == root {
+			idx = i
+			break
+		}
+	}
+	if pinned {
+		if idx >= 0 {
+			return nil
+		}
+		w.pinned = append(w.pinned, root)
+		return w.save()
+	}
+	if idx < 0 {
+		return nil
+	}
+	w.pinned = append(w.pinned[:idx:idx], w.pinned[idx+1:]...)
 	return w.save()
 }
 

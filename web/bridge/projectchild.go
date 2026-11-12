@@ -31,11 +31,19 @@ type projectChild struct {
 	// envWarning is why the environment the started child runs with fell
 	// back, empty when it resolved (P4 D7). It belongs to the generation
 	// that was built, so a restart keeps it.
-	// mu guards ready, linger and envWarning.
+	// log is the child's event log, shared by the fleet's sessions that run
+	// on it (P4 D10 decision 3). It is built with the child and kept across a
+	// restart, because a restart reuses the same Child and its hooks.
+	log *EventLog
+	// caps are the capabilities its initialize advertised (P4 D10). They
+	// belong to the generation that answered, so every handshake sets them
+	// again.
+	// mu guards ready, linger, envWarning and caps.
 	mu         sync.Mutex
 	ready      bool
 	linger     func() // stops the armed linger timer; nil when none
 	envWarning string
+	caps       map[string]bool
 
 	// stopMu guards stopping, the marker a resolver waits on so no
 	// replacement child is started while the previous process still holds the
@@ -217,6 +225,18 @@ func (f *Fleet) startProjectChildLocked(ctx context.Context, pc *projectChild) (
 		// viewers, or the TUI over the attach relay), so the child lets that
 		// client answer the trust question (P4 D8).
 		pc.reg.ClientTrust = true
+		// One event log and one classifier for the child, installed before
+		// it starts, as Attach requires (P4 D10 decision 3). The log keeps
+		// every session that is not tracked as a client's: a fleet session is
+		// logged from its first notification, even before Spawn has tracked
+		// it. A restart reuses this Child, so the log and both hooks carry
+		// over to the next generation.
+		pc.log = NewEventLog()
+		reg := pc.reg
+		attachSessions(pc.log, child, reg, func(sessionID string) bool {
+			return !reg.tracksClient(sessionID)
+		})
+		f.installClassifier(child, reg, f.agentForSession)
 		pc.ready, pc.version = false, ""
 		if err := child.Start(); err != nil {
 			pc.child = nil
@@ -267,6 +287,8 @@ func (f *Fleet) projectHandshake(ctx context.Context, pc *projectChild) error {
 		AgentInfo struct {
 			Version string `json:"version"`
 		} `json:"agentInfo"`
+		AgentCapabilities   map[string]json.RawMessage `json:"agentCapabilities"`
+		SessionCapabilities map[string]json.RawMessage `json:"sessionCapabilities"`
 	}
 	if err := json.Unmarshal(raw, &res); err != nil {
 		// A child that answers its handshake with something that is not the
@@ -275,6 +297,18 @@ func (f *Fleet) projectHandshake(ctx context.Context, pc *projectChild) error {
 		return fmt.Errorf("bridge: decode project initialize for %s: %w", pc.root, err)
 	}
 	pc.version = res.AgentInfo.Version
+	// The capabilities belong to the generation that answered, so every
+	// handshake records them again (P4 D10). The fleet's agents on this child
+	// read them as their own, as checkAgentVersion reads a child of an agent's
+	// own.
+	caps := make(map[string]bool, len(res.AgentCapabilities)+len(res.SessionCapabilities))
+	for k := range res.AgentCapabilities {
+		caps[k] = true
+	}
+	for k := range res.SessionCapabilities {
+		caps[k] = true
+	}
+	pc.caps = caps
 	pc.ready = true
 	return nil
 }

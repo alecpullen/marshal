@@ -271,6 +271,18 @@ func marshalPayload(payload any) (json.RawMessage, error) {
 // NewRegistry has the same constraint — build the whole stack, then
 // Start.
 func Attach(l *EventLog, child *Child, reg *Registry) {
+	attachSessions(l, child, reg, nil)
+}
+
+// attachSessions is Attach for the sessions keep accepts; a nil keep accepts
+// every session, which is what Attach passes (P4 D10 decision 3). A session
+// keep refuses is passed to the previous hook and not logged: a project
+// child's log holds the fleet's sessions, and a client's session belongs to
+// the client's own log.
+//
+// It has Attach's constraint: install it before child.Start.
+func attachSessions(l *EventLog, child *Child, reg *Registry, keep func(sessionID string) bool) {
+	keeps := func(sessionID string) bool { return keep == nil || keep(sessionID) }
 	prevNotify := child.OnNotification
 	child.OnNotification = func(method string, params json.RawMessage) {
 		var p struct {
@@ -280,12 +292,14 @@ func Attach(l *EventLog, child *Child, reg *Registry) {
 			} `json:"update"`
 		}
 		_ = json.Unmarshal(params, &p)
-		envelope, err := json.Marshal(map[string]any{"method": method, "params": params})
-		if err == nil {
-			if method == "session/update" && p.Update.Kind == "stack_patch" {
-				_ = l.Broadcast(p.SessionID, json.RawMessage(envelope))
-			} else {
-				_, _ = l.Append(p.SessionID, json.RawMessage(envelope))
+		if keeps(p.SessionID) {
+			envelope, err := json.Marshal(map[string]any{"method": method, "params": params})
+			if err == nil {
+				if method == "session/update" && p.Update.Kind == "stack_patch" {
+					_ = l.Broadcast(p.SessionID, json.RawMessage(envelope))
+				} else {
+					_, _ = l.Append(p.SessionID, json.RawMessage(envelope))
+				}
 			}
 		}
 		if prevNotify != nil {
@@ -294,7 +308,9 @@ func Attach(l *EventLog, child *Child, reg *Registry) {
 	}
 	prevOnEvent := reg.OnEvent
 	reg.OnEvent = func(sessionID string, payload any) {
-		_, _ = l.Append(sessionID, payload)
+		if keeps(sessionID) {
+			_, _ = l.Append(sessionID, payload)
+		}
 		if prevOnEvent != nil {
 			prevOnEvent(sessionID, payload)
 		}

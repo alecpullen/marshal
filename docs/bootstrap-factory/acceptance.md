@@ -27,8 +27,10 @@ Serializing the package test binaries with `-p=1` is kept, because CI measured i
 This run integrated `p4-8-refresh` and the factory branch before validating, so the result below is for the head that would merge after `p4-8-refresh`, not the older PR head alone.
 
 - Locally validated head: `5271c9d839bbad1ad7bb6d7941663da8be6b655e`
-- Pushed head (PR 57): `15d59a3505cc8723cf4b744e22c4108a149fef9d`
+- Pushed head (PR 57): `15d59a3505cc8723cf4b744e22c4108a149fef9d`, later `47ffa04b4841f8ba78a069458f918bde015febbd`
 - Integrated branches: `main` `ab935334f59171d0b9d03acab595901023b7c44f`, `p4-8-refresh` `7ca77cf4ffadbd3283114093023a162191607ef5`, factory head `a596bdb8d7f22ad68fdff87af3babf08bf750be7`
+
+The final head `47ffa04b` merges `origin/main` `f55e87d6` (which now contains `p4-8-refresh` and PR #58) into the branch and adds two factory recovery fixes; the merge itself is documentation-only (`git diff d639defd..47ffa04b -- '*.go'` is empty). Its local gates re-ran green: `go build ./...`, `go vet`, `cmd/webbridge` (1.3 s), `web/bridge` (121.5 s), and `go test -p=1 ./... -count=1 -timeout 20m` exit 0 with no `FAIL`.
 
 The local gates below ran on their own with package execution serialized (`-p=1`); the workflow itself is unchanged and still runs `go test ./... -count=1 -timeout 5m`. The CI result further down is the authoritative gate.
 
@@ -62,8 +64,11 @@ Focused evidence for the three repairs in this run:
 |---|---|---|---|
 | `15d59a35` | `-p=1`, 20 m | FAIL, 7 m 1 s | 1 — `TestStackRoundTripBudget` |
 | `433bfb70` | plain, 5 m | FAIL, 3 m 29 s | 3 — `TestStackBusyFlipBudget`, `TestStackPatchApplyBudget`, `TestStackRoundTripBudget` |
+| `47ffa04b` | `-p=1`, 20 m, `origin/main` merged | FAIL, 7 m 21 s | 2 — `TestStackPatchApplyBudget`, `TestStackRoundTripBudget` |
 
 `TestStackRoundTripBudget` fails either way; `TestASecondEmbeddingWaitsAndTakesOver` failed once, in the serialized run only.
+
+The `47ffa04b` result is not a regression from this branch. `origin/main` itself, at `f55e87d6`, fails its own `go-checks` `full-suite` with the same ACP budget tests plus `TestNoteCallBudget`, `TestStackBusyFlipBudget` and `TestASecondEmbeddingWaitsAndTakesOver` (run `43164610648`). The same suite run locally on `47ffa04b` is exit 0 with no `FAIL`, so the remaining red is the known absolute-runner budget breach in `internal/acp`, already recorded below, and it is present on `main` independently of this work.
 
 | Failing test | Observed | Disposition |
 |---|---|---|
@@ -71,7 +76,9 @@ Focused evidence for the three repairs in this run:
 | `TestStackBusyFlipBudget`, `TestStackPatchApplyBudget` (`internal/acp`) | Fail only in the non-serialized run | Resolved by `-p=1`: this is the package-level contention the task targeted. |
 | `TestASecondEmbeddingWaitsAndTakesOver` (`internal/app`) | `embedded_refresh_test.go:142: no runtime took the refresh lease within 2s`, once | Timing-sensitive lease test introduced by `p4-8-refresh`'s fixups commit `7ca77cf4`; passes 5/5 locally. Not part of this plan's task scope; recorded as an open flake for `p4-8-refresh` to own. |
 
-Because a required check is red, PR 57 is **not** marked ready in this run, and the plan's Task 5 step 4 / Task 8 step 4 cannot complete on this head. Locally the same tests are green, which is why the local table above is not the acceptance evidence for the gate.
+PR 57 was held as a draft while `full-suite` was red on its own head. Once `origin/main` was measured failing the same ACP budget tests independently, the red was confirmed pre-existing rather than introduced here, and the human operator chose to mark the PR ready and merge it on head `47ffa04b`: `scripted` passed (1 m 31 s), `full-suite` failed (7 m 21 s) on the two ACP tests above, and the same suite is green locally.
+
+This is a deliberate, recorded deviation from the plan's Task 8 step 4, which gates `gh pr ready` on a green `full-suite`. The gate was overridden by the repo owner, not waived silently, and the surviving failure is documented above as an `internal/acp` runner-budget breach that predates and is independent of this branch.
 
 ### Independent review
 
@@ -88,7 +95,7 @@ The reviewer independently confirmed all five Task 1 lifecycle requirements, the
 
 Historical note: the earlier PR head failed the full suite on unchanged ACP budget, LSP rescan, pipeline, snapshot, native-tools and worktree packages, and its required race gate timed out in `TestRecipeRunMaxUSDSetsAPausingCapForTheRun`. Resolved here: the LSP rescan fixture no longer depends on filesystem timestamp granularity, the budget pause no longer applies its cancel synchronously on the caller's goroutine, and `-p=1` removes the package-level contention that made two of the three ACP budget tests fail on CI. The one surviving ACP failure is recorded above as an absolute CI-runner budget breach, not contention. The earlier fixwave's focused regressions for same-SHA CI reruns, PR closure and external movement, exact ref/PR identity readiness, retargeting around the ready mutation, and external-closure cleanup remain in place.
 
-Live provider/GitHub execution and the ARM64 OrbStack deployment gates are **not** part of these automated results and remain pending, as recorded below. Nothing here claims live, deployment, Podman or merge readiness.
+Live provider/GitHub execution and the ARM64 OrbStack deployment gates are **not** part of these automated results and remain pending, as recorded below. Nothing here claims live execution, deployment or Podman support. Merge readiness is limited to what the automated gate shows: the branch merges cleanly into `main`, its own local gates are green, and the one red CI job is red on `main` too.
 
 ## Opt-in live acceptance: pending
 

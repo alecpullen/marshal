@@ -869,7 +869,59 @@ first, then the alternative it was weighed against.
 
 ### Plan 1 — the contract
 
-To be filled by plan 1's executor.
+**What was built.** `web/bridge/contractwire_test.go` plus 55 exact wire
+recordings under `web/bridge/testdata/contract/` pin the encoding of every type
+the plan moves: filled and zero encodings, `fleetDelta` with its off-wire
+fields, every map answer, and all fleet deltas. `web/bridge/contract/` then
+holds those wire types and their enumerations; the web boundary now permits
+`marshal/web/...` imports while still refusing every other `marshal/...`
+import. The bridge reads the contract through type aliases, its unexported
+`fleetDelta` embeds `contract.FleetDelta` with the two fields kept off the wire,
+and the map answers and request bodies are contract types — every recording
+stays byte-identical. `internal/daemon` uses the same aliases, and
+`internal/acp/contract_test.go` proves that diff, merge-refusal and
+commit-draft replies decode strictly into the contract and re-encode
+identically. `web/bridge/contract/tsgen/` generates the TypeScript contract,
+covering every mapping and unsupported construct in its fixture suite, and
+`TestTypeScriptContractIsCurrent` holds `web/ui/src/lib/contract.ts` current.
+The web UI re-exports the generated types under its existing names, derives its
+fleet deltas from the contract, narrows unknown run and telemetry payloads
+safely, gains `npm run check`, and `web/bridge/static/` is rebuilt.
+
+**Where the plan was short, and how that was filled.** The plan required both a
+`BudgetDaily` struct and a `BudgetDaily` scope constant in the one package,
+which cannot compile. It was resolved conservatively: `contract.BudgetDaily`
+stays the daily report struct (Tasks 3, 5 and 6 depend on that name), and the
+scope constants are `contract.BudgetScopeDaily` and `contract.BudgetScopeAgent`.
+W1's map-answer recordings could not record the `POST /api/agents` answer's
+non-deterministic `warning` key, because no fixture produces a stable warning;
+the clean spawn answer is recorded and the test comment documents the omission.
+The generated budget and request types are consumed directly instead of
+keeping a second UI model. A request body's optional fields are `omitempty` in
+Go, while the TypeScript request's `routing` is `unknown`, matching the wire
+contract.
+
+**The type check.** `npm run check` reports exactly 6 errors, all in the six
+baseline files: `web/ui/src/lib/fleet.test.ts`,
+`web/ui/src/lib/Sidebar.test.ts`, `web/ui/src/views/Review.test.ts`,
+`web/ui/src/views/Runs.test.ts`, `web/ui/src/views/Chat.svelte` and
+`web/ui/src/views/Run.svelte`. The count did not rise and no error appears in
+another file. `npm test` passes with 88 files and 933 tests.
+
+**Verification.**
+
+| Command | Result |
+| --- | --- |
+| `gofmt -l internal cmd test web` | No output. |
+| `go vet ./...` | Clean. |
+| `GOOS=linux go vet ./web/...` | Clean. |
+| `GOOS=windows go vet ./web/bridge/...` | Clean. |
+| `TMPDIR=/private/tmp/p5-1-suite go test ./... -timeout 20m` | One full-suite run was clean. A controller rerun hit the base's load-sensitive `internal/acp` failure `TestStackRoundTripBudget` (first read 53.464ms against the 50ms budget); `go test ./internal/acp/ -count=1` then passed. No other package failed. The baseline also records `TestStackPatchApplyBudget` as load-sensitive; it did not fail in either final full-suite run. |
+| `web/ui: npm run check` | 6 errors in the six baseline files above, as expected; the gate, not a regression. |
+| `web/ui: npm test` | 88 files / 933 tests passed. |
+| `web/ui: npm run build` | Built in 3.49s; `web/bridge/static/` is unchanged against the committed build. |
+| `CGO_ENABLED=1 go build -o marshal ./cmd/marshal` | Built (git-ignored via `.gitignore`'s `/marshal`). |
+| `TMPDIR=/private/tmp/p5-1-suite go test ./test/usability/... -run TestScripted -timeout 5m` | Passed (`marshal/test/usability` ok, 45.7s). |
 
 ### Plan 2 — the inbox
 

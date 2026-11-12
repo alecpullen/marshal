@@ -135,6 +135,11 @@ never be inherited.
   records a human acknowledgement that no CI checks are required, which is a
   decision about one handoff rather than a property of the project.
 
+`ProjectSettings.Workspace` and `FactoryDefaults.Workspace` are two different
+things under one name: the first is the project's default workspace for new
+agents, the second is the factory's default environment. Neither is seeded
+from the other.
+
 ### 4.3 How an override is expressed
 
 A handoff overrides a default by setting the field itself. "Unset" is
@@ -152,6 +157,11 @@ The slice case matters: an explicitly empty `expectedChecks` means
 project's expected checks". Resolution must preserve that distinction. It does
 not bypass the existing approval rule, which tests the list's length: an empty
 list is approved only when the handoff also sets `noRequiredCiAcknowledged`.
+
+A project's own defaults cannot express "no checks": the field is stored with
+`omitempty`, so an explicitly empty default list does not survive a save and
+load and comes back unset. The handoff's explicitly empty list — the case the
+acceptance criteria cover — is preserved.
 
 ### 4.4 Resolution
 
@@ -188,6 +198,12 @@ re-resolved against the current defaults: the operator is deliberately
 changing the handoff, and the resolved configuration of the existing draft is
 the baseline they are editing. This is the proposed behaviour for now; §8 item
 4 asks the user whether a replacement should instead re-resolve.
+
+The **create-replay identity** is the request the operator sent, not the
+resolved configuration. The store recognises a replayed create by hashing the
+request it received, so a client that retries an unchanged create after the
+project's defaults have moved on still receives the original work item rather
+than a conflict. The resolved configuration is the item's content.
 
 ### 4.5 Which project's defaults apply
 
@@ -230,10 +246,16 @@ error naming the offending field. The identity requirements — a request id, a
 title, a plan and a repository — do not apply to defaults, because a default
 describes how work runs, not what work is.
 
+The validator never fills anything in. A zero limit in a default means
+"unset", and must stay unset so that a handoff can inherit it; the built-in
+limits are applied later, to the merged configuration.
+
 **At resolve time**, the defaults are validated again, because a workspace
 file can be written by an older binary or edited by hand. A default that is
 invalid on its own is an error that names the project's defaults as the
-source, not a silent fallback to the handoff's own values.
+source, not a silent fallback to the handoff's own values. An older binary
+that does not know the field silently drops it on its next save, which is a
+second reason the resolve-time check exists.
 
 **Conflicts** between a default and a handoff are reported the same way: the
 error names both sources.
@@ -245,6 +267,12 @@ be. A project default that conflicts with the handoff is rejected with an
 error that names the conflict and both sources — for example a project default
 `workspace` combined with a handoff `native: true`, which the existing
 normalisation already rejects as mutually exclusive.
+
+That is the only cross-source conflict possible: `Native` is the only
+non-inheritable field that can collide with an inheritable one. A handoff that
+sets both `native` and `workspace` itself is a handoff-internal conflict and
+stays with the unchanged normalisation, because the project's defaults are not
+involved.
 
 ### 4.8 What this does not change
 
@@ -268,13 +296,13 @@ Proposed, not approved. Shapes follow the existing `ProjectSettings` and
 ```
 PUT /api/projects/settings?root=/path/to/project
   -> 200 {
-       "workspace": "",
-       "routing": null,
        "factoryDefaults": {
          "targetBranch": "main",
          "workspace": "ws://published/example",
-         "implementerRouting": {"preset": "frontier"},
-         "reviewerRouting": {"preset": "frontier"},
+         "implementerRouting": {"profile": "frontier"},
+         "reviewerRouting": {"profile": "frontier"},
+         "reviewerInstructions": "be terse",
+         "expectedChecks": [{"kind": "check_run", "name": "build", "appId": 7}],
          "maxRounds": 5,
          "ciPollSeconds": 15,
          "ciWaitSeconds": 1800
@@ -283,17 +311,19 @@ PUT /api/projects/settings?root=/path/to/project
      }
 
 POST /api/factory/items
-  -> 200 {
-       "id": "item-1",
-       "draft": {
-         "title": "Add the thing",
-         "config": {
-           "repoId": "repo-1",
-           "projectRoot": "/path/to/project",
-           "targetBranch": "main",
-           "workspace": "ws://published/example",
-           "implementerRouting": {"preset": "frontier"},
-           "maxRounds": 5
+  -> 201 {
+       "item": {
+         "id": "item-1",
+         "draft": {
+           "title": "Add the thing",
+           "config": {
+             "repoId": "repo-1",
+             "projectRoot": "/path/to/project",
+             "targetBranch": "main",
+             "workspace": "ws://published/example",
+             "implementerRouting": {"profile": "frontier"},
+             "maxRounds": 5
+           }
          }
        }
      }
@@ -302,6 +332,11 @@ POST /api/factory/items
 The handoff in that request set only `repoId`, `projectRoot` and `title`; the
 rest came from the project's defaults, and the stored draft shows the resolved
 values.
+
+The shapes above match the real surfaces: the settings response omits empty
+optional fields rather than rendering them, a routing object must carry a
+`profile` the factory preflight recognises, and the create response wraps the
+item in `item` and answers 201 on create and 200 on a replay.
 
 ## 6. Missing access and partial failure
 

@@ -452,3 +452,77 @@ commit. All findings are resolved.
 | The create-path citation was off by two | §3 now cites `factory_http.go:54` |
 | "The SPA needs no change" hid a whole-record-replacement caveat | §4.1 now states that the defaults survive only because the settings views round-trip the fetched record |
 | A write-time check could not apply to the defaults | The `workspace`/`native` bullet was removed from §4.6's write-time list and the conflict left to §4.7 |
+
+## Implementation record
+
+Delivered on branch `studio/project-factory-defaults-implementation` as
+Tasks 1–6 of the
+[plan](plans/2026-11-13-project-factory-defaults-plan.md), test-first, with one
+commit per task.
+
+| Task | Deliverable | Commit |
+|---|---|---|
+| 1 | The `FactoryDefaults` type, the per-field merge that leaves non-inheritable fields alone, the deterministic validator, and the `factoryDefaults` block on the workspace record | `b668f7fc` |
+| 2 | Write-time validation of the defaults through the existing `PUT /api/projects/settings` surface, wrapped in `errInvalidProjectSettings` so the status stays 400 | `38b3e1db` |
+| 3 | Resolve-time merge in the create path before normalisation, `CreateResolved` next to `Create`, and the replay short-circuit ahead of resolution | `b5c1e1fc` |
+| 4 | Conflict errors naming both sources, resolve-time validation errors naming the project's defaults, and the retry replacement left un-resolved | `629dc6f0` |
+| 5 | The untouched-contract pin: a defaults-free (or zero-valued) project behaves exactly as today, and the §4.8 bootstrap acceptance contract holds under a full set of defaults | `f382f989` |
+| 6 | This implementation record and the plan outcome record | this documentation commit |
+
+Files: `web/bridge/factory_defaults.go`, `factory_defaults_test.go` and
+`factory_defaults_http_test.go` are new; `web/bridge/factory_types.go`,
+`workspace.go`, `projects.go`, `projects_test.go`, `factory_http.go` and
+`factory_store.go` are modified. Everything is standard library only in
+`web/bridge`. `web/ui/` is untouched, no route was added, `FactoryConfig`,
+`factoryNormalize` and the workspace version (`11`) are unchanged, and no
+production file outside `web/bridge` is touched — in particular nothing under
+`internal/...`.
+
+Acceptance gates, run from the repository root on this branch:
+
+| Gate | Result |
+|---|---|
+| `go test ./web/bridge -run '^TestFactory(Defaults\|Validate\|Create\|Retry\|BootstrapAcceptance)\|^TestProjectWithoutDefaults\|^TestProjectSettingsRoundTripFactoryDefaults' -count=1 -v` | PASS — 18 top-level tests, every subtest PASS; `ok marshal/web/bridge 1.641s` |
+| `go test ./web/bridge -run 'Factory' -count=1` | PASS — `ok marshal/web/bridge 28.800s`; the pre-existing factory tests are unmodified |
+| `go test ./web/bridge -count=1` | PASS — `ok marshal/web/bridge 116.336s` |
+| `go test ./web/bridge -run '^TestWebIsStdlibOnly$' -count=1` | PASS — `ok marshal/web/bridge 0.187s` |
+| `gofmt -l web/bridge` | no output |
+| `go vet ./web/bridge/...` | no output, exit 0 |
+| `CGO_ENABLED=1 go build ./...` | exit 0 |
+| `CGO_ENABLED=1 go test -p=1 ./... -count=1 -timeout 20m` | PASS — 122 `ok`, 5 `[no test files]`, 0 `FAIL`, exit 0; `marshal/internal/acp` `ok 23.770s` |
+
+Every test is offline and deterministic: no live forge, no real git repository,
+no container runtime, no model provider, and no developer credentials. The
+registered repository uses the RFC 2606 reserved
+`https://example.invalid/...` URL, which the preflight only constructs a client
+for and never calls. No test calls `t.Parallel()`, because the trust fixture
+uses `t.Setenv`.
+
+### Open questions still open
+
+Four of the five items in §8 remain open. None blocks this slice, and §11 keeps
+each out of scope, so they need the user rather than another implementer pass.
+
+1. **The SPA surface (§8 item 1).** No editor for a project's defaults exists.
+   The defaults are read and written through the existing project-settings
+   payload with no new route, and they survive only because the settings views
+   round-trip the whole fetched record (§4.1). Where the editing surface lives
+   — inside the project settings screen or as its own view — is still
+   undecided, and is a separate front-end slice.
+2. **Inheritable booleans (§8 item 2).** `Native`, `ImplementerAuto` and
+   `NoRequiredCIAcknowledged` are still not inheritable: they carry no
+   tri-state field on the shipped `FactoryConfig` contract, so
+   `FactoryDefaults` deliberately has no field for them and the merge leaves
+   each as the handoff set it.
+3. **Per-repository defaults (§8 item 3).** Defaults remain per project, keyed
+   by the settings record. A repository-level override was not added, and
+   `Config.ProjectRoot` — not the repository's intake mapping — is still the
+   only live source of the applied defaults (§4.5).
+4. **Retry re-resolution (§8 item 4).** Implemented as the proposed default in
+   §4.4: a `retry` replacement is taken as written and is not re-resolved
+   against the current defaults, now pinned by
+   `TestFactoryRetryReplacementIsNotReResolved`. Whether it *should* re-resolve
+   is still an open product question.
+
+§8 item 5 — the adoption transition — is deferred rather than open, exactly as
+§9 records: this slice does not implement it.

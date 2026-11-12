@@ -500,9 +500,11 @@ type DiscoveryForge interface {
 - [ ] Write `TestDiscoverReportRecommendationsAreAdvisory`: assert a missing
   environment may produce a recommendation, but no repository file or project
   setting is created or changed.
-- [ ] Write `TestDiscoverReportRevisionAdvancesWithDefaultBranch`: use a fake
-  GitHub branch response whose SHA changes; assert the forge fact revision
-  changes while no fetch occurs.
+- [ ] Write `TestDiscoverReportRevisionAdvancesWithDefaultBranch`: use a
+  project-linked checkout with a known `HEAD` and branch plus a fake GitHub
+  branch response whose SHA changes; assert the forge fact revision changes
+  while no fetch occurs, and assert top-level `revision` and `branch` still
+  come from the checkout under the frozen source priority.
 - [ ] Run
   `go test ./web/bridge -run '^TestDiscoverReport' -count=1`; confirm failure.
 - [ ] Implement `func (f *Fleet) DiscoverRepo(ctx context.Context, repo Repo) (*DiscoveryReport, error)` in the new file. Resolve the checkout only through
@@ -511,9 +513,11 @@ type DiscoveryForge interface {
   read it into `discoveryCapabilityState` for later sections. Probe each forge
   section independently, map failures to gaps, and never convert a declared
   forge failure into Git-only. Derive recommendations only from successfully
-  inspected sections. Set top-level `revision` from the checkout `HEAD` first,
-  then the forge default-branch head. Sort facts, recommendations, and gaps
-  for deterministic output; keep the fixed capability order.
+  inspected sections. Set top-level `revision` and `branch` from the checkout
+  first (`HEAD` and current branch, with an empty branch for detached HEAD),
+  then from the forge default-branch head and default branch. Sort facts,
+  recommendations, and gaps for deterministic output; keep the fixed
+  capability order.
 - [ ] Run the named tests; require PASS. Run `gofmt -l` on the two task files;
   require no output.
 - [ ] Commit only this task: `feat(discovery): assemble partial access reports`.
@@ -595,6 +599,7 @@ first exposes a defect.
 | Dirty checkout is reported and unchanged | Task 3 dirty test |
 | `web/` remains standard-library only | Existing `TestWebIsStdlibOnly` plus Task 6 gate |
 | Default-branch advance changes a fact revision | Task 4 revision test |
+| Top-level revision and branch prefer the linked checkout | Task 4 revision/source-priority test |
 | Supported-forge failure stays visible | Task 4 unavailable test |
 | Git-only fallback remains supported | Task 4 Git-only test |
 | Setup/build/install never runs | Task 3 no-execution test |
@@ -668,3 +673,4 @@ focused re-review is recorded in the PR review thread.
 | Route registration referenced nonexistent route groups | The plan now says one `s.discoveryRoutes()` call at the end of the flat registration list |
 | The hidden-resource report fixture contradicted the frozen 404 rule | The fixture now makes repository metadata itself return 404 with metadata not known readable, which deterministically maps to `insufficient_permission` |
 | Non-nil slices, Git-only status, unavailable gate, and top-level branch were imprecise | The plan now distinguishes Go slice invariants from JSON omission, asserts Git-only `degraded`, names the metadata probe as the unavailable gate, and gives top-level `branch` the same source priority as `revision` |
+| The Task 4 instruction did not repeat top-level branch priority | Task 4's implementation bullet and revision test now explicitly assert that checkout `HEAD`/branch take priority over forge defaults |

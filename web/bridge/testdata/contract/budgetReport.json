@@ -1,0 +1,1 @@
+{"budgets":{"dailyUsd":1,"perAgentUsd":1,"onDailyCap":"OnDailyCap","onAgentCap":"OnAgentCap"},"daily":{"day":"Day","spentUsd":1,"blocked":true},"agents":[{"agentId":"AgentID","spentUsd":1,"paused":true,"overridden":true}],"loaded":true}

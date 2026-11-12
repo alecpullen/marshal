@@ -20,9 +20,10 @@ func TestAPinnedProjectIndexesWithNoSession(t *testing.T) {
 	ctx := callCtx(t)
 
 	// A source file before the pin, so the startup scan the hold triggers has
-	// something to find.
+	// something to find. Nothing has opened this project: no session, and no
+	// .marshal directory either, so the pin's hold is the first thing that
+	// touches it.
 	const first = "main.go"
-	createMarshalDir(t, h.root)
 	writeSource(t, h.root, first)
 
 	// No attach came before this: the child the pin starts is the only thing
@@ -78,7 +79,6 @@ func TestUnpinningKeepsTheChildForItsSessions(t *testing.T) {
 	h := newDaemonHarness(t)
 	ctx := callCtx(t)
 
-	createMarshalDir(t, h.root)
 	if state, err := h.client.Pin(ctx, h.root, true); err != nil {
 		t.Fatalf("pin %s: %v", h.root, err)
 	} else if !state.Pinned || !state.Running {
@@ -162,17 +162,6 @@ func TestAPinNeedsAnExistingDirectory(t *testing.T) {
 	}
 	if len(info.Pinned) != 0 {
 		t.Fatalf("a refused pin left %v pinned", info.Pinned)
-	}
-}
-
-// createMarshalDir makes root look like a project a session has opened: the
-// host keeps its database under <root>/.marshal, and the runtime creates that
-// directory when a session starts. A project nothing has opened yet has none,
-// and a hold — which opens the host itself — needs one to exist.
-func createMarshalDir(t *testing.T, root string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Join(root, ".marshal"), 0o755); err != nil {
-		t.Fatalf("create .marshal: %v", err)
 	}
 }
 

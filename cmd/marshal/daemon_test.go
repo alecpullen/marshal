@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -696,7 +697,14 @@ func TestDaemonPinRefusesTwoArguments(t *testing.T) {
 // error naming its socket, as `status` says it.
 func TestDaemonPinReportsASilentDaemon(t *testing.T) {
 	home := daemonTestEnv(t)
-	fakeDaemonSocket(t, fakeDaemonClient{pinErr: errors.New("dial unix: connect: no such file or directory")})
+	// A silent daemon fails the dial, which the client reports as a
+	// *url.Error; the fixture carries that shape so the wording under test is
+	// the one a real silent socket produces.
+	fakeDaemonSocket(t, fakeDaemonClient{pinErr: &url.Error{
+		Op:  "Post",
+		URL: "http://daemon/api/projects/pin",
+		Err: errors.New("dial unix: connect: no such file or directory"),
+	}})
 
 	var stdout, stderr bytes.Buffer
 	err := runDaemon(context.Background(), []string{"pin", t.TempDir()},

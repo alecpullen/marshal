@@ -390,7 +390,8 @@ func (h *ProjectHost) noteConfig(cfg config.Config) {
 
 // refreshIndex starts the index work once a session has attached, and
 // restarts it when the current config changes whether the watcher runs or
-// its debounce. Other config changes need no restart: every pass reads the
+// its debounce, or when taking or releasing a hold changes whether the
+// watcher runs. Other config changes need no restart: every pass reads the
 // current config.
 func (h *ProjectHost) refreshIndex() {
 	if !h.hosts.indexing {
@@ -428,6 +429,10 @@ func (h *ProjectHost) refreshIndex() {
 	if h.closed {
 		return
 	}
+	// Re-read: a hold or a config change may have landed while the old work
+	// stopped, and the key must describe what is started.
+	cfg, held = h.cfg, h.holds > 0
+	key = indexKeyFor(cfg, held)
 	h.indexKey = key
 	h.indexStop = h.startIndex(cfg, held)
 }
@@ -482,7 +487,7 @@ func (h *ProjectHost) supervisor(cfg config.Config, held bool) indexSupervisor {
 }
 
 // watchFor reports whether a host's index watcher runs: always while the host
-// is held (decision 6), else as config.WatchEnabled says.
+// is held (decision 7), else as config.WatchEnabled says.
 func watchFor(cfg config.Config, held bool) bool {
 	return held || config.WatchEnabled(cfg.Indexing.Watch, embeddingRouteResolves(cfg))
 }

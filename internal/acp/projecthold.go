@@ -13,7 +13,9 @@ import (
 	"marshal/internal/trust"
 )
 
-// projectHoldFunc holds root's project host and returns its release.
+// projectHoldFunc holds root's project host and returns its release. ctx is
+// advisory: the hold itself is not cancellable, because config.Load and
+// Hosts.Hold take none.
 type projectHoldFunc func(ctx context.Context, root string) (release func(), err error)
 
 // hostsHold is a --viewers child's hold: the config loaded for root by

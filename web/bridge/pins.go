@@ -78,6 +78,16 @@ func (f *Fleet) pinned(root string) bool {
 	return f.ws.IsPinned(filepath.Clean(root))
 }
 
+// hasProjectChild reports whether root already has a child entry, started or
+// starting. A caller that finds one did not start it, so it has not held the
+// root.
+func (f *Fleet) hasProjectChild(root string) bool {
+	f.projMu.Lock()
+	defer f.projMu.Unlock()
+	_, ok := f.projects[filepath.Clean(root)]
+	return ok
+}
+
 // holdLocked sends project/hold for pc's root on its current generation.
 // The caller holds pc.mu.
 func (f *Fleet) holdLocked(ctx context.Context, pc *projectChild) error {
@@ -174,7 +184,17 @@ func (f *Fleet) StartPinned(ctx context.Context) {
 			continue
 		}
 		hctx, cancel := context.WithTimeout(ctx, controlHandshakeTimeout)
-		_, err := f.projectChildFor(hctx, root)
+		// A child that already existed was not started here, so it has not
+		// held the root: either it was running when the pin arrived, or its
+		// hold failed at its start. Hold it here, which the agent treats as
+		// idempotent (decision 4). A child this call starts holds itself.
+		existed := f.hasProjectChild(root)
+		pc, err := f.projectChildFor(hctx, root)
+		if err == nil && existed {
+			pc.mu.Lock()
+			err = f.holdLocked(hctx, pc)
+			pc.mu.Unlock()
+		}
 		cancel()
 		if err != nil {
 			slog.Default().Warn("webbridge: start a pinned project child",

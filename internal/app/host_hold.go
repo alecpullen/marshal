@@ -19,7 +19,12 @@ import (
 func (hs *Hosts) Hold(root string, cfg config.Config) (release func(), err error) {
 	// A hold can be the first thing that ever touches a project, so it makes
 	// the directory the host's database lives in, as a runtime's start does:
-	// SQLite cannot create a database whose parent directory is missing.
+	// SQLite cannot create a database whose parent directory is missing. The
+	// root itself must already exist, so a typo is refused rather than
+	// materialized and indexed.
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		return nil, fmt.Errorf("hold %s: not a directory", root)
+	}
 	if err := os.MkdirAll(filepath.Join(root, ".marshal"), 0o755); err != nil {
 		return nil, fmt.Errorf("create .marshal directory: %w", err)
 	}

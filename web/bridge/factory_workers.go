@@ -204,17 +204,8 @@ func (w *factoryWorkers) Observe(ctx context.Context, item FactoryItem) (Factory
 		if worker.Parked {
 			continue
 		}
-		rt, err := w.fleet.runtimeForAgent(worker.AgentID)
-		if err != nil {
-			continue
-		}
-		obs.RuntimeKnown = true
-		if info, ok := rt.reg.lookup(worker.SessionID); ok {
-			obs.TurnIdle = !info.Busy && rt.reg.Pending(worker.SessionID) == ""
-		}
-		if raw, err := rt.child.Request(ctx, "session/end_work", map[string]any{"sessionId": worker.SessionID}); err == nil {
-			obs.ActiveWorkKnown, obs.WorkIdle = decodeFactoryWork(raw)
-		}
+		// Git evidence comes from the retained checkout, not the runtime, so it
+		// stays available while a worker is interrupted or reattaching.
 		if w.fleet.git != nil {
 			out, err := w.fleet.git.runCtx(ctx, a.Project, Credential{}, "rev-parse", "HEAD")
 			if err == nil {
@@ -235,6 +226,17 @@ func (w *factoryWorkers) Observe(ctx context.Context, item FactoryItem) (Factory
 					}
 				}
 			}
+		}
+		rt, err := w.fleet.runtimeForAgent(worker.AgentID)
+		if err != nil {
+			continue
+		}
+		obs.RuntimeKnown = true
+		if info, ok := rt.reg.lookup(worker.SessionID); ok {
+			obs.TurnIdle = !info.Busy && rt.reg.Pending(worker.SessionID) == ""
+		}
+		if raw, err := rt.child.Request(ctx, "session/end_work", map[string]any{"sessionId": worker.SessionID}); err == nil {
+			obs.ActiveWorkKnown, obs.WorkIdle = decodeFactoryWork(raw)
 		}
 	}
 	return obs, nil

@@ -6,7 +6,9 @@ puts the bridge between. Where this spec and the design differ, this spec
 wins. Each difference is listed under "Decisions".
 Depends on: P3, implemented (its plan 8 merged at `40dc0eff`).
 Status: approved 2026-11-09, with every recommendation under "Decisions"
-accepted. The line anchors were re-checked at `40dc0eff` for plans 1 and 2,
+accepted. Implemented: all ten plans are merged, and `main` is at `7ae94a9b`.
+The done-when's hands-on run is the close-out at the end of the
+Implementation record, and it has not been run yet. The line anchors were re-checked at `40dc0eff` for plans 1 and 2,
 and at `7802701f` (plans 1 and 2 merged) for plans 3 and 4, and at
 `29851a61` (plans 3 and 4 merged) for plans 5 and 6, and at `87c0ad10`
 (plans 5 and 6 merged) for plans 7 and 8, and at `5f4754dc` (plans 7 and 8
@@ -214,6 +216,16 @@ against.
 - **H12.** Pinning from the web UI. Plan 9's pins are set by `marshal daemon
   pin` over the socket only; the web UI's project settings neither show nor
   change them yet.
+- **H13.** A fleet agent's version warning. The bridge sets
+  `agentRuntime.versionWarning` when an agent's child reports another version
+  than the bridge's (`web/bridge/fleet.go:869`, `:958`), but no status field,
+  route or log line carries it. Plan 10 makes the skew likelier: every local
+  agent now shares the TUI's project child.
+- **H14.** A project child's event log grows with its fleet agents' turns,
+  because their sessions log on the child's log (plan 10), until the child
+  restarts.
+- **H15.** A TUI can resume a paused fleet agent's stored session. An attach
+  refuses only a live fleet session (plan 10's decision 6).
 
 ## Behaviour
 
@@ -2642,3 +2654,107 @@ a scratch `git init` project, the built `marshal` and `webbridge`:
   both checks and dialled; that needs the attach to win a race it cannot
   observe, and closing it would mean holding the child's session table across
   the dial.
+
+### Close-out — the hands-on acceptance run
+
+Not yet run. The done-when asks for a manual run, and no plan's own manual run
+could cover it:
+
+- plans 5, 7 and 10 had no interactive terminal;
+- plan 6 had no direnv;
+- plan 9 had no embedding route;
+- no machine they ran on had the service installed.
+
+So this run is made once, by hand, on a real machine. Under each step, record
+the outcome: pass, or fail with what was seen.
+
+The suite half of the done-when (W1 to W13) is covered at `7ae94a9b`. There,
+`go test ./... -timeout 20m` passed 122 packages. `internal/acp` failed on two
+budget tests under the suite's load: `TestNoteCallBudget` at 10.6ms of 10ms,
+and `TestStackRoundTripBudget` at 69ms of 50ms. Both are the known load flake;
+the package passes alone, and the two tests passed three times in a row.
+
+**Setup.**
+
+1. Build both binaries into one directory on `PATH`. For example:
+   `CGO_ENABLED=1 go build -o ~/bin/marshal ./cmd/marshal` and
+   `go build -o ~/bin/webbridge ./cmd/webbridge`.
+   `marshal daemon install` runs the `webbridge` beside `marshal`, else the one
+   on `PATH`, else the one `--webbridge` names.
+2. Have a provider that answers prompts; the LM Studio model works. Step H also
+   needs an embedding route: `[indexing] embedding_preset` in the user config,
+   naming a preset whose model embeds, set before the pin.
+3. Use a scratch git project with a few source files, and run each step from
+   its root.
+
+**Steps.**
+
+- **A. The service survives the terminal.**
+  1. Run `marshal daemon install`. It prints the unit and the socket, then
+     `answering`.
+  2. Run `marshal daemon status`. Expect `service: loaded and running (pid N)`
+     and `socket: … (answering)`.
+  3. Close every terminal window, open a new one and run `marshal daemon
+     status` again: the pid is the same.
+  4. Optionally, log out of the OS and back in. The service starts again at
+     login with a new pid.
+- **B. `marshal` starts its session on the daemon.** Run `marshal` in the
+  project. In a second terminal, `marshal daemon status` lists `child <root>:
+  …, 1 sessions`.
+- **C. Detach mid-turn and reattach.**
+  1. Prompt something that runs for about 30 seconds, such as "Run `sleep 30;
+     echo finished` in the shell and tell me what it printed."
+  2. While the call runs, type `/detach`. The shell prints `Detached from
+     session <id>. marshal attach <id> reattaches.`
+  3. Run `marshal attach`. The live transcript shows the call still running.
+     When it ends, the reply and the outcome appear as if the TUI had never
+     left.
+  4. Afterwards, Ctrl+C twice at an idle prompt also detaches, and does not
+     end the session.
+- **D. An open request across a detach.**
+  1. Prompt for a command that needs approval, such as "Run `touch
+     approved.txt`".
+  2. When the approval shows, `/detach`.
+  3. `marshal attach` shows the same approval. Approve it, and the run
+     completes.
+- **E. A sudo prompt.**
+  1. Turn on `/system on`, then prompt "Use the shell.sudo tool to run `id
+     -u`."
+  2. Approve it. The password prompt appears in the TUI. Answer it, and the
+     reply says `0`.
+  3. Repeat once with a `/detach` while the password prompt is open. After
+     `marshal attach` the prompt is still there.
+  4. End with `/system off`.
+- **F. An MCP sign-in.**
+  1. Configure an HTTP MCP server with `auth = "oauth"` in the user config.
+  2. In a daemon session, run `/mcp auth <name>`. The browser opens. After
+     signing in, the TUI reports the authorization, and the server's tools
+     answer a prompt that uses them.
+- **G. Embedded mode is unchanged.**
+  1. `marshal --embedded` runs in process: `marshal daemon status` shows no
+     new session, and quitting ends the conversation through the exit flow.
+  2. `marshal daemon stop`, then `marshal`: it runs embedded with no error.
+  3. `marshal daemon start` brings the daemon back.
+- **H. A pinned project's embeddings refresh with no session open.**
+  1. With the embedding preset set, quit every session on the project and run
+     `marshal daemon pin`. `marshal daemon status` shows `0 sessions,
+     pinned`.
+  2. After the startup pass, `sqlite3 .marshal/marshal.db "select count(*)
+     from embeddings"` is above zero.
+  3. Add a function to a source file. Within a few seconds, `select count(*),
+     max(created_at) from chunks where file_path = '<that file>'` shows the
+     new chunk, and the embeddings count grows with it.
+  4. Finish with `marshal daemon unpin`.
+- **I. An `.envrc` sets the toolchain.**
+  1. Install direnv (`brew install direnv`). It must be on the login shell's
+     `PATH`.
+  2. In a second scratch project, create `bin/mytool`, a shell script that
+     prints `from-envrc`, and make it executable.
+  3. Write `.envrc` containing `PATH_add bin`, and run `direnv allow`.
+  4. `marshal` there, then prompt "Run `mytool` in the shell." It prints
+     `from-envrc`. `marshal daemon status` shows no `environment:` line under
+     that project's child.
+- **J. Afterwards.** Keep the service, or remove it with `marshal daemon
+  uninstall`, which keeps the data directory.
+
+**Results.** Not yet run.

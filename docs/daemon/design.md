@@ -1,13 +1,14 @@
 # Marshal daemon and detached TUI — design
 
-Status: direction agreed 2026-10-19. P0 is specified and implemented (§5,
-§7). P1 is specified ([`p1-project-host.md`](p1-project-host.md)) and
-implemented (see its implementation record). P2 is specified
-([`p2-client-seam.md`](p2-client-seam.md)), revised on 2026-10-25 after the
-TUI simplification landed, and awaiting review; its scope widened to the
-whole agent side, and it settles §8's transcript question.
-Later phases have no spec yet. The decision to keep the TUI in Go depends
-on P0 (text selection, §5) working.
+Status: direction agreed 2026-10-19. P0 to P4 are specified and implemented,
+each spec with its own implementation record: P0 in §5,
+[`p1-project-host.md`](p1-project-host.md),
+[`p2-client-seam.md`](p2-client-seam.md) (which settles §8's transcript
+question), [`p3-acp-transport.md`](p3-acp-transport.md) and
+[`p4-local-daemon.md`](p4-local-daemon.md). P0's manual terminal check and
+P4's hands-on acceptance run are still to do. P5 is specified in
+[`p5-fleet-screen.md`](p5-fleet-screen.md), approved and not yet planned. Where a spec and
+this sketch differ, the spec wins.
 
 ## 1. Goal and scope
 
@@ -168,14 +169,15 @@ in the bridge's SSE layer.
 
 ### 4.3 Pinned projects
 
-The pin is a project setting in the bridge's workspace registry
-(`web/bridge/projects.go`). A ProjectHost stays alive while its project is
-pinned or has at least one session. Its watcher runs for its whole life.
-Unpinned projects index when a session starts, as the TUI does today, and
-shut down with their last session. Language servers are stopped after an
-idle timeout even on pinned projects; the index and embeddings stay
-current without them. Embedding calls are debounced and batched per
-project.
+As built in P4 (plan 9, D9), a pin is an entry in the workspace registry's
+own `pinned` list, not a project setting, so a settings save cannot drop it.
+`marshal daemon pin [dir]` sets it over the socket. A pinned project's child
+keeps running with no session, through the linger and across a daemon
+restart. It holds the project's host open, and the index watcher runs
+whatever `indexing.watch` says. Unpinned projects index when a session
+starts and shut down with their last session. A pin starts no language
+server. Embeddings follow the index pass whenever an embedding route
+resolves. The web UI cannot pin yet (P4 H12).
 
 ### 4.4 Contract
 
@@ -220,8 +222,10 @@ notifications, answer agent requests. It has two transports:
 - **Pipe** (embedded mode): an in-process ACP host connected with
   `io.Pipe`. `acp.NewServer` already takes a reader and a writer
   (`internal/acp/server.go:119`).
-- **Bridge** (daemon mode): the RPC passthrough plus the session SSE
-  stream, over the unix socket or TLS.
+- **Relay** (daemon mode): the TUI's own ACP connection to the project's
+  `marshal acp` child, carried frame for frame over the daemon's unix socket
+  (P4, decision 1). The RPC passthrough plus the session SSE stream stays the
+  web UI's path.
 
 Fleet features need the bridge transport. Embedded mode shows only the
 session screen.
@@ -304,6 +308,9 @@ daemon never relaunches, so the checks happen at session start, and the
 ProjectHost watches the user config and `.marshal/config.toml`. A changed
 project config marks the project untrusted until the next session start
 re-prompts. The prompt goes to whichever client starts the session.
+P4 asks at session start through the attached TUI, and a trust given there
+applies to the running session (D8). Watching the files while a session runs
+is a P4 follow-up (H5).
 
 ### 6.3 Flows that need the user
 
@@ -327,7 +334,8 @@ Replacing the binary restarts every project host. The daemon drains first:
 it refuses new turns, waits for running turns up to a limit, then
 restarts, and sessions come back through `session/resume`. Clients compare
 their version with the daemon's (the bridge build version and ACP
-`agentInfo.version`) and warn on mismatch.
+`agentInfo.version`) and warn on mismatch. P4 only warns (D11); the drain is
+a follow-up (H4).
 
 ### 6.5 Embedded mode next to a daemon
 
@@ -347,8 +355,8 @@ corruption.
 | P1 | ProjectHost/Session split and headless indexing (§4.2) — implemented; see the spec's implementation record | Two ACP sessions on one repo in one process share one host, one set of language servers and one watcher. With `indexing.watch = true`, a headless session's edit refreshes its embeddings. Two processes on one tree run one indexer |
 | P2 | TUI client seam with the in-process adapter (§4.5) — implemented (see the spec's implementation record): nine plans, with 2, 3 and 5 split into sub-plans, namely 1, 2a–2c, 3a–3d, 4, 5a–5e, 6, 7a–7d, 8a, 8b and 9 | Done when: the TUI reaches the agent side only through the client interface — it imports no agent-side package, holds no `session.State`, and does no project, config or keychain I/O (enforced by a boundary test) — and the transcript renders from the wire projection (§8 settled). The boundary test's allowlist is empty and `WithLegacyState` is gone |
 | P3 | ACP client transports; embedded mode over the pipe — implemented (see the spec's implementation record) | Embedded mode runs entirely over ACP and the adapter is deleted |
-| P4 | Bridge local profile ([`p4-local-daemon.md`](p4-local-daemon.md)): user service, unix listener, the attach relay (the sudo answer included), turns that outlive their caller, pinning, environment resolution, OAuth refresh run once, one `marshal acp` child per project for host-process agents | A TUI can quit and reattach to a running turn on the local daemon |
-| P5 | Fleet screen in the Go TUI, shared types, server-computed views | The fleet loop from `docs/fleet-cli/design.md` §1 works from the Go TUI against local and server profiles |
+| P4 | Bridge local profile ([`p4-local-daemon.md`](p4-local-daemon.md)): user service, unix listener, the attach relay (the sudo answer included), turns that outlive their caller, pinning, environment resolution, OAuth refresh run once, one `marshal acp` child per project for host-process agents — implemented (ten plans; see the spec's implementation record), hands-on acceptance pending (the spec's close-out) | A TUI can quit and reattach to a running turn on the local daemon |
+| P5 | Fleet screen in the Go TUI, shared types, server-computed views ([`p5-fleet-screen.md`](p5-fleet-screen.md), approved) | The fleet loop from `docs/fleet-cli/design.md` §1 works from the Go TUI against local and server profiles |
 
 P0 and P1 are independent of each other and of the later phases, and each
 is useful on its own.

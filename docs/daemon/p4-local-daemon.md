@@ -2550,16 +2550,22 @@ a scratch `git init` project, the built `marshal` and `webbridge`:
   the agent's session was on it and hidden from the listing (decision 1).
 - `ps` showed one `marshal acp --viewers unix://<data>/daemon/state/v/…sock`
   for that state dir — the project's child, not a child of the agent's own.
-- `POST /api/sessions/<id>/prompt` answered `{"status":"started"}`. No provider
-  was configured for the scratch run, so the turn itself produced no reply to
-  transcribe; the event stream was not read.
+- `POST /api/sessions/<id>/prompt` answered `{"status":"started"}`. The run
+  then read no event stream: no provider was configured, so the turn produced
+  no reply to transcribe. The plan allowed a mock provider for this step; it
+  was not set up, so **the prompt/events step was not executed** rather than
+  being impossible.
 - `POST /api/agents/<id>/exit` retired the agent; `GET /api/daemon` still
   listed the child and its process was still alive, waiting on its linger
   (decision 5).
-- **What could not be driven:** the TUI half — `marshal attach [id]` and an
-  SSE viewer — needs a terminal or a browser, and a scripted reply needs a
-  provider. W13's in-process test (`test/daemon`) covers both, attach
-  refusal included.
+- **Not executed, and why.** The TUI half — `marshal attach [id]` and an SSE
+  viewer — was not driven: it needs an interactive terminal or a browser, and
+  this run had neither. The prompt/events step above was skipped for want of a
+  provider, not for want of a means. Both are covered in-process instead:
+  W13 (`test/daemon/fleet_test.go`) attaches a real client, spawns a real
+  agent on the same child, prompts it and reads the scripted reply from the
+  agent's own log, and asserts the 409 refusal; the TUI's side of that contract
+  is the same `attach` handler W13 drives.
 
 **Verification**, each command with its result:
 
@@ -2588,3 +2594,17 @@ a scratch `git init` project, the built `marshal` and `webbridge`:
   live fleet session is refused to an attach.
 - A fleet agent's session is logged on the project child's log, so that log
   grows with the agent's turns until the child restarts.
+- `agentRuntime.versionWarning` is written on the project path (as on the
+  agent's own child) but nothing reads it: no `AgentStatus` field, REST surface
+  or log line carries it, so a `--marshal-bin` override running an older
+  `marshal acp` warns only in the bridge's own log. The comparison is right
+  (`versionSkew(pc.version, f.buildVersion)`); surfacing it is a follow-up, and
+  it pre-dates this plan — the project path only makes the skew likelier
+  because every local-profile fleet agent now shares the TUI's child.
+- `TrackFleet`'s mark and the record are set in one lock hold, and an attach
+  also refuses a session the fleet's session map knows but the registry does
+  not yet track, so a Spawn in flight cannot be adopted. The remaining narrow
+  window is a `session/new` that returns after the attach has already passed
+  both checks and dialled; that needs the attach to win a race it cannot
+  observe, and closing it would mean holding the child's session table across
+  the dial.

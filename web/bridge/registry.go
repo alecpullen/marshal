@@ -240,10 +240,29 @@ func (r *Registry) LoadFleet(ctx context.Context, cwd AgentPath, id string) erro
 // and cancel context belong to the live session rather than to the newer
 // resolve. Replacing it would strand a viewer and leak the old context.
 func (r *Registry) track(id string, cwd AgentPath) {
+	r.trackAs(id, cwd, false)
+}
+
+// TrackFleet tracks id as a fleet agent's session.
+//
+// The mark goes in with the record, in one hold: the attach refusal's IsFleet
+// and the project child's log hook (tracksClient) must never see a fleet
+// session as a client's, not even between two lock sections.
+func (r *Registry) TrackFleet(id string, cwd AgentPath) {
+	r.trackAs(id, cwd, true)
+}
+
+// trackAs is track with the fleet mark decided by the caller. A fleet mark set
+// by an earlier call is never cleared: one record is one session, and a later
+// client-path track of it must not make it attachable.
+func (r *Registry) trackAs(id string, cwd AgentPath, fleet bool) {
 	r.mu.Lock()
 	if info, ok := r.sessions[id]; ok {
 		info.Cwd = cwd
 		info.lastActive = time.Now()
+		if fleet {
+			info.fleet = true
+		}
 		r.mu.Unlock()
 		return
 	}
@@ -254,16 +273,7 @@ func (r *Registry) track(id string, cwd AgentPath) {
 		cancel:     cancel,
 		accepting:  true,
 		lastActive: time.Now(),
-	}
-	r.mu.Unlock()
-}
-
-// TrackFleet tracks id as a fleet agent's session.
-func (r *Registry) TrackFleet(id string, cwd AgentPath) {
-	r.track(id, cwd)
-	r.mu.Lock()
-	if info, ok := r.sessions[id]; ok {
-		info.fleet = true
+		fleet:      fleet,
 	}
 	r.mu.Unlock()
 }

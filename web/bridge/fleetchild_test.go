@@ -573,6 +573,11 @@ func TestTheFleetsCloseStopsTheSharedChildOnce(t *testing.T) {
 	if _, still := projectEntry(f, root); still {
 		t.Fatal("the child is still in the fleet's map after Close")
 	}
+	// One stop, not a stop and a retry: the shared child is stopped by
+	// stopProjectChildren and by nothing else.
+	if got := fake.signalsSeen(); got != 1 {
+		t.Fatalf("the shared child got %d stop signals, want exactly 1", got)
+	}
 }
 
 // TestReattachAllLoadsOnTheProjectChild: a persisted local agent is reattached
@@ -612,6 +617,43 @@ func TestReattachAllLoadsOnTheProjectChild(t *testing.T) {
 	pc, _ := projectEntry(f, root)
 	if !pc.reg.IsFleet("sess-1") {
 		t.Fatal("the reattached session is not tracked as the fleet's")
+	}
+}
+
+// TestTheAgentsRuntimeTakesTheChildsCapabilities: an agent's runtime receives
+// the shared child's capabilities, copied under the child's lock, so a
+// capability-gated feature (watches) works for a fleet agent on a project
+// child (P4 D10).
+func TestTheAgentsRuntimeTakesTheChildsCapabilities(t *testing.T) {
+	f, fakeFor := projectFleetWith(t, func(fake *fakeProjectChild) {
+		setFakeCaps(fake, map[string]any{
+			"configAccess": map[string]any{},
+			"watchAccess":  map[string]any{},
+		})
+	})
+	f.SetHostProcessesOnly()
+	ctx := ctlContext(t)
+	root := t.TempDir()
+
+	id, err := f.Spawn(ctx, root, SpawnOptions{Name: "one"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if fakeFor(root) == nil {
+		t.Fatal("no project child was built for the root")
+	}
+
+	f.mu.Lock()
+	rt := f.runtimes[id]
+	f.mu.Unlock()
+	if rt == nil {
+		t.Fatalf("agent %s has no runtime", id)
+	}
+	if !rt.caps["configAccess"] || !rt.caps["watchAccess"] {
+		t.Fatalf("the runtime's caps = %v, want the child's advertised set", rt.caps)
+	}
+	if rt.caps["sessionHolds"] {
+		t.Fatalf("the runtime's caps = %v, want only what the child advertised", rt.caps)
 	}
 }
 

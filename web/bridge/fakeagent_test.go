@@ -220,6 +220,9 @@ type fakeProjectChild struct {
 	nextConn int
 	stopped  chan struct{}
 	stopOnce sync.Once
+	// signals counts the stop signals the bridge sent, so a test can tell one
+	// stop from a stop-and-retry.
+	signals int
 }
 
 func newFakeProjectChild(socket string) *fakeProjectChild {
@@ -290,9 +293,19 @@ func (p *fakeProjectChild) die() {
 // was replaced while Stop ran would wait forever on a pipe nothing will ever
 // close, because the fake's Kill is a no-op.
 func (p *fakeProjectChild) Signal(sig os.Signal) error {
+	p.mu.Lock()
+	p.signals++
+	p.mu.Unlock()
 	p.stopOnce.Do(func() { close(p.stopped) })
 	p.die()
 	return nil
+}
+
+// signalsSeen reports how many stop signals the bridge sent the child.
+func (p *fakeProjectChild) signalsSeen() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.signals
 }
 
 // wasStopped reports whether the bridge has stopped the child.

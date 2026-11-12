@@ -90,7 +90,13 @@ func (s *Server) attachProject(w http.ResponseWriter, r *http.Request) {
 		// take its relay and answer its client as if it were the TUI (P4 D10
 		// decision 6). Refused before any viewer connection opens; the child
 		// keeps its session, so no linger is rearmed.
-		if pc.reg.IsFleet(sessionID) {
+		//
+		// Both sources are consulted. The registry's flag is the fast path, but
+		// it is set after session/new returns: a Spawn in that window is live on
+		// the child and not yet tracked, so the classifier's map — which Spawn
+		// fills first — closes it.
+		_, classified := s.fleet.agentForSession(sessionID)
+		if pc.reg.IsFleet(sessionID) || classified {
 			logAttach("refused", root, sessionID, "fleet session")
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "session " + sessionID + " belongs to a fleet agent"})
 			return

@@ -535,6 +535,45 @@ func TestAnAttachToAFleetSessionIsRefused(t *testing.T) {
 	}
 }
 
+// TestAnAttachToASpawningFleetSessionIsRefused: Spawn maps a session to its
+// agent as soon as session/new returns, before the registry tracks it. An
+// attach landing in that window must still be refused, or it would take the
+// relay of a session the agent is about to use (P4 D10 decision 6).
+func TestAnAttachToASpawningFleetSessionIsRefused(t *testing.T) {
+	root := t.TempDir()
+	h := newAttachHarness(t)
+
+	// A client's session starts the child and holds one viewer, so the
+	// refusal below is measured against a live relay.
+	first := h.attach(http.MethodPost, root, "", true)
+	if first.status != http.StatusSwitchingProtocols {
+		t.Fatalf("opening attach = %d, want 101", first.status)
+	}
+	fake := h.fake(root)
+	if fake == nil {
+		t.Fatal("no fake was built for the project child")
+	}
+	eventually(t, "the first viewer to connect", func() bool { return fake.viewers() == 1 })
+	viewers := fake.viewers()
+
+	// The state a Spawn is in between session/new returning and TrackFleet:
+	// the fleet knows the session, the registry does not.
+	h.fleet.mu.Lock()
+	h.fleet.sessionAgent["spawning-1"] = "agent-a"
+	h.fleet.mu.Unlock()
+
+	res := h.attach(http.MethodPost, root, "spawning-1", true)
+	if res.status != http.StatusConflict {
+		t.Fatalf("attach to a spawning fleet session = %d, want 409", res.status)
+	}
+	if got, want := res.refusal(t), "session spawning-1 belongs to a fleet agent"; got != want {
+		t.Errorf("409 refusal = %q, want %q", got, want)
+	}
+	if got := fake.viewers(); got != viewers {
+		t.Errorf("a refused attach opened a viewer connection: %d before, %d after", viewers, got)
+	}
+}
+
 func TestAFailedDialClosesTheNewSession(t *testing.T) {
 	root := t.TempDir()
 	h := newAttachHarness(t)

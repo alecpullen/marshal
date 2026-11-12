@@ -27,6 +27,7 @@ type daemonHarness struct {
 	t      *testing.T
 	socket string
 	root   string // the project every attach names
+	ws     *bridge.Workspace
 	fleet  *bridge.Fleet
 	srv    *http.Server
 	client *daemon.Client
@@ -98,6 +99,7 @@ func newDaemonHarness(t *testing.T) *daemonHarness {
 		t:      t,
 		socket: socket,
 		root:   root,
+		ws:     ws,
 		fleet:  fleet,
 		srv:    srv,
 		client: daemon.NewClient(socket),

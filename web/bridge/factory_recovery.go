@@ -31,6 +31,12 @@ func (c *FactoryController) Recover(ctx context.Context) error {
 	return nil
 }
 
+// factorySeedDidNotRun reports a clean checkout still at the approved base,
+// which proves the seed commit never landed.
+func factorySeedDidNotRun(item FactoryItem, o FactoryObservation) bool {
+	return o.Error == "" && !o.Dirty && item.BaseSHA != "" && o.HeadSHA == item.BaseSHA
+}
+
 func recoveryStopConfirmed(item FactoryItem, obs FactoryObservation) bool {
 	for _, w := range item.Workers {
 		if !w.Parked && (!obs.RuntimeKnown || !obs.TurnIdle || !obs.ActiveWorkKnown || !obs.WorkIdle) {
@@ -56,7 +62,16 @@ func (c *FactoryController) recoveryOutcome(item FactoryItem, e FactoryEffect, o
 			return out, false
 		}
 		out.Worker = &matches[0]
-	case "seed", "publish":
+	case "seed":
+		// Seed creates the owned branch and commits locally; it never pushes.
+		// A remote head is therefore not evidence of a seed, and requiring one
+		// would leave every seed effect permanently unconfirmed. The seed
+		// commit landing on a clean checkout is the evidence.
+		if o.Error != "" || o.Dirty || o.HeadSHA == "" || o.TreeSHA == "" || o.HeadSHA == item.BaseSHA {
+			return out, false
+		}
+		out.HeadSHA, out.TreeSHA = o.HeadSHA, o.TreeSHA
+	case "publish":
 		if o.Error != "" || o.Dirty || o.HeadSHA == "" || o.TreeSHA == "" || o.RemoteHead != o.HeadSHA {
 			return out, false
 		}
@@ -141,6 +156,21 @@ func (c *FactoryController) reconcile(ctx context.Context, item FactoryItem, att
 						next.Decision = nil
 					}
 					return c.internalUpdate(item, "reconciled", func(dst *FactoryItem) error { *dst = next; dst.Version = item.Version; return nil })
+				}
+			}
+			if e.Kind == "seed" && factorySeedDidNotRun(item, obs) {
+				// A clean checkout still at the approved base proves the seed
+				// never ran. Record a definite failure so the operator can
+				// retry it instead of leaving the item uncertain forever.
+				copy := factoryCopy(item)
+				copy.Effects[len(copy.Effects)-1].Status = "dispatched"
+				next, err := CompleteFactoryEffect(copy, e.ID, FactoryOutcome{
+					EffectID:  e.ID,
+					Error:     "seed did not run: checkout is clean at the approved base",
+					Confirmed: true,
+				}, c.now())
+				if err == nil {
+					return c.internalUpdate(item, "seed_not_run", func(dst *FactoryItem) error { *dst = next; dst.Version = item.Version; return nil })
 				}
 			}
 			if attest && e.Kind != "spawn" && len(item.Workers) > 0 && strings.Contains(reason, item.Workers[len(item.Workers)-1].AgentID) && !obs.RuntimeKnown {

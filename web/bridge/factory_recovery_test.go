@@ -80,6 +80,99 @@ func TestFactoryRecoveryLostOutcomes(t *testing.T) {
 	}
 }
 
+func TestFactoryRecoverySeedEvidence(t *testing.T) {
+	i := loopItem() // BaseSHA is "base"
+	c := NewFactoryController(nil, nil, nil)
+	e := FactoryEffect{ID: "seed", Kind: "seed", Status: "dispatched"}
+	for _, tc := range []struct {
+		name        string
+		observation FactoryObservation
+		want        bool
+	}{
+		// Seed never pushes, so a remote head is absent by design.
+		{"local seed commit", FactoryObservation{HeadSHA: "seed-head", TreeSHA: "tree"}, true},
+		{"seed did not run", FactoryObservation{HeadSHA: "base", TreeSHA: "tree"}, false},
+		{"dirty checkout", FactoryObservation{HeadSHA: "seed-head", TreeSHA: "tree", Dirty: true}, false},
+		{"missing tree", FactoryObservation{HeadSHA: "seed-head"}, false},
+		{"observation error", FactoryObservation{HeadSHA: "seed-head", TreeSHA: "tree", Error: "boom"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, ok := c.recoveryOutcome(i, e, tc.observation)
+			if ok != tc.want {
+				t.Fatalf("seed accepted=%v, want %v", ok, tc.want)
+			}
+			if ok && out.HeadSHA != "seed-head" {
+				t.Fatalf("seed evidence lost: %+v", out)
+			}
+		})
+	}
+}
+
+func TestFactoryRecoverySeedThatNeverRanBecomesRetryable(t *testing.T) {
+	s, err := OpenFactoryStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	i, err := s.Create(factoryReq(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	i, err = s.Update(i.ID, "prepare-seed", i.Version, json.RawMessage(`{"kind":"prepare"}`), func(dst *FactoryItem) error {
+		dst.State = "preparing"
+		dst.BaseSHA = "base"
+		dst.Branch = "marshal/factory/" + dst.ID
+		dst.Workers = []FactoryWorker{{AgentID: "worker", SessionID: "session", Role: "implementer", SpawnEffectID: "spawn"}}
+		dst.Effects = []FactoryEffect{{ID: "seed-id", Kind: "seed", Status: "uncertain"}}
+		return nil
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fx := &recoveryEffects{observation: FactoryObservation{HeadSHA: "base", TreeSHA: "tree"}}
+	c := NewFactoryController(s, fx, time.Now)
+	if err := c.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Get(i.ID)
+	if got.Effects[0].Status != "completed" || got.Effects[0].Outcome == nil || !strings.Contains(got.Effects[0].Outcome.Error, "seed did not run") {
+		t.Fatalf("seed that never ran stayed uncertain: %+v", got.Effects[0])
+	}
+	if got.Decision == nil || got.Decision.Kind != "worker_failed" {
+		t.Fatalf("seed failure is not actionable: %+v", got.Decision)
+	}
+}
+
+func TestFactoryAdvanceRetriesFailedSeed(t *testing.T) {
+	now := time.Now().UTC()
+	obs := FactoryObservation{RuntimeKnown: true, TurnIdle: true, ActiveWorkKnown: true, WorkIdle: true, HeadSHA: "base", TreeSHA: "tree", BaseSHA: "base", ObservedAt: now}
+	for _, tc := range []struct {
+		name    string
+		outcome *FactoryOutcome
+		want    string
+	}{
+		{"failed seed retries the seed", &FactoryOutcome{EffectID: "seed-1", Error: "seed did not run", Confirmed: true}, "seed"},
+		{"successful seed publishes", &FactoryOutcome{EffectID: "seed-1", HeadSHA: "seed-head", TreeSHA: "tree", Confirmed: true}, "publish"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			i := loopItem()
+			i.State = "repairing"
+			i.Workers = []FactoryWorker{{AgentID: "worker", SessionID: "session", Role: "implementer", SpawnEffectID: "spawn"}}
+			i.Effects = []FactoryEffect{{ID: "seed-1", Kind: "seed", Status: "completed", WorkerRole: "implementer", Outcome: tc.outcome}}
+			_, e, err := AdvanceFactory(i, obs, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if e == nil || e.Kind != tc.want {
+				t.Fatalf("wanted %s, got %+v", tc.want, e)
+			}
+			if e.Kind == "seed" && e.Worker == nil {
+				t.Fatal("retried seed lost its worker")
+			}
+		})
+	}
+}
+
 func TestFactoryRecoveryParkedAndStopped(t *testing.T) {
 	i := loopItem()
 	i.State = "stopping"

@@ -217,7 +217,11 @@ func AdvanceFactory(item FactoryItem, observed FactoryObservation, now time.Time
 				role = "implementer"
 			}
 		case "seed":
-			kind = "publish"
+			if last.Outcome != nil && last.Outcome.Error != "" {
+				kind = "seed"
+			} else {
+				kind = "publish"
+			}
 			role = "implementer"
 		case "implement":
 			if last.Outcome != nil && last.Outcome.Report != nil && last.Outcome.Report.Outcome == "needs_input" {

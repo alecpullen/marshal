@@ -215,7 +215,9 @@ operator sent. Two consequences, both narrow:
   sharing a request id between them is a conflict rather than a replay;
 - a create that was journalled by a pre-slice bridge and is replayed after the
   upgrade is answered with a conflict once, because the stored hash was taken
-  over the normalised request.
+  over the normalised request — unless the request already carried every
+  value normalisation would have filled in, in which case the two hashes
+  agree and the create still replays.
 
 A byte-identical retry is unaffected, which is the case the replay contract
 exists for.
@@ -547,7 +549,7 @@ each out of scope, so they need the user rather than another implementer pass.
 The rule that an expected check must carry a valid identity now exists twice:
 inline in `factoryNormalize`, and again in `factoryValidateDefaults`. The
 duplication is deliberate — this slice does not touch `factoryNormalize` — and
-the two copies are identical today. A later change to only one of them would
+the two predicates are identical today. A later change to only one of them would
 make a default valid when written and invalid when resolved, or the reverse,
 with a resolve-time error that blames the workspace file. The next slice that
 modifies `factoryNormalize` should extract the shared rule.

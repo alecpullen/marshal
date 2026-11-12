@@ -82,6 +82,7 @@ func RunWithViewers(ctx context.Context, stdin io.Reader, stdout, stderr io.Writ
 		lister:   newPerCwdLister(),
 		shutdown: connectionShutdownTimeout,
 		logger:   log,
+		hold:     hostsHold(hosts, home, trust.NewHeadlessResolver(trustStore, log)),
 	})
 	return errors.Join(err, closeHosts(hosts))
 }

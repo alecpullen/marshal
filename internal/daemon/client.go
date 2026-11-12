@@ -20,6 +20,7 @@ const (
 	attachPath     = "/api/projects/attach"
 	attachProtocol = "marshal-acp"
 	sessionHeader  = "Marshal-Session"
+	pinPath        = "/api/projects/pin"
 )
 
 // ChildInfo mirrors the bridge's DaemonChild on the wire.
@@ -28,6 +29,7 @@ type ChildInfo struct {
 	Version    string        `json:"version"`
 	Sessions   []SessionInfo `json:"sessions"`
 	EnvWarning string        `json:"envWarning,omitempty"`
+	Pinned     bool          `json:"pinned,omitempty"`
 }
 
 // SessionInfo mirrors the bridge's DaemonSession on the wire.
@@ -51,8 +53,16 @@ type Info struct {
 	StartedAt int64        `json:"startedAt"`
 	Socket    string       `json:"socket"`
 	Projects  []string     `json:"projects"`
+	Pinned    []string     `json:"pinned"`
 	Children  []ChildInfo  `json:"children"`
 	Refresh   *RefreshInfo `json:"refresh,omitempty"`
+}
+
+// PinState mirrors the bridge's PinState on the wire.
+type PinState struct {
+	Root    string `json:"root"`
+	Pinned  bool   `json:"pinned"`
+	Running bool   `json:"running"`
 }
 
 // Client talks HTTP to the daemon over its socket.
@@ -113,6 +123,53 @@ func (c *Client) Info(ctx context.Context) (Info, error) {
 		return Info{}, fmt.Errorf("decode daemon answer: %w", err)
 	}
 	return info, nil
+}
+
+// Pin pins or unpins root on the daemon, bounded by ctx.
+func (c *Client) Pin(ctx context.Context, root string, pinned bool) (PinState, error) {
+	body, err := json.Marshal(struct {
+		Root   string `json:"root"`
+		Pinned bool   `json:"pinned"`
+	}{Root: root, Pinned: pinned})
+	if err != nil {
+		return PinState{}, fmt.Errorf("encode pin request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://daemon"+pinPath, bytes.NewReader(body))
+	if err != nil {
+		return PinState{}, fmt.Errorf("daemon request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return PinState{}, fmt.Errorf("daemon at %s: %w", c.socket, err)
+	}
+	defer resp.Body.Close()
+
+	answer, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return PinState{}, fmt.Errorf("read daemon answer: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		// The handler answers {"error": "..."} on a refusal; keep
+		// that text, since it says why better than the status does.
+		var refused struct {
+			Error string `json:"error"`
+		}
+		detail := strings.TrimSpace(string(answer))
+		if json.Unmarshal(answer, &refused) == nil && refused.Error != "" {
+			detail = refused.Error
+		}
+		return PinState{}, fmt.Errorf("daemon answered %s: %s", resp.Status, detail)
+	}
+
+	var state PinState
+	if err := json.Unmarshal(answer, &state); err != nil {
+		return PinState{}, fmt.Errorf("decode daemon answer: %w", err)
+	}
+	return state, nil
 }
 
 // Attachment is an attached session: its ID and the upgraded stream.

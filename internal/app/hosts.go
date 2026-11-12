@@ -114,6 +114,8 @@ type ProjectHost struct {
 	cfg       config.Config
 	projectID int64
 	attached  bool
+	// holds counts the holds not yet released (P4 D9).
+	holds     int
 	indexKey  string
 	indexStop func(context.Context) error
 	closed    bool
@@ -403,7 +405,8 @@ func (h *ProjectHost) refreshIndex() {
 		return
 	}
 	cfg := h.cfg
-	key := indexKeyFor(cfg)
+	held := h.holds > 0
+	key := indexKeyFor(cfg, held)
 	if h.indexStop != nil && key == h.indexKey {
 		h.mu.Unlock()
 		return
@@ -426,12 +429,12 @@ func (h *ProjectHost) refreshIndex() {
 		return
 	}
 	h.indexKey = key
-	h.indexStop = h.startIndex(cfg)
+	h.indexStop = h.startIndex(cfg, held)
 }
 
 // startIndex starts the host's index work for cfg and returns a func that
 // stops it and waits for it to return.
-func (h *ProjectHost) startIndex(cfg config.Config) func(context.Context) error {
+func (h *ProjectHost) startIndex(cfg config.Config, held bool) func(context.Context) error {
 	ctx, cancel := context.WithCancel(h.ctx)
 	done := make(chan struct{})
 	if workers := h.hosts.workers; len(workers) > 0 {
@@ -444,7 +447,7 @@ func (h *ProjectHost) startIndex(cfg config.Config) func(context.Context) error 
 			close(done)
 		}()
 	} else {
-		sup := h.supervisor(cfg)
+		sup := h.supervisor(cfg, held)
 		go func() {
 			defer close(done)
 			sup.run(ctx)
@@ -463,11 +466,11 @@ func (h *ProjectHost) startIndex(cfg config.Config) func(context.Context) error 
 
 // supervisor is the index supervisor for cfg: a startup scan, then the
 // watcher when config.WatchEnabled allows it.
-func (h *ProjectHost) supervisor(cfg config.Config) indexSupervisor {
+func (h *ProjectHost) supervisor(cfg config.Config, held bool) indexSupervisor {
 	debounce := time.Duration(cfg.Indexing.WatchDebounceMs) * time.Millisecond
 	return indexSupervisor{
 		root:     h.root,
-		watch:    config.WatchEnabled(cfg.Indexing.Watch, embeddingRouteResolves(cfg)),
+		watch:    watchFor(cfg, held),
 		retry:    h.hosts.leaseRetry,
 		log:      h.log,
 		tryLease: h.hosts.tryLease,
@@ -478,9 +481,15 @@ func (h *ProjectHost) supervisor(cfg config.Config) indexSupervisor {
 	}
 }
 
+// watchFor reports whether a host's index watcher runs: always while the host
+// is held (decision 6), else as config.WatchEnabled says.
+func watchFor(cfg config.Config, held bool) bool {
+	return held || config.WatchEnabled(cfg.Indexing.Watch, embeddingRouteResolves(cfg))
+}
+
 // indexKeyFor is the part of cfg the running index work was built from.
-func indexKeyFor(cfg config.Config) string {
-	return fmt.Sprintf("watch=%t debounce=%d", config.WatchEnabled(cfg.Indexing.Watch, embeddingRouteResolves(cfg)), cfg.Indexing.WatchDebounceMs)
+func indexKeyFor(cfg config.Config, held bool) string {
+	return fmt.Sprintf("watch=%t debounce=%d", watchFor(cfg, held), cfg.Indexing.WatchDebounceMs)
 }
 
 // embeddingRouteResolves reports whether cfg names an embedding route that

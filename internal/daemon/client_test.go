@@ -132,6 +132,85 @@ func TestTheClientReportsAnUnansweredSocket(t *testing.T) {
 	}
 }
 
+// TestPinPostsTheRoot: a pin is a POST of the root and the state wanted to
+// the socket's pin route, and the answer is the project's state afterwards.
+func TestPinPostsTheRoot(t *testing.T) {
+	for _, pinned := range []bool{true, false} {
+		t.Run(fmt.Sprintf("pinned=%t", pinned), func(t *testing.T) {
+			requests := make(chan *http.Request, 1)
+			bodies := make(chan string, 1)
+
+			socket := unixServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				raw, _ := io.ReadAll(r.Body)
+				requests <- r
+				bodies <- string(raw)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"root":"/work/root","pinned":` +
+					fmt.Sprintf("%t", pinned) + `,"running":true}`))
+			}))
+
+			state, err := NewClient(socket).Pin(context.Background(), "/work/root", pinned)
+			if err != nil {
+				t.Fatalf("Pin(): %v", err)
+			}
+
+			req := <-requests
+			if req.Method != http.MethodPost {
+				t.Errorf("method = %q, want POST", req.Method)
+			}
+			if req.URL.Path != "/api/projects/pin" {
+				t.Errorf("path = %q, want /api/projects/pin", req.URL.Path)
+			}
+			if got := req.Header.Get("Content-Type"); got != "application/json" {
+				t.Errorf("Content-Type = %q, want application/json", got)
+			}
+
+			raw := <-bodies
+			var body struct {
+				Root   string `json:"root"`
+				Pinned bool   `json:"pinned"`
+			}
+			if err := json.Unmarshal([]byte(raw), &body); err != nil {
+				t.Fatalf("decode request body %q: %v", raw, err)
+			}
+			if body.Root != "/work/root" || body.Pinned != pinned {
+				t.Errorf("body = %+v, want root /work/root and pinned %t", body, pinned)
+			}
+
+			want := PinState{Root: "/work/root", Pinned: pinned, Running: true}
+			if state != want {
+				t.Errorf("Pin() = %+v, want %+v", state, want)
+			}
+		})
+	}
+}
+
+// TestARefusedPinCarriesTheDaemonsSentence: a pin the daemon refuses is an
+// error carrying its own sentence, as a refused Info is.
+func TestARefusedPinCarriesTheDaemonsSentence(t *testing.T) {
+	const sentence = "root must be an existing directory"
+
+	socket := unixServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": sentence})
+	}))
+
+	state, err := NewClient(socket).Pin(context.Background(), "/work/gone", true)
+	if err == nil {
+		t.Fatalf("Pin() = %+v, want a refusal", state)
+	}
+	if !strings.Contains(err.Error(), sentence) {
+		t.Errorf("Pin() error = %q, want it to carry %q", err, sentence)
+	}
+	if !strings.Contains(err.Error(), "400") {
+		t.Errorf("Pin() error = %q, want it to name the status", err)
+	}
+	if state != (PinState{}) {
+		t.Errorf("Pin() = %+v alongside a refusal, want the zero state", state)
+	}
+}
+
 // shortSocket is a unix socket path under a short directory: a socket path
 // is capped at 104 bytes on macOS and t.TempDir can be longer than that.
 func shortSocket(t *testing.T) string {
@@ -452,8 +531,9 @@ func TestACancelledHandshakeEndsTheAttach(t *testing.T) {
 
 func TestInfoDecodesTheChildren(t *testing.T) {
 	const body = `{"version":"1.0.0","profile":"local","pid":7,"startedAt":1,` +
-		`"socket":"/tmp/marshal.sock","projects":["/work/one"],"children":[` +
-		`{"root":"/work/one","version":"2.0.0","sessions":[` +
+		`"socket":"/tmp/marshal.sock","projects":["/work/one"],` +
+		`"pinned":["/work/one"],"children":[` +
+		`{"root":"/work/one","version":"2.0.0","pinned":true,"sessions":[` +
 		`{"id":"sess-1","viewers":2,"lastActive":1700000000000}]},` +
 		`{"root":"/work/two","version":"2.0.1","sessions":[]}]}`
 
@@ -466,6 +546,9 @@ func TestInfoDecodesTheChildren(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Info(): %v", err)
 	}
+	if len(info.Pinned) != 1 || info.Pinned[0] != "/work/one" {
+		t.Errorf("Pinned = %v, want [/work/one]", info.Pinned)
+	}
 	if len(info.Children) != 2 {
 		t.Fatalf("Children = %+v, want two", info.Children)
 	}
@@ -474,6 +557,9 @@ func TestInfoDecodesTheChildren(t *testing.T) {
 	if first.Root != "/work/one" || first.Version != "2.0.0" || len(first.Sessions) != 1 {
 		t.Fatalf("Children[0] = %+v, want /work/one 2.0.0 with one session", first)
 	}
+	if !first.Pinned {
+		t.Errorf("Children[0].Pinned = false, want the pinned child")
+	}
 	if got := first.Sessions[0]; got.ID != "sess-1" || got.Viewers != 2 || got.LastActive != 1700000000000 {
 		t.Errorf("Children[0].Sessions[0] = %+v, want sess-1, 2 viewers, lastActive 1700000000000", got)
 	}
@@ -481,6 +567,9 @@ func TestInfoDecodesTheChildren(t *testing.T) {
 	second := info.Children[1]
 	if second.Root != "/work/two" || second.Version != "2.0.1" || len(second.Sessions) != 0 {
 		t.Errorf("Children[1] = %+v, want /work/two 2.0.1 with no sessions", second)
+	}
+	if second.Pinned {
+		t.Errorf("Children[1].Pinned = true, want it false for an unpinned child")
 	}
 }
 

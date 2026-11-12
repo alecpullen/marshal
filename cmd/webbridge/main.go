@@ -587,6 +587,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 	}
 
+	// The local profile starts each pinned project's child on its own
+	// goroutine, one after another (decision 9). The server profile pins
+	// nothing, so it starts none.
+	if cfg.profile == "local" {
+		go fleet.StartPinned(ctx)
+	}
+
 	// Watch labelled issues on registered repos. Off by default; only
 	// repos with Watch set are polled.
 	fleet.StartPoller(0)

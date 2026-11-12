@@ -90,6 +90,8 @@ type agentHost struct {
 	// outlived them, which is the point.
 	cancellersMu sync.Mutex
 	cancellers   []TurnCanceller
+
+	holds *projectHolds // nil when runConfig.hold is
 }
 
 // newAgentHost constructs the session manager and turn manager in
@@ -123,6 +125,9 @@ func newAgentHost(cfg runConfig) (*agentHost, error) {
 		sink:     sink,
 		log:      log,
 		shutdown: cfg.shutdown,
+	}
+	if cfg.hold != nil {
+		h.holds = &projectHolds{hold: cfg.hold, held: map[string]func(){}}
 	}
 	// Register the manager's canceller exactly once: it fans out to
 	// every live connection's TurnManager (see addTurnCanceller).
@@ -401,11 +406,19 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool, notify Not
 		srv.Handle("session/load", refuse)
 		srv.Handle("session/resume", refuse)
 		srv.Handle("session/delete", refuse)
+		srv.Handle("project/hold", refuse)
+		srv.Handle("project/release", refuse)
 	} else {
 		srv.Handle("session/new", manager.Create)
 		srv.Handle("session/load", manager.Load)
 		srv.Handle("session/resume", manager.Resume)
 		srv.Handle("session/delete", manager.Delete)
+		// Only a --viewers child serves the hold methods, on the bridge's own
+		// connection (P4 D9 decision 8).
+		if h.holds != nil {
+			srv.Handle("project/hold", h.holds.Hold)
+			srv.Handle("project/release", h.holds.Release)
+		}
 	}
 
 	srv.Handle("session/access_state", turns.AccessState)
@@ -766,7 +779,12 @@ func (h *agentHost) serveConnWith(ctx context.Context, stdin io.Reader, stdout i
 	return srv.Serve(ctx)
 }
 
-// close tears down every session with a bounded timeout.
+// close tears down every session with a bounded timeout, then drops every
+// project hold the host kept.
 func (h *agentHost) close(ctx context.Context) error {
-	return h.manager.CloseAll(ctx)
+	err := h.manager.CloseAll(ctx)
+	if h.holds != nil {
+		h.holds.releaseAll()
+	}
+	return err
 }

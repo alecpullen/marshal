@@ -237,6 +237,16 @@ func (f *Fleet) startProjectChildLocked(ctx context.Context, pc *projectChild) (
 		pc.child, pc.ready = nil, false
 		return child, err
 	}
+	// A pinned root's child holds it, so nothing reaps it and a restart comes
+	// back to a root that is still held (decision 2). A hold that fails is
+	// logged and the start goes on: an attach is never refused because of a
+	// pin.
+	if f.pinned(pc.root) {
+		if err := f.holdLocked(hctx, pc); err != nil {
+			slog.Default().Warn("webbridge: hold a pinned project child",
+				"root", pc.root, "err", err)
+		}
+	}
 	return nil, nil
 }
 
@@ -284,6 +294,16 @@ func (f *Fleet) reinitProjectChild(pc *projectChild) {
 	if err := f.projectHandshake(ctx, pc); err != nil {
 		slog.Default().Warn("webbridge: project child restart handshake failed",
 			"root", pc.root, "err", err)
+		return
+	}
+	// A restarted child has forgotten the hold the previous generation took,
+	// so a pinned root is held again here (decision 2). A hold that fails is
+	// logged and the restart goes on.
+	if f.pinned(pc.root) {
+		if err := f.holdLocked(ctx, pc); err != nil {
+			slog.Default().Warn("webbridge: hold a restarted pinned project child",
+				"root", pc.root, "err", err)
+		}
 	}
 }
 
@@ -298,9 +318,13 @@ func (f *Fleet) lingerDuration() time.Duration {
 
 // armLinger arms the stop timer for a child with no tracked session, through
 // the fleet's deadline seam when one is set (decision 4). It is a no-op when a
-// timer is already armed. The caller holds pc.mu.
+// timer is already armed, and for a pinned root: a pin is what keeps a child
+// running, so nothing reaps it (decision 2). The caller holds pc.mu.
 func (f *Fleet) armLinger(pc *projectChild) {
 	if pc.linger != nil {
+		return
+	}
+	if f.pinned(pc.root) {
 		return
 	}
 	d := f.lingerDuration()
@@ -315,6 +339,12 @@ func (f *Fleet) armLinger(pc *projectChild) {
 		reg := pc.reg
 		pc.mu.Unlock()
 		if reg != nil && reg.count() > 0 {
+			return
+		}
+		// A pin that arrived while the timer was armed keeps the child too,
+		// so the pin is read again here rather than only when arming
+		// (decision 2).
+		if f.pinned(pc.root) {
 			return
 		}
 		// Only the child still registered for its root is reaped: a child that

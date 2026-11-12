@@ -50,6 +50,9 @@ type runConfig struct {
 	// tests. Zero means acpIdleTimeout. Only the listen path uses it
 	// (stdio has no peer that can go silently idle).
 	idleTimeout time.Duration
+
+	// hold serves project/hold and project/release; nil serves neither.
+	hold projectHoldFunc
 }
 
 // runWithConfig constructs the agentHost, serves a single connection, then

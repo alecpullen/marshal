@@ -217,7 +217,7 @@ presented as ready evidence; it is transient, and the next round's
 
 The composition leads with CI, then the narration, in the approved order:
 
-```
+~~~~
 ## CI
 <the failing checks, expanded, with their conclusion, a link and the log tail>
 <details><summary>N passing checks</summary>…</details>
@@ -242,7 +242,7 @@ The composition leads with CI, then the narration, in the approved order:
 <path>
 <code>
 ```
-```
+~~~~
 
 Sections with no content are omitted rather than rendered empty. The CI
 section is always present: when the evidence is unavailable or incomplete the
@@ -419,6 +419,9 @@ For this slice:
   so is an over-long narration section or an over-long narration as a whole;
 - a forge that cannot update a pull request description refuses `set_ready`
   with a recorded reason, and the pull request stays a draft;
+- a work item whose newest round carries no narration — a pre-upgrade journal
+  entry — refuses `set_ready` with a recorded reason rather than publishing a
+  narration-less description;
 - the description is written for the reviewed head SHA, and a pull request
   whose revision has moved is refused before any body is written;
 - a body write that fails leaves the pull request a draft and the item not
@@ -442,7 +445,9 @@ For this slice:
   report's claims, linking the account to recorded planning decisions, and
   showing preview/test environment links with their provider-reported status.
   This slice's structured narration and generated Markdown are its own transport
-  choice, not an implementation of those proposals;
+  choice, not an implementation of those proposals. Republishing the
+  description at the next round's ordinary `set_ready` is the normal ready
+  path, not the excluded regeneration proposal;
 - surfacing a repository's existing branch testing, preview deployments or test
   environments in the pull request experience — an agreed priority, deferred
   pending the provider-capability discovery its refinement leaves open;

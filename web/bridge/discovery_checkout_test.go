@@ -294,6 +294,125 @@ func TestInspectCheckoutDistinguishesAbsentFromUnreadable(t *testing.T) {
 	}
 }
 
+// discoveryCheckoutGap inspects root and returns the gap recorded for key.
+func discoveryCheckoutGap(t *testing.T, root, key string) DiscoveryGap {
+	t.Helper()
+	got, err := inspectCheckout(root)
+	if err != nil {
+		t.Fatalf("inspectCheckout: %v", err)
+	}
+	for _, gap := range got.Gaps {
+		if gap.Key == key {
+			return gap
+		}
+	}
+	t.Fatalf("gaps = %+v, want one for %s", got.Gaps, key)
+	return DiscoveryGap{}
+}
+
+// TestInspectCheckoutGapStatesMatchTheCause pins the capability state each
+// unreadable-target cause reports, because the state is what names the fix: a
+// filesystem permission failure is not an unimplemented capability, and the
+// report must not tell the operator to wait for an adapter upgrade when what
+// they need is access to the file.
+func TestInspectCheckoutGapStatesMatchTheCause(t *testing.T) {
+	// A directory where a known instruction file belongs is a shape the
+	// adapter does not read. No retry and no permission change alters that, so
+	// the fix is adapter support.
+	shaped := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(shaped, "AGENTS.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gap := discoveryCheckoutGap(t, shaped, "checkout_instructions")
+	if gap.State != DiscoveryCapabilityUnsupported {
+		t.Fatalf("directory target state = %q, want %q", gap.State, DiscoveryCapabilityUnsupported)
+	}
+	if !strings.Contains(gap.Detail, "AGENTS.md") || !strings.Contains(gap.Detail, "regular file") {
+		t.Fatalf("directory target detail = %q, want the target and why it is not read", gap.Detail)
+	}
+
+	// A target past the 1 MiB inspection limit is deliberately not read, so it
+	// is unsupported too, and the detail names the limit.
+	oversized := t.TempDir()
+	discoveryWriteFile(t, oversized, "AGENTS.md", bytes.Repeat([]byte("a"), discoveryReadLimit+1))
+	gap = discoveryCheckoutGap(t, oversized, "checkout_instructions")
+	if gap.State != DiscoveryCapabilityUnsupported {
+		t.Fatalf("oversized target state = %q, want %q", gap.State, DiscoveryCapabilityUnsupported)
+	}
+	if !strings.Contains(gap.Detail, "AGENTS.md") || !strings.Contains(gap.Detail, "1 MiB") {
+		t.Fatalf("oversized target detail = %q, want the target and the 1 MiB limit", gap.Detail)
+	}
+
+	// A target the process cannot open is an access problem: the bridge is
+	// missing permission, so the fix is a credential or a mode change, never
+	// an adapter change. A root-owned process can open a 0o000 file, so probe
+	// the mode rather than assume it took effect.
+	denied := t.TempDir()
+	discoveryWriteFile(t, denied, "AGENTS.md", []byte("# agents\n"))
+	locked := filepath.Join(denied, "AGENTS.md")
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o644) })
+	if f, err := os.Open(locked); err == nil {
+		f.Close()
+		t.Log("process can read a 0o000 file (running as root); skipping the end-to-end access case")
+	} else {
+		gap = discoveryCheckoutGap(t, denied, "checkout_instructions")
+		if gap.State != DiscoveryCapabilityInsufficientPermission {
+			t.Fatalf("unreadable target state = %q, want %q", gap.State, DiscoveryCapabilityInsufficientPermission)
+		}
+		if !strings.Contains(gap.Detail, "AGENTS.md") || !strings.Contains(gap.Detail, "access") {
+			t.Fatalf("unreadable target detail = %q, want the target and the missing access", gap.Detail)
+		}
+	}
+
+	// The same access mapping, driven through the reader's own open failure so
+	// it holds on a root-owned runner that can open a 0o000 file. A removed
+	// target is the portable form of a target that cannot be read.
+	removed := filepath.Join(t.TempDir(), "AGENTS.md")
+	discoveryWriteFile(t, filepath.Dir(removed), "AGENTS.md", []byte("# agents\n"))
+	known, err := os.Lstat(removed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(removed); err != nil {
+		t.Fatal(err)
+	}
+	u, ok := readBoundedFile(removed, known)
+	if ok {
+		t.Fatalf("read a target that was removed before the open")
+	}
+	gap = gapFor(discoveryKeyInstructions, discoverySectionInstructions, "AGENTS.md", u)
+	if gap.State != DiscoveryCapabilityInsufficientPermission {
+		t.Fatalf("unreadable-via-open state = %q, want %q", gap.State, DiscoveryCapabilityInsufficientPermission)
+	}
+	if !strings.Contains(gap.Detail, "AGENTS.md") || !strings.Contains(gap.Detail, "access") {
+		t.Fatalf("unreadable-via-open detail = %q, want the target and the missing access", gap.Detail)
+	}
+
+	// A target that changed between the lstat and the open is a race: the
+	// adapter supports the read, so a retry may succeed.
+	raced := t.TempDir()
+	discoveryWriteFile(t, raced, "AGENTS.md", []byte("# agents\n"))
+	discoveryWriteFile(t, raced, "replacement.md", []byte("# replacement\n"))
+	stale, err := os.Lstat(filepath.Join(raced, "AGENTS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, ok = readBoundedFile(filepath.Join(raced, "replacement.md"), stale)
+	if ok {
+		t.Fatalf("read a target that no longer matches the inspected file")
+	}
+	gap = gapFor(discoveryKeyInstructions, discoverySectionInstructions, "AGENTS.md", u)
+	if gap.State != DiscoveryCapabilityTemporarilyUnavailable {
+		t.Fatalf("swapped target state = %q, want %q", gap.State, DiscoveryCapabilityTemporarilyUnavailable)
+	}
+	if !strings.Contains(gap.Detail, "changed while being inspected") {
+		t.Fatalf("swapped target detail = %q, want it to name the race", gap.Detail)
+	}
+}
+
 func TestInspectCheckoutDoesNotFollowSymlinks(t *testing.T) {
 	outside := t.TempDir()
 	discoveryWriteFile(t, outside, "AGENTS.md", []byte("OUTSIDE INSTRUCTIONS\n"))

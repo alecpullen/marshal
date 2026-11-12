@@ -176,16 +176,74 @@ func absentFact(section, root string, searched ...string) DiscoveryFact {
 	}
 }
 
+// unreadableCause names why one known target could not be inspected. The cause
+// selects the capability state, because the state is what tells the operator
+// which fix applies: access to the file, adapter support, or a retry.
+type unreadableCause int
+
+const (
+	// causeAccess is a filesystem access failure: the target could not be
+	// opened, lstat'ed or listed by this process. No adapter change helps; the
+	// bridge is missing permission.
+	causeAccess unreadableCause = iota
+	// causeShape is a target the adapter does not read at all, such as a
+	// directory where a file belongs. The fix is adapter support.
+	causeShape
+	// causeSize is a target past discoveryReadLimit, which the adapter
+	// deliberately does not read. The fix is adapter support.
+	causeSize
+	// causeRace is a target that changed between the lstat and the read. The
+	// adapter support is there; a retry may succeed.
+	causeRace
+)
+
+// state is the capability state that names the fix for this cause.
+func (c unreadableCause) state() DiscoveryCapabilityState {
+	switch c {
+	case causeAccess:
+		return DiscoveryCapabilityInsufficientPermission
+	case causeRace:
+		return DiscoveryCapabilityTemporarilyUnavailable
+	}
+	// causeShape and causeSize are both shapes this adapter version does not
+	// read, and neither a retry nor a permission change alters them.
+	return DiscoveryCapabilityUnsupported
+}
+
+// unreadable is one known target discovery could not inspect: why it failed,
+// and the cause that decides the capability state the gap reports.
+type unreadable struct {
+	cause  unreadableCause
+	reason string
+}
+
+// unreadableAccess reports a target this process could not open, lstat or list.
+func unreadableAccess(reason string) unreadable {
+	return unreadable{cause: causeAccess, reason: reason}
+}
+
+// detail names the target, the cause, and (for access and race failures) what
+// would fix it. The wording deliberately never reads as absence.
+func (u unreadable) detail(rel string) string {
+	switch u.cause {
+	case causeAccess:
+		return fmt.Sprintf("%s could not be inspected: the bridge lacks filesystem access to it (%s)",
+			rel, u.reason)
+	case causeRace:
+		return fmt.Sprintf("%s could not be inspected: %s; a retry may succeed", rel, u.reason)
+	}
+	return fmt.Sprintf("%s could not be inspected: %s", rel, u.reason)
+}
+
 // gapFor records one target discovery could not read. Discovery cannot make a
-// fact from it, and no retry of the same read changes its shape, so the
-// capability reports unsupported with a detail naming the target and reason.
-// The wording deliberately never reads as absence.
-func gapFor(key, section, rel, reason string) DiscoveryGap {
+// fact from it, so the target becomes a gap carrying the capability state its
+// cause implies.
+func gapFor(key, section, rel string, u unreadable) DiscoveryGap {
 	return DiscoveryGap{
 		Key:     key,
 		Section: section,
-		State:   DiscoveryCapabilityUnsupported,
-		Detail:  fmt.Sprintf("%s could not be inspected: %s", rel, reason),
+		State:   u.cause.state(),
+		Detail:  u.detail(rel),
 	}
 }
 
@@ -193,12 +251,12 @@ func gapFor(key, section, rel, reason string) DiscoveryGap {
 // target that exists but cannot be read.
 func (in checkoutInspector) inspectFiles(section, key string, targets []fileTarget) (facts []DiscoveryFact, gaps []DiscoveryGap) {
 	for _, target := range targets {
-		fact, outcome, reason := in.inspectFile(section, target.rel, target.detail, target.read)
+		fact, outcome, u := in.inspectFile(section, target.rel, target.detail, target.read)
 		switch outcome {
 		case targetFound:
 			facts = append(facts, fact)
 		case targetUnreadable:
-			gaps = append(gaps, gapFor(key, section, target.rel, reason))
+			gaps = append(gaps, gapFor(key, section, target.rel, u))
 		}
 	}
 	return facts, gaps
@@ -207,53 +265,58 @@ func (in checkoutInspector) inspectFiles(section, key string, targets []fileTarg
 // inspectFile reports one known file. A symlink is skipped without a read; a
 // non-regular file, an unreadable file, or a file past discoveryReadLimit is
 // unreadable and becomes a gap in the caller.
-func (in checkoutInspector) inspectFile(section, rel, detail string, read bool) (DiscoveryFact, targetResult, string) {
+func (in checkoutInspector) inspectFile(section, rel, detail string, read bool) (DiscoveryFact, targetResult, unreadable) {
 	abs := filepath.Join(in.dir, filepath.FromSlash(rel))
 	info, err := os.Lstat(abs)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return DiscoveryFact{}, targetMissing, ""
+			return DiscoveryFact{}, targetMissing, unreadable{}
 		}
-		return DiscoveryFact{}, targetUnreadable, "it cannot be inspected"
+		return DiscoveryFact{}, targetUnreadable, unreadableAccess("it cannot be inspected")
 	}
 	switch {
 	case info.Mode()&os.ModeSymlink != 0:
-		return DiscoveryFact{}, targetSkipped, ""
+		return DiscoveryFact{}, targetSkipped, unreadable{}
 	case !info.Mode().IsRegular():
-		return DiscoveryFact{}, targetUnreadable, "it is not a regular file"
+		// A directory, socket or device where a file belongs is a shape this
+		// adapter does not read.
+		return DiscoveryFact{}, targetUnreadable, unreadable{cause: causeShape, reason: "it is not a regular file"}
 	}
 	if read {
-		if reason, ok := readBoundedFile(abs, info); !ok {
-			return DiscoveryFact{}, targetUnreadable, reason
+		if u, ok := readBoundedFile(abs, info); !ok {
+			return DiscoveryFact{}, targetUnreadable, u
 		}
 	}
-	return discoveryFact(section, rel, detail, info.Size()), targetFound, ""
+	return discoveryFact(section, rel, detail, info.Size()), targetFound, unreadable{}
 }
 
 // readBoundedFile opens abs through a LimitReader at discoveryReadLimit+1 and
 // reports whether the target stayed within the limit. The bytes are discarded:
 // only the bound and the readability of the file are established, which is the
 // minimum discovery needs and the most it may take.
-func readBoundedFile(abs string, known os.FileInfo) (reason string, ok bool) {
+func readBoundedFile(abs string, known os.FileInfo) (unreadable, bool) {
 	f, err := os.Open(abs)
 	if err != nil {
-		return "it cannot be read", false
+		return unreadableAccess("it cannot be read"), false
 	}
 	defer f.Close()
 	opened, err := f.Stat()
 	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(known, opened) {
 		// The path was swapped between the lstat and the open: refuse rather
 		// than read something discovery did not inspect.
-		return "it changed while being inspected", false
+		return unreadable{cause: causeRace, reason: "it changed while being inspected"}, false
 	}
 	data, err := io.ReadAll(io.LimitReader(f, discoveryReadLimit+1))
 	if err != nil {
-		return "it cannot be read", false
+		return unreadableAccess("it cannot be read"), false
 	}
 	if len(data) > discoveryReadLimit {
-		return fmt.Sprintf("it is larger than the %d MiB inspection limit", discoveryReadLimit>>20), false
+		return unreadable{
+			cause:  causeSize,
+			reason: fmt.Sprintf("it is larger than the %d MiB inspection limit", discoveryReadLimit>>20),
+		}, false
 	}
-	return "", true
+	return unreadable{}, true
 }
 
 // presentRegular reports whether rel exists below the checkout as a regular
@@ -300,7 +363,7 @@ func (in checkoutInspector) instructions() ([]DiscoveryFact, []DiscoveryGap) {
 		// The fixed names may have been inspected, but README* is unknown, so
 		// the search did not complete: a gap, never an absence fact.
 		gaps = append(gaps, gapFor(discoveryKeyInstructions, section, "README*",
-			"the checkout root could not be listed"))
+			unreadableAccess("the checkout root could not be listed")))
 		return facts, gaps
 	}
 	if len(facts) == 0 && len(gaps) == 0 {
@@ -320,7 +383,8 @@ func (in checkoutInspector) docs() ([]DiscoveryFact, []DiscoveryGap) {
 	case targetMissing, targetSkipped:
 		return []DiscoveryFact{absentFact(section, "docs", searched...)}, nil
 	case targetUnreadable:
-		return nil, []DiscoveryGap{gapFor(discoveryKeyDocs, section, "docs", "it cannot be inspected")}
+		return nil, []DiscoveryGap{gapFor(discoveryKeyDocs, section, "docs",
+			unreadableAccess("it cannot be inspected"))}
 	}
 
 	targets := make([]fileTarget, 0, len(discoveryDocFiles))
@@ -386,7 +450,7 @@ func (in checkoutInspector) environment() ([]DiscoveryFact, []DiscoveryGap) {
 			"container-based development environment", 0))
 	case targetUnreadable:
 		gaps = append(gaps, gapFor(discoveryKeyEnvironment, section, discoveryDevcontainerDir+"/",
-			"it cannot be inspected"))
+			unreadableAccess("it cannot be inspected")))
 	}
 
 	targets := make([]fileTarget, 0, len(discoveryEnvironmentFiles))
@@ -417,7 +481,7 @@ func (in checkoutInspector) ci() ([]DiscoveryFact, []DiscoveryGap) {
 		return []DiscoveryFact{absentFact(section, discoveryWorkflowsDir, searched...)}, nil
 	case targetUnreadable:
 		return nil, []DiscoveryGap{gapFor(discoveryKeyCI, section, discoveryWorkflowsDir,
-			"it cannot be inspected")}
+			unreadableAccess("it cannot be inspected"))}
 	}
 
 	var facts []DiscoveryFact

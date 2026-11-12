@@ -4,12 +4,67 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 )
 
 // pinPath is the socket's pin route (P4 D9).
 const pinPath = "/api/projects/pin"
+
+// pinRequest is the pin route's body.
+type pinRequest struct {
+	Root   string `json:"root"`
+	Pinned bool   `json:"pinned"`
+}
+
+// pinProject serves POST /api/projects/pin on the socket (P4 D9). Every
+// refusal is an ordinary JSON answer, and a successful pin answers the state
+// the fleet holds afterwards.
+func (s *Server) pinProject(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "pin is a POST"})
+		return
+	}
+	var req pinRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	root := req.Root
+	if !filepath.IsAbs(root) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "root must be an absolute path"})
+		return
+	}
+	root = filepath.Clean(root)
+	// A pin keeps a child running for the root, so the root has to be one the
+	// daemon can start a child in. An unpin is always allowed: a root that has
+	// since been removed must still be releasable (decision 4), as Fleet.Pin
+	// itself allows.
+	if req.Pinned {
+		if info, err := os.Stat(root); err != nil || !info.IsDir() {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "root must be an existing directory"})
+			return
+		}
+	}
+	if s.fleet == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "this bridge has no fleet"})
+		return
+	}
+
+	// The child is started and held within one handshake budget, as the
+	// attach route resolves its own: a stuck child must not hold the request
+	// open indefinitely.
+	ctx, cancel := context.WithTimeout(r.Context(), controlHandshakeTimeout)
+	defer cancel()
+
+	state, err := s.fleet.Pin(ctx, root, req.Pinned)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, state)
+}
 
 // PinState is a project's pin, as the pin route answers it.
 type PinState struct {

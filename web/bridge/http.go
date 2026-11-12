@@ -109,12 +109,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // routing without the bearer check (decision 7). /mcp keeps its own
 // per-client auth, so it is on the bare mux here either way.
 //
-// The attach route exists only here: the network listener never upgrades a
-// connection to a session's stream, so ServeHTTP answers it 404 (P4 D3).
+// The attach and pin routes exist only here: the network listener never
+// upgrades a connection to a session's stream and never changes what the
+// daemon keeps running, so ServeHTTP answers both 404 (P4 D3, D9).
 func (s *Server) SocketHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == attachPath {
 			s.attachProject(w, r)
+			return
+		}
+		if r.URL.Path == pinPath {
+			s.pinProject(w, r)
 			return
 		}
 		s.route(s.mux, w, r)

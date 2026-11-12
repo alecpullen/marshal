@@ -13,6 +13,7 @@ type DaemonInfo struct {
 	StartedAt int64          `json:"startedAt"` // Unix milliseconds
 	Socket    string         `json:"socket"`
 	Projects  []string       `json:"projects"`          // filled per request
+	Pinned    []string       `json:"pinned"`            // filled per request
 	Children  []DaemonChild  `json:"children"`          // filled per request
 	Refresh   *DaemonRefresh `json:"refresh,omitempty"` // filled per request
 }
@@ -28,6 +29,7 @@ type DaemonChild struct {
 	Root       string          `json:"root"`
 	Version    string          `json:"version"`
 	EnvWarning string          `json:"envWarning,omitempty"`
+	Pinned     bool            `json:"pinned,omitempty"`
 	Sessions   []DaemonSession `json:"sessions"`
 }
 
@@ -53,6 +55,7 @@ func (s *Server) daemon(w http.ResponseWriter, r *http.Request) {
 	}
 	out := *s.daemonInfo
 	out.Projects = s.projectRoots()
+	out.Pinned = s.pinnedRoots()
 	out.Children = s.projectChildren()
 	out.Refresh = nil
 	if s.refresh != nil {
@@ -71,6 +74,15 @@ func (s *Server) projectRoots() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// pinnedRoots is the workspace's pinned projects, sorted and never nil so the
+// response encodes as [] rather than null.
+func (s *Server) pinnedRoots() []string {
+	if s.fleet == nil {
+		return []string{}
+	}
+	return s.fleet.ws.Pinned()
 }
 
 // projectChildren is the fleet's project children, never nil so the
@@ -102,6 +114,7 @@ func (f *Fleet) projectChildren() []DaemonChild {
 			Root:       pc.root,
 			Version:    version,
 			EnvWarning: envWarning,
+			Pinned:     f.pinned(pc.root),
 			Sessions:   []DaemonSession{},
 		}
 		if reg != nil {

@@ -51,11 +51,17 @@ change. The following points resolve their differences.
 3. **Capability set.** Use the ten keys below, always present and always in
    this order. They map directly to the specification's independently
    observable reads; `issues`, `reviews`, and previews are not invented.
-4. **Capability state mapping.** No credential or non-PAT credential is
-   `unconfigured`; no declared forge is `unsupported`; HTTP 401/403 is
-   `insufficient_permission`; HTTP 404 is `unsupported`; HTTP 429, 5xx, and
-   transport failures are `temporarily_unavailable`; a successful probe is
-   `supported`.
+4. **Capability state mapping.** Classification is contextual, not a blanket
+   HTTP-status table. An absent, non-PAT, invalid, or expired credential is
+   `unconfigured`; a declared Gitea/Forgejo instance with no `APIBase` is also
+   `unconfigured` with an actionable detail. HTTP 401 is `unconfigured`; HTTP
+   403 is `insufficient_permission`. HTTP 404 is `insufficient_permission`
+   unless the same credential has already read repository metadata, in which
+   case it means that endpoint is genuinely `unsupported` for this
+   adapter/instance. HTTP 429, 5xx, and transport failures are
+   `temporarily_unavailable`; a successful probe is `supported`. A capability
+   with no matching resource to exercise is `supported` with a detail that
+   says it was not exercised.
 5. **Absent versus unreadable.** Absence is emitted only after a successful
    search: a detected fact with `value: "absent"`. An unreadable target is a
    gap with no absence fact. The two outcomes must be textually distinct.
@@ -234,7 +240,58 @@ type DiscoveryReport struct {
     Recommended  []DiscoveryRecommendation `json:"recommended"`
     Gaps         []DiscoveryGap           `json:"gaps"`
 }
+
+type DiscoveryRepositoryMetadata struct {
+    DefaultBranch string
+    Visibility    string
+    Description   string
+    Topics        []string
+    Language      string
+    SizeBytes     int64
+}
+
+type DiscoveryBranch struct {
+    Name string
+    SHA  string
+}
+
+type DiscoveryPullRequest struct {
+    Number  int
+    State   string
+    Title   string
+    HeadSHA string
+}
+
+type DiscoveryCheck struct {
+    Name       string
+    Conclusion string
+    Status     string
+    URL        string
+    AppID      int64
+    Context    string
+    JobID      int64
+}
 ```
+
+The classifier is contextual because HTTP 404 alone cannot distinguish an
+unsupported endpoint from a resource hidden from the credential. Task 1 owns
+this signature and the sentinel errors:
+
+```go
+var errDiscoveryUnconfigured = errors.New("bridge: discovery capability is unconfigured")
+var errDiscoveryUnsupported = errors.New("bridge: discovery capability is unsupported")
+
+func discoveryCapabilityState(err error, metadataReadable bool) (DiscoveryCapabilityState, string)
+```
+
+`metadataReadable` is true only after the same credential has successfully
+read repository metadata. The classifier uses `errors.As` with the existing
+`*forgeAPIError`, maps 401 to `unconfigured`, 403 to
+`insufficient_permission`, maps 404 to `unsupported` only when
+`metadataReadable` is true and otherwise to `insufficient_permission`, and
+maps 429, 5xx, and transport failures to `temporarily_unavailable`.
+`errDiscoveryUnconfigured` and `errDiscoveryUnsupported` are handled before
+HTTP classification.
 
 ## File and dependency map
 
@@ -262,17 +319,20 @@ at the same time.
 - [ ] Write `TestDiscoveryCapabilityOrderIsStable`: pin the ten keys and their
   order from the table above.
 - [ ] Write `TestDiscoveryCapabilityStateForForgeErrors`: table-drive nil,
-  HTTP 401, 403, 404, 429, 500, transport failure, missing credential, and
-  unsupported adapter to the agreed state.
+  HTTP 401, 403, 404 with `metadataReadable` false, 404 with
+  `metadataReadable` true, 429, 500, transport failure,
+  `errDiscoveryUnconfigured`, and `errDiscoveryUnsupported` to the agreed
+  state.
 - [ ] Write `TestDiscoveryReportJSONUsesStableShape`: assert non-nil slices,
   the `dirty` tri-state, and absence of a credential literal.
 - [ ] Run
   `go test ./web/bridge -run '^TestDiscovery(Capability|ReportJSON)' -count=1`;
   confirm the new tests fail because the contract does not exist.
 - [ ] Implement the shared types and constants above, the capability-order
-  slice, and a pure classifier that uses `errors.As` with the existing
-  `*forgeAPIError`. Do not add methods to `Forge` and do not touch persisted
-  structures.
+  slice, the two sentinel errors, and
+  `discoveryCapabilityState(err error, metadataReadable bool)` using
+  `errors.As` with the existing `*forgeAPIError`. Do not add methods to
+  `Forge` and do not touch persisted structures.
 - [ ] Run
   `go test ./web/bridge -run '^TestDiscovery(Capability|ReportJSON)' -count=1`
   and `gofmt -l web/bridge/discovery.go web/bridge/discovery_test.go`; require
@@ -306,9 +366,14 @@ type DiscoveryForge interface {
   check name/conclusion/status/URL/App ID.
 - [ ] Write `TestDiscoveryForgeGitHubReadsCheckLog`: reuse the existing
   Actions job/log shape and bound returned content to `checkLogLimit`.
-- [ ] Write `TestDiscoveryForgeGiteaUsesTokenAuthAndV1Paths`: assert
-  `Authorization: token ...`, `<APIBase>/api/v1/...`, and Gitea's status
-  context identity.
+- [ ] Write `TestDiscoveryForgeGiteaUsesTokenAuthAndVersionedBase`: register
+  `APIBase` as `https://host/api/v1` — the versioned prefix is already part of
+  the base, exactly as `giteaForge.apiBase` returns it — and assert
+  `Authorization: token ...`, request paths of `<APIBase>/repos/{owner}/{name}`
+  and its sub-resources, and Gitea's status context identity.
+- [ ] Write `TestDiscoveryForgeGiteaWithoutAPIBaseIsUnconfigured`: a declared
+  Gitea repo with an empty `APIBase` returns `errDiscoveryUnconfigured` with a
+  detail naming the instance API base, and makes no HTTP request.
 - [ ] Write `TestDiscoveryForgeNeverEchoesCredential`: make every endpoint
   fail and assert the PAT is absent from errors and responses.
 - [ ] Run
@@ -317,7 +382,8 @@ type DiscoveryForge interface {
   Reuse `parseOwnerRepo`, `doJSON`, `hardenedGitArgs`, and the existing
   auth/base conventions. Use `Repo.APIBase` for deterministic tests. A 404
   is returned to the classifier; the adapter does not silently omit a
-  capability.
+  capability. A Gitea/Forgejo repo with no `APIBase` returns
+  `errDiscoveryUnconfigured` rather than issuing a request to an empty base.
 - [ ] Run `go test ./web/bridge -run '^TestDiscoveryForge' -count=1`; require
   PASS. Run `gofmt -l` on the four task files; require no output.
 - [ ] Commit only this task: `feat(discovery): read forge metadata without mutation`.
@@ -338,12 +404,14 @@ type DiscoveryForge interface {
 - [ ] Write `TestInspectCheckoutDoesNotExecuteSetup`: marker-producing
   Makefile, package script, and devcontainer command remain unexecuted.
 - [ ] Write `TestDiscoveryGitStateIsReadOnly`: on a local repository, capture
-  the file set, hashes, modes, `HEAD`, and porcelain status before and after;
-  assert byte identity, clean state, and detached-state handling.
+  the working-tree file set (excluding `.git/`), hashes, modes, `HEAD`, and
+  porcelain status before and after; assert byte identity, clean state, and
+  detached-state handling. The test compares working-tree content rather than
+  Git's internal cache files.
 - [ ] Write `TestDiscoveryGitStateReportsDirtyWithoutRepair`: modify one
   tracked file and add one untracked file; assert dirty status and unchanged
-  bytes/status afterwards. Assert the allowed git verbs are only `rev-parse`,
-  `symbolic-ref`, `status`, and `for-each-ref`.
+  working-tree bytes/status afterwards. Assert the allowed git verbs are only
+  `rev-parse`, `symbolic-ref`, `status`, and `for-each-ref`.
 - [ ] Run
   `go test ./web/bridge -run '^(TestInspectCheckout|TestDiscoveryGitState)' -count=1`;
   confirm failure.
@@ -351,8 +419,9 @@ type DiscoveryForge interface {
   and do not follow symlinks. Open known instruction/docs files with a bounded
   read to distinguish readable from unreadable, but return no content. Read
   only the minimum manifest fields needed for language/tooling facts. Use the
-  existing hardened git runner for `rev-parse HEAD`,
-  `symbolic-ref --quiet --short HEAD`,
+  existing hardened git runner with an empty `Credential{}` for every local
+  read, so no forge PAT is placed in the child environment, for
+  `rev-parse HEAD`, `symbolic-ref --quiet --short HEAD`,
   `--no-optional-locks status --porcelain --untracked-files=all`, and
   `for-each-ref --format=%(refname:short) refs/heads`. Never use fetch,
   checkout, switch, reset, clean, clone, pull, push, or write git commands.
@@ -375,6 +444,13 @@ type DiscoveryForge interface {
 - [ ] Write `TestDiscoverReportDegradesOnlyTheDeniedSection`: return 403 for
   CI checks only; assert CI is `insufficient_permission` with an actionable
   gap while repository, branch, PR, and checkout sections remain present.
+- [ ] Write `TestDiscoverReportClassifiesHiddenResourceAsPermissionDenied`:
+  make repository metadata readable but a section endpoint return 404; assert
+  that section is `insufficient_permission`, not `unsupported`, because the
+  same credential has not proved that endpoint is genuinely unsupported.
+- [ ] Write `TestDiscoverReportClassifiesMissingGiteaBaseAsUnconfigured`: a
+  declared Gitea repo with no `APIBase` reports `unconfigured` with an
+  actionable detail and makes no HTTP request.
 - [ ] Write `TestDiscoverReportGitOnlyUsesLocalFacts`: with no declared forge,
   assert forge capabilities are unsupported, no HTTP request occurs, and
   local Git/checkout facts remain.
@@ -391,10 +467,12 @@ type DiscoveryForge interface {
   `go test ./web/bridge -run '^TestDiscoverReport' -count=1`; confirm failure.
 - [ ] Implement `func (f *Fleet) DiscoverRepo(ctx context.Context, repo Repo) (*DiscoveryReport, error)` in the new file. Resolve the checkout only through
   `f.ws.ProjectRootByRepo(repo.ID)`. Resolve a credential only for a declared
-  forge. Probe each forge section independently, map failures to gaps, and
-  never convert a declared forge failure into Git-only. Derive recommendations
-  only from successfully inspected sections. Sort facts, recommendations, and
-  gaps for deterministic output; keep the fixed capability order.
+  forge. Probe repository metadata first and pass whether that same credential
+  read it into `discoveryCapabilityState` for later sections. Probe each forge
+  section independently, map failures to gaps, and never convert a declared
+  forge failure into Git-only. Derive recommendations only from successfully
+  inspected sections. Sort facts, recommendations, and gaps for deterministic
+  output; keep the fixed capability order.
 - [ ] Run the named tests; require PASS. Run `gofmt -l` on the two task files;
   require no output.
 - [ ] Commit only this task: `feat(discovery): assemble partial access reports`.
@@ -425,8 +503,10 @@ one route-registration line.
   reorder existing lines.
 - [ ] Run
   `go test ./web/bridge -run '^(TestDiscoverRoute|TestWebIsStdlibOnly)' -count=1`;
-  require PASS. Confirm `git diff -- web/bridge/http.go` contains one added
-  line.
+  require PASS. Inspect this task's commit with
+  `git show --format= -- web/bridge/http.go` and confirm it contains exactly
+  one added route-registration line, independent of any later base-branch
+  movement.
 - [ ] Commit only this task: `feat(discovery): expose read-only repo discovery`.
 
 ## Task 6: Finalize the specification and prove acceptance
@@ -437,9 +517,12 @@ one route-registration line.
 first exposes a defect.
 
 - [ ] Update specification §5 from “Proposed” to the implemented contract,
-  document the ten capability keys, the checkout-source rule, the
-  unavailable-report rule, and the bounded-read/symlink guarantees.
-- [ ] Link the plan from the README's Active specification section.
+  document the ten capability keys, the registered-`repoId` identity, the
+  checkout-source rule, the unavailable-report rule, the contextual
+  401/403/404 classification, the missing-Gitea-`APIBase` case, the
+  `supported` not-exercised detail convention, and the
+  bounded-read/symlink guarantees.
+- [ ] Keep the plan link in the README's `Active specification` section.
 - [ ] Run the complete feature suite:
   `go test ./web/bridge -run 'Discovery|DiscoverRoute|InspectCheckout|WebIsStdlibOnly' -count=1 -v`.
 - [ ] Run the package gate: `go test ./web/bridge -count=1`.
@@ -458,8 +541,10 @@ first exposes a defect.
 | Specification criterion | Owning tests |
 |---|---|
 | Every capability uses one of five states | Task 1 classifier/order tests; Task 4 invariant assertion |
-| Public-GitHub-with-PAT report | Task 2 GitHub tests; Task 4 supported report test |
+| GitHub-wire-compatible PAT report | Task 2 GitHub tests; Task 4 supported report test |
 | Under-scoped CI credential is not an empty section | Task 4 denied-section test |
+| Hidden resource is not reported as unsupported | Task 4 contextual-404 test |
+| Missing self-hosted instance base is unconfigured | Task 2 and Task 4 Gitea tests |
 | Absent instructions differ from unreadable instructions | Task 3 and Task 4 contrast tests |
 | Clean checkout remains byte-identical | Task 3 read-only Git test |
 | Dirty checkout is reported and unchanged | Task 3 dirty test |
@@ -508,3 +593,23 @@ calls a live forge, or contacts a model provider.
   no live forge or model dependency is required.
 - Collision control: all implementation tasks are sequential because they
   compile as one Go package and share the frozen contract.
+
+## Branch review record
+
+PR #59 received two independent `glm-5.3-flash` reviews through
+`ollama-cloud` on 2026-11-12. All findings are addressed in this fix set; the
+focused re-review is recorded in the PR review thread.
+
+| Review finding | Resolution |
+|---|---|
+| HTTP 401/404 were mapped without enough context | Classification is now contextual: 401 is `unconfigured`; 404 is `insufficient_permission` unless repository metadata is readable with the same credential, in which case it is `unsupported` |
+| The public-GitHub acceptance wording had no offline owner | The criterion now names a GitHub-wire-compatible endpoint exercised with a PAT through `httptest`; the offline suite is the CI gate |
+| Auto-creating the Marshal project was an implicit deferral | The specification now lists it explicitly as a later-slice non-goal |
+| `repoId` implied owner/slug | The specification and plan now define it as the registered repository identifier |
+| `ci_logs` used `supported` without saying it was unexercised | The state table and plan now define the not-exercised detail convention |
+| The `p4-10-fleet` collision claim was stale | The measured diff is recorded, with a landing-time re-check retained |
+| The Gitea path assertion appended `/api/v1` twice | The plan now uses the existing versioned `APIBase` convention |
+| A Gitea instance with no `APIBase` was misclassified | It is now `unconfigured`, makes no HTTP request, and has adapter and report tests |
+| Adapter result shapes were not frozen | Task 1 now owns the four adapter result types and their fields |
+| The README section and route-diff check were imprecise | The plan names the actual `Active specification` section and checks the task commit rather than a moving base diff |
+| Local Git reads could carry a PAT or compare `.git` cache files | The plan requires `Credential{}` for local reads and compares working-tree content outside `.git/` |

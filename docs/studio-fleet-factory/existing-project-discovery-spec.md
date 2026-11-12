@@ -91,11 +91,19 @@ forge name. Each reported capability carries one of five states:
 
 | State | Meaning |
 |---|---|
-| `supported` | The adapter implements it and this credential exercised it |
-| `unconfigured` | Not set up for this instance (for example no credential) |
-| `insufficient_permission` | The credential is valid but lacks the scope |
+| `supported` | The adapter implements it and the credential is usable for it; when no matching resource existed to exercise, `detail` says that it was not exercised |
+| `unconfigured` | Not set up for this instance (for example no credential, an invalid credential, or a missing self-hosted instance API base) |
+| `insufficient_permission` | The credential is valid but lacks the scope, or the resource is hidden from that credential |
 | `temporarily_unavailable` | The adapter supports it, but the instance or service could not answer right now |
 | `unsupported` | The adapter does not implement it for this instance/version |
+
+Classification is contextual rather than a blanket HTTP-status mapping. An
+invalid or absent credential is `unconfigured`; a valid credential receiving
+403, or a 404 for a resource hidden from it, is `insufficient_permission`; a
+404 is `unsupported` only when the same credential has already proved that
+repository metadata is readable and the missing endpoint is genuinely
+unsupported by this adapter/instance. HTTP 429, 5xx, and transport failures
+are `temporarily_unavailable`.
 
 A failed API connection on a **supported** forge stays a visible error and does
 not silently downgrade to generic Git (approved in §6).
@@ -173,7 +181,7 @@ conventions.
 ```
 POST /api/repos/{id}/discover
   -> 200 {
-       "repoId":      "alecpullen/factory-acceptance",
+       "repoId":      "repo-1",
        "revision":    "<commit sha examined>",
        "forge":       "github",
        "capabilities": [ {"key":"pull_requests","state":"supported"}, ... ],
@@ -190,6 +198,8 @@ Notes on the shape:
 
 - one endpoint returns the capability summary **and** the report, so a caller
   cannot observe capabilities without the report they explain;
+- `repoId` is the registered repository identifier; owner/slug is forge-derived
+  fact rather than the repository's local identity;
 - `revision` makes the fact set invalidatable;
 - `gaps` is the only channel for partial access, so an empty `facts` list is
   never ambiguous;
@@ -199,8 +209,9 @@ Notes on the shape:
 
 - A missing capability degrades **that section only**; the remaining sections
   still report.
-- Each gap states the four-way capability state and a human-readable `detail`
-  naming what would fix it (scope, credential kind, or adapter support).
+- Each gap states the five-way capability state and a human-readable `detail`
+  naming what would fix it (scope, credential kind, instance configuration, or
+  adapter support).
 - A supported-forge connection error is surfaced as an error, not as an empty
   report.
 - No inference of absence from inaccessibility: "could not read" and "not
@@ -214,13 +225,14 @@ This slice is chosen partly because it can proceed while the daemon work
 | Surface | Collision risk |
 |---|---|
 | This specification, and docs generally | none |
-| `web/ui` | none — `p4-10-fleet` does not touch it |
-| `forge*.go`, `credential.go`, new discovery files | none — not in `p4-10-fleet`'s file set |
-| `web/bridge/http.go` route registration | **shared** — `p4-10-fleet` modifies this file |
+| `web/ui` | none — the measured `p4-10-fleet` diff does not touch it |
+| `forge*.go`, `credential.go`, new discovery files | none — the measured `p4-10-fleet` diff does not touch them |
+| `web/bridge/http.go` route registration | no current overlap — the measured `p4-10-fleet` diff does not modify `http.go`; re-check at landing time |
 
-The only real overlap is route registration in `http.go`. The implementation
-task should therefore add its route as one adjacent line and expect a trivial
-rebase, or land after `p4-10-fleet` merges.
+The measured `p4-10-fleet` diff currently overlaps only daemon/child-process
+files and their tests, not the discovery surfaces. The implementation still
+keeps its route registration to one adjacent line and re-checks the base at
+landing time so a later daemon change cannot turn that into a broad conflict.
 
 ## 8. Open questions
 
@@ -245,9 +257,9 @@ For the first slice:
 - connecting a repository already registered with `forge` and a credential
   returns a capability report in which every capability carries one of the five
   states;
-- the report is produced for a public GitHub repository with a `pat`, and for a
-  credential lacking CI scope the CI section reports `insufficient_permission`
-  rather than empty;
+- a GitHub-wire-compatible endpoint exercised with a `pat` produces the
+  report, and a simulated under-scoped credential makes the CI section report
+  `insufficient_permission` rather than empty;
 - a repository without `AGENTS.md` reports instructions as absent, and the same
   repository with unreadable contents reports a gap — the two are textually
   distinct in the response;
@@ -262,6 +274,8 @@ For the first slice:
 ## 10. Non-goals
 
 - repository creation on a forge, or scaffolding a new project;
+- creating the Marshal project on connection (approved in §1, but deferred to
+  a later slice);
 - executing setup scripts, building, or installing dependencies;
 - a repository map or symbol graph in the bridge (see §4.6);
 - adopting an existing planning conversation;

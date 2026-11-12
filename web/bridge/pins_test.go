@@ -1,7 +1,10 @@
 package bridge
 
 import (
+	"bytes"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -313,5 +316,79 @@ func TestAPinNeedsADirectory(t *testing.T) {
 	}
 	if state.Pinned || state.Running {
 		t.Fatalf("unpin answered %+v, want not pinned and not running", state)
+	}
+}
+
+// pinRoute issues one pin request against an arbitrary handler, so a test can
+// drive the socket handler without a token or the network handler with one.
+func pinRoute(t *testing.T, h http.Handler, method, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	var data []byte
+	if body != nil {
+		var err error
+		data, err = json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal body: %v", err)
+		}
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(method, path, bytes.NewReader(data)))
+	return rec
+}
+
+// TestThePinRouteIsTheSocketsOnly is decision 3: the socket handler serves the
+// pin route, and the network listener answers it 404 as it answers attach.
+func TestThePinRouteIsTheSocketsOnly(t *testing.T) {
+	f, _ := projectFleet(t)
+	shortenLinger(t, f)
+	s := NewServer(f)
+	root := t.TempDir()
+	body := map[string]any{"root": root, "pinned": true}
+
+	rec := pinRoute(t, s.SocketHandler(), http.MethodPost, pinPath, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("socket %s status = %d, body = %s", pinPath, rec.Code, rec.Body.String())
+	}
+	var got PinState
+	decodeBody(t, rec, &got)
+	if want := filepath.Clean(root); got.Root != want || !got.Pinned || !got.Running {
+		t.Fatalf("pin answered %+v, want %q pinned and running", got, want)
+	}
+
+	// The network listener never changes what the daemon keeps running.
+	if rec := pinRoute(t, s, http.MethodPost, pinPath, body); rec.Code != http.StatusNotFound {
+		t.Fatalf("network %s = %d, body = %s; want 404", pinPath, rec.Code, rec.Body.String())
+	}
+}
+
+// TestThePinRouteRefusesABadRequest: only a POST reaches the fleet, and only
+// with a root the daemon could start a child in.
+func TestThePinRouteRefusesABadRequest(t *testing.T) {
+	f, _ := projectFleet(t)
+	shortenLinger(t, f)
+	sock := NewServer(f).SocketHandler()
+
+	rec := pinRoute(t, sock, http.MethodGet, pinPath, nil)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET %s = %d, body = %s; want 405", pinPath, rec.Code, rec.Body.String())
+	}
+	if allow := rec.Header().Get("Allow"); allow != http.MethodPost {
+		t.Fatalf("Allow = %q, want %q", allow, http.MethodPost)
+	}
+
+	if rec := pinRoute(t, sock, http.MethodPost, pinPath,
+		map[string]any{"root": "relative/root", "pinned": true}); rec.Code != http.StatusBadRequest {
+		t.Fatalf("relative root = %d, body = %s; want 400", rec.Code, rec.Body.String())
+	}
+
+	missing := filepath.Join(t.TempDir(), "gone")
+	rec = pinRoute(t, sock, http.MethodPost, pinPath, map[string]any{"root": missing, "pinned": true})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing directory = %d, body = %s; want 400", rec.Code, rec.Body.String())
+	}
+	var body map[string]string
+	decodeBody(t, rec, &body)
+	if body["error"] == "" {
+		t.Fatalf("body = %q, want an error", rec.Body.String())
 	}
 }

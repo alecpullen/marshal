@@ -3,6 +3,7 @@ package bridge
 import (
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 )
 
@@ -98,5 +99,50 @@ func TestTheSocketHandlerServesEveryRoute(t *testing.T) {
 	}
 	if viaSocket.Body.String() != viaNetwork.Body.String() {
 		t.Fatalf("socket body %q, network body %q", viaSocket.Body.String(), viaNetwork.Body.String())
+	}
+}
+
+// TestTheDaemonRouteReportsThePins is decision 9: the daemon route lists the
+// pinned roots even when they have no child, and marks the child a pinned
+// root runs.
+func TestTheDaemonRouteReportsThePins(t *testing.T) {
+	f, fakeFor := projectFleet(t)
+	shortenLinger(t, f)
+	root := filepath.Clean(t.TempDir())
+	if err := f.ws.SetPinned(root, true); err != nil {
+		t.Fatalf("SetPinned: %v", err)
+	}
+	s := NewServer(f, "secret")
+	s.SetDaemonInfo(DaemonInfo{Version: "v1", Profile: "local"})
+	sock := s.SocketHandler()
+
+	rec := viaHandler(t, sock, http.MethodGet, "/api/daemon")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("socket /api/daemon status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var got DaemonInfo
+	decodeBody(t, rec, &got)
+	if len(got.Pinned) != 1 || got.Pinned[0] != root {
+		t.Fatalf("pinned = %v, want [%s]", got.Pinned, root)
+	}
+	if len(got.Children) != 0 {
+		t.Fatalf("children = %+v, want none before the pinned child runs", got.Children)
+	}
+
+	// The pinned root's child, once it runs, is marked pinned.
+	f.StartPinned(ctlContext(t))
+	if fakeFor(root) == nil {
+		t.Fatal("StartPinned started no child for the pinned root")
+	}
+	rec = viaHandler(t, sock, http.MethodGet, "/api/daemon")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("socket /api/daemon status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	decodeBody(t, rec, &got)
+	if len(got.Children) != 1 {
+		t.Fatalf("children = %+v, want one", got.Children)
+	}
+	if got.Children[0].Root != root || !got.Children[0].Pinned {
+		t.Fatalf("child = %+v, want %s pinned", got.Children[0], root)
 	}
 }

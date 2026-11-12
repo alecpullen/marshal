@@ -1,5 +1,6 @@
 import { ensureToken, getToken, rejectToken } from './api.js'
-import type { FleetEvent, ProjectRemovedDelta } from './fleet'
+import type { FleetDelta, FleetEvent, ProjectRemovedDelta, RunDelta, ToolStat } from './fleet'
+import type { RunDetail } from './api.js'
 
 export interface SSEMessage {
   id: number
@@ -242,6 +243,38 @@ function bindingLabel(v: unknown): string {
 
 const str = (v: unknown) => (typeof v === 'string' && v !== '' ? v : null)
 
+/** A run delta's detail. The contract carries it as `unknown` and the store
+ *  renders it as a RunDetail, so the value is validated rather than asserted:
+ *  anything without one of the three known kinds is not a run detail. */
+function isRunDetail(v: unknown): v is RunDetail {
+  if (!v || typeof v !== 'object') return false
+  const kind = (v as { kind?: unknown }).kind
+  return kind === 'sdd' || kind === 'swarm' || kind === 'none'
+}
+
+/** The telemetry tool rows. The contract carries them as `unknown`; malformed
+ *  rows are dropped rather than passed through as if they were ToolStats. */
+function parseToolStats(v: unknown): ToolStat[] | undefined {
+  if (!Array.isArray(v)) return undefined
+  const out = v.flatMap((row): ToolStat[] => {
+    if (!row || typeof row !== 'object') return []
+    const r = row as Record<string, unknown>
+    if (typeof r.name !== 'string' || typeof r.calls !== 'number') return []
+    const stat: ToolStat = { name: r.name, calls: r.calls }
+    if (typeof r.errors === 'number') stat.errors = r.errors
+    if (typeof r.slowestMs === 'number') stat.slowestMs = r.slowestMs
+    return [stat]
+  })
+  return out.length > 0 ? out : undefined
+}
+
+/** The telemetry rule names; non-strings are dropped. */
+function parseRules(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined
+  const out = v.filter((r): r is string => typeof r === 'string')
+  return out.length > 0 ? out : undefined
+}
+
 /**
  * A reroute delta carries its payload under `reroute` (`{id, watchId, watch,
  * role, profile, from, to, at}`; from and to are bindings, null for none), and
@@ -290,6 +323,27 @@ export function parseFleetEvent(data: string): FleetEvent | 'overflow' | null {
       value.sessionId = value.agentId
     }
     if (typeof value.kind !== 'string' || typeof value.sessionId !== 'string') return null
+    // The contract types a run delta's payload and a telemetry delta's sections
+    // as `unknown`; the store renders them as RunDetail / ToolStat[] / string[],
+    // so each is validated here instead of being asserted through.
+    if (value.kind === 'run') {
+      const run = value.run
+      if (!isRunDetail(run)) return null
+      const delta: RunDelta = { kind: 'run', sessionId: value.sessionId, run }
+      if (typeof value.at === 'number') delta.at = value.at
+      return delta
+    }
+    if (value.kind === 'telemetry') {
+      const delta: FleetDelta = { kind: 'telemetry', sessionId: value.sessionId }
+      if (typeof value.activity === 'string') delta.activity = value.activity
+      if (typeof value.contextPct === 'number') delta.contextPct = value.contextPct
+      if (typeof value.changedFiles === 'number') delta.changedFiles = value.changedFiles
+      const toolStats = parseToolStats(value.toolStats)
+      if (toolStats) delta.toolStats = toolStats
+      const rules = parseRules(value.rules)
+      if (rules) delta.rules = rules
+      return delta
+    }
     return value as unknown as FleetEvent
   } catch { return null }
 }

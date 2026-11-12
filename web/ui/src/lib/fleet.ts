@@ -1,22 +1,30 @@
 import { writable } from 'svelte/store'
 import { getNetworkPending, listAgents, listProjects, postNetworkDecision, type AgentStatus, type NetDecisionKind, type NetDecisionResult, type GateRecord, type PendingRequest, type ProjectStatus, type RunDetail } from './api'
 import { applyAccessReport, parseAccessState, parseModeAccess, type AccessState, type AccessStateWire } from './interaction'
+import type {
+  BudgetDelta as ContractBudgetDelta,
+  FleetDelta as ContractFleetDelta,
+  ProjectRemovedDelta as ContractProjectRemovedDelta,
+} from './contract'
 import type { PendingPermission, PendingQuestion, Question, QuestionOption } from './store'
 
 export type AgentRow = Omit<AgentStatus, 'access'> & { name: string; mode: string; access: AccessState | null; activity: string; contextPct: number; changedFiles: number; interrupted: boolean; heldBy?: string; gate?: GateRecord; run?: RunDetail; runAt?: number }
-export interface FleetDelta {
-  kind: 'activity' | 'telemetry' | 'mode' | 'turn' | 'gate' | 'hold'
-  sessionId: string
-  activity?: string
+
+/** Narrow an unknown wire payload to the record shape the pending readers use. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * The in-loop session deltas: activity, mode, telemetry, gate and hold. Its
+ * fields are the generated contract's; `kind` is fixed to what this store
+ * handles, `access` is the wire type, and `toolStats`/`rules` are the telemetry
+ * projection the SSE parser validates (the contract carries them as `unknown`).
+ */
+export type FleetDelta = Pick<ContractFleetDelta, 'sessionId' | 'activity' | 'contextPct' | 'changedFiles' | 'held' | 'by' | 'gate'> & {
+  kind: 'activity' | 'telemetry' | 'mode' | 'gate' | 'hold'
   /** A mode delta's whole committed tuple. A missing or malformed one is ignored, never inferred. */
   access?: AccessStateWire
-  contextPct?: number
-  changedFiles?: number
-  /** A hold delta: whether the agent is held, and by whom (`terminal`). */
-  held?: boolean
-  by?: string
-  /** The latest verify record. Its output is left out of the stream; GET …/gate has it. */
-  gate?: GateRecord
   /** Optional telemetry sections; the bridge's digest carries only the two counts above today. */
   toolStats?: ToolStat[]
   rules?: string[]
@@ -28,10 +36,17 @@ export interface AgentTelemetry { contextPct: number; changedFiles: number; tool
 /** A request the egress proxy blocked, awaiting Block, Allow for this agent, or Add to workspace. */
 export interface NetworkBlockDelta { kind: 'network_block'; sessionId: string; agentId?: string; host: string; workspace?: string; at?: number }
 export interface NetworkDecisionItem { agentId: string; host: string; workspace?: string; at: number }
-/** A run's latest detail (run_progress). `at` is when the bridge saw it, in ms. */
-export interface RunDelta { kind: 'run'; sessionId: string; run: RunDetail; at?: number }
-/** A daily or per-agent budget check; no session, so it never touches a row. */
-export interface BudgetDelta { kind: 'budget'; scope: 'daily' | 'agent'; agentId?: string; spentUsd: number; capUsd: number; action: string }
+/**
+ * A run's latest detail (run_progress). `at` is when the bridge saw it, in ms.
+ * `run` narrows the contract's `unknown` to the detail this UI renders; the SSE
+ * parser validates it before a delta is handed on.
+ */
+export type RunDelta = Pick<ContractFleetDelta, 'sessionId' | 'at'> & { kind: 'run'; run: RunDetail }
+/**
+ * A daily or per-agent budget check. It carries no session the UI uses, so the
+ * delta is the contract's fields minus `sessionId` and `kind`.
+ */
+export type BudgetDelta = Pick<ContractBudgetDelta, 'scope' | 'agentId' | 'spentUsd' | 'capUsd' | 'action'> & { kind: 'budget' }
 /** A watch rerouted a role; the inbox offers Undo. */
 export interface RerouteDelta { kind: 'reroute'; id: string; watch: string; role: string; from: string; to: string }
 /** A watch changed state (or fired). `sessionId` is the owner agent, or `studio`; the Watches page refetches on it. */
@@ -39,13 +54,14 @@ export interface WatchDelta { kind: 'watch'; sessionId?: string; event?: unknown
 export interface AutomationEvent { type: string; id: string; status?: string; at: number }
 export type BudgetState = Omit<BudgetDelta, 'kind'>
 export type RerouteNotice = Omit<RerouteDelta, 'kind'>
-export interface ProjectRemovedDelta { kind: 'project_removed'; project: string }
+/** The contract's project removal delta, with `kind` fixed. */
+export type ProjectRemovedDelta = Pick<ContractProjectRemovedDelta, 'project'> & { kind: 'project_removed' }
 /**
  * An agent parked on an approval or question. Carries only the kind — the
  * payload needed to render a decision comes from a snapshot refetch, since
  * the snapshot is the authority on what is still outstanding.
  */
-export interface PendingDelta { kind: 'pending'; sessionId: string; pendingKind: 'approval' | 'question' }
+export type PendingDelta = Pick<ContractFleetDelta, 'sessionId' | 'pendingKind'> & { kind: 'pending' }
 /** An automation ran (review draft or CI result). `id`/`type` are set for those; the rest feeds notifications. */
 export interface AutomationDelta { kind: 'automation'; type?: string; id?: string; status?: string; sessionId?: string; agentId?: string; title?: string; text?: string }
 export type FleetEvent = AutomationDelta | NetworkBlockDelta | FleetDelta | ProjectRemovedDelta | PendingDelta | RunDelta | BudgetDelta | RerouteDelta | WatchDelta
@@ -123,10 +139,10 @@ export function applyDeltaTo(rows: AgentRow[], d: FleetEvent): AgentRow[] {
 export function describePending(p: PendingRequest): string {
   const fallback = p.kind === 'approval' ? 'Approval required' : 'Answer required'
   const params = p.params
-  if (!params || typeof params !== 'object') return fallback
+  if (!isRecord(params)) return fallback
 
   if (p.kind === 'question') {
-    const questions = (params as { questions?: unknown }).questions
+    const questions = params.questions
     if (Array.isArray(questions) && questions.length > 0) {
       const first = questions[0]
       if (first && typeof first === 'object') {
@@ -139,9 +155,9 @@ export function describePending(p: PendingRequest): string {
 
   // Approvals: the command is the most informative thing when present,
   // since that is what the user is actually being asked to allow.
-  const command = (params as { command?: unknown }).command
+  const command = params.command
   if (typeof command === 'string' && command.trim() !== '') return command
-  const toolName = (params as { toolName?: unknown }).toolName
+  const toolName = params.toolName
   if (typeof toolName === 'string' && toolName.trim() !== '') return toolName
   return fallback
 }
@@ -152,8 +168,8 @@ export function describePending(p: PendingRequest): string {
  * branches on their presence.
  */
 export function toPendingPermission(p: PendingRequest): PendingPermission {
-  const params = (p.params ?? {}) as Record<string, unknown>
-  const str = (k: string): string | undefined => (typeof params[k] === 'string' && params[k] !== '' ? (params[k] as string) : undefined)
+  const params = isRecord(p.params) ? p.params : {}
+  const str = (k: string): string | undefined => (typeof params[k] === 'string' && params[k] !== '' ? params[k] : undefined)
   // The typed capability bundle is kept rather than dropped. Without one, the
   // approval is exact-only: it covers the presented action and nothing more.
   const modeAccess = parseModeAccess(params.modeAccess)
@@ -186,7 +202,7 @@ function toOption(raw: unknown): QuestionOption | null {
  * request cannot break the dashboard.
  */
 export function toPendingQuestion(sessionId: string, p: PendingRequest): PendingQuestion {
-  const raw = (p.params as { questions?: unknown } | undefined)?.questions
+  const raw = isRecord(p.params) ? p.params.questions : undefined
   const questions: Question[] = Array.isArray(raw)
     ? raw.flatMap((q) => {
         if (!q || typeof q !== 'object') return []

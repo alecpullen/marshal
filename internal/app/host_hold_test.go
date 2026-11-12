@@ -29,6 +29,19 @@ func TestAHeldHostWatchesWhateverTheConfigSays(t *testing.T) {
 	}
 }
 
+func TestAHoldCreatesTheProjectsMarshalDirectory(t *testing.T) {
+	hs := testHosts(t, false, time.Minute)
+	root := t.TempDir() // no .marshal: a fresh clone
+	release, err := hs.Hold(root, config.Default())
+	if err != nil {
+		t.Fatalf("Hold on a project with no .marshal: %v", err)
+	}
+	defer release()
+	if info, err := os.Stat(filepath.Join(root, ".marshal")); err != nil || !info.IsDir() {
+		t.Fatalf(".marshal after the hold: %v, %v; want a directory", info, err)
+	}
+}
+
 func TestAHoldStartsTheIndexWithNoSession(t *testing.T) {
 	hs := testHosts(t, true, time.Minute)
 	var runs int32

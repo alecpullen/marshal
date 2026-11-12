@@ -1,6 +1,9 @@
 package app
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -14,6 +17,12 @@ import (
 // The release is safe to call more than once; the last release lets the host
 // linger as a session's does.
 func (hs *Hosts) Hold(root string, cfg config.Config) (release func(), err error) {
+	// A hold can be the first thing that ever touches a project, so it makes
+	// the directory the host's database lives in, as a runtime's start does:
+	// SQLite cannot create a database whose parent directory is missing.
+	if err := os.MkdirAll(filepath.Join(root, ".marshal"), 0o755); err != nil {
+		return nil, fmt.Errorf("create .marshal directory: %w", err)
+	}
 	h, err := hs.acquire(root, time.Now())
 	if err != nil {
 		return nil, err

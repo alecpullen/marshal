@@ -2,6 +2,44 @@ package bridge
 
 import "fmt"
 
+// factoryResolveDefaults applies the project's factory defaults to a handoff.
+//
+// The project is the one the handoff names, because a valid handoff always
+// names a registered, trusted root and the handoff is the primary place
+// configuration is selected. The repository's intake project is consulted only
+// when the handoff names no root, and then only to choose which defaults are
+// read: that fallback never writes a root into the configuration, and a
+// rootless handoff is rejected by preflight before any work item exists.
+//
+// The defaults are validated again here, even though they were validated when
+// they were written: a workspace file can be written by an older binary that
+// does not know the field, or edited by hand. A default that is invalid on its
+// own is an error naming the project's defaults as the source, never a silent
+// fallback to the handoff's own values.
+func (a *factoryAPI) factoryResolveDefaults(req FactoryCreate) (FactoryCreate, error) {
+	if a == nil || a.fleet == nil || a.fleet.ws == nil {
+		return req, nil
+	}
+	root := req.Config.ProjectRoot
+	if root == "" {
+		// Defensive only: this chooses which defaults are consulted for a
+		// handoff that preflight is about to reject. It never supplies a root.
+		root = a.fleet.ws.ProjectRootByRepo(req.Config.RepoID)
+	}
+	if root == "" {
+		return req, nil
+	}
+	defaults := a.fleet.ws.ProjectSettingsFor(root).FactoryDefaults
+	if defaults == nil {
+		return req, nil
+	}
+	if err := factoryValidateDefaults(defaults); err != nil {
+		return FactoryCreate{}, fmt.Errorf("%w: project factory defaults for %s: %v", errFactoryConfig, root, err)
+	}
+	req.Config = factoryMergeDefaults(req.Config, defaults)
+	return req, nil
+}
+
 // factoryMergeDefaults applies a project's defaults to a handoff's
 // configuration. The handoff wins for every field it sets; "unset" is
 // per-type, as the specification's §4.3 defines it: an empty string, a zero

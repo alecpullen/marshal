@@ -55,16 +55,24 @@ func (a *factoryAPI) Create(req FactoryCreate) (FactoryItem, error) {
 	if a.store == nil {
 		return FactoryItem{}, ErrFactoryUnavailable
 	}
-	if err := factoryNormalize(&req); err != nil {
-		return FactoryItem{}, fmt.Errorf("%w: %v", errFactoryInput, err)
-	}
+	// A replay returns the original item, so it must be recognised before the
+	// project's defaults are read: resolution consults mutable state and is
+	// therefore not deterministic, while the replay identity is the request the
+	// operator sent.
 	if a.priorRequest(req.RequestID) {
 		return a.store.Create(req, time.Now().UTC())
 	}
-	if err := a.preflight(context.Background(), req.Config, false); err != nil {
+	resolved, err := a.factoryResolveDefaults(req)
+	if err != nil {
 		return FactoryItem{}, err
 	}
-	return a.store.Create(req, time.Now().UTC())
+	if err = factoryNormalize(&resolved); err != nil {
+		return FactoryItem{}, fmt.Errorf("%w: %v", errFactoryInput, err)
+	}
+	if err = a.preflight(context.Background(), resolved.Config, false); err != nil {
+		return FactoryItem{}, err
+	}
+	return a.store.CreateResolved(req, resolved, time.Now().UTC())
 }
 func (a *factoryAPI) Command(ctx context.Context, id string, cmd FactoryCommand) (FactoryItem, error) {
 	if a.store == nil || a.controller == nil {

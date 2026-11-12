@@ -1,8 +1,10 @@
 # Existing-project connection and read-only discovery — feature spec
 
 Date: 2026-11-12
-Status: spec for the first implementation slice. No product code is changed by
-this document. The executable plan is
+Status: the first implementation slice is implemented; §5 records the contract
+the bridge actually serves, and the [implementation
+record](#implementation-record) lists the commits and the acceptance gates.
+The executable plan is
 [plans/2026-11-12-existing-project-discovery-plan.md](plans/2026-11-12-existing-project-discovery-plan.md).
 
 ## 1. Provenance
@@ -54,7 +56,9 @@ not add a planning UI.
 
 ## 3. What exists today
 
-Measured on `main` at `907730fb`.
+Measured on `main` at `907730fb`, before this slice. The table is retained as
+the starting-point record; §5 and the implementation record describe what the
+slice added.
 
 | Piece | Where | State |
 |---|---|---|
@@ -180,37 +184,299 @@ richer inspection is later wanted, the correct route is a data contract fed by
 the agent side over ACP, or a dedicated capability, not an exception to the
 boundary rule.
 
-## 5. Contract sketch
+## 5. Implemented contract
 
-Proposed, not approved. Shapes follow the existing `Repo`/`Credential`
-conventions.
+Implemented in `web/bridge/discovery.go`, `discovery_forge.go`,
+`discovery_forge_github.go`, `discovery_forge_gitea.go`,
+`discovery_checkout.go`, `discovery_report.go` and `discovery_http.go`. Every
+statement below is a behaviour those files have and their tests exercise; the
+[implementation record](#implementation-record) names the commits and gates.
 
-```
+### 5.1 Route
+
+```http
 POST /api/repos/{id}/discover
-  -> 200 {
-       "repoId":      "repo-1",
-       "revision":    "<commit sha examined>",
-       "forge":       "github",
-       "capabilities": [ {"key":"pull_requests","state":"supported"}, ... ],
-       "facts":  [ {"origin":"detected","kind":"language","value":"Go",
-                    "source":"forge:languages"}, ... ],
-       "recommended": [ {"kind":"instructions","value":"Add AGENTS.md",
-                         "reason":"no project instructions found"} ],
-       "gaps":   [ {"key":"ci_logs","state":"insufficient_permission",
-                    "detail":"token lacks checks:read"} ]
-     }
+Authorization: Bearer <token>   # when the server has a token
+Content-Length: 0
 ```
 
-Notes on the shape:
+- `{id}` is the **registered** repository identifier (`Repo.ID`), not an
+  owner/slug pair. Owner and slug appear only as forge-derived facts.
+- The body is empty and is not read. The repository always comes from its
+  registered record, never from the caller.
+- The route is `POST` because discovery may be expensive, not because it
+  mutates.
+- Request-level statuses: `200` with the report; `401` when the server has a
+  token and the request does not carry it (bearer auth wraps every `/api`
+  route); `404` for an unregistered id; `405` for a non-`POST` method; `503`
+  when the server runs without a fleet; `500` for an unexpected in-process
+  discovery failure. The 500 is deliberate: the shared `writeErr` default of
+  `502` denotes a child-process failure, which this is not.
 
-- one endpoint returns the capability summary **and** the report, so a caller
-  cannot observe capabilities without the report they explain;
-- `repoId` is the registered repository identifier; owner/slug is forge-derived
-  fact rather than the repository's local identity;
-- `revision` makes the fact set invalidatable;
-- `gaps` is the only channel for partial access, so an empty `facts` list is
-  never ambiguous;
-- discovery is `POST` because it may be expensive, not because it mutates.
+### 5.2 Response
+
+One document carries the capability summary and the report that explains it,
+so a caller cannot observe capabilities without the facts, recommendations and
+gaps behind them.
+
+```json
+{
+  "repoId": "repo-1",
+  "forge": "github",
+  "status": "degraded",
+  "revision": "8e4c1b2f0e1d2c3b4a5968778695a4b3c2d1e0f9",
+  "branch": "main",
+  "worktree": {
+    "path": "/Users/alecpullen/projects/example",
+    "branch": "main",
+    "head": "8e4c1b2f0e1d2c3b4a5968778695a4b3c2d1e0f9",
+    "dirty": false
+  },
+  "capabilities": [
+    {"key": "repository_metadata", "state": "supported"},
+    {"key": "branches", "state": "supported"},
+    {"key": "pull_requests", "state": "supported"},
+    {"key": "ci_checks", "state": "insufficient_permission",
+     "detail": "the credential lacks permission to read this resource (HTTP 403)"},
+    {"key": "ci_logs", "state": "supported",
+     "detail": "not exercised: the CI checks section could not be read"},
+    {"key": "checkout_instructions", "state": "supported"},
+    {"key": "checkout_docs", "state": "supported"},
+    {"key": "checkout_tooling", "state": "supported"},
+    {"key": "checkout_environment", "state": "supported"},
+    {"key": "checkout_ci_definition", "state": "supported"}
+  ],
+  "facts": [
+    {"origin": "detected", "section": "instructions", "kind": "instructions",
+     "value": "AGENTS.md", "source": "checkout:AGENTS.md",
+     "revision": "8e4c1b2f0e1d2c3b4a5968778695a4b3c2d1e0f9", "size": 2048}
+  ],
+  "recommended": [],
+  "gaps": [
+    {"key": "ci_checks", "section": "ci", "state": "insufficient_permission",
+     "detail": "the credential lacks permission to read this resource (HTTP 403); grant the credential or process read access and retry"}
+  ]
+}
+```
+
+Field notes the code holds to:
+
+- `repoId` is the registered identifier; `forge` echoes the declared family
+  (`"github"`, `"gitea"`, or empty for the Git-only path).
+- `status` is `ok`, `degraded` or `unavailable` (§5.4). `error` is present
+  only on `unavailable`.
+- `revision` and `branch` are the top-level identity of the inspected state
+  (§5.9); both are omitted when empty.
+- `worktree` is omitted entirely when no checkout was inspected. Inside it,
+  `path` is the linked project root, `dirty` is always present and is `null`
+  when the state could not be determined — which differs from `false` — and
+  `detail` carries a detached-HEAD clause, the dirty-list truncation clause,
+  or the reason Git state could not be read.
+- `capabilities`, `facts`, `recommended` and `gaps` are always present and are
+  JSON arrays, never `null`, because the slices are always non-nil.
+- A **fact** carries `origin` (`"detected"`), `section`, `kind`, `value`,
+  `source` (`forge:<resource>` or `checkout:<relative-path>`), a `revision`
+  when one is known, and an optional `size` or `detail`.
+- A **recommendation** carries `origin: "recommended"`, `section`, `kind`,
+  `value` and `reason`. Discovery never applies one.
+- A **gap** carries the capability `key`, its `section`, the five-way `state`,
+  and a `detail` that ends with what would fix it.
+- `facts`, `recommended` and `gaps` are ordered deterministically.
+  Capabilities keep the frozen key order, and `gaps` holds at most one entry
+  per capability key.
+
+### 5.3 Capability keys and states
+
+All ten keys are always present, always in this order:
+
+| # | Key | Reads |
+|---|---|---|
+| 1 | `repository_metadata` | default branch, visibility, description, topics, language, size |
+| 2 | `branches` | branch names and their head revisions |
+| 3 | `pull_requests` | open pull/merge requests |
+| 4 | `ci_checks` | checks or commit statuses on the observed head |
+| 5 | `ci_logs` | bounded detail for one failing check |
+| 6 | `checkout_instructions` | `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.cursorrules`, `README*` |
+| 7 | `checkout_docs` | `docs/README.md`, `docs/index.md`, `docs/INDEX.md` |
+| 8 | `checkout_tooling` | `go.mod`, `package.json`, `pyproject.toml`, `Cargo.toml`, `tsconfig.json` |
+| 9 | `checkout_environment` | `.devcontainer/`, `Dockerfile`, `docker-compose.yml`, `compose.yaml` |
+| 10 | `checkout_ci_definition` | `.github/workflows/*.yml`, `.github/workflows/*.yaml` |
+
+Each carries one of exactly five states — `supported`, `unconfigured`,
+`insufficient_permission`, `temporarily_unavailable`, `unsupported` — with the
+meanings in §4.2. A key no code path probed stays `unsupported` with the detail
+`discovery did not probe this capability`, so it never silently vanishes from
+the wire.
+
+### 5.4 The `ok` / `degraded` / `unavailable` boundary
+
+- `ok` — every one of the ten capabilities is `supported` and `gaps` is empty.
+- `degraded` — any capability is not `supported`, or any gap exists. A Git-only
+  report is therefore `degraded`, because its five forge capabilities are
+  `unsupported`.
+- `unavailable` — the declared forge's **repository metadata** probe failed as
+  `temporarily_unavailable`. The report keeps every locally observable checkout
+  fact, sets a non-empty top-level `error` naming the outage, marks the forge
+  capabilities `temporarily_unavailable`, and does not attempt the remaining
+  forge probes. This is a visible failure, never a silent downgrade to
+  Git-only.
+
+A per-section failure after repository metadata was readable degrades only that
+section and yields `degraded`, not `unavailable`.
+
+### 5.5 Contextual classification
+
+Classification is contextual, not a blanket HTTP-status table:
+
+| Outcome | State |
+|---|---|
+| the probe returned no error | `supported` |
+| the adapter raised `errDiscoveryUnconfigured` | `unconfigured` |
+| the adapter raised `errDiscoveryUnsupported` | `unsupported` |
+| a transport failure, or an undecodable response | `temporarily_unavailable` |
+| HTTP 401 | `unconfigured` |
+| HTTP 403 carrying `Retry-After` | `temporarily_unavailable` |
+| HTTP 403 without a retry signal | `insufficient_permission` |
+| HTTP 404 while repository metadata is not known readable | `insufficient_permission` |
+| HTTP 404 after this credential read repository metadata | `unsupported` |
+| HTTP 429 | `temporarily_unavailable` |
+| HTTP 5xx | `temporarily_unavailable` |
+| any other 4xx | `unsupported` |
+| anything else | `temporarily_unavailable` |
+
+The 404 rule is why the metadata probe runs first: the same status code means
+"this instance does not serve the endpoint" or "this credential cannot see the
+resource", and only a prior successful metadata read distinguishes them. Gap
+details name the state and the fix and never echo the credential, a request
+header, or the forge's raw error body.
+
+When one section produced several gaps, the capability reports the most
+actionable state among them, ordered `unconfigured` >
+`insufficient_permission` > `temporarily_unavailable` > `unsupported`.
+
+### 5.6 Credential and forge availability
+
+- **Declared forge.** A credential is resolved only for a repository that
+  declares one. Only a `pat` credential with a usable secret can authenticate
+  an API probe; an absent, non-PAT, invalid or expired credential makes every
+  forge capability `unconfigured`, and no request is attempted with it.
+- **No declared forge.** The sanctioned Git-only path: no adapter is engaged,
+  no credential or host is touched, no HTTP request happens, and all five forge
+  capabilities are `unsupported` with the gap "no forge is declared for this
+  repository".
+- **Forge with no read-only adapter.** `unsupported`, with a detail naming the
+  declared forge.
+- **Gitea/Forgejo with no `APIBase`.** `unconfigured`, with a detail naming the
+  setting to fix (`apiBase`, `https://<host>/api/v1`) and **no request built**.
+  GitHub differs on purpose: an empty `APIBase` falls back to the public
+  `https://api.github.com`, because GitHub has a public API default and a
+  self-hosted Gitea instance does not.
+- **An unusable instance setting or credential found by the metadata probe.**
+  The cause is instance-wide, so all five forge capabilities share it and the
+  remaining probes are skipped.
+
+### 5.7 `supported` and the not-exercised detail
+
+A capability can be `supported` without a resource to read. The report says so
+in `detail` instead of implying an empty result:
+
+- no revision is known to check — `ci_checks` and `ci_logs` are `supported`
+  with `not exercised: no default branch revision is known to check`;
+- the checks section could not be read — `ci_logs` is `supported` with
+  `not exercised: the CI checks section could not be read`;
+- checks are readable with no failing check — `ci_logs` is `supported` with
+  `no failing check to exercise`;
+- a log was read — `ci_logs` is `supported` with
+  `detailed logs readable for <check>`, plus a `check_log` fact whose `size` is
+  the bounded byte count. For Gitea, whose commit status has no generic log
+  endpoint, the "log" is the check's name and link, bounded like any other, and
+  no request is invented.
+
+A readable section with nothing in it reports a **detected fact** with
+`value: "absent"` and a `detail` naming what was searched. That is a completed
+search, not a failure: absence is never inferred from an unreadable target,
+which is a gap with no absence fact instead. The two outcomes stay textually
+distinct in the response.
+
+### 5.8 Checkout source and inspection
+
+- The checkout comes from exactly one place:
+  `Workspace.ProjectRootByRepo(repo.ID)`. A repository URL is never treated as
+  a local path, and discovery never clones, fetches, creates a checkout, uses a
+  bare mirror, or persists a path.
+- No linked project — all five checkout capabilities are `unconfigured` with
+  the gap "no Marshal project links this repository, so there is no checkout to
+  inspect".
+- The root is stat'ed; everything below it is `lstat`'ed and no symlink is ever
+  followed. A symlinked file target is skipped without a read. A symlinked
+  `docs/`, `.devcontainer/` or `.github/workflows` directory is not entered, so
+  that section reports a completed search rather than reading through it.
+  Nothing outside the checkout can be read.
+- Only the exact paths in §5.3 are looked at: no tree walk, and no glob beyond
+  `README*`, which is resolved from one listing of the checkout root.
+  Environment definitions are reported by presence only; nothing inside
+  `.devcontainer/` is listed or opened. Workflow files are detected by name,
+  never parsed.
+- Every instruction, documentation and manifest target is opened through
+  `io.LimitReader` at **1 MiB**, reading one byte beyond the limit so overflow
+  is detectable. An oversized target is a gap in the `unsupported` state, and
+  its content is neither decoded, quoted nor returned: the bytes are read only
+  to establish readability and the bound.
+- A target that exists but cannot be inspected is a gap whose state names the
+  fix: a filesystem access failure → `insufficient_permission`; a directory or
+  device where a file belongs, or an oversized file → `unsupported`; a target
+  that changed between `lstat` and `open` → `temporarily_unavailable`.
+- Manifests yield only the minimum language/tooling detail: `go.mod` → Go,
+  `package.json` → JavaScript, or TypeScript with a sibling `tsconfig.json`,
+  `pyproject.toml` → Python, `Cargo.toml` → Rust.
+
+### 5.9 Local Git state, revision and branch
+
+Git state is read through the hardened runner with an **empty** credential, so
+no forge PAT reaches a local read's environment, and only four allowlisted
+verbs are used: `rev-parse HEAD`, `symbolic-ref --quiet --short HEAD`,
+`for-each-ref --format=%(refname:short) refs/heads`, and
+`--no-optional-locks status --porcelain --untracked-files=all`. Nothing that
+fetches, checks out, switches, resets, cleans, clones, pulls or pushes is ever
+run, and `--no-optional-locks` keeps `git status` from refreshing the index.
+
+- A **detached HEAD** is an empty `worktree.branch`, the SHA in
+  `worktree.head`, and `detached HEAD` in `worktree.detail` — plus
+  `no local branches` when the checkout has none. Clauses are joined with
+  `; `, so a detached, truncated checkout states both.
+- `worktree.dirtyFiles` is capped at **100** entries. Beyond the cap the detail
+  adds `<n> additional dirty entries omitted (dirtyFiles is capped at 100)`.
+  Renames and copies report their destination path.
+- A dirty checkout is reported, never repaired, and its working tree is
+  untouched.
+- **Top-level `revision` and `branch` source priority** is frozen: the checkout
+  `HEAD` and its current branch when a checkout was inspected (empty branch for
+  a detached HEAD), otherwise the forge's default-branch head and default
+  branch, otherwise empty. A checkout therefore wins even when the forge's
+  default branch has moved, which is what makes a stale forge fact detectable
+  without a forbidden fetch.
+- Forge facts carry the default-branch head observed during the probe
+  (`default_branch`, falling back to the repository's registered branch);
+  checkout facts carry the checkout `HEAD` they were read at. Advancing the
+  default branch changes a forge fact's `revision` with no local mutation.
+
+### 5.10 Read-only guarantees
+
+Discovery is observational on every path it has:
+
+- no writes to the checkout, its Git state or its index; a dirty checkout is
+  reported, not corrected;
+- no write to the workspace: its files and version are unchanged, and no report
+  is persisted;
+- no audit event, and no project, agent, factory or work item is created;
+- no clone, fetch, pull, push, checkout, reset or clean;
+- no setup script, build, Makefile target, package script, devcontainer command
+  or workflow step is executed — discovery reads files and runs the four
+  allowlisted local Git reads, nothing else;
+- no forge request at all for a repository with no declared forge, and no
+  request with an unusable credential;
+- no credential, token, request header or raw forge error body in the report, a
+  gap, or an error string.
 
 ## 6. Missing access and partial failure
 
@@ -288,3 +554,44 @@ For the first slice:
 - adopting an existing planning conversation;
 - auto-applying any recommendation;
 - creating a factory, a work item, or starting an agent.
+
+## Implementation record
+
+Delivered on branch `studio/existing-project-discovery-implementation` as
+Tasks 1–6 of the
+[plan](plans/2026-11-12-existing-project-discovery-plan.md), test-first, with
+one commit per task.
+
+| Task | Deliverable | Commit |
+|---|---|---|
+| 1 | Frozen contract: five capability states, ten ordered keys, contextual classifier, four adapter result types | `fb00e3cf` |
+| 2 | Read-only GitHub and Gitea/Forgejo metadata probes behind an optional `DiscoveryForge` interface | `f78bbd0e` |
+| 3 | Read-only existing-checkout inspection and local Git state | `8361d0b1` |
+| — | Gap-state fix: a checkout gap reports the state that names its fix | `8cdec12b` |
+| 4 | Capability, fact, gap and recommendation assembly with the status boundary | `10f0a83b` |
+| 5 | Authenticated `POST /api/repos/{id}/discover` route | `fd350efa` |
+| 6 | Specification, README and plan outcome record | this documentation commit |
+
+Files: `web/bridge/discovery.go`, `discovery_forge.go`,
+`discovery_forge_github.go`, `discovery_forge_gitea.go`,
+`discovery_checkout.go`, `discovery_report.go`, `discovery_http.go`, their
+tests, and one route-registration line in `web/bridge/http.go`. All new code is
+standard library only; `web/ui/` is untouched, and the existing `Forge`
+interface is not widened.
+
+Acceptance gates, run from the repository root on this branch:
+
+| Gate | Result |
+|---|---|
+| `go test ./web/bridge -run 'Discovery\|DiscoverRoute\|InspectCheckout\|WebIsStdlibOnly' -count=1 -v` | PASS — `ok marshal/web/bridge 1.545s` |
+| `go test ./web/bridge -count=1` | PASS — `ok marshal/web/bridge 119.328s` |
+| `go test ./web/bridge -run '^TestWebIsStdlibOnly$' -count=1` | PASS — `ok marshal/web/bridge 0.375s` |
+| `gofmt -l web/bridge` | no output |
+| `go vet ./web/bridge/...` | no output, exit 0 |
+| `CGO_ENABLED=1 go build ./...` | exit 0 |
+
+The forge probes are exercised only against `httptest` loopback servers; the
+only real subprocess is local `git` against a disposable repository. No test
+reads developer credentials, calls a live forge, or contacts a model provider.
+The whole-repository suite is run by the coordinator separately, not by this
+slice.

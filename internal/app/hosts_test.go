@@ -273,12 +273,12 @@ func TestHostStartsTheWatcherOnlyWhenConfigured(t *testing.T) {
 	hs := testHosts(t, false, time.Minute)
 	h := mustAcquire(t, hs, hostRoot(t))
 	cfg := config.Default() // watch unset: the watcher stays off
-	if h.supervisor(cfg).watch {
+	if h.supervisor(cfg, false).watch {
 		t.Fatal("the watcher runs without indexing.watch")
 	}
 	on := true
 	cfg.Indexing.Watch = &on
-	if !h.supervisor(cfg).watch {
+	if !h.supervisor(cfg, false).watch {
 		t.Fatal("the watcher does not run with indexing.watch = true")
 	}
 }

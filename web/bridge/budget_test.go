@@ -159,7 +159,7 @@ func TestBudgetWarnOnlyEmitsOneDelta(t *testing.T) {
 	}
 	scopes := map[string]string{}
 	for _, d := range deltas {
-		scopes[d.Scope] = d.Action
+		scopes[string(d.Scope)] = d.Action
 	}
 	if scopes["daily"] != "warn" || scopes["agent"] != "warn" {
 		t.Fatalf("scopes = %v", scopes)

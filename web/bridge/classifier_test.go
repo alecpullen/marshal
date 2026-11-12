@@ -60,7 +60,7 @@ func pendingDeltas(f *Fleet) map[string]string {
 	for _, e := range f.fleetLog.Tail(fleetStreamKey) {
 		var ev fleetDelta
 		if json.Unmarshal(e.Data, &ev) == nil && ev.Kind == "pending" {
-			out[ev.SessionID] = ev.PendingKind
+			out[ev.SessionID] = string(ev.PendingKind)
 		}
 	}
 	return out

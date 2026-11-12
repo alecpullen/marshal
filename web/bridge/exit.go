@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // exitDestination reports how an agent's work leaves the fleet. It is
@@ -35,25 +37,11 @@ type ExitOptions struct {
 	NoPR   bool   `json:"-"`
 }
 
-// ExitResult reports the outcome. Blocked means the gate refused and no
-// override was supplied — nothing was pushed.
-type ExitResult struct {
-	Destination string      `json:"destination"`
-	Branch      string      `json:"branch,omitempty"`
-	PRUrl       string      `json:"prUrl,omitempty"`
-	Verify      *gateResult `json:"verify,omitempty"`
-	Blocked     bool        `json:"blocked,omitempty"`
-}
+// ExitResult is contract.ExitResult; see that declaration.
+type ExitResult = contract.ExitResult
 
-// gateResult is the bridge-side mirror of acp.VerifyReply. It lives
-// here rather than importing internal/acp because web/ must stay
-// stdlib-only.
-type gateResult struct {
-	OK            bool   `json:"ok"`
-	Skipped       bool   `json:"skipped"`
-	FailedCommand string `json:"failedCommand,omitempty"`
-	Output        string `json:"output,omitempty"`
-}
+// gateResult is contract.GateResult; see that declaration.
+type gateResult = contract.GateResult
 
 // Exit runs the exit path for one agent: commit, verify, then push.
 func (f *Fleet) Exit(ctx context.Context, agentID string, opts ExitOptions) (ExitResult, error) {

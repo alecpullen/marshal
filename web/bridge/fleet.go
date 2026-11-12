@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 var ErrUnknownProject = errors.New("bridge: unknown project")
@@ -109,19 +111,8 @@ type agentRuntime struct {
 	spawnErr error
 }
 
-type ProjectStatus struct {
-	Root      string `json:"root"`
-	Available bool   `json:"available"`
-	Error     string `json:"error,omitempty"`
-	Trust     string `json:"trust"`
-	// Isolation is "available", or a human-readable reason isolation cannot
-	// be offered for this project. The composer disables its toggle and shows
-	// the reason, rather than letting a spawn fail.
-	Isolation string `json:"isolation"`
-	// OrphanWorktrees are worktrees under this project that no known agent
-	// claims. Reported, never deleted — they may hold uncommitted work.
-	OrphanWorktrees []string `json:"orphanWorktrees,omitempty"`
-}
+// ProjectStatus is contract.ProjectStatus; see that declaration.
+type ProjectStatus = contract.ProjectStatus
 
 type Fleet struct {
 	factory    *FactoryController
@@ -1338,7 +1329,7 @@ func (f *Fleet) spawn(ctx context.Context, root string, opts SpawnOptions, tag *
 	profile, _ := ResolveProfile(workDir, opts.Profile, f.buildVersion)
 	a.Profile = profile
 	if wsRes != nil {
-		a.Workspace = &AgentWorkspace{Name: wsRes.Name, Version: wsRes.Version, Source: wsRes.Source, Timeout: wsRes.Doc.Resources.Timeout}
+		a.Workspace = &AgentWorkspace{Name: wsRes.Name, Version: wsRes.Version, Source: contract.WorkspaceSource(wsRes.Source), Timeout: wsRes.Doc.Resources.Timeout}
 		a.Profile.Image = wsImage
 		applyResources(&a.Profile, wsRes.Doc.Resources)
 	}
@@ -1703,7 +1694,7 @@ func (f *Fleet) ProjectStatus() []ProjectStatus {
 		}
 		seen[root] = true
 		st := ProjectStatus{
-			Root: root, Available: true, Trust: projectTrust(root),
+			Root: root, Available: true, Trust: contract.TrustState(projectTrust(root)),
 			Isolation: isolationSupport(root), OrphanWorktrees: f.orphans[root],
 		}
 		if spawnErr := runtimeErrors[root]; spawnErr != nil {
@@ -1854,10 +1845,10 @@ func (f *Fleet) installClassifier(child *Child, reg *Registry, agentOf agentOf) 
 			if d.Kind == "run" {
 				d.At = f.now().UnixMilli()
 			}
-			if d.Kind == "telemetry" && len(d.Usage) > 0 {
+			if d.Kind == "telemetry" && len(d.usage) > 0 {
 				// Off the read goroutine: the budget check may need the
 				// control agent, and a notification callback must not block.
-				go f.recordUsage(agentID, d.Usage)
+				go f.recordUsage(agentID, d.usage)
 			}
 			f.live.apply(d)
 			f.emit(d)
@@ -1879,9 +1870,9 @@ func (f *Fleet) installClassifier(child *Child, reg *Registry, agentOf agentOf) 
 				return
 			}
 			f.live.observePending(agentID, p)
-			f.emit(fleetDelta{
-				Kind: "pending", SessionID: agentID, PendingKind: p.kind,
-			})
+			f.emit(fleetDelta{FleetDelta: contract.FleetDelta{
+				Kind: "pending", SessionID: agentID, PendingKind: contract.PendingKind(p.kind),
+			}})
 		}
 	}
 }
@@ -1930,7 +1921,7 @@ func (f *Fleet) Snapshot() []AgentStatus {
 			pending := rt.reg.Pending(sid)
 			if pending != "" && live.pending != nil && live.pending.kind == pending {
 				st.Pending = &PendingRequest{
-					Kind: live.pending.kind, ID: live.pending.id, Params: live.pending.params,
+					Kind: contract.PendingKind(live.pending.kind), ID: live.pending.id, Params: live.pending.params,
 				}
 			}
 			switch pending {

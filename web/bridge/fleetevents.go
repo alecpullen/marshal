@@ -4,54 +4,20 @@ import (
 	"encoding/json"
 	"sync"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
+// fleetDelta is the contract's FleetDelta plus the bridge's two off-wire
+// fields.
 type fleetDelta struct {
-	Kind      string `json:"kind"`
-	SessionID string `json:"sessionId"`
-	Activity  string `json:"activity,omitempty"`
-	// Access is the session's whole committed interaction state on a "mode"
-	// delta. It is a pointer so every other delta kind omits it and cannot
-	// zero a row, while the state itself always serializes all four fields:
-	// an explicit false (a revoked System grant) must reach the client.
-	Access *AccessState `json:"access,omitempty"`
-	// accessSession is the ACP session the access state belongs to. It is
-	// not on the wire: the fleet keys rows by agent id, but a revision is
-	// only comparable within one session, so liveState needs the identity
-	// the agent reported it under.
+	contract.FleetDelta
+	// accessSession is the ACP session the access state belongs to; never
+	// encoded.
 	accessSession string
-	// ContextPct and ChangedFiles are set only on "telemetry" deltas. They
-	// are pointers so a real zero (an emptied context, a clean tree) is
-	// sent, while every other delta kind omits them and cannot zero a row.
-	ContextPct   *int `json:"contextPct,omitempty"`
-	ChangedFiles *int `json:"changedFiles,omitempty"`
-	// PendingKind is "approval" or "question" on a "pending" delta. The
-	// payload itself is not streamed — the dashboard refetches the
-	// snapshot, which is the authority on what is still outstanding.
-	PendingKind string `json:"pendingKind,omitempty"`
-	// Gate is the new verify result on a "gate" delta.
-	Gate *gateRecord `json:"gate,omitempty"`
-	// AgentID names the agent on run, watch, budget and reroute deltas.
-	// SessionID carries the same agent id for older deltas.
-	AgentID string `json:"agentId,omitempty"`
-	// Run is the latest run detail on a "run" delta, verbatim.
-	Run json.RawMessage `json:"run,omitempty"`
-	// Watch is a watch event on a "watch" delta, verbatim from the agent.
-	Watch json.RawMessage `json:"event,omitempty"`
-	// At is when the bridge received a "run" update, in Unix milliseconds,
-	// so clients can order and freshen run rows.
-	At int64 `json:"at,omitempty"`
-	// ToolStats and Rules are the session sheet's telemetry sections,
-	// forwarded verbatim from the agent on a "telemetry" delta.
-	ToolStats json.RawMessage `json:"toolStats,omitempty"`
-	Rules     json.RawMessage `json:"rules,omitempty"`
-	// Held and By describe a "hold" delta: whether the agent is held, and
-	// by what ("terminal").
-	Held *bool  `json:"held,omitempty"`
-	By   string `json:"by,omitempty"`
-	// Usage carries a telemetry update's new usage rows to the ledger. It
-	// is not streamed: the fleet SSE only needs the telemetry digest.
-	Usage json.RawMessage `json:"-"`
+	// usage carries a telemetry update's usage rows to the ledger; never
+	// encoded.
+	usage json.RawMessage
 }
 
 // contextPct is how full the context pack is. The engine reports pack
@@ -99,7 +65,7 @@ func classifyNotification(method string, params json.RawMessage) (fleetDelta, bo
 	if err := json.Unmarshal(params, &p); err != nil || p.SessionID == "" {
 		return fleetDelta{}, false
 	}
-	d := fleetDelta{SessionID: p.SessionID}
+	d := fleetDelta{FleetDelta: contract.FleetDelta{SessionID: p.SessionID}}
 	switch p.Update.Kind {
 	case "tool_call":
 		d.Kind, d.Activity = "activity", p.Update.ToolName
@@ -120,7 +86,7 @@ func classifyNotification(method string, params json.RawMessage) (fleetDelta, bo
 		changed := len(p.Update.ChangedFiles)
 		d.Kind, d.ChangedFiles, d.ContextPct = "telemetry", &changed, &pct
 		d.ToolStats, d.Rules = p.Update.ToolStats, p.Update.Rules
-		d.Usage = p.Update.Usage
+		d.usage = p.Update.Usage
 	case "watch":
 		if len(p.Update.Event) == 0 {
 			return fleetDelta{}, false
@@ -137,17 +103,8 @@ func classifyNotification(method string, params json.RawMessage) (fleetDelta, bo
 	return d, true
 }
 
-// PendingRequest is the outstanding approval or question for an agent,
-// carried in the fleet snapshot so the dashboard can render a decision
-// inline instead of making the user open the chat.
-type PendingRequest struct {
-	// Kind is "approval" or "question", matching Registry.Pending.
-	Kind string `json:"kind"`
-	// ID is the toolCallId or questionId to POST the resolution to.
-	ID string `json:"id"`
-	// Params is the original request payload, verbatim.
-	Params json.RawMessage `json:"params,omitempty"`
-}
+// PendingRequest is contract.PendingRequest; see that declaration.
+type PendingRequest = contract.PendingRequest
 
 // observedPending is what the classifier saw on the wire. It is a cache,
 // not a source of truth: Registry.Pending decides whether anything is
@@ -352,49 +309,5 @@ func (s *liveState) get(id string) agentLive {
 	return agentLive{}
 }
 
-type AgentStatus struct {
-	ID      string `json:"id"`
-	Project string `json:"project"`
-	Name    string `json:"name,omitempty"`
-	// OwnerID, Origin and ClientID mirror Agent.OwnerID, Agent.Origin and
-	// Agent.ClientID in workspace.go.
-	OwnerID  string `json:"ownerId,omitempty"`
-	Origin   string `json:"origin,omitempty"`
-	ClientID string `json:"clientId,omitempty"`
-	// Access is the session's committed interaction state, as the agent last
-	// reported it. Nil means the bridge cannot vouch for it — the agent has
-	// not reported, or the read failed — and a client must present that as
-	// unavailable rather than inferring privileges from the project's
-	// defaults or the agent's persisted starting mode.
-	Access       *AccessState `json:"access,omitempty"`
-	Status       string       `json:"status"`
-	Activity     string       `json:"activity,omitempty"`
-	ContextPct   int          `json:"contextPct,omitempty"`
-	ChangedFiles int          `json:"changedFiles,omitempty"`
-	Interrupted  bool         `json:"interrupted,omitempty"`
-	// Held is true while a terminal is holding the agent (the agent is
-	// paused for someone typing), so a reloaded page shows it without
-	// waiting for the next "hold" delta.
-	Held      bool      `json:"held,omitempty"`
-	Isolated  bool      `json:"isolated,omitempty"`
-	Branch    string    `json:"branch,omitempty"`
-	UpdatedAt time.Time `json:"updatedAt"`
-	// SourceKind is "local" or "git"; the exit panel routes on it and
-	// ReadOnly to decide between merge, push, and patch.
-	SourceKind string `json:"sourceKind,omitempty"`
-	// ReadOnly marks an arbitrary-URL clone with no push path.
-	ReadOnly bool `json:"readOnly,omitempty"`
-	// TargetBranch is the repo's default branch at spawn time.
-	TargetBranch string `json:"targetBranch,omitempty"`
-	// PRUrl is the validated pull-request URL from the last push.
-	PRUrl string `json:"prUrl,omitempty"`
-	// PushedAt is when the agent's branch last reached the remote.
-	PushedAt *time.Time `json:"pushedAt,omitempty"`
-	// GateOverride, when non-nil, records a pushed-despite-failure decision.
-	GateOverride *GateOverride `json:"gateOverride,omitempty"`
-	// Workspace is the workspace the agent runs in, when it has one.
-	Workspace *AgentWorkspace `json:"workspace,omitempty"`
-	// Pending is set only while the agent is genuinely parked on an
-	// approval or question, so the dashboard can resolve it in place.
-	Pending *PendingRequest `json:"pending,omitempty"`
-}
+// AgentStatus is contract.AgentStatus; see that declaration.
+type AgentStatus = contract.AgentStatus

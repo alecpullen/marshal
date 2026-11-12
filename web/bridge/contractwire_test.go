@@ -111,17 +111,17 @@ func fleetDeltaRecordings() []wireRecording {
 	return []wireRecording{
 		{name: "fleetDelta", record: func(t *testing.T) []byte {
 			d := fillValue(fleetDelta{})
-			// Usage is exported (json:"-"), so fillValue fills it; clear it
-			// for the "off-wire fields unpopulated" recording.
-			d.Usage = nil
+			// Usage is off-wire, so fillValue does not fill it; it is
+			// already nil, but clear it explicitly for clarity.
+			d.usage = nil
 			return encodeWire(d)
 		}},
 		{name: "fleetDelta.offwire", record: func(t *testing.T) []byte {
 			d := fillValue(fleetDelta{})
 			d.accessSession = "off-wire-session"
-			d.Usage = json.RawMessage(`"off-wire-usage"`)
+			d.usage = json.RawMessage(`"off-wire-usage"`)
 			got := encodeWire(d)
-			for _, banned := range []string{"off-wire-session", "off-wire-usage", "accessSession", "Usage"} {
+			for _, banned := range []string{"off-wire-session", "off-wire-usage", "accessSession", "Usage", "usage"} {
 				if bytes.Contains(got, []byte(banned)) {
 					t.Fatalf("fleetDelta put its off-wire field %q on the wire: %s", banned, got)
 				}
@@ -130,7 +130,7 @@ func fleetDeltaRecordings() []wireRecording {
 		}},
 		{name: "fleetDelta.zero", record: func(t *testing.T) []byte {
 			got := encodeWire(fleetDelta{})
-			for _, banned := range []string{"accessSession", "Usage"} {
+			for _, banned := range []string{"accessSession", "Usage", "usage"} {
 				if bytes.Contains(got, []byte(banned)) {
 					t.Fatalf("a zero fleetDelta put %q on the wire: %s", banned, got)
 				}
@@ -341,7 +341,7 @@ func budgetDeltaRecording(t *testing.T, scope string) []byte {
 	tail := h.f.fleetLog.Tail(fleetStreamKey)
 	for _, ev := range tail {
 		var d budgetDelta
-		if json.Unmarshal(ev.Data, &d) == nil && d.Kind == "budget" && d.Scope == scope {
+		if json.Unmarshal(ev.Data, &d) == nil && d.Kind == "budget" && string(d.Scope) == scope {
 			return normalizeDelta(ev.Data, "")
 		}
 	}

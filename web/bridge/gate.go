@@ -4,13 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
-// gateRecord is an agent's latest verify result and when it ran.
-type gateRecord struct {
-	Result *gateResult `json:"result"`
-	At     time.Time   `json:"at"`
-}
+// gateRecord is contract.GateRecord; see that declaration.
+type gateRecord = contract.GateRecord
 
 // storeGate records a verify result and announces it on the fleet stream.
 func (f *Fleet) storeGate(agentID string, res *gateResult) gateRecord {
@@ -30,7 +29,7 @@ func (f *Fleet) storeGate(agentID string, res *gateResult) gateRecord {
 			r.Output = ""
 			slim.Result = &r
 		}
-		f.emit(fleetDelta{Kind: "gate", SessionID: agentID, Gate: &slim})
+		f.emit(fleetDelta{FleetDelta: contract.FleetDelta{Kind: "gate", SessionID: agentID, Gate: &slim}})
 	}
 	return rec
 }

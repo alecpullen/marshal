@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // A mode_changed update carries the whole committed tuple, so the fleet delta
@@ -91,7 +93,7 @@ func TestFleetAccessSnapshotRejectsStaleRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	apply := func(session string, st AccessState) {
-		f.live.apply(fleetDelta{SessionID: a.ID, Kind: "mode", Access: &st, accessSession: session})
+		f.live.apply(fleetDelta{FleetDelta: contract.FleetDelta{SessionID: a.ID, Kind: "mode", Access: &st}, accessSession: session})
 	}
 	snapshotAccess := func() *AccessState {
 		t.Helper()

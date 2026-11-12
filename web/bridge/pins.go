@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+
+	"marshal/web/bridge/contract"
 )
 
 // pinPath is the socket's pin route (P4 D9).
@@ -66,12 +68,8 @@ func (s *Server) pinProject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, state)
 }
 
-// PinState is a project's pin, as the pin route answers it.
-type PinState struct {
-	Root    string `json:"root"`
-	Pinned  bool   `json:"pinned"`
-	Running bool   `json:"running"`
-}
+// PinState is contract.PinState; see that declaration.
+type PinState = contract.PinState
 
 // pinned reports whether root is pinned in the workspace.
 func (f *Fleet) pinned(root string) bool {

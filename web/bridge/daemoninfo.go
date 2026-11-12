@@ -3,35 +3,18 @@ package bridge
 import (
 	"net/http"
 	"sort"
+
+	"marshal/web/bridge/contract"
 )
 
-// DaemonInfo is what GET /api/daemon answers about the local daemon.
-type DaemonInfo struct {
-	Version   string         `json:"version"`
-	Profile   string         `json:"profile"`
-	PID       int            `json:"pid"`
-	StartedAt int64          `json:"startedAt"` // Unix milliseconds
-	Socket    string         `json:"socket"`
-	Projects  []string       `json:"projects"`          // filled per request
-	Pinned    []string       `json:"pinned"`            // filled per request
-	Children  []DaemonChild  `json:"children"`          // filled per request
-	Refresh   *DaemonRefresh `json:"refresh,omitempty"` // filled per request
-}
+// DaemonInfo is contract.DaemonInfo; see that declaration.
+type DaemonInfo = contract.DaemonInfo
 
-// DaemonRefresh is the refresh helper as GET /api/daemon reports it.
-type DaemonRefresh struct {
-	PID      int `json:"pid"`
-	Restarts int `json:"restarts"`
-}
+// DaemonRefresh is contract.DaemonRefresh; see that declaration.
+type DaemonRefresh = contract.DaemonRefresh
 
-// DaemonChild is one project child as GET /api/daemon reports it.
-type DaemonChild struct {
-	Root       string          `json:"root"`
-	Version    string          `json:"version"`
-	EnvWarning string          `json:"envWarning,omitempty"`
-	Pinned     bool            `json:"pinned,omitempty"`
-	Sessions   []DaemonSession `json:"sessions"`
-}
+// DaemonChild is contract.DaemonChild; see that declaration.
+type DaemonChild = contract.DaemonChild
 
 // SetDaemonInfo makes GET /api/daemon answer info; without it the route
 // answers 404 (decision 8).

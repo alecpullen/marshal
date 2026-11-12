@@ -17,6 +17,7 @@ Start with the [design and decision record](design-notes.md), which distinguishe
 
 - [Existing-project connection and read-only discovery](existing-project-discovery-spec.md): the design output for gap 1 of the journey map, and the first slice taken from this archive. It states the approved behaviour as requirements, records the served `POST /api/repos/{id}/discover` contract in §5 with the ten capability keys, five states, status boundary and read-only guarantees, and lists the questions still open. The specification's implementation record lists the commits and acceptance gates.
 - [Existing-project read-only discovery implementation plan](plans/2026-11-12-existing-project-discovery-plan.md): the reconciled, test-first execution plan for the first slice. It freezes the HTTP/report contract, capability taxonomy, read-only guarantees, task boundaries, verification gates, and draft-PR review policy.
+- [Project factory defaults and per-handoff overrides](project-factory-defaults-spec.md): the design output for gap 2 of the journey map. It turns the approved "configuration can supply defaults and individual handoffs can override them" decision into a concrete contract: which fields are inheritable, how an override is expressed, when the resolved configuration is snapshotted, and why adopting independent work into a factory is deferred to the daemon track.
 
 ## Visual explorations
 

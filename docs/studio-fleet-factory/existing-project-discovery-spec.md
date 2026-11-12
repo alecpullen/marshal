@@ -98,12 +98,14 @@ forge name. Each reported capability carries one of five states:
 | `unsupported` | The adapter does not implement it for this instance/version |
 
 Classification is contextual rather than a blanket HTTP-status mapping. An
-invalid or absent credential is `unconfigured`; a valid credential receiving
-403 without a `Retry-After` signal, or a 404 for a resource hidden from it, is
-`insufficient_permission`; a 404 after the same credential has proved that
-repository metadata is readable is interpreted as the endpoint not being
-implemented for this adapter/instance, and is `unsupported`. A 403 carrying
-`Retry-After`, HTTP 429, 5xx, and transport failures are
+invalid or absent credential is `unconfigured`, and a valid credential
+receiving 403 without a `Retry-After` signal is
+`insufficient_permission`. A 404 is `insufficient_permission` while
+repository metadata is not known to be readable, for example when the
+repository itself is hidden from the credential. After the same credential has
+successfully read repository metadata, a later 404 is interpreted as the
+endpoint not being implemented for this adapter/instance and is `unsupported`.
+A 403 carrying `Retry-After`, HTTP 429, 5xx, and transport failures are
 `temporarily_unavailable`.
 
 A repository with no declared forge uses the sanctioned Git-only path. Its

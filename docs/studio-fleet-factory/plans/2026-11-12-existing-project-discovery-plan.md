@@ -51,24 +51,27 @@ change. The following points resolve their differences.
 3. **Capability set.** Use the ten keys below, always present and always in
    this order. They map directly to the specification's independently
    observable reads; `issues`, `reviews`, and previews are not invented.
-4. **Report status.** `unavailable` means a declared forge could not complete
-   its orchestration because the service was temporarily unreachable; the
-   report still preserves locally observable checkout facts and carries a
-   top-level error. Otherwise, `degraded` means at least one capability is
-   not `supported` or at least one gap exists; `ok` means every capability is
-   supported and no gaps exist. A Git-only report is therefore `degraded`
-   because its forge capabilities are `unsupported`.
+4. **Report status.** `unavailable` means the declared forge's repository
+   metadata probe could not complete because the service was temporarily
+   unreachable; the report still preserves locally observable checkout facts
+   and carries a top-level error. Once metadata is readable, a later
+   per-section failure degrades only that section. Otherwise, `degraded` means
+   at least one capability is not `supported` or at least one gap exists;
+   `ok` means every capability is supported and no gaps exist. A Git-only
+   report is therefore `degraded` because its forge capabilities are
+   `unsupported`.
 5. **Capability state mapping.** Classification is contextual, not a blanket
    HTTP-status table. An absent, non-PAT, invalid, or expired credential is
    `unconfigured`; a declared Gitea/Forgejo instance with no `APIBase` is also
    `unconfigured` with an actionable detail. HTTP 401 is `unconfigured`. HTTP
    403 with a retry signal is `temporarily_unavailable`; HTTP 403 without one
-   is `insufficient_permission`. HTTP 404 is `insufficient_permission`
-   unless the same credential has already read repository metadata, in which
-   case it is interpreted as `unsupported` for this adapter/instance. HTTP
-   429, 5xx, and transport failures are `temporarily_unavailable`; a
-   successful probe is `supported`. A capability with no matching resource to
-   exercise is `supported` with a detail that says it was not exercised.
+   is `insufficient_permission`. HTTP 404 is `insufficient_permission` while
+   repository metadata is not known to be readable; after the same credential
+   has successfully read repository metadata, a later 404 is interpreted as
+   `unsupported` for this adapter/instance. HTTP 429, 5xx, and transport
+   failures are `temporarily_unavailable`; a successful probe is `supported`.
+   A capability with no matching resource to exercise is `supported` with a
+   detail that says it was not exercised.
 6. **Absent versus unreadable.** Absence is emitted only after a successful
    search: a detected fact with `value: "absent"`. An unreadable target is a
    gap with no absence fact. The two outcomes must be textually distinct.
@@ -82,9 +85,11 @@ change. The following points resolve their differences.
 8. **Revision.** Forge facts carry the default-branch head observed during
    the probe; checkout facts carry the checkout `HEAD`. The top-level
    `revision` is the checkout `HEAD` when a checkout was inspected, otherwise
-   the forge default-branch head, otherwise empty. This makes a stale forge
-   fact detectable when the default branch advances without requiring a
-   forbidden fetch.
+   the forge default-branch head, otherwise empty. The top-level `branch`
+   follows the same source: the checkout branch (empty for a detached HEAD)
+   when a checkout was inspected, otherwise the forge default branch. This
+   makes a stale forge fact detectable when the default branch advances
+   without requiring a forbidden fetch.
 9. **Report errors.** Unknown repository is 404; missing fleet is 503;
    malformed request is 400; an unexpected in-process discovery failure is
    500. A declared forge outage is a successful report whose
@@ -166,8 +171,10 @@ The body is empty. The repository id comes from the registered `Repo` record.
 }
 ```
 
-All slices are non-nil. `status` is `ok`, `degraded`, or `unavailable` under
-the explicit boundary in Reconciled implementation decision 4.
+All Go report slices are non-nil; fields tagged `omitempty`, including an
+empty `dirtyFiles`, may still be absent on the JSON wire. `status` is `ok`,
+`degraded`, or `unavailable` under the explicit boundary in Reconciled
+implementation decision 4.
 `worktree.dirty` is a pointer: `null` means not determined, which differs
 from a known clean checkout. `worktree.branch` is empty for a detached HEAD,
 while `worktree.head` still carries its SHA and `worktree.detail` says
@@ -443,9 +450,9 @@ type DiscoveryForge interface {
   confirm failure.
 - [ ] Implement bounded inspection of the exact known paths. Use `os.Lstat`
   and do not follow symlinks. Open every known instruction, documentation,
-  and manifest target through `io.LimitReader` with a 1 MiB limit (read at
-  most 1 MiB plus one byte so exceeding the limit is detectable); report an
-  oversized target as a gap
+  and manifest target through `io.LimitReader` with a 1 MiB limit (read one
+  byte beyond the limit so exceeding it is detectable); report an oversized
+  target as a gap
   and return no content. Read only the minimum manifest fields needed for
   language/tooling facts. Use the existing hardened git runner with an empty
   `Credential{}` for every local read, so no forge PAT is placed in the child
@@ -477,16 +484,16 @@ type DiscoveryForge interface {
   CI checks only; assert CI is `insufficient_permission` with an actionable
   gap, report status is `degraded`, and repository, branch, PR, and checkout
   sections remain present.
-- [ ] Write `TestDiscoverReportClassifiesHiddenResourceAsPermissionDenied`:
-  make repository metadata readable but a section endpoint return 404; assert
-  that section is `insufficient_permission`, not `unsupported`, because the
-  same credential has not proved that endpoint is genuinely unsupported.
+- [ ] Write `TestDiscoverReportClassifiesHiddenRepositoryAsPermissionDenied`:
+  make the repository metadata endpoint return 404, so metadata is not known to
+  be readable; assert `repository_metadata` is `insufficient_permission`, not
+  `unsupported`, and the report status is `degraded`.
 - [ ] Write `TestDiscoverReportClassifiesMissingGiteaBaseAsUnconfigured`: a
   declared Gitea repo with no `APIBase` reports `unconfigured` with an
   actionable detail and makes no HTTP request.
 - [ ] Write `TestDiscoverReportGitOnlyUsesLocalFacts`: with no declared forge,
-  assert forge capabilities are unsupported, no HTTP request occurs, and
-  local Git/checkout facts remain.
+  assert forge capabilities are unsupported, report status is `degraded`, no
+  HTTP request occurs, and local Git/checkout facts remain.
 - [ ] Write `TestDiscoverReportDistinguishesAbsentFromUnreadable`: assert the
   serialized responses are textually distinct and absence is never inferred
   from a gap.
@@ -581,7 +588,7 @@ first exposes a defect.
 | Every capability uses one of five states | Task 1 classifier/order tests; Task 4 invariant assertion |
 | GitHub-wire-compatible PAT report | Task 2 GitHub tests; Task 4 supported report test |
 | Under-scoped CI credential is not an empty section | Task 4 denied-section test |
-| Hidden resource is not reported as unsupported | Task 4 contextual-404 test |
+| Hidden repository is not reported as unsupported | Task 4 hidden-repository 404 test |
 | Missing self-hosted instance base is unconfigured | Task 2 and Task 4 Gitea tests |
 | Absent instructions differ from unreadable instructions | Task 3 and Task 4 contrast tests |
 | Clean checkout remains byte-identical | Task 3 read-only Git test |
@@ -640,7 +647,7 @@ focused re-review is recorded in the PR review thread.
 
 | Review finding | Resolution |
 |---|---|
-| HTTP 401/404 were mapped without enough context | Classification is now contextual: 401 is `unconfigured`; 404 is `insufficient_permission` unless repository metadata is readable with the same credential, in which case it is `unsupported` |
+| HTTP 401/404 were mapped without enough context | Classification is now contextual: 401 is `unconfigured`; a 404 before repository metadata is known readable is `insufficient_permission`, while a later 404 after readable metadata is `unsupported` |
 | The public-GitHub acceptance wording had no offline owner | The criterion now names a GitHub-wire-compatible endpoint exercised with a PAT through `httptest`; the offline suite is the CI gate |
 | Auto-creating the Marshal project was an implicit deferral | The specification now lists it explicitly as a later-slice non-goal |
 | `repoId` implied owner/slug | The specification and plan now define it as the registered repository identifier |
@@ -659,3 +666,5 @@ focused re-review is recorded in the PR review thread.
 | Top-level revision priority was ambiguous | Checkout `HEAD` wins, then the forge default-branch head, otherwise empty |
 | In-process failures reused the child-failure 502 convention | The route now returns 500 for an unexpected in-process discovery failure and has a named test |
 | Route registration referenced nonexistent route groups | The plan now says one `s.discoveryRoutes()` call at the end of the flat registration list |
+| The hidden-resource report fixture contradicted the frozen 404 rule | The fixture now makes repository metadata itself return 404 with metadata not known readable, which deterministically maps to `insufficient_permission` |
+| Non-nil slices, Git-only status, unavailable gate, and top-level branch were imprecise | The plan now distinguishes Go slice invariants from JSON omission, asserts Git-only `degraded`, names the metadata probe as the unavailable gate, and gives top-level `branch` the same source priority as `revision` |

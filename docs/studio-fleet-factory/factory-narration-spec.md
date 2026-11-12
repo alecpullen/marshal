@@ -504,3 +504,9 @@ executability, and each is resolved in the plan.
 | `TestFactoryPRBodyUsesTheNewestRound` named a behaviour the composer does not have | It is now `TestFactoryPRBodyRendersTheGivenRound`: the composer renders the round it is given, and choosing the newest round is the effect's job |
 | The studio test names were Go-style names in a vitest file | Task 6 now names its cases as vitest `it(...)` descriptions, and the acceptance matrix cites them the same way |
 | The order of the capability check and the narration check was unstated | P17 pins the order, and states that when both are missing the recorded reason names the unsupported capability |
+
+A focused re-review of that fix commit confirmed all six findings resolved and
+found four residual clarity gaps, all now closed: a duplicated Task 4
+checklist bullet, reconciled decision 6 omitting the `~` prohibition, the
+plan not saying what realises a capability-less forge, and Task 4
+understating the ten `Forge` methods the double must stub.

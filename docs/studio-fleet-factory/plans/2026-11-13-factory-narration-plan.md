@@ -54,9 +54,10 @@ and record the discrepancies they found.
 5. **The narration total is** the sum of the eight section lengths plus the sum
    of the excerpt code lengths. Excerpt paths and languages are excluded.
 6. **An excerpt path is repository-relative**: not empty, not starting with
-   `/`, no `\` anywhere, no `..` segment, and no `:` drive prefix. A `.`
-   segment and an empty segment are also rejected, so `internal//x.go`,
-   `./x.go` and `internal/` are all refused.
+   `/` or `~`, no `\` anywhere, no `..` segment, and no `:` drive prefix. A
+   `.` segment and an empty segment are also rejected, so `internal//x.go`,
+   `./x.go` and `internal/` are all refused. A dot-prefixed *name* such as
+   `.gitignore` is not a `.` segment, and is accepted.
 7. **The body is composed from the newest round.** A round with no
    implementation report, or one whose report carries no narration, cannot
    produce a body: `set_ready` is refused with a recorded reason.
@@ -332,9 +333,6 @@ last, because the asset build writes `web/bridge/static/`.
   body written and no draft mutation.
 - [ ] Write `TestFactoryEffectReadyDescriptionFailureLeavesDraft`: a failed
   write is uncertain, and the draft flag was never cleared.
-- [ ] Write `TestFactoryEffectReadyRefusesForgeWithoutDescriptionCapability`:
-  the effect is refused with the unsupported-capability reason, and nothing is
-  written.
 - [ ] Write `TestFactoryEffectReadyRefusesItemWithoutNarration`: the effect is
   refused with a reason naming the missing narration, and nothing is written.
 - [ ] Write `TestFactoryEffectSetDraftWritesNoDescription`: the `set_draft`
@@ -342,14 +340,22 @@ last, because the asset build writes `web/bridge/static/`.
 - [ ] Write `TestFactoryEffectReadyRefusesForgeWithoutDescriptionCapability`:
   the `Forge` value carries no description capability, so the effect is
   refused with the unsupported-capability reason, and nothing is written.
-- [ ] Extend the test double `racingFactoryForge` in
-  `web/bridge/factory_effects_test.go` so it implements `Forge` as well as
-  `FactoryForge`, and give it the description capability: it records the
-  bodies it is given. The `openForge` fakes must return that same value in
-  both slots, so the `Forge` value the effect asserts on is never nil. The
-  existing `set_ready` race tests give their item a round whose
-  implementation report carries a narration, so they reach the write instead
-  of stopping at the narration check. Extend these tests; do not weaken them.
+- [ ] Extend the test doubles in `web/bridge/factory_effects_test.go`:
+  `racingFactoryForge` implements `Forge` as well as `FactoryForge`, so it
+  can be returned in the `Forge` slot as well as the `FactoryForge` slot, and
+  it gains the description capability and records the bodies it is given.
+  `Forge` has ten methods that the factory effect path never calls
+  (`CreatePR`, `GetIssue`, `ListIssues`, `CommentIssue`, `RepoSize`,
+  `ListPRs`, `GetPR`, `PostReview`, `ListFailedChecks`, `CheckLog`); stub
+  them so they panic if called, rather than silently passing. Add a second
+  double without the description capability — it implements `Forge` and
+  `FactoryForge` but not `FactoryPRDescription` — to back the refusal test
+  above and Task 5's `TestFactoryControllerRecordsReasonForUnsupportedDescription`.
+  The `openForge` fakes must return the capable double in both slots, so the
+  `Forge` value the effect asserts on is never nil. The existing `set_ready`
+  race tests give their item a round whose implementation report carries a
+  narration, so they reach the write instead of stopping at the narration
+  check. Extend these tests; do not weaken them.
 - [ ] Run
   `go test ./web/bridge -run '^TestFactoryEffect' -count=1 -v`; confirm the
   new tests fail.

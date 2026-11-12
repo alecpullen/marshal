@@ -44,6 +44,9 @@ type Server struct {
 	// daemonInfo, when set, is what GET /api/daemon answers. Nil on a
 	// server that is not a daemon, which answers 404 (decision 8).
 	daemonInfo *DaemonInfo
+	// refresh, when set, is the daemon's refresh helper, reported per
+	// request by GET /api/daemon (see SetRefreshHelper).
+	refresh *Helper
 }
 
 func NewServer(target any, args ...any) *Server {

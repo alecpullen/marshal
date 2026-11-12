@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -25,7 +26,7 @@ func isolateWebbridgeEnv(t *testing.T) {
 		"WEBBRIDGE_PROFILE", "WEBBRIDGE_SOCKET", "WEBBRIDGE_ADDR", "WEBBRIDGE_TOKEN",
 		"WEBBRIDGE_CWD_ROOT", "WEBBRIDGE_STATE_DIR", "WEBBRIDGE_WORKSPACE",
 		"WEBBRIDGE_EGRESS", "WEBBRIDGE_SECRETS", "WEBBRIDGE_SECRETS_KEY_FILE",
-		"WEBBRIDGE_IDLE_SESSION_TIMEOUT",
+		"WEBBRIDGE_IDLE_SESSION_TIMEOUT", "WEBBRIDGE_OAUTH_REFRESH",
 	} {
 		t.Setenv(k, "")
 	}
@@ -116,6 +117,11 @@ func TestTheLocalProfilesDefaults(t *testing.T) {
 	if want := 30 * time.Minute; cfg.idleSessionTimeout != want {
 		t.Errorf("idleSessionTimeout = %s, want %s", cfg.idleSessionTimeout, want)
 	}
+	// The refresh helper is off unless asked: nothing else in the local
+	// profile's defaults starts a process.
+	if cfg.oauthRefresh {
+		t.Errorf("oauthRefresh = true, want false: the refresh helper is asked for")
+	}
 }
 
 // TestTheLocalProfileRefuses pins decision 3 and the settings that only
@@ -132,15 +138,20 @@ func TestTheLocalProfileRefuses(t *testing.T) {
 		name string
 		args []string
 		env  map[string]string
+		// unparsable marks a case whose refusal is the variable's own
+		// parse error rather than a profile one.
+		unparsable bool
 	}{
-		{"egress flag", []string{"--profile", "local", "--egress", "on"}, nil},
-		{"egress env", []string{"--profile", "local"}, map[string]string{"WEBBRIDGE_EGRESS": "on"}},
-		{"secrets local", []string{"--profile", "local", "--secrets", "local", "--secrets-key-file", keyFile}, nil},
-		{"socket without the profile", []string{"--socket", "/tmp/x.sock"}, nil},
-		{"addr off without the profile", []string{"--addr", "off"}, nil},
-		{"idle timeout without the profile", []string{"--idle-session-timeout", "5m"}, nil},
-		{"idle timeout negative", []string{"--profile", "local", "--idle-session-timeout", "-5m"}, nil},
-		{"profile cloud", []string{"--profile", "cloud"}, nil},
+		{"egress flag", []string{"--profile", "local", "--egress", "on"}, nil, false},
+		{"egress env", []string{"--profile", "local"}, map[string]string{"WEBBRIDGE_EGRESS": "on"}, false},
+		{"secrets local", []string{"--profile", "local", "--secrets", "local", "--secrets-key-file", keyFile}, nil, false},
+		{"socket without the profile", []string{"--socket", "/tmp/x.sock"}, nil, false},
+		{"addr off without the profile", []string{"--addr", "off"}, nil, false},
+		{"idle timeout without the profile", []string{"--idle-session-timeout", "5m"}, nil, false},
+		{"idle timeout negative", []string{"--profile", "local", "--idle-session-timeout", "-5m"}, nil, false},
+		{"oauth refresh without the profile", []string{"--oauth-refresh"}, nil, false},
+		{"oauth refresh unparsable", []string{"--profile", "local"}, map[string]string{"WEBBRIDGE_OAUTH_REFRESH": "yes"}, true},
+		{"profile cloud", []string{"--profile", "cloud"}, nil, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -153,9 +164,14 @@ func TestTheLocalProfileRefuses(t *testing.T) {
 				t.Fatalf("parseConfig(%v) accepted the setting", tc.args)
 			}
 			// Every refusal names what to use instead: the local
-			// profile.
-			if !strings.Contains(err.Error(), "local") {
-				t.Errorf("error %q does not name the local profile", err)
+			// profile. A variable that does not parse names the
+			// variable instead.
+			want := "local"
+			if tc.unparsable {
+				want = "WEBBRIDGE_OAUTH_REFRESH"
+			}
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q does not name %s", err, want)
 			}
 		})
 	}
@@ -229,6 +245,127 @@ func TestTheLocalProfileServesItsSocket(t *testing.T) {
 	}
 	if strings.Contains(stderr.String(), "generated bearer token") {
 		t.Fatalf("the local profile generated a token: %q", stderr.String())
+	}
+}
+
+// helperScript writes a marshal stand-in for the refresh helper: it
+// records the arguments it was given and then stays alive, so a test can
+// see both what the bridge ran and whether it is gone afterwards.
+func helperScript(t *testing.T) (script, argsFile string) {
+	t.Helper()
+	dir := t.TempDir()
+	script = filepath.Join(dir, "marshal-helper")
+	argsFile = filepath.Join(dir, "helper-args")
+	body := "#!/bin/sh\nprintf '%s' \"$*\" > \"$HELPER_ARGS_FILE\"\nexec sleep 60\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatalf("write helper script: %v", err)
+	}
+	// The helper inherits the bridge's environment, so this reaches it.
+	t.Setenv("HELPER_ARGS_FILE", argsFile)
+	return script, argsFile
+}
+
+// waitForArgs polls the helper's argument file until it has contents.
+func waitForArgs(t *testing.T, path string) string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var last error
+	for time.Now().Before(deadline) {
+		b, err := os.ReadFile(path)
+		if err == nil && len(b) > 0 {
+			return string(b)
+		}
+		last = err
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("the helper did not record its arguments: %v", last)
+	return ""
+}
+
+// TestTheLocalProfileSupervisesTheRefreshHelper: --oauth-refresh runs
+// `<marshal-bin> daemon refresh` beside the local bridge, reports it on
+// GET /api/daemon, and takes it down again when the bridge stops.
+func TestTheLocalProfileSupervisesTheRefreshHelper(t *testing.T) {
+	isolateWebbridgeEnv(t)
+	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
+	socket := localSocketPath(t)
+	script, argsFile := helperScript(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, []string{"--profile", "local", "--addr", "off", "--socket", socket,
+			"--oauth-refresh", "--marshal-bin", script}, io.Discard, io.Discard)
+	}()
+
+	client := socketClient(socket)
+	var refresh bridge.DaemonRefresh
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		info := waitForDaemon(t, client)
+		if info.Refresh != nil && info.Refresh.PID > 0 {
+			refresh = *info.Refresh
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("GET /api/daemon reported no refresh helper: %+v", info)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// The helper is the marshal binary with `daemon refresh`, nothing else.
+	if argv := waitForArgs(t, argsFile); argv != "daemon refresh" {
+		t.Errorf("helper argv = %q, want %q", argv, "daemon refresh")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned %v after its context was cancelled; want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not return within 10s of its context being cancelled")
+	}
+	if err := syscall.Kill(refresh.PID, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("refresh helper %d still running after run returned: %v", refresh.PID, err)
+	}
+}
+
+// TestTheLocalProfileStartsNoHelperUnasked: without --oauth-refresh, the
+// local profile runs no helper and reports none.
+func TestTheLocalProfileStartsNoHelperUnasked(t *testing.T) {
+	isolateWebbridgeEnv(t)
+	t.Setenv("MARSHAL_DATA_DIR", t.TempDir())
+	socket := localSocketPath(t)
+	script, argsFile := helperScript(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, []string{"--profile", "local", "--addr", "off", "--socket", socket,
+			"--marshal-bin", script}, io.Discard, io.Discard)
+	}()
+
+	info := waitForDaemon(t, socketClient(socket))
+	if info.Refresh != nil {
+		t.Errorf("GET /api/daemon reported a refresh helper without --oauth-refresh: %+v", info.Refresh)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return within 5s of its context being cancelled")
+	}
+	if _, err := os.Stat(argsFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the helper script ran without --oauth-refresh; want it never run")
 	}
 }
 

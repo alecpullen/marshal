@@ -6,13 +6,18 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
+	"marshal/internal/app"
 	"marshal/internal/app/config"
 	"marshal/internal/daemon"
+	"marshal/internal/llm/provider"
 )
 
 // daemonClient is the part of daemon.Client that `status` needs, so a test
@@ -42,13 +47,18 @@ const daemonReadyPoll = 100 * time.Millisecond
 
 var daemonStartTimeout = 5 * time.Second
 
-// runDaemon implements `marshal daemon <install|start|stop|status|uninstall>`.
+// runDaemon implements `marshal daemon <install|start|stop|status|uninstall>`,
+// and dispatches `refresh` as well.
 //
 // It owns the user-facing half of the local daemon: it resolves the binaries
 // and paths decision 10 names, renders them into a unit through
 // internal/daemon, and reports what the service manager and the socket say.
 // It never writes a unit itself and never runs a service-manager command —
 // that is all daemon.Manager, behind the daemonManagerFor seam.
+//
+// `refresh` is dispatched but left out of the usage hint: the daemon's unit
+// runs it, so it is an internal half of the daemon rather than a subcommand a
+// user is meant to type.
 //
 // The I/O shape follows runSnapshots exactly (ctx, args, stdin, stdout,
 // stderr) so main.go's dispatch is uniform and tests can substitute streams.
@@ -64,9 +74,53 @@ func runDaemon(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		return runDaemonService(ctx, sub, rest, stdout, stderr)
 	case "status":
 		return runDaemonStatus(ctx, rest, stdout, stderr)
+	case "refresh":
+		return runDaemonRefresh(ctx, rest, stderr)
 	default:
 		return fmt.Errorf("marshal daemon: unknown subcommand %q (install|start|stop|status|uninstall)", sub)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// refresh
+// ---------------------------------------------------------------------------
+
+// oauthRefreshRunner is the helper's body; tests replace it.
+var oauthRefreshRunner = app.RunOAuthRefresh
+
+// daemonSignalContext is the helper's own signal context (decision 9). Tests
+// replace it rather than signalling the test process, which would kill it if
+// the seam were ever removed.
+var daemonSignalContext = func(ctx context.Context) (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+}
+
+// runDaemonRefresh implements `marshal daemon refresh`: it runs the OAuth
+// refresh helper the daemon's unit starts, which keeps the user config's
+// OAuth providers refreshed until the helper is interrupted.
+//
+// Usage: marshal daemon refresh
+func runDaemonRefresh(ctx context.Context, args []string, stderr io.Writer) error {
+	if len(args) != 0 {
+		return fmt.Errorf("marshal daemon refresh: unexpected argument %q", args[0])
+	}
+	home, err := daemonHome()
+	if err != nil {
+		return err
+	}
+	// Decision 9: main passes a background context, so the helper installs
+	// its own signal context: the daemon stops the helper by signalling it,
+	// and SIGTERM from the service manager is an orderly stop, not a failure.
+	ctx, stop := daemonSignalContext(ctx)
+	defer stop()
+	// Decision 7: a text logger on standard error at info, so the helper's
+	// lines land in the daemon's log.
+	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	return oauthRefreshRunner(ctx, app.OAuthRefreshOptions{
+		HomeDir: home,
+		Auth:    provider.DefaultAuthResolver(),
+		Logger:  logger,
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +360,7 @@ func runDaemonStatus(ctx context.Context, args []string, stdout, stderr io.Write
 	fmt.Fprintf(stdout, "socket: %s (answering)\n", paths.Socket)
 	marshalVersion := daemonVersion()
 	fmt.Fprintln(stdout, daemonInfoLine(info, marshalVersion))
+	fmt.Fprintln(stdout, daemonRefreshLine(info))
 	for _, child := range info.Children {
 		fmt.Fprintln(stdout, daemonChildLine(child, marshalVersion))
 		if warning := strings.TrimSpace(child.EnvWarning); warning != "" {
@@ -343,6 +398,36 @@ func daemonInfoLine(info daemon.Info, marshalVersion string) string {
 	}
 	return fmt.Sprintf("daemon: version %s (this marshal %s), started %s, projects: %s",
 		info.Version, marshalVersion, started, projects)
+}
+
+// daemonRefreshLine renders info's refresh helper: its pid, and its restart
+// count when it has restarted. A daemon that reports no helper — an older
+// build, or one run without --oauth-refresh — says `off`, so the absence is
+// stated rather than left to be inferred from a missing line.
+//
+// A helper between runs reports no process, because its supervisor is waiting
+// out a restart backoff: calling that "running" would misinform exactly the
+// reader who consults this line because refreshing is not working.
+func daemonRefreshLine(info daemon.Info) string {
+	if info.Refresh == nil {
+		return "refresh: off"
+	}
+	line := "refresh: not running"
+	if info.Refresh.PID > 0 {
+		line = fmt.Sprintf("refresh: running (pid %d)", info.Refresh.PID)
+	}
+	if info.Refresh.Restarts != 0 {
+		line += fmt.Sprintf(", restarted %d %s", info.Refresh.Restarts, restartCount(info.Refresh.Restarts))
+	}
+	return line
+}
+
+// restartCount is the noun for n restarts.
+func restartCount(n int) string {
+	if n == 1 {
+		return "time"
+	}
+	return "times"
 }
 
 // daemonChildLine is one project child's line under the daemon's: its root,

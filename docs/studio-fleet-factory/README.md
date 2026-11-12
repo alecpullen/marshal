@@ -13,6 +13,10 @@ Start with the [design and decision record](design-notes.md), which distinguishe
 - [Original bootstrap design draft](bootstrap-factory-design.md) and [original implementation plan](bootstrap-factory-plan.md).
 - [Earlier exploration overview](early-exploration-readme.md), retained as historical context; the decision record takes precedence over its older open-question lists.
 
+## Active specification
+
+- [Existing-project connection and read-only discovery](existing-project-discovery-spec.md): the design output for gap 1 of the journey map, and the first slice taken from this archive. It states the approved behaviour as requirements, records what the code already provides, and lists the questions still open.
+
 ## Visual explorations
 
 The decision record links all approved and exploratory screens to their standalone HTML and high-resolution screenshots. These cover voice planning, narrated PR inspection, fleet/factory dashboards, work items, handoff, execution, human decisions, ready review, stalled-work recovery, agent/environment setup, hosts and disconnection, new/existing project onboarding, and the extensible workflow editor.

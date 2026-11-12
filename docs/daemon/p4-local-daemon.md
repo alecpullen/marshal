@@ -2339,7 +2339,158 @@ empty; `go vet` on the same five packages clean.
 
 ### Plan 9 — pinned projects
 
-Not yet run. [The plan](plans/2026-11-12-p4-9-pins-plan.md) fills this record.
+Run as `p4-9-pins`, nine tasks plus one fixup, one verified commit each, in a
+worktree off `main` at `c0fe0b03` (the docs commit over base `5f4754dc`).
+[The plan](plans/2026-11-12-p4-9-pins-plan.md) holds the task list.
+
+**What was built.**
+
+- `internal/app/host_hold.go`: `Hosts.Hold(root, cfg) (release, error)`,
+  `ProjectHost.hold`/`unhold` and the `holds` count. A hold opens the host,
+  creates the project row, starts the index work as a session's attach does,
+  and keeps the host open past its last session's release. `watchFor(cfg,
+  held)` makes the watcher run while any hold is taken, whatever
+  `indexing.watch` says, and `supervisor`/`indexKeyFor` take `held`, so taking
+  or releasing a hold restarts the index work only when it changes whether the
+  watcher runs.
+- `internal/acp/projecthold.go`: `project/hold` and `project/release`, with
+  `projectHoldFunc`, `hostsHold` (the headless config rule), `ProjectHoldParams`
+  and `ProjectHoldResult`. `projectHolds` keeps one release per repository
+  root, idempotent per root, and `agentHost.close` releases them all.
+  `RunWithViewers` sets `runConfig.hold`; `Run` and `ListenAndServe` leave it
+  unset, so only a `--viewers` child serves the methods, and a viewer
+  connection is refused as its lifecycle calls are.
+- `web/bridge/workspace.go`: `Pinned` on the workspace file and `Pinned()`,
+  `IsPinned` and `SetPinned` on `Workspace`. The pins are a list of their own,
+  so the settings `PUT` and `RemoveProject` cannot drop one, and a pin needs no
+  registered project.
+- `web/bridge/pins.go`: `pinPath`, `PinState`, `Fleet.Pin`, `Fleet.StartPinned`,
+  `Fleet.pinned`, `Fleet.holdLocked` and `Server.pinProject`. `armLinger` arms
+  nothing for a pinned root and its `fire` re-checks the pin;
+  `startProjectChildLocked` and `reinitProjectChild` hold a pinned root after
+  their handshake, logging a failure rather than failing the start.
+- `web/bridge/http.go` serves `pinPath` on `SocketHandler` only, so the TCP
+  listener answers it 404. `DaemonInfo.Pinned` and `DaemonChild.Pinned` report
+  the pins on `GET /api/daemon`.
+- `internal/daemon`: `PinState`, `Info.Pinned`, `ChildInfo.Pinned` and
+  `Client.Pin`.
+- `cmd/webbridge`: the local profile starts `fleet.StartPinned` on its own
+  goroutine after `ReattachAll`.
+- `cmd/marshal`: `marshal daemon pin [dir]` and `unpin [dir]`, `daemonPinTimeout`,
+  `daemonPinnedLines`, `, pinned` on a child's status line, and the new
+  subcommands in both usage texts.
+- `test/daemon/pin_test.go`: W12 and the unpin and missing-directory cases.
+
+**Where the plan was short, and how it was filled.**
+
+1. *The pin route's directory check.* The plan says a refused root answers 400
+   and that `Fleet.Pin` refuses a non-directory only for a pin (decision 4:
+   `unpin` must always drop a pin). The route as first written checked the
+   directory unconditionally, which would have refused an unpin of a root whose
+   directory is gone. The route now checks it only when `pinned` is true,
+   matching `Fleet.Pin`.
+2. *A hold on a project with no `.marshal`.* `ProjectHost.open` calls
+   `db.Open(db.Path(root))`, and SQLite cannot create a database whose parent
+   directory is missing. A runtime's start creates `<root>/.marshal`
+   (`runtime.go:1678`); a hold did not, so `marshal daemon pin` of a fresh
+   clone answered 502. `Hosts.Hold` now makes the directory the same way, with
+   `TestAHoldCreatesTheProjectsMarshalDirectory`. Task 8's test had worked
+   around it with a fixture `MkdirAll`; the fix makes that unnecessary but
+   harmless, and `TestTheChildsHoldIndexesItsProject` keeps its own.
+3. *The `watchFor` comment's decision number.* The Contracts block cites
+   "decision 6" for the held-watcher rule; the decisions list makes it 7. The
+   comment is applied verbatim as the plan wrote it.
+4. *`reinitProjectChild`'s failed handshake.* The hold follows a successful
+   handshake only, so the function now returns after a failed one. The old code
+   fell through to the end of the function, so the behaviour is unchanged.
+5. *`daemonPinnedLines`.* A root counts as served by any child whose root
+   matches, whatever that child's `pinned` flag says: a child fulfilling a pin
+   is the serving case, and its own line already says `, pinned`.
+
+**The manual run** (built `marshal` and `webbridge`, a scratch `HOME` and
+`MARSHAL_DATA_DIR` whose `daemon` directory is `0700`, a `git init`ed project
+holding `internal/pathutil`'s three files, `--profile local --addr off`):
+
+```
+=== pin
+pinned /private/tmp/p4-9-manual/proj
+=== status
+child /private/tmp/p4-9-manual/proj: version dev, 0 sessions, pinned
+=== fleet.json
+{"version": 11, "projects": null, "agents": [], "pinned": ["…/proj"]}
+=== status at t+35s (past the 30s linger)
+child /private/tmp/p4-9-manual/proj: version dev, 0 sessions, pinned
+=== the hold's startup scan, no session ever started
+projects: 1|…/proj|marshal   files: resolve.go safe.go safe_test.go   symbols: 16
+=== 8 files copied in, no indexing.watch set
+t+1s files=3   t+2s files=11
+=== bridge restarted, no attach
+child /private/tmp/p4-9-manual/proj: version dev, 0 sessions, pinned
+=== unpin
+unpinned /private/tmp/p4-9-manual/proj
+child /private/tmp/p4-9-manual/proj: version dev, 0 sessions
+child gone at t+31s; fleet.json's pinned list empty
+```
+
+The hold opened the host and ran its startup scan with no session, the watcher
+it turned on picked up eight new files within two seconds, the pin survived a
+daemon restart, and the unpin let the child stop after its linger. No embedding
+route was configured, so the pass indexed files and symbols and embedded
+nothing; `resolveEmbedderFromConfig` returned nil and no embedding route was
+tried. The spec's done-when asks for "a pinned project's embeddings refreshing
+after an edit", which this run cannot show: it shows the file index and symbols
+refreshing, and embeddings follow the same pass when a route resolves.
+
+**Verification** (worktree, `TMPDIR=/private/tmp/p4-9-suite`; the baseline at
+the starting commit had every package below passing, so no failure here is
+pre-existing):
+
+- Task 1: `go test ./internal/app/ -run 'Host|Hold'` — `ok 1.919s`; the whole
+  package `ok 9.211s`. Mutation: `watchFor` ignoring `held` fails
+  `TestAHeldHostWatchesWhateverTheConfigSays`, as required.
+- Task 3: `go test ./web/bridge/ -run 'Pin|Workspace'` — `ok 3.423s`.
+- Task 2: `go test ./internal/acp/ -run 'Hold|Viewer'` — `ok 0.624s`; the whole
+  package `ok 22.791s`, no budget test over budget.
+- Task 4: `go test ./web/bridge/ -run 'Pin|Linger|ProjectChild|Restarted'` —
+  `ok 1.591s`; the whole package `ok 82.976s`, no hang. Mutation: dropping the
+  hold from `reinitProjectChild` fails `TestARestartedPinnedChildHoldsAgain`,
+  as required.
+- Task 5: `go test ./web/bridge/ -run 'Pin|Daemon|Socket'` — `ok 1.761s`;
+  `TestWebIsStdlibOnly` `ok 0.181s`.
+- Task 6: `go test ./internal/daemon/` — `ok 1.330s`; `./cmd/webbridge/`
+  `ok 0.511s`; `go build ./cmd/webbridge` clean.
+- Task 7: `go test ./cmd/marshal/ -run 'Daemon'` — `ok 0.877s`; the whole
+  package `ok 3.075s`.
+- Task 8: `go test ./test/daemon/` — `ok 3.232s`; with
+  `MARSHAL_DAEMON_TEST_MARSHAL` set to a built binary, `-run Pin` `ok 2.282s`.
+  Mutation: `Hosts.Hold` skipping `hold` fails
+  `TestAPinnedProjectIndexesWithNoSession` at its third step, as required.
+- The `.marshal` fixup: `./internal/app/` `ok 9.071s`; `./test/daemon/`
+  `ok 3.243s`.
+- `gofmt -l internal cmd test web` — no output.
+- `go vet ./...` — clean; `GOOS=linux go vet ./web/... ./internal/daemon/
+  ./cmd/webbridge/` — clean; `GOOS=windows go vet ./web/bridge/` — clean.
+- `go test ./... -timeout 20m` — one failing package, `web/bridge`, with the
+  intermittent `TestRecipeRunMaxUSDSetsAPausingCapForTheRun` hang the base
+  commit recorded (1200s timeout). Alone, `go test ./web/bridge/ -count=1` is
+  `ok 86.251s`, and every other package passed.
+- `go test ./web/bridge/ -run TestWebIsStdlibOnly -count=1` — `ok 0.168s`.
+- `go test -race ./internal/app/ -run 'Hold|Host' -count=1` — `ok 9.879s`;
+  `go test -race ./web/bridge/ -run Pin -count=1` — `ok 1.746s`; no data race.
+- `CGO_ENABLED=1 go build -o marshal ./cmd/marshal`, then
+  `go test ./test/usability/... -run TestScripted -timeout 5m` — `ok 45.950s`.
+
+**Open for later plans.**
+
+- H12 is unchanged: no web UI pinning, and the project settings `PUT` is
+  untouched.
+- A pin whose child cannot start or hold stays pinned and is answered with its
+  error; the daemon's next start retries it, and `unpin` drops it. Nothing
+  retries on a timer.
+- The pin route is the socket's only, so the server profile has no pins.
+- A pinned project's index embeds only when an embedding route resolves, as a
+  session's does; a pin starts no language server.
+
 
 ### Plan 10 — fleet agents on the project's child
 

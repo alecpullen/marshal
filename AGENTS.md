@@ -55,7 +55,8 @@ client onto that child's viewer socket, relaying its frames unchanged. Plain
 `/detach` leave it running, and `marshal attach [id]` comes back to it. A
 daemon session on an untrusted project asks its TUI, as embedded mode does,
 and a trust there applies to the running session without restarting the
-program.
+program. `marshal daemon pin [dir]` keeps a project's child running with no
+session, with its index watched, until `marshal daemon unpin`.
 
 ### End-to-end and usability suites
 

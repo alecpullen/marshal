@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -482,6 +483,12 @@ func TestStartAcceptsUnknownCommandWithUnrestrictedTrust(t *testing.T) {
 }
 
 func TestStartAcceptsNpx(t *testing.T) {
+	// Exercise command validation without allowing npx to fetch or run a package.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "npx"), []byte("#!/bin/sh\nexit 1\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
 	cfg := &config.Config{
 		MCP: config.MCPConfig{
 			Servers: map[string]config.MCPServerConfig{
@@ -490,7 +497,7 @@ func TestStartAcceptsNpx(t *testing.T) {
 		},
 	}
 	m := NewManager(cfg)
-	// npx may not be installed in the test env; we just want validation to pass.
+	// The fixture exits immediately; we only care that validation accepts npx.
 	for _, f := range m.Start(context.Background()) {
 		msg := f.Error()
 		if strings.Contains(msg, "deny-list") || strings.Contains(msg, "allow-list") {

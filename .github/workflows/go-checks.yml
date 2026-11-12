@@ -1,13 +1,23 @@
-name: go-checks
+name: checks
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  full-suite:
+  go:
+    name: Go tests and vet
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -17,3 +27,50 @@ jobs:
         run: CGO_ENABLED=1 go test -p=1 ./... -count=1 -timeout 20m
       - name: Go vet
         run: CGO_ENABLED=1 go vet ./...
+
+  usability:
+    name: Scripted usability
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build marshal
+        run: CGO_ENABLED=1 go build ./cmd/marshal
+      - name: Run scripted usability tests
+        env:
+          USABILITY_REQUIRE_BINARY: "1"
+          USABILITY_REPORT_DIR: ${{ runner.temp }}/marshal-usability
+        run: go test ./test/usability/... -run TestScripted -v -count=1 -timeout 5m
+      - name: Upload usability report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: usability-report
+          path: ${{ runner.temp }}/marshal-usability/
+          if-no-files-found: ignore
+
+  web:
+    name: Web UI tests and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web/ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/ui/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - name: Check committed embedded assets
+        working-directory: .
+        run: |
+          git diff --exit-code -- web/bridge/static
+          test -z "$(git ls-files --others --exclude-standard -- web/bridge/static)"

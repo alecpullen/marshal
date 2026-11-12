@@ -269,10 +269,9 @@ seams that implement it.
   only its own entry. Provider integration tests carry the `integration` build
   tag and are excluded from ordinary builds. Do not enable either to make a
   unit test pass.
-- CI: `usability.yml` runs only `./test/usability/...`; the full `go test ./...`
-  suite runs in `release.yaml` on tag pushes. Full-suite regressions therefore
-  surface at release time — run the suite locally before assuming a change is
-  clean.
+- CI runs the full Go suite, scripted usability, and web UI tests and build on
+  pull requests and main. Tag releases run the same checks before creating a
+  draft. See `docs/testing-ci-audit.md` for local commands and tradeoffs.
 
 ## Specs and plans
 

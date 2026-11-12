@@ -18,12 +18,14 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/daemon"
 	"marshal/internal/llm/provider"
+	"marshal/internal/repo"
 )
 
 // daemonClient is the part of daemon.Client that `status` needs, so a test
 // answers with a scripted daemon instead of opening a socket.
 type daemonClient interface {
 	Info(ctx context.Context) (daemon.Info, error)
+	Pin(ctx context.Context, root string, pinned bool) (daemon.PinState, error)
 }
 
 // The two seams a test replaces: the service manager and the socket client.
@@ -39,6 +41,10 @@ var daemonClientFor = func(socket string) daemonClient {
 // daemonStatusTimeout bounds the socket call: `status` has to answer even
 // when the service is wedged, so a silent socket is reported, not waited on.
 const daemonStatusTimeout = 2 * time.Second
+
+// daemonPinTimeout bounds a pin, which may start a child and resolve its
+// environment.
+const daemonPinTimeout = 60 * time.Second
 
 // daemonReadyPoll is the gap between readiness probes, and daemonStartTimeout
 // the longest wait for a freshly loaded service to answer. It is a var so a
@@ -64,7 +70,7 @@ var daemonStartTimeout = 5 * time.Second
 // stderr) so main.go's dispatch is uniform and tests can substitute streams.
 func runDaemon(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("marshal daemon: a subcommand is required (install|start|stop|status|uninstall)")
+		return errors.New("marshal daemon: a subcommand is required (install|start|stop|status|pin|unpin|uninstall)")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -74,10 +80,14 @@ func runDaemon(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		return runDaemonService(ctx, sub, rest, stdout, stderr)
 	case "status":
 		return runDaemonStatus(ctx, rest, stdout, stderr)
+	case "pin":
+		return runDaemonPin(ctx, rest, true, stdout, stderr)
+	case "unpin":
+		return runDaemonPin(ctx, rest, false, stdout, stderr)
 	case "refresh":
 		return runDaemonRefresh(ctx, rest, stderr)
 	default:
-		return fmt.Errorf("marshal daemon: unknown subcommand %q (install|start|stop|status|uninstall)", sub)
+		return fmt.Errorf("marshal daemon: unknown subcommand %q (install|start|stop|status|pin|unpin|uninstall)", sub)
 	}
 }
 
@@ -367,6 +377,63 @@ func runDaemonStatus(ctx context.Context, args []string, stdout, stderr io.Write
 			fmt.Fprintf(stdout, "  environment: %s\n", warning)
 		}
 	}
+	for _, line := range daemonPinnedLines(info) {
+		fmt.Fprintln(stdout, line)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// pin, unpin
+// ---------------------------------------------------------------------------
+
+// runDaemonPin implements `marshal daemon pin [dir]` and `unpin [dir]`.
+//
+// The directory defaults to the working directory and is resolved to its
+// repository root first, exactly as daemon mode resolves the project it
+// serves: a pin names a project, and a project is anchored at its git root.
+// The daemon does the pinning, so the answer is its answer.
+func runDaemonPin(ctx context.Context, args []string, pinned bool, stdout, stderr io.Writer) error {
+	sub := "unpin"
+	if pinned {
+		sub = "pin"
+	}
+	if len(args) > 1 {
+		return fmt.Errorf("marshal daemon %s: unexpected argument %q", sub, args[1])
+	}
+	dir := ""
+	if len(args) == 1 {
+		dir = args[0]
+	}
+	if dir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("marshal daemon %s: resolve the working directory: %w", sub, err)
+		}
+		dir = wd
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return fmt.Errorf("marshal daemon %s: resolve %q: %w", sub, dir, err)
+	}
+	root := repo.Root(abs)
+
+	home, err := daemonHome()
+	if err != nil {
+		return err
+	}
+	socket := daemon.PathsFor(home).Socket
+
+	pinCtx, cancel := context.WithTimeout(ctx, daemonPinTimeout)
+	defer cancel()
+	if _, err := daemonClientFor(socket).Pin(pinCtx, root, pinned); err != nil {
+		return fmt.Errorf("the daemon is not answering on %s: %w", socket, err)
+	}
+	if pinned {
+		fmt.Fprintf(stdout, "pinned %s\n", root)
+		return nil
+	}
+	fmt.Fprintf(stdout, "unpinned %s\n", root)
 	return nil
 }
 
@@ -447,7 +514,28 @@ func daemonChildLine(child daemon.ChildInfo, marshalVersion string) string {
 	if childVersion != marshalVersion {
 		line += fmt.Sprintf(" (this marshal %s)", marshalVersion)
 	}
+	if child.Pinned {
+		line += ", pinned"
+	}
 	return line
+}
+
+// daemonPinnedLines are the `pinned <root>: not running` lines, one per
+// pinned root no child serves: a pin outlives the child that served it, so a
+// pinned project with nothing running is the state a reader most needs told.
+func daemonPinnedLines(info daemon.Info) []string {
+	served := make(map[string]bool, len(info.Children))
+	for _, child := range info.Children {
+		served[child.Root] = true
+	}
+	var lines []string
+	for _, root := range info.Pinned {
+		if served[root] {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("pinned %s: not running", root))
+	}
+	return lines
 }
 
 // sessionCount is the noun for n sessions.

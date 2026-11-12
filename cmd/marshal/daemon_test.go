@@ -20,6 +20,19 @@ type fakeDaemonClient struct {
 	info   daemon.Info
 	err    error
 	onInfo func(context.Context)
+
+	// pinState and pinErr are the scripted answer to Pin; pinCalls, when
+	// set, records every call, since the fake is copied into the seam and
+	// so cannot count on itself.
+	pinState daemon.PinState
+	pinErr   error
+	pinCalls *[]pinCall
+}
+
+// pinCall is one Pin the fake saw.
+type pinCall struct {
+	root   string
+	pinned bool
 }
 
 func (c fakeDaemonClient) Info(ctx context.Context) (daemon.Info, error) {
@@ -27,6 +40,16 @@ func (c fakeDaemonClient) Info(ctx context.Context) (daemon.Info, error) {
 		c.onInfo(ctx)
 	}
 	return c.info, c.err
+}
+
+func (c fakeDaemonClient) Pin(ctx context.Context, root string, pinned bool) (daemon.PinState, error) {
+	if c.pinCalls != nil {
+		*c.pinCalls = append(*c.pinCalls, pinCall{root: root, pinned: pinned})
+	}
+	if c.pinErr != nil {
+		return daemon.PinState{}, c.pinErr
+	}
+	return c.pinState, nil
 }
 
 // daemonTestEnv isolates a daemon test: a temporary home and none of the
@@ -448,6 +471,17 @@ func TestDaemonChildLine(t *testing.T) {
 			marshalVersion: "dev",
 			want:           "child /work/three: version dev, 0 sessions",
 		},
+		{
+			name: "a pinned child says so",
+			child: daemon.ChildInfo{
+				Root:     "/work/four",
+				Version:  "0.9.0",
+				Sessions: []daemon.SessionInfo{{ID: "s"}},
+				Pinned:   true,
+			},
+			marshalVersion: "0.9.0",
+			want:           "child /work/four: version 0.9.0, 1 session, pinned",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -455,6 +489,30 @@ func TestDaemonChildLine(t *testing.T) {
 				t.Errorf("daemonChildLine() = %q, want %q", got, c.want)
 			}
 		})
+	}
+}
+
+// TestDaemonPinnedLines: a pinned root a child serves is that child's line,
+// so it gets no line of its own; a pinned root nothing serves is reported,
+// because a pin outlives the child that served it.
+func TestDaemonPinnedLines(t *testing.T) {
+	info := daemon.Info{
+		Pinned: []string{"/work/one", "/work/two"},
+		Children: []daemon.ChildInfo{
+			{Root: "/work/one", Pinned: true},
+		},
+	}
+	got := daemonPinnedLines(info)
+	if len(got) != 1 {
+		t.Fatalf("daemonPinnedLines() = %v, want one line for the unserved root", got)
+	}
+	if want := "pinned /work/two: not running"; got[0] != want {
+		t.Errorf("daemonPinnedLines()[0] = %q, want %q", got[0], want)
+	}
+
+	// A daemon with no pins at all says nothing.
+	if got := daemonPinnedLines(daemon.Info{}); len(got) != 0 {
+		t.Errorf("daemonPinnedLines() = %v, want no lines for a daemon with no pins", got)
 	}
 }
 
@@ -544,6 +602,114 @@ func TestDaemonStatusFailsWhenTheSocketIsSilent(t *testing.T) {
 	}
 	if !strings.Contains(lines[1], socket) || !strings.Contains(lines[1], "not answering") {
 		t.Errorf("socket line = %q, want %q reported as not answering", lines[1], socket)
+	}
+}
+
+// TestDaemonPinResolvesTheRepositoryRoot: a pin names a project, so a
+// directory inside a repository is pinned at the repository root, and the
+// line printed names that root.
+func TestDaemonPinResolvesTheRepositoryRoot(t *testing.T) {
+	daemonTestEnv(t)
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(root, "internal", "pkg")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var pins []pinCall
+	fakeDaemonSocket(t, fakeDaemonClient{pinCalls: &pins})
+
+	var stdout, stderr bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"pin", sub},
+		strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("runDaemon pin: %v\nstderr: %s", err, stderr.String())
+	}
+	if len(pins) != 1 {
+		t.Fatalf("the daemon was pinned %d times, want once", len(pins))
+	}
+	if pins[0].root != root {
+		t.Errorf("pinned root = %q, want the repository root %q", pins[0].root, root)
+	}
+	if !pins[0].pinned {
+		t.Error("daemon pin asked the daemon to unpin")
+	}
+	if want := "pinned " + root + "\n"; stdout.String() != want {
+		t.Errorf("pin printed %q, want %q", stdout.String(), want)
+	}
+}
+
+// TestDaemonUnpinDefaultsToTheWorkingDirectory: with no argument, unpin
+// unpins the working directory.
+func TestDaemonUnpinDefaultsToTheWorkingDirectory(t *testing.T) {
+	daemonTestEnv(t)
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	var pins []pinCall
+	fakeDaemonSocket(t, fakeDaemonClient{pinCalls: &pins})
+
+	var stdout, stderr bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"unpin"},
+		strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("runDaemon unpin: %v\nstderr: %s", err, stderr.String())
+	}
+	if len(pins) != 1 {
+		t.Fatalf("the daemon was unpinned %d times, want once", len(pins))
+	}
+	if pins[0].root != dir {
+		t.Errorf("unpinned root = %q, want the working directory %q", pins[0].root, dir)
+	}
+	if pins[0].pinned {
+		t.Error("daemon unpin asked the daemon to pin")
+	}
+	if want := "unpinned " + dir + "\n"; stdout.String() != want {
+		t.Errorf("unpin printed %q, want %q", stdout.String(), want)
+	}
+}
+
+// TestDaemonPinRefusesTwoArguments: pin takes one directory, so a second
+// argument is refused by name and the daemon is never asked.
+func TestDaemonPinRefusesTwoArguments(t *testing.T) {
+	daemonTestEnv(t)
+
+	var pins []pinCall
+	fakeDaemonSocket(t, fakeDaemonClient{pinCalls: &pins})
+
+	err := runDaemon(context.Background(), []string{"pin", t.TempDir(), "extra"},
+		strings.NewReader(""), io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("pin with two arguments succeeded, want an error")
+	}
+	if !strings.Contains(err.Error(), "extra") {
+		t.Errorf("error = %q, want it to name %q", err, "extra")
+	}
+	if len(pins) != 0 {
+		t.Errorf("the daemon was pinned %d times, want none", len(pins))
+	}
+}
+
+// TestDaemonPinReportsASilentDaemon: a daemon that does not answer is an
+// error naming its socket, as `status` says it.
+func TestDaemonPinReportsASilentDaemon(t *testing.T) {
+	home := daemonTestEnv(t)
+	fakeDaemonSocket(t, fakeDaemonClient{pinErr: errors.New("dial unix: connect: no such file or directory")})
+
+	var stdout, stderr bytes.Buffer
+	err := runDaemon(context.Background(), []string{"pin", t.TempDir()},
+		strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("pin succeeded against a silent daemon, want an error")
+	}
+	socket := daemon.PathsFor(home).Socket
+	if !strings.Contains(err.Error(), "not answering") || !strings.Contains(err.Error(), socket) {
+		t.Errorf("error = %q, want it to say the daemon is not answering on %q", err, socket)
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("pin printed %q, want nothing for a silent daemon", stdout.String())
 	}
 }
 
@@ -693,7 +859,7 @@ func TestDaemonRejectsUnknownSubcommands(t *testing.T) {
 			if !strings.Contains(err.Error(), c.want) {
 				t.Errorf("error = %q, want it to mention %q", err, c.want)
 			}
-			for _, sub := range []string{"install", "start", "stop", "status", "uninstall"} {
+			for _, sub := range []string{"install", "start", "stop", "status", "pin", "unpin", "uninstall"} {
 				if !strings.Contains(err.Error(), sub) {
 					t.Errorf("error = %q, want it to list %q", err, sub)
 				}

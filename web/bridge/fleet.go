@@ -1702,19 +1702,40 @@ func (f *Fleet) ReconcileWorktrees(ctx context.Context) {
 
 const fleetStreamKey = "fleet"
 
-func (f *Fleet) attachClassifier(rt *agentRuntime) {
-	prev := rt.child.OnNotification
-	rt.child.OnNotification = func(method string, params json.RawMessage) {
+// agentOf names the agent a session belongs to; ok is false for a session
+// that is no agent's.
+type agentOf func(sessionID string) (agentID string, ok bool)
+
+// agentForSession is the fleet's session map as an agentOf.
+func (f *Fleet) agentForSession(sessionID string) (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id, ok := f.sessionAgent[sessionID]
+	return id, ok
+}
+
+// installClassifier chains the fleet's classifier onto child's notifications
+// and reg's events, keying each delta by agentOf's answer. It must run before
+// child starts, as Attach must: the hook fields are read unsynchronized by the
+// child's read loop.
+func (f *Fleet) installClassifier(child *Child, reg *Registry, agentOf agentOf) {
+	prev := child.OnNotification
+	child.OnNotification = func(method string, params json.RawMessage) {
 		if prev != nil {
 			prev(method, params)
 		}
 		if d, ok := classifyNotification(method, params); ok {
 			// The live state and fleet log are keyed by agent id, but
-			// notifications carry the ACP session id. Each runtime owns
-			// exactly one session, so the agent id is rt.id.
-			d.SessionID = rt.id
+			// notifications carry the ACP session id. A child with one
+			// session answers its runtime's id for every session; a project
+			// child answers from the fleet's session map.
+			agentID, known := agentOf(d.SessionID)
+			if !known {
+				return
+			}
+			d.SessionID = agentID
 			if d.Kind == "run" || d.Kind == "watch" {
-				d.AgentID = rt.id
+				d.AgentID = agentID
 			}
 			if d.Kind == "run" {
 				d.At = f.now().UnixMilli()
@@ -1722,7 +1743,7 @@ func (f *Fleet) attachClassifier(rt *agentRuntime) {
 			if d.Kind == "telemetry" && len(d.Usage) > 0 {
 				// Off the read goroutine: the budget check may need the
 				// control agent, and a notification callback must not block.
-				go f.recordUsage(rt.id, d.Usage)
+				go f.recordUsage(agentID, d.Usage)
 			}
 			f.live.apply(d)
 			f.emit(d)
@@ -1733,18 +1754,28 @@ func (f *Fleet) attachClassifier(rt *agentRuntime) {
 	// they never pass through OnNotification. Registry.emitEvent is the
 	// only place they surface, so chain onto OnEvent (installed by Attach,
 	// which runs first) to learn what an agent is parked on.
-	prevEvent := rt.reg.OnEvent
-	rt.reg.OnEvent = func(sessionID string, payload any) {
+	prevEvent := reg.OnEvent
+	reg.OnEvent = func(sessionID string, payload any) {
 		if prevEvent != nil {
 			prevEvent(sessionID, payload)
 		}
 		if p, ok := classifyRegistryEvent(payload); ok {
-			f.live.observePending(rt.id, p)
+			agentID, known := agentOf(sessionID)
+			if !known {
+				return
+			}
+			f.live.observePending(agentID, p)
 			f.emit(fleetDelta{
-				Kind: "pending", SessionID: rt.id, PendingKind: p.kind,
+				Kind: "pending", SessionID: agentID, PendingKind: p.kind,
 			})
 		}
 	}
+}
+
+// attachClassifier is installClassifier for a runtime whose child owns exactly
+// one session: every session it sees is the runtime's.
+func (f *Fleet) attachClassifier(rt *agentRuntime) {
+	f.installClassifier(rt.child, rt.reg, func(string) (string, bool) { return rt.id, true })
 }
 
 func (f *Fleet) Snapshot() []AgentStatus {

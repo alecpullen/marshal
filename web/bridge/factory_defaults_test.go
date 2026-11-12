@@ -453,3 +453,133 @@ func TestFactoryValidateDefaults(t *testing.T) {
 		t.Fatalf("validator filled the defaults: %+v", d)
 	}
 }
+
+// assertPreSliceConfiguration asserts, field by field, the configuration the
+// bootstrap factory produced for a handoff that states its own target branch
+// and routings, before project defaults existed. The host and the three
+// limits are the values normalisation contributes, so they appear here even
+// though the handoff never set them.
+func assertPreSliceConfiguration(t *testing.T, got FactoryConfig, root string) {
+	t.Helper()
+	want := FactoryConfig{
+		RepoID:                   "repo-1",
+		ProjectRoot:              root,
+		HostID:                   "local",
+		TargetBranch:             "main",
+		Native:                   true,
+		ImplementerRouting:       factoryDefaultsRouting(),
+		ReviewerRouting:          factoryDefaultsRouting(),
+		NoRequiredCIAcknowledged: true,
+		MaxRounds:                5,
+		CIPollSeconds:            15,
+		CIWaitSeconds:            1800,
+	}
+	if got.RepoID != want.RepoID {
+		t.Errorf("repoId = %q, want %q", got.RepoID, want.RepoID)
+	}
+	if got.ProjectRoot != want.ProjectRoot {
+		t.Errorf("projectRoot = %q, want %q", got.ProjectRoot, want.ProjectRoot)
+	}
+	if got.HostID != want.HostID {
+		t.Errorf("hostId = %q, want the built-in %q", got.HostID, want.HostID)
+	}
+	if got.TargetBranch != want.TargetBranch {
+		t.Errorf("targetBranch = %q, want %q", got.TargetBranch, want.TargetBranch)
+	}
+	if got.Workspace != "" {
+		t.Errorf("workspace = %q, want empty", got.Workspace)
+	}
+	if got.Native != want.Native {
+		t.Errorf("native = %v, want %v", got.Native, want.Native)
+	}
+	if !bytes.Equal(got.ImplementerRouting, want.ImplementerRouting) {
+		t.Errorf("implementerRouting = %q, want %q", got.ImplementerRouting, want.ImplementerRouting)
+	}
+	if !bytes.Equal(got.ReviewerRouting, want.ReviewerRouting) {
+		t.Errorf("reviewerRouting = %q, want %q", got.ReviewerRouting, want.ReviewerRouting)
+	}
+	if got.ReviewerInstructions != "" {
+		t.Errorf("reviewerInstructions = %q, want empty", got.ReviewerInstructions)
+	}
+	if got.ImplementerAuto {
+		t.Error("implementerAuto = true, want false")
+	}
+	if got.ExpectedChecks != nil {
+		t.Errorf("expectedChecks = %+v, want nil", got.ExpectedChecks)
+	}
+	if got.NoRequiredCIAcknowledged != want.NoRequiredCIAcknowledged {
+		t.Errorf("noRequiredCiAcknowledged = %v, want %v", got.NoRequiredCIAcknowledged, want.NoRequiredCIAcknowledged)
+	}
+	if got.MaxRounds != want.MaxRounds {
+		t.Errorf("maxRounds = %d, want the built-in %d", got.MaxRounds, want.MaxRounds)
+	}
+	if got.CIPollSeconds != want.CIPollSeconds {
+		t.Errorf("ciPollSeconds = %d, want the built-in %d", got.CIPollSeconds, want.CIPollSeconds)
+	}
+	if got.CIWaitSeconds != want.CIWaitSeconds {
+		t.Errorf("ciWaitSeconds = %d, want the built-in %d", got.CIWaitSeconds, want.CIWaitSeconds)
+	}
+	// Finally the whole configuration, which also pins nil-versus-empty for
+	// the fields asserted above individually.
+	sameFactoryConfig(t, got, want)
+}
+
+// TestProjectWithoutDefaultsBehavesExactlyAsToday pins the specification's
+// §6 and §10 guarantee that project defaults are purely additive: where there
+// are none to apply, the create path produces exactly the configuration the
+// bootstrap factory produced before this slice.
+//
+// Three states are indistinguishable to resolution — no settings record at
+// all, a record whose FactoryDefaults is nil, and an all-zero FactoryDefaults
+// object — so all three are pinned against the same field-by-field
+// expectation, including the built-in host, round count and CI limits that
+// normalisation contributes.
+func TestProjectWithoutDefaultsBehavesExactlyAsToday(t *testing.T) {
+	f := newFactoryDefaultsFixture(t)
+	// A settings record that exists and carries an intake mapping but no
+	// factory defaults: the intake project must not stand in for them.
+	nilDefaults := t.TempDir()
+	if err := f.fleet.ws.AddProject(nilDefaults); err != nil {
+		t.Fatal(err)
+	}
+	f.putSettings(t, nilDefaults, ProjectSettings{Intake: ProjectIntake{RepoID: "repo-1"}})
+	// An all-zero defaults object: present, valid, and contributing nothing.
+	zeroDefaults := t.TempDir()
+	if err := f.fleet.ws.AddProject(zeroDefaults); err != nil {
+		t.Fatal(err)
+	}
+	f.putSettings(t, zeroDefaults, ProjectSettings{FactoryDefaults: &FactoryDefaults{}})
+
+	for _, tc := range []struct {
+		key  string
+		name string
+		root string
+	}{
+		// f.root is registered and trusted, and nothing has ever been stored
+		// for it: the fixture registers the repository, not its settings.
+		{key: "no-record", name: "no settings record", root: f.root},
+		{key: "nil-defaults", name: "nil factory defaults", root: nilDefaults},
+		{key: "zero-defaults", name: "zero-valued factory defaults", root: zeroDefaults},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := f.handoff("no-defaults-"+tc.key, tc.root)
+			// The fields a handoff had to state itself before this slice,
+			// because nothing else could supply them.
+			req.Config.TargetBranch = "main"
+			req.Config.ImplementerRouting = factoryDefaultsRouting()
+			req.Config.ReviewerRouting = factoryDefaultsRouting()
+			item := f.created(t, req)
+			assertPreSliceConfiguration(t, item.Draft.Config, tc.root)
+			// The stored item carries the same configuration the response
+			// showed; nothing rewrites it afterwards.
+			stored, err := f.store.Get(item.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertPreSliceConfiguration(t, stored.Draft.Config, tc.root)
+			if item.State != "draft" || stored.State != "draft" {
+				t.Fatalf("state = %q/%q, want draft", item.State, stored.State)
+			}
+		})
+	}
+}

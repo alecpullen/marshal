@@ -587,3 +587,182 @@ func TestFactoryRetryReplacementIsNotReResolved(t *testing.T) {
 		t.Fatalf("replacement configuration was not taken as written: %+v", snapshot)
 	}
 }
+
+// TestFactoryBootstrapAcceptanceContractStillHolds pins the specification's
+// §4.8 list: project defaults add a source of configuration without changing
+// a single rule of the bootstrap factory's acceptance contract. Every rule is
+// exercised twice — against a project with no defaults and against a project
+// whose defaults are a full set — so a resolution that weakened a rule could
+// not hide behind either state.
+func TestFactoryBootstrapAcceptanceContractStillHolds(t *testing.T) {
+	f := newFactoryDefaultsFixture(t)
+	withDefaults := t.TempDir()
+	if err := f.fleet.ws.AddProject(withDefaults); err != nil {
+		t.Fatal(err)
+	}
+	// A full set of defaults, minus workspaces: a workspace default conflicts
+	// with every native handoff (§4.7), and an offline test cannot resolve a
+	// published workspace. Everything else a project can set is set here.
+	f.putSettings(t, withDefaults, ProjectSettings{FactoryDefaults: &FactoryDefaults{
+		TargetBranch:         "main",
+		HostID:               "local",
+		ImplementerRouting:   factoryDefaultsRouting(),
+		ReviewerRouting:      factoryDefaultsRouting(),
+		ReviewerInstructions: "be terse",
+		ExpectedChecks:       []FactoryCheckKey{{Kind: "check_run", Name: "build", AppID: 7}},
+		MaxRounds:            9,
+		CIPollSeconds:        30,
+		CIWaitSeconds:        900,
+	}})
+
+	projects := []struct {
+		name string
+		root string
+		// limits are what a handoff that sets none must end up with: the
+		// built-in values when nothing supplies them, the project's own when
+		// its defaults do.
+		maxRounds     int
+		ciPollSeconds int
+		ciWaitSeconds int
+	}{
+		{"no defaults", f.root, 5, 15, 1800},
+		{"full defaults", withDefaults, 9, 30, 900},
+	}
+	for _, project := range projects {
+		project := project
+		t.Run(project.name, func(t *testing.T) {
+			// base is the smallest handoff a project with no defaults accepts:
+			// the fields only a handoff can supply. Request ids are prefixed
+			// with the project, because the journal's replay identity is
+			// global to the store.
+			base := func(name string) FactoryCreate {
+				req := f.handoff(project.name+"/"+name, project.root)
+				req.Config.TargetBranch = "main"
+				req.Config.ImplementerRouting = factoryDefaultsRouting()
+				req.Config.ReviewerRouting = factoryDefaultsRouting()
+				return req
+			}
+			items := func() int { return len(f.store.List()) }
+			expectRejected := func(t *testing.T, rec *httptest.ResponseRecorder, status int, wants ...string) {
+				t.Helper()
+				if rec.Code != status {
+					t.Fatalf("status = %d, want %d: %s", rec.Code, status, rec.Body.String())
+				}
+				for _, want := range wants {
+					if !strings.Contains(rec.Body.String(), want) {
+						t.Fatalf("error does not name %q: %s", want, rec.Body.String())
+					}
+				}
+			}
+
+			// §4.8: the request id, title, plan and repository are still
+			// required, and no default can supply one of them.
+			for _, tc := range []struct {
+				name string
+				drop func(*FactoryCreate)
+			}{
+				{"requestId", func(r *FactoryCreate) { r.RequestID = "" }},
+				{"title", func(r *FactoryCreate) { r.Title = "" }},
+				{"plan", func(r *FactoryCreate) { r.Plan = "" }},
+				{"repository", func(r *FactoryCreate) { r.Config.RepoID = "" }},
+			} {
+				before := items()
+				req := base("identity-" + tc.name)
+				tc.drop(&req)
+				expectRejected(t, f.create(t, req), http.StatusBadRequest, "requestId, title, plan and repository required")
+				if got := items(); got != before {
+					t.Fatalf("a handoff missing %s created %d work items", tc.name, got-before)
+				}
+			}
+
+			// §4.8: the plan and specification size limit is unchanged.
+			before := items()
+			tooLong := base("plan-over-limit")
+			tooLong.Plan = strings.Repeat("x", factoryImportLimit+1)
+			expectRejected(t, f.create(t, tooLong), http.StatusBadRequest, "1 MiB")
+			combined := base("plan-and-spec-over-limit")
+			combined.Plan = strings.Repeat("x", factoryImportLimit/2)
+			combined.Spec = strings.Repeat("y", factoryImportLimit/2+1)
+			expectRejected(t, f.create(t, combined), http.StatusBadRequest, "1 MiB")
+			if got := items(); got != before {
+				t.Fatalf("oversized handoffs created %d work items", got-before)
+			}
+			// A handoff at exactly the limit is still accepted, so the rule is
+			// the unchanged "more than 1 MiB" and not a stricter one.
+			atLimit := f.created(t, func() FactoryCreate {
+				req := base("plan-at-limit")
+				req.Plan = strings.Repeat("x", factoryImportLimit)
+				return req
+			}())
+			if len(atLimit.Draft.Plan) != factoryImportLimit {
+				t.Fatalf("stored plan = %d bytes, want the %d-byte plan it accepted", len(atLimit.Draft.Plan), factoryImportLimit)
+			}
+
+			// §4.8: the local-host requirement is unchanged, and a handoff
+			// that names a remote host is still rejected even when the
+			// project's default is local.
+			before = items()
+			remote := base("remote-host")
+			remote.Config.HostID = "remote"
+			expectRejected(t, f.create(t, remote), http.StatusBadRequest, "local host")
+			if got := items(); got != before {
+				t.Fatalf("a remote-host handoff created %d work items", got-before)
+			}
+
+			// §4.8: the built-in limits are unchanged, and a project default
+			// may set them explicitly — resolution runs before normalisation,
+			// so the project's values win where it sets them.
+			config := f.created(t, base("limits")).Draft.Config
+			if config.HostID != "local" {
+				t.Fatalf("hostId = %q, want the built-in %q", config.HostID, "local")
+			}
+			if config.MaxRounds != project.maxRounds || config.CIPollSeconds != project.ciPollSeconds || config.CIWaitSeconds != project.ciWaitSeconds {
+				t.Fatalf("limits = %d/%d/%d, want %d/%d/%d",
+					config.MaxRounds, config.CIPollSeconds, config.CIWaitSeconds,
+					project.maxRounds, project.ciPollSeconds, project.ciWaitSeconds)
+			}
+			// A handoff that sets the limits itself wins over both sources.
+			explicit := base("limits-set-by-handoff")
+			explicit.Config.MaxRounds = 2
+			explicit.Config.CIPollSeconds = 5
+			explicit.Config.CIWaitSeconds = 60
+			config = f.created(t, explicit).Draft.Config
+			if config.MaxRounds != 2 || config.CIPollSeconds != 5 || config.CIWaitSeconds != 60 {
+				t.Fatalf("limits = %d/%d/%d, want the handoff's 2/5/60", config.MaxRounds, config.CIPollSeconds, config.CIWaitSeconds)
+			}
+
+			// §4.8: a handoff must select expected CI checks or acknowledge
+			// that none are required. An explicitly empty list is still an
+			// empty list for that rule, in both projects.
+			unacknowledged := base("ci-unacknowledged")
+			unacknowledged.Config.ExpectedChecks = []FactoryCheckKey{}
+			unacknowledged.Config.NoRequiredCIAcknowledged = false
+			draft := f.created(t, unacknowledged)
+			expectRejected(t, doReq(t, f.srv, http.MethodPost, "/api/factory/items/"+draft.ID+"/commands",
+				FactoryCommand{RequestID: project.name + "/approve-unacknowledged", Kind: "approve", ExpectedVersion: 1}, f.headers()),
+				http.StatusUnprocessableEntity, "expected CI checks or acknowledge none are required")
+			// The rejected approval left the item a draft, as it does today.
+			if stored, err := f.store.Get(draft.ID); err != nil || stored.State != "draft" || stored.Version != 1 {
+				t.Fatalf("rejected approval changed the item: %v %+v", err, stored)
+			}
+			// Acknowledging that none are required satisfies the rule.
+			acknowledged := base("ci-acknowledged")
+			acknowledged.Config.ExpectedChecks = []FactoryCheckKey{}
+			created := f.created(t, acknowledged)
+			if rec := doReq(t, f.srv, http.MethodPost, "/api/factory/items/"+created.ID+"/commands",
+				FactoryCommand{RequestID: project.name + "/approve-acknowledged", Kind: "approve", ExpectedVersion: 1}, f.headers()); rec.Code != http.StatusOK {
+				t.Fatalf("acknowledged approval: status %d, body %s", rec.Code, rec.Body.String())
+			}
+			// Selecting an expected check satisfies it without the
+			// acknowledgement.
+			selected := base("ci-selected")
+			selected.Config.ExpectedChecks = []FactoryCheckKey{{Kind: "commit_status", Name: "gate"}}
+			selected.Config.NoRequiredCIAcknowledged = false
+			created = f.created(t, selected)
+			if rec := doReq(t, f.srv, http.MethodPost, "/api/factory/items/"+created.ID+"/commands",
+				FactoryCommand{RequestID: project.name + "/approve-selected", Kind: "approve", ExpectedVersion: 1}, f.headers()); rec.Code != http.StatusOK {
+				t.Fatalf("approval with selected checks: status %d, body %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}

@@ -487,6 +487,125 @@ func TestProjectSettingsRoundTripAndRemoveWithProject(t *testing.T) {
 	}
 }
 
+func TestPinsSurviveASaveAndALoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.json")
+	w := NewWorkspace(path)
+	if _, err := w.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.SetPinned("/home/u/zeta", true); err != nil {
+		t.Fatalf("SetPinned: %v", err)
+	}
+	if err := w.SetPinned("/home/u/alpha", true); err != nil {
+		t.Fatalf("SetPinned: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Index(string(data), "/home/u/alpha") > strings.Index(string(data), "/home/u/zeta") {
+		t.Fatalf("saved pins are not sorted:\n%s", data)
+	}
+	reloaded := NewWorkspace(path)
+	if _, err := reloaded.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := reloaded.Pinned()
+	want := []string{"/home/u/alpha", "/home/u/zeta"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("Pinned() = %v, want %v", got, want)
+	}
+}
+
+func TestUnpinningRemovesOnlyThatRoot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.json")
+	w := NewWorkspace(path)
+	if _, err := w.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.SetPinned("/home/u/a", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.SetPinned("/home/u/b", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.SetPinned("/home/u/a", false); err != nil {
+		t.Fatalf("SetPinned(false): %v", err)
+	}
+	if w.IsPinned("/home/u/a") {
+		t.Error("/home/u/a must be unpinned")
+	}
+	if !w.IsPinned("/home/u/b") {
+		t.Error("/home/u/b must stay pinned")
+	}
+	reloaded := NewWorkspace(path)
+	if _, err := reloaded.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.Pinned(); len(got) != 1 || got[0] != "/home/u/b" {
+		t.Fatalf("Pinned() after reload = %v", got)
+	}
+}
+
+func TestAPinNeedsNoRegisteredProject(t *testing.T) {
+	w := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))
+	if _, err := w.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.SetPinned("/home/u/unregistered", true); err != nil {
+		t.Fatalf("SetPinned: %v", err)
+	}
+	if got := w.Projects(); len(got) != 0 {
+		t.Fatalf("pinning registered a project: %v", got)
+	}
+	if !w.IsPinned("/home/u/unregistered") {
+		t.Error("pin was not kept")
+	}
+}
+
+func TestRemovingAProjectKeepsItsPin(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.json")
+	w := NewWorkspace(path)
+	if _, err := w.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.AddProject("/home/u/repo"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.SetPinned("/home/u/repo", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.RemoveProject("/home/u/repo"); err != nil {
+		t.Fatalf("RemoveProject: %v", err)
+	}
+	if got := w.Projects(); len(got) != 0 {
+		t.Fatalf("project survived removal: %v", got)
+	}
+	if !w.IsPinned("/home/u/repo") {
+		t.Error("removing a project must keep its pin")
+	}
+	reloaded := NewWorkspace(path)
+	if _, err := reloaded.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.IsPinned("/home/u/repo") {
+		t.Error("pin did not survive the reload")
+	}
+}
+
+func TestARelativePinIsRefused(t *testing.T) {
+	w := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))
+	if _, err := w.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.SetPinned("relative/path", true); err == nil {
+		t.Fatal("expected error for relative pin root")
+	}
+	if got := w.Pinned(); len(got) != 0 {
+		t.Fatalf("refused pin was stored: %v", got)
+	}
+}
+
 func TestAgentOverridesReachTheContainerConfig(t *testing.T) {
 	f := testFleet(t)
 	plain := Agent{ID: "a1", Project: "/p", SourceKind: "git", Profile: DefaultRuntimeProfile()}

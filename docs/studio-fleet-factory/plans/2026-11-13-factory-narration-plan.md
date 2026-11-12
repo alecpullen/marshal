@@ -85,6 +85,14 @@ and record the discrepancies they found.
 14. **The embedded assets are rebuilt at the end.** `web/ui/vite.config.ts`
     writes `web/bridge/static/`, which `web/bridge/assets.go` embeds, so the
     build runs only once the studio source is final.
+15. **A fixture change lands in the task that invalidates it.** Task 2's
+    parse-time rule refuses an implementer `complete` report without a
+    narration, so it invalidates the `deliveryHarness` implementer report —
+    that fixture gains a narration in Task 2, not Task 5. Task 4's write
+    path invalidates the `racingFactoryForge` double and the `set_ready`
+    race tests, so those change in Task 4, not Task 5. Task 5 keeps only
+    the harness GitHub handler's description-update branch. Without this
+    split, Task 2 and Task 4 would leave the tree red at their own commits.
 
 ## Contract pins
 
@@ -96,17 +104,20 @@ every test below depends on them.
 | P1 | Narration total | Σ(eight section rune lengths) + Σ(excerpt `code` rune lengths) |
 | P2 | Bound comparison | Reject only when strictly over the bound |
 | P3 | Section measurement | The raw string length in runes; not trimmed |
-| P4 | Excerpt path rule | Not empty; no leading `/`; no `\`; no `..`, `.` or empty segment; no `:` drive prefix |
+| P4 | Excerpt path rule | Not empty; no leading `/`; no leading `~`; no `\`; every segment non-empty and neither `.` nor `..`; no `:` drive prefix. A dot-prefixed name such as `.gitignore` is allowed |
 | P5 | Excerpt `code` may be empty | Allowed — an empty excerpt is not malformed |
 | P6 | Excerpt `lang` optional | An omitted language yields a bare fence |
 | P7 | Which round supplies the body | The newest round, whatever its head SHA |
 | P8 | Newest round with no implementation report | Treated as no narration: `set_ready` is refused |
-| P9 | CI wording | "CI evidence is unavailable for this revision." / "CI evidence is incomplete for this revision." / "CI evidence is complete with no reported checks." |
+| P9 | CI wording | "CI evidence is unavailable for this revision." (no CI evidence, or evidence observed for another head SHA) / "CI evidence is incomplete for this revision." / "CI evidence is complete with no reported checks." |
 | P10 | Description write failure | `ErrFactoryUncertain` |
 | P11 | Refusal class | `ErrFactoryRefused`, which the controller records as a `conflict` decision |
 | P12 | Write position | After the revision pre-check, before `SetFactoryDraft`; `set_draft` writes no body |
 | P13 | No `preflight` change | The capability check is in `set_ready` |
 | P14 | Capability assertion | On the `Forge` value returned by `f.forge` |
+| P15 | CI revision match | The round's CI evidence counts only when `round.CI != nil` and `round.CI.HeadSHA == round.HeadSHA`; otherwise the CI section says "unavailable" |
+| P16 | Description accessor | `FactoryPRDescriptionFor(f Forge) (FactoryPRDescription, error)` — the same shape as `FactoryForgeFor`, asserted on the `Forge` value, which the `set_ready` branch therefore keeps instead of discarding |
+| P17 | Check order in `set_ready` | The capability check runs first, then the narration check, then the compose and the write. When the forge lacks the capability and the round lacks a narration, the recorded reason names the unsupported capability |
 
 ## Shared Go types
 
@@ -158,10 +169,15 @@ All paths are relative to the repository root.
 | Task | Files | Depends on |
 |---|---|---|
 | 1 | `web/bridge/factory_types.go`, `web/bridge/factory_prbody.go` (new), `web/bridge/factory_prbody_test.go` (new) | — |
-| 2 | `web/bridge/factory_prompts.go`, `web/bridge/factory_prompts_test.go` | 1 |
+| 2 | `web/bridge/factory_prompts.go`, `web/bridge/factory_prompts_test.go`, `web/bridge/factory_integration_test.go` | 1 |
 | 3 | `web/bridge/factory_forge.go`, `web/bridge/forge_github_factory.go`, `web/bridge/forge_github_factory_test.go` | 1 |
 | 4 | `web/bridge/factory_effects.go`, `web/bridge/factory_effects_test.go` | 1, 2, 3 |
 | 5 | `web/bridge/factory_controller_test.go`, `web/bridge/factory_store_test.go`, `web/bridge/factory_integration_test.go` | 2, 4 |
+
+Tasks 2 and 5 both touch `web/bridge/factory_integration_test.go`: Task 2
+gives the harness's implementer report a narration, Task 5 gives its GitHub
+handler the description-update branch. Because the Go tasks run sequentially
+under one implementer, the second edit is applied on top of the first.
 | 6 | `web/ui/src/lib/factory.ts`, `web/ui/src/views/FactoryItem.svelte`, `web/ui/src/views/FactoryItem.test.ts` | 1 |
 | 7 | `web/bridge/static/**` (rebuilt), `web/bridge/factory_defaults_http_test.go` (unchanged), `web/bridge/boundary_test.go` (unchanged), docs | 1–6 |
 
@@ -191,9 +207,13 @@ last, because the asset build writes `web/bridge/static/`.
   ("incomplete"), a complete observation with no checks ("complete with no
   reported checks"), a failing check (expanded with its conclusion, a link and
   the log tail), and passing checks only (collapsed in
-  `<details><summary>N passing checks</summary>`).
-- [ ] Write `TestFactoryPRBodyUsesTheNewestRound`: given a round with a
-  narration, the body carries that narration.
+  `<details><summary>N passing checks</summary>`); CI evidence observed for
+  another head SHA reads as "unavailable", because it describes a revision
+  this body does not describe.
+- [ ] Write `TestFactoryPRBodyRendersTheGivenRound`: given a round with a
+  narration, the body carries that narration. The composer renders the round
+  it is given; choosing the newest round is the effect's job, not the
+  composer's.
 - [ ] Write `TestFactoryPRBodyRefusesARoundWithoutNarration`: a round whose
   implementation report is absent, or whose report carries no narration,
   returns an error.
@@ -214,8 +234,9 @@ last, because the asset build writes `web/bridge/static/`.
 
 ## Task 2: Parse and prompt the narration
 
-**Files:** modify `web/bridge/factory_prompts.go` and
-`web/bridge/factory_prompts_test.go`.
+**Files:** modify `web/bridge/factory_prompts.go`,
+`web/bridge/factory_prompts_test.go` and
+`web/bridge/factory_integration_test.go`.
 
 - [ ] Write `TestParseFactoryReportRequiresNarrationForCompletedImplementer`:
   an implementer report with outcome `complete` and no narration, a null
@@ -224,11 +245,11 @@ last, because the asset build writes `web/bridge/static/`.
 - [ ] Write `TestParseFactoryReportNarrationRequirementByRole`: a reviewer
   report and an implementer `needs_input` report parse without a narration.
 - [ ] Write `TestParseFactoryReportRejectsInvalidExcerptPaths`: the table of
-  path cases — a relative path and a nested relative path are accepted; an
-  absolute path, a leading slash, a `..` segment, a `..` segment mid-path, a
+  path cases — a relative path, a nested relative path and a dot-prefixed
+  file name (`.gitignore`, `.github/ci.yml`) are accepted; an absolute path, a
+  leading slash, a leading `~`, a `..` segment, a `..` segment mid-path, a
   backslash, a Windows drive path, a forward-slash drive path, an empty path,
-  a double slash, a `.` segment, a hidden `.` segment, a trailing slash and a
-  tilde path are rejected.
+  a double slash, a `.` segment and a trailing slash are rejected.
 - [ ] Write `TestParseFactoryReportAcceptsNarrationAtBounds`: a section of
   exactly 8,000 runes, an excerpt of exactly 4,000 runes, exactly eight
   excerpts, and a narration of exactly 64,000 runes are accepted.
@@ -237,9 +258,17 @@ last, because the asset build writes `web/bridge/static/`.
   its total bound are rejected, and the error names the offending field.
 - [ ] Write `TestFactoryPromptNamesNarrationFields`: the implementer prompt
   names the narration fields, and the reviewer's prompt does not.
+- [ ] Update the existing fixtures this task's rule invalidates, so the tree
+  stays green: the shared `valid` report in `factory_prompts_test.go` gains a
+  narration, and the `deliveryHarness` implementer report in
+  `factory_integration_test.go` gains a narration — this task's rule refuses
+  an implementer `complete` report without one, and the end-to-end test
+  parses exactly that report. Extend the tests; do not weaken them.
 - [ ] Run
   `go test ./web/bridge -run '^(TestParseFactoryReport|TestFactoryPrompt)' -count=1 -v`;
   confirm the new tests fail.
+- [ ] Run `go test ./web/bridge -run '^TestFactoryEndToEnd' -count=1`; require
+  PASS, proving the fixtures this task invalidates are updated.
 - [ ] Implement:
   - the four bound constants, exactly as frozen in the contract pins;
   - a `Narration *FactoryNarration` field on the wire struct;
@@ -274,7 +303,10 @@ last, because the asset build writes `web/bridge/static/`.
   confirm the new tests fail.
 - [ ] Implement:
   - the `FactoryPRDescription` interface, its sentinel error and the
-    `FactoryPRDescriptionFor` accessor, in `factory_forge.go`;
+    `FactoryPRDescriptionFor` accessor, in `factory_forge.go`. The accessor
+    takes the `Forge` value, exactly like `FactoryForgeFor`, and reports
+    `ErrFactoryPRDescriptionUnsupported` when that value does not implement
+    the interface;
   - `(*githubForge).UpdateFactoryPRDescription`, which PATCHes
     `/repos/{owner}/{repo}/pulls/{number}` with `{"body": …}` and confirms the
     returned pull request number.
@@ -307,6 +339,17 @@ last, because the asset build writes `web/bridge/static/`.
   refused with a reason naming the missing narration, and nothing is written.
 - [ ] Write `TestFactoryEffectSetDraftWritesNoDescription`: the `set_draft`
   effect writes no body.
+- [ ] Write `TestFactoryEffectReadyRefusesForgeWithoutDescriptionCapability`:
+  the `Forge` value carries no description capability, so the effect is
+  refused with the unsupported-capability reason, and nothing is written.
+- [ ] Extend the test double `racingFactoryForge` in
+  `web/bridge/factory_effects_test.go` so it implements `Forge` as well as
+  `FactoryForge`, and give it the description capability: it records the
+  bodies it is given. The `openForge` fakes must return that same value in
+  both slots, so the `Forge` value the effect asserts on is never nil. The
+  existing `set_ready` race tests give their item a round whose
+  implementation report carries a narration, so they reach the write instead
+  of stopping at the narration check. Extend these tests; do not weaken them.
 - [ ] Run
   `go test ./web/bridge -run '^TestFactoryEffect' -count=1 -v`; confirm the
   new tests fail.
@@ -314,10 +357,12 @@ last, because the asset build writes `web/bridge/static/`.
   - in the `set_ready`/`set_draft` branch, keep the `Forge` value instead of
     discarding it;
   - on `set_ready` only, after the revision pre-check and before
-    `SetFactoryDraft`: select the newest round, compose the body, refuse when
-    there is no narration, refuse when the forge lacks the capability, and
-    write the body — an uncertain failure for a failed write, a refusal for a
-    missing narration or capability.
+    `SetFactoryDraft`, in this order: assert the description capability on
+    the `Forge` value and refuse when it is absent; select the newest round
+    and refuse when it carries no narration; compose the body; write the
+    body — an uncertain failure for a failed write, a refusal for a missing
+    narration or capability. When both the capability and the narration are
+    missing, the recorded reason names the unsupported capability.
   The draft-compensation path, the readiness gate and the effect kinds are
   untouched.
 - [ ] Run `gofmt -w` on the two task files; run the named tests; require
@@ -346,12 +391,10 @@ last, because the asset build writes `web/bridge/static/`.
 - [ ] Write `TestFactoryStoreReplaysPreSliceEntryWithoutNarration`: a
   hand-crafted journal entry without a narration opens cleanly and loads with
   no narration.
-- [ ] Update the existing tests this slice changes by design:
-  `racingFactoryForge` gains the description capability and records the
-  bodies it is given; the `deliveryHarness` implementer report gains a
-  narration; its GitHub handler gains a branch for the description update;
-  and the existing `set_ready` race tests give their item a round with a
-  narration. Extend these tests; do not weaken them.
+- [ ] Update the existing test this slice changes by design: the
+  `deliveryHarness` GitHub handler gains a branch for the description
+  update, so the end-to-end run publishes a body rather than a bare pull
+  request. Extend the test; do not weaken it.
 - [ ] Run `go test ./web/bridge -run '^TestFactory' -count=1`; require PASS.
 - [ ] Run `gofmt -w` on the three task files; run `gofmt -l` on them; require
   no output.
@@ -363,14 +406,18 @@ last, because the asset build writes `web/bridge/static/`.
 `web/ui/src/views/FactoryItem.svelte` and
 `web/ui/src/views/FactoryItem.test.ts`.
 
-- [ ] Write `TestFactoryItemRendersNarrationSections`: the narration sections
-  render in order with their headings, and the section bodies are present.
-- [ ] Write `TestFactoryItemRendersNarrationExcerpts`: each excerpt renders
+- [ ] Write the vitest case `it('renders the narration sections in order')`:
+  the narration sections render in order with their headings, and the section
+  bodies are present.
+- [ ] Write the vitest case
+  `it('renders each excerpt with its path and code')`: each excerpt renders
   its path and its code.
-- [ ] Write `TestFactoryItemRendersNarrationAlongsideCI`: a failing check is
+- [ ] Write the vitest case
+  `it('renders the narration alongside the CI card')`: a failing check is
   expanded with its conclusion, the passing checks are collapsed, and the
   narration is present.
-- [ ] Write `TestFactoryItemRendersSummaryWhenNarrationAbsent`: an item with
+- [ ] Write the vitest case
+  `it('falls back to the summary when there is no narration')`: an item with
   no narration still renders the summary paragraph.
 - [ ] Run `cd web/ui && npm run test`; confirm the new tests fail.
 - [ ] Implement:
@@ -421,7 +468,7 @@ last, because the asset build writes `web/bridge/static/`.
 | The CI section is always present and states unavailable or incomplete | Task 1 `TestFactoryPRBodyAlwaysCarriesCISection` |
 | A forge that cannot update a description refuses `set_ready` with a recorded reason and the pull request stays a draft | Task 3 `TestFactoryPRDescriptionCapability`; Task 4 `TestFactoryEffectReadyRefusesForgeWithoutDescriptionCapability`; Task 5 `TestFactoryControllerRecordsReasonForUnsupportedDescription` |
 | A pre-upgrade item with no narration refuses `set_ready` with a recorded reason | Task 4 `TestFactoryEffectReadyRefusesItemWithoutNarration`; Task 5 `TestFactoryControllerRecordsReasonForMissingNarration` |
-| The studio renders the narration sections and the excerpts, and still renders CI with failures expanded and passes collapsed | Task 6 `TestFactoryItemRendersNarrationSections`, `…RendersNarrationExcerpts`, `…RendersNarrationAlongsideCI` |
+| The studio renders the narration sections and the excerpts, and still renders CI with failures expanded and passes collapsed | Task 6 `it('renders the narration sections in order')`, `it('renders each excerpt with its path and code')`, `it('renders the narration alongside the CI card')` |
 | The journal replays a narration-carrying item identically, and pre-slice entries remain valid | Task 5 `TestFactoryStoreReplaysNarrationItem`, `TestFactoryStoreReplaysPreSliceEntryWithoutNarration` |
 | `TestWebIsStdlibOnly` passes and no new `marshal/internal` import appears under `web/` | The existing boundary test, run in Task 7 |
 | The bootstrap factory's acceptance contract is unchanged | The existing factory tests, run unmodified in Task 7 |
@@ -455,6 +502,9 @@ no model provider, and — outside the one end-to-end harness — no real git.
   are respected.
 - Contract consistency: the types, the bounds, the path rule, the body shape
   and the write position are fixed in Tasks 1–4 and consumed unchanged.
+- Fixture ownership: every fixture a task's rule invalidates is changed in
+  that task, so each task's own gate passes and the tree stays green at
+  every commit.
 - Safety: no route, no widened interface, no change to the effect kinds, the
   state machine, the readiness gate, the draft-compensation path, the handoff
   contract or the workspace format.

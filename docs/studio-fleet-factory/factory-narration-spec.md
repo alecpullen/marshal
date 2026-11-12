@@ -150,7 +150,10 @@ will read.
 - every other section may be empty. A change with no meaningful alternatives
   says so by leaving them empty; the bridge does not invent content.
 - excerpts are optional. Each excerpt's `path` must be repository-relative: not
-  absolute, no leading `/`, no `..` segment, and no backslash.
+  empty, not absolute, no leading `/`, no leading `~`, no `..` segment, no
+  backslash, and no empty path segment. A dot-prefixed file name such as
+  `.gitignore` is repository-relative and is allowed; a `.` or `..` path
+  segment is not. The executable rule is pinned in the implementation plan.
 - a reviewer report and an implementer `needs_input` report need no narration.
 
 The bounds are fixed, so that an oversized report fails at parse time rather
@@ -212,7 +215,9 @@ presented as ready evidence; it is transient, and the next round's
 
 **What.** The body is composed from the newest round:
 
-- the round's CI evidence, when it was observed for that round's head SHA;
+- the round's CI evidence, when it was observed for that round's head SHA.
+  Evidence observed for another revision is not this revision's evidence, so
+  it reads as unavailable;
 - the round's implementation report's narration.
 
 The composition leads with CI, then the narration, in the approved order:
@@ -285,6 +290,14 @@ when the factory gains it; the bootstrap scope is one GitHub repository.
 
 A forge that cannot update a description reports
 `ErrFactoryPRDescriptionUnsupported`, and the item is not marked ready.
+
+The capability is asserted the same way `FactoryForge` is: an accessor takes
+the `Forge` value and reports `ErrFactoryPRDescriptionUnsupported` when that
+value does not implement the interface. The `set_ready` path keeps the
+`Forge` value for that assertion rather than discarding it. The accessor
+mirrors `FactoryForgeFor`, and the two capabilities are independent: a forge
+may support the draft lifecycle without supporting descriptions, and the
+recorded reason names the unsupported capability.
 
 ### 4.5 The studio
 
@@ -414,9 +427,10 @@ For this slice:
 - a completed implementer report with a missing or malformed narration is
   rejected as a report failure — the round does not advance and no
   summary-only description is published;
-- an excerpt with an absolute path, a `..` segment, a backslash, an
-  over-long body, or too many excerpts is rejected rather than published, and
-  so is an over-long narration section or an over-long narration as a whole;
+- an excerpt with an absolute path, a leading `~`, a `..` segment, a
+  backslash, an over-long body, or too many excerpts is rejected rather than
+  published, and so is an over-long narration section or an over-long
+  narration as a whole;
 - a forge that cannot update a pull request description refuses `set_ready`
   with a recorded reason, and the pull request stays a draft;
 - a work item whose newest round carries no narration — a pre-upgrade journal
@@ -427,7 +441,8 @@ For this slice:
 - a body write that fails leaves the pull request a draft and the item not
   ready;
 - the CI section is always present, and states that the evidence is
-  unavailable or incomplete when it is;
+  unavailable or incomplete when it is — including when it was observed for
+  another revision rather than this one;
 - the studio renders the narration sections and the excerpts, and still renders
   CI with failing checks expanded and passing checks collapsed;
 - the factory journal replays a narration-carrying item identically, and
@@ -476,3 +491,16 @@ commit.
 | §10 contradicted §1 about structured narration | §10 now excludes the fuller proposals and states that this slice's structured narration and generated Markdown are its own transport choice |
 | A pre-upgrade item with no narration had no defined outcome | §4.3 now refuses `set_ready` with a recorded reason rather than publishing a narration-less description |
 | The final acceptance bullet read as if the report contract were untouched | §9 now says "the handoff required fields" |
+
+The implementation plan received a second `glm-5.3-flash` review through
+`ollama-cloud` on 2026-11-13. Its findings were about the plan's
+executability, and each is resolved in the plan.
+
+| Plan review finding | Resolution |
+|---|---|
+| Task 4's gate could not pass: the `racingFactoryForge` double and the `set_ready` race tests live in `factory_effects_test.go`, but their fixture updates were assigned to Task 5, whose file list excludes that file | The plan's reconciled decision 15 now puts each fixture change in the task whose rule invalidates it: the double, the `openForge` fakes and the race tests change in Task 4; the `deliveryHarness` implementer report changes in Task 2; Task 5 keeps only the harness GitHub handler's description-update branch |
+| P4 forbade neither a leading `~` nor a hidden `.` segment, so it contradicted the Task 2 path table | P4 now forbids a leading `~`, an empty segment and a `.`/`..` segment, and states that a dot-prefixed name such as `.gitignore` is allowed; §4.2 states the same rule |
+| The CI section did not say what happens to evidence observed for another head SHA | P15 and §4.3 now read that evidence as unavailable, because it describes another revision |
+| `TestFactoryPRBodyUsesTheNewestRound` named a behaviour the composer does not have | It is now `TestFactoryPRBodyRendersTheGivenRound`: the composer renders the round it is given, and choosing the newest round is the effect's job |
+| The studio test names were Go-style names in a vitest file | Task 6 now names its cases as vitest `it(...)` descriptions, and the acceptance matrix cites them the same way |
+| The order of the capability check and the narration check was unstated | P17 pins the order, and states that when both are missing the recorded reason names the unsupported capability |

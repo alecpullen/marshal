@@ -149,7 +149,7 @@ per-type, and is unambiguous for every inheritable field:
 |---|---|---|
 | `string` | `""` | any non-empty value |
 | `int` | `0` | any non-zero value |
-| `json.RawMessage` | `nil` | any non-nil value, including `{}` |
+| `json.RawMessage` | `nil`, or zero length | any non-nil, non-empty value, including `{}` |
 | `[]FactoryCheckKey` | `nil` | any non-nil slice, **including an empty one** |
 
 The slice case matters: an explicitly empty `expectedChecks` means
@@ -337,6 +337,10 @@ The shapes above match the real surfaces: the settings response omits empty
 optional fields rather than rendering them, a routing object must carry a
 `profile` the factory preflight recognises, and the create response wraps the
 item in `item` and answers 201 on create and 200 on a replay.
+
+The sketch is illustrative. `FactoryConfig` carries no `omitempty`, so a real
+response renders every configuration field, including the ones the sketch
+leaves out.
 
 ## 6. Missing access and partial failure
 

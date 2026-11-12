@@ -50,13 +50,19 @@ between the specification and the real code.
 4. **The validator never fills anything.** It checks the defaults; it does not
    apply the built-in defaults to them, because a zero limit in a default means
    "unset" and must stay unset for a handoff to inherit.
-5. **The create-replay identity is the operator's request.** `FactoryStore.Create`
-   hashes the marshalled request to recognise a replay. If the resolved request
-   were hashed, a client retrying an unchanged POST after the project's defaults
-   had moved on would get 409 instead of the original item. The store
-   therefore keeps identity and content apart: the hash is computed over the
-   request the operator sent, and the item is built from the resolved
-   configuration.
+5. **The create-replay identity is the operator's request, and the replay
+   short-circuit precedes resolution.** `FactoryStore.Create` hashes the
+   marshalled request to recognise a replay. If the resolved request were
+   hashed, a client retrying an unchanged POST after the project's defaults had
+   moved on would get 409 instead of the original item. The store therefore
+   keeps identity and content apart: the hash is computed over the request the
+   operator sent, and the item is built from the resolved configuration.
+   Resolution reads mutable project defaults, so it is not deterministic; the
+   create path therefore checks for a prior request **before** resolving. The
+   order is: prior-request short-circuit → resolve → normalise → preflight,
+   and the replay branch keeps calling `store.Create(req)` with the operator's
+   request. A replay therefore returns the original item even when the
+   project's defaults have since become invalid or conflicting.
 6. **The named project root is the only live resolution path.** A valid
    handoff always names a registered, trusted `ProjectRoot`, and the named
    root wins over the repository's intake project. The intake mapping is a
@@ -133,6 +139,10 @@ The handoff in that request set only `repoId`, `projectRoot`, `title` and the
 two routings; the rest came from the project's defaults, and the stored draft
 shows the resolved values.
 
+The sketch is illustrative. `FactoryConfig` carries no `omitempty`, so a real
+response renders every configuration field, including the ones the sketch
+leaves out.
+
 ## Shared Go types
 
 Task 1 owns these names verbatim. Later tasks consume them without renaming.
@@ -179,7 +189,7 @@ All paths are relative to the repository root.
 |---|---|---|
 | 1 | `web/bridge/factory_types.go`, `web/bridge/workspace.go`, `web/bridge/factory_defaults.go` (new), `web/bridge/factory_defaults_test.go` (new) | — |
 | 2 | `web/bridge/projects.go`, `web/bridge/projects_test.go` | 1 |
-| 3 | `web/bridge/factory_http.go`, `web/bridge/factory_store.go`, `web/bridge/factory_defaults_http_test.go` (new) | 1, 2 |
+| 3 | `web/bridge/factory_http.go`, `web/bridge/factory_store.go`, `web/bridge/factory_defaults.go`, `web/bridge/factory_defaults_http_test.go` (new) | 1, 2 |
 | 4 | `web/bridge/factory_defaults.go`, `web/bridge/factory_http.go`, `web/bridge/factory_defaults_test.go`, `web/bridge/factory_defaults_http_test.go` | 3 |
 | 5 | `web/bridge/factory_defaults_test.go`, `web/bridge/factory_defaults_http_test.go` | 4 |
 | 6 | `docs/studio-fleet-factory/project-factory-defaults-spec.md`, this plan | 1–5 |
@@ -218,10 +228,13 @@ create `web/bridge/factory_defaults.go` and `web/bridge/factory_defaults_test.go
     — the merge, one branch per inheritable field, copying the check list
     rather than aliasing it, and never collapsing a non-nil empty list to nil;
   - `func factoryValidateDefaults(d *FactoryDefaults) error` — the validation
-    subset, in a fixed order so the error is deterministic, reusing the same
-    check-identity predicate `factoryNormalize` uses.
-- [ ] Run `go test ./web/bridge -run '^TestFactoryDefaults' -count=1 -v` and
-  `gofmt -l` on the four task files; require PASS and no output.
+    subset, in a fixed order so the error is deterministic. The check-identity
+    rule is duplicated here rather than extracted: `factoryNormalize` has the
+    rule inline, and extracting it would modify `factoryNormalize`, which this
+    slice leaves untouched.
+- [ ] Run
+  `go test ./web/bridge -run '^TestFactoryDefaults|^TestFactoryValidateDefaults' -count=1 -v`
+  and `gofmt -l` on the four task files; require PASS and no output.
 - [ ] Commit only this task: `feat(factory): add project factory defaults type and resolver`.
 
 ## Task 2: Validate the defaults when they are written
@@ -251,8 +264,9 @@ create `web/bridge/factory_defaults.go` and `web/bridge/factory_defaults_test.go
 
 ## Task 3: Resolve the defaults in the create path
 
-**Files:** modify `web/bridge/factory_http.go` and `web/bridge/factory_store.go`;
-create `web/bridge/factory_defaults_http_test.go`.
+**Files:** modify `web/bridge/factory_http.go`, `web/bridge/factory_store.go`
+and `web/bridge/factory_defaults.go`; create
+`web/bridge/factory_defaults_http_test.go`.
 
 - [ ] Write `TestFactoryCreateResolvesProjectDefaultsIntoStoredDraft`: a
   project with defaults creates a factory whose stored draft carries the
@@ -271,6 +285,16 @@ create `web/bridge/factory_defaults_http_test.go`.
   handoff naming the first gets the first's.
 - [ ] Write `TestFactoryDefaultsRootlessHandoffIsStillRejected`: a handoff with
   no `ProjectRoot` is rejected and no work item is created.
+- [ ] Write `TestFactoryCreateStoredDraftIsSnapshotted`: create a handoff
+  against a project with defaults, then change the project's defaults through
+  the real settings surface; the stored draft's configuration is unchanged, and
+  after approving, the approval's configuration is unchanged too. The next
+  handoff picks up the new defaults, so the change really took effect.
+- [ ] Write `TestFactoryCreateReplayReturnsTheOriginalItem`: create a handoff
+  against a project with defaults, then rewrite the project's defaults to an
+  invalid or conflicting set; replaying the identical request returns the
+  original item rather than an error, because the replay short-circuit precedes
+  resolution.
 - [ ] Run
   `go test ./web/bridge -run '^TestFactory(Create|Defaults)' -count=1 -v`;
   confirm the new tests fail.
@@ -280,8 +304,10 @@ create `web/bridge/factory_defaults_http_test.go`.
     fallback that never writes a root), read its defaults, validate them at
     resolve time and report a failure naming the project's defaults as the
     source, then merge;
-  - in `factoryAPI.Create`, resolve **before** `factoryNormalize`, and
-    preflight the resolved configuration;
+  - in `factoryAPI.Create`, check for a prior request **first**, then resolve
+    **before** `factoryNormalize`, and preflight the resolved configuration;
+    the replay branch keeps calling `store.Create(req)` with the operator's
+    request;
   - in `factory_store.go`, split `Create` into `Create` (identity and content
     both the request) and `CreateResolved(req, resolved, now)` (identity the
     request, content the resolved configuration), so the create-replay hash
@@ -307,8 +333,12 @@ create `web/bridge/factory_defaults_http_test.go`.
   field.
 - [ ] Write `TestFactoryRetryReplacementIsNotReResolved`: a retry replacement
   that omits a field the project default sets keeps that field empty in the
-  new approval. The replacement must be driven through the store's public
-  mutation path so a decision exists; no forge, git or loop is involved.
+  new approval. Drive the replacement through `factoryAPI.Command` — the layer
+  whose retry branch normalises and preflights the replacement, and where an
+  accidental resolution would be inserted — using the existing fake-agent
+  harness. The item needs a `question` decision, a positive
+  `AdditionalRounds` and a reason, all reachable offline; the decision is set
+  through the store's public mutation path. No forge, git or loop is involved.
 - [ ] Run
   `go test ./web/bridge -run '^TestFactory(Defaults|Retry)' -count=1 -v`;
   confirm the new tests fail.
@@ -355,7 +385,7 @@ and this plan.
 - [ ] Record the plan's outcome here: the task/commit table and the gates
   actually run.
 - [ ] Run the complete feature suite:
-  `go test ./web/bridge -run 'FactoryDefaults|ProjectWithoutDefaults|FactoryCreate|FactoryRetry|FactoryBootstrapAcceptance|ProjectSettingsRoundTripFactoryDefaults|WorkspaceRoundTripsFactoryDefaults' -count=1 -v`.
+  `go test ./web/bridge -run '^TestFactory(Defaults|Validate|Create|Retry|BootstrapAcceptance)|^TestProjectWithoutDefaults|^TestProjectSettingsRoundTripFactoryDefaults' -count=1 -v`.
 - [ ] Run the pre-existing contract gate: `go test ./web/bridge -run 'Factory' -count=1`.
 - [ ] Run the package gate: `go test ./web/bridge -count=1`.
 - [ ] Run the boundary and build gates:

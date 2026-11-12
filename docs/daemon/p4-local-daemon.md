@@ -9,10 +9,13 @@ Status: approved 2026-11-09, with every recommendation under "Decisions"
 accepted. The line anchors were re-checked at `40dc0eff` for plans 1 and 2,
 and at `7802701f` (plans 1 and 2 merged) for plans 3 and 4, and at
 `29851a61` (plans 3 and 4 merged) for plans 5 and 6, and at `87c0ad10`
-(plans 5 and 6 merged) for plans 7 and 8. Plans 1 and 2
+(plans 5 and 6 merged) for plans 7 and 8, and at `5f4754dc` (plans 7 and 8
+merged) for plans 9 and 10. Plans 1 and 2
 shared no code and ran side by side. Plans 3 and 4 do the same, except plan
 4's last task, which needs plan 3 on `main`. Plans 5 and 6 share no file but
-this spec, each filling its own record, and so do plans 7 and 8. Each plan
+this spec, each filling its own record, and so do plans 7 and 8. Plans 9 and
+10 run side by side too, except plan 10's tasks from its fourth, which change
+the project children and need plan 9 on `main`. Each plan
 records itself under its own heading in the Implementation record.
 
 ## Goal
@@ -204,6 +207,13 @@ against.
   loaded only when a runtime starts, so they arrive at the session's next
   start. An ordinary config reload already drops plugin-applied hooks and
   MCP entries the same way.
+- **H11.** Fleet agents on project children under the server profile. Plan 10
+  moves only the local profile's host-process agents (D10). A server-profile
+  bridge that falls back to host processes for want of a container runtime
+  keeps a child per agent, as containerized agents do (H1).
+- **H12.** Pinning from the web UI. Plan 9's pins are set by `marshal daemon
+  pin` over the socket only; the web UI's project settings neither show nor
+  change them yet.
 
 ## Behaviour
 
@@ -386,9 +396,9 @@ against.
     last active: an attach, a detach, or a frame relayed either way.
     `GET /api/daemon` lists each child's root, version and sessions with
     those two values. Plan 5's `marshal attach` with no ID reads it.
-  - A child with no tracked session stops after the 30s linger. In P4 a
-    session leaves the registry only by a close, until plan 6's idle timeout
-    and plan 9's pins.
+  - A child with no tracked session stops after the 30s linger, unless its
+    project is pinned (D9). A session leaves the registry by a close: a
+    viewer's, or plan 6's idle end.
 - **The client's half** is `internal/daemon`'s `Client.Attach`. It sends the
   handshake and returns the upgraded stream and the session ID, which plan 5
   wraps in `rpc.NewStream`.
@@ -628,7 +638,7 @@ against.
     with `replaces`) builds its session inside the same runtime, so it keeps
     the runtime's answer. The mark is per registry in P4, because every
     session on a project child is a TUI's until plan 10 (D10) brings fleet
-    agents there; that plan must mark sessions one by one.
+    agents there; that plan marks the fleet's sessions one by one.
   - *Starting.* A client-trust runtime evaluates trust as embedded mode does
     (`trust.Evaluate`): a stored permanent record whose hash matches applies
     the project config, and a needed question skips it and leaves the prompt
@@ -666,9 +676,9 @@ against.
 
 ### D9. Pinned projects
 
-- `pinned` is a project setting in the workspace registry. `marshal daemon
-  pin [dir]` and `unpin` set it, and so can the web UI's project settings
-  (later).
+- The workspace registry keeps the pinned project roots. `marshal daemon pin
+  [dir]` and `unpin` change them; the web UI's project settings will later
+  (H12).
 - A pinned project's child runs while the project is pinned, holding its
   project host open through a new host-level method, `project/hold`
   (released by `project/release`). The host's index watcher runs for as long
@@ -677,18 +687,91 @@ against.
   debounced and batched (design §4.3).
 - Unpinning releases the hold. The child stops after its linger once it has
   no session.
+- **The details** (plan 9).
+  - *The store.* The pins are a list of roots of their own in the workspace
+    file (`pinned`), not a field of `ProjectSettings`: the web UI's settings
+    `PUT` replaces a project's settings whole, and would drop a pin it does
+    not know. A pin needs no registered project, as an attach needs none
+    (D3), so pinning does not add the root to `projects`.
+  - *The route.* `POST /api/projects/pin` takes `root` and `pinned`, and
+    answers the project's pin state (`root`, `pinned`, `running`). It is
+    served on the socket only, as the attach is. A pin needs an absolute,
+    existing directory. An unpin takes any absolute root, so a pin on a
+    directory removed since can still be dropped.
+  - *Pinning* records the root, then starts the project's child if it is not
+    running (as an attach does, with the project's environment) and sends
+    `project/hold` on the bridge's own connection. A child that does not
+    start, or a hold that fails, is answered as an error, and the root stays
+    pinned, so the daemon's next start tries again.
+  - *A pinned child* arms no linger. Every handshake on it, a restart's
+    included, is followed by `project/hold`, because a restarted child has
+    forgotten its holds. At start the daemon starts each pinned project's
+    child in the background. A start that fails is logged, and the next
+    attach or pin starts the child.
+  - *Unpinning* removes the root and sends `project/release` to a running
+    child, which then arms its linger if it has no session.
+  - *The hold.* `project/hold` and `project/release` take an absolute `root`,
+    and only a `--viewers` child serves them, on the bridge's own connection:
+    a viewer is refused, as its lifecycle calls are. The child resolves the
+    root to its repository root and loads its config by the headless rule
+    (D8): a stored permanent trust whose hash matches applies the project
+    config, and otherwise the user config applies alone. It then holds the
+    root's project host. A held host stays open with no session and starts
+    its index work as a session's attach would, under the index lease as
+    always, with the watcher on while it is held. A hold does not replace the
+    config a session has given the host. Holding a held root, or releasing
+    one that is not held, changes nothing, and the last release lets the host
+    linger as a session's release does.
+  - *Reporting.* `GET /api/daemon` lists the pinned roots as `pinned` and
+    marks each pinned child `pinned`. `marshal daemon status` adds `, pinned`
+    to a pinned child's line, and prints `pinned <root>: not running` for a
+    pinned project with no child.
 
 ### D10. Fleet agents on the project's child
 
-- With the local profile (and with no container runtime in any profile), a
-  fleet agent's session runs on its project's child, beside the TUI's
-  sessions, instead of on a child of its own. The agent keeps its bridge ID,
+- With the local profile, a fleet agent's session runs on its project's
+  child, beside the TUI's sessions, instead of on a child of its own. (A
+  server-profile bridge without a container runtime keeps a child per agent:
+  H11.) The agent keeps its bridge ID,
   its registry entry, its event log and its lifecycle (finish, merge,
   discard). Finishing an agent closes its session, not the child.
 - An isolated agent's worktree is its session's active root, as today, so
   the shared project host serves its index and pools its language servers by
   root (P1).
 - Containerized agents keep a child each (H1).
+- **The details** (plan 10).
+  - *Which agents.* Under the local profile, an agent whose source is a local
+    project, with no workspace, runs on its project's child while the egress
+    proxy is not running. The others keep a child of their own. A git-sourced
+    agent's tree is a checkout the bridge deletes when the agent ends, not a
+    project a child should serve. A workspace needs a container. And an agent
+    the proxy wires needs an environment of its own.
+  - *The fleet's sessions.* Spawn resolves the project's child, starting it
+    as an attach does, and sends the agent's `session/new` on the bridge's
+    own connection without the client-trust mark, so the agent keeps the
+    headless rule (D8). The child's registry tracks the session as the
+    fleet's. A fleet session keeps the child running, but the idle sweep
+    never ends it, `GET /api/daemon` does not list it (so `marshal attach`
+    never picks it), an attach that names it is refused with 409, and a
+    restart resumes it unmarked.
+  - *Releasing an agent* (retiring it, pausing it, or removing its project)
+    closes its session on the bridge's connection (`session/close`) and
+    untracks it. The child keeps serving its other sessions, and arms its
+    linger when none is left. A resumed agent, and the daemon's reattach at
+    start, load the session on the project's child again (`session/load`,
+    whose replay fills the agent's event log, as today). The daemon's close
+    stops its project children, which ends their agents' sessions, as it
+    ends per-agent host processes today.
+  - *Events.* A project child has one event log, keyed by session as every
+    event log is, and one classifier, both installed before the child
+    starts. The classifier maps a notification's session to its agent
+    through the fleet's session map, so the live state and the fleet log
+    stay keyed by agent ID. Notifications and registry events for a client's
+    session are dropped, as every notification on a project child is today.
+    A session not yet tracked is logged, so a fleet session is logged from its
+    first notification, before Spawn has its ID.
+  - *Versions.* An agent on a project child takes its version warning and its
+    capabilities from that child's `initialize`.
 
 ### D11. Versions
 
@@ -751,21 +834,21 @@ against.
 
 | Area | Change |
 |---|---|
-| `cmd/webbridge`, `web/bridge` | `--profile local`; the unix listener and the peer check; project children; the attach handshake and the relay; the environment resolver and `webbridge print-env`; the idle-session sweep and `--idle-session-timeout`; the client-trust mark on a project child's sessions (plan 7); the refresh helper's supervision behind `--oauth-refresh` and its `refresh` report (plan 8); pins; host-process agents on project children. Standard library only, as ever. |
-| `cmd/marshal` | `marshal attach`, `marshal daemon install/uninstall/start/stop/status/pin/unpin/refresh`, `--embedded`. Install writes `SHELL`, the idle timeout and `--oauth-refresh` into the unit; status prints each child and the refresh helper. |
+| `cmd/webbridge`, `web/bridge` | `--profile local`; the unix listener and the peer check; project children; the attach handshake and the relay; the environment resolver and `webbridge print-env`; the idle-session sweep and `--idle-session-timeout`; the client-trust mark on a project child's sessions (plan 7); the refresh helper's supervision behind `--oauth-refresh` and its `refresh` report (plan 8); the pins, their socket route and the daemon's start-up of pinned children (plan 9); host-process agents on project children, their sessions tracked as the fleet's (plan 10). Standard library only, as ever. |
+| `cmd/marshal` | `marshal attach`, `marshal daemon install/uninstall/start/stop/status/pin/unpin/refresh`, `--embedded`. Install writes `SHELL`, the idle timeout and `--oauth-refresh` into the unit; status prints each child, the refresh helper and the pins (plan 9). |
 | `internal/commands` | The TUI-only `/detach` (plan 5). |
-| `internal/daemon` (new) | The service units and the commands that drive them, and the socket's HTTP client with its attach handshake, which plan 5's daemon mode reuses; the unit's `--oauth-refresh` and the answer's `refresh` (plan 8). |
+| `internal/daemon` (new) | The service units and the commands that drive them, and the socket's HTTP client with its attach handshake, which plan 5's daemon mode reuses; the unit's `--oauth-refresh` and the answer's `refresh` (plan 8); `Client.Pin` and the answer's `pinned` (plan 9). |
 | `internal/app/config` | `DaemonDir` and `DaemonSocketPath`, beside `DataDir`; the `[daemon]` section's `idle_session_timeout` (plan 6). |
-| `internal/acp` | `--viewers`: concurrent marshal connections that notify on their own connection; one run slot per session; `project/hold` and `project/release`; `clientTrust` on the lifecycle calls, and the trust calls served to marshal clients only (plan 7). |
+| `internal/acp` | `--viewers`: concurrent marshal connections that notify on their own connection; one run slot per session; `project/hold` and `project/release` on the bridge's connection (plan 9); `clientTrust` on the lifecycle calls, and the trust calls served to marshal clients only (plan 7). |
 | `internal/acp/service` | Runs on the session's context; `run` and `lastRun` in the status; run outcome notes; a trust applied in place and its settled prompt (plan 7). |
-| `internal/acpwire` | `SessionStatus.Run`, `LastRun`; `TrustPromptResult.InPlace` (plan 7); the hold methods. |
+| `internal/acpwire` | `SessionStatus.Run`, `LastRun`; `TrustPromptResult.InPlace` (plan 7). The hold methods' params stay in `internal/acp`: no marshal client calls them (plan 9). |
 | `internal/acpclient`, `internal/acpclient/rpc` | No new method; the relay is a byte stream `rpc.NewStream` already frames. `Host.TrustPrompt` returns the whole prompt, its `InPlace` included (plan 7). |
 | `internal/launch` | The daemon check, the attach handshake, daemon mode's loop and its detach, and the client log; plan 7 drops the check's trust condition. |
 | `internal/app/tui` | Quit and `/detach` detach in daemon mode; `busy` follows a run it did not start; an attach never replays an old wake; the outcome notes leave `handleAgentFinished` and `handlePlanAuthorFinished`; the trust panel closes after a trust applied in place (plan 7). |
-| `internal/app` | `WithClientTrust` and the trust applied in place (plan 7); the refresh lease around the OAuth workers, and `RunOAuthRefresh` for `marshal daemon refresh` (plan 8). |
+| `internal/app` | `WithClientTrust` and the trust applied in place (plan 7); the refresh lease around the OAuth workers, and `RunOAuthRefresh` for `marshal daemon refresh` (plan 8); a project host held open with no session, its watcher on (plan 9). |
 | `internal/llm/provider/oauthworker` | The refresh lease, `TryLease` (plan 8). |
 | `internal/app/session` | The run claim both run slots take (plan 3). |
-| `test/daemon` (new) | The end-to-end attach test: a real bridge and a real child in one test process, driven by a scripted client (plan 4); the reattach to a running turn against a test-owned provider, and `launch`'s daemon mode detaching from it (plan 5); a daemon session asking its client about trust (plan 7). |
+| `test/daemon` (new) | The end-to-end attach test: a real bridge and a real child in one test process, driven by a scripted client (plan 4); the reattach to a running turn against a test-owned provider, and `launch`'s daemon mode detaching from it (plan 5); a daemon session asking its client about trust (plan 7); a pinned project's child with no session (plan 9); a fleet agent on the project's child beside a TUI's session (plan 10). |
 
 ## Migration order
 
@@ -806,15 +889,21 @@ Two plans at a time where they share no files, as in P3.
    `internal/app`'s embedding and a new refresh file, `cmd/marshal`'s `daemon`
    command, `internal/daemon`, the bridge's new helper supervisor and
    daemon answer, and `cmd/webbridge`. Alongside plan 7.
-9. **Pinned projects** (D9). Pins moved here from plan 7: their
+9. **Pinned projects** (D9), in `internal/app`'s project hosts,
+   `internal/acp`, the bridge's workspace, project children, daemon answer
+   and socket routes, `cmd/webbridge`, `internal/daemon`, `cmd/marshal`'s
+   `daemon` command and `test/daemon`. Pins moved here from plan 7: their
    `marshal daemon pin`, the bridge's start-up of pinned children and the
-   unit's environment share `cmd/marshal/daemon.go`, `cmd/webbridge/main.go`
-   and `internal/daemon` with plan 8, while trust and the refresh share no
-   file.
-10. **Fleet agents on the project's child** (D10). Last: it changes the
-    fleet's lifecycle, which every earlier plan leaves alone. Plans 9 and 10
-    both change a project child's lifecycle, so they run one after the
-    other.
+   daemon's answer share `cmd/marshal/daemon.go`, `cmd/webbridge/main.go` and
+   `internal/daemon` with plan 8, while trust and the refresh share no file.
+   Alongside plan 10.
+10. **Fleet agents on the project's child** (D10), in the bridge's registry,
+    attach handler, fleet, event wiring and project children, and
+    `test/daemon`. Last: it changes the fleet's lifecycle, which every earlier
+    plan leaves alone. Its first three tasks (the registry's fleet sessions,
+    the attach refusal and the session-keyed classifier) touch no file plan
+    9 does, and run alongside it. Its tasks from the fourth change the
+    project children, as plan 9 does, and run once plan 9 is on `main`.
 
 ## Tests
 
@@ -854,6 +943,15 @@ Two plans at a time where they share no files, as in P3.
   session kept and the client's program still running; a second session
   starts trusted and asks nothing. A session-only answer records nothing,
   and the bridge's own connection can neither read the prompt nor answer it.
+- **W12. Pins.** A pinned project's child starts with no session and outlives
+  the linger, a restarted child holds again, and unpinning lets a child with
+  no session stop. A held project host runs its index work with no session,
+  and runs the watcher whatever `indexing.watch` says.
+- **W13. Fleet agents on the project's child.** Under the local profile, an
+  agent spawned on a project a TUI has open runs on the same child. Its
+  events reach its own log and the live state under its agent ID; the
+  daemon's listing, `marshal attach` and the idle sweep leave it alone; and
+  retiring it leaves the TUI's session running.
 - **W10. Suite.** Every plan keeps `go test ./...` green, apart from the known
   local failures, and `TestWebIsStdlibOnly` passes.
 
@@ -866,7 +964,7 @@ Two plans at a time where they share no files, as in P3.
   and, when it ends, its outcome, as if it had never left.
 - Plain `marshal --embedded`, and `marshal` with no daemon, behave as after
   P3.
-- W1 to W11 pass. A manual run covers the above, plus a sudo prompt and an
+- W1 to W13 pass. A manual run covers the above, plus a sudo prompt and an
   MCP sign-in through the daemon, a pinned project's embeddings refreshing
   after an edit with no session open, and a project whose `.envrc` sets the
   toolchain.
@@ -2239,3 +2337,10 @@ Verification after the fixups, in the worktree with `TMPDIR=/private/tmp/p4-8-fi
 `go test ./web/bridge/ -count=1` `ok 82.647s`; `gofmt -l cmd internal web`
 empty; `go vet` on the same five packages clean.
 
+### Plan 9 — pinned projects
+
+Not yet run. [The plan](plans/2026-11-12-p4-9-pins-plan.md) fills this record.
+
+### Plan 10 — fleet agents on the project's child
+
+Not yet run. [The plan](plans/2026-11-12-p4-10-fleet-plan.md) fills this record.

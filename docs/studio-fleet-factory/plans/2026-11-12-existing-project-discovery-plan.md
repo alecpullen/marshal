@@ -1,0 +1,510 @@
+# Existing-project read-only discovery implementation plan
+
+Date: 2026-11-12
+Status: approved for autonomous execution by the user's implementation request.
+Base: `a710903a` (`docs: specify existing-project discovery slice`).
+Specification: [existing-project-discovery-spec.md](../existing-project-discovery-spec.md).
+
+**Goal:** deliver the first gap-1 slice from the studio-fleet-factory archive: a
+read-only, authenticated bridge endpoint that reports what a registered forge
+and credential can access, what can be detected in an existing local checkout,
+what is inaccessible, and which setup options Marshal recommends—without
+creating projects or agents, changing repository configuration, or modifying
+the checkout.
+
+## Scope and boundaries
+
+This slice adds:
+
+- `POST /api/repos/{id}/discover` for an already-registered repository;
+- a per-instance/per-credential capability report with exactly five states;
+- read-only GitHub and Gitea/Forgejo metadata probes;
+- explicit, bounded inspection of an existing project-linked checkout;
+- read-only local Git state (revision, branch, dirtiness);
+- detected facts, actionable gaps, and advisory recommendations in one report.
+
+It does not add a planning UI, create a Marshal project, clone or fetch a
+repository, execute setup/build/install commands, start an agent, create a
+factory, persist discovery state, apply a recommendation, or widen the
+existing `Forge` interface.
+
+All new Go code stays under `web/bridge/` and imports only the standard
+library. `web/ui/` is untouched.
+
+## Reconciled implementation decisions
+
+The two Minimax planning briefs agreed on the route, local-only checkout rule,
+five capability states, partial-failure model, and one-line route-registration
+change. The following points resolve their differences.
+
+1. **Checkout source.** Use only `Workspace.ProjectRootByRepo(repo.ID)`. If no
+   project links the repository, checkout capabilities are `unconfigured` and
+   the report says why. Do not clone, fetch, create a checkout, use a bare
+   mirror, or persist a new path field. A repository URL is not treated as a
+   local checkout.
+2. **Supported-forge outage.** A total transport failure against a declared
+   supported forge produces HTTP 200 with `status: "unavailable"`, a non-empty
+   top-level `error`, forge capabilities in `temporarily_unavailable`, and
+   actionable gaps. Locally observable checkout facts remain in the report.
+   This is a visible error state, never a silent downgrade to Git-only. A
+   per-section 403/404/429/5xx is a degraded section, not a total outage.
+3. **Capability set.** Use the ten keys below, always present and always in
+   this order. They map directly to the specification's independently
+   observable reads; `issues`, `reviews`, and previews are not invented.
+4. **Capability state mapping.** No credential or non-PAT credential is
+   `unconfigured`; no declared forge is `unsupported`; HTTP 401/403 is
+   `insufficient_permission`; HTTP 404 is `unsupported`; HTTP 429, 5xx, and
+   transport failures are `temporarily_unavailable`; a successful probe is
+   `supported`.
+5. **Absent versus unreadable.** Absence is emitted only after a successful
+   search: a detected fact with `value: "absent"`. An unreadable target is a
+   gap with no absence fact. The two outcomes must be textually distinct.
+6. **File reads.** Known instruction/document targets are opened with a
+   bounded read to prove readability, but their contents are never returned.
+   Manifests are inspected only for the minimum fields needed to identify
+   language/tooling. No arbitrary tree walk and no symlink following occur.
+7. **Revision.** Forge facts carry the default-branch head observed during
+   the probe; checkout facts carry the checkout `HEAD`. This makes a stale
+   forge fact detectable when the default branch advances without requiring a
+   forbidden fetch.
+8. **Report errors.** Unknown repository is 404; missing fleet is 503;
+   malformed request is 400; an unexpected internal failure is 502. A declared
+   forge outage is a successful report whose `status`/`error` visibly say it
+   failed, because checkout discovery remains independently useful.
+9. **No persistence or audit event.** Discovery is observational. It does not
+   rewrite the workspace, bump its version, or create an audit record.
+
+## HTTP and JSON contract
+
+### Request
+
+```http
+POST /api/repos/{id}/discover
+Authorization: Bearer <token>   # when the server has a token
+Content-Length: 0
+```
+
+The body is empty. The repository id comes from the registered `Repo` record.
+
+### Response
+
+```json
+{
+  "repoId": "repo-1",
+  "forge": "github",
+  "status": "ok",
+  "error": "",
+  "revision": "8e4c1b2f0e1d2c3b4a5968778695a4b3c2d1e0f9",
+  "branch": "main",
+  "worktree": {
+    "path": "/Users/alecpullen/projects/example",
+    "branch": "main",
+    "head": "8e4c1b2f0e1d2c3b4a5968778695a4b3c2d1e0f9",
+    "dirty": false,
+    "dirtyFiles": []
+  },
+  "capabilities": [
+    {"key": "repository_metadata", "state": "supported", "detail": ""},
+    {"key": "branches", "state": "supported", "detail": ""},
+    {"key": "pull_requests", "state": "supported", "detail": ""},
+    {"key": "ci_checks", "state": "supported", "detail": ""},
+    {"key": "ci_logs", "state": "supported", "detail": "no failing check to exercise"},
+    {"key": "checkout_instructions", "state": "supported", "detail": ""},
+    {"key": "checkout_docs", "state": "supported", "detail": ""},
+    {"key": "checkout_tooling", "state": "supported", "detail": ""},
+    {"key": "checkout_environment", "state": "supported", "detail": ""},
+    {"key": "checkout_ci_definition", "state": "supported", "detail": ""}
+  ],
+  "facts": [
+    {
+      "origin": "detected",
+      "section": "instructions",
+      "kind": "instructions",
+      "value": "AGENTS.md",
+      "source": "checkout:AGENTS.md",
+      "revision": "8e4c1b2f0e1d2c3b4a5968778695a4b3c2d1e0f9",
+      "size": 9120,
+      "detail": ""
+    }
+  ],
+  "recommended": [
+    {
+      "origin": "recommended",
+      "section": "environment",
+      "kind": "environment",
+      "value": "Define a development environment",
+      "reason": "no recognised environment definition was found"
+    }
+  ],
+  "gaps": [
+    {
+      "key": "ci_checks",
+      "section": "ci",
+      "state": "insufficient_permission",
+      "detail": "credential lacks permission to read CI checks"
+    }
+  ]
+}
+```
+
+All slices are non-nil. `status` is `ok`, `degraded`, or `unavailable`.
+`worktree.dirty` is a pointer: `null` means not determined, which differs
+from a known clean checkout.
+
+### Capability order and meanings
+
+| Key | Meaning |
+|---|---|
+| `repository_metadata` | default branch, visibility, description, topics, language, size |
+| `branches` | branch names and default-branch head revision |
+| `pull_requests` | open PR/MR number, state, title, and head revision |
+| `ci_checks` | check/workflow names, conclusions, status, URL, and identity |
+| `ci_logs` | availability of detailed logs for failing checks |
+| `checkout_instructions` | `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.cursorrules`, `README*` |
+| `checkout_docs` | `docs/README.md`, `docs/index.md`, `docs/INDEX.md` |
+| `checkout_tooling` | `go.mod`, `package.json`, `pyproject.toml`, `Cargo.toml`, `tsconfig.json` |
+| `checkout_environment` | `.devcontainer/`, `Dockerfile`, `docker-compose.yml`, `compose.yaml` |
+| `checkout_ci_definition` | `.github/workflows/*.yml` and `*.yaml` |
+
+### Shared Go types
+
+Task 1 owns these names verbatim. Later tasks consume them without renaming.
+
+```go
+type DiscoveryCapabilityState string
+
+const (
+    DiscoveryCapabilitySupported            DiscoveryCapabilityState = "supported"
+    DiscoveryCapabilityUnconfigured         DiscoveryCapabilityState = "unconfigured"
+    DiscoveryCapabilityInsufficientPermission DiscoveryCapabilityState = "insufficient_permission"
+    DiscoveryCapabilityTemporarilyUnavailable DiscoveryCapabilityState = "temporarily_unavailable"
+    DiscoveryCapabilityUnsupported          DiscoveryCapabilityState = "unsupported"
+)
+
+type DiscoveryCapability struct {
+    Key    string                   `json:"key"`
+    State  DiscoveryCapabilityState `json:"state"`
+    Detail string                   `json:"detail,omitempty"`
+}
+
+type DiscoveryFact struct {
+    Origin   string `json:"origin"`
+    Section  string `json:"section"`
+    Kind     string `json:"kind"`
+    Value    string `json:"value"`
+    Source   string `json:"source"`
+    Revision string `json:"revision,omitempty"`
+    Size     int64  `json:"size,omitempty"`
+    Detail   string `json:"detail,omitempty"`
+}
+
+type DiscoveryRecommendation struct {
+    Origin  string `json:"origin"`
+    Section string `json:"section"`
+    Kind    string `json:"kind"`
+    Value   string `json:"value"`
+    Reason  string `json:"reason"`
+}
+
+type DiscoveryGap struct {
+    Key     string                   `json:"key"`
+    Section string                   `json:"section"`
+    State   DiscoveryCapabilityState `json:"state"`
+    Detail  string                   `json:"detail"`
+}
+
+type DiscoveryWorktree struct {
+    Path       string   `json:"path"`
+    Branch     string   `json:"branch,omitempty"`
+    Head       string   `json:"head,omitempty"`
+    Dirty      *bool    `json:"dirty"`
+    DirtyFiles []string `json:"dirtyFiles,omitempty"`
+}
+
+type DiscoveryReport struct {
+    RepoID       string                   `json:"repoId"`
+    Forge        string                   `json:"forge"`
+    Status       string                   `json:"status"`
+    Error        string                   `json:"error,omitempty"`
+    Revision     string                   `json:"revision,omitempty"`
+    Branch       string                   `json:"branch,omitempty"`
+    Worktree     *DiscoveryWorktree       `json:"worktree,omitempty"`
+    Capabilities []DiscoveryCapability    `json:"capabilities"`
+    Facts        []DiscoveryFact          `json:"facts"`
+    Recommended  []DiscoveryRecommendation `json:"recommended"`
+    Gaps         []DiscoveryGap           `json:"gaps"`
+}
+```
+
+## File and dependency map
+
+All paths are relative to the repository root.
+
+| Task | Files | Depends on |
+|---|---|---|
+| 1 | `web/bridge/discovery.go`, `web/bridge/discovery_test.go` | — |
+| 2 | `web/bridge/discovery_forge.go`, `web/bridge/discovery_forge_github.go`, `web/bridge/discovery_forge_gitea.go`, `web/bridge/discovery_forge_test.go` | 1 |
+| 3 | `web/bridge/discovery_checkout.go`, `web/bridge/discovery_checkout_test.go` | 1 |
+| 4 | `web/bridge/discovery_report.go`, `web/bridge/discovery_report_test.go` | 1–3 |
+| 5 | `web/bridge/discovery_http.go`, `web/bridge/discovery_http_test.go`; one line in `web/bridge/http.go` | 4 |
+| 6 | specification/README updates and acceptance coverage | 1–5 |
+
+The implementation tasks are sequential: they compile as one Go package and
+share one frozen contract. Do not run two implementers against `web/bridge`
+at the same time.
+
+## Task 1: Freeze the report contract and state classifier
+
+**Files:** create `web/bridge/discovery.go` and `web/bridge/discovery_test.go`.
+
+- [ ] Write `TestDiscoveryCapabilityStatesAreExactlyFive`: pin the five state
+  strings and reject additions/removals.
+- [ ] Write `TestDiscoveryCapabilityOrderIsStable`: pin the ten keys and their
+  order from the table above.
+- [ ] Write `TestDiscoveryCapabilityStateForForgeErrors`: table-drive nil,
+  HTTP 401, 403, 404, 429, 500, transport failure, missing credential, and
+  unsupported adapter to the agreed state.
+- [ ] Write `TestDiscoveryReportJSONUsesStableShape`: assert non-nil slices,
+  the `dirty` tri-state, and absence of a credential literal.
+- [ ] Run
+  `go test ./web/bridge -run '^TestDiscovery(Capability|ReportJSON)' -count=1`;
+  confirm the new tests fail because the contract does not exist.
+- [ ] Implement the shared types and constants above, the capability-order
+  slice, and a pure classifier that uses `errors.As` with the existing
+  `*forgeAPIError`. Do not add methods to `Forge` and do not touch persisted
+  structures.
+- [ ] Run
+  `go test ./web/bridge -run '^TestDiscovery(Capability|ReportJSON)' -count=1`
+  and `gofmt -l web/bridge/discovery.go web/bridge/discovery_test.go`; require
+  PASS and no output.
+- [ ] Commit only this task: `feat(discovery): define capability report contract`.
+
+## Task 2: Add read-only GitHub and Gitea discovery adapters
+
+**Files:** create `web/bridge/discovery_forge.go`,
+`web/bridge/discovery_forge_github.go`,
+`web/bridge/discovery_forge_gitea.go`, and
+`web/bridge/discovery_forge_test.go`.
+
+Use an optional interface; do not widen `Forge`:
+
+```go
+type DiscoveryForge interface {
+    RepositoryMetadata(ctx context.Context, repo Repo, cred Credential) (DiscoveryRepositoryMetadata, error)
+    Branches(ctx context.Context, repo Repo, cred Credential) ([]DiscoveryBranch, error)
+    PullRequests(ctx context.Context, repo Repo, cred Credential) ([]DiscoveryPullRequest, error)
+    Checks(ctx context.Context, repo Repo, ref string, cred Credential) ([]DiscoveryCheck, error)
+    CheckLogs(ctx context.Context, repo Repo, check DiscoveryCheck, cred Credential) (string, error)
+}
+```
+
+- [ ] Write `TestDiscoveryForgeGitHubReportsRepositoryMetadata`: an httptest
+  server returns GitHub's repository shape; assert default branch, visibility,
+  description, topics, language, byte size, Bearer auth, and API-base use.
+- [ ] Write `TestDiscoveryForgeGitHubListsBranchesPullRequestsAndChecks`: pin
+  the three paths and normalize branch SHA, PR number/state/title/head, and
+  check name/conclusion/status/URL/App ID.
+- [ ] Write `TestDiscoveryForgeGitHubReadsCheckLog`: reuse the existing
+  Actions job/log shape and bound returned content to `checkLogLimit`.
+- [ ] Write `TestDiscoveryForgeGiteaUsesTokenAuthAndV1Paths`: assert
+  `Authorization: token ...`, `<APIBase>/api/v1/...`, and Gitea's status
+  context identity.
+- [ ] Write `TestDiscoveryForgeNeverEchoesCredential`: make every endpoint
+  fail and assert the PAT is absent from errors and responses.
+- [ ] Run
+  `go test ./web/bridge -run '^TestDiscoveryForge' -count=1`; confirm failure.
+- [ ] Implement the optional interface and the two adapters in new files.
+  Reuse `parseOwnerRepo`, `doJSON`, `hardenedGitArgs`, and the existing
+  auth/base conventions. Use `Repo.APIBase` for deterministic tests. A 404
+  is returned to the classifier; the adapter does not silently omit a
+  capability.
+- [ ] Run `go test ./web/bridge -run '^TestDiscoveryForge' -count=1`; require
+  PASS. Run `gofmt -l` on the four task files; require no output.
+- [ ] Commit only this task: `feat(discovery): read forge metadata without mutation`.
+
+## Task 3: Inspect an existing checkout without changing it
+
+**Files:** create `web/bridge/discovery_checkout.go` and
+`web/bridge/discovery_checkout_test.go`.
+
+- [ ] Write `TestInspectCheckoutFindsKnownSetup`: a temporary tree containing
+  instruction, docs, manifest, environment, and workflow files yields the
+  expected sections and `checkout:<relative-path>` sources.
+- [ ] Write `TestInspectCheckoutDistinguishesAbsentFromUnreadable`: an absent
+  instruction produces an `absent` fact and no gap; a directory named
+  `AGENTS.md` or an unreadable known file produces a gap and no absence fact.
+- [ ] Write `TestInspectCheckoutDoesNotFollowSymlinks`: a symlink to an
+  outside secret and a symlinked directory produce no outside source.
+- [ ] Write `TestInspectCheckoutDoesNotExecuteSetup`: marker-producing
+  Makefile, package script, and devcontainer command remain unexecuted.
+- [ ] Write `TestDiscoveryGitStateIsReadOnly`: on a local repository, capture
+  the file set, hashes, modes, `HEAD`, and porcelain status before and after;
+  assert byte identity, clean state, and detached-state handling.
+- [ ] Write `TestDiscoveryGitStateReportsDirtyWithoutRepair`: modify one
+  tracked file and add one untracked file; assert dirty status and unchanged
+  bytes/status afterwards. Assert the allowed git verbs are only `rev-parse`,
+  `symbolic-ref`, `status`, and `for-each-ref`.
+- [ ] Run
+  `go test ./web/bridge -run '^(TestInspectCheckout|TestDiscoveryGitState)' -count=1`;
+  confirm failure.
+- [ ] Implement bounded inspection of the exact known paths. Use `os.Lstat`
+  and do not follow symlinks. Open known instruction/docs files with a bounded
+  read to distinguish readable from unreadable, but return no content. Read
+  only the minimum manifest fields needed for language/tooling facts. Use the
+  existing hardened git runner for `rev-parse HEAD`,
+  `symbolic-ref --quiet --short HEAD`,
+  `--no-optional-locks status --porcelain --untracked-files=all`, and
+  `for-each-ref --format=%(refname:short) refs/heads`. Never use fetch,
+  checkout, switch, reset, clean, clone, pull, push, or write git commands.
+- [ ] Run the named tests; require PASS. Run `gofmt -l` on the two task files;
+  require no output.
+- [ ] Commit only this task: `feat(discovery): inspect existing checkouts read-only`.
+
+## Task 4: Assemble capability, fact, gap, and recommendation sections
+
+**Files:** create `web/bridge/discovery_report.go` and
+`web/bridge/discovery_report_test.go`.
+
+- [ ] Write `TestDiscoverReportReportsSupportedGitHubWithPAT`: use httptest
+  plus a registered PAT repo; assert supported forge capabilities, checkout
+  facts, non-empty revision, and no credential leakage.
+- [ ] Write `TestDiscoverReportKeepsCheckoutFactsWhenForgeUnavailable`: make
+  the fake API fail at the transport layer; assert HTTP-level orchestrator
+  success, `status: unavailable`, a visible error, temporary-unavailable forge
+  capabilities/gaps, and preserved checkout facts.
+- [ ] Write `TestDiscoverReportDegradesOnlyTheDeniedSection`: return 403 for
+  CI checks only; assert CI is `insufficient_permission` with an actionable
+  gap while repository, branch, PR, and checkout sections remain present.
+- [ ] Write `TestDiscoverReportGitOnlyUsesLocalFacts`: with no declared forge,
+  assert forge capabilities are unsupported, no HTTP request occurs, and
+  local Git/checkout facts remain.
+- [ ] Write `TestDiscoverReportDistinguishesAbsentFromUnreadable`: assert the
+  serialized responses are textually distinct and absence is never inferred
+  from a gap.
+- [ ] Write `TestDiscoverReportRecommendationsAreAdvisory`: assert a missing
+  environment may produce a recommendation, but no repository file or project
+  setting is created or changed.
+- [ ] Write `TestDiscoverReportRevisionAdvancesWithDefaultBranch`: use a fake
+  GitHub branch response whose SHA changes; assert the forge fact revision
+  changes while no fetch occurs.
+- [ ] Run
+  `go test ./web/bridge -run '^TestDiscoverReport' -count=1`; confirm failure.
+- [ ] Implement `func (f *Fleet) DiscoverRepo(ctx context.Context, repo Repo) (*DiscoveryReport, error)` in the new file. Resolve the checkout only through
+  `f.ws.ProjectRootByRepo(repo.ID)`. Resolve a credential only for a declared
+  forge. Probe each forge section independently, map failures to gaps, and
+  never convert a declared forge failure into Git-only. Derive recommendations
+  only from successfully inspected sections. Sort facts, recommendations, and
+  gaps for deterministic output; keep the fixed capability order.
+- [ ] Run the named tests; require PASS. Run `gofmt -l` on the two task files;
+  require no output.
+- [ ] Commit only this task: `feat(discovery): assemble partial access reports`.
+
+## Task 5: Expose the authenticated discovery route
+
+**Files:** create `web/bridge/discovery_http.go` and
+`web/bridge/discovery_http_test.go`; modify `web/bridge/http.go` by adding
+one route-registration line.
+
+- [ ] Write `TestDiscoverRouteReturnsCapabilitiesAndReportTogether`: POST
+  returns 200, JSON content type, the repository id, all ten capabilities,
+  facts, recommendations, and gaps.
+- [ ] Write `TestDiscoverRouteRequiresFleet`: a registry-only server returns
+  503 and does not panic.
+- [ ] Write `TestDiscoverRouteUnknownRepo`: an unknown id returns 404.
+- [ ] Write `TestDiscoverRouteMethodMismatch`: GET returns 405.
+- [ ] Write `TestDiscoverRouteHonoursBearerAuth`: with a configured token, an
+  unauthenticated request returns 401 and an authenticated request succeeds.
+- [ ] Write `TestDiscoverRouteDoesNotPersistState`: the workspace file bytes
+  and version are unchanged before and after a successful call.
+- [ ] Run
+  `go test ./web/bridge -run '^TestDiscoverRoute' -count=1`; confirm failure.
+- [ ] Implement `discoveryRoutes()` and `discoverRepo` in the new file. The
+  handler requires fleet mode, resolves the registered repo, calls
+  `Fleet.DiscoverRepo`, and writes JSON. It accepts an empty body. Add exactly
+  `s.discoveryRoutes()` beside the other route groups in `routes()`; do not
+  reorder existing lines.
+- [ ] Run
+  `go test ./web/bridge -run '^(TestDiscoverRoute|TestWebIsStdlibOnly)' -count=1`;
+  require PASS. Confirm `git diff -- web/bridge/http.go` contains one added
+  line.
+- [ ] Commit only this task: `feat(discovery): expose read-only repo discovery`.
+
+## Task 6: Finalize the specification and prove acceptance
+
+**Files:** modify
+`docs/studio-fleet-factory/existing-project-discovery-spec.md` and
+`docs/studio-fleet-factory/README.md`; add no production code unless a test
+first exposes a defect.
+
+- [ ] Update specification §5 from “Proposed” to the implemented contract,
+  document the ten capability keys, the checkout-source rule, the
+  unavailable-report rule, and the bounded-read/symlink guarantees.
+- [ ] Link the plan from the README's Active specification section.
+- [ ] Run the complete feature suite:
+  `go test ./web/bridge -run 'Discovery|DiscoverRoute|InspectCheckout|WebIsStdlibOnly' -count=1 -v`.
+- [ ] Run the package gate: `go test ./web/bridge -count=1`.
+- [ ] Run the boundary and build gates:
+  `go test ./web/bridge -run '^TestWebIsStdlibOnly$' -count=1`,
+  `gofmt -l web/bridge`, `go vet ./web/bridge/...`, and
+  `CGO_ENABLED=1 go build ./...`.
+- [ ] Run the repository suite: `CGO_ENABLED=1 go test ./... -count=1 -timeout 10m`.
+  Record unrelated baseline failures separately; do not claim an overall pass
+  when any required gate remains red.
+- [ ] Commit docs and any test-first defect fixes:
+  `docs(discovery): record implemented discovery contract`.
+
+## Acceptance matrix
+
+| Specification criterion | Owning tests |
+|---|---|
+| Every capability uses one of five states | Task 1 classifier/order tests; Task 4 invariant assertion |
+| Public-GitHub-with-PAT report | Task 2 GitHub tests; Task 4 supported report test |
+| Under-scoped CI credential is not an empty section | Task 4 denied-section test |
+| Absent instructions differ from unreadable instructions | Task 3 and Task 4 contrast tests |
+| Clean checkout remains byte-identical | Task 3 read-only Git test |
+| Dirty checkout is reported and unchanged | Task 3 dirty test |
+| `web/` remains standard-library only | Existing `TestWebIsStdlibOnly` plus Task 6 gate |
+| Default-branch advance changes a fact revision | Task 4 revision test |
+| Supported-forge failure stays visible | Task 4 unavailable test |
+| Git-only fallback remains supported | Task 4 Git-only test |
+| Setup/build/install never runs | Task 3 no-execution test |
+| Recommendations never rewrite setup | Task 4 advisory test |
+
+All forge tests use `httptest` loopback only. The only real subprocess is Git
+against a local disposable repository. No test reads developer credentials,
+calls a live forge, or contacts a model provider.
+
+## Execution, commits, and PR policy
+
+- Execute Tasks 1–6 sequentially with one DeepSeek
+  `deepseek-v4.1-flash:1017` implementer per task through the
+  `ollama-cloud` provider.
+- Each implementer follows test-driven development: add the named failing
+  test, capture the expected failure, implement the smallest owning change,
+  run the named verification, and commit only that task's files.
+- If the `ollama-cloud` provider is unavailable or materially slow, retry the
+  same scoped task with `openrouter/deepseek-v4.1-flash:1017` or
+  `opencode-go/deepseek-v4.1-flash:1017`; do not split a task across models.
+- The specification/plan PR is the base of the stack. The implementation PR
+  targets that base branch and contains Tasks 1–6.
+- Every PR is created as draft. Before it can become ready, dispatch a
+  `glm-5.3-flash` reviewer through `ollama-cloud` (fallback:
+  `openrouter/glm-5.3-flash` or `opencode-go/glm-5.3-flash`) to review the
+  branch against its base. Address every substantive finding, rerun the
+  affected gates, and have the reviewer verify the fixes before changing the
+  PR from draft to ready.
+- Do not merge automatically. The user retains the merge decision.
+
+## Plan self-review
+
+- Coverage: specification §§4–6 and §9 map to Tasks 1–5; §10 remains
+  excluded; the active archive index is updated in Task 6.
+- Contract consistency: the ten keys and five states are fixed in Task 1;
+  later tasks consume the exact Go names above.
+- Safety: no persisted schema change, no `Forge` widening, no clone/fetch,
+  no setup execution, no symlink escape, no secret in the report, and one
+  shared-file line in `http.go`.
+- Testability: every acceptance criterion has an offline deterministic test;
+  no live forge or model dependency is required.
+- Collision control: all implementation tasks are sequential because they
+  compile as one Go package and share the frozen contract.

@@ -2,7 +2,8 @@
 
 Date: 2026-11-12
 Status: spec for the first implementation slice. No product code is changed by
-this document.
+this document. The executable plan is
+[plans/2026-11-12-existing-project-discovery-plan.md](plans/2026-11-12-existing-project-discovery-plan.md).
 
 ## 1. Provenance
 

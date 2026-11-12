@@ -40,6 +40,11 @@ var ErrUnknownPending = errors.New("bridge: unknown pending submission")
 // unbounded wait is indistinguishable from a hung bridge.
 const spawnSlotTimeout = 2 * time.Minute
 
+// projectCloseTimeout bounds the session/close a released agent's project
+// child is asked for (P4 D10 decision 5). A close that fails must not hold up
+// the release: the session is forgotten and the child is left to linger.
+const projectCloseTimeout = 30 * time.Second
+
 // Agent lifecycle states, reported to the fleet UI.
 const (
 	AgentQueued           = "queued"
@@ -1938,6 +1943,16 @@ func (f *Fleet) releaseAgent(id string, destroy bool) {
 		return
 	}
 	rt.stopTimeout()
+	// An agent on its project's child leaves the child serving its other
+	// sessions: its session is closed and the linger is rearmed for a child
+	// with nothing left on it. The child is never stopped or detached, and
+	// there is no tree to remove, because the agent's source is local
+	// (P4 D10 decision 5).
+	if rt.project != nil {
+		f.releaseProjectAgent(rt)
+		f.slots.release()
+		return
+	}
 	// A runtime whose transport could not be built carries no child: a
 	// reattach to a container that is gone leaves exactly that. There is
 	// nothing to detach or stop, so skip both rather than dereference nil —
@@ -1978,6 +1993,24 @@ func (f *Fleet) releaseAgent(id string, destroy bool) {
 // git-sourced working tree.
 func (f *Fleet) stopAgent(id string) { f.releaseAgent(id, true) }
 
+// releaseProjectAgent closes a released agent's session on its project's child
+// and then rearms the linger for a child with nothing left on it. A close that
+// fails is logged and the session forgotten, so a dead session never keeps the
+// child from lingering (P4 D10 decision 5). The child itself is never stopped
+// or detached here: its other sessions, the TUI's among them, are still on it.
+func (f *Fleet) releaseProjectAgent(rt *agentRuntime) {
+	if sid := f.sessionIDFor(rt); sid != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), projectCloseTimeout)
+		defer cancel()
+		if err := rt.reg.Close(ctx, sid); err != nil {
+			slog.Default().Warn("webbridge: close a released agent's session",
+				"agent", rt.id, "session", sid, "err", err)
+			rt.reg.forget(sid)
+		}
+	}
+	f.rearmLinger(rt.project)
+}
+
 // restoreSession reattaches the bridge to the ACP session already
 // running inside a reattached container. An agent with no persisted
 // session id (a pre-v2 record) is left addressable by agent id only.
@@ -1989,13 +2022,30 @@ func (f *Fleet) restoreSession(ctx context.Context, rt *agentRuntime, a Agent) e
 	if cerr != nil {
 		return fmt.Errorf("resolve cwd for agent %s: %w", a.ID, cerr)
 	}
-	if err := rt.reg.Load(ctx, cwd, a.SessionID); err != nil {
-		return fmt.Errorf("restore session %s for agent %s: %w", a.SessionID, a.ID, err)
+	if rt.project != nil {
+		// The session is mapped before it is loaded, so the load's replay
+		// reaches the live state under the agent's id (P4 D10 decision 4). A
+		// load that fails unmaps it again.
+		f.mu.Lock()
+		rt.sessionID = a.SessionID
+		f.sessionAgent[a.SessionID] = a.ID
+		f.mu.Unlock()
+		if err := rt.reg.LoadFleet(ctx, cwd, a.SessionID); err != nil {
+			f.mu.Lock()
+			delete(f.sessionAgent, a.SessionID)
+			rt.sessionID = ""
+			f.mu.Unlock()
+			return fmt.Errorf("restore session %s for agent %s: %w", a.SessionID, a.ID, err)
+		}
+	} else {
+		if err := rt.reg.Load(ctx, cwd, a.SessionID); err != nil {
+			return fmt.Errorf("restore session %s for agent %s: %w", a.SessionID, a.ID, err)
+		}
+		f.mu.Lock()
+		rt.sessionID = a.SessionID
+		f.sessionAgent[a.SessionID] = a.ID
+		f.mu.Unlock()
 	}
-	f.mu.Lock()
-	rt.sessionID = a.SessionID
-	f.sessionAgent[a.SessionID] = a.ID
-	f.mu.Unlock()
 	// A reattached session reports no mode_changed for the state it already
 	// holds, so ask for it before the fleet claims any privileges. A failed
 	// or unsupported read leaves the state unavailable: the persisted
@@ -2110,8 +2160,15 @@ func (f *Fleet) Close() {
 	// The bridge is going away; the agents are not. Detaching leaves
 	// each container running under its name, so Open reattaches to it
 	// on the next start instead of spawning a duplicate.
+	//
+	// An agent on a project's child is skipped: stopProjectChildren has
+	// already stopped that child, and it holds no work of the agent's to
+	// reattach to (P4 D10).
 	var wg sync.WaitGroup
 	for _, rt := range rts {
+		if rt.project != nil || rt.child == nil {
+			continue
+		}
 		wg.Add(1)
 		go func(rt *agentRuntime) { defer wg.Done(); rt.child.Detach() }(rt)
 	}

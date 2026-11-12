@@ -1,6 +1,8 @@
 package bridge
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -337,6 +339,279 @@ func TestTheAgentTakesTheChildsVersion(t *testing.T) {
 	}
 	if !rt.versionWarning {
 		t.Fatalf("versionWarning = false, want true: the child reports v2.0.0 and the bridge v1.0.0")
+	}
+}
+
+// lingerArmed reports whether the child has a linger timer armed.
+func lingerArmed(pc *projectChild) bool {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	return pc.linger != nil
+}
+
+// closeCalls returns the session ids the fake was asked to close.
+func closeCalls(t *testing.T, fake *fakeProjectChild) []string {
+	t.Helper()
+	var out []string
+	for _, params := range fake.calls("session/close") {
+		var p struct {
+			SessionID string `json:"sessionId"`
+		}
+		if err := json.Unmarshal([]byte(params), &p); err != nil {
+			t.Fatalf("decode session/close params %q: %v", params, err)
+		}
+		out = append(out, p.SessionID)
+	}
+	return out
+}
+
+// TestRetiringAnAgentLeavesTheChild: retiring an agent closes its session on
+// the project's child and leaves the child serving the client's session, with
+// no stop and no detach (P4 D10 decision 5).
+func TestRetiringAnAgentLeavesTheChild(t *testing.T) {
+	f, fakeFor := hostOnlyProjectFleet(t)
+	ctx := ctlContext(t)
+	root := t.TempDir()
+
+	pc, err := f.projectChildFor(ctx, root)
+	if err != nil {
+		t.Fatalf("projectChildFor: %v", err)
+	}
+	clientSID, err := pc.reg.New(ctx, AgentPath(root), "")
+	if err != nil {
+		t.Fatalf("session/new: %v", err)
+	}
+	id, err := f.Spawn(ctx, root, SpawnOptions{Name: "one"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	fake := fakeFor(root)
+	a, ok := f.ws.Agent(id)
+	if !ok || a.SessionID == "" {
+		t.Fatalf("agent %s has no recorded session", id)
+	}
+
+	f.stopAgent(id)
+
+	closed := closeCalls(t, fake)
+	if len(closed) != 1 || closed[0] != a.SessionID {
+		t.Fatalf("session/close = %v, want only the agent's session %s", closed, a.SessionID)
+	}
+	if fake.wasStopped() {
+		t.Fatal("retiring an agent stopped the project child")
+	}
+	if !pc.reg.tracksClient(clientSID) {
+		t.Fatalf("the client's session %s was dropped with the agent", clientSID)
+	}
+}
+
+// TestTheLastAgentLeavingArmsTheLinger: with no client session, retiring the
+// agent leaves the child with nothing tracked and a linger that stops it.
+func TestTheLastAgentLeavingArmsTheLinger(t *testing.T) {
+	f, _ := hostOnlyProjectFleet(t)
+	kit := captureTimers(f)
+	ctx := ctlContext(t)
+	root := t.TempDir()
+
+	id, err := f.Spawn(ctx, root, SpawnOptions{Name: "one"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	pc, ok := projectEntry(f, root)
+	if !ok {
+		t.Fatal("the project child is not in the fleet's map")
+	}
+
+	f.stopAgent(id)
+
+	if !lingerArmed(pc) {
+		t.Fatal("the released child has no linger armed")
+	}
+	if kit.count() == 0 {
+		t.Fatal("no linger timer was captured")
+	}
+	kit.at(kit.count() - 1).fire()
+
+	if _, still := projectEntry(f, root); still {
+		t.Fatal("the child is still in the fleet's map after its linger fired")
+	}
+}
+
+// TestPausingAndResumingReloadsOnTheChild: Pause closes the agent's session;
+// Resume loads it again on the same child, mapped before the load and without
+// the client-trust mark (P4 D10 decisions 4 and 5).
+func TestPausingAndResumingReloadsOnTheChild(t *testing.T) {
+	var fleet *Fleet
+	f, fakeFor := projectFleetWith(t, func(fake *fakeProjectChild) {
+		fake.fakeAgent.mu.Lock()
+		fake.fakeAgent.handler = func(method string, params json.RawMessage) (any, *rpcError, bool) {
+			if method != "session/load" {
+				return nil, nil, false
+			}
+			var p struct {
+				SessionID string `json:"sessionId"`
+			}
+			if err := json.Unmarshal(params, &p); err != nil {
+				return nil, nil, false
+			}
+			if _, mapped := fleet.agentForSession(p.SessionID); !mapped {
+				return nil, &rpcError{Code: -32000, Message: "session loaded before it was mapped"}, true
+			}
+			return nil, nil, false
+		}
+		fake.fakeAgent.mu.Unlock()
+	})
+	fleet = f
+	f.SetHostProcessesOnly()
+	ctx := ctlContext(t)
+	root := t.TempDir()
+
+	id, err := f.Spawn(ctx, root, SpawnOptions{Name: "one"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	a, ok := f.ws.Agent(id)
+	if !ok || a.SessionID == "" {
+		t.Fatalf("agent %s has no recorded session", id)
+	}
+	fake := fakeFor(root)
+	pc, _ := projectEntry(f, root)
+
+	if err := f.Pause(id); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if closed := closeCalls(t, fake); len(closed) != 1 || closed[0] != a.SessionID {
+		t.Fatalf("session/close after Pause = %v, want %s", closed, a.SessionID)
+	}
+
+	if err := f.Resume(ctx, id); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if gens := fake.generations(); gens != 1 {
+		t.Fatalf("generations = %d, want the same child", gens)
+	}
+	loads := fake.calls("session/load")
+	if len(loads) != 1 {
+		t.Fatalf("session/load calls = %v, want exactly one", loads)
+	}
+	params := paramsOf(t, loads[0])
+	if got := params["sessionId"]; got != a.SessionID {
+		t.Fatalf("session/load sessionId = %v, want %s", got, a.SessionID)
+	}
+	if got := params["clientTrust"]; got != nil {
+		t.Errorf("session/load clientTrust = %v, want none for a fleet session", got)
+	}
+	if !pc.reg.IsFleet(a.SessionID) {
+		t.Fatalf("session %s is not tracked as the fleet's after Resume", a.SessionID)
+	}
+}
+
+// TestAFailedCloseStillUntracks: a session/close the child refuses still
+// untracks the session, and the child is left with its linger (decision 5).
+func TestAFailedCloseStillUntracks(t *testing.T) {
+	f, fakeFor := projectFleetWith(t, func(fake *fakeProjectChild) {
+		fake.fakeAgent.mu.Lock()
+		fake.fakeAgent.handler = func(method string, params json.RawMessage) (any, *rpcError, bool) {
+			if method != "session/close" {
+				return nil, nil, false
+			}
+			return nil, &rpcError{Code: -32000, Message: "no such session"}, true
+		}
+		fake.fakeAgent.mu.Unlock()
+	})
+	f.SetHostProcessesOnly()
+	shortenLinger(t, f)
+	ctx := ctlContext(t)
+	root := t.TempDir()
+
+	id, err := f.Spawn(ctx, root, SpawnOptions{Name: "one"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	a, ok := f.ws.Agent(id)
+	if !ok || a.SessionID == "" {
+		t.Fatalf("agent %s has no recorded session", id)
+	}
+	fake := fakeFor(root)
+	pc, _ := projectEntry(f, root)
+
+	f.stopAgent(id)
+
+	if pc.reg.IsFleet(a.SessionID) {
+		t.Fatalf("session %s is still tracked after the close failed", a.SessionID)
+	}
+	if !lingerArmed(pc) {
+		t.Fatal("the linger was not armed after the close failed")
+	}
+	if fake.wasStopped() {
+		t.Fatal("the project child was stopped by the failed close")
+	}
+}
+
+// TestTheFleetsCloseStopsTheSharedChildOnce: Close stops the child an agent
+// shares with a client, and does not detach it (P4 D10).
+func TestTheFleetsCloseStopsTheSharedChildOnce(t *testing.T) {
+	f, fakeFor := hostOnlyProjectFleet(t)
+	ctx := ctlContext(t)
+	root := t.TempDir()
+
+	pc, err := f.projectChildFor(ctx, root)
+	if err != nil {
+		t.Fatalf("projectChildFor: %v", err)
+	}
+	if _, err := pc.reg.New(ctx, AgentPath(root), ""); err != nil {
+		t.Fatalf("session/new: %v", err)
+	}
+	if _, err := f.Spawn(ctx, root, SpawnOptions{Name: "one"}); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	fake := fakeFor(root)
+
+	f.Close()
+
+	fake.waitStopped(t, 5*time.Second)
+	if _, still := projectEntry(f, root); still {
+		t.Fatal("the child is still in the fleet's map after Close")
+	}
+}
+
+// TestReattachAllLoadsOnTheProjectChild: a persisted local agent is reattached
+// with session/load on its project's child, after the session is mapped
+// (P4 D10 decisions 4 and 5).
+func TestReattachAllLoadsOnTheProjectChild(t *testing.T) {
+	f, fakeFor := hostOnlyProjectFleet(t)
+	root := t.TempDir()
+
+	if err := f.ws.PutAgent(Agent{
+		ID: "a1", Project: root, OwnerID: DefaultOwnerID,
+		SourceKind: "local", Profile: DefaultRuntimeProfile(),
+		SessionID: "sess-1", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("PutAgent: %v", err)
+	}
+
+	if errs := f.ReattachAll(context.Background()); len(errs) != 0 {
+		t.Fatalf("ReattachAll: %v", errs)
+	}
+	fake := fakeFor(root)
+	if fake == nil {
+		t.Fatal("no project child was built for the root")
+	}
+
+	loads := fake.calls("session/load")
+	if len(loads) != 1 {
+		t.Fatalf("session/load calls = %v, want exactly one on the project child", loads)
+	}
+	params := paramsOf(t, loads[0])
+	if got := params["sessionId"]; got != "sess-1" {
+		t.Fatalf("session/load sessionId = %v, want sess-1", got)
+	}
+	if got := params["clientTrust"]; got != nil {
+		t.Errorf("session/load clientTrust = %v, want none for a fleet session", got)
+	}
+	pc, _ := projectEntry(f, root)
+	if !pc.reg.IsFleet("sess-1") {
+		t.Fatal("the reattached session is not tracked as the fleet's")
 	}
 }
 

@@ -2480,6 +2480,40 @@ pre-existing):
 - `CGO_ENABLED=1 go build -o marshal ./cmd/marshal`, then
   `go test ./test/usability/... -run TestScripted -timeout 5m` — `ok 45.950s`.
 
+**The branch review.** Three reviewers read the branch in disjoint areas
+(`internal/app` + `internal/acp`, `web/bridge`, and `internal/daemon` +
+`cmd/*` + `test/daemon`). No BLOCKER was found. Their findings, and what was
+done with each:
+
+- *A hold on a project with no `.marshal`* (MAJOR, stale): already fixed by
+  the `.marshal` fixup above. The end-to-end test's `createMarshalDir` fixture
+  was then removed, so `TestAPinnedProjectIndexesWithNoSession` now pins a
+  project nothing has ever opened — the fresh-clone path the feature exists
+  for.
+- *A pinned child whose hold failed at start was never re-held while ready*
+  (MINOR): `StartPinned` now holds a root whose child already existed before
+  the resolve, which is the retry decision 4 promises. A child the call starts
+  holds itself, so no root is held twice.
+- *`runDaemonPin` wrapped a daemon refusal in "the daemon is not answering"*
+  (MINOR): only a transport failure (`*url.Error`) gets that wording now; a
+  refusal is reported as the daemon's own sentence. The silent-daemon fixture
+  carries a `*url.Error`, which is what a real silent socket produces.
+- *`armLinger`'s `fire` re-check had no test* (MINOR): added
+  `TestALingerThatFiresAfterAPinKeepsTheChild`.
+- *The route's 501 and 502 answers were untested* (MINOR): added
+  `TestThePinRouteAnswersItsRefusals`.
+- *`watchFor` cited decision 6, and `refreshIndex`'s doc did not mention
+  holds* (MINOR): both corrected to decision 7.
+- *`refreshIndex` used a `held`/`cfg` read from before the stop* (NIT): it
+  re-reads both under the second lock and recomputes the key.
+- *`Hosts.Hold`'s `MkdirAll` would materialize a typo'd root* (NIT): it now
+  refuses a root that is not an existing directory.
+- *`hostsHold`'s `ctx` is unused, and `agentHost.holds`'s comment was a
+  fragment* (NITs): both documented.
+- *`runDaemonPin` did not reject a `-`-prefixed argument* (NIT): it does now.
+- *`rearmLinger` reads `pc.reg` without `pc.mu`* (NIT, pre-existing): left
+  alone; it predates this plan and the race detector is clean on the subset.
+
 **Open for later plans.**
 
 - H12 is unchanged: no web UI pinning, and the project settings `PUT` is

@@ -392,3 +392,72 @@ func TestThePinRouteRefusesABadRequest(t *testing.T) {
 		t.Fatalf("body = %q, want an error", rec.Body.String())
 	}
 }
+
+// TestALingerThatFiresAfterAPinKeepsTheChild is decision 2's re-check: a
+// linger armed before the pin must not reap the child once the pin lands.
+func TestALingerThatFiresAfterAPinKeepsTheChild(t *testing.T) {
+	f, _ := projectFleet(t)
+	shortenLinger(t, f)
+	timers := captureTimers(f)
+	ctx := ctlContext(t)
+	root := t.TempDir()
+
+	// Start the child unpinned, so its linger is armed.
+	pc, err := f.projectChildFor(ctx, root)
+	if err != nil {
+		t.Fatalf("projectChildFor: %v", err)
+	}
+	f.rearmLinger(pc)
+	if n := timers.count(); n != 1 {
+		t.Fatalf("armed timers = %d, want 1 for an unpinned empty child", n)
+	}
+
+	// The pin lands while the timer is armed.
+	if _, err := f.Pin(ctx, root, true); err != nil {
+		t.Fatalf("Pin: %v", err)
+	}
+
+	// The timer fires: the pin keeps the child.
+	timers.at(0).fire()
+	if _, ok := projectEntry(f, filepath.Clean(root)); !ok {
+		t.Fatal("the linger reaped a child the pin keeps")
+	}
+}
+
+// TestThePinRouteAnswersItsRefusals: a bridge without a fleet answers 501, and
+// a child that cannot hold answers 502 with the agent's sentence.
+func TestThePinRouteAnswersItsRefusals(t *testing.T) {
+	t.Run("a server without a fleet", func(t *testing.T) {
+		srv := NewServer(nil)
+		rec := pinRoute(t, srv.SocketHandler(), http.MethodPost, pinPath,
+			map[string]any{"root": t.TempDir(), "pinned": true})
+		if rec.Code != http.StatusNotImplemented {
+			t.Fatalf("pin on a server without a fleet = %d, body = %s; want 501", rec.Code, rec.Body.String())
+		}
+		var body map[string]string
+		decodeBody(t, rec, &body)
+		if body["error"] == "" {
+			t.Fatalf("501 body = %q, want a JSON error", rec.Body.String())
+		}
+	})
+
+	t.Run("a child that cannot hold", func(t *testing.T) {
+		f, _ := projectFleetWith(t, func(fake *fakeProjectChild) {
+			fake.handler = func(method string, _ json.RawMessage) (any, *rpcError, bool) {
+				if method == "project/hold" {
+					return nil, &rpcError{Code: -32603, Message: "hold refused"}, true
+				}
+				return nil, nil, false
+			}
+		})
+		shortenLinger(t, f)
+		rec := pinRoute(t, NewServer(f).SocketHandler(), http.MethodPost, pinPath,
+			map[string]any{"root": t.TempDir(), "pinned": true})
+		if rec.Code != http.StatusBadGateway {
+			t.Fatalf("pin whose hold fails = %d, body = %s; want 502", rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "hold refused") {
+			t.Fatalf("502 body = %q, want the agent's sentence", rec.Body.String())
+		}
+	})
+}

@@ -1047,8 +1047,10 @@ type captureTransport struct {
 	stackError  *rpcError
 	// results and errs answer other methods by name, for tests of the
 	// session proxy routes.
-	results map[string]json.RawMessage
-	errs    map[string]*rpcError
+	results   map[string]json.RawMessage
+	errs      map[string]*rpcError
+	onRequest func(string) error
+	signalErr error
 }
 
 type capturedFrame struct {
@@ -1079,6 +1081,12 @@ func (t *captureTransport) serve(r io.Reader, w io.WriteCloser) {
 		t.mu.Lock()
 		t.seen = append(t.seen, capturedFrame{method: req.Method, params: string(req.Params)})
 		t.mu.Unlock()
+		if t.onRequest != nil {
+			if err := t.onRequest(req.Method); err != nil {
+				_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "error": map[string]any{"code": -32000, "message": err.Error()}})
+				continue
+			}
+		}
 		var result any
 		if e := t.errs[req.Method]; e != nil {
 			_ = enc.Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "error": e})
@@ -1105,7 +1113,7 @@ func (t *captureTransport) serve(r io.Reader, w io.WriteCloser) {
 }
 
 func (t *captureTransport) Wait() error                { return nil }
-func (t *captureTransport) Signal(sig os.Signal) error { return nil }
+func (t *captureTransport) Signal(sig os.Signal) error { return t.signalErr }
 func (t *captureTransport) Kill() error                { return nil }
 func (t *captureTransport) Detach() error              { return nil }
 

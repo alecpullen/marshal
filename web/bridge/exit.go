@@ -57,6 +57,9 @@ type gateResult struct {
 
 // Exit runs the exit path for one agent: commit, verify, then push.
 func (f *Fleet) Exit(ctx context.Context, agentID string, opts ExitOptions) (ExitResult, error) {
+	if err := f.checkFactoryActionContext(ctx, agentID, "exit"); err != nil {
+		return ExitResult{}, err
+	}
 	a, ok := f.ws.Agent(agentID)
 	if !ok {
 		return ExitResult{}, fmt.Errorf("%w: agent %s", ErrUnknownAgent, agentID)

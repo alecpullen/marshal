@@ -124,6 +124,7 @@ type ProjectStatus struct {
 }
 
 type Fleet struct {
+	factory    *FactoryController
 	ws         *Workspace
 	marshalBin string
 	agentEnv   map[string]string
@@ -372,6 +373,8 @@ type Fleet struct {
 	// taken in.
 	pruneMu sync.Mutex
 }
+
+func (f *Fleet) SetFactoryController(c *FactoryController) { f.factory = c }
 
 func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stateDir string, limits Limits, buildVersion string, projectMounts []ProjectMount, stateVolume string) *Fleet {
 	if stateDir == "" {
@@ -1133,6 +1136,15 @@ func (f *Fleet) resolveSource(opts SpawnOptions, origin string) (gitSource, erro
 }
 
 func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (string, error) {
+	return f.spawn(ctx, root, opts, nil)
+}
+
+type factorySpawnTag struct {
+	itemID, role, effectID string
+	native                 bool
+}
+
+func (f *Fleet) spawn(ctx context.Context, root string, opts SpawnOptions, tag *factorySpawnTag) (string, error) {
 	// The daily cap gates every way an agent can start: the UI, an issue,
 	// an approved intake submission and MCP all come through here. There is
 	// no agent yet, so only the daily cap can apply.
@@ -1165,6 +1177,9 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 		OwnerID:   DefaultOwnerID,
 		Origin:    origin,
 	}
+	if tag != nil {
+		a.FactoryItemID, a.FactoryRole, a.FactorySpawnEffectID = tag.itemID, tag.role, tag.effectID
+	}
 	a.SourceKind = src.kind
 	a.SourceRef = src.ref
 	a.ReadOnly = src.readOnly
@@ -1178,7 +1193,7 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	// state exists; a repo reference needs the checkout and resolves once
 	// workDir is known.
 	wsRefText := opts.Workspace
-	if wsRefText == "" {
+	if wsRefText == "" && (tag == nil || !tag.native) {
 		wsRefText = f.ws.ProjectSettingsFor(root).Workspace
 	}
 	var wsRef WSRef
@@ -1270,7 +1285,7 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 			src.gitRef = head
 		}
 		a.TargetBranch = src.gitRef
-		if wsRes != nil && wsRes.Source == "studio" {
+		if tag == nil && wsRes != nil && wsRes.Source == "studio" {
 			if e, ok := f.pools.take(wsRes.ImageName, wsRes.ImageVersion); ok {
 				pooled = &e
 			}
@@ -1397,6 +1412,14 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	if err := f.slots.acquire(slotCtx); err != nil {
 		cleanTree()
 		return "", fmt.Errorf("wait for an agent slot: %w", err)
+	}
+	if tag != nil {
+		// Persist ownership before any runtime can begin work.
+		if err := f.ws.PutAgent(a); err != nil {
+			f.slots.release()
+			cleanTree()
+			return "", fmt.Errorf("persist factory worker: %w", err)
+		}
 	}
 
 	rt, err := f.startRuntime(ctx, a)
@@ -1575,6 +1598,9 @@ func (f *Fleet) Diff(ctx context.Context, id, path string) (json.RawMessage, err
 }
 
 func (f *Fleet) Merge(ctx context.Context, id, commitMessage string) (json.RawMessage, error) {
+	if err := f.checkFactoryActionContext(ctx, id, "merge"); err != nil {
+		return nil, err
+	}
 	rt, err := f.RuntimeForSession(id)
 	if err != nil {
 		return nil, err
@@ -1610,6 +1636,9 @@ func (f *Fleet) Merge(ctx context.Context, id, commitMessage string) (json.RawMe
 }
 
 func (f *Fleet) Discard(ctx context.Context, id string) error {
+	if err := f.checkFactoryActionContext(ctx, id, "discard"); err != nil {
+		return err
+	}
 	rt, err := f.RuntimeForSession(id)
 	if err != nil {
 		// The runtime could not be resolved: the session is gone, or
@@ -2065,6 +2094,9 @@ func (f *Fleet) restoreSession(ctx context.Context, rt *agentRuntime, a Agent) e
 func (f *Fleet) ReattachAll(ctx context.Context) []error {
 	var errs []error
 	for _, a := range f.ws.Agents() {
+		if a.FactoryItemID != "" {
+			continue
+		}
 		if _, err := f.runtimeForAgent(a.ID); err == nil {
 			continue // already live
 		}
@@ -2102,6 +2134,9 @@ func (f *Fleet) Pause(id string) error {
 // Resume restarts a paused agent against its existing workspace.
 func (f *Fleet) Resume(ctx context.Context, id string) error {
 	if _, err := f.runtimeForAgent(id); err == nil {
+		if a, ok := f.ws.Agent(id); ok && a.FactoryItemID != "" && a.FactoryParked {
+			return fmt.Errorf("factory: parked worker has a live or uncertain runtime; cannot resume")
+		}
 		return nil // already running
 	}
 	a, ok := f.ws.Agent(id)
@@ -2117,13 +2152,33 @@ func (f *Fleet) Resume(ctx context.Context, id string) error {
 		return err
 	}
 	if err := f.restoreSession(ctx, rt, a); err != nil {
-		f.stopAgent(id)
+		if a.FactoryItemID == "" {
+			f.stopAgent(id)
+		} else if stopErr := f.stopFactoryRuntimeForRetry(rt, a); stopErr != nil {
+			return fmt.Errorf("restore saved factory session: %w; runtime stop unconfirmed: %v", err, stopErr)
+		}
 		return err
+	}
+	if a.FactoryItemID != "" {
+		a.FactoryParked = false
+		if err := f.ws.PutAgent(a); err != nil {
+			return fmt.Errorf("persist resumed factory worker: %w", err)
+		}
 	}
 	return nil
 }
 
-func (f *Fleet) StopProject(root string) {
+func (f *Fleet) StopProject(root string) error {
+	for _, a := range f.ws.Agents() {
+		if a.Project == root {
+			if a.FactoryItemID != "" {
+				return fmt.Errorf("%w: remove factory worker %s through its work item before deleting project", ErrFactoryConflict, a.ID)
+			}
+			if err := f.checkFactoryAction(a.ID, "delete project"); err != nil {
+				return err
+			}
+		}
+	}
 	f.mu.Lock()
 	var toStop []string
 	var removed []string
@@ -2140,6 +2195,7 @@ func (f *Fleet) StopProject(root string) {
 		f.stopAgent(id)
 	}
 	f.live.removeProject(removed)
+	return nil
 }
 
 func (f *Fleet) Close() {

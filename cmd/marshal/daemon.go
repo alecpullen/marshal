@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -405,6 +406,9 @@ func runDaemonPin(ctx context.Context, args []string, pinned bool, stdout, stder
 	if len(args) == 1 {
 		dir = args[0]
 	}
+	if strings.HasPrefix(dir, "-") {
+		return fmt.Errorf("marshal daemon %s: %q is not a directory", sub, dir)
+	}
 	if dir == "" {
 		wd, err := os.Getwd()
 		if err != nil {
@@ -427,7 +431,13 @@ func runDaemonPin(ctx context.Context, args []string, pinned bool, stdout, stder
 	pinCtx, cancel := context.WithTimeout(ctx, daemonPinTimeout)
 	defer cancel()
 	if _, err := daemonClientFor(socket).Pin(pinCtx, root, pinned); err != nil {
-		return fmt.Errorf("the daemon is not answering on %s: %w", socket, err)
+		// A transport failure means the daemon never answered; a refusal is
+		// the daemon's own sentence, so it is reported as itself.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			return fmt.Errorf("the daemon is not answering on %s: %w", socket, err)
+		}
+		return fmt.Errorf("marshal daemon %s: %w", sub, err)
 	}
 	if pinned {
 		fmt.Fprintf(stdout, "pinned %s\n", root)

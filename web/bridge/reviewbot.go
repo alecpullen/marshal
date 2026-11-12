@@ -145,6 +145,9 @@ func (f *Fleet) reviewPR(ctx context.Context, ev prEvent) error {
 		f.noteRateLimit(repo.ID, err)
 		return err
 	}
+	if f.factoryOwnsBranch(repo.ID, pr.HeadRef) {
+		return nil
+	}
 	// A newer push has its own event; reviewing this one would be stale.
 	if ev.headSHA != "" && pr.HeadSHA != "" && ev.headSHA != pr.HeadSHA {
 		return nil
@@ -493,6 +496,9 @@ func (f *Fleet) RunReviewBot(ctx context.Context, repoID string, number int) err
 	pr, err := forge.GetPR(ctx, repo, number, cred)
 	if err != nil {
 		return err
+	}
+	if f.factoryOwnsBranch(repo.ID, pr.HeadRef) {
+		return fmt.Errorf("%w: factory owns PR branch %s", ErrFactoryConflict, pr.HeadRef)
 	}
 	ev := prEvent{repoID: repoID, number: number, headSHA: pr.HeadSHA, manual: true}
 	go func() {

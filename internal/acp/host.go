@@ -91,7 +91,7 @@ type agentHost struct {
 	cancellersMu sync.Mutex
 	cancellers   []TurnCanceller
 
-	holds *projectHolds // nil when runConfig.hold is
+	holds *projectHolds // nil when runConfig.hold is nil
 }
 
 // newAgentHost constructs the session manager and turn manager in

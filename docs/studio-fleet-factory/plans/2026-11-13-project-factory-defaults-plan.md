@@ -63,6 +63,12 @@ between the specification and the real code.
    and the replay branch keeps calling `store.Create(req)` with the operator's
    request. A replay therefore returns the original item even when the
    project's defaults have since become invalid or conflicting.
+
+   This moved the hash base from the normalised request to the raw one. Two
+   requests that differ only in fields normalisation would fill in now have
+   different hashes, and a create journalled by a pre-slice bridge replays as a
+   conflict once after the upgrade. A byte-identical retry is unaffected. The
+   specification records this in §4.4.
 6. **The named project root is the only live resolution path.** A valid
    handoff always names a registered, trusted `ProjectRoot`, and the named
    root wins over the repository's intake project. The intake mapping is a

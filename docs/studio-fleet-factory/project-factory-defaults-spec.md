@@ -205,6 +205,21 @@ request it received, so a client that retries an unchanged create after the
 project's defaults have moved on still receives the original work item rather
 than a conflict. The resolved configuration is the item's content.
 
+This moved the hash base. Before this slice the create path normalised the
+request first, so the journal's command hash was computed over the
+**normalised** request; the hash is now computed over the **raw** request the
+operator sent. Two consequences, both narrow:
+
+- two requests that differ only in fields normalisation would fill in — one
+  setting `maxRounds: 5` and one omitting it — now have different hashes, so
+  sharing a request id between them is a conflict rather than a replay;
+- a create that was journalled by a pre-slice bridge and is replayed after the
+  upgrade is answered with a conflict once, because the stored hash was taken
+  over the normalised request.
+
+A byte-identical retry is unaffected, which is the case the replay contract
+exists for.
+
 ### 4.5 Which project's defaults apply
 
 A valid handoff always names a registered, trusted `ProjectRoot`: the existing
@@ -526,3 +541,13 @@ each out of scope, so they need the user rather than another implementer pass.
 
 §8 item 5 — the adoption transition — is deferred rather than open, exactly as
 §9 records: this slice does not implement it.
+
+### Known follow-up: the check-identity rule is duplicated
+
+The rule that an expected check must carry a valid identity now exists twice:
+inline in `factoryNormalize`, and again in `factoryValidateDefaults`. The
+duplication is deliberate — this slice does not touch `factoryNormalize` — and
+the two copies are identical today. A later change to only one of them would
+make a default valid when written and invalid when resolved, or the reverse,
+with a resolve-time error that blames the workspace file. The next slice that
+modifies `factoryNormalize` should extract the shared rule.

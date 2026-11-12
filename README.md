@@ -293,6 +293,7 @@ Requires Go 1.26+ and a C toolchain — tree-sitter needs cgo.
 CGO_ENABLED=1 go build ./cmd/marshal   # build
 go run ./cmd/marshal                   # run
 go test ./...                          # all Go tests (cached when unchanged)
+go test -short ./internal/app/tui       # faster TUI feedback; reduced coverage
 gofmt -w .                             # format
 go vet ./...                           # vet
 ```

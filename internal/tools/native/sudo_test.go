@@ -226,6 +226,7 @@ func TestSudoToolRefusesWithoutSecretPrompt(t *testing.T) {
 }
 
 func TestSudoToolRefusesPrivilegeWrapper(t *testing.T) {
+	fakeSudo(t, 0, "", true)
 	root := t.TempDir()
 	state := session.New(config.Default(), root, time.Unix(100, 0), session.Persistence{})
 	state.SetSystemAccess(true)
@@ -483,6 +484,7 @@ func TestSudoLockReleasedOnEveryPath(t *testing.T) {
 }
 
 func TestSudoToolSingleFlight(t *testing.T) {
+	fakeSudo(t, 0, "", true)
 	root := t.TempDir()
 	state := session.New(config.Default(), root, time.Unix(100, 0), session.Persistence{})
 	state.SetSystemAccess(true)

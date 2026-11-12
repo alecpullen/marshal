@@ -250,9 +250,14 @@ func TestFrameInvariants(t *testing.T) {
 	prev := theme.Current()
 	t.Cleanup(func() { theme.Reload(prev) })
 
+	widths, heights := []int{80, 100, 140, 200}, []int{24, 30, 40}
+	if testing.Short() {
+		// Keep every state and both themes, with representative narrow and wide frames.
+		widths, heights = []int{80, 140}, []int{24}
+	}
 	for _, v := range variants {
-		for _, w := range []int{80, 100, 140, 200} {
-			for _, h := range []int{24, 30, 40} {
+		for _, w := range widths {
+			for _, h := range heights {
 				for _, depth := range []theme.Depth{theme.DepthFlat, theme.DepthFull} {
 					th := prev
 					th.Depth = depth

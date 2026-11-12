@@ -24,7 +24,8 @@ The checkout contains 1,086 Go `*_test.go` files, approximately 9,700
 named top-level tests and benchmarks, and 88 web test files. A run in the
 cloud environment passed 933 UI tests in 134 seconds, including 56 seconds of
 jsdom environment setup; the Go `internal/app/tui` package took 53.7 seconds
-in the same uncached, serialized run. These measurements were made with other
+in the same uncached, serialized run. A subsequent run measured 86.6 seconds
+for `web/bridge`, and 49.5 seconds for `internal/app/tui`. These measurements were made with other
 work running and are not laptop benchmarks. These counts are
 not a measure of redundant coverage. Many Go package tests exercise multiple
 components, HTTP, subprocesses, persistence, or security boundaries; they cannot
@@ -66,11 +67,22 @@ passed with a private temporary directory and umask 022. The scripted approval
 deny scenario also failed when its fixture used shared `/tmp`; the approval
 scenario passed when rerun with a private temporary directory and umask 022.
 The two changes were made together, so the cause is not isolated.
+A later full run also saw three `TestStartRuntime...` database-open failures;
+all three passed when rerun together in isolation. Their cause remains unknown.
 Four snapshot process-lifecycle tests also failed when the container's PID 1
 left killed descendants as zombies. All four passed under a child-subreaper,
 which reaped those descendants. The production fail-closed behavior is intact.
 
-Only 23 Go test locations check `testing.Short()`, including some tagged live
+The TUI frame-invariant sweep renders every state across 24 size/theme
+combinations. Its `-short` mode now keeps every state and both themes but uses
+two widths at one height (four combinations); the default and CI retain all
+24. In this cloud environment, isolated uncached runs took 23.8 seconds for
+the full sweep and 1.2 seconds for the short sweep, with other work running.
+Use `go test -short ./internal/app/tui` for quicker TUI feedback. Short mode
+also skips other tests, including performance budgets; it is not a replacement
+for the full suite.
+
+Only 24 Go test locations check `testing.Short()`, including some tagged live
 tests, so `-short` is not a comprehensive fast-suite switch. The serialized
 CI command (`-p=1`) trades speed for reduced concurrency; do not copy it as
 the default local command without measuring on the laptop.

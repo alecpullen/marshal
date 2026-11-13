@@ -945,4 +945,106 @@ none of which the current contract triggers, and all four are fixed here.
 
 ### Plan 2 — the inbox
 
-To be filled by plan 2's executor.
+**What was built.** The bridge computes the fleet's inbox, so no client has to.
+`web/bridge/inbox.go` holds the rules: `computeInbox` puts each agent in the
+first group it qualifies for — needs you when it is parked on a request,
+running, ready to ship when it is idle with changes and no pull request, else
+earlier — and sorts each group by pending kind, then status rank, then most
+recently updated, stably. The queue merges the needs-you agents at their
+`updatedAt` with the intake submissions at their `createdAt`, oldest first,
+agents first on a tie. Every list is non-nil, so an empty inbox encodes as four
+empty arrays and an empty queue, never `null`. `GET /api/inbox` answers a fresh
+computation behind the same bearer check as the rest of `/api/`, and answers
+what the mux answers for an unknown path on a bridge built over a registry
+rather than a fleet. A loop beside the fleet's deltas wakes on any delta but
+its own, settles 250ms so a burst costs one recompute, and recomputes every
+second when nothing wakes it; it sends an `inbox` delta through the fleet's
+`emit` only when the encoding differs from the last one it sent, and always on
+its first computation. The route never sees that cache: only the loop keeps it,
+and only to decide whether to send. The inbox's types live in
+`web/bridge/contract/` with the rest of the wire types, the bridge keeping its
+names as aliases, and four new wire recordings pin the inbox and its delta
+without changing one of plan 1's. An intake item carries the whole submission,
+built by the same function `GET /api/pending` uses, so both answers carry the
+same bytes for one submission. The web UI's sidebar and Home render the
+bridge's grouping and queue; `groupAgents`, `pendingRank`, `byUrgency`,
+`AgentGroupKey` and `AgentGroups` are gone, and `buildInbox` is replaced by
+`mineOnly`, which keeps Home's "Mine" scope as a filter over the lists the
+bridge sent. The sidebar looks rows up by the IDs the inbox named and refetches
+the agents, at most once a second, when it sees an ID it has no row for. The
+docs say where this lives: `cmd/webbridge/README.md` gains "The fleet inbox",
+between "The local profile" and "Secrets", and `docs/ARCHITECTURE.md`'s web
+bridge row gains one clause. `AGENTS.md` does not change: it never described
+the web UI's grouping.
+
+**Where the plan was short, and how that was filled.** The plan says a fleet
+event wakes the inbox loop. The loop's own delta is a fleet event, so without
+an exclusion each send would wake the loop and it would recompute itself every
+250ms for nothing; the exclusion is explicit in `emit`, where an `inboxDelta`
+does not signal `inboxWake`. The plan requires the delta to name no session,
+as the budget, reroute and watch deltas do, but `sse.ts` dropped every delta
+without a session ID, so the inbox delta never reached the store; the client
+now passes it through, with a test. The plan's migration order deferred the
+inbox's last three tasks until plan 1 landed on `main` — the types into the
+contract, each intake item's whole submission, and the web UI onto the inbox —
+and that is the order the branch took, after the merge.
+
+**The manual run.** `webbridge` and `marshal` were built and the bridge run
+with `--profile local`, `--marshal-bin $PWD/marshal`, its TCP listener on
+`127.0.0.1:7799`, a fixed bearer token, `--egress off`, and a scratch
+`MARSHAL_DATA_DIR`, `--state-dir` and `--socket` under `/private/tmp`. A scratch
+git project was added with `POST /api/projects` and three local agents spawned
+with `POST /api/agents`; the provider was the local Ollama with
+`llama3.1:8b-instruct-q4_K_M`.
+
+Driven, and seen on `curl -N` against `GET /api/events?stream=fleet`:
+
+- **The first computed value reaches a client that is already connected.** A
+  `curl` started before the bridge, retrying until the listener answered, saw
+  `id: 1` as an `inbox` delta when the loop first computed. A client that
+  connects later sees nothing until the inbox changes, which is what the loop
+  sending only on a change means.
+- **A spawn moves the agent into `running`, and the turn's end moves it to
+  `ready`.** Each completed turn cost two inbox deltas: one entering `running`
+  and one leaving into `ready`.
+- **How many, for a running agent.** Each turn produced 2 inbox deltas — into
+  `running`, then out to `ready`. Across the run the stream carried 7: 2 for
+  the first agent's one turn, 4 for the second agent's two turns, and 1 for the
+  third, which never finished.
+- **`GET /api/inbox` answers the last delta's value.** Fetched at the end of the
+  run and compared as sorted JSON with the last `inbox` delta on the stream:
+  identical.
+
+Not driven, and why:
+
+- **An inbox delta moving an agent into `needsYou`, and answering the approval
+  moving it out within a second.** These need a turn that parks on a request.
+  `echo hello` is a safe command, so the bridge executed it without asking even
+  with the session in `ask` mode and auto off. The two later turns that asked
+  for a risky command never raised a request: both hung — one at `symbols` for
+  about seven minutes, one at `mode.request` — until the sessions were
+  cancelled. The only provider available was the local 8B model, so the
+  approval path is the one part of this plan the manual run did not exercise.
+- **The `needsYou → running` half of "the turn ending moves it to running, then
+  ready or earlier".** The `running → ready` half was seen; the half that
+  starts from a parked agent was not, for the same reason.
+- **What needed a browser.** The sidebar's and Home's rendering of the inbox —
+  the groups, the needs-you count, and Home's intake items from the queue —
+  was not checked. A browser is not available here, so only the values the
+  bridge served and streamed were checked.
+
+**Verification.**
+
+| Command | Result |
+| --- | --- |
+| `gofmt -l internal cmd test web` | No output. |
+| `go vet ./...` | Clean. |
+| `GOOS=linux go vet ./web/...` | Clean. |
+| `GOOS=windows go vet ./web/bridge/...` | Clean. |
+| `TMPDIR=/private/tmp/p5-2-suite go test ./... -timeout 20m` | `marshal/internal/acp` failed four timing-budget tests: `TestNoteCallBudget`, `TestStackBusyFlipBudget`, `TestStackPatchApplyBudget` and `TestStackRoundTripBudget`. All four are load-sensitive budget tests the repo already records: plan 1's header names `TestNoteCallBudget` and `TestStackRoundTripBudget` as the base's two, and `docs/bootstrap-factory/acceptance.md` records `TestStackBusyFlipBudget` and `TestStackPatchApplyBudget` as the same family. Each skips under `-short` and the race detector and holds a wall-clock budget, and this branch touches none of them: `git diff main..HEAD -- internal/acp` is empty. Rerun alone: `TestNoteCallBudget`, `TestStackBusyFlipBudget` and `TestStackPatchApplyBudget` passed; `TestStackRoundTripBudget`, a median of samples against 50ms, failed 2 of 3 runs alone on this loaded machine and passed once. No other package failed; `web/bridge` passed in 191.9s. |
+| `TMPDIR=/private/tmp/p5-2-suite go test -race ./web/bridge/ -run 'Inbox\|Fleet' -count=1` | `ok marshal/web/bridge 6.630s`. |
+| `web/ui: npm run check` | 6 errors in the six baseline files — `src/lib/fleet.test.ts`, `src/lib/Sidebar.test.ts`, `src/views/Review.test.ts`, `src/views/Runs.test.ts`, `src/views/Chat.svelte` and `src/views/Run.svelte` — plus 1 warning. The count is the base's and no error appears in another file; exit 1 is the gate, not a regression. |
+| `web/ui: npm test` | 88 files / 940 tests passed. |
+| `web/ui: npm run build` | Built in 3.80s; `git status` shows no change under `web/bridge/static/`. |
+| `CGO_ENABLED=1 go build -o marshal ./cmd/marshal` | Built (git-ignored via `.gitignore`'s `/marshal`). |
+| `TMPDIR=/private/tmp/p5-2-suite go test ./test/usability/... -run TestScripted -timeout 5m` | Passed (`marshal/test/usability` ok, 45.3s). |

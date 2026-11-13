@@ -153,7 +153,15 @@ will read.
   empty, not absolute, no leading `/`, no leading `~`, no `..` segment, no
   backslash, and no empty path segment. A dot-prefixed file name such as
   `.gitignore` is repository-relative and is allowed; a `.` or `..` path
-  segment is not. The executable rule is pinned in the implementation plan.
+  segment is not. A path carries no control character, and a path that names
+  a Windows drive — a letter, then `:`, then a separator or the end of the
+  path — is not repository-relative. The executable rule is pinned in the
+  implementation plan.
+- an excerpt's `lang` names the language of its code. It is optional, and
+  when present it is one short line: no control character, no backtick, and
+  at most 64 runes. The language is written on the fence line, so an
+  unvalidated one could close the fence and inject content into the
+  published description.
 - a reviewer report and an implementer `needs_input` report need no narration.
 
 The bounds are fixed, so that an oversized report fails at parse time rather
@@ -168,16 +176,20 @@ const (
 	factoryNarrationMaxSectionRunes = 8_000
 	// factoryNarrationMaxExcerptRunes bounds one excerpt's code.
 	factoryNarrationMaxExcerptRunes = 4_000
+	// factoryNarrationMaxPathRunes bounds one excerpt's path.
+	factoryNarrationMaxPathRunes = 512
+	// factoryNarrationMaxLangRunes bounds one excerpt's language tag.
+	factoryNarrationMaxLangRunes = 64
 	// factoryNarrationMaxTotalRunes bounds the whole narration.
 	factoryNarrationMaxTotalRunes = 64_000
 )
 ```
 
-A section over its bound, an excerpt over its bound, more than
-`factoryNarrationMaxExcerpts` excerpts, or a narration over
-`factoryNarrationMaxTotalRunes` is a report failure. The bounds are checked in
-`ParseFactoryReport`, so an oversized narration never reaches the store, the
-journal or the pull request.
+A section over its bound, an excerpt over its bound, a path or a language over
+its bound, more than `factoryNarrationMaxExcerpts` excerpts, or a narration
+over `factoryNarrationMaxTotalRunes` is a report failure. The bounds are
+checked in `ParseFactoryReport`, so an oversized narration never reaches the
+store, the journal or the pull request.
 
 A completed implementer report without a usable narration is a **report
 failure**, exactly as a missing summary is today. It is never silently
@@ -224,8 +236,9 @@ The composition leads with CI, then the narration, in the approved order:
 
 ~~~~
 ## CI
-<the failing checks, expanded, with their conclusion, a link and the log tail>
+<the failed checks, expanded, with their conclusion, a link and the log tail>
 <details><summary>N passing checks</summary>…</details>
+<the checks that neither passed nor failed, listed with their conclusion>
 
 ## Issue
 …
@@ -253,6 +266,15 @@ Sections with no content are omitted rather than rendered empty. The CI
 section is always present: when the evidence is unavailable or incomplete the
 body says so, because the approved behaviour is that CI is visible and its
 absence is never silent.
+
+The CI section buckets the checks the way the studio's CI card does, so the
+two surfaces agree. A check passes only when its conclusion is `success`. The
+failed checks are those whose conclusion is set and is neither `success`,
+`neutral` nor `skipped`; they are expanded with their conclusion, a link and
+the log tail. The passing checks collapse under their count. The rest — a
+check with no conclusion, or one that is `neutral` or `skipped` — are listed
+with their conclusion. A check that did not pass is never counted as
+passing.
 
 The body is composed from the newest round only. Earlier rounds' narration
 stays in the journal, and the published body always describes the revision the
@@ -431,6 +453,12 @@ For this slice:
   backslash, an over-long body, or too many excerpts is rejected rather than
   published, and so is an over-long narration section or an over-long
   narration as a whole;
+- an excerpt language carrying a backtick, a newline or a control character,
+  or longer than 64 runes, is rejected rather than published;
+- the excerpt's fence cannot be closed early by its language, its path or its
+  code;
+- a check that did not pass is never counted as passing, and the CI section
+  buckets the checks the way the studio's CI card does;
 - a forge that cannot update a pull request description refuses `set_ready`
   with a recorded reason, and the pull request stays a draft;
 - a work item whose newest round carries no narration — a pre-upgrade journal

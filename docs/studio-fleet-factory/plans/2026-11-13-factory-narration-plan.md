@@ -54,10 +54,11 @@ and record the discrepancies they found.
 5. **The narration total is** the sum of the eight section lengths plus the sum
    of the excerpt code lengths. Excerpt paths and languages are excluded.
 6. **An excerpt path is repository-relative**: not empty, not starting with
-   `/` or `~`, no `\` anywhere, no `..` segment, and no `:` drive prefix. A
-   `.` segment and an empty segment are also rejected, so `internal//x.go`,
-   `./x.go` and `internal/` are all refused. A dot-prefixed *name* such as
-   `.gitignore` is not a `.` segment, and is accepted.
+   `/` or `~`, no `\` anywhere, no control character, no `..` segment, and no
+   Windows drive prefix. A `.` segment and an empty segment are also
+   rejected, so `internal//x.go`, `./x.go` and `internal/` are all refused. A
+   dot-prefixed *name* such as `.gitignore` is not a `.` segment, and is
+   accepted. The path is bounded at 512 runes.
 7. **The body is composed from the newest round.** A round with no
    implementation report, or one whose report carries no narration, cannot
    produce a body: `set_ready` is refused with a recorded reason.
@@ -105,9 +106,9 @@ every test below depends on them.
 | P1 | Narration total | Σ(eight section rune lengths) + Σ(excerpt `code` rune lengths) |
 | P2 | Bound comparison | Reject only when strictly over the bound |
 | P3 | Section measurement | The raw string length in runes; not trimmed |
-| P4 | Excerpt path rule | Not empty; no leading `/`; no leading `~`; no `\`; every segment non-empty and neither `.` nor `..`; no `:` drive prefix. A dot-prefixed name such as `.gitignore` is allowed |
+| P4 | Excerpt path rule | Not empty; no leading `/`; no leading `~`; no `\`; no control character; every segment non-empty and neither `.` nor `..`; no Windows drive prefix (a letter, then `:`, then a separator or the end); at most 512 runes. A dot-prefixed name such as `.gitignore` is allowed |
 | P5 | Excerpt `code` may be empty | Allowed — an empty excerpt is not malformed |
-| P6 | Excerpt `lang` optional | An omitted language yields a bare fence |
+| P6 | Excerpt `lang` | Optional. When present: no control character, no backtick, at most 64 runes. An omitted language yields a bare fence |
 | P7 | Which round supplies the body | The newest round, whatever its head SHA |
 | P8 | Newest round with no implementation report | Treated as no narration: `set_ready` is refused |
 | P9 | CI wording | "CI evidence is unavailable for this revision." (no CI evidence, or evidence observed for another head SHA) / "CI evidence is incomplete for this revision." / "CI evidence is complete with no reported checks." |
@@ -119,6 +120,8 @@ every test below depends on them.
 | P15 | CI revision match | The round's CI evidence counts only when `round.CI != nil` and `round.CI.HeadSHA == round.HeadSHA`; otherwise the CI section says "unavailable" |
 | P16 | Description accessor | `FactoryPRDescriptionFor(f Forge) (FactoryPRDescription, error)` — the same shape as `FactoryForgeFor`, asserted on the `Forge` value, which the `set_ready` branch therefore keeps instead of discarding |
 | P17 | Check order in `set_ready` | The capability check runs first, then the narration check, then the compose and the write. When the forge lacks the capability and the round lacks a narration, the recorded reason names the unsupported capability |
+| P18 | CI bucketing | A check passes only when its conclusion is `success`. The failed checks are those whose conclusion is set and is neither `success`, `neutral` nor `skipped`; they are expanded with their conclusion, a link and the log tail. The passing checks collapse under their count. The rest — a check with no conclusion, or one that is `neutral` or `skipped` — are listed with their conclusion. A check that did not pass is never counted as passing |
+| P19 | Excerpt fence | The fence is computed over the language, the path and the code together, so none of them can close it early; the language is additionally validated at parse time |
 
 ## Shared Go types
 
@@ -210,7 +213,7 @@ last, because the asset build writes `web/bridge/static/`.
   the log tail), and passing checks only (collapsed in
   `<details><summary>N passing checks</summary>`); CI evidence observed for
   another head SHA reads as "unavailable", because it describes a revision
-  this body does not describe.
+  this body does not describe. The checks are bucketed as P18 pins.
 - [ ] Write `TestFactoryPRBodyRendersTheGivenRound`: given a round with a
   narration, the body carries that narration. The composer renders the round
   it is given; choosing the newest round is the effect's job, not the
@@ -251,6 +254,9 @@ last, because the asset build writes `web/bridge/static/`.
   leading slash, a leading `~`, a `..` segment, a `..` segment mid-path, a
   backslash, a Windows drive path, a forward-slash drive path, an empty path,
   a double slash, a `.` segment and a trailing slash are rejected.
+- [ ] Write `TestParseFactoryReportRejectsInvalidExcerptLanguage`: a language
+  carrying a backtick, a newline or a control character, or longer than 64
+  runes, is rejected, and the error names the offending field.
 - [ ] Write `TestParseFactoryReportAcceptsNarrationAtBounds`: a section of
   exactly 8,000 runes, an excerpt of exactly 4,000 runes, exactly eight
   excerpts, and a narration of exactly 64,000 runes are accepted.
@@ -462,6 +468,48 @@ last, because the asset build writes `web/bridge/static/`.
   actually run.
 - [ ] Commit: `docs(factory): record implemented narrated engineering report`.
 
+## Task 8: Close the branch-review findings
+
+**Files:** modify `web/bridge/factory_prbody.go`,
+`web/bridge/factory_prbody_test.go`, `web/bridge/factory_prompts.go` and
+`web/bridge/factory_prompts_test.go`.
+
+The `glm-5.3-flash` branch review of this branch found one Important and three
+Minor issues. They amend the contract, so the specification and the contract
+pins are amended with them: P4 gains the control-character, Windows
+drive-prefix and 512-rune path rules, P6 gains the language rule, and P18 and
+P19 are new.
+
+- [ ] Write `TestFactoryPRBodyFenceSurvivesAnUnvalidatedLanguage`: an
+  excerpt whose language carries a newline and a backtick cannot close its own
+  fence, and the composed body keeps the excerpt inside one block.
+- [ ] Write `TestFactoryPRBodyBucketsChecksByConclusion`: a `success` check is
+  counted as passing; a `failure`, `error`, `cancelled`, `timed_out` or
+  `action_required` check is expanded as failed; a `neutral` or `skipped`
+  check, and a check with no conclusion, is listed with its conclusion and is
+  never counted as passing.
+- [ ] Write `TestParseFactoryReportRejectsInvalidExcerptLanguage`: a language
+  carrying a backtick, a newline or a control character, or longer than 64
+  runes, is rejected, and the error names the offending field.
+- [ ] Extend `TestParseFactoryReportRejectsInvalidExcerptPaths` with the
+  control-character, Windows drive-prefix and over-512-rune path cases.
+- [ ] Run
+  `go test ./web/bridge -run 'TestFactoryPRBody|TestParseFactoryReport' -count=1 -v`;
+  confirm the new tests fail.
+- [ ] Implement:
+  - validate the excerpt language at parse time — no control character, no
+    backtick, at most 64 runes — and reject a path carrying a control
+    character, naming a Windows drive prefix, or longer than 512 runes;
+  - compute the excerpt fence over the language, the path and the code
+    together, so none of them can close it early;
+  - bucket the CI checks by conclusion as P18 pins: only `success` passes,
+    the failed set is expanded, and the rest are listed with their
+    conclusion.
+- [ ] Run `gofmt -w` on the four task files; run the named tests; require
+  PASS. Run `gofmt -l` on them; require no output.
+- [ ] Run `go test ./web/bridge -count=1`; require PASS.
+- [ ] Commit only this task: `fix(factory): close the narration fence and CI bucketing gaps`.
+
 ## Acceptance matrix
 
 | Specification criterion | Owning tests |
@@ -469,6 +517,9 @@ last, because the asset build writes `web/bridge/static/`.
 | A valid narration produces a description that leads with CI and contains every non-empty section and the excerpts | Task 1 `TestFactoryPRBodyComposesCIThenNarration`, `…OmitsEmptySections`, `…RendersExcerptsAsFencedBlocks`; Task 4 `TestFactoryEffectReadyPublishesComposedDescription` |
 | A missing or malformed narration is a report failure and no summary-only description is published | Task 2 `TestParseFactoryReportRequiresNarrationForCompletedImplementer`; Task 4 `TestFactoryEffectReadyRefusesItemWithoutNarration`; Task 5 `TestFactoryControllerReportFailureDoesNotAdvanceRound` |
 | An excerpt with a bad path, an over-long body, too many excerpts, or an over-long section or narration is rejected | Task 2 `TestParseFactoryReportRejectsInvalidExcerptPaths`, `…RejectsOversizedNarration`, `…AcceptsNarrationAtBounds` |
+| An excerpt language carrying a backtick, a newline or a control character, or longer than 64 runes, is rejected | Task 8 `TestParseFactoryReportRejectsInvalidExcerptLanguage` |
+| The excerpt fence cannot be closed early by the language, the path or the code | Task 8 `TestFactoryPRBodyFenceSurvivesAnUnvalidatedLanguage` |
+| A check that did not pass is never counted as passing, and the CI section buckets the checks as the studio does | Task 8 `TestFactoryPRBodyBucketsChecksByConclusion` |
 | The description is written for the reviewed head SHA, and a moved revision is refused before any body is written | Task 4 `TestFactoryEffectReadyWritesDescriptionForReviewedHead`, `…RefusesMovedRevisionBeforeDescriptionWrite` |
 | A body write that fails leaves the pull request a draft and the item not ready | Task 4 `TestFactoryEffectReadyDescriptionFailureLeavesDraft`; Task 5 `TestFactoryControllerDescriptionFailureLeavesItemNotReady` |
 | The CI section is always present and states unavailable or incomplete | Task 1 `TestFactoryPRBodyAlwaysCarriesCISection` |

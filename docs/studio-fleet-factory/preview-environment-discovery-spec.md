@@ -155,7 +155,7 @@ statuses: `CommitStatus` carries `target_url` ("the URL to link to for more
 details"). That is the instance's own way of pointing at a deployed
 environment — and it is already reported, because the existing Gitea
 discovery probe maps a commit status's `target_url` onto `DiscoveryCheck.URL`
-(`web/bridge/discovery_forge_gitea.go:195`) and the CI-checks fact carries
+(`web/bridge/discovery_forge_gitea.go:207`) and the CI-checks fact carries
 that URL in its detail (`web/bridge/discovery_report.go:610`).
 
 So on Gitea and Forgejo the preview link exists but is not a deployment
@@ -263,6 +263,23 @@ type PreviewForge interface {
 `DiscoveryForgeFor` does. Both families implement all three methods; the
 Gitea/Forgejo adapter asks the instance, and the instance answers `404`.
 
+The four Go types are named by their wire shape, so §6.4 is their
+definition:
+
+| Go type | Carries |
+|---|---|
+| `PreviewFilter` | The scope: `Ref` and `SHA`, either or both, empty meaning "do not filter on this dimension" |
+| `PreviewEnvironment` | One configured environment: the fields of §6.4's `environments[]` row |
+| `PreviewDeployment` | One deployment: the fields of §6.4's `deployments[]` row, with the newest status folded in |
+| `PreviewDeploymentStatus` | One status record: the provider's `id`, `state`, `environment_url`, `target_url`, `log_url`, `description`, `created_at` and `updated_at` |
+
+**Decided — D4a.** The **newest** status of a deployment supplies that
+deployment row's status fields — `state`, `environmentUrl`, `targetUrl`,
+`logUrl` and `description`. A field the newest status does not carry is left
+empty; it is **not** back-filled from an older status, because an older
+status describes an older moment of the environment and reporting it under
+the newest deployment's row would misstate the current state.
+
 **Decided — D5.** The preview surface **does not read the local checkout at
 all**. It reports what the *forge* knows. The revision a preview belongs to
 comes from the forge's own records, so the surface needs no project linkage
@@ -279,6 +296,14 @@ and works for a registered repository that has no workspace yet.
    (`web/bridge/discovery_report.go:576`).
 3. The resolved scope is echoed in the report, so a reader can always see
    what was asked for.
+4. **Terminal case.** When no scope resolves at all — neither query
+   parameter, no registered branch, and the forge reported no default
+   branch — the deployments read is **unfiltered**: the report lists every
+   deployment the forge reports, `ref` and `sha` are both empty, and
+   `preview_deployments` is `supported` with the detail "no revision scope
+   was resolvable; every deployment the forge reports is listed". The
+   detail is what distinguishes "unfiltered" from "an empty scope was
+   applied", so the report never leaves a reader guessing which happened.
 
 **Decided — D7.** `?ref=` is the primary filter, and each reported
 deployment carries its **own** SHA. This is deliberate. The open proposal
@@ -320,7 +345,7 @@ deployment's recorded revision, and leaves the comparison to the reader.
   "gaps": [
     {"key": "preview_environments", "section": "environments",
      "state": "insufficient_permission",
-     "detail": "the credential lacks permission to read this resource (HTTP 403); grant the credential or process read access and retry"}
+     "detail": "the credential lacks permission to read this resource (HTTP 403); grant the credential read access to the repository's deployments and environments, and retry"}
   ]
 }
 ```
@@ -379,26 +404,45 @@ discovery report distinguishes a section it had nothing to exercise
 **Decided — D11.** The forge-collection bounds are the ones the discovery
 surface already uses, unchanged: 100 per page, at most 5 pages
 (`web/bridge/discovery_forge.go:21`). A full final page means the forge
-reported more than is read, which is `errDiscoveryTruncated`: the items read
-are kept, the capability stays `supported`, and a gap records that the list
-is not exhaustive.
+reported more than is read. The items read are kept, the capability stays
+`supported`, and a gap records that the list is not exhaustive.
 
-**Decided — D12.** The report names **at most 20 deployments**, newest
-first, and reads statuses only for the deployments it names. When a ref has
-more environments than that, the report says so in a gap on
-`preview_deployments` — the same "the list is not exhaustive" wording the
-discovery surface uses for a truncated collection.
+**Decided — D12.** The report names **at most 20 deployments** and reads
+statuses only for the deployments it names. The pipeline is fixed, in this
+order:
 
-**Decided — D13.** Within those 20 deployments, the report names the
-**newest deployment per environment**. That is the deployment whose status
-describes the environment's current state, and it keeps the status fan-out
-proportional to the number of environments rather than to the number of
-deployments ever made.
+1. Read the deployments for the resolved scope, bounded by the page bound
+   in D11.
+2. Group them by environment name; within a group keep the deployment with
+   the greatest id — the newest deployment of that environment, whose status
+   describes its current state.
+3. Order the survivors by id descending and keep the first 20.
+4. Read statuses for those 20 deployments, and no others.
+
+Steps 2 and 3 are separate, and the order matters: the cap is applied to the
+**newest deployment per environment**, not to the newest 20 deployments. A
+branch with 40 environments therefore yields one row per environment, capped
+at the 20 newest environments, rather than 20 rows that might all belong to
+one environment.
+
+**Decided — D13.** Whenever a deployment or an environment was collected but
+not named — by the page bound in D11 or the cap in D12 — the report records a
+gap on `preview_deployments` saying so. The gap's detail states the bound
+that was hit, in the preview surface's own words:
+
+| Bound hit | Detail |
+|---|---|
+| The page bound (D11) | the forge reported more deployments than this report reads; the list is not exhaustive and a larger page bound would be needed to read the rest |
+| The name cap (D12) | the forge reported deployments for more environments than this report names; the newest deployment for each of the most recently updated environments is listed |
+
+Neither detail says adapter support would be needed. The adapter exists and
+the instance answered; what was not read is a matter of this report's own
+bounds, and the detail says which bound.
 
 **Decided — D14.** Ordering is by the provider's own **id**, descending.
 Deployment and status ids increase monotonically, and the discovery surface
 already relies on that ordering for commit statuses
-(`web/bridge/discovery_forge_github.go:263`). Ordering by a parsed timestamp
+(`web/bridge/discovery_forge_github.go:251`). Ordering by a parsed timestamp
 would need a second clock and a second failure mode, for no gain.
 
 ### 5.5 Failures
@@ -439,6 +483,16 @@ implies a repository has no previews when it simply was not asked a forge.
 **Decided — D18.** One failure degrades one capability. A refused
 environments read leaves `preview_deployments` and `preview_statuses`
 `supported`, and the report's `gaps` names only the refused key.
+
+Because `preview_statuses` is read per deployment, several status reads can
+fail with different causes. The capability and its one gap then carry the
+**most actionable** state among them, using the discovery contract's severity
+order — `unconfigured` > `insufficient_permission` >
+`temporarily_unavailable` > `unsupported`
+(`web/bridge/discovery_report.go:533`, `discoveryStateSeverity`) — so the
+report names the failure the operator can act on first. A deployment whose
+status read failed keeps its row with empty status fields; only the
+capability state and the gap reflect the failure.
 
 ### 5.6 Gaps and their fixes
 
@@ -524,11 +578,11 @@ GET /api/repos/{id}/preview-environments[?ref=<ref>][&sha=<sha>]
 
 ### 6.2 Capability keys
 
-| # | Key | Reads |
-|---|---|---|
-| 1 | `preview_environments` | The repository's configured deployment environments |
-| 2 | `preview_deployments` | The deployments recorded for the resolved scope |
-| 3 | `preview_statuses` | The provider-reported status of each reported deployment |
+| # | Key | Reads | Gap `section` |
+|---|---|---|---|
+| 1 | `preview_environments` | The repository's configured deployment environments | `environments` |
+| 2 | `preview_deployments` | The deployments recorded for the resolved scope | `deployments` |
+| 3 | `preview_statuses` | The provider-reported status of each reported deployment | `statuses` |
 
 ### 6.3 Report fields
 
@@ -544,6 +598,11 @@ GET /api/repos/{id}/preview-environments[?ref=<ref>][&sha=<sha>]
 | `environments` | array | The configured deployment environments the forge reported |
 | `deployments` | array | The deployments the forge reported for the scope |
 | `gaps` | array | At most one entry per capability key |
+
+`capabilities`, `environments`, `deployments` and `gaps` are always present
+as arrays, never `null`. `gaps` is ordered by the frozen capability-key
+order — `preview_environments`, `preview_deployments`, `preview_statuses` —
+so the report's arrays line up the way the discovery report's do.
 
 ### 6.4 Deployment and environment fields
 
@@ -645,9 +704,14 @@ These need the user, or a later slice, not an implementer's judgement.
 - A forge reporting more deployments than the page bound holds reports the
   deployments it read, keeps `preview_deployments` `supported`, and records a
   gap saying the list is not exhaustive.
-- The report names at most 20 deployments and reads statuses only for the
+- The report names at most 20 deployments, one per environment — the newest
+  deployment of each environment — and reads statuses only for the
   deployments it names; a ref with more environments than that records a gap
-  saying so.
+  on `preview_deployments` naming the bound that was hit.
+- When no revision scope resolves at all, the deployments read is unfiltered,
+  `ref` and `sha` are both empty, and `preview_deployments` carries the
+  detail "no revision scope was resolvable; every deployment the forge
+  reports is listed".
 - The probe issues only `GET` requests to the forge, reads no local path, and
   writes nothing anywhere.
 - The credential, any request header, and the forge's raw error body appear
@@ -682,5 +746,24 @@ when the slice lands.
 
 ## Branch review record
 
-Not yet reviewed. This section records the independent `glm-5.3-flash` review
-of the specification, and later the review of the implementation against it.
+This specification received an independent `glm-5.3-flash` review through
+`ollama-cloud` on 2026-11-13, against two questions: fidelity to the recorded
+approved decisions, and implementability against the real code. Seven findings
+were raised; all seven are resolved.
+
+| Severity | Finding | Resolution |
+|---|---|---|
+| Important | D12 and D13 left the order of the two bounds unstated, so cap-then-dedup and dedup-then-cap both read consistently and produce different reports; the gap trigger was also worded as "environments" where a ref has deployments | D12 now fixes the pipeline in four ordered steps — read, group by environment keeping the greatest id, order by id descending, keep the first 20 — and states that the cap applies to the newest deployment **per environment**, not to the newest 20 deployments. D13 gives the two bound-hit details, and the §9 criterion was reworded |
+| Minor | With statuses read per deployment, several reads can fail with different causes, and the spec never said which state the one capability and its one gap carry | D18 now folds several failures into the most actionable state, using the discovery contract's severity order (`web/bridge/discovery_report.go:533`) |
+| Minor | The D8 example gap reused the discovery surface's fix text verbatim, including "or process" — vocabulary this surface does not use, since it never reads the filesystem | The example now uses D19's own `insufficient_permission` fix |
+| Minor | Reusing the discovery truncation wording carried its "adapter support would be needed" tail, which contradicts D20: the adapter exists and the instance answered | D13 now states both truncation details in the preview surface's own words, naming the bound that was hit and promising no adapter work |
+| Minor | D4 named four Go types it never defined; `PreviewFilter`'s contents were unstated; there was no rule for which status supplies a deployment row's fields; the gap `section` values and the `gaps` presence and ordering were unstated | D4 now names the four types by their wire shape, D4a states that the newest status supplies the row's status fields and that an absent field is left empty rather than back-filled, §6.2 gives each key's gap `section`, and §6.3 states that all four arrays are always present and that `gaps` follows the frozen key order |
+| Minor | D6's scope resolution had no terminal case, so "no scope was resolvable" was indistinguishable from "an empty scope was applied" | D6 adds the terminal case: the read is unfiltered, `ref` and `sha` are empty, and the capability carries the detail "no revision scope was resolvable; every deployment the forge reports is listed". A matching §9 criterion was added |
+| Minor | Two cited anchors drifted from the code they claimed | `web/bridge/discovery_forge_gitea.go:195` → `:207` (the `target_url` mapping) and `web/bridge/discovery_forge_github.go:263` → `:251` (the status-id ordering) |
+
+The reviewer confirmed the two boundaries this slice must not cross: the
+specification stays on the approved side of the agreed/proposal line in §1,
+and the §4 provider claims — the three GitHub endpoints and their response
+shapes, the scope requirements, and the absence of any deployment or
+environment resource in the Gitea and Forgejo API descriptions — check out
+against the providers' own published descriptions.

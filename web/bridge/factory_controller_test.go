@@ -913,3 +913,206 @@ func TestFactoryExternalClosureCancelsDispatchedTurn(t *testing.T) {
 		t.Fatalf("active turn closed: %+v", got)
 	}
 }
+
+// narratedReadyEffects supplies a fixed observation and runs the real effect
+// adapter, so a controller test can drive set_ready against a test forge.
+type narratedReadyEffects struct {
+	effects     FactoryEffects
+	observation FactoryObservation
+}
+
+func (n narratedReadyEffects) Observe(context.Context, FactoryItem) (FactoryObservation, error) {
+	return n.observation, nil
+}
+
+func (n narratedReadyEffects) Execute(ctx context.Context, i FactoryItem, e FactoryEffect) (FactoryOutcome, error) {
+	return n.effects.Execute(ctx, i, e)
+}
+
+// readyObservation describes the seeded item as its own reviewed head, which
+// is what factoryReadyEvidence requires.
+func readyObservation(i FactoryItem) FactoryObservation {
+	pr := i.PRs[len(i.PRs)-1]
+	return FactoryObservation{PR: &pr, CI: &FactoryCI{HeadSHA: "head", Complete: true}}
+}
+
+// narrationControllerItem seeds the state AdvanceFactory maps to set_ready: a
+// reviewer park, a clean review of the round, matching CI and a draft PR at the
+// reviewed head.
+func narrationControllerItem(t *testing.T, s *FactoryStore, narrate bool) FactoryItem {
+	t.Helper()
+	now := time.Now()
+	i, err := s.Create(factoryReq(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i, err = s.Update(i.ID, "narrated-ready", i.Version, json.RawMessage(`{"narratedReady":true}`), func(dst *FactoryItem) error {
+		req := factoryReq()
+		req.Config.TargetBranch = "main"
+		req.Config.MaxRounds = 5
+		dst.State = "checking"
+		dst.Branch = "marshal/factory/item"
+		dst.BaseSHA = "base"
+		dst.Approvals = []FactoryApproval{{Revision: 1, Plan: req.Plan, Spec: req.Spec, PlanHash: FactoryPlanHash(req.Plan, req.Spec), Config: req.Config, ApprovedAt: now}}
+		dst.Grants = []FactoryGrant{{ID: "initial", AdditionalRounds: 5, At: now}}
+		dst.PRs = []FactoryPR{{Number: 1, NodeID: "node", HeadRef: dst.Branch, BaseRef: "main", State: "open", Draft: true, HeadSHA: "head", BaseSHA: "base"}}
+		implementation := &FactoryReport{OperationID: "op", Outcome: "complete", Summary: "implemented"}
+		if narrate {
+			implementation.Narration = &FactoryNarration{Issue: "the issue", Approach: "the approach"}
+		}
+		dst.Rounds = []FactoryRound{{
+			Number: 1, ApprovalRevision: 1, HeadSHA: "head", BaseSHA: "base",
+			CI:             &FactoryCI{HeadSHA: "head", Complete: true, Checks: []FactoryCheck{{Key: FactoryCheckKey{Kind: "check_run", Name: "build"}, SHA: "head", Status: "completed", Conclusion: "success"}}},
+			Implementation: implementation,
+			Review:         &FactoryReport{OperationID: "review", Outcome: "complete", InputsAccessible: true, BaseSHA: "base", HeadSHA: "head", Findings: []ReviewFinding{}},
+		}}
+		dst.Workers = []FactoryWorker{{AgentID: "reviewer", SessionID: "session", Role: "reviewer", SpawnEffectID: "review-park", Parked: true}}
+		dst.Effects = []FactoryEffect{{ID: "review-park", Kind: "park", WorkerRole: "reviewer", Status: "completed"}}
+		return nil
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return i
+}
+
+func TestFactoryControllerRecordsReasonForMissingNarration(t *testing.T) {
+	s, err := OpenFactoryStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	i := narrationControllerItem(t, s, false)
+	forge := newRacingFactoryForge(i.PRs[len(i.PRs)-1])
+	real := &factoryEffects{openForge: openForgeWith(forge, forge)}
+	c := NewFactoryController(s, narratedReadyEffects{effects: real, observation: readyObservation(i)}, time.Now)
+	c.admitAfterRecovery()
+	if err := c.tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := s.Get(i.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Decision == nil || saved.Decision.Kind != "conflict" || !strings.Contains(saved.Decision.Reason, "narration") {
+		t.Fatalf("decision does not name the missing narration: %+v", saved.Decision)
+	}
+	if saved.State == "ready" || !saved.PRs[len(saved.PRs)-1].Draft || len(forge.mutations) != 0 || len(forge.bodies) != 0 {
+		t.Fatalf("refusal mutated the pull request: state=%s pr=%+v mutations=%v bodies=%q", saved.State, saved.PRs[len(saved.PRs)-1], forge.mutations, forge.bodies)
+	}
+}
+
+func TestFactoryControllerRecordsReasonForUnsupportedDescription(t *testing.T) {
+	s, err := OpenFactoryStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	i := narrationControllerItem(t, s, true)
+	forge := newFactoryForgeWithoutDescription(i.PRs[len(i.PRs)-1])
+	real := &factoryEffects{openForge: openForgeWith(forge, forge)}
+	c := NewFactoryController(s, narratedReadyEffects{effects: real, observation: readyObservation(i)}, time.Now)
+	c.admitAfterRecovery()
+	if err := c.tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := s.Get(i.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Decision == nil || saved.Decision.Kind != "conflict" || !strings.Contains(saved.Decision.Reason, "pull request descriptions") {
+		t.Fatalf("decision does not name the unsupported capability: %+v", saved.Decision)
+	}
+	if saved.State == "ready" || !saved.PRs[len(saved.PRs)-1].Draft || len(forge.mutations) != 0 {
+		t.Fatalf("refusal mutated the pull request: state=%s pr=%+v mutations=%v", saved.State, saved.PRs[len(saved.PRs)-1], forge.mutations)
+	}
+}
+
+func TestFactoryControllerDescriptionFailureLeavesItemNotReady(t *testing.T) {
+	s, err := OpenFactoryStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	i := narrationControllerItem(t, s, true)
+	forge := newRacingFactoryForge(i.PRs[len(i.PRs)-1])
+	forge.failDescription = true
+	real := &factoryEffects{openForge: openForgeWith(forge, forge)}
+	c := NewFactoryController(s, narratedReadyEffects{effects: real, observation: readyObservation(i)}, time.Now)
+	c.admitAfterRecovery()
+	if err := c.tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := s.Get(i.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := factoryLastEffect(saved)
+	if last == nil || last.Kind != "set_ready" || last.Status != "uncertain" {
+		t.Fatalf("description failure was not uncertain: %+v", last)
+	}
+	if saved.State == "ready" || !saved.PRs[len(saved.PRs)-1].Draft || len(forge.mutations) != 0 {
+		t.Fatalf("failed write left the item ready: state=%s pr=%+v mutations=%v", saved.State, saved.PRs[len(saved.PRs)-1], forge.mutations)
+	}
+	if saved.Decision == nil || !strings.Contains(saved.Decision.Reason, "description write failed") {
+		t.Fatalf("description failure was not recorded: %+v", saved.Decision)
+	}
+}
+
+// reportRejectingEffects fails every implement effect at report parsing.
+type reportRejectingEffects struct{}
+
+func (reportRejectingEffects) Observe(context.Context, FactoryItem) (FactoryObservation, error) {
+	return FactoryObservation{}, nil
+}
+func (reportRejectingEffects) Execute(context.Context, FactoryItem, FactoryEffect) (FactoryOutcome, error) {
+	return FactoryOutcome{}, fmt.Errorf("%w: report rejected", ErrFactoryInvalidResult)
+}
+
+func TestFactoryControllerReportFailureDoesNotAdvanceRound(t *testing.T) {
+	s, err := OpenFactoryStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Now()
+	i, err := s.Create(factoryReq(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i, err = s.Update(i.ID, "implementing", i.Version, json.RawMessage(`{"implementing":true}`), func(dst *FactoryItem) error {
+		req := factoryReq()
+		req.Config.TargetBranch = "main"
+		req.Config.MaxRounds = 5
+		dst.State = "implementing"
+		dst.Branch = "marshal/factory/item"
+		dst.BaseSHA = "base"
+		dst.Approvals = []FactoryApproval{{Revision: 1, Plan: req.Plan, Spec: req.Spec, PlanHash: FactoryPlanHash(req.Plan, req.Spec), Config: req.Config, ApprovedAt: now}}
+		dst.Grants = []FactoryGrant{{ID: "initial", AdditionalRounds: 5, At: now}}
+		dst.Effects = []FactoryEffect{{ID: "create", Kind: "create_pr", Status: "completed"}}
+		return nil
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := NewFactoryController(s, reportRejectingEffects{}, time.Now)
+	c.admitAfterRecovery()
+	if err := c.tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	c.active.Wait()
+	saved, err := s.Get(i.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Rounds) != 1 || saved.Rounds[0].Implementation != nil {
+		t.Fatalf("rejected report advanced the round: %+v", saved.Rounds)
+	}
+	if saved.Decision == nil || saved.Decision.Kind != "worker_failed" {
+		t.Fatalf("report failure was not recorded: %+v", saved.Decision)
+	}
+	last := factoryLastEffect(saved)
+	if last == nil || last.Kind != "implement" || last.Status != "completed" {
+		t.Fatalf("implement effect did not settle: %+v", last)
+	}
+}

@@ -297,3 +297,28 @@ func (g *githubForge) SetFactoryDraft(ctx context.Context, repo Repo, pr Factory
 	}
 	return nil
 }
+
+// UpdateFactoryPRDescription writes the composed description and confirms the
+// response names the pull request it was asked to update.
+func (g *githubForge) UpdateFactoryPRDescription(ctx context.Context, repo Repo, number int, body string, cred Credential) error {
+	root, err := factoryRepoPath(repo)
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(map[string]string{"body": body})
+	if err != nil {
+		return err
+	}
+	req, err := g.newRequest(repo, "PATCH", root+"/pulls/"+strconv.Itoa(number), bytes.NewReader(payload), cred)
+	if err != nil {
+		return err
+	}
+	var p factoryGitHubPR
+	if err = doJSON(ctx, g.client, req, &p); err != nil {
+		return err
+	}
+	if p.Number != number {
+		return fmt.Errorf("GitHub description update returned mismatched pull request confirmation")
+	}
+	return nil
+}

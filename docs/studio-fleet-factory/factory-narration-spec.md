@@ -153,7 +153,15 @@ will read.
   empty, not absolute, no leading `/`, no leading `~`, no `..` segment, no
   backslash, and no empty path segment. A dot-prefixed file name such as
   `.gitignore` is repository-relative and is allowed; a `.` or `..` path
-  segment is not. The executable rule is pinned in the implementation plan.
+  segment is not. A path carries no control character, and a path that names
+  a Windows drive — a letter, then `:`, then a separator or the end of the
+  path — is not repository-relative. The executable rule is pinned in the
+  implementation plan.
+- an excerpt's `lang` names the language of its code. It is optional, and
+  when present it is one short line: no control character, no backtick, and
+  at most 64 runes. The language is written on the fence line, so an
+  unvalidated one could close the fence and inject content into the
+  published description.
 - a reviewer report and an implementer `needs_input` report need no narration.
 
 The bounds are fixed, so that an oversized report fails at parse time rather
@@ -168,16 +176,20 @@ const (
 	factoryNarrationMaxSectionRunes = 8_000
 	// factoryNarrationMaxExcerptRunes bounds one excerpt's code.
 	factoryNarrationMaxExcerptRunes = 4_000
+	// factoryNarrationMaxPathRunes bounds one excerpt's path.
+	factoryNarrationMaxPathRunes = 512
+	// factoryNarrationMaxLangRunes bounds one excerpt's language tag.
+	factoryNarrationMaxLangRunes = 64
 	// factoryNarrationMaxTotalRunes bounds the whole narration.
 	factoryNarrationMaxTotalRunes = 64_000
 )
 ```
 
-A section over its bound, an excerpt over its bound, more than
-`factoryNarrationMaxExcerpts` excerpts, or a narration over
-`factoryNarrationMaxTotalRunes` is a report failure. The bounds are checked in
-`ParseFactoryReport`, so an oversized narration never reaches the store, the
-journal or the pull request.
+A section over its bound, an excerpt over its bound, a path or a language over
+its bound, more than `factoryNarrationMaxExcerpts` excerpts, or a narration
+over `factoryNarrationMaxTotalRunes` is a report failure. The bounds are
+checked in `ParseFactoryReport`, so an oversized narration never reaches the
+store, the journal or the pull request.
 
 A completed implementer report without a usable narration is a **report
 failure**, exactly as a missing summary is today. It is never silently
@@ -224,8 +236,9 @@ The composition leads with CI, then the narration, in the approved order:
 
 ~~~~
 ## CI
-<the failing checks, expanded, with their conclusion, a link and the log tail>
+<the failed checks, expanded, with their conclusion, a link and the log tail>
 <details><summary>N passing checks</summary>…</details>
+<the checks that neither passed nor failed, listed with their conclusion>
 
 ## Issue
 …
@@ -253,6 +266,15 @@ Sections with no content are omitted rather than rendered empty. The CI
 section is always present: when the evidence is unavailable or incomplete the
 body says so, because the approved behaviour is that CI is visible and its
 absence is never silent.
+
+The CI section buckets the checks the way the studio's CI card does, so the
+two surfaces agree. A check passes only when its conclusion is `success`. The
+failed checks are those whose conclusion is set and is neither `success`,
+`neutral` nor `skipped`; they are expanded with their conclusion, a link and
+the log tail. The passing checks collapse under their count. The rest — a
+check with no conclusion, or one that is `neutral` or `skipped` — are listed
+with their conclusion. A check that did not pass is never counted as
+passing.
 
 The body is composed from the newest round only. Earlier rounds' narration
 stays in the journal, and the published body always describes the revision the
@@ -431,6 +453,12 @@ For this slice:
   backslash, an over-long body, or too many excerpts is rejected rather than
   published, and so is an over-long narration section or an over-long
   narration as a whole;
+- an excerpt language carrying a backtick, a newline or a control character,
+  or longer than 64 runes, is rejected rather than published;
+- the excerpt's fence cannot be closed early by its language, its path or its
+  code;
+- a check that did not pass is never counted as passing, and the CI section
+  buckets the checks the way the studio's CI card does;
 - a forge that cannot update a pull request description refuses `set_ready`
   with a recorded reason, and the pull request stays a draft;
 - a work item whose newest round carries no narration — a pre-upgrade journal
@@ -510,3 +538,57 @@ found four residual clarity gaps, all now closed: a duplicated Task 4
 checklist bullet, reconciled decision 6 omitting the `~` prohibition, the
 plan not saying what realises a capability-less forge, and Task 4
 understating the ten `Forge` methods the double must stub.
+
+## Implementation record
+
+Delivered on branch `studio/factory-narration-implementation` as Tasks 1–7 of the
+[plan](plans/2026-11-13-factory-narration-plan.md), test-first, with one
+commit per task. The studio task ran concurrently with the Go tasks in a
+separate worktree, because `web/ui` is a separate npm package with a
+disjoint file set.
+
+| Task | Deliverable | Commit |
+|---|---|---|
+| 1 | The `FactoryNarration` and `FactoryExcerpt` types, the `FactoryReport.Narration` field, the composed description, and the computed code fence | `ad1087b1` |
+| 2 | The parse-time narration requirement, the four bounds, the excerpt-path rule, the implementer prompt, and the fixtures that rule invalidates | `0a406a0d` |
+| 3 | The optional `FactoryPRDescription` capability, its accessor, and the GitHub `PATCH /pulls/{number}` implementation | `3b09a57a` |
+| 4 | The `set_ready` write path: the capability check, the narration check, the compose, the write, and the test doubles that carry the capability | `65e81c3b` |
+| 5 | The controller, store and end-to-end evidence, including the harness GitHub handler's description-update branch | `efa47ea7` |
+| 6 | The studio rendering of the narration sections and excerpts, with the summary fallback | `f96781a0` |
+| 7 | The rebuilt embedded assets, the gates below, and this record | `70fca650` |
+| 8 | The branch-review fixes: the excerpt language validated at parse time, the path refusing control characters, Windows drive prefixes and over-long paths, the fence computed over the language, the path and the code together, and the CI checks bucketed the way the studio's CI card buckets them | `4cdaaeec` |
+
+Files: `web/bridge/factory_prbody.go` and `factory_prbody_test.go` are new;
+`web/bridge/factory_types.go`, `factory_prompts.go`, `factory_prompts_test.go`,
+`factory_integration_test.go`, `factory_forge.go`, `forge_github_factory.go`,
+`forge_github_factory_test.go`, `factory_effects.go`, `factory_effects_test.go`,
+`factory_controller_test.go` and `factory_store_test.go` are modified;
+`web/ui/src/lib/factory.ts`, `web/ui/src/views/FactoryItem.svelte` and
+`web/ui/src/views/FactoryItem.test.ts` are modified; `web/bridge/static/**` is
+rebuilt. Everything in `web/bridge` is standard library only, no route was
+added, the `Forge` interface is unchanged, and no production file outside
+`web/bridge` is touched — in particular nothing under `internal/...`.
+
+Acceptance gates, run from the repository root on this branch:
+
+| Gate | Result |
+|---|---|
+| `go test ./web/bridge -run 'TestFactoryPRBody\|TestParseFactoryReport\|TestFactoryPrompt\|TestFactoryEffect\|TestFactoryGitHub.*Description\|TestFactoryPRDescriptionCapability\|TestFactoryController\|TestFactoryStore\|TestWebIsStdlibOnly' -count=1` | PASS — `ok marshal/web/bridge 1.006s` |
+| `go test ./web/bridge -run 'Factory' -count=1` | PASS — `ok marshal/web/bridge 31.318s`; the pre-existing factory tests are unmodified |
+| `go test ./web/bridge -run '^TestWebIsStdlibOnly$' -count=1` | PASS — `ok marshal/web/bridge 0.192s` |
+| `go test ./web/bridge -count=1` | PASS — `ok marshal/web/bridge 121.425s` |
+| `gofmt -l web/bridge` | no output |
+| `go vet ./web/...` | no output, exit 0 |
+| `CGO_ENABLED=1 go build ./...` | exit 0 |
+| `cd web/ui && npm run test` | PASS — 88 test files, 937 tests, 0 failures |
+| `CGO_ENABLED=1 go test -p=1 ./... -count=1 -timeout 20m` | PASS — exit 0, no `FAIL` line |
+
+Every test is offline and deterministic: no live forge, no real git repository,
+no container runtime, no model provider, and no developer credentials. The
+end-to-end evidence uses the existing `deliveryHarness` fixture, which drives a
+real local git repository and an `httptest` GitHub stand-in.
+
+The open questions in §8 remain open: operator editing of the narration, showing
+a repair round's narration beside the earlier one, carrying the review findings
+and repair history in the description, and giving Gitea and Forgejo the factory
+loop. None of them is decided by this slice.

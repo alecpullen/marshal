@@ -252,3 +252,86 @@ func TestFactoryStoreInvalidMutationAndCopy(t *testing.T) {
 		t.Fatal("invalid mutation published")
 	}
 }
+
+func TestFactoryStoreReplaysNarrationItem(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenFactoryStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	a, err := s.Create(factoryReq(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	narrated, err := s.Update(a.ID, "narrate", a.Version, json.RawMessage(`{"narrate":true}`), func(i *FactoryItem) error {
+		i.Rounds = []FactoryRound{{Number: 1, HeadSHA: "head", Implementation: &FactoryReport{OperationID: "op", Outcome: "complete", Narration: &FactoryNarration{Issue: "the issue", Approach: "the approach", Verification: "tests pass", Excerpts: []FactoryExcerpt{{Path: "web/bridge/x.go", Lang: "go", Code: "func A() {}"}}}}}}
+		return nil
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenFactoryStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	got, err := reopened.Get(a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	x, _ := json.Marshal(got)
+	y, _ := json.Marshal(narrated)
+	if string(x) != string(y) {
+		t.Fatal("narrated item did not replay identically")
+	}
+	narration := got.Rounds[0].Implementation.Narration
+	if narration == nil || narration.Issue != "the issue" || len(narration.Excerpts) != 1 || narration.Excerpts[0].Path != "web/bridge/x.go" {
+		t.Fatalf("narration lost on replay: %+v", narration)
+	}
+}
+
+func TestFactoryStoreReplaysPreSliceEntryWithoutNarration(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC()
+	req := factoryReq()
+	config := req.Config
+	config.TargetBranch = "main"
+	item := FactoryItem{
+		ID: "pre-slice-item", Title: req.Title, State: "checking", Version: 1, RepoID: config.RepoID,
+		Branch: "marshal/factory/item", BaseSHA: "base", Draft: req,
+		Approvals: []FactoryApproval{{Revision: 1, Plan: req.Plan, Spec: req.Spec, PlanHash: FactoryPlanHash(req.Plan, req.Spec), Config: config, ApprovedAt: now}},
+		// A pre-slice report carries no narration: the journal predates the field.
+		Rounds:    []FactoryRound{{Number: 1, ApprovalRevision: 1, HeadSHA: "head", BaseSHA: "base", Implementation: &FactoryReport{OperationID: "op", Outcome: "complete", Summary: "implemented"}}},
+		CreatedAt: now, UpdatedAt: now,
+	}
+	payload, err := json.Marshal(factoryPayload{Format: 1, Sequence: 1, RequestID: "pre-slice", ItemID: item.ID, CommandHash: "pre-slice", Item: item})
+	if err != nil {
+		t.Fatal(err)
+	}
+	line, err := json.Marshal(factoryRecord{Payload: payload, Checksum: factoryDigest(payload)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "journal.jsonl"), append(line, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenFactoryStore(dir)
+	if err != nil {
+		t.Fatalf("pre-slice journal did not open: %v", err)
+	}
+	defer s.Close()
+	got, err := s.Get(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != item.State || len(got.Rounds) != 1 || got.Rounds[0].Implementation == nil || got.Rounds[0].Implementation.Summary != "implemented" {
+		t.Fatalf("pre-slice entry lost: %+v", got)
+	}
+	if got.Rounds[0].Implementation.Narration != nil {
+		t.Fatalf("pre-slice report gained a narration: %+v", got.Rounds[0].Implementation.Narration)
+	}
+}

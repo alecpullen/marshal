@@ -15,7 +15,7 @@ Start with the [design and decision record](design-notes.md), which distinguishe
 
 ## Active specification
 
-- [Existing-project connection and read-only discovery](existing-project-discovery-spec.md): the design output for gap 1 of the journey map, and the first slice taken from this archive. It states the approved behaviour as requirements, records what the code already provides, and lists the questions still open.
+- [Existing-project connection and read-only discovery](existing-project-discovery-spec.md): the design output for gap 1 of the journey map, and the first slice taken from this archive. It states the approved behaviour as requirements, records the served `POST /api/repos/{id}/discover` contract in §5 with the ten capability keys, five states, status boundary and read-only guarantees, and lists the questions still open. The specification's implementation record lists the commits and acceptance gates.
 - [Existing-project read-only discovery implementation plan](plans/2026-11-12-existing-project-discovery-plan.md): the reconciled, test-first execution plan for the first slice. It freezes the HTTP/report contract, capability taxonomy, read-only guarantees, task boundaries, verification gates, and draft-PR review policy.
 
 ## Visual explorations

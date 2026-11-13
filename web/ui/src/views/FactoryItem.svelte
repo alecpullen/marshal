@@ -50,6 +50,25 @@
   const other = $derived((ci?.checks ?? []).filter((c) => !failed.includes(c) && !passed.includes(c)))
   const granted = $derived((item?.grants ?? []).reduce((sum, g) => sum + g.additionalRounds, 0))
   const lastWorkerId = $derived(item?.workers?.at(-1)?.agentId ?? '')
+  const narration = $derived(round?.implementation?.narration ?? null)
+  const narrationSections = $derived.by(() => {
+    const n = narration
+    if (!n) return [] as { heading: string; paragraphs: string[] }[]
+    const sections: { heading: string; paragraphs: string[] }[] = []
+    const add = (heading: string, ...paragraphs: string[]) => {
+      const kept = paragraphs.filter((paragraph) => paragraph)
+      if (kept.length) sections.push({ heading, paragraphs: kept })
+    }
+    add('Issue', n.issue)
+    add('Approach', n.approach)
+    add('Existing behaviour', n.existingBehaviour)
+    add('Alternatives and trade-offs', n.alternatives, n.tradeoffs)
+    add('Implementation choice', n.choice)
+    add('Verification', n.verification)
+    add('Limitations', n.limitations)
+    return sections
+  })
+  const excerpts = $derived(narration?.excerpts ?? [])
 </script>
 <div class="mx-auto flex max-w-6xl flex-col gap-4 p-4 sm:p-6">
   <a class="text-sm text-accent underline" href="#factory" onclick={(e) => { e.preventDefault(); onNavigate('#factory') }}>Factory</a>
@@ -115,7 +134,12 @@
         {#each other as check}<p class="text-sm">{check.key.name}: {check.conclusion || check.status || 'pending'}</p>{/each}
       </Card>
       <Card class="grid min-w-0 gap-2"><h2 class="font-semibold">Engineering report</h2>
-        {#if round?.implementation}<p class="whitespace-pre-wrap break-words text-sm">{round.implementation.summary}</p>{#if round.implementation.question}<p class="text-sm">Implementer question: {round.implementation.question}</p>{/if}{#if round.implementation.reason}<p class="text-sm">Implementer reason: {round.implementation.reason}</p>{/if}{/if}
+        {#if round?.implementation}{#if narration}
+          <div class="grid gap-2" data-testid="factory-narration">
+            {#each narrationSections as section}<div class="grid gap-1"><h3 class="text-sm font-semibold">{section.heading}</h3>{#each section.paragraphs as paragraph}<p class="whitespace-pre-wrap break-words text-sm">{paragraph}</p>{/each}</div>{/each}
+            {#if excerpts.length}<div class="grid gap-1"><h3 class="text-sm font-semibold">Selected code</h3>{#each excerpts as excerpt}<div class="min-w-0 rounded border border-border p-2"><div class="flex flex-wrap items-baseline gap-2"><p class="break-all font-mono text-xs">{excerpt.path}</p>{#if excerpt.lang}<span class="text-xs text-muted">{excerpt.lang}</span>{/if}</div><pre class="max-h-60 overflow-auto whitespace-pre-wrap break-words text-xs">{excerpt.code}</pre></div>{/each}</div>{/if}
+          </div>
+        {:else}<p class="whitespace-pre-wrap break-words text-sm">{round.implementation.summary}</p>{/if}{#if round.implementation.question}<p class="text-sm">Implementer question: {round.implementation.question}</p>{/if}{#if round.implementation.reason}<p class="text-sm">Implementer reason: {round.implementation.reason}</p>{/if}{/if}
         {#if round?.review}<p class="whitespace-pre-wrap break-words text-sm">Review: {round.review.summary}</p>{#if round.review.question}<p class="text-sm">Reviewer question: {round.review.question}</p>{/if}{#if round.review.reason}<p class="text-sm">Reviewer reason: {round.review.reason}</p>{/if}
           {#if round.review.findings?.length}<h3 class="text-sm font-semibold">Review findings</h3>{#each round.review.findings as finding}<div class="min-w-0 rounded border border-border p-2 text-sm"><p class="font-semibold">{finding.severity}: {finding.title}</p>{#if finding.path}<p class="break-all font-mono text-xs">{finding.path}{#if finding.line}:{finding.line}{/if}</p>{/if}{#if finding.body}<p class="whitespace-pre-wrap break-words">{finding.body}</p>{/if}</div>{/each}{/if}
         {/if}

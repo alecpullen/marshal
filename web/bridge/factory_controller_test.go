@@ -1326,3 +1326,82 @@ func TestFactoryRouteOnlyRetryRevokesTheInterruptedRoundsReadiness(t *testing.T)
 		t.Fatalf("round evidence was discarded: %+v", n.Rounds)
 	}
 }
+
+// resumeAfterRouteChange is a work item whose last effect is a completed
+// resume carrying resumeRevision, with two approvals whose implementer routes
+// are previous and latest.
+func resumeAfterRouteChange(previousImplementer, latestImplementer string, resumeRevision uint64) FactoryItem {
+	i := loopItem()
+	i.State = "repairing"
+	i.Effects = []FactoryEffect{{ID: "resume", Kind: "resume", Status: "completed", ApprovalRevision: resumeRevision}}
+	previous := factoryCopy(i.Approvals[0])
+	previous.Revision = 1
+	previous.Config.ImplementerRouting = json.RawMessage(previousImplementer)
+	latest := factoryCopy(previous)
+	latest.Revision = 2
+	latest.Config.ImplementerRouting = json.RawMessage(latestImplementer)
+	i.Approvals = []FactoryApproval{previous, latest}
+	return i
+}
+
+func TestFactoryRouteChangeSpawnsAFreshImplementerAfterAResume(t *testing.T) {
+	i := resumeAfterRouteChange(`{"profile":"frontier"}`, `{"profile":"cheap-implementer"}`, 1)
+	_, e, err := AdvanceFactory(i, FactoryObservation{}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e == nil || e.Kind != "spawn" || e.WorkerRole != "implementer" {
+		t.Fatalf("effect = %+v, want a fresh implementer spawn", e)
+	}
+	if e.ApprovalRevision != 2 {
+		t.Fatalf("approval revision = %d, want the latest approval's 2", e.ApprovalRevision)
+	}
+}
+
+func TestFactoryUnchangedRouteResumesTheImplementer(t *testing.T) {
+	i := resumeAfterRouteChange(`{"profile":"frontier"}`, `{"profile":"frontier"}`, 1)
+	_, e, err := AdvanceFactory(i, FactoryObservation{}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e == nil || e.Kind != "implement" || e.WorkerRole != "implementer" {
+		t.Fatalf("effect = %+v, want the existing implementer resumed", e)
+	}
+}
+
+func TestFactoryFreshResumeContinuesUnderTheCurrentApproval(t *testing.T) {
+	// The operator-attested fresh resume already opened a session on the
+	// latest approval's routing, so it continues rather than spawning again.
+	i := resumeAfterRouteChange(`{"profile":"frontier"}`, `{"profile":"cheap-implementer"}`, 2)
+	_, e, err := AdvanceFactory(i, FactoryObservation{}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e == nil || e.Kind != "implement" || e.WorkerRole != "implementer" {
+		t.Fatalf("effect = %+v, want the fresh resume continued", e)
+	}
+}
+
+func TestFactoryRouteOnlyRetryGivesTheNextReviewerTheNewRouting(t *testing.T) {
+	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	i := routeRetryItem()
+	i.Effects = []FactoryEffect{{ID: "park", Kind: "park", WorkerRole: "implementer", Status: "completed"}}
+	i.Rounds = []FactoryRound{{Number: 1, ApprovalRevision: 1, BaseSHA: "base", HeadSHA: "head", CI: &FactoryCI{HeadSHA: "head", Complete: true}}}
+	route := json.RawMessage(`{"profile":"cheap-review"}`)
+	if err := factoryApplyCommand(&i, FactoryCommand{Kind: "retry", DecisionID: "block", RequestID: "retry-1", Reason: "the reviewer model stalls", AdditionalRounds: 2, ReviewerRouting: route}, now); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(i.Approvals[len(i.Approvals)-1].Config.ReviewerRouting, route) {
+		t.Fatalf("latest reviewer routing = %s, want %s", i.Approvals[len(i.Approvals)-1].Config.ReviewerRouting, route)
+	}
+	_, e, err := AdvanceFactory(i, FactoryObservation{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e == nil || e.Kind != "spawn" || e.WorkerRole != "reviewer" {
+		t.Fatalf("effect = %+v, want the next review round's reviewer spawn", e)
+	}
+	if e.ApprovalRevision != 2 {
+		t.Fatalf("approval revision = %d, want the new approval's 2", e.ApprovalRevision)
+	}
+}

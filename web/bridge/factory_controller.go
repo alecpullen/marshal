@@ -239,8 +239,19 @@ func AdvanceFactory(item FactoryItem, observed FactoryObservation, now time.Time
 				role = "implementer"
 			}
 		case "create_pr", "resume":
-			kind = "implement"
-			role = "implementer"
+			// A changed implementer route must not continue the previous
+			// implementer on its previous route, so the rule that chooses
+			// between a fresh spawn and a continuation is consulted here
+			// too. A resume that already carries the current approval
+			// revision was opened under the new route — the
+			// operator-attested fresh resume — so it continues.
+			if last.Kind == "resume" && last.ApprovalRevision != i.Approvals[len(i.Approvals)-1].Revision && factoryImplementerRouteChanged(i) {
+				kind = "spawn"
+				role = "implementer"
+			} else {
+				kind = "implement"
+				role = "implementer"
+			}
 		case "park":
 			if last.WorkerRole == "implementer" {
 				if len(i.Rounds) == 0 {

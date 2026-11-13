@@ -208,6 +208,44 @@ func TestPreviewReportGitOnlyMakesNoRequest(t *testing.T) {
 	}
 }
 
+// TestPreviewReportNamesAFamilyWithNoPreviewAdapter pins decision 1 for a
+// declared family this bridge has no preview adapter for: every capability is
+// unsupported, no request is made, and the cause names the missing adapter
+// instead of degenerating to the bare forge family.
+func TestPreviewReportNamesAFamilyWithNoPreviewAdapter(t *testing.T) {
+	// gitlab is a forge family Marshal knows, with no read-only preview adapter
+	// in this bridge.
+	report, requests := previewReport(t, discoveryTestRepo("gitlab", ""), PreviewFilter{},
+		previewForgeFixture{defaultBranch: "main"})
+
+	if got := len(requests); got != 0 {
+		t.Errorf("requests = %d, want none: no adapter exists to make one", got)
+	}
+	const cause = `forge "gitlab" has no read-only preview adapter in this bridge`
+	if report.Status != discoveryStatusDegraded {
+		t.Errorf("status = %q, want degraded", report.Status)
+	}
+	for _, key := range previewCapabilityKeys() {
+		capability := previewCapability(t, report, key)
+		if capability.State != DiscoveryCapabilityUnsupported {
+			t.Errorf("%s state = %q, want unsupported", key, capability.State)
+		}
+		if capability.Detail != cause {
+			t.Errorf("%s detail = %q, want %q", key, capability.Detail, cause)
+		}
+		gap := previewGap(t, report, key)
+		if gap.State != DiscoveryCapabilityUnsupported {
+			t.Errorf("%s gap state = %q, want unsupported", key, gap.State)
+		}
+		if !strings.HasPrefix(gap.Detail, cause) {
+			t.Errorf("%s gap = %q, want the explicit adapter cause first", key, gap.Detail)
+		}
+		if !strings.Contains(gap.Detail, previewFix(DiscoveryCapabilityUnsupported, true)) {
+			t.Errorf("%s gap = %q, want the usual unsupported fix suffix", key, gap.Detail)
+		}
+	}
+}
+
 // TestPreviewReportUnconfiguredWithoutAPATCredential pins that an unusable
 // credential is unconfigured for all three keys and touches no host: an absent
 // credential and a non-PAT credential alike.
@@ -521,6 +559,53 @@ func TestPreviewReportWithoutAnyScopeIsUnfiltered(t *testing.T) {
 	}
 }
 
+// TestPreviewReportNonNumericIDLosesWithinItsEnvironment pins plan decision
+// 10: a non-numeric id loses to a numeric id within its environment group, and
+// survives grouping only as the sole member of its group. It is ordered after
+// every numeric survivor, keeps its row with empty status fields, and its
+// status is never read because the status URL needs a usable id.
+func TestPreviewReportNonNumericIDLosesWithinItsEnvironment(t *testing.T) {
+	report, requests := previewReport(t, discoveryTestRepo("github", ""), PreviewFilter{Ref: "main"},
+		previewForgeFixture{
+			defaultBranch: "main",
+			// id 0 is a deployment the forge reported without an id, which the
+			// report carries as "" — the non-numeric case.
+			deployments: `[
+				{"id":0,"environment":"production","ref":"main"},
+				{"id":99,"environment":"production","ref":"main"},
+				{"id":0,"environment":"staging","ref":"main"}]`,
+			statuses: map[string]string{
+				"99": `[{"id":7,"state":"success","environment_url":"https://preview.example.internal"}]`,
+			},
+		})
+
+	if len(report.Deployments) != 2 {
+		t.Fatalf("deployments = %+v, want one row per environment", report.Deployments)
+	}
+	named := report.Deployments[0]
+	if named.Environment != "production" || named.ID != "99" {
+		t.Errorf("first row = %q/%q, want production/99: the numeric id wins its group",
+			named.Environment, named.ID)
+	}
+	if named.State != "success" || named.EnvironmentURL != "https://preview.example.internal" {
+		t.Errorf("first row = %+v, want its status folded in", named)
+	}
+	sole := report.Deployments[1]
+	if sole.Environment != "staging" || sole.ID != "" {
+		t.Errorf("second row = %q/%q, want staging with an empty id: the non-numeric survivor comes after the numeric ones",
+			sole.Environment, sole.ID)
+	}
+	if sole.State != "" || sole.EnvironmentURL != "" || sole.TargetURL != "" ||
+		sole.LogURL != "" || sole.Description != "" {
+		t.Errorf("second row = %+v, want empty status fields", sole)
+	}
+	got := previewStatusPaths(requests)
+	want := []string{"/repos/acme/widgets/deployments/99/statuses"}
+	if len(got) != len(want) || (len(want) > 0 && got[0] != want[0]) {
+		t.Errorf("status reads = %v, want only %v: a non-numeric id has no status URL", got, want)
+	}
+}
+
 // TestPreviewReportNamesTheNewestDeploymentPerEnvironment pins the grouping
 // step: one row per environment, the greatest id, ordered by id descending, and
 // statuses read only for the rows named.
@@ -611,6 +696,56 @@ func TestPreviewReportRecordsThePageBoundGap(t *testing.T) {
 	}
 	if strings.Contains(gap.Detail, "adapter support") {
 		t.Errorf("gap = %q, want no adapter-support wording", gap.Detail)
+	}
+}
+
+// TestPreviewReportDeploymentsBoundsTogetherKeepThePageBound pins the first-wins
+// rule when both deployments bounds are hit at once: the page bound and the name
+// cap are keyed on preview_deployments, and the page bound is recorded first, so
+// that is the one gap that lands.
+func TestPreviewReportDeploymentsBoundsTogetherKeepThePageBound(t *testing.T) {
+	// A full page of deployments over more than the name cap's environments:
+	// the page bound is hit because a full final page means more to read, and
+	// the name cap is hit because there are more environments than it names.
+	var deployments strings.Builder
+	deployments.WriteString("[")
+	for id := 1; id <= discoveryForgePageSize; id++ {
+		if id > 1 {
+			deployments.WriteString(",")
+		}
+		fmt.Fprintf(&deployments, `{"id":%d,"environment":"env-%d","ref":"main"}`, id, id)
+	}
+	deployments.WriteString("]")
+	if distinct := discoveryForgePageSize; distinct <= previewNamedDeploymentLimit {
+		t.Fatalf("the fixture must exceed the name cap: %d environments, cap %d",
+			distinct, previewNamedDeploymentLimit)
+	}
+
+	report, _ := previewReport(t, discoveryTestRepo("github", ""), PreviewFilter{Ref: "main"},
+		previewForgeFixture{defaultBranch: "main", deployments: deployments.String()})
+
+	if got := previewCapability(t, report, "preview_deployments").State; got != DiscoveryCapabilitySupported {
+		t.Errorf("preview_deployments = %q, want supported (a bound is not a failure)", got)
+	}
+	if got := len(report.Deployments); got == 0 || got > previewNamedDeploymentLimit {
+		t.Errorf("deployments = %d, want between 1 and the name cap of %d", got, previewNamedDeploymentLimit)
+	}
+	count := 0
+	for _, gap := range report.Gaps {
+		if gap.Key == "preview_deployments" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("preview_deployments gaps = %d in %+v, want exactly one", count, report.Gaps)
+	}
+	gap := previewGap(t, report, "preview_deployments")
+	const want = "the forge reported more deployments than this report reads; the list is not exhaustive and a larger page bound would be needed to read the rest"
+	if gap.Detail != want {
+		t.Errorf("gap = %q, want the deployments page bound %q", gap.Detail, want)
+	}
+	if strings.Contains(gap.Detail, "more environments than this report names") {
+		t.Errorf("gap = %q, want the page bound, not the name cap", gap.Detail)
 	}
 }
 
@@ -789,6 +924,81 @@ func TestPreviewReportStatusNotExercisedWithoutDeployments(t *testing.T) {
 	}
 	if got := len(previewStatusPaths(requests)); got != 0 {
 		t.Errorf("status reads = %d, want none", got)
+	}
+}
+
+// TestPreviewReportStatusNotExercisedWithoutAUsableID pins the other
+// not-exercised case: deployments were reported, but not one carries an id the
+// status URL can use, so the detail says exactly that rather than claiming no
+// deployment was reported while the deployments section shows rows.
+func TestPreviewReportStatusNotExercisedWithoutAUsableID(t *testing.T) {
+	report, requests := previewReport(t, discoveryTestRepo("github", ""), PreviewFilter{Ref: "main"},
+		previewForgeFixture{
+			defaultBranch: "main",
+			// GitHub reports a deployment it has no id for as 0, which the
+			// report carries as "" so it never becomes "0".
+			deployments: `[{"id":0,"environment":"production","ref":"main"}]`,
+		})
+
+	if len(report.Deployments) != 1 {
+		t.Fatalf("deployments = %+v, want the row reported", report.Deployments)
+	}
+	const want = "not exercised: no deployment carried a usable id"
+	capability := previewCapability(t, report, "preview_statuses")
+	if capability.State != DiscoveryCapabilitySupported {
+		t.Errorf("preview_statuses = %q, want supported", capability.State)
+	}
+	if capability.Detail != want {
+		t.Errorf("preview_statuses detail = %q, want %q", capability.Detail, want)
+	}
+	if got := len(previewStatusPaths(requests)); got != 0 {
+		t.Errorf("status reads = %d, want none for a deployment with no usable id", got)
+	}
+	if len(report.Gaps) != 0 {
+		t.Errorf("gaps = %+v, want none: not exercising a read is not a failure", report.Gaps)
+	}
+}
+
+// TestPreviewReportStatusFailureKeepsTheKeyAgainstTheBound pins the ordering
+// that motivated recording the statuses bound last: when one status read fails
+// and another is truncated, the failure keeps the preview_statuses key and the
+// bound detail is not the one recorded.
+func TestPreviewReportStatusFailureKeepsTheKeyAgainstTheBound(t *testing.T) {
+	report, _ := previewReport(t, discoveryTestRepo("github", ""), PreviewFilter{Ref: "main"},
+		previewForgeFixture{
+			defaultBranch: "main",
+			deployments: `[
+				{"id":99,"environment":"production","ref":"main"},
+				{"id":50,"environment":"staging","ref":"main"}]`,
+			statuses: map[string]string{
+				// 99 fails, 50 answers with a full page and is truncated.
+				"50": previewPageOfStatuses(discoveryForgePageSize),
+			},
+			statusStatus: map[string]int{"99": http.StatusForbidden},
+		})
+
+	count := 0
+	for _, gap := range report.Gaps {
+		if gap.Key == "preview_statuses" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("preview_statuses gaps = %d in %+v, want exactly one", count, report.Gaps)
+	}
+	gap := previewGap(t, report, "preview_statuses")
+	if gap.State != DiscoveryCapabilityInsufficientPermission {
+		t.Errorf("gap state = %q, want insufficient_permission", gap.State)
+	}
+	if capability := previewCapability(t, report, "preview_statuses"); capability.State == DiscoveryCapabilitySupported {
+		t.Errorf("preview_statuses = %q, want a state that is not supported", capability.State)
+	}
+	const boundDetail = "the forge reported more statuses for at least one deployment than this report reads; the listed status may not be the newest"
+	if !strings.Contains(gap.Detail, "HTTP 403") {
+		t.Errorf("gap = %q, want the failed read's cause", gap.Detail)
+	}
+	if strings.Contains(gap.Detail, boundDetail) {
+		t.Errorf("gap = %q, want the failure's cause, not the statuses page bound", gap.Detail)
 	}
 }
 

@@ -30,6 +30,10 @@ const (
 	previewNameCapDetail              = "the forge reported deployments for more environments than this report names; the newest deployment for each of the most recently updated environments is listed"
 	previewUnfilteredDetail           = "no revision scope was resolvable; every deployment the forge reports is listed"
 	previewStatusesNotExercisedDetail = "not exercised: no deployment was reported for this scope"
+	// previewStatusesNoUsableIDDetail is the other not-exercised case: rows
+	// exist, but not one carries an id the status URL can use, so saying no
+	// deployment was reported would contradict the deployments section.
+	previewStatusesNoUsableIDDetail = "not exercised: no deployment carried a usable id"
 )
 
 // PreviewEnvironments assembles the read-only preview-environment report for a
@@ -143,9 +147,12 @@ func (a *previewAssembler) probe(ctx context.Context, f *Fleet, client *http.Cli
 
 	preview, previewErr := PreviewForgeFor(repo, client)
 	if previewErr != nil {
-		// A family with no preview adapter: unsupported, never an error.
-		state, detail := discoveryProbeOutcome(previewErr, false)
-		a.degradeAll(state, detail)
+		// A family with no preview adapter: unsupported, never an error. The
+		// cause is written explicitly rather than re-classified, because the
+		// classifier's sentinel trim would leave only the bare `forge "x"`,
+		// which names neither the reason nor a remedy.
+		a.degradeAll(DiscoveryCapabilityUnsupported,
+			fmt.Sprintf("forge %q has no read-only preview adapter in this bridge", repo.Forge))
 		return
 	}
 	// The metadata probe is the discovery read: it establishes whether a later
@@ -323,7 +330,10 @@ func (a *previewAssembler) readStatuses(ctx context.Context, probe PreviewForge,
 
 	if len(gaps) == 0 {
 		if read == 0 {
-			a.set("preview_statuses", DiscoveryCapabilitySupported, previewStatusesNotExercisedDetail)
+			// Rows exist (an empty list returned above), so none of them carried
+			// an id the status URL can use: report that rather than claiming no
+			// deployment was reported.
+			a.set("preview_statuses", DiscoveryCapabilitySupported, previewStatusesNoUsableIDDetail)
 			return
 		}
 		a.set("preview_statuses", DiscoveryCapabilitySupported, "")

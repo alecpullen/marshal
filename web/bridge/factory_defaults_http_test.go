@@ -25,9 +25,12 @@ type factoryDefaultsFixture struct {
 	store *FactoryStore
 	// api is the transport-free surface the routes serve, so a test can drive
 	// the layer that normalises and preflights a retry replacement directly.
-	api  FactoryAPI
-	srv  *Server
-	root string
+	api FactoryAPI
+	srv *Server
+	// agent is the control agent behind the canned config/get, so a test can
+	// replace that result with a model configuration of its own.
+	agent *fakeAgent
+	root  string
 }
 
 // factoryDefaultsRouting is the routing profile the canned config/get result
@@ -72,7 +75,7 @@ func newFactoryDefaultsFixture(t *testing.T) *factoryDefaultsFixture {
 	t.Cleanup(func() { store.Close() })
 	api := NewFactoryAPI(store, NewFactoryController(store, nil, nil), fleet)
 	srv := NewServer(fleet, "secret", "", api)
-	return &factoryDefaultsFixture{fleet: fleet, store: store, api: api, srv: srv, root: root}
+	return &factoryDefaultsFixture{fleet: fleet, store: store, api: api, srv: srv, agent: agent, root: root}
 }
 
 func (f *factoryDefaultsFixture) headers() map[string]string {

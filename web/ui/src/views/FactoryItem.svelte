@@ -22,12 +22,16 @@
         if (kind === 'answer') c.answer = answer
         if (kind === 'retry') {
           c.reason = reason; c.additionalRounds = additionalRounds
+          const latest = item.approvals?.at(-1)?.config ?? item.draft.config
           if (changePlan) {
             const draft: FactoryCreate = { ...item.draft, requestId: crypto.randomUUID(), plan: replacementPlan, spec: replacementSpec,
-              config: { ...(item.approvals?.at(-1)?.config ?? item.draft.config), reviewerInstructions: replacementInstructions,
-                implementerRouting: replaceImplementerProfile.trim() ? { profile: replaceImplementerProfile.trim() } : (item.approvals?.at(-1)?.config ?? item.draft.config).implementerRouting,
-                reviewerRouting: replaceReviewerProfile.trim() ? { profile: replaceReviewerProfile.trim() } : (item.approvals?.at(-1)?.config ?? item.draft.config).reviewerRouting } }
+              config: { ...latest, reviewerInstructions: replacementInstructions,
+                implementerRouting: replaceImplementerProfile.trim() ? { profile: replaceImplementerProfile.trim() } : latest.implementerRouting,
+                reviewerRouting: replaceReviewerProfile.trim() ? { profile: replaceReviewerProfile.trim() } : latest.reviewerRouting } }
             c.replacement = draft
+          } else {
+            if (replaceImplementerProfile.trim()) c.implementerRouting = { profile: replaceImplementerProfile.trim() }
+            if (replaceReviewerProfile.trim()) c.reviewerRouting = { profile: replaceReviewerProfile.trim() }
           }
         }
         if (kind === 'recover') { c.confirmPreviousWorkerStopped = attest; c.reason = `${workerName.trim()}: ${reason.trim()}` }
@@ -50,6 +54,9 @@
   const other = $derived((ci?.checks ?? []).filter((c) => !failed.includes(c) && !passed.includes(c)))
   const granted = $derived((item?.grants ?? []).reduce((sum, g) => sum + g.additionalRounds, 0))
   const lastWorkerId = $derived(item?.workers?.at(-1)?.agentId ?? '')
+  const currentConfig = $derived(item?.approvals?.at(-1)?.config ?? item?.draft.config ?? null)
+  const currentImplementerProfile = $derived((currentConfig?.implementerRouting as { profile?: string } | undefined)?.profile || 'none')
+  const currentReviewerProfile = $derived((currentConfig?.reviewerRouting as { profile?: string } | undefined)?.profile || 'none')
   const narration = $derived(round?.implementation?.narration ?? null)
   const narrationSections = $derived.by(() => {
     const n = narration
@@ -102,11 +109,13 @@
           <p class="text-sm">{(item.rounds ?? []).length} rounds used · {granted} granted total. An additional allowance is required to resume work.</p>
           <label class="grid gap-1 text-sm">Reason <textarea class="rounded border border-border bg-bg p-2" bind:value={reason}></textarea></label>
           <label class="grid gap-1 text-sm">Additional rounds <input class="rounded border border-border bg-bg p-2" type="number" min="1" bind:value={additionalRounds} /></label>
-          <label class="flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={changePlan} onchange={() => { if (changePlan && item) { const approval = item.approvals?.at(-1); replacementPlan = approval?.plan ?? item.draft.plan; replacementSpec = approval?.spec ?? item.draft.spec; replacementInstructions = approval?.config.reviewerInstructions ?? item.draft.config.reviewerInstructions } }} /> Change approved plan, routes or reviewer instructions</label>
-          {#if changePlan}<details open><summary>Replacement plan, routes and reviewer instructions</summary><div class="grid gap-2 pt-2">
+          <p class="text-sm">Routes in force: implementer {currentImplementerProfile} · reviewer {currentReviewerProfile}</p>
+          <label class="grid gap-1 text-sm">New implementer profile (optional) <input class="rounded border border-border bg-bg p-2" bind:value={replaceImplementerProfile} /></label>
+          <label class="grid gap-1 text-sm">New reviewer profile (optional) <input class="rounded border border-border bg-bg p-2" bind:value={replaceReviewerProfile} /></label>
+          <p class="text-sm">A route-only retry starts a fresh round. The interrupted round's review is not reused, and one granted round is spent.</p>
+          <label class="flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={changePlan} onchange={() => { if (changePlan && item) { const approval = item.approvals?.at(-1); replacementPlan = approval?.plan ?? item.draft.plan; replacementSpec = approval?.spec ?? item.draft.spec; replacementInstructions = approval?.config.reviewerInstructions ?? item.draft.config.reviewerInstructions } }} /> Change approved plan or reviewer instructions</label>
+          {#if changePlan}<details open><summary>Replacement plan and reviewer instructions</summary><div class="grid gap-2 pt-2">
             <p class="text-sm">Review these changes before submitting. Retry records a new approval revision with this plan, the selected routes and reviewer instructions before work resumes.</p>
-            <label class="grid gap-1 text-sm">New implementer profile (optional) <input class="rounded border border-border bg-bg p-2" bind:value={replaceImplementerProfile} /></label>
-            <label class="grid gap-1 text-sm">New reviewer profile (optional) <input class="rounded border border-border bg-bg p-2" bind:value={replaceReviewerProfile} /></label>
             <label class="grid gap-1 text-sm">Replacement plan <textarea class="min-h-40 rounded border border-border bg-bg p-2" bind:value={replacementPlan}></textarea></label>
             <label class="grid gap-1 text-sm">Replacement specification <textarea class="min-h-24 rounded border border-border bg-bg p-2" bind:value={replacementSpec}></textarea></label>
             <label class="grid gap-1 text-sm">Reviewer instructions <textarea class="min-h-24 rounded border border-border bg-bg p-2" bind:value={replacementInstructions}></textarea></label>

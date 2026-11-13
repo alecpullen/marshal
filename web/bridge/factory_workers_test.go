@@ -202,3 +202,66 @@ func TestFactoryPromptFreshFinalAndStopReason(t *testing.T) {
 		})
 	}
 }
+
+// TestFactorySpawnFactoryWorkerUsesTheLatestApprovalRouting proves the routing
+// source the factory relies on: a worker reads the latest approval's route and
+// it reaches the agent verbatim in the session/new frame.
+//
+// The spawn is driven through the real Fleet.spawn, so the fleet is extended
+// with what that path resolves before session/new — a registered repository,
+// pointed at a local bare repository so the clone is offline, and a runtime
+// whose transport records the frames the bridge sends.
+func TestFactorySpawnFactoryWorkerUsesTheLatestApprovalRouting(t *testing.T) {
+	bare := newBareRepoFixture(t)
+	base := gitText(t, bare, "rev-parse", "main")
+	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))
+	if _, err := ws.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.PutRepo(Repo{ID: "repo-1", URL: bare, Branch: "main", OwnerID: DefaultOwnerID}); err != nil {
+		t.Fatal(err)
+	}
+	f := NewFleet(ws, "", nil, t.TempDir(), Limits{}, "", nil, "")
+	tr := &captureTransport{}
+	f.newRuntime = func(Agent) (*Child, error) { return &Child{Transport: tr}, nil }
+	t.Cleanup(f.Close)
+	reviewerRoute := json.RawMessage(`{"profile":"cheap-review"}`)
+	item := FactoryItem{
+		ID:      "item-1",
+		RepoID:  "repo-1",
+		BaseSHA: base,
+		Approvals: []FactoryApproval{{Revision: 1, Plan: "plan", Spec: "spec", PlanHash: FactoryPlanHash("plan", "spec"), Config: FactoryConfig{
+			RepoID:                   "repo-1",
+			ProjectRoot:              t.TempDir(),
+			TargetBranch:             "main",
+			Native:                   true,
+			ImplementerRouting:       json.RawMessage(`{"profile":"frontier"}`),
+			ReviewerRouting:          reviewerRoute,
+			NoRequiredCIAcknowledged: true,
+			MaxRounds:                5,
+		}}},
+		Rounds: []FactoryRound{{Number: 1, ApprovalRevision: 1, HeadSHA: base}},
+	}
+	if _, err := f.SpawnFactoryWorker(context.Background(), item, "reviewer", "spawn-1"); err != nil {
+		t.Fatal(err)
+	}
+	tr.mu.Lock()
+	frames := append([]capturedFrame(nil), tr.seen...)
+	tr.mu.Unlock()
+	var params map[string]any
+	for _, frame := range frames {
+		if frame.method != "session/new" {
+			continue
+		}
+		if err := json.Unmarshal([]byte(frame.params), &params); err != nil {
+			t.Fatalf("decode session/new params: %v", err)
+		}
+	}
+	if params == nil {
+		t.Fatalf("no session/new frame was sent: %+v", frames)
+	}
+	routing, _ := params["routing"].(map[string]any)
+	if routing["profile"] != "cheap-review" {
+		t.Fatalf("session/new routing = %v, want the reviewer route from the latest approval", params["routing"])
+	}
+}

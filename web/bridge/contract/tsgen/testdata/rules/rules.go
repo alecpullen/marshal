@@ -42,4 +42,19 @@ type Sample struct {
 	Enabled  bool            `json:"enabled"`
 	Count    uint64          `json:"count"`
 	Ratio    float64         `json:"ratio"`
+	// Pointers holds pointers, so its element type is a union and needs
+	// its own parentheses.
+	Pointers []*Inner `json:"pointers"`
+	// Tricky has a tricky */ terminator in its comment.
+	Tricky string `json:"tricky"`
 }
+
+// Shade is a named string type whose constants are declared in another
+// file, before this one.
+type Shade string
+
+// Repeat is a named string type whose constants repeat one another.
+type Repeat string
+
+// Text is a named string type whose constant is a raw string.
+type Text string

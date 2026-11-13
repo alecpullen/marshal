@@ -908,6 +908,26 @@ baseline files: `web/ui/src/lib/fleet.test.ts`,
 `web/ui/src/views/Run.svelte`. The count did not rise and no error appears in
 another file. `npm test` passes with 88 files and 933 tests.
 
+**The branch review.** Three `glm-5.3-flash` reviewers read the branch in
+disjoint slices — the wire and the contract, the generator, and the web UI
+with the docs. The wire and the UI slices found nothing: the recordings stay
+byte-identical, the contract's aliases decode as before, and a fresh UI build
+matches the committed bundle. The generator slice found four latent holes,
+none of which the current contract triggers, and all four are fixed here.
+- A typed constant was dropped from its union when the constant was declared
+  before its type, when it repeated the previous constant's expression list,
+  or when it took its value from another constant. The generator now collects
+  the types first and resolves every constant's value, by literal or by
+  reference.
+- A slice of pointers became `Inner | null[]`, which TypeScript reads as
+  `Inner | (null[])`. It is now `(Inner | null)[]`.
+- `any` and a named type the module cannot declare were accepted silently,
+  which produced a field whose type the module never declares. Both are
+  errors now, naming the file, the line and the construct.
+- A doc comment holding `*/` ended the generated block comment early, and a
+  raw-string constant could produce an invalid TypeScript literal. Both are
+  escaped now.
+
 **Verification.**
 
 | Command | Result |

@@ -73,6 +73,8 @@ func TestGeneratorRules(t *testing.T) {
 		{"embedded", "embedded.go", "embedded field", 11},
 		{"badmap", "badmap.go", "map keyed by a non-string", 6},
 		{"generic", "generic.go", "generic type", 5},
+		{"anytype", "anytype.go", "any", 6},
+		{"namedchan", "namedchan.go", "channel", 9},
 	}
 	for _, tc := range unsupported {
 		t.Run("unsupported/"+tc.name, func(t *testing.T) {

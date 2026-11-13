@@ -39,4 +39,29 @@ export interface Sample {
   enabled: boolean;
   count: number;
   ratio: number;
+  /**
+   * Pointers holds pointers, so its element type is a union and needs
+   * its own parentheses.
+   */
+  pointers: (Inner | null)[];
+  /**
+   * Tricky has a tricky *\/ terminator in its comment.
+   */
+  tricky: string;
 }
+
+/**
+ * Shade is a named string type whose constants are declared in another
+ * file, before this one.
+ */
+export type Shade = 'amber' | 'azure' | 'azure' | 'base';
+
+/**
+ * Repeat is a named string type whose constants repeat one another.
+ */
+export type Repeat = 'one' | 'one';
+
+/**
+ * Text is a named string type whose constant is a raw string.
+ */
+export type Text = 'first\nsecond';

@@ -246,7 +246,7 @@ func (h *deliveryHarness) spawn(e FactoryEffect) FactoryWorker {
 				if err := os.WriteFile(filepath.Join(work, "feature.txt"), []byte(fmt.Sprintf("revision %d\n", h.implements)), 0644); err != nil {
 					return err
 				}
-				report = fmt.Sprintf(`{"operationId":%q,"outcome":"complete","summary":"implemented"}`, fx.ID)
+				report = fmt.Sprintf(`{"operationId":%q,"outcome":"complete","summary":"implemented","narration":{"issue":"fixture issue","approach":"fixture approach","verification":"fixture verification"}}`, fx.ID)
 			} else {
 				h.reviews++
 				findings := "[]"

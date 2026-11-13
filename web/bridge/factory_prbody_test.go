@@ -101,6 +101,80 @@ func TestFactoryPRBodyRendersExcerptsAsFencedBlocks(t *testing.T) {
 	}
 }
 
+// A language tag is only a fence tag, never a fence length, so a tag that
+// carries its own fence must not close the block early.
+func TestFactoryPRBodyFenceSurvivesAnUnvalidatedLanguage(t *testing.T) {
+	n := fullNarration()
+	n.Excerpts = []FactoryExcerpt{{Path: "internal/app/x.go", Lang: "go\n```", Code: "func A() {}"}}
+	body, err := composeFactoryPRBody(prBodyRound(n))
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := "````go\n```\ninternal/app/x.go\nfunc A() {}\n````"
+	at := strings.Index(body, block)
+	if at < 0 {
+		t.Fatalf("excerpt is not one block fenced over its language:\n%s", body)
+	}
+	if strings.Contains(body, "\n```go\n") {
+		t.Fatalf("the language closed the fence early:\n%s", body)
+	}
+	if strings.Contains(body[at+len(block):], "internal/app/x.go") {
+		t.Fatalf("the excerpt reopened outside its block:\n%s", body)
+	}
+}
+
+func TestFactoryPRBodyBucketsChecksByConclusion(t *testing.T) {
+	failing := []struct{ name, conclusion, url, log string }{
+		{"build", "failure", "https://ci.example/build", "compile failed"},
+		{"unit", "error", "https://ci.example/unit", "panic: nil map"},
+		{"integration", "cancelled", "https://ci.example/integration", "cancelled by user"},
+		{"e2e", "timed_out", "https://ci.example/e2e", "timed out after 30m"},
+		{"approval", "action_required", "https://ci.example/approval", "waiting for approval"},
+	}
+	checks := []FactoryCheck{prBodyCheck("ok", "success", "https://ci.example/ok", "")}
+	for _, f := range failing {
+		checks = append(checks, prBodyCheck(f.name, f.conclusion, f.url, f.log))
+	}
+	checks = append(checks,
+		prBodyCheck("scan", "neutral", "https://ci.example/scan", ""),
+		prBodyCheck("docs", "skipped", "https://ci.example/docs", ""),
+		FactoryCheck{Key: FactoryCheckKey{Kind: "check_run", Name: "queued"}, SHA: "head", Status: "in_progress"},
+	)
+	r := prBodyRound(fullNarration())
+	r.CI = &FactoryCI{HeadSHA: "head", Complete: true, Checks: checks}
+	body, err := composeFactoryPRBody(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	open, closed := strings.Index(body, "<details>"), strings.Index(body, "</details>")
+	if open < 0 || closed < open {
+		t.Fatalf("missing the collapsed passing block in:\n%s", body)
+	}
+	collapsed := body[open:closed]
+	if !strings.Contains(collapsed, "<summary>1 passing checks</summary>") || !strings.Contains(collapsed, "- ok: success") {
+		t.Fatalf("the passing bucket is not the success check alone:\n%s", collapsed)
+	}
+	unpassed := body[:open] + body[closed:]
+	for _, f := range failing {
+		heading := "### " + f.name + ": " + f.conclusion
+		for _, want := range []string{heading, f.url, f.log} {
+			if !strings.Contains(unpassed, want) {
+				t.Fatalf("failed check %s not expanded with %q in:\n%s", f.name, want, body)
+			}
+		}
+	}
+	for _, want := range []string{"- scan: neutral", "- docs: skipped", "- queued: in_progress"} {
+		if !strings.Contains(unpassed, want) {
+			t.Fatalf("unresolved check not listed with %q in:\n%s", want, body)
+		}
+	}
+	for _, name := range []string{"build", "unit", "integration", "e2e", "approval", "scan", "docs", "queued"} {
+		if strings.Contains(collapsed, name) {
+			t.Fatalf("%s was counted as passing:\n%s", name, collapsed)
+		}
+	}
+}
+
 func TestFactoryPRBodyAlwaysCarriesCISection(t *testing.T) {
 	cases := []struct {
 		name string

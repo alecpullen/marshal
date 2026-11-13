@@ -16,6 +16,10 @@ const (
 	factoryNarrationMaxSectionRunes = 8_000
 	// factoryNarrationMaxExcerptRunes bounds one excerpt's code.
 	factoryNarrationMaxExcerptRunes = 4_000
+	// factoryNarrationMaxPathRunes bounds one excerpt's path.
+	factoryNarrationMaxPathRunes = 512
+	// factoryNarrationMaxLangRunes bounds one excerpt's language tag.
+	factoryNarrationMaxLangRunes = 64
 	// factoryNarrationMaxTotalRunes bounds the whole narration.
 	factoryNarrationMaxTotalRunes = 64_000
 )
@@ -98,9 +102,10 @@ func ParseFactoryReport(text, operationID, role, baseSHA, headSHA string) (Facto
 	}(), Narration: wire.Narration}, nil
 }
 
-// validateFactoryNarration enforces the fixed bounds and the
-// repository-relative excerpt path rule at parse time, so a malformed
-// narration never reaches the store, the journal or the pull request.
+// validateFactoryNarration enforces the fixed bounds, the repository-relative
+// excerpt path rule and the excerpt language rule at parse time, so a
+// malformed narration never reaches the store, the journal or the pull
+// request.
 func validateFactoryNarration(n *FactoryNarration) error {
 	if len(n.Excerpts) > factoryNarrationMaxExcerpts {
 		return fmt.Errorf("factory: narration excerpt count %d exceeds %d", len(n.Excerpts), factoryNarrationMaxExcerpts)
@@ -122,8 +127,17 @@ func validateFactoryNarration(n *FactoryNarration) error {
 	}
 	total := 0
 	for i, excerpt := range n.Excerpts {
+		if runes := len([]rune(excerpt.Path)); runes > factoryNarrationMaxPathRunes {
+			return fmt.Errorf("factory: narration excerpt %d path is %d runes, at most %d allowed", i, runes, factoryNarrationMaxPathRunes)
+		}
 		if !factoryNarrationPathOK(excerpt.Path) {
 			return fmt.Errorf("factory: narration excerpt %d path %q is not repository-relative", i, excerpt.Path)
+		}
+		if runes := len([]rune(excerpt.Lang)); runes > factoryNarrationMaxLangRunes {
+			return fmt.Errorf("factory: narration excerpt %d lang is %d runes, at most %d allowed", i, runes, factoryNarrationMaxLangRunes)
+		}
+		if !factoryNarrationLangOK(excerpt.Lang) {
+			return fmt.Errorf("factory: narration excerpt %d lang %q is not a usable language tag", i, excerpt.Lang)
 		}
 		runes := len([]rune(excerpt.Code))
 		if runes > factoryNarrationMaxExcerptRunes {
@@ -139,12 +153,13 @@ func validateFactoryNarration(n *FactoryNarration) error {
 }
 
 // factoryNarrationPathOK accepts a repository-relative path. A dot-prefixed
-// name such as .gitignore is a name, not a dot segment.
+// name such as .gitignore is a name, not a dot segment. The rune bound is
+// checked with the other bounds, so this is the shape rule alone.
 func factoryNarrationPathOK(path string) bool {
 	if path == "" || strings.HasPrefix(path, "/") || strings.HasPrefix(path, "~") || strings.Contains(path, `\`) {
 		return false
 	}
-	if len(path) >= 2 && path[1] == ':' {
+	if factoryNarrationHasControlRune(path) || factoryNarrationHasDrivePrefix(path) {
 		return false
 	}
 	for _, segment := range strings.Split(path, "/") {
@@ -153,6 +168,38 @@ func factoryNarrationPathOK(path string) bool {
 		}
 	}
 	return true
+}
+
+// factoryNarrationLangOK accepts an optional code-fence language tag. The tag
+// is rendered on the fence's opening line, so a backtick or a control
+// character in it could close the fence early or break the line. The rune
+// bound is checked with the other bounds.
+func factoryNarrationLangOK(lang string) bool {
+	return !factoryNarrationHasControlRune(lang) && !strings.Contains(lang, "`")
+}
+
+// factoryNarrationHasControlRune reports a control character: any rune below
+// U+0020, plus U+007F.
+func factoryNarrationHasControlRune(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+// factoryNarrationHasDrivePrefix reports a Windows drive prefix: one ASCII
+// letter, then ':', then a path separator or the end of the path. A colon
+// that is not a drive prefix, as in a:b, is not one.
+func factoryNarrationHasDrivePrefix(path string) bool {
+	if len(path) < 2 || path[1] != ':' {
+		return false
+	}
+	if c := path[0]; !(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') {
+		return false
+	}
+	return len(path) == 2 || path[2] == '/' || path[2] == '\\'
 }
 
 func BuildFactoryPrompt(item FactoryItem, effect FactoryEffect) (string, error) {

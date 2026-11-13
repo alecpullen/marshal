@@ -81,11 +81,24 @@ func narrationReportFor(t *testing.T, n *FactoryNarration) string {
 
 func excerptPathReport(t *testing.T, path string) string {
 	t.Helper()
-	quoted, err := json.Marshal(path)
+	return excerptReport(t, path, "", "x")
+}
+
+func excerptReport(t *testing.T, path, lang, code string) string {
+	t.Helper()
+	quotedPath, err := json.Marshal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return narrationReportText(`{"issue":"i","approach":"a","excerpts":[{"path":` + string(quoted) + `,"code":"x"}]}`)
+	quotedLang, err := json.Marshal(lang)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quotedCode, err := json.Marshal(code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return narrationReportText(`{"issue":"i","approach":"a","excerpts":[{"path":` + string(quotedPath) + `,"lang":` + string(quotedLang) + `,"code":` + string(quotedCode) + `}]}`)
 }
 
 func TestParseFactoryReportRequiresNarrationForCompletedImplementer(t *testing.T) {
@@ -138,6 +151,18 @@ func TestParseFactoryReportRejectsInvalidExcerptPaths(t *testing.T) {
 		{"double slash", "internal//x.go", false},
 		{"dot segment", "./x.go", false},
 		{"trailing slash", "internal/", false},
+		{"newline", "internal/\nx.go", false},
+		{"carriage return", "internal/\rx.go", false},
+		{"tab", "internal/\tx.go", false},
+		{"nul", "internal/\x00x.go", false},
+		{"delete", "internal/\x7fx.go", false},
+		{"bare drive", "C:", false},
+		{"lower drive", "c:/work/x.go", false},
+		{"drive end after letter", "z:work/x.go", true},
+		{"colon is not a drive", "a:b", true},
+		{"path at bound", strings.Repeat("a", factoryNarrationMaxPathRunes), true},
+		{"path over bound", strings.Repeat("a", factoryNarrationMaxPathRunes+1), false},
+		{"nested path over bound", strings.Repeat("dir/", 128) + strings.Repeat("a", 5), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := ParseFactoryReport(excerptPathReport(t, tc.path), "op-1", "implementer", "", "")
@@ -145,6 +170,46 @@ func TestParseFactoryReportRejectsInvalidExcerptPaths(t *testing.T) {
 				t.Fatalf("path %q: err=%v, want accepted=%v", tc.path, err, tc.ok)
 			}
 		})
+	}
+}
+
+func TestParseFactoryReportRejectsInvalidExcerptLanguage(t *testing.T) {
+	for _, tc := range []struct {
+		name, lang string
+		ok         bool
+	}{
+		{"plain", "go", true},
+		{"omitted", "", true},
+		{"punctuation", "c++", true},
+		{"at bound", strings.Repeat("a", factoryNarrationMaxLangRunes), true},
+		{"backtick", "go`", false},
+		{"newline", "go\nx", false},
+		{"carriage return", "go\rx", false},
+		{"tab", "go\tx", false},
+		{"nul", "go\x00x", false},
+		{"delete", "go\x7fx", false},
+		{"over bound", strings.Repeat("a", factoryNarrationMaxLangRunes+1), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseFactoryReport(excerptReport(t, "x.go", tc.lang, "x"), "op-1", "implementer", "", "")
+			if (err == nil) != tc.ok {
+				t.Fatalf("lang %q: err=%v, want accepted=%v", tc.lang, err, tc.ok)
+			}
+			if tc.ok {
+				return
+			}
+			for _, field := range []string{"excerpt", "lang"} {
+				if !strings.Contains(err.Error(), field) {
+					t.Fatalf("lang %q: error %v does not name %q", tc.lang, err, field)
+				}
+			}
+		})
+	}
+	// A language carrying a full fence never reaches the validator: the report
+	// is itself a fenced block, so that payload is truncated before it is
+	// parsed. It is refused either way, and never rendered on the fence line.
+	if _, err := ParseFactoryReport(excerptReport(t, "x.go", "go```", "x"), "op-1", "implementer", "", ""); err == nil {
+		t.Fatal("a language carrying a fence was accepted")
 	}
 }
 

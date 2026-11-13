@@ -44,7 +44,9 @@ func composeFactoryPRBody(round FactoryRound) (string, error) {
 	if len(narration.Excerpts) > 0 {
 		b.WriteString("\n## Selected code\n")
 		for _, excerpt := range narration.Excerpts {
-			fence := codeFence(excerpt.Path + "\n" + excerpt.Code)
+			// The fence covers every line the block renders, so neither the
+			// language tag nor the path nor the code can close it early.
+			fence := codeFence(excerpt.Lang + "\n" + excerpt.Path + "\n" + excerpt.Code)
 			fmt.Fprintf(&b, "\n%s%s\n%s\n%s\n%s\n", fence, excerpt.Lang, excerpt.Path, excerpt.Code, fence)
 		}
 	}
@@ -63,13 +65,16 @@ func factoryCIBody(round FactoryRound) string {
 	if len(round.CI.Checks) == 0 {
 		return "CI evidence is complete with no reported checks."
 	}
-	var failing, passing []FactoryCheck
+	var failing, passing, other []FactoryCheck
 	for _, check := range round.CI.Checks {
-		if check.Conclusion == "failure" || check.Conclusion == "error" {
+		switch {
+		case check.Conclusion == "success":
+			passing = append(passing, check)
+		case check.Conclusion != "" && check.Conclusion != "neutral" && check.Conclusion != "skipped":
 			failing = append(failing, check)
-			continue
+		default:
+			other = append(other, check)
 		}
-		passing = append(passing, check)
 	}
 	var b strings.Builder
 	for _, check := range failing {
@@ -86,15 +91,30 @@ func factoryCIBody(round FactoryRound) string {
 	if len(passing) > 0 {
 		fmt.Fprintf(&b, "<details><summary>%d passing checks</summary>\n\n", len(passing))
 		for _, check := range passing {
-			status := check.Status
-			if check.Conclusion != "" {
-				status = check.Conclusion
-			}
-			fmt.Fprintf(&b, "- %s: %s\n", check.Key.Name, status)
+			fmt.Fprintf(&b, "- %s: %s\n", check.Key.Name, factoryCheckConclusion(check))
 		}
 		b.WriteString("\n</details>\n")
 	}
+	if len(other) > 0 {
+		b.WriteString("\n")
+		for _, check := range other {
+			fmt.Fprintf(&b, "- %s: %s\n", check.Key.Name, factoryCheckConclusion(check))
+		}
+	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// factoryCheckConclusion states what a check reported. A check that neither
+// passed nor settled is listed with its conclusion, or its status while it
+// has none.
+func factoryCheckConclusion(check FactoryCheck) string {
+	if check.Conclusion != "" {
+		return check.Conclusion
+	}
+	if check.Status != "" {
+		return check.Status
+	}
+	return "pending"
 }
 
 // codeFence is one backtick longer than the longest backtick run in the

@@ -510,3 +510,56 @@ found four residual clarity gaps, all now closed: a duplicated Task 4
 checklist bullet, reconciled decision 6 omitting the `~` prohibition, the
 plan not saying what realises a capability-less forge, and Task 4
 understating the ten `Forge` methods the double must stub.
+
+## Implementation record
+
+Delivered on branch `studio/factory-narration-implementation` as Tasks 1–7 of the
+[plan](plans/2026-11-13-factory-narration-plan.md), test-first, with one
+commit per task. The studio task ran concurrently with the Go tasks in a
+separate worktree, because `web/ui` is a separate npm package with a
+disjoint file set.
+
+| Task | Deliverable | Commit |
+|---|---|---|
+| 1 | The `FactoryNarration` and `FactoryExcerpt` types, the `FactoryReport.Narration` field, the composed description, and the computed code fence | `ad1087b1` |
+| 2 | The parse-time narration requirement, the four bounds, the excerpt-path rule, the implementer prompt, and the fixtures that rule invalidates | `0a406a0d` |
+| 3 | The optional `FactoryPRDescription` capability, its accessor, and the GitHub `PATCH /pulls/{number}` implementation | `3b09a57a` |
+| 4 | The `set_ready` write path: the capability check, the narration check, the compose, the write, and the test doubles that carry the capability | `65e81c3b` |
+| 5 | The controller, store and end-to-end evidence, including the harness GitHub handler's description-update branch | `efa47ea7` |
+| 6 | The studio rendering of the narration sections and excerpts, with the summary fallback | `f96781a0` |
+| 7 | The rebuilt embedded assets, the gates below, and this record | `70fca650` |
+
+Files: `web/bridge/factory_prbody.go` and `factory_prbody_test.go` are new;
+`web/bridge/factory_types.go`, `factory_prompts.go`, `factory_prompts_test.go`,
+`factory_integration_test.go`, `factory_forge.go`, `forge_github_factory.go`,
+`forge_github_factory_test.go`, `factory_effects.go`, `factory_effects_test.go`,
+`factory_controller_test.go` and `factory_store_test.go` are modified;
+`web/ui/src/lib/factory.ts`, `web/ui/src/views/FactoryItem.svelte` and
+`web/ui/src/views/FactoryItem.test.ts` are modified; `web/bridge/static/**` is
+rebuilt. Everything in `web/bridge` is standard library only, no route was
+added, the `Forge` interface is unchanged, and no production file outside
+`web/bridge` is touched — in particular nothing under `internal/...`.
+
+Acceptance gates, run from the repository root on this branch:
+
+| Gate | Result |
+|---|---|
+| `go test ./web/bridge -run 'TestFactoryPRBody\|TestParseFactoryReport\|TestFactoryPrompt\|TestFactoryEffect\|TestFactoryGitHub.*Description\|TestFactoryPRDescriptionCapability\|TestFactoryController\|TestFactoryStore\|TestWebIsStdlibOnly' -count=1` | PASS — `ok marshal/web/bridge 1.006s` |
+| `go test ./web/bridge -run 'Factory' -count=1` | PASS — `ok marshal/web/bridge 31.318s`; the pre-existing factory tests are unmodified |
+| `go test ./web/bridge -run '^TestWebIsStdlibOnly$' -count=1` | PASS — `ok marshal/web/bridge 0.192s` |
+| `go test ./web/bridge -count=1` | PASS — `ok marshal/web/bridge 121.425s` |
+| `gofmt -l web/bridge` | no output |
+| `go vet ./web/...` | no output, exit 0 |
+| `CGO_ENABLED=1 go build ./...` | exit 0 |
+| `cd web/ui && npm run test` | PASS — 88 test files, 937 tests, 0 failures |
+| `CGO_ENABLED=1 go test -p=1 ./... -count=1 -timeout 20m` | PASS — exit 0, no `FAIL` line |
+
+Every test is offline and deterministic: no live forge, no real git repository,
+no container runtime, no model provider, and no developer credentials. The
+end-to-end evidence uses the existing `deliveryHarness` fixture, which drives a
+real local git repository and an `httptest` GitHub stand-in.
+
+The open questions in §8 remain open: operator editing of the narration, showing
+a repair round's narration beside the earlier one, carrying the review findings
+and repair history in the description, and giving Gitea and Forgejo the factory
+loop. None of them is decided by this slice.

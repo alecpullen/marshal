@@ -519,3 +519,37 @@ no model provider, and — outside the one end-to-end harness — no real git.
   contract.
 - Collision control: the Go tasks are sequential because they compile as one
   package; the studio task is separate; the asset rebuild runs last.
+
+## Plan outcome record
+
+Executed on branch `studio/factory-narration-implementation`, one commit per
+task, test-first. The Go tasks ran sequentially under one implementer; the
+studio task ran concurrently in a separate worktree, because `web/ui` is a
+separate npm package with a disjoint file set.
+
+| Task | Commit | Outcome |
+|---|---|---|
+| 1 | `ad1087b1` | The narration types, the `FactoryReport.Narration` field, the composed description and the computed fence |
+| 2 | `0a406a0d` | The parse-time narration requirement, the four bounds, the excerpt-path rule, the implementer prompt, and the fixtures that rule invalidates |
+| 3 | `3b09a57a` | The optional `FactoryPRDescription` capability, its accessor and the GitHub `PATCH /pulls/{number}` implementation |
+| 4 | `65e81c3b` | The `set_ready` write path and the test doubles that carry the capability |
+| 5 | `efa47ea7` | The controller, store and end-to-end evidence |
+| 6 | `f96781a0` | The studio rendering of the narration sections and excerpts |
+| 7 | `70fca650` | The rebuilt embedded assets and the gates below |
+
+The gates Task 7 ran, and their results, are recorded in the
+[specification's implementation record](../factory-narration-spec.md#implementation-record).
+Every gate passed: the feature suite, the pre-existing factory contract
+gates, the `web/bridge` package gate, `gofmt -l`, `go vet ./web/...`,
+`CGO_ENABLED=1 go build ./...`, the 937 studio tests, and the whole-repository
+suite `CGO_ENABLED=1 go test -p=1 ./... -count=1 -timeout 20m` (exit 0, no
+`FAIL` line).
+
+Two plan decisions were settled during execution, both recorded in the
+specification's implementation record: the CI section renders a failing check
+as its conclusion, URL and log tail, and the passing checks collapse under the
+pinned "N passing checks" wording; and the excerpt fence is computed over the
+whole block content, so a path cannot terminate its own fence early.
+
+The open questions in the specification's §8 remain open and are not decided
+by this slice.

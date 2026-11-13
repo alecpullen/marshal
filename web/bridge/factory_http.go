@@ -105,16 +105,43 @@ func (a *factoryAPI) Command(ctx context.Context, id string, cmd FactoryCommand)
 			return FactoryItem{}, err
 		}
 	}
-	if cmd.Kind == "retry" && cmd.Replacement != nil {
-		replacement := *cmd.Replacement
-		replacement.RequestID = cmd.RequestID
-		if err := factoryNormalize(&replacement); err != nil {
-			return FactoryItem{}, fmt.Errorf("%w: %v", errFactoryInput, err)
+	if cmd.Kind == "retry" {
+		if cmd.Replacement != nil {
+			replacement := *cmd.Replacement
+			replacement.RequestID = cmd.RequestID
+			if err := factoryNormalize(&replacement); err != nil {
+				return FactoryItem{}, fmt.Errorf("%w: %v", errFactoryInput, err)
+			}
+			cmd.Replacement = &replacement
 		}
-		if err := a.preflight(ctx, replacement.Config, true); err != nil {
+		// The candidate is the configuration the command would be applied
+		// against: the replacement's when the command carries one, the
+		// latest approval's otherwise.
+		candidate, named, err := factoryRouteCandidate(item, cmd)
+		if err != nil {
 			return FactoryItem{}, err
 		}
-		cmd.Replacement = &replacement
+		switch {
+		case cmd.Replacement != nil:
+			// A plan replacement can change the repository, the project root,
+			// the target branch, the workspace and the expected CI checks,
+			// so it is validated in full — against the combined
+			// configuration, in which the named routes are the ones the
+			// command supplied.
+			if named {
+				cmd.Replacement.Config = candidate
+			}
+			if err := a.preflight(ctx, cmd.Replacement.Config, true); err != nil {
+				return FactoryItem{}, err
+			}
+		case named:
+			// A route-only retry changes exactly two fields, so it runs the
+			// route rules alone: an unrelated condition the operator cannot
+			// fix from this surface must not block the one action they need.
+			if err := a.factoryValidateRoutes(ctx, candidate); err != nil {
+				return FactoryItem{}, err
+			}
+		}
 	}
 	return a.controller.Command(ctx, id, cmd)
 }

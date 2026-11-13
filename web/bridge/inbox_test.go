@@ -353,6 +353,177 @@ func TestTheInboxRouteNeedsTheToken(t *testing.T) {
 	}
 }
 
+// inboxShorten sets the inbox loop's settle delay and tick. The loop reads
+// both fresh each turn, so this takes effect without restarting it.
+func inboxShorten(t *testing.T, f *Fleet, delay, every time.Duration) {
+	t.Helper()
+	f.inboxMu.Lock()
+	f.inboxDelay, f.inboxEvery = delay, every
+	f.inboxMu.Unlock()
+}
+
+// inboxProbe emits a delta that is not an inbox delta, which wakes the loop
+// the way any delta on the fleet stream does.
+func inboxProbe(f *Fleet) { f.emit(map[string]string{"kind": "probe"}) }
+
+// inboxDeltas returns the inbox deltas on the fleet stream, oldest first.
+func inboxDeltas(f *Fleet) []inboxDelta {
+	var out []inboxDelta
+	for _, e := range f.fleetLog.Tail(fleetStreamKey) {
+		var d inboxDelta
+		if json.Unmarshal(e.Data, &d) == nil && d.Kind == "inbox" {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// TestTheInboxIsSentOnceThenOnlyOnChange pins decision 3: the first value the
+// loop computes is always sent, and a wake that changes nothing adds none.
+func TestTheInboxIsSentOnceThenOnlyOnChange(t *testing.T) {
+	f := testFleet(t)
+	inboxShorten(t, f, 5*time.Millisecond, time.Hour)
+
+	inboxProbe(f)
+	waitFor(t, 5*time.Second, "the first inbox delta", func() bool { return len(inboxDeltas(f)) == 1 })
+
+	// A second wake, with nothing changed, recomputes and sends nothing.
+	inboxProbe(f)
+	waitFor(t, 5*time.Second, "the second recompute", func() bool { return f.inboxRecomputes() == 2 })
+	time.Sleep(50 * time.Millisecond)
+	if n := len(inboxDeltas(f)); n != 1 {
+		t.Fatalf("inbox deltas after an unchanged recompute = %d, want 1", n)
+	}
+}
+
+// TestAPendingRequestMovesTheAgentIntoNeedsYou: a pending request, parked the
+// way the classifier's registry hook parks one, reaches an inbox delta whose
+// needsYou names the agent.
+func TestAPendingRequestMovesTheAgentIntoNeedsYou(t *testing.T) {
+	f := testFleet(t)
+	inboxShorten(t, f, 5*time.Millisecond, time.Hour)
+	id, err := f.Spawn(t.Context(), "/home/u/a", SpawnOptions{Name: "agent one", Mode: "edit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt, err := f.runtimeForAgent(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := rt.reg
+	reg.permMu.Lock()
+	reg.permissions["tc1"] = make(chan Decision, 1)
+	reg.permSession["tc1"] = rt.sessionID
+	reg.permMu.Unlock()
+	// The registry's pending state is the status; the event is the payload
+	// the snapshot carries, exactly as awaitPermission leaves it.
+	reg.emitEvent(rt.sessionID, map[string]any{
+		"type":       "permission_request",
+		"toolCallId": "tc1",
+		"params":     json.RawMessage(`{"sessionId":"` + rt.sessionID + `","toolCallId":"tc1","toolName":"shell.run","command":"go test"}`),
+	})
+
+	inboxProbe(f)
+	waitFor(t, 5*time.Second, "an inbox delta naming the agent under needsYou", func() bool {
+		for _, d := range inboxDeltas(f) {
+			if slices.Contains(d.Inbox.Groups.NeedsYou, id) {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// TestTheTickCatchesAChangeWithNoEvent: a submission written with PutPending,
+// with no delta emitted for it, shows up in an inbox delta within a few ticks.
+func TestTheTickCatchesAChangeWithNoEvent(t *testing.T) {
+	f := testFleet(t)
+	inboxShorten(t, f, 5*time.Millisecond, 5*time.Millisecond)
+
+	// One probe settles the loop onto the shortened intervals; the change
+	// that follows is then seen by the tick alone.
+	inboxProbe(f)
+	waitFor(t, 5*time.Second, "the loop's first recompute", func() bool { return f.inboxRecomputes() >= 1 })
+
+	if err := f.ws.PutPending(inboxSubmission("sub-1", "2024-05-04T09:00:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 5*time.Second, "the submission in an inbox delta", func() bool {
+		for _, d := range inboxDeltas(f) {
+			if slices.Contains(inboxQueueIDs(d.Inbox.Queue), "sub-1") {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// TestABurstCostsOneRecompute: a hundred deltas inside the settle delay cost
+// at most two recomputes, because the wake signal buffers one.
+func TestABurstCostsOneRecompute(t *testing.T) {
+	f := testFleet(t)
+	inboxShorten(t, f, 50*time.Millisecond, time.Hour)
+
+	for i := 0; i < 100; i++ {
+		inboxProbe(f)
+	}
+	waitFor(t, 5*time.Second, "the burst's recompute", func() bool { return f.inboxRecomputes() >= 1 })
+	time.Sleep(150 * time.Millisecond)
+
+	if n := f.inboxRecomputes(); n > 2 {
+		t.Fatalf("recomputes for a hundred-delta burst = %d, want at most 2", n)
+	}
+	if n := len(inboxDeltas(f)); n > 2 {
+		t.Fatalf("inbox deltas for a hundred-delta burst = %d, want at most 2", n)
+	}
+}
+
+// TestTheInboxDeltaDoesNotWakeTheLoop: the loop's own delta must not feed
+// back, so one wake gives one recompute and no chain.
+func TestTheInboxDeltaDoesNotWakeTheLoop(t *testing.T) {
+	f := testFleet(t)
+	inboxShorten(t, f, 5*time.Millisecond, time.Hour)
+
+	inboxProbe(f)
+	waitFor(t, 5*time.Second, "one recompute", func() bool { return f.inboxRecomputes() == 1 })
+	time.Sleep(100 * time.Millisecond)
+
+	if n := f.inboxRecomputes(); n != 1 {
+		t.Fatalf("recomputes after one wake = %d, want 1", n)
+	}
+	if n := len(inboxDeltas(f)); n != 1 {
+		t.Fatalf("inbox deltas after one wake = %d, want 1", n)
+	}
+}
+
+// TestTheLoopStopsWithTheFleet: Close ends the loop, even mid-delay, and no
+// inbox delta follows it.
+func TestTheLoopStopsWithTheFleet(t *testing.T) {
+	f := testFleet(t)
+	inboxShorten(t, f, 50*time.Millisecond, 5*time.Millisecond)
+	inboxProbe(f)
+	waitFor(t, 5*time.Second, "the first inbox delta", func() bool { return len(inboxDeltas(f)) == 1 })
+
+	// Wake it again and close while it waits the delay.
+	inboxProbe(f)
+	f.Close()
+	select {
+	case <-f.inboxStopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the inbox loop did not return after Close")
+	}
+
+	before, sent := f.inboxRecomputes(), len(inboxDeltas(f))
+	inboxProbe(f)
+	time.Sleep(100 * time.Millisecond)
+	if n := f.inboxRecomputes(); n != before {
+		t.Fatalf("recomputes after Close = %d, want %d", n, before)
+	}
+	if n := len(inboxDeltas(f)); n != sent {
+		t.Fatalf("inbox deltas after Close = %d, want %d", n, sent)
+	}
+}
+
 // assertIDs compares an inbox list against the expected IDs.
 func assertIDs(t *testing.T, list string, got, want []string) {
 	t.Helper()

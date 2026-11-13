@@ -1,6 +1,8 @@
 package bridge
 
 import (
+	"bytes"
+	"encoding/json"
 	"sort"
 	"time"
 
@@ -150,6 +152,84 @@ func inboxStatusRank(s contract.AgentState) int {
 	default:
 		return 3
 	}
+}
+
+// inboxDelta is the "inbox" delta on the fleet stream.
+type inboxDelta struct {
+	Kind  string    `json:"kind"`
+	Inbox inboxView `json:"inbox"`
+}
+
+// inboxSettleDelay is how long the loop waits after a wake before it
+// recomputes, so a burst of deltas costs one recompute.
+const inboxSettleDelay = 250 * time.Millisecond
+
+// inboxTick is how often the loop recomputes with no delta to wake it.
+const inboxTick = time.Second
+
+// runInbox is the inbox loop; NewFleet starts it, and it ends with done.
+//
+// It wakes on any delta but its own, settles for inboxDelay, and recomputes;
+// with no delta it still recomputes every inboxEvery. Both intervals are read
+// fresh each turn, so a test that shortens them takes effect without
+// restarting the loop.
+func (f *Fleet) runInbox() {
+	defer close(f.inboxStopped)
+	for {
+		delay, every := f.inboxTiming()
+		tick := time.NewTimer(every)
+		select {
+		case <-f.done:
+			tick.Stop()
+			return
+		case <-f.inboxWake:
+			tick.Stop()
+			settle := time.NewTimer(delay)
+			select {
+			case <-f.done:
+				settle.Stop()
+				return
+			case <-settle.C:
+			}
+		case <-tick.C:
+		}
+		f.recomputeInbox()
+	}
+}
+
+// recomputeInbox sends an inbox delta when the inbox differs from the last one
+// sent, and always on the first computation. Only the loop caches: Inbox stays
+// a fresh computation.
+func (f *Fleet) recomputeInbox() {
+	f.inboxMu.Lock()
+	f.inboxRan++
+	f.inboxMu.Unlock()
+
+	delta := inboxDelta{Kind: "inbox", Inbox: f.Inbox()}
+	data, err := json.Marshal(delta)
+	if err != nil {
+		return
+	}
+	if f.inboxSent != nil && bytes.Equal(data, f.inboxSent) {
+		return
+	}
+	f.inboxSent = data
+	f.emit(delta)
+}
+
+// inboxTiming is the loop's settle delay and tick, read fresh each turn.
+func (f *Fleet) inboxTiming() (time.Duration, time.Duration) {
+	f.inboxMu.Lock()
+	defer f.inboxMu.Unlock()
+	return f.inboxDelay, f.inboxEvery
+}
+
+// inboxRecomputes is how many times the loop has recomputed, for tests that
+// count them directly.
+func (f *Fleet) inboxRecomputes() int64 {
+	f.inboxMu.Lock()
+	defer f.inboxMu.Unlock()
+	return f.inboxRan
 }
 
 // Inbox is the fleet's inbox now.

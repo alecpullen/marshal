@@ -349,14 +349,21 @@ func budgetDeltaRecording(t *testing.T, scope string) []byte {
 	return nil
 }
 
-// lastDelta is the most recent delta on the fleet stream.
+// lastDelta is the most recent delta on the fleet stream that is not the
+// inbox loop's. The recordings here are of the other kinds, and the loop's
+// delta carries no session or agent a recording could stand for.
 func lastDelta(t *testing.T, f *Fleet) []byte {
 	t.Helper()
 	tail := f.fleetLog.Tail(fleetStreamKey)
-	if len(tail) == 0 {
-		t.Fatal("no delta on the fleet stream")
+	for i := len(tail) - 1; i >= 0; i-- {
+		var d fleetDelta
+		if json.Unmarshal(tail[i].Data, &d) == nil && d.Kind == "inbox" {
+			continue
+		}
+		return tail[i].Data
 	}
-	return tail[len(tail)-1].Data
+	t.Fatal("no delta on the fleet stream")
+	return nil
 }
 
 var wireTimeRE = regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z`)

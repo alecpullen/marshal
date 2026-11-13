@@ -26,6 +26,7 @@ import (
 // answered; what was not read is a matter of this report's bounds.
 const (
 	previewPageBoundDetail            = "the forge reported more deployments than this report reads; the list is not exhaustive and a larger page bound would be needed to read the rest"
+	previewStatusesPageBoundDetail    = "the forge reported more statuses for at least one deployment than this report reads; the listed status may not be the newest"
 	previewNameCapDetail              = "the forge reported deployments for more environments than this report names; the newest deployment for each of the most recently updated environments is listed"
 	previewUnfilteredDetail           = "no revision scope was resolvable; every deployment the forge reports is listed"
 	previewStatusesNotExercisedDetail = "not exercised: no deployment was reported for this scope"
@@ -285,6 +286,7 @@ func (a *previewAssembler) readStatuses(ctx context.Context, probe PreviewForge,
 	}
 
 	read := 0
+	truncated := false
 	gaps := make([]DiscoveryGap, 0, len(a.deployments))
 	for i := range a.deployments {
 		id, numeric := previewNumericID(a.deployments[i].ID)
@@ -295,8 +297,8 @@ func (a *previewAssembler) readStatuses(ctx context.Context, probe PreviewForge,
 		}
 		read++
 		statuses, err := probe.DeploymentStatuses(ctx, a.repo, id, cred)
-		truncated := errors.Is(err, errDiscoveryTruncated)
-		if err != nil && !truncated {
+		bounded := errors.Is(err, errDiscoveryTruncated)
+		if err != nil && !bounded {
 			state, detail := discoveryProbeOutcome(err, metadataReadable)
 			gaps = append(gaps, DiscoveryGap{
 				Key:     "preview_statuses",
@@ -306,6 +308,7 @@ func (a *previewAssembler) readStatuses(ctx context.Context, probe PreviewForge,
 			})
 			continue
 		}
+		truncated = truncated || bounded
 		newest, ok := previewNewestStatus(statuses)
 		if !ok {
 			// An empty collection is a completed read of nothing, not a failure.
@@ -324,21 +327,28 @@ func (a *previewAssembler) readStatuses(ctx context.Context, probe PreviewForge,
 			return
 		}
 		a.set("preview_statuses", DiscoveryCapabilitySupported, "")
-		return
+	} else {
+		// Several status reads can fail differently: the capability and its single
+		// gap carry the most actionable state, so the operator sees the failure
+		// they can act on first.
+		worst := discoveryWorstState(gaps)
+		detail := ""
+		for _, gap := range gaps {
+			if gap.State == worst {
+				detail = gap.Detail
+				break
+			}
+		}
+		a.degrade("preview_statuses", previewSectionStatuses, worst, detail)
 	}
 
-	// Several status reads can fail differently: the capability and its single
-	// gap carry the most actionable state, so the operator sees the failure
-	// they can act on first.
-	worst := discoveryWorstState(gaps)
-	detail := ""
-	for _, gap := range gaps {
-		if gap.State == worst {
-			detail = gap.Detail
-			break
-		}
+	// The bound is recorded last, so a failure keeps the key: the more
+	// actionable state is the one the operator can act on, and addGap leaves
+	// the existing gap untouched when a failure already holds it.
+	if truncated {
+		a.addGap("preview_statuses", previewSectionStatuses,
+			DiscoveryCapabilityTemporarilyUnavailable, previewStatusesPageBoundDetail)
 	}
-	a.degrade("preview_statuses", previewSectionStatuses, worst, detail)
 }
 
 // report orders every slice deterministically and derives the status from the

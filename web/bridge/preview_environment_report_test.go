@@ -629,6 +629,100 @@ func previewPageOfDeployments(n int) string {
 	return b.String()
 }
 
+// TestPreviewReportRecordsTheEnvironmentsPageBoundGap pins the environments
+// page bound: a truncated read keeps the environments it read, keeps the
+// capability supported, and records the bound in its own gap.
+func TestPreviewReportRecordsTheEnvironmentsPageBoundGap(t *testing.T) {
+	full := previewPageOfEnvironments(discoveryForgePageSize)
+	report, _ := previewReport(t, discoveryTestRepo("github", ""), PreviewFilter{Ref: "main"},
+		previewForgeFixture{defaultBranch: "main", environments: full})
+
+	capability := previewCapability(t, report, "preview_environments")
+	if capability.State != DiscoveryCapabilitySupported {
+		t.Errorf("preview_environments = %q, want supported (a bound is not a failure)", capability.State)
+	}
+	if len(report.Environments) == 0 {
+		t.Error("environments is empty, want the items read before the bound")
+	}
+	gap := previewGap(t, report, "preview_environments")
+	const want = "the forge reported more environments than this report reads; the list is not exhaustive and a larger page bound would be needed to read the rest"
+	if gap.Detail != want {
+		t.Errorf("gap = %q, want %q", gap.Detail, want)
+	}
+	if gap.State != DiscoveryCapabilityTemporarilyUnavailable {
+		t.Errorf("gap state = %q, want temporarily_unavailable", gap.State)
+	}
+	if strings.Contains(gap.Detail, "adapter support") {
+		t.Errorf("gap = %q, want no adapter-support wording", gap.Detail)
+	}
+}
+
+// previewPageOfEnvironments renders exactly one full page of GitHub
+// environments, so the environments page bound is hit.
+func previewPageOfEnvironments(n int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, `{"total_count":%d,"environments":[`, n)
+	for i := 1; i <= n; i++ {
+		if i > 1 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `{"id":%d,"name":"env-%d"}`, i, i)
+	}
+	b.WriteString("]}")
+	return b.String()
+}
+
+// TestPreviewReportRecordsTheStatusesPageBoundGap pins the statuses page bound:
+// a truncated statuses read keeps its items, keeps the capability supported,
+// and records the bound — the listed status may not be the newest.
+func TestPreviewReportRecordsTheStatusesPageBoundGap(t *testing.T) {
+	report, _ := previewReport(t, discoveryTestRepo("github", ""), PreviewFilter{Ref: "main"},
+		previewForgeFixture{
+			defaultBranch: "main",
+			deployments:   `[{"id":99,"environment":"production","ref":"main"}]`,
+			statuses: map[string]string{
+				"99": previewPageOfStatuses(discoveryForgePageSize),
+			},
+		})
+
+	if len(report.Deployments) != 1 {
+		t.Fatalf("deployments = %+v, want the row kept", report.Deployments)
+	}
+	if got := report.Deployments[0].State; got != "success" {
+		t.Errorf("state = %q, want the status folded from the items read", got)
+	}
+	capability := previewCapability(t, report, "preview_statuses")
+	if capability.State != DiscoveryCapabilitySupported {
+		t.Errorf("preview_statuses = %q, want supported (a bound is not a failure)", capability.State)
+	}
+	gap := previewGap(t, report, "preview_statuses")
+	const want = "the forge reported more statuses for at least one deployment than this report reads; the listed status may not be the newest"
+	if gap.Detail != want {
+		t.Errorf("gap = %q, want %q", gap.Detail, want)
+	}
+	if gap.State != DiscoveryCapabilityTemporarilyUnavailable {
+		t.Errorf("gap state = %q, want temporarily_unavailable", gap.State)
+	}
+	if strings.Contains(gap.Detail, "adapter support") {
+		t.Errorf("gap = %q, want no adapter-support wording", gap.Detail)
+	}
+}
+
+// previewPageOfStatuses renders exactly one full page of GitHub deployment
+// statuses, so the statuses page bound is hit.
+func previewPageOfStatuses(n int) string {
+	var b strings.Builder
+	b.WriteString("[")
+	for i := 1; i <= n; i++ {
+		if i > 1 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `{"id":%d,"state":"success","environment_url":"https://preview.example.internal"}`, i)
+	}
+	b.WriteString("]")
+	return b.String()
+}
+
 // TestPreviewReportFoldsTheNewestStatusOnly pins decision 4a: the newest status
 // supplies the row's status fields, an absent field stays empty rather than
 // being back-filled from an older status, and the deployment's own description

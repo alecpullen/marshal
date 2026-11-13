@@ -136,6 +136,11 @@ type ProjectSettings struct {
 	// Automations configures the forge automations (W5.4). It is optional,
 	// so the workspace version does not change.
 	Automations *Automations `json:"automations,omitempty"`
+	// FactoryDefaults are the project's default factory configuration. A
+	// handoff inherits every field it leaves unset. It is optional, so the
+	// workspace file format does not change and workspaceVersion stays 11 —
+	// the same reasoning the Automations field already follows.
+	FactoryDefaults *FactoryDefaults `json:"factoryDefaults,omitempty"`
 }
 
 // ProjectIntake mirrors Repo.Watch/WatchLabel and the client allowedRepos.

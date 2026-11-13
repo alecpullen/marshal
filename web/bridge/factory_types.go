@@ -5,6 +5,28 @@ import (
 	"time"
 )
 
+// FactoryDefaults are a project's default factory configuration. A handoff
+// inherits every field it leaves unset.
+//
+// The type is the rule: a field that is not here can never be inherited.
+// RepoID and ProjectRoot are absent because they say what the work item is
+// about and which project it belongs to. Native, ImplementerAuto and
+// NoRequiredCIAcknowledged are absent because their false is a meaningful
+// choice, and the handoff's plain FactoryConfig cannot tell "unset" from
+// "explicitly false".
+type FactoryDefaults struct {
+	TargetBranch         string            `json:"targetBranch,omitempty"`
+	Workspace            string            `json:"workspace,omitempty"`
+	HostID               string            `json:"hostId,omitempty"`
+	ImplementerRouting   json.RawMessage   `json:"implementerRouting,omitempty"`
+	ReviewerRouting      json.RawMessage   `json:"reviewerRouting,omitempty"`
+	ReviewerInstructions string            `json:"reviewerInstructions,omitempty"`
+	ExpectedChecks       []FactoryCheckKey `json:"expectedChecks,omitempty"`
+	MaxRounds            int               `json:"maxRounds,omitempty"`
+	CIPollSeconds        int               `json:"ciPollSeconds,omitempty"`
+	CIWaitSeconds        int               `json:"ciWaitSeconds,omitempty"`
+}
+
 type FactoryConfig struct {
 	RepoID                   string            `json:"repoId"`
 	ProjectRoot              string            `json:"projectRoot"`

@@ -63,6 +63,13 @@ between the specification and the real code.
    and the replay branch keeps calling `store.Create(req)` with the operator's
    request. A replay therefore returns the original item even when the
    project's defaults have since become invalid or conflicting.
+
+   This moved the hash base from the normalised request to the raw one. Two
+   requests that differ only in fields normalisation would fill in now have
+   different hashes, and a create journalled by a pre-slice bridge replays as a
+   conflict once after the upgrade, unless the request already carried every
+   value normalisation would have filled in. A byte-identical retry is
+   unaffected. The specification records this in §4.4.
 6. **The named project root is the only live resolution path.** A valid
    handoff always names a registered, trusted `ProjectRoot`, and the named
    root wins over the repository's intake project. The intake mapping is a
@@ -203,27 +210,27 @@ the same time.
 **Files:** modify `web/bridge/factory_types.go` and `web/bridge/workspace.go`;
 create `web/bridge/factory_defaults.go` and `web/bridge/factory_defaults_test.go`.
 
-- [ ] Write `TestFactoryDefaultsApplyPerTypeUnsetRules`: a table over every
+- [x] Write `TestFactoryDefaultsApplyPerTypeUnsetRules`: a table over every
   inheritable field and every type. A string default applies to an empty
   handoff string and loses to a set one; an int default applies to a zero
   handoff int and loses to a set one; a `json.RawMessage` default applies to
   a nil handoff value and loses to `{}` and to `null` (compare the raw bytes,
   not a decoded struct); a check-list default applies to a nil handoff list and
   loses to a non-nil empty one. Assert nil-ness, not only length.
-- [ ] Write `TestFactoryDefaultsNeverSupplyNonInheritableFields`: assert by
+- [x] Write `TestFactoryDefaultsNeverSupplyNonInheritableFields`: assert by
   reflection that `FactoryDefaults` has no `RepoID`, `ProjectRoot`, `Native`,
   `ImplementerAuto` or `NoRequiredCIAcknowledged` field, and behaviourally that
   a merge leaves those five exactly as the handoff set them.
-- [ ] Write `TestFactoryValidateDefaults`: nil defaults are valid; a negative
+- [x] Write `TestFactoryValidateDefaults`: nil defaults are valid; a negative
   `maxRounds`, `ciPollSeconds` or `ciWaitSeconds` is rejected naming the
   field; a `hostId` other than `local` is rejected; a check identity with no
   name, an unknown kind, a `check_run` without an app id, or a
   `commit_status` with one is rejected; a valid default passes. The validator
   must not fill the built-in defaults — a zero limit stays zero.
-- [ ] Run
+- [x] Run
   `go test ./web/bridge -run '^TestFactoryDefaults' -count=1 -v`; confirm the
   new tests fail because the contract does not exist.
-- [ ] Implement the shared types above, plus in `factory_defaults.go`:
+- [x] Implement the shared types above, plus in `factory_defaults.go`:
   - `func factoryMergeDefaults(c FactoryConfig, d *FactoryDefaults) FactoryConfig`
     — the merge, one branch per inheritable field, copying the check list
     rather than aliasing it, and never collapsing a non-nil empty list to nil;
@@ -232,35 +239,35 @@ create `web/bridge/factory_defaults.go` and `web/bridge/factory_defaults_test.go
     rule is duplicated here rather than extracted: `factoryNormalize` has the
     rule inline, and extracting it would modify `factoryNormalize`, which this
     slice leaves untouched.
-- [ ] Run
+- [x] Run
   `go test ./web/bridge -run '^TestFactoryDefaults|^TestFactoryValidateDefaults' -count=1 -v`
   and `gofmt -l` on the four task files; require PASS and no output.
-- [ ] Commit only this task: `feat(factory): add project factory defaults type and resolver`.
+- [x] Commit only this task: `feat(factory): add project factory defaults type and resolver`.
 
 ## Task 2: Validate the defaults when they are written
 
 **Files:** modify `web/bridge/projects.go` and `web/bridge/projects_test.go`.
 
-- [ ] Write `TestProjectSettingsRoundTripFactoryDefaults`: a `factoryDefaults`
+- [x] Write `TestProjectSettingsRoundTripFactoryDefaults`: a `factoryDefaults`
   block survives `PUT` → `GET` through the existing project-settings surface,
   and the workspace file still reports `"version": 11`.
-- [ ] Write `TestFactoryDefaultsRejectInvalidDefaultsAtWriteTime`: through
+- [x] Write `TestFactoryDefaultsRejectInvalidDefaultsAtWriteTime`: through
   `PUT /api/projects/settings?root=`, a negative limit, a non-`local` host id
   and each invalid check identity are rejected with 400 and an error naming
   the offending field; a zero limit, a `local` host id, an explicitly empty
   check list and a nil check list are accepted; a rejected write leaves the
   previously stored settings untouched.
-- [ ] Run
+- [x] Run
   `go test ./web/bridge -run '^(TestProjectSettingsRoundTripFactoryDefaults|TestFactoryDefaultsRejectInvalidDefaultsAtWriteTime)' -count=1 -v`;
   confirm the new tests fail.
-- [ ] Implement: in `Fleet.PutProjectSettings`, after the existing automations
+- [x] Implement: in `Fleet.PutProjectSettings`, after the existing automations
   validation, call `factoryValidateDefaults(ps.FactoryDefaults)` and wrap a
   failure in `errInvalidProjectSettings` so the status stays 400 and the
   message names the field. The raw `Workspace.PutProjectSettings` stays a dumb
   store, exactly as it is today for `Automations`.
-- [ ] Run the named tests; require PASS. Run `gofmt -l` on the two task
+- [x] Run the named tests; require PASS. Run `gofmt -l` on the two task
   files; require no output.
-- [ ] Commit only this task: `feat(factory): validate project factory defaults on write`.
+- [x] Commit only this task: `feat(factory): validate project factory defaults on write`.
 
 ## Task 3: Resolve the defaults in the create path
 
@@ -268,37 +275,37 @@ create `web/bridge/factory_defaults.go` and `web/bridge/factory_defaults_test.go
 and `web/bridge/factory_defaults.go`; create
 `web/bridge/factory_defaults_http_test.go`.
 
-- [ ] Write `TestFactoryCreateResolvesProjectDefaultsIntoStoredDraft`: a
+- [x] Write `TestFactoryCreateResolvesProjectDefaultsIntoStoredDraft`: a
   project with defaults creates a factory whose stored draft carries the
   default for every field the handoff left unset.
-- [ ] Write `TestFactoryCreateHandoffOverridesDefault`: the handoff's own value
+- [x] Write `TestFactoryCreateHandoffOverridesDefault`: the handoff's own value
   wins for the field it sets.
-- [ ] Write `TestFactoryCreatePreservesExplicitlyEmptyChecks`: the default has
+- [x] Write `TestFactoryCreatePreservesExplicitlyEmptyChecks`: the default has
   one check, the handoff sends an explicitly empty list, and the stored draft
   has an empty, non-nil list.
-- [ ] Write `TestFactoryDefaultsResolveBeforeNormalisation`: a project default
+- [x] Write `TestFactoryDefaultsResolveBeforeNormalisation`: a project default
   of `maxRounds: 9` reaches the stored draft as 9, not the built-in 5. This is
   the ordering proof.
-- [ ] Write `TestFactoryDefaultsResolveFromNamedProjectRootNotIntake`: with two
+- [x] Write `TestFactoryDefaultsResolveFromNamedProjectRootNotIntake`: with two
   registered projects whose defaults differ in every observable field, a
   handoff naming the second project gets the second project's defaults, and a
   handoff naming the first gets the first's.
-- [ ] Write `TestFactoryDefaultsRootlessHandoffIsStillRejected`: a handoff with
+- [x] Write `TestFactoryDefaultsRootlessHandoffIsStillRejected`: a handoff with
   no `ProjectRoot` is rejected and no work item is created.
-- [ ] Write `TestFactoryCreateStoredDraftIsSnapshotted`: create a handoff
+- [x] Write `TestFactoryCreateStoredDraftIsSnapshotted`: create a handoff
   against a project with defaults, then change the project's defaults through
   the real settings surface; the stored draft's configuration is unchanged, and
   after approving, the approval's configuration is unchanged too. The next
   handoff picks up the new defaults, so the change really took effect.
-- [ ] Write `TestFactoryCreateReplayReturnsTheOriginalItem`: create a handoff
+- [x] Write `TestFactoryCreateReplayReturnsTheOriginalItem`: create a handoff
   against a project with defaults, then rewrite the project's defaults to an
   invalid or conflicting set; replaying the identical request returns the
   original item rather than an error, because the replay short-circuit precedes
   resolution.
-- [ ] Run
+- [x] Run
   `go test ./web/bridge -run '^TestFactory(Create|Defaults)' -count=1 -v`;
   confirm the new tests fail.
-- [ ] Implement:
+- [x] Implement:
   - in `factory_defaults.go`, `func (a *factoryAPI) factoryResolveDefaults(req FactoryCreate) (FactoryCreate, error)`
     — locate the project (named root first, intake mapping only as a defensive
     fallback that never writes a root), read its defaults, validate them at
@@ -312,9 +319,9 @@ and `web/bridge/factory_defaults.go`; create
     both the request) and `CreateResolved(req, resolved, now)` (identity the
     request, content the resolved configuration), so the create-replay hash
     stays over the operator's request.
-- [ ] Run the named tests; require PASS. Run `gofmt -l` on the four task
+- [x] Run the named tests; require PASS. Run `gofmt -l` on the four task
   files; require no output.
-- [ ] Commit only this task: `feat(factory): resolve project factory defaults on handoff create`.
+- [x] Commit only this task: `feat(factory): resolve project factory defaults on handoff create`.
 
 ## Task 4: Name the sources of conflicts and keep retries un-resolved
 
@@ -322,16 +329,16 @@ and `web/bridge/factory_defaults.go`; create
 `web/bridge/factory_http.go`, `web/bridge/factory_defaults_test.go` and
 `web/bridge/factory_defaults_http_test.go`.
 
-- [ ] Write `TestFactoryDefaultsConflictNamesBothSources`: a project default
+- [x] Write `TestFactoryDefaultsConflictNamesBothSources`: a project default
   that carries a workspace and a handoff that sets `native: true` are
   rejected with an error naming the conflict, both field names, the project
   root and the handoff.
-- [ ] Write `TestFactoryDefaultsRejectInvalidDefaultsAtResolveTime`: a
+- [x] Write `TestFactoryDefaultsRejectInvalidDefaultsAtResolveTime`: a
   default that reached the workspace file another way is rejected when it is
   resolved, with an error naming the project's defaults as the source — and
   it is still rejected when the handoff would have overridden the offending
   field.
-- [ ] Write `TestFactoryRetryReplacementIsNotReResolved`: a retry replacement
+- [x] Write `TestFactoryRetryReplacementIsNotReResolved`: a retry replacement
   that omits a field the project default sets keeps that field empty in the
   new approval. Drive the replacement through `factoryAPI.Command` — the layer
   whose retry branch normalises and preflights the replacement, and where an
@@ -339,63 +346,63 @@ and `web/bridge/factory_defaults.go`; create
   harness. The item needs a `question` decision, a positive
   `AdditionalRounds` and a reason, all reachable offline; the decision is set
   through the store's public mutation path. No forge, git or loop is involved.
-- [ ] Run
+- [x] Run
   `go test ./web/bridge -run '^TestFactory(Defaults|Retry)' -count=1 -v`;
   confirm the new tests fail.
-- [ ] Implement: detect the cross-source conflict during resolution and report
+- [x] Implement: detect the cross-source conflict during resolution and report
   it with both sources; report a resolve-time validation failure with the
   project's defaults as the source; leave the retry path untouched.
-- [ ] Run the named tests; require PASS. Run `gofmt -l` on the four task
+- [x] Run the named tests; require PASS. Run `gofmt -l` on the four task
   files; require no output.
-- [ ] Commit only this task: `feat(factory): name conflict sources and keep retry replacements un-resolved`.
+- [x] Commit only this task: `feat(factory): name conflict sources and keep retry replacements un-resolved`.
 
 ## Task 5: Pin the untouched contract
 
 **Files:** modify `web/bridge/factory_defaults_test.go` and
 `web/bridge/factory_defaults_http_test.go`.
 
-- [ ] Write `TestProjectWithoutDefaultsBehavesExactlyAsToday`: for a project
+- [x] Write `TestProjectWithoutDefaultsBehavesExactlyAsToday`: for a project
   with no settings record, and again for one whose `FactoryDefaults` is nil,
   the stored draft's configuration equals the pre-slice expected values field
   by field, including the built-in `local`, 5, 15 and 1800. A zero-valued
   defaults object must behave exactly like no defaults.
-- [ ] Write `TestFactoryBootstrapAcceptanceContractStillHolds`: each element
+- [x] Write `TestFactoryBootstrapAcceptanceContractStillHolds`: each element
   of the specification's §4.8 list, run twice — once against a defaults-free
   project and once against a project with a full set of defaults: the required
   request id, title, plan and repository; the plan and specification size
   limit; the local-host rule; the built-in limits; a project default setting
   the limits explicitly; and the rule that a handoff must select expected CI
   checks or acknowledge that none are required.
-- [ ] Run `go test ./web/bridge -run '^(TestProjectWithoutDefaults|TestFactoryBootstrapAcceptance)' -count=1 -v`;
+- [x] Run `go test ./web/bridge -run '^(TestProjectWithoutDefaults|TestFactoryBootstrapAcceptance)' -count=1 -v`;
   confirm the new tests fail or pass as appropriate, then make them pass.
-- [ ] Run `go test ./web/bridge -run 'Factory' -count=1`; the pre-existing
+- [x] Run `go test ./web/bridge -run 'Factory' -count=1`; the pre-existing
   factory tests must pass **unmodified** — they are the executable form of
   "the bootstrap factory's acceptance contract still holds".
-- [ ] Run `gofmt -l` on the two task files; require no output.
-- [ ] Commit only this task: `test(factory): pin the bootstrap acceptance contract under project defaults`.
+- [x] Run `gofmt -l` on the two task files; require no output.
+- [x] Commit only this task: `test(factory): pin the bootstrap acceptance contract under project defaults`.
 
 ## Task 6: Finalize the contract documentation and prove acceptance
 
 **Files:** modify `docs/studio-fleet-factory/project-factory-defaults-spec.md`
 and this plan.
 
-- [ ] Add an "Implementation record" section to the specification: the branch,
+- [x] Add an "Implementation record" section to the specification: the branch,
   the task commits, the acceptance gates and the open questions from §8 that
   remain open.
-- [ ] Record the plan's outcome here: the task/commit table and the gates
+- [x] Record the plan's outcome here: the task/commit table and the gates
   actually run.
-- [ ] Run the complete feature suite:
+- [x] Run the complete feature suite:
   `go test ./web/bridge -run '^TestFactory(Defaults|Validate|Create|Retry|BootstrapAcceptance)|^TestProjectWithoutDefaults|^TestProjectSettingsRoundTripFactoryDefaults' -count=1 -v`.
-- [ ] Run the pre-existing contract gate: `go test ./web/bridge -run 'Factory' -count=1`.
-- [ ] Run the package gate: `go test ./web/bridge -count=1`.
-- [ ] Run the boundary and build gates:
+- [x] Run the pre-existing contract gate: `go test ./web/bridge -run 'Factory' -count=1`.
+- [x] Run the package gate: `go test ./web/bridge -count=1`.
+- [x] Run the boundary and build gates:
   `go test ./web/bridge -run '^TestWebIsStdlibOnly$' -count=1`,
   `gofmt -l web/bridge`, `go vet ./web/bridge/...`, and
   `CGO_ENABLED=1 go build ./...`.
-- [ ] Run the repository suite: `CGO_ENABLED=1 go test -p=1 ./... -count=1 -timeout 20m`.
+- [x] Run the repository suite: `CGO_ENABLED=1 go test -p=1 ./... -count=1 -timeout 20m`.
   Record unrelated baseline failures separately; do not claim an overall pass
   when any required gate remains red.
-- [ ] Commit docs and any test-first defect fixes:
+- [x] Commit docs and any test-first defect fixes:
   `docs(factory): record implemented project factory defaults`.
 
 ## Acceptance matrix
@@ -456,3 +463,55 @@ fixture uses `t.Setenv`.
   contract.
 - Collision control: all implementation tasks are sequential because they
   compile as one Go package and share the frozen contract.
+
+## Implementation record
+
+Tasks 1–6 are complete on branch
+`studio/project-factory-defaults-implementation`, one commit per task. Every
+checkbox above is ticked from verifiable evidence on the branch: the named
+files and tests exist and pass, each commit carries the message this plan
+prescribed and only that task's files, and `gofmt` and `go vet` are clean. The
+red-first step inside each task ran in the implementer's own turn and is not
+separately reconstructible from the history.
+
+| Task | Commit | Message |
+|---|---|---|
+| 1 | `b668f7fc` | `feat(factory): add project factory defaults type and resolver` |
+| 2 | `38b3e1db` | `feat(factory): validate project factory defaults on write` |
+| 3 | `b5c1e1fc` | `feat(factory): resolve project factory defaults on handoff create` |
+| 4 | `629dc6f0` | `feat(factory): name conflict sources and keep retry replacements un-resolved` |
+| 5 | `f382f989` | `test(factory): pin the bootstrap acceptance contract under project defaults` |
+| 6 | this documentation commit | `docs(factory): record implemented project factory defaults` |
+
+Files changed across Tasks 1–5, against the specification commit `6eff329b`:
+`web/bridge/factory_defaults.go`, `factory_defaults_test.go` and
+`factory_defaults_http_test.go` (new); `web/bridge/factory_types.go`,
+`workspace.go`, `projects.go`, `projects_test.go`, `factory_http.go` and
+`factory_store.go` (modified). Nine files, 1695 insertions, 7 deletions. No
+file outside `web/bridge` changed, so the safety claims of the self-review hold:
+no route, no `FactoryConfig` change, no `factoryNormalize` change, no workspace
+version bump, no SPA change, no change to the factory loop.
+
+The gates actually run, exactly as specified in Task 6:
+
+| Gate | Result |
+|---|---|
+| `go test ./web/bridge -run '^TestFactory(Defaults\|Validate\|Create\|Retry\|BootstrapAcceptance)\|^TestProjectWithoutDefaults\|^TestProjectSettingsRoundTripFactoryDefaults' -count=1 -v` | PASS — 18 top-level tests, every subtest PASS; `ok marshal/web/bridge 1.641s` |
+| `go test ./web/bridge -run 'Factory' -count=1` | PASS — `ok marshal/web/bridge 28.800s` |
+| `go test ./web/bridge -count=1` | PASS — `ok marshal/web/bridge 116.336s` |
+| `go test ./web/bridge -run '^TestWebIsStdlibOnly$' -count=1` | PASS — `ok marshal/web/bridge 0.187s` |
+| `gofmt -l web/bridge` | no output |
+| `go vet ./web/bridge/...` | no output, exit 0 |
+| `CGO_ENABLED=1 go build ./...` | exit 0 |
+| `CGO_ENABLED=1 go test -p=1 ./... -count=1 -timeout 20m` | PASS — 122 `ok`, 5 `[no test files]`, 0 `FAIL`, exit 0; `marshal/internal/acp` `ok 23.770s` |
+
+No gate was red, so there is no baseline failure to report and no defect to
+hand back. The whole-repository suite passed in full, including the
+`internal/acp` timing-budget tests and
+`TestACPSendNowCancelsPromptRPCWithoutCancelingTurn`; this branch does not touch
+`internal/acp`, so a future flake there is unrelated to this slice.
+
+The acceptance matrix above maps each specification criterion to the test that
+now enforces it; every one of those tests passes. The specification's
+[implementation record](../project-factory-defaults-spec.md#implementation-record)
+carries the same task table and names the §8 questions that stay open.

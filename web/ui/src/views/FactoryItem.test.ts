@@ -53,7 +53,7 @@ it('requires an explicit replacement plan and retry grant', async () => {
   render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
   await screen.findByText('Allowance spent')
   expect(screen.getByText(/5 rounds used · 5 granted total/)).toBeTruthy()
-  await fireEvent.click(screen.getByLabelText('Change approved plan, routes or reviewer instructions'))
+  await fireEvent.click(screen.getByLabelText('Change approved plan or reviewer instructions'))
   expect(screen.getByLabelText('Replacement plan')).toBeTruthy()
   expect((screen.getByRole('button', { name: 'Grant rounds and retry' }) as HTMLButtonElement).disabled).toBe(true)
 })
@@ -66,7 +66,7 @@ it('sends route changes in the replacement approval config', async () => {
   render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
   await screen.findByText('Try again')
   await fireEvent.input(screen.getByLabelText('Reason'), { target: { value: 'Change route' } })
-  await fireEvent.click(screen.getByLabelText('Change approved plan, routes or reviewer instructions'))
+  await fireEvent.click(screen.getByLabelText('Change approved plan or reviewer instructions'))
   expect((screen.getByLabelText('Replacement plan') as HTMLTextAreaElement).value).toBe('Approved plan')
   await fireEvent.input(screen.getByLabelText('New implementer profile (optional)'), { target: { value: 'new-impl' } })
   await fireEvent.input(screen.getByLabelText('New reviewer profile (optional)'), { target: { value: 'new-review' } })
@@ -80,6 +80,56 @@ it('sends route changes in the replacement approval config', async () => {
   expect(cmd?.implementerRouting).toBeUndefined()
   expect(cmd?.reviewerRouting).toBeUndefined()
   expect(cmd?.replacement?.requestId).toBeTruthy()
+})
+it('sends a route-only retry without the plan-replacement checkbox', async () => {
+  const { fireEvent } = await import('@testing-library/svelte')
+  const item = { ...base, state: 'needs_input', decision: { id: 'd', kind: 'exhausted', question: 'Try again' },
+    approvals: [{ plan: 'Approved plan', spec: 'Approved spec', config: { ...base.draft.config, implementerRouting: { profile: 'old' }, reviewerRouting: { profile: 'old-review' } } }] } as unknown as Item
+  vi.mocked(api.getFactoryItem).mockResolvedValue(item)
+  vi.mocked(api.commandFactoryItem).mockResolvedValue(item)
+  render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
+  await screen.findByText('Try again')
+  await fireEvent.input(screen.getByLabelText('Reason'), { target: { value: 'Change route' } })
+  await fireEvent.input(screen.getByLabelText('New implementer profile (optional)'), { target: { value: 'new-impl' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Grant rounds and retry' }))
+  const cmd = vi.mocked(api.commandFactoryItem).mock.calls.at(-1)?.[1]
+  expect(cmd).toMatchObject({ kind: 'retry', implementerRouting: { profile: 'new-impl' } })
+  expect(cmd?.reviewerRouting).toBeUndefined()
+  expect(cmd?.replacement).toBeUndefined()
+})
+it('sends both routes in a route-only retry', async () => {
+  const { fireEvent } = await import('@testing-library/svelte')
+  const item = { ...base, state: 'needs_input', decision: { id: 'd', kind: 'exhausted', question: 'Try again' },
+    approvals: [{ plan: 'Approved plan', spec: 'Approved spec', config: { ...base.draft.config, implementerRouting: { profile: 'old' }, reviewerRouting: { profile: 'old-review' } } }] } as unknown as Item
+  vi.mocked(api.getFactoryItem).mockResolvedValue(item)
+  vi.mocked(api.commandFactoryItem).mockResolvedValue(item)
+  render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
+  await screen.findByText('Try again')
+  await fireEvent.input(screen.getByLabelText('Reason'), { target: { value: 'Change both routes' } })
+  await fireEvent.input(screen.getByLabelText('New implementer profile (optional)'), { target: { value: 'new-impl' } })
+  await fireEvent.input(screen.getByLabelText('New reviewer profile (optional)'), { target: { value: 'new-review' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Grant rounds and retry' }))
+  const cmd = vi.mocked(api.commandFactoryItem).mock.calls.at(-1)?.[1]
+  expect(cmd).toMatchObject({ kind: 'retry', implementerRouting: { profile: 'new-impl' }, reviewerRouting: { profile: 'new-review' } })
+  expect(cmd?.replacement).toBeUndefined()
+})
+it('shows the routes currently in force and leaves the new-route inputs empty', async () => {
+  const item = { ...base, state: 'needs_input', decision: { id: 'd', kind: 'exhausted', question: 'Try again' },
+    approvals: [{ plan: 'Approved plan', spec: 'Approved spec', config: { ...base.draft.config, implementerRouting: { profile: 'frontier' }, reviewerRouting: { profile: 'cheap-review' } } }] } as unknown as Item
+  vi.mocked(api.getFactoryItem).mockResolvedValue(item)
+  render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
+  await screen.findByText('Try again')
+  expect(screen.getByText('Routes in force: implementer frontier · reviewer cheap-review')).toBeTruthy()
+  expect((screen.getByLabelText('New implementer profile (optional)') as HTMLInputElement).value).toBe('')
+  expect((screen.getByLabelText('New reviewer profile (optional)') as HTMLInputElement).value).toBe('')
+})
+it('states that a route-only retry starts a fresh round', async () => {
+  const item = { ...base, state: 'needs_input', decision: { id: 'd', kind: 'exhausted', question: 'Try again' },
+    approvals: [{ plan: 'Approved plan', spec: 'Approved spec', config: { ...base.draft.config, implementerRouting: { profile: 'old' }, reviewerRouting: { profile: 'old-review' } } }] } as unknown as Item
+  vi.mocked(api.getFactoryItem).mockResolvedValue(item)
+  render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
+  await screen.findByText('Try again')
+  expect(screen.getByText("A route-only retry starts a fresh round. The interrupted round's review is not reused, and one granted round is spent.")).toBeTruthy()
 })
 it('requires exact last agent ID before recovery attestation', async () => {
   const { fireEvent } = await import('@testing-library/svelte')

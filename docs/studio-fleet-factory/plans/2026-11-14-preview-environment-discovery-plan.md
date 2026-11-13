@@ -48,7 +48,7 @@ differences, and each names the code it builds on.
 
 1. **A third forge interface, not a widening.** The preview read is a new
    optional interface `PreviewForge`, declared in the new
-   `web/bridge/preview_forge.go`, with the three methods the specification D4
+   `web/bridge/preview_environment_forge.go`, with the three methods the specification D4
    gives it: `Environments`, `Deployments` and `DeploymentStatuses`. `Forge`
    (`web/bridge/forge.go:96`) and `DiscoveryForge`
    (`web/bridge/discovery_forge.go:29`) are **not** touched. A repository
@@ -57,7 +57,7 @@ differences, and each names the code it builds on.
 
 2. **`PreviewForgeFor(repo, client)` mirrors `DiscoveryForgeFor`.** It lives
    beside `DiscoveryForgeFor` (`web/bridge/discovery_forge.go:50`) in
-   `web/bridge/preview_forge.go`, returns `&previewGitHubForge{client: client}`
+   `web/bridge/preview_environment_forge.go`, returns `&previewGitHubForge{client: client}`
    for `repo.Forge == "github"` and `&previewGiteaForge{client: client}` for
    `"gitea"` (which also serves Forgejo), and returns an error wrapping
    `errDiscoveryUnsupported` for anything else. A nil client falls back to
@@ -77,7 +77,7 @@ differences, and each names the code it builds on.
 
 4. **The four wire types are new and live in one file.** `PreviewFilter`,
    `PreviewEnvironment`, `PreviewDeployment` and `PreviewDeploymentStatus` are
-   declared in `web/bridge/preview.go` beside the report types, and their JSON
+   declared in `web/bridge/preview_environment.go` beside the report types, and their JSON
    tags are exactly the field names in the specification §6.4. No discovery
    type is reused for a preview value, and no discovery type is modified.
 
@@ -134,7 +134,7 @@ differences, and each names the code it builds on.
    is the remedy here, so the preview surface gets its own
    `previewFix(state DiscoveryCapabilityState, forgeDeclared bool) string` and
    `previewGapDetail(detail string, state DiscoveryCapabilityState, forgeDeclared bool) string`
-   in `web/bridge/preview.go`, with the four texts the specification D19
+   in `web/bridge/preview_environment.go`, with the four texts the specification D19
    fixes. Its `unsupported` text names the **instance** not exposing the
    resource and never says "adapter support would be needed" (D20). The gap
    shape is the reused `DiscoveryGap`: `Key`, `Section`, `State`, `Detail`.
@@ -162,7 +162,7 @@ differences, and each names the code it builds on.
    **per environment**, not to the newest 20 deployments: a branch with 40
    environments yields one row per environment, capped at the 20 newest
    environments, rather than 20 rows that might all belong to one environment.
-   The 20 is a new named constant in `web/bridge/preview.go`,
+   The 20 is a new named constant in `web/bridge/preview_environment.go`,
    `previewNamedDeploymentLimit`.
 
 10. **Ordering is by the provider's own id, descending** (D14). Deployment
@@ -249,7 +249,7 @@ differences, and each names the code it builds on.
     construction. No credential value is ever copied into a report field.
 
 22. **The route is a `GET`**, registered by a new `previewRoutes()` method in
-    `web/bridge/preview_http.go`, called by **exactly one** added line in
+    `web/bridge/preview_environment_http.go`, called by **exactly one** added line in
     `web/bridge/http.go` next to the existing `s.discoveryRoutes()` call
     (`web/bridge/http.go:254`). The bearer wrapper is inherited: every `/api`
     route is wrapped when the server has a token (`web/bridge/http.go:90`). The
@@ -273,6 +273,34 @@ differences, and each names the code it builds on.
     reaches it the way the discovery route test does
     (`web/bridge/discovery_http_test.go:238`–`270`): by seeding a workspace
     record whose map key exists but whose `Repo.ID` field is empty.
+
+25. **Every file in this slice is named `preview_environment*.go`.** The plan's
+    first draft named `web/bridge/preview.go` and
+    `web/bridge/preview_test.go`, but **both already exist** at this base
+    commit and hold the unrelated, already-shipped **web-studio live preview
+    proxy** — `previewToken`, `previewStore`, `IssuePreview`,
+    `PreviewHandler`, and about 28 `TestPreview*` tests. The slice's files are
+    therefore named `preview_environment.go`, `preview_environment_test.go`,
+    `preview_environment_forge.go`,
+    `preview_environment_forge_github.go`,
+    `preview_environment_forge_gitea.go`,
+    `preview_environment_forge_test.go`,
+    `preview_environment_report.go`,
+    `preview_environment_report_test.go`,
+    `preview_environment_http.go` and
+    `preview_environment_http_test.go`. The existing `preview.go` and
+    `preview_test.go` are **not** modified by this slice.
+
+    No symbol collides: none of `PreviewReport`, `PreviewFilter`,
+    `PreviewEnvironment`, `PreviewDeployment`, `PreviewDeploymentStatus`,
+    `previewCapabilityOrder`, `previewCapabilityKeys`, `previewFix`,
+    `previewGapDetail`, `previewNamedDeploymentLimit` or the `previewSection*`
+    constants exists in the package today, and none of this slice's test names
+    collides with the live-preview tests. Because the live-preview tests also
+    begin with `TestPreview`, this slice's run gates **name this slice's own
+    tests explicitly** instead of matching the bare `^TestPreview` prefix, so a
+    gate failure means this slice failed and never that an unrelated feature
+    broke.
 
 ## HTTP and JSON contract
 
@@ -388,34 +416,34 @@ contract and are not redefined.
 
 | File | Task | Contents |
 |---|---|---|
-| `web/bridge/preview.go` | 1 | The report type, the four wire types, the frozen key list, `previewFix`, `previewGapDetail`, the section and limit constants |
-| `web/bridge/preview_test.go` | 1 | The contract tests: frozen key order, fix texts, gap detail, JSON shape |
-| `web/bridge/preview_forge.go` | 2 | The `PreviewForge` interface and `PreviewForgeFor` |
-| `web/bridge/preview_forge_github.go` | 2 | The GitHub adapter |
-| `web/bridge/preview_forge_gitea.go` | 2 | The Gitea/Forgejo adapter |
-| `web/bridge/preview_forge_test.go` | 2 | The adapter tests against `httptest` loopback servers |
-| `web/bridge/preview_report.go` | 3 | The assembler: read order, scope resolution, the bounds pipeline, classification, gap writing |
-| `web/bridge/preview_report_test.go` | 3 | The report tests: every failure, bound and edge case |
-| `web/bridge/preview_http.go` | 4 | `previewRoutes()` and the handler |
-| `web/bridge/preview_http_test.go` | 4 | The route tests |
+| `web/bridge/preview_environment.go` | 1 | The report type, the four wire types, the frozen key list, `previewFix`, `previewGapDetail`, the section and limit constants |
+| `web/bridge/preview_environment_test.go` | 1 | The contract tests: frozen key order, fix texts, gap detail, JSON shape |
+| `web/bridge/preview_environment_forge.go` | 2 | The `PreviewForge` interface and `PreviewForgeFor` |
+| `web/bridge/preview_environment_forge_github.go` | 2 | The GitHub adapter |
+| `web/bridge/preview_environment_forge_gitea.go` | 2 | The Gitea/Forgejo adapter |
+| `web/bridge/preview_environment_forge_test.go` | 2 | The adapter tests against `httptest` loopback servers |
+| `web/bridge/preview_environment_report.go` | 3 | The assembler: read order, scope resolution, the bounds pipeline, classification, gap writing |
+| `web/bridge/preview_environment_report_test.go` | 3 | The report tests: every failure, bound and edge case |
+| `web/bridge/preview_environment_http.go` | 4 | `previewRoutes()` and the handler |
+| `web/bridge/preview_environment_http_test.go` | 4 | The route tests |
 | `web/bridge/http.go` | 4 | **One** added route-registration line |
 | `docs/studio-fleet-factory/preview-environment-discovery-spec.md` | 5 | The implementation record and the branch review record |
 | `docs/studio-fleet-factory/README.md` | 5 | The active-specification entry |
 
 No task edits `discovery.go`, `discovery_forge.go`, `discovery_forge_github.go`,
 `discovery_forge_gitea.go`, `discovery_report.go`, `discovery_checkout.go`,
-`discovery_http.go` or `forge.go`.
+`discovery_http.go`, `forge.go`, `preview.go` or `preview_test.go`.
 
 ## Task 1: Freeze the preview report contract and its own fix rules
 
-**Files:** create `web/bridge/preview.go` and `web/bridge/preview_test.go`.
+**Files:** create `web/bridge/preview_environment.go` and `web/bridge/preview_environment_test.go`.
 
 - [ ] Write `TestPreviewCapabilityOrderIsStable`: the three keys are
   `preview_environments`, `preview_deployments`, `preview_statuses`, in that
   order, and the accessor hands back a copy so a caller cannot reorder the
   contract for everyone else. Assert the discovery report's own key list is
   untouched by this slice.
-- [ ] Write `TestPreviewReportJSONUsesStableShape`: the report marshals with
+- [ ] Write `TestPreviewContractJSONUsesStableShape`: the report marshals with
   the field names of the HTTP and JSON contract above; every array is present
   and `[]`, never `null`; `error` is omitted unless `status` is
   `unavailable`.
@@ -425,23 +453,23 @@ No task edits `discovery.go`, `discovery_forge.go`, `discovery_forge_github.go`,
 - [ ] Write `TestPreviewGapDetailJoinsCauseAndFix`: a gap's detail is the
   cause and the fix, and the fix is not duplicated when the cause already
   contains it.
-- [ ] Run `go test ./web/bridge -run '^TestPreview' -count=1`; confirm
+- [ ] Run `go test ./web/bridge -run '^(TestPreviewCapabilityOrderIsStable|TestPreviewContractJSONUsesStableShape|TestPreviewFixRulesMatchTheContract|TestPreviewGapDetailJoinsCauseAndFix)$' -count=1`; confirm
   failure.
-- [ ] Implement `web/bridge/preview.go`: the `PreviewReport` type, the four
+- [ ] Implement `web/bridge/preview_environment.go`: the `PreviewReport` type, the four
   wire types with the JSON tags of the specification §6.4, the frozen
   `previewCapabilityOrder` with `previewCapabilityKeys()` returning a copy,
   `previewFix(state, forgeDeclared)`, `previewGapDetail(detail, state,
   forgeDeclared)`, and the named constants `previewNamedDeploymentLimit` (20)
   and the three section names. Reuse `DiscoveryCapability`, `DiscoveryGap` and
   `DiscoveryCapabilityState` unchanged.
-- [ ] Run `go test ./web/bridge -run '^TestPreview' -count=1`; require PASS.
+- [ ] Run `go test ./web/bridge -run '^(TestPreviewCapabilityOrderIsStable|TestPreviewContractJSONUsesStableShape|TestPreviewFixRulesMatchTheContract|TestPreviewGapDetailJoinsCauseAndFix)$' -count=1`; require PASS.
 - [ ] Commit only this task: `feat(preview): freeze the preview report contract`.
 
 ## Task 2: Add the read-only preview forge adapters
 
-**Files:** create `web/bridge/preview_forge.go`,
-`web/bridge/preview_forge_github.go`, `web/bridge/preview_forge_gitea.go` and
-`web/bridge/preview_forge_test.go`.
+**Files:** create `web/bridge/preview_environment_forge.go`,
+`web/bridge/preview_environment_forge_github.go`, `web/bridge/preview_environment_forge_gitea.go` and
+`web/bridge/preview_environment_forge_test.go`.
 
 - [ ] Write `TestPreviewForgeGitHubReadsEnvironments`: the adapter issues
   `GET /repos/{owner}/{repo}/environments`, decodes the **object** shape
@@ -499,8 +527,8 @@ No task edits `discovery.go`, `discovery_forge.go`, `discovery_forge_github.go`,
 
 ## Task 3: Assemble the preview environment report
 
-**Files:** create `web/bridge/preview_report.go` and
-`web/bridge/preview_report_test.go`.
+**Files:** create `web/bridge/preview_environment_report.go` and
+`web/bridge/preview_environment_report_test.go`.
 
 - [ ] Write `TestPreviewReportGitOnlyMakesNoRequest`: with no declared
   forge, assert **no** request is made, all three capabilities are
@@ -579,7 +607,7 @@ No task edits `discovery.go`, `discovery_forge.go`, `discovery_forge_github.go`,
 - [ ] Run
   `go test ./web/bridge -run '^TestPreviewReport' -count=1`; confirm
   failure.
-- [ ] Implement `web/bridge/preview_report.go`: the read order of decision
+- [ ] Implement `web/bridge/preview_environment_report.go`: the read order of decision
   5, the scope resolution of decision 8, the bounds pipeline of decision 9,
   the classification of decision 6, the fix and gap text of decision 7, the
   severity fold of decision 14, and the always-present arrays of decision 19.
@@ -592,8 +620,8 @@ No task edits `discovery.go`, `discovery_forge.go`, `discovery_forge_github.go`,
 
 ## Task 4: Expose the authenticated preview-environments route
 
-**Files:** create `web/bridge/preview_http.go` and
-`web/bridge/preview_http_test.go`; modify `web/bridge/http.go` by adding one
+**Files:** create `web/bridge/preview_environment_http.go` and
+`web/bridge/preview_environment_http_test.go`; modify `web/bridge/http.go` by adding one
 route-registration line.
 
 - [ ] Write `TestPreviewRouteReturnsTheReport`: GET returns 200, a JSON
@@ -638,7 +666,7 @@ route-registration line.
 - [ ] Run `go vet ./web/bridge/...`; require exit 0.
 - [ ] Run `gofmt -l web/bridge`; require no output.
 - [ ] Run `go test ./web/bridge -count=1`; require PASS.
-- [ ] Run `go test ./web/bridge -run '^(TestPreview|TestPreviewForge|TestPreviewReport|TestPreviewRoute|TestWebIsStdlibOnly)' -count=1`;
+- [ ] Run `go test ./web/bridge -run '(^(TestPreviewCapabilityOrderIsStable|TestPreviewContractJSONUsesStableShape|TestPreviewFixRulesMatchTheContract|TestPreviewGapDetailJoinsCauseAndFix)$|TestPreviewForge|TestPreviewReport|TestPreviewRoute|TestWebIsStdlibOnly)$' -count=1`;
   require PASS.
 - [ ] Fill the specification's **Implementation record** with the commits and
   the acceptance gates, and its **Branch review record** with the
@@ -690,7 +718,9 @@ when the slice lands.
 
 - [x] Every file path and symbol named in this plan exists in the tree, or
       is created by a task here. The `web/bridge/` anchors were checked
-      against the worktree at `f8e6e2f7`.
+      against the worktree at `f8e6e2f7`, and the file-name claim was
+      re-checked against `caa8f64c` — which is how the live-preview collision
+      behind decision 25 was found.
 - [x] Every acceptance criterion in the specification §9 maps to a named
       test in the matrix above.
 - [x] The specification's decisions D1–D23 are each reflected in the
@@ -721,6 +751,7 @@ findings were raised; all five are resolved.
 | Important | The Gitea/Forgejo `404` acceptance criterion mapped to tests that do not prove it: one asserted only the auth header and API base, the other was a GitHub-shaped `404` on one resource | Task 3 now writes `TestPreviewReportGiteaInstanceAnswering404IsUnsupported`, which points a Gitea `apiBase` at an `httptest` server answering `404` on the three preview paths and asserts that **all three** capabilities are `unsupported` with the D20 wording, that the report does not claim the repository has no previews, and that the status is `degraded`. The acceptance matrix points at it |
 | Minor | The reuse list sent the implementer into a classification trap: `discoveryCredential` returns plain `errors.New` values, and the shared classifier maps a plain error to `temporarily_unavailable`, contradicting the specification D15 row | Decision 5 step 2 now states that the credential failure is degraded to `unconfigured` across all three keys **before** any classification call, exactly as `probeForge` does (`web/bridge/discovery_report.go:272`–`277`), and explains why it cannot go through the classifier |
 | Minor | The Gitea adapter's request paths were never named, so the adapter was not fully specified | Task 2 now names the three paths — `/repos/{owner}/{repo}/environments`, `/repos/{owner}/{repo}/deployments` and `/repos/{owner}/{repo}/deployments/{id}/statuses` — the natural mirror of the GitHub paths under the instance's versioned API root, and notes that the instance answers `404` |
+| Minor | The plan's file map named `web/bridge/preview.go` and `web/bridge/preview_test.go`, which already exist at the base commit holding the unrelated, shipped web-studio live preview proxy | Found by the implementer before it wrote any code, not by the reviewer. Decision 25 renames every file in this slice to `preview_environment*.go`, keeps every type, helper, constant and test name the plan fixes, and narrows the run gates to this slice's own test names so the live-preview tests cannot mask a failure here. The existing files are not modified |
 | Minor | A non-numeric deployment id was under-defined: it did not say how it competes within its environment group, nor whether "ordered after the numeric ones" applies before or after the keep-first-20 cut | Decision 10 now says a non-numeric id **loses to any numeric id within its environment group**, so it survives grouping only as the sole member of that group; it is ordered after every numeric survivor and before the keep-first-20 cut, and its status is not read |
 
 The reviewer confirmed that every anchor, helper signature and claimed

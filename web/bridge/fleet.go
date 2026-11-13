@@ -424,12 +424,14 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		wsExtras:      make(map[string]wsExtras),
 		recipes:       NewRecipeStore(stateDir),
 	}
-	if f.done != nil {
-		go f.runInbox()
-	}
 	f.pools = newPoolManager(f)
 	f.notify = newNotifier(f)
 	f.budgets = newBudgetState(f)
+	// The inbox loop starts once the fleet is fully built: its first
+	// recompute emits a delta, which goes through the notifier.
+	if f.done != nil {
+		go f.runInbox()
+	}
 	// Remote sources need git and (later) credentials. Absent git is not
 	// fatal at startup: local-path spawns still work, and a git-sourced
 	// spawn reports a clear error via Spawn.

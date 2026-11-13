@@ -1,5 +1,5 @@
 import { ensureToken, getToken, rejectToken } from './api.js'
-import type { FleetDelta, FleetEvent, ProjectRemovedDelta, RunDelta, ToolStat } from './fleet'
+import type { FleetDelta, FleetEvent, InboxDelta, ProjectRemovedDelta, RunDelta, ToolStat } from './fleet'
 import type { RunDetail } from './api.js'
 
 export interface SSEMessage {
@@ -293,6 +293,25 @@ function parseReroute(value: Record<string, unknown>): FleetEvent | null {
   return { kind: 'reroute', id, watch: str(src.watch) ?? str(src.watchId) ?? '', role, from, to }
 }
 
+/** The inbox groups: all four lists are arrays, or the value is not a group table. */
+function isInboxGroups(v: unknown): boolean {
+  if (!v || typeof v !== 'object') return false
+  const g = v as Record<string, unknown>
+  return Array.isArray(g.needsYou) && Array.isArray(g.running) && Array.isArray(g.ready) && Array.isArray(g.earlier)
+}
+
+/** The inbox delta is the bridge's whole inbox and the store adopts it as is:
+ *  the sidebar counts `groups.needsYou` and Home dereferences `inbox.groups.*`,
+ *  so a frame missing the group table or the queue is dropped and the browser
+ *  keeps its last good inbox rather than rendering a broken one. */
+function parseInbox(value: Record<string, unknown>): InboxDelta | null {
+  const inbox = value.inbox
+  if (!inbox || typeof inbox !== 'object') return null
+  const i = inbox as Record<string, unknown>
+  if (!isInboxGroups(i.groups) || !Array.isArray(i.queue)) return null
+  return value as unknown as InboxDelta
+}
+
 /** A budget delta is nested under `budget` on the wire; the flat spec shape is accepted too. */
 function parseBudget(value: Record<string, unknown>): FleetEvent | null {
   const src = (value.budget && typeof value.budget === 'object' ? value.budget : value) as Record<string, unknown>
@@ -317,7 +336,7 @@ export function parseFleetEvent(data: string): FleetEvent | 'overflow' | null {
     if (value.kind === 'reroute') return parseReroute(value)
     if (value.kind === 'watch') return value as unknown as FleetEvent
     // The inbox is the bridge's whole fleet inbox, sent as one delta; it names no session.
-    if (value.kind === 'inbox') return value as unknown as FleetEvent
+    if (value.kind === 'inbox') return parseInbox(value)
     // Automation and network-block events may name no session.
     if (value.kind === 'automation' || value.kind === 'network_block') return value as unknown as FleetEvent
     // The bridge may address a run delta as agentId; rows are keyed by sessionId.

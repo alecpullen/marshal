@@ -1033,6 +1033,23 @@ Not driven, and why:
   was not checked. A browser is not available here, so only the values the
   bridge served and streamed were checked.
 
+**The branch review.** Three `glm-5.3-flash` reviewers read the branch in
+disjoint slices — the bridge's rules, route and loop, the contract and the
+wire, and the web UI with the docs. The contract and wire slice found
+nothing: the inbox's types match the plan's declarations, the bridge's names
+are true aliases of them, the four new recordings are deterministic, and not
+one of plan 1's recordings changed. The other two slices each found one
+thing, and both are fixed here.
+- `NewFleet` started the inbox loop before the notifier was assigned, so a
+  scheduler stall between the two statements would have had the loop's first
+  delta reach a nil notifier. The loop starts once the fleet is built.
+- The SSE parser passed the inbox delta through unchecked, where every other
+  kind with an untyped payload is validated first. A drifted frame — one with
+  no inbox, a group table missing a list, or no queue — would have been
+  stored and blanked the sidebar or Home on the next render. The inbox is
+  validated like its siblings now, and a malformed frame is dropped, so the
+  browser keeps the last good inbox.
+
 **Verification.**
 
 | Command | Result |
@@ -1041,10 +1058,10 @@ Not driven, and why:
 | `go vet ./...` | Clean. |
 | `GOOS=linux go vet ./web/...` | Clean. |
 | `GOOS=windows go vet ./web/bridge/...` | Clean. |
-| `TMPDIR=/private/tmp/p5-2-suite go test ./... -timeout 20m` | `marshal/internal/acp` failed four timing-budget tests: `TestNoteCallBudget`, `TestStackBusyFlipBudget`, `TestStackPatchApplyBudget` and `TestStackRoundTripBudget`. All four are load-sensitive budget tests the repo already records: plan 1's header names `TestNoteCallBudget` and `TestStackRoundTripBudget` as the base's two, and `docs/bootstrap-factory/acceptance.md` records `TestStackBusyFlipBudget` and `TestStackPatchApplyBudget` as the same family. Each skips under `-short` and the race detector and holds a wall-clock budget, and this branch touches none of them: `git diff main..HEAD -- internal/acp` is empty. Rerun alone: `TestNoteCallBudget`, `TestStackBusyFlipBudget` and `TestStackPatchApplyBudget` passed; `TestStackRoundTripBudget`, a median of samples against 50ms, failed 2 of 3 runs alone on this loaded machine and passed once. No other package failed; `web/bridge` passed in 191.9s. |
-| `TMPDIR=/private/tmp/p5-2-suite go test -race ./web/bridge/ -run 'Inbox\|Fleet' -count=1` | `ok marshal/web/bridge 6.630s`. |
+| `TMPDIR=/private/tmp/p5-2-suite go test ./... -timeout 20m` | One run, before the branch review's fixups, had `marshal/internal/acp` fail four timing-budget tests: `TestNoteCallBudget`, `TestStackBusyFlipBudget`, `TestStackPatchApplyBudget` and `TestStackRoundTripBudget`. All four are load-sensitive budget tests the repo already records: plan 1's header names `TestNoteCallBudget` and `TestStackRoundTripBudget` as the base's two, and `docs/bootstrap-factory/acceptance.md` records `TestStackBusyFlipBudget` and `TestStackPatchApplyBudget` as the same family. Each skips under `-short` and the race detector and holds a wall-clock budget, and this branch touches none of them: `git diff main..HEAD -- internal/acp` is empty. Rerun alone, the first three passed; `TestStackRoundTripBudget`, a median of samples against 50ms, failed 2 of 3 runs alone on the loaded machine and passed once. A controller rerun of the full suite on the final tree was clean — no package failed — and `web/bridge` passed in 132.1s. |
+| `TMPDIR=/private/tmp/p5-2-suite go test -race ./web/bridge/ -run 'Inbox\|Fleet' -count=1` | `ok marshal/web/bridge 6.591s`. |
 | `web/ui: npm run check` | 6 errors in the six baseline files — `src/lib/fleet.test.ts`, `src/lib/Sidebar.test.ts`, `src/views/Review.test.ts`, `src/views/Runs.test.ts`, `src/views/Chat.svelte` and `src/views/Run.svelte` — plus 1 warning. The count is the base's and no error appears in another file; exit 1 is the gate, not a regression. |
-| `web/ui: npm test` | 88 files / 940 tests passed. |
-| `web/ui: npm run build` | Built in 3.80s; `git status` shows no change under `web/bridge/static/`. |
+| `web/ui: npm test` | 88 files / 943 tests passed. |
+| `web/ui: npm run build` | Built; `web/bridge/static/` is the committed build. |
 | `CGO_ENABLED=1 go build -o marshal ./cmd/marshal` | Built (git-ignored via `.gitignore`'s `/marshal`). |
 | `TMPDIR=/private/tmp/p5-2-suite go test ./test/usability/... -run TestScripted -timeout 5m` | Passed (`marshal/test/usability` ok, 45.3s). |

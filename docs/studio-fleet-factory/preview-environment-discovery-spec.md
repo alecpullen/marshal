@@ -769,8 +769,44 @@ These need the user, or a later slice, not an implementer's judgement.
 
 ## Implementation record
 
-Not yet implemented. This section names the commits and the acceptance gates
-when the slice lands.
+Delivered on branch `studio/preview-environment-discovery-implementation` as
+Tasks 1–4 of the
+[plan](plans/2026-11-14-preview-environment-discovery-plan.md), test-first,
+with one commit per task, followed by two commits that close the gaps the
+implementation review found.
+
+| Task | Deliverable | Commit |
+|---|---|---|
+| 1 | Frozen contract: the report type, the four wire types, the three ordered capability keys, and this surface's own fix and gap rules | `c21f16f2` |
+| 2 | Read-only GitHub and Gitea/Forgejo preview adapters behind an optional `PreviewForge` interface | `2631d70b` |
+| 3 | The report assembler: the fixed read order, scope resolution, the bounds pipeline, classification and gap writing | `960e0498` |
+| 4 | The authenticated `GET /api/repos/{id}/preview-environments` route | `22dfbf33` |
+| — | Bound-gap completion: a truncated read of a deployment's statuses records the gap the contract fixes | `1ab68d88` |
+| — | Review fixes: the gaps name what happened, and three untested branches are covered | `6d970434` |
+| 5 | Specification, README and plan outcome record | this documentation commit |
+
+Files: `web/bridge/preview_environment.go`, `preview_environment_forge.go`,
+`preview_environment_forge_github.go`, `preview_environment_forge_gitea.go`,
+`preview_environment_report.go`, `preview_environment_http.go`, their tests, and
+one route-registration line in `web/bridge/http.go`. All new code is standard
+library only; `web/ui/` is untouched, and neither the `Forge` interface nor the
+`DiscoveryForge` interface is widened. The unrelated shipped live-preview proxy
+in `web/bridge/preview.go` is not touched.
+
+Acceptance gates, run from the repository root on this branch:
+
+| Gate | Result |
+|---|---|
+| `go test ./web/bridge -run '^(TestPreviewCapabilityOrderIsStable\|TestPreviewContractJSONUsesStableShape\|TestPreviewFixRulesMatchTheContract\|TestPreviewGapDetailJoinsCauseAndFix\|TestPreviewForge\|TestPreviewReport\|TestPreviewRoute\|TestWebIsStdlibOnly\|TestDiscoveryCapabilityOrderIsStable)$' -count=1` | PASS — `ok marshal/web/bridge 0.596s` |
+| `go test ./web/bridge -count=1` | PASS — `ok marshal/web/bridge 128.309s` |
+| `gofmt -l web/bridge` | no output |
+| `go vet ./web/bridge/...` | no output, exit 0 |
+| `CGO_ENABLED=1 go build ./...` | exit 0 |
+
+The forge reads are exercised only against `httptest` loopback servers, and no
+test reads developer credentials, calls a live forge, or contacts a model
+provider. The whole-repository suite is run by the coordinator separately, not
+by this slice.
 
 ## Branch review record
 
@@ -795,3 +831,30 @@ and the §4 provider claims — the three GitHub endpoints and their response
 shapes, the scope requirements, and the absence of any deployment or
 environment resource in the Gitea and Forgejo API descriptions — check out
 against the providers' own published descriptions.
+
+### Implementation review (PR #68)
+
+The implementation received an independent `glm-5.3-flash` review through
+`ollama-cloud` on 2026-11-13, against the contract above: whether it matches
+the specification's decisions, whether it is correct, whether it is well
+tested, and whether it disturbs anything else. Four findings were raised; all
+four are resolved.
+
+| Severity | Finding | Resolution |
+|---|---|---|
+| Important | Plan Task 5 was not executed: the implementation record and the archive README entry were missing, so nothing in the tree traced the §9 acceptance criteria to a gate | Task 5 is this documentation commit: both implementation records and the README entry name the commits and the acceptance gates |
+| Minor | `preview_statuses` could report "not exercised: no deployment was reported for this scope" when deployments *were* reported but none carried an id the status URL could use, so the detail was false | The two cases now read differently: an empty deployment list keeps the original detail, and a non-empty list whose ids are all unusable reports "not exercised: no deployment carried a usable id" (`6d970434`) |
+| Minor | An unknown forge family degenerated to a near-empty gap cause, `forge "gitlab"`, because the wrapped sentinel was re-classified | The cause is now written explicitly, as the discovery surface's equivalent path does: "forge %q has no read-only preview adapter in this bridge" (`6d970434`) |
+| Minor | Three behaviours the contract fixes carried no test: a status fan-out where one read fails and another is truncated, the name cap and the deployments page bound hitting together, and the non-numeric-id rule | Three fixture-driven tests now cover them: `TestPreviewReportStatusFailureKeepsTheKeyAgainstTheBound`, `TestPreviewReportDeploymentsBoundsTogetherKeepThePageBound` and `TestPreviewReportNonNumericIDLosesWithinItsEnvironment` (`6d970434`) |
+
+The reviewer confirmed that every specification decision D1–D24 and plan
+decision 1–25 is implemented as decided; that the `404`-after-readable-metadata
+(`unsupported`) versus `404`-before (`insufficient_permission`) distinction is
+threaded into every read including the per-deployment status reads; that no
+credential, request header or raw forge error body can reach the report, a gap
+or an error string; that the probe issues only `GET`s, reads no local path and
+writes nothing; that the resource bounds hold (≤5 pages of 100 per
+collection, ≤20 named deployments, ≤20 status reads); and that the diff touches
+exactly the slice's files plus one route-registration line in `http.go`, leaving
+`Forge`, `DiscoveryForge`, the discovery report's ten frozen keys and the
+shipped live-preview proxy untouched.

@@ -708,8 +708,41 @@ route-registration line.
 
 ## Implementation record
 
-Not yet implemented. This section names the commits and the acceptance gates
-when the slice lands.
+Delivered on branch `studio/preview-environment-discovery-implementation` as
+Tasks 1–4, test-first, one commit per task, plus two commits that close the
+gaps the implementation review found.
+
+| Task | Deliverable | Commit |
+|---|---|---|
+| 1 | Frozen contract: the report type, the four wire types, the three ordered capability keys, and this surface's own fix and gap rules | `c21f16f2` |
+| 2 | Read-only GitHub and Gitea/Forgejo preview adapters behind an optional `PreviewForge` interface | `2631d70b` |
+| 3 | The report assembler: the fixed read order, scope resolution, the bounds pipeline, classification and gap writing | `960e0498` |
+| 4 | The authenticated `GET /api/repos/{id}/preview-environments` route | `22dfbf33` |
+| — | Bound-gap completion: a truncated read of a deployment's statuses records the gap the contract fixes | `1ab68d88` |
+| — | Review fixes: the gaps name what happened, and three untested branches are covered | `6d970434` |
+| 5 | Specification, README and plan outcome record | this documentation commit |
+
+Files: `web/bridge/preview_environment.go`, `preview_environment_forge.go`,
+`preview_environment_forge_github.go`, `preview_environment_forge_gitea.go`,
+`preview_environment_report.go`, `preview_environment_http.go`, their tests, and
+one route-registration line in `web/bridge/http.go`. All new code is standard
+library only; `web/ui/` is untouched, and neither the `Forge` interface nor the
+`DiscoveryForge` interface is widened. The unrelated shipped live-preview proxy
+in `web/bridge/preview.go` is not touched.
+
+Acceptance gates, run from the repository root on this branch:
+
+| Gate | Result |
+|---|---|
+| `go test ./web/bridge -run '^(TestPreviewCapabilityOrderIsStable\|TestPreviewContractJSONUsesStableShape\|TestPreviewFixRulesMatchTheContract\|TestPreviewGapDetailJoinsCauseAndFix\|TestPreviewForge\|TestPreviewReport\|TestPreviewRoute\|TestWebIsStdlibOnly\|TestDiscoveryCapabilityOrderIsStable)$' -count=1` | PASS — `ok marshal/web/bridge 0.596s` |
+| `go test ./web/bridge -count=1` | PASS — `ok marshal/web/bridge 128.309s` |
+| `gofmt -l web/bridge` | no output |
+| `go vet ./web/bridge/...` | no output, exit 0 |
+| `CGO_ENABLED=1 go build ./...` | exit 0 |
+
+The forge reads are exercised only against `httptest` loopback servers, and no
+test reads developer credentials, calls a live forge, or contacts a model
+provider.
 
 ## Acceptance matrix
 
@@ -802,3 +835,12 @@ plan, that D6.2's claim that the registered-branch-first order "matches"
 prefers the forge's default branch first. The plan follows the
 specification's own order, so the plan is unaffected; the specification's
 wording is corrected in the same commit as this record.
+
+### Implementation review (PR #68)
+
+The implementation was reviewed independently with `glm-5.3-flash` against
+this plan's decisions and the specification. Four findings were raised, all
+resolved: the missing Task 5 documentation, two gap-detail defects (a false
+"not exercised" detail, and a near-empty cause for an unknown forge family),
+and three untested branches. The resolutions and their commits are recorded in
+the specification's branch review record; the two code fixes are `6d970434`.

@@ -26,6 +26,7 @@ type deliveryHarness struct {
 	seedHead                                  string
 	server                                    *httptest.Server
 	created, draft                            bool
+	description                               string
 	creates, implements, reviews, mutations   int
 	loseKind                                  string
 	cancelTurn, readyRace                     bool
@@ -118,6 +119,16 @@ func (h *deliveryHarness) github(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		fmt.Fprintf(w, `{"data":{"mutation":{"pullRequest":{"id":"node","isDraft":%t}}}}`, h.draft)
+		return
+	}
+	if r.Method == "PATCH" && strings.Contains(r.URL.Path, "/pulls/") {
+		var body struct {
+			Body string `json:"body"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		h.description = body.Body
+		head := gitText(h.t, h.bare, "rev-parse", "refs/heads/marshal/factory/"+h.id)
+		fmt.Fprintf(w, `{"number":1,"html_url":"https://github.com/o/r/pull/1","node_id":"node","state":"open","draft":%t,"head":{"ref":%q,"sha":%q},"base":{"ref":"main","sha":%q}}`, h.draft, "marshal/factory/"+h.id, head, h.base)
 		return
 	}
 	if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/pulls") {
@@ -367,6 +378,9 @@ func TestFactoryEndToEnd(t *testing.T) {
 	}
 	if i.PRs[0].State != "open" || i.PRs[0].Draft {
 		t.Fatal("PR not left ready for human merge")
+	}
+	if !strings.Contains(h.description, "## CI") || !strings.Contains(h.description, "fixture issue") || !strings.Contains(h.description, "fixture approach") {
+		t.Fatalf("published description does not carry the newest narration: %q", h.description)
 	}
 	for _, e := range i.Effects {
 		if e.Status != "completed" {

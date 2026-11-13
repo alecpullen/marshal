@@ -3,7 +3,7 @@ import { render, cleanup, screen } from '@testing-library/svelte'
 import userEvent from '@testing-library/user-event'
 import Sidebar from './Sidebar.svelte'
 import type { AgentRow } from './fleet'
-import type { ProjectStatus } from './api'
+import type { Inbox, PendingSubmission, ProjectStatus } from './api'
 
 afterEach(cleanup)
 
@@ -27,14 +27,34 @@ function agent(id: string, project: string): AgentRow {
   }
 }
 
+const inbox = (o: Partial<Inbox['groups']> = {}, queue: Inbox['queue'] = []): Inbox => ({
+  groups: { needsYou: [], running: [], ready: [], earlier: [], ...o },
+  queue,
+})
+
+const submission = (id: string): PendingSubmission => ({
+  id,
+  auto: null,
+  clientId: 'c1',
+  mode: 'act',
+  origin: 'mcp',
+  plan: '',
+  prompt: '',
+  ref: '',
+  title: id,
+  repoId: 'r',
+  createdAt: '2024-05-04T09:00:00Z',
+  expiresAt: '2024-06-01T00:00:00Z',
+})
+
 function mount(route = '#') {
   const onNavigate = vi.fn()
   render(Sidebar, {
     open: true,
     onToggle: () => {},
     agents: [],
+    inbox: inbox(),
     projects,
-    pendingCount: 0,
     clientCount: 0,
     route,
     activeAgentId: null,
@@ -51,7 +71,8 @@ describe('Sidebar groups', () => {
       { ...agent('done', '/home/u/beta'), changedFiles: 2 },
       agent('old', '/home/u/beta'),
     ]
-    render(Sidebar, { open: true, onToggle: () => {}, agents: rows, projects, pendingCount: 0, clientCount: 0, route: '#', activeAgentId: null, onNavigate: () => {} })
+    const ib = inbox({ needsYou: ['ask'], running: ['busy'], ready: ['done'], earlier: ['old'] })
+    render(Sidebar, { open: true, onToggle: () => {}, agents: rows, inbox: ib, projects, clientCount: 0, route: '#', activeAgentId: null, onNavigate: () => {} })
     for (const label of ['Needs you', 'Running', 'Ready to ship', 'Earlier']) expect(screen.getByText(label)).toBeTruthy()
     expect(screen.getByText('ask')).toBeTruthy()
     expect(screen.getByText('busy')).toBeTruthy()
@@ -61,9 +82,32 @@ describe('Sidebar groups', () => {
     expect(screen.getByText('old')).toBeTruthy()
   })
 
+  it('lists each group in the order the bridge sent', () => {
+    const rows = [agent('first', '/home/u/alpha'), agent('second', '/home/u/alpha')]
+    render(Sidebar, { open: true, onToggle: () => {}, agents: rows, inbox: inbox({ needsYou: ['second', 'first'] }), projects, clientCount: 0, route: '#', activeAgentId: null, onNavigate: () => {} })
+    expect(screen.getAllByText(/^(second|first)$/).map((el) => el.textContent)).toEqual(['second', 'first'])
+  })
+
+  it('skips an ID it has no row for', () => {
+    const rows = [agent('busy', '/home/u/alpha')]
+    render(Sidebar, { open: true, onToggle: () => {}, agents: rows, inbox: inbox({ running: ['busy', 'ghost'] }), projects, clientCount: 0, route: '#', activeAgentId: null, onNavigate: () => {} })
+    expect(screen.getByText('busy')).toBeTruthy()
+    expect(screen.queryByText('ghost')).toBeNull()
+  })
+
+  it('counts the queue’s intake items as Pending', () => {
+    const queue: Inbox['queue'] = [
+      { kind: 'intake', submission: submission('p1'), at: '2024-05-04T09:00:00Z' },
+      { kind: 'agent', agentId: 'busy', at: '2024-05-04T10:00:00Z' },
+    ]
+    render(Sidebar, { open: true, onToggle: () => {}, agents: [agent('busy', '/home/u/alpha')], inbox: inbox({ needsYou: ['busy'] }, queue), projects, clientCount: 0, route: '#', activeAgentId: null, onNavigate: () => {} })
+    const pending = screen.getByRole('button', { name: /^Pending/ })
+    expect(pending.textContent).toContain('1')
+  })
+
   it('navigates to the agent chat', async () => {
     const onNavigate = vi.fn()
-    render(Sidebar, { open: true, onToggle: () => {}, agents: [{ ...agent('busy', '/home/u/alpha'), status: 'running' }], projects, pendingCount: 0, clientCount: 0, route: '#', activeAgentId: null, onNavigate })
+    render(Sidebar, { open: true, onToggle: () => {}, agents: [{ ...agent('busy', '/home/u/alpha'), status: 'running' }], inbox: inbox({ running: ['busy'] }), projects, clientCount: 0, route: '#', activeAgentId: null, onNavigate })
     await userEvent.click(screen.getByText('busy'))
     expect(onNavigate).toHaveBeenCalledWith('#chat/busy')
   })

@@ -102,6 +102,13 @@ describe('parseFleetEvent', () => {
     expect(parseFleetEvent('{"kind":"run","agentId":"a1","run":{"kind":"none"}}')).toMatchObject({ kind: 'run', sessionId: 'a1' })
   })
 
+  it('passes the fleet-wide inbox delta, which carries no session', () => {
+    const event = parseFleetEvent('{"kind":"inbox","inbox":{"groups":{"needsYou":["a1"],"running":[],"ready":[],"earlier":[]},"queue":[]}}')
+    expect(event).not.toBeNull()
+    expect(event).toMatchObject({ kind: 'inbox' })
+    expect((event as { inbox: { groups: { needsYou: string[] } } }).inbox.groups.needsYou).toEqual(['a1'])
+  })
+
   it('accepts a watch delta with no session', () => {
     expect(parseFleetEvent('{"kind":"watch","sessionId":"studio","event":{"State":"fired"}}')).toEqual({ kind: 'watch', sessionId: 'studio', event: { State: 'fired' } })
   })

@@ -6,7 +6,7 @@ import * as api from '../lib/api.js'
 import { toRow, createFleetStore } from '../lib/fleet'
 import { get } from 'svelte/store'
 import { outcomeFor } from '../lib/inbox/decision'
-import type { AgentStatus, PendingSubmission, ProjectStatus } from '../lib/api.js'
+import type { AgentStatus, Inbox, PendingSubmission, ProjectStatus } from '../lib/api.js'
 
 vi.mock('../lib/api.js', async (importActual) => {
   const actual = await importActual<typeof import('../lib/api.js')>()
@@ -43,8 +43,23 @@ const agents = [
 ]
 const intake: PendingSubmission = { id: 'p1', auto: null, clientId: 'c1', mode: 'act', origin: 'mcp', plan: '', prompt: '', ref: '', title: 'Plan X', repoId: 'repo', createdAt: '2024-05-04T09:00:00Z', expiresAt: '2024-06-01T00:00:00Z' }
 
+// The bridge groups the fleet and orders the queue; the browser only filters it.
+const inbox: Inbox = {
+  groups: { needsYou: ['ask'], running: ['run'], ready: ['done'], earlier: [] },
+  queue: [
+    { kind: 'intake', submission: intake, at: '2024-05-04T09:00:00Z' },
+    { kind: 'agent', agentId: 'ask', at: '2024-05-04T10:00:00Z' },
+  ],
+}
+// The same fleet without intake, for the decision cases that count needs-you entries.
+const agentOnlyInbox: Inbox = {
+  groups: inbox.groups,
+  queue: [{ kind: 'agent', agentId: 'ask', at: '2024-05-04T10:00:00Z' }],
+}
+const emptyInbox: Inbox = { groups: { needsYou: [], running: [], ready: [], earlier: [] }, queue: [] }
+
 function mount(onRefreshPending = vi.fn()) {
-  render(Home, { agents, pending: [intake], onRefreshPending, onOpenAgent: () => {}, onNavigate: () => {} })
+  render(Home, { agents, inbox, onRefreshPending, onOpenAgent: () => {}, onNavigate: () => {} })
   return { onRefreshPending }
 }
 
@@ -79,10 +94,21 @@ describe('Home', () => {
     expect(localStorage.getItem('marshal.ui.inbox.scope')).toBe('everyone')
   })
 
+  it('drops another owner’s agents from Mine and shows them under Everyone', async () => {
+    const rows = [...agents, mk({ id: 'theirs', name: 'theirs-agent', status: 'running', ownerId: 'bob' })]
+    const ib: Inbox = { groups: { needsYou: ['ask'], running: ['run', 'theirs'], ready: ['done'], earlier: [] }, queue: inbox.queue }
+    render(Home, { agents: rows, inbox: ib, onRefreshPending: () => {}, onOpenAgent: () => {}, onNavigate: () => {} })
+    expect(screen.getByText(/Running · 1/)).toBeTruthy()
+    expect(screen.queryByText(/theirs-agent/)).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Everyone' }))
+    expect(screen.getByText(/Running · 2/)).toBeTruthy()
+    expect(screen.getByText(/theirs-agent/)).toBeTruthy()
+  })
+
   it('offers Undo on a reroute notice and dismisses it', async () => {
     const onDismissNotice = vi.fn()
     const notices = [{ id: 'r1', watch: 'w', role: 'reviewer', from: 'big', to: 'small' }]
-    render(Home, { agents, pending: [], notices, onDismissNotice, onRefreshPending: () => {}, onOpenAgent: () => {}, onNavigate: () => {} })
+    render(Home, { agents, inbox, notices, onDismissNotice, onRefreshPending: () => {}, onOpenAgent: () => {}, onNavigate: () => {} })
     await userEvent.click(screen.getByRole('button', { name: 'Undo' }))
     expect(api.undoReroute).toHaveBeenCalledWith('r1')
     expect(onDismissNotice).toHaveBeenCalledWith('r1')
@@ -92,7 +118,7 @@ describe('Home', () => {
     ;(api.undoReroute as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new api.APIError(409, { error: 'the reviewer binding changed since' }))
     const onDismissNotice = vi.fn()
     const notices = [{ id: 'r1', watch: 'w', role: 'reviewer', from: 'big', to: 'small' }]
-    render(Home, { agents, pending: [], notices, onDismissNotice, onRefreshPending: () => {}, onOpenAgent: () => {}, onNavigate: () => {} })
+    render(Home, { agents, inbox, notices, onDismissNotice, onRefreshPending: () => {}, onOpenAgent: () => {}, onNavigate: () => {} })
     await userEvent.click(screen.getByRole('button', { name: 'Undo' }))
     expect(await screen.findByText('the reviewer binding changed since')).toBeTruthy()
     expect(onDismissNotice).toHaveBeenCalledWith('r1')
@@ -109,7 +135,7 @@ describe('Home network decisions', () => {
     const onDecide = vi.fn(async (item: { agentId: string; host: string }, d: Parameters<typeof actions.decideNetwork>[2]) => {
       await actions.decideNetwork(item.agentId, item.host, d)
     })
-    render(Home, { agents, pending: [], decisions: get(state).decisions, onDecide, onRefreshPending: () => {}, onOpenAgent: () => {}, onNavigate: () => {} })
+    render(Home, { agents, inbox: agentOnlyInbox, decisions: get(state).decisions, onDecide, onRefreshPending: () => {}, onOpenAgent: () => {}, onNavigate: () => {} })
     return { state, onDecide }
   }
 
@@ -158,7 +184,7 @@ describe('Home stale decisions', () => {
       { agentId: 'run', host: 'live.example', at: 1 },
       { agentId: 'removed', host: 'ghost.example', at: 2 },
     ]
-    render(Home, { agents, pending: [], decisions, onDecide: async () => {}, onRefreshPending: () => {}, onOpenAgent: () => {}, onNavigate: () => {} })
+    render(Home, { agents, inbox, decisions, onDecide: async () => {}, onRefreshPending: () => {}, onOpenAgent: () => {}, onNavigate: () => {} })
     expect(screen.getAllByTestId('network-decision')).toHaveLength(1)
     expect(screen.queryByText(/ghost\.example/)).toBeNull()
   })
@@ -171,7 +197,7 @@ describe('Home automations', () => {
   it('lists review drafts in Ready to ship and opens the draft on the automations page', async () => {
     vi.mocked(api.listReviewDrafts).mockResolvedValue([draft] as never)
     const onNavigate = vi.fn()
-    render(Home, { agents: [], pending: [], onRefreshPending: () => {}, onOpenAgent: () => {}, onNavigate, projects })
+    render(Home, { agents: [], inbox: emptyInbox, onRefreshPending: () => {}, onOpenAgent: () => {}, onNavigate, projects })
     const row = await screen.findByTestId('draft-ready')
     expect(api.listReviewDrafts).toHaveBeenCalledWith({ project: '/home/u/alpha', status: 'draft' })
     expect(row.textContent).toContain('Review draft for PR #12')
@@ -184,7 +210,7 @@ describe('Home automations', () => {
   it('shows a fresh CI fix for a day and hides an old one', async () => {
     const h = (id: string, createdAt: string) => ({ id, repoId: 'r1', sha: 's', check: 'go test', status: 'fixed', reason: 'ok', prUrl: 'https://github.com/o/n/pull/' + id.slice(1), costUsd: 1, createdAt })
     vi.mocked(api.listCIHistory).mockResolvedValue([h('c5', new Date().toISOString()), h('c6', new Date(Date.now() - 30 * 3600 * 1000).toISOString()), { ...h('c7', new Date().toISOString()), status: 'gave up' }] as never)
-    render(Home, { agents: [], pending: [], onRefreshPending: () => {}, onOpenAgent: () => {}, onNavigate: () => {}, projects })
+    render(Home, { agents: [], inbox: emptyInbox, onRefreshPending: () => {}, onOpenAgent: () => {}, onNavigate: () => {}, projects })
     const row = await screen.findByTestId('ci-fix-ready')
     expect(row.textContent).toContain('CI fix ready: PR #5')
     expect(screen.getAllByTestId('ci-fix-ready')).toHaveLength(1)
@@ -192,7 +218,7 @@ describe('Home automations', () => {
 
   it('refetches when an automation delta arrives', async () => {
     vi.mocked(api.listReviewDrafts).mockClear()
-    const { rerender } = render(Home, { agents: [], pending: [], onRefreshPending: () => {}, onOpenAgent: () => {}, onNavigate: () => {}, projects, automationTick: 0 })
+    const { rerender } = render(Home, { agents: [], inbox: emptyInbox, onRefreshPending: () => {}, onOpenAgent: () => {}, onNavigate: () => {}, projects, automationTick: 0 })
     await waitFor(() => expect(api.listReviewDrafts).toHaveBeenCalledTimes(1))
     await rerender({ automationTick: 1 })
     await waitFor(() => expect(api.listReviewDrafts).toHaveBeenCalledTimes(2))

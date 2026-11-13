@@ -312,10 +312,12 @@ export function parseFleetEvent(data: string): FleetEvent | 'overflow' | null {
     const value = JSON.parse(data) as Record<string, unknown>
     if (value.type === 'replay_overflow') return 'overflow'
     if (value.kind === 'project_removed' && typeof value.project === 'string') return value as unknown as ProjectRemovedDelta
-    // Budget, reroute and watch are fleet-wide, so they carry no session.
+    // Budget, reroute, watch and the inbox are fleet-wide, so they carry no session.
     if (value.kind === 'budget') return parseBudget(value)
     if (value.kind === 'reroute') return parseReroute(value)
     if (value.kind === 'watch') return value as unknown as FleetEvent
+    // The inbox is the bridge's whole fleet inbox, sent as one delta; it names no session.
+    if (value.kind === 'inbox') return value as unknown as FleetEvent
     // Automation and network-block events may name no session.
     if (value.kind === 'automation' || value.kind === 'network_block') return value as unknown as FleetEvent
     // The bridge may address a run delta as agentId; rows are keyed by sessionId.

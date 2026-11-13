@@ -240,7 +240,7 @@
     onToggle={toggleNav}
     agents={$fleet.agents}
     projects={$fleet.projects}
-    pendingCount={pending.length}
+    inbox={$fleet.inbox}
     clientCount={clients.length}
     route={hash}
     activeAgentId={chatSessionId}
@@ -387,7 +387,7 @@
       <div class="h-full overflow-y-auto">
         <Home
           agents={$fleet.agents}
-          {pending}
+          inbox={$fleet.inbox}
           notices={$fleet.notices}
           onDismissNotice={actions.dismissNotice}
           projects={$fleet.projects}

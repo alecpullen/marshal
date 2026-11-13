@@ -8,16 +8,21 @@
   import type { DecideFn } from '../lib/inbox/decision'
   import DiskPanel from '../lib/DiskPanel.svelte'
   import ActivityFeed from '../lib/ActivityFeed.svelte'
-  import { buildInbox } from '../lib/inbox'
+  import { mineOnly } from '../lib/inbox'
   import { describePending, type AgentRow, type NetworkDecisionItem, type RerouteNotice } from '../lib/fleet'
-  import { APIError, approvePending, denyPending, undoReroute, errMessage, listCIHistory, listReviewDrafts, type CIHistory, type PendingSubmission, type ProjectStatus, type ReviewDraft } from '../lib/api'
+  import { APIError, approvePending, denyPending, undoReroute, errMessage, listCIHistory, listReviewDrafts, type CIHistory, type Inbox, type PendingSubmission, type ProjectStatus, type ReviewDraft } from '../lib/api'
   import { prNumber, recentFixes, severityCounts, severityTone } from '../lib/automations/model'
   import { formatAutomationRoute } from '../lib/routes'
   import { shortName } from '../lib/utils'
 
+  /** One needs-you entry: an agent the bridge named, or an intake submission it carried. */
+  type NeedsItem =
+    | { kind: 'agent'; agent: AgentRow; at: string }
+    | { kind: 'intake'; submission: PendingSubmission; at: string }
+
   let {
     agents,
-    pending,
+    inbox,
     onRefreshPending,
     onOpenAgent,
     onNavigate,
@@ -29,7 +34,8 @@
     automationTick = 0,
   }: {
     agents: AgentRow[]
-    pending: PendingSubmission[]
+    /** The bridge's inbox: its groups name agents by ID, its queue carries intake. */
+    inbox: Inbox
     /** Watches that rerouted a role, each undoable until dismissed. */
     notices?: RerouteNotice[]
     onDismissNotice?: (id: string) => void
@@ -63,7 +69,23 @@
     }
   }
 
-  const inbox = $derived(buildInbox(agents, pending, scope === 'mine'))
+  // The bridge scopes nothing, so "Mine" filters its lists without reordering them.
+  const scoped = $derived(scope === 'mine' ? mineOnly(inbox, (id) => agents.find((a) => a.id === id)?.ownerId) : inbox)
+  const byId = $derived(new Map(agents.map((a) => [a.id, a])))
+  // An ID with no row yet is skipped, as in the sidebar.
+  const rowsOf = (ids: string[]) => ids.flatMap((id) => { const row = byId.get(id); return row ? [row] : [] })
+  const ready = $derived(rowsOf(scoped.groups.ready))
+  const running = $derived(rowsOf(scoped.groups.running))
+  // The queue is already ordered, oldest first; intake reads its submission from it.
+  const needs = $derived(
+    scoped.queue.flatMap((item): NeedsItem[] => {
+      if (item.kind === 'agent') {
+        const agent = item.agentId ? byId.get(item.agentId) : undefined
+        return agent ? [{ kind: 'agent', agent, at: item.at }] : []
+      }
+      return item.submission ? [{ kind: 'intake', submission: item.submission, at: item.at }] : []
+    }),
+  )
   // Oldest first, so the request that has waited longest is on top.
   const netDecisions = $derived([...decisions].filter((d) => agents.some((a) => a.id === d.agentId)).sort((a, b) => a.at - b.at))
   const agentName = (id: string) => agents.find((a) => a.id === id)?.name || id
@@ -94,7 +116,7 @@
       stale = true
     }
   })
-  const readyCount = $derived(inbox.ready.length + drafts.length + fixes.length)
+  const readyCount = $derived(ready.length + drafts.length + fixes.length)
 
   let notice = $state<string | null>(null)
 
@@ -162,9 +184,9 @@
   <div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_18rem]">
     <div class="flex flex-col gap-6">
       <section aria-labelledby="inbox-needs">
-        <h2 id="inbox-needs" class="mb-2 text-xs tracking-wide text-attention uppercase">Needs you · {inbox.needsYou.length + netDecisions.length}</h2>
+        <h2 id="inbox-needs" class="mb-2 text-xs tracking-wide text-attention uppercase">Needs you · {needs.length + netDecisions.length}</h2>
         <div class="flex flex-col gap-2">
-          {#each inbox.needsYou as item (item.kind === 'agent' ? 'a:' + item.agent.id : 'i:' + item.submission.id)}
+          {#each needs as item (item.kind === 'agent' ? 'a:' + item.agent.id : 'i:' + item.submission.id)}
             <Card class="flex items-center gap-3 p-3">
               {#if item.kind === 'agent'}
                 {@const a = item.agent}
@@ -191,7 +213,7 @@
               <NetworkDecision item={d} agentName={agentName(d.agentId)} {onDecide} />
             </Card>
           {/each}
-          {#if inbox.needsYou.length + netDecisions.length === 0}
+          {#if needs.length + netDecisions.length === 0}
             <p class="text-sm text-muted">Nothing is waiting on you.</p>
           {/if}
         </div>
@@ -200,7 +222,7 @@
       <section aria-labelledby="inbox-ready">
         <h2 id="inbox-ready" class="mb-2 text-xs tracking-wide text-accent uppercase">Ready to ship · {readyCount}</h2>
         <div class="flex flex-col gap-2">
-          {#each inbox.ready as a (a.id)}
+          {#each ready as a (a.id)}
             <Card class="flex items-center gap-3 p-3">
               <div class="min-w-0 flex-1">
                 <div class="truncate text-sm font-medium">{a.name || a.id}</div>
@@ -240,9 +262,9 @@
       </section>
 
       <section aria-labelledby="inbox-running">
-        <h2 id="inbox-running" class="mb-2 text-xs tracking-wide text-running uppercase">Running · {inbox.running.length}</h2>
+        <h2 id="inbox-running" class="mb-2 text-xs tracking-wide text-running uppercase">Running · {running.length}</h2>
         <div class="flex flex-col gap-2">
-          {#each inbox.running as a (a.id)}
+          {#each running as a (a.id)}
             <Card class="flex items-center gap-3 p-3">
               <button class="min-w-0 flex-1 cursor-pointer text-left" onclick={() => onOpenAgent(a.id)}>
                 <div class="truncate text-sm font-medium">{a.name || a.id} <span class="font-normal text-muted">· {shortName(a.project)}</span></div>

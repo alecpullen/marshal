@@ -47,7 +47,7 @@ func (f *Fleet) workspaceUsage() map[string]int {
 	use := map[string]int{}
 	for _, a := range f.ws.Agents() {
 		if a.Workspace != nil {
-			use[a.Workspace.Source+":"+a.Workspace.Name]++
+			use[string(a.Workspace.Source)+":"+a.Workspace.Name]++
 		}
 	}
 	return use

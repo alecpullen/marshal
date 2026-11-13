@@ -18,6 +18,14 @@
 
 export type Mode = 'ask' | 'act'
 
+/**
+ * The committed state as the bridge puts it on the wire. Generated from the Go
+ * contract (`web/bridge/contract`), so it has exactly one definition; the
+ * app-side parse below is what turns it into the stricter `AccessState`.
+ */
+import type { AccessState as ContractAccessState } from './contract'
+export type AccessStateWire = ContractAccessState
+
 /** The two interaction modes, in picker order. Auto and System are modifiers. */
 export const MODES: readonly Mode[] = ['ask', 'act']
 
@@ -27,14 +35,6 @@ export interface AccessState {
   /** Broader filesystem access: a session grant, never a starting default. */
   system: boolean
   revision: number
-}
-
-/** The committed state as the bridge puts it on the wire. */
-export interface AccessStateWire {
-  mode: string
-  auto: boolean
-  system_access: boolean
-  access_revision: number
 }
 
 /** One atomic access change. Absent fields are left alone; false is a value. */

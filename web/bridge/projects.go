@@ -238,7 +238,7 @@ func (f *Fleet) ProjectHealth(ctx context.Context, root string) (ProjectHealth, 
 
 	for _, st := range f.ProjectStatus() {
 		if st.Root == root {
-			h.Trust = st.Trust
+			h.Trust = string(st.Trust)
 			if st.OrphanWorktrees != nil {
 				h.OrphanWorktrees = st.OrphanWorktrees
 			}

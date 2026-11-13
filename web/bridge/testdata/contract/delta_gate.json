@@ -1,0 +1,1 @@
+{"kind":"gate","sessionId":"a1","gate":{"result":{"ok":false,"skipped":false,"failedCommand":"go test"},"at":"<time>"}}

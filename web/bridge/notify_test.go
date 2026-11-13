@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // memSecrets is an in-memory SecretProvider.
@@ -133,13 +135,13 @@ func TestNotifyMapsEachDeltaKind(t *testing.T) {
 		delta any
 		want  string
 	}{
-		{"pending", fleetDelta{Kind: "pending", SessionID: "a1", PendingKind: "approval"}, NotifyNeedsYou},
-		{"run finished", fleetDelta{Kind: "run", SessionID: "a1", AgentID: "a1",
-			Run: json.RawMessage(`{"kind":"sdd","sdd":{"finished":true,"succeeded":true,"planName":"p","endedAt":9}}`)}, NotifyRunFinished},
+		{"pending", fleetDelta{FleetDelta: contract.FleetDelta{Kind: "pending", SessionID: "a1", PendingKind: "approval"}}, NotifyNeedsYou},
+		{"run finished", fleetDelta{FleetDelta: contract.FleetDelta{Kind: "run", SessionID: "a1", AgentID: "a1",
+			Run: json.RawMessage(`{"kind":"sdd","sdd":{"finished":true,"succeeded":true,"planName":"p","endedAt":9}}`)}}, NotifyRunFinished},
 		{"budget", budgetDelta{Kind: "budget", SessionID: "a1", Scope: "agent", AgentID: "a1", SpentUSD: 2, CapUSD: 1, Action: "pause"}, NotifyBudget},
 		{"automation", map[string]any{"kind": "automation", "title": "Reviewed PR 7"}, NotifyAutomation},
-		{"watch fired", fleetDelta{Kind: "watch", SessionID: studioOwner, AgentID: studioOwner,
-			Watch: json.RawMessage(`{"watchId":"w","name":"cost","state":"fired"}`)}, NotifyWatchFired},
+		{"watch fired", fleetDelta{FleetDelta: contract.FleetDelta{Kind: "watch", SessionID: studioOwner, AgentID: studioOwner,
+			Watch: json.RawMessage(`{"watchId":"w","name":"cost","state":"fired"}`)}}, NotifyWatchFired},
 		{"network block", networkBlockDelta{Kind: "network_block", SessionID: "a1", AgentID: "a1", Host: "evil.example"}, NotifyNetworkBlock},
 	}
 	for _, d := range deltas {
@@ -175,16 +177,16 @@ func TestNotifyIgnoresDeltasThatAreNotEvents(t *testing.T) {
 	rc := newReceiver(t)
 	f := notifyFleet(t, Webhook{ID: "w1", URL: rc.srv.URL, Events: allEvents()})
 	for _, d := range []any{
-		fleetDelta{Kind: "activity", SessionID: "a1", Activity: "read"},
-		fleetDelta{Kind: "telemetry", SessionID: "a1"},
-		fleetDelta{Kind: "run", SessionID: "a1", Run: json.RawMessage(`{"kind":"sdd","sdd":{"finished":false}}`)},
-		fleetDelta{Kind: "watch", SessionID: studioOwner, Watch: json.RawMessage(`{"name":"x","state":"armed"}`)},
+		fleetDelta{FleetDelta: contract.FleetDelta{Kind: "activity", SessionID: "a1", Activity: "read"}},
+		fleetDelta{FleetDelta: contract.FleetDelta{Kind: "telemetry", SessionID: "a1"}},
+		fleetDelta{FleetDelta: contract.FleetDelta{Kind: "run", SessionID: "a1", Run: json.RawMessage(`{"kind":"sdd","sdd":{"finished":false}}`)}},
+		fleetDelta{FleetDelta: contract.FleetDelta{Kind: "watch", SessionID: studioOwner, Watch: json.RawMessage(`{"name":"x","state":"armed"}`)}},
 		map[string]any{"kind": "project_removed"},
 	} {
 		f.emit(d)
 	}
 	// A finished run is notified once, however often its digest repeats.
-	fin := fleetDelta{Kind: "run", SessionID: "a1", AgentID: "a1", Run: json.RawMessage(`{"kind":"sdd","sdd":{"finished":true,"planName":"p","endedAt":5}}`)}
+	fin := fleetDelta{FleetDelta: contract.FleetDelta{Kind: "run", SessionID: "a1", AgentID: "a1", Run: json.RawMessage(`{"kind":"sdd","sdd":{"finished":true,"planName":"p","endedAt":5}}`)}}
 	f.emit(fin)
 	f.emit(fin)
 	rc.wait(t, 1)
@@ -200,7 +202,7 @@ func TestNotifyOnlyDeliversSelectedEvents(t *testing.T) {
 	f := notifyFleet(t,
 		Webhook{ID: "w1", URL: only.srv.URL, Events: []string{NotifyBudget}},
 		Webhook{ID: "w2", URL: all.srv.URL, Events: allEvents()})
-	f.emit(fleetDelta{Kind: "pending", SessionID: "a1", PendingKind: "question"})
+	f.emit(fleetDelta{FleetDelta: contract.FleetDelta{Kind: "pending", SessionID: "a1", PendingKind: "question"}})
 	f.emit(budgetDelta{Kind: "budget", Scope: "daily", Action: "warn"})
 	all.wait(t, 2)
 	only.wait(t, 1)

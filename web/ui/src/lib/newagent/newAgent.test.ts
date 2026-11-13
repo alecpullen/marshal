@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { DEFAULT_MODEL, FAST_ROLES, MODES, canIsolate, defaults, loadRemembered, modelLabel, remember, rememberedReset, routingFor, validModel } from './newAgent'
 import type { ProjectStatus } from '../api'
 
-const p = (root: string, over: Partial<ProjectStatus> = {}): ProjectStatus => ({ root, available: true, isolation: 'available', ...over })
+const p = (root: string, over: Partial<ProjectStatus> = {}): ProjectStatus => ({ root, available: true, trust: 'na', isolation: 'available', ...over })
 
 describe('defaults', () => {
   it('picks the first available project in Act with Auto off, isolated when supported', () => {

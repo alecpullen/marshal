@@ -65,7 +65,13 @@ func TestWebIsStdlibOnly(t *testing.T) {
 // forbiddenImport reports whether an import path breaks the boundary.
 // A standard library path's first element never contains a dot; a
 // third-party path's always does.
+//
+// An import under marshal/web/ is allowed: those are web/'s own packages
+// (the wire contract among them), never the agent's.
 func forbiddenImport(path string) (reason string, forbidden bool) {
+	if strings.HasPrefix(path, "marshal/web/") {
+		return "", false
+	}
 	if strings.HasPrefix(path, "marshal/") {
 		return "web/ must not depend on the agent's Go packages; put the data in the JSON contract instead", true
 	}
@@ -78,7 +84,11 @@ func forbiddenImport(path string) (reason string, forbidden bool) {
 
 // TestForbiddenImportClassifies guards the guard.
 func TestForbiddenImportClassifies(t *testing.T) {
-	allowed := []string{"net/http", "encoding/json", "os", "path/filepath"}
+	allowed := []string{
+		"net/http", "encoding/json", "os", "path/filepath",
+		// web/'s own packages are allowed; the agent's never are.
+		"marshal/web/bridge/contract",
+	}
 	for _, p := range allowed {
 		if _, bad := forbiddenImport(p); bad {
 			t.Errorf("forbiddenImport(%q) = forbidden, want allowed", p)
@@ -86,6 +96,8 @@ func TestForbiddenImportClassifies(t *testing.T) {
 	}
 	denied := []string{
 		"marshal/internal/app/session",
+		"marshal/internal/acp",
+		"marshal/cmd/marshal",
 		"github.com/pelletier/go-toml/v2",
 		"golang.org/x/sys/unix",
 	}

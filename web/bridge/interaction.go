@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"marshal/web/bridge/contract"
 )
 
 // This file owns the bridge's access-transport wire contracts. They are
@@ -14,16 +16,8 @@ import (
 // halves. The bridge forwards atomic patches and full committed state; it
 // never validates policy or grants a capability locally.
 
-// AccessState is the bridge-owned projection of a session's committed
-// interaction tuple. Every field is always present on the wire: a client must
-// be able to tell an explicit false from an omitted value, so no field carries
-// omitempty.
-type AccessState struct {
-	Mode     string `json:"mode"`
-	Auto     bool   `json:"auto"`
-	System   bool   `json:"system_access"`
-	Revision uint64 `json:"access_revision"`
-}
+// AccessState is contract.AccessState; see that declaration.
+type AccessState = contract.AccessState
 
 // AccessPatch is one atomic access change. The fields are pointers so an
 // omitted field stays distinguishable from an explicit false: "revoke system

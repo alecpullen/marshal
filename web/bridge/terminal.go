@@ -19,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 const (
@@ -522,9 +524,9 @@ func (f *Fleet) callHold(t *terminal, on bool) (ok, unsupported bool) {
 		}
 		return false, unsupported
 	}
-	f.emit(fleetDelta{
+	f.emit(fleetDelta{FleetDelta: contract.FleetDelta{
 		Kind: "hold", SessionID: t.agentID, AgentID: t.agentID, Held: &on, By: "terminal",
-	})
+	}})
 	return true, false
 }
 
@@ -888,7 +890,7 @@ func (f *Fleet) OpenWorkspaceShell(ctx context.Context, name string, cols, rows 
 	container := shellContainerPrefix + rnd
 	pseudo := Agent{
 		ID: shellID, Profile: DefaultRuntimeProfile(),
-		Workspace: &AgentWorkspace{Name: res.Name, Version: res.Version, Source: res.Source},
+		Workspace: &AgentWorkspace{Name: res.Name, Version: res.Version, Source: contract.WorkspaceSource(res.Source)},
 	}
 	extras, err := f.buildWorkspaceExtras(ctx, pseudo, res.Doc, res.ImageName, rtName)
 	if err != nil {

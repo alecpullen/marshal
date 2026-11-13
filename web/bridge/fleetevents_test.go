@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"marshal/web/bridge/contract"
 )
 
 func TestLiveStateRemoveProject(t *testing.T) {
 	live := newLiveState()
-	live.apply(fleetDelta{SessionID: "s1", Kind: "activity", Activity: "read"})
+	live.apply(fleetDelta{FleetDelta: contract.FleetDelta{SessionID: "s1", Kind: "activity", Activity: "read"}})
 	live.removeProject([]string{"s1"})
 	if got := live.get("s1"); got.activity != "" {
 		t.Fatalf("removed live state = %+v", got)
@@ -257,7 +259,7 @@ func TestLiveStateTelemetryZeroesAndActivityKeepsValues(t *testing.T) {
 		return d
 	}
 	live.apply(tel(`[{"path":"a"}]`, "50"))
-	live.apply(fleetDelta{SessionID: "s1", Kind: "activity", Activity: "read"})
+	live.apply(fleetDelta{FleetDelta: contract.FleetDelta{SessionID: "s1", Kind: "activity", Activity: "read"}})
 	if got := live.get("s1"); got.changedFiles != 1 || got.contextPct != 50 {
 		t.Fatalf("an activity delta disturbed telemetry: %+v", got)
 	}

@@ -8,8 +8,8 @@ import type { ProjectStatus } from './api'
 afterEach(cleanup)
 
 const projects: ProjectStatus[] = [
-  { root: '/home/u/alpha', available: true, trust: 'trusted' },
-  { root: '/home/u/beta', available: false, error: 'down', trust: 'untrusted' },
+  { root: '/home/u/alpha', available: true, trust: 'trusted', isolation: 'available' },
+  { root: '/home/u/beta', available: false, error: 'down', trust: 'untrusted', isolation: 'available' },
 ]
 
 function agent(id: string, project: string): AgentRow {

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // The attach wire contract. The bridge speaks it as an external ACP
@@ -23,47 +25,20 @@ const (
 	pinPath        = "/api/projects/pin"
 )
 
-// ChildInfo mirrors the bridge's DaemonChild on the wire.
-type ChildInfo struct {
-	Root       string        `json:"root"`
-	Version    string        `json:"version"`
-	Sessions   []SessionInfo `json:"sessions"`
-	EnvWarning string        `json:"envWarning,omitempty"`
-	Pinned     bool          `json:"pinned,omitempty"`
-}
+// ChildInfo is the contract's DaemonChild; see that declaration.
+type ChildInfo = contract.DaemonChild
 
-// SessionInfo mirrors the bridge's DaemonSession on the wire.
-type SessionInfo struct {
-	ID         string `json:"id"`
-	Viewers    int    `json:"viewers"`
-	LastActive int64  `json:"lastActive"`
-}
+// SessionInfo is the contract's DaemonSession; see that declaration.
+type SessionInfo = contract.DaemonSession
 
-// RefreshInfo is the refresh helper the daemon supervises.
-type RefreshInfo struct {
-	PID      int `json:"pid"`
-	Restarts int `json:"restarts"`
-}
+// RefreshInfo is the contract's DaemonRefresh; see that declaration.
+type RefreshInfo = contract.DaemonRefresh
 
-// Info mirrors the bridge's DaemonInfo on the wire.
-type Info struct {
-	Version   string       `json:"version"`
-	Profile   string       `json:"profile"`
-	PID       int          `json:"pid"`
-	StartedAt int64        `json:"startedAt"`
-	Socket    string       `json:"socket"`
-	Projects  []string     `json:"projects"`
-	Pinned    []string     `json:"pinned"`
-	Children  []ChildInfo  `json:"children"`
-	Refresh   *RefreshInfo `json:"refresh,omitempty"`
-}
+// Info is the contract's DaemonInfo; see that declaration.
+type Info = contract.DaemonInfo
 
-// PinState mirrors the bridge's PinState on the wire.
-type PinState struct {
-	Root    string `json:"root"`
-	Pinned  bool   `json:"pinned"`
-	Running bool   `json:"running"`
-}
+// PinState is the contract's PinState; see that declaration.
+type PinState = contract.PinState
 
 // Client talks HTTP to the daemon over its socket.
 type Client struct {

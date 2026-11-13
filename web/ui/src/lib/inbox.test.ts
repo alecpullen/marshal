@@ -7,7 +7,13 @@ const mk = (o: Partial<AgentStatus> & { id: string }) =>
   toRow({ project: '/p', status: 'idle', updatedAt: '2024-05-04T12:00:00Z', ...o })
 const sub = (id: string, createdAt: string): PendingSubmission => ({
   id,
+  auto: null,
+  clientId: 'c1',
+  mode: 'act',
   origin: 'mcp',
+  plan: '',
+  prompt: '',
+  ref: '',
   title: id,
   repoId: 'r',
   createdAt,

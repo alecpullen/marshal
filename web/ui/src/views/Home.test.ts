@@ -6,7 +6,7 @@ import * as api from '../lib/api.js'
 import { toRow, createFleetStore } from '../lib/fleet'
 import { get } from 'svelte/store'
 import { outcomeFor } from '../lib/inbox/decision'
-import type { AgentStatus, PendingSubmission } from '../lib/api.js'
+import type { AgentStatus, PendingSubmission, ProjectStatus } from '../lib/api.js'
 
 vi.mock('../lib/api.js', async (importActual) => {
   const actual = await importActual<typeof import('../lib/api.js')>()
@@ -41,7 +41,7 @@ const agents = [
   mk({ id: 'run', name: 'run-agent', status: 'running', activity: 'editing main.go' }),
   mk({ id: 'done', name: 'done-agent', changedFiles: 3, branch: 'feat/x' }),
 ]
-const intake: PendingSubmission = { id: 'p1', origin: 'mcp', title: 'Plan X', repoId: 'repo', createdAt: '2024-05-04T09:00:00Z', expiresAt: '2024-06-01T00:00:00Z' }
+const intake: PendingSubmission = { id: 'p1', auto: null, clientId: 'c1', mode: 'act', origin: 'mcp', plan: '', prompt: '', ref: '', title: 'Plan X', repoId: 'repo', createdAt: '2024-05-04T09:00:00Z', expiresAt: '2024-06-01T00:00:00Z' }
 
 function mount(onRefreshPending = vi.fn()) {
   render(Home, { agents, pending: [intake], onRefreshPending, onOpenAgent: () => {}, onNavigate: () => {} })
@@ -165,7 +165,7 @@ describe('Home stale decisions', () => {
 })
 
 describe('Home automations', () => {
-  const projects = [{ root: '/home/u/alpha', available: true }]
+  const projects: ProjectStatus[] = [{ root: '/home/u/alpha', available: true, trust: 'trusted', isolation: 'available' }]
   const draft = { id: 'd1', repoId: 'r1', number: 12, headSha: 'abc', agentId: 'rv', summary: '', status: 'draft', createdAt: '2026-10-05T00:00:00Z', findings: [{ id: 'f1', severity: 'blocking', title: 't', body: 'b' }, { id: 'f2', severity: 'nit', title: 't', body: 'b' }] }
 
   it('lists review drafts in Ready to ship and opens the draft on the automations page', async () => {

@@ -239,8 +239,19 @@ func AdvanceFactory(item FactoryItem, observed FactoryObservation, now time.Time
 				role = "implementer"
 			}
 		case "create_pr", "resume":
-			kind = "implement"
-			role = "implementer"
+			// A changed implementer route must not continue the previous
+			// implementer on its previous route, so the rule that chooses
+			// between a fresh spawn and a continuation is consulted here
+			// too. A resume that already carries the current approval
+			// revision was opened under the new route — the
+			// operator-attested fresh resume — so it continues.
+			if last.Kind == "resume" && last.ApprovalRevision != i.Approvals[len(i.Approvals)-1].Revision && factoryImplementerRouteChanged(i) {
+				kind = "spawn"
+				role = "implementer"
+			} else {
+				kind = "implement"
+				role = "implementer"
+			}
 		case "park":
 			if last.WorkerRole == "implementer" {
 				if len(i.Rounds) == 0 {
@@ -1010,6 +1021,20 @@ func factoryApplyCommand(i *FactoryItem, c FactoryCommand, now time.Time) error 
 			}
 			a := FactoryApproval{Revision: uint64(len(i.Approvals) + 1), Plan: r.Plan, Spec: r.Spec, PlanHash: FactoryPlanHash(r.Plan, r.Spec), Config: r.Config, ApprovedAt: now}
 			i.Approvals = append(i.Approvals, a)
+		} else {
+			// A route-only retry: the plan and the specification are carried
+			// over verbatim and only the named route(s) change. The approval
+			// is appended only when a route actually differs, so a retry
+			// that re-states the routes in force behaves as a plain retry.
+			approval, appended, err := factoryRouteOnlyApproval(*i, c, now)
+			if err != nil {
+				return err
+			}
+			if appended {
+				previous := i.Approvals[len(i.Approvals)-1]
+				i.Approvals = append(i.Approvals, approval)
+				i.History = append(i.History, FactoryEvent{At: now, Kind: "route_changed", Message: factoryRouteChangeMessage(previous.Config, approval.Config)})
+			}
 		}
 		attested := factoryLastAttested(*i)
 		i.Decision = nil

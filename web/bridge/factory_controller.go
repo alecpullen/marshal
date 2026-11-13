@@ -1010,6 +1010,20 @@ func factoryApplyCommand(i *FactoryItem, c FactoryCommand, now time.Time) error 
 			}
 			a := FactoryApproval{Revision: uint64(len(i.Approvals) + 1), Plan: r.Plan, Spec: r.Spec, PlanHash: FactoryPlanHash(r.Plan, r.Spec), Config: r.Config, ApprovedAt: now}
 			i.Approvals = append(i.Approvals, a)
+		} else {
+			// A route-only retry: the plan and the specification are carried
+			// over verbatim and only the named route(s) change. The approval
+			// is appended only when a route actually differs, so a retry
+			// that re-states the routes in force behaves as a plain retry.
+			approval, appended, err := factoryRouteOnlyApproval(*i, c, now)
+			if err != nil {
+				return err
+			}
+			if appended {
+				previous := i.Approvals[len(i.Approvals)-1]
+				i.Approvals = append(i.Approvals, approval)
+				i.History = append(i.History, FactoryEvent{At: now, Kind: "route_changed", Message: factoryRouteChangeMessage(previous.Config, approval.Config)})
+			}
 		}
 		attested := factoryLastAttested(*i)
 		i.Decision = nil

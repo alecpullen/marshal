@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -97,6 +98,50 @@ func TestFactoryValidateRoutesNamesTheFailingRole(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestFactoryRouteSelectionRejectsANullRoute(t *testing.T) {
+	for _, field := range []string{"implementerRouting", "reviewerRouting"} {
+		var cmd FactoryCommand
+		if err := json.Unmarshal([]byte(`{"`+field+`":null}`), &cmd); err != nil {
+			t.Fatal(err)
+		}
+		_, err := factoryRouteSelectionOf(cmd)
+		want := errFactoryInput.Error() + ": " + field + " must be a routing object, not null"
+		if !errors.Is(err, errFactoryInput) || err == nil || err.Error() != want {
+			t.Fatalf("%s: error = %v, want %q", field, err, want)
+		}
+	}
+}
+
+func TestFactoryRouteSelectionReadsAbsentAndPresentRoutes(t *testing.T) {
+	var absent FactoryCommand
+	if err := json.Unmarshal([]byte(`{"kind":"retry"}`), &absent); err != nil {
+		t.Fatal(err)
+	}
+	sel, err := factoryRouteSelectionOf(absent)
+	if err != nil || sel.hasImplementer || sel.hasReviewer {
+		t.Fatalf("absent routes: %+v, %v", sel, err)
+	}
+	var present FactoryCommand
+	if err := json.Unmarshal([]byte(`{"reviewerRouting":{"profile":"cheap"}}`), &present); err != nil {
+		t.Fatal(err)
+	}
+	sel, err = factoryRouteSelectionOf(present)
+	if err != nil || sel.hasImplementer || !sel.hasReviewer {
+		t.Fatalf("one route: %+v, %v", sel, err)
+	}
+	if string(sel.reviewer) != `{"profile":"cheap"}` {
+		t.Fatalf("reviewer route = %s, want the bytes the command carried", sel.reviewer)
+	}
+	// The reported route is the exact bytes the command carried, whitespace
+	// included: a selection that re-encoded the route would silently rewrite
+	// the approval's configuration.
+	exact := json.RawMessage("{ \"profile\" : \"frontier\" }")
+	sel, err = factoryRouteSelectionOf(FactoryCommand{ImplementerRouting: exact})
+	if err != nil || !sel.hasImplementer || !bytes.Equal(sel.implementer, exact) {
+		t.Fatalf("exact bytes: %+v, %v", sel, err)
 	}
 }
 

@@ -1127,5 +1127,46 @@ client for and never calls.
 
 ## Plan outcome record
 
-_To be completed by the implementer: the task/commit table, the gates
-actually run and their results, and any substitution recorded above._
+Executed on branch `studio/factory-recovery-routing-implementation`, one commit
+per task, test-first. The Go tasks ran sequentially under one implementer; the
+studio task ran concurrently in a separate worktree, because `web/ui` is a
+separate npm package with a disjoint file set.
+
+| Task | Commit | Outcome |
+|---|---|---|
+| 1 | `3cc82111` | The shared route rules: `factoryValidateRoutes` extracted from `preflight` into `web/bridge/factory_routing.go`, with every message naming its role |
+| 2 | `5a2a9126` | The route-only retry appends an approval: the selection reader, the candidate configuration, the approval builder, the journal message, and the `"retry"` case of `factoryApplyCommand` |
+| 3 | `e892a9cb` | The route-only retry is validated before the controller: the `retry` branch of `factoryAPI.Command`, with route-only running the route rules only and plan-replacement keeping the full preflight |
+| 4 | `b6669403` | A changed implementer route yields a fresh implementer: D15's one consultation site, guarded by the approval revision |
+| 5 | `4a4163bb` | The studio sends a route-only retry: the route inputs ungated from the plan-replacement checkbox, the checkbox relabelled, the routes in force shown, and the consequence stated |
+| 6 | this commit | The rebuilt embedded assets, the gates below, and the implementation record |
+
+The gates Task 6 ran, and their results, are recorded in the
+[specification's implementation record](../factory-recovery-routing-spec.md#implementation-record).
+Every gate passed: the feature suite, the pre-existing factory contract gates,
+the `web/bridge` package gate, `gofmt -l`, `go vet ./web/...`,
+`CGO_ENABLED=1 go build ./...`, the 941 studio tests, and the whole-repository
+suite `CGO_ENABLED=1 go test -p=1 ./... -count=1 -timeout 20m` (exit 0, no
+`FAIL` line).
+
+**The substitution the plan asked to be recorded.** Task 4's
+`TestFactorySpawnFactoryWorkerUsesTheLatestApprovalRouting` did not extend
+`parkedFixture`, which has no registered repository and no runtime for the new
+agent, and `SpawnFactoryWorker` forces a git source because it requires a
+non-empty `RepoID`. The test uses the repository's existing offline pair
+instead — `newBareRepoFixture` as the registered repository's URL (a real
+`git clone --mirror` against a local bare repository, no network) plus
+`captureTransport` for `session/new`. The criterion is exercised, not
+weakened: the real `Fleet.SpawnFactoryWorker` runs, and the assertion is on
+the captured `session/new` routing, whose profile is the reviewer's
+`cheap-review` and distinct from the implementer's `frontier`.
+
+Two smaller choices the plan left open were made as follows. Task 3 did not
+modify `factory_routing.go`, because the helpers it uses landed in Task 2 and
+the file needed no change. The model-config fixture gained an `alternate`
+profile — a valid route change needs a second good profile — and a
+`ghost/model` preset, without which the "provider unavailable" case trips the
+preset rule first.
+
+The open questions in the specification's §8 remain open and are not decided
+by this slice.

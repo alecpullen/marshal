@@ -636,12 +636,18 @@ For this slice:
 
 ## Branch review record
 
-This specification awaits an independent `glm-5.3-flash` review. No review
-findings are recorded yet.
+This specification received an independent `glm-5.3-flash` review through
+`ollama-cloud` on 2026-11-13, and the findings were addressed before the
+implementation began.
 
 | Review finding | Resolution |
 |---|---|
-| — | — |
+| D9 quoted two preflight messages that do not exist in the code — "explicit implementer/reviewer routing profile required" and "unknown implementer/reviewer routing profile" — while the code produces the role-less "explicit routing profile required" and "unknown routing profile", and the claim that the messages name the role was false for them | D9 now quotes the real strings, names the two role-less messages with their line numbers, and states that the shared helper role-names every message because it checks both routes of a config. D10 now says the plan-replacement path keeps the full `preflight` and that only those two messages change. The §5 sketch shows the role-named message |
+| The decision label D12 was used twice | The §4.4 decision was folded into D6, which already carries the plan, specification and plan hash verbatim, and §4.4 now opens with D13. The labels D1–D23 are unique |
+| D21 relabels the studio's plan-replacement checkbox but had no acceptance criterion | §9 now requires the studio to render the checkbox with the label "Change approved plan or reviewer instructions" and the studio test to find it by that label |
+| D17 listed the retry guards but omitted the `recovering`-state refusal | D17 now names it, with its line number |
+| D8 said the route change is journalled without pinning the event's shape | D8 now pins the kind `route_changed` and the message format — one clause per changed role, joined with "; ", each clause `<role> route <oldProfile> -> <newProfile>` |
+| D13 cited two of the three revision-keyed readiness conversions | D13 now cites `:284`, `:303` and `:325` |
 
 ### Independent design proposal
 
@@ -667,3 +673,67 @@ Two points it raised were recorded as open questions rather than decided: the
 `no_progress` guard's exemption after a new revision (§8.5), and whether the
 route-only retry should also carry the reviewer instructions or the expected CI
 checks (§8.6).
+
+## Implementation record
+
+Delivered on branch `studio/factory-recovery-routing-implementation` as Tasks
+1–6 of the [plan](plans/2026-11-14-factory-recovery-routing-plan.md),
+test-first, with one commit per task. The studio task ran concurrently with
+the Go tasks in a separate worktree, because `web/ui` is a separate npm
+package with a disjoint file set.
+
+| Task | Deliverable | Commit |
+|---|---|---|
+| 1 | The shared route rules: `factoryValidateRoutes` extracted from `preflight` into `web/bridge/factory_routing.go`, with every message naming its role | `3cc82111` |
+| 2 | The route-only retry appends an approval: the selection reader, the candidate configuration, the approval builder, the journal message, and the `"retry"` case of `factoryApplyCommand` | `5a2a9126` |
+| 3 | The route-only retry is validated before the controller: the `retry` branch of `factoryAPI.Command`, with route-only running the route rules only and plan-replacement keeping the full preflight | `e892a9cb` |
+| 4 | A changed implementer route yields a fresh implementer: D15's one consultation site, guarded by the approval revision | `b6669403` |
+| 5 | The studio sends a route-only retry: the route inputs ungated from the plan-replacement checkbox, the checkbox relabelled, the routes in force shown, and the consequence stated | `4a4163bb` |
+| 6 | The rebuilt embedded assets, the gates below, and this record | this commit |
+
+Files: `web/bridge/factory_routing.go` and `factory_routing_test.go` are new;
+`web/bridge/factory_http.go`, `factory_controller.go`,
+`factory_controller_test.go`, `factory_defaults_http_test.go` and
+`factory_workers_test.go` are modified; `web/ui/src/views/FactoryItem.svelte`
+and `FactoryItem.test.ts` are modified; `web/bridge/static/**` is rebuilt.
+Everything in `web/bridge` is standard library only, no route was added, the
+`Forge` interface is unchanged, and no production file outside `web/bridge` and
+`web/ui` is touched.
+
+Acceptance gates, run from the repository root on this branch:
+
+| Gate | Result |
+|---|---|
+| `go test ./web/bridge -run 'TestFactoryRoute\|TestFactoryValidateRoutes\|TestFactoryPreflightUsesTheSharedRouteRules\|TestFactoryPlanReplacementRetry\|TestFactoryRouteChange\|TestFactoryUnchangedRoute\|TestFactoryFreshResume\|TestFactorySpawnFactoryWorker\|TestWebIsStdlibOnly' -count=1` | PASS — `ok marshal/web/bridge 2.191s` |
+| `go test ./web/bridge -run 'Factory' -count=1` | PASS — `ok marshal/web/bridge 33.317s`; the pre-existing factory tests are unmodified |
+| `go test ./web/bridge -run '^TestWebIsStdlibOnly$' -count=1` | PASS — `ok marshal/web/bridge 0.405s` |
+| `go test ./web/bridge -count=1` | PASS — `ok marshal/web/bridge 124.946s` |
+| `gofmt -l web/bridge` | no output |
+| `go vet ./web/...` | no output, exit 0 |
+| `CGO_ENABLED=1 go build ./...` | exit 0 |
+| `cd web/ui && npm run test` | PASS — 88 test files, 941 tests, 0 failures |
+| `CGO_ENABLED=1 go test -p=1 ./... -count=1 -timeout 20m` | PASS — exit 0, no `FAIL` line |
+
+Every test is offline and deterministic: no live forge, no network, no container
+runtime, no model provider and no developer credentials.
+
+**One substitution was recorded.** The plan named
+`TestFactorySpawnFactoryWorkerUsesTheLatestApprovalRouting` as the test that
+must extend an offline fleet fixture, and warned that the fixture might be
+expensive to build. It was: `parkedFixture` has no registered repository and
+no runtime for the new agent, and `SpawnFactoryWorker` forces a git source
+because it requires a non-empty `RepoID`. The test instead uses the
+repository's existing offline pair — `newBareRepoFixture` as the registered
+repository's URL (a real `git clone --mirror` against a local bare repository,
+no network) plus `captureTransport` for `session/new`. The criterion is
+exercised, not weakened: the real `Fleet.SpawnFactoryWorker` runs, and the
+assertion is on the captured `session/new` routing, whose profile is the
+reviewer's `cheap-review` and distinct from the implementer's `frontier`.
+
+The open questions in §8 remain open: the fresh-start handoff summary (§8.1),
+continuing the existing conversation on the new route (§8.2), the superseded
+implementer's session and workspace (§8.3), warning the operator that a route
+change discards the conversation (§8.4), the `no_progress` guard's exemption
+after a new revision (§8.5), and whether a route-only retry should also carry
+the reviewer instructions or the expected CI checks (§8.6). None of them is
+decided by this slice.

@@ -5,6 +5,28 @@ import (
 	"time"
 )
 
+// FactoryDefaults are a project's default factory configuration. A handoff
+// inherits every field it leaves unset.
+//
+// The type is the rule: a field that is not here can never be inherited.
+// RepoID and ProjectRoot are absent because they say what the work item is
+// about and which project it belongs to. Native, ImplementerAuto and
+// NoRequiredCIAcknowledged are absent because their false is a meaningful
+// choice, and the handoff's plain FactoryConfig cannot tell "unset" from
+// "explicitly false".
+type FactoryDefaults struct {
+	TargetBranch         string            `json:"targetBranch,omitempty"`
+	Workspace            string            `json:"workspace,omitempty"`
+	HostID               string            `json:"hostId,omitempty"`
+	ImplementerRouting   json.RawMessage   `json:"implementerRouting,omitempty"`
+	ReviewerRouting      json.RawMessage   `json:"reviewerRouting,omitempty"`
+	ReviewerInstructions string            `json:"reviewerInstructions,omitempty"`
+	ExpectedChecks       []FactoryCheckKey `json:"expectedChecks,omitempty"`
+	MaxRounds            int               `json:"maxRounds,omitempty"`
+	CIPollSeconds        int               `json:"ciPollSeconds,omitempty"`
+	CIWaitSeconds        int               `json:"ciWaitSeconds,omitempty"`
+}
+
 type FactoryConfig struct {
 	RepoID                   string            `json:"repoId"`
 	ProjectRoot              string            `json:"projectRoot"`
@@ -92,15 +114,44 @@ type FactoryCI struct {
 }
 
 type FactoryReport struct {
-	OperationID      string          `json:"operationId"`
-	Outcome          string          `json:"outcome"`
-	Summary          string          `json:"summary"`
-	Question         string          `json:"question"`
-	Reason           string          `json:"reason"`
-	BaseSHA          string          `json:"baseSha"`
-	HeadSHA          string          `json:"headSha"`
-	InputsAccessible bool            `json:"inputsAccessible"`
-	Findings         []ReviewFinding `json:"findings"`
+	OperationID      string            `json:"operationId"`
+	Outcome          string            `json:"outcome"`
+	Summary          string            `json:"summary"`
+	Question         string            `json:"question"`
+	Reason           string            `json:"reason"`
+	BaseSHA          string            `json:"baseSha"`
+	HeadSHA          string            `json:"headSha"`
+	InputsAccessible bool              `json:"inputsAccessible"`
+	Findings         []ReviewFinding   `json:"findings"`
+	Narration        *FactoryNarration `json:"narration,omitempty"`
+}
+
+// FactoryNarration is the engineer's account of the change: the issue and the
+// proposed solution, the reasoning behind the implementation, and the
+// verification that backs it.
+//
+// The sections are the approved list. Constraints are narrated inside the
+// approach and the implementation choice, because they are the reasons those
+// two sections take the shape they do.
+type FactoryNarration struct {
+	Issue             string           `json:"issue"`
+	Approach          string           `json:"approach"`
+	ExistingBehaviour string           `json:"existingBehaviour"`
+	Alternatives      string           `json:"alternatives"`
+	Tradeoffs         string           `json:"tradeoffs"`
+	Choice            string           `json:"choice"`
+	Verification      string           `json:"verification"`
+	Limitations       string           `json:"limitations"`
+	Excerpts          []FactoryExcerpt `json:"excerpts,omitempty"`
+}
+
+// FactoryExcerpt is a selected piece of code that supports the narration. It
+// is a selection, not a diff: the narration avoids narrating every changed
+// line.
+type FactoryExcerpt struct {
+	Path string `json:"path"`
+	Lang string `json:"lang,omitempty"`
+	Code string `json:"code"`
 }
 
 type FactoryRound struct {

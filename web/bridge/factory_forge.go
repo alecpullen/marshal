@@ -23,6 +23,22 @@ func FactoryForgeFor(f Forge) (FactoryForge, error) {
 	return v, nil
 }
 
+// FactoryPRDescription is optional: a forge that cannot update a pull request
+// description must not pretend it did.
+type FactoryPRDescription interface {
+	UpdateFactoryPRDescription(ctx context.Context, repo Repo, number int, body string, cred Credential) error
+}
+
+var ErrFactoryPRDescriptionUnsupported = errors.New("forge does not support pull request descriptions")
+
+func FactoryPRDescriptionFor(f Forge) (FactoryPRDescription, error) {
+	v, ok := f.(FactoryPRDescription)
+	if !ok {
+		return nil, ErrFactoryPRDescriptionUnsupported
+	}
+	return v, nil
+}
+
 // EvaluateFactoryCI never treats incomplete or revision-mismatched evidence as passing.
 func EvaluateFactoryCI(ci FactoryCI, expected []FactoryCheckKey, acknowledged bool) (string, []FactoryCheck) {
 	if !ci.Complete || ci.HeadSHA == "" {

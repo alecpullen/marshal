@@ -53,7 +53,7 @@ between the specification's prose and the code at the base commit.
 
 1. **The route rules move into one helper, and the helper owns the model
    configuration.** The rules live in `factoryAPI.preflight`
-   (`web/bridge/factory_http.go:183-221`). The helper
+   (`web/bridge/factory_http.go:183-220`). The helper
    `factoryValidateRoutes` owns the `config/get` call that serves them
    (`web/bridge/factory_http.go:161`), because the route-only retry path
    needs the rules without the rest of the preflight. `preflight` therefore
@@ -226,7 +226,7 @@ All paths are relative to the repository root.
 | 2 | `web/bridge/factory_routing.go`, `web/bridge/factory_controller.go`, `web/bridge/factory_routing_test.go`, `web/bridge/factory_controller_test.go` | 1 |
 | 3 | `web/bridge/factory_http.go`, `web/bridge/factory_routing.go`, `web/bridge/factory_routing_test.go`, `web/bridge/factory_defaults_http_test.go` | 1, 2 |
 | 4 | `web/bridge/factory_controller.go`, `web/bridge/factory_controller_test.go`, `web/bridge/factory_workers_test.go` | 2 |
-| 5 | `web/ui/src/views/FactoryItem.svelte`, `web/ui/src/views/FactoryItem.test.ts` | 1 |
+| 5 | `web/ui/src/views/FactoryItem.svelte`, `web/ui/src/views/FactoryItem.test.ts` | — |
 | 6 | `web/bridge/static/**` (rebuilt), `docs/studio-fleet-factory/factory-recovery-routing-spec.md`, this plan | 1–5 |
 
 `web/bridge` is one Go package, so Tasks 1–4 are sequential under one
@@ -365,7 +365,7 @@ func (a *factoryAPI) factoryValidateRoutes(ctx context.Context, c FactoryConfig)
 }
 ```
 
-  The block is the one at `web/bridge/factory_http.go:161-221` moved
+  The block is the one at `web/bridge/factory_http.go:161-220` moved
   verbatim; the only changes are the three role-less messages, which now name
   the role, and the `a.fleet == nil` guard, which the helper needs because
   the route-only retry path does not go through the preflight's own fleet
@@ -376,7 +376,7 @@ func (a *factoryAPI) factoryValidateRoutes(ctx context.Context, c FactoryConfig)
 - [ ] In `web/bridge/factory_http.go`, replace the block from
   `raw, err := a.fleet.controlCall(ctx, "config/get", nil, false)`
   (`web/bridge/factory_http.go:161`) through the end of the route loop
-  (`web/bridge/factory_http.go:221`) with:
+  (`web/bridge/factory_http.go:220`) with:
 
 ```go
 	if err := a.factoryValidateRoutes(ctx, c); err != nil {
@@ -442,9 +442,11 @@ approval and behaves exactly as today's retry.
   behaves the same way.
 - [ ] Write `TestFactoryRouteOnlyRetryAppendsTheGrantAndJournalsTheRouteChange`:
   the appended grant carries the command's `additionalRounds`, its `reason`
-  and its request id; the earlier grants are unchanged; the journal's last
-  event has the kind `route_changed` and the message of P16; a retry that
-  changes both routes produces one event naming both clauses.
+  and its request id; the earlier grants are unchanged; the item's total
+  allowance — the sum of every grant's `additionalRounds` — grows by exactly
+  the granted amount; the journal's last event has the kind `route_changed`
+  and the message of P16; a retry that changes both routes produces one event
+  naming both clauses.
 - [ ] Write `TestFactoryRouteOnlyRetryRevokesTheInterruptedRoundsReadiness`:
   an item at the reviewer-park position, whose round carries a clean review
   and passed CI at the current approval revision, is advanced to `set_ready`
@@ -456,7 +458,27 @@ approval and behaves exactly as today's retry.
   `CGO_ENABLED=1 go test ./web/bridge -run '^TestFactoryRoute' -count=1 -v`;
   confirm the new tests fail because the contract does not exist.
 - [ ] Implement, in `web/bridge/factory_routing.go` — add the imports
-  `bytes`, `strings` and `time`, and these declarations:
+  `bytes`, `strings` and `time`, and these declarations. Declare
+  `factoryRouteSelection` first, exactly as the "Shared Go types" section
+  gives it:
+
+```go
+// factoryRouteSelection reports which of the two routes a retry command
+// replaces. The routes are independent: one may change without the other.
+//
+// A route that is not named is inherited from the latest approval, byte for
+// byte. A route that is named replaces the previous route wholesale, so any
+// per-role override the previous routing object carried is dropped with it:
+// the operator re-stated the route.
+type factoryRouteSelection struct {
+	implementer    json.RawMessage
+	reviewer       json.RawMessage
+	hasImplementer bool
+	hasReviewer    bool
+}
+```
+
+  Then add these declarations:
 
 ```go
 // factoryRouteSelectionOf reads the two routing fields a retry command
@@ -772,6 +794,10 @@ validated in full against the combined configuration.
   to HTTP 400 `invalid_input`.
 - [ ] Run `gofmt -w` on the four task files; run the named tests; require
   PASS. Run `gofmt -l` on them; require no output.
+- [ ] Inspect `web/bridge/factory_http.go` and confirm the route rules are
+  called from **exactly two** places — `factoryAPI.preflight` and the
+  route-only branch of `factoryAPI.Command` — and that no copy of the rule
+  block survives inline. P2 pins this, and no test can prove it.
 - [ ] Run `CGO_ENABLED=1 go test ./web/bridge -run 'Factory' -count=1`; the
   pre-existing factory tests must pass unmodified. In particular
   `TestFactoryRetryReplacementIsNotReResolved`

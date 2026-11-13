@@ -348,6 +348,47 @@ export interface MergeRequest {
 }
 
 /**
+ * Inbox is the fleet's inbox (P5 F2).
+ */
+export interface Inbox {
+  groups: InboxGroups;
+  queue: InboxItem[];
+}
+
+/**
+ * InboxGroups are agent IDs, each list in urgency order.
+ */
+export interface InboxGroups {
+  needsYou: string[];
+  running: string[];
+  ready: string[];
+  earlier: string[];
+}
+
+/**
+ * InboxItemKind is what an entry in the needs-you queue is.
+ */
+export type InboxItemKind = 'agent' | 'intake';
+
+/**
+ * InboxItem is one entry in the needs-you queue, oldest first.
+ */
+export interface InboxItem {
+  kind: InboxItemKind;
+  agentId?: string;
+  submission?: PendingSubmission;
+  at: string;
+}
+
+/**
+ * InboxDelta is the "inbox" delta on the fleet stream.
+ */
+export interface InboxDelta {
+  kind: DeltaKind;
+  inbox: Inbox;
+}
+
+/**
  * PendingSubmission is one submission awaiting an operator's decision, as
  * GET /api/pending lists it.
  */
@@ -466,7 +507,7 @@ export interface SpawnResult {
 /**
  * DeltaKind is the discriminator of a fleet-stream delta.
  */
-export type DeltaKind = 'activity' | 'mode' | 'telemetry' | 'watch' | 'run' | 'pending' | 'gate' | 'hold' | 'budget' | 'project_removed';
+export type DeltaKind = 'activity' | 'mode' | 'telemetry' | 'watch' | 'run' | 'pending' | 'gate' | 'hold' | 'budget' | 'project_removed' | 'inbox';
 
 /**
  * FleetDelta is one entry on the fleet stream.

@@ -289,6 +289,23 @@ type Fleet struct {
 	done chan struct{}
 	// closeOnce guards Close against a double-close panic on done.
 	closeOnce sync.Once
+
+	// inboxWake wakes the inbox loop; one buffered signal.
+	inboxWake chan struct{}
+	// inboxDelay and inboxEvery are the loop's settle delay and tick:
+	// 250ms and 1s; tests shorten them.
+	inboxDelay, inboxEvery time.Duration
+	// inboxSent is the encoding of the last inbox delta sent (loop only).
+	inboxSent []byte
+	// inboxMu guards the intervals above and inboxRan, which tests shorten
+	// and count without restarting the loop.
+	inboxMu sync.Mutex
+	// inboxRan counts the loop's recomputes; tests read it through
+	// inboxRecomputes.
+	inboxRan int64
+	// inboxStopped is closed when the loop returns; tests wait on it.
+	inboxStopped chan struct{}
+
 	// rateLimits tracks per-repo "not before" times for backoff.
 	rateMu     sync.Mutex
 	rateLimits map[string]time.Time
@@ -392,6 +409,10 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		limits:        limits,
 		projectMounts: projectMounts,
 		done:          make(chan struct{}),
+		inboxWake:     make(chan struct{}, 1),
+		inboxDelay:    inboxSettleDelay,
+		inboxEvery:    inboxTick,
+		inboxStopped:  make(chan struct{}),
 		rateLimits:    make(map[string]time.Time),
 		provisioning:  make(map[string]string),
 		ctl:           newControlRuntime(),
@@ -406,6 +427,11 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 	f.pools = newPoolManager(f)
 	f.notify = newNotifier(f)
 	f.budgets = newBudgetState(f)
+	// The inbox loop starts once the fleet is fully built: its first
+	// recompute emits a delta, which goes through the notifier.
+	if f.done != nil {
+		go f.runInbox()
+	}
 	// Remote sources need git and (later) credentials. Absent git is not
 	// fatal at startup: local-path spawns still work, and a git-sourced
 	// spawn reports a clear error via Spawn.

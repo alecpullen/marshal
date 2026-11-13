@@ -12,6 +12,10 @@ import type {
   ExitResult as ContractExitResult,
   GateRecord as ContractGateRecord,
   GateResult as ContractGateResult,
+  Inbox as ContractInbox,
+  InboxDelta as ContractInboxDelta,
+  InboxGroups as ContractInboxGroups,
+  InboxItem as ContractInboxItem,
   MergeResult as ContractMergeResult,
   PendingRequest as ContractPendingRequest,
   PendingSubmission as ContractPendingSubmission,
@@ -37,6 +41,10 @@ export type DiffResult = ContractDiffResult
 export type ExitResult = ContractExitResult
 export type GateRecord = ContractGateRecord
 export type GateResult = ContractGateResult
+export type Inbox = ContractInbox
+export type InboxGroups = ContractInboxGroups
+export type InboxItem = ContractInboxItem
+export type InboxDelta = ContractInboxDelta
 export type MergeResult = ContractMergeResult
 /**
  * The approval or question an agent is parked on. `params` is the raw ACP
@@ -266,6 +274,7 @@ async function request<T = unknown>(method: string, path: string, body?: unknown
 export interface RoutingChoice { profile?: string; overrides?: Record<string, string> }
 export async function listAgents(): Promise<AgentStatus[]> { return request('GET', '/api/agents') }
 export async function listProjects(): Promise<ProjectStatus[]> { return request('GET', '/api/projects') }
+export async function getInbox(): Promise<Inbox> { return request('GET', '/api/inbox') }
 export async function addProject(root: string): Promise<ProjectStatus[]> { return request('POST', '/api/projects', { root }) }
 export async function removeProject(root: string): Promise<ProjectStatus[]> { return request('DELETE', '/api/projects', { root }) }
 export async function spawnAgent(req: SpawnRequest): Promise<SpawnResult> { return request('POST', '/api/agents', req) }

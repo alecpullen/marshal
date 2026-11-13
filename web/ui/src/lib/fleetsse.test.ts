@@ -102,6 +102,27 @@ describe('parseFleetEvent', () => {
     expect(parseFleetEvent('{"kind":"run","agentId":"a1","run":{"kind":"none"}}')).toMatchObject({ kind: 'run', sessionId: 'a1' })
   })
 
+  it('passes the fleet-wide inbox delta, which carries no session', () => {
+    const frame = { kind: 'inbox', inbox: { groups: { needsYou: ['a1'], running: ['a2'], ready: [], earlier: ['a3'] }, queue: [] } }
+    expect(parseFleetEvent(JSON.stringify(frame))).toEqual(frame)
+  })
+
+  it('drops an inbox delta with no inbox object', () => {
+    expect(parseFleetEvent('{"kind":"inbox"}')).toBeNull()
+    expect(parseFleetEvent('{"kind":"inbox","inbox":null}')).toBeNull()
+    expect(parseFleetEvent('{"kind":"inbox","inbox":"x"}')).toBeNull()
+  })
+
+  it('drops an inbox delta whose groups is missing one of the four lists', () => {
+    expect(parseFleetEvent('{"kind":"inbox","inbox":{"groups":{"needsYou":[],"running":[],"ready":[]},"queue":[]}}')).toBeNull()
+    expect(parseFleetEvent('{"kind":"inbox","inbox":{"groups":{"needsYou":[],"running":[],"ready":[],"earlier":{}},"queue":[]}}')).toBeNull()
+    expect(parseFleetEvent('{"kind":"inbox","inbox":{"queue":[]}}')).toBeNull()
+  })
+
+  it('drops an inbox delta with no queue', () => {
+    expect(parseFleetEvent('{"kind":"inbox","inbox":{"groups":{"needsYou":[],"running":[],"ready":[],"earlier":[]}}}')).toBeNull()
+  })
+
   it('accepts a watch delta with no session', () => {
     expect(parseFleetEvent('{"kind":"watch","sessionId":"studio","event":{"State":"fired"}}')).toEqual({ kind: 'watch', sessionId: 'studio', event: { State: 'fired' } })
   })

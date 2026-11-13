@@ -1,10 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { buildInbox } from './inbox'
-import { toRow } from './fleet'
-import type { AgentStatus, PendingSubmission } from './api'
+import { mineOnly } from './inbox'
+import type { Inbox, InboxItem } from './contract'
+import type { PendingSubmission } from './api'
 
-const mk = (o: Partial<AgentStatus> & { id: string }) =>
-  toRow({ project: '/p', status: 'idle', updatedAt: '2024-05-04T12:00:00Z', ...o })
 const sub = (id: string, createdAt: string): PendingSubmission => ({
   id,
   auto: null,
@@ -20,34 +18,54 @@ const sub = (id: string, createdAt: string): PendingSubmission => ({
   expiresAt: '2024-06-01T00:00:00Z',
 })
 
-describe('buildInbox', () => {
-  const agents = [
-    mk({ id: 'ask', pending: { kind: 'approval', id: 't' }, updatedAt: '2024-05-04T12:00:00Z' }),
-    mk({ id: 'busy', status: 'running' }),
-    mk({ id: 'done', changedFiles: 2 }),
-    mk({ id: 'theirs', status: 'running', ownerId: 'bob' }),
-  ]
+const inbox = (o: { groups?: Partial<Inbox['groups']>; queue?: InboxItem[] } = {}): Inbox => ({
+  groups: { needsYou: [], running: [], ready: [], earlier: [], ...(o.groups ?? {}) },
+  queue: o.queue ?? [],
+})
 
-  it('merges intake into Needs you, oldest first', () => {
-    const inbox = buildInbox(agents, [sub('early', '2024-05-04T09:00:00Z'), sub('late', '2024-05-04T15:00:00Z')], false)
-    expect(inbox.needsYou.map((i) => (i.kind === 'agent' ? i.agent.id : i.submission.id))).toEqual(['early', 'ask', 'late'])
-    expect(inbox.ready.map((a) => a.id)).toEqual(['done'])
-    expect(inbox.running.map((a) => a.id).sort()).toEqual(['busy', 'theirs'])
+const ownerOf = (owners: Record<string, string | undefined>) => (id: string) => owners[id]
+
+describe('mineOnly', () => {
+  it('keeps local or unowned agent IDs and drops another owner’s, in the bridge’s order', () => {
+    const got = mineOnly(
+      inbox({ groups: { running: ['busy', 'theirs', 'mine'], ready: ['theirs'] } }),
+      ownerOf({ busy: undefined, theirs: 'bob', mine: 'local' }),
+    )
+    expect(got.groups.running).toEqual(['busy', 'mine'])
+    expect(got.groups.ready).toEqual([])
   })
 
-  it('keeps only local or unowned items when mine', () => {
-    const inbox = buildInbox(agents, [], true)
-    expect(inbox.running.map((a) => a.id)).toEqual(['busy'])
+  it('drops an agent ID from every group, keeping each list’s order', () => {
+    const got = mineOnly(
+      inbox({ groups: { needsYou: ['a', 'b'], running: ['a', 'b'], ready: ['a', 'b'], earlier: ['a', 'b'] } }),
+      ownerOf({ a: 'bob', b: undefined }),
+    )
+    expect(got.groups).toEqual({ needsYou: ['b'], running: ['b'], ready: ['b'], earlier: ['b'] })
   })
 
-  it('filters intake requests by owner too', () => {
-    const theirs = { ...sub('t', '2024-05-04T10:00:00Z'), ownerId: 'bob' }
-    expect(buildInbox([], [theirs, sub('m', '2024-05-04T11:00:00Z')], true).needsYou).toHaveLength(1)
-    expect(buildInbox([], [theirs], false).needsYou).toHaveLength(1)
+  it('filters the queue’s intake items by the submission’s owner', () => {
+    const theirs = { ...sub('t', '2024-05-04T09:00:00Z'), ownerId: 'bob' }
+    const got = mineOnly(
+      inbox({ queue: [{ kind: 'intake', submission: theirs, at: theirs.createdAt }, { kind: 'intake', submission: sub('m', '2024-05-04T10:00:00Z'), at: '2024-05-04T10:00:00Z' }] }),
+      ownerOf({}),
+    )
+    expect(got.queue.map((i) => i.submission?.id)).toEqual(['m'])
+  })
+
+  it('filters the queue’s agent items by the agent’s owner', () => {
+    const got = mineOnly(
+      inbox({ queue: [{ kind: 'agent', agentId: 'theirs', at: '2024-05-04T09:00:00Z' }, { kind: 'agent', agentId: 'busy', at: '2024-05-04T10:00:00Z' }] }),
+      ownerOf({ theirs: 'bob' }),
+    )
+    expect(got.queue.map((i) => i.agentId)).toEqual(['busy'])
   })
 
   it('counts ownerId "local" as mine', () => {
-    const inbox = buildInbox([mk({ id: 'l', status: 'running', ownerId: 'local' })], [], true)
-    expect(inbox.running).toHaveLength(1)
+    const got = mineOnly(
+      inbox({ groups: { running: ['l'] }, queue: [{ kind: 'intake', submission: { ...sub('i', '2024-05-04T09:00:00Z'), ownerId: 'local' }, at: '2024-05-04T09:00:00Z' }] }),
+      ownerOf({ l: 'local' }),
+    )
+    expect(got.groups.running).toEqual(['l'])
+    expect(got.queue).toHaveLength(1)
   })
 })

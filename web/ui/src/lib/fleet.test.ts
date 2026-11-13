@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { get } from 'svelte/store'
-import { applyDeltaTo, createFleetStore, groupAgents, describePending, sortAttentionFirst, toPendingPermission, toPendingQuestion, toRow, type AgentRow } from './fleet'
+import { applyDeltaTo, createFleetStore, describePending, sortAttentionFirst, toPendingPermission, toPendingQuestion, toRow, type AgentRow } from './fleet'
 import { setToken, type AgentStatus } from './api'
 
 const row = (x: Partial<AgentRow>): AgentRow => ({
@@ -264,41 +264,6 @@ describe('toPendingQuestion', () => {
 })
 
 
-describe('groupAgents', () => {
-  const mk = (o: Partial<AgentStatus> & { id: string }): AgentRow =>
-    toRow({ project: '/p', status: 'idle', updatedAt: '2024-05-04T12:00:00Z', ...o })
-
-  it('buckets agents by what they need', () => {
-    const g = groupAgents([
-      mk({ id: 'asks', status: 'awaiting-approval', pending: { kind: 'approval', id: 't' } }),
-      mk({ id: 'busy', status: 'running' }),
-      mk({ id: 'done', changedFiles: 3 }),
-      mk({ id: 'shipped', changedFiles: 3, prUrl: 'https://x/pr/1' }),
-      mk({ id: 'quiet' }),
-      mk({ id: 'broken', status: 'error' }),
-    ])
-    expect(g.needsYou.map((a) => a.id)).toEqual(['asks'])
-    expect(g.running.map((a) => a.id)).toEqual(['busy'])
-    expect(g.ready.map((a) => a.id)).toEqual(['done'])
-    expect(g.earlier.map((a) => a.id).sort()).toEqual(['broken', 'quiet', 'shipped'])
-  })
-
-  it('never lists a running agent that is waiting on you under Running', () => {
-    const g = groupAgents([mk({ id: 'a', status: 'running', pending: { kind: 'question', id: 'q' } })])
-    expect(g.running).toHaveLength(0)
-    expect(g.needsYou).toHaveLength(1)
-  })
-
-  it('sorts by pending kind, then recency', () => {
-    const g = groupAgents([
-      mk({ id: 'q', pending: { kind: 'question', id: '1' }, updatedAt: '2024-05-04T13:00:00Z' }),
-      mk({ id: 'old', pending: { kind: 'approval', id: '2' }, updatedAt: '2024-05-04T10:00:00Z' }),
-      mk({ id: 'new', pending: { kind: 'approval', id: '3' }, updatedAt: '2024-05-04T12:00:00Z' }),
-    ])
-    expect(g.needsYou.map((a) => a.id)).toEqual(['new', 'old', 'q'])
-  })
-})
-
 describe('run, budget and reroute deltas', () => {
   const run = { kind: 'sdd' as const, sdd: { totalTasks: 2, doneTasks: 1 } as never }
 
@@ -450,3 +415,74 @@ describe('held on load', () => {
     expect(toRow({ id: 'b', project: '/p', status: 'idle', updatedAt: '' }).held ?? false).toBe(false)
   })
 })
+
+describe('the inbox in the store', () => {
+  const inbox = (o: Partial<{ needsYou: string[]; running: string[]; ready: string[]; earlier: string[] }> = {}) => ({
+    groups: { needsYou: [], running: [], ready: [], earlier: [], ...o },
+    queue: [],
+  })
+
+  it('starts empty and takes an inbox delta whole, leaving the rows alone', () => {
+    const { state, actions } = createFleetStore()
+    expect(get(state).inbox).toEqual({ groups: { needsYou: [], running: [], ready: [], earlier: [] }, queue: [] })
+    const rows = [row({ id: 'a' })]
+    state.update((s) => ({ ...s, agents: rows }))
+    const next = inbox({ running: ['a'] })
+    actions.applyDelta({ kind: 'inbox', inbox: next })
+    expect(get(state).inbox).toEqual(next)
+    expect(get(state).agents).toBe(rows)
+  })
+
+  it('refresh fetches the inbox with the agents and the projects', async () => {
+    const { state, actions } = createFleetStore()
+    const next = inbox({ needsYou: ['a1'] })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (u: string) => ({
+      ok: true,
+      status: 200,
+      text: async () =>
+        u === '/api/agents' ? JSON.stringify([{ id: 'a1', project: '/p', status: 'idle', updatedAt: '' }])
+        : u === '/api/inbox' ? JSON.stringify(next)
+        : '[]',
+    })))
+    setToken('t')
+    await actions.refresh()
+    expect(get(state).inbox).toEqual(next)
+    expect(get(state).agents.map((a) => a.id)).toEqual(['a1'])
+    vi.unstubAllGlobals()
+  })
+
+  it('refetches the agents when the inbox names a row it lacks, at most once a second', async () => {
+    const { state, actions } = createFleetStore()
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify([{ id: 'new', project: '/p', status: 'running', updatedAt: '' }]),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    setToken('t')
+
+    actions.applyDelta({ kind: 'inbox', inbox: inbox({ running: ['new'] }) })
+    await vi.waitFor(() => expect(get(state).agents.map((a) => a.id)).toEqual(['new']))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/agents')
+
+    // Same second: the second unknown ID rides on the refetch already made.
+    actions.applyDelta({ kind: 'inbox', inbox: inbox({ running: ['new', 'other'] }) })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    vi.unstubAllGlobals()
+  })
+
+  it('does not refetch when every ID the inbox names has a row', async () => {
+    const { state, actions } = createFleetStore()
+    state.update((s) => ({ ...s, agents: [row({ id: 'a' })] }))
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    actions.applyDelta({ kind: 'inbox', inbox: inbox({ running: ['a'] }) })
+    await Promise.resolve()
+    expect(fetchMock).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
+})
+

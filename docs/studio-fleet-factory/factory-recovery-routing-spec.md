@@ -714,6 +714,15 @@ Acceptance gates, run from the repository root on this branch:
 | `cd web/ui && npm run test` | PASS — 88 test files, 941 tests, 0 failures |
 | `CGO_ENABLED=1 go test -p=1 ./... -count=1 -timeout 20m` | PASS — exit 0, no `FAIL` line |
 
+The `full-suite` CI job reports failures in `internal/acp` and `internal/app` —
+`TestStackPatchApplyBudget`, `TestStackRoundTripBudget` and
+`TestASecondEmbeddingWaitsAndTakesOver`. These are pre-existing
+timing-budget flakes, not regressions from this slice: the first two fail on
+this branch's base the same way when they are run sequentially, the third is a
+lease-timing test with a 50 ms window that is sensitive to CI load, and this
+branch touches nothing under `internal/`. CI reports `ok marshal/web/bridge`,
+and the `scripted` suite passes.
+
 Every test is offline and deterministic: no live forge, no network, no container
 runtime, no model provider and no developer credentials.
 

@@ -542,3 +542,39 @@ func TestFactoryRouteOnlyRetryReplaysToTheOriginalItem(t *testing.T) {
 		t.Fatalf("changed content: status %d, body %s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestFactoryRouteOnlyRetryReplaysAfterTheProfileIsWithdrawn pins the replay
+// promise: a replayed route-only retry returns the original item even when
+// the route it named has since been withdrawn from the model configuration.
+// The replay is answered from the recorded request, not re-validated.
+func TestFactoryRouteOnlyRetryReplaysAfterTheProfileIsWithdrawn(t *testing.T) {
+	f := routingFixture(t)
+	item := blockedRoutedItem(t, f)
+	cmd := map[string]any{
+		"requestId": "retry-1", "kind": "retry", "decisionId": "block", "reason": "the implementer model stalls",
+		"expectedVersion": item.Version, "additionalRounds": 1, "implementerRouting": json.RawMessage(`{"profile":"alternate"}`),
+	}
+	first := retryCommand(t, f, item, cmd)
+	if first.Code != http.StatusOK {
+		t.Fatalf("retry: status %d, body %s", first.Code, first.Body.String())
+	}
+	var once struct {
+		Item FactoryItem `json:"item"`
+	}
+	decodeBody(t, first, &once)
+	// The profile the retry named is withdrawn from the model configuration.
+	withdrawn := factoryRoutingModelConfig()
+	delete(withdrawn["profiles"].(map[string]any), "alternate")
+	setFactoryModelConfig(f, withdrawn)
+	replay := retryCommand(t, f, item, cmd)
+	if replay.Code != http.StatusOK {
+		t.Fatalf("replay after the profile was withdrawn: status %d, body %s", replay.Code, replay.Body.String())
+	}
+	var twice struct {
+		Item FactoryItem `json:"item"`
+	}
+	decodeBody(t, replay, &twice)
+	if twice.Item.Version != once.Item.Version || len(twice.Item.Approvals) != 2 {
+		t.Fatalf("replay = %s@%d with %d approvals, want the original %s@%d", twice.Item.ID, twice.Item.Version, len(twice.Item.Approvals), once.Item.ID, once.Item.Version)
+	}
+}

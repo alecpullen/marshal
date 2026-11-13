@@ -730,6 +730,18 @@ exercised, not weakened: the real `Fleet.SpawnFactoryWorker` runs, and the
 assertion is on the captured `session/new` routing, whose profile is the
 reviewer's `cheap-review` and distinct from the implementer's `frontier`.
 
+**One branch-review finding was examined and does not reproduce.** The review
+reported that a replayed route-only retry re-validates against the current
+model configuration, so that withdrawing the profile after the original retry
+would make the replay answer 422 instead of the original item. It does not:
+`factoryAPI.Command` answers a recorded request id from the store before it
+reaches the route validation (`web/bridge/factory_http.go:89` precedes the
+retry block at `:110`), so the replay is answered from the recorded request
+and is never re-validated. `TestFactoryRouteOnlyRetryReplaysAfterTheProfileIsWithdrawn`
+pins that: it withdraws the profile the retry named and requires the replay
+to return the original item. The finding was left as a test rather than a
+change, because the behaviour it describes is the behaviour §6 promises.
+
 The open questions in §8 remain open: the fresh-start handoff summary (§8.1),
 continuing the existing conversation on the new route (§8.2), the superseded
 implementer's session and workspace (§8.3), warning the operator that a route

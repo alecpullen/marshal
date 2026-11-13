@@ -556,6 +556,7 @@ disjoint file set.
 | 5 | The controller, store and end-to-end evidence, including the harness GitHub handler's description-update branch | `efa47ea7` |
 | 6 | The studio rendering of the narration sections and excerpts, with the summary fallback | `f96781a0` |
 | 7 | The rebuilt embedded assets, the gates below, and this record | `70fca650` |
+| 8 | The branch-review fixes: the excerpt language validated at parse time, the path refusing control characters, Windows drive prefixes and over-long paths, the fence computed over the language, the path and the code together, and the CI checks bucketed the way the studio's CI card buckets them | `4cdaaeec` |
 
 Files: `web/bridge/factory_prbody.go` and `factory_prbody_test.go` are new;
 `web/bridge/factory_types.go`, `factory_prompts.go`, `factory_prompts_test.go`,

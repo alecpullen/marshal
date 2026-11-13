@@ -587,6 +587,7 @@ separate npm package with a disjoint file set.
 | 5 | `efa47ea7` | The controller, store and end-to-end evidence |
 | 6 | `f96781a0` | The studio rendering of the narration sections and excerpts |
 | 7 | `70fca650` | The rebuilt embedded assets and the gates below |
+| 8 | `4cdaaeec` | The branch-review fixes: the excerpt language validated at parse time, the path refusing control characters, Windows drive prefixes and over-long paths, the fence computed over the language, the path and the code together, and the CI checks bucketed the way the studio's CI card buckets them |
 
 The gates Task 7 ran, and their results, are recorded in the
 [specification's implementation record](../factory-narration-spec.md#implementation-record).

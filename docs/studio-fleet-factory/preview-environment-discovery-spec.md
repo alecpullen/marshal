@@ -428,17 +428,25 @@ branch with 40 environments therefore yields one row per environment, capped
 at the 20 newest environments, rather than 20 rows that might all belong to
 one environment.
 
-**Decided — D13.** Whenever a deployment or an environment was collected but
-not named — by the page bound in D11 or the cap in D12 — the report records a
-gap on `preview_deployments` saying so. The gap's detail states the bound
-that was hit, in the preview surface's own words:
+**Decided — D13.** Whenever a deployment, an environment, or a deployment's
+statuses was collected but not named — by the page bound in D11 or the cap in
+D12 — the report records a gap naming the bound that was hit: on
+`preview_deployments` for the deployments bounds, on `preview_environments` for
+the environments bound, and on `preview_statuses` for a statuses bound. The
+gap's detail states the bound in the preview surface's own words:
 
-| Bound hit | Detail |
-|---|---|
-| The page bound (D11) | the forge reported more deployments than this report reads; the list is not exhaustive and a larger page bound would be needed to read the rest |
-| The name cap (D12) | the forge reported deployments for more environments than this report names; the newest deployment for each of the most recently updated environments is listed |
+| Bound hit | Gap key | Detail |
+|---|---|---|
+| The page bound on deployments (D11) | `preview_deployments` | the forge reported more deployments than this report reads; the list is not exhaustive and a larger page bound would be needed to read the rest |
+| The name cap (D12) | `preview_deployments` | the forge reported deployments for more environments than this report names; the newest deployment for each of the most recently updated environments is listed |
+| The page bound on environments (D11) | `preview_environments` | the forge reported more environments than this report reads; the list is not exhaustive and a larger page bound would be needed to read the rest |
+| The page bound on a deployment's statuses (D11) | `preview_statuses` | the forge reported more statuses for at least one deployment than this report reads; the listed status may not be the newest |
 
-Neither detail says adapter support would be needed. The adapter exists and
+A bound gap's **state** is `temporarily_unavailable`, mirroring the discovery
+report's truncation gaps: the forge did answer, so the capability stays
+`supported`, and the gap says the answer was not exhaustive.
+
+No bound detail says adapter support would be needed. The adapter exists and
 the instance answered; what was not read is a matter of this report's own
 bounds, and the detail says which bound.
 
@@ -483,9 +491,19 @@ makes **no request at all**. Every preview capability is `unsupported`, and
 the gap says no forge is declared for this repository. The report never
 implies a repository has no previews when it simply was not asked a forge.
 
-**Decided — D18.** One failure degrades one capability. A refused
-environments read leaves `preview_deployments` and `preview_statuses`
-`supported`, and the report's `gaps` names only the refused key.
+**Decided — D18.** One failure degrades one capability, **unless another
+read depends on it**. A refused environments read leaves `preview_deployments`
+and `preview_statuses` `supported`, and the report's `gaps` names only the
+refused key.
+
+Deployment statuses are a sub-resource of deployments, so the dependency
+propagates: if the deployments read fails, the instance does not serve the
+statuses either, and reporting `preview_statuses` as `supported` would claim a
+capability the instance does not have. A failed deployments read therefore
+degrades `preview_statuses` with the **same state and cause**, in its own gap,
+so each key still carries exactly one gap. The environments read is
+independent of the other two, so a refused environments read propagates to
+nothing.
 
 Because `preview_statuses` is read per deployment, several status reads can
 fail with different causes. The capability and its one gap then carry the
@@ -509,6 +527,11 @@ rules are:
 | `insufficient_permission` | grant the credential read access to the repository's deployments and environments, and retry |
 | `temporarily_unavailable` | the forge could not answer right now; retry later |
 | `unsupported` | this forge instance does not expose this resource; no adapter can read what the instance does not serve |
+
+The Git-only path has a different cause — **no forge is declared** — so its
+`unsupported` fix is `declare github or gitea for this repository`, not the
+instance text above. The instance text would tell the operator to look for a
+resource their instance was never asked about.
 
 **Decided — D20.** The `unsupported` fix says the **instance** does not
 expose the resource. It does not say "adapter support would be needed", which
@@ -645,7 +668,9 @@ not report it.
 ## 7. Missing access and partial failure
 
 - A capability the credential cannot read degrades **that capability only**;
-  the others keep their own state and their own facts.
+  the others keep their own state and their own facts. The one exception is
+  the dependency in D18: a failed deployments read also degrades
+  `preview_statuses`, because statuses are a sub-resource of deployments.
 - A capability the instance does not serve is `unsupported`, with a gap that
   says so and a fix that does not promise an adapter can help.
 - A forge that is entirely unreachable is `unavailable`, with a top-level

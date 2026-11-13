@@ -191,10 +191,16 @@ differences, and each names the code it builds on.
     (`web/bridge/discovery_report.go:380`).
 
 13. **A truncated or capped read keeps its capability `supported`** and
-    records a gap on `preview_deployments` naming the bound hit, with the
-    exact texts the specification D13 fixes. Neither bound text mentions
-    adapter support: the adapter exists and the instance answered; what was
-    not read is a matter of this report's own bounds.
+    records a gap naming the bound hit. The gap's **key** is the capability
+    whose collection was bounded — `preview_deployments` for the deployments
+    bounds, `preview_environments` for the environments bound, and
+    `preview_statuses` for a statuses bound — and its **state** is
+    `temporarily_unavailable`, mirroring the discovery report's truncation
+    gaps: the forge did answer, so the capability stays `supported`, and the
+    gap says the answer was not exhaustive. The exact texts are in the
+    **Bound-hit details** table below. No bound detail mentions adapter
+    support: the adapter exists and the instance answered; what was not read
+    is a matter of this report's own bounds.
 
 14. **The status capability carries the most actionable state among its
     failures** (D18). When several per-deployment status reads fail with
@@ -207,9 +213,14 @@ differences, and each names the code it builds on.
     whose status read failed keeps its row with empty status fields; only the
     capability state and the gap reflect the failure.
 
-15. **One failure degrades one capability** (D18). A refused environments
-    read leaves `preview_deployments` and `preview_statuses` `supported`, and
-    `gaps` names only the refused key.
+15. **One failure degrades one capability — unless another read depends on
+    it** (D18). A refused environments read leaves `preview_deployments` and
+    `preview_statuses` `supported`, and `gaps` names only the refused key.
+    Deployment statuses are a sub-resource of deployments, so the dependency
+    propagates: a failed deployments read degrades `preview_statuses` with
+    the **same state and cause**, in its own gap, because reporting
+    `preview_statuses` as `supported` would claim a capability the instance
+    does not have. Each key still carries exactly one gap.
 
 16. **Each degraded capability contributes exactly one gap.** `gaps` holds at
     most one entry per capability key, so the Git-only path — three keys
@@ -394,12 +405,20 @@ contract and are not redefined.
 | `temporarily_unavailable` | the forge could not answer right now; retry later |
 | `unsupported` | this forge instance does not expose this resource; no adapter can read what the instance does not serve |
 
+The Git-only path has a different cause — **no forge is declared** — so its
+`unsupported` fix is `declare github or gitea for this repository`, not the
+instance text above. The instance text would tell the operator to look for a
+resource their instance was never asked about. `previewFix` therefore takes a
+`forgeDeclared` flag, exactly as the discovery surface's `discoveryFix` does.
+
 ### Bound-hit details (specification D13)
 
-| Bound hit | Detail |
-|---|---|
-| The page bound | the forge reported more deployments than this report reads; the list is not exhaustive and a larger page bound would be needed to read the rest |
-| The name cap | the forge reported deployments for more environments than this report names; the newest deployment for each of the most recently updated environments is listed |
+| Bound hit | Gap key | Detail |
+|---|---|---|
+| The page bound on deployments | `preview_deployments` | the forge reported more deployments than this report reads; the list is not exhaustive and a larger page bound would be needed to read the rest |
+| The name cap | `preview_deployments` | the forge reported deployments for more environments than this report names; the newest deployment for each of the most recently updated environments is listed |
+| The page bound on environments | `preview_environments` | the forge reported more environments than this report reads; the list is not exhaustive and a larger page bound would be needed to read the rest |
+| The page bound on a deployment's statuses | `preview_statuses` | the forge reported more statuses for at least one deployment than this report reads; the listed status may not be the newest |
 
 ### Status codes
 
@@ -599,6 +618,14 @@ No task edits `discovery.go`, `discovery_forge.go`, `discovery_forge_github.go`,
 - [ ] Write `TestPreviewReportReportsEmptyCollectionsAsSupported`: an empty
   repository reports empty arrays, every capability `supported`, no gaps,
   and `status` `ok` — textually distinct from an unreadable section.
+- [ ] Write `TestPreviewReportRecordsTheEnvironmentsPageBoundGap`: a
+  truncated environments read keeps the environments read, keeps
+  `preview_environments` `supported`, and records a gap on
+  `preview_environments` with the environments page-bound detail.
+- [ ] Write `TestPreviewReportRecordsTheStatusesPageBoundGap`: a truncated
+  statuses read keeps its items, keeps `preview_statuses` `supported`, and
+  records a gap on `preview_statuses` with the statuses page-bound detail —
+  a listed status may not be the newest.
 - [ ] Write `TestPreviewReportReadsNoLocalPath`: the report never reads a
   checkout, a workspace or any local file.
 - [ ] Write `TestPreviewReportDoesNotChangeTheDiscoveryContract`: the
@@ -610,7 +637,11 @@ No task edits `discovery.go`, `discovery_forge.go`, `discovery_forge_github.go`,
 - [ ] Implement `web/bridge/preview_environment_report.go`: the read order of decision
   5, the scope resolution of decision 8, the bounds pipeline of decision 9,
   the classification of decision 6, the fix and gap text of decision 7, the
-  severity fold of decision 14, and the always-present arrays of decision 19.
+  severity fold of decision 14, the dependency propagation of decision 15, and
+  the always-present arrays of decision 19. A truncated statuses read records
+  its gap **after** the capability's failure gap, so the more actionable
+  failure keeps the key and the bound detail is added only when the key has no
+  gap yet.
   Reuse `discoveryCapabilityState`, `discoveryProbeOutcome`,
   `discoveryWorstState`, `discoveryStateSeverity` and
   `f.discoveryCredential` unchanged.
@@ -693,6 +724,8 @@ when the slice lands.
 | More deployments than the page bound holds: the deployments read are reported, `preview_deployments` stays `supported`, and a gap says the list is not exhaustive | Task 2 `TestPreviewForgeGitHubTruncatesAtThePageBound`; Task 3 `TestPreviewReportRecordsThePageBoundGap` |
 | At most 20 deployments, one per environment, statuses read only for those named; more environments records a gap on `preview_deployments` naming the bound | Task 3 `TestPreviewReportNamesTheNewestDeploymentPerEnvironment`, `TestPreviewReportRecordsTheNameCapGap` |
 | With no scope resolvable, the read is unfiltered, `ref` and `sha` are empty, and the capability carries the exact detail | Task 3 `TestPreviewReportWithoutAnyScopeIsUnfiltered` |
+| A truncated environments read keeps the items, keeps `preview_environments` `supported`, and records a gap on that key | Task 3 `TestPreviewReportRecordsTheEnvironmentsPageBoundGap` |
+| A truncated statuses read keeps its items, keeps `preview_statuses` `supported`, and records a gap on that key | Task 3 `TestPreviewReportRecordsTheStatusesPageBoundGap` |
 | The probe issues only `GET` requests, reads no local path, and writes nothing anywhere | Task 2 `TestPreviewForgeIssuesOnlyGetRequests`; Task 3 `TestPreviewReportReadsNoLocalPath`; Task 4 `TestPreviewRouteDoesNotPersistState` |
 | The credential, request headers and the forge's raw error body appear nowhere in the report, a gap or an error string | Task 2 `TestPreviewForgeNeverEchoesTheCredential` |
 | `TestWebIsStdlibOnly` passes and no new import from `marshal/internal/...` appears under `web/` | Task 4 `go test ./web/bridge -run '^(TestPreviewRoute|TestWebIsStdlibOnly)' -count=1` |

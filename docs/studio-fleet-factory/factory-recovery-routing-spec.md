@@ -109,7 +109,7 @@ this slice makes the studio send them.
 **Decided — D2.** A retry that carries routing and **no** `replacement` is a
 **route-only retry**. A retry that carries a `replacement` is a
 **plan-replacement retry** and keeps its existing meaning. The two may be
-combined; D9 states what the combination means.
+combined; D12 states what the combination means.
 
 **Decided — D3.** The routing fields are read as *replacements for the named
 route*, not as merges:
@@ -157,6 +157,10 @@ existing per-approval validation (`factory_store.go:299-311`): a non-empty
 plan, a matching plan hash, a normalizable config, and either expected CI
 checks or the explicit no-required-CI acknowledgement.
 
+The approved plan and the approved specification are therefore **unchanged**,
+and the plan hash is unchanged, so the plan identity of the work item does not
+move.
+
 **Decided — D7.** An approval is appended **only when at least one route
 actually differs** from the latest approval's config. Routes are compared as
 raw bytes, the same comparison `factoryImplementerRouteChanged` uses
@@ -174,8 +178,13 @@ allowance accounting, the exhaustion decision and the "previous attempts are
 preserved" rule are unchanged — the earlier grants stay in the journal and the
 total allowance grows by exactly the granted amount.
 
-The route change is also **journalled**, as a history event naming the old and
-the new profile for each role that changed. The approval history already
+The route change is also **journalled**, as a history event of kind
+`route_changed` whose message names the old and the new profile of each role
+that changed: one clause per changed role, joined with `"; "`, each clause
+`<role> route <oldProfile> -> <newProfile>`, where `<role>` is `implementer`
+or `reviewer` and the profiles are the `profile` field of the routing object,
+or `-` when the routing object names no profile. For example
+`implementer route frontier -> cheap-review`. The approval history already
 shows revision N → N+1 with an identical plan hash, which is the evidence;
 the history event makes the *intent* legible in the studio's activity list.
 The item's `ApprovedAt` does **not** change: it is the plan's approval time,
@@ -201,9 +210,15 @@ preflight already applies (`web/bridge/factory_http.go:183-219`):
   credential unavailable".
 
 Sharing the helper is what makes "the same rules apply" a structural property
-rather than a convention: the two call sites cannot drift. The messages name
-the role, because the helper checks **both** routes of a config and a
-role-less message would not say which route was at fault.
+rather than a convention: the two call sites cannot drift.
+
+The helper **names the role in every message**. Two of the six messages are
+role-less today — "explicit routing profile required"
+(`factory_http.go:196`) and "unknown routing profile" (`:204`) — and the
+helper role-names them, because it checks **both** routes of a config and a
+role-less message would not say which route was at fault. This changes the
+error text of the plan-replacement path for those two cases; it changes no
+rule, no status code and no outcome.
 
 **Decided — D10.** A route-only retry is validated by that shared helper, run
 against the **candidate config** — the latest approval's config with the named
@@ -224,7 +239,8 @@ plain retry receives — a plain retry is not preflighted at all — and
 deliberately less than the plan-replacement retry receives, because a
 replacement can change the repository, the project root, the target branch,
 the workspace and the expected CI checks, all of which need re-validation. The
-plan-replacement path keeps the full `preflight` unchanged.
+plan-replacement path keeps the full `preflight`, including the route rules it
+already ran; only the two role-less messages become role-named (D9).
 
 **Decided — D11.** A route that fails validation **refuses the command**. The
 error is the existing configuration error (`errFactoryConfig`), which
@@ -242,17 +258,14 @@ byte-for-byte unchanged: its replacement's config is validated as today and
 its approval is appended with the replacement's plan and specification. There
 is one source of truth for a given route in any one command.
 
-### 4.4 The plan, the specification and the interrupted round
-
-**Decided — D12.** A route-only retry leaves the **approved plan and the
-approved specification unchanged**. The plan hash is unchanged, so the plan
-identity of the work item does not move.
+### 4.4 The interrupted round
 
 **Decided — D13.** Because the approval revision advances, the interrupted
 round's review evidence **no longer satisfies the readiness gate**. The
 readiness gate compares the round's `ApprovalRevision` with the latest
-approval's revision (`factory_controller.go:284` and `:303`); a new revision
-means the previous round's clean review cannot mark the pull request ready.
+approval's revision (`factory_controller.go:284`, `:303` and `:325`); a new
+revision means the previous round's clean review cannot mark the pull request
+ready.
 
 That is the intended consequence, and it is the same one a plan replacement
 already produces: **a new model does not inherit the previous model's clean
@@ -309,7 +322,8 @@ conversation on the new route, and what a fresh start should carry, are open
 questions (§8.1, §8.2) that need the user.
 
 **Decided — D17.** The retry guards are unchanged. A retry is refused while
-any effect is dispatched or uncertain, and while a worker is active unless the
+any effect is dispatched or uncertain, while the item is in the `recovering`
+state (`factory_controller.go:922`), and while a worker is active unless the
 previous worker is attested stopped
 (`factory_controller.go:917-946`). A route-only retry does not get a weaker
 guard than today's retry. What happens to the **previous** implementer's
@@ -427,7 +441,7 @@ plan and specification in the item are the previous approval's.
 An invalid route is refused before anything is written:
 
 ```json
-{ "error": "factory configuration or capability unsupported: unknown routing profile",
+{ "error": "factory configuration or capability unsupported: unknown implementer/reviewer routing profile",
   "code": "unsupported" }
 ```
 
@@ -574,6 +588,9 @@ For this slice:
   without the plan-replacement checkbox being ticked;
 - the studio sends the routes inside the replacement's config and sends no
   top-level route fields when the plan is replaced, as today;
+- the studio renders the plan-replacement checkbox with the label "Change
+  approved plan or reviewer instructions", and the studio test finds the
+  checkbox by that label;
 - the studio shows the routes currently in force and leaves the new-route
   inputs empty by default;
 - the studio states that a route-only retry starts a fresh round, that the

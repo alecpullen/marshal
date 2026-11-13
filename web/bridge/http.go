@@ -169,6 +169,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/projects", s.addProject)
 	s.mux.HandleFunc("DELETE /api/projects", s.removeProject)
 	s.mux.HandleFunc("GET /api/agents", s.listAgents)
+	s.mux.HandleFunc("GET /api/inbox", s.inbox)
 	s.mux.HandleFunc("POST /api/agents", s.spawnAgent)
 	s.mux.HandleFunc("GET /api/agents/{id}/diff", s.agentDiff)
 	s.mux.HandleFunc("GET /api/agents/{id}/files", s.agentFiles)
@@ -439,6 +440,18 @@ func (s *Server) removeProject(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.fleet.Snapshot())
+}
+
+// inbox answers the fleet's inbox: the four agent groups and the needs-you
+// queue, computed fresh on every request (P5 F2). A bridge built over a
+// registry rather than a fleet has no inbox, so the route answers exactly
+// what the mux answers for a path it does not know.
+func (s *Server) inbox(w http.ResponseWriter, r *http.Request) {
+	if s.fleet == nil {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.fleet.Inbox())
 }
 
 // ValidateProjectRoot checks that root is an absolute path under one of the

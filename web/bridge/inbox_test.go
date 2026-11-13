@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"encoding/json"
+	"net/http"
 	"slices"
 	"testing"
 	"time"
@@ -282,6 +283,73 @@ func TestFleetInbox(t *testing.T) {
 	}
 	if want := inboxAt("2024-05-04T09:00:00Z"); !got.Queue[0].At.Equal(want) {
 		t.Fatalf("queue at = %s, want %s", got.Queue[0].At, want)
+	}
+}
+
+// TestTheInboxRouteAnswersTheGroups checks GET /api/inbox end to end: the
+// answer is the fleet's live inbox, so each agent lands in the group its
+// state puts it in, and an intake submission is in the needs-you queue.
+func TestTheInboxRouteAnswersTheGroups(t *testing.T) {
+	e, s, root := projectEnv(t)
+	busy, err := e.f.Spawn(ctlContext(t), root, SpawnOptions{Name: "busy", Mode: "edit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	quiet, err := e.f.Spawn(ctlContext(t), root, SpawnOptions{Name: "quiet", Mode: "edit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The running agent: a live session with its turn marked busy. The
+	// quiet one stays idle with no changed files, which is Earlier.
+	rt, err := e.f.runtimeForAgent(busy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.reg.mu.Lock()
+	rt.reg.sessions[rt.sessionID].Busy = true
+	rt.reg.mu.Unlock()
+
+	if err := e.f.ws.PutPending(inboxSubmission("sub-1", "2024-05-04T09:00:00Z")); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := doReq(t, s, http.MethodGet, "/api/inbox", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/inbox = %d %s", rec.Code, rec.Body)
+	}
+	var got inboxView
+	decodeBody(t, rec, &got)
+
+	assertIDs(t, "needsYou", got.Groups.NeedsYou, []string{})
+	assertIDs(t, "running", got.Groups.Running, []string{busy})
+	assertIDs(t, "ready", got.Groups.Ready, []string{})
+	assertIDs(t, "earlier", got.Groups.Earlier, []string{quiet})
+	assertIDs(t, "queue", inboxQueueIDs(got.Queue), []string{"sub-1"})
+	if got.Queue[0].Kind != "intake" {
+		t.Fatalf("queue kind = %q, want intake", got.Queue[0].Kind)
+	}
+}
+
+// TestTheInboxRouteNeedsTheToken checks that the route sits behind the same
+// bearer check as the rest of /api/.
+func TestTheInboxRouteNeedsTheToken(t *testing.T) {
+	const token = "tok"
+	e := newWSSpawnEnv(t)
+	s := NewServer(e.f, token)
+	auth := map[string]string{"Authorization": "Bearer " + token}
+
+	if rec := doReq(t, s, http.MethodGet, "/api/inbox", nil, nil); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /api/inbox without a token = %d, want 401", rec.Code)
+	}
+	if rec := doReq(t, s, http.MethodGet, "/api/inbox", nil, auth); rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/inbox with a token = %d, want 200", rec.Code)
+	}
+	// The same pair for GET /api/agents, the route it is registered beside.
+	if rec := doReq(t, s, http.MethodGet, "/api/agents", nil, nil); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /api/agents without a token = %d, want 401", rec.Code)
+	}
+	if rec := doReq(t, s, http.MethodGet, "/api/agents", nil, auth); rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/agents with a token = %d, want 200", rec.Code)
 	}
 }
 

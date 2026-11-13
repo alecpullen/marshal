@@ -90,6 +90,13 @@ differences, and each names the code it builds on.
       (`web/bridge/discovery_report.go:456`), exactly as the discovery report
       resolves it. An unusable credential is `unconfigured` and **no request
       is made**; a non-PAT credential is refused before any host is touched.
+      The credential failure is degraded to `unconfigured` across all three
+      keys **before** any classification call, exactly as `probeForge` does
+      (`web/bridge/discovery_report.go:272`–`277`). It cannot go through the
+      shared classifier: `discoveryCredential` returns plain `errors.New`
+      values, and the classifier maps a plain non-sentinel, non-`forgeAPIError`
+      error to `temporarily_unavailable`, which would contradict the
+      specification D15 row.
    3. **Metadata probe** — `DiscoveryForge.RepositoryMetadata`, for the
       reason the specification D15 gives: it establishes whether a later
       `404` means "this instance does not serve this endpoint" or "this
@@ -162,9 +169,11 @@ differences, and each names the code it builds on.
     ids are numeric; the report carries them as strings, because the
     specification §6.4 requires the native id to survive any provider, but
     the grouping and ordering compare the **numeric** value, so `"99"` sorts
-    above `"9"`. A deployment whose id does not parse as a number is kept,
-    ordered after the numeric ones, and its status is not read — the status
-    URL needs a usable id.
+    above `"9"`. A deployment whose id does not parse as a number **loses to
+    any numeric id within its environment group**, so it survives grouping
+    only as the sole member of that group; it is then ordered after every
+    numeric survivor and before the keep-first-20 cut, and its status is not
+    read, because the status URL needs a usable id.
 
 11. **The newest status supplies the deployment row's status fields** (D4a).
     `state`, `environmentUrl`, `targetUrl`, `logUrl` and `description` come
@@ -253,6 +262,17 @@ differences, and each names the code it builds on.
     directly with `writeJSON` (`web/bridge/http.go:273`), **not** through
     `writeErr`, whose 502 default denotes a child-process failure
     (`web/bridge/http.go:279`).
+
+24. **The assembler returns an error only for a request the bridge cannot
+    assemble at all.** It mirrors `Fleet.DiscoverRepo`
+    (`web/bridge/discovery_report.go:77`–`85`), whose returned error "is
+    reserved for a request the bridge cannot assemble at all": concretely, a
+    registered repository whose `Repo.ID` is empty. Everything else is
+    classified into the report and returned with a nil error, so the 500
+    branch is reachable without a forge being contacted. The route test
+    reaches it the way the discovery route test does
+    (`web/bridge/discovery_http_test.go:238`–`270`): by seeding a workspace
+    record whose map key exists but whose `Repo.ID` field is empty.
 
 ## HTTP and JSON contract
 
@@ -444,7 +464,12 @@ No task edits `discovery.go`, `discovery_forge.go`, `discovery_forge_github.go`,
   can keep the items and record the bound.
 - [ ] Write `TestPreviewForgeGiteaUsesTokenAuthAndVersionedBase`: the Gitea
   adapter sends `Authorization: token <pat>` against the instance's
-  `apiBase`, and asks the instance's own paths.
+  `apiBase`, and asks the instance's own paths: `/repos/{owner}/{repo}/environments`,
+  `/repos/{owner}/{repo}/deployments` and
+  `/repos/{owner}/{repo}/deployments/{id}/statuses` — the natural mirror of
+  the GitHub paths under the instance's versioned API root. Gitea serves no
+  such resource, so the instance answers `404`; the adapter reports what it
+  answered and the assembler classifies it.
 - [ ] Write `TestPreviewForgeGiteaWithoutAPIBaseIsUnconfigured`: with no
   `apiBase`, the adapter reports `errDiscoveryUnconfigured` **without
   building a request**.
@@ -494,6 +519,11 @@ No task edits `discovery.go`, `discovery_forge.go`, `discovery_forge_github.go`,
 - [ ] Write `TestPreviewReportClassifies404BeforeReadableMetadataAsInsufficientPermission`:
   the same `404` from an instance whose metadata was **not** readable is
   `insufficient_permission`.
+- [ ] Write `TestPreviewReportGiteaInstanceAnswering404IsUnsupported`: point a
+  Gitea `apiBase` at an `httptest` server that answers `404` on the three
+  preview paths, and assert that **all three** capabilities are `unsupported`
+  with the D20 instance wording, that the report does not claim the
+  repository has no previews, and that the status is `degraded`.
 - [ ] Write `TestPreviewReportDegradesOnlyTheDeniedEnvironmentsRead`: a `403`
   on the environments read leaves `preview_deployments` and
   `preview_statuses` `supported` with their facts intact, and `gaps` names
@@ -630,7 +660,7 @@ when the slice lands.
 | A credential refused with `403` on the environments read yields `insufficient_permission` for `preview_environments` with a gap naming cause and fix, while the other two stay `supported` with their facts intact | Task 3 `TestPreviewReportDegradesOnlyTheDeniedEnvironmentsRead`; Task 1 `TestPreviewFixRulesMatchTheContract` |
 | A `404` after readable metadata is `unsupported`; the same `404` before it is `insufficient_permission` | Task 3 `TestPreviewReportClassifies404AfterReadableMetadataAsUnsupported`, `TestPreviewReportClassifies404BeforeReadableMetadataAsInsufficientPermission` |
 | An empty repository reports empty arrays, every capability `supported`, no gaps, `status` `ok`, and an unreadable section stays textually distinct from an empty one | Task 3 `TestPreviewReportReportsEmptyCollectionsAsSupported` (empty), `TestPreviewReportDegradesOnlyTheDeniedEnvironmentsRead` (unreadable) |
-| A Gitea/Forgejo instance answering `404` reports all three capabilities `unsupported` with a gap naming the resource, and does not claim the repository has no previews | Task 2 `TestPreviewForgeGiteaUsesTokenAuthAndVersionedBase`; Task 3 `TestPreviewReportClassifies404AfterReadableMetadataAsUnsupported` |
+| A Gitea/Forgejo instance answering `404` reports all three capabilities `unsupported` with a gap naming the resource, and does not claim the repository has no previews | Task 3 `TestPreviewReportGiteaInstanceAnswering404IsUnsupported`; Task 2 `TestPreviewForgeGiteaUsesTokenAuthAndVersionedBase` |
 | A repository with no declared forge makes no forge request, reports every capability `unsupported` with a gap saying no forge is declared, and reports `degraded` | Task 3 `TestPreviewReportGitOnlyMakesNoRequest` |
 | More deployments than the page bound holds: the deployments read are reported, `preview_deployments` stays `supported`, and a gap says the list is not exhaustive | Task 2 `TestPreviewForgeGitHubTruncatesAtThePageBound`; Task 3 `TestPreviewReportRecordsThePageBoundGap` |
 | At most 20 deployments, one per environment, statuses read only for those named; more environments records a gap on `preview_deployments` naming the bound | Task 3 `TestPreviewReportNamesTheNewestDeploymentPerEnvironment`, `TestPreviewReportRecordsTheNameCapGap` |
@@ -680,5 +710,31 @@ when the slice lands.
 
 ## Branch review record
 
-Not yet reviewed. This section records the independent `glm-5.3-flash` review
-of this plan, and later the review of the implementation against it.
+This plan received an independent `glm-5.3-flash` review through
+`ollama-cloud` on 2026-11-13, against three questions: correctness against
+the code, fidelity to the specification, and executability task by task. Five
+findings were raised; all five are resolved.
+
+| Severity | Finding | Resolution |
+|---|---|---|
+| Important | The status table and `TestPreviewRouteInternalFailureIs500` require a 500, but no decision defined any failure the assembler can *return* as an error — everything in the read order is classified into the report — so the test had nothing to trigger | Decision 24 states the error contract explicitly: the assembler returns an error only for a request the bridge cannot assemble at all, mirroring `Fleet.DiscoverRepo` (`web/bridge/discovery_report.go:77`–`85`), concretely a registered repository whose `Repo.ID` is empty. The route test reaches it the way the discovery route test does, by seeding a workspace record whose map key exists but whose `Repo.ID` is empty |
+| Important | The Gitea/Forgejo `404` acceptance criterion mapped to tests that do not prove it: one asserted only the auth header and API base, the other was a GitHub-shaped `404` on one resource | Task 3 now writes `TestPreviewReportGiteaInstanceAnswering404IsUnsupported`, which points a Gitea `apiBase` at an `httptest` server answering `404` on the three preview paths and asserts that **all three** capabilities are `unsupported` with the D20 wording, that the report does not claim the repository has no previews, and that the status is `degraded`. The acceptance matrix points at it |
+| Minor | The reuse list sent the implementer into a classification trap: `discoveryCredential` returns plain `errors.New` values, and the shared classifier maps a plain error to `temporarily_unavailable`, contradicting the specification D15 row | Decision 5 step 2 now states that the credential failure is degraded to `unconfigured` across all three keys **before** any classification call, exactly as `probeForge` does (`web/bridge/discovery_report.go:272`–`277`), and explains why it cannot go through the classifier |
+| Minor | The Gitea adapter's request paths were never named, so the adapter was not fully specified | Task 2 now names the three paths — `/repos/{owner}/{repo}/environments`, `/repos/{owner}/{repo}/deployments` and `/repos/{owner}/{repo}/deployments/{id}/statuses` — the natural mirror of the GitHub paths under the instance's versioned API root, and notes that the instance answers `404` |
+| Minor | A non-numeric deployment id was under-defined: it did not say how it competes within its environment group, nor whether "ordered after the numeric ones" applies before or after the keep-first-20 cut | Decision 10 now says a non-numeric id **loses to any numeric id within its environment group**, so it survives grouping only as the sole member of that group; it is ordered after every numeric survivor and before the keep-first-20 cut, and its status is not read |
+
+The reviewer confirmed that every anchor, helper signature and claimed
+behaviour in the plan resolves against the worktree at `f8e6e2f7`; that the
+specification's decisions D1–D23 are each carried by a reconciled decision
+with none re-litigated; that the reconciled decisions — reusing the discovery
+capability and gap shapes, the fixed read order, numeric id comparison
+against string wire ids, and one gap per degraded capability — are sound and
+consistent with the specification; and that the task order is a valid
+dependency order in which no commit contains another task's files.
+
+The reviewer also noted, against the **specification** rather than this
+plan, that D6.2's claim that the registered-branch-first order "matches"
+`branchHead` (`web/bridge/discovery_report.go:576`) is off: that helper
+prefers the forge's default branch first. The plan follows the
+specification's own order, so the plan is unaffected; the specification's
+wording is corrected in the same commit as this record.

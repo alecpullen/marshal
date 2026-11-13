@@ -291,9 +291,12 @@ and works for a registered repository that has no workspace yet.
    applies its filters conjunctively, and so does this report.
 2. When neither is given, the report uses the **registered branch** of the
    repository (`Repo.Branch`) if it has one, and otherwise the forge's
-   **default branch**. This matches the revision priority the discovery
-   report already uses for the forge-side head
-   (`web/bridge/discovery_report.go:576`).
+   **default branch**. This is the registered branch first, which is the
+   reverse of `branchHead`
+   (`web/bridge/discovery_report.go:576`): that helper resolves a *head
+   revision*, preferring the forge's default branch, whereas this resolves a
+   *scope to filter by*, and the registered branch is the one the
+   repository was connected on.
 3. The resolved scope is echoed in the report, so a reader can always see
    what was asked for.
 4. **Terminal case.** When no scope resolves at all — neither query

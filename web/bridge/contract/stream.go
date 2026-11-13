@@ -17,6 +17,7 @@ const (
 	DeltaHold           DeltaKind = "hold"
 	DeltaBudget         DeltaKind = "budget"
 	DeltaProjectRemoved DeltaKind = "project_removed"
+	DeltaInbox          DeltaKind = "inbox"
 )
 
 // FleetDelta is one entry on the fleet stream.

@@ -9,28 +9,15 @@ import (
 	"marshal/web/bridge/contract"
 )
 
-// inboxView is the fleet's inbox (P5 F2). Task 4 moves it into the contract
-// as contract.Inbox.
-type inboxView struct {
-	Groups inboxGroups `json:"groups"`
-	Queue  []inboxItem `json:"queue"`
-}
+// inboxView is the fleet's inbox (P5 F2); the wire type is the contract's.
+type inboxView = contract.Inbox
 
 // inboxGroups are agent IDs, each list in urgency order.
-type inboxGroups struct {
-	NeedsYou []string `json:"needsYou"`
-	Running  []string `json:"running"`
-	Ready    []string `json:"ready"`
-	Earlier  []string `json:"earlier"`
-}
+type inboxGroups = contract.InboxGroups
 
-// inboxItem is one entry in the needs-you queue, oldest first.
-type inboxItem struct {
-	Kind      string    `json:"kind"` // "agent" or "intake"
-	AgentID   string    `json:"agentId,omitempty"`
-	PendingID string    `json:"pendingId,omitempty"` // replaced in Task 4
-	At        time.Time `json:"at"`
-}
+// inboxItem is one entry in the needs-you queue, oldest first. It is the
+// contract's type: an intake item carries the whole submission.
+type inboxItem = contract.InboxItem
 
 // computeInbox applies F2's rules to a snapshot and the intake list.
 //
@@ -79,10 +66,11 @@ func computeInbox(agents []AgentStatus, pending []PendingSpawn) inboxView {
 	// Agents first, so a stable sort keeps them ahead of a submission that
 	// arrived at the same instant.
 	for _, a := range buckets[inboxNeedsYou] {
-		view.Queue = append(view.Queue, inboxItem{Kind: "agent", AgentID: a.ID, At: a.UpdatedAt})
+		view.Queue = append(view.Queue, inboxItem{Kind: contract.InboxItemAgent, AgentID: a.ID, At: a.UpdatedAt})
 	}
 	for _, p := range pending {
-		view.Queue = append(view.Queue, inboxItem{Kind: "intake", PendingID: p.ID, At: p.CreatedAt})
+		sub := pendingSubmission(p)
+		view.Queue = append(view.Queue, inboxItem{Kind: contract.InboxItemIntake, Submission: &sub, At: p.CreatedAt})
 	}
 	sort.SliceStable(view.Queue, func(i, j int) bool { return view.Queue[i].At.Before(view.Queue[j].At) })
 
@@ -155,10 +143,7 @@ func inboxStatusRank(s contract.AgentState) int {
 }
 
 // inboxDelta is the "inbox" delta on the fleet stream.
-type inboxDelta struct {
-	Kind  string    `json:"kind"`
-	Inbox inboxView `json:"inbox"`
-}
+type inboxDelta = contract.InboxDelta
 
 // inboxSettleDelay is how long the loop waits after a wake before it
 // recomputes, so a burst of deltas costs one recompute.
@@ -205,7 +190,7 @@ func (f *Fleet) recomputeInbox() {
 	f.inboxRan++
 	f.inboxMu.Unlock()
 
-	delta := inboxDelta{Kind: "inbox", Inbox: f.Inbox()}
+	delta := inboxDelta{Kind: contract.DeltaInbox, Inbox: f.Inbox()}
 	data, err := json.Marshal(delta)
 	if err != nil {
 		return

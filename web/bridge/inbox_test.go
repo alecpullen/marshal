@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"slices"
@@ -45,15 +46,15 @@ func inboxSubmission(id, createdAt string) PendingSpawn {
 }
 
 // inboxQueueIDs names each queued item the way the browser test does: an
-// agent by its agent ID, an intake request by its submission ID.
+// agent by its agent ID, an intake request by its submission's ID.
 func inboxQueueIDs(items []inboxItem) []string {
 	out := make([]string, 0, len(items))
 	for _, i := range items {
-		if i.Kind == "agent" {
+		if i.Kind == contract.InboxItemAgent {
 			out = append(out, i.AgentID)
 			continue
 		}
-		out = append(out, i.PendingID)
+		out = append(out, i.Submission.ID)
 	}
 	return out
 }
@@ -278,7 +279,7 @@ func TestFleetInbox(t *testing.T) {
 	got := f.Inbox()
 	assertIDs(t, "earlier", got.Groups.Earlier, []string{"a1"})
 	assertIDs(t, "queue", inboxQueueIDs(got.Queue), []string{"p1"})
-	if got.Queue[0].Kind != "intake" {
+	if got.Queue[0].Kind != contract.InboxItemIntake {
 		t.Fatalf("queue kind = %q, want intake", got.Queue[0].Kind)
 	}
 	if want := inboxAt("2024-05-04T09:00:00Z"); !got.Queue[0].At.Equal(want) {
@@ -325,8 +326,27 @@ func TestTheInboxRouteAnswersTheGroups(t *testing.T) {
 	assertIDs(t, "ready", got.Groups.Ready, []string{})
 	assertIDs(t, "earlier", got.Groups.Earlier, []string{quiet})
 	assertIDs(t, "queue", inboxQueueIDs(got.Queue), []string{"sub-1"})
-	if got.Queue[0].Kind != "intake" {
+	if got.Queue[0].Kind != contract.InboxItemIntake {
 		t.Fatalf("queue kind = %q, want intake", got.Queue[0].Kind)
+	}
+
+	// The intake item carries the whole submission, and its bytes are the
+	// ones GET /api/pending answers for it.
+	pendingRec := doReq(t, s, http.MethodGet, "/api/pending", nil, nil)
+	if pendingRec.Code != http.StatusOK {
+		t.Fatalf("GET /api/pending = %d %s", pendingRec.Code, pendingRec.Body)
+	}
+	var listed []json.RawMessage
+	decodeBody(t, pendingRec, &listed)
+	if len(listed) != 1 {
+		t.Fatalf("GET /api/pending listed %d submissions, want 1", len(listed))
+	}
+	itemBytes, err := json.Marshal(got.Queue[0].Submission)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(itemBytes, listed[0]) {
+		t.Fatalf("the inbox item's submission encodes as\n%s\nGET /api/pending answers\n%s", itemBytes, listed[0])
 	}
 }
 

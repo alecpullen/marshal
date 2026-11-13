@@ -87,6 +87,8 @@ func wireRecordings() []wireRecording {
 		typeRecordings[DaemonChild]("DaemonChild"),
 		typeRecordings[DaemonSession]("DaemonSession"),
 		typeRecordings[PinState]("PinState"),
+		typeRecordings[inboxView]("Inbox"),
+		typeRecordings[inboxDelta]("InboxDelta"),
 		fleetDeltaRecordings(),
 		answerRecordings(),
 		deltaRecordings(),

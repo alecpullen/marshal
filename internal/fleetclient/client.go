@@ -576,38 +576,38 @@ func (c *Client) readSnapshot(ctx context.Context) (snapshot, error) {
 // the caller can stop the client.
 func (c *Client) readOverflow(ctx context.Context) (snapshot, bool) {
 	var snap snapshot
-	rejected := false
 
 	if err := c.read(ctx, "/api/agents", &snap.agents); err == nil {
 		snap.agentsOK = true
 	} else if unauthorized(err) {
-		rejected = true
+		// A rejected token stops the client, so no further request is made.
+		return snap, true
 	}
 	if err := c.read(ctx, "/api/inbox", &snap.inbox); err == nil {
 		snap.inboxOK = true
 	} else if unauthorized(err) {
-		rejected = true
+		return snap, true
 	}
 	if err := c.read(ctx, "/api/projects", &snap.projects); err == nil {
 		snap.projectsOK = true
 	} else if unauthorized(err) {
-		rejected = true
+		return snap, true
 	}
 	var budgets contract.BudgetReport
 	if err := c.read(ctx, "/api/budgets", &budgets); err == nil {
 		snap.budgets = &budgets
 	} else if unauthorized(err) {
-		rejected = true
+		return snap, true
 	}
 	if c.transport.Local {
 		var daemon contract.DaemonInfo
 		if err := c.read(ctx, "/api/daemon", &daemon); err == nil {
 			snap.daemon, snap.daemonOK = &daemon, true
 		} else if unauthorized(err) {
-			rejected = true
+			return snap, true
 		}
 	}
-	return snap, rejected
+	return snap, false
 }
 
 // install puts a read snapshot into the state.
@@ -828,6 +828,10 @@ func copyState(s acpclient.FleetState) acpclient.FleetState {
 	if s.Gates != nil {
 		out.Gates = make(map[string]contract.GateRecord, len(s.Gates))
 		for id, record := range s.Gates {
+			if r := record.Result; r != nil {
+				result := *r
+				record.Result = &result
+			}
 			out.Gates[id] = record
 		}
 	}
@@ -879,6 +883,10 @@ func copyQueue(v []contract.InboxItem) []contract.InboxItem {
 	for i := range out {
 		if s := out[i].Submission; s != nil {
 			submission := *s
+			if s.Auto != nil {
+				auto := *s.Auto
+				submission.Auto = &auto
+			}
 			out[i].Submission = &submission
 		}
 	}

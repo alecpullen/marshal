@@ -353,7 +353,8 @@ func sameQueue(a, b []contract.InboxItem) bool {
 		}
 		if a[i].Submission != nil {
 			if a[i].Submission.ID != b[i].Submission.ID ||
-				a[i].Submission.Title != b[i].Submission.Title {
+				a[i].Submission.Title != b[i].Submission.Title ||
+				a[i].Submission.Origin != b[i].Submission.Origin {
 				return false
 			}
 		}

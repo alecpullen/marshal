@@ -46,6 +46,11 @@ go build ./cmd/webbridge                    # embeds the built assets
 The SPA is baked in with `//go:embed`, so a change under `web/ui/src` is
 **invisible until `npm run build` reruns and the binary is rebuilt**.
 
+`web/bridge/contract` holds the fleet loop's wire types. `web/ui/src/lib/contract.ts`
+is generated from it: regenerate with
+`go test ./web/bridge/contract/tsgen -run TestTypeScriptContractIsCurrent -update`.
+`npm run check` type-checks the web UI.
+
 `webbridge --profile local` is the user's local daemon (P4): a unix socket,
 host processes only, and no container machinery. Each project runs its own
 `marshal acp --viewers` child, started on the first attach and stopped 30s
@@ -174,10 +179,12 @@ These are load-bearing; code comments and tests point back at them.
 
 - **`web/` is standard library only.** Everything under `web/` is an external
   ACP client: it must not import `marshal/internal/...` or any third-party
-  module. `TestWebIsStdlibOnly` (`web/bridge/boundary_test.go`) enforces this
-  in CI. If it fails, do not add an exception — either the code belongs on the
-  agent side of ACP, or the data belongs in the JSON contract. Extend the
-  contract; do not share a Go type.
+  module. A package under `web/` may import another package under `web/`: the
+  wire types live in `web/bridge/contract`. `TestWebIsStdlibOnly`
+  (`web/bridge/boundary_test.go`) enforces this in CI. If it fails, do not add
+  an exception — either the code belongs on the agent side of ACP, or the data
+  belongs in the JSON contract. Extend `web/bridge/contract`; do not share a Go
+  type.
 - **The TUI renders only.** No routing, policy, or prompt logic in
   `internal/app/tui/`. It reaches the agent side through `internal/acpclient`
   (daemon P2).

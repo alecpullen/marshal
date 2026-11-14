@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 const workspaceVersion = 11
@@ -106,16 +108,8 @@ type Agent struct {
 	Recipe string `json:"recipe,omitempty"`
 }
 
-// AgentWorkspace records which workspace template an agent runs in.
-type AgentWorkspace struct {
-	Name    string `json:"name"`
-	Version int    `json:"version,omitempty"`
-	// Source is "studio" or "repo".
-	Source string `json:"source"`
-	// Timeout is the agent deadline from [resources], armed on the first
-	// prompt, so a restarted runtime can arm it again.
-	Timeout string `json:"timeout,omitempty"`
-}
+// AgentWorkspace is contract.AgentWorkspace; see that declaration.
+type AgentWorkspace = contract.AgentWorkspace
 
 // ProjectSettings are a project's defaults for new agents and runs, and
 // its intake wiring (v9).
@@ -136,6 +130,11 @@ type ProjectSettings struct {
 	// Automations configures the forge automations (W5.4). It is optional,
 	// so the workspace version does not change.
 	Automations *Automations `json:"automations,omitempty"`
+	// FactoryDefaults are the project's default factory configuration. A
+	// handoff inherits every field it leaves unset. It is optional, so the
+	// workspace file format does not change and workspaceVersion stays 11 —
+	// the same reasoning the Automations field already follows.
+	FactoryDefaults *FactoryDefaults `json:"factoryDefaults,omitempty"`
 }
 
 // ProjectIntake mirrors Repo.Watch/WatchLabel and the client allowedRepos.
@@ -145,19 +144,8 @@ type ProjectIntake struct {
 	Clients []string `json:"clients,omitempty"`
 }
 
-// GateOverride records an operator's decision to push despite a failed
-// or skipped verify.
-//
-// It is persisted rather than transient because that is what makes the
-// exception honest: it surfaces on the exit panel and feeds S3's audit
-// log. A nil GateOverride means the gate passed on its own merits.
-type GateOverride struct {
-	Reason        string    `json:"reason"`
-	At            time.Time `json:"at"`
-	By            string    `json:"by"` // OwnerID
-	FailedCommand string    `json:"failedCommand,omitempty"`
-	Skipped       bool      `json:"skipped,omitempty"`
-}
+// GateOverride is contract.GateOverride; see that declaration.
+type GateOverride = contract.GateOverride
 
 // Repo is a registered repository. Registration is what grants push
 // capability: an agent spawned against a raw URL is read-only, and only

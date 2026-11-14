@@ -175,6 +175,15 @@ func (f *Fleet) notifyURL(agentID string) string {
 // Every site that appends to the fleet stream goes through here.
 func (f *Fleet) emit(d any) {
 	_, _ = f.fleetLog.Append(fleetStreamKey, d)
+	// Wake the inbox loop, unless this is the loop's own delta: feeding it
+	// back would make the loop wake itself. The send never blocks; one
+	// buffered signal is all a burst needs.
+	if _, own := d.(inboxDelta); !own {
+		select {
+		case f.inboxWake <- struct{}{}:
+		default:
+		}
+	}
 	f.notify.consider(d)
 }
 

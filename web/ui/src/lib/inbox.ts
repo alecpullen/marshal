@@ -1,32 +1,33 @@
-import { groupAgents, type AgentRow } from './fleet'
-import type { PendingSubmission } from './api'
-
-export type NeedsYouItem =
-  | { kind: 'agent'; agent: AgentRow; at: string }
-  | { kind: 'intake'; submission: PendingSubmission; at: string }
-
-export interface Inbox {
-  needsYou: NeedsYouItem[]
-  ready: AgentRow[]
-  running: AgentRow[]
-}
+/**
+ * Home's "Mine" scope, as a filter over the bridge's inbox.
+ *
+ * The bridge groups the fleet and orders the needs-you queue; the browser does
+ * not group anything. "Mine" is still a browser-side view, so it is applied
+ * here, to the lists the bridge sent, keeping their order.
+ */
+import type { Inbox } from './contract'
 
 // "Mine" is the single local owner for now; once agents carry real owner ids
 // this needs the viewer's id (design §5.4).
 const isMine = (ownerId?: string) => !ownerId || ownerId === 'local'
 
 /**
- * The Home inbox: agents grouped by what they need, plus intake requests
- * merged into Needs you, oldest first. With `mine`, anything owned by
- * someone else is dropped; an unset owner counts as local.
+ * Home's "Mine": drops what another owner has, keeping the bridge's order.
+ * The bridge scopes nothing, so the browser filters.
  */
-export function buildInbox(agents: AgentRow[], pending: PendingSubmission[], mine: boolean): Inbox {
-  const scoped = mine ? agents.filter((a) => isMine(a.ownerId)) : agents
-  const g = groupAgents(scoped)
-  const intake = (mine ? pending.filter((p) => isMine(p.ownerId)) : pending).map<NeedsYouItem>(
-    (p) => ({ kind: 'intake', submission: p, at: p.createdAt }),
-  )
-  const agentItems = g.needsYou.map<NeedsYouItem>((a) => ({ kind: 'agent', agent: a, at: a.updatedAt }))
-  const needsYou = [...agentItems, ...intake].sort((a, b) => a.at.localeCompare(b.at))
-  return { needsYou, ready: g.ready, running: g.running }
+export function mineOnly(inbox: Inbox, ownerOf: (agentId: string) => string | undefined): Inbox {
+  const group = (ids: string[]) => ids.filter((id) => isMine(ownerOf(id)))
+  return {
+    groups: {
+      needsYou: group(inbox.groups.needsYou),
+      running: group(inbox.groups.running),
+      ready: group(inbox.groups.ready),
+      earlier: group(inbox.groups.earlier),
+    },
+    queue: inbox.queue.filter((item) =>
+      item.kind === 'intake'
+        ? isMine(item.submission?.ownerId)
+        : isMine(item.agentId ? ownerOf(item.agentId) : undefined),
+    ),
+  }
 }

@@ -62,7 +62,7 @@ func (f *Fleet) runtimeInfo() (path, name string, ok bool) {
 }
 
 func wsRefOf(w *AgentWorkspace) WSRef {
-	return WSRef{Source: w.Source, Name: w.Name, Version: w.Version}
+	return WSRef{Source: string(w.Source), Name: w.Name, Version: w.Version}
 }
 
 // validateMountTarget refuses a target that is relative, carries

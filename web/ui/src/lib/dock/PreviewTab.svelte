@@ -14,7 +14,7 @@
     workspace,
   }: {
     agentId: string
-    workspace?: { name: string; version: number; source: 'studio' | 'repo' }
+    workspace?: { name: string; version?: number; source: 'studio' | 'repo' }
   } = $props()
 
   function isForeignOrigin(url: string): boolean {

@@ -1,5 +1,61 @@
 import type { AuditEvent } from './audit'
 import { accessPatchBody, type AccessPatch, type AccessStateWire, type ModeAccessChoice } from './interaction'
+import type {
+  AgentStatus as ContractAgentStatus,
+  ApproveResult as ContractApproveResult,
+  BudgetAgentSpend as ContractBudgetAgentSpend,
+  BudgetReport as ContractBudgetReport,
+  Budgets as ContractBudgets,
+  CommitDraft as ContractCommitDraft,
+  DiffFile as ContractDiffFile,
+  DiffResult as ContractDiffResult,
+  ExitResult as ContractExitResult,
+  GateRecord as ContractGateRecord,
+  GateResult as ContractGateResult,
+  Inbox as ContractInbox,
+  InboxDelta as ContractInboxDelta,
+  InboxGroups as ContractInboxGroups,
+  InboxItem as ContractInboxItem,
+  MergeResult as ContractMergeResult,
+  PendingRequest as ContractPendingRequest,
+  PendingSubmission as ContractPendingSubmission,
+  ProjectStatus as ContractProjectStatus,
+  SpawnRequest as ContractSpawnRequest,
+  SpawnResult as ContractSpawnResult,
+} from './contract'
+
+/*
+  The bridge's wire types are generated from the Go contract into ./contract.ts.
+  They are re-exported here under the names the rest of the app already uses, so
+  the wire shape has exactly one definition and no caller changes its imports.
+  Do not hand-write these again: change web/bridge/contract and regenerate.
+*/
+export type AgentStatus = ContractAgentStatus
+export type ApproveResult = ContractApproveResult
+export type BudgetAgent = ContractBudgetAgentSpend
+/** `GET /api/budgets` (bridge budgetReport). `loaded` is false while the caps could not be read, so `budgets` is zeroes, not the real caps. */
+export type BudgetStatus = ContractBudgetReport
+export type Budgets = ContractBudgets
+export type DiffFile = ContractDiffFile
+export type DiffResult = ContractDiffResult
+export type ExitResult = ContractExitResult
+export type GateRecord = ContractGateRecord
+export type GateResult = ContractGateResult
+export type Inbox = ContractInbox
+export type InboxGroups = ContractInboxGroups
+export type InboxItem = ContractInboxItem
+export type InboxDelta = ContractInboxDelta
+export type MergeResult = ContractMergeResult
+/**
+ * The approval or question an agent is parked on. `params` is the raw ACP
+ * request payload: its shape varies by tool, so every read narrows it (see
+ * describePending in fleet.ts).
+ */
+export type PendingRequest = ContractPendingRequest
+export type PendingSubmission = ContractPendingSubmission
+export type ProjectStatus = ContractProjectStatus
+export type SpawnRequest = ContractSpawnRequest
+export type SpawnResult = ContractSpawnResult
 
 const TOKEN_KEY = 'marshal:token'
 
@@ -214,87 +270,14 @@ async function request<T = unknown>(method: string, path: string, body?: unknown
   return data as T
 }
 
-/**
- * The approval or question an agent is parked on. Present only while it is
- * genuinely outstanding, so its presence is enough to offer a decision.
- * `params` is the raw ACP request payload — shape varies by tool, so read
- * it defensively (see describePending in fleet.ts).
- */
-export interface PendingRequest {
-  kind: 'approval' | 'question'
-  /** toolCallId for an approval, questionId for a question. */
-  id: string
-  params?: Record<string, unknown>
-}
-
-export interface AgentStatus {
-  /** True while a terminal holds the agent or a hand-back is pending; omitted when false. */
-  held?: boolean
-  id: string
-  project: string
-  name?: string
-  /** The agent's committed interaction tuple. Absent means the bridge cannot vouch for it. */
-  access?: AccessStateWire
-  status: 'idle' | 'running' | 'awaiting-approval' | 'awaiting-question' | 'error'
-  activity?: string
-  contextPct?: number
-  changedFiles?: number
-  interrupted?: boolean
-  isolated?: boolean
-  branch?: string
-  sourceKind?: string
-  readOnly?: boolean
-  targetBranch?: string
-  prUrl?: string
-  pushedAt?: string
-  gateOverride?: { reason: string; at: string; by: string; failedCommand?: string; skipped?: boolean }
-  updatedAt: string
-  pending?: PendingRequest
-  /** Who owns the agent; unset or 'local' on a single-user bridge. */
-  ownerId?: string
-  /** Where the agent was started: ui, cli, mcp or issue. */
-  origin?: string
-  clientId?: string
-  /** The workspace template the agent runs in (W4.2); unset for profile/devcontainer agents. */
-  workspace?: { name: string; version: number; source: 'studio' | 'repo' }
-}
-
-export interface ProjectStatus {
-  root: string
-  available: boolean
-  error?: string
-  trust?: 'na' | 'untrusted' | 'trusted'
-  isolation?: string
-  orphanWorktrees?: string[]
-}
-
 /** A spawn's model choice: a routing profile, per-role preset overrides, or both (session/new `routing`). */
 export interface RoutingChoice { profile?: string; overrides?: Record<string, string> }
-export interface SpawnRequest { project: string; name?: string; mode?: string; auto?: boolean; prompt?: string; isolated?: boolean; branch?: string; baseRef?: string; routing?: RoutingChoice; workspace?: string }
 export async function listAgents(): Promise<AgentStatus[]> { return request('GET', '/api/agents') }
 export async function listProjects(): Promise<ProjectStatus[]> { return request('GET', '/api/projects') }
+export async function getInbox(): Promise<Inbox> { return request('GET', '/api/inbox') }
 export async function addProject(root: string): Promise<ProjectStatus[]> { return request('POST', '/api/projects', { root }) }
 export async function removeProject(root: string): Promise<ProjectStatus[]> { return request('DELETE', '/api/projects', { root }) }
-export async function spawnAgent(req: SpawnRequest): Promise<{ agentId: string; warning?: string }> { return request('POST', '/api/agents', req) }
-
-export interface DiffFile {
-  path: string
-  added: number
-  removed: number
-}
-
-export interface DiffResult {
-  files: DiffFile[]
-  diff?: string
-}
-
-export interface MergeResult {
-  merged: boolean
-  branch: string
-  target: string
-  reason?: string
-  conflicts?: string[]
-}
+export async function spawnAgent(req: SpawnRequest): Promise<SpawnResult> { return request('POST', '/api/agents', req) }
 
 export async function getDiff(id: string, path?: string): Promise<DiffResult> {
   const q = path ? `?path=${encodeURIComponent(path)}` : ''
@@ -308,21 +291,6 @@ export async function mergeAgent(id: string, commitMessage?: string): Promise<Me
 
 export async function discardAgent(id: string): Promise<void> {
   return request('POST', `/api/agents/${encodeURIComponent(id)}/discard`)
-}
-
-export interface GateResult {
-  ok: boolean
-  skipped: boolean
-  failedCommand?: string
-  output?: string
-}
-
-export interface ExitResult {
-  destination: string
-  branch?: string
-  prUrl?: string
-  verify?: GateResult
-  blocked?: boolean
 }
 
 export async function exitAgent(id: string, opts: { commitMessage: string; override?: { reason: string } }): Promise<ExitResult> {
@@ -484,8 +452,6 @@ export async function readFile(agentId: string, path: string): Promise<FileView 
   return orUnsupported(() => request('GET', `/api/agents/${encodeURIComponent(agentId)}/file?path=${encodeURIComponent(path)}`))
 }
 
-export interface GateRecord { result: GateResult; at: string }
-
 /** The stored verify record, or null when none has run (204). */
 export async function getGate(agentId: string): Promise<GateRecord | null> {
   const r = await request<GateRecord | undefined>('GET', `/api/agents/${encodeURIComponent(agentId)}/gate`)
@@ -567,22 +533,6 @@ export interface CreateClientResult {
   autonomous: boolean
 }
 
-export interface PendingSubmission {
-  id: string
-  origin: string
-  clientId?: string
-  /** Not sent by the bridge yet; unset counts as local. */
-  ownerId?: string
-  title: string
-  repoId: string
-  ref?: string
-  prompt?: string
-  plan?: string
-  mode?: string
-  createdAt: string
-  expiresAt: string
-}
-
 export async function listClients(): Promise<MCPClient[]> {
   return request('GET', '/api/clients')
 }
@@ -605,7 +555,7 @@ export async function listPending(): Promise<PendingSubmission[]> {
   return request('GET', '/api/pending')
 }
 
-export async function approvePending(id: string): Promise<{ agentId: string; status: string }> {
+export async function approvePending(id: string): Promise<ApproveResult> {
   return request('POST', `/api/pending/${encodeURIComponent(id)}/approve`)
 }
 
@@ -734,8 +684,8 @@ export interface ReviewComment {
 
 /** The agent's drafted commit message, or 'unsupported' for an agent that cannot draft one. */
 export async function getCommitDraft(agentId: string): Promise<string | 'unsupported'> {
-  const r = await orUnsupported(() => request<{ message?: string }>('GET', `/api/agents/${encodeURIComponent(agentId)}/commit-draft`))
-  return r === 'unsupported' ? r : (r?.message ?? '')
+  const r = await orUnsupported(() => request<ContractCommitDraft>('GET', `/api/agents/${encodeURIComponent(agentId)}/commit-draft`))
+  return r === 'unsupported' ? r : r.message
 }
 
 export async function listReviewComments(agentId: string): Promise<ReviewComment[]> {
@@ -871,7 +821,6 @@ export interface PresetWire {
 }
 export interface Binding { preset?: string; customAgent?: string }
 export type CapAction = 'warn' | 'block' | 'pause'
-export interface Budgets { dailyUsd: number; perAgentUsd: number; onDailyCap: string; onAgentCap: string }
 export interface ModelsConfig {
   providers: Record<string, ProviderView>
   presets: Record<string, PresetWire>
@@ -883,14 +832,6 @@ export interface ModelsConfig {
   budgets: Budgets
 }
 export interface ProbeResult { models: { id: string; contextWindow?: number }[]; error?: string }
-export interface BudgetAgent { agentId: string; spentUsd: number; paused: boolean; overridden: boolean }
-/** `GET /api/budgets` (bridge budgetReport). `loaded` is false while the caps could not be read, so `budgets` is zeroes, not the real caps. */
-export interface BudgetStatus {
-  budgets: Budgets
-  daily: { day: string; spentUsd: number; blocked: boolean }
-  agents: BudgetAgent[]
-  loaded: boolean
-}
 
 export async function getModels(): Promise<ModelsConfig> { return request('GET', '/api/models') }
 /** Sends only the named providers; `null` removes one. */

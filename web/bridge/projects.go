@@ -155,6 +155,12 @@ func (f *Fleet) PutProjectSettings(root string, ps ProjectSettings) error {
 	if err := f.validateAutomations(ps.Automations); err != nil {
 		return err
 	}
+	// The defaults are validated here, not in the store: Workspace.PutProjectSettings
+	// stays a dumb store, exactly as it is for Automations. A zero limit is
+	// "unset" and passes; factoryValidateDefaults fills nothing in.
+	if err := factoryValidateDefaults(ps.FactoryDefaults); err != nil {
+		return fmt.Errorf("%w: factoryDefaults: %v", errInvalidProjectSettings, err)
+	}
 
 	prev := f.ws.ProjectSettingsFor(root)
 	if err := f.ws.PutProjectSettings(root, ps); err != nil {
@@ -238,7 +244,7 @@ func (f *Fleet) ProjectHealth(ctx context.Context, root string) (ProjectHealth, 
 
 	for _, st := range f.ProjectStatus() {
 		if st.Root == root {
-			h.Trust = st.Trust
+			h.Trust = string(st.Trust)
 			if st.OrphanWorktrees != nil {
 				h.OrphanWorktrees = st.OrphanWorktrees
 			}

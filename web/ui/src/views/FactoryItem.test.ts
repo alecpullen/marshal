@@ -53,7 +53,7 @@ it('requires an explicit replacement plan and retry grant', async () => {
   render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
   await screen.findByText('Allowance spent')
   expect(screen.getByText(/5 rounds used · 5 granted total/)).toBeTruthy()
-  await fireEvent.click(screen.getByLabelText('Change approved plan, routes or reviewer instructions'))
+  await fireEvent.click(screen.getByLabelText('Change approved plan or reviewer instructions'))
   expect(screen.getByLabelText('Replacement plan')).toBeTruthy()
   expect((screen.getByRole('button', { name: 'Grant rounds and retry' }) as HTMLButtonElement).disabled).toBe(true)
 })
@@ -66,7 +66,7 @@ it('sends route changes in the replacement approval config', async () => {
   render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
   await screen.findByText('Try again')
   await fireEvent.input(screen.getByLabelText('Reason'), { target: { value: 'Change route' } })
-  await fireEvent.click(screen.getByLabelText('Change approved plan, routes or reviewer instructions'))
+  await fireEvent.click(screen.getByLabelText('Change approved plan or reviewer instructions'))
   expect((screen.getByLabelText('Replacement plan') as HTMLTextAreaElement).value).toBe('Approved plan')
   await fireEvent.input(screen.getByLabelText('New implementer profile (optional)'), { target: { value: 'new-impl' } })
   await fireEvent.input(screen.getByLabelText('New reviewer profile (optional)'), { target: { value: 'new-review' } })
@@ -80,6 +80,56 @@ it('sends route changes in the replacement approval config', async () => {
   expect(cmd?.implementerRouting).toBeUndefined()
   expect(cmd?.reviewerRouting).toBeUndefined()
   expect(cmd?.replacement?.requestId).toBeTruthy()
+})
+it('sends a route-only retry without the plan-replacement checkbox', async () => {
+  const { fireEvent } = await import('@testing-library/svelte')
+  const item = { ...base, state: 'needs_input', decision: { id: 'd', kind: 'exhausted', question: 'Try again' },
+    approvals: [{ plan: 'Approved plan', spec: 'Approved spec', config: { ...base.draft.config, implementerRouting: { profile: 'old' }, reviewerRouting: { profile: 'old-review' } } }] } as unknown as Item
+  vi.mocked(api.getFactoryItem).mockResolvedValue(item)
+  vi.mocked(api.commandFactoryItem).mockResolvedValue(item)
+  render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
+  await screen.findByText('Try again')
+  await fireEvent.input(screen.getByLabelText('Reason'), { target: { value: 'Change route' } })
+  await fireEvent.input(screen.getByLabelText('New implementer profile (optional)'), { target: { value: 'new-impl' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Grant rounds and retry' }))
+  const cmd = vi.mocked(api.commandFactoryItem).mock.calls.at(-1)?.[1]
+  expect(cmd).toMatchObject({ kind: 'retry', implementerRouting: { profile: 'new-impl' } })
+  expect(cmd?.reviewerRouting).toBeUndefined()
+  expect(cmd?.replacement).toBeUndefined()
+})
+it('sends both routes in a route-only retry', async () => {
+  const { fireEvent } = await import('@testing-library/svelte')
+  const item = { ...base, state: 'needs_input', decision: { id: 'd', kind: 'exhausted', question: 'Try again' },
+    approvals: [{ plan: 'Approved plan', spec: 'Approved spec', config: { ...base.draft.config, implementerRouting: { profile: 'old' }, reviewerRouting: { profile: 'old-review' } } }] } as unknown as Item
+  vi.mocked(api.getFactoryItem).mockResolvedValue(item)
+  vi.mocked(api.commandFactoryItem).mockResolvedValue(item)
+  render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
+  await screen.findByText('Try again')
+  await fireEvent.input(screen.getByLabelText('Reason'), { target: { value: 'Change both routes' } })
+  await fireEvent.input(screen.getByLabelText('New implementer profile (optional)'), { target: { value: 'new-impl' } })
+  await fireEvent.input(screen.getByLabelText('New reviewer profile (optional)'), { target: { value: 'new-review' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Grant rounds and retry' }))
+  const cmd = vi.mocked(api.commandFactoryItem).mock.calls.at(-1)?.[1]
+  expect(cmd).toMatchObject({ kind: 'retry', implementerRouting: { profile: 'new-impl' }, reviewerRouting: { profile: 'new-review' } })
+  expect(cmd?.replacement).toBeUndefined()
+})
+it('shows the routes currently in force and leaves the new-route inputs empty', async () => {
+  const item = { ...base, state: 'needs_input', decision: { id: 'd', kind: 'exhausted', question: 'Try again' },
+    approvals: [{ plan: 'Approved plan', spec: 'Approved spec', config: { ...base.draft.config, implementerRouting: { profile: 'frontier' }, reviewerRouting: { profile: 'cheap-review' } } }] } as unknown as Item
+  vi.mocked(api.getFactoryItem).mockResolvedValue(item)
+  render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
+  await screen.findByText('Try again')
+  expect(screen.getByText('Routes in force: implementer frontier · reviewer cheap-review')).toBeTruthy()
+  expect((screen.getByLabelText('New implementer profile (optional)') as HTMLInputElement).value).toBe('')
+  expect((screen.getByLabelText('New reviewer profile (optional)') as HTMLInputElement).value).toBe('')
+})
+it('states that a route-only retry starts a fresh round', async () => {
+  const item = { ...base, state: 'needs_input', decision: { id: 'd', kind: 'exhausted', question: 'Try again' },
+    approvals: [{ plan: 'Approved plan', spec: 'Approved spec', config: { ...base.draft.config, implementerRouting: { profile: 'old' }, reviewerRouting: { profile: 'old-review' } } }] } as unknown as Item
+  vi.mocked(api.getFactoryItem).mockResolvedValue(item)
+  render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
+  await screen.findByText('Try again')
+  expect(screen.getByText("A route-only retry starts a fresh round. The interrupted round's review is not reused, and one granted round is spent.")).toBeTruthy()
 })
 it('requires exact last agent ID before recovery attestation', async () => {
   const { fireEvent } = await import('@testing-library/svelte')
@@ -125,4 +175,58 @@ it('previews material environment and permission settings before approval', asyn
   render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
   expect(await screen.findByText(/Environment: go-dev · Implementer auto permission: on/)).toBeTruthy()
   expect(screen.getByText('Reviewer instructions: Check migration safety')).toBeTruthy()
+})
+const narration = {
+  issue: 'The report hides the reasoning', approach: 'Narrate the change in the report',
+  existingBehaviour: 'Only a summary paragraph existed', alternatives: 'Extend the summary',
+  tradeoffs: 'A longer report body', choice: 'Add a structured narration',
+  verification: 'go test ./web/bridge', limitations: 'Excerpts are selections, not diffs',
+  excerpts: [{ path: 'web/bridge/factory_types.go', lang: 'go', code: 'type FactoryNarration struct{}' }],
+}
+it('renders the narration sections in order', async () => {
+  const item = { ...base, state: 'checking', rounds: [{ implementation: { summary: 'Bare summary', narration } }] } as unknown as Item
+  vi.mocked(api.getFactoryItem).mockResolvedValue(item)
+  render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
+  await screen.findByText('Issue')
+  expect(screen.getAllByRole('heading', { level: 3 }).map((heading) => heading.textContent)).toEqual([
+    'Issue', 'Approach', 'Existing behaviour', 'Alternatives and trade-offs', 'Implementation choice', 'Verification', 'Limitations', 'Selected code',
+  ])
+  expect(screen.getByText('The report hides the reasoning')).toBeTruthy()
+  expect(screen.getByText('Narrate the change in the report')).toBeTruthy()
+  expect(screen.getByText('Extend the summary')).toBeTruthy()
+  expect(screen.getByText('A longer report body')).toBeTruthy()
+  expect(screen.getByText('Add a structured narration')).toBeTruthy()
+  expect(screen.getByText('go test ./web/bridge')).toBeTruthy()
+  expect(screen.getByText('Excerpts are selections, not diffs')).toBeTruthy()
+})
+it('renders each excerpt with its path and code', async () => {
+  const item = { ...base, state: 'checking', rounds: [{ implementation: { summary: 'Bare summary', narration: { ...narration,
+    excerpts: [{ path: 'web/bridge/factory_types.go', lang: 'go', code: 'type FactoryNarration struct{}' }, { path: 'web/ui/src/lib/factory.ts', code: 'interface FactoryExcerpt {}' }] } } }] } as unknown as Item
+  vi.mocked(api.getFactoryItem).mockResolvedValue(item)
+  render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
+  await screen.findByText('web/bridge/factory_types.go')
+  expect(screen.getByText('type FactoryNarration struct{}')).toBeTruthy()
+  expect(screen.getByText('web/ui/src/lib/factory.ts')).toBeTruthy()
+  expect(screen.getByText('interface FactoryExcerpt {}')).toBeTruthy()
+  expect(screen.getByText('go')).toBeTruthy()
+})
+it('renders the narration alongside the CI card', async () => {
+  const item = { ...base, state: 'checking', rounds: [{
+    ci: { complete: true, checks: [{ key: { name: 'fail' }, conclusion: 'failure', logTail: 'trace' }, { key: { name: 'pass' }, conclusion: 'success' }] },
+    implementation: { summary: 'Bare summary', narration },
+  }] } as unknown as Item
+  vi.mocked(api.getFactoryItem).mockResolvedValue(item)
+  render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
+  expect((await screen.findByText(/fail: failure/)).textContent).toContain('failure')
+  expect(screen.getByText('trace')).toBeTruthy()
+  expect(screen.getByText('1 passing checks').closest('details')?.hasAttribute('open')).toBe(false)
+  expect(screen.getByText('Issue')).toBeTruthy()
+  expect(screen.getByText('The report hides the reasoning')).toBeTruthy()
+})
+it('falls back to the summary when there is no narration', async () => {
+  const item = { ...base, state: 'checking', rounds: [{ implementation: { summary: 'Bare summary' } }] } as unknown as Item
+  vi.mocked(api.getFactoryItem).mockResolvedValue(item)
+  render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
+  expect(await screen.findByText('Bare summary')).toBeTruthy()
+  expect(screen.queryByText('Issue')).toBeNull()
 })

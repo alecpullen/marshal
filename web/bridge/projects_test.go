@@ -293,3 +293,141 @@ func TestExitHonoursAValidShipTarget(t *testing.T) {
 		t.Fatalf("Exit = %+v, %v; want a patch destination without pushing", res, err)
 	}
 }
+
+// TestProjectSettingsRoundTripFactoryDefaults pins the project's factory
+// defaults to the existing project-settings surface: a block written through
+// PUT comes back unchanged from GET, and because the field is optional the
+// workspace file keeps its version.
+func TestProjectSettingsRoundTripFactoryDefaults(t *testing.T) {
+	e, s, root := projectEnv(t)
+
+	want := &FactoryDefaults{
+		TargetBranch:         "main",
+		Workspace:            "ws://published/example",
+		HostID:               "local",
+		ImplementerRouting:   json.RawMessage(`{"profile":"frontier"}`),
+		ReviewerRouting:      json.RawMessage(`{"profile":"frontier"}`),
+		ReviewerInstructions: "be terse",
+		ExpectedChecks:       []FactoryCheckKey{{Kind: "check_run", Name: "build", AppID: 7}},
+		MaxRounds:            5,
+		CIPollSeconds:        15,
+		CIWaitSeconds:        1800,
+	}
+	if code := putSettings(t, s, root, ProjectSettings{FactoryDefaults: want}); code != http.StatusOK {
+		t.Fatalf("put = %d", code)
+	}
+
+	rec := doReq(t, s, http.MethodGet, "/api/projects/settings?root="+root, nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get = %d %s", rec.Code, rec.Body)
+	}
+	var got ProjectSettings
+	decodeBody(t, rec, &got)
+	if got.FactoryDefaults == nil {
+		t.Fatal("factoryDefaults did not survive the round trip")
+	}
+	gd := got.FactoryDefaults
+	if gd.TargetBranch != want.TargetBranch || gd.Workspace != want.Workspace || gd.HostID != want.HostID {
+		t.Fatalf("defaults = %+v", gd)
+	}
+	if string(gd.ImplementerRouting) != string(want.ImplementerRouting) || string(gd.ReviewerRouting) != string(want.ReviewerRouting) {
+		t.Fatalf("routings = %s / %s", gd.ImplementerRouting, gd.ReviewerRouting)
+	}
+	if gd.ReviewerInstructions != want.ReviewerInstructions {
+		t.Fatalf("reviewerInstructions = %q", gd.ReviewerInstructions)
+	}
+	if len(gd.ExpectedChecks) != 1 || gd.ExpectedChecks[0] != want.ExpectedChecks[0] {
+		t.Fatalf("expectedChecks = %+v", gd.ExpectedChecks)
+	}
+	if gd.MaxRounds != 5 || gd.CIPollSeconds != 15 || gd.CIWaitSeconds != 1800 {
+		t.Fatalf("limits = %d/%d/%d", gd.MaxRounds, gd.CIPollSeconds, gd.CIWaitSeconds)
+	}
+
+	// The optional field leaves the on-disk format alone.
+	raw, err := os.ReadFile(e.f.ws.path)
+	if err != nil {
+		t.Fatalf("read workspace file: %v", err)
+	}
+	var stored struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		t.Fatalf("decode workspace file: %v", err)
+	}
+	if stored.Version != 11 {
+		t.Fatalf("workspace version = %d, want 11", stored.Version)
+	}
+}
+
+// TestFactoryDefaultsRejectInvalidDefaultsAtWriteTime checks the write-time
+// validation the settings surface owns: every invalid default is a 400 naming
+// the offending field, the accepted boundary cases (a zero limit, "local", and
+// nil or explicitly empty checks) are stored, and a rejected write leaves the
+// stored record untouched.
+func TestFactoryDefaultsRejectInvalidDefaultsAtWriteTime(t *testing.T) {
+	e, s, root := projectEnv(t)
+
+	// A stored record that a refused write must not disturb.
+	good := ProjectSettings{
+		Workspace:       "svc@2",
+		FactoryDefaults: &FactoryDefaults{ReviewerInstructions: "keep", MaxRounds: 5},
+	}
+	if code := putSettings(t, s, root, good); code != http.StatusOK {
+		t.Fatalf("put good = %d", code)
+	}
+
+	bad := []struct {
+		name  string
+		d     *FactoryDefaults
+		field string
+	}{
+		{"negative maxRounds", &FactoryDefaults{MaxRounds: -1}, "maxRounds"},
+		{"negative ciPollSeconds", &FactoryDefaults{CIPollSeconds: -1}, "ciPollSeconds"},
+		{"negative ciWaitSeconds", &FactoryDefaults{CIWaitSeconds: -1}, "ciWaitSeconds"},
+		{"non-local hostId", &FactoryDefaults{HostID: "remote"}, "hostId"},
+		{"check without a name", &FactoryDefaults{ExpectedChecks: []FactoryCheckKey{{Kind: "check_run", AppID: 7}}}, "expectedChecks"},
+		{"unknown check kind", &FactoryDefaults{ExpectedChecks: []FactoryCheckKey{{Kind: "workflow", Name: "build"}}}, "expectedChecks"},
+		{"check_run without an app id", &FactoryDefaults{ExpectedChecks: []FactoryCheckKey{{Kind: "check_run", Name: "build"}}}, "expectedChecks"},
+		{"commit_status with an app id", &FactoryDefaults{ExpectedChecks: []FactoryCheckKey{{Kind: "commit_status", Name: "ci", AppID: 7}}}, "expectedChecks"},
+	}
+	for _, c := range bad {
+		// The rest of the record would overwrite the stored one, so storing
+		// anything at all proves the write was refused before it landed.
+		body := ProjectSettings{Workspace: "overwritten", FactoryDefaults: c.d}
+		rec := doReq(t, s, http.MethodPut, "/api/projects/settings?root="+root, body, nil)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: put = %d, want 400", c.name, rec.Code)
+			continue
+		}
+		var out struct {
+			Error string `json:"error"`
+		}
+		decodeBody(t, rec, &out)
+		if !strings.Contains(out.Error, c.field) {
+			t.Errorf("%s: error %q does not name %q", c.name, out.Error, c.field)
+		}
+	}
+	if st := e.f.ws.ProjectSettingsFor(root); st.Workspace != "svc@2" || st.FactoryDefaults == nil || st.FactoryDefaults.ReviewerInstructions != "keep" || st.FactoryDefaults.MaxRounds != 5 {
+		t.Fatalf("settings changed by a refused request: %+v", st)
+	}
+
+	// The boundary cases are real values, not invalid ones.
+	accepted := []struct {
+		name string
+		body json.RawMessage
+	}{
+		{"zero limits", json.RawMessage(`{"factoryDefaults":{"maxRounds":0,"ciPollSeconds":0,"ciWaitSeconds":0}}`)},
+		{"local host", json.RawMessage(`{"factoryDefaults":{"hostId":"local"}}`)},
+		{"nil checks", json.RawMessage(`{"factoryDefaults":{"reviewerInstructions":"no checks"}}`)},
+		{"explicitly empty checks", json.RawMessage(`{"factoryDefaults":{"expectedChecks":[]}}`)},
+	}
+	for _, c := range accepted {
+		if code := putSettings(t, s, root, c.body); code != http.StatusOK {
+			t.Errorf("%s: put = %d, want 200", c.name, code)
+		}
+	}
+	// An explicitly empty check list is a choice, so it is stored non-nil.
+	if st := e.f.ws.ProjectSettingsFor(root); st.FactoryDefaults == nil || st.FactoryDefaults.ExpectedChecks == nil || len(st.FactoryDefaults.ExpectedChecks) != 0 {
+		t.Fatalf("explicitly empty expectedChecks = %+v", st.FactoryDefaults)
+	}
+}

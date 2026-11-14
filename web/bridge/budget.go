@@ -9,6 +9,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // Budget actions, matching the engine's [budgets] values.
@@ -37,25 +39,11 @@ type ErrBudget struct{ Scope string }
 
 func (e ErrBudget) Error() string { return "budget_exceeded: " + e.Scope }
 
-// Budgets mirrors the engine's [budgets] section on the wire.
-type Budgets struct {
-	DailyUSD    float64 `json:"dailyUsd"`
-	PerAgentUSD float64 `json:"perAgentUsd"`
-	OnDailyCap  string  `json:"onDailyCap"`
-	OnAgentCap  string  `json:"onAgentCap"`
-}
+// Budgets is contract.Budgets; see that declaration.
+type Budgets = contract.Budgets
 
-// budgetDelta is a "budget" fleet delta. Its fields are flat, as the spec
-// lists them.
-type budgetDelta struct {
-	Kind      string  `json:"kind"`
-	SessionID string  `json:"sessionId"`
-	Scope     string  `json:"scope"`
-	AgentID   string  `json:"agentId,omitempty"`
-	SpentUSD  float64 `json:"spentUsd"`
-	CapUSD    float64 `json:"capUsd"`
-	Action    string  `json:"action"`
-}
+// budgetDelta is contract.BudgetDelta; see that declaration.
+type budgetDelta = contract.BudgetDelta
 
 // budgetState enforces the caps. The engine only stores them: spend spans
 // agents, so the bridge, which sees every usage row, does the arithmetic.
@@ -227,7 +215,7 @@ func (f *Fleet) checkBudgets(row UsageRow) {
 		if action == budgetBlock {
 			b.blockedDay = b.day
 		}
-		deltas = append(deltas, budgetDelta{Scope: "daily", SpentUSD: microToUSD(b.daySpend), CapUSD: cap, Action: action})
+		deltas = append(deltas, budgetDelta{Scope: contract.BudgetScopeDaily, SpentUSD: microToUSD(b.daySpend), CapUSD: cap, Action: action})
 	}
 	if cap, capAction := b.capFor(row.AgentID); cap > 0 && b.agentSpend[row.AgentID] >= usdToMicro(cap) &&
 		!b.agentAlert[row.AgentID] && !b.overridden[row.AgentID] {
@@ -240,7 +228,7 @@ func (f *Fleet) checkBudgets(row UsageRow) {
 			b.paused[row.AgentID] = true
 			cancelAgent = row.AgentID
 		}
-		deltas = append(deltas, budgetDelta{Scope: "agent", AgentID: row.AgentID,
+		deltas = append(deltas, budgetDelta{Scope: contract.BudgetScopeAgent, AgentID: row.AgentID,
 			SpentUSD: microToUSD(b.agentSpend[row.AgentID]), CapUSD: cap, Action: action})
 	}
 	b.mu.Unlock()
@@ -318,25 +306,11 @@ func (b *budgetState) applyBudgets(cfg Budgets, now time.Time) {
 	}
 }
 
-type budgetAgentSpend struct {
-	AgentID    string  `json:"agentId"`
-	SpentUSD   float64 `json:"spentUsd"`
-	Paused     bool    `json:"paused"`
-	Overridden bool    `json:"overridden"`
-}
+// budgetAgentSpend is contract.BudgetAgentSpend; see that declaration.
+type budgetAgentSpend = contract.BudgetAgentSpend
 
-type budgetReport struct {
-	Budgets Budgets `json:"budgets"`
-	Daily   struct {
-		Day      string  `json:"day"`
-		SpentUSD float64 `json:"spentUsd"`
-		Blocked  bool    `json:"blocked"`
-	} `json:"daily"`
-	Agents []budgetAgentSpend `json:"agents"`
-	// Loaded is false while the caps could not be read from the engine, so
-	// clients know Budgets is the zero value rather than the real caps.
-	Loaded bool `json:"loaded"`
-}
+// budgetReport is contract.BudgetReport; see that declaration.
+type budgetReport = contract.BudgetReport
 
 func (f *Fleet) budgetReport() budgetReport {
 	b := f.budgets

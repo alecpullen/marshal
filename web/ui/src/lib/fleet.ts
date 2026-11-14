@@ -1,22 +1,32 @@
-import { writable } from 'svelte/store'
-import { getNetworkPending, listAgents, listProjects, postNetworkDecision, type AgentStatus, type NetDecisionKind, type NetDecisionResult, type GateRecord, type PendingRequest, type ProjectStatus, type RunDetail } from './api'
+import { get, writable } from 'svelte/store'
+import { getInbox, getNetworkPending, listAgents, listProjects, postNetworkDecision, type AgentStatus, type NetDecisionKind, type NetDecisionResult, type GateRecord, type PendingRequest, type ProjectStatus, type RunDetail } from './api'
 import { applyAccessReport, parseAccessState, parseModeAccess, type AccessState, type AccessStateWire } from './interaction'
+import type {
+  BudgetDelta as ContractBudgetDelta,
+  FleetDelta as ContractFleetDelta,
+  Inbox as ContractInbox,
+  InboxDelta as ContractInboxDelta,
+  ProjectRemovedDelta as ContractProjectRemovedDelta,
+} from './contract'
 import type { PendingPermission, PendingQuestion, Question, QuestionOption } from './store'
 
 export type AgentRow = Omit<AgentStatus, 'access'> & { name: string; mode: string; access: AccessState | null; activity: string; contextPct: number; changedFiles: number; interrupted: boolean; heldBy?: string; gate?: GateRecord; run?: RunDetail; runAt?: number }
-export interface FleetDelta {
-  kind: 'activity' | 'telemetry' | 'mode' | 'turn' | 'gate' | 'hold'
-  sessionId: string
-  activity?: string
+
+/** Narrow an unknown wire payload to the record shape the pending readers use. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * The in-loop session deltas: activity, mode, telemetry, gate and hold. Its
+ * fields are the generated contract's; `kind` is fixed to what this store
+ * handles, `access` is the wire type, and `toolStats`/`rules` are the telemetry
+ * projection the SSE parser validates (the contract carries them as `unknown`).
+ */
+export type FleetDelta = Pick<ContractFleetDelta, 'sessionId' | 'activity' | 'contextPct' | 'changedFiles' | 'held' | 'by' | 'gate'> & {
+  kind: 'activity' | 'telemetry' | 'mode' | 'gate' | 'hold'
   /** A mode delta's whole committed tuple. A missing or malformed one is ignored, never inferred. */
   access?: AccessStateWire
-  contextPct?: number
-  changedFiles?: number
-  /** A hold delta: whether the agent is held, and by whom (`terminal`). */
-  held?: boolean
-  by?: string
-  /** The latest verify record. Its output is left out of the stream; GET …/gate has it. */
-  gate?: GateRecord
   /** Optional telemetry sections; the bridge's digest carries only the two counts above today. */
   toolStats?: ToolStat[]
   rules?: string[]
@@ -28,10 +38,17 @@ export interface AgentTelemetry { contextPct: number; changedFiles: number; tool
 /** A request the egress proxy blocked, awaiting Block, Allow for this agent, or Add to workspace. */
 export interface NetworkBlockDelta { kind: 'network_block'; sessionId: string; agentId?: string; host: string; workspace?: string; at?: number }
 export interface NetworkDecisionItem { agentId: string; host: string; workspace?: string; at: number }
-/** A run's latest detail (run_progress). `at` is when the bridge saw it, in ms. */
-export interface RunDelta { kind: 'run'; sessionId: string; run: RunDetail; at?: number }
-/** A daily or per-agent budget check; no session, so it never touches a row. */
-export interface BudgetDelta { kind: 'budget'; scope: 'daily' | 'agent'; agentId?: string; spentUsd: number; capUsd: number; action: string }
+/**
+ * A run's latest detail (run_progress). `at` is when the bridge saw it, in ms.
+ * `run` narrows the contract's `unknown` to the detail this UI renders; the SSE
+ * parser validates it before a delta is handed on.
+ */
+export type RunDelta = Pick<ContractFleetDelta, 'sessionId' | 'at'> & { kind: 'run'; run: RunDetail }
+/**
+ * A daily or per-agent budget check. It carries no session the UI uses, so the
+ * delta is the contract's fields minus `sessionId` and `kind`.
+ */
+export type BudgetDelta = Pick<ContractBudgetDelta, 'scope' | 'agentId' | 'spentUsd' | 'capUsd' | 'action'> & { kind: 'budget' }
 /** A watch rerouted a role; the inbox offers Undo. */
 export interface RerouteDelta { kind: 'reroute'; id: string; watch: string; role: string; from: string; to: string }
 /** A watch changed state (or fired). `sessionId` is the owner agent, or `studio`; the Watches page refetches on it. */
@@ -39,16 +56,19 @@ export interface WatchDelta { kind: 'watch'; sessionId?: string; event?: unknown
 export interface AutomationEvent { type: string; id: string; status?: string; at: number }
 export type BudgetState = Omit<BudgetDelta, 'kind'>
 export type RerouteNotice = Omit<RerouteDelta, 'kind'>
-export interface ProjectRemovedDelta { kind: 'project_removed'; project: string }
+/** The contract's project removal delta, with `kind` fixed. */
+export type ProjectRemovedDelta = Pick<ContractProjectRemovedDelta, 'project'> & { kind: 'project_removed' }
 /**
  * An agent parked on an approval or question. Carries only the kind — the
  * payload needed to render a decision comes from a snapshot refetch, since
  * the snapshot is the authority on what is still outstanding.
  */
-export interface PendingDelta { kind: 'pending'; sessionId: string; pendingKind: 'approval' | 'question' }
+export type PendingDelta = Pick<ContractFleetDelta, 'sessionId' | 'pendingKind'> & { kind: 'pending' }
 /** An automation ran (review draft or CI result). `id`/`type` are set for those; the rest feeds notifications. */
 export interface AutomationDelta { kind: 'automation'; type?: string; id?: string; status?: string; sessionId?: string; agentId?: string; title?: string; text?: string }
-export type FleetEvent = AutomationDelta | NetworkBlockDelta | FleetDelta | ProjectRemovedDelta | PendingDelta | RunDelta | BudgetDelta | RerouteDelta | WatchDelta
+/** The bridge's whole inbox, sent as one delta; it names no session. */
+export type InboxDelta = Pick<ContractInboxDelta, 'inbox'> & { kind: 'inbox' }
+export type FleetEvent = AutomationDelta | NetworkBlockDelta | FleetDelta | ProjectRemovedDelta | PendingDelta | RunDelta | BudgetDelta | RerouteDelta | WatchDelta | InboxDelta
 export function toRow(a: AgentStatus): AgentRow {
   // Only the committed tuple is advertised. A starting mode with no reported
   // state is left as unknown rather than shown as if it were current.
@@ -58,35 +78,11 @@ export function toRow(a: AgentStatus): AgentRow {
 }
 const rank: Record<AgentRow['status'], number> = { 'awaiting-approval': 0, 'awaiting-question': 0, error: 1, running: 2, idle: 3 }
 export function sortAttentionFirst(rows: AgentRow[]): AgentRow[] { return [...rows].sort((a,b) => rank[a.status] - rank[b.status] || a.id.localeCompare(b.id)) }
-export type AgentGroupKey = 'needsYou' | 'running' | 'ready' | 'earlier'
-export type AgentGroups = Record<AgentGroupKey, AgentRow[]>
-
-const pendingRank = (a: AgentRow) => (a.pending?.kind === 'approval' ? 0 : a.pending ? 1 : 2)
-const byUrgency = (a: AgentRow, b: AgentRow) =>
-  pendingRank(a) - pendingRank(b) || rank[a.status] - rank[b.status] || b.updatedAt.localeCompare(a.updatedAt)
-
-/**
- * Bucket agents for the sidebar and inbox. An agent lands in the first group
- * it qualifies for: Needs you (pending), Running, Ready to ship (idle with
- * changes and no PR), else Earlier. Each group is sorted by urgency, then by
- * most recently updated.
- */
-export function groupAgents(agents: AgentRow[]): AgentGroups {
-  const out: AgentGroups = { needsYou: [], running: [], ready: [], earlier: [] }
-  for (const a of agents) {
-    if (a.pending) out.needsYou.push(a)
-    else if (a.status === 'running') out.running.push(a)
-    else if (a.status === 'idle' && a.changedFiles > 0 && !a.prUrl) out.ready.push(a)
-    else out.earlier.push(a)
-  }
-  for (const k of Object.keys(out) as AgentGroupKey[]) out[k].sort(byUrgency)
-  return out
-}
 
 export function applyDeltaTo(rows: AgentRow[], d: FleetEvent): AgentRow[] {
   if (d.kind === 'project_removed') return rows.filter((r) => r.project !== d.project)
-  // Budget, reroute and watch deltas are fleet-wide; the store handles them.
-  if (d.kind === 'budget' || d.kind === 'reroute' || d.kind === 'watch' || d.kind === 'automation' || d.kind === 'network_block') return rows
+  // Budget, reroute, watch, inbox and automation deltas are fleet-wide; the store handles them.
+  if (d.kind === 'budget' || d.kind === 'reroute' || d.kind === 'watch' || d.kind === 'automation' || d.kind === 'network_block' || d.kind === 'inbox') return rows
   let changed = false
   const out = rows.map((r) => {
     if (r.id !== d.sessionId) return r
@@ -123,10 +119,10 @@ export function applyDeltaTo(rows: AgentRow[], d: FleetEvent): AgentRow[] {
 export function describePending(p: PendingRequest): string {
   const fallback = p.kind === 'approval' ? 'Approval required' : 'Answer required'
   const params = p.params
-  if (!params || typeof params !== 'object') return fallback
+  if (!isRecord(params)) return fallback
 
   if (p.kind === 'question') {
-    const questions = (params as { questions?: unknown }).questions
+    const questions = params.questions
     if (Array.isArray(questions) && questions.length > 0) {
       const first = questions[0]
       if (first && typeof first === 'object') {
@@ -139,9 +135,9 @@ export function describePending(p: PendingRequest): string {
 
   // Approvals: the command is the most informative thing when present,
   // since that is what the user is actually being asked to allow.
-  const command = (params as { command?: unknown }).command
+  const command = params.command
   if (typeof command === 'string' && command.trim() !== '') return command
-  const toolName = (params as { toolName?: unknown }).toolName
+  const toolName = params.toolName
   if (typeof toolName === 'string' && toolName.trim() !== '') return toolName
   return fallback
 }
@@ -152,8 +148,8 @@ export function describePending(p: PendingRequest): string {
  * branches on their presence.
  */
 export function toPendingPermission(p: PendingRequest): PendingPermission {
-  const params = (p.params ?? {}) as Record<string, unknown>
-  const str = (k: string): string | undefined => (typeof params[k] === 'string' && params[k] !== '' ? (params[k] as string) : undefined)
+  const params = isRecord(p.params) ? p.params : {}
+  const str = (k: string): string | undefined => (typeof params[k] === 'string' && params[k] !== '' ? params[k] : undefined)
   // The typed capability bundle is kept rather than dropped. Without one, the
   // approval is exact-only: it covers the presented action and nothing more.
   const modeAccess = parseModeAccess(params.modeAccess)
@@ -186,7 +182,7 @@ function toOption(raw: unknown): QuestionOption | null {
  * request cannot break the dashboard.
  */
 export function toPendingQuestion(sessionId: string, p: PendingRequest): PendingQuestion {
-  const raw = (p.params as { questions?: unknown } | undefined)?.questions
+  const raw = isRecord(p.params) ? p.params.questions : undefined
   const questions: Question[] = Array.isArray(raw)
     ? raw.flatMap((q) => {
         if (!q || typeof q !== 'object') return []
@@ -205,10 +201,27 @@ export function toPendingQuestion(sessionId: string, p: PendingRequest): Pending
   return { questionId: p.id, sessionId, questions }
 }
 
+/** An empty inbox: every list is an array, as the bridge always encodes them. */
+const emptyInbox = (): ContractInbox => ({ groups: { needsYou: [], running: [], ready: [], earlier: [] }, queue: [] })
+
+/**
+ * Fold a fresh agent snapshot over the rows. The snapshot has no run digest,
+ * so the one deltas gave a row is kept.
+ */
+function mergeAgents(prev: AgentRow[], list: AgentStatus[]): AgentRow[] {
+  const by = new Map(prev.map((r) => [r.id, r]))
+  return list.map(toRow).map((r) => {
+    const old = by.get(r.id)
+    return old?.run ? { ...r, run: old.run, runAt: old.runAt } : r
+  })
+}
+
 export function createFleetStore() {
   const state = writable({
     agents: [] as AgentRow[],
     projects: [] as ProjectStatus[],
+    /** The bridge's inbox: groups of agent IDs and the needs-you queue, already ordered. */
+    inbox: emptyInbox(),
     loading: false,
     error: null as string | null,
     budget: null as BudgetState | null,
@@ -226,31 +239,57 @@ export function createFleetStore() {
     /** Bumped on every automation delta; views that list drafts or CI results refetch when it moves. */
     automationTick: 0,
   })
+  /** When the agents were last refetched because the inbox named a row we lack (decision 7). */
+  let agentsRefetchedAt = 0
   async function refresh() {
     state.update((s) => ({ ...s, loading: true, error: null }))
     try {
       // Pending prompts survive a reload through the bridge; a bridge without the route just has none to restore.
-      const [a, p, pend] = await Promise.all([listAgents(), listProjects(), getNetworkPending().catch(() => [])])
-      // The snapshot's rows have no run digest; keep the one deltas gave us.
+      const [a, p, ib, pend] = await Promise.all([listAgents(), listProjects(), getInbox(), getNetworkPending().catch(() => [])])
       state.update((s) => {
-        const prev = new Map(s.agents.map((r) => [r.id, r]))
-        const agents = a.map(toRow).map((r) => {
-          const old = prev.get(r.id)
-          return old?.run ? { ...r, run: old.run, runAt: old.runAt } : r
-        })
+        const agents = mergeAgents(s.agents, a)
         // A request for an agent that is gone has nobody left to decide for.
         const live = new Set(agents.map((r) => r.id))
         const byKey = new Map<string, NetworkDecisionItem>()
         for (const d of s.decisions) byKey.set(`${d.agentId}|${d.host}`, d)
         for (const d of pend) byKey.set(`${d.agentId}|${d.host}`, { agentId: d.agentId, host: d.host, workspace: d.workspace, at: d.at })
         const decisions = [...byKey.values()].filter((d) => live.has(d.agentId)).sort((x, y) => x.at - y.at)
-        return { ...s, agents, projects: p, loading: false, error: null, decisions }
+        return { ...s, agents, projects: p, inbox: ib, loading: false, error: null, decisions }
       })
     } catch (e) {
       state.update((s) => ({ ...s, loading: false, error: e instanceof Error ? e.message : String(e) }))
     }
   }
+  /**
+   * An inbox names an agent the rows do not have yet, so the snapshot behind
+   * the inbox is newer than ours. Refetch it, at most once a second; until the
+   * rows land, the ID is simply not shown.
+   */
+  function refetchAgentsFor(inbox: ContractInbox) {
+    const known = new Set(get(state).agents.map((r) => r.id))
+    const named = [
+      ...inbox.groups.needsYou,
+      ...inbox.groups.running,
+      ...inbox.groups.ready,
+      ...inbox.groups.earlier,
+      ...inbox.queue.flatMap((i) => (i.kind === 'agent' && i.agentId ? [i.agentId] : [])),
+    ]
+    if (!named.some((id) => !known.has(id))) return
+    const now = Date.now()
+    if (now - agentsRefetchedAt < 1000) return
+    agentsRefetchedAt = now
+    void listAgents()
+      .then((a) => state.update((s) => ({ ...s, agents: mergeAgents(s.agents, a) })))
+      .catch(() => {
+        // A failed refetch leaves the rows alone; the next inbox delta retries.
+      })
+  }
   function applyDelta(d: FleetEvent) {
+    if (d.kind === 'inbox') {
+      state.update((s) => ({ ...s, inbox: d.inbox }))
+      refetchAgentsFor(d.inbox)
+      return
+    }
     state.update((s) => {
       if (d.kind === 'budget') {
         const { kind: _k, ...b } = d

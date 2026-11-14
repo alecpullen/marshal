@@ -78,6 +78,6 @@ export function gateRunnable(toolchains: string[], gateCommands: string | undefi
 }
 
 /** `▦ name@v3`, the tag the session header and Live wall show for an agent's workspace. */
-export function workspaceTag(w: { name: string; version: number }): string {
-  return `▦ ${w.name}@v${w.version}`
+export function workspaceTag(w: { name: string; version?: number }): string {
+  return w.version === undefined ? `▦ ${w.name}` : `▦ ${w.name}@v${w.version}`
 }

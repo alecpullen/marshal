@@ -117,6 +117,21 @@ environment and records a warning naming the step and how it failed — never
 the step's output — which `GET /api/daemon` reports per child as `envWarning`
 and `marshal daemon status` prints.
 
+## The fleet inbox
+
+`GET /api/inbox` answers the fleet's inbox:
+`{"groups":{"needsYou":[…],"running":[…],"ready":[…],"earlier":[…]},"queue":[…]}`.
+The groups are agent IDs in the order they need attention, and the queue is
+what needs a person, oldest first — the needs-you agents and the intake
+submissions, each naming its kind and the instant it arrived. The bridge
+computes the grouping, the urgency order and the queue, so a client renders
+them and groups nothing itself.
+
+The same object arrives unprompted as an `inbox` delta on the fleet stream
+(`GET /api/events?stream=fleet`), sent whenever the inbox changes. Like the
+budget, reroute and watch deltas it names no session: it is one view of the
+whole fleet, so the last one received is the current inbox.
+
 ## Secrets
 
 Credential values (git tokens, provider keys, workspace CA keys) live in

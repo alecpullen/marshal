@@ -331,7 +331,21 @@ func (s *FactoryStore) replayRequest(request, id, hash string) (FactoryItem, boo
 	}
 	return FactoryItem{}, false, nil
 }
+
+// Create stores a handoff whose replay identity and content are both the
+// request it received.
 func (s *FactoryStore) Create(req FactoryCreate, now time.Time) (FactoryItem, error) {
+	return s.CreateResolved(req, req, now)
+}
+
+// CreateResolved stores a handoff whose replay identity is the operator's
+// request but whose content is the resolved configuration.
+//
+// The two are kept apart on purpose: a client retrying an unchanged create
+// after the project's defaults moved on must receive the original work item,
+// so the identity is hashed over what the operator sent, never over the
+// resolved result.
+func (s *FactoryStore) CreateResolved(req, resolved FactoryCreate, now time.Time) (FactoryItem, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed || s.unavailable {
@@ -349,7 +363,7 @@ func (s *FactoryStore) Create(req FactoryCreate, now time.Time) (FactoryItem, er
 	if i, ok, e := s.replayRequest(req.RequestID, "", hash); ok {
 		return i, e
 	}
-	if e = factoryNormalize(&req); e != nil {
+	if e = factoryNormalize(&resolved); e != nil {
 		return FactoryItem{}, e
 	}
 	idBytes := make([]byte, 16)
@@ -358,7 +372,7 @@ func (s *FactoryStore) Create(req FactoryCreate, now time.Time) (FactoryItem, er
 	}
 	id := hex.EncodeToString(idBytes)
 	now = now.UTC()
-	i := FactoryItem{ID: id, Title: req.Title, State: "draft", Version: 1, Draft: req, RepoID: req.Config.RepoID, ProjectRoot: req.Config.ProjectRoot, HostID: req.Config.HostID, Branch: "marshal/factory/" + id, CreatedAt: now, UpdatedAt: now}
+	i := FactoryItem{ID: id, Title: resolved.Title, State: "draft", Version: 1, Draft: resolved, RepoID: resolved.Config.RepoID, ProjectRoot: resolved.Config.ProjectRoot, HostID: resolved.Config.HostID, Branch: "marshal/factory/" + id, CreatedAt: now, UpdatedAt: now}
 	return s.append(req.RequestID, hash, i)
 }
 

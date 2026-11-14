@@ -1,27 +1,36 @@
 <script lang="ts">
-  import { groupAgents, type AgentRow, type AgentGroupKey } from './fleet'
-  import type { ProjectStatus } from './api'
+  import type { AgentRow } from './fleet'
+  import type { Inbox, ProjectStatus } from './api'
   import { shortName } from './utils'
   import { isScopedSessions } from './routes'
 
   interface Props {
     open: boolean
     onToggle: () => void
+    /** The rows the inbox's groups name, looked up by ID. */
     agents: AgentRow[]
+    /** The bridge's groups (agent IDs, in urgency order) and needs-you queue. */
+    inbox: Inbox
     projects: ProjectStatus[]
-    pendingCount: number
     clientCount: number
     route: string
     activeAgentId: string | null
     onNavigate: (hash: string) => void
   }
 
-  let { open, onToggle, agents, projects, pendingCount, clientCount, route, activeAgentId, onNavigate }: Props = $props()
+  let { open, onToggle, agents, inbox, projects, clientCount, route, activeAgentId, onNavigate }: Props = $props()
 
-  const groups = $derived(groupAgents(agents))
+  const byId = $derived(new Map(agents.map((a) => [a.id, a])))
+  // An ID with no row is skipped until the snapshot catches up with the inbox.
+  const rowsOf = (ids: string[]) => ids.flatMap((id) => { const row = byId.get(id); return row ? [row] : [] })
+
+  const groups = $derived(inbox.groups)
   const needsCount = $derived(groups.needsYou.length)
+  const firstNeed = $derived(rowsOf(groups.needsYou)[0])
+  // Intake comes from the queue now, so a submission shows up within a second (decision 8).
+  const pendingCount = $derived(inbox.queue.filter((i) => i.kind === 'intake').length)
 
-  const sections: { key: AgentGroupKey; label: string; tone: string }[] = [
+  const sections: { key: keyof Inbox['groups']; label: string; tone: string }[] = [
     { key: 'needsYou', label: 'Needs you', tone: 'text-attention' },
     { key: 'running', label: 'Running', tone: 'text-running' },
     { key: 'ready', label: 'Ready to ship', tone: 'text-accent' },
@@ -67,10 +76,10 @@
     >
       +
     </button>
-    {#if needsCount > 0}
+    {#if needsCount > 0 && firstNeed}
       <button
         class="relative cursor-pointer rounded-md px-2 py-1 hover:bg-bg"
-        onclick={() => onNavigate(`#chat/${groups.needsYou[0].id}`)}
+        onclick={() => onNavigate(`#chat/${firstNeed.id}`)}
         title="{needsCount} agent(s) need you"
         aria-label="{needsCount} agents need you"
       >
@@ -104,8 +113,8 @@
 
   <div class="flex-1 px-2">
     {#each sections as sec (sec.key)}
-      {@const list = groups[sec.key]}
-      {#if list.length > 0}
+      {@const ids = groups[sec.key]}
+      {#if ids.length > 0}
         <div class="mb-2">
           <button
             class="flex w-full cursor-pointer items-center gap-1 rounded-md px-2 py-1 text-left text-[0.6875rem] tracking-wide uppercase hover:bg-bg {sec.tone}"
@@ -114,10 +123,10 @@
           >
             <span class="w-3 shrink-0">{collapsed[sec.key] ? '▸' : '▾'}</span>
             <span>{sec.label}</span>
-            <span class="ml-auto shrink-0 tabular-nums">{list.length}</span>
+            <span class="ml-auto shrink-0 tabular-nums">{ids.length}</span>
           </button>
           {#if !collapsed[sec.key]}
-            {#each list as a (a.id)}
+            {#each rowsOf(ids) as a (a.id)}
               <button
                 class="flex w-full cursor-pointer items-center gap-2 rounded-md py-1.5 pr-2 pl-5 text-left text-sm hover:bg-bg
                        {activeAgentId === a.id ? 'bg-bg font-medium' : ''}"

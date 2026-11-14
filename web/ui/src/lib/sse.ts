@@ -1,5 +1,6 @@
 import { ensureToken, getToken, rejectToken } from './api.js'
-import type { FleetEvent, ProjectRemovedDelta } from './fleet'
+import type { FleetDelta, FleetEvent, InboxDelta, ProjectRemovedDelta, RunDelta, ToolStat } from './fleet'
+import type { RunDetail } from './api.js'
 
 export interface SSEMessage {
   id: number
@@ -242,6 +243,38 @@ function bindingLabel(v: unknown): string {
 
 const str = (v: unknown) => (typeof v === 'string' && v !== '' ? v : null)
 
+/** A run delta's detail. The contract carries it as `unknown` and the store
+ *  renders it as a RunDetail, so the value is validated rather than asserted:
+ *  anything without one of the three known kinds is not a run detail. */
+function isRunDetail(v: unknown): v is RunDetail {
+  if (!v || typeof v !== 'object') return false
+  const kind = (v as { kind?: unknown }).kind
+  return kind === 'sdd' || kind === 'swarm' || kind === 'none'
+}
+
+/** The telemetry tool rows. The contract carries them as `unknown`; malformed
+ *  rows are dropped rather than passed through as if they were ToolStats. */
+function parseToolStats(v: unknown): ToolStat[] | undefined {
+  if (!Array.isArray(v)) return undefined
+  const out = v.flatMap((row): ToolStat[] => {
+    if (!row || typeof row !== 'object') return []
+    const r = row as Record<string, unknown>
+    if (typeof r.name !== 'string' || typeof r.calls !== 'number') return []
+    const stat: ToolStat = { name: r.name, calls: r.calls }
+    if (typeof r.errors === 'number') stat.errors = r.errors
+    if (typeof r.slowestMs === 'number') stat.slowestMs = r.slowestMs
+    return [stat]
+  })
+  return out.length > 0 ? out : undefined
+}
+
+/** The telemetry rule names; non-strings are dropped. */
+function parseRules(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined
+  const out = v.filter((r): r is string => typeof r === 'string')
+  return out.length > 0 ? out : undefined
+}
+
 /**
  * A reroute delta carries its payload under `reroute` (`{id, watchId, watch,
  * role, profile, from, to, at}`; from and to are bindings, null for none), and
@@ -258,6 +291,25 @@ function parseReroute(value: Record<string, unknown>): FleetEvent | null {
   const to = bindingLabel(src.to)
   if (!from || !to) return null
   return { kind: 'reroute', id, watch: str(src.watch) ?? str(src.watchId) ?? '', role, from, to }
+}
+
+/** The inbox groups: all four lists are arrays, or the value is not a group table. */
+function isInboxGroups(v: unknown): boolean {
+  if (!v || typeof v !== 'object') return false
+  const g = v as Record<string, unknown>
+  return Array.isArray(g.needsYou) && Array.isArray(g.running) && Array.isArray(g.ready) && Array.isArray(g.earlier)
+}
+
+/** The inbox delta is the bridge's whole inbox and the store adopts it as is:
+ *  the sidebar counts `groups.needsYou` and Home dereferences `inbox.groups.*`,
+ *  so a frame missing the group table or the queue is dropped and the browser
+ *  keeps its last good inbox rather than rendering a broken one. */
+function parseInbox(value: Record<string, unknown>): InboxDelta | null {
+  const inbox = value.inbox
+  if (!inbox || typeof inbox !== 'object') return null
+  const i = inbox as Record<string, unknown>
+  if (!isInboxGroups(i.groups) || !Array.isArray(i.queue)) return null
+  return value as unknown as InboxDelta
 }
 
 /** A budget delta is nested under `budget` on the wire; the flat spec shape is accepted too. */
@@ -279,10 +331,12 @@ export function parseFleetEvent(data: string): FleetEvent | 'overflow' | null {
     const value = JSON.parse(data) as Record<string, unknown>
     if (value.type === 'replay_overflow') return 'overflow'
     if (value.kind === 'project_removed' && typeof value.project === 'string') return value as unknown as ProjectRemovedDelta
-    // Budget, reroute and watch are fleet-wide, so they carry no session.
+    // Budget, reroute, watch and the inbox are fleet-wide, so they carry no session.
     if (value.kind === 'budget') return parseBudget(value)
     if (value.kind === 'reroute') return parseReroute(value)
     if (value.kind === 'watch') return value as unknown as FleetEvent
+    // The inbox is the bridge's whole fleet inbox, sent as one delta; it names no session.
+    if (value.kind === 'inbox') return parseInbox(value)
     // Automation and network-block events may name no session.
     if (value.kind === 'automation' || value.kind === 'network_block') return value as unknown as FleetEvent
     // The bridge may address a run delta as agentId; rows are keyed by sessionId.
@@ -290,6 +344,27 @@ export function parseFleetEvent(data: string): FleetEvent | 'overflow' | null {
       value.sessionId = value.agentId
     }
     if (typeof value.kind !== 'string' || typeof value.sessionId !== 'string') return null
+    // The contract types a run delta's payload and a telemetry delta's sections
+    // as `unknown`; the store renders them as RunDetail / ToolStat[] / string[],
+    // so each is validated here instead of being asserted through.
+    if (value.kind === 'run') {
+      const run = value.run
+      if (!isRunDetail(run)) return null
+      const delta: RunDelta = { kind: 'run', sessionId: value.sessionId, run }
+      if (typeof value.at === 'number') delta.at = value.at
+      return delta
+    }
+    if (value.kind === 'telemetry') {
+      const delta: FleetDelta = { kind: 'telemetry', sessionId: value.sessionId }
+      if (typeof value.activity === 'string') delta.activity = value.activity
+      if (typeof value.contextPct === 'number') delta.contextPct = value.contextPct
+      if (typeof value.changedFiles === 'number') delta.changedFiles = value.changedFiles
+      const toolStats = parseToolStats(value.toolStats)
+      if (toolStats) delta.toolStats = toolStats
+      const rules = parseRules(value.rules)
+      if (rules) delta.rules = rules
+      return delta
+    }
     return value as unknown as FleetEvent
   } catch { return null }
 }

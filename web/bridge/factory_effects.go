@@ -240,7 +240,7 @@ func (f *factoryEffects) Execute(ctx context.Context, item FactoryItem, e Factor
 			return out, fmt.Errorf("%w: resume: %v", ErrFactoryUncertain, err)
 		}
 	case "set_ready", "set_draft":
-		repo, _, forge, cred, err := f.forge(ctx, item)
+		repo, baseForge, forge, cred, err := f.forge(ctx, item)
 		if err != nil {
 			return out, fmt.Errorf("%w: %v", ErrFactoryRefused, err)
 		}
@@ -257,6 +257,29 @@ func (f *factoryEffects) Execute(ctx context.Context, item FactoryItem, e Factor
 		}
 		if e.Kind == "set_ready" && (!factoryPRMatches(item, before) || before.HeadSHA != e.ExpectedHead || before.BaseSHA != e.ExpectedBase || !before.Draft) {
 			return out, fmt.Errorf("%w: PR revision changed", ErrFactoryRefused)
+		}
+		// The description is written for the revision the pre-check confirmed
+		// and before the draft flag is cleared, so a failed write leaves the
+		// pull request a draft. set_draft writes no body.
+		if e.Kind == "set_ready" {
+			description, err := FactoryPRDescriptionFor(baseForge)
+			if err != nil {
+				return out, fmt.Errorf("%w: %v", ErrFactoryRefused, err)
+			}
+			if len(item.Rounds) == 0 {
+				return out, fmt.Errorf("%w: newest round carries no narration", ErrFactoryRefused)
+			}
+			round := item.Rounds[len(item.Rounds)-1]
+			if round.Implementation == nil || round.Implementation.Narration == nil {
+				return out, fmt.Errorf("%w: newest round %d carries no narration", ErrFactoryRefused, round.Number)
+			}
+			body, err := composeFactoryPRBody(round)
+			if err != nil {
+				return out, fmt.Errorf("%w: %v", ErrFactoryRefused, err)
+			}
+			if err := description.UpdateFactoryPRDescription(ctx, repo, before.Number, body, cred); err != nil {
+				return out, fmt.Errorf("%w: PR description: %v", ErrFactoryUncertain, err)
+			}
 		}
 		draft := e.Kind == "set_draft"
 		if err := forge.SetFactoryDraft(ctx, repo, before, draft, cred); err != nil {

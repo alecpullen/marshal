@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 var ErrUnknownProject = errors.New("bridge: unknown project")
@@ -109,19 +111,8 @@ type agentRuntime struct {
 	spawnErr error
 }
 
-type ProjectStatus struct {
-	Root      string `json:"root"`
-	Available bool   `json:"available"`
-	Error     string `json:"error,omitempty"`
-	Trust     string `json:"trust"`
-	// Isolation is "available", or a human-readable reason isolation cannot
-	// be offered for this project. The composer disables its toggle and shows
-	// the reason, rather than letting a spawn fail.
-	Isolation string `json:"isolation"`
-	// OrphanWorktrees are worktrees under this project that no known agent
-	// claims. Reported, never deleted — they may hold uncommitted work.
-	OrphanWorktrees []string `json:"orphanWorktrees,omitempty"`
-}
+// ProjectStatus is contract.ProjectStatus; see that declaration.
+type ProjectStatus = contract.ProjectStatus
 
 type Fleet struct {
 	factory    *FactoryController
@@ -298,6 +289,23 @@ type Fleet struct {
 	done chan struct{}
 	// closeOnce guards Close against a double-close panic on done.
 	closeOnce sync.Once
+
+	// inboxWake wakes the inbox loop; one buffered signal.
+	inboxWake chan struct{}
+	// inboxDelay and inboxEvery are the loop's settle delay and tick:
+	// 250ms and 1s; tests shorten them.
+	inboxDelay, inboxEvery time.Duration
+	// inboxSent is the encoding of the last inbox delta sent (loop only).
+	inboxSent []byte
+	// inboxMu guards the intervals above and inboxRan, which tests shorten
+	// and count without restarting the loop.
+	inboxMu sync.Mutex
+	// inboxRan counts the loop's recomputes; tests read it through
+	// inboxRecomputes.
+	inboxRan int64
+	// inboxStopped is closed when the loop returns; tests wait on it.
+	inboxStopped chan struct{}
+
 	// rateLimits tracks per-repo "not before" times for backoff.
 	rateMu     sync.Mutex
 	rateLimits map[string]time.Time
@@ -401,6 +409,10 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		limits:        limits,
 		projectMounts: projectMounts,
 		done:          make(chan struct{}),
+		inboxWake:     make(chan struct{}, 1),
+		inboxDelay:    inboxSettleDelay,
+		inboxEvery:    inboxTick,
+		inboxStopped:  make(chan struct{}),
 		rateLimits:    make(map[string]time.Time),
 		provisioning:  make(map[string]string),
 		ctl:           newControlRuntime(),
@@ -415,6 +427,11 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 	f.pools = newPoolManager(f)
 	f.notify = newNotifier(f)
 	f.budgets = newBudgetState(f)
+	// The inbox loop starts once the fleet is fully built: its first
+	// recompute emits a delta, which goes through the notifier.
+	if f.done != nil {
+		go f.runInbox()
+	}
 	// Remote sources need git and (later) credentials. Absent git is not
 	// fatal at startup: local-path spawns still work, and a git-sourced
 	// spawn reports a clear error via Spawn.
@@ -1338,7 +1355,7 @@ func (f *Fleet) spawn(ctx context.Context, root string, opts SpawnOptions, tag *
 	profile, _ := ResolveProfile(workDir, opts.Profile, f.buildVersion)
 	a.Profile = profile
 	if wsRes != nil {
-		a.Workspace = &AgentWorkspace{Name: wsRes.Name, Version: wsRes.Version, Source: wsRes.Source, Timeout: wsRes.Doc.Resources.Timeout}
+		a.Workspace = &AgentWorkspace{Name: wsRes.Name, Version: wsRes.Version, Source: contract.WorkspaceSource(wsRes.Source), Timeout: wsRes.Doc.Resources.Timeout}
 		a.Profile.Image = wsImage
 		applyResources(&a.Profile, wsRes.Doc.Resources)
 	}
@@ -1703,7 +1720,7 @@ func (f *Fleet) ProjectStatus() []ProjectStatus {
 		}
 		seen[root] = true
 		st := ProjectStatus{
-			Root: root, Available: true, Trust: projectTrust(root),
+			Root: root, Available: true, Trust: contract.TrustState(projectTrust(root)),
 			Isolation: isolationSupport(root), OrphanWorktrees: f.orphans[root],
 		}
 		if spawnErr := runtimeErrors[root]; spawnErr != nil {
@@ -1854,10 +1871,10 @@ func (f *Fleet) installClassifier(child *Child, reg *Registry, agentOf agentOf) 
 			if d.Kind == "run" {
 				d.At = f.now().UnixMilli()
 			}
-			if d.Kind == "telemetry" && len(d.Usage) > 0 {
+			if d.Kind == "telemetry" && len(d.usage) > 0 {
 				// Off the read goroutine: the budget check may need the
 				// control agent, and a notification callback must not block.
-				go f.recordUsage(agentID, d.Usage)
+				go f.recordUsage(agentID, d.usage)
 			}
 			f.live.apply(d)
 			f.emit(d)
@@ -1879,9 +1896,9 @@ func (f *Fleet) installClassifier(child *Child, reg *Registry, agentOf agentOf) 
 				return
 			}
 			f.live.observePending(agentID, p)
-			f.emit(fleetDelta{
-				Kind: "pending", SessionID: agentID, PendingKind: p.kind,
-			})
+			f.emit(fleetDelta{FleetDelta: contract.FleetDelta{
+				Kind: "pending", SessionID: agentID, PendingKind: contract.PendingKind(p.kind),
+			}})
 		}
 	}
 }
@@ -1930,7 +1947,7 @@ func (f *Fleet) Snapshot() []AgentStatus {
 			pending := rt.reg.Pending(sid)
 			if pending != "" && live.pending != nil && live.pending.kind == pending {
 				st.Pending = &PendingRequest{
-					Kind: live.pending.kind, ID: live.pending.id, Params: live.pending.params,
+					Kind: contract.PendingKind(live.pending.kind), ID: live.pending.id, Params: live.pending.params,
 				}
 			}
 			switch pending {

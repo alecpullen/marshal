@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -299,5 +300,62 @@ func TestFactoryGitHubEvaluation(t *testing.T) {
 	f, _ := ForgeFor(Repo{Forge: "gitea"}, http.DefaultClient)
 	if _, err := FactoryForgeFor(f); err != ErrFactoryForgeUnsupported {
 		t.Fatal(err)
+	}
+}
+
+func TestFactoryGitHubUpdatesPRDescription(t *testing.T) {
+	var method, path string
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		fmt.Fprint(w, `{"number":7,"node_id":"node","state":"open","draft":true,"head":{"ref":"branch","sha":"h"},"base":{"ref":"main","sha":"b"}}`)
+	}))
+	defer srv.Close()
+	g := &githubForge{srv.Client()}
+	err := g.UpdateFactoryPRDescription(context.Background(), Repo{URL: "https://github.com/o/r", APIBase: srv.URL}, 7, "## CI\n\nbody", Credential{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if method != "PATCH" || path != "/repos/o/r/pulls/7" || body["body"] != "## CI\n\nbody" {
+		t.Fatalf("method=%s path=%s body=%v", method, path, body)
+	}
+}
+
+func TestFactoryGitHubDescriptionUpdateRejectsFailure(t *testing.T) {
+	repo := Repo{URL: "https://github.com/o/r"}
+	for _, code := range []int{403, 422, 500} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(code)
+				fmt.Fprint(w, `{"message":"denied"}`)
+			}))
+			defer srv.Close()
+			repo.APIBase = srv.URL
+			if err := (&githubForge{srv.Client()}).UpdateFactoryPRDescription(context.Background(), repo, 7, "body", Credential{}); err == nil {
+				t.Fatalf("accepted %d", code)
+			}
+		})
+	}
+	t.Run("mismatched pull request", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, `{"number":8,"node_id":"node"}`)
+		}))
+		defer srv.Close()
+		repo.APIBase = srv.URL
+		if err := (&githubForge{srv.Client()}).UpdateFactoryPRDescription(context.Background(), repo, 7, "body", Credential{}); err == nil {
+			t.Fatal("accepted a mismatched pull request number")
+		}
+	})
+}
+
+func TestFactoryPRDescriptionCapability(t *testing.T) {
+	d, err := FactoryPRDescriptionFor(&githubForge{http.DefaultClient})
+	if err != nil || d == nil {
+		t.Fatalf("GitHub forge lost the description capability: %v", err)
+	}
+	f, _ := ForgeFor(Repo{Forge: "gitea"}, http.DefaultClient)
+	if _, err := FactoryPRDescriptionFor(f); !errors.Is(err, ErrFactoryPRDescriptionUnsupported) {
+		t.Fatalf("forge without the capability reported %v", err)
 	}
 }

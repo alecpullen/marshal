@@ -8,6 +8,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // ErrGone is returned by ResolvePermission and ResolveQuestion when the
@@ -97,13 +99,8 @@ type sessionInfo struct {
 	fleet bool
 }
 
-// DaemonSession is one tracked session of a project child, as
-// GET /api/daemon reports it.
-type DaemonSession struct {
-	ID         string `json:"id"`
-	Viewers    int    `json:"viewers"`
-	LastActive int64  `json:"lastActive"` // Unix milliseconds
-}
+// DaemonSession is contract.DaemonSession; see that declaration.
+type DaemonSession = contract.DaemonSession
 
 // Registry tracks active sessions and brokers the child-initiated
 // permission and question requests to the HTTP layer.

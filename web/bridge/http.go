@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // maxBodyBytes bounds inbound request bodies. Prompt and steer text
@@ -167,6 +169,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/projects", s.addProject)
 	s.mux.HandleFunc("DELETE /api/projects", s.removeProject)
 	s.mux.HandleFunc("GET /api/agents", s.listAgents)
+	s.mux.HandleFunc("GET /api/inbox", s.inbox)
 	s.mux.HandleFunc("POST /api/agents", s.spawnAgent)
 	s.mux.HandleFunc("GET /api/agents/{id}/diff", s.agentDiff)
 	s.mux.HandleFunc("GET /api/agents/{id}/files", s.agentFiles)
@@ -251,6 +254,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/secrets", s.listSecrets)
 	s.mux.HandleFunc("PUT /api/secrets/{ref...}", s.putSecret)
 	s.mux.HandleFunc("DELETE /api/secrets/{ref...}", s.deleteSecret)
+	s.discoveryRoutes()
+	s.previewRoutes()
 	// NOTE: with a token configured this stream requires an
 	// Authorization header, which the browser-native EventSource API
 	// cannot send. The SPA must consume SSE over fetch (Task 7 does);
@@ -431,12 +436,24 @@ func (s *Server) removeProject(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	s.fleet.emit(map[string]any{"kind": "project_removed", "project": body.Root})
+	s.fleet.emit(contract.ProjectRemovedDelta{Kind: contract.DeltaProjectRemoved, Project: body.Root})
 	writeJSON(w, http.StatusOK, s.fleet.ProjectStatus())
 }
 
 func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.fleet.Snapshot())
+}
+
+// inbox answers the fleet's inbox: the four agent groups and the needs-you
+// queue, computed fresh on every request (P5 F2). A bridge built over a
+// registry rather than a fleet has no inbox, so the route answers exactly
+// what the mux answers for a path it does not know.
+func (s *Server) inbox(w http.ResponseWriter, r *http.Request) {
+	if s.fleet == nil {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.fleet.Inbox())
 }
 
 // ValidateProjectRoot checks that root is an absolute path under one of the
@@ -477,24 +494,7 @@ func ValidateProjectRoot(root string) error {
 }
 
 func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Project string `json:"project"`
-		Name    string `json:"name"`
-		Mode    string `json:"mode"`
-		// Auto is a pointer so a request that leaves it out takes the
-		// project's default, while an explicit false stays a value.
-		Auto   *bool  `json:"auto"`
-		Prompt string `json:"prompt"`
-		// Isolated is a pointer so a request that leaves it out takes the
-		// project's default.
-		Isolated *bool  `json:"isolated"`
-		Branch   string `json:"branch"`
-		BaseRef  string `json:"baseRef"`
-		// Routing picks this agent's models; see SpawnOptions.Routing.
-		Routing json.RawMessage `json:"routing"`
-		// Workspace is a workspace reference: name, name@3 or repo:name.
-		Workspace string `json:"workspace"`
-	}
+	var body contract.SpawnRequest
 	if !decodeJSON(w, r, &body) {
 		return
 	}
@@ -537,9 +537,9 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 			}()
 		}
 	}
-	resp := map[string]any{"agentId": id}
+	resp := contract.SpawnResult{AgentID: id}
 	if err != nil {
-		resp["warning"] = err.Error()
+		resp.Warning = err.Error()
 	}
 	writeJSON(w, http.StatusCreated, resp)
 }
@@ -603,9 +603,7 @@ func (s *Server) agentGate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) agentMerge(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		CommitMessage string `json:"commitMessage"`
-	}
+	var body contract.MergeRequest
 	if !decodeJSON(w, r, &body) {
 		return
 	}
@@ -635,14 +633,11 @@ func (s *Server) agentDiscard(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "discarded"})
+	writeJSON(w, http.StatusOK, contract.ActionStatus{Status: "discarded"})
 }
 
 func (s *Server) agentExit(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		CommitMessage string        `json:"commitMessage"`
-		Override      *GateOverride `json:"override,omitempty"`
-	}
+	var body contract.ExitRequest
 	if !decodeJSON(w, r, &body) {
 		return
 	}
@@ -1247,24 +1242,31 @@ func (s *Server) deleteClient(w http.ResponseWriter, r *http.Request) {
 // listPending returns all pending submissions awaiting confirmation.
 func (s *Server) listPending(w http.ResponseWriter, r *http.Request) {
 	pending := s.fleet.ws.Pending()
-	out := make([]map[string]any, 0, len(pending))
+	out := make([]contract.PendingSubmission, 0, len(pending))
 	for _, p := range pending {
-		out = append(out, map[string]any{
-			"id":        p.ID,
-			"origin":    p.Origin,
-			"clientId":  p.ClientID,
-			"title":     p.Title,
-			"repoId":    p.RepoID,
-			"ref":       p.Ref,
-			"prompt":    p.Prompt,
-			"plan":      p.Plan,
-			"mode":      p.Mode,
-			"auto":      p.Auto,
-			"createdAt": p.CreatedAt,
-			"expiresAt": p.ExpiresAt,
-		})
+		out = append(out, pendingSubmission(p))
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// pendingSubmission projects a stored pending spawn onto the wire shape
+// GET /api/pending answers. OwnerID is deliberately left unset: today's
+// bridge never reports one, and an absent value means the local owner.
+func pendingSubmission(p PendingSpawn) contract.PendingSubmission {
+	return contract.PendingSubmission{
+		ID:        p.ID,
+		Origin:    p.Origin,
+		ClientID:  p.ClientID,
+		Title:     p.Title,
+		RepoID:    p.RepoID,
+		Ref:       p.Ref,
+		Prompt:    p.Prompt,
+		Plan:      p.Plan,
+		Mode:      p.Mode,
+		Auto:      p.Auto,
+		CreatedAt: p.CreatedAt,
+		ExpiresAt: p.ExpiresAt,
+	}
 }
 
 // approvePending confirms a submission and starts its agent.
@@ -1279,7 +1281,7 @@ func (s *Server) approvePending(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"agentId": agentID, "status": "running"})
+	writeJSON(w, http.StatusOK, contract.ApproveResult{AgentID: agentID, Status: "running"})
 }
 
 // denyPending discards a submission without spawning.
@@ -1293,7 +1295,7 @@ func (s *Server) denyPending(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "denied"})
+	writeJSON(w, http.StatusOK, contract.ActionStatus{Status: "denied"})
 }
 
 // listRepoIssues returns the open issues for a registered repo.

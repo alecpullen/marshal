@@ -1,0 +1,24 @@
+goos: darwin
+goarch: arm64
+pkg: marshal/internal/app
+cpu: Apple M5
+BenchmarkCompletedCommandProjectionProbe/current_durable_and_retained-10         	       7	  46182196 ns/op	 8488766 B/op	   75670 allocs/op
+BenchmarkCompletedCommandProjectionProbe/current_durable_and_retained-10         	       7	  44572012 ns/op	 8521900 B/op	   75655 allocs/op
+BenchmarkCompletedCommandProjectionProbe/current_durable_and_retained-10         	       7	  45530184 ns/op	 8527524 B/op	   75677 allocs/op
+BenchmarkCompletedCommandProjectionProbe/durable_winners_only-10                 	      48	   7684193 ns/op	 1516253 B/op	   13007 allocs/op
+BenchmarkCompletedCommandProjectionProbe/durable_winners_only-10                 	      45	   7587856 ns/op	 1519808 B/op	   13012 allocs/op
+BenchmarkCompletedCommandProjectionProbe/durable_winners_only-10                 	      48	   7552627 ns/op	 1524689 B/op	   13012 allocs/op
+BenchmarkCompletedTailCleaningProbe/durable_exit/clean_two_outputs_each_tick-10  	      45	   7899732 ns/op	 1518704 B/op	   12918 allocs/op
+BenchmarkCompletedTailCleaningProbe/durable_exit/clean_two_outputs_each_tick-10  	      45	   7701495 ns/op	 1514769 B/op	   12919 allocs/op
+BenchmarkCompletedTailCleaningProbe/durable_exit/clean_two_outputs_each_tick-10  	      48	   7872968 ns/op	 1512007 B/op	   12918 allocs/op
+BenchmarkCompletedTailCleaningProbe/durable_exit/exact_input_memo_two_hits-10    	 8313862	        41.46 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompletedTailCleaningProbe/durable_exit/exact_input_memo_two_hits-10    	 8823331	        41.26 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompletedTailCleaningProbe/durable_exit/exact_input_memo_two_hits-10    	 8722496	        42.71 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompletedTailCleaningProbe/retained_job/clean_two_outputs_each_tick-10  	       9	  36623384 ns/op	 6968993 B/op	   62534 allocs/op
+BenchmarkCompletedTailCleaningProbe/retained_job/clean_two_outputs_each_tick-10  	       9	  37793787 ns/op	 6987009 B/op	   62564 allocs/op
+BenchmarkCompletedTailCleaningProbe/retained_job/clean_two_outputs_each_tick-10  	       9	  38689144 ns/op	 6997935 B/op	   62569 allocs/op
+BenchmarkCompletedTailCleaningProbe/retained_job/exact_input_memo_two_hits-10    	 8656021	        40.97 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompletedTailCleaningProbe/retained_job/exact_input_memo_two_hits-10    	 7868751	        44.21 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCompletedTailCleaningProbe/retained_job/exact_input_memo_two_hits-10    	 8035160	        41.11 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	marshal/internal/app	8.810s

@@ -2379,7 +2379,8 @@ type workCandidate struct {
 
 // workCoordinator is one conversation's private projection and action facade.
 type workCoordinator struct {
-	mu sync.Mutex
+	mu          sync.Mutex
+	outputCache workOutputCache
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -2733,8 +2734,8 @@ func (wc *workCoordinator) reconcileWork(now time.Time) {
 	wc.publishWork(urgent)
 }
 
-// buildCandidates normalizes every source into work items. It is pure with
-// respect to the coordinator: it reads only the snapshots handed to it.
+// buildCandidates normalizes source snapshots without changing lifecycle state.
+// Completed command text uses a separately synchronized, bounded derived cache.
 func (wc *workCoordinator) buildCandidates(conv string, jobs *native.JobSnapshot, subs session.SubagentSnapshot, watchSnap *watch.Snapshot, exits []session.JobExit, workView db.WorkViewRecord) []workCandidate {
 	var out []workCandidate
 	out = append(out, wc.commandCandidates(conv, jobs, exits)...)
@@ -2768,7 +2769,7 @@ func (wc *workCoordinator) commandCandidates(conv string, jobs *native.JobSnapsh
 			// the next resume synthesizes it again.
 			continue
 		}
-		add(workCandidate{item: commandExitItem(conv, e)})
+		add(workCandidate{item: wc.commandExitItem(conv, e)})
 	}
 	if jobs != nil {
 		for _, j := range jobs.Jobs {
@@ -2781,23 +2782,23 @@ func (wc *workCoordinator) commandCandidates(conv string, jobs *native.JobSnapsh
 			}
 			key := viewmodel.WorkKey(conv, epoch, workKindCommand, j.ExecutionID)
 			settling := containsString(jobs.Settling, settlementKeyOf(j))
-			it := commandItem(conv, epoch, key, j, jobs.SaveErrors)
 			if i, ok := byKey[key]; ok {
 				if workItemTerminal(out[i].item.State) {
 					continue
 				}
-				out[i] = workCandidate{item: it, settling: settling}
+				out[i] = workCandidate{item: wc.commandItem(conv, epoch, key, j, jobs.SaveErrors), settling: settling}
 				continue
 			}
 			byKey[key] = len(out)
-			out = append(out, workCandidate{item: it, settling: settling})
+			out = append(out, workCandidate{item: wc.commandItem(conv, epoch, key, j, jobs.SaveErrors), settling: settling})
 		}
 	}
+	wc.outputCache.prune(byKey)
 	return out
 }
 
 // commandItem projects one live execution.
-func commandItem(conv, epoch, key string, j native.JobInfo, saveErrors map[string]string) viewmodel.WorkItem {
+func (wc *workCoordinator) commandItem(conv, epoch, key string, j native.JobInfo, saveErrors map[string]string) viewmodel.WorkItem {
 	state := jobWorkState(j)
 	it := viewmodel.WorkItem{
 		TaskKey:        key,
@@ -2821,7 +2822,7 @@ func commandItem(conv, epoch, key string, j native.JobInfo, saveErrors map[strin
 		EndedAt:        j.EndedAt,
 		ResultRevision: j.ResultRevision,
 		Activity:       cleanWorkActivity(lastLine(j.DisplayTail)),
-		OutputTail:     cleanWorkTail(j.OutputTail),
+		OutputTail:     wc.commandOutputTail(key, j.ResultRevision, j.OutputTail, state),
 		ProgressConfig: j.ProgressConfig,
 		Progress:       j.Progress,
 	}
@@ -2850,7 +2851,7 @@ func commandItem(conv, epoch, key string, j native.JobInfo, saveErrors map[strin
 // identity as source ID, and it never receives stop capability. A record with an
 // identity but no source epoch predates the epoch's recording and takes the same
 // stable epoch — never the live manager epoch, which changes every process.
-func commandExitItem(conv string, e session.JobExit) viewmodel.WorkItem {
+func (wc *workCoordinator) commandExitItem(conv string, e session.JobExit) viewmodel.WorkItem {
 	epoch := e.SourceEpoch
 	sourceID := e.ExecutionID
 	if sourceID == "" {
@@ -2883,7 +2884,7 @@ func commandExitItem(conv string, e session.JobExit) viewmodel.WorkItem {
 		StartedAt:      e.StartedAt,
 		EndedAt:        e.EndedAt,
 		ResultRevision: e.ResultRevision,
-		OutputTail:     cleanWorkTail(e.Output),
+		OutputTail:     wc.commandOutputTail(key, e.ResultRevision, e.Output, state),
 		ProgressConfig: e.ProgressConfig,
 		Progress:       e.Progress,
 	}

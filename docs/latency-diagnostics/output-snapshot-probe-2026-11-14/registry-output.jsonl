@@ -1,0 +1,404 @@
+{"Time":"2026-11-14T17:27:11.066469+11:00","Action":"start","Package":"marshal/internal/tools/registry"}
+{"Time":"2026-11-14T17:27:11.635997+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesToolCallResultAndError"}
+{"Time":"2026-11-14T17:27:11.636048+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesToolCallResultAndError","Output":"=== RUN   TestNewAuditEventCopiesToolCallResultAndError\n"}
+{"Time":"2026-11-14T17:27:11.636072+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesToolCallResultAndError","Output":"--- PASS: TestNewAuditEventCopiesToolCallResultAndError (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636077+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesToolCallResultAndError","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636084+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventRoundTripsOriginalArgs"}
+{"Time":"2026-11-14T17:27:11.636088+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventRoundTripsOriginalArgs","Output":"=== RUN   TestNewAuditEventRoundTripsOriginalArgs\n"}
+{"Time":"2026-11-14T17:27:11.636095+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventRoundTripsOriginalArgs","Output":"--- PASS: TestNewAuditEventRoundTripsOriginalArgs (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636099+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventRoundTripsOriginalArgs","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636103+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesCommandExitCode"}
+{"Time":"2026-11-14T17:27:11.636106+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesCommandExitCode","Output":"=== RUN   TestNewAuditEventCopiesCommandExitCode\n"}
+{"Time":"2026-11-14T17:27:11.63611+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesCommandExitCode","Output":"--- PASS: TestNewAuditEventCopiesCommandExitCode (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636113+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesCommandExitCode","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636117+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesResultContent"}
+{"Time":"2026-11-14T17:27:11.636122+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesResultContent","Output":"=== RUN   TestNewAuditEventCopiesResultContent\n"}
+{"Time":"2026-11-14T17:27:11.636126+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesResultContent","Output":"--- PASS: TestNewAuditEventCopiesResultContent (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636129+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesResultContent","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636133+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesFilesChangedSlice"}
+{"Time":"2026-11-14T17:27:11.636136+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesFilesChangedSlice","Output":"=== RUN   TestNewAuditEventCopiesFilesChangedSlice\n"}
+{"Time":"2026-11-14T17:27:11.636139+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesFilesChangedSlice","Output":"--- PASS: TestNewAuditEventCopiesFilesChangedSlice (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636141+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesFilesChangedSlice","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636144+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesNotice"}
+{"Time":"2026-11-14T17:27:11.636147+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesNotice","Output":"=== RUN   TestNewAuditEventCopiesNotice\n"}
+{"Time":"2026-11-14T17:27:11.636169+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesNotice/nil_notice_stays_nil"}
+{"Time":"2026-11-14T17:27:11.636172+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesNotice/nil_notice_stays_nil","Output":"=== RUN   TestNewAuditEventCopiesNotice/nil_notice_stays_nil\n"}
+{"Time":"2026-11-14T17:27:11.636177+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesNotice/nil_notice_stays_nil","Output":"--- PASS: TestNewAuditEventCopiesNotice/nil_notice_stays_nil (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.63618+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesNotice/nil_notice_stays_nil","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636182+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesNotice/notice_with_data"}
+{"Time":"2026-11-14T17:27:11.636184+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesNotice/notice_with_data","Output":"=== RUN   TestNewAuditEventCopiesNotice/notice_with_data\n"}
+{"Time":"2026-11-14T17:27:11.636193+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesNotice/notice_with_data","Output":"--- PASS: TestNewAuditEventCopiesNotice/notice_with_data (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636197+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesNotice/notice_with_data","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636199+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesNotice/notice_without_data"}
+{"Time":"2026-11-14T17:27:11.636201+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesNotice/notice_without_data","Output":"=== RUN   TestNewAuditEventCopiesNotice/notice_without_data\n"}
+{"Time":"2026-11-14T17:27:11.636204+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesNotice/notice_without_data","Output":"--- PASS: TestNewAuditEventCopiesNotice/notice_without_data (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636206+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesNotice/notice_without_data","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636209+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesNotice","Output":"--- PASS: TestNewAuditEventCopiesNotice (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636211+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventCopiesNotice","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636213+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventNoticeIsIndependentCopy"}
+{"Time":"2026-11-14T17:27:11.636216+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventNoticeIsIndependentCopy","Output":"=== RUN   TestNewAuditEventNoticeIsIndependentCopy\n"}
+{"Time":"2026-11-14T17:27:11.636218+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventNoticeIsIndependentCopy","Output":"--- PASS: TestNewAuditEventNoticeIsIndependentCopy (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636221+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestNewAuditEventNoticeIsIndependentCopy","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636223+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestToolNoticeJSONRoundTrip"}
+{"Time":"2026-11-14T17:27:11.636227+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestToolNoticeJSONRoundTrip","Output":"=== RUN   TestToolNoticeJSONRoundTrip\n"}
+{"Time":"2026-11-14T17:27:11.63623+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestToolNoticeJSONRoundTrip/oversize_fallback"}
+{"Time":"2026-11-14T17:27:11.636236+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestToolNoticeJSONRoundTrip/oversize_fallback","Output":"=== RUN   TestToolNoticeJSONRoundTrip/oversize_fallback\n"}
+{"Time":"2026-11-14T17:27:11.636239+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestToolNoticeJSONRoundTrip/oversize_fallback","Output":"--- PASS: TestToolNoticeJSONRoundTrip/oversize_fallback (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636241+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestToolNoticeJSONRoundTrip/oversize_fallback","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636243+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestToolNoticeJSONRoundTrip/slice_truncated"}
+{"Time":"2026-11-14T17:27:11.636246+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestToolNoticeJSONRoundTrip/slice_truncated","Output":"=== RUN   TestToolNoticeJSONRoundTrip/slice_truncated\n"}
+{"Time":"2026-11-14T17:27:11.636251+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestToolNoticeJSONRoundTrip/slice_truncated","Output":"--- PASS: TestToolNoticeJSONRoundTrip/slice_truncated (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636253+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestToolNoticeJSONRoundTrip/slice_truncated","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636256+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestToolNoticeJSONRoundTrip/zero_match_coach"}
+{"Time":"2026-11-14T17:27:11.636259+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestToolNoticeJSONRoundTrip/zero_match_coach","Output":"=== RUN   TestToolNoticeJSONRoundTrip/zero_match_coach\n"}
+{"Time":"2026-11-14T17:27:11.636262+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestToolNoticeJSONRoundTrip/zero_match_coach","Output":"--- PASS: TestToolNoticeJSONRoundTrip/zero_match_coach (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636264+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestToolNoticeJSONRoundTrip/zero_match_coach","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636267+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestToolNoticeJSONRoundTrip/capped_results"}
+{"Time":"2026-11-14T17:27:11.63627+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestToolNoticeJSONRoundTrip/capped_results","Output":"=== RUN   TestToolNoticeJSONRoundTrip/capped_results\n"}
+{"Time":"2026-11-14T17:27:11.636272+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestToolNoticeJSONRoundTrip/capped_results","Output":"--- PASS: TestToolNoticeJSONRoundTrip/capped_results (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636275+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestToolNoticeJSONRoundTrip/capped_results","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636277+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestToolNoticeJSONRoundTrip","Output":"--- PASS: TestToolNoticeJSONRoundTrip (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.63628+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestToolNoticeJSONRoundTrip","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636282+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip"}
+{"Time":"2026-11-14T17:27:11.636284+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip","Output":"=== RUN   TestSubagentWorkReferenceNoticeRoundTrip\n"}
+{"Time":"2026-11-14T17:27:11.636288+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/struct"}
+{"Time":"2026-11-14T17:27:11.63629+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/struct","Output":"=== RUN   TestSubagentWorkReferenceNoticeRoundTrip/struct\n"}
+{"Time":"2026-11-14T17:27:11.636295+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/struct","Output":"--- PASS: TestSubagentWorkReferenceNoticeRoundTrip/struct (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636297+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/struct","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.6363+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/pointer"}
+{"Time":"2026-11-14T17:27:11.636303+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/pointer","Output":"=== RUN   TestSubagentWorkReferenceNoticeRoundTrip/pointer\n"}
+{"Time":"2026-11-14T17:27:11.636306+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/pointer","Output":"--- PASS: TestSubagentWorkReferenceNoticeRoundTrip/pointer (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636309+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/pointer","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636312+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/map"}
+{"Time":"2026-11-14T17:27:11.636315+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/map","Output":"=== RUN   TestSubagentWorkReferenceNoticeRoundTrip/map\n"}
+{"Time":"2026-11-14T17:27:11.636317+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/map","Output":"--- PASS: TestSubagentWorkReferenceNoticeRoundTrip/map (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.63632+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/map","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636323+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/nil_notice"}
+{"Time":"2026-11-14T17:27:11.636325+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/nil_notice","Output":"=== RUN   TestSubagentWorkReferenceNoticeRoundTrip/nil_notice\n"}
+{"Time":"2026-11-14T17:27:11.636328+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/nil_notice","Output":"--- PASS: TestSubagentWorkReferenceNoticeRoundTrip/nil_notice (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.63633+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/nil_notice","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636333+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/empty_data"}
+{"Time":"2026-11-14T17:27:11.636335+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/empty_data","Output":"=== RUN   TestSubagentWorkReferenceNoticeRoundTrip/empty_data\n"}
+{"Time":"2026-11-14T17:27:11.636338+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/empty_data","Output":"--- PASS: TestSubagentWorkReferenceNoticeRoundTrip/empty_data (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.63634+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/empty_data","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636343+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/missing_key"}
+{"Time":"2026-11-14T17:27:11.636345+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/missing_key","Output":"=== RUN   TestSubagentWorkReferenceNoticeRoundTrip/missing_key\n"}
+{"Time":"2026-11-14T17:27:11.636351+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/missing_key","Output":"--- PASS: TestSubagentWorkReferenceNoticeRoundTrip/missing_key (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636354+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/missing_key","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636358+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/nil_value"}
+{"Time":"2026-11-14T17:27:11.63636+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/nil_value","Output":"=== RUN   TestSubagentWorkReferenceNoticeRoundTrip/nil_value\n"}
+{"Time":"2026-11-14T17:27:11.636364+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/nil_value","Output":"--- PASS: TestSubagentWorkReferenceNoticeRoundTrip/nil_value (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636366+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/nil_value","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636369+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/nil_pointer"}
+{"Time":"2026-11-14T17:27:11.636372+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/nil_pointer","Output":"=== RUN   TestSubagentWorkReferenceNoticeRoundTrip/nil_pointer\n"}
+{"Time":"2026-11-14T17:27:11.636375+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/nil_pointer","Output":"--- PASS: TestSubagentWorkReferenceNoticeRoundTrip/nil_pointer (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636378+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/nil_pointer","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.63638+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/unrecognised_shape"}
+{"Time":"2026-11-14T17:27:11.636382+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/unrecognised_shape","Output":"=== RUN   TestSubagentWorkReferenceNoticeRoundTrip/unrecognised_shape\n"}
+{"Time":"2026-11-14T17:27:11.636389+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/unrecognised_shape","Output":"--- PASS: TestSubagentWorkReferenceNoticeRoundTrip/unrecognised_shape (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636392+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/unrecognised_shape","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636394+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/empty_task_key"}
+{"Time":"2026-11-14T17:27:11.636396+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/empty_task_key","Output":"=== RUN   TestSubagentWorkReferenceNoticeRoundTrip/empty_task_key\n"}
+{"Time":"2026-11-14T17:27:11.636399+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/empty_task_key","Output":"--- PASS: TestSubagentWorkReferenceNoticeRoundTrip/empty_task_key (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636401+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/empty_task_key","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636404+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/empty_runtime_epoch"}
+{"Time":"2026-11-14T17:27:11.636409+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/empty_runtime_epoch","Output":"=== RUN   TestSubagentWorkReferenceNoticeRoundTrip/empty_runtime_epoch\n"}
+{"Time":"2026-11-14T17:27:11.636411+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/empty_runtime_epoch","Output":"--- PASS: TestSubagentWorkReferenceNoticeRoundTrip/empty_runtime_epoch (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636414+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/empty_runtime_epoch","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636416+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/zero_agent_id"}
+{"Time":"2026-11-14T17:27:11.636419+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/zero_agent_id","Output":"=== RUN   TestSubagentWorkReferenceNoticeRoundTrip/zero_agent_id\n"}
+{"Time":"2026-11-14T17:27:11.636421+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/zero_agent_id","Output":"--- PASS: TestSubagentWorkReferenceNoticeRoundTrip/zero_agent_id (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636425+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/zero_agent_id","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636429+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/map_without_identity"}
+{"Time":"2026-11-14T17:27:11.636431+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/map_without_identity","Output":"=== RUN   TestSubagentWorkReferenceNoticeRoundTrip/map_without_identity\n"}
+{"Time":"2026-11-14T17:27:11.636434+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/map_without_identity","Output":"--- PASS: TestSubagentWorkReferenceNoticeRoundTrip/map_without_identity (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636436+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip/map_without_identity","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636439+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip","Output":"--- PASS: TestSubagentWorkReferenceNoticeRoundTrip (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636441+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestSubagentWorkReferenceNoticeRoundTrip","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636444+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestToolNoticeNilDataOmitempty"}
+{"Time":"2026-11-14T17:27:11.636446+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestToolNoticeNilDataOmitempty","Output":"=== RUN   TestToolNoticeNilDataOmitempty\n"}
+{"Time":"2026-11-14T17:27:11.636449+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestToolNoticeNilDataOmitempty","Output":"--- PASS: TestToolNoticeNilDataOmitempty (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636455+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestToolNoticeNilDataOmitempty","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636458+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestToolResultNoticeDefaultsNil"}
+{"Time":"2026-11-14T17:27:11.63646+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestToolResultNoticeDefaultsNil","Output":"=== RUN   TestToolResultNoticeDefaultsNil\n"}
+{"Time":"2026-11-14T17:27:11.636467+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestToolResultNoticeDefaultsNil","Output":"--- PASS: TestToolResultNoticeDefaultsNil (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636475+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestToolResultNoticeDefaultsNil","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636477+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestWorkspaceEffectsStayConservativeAcrossRegistryViews"}
+{"Time":"2026-11-14T17:27:11.63648+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestWorkspaceEffectsStayConservativeAcrossRegistryViews","Output":"=== RUN   TestWorkspaceEffectsStayConservativeAcrossRegistryViews\n"}
+{"Time":"2026-11-14T17:27:11.636483+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestWorkspaceEffectsStayConservativeAcrossRegistryViews","Output":"--- PASS: TestWorkspaceEffectsStayConservativeAcrossRegistryViews (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636485+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestWorkspaceEffectsStayConservativeAcrossRegistryViews","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636487+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestRiskLevelValidAcceptsDocumentedValues"}
+{"Time":"2026-11-14T17:27:11.636489+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestRiskLevelValidAcceptsDocumentedValues","Output":"=== RUN   TestRiskLevelValidAcceptsDocumentedValues\n"}
+{"Time":"2026-11-14T17:27:11.636492+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestRiskLevelValidAcceptsDocumentedValues","Output":"--- PASS: TestRiskLevelValidAcceptsDocumentedValues (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636494+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestRiskLevelValidAcceptsDocumentedValues","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636496+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestRiskLevelValidRejectsUnknownValue"}
+{"Time":"2026-11-14T17:27:11.636498+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestRiskLevelValidRejectsUnknownValue","Output":"=== RUN   TestRiskLevelValidRejectsUnknownValue\n"}
+{"Time":"2026-11-14T17:27:11.636501+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestRiskLevelValidRejectsUnknownValue","Output":"--- PASS: TestRiskLevelValidRejectsUnknownValue (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636504+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestRiskLevelValidRejectsUnknownValue","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636508+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestToolHandlerSignature"}
+{"Time":"2026-11-14T17:27:11.63651+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestToolHandlerSignature","Output":"=== RUN   TestToolHandlerSignature\n"}
+{"Time":"2026-11-14T17:27:11.636513+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestToolHandlerSignature","Output":"--- PASS: TestToolHandlerSignature (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636516+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestToolHandlerSignature","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636519+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestRegisterAcceptsValidTool"}
+{"Time":"2026-11-14T17:27:11.636521+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestRegisterAcceptsValidTool","Output":"=== RUN   TestRegisterAcceptsValidTool\n"}
+{"Time":"2026-11-14T17:27:11.636524+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestRegisterAcceptsValidTool","Output":"--- PASS: TestRegisterAcceptsValidTool (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636527+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestRegisterAcceptsValidTool","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.63653+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestRegisterCopiesSchemaBytes"}
+{"Time":"2026-11-14T17:27:11.636535+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestRegisterCopiesSchemaBytes","Output":"=== RUN   TestRegisterCopiesSchemaBytes\n"}
+{"Time":"2026-11-14T17:27:11.636537+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestRegisterCopiesSchemaBytes","Output":"--- PASS: TestRegisterCopiesSchemaBytes (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636541+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestRegisterCopiesSchemaBytes","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636544+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsEmptyName"}
+{"Time":"2026-11-14T17:27:11.636546+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsEmptyName","Output":"=== RUN   TestRegisterRejectsEmptyName\n"}
+{"Time":"2026-11-14T17:27:11.636549+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsEmptyName","Output":"--- PASS: TestRegisterRejectsEmptyName (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636552+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsEmptyName","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636554+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsNilHandler"}
+{"Time":"2026-11-14T17:27:11.636556+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsNilHandler","Output":"=== RUN   TestRegisterRejectsNilHandler\n"}
+{"Time":"2026-11-14T17:27:11.636559+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsNilHandler","Output":"--- PASS: TestRegisterRejectsNilHandler (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636561+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsNilHandler","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636563+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsUnknownRisk"}
+{"Time":"2026-11-14T17:27:11.636566+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsUnknownRisk","Output":"=== RUN   TestRegisterRejectsUnknownRisk\n"}
+{"Time":"2026-11-14T17:27:11.636568+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsUnknownRisk","Output":"--- PASS: TestRegisterRejectsUnknownRisk (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.63657+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsUnknownRisk","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636573+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsInvalidSchemaJSON"}
+{"Time":"2026-11-14T17:27:11.636575+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsInvalidSchemaJSON","Output":"=== RUN   TestRegisterRejectsInvalidSchemaJSON\n"}
+{"Time":"2026-11-14T17:27:11.636578+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsInvalidSchemaJSON","Output":"--- PASS: TestRegisterRejectsInvalidSchemaJSON (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636581+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsInvalidSchemaJSON","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636583+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsDuplicateName"}
+{"Time":"2026-11-14T17:27:11.636586+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsDuplicateName","Output":"=== RUN   TestRegisterRejectsDuplicateName\n"}
+{"Time":"2026-11-14T17:27:11.636589+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsDuplicateName","Output":"--- PASS: TestRegisterRejectsDuplicateName (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636591+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsDuplicateName","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636597+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestLookupMissReturnsFalse"}
+{"Time":"2026-11-14T17:27:11.636599+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestLookupMissReturnsFalse","Output":"=== RUN   TestLookupMissReturnsFalse\n"}
+{"Time":"2026-11-14T17:27:11.636602+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestLookupMissReturnsFalse","Output":"--- PASS: TestLookupMissReturnsFalse (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636604+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestLookupMissReturnsFalse","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636607+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestLookupReturnsSchemaCopy"}
+{"Time":"2026-11-14T17:27:11.636609+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestLookupReturnsSchemaCopy","Output":"=== RUN   TestLookupReturnsSchemaCopy\n"}
+{"Time":"2026-11-14T17:27:11.636612+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestLookupReturnsSchemaCopy","Output":"--- PASS: TestLookupReturnsSchemaCopy (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636615+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestLookupReturnsSchemaCopy","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636617+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestListReturnsToolsSortedByName"}
+{"Time":"2026-11-14T17:27:11.636619+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestListReturnsToolsSortedByName","Output":"=== RUN   TestListReturnsToolsSortedByName\n"}
+{"Time":"2026-11-14T17:27:11.636638+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestListReturnsToolsSortedByName","Output":"--- PASS: TestListReturnsToolsSortedByName (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636642+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestListReturnsToolsSortedByName","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636645+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestReadOnlyNamesIncludesReadOnlyToolsAndExcludesOthers"}
+{"Time":"2026-11-14T17:27:11.636647+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestReadOnlyNamesIncludesReadOnlyToolsAndExcludesOthers","Output":"=== RUN   TestReadOnlyNamesIncludesReadOnlyToolsAndExcludesOthers\n"}
+{"Time":"2026-11-14T17:27:11.636665+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestReadOnlyNamesIncludesReadOnlyToolsAndExcludesOthers","Output":"--- PASS: TestReadOnlyNamesIncludesReadOnlyToolsAndExcludesOthers (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636669+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestReadOnlyNamesIncludesReadOnlyToolsAndExcludesOthers","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636672+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestListDeferredReturnsOnlyDeferredToolsSortedByName"}
+{"Time":"2026-11-14T17:27:11.636675+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestListDeferredReturnsOnlyDeferredToolsSortedByName","Output":"=== RUN   TestListDeferredReturnsOnlyDeferredToolsSortedByName\n"}
+{"Time":"2026-11-14T17:27:11.636702+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestListDeferredReturnsOnlyDeferredToolsSortedByName","Output":"--- PASS: TestListDeferredReturnsOnlyDeferredToolsSortedByName (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636706+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestListDeferredReturnsOnlyDeferredToolsSortedByName","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636709+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestListLoadedReturnsOnlyMatchingRegisteredTools"}
+{"Time":"2026-11-14T17:27:11.636715+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestListLoadedReturnsOnlyMatchingRegisteredTools","Output":"=== RUN   TestListLoadedReturnsOnlyMatchingRegisteredTools\n"}
+{"Time":"2026-11-14T17:27:11.636736+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestListLoadedReturnsOnlyMatchingRegisteredTools","Output":"--- PASS: TestListLoadedReturnsOnlyMatchingRegisteredTools (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.63674+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestListLoadedReturnsOnlyMatchingRegisteredTools","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636742+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestListReturnsSchemaCopies"}
+{"Time":"2026-11-14T17:27:11.636745+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestListReturnsSchemaCopies","Output":"=== RUN   TestListReturnsSchemaCopies\n"}
+{"Time":"2026-11-14T17:27:11.63676+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestListReturnsSchemaCopies","Output":"--- PASS: TestListReturnsSchemaCopies (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636764+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestListReturnsSchemaCopies","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636766+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsUncompilableSchema"}
+{"Time":"2026-11-14T17:27:11.636769+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsUncompilableSchema","Output":"=== RUN   TestRegisterRejectsUncompilableSchema\n"}
+{"Time":"2026-11-14T17:27:11.636818+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsUncompilableSchema","Output":"--- PASS: TestRegisterRejectsUncompilableSchema (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636823+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsUncompilableSchema","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636825+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsMalformedSchemaJSON"}
+{"Time":"2026-11-14T17:27:11.636828+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsMalformedSchemaJSON","Output":"=== RUN   TestRegisterRejectsMalformedSchemaJSON\n"}
+{"Time":"2026-11-14T17:27:11.63683+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsMalformedSchemaJSON","Output":"--- PASS: TestRegisterRejectsMalformedSchemaJSON (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636839+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestRegisterRejectsMalformedSchemaJSON","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636841+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestRegisterAcceptsToolWithNoSchema"}
+{"Time":"2026-11-14T17:27:11.636844+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestRegisterAcceptsToolWithNoSchema","Output":"=== RUN   TestRegisterAcceptsToolWithNoSchema\n"}
+{"Time":"2026-11-14T17:27:11.636847+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestRegisterAcceptsToolWithNoSchema","Output":"--- PASS: TestRegisterAcceptsToolWithNoSchema (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636849+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestRegisterAcceptsToolWithNoSchema","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636851+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestClonedToolKeepsValidator"}
+{"Time":"2026-11-14T17:27:11.636854+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestClonedToolKeepsValidator","Output":"=== RUN   TestClonedToolKeepsValidator\n"}
+{"Time":"2026-11-14T17:27:11.636871+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestClonedToolKeepsValidator","Output":"--- PASS: TestClonedToolKeepsValidator (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636874+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestClonedToolKeepsValidator","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.63688+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestDispatchRejectsInvalidArgsWithoutCallingHandler"}
+{"Time":"2026-11-14T17:27:11.636883+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestDispatchRejectsInvalidArgsWithoutCallingHandler","Output":"=== RUN   TestDispatchRejectsInvalidArgsWithoutCallingHandler\n"}
+{"Time":"2026-11-14T17:27:11.63691+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestDispatchRejectsInvalidArgsWithoutCallingHandler","Output":"--- PASS: TestDispatchRejectsInvalidArgsWithoutCallingHandler (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636914+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestDispatchRejectsInvalidArgsWithoutCallingHandler","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636923+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestDispatchInvokesHandlerOnValidArgs"}
+{"Time":"2026-11-14T17:27:11.636926+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestDispatchInvokesHandlerOnValidArgs","Output":"=== RUN   TestDispatchInvokesHandlerOnValidArgs\n"}
+{"Time":"2026-11-14T17:27:11.636953+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestDispatchInvokesHandlerOnValidArgs","Output":"--- PASS: TestDispatchInvokesHandlerOnValidArgs (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636957+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestDispatchInvokesHandlerOnValidArgs","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636959+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestDispatchUnknownTool"}
+{"Time":"2026-11-14T17:27:11.636962+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestDispatchUnknownTool","Output":"=== RUN   TestDispatchUnknownTool\n"}
+{"Time":"2026-11-14T17:27:11.636965+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestDispatchUnknownTool","Output":"--- PASS: TestDispatchUnknownTool (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636967+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestDispatchUnknownTool","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.63697+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestReplaceUpserts"}
+{"Time":"2026-11-14T17:27:11.636972+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestReplaceUpserts","Output":"=== RUN   TestReplaceUpserts\n"}
+{"Time":"2026-11-14T17:27:11.636987+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestReplaceUpserts","Output":"--- PASS: TestReplaceUpserts (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.636991+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestReplaceUpserts","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.636994+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestSandboxMetaLimitsJSONIncludesOutputTruncated"}
+{"Time":"2026-11-14T17:27:11.637007+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSandboxMetaLimitsJSONIncludesOutputTruncated","Output":"=== RUN   TestSandboxMetaLimitsJSONIncludesOutputTruncated\n"}
+{"Time":"2026-11-14T17:27:11.637026+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSandboxMetaLimitsJSONIncludesOutputTruncated","Output":"--- PASS: TestSandboxMetaLimitsJSONIncludesOutputTruncated (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.637028+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestSandboxMetaLimitsJSONIncludesOutputTruncated","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.637031+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestSandboxMetaLimitsJSONReturnsValidJSON"}
+{"Time":"2026-11-14T17:27:11.637034+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSandboxMetaLimitsJSONReturnsValidJSON","Output":"=== RUN   TestSandboxMetaLimitsJSONReturnsValidJSON\n"}
+{"Time":"2026-11-14T17:27:11.637039+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestSandboxMetaLimitsJSONReturnsValidJSON","Output":"--- PASS: TestSandboxMetaLimitsJSONReturnsValidJSON (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.637041+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestSandboxMetaLimitsJSONReturnsValidJSON","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.637044+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestExecutionProgressRoundTripAndLegacy"}
+{"Time":"2026-11-14T17:27:11.637047+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestExecutionProgressRoundTripAndLegacy","Output":"=== RUN   TestExecutionProgressRoundTripAndLegacy\n"}
+{"Time":"2026-11-14T17:27:11.637099+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestExecutionProgressRoundTripAndLegacy","Output":"--- PASS: TestExecutionProgressRoundTripAndLegacy (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.637106+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestExecutionProgressRoundTripAndLegacy","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.637109+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestExecutionProgressNoticeOwnsNestedSnapshots"}
+{"Time":"2026-11-14T17:27:11.637111+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestExecutionProgressNoticeOwnsNestedSnapshots","Output":"=== RUN   TestExecutionProgressNoticeOwnsNestedSnapshots\n"}
+{"Time":"2026-11-14T17:27:11.637114+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestExecutionProgressNoticeOwnsNestedSnapshots/struct"}
+{"Time":"2026-11-14T17:27:11.637116+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestExecutionProgressNoticeOwnsNestedSnapshots/struct","Output":"=== RUN   TestExecutionProgressNoticeOwnsNestedSnapshots/struct\n"}
+{"Time":"2026-11-14T17:27:11.637124+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestExecutionProgressNoticeOwnsNestedSnapshots/struct","Output":"--- PASS: TestExecutionProgressNoticeOwnsNestedSnapshots/struct (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.637128+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestExecutionProgressNoticeOwnsNestedSnapshots/struct","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.637131+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestExecutionProgressNoticeOwnsNestedSnapshots/pointer"}
+{"Time":"2026-11-14T17:27:11.637133+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestExecutionProgressNoticeOwnsNestedSnapshots/pointer","Output":"=== RUN   TestExecutionProgressNoticeOwnsNestedSnapshots/pointer\n"}
+{"Time":"2026-11-14T17:27:11.637135+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestExecutionProgressNoticeOwnsNestedSnapshots/pointer","Output":"--- PASS: TestExecutionProgressNoticeOwnsNestedSnapshots/pointer (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.637138+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestExecutionProgressNoticeOwnsNestedSnapshots/pointer","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.63714+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestExecutionProgressNoticeOwnsNestedSnapshots/map"}
+{"Time":"2026-11-14T17:27:11.637143+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestExecutionProgressNoticeOwnsNestedSnapshots/map","Output":"=== RUN   TestExecutionProgressNoticeOwnsNestedSnapshots/map\n"}
+{"Time":"2026-11-14T17:27:11.637145+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestExecutionProgressNoticeOwnsNestedSnapshots/map","Output":"--- PASS: TestExecutionProgressNoticeOwnsNestedSnapshots/map (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.637147+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestExecutionProgressNoticeOwnsNestedSnapshots/map","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.637154+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestExecutionProgressNoticeOwnsNestedSnapshots/json"}
+{"Time":"2026-11-14T17:27:11.637156+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestExecutionProgressNoticeOwnsNestedSnapshots/json","Output":"=== RUN   TestExecutionProgressNoticeOwnsNestedSnapshots/json\n"}
+{"Time":"2026-11-14T17:27:11.637159+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestExecutionProgressNoticeOwnsNestedSnapshots/json","Output":"--- PASS: TestExecutionProgressNoticeOwnsNestedSnapshots/json (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.637161+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestExecutionProgressNoticeOwnsNestedSnapshots/json","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.637164+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestExecutionProgressNoticeOwnsNestedSnapshots","Output":"--- PASS: TestExecutionProgressNoticeOwnsNestedSnapshots (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.637167+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestExecutionProgressNoticeOwnsNestedSnapshots","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.63717+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestValidateAcceptsConformingArgs"}
+{"Time":"2026-11-14T17:27:11.637172+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestValidateAcceptsConformingArgs","Output":"=== RUN   TestValidateAcceptsConformingArgs\n"}
+{"Time":"2026-11-14T17:27:11.637238+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestValidateAcceptsConformingArgs","Output":"--- PASS: TestValidateAcceptsConformingArgs (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.637243+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestValidateAcceptsConformingArgs","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.637246+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestValidateRejectsMissingRequiredProperty"}
+{"Time":"2026-11-14T17:27:11.637248+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestValidateRejectsMissingRequiredProperty","Output":"=== RUN   TestValidateRejectsMissingRequiredProperty\n"}
+{"Time":"2026-11-14T17:27:11.637315+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestValidateRejectsMissingRequiredProperty","Output":"--- PASS: TestValidateRejectsMissingRequiredProperty (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.637319+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestValidateRejectsMissingRequiredProperty","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.637323+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestValidateRejectsUnknownProperty"}
+{"Time":"2026-11-14T17:27:11.63733+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestValidateRejectsUnknownProperty","Output":"=== RUN   TestValidateRejectsUnknownProperty\n"}
+{"Time":"2026-11-14T17:27:11.637386+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestValidateRejectsUnknownProperty","Output":"--- PASS: TestValidateRejectsUnknownProperty (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.63739+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestValidateRejectsUnknownProperty","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.637407+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestValidateRejectsBadEnumValue"}
+{"Time":"2026-11-14T17:27:11.637412+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestValidateRejectsBadEnumValue","Output":"=== RUN   TestValidateRejectsBadEnumValue\n"}
+{"Time":"2026-11-14T17:27:11.63745+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestValidateRejectsBadEnumValue","Output":"--- PASS: TestValidateRejectsBadEnumValue (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.637457+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestValidateRejectsBadEnumValue","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.637464+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestValidateRejectsFractionalInteger"}
+{"Time":"2026-11-14T17:27:11.637467+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestValidateRejectsFractionalInteger","Output":"=== RUN   TestValidateRejectsFractionalInteger\n"}
+{"Time":"2026-11-14T17:27:11.637526+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestValidateRejectsFractionalInteger","Output":"--- PASS: TestValidateRejectsFractionalInteger (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.63753+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestValidateRejectsFractionalInteger","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.637533+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestValidateRejectsEmptyArgsWhenFieldsRequired"}
+{"Time":"2026-11-14T17:27:11.637535+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestValidateRejectsEmptyArgsWhenFieldsRequired","Output":"=== RUN   TestValidateRejectsEmptyArgsWhenFieldsRequired\n"}
+{"Time":"2026-11-14T17:27:11.637596+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestValidateRejectsEmptyArgsWhenFieldsRequired","Output":"--- PASS: TestValidateRejectsEmptyArgsWhenFieldsRequired (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.6376+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestValidateRejectsEmptyArgsWhenFieldsRequired","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.637603+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestValidateAcceptsEmptyArgsWhenNothingRequired"}
+{"Time":"2026-11-14T17:27:11.637605+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestValidateAcceptsEmptyArgsWhenNothingRequired","Output":"=== RUN   TestValidateAcceptsEmptyArgsWhenNothingRequired\n"}
+{"Time":"2026-11-14T17:27:11.637651+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestValidateAcceptsEmptyArgsWhenNothingRequired","Output":"--- PASS: TestValidateAcceptsEmptyArgsWhenNothingRequired (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.637656+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestValidateAcceptsEmptyArgsWhenNothingRequired","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.637658+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestValidateRejectsNonObjectArgs"}
+{"Time":"2026-11-14T17:27:11.637661+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestValidateRejectsNonObjectArgs","Output":"=== RUN   TestValidateRejectsNonObjectArgs\n"}
+{"Time":"2026-11-14T17:27:11.638154+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestValidateRejectsNonObjectArgs","Output":"--- PASS: TestValidateRejectsNonObjectArgs (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.638175+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestValidateRejectsNonObjectArgs","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.638185+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestNilValidatorAcceptsAnything"}
+{"Time":"2026-11-14T17:27:11.638194+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestNilValidatorAcceptsAnything","Output":"=== RUN   TestNilValidatorAcceptsAnything\n"}
+{"Time":"2026-11-14T17:27:11.638203+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestNilValidatorAcceptsAnything","Output":"--- PASS: TestNilValidatorAcceptsAnything (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.63822+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestNilValidatorAcceptsAnything","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.638257+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestCompileSchemaEmptyReturnsNilValidator"}
+{"Time":"2026-11-14T17:27:11.63826+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestCompileSchemaEmptyReturnsNilValidator","Output":"=== RUN   TestCompileSchemaEmptyReturnsNilValidator\n"}
+{"Time":"2026-11-14T17:27:11.638266+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestCompileSchemaEmptyReturnsNilValidator","Output":"--- PASS: TestCompileSchemaEmptyReturnsNilValidator (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.638269+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestCompileSchemaEmptyReturnsNilValidator","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.638274+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestCompileSchemaRejectsMalformedSchema"}
+{"Time":"2026-11-14T17:27:11.638276+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestCompileSchemaRejectsMalformedSchema","Output":"=== RUN   TestCompileSchemaRejectsMalformedSchema\n"}
+{"Time":"2026-11-14T17:27:11.638279+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestCompileSchemaRejectsMalformedSchema","Output":"--- PASS: TestCompileSchemaRejectsMalformedSchema (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.638282+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestCompileSchemaRejectsMalformedSchema","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.638284+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestValidateErrorIsDeterministic"}
+{"Time":"2026-11-14T17:27:11.638287+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestValidateErrorIsDeterministic","Output":"=== RUN   TestValidateErrorIsDeterministic\n"}
+{"Time":"2026-11-14T17:27:11.63838+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestValidateErrorIsDeterministic","Output":"--- PASS: TestValidateErrorIsDeterministic (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.638405+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestValidateErrorIsDeterministic","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.638412+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestValidateErrorTruncatesManyCauses"}
+{"Time":"2026-11-14T17:27:11.638416+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestValidateErrorTruncatesManyCauses","Output":"=== RUN   TestValidateErrorTruncatesManyCauses\n"}
+{"Time":"2026-11-14T17:27:11.638468+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestValidateErrorTruncatesManyCauses","Output":"--- PASS: TestValidateErrorTruncatesManyCauses (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.638488+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestValidateErrorTruncatesManyCauses","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.6385+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestTesterViewExposesInternalTestRun"}
+{"Time":"2026-11-14T17:27:11.63851+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestTesterViewExposesInternalTestRun","Output":"=== RUN   TestTesterViewExposesInternalTestRun\n"}
+{"Time":"2026-11-14T17:27:11.638522+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestTesterViewExposesInternalTestRun","Output":"--- PASS: TestTesterViewExposesInternalTestRun (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.638531+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestTesterViewExposesInternalTestRun","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.638539+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestReadOnlyViewFiltersOutWriteTools"}
+{"Time":"2026-11-14T17:27:11.638549+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestReadOnlyViewFiltersOutWriteTools","Output":"=== RUN   TestReadOnlyViewFiltersOutWriteTools\n"}
+{"Time":"2026-11-14T17:27:11.638558+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestReadOnlyViewFiltersOutWriteTools","Output":"--- PASS: TestReadOnlyViewFiltersOutWriteTools (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.638577+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestReadOnlyViewFiltersOutWriteTools","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.638593+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestTesterViewAllowsReadAndCommandButNotWrites"}
+{"Time":"2026-11-14T17:27:11.638605+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestTesterViewAllowsReadAndCommandButNotWrites","Output":"=== RUN   TestTesterViewAllowsReadAndCommandButNotWrites\n"}
+{"Time":"2026-11-14T17:27:11.638619+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestTesterViewAllowsReadAndCommandButNotWrites","Output":"--- PASS: TestTesterViewAllowsReadAndCommandButNotWrites (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.638631+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestTesterViewAllowsReadAndCommandButNotWrites","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.638639+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestOrchestratorViewDropsWriteAndShellTools"}
+{"Time":"2026-11-14T17:27:11.638645+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestOrchestratorViewDropsWriteAndShellTools","Output":"=== RUN   TestOrchestratorViewDropsWriteAndShellTools\n"}
+{"Time":"2026-11-14T17:27:11.638654+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestOrchestratorViewDropsWriteAndShellTools","Output":"--- PASS: TestOrchestratorViewDropsWriteAndShellTools (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.638661+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestOrchestratorViewDropsWriteAndShellTools","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.638669+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestTesterViewTestRunIgnoresCommandOverride"}
+{"Time":"2026-11-14T17:27:11.638677+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestTesterViewTestRunIgnoresCommandOverride","Output":"=== RUN   TestTesterViewTestRunIgnoresCommandOverride\n"}
+{"Time":"2026-11-14T17:27:11.638684+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestTesterViewTestRunIgnoresCommandOverride","Output":"--- PASS: TestTesterViewTestRunIgnoresCommandOverride (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.63869+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestTesterViewTestRunIgnoresCommandOverride","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.638705+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestArtifactWriterViewFiltersTools"}
+{"Time":"2026-11-14T17:27:11.638712+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestArtifactWriterViewFiltersTools","Output":"=== RUN   TestArtifactWriterViewFiltersTools\n"}
+{"Time":"2026-11-14T17:27:11.638715+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestArtifactWriterViewFiltersTools","Output":"--- PASS: TestArtifactWriterViewFiltersTools (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.638718+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestArtifactWriterViewFiltersTools","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.63872+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestArtifactWriterPatchGuardEnforcesAliasPrefix"}
+{"Time":"2026-11-14T17:27:11.638723+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestArtifactWriterPatchGuardEnforcesAliasPrefix","Output":"=== RUN   TestArtifactWriterPatchGuardEnforcesAliasPrefix\n"}
+{"Time":"2026-11-14T17:27:11.63873+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestArtifactWriterPatchGuardEnforcesAliasPrefix","Output":"--- PASS: TestArtifactWriterPatchGuardEnforcesAliasPrefix (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.638738+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestArtifactWriterPatchGuardEnforcesAliasPrefix","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.638749+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestPlanWriterViewAllowsOnlyTheCandidatePlan"}
+{"Time":"2026-11-14T17:27:11.638752+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestPlanWriterViewAllowsOnlyTheCandidatePlan","Output":"=== RUN   TestPlanWriterViewAllowsOnlyTheCandidatePlan\n"}
+{"Time":"2026-11-14T17:27:11.638754+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestPlanWriterViewAllowsOnlyTheCandidatePlan","Output":"--- PASS: TestPlanWriterViewAllowsOnlyTheCandidatePlan (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.638757+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestPlanWriterViewAllowsOnlyTheCandidatePlan","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.638759+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestPlanWriterViewRejectsSourceAndSecondPlanWrites"}
+{"Time":"2026-11-14T17:27:11.638761+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestPlanWriterViewRejectsSourceAndSecondPlanWrites","Output":"=== RUN   TestPlanWriterViewRejectsSourceAndSecondPlanWrites\n"}
+{"Time":"2026-11-14T17:27:11.638764+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestPlanWriterViewRejectsSourceAndSecondPlanWrites","Output":"--- PASS: TestPlanWriterViewRejectsSourceAndSecondPlanWrites (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.638766+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestPlanWriterViewRejectsSourceAndSecondPlanWrites","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.638769+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestFallbackWriterViewNarrowsFileWrite"}
+{"Time":"2026-11-14T17:27:11.638771+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestFallbackWriterViewNarrowsFileWrite","Output":"=== RUN   TestFallbackWriterViewNarrowsFileWrite\n"}
+{"Time":"2026-11-14T17:27:11.638774+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestFallbackWriterViewNarrowsFileWrite","Output":"--- PASS: TestFallbackWriterViewNarrowsFileWrite (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.638776+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestFallbackWriterViewNarrowsFileWrite","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.638779+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestFallbackWriterViewNarrowsFileWritePatch"}
+{"Time":"2026-11-14T17:27:11.638781+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestFallbackWriterViewNarrowsFileWritePatch","Output":"=== RUN   TestFallbackWriterViewNarrowsFileWritePatch\n"}
+{"Time":"2026-11-14T17:27:11.638785+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestFallbackWriterViewNarrowsFileWritePatch","Output":"--- PASS: TestFallbackWriterViewNarrowsFileWritePatch (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.638787+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestFallbackWriterViewNarrowsFileWritePatch","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.63879+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestFallbackWriterViewExcludesWebTools"}
+{"Time":"2026-11-14T17:27:11.638792+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestFallbackWriterViewExcludesWebTools","Output":"=== RUN   TestFallbackWriterViewExcludesWebTools\n"}
+{"Time":"2026-11-14T17:27:11.638795+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestFallbackWriterViewExcludesWebTools","Output":"--- PASS: TestFallbackWriterViewExcludesWebTools (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.638798+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestFallbackWriterViewExcludesWebTools","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.638801+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestWithoutNetworkExcludesNetworkTools"}
+{"Time":"2026-11-14T17:27:11.638804+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestWithoutNetworkExcludesNetworkTools","Output":"=== RUN   TestWithoutNetworkExcludesNetworkTools\n"}
+{"Time":"2026-11-14T17:27:11.638809+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestWithoutNetworkExcludesNetworkTools","Output":"--- PASS: TestWithoutNetworkExcludesNetworkTools (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.638811+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestWithoutNetworkExcludesNetworkTools","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.638813+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestScopeViewsRejectPathTraversal"}
+{"Time":"2026-11-14T17:27:11.638815+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestScopeViewsRejectPathTraversal","Output":"=== RUN   TestScopeViewsRejectPathTraversal\n"}
+{"Time":"2026-11-14T17:27:11.638818+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestScopeViewsRejectPathTraversal/plan_writer_exact_match"}
+{"Time":"2026-11-14T17:27:11.638821+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestScopeViewsRejectPathTraversal/plan_writer_exact_match","Output":"=== RUN   TestScopeViewsRejectPathTraversal/plan_writer_exact_match\n"}
+{"Time":"2026-11-14T17:27:11.638823+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestScopeViewsRejectPathTraversal/plan_writer_exact_match","Output":"--- PASS: TestScopeViewsRejectPathTraversal/plan_writer_exact_match (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.638826+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestScopeViewsRejectPathTraversal/plan_writer_exact_match","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.638828+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestScopeViewsRejectPathTraversal/plan_writer_traversal"}
+{"Time":"2026-11-14T17:27:11.638831+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestScopeViewsRejectPathTraversal/plan_writer_traversal","Output":"=== RUN   TestScopeViewsRejectPathTraversal/plan_writer_traversal\n"}
+{"Time":"2026-11-14T17:27:11.638833+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestScopeViewsRejectPathTraversal/plan_writer_traversal","Output":"--- PASS: TestScopeViewsRejectPathTraversal/plan_writer_traversal (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.638835+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestScopeViewsRejectPathTraversal/plan_writer_traversal","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.638838+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestScopeViewsRejectPathTraversal/artifact_writer_prefix"}
+{"Time":"2026-11-14T17:27:11.63884+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestScopeViewsRejectPathTraversal/artifact_writer_prefix","Output":"=== RUN   TestScopeViewsRejectPathTraversal/artifact_writer_prefix\n"}
+{"Time":"2026-11-14T17:27:11.638843+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestScopeViewsRejectPathTraversal/artifact_writer_prefix","Output":"--- PASS: TestScopeViewsRejectPathTraversal/artifact_writer_prefix (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.638846+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestScopeViewsRejectPathTraversal/artifact_writer_prefix","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.638848+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestScopeViewsRejectPathTraversal/artifact_writer_traversal"}
+{"Time":"2026-11-14T17:27:11.63885+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestScopeViewsRejectPathTraversal/artifact_writer_traversal","Output":"=== RUN   TestScopeViewsRejectPathTraversal/artifact_writer_traversal\n"}
+{"Time":"2026-11-14T17:27:11.638853+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestScopeViewsRejectPathTraversal/artifact_writer_traversal","Output":"--- PASS: TestScopeViewsRejectPathTraversal/artifact_writer_traversal (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.638857+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestScopeViewsRejectPathTraversal/artifact_writer_traversal","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.638859+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestScopeViewsRejectPathTraversal","Output":"--- PASS: TestScopeViewsRejectPathTraversal (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.638862+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestScopeViewsRejectPathTraversal","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.638864+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestFallbackWriterViewRejectsEmptyAllowlist"}
+{"Time":"2026-11-14T17:27:11.638866+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestFallbackWriterViewRejectsEmptyAllowlist","Output":"=== RUN   TestFallbackWriterViewRejectsEmptyAllowlist\n"}
+{"Time":"2026-11-14T17:27:11.638868+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestFallbackWriterViewRejectsEmptyAllowlist","Output":"--- PASS: TestFallbackWriterViewRejectsEmptyAllowlist (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.638874+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestFallbackWriterViewRejectsEmptyAllowlist","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.638877+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestPathInAllowlistRootSlash"}
+{"Time":"2026-11-14T17:27:11.638879+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestPathInAllowlistRootSlash","Output":"=== RUN   TestPathInAllowlistRootSlash\n"}
+{"Time":"2026-11-14T17:27:11.638882+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestPathInAllowlistRootSlash","Output":"--- PASS: TestPathInAllowlistRootSlash (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.638888+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestPathInAllowlistRootSlash","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.63889+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestFallbackWriterFileWriteToolRejectsUnmarshalError"}
+{"Time":"2026-11-14T17:27:11.638893+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestFallbackWriterFileWriteToolRejectsUnmarshalError","Output":"=== RUN   TestFallbackWriterFileWriteToolRejectsUnmarshalError\n"}
+{"Time":"2026-11-14T17:27:11.638895+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestFallbackWriterFileWriteToolRejectsUnmarshalError","Output":"--- PASS: TestFallbackWriterFileWriteToolRejectsUnmarshalError (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.638897+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestFallbackWriterFileWriteToolRejectsUnmarshalError","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.6389+11:00","Action":"run","Package":"marshal/internal/tools/registry","Test":"TestPlanWriterViewAllowsScopedFileWrite"}
+{"Time":"2026-11-14T17:27:11.638902+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestPlanWriterViewAllowsScopedFileWrite","Output":"=== RUN   TestPlanWriterViewAllowsScopedFileWrite\n"}
+{"Time":"2026-11-14T17:27:11.638905+11:00","Action":"output","Package":"marshal/internal/tools/registry","Test":"TestPlanWriterViewAllowsScopedFileWrite","Output":"--- PASS: TestPlanWriterViewAllowsScopedFileWrite (0.00s)\n"}
+{"Time":"2026-11-14T17:27:11.638907+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Test":"TestPlanWriterViewAllowsScopedFileWrite","Elapsed":0}
+{"Time":"2026-11-14T17:27:11.638909+11:00","Action":"output","Package":"marshal/internal/tools/registry","Output":"PASS\n"}
+{"Time":"2026-11-14T17:27:11.639242+11:00","Action":"output","Package":"marshal/internal/tools/registry","Output":"ok  \tmarshal/internal/tools/registry\t0.572s\n"}
+{"Time":"2026-11-14T17:27:11.639256+11:00","Action":"pass","Package":"marshal/internal/tools/registry","Elapsed":0.573}

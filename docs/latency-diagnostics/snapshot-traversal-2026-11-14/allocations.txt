@@ -1,0 +1,27 @@
+File: snapshot.test
+Type: alloc_space
+Time: 2026-11-14 19:45:56 AEDT
+Showing nodes accounting for 276878496B, 27.54% of 1005285708B total
+Dropped 90 nodes (cum <= 5026428B)
+Showing top 20 nodes out of 100
+      flat  flat%   sum%        cum   cum%
+         0     0%     0% 993848378B 98.86%  marshal/internal/snapshot.TestSnapshotTraversalProbe
+         0     0%     0% 993848378B 98.86%  testing.tRunner
+         0     0%     0% 990036737B 98.48%  marshal/internal/snapshot.(*Manager).AdmitAndCaptureWithCleanup
+         0     0%     0% 990036737B 98.48%  marshal/internal/snapshot.(*Service).Track
+         0     0%     0% 990036737B 98.48%  marshal/internal/snapshot.(*Service).Track.func1
+         0     0%     0% 990036737B 98.48%  marshal/internal/snapshot.(*Service).withStore
+         0     0%     0% 990036737B 98.48%  marshal/internal/snapshot.TestSnapshotTraversalProbe.func2 (inline)
+         0     0%     0% 757529254B 75.35%  marshal/internal/snapshot.(*Manager).AdmitCapture
+   524336B 0.052% 0.052% 753592255B 74.96%  marshal/internal/snapshot.(*Manager).measureTree
+         0     0% 0.052% 571099387B 56.81%  marshal/internal/snapshot.(*Manager).measureTreeAllocated
+         0     0% 0.052% 563226676B 56.03%  marshal/internal/snapshot.(*Manager).UsageContext
+         0     0% 0.052% 563226676B 56.03%  marshal/internal/snapshot.(*Manager).usageWith
+   524320B 0.052%   0.1% 481424792B 47.89%  marshal/internal/snapshot.(*Manager).MeasureWorkspaceGenerations
+         0     0%   0.1% 380733808B 37.87%  marshal/internal/snapshot.(*Manager).measureV2Workspaces
+122182984B 12.15% 12.26% 375463744B 37.35%  os.(*unixDirent).Info
+         0     0% 12.26% 363403240B 36.15%  marshal/internal/snapshot.lsEntryInfo
+         0     0% 12.26% 284219544B 28.27%  os.Lstat
+153646856B 15.28% 27.54% 284219544B 28.27%  os.lstatNolog
+         0     0% 27.54% 165759280B 16.49%  os.ReadDir
+         0     0% 27.54% 156320796B 15.55%  os.(*File).ReadDir

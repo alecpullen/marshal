@@ -1,6 +1,8 @@
 package bridge
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -677,6 +679,54 @@ func (w *Workspace) PutProjectSettings(root string, ps ProjectSettings) error {
 	defer w.mu.Unlock()
 	w.projectSettings[root] = ps
 	return w.save()
+}
+
+// projectSettingsETag is the opaque version token for a project's settings: a
+// quoted, lowercase SHA-256 of their JSON encoding. It is what a settings GET
+// returns and what a conditional PUT compares, so a client that writes from a
+// stale read is refused rather than silently overwriting someone else's edit.
+// The encoding is the store's own view of the value, so two equal settings
+// always carry the same tag.
+func projectSettingsETag(ps ProjectSettings) (string, error) {
+	data, err := json.Marshal(ps)
+	if err != nil {
+		return "", fmt.Errorf("encode project settings: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	return `"` + hex.EncodeToString(sum[:]) + `"`, nil
+}
+
+// PutProjectSettingsIfMatch stores a project's settings only when the stored
+// value still carries expected as its ETag. It reports whether it wrote, the
+// value it replaced, and any persistence error. The comparison, the map update
+// and the save all happen under one lock, so of two writers naming the same
+// version exactly one wins. A failed save restores the exact prior value,
+// including the case where no entry existed before. An empty expected is
+// refused: a caller that names no version wants PutProjectSettings.
+func (w *Workspace) PutProjectSettingsIfMatch(root string, ps ProjectSettings, expected string) (bool, ProjectSettings, error) {
+	if expected == "" {
+		return false, ProjectSettings{}, errors.New("bridge: conditional settings write needs an If-Match value")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	prev, had := w.projectSettings[root]
+	current, err := projectSettingsETag(prev)
+	if err != nil {
+		return false, prev, err
+	}
+	if current != expected {
+		return false, prev, nil
+	}
+	w.projectSettings[root] = ps
+	if err := w.save(); err != nil {
+		if had {
+			w.projectSettings[root] = prev
+		} else {
+			delete(w.projectSettings, root)
+		}
+		return false, prev, err
+	}
+	return true, prev, nil
 }
 
 // ProjectSettingsFor returns a project's settings, zero when none are set.

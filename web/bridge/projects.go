@@ -116,28 +116,76 @@ func (f *Fleet) registeredProject(root string) error {
 // PutProjectSettings validates and stores a project's settings, mirrors
 // the intake label onto the registered repo's watcher, and audits it.
 func (f *Fleet) PutProjectSettings(root string, ps ProjectSettings) error {
+	_, err := f.putProjectSettings(root, ps)
+	return err
+}
+
+// putProjectSettings is PutProjectSettings returning the settings as stored,
+// which is the validated form: the same value the workspace holds, so a
+// caller's ETag names what was written rather than a later racing read.
+func (f *Fleet) putProjectSettings(root string, ps ProjectSettings) (ProjectSettings, error) {
+	ps, repo, err := f.validateProjectSettings(root, ps)
+	if err != nil {
+		return ProjectSettings{}, err
+	}
+	prev := f.ws.ProjectSettingsFor(root)
+	if err := f.ws.PutProjectSettings(root, ps); err != nil {
+		return ProjectSettings{}, err
+	}
+	if err := f.applyProjectSettings(root, ps, prev, repo); err != nil {
+		return ProjectSettings{}, err
+	}
+	return ps, nil
+}
+
+// putProjectSettingsIfMatch is the conditional form: the store compares
+// expected with the value it holds, updates and saves under its own lock, and
+// only then are the intake watcher and the audit record touched. A mismatch
+// performs neither, and reports ok false with no error — the caller's view is
+// stale, which is the HTTP layer's 412. The stored settings it returns are the
+// value that was written, so the caller's ETag cannot come from a later read.
+func (f *Fleet) putProjectSettingsIfMatch(root string, ps ProjectSettings, expected string) (ProjectSettings, bool, error) {
+	ps, repo, err := f.validateProjectSettings(root, ps)
+	if err != nil {
+		return ProjectSettings{}, false, err
+	}
+	ok, prev, err := f.ws.PutProjectSettingsIfMatch(root, ps, expected)
+	if err != nil || !ok {
+		return ProjectSettings{}, false, err
+	}
+	if err := f.applyProjectSettings(root, ps, prev, repo); err != nil {
+		return ProjectSettings{}, false, err
+	}
+	return ps, true, nil
+}
+
+// validateProjectSettings checks and canonicalizes one settings write. Both the
+// unconditional and the conditional route go through it, so they accept
+// exactly the same writes. It returns the settings to store, and the repo the
+// intake names when one is named.
+func (f *Fleet) validateProjectSettings(root string, ps ProjectSettings) (ProjectSettings, Repo, error) {
 	if err := f.registeredProject(root); err != nil {
-		return err
+		return ProjectSettings{}, Repo{}, err
 	}
 	if ps.Workspace != "" {
 		if _, err := ParseWSRef(ps.Workspace); err != nil {
-			return fmt.Errorf("%w: workspace: %v", errInvalidProjectSettings, err)
+			return ProjectSettings{}, Repo{}, fmt.Errorf("%w: workspace: %v", errInvalidProjectSettings, err)
 		}
 	}
 	if ps.Mode != "" || ps.Auto != nil {
 		mode, auto, _, err := canonicalModeTuple(ps.Mode, ps.Auto)
 		if err != nil {
-			return fmt.Errorf("%w: %v", errInvalidProjectSettings, err)
+			return ProjectSettings{}, Repo{}, fmt.Errorf("%w: %v", errInvalidProjectSettings, err)
 		}
 		ps.Mode, ps.Auto = mode, auto
 	}
 	if ps.ShipTarget != "" && !validShipTargets[ps.ShipTarget] {
-		return fmt.Errorf("%w: shipTarget must be merge, push or patch", errInvalidProjectSettings)
+		return ProjectSettings{}, Repo{}, fmt.Errorf("%w: shipTarget must be merge, push or patch", errInvalidProjectSettings)
 	}
 	if len(ps.Routing) > 0 && string(ps.Routing) != "null" {
 		var obj map[string]json.RawMessage
 		if json.Unmarshal(ps.Routing, &obj) != nil {
-			return fmt.Errorf("%w: routing must be a JSON object", errInvalidProjectSettings)
+			return ProjectSettings{}, Repo{}, fmt.Errorf("%w: routing must be a JSON object", errInvalidProjectSettings)
 		}
 	} else {
 		ps.Routing = nil
@@ -146,26 +194,28 @@ func (f *Fleet) PutProjectSettings(root string, ps ProjectSettings) error {
 	if id := ps.Intake.RepoID; id != "" {
 		var ok bool
 		if repo, ok = f.ws.Repo(id); !ok {
-			return fmt.Errorf("%w: intake.repoId %q is not a registered repo", errInvalidProjectSettings, id)
+			return ProjectSettings{}, Repo{}, fmt.Errorf("%w: intake.repoId %q is not a registered repo", errInvalidProjectSettings, id)
 		}
 	} else if len(ps.Intake.Labels) > 0 {
-		return fmt.Errorf("%w: intake.labels need an intake.repoId", errInvalidProjectSettings)
+		return ProjectSettings{}, Repo{}, fmt.Errorf("%w: intake.labels need an intake.repoId", errInvalidProjectSettings)
 	}
 
 	if err := f.validateAutomations(ps.Automations); err != nil {
-		return err
+		return ProjectSettings{}, Repo{}, err
 	}
 	// The defaults are validated here, not in the store: Workspace.PutProjectSettings
 	// stays a dumb store, exactly as it is for Automations. A zero limit is
 	// "unset" and passes; factoryValidateDefaults fills nothing in.
 	if err := factoryValidateDefaults(ps.FactoryDefaults); err != nil {
-		return fmt.Errorf("%w: factoryDefaults: %v", errInvalidProjectSettings, err)
+		return ProjectSettings{}, Repo{}, fmt.Errorf("%w: factoryDefaults: %v", errInvalidProjectSettings, err)
 	}
+	return ps, repo, nil
+}
 
-	prev := f.ws.ProjectSettingsFor(root)
-	if err := f.ws.PutProjectSettings(root, ps); err != nil {
-		return err
-	}
+// applyProjectSettings performs the side effects of a settings write that has
+// already been stored: the intake label is mirrored onto the registered repo's
+// watcher, and the change is audited. prev is the value the write replaced.
+func (f *Fleet) applyProjectSettings(root string, ps, prev ProjectSettings, repo Repo) error {
 	// The poller supports one label, so the first one is the watcher's.
 	if ps.Intake.RepoID != "" && !sameIntake(prev.Intake, ps.Intake) {
 		repo.Watch = len(ps.Intake.Labels) > 0
@@ -343,7 +393,53 @@ func (s *Server) getProjectSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.fleet.ws.ProjectSettingsFor(root))
+	// The tag and the body come from one read, so a client that PUTs with
+	// this If-Match is comparing against exactly what it was shown.
+	ps := s.fleet.ws.ProjectSettingsFor(root)
+	writeSettings(w, http.StatusOK, ps)
+}
+
+// settingsIfMatch reads the ETag a conditional settings write names. A missing
+// header is the legacy unconditional write. The tag is opaque to clients, but
+// it has exactly one form — the quoted tag a GET returns — so a wildcard, a
+// list, an unquoted value or anything else is a malformed request (400), not a
+// conflict: the bridge cannot compare a version it never emitted.
+func settingsIfMatch(r *http.Request) (string, bool, error) {
+	values := r.Header.Values("If-Match")
+	if len(values) == 0 {
+		return "", false, nil
+	}
+	if len(values) > 1 {
+		return "", false, fmt.Errorf("%w: If-Match must name exactly one ETag", errInvalidProjectSettings)
+	}
+	tag := values[0]
+	if len(tag) != 66 || tag[0] != '"' || tag[65] != '"' {
+		return "", false, fmt.Errorf("%w: If-Match must be one quoted ETag", errInvalidProjectSettings)
+	}
+	for i := 1; i < 65; i++ {
+		c := tag[i]
+		switch {
+		case c >= '0' && c <= '9':
+		case c >= 'a' && c <= 'f':
+		case c >= 'A' && c <= 'F':
+		default:
+			return "", false, fmt.Errorf("%w: If-Match must be one quoted ETag", errInvalidProjectSettings)
+		}
+	}
+	return tag, true, nil
+}
+
+// writeSettings responds with the settings as stored and the ETag naming that
+// exact value, never a later read: a racing writer must not be able to make
+// the response describe someone else's write.
+func writeSettings(w http.ResponseWriter, status int, ps ProjectSettings) {
+	tag, err := projectSettingsETag(ps)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.Header().Set("ETag", tag)
+	writeJSON(w, status, ps)
 }
 
 func (s *Server) putProjectSettings(w http.ResponseWriter, r *http.Request) {
@@ -352,11 +448,33 @@ func (s *Server) putProjectSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	root := r.URL.Query().Get("root")
-	if err := s.fleet.PutProjectSettings(root, ps); err != nil {
+	expected, conditional, err := settingsIfMatch(r)
+	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.fleet.ws.ProjectSettingsFor(root))
+	if conditional {
+		stored, ok, err := s.fleet.putProjectSettingsIfMatch(root, ps, expected)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		if !ok {
+			// The stored settings moved since the caller read them. Nothing
+			// was written, mirrored onto the watcher or audited.
+			writeJSON(w, http.StatusPreconditionFailed,
+				map[string]string{"error": "project settings changed since the If-Match ETag"})
+			return
+		}
+		writeSettings(w, http.StatusOK, stored)
+		return
+	}
+	stored, err := s.fleet.putProjectSettings(root, ps)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeSettings(w, http.StatusOK, stored)
 }
 
 func (s *Server) getProjectHealth(w http.ResponseWriter, r *http.Request) {

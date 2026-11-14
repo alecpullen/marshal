@@ -1,12 +1,16 @@
 package bridge
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -429,5 +433,409 @@ func TestFactoryDefaultsRejectInvalidDefaultsAtWriteTime(t *testing.T) {
 	// An explicitly empty check list is a choice, so it is stored non-nil.
 	if st := e.f.ws.ProjectSettingsFor(root); st.FactoryDefaults == nil || st.FactoryDefaults.ExpectedChecks == nil || len(st.FactoryDefaults.ExpectedChecks) != 0 {
 		t.Fatalf("explicitly empty expectedChecks = %+v", st.FactoryDefaults)
+	}
+}
+
+// projectSettingsTag returns the ETag a settings GET carries and the settings
+// it describes.
+func projectSettingsTag(t *testing.T, s *Server, root string) (string, ProjectSettings) {
+	t.Helper()
+	rec := doReq(t, s, http.MethodGet, "/api/projects/settings?root="+root, nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get settings = %d %s", rec.Code, rec.Body)
+	}
+	var got ProjectSettings
+	decodeBody(t, rec, &got)
+	tag := rec.Header().Get("ETag")
+	if tag == "" {
+		t.Fatal("a settings GET carries no ETag")
+	}
+	return tag, got
+}
+
+// TestProjectSettingsETagRoundTrip checks the version token is what the
+// contract says: a quoted SHA-256 of the typed settings, returned by GET and by
+// every successful PUT, naming the value that was written rather than a later
+// read.
+func TestProjectSettingsETagRoundTrip(t *testing.T) {
+	e, s, root := projectEnv(t)
+	path := "/api/projects/settings?root=" + root
+
+	rec := doReq(t, s, http.MethodPut, path, ProjectSettings{Workspace: "svc@2", Mode: "ask"}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("put = %d %s", rec.Code, rec.Body)
+	}
+	tag := rec.Header().Get("ETag")
+	if len(tag) != 66 || tag[0] != '"' || tag[65] != '"' {
+		t.Fatalf("ETag = %q, want one quoted tag", tag)
+	}
+	for _, c := range tag[1:65] {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			t.Fatalf("ETag %q is not lowercase hex", tag)
+		}
+	}
+	want, err := projectSettingsETag(e.f.ws.ProjectSettingsFor(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tag != want {
+		t.Fatalf("ETag = %q, want %q for the stored value", tag, want)
+	}
+	var stored ProjectSettings
+	decodeBody(t, rec, &stored)
+	if stored.Workspace != "svc@2" || stored.Mode != "ask" {
+		t.Fatalf("response = %+v", stored)
+	}
+	// GET agrees with the write: same tag, same body.
+	if gotTag, got := projectSettingsTag(t, s, root); gotTag != tag || got.Workspace != stored.Workspace || got.Mode != stored.Mode {
+		t.Fatalf("GET = %q %+v, want %q %+v", gotTag, got, tag, stored)
+	}
+
+	// A conditional PUT naming the tag it read applies, and answers with the
+	// tag of the value it stored.
+	rec = doReq(t, s, http.MethodPut, path, ProjectSettings{Workspace: "svc@2", Mode: "act"}, map[string]string{"If-Match": tag})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("conditional put = %d %s", rec.Code, rec.Body)
+	}
+	next := rec.Header().Get("ETag")
+	if next == tag {
+		t.Fatalf("the ETag did not follow the value: %q", next)
+	}
+	if got := e.f.ws.ProjectSettingsFor(root); got.Mode != "act" {
+		t.Fatalf("stored = %+v, want the conditional write", got)
+	}
+	want, err = projectSettingsETag(e.f.ws.ProjectSettingsFor(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next != want {
+		t.Fatalf("conditional ETag = %q, want %q", next, want)
+	}
+	if gotTag, _ := projectSettingsTag(t, s, root); gotTag != next {
+		t.Fatalf("GET after the conditional write = %q, want %q", gotTag, next)
+	}
+
+	// Rewriting the same value keeps the tag: it names the content.
+	rec = doReq(t, s, http.MethodPut, path, ProjectSettings{Workspace: "svc@2", Mode: "act"}, map[string]string{"If-Match": next})
+	if rec.Code != http.StatusOK || rec.Header().Get("ETag") != next {
+		t.Fatalf("idempotent conditional put = %d %q", rec.Code, rec.Header().Get("ETag"))
+	}
+}
+
+// TestProjectSettingsConditionalConflict checks that a write naming a version
+// the record has moved past is a 412 that changes nothing, and that a malformed
+// If-Match is a caller mistake (400), never a conflict.
+func TestProjectSettingsConditionalConflict(t *testing.T) {
+	e, s, root := projectEnv(t)
+	if err := e.f.ws.PutRepo(Repo{ID: "r1", URL: "https://example.com/r1.git", OwnerID: DefaultOwnerID}); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/projects/settings?root=" + root
+	audits := func() int {
+		t.Helper()
+		tail, err := e.f.audit.Tail(200)
+		if err != nil {
+			t.Fatalf("audit tail: %v", err)
+		}
+		n := 0
+		for _, ev := range tail {
+			if ev.Event == AuditProjectSettings {
+				n++
+			}
+		}
+		return n
+	}
+
+	rec := doReq(t, s, http.MethodPut, path, ProjectSettings{Intake: ProjectIntake{RepoID: "r1", Labels: []string{"marshal"}}}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("put = %d %s", rec.Code, rec.Body)
+	}
+	stale := rec.Header().Get("ETag")
+
+	// Another writer moves the record on, so the tag above is stale.
+	if code := putSettings(t, s, root, ProjectSettings{Mode: "ask", Intake: ProjectIntake{RepoID: "r1", Labels: []string{"other"}}}); code != http.StatusOK {
+		t.Fatalf("intervening write = %d", code)
+	}
+	before := audits()
+
+	rec = doReq(t, s, http.MethodPut, path, ProjectSettings{Intake: ProjectIntake{RepoID: "r1", Labels: []string{"third"}}}, map[string]string{"If-Match": stale})
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("stale conditional put = %d %s, want 412", rec.Code, rec.Body)
+	}
+	if got := e.f.ws.ProjectSettingsFor(root); got.Mode != "ask" || len(got.Intake.Labels) != 1 || got.Intake.Labels[0] != "other" {
+		t.Fatalf("a refused write changed the record: %+v", got)
+	}
+	if r, _ := e.f.ws.Repo("r1"); r.WatchLabel != "other" {
+		t.Fatalf("repo = %+v, want the watcher on the stored label", r)
+	}
+	if after := audits(); after != before {
+		t.Fatalf("a refused write was audited: %d -> %d", before, after)
+	}
+
+	// Every malformed If-Match is the caller's mistake: 400, not 412.
+	current, _ := projectSettingsTag(t, s, root)
+	for name, header := range map[string]string{
+		"wildcard": "*",
+		"unquoted": strings.Trim(current, `"`),
+		"list":     current + `, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"`,
+		"short":    `"deadbeef"`,
+		"weak":     "W/" + current,
+	} {
+		rec := doReq(t, s, http.MethodPut, path, ProjectSettings{Workspace: "svc@2"}, map[string]string{"If-Match": header})
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: put = %d, want 400", name, rec.Code)
+		}
+	}
+	// Two header lines are two tags, which the bridge refuses to choose
+	// between.
+	req := httptest.NewRequest(http.MethodPut, path, bytes.NewReader([]byte(`{"workspace":"svc@2"}`)))
+	req.Header.Add("If-Match", current)
+	req.Header.Add("If-Match", current)
+	twin := httptest.NewRecorder()
+	s.ServeHTTP(twin, req)
+	if twin.Code != http.StatusBadRequest {
+		t.Fatalf("two If-Match headers = %d, want 400", twin.Code)
+	}
+	if got := e.f.ws.ProjectSettingsFor(root); got.Workspace != "" {
+		t.Fatalf("a malformed If-Match wrote: %+v", got)
+	}
+
+	// A save that fails restores the exact prior value, including for a
+	// project that had no record at all.
+	t.Run("persistence failure restores the prior value", func(t *testing.T) {
+		dir := t.TempDir()
+		state := filepath.Join(dir, "state")
+		w := NewWorkspace(filepath.Join(state, "fleet.json"))
+		prior := ProjectSettings{Workspace: "svc@2"}
+		if err := w.PutProjectSettings("/p", prior); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		tag, err := projectSettingsETag(prior)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A regular file where the state directory was: every later save
+		// fails, whatever the test user's privileges.
+		if err := os.RemoveAll(state); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(state, []byte("not a directory"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		ok, prev, err := w.PutProjectSettingsIfMatch("/p", ProjectSettings{Workspace: "svc@3"}, tag)
+		if err == nil {
+			t.Fatal("a failed save reported success")
+		}
+		if ok {
+			t.Fatal("ok = true on a failed save")
+		}
+		if prev.Workspace != "svc@2" {
+			t.Fatalf("prev = %+v, want the value it replaced", prev)
+		}
+		if got := w.ProjectSettingsFor("/p"); got.Workspace != "svc@2" {
+			t.Fatalf("after a failed save settings = %+v, want the prior value", got)
+		}
+
+		// A project with no stored record gains none.
+		empty, err := projectSettingsETag(ProjectSettings{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok, _, err := w.PutProjectSettingsIfMatch("/fresh", ProjectSettings{Workspace: "svc@3"}, empty); err == nil || ok {
+			t.Fatalf("a failed first save = ok %v, err %v", ok, err)
+		}
+		w.mu.Lock()
+		_, had := w.projectSettings["/fresh"]
+		w.mu.Unlock()
+		if had {
+			t.Fatal("a failed first save left a record behind")
+		}
+
+		// An empty expectation names no version, so it is refused outright.
+		if ok, _, err := w.PutProjectSettingsIfMatch("/p", prior, ""); err == nil || ok {
+			t.Fatalf("empty If-Match = ok %v, err %v, want a refusal", ok, err)
+		}
+	})
+}
+
+// TestProjectSettingsConcurrentConditionalWrites checks the compare and the
+// write are one step: two writers naming the same version cannot both win.
+func TestProjectSettingsConcurrentConditionalWrites(t *testing.T) {
+	e, s, root := projectEnv(t)
+	path := "/api/projects/settings?root=" + root
+
+	rec := doReq(t, s, http.MethodPut, path, ProjectSettings{Workspace: "svc@1"}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("put = %d %s", rec.Code, rec.Body)
+	}
+	tag := rec.Header().Get("ETag")
+	audits := func() int {
+		t.Helper()
+		tail, err := e.f.audit.Tail(200)
+		if err != nil {
+			t.Fatalf("audit tail: %v", err)
+		}
+		n := 0
+		for _, ev := range tail {
+			if ev.Event == AuditProjectSettings {
+				n++
+			}
+		}
+		return n
+	}
+	before := audits()
+
+	// Two writers, each holding the same tag and a different value.
+	const writers = 2
+	bodies := make([][]byte, writers)
+	for i := range bodies {
+		data, err := json.Marshal(ProjectSettings{Workspace: fmt.Sprintf("svc@%d", i+2)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		bodies[i] = data
+	}
+	codes := make(chan int, writers)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodPut, path, bytes.NewReader(bodies[i]))
+			req.Header.Set("If-Match", tag)
+			rr := httptest.NewRecorder()
+			<-start
+			s.ServeHTTP(rr, req)
+			codes <- rr.Code
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(codes)
+
+	won, lost := 0, 0
+	for code := range codes {
+		switch code {
+		case http.StatusOK:
+			won++
+		case http.StatusPreconditionFailed:
+			lost++
+		default:
+			t.Errorf("writer = %d, want 200 or 412", code)
+		}
+	}
+	if won != 1 || lost != writers-1 {
+		t.Fatalf("%d writers won and %d lost, want exactly one winner", won, lost)
+	}
+	// The winner's value is the one stored, and only the winner mirrored or
+	// audited.
+	if got := e.f.ws.ProjectSettingsFor(root); got.Workspace != "svc@2" && got.Workspace != "svc@3" {
+		t.Fatalf("stored = %+v, want a writer's value", got)
+	}
+	if after := audits(); after != before+1 {
+		t.Fatalf("audit records = %d, want %d: only the winner audits", after, before+1)
+	}
+}
+
+// TestProjectSettingsConditionalFailureNoIntakeSideEffect checks that a refused
+// conditional write leaves the watcher alone: the intake mirror runs only after
+// the store accepted the write.
+func TestProjectSettingsConditionalFailureNoIntakeSideEffect(t *testing.T) {
+	e, s, root := projectEnv(t)
+	if err := e.f.ws.PutRepo(Repo{ID: "r1", URL: "https://example.com/r1.git", OwnerID: DefaultOwnerID}); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/projects/settings?root=" + root
+
+	rec := doReq(t, s, http.MethodPut, path, ProjectSettings{Intake: ProjectIntake{RepoID: "r1", Labels: []string{"marshal"}}}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("put = %d %s", rec.Code, rec.Body)
+	}
+	if r, _ := e.f.ws.Repo("r1"); !r.Watch || r.WatchLabel != "marshal" {
+		t.Fatalf("repo = %+v, want the label watched", r)
+	}
+	stale := rec.Header().Get("ETag")
+
+	// The record moves on, then a write naming the version it read before
+	// that tries to move the watcher somewhere else.
+	if code := putSettings(t, s, root, ProjectSettings{Intake: ProjectIntake{RepoID: "r1", Labels: []string{"second"}}}); code != http.StatusOK {
+		t.Fatalf("intervening write = %d", code)
+	}
+	before, _ := e.f.audit.Tail(200)
+	rec = doReq(t, s, http.MethodPut, path, ProjectSettings{Intake: ProjectIntake{RepoID: "r1", Labels: []string{"third"}}}, map[string]string{"If-Match": stale})
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("stale conditional put = %d %s, want 412", rec.Code, rec.Body)
+	}
+	if r, _ := e.f.ws.Repo("r1"); !r.Watch || r.WatchLabel != "second" {
+		t.Fatalf("repo = %+v, want the watcher untouched by the refused write", r)
+	}
+	if got := e.f.ws.ProjectSettingsFor(root); len(got.Intake.Labels) != 1 || got.Intake.Labels[0] != "second" {
+		t.Fatalf("stored = %+v, want the intervening write", got)
+	}
+	after, _ := e.f.audit.Tail(200)
+	count := func(evs []AuditEvent) int {
+		n := 0
+		for _, ev := range evs {
+			if ev.Event == AuditProjectSettings {
+				n++
+			}
+		}
+		return n
+	}
+	if count(after) != count(before) {
+		t.Fatalf("a refused write was audited: %d -> %d", count(before), count(after))
+	}
+}
+
+// TestProjectSettingsLegacyPut checks a PUT without If-Match keeps the old
+// unconditional behaviour, and still hands back a tag the next write can use.
+func TestProjectSettingsLegacyPut(t *testing.T) {
+	e, s, root := projectEnv(t)
+	if err := e.f.ws.PutRepo(Repo{ID: "r1", URL: "https://example.com/r1.git", OwnerID: DefaultOwnerID}); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/projects/settings?root=" + root
+
+	rec := doReq(t, s, http.MethodPut, path, ProjectSettings{Intake: ProjectIntake{RepoID: "r1", Labels: []string{"marshal"}}}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("legacy put = %d %s", rec.Code, rec.Body)
+	}
+	var first ProjectSettings
+	decodeBody(t, rec, &first)
+	if len(first.Intake.Labels) != 1 || first.Intake.Labels[0] != "marshal" {
+		t.Fatalf("response = %+v", first)
+	}
+	if r, _ := e.f.ws.Repo("r1"); !r.Watch || r.WatchLabel != "marshal" {
+		t.Fatalf("repo = %+v, want the legacy route to mirror the intake", r)
+	}
+	found := false
+	tail, _ := e.f.audit.Tail(50)
+	for _, ev := range tail {
+		found = found || ev.Event == AuditProjectSettings
+	}
+	if !found {
+		t.Fatal("the legacy route did not audit the write")
+	}
+
+	// No If-Match is still unconditional: it overwrites a record it never read.
+	rec = doReq(t, s, http.MethodPut, path, ProjectSettings{Workspace: "svc@2", Mode: "ask", Intake: ProjectIntake{RepoID: "r1", Labels: []string{"marshal"}}}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second legacy put = %d %s", rec.Code, rec.Body)
+	}
+	if got := e.f.ws.ProjectSettingsFor(root); got.Workspace != "svc@2" || got.Mode != "ask" {
+		t.Fatalf("stored = %+v, want the unconditional write", got)
+	}
+
+	// A client that skipped the ETag is still answered with one, so its next
+	// write can be conditional.
+	tag := rec.Header().Get("ETag")
+	if tag == "" {
+		t.Fatal("a legacy PUT carries no ETag")
+	}
+	rec = doReq(t, s, http.MethodPut, path, ProjectSettings{Workspace: "svc@2", Mode: "act"}, map[string]string{"If-Match": tag})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("conditional put after a legacy one = %d %s", rec.Code, rec.Body)
 	}
 }

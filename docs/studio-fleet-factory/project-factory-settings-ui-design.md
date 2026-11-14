@@ -114,3 +114,53 @@ choosing files or a base. Keep the change within the existing web/ standard
 library boundary and avoid P5's fleet inbox, viewer and attachment ownership.
 The implementation plan is
 [Project factory settings](plans/2026-11-15-project-factory-settings-plan.md).
+
+## Implementation record
+
+Implemented on branch `project-factory-settings` from `40c2194d` (current
+`main`, after the planning PRs), as the four tasks of the
+[plan](plans/2026-11-15-project-factory-settings-plan.md) plus a verification
+task. The design's open questions — the exact precedence, the native-versus-
+workspace policy, and the concurrency mechanism — are settled as follows.
+
+### Precedence and native behaviour
+
+Resolution is `handoff > project factory defaults > project agent defaults >
+existing normalisation/validation`. The project agent level covers exactly
+three fields: the workspace, the implementer route and the reviewer route. Each
+role falls back independently to `{"profile": <ProjectSettings.Routing.profile>}`;
+every other member of a stored routing object is preserved, and a project whose
+routing has no usable `profile` contributes no fallback.
+
+An explicit handoff `native: true` suppresses only the *project agent* workspace
+fallback. A project *factory* workspace combined with native stays the explicit
+conflict, with both sources named in the error. The backend never infers
+`native: true` from an empty project workspace. Existing projects with no
+factory override therefore follow their agent defaults for future creates only:
+prior drafts, approvals, retry replacements and replayed requests keep the
+configuration they were created with.
+
+### Conditional settings writes
+
+`GET /api/projects/settings` now returns an `ETag`: a quoted, lowercase SHA-256
+of the JSON encoding of the typed settings. `PUT` accepts `If-Match`; the
+comparison, the map update and the persistence happen under `Workspace.mu`, and
+a mismatch is 412 with no write, no intake mirroring and no audit. A single
+quoted 64-hex tag is accepted; `*`, lists, unquoted, weak or wrong-length values
+are 400. A `PUT` without `If-Match` keeps its legacy unconditional behaviour.
+
+The combined settings screen keeps one versioned saved record for every write,
+spreads the fetched record so unknown fields and nested routing members survive,
+and on 412 keeps the user's edits and offers an explicit reload — never a silent
+retry. A successful write updates the stored record and the version token but
+does not revert a field the user changed while that write was in flight.
+
+### Verification
+
+`web/bridge` covers the inheritance and conditional-write contracts in
+`factory_defaults_test.go`, `factory_defaults_http_test.go` and
+`projects_test.go`; `web/ui` covers the screens in `Project.test.ts` and
+`FactoryNew.test.ts`. The real bundle is exercised at desktop and 390px by
+`web/ui/e2e/project-settings.pw.ts`, run through
+`scripts/e2e/run_browser_checks.sh`, which starts a fixture bridge with no
+reachable provider.

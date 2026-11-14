@@ -126,3 +126,57 @@ Use the existing request plumbing or a narrowly scoped response-header helper; d
 - CI, permissions, worktree and daemon lifecycle are unchanged. The project setting affects future creation only; verify retries, approvals and existing drafts do not re-resolve.
 - P5 plan 1/2 is already represented on this base; check the active `p5-3-fleet-screen` diff at execution and avoid its changed files or reconcile deliberately. Check the currently running preview implementation branch independently before touching PR-view code.
 - Factory handoff must include the approved design and this plan as durable documents. The source planning branch's uncommitted artifacts must not be lost when seeding the factory's checkout.
+
+## Outcome record
+
+Executed on branch `project-factory-settings`, in an isolated worktree, from
+accepted base `40c2194d` (current `main` after the planning PRs; the plan's
+`89eb2463` base is an ancestor and its anchors were rechecked against current
+`main` as the plan instructs). Tasks 1, 3, 2 and 4 were delegated to subagents
+one commit each; task 5 was executed by the controller.
+
+| Task | Commit message |
+|---|---|
+| 1 | `project-factory-settings: task 1 — resolve inheritance` |
+| 3 | `project-factory-settings: task 3 — edit project defaults` |
+| 2 | `project-factory-settings: task 2 — guard settings writes` |
+| 4 | `project-factory-settings: task 4 — expose handoff overrides` |
+| 5 | `project-factory-settings: task 5 — verify and document` |
+
+Tasks 1 and 3 ran concurrently, as did 2 and 4: each pair has a disjoint file
+set and a separate build/test unit (`go` in `web/bridge`, `npm` in `web/ui`).
+No two tasks that share a package or a test binary overlapped.
+
+### Deviations from the plan
+
+- **Browser checks are scripted.** The plan asked for desktop and 390px browser
+  checks of the real UI. Those are `web/ui/e2e/project-settings.pw.ts`, run by
+  `scripts/e2e/run_browser_checks.sh` against a fixture bridge, at 1280×900 and
+  390×844. This adds `@playwright/test` as a dev dependency of `web/ui` and a
+  `test:browser` script; CI still runs `npm test`, which is jsdom-only.
+- **One defect was fixed outside the task list.** The browser checks found that
+  a settings write's response re-adopted the saved record into the drafts, so a
+  field changed while that write was in flight was silently reverted. `save()`
+  in `Project.svelte` now updates the stored record and version token without
+  overwriting drafts typed after the request left.
+- `web/bridge/static/` is tracked, so the rebuilt SPA is in the task 5 commit.
+
+### Verification
+
+| Gate | Result |
+|---|---|
+| `go test ./web/bridge` | PASS |
+| `go test ./web/bridge -run 'TestFactoryDefaults\|TestFactoryAgent\|TestProjectSettings\|TestWebIsStdlibOnly'` | PASS |
+| `go test -race ./web/bridge -run TestProjectSettingsConcurrentConditionalWrites` | PASS |
+| `cd web/ui && npm test` | PASS — 88 files, 963 tests |
+| `cd web/ui && npm run check` | 6 pre-existing errors, unchanged: `Chat.svelte:697`, `Run.svelte:336`, `Sidebar.test.ts:16`, `fleet.test.ts:78`, `Review.test.ts:49`, `Runs.test.ts:15` |
+| `scripts/e2e/run_browser_checks.sh` | PASS — 12 checks (6 cases × desktop and 390px) |
+| `CGO_ENABLED=1 go build ./cmd/marshal` | PASS |
+| `go vet ./...` | PASS, no output |
+| `gofmt -l` on changed Go files | no output |
+| `git diff --check` | no output |
+
+The full `go test ./...` baseline was taken twice on the accepted base: one run
+under concurrent `npm` load reported `FAIL` naming no test, and an unloaded
+rerun passed with no failures. The final run is recorded in the pull request;
+no named test failure is attributed to this slice.

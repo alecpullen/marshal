@@ -1149,3 +1149,157 @@ func TestFactoryReplayAfterAgentDefaultsChange(t *testing.T) {
 	}
 	assertFactoryRoutes(t, got.Approvals[0].Config, `{"profile":"chosen"}`)
 }
+
+// TestFactoryDefaultsEndToEnd drives the defaults chain through the served API
+// alone: it writes a project's defaults with the same endpoint an operator
+// uses, creates a handoff that omits every inheritable field, changes the
+// defaults, creates a second handoff, and reads both drafts back as the
+// snapshots their own create resolved. The three fields resolution contributes
+// are each exercised the same way: an explicit role override on a handoff, the
+// native choice suppressing the project's agent workspace, and an explicitly
+// empty check list approved with the acknowledgement that stands in for
+// required checks.
+func TestFactoryDefaultsEndToEnd(t *testing.T) {
+	f := newFactoryDefaultsFixture(t)
+	f.addProfile(t, "later")
+
+	// The first set of project defaults: a routing profile both roles follow,
+	// an agent workspace the native choice suppresses, and a target branch the
+	// handoff never states.
+	f.putSettings(t, f.root, ProjectSettings{
+		Workspace:       "project-one",
+		Routing:         json.RawMessage(`{"profile":"chosen"}`),
+		FactoryDefaults: &FactoryDefaults{TargetBranch: "main"},
+	})
+	// The workspace really is in effect, so the empty workspace on the draft
+	// below is the native choice suppressing it rather than nothing being set.
+	served := doReq(t, f.srv, http.MethodGet, "/api/projects/settings?root="+url.QueryEscape(f.root), nil, f.headers())
+	if served.Code != http.StatusOK {
+		t.Fatalf("get project settings: status %d, body %s", served.Code, served.Body.String())
+	}
+	var serving ProjectSettings
+	decodeBody(t, served, &serving)
+	if serving.Workspace != "project-one" {
+		t.Fatalf("project workspace = %q, want %q", serving.Workspace, "project-one")
+	}
+
+	firstWant := FactoryConfig{
+		RepoID:                   "repo-1",
+		ProjectRoot:              f.root,
+		HostID:                   "local",
+		TargetBranch:             "main",
+		Native:                   true,
+		ImplementerRouting:       json.RawMessage(`{"profile":"chosen"}`),
+		ReviewerRouting:          json.RawMessage(`{"profile":"chosen"}`),
+		NoRequiredCIAcknowledged: true,
+		MaxRounds:                5,
+		CIPollSeconds:            15,
+		CIWaitSeconds:            1800,
+	}
+	first := f.created(t, f.handoff("end-to-end-1", f.root))
+	if first.State != "draft" {
+		t.Fatalf("state = %q, want draft", first.State)
+	}
+	if first.Draft.Config.Workspace != "" {
+		t.Fatalf("workspace = %q, want none for a native handoff", first.Draft.Config.Workspace)
+	}
+	sameFactoryConfig(t, first.Draft.Config, firstWant)
+
+	// Move the project's defaults between the two creates: a second profile,
+	// a second agent workspace, a different target branch and an inherited
+	// check list the first set did not have.
+	f.putSettings(t, f.root, ProjectSettings{
+		Workspace: "project-two",
+		Routing:   json.RawMessage(`{"profile":"later"}`),
+		FactoryDefaults: &FactoryDefaults{
+			TargetBranch:   "trunk",
+			ExpectedChecks: []FactoryCheckKey{{Kind: "check_run", Name: "build", AppID: 7}},
+		},
+	})
+	secondWant := FactoryConfig{
+		RepoID:                   "repo-1",
+		ProjectRoot:              f.root,
+		HostID:                   "local",
+		TargetBranch:             "trunk",
+		Native:                   true,
+		ImplementerRouting:       json.RawMessage(`{"profile":"later"}`),
+		ReviewerRouting:          json.RawMessage(`{"profile":"later"}`),
+		ExpectedChecks:           []FactoryCheckKey{{Kind: "check_run", Name: "build", AppID: 7}},
+		NoRequiredCIAcknowledged: true,
+		MaxRounds:                5,
+		CIPollSeconds:            15,
+		CIWaitSeconds:            1800,
+	}
+	second := f.created(t, f.handoff("end-to-end-2", f.root))
+	if second.Draft.Config.Workspace != "" {
+		t.Fatalf("workspace = %q, want none for a native handoff", second.Draft.Config.Workspace)
+	}
+	sameFactoryConfig(t, second.Draft.Config, secondWant)
+
+	// The two snapshots differ because the defaults changed in between, and
+	// the first draft keeps the set its own create resolved against.
+	firstJSON, err := json.Marshal(first.Draft.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondJSON, err := json.Marshal(second.Draft.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(firstJSON, secondJSON) {
+		t.Fatalf("both drafts resolved to the same snapshot after the defaults changed: %s", firstJSON)
+	}
+	reread := doReq(t, f.srv, http.MethodGet, "/api/factory/items/"+first.ID, nil, f.headers())
+	if reread.Code != http.StatusOK {
+		t.Fatalf("get draft: status %d, body %s", reread.Code, reread.Body.String())
+	}
+	var rereadBody struct {
+		Item FactoryItem `json:"item"`
+	}
+	decodeBody(t, reread, &rereadBody)
+	sameFactoryConfig(t, rereadBody.Item.Draft.Config, firstWant)
+
+	// A handoff that states one role's route outranks both project levels for
+	// that role alone: the reviewer still follows the project's profile.
+	override := f.handoff("end-to-end-3", f.root)
+	override.Config.ImplementerRouting = json.RawMessage(`{"profile":"chosen"}`)
+	overrideWant := secondWant
+	overrideWant.ImplementerRouting = json.RawMessage(`{"profile":"chosen"}`)
+	overridden := f.created(t, override)
+	sameFactoryConfig(t, overridden.Draft.Config, overrideWant)
+
+	// An explicitly empty check list is a choice, not an omission: it replaces
+	// the inherited list, and the acknowledgement is what lets the draft be
+	// approved. Both are exercised through the served endpoints.
+	empty := f.handoff("end-to-end-4", f.root)
+	empty.Config.ExpectedChecks = []FactoryCheckKey{}
+	empty.Config.NoRequiredCIAcknowledged = true
+	emptyWant := secondWant
+	emptyWant.ExpectedChecks = []FactoryCheckKey{}
+	emptyDraft := f.created(t, empty)
+	sameFactoryConfig(t, emptyDraft.Draft.Config, emptyWant)
+
+	approved := doReq(t, f.srv, http.MethodPost, "/api/factory/items/"+emptyDraft.ID+"/commands",
+		FactoryCommand{RequestID: "end-to-end-approve", Kind: "approve", ExpectedVersion: 1}, f.headers())
+	if approved.Code != http.StatusOK {
+		t.Fatalf("approve: status %d, body %s", approved.Code, approved.Body.String())
+	}
+	var approvalBody struct {
+		Item FactoryItem `json:"item"`
+	}
+	decodeBody(t, approved, &approvalBody)
+	if len(approvalBody.Item.Approvals) != 1 {
+		t.Fatalf("approvals = %+v, want one", approvalBody.Item.Approvals)
+	}
+	snapshot := approvalBody.Item.Approvals[0].Config
+	if snapshot.ExpectedChecks == nil {
+		t.Fatal("explicitly empty expectedChecks became nil in the approval snapshot")
+	}
+	if len(snapshot.ExpectedChecks) != 0 {
+		t.Fatalf("expectedChecks = %+v, want an empty list", snapshot.ExpectedChecks)
+	}
+	if !snapshot.NoRequiredCIAcknowledged {
+		t.Fatal("approval snapshot dropped the no-required-CI acknowledgement")
+	}
+	sameFactoryConfig(t, snapshot, emptyWant)
+}

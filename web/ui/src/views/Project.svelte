@@ -163,8 +163,18 @@
     error = ''
     notice = ''
     stale = false
+    // What the drafts held when the write left. A field the user changes while
+    // it is in flight is theirs: the response updates the stored record and the
+    // version token, but never overwrites a draft typed after this point.
+    const sent = draftSignature()
     try {
-      adopt(await putVersionedProjectSettings(root, next, saved.etag))
+      const written = await putVersionedProjectSettings(root, next, saved.etag)
+      if (draftSignature() === sent) {
+        adopt(written)
+      } else {
+        saved = written
+        baseline = sent
+      }
       notice = `${what} saved`
       void loadPolicy()
     } catch (e) {

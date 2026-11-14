@@ -466,8 +466,8 @@ func TestTheWaitCommandDeliversTheChange(t *testing.T) {
 	}
 
 	stop := New(f, fixedClock())
-	stop.done = make(chan struct{})
-	close(stop.done)
+	stop.done = newQuitGate()
+	stop.done.release()
 	wait = stop.waitForChange()
 	done := make(chan tea.Msg, 1)
 	go func() { done <- wait() }()
@@ -478,6 +478,37 @@ func TestTheWaitCommandDeliversTheChange(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("the wait command blocked after the program quit")
+	}
+}
+
+// TestQuitReleasesTheWait is the regression for a quit that never released the
+// wait: without it the armed wait stays blocked on the client's signal, which
+// is closed with the client at quit, so one goroutine leaks per program run.
+func TestQuitReleasesTheWait(t *testing.T) {
+	f := newFakeFleet()
+	m := New(f, fixedClock())
+
+	// Arm the wait the way Init does, but do not fire the client's change
+	// channel: the point is that the quit alone releases the wait.
+	wait := m.waitForChange()
+
+	_, cmd := press(t, m, tea.KeyPressMsg{Code: 'q', Text: "q"})
+	if cmd == nil {
+		t.Fatalf("q returned no command")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("q returned %T, want tea.QuitMsg", cmd())
+	}
+
+	done := make(chan tea.Msg, 1)
+	go func() { done <- wait() }()
+	select {
+	case msg := <-done:
+		if msg != nil {
+			t.Fatalf("the wait after quit returned %T, want nil", msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("the quit did not release the wait command")
 	}
 }
 

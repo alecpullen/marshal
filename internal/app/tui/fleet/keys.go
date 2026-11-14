@@ -11,7 +11,7 @@ import (
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// ctrl+c quits from everywhere, the filter input included.
 	if msg.String() == "ctrl+c" {
-		return m, tea.Quit
+		return m, m.quit()
 	}
 	if m.filtering {
 		return m.handleFilterKey(msg)
@@ -41,7 +41,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "q":
-		return m, tea.Quit
+		return m, m.quit()
 	case "j":
 		m.moveCursor(1)
 	case "k":

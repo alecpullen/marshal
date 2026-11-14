@@ -7,6 +7,7 @@ package fleet
 
 import (
 	"strings"
+	"sync"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -28,7 +29,7 @@ const (
 )
 
 // Model is the fleet screen (P5 F4). It is a value: Update returns a new copy,
-// and the only shared state is the done channel that releases the wait command
+// and the only shared state is the done gate that releases the wait command
 // when the program quits.
 type Model struct {
 	fleet acpclient.Fleet
@@ -68,10 +69,24 @@ type Model struct {
 
 	width, height int
 
-	// done is closed when the program quits, so the wait command cannot block
-	// a program that has stopped reading its messages.
-	done chan struct{}
+	// done releases the wait command when the program quits, so the wait
+	// cannot block a program that has stopped reading its messages. It is
+	// held by pointer: Model is a value, and every copy shares one release.
+	done *quitGate
 }
+
+// quitGate releases the wait command when the program quits. The close is
+// guarded, so a second quit key cannot panic on an already-closed channel.
+type quitGate struct {
+	once sync.Once
+	ch   chan struct{}
+}
+
+// newQuitGate is a gate that has not been released.
+func newQuitGate() *quitGate { return &quitGate{ch: make(chan struct{})} }
+
+// release closes the gate, once.
+func (g *quitGate) release() { g.once.Do(func() { close(g.ch) }) }
 
 // Option configures a Model.
 type Option func(*Model)
@@ -100,11 +115,18 @@ func New(f acpclient.Fleet, opts ...Option) Model {
 		cfg:    config.Default().TUI,
 		tab:    1,
 		dimmed: true,
-		done:   make(chan struct{}),
+		done:   newQuitGate(),
 	}
 	for _, opt := range opts {
 		opt(m)
 	}
+	// Seed the state from the client, so the screen can name the bridge it is
+	// waiting for before the first read lands. The client's state carries the
+	// server's name from the moment it is built.
+	if f != nil {
+		m.state = f.State()
+	}
+	m.dimmed = m.state.Conn != acpclient.FleetConnected
 	m.th = theme.LoadWithConfig(m.cfg.Theme, m.cfg.Mode, theme.ParseDepth(m.cfg.Depth), theme.PaletteOverrides(m.cfg.Palette))
 	theme.Reload(m.th)
 	return *m
@@ -131,11 +153,20 @@ func (m Model) waitForChange() tea.Cmd {
 	f, done := m.fleet, m.done
 	return func() tea.Msg {
 		select {
-		case <-done:
+		case <-done.ch:
 			return nil
 		case <-f.Changed():
 			return changedMsg{}
 		}
+	}
+}
+
+// quit ends the program: it releases the wait command, so no goroutine is
+// left blocked on the client's signal, and then quits.
+func (m Model) quit() tea.Cmd {
+	return func() tea.Msg {
+		m.done.release()
+		return tea.QuitMsg{}
 	}
 }
 

@@ -337,8 +337,9 @@ func sameStrings(a, b []string) bool {
 	return true
 }
 
-// sameQueue compares two inbox queues. Submission payloads are compared by
-// their presence, since a queue item's own fields are what the screen shows.
+// sameQueue compares two inbox queues. A submission is compared by its identity
+// and title, which are what the screen reads from it; its raw payload varies by
+// intake and is not compared.
 func sameQueue(a, b []contract.InboxItem) bool {
 	if len(a) != len(b) {
 		return false
@@ -350,8 +351,12 @@ func sameQueue(a, b []contract.InboxItem) bool {
 		if (a[i].Submission == nil) != (b[i].Submission == nil) {
 			return false
 		}
-		// Submission carries a raw payload whose shape varies by intake; two
-		// items differing only there are the same item for the fleet screen.
+		if a[i].Submission != nil {
+			if a[i].Submission.ID != b[i].Submission.ID ||
+				a[i].Submission.Title != b[i].Submission.Title {
+				return false
+			}
+		}
 	}
 	return true
 }

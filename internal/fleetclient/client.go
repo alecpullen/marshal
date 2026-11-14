@@ -572,30 +572,42 @@ func (c *Client) readSnapshot(ctx context.Context) (snapshot, error) {
 
 // readOverflow reads everything the connect reads, keeping what it can: a
 // failed budgets read leaves Budgets nil, and the others keep their previous
-// value.
-func (c *Client) readOverflow(ctx context.Context) snapshot {
+// value. The second answer reports whether one of the reads was rejected, so
+// the caller can stop the client.
+func (c *Client) readOverflow(ctx context.Context) (snapshot, bool) {
 	var snap snapshot
+	rejected := false
 
 	if err := c.read(ctx, "/api/agents", &snap.agents); err == nil {
 		snap.agentsOK = true
+	} else if unauthorized(err) {
+		rejected = true
 	}
 	if err := c.read(ctx, "/api/inbox", &snap.inbox); err == nil {
 		snap.inboxOK = true
+	} else if unauthorized(err) {
+		rejected = true
 	}
 	if err := c.read(ctx, "/api/projects", &snap.projects); err == nil {
 		snap.projectsOK = true
+	} else if unauthorized(err) {
+		rejected = true
 	}
 	var budgets contract.BudgetReport
 	if err := c.read(ctx, "/api/budgets", &budgets); err == nil {
 		snap.budgets = &budgets
+	} else if unauthorized(err) {
+		rejected = true
 	}
 	if c.transport.Local {
 		var daemon contract.DaemonInfo
 		if err := c.read(ctx, "/api/daemon", &daemon); err == nil {
 			snap.daemon, snap.daemonOK = &daemon, true
+		} else if unauthorized(err) {
+			rejected = true
 		}
 	}
-	return snap
+	return snap, rejected
 }
 
 // install puts a read snapshot into the state.
@@ -715,10 +727,14 @@ func (c *Client) setDaemon(info *contract.DaemonInfo) bool {
 }
 
 // refetchAgents replaces every row with the snapshot's, which wins over
-// anything a delta set. A failed refetch leaves the rows alone.
+// anything a delta set. A failed refetch leaves the rows alone; a rejected
+// token stops the client.
 func (c *Client) refetchAgents(ctx context.Context) {
 	var rows []contract.AgentStatus
 	if err := c.read(ctx, "/api/agents", &rows); err != nil {
+		if unauthorized(err) {
+			c.reject()
+		}
 		return
 	}
 	c.mu.Lock()
@@ -727,10 +743,14 @@ func (c *Client) refetchAgents(ctx context.Context) {
 	c.fire()
 }
 
-// refetchBudgets replaces the report. A failed refetch leaves it as it was.
+// refetchBudgets replaces the report. A failed refetch leaves it as it was; a
+// rejected token stops the client.
 func (c *Client) refetchBudgets(ctx context.Context) {
 	var report contract.BudgetReport
 	if err := c.read(ctx, "/api/budgets", &report); err != nil {
+		if unauthorized(err) {
+			c.reject()
+		}
 		return
 	}
 	c.mu.Lock()
@@ -740,9 +760,14 @@ func (c *Client) refetchBudgets(ctx context.Context) {
 }
 
 // refetchEverything rereads everything the connect read, after a
-// replay_overflow, and bumps the epoch.
+// replay_overflow, and bumps the epoch. A rejected token stops the client
+// instead: nothing is installed and the epoch does not move.
 func (c *Client) refetchEverything(ctx context.Context) {
-	snap := c.readOverflow(ctx)
+	snap, rejected := c.readOverflow(ctx)
+	if rejected {
+		c.reject()
+		return
+	}
 	c.install(snap)
 	c.mu.Lock()
 	c.state.Epoch++
@@ -762,6 +787,26 @@ func copyState(s acpclient.FleetState) acpclient.FleetState {
 			if a := out.Agents[i].Access; a != nil {
 				access := *a
 				out.Agents[i].Access = &access
+			}
+			if p := out.Agents[i].Pending; p != nil {
+				pending := *p
+				if p.Params != nil {
+					pending.Params = make(json.RawMessage, len(p.Params))
+					copy(pending.Params, p.Params)
+				}
+				out.Agents[i].Pending = &pending
+			}
+			if w := out.Agents[i].Workspace; w != nil {
+				workspace := *w
+				out.Agents[i].Workspace = &workspace
+			}
+			if g := out.Agents[i].GateOverride; g != nil {
+				override := *g
+				out.Agents[i].GateOverride = &override
+			}
+			if t := out.Agents[i].PushedAt; t != nil {
+				pushed := *t
+				out.Agents[i].PushedAt = &pushed
 			}
 		}
 	}
@@ -823,13 +868,20 @@ func copyStrings(v []string) []string {
 	return out
 }
 
-// copyQueue copies the inbox queue, keeping a nil slice nil.
+// copyQueue copies the inbox queue, keeping a nil slice nil. Each item's
+// submission is its own copy.
 func copyQueue(v []contract.InboxItem) []contract.InboxItem {
 	if v == nil {
 		return nil
 	}
 	out := make([]contract.InboxItem, len(v))
 	copy(out, v)
+	for i := range out {
+		if s := out[i].Submission; s != nil {
+			submission := *s
+			out[i].Submission = &submission
+		}
+	}
 	return out
 }
 

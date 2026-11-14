@@ -182,6 +182,9 @@ type fakeBridge struct {
 	// unauthorized makes every request answer 401, as the bridge does when a
 	// token is rejected.
 	unauthorized bool
+	// rejectPaths makes only those paths answer 401, so a single read can meet
+	// the rejection while the stream stays up.
+	rejectPaths map[string]bool
 	// streams is every stream request's Last-Event-ID, in order, and at is
 	// when each arrived.
 	streams []string
@@ -198,15 +201,16 @@ func newFakeBridge(t *testing.T) *fakeBridge {
 	t.Helper()
 	budgets, daemon := fixtureBudgets(), fixtureDaemon()
 	b := &fakeBridge{
-		t:        t,
-		agents:   fixtureAgents(),
-		inbox:    fixtureInbox(),
-		projects: fixtureProjects(),
-		budgets:  &budgets,
-		daemon:   &daemon,
-		reads:    make(map[string]int),
-		events:   make(chan frameWrite),
-		drop:     make(chan struct{}),
+		t:           t,
+		agents:      fixtureAgents(),
+		inbox:       fixtureInbox(),
+		projects:    fixtureProjects(),
+		budgets:     &budgets,
+		daemon:      &daemon,
+		reads:       make(map[string]int),
+		rejectPaths: make(map[string]bool),
+		events:      make(chan frameWrite),
+		drop:        make(chan struct{}),
 	}
 
 	mux := http.NewServeMux()
@@ -222,7 +226,7 @@ func newFakeBridge(t *testing.T) *fakeBridge {
 	b.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b.record(r)
 		b.mu.Lock()
-		rejected := b.unauthorized
+		rejected := b.unauthorized || b.rejectPaths[r.URL.Path]
 		b.mu.Unlock()
 		if rejected {
 			http.Error(w, `{"error":"token rejected"}`, http.StatusUnauthorized)
@@ -381,6 +385,14 @@ func (b *fakeBridge) rejectToken() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.unauthorized = true
+}
+
+// rejectPath makes one path answer 401, so a single read can meet the rejection
+// while the stream and the other reads carry on.
+func (b *fakeBridge) rejectPath(path string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.rejectPaths[path] = true
 }
 
 // streamRequests is every stream request's Last-Event-ID, in order, and when
@@ -734,6 +746,35 @@ func TestAGroupChangeRefetchesTheAgents(t *testing.T) {
 	})
 }
 
+// TestAnInboxDeltaChangingOnlyATitleFiresAChange checks the queue's submissions
+// are compared by what the screen reads: a submission whose title moved is a
+// change, even when its id and the item's At are the same.
+func TestAnInboxDeltaChangingOnlyATitleFiresAChange(t *testing.T) {
+	b := newFakeBridge(t)
+	// The connect reads a submission that has a title, so the delta can move
+	// only that.
+	queued := fixtureInbox()
+	queued.Queue[1].Submission = &contract.PendingSubmission{ID: "sub-1", Title: "the old title"}
+	b.setInbox(queued)
+
+	c := b.startClient(t, false)
+	waitConnected(t, c)
+	drainChanged(t, c)
+
+	renamed := fixtureInbox()
+	renamed.Queue[1].Submission = &contract.PendingSubmission{ID: "sub-1", Title: "the new title"}
+	b.delta(`{"kind":"inbox","inbox":` + mustJSON(t, renamed) + `}`)
+
+	select {
+	case <-c.Changed():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the title change fired no Changed signal")
+	}
+	if got := c.State().Inbox.Queue[1].Submission; got == nil || got.Title != "the new title" {
+		t.Errorf("the queue's submission = %+v, want the delta's title", got)
+	}
+}
+
 func TestKindsOutsideTheLoopChangeNothing(t *testing.T) {
 	b := newFakeBridge(t)
 	c := b.startClient(t, false)
@@ -864,6 +905,25 @@ func TestStateIsACopy(t *testing.T) {
 	first.Daemon.Projects[0] = "mutated"
 	first.Daemon.Pinned[0] = "mutated"
 	first.Daemon.Children[0].Sessions[0].ID = "mutated"
+
+	if first.Agents[0].Workspace == nil || first.Agents[0].GateOverride == nil || first.Agents[0].PushedAt == nil {
+		t.Fatal("the first row's fixture is missing a pointed-to value; it needs Workspace, GateOverride and PushedAt")
+	}
+	first.Agents[0].Workspace.Name = "mutated"
+	first.Agents[0].GateOverride.Reason = "mutated"
+	*first.Agents[0].PushedAt = time.Time{}
+
+	if first.Agents[2].Pending == nil || len(first.Agents[2].Pending.Params) == 0 {
+		t.Fatal("the third row's fixture is missing a pending request with params; the test needs one")
+	}
+	first.Agents[2].Pending.ID = "mutated"
+	first.Agents[2].Pending.Params[0] = 'x'
+
+	if len(first.Inbox.Queue) < 2 || first.Inbox.Queue[1].Submission == nil {
+		t.Fatal("the inbox fixture is missing a queue item with a submission; the test needs one")
+	}
+	first.Inbox.Queue[1].Submission.ID = "mutated"
+	first.Inbox.Queue[1].Submission.Title = "mutated"
 
 	second := c.State()
 	if !reflect.DeepEqual(second.Agents, fixtureAgents()) {
@@ -1222,6 +1282,92 @@ func TestA401StopsEverything(t *testing.T) {
 		waitFor(t, "the rejection", func() bool {
 			return c.State().Conn == acpclient.FleetRejected
 		})
+		assertSettled(t, b, c)
+	})
+}
+
+// TestA401OnARefetchStopsTheClient checks a delta-triggered refetch that meets a
+// rejected token stops the client, exactly as the connect's reads and the
+// daemon's reread do.
+func TestA401OnARefetchStopsTheClient(t *testing.T) {
+	// assertSettled is TestA401StopsEverything's shape: the client's goroutine
+	// returns, the bridge is asked nothing more, and the state names the
+	// rejection.
+	assertSettled := func(t *testing.T, b *fakeBridge, c *Client) {
+		t.Helper()
+		select {
+		case <-c.done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the client's goroutine did not return after the 401")
+		}
+		settled := b.requestCount()
+		time.Sleep(50 * time.Millisecond)
+		if got := b.requestCount(); got != settled {
+			t.Errorf("%d requests after the 401, want none", got-settled)
+		}
+		if got, want := c.State().ConnErr, "token rejected for test"; got != want {
+			t.Errorf("ConnErr = %q, want %q", got, want)
+		}
+		if got := c.State().Conn; got != acpclient.FleetRejected {
+			t.Errorf("Conn = %v, want FleetRejected", got)
+		}
+	}
+
+	t.Run("the agents refetch", func(t *testing.T) {
+		b := newFakeBridge(t)
+		// No daemon to reread: the only read after the connect is the refetch.
+		c := b.startNamedClient(t, "test", false,
+			WithBackoff(2*time.Millisecond, 8*time.Millisecond))
+		waitConnected(t, c)
+
+		// Only the refetch's read meets the rejection; the stream stays up.
+		b.rejectPath("/api/agents")
+		b.delta(`{"kind":"pending","sessionId":"a1","pendingKind":"approval"}`)
+
+		waitFor(t, "the rejection", func() bool {
+			return c.State().Conn == acpclient.FleetRejected
+		})
+		assertSettled(t, b, c)
+	})
+
+	t.Run("the budgets refetch", func(t *testing.T) {
+		b := newFakeBridge(t)
+		c := b.startNamedClient(t, "test", false,
+			WithBackoff(2*time.Millisecond, 8*time.Millisecond))
+		waitConnected(t, c)
+
+		b.rejectPath("/api/budgets")
+		b.delta(`{"kind":"budget","scope":"daily","spentUsd":9.5,"capUsd":20,"action":"warn"}`)
+
+		waitFor(t, "the rejection", func() bool {
+			return c.State().Conn == acpclient.FleetRejected
+		})
+		assertSettled(t, b, c)
+	})
+
+	t.Run("the overflow's reread", func(t *testing.T) {
+		b := newFakeBridge(t)
+		// The daemon's reread is parked out of the way, so the only reads after
+		// the connect are the overflow's.
+		c := b.startNamedClient(t, "test", true,
+			WithBackoff(2*time.Millisecond, 8*time.Millisecond),
+			WithDaemonEvery(time.Hour))
+		waitConnected(t, c)
+		if got := c.State().Epoch; got != 1 {
+			t.Fatalf("Epoch = %d, want 1 after the connect", got)
+		}
+
+		// One of the overflow's five reads is refused.
+		b.rejectPath("/api/inbox")
+		b.delta(`{"type":"replay_overflow"}`)
+
+		waitFor(t, "the rejection", func() bool {
+			return c.State().Conn == acpclient.FleetRejected
+		})
+		// A rejected overflow installs nothing, so the epoch does not move.
+		if got := c.State().Epoch; got != 1 {
+			t.Errorf("Epoch = %d, want 1: a rejected overflow installs nothing", got)
+		}
 		assertSettled(t, b, c)
 	})
 }

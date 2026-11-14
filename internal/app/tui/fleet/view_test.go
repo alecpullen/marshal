@@ -278,6 +278,22 @@ func TestTheFleetScreenMatchesItsGoldens(t *testing.T) {
 	}
 }
 
+// TestTheScreenNamesTheBridgeBeforeTheFirstRead is the regression for a model
+// that did not seed itself from the client: until the first read landed the
+// server's name was missing, so every panel said "Connecting to …" with
+// nothing after the "to".
+func TestTheScreenNamesTheBridgeBeforeTheFirstRead(t *testing.T) {
+	f := newFakeFleet()
+	f.state = acpclient.FleetState{Server: "local", Conn: acpclient.FleetConnecting}
+
+	m := New(f, fixedClock())
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	got := next.(Model).View().Content
+	if !strings.Contains(got, "Connecting to local…") {
+		t.Fatalf("the screen does not name the bridge before the first read:\n%s", got)
+	}
+}
+
 // TestColourAddsNoText renders each frame with the 256-colour theme and checks
 // that stripping its ANSI gives the golden byte for byte: colour changes how
 // the screen looks, never what it says.

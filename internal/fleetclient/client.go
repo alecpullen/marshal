@@ -5,10 +5,12 @@ package fleetclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -75,6 +77,10 @@ type Client struct {
 	started     bool
 	closed      bool
 	cancel      context.CancelFunc
+
+	// lastEventID is the position a reconnect resumes from: the id of the last
+	// frame the client applied. Only the run goroutine reads and writes it.
+	lastEventID string
 }
 
 // Option configures a Client.
@@ -170,8 +176,8 @@ func (c *Client) Start(ctx context.Context) {
 	go c.run(runCtx)
 }
 
-// Close ends the stream and the client's goroutine. Calling it twice is a
-// no-op.
+// Close ends the stream, every timer and the client's goroutine, and waits for
+// the goroutine to return. Calling it twice is a no-op.
 func (c *Client) Close() error {
 	c.mu.Lock()
 	if c.closed {
@@ -179,11 +185,14 @@ func (c *Client) Close() error {
 		return nil
 	}
 	c.closed = true
-	cancel := c.cancel
+	cancel, started := c.cancel, c.started
 	c.mu.Unlock()
 
 	if cancel != nil {
 		cancel()
+	}
+	if started {
+		<-c.done
 	}
 	return nil
 }
@@ -219,15 +228,72 @@ func (c *Client) httpClient() *http.Client {
 	return http.DefaultClient
 }
 
-// run opens the stream, reads the fleet, applies what arrived while it read,
-// and then keeps applying the stream's deltas until it ends or ctx is done.
+// errStreamEnded is what ends an attempt when the stream closes without an
+// error.
+var errStreamEnded = errors.New("the fleet stream ended")
+
+// run connects, and reconnects when the stream ends, until ctx is done or
+// Close is called. A rejected token ends it: a 401 is never retried.
 func (c *Client) run(ctx context.Context) {
 	defer close(c.done)
 
+	// failures counts the attempts that have failed since the backoff last
+	// reset; a stream that stayed up for resetAfter resets it.
+	failures := 0
+	// failingSince is when the current run of failures began. Every attempt
+	// that connects restarts it; once the failures have lasted downAfter, the
+	// state goes down.
+	var failingSince time.Time
+
+	for {
+		upAt, err := c.attempt(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		if unauthorized(err) {
+			c.reject()
+			return
+		}
+		if err == nil {
+			err = errStreamEnded
+		}
+
+		// A stream that stayed up long enough earns a fresh backoff; any
+		// connect at all restarts the clock the down state is measured from.
+		if !upAt.IsZero() {
+			failingSince = time.Time{}
+			if c.now().Sub(upAt) >= c.resetAfter {
+				failures = 0
+			}
+		}
+		if failingSince.IsZero() {
+			failingSince = c.now()
+		}
+		failures++
+
+		down := c.now().Sub(failingSince) >= c.downAfter
+		c.fail(down, err)
+
+		wait := c.backoffWait(failures)
+		if down {
+			// Down keeps retrying for as long as the failures last: every
+			// attempt waits the maximum.
+			wait = c.backoffMax
+		}
+		if waitCtx(ctx, wait) != nil {
+			return
+		}
+	}
+}
+
+// attempt is one connect: it opens the stream, reads the fleet, applies what
+// arrived while it read, and consumes the stream until it ends. It reports
+// when the stream came up (zero when it never did) and why the attempt ended;
+// a nil error means the stream closed cleanly.
+func (c *Client) attempt(ctx context.Context) (time.Time, error) {
 	resp, err := c.openStream(ctx)
 	if err != nil {
-		c.fail(ctx, err)
-		return
+		return time.Time{}, err
 	}
 	defer resp.Body.Close()
 
@@ -236,8 +302,7 @@ func (c *Client) run(ctx context.Context) {
 
 	snap, err := c.readSnapshot(ctx)
 	if err != nil {
-		c.fail(ctx, err)
-		return
+		return time.Time{}, err
 	}
 	c.install(snap)
 
@@ -246,32 +311,87 @@ func (c *Client) run(ctx context.Context) {
 	// happened since it was taken.
 	frames, _, _ := src.take()
 	for _, f := range frames {
+		c.observe(f)
 		c.applyFrame(ctx, f.Data)
 	}
 
 	c.connected()
-	c.consume(ctx, src)
+	upAt := c.now()
+
+	// The local daemon's info is kept current while the stream is up.
+	stopDaemon := c.watchDaemon(ctx)
+	err = c.consume(ctx, src)
+	stopDaemon()
+
+	return upAt, err
 }
 
-// consume applies the stream's frames until it ends or ctx is done.
-func (c *Client) consume(ctx context.Context, src *frameSource) {
+// consume applies the stream's frames until it ends. It returns why the stream
+// ended: nil means it ended cleanly, or that ctx ended the attempt.
+func (c *Client) consume(ctx context.Context, src *frameSource) error {
 	for {
 		frames, done, err := src.take()
 		for _, f := range frames {
+			c.observe(f)
 			c.applyFrame(ctx, f.Data)
 		}
 		if done {
-			if ctx.Err() == nil {
-				if err == nil {
-					err = fmt.Errorf("the fleet stream ended")
-				}
-				c.fail(ctx, err)
+			if ctx.Err() != nil {
+				return nil
 			}
-			return
+			if err != nil {
+				return err
+			}
+			return errStreamEnded
 		}
 		if err := src.wait(ctx); err != nil {
-			return
+			return nil
 		}
+	}
+}
+
+// observe records the position a reconnect resumes from: a frame carries its
+// own id, and the overflow nudge carries none.
+func (c *Client) observe(f eventFrame) {
+	if f.ID != "" {
+		c.lastEventID = f.ID
+	}
+}
+
+// backoffWait is the wait after failures consecutive failures: backoffFirst,
+// then doubling, capped at backoffMax.
+func (c *Client) backoffWait(failures int) time.Duration {
+	wait := c.backoffFirst
+	for i := 1; i < failures; i++ {
+		if wait >= c.backoffMax {
+			break
+		}
+		wait *= 2
+	}
+	if wait > c.backoffMax {
+		wait = c.backoffMax
+	}
+	return wait
+}
+
+// waitCtx waits for d, and returns early when ctx ends. A zero or negative
+// wait is no wait at all.
+func waitCtx(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			return nil
+		}
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 
@@ -291,6 +411,24 @@ func (c *Client) applyFrame(ctx context.Context, payload []byte) {
 	}
 }
 
+// statusError is a non-200 answer. It carries the status, so the client can
+// tell a rejected token from a transient failure.
+type statusError struct {
+	status int
+	msg    string
+}
+
+// Error is the answer's message.
+func (e *statusError) Error() string { return e.msg }
+
+// unauthorized reports whether err is the bridge's 401. The bridge answers it
+// only when a token is rejected, so a 401 anywhere means the same thing: the
+// token is wrong, and nothing is retried.
+func unauthorized(err error) bool {
+	var rejected *statusError
+	return errors.As(err, &rejected) && rejected.status == http.StatusUnauthorized
+}
+
 // openStream opens GET /api/events?stream=fleet. Only a 200 answer is a
 // connected stream.
 func (c *Client) openStream(ctx context.Context) (*http.Response, error) {
@@ -299,6 +437,11 @@ func (c *Client) openStream(ctx context.Context) (*http.Response, error) {
 		return nil, fmt.Errorf("fleet stream: %w", err)
 	}
 	req.Header.Set("Accept", "text/event-stream")
+	if c.lastEventID != "" {
+		// A reconnect resumes from the last frame applied: the bridge replays
+		// what happened after it.
+		req.Header.Set("Last-Event-ID", c.lastEventID)
+	}
 	if err := c.authorize(ctx, req); err != nil {
 		return nil, err
 	}
@@ -309,7 +452,10 @@ func (c *Client) openStream(ctx context.Context) (*http.Response, error) {
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
 		detail := responseDetail(resp)
-		return nil, fmt.Errorf("fleet stream: %s: %s", resp.Status, detail)
+		return nil, &statusError{
+			status: resp.StatusCode,
+			msg:    fmt.Sprintf("fleet stream: %s: %s", resp.Status, detail),
+		}
 	}
 	return resp, nil
 }
@@ -345,7 +491,10 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("fleet read %s: %s: %s", path, resp.Status, responseDetail(resp))
+		return &statusError{
+			status: resp.StatusCode,
+			msg:    fmt.Sprintf("fleet read %s: %s: %s", path, resp.Status, responseDetail(resp)),
+		}
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		return fmt.Errorf("fleet read %s: %w", path, err)
@@ -405,6 +554,9 @@ func (c *Client) readSnapshot(ctx context.Context) (snapshot, error) {
 	var budgets contract.BudgetReport
 	if err := c.read(ctx, "/api/budgets", &budgets); err == nil {
 		snap.budgets = &budgets
+	} else if unauthorized(err) {
+		// A rejected token is not a missing budget report: it stops the client.
+		return snapshot{}, err
 	}
 
 	if c.transport.Local {
@@ -476,17 +628,90 @@ func (c *Client) connected() {
 	c.fire()
 }
 
-// fail records an unexpected end. A cancelled context is not a failure: Close
-// and the caller's own cancellation end the client quietly.
-func (c *Client) fail(ctx context.Context, err error) {
-	if ctx.Err() != nil {
-		return
-	}
+// fail records why an attempt ended: the state is reconnecting while the
+// failures have lasted less than downAfter, and down once they have lasted
+// longer. The retries never stop on their own.
+func (c *Client) fail(down bool, err error) {
 	c.mu.Lock()
-	c.state.Conn = acpclient.FleetDown
+	if down {
+		c.state.Conn = acpclient.FleetDown
+	} else {
+		c.state.Conn = acpclient.FleetReconnecting
+	}
 	c.state.ConnErr = err.Error()
 	c.mu.Unlock()
 	c.fire()
+}
+
+// reject records the bridge's 401 and stops everything: the token is wrong, so
+// the stream, the retries and the timers all end, and no further request is
+// made.
+func (c *Client) reject() {
+	c.mu.Lock()
+	c.state.Conn = acpclient.FleetRejected
+	c.state.ConnErr = "token rejected for " + c.transport.Server
+	cancel := c.cancel
+	c.mu.Unlock()
+	c.fire()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// watchDaemon starts the local daemon's reread while the stream is up. The
+// returned function stops it and waits for it to finish.
+func (c *Client) watchDaemon(ctx context.Context) func() {
+	if !c.transport.Local || c.daemonEvery <= 0 {
+		return func() {}
+	}
+	watchCtx, cancel := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		c.pollDaemon(watchCtx)
+	}()
+	return func() {
+		cancel()
+		wg.Wait()
+	}
+}
+
+// pollDaemon rereads GET /api/daemon on the interval. A failed reread leaves
+// the info as it was and tries again on the next tick; a 401 stops the client.
+func (c *Client) pollDaemon(ctx context.Context) {
+	ticker := time.NewTicker(c.daemonEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		var info contract.DaemonInfo
+		if err := c.read(ctx, "/api/daemon", &info); err != nil {
+			if unauthorized(err) {
+				c.reject()
+				return
+			}
+			continue
+		}
+		if c.setDaemon(&info) {
+			c.fire()
+		}
+	}
+}
+
+// setDaemon replaces the daemon's info when the answer differs from the one
+// held, and reports whether it did.
+func (c *Client) setDaemon(info *contract.DaemonInfo) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if reflect.DeepEqual(c.state.Daemon, info) {
+		return false
+	}
+	c.state.Daemon = info
+	return true
 }
 
 // refetchAgents replaces every row with the snapshot's, which wins over

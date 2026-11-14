@@ -175,7 +175,22 @@ type fakeBridge struct {
 	methods    []string
 	agentsGate chan struct{}
 
+	// refuse makes the events handler answer with an error instead of a
+	// stream; refuseStatus is that answer's status.
+	refuse       bool
+	refuseStatus int
+	// unauthorized makes every request answer 401, as the bridge does when a
+	// token is rejected.
+	unauthorized bool
+	// streams is every stream request's Last-Event-ID, in order, and at is
+	// when each arrived.
+	streams []string
+	at      []time.Time
+
 	events chan frameWrite
+	// drop ends the stream a handler is serving: the handler takes it and
+	// returns.
+	drop chan struct{}
 }
 
 // newFakeBridge is a bridge answering the fixtures.
@@ -191,6 +206,7 @@ func newFakeBridge(t *testing.T) *fakeBridge {
 		daemon:   &daemon,
 		reads:    make(map[string]int),
 		events:   make(chan frameWrite),
+		drop:     make(chan struct{}),
 	}
 
 	mux := http.NewServeMux()
@@ -201,7 +217,19 @@ func newFakeBridge(t *testing.T) *fakeBridge {
 	mux.HandleFunc("/api/daemon", b.serveDaemon)
 	mux.HandleFunc("/api/events", b.serveEvents)
 
-	b.srv = httptest.NewServer(mux)
+	// Every request is recorded once, here, and a rejected token answers 401
+	// before any handler runs.
+	b.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b.record(r)
+		b.mu.Lock()
+		rejected := b.unauthorized
+		b.mu.Unlock()
+		if rejected {
+			http.Error(w, `{"error":"token rejected"}`, http.StatusUnauthorized)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	}))
 	t.Cleanup(b.srv.Close)
 	return b
 }
@@ -226,8 +254,6 @@ func (b *fakeBridge) holdAgents() chan struct{} {
 }
 
 func (b *fakeBridge) serveAgents(w http.ResponseWriter, r *http.Request) {
-	b.record(r)
-
 	b.mu.Lock()
 	gate := b.agentsGate
 	b.agentsGate = nil
@@ -247,7 +273,6 @@ func (b *fakeBridge) serveAgents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (b *fakeBridge) serveInbox(w http.ResponseWriter, r *http.Request) {
-	b.record(r)
 	b.mu.Lock()
 	inbox := b.inbox
 	b.mu.Unlock()
@@ -255,7 +280,6 @@ func (b *fakeBridge) serveInbox(w http.ResponseWriter, r *http.Request) {
 }
 
 func (b *fakeBridge) serveProjects(w http.ResponseWriter, r *http.Request) {
-	b.record(r)
 	b.mu.Lock()
 	projects := b.projects
 	b.mu.Unlock()
@@ -263,7 +287,6 @@ func (b *fakeBridge) serveProjects(w http.ResponseWriter, r *http.Request) {
 }
 
 func (b *fakeBridge) serveBudgets(w http.ResponseWriter, r *http.Request) {
-	b.record(r)
 	b.mu.Lock()
 	budgets := b.budgets
 	b.mu.Unlock()
@@ -275,7 +298,6 @@ func (b *fakeBridge) serveBudgets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (b *fakeBridge) serveDaemon(w http.ResponseWriter, r *http.Request) {
-	b.record(r)
 	b.mu.Lock()
 	daemon := b.daemon
 	b.mu.Unlock()
@@ -288,11 +310,25 @@ func (b *fakeBridge) serveDaemon(w http.ResponseWriter, r *http.Request) {
 
 // serveEvents is the fleet stream: the test's frames, one after another.
 func (b *fakeBridge) serveEvents(w http.ResponseWriter, r *http.Request) {
-	b.record(r)
 	if r.URL.Query().Get("stream") != "fleet" {
 		http.Error(w, "bridge: stream must be fleet", http.StatusBadRequest)
 		return
 	}
+
+	b.mu.Lock()
+	b.streams = append(b.streams, r.Header.Get("Last-Event-ID"))
+	b.at = append(b.at, time.Now())
+	refuse, status := b.refuse, b.refuseStatus
+	b.mu.Unlock()
+
+	if refuse {
+		if status == 0 {
+			status = http.StatusServiceUnavailable
+		}
+		http.Error(w, "bridge: refusing the stream", status)
+		return
+	}
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "bridge: streaming unsupported", http.StatusInternalServerError)
@@ -307,6 +343,9 @@ func (b *fakeBridge) serveEvents(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-b.drop:
+			// The test asked for the stream to end.
+			return
 		case frame := <-b.events:
 			if _, err := io.WriteString(w, frame.raw); err != nil {
 				return
@@ -315,6 +354,48 @@ func (b *fakeBridge) serveEvents(w http.ResponseWriter, r *http.Request) {
 			close(frame.ack)
 		}
 	}
+}
+
+// dropStream ends the stream the bridge is serving, and returns once the
+// handler has taken the drop.
+func (b *fakeBridge) dropStream() {
+	b.t.Helper()
+	select {
+	case b.drop <- struct{}{}:
+	case <-time.After(10 * time.Second):
+		b.t.Fatal("the bridge's events handler never took the drop")
+	}
+}
+
+// refuseStream makes the events handler answer with an error instead of a
+// stream; status 0 is 503.
+func (b *fakeBridge) refuseStream(refuse bool, status int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.refuse, b.refuseStatus = refuse, status
+}
+
+// rejectToken makes every request answer 401, as the bridge does when a token
+// is rejected.
+func (b *fakeBridge) rejectToken() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.unauthorized = true
+}
+
+// streamRequests is every stream request's Last-Event-ID, in order, and when
+// each arrived.
+func (b *fakeBridge) streamRequests() ([]string, []time.Time) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string(nil), b.streams...), append([]time.Time(nil), b.at...)
+}
+
+// requestCount is how many requests the bridge has taken.
+func (b *fakeBridge) requestCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.order)
 }
 
 // feed writes one raw frame and waits until the bridge has written it.
@@ -386,8 +467,15 @@ func (b *fakeBridge) requests() ([]string, []string) {
 // startClient connects a client to the bridge, closing it after the test.
 func (b *fakeBridge) startClient(t *testing.T, local bool, opts ...Option) *Client {
 	t.Helper()
+	return b.startNamedClient(t, "fake", local, opts...)
+}
+
+// startNamedClient connects a client named server to the bridge, closing it
+// after the test.
+func (b *fakeBridge) startNamedClient(t *testing.T, server string, local bool, opts ...Option) *Client {
+	t.Helper()
 	c := New(Transport{
-		Server:  "fake",
+		Server:  server,
 		BaseURL: b.srv.URL,
 		HTTP:    b.srv.Client(),
 		Local:   local,
@@ -911,5 +999,297 @@ func TestSocketIsTheLocalDaemonsTransport(t *testing.T) {
 	}
 	if fmt.Sprint(tr.HTTP.Timeout) != "0s" {
 		t.Errorf("HTTP.Timeout = %v, want none: the stream is long-lived", tr.HTTP.Timeout)
+	}
+}
+
+// streamGaps is the wait between every pair of stream requests, in arrival
+// order.
+func streamGaps(times []time.Time) []time.Duration {
+	gaps := make([]time.Duration, 0, len(times)-1)
+	for i := 1; i < len(times); i++ {
+		gaps = append(gaps, times[i].Sub(times[i-1]))
+	}
+	return gaps
+}
+
+// TestADroppedStreamReconnectsWithTheLastEventID checks a dropped stream comes
+// back, resumed from the last frame the client applied.
+func TestADroppedStreamReconnectsWithTheLastEventID(t *testing.T) {
+	b := newFakeBridge(t)
+	// A wait long enough that the reconnecting state is observable.
+	c := b.startClient(t, false, WithBackoff(30*time.Millisecond, 100*time.Millisecond))
+	waitConnected(t, c)
+
+	b.feed(`id: 7
+data: {"kind":"activity","sessionId":"a1","activity":"before the drop"}
+
+`)
+	waitFor(t, "the identified frame", func() bool {
+		for _, a := range c.State().Agents {
+			if a.ID == "a1" {
+				return a.Activity == "before the drop"
+			}
+		}
+		return false
+	})
+
+	b.dropStream()
+
+	// The drop shows as reconnecting, with why it ended, before the retry.
+	waitFor(t, "the reconnecting state", func() bool {
+		return c.State().Conn == acpclient.FleetReconnecting
+	})
+	if got := c.State().ConnErr; got == "" {
+		t.Error("ConnErr is empty while reconnecting, want why the stream ended")
+	}
+
+	waitFor(t, "the reconnect", func() bool {
+		s := c.State()
+		return s.Conn == acpclient.FleetConnected && s.Epoch == 2
+	})
+
+	ids, _ := b.streamRequests()
+	if len(ids) < 2 {
+		t.Fatalf("stream requests = %v, want the connect's and the reconnect's", ids)
+	}
+	if ids[0] != "" {
+		t.Errorf("the first stream's Last-Event-ID = %q, want none", ids[0])
+	}
+	if ids[1] != "7" {
+		t.Errorf("the reconnect's Last-Event-ID = %q, want 7", ids[1])
+	}
+	if got := c.State().Epoch; got != 2 {
+		t.Errorf("Epoch = %d, want 2 after the reconnect", got)
+	}
+}
+
+// TestTheBackoffDoublesToItsMaximum checks the wait after each failed attempt:
+// the first wait, doubling each failure, capped at the maximum.
+func TestTheBackoffDoublesToItsMaximum(t *testing.T) {
+	b := newFakeBridge(t)
+	b.refuseStream(true, http.StatusServiceUnavailable)
+	// Waits of 5ms, 10ms, 20ms, then 20ms: small enough to keep the test quick,
+	// large enough that the doubling is measurable.
+	b.startClient(t, false, WithBackoff(5*time.Millisecond, 20*time.Millisecond))
+
+	// The first attempt plus four failed retries.
+	waitFor(t, "four failed retries", func() bool {
+		ids, _ := b.streamRequests()
+		return len(ids) >= 5
+	})
+	_, times := b.streamRequests()
+	gaps := streamGaps(times)
+
+	want := []time.Duration{5 * time.Millisecond, 10 * time.Millisecond, 20 * time.Millisecond, 20 * time.Millisecond}
+	for i, w := range want {
+		if i >= len(gaps) {
+			break
+		}
+		// A timer never fires early; the slack absorbs scheduling delay.
+		if gaps[i] < w*3/4 {
+			t.Errorf("wait %d = %v, want at least %v", i+1, gaps[i], w*3/4)
+		}
+	}
+	// The fourth wait is the maximum, not double the third: the backoff
+	// stopped growing.
+	if len(gaps) > 3 && gaps[3] > gaps[2]+10*time.Millisecond {
+		t.Errorf("wait 4 = %v, want it capped at the maximum like wait 3's %v", gaps[3], gaps[2])
+	}
+}
+
+// TestTheBackoffResetsAfterAMinuteConnected checks a stream that stayed up long
+// enough earns a fresh first wait.
+func TestTheBackoffResetsAfterAMinuteConnected(t *testing.T) {
+	b := newFakeBridge(t)
+	b.refuseStream(true, http.StatusServiceUnavailable)
+	c := b.startClient(t, false,
+		WithBackoff(20*time.Millisecond, 160*time.Millisecond),
+		WithResetAfter(20*time.Millisecond))
+
+	// Three failed attempts grow the wait to its maximum.
+	waitFor(t, "three failed attempts", func() bool {
+		_, times := b.streamRequests()
+		return len(times) >= 4
+	})
+	_, failed := b.streamRequests()
+	gaps := streamGaps(failed)
+	if len(gaps) < 3 || gaps[2] < 20*time.Millisecond*3/4 {
+		t.Fatalf("gaps = %v, want the third wait at the maximum", gaps)
+	}
+
+	// The bridge accepts, and the stream stays up past the reset.
+	b.refuseStream(false, 0)
+	waitConnected(t, c)
+	time.Sleep(60 * time.Millisecond)
+
+	// The stream drops, the bridge refuses again, and the next attempt waits
+	// the first wait rather than the maximum it had grown to.
+	_, up := b.streamRequests()
+	count := len(up)
+	b.refuseStream(true, http.StatusServiceUnavailable)
+	b.dropStream()
+	dropped := time.Now()
+
+	waitFor(t, "the retry after the drop", func() bool {
+		_, times := b.streamRequests()
+		return len(times) > count
+	})
+	_, after := b.streamRequests()
+	wait := after[count].Sub(dropped)
+	if wait >= 60*time.Millisecond {
+		t.Errorf("the retry after the reset waited %v, want the first wait (~20ms), not the maximum", wait)
+	}
+}
+
+// TestTheStateGoesDownAfterAMinuteOfFailures checks the state goes down after
+// downAfter of failures, keeps retrying, and comes back when the bridge does.
+func TestTheStateGoesDownAfterAMinuteOfFailures(t *testing.T) {
+	b := newFakeBridge(t)
+	b.refuseStream(true, http.StatusServiceUnavailable)
+	c := b.startClient(t, false,
+		WithBackoff(2*time.Millisecond, 8*time.Millisecond),
+		WithDownAfter(30*time.Millisecond))
+
+	waitFor(t, "the down state", func() bool {
+		return c.State().Conn == acpclient.FleetDown
+	})
+	if got := c.State().ConnErr; got == "" {
+		t.Error("ConnErr is empty while down, want why the last attempt failed")
+	}
+
+	// Down still retries, at the maximum wait.
+	retries := b.requestCount()
+	waitFor(t, "more retries while down", func() bool {
+		return b.requestCount() > retries
+	})
+
+	b.refuseStream(false, 0)
+	waitFor(t, "the recovery", func() bool {
+		s := c.State()
+		return s.Conn == acpclient.FleetConnected && s.ConnErr == ""
+	})
+}
+
+// TestA401StopsEverything checks a rejected token ends the stream, the retries
+// and the timers, and that nothing is asked of the bridge again.
+func TestA401StopsEverything(t *testing.T) {
+	// assertSettled checks the client asks the bridge nothing more.
+	assertSettled := func(t *testing.T, b *fakeBridge, c *Client) {
+		t.Helper()
+		select {
+		case <-c.done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the client's goroutine did not return after the 401")
+		}
+		settled := b.requestCount()
+		// Several daemon intervals: a surviving timer would have asked by now.
+		time.Sleep(50 * time.Millisecond)
+		if got := b.requestCount(); got != settled {
+			t.Errorf("%d requests after the 401, want none", got-settled)
+		}
+		if got, want := c.State().ConnErr, "token rejected for test"; got != want {
+			t.Errorf("ConnErr = %q, want %q", got, want)
+		}
+		if got := c.State().Conn; got != acpclient.FleetRejected {
+			t.Errorf("Conn = %v, want FleetRejected", got)
+		}
+	}
+
+	t.Run("the stream", func(t *testing.T) {
+		b := newFakeBridge(t)
+		// No daemon to reread, so the 401 can only come from the stream.
+		c := b.startNamedClient(t, "test", false,
+			WithBackoff(2*time.Millisecond, 8*time.Millisecond))
+		waitConnected(t, c)
+
+		b.rejectToken()
+		b.dropStream()
+		waitFor(t, "the rejection", func() bool {
+			return c.State().Conn == acpclient.FleetRejected
+		})
+		assertSettled(t, b, c)
+	})
+
+	t.Run("a read", func(t *testing.T) {
+		b := newFakeBridge(t)
+		// The stream stays up; the local daemon's reread meets the 401.
+		c := b.startNamedClient(t, "test", true,
+			WithBackoff(2*time.Millisecond, 8*time.Millisecond),
+			WithDaemonEvery(10*time.Millisecond))
+		waitConnected(t, c)
+
+		b.rejectToken()
+		waitFor(t, "the rejection", func() bool {
+			return c.State().Conn == acpclient.FleetRejected
+		})
+		assertSettled(t, b, c)
+	})
+}
+
+// TestTheDaemonsSessionsAreReread checks the local daemon's info stays current
+// while the stream is up, and that an unchanged answer fires nothing.
+func TestTheDaemonsSessionsAreReread(t *testing.T) {
+	b := newFakeBridge(t)
+	c := b.startClient(t, true, WithDaemonEvery(10*time.Millisecond))
+	waitConnected(t, c)
+	drainChanged(t, c)
+
+	grown := fixtureDaemon()
+	grown.Children[0].Sessions = append(grown.Children[0].Sessions,
+		contract.DaemonSession{ID: "session-2", Viewers: 1, LastActive: 1763000000002})
+	b.setDaemon(grown)
+
+	waitFor(t, "the daemon reread", func() bool {
+		d := c.State().Daemon
+		return d != nil && len(d.Children) > 0 && len(d.Children[0].Sessions) == 2
+	})
+	drainChanged(t, c)
+
+	// The answer has not changed: several more rereads fire nothing.
+	time.Sleep(40 * time.Millisecond)
+	if n := len(c.Changed()); n != 0 {
+		t.Errorf("buffered Changed signals = %d, want 0: the daemon's answer did not differ", n)
+	}
+}
+
+// TestCloseStopsTheClient checks Close ends the goroutine, the stream and the
+// timers, is safe twice, and that Start after Close does nothing.
+func TestCloseStopsTheClient(t *testing.T) {
+	b := newFakeBridge(t)
+	c := New(Transport{
+		Server:  "fake",
+		BaseURL: b.srv.URL,
+		HTTP:    b.srv.Client(),
+		Local:   true,
+	}, WithDaemonEvery(10*time.Millisecond))
+	c.Start(context.Background())
+	waitConnected(t, c)
+
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// Close waits for the run goroutine: it has returned when Close does.
+	select {
+	case <-c.done:
+	default:
+		t.Fatal("the client's goroutine is still running after Close returned")
+	}
+
+	if err := c.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+
+	// Neither the stream nor the daemon timers ask anything more.
+	count := b.requestCount()
+	time.Sleep(40 * time.Millisecond)
+	if got := b.requestCount(); got != count {
+		t.Fatalf("%d requests after Close, want none", got-count)
+	}
+
+	// Start after Close does nothing.
+	c.Start(context.Background())
+	time.Sleep(20 * time.Millisecond)
+	if got := b.requestCount(); got != count {
+		t.Fatalf("%d requests after Start on a closed client, want none", got-count)
 	}
 }

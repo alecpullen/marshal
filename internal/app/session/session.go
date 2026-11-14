@@ -252,6 +252,7 @@ type State struct {
 	cancel context.CancelFunc
 
 	mu                sync.Mutex
+	todoMu            sync.Mutex    // serializes todo reconciliation and persistence
 	hold              bool          // guarded by mu; see hold.go
 	holdCh            chan struct{} // closed and cleared on release; guarded by mu
 	messages          []Message
@@ -3772,15 +3773,33 @@ func (s *State) Plan() []string {
 }
 
 func (s *State) SetTodos(todos []db.TodoItem) error {
-	s.mu.Lock()
-	s.todos = make([]db.TodoItem, len(todos))
-	copy(s.todos, todos)
-	snapshot := s.todos
-	s.mu.Unlock()
-	if s.persistenceEnabled() {
-		if err := s.db.SaveTodos(s.sessionID, snapshot); err != nil {
-			s.logger.Warn("failed to persist todos", "error", err)
+	return s.UpdateTodos(func(_ []db.TodoItem, _ int) ([]db.TodoItem, error) { return todos, nil })
+}
+
+// UpdateTodos serializes a read/reconcile/write transaction, including its
+// persistence. update receives a copy and the historical ID floor; it must not
+// call SetTodos or UpdateTodos. Events publish after releasing the transaction.
+func (s *State) UpdateTodos(update func([]db.TodoItem, int) ([]db.TodoItem, error)) error {
+	s.todoMu.Lock()
+	err := func() error {
+		defer s.todoMu.Unlock()
+		todos, err := update(s.Todos(), s.TodoIDFloor())
+		if err != nil {
+			return err
 		}
+		snapshot := append([]db.TodoItem{}, todos...)
+		s.mu.Lock()
+		s.todos = snapshot
+		s.mu.Unlock()
+		if s.persistenceEnabled() {
+			if err := s.db.SaveTodos(s.sessionID, snapshot); err != nil {
+				s.logger.Warn("failed to persist todos", "error", err)
+			}
+		}
+		return nil
+	}()
+	if err != nil {
+		return err
 	}
 	s.publishEvent(EventTranscriptChanged, Event{})
 	return nil

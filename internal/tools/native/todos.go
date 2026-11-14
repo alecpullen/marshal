@@ -22,11 +22,6 @@ const (
 	TodoCompleted  = "completed"
 )
 
-type TodoStore interface {
-	SetTodos([]TodoItem) error
-	Todos() []TodoItem
-}
-
 type todoWriteArgs struct {
 	Todos []TodoItem `json:"todos"`
 	// DropUnfinished is the opt-in escape hatch for auto-carry. False
@@ -48,10 +43,11 @@ func (t *toolSet) todoWriteTool() registry.Tool {
 
 func newTodoWriteTool(state *session.State) registry.Tool {
 	tool := registry.Tool{
-		Name:        "todo.write",
-		Description: "Replace the session todo list. Use it for work with 3+ steps or several requirements, and mark each item completed as soon as it is done. Unfinished items you omit are carried over; pass \"drop_unfinished\": true to make the submitted list the whole list.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"todos":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"content":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["content","status"],"additionalProperties":false}},"drop_unfinished":{"type":"boolean","description":"When true, skip auto-carry: the submitted list becomes the whole list and unfinished items omitted from it are dropped. Default false keeps auto-carry."}},"required":["todos"],"additionalProperties":false}`),
-		Risk:        registry.RiskWorkspaceWrite,
+		Name:            "todo.write",
+		Description:     "Replace the session todo list. Use it for work with 3+ steps or several requirements, and mark each item completed as soon as it is done. Unfinished items you omit are carried over; pass \"drop_unfinished\": true to make the submitted list the whole list.",
+		Schema:          json.RawMessage(`{"type":"object","properties":{"todos":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"content":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["content","status"],"additionalProperties":false}},"drop_unfinished":{"type":"boolean","description":"When true, skip auto-carry: the submitted list becomes the whole list and unfinished items omitted from it are dropped. Default false keeps auto-carry."}},"required":["todos"],"additionalProperties":false}`),
+		Risk:            registry.RiskWorkspaceWrite,
+		WorkspaceEffect: registry.WorkspaceEffectSessionOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		args, err := decodeArgs[todoWriteArgs](tool, call.Args)
@@ -75,36 +71,35 @@ func newTodoWriteTool(state *session.State) registry.Tool {
 		if state == nil {
 			return registry.ToolResult{}, fmt.Errorf("todo store not available")
 		}
-		store := TodoStore(state)
-
-		oldTodos := store.Todos()
-		now := todoNow()
 		// Identity and timestamps are the store's, never the model's.
 		for i := range args.Todos {
 			args.Todos[i].StartedAt, args.Todos[i].CompletedAt = time.Time{}, time.Time{}
 		}
-		merged, matched := reconcileTodos(oldTodos, args.Todos, now, state.TodoIDFloor())
-
-		// Auto-carry: unfinished items missing from the submitted list are
-		// kept (appended with their status) instead of erroring. The old
-		// drop-guard fired during ordinary reorganisation and forced a
-		// retry loop with the model.
 		var carried, dropped []string
-		for i, old := range oldTodos {
-			if matched[i] || old.Status == TodoCompleted {
-				continue
-			}
-			if args.DropUnfinished {
-				dropped = append(dropped, old.Content)
-				continue
-			}
-			carried = append(carried, old.Content)
-			merged = append(merged, old)
-		}
-		ensureTodoIDs(merged, state.TodoIDFloor())
-		args.Todos = merged
+		err = state.UpdateTodos(func(oldTodos []db.TodoItem, floor int) ([]db.TodoItem, error) {
+			now := todoNow()
+			merged, matched := reconcileTodos(oldTodos, args.Todos, now, floor)
 
-		if err := store.SetTodos(args.Todos); err != nil {
+			// Auto-carry: unfinished items missing from the submitted list are
+			// kept (appended with their status) instead of erroring. The old
+			// drop-guard fired during ordinary reorganisation and forced a
+			// retry loop with the model.
+			for i, old := range oldTodos {
+				if matched[i] || old.Status == TodoCompleted {
+					continue
+				}
+				if args.DropUnfinished {
+					dropped = append(dropped, old.Content)
+					continue
+				}
+				carried = append(carried, old.Content)
+				merged = append(merged, old)
+			}
+			ensureTodoIDs(merged, floor)
+			args.Todos = merged
+			return merged, nil
+		})
+		if err != nil {
 			return registry.ToolResult{}, err
 		}
 		result := registry.ToolResult{

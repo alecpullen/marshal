@@ -702,15 +702,21 @@ func (r *Runner) acquireToolGate(ctx context.Context) (func(), error) {
 	return release, nil
 }
 
-func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]schema.ChatMessage, error) {
-	if err := r.State.WaitUnheld(ctx); err != nil {
-		return nil, err
-	}
+func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) (_ []schema.ChatMessage, returnedErr error) {
+	timing := toolTiming{now: r.Now, started: r.Now(), tool: "<unresolved>"}
+	defer func() { timing.emit(r.State.Logger(), returnedErr) }()
 	toolName := actionToolName(action)
 	toolCallID := action.ToolCallID
 	callID := toolCallID
 	if callID == "" {
 		callID = r.newCallID()
+	}
+	timing.callID = callID
+	endHold := timing.measure(&timing.hold)
+	holdErr := r.State.WaitUnheld(ctx)
+	endHold()
+	if holdErr != nil {
+		return nil, holdErr
 	}
 
 	// First admission gate: steering accepted for this operation outranks a
@@ -727,6 +733,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		r.countToolCall(true, false)
 		return []schema.ChatMessage{r.buildToolErrorMessage(toolName, "unknown tool", toolCallID)}, nil
 	}
+	timing.tool = tool.Name
 
 	// Internal tools are never offered to the model, so a model naming one
 	// directly is reaching for a tool it was never shown. The envelope patch
@@ -781,7 +788,10 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	// Confirm→Allow transform can never auto-approve it. Subagent/swarm
 	// runners never gate (role != general); auto mode auto-allows.
 	if toolName == "skill.load" && r.role() == RoleGeneral {
-		if msgs, handled := r.skillLoadGate(ctx, tool, args, argsMap, toolCallID); handled {
+		endPolicy := timing.measure(&timing.policyApproval)
+		msgs, handled := r.skillLoadGate(ctx, tool, args, argsMap, toolCallID)
+		endPolicy()
+		if handled {
 			return msgs, nil
 		}
 	}
@@ -793,7 +803,9 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	// being answered from a previous session's grant.
 	if tool.Cacheable {
 		preCall := r.policyCall(callID, toolName, argsMap)
+		endPolicy := timing.measure(&timing.policyApproval)
 		_, preEval, preErr := r.Authorizer.Evaluate(ctx, preCall)
+		endPolicy()
 		if preErr != nil {
 			r.countToolCall(true, false)
 			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, preErr.Error(), toolCallID)}, nil
@@ -807,6 +819,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		}
 		if preEval.Decision == policy.DecisionAllow {
 			if cached, hit := r.State.GetTurnToolResult(toolName, normalizedArgs); hit {
+				timing.cacheHit = true
 				r.trackerMu.Lock()
 				count := r.tracker.record(toolName, string(normalizedArgs), hashToolResult(cached.Content), true)
 				r.trackerMu.Unlock()
@@ -864,14 +877,17 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		// authority. The proof it returns binds the exact facts this
 		// iteration settled on, so the launch admits what was evaluated.
 		policyCall := r.policyCall(invocationID, toolName, argsMap)
+		endPolicy := timing.measure(&timing.policyApproval)
 		iterationProof, evaluation, evalErr := r.Authorizer.Evaluate(ctx, policyCall)
 		if evalErr != nil {
+			endPolicy()
 			r.countToolCall(true, false)
 			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, evalErr.Error(), toolCallID)}, nil
 		}
 		proof = iterationProof
 
 		policyResult, err := r.handlePolicyDecision(ctx, tool, toolName, args, argsMap, normalizedArgs, evaluation, proof, invocationID, toolCallID)
+		endPolicy()
 		if err != nil {
 			return nil, err
 		}
@@ -888,7 +904,9 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		// audit event can record what the user approved vs what was
 		// actually executed after a rewrite.
 		preHookArgs := args
+		endHook := timing.measure(&timing.hooks)
 		rewrittenArgs, hookOut, hookErr := r.runPreToolUseHook(ctx, toolName, args)
+		endHook()
 		lastHookOut = hookOut
 		if hookErr != nil {
 			event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("blocked by pre_tool_use hook: %s", hookErr.Error()))
@@ -951,22 +969,26 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		return msgs, nil
 	}
 
-	// Pre-write capture, non-read-only tools only. A capture that fails or is
+	// Pre-write capture for tools with potential workspace effects. A capture that fails or is
 	// SKIPPED now produces a user-visible warning through the shared helper;
 	// a session DB row is written only for a capture that PUBLISHED a hash.
 	// The tool still runs either way — no continuation, permission, or
 	// approval behaviour changes here.
-	if tool.Risk != registry.RiskReadOnly {
+	if tool.NeedsWorkspacePreflight() {
+		endSnapshot := timing.measure(&timing.snapshot)
 		r.snapshotCapture(ctx, SnapshotPhasePreWrite, changedFilesForTool(toolName, argsMap))
+		endSnapshot()
 	}
 
-	// The write gate serialises non-read-only execution across runners, so a
+	// The write gate serialises workspace execution across runners, so a
 	// call can wait here for an unbounded time. A cancelable gate wakes when
 	// this operation is interrupted; a legacy gate cannot, so the runner
 	// rechecks admission as soon as it acquires and releases the token rather
 	// than launching a call the user already interrupted.
-	if tool.Risk != registry.RiskReadOnly {
+	if tool.NeedsWorkspacePreflight() {
+		endGate := timing.measure(&timing.gate)
 		release, gateErr := r.acquireToolGate(ctx)
+		endGate()
 		if gateErr != nil {
 			return r.settleSteeringCall(ctx, action, callID, registry.ToolResult{}, false,
 				steeringCause(ctx, "", gateErr)), nil
@@ -1002,7 +1024,10 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		}
 		admission.Release()
 	}
+	endHandler := timing.measure(&timing.handler)
 	result, execErr := tool.Handler(handlerCtx, call)
+	endHandler()
+	timing.handlerError = execErr != nil
 	if execErr != nil {
 		// Steering that interrupted an admitted call is not a tool failure:
 		// the call genuinely started, so its partial result is preserved as
@@ -1380,7 +1405,9 @@ func (r *Runner) toolCallOutcomeMessage(call schema.ToolCall, err error) schema.
 
 // executeNativeQuestionAsk handles the new structured question.ask tool,
 // which accepts one or more questions with optional options/multi/other.
-func (r *Runner) executeNativeQuestionAsk(ctx context.Context, call schema.ToolCall) (schema.ChatMessage, error) {
+func (r *Runner) executeNativeQuestionAsk(ctx context.Context, call schema.ToolCall) (_ schema.ChatMessage, returnedErr error) {
+	timing := toolTiming{now: r.Now, started: r.Now(), tool: "question.ask", callID: call.ID}
+	defer func() { timing.emit(r.State.Logger(), returnedErr) }()
 	if r.role() != RoleGeneral {
 		return BuildNativeToolErrorMessage(call.Name, fmt.Sprintf("%s is not available for the %s role", call.Name, r.role()), call.ID), nil
 	}
@@ -1404,7 +1431,9 @@ func (r *Runner) executeNativeQuestionAsk(ctx context.Context, call schema.ToolC
 		r.countToolCall(true, false)
 		return BuildNativeToolErrorMessage(call.Name, "arguments are not valid JSON", call.ID), nil
 	}
+	endQuestions := timing.measure(&timing.questions)
 	answers, waitErr := r.requestQuestions(ctx, payload.Questions)
+	endQuestions()
 	if waitErr != nil {
 		if errors.Is(waitErr, interaction.ErrQuestionsDisabled) {
 			return BuildNativeToolErrorMessage(call.Name, waitErr.Error(), call.ID), nil

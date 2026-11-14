@@ -801,6 +801,10 @@ func testSendNowCancelsApprovalRPC(t *testing.T) {
 	}
 	waitClosed(t, firstCanceled, "the interrupted approval to settle")
 	waitClosed(t, secondPrompt, "the newer prompt")
+	// RPC cancellation is forwarded with context.AfterFunc. Canonical prompt
+	// settlement and the runner's next registration do not join that callback.
+	// Wait for its observable effect before asserting on the derived context.
+	waitClosed(t, gated.ctx(0).Done(), "the interrupted approval RPC context")
 
 	// The interruption cancelled the prompt's RPC context but not the turn.
 	if !h.manager.HasActiveTurn(h.session) {
@@ -816,6 +820,7 @@ func testSendNowCancelsApprovalRPC(t *testing.T) {
 		t.Fatal("a late grant settled a newer prompt")
 	case <-time.After(100 * time.Millisecond):
 	}
+	waitFor(t, "the newer approval RPC", func() bool { return gated.count() >= 2 })
 	gated.release(1, PermissionDecision{Approved: false})
 	h.cancel()
 	if err := h.awaitTurn(done); err != nil {

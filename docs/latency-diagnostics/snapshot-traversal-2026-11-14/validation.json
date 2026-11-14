@@ -1,0 +1,14 @@
+{
+  "normal_probe_runs": 3,
+  "normal_runs_passed": true,
+  "profile_run_passed": true,
+  "tagged_vet_exit_code": 0,
+  "race": {
+    "toolchain": "go1.27.0",
+    "command": "MARSHAL_SNAPSHOT_PROBE_REPO=<marked fixture> CGO_ENABLED=1 go test -race -tags=latencyprobe ./internal/snapshot -run ^TestSnapshotTraversalProbe$ -count=1 -timeout 5m",
+    "passed": true,
+    "log_sha256": "7e12a5d98211b52b19022c72877e90e9d7ae695c226086a600ae09b6e41036a9"
+  },
+  "default_suite": "not rerun; new code requires latencyprobe tag, no production/default test changes",
+  "production_changes": false
+}

@@ -32,9 +32,9 @@ gofmt -w .
 
 `marshal` also dispatches subcommands: `acp` (headless JSON-RPC server),
 `attach` (reattach to a daemon session), `daemon` (install and drive the local
-daemon), `history`, `plugin`, `snapshots`, `calibrate-tokens`. Top-level flags
-are `--trust`, `--embedded` (run in this process, without the daemon) and
-`--version`.
+daemon), `fleet` (the fleet screen on the local daemon), `history`, `plugin`,
+`snapshots`, `calibrate-tokens`. Top-level flags are `--trust`, `--embedded`
+(run in this process, without the daemon) and `--version`.
 
 ### Web control plane
 
@@ -101,6 +101,7 @@ App shell & config
   internal/acpclient/      the TUI's Host/Session interfaces; rpc/ is the JSON-RPC client the TUI runs on
   internal/launch/         embedded mode's composition root: the run loop, the agent host on a pipe, the TUI over its client
   internal/daemon/         the local daemon's paths, service units and commands, and its socket's client, attach handshake included
+  internal/fleetclient/    the fleet client over the daemon's socket: the fleet screen's read of a bridge
   internal/app/            Embedded() and ServiceDeps(): runtimes, dependency wiring, repo instructions
   internal/app/config/     TOML loading, defaults, merge rules
   internal/app/session/    shared mutable state between TUI and agent
@@ -117,6 +118,7 @@ TUI (rendering only)
                            shared panel host, session sheet, browse inspector, list engine, dressing
   internal/app/tui/{settings,connect,agents,memory,skills,plugins,mcpauth,modeloptions,presetflow,probe,doctorpanel}
                            interactive surfaces for config, providers, roles, MCP, models
+  internal/app/tui/fleet/   the fleet screen: the agents list, needs you, events, and an agent's Activity or Info
   internal/app/tui/{sddreview,castlist,gatepanel,postmortempanel,trustpanel,liveregion,textfield}
 
 Models

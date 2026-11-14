@@ -632,7 +632,9 @@ first, then the alternative it was weighed against.
     `·` otherwise. `glyph.Live` (`●`, sharing `Brand`'s shape, which the fleet
     screen never shows) and `glyph.Waiting` (`◌`) join the vocabulary.
   - **The layout's numbers:**
-    - The left column is 28 columns below 100, and 40% from 100 up.
+    - The left column is 28 columns below 100. From 100 up the Agents table
+      takes the larger pane and the right panel keeps 40%: the table's fixed
+      columns alone fill a 40% pane, so the rule is the other way round.
     - Needs you shows 1 to 5 rows, as many as it has items.
     - Events shows 3 rows below 30 rows of height, and 6 from 30 up.
     - Agents takes the rest.
@@ -1195,7 +1197,116 @@ thing, and both are fixed here.
 
 ### Plan 3 — the fleet client and a read-only fleet screen
 
-Not yet run. Plan 3's last task fills this in.
+**What was built.** The seam grew a fleet interface beside its `Host` and
+`Session`: `acpclient.Fleet` with `State()` and `Changed()`, the `FleetState`
+it returns, the `FleetConn` the connection is in, and `acpclient.FleetRoutes`,
+a table of the bridge routes that serve each method. The TUI may now import
+`web/bridge/contract`, and `acpclient` may too, so the fleet's values cross
+the seam as the contract's own types rather than as copies.
+
+`internal/fleetclient/` is the client over one bridge. It opens
+`GET /api/events?stream=fleet`, and once the stream has answered it reads
+`/api/agents`, `/api/inbox`, `/api/projects`, `/api/budgets` and — locally —
+`/api/daemon`, each bounded by ten seconds. The deltas that arrive while
+those reads are in flight are held and applied after them, in order, so
+nothing that happened between the snapshot and the stream is lost. Every delta
+kind the bridge sends is applied: activity, telemetry, mode, hold, pending,
+gate, run, budget, project_removed and inbox, each by the rules the web UI
+follows. A stream that ends is reconnected, with the wait doubling from a
+second to thirty, the last event's id sent back so the bridge replays what
+was missed; a failure that lasts a minute puts the connection down and it
+keeps retrying at the maximum wait; a 401 stops everything, says the token was
+rejected and is never retried. Locally the daemon's own listing is reread
+every five seconds, because the daemon's sessions are not on the stream.
+
+`internal/app/tui/fleet/` is the screen: the model holds the fleet as the
+client last read it, the Events ring, the selection and the focus, and the
+keys that move them; `view.go` draws the layout, with the Agents table on the
+left above the needs-you queue and the Events ring, and the selected agent's
+Activity or Info on the right. Six golden frames pin it at 80×24, 100×30 and
+140×40, with the Info tab, with the connection down, and below the minimum
+size.
+
+`marshal fleet` runs the screen on the local daemon. `launch.Fleet` probes the
+daemon, refuses one that is not the local profile, reads the user's `[tui]`
+config without the project layer, builds the client, and runs the model
+through the program runner.
+
+**Where the plan was short, and how that was filled.**
+
+- **The `Routes:` doc line.** The plan's contract block wraps `State`'s routes
+  over two comment lines, and its own rule is that the doc line lists the
+  routes in order. A wrapped line cannot be that, so the test reads the whole
+  statement and joins it, and the declaration keeps the plan's own wording.
+- **The layout's width.** Decision 11 gives the left column 40% of the width
+  from 100 columns up. The plan's own column set does not fit in it: at 100
+  columns the table's fixed columns and their gaps need 37 cells of the 36 a
+  40% pane leaves, and at 140 they need 50 of 52 — so NAME and ACTIVITY would
+  each be one cell, and every name would read `…`. The Agents table therefore
+  takes the larger pane and the right panel keeps the 40%, which keeps every
+  column and the flex rule usable. The spec's F4 bullet is changed to say so.
+- **`tea.KeyShiftTab` and `tea.KeyCtrlC` do not exist** in the Bubble Tea
+  version this repository builds against. Shift-tab is `tea.KeyTab` with
+  `tea.ModShift`, the idiom the session screen already uses, and ctrl+c is
+  matched on the key's text.
+- **The goldens hold no escape sequences.** Under `NO_COLOR` the renderer
+  still emits bold and faint attributes, so the goldens are written and
+  compared with the ANSI stripped, and `TestColourAddsNoText` strips the
+  coloured render the same way.
+- **The model's theme is read through an accessor.** `launch.Fleet`'s test has
+  to see which theme the model resolved, and the model's fields are
+  unexported, so `Model.Theme()` was added for it.
+- **A 401 has to be recognisable.** The client now carries the status on its
+  own error type, so a rejected token is told from a transient failure
+  wherever it appears — the stream, a snapshot read or the daemon reread.
+- **The overflow's refetch keeps what it can.** A failed budgets read leaves
+  the budgets nil; the other reads keep their previous value, and the epoch
+  still moves.
+- **The allowlists grew by one path each.** `internal/app/tui/` and
+  `acpclient` may now import `marshal/web/bridge/contract`, and nothing else
+  was added to either.
+
+**The manual run.** The screen was run against a real local daemon: a
+`webbridge --profile local` on a scratch unix socket under `/private/tmp`, its
+own scratch state and config directories, the local Ollama's
+`llama3.1:8b-instruct-q4_K_M` as the provider, and a scratch git project
+added over the socket's `POST /api/projects`. An agent was spawned over the
+socket's `POST /api/agents` and ran there.
+
+- **The screen draws at every size.** `marshal fleet` in an 80×24 terminal
+  showed the Agents table with ST, NAME, CTX, Δ and AGE, the needs-you panel
+  below it and the Events panel under that, the Activity panel on the right,
+  and the footer reading `local ●  j/k move` with `?help q quit` at the far
+  right. At 100 columns the table gained PROJECT and MODE; at 140 it gained
+  ACTIVITY, COST and CHECK, with the gate and the spend shown for the
+  selected agent.
+- **The daemon's own sessions appear under Sessions.** A plain `marshal`
+  session running in another terminal put one child with one session in the
+  daemon's listing, and the fleet screen showed it a few seconds later — the
+  daemon's listing is reread every five seconds, because those sessions are
+  not on the stream — as `· project sess_179 1 viewer`, with its age.
+- **The connection's state is shown, and it recovers.** Stopping the daemon
+  turned the footer's dot from `●` to `◌` and put the dial error beside it,
+  while the panels kept the last state they had. The Events ring recorded
+  `reconnecting to local` and then `local is down: …`. Starting the daemon
+  again brought the client back on its own: the dot returned to `●` and the
+  ring recorded `connected to local`, with no key pressed.
+- **What was not driven.** The needs-you queue was never filled by a real
+  approval, for the reason plan 2's run found: the only local model is an 8B
+  one, and it did not raise a request. The Diff tab, the actions and `⏎` are
+  plans 4b and 5, and were not built.
+
+**Verification.**
+
+| Command | Result |
+| --- | --- |
+| `gofmt -l internal cmd test web` | No output. |
+| `go vet ./...` | Clean. |
+| `TMPDIR=/private/tmp/p5-3-suite CGO_ENABLED=1 go test -p=1 ./... -count=1 -timeout 30m -skip '^Test(NoticeCallBudget\|ControlCallBudget\|AnswerCallBudget\|ResponseBarrierBudget\|SettingsCallBudget\|NoteCallBudget\|BrowserCallBudget\|EndCallBudget\|StackBusyFlipBudget\|StackPatchApplyBudget\|StackRoundTripBudget\|AKeyPressOverThePipeBudget)$'` | Passed: 125 packages ok, no failure, exit 0. The twelve skipped tests are the wall-clock budget family CI skips; the base's two known failures are among them, so no package failed here. |
+| `TMPDIR=/private/tmp/p5-3-suite go test -race ./internal/fleetclient/ ./internal/app/tui/fleet/ -count=1` | `ok marshal/internal/fleetclient 3.009s`, `ok marshal/internal/app/tui/fleet 1.532s`, no data race. |
+| `CGO_ENABLED=1 go build -o marshal ./cmd/marshal` | Built (git-ignored via `.gitignore`'s `/marshal`). |
+| `./marshal fleet --embedded` | Refused, as it must be: `marshal fleet: --embedded cannot be combined with fleet: the fleet screen needs the daemon`, exit 1. |
+| `TMPDIR=/private/tmp/p5-3-suite go test ./test/usability/... -run TestScripted -timeout 5m` | Passed (`marshal/test/usability` ok, 45.1s). |
 
 ### Plan 4a — fleet requests reach the bridge, and leave it
 

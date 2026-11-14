@@ -648,6 +648,38 @@ func (s *State) PromptContext(key PromptKey) context.Context {
 	return rec.ctx
 }
 
+// settledPrompt is the shared already-closed channel PromptSettled answers for
+// a key that names no live record: an unknown key, a record that already
+// settled, and a record ClearPrompt released are all settled by definition.
+var settledPrompt = func() <-chan struct{} {
+	done := make(chan struct{})
+	close(done)
+	return done
+}()
+
+// PromptSettled is closed once the prompt key names has settled, by an
+// answer, a cancellation or a steering interruption. A key with an ID that
+// names no live record is already settled, and gets a closed channel. A key
+// with no ID (an unregistered legacy prompt) gets nil, which never fires.
+//
+// The record is found by its ID alone, the way PromptContext finds one. The
+// kind and operation are deliberately not matched: a typed access request
+// names itself by its request id alone, and its mirror record is filed under
+// the approval kind, so a stricter lookup would report a live access request
+// as already settled and end its request before the client was asked.
+func (s *State) PromptSettled(key PromptKey) <-chan struct{} {
+	if key.ID == "" {
+		return nil
+	}
+	s.accessMu.Lock()
+	done := settledPrompt
+	if rec := s.prompts[key.ID]; rec != nil {
+		done = rec.done
+	}
+	s.accessMu.Unlock()
+	return done
+}
+
 // ClearPrompt compare-clears both the record and the prompt slot for a key. It
 // releases nothing — a caller that settles a prompt has already done so — and it
 // never touches whichever prompt is now pending: an old copy's cleanup cannot

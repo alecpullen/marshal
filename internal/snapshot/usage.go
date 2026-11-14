@@ -160,6 +160,10 @@ type GenerationUsage struct {
 // read-only git process, and a cancelled turn must not be held open by
 // accounting.
 func (m *Manager) MeasureWorkspaceGenerations(ctx context.Context, workspace string) (*WorkspaceGenerations, error) {
+	return m.measureWorkspaceGenerations(ctx, workspace, nil)
+}
+
+func (m *Manager) measureWorkspaceGenerations(ctx context.Context, workspace string, inv *usageInventory) (*WorkspaceGenerations, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -171,6 +175,9 @@ func (m *Manager) MeasureWorkspaceGenerations(ctx context.Context, workspace str
 		return nil, err
 	}
 	unit := m.limits.Normalize().AllocationUnitBytes
+	if inv != nil {
+		unit = inv.unit
+	}
 
 	out := &WorkspaceGenerations{
 		Workspace: workspace,
@@ -179,7 +186,16 @@ func (m *Manager) MeasureWorkspaceGenerations(ctx context.Context, workspace str
 	}
 
 	if info, err := os.Lstat(cat.Root()); err == nil {
-		allocated, err := m.measureTreeAllocated(cat.Root(), info)
+		var allocated int64
+		if inv == nil && info.IsDir() {
+			var total *Usage
+			inv, total, err = m.inventoryTree(ctx, cat.Root(), info, StoreKindWorkspace, workspace, unit)
+			if err == nil {
+				allocated = total.Allocated
+			}
+		} else {
+			allocated, err = m.allocatedFromInventory(ctx, cat.Root(), info, inv)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -247,25 +263,9 @@ func (m *Manager) MeasureWorkspaceGenerations(ctx context.Context, workspace str
 		if !info.IsDir() {
 			continue
 		}
-		allocated, err := m.measureTreeAllocated(path, info)
+		gu, err := m.generationUsage(ctx, path, name, info, man, inv)
 		if err != nil {
 			return nil, err
-		}
-		gu := &GenerationUsage{ID: name, Path: path, Allocated: allocated, Protected: true, Refs: -1}
-		if man != nil {
-			if rec := man.Generation(name); rec != nil {
-				gu.Listed = true
-				gu.Protected = rec.IsProtected()
-			}
-		}
-		if repositoryLooksInitialised(path) {
-			// A generation whose refs cannot be listed keeps Refs = -1, which
-			// marks it unreclaimable. Failing the whole measurement instead
-			// would make one unreadable generation hide every other workspace's
-			// accounting.
-			if _, hashes, err := m.snapshotRefsInDir(ctx, path); err == nil {
-				gu.Refs = len(hashes)
-			}
 		}
 		if gu.Listed {
 			out.ByID[name] = gu
@@ -286,7 +286,7 @@ func (m *Manager) MeasureWorkspaceGenerations(ctx context.Context, workspace str
 		if err != nil {
 			return nil, m.storeError(ReasonUnreadableFile, path, err)
 		}
-		allocated, err := m.measureTreeAllocated(path, info)
+		allocated, err := m.allocatedFromInventory(ctx, path, info, inv)
 		if err != nil {
 			return nil, err
 		}
@@ -299,6 +299,29 @@ func (m *Manager) MeasureWorkspaceGenerations(ctx context.Context, workspace str
 		out.StagingCount++
 	}
 	return out, nil
+}
+
+// generationUsage keeps protection/ref semantics common to whole-workspace
+// accounting and the post-publication target-only rotation check.
+func (m *Manager) generationUsage(ctx context.Context, path, id string, info os.FileInfo, man *Manifest, inv *usageInventory) (*GenerationUsage, error) {
+	allocated, err := m.allocatedFromInventory(ctx, path, info, inv)
+	if err != nil {
+		return nil, err
+	}
+	gu := &GenerationUsage{ID: id, Path: path, Allocated: allocated, Protected: true, Refs: -1}
+	if man != nil {
+		if rec := man.Generation(id); rec != nil {
+			gu.Listed = true
+			gu.Protected = rec.IsProtected()
+		}
+	}
+	if repositoryLooksInitialised(path) {
+		// An unreadable ref listing is unknown, never an empty successful list.
+		if _, hashes, err := m.snapshotRefsInDir(ctx, path); err == nil {
+			gu.Refs = len(hashes)
+		}
+	}
+	return gu, nil
 }
 
 // Reclaimable returns the measured allocated bytes of the generations that
@@ -346,7 +369,7 @@ func (m *Manager) UsageContext(ctx context.Context) (*StoreUsage, error) {
 // rather than failing the whole pass: one broken workspace must not hide the
 // accounting of every other one, and a caller can still see that it must not be
 // reclaimed.
-func (m *Manager) measureV2Workspaces(ctx context.Context, _ usageOptions, out *StoreUsage) error {
+func (m *Manager) measureV2Workspaces(ctx context.Context, out *StoreUsage, inv *usageInventory) error {
 	entries, err := readDirNoFollow(filepath.Join(m.root, v2DirName))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -362,7 +385,7 @@ func (m *Manager) measureV2Workspaces(ctx context.Context, _ usageOptions, out *
 		if !validWorkspaceID(name) {
 			continue
 		}
-		gens, err := m.MeasureWorkspaceGenerations(ctx, name)
+		gens, err := m.measureWorkspaceGenerations(ctx, name, inv)
 		if err != nil {
 			return err
 		}
@@ -423,13 +446,13 @@ func (m *Manager) usageWith(ctx context.Context, o usageOptions) (*StoreUsage, e
 			// The versioned store root: measured as one entry so its total is
 			// visible, and classified separately from legacy storage because
 			// only the v2 side is ever automatically reclaimed.
-			u, err := m.measureTree(p, entryInfo, StoreKindWorkspace, name, o.allocationUnit)
+			inv, u, err := m.inventoryTree(ctx, p, entryInfo, StoreKindWorkspace, name, o.allocationUnit)
 			if err != nil {
 				return nil, err
 			}
 			out.Workspaces[name] = u
 			out.V2Allocated = u.Allocated
-			if err := m.measureV2Workspaces(ctx, o, out); err != nil {
+			if err := m.measureV2Workspaces(ctx, out, inv); err != nil {
 				return nil, err
 			}
 		case entryInfo.IsDir():
@@ -572,61 +595,7 @@ func (m *Manager) forgetLegacyUsage() {
 }
 
 func (m *Manager) measureTree(root string, info os.FileInfo, kind StoreKind, workspace string, unit int64) (*Usage, error) {
-	u := &Usage{Path: root, Kind: kind, Workspace: workspace}
-	dirAllocated, err := m.allocatedBytes(root, info, unit)
-	if err != nil {
-		return nil, err
-	}
-	u.Allocated = dirAllocated
-	u.Logical = dirAllocated
-	u.DirBytes = dirAllocated
-	u.Dirs = 1
-
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return nil, m.storeError(ReasonUnreadableFile, root, err)
-	}
-	for _, entry := range entries {
-		name := entry.Name()
-		p := filepath.Join(root, name)
-		entryInfo, err := lsEntryInfo(root, entry)
-		if err != nil {
-			return nil, m.storeError(ReasonUnreadableFile, p, err)
-		}
-		// entry.Type() comes from the directory read and does not follow a
-		// symlink. os.ReadDir does not follow symlinks, so a symlink appears
-		// as a symlink and is never traversed.
-		if entryInfo.IsDir() {
-			sub, err := m.measureTree(p, entryInfo, kind, workspace, unit)
-			if err != nil {
-				return nil, err
-			}
-			if u.Allocated, err = addInt64(u.Allocated, sub.Allocated); err != nil {
-				return nil, err
-			}
-			if u.Logical, err = addInt64(u.Logical, sub.Logical); err != nil {
-				return nil, err
-			}
-			if u.DirBytes, err = addInt64(u.DirBytes, sub.DirBytes); err != nil {
-				return nil, err
-			}
-			u.Dirs += sub.Dirs
-			u.Files += sub.Files
-			continue
-		}
-		file, err := m.measure(p, entryInfo, kind, workspace, unit)
-		if err != nil {
-			return nil, err
-		}
-		if u.Allocated, err = addInt64(u.Allocated, file.Allocated); err != nil {
-			return nil, err
-		}
-		if u.Logical, err = addInt64(u.Logical, file.Logical); err != nil {
-			return nil, err
-		}
-		u.Files += file.Files
-	}
-	return u, nil
+	return m.measureTreeWith(context.Background(), root, info, kind, workspace, unit, nil)
 }
 
 // measure measures one non-directory entry (or a directory's own metadata when

@@ -1296,6 +1296,37 @@ socket's `POST /api/agents` and ran there.
   one, and it did not raise a request. The Diff tab, the actions and `⏎` are
   plans 4b and 5, and were not built.
 
+**The branch review.** A reviewer read the whole branch against the base and
+found two defects and three gaps. All five are fixed, and a second reviewer
+verified each fix by reverting the four source files and watching the new
+tests fail against them.
+
+- **The model's quit never released its wait.** The model held a `done`
+  channel that nothing closed: the quit keys returned `tea.Quit`, and Bubble
+  Tea v2 handles `tea.QuitMsg` inside its own event loop without ever
+  delivering it to `Update`, so the model never learned the program was
+  ending. The armed wait goroutine stayed blocked on the client's signal
+  forever — one leaked goroutine per program run, which matters for plan 4b's
+  fleet program run repeatedly in one process. The model now holds a gate
+  whose close is guarded, and its quit command releases the gate before it
+  quits.
+- **The model never seeded itself from the client,** so before the first
+  read the panels said "Connecting to …" with no name and the footer's server
+  cell was blank. It now takes the client's state when it is built, which
+  carries the server's name from the start.
+- **A 401 on a mid-stream refetch was swallowed.** The plan says a 401 on any
+  read stops everything, but the refetches a pending, budget, inbox or
+  overflow delta triggers ignored their errors, so the client stayed
+  "connected" with stale rows. They now reject, and the overflow's reread
+  stops at the first rejection rather than finishing the batch.
+- **An inbox delta that changed only a submission's title fired no change,** so
+  the screen kept the old title. The queue's submissions are now compared by
+  their identity, title and origin.
+- **`State` shared pointed-to values with the client,** though the seam says
+  every slice and map is the caller's own copy. The agent's pending request,
+  workspace, gate override, push time and each queue item's submission are
+  now copied too, the pending request's payload into a fresh byte slice.
+
 **Verification.**
 
 | Command | Result |

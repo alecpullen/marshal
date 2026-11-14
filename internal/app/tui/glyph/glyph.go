@@ -69,6 +69,13 @@ const (
 	// transcript.
 	Beat = Brand
 
+	// Live marks a running agent, or a connected stream, on the fleet screen.
+	// It shares Brand's shape, which the fleet screen never shows.
+	Live = Brand
+
+	// Waiting marks a stream that is connecting or reconnecting.
+	Waiting = "◌"
+
 	// SpineMid, SpineEnd and Spine draw a beat's spine: each call row hangs
 	// off it with SpineMid, the last with SpineEnd, and Spine carries it past
 	// an expanded row's detail. They mean "this belongs to the beat above".

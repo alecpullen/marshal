@@ -1,0 +1,558 @@
+{
+  "source_commit": "4b5ab9d6dd4048d3e1f54bc13f8d8f2c9a9a7ded",
+  "followup_base": "cef1e353e8f58f11a670aa5d64aea9ed00017d0b",
+  "go": "go1.26.1 darwin/arm64",
+  "cpu": "Apple M5",
+  "fixture": {
+    "path": "registry-output.jsonl",
+    "bytes": 77893,
+    "sha256": "86457b52593582f92ed6038e79b22dd7d190e495e8614e65f55a3cf2c441919a",
+    "capture_command": "CGO_ENABLED=1 go test -json ./internal/tools/registry -count=1 -timeout 2m"
+  },
+  "corpus": [
+    {
+      "path": "go.mod",
+      "bytes": 3253,
+      "sha256": "a55502859b1d3fe67c207b5bfb865c18e1d11b61f97aebbf579846c888b24a65"
+    },
+    {
+      "path": "internal/agent/metrics.go",
+      "bytes": 9681,
+      "sha256": "b56ab702c5164ea73b7546c0723c4406363ca82f01dbba59d80de9d5e90420ae"
+    },
+    {
+      "path": "internal/app/runtime.go",
+      "bytes": 146962,
+      "sha256": "fa73d23638ec54fb710bddffc4a933c8f3296e14c22ad89f44129e53910f460d"
+    }
+  ],
+  "samples": [
+    {
+      "benchmark": "BenchmarkCompletedCommandProjectionProbe/current_durable_and_retained",
+      "ns_per_op": 46182196.0,
+      "bytes_per_op": 8488766,
+      "allocations_per_op": 75670
+    },
+    {
+      "benchmark": "BenchmarkCompletedCommandProjectionProbe/current_durable_and_retained",
+      "ns_per_op": 44572012.0,
+      "bytes_per_op": 8521900,
+      "allocations_per_op": 75655
+    },
+    {
+      "benchmark": "BenchmarkCompletedCommandProjectionProbe/current_durable_and_retained",
+      "ns_per_op": 45530184.0,
+      "bytes_per_op": 8527524,
+      "allocations_per_op": 75677
+    },
+    {
+      "benchmark": "BenchmarkCompletedCommandProjectionProbe/durable_winners_only",
+      "ns_per_op": 7684193.0,
+      "bytes_per_op": 1516253,
+      "allocations_per_op": 13007
+    },
+    {
+      "benchmark": "BenchmarkCompletedCommandProjectionProbe/durable_winners_only",
+      "ns_per_op": 7587856.0,
+      "bytes_per_op": 1519808,
+      "allocations_per_op": 13012
+    },
+    {
+      "benchmark": "BenchmarkCompletedCommandProjectionProbe/durable_winners_only",
+      "ns_per_op": 7552627.0,
+      "bytes_per_op": 1524689,
+      "allocations_per_op": 13012
+    },
+    {
+      "benchmark": "BenchmarkCompletedTailCleaningProbe/durable_exit/clean_two_outputs_each_tick",
+      "ns_per_op": 7899732.0,
+      "bytes_per_op": 1518704,
+      "allocations_per_op": 12918
+    },
+    {
+      "benchmark": "BenchmarkCompletedTailCleaningProbe/durable_exit/clean_two_outputs_each_tick",
+      "ns_per_op": 7701495.0,
+      "bytes_per_op": 1514769,
+      "allocations_per_op": 12919
+    },
+    {
+      "benchmark": "BenchmarkCompletedTailCleaningProbe/durable_exit/clean_two_outputs_each_tick",
+      "ns_per_op": 7872968.0,
+      "bytes_per_op": 1512007,
+      "allocations_per_op": 12918
+    },
+    {
+      "benchmark": "BenchmarkCompletedTailCleaningProbe/durable_exit/exact_input_memo_two_hits",
+      "ns_per_op": 41.46,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0
+    },
+    {
+      "benchmark": "BenchmarkCompletedTailCleaningProbe/durable_exit/exact_input_memo_two_hits",
+      "ns_per_op": 41.26,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0
+    },
+    {
+      "benchmark": "BenchmarkCompletedTailCleaningProbe/durable_exit/exact_input_memo_two_hits",
+      "ns_per_op": 42.71,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0
+    },
+    {
+      "benchmark": "BenchmarkCompletedTailCleaningProbe/retained_job/clean_two_outputs_each_tick",
+      "ns_per_op": 36623384.0,
+      "bytes_per_op": 6968993,
+      "allocations_per_op": 62534
+    },
+    {
+      "benchmark": "BenchmarkCompletedTailCleaningProbe/retained_job/clean_two_outputs_each_tick",
+      "ns_per_op": 37793787.0,
+      "bytes_per_op": 6987009,
+      "allocations_per_op": 62564
+    },
+    {
+      "benchmark": "BenchmarkCompletedTailCleaningProbe/retained_job/clean_two_outputs_each_tick",
+      "ns_per_op": 38689144.0,
+      "bytes_per_op": 6997935,
+      "allocations_per_op": 62569
+    },
+    {
+      "benchmark": "BenchmarkCompletedTailCleaningProbe/retained_job/exact_input_memo_two_hits",
+      "ns_per_op": 40.97,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0
+    },
+    {
+      "benchmark": "BenchmarkCompletedTailCleaningProbe/retained_job/exact_input_memo_two_hits",
+      "ns_per_op": 44.21,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0
+    },
+    {
+      "benchmark": "BenchmarkCompletedTailCleaningProbe/retained_job/exact_input_memo_two_hits",
+      "ns_per_op": 41.11,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/go.mod/new_writer_per_object",
+      "ns_per_op": 30372.0,
+      "bytes_per_op": 733179,
+      "allocations_per_op": 15
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/go.mod/new_writer_per_object",
+      "ns_per_op": 31137.0,
+      "bytes_per_op": 733178,
+      "allocations_per_op": 15
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/go.mod/new_writer_per_object",
+      "ns_per_op": 30878.0,
+      "bytes_per_op": 733178,
+      "allocations_per_op": 15
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/go.mod/reset_writer_per_capture",
+      "ns_per_op": 900.9,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/go.mod/reset_writer_per_capture",
+      "ns_per_op": 899.4,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/go.mod/reset_writer_per_capture",
+      "ns_per_op": 901.9,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/go.mod/new_reader_and_copy_buffer",
+      "ns_per_op": 4607.0,
+      "bytes_per_op": 44204,
+      "allocations_per_op": 10
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/go.mod/new_reader_and_copy_buffer",
+      "ns_per_op": 4589.0,
+      "bytes_per_op": 44204,
+      "allocations_per_op": 10
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/go.mod/new_reader_and_copy_buffer",
+      "ns_per_op": 4665.0,
+      "bytes_per_op": 44204,
+      "allocations_per_op": 10
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/go.mod/reset_reader_and_reuse_buffer",
+      "ns_per_op": 2182.0,
+      "bytes_per_op": 188,
+      "allocations_per_op": 4
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/go.mod/reset_reader_and_reuse_buffer",
+      "ns_per_op": 2160.0,
+      "bytes_per_op": 188,
+      "allocations_per_op": 4
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/go.mod/reset_reader_and_reuse_buffer",
+      "ns_per_op": 2732.0,
+      "bytes_per_op": 188,
+      "allocations_per_op": 4
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/go.mod/reset_reader_compare_buffered_source",
+      "ns_per_op": 1177.0,
+      "bytes_per_op": 56,
+      "allocations_per_op": 3
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/go.mod/reset_reader_compare_buffered_source",
+      "ns_per_op": 1137.0,
+      "bytes_per_op": 56,
+      "allocations_per_op": 3
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/go.mod/reset_reader_compare_buffered_source",
+      "ns_per_op": 1134.0,
+      "bytes_per_op": 56,
+      "allocations_per_op": 3
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/new_writer_per_object",
+      "ns_per_op": 32300.0,
+      "bytes_per_op": 733178,
+      "allocations_per_op": 15
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/new_writer_per_object",
+      "ns_per_op": 33241.0,
+      "bytes_per_op": 733178,
+      "allocations_per_op": 15
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/new_writer_per_object",
+      "ns_per_op": 36406.0,
+      "bytes_per_op": 733178,
+      "allocations_per_op": 15
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/reset_writer_per_capture",
+      "ns_per_op": 2712.0,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/reset_writer_per_capture",
+      "ns_per_op": 2615.0,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/reset_writer_per_capture",
+      "ns_per_op": 2621.0,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/new_reader_and_copy_buffer",
+      "ns_per_op": 8452.0,
+      "bytes_per_op": 50476,
+      "allocations_per_op": 10
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/new_reader_and_copy_buffer",
+      "ns_per_op": 8367.0,
+      "bytes_per_op": 50476,
+      "allocations_per_op": 10
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/new_reader_and_copy_buffer",
+      "ns_per_op": 8245.0,
+      "bytes_per_op": 50476,
+      "allocations_per_op": 10
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/reset_reader_and_reuse_buffer",
+      "ns_per_op": 5918.0,
+      "bytes_per_op": 188,
+      "allocations_per_op": 4
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/reset_reader_and_reuse_buffer",
+      "ns_per_op": 5895.0,
+      "bytes_per_op": 188,
+      "allocations_per_op": 4
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/reset_reader_and_reuse_buffer",
+      "ns_per_op": 5881.0,
+      "bytes_per_op": 188,
+      "allocations_per_op": 4
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/reset_reader_compare_buffered_source",
+      "ns_per_op": 2950.0,
+      "bytes_per_op": 56,
+      "allocations_per_op": 3
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/reset_reader_compare_buffered_source",
+      "ns_per_op": 2959.0,
+      "bytes_per_op": 56,
+      "allocations_per_op": 3
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/reset_reader_compare_buffered_source",
+      "ns_per_op": 2949.0,
+      "bytes_per_op": 56,
+      "allocations_per_op": 3
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/new_writer_per_object",
+      "ns_per_op": 69660.0,
+      "bytes_per_op": 733176,
+      "allocations_per_op": 15
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/new_writer_per_object",
+      "ns_per_op": 78921.0,
+      "bytes_per_op": 733177,
+      "allocations_per_op": 15
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/new_writer_per_object",
+      "ns_per_op": 73761.0,
+      "bytes_per_op": 733179,
+      "allocations_per_op": 15
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/reset_writer_per_capture",
+      "ns_per_op": 39667.0,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/reset_writer_per_capture",
+      "ns_per_op": 43957.0,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/reset_writer_per_capture",
+      "ns_per_op": 41322.0,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/new_reader_and_copy_buffer",
+      "ns_per_op": 90582.0,
+      "bytes_per_op": 73516,
+      "allocations_per_op": 10
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/new_reader_and_copy_buffer",
+      "ns_per_op": 90732.0,
+      "bytes_per_op": 73516,
+      "allocations_per_op": 10
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/new_reader_and_copy_buffer",
+      "ns_per_op": 90958.0,
+      "bytes_per_op": 73516,
+      "allocations_per_op": 10
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/reset_reader_and_reuse_buffer",
+      "ns_per_op": 87448.0,
+      "bytes_per_op": 188,
+      "allocations_per_op": 4
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/reset_reader_and_reuse_buffer",
+      "ns_per_op": 86882.0,
+      "bytes_per_op": 188,
+      "allocations_per_op": 4
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/reset_reader_and_reuse_buffer",
+      "ns_per_op": 87215.0,
+      "bytes_per_op": 188,
+      "allocations_per_op": 4
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/reset_reader_compare_buffered_source",
+      "ns_per_op": 44558.0,
+      "bytes_per_op": 56,
+      "allocations_per_op": 3
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/reset_reader_compare_buffered_source",
+      "ns_per_op": 43918.0,
+      "bytes_per_op": 56,
+      "allocations_per_op": 3
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/reset_reader_compare_buffered_source",
+      "ns_per_op": 45997.0,
+      "bytes_per_op": 56,
+      "allocations_per_op": 3
+    }
+  ],
+  "medians": [
+    {
+      "benchmark": "BenchmarkCompletedCommandProjectionProbe/current_durable_and_retained",
+      "samples": 3,
+      "ns_per_op": 45530184.0,
+      "bytes_per_op": 8521900,
+      "allocations_per_op": 75670
+    },
+    {
+      "benchmark": "BenchmarkCompletedCommandProjectionProbe/durable_winners_only",
+      "samples": 3,
+      "ns_per_op": 7587856.0,
+      "bytes_per_op": 1519808,
+      "allocations_per_op": 13012
+    },
+    {
+      "benchmark": "BenchmarkCompletedTailCleaningProbe/durable_exit/clean_two_outputs_each_tick",
+      "samples": 3,
+      "ns_per_op": 7872968.0,
+      "bytes_per_op": 1514769,
+      "allocations_per_op": 12918
+    },
+    {
+      "benchmark": "BenchmarkCompletedTailCleaningProbe/durable_exit/exact_input_memo_two_hits",
+      "samples": 3,
+      "ns_per_op": 41.46,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0
+    },
+    {
+      "benchmark": "BenchmarkCompletedTailCleaningProbe/retained_job/clean_two_outputs_each_tick",
+      "samples": 3,
+      "ns_per_op": 37793787.0,
+      "bytes_per_op": 6987009,
+      "allocations_per_op": 62564
+    },
+    {
+      "benchmark": "BenchmarkCompletedTailCleaningProbe/retained_job/exact_input_memo_two_hits",
+      "samples": 3,
+      "ns_per_op": 41.11,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/go.mod/new_writer_per_object",
+      "samples": 3,
+      "ns_per_op": 30878.0,
+      "bytes_per_op": 733178,
+      "allocations_per_op": 15
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/go.mod/reset_writer_per_capture",
+      "samples": 3,
+      "ns_per_op": 900.9,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/go.mod/new_reader_and_copy_buffer",
+      "samples": 3,
+      "ns_per_op": 4607.0,
+      "bytes_per_op": 44204,
+      "allocations_per_op": 10
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/go.mod/reset_reader_and_reuse_buffer",
+      "samples": 3,
+      "ns_per_op": 2182.0,
+      "bytes_per_op": 188,
+      "allocations_per_op": 4
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/go.mod/reset_reader_compare_buffered_source",
+      "samples": 3,
+      "ns_per_op": 1137.0,
+      "bytes_per_op": 56,
+      "allocations_per_op": 3
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/new_writer_per_object",
+      "samples": 3,
+      "ns_per_op": 33241.0,
+      "bytes_per_op": 733178,
+      "allocations_per_op": 15
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/reset_writer_per_capture",
+      "samples": 3,
+      "ns_per_op": 2621.0,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/new_reader_and_copy_buffer",
+      "samples": 3,
+      "ns_per_op": 8367.0,
+      "bytes_per_op": 50476,
+      "allocations_per_op": 10
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/reset_reader_and_reuse_buffer",
+      "samples": 3,
+      "ns_per_op": 5895.0,
+      "bytes_per_op": 188,
+      "allocations_per_op": 4
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/reset_reader_compare_buffered_source",
+      "samples": 3,
+      "ns_per_op": 2950.0,
+      "bytes_per_op": 56,
+      "allocations_per_op": 3
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/new_writer_per_object",
+      "samples": 3,
+      "ns_per_op": 73761.0,
+      "bytes_per_op": 733177,
+      "allocations_per_op": 15
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/reset_writer_per_capture",
+      "samples": 3,
+      "ns_per_op": 41322.0,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/new_reader_and_copy_buffer",
+      "samples": 3,
+      "ns_per_op": 90732.0,
+      "bytes_per_op": 73516,
+      "allocations_per_op": 10
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/reset_reader_and_reuse_buffer",
+      "samples": 3,
+      "ns_per_op": 87215.0,
+      "bytes_per_op": 188,
+      "allocations_per_op": 4
+    },
+    {
+      "benchmark": "BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/reset_reader_compare_buffered_source",
+      "samples": 3,
+      "ns_per_op": 44558.0,
+      "bytes_per_op": 56,
+      "allocations_per_op": 3
+    }
+  ]
+}

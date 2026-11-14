@@ -1,0 +1,51 @@
+goos: darwin
+goarch: arm64
+pkg: marshal/internal/snapshot
+cpu: Apple M5
+BenchmarkSnapshotCodecReuseProbe/go.mod/new_writer_per_object-10         	   10000	     30372 ns/op	 107.43 MB/s	  733179 B/op	      15 allocs/op
+BenchmarkSnapshotCodecReuseProbe/go.mod/new_writer_per_object-10         	   10000	     31137 ns/op	 104.80 MB/s	  733178 B/op	      15 allocs/op
+BenchmarkSnapshotCodecReuseProbe/go.mod/new_writer_per_object-10         	   10000	     30878 ns/op	 105.67 MB/s	  733178 B/op	      15 allocs/op
+BenchmarkSnapshotCodecReuseProbe/go.mod/reset_writer_per_capture-10      	  399952	       900.9 ns/op	3621.78 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnapshotCodecReuseProbe/go.mod/reset_writer_per_capture-10      	  396039	       899.4 ns/op	3628.09 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnapshotCodecReuseProbe/go.mod/reset_writer_per_capture-10      	  401635	       901.9 ns/op	3617.93 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnapshotCodecReuseProbe/go.mod/new_reader_and_copy_buffer-10    	   81836	      4607 ns/op	 708.29 MB/s	   44204 B/op	      10 allocs/op
+BenchmarkSnapshotCodecReuseProbe/go.mod/new_reader_and_copy_buffer-10    	   82220	      4589 ns/op	 710.98 MB/s	   44204 B/op	      10 allocs/op
+BenchmarkSnapshotCodecReuseProbe/go.mod/new_reader_and_copy_buffer-10    	   79483	      4665 ns/op	 699.46 MB/s	   44204 B/op	      10 allocs/op
+BenchmarkSnapshotCodecReuseProbe/go.mod/reset_reader_and_reuse_buffer-10 	  169399	      2182 ns/op	1495.22 MB/s	     188 B/op	       4 allocs/op
+BenchmarkSnapshotCodecReuseProbe/go.mod/reset_reader_and_reuse_buffer-10 	  168603	      2160 ns/op	1510.75 MB/s	     188 B/op	       4 allocs/op
+BenchmarkSnapshotCodecReuseProbe/go.mod/reset_reader_and_reuse_buffer-10 	  166999	      2732 ns/op	1194.51 MB/s	     188 B/op	       4 allocs/op
+BenchmarkSnapshotCodecReuseProbe/go.mod/reset_reader_compare_buffered_source-10         	  279429	      1177 ns/op	2773.48 MB/s	      56 B/op	       3 allocs/op
+BenchmarkSnapshotCodecReuseProbe/go.mod/reset_reader_compare_buffered_source-10         	  321423	      1137 ns/op	2870.02 MB/s	      56 B/op	       3 allocs/op
+BenchmarkSnapshotCodecReuseProbe/go.mod/reset_reader_compare_buffered_source-10         	  322722	      1134 ns/op	2878.11 MB/s	      56 B/op	       3 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/new_writer_per_object-10     	   10000	     32300 ns/op	 300.04 MB/s	  733178 B/op	      15 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/new_writer_per_object-10     	   10000	     33241 ns/op	 291.54 MB/s	  733178 B/op	      15 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/new_writer_per_object-10     	   10000	     36406 ns/op	 266.19 MB/s	  733178 B/op	      15 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/reset_writer_per_capture-10  	  127702	      2712 ns/op	3572.97 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/reset_writer_per_capture-10  	  139438	      2615 ns/op	3705.43 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/reset_writer_per_capture-10  	  139424	      2621 ns/op	3697.32 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/new_reader_and_copy_buffer-10         	   42691	      8452 ns/op	1146.66 MB/s	   50476 B/op	      10 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/new_reader_and_copy_buffer-10         	   41506	      8367 ns/op	1158.30 MB/s	   50476 B/op	      10 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/new_reader_and_copy_buffer-10         	   44044	      8245 ns/op	1175.33 MB/s	   50476 B/op	      10 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/reset_reader_and_reuse_buffer-10      	   61368	      5918 ns/op	1637.48 MB/s	     188 B/op	       4 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/reset_reader_and_reuse_buffer-10      	   61406	      5895 ns/op	1643.90 MB/s	     188 B/op	       4 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/reset_reader_and_reuse_buffer-10      	   61704	      5881 ns/op	1647.73 MB/s	     188 B/op	       4 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/reset_reader_compare_buffered_source-10         	  123091	      2950 ns/op	3285.48 MB/s	      56 B/op	       3 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/reset_reader_compare_buffered_source-10         	  122618	      2959 ns/op	3274.69 MB/s	      56 B/op	       3 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/agent/metrics.go/reset_reader_compare_buffered_source-10         	  122702	      2949 ns/op	3286.02 MB/s	      56 B/op	       3 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/new_writer_per_object-10                          	    5338	     69660 ns/op	2109.89 MB/s	  733176 B/op	      15 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/new_writer_per_object-10                          	    5172	     78921 ns/op	1862.30 MB/s	  733177 B/op	      15 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/new_writer_per_object-10                          	    4993	     73761 ns/op	1992.58 MB/s	  733179 B/op	      15 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/reset_writer_per_capture-10                       	    9202	     39667 ns/op	3705.21 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/reset_writer_per_capture-10                       	    9074	     43957 ns/op	3343.55 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/reset_writer_per_capture-10                       	    9225	     41322 ns/op	3556.79 MB/s	       0 B/op	       0 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/new_reader_and_copy_buffer-10                     	    3949	     90582 ns/op	1622.55 MB/s	   73516 B/op	      10 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/new_reader_and_copy_buffer-10                     	    3872	     90732 ns/op	1619.87 MB/s	   73516 B/op	      10 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/new_reader_and_copy_buffer-10                     	    3998	     90958 ns/op	1615.85 MB/s	   73516 B/op	      10 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/reset_reader_and_reuse_buffer-10                  	    4095	     87448 ns/op	1680.69 MB/s	     188 B/op	       4 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/reset_reader_and_reuse_buffer-10                  	    4182	     86882 ns/op	1691.65 MB/s	     188 B/op	       4 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/reset_reader_and_reuse_buffer-10                  	    4164	     87215 ns/op	1685.18 MB/s	     188 B/op	       4 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/reset_reader_compare_buffered_source-10           	    8318	     44558 ns/op	3298.45 MB/s	      56 B/op	       3 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/reset_reader_compare_buffered_source-10           	    8310	     43918 ns/op	3346.52 MB/s	      56 B/op	       3 allocs/op
+BenchmarkSnapshotCodecReuseProbe/internal/app/runtime.go/reset_reader_compare_buffered_source-10           	    7885	     45997 ns/op	3195.33 MB/s	      56 B/op	       3 allocs/op
+PASS
+ok  	marshal/internal/snapshot	17.692s

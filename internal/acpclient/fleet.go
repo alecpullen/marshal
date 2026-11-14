@@ -38,7 +38,8 @@ type Fleet interface {
 	State() FleetState
 
 	// Changed fires after anything State returns may have changed. It is a
-	// coalescing signal with a buffer of 1.
+	// coalescing signal with a buffer of 1. It is closed when the client
+	// closes, so a reader learns there is nothing more to wait for.
 	//
 	// Routes: none.
 	Changed() <-chan struct{}

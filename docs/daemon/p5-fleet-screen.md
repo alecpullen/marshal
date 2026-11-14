@@ -525,10 +525,12 @@ first, then the alternative it was weighed against.
     minute connected.
   - Each reconnect resumes with `Last-Event-ID`, and refetches what it read on
     connect, since the ring may have moved past it.
-  - The connection state is one of three:
+  - The connection state is one of five:
+    - connecting, before the first read;
     - connected;
     - reconnecting, while the retries run;
-    - down, once retries have failed for a minute. It keeps retrying every 30s.
+    - down, once retries have failed for a minute. It keeps retrying every 30s;
+    - rejected, when a 401 stops everything.
 - **A 401.**
   - A 401 on any request stops the stream and every retry.
   - The state says "token rejected for <profile>".
@@ -621,8 +623,8 @@ first, then the alternative it was weighed against.
     starts.
   - `q` and `ctrl-c` leave the fleet program for the shell.
 - **Connection and failures** follow fleet-cli §5.
-  - The footer shows the state as a dot: `●` connected, `◌` reconnecting, `✗`
-    down.
+  - The footer shows the state as a dot: `●` connected, `◌` connecting or
+    reconnecting, `✗` down or rejected.
   - While down, the panels keep the last state, dimmed. Actions are refused
     with a status-line message.
   - A failed action shows on the status line for 4s, and as a line in Events.
@@ -1327,6 +1329,54 @@ tests fail against them.
   workspace, gate override, push time and each queue item's submission are
   now copied too, the pending request's payload into a fresh byte slice.
 
+**The second branch review.** Four more reviewers read the branch, one over
+the client, one over the screen, one over the seam and the launch path, and
+one over this record and the plan. They found two defects in the client, two
+in the screen, and two stale sentences in the documents. All are fixed, and
+each fix has a test that fails without it.
+
+- **A 401 in the connect's own window was overwritten.** The deltas that
+  arrive while the connect reads the fleet are applied after the read, and
+  one of them can ask for a refetch that meets the 401. The rejection stopped
+  the client, but the connected state that followed presented the connection
+  as live: the screen showed a stream that would never update again, and
+  never said the token had been rejected. The connected state now leaves a
+  rejection standing, with its message.
+- **`State` still shared two values with the client:** a project's orphan
+  worktrees, and the daemon's refresh record. They are copied now, and the
+  test that says every slice and map is the caller's own copy mutates both.
+- **The client never said it was closed.** A reader waiting on its change
+  signal waited forever — one goroutine per program run, which matters for
+  plan 4b's fleet program run repeatedly in one process. The client closes its
+  signal when it closes, and the screen's wait ends on a closed signal rather
+  than reading it as a change.
+- **The Needs you panel could hide the row under the cursor.** It showed the
+  queue's oldest rows, so a queue longer than the panel kept the cursor's row
+  out of sight, and the right panel followed a selection nobody could see. The
+  panel now scrolls around the cursor.
+- **Two documents had gone stale.** This spec's connection-state list still
+  said three states, and `AGENTS.md`'s `internal/acpclient` row did not
+  mention the fleet seam. Both are corrected, and the plan's layout decision
+  now carries a pointer to the corrected rule.
+- **Smaller things, fixed with tests:** the help screen claimed `esc` clears
+  the filter (it does not, unless the filter is open) and offered `j`/`k`
+  without saying where they move a cursor; `tab` did nothing while the filter
+  was open, so the focus could not move until it was closed; a row with no
+  time read as a count of days since 1970; an identifier cut to eight bytes
+  could split a character; the model kept a `prev` field it never read; and
+  the stream parser dropped a field line with no colon, which the event
+  stream format reads as a field with an empty value.
+- **Two gaps in the launch path's own tests are now closed:** the production
+  path — the client built over the socket, run and closed — had no test, and
+  neither did the branch where the user's config cannot be read.
+- **The screen's own untested keys are now tested:** `1` and `3` pick the
+  right panel's tab, `z` and `?` toggle their overlays, and the view asks for
+  the alternate screen and no mouse.
+
+One finding was not a defect: the review noted that the execution claims in
+this record are not code-checkable from the tree. That is what a record is —
+the run's own account of what it saw — and the record says so.
+
 **Verification.**
 
 | Command | Result |
@@ -1338,6 +1388,17 @@ tests fail against them.
 | `CGO_ENABLED=1 go build -o marshal ./cmd/marshal` | Built (git-ignored via `.gitignore`'s `/marshal`). |
 | `./marshal fleet --embedded` | Refused, as it must be: `marshal fleet: --embedded cannot be combined with fleet: the fleet screen needs the daemon`, exit 1. |
 | `TMPDIR=/private/tmp/p5-3-suite go test ./test/usability/... -run TestScripted -timeout 5m` | Passed (`marshal/test/usability` ok, 45.1s). |
+
+**The second review's verification.** The same tree, after the fixes above.
+
+| Command | Result |
+| --- | --- |
+| `gofmt -l internal cmd test web` | No output. |
+| `go vet ./...` | Clean. |
+| `TMPDIR=/private/tmp/p5-3-suite CGO_ENABLED=1 go test -p=1 ./... -count=1 -timeout 30m -skip '^Test(NoticeCallBudget\|ControlCallBudget\|AnswerCallBudget\|ResponseBarrierBudget\|SettingsCallBudget\|NoteCallBudget\|BrowserCallBudget\|EndCallBudget\|StackBusyFlipBudget\|StackPatchApplyBudget\|StackRoundTripBudget\|AKeyPressOverThePipeBudget)$'` | Passed: every package ok, no failure, exit 0. The twelve skipped tests are the wall-clock budget family CI skips. |
+| `TMPDIR=/private/tmp/p5-3-suite CGO_ENABLED=1 go test -race ./internal/fleetclient/ ./internal/app/tui/fleet/ ./internal/acpclient/ ./internal/launch/ -count=1` | `ok marshal/internal/fleetclient 3.407s`, `ok marshal/internal/app/tui/fleet 1.745s`, `ok marshal/internal/acpclient 1.522s`, `ok marshal/internal/launch 13.940s`, no data race. |
+| `CGO_ENABLED=1 go build -o marshal ./cmd/marshal` | Built (git-ignored via `.gitignore`'s `/marshal`). |
+| `./marshal fleet --embedded` | Refused, as it must be: `marshal: marshal fleet: --embedded cannot be combined with fleet: the fleet screen needs the daemon`, exit 1. |
 
 ### Plan 4a — fleet requests reach the bridge, and leave it
 

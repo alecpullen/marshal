@@ -1,7 +1,9 @@
 package fleet
 
 import (
+	"fmt"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -428,6 +430,104 @@ func TestNeedsYouSelectsItsAgent(t *testing.T) {
 	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
 	if m.selected != "a1" {
 		t.Fatalf("selected after up = %q, want a1", m.selected)
+	}
+}
+
+// TestTheNeedsYouPanelKeepsTheCursorVisible checks a queue longer than the
+// panel scrolls around the cursor's row: the row the user is on is never
+// hidden below the fold.
+func TestTheNeedsYouPanelKeepsTheCursorVisible(t *testing.T) {
+	f := newFakeFleet()
+	m := New(f, fixedClock())
+
+	state := loadedState(1)
+	for i := 1; i <= 7; i++ {
+		state.Inbox.Queue = append(state.Inbox.Queue, contract.InboxItem{
+			Kind:       contract.InboxItemIntake,
+			Submission: &contract.PendingSubmission{ID: fmt.Sprintf("s%d", i), Title: fmt.Sprintf("item%d", i)},
+		})
+	}
+	m = f.change(t, m, state)
+
+	m.focus = focusNeedsYou
+	m.needsCursor = 6
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	got := next.(Model).View().Content
+
+	if !strings.Contains(got, "item7") {
+		t.Fatalf("the cursor's row is not on screen:\n%s", got)
+	}
+	if strings.Contains(got, "item1") {
+		t.Fatalf("the panel did not scroll: the oldest row is still on screen:\n%s", got)
+	}
+}
+
+// TestTheTabKeysSwitchTheRightPanel checks the 1 and 3 keys pick the right
+// panel's tab.
+func TestTheTabKeysSwitchTheRightPanel(t *testing.T) {
+	m := New(newFakeFleet(), fixedClock())
+
+	m, _ = press(t, m, tea.KeyPressMsg{Code: '3', Text: "3"})
+	if m.tab != 3 {
+		t.Fatalf("tab after 3 = %d, want 3", m.tab)
+	}
+	m, _ = press(t, m, tea.KeyPressMsg{Code: '1', Text: "1"})
+	if m.tab != 1 {
+		t.Fatalf("tab after 1 = %d, want 1", m.tab)
+	}
+}
+
+// TestTheZoomAndHelpKeysToggle checks z and ? toggle their overlays.
+func TestTheZoomAndHelpKeysToggle(t *testing.T) {
+	m := New(newFakeFleet(), fixedClock())
+
+	m, _ = press(t, m, tea.KeyPressMsg{Code: 'z', Text: "z"})
+	if !m.zoom {
+		t.Fatal("z did not zoom the focused panel")
+	}
+	m, _ = press(t, m, tea.KeyPressMsg{Code: 'z', Text: "z"})
+	if m.zoom {
+		t.Fatal("z did not unzoom the focused panel")
+	}
+
+	m, _ = press(t, m, tea.KeyPressMsg{Code: '?', Text: "?"})
+	if !m.help {
+		t.Fatal("? did not show the help")
+	}
+	m, _ = press(t, m, tea.KeyPressMsg{Code: '?', Text: "?"})
+	if m.help {
+		t.Fatal("? did not hide the help")
+	}
+}
+
+// TestARowWithNoTimeReadsAsADash checks a row whose time is unknown: the age
+// reads as –, not as a count of days since the epoch.
+func TestARowWithNoTimeReadsAsADash(t *testing.T) {
+	m := New(newFakeFleet(), fixedClock())
+	if got, want := m.age(time.Time{}), "–"; got != want {
+		t.Errorf("the age of no time = %q, want %q", got, want)
+	}
+}
+
+// TestTheWaitEndsWhenTheClientCloses checks the screen stops waiting when the
+// client's change signal closes: a closed client has nothing more to say, so
+// the wait must end rather than block forever.
+func TestTheWaitEndsWhenTheClientCloses(t *testing.T) {
+	f := newFakeFleet()
+	m := New(f, fixedClock())
+
+	wait := m.waitForChange()
+	close(f.changed)
+
+	done := make(chan tea.Msg, 1)
+	go func() { done <- wait() }()
+	select {
+	case msg := <-done:
+		if msg != nil {
+			t.Fatalf("the wait after the client closed returned %T, want nil", msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the wait command blocked after the client closed")
 	}
 }
 

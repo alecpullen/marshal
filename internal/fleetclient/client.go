@@ -178,6 +178,9 @@ func (c *Client) Start(ctx context.Context) {
 
 // Close ends the stream, every timer and the client's goroutine, and waits for
 // the goroutine to return. Calling it twice is a no-op.
+//
+// The change signal is closed too, so a reader waiting on it learns there is
+// nothing more to wait for.
 func (c *Client) Close() error {
 	c.mu.Lock()
 	if c.closed {
@@ -194,6 +197,7 @@ func (c *Client) Close() error {
 	if started {
 		<-c.done
 	}
+	c.closeChanged()
 	return nil
 }
 
@@ -206,18 +210,33 @@ func (c *Client) State() acpclient.FleetState {
 }
 
 // Changed fires after anything State returns may have changed. It coalesces: a
-// signal already waiting is not queued twice, and a send never blocks.
+// signal already waiting is not queued twice, and a send never blocks. It is
+// closed when the client closes.
 func (c *Client) Changed() <-chan struct{} {
 	return c.changed
 }
 
 // fire signals Changed without blocking. It is a coalescing signal, so a
-// second change with a signal already waiting is dropped.
+// second change with a signal already waiting is dropped. A closed client
+// signals nothing.
 func (c *Client) fire() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return
+	}
 	select {
 	case c.changed <- struct{}{}:
 	default:
 	}
+}
+
+// closeChanged closes the change signal, so a reader stops waiting. It holds
+// the lock the send does, so a signal can never race the close.
+func (c *Client) closeChanged() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	close(c.changed)
 }
 
 // httpClient is the transport's HTTP client, or the default one.
@@ -630,12 +649,18 @@ func (c *Client) install(snap snapshot) {
 }
 
 // connected marks the first full read landed and the stream up.
+//
+// A rejection stands: a 401 that arrived while the deltas were being applied
+// stopped the client, and the read that followed it must not present the
+// connection as live.
 func (c *Client) connected() {
 	c.mu.Lock()
 	c.state.Loaded = true
 	c.state.Epoch++
-	c.state.Conn = acpclient.FleetConnected
-	c.state.ConnErr = ""
+	if c.state.Conn != acpclient.FleetRejected {
+		c.state.Conn = acpclient.FleetConnected
+		c.state.ConnErr = ""
+	}
 	c.mu.Unlock()
 	c.fire()
 }
@@ -813,6 +838,9 @@ func copyState(s acpclient.FleetState) acpclient.FleetState {
 	if s.Projects != nil {
 		out.Projects = make([]contract.ProjectStatus, len(s.Projects))
 		copy(out.Projects, s.Projects)
+		for i := range out.Projects {
+			out.Projects[i].OrphanWorktrees = copyStrings(s.Projects[i].OrphanWorktrees)
+		}
 	}
 
 	out.Inbox = contract.Inbox{
@@ -855,6 +883,10 @@ func copyState(s acpclient.FleetState) acpclient.FleetState {
 			for i := range daemon.Children {
 				daemon.Children[i].Sessions = copySessions(s.Daemon.Children[i].Sessions)
 			}
+		}
+		if s.Daemon.Refresh != nil {
+			refresh := *s.Daemon.Refresh
+			daemon.Refresh = &refresh
 		}
 		out.Daemon = &daemon
 	}

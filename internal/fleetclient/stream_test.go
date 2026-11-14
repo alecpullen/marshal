@@ -102,6 +102,26 @@ func TestTheParserEmitsTheLastFrameWithoutABlankLine(t *testing.T) {
 	}
 }
 
+// TestTheParserReadsAFieldWithNoColon checks a field line with no colon: the
+// event stream format reads it as a field name with an empty value.
+func TestTheParserReadsAFieldWithNoColon(t *testing.T) {
+	reader := newEventReader(strings.NewReader("data\n\n"))
+
+	frame, err := reader.next()
+	if err != nil {
+		t.Fatalf("frame: %v", err)
+	}
+	if got, want := string(frame.Data), ""; got != want {
+		t.Errorf("the frame's data = %q, want %q", got, want)
+	}
+
+	// A line that names no known field is not a frame.
+	reader = newEventReader(strings.NewReader("hello\n\n"))
+	if _, err := reader.next(); err != io.EOF {
+		t.Fatalf("next after an unknown field = %v, want io.EOF", err)
+	}
+}
+
 // TestTheFrameSourceHoldsFramesUntilTaken checks the buffer the connect drains
 // after its reads.
 func TestTheFrameSourceHoldsFramesUntilTaken(t *testing.T) {

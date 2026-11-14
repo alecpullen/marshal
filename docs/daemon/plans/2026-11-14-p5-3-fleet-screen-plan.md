@@ -185,6 +185,11 @@ F3's and F4's "Decided by plan 3" bullets record them.
       Events shows 3 rows below 30 rows of height, and 6 from 30 up. Agents
       takes the rest. Each panel is a closed `chrome.Frame`, so it costs two
       border rows.
+
+    Erratum: the width rule is the other way round from 100 up. The Agents
+    table takes the larger pane and the right panel keeps 40%, because the
+    table's fixed columns and their gaps fill a 40% pane on their own. The
+    record in `docs/daemon/p5-fleet-screen.md` has the arithmetic.
 12. **The right panel's tabs are Activity (`1`) and Info (`3`).** `2` stays
     free for plan 5's Diff, so the numbers never move. A Sessions row has no
     tabs: the panel shows its project, its session ID, its viewers and its
@@ -265,7 +270,8 @@ type Fleet interface {
 	State() FleetState
 
 	// Changed fires after anything State returns may have changed. It is a
-	// coalescing signal with a buffer of 1.
+	// coalescing signal with a buffer of 1. It is closed when the client
+	// closes, so a reader learns there is nothing more to wait for.
 	//
 	// Routes: none.
 	Changed() <-chan struct{}

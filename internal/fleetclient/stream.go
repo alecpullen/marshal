@@ -54,15 +54,19 @@ func (e *eventReader) next() (eventFrame, error) {
 		case strings.HasPrefix(text, ":"):
 			// A heartbeat or comment.
 		default:
+			// A line with no colon is a field name with an empty value, as
+			// the event stream format says.
 			field, value, ok := strings.Cut(text, ":")
-			if ok {
+			if !ok {
+				field, value = text, ""
+			} else {
 				value = strings.TrimPrefix(value, " ")
-				switch field {
-				case "id":
-					e.lastID, frameID = value, value
-				case "data":
-					data = append(data, value)
-				}
+			}
+			switch field {
+			case "id":
+				e.lastID, frameID = value, value
+			case "data":
+				data = append(data, value)
 			}
 		}
 

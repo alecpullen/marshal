@@ -173,7 +173,8 @@ func (m Model) panelAgents(outer, h int) string {
 	return m.frame("Agents", strconv.Itoa(len(rows)), body, outer, h, focused)
 }
 
-// panelNeedsYou draws the needs-you queue, oldest first.
+// panelNeedsYou draws the needs-you queue, oldest first. A queue longer than
+// the panel scrolls, so the row under the cursor stays visible.
 func (m Model) panelNeedsYou(outer, h int) string {
 	focused := m.focus == focusNeedsYou
 	if !m.state.Loaded {
@@ -181,9 +182,11 @@ func (m Model) panelNeedsYou(outer, h int) string {
 	}
 	queue := m.state.Inbox.Queue
 	inner := max(outer-4, 1)
-	body := make([]string, 0, len(queue))
-	for i, item := range queue {
-		text := cut(m.needsYouText(item), inner)
+	rows := max(h-2, 0)
+	start := needsYouWindow(len(queue), m.needsCursor, rows)
+	body := make([]string, 0, rows)
+	for i := start; i < len(queue) && i-start < rows; i++ {
+		text := cut(m.needsYouText(queue[i]), inner)
 		if focused && i == m.needsCursor {
 			text = chrome.SelectionStyle().Render(text)
 		} else {
@@ -192,6 +195,23 @@ func (m Model) panelNeedsYou(outer, h int) string {
 		body = append(body, text)
 	}
 	return m.frame("Needs you", strconv.Itoa(len(queue)), body, outer, h, focused)
+}
+
+// needsYouWindow is the index of the first queue row the panel shows. A queue
+// longer than the panel scrolls around the cursor's row, so the row the user
+// is on is never hidden.
+func needsYouWindow(queue, cursor, rows int) int {
+	if rows <= 0 || queue <= rows {
+		return 0
+	}
+	start := cursor - rows/2
+	if start < 0 {
+		start = 0
+	}
+	if start > queue-rows {
+		start = queue - rows
+	}
+	return start
 }
 
 // panelEvents draws the Events ring's newest lines, newest at the bottom.
@@ -411,7 +431,7 @@ func (m Model) sessionLine(r agentRow, widths []int, selected bool) string {
 		label += " " + viewersText(viewers)
 	}
 	age := "–"
-	if known {
+	if known && last > 0 {
 		age = m.age(time.UnixMilli(last))
 	}
 	dot := m.mutedCell(glyph.Ambient)
@@ -567,8 +587,12 @@ func (m Model) contextBar(pct int) string {
 }
 
 // age is the time since t, on the model's clock: seconds under a minute,
-// minutes under an hour, hours under a day, then days.
+// minutes under an hour, hours under a day, then days. A row with no time
+// reads as –, like every other unknown.
 func (m Model) age(t time.Time) string {
+	if t.IsZero() {
+		return "–"
+	}
 	d := m.now().Sub(t)
 	if d < 0 {
 		d = 0
@@ -742,10 +766,10 @@ func (m Model) footer() string {
 func (m Model) helpScreen() string {
 	body := m.frame("Help", "", []string{
 		"tab / shift-tab  focus the next or previous panel",
-		"j / k            move the cursor",
+		"j / k            move the cursor in a list panel",
 		"1 / 3            Activity or Info tab",
 		"z                zoom the focused panel",
-		"esc              unzoom, or clear the filter",
+		"esc              unzoom, or clear the filter while it is open",
 		"/                filter agents by name or project",
 		"?                show or hide this help",
 		"q / ctrl+c       quit",

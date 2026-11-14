@@ -889,6 +889,7 @@ func TestStateIsACopy(t *testing.T) {
 	first.Agents[0].Access.Mode = "mutated"
 	first.Agents = append(first.Agents, contract.AgentStatus{ID: "mutated"})
 	first.Projects[0].Root = "mutated"
+	first.Projects[0].OrphanWorktrees[0] = "mutated"
 	first.Inbox.Groups.NeedsYou[0] = "mutated"
 	first.Inbox.Queue[0].AgentID = "mutated"
 	first.Gates["a1"] = contract.GateRecord{}
@@ -905,6 +906,7 @@ func TestStateIsACopy(t *testing.T) {
 	first.Daemon.Projects[0] = "mutated"
 	first.Daemon.Pinned[0] = "mutated"
 	first.Daemon.Children[0].Sessions[0].ID = "mutated"
+	first.Daemon.Refresh.Restarts = 99
 
 	if first.Agents[0].Workspace == nil || first.Agents[0].GateOverride == nil || first.Agents[0].PushedAt == nil {
 		t.Fatal("the first row's fixture is missing a pointed-to value; it needs Workspace, GateOverride and PushedAt")
@@ -1437,5 +1439,78 @@ func TestCloseStopsTheClient(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	if got := b.requestCount(); got != count {
 		t.Fatalf("%d requests after Start on a closed client, want none", got-count)
+	}
+}
+
+// TestARejectionStands is the regression for a rejection that the connected
+// state overwrote: a 401 that lands while the connect's buffered deltas are
+// applied stops the client, and the connected state that follows must not
+// present the connection as live.
+func TestARejectionStands(t *testing.T) {
+	c := New(Transport{Server: "fake"})
+
+	// A 401 lands before the read that would have marked the client
+	// connected.
+	c.reject()
+	c.connected()
+
+	s := c.State()
+	if s.Conn != acpclient.FleetRejected {
+		t.Errorf("Conn = %v, want FleetRejected", s.Conn)
+	}
+	if s.ConnErr != "token rejected for fake" {
+		t.Errorf("ConnErr = %q, want %q", s.ConnErr, "token rejected for fake")
+	}
+}
+
+// TestA401DuringTheConnectKeepsTheRejection is the end-to-end shape of the
+// same defect: the 401 meets the refetch a buffered delta asks for, in the
+// window between the connect's read and the connected state.
+func TestA401DuringTheConnectKeepsTheRejection(t *testing.T) {
+	b := newFakeBridge(t)
+	gate := b.holdAgents()
+	c := b.startClient(t, false)
+
+	// The delta arrives while the connect's read is held open, so it is
+	// buffered and applied after the read — in the window before the client
+	// says it is connected.
+	b.delta(`{"kind":"pending","sessionId":"a1","pendingKind":"approval"}`)
+	// Let the client's reader take the frame off the wire before the read
+	// completes, so the frame is in the buffered set when the read returns.
+	time.Sleep(50 * time.Millisecond)
+	// The refetch the delta asks for meets the rejection.
+	b.rejectPath("/api/agents")
+	close(gate)
+
+	waitFor(t, "the rejection", func() bool {
+		return c.State().Conn == acpclient.FleetRejected
+	})
+	s := c.State()
+	if s.ConnErr != "token rejected for fake" {
+		t.Errorf("ConnErr = %q, want %q", s.ConnErr, "token rejected for fake")
+	}
+}
+
+// TestCloseClosesTheChangeSignal checks the client says it is closed, so a
+// reader waiting on its change signal learns there is nothing more to wait for.
+func TestCloseClosesTheChangeSignal(t *testing.T) {
+	b := newFakeBridge(t)
+	c := b.startClient(t, false)
+	waitConnected(t, c)
+
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	for {
+		select {
+		case _, open := <-c.Changed():
+			if !open {
+				return // the signal is closed
+			}
+			// A buffered signal: take it and look again.
+		case <-time.After(time.Second):
+			t.Fatal("the change signal was not closed by Close")
+		}
 	}
 }

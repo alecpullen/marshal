@@ -14,15 +14,18 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.quit()
 	}
 	if m.filtering {
+		if msg.Code == tea.KeyTab {
+			// Tab leaves the filter, keeping its text, and moves the focus
+			// on: the panel keys answer again.
+			m.filtering = false
+			m.cycleFocus(msg.Mod.Contains(tea.ModShift))
+			return m, nil
+		}
 		return m.handleFilterKey(msg)
 	}
 
 	if msg.Code == tea.KeyTab {
-		if msg.Mod.Contains(tea.ModShift) {
-			m.focus = (m.focus + focusCount - 1) % focusCount
-		} else {
-			m.focus = (m.focus + 1) % focusCount
-		}
+		m.cycleFocus(msg.Mod.Contains(tea.ModShift))
 		return m, nil
 	}
 
@@ -88,6 +91,16 @@ func (m Model) handleFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.reconcile()
 	}
 	return m, nil
+}
+
+// cycleFocus moves the focus to the next panel, or to the previous one when
+// shift is held.
+func (m *Model) cycleFocus(back bool) {
+	if back {
+		m.focus = (m.focus + focusCount - 1) % focusCount
+	} else {
+		m.focus = (m.focus + 1) % focusCount
+	}
 }
 
 // moveCursor moves the focused list panel's cursor by delta. Moving in Needs

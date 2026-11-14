@@ -38,10 +38,8 @@ type Model struct {
 	th  theme.Theme
 	cfg config.TUIConfig
 
-	// state is the last state read from the client; prev is the one before
-	// it, which the transitions compare against.
+	// state is the last state read from the client.
 	state acpclient.FleetState
-	prev  acpclient.FleetState
 	// events is the Events ring: oldest first, newest last, at most maxEvents
 	// lines.
 	events []string
@@ -149,13 +147,18 @@ func (m Model) Init() tea.Cmd {
 
 // waitForChange waits for the client's change signal. It gives up as soon as
 // the program quits, so it never leaks a goroutine past the program's life.
+// A closed client ends the wait too: there is nothing more to read.
 func (m Model) waitForChange() tea.Cmd {
 	f, done := m.fleet, m.done
 	return func() tea.Msg {
 		select {
 		case <-done.ch:
 			return nil
-		case <-f.Changed():
+		case _, open := <-f.Changed():
+			if !open {
+				// The client is closed: its signal will never fire again.
+				return nil
+			}
 			return changedMsg{}
 		}
 	}
@@ -201,7 +204,6 @@ func (m *Model) applyState() {
 	for _, t := range transitions(prev, next) {
 		m.addEvent(transitionText(t))
 	}
-	m.prev = prev
 	m.state = next
 	m.dimmed = next.Conn != acpclient.FleetConnected
 	m.reconcile()
@@ -325,10 +327,12 @@ func agentName(a contract.AgentStatus) string {
 	return shortID(a.ID)
 }
 
-// shortID is the first 8 characters of id.
+// shortID is the first 8 characters of id. It cuts on a rune, so a
+// multi-byte character is never split.
 func shortID(id string) string {
-	if len(id) > 8 {
-		return id[:8]
+	runes := []rune(id)
+	if len(runes) > 8 {
+		return string(runes[:8])
 	}
 	return id
 }

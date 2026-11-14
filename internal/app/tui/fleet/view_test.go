@@ -321,6 +321,20 @@ func TestColourAddsNoText(t *testing.T) {
 	}
 }
 
+// TestTheScreenAsksForTheAlternateScreenAndNoMouse pins decision 14: the
+// alternate screen, and no mouse capture, so the terminal's own selection
+// keeps working.
+func TestTheScreenAsksForTheAlternateScreenAndNoMouse(t *testing.T) {
+	v := New(newFakeFleet(), fixedClock()).View()
+
+	if !v.AltScreen {
+		t.Error("the screen does not ask for the alternate screen")
+	}
+	if v.MouseMode != tea.MouseModeNone {
+		t.Errorf("the screen's mouse mode = %v, want none", v.MouseMode)
+	}
+}
+
 // TestEachStateGlyphHasItsColour checks every ST state glyph is styled in its
 // colour (decision 9): no state is told by colour alone, and none lacks its
 // colour.

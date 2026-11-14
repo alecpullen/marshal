@@ -98,7 +98,7 @@ Runtime & orchestration
 
 App shell & config
   internal/acpwire/        wire types and error codes for the TUI client seam (stdlib only)
-  internal/acpclient/      the TUI's Host/Session interfaces; rpc/ is the JSON-RPC client the TUI runs on
+  internal/acpclient/      the TUI's Host/Session/Fleet interfaces (fleet.go declares the fleet screen's seam); rpc/ is the JSON-RPC client the TUI runs on
   internal/launch/         embedded mode's composition root: the run loop, the agent host on a pipe, the TUI over its client
   internal/daemon/         the local daemon's paths, service units and commands, and its socket's client, attach handshake included
   internal/fleetclient/    the fleet client over the daemon's socket: the fleet screen's read of a bridge

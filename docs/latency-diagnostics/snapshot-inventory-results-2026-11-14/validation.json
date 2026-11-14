@@ -1,0 +1,45 @@
+{
+  "full_suite": {
+    "command": "CGO_ENABLED=1 go test -p=1 ./... -count=1 -json -timeout 20m",
+    "exit_code": 0,
+    "packages_passed": 123,
+    "packages_without_tests": [
+      "marshal/internal/agent/agenttest",
+      "marshal/internal/app/session/sessiontest",
+      "marshal/internal/app/tui/glyph",
+      "marshal/internal/watch/watchctx",
+      "marshal/test/usability/actor",
+      "marshal/web/bridge/contract"
+    ],
+    "test_subtest_pass_events": 13064,
+    "test_skips": 10,
+    "elapsed_event_interval_seconds": 523.074241,
+    "log_sha256": "5b7aae4717d7a306a4797f0a894b1d5a8d6deb6003b14d35c8fb520eaf3461c8",
+    "required_usability_binary": "private freshly built marshal-after --embedded wrapper; no production changes since this binary was built"
+  },
+  "initial_full_suite": {
+    "exit_code": 1,
+    "failed_tests": [
+      "TestACPSendNowCancelsPromptRPCWithoutCancelingTurn/approval",
+      "TestACPSendNowCancelsPromptRPCWithoutCancelingTurn"
+    ],
+    "log_sha256": "bcf514cf96c23247c0d8a324a7dd26b890d99a485544c011f6731fee9ae60df5"
+  },
+  "acp_test_correction": {
+    "baseline_80_repeats": "failed with same approval-context assertion",
+    "corrected_80_repeats": "passed",
+    "corrected_go127_race_10_repeats": "passed",
+    "mutation_cancellation_disabled": "expected failure; private copy restored",
+    "production_acp_changes": false
+  },
+  "vet": {
+    "repository": "passed",
+    "tagged_snapshot_usability": "passed"
+  },
+  "snapshot_race": {
+    "toolchain": "go1.27.0",
+    "result": "passed",
+    "log_sha256": "53a318e4a86b00400fc321fdebca40670cd4c932a0b044efe1278496f342cad2"
+  },
+  "review": "independent production/evidence review; ancestor no-follow finding reproduced and corrected"
+}

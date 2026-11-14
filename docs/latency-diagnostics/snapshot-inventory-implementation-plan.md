@@ -56,13 +56,13 @@ Files: modify `usage.go` and `admission.go`; add tests in
 
 ## Task 3: Evidence, integration and review
 
-- [ ] Repeat the same three-process one/four-workspace diagnostic on the fixed
+- [x] Repeat the same three-process one/four-workspace diagnostic on the fixed
   public Marshal source, plus a separate profile; compare against committed
   baseline logs and check the predicted seven-to-three visit reduction.
-- [ ] Repeat real-client timings with LSP off/snapshots on in private fixtures.
-- [ ] Run complete default Go suite with a required private embedded binary,
+- [x] Repeat real-client timings with LSP off/snapshots on in private fixtures.
+- [x] Run complete default Go suite with a required private embedded binary,
   repository/tagged vet, and independent code/evidence review.
-- [ ] Record results and limitations; commit and publish a separate PR.
+- [x] Record results and limitations; commit and publish a separate PR.
 
 ## Progress
 
@@ -73,3 +73,12 @@ one helper before narrowing the rotation caller. Validation consumes both.
 Tasks 1/2 implemented together because they share generation classification.
 RED: usage/workspace/discovery visits3/2/2; unrelated unreadable generation blocked target rotation. GREEN focused tests. Full snapshot package112.955s passed before ancestor-guard correction; focused safety/accounting tests2.185s and Go1.27 race8.447s passed afterward.
 Independent review identified missing ancestor no-follow checks in target rotation; both new regressions failed before the guard correction and passed after it.
+
+Task 3 complete: three matched component pairs, two separate profiles and three
+real-client pairs. Warm captures were 16.7% / 26.7% faster for one / four stored
+workspaces; the real warm turn fell from 2.551 to 2.201 seconds. The initial full
+suite exposed a pre-existing asynchronous ACP assertion race, reproduced on the
+baseline. A test-only wait passed 80 repeats, ten race-checked repeats and a
+cancellation-removal mutation check. The complete final suite passed 123
+packages with no failures. Vet, focused race checks and independent code/evidence
+reviews are complete.

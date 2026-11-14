@@ -1,0 +1,26 @@
+File: snapshot.test
+Type: cpu
+Time: 2026-11-14 20:22:59 AEDT
+Duration: 7.53s, Total samples = 5.50s (73.03%)
+Showing nodes accounting for 4.93s, 89.64% of 5.50s total
+Dropped 142 nodes (cum <= 0.03s)
+Showing top 18 nodes out of 146
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%      5.05s 91.82%  marshal/internal/snapshot.(*Manager).AdmitAndCaptureWithCleanup
+         0     0%     0%      5.05s 91.82%  marshal/internal/snapshot.(*Service).Track
+         0     0%     0%      5.05s 91.82%  marshal/internal/snapshot.(*Service).Track.func1
+         0     0%     0%      5.05s 91.82%  marshal/internal/snapshot.(*Service).withStore
+         0     0%     0%      5.05s 91.82%  marshal/internal/snapshot.TestSnapshotTraversalProbe
+         0     0%     0%      5.05s 91.82%  marshal/internal/snapshot.TestSnapshotTraversalProbe.func2 (inline)
+         0     0%     0%      5.05s 91.82%  testing.tRunner
+     4.93s 89.64% 89.64%      4.93s 89.64%  syscall.rawsyscalln
+         0     0% 89.64%      4.92s 89.45%  syscall.syscalln
+         0     0% 89.64%      4.54s 82.55%  syscall.syscall
+         0     0% 89.64%      2.96s 53.82%  os.ignoringEINTR (inline)
+         0     0% 89.64%      2.75s 50.00%  marshal/internal/snapshot.(*Manager).measureTree
+         0     0% 89.64%      2.71s 49.27%  marshal/internal/snapshot.(*Manager).AdmitCapture
+         0     0% 89.64%      2.07s 37.64%  marshal/internal/snapshot.(*Manager).UsageContext
+         0     0% 89.64%      2.07s 37.64%  marshal/internal/snapshot.(*Manager).usageWith
+         0     0% 89.64%         2s 36.36%  marshal/internal/snapshot.(*Manager).measureTreeAllocated
+         0     0% 89.64%      1.93s 35.09%  marshal/internal/snapshot.(*Manager).captureToGeneration
+         0     0% 89.64%      1.72s 31.27%  marshal/internal/snapshot.(*Manager).MeasureWorkspaceGenerations

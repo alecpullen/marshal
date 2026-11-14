@@ -9,6 +9,7 @@ Start with the [design and decision record](design-notes.md), which distinguishe
 - [Product design and decisions](design-notes.md): optional project factories within the fleet manager, conversational planning and handoff, forge/CI/review, mobile/PWA, notifications, environments, hosts and recovery.
 - [Journey map](journey-map.md) and [high-resolution visual](screenshots/journey-map.png).
 - [Environment feasibility](environment-feasibility.md): Dev Containers/Compose/native execution, OrbStack ARM64 and Podman considerations.
+- [Workers and external planners](worker-and-planner-integration.md): mobile-friendly Studio planning, reusable worker roles, complementary ACP and MCP paths, project context and opt-in planner delegation; a future direction to validate and plan.
 - [Initial bootstrap scope](bootstrap-factory-scope.md) and [source compatibility assessment](bootstrap-compatibility.md).
 - [Original bootstrap design draft](bootstrap-factory-design.md) and [original implementation plan](bootstrap-factory-plan.md).
 - [Earlier exploration overview](early-exploration-readme.md), retained as historical context; the decision record takes precedence over its older open-question lists.

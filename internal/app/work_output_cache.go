@@ -4,6 +4,8 @@ import (
 	"container/list"
 	"strings"
 	"sync"
+
+	"marshal/internal/redact"
 )
 
 const (
@@ -23,6 +25,7 @@ type workOutputCache struct {
 
 type workOutputEntry struct {
 	key, revision, raw, clean string
+	generation                uint64
 }
 
 func (e workOutputEntry) size() int {
@@ -30,45 +33,53 @@ func (e workOutputEntry) size() int {
 }
 
 func (c *workOutputCache) clean(key, revision, raw string) string {
-	c.mu.Lock()
-	if el := c.entries[key]; el != nil {
-		e := el.Value.(workOutputEntry)
-		if e.revision == revision && e.raw == raw {
-			c.lru.MoveToFront(el)
-			c.mu.Unlock()
-			return e.clean
+	for {
+		generation := redact.Generation()
+		c.mu.Lock()
+		if el := c.entries[key]; el != nil {
+			e := el.Value.(workOutputEntry)
+			if e.revision == revision && e.raw == raw && e.generation == generation {
+				c.lru.MoveToFront(el)
+				c.mu.Unlock()
+				return e.clean
+			}
 		}
-	}
-	c.mu.Unlock()
+		c.mu.Unlock()
 
-	// Redaction can be expensive. Do it without holding source/coordinator or
-	// cache locks. A late insert from an older snapshot only causes a future
-	// miss: every lookup validates the caller's exact input again.
-	clean := cleanWorkTail(raw)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if el := c.entries[key]; el != nil {
-		c.remove(el)
-	}
-	// Subtract rather than sum untrusted lengths before the admission check.
-	remaining := workOutputCacheBytes
-	for _, s := range []string{key, revision, raw, clean} {
-		if len(s) > remaining {
-			return clean
+		// Redaction can be expensive. Do it without holding source/coordinator or
+		// cache locks. A late insert from an older snapshot only causes a future
+		// miss: every lookup validates the caller's exact input again.
+		clean := cleanWorkTail(raw)
+		// Cleaning consults the runtime secret registry. If it changed during
+		// that work, retry from the full input (a secret may span the tail cut).
+		if redact.Generation() != generation {
+			continue
 		}
-		remaining -= len(s)
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if el := c.entries[key]; el != nil {
+			c.remove(el)
+		}
+		// Subtract rather than sum untrusted lengths before the admission check.
+		remaining := workOutputCacheBytes
+		for _, s := range []string{key, revision, raw, clean} {
+			if len(s) > remaining {
+				return clean
+			}
+			remaining -= len(s)
+		}
+		// Own each backing allocation: a tiny substring must not pin a huge log.
+		e := workOutputEntry{key: strings.Clone(key), revision: strings.Clone(revision), raw: strings.Clone(raw), clean: strings.Clone(clean), generation: generation}
+		for c.lru.Len() >= workOutputCacheEntries || c.used+e.size() > workOutputCacheBytes {
+			c.remove(c.lru.Back())
+		}
+		if c.entries == nil {
+			c.entries = make(map[string]*list.Element)
+		}
+		c.entries[e.key] = c.lru.PushFront(e)
+		c.used += e.size()
+		return clean
 	}
-	// Own each backing allocation: a tiny substring must not pin a huge log.
-	e := workOutputEntry{strings.Clone(key), strings.Clone(revision), strings.Clone(raw), strings.Clone(clean)}
-	for c.lru.Len() >= workOutputCacheEntries || c.used+e.size() > workOutputCacheBytes {
-		c.remove(c.lru.Back())
-	}
-	if c.entries == nil {
-		c.entries = make(map[string]*list.Element)
-	}
-	c.entries[e.key] = c.lru.PushFront(e)
-	c.used += e.size()
-	return clean
 }
 
 func (c *workOutputCache) remove(el *list.Element) {

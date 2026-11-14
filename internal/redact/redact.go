@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unicode"
 
 	"marshal/internal/sandbox/envutil"
@@ -141,9 +142,15 @@ const maxLiteralSecrets = 256
 // env-resolved MCP header values. They carry no recognisable sigil, so the
 // pattern passes below cannot find them; they are masked verbatim instead.
 var (
-	literalMu      sync.RWMutex
-	literalSecrets = map[string]struct{}{}
+	literalMu         sync.RWMutex
+	literalSecrets    = map[string]struct{}{}
+	literalGeneration atomic.Uint64
 )
+
+// Generation changes whenever the runtime literal registry changes. Derived
+// text caches must validate this as well as their raw input, and must not tag
+// text with a generation observed only after cleaning it.
+func Generation() uint64 { return literalGeneration.Load() }
 
 // RegisterSecret records a literal secret value so Secrets masks every
 // occurrence of it. Values shorter than minLiteralSecretLen are ignored, and
@@ -157,7 +164,11 @@ func RegisterSecret(value string) {
 	if len(literalSecrets) >= maxLiteralSecrets {
 		return
 	}
+	if _, exists := literalSecrets[value]; exists {
+		return
+	}
 	literalSecrets[value] = struct{}{}
+	literalGeneration.Add(1)
 }
 
 // resetRegisteredSecrets clears the registry. Tests use it to isolate cases.
@@ -165,6 +176,7 @@ func resetRegisteredSecrets() {
 	literalMu.Lock()
 	defer literalMu.Unlock()
 	literalSecrets = map[string]struct{}{}
+	literalGeneration.Add(1)
 }
 
 // maskRegisteredSecrets replaces every registered literal secret with

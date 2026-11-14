@@ -5,10 +5,29 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"marshal/internal/app/session"
+	"marshal/internal/redact"
 	"marshal/internal/tools/native"
 )
+
+func TestWorkOutputCacheInvalidatesRegisteredSecrets(t *testing.T) {
+	for _, boundary := range []bool{false, true} {
+		var cache workOutputCache
+		secret := fmt.Sprintf("opaque-work-cache-%d-%v", time.Now().UnixNano(), boundary)
+		raw, want := "printed "+secret, "printed "+redact.MaskToken
+		if boundary {
+			suffix := strings.Repeat("x", workTailBytes-len(redact.MaskToken))
+			raw, want = secret+suffix, redact.MaskToken+suffix
+		}
+		cache.clean("key", "r1", raw)
+		redact.RegisterSecret(secret)
+		if got := cache.clean("key", "r1", raw); got != want {
+			t.Fatalf("cache did not re-clean full input after secret registration (boundary=%v)", boundary)
+		}
+	}
+}
 
 // Repeatedly projecting a completed command must not repeatedly allocate the
 // sanitized output, including a retained job discarded by durable precedence.
@@ -116,6 +135,7 @@ func TestWorkOutputCacheConcurrentCorrections(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
+			redact.RegisterSecret(fmt.Sprintf("concurrent-cache-registry-%d", i))
 			input := fmt.Sprint(i)
 			for range 100 {
 				if got := cache.clean("same key", "r1", input); got != input {

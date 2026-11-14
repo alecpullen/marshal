@@ -69,6 +69,10 @@ linear comparison. These figures are not whole-coordinator timings.
   identity) and result revision, and require exact raw-input equality on hits.
   `ResultRevision` is computed from settlement metadata, not an output digest;
   `AddJobExit` can replace output under the same identity and revision.
+  Implementation review also identified a mutable cleaning dependency:
+  `redact.RegisterSecret` adds literal secrets during a session. Cache hits
+  must validate that registry's generation, and recompute from the full raw
+  input if it changes, including secrets crossing the tail clipping boundary.
 - Cache derived cleaned text only. Rebuild state, capabilities, save errors,
   acknowledgments, attachment and progress from fresh snapshots. Running
   progress can change without a lifecycle revision, so caching an entire work

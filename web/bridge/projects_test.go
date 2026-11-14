@@ -659,6 +659,56 @@ func TestProjectSettingsConditionalConflict(t *testing.T) {
 	})
 }
 
+// TestProjectSettingsStaleBodyIsConflictNotInvalid checks that a conditional
+// write evaluates its precondition before it validates the body. A writer whose
+// view of the record is stale is told its view is stale, not that its body is
+// invalid: it is describing a project someone else has since changed, and
+// "fix your body and retry" is the wrong instruction. The 412 names the value
+// that won, so a client can act on it without a second round trip.
+func TestProjectSettingsStaleBodyIsConflictNotInvalid(t *testing.T) {
+	e, s, root := projectEnv(t)
+	path := "/api/projects/settings?root=" + root
+
+	rec := doReq(t, s, http.MethodPut, path, ProjectSettings{ShipTarget: "merge"}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("put = %d %s", rec.Code, rec.Body)
+	}
+	stale := rec.Header().Get("ETag")
+
+	// Another writer moves the record on, so stale no longer names it.
+	if code := putSettings(t, s, root, ProjectSettings{ShipTarget: "push"}); code != http.StatusOK {
+		t.Fatalf("intervening write = %d", code)
+	}
+	current, stored := projectSettingsTag(t, s, root)
+
+	// The stale tag wins over the invalid body: 412, not 400.
+	rec = doReq(t, s, http.MethodPut, path, ProjectSettings{ShipTarget: "bogus"}, map[string]string{"If-Match": stale})
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("stale tag with an invalid body = %d %s, want 412", rec.Code, rec.Body)
+	}
+	if got := rec.Header().Get("ETag"); got != current {
+		t.Fatalf("412 ETag = %q, want the stored %q", got, current)
+	}
+	if got := e.f.ws.ProjectSettingsFor(root); got.ShipTarget != stored.ShipTarget {
+		t.Fatalf("a refused write changed the record: %+v", got)
+	}
+
+	// The same invalid body against the current tag is still the caller's
+	// mistake, so the ordering does not weaken validation.
+	rec = doReq(t, s, http.MethodPut, path, ProjectSettings{ShipTarget: "bogus"}, map[string]string{"If-Match": current})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("current tag with an invalid body = %d %s, want 400", rec.Code, rec.Body)
+	}
+
+	// A project that is not registered is a bad request target, not a
+	// conflict, whatever tag it names.
+	unregistered := path[:strings.LastIndex(path, "=")+1] + root + "-nope"
+	rec = doReq(t, s, http.MethodPut, unregistered, ProjectSettings{ShipTarget: "merge"}, map[string]string{"If-Match": stale})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unregistered root = %d %s, want 400", rec.Code, rec.Body)
+	}
+}
+
 // TestProjectSettingsConcurrentConditionalWrites checks the compare and the
 // write are one step: two writers naming the same version cannot both win.
 func TestProjectSettingsConcurrentConditionalWrites(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -132,30 +133,45 @@ func (f *Fleet) putProjectSettings(root string, ps ProjectSettings) (ProjectSett
 	if err := f.ws.PutProjectSettings(root, ps); err != nil {
 		return ProjectSettings{}, err
 	}
-	if err := f.applyProjectSettings(root, ps, prev, repo); err != nil {
-		return ProjectSettings{}, err
-	}
+	f.applyProjectSettings(root, ps, prev, repo)
 	return ps, nil
 }
 
-// putProjectSettingsIfMatch is the conditional form: the store compares
-// expected with the value it holds, updates and saves under its own lock, and
-// only then are the intake watcher and the audit record touched. A mismatch
-// performs neither, and reports ok false with no error — the caller's view is
-// stale, which is the HTTP layer's 412. The stored settings it returns are the
-// value that was written, so the caller's ETag cannot come from a later read.
+// putProjectSettingsIfMatch is the conditional form. It evaluates the
+// precondition before it validates the body, so a caller writing from a stale
+// read is told its view is stale (ok false, the HTTP layer's 412) even when
+// the body it sends would no longer validate: it is describing a project
+// another writer has since changed, and "validate this again" would be the
+// wrong instruction. The store then repeats the comparison while holding the
+// lock that performs the write, so the check and the write cannot be split by
+// a racing writer, and neither the intake watcher nor the audit record is
+// touched unless that write lands.
+//
+// On a mismatch it returns the settings it saw, which is what the caller's
+// ETag is compared against, so the 412 can name the value that won.
 func (f *Fleet) putProjectSettingsIfMatch(root string, ps ProjectSettings, expected string) (ProjectSettings, bool, error) {
+	if err := f.registeredProject(root); err != nil {
+		return ProjectSettings{}, false, err
+	}
+	current, err := f.ws.ProjectSettingsETag(root)
+	if err != nil {
+		return ProjectSettings{}, false, err
+	}
+	if current != expected {
+		return f.ws.ProjectSettingsFor(root), false, nil
+	}
 	ps, repo, err := f.validateProjectSettings(root, ps)
 	if err != nil {
 		return ProjectSettings{}, false, err
 	}
 	ok, prev, err := f.ws.PutProjectSettingsIfMatch(root, ps, expected)
-	if err != nil || !ok {
+	if err != nil {
 		return ProjectSettings{}, false, err
 	}
-	if err := f.applyProjectSettings(root, ps, prev, repo); err != nil {
-		return ProjectSettings{}, false, err
+	if !ok {
+		return prev, false, nil
 	}
+	f.applyProjectSettings(root, ps, prev, repo)
 	return ps, true, nil
 }
 
@@ -215,7 +231,14 @@ func (f *Fleet) validateProjectSettings(root string, ps ProjectSettings) (Projec
 // applyProjectSettings performs the side effects of a settings write that has
 // already been stored: the intake label is mirrored onto the registered repo's
 // watcher, and the change is audited. prev is the value the write replaced.
-func (f *Fleet) applyProjectSettings(root string, ps, prev ProjectSettings, repo Repo) error {
+//
+// It reports no error on purpose. The settings are committed before it runs,
+// so a watcher failure cannot be undone by failing the request: the caller
+// would be told its write did not happen, would retry, and would then be
+// refused with 412 because the write it made is exactly what moved the tag.
+// The failure is logged instead, and the audit entry is still written, because
+// the user's change did take effect.
+func (f *Fleet) applyProjectSettings(root string, ps, prev ProjectSettings, repo Repo) {
 	// The poller supports one label, so the first one is the watcher's.
 	if ps.Intake.RepoID != "" && !sameIntake(prev.Intake, ps.Intake) {
 		repo.Watch = len(ps.Intake.Labels) > 0
@@ -224,11 +247,11 @@ func (f *Fleet) applyProjectSettings(root string, ps, prev ProjectSettings, repo
 			repo.WatchLabel = ps.Intake.Labels[0]
 		}
 		if err := f.ws.PutRepo(repo); err != nil {
-			return err
+			slog.Default().Warn("webbridge: mirror intake label onto repo watcher",
+				"project", root, "repo", repo.ID, "err", err)
 		}
 	}
 	f.auditf(AuditEvent{Event: AuditProjectSettings, OwnerID: DefaultOwnerID, RepoID: ps.Intake.RepoID, Detail: filepath.Base(root)})
-	return nil
 }
 
 func sameIntake(a, b ProjectIntake) bool {
@@ -403,7 +426,10 @@ func (s *Server) getProjectSettings(w http.ResponseWriter, r *http.Request) {
 // header is the legacy unconditional write. The tag is opaque to clients, but
 // it has exactly one form — the quoted tag a GET returns — so a wildcard, a
 // list, an unquoted value or anything else is a malformed request (400), not a
-// conflict: the bridge cannot compare a version it never emitted.
+// conflict: the bridge cannot compare a version it never emitted. Hex digits
+// in upper case are still a well-formed tag, so they are compared rather than
+// rejected; they simply never equal the lower-case tag the bridge emits, which
+// makes such a write a conflict (412), not a malformed request.
 func settingsIfMatch(r *http.Request) (string, bool, error) {
 	values := r.Header.Values("If-Match")
 	if len(values) == 0 {
@@ -442,6 +468,18 @@ func writeSettings(w http.ResponseWriter, status int, ps ProjectSettings) {
 	writeJSON(w, status, ps)
 }
 
+// writeStale answers a conditional write whose If-Match no longer names the
+// stored settings: 412, changing nothing. It carries the ETag of the value
+// that is stored now, so a client can tell what won and retry against it
+// rather than discovering the change with an extra GET.
+func writeStale(w http.ResponseWriter, ps ProjectSettings) {
+	if tag, err := projectSettingsETag(ps); err == nil {
+		w.Header().Set("ETag", tag)
+	}
+	writeJSON(w, http.StatusPreconditionFailed,
+		map[string]string{"error": "project settings changed since the If-Match ETag"})
+}
+
 func (s *Server) putProjectSettings(w http.ResponseWriter, r *http.Request) {
 	var ps ProjectSettings
 	if !decodeJSON(w, r, &ps) {
@@ -461,9 +499,10 @@ func (s *Server) putProjectSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if !ok {
 			// The stored settings moved since the caller read them. Nothing
-			// was written, mirrored onto the watcher or audited.
-			writeJSON(w, http.StatusPreconditionFailed,
-				map[string]string{"error": "project settings changed since the If-Match ETag"})
+			// was written, mirrored onto the watcher or audited. The response
+			// names the value that won, so a client that needs to merge can
+			// compare against it without a second round trip.
+			writeStale(w, stored)
 			return
 		}
 		writeSettings(w, http.StatusOK, stored)

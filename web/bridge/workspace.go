@@ -696,6 +696,18 @@ func projectSettingsETag(ps ProjectSettings) (string, error) {
 	return `"` + hex.EncodeToString(sum[:]) + `"`, nil
 }
 
+// ProjectSettingsETag returns the ETag of the settings the store holds for
+// root right now. A conditional write reads it before it looks at the body, so
+// a caller whose view is stale is told exactly that instead of being sent away
+// with a validation error about a version it can no longer see. The tag is
+// computed under the lock that guards the map, so it describes one value and
+// not a torn read of two.
+func (w *Workspace) ProjectSettingsETag(root string) (string, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return projectSettingsETag(w.projectSettings[root])
+}
+
 // PutProjectSettingsIfMatch stores a project's settings only when the stored
 // value still carries expected as its ETag. It reports whether it wrote, the
 // value it replaced, and any persistence error. The comparison, the map update

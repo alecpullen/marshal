@@ -12,8 +12,10 @@ scripts/e2e/run_browser_checks.sh
 The script builds the SPA, builds `webbridge`, writes a fixture config with
 three agent profiles and no real provider, starts the bridge on port 7799 with
 an isolated `HOME`/config/data dir, runs the suite at desktop and 390px, and
-stops the bridge. `KEEP=1` leaves the bridge and the fixture in `/tmp` for
-debugging and prints the paths; `PW_PORT` moves it off 7799.
+stops the bridge. `KEEP=1` leaves the fixture directory — the generated config,
+the throwaway project and the bridge log — in `/tmp` and prints the path, so a
+failure can be inspected after the fact; the bridge itself is always stopped.
+`PW_PORT` moves it off 7799.
 
 Prerequisites: `npm install` in `web/ui`, plus the browser:
 
@@ -36,6 +38,7 @@ browser. `npm test` stays jsdom-only; these run under `npm run test:browser`.
 | `a stale save warns, keeps the edit, and offers reload` | `If-Match` / 412 path |
 | `factory form shows inherited sources and keeps its input` | handoff review, settings link |
 | `no horizontal overflow and readable labels` | both viewports |
+| `the handoff form does not overflow either viewport` | handoff form, both viewports |
 | `unsaved edits are confirmed before in-app navigation` | draft guard |
 
 No external credentials are used: the fixture provider points at a closed

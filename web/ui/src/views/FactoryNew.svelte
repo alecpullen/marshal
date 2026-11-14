@@ -113,7 +113,13 @@
     value && !options.some((o) => o.value === value) ? [...options, { value, label: `${value} (unavailable)` }] : options
   const wsOptions = $derived(workspaces.map((w) => ({ value: w.source === 'repo' ? `repo:${w.name}` : w.name, label: w.source === 'repo' ? `${w.name} (repo)` : w.name })))
   const workspaceChoices = $derived(keepUnavailable(wsOptions, workspaceOverride))
-  const profileChoices = $derived(keepUnavailable(profiles.map((p) => ({ value: p, label: p })), implementerOverride || reviewerOverride))
+  // Each role keeps its own unavailable value. Sharing one list would leave the
+  // second role's saved profile out of its picker, so the select would show a
+  // blank choice and touching it would silently replace a value the user never
+  // meant to change.
+  const profileOptions = $derived(profiles.map((p) => ({ value: p, label: p })))
+  const implementerChoices = $derived(keepUnavailable(profileOptions, implementerOverride))
+  const reviewerChoices = $derived(keepUnavailable(profileOptions, reviewerOverride))
 
   onMount(() => { void load() })
   async function load() {
@@ -269,14 +275,14 @@
         <label class="grid gap-1 text-sm">Implementer model profile
           <select class="rounded border border-border bg-bg p-2" bind:value={implementerOverride}>
             <option value="">Follow inherited setting</option>
-            {#each profileChoices as o (o.value)}<option value={o.value}>{o.label}</option>{/each}
+            {#each implementerChoices as o (o.value)}<option value={o.value}>{o.label}</option>{/each}
           </select>
         </label>
         <p class="text-xs text-muted" data-testid="implementer-effective">{describe(implementer, 'set a project model profile or choose one here')}</p>
         <label class="grid gap-1 text-sm">Reviewer model profile
           <select class="rounded border border-border bg-bg p-2" bind:value={reviewerOverride}>
             <option value="">Follow inherited setting</option>
-            {#each profileChoices as o (o.value)}<option value={o.value}>{o.label}</option>{/each}
+            {#each reviewerChoices as o (o.value)}<option value={o.value}>{o.label}</option>{/each}
           </select>
         </label>
         <p class="text-xs text-muted" data-testid="reviewer-effective">{describe(reviewer, 'set a project model profile or choose one here')}</p>

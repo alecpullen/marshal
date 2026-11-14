@@ -197,6 +197,39 @@ describe('Project factory and agent defaults', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
     await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalledTimes(2))
     expect(written(1).factoryDefaults).toEqual({ workspace: 'repo:ci' })
+    // The second write names the version the first write returned, not the one
+    // the page originally read: the token follows every successful save.
+    expect((api.putVersionedProjectSettings as Mock).mock.calls[1][2]).toBe('"v1"+')
+  })
+
+  it('aSaveInFlightDoesNotRevertWhatWasTypedAfterIt', async () => {
+    let release!: (v: unknown) => void
+    ;(api.putVersionedProjectSettings as Mock).mockImplementationOnce(
+      () => new Promise((resolve) => { release = resolve }),
+    )
+    mount()
+    await waitFor(() => expect((screen.getByLabelText('Mode') as HTMLSelectElement).value).toBe('ask'))
+    await fireEvent.change(screen.getByLabelText('Mode'), { target: { value: 'act' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalledTimes(1))
+
+    // The user keeps typing while the write is still in flight.
+    await fireEvent.change(screen.getByLabelText('Ship target'), { target: { value: 'patch' } })
+    expect((screen.getByLabelText('Ship target') as HTMLSelectElement).value).toBe('patch')
+
+    // The response describes what was sent, so adopting it wholesale would
+    // silently undo the Ship target edit made after the request left.
+    release(versioned({ ...settings, mode: 'act' }, '"v1+"'))
+    await waitFor(() => expect(screen.queryByRole('status')).not.toBeNull())
+    expect((screen.getByLabelText('Ship target') as HTMLSelectElement).value).toBe('patch')
+    expect((screen.getByLabelText('Mode') as HTMLSelectElement).value).toBe('act')
+
+    // The stored record and the version token still advanced, so the next
+    // write is not refused as stale.
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalledTimes(2))
+    expect((api.putVersionedProjectSettings as Mock).mock.calls[1][2]).toBe('"v1+"')
+    expect(written(1).shipTarget).toBe('patch')
   })
 
   it('roleOverridesIndependentAndReset', async () => {
@@ -248,6 +281,31 @@ describe('Project factory and agent defaults', () => {
     expect(body.intake).toEqual(rich.intake)
     expect(body.automations).toEqual(rich.automations)
     expect((body as unknown as Record<string, unknown>).futureSetting).toEqual({ keep: ['me'] })
+  })
+
+  it('keepsARoleRouteThatHasNoProfileWhenSomethingElseIsSaved', async () => {
+    // A stored role route need not carry a profile: it can hold overrides, and
+    // members a build does not know. Saving an unrelated field must keep it —
+    // an absent profile is not the user asking to delete the route.
+    ;(api.getVersionedProjectSettings as Mock).mockResolvedValue(versioned({
+      workspace: 'go-dev',
+      intake: {},
+      factoryDefaults: {
+        implementerRouting: { overrides: { reviewer: 'big' }, futureMember: { nested: true } },
+        reviewerRouting: { overrides: { implementer: 'small' } },
+      },
+    } as unknown as api.ProjectSettings))
+    mount()
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Save defaults' }) as HTMLButtonElement).disabled).toBe(false))
+    await fireEvent.change(screen.getByLabelText('Ship target'), { target: { value: 'patch' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalled())
+    const defaults = written().factoryDefaults ?? {}
+    expect(defaults.implementerRouting).toEqual({ overrides: { reviewer: 'big' }, futureMember: { nested: true } })
+    expect(defaults.reviewerRouting).toEqual({ overrides: { implementer: 'small' } })
+    // No profile member is invented for a route that never had one.
+    expect(defaults.implementerRouting).not.toHaveProperty('profile')
+    expect(defaults.reviewerRouting).not.toHaveProperty('profile')
   })
 
   it('unavailableChoicesRemainVisible', async () => {

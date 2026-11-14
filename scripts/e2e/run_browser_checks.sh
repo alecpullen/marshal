@@ -9,6 +9,15 @@
 #   scripts/e2e/run_browser_checks.sh
 #   PW_PORT=7801 KEEP=1 scripts/e2e/run_browser_checks.sh   # keep the fixture
 #
+# Environment:
+#   PW_PORT      port the fixture bridge listens on (default 7799)
+#   PW_TOKEN     bearer token the bridge and the suite use (default e2e-token)
+#   PW_WORKDIR   scratch directory for the fixture, bridge log and binary
+#                (default a fresh temp dir). Unless KEEP=1, it is deleted on
+#                exit, so do not point it at a real directory.
+#   KEEP=1       keep the fixture config, project and bridge log afterwards
+#   SKIP_BUILD=1 reuse an existing SPA build and skip building webbridge
+#
 # Requires `npm install` in web/ui and the browser:
 #   cd web/ui && npx playwright install chromium
 set -euo pipefail
@@ -96,8 +105,10 @@ XDG_DATA_HOME="$workdir/data" \
 bridge_pid=$!
 
 base="http://127.0.0.1:$port"
+ready=0
 for _ in $(seq 1 50); do
   if curl -fsS -H "Authorization: Bearer $token" "$base/api/projects/settings?root=$(printf %s "$project" | sed 's|/|%2F|g')" >/dev/null 2>&1; then
+    ready=1
     break
   fi
   if ! kill -0 "$bridge_pid" 2>/dev/null; then
@@ -107,6 +118,16 @@ for _ in $(seq 1 50); do
   fi
   sleep 0.2
 done
+
+# The loop can also end on the last probe's failure, with the bridge still
+# alive but not answering — a bad config, or a machine slower than the budget.
+# Without this check Playwright would run against an unready bridge and report
+# the resulting browser failures as suite bugs.
+if [[ "$ready" != "1" ]]; then
+  echo "bridge did not answer on $base within 10s; log:" >&2
+  cat "$workdir/bridge.log" >&2
+  exit 1
+fi
 
 echo "==> running the browser checks"
 cd "$repo_root/web/ui"

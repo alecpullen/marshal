@@ -152,7 +152,7 @@
     clients = c
   }
 
-  const PROJECT_CHANGED = 'These settings changed elsewhere. Your edits are kept: reload to see the saved values, then save again.'
+  const PROJECT_CHANGED = 'These settings changed elsewhere. Your edits are kept until you reload: reloading discards them and shows the saved values.'
 
   async function save(next: ProjectSettings, what: string) {
     if (!saved) {
@@ -190,8 +190,18 @@
     }
   }
 
-  /** A role route keeps every member the server sent, including ones this build does not know. */
-  const roleRouting = (base: Record<string, unknown> | undefined, value: string): Record<string, unknown> => ({ ...(base ?? {}), profile: value })
+  /**
+   * A role route keeps every member the server sent, including ones this build
+   * does not know. An empty profile removes only the profile member: a route
+   * that never had one is not something saving an unrelated field may delete.
+   * A route left with nothing at all is dropped.
+   */
+  function roleRoute(base: Record<string, unknown> | undefined, value: string): Record<string, unknown> | undefined {
+    const route: Record<string, unknown> = { ...(base ?? {}) }
+    if (value) route.profile = value
+    else delete route.profile
+    return Object.keys(route).length ? route : undefined
+  }
 
   /** The same syntax the handoff form accepts; an empty list means "follow", not "no checks". */
   function parseChecks(): FactoryCheckKey[] {
@@ -216,8 +226,14 @@
     if (factoryHost) f.hostId = factoryHost
     if (targetBranch.trim()) f.targetBranch = targetBranch.trim()
     if (factoryWorkspace) f.workspace = factoryWorkspace
-    if (implementerProfile) f.implementerRouting = roleRouting(stored?.implementerRouting, implementerProfile)
-    if (reviewerProfile) f.reviewerRouting = roleRouting(stored?.reviewerRouting, reviewerProfile)
+    if (implementerProfile || stored?.implementerRouting) {
+      const route = roleRoute(stored?.implementerRouting, implementerProfile)
+      if (route) f.implementerRouting = route
+    }
+    if (reviewerProfile || stored?.reviewerRouting) {
+      const route = roleRoute(stored?.reviewerRouting, reviewerProfile)
+      if (route) f.reviewerRouting = route
+    }
     if (reviewerInstructions.trim()) f.reviewerInstructions = reviewerInstructions.trim()
     const checks = parseChecks()
     if (checks.length) f.expectedChecks = checks

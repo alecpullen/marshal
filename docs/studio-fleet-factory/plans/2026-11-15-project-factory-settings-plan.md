@@ -168,7 +168,7 @@ No two tasks that share a package or a test binary overlapped.
 | `go test ./web/bridge` | PASS |
 | `go test ./web/bridge -run 'TestFactoryDefaults\|TestFactoryAgent\|TestProjectSettings\|TestWebIsStdlibOnly'` | PASS |
 | `go test -race ./web/bridge -run TestProjectSettingsConcurrentConditionalWrites` | PASS |
-| `cd web/ui && npm test` | PASS — 88 files, 963 tests |
+| `cd web/ui && npm test` | PASS — 88 files, 974 tests |
 | `cd web/ui && npm run check` | 6 pre-existing errors, unchanged: `Chat.svelte:697`, `Run.svelte:336`, `Sidebar.test.ts:16`, `fleet.test.ts:78`, `Review.test.ts:49`, `Runs.test.ts:15` |
 | `scripts/e2e/run_browser_checks.sh` | PASS — 12 checks (6 cases × desktop and 390px) |
 | `CGO_ENABLED=1 go build ./cmd/marshal` | PASS |
@@ -180,3 +180,27 @@ The full `go test ./...` baseline was taken twice on the accepted base: one run
 under concurrent `npm` load reported `FAIL` naming no test, and an unloaded
 rerun passed with no failures. The final run is recorded in the pull request;
 no named test failure is attributed to this slice.
+
+## Branch review record
+
+The branch was reviewed against `40c2194d` by three independent
+`glm-5.3-flash` reviewers through `ollama-cloud`, split by file set: the Go
+bridge (`factory_defaults.go`, `workspace.go`, `projects.go`), the web UI
+(`api.ts`, `factory.ts`, `Project.svelte`, `FactoryNew.svelte`), and docs,
+scripts and committed assets. All findings are addressed in the fix-up commit;
+the reviewer verified the fixes before the pull request left draft.
+
+| Review finding | Resolution |
+|---|---|
+| A stale `If-Match` with a body that no longer validates answered 400 "your body is invalid" rather than 412 "your view is stale", because validation ran before the precondition | `putProjectSettingsIfMatch` now evaluates the precondition first through the lock-held `Workspace.ProjectSettingsETag`, then validates, then lets the store re-confirm the tag atomically. `TestProjectSettingsStaleBodyIsConflictNotInvalid` pins 412-over-400, the 400 for the same body against the current tag, and 400 for an unregistered root |
+| A failed intake-watcher mirror after a committed write returned an error for a write that had persisted, leaving the client's version token behind the stored value | `applyProjectSettings` is now best-effort: it logs the watcher failure and still audits, so a committed write answers 200 with the tag of what was stored |
+| The 412 carried no ETag, forcing every stale client into an extra GET | `writeStale` sets the ETag of the value that won before writing the body |
+| `settingsIfMatch` accepted upper-case hex while its comment promised 400 for anything the bridge never emitted | The comment now states the real rule: a well-formed tag in any case is compared, and upper case simply never matches the lower-case tag the bridge emits, so it is a 409-style conflict (412), not malformed |
+| Saving an unrelated field deleted a stored role route that had no `profile` member, losing its overrides and unknown members | `roleRoute` in `Project.svelte` removes only the `profile` member and keeps the rest, dropping the route only when nothing is left. `keepsARoleRouteThatHasNoProfileWhenSomethingElseIsSaved` covers it |
+| The in-flight save race, and the version token advancing across consecutive saves, were untested | `aSaveInFlightDoesNotRevertWhatWasTypedAfterIt` holds the write open, types, then releases it; `followsAgentDefaultsUntilOverridden` now asserts the second write names the tag the first returned |
+| `FactoryNew` shared one profile picker list between both roles, so a second unavailable profile was dropped and its select rendered blank | Each role now derives its own choices from `keepUnavailable` |
+| The 412 copy said edits were kept by reloading, while the offered Reload discards them | The copy now says the edits survive until reload, and that reloading discards them |
+| `run_browser_checks.sh` could fall through to Playwright with the bridge alive but not answering | The readiness loop sets a `ready` flag and a failed wait prints the bridge log and exits |
+| `web/ui/e2e/README.md` claimed `KEEP=1` left the bridge running, and its coverage table omitted the second overflow case | The wording now says the fixture and log survive and the bridge is always stopped; the table lists all six cases |
+| `PW_WORKDIR` and `SKIP_BUILD` were honoured but undocumented | The script header documents every variable, including that `PW_WORKDIR` is deleted unless `KEEP=1` |
+| The recorded `npm test` count (963) was stale | It is 974, re-measured after the fix-up tests |

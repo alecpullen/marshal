@@ -27,10 +27,13 @@ type daemonHarness struct {
 	t      *testing.T
 	socket string
 	root   string // the project every attach names
-	ws     *bridge.Workspace
-	fleet  *bridge.Fleet
-	srv    *http.Server
-	client *daemon.Client
+	// stateDir is the fleet's state directory, which the project children's
+	// viewer sockets live under.
+	stateDir string
+	ws       *bridge.Workspace
+	fleet    *bridge.Fleet
+	srv      *http.Server
+	client   *daemon.Client
 }
 
 func newDaemonHarness(t *testing.T) *daemonHarness {
@@ -96,13 +99,14 @@ func newDaemonHarness(t *testing.T) *daemonHarness {
 	}()
 
 	h := &daemonHarness{
-		t:      t,
-		socket: socket,
-		root:   root,
-		ws:     ws,
-		fleet:  fleet,
-		srv:    srv,
-		client: daemon.NewClient(socket),
+		t:        t,
+		socket:   socket,
+		root:     root,
+		stateDir: stateDir,
+		ws:       ws,
+		fleet:    fleet,
+		srv:      srv,
+		client:   daemon.NewClient(socket),
 	}
 	t.Cleanup(h.close)
 

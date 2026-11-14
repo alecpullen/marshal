@@ -1,7 +1,7 @@
 # Lexical codebase search — implementation plan
 
 Date: 2026-11-14
-Status: approved design; plan awaiting user approval before execution.
+Status: approved for execution; not yet executed.
 Base: `011113b4` (`main`, with PR #71 merged). This plan and its specification
 travel together in PR #72; implement on a branch cut from `main` after it
 merges.

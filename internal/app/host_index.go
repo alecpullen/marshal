@@ -62,8 +62,9 @@ func (s indexSupervisor) run(ctx context.Context) {
 }
 
 // indexHeld runs the startup scan and, after a successful one, the watcher.
-// A failed scan ends the supervisor, so a process that cannot index (an
-// unreachable embedder, say) releases the lease to one that can.
+// A failed scan ends the supervisor, so a process that cannot index releases
+// the lease to one that can. An unreachable embedding backend is not such a
+// failure: the pass degrades to no embeddings and still succeeds.
 func (s indexSupervisor) indexHeld(ctx context.Context) {
 	if err := s.scan(ctx); err != nil {
 		if ctx.Err() == nil {

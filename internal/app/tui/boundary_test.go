@@ -43,7 +43,8 @@ func seamImportAllowed(importPath string) bool {
 		"marshal/internal/strutil",
 		"marshal/internal/diffview",
 		"marshal/internal/jsonextract",
-		"marshal/internal/progress":
+		"marshal/internal/progress",
+		"marshal/web/bridge/contract":
 		return true
 	}
 	// A sibling such as .../tuix must not pass the prefix check below.

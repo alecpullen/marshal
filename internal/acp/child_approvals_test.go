@@ -107,6 +107,84 @@ func newChildApprovalHarness(t *testing.T, client PermissionClient) *childApprov
 // Lookup-time start.
 func (h *childApprovalHarness) start() { h.tm.ensureChildApprovals("sess_child", h.rt) }
 
+// settledChildApprovalClient blocks every request until its context ends,
+// reporting that it was entered and that the context ended, so a test can prove
+// a settlement of the child's approval ended the forwarded RPC.
+type settledChildApprovalClient struct {
+	entered chan struct{}
+	ended   chan struct{}
+	enter   sync.Once
+	end     sync.Once
+}
+
+func newSettledChildApprovalClient() *settledChildApprovalClient {
+	return &settledChildApprovalClient{
+		entered: make(chan struct{}),
+		ended:   make(chan struct{}),
+	}
+}
+
+func (c *settledChildApprovalClient) RequestPermission(ctx context.Context, req PermissionRequest) (PermissionDecision, error) {
+	c.enter.Do(func() { close(c.entered) })
+	<-ctx.Done()
+	c.end.Do(func() { close(c.ended) })
+	return PermissionDecision{}, ctx.Err()
+}
+
+// TestASettledChildApprovalEndsItsForwardedRequest pins the settled channel for
+// a child approval: once the owning child session settles it, the forwarded
+// request stops waiting, the child keeps the decision it was given, and no
+// denial is invented for a request that already has its answer.
+func TestASettledChildApprovalEndsItsForwardedRequest(t *testing.T) {
+	client := newSettledChildApprovalClient()
+	h := newChildApprovalHarness(t, client)
+	h.start()
+
+	response := make(chan session.UserApprovalDecision, 1)
+	pending := &session.PendingToolCall{ID: "c-settled", Name: "shell.run", Command: "date", ResponseChan: response}
+	key, err := h.child.RegisterApproval(context.Background(), pending)
+	if err != nil {
+		t.Fatalf("RegisterApproval: %v", err)
+	}
+
+	select {
+	case <-client.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the child approval was never forwarded to the permission client")
+	}
+
+	// The child session's own answer path.
+	if _, err := h.child.ResolveApproval(key, session.UserApprovalDecision{Approved: true}, nil); err != nil {
+		t.Fatalf("ResolveApproval: %v", err)
+	}
+
+	select {
+	case <-client.ended:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the settled child approval did not end its forwarded request")
+	}
+	select {
+	case got := <-response:
+		if !got.Approved {
+			t.Fatalf("decision = %+v, want the decision the child was given", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the settled decision never reached the child")
+	}
+	// The canonical settlement cleared the slot, and the channel is closed: a
+	// denial after it could neither be delivered nor recorded.
+	if h.child.PendingApproval() != nil {
+		t.Fatal("the child's pending slot was not cleared by the canonical settlement")
+	}
+	select {
+	case late, ok := <-response:
+		if ok && !late.Approved {
+			t.Fatalf("a denial followed the settled decision: %+v", late)
+		}
+	default:
+	}
+}
+
 func TestACPChildApprovalUsesOwningSessionRegistry(t *testing.T) {
 	client := &recordingPermissionClient{decision: PermissionDecision{Approved: true}}
 	h := newChildApprovalHarness(t, client)

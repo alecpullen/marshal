@@ -7,8 +7,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/pubsub"
 )
 
 // TestQuestionRequestOptionsWireShape pins the JSON shape of question
@@ -145,6 +148,126 @@ func TestQuestionBridgeUniqueIDsUnderRapidCalls(t *testing.T) {
 	}
 	if len(ids) != 100 {
 		t.Fatalf("expected 100 IDs, got %d", len(ids))
+	}
+}
+
+// contextEndingQuestionClient blocks every question until its context ends,
+// reporting that it was entered and that the context ended, so a test can prove
+// a settlement of the pending question ended the forwarded RPC.
+type contextEndingQuestionClient struct {
+	entered chan struct{}
+	ended   chan struct{}
+	enter   sync.Once
+	end     sync.Once
+}
+
+func newContextEndingQuestionClient() *contextEndingQuestionClient {
+	return &contextEndingQuestionClient{
+		entered: make(chan struct{}),
+		ended:   make(chan struct{}),
+	}
+}
+
+func (c *contextEndingQuestionClient) RequestQuestion(ctx context.Context, req QuestionRequest) (QuestionResponse, error) {
+	c.enter.Do(func() { close(c.entered) })
+	<-ctx.Done()
+	c.end.Do(func() { close(c.ended) })
+	return QuestionResponse{}, ctx.Err()
+}
+
+// TestASettledQuestionEndsItsForwardedRequest pins the settled channel for a
+// question: when the session itself settles it (a viewer's
+// session/answer_question goes through the same path), the outbound request
+// stops waiting, the given answer stands, and no Unanswered is fabricated.
+func TestASettledQuestionEndsItsForwardedRequest(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	broker := pubsub.NewBroker[session.Event]()
+	state.SetEventBroker(broker)
+
+	answersCh := make(chan []session.Answer, 1)
+	pending := &session.PendingQuestion{
+		Questions:    []session.Question{{Question: "pick"}},
+		ResponseChan: answersCh,
+	}
+	key, err := state.RegisterQuestion(context.Background(), pending)
+	if err != nil {
+		t.Fatalf("RegisterQuestion: %v", err)
+	}
+
+	answered := make(chan []session.Answer, 1)
+	// hold keeps the turn alive after the answer arrives until the test has seen
+	// the forwarded request end, so "the context ended" cannot be satisfied
+	// merely by the turn shutting down.
+	hold := make(chan struct{})
+	client := newContextEndingQuestionClient()
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					broker.Publish(session.EventPendingQuestionChanged, session.Event{PendingQuestion: pending})
+					// Wait for the canonical answer, exactly as the runner does.
+					select {
+					case got := <-answersCh:
+						answered <- got
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+					select {
+					case <-hold:
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+					return nil
+				}),
+				Events: broker,
+				State:  state,
+			}, true
+		},
+		Notify:    func(method string, params any) error { return nil },
+		Questions: client,
+	})
+
+	turnErr := make(chan error, 1)
+	go func() {
+		_, err := manager.PromptTurn(context.Background(),
+			json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"hi"}]}`))
+		turnErr <- err
+	}()
+
+	select {
+	case <-client.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the question was never forwarded to the question client")
+	}
+
+	// The session's own answer path, as a viewer's session/answer_question uses.
+	if !state.ResolveQuestion(key, []session.Answer{{Question: "pick", Answer: "a"}}) {
+		t.Fatal("ResolveQuestion did not settle the registered question")
+	}
+
+	select {
+	case <-client.ended:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the settled question did not end its forwarded request")
+	}
+	close(hold)
+	select {
+	case err := <-turnErr:
+		if err != nil {
+			t.Fatalf("PromptTurn() error = %v, want the turn to continue", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the turn did not finish")
+	}
+	select {
+	case got := <-answered:
+		if len(got) != 1 || got[0].Answer != "a" {
+			t.Fatalf("answers = %#v, want the answer the session was given", got)
+		}
+	default:
+		t.Fatal("the settled answer never reached the waiting runner")
 	}
 }
 

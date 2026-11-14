@@ -917,14 +917,23 @@ func (m *TurnManager) runTurn(
 			} else {
 				go func() {
 					// The outbound RPC runs under a context that also stops when
-					// the prompt's owning operation is interrupted, so a steering
-					// cancellation ends this one request without cancelling the
-					// turn or leaking the goroutine until a late client answer.
+					// the prompt's owning operation is interrupted or the session
+					// settles the prompt itself, so either ends this one request
+					// without cancelling the turn or leaking the goroutine until a
+					// late client answer.
 					original := promptContextFor(rt, pa.Key)
-					rpcCtx, cleanup := promptRPCContext(turnCtx, original)
+					settled := promptSettledFor(rt, pa.Key)
+					rpcCtx, cleanup := promptRPCContext(turnCtx, original, settled)
 					defer cleanup()
 					decision, err := m.bridge.Request(rpcCtx, sessionID, pa)
 					if err != nil {
+						if settledElsewhere(settled) {
+							// The session settled this request itself (an answer
+							// from another viewer, a cancellation or a steering
+							// interruption). Nothing is left to fail here; the
+							// turn continues.
+							return
+						}
 						if steeringEndedPrompt(rt, pa.Key, original, err) {
 							// Steering ended this RPC; the session already settled
 							// the canonical request. The turn continues.
@@ -957,12 +966,20 @@ func (m *TurnManager) runTurn(
 				go func() {
 					// No wall-clock question timeout: the wait ends on client
 					// disconnect / session shutdown (turnCtx cancellation), on a
-					// steering cancellation of the owning operation, or on a
-					// bridge error, which still answers Unanswered.
+					// steering cancellation of the owning operation, on the
+					// session's own settlement of the question, or on a bridge
+					// error, which still answers Unanswered.
 					original := promptContextFor(rt, pending.Key)
-					rpcCtx, cleanup := promptRPCContext(turnCtx, original)
+					settled := promptSettledFor(rt, pending.Key)
+					rpcCtx, cleanup := promptRPCContext(turnCtx, original, settled)
 					defer cleanup()
 					if err := m.qbridge.Ask(rpcCtx, sessionID, pending); err != nil {
+						if settledElsewhere(settled) {
+							// The session settled this question itself, so its
+							// answer is already the canonical one; never overwrite
+							// it with a fabricated Unanswered.
+							return
+						}
 						if steeringEndedPrompt(rt, pending.Key, original, err) {
 							// A canceled question must never be answered with a
 							// fabricated Unanswered: the session's canonical
@@ -996,9 +1013,15 @@ func (m *TurnManager) runTurn(
 			} else {
 				go func() {
 					original := promptContextFor(rt, sg.Key)
-					rpcCtx, cleanup := promptRPCContext(turnCtx, original)
+					settled := promptSettledFor(rt, sg.Key)
+					rpcCtx, cleanup := promptRPCContext(turnCtx, original, settled)
 					defer cleanup()
 					if _, err := m.bridge.RequestSkillGate(rpcCtx, sessionID, sg); err != nil {
+						if settledElsewhere(settled) {
+							// The session settled the gate itself; nothing is
+							// left to fail here, and the turn continues.
+							return
+						}
 						if steeringEndedPrompt(rt, sg.Key, original, err) {
 							// A canceled gate must not be recorded as a sticky
 							// denial. The session's canonical settlement already
@@ -1149,10 +1172,16 @@ func (m *TurnManager) resolveAccessRequest(ctx context.Context, sessionID string
 		// opaque request id, which is this request's key.
 		accessKey := session.PromptKey{ID: requestID}
 		original := promptContextFor(rt, accessKey)
-		rpcCtx, cleanup := promptRPCContext(ctx, original)
+		settled := promptSettledFor(rt, accessKey)
+		rpcCtx, cleanup := promptRPCContext(ctx, original, settled)
 		choice, err := m.bridge.CollectAccess(rpcCtx, sessionID, toolCallID, request)
 		cleanup()
 		if err != nil {
+			if settledElsewhere(settled) {
+				// The request settled while the client was deciding, so there
+				// is nothing left to fail.
+				return nil
+			}
 			if steeringEndedPrompt(rt, accessKey, original, err) {
 				// The operation's own interruption settled this request through
 				// the canonical resolver; the turn continues.
@@ -1870,6 +1899,14 @@ func promptContextFor(rt *TurnRuntime, key session.PromptKey) context.Context {
 		return nil
 	}
 	return rt.State.PromptContext(key)
+}
+
+// promptSettledFor is PromptSettled for rt's state, nil without one.
+func promptSettledFor(rt *TurnRuntime, key session.PromptKey) <-chan struct{} {
+	if rt == nil || rt.State == nil || key.ID == "" {
+		return nil
+	}
+	return rt.State.PromptSettled(key)
 }
 
 // steeringEndedPrompt reports whether err is the cancellation of a prompt RPC

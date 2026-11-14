@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -94,16 +95,20 @@ func (b *QuestionBridge) Ask(ctx context.Context, sessionID string, pending *ses
 	return nil
 }
 
-// promptRPCContext derives the context one outbound prompt RPC runs under. It
-// is a child of parent (the turn context, so a full turn stop still ends the
-// RPC) that is also cancelled as soon as original — the prompt's own owning
-// operation context, as returned by State.PromptContext — is done. That lets a
-// steering interruption end the pending request promptly instead of leaving
-// the permission/question goroutine blocked until a late client answer.
+// promptRPCContext derives the context one outbound prompt RPC runs under: the
+// RPC context ends when parent ends, when original ends, or when settled
+// closes. A nil original or settled is ignored. It is a child of parent (the
+// turn context, so a full turn stop still ends the RPC), also cancelled as soon
+// as original — the prompt's own owning operation context, as returned by
+// State.PromptContext — is done, and as soon as settled — the channel
+// State.PromptSettled answers for the same key — closes. That lets a steering
+// interruption, or the session's own settlement of the prompt, end the pending
+// request promptly instead of leaving the permission/question goroutine blocked
+// until a late client answer.
 //
-// The returned function stops the after-function and cancels the derived
-// context; callers must always call it.
-func promptRPCContext(parent context.Context, original context.Context) (context.Context, func()) {
+// The returned function stops the watcher and cancels the derived context;
+// callers must always call it.
+func promptRPCContext(parent, original context.Context, settled <-chan struct{}) (context.Context, func()) {
 	if parent == nil {
 		parent = context.Background()
 	}
@@ -114,9 +119,37 @@ func promptRPCContext(parent context.Context, original context.Context) (context
 			cancel(context.Cause(original))
 		})
 	}
+	// One watcher ends the context when the prompt settles. It exits on the
+	// context's own end too, so the cleanup below can join it without a leak.
+	var watch sync.WaitGroup
+	if settled != nil {
+		watch.Add(1)
+		go func() {
+			defer watch.Done()
+			select {
+			case <-settled:
+				cancel(context.Canceled)
+			case <-ctx.Done():
+			}
+		}()
+	}
 	return ctx, func() {
+		// Cancel first, then wait: the watcher's only other exit is this
+		// context ending.
+		cancel(context.Canceled)
+		watch.Wait()
 		stop()
 		cancel(context.Canceled)
+	}
+}
+
+// settledElsewhere reports whether settled is closed.
+func settledElsewhere(settled <-chan struct{}) bool {
+	select {
+	case <-settled:
+		return true
+	default:
+		return false
 	}
 }
 

@@ -1199,7 +1199,137 @@ Not yet run. Plan 3's last task fills this in.
 
 ### Plan 4a — fleet requests reach the bridge, and leave it
 
-Not yet run. Plan 4a's last task fills this in.
+**What was built.** The bridge brokers a real agent's requests, and stops
+listing one the agent settled elsewhere. `web/bridge/child.go` keys a child
+request by its raw ID — any JSON, not only an integer — and answers with those
+bytes, so the agent's `"marshal-out-N"` IDs are brokered at all; `OnRequest`
+now takes a context and no ID. Each in-flight request is registered under its
+compact ID on the read goroutine *before* the handler starts, so a
+`$/cancel_request` read next always finds it; the cancel ends that request's
+context, the registry's wait returns `errRequestCancelled`, the pending entry
+is dropped, and the child is answered `-32800` with the message "request
+cancelled". A `$/cancel_request` never reaches `OnNotification`, and one
+naming no request in flight is ignored. `Child` gained a per-generation parent
+context, created in `spawn` and cancelled in `failPending`, so a request in
+flight ends when its generation's pipe closes. `internal/app/session/prompts.go`
+gained `State.PromptSettled(key)`: it answers the live record's `done`
+channel — closed exactly once, on any settlement — a shared already-closed
+channel for a key that names no live record, and nil for a key with no ID.
+`internal/acp` then made the agent stop waiting out loud: `Server.Request`
+sends `$/cancel_request` when its context ends before the answer (a closed
+server sends nothing), and `promptRPCContext` takes the settled channel, so
+the RPC ends when the prompt settles by any path. All five waiters — the
+approval, the question, the skill gate, the access request and a child's
+approvals — pass their prompt's settled channel and, when it has closed,
+return quietly: the turn is not cancelled, no `Unanswered` is fabricated, and
+no denial is delivered. `test/daemon/requests_test.go` drives the whole path
+end to end over a real local-profile bridge: the approval reaching the
+bridge, a viewer's answer settling the bridge's request, and the bridge's
+answer settling the viewer's mirror. `cmd/webbridge/README.md` names no
+permission or question endpoint at all — it documents `/api/inbox`, the
+fleet stream and the factory items — so it describes neither path and was
+left unchanged.
+
+**Where the plan was short, and how that was filled.** The plan's contract
+for `PromptSettled` said to look the key up "as `lookupPromptLocked` does",
+but that helper matches a record's kind and operation as well as its ID.
+`resolveAccessRequest` names its request by the request ID alone
+(`session.PromptKey{ID: requestID}`) while the access mirror record is filed
+under the approval kind, so a kind-matching lookup reported a *live* access
+request as already settled — and because the settled channel would already be
+closed, `promptRPCContext` would have ended the access RPC before the client
+was ever asked. Reading the access path against the contract found this, and
+a throwaway test printed the record's kind and the already-closed channel to
+confirm it. `PromptSettled` therefore resolves a record by its ID alone, the
+way `PromptContext` already does, and a test pins that. The plan also did not
+say what the bridge's generation parent context is; `Child` held none, so one
+is created per generation in `spawn` and cancelled in `failPending`, the one
+place that runs for every dead generation. The plan's Task 1 tests assumed
+the fake child could issue a question under a string ID: it cannot, because
+the existing `test/ask_question` issues its question under the integer ID
+9000 and the plan's new fake method was a permission. The cancel fake
+therefore takes its target ID from its params, defaulting to
+`"marshal-out-1"`, so the question test drives a real cancel through the real
+pipe without changing the existing case. The plan did not say how the bridge
+names `$/cancel_request`: `web/` is standard-library only, so the method name
+is a literal there and `marshal/internal/acpwire` is not imported. The plan's
+Task 3 test — "the fake `PermissionClient` blocks until its context ends" —
+needed a stronger form: its first version passed even with the settled
+channel dropped, because the turn's own end also ended the fake's context, so
+the test now holds the turn open on a channel until after the context-end
+assertion. That is what makes the mutation bite.
+
+**The manual run.** `webbridge` and `marshal` were built from the branch and
+the bridge run with `--profile local`, `--marshal-bin` pointing at the built
+`marshal`, its TCP listener on `127.0.0.1:7799`, a fixed bearer token,
+`--egress off`, and a scratch `MARSHAL_DATA_DIR`, `--state-dir` and
+`--socket` under `/private/tmp`. A scratch git project carried a
+`[tools.shell.confirm]` rule for `rm -f marker.txt` and a passthrough
+sandbox, and was trusted with `marshal --trust` — which records the trust and
+then falls through into the TUI, so the record was read back from the
+scratch `trust.json` rather than from a finished process. A fleet agent was
+spawned on it with `POST /api/agents`, every routing role pinned to
+`ollama-cloud/deepseek-v4.1-flash:1017`.
+
+Driven, and seen on `curl -N` against `GET /api/events?stream=fleet`, which
+carried 10 `inbox` deltas:
+
+- **A real agent's request reaches the bridge.** The fleet's snapshot showed
+  the agent `awaiting-approval`, with a pending approval carrying its
+  `toolCallId`.
+- **An inbox delta moves the agent into `needsYou`.** The delta named the
+  agent in `groups.needsYou` and put it in the queue.
+- **`POST /api/permissions/{id}` answers it, and the turn finishes.** The
+  answer was HTTP 200, `{"status":"resolved"}`. The session's audit records
+  the mode change as "granted — mode act" and then `shell.run` as
+  `command "rm -f marker.txt" exited with code 0`; the agent's final message
+  says the command ran with exit code 0.
+- **A late answer gets 410.** Answering the first, already-settled ID again
+  returned HTTP 410, `bridge: pending request already resolved or expired`.
+- **The turn ends.** The agent's status went back to `idle`, `needsYou`
+  emptied, and the stream carried the deltas out of `needsYou` and into
+  `ready`.
+
+Not driven, and why:
+
+- **A viewer answering first.** That needs a TUI on the agent's session,
+  which only plan 4b's agent attach gives. This half was covered by task 4's
+  end-to-end test, not by hand: `TestAViewersAnswerSettlesTheFleetsRequest`
+  and `TestTheFleetsAnswerSettlesTheViewersRequest` drive it over the
+  project's own viewer socket.
+- **The first two spawns never raised a request at all**, for a reason
+  outside this plan and worth recording. A turn is more than the
+  implementer's call: the auxiliary roles (title, router) keep the config's
+  `active_preset`, which was `openai-codex/gpt-6.1-sol`, and that provider's
+  OAuth refresh token was stale (HTTP 401, "Your refresh token has already
+  been used to generate a new access token"). The turn aborted on that call
+  before the model made a tool call, so no approval was ever raised. Pinning
+  every routing role to `ollama-cloud/deepseek-v4.1-flash:1017` fixed it.
+  Nothing in this plan changed that behaviour; it is recorded because the
+  same failure would look like "the bridge dropped the request again".
+
+**Verification.**
+
+| Command | Result |
+| --- | --- |
+| `gofmt -l internal cmd test web` | No output. |
+| `go vet ./...` | Clean. |
+| `GOOS=linux go vet ./web/...` | Clean. |
+| `GOOS=windows go vet ./web/bridge/...` | Clean. |
+| `TMPDIR=/private/tmp/p5-4a-suite CGO_ENABLED=1 go test -p=1 ./... -count=1 -timeout 30m -skip '^Test(NoticeCallBudget\|ControlCallBudget\|AnswerCallBudget\|ResponseBarrierBudget\|SettingsCallBudget\|NoteCallBudget\|BrowserCallBudget\|EndCallBudget\|StackBusyFlipBudget\|StackPatchApplyBudget\|StackRoundTripBudget\|AKeyPressOverThePipeBudget)$'` | Passed; no package failed. The twelve skipped tests are the repo's wall-clock budget tests, which CI also skips (`docs/testing-ci-audit.md`). |
+| `TMPDIR=/private/tmp/p5-4a-suite CGO_ENABLED=1 go test ./web/bridge/ -count=1 -timeout 20m` | Passed (`ok marshal/web/bridge 104.4s`). |
+| `TMPDIR=/private/tmp/p5-4a-suite CGO_ENABLED=1 go test ./internal/app/session/ -count=1` | Passed (`ok marshal/internal/app/session 3.8s`). |
+| `TMPDIR=/private/tmp/p5-4a-suite CGO_ENABLED=1 go test ./internal/acp/ -count=1 -timeout 20m -skip '^Test(NoticeCallBudget\|ControlCallBudget\|AnswerCallBudget\|ResponseBarrierBudget\|SettingsCallBudget\|NoteCallBudget\|BrowserCallBudget\|EndCallBudget\|StackBusyFlipBudget\|StackPatchApplyBudget\|StackRoundTripBudget)$'` | Passed (`ok marshal/internal/acp 20.0s`). |
+| `TMPDIR=/private/tmp/p5-4a-suite CGO_ENABLED=1 go test ./test/daemon/ -count=1 -timeout 15m` | Passed (`ok marshal/test/daemon 4.9s`). |
+| `CGO_ENABLED=1 go build -o marshal ./cmd/marshal` | Built (git-ignored via `.gitignore`'s `/marshal`). |
+| `TMPDIR=/private/tmp/p5-4a-suite go test ./test/usability/... -run TestScripted -timeout 5m` | Passed (`marshal/test/usability` ok, 45.4s). |
+
+Each task's mutation check was run and restored: decoding the child's ID as an
+`int` again failed `TestAChildRequestWithAStringIDIsHandled`; dropping the
+settled channel from the approval goroutine's `promptRPCContext` call failed
+`TestASettledApprovalEndsItsForwardedRequest`; skipping the
+`$/cancel_request` send in `Server.Request` failed
+`TestAViewersAnswerSettlesTheFleetsRequest`, and only that one.
 
 ### Plan 4b — opening an agent
 

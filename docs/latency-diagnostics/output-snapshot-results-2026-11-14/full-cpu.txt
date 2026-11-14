@@ -1,0 +1,28 @@
+File: marshal-profile
+Type: cpu
+Time: 2026-11-14 18:32:22 AEDT
+Duration: 20.75s, Total samples = 8.97s (43.23%)
+Showing nodes accounting for 4.56s, 50.84% of 8.97s total
+Dropped 528 nodes (cum <= 0.04s)
+Showing top 20 nodes out of 327
+      flat  flat%   sum%        cum   cum%
+     4.56s 50.84% 50.84%      4.56s 50.84%  syscall.rawsyscalln
+         0     0% 50.84%      4.56s 50.84%  syscall.syscalln
+         0     0% 50.84%      4.34s 48.38%  marshal/internal/acp/service.(*Session).Prompt.func1
+         0     0% 50.84%      4.34s 48.38%  marshal/internal/acp/service.(*Session).endRun
+         0     0% 50.84%      4.34s 48.38%  marshal/internal/acp/service.(*Session).runTurn.func1
+         0     0% 50.84%      4.34s 48.38%  marshal/internal/acp/service.callRun
+         0     0% 50.84%      4.34s 48.38%  marshal/internal/agent.(*Runner).Run
+         0     0% 50.84%      4.34s 48.38%  marshal/internal/agent.(*Runner).RunTask
+         0     0% 50.84%      4.31s 48.05%  marshal/internal/agent.(*Runner).snapshotCapture
+         0     0% 50.84%      4.31s 48.05%  marshal/internal/snapshot.(*Manager).AdmitAndCaptureWithCleanup
+         0     0% 50.84%      4.31s 48.05%  marshal/internal/snapshot.(*Rooted).Track
+         0     0% 50.84%      4.31s 48.05%  marshal/internal/snapshot.(*Service).Track
+         0     0% 50.84%      4.31s 48.05%  marshal/internal/snapshot.(*Service).Track.func1
+         0     0% 50.84%      4.31s 48.05%  marshal/internal/snapshot.(*Service).withStore
+         0     0% 50.84%      4.11s 45.82%  syscall.syscall
+         0     0% 50.84%      2.89s 32.22%  marshal/internal/snapshot.(*Manager).captureToGeneration
+         0     0% 50.84%      2.74s 30.55%  os.ignoringEINTR (inline)
+         0     0% 50.84%      2.35s 26.20%  marshal/internal/agent.(*Runner).RunTask.func22
+         0     0% 50.84%      2.35s 26.20%  marshal/internal/agent.(*Runner).executeNativeToolCalls
+         0     0% 50.84%      2.35s 26.20%  marshal/internal/agent.(*Runner).executeToolCall

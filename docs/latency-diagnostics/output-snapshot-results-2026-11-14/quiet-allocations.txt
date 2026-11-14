@@ -1,0 +1,27 @@
+File: marshal-profile
+Type: alloc_space
+Time: 2026-11-14 18:32:02 AEDT
+Showing nodes accounting for 21342320B, 13.89% of 153621459B total
+Dropped 27 nodes (cum <= 768107B)
+Showing top 20 nodes out of 150
+      flat  flat%   sum%        cum   cum%
+         0     0%     0% 111754531B 72.75%  charm.land/bubbletea/v2.(*Program).Run
+         0     0%     0% 111754531B 72.75%  charm.land/bubbletea/v2.(*Program).eventLoop
+         0     0%     0% 111754531B 72.75%  main.main
+         0     0%     0% 111754531B 72.75%  main.run
+         0     0%     0% 111754531B 72.75%  marshal/internal/launch.Run
+         0     0%     0% 111754531B 72.75%  marshal/internal/launch.runProgram
+         0     0%     0% 111754531B 72.75%  runtime.main
+  9070486B  5.90%  5.90%  68698691B 44.72%  marshal/internal/app/tui.Model.Update
+  6402696B  4.17% 10.07%  59628205B 38.82%  marshal/internal/app/tui.Model.update
+         0     0% 10.07%  57312937B 37.31%  marshal/internal/app/tui.Model.inputSections
+         0     0% 10.07%  54164257B 35.26%  marshal/internal/app/tui.Model.inputChromeRows
+         0     0% 10.07%  53115569B 34.58%  marshal/internal/app/tui.Model.inputHeaderRows
+  3734906B  2.43% 12.50%  51651669B 33.62%  marshal/internal/app/tui.Model.dispatchRuntimeMessage
+         0     0% 12.50%  51651669B 33.62%  marshal/internal/app/tui.Model.handleRuntimeMessage
+         0     0% 12.50%  50490702B 32.87%  marshal/internal/app/tui.(*Model).updateViewportHeight
+  2134232B  1.39% 13.89%  47391323B 30.85%  marshal/internal/app/tui.Model.handleAgentTick
+         0     0% 13.89%  43055840B 28.03%  charm.land/bubbletea/v2.(*Program).render
+         0     0% 13.89%  43055840B 28.03%  marshal/internal/app/tui.Model.View
+         0     0% 13.89%  40955974B 26.66%  marshal/internal/app/tui.(*Model).viewString
+         0     0% 13.89%  39878770B 25.96%  marshal/internal/app/tui.Model.footerHints

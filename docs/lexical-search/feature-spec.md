@@ -183,6 +183,39 @@ chunk are **replaced in place** (the `embeddings` table keeps `PRIMARY KEY
 already handles this: it reloads fully when `model != cacheModel`
 (`internal/retrieval/semantic.go:69`).
 
+### The semantic source's cache
+
+One interaction follows from stable chunk ids, and it is stated here rather
+than left for the plan to discover.
+
+The semantic source decides whether its cache is stale from the chunk count and
+the maximum chunk id (`ChunkGeneration`, `internal/retrieval/semantic.go:54`),
+and its incremental load fetches vectors whose chunk id is above the last one
+it saw (`LoadVectorsSince`, `internal/db/chunks.go:181`). Both signals move
+when a file's chunks are rewritten — chunk ids advance — but **neither moves
+when only vectors are written for chunk rows that already exist**, because the
+vector phase does not rewrite chunks.
+
+The case this reaches is a project whose chunks are indexed and whose vectors
+arrive later: an embedder configured after the fact, or one that recovers from
+being down. A semantic source that had already cached the empty result for
+that project would keep serving it.
+
+This is safe today, and the design keeps it safe, because both call sites
+construct a **fresh** `SemanticSource` per query
+(`internal/agent/route.go:460`, `internal/tools/native/codebase_search.go:51`),
+so the cache is cold at every query and the full-load path
+(`internal/retrieval/semantic.go:69`) reads the vectors that are there. The
+incremental path only ever serves repeat queries within one source instance.
+
+Two obligations follow, and they belong to this design:
+
+- The plan adds a test that a semantic query sees vectors written for chunk
+  rows whose ids did not change.
+- **No caller may hold a `SemanticSource` across an index pass.** A cached
+  source goes stale on a vector-only write. The semantic source is otherwise
+  untouched: same interface, same cache, same model-change reload.
+
 ### Per-file state
 
 The staleness record is no longer a join of chunks to embeddings — a file with
@@ -476,6 +509,9 @@ known trap, so it carries the most coverage:
 
 - `LexicalSource` returns ranked candidates with `SourceName: "lexical"`.
 - Score ordering is higher-is-better.
+- A semantic query sees vectors written for chunk rows whose ids did not
+  change — the vector-only-write case the semantic source's cache cannot see
+  (see "The semantic source's cache").
 
 **Tool layer** (`internal/tools/native`):
 

@@ -322,9 +322,3 @@ func clamp(v, lo, hi int) int {
 	}
 	return v
 }
-
-// View is the placeholder the tests need until the screen itself lands: the
-// Events ring, one line per event.
-func (m Model) View() tea.View {
-	return tea.NewView(strings.Join(m.events, "\n"))
-}

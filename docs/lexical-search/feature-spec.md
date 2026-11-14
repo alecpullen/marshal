@@ -1,8 +1,9 @@
 # Lexical codebase search — feature spec
 
 Status: approved for implementation (brainstorming, 2026-11-14).
-Supersedes nothing. Related: PR #71 (`codex/embedding-fail-soft`), which makes an
-unreachable embedding backend non-fatal to the index pass; this spec builds on it.
+Supersedes nothing. Builds on PR #71 (`codex/embedding-fail-soft`, merged), which
+made an unreachable embedding backend non-fatal to the index pass; this spec
+depends on that behaviour.
 
 ## Context
 

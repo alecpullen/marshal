@@ -35,13 +35,23 @@ func (r RiskLevel) Valid() bool {
 	}
 }
 
+// WorkspaceEffect is independent of approval risk. The zero value and unknown
+// values retain the conservative workspace preflight for non-read-only tools.
+type WorkspaceEffect uint8
+
+const (
+	WorkspaceEffectUnknown WorkspaceEffect = iota
+	WorkspaceEffectSessionOnly
+)
+
 type Tool struct {
-	Name        string
-	Description string
-	Schema      json.RawMessage
-	Risk        RiskLevel
-	Cacheable   bool
-	Deferred    bool
+	Name            string
+	Description     string
+	Schema          json.RawMessage
+	Risk            RiskLevel
+	WorkspaceEffect WorkspaceEffect
+	Cacheable       bool
+	Deferred        bool
 	// Internal tools are dispatchable by the runtime (envelope-mode patch
 	// actions, role views that re-expose them) but are never offered to the
 	// model: no tool definition, no prompt listing, no deferred announcement.
@@ -52,6 +62,12 @@ type Tool struct {
 	// Shared by pointer through cloneTool: jsonschema.Schema is immutable
 	// after compilation and safe for concurrent use.
 	validator *Validator
+}
+
+// NeedsWorkspacePreflight reports whether snapshot and workspace serialization
+// are needed. Session-only tools must provide their own state synchronization.
+func (t Tool) NeedsWorkspacePreflight() bool {
+	return t.Risk != RiskReadOnly && t.WorkspaceEffect != WorkspaceEffectSessionOnly
 }
 
 type ToolCall struct {

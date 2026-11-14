@@ -3,7 +3,12 @@ package native
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,6 +17,103 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/tools/registry"
 )
+
+// Every writer adds one distinct item. Auto-carry must preserve the others
+// even when independent runners update the same session simultaneously.
+func TestTodoWriteConcurrentCarryPersistsAllItems(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	if err := d.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	pid, err := d.GetOrCreateProject(t.TempDir(), "todos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const sid = "concurrent-todos"
+	if err := d.CreateSession(sid, pid, "todos", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{DB: d, SessionID: sid, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	tool := TodoWriteTool(state)
+	const writers = 32
+	start := make(chan struct{})
+	errs := make(chan error, writers)
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, err := tool.Handler(context.Background(), registry.ToolCall{Args: []byte(fmt.Sprintf(`{"todos":[{"content":"task %d","status":"pending"}]}`, i))})
+			errs <- err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := state.Todos()
+	if len(got) != writers {
+		t.Fatalf("lost concurrent todo updates: got %d items, want %d", len(got), writers)
+	}
+	ids, contents := map[string]bool{}, map[string]bool{}
+	for _, item := range got {
+		if item.ID == "" || ids[item.ID] || contents[item.Content] {
+			t.Fatalf("duplicate identity or content: %+v", got)
+		}
+		ids[item.ID], contents[item.Content] = true, true
+	}
+	persisted, err := d.LoadTodos(sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(persisted, got) {
+		t.Fatalf("persisted todos differ from memory: persisted=%+v memory=%+v", persisted, got)
+	}
+}
+
+func TestTodoWriteClockRunsInsideSerializedUpdate(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	tool := TodoWriteTool(state)
+	clockRead := make(chan struct{}, 1)
+	original := todoNow
+	todoNow = func() time.Time { clockRead <- struct{}{}; return time.Unix(100, 0) }
+	defer func() { todoNow = original }()
+	done := make(chan error, 1)
+	// An earlier reconciliation still owns this session. A queued writer must
+	// read its timestamp after that transaction, otherwise writes that acquire
+	// serialization in reverse order can complete a todo before it started.
+	if err := state.UpdateTodos(func(current []db.TodoItem, _ int) ([]db.TodoItem, error) {
+		go func() {
+			_, err := tool.Handler(context.Background(), registry.ToolCall{Args: []byte(`{"todos":[{"content":"work","status":"in_progress"}]}`)})
+			done <- err
+		}()
+		select {
+		case <-clockRead:
+			t.Error("queued todo writer read its clock before acquiring session serialization")
+		case <-time.After(50 * time.Millisecond):
+		}
+		return current, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("queued todo writer did not finish")
+	}
+}
 
 func TestTodoWriteReplacesList(t *testing.T) {
 	state := session.New(config.Config{}, "/tmp", time.Now(), session.Persistence{})

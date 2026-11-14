@@ -376,6 +376,8 @@ func (m *terminalModel) handleCsi(cmd ansi.Cmd, params ansi.Params) {
 			m.eraseLine(eraseMode(params))
 		case 'X': // ECH erase characters from the cursor, without moving it
 			m.eraseSpan(m.row, m.col, m.col+cursorCount(params, 0))
+		case 'P': // DCH delete cells and shift the rest of this row left
+			m.deleteCharacters(cursorCount(params, 0))
 		case 's': // SCP save cursor
 			m.saveCursor()
 		case 'u': // RCP restore cursor
@@ -770,6 +772,22 @@ func (m *terminalModel) eraseSpan(row, from, to int) {
 	for c := from; c < to; c++ {
 		m.cells[row][c] = termCell{}
 	}
+}
+
+func (m *terminalModel) deleteCharacters(count int) {
+	count = min(count, m.width-m.col)
+	// Never retain half of a wide glyph across either deletion boundary.
+	if m.cellAt(m.row, m.col).cont {
+		m.setBlank(m.row, m.col-1)
+	}
+	if m.cellAt(m.row, m.col+count).cont {
+		m.setBlank(m.row, m.col+count)
+	}
+	row := m.cells[m.row]
+	copy(row[m.col:], row[m.col+count:])
+	clear(row[m.width-count:])
+	m.wrapPending = false
+	m.head.ok = false
 }
 
 // cellAt returns the cell at a position, or the zero cell when out of the

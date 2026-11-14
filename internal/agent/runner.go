@@ -137,7 +137,7 @@ type SnapshotRecorder interface {
 	SaveSnapshot(sessionID string, turnIndex int, hash string, files []string, at time.Time) (int64, error)
 }
 
-// WriteGate serialises non-read-only tool execution across concurrently
+// WriteGate serialises tools with potential workspace effects across concurrently
 // running Runners. The swarm sets one shared gate on every role runner so
 // that "only one agent may write files at a time" (docs/07 swarm safety)
 // holds even if a future orchestration mode overlaps role turns.
@@ -1053,15 +1053,27 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	if r.RunTaskFunc != nil {
 		return r.RunTaskFunc(ctx, goal)
 	}
+	// Start before any startup work or cancellation exit. Emission is the
+	// outermost defer so elapsed time includes this turn's cleanup as well.
+	startedAt := r.Now()
+	task := NewTask(goal, startedAt)
+	r.statsMu.Lock()
+	r.stats = &turnStats{m: TurnMetrics{
+		StartedAt: startedAt,
+		Goal:      strutil.Truncate(goal, 200, false),
+		Role:      string(r.role()),
+	}}
+	r.statsMu.Unlock()
+	defer func() { r.emitMetrics(task) }()
 
 	// Send now: an enabled root/general conversation opens the one eligible
 	// turn every operation beneath it belongs to. The predicate is deliberately
 	// narrower than the flag — a child, SDD or swarm runner never registers
 	// parent control, and reusing an inherited operation would let an outer
-	// turn's requests steer this nested one. Registering first also makes this
-	// the outermost defer, so the turn stays eligible for the whole of its own
+	// turn's requests steer this nested one. Registering before other operation
+	// cleanup keeps the turn eligible for the whole of its own
 	// cleanup (the interruption a final answer races must still be able to land)
-	// and is closed exactly once, after everything else has run.
+	// and is closed exactly once, after operation cleanup has run.
 	if r.EnableSteering && r.role() == RoleGeneral && r.State != nil && r.State.SubagentDepth() == 0 {
 		if _, inherited := session.OperationFromContext(ctx); !inherited {
 			if turnID, err := r.State.BeginSteeringTurn(ctx); err == nil {
@@ -1132,8 +1144,6 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	// registers first, and this call reuses that registration rather than
 	// replacing it, so the stop the user's keystroke names stays the one the
 	// running turn actually owns.
-	task := NewTask(goal, r.Now())
-	defer func() { r.emitMetrics(task) }()
 	stopGroup, stopPendingCause := r.beginTurnStop()
 	if stopGroup != nil {
 		defer r.finishTurnStop(stopGroup)
@@ -1178,14 +1188,6 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	// The stale-todo clock starts with the turn, so a list carried in from an
 	// earlier session is judged from now rather than from when it was written.
 	r.startTodoClock()
-
-	r.statsMu.Lock()
-	r.stats = &turnStats{m: TurnMetrics{
-		StartedAt: r.Now(),
-		Goal:      strutil.Truncate(goal, 200, false),
-		Role:      string(r.role()),
-	}}
-	r.statsMu.Unlock()
 
 	// Per-turn reset: there is no tracked context-pack message yet, and no
 	// skill body has been written to this turn's wire.

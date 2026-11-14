@@ -1027,6 +1027,27 @@ func TestSessionParamsCarryTheAgentsView(t *testing.T) {
 	}
 }
 
+func TestRegistryLookupKeepsSessionStateSnapshot(t *testing.T) {
+	reg := NewRegistry(&Child{})
+	reg.track("s-1", AgentPath("/work"))
+	before, ok := reg.lookup("s-1")
+	if !ok {
+		t.Fatal("session not tracked")
+	}
+	reg.beginTurn("s-1")
+	if before.Busy {
+		t.Fatal("starting a turn mutated an already returned session snapshot")
+	}
+	during, ok := reg.lookup("s-1")
+	if !ok || !during.Busy {
+		t.Fatal("new lookup did not observe the active turn")
+	}
+	reg.endTurn("s-1")
+	if !during.Busy {
+		t.Fatal("ending a turn mutated an already returned session snapshot")
+	}
+}
+
 func TestSessionParamsSerialiseAsPlainStrings(t *testing.T) {
 	blob, err := json.Marshal(sessionParams{Cwd: AgentPath("/work"), SessionID: "s1"})
 	if err != nil {

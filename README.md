@@ -292,7 +292,8 @@ Requires Go 1.26+ and a C toolchain — tree-sitter needs cgo.
 ```bash
 CGO_ENABLED=1 go build ./cmd/marshal   # build
 go run ./cmd/marshal                   # run
-go test ./...                          # all tests
+go test ./...                          # all Go tests (cached when unchanged)
+go test -short ./internal/app/tui       # faster TUI feedback; reduced coverage
 gofmt -w .                             # format
 go vet ./...                           # vet
 ```
@@ -340,8 +341,10 @@ git tag -a v0.0.4-alpha -m "Release v0.0.4-alpha"
 git push origin v0.0.4-alpha
 ```
 
-The `release` workflow runs tests, builds binaries, creates a draft release and
-attaches archives and checksums. Review the draft, then publish. Release notes
+Pull requests and main run Go, scripted usability, and web UI checks. Tagged
+releases run the same checks before building binaries, creating a draft release
+and attaching archives and checksums. See [the testing audit](docs/testing-ci-audit.md)
+for local test choices and CI details. Review the draft, then publish. Release notes
 are curated in `CHANGELOG.md`; GoReleaser's generated changelog is disabled
 deliberately, since the commit log is too granular to be useful.
 

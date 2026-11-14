@@ -6,26 +6,16 @@ on:
       - 'v*'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-
-      - name: Run tests
-        run: go test ./...
-
-      - name: Run vet
-        run: go vet ./...
+  checks:
+    uses: ./.github/workflows/go-checks.yml
 
   release:
-    needs: test
+    needs: checks
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     container:
       image: goreleaser/goreleaser-cross:latest
@@ -33,20 +23,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      # The job runs inside the goreleaser-cross container, where the checkout
-      # is owned by a different UID than the container user. Git's dubious
-      # ownership protection then refuses to read the repo, and GoReleaser
-      # fails with "current folder is not a git repository".
       - name: Trust the workspace checkout
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-      # --skip=docker: the dockers/docker_manifests sections in
-      # .goreleaser.yaml push to ghcr.io/marshal/*, but this workflow has no
-      # registry login and no packages:write permission, so the push would
-      # fail and abort the release before the draft is created. Binaries-only
-      # until the registry side is wired up; the docker sections stay for
-      # that release.
+      # Registry publishing is not configured; create a binaries-only draft.
       - name: Run GoReleaser
         run: goreleaser release --clean --skip=docker
         env:

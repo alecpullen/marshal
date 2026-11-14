@@ -1114,6 +1114,12 @@ export interface ProjectSettings {
   shipTarget?: 'merge' | 'push' | 'patch' | ''
   intake: { repoId?: string; labels?: string[]; clients?: string[] }
   automations?: { reviewBot?: ReviewBotSettings; ciFixer?: CIFixerSettings }
+  /**
+   * This project's factory defaults. Absent fields follow the handoff, or the
+   * project's agent defaults where those apply; never materialise a fallback
+   * into one of them.
+   */
+  factoryDefaults?: FactoryDefaults
 }
 export interface ProjectHealth {
   /** The project's verify-gate commands; both empty means the gate has nothing to run. */
@@ -1131,6 +1137,67 @@ export async function getProjectSettings(root: string): Promise<ProjectSettings>
 export async function putProjectSettings(root: string, s: ProjectSettings): Promise<ProjectSettings> {
   const r = await request<Partial<ProjectSettings> | null>('PUT', `/api/projects/settings${query({ root })}`, s)
   return { ...r, intake: r?.intake ?? {} }
+}
+
+/** One settings record and the opaque `ETag` that versions it. */
+export interface VersionedProjectSettings { settings: ProjectSettings; etag: string }
+
+/**
+ * The one header-aware request. `request` above stays header-blind, so its
+ * callers are untouched; this exists only for the conditional settings editor,
+ * which needs the response's `ETag` and sends it back as `If-Match`.
+ *
+ * A missing `ETag` is an error here, never permission to write
+ * unconditionally: an unconditional PUT would silently replace whatever
+ * another surface saved.
+ */
+async function requestVersioned<T = unknown>(method: string, path: string, body?: unknown, ifMatch?: string): Promise<{ data: T; etag: string }> {
+  const token = ensureToken()
+  const init: RequestInit = {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+      ...(ifMatch ? { 'If-Match': ifMatch } : {}),
+    },
+  }
+  if (body) init.body = JSON.stringify(body)
+
+  const res = await fetch(path, init)
+  let data: unknown
+  const text = await res.text()
+  if (text) {
+    try {
+      data = JSON.parse(text)
+    } catch {
+      data = text
+    }
+  }
+  if (res.status === 401) {
+    rejectToken()
+    throw new AuthError('Unauthorized')
+  }
+  if (!res.ok) {
+    if (res.status === 429 && (data as { error?: string } | undefined)?.error === 'budget_exceeded') {
+      throw new BudgetError(data as { scope?: string; agentId?: string })
+    }
+    throw new APIError(res.status, data)
+  }
+  const etag = res.headers?.get('ETag') ?? ''
+  if (!etag) throw new APIError(res.status, { error: 'The bridge did not return an ETag, so the settings cannot be saved safely.' })
+  return { data: data as T, etag }
+}
+
+/** `GET /api/projects/settings` with the version that a conditional save must send back. */
+export async function getVersionedProjectSettings(root: string): Promise<VersionedProjectSettings> {
+  const { data, etag } = await requestVersioned<Partial<ProjectSettings> | null>('GET', `/api/projects/settings${query({ root })}`)
+  return { settings: { ...data, intake: data?.intake ?? {} }, etag }
+}
+
+/** `PUT /api/projects/settings` with `If-Match`; a 412 rejects with that APIError, retaining nothing. */
+export async function putVersionedProjectSettings(root: string, settings: ProjectSettings, etag: string): Promise<VersionedProjectSettings> {
+  const { data, etag: next } = await requestVersioned<Partial<ProjectSettings> | null>('PUT', `/api/projects/settings${query({ root })}`, settings, etag)
+  return { settings: { ...data, intake: data?.intake ?? {} }, etag: next }
 }
 export async function getProjectHealth(root: string): Promise<ProjectHealth> {
   return request('GET', `/api/projects/health${query({ root })}`)
@@ -1339,7 +1406,7 @@ export async function listStatusLinks(): Promise<StatusLink[]> { return (await r
 export async function revokeStatusLink(id: string): Promise<void> { await request('DELETE', `/api/status-links/${q(id)}`) }
 
 
-import type { FactoryItem, FactoryCreate, FactoryCommand } from './factory'
+import type { FactoryItem, FactoryCreate, FactoryCommand, FactoryDefaults } from './factory'
 export async function listFactoryItems(): Promise<FactoryItem[]> {
   return (await request<{ items: FactoryItem[] | null }>('GET', '/api/factory/items')).items ?? []
 }

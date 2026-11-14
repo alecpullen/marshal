@@ -9,8 +9,8 @@ vi.mock('../lib/api.js', async (importActual) => {
   const actual = await importActual<typeof import('../lib/api.js')>()
   return {
     ...actual,
-    getProjectSettings: vi.fn(),
-    putProjectSettings: vi.fn(),
+    getVersionedProjectSettings: vi.fn(),
+    putVersionedProjectSettings: vi.fn(),
     getProjectHealth: vi.fn(),
     getWorkspacePolicy: vi.fn(),
     listWorkspaces: vi.fn(),
@@ -26,12 +26,18 @@ const ROOT = '/home/u/alpha'
 const settings: api.ProjectSettings = { workspace: 'go-dev', mode: 'ask', routing: { profile: 'fast', overrides: { reviewer: 'big' } }, intake: { repoId: 'r1', labels: ['agent'], clients: ['c1'] } }
 const healthy: api.ProjectHealth = { gateRunnable: 'yes', mirrorFresh: [{ repoId: 'r1', present: true, ageSeconds: 120, head: 'main' }], orphanWorktrees: [], trust: 'trusted', workspaceResolves: { ref: 'go-dev', resolves: true, built: true } }
 
+/** The versioned record a read or write returns; the etag is opaque to the client. */
+const versioned = (s: api.ProjectSettings, etag = '"v1"') => ({ settings: s, etag })
+
 const mount = (over: Record<string, unknown> = {}) => render(Project, { root: ROOT, agents: [], onNavigate: vi.fn(), ...over })
+
+/** The body of the nth settings write. */
+const written = (n = 0) => (api.putVersionedProjectSettings as Mock).mock.calls[n][1] as api.ProjectSettings
 
 beforeEach(() => {
   vi.clearAllMocks()
-  ;(api.getProjectSettings as Mock).mockResolvedValue(settings)
-  ;(api.putProjectSettings as Mock).mockImplementation(async (_r: string, s: api.ProjectSettings) => s)
+  ;(api.getVersionedProjectSettings as Mock).mockResolvedValue(versioned(settings))
+  ;(api.putVersionedProjectSettings as Mock).mockImplementation(async (_r: string, s: api.ProjectSettings, etag: string) => versioned(s, `${etag}+`))
   ;(api.getProjectHealth as Mock).mockResolvedValue(healthy)
   ;(api.getWorkspacePolicy as Mock).mockResolvedValue({ mode: 'ask', allow: ['go test ./...'] })
   ;(api.listWorkspaces as Mock).mockResolvedValue([{ source: 'studio', name: 'go-dev' }, { source: 'studio', name: 'node' }, { source: 'repo', name: 'ci', project: ROOT }])
@@ -42,7 +48,7 @@ beforeEach(() => {
 
 describe('Project automations tab', () => {
   it('links to both automations pages with their on/off state', async () => {
-    ;(api.getProjectSettings as Mock).mockResolvedValue({ ...settings, automations: { reviewBot: { enabled: true, repoId: 'r1', skipDrafts: true, autoPost: false, holdSeverities: [] } } })
+    ;(api.getVersionedProjectSettings as Mock).mockResolvedValue(versioned({ ...settings, automations: { reviewBot: { enabled: true, repoId: 'r1', skipDrafts: true, autoPost: false, holdSeverities: [] } } }))
     const onNavigate = vi.fn()
     mount({ onNavigate })
     await fireEvent.click(screen.getByRole('tab', { name: 'Automations' }))
@@ -54,10 +60,10 @@ describe('Project automations tab', () => {
 })
 
 describe('Project overview', () => {
-  it('loads the saved settings into the defaults and intake cards', async () => {
+  it('loads the saved settings into the grouped workspace, model and intake cards', async () => {
     mount()
     await waitFor(() => expect((screen.getByLabelText('Mode') as HTMLSelectElement).value).toBe('ask'))
-    expect(api.getProjectSettings).toHaveBeenCalledWith(ROOT)
+    expect(api.getVersionedProjectSettings).toHaveBeenCalledWith(ROOT)
     await waitFor(() => expect((screen.getByLabelText('Workspace') as HTMLSelectElement).value).toBe('go-dev'))
     await waitFor(() => expect([...(screen.getByLabelText('Workspace') as HTMLSelectElement).options].map((o) => o.value)).toEqual(['', 'go-dev', 'node', 'repo:ci']))
     expect((screen.getByLabelText('Model profile') as HTMLSelectElement).value).toBe('fast')
@@ -67,7 +73,7 @@ describe('Project overview', () => {
     expect((screen.getByRole('checkbox', { name: 'Zed' }) as HTMLInputElement).checked).toBe(false)
   })
 
-  it('saves defaults with the right body, keeping intake and routing overrides', async () => {
+  it('saves defaults with the right body and the version it read', async () => {
     mount()
     await waitFor(() => expect((screen.getByLabelText('Workspace') as HTMLSelectElement).options.length).toBe(4))
     await fireEvent.change(screen.getByLabelText('Workspace'), { target: { value: 'repo:ci' } })
@@ -77,8 +83,8 @@ describe('Project overview', () => {
     await fireEvent.change(screen.getByLabelText('Isolation'), { target: { value: 'isolated' } })
     await fireEvent.change(screen.getByLabelText('Ship target'), { target: { value: 'patch' } })
     await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
-    await waitFor(() => expect(api.putProjectSettings).toHaveBeenCalled())
-    expect(api.putProjectSettings).toHaveBeenCalledWith(ROOT, {
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalled())
+    expect(api.putVersionedProjectSettings).toHaveBeenCalledWith(ROOT, {
       workspace: 'repo:ci',
       routing: { profile: 'careful', overrides: { reviewer: 'big' } },
       mode: 'act',
@@ -86,19 +92,19 @@ describe('Project overview', () => {
       isolated: true,
       shipTarget: 'patch',
       intake: { repoId: 'r1', labels: ['agent'], clients: ['c1'] },
-    })
+    }, '"v1"')
     expect((await screen.findByRole('status')).textContent).toBe('Defaults saved')
   })
 
   it('leaves unset defaults out of the body', async () => {
-    ;(api.getProjectSettings as Mock).mockResolvedValue({ intake: {} })
+    ;(api.getVersionedProjectSettings as Mock).mockResolvedValue(versioned({ intake: {} }))
     mount()
-    await waitFor(() => expect(api.getProjectSettings).toHaveBeenCalled())
+    // The save is only enabled once the record (and its version) arrived.
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Save defaults' }) as HTMLButtonElement).disabled).toBe(false))
     await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
-    await waitFor(() => expect(api.putProjectSettings).toHaveBeenCalled())
-    const body = (api.putProjectSettings as Mock).mock.calls[0][1]
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalled())
     // What goes on the wire: nothing but the intake.
-    expect(JSON.parse(JSON.stringify(body))).toEqual({ intake: {} })
+    expect(JSON.parse(JSON.stringify(written()))).toEqual({ intake: {} })
   })
 
   it('saves intake: repo, labels as chips, allowed clients', async () => {
@@ -112,16 +118,21 @@ describe('Project overview', () => {
     await fireEvent.click(screen.getByRole('checkbox', { name: 'Zed' }))
     await fireEvent.click(screen.getByRole('checkbox', { name: 'Cursor' }))
     await fireEvent.click(screen.getByRole('button', { name: 'Save intake' }))
-    await waitFor(() => expect(api.putProjectSettings).toHaveBeenCalled())
-    expect((api.putProjectSettings as Mock).mock.calls[0][1].intake).toEqual({ repoId: 'r1', labels: ['bug'], clients: ['c2'] })
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalled())
+    expect(written().intake).toEqual({ repoId: 'r1', labels: ['bug'], clients: ['c2'] })
   })
 
   it('shows a refused save, such as an unregistered repo, and keeps the form', async () => {
-    ;(api.putProjectSettings as Mock).mockRejectedValue(new api.APIError(400, { error: 'intake.repoId "r9" is not a registered repo' }))
+    ;(api.putVersionedProjectSettings as Mock).mockRejectedValue(new api.APIError(400, { error: 'intake.repoId "r9" is not a registered repo' }))
     mount()
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Save intake' })).toBeTruthy())
+    // Both repos are selectable once the picker has loaded.
+    await waitFor(() => expect([...(screen.getByLabelText('Intake repo') as HTMLSelectElement).options].map((o) => o.value)).toEqual(['', 'r1', 'r2']))
+    await fireEvent.change(screen.getByLabelText('Intake repo'), { target: { value: 'r2' } })
+    expect((screen.getByLabelText('Intake repo') as HTMLSelectElement).value).toBe('r2')
     await fireEvent.click(screen.getByRole('button', { name: 'Save intake' }))
     expect((await screen.findByRole('alert')).textContent).toContain('is not a registered repo')
+    // A failed write keeps every edit.
+    expect((screen.getByLabelText('Intake repo') as HTMLSelectElement).value).toBe('r2')
   })
 
   it('renders the health checks with a dot each, and Refresh fetches again', async () => {
@@ -151,15 +162,210 @@ describe('Project overview', () => {
   })
 
   it('says so when the workspace is a repo template or none is set', async () => {
-    ;(api.getProjectSettings as Mock).mockResolvedValue({ workspace: 'repo:ci', intake: {} })
+    ;(api.getVersionedProjectSettings as Mock).mockResolvedValue(versioned({ workspace: 'repo:ci', intake: {} }))
     const { unmount } = mount()
     await waitFor(() => expect(screen.getByTestId('policy-card').textContent).toContain('comes from the repo'))
     expect(api.getWorkspacePolicy).not.toHaveBeenCalled()
     expect(screen.queryByRole('link', { name: 'Edit in designer' })).toBeNull()
     unmount()
-    ;(api.getProjectSettings as Mock).mockResolvedValue({ intake: {} })
+    ;(api.getVersionedProjectSettings as Mock).mockResolvedValue(versioned({ intake: {} }))
     mount()
     await waitFor(() => expect(screen.getByTestId('policy-card').textContent).toContain('No default workspace'))
+  })
+})
+
+describe('Project factory and agent defaults', () => {
+  it('followsAgentDefaultsUntilOverridden', async () => {
+    ;(api.getVersionedProjectSettings as Mock).mockResolvedValue(versioned({ workspace: 'go-dev', routing: { profile: 'fast' }, intake: {} }))
+    mount()
+    await waitFor(() => expect(screen.getByTestId('factory-workspace-effective').textContent).toContain('Following the project default: go-dev'))
+    expect(screen.getByTestId('implementer-effective').textContent).toContain('Following the project default: fast')
+    expect(screen.getByTestId('reviewer-effective').textContent).toContain('Following the project default: fast')
+    // Moving the agent default moves what the factory follows.
+    await waitFor(() => expect([...(screen.getByLabelText('Workspace') as HTMLSelectElement).options].map((o) => o.value)).toEqual(['', 'go-dev', 'node', 'repo:ci']))
+    await fireEvent.change(screen.getByLabelText('Workspace'), { target: { value: 'node' } })
+    await waitFor(() => expect(screen.getByTestId('factory-workspace-effective').textContent).toContain('Following the project default: node'))
+    // Following writes no factory field at all.
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalled())
+    expect(written().workspace).toBe('node')
+    expect(written().factoryDefaults).toBeUndefined()
+    // An explicit choice overrides just that field, and says so.
+    await waitFor(() => expect([...(screen.getByLabelText('Factory workspace') as HTMLSelectElement).options].map((o) => o.value)).toEqual(['', 'go-dev', 'node', 'repo:ci']))
+    await fireEvent.change(screen.getByLabelText('Factory workspace'), { target: { value: 'repo:ci' } })
+    expect(screen.getByTestId('factory-workspace-effective').textContent).toContain('repo:ci (own choice)')
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalledTimes(2))
+    expect(written(1).factoryDefaults).toEqual({ workspace: 'repo:ci' })
+  })
+
+  it('roleOverridesIndependentAndReset', async () => {
+    mount()
+    await waitFor(() => expect([...(screen.getByLabelText('Implementer profile') as HTMLSelectElement).options].map((o) => o.value)).toEqual(['', 'careful', 'fast']))
+    expect((screen.getByLabelText('Model profile') as HTMLSelectElement).value).toBe('fast')
+    expect((screen.getByLabelText('Implementer profile') as HTMLSelectElement).value).toBe('')
+    expect(screen.getByTestId('implementer-effective').textContent).toContain('Following the project default: fast')
+    await fireEvent.change(screen.getByLabelText('Implementer profile'), { target: { value: 'careful' } })
+    expect(screen.getByTestId('implementer-effective').textContent).toContain('careful (own choice)')
+    // The reviewer is untouched by the implementer's choice.
+    expect(screen.getByTestId('reviewer-effective').textContent).toContain('Following the project default: fast')
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalled())
+    expect(written().factoryDefaults).toEqual({ implementerRouting: { profile: 'careful' } })
+    // Each role resets to following on its own.
+    await fireEvent.change(screen.getByLabelText('Implementer profile'), { target: { value: '' } })
+    await fireEvent.change(screen.getByLabelText('Reviewer profile'), { target: { value: 'careful' } })
+    await waitFor(() => expect(screen.getByTestId('implementer-effective').textContent).toContain('Following the project default: fast'))
+    expect(screen.getByTestId('reviewer-effective').textContent).toContain('careful (own choice)')
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalledTimes(2))
+    expect(written(1).factoryDefaults).toEqual({ reviewerRouting: { profile: 'careful' } })
+  })
+
+  it('preservesNestedRoutingAndOtherSettings', async () => {
+    const rich = {
+      workspace: 'go-dev',
+      routing: { profile: 'fast', overrides: { reviewer: 'big' }, futureMember: { nested: true } },
+      intake: { repoId: 'r1', labels: ['agent'] },
+      automations: { reviewBot: { enabled: true, repoId: 'r1', skipDrafts: true, autoPost: false, holdSeverities: [] } },
+      futureSetting: { keep: ['me'] },
+      factoryDefaults: { targetBranch: 'develop', implementerRouting: { profile: 'fast', overrides: { reviewer: 'big' }, futureMember: { nested: true } } },
+    } as unknown as api.ProjectSettings
+    ;(api.getVersionedProjectSettings as Mock).mockResolvedValue(versioned(rich))
+    mount()
+    await waitFor(() => expect([...(screen.getByLabelText('Model profile') as HTMLSelectElement).options].map((o) => o.value)).toEqual(['', 'careful', 'fast']))
+    await fireEvent.change(screen.getByLabelText('Model profile'), { target: { value: 'careful' } })
+    await fireEvent.change(screen.getByLabelText('Implementer profile'), { target: { value: 'careful' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalled())
+    const body = written()
+    // The whole routing object survives a profile change, unknown members included.
+    expect(body.routing).toEqual({ profile: 'careful', overrides: { reviewer: 'big' }, futureMember: { nested: true } })
+    const factory = body.factoryDefaults ?? {}
+    expect(factory.implementerRouting).toEqual({ profile: 'careful', overrides: { reviewer: 'big' }, futureMember: { nested: true } })
+    expect(factory.targetBranch).toBe('develop')
+    // Settings this screen does not model are carried through untouched.
+    expect(body.intake).toEqual(rich.intake)
+    expect(body.automations).toEqual(rich.automations)
+    expect((body as unknown as Record<string, unknown>).futureSetting).toEqual({ keep: ['me'] })
+  })
+
+  it('unavailableChoicesRemainVisible', async () => {
+    ;(api.getVersionedProjectSettings as Mock).mockResolvedValue(versioned({
+      workspace: 'gone-ws',
+      routing: { profile: 'gone-profile' },
+      intake: {},
+      factoryDefaults: { workspace: 'repo:gone', implementerRouting: { profile: 'gone-impl' }, hostId: 'remote' },
+    }))
+    mount()
+    await waitFor(() => expect((screen.getByLabelText('Workspace') as HTMLSelectElement).value).toBe('gone-ws'))
+    const agentWs = screen.getByLabelText('Workspace') as HTMLSelectElement
+    expect([...agentWs.options].map((o) => o.textContent)).toContain('gone-ws (unavailable)')
+    const factoryWs = screen.getByLabelText('Factory workspace') as HTMLSelectElement
+    expect(factoryWs.value).toBe('repo:gone')
+    expect([...factoryWs.options].map((o) => o.textContent)).toContain('repo:gone (unavailable)')
+    expect((screen.getByLabelText('Implementer profile') as HTMLSelectElement).value).toBe('gone-impl')
+    expect(screen.getByTestId('implementer-effective').textContent).toContain('gone-impl (own choice)')
+    expect(screen.getByTestId('factory-host').textContent).toContain('remote')
+    // Saving keeps them rather than clearing what it cannot offer.
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalled())
+    expect(written().workspace).toBe('gone-ws')
+    expect(written().routing).toEqual({ profile: 'gone-profile' })
+    expect(written().factoryDefaults).toMatchObject({ workspace: 'repo:gone', hostId: 'remote', implementerRouting: { profile: 'gone-impl' } })
+  })
+
+  it('failedLoadCannotSave', async () => {
+    ;(api.getVersionedProjectSettings as Mock).mockRejectedValue(new api.APIError(503, { error: 'settings unavailable' }))
+    mount()
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('settings unavailable'))
+    expect((screen.getByRole('button', { name: 'Save defaults' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: 'Save intake' }) as HTMLButtonElement).disabled).toBe(true)
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    expect(api.putVersionedProjectSettings).not.toHaveBeenCalled()
+  })
+
+  it('staleSaveRetainsDraft', async () => {
+    ;(api.putVersionedProjectSettings as Mock).mockRejectedValue(new api.APIError(412, { error: 'project settings changed' }))
+    mount()
+    await waitFor(() => expect((screen.getByLabelText('Mode') as HTMLSelectElement).value).toBe('ask'))
+    await fireEvent.change(screen.getByLabelText('Mode'), { target: { value: 'act' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('changed elsewhere')
+    // The edit survives the refusal, and nothing was silently retried.
+    expect((screen.getByLabelText('Mode') as HTMLSelectElement).value).toBe('act')
+    expect(screen.getByTestId('unsaved')).toBeTruthy()
+    expect(api.putVersionedProjectSettings).toHaveBeenCalledTimes(1)
+    // Only an explicit reload replaces the draft, and it adopts what it reads.
+    await fireEvent.click(within(alert).getByRole('button', { name: 'Reload' }))
+    await waitFor(() => expect(api.getVersionedProjectSettings).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect((screen.getByLabelText('Mode') as HTMLSelectElement).value).toBe('ask'))
+  })
+
+  it('factoryFieldsRoundTrip', async () => {
+    const defaults: NonNullable<api.ProjectSettings['factoryDefaults']> = {
+      targetBranch: 'develop',
+      workspace: 'repo:ci',
+      implementerRouting: { profile: 'careful' },
+      reviewerRouting: { profile: 'fast' },
+      reviewerInstructions: 'Be strict',
+      expectedChecks: [{ kind: 'check_run', name: 'build', appId: 7 }, { kind: 'commit_status', name: 'lint', appId: 0 }],
+      maxRounds: 4,
+      ciPollSeconds: 20,
+      ciWaitSeconds: 900,
+    }
+    ;(api.getVersionedProjectSettings as Mock).mockResolvedValue(versioned({ intake: {}, factoryDefaults: defaults }))
+    mount()
+    await waitFor(() => expect((screen.getByLabelText('Target branch') as HTMLInputElement).value).toBe('develop'))
+    expect((screen.getByLabelText('Expected CI checks') as HTMLTextAreaElement).value).toBe('check_run:build:7\ncommit_status:lint')
+    expect((screen.getByLabelText('Reviewer instructions') as HTMLTextAreaElement).value).toBe('Be strict')
+    expect((screen.getByLabelText('Max rounds') as HTMLInputElement).value).toBe('4')
+    expect((screen.getByLabelText('CI poll seconds') as HTMLInputElement).value).toBe('20')
+    expect((screen.getByLabelText('CI wait seconds') as HTMLInputElement).value).toBe('900')
+    // The handoff form's check syntax is enforced here too.
+    await fireEvent.input(screen.getByLabelText('Expected CI checks'), { target: { value: 'workflow:build' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    expect((await screen.findByRole('alert')).textContent).toContain('check_run:name:appId or commit_status:context')
+    expect(api.putVersionedProjectSettings).not.toHaveBeenCalled()
+    // The whole record round trips unchanged.
+    await fireEvent.input(screen.getByLabelText('Expected CI checks'), { target: { value: 'check_run:build:7\ncommit_status:lint' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalledTimes(1))
+    expect(written().factoryDefaults).toEqual(defaults)
+    // A cleared field is deleted, not replaced by a fallback.
+    await fireEvent.input(screen.getByLabelText('Target branch'), { target: { value: '' } })
+    await fireEvent.input(screen.getByLabelText('Max rounds'), { target: { value: '' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalledTimes(2))
+    const cleared = written(1).factoryDefaults ?? {}
+    expect(cleared.targetBranch).toBeUndefined()
+    expect(cleared.maxRounds).toBeUndefined()
+    expect(cleared.reviewerInstructions).toBe('Be strict')
+  })
+
+  it('unsavedNavigationRequiresConfirmation', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const onNavigate = vi.fn()
+    mount({ onNavigate })
+    await waitFor(() => expect((screen.getByLabelText('Mode') as HTMLSelectElement).value).toBe('ask'))
+    // A pristine screen leaves without asking.
+    await fireEvent.click(screen.getByRole('link', { name: /Create factory work item/ }))
+    expect(confirm).not.toHaveBeenCalled()
+    expect(onNavigate).toHaveBeenCalledTimes(1)
+    // An edit is protected by the in-app prompt and the browser's own warning.
+    await fireEvent.change(screen.getByLabelText('Mode'), { target: { value: 'act' } })
+    const unload = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(unload)
+    expect(unload.defaultPrevented).toBe(true)
+    await fireEvent.click(screen.getByRole('link', { name: /Create factory work item/ }))
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(onNavigate).toHaveBeenCalledTimes(1)
+    // With confirmation, the edit is only lost deliberately.
+    confirm.mockReturnValue(true)
+    await fireEvent.click(screen.getByRole('link', { name: /Create factory work item/ }))
+    expect(onNavigate).toHaveBeenCalledTimes(2)
+    confirm.mockRestore()
   })
 })
 

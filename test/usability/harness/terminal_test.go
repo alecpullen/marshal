@@ -147,6 +147,22 @@ func TestTerminalCursorAndErase(t *testing.T) {
 	wantLines(t, m.Snapshot(), "abcdeX  QW", "")
 }
 
+func TestTerminalDeleteCharacters(t *testing.T) {
+	for _, tc := range []struct{ name, input, want string }{
+		{"count", "abcdef\x1b[3G\x1b[2PZ", "abZf"},
+		{"default", "abcdef\x1b[3G\x1b[P", "abdef"},
+		{"zero means one", "abcdef\x1b[3G\x1b[0P", "abdef"},
+		{"clamped", "abcdef\x1b[3G\x1b[999P", "ab"},
+		{"wide boundary", "a界bc\x1b[3G\x1b[P", "a bc"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTerminalModel(8, 1)
+			writeAll(t, m, tc.input)
+			wantLines(t, m.Snapshot(), tc.want)
+		})
+	}
+}
+
 // TestTerminalEraseCharacters pins ECH: it blanks the requested number of
 // cells to the right of the cursor and leaves the cursor where it was, which
 // is what a 256-colour renderer relies on when it repaints a shortened line.

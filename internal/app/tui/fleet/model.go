@@ -110,6 +110,9 @@ func New(f acpclient.Fleet, opts ...Option) Model {
 	return *m
 }
 
+// Theme is the theme the model resolved from its TUI config.
+func (m Model) Theme() theme.Theme { return m.th }
+
 // changedMsg reports that the client's state may have changed.
 type changedMsg struct{}
 

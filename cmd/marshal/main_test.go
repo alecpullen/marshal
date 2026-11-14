@@ -362,6 +362,71 @@ func TestAttachRoutesToTheAttachRunner(t *testing.T) {
 	}
 }
 
+// TestFleetRoutesToTheFleetRunner pins `marshal fleet`: the screen reaches the
+// fleet runner with the daemon's socket under this home.
+func TestFleetRoutesToTheFleetRunner(t *testing.T) {
+	home := isolateHome(t)
+	wantSocket := config.DaemonSocketPath(home)
+
+	var stdout, stderr bytes.Buffer
+	called := false
+	var gotSocket string
+	oldFleet := fleetRunner
+	fleetRunner = func(ctx context.Context, out io.Writer, socket string, opts ...launch.Option) error {
+		called = true
+		gotSocket = socket
+		return nil
+	}
+	defer func() { fleetRunner = oldFleet }()
+
+	if err := run(context.Background(), []string{"fleet"}, bytes.NewBuffer(nil), &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if !called {
+		t.Fatal("run() did not reach the fleet runner")
+	}
+	if gotSocket != wantSocket {
+		t.Errorf("run() socket = %q, want %q", gotSocket, wantSocket)
+	}
+	if !strings.HasPrefix(gotSocket, home) {
+		t.Errorf("run() socket = %q, want it under the test's home %q", gotSocket, home)
+	}
+}
+
+// TestFleetRefusesArgumentsAndEmbedded pins the refusals: fleet takes no
+// arguments yet (plan 7 adds --server and login), and --embedded is refused
+// wherever it appears.
+func TestFleetRefusesArgumentsAndEmbedded(t *testing.T) {
+	isolateHome(t)
+	oldFleet := fleetRunner
+	defer func() { fleetRunner = oldFleet }()
+	fleetRunner = func(ctx context.Context, out io.Writer, socket string, opts ...launch.Option) error {
+		t.Fatal("the fleet runner was called for a refused invocation")
+		return nil
+	}
+
+	cases := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--embedded", "fleet"}, "--embedded cannot be combined with fleet"},
+		{[]string{"fleet", "--embedded"}, "--embedded cannot be combined with fleet"},
+		{[]string{"fleet", "--embedded=1"}, "--embedded cannot be combined with fleet"},
+		{[]string{"fleet", "login"}, "unexpected argument"},
+		{[]string{"fleet", "--server", "x"}, "unexpected argument"},
+	}
+	for _, tc := range cases {
+		var stdout, stderr bytes.Buffer
+		err := run(context.Background(), tc.args, bytes.NewBuffer(nil), &stdout, &stderr)
+		if err == nil {
+			t.Fatalf("run(%v) returned no error, want a refusal", tc.args)
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("run(%v) error = %q, want it to name %q", tc.args, err, tc.want)
+		}
+	}
+}
+
 // TestAttachRefusesExtraArgumentsAndEmbedded pins the refusals: attach takes at
 // most one ID, --embedded is refused wherever it appears, and a flag-shaped ID
 // is named as a flag.

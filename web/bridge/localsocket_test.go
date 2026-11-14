@@ -14,16 +14,20 @@ import (
 	"time"
 )
 
-// socketDir creates the private directory a socket goes in, one level
-// below t.TempDir: testing's temp dir asks for 0777 (0755 after the
-// umask), which is exactly the directory decision 5 refuses. The nesting
-// keeps the path short too — macOS caps a unix socket path at 104 bytes.
+// socketDir creates a private directory without t.TempDir's test-name
+// component: macOS caps a unix socket path at 104 bytes. MkdirTemp also
+// requests 0700, as the directory decision 5 requires.
 func socketDir(t *testing.T) string {
 	t.Helper()
-	dir := filepath.Join(t.TempDir(), "daemon")
-	if err := os.Mkdir(dir, 0o700); err != nil {
+	dir, err := os.MkdirTemp("", "sock")
+	if err != nil {
 		t.Fatalf("make socket directory: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Errorf("remove socket directory: %v", err)
+		}
+	})
 	return dir
 }
 
@@ -65,7 +69,7 @@ func acceptWithin(t *testing.T, ln net.Listener, d time.Duration) (net.Conn, err
 }
 
 func TestListenLocalMakesAPrivateSocket(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "daemon")
+	dir := filepath.Join(socketDir(t), "daemon")
 	path := filepath.Join(dir, "bridge.sock")
 
 	ln, err := ListenLocal(path)

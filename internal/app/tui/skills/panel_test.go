@@ -1471,25 +1471,20 @@ func TestDuplicateSkillRowsHaveDistinctIdentity(t *testing.T) {
 // --- escape precedence inside a frame -------------------------------------
 
 // typeIntoPanel delivers each rune of s through Panel.Update as a keypress, so
-// the text reaches whatever the panel currently routes keys to.
+// the text reaches whatever the panel currently routes keys to. Text changes
+// synchronously; cursor-blink timer commands are not part of these assertions.
 func typeIntoPanel(t *testing.T, p *Panel, s string) {
 	t.Helper()
 	for _, r := range s {
-		press(t, p, tea.KeyPressMsg{Code: r, Text: string(r)})
+		p.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 	}
 }
 
-// pasteIntoPanel delivers a bracketed paste through Panel.Update and feeds the
-// emitted command's message back, the way the dock host does.
+// pasteIntoPanel delivers a bracketed paste through Panel.Update. As with
+// typing, the text changes synchronously without waiting for a blink tick.
 func pasteIntoPanel(t *testing.T, p *Panel, text string) {
 	t.Helper()
-	cmd := p.Update(tea.PasteMsg{Content: text})
-	if cmd == nil {
-		return
-	}
-	if msg := cmd(); msg != nil {
-		p.Update(msg)
-	}
+	p.Update(tea.PasteMsg{Content: text})
 }
 
 // TestEscapeCancelsSkillEditorBeforeLeavingFrame pins escape precedence inside

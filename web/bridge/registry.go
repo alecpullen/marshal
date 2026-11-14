@@ -1032,7 +1032,13 @@ func (r *Registry) lookup(id string) (*sessionInfo, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	info, ok := r.sessions[id]
-	return info, ok
+	if !ok {
+		return nil, false
+	}
+	// Callers read this after releasing mu, while turn and viewer state may
+	// change. Keep those reads on an immutable snapshot of the entry.
+	snapshot := *info
+	return &snapshot, true
 }
 
 func (r *Registry) setBusy(id string, busy bool) {

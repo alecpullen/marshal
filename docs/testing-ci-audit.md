@@ -98,6 +98,124 @@ see `AGENTS.md` for their explicit opt-in requirements. The ordinary suite
 also skips usability scenarios when no binary exists, which is why CI has a
 separate required-binary job.
 
+## Laptop bridge investigation (2026-11-14)
+
+After merging main at `fcebaa8b` into this branch, an uncached
+`go test ./web/bridge -count=1 -json -timeout 10m` on darwin/arm64 with
+Go 1.26.1 took 116.7 seconds. It reported 1,151 top-level test outcomes:
+1,146 passed and five socket tests failed because the default macOS temporary
+directory plus `t.TempDir`'s test-name component exceeded the Unix socket path
+limit. The socket fixture now uses a short, unique `MkdirTemp` directory with
+cleanup. The directory-creation test still starts with its nested directory
+absent, and permission and peer-identity assertions are unchanged. The socket
+subset passed three repeats with the original temporary-directory environment.
+
+The slowest top-level groups in that baseline were:
+
+| Test | Seconds | Investigation |
+| --- | ---: | --- |
+| `TestFactoryEndToEndInterrupted` | 17.03 | Fifteen independent real-Git interruption scenarios, originally serialized. |
+| `TestChildStopDuringRestartReturns` | 2.47 | Intentionally widens the restart window to two seconds to exercise a stop/respawn race. |
+| `TestFactoryEndToEnd` | 2.37 | Real Git delivery, repair, review and journal replay. |
+| `TestScheduleHistoryWritesDoNotUndoAConcurrentEdit` | 1.78 | Thirty HTTP updates competing with background persisted history writes. |
+| `TestFleetSpawnsChildLazilyPerProject` | 1.60 | Multiple real helper-process lifecycles. |
+
+A separate runtime trace of the interruption group took 16.9 seconds;
+13.5 seconds of its recorded syscall delay was process waiting, and
+10.9 seconds passed through the production Git runner. Fixture repository
+creation accounted for only about 1.2 seconds of recorded syscall delay.
+These are cumulative trace attribution values, not additive wall-clock phases.
+Replacing the Git layer with a fake or deleting recovery cases would weaken
+the behavior being checked; optimizing seed setup alone has limited upside.
+
+Each interruption scenario owns its repository, HTTP server, journal, fleet
+and controller, so those subtests now use `t.Parallel`. Three focused runs
+took 4.25, 4.50 and 4.45 seconds from the parent test's `run` event to its
+`pass` event, roughly 74% less elapsed time than the serial trace run. All 15
+scenarios and their assertions remain. Go's `-parallel` flag controls their
+concurrency; package serialization with `-p=1` does not serialize subtests.
+The parent's reported `Elapsed` field excludes time waiting for parallel
+children and can be zero: use event timestamps or focused package elapsed
+time when comparing this group. These laptop results do not predict the
+speedup on a smaller shared runner.
+
+The first race-detector attempt with Go 1.26.1 stalled in a forked child at
+full CPU and was stopped. This is consistent with the documented
+[Darwin race-runtime fork bug](https://github.com/golang/go/issues/79804),
+whose [Go 1.26 backport](https://github.com/golang/go/issues/79806) targets
+1.26.5. Retrying with the already installed Go 1.27.0 exposed two real
+races: the lost-response HTTP fixture read its handler's draft/mutation
+state without synchronization, and `Registry.lookup` exposed a live session
+entry after releasing its mutex while the fleet inbox read `Busy`.
+The fixture now snapshots its HTTP state under its mutex; registry lookups
+copy entries under the registry mutex. A deterministic regression test failed
+before the registry fix because beginning a turn changed a previously returned
+entry. Both factory groups and that regression passed three race-detector
+repeats after the fixes (28.8 seconds total):
+
+```sh
+GOTOOLCHAIN=go1.27.0 CGO_ENABLED=1 go test -race ./web/bridge \
+  -run '^Test(FactoryEndToEnd|FactoryEndToEndInterrupted|RegistryLookupKeepsSessionStateSnapshot)$' \
+  -count=3 -timeout 3m
+```
+
+This uses a newer toolchain for verification only; the module's Go requirement
+and CI configuration are unchanged.
+
+The subsequent full-suite timing pass identified
+`TestEscapeCancelsSkillEditorBeforeLeavingFrame` as another avoidable delay:
+10.62 seconds, almost all of the skills panel package's 11.25 seconds.
+Its input helpers executed the cursor's 530 ms blink command synchronously
+after each of 19 characters and one paste. Typing and paste already update the
+text synchronously, so these helpers now deliver those same events without
+waiting for cursor ticks. Action commands still execute through `press`, and
+the edit, paste, cancellation, committed-value, picker and navigation
+assertions are unchanged. All three repeats reported the test below the
+JSON log's 0.01-second elapsed precision; the entire skills package passed
+three repeats in 0.86 seconds:
+
+```sh
+CGO_ENABLED=1 go test ./internal/app/tui/skills -count=3 -json -timeout 2m
+```
+
+The full Go 1.26.1 pass used a freshly built binary, required the scripted
+usability tests to run, and used a private short temporary directory. It ran
+`go test -p=1 ./... -count=1 -json -timeout 20m` without the CI latency-test
+exclusions: 123 test packages passed, six packages had no tests, and 9,825
+top-level tests passed with ten skips. Its first-to-last JSON event interval
+was 478.3 seconds, excluding the preceding binary build. The skills-helper
+change was made after that package had completed and was verified separately
+by the three full-package repeats above.
+
+The largest package times in that pass were:
+
+| Package | Seconds |
+| --- | ---: |
+| `web/bridge` | 104.35 |
+| `internal/snapshot` | 83.31 |
+| `test/usability` | 47.89 |
+| `internal/app/tui` | 32.46 |
+| `internal/acp` | 22.09 |
+| `internal/tools/native` | 18.31 |
+| `test/usability/scenario` | 16.86 |
+
+The bridge interruption group took 4.60 seconds including its parallel
+children in this full pass. Compared with the initial bridge baseline, the
+package saved about 12 seconds, with the socket failures repaired rather
+than skipped. This is a single-run comparison, not a regression threshold.
+The remaining snapshot costs are spread across real Git and persistence
+fixtures: its slowest cases were multiprocess workspaces under tiny budgets
+(8.30 seconds), creating 100,001 files to exercise the production entry bound
+(7.60 seconds), and crash recovery preserving every published hash
+(7.23 seconds). Those are explicit safety scenarios; further work should
+profile their common fixtures before deciding on scheduling or coverage
+changes. The large capture-bound test already skips under `-short`.
+
+Final checks also passed `go vet ./...` and three interruption-group repeats
+with `-parallel=2` (9.44–10.32 seconds each). The smaller concurrency limit
+preserves all scenarios and models a shared runner more closely, but it is
+still a laptop measurement rather than a hosted result.
+
 ## Performance and security
 
 The default Go suite already contains wall-clock performance budgets. In one

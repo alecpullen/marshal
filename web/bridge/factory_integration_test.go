@@ -40,6 +40,18 @@ type deliveryHarness struct {
 
 type deliveryAdapter struct{ h *deliveryHarness }
 
+type deliveryForgeState struct {
+	creates, mutations int
+	draft              bool
+	description        string
+}
+
+func (h *deliveryHarness) forgeState() deliveryForgeState {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return deliveryForgeState{h.creates, h.mutations, h.draft, h.description}
+}
+
 func (d deliveryAdapter) Cancel(ctx context.Context, i FactoryItem) error {
 	err := d.h.effects.Cancel(ctx, i)
 	if err == nil {
@@ -87,6 +99,8 @@ func (d deliveryAdapter) Execute(ctx context.Context, i FactoryItem, e FactoryEf
 	return out, err
 }
 func (h *deliveryHarness) github(w http.ResponseWriter, r *http.Request) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if strings.Contains(r.URL.Path, "/check-runs/") {
 		fmt.Fprint(w, `{"output":{"text":"fixture failure"}}`)
 		return
@@ -322,8 +336,9 @@ func TestFactoryEndToEnd(t *testing.T) {
 	if i.State != "ready" {
 		t.Fatalf("state=%s decision=%+v last=%+v", i.State, i.Decision, factoryLastEffect(i))
 	}
-	if h.creates != 1 || h.implements != 2 || h.reviews != 2 || h.mutations != 1 || len(i.PRs) != 1 || len(i.Rounds) != 2 {
-		t.Fatalf("creates=%d implement=%d review=%d mutations=%d PRs=%d rounds=%d", h.creates, h.implements, h.reviews, h.mutations, len(i.PRs), len(i.Rounds))
+	forge := h.forgeState()
+	if forge.creates != 1 || h.implements != 2 || h.reviews != 2 || forge.mutations != 1 || len(i.PRs) != 1 || len(i.Rounds) != 2 {
+		t.Fatalf("creates=%d implement=%d review=%d mutations=%d PRs=%d rounds=%d", forge.creates, h.implements, h.reviews, forge.mutations, len(i.PRs), len(i.Rounds))
 	}
 	for name, want := range map[string]string{"plan.md": i.Approvals[0].Plan, "spec.md": i.Approvals[0].Spec} {
 		cmd := exec.Command("git", "show", h.seedHead+":docs/marshal-factory/"+i.ID+"/"+name)
@@ -379,8 +394,8 @@ func TestFactoryEndToEnd(t *testing.T) {
 	if i.PRs[0].State != "open" || i.PRs[0].Draft {
 		t.Fatal("PR not left ready for human merge")
 	}
-	if !strings.Contains(h.description, "## CI") || !strings.Contains(h.description, "fixture issue") || !strings.Contains(h.description, "fixture approach") {
-		t.Fatalf("published description does not carry the newest narration: %q", h.description)
+	if !strings.Contains(forge.description, "## CI") || !strings.Contains(forge.description, "fixture issue") || !strings.Contains(forge.description, "fixture approach") {
+		t.Fatalf("published description does not carry the newest narration: %q", forge.description)
 	}
 	for _, e := range i.Effects {
 		if e.Status != "completed" {
@@ -416,7 +431,10 @@ func TestFactoryEndToEnd(t *testing.T) {
 	}
 }
 func TestFactoryEndToEndInterrupted(t *testing.T) {
+	// Each scenario owns its repositories, server, store and fleet. Run them
+	// concurrently while preserving the real Git and recovery assertions.
 	t.Run("lost cancellation acknowledgement is not replayed", func(t *testing.T) {
+		t.Parallel()
 		h := newDeliveryHarness(t)
 		h.loseCancel = true
 		i := h.tick()
@@ -445,6 +463,7 @@ func TestFactoryEndToEndInterrupted(t *testing.T) {
 		}
 	})
 	t.Run("lost set draft response is not replayed", func(t *testing.T) {
+		t.Parallel()
 		h := newDeliveryHarness(t)
 		var i FactoryItem
 		for n := 0; n < 80; n++ {
@@ -459,25 +478,31 @@ func TestFactoryEndToEndInterrupted(t *testing.T) {
 		if i.State != "ready" {
 			t.Fatalf("fixture never ready: %+v", i.Decision)
 		}
+		h.mu.Lock()
 		h.forcePRHead = true
+		h.mu.Unlock()
 		h.loseKind = "set_draft"
 		h.controller.monitorReadyOnce(context.Background())
 		i = h.tick()
 		last := factoryLastEffect(i)
-		if last == nil || last.Kind != "set_draft" || last.Status != "uncertain" || h.mutations != 2 || !h.draft {
-			t.Fatalf("lost set draft: state=%s effect=%+v mutations=%d draft=%t", i.State, last, h.mutations, h.draft)
+		forge := h.forgeState()
+		if last == nil || last.Kind != "set_draft" || last.Status != "uncertain" || forge.mutations != 2 || !forge.draft {
+			t.Fatalf("lost set draft: state=%s effect=%+v mutations=%d draft=%t", i.State, last, forge.mutations, forge.draft)
 		}
 		for n := 0; n < 3; n++ {
 			h.tick()
 		}
-		if h.mutations != 2 {
+		if h.forgeState().mutations != 2 {
 			t.Fatal("set draft mutation replayed")
 		}
 	})
 	t.Run("lost ready compensation response remains uncertain", func(t *testing.T) {
+		t.Parallel()
 		h := newDeliveryHarness(t)
+		h.mu.Lock()
 		h.readyRace = true
 		h.loseCompensation = true
+		h.mu.Unlock()
 		var i FactoryItem
 		for n := 0; n < 80; n++ {
 			i = h.tick()
@@ -489,27 +514,30 @@ func TestFactoryEndToEndInterrupted(t *testing.T) {
 			}
 		}
 		last := factoryLastEffect(i)
-		if i.State == "ready" || last == nil || last.Kind != "set_ready" || last.Status != "uncertain" || h.mutations != 2 || !h.draft {
-			t.Fatalf("lost compensation: state=%s effect=%+v mutations=%d draft=%t", i.State, last, h.mutations, h.draft)
+		forge := h.forgeState()
+		if i.State == "ready" || last == nil || last.Kind != "set_ready" || last.Status != "uncertain" || forge.mutations != 2 || !forge.draft {
+			t.Fatalf("lost compensation: state=%s effect=%+v mutations=%d draft=%t", i.State, last, forge.mutations, forge.draft)
 		}
 		for n := 0; n < 3; n++ {
 			h.tick()
 		}
-		if h.mutations != 2 {
+		if h.forgeState().mutations != 2 {
 			t.Fatal("ready or compensation replayed")
 		}
 	})
 	t.Run("journal failure stops dispatch", func(t *testing.T) {
+		t.Parallel()
 		h := newDeliveryHarness(t)
 		h.store.write = func([]byte) (int, error) { return 0, os.ErrPermission }
 		if err := h.controller.tick(context.Background()); err == nil {
 			t.Fatal("journal failure accepted")
 		}
-		if h.creates != 0 || h.implements != 0 || len(h.store.List()[0].Effects) != 0 {
+		if h.forgeState().creates != 0 || h.implements != 0 || len(h.store.List()[0].Effects) != 0 {
 			t.Fatal("effect ran after failed journal append")
 		}
 	})
 	t.Run("cancelled nil-error ACP reply cannot publish", func(t *testing.T) {
+		t.Parallel()
 		h := newDeliveryHarness(t)
 		h.cancelTurn = true
 		var i FactoryItem
@@ -527,8 +555,11 @@ func TestFactoryEndToEndInterrupted(t *testing.T) {
 		}
 	})
 	t.Run("ready race returns PR to draft", func(t *testing.T) {
+		t.Parallel()
 		h := newDeliveryHarness(t)
+		h.mu.Lock()
 		h.readyRace = true
+		h.mu.Unlock()
 		var i FactoryItem
 		for n := 0; n < 80; n++ {
 			i = h.tick()
@@ -539,12 +570,14 @@ func TestFactoryEndToEndInterrupted(t *testing.T) {
 				time.Sleep(5 * time.Millisecond)
 			}
 		}
-		if i.State == "ready" || i.Decision == nil || h.mutations != 2 || !h.draft {
-			t.Fatalf("ready race state=%s decision=%+v mutations=%d draft=%t", i.State, i.Decision, h.mutations, h.draft)
+		forge := h.forgeState()
+		if i.State == "ready" || i.Decision == nil || forge.mutations != 2 || !forge.draft {
+			t.Fatalf("ready race state=%s decision=%+v mutations=%d draft=%t", i.State, i.Decision, forge.mutations, forge.draft)
 		}
 	})
 	for _, kind := range []string{"spawn", "seed", "publish", "create_pr", "implement", "park", "review", "resume", "set_ready"} {
 		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
 			h := newDeliveryHarness(t)
 			h.loseKind = kind
 			var i FactoryItem
@@ -564,13 +597,15 @@ func TestFactoryEndToEndInterrupted(t *testing.T) {
 			if last == nil || last.Kind != kind || last.Status != "uncertain" {
 				t.Fatalf("did not interrupt %s: state=%s decision=%+v last=%+v", kind, i.State, i.Decision, last)
 			}
-			before := []int{h.creates, h.implements, h.reviews, h.mutations, len(i.Effects)}
+			forge := h.forgeState()
+			before := []int{forge.creates, h.implements, h.reviews, forge.mutations, len(i.Effects)}
 			for n := 0; n < 3; n++ {
 				h.tick()
 			}
 			after, _ := h.store.Get(h.id)
-			if h.creates != before[0] || h.implements != before[1] || h.reviews != before[2] || h.mutations != before[3] || len(after.Effects) != before[4] {
-				t.Fatalf("blind replay of %s: before=%v after=%v", kind, before, []int{h.creates, h.implements, h.reviews, h.mutations, len(after.Effects)})
+			forge = h.forgeState()
+			if forge.creates != before[0] || h.implements != before[1] || h.reviews != before[2] || forge.mutations != before[3] || len(after.Effects) != before[4] {
+				t.Fatalf("blind replay of %s: before=%v after=%v", kind, before, []int{forge.creates, h.implements, h.reviews, forge.mutations, len(after.Effects)})
 			}
 		})
 	}

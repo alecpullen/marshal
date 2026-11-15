@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { APIError, BudgetError, answerRun, errMessage, getCommitDraft, getRoster, getRun, listReviewComments, listRuns, postReviewComment, recentPrompts, resolveReviewComment, startRun, undoReroute, getGate, getLastRequest, getNode, getStack, getStepDiffs, listFiles, readFile, runGate, getAccess, patchAccess, setToken, confirmPlugin, confirmSkill, createWatch, deleteMemory, discardPlugin, discardSkill, getBudgets, getModels, getUsage, listMemory, listPlugins, listSkills, listWatches, overrideBudget, previewSkill, probeProvider, removePlugin, removeSkill, scanPlugin, setBudgets, setMemoryConfidence, setPresets, setProviderKey, setProviders, setRouting, spawnAgent, stopWatch, createWorkspace, diffWorkspace, getWorkspace, listBuilds, listWorkspaces, patchWorkspace, publishWorkspace, rotateWorkspaceCA, saveWorkspaceDraft, setWorkspacePool, startBuild, deleteWorkspace, getNetworkHosts, getNetworkRequests, getNetworkAgents, postNetworkDecision, getSecretsStatus, listSecrets, putSecret, deleteSecret, listCredentials, putCredential, deleteCredential, listRepos, registerRepo, removeRepo, getProjectSettings, putProjectSettings, getProjectHealth, getNetworkPending, listReviewDrafts, getReviewDraft, editReviewDraft, postReviewDraft, discardReviewDraft, sendDraftToAuthor, runReviewBot, listCIHistory, getCIHistory, createWebhookSecret, openTerminal, openWorkspaceShell, terminalInput, terminalResize, terminalRelease, closeTerminal, terminalEventsUrl, openPreview, listRecipes, getRecipe, saveRecipe, deleteRecipe, copyRecipe, runRecipe, listSchedules, saveSchedule, deleteSchedule, runSchedule, getNotifications, saveNotifications, testNotifications, createStatusLink, listStatusLinks, revokeStatusLink, memorySuggestions, promoteMemory } from './api'
+import { APIError, BudgetError, answerRun, errMessage, getCommitDraft, getRoster, getRun, listReviewComments, listRuns, postReviewComment, recentPrompts, resolveReviewComment, startRun, undoReroute, getGate, getLastRequest, getNode, getStack, getStepDiffs, listFiles, readFile, runGate, getAccess, patchAccess, setToken, confirmPlugin, confirmSkill, createWatch, deleteMemory, discardPlugin, discardSkill, getBudgets, getModels, getUsage, listMemory, listPlugins, listSkills, listWatches, overrideBudget, previewSkill, probeProvider, removePlugin, removeSkill, scanPlugin, setBudgets, setMemoryConfidence, setPresets, setProviderKey, setProviders, setRouting, spawnAgent, stopWatch, createWorkspace, diffWorkspace, getWorkspace, listBuilds, listWorkspaces, patchWorkspace, publishWorkspace, rotateWorkspaceCA, saveWorkspaceDraft, setWorkspacePool, startBuild, deleteWorkspace, getNetworkHosts, getNetworkRequests, getNetworkAgents, postNetworkDecision, getSecretsStatus, listSecrets, putSecret, deleteSecret, listCredentials, putCredential, deleteCredential, listRepos, registerRepo, removeRepo, getProjectSettings, putProjectSettings, getProjectHealth, getNetworkPending, listReviewDrafts, getReviewDraft, editReviewDraft, postReviewDraft, discardReviewDraft, sendDraftToAuthor, runReviewBot, listCIHistory, getCIHistory, createWebhookSecret, openTerminal, openWorkspaceShell, terminalInput, terminalResize, terminalRelease, closeTerminal, terminalEventsUrl, openPreview, listRecipes, getRecipe, saveRecipe, deleteRecipe, copyRecipe, runRecipe, listSchedules, saveSchedule, deleteSchedule, runSchedule, getNotifications, saveNotifications, testNotifications, createStatusLink, listStatusLinks, revokeStatusLink, memorySuggestions, promoteMemory, getVersionedProjectSettings, putVersionedProjectSettings } from './api'
 
 function reply(status: number, body?: unknown) {
   return vi.fn().mockResolvedValue({
@@ -587,5 +587,70 @@ describe('factory API', () => {
     await expect(commandFactoryItem('x', { requestId: 'r', kind: 'stop', expectedVersion: 7 })).rejects.toMatchObject({ status: 409, body: { currentVersion: 8 } })
     vi.stubGlobal('fetch', reply(401))
     await expect(commandFactoryItem('x', { requestId: 'r2', kind: 'stop', expectedVersion: 7 })).rejects.toMatchObject({ name: 'AuthError' })
+  })
+})
+
+describe('versioned project settings API', () => {
+  beforeEach(() => setToken('t'))
+  afterEach(() => vi.unstubAllGlobals())
+
+  /** Like reply(), but with the response headers a conditional settings request reads. */
+  function replyWith(status: number, body?: unknown, etag?: string) {
+    const get = vi.fn((name: string) => (name.toLowerCase() === 'etag' ? (etag ?? null) : null))
+    const f = vi.fn().mockResolvedValue({
+      ok: status >= 200 && status < 300,
+      status,
+      headers: { get },
+      text: async () => (body === undefined ? '' : JSON.stringify(body)),
+    })
+    return f
+  }
+
+  it('reads the ETag and sends it back as If-Match', async () => {
+    const read = replyWith(200, { workspace: 'go-dev', intake: { repoId: 'r1' } }, '"abc"')
+    vi.stubGlobal('fetch', read)
+    const got = await getVersionedProjectSettings('/p q')
+    expect(got).toEqual({ settings: { workspace: 'go-dev', intake: { repoId: 'r1' } }, etag: '"abc"' })
+    expect(read.mock.calls[0][0]).toBe('/api/projects/settings?root=%2Fp+q')
+    expect(read.mock.calls[0][1].method).toBe('GET')
+
+    const write = replyWith(200, { mode: 'ask', intake: {} }, '"def"')
+    vi.stubGlobal('fetch', write)
+    const settings = { mode: 'ask', intake: {} }
+    const saved = await putVersionedProjectSettings('/p', settings, '"abc"')
+    expect(saved).toEqual({ settings, etag: '"def"' })
+    expect(write.mock.calls[0][0]).toBe('/api/projects/settings?root=%2Fp')
+    expect(write.mock.calls[0][1].method).toBe('PUT')
+    expect(write.mock.calls[0][1].headers['If-Match']).toBe('"abc"')
+    expect(JSON.parse(write.mock.calls[0][1].body)).toEqual(settings)
+  })
+
+  it('treats a missing ETag as an error, never an unconditional write', async () => {
+    vi.stubGlobal('fetch', replyWith(200, { intake: {} }))
+    await expect(getVersionedProjectSettings('/p')).rejects.toBeInstanceOf(APIError)
+
+    const write = replyWith(200, { intake: {} })
+    vi.stubGlobal('fetch', write)
+    await expect(putVersionedProjectSettings('/p', { intake: {} }, '"abc"')).rejects.toBeInstanceOf(APIError)
+    // It still sent the condition, and it never retried without one.
+    expect(write).toHaveBeenCalledTimes(1)
+    expect(write.mock.calls[0][1].headers['If-Match']).toBe('"abc"')
+  })
+
+  it('propagates a 412 so the caller keeps its draft', async () => {
+    vi.stubGlobal('fetch', replyWith(412, { error: 'project settings changed' }, '"gone"'))
+    const err = await putVersionedProjectSettings('/p', { intake: {} }, '"abc"').catch((e) => e)
+    expect(err).toBeInstanceOf(APIError)
+    expect(err.status).toBe(412)
+    expect(errMessage(err)).toBe('project settings changed')
+  })
+
+  it('leaves the unconditional helpers unchanged', async () => {
+    const f = reply(200, { intake: {} })
+    vi.stubGlobal('fetch', f)
+    await getProjectSettings('/p')
+    await putProjectSettings('/p', { intake: {} })
+    expect(f.mock.calls[0][0]).toBe('/api/projects/settings?root=%2Fp')
+    expect(f.mock.calls[1][1].headers['If-Match']).toBeUndefined()
   })
 })

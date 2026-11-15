@@ -80,6 +80,14 @@ func runHelperChild(mode string) {
 			}
 			continue
 		}
+		if len(req.Method) == 0 {
+			// A response, i.e. the bridge's answer to a child-initiated
+			// request. Report the frame verbatim on stderr so a test can
+			// read back the id it carried and, for a cancelled request,
+			// its error code.
+			fmt.Fprintf(os.Stderr, "helper saw answer %s\n", sc.Bytes())
+			continue
+		}
 		fmt.Fprintf(os.Stderr, "helper saw request %s\n", req.Method)
 		// test/big answers with a result of params.bytes "x" characters, in
 		// any mode. It exists to drive the bridge's inbound frame cap.
@@ -121,6 +129,9 @@ func runHelperChild(mode string) {
 // methods test/ask_permission and test/ask_question make the helper
 // issue a child-initiated request and report the bridge's response on
 // stderr, where tests can observe it via StderrLog.
+// test/ask_permission_string issues the same permission request under a
+// string id, and test/cancel_request cancels it with $/cancel_request —
+// the pair that exercises the bridge's request cancellation.
 func handleRegistryMode(req *struct {
 	ID     json.RawMessage `json:"id"`
 	Method string          `json:"method"`
@@ -219,6 +230,41 @@ func handleRegistryMode(req *struct {
 			"id":      9000,
 			"method":  method,
 			"params":  params,
+		})
+	case "test/ask_permission_string":
+		// The same permission request as test/ask_permission, but under a
+		// string id, so the bridge must key and answer it as raw JSON.
+		_ = enc.Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      req.ID,
+			"result":  map[string]any{},
+		})
+		_ = enc.Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      "marshal-out-1",
+			"method":  "session/request_permission",
+			"params":  map[string]any{"sessionId": "s-1", "toolCallId": "tc-1", "toolName": "shell.run"},
+		})
+	case "test/cancel_request":
+		// $/cancel_request for the string-id request above. A trigger may
+		// name another id with params.id, so a test can cancel a request
+		// the helper issued under an integer id.
+		_ = enc.Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      req.ID,
+			"result":  map[string]any{},
+		})
+		var target json.RawMessage = json.RawMessage(`"marshal-out-1"`)
+		var p struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if err := json.Unmarshal(req.Params, &p); err == nil && len(p.ID) > 0 {
+			target = p.ID
+		}
+		_ = enc.Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"method":  "$/cancel_request",
+			"params":  map[string]any{"id": target},
 		})
 	default:
 		_ = enc.Encode(map[string]any{
@@ -683,5 +729,131 @@ func TestChildDetachDoesNotRespawn(t *testing.T) {
 	defer tr.mu.Unlock()
 	if tr.opens != 1 {
 		t.Fatalf("transport opened %d times, want 1 — Detach respawned the agent", tr.opens)
+	}
+}
+
+// TestAChildRequestWithAStringIDIsHandled: a child request's id may be any
+// JSON, not only an integer. The handler runs and the answer carries the
+// string id back exactly as the child sent it.
+func TestAChildRequestWithAStringIDIsHandled(t *testing.T) {
+	c := newTestChild(t, "registry")
+	handled := make(chan string, 1)
+	c.OnRequest = func(ctx context.Context, method string, params json.RawMessage) (any, error) {
+		handled <- method
+		return map[string]any{"approved": true}, nil
+	}
+	if err := c.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer c.Stop()
+
+	ctx, cancel := testContext(t)
+	defer cancel()
+	if _, err := c.Request(ctx, "test/ask_permission_string", nil); err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	select {
+	case method := <-handled:
+		if method != "session/request_permission" {
+			t.Fatalf("handler ran for %q, want session/request_permission", method)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the child's string-id request was never handled")
+	}
+	waitFor(t, 2*time.Second, "the answer to carry the string id", func() bool {
+		return strings.Contains(c.StderrLog(), `"id":"marshal-out-1"`)
+	})
+}
+
+// TestAChildsCancelEndsItsRequest: $/cancel_request ends the request it
+// names, and the answer for that id is JSON-RPC -32800.
+func TestAChildsCancelEndsItsRequest(t *testing.T) {
+	c := newTestChild(t, "registry")
+	started := make(chan struct{})
+	c.OnRequest = func(ctx context.Context, method string, params json.RawMessage) (any, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, errRequestCancelled
+	}
+	if err := c.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer c.Stop()
+
+	ctx, cancel := testContext(t)
+	defer cancel()
+	if _, err := c.Request(ctx, "test/ask_permission_string", nil); err != nil {
+		t.Fatalf("request trigger: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handler never started")
+	}
+	// The request is registered before its handler runs, so this cancel
+	// always finds it.
+	if _, err := c.Request(ctx, "test/cancel_request", nil); err != nil {
+		t.Fatalf("cancel trigger: %v", err)
+	}
+	waitFor(t, 3*time.Second, "a -32800 answer for the cancelled id", func() bool {
+		log := c.StderrLog()
+		return strings.Contains(log, `"id":"marshal-out-1"`) &&
+			strings.Contains(log, `"code":-32800`) &&
+			strings.Contains(log, `"message":"request cancelled"`)
+	})
+}
+
+// TestACancelForNoRequestIsIgnored: a cancel for an id nothing registered
+// changes nothing and is never passed on as a notification.
+func TestACancelForNoRequestIsIgnored(t *testing.T) {
+	c := newTestChild(t, "registry")
+	requests := make(chan string, 4)
+	c.OnRequest = func(ctx context.Context, method string, params json.RawMessage) (any, error) {
+		requests <- method
+		return map[string]any{}, nil
+	}
+	notes := make(chan string, 8)
+	c.OnNotification = func(method string, params json.RawMessage) {
+		notes <- method
+	}
+	if err := c.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer c.Stop()
+
+	ctx, cancel := testContext(t)
+	defer cancel()
+	// No request has registered "marshal-out-1".
+	if _, err := c.Request(ctx, "test/cancel_request", nil); err != nil {
+		t.Fatalf("cancel trigger: %v", err)
+	}
+	// A notification emitted afterwards proves the read loop has moved
+	// past the cancel, so the check below is not a race.
+	if _, err := c.Request(ctx, "test/emit_update", nil); err != nil {
+		t.Fatalf("notification trigger: %v", err)
+	}
+	select {
+	case method := <-notes:
+		if method != "session/update" {
+			t.Fatalf("the cancel reached OnNotification as %q", method)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the later notification never arrived")
+	}
+	select {
+	case method := <-notes:
+		t.Fatalf("unexpected extra notification %q", method)
+	case <-time.After(200 * time.Millisecond):
+	}
+	select {
+	case method := <-requests:
+		t.Fatalf("the cancel was handled as a request %q", method)
+	default:
+	}
+	c.inboundMu.Lock()
+	inbound := len(c.inbound)
+	c.inboundMu.Unlock()
+	if inbound != 0 {
+		t.Fatalf("inbound holds %d entries after a cancel for no request", inbound)
 	}
 }

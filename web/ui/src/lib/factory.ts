@@ -6,7 +6,30 @@ export interface FactoryConfig {
   reviewerInstructions: string; implementerAuto: boolean; expectedChecks: FactoryCheckKey[]
   noRequiredCiAcknowledged: boolean; maxRounds: number; ciPollSeconds: number; ciWaitSeconds: number
 }
-export interface FactoryCreate { requestId: string; title: string; plan: string; spec: string; config: FactoryConfig }
+/**
+ * The project's factory defaults. Every field is optional on purpose: an
+ * absent field follows the handoff, or the project's agent defaults where
+ * those apply. Do not materialise a fallback into a field the user left alone.
+ */
+export interface FactoryDefaults {
+  targetBranch?: string
+  workspace?: string
+  hostId?: string
+  implementerRouting?: Record<string, unknown>
+  reviewerRouting?: Record<string, unknown>
+  reviewerInstructions?: string
+  expectedChecks?: FactoryCheckKey[]
+  maxRounds?: number
+  ciPollSeconds?: number
+  ciWaitSeconds?: number
+}
+/**
+ * A create request's configuration. The fields the bridge never derives are
+ * required; everything it can resolve from the project's defaults is optional
+ * and omitted when it should follow.
+ */
+export type FactoryCreateConfig = Pick<FactoryConfig, 'repoId' | 'projectRoot' | 'native' | 'implementerAuto' | 'noRequiredCiAcknowledged'> & Partial<Omit<FactoryConfig, 'repoId' | 'projectRoot' | 'native' | 'implementerAuto' | 'noRequiredCiAcknowledged'>>
+export interface FactoryCreate { requestId: string; title: string; plan: string; spec: string; config: FactoryCreateConfig }
 export interface FactoryApproval { revision: number; plan: string; spec: string; planHash: string; config: FactoryConfig; approvedAt: string }
 export interface FactoryGrant { id: string; reason: string; additionalRounds: number; at: string }
 export interface FactoryWorker { agentId: string; sessionId: string; role: string; spawnEffectId: string; parked: boolean }
@@ -25,7 +48,7 @@ export interface FactoryOutcome { effectId: string; stopReason: string; error: s
 export interface FactoryEffect { outcome: FactoryOutcome | null; id: string; kind: string; status: string; workerRole: string; round: number; approvalRevision: number; worker: FactoryWorker | null; expectedHead: string; expectedBase: string; createdAt: string }
 export interface FactoryDecision { id: string; kind: string; question: string; reason: string; effectId: string; createdAt: string }
 export interface FactoryEvent { sequence: number; at: string; kind: string; message: string; effectId: string }
-export interface FactoryItem { id: string; title: string; state: string; stage: string; repoId: string; projectRoot: string; hostId: string; branch: string; baseSha: string; version: number; draft: FactoryCreate; approvals: FactoryApproval[] | null; grants: FactoryGrant[] | null; rounds: FactoryRound[] | null; workers: FactoryWorker[] | null; prs: FactoryPR[] | null; effects: FactoryEffect[] | null; decision: FactoryDecision | null; history: FactoryEvent[] | null; createdAt: string; approvedAt: string; updatedAt: string }
+export interface FactoryItem { id: string; title: string; state: string; stage: string; repoId: string; projectRoot: string; hostId: string; branch: string; baseSha: string; version: number; draft: Omit<FactoryCreate, 'config'> & { config: FactoryConfig }; approvals: FactoryApproval[] | null; grants: FactoryGrant[] | null; rounds: FactoryRound[] | null; workers: FactoryWorker[] | null; prs: FactoryPR[] | null; effects: FactoryEffect[] | null; decision: FactoryDecision | null; history: FactoryEvent[] | null; createdAt: string; approvedAt: string; updatedAt: string }
 export interface FactoryCommand { requestId: string; kind: 'approve' | 'answer' | 'stop' | 'retry' | 'reconcile' | 'recover'; expectedVersion: number; decisionId?: string; answer?: string; reason?: string; additionalRounds?: number; replacement?: FactoryCreate; implementerRouting?: Record<string, unknown>; reviewerRouting?: Record<string, unknown>; confirmPreviousWorkerStopped?: boolean }
 export interface FactoryRoute { itemId?: string; create?: boolean }
 

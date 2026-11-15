@@ -149,6 +149,30 @@ func (blockingPermissionClient) RequestPermission(ctx context.Context, req Permi
 	return PermissionDecision{}, ctx.Err()
 }
 
+// contextEndingPermissionClient blocks every request until its context ends,
+// reporting that it was entered and that the context ended, so a test can prove
+// a settlement of the pending prompt ended the forwarded RPC.
+type contextEndingPermissionClient struct {
+	entered chan struct{}
+	ended   chan struct{}
+	enter   sync.Once
+	end     sync.Once
+}
+
+func newContextEndingPermissionClient() *contextEndingPermissionClient {
+	return &contextEndingPermissionClient{
+		entered: make(chan struct{}),
+		ended:   make(chan struct{}),
+	}
+}
+
+func (c *contextEndingPermissionClient) RequestPermission(ctx context.Context, req PermissionRequest) (PermissionDecision, error) {
+	c.enter.Do(func() { close(c.entered) })
+	<-ctx.Done()
+	c.end.Do(func() { close(c.ended) })
+	return PermissionDecision{}, ctx.Err()
+}
+
 func TestPromptTurnBridgesPendingApprovalToPermissionClient(t *testing.T) {
 	broker := pubsub.NewBroker[session.Event]()
 	pendingCh := make(chan session.UserApprovalDecision, 1)
@@ -188,6 +212,104 @@ func TestPromptTurnBridgesPendingApprovalToPermissionClient(t *testing.T) {
 	}
 	if client.gotReq.ToolCallID != "tool-1" || client.gotReq.ToolName != "shell.run" || client.gotReq.Command != "rm tmp" {
 		t.Fatalf("client.gotReq = %+v", client.gotReq)
+	}
+}
+
+// TestASettledApprovalEndsItsForwardedRequest pins the settled channel: when the
+// session itself settles a forwarded approval (a viewer's
+// session/answer_approval goes through the same path), the outbound request
+// stops waiting, and the turn continues rather than being cancelled.
+func TestASettledApprovalEndsItsForwardedRequest(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	broker := pubsub.NewBroker[session.Event]()
+	state.SetEventBroker(broker)
+
+	pendingCh := make(chan session.UserApprovalDecision, 1)
+	pending := &session.PendingToolCall{
+		ID:           "tool-settled",
+		Name:         "shell.run",
+		Command:      "rm tmp",
+		ResponseChan: pendingCh,
+	}
+	key, err := state.RegisterApproval(context.Background(), pending)
+	if err != nil {
+		t.Fatalf("RegisterApproval: %v", err)
+	}
+
+	decisions := make(chan session.UserApprovalDecision, 1)
+	// hold keeps the turn alive after the decision arrives until the test has
+	// seen the forwarded request end, so "the context ended" cannot be satisfied
+	// merely by the turn shutting down.
+	hold := make(chan struct{})
+	client := newContextEndingPermissionClient()
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					broker.Publish(session.EventPendingApprovalChanged, session.Event{PendingApproval: pending})
+					// Wait for the canonical decision, exactly as the runner does.
+					select {
+					case decision := <-pendingCh:
+						decisions <- decision
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+					select {
+					case <-hold:
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+					return nil
+				}),
+				Events: broker,
+				State:  state,
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+		Perms:  client,
+	})
+
+	turnErr := make(chan error, 1)
+	go func() {
+		_, err := manager.PromptTurn(context.Background(),
+			json.RawMessage(`{"sessionId":"sess_test","prompt":[{"type":"text","text":"hi"}]}`))
+		turnErr <- err
+	}()
+
+	select {
+	case <-client.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the approval was never forwarded to the permission client")
+	}
+
+	// The session's own answer path, as a viewer's session/answer_approval uses.
+	if _, err := state.ResolveApproval(key, session.UserApprovalDecision{Approved: true}, nil); err != nil {
+		t.Fatalf("ResolveApproval: %v", err)
+	}
+
+	select {
+	case <-client.ended:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the settled approval did not end its forwarded request")
+	}
+	close(hold)
+	select {
+	case err := <-turnErr:
+		if err != nil {
+			t.Fatalf("PromptTurn() error = %v, want the turn to continue", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the turn did not finish")
+	}
+	select {
+	case decision := <-decisions:
+		if !decision.Approved {
+			t.Fatalf("decision = %+v, want approved", decision)
+		}
+	default:
+		t.Fatal("the settled decision never reached the waiting runner")
 	}
 }
 

@@ -41,6 +41,15 @@ const stderrCap = 64 << 10
 // delivered to every pending request when Stop runs.
 var errStopped = errors.New("bridge: child stopped")
 
+// errRequestCancelled is the handler's error when the child cancelled the
+// request; answerRequest answers it as JSON-RPC -32800.
+var errRequestCancelled = errors.New("bridge: the child cancelled the request")
+
+// cancelRequestMethod is JSON-RPC's $/cancel_request notification. It is a
+// literal because everything under web/ is standard-library only and so may
+// not import marshal/internal/acpwire.
+const cancelRequestMethod = "$/cancel_request"
+
 // rpcError is a JSON-RPC error object returned by the child.
 type rpcError struct {
 	Code    int    `json:"code"`
@@ -94,13 +103,13 @@ type Child struct {
 	// with a method and no id). It runs on the read goroutine and must
 	// not block.
 	OnNotification func(method string, params json.RawMessage)
-	// OnRequest handles a child-initiated request (a frame with both a
-	// method and an integer id), e.g. session/request_permission. It
-	// runs on its own goroutine and may block; the returned result or
-	// error is written back to the child as the JSON-RPC response.
-	OnRequest func(id int, method string, params json.RawMessage) (result any, err error)
+	// OnRequest handles a child-initiated request (a frame with both a method
+	// and an id). ctx ends when the child cancels the request with
+	// $/cancel_request, or when this generation's pipe closes. The handler's
+	// result or error is answered with the request's own id.
+	OnRequest func(ctx context.Context, method string, params json.RawMessage) (result any, err error)
 
-	mu         sync.Mutex // guards transport, stdin, stdout, stderrPipe, readDone, stopping, started
+	mu         sync.Mutex // guards transport, stdin, stdout, stderrPipe, readDone, genCtx, genCancel, stopping, started
 	transport  agentTransport
 	stdin      io.WriteCloser
 	stdout     io.ReadCloser
@@ -108,6 +117,13 @@ type Child struct {
 	// readDone is closed by this generation's readLoop when the child's
 	// stdout reaches EOF. supervise waits on it before reaping.
 	readDone chan struct{}
+
+	// genCtx is the current generation's parent context: every child
+	// request's context derives from it, and failPending cancels it, so a
+	// request in flight ends when its generation's pipe closes. genCancel
+	// is that context's cancel func.
+	genCtx    context.Context
+	genCancel context.CancelFunc
 
 	stopping bool
 	started  bool
@@ -118,6 +134,11 @@ type Child struct {
 	pendMu  sync.Mutex
 	nextID  int
 	pending map[int]chan requestResult
+
+	// inbound is each child request in flight, by its id's compact JSON, so a
+	// $/cancel_request can end the one it names. Guarded by inboundMu.
+	inboundMu sync.Mutex
+	inbound   map[string]context.CancelFunc
 
 	stderrMu sync.Mutex
 	stderr   bytes.Buffer // bounded tail of the child's stderr
@@ -165,6 +186,9 @@ func (c *Child) Start() error {
 	c.pendMu.Lock()
 	c.pending = make(map[int]chan requestResult)
 	c.pendMu.Unlock()
+	c.inboundMu.Lock()
+	c.inbound = make(map[string]context.CancelFunc)
+	c.inboundMu.Unlock()
 	c.mu.Unlock()
 	if err := c.spawn(); err != nil {
 		// Leave the Child in its pre-Start state so a cleanup Stop()
@@ -336,6 +360,9 @@ func (c *Child) spawn() error {
 	}
 
 	readDone := make(chan struct{})
+	// Each generation gets its own parent context, so a request in flight
+	// ends when this generation's pipe closes (failPending cancels it).
+	genCtx, genCancel := context.WithCancel(context.Background())
 
 	c.mu.Lock()
 	c.transport = tr
@@ -343,6 +370,8 @@ func (c *Child) spawn() error {
 	c.stdout = stdout
 	c.stderrPipe = stderr
 	c.readDone = readDone
+	c.genCtx = genCtx
+	c.genCancel = genCancel
 	c.mu.Unlock()
 
 	go func() {
@@ -437,13 +466,55 @@ func (c *Child) supervise() {
 }
 
 // failPending delivers err to every pending request and clears the
-// correlation map.
+// correlation map. It also cancels the generation's parent context, so a
+// child request still in flight ends instead of waiting on a pipe that is
+// already gone. Every dead generation runs this, whether it stopped, exited,
+// or failed to respawn.
 func (c *Child) failPending(err error) {
+	c.mu.Lock()
+	genCancel := c.genCancel
+	c.mu.Unlock()
+	if genCancel != nil {
+		genCancel()
+	}
+
 	c.pendMu.Lock()
 	defer c.pendMu.Unlock()
 	for id, ch := range c.pending {
 		ch <- requestResult{err: err}
 		delete(c.pending, id)
+	}
+}
+
+// generationContext returns the current generation's parent context, which a
+// child request's context derives from. It is read under c.mu so readLoop
+// never races a respawn replacing the generation.
+func (c *Child) generationContext() context.Context {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.genCtx == nil {
+		return context.Background()
+	}
+	return c.genCtx
+}
+
+// handleCancelRequest ends the child request the $/cancel_request names. A
+// cancel for an id that names nothing in flight is ignored. Runs on the read
+// goroutine, in arrival order, so a cancel that follows its request always
+// finds it registered.
+func (c *Child) handleCancelRequest(params json.RawMessage) {
+	var p struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil || len(p.ID) == 0 {
+		return
+	}
+	key := compactID(p.ID)
+	c.inboundMu.Lock()
+	cancel, ok := c.inbound[key]
+	c.inboundMu.Unlock()
+	if ok {
+		cancel()
 	}
 }
 
@@ -494,15 +565,25 @@ func (c *Child) readLoop(r io.Reader) {
 			if err := json.Unmarshal(methodRaw, &method); err != nil {
 				continue
 			}
+			if method == cancelRequestMethod && !hasID {
+				// $/cancel_request is the protocol's own notification,
+				// handled here on the read goroutine and in arrival order,
+				// so a cancel that follows its request is never missed. It
+				// never reaches OnNotification.
+				c.handleCancelRequest(probe["params"])
+				continue
+			}
 			if hasID && c.OnRequest != nil {
 				// Child-initiated request (e.g. session/request_permission).
-				// Handle on a separate goroutine: the handler may block
-				// and readLoop must keep draining.
-				var id int
-				if err := json.Unmarshal(idRaw, &id); err != nil {
-					continue
-				}
-				go c.answerRequest(id, method, probe["params"])
+				// Register its cancel func before the handler goroutine
+				// starts, so a $/cancel_request read next finds it. The
+				// raw id is answered back unchanged.
+				key := compactID(idRaw)
+				ctx, cancel := context.WithCancel(c.generationContext())
+				c.inboundMu.Lock()
+				c.inbound[key] = cancel
+				c.inboundMu.Unlock()
+				go c.answerRequest(ctx, key, idRaw, method, probe["params"])
 				continue
 			}
 			if c.OnNotification == nil {
@@ -560,15 +641,27 @@ func (c *Child) readLoop(r io.Reader) {
 	}
 }
 
-// answerRequest invokes OnRequest for one child-initiated request and
-// writes the JSON-RPC response back. Runs on its own goroutine.
-func (c *Child) answerRequest(id int, method string, params json.RawMessage) {
-	result, err := c.OnRequest(id, method, params)
+// answerRequest invokes OnRequest for one child-initiated request and writes
+// the JSON-RPC response back under the request's own raw id, byte for byte.
+// Runs on its own goroutine. It removes its own inbound entry when the
+// handler returns, so a later cancel for this id names nothing.
+func (c *Child) answerRequest(ctx context.Context, key string, id json.RawMessage, method string, params json.RawMessage) {
+	defer func() {
+		c.inboundMu.Lock()
+		delete(c.inbound, key)
+		c.inboundMu.Unlock()
+	}()
+	result, err := c.OnRequest(ctx, method, params)
 	if err != nil {
+		code, message := -32000, err.Error()
+		if errors.Is(err, errRequestCancelled) {
+			// The child ended this request itself (P5 R2).
+			code, message = -32800, "request cancelled"
+		}
 		_ = c.writeFrame(map[string]any{
 			"jsonrpc": "2.0",
 			"id":      id,
-			"error":   map[string]any{"code": -32000, "message": err.Error()},
+			"error":   map[string]any{"code": code, "message": message},
 		})
 		return
 	}

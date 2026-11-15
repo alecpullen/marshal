@@ -175,15 +175,22 @@ func (c *childApprovals) collect(src *session.ApprovalSource) {
 	}
 	go func() {
 		// The owning child's operation context, not the root turn's: a steering
-		// interruption of the child's own operation ends this one RPC.
+		// interruption of the child's own operation ends this one RPC, and so
+		// does the child session's own settlement of the approval.
 		original := childPromptContext(src.Owner, src.Key)
-		rpcCtx, cleanup := promptRPCContext(c.ctx, original)
+		settled := childPromptSettled(src.Owner, src.Key)
+		rpcCtx, cleanup := promptRPCContext(c.ctx, original, settled)
 		defer cleanup()
 		// The canonical pending is what the bridge settles, so Respond routes
 		// through the owning registry. The actor attribution is presentation
 		// only and never changes which request is answered.
 		bridge := NewPermissionBridge(actorPermissionClient{inner: c.tm.bridge.client, actor: src.Actor})
 		if _, err := bridge.Request(rpcCtx, c.sessionID, pending); err != nil {
+			if settledElsewhere(settled) {
+				// The owning session settled this approval itself; a denial
+				// here would answer a request that already has its decision.
+				return
+			}
 			if childSteeringEndedPrompt(src.Owner, src.Key, original, err) {
 				// The child's operation interruption already settled this
 				// request canonically; the collector continues.
@@ -220,6 +227,14 @@ func childPromptContext(owner *session.State, key session.PromptKey) context.Con
 		return nil
 	}
 	return owner.PromptContext(key)
+}
+
+// childPromptSettled is PromptSettled for owner, nil without one.
+func childPromptSettled(owner *session.State, key session.PromptKey) <-chan struct{} {
+	if owner == nil || key.ID == "" {
+		return nil
+	}
+	return owner.PromptSettled(key)
 }
 
 // childSteeringEndedPrompt reports whether err is the cancellation of a child

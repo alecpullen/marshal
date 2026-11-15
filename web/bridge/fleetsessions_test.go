@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"testing"
@@ -175,7 +176,7 @@ func TestForgettingUntracksWithoutAClose(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := reg.awaitPermission(params)
+		_, err := reg.awaitPermission(context.Background(), params)
 		done <- err
 	}()
 	waitFor(t, 2*time.Second, "pending permission", func() bool {

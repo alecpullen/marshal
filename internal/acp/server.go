@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -277,7 +278,16 @@ func (s *Server) Request(ctx context.Context, method string, params any, result 
 	case <-ctx.Done():
 		s.stateMu.Lock()
 		delete(s.outbound, id)
+		closed := s.closed
 		s.stateMu.Unlock()
+		// Tell the peer the request is abandoned so it can stop waiting too.
+		// A closed connection is already going, and an encode error there is
+		// the connection's business, not this caller's.
+		if !closed {
+			_ = s.Notify(acpwire.MethodCancelRequest, acpwire.CancelRequestParams{
+				ID: json.RawMessage(strconv.Quote(id)),
+			})
+		}
 		return ctx.Err()
 	}
 }

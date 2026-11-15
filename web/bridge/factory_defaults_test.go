@@ -8,6 +8,90 @@ import (
 	"testing"
 )
 
+// assertFactoryRoutes pins both roles' routes to want: an empty want means the
+// field stays unset, a non-empty one means both roles carry exactly those
+// bytes.
+func assertFactoryRoutes(t *testing.T, c FactoryConfig, want string) {
+	t.Helper()
+	for _, route := range []struct {
+		role string
+		raw  json.RawMessage
+	}{
+		{"implementer", c.ImplementerRouting},
+		{"reviewer", c.ReviewerRouting},
+	} {
+		if want == "" {
+			if len(route.raw) != 0 {
+				t.Fatalf("%s routing = %q, want unset", route.role, route.raw)
+			}
+			continue
+		}
+		if !bytes.Equal(route.raw, json.RawMessage(want)) {
+			t.Fatalf("%s routing = %q, want %q", route.role, route.raw, want)
+		}
+	}
+}
+
+// TestFactoryAgentRoutingProfileOnly pins the shape of resolution's lower
+// precedence level for routing: only the project's routing *profile* is
+// inherited, as a route of its own, and a profile the stored message does not
+// carry — absent, null, malformed, non-string or empty — contributes no
+// fallback at all. The stored message is only ever read.
+func TestFactoryAgentRoutingProfileOnly(t *testing.T) {
+	cases := []struct {
+		name    string
+		routing json.RawMessage
+		want    string // "" means neither route is supplied
+	}{
+		{name: "missing"},
+		{name: "null", routing: json.RawMessage(`null`)},
+		{name: "malformed", routing: json.RawMessage(`{"profile":`)},
+		{name: "not an object", routing: json.RawMessage(`["chosen"]`)},
+		{name: "no profile field", routing: json.RawMessage(`{"mode":"ask"}`)},
+		{name: "null profile", routing: json.RawMessage(`{"profile":null}`)},
+		{name: "non-string profile", routing: json.RawMessage(`{"profile":7}`)},
+		{name: "empty profile", routing: json.RawMessage(`{"profile":""}`)},
+		{
+			name:    "extra fields",
+			routing: json.RawMessage(`{"profile":"chosen","overrides":{"implementer":"other"},"mode":"ask"}`),
+			want:    `{"profile":"chosen"}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			before := append(json.RawMessage(nil), tc.routing...)
+			ps := ProjectSettings{Workspace: "ws://published/example", Routing: tc.routing}
+			got := factoryApplyProjectAgentDefaults(FactoryConfig{}, ps)
+			assertFactoryRoutes(t, got, tc.want)
+			if !bytes.Equal(ps.Routing, before) {
+				t.Fatalf("stored routing changed to %q, want %q", ps.Routing, before)
+			}
+			// The fallback is idempotent: a second pass over its own output
+			// changes nothing, which is what makes the two precedence levels
+			// compose in the order the contract states.
+			if again := factoryApplyProjectAgentDefaults(got, ps); !reflect.DeepEqual(again, got) {
+				t.Fatalf("fallback is not idempotent: %+v then %+v", got, again)
+			}
+		})
+	}
+
+	// An explicit route is never rewritten, extra fields and all, and a route
+	// the handoff wrote as an empty object stays exactly that: the fallback
+	// applies to an unset route, not to a set one.
+	project := ProjectSettings{Routing: json.RawMessage(`{"profile":"chosen","overrides":{"implementer":"other"}}`)}
+	conf := FactoryConfig{
+		ImplementerRouting: json.RawMessage(`{"profile":"mine","overrides":{"reviewer":"other"}}`),
+		ReviewerRouting:    json.RawMessage(`{}`),
+	}
+	got := factoryApplyProjectAgentDefaults(conf, project)
+	if !bytes.Equal(got.ImplementerRouting, conf.ImplementerRouting) {
+		t.Fatalf("implementer routing = %q, want the explicit %q", got.ImplementerRouting, conf.ImplementerRouting)
+	}
+	if !bytes.Equal(got.ReviewerRouting, json.RawMessage(`{}`)) {
+		t.Fatalf("reviewer routing = %q, want the explicit empty object", got.ReviewerRouting)
+	}
+}
+
 // TestFactoryDefaultsApplyPerTypeUnsetRules pins the per-type definition of
 // "unset" from the specification's §4.3: a string default applies to an empty
 // handoff string, an int default to a zero one, a json.RawMessage default to a

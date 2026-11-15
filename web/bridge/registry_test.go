@@ -1308,7 +1308,7 @@ func TestPermissionDecisionPreservesModeAccess(t *testing.T) {
 	resCh := make(chan any, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		res, err := r.awaitPermission(params)
+		res, err := r.awaitPermission(context.Background(), params)
 		if err != nil {
 			errCh <- err
 			return
@@ -1390,7 +1390,7 @@ func TestPermissionDecisionPreservesModeAccess(t *testing.T) {
 	plain := json.RawMessage(`{"sessionId":"s-1","toolCallId":"tc-10","toolName":"shell.run","command":"rm -rf /","reason":"destructive"}`)
 	plainCh := make(chan any, 1)
 	go func() {
-		res, _ := r.awaitPermission(plain)
+		res, _ := r.awaitPermission(context.Background(), plain)
 		plainCh <- res
 	}()
 	waitFor(t, 2*time.Second, "pending ordinary permission", func() bool {
@@ -1416,5 +1416,77 @@ func TestPermissionDecisionPreservesModeAccess(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("awaitPermission did not return after resolve")
+	}
+}
+
+// TestACancelledPermissionStopsBeingPending: a permission the child cancels
+// through the pipe stops being pending, and a later decision finds nothing
+// to resolve.
+func TestACancelledPermissionStopsBeingPending(t *testing.T) {
+	r, _ := newTestRegistry(t, "registry")
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// The fake child emits session/request_permission under the string id
+	// "marshal-out-1"; the registry parks on it.
+	if _, err := r.child.Request(ctx, "test/ask_permission_string", nil); err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	waitFor(t, 2*time.Second, "pending permission", func() bool {
+		r.permMu.Lock()
+		defer r.permMu.Unlock()
+		_, ok := r.permissions["tc-1"]
+		return ok
+	})
+	if got := r.Pending("s-1"); got != "approval" {
+		t.Fatalf("Pending before the cancel = %q, want approval", got)
+	}
+	// The child cancels its own request, through the real pipe.
+	if _, err := r.child.Request(ctx, "test/cancel_request", nil); err != nil {
+		t.Fatalf("cancel trigger: %v", err)
+	}
+	waitFor(t, 2*time.Second, "the cancel to stop the permission being pending", func() bool {
+		return r.Pending("s-1") == ""
+	})
+	if err := r.ResolvePermission("tc-1", Decision{Approved: true}); !errors.Is(err, ErrGone) {
+		t.Fatalf("resolve after the cancel: want ErrGone, got %v", err)
+	}
+}
+
+// TestACancelledQuestionStopsBeingPending: the same for a question. The
+// child issued this one under the integer id 9000, and cancels that id.
+func TestACancelledQuestionStopsBeingPending(t *testing.T) {
+	r, _ := newTestRegistry(t, "registry")
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := r.child.Request(ctx, "test/ask_question", nil); err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	waitFor(t, 2*time.Second, "pending question", func() bool {
+		r.quesMu.Lock()
+		defer r.quesMu.Unlock()
+		_, ok := r.questions["q-1"]
+		return ok
+	})
+	if got := r.Pending("s-1"); got != "question" {
+		t.Fatalf("Pending before the cancel = %q, want question", got)
+	}
+	// Cancel the request the child issued for this question.
+	if _, err := r.child.Request(ctx, "test/cancel_request", map[string]any{"id": 9000}); err != nil {
+		t.Fatalf("cancel trigger: %v", err)
+	}
+	waitFor(t, 2*time.Second, "the cancel to stop the question being pending", func() bool {
+		return r.Pending("s-1") == ""
+	})
+	ans := Answers{Answers: []Answer{{Question: "proceed?", Answer: "yes"}}}
+	if err := r.ResolveQuestion("q-1", ans); !errors.Is(err, ErrGone) {
+		t.Fatalf("resolve after the cancel: want ErrGone, got %v", err)
 	}
 }

@@ -11,8 +11,11 @@ relay and its fleet agents on project children.
 Depends on: P4, implemented (all ten plans merged at `7ae94a9b`; its hands-on
 acceptance run is still to do).
 Status: approved, 2026-11-12, with all ten decisions as recommended.
-Behaviour written 2026-11-13; plans 1 and 2 are written. The line anchors were
-checked at `d5e63dcd`.
+Behaviour written 2026-11-13. Plans 1 and 2 are implemented (merged at
+`fcebaa8b`). Plans 3, 4a and 4b are written (2026-11-14), with their anchors
+checked at `cef1e353`. Plan 4a is new: authoring plan 4 found that no real
+agent's approval reaches the bridge (Findings), so plan 4 became 4a, the
+requests, and 4b, opening an agent.
 
 ## Goal
 
@@ -533,6 +536,32 @@ first, then the alternative it was weighed against.
     the screen again (fleet-cli §5).
 - **Action errors.** An action returns the bridge's refusal: its status and
   its `error` text. A budget refusal keeps the budget's own sentence.
+- **Decided by plan 3:**
+  - **One read.** `Fleet.State()` returns one `FleetState`: the rows, the
+    inbox, the projects, the budgets, the latest gate per agent, the daemon's
+    info and the connection. It is one consistent value, as `Session.Status`
+    is.
+  - **Plan 3's interface is the reads and `Changed`.** Plan 5 adds the
+    actions, their routes and the last action's error.
+  - **The route table** is `acpclient.FleetRoutes`, with `Routes:` doc lines.
+    A test in `test/daemon` checks each route against a real bridge.
+    `acpclient` may import the contract, as the TUI may.
+  - **The stream opens first.** The client reads the snapshot once the stream
+    has answered, and applies the deltas that arrived meanwhile after the
+    reads. Reading first would lose what happens between the two.
+  - **Freshness:**
+    - An inbox that names an unknown agent, or moves any agent to another
+      group, refetches the agents, at most once a second. A turn ending has no
+      delta of its own.
+    - Activity, mode, telemetry and run deltas move the row's `updatedAt`, as
+      the bridge does.
+    - A mode delta replaces the row's access unless its revision is older.
+    - Locally, the daemon's info is reread every 5s, because its sessions are
+      not on the stream.
+  - **Epochs.** Every full read (a connect, a reconnect, an overflow) bumps
+    `FleetState.Epoch`. The first state of an epoch is the baseline of F8.
+  - **Before the first read,** the state is `connecting`, which the footer
+    shows as reconnecting.
 
 ### F4. The fleet screen
 
@@ -597,6 +626,22 @@ first, then the alternative it was weighed against.
   - While down, the panels keep the last state, dimmed. Actions are refused
     with a status-line message.
   - A failed action shows on the status line for 4s, and as a line in Events.
+- **Decided by plan 3:**
+  - **The ST glyph comes from the inbox group,** so glyph and group agree:
+    `⚠` needs you, `●` running, `✓` ready, and in earlier `✗` for an error and
+    `·` otherwise. `glyph.Live` (`●`, sharing `Brand`'s shape, which the fleet
+    screen never shows) and `glyph.Waiting` (`◌`) join the vocabulary.
+  - **The layout's numbers:**
+    - The left column is 28 columns below 100, and 40% from 100 up.
+    - Needs you shows 1 to 5 rows, as many as it has items.
+    - Events shows 3 rows below 30 rows of height, and 6 from 30 up.
+    - Agents takes the rest.
+  - **The tabs are Activity (`1`) and Info (`3`)** until plan 5 adds Diff as
+    `2`, so the numbers never move. A Sessions row has no tabs: the panel
+    shows its project, session ID, viewers and last activity.
+  - **The theme** is the user's `[tui]` config, without the project layer,
+    read by launch.
+  - **No mouse capture,** so the terminal's own selection works.
 
 ### F5. Opening an agent
 
@@ -608,7 +653,7 @@ first, then the alternative it was weighed against.
   - Before plan 6, an agent with no viewer socket (one with its own child) is
     refused with 409 and a sentence saying so.
   - A paused agent is refused with 409. An unknown agent gets 404.
-  - Plan 4 serves the route on the socket. Plan 7 adds it on the TLS listener,
+  - Plan 4b serves the route on the socket. Plan 7 adds it on the TLS listener,
     with the bearer token.
 - **The relay** is P4's. For an agent's session it refuses two calls:
   `session/close` for that session, and `session/new` with `replaces`.
@@ -637,12 +682,62 @@ first, then the alternative it was weighed against.
   - The fleet screen answers through `POST /api/permissions/{id}` and
     `POST /api/questions/{id}`. The session screen answers through its mirror
     (P3 R5).
-  - Plan 4 first tests that the first answer settles the request on both paths,
-    and that the other path is then told it was already answered.
-  - If that does not hold, plan 4 makes it hold before relying on it.
+  - The first answer settles the request on both paths, and the other path is
+    then told it was already answered: 410 through the bridge,
+    `CodeRequestSettled` through a viewer.
+  - Checking this while authoring plan 4 found that it held in neither
+    direction, for two reasons (Findings). Plan 4a makes it hold:
+    - The bridge keeps a child request's ID as raw JSON and answers with it, so
+      the agent's string IDs (`"marshal-out-N"`) are brokered at all.
+    - When an outbound request's context ends before its answer, the agent
+      sends `$/cancel_request` for it. The bridge ends that request's wait,
+      which drops it from the bridge's list.
+    - A forwarded prompt's RPC also ends when the prompt settles by any path,
+      and the forwarder then returns quietly: it does not fail the turn or
+      answer again. This covers approvals, questions, skill gates, access
+      requests and a child's approvals.
 - **The project attach widens** (closing P4 H15). It refuses with 409 any
   session ID an agent record names, live or paused. Today it refuses only the
   live fleet sessions (`attach.go:101`).
+- **Decided by plan 4b:**
+  - **No viewer may close or replace any agent's session,** on either attach.
+    A project viewer can do both today, to a fleet agent on the same child. The
+    relay refuses both whenever the named session is an agent's.
+  - **"An agent's session"** is one an agent record names, live or paused, or
+    one the classifier maps to a live agent.
+  - **One sentence** serves the relay and the session screen: "This is agent
+    <name>'s session: finish it from the fleet screen."
+  - **Every ending is refused** on an agent's session screen, in `beginEnd`:
+    `/exit`, `/quit`, `/new`, `/clear` and a resume. `/detach` still detaches.
+  - **The agent attach's refusals:**
+    - an unknown agent: 404;
+    - a paused agent: 409;
+    - a runtime that failed to start: 502;
+    - an agent with its own child: 409 until plan 6;
+    - an agent with no session yet: 409.
+
+    It never resumes a paused agent.
+  - **The loop returns to the fleet once the fleet has run in it,** from every
+    ending, including a failed or refused open, with the reason in Events.
+    Before that, a plain `marshal` or `marshal attach` behaves as today, apart
+    from `/fleet`.
+  - **The fleet client lives as long as the loop.**
+- **A viewer's own turns are invisible to the fleet** (found while authoring
+  plan 4b; not yet decided).
+  - The fleet's `running` is the bridge's `Busy` flag, which only a turn the
+    bridge's own connection prompts sets (`registry.go:887`). A turn started
+    from an agent's session screen runs on the viewer's connection.
+  - It reaches the bridge as no delta, and its approvals are asked of the
+    viewer's mirror only (P3 R5). So the fleet shows the agent idle, and
+    never lists its requests in needs you.
+  - This is P4 decision 8's gap, met from the other side. H3 covers it for
+    the daemon's own TUI sessions, but here it is a fleet agent. The fleet
+    loop's "go back to the fleet, leaving the agent running" needs it closed:
+    W4 as written checks the run through a viewer, not through the fleet.
+  - The likely fix: the agent also reports a service run on a session that a
+    non-marshal connection created to that connection, with its updates and
+    its prompts. Plan 4a's settlement then makes a prompt presented on both
+    paths safe. It needs a decision before any plan takes it.
 
 ### F6. Viewer sockets
 
@@ -758,16 +853,17 @@ first, then the alternative it was weighed against.
 | Area | Change |
 |---|---|
 | `web/bridge/contract` (new) | The fleet loop's wire types, their enumerations and the container viewers' method list (plans 1, 2, 5, 8); `tsgen`, the TypeScript generator, and its staleness test (plan 1). |
-| `web/bridge` | Type aliases onto the contract (plan 1); the inbox, its loop, route and delta (plan 2); the agent attach and the relay's refusals, and the widened project attach (plan 4); viewer sockets on agents' own children (plan 6); the attach on the TLS listener (plan 7); container viewers and the allowlist in the relay (plan 8). `TestWebIsStdlibOnly` allows `marshal/web/` imports (plan 1). |
+| `web/bridge` | Type aliases onto the contract (plan 1); the inbox, its loop, route and delta (plan 2); the child's requests kept by their raw ID, and `$/cancel_request` honoured (plan 4a); the agent attach and the relay's refusals, and the widened project attach (plan 4b); viewer sockets on agents' own children (plan 6); the attach on the TLS listener (plan 7); container viewers and the allowlist in the relay (plan 8). `TestWebIsStdlibOnly` allows `marshal/web/` imports (plan 1). |
 | `web/ui` | `contract.ts`, generated; `api.ts` and `fleet.ts` re-export it; `npm run check` (plan 1). The sidebar and Home on the inbox; `groupAgents` and `buildInbox` deleted (plan 2). |
-| `internal/daemon` | Its mirrored types become contract aliases (plan 1); the attachment's agent ID (plan 4). |
+| `internal/daemon` | Its mirrored types become contract aliases (plan 1); `AttachAgent` and the attachment's agent ID (plan 4b). |
 | `internal/fleetclient` (new) | The fleet client over the socket (plan 3) and HTTPS (plan 7). |
 | `internal/acpclient` | The `Fleet` interface and its route table (plan 3). |
-| `internal/app/tui` | The fleet model in `fleet/` (plans 3, 5); `/fleet`, and `/exit` and `/new` on an agent's session (plan 4); the needs-you count and notifications (plan 6). The boundary test allows the contract package (plan 3). |
-| `internal/launch` | The fleet pass in daemon mode's loop (plans 3, 4); the notifier (plan 6); remote profiles (plan 7). |
+| `internal/app/tui` | The fleet model in `fleet/` and two glyphs (plans 3, 5); the fleet model opening a target (plan 4b); `/fleet`, and every ending refused on an agent's session (plan 4b); the needs-you count and notifications (plan 6). The boundary test allows the contract package (plan 3). |
+| `internal/launch` | `launch.Fleet` (plan 3); the loop between the fleet and the session screen (plan 4b); the notifier (plan 6); remote profiles (plan 7). |
 | `cmd/marshal` | `marshal fleet` (plan 3), `--server` and `marshal fleet login` (plan 7); `acp --listen` with `--viewers` (plan 8). |
-| `internal/acp` | The test that the agent's forwarded replies decode into the contract (plan 1); the viewers' allowlist when started for a container (plan 8). |
-| `test/daemon` | The fleet loop against a real bridge (plans 4, 5, 6); a server profile over TLS (plan 7). |
+| `internal/acp` | The test that the agent's forwarded replies decode into the contract (plan 1); `$/cancel_request` sent when an outbound request stops waiting, and a forwarded prompt's RPC ended by its settlement (plan 4a); the viewers' allowlist when started for a container (plan 8). |
+| `internal/app/session` | `PromptSettled` (plan 4a). |
+| `test/daemon` | The fleet client and its routes against a real bridge (plan 3); requests on both paths (plan 4a); the agent attach and the fleet loop (plan 4b); the actions and viewers everywhere (plans 5, 6); a server profile over TLS (plan 7). |
 
 ## Migration order
 
@@ -784,15 +880,24 @@ first, then the alternative it was weighed against.
    - `internal/fleetclient` and `acpclient.Fleet`.
    - `marshal fleet` showing the agents, needs you and events, local only.
    - It needs plans 1 and 2.
-4. **Opening an agent.**
-   - The agent attach and the relay's refusals.
-   - The fleet-to-session loop in launch, for agents on a project child.
-   - The widened 409.
-   - It needs plan 3.
+4. **Plan 4 became two** when its authoring found that no real agent's
+   approval reaches the bridge.
+   - **4a. The requests.** A real agent's approvals and questions reach the
+     bridge, and an answer on either path settles them on both. It needs
+     nothing, and runs beside plans 3 and 4b.
+   - **4b. Opening an agent.**
+     - The agent attach and the relay's refusals.
+     - The widened 409.
+     - The session screen on an agent's session, and `/fleet`.
+     - The fleet-to-session loop in launch, for agents on a project child.
+
+     Its bridge, daemon-client and session-screen tasks run beside plan 3.
+     Its fleet-model and launch tasks need plan 3.
 5. **The fleet's actions.** Spawn, answering, the diff tab, the finish modal
    (exit, gate failure and override, merge, discard), and intake. It needs
-   plan 3, and runs beside plan 4 if their files stay apart: plan 4 is
-   launch, the relay and the bridge's route, plan 5 the fleet screen's panels.
+   plans 3 and 4a, and runs beside plan 4b if their files stay apart: plan 4b
+   is launch, the relay and the bridge's route, plan 5 the fleet screen's
+   panels. Both add keys to the fleet model.
 6. **Viewers everywhere, and needs you.**
    - Viewer sockets on host-process agents' own children.
    - The session screen's needs-you count, and notifications.
@@ -860,10 +965,32 @@ first, then the alternative it was weighed against.
   that.
 - **The browser orders times as strings.** Two times in the same second sort
   wrongly when only one has a fraction. The bridge compares them as times.
-- **Not yet checked:** whether a viewer's answer settles the bridge's brokered
-  request for the same approval, so that the fleet screen stops listing it.
-  Decision 5 assumes the first answer wins on both paths. Plan 4 must test
-  it before relying on it.
+- **No real agent's approval or question reaches the bridge** (found while
+  authoring plan 4, by reading and by a probe run, 2026-11-14).
+  - The agent numbers its outbound requests as strings, `"marshal-out-N"`
+    (`internal/acp/server.go:228`). The bridge's child reader decodes a
+    child-initiated request's ID as an `int`, and drops the frame when that
+    fails (`web/bridge/child.go:502`).
+  - So every `session/request_permission` and `session/request_question` from
+    a real `marshal acp` child is dropped, and the agent waits forever.
+  - A probe ran a fleet agent on a project child with a confirmation rule. It
+    made its tool call and then sat in `running` with nothing pending for
+    40s. An instrumented reader logged the dropped
+    `session/request_permission id="marshal-out-1"`.
+  - The bridge's tests never saw it, because their fake child sends the
+    integer ID 9000. It is also why plan 2's manual run never saw an approval.
+  - It affects the web UI as much as the fleet screen. Plan 4a fixes it.
+- **A viewer's answer did not settle the bridge's request** (the question this
+  spec left for plan 4, answered by reading).
+  - A viewer's `session/answer_approval` settles the session's prompt, but
+    nothing ends the RPC the agent forwarded for it. When that RPC's context
+    does end, `Server.Request` forgets its waiter without telling the peer
+    (`server.go:277`).
+  - So the bridge would keep listing the request until someone answered it
+    there. The other direction already held.
+  - Plan 4a fixes it with `$/cancel_request` (F5, "Answers").
+- **A viewer's own turns are invisible to the fleet** (found while authoring
+  plan 4b). F5 describes it. It needs a decision before a plan takes it.
 
 ## Implementation record
 
@@ -1065,3 +1192,145 @@ thing, and both are fixed here.
 | `web/ui: npm run build` | Built; `web/bridge/static/` is the committed build. |
 | `CGO_ENABLED=1 go build -o marshal ./cmd/marshal` | Built (git-ignored via `.gitignore`'s `/marshal`). |
 | `TMPDIR=/private/tmp/p5-2-suite go test ./test/usability/... -run TestScripted -timeout 5m` | Passed (`marshal/test/usability` ok, 45.3s). |
+
+### Plan 3 — the fleet client and a read-only fleet screen
+
+Not yet run. Plan 3's last task fills this in.
+
+### Plan 4a — fleet requests reach the bridge, and leave it
+
+**What was built.** The bridge brokers a real agent's requests, and stops
+listing one the agent settled elsewhere. `web/bridge/child.go` keys a child
+request by its raw ID — any JSON, not only an integer — and answers with those
+bytes, so the agent's `"marshal-out-N"` IDs are brokered at all; `OnRequest`
+now takes a context and no ID. Each in-flight request is registered under its
+compact ID on the read goroutine *before* the handler starts, so a
+`$/cancel_request` read next always finds it; the cancel ends that request's
+context, the registry's wait returns `errRequestCancelled`, the pending entry
+is dropped, and the child is answered `-32800` with the message "request
+cancelled". A `$/cancel_request` never reaches `OnNotification`, and one
+naming no request in flight is ignored. `Child` gained a per-generation parent
+context, created in `spawn` and cancelled in `failPending`, so a request in
+flight ends when its generation's pipe closes. `internal/app/session/prompts.go`
+gained `State.PromptSettled(key)`: it answers the live record's `done`
+channel — closed exactly once, on any settlement — a shared already-closed
+channel for a key that names no live record, and nil for a key with no ID.
+`internal/acp` then made the agent stop waiting out loud: `Server.Request`
+sends `$/cancel_request` when its context ends before the answer (a closed
+server sends nothing), and `promptRPCContext` takes the settled channel, so
+the RPC ends when the prompt settles by any path. All five waiters — the
+approval, the question, the skill gate, the access request and a child's
+approvals — pass their prompt's settled channel and, when it has closed,
+return quietly: the turn is not cancelled, no `Unanswered` is fabricated, and
+no denial is delivered. `test/daemon/requests_test.go` drives the whole path
+end to end over a real local-profile bridge: the approval reaching the
+bridge, a viewer's answer settling the bridge's request, and the bridge's
+answer settling the viewer's mirror. `cmd/webbridge/README.md` names no
+permission or question endpoint at all — it documents `/api/inbox`, the
+fleet stream and the factory items — so it describes neither path and was
+left unchanged.
+
+**Where the plan was short, and how that was filled.** The plan's contract
+for `PromptSettled` said to look the key up "as `lookupPromptLocked` does",
+but that helper matches a record's kind and operation as well as its ID.
+`resolveAccessRequest` names its request by the request ID alone
+(`session.PromptKey{ID: requestID}`) while the access mirror record is filed
+under the approval kind, so a kind-matching lookup reported a *live* access
+request as already settled — and because the settled channel would already be
+closed, `promptRPCContext` would have ended the access RPC before the client
+was ever asked. Reading the access path against the contract found this, and
+a throwaway test printed the record's kind and the already-closed channel to
+confirm it. `PromptSettled` therefore resolves a record by its ID alone, the
+way `PromptContext` already does, and a test pins that. The plan also did not
+say what the bridge's generation parent context is; `Child` held none, so one
+is created per generation in `spawn` and cancelled in `failPending`, the one
+place that runs for every dead generation. The plan's Task 1 tests assumed
+the fake child could issue a question under a string ID: it cannot, because
+the existing `test/ask_question` issues its question under the integer ID
+9000 and the plan's new fake method was a permission. The cancel fake
+therefore takes its target ID from its params, defaulting to
+`"marshal-out-1"`, so the question test drives a real cancel through the real
+pipe without changing the existing case. The plan did not say how the bridge
+names `$/cancel_request`: `web/` is standard-library only, so the method name
+is a literal there and `marshal/internal/acpwire` is not imported. The plan's
+Task 3 test — "the fake `PermissionClient` blocks until its context ends" —
+needed a stronger form: its first version passed even with the settled
+channel dropped, because the turn's own end also ended the fake's context, so
+the test now holds the turn open on a channel until after the context-end
+assertion. That is what makes the mutation bite.
+
+**The manual run.** `webbridge` and `marshal` were built from the branch and
+the bridge run with `--profile local`, `--marshal-bin` pointing at the built
+`marshal`, its TCP listener on `127.0.0.1:7799`, a fixed bearer token,
+`--egress off`, and a scratch `MARSHAL_DATA_DIR`, `--state-dir` and
+`--socket` under `/private/tmp`. A scratch git project carried a
+`[tools.shell.confirm]` rule for `rm -f marker.txt` and a passthrough
+sandbox, and was trusted with `marshal --trust` — which records the trust and
+then falls through into the TUI, so the record was read back from the
+scratch `trust.json` rather than from a finished process. A fleet agent was
+spawned on it with `POST /api/agents`, every routing role pinned to
+`ollama-cloud/deepseek-v4.1-flash:1017`.
+
+Driven, and seen on `curl -N` against `GET /api/events?stream=fleet`, which
+carried 10 `inbox` deltas:
+
+- **A real agent's request reaches the bridge.** The fleet's snapshot showed
+  the agent `awaiting-approval`, with a pending approval carrying its
+  `toolCallId`.
+- **An inbox delta moves the agent into `needsYou`.** The delta named the
+  agent in `groups.needsYou` and put it in the queue.
+- **`POST /api/permissions/{id}` answers it, and the turn finishes.** The
+  answer was HTTP 200, `{"status":"resolved"}`. The session's audit records
+  the mode change as "granted — mode act" and then `shell.run` as
+  `command "rm -f marker.txt" exited with code 0`; the agent's final message
+  says the command ran with exit code 0.
+- **A late answer gets 410.** Answering the first, already-settled ID again
+  returned HTTP 410, `bridge: pending request already resolved or expired`.
+- **The turn ends.** The agent's status went back to `idle`, `needsYou`
+  emptied, and the stream carried the deltas out of `needsYou` and into
+  `ready`.
+
+Not driven, and why:
+
+- **A viewer answering first.** That needs a TUI on the agent's session,
+  which only plan 4b's agent attach gives. This half was covered by task 4's
+  end-to-end test, not by hand: `TestAViewersAnswerSettlesTheFleetsRequest`
+  and `TestTheFleetsAnswerSettlesTheViewersRequest` drive it over the
+  project's own viewer socket.
+- **The first two spawns never raised a request at all**, for a reason
+  outside this plan and worth recording. A turn is more than the
+  implementer's call: the auxiliary roles (title, router) keep the config's
+  `active_preset`, which was `openai-codex/gpt-6.1-sol`, and that provider's
+  OAuth refresh token was stale (HTTP 401, "Your refresh token has already
+  been used to generate a new access token"). The turn aborted on that call
+  before the model made a tool call, so no approval was ever raised. Pinning
+  every routing role to `ollama-cloud/deepseek-v4.1-flash:1017` fixed it.
+  Nothing in this plan changed that behaviour; it is recorded because the
+  same failure would look like "the bridge dropped the request again".
+
+**Verification.**
+
+| Command | Result |
+| --- | --- |
+| `gofmt -l internal cmd test web` | No output. |
+| `go vet ./...` | Clean. |
+| `GOOS=linux go vet ./web/...` | Clean. |
+| `GOOS=windows go vet ./web/bridge/...` | Clean. |
+| `TMPDIR=/private/tmp/p5-4a-suite CGO_ENABLED=1 go test -p=1 ./... -count=1 -timeout 30m -skip '^Test(NoticeCallBudget\|ControlCallBudget\|AnswerCallBudget\|ResponseBarrierBudget\|SettingsCallBudget\|NoteCallBudget\|BrowserCallBudget\|EndCallBudget\|StackBusyFlipBudget\|StackPatchApplyBudget\|StackRoundTripBudget\|AKeyPressOverThePipeBudget)$'` | Passed; no package failed. The twelve skipped tests are the repo's wall-clock budget tests, which CI also skips (`docs/testing-ci-audit.md`). |
+| `TMPDIR=/private/tmp/p5-4a-suite CGO_ENABLED=1 go test ./web/bridge/ -count=1 -timeout 20m` | Passed (`ok marshal/web/bridge 104.4s`). |
+| `TMPDIR=/private/tmp/p5-4a-suite CGO_ENABLED=1 go test ./internal/app/session/ -count=1` | Passed (`ok marshal/internal/app/session 3.8s`). |
+| `TMPDIR=/private/tmp/p5-4a-suite CGO_ENABLED=1 go test ./internal/acp/ -count=1 -timeout 20m -skip '^Test(NoticeCallBudget\|ControlCallBudget\|AnswerCallBudget\|ResponseBarrierBudget\|SettingsCallBudget\|NoteCallBudget\|BrowserCallBudget\|EndCallBudget\|StackBusyFlipBudget\|StackPatchApplyBudget\|StackRoundTripBudget)$'` | Passed (`ok marshal/internal/acp 20.0s`). |
+| `TMPDIR=/private/tmp/p5-4a-suite CGO_ENABLED=1 go test ./test/daemon/ -count=1 -timeout 15m` | Passed (`ok marshal/test/daemon 4.9s`). |
+| `CGO_ENABLED=1 go build -o marshal ./cmd/marshal` | Built (git-ignored via `.gitignore`'s `/marshal`). |
+| `TMPDIR=/private/tmp/p5-4a-suite go test ./test/usability/... -run TestScripted -timeout 5m` | Passed (`marshal/test/usability` ok, 45.4s). |
+
+Each task's mutation check was run and restored: decoding the child's ID as an
+`int` again failed `TestAChildRequestWithAStringIDIsHandled`; dropping the
+settled channel from the approval goroutine's `promptRPCContext` call failed
+`TestASettledApprovalEndsItsForwardedRequest`; skipping the
+`$/cancel_request` send in `Server.Request` failed
+`TestAViewersAnswerSettlesTheFleetsRequest`, and only that one.
+
+### Plan 4b — opening an agent
+
+Not yet run. Plan 4b's last task fills this in.

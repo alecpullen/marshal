@@ -709,18 +709,18 @@ func (r *Registry) ResolveQuestion(questionId string, a Answers) error {
 // handleChildRequest is installed as the Child's OnRequest. It brokers
 // permission and question requests to the HTTP layer; unknown methods
 // get a JSON-RPC method-not-found error.
-func (r *Registry) handleChildRequest(id int, method string, params json.RawMessage) (any, error) {
+func (r *Registry) handleChildRequest(ctx context.Context, method string, params json.RawMessage) (any, error) {
 	switch method {
 	case "session/request_permission":
-		return r.awaitPermission(params)
+		return r.awaitPermission(ctx, params)
 	case "session/request_question":
-		return r.awaitQuestion(params)
+		return r.awaitQuestion(ctx, params)
 	default:
 		return nil, fmt.Errorf("bridge: unsupported child request %q", method)
 	}
 }
 
-func (r *Registry) awaitPermission(params json.RawMessage) (any, error) {
+func (r *Registry) awaitPermission(ctx context.Context, params json.RawMessage) (any, error) {
 	var req struct {
 		SessionID  string `json:"sessionId"`
 		ToolCallID string `json:"toolCallId"`
@@ -766,8 +766,9 @@ func (r *Registry) awaitPermission(params json.RawMessage) (any, error) {
 
 	// Wait ends when the HTTP layer resolves the permission, when the
 	// issuing session is cancelled/deleted or its SSE subscriber
-	// disconnects (drainSession), or when clearPending drains it on child
-	// restart — all with a deny. Browsers can still explicitly deny.
+	// disconnects (drainSession), when clearPending drains it on child
+	// restart — all with a deny — or when the child cancels the request
+	// itself, which answers -32800. Browsers can still explicitly deny.
 	//
 	// No wall-clock timeout: a user reading and deciding is not a hung
 	// request, and denying after N seconds punishes them for thinking.
@@ -782,12 +783,18 @@ func (r *Registry) awaitPermission(params json.RawMessage) (any, error) {
 			out["modeAccess"] = d.ModeAccess
 		}
 		return out, nil
+	case <-ctx.Done():
+		// The child cancelled this request with $/cancel_request. The
+		// deferred cleanup above already dropped the pending entry, so
+		// Pending stops reporting it and a later ResolvePermission
+		// answers ErrGone.
+		return nil, errRequestCancelled
 	case <-r.sessionCtx(req.SessionID).Done():
 		return map[string]any{"approved": false}, nil
 	}
 }
 
-func (r *Registry) awaitQuestion(params json.RawMessage) (any, error) {
+func (r *Registry) awaitQuestion(ctx context.Context, params json.RawMessage) (any, error) {
 	var req struct {
 		QuestionID string `json:"questionId"`
 		SessionID  string `json:"sessionId"`
@@ -833,8 +840,9 @@ func (r *Registry) awaitQuestion(params json.RawMessage) (any, error) {
 
 	// Wait ends when the HTTP layer answers, when the issuing session is
 	// cancelled/deleted or its SSE subscriber disconnects (drainSession),
-	// or when clearPending drains it on child restart — all with a
-	// decline. Browsers can still explicitly decline.
+	// when clearPending drains it on child restart — all with a decline —
+	// or when the child cancels the request itself, which answers -32800.
+	// Browsers can still explicitly decline.
 	//
 	// No wall-clock timeout: a user reading and deciding is not a hung
 	// request, and declining after N seconds punishes them for thinking.
@@ -845,6 +853,12 @@ func (r *Registry) awaitQuestion(params json.RawMessage) (any, error) {
 			return map[string]any{"declined": true}, nil
 		}
 		return map[string]any{"answers": a.Answers}, nil
+	case <-ctx.Done():
+		// The child cancelled this request with $/cancel_request. The
+		// deferred cleanup above already dropped the pending entry, so
+		// Pending stops reporting it and a later ResolveQuestion answers
+		// ErrGone.
+		return nil, errRequestCancelled
 	case <-r.sessionCtx(req.SessionID).Done():
 		return map[string]any{"declined": true}, nil
 	}

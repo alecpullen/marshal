@@ -200,6 +200,18 @@ export interface PendingWorkingDraftConversion {
   enqueuedAt: number
 }
 
+/**
+ * A removal this tab sent and has not had a conclusive answer to. It holds the
+ * request id and the version it expected — nothing else varies — so a retry
+ * after a lost answer sends that request again instead of minting a second
+ * delete.
+ */
+export interface PendingWorkingDraftRemoval {
+  requestId: string
+  expectedVersion: number
+  enqueuedAt: number
+}
+
 /** One device's record of one draft edited by one tab. */
 export interface WorkingDraftRecord extends WorkingDraftKey {
   content: WorkingDraftContent
@@ -212,6 +224,8 @@ export interface WorkingDraftRecord extends WorkingDraftKey {
   pending: PendingWorkingDraftRequest | null
   /** The conversion this tab is holding until its outcome is established. */
   conversion?: PendingWorkingDraftConversion | null
+  /** The removal this tab is holding until its outcome is established. */
+  removal?: PendingWorkingDraftRemoval | null
   updatedAt: number
 }
 
@@ -243,6 +257,8 @@ const cloneFactoryRequest = (request: FactoryCreate): FactoryCreate => ({ ...req
 const cloneConversion = (conversion: PendingWorkingDraftConversion | null): PendingWorkingDraftConversion | null =>
   conversion ? { ...conversion, factoryRequest: cloneFactoryRequest(conversion.factoryRequest) } : null
 
+const cloneRemoval = (removal: PendingWorkingDraftRemoval | null): PendingWorkingDraftRemoval | null => (removal ? { ...removal } : null)
+
 const cloneRecord = (record: WorkingDraftRecord): WorkingDraftRecord => ({
   ...record,
   content: { ...record.content },
@@ -250,6 +266,7 @@ const cloneRecord = (record: WorkingDraftRecord): WorkingDraftRecord => ({
   server: record.server ? cloneDraft(record.server) : null,
   pending: clonePending(record.pending),
   conversion: cloneConversion(record.conversion ?? null),
+  removal: cloneRemoval(record.removal ?? null),
 })
 
 const scopeOf = (key: Pick<WorkingDraftKey, 'installationId' | 'projectRoot'>): string =>
@@ -413,6 +430,8 @@ export interface WorkingDraftRequests {
   get(id: string): Promise<WorkingDraft>
   save(id: string, req: WorkingDraftSaveRequest): Promise<WorkingDraft>
   convert(id: string, req: WorkingDraftConvertRequest): Promise<WorkingDraftConvertResult>
+  /** Records a tombstone: the reply is the deleted draft, or none at all. */
+  remove(id: string, req: WorkingDraftRemoveRequest): Promise<WorkingDraft | null>
 }
 
 /**
@@ -479,6 +498,11 @@ export interface WorkingDraftView {
    * request a reload or a lost answer replays.
    */
   conversion: PendingWorkingDraftConversion | null
+  /**
+   * The removal this tab holds until its outcome is established: the exact
+   * request a retry replays, never a freshly minted one.
+   */
+  removal: PendingWorkingDraftRemoval | null
   /** Other editors' copies of this draft that can be adopted. */
   recoverable: WorkingDraftRecoverable[]
 }
@@ -578,6 +602,7 @@ export class WorkingDraftController {
   private draftState: WorkingDraftState | 'unknown' = 'unknown'
   private pendingRequest: PendingWorkingDraftRequest | null = null
   private pendingConversion: PendingWorkingDraftConversion | null = null
+  private pendingRemoval: PendingWorkingDraftRemoval | null = null
   private factoryItemId: string | null = null
   private saving = false
   private offline = false
@@ -626,6 +651,7 @@ export class WorkingDraftController {
       localOnly: this.projectRoot === null,
       factoryItemId: this.factoryItemId,
       conversion: cloneConversion(this.pendingConversion),
+      removal: cloneRemoval(this.pendingRemoval),
       recoverable: this.recoverable,
     }
   }
@@ -679,7 +705,28 @@ export class WorkingDraftController {
   /** Send whatever is outstanding now. The reconnect hook; safe to call twice. */
   async flush(): Promise<WorkingDraftView> {
     this.clearTimer()
-    await this.enqueueSend(() => this.send())
+    // An unresolved removal outranks a save: it is the draft's next state.
+    await this.enqueueSend(() => (this.pendingRemoval ? this.sendRemoval() : this.send()))
+    return this.view()
+  }
+
+  /**
+   * Refetch the bridge's draft and re-derive the conflict from the answer.
+   * Used when a version conflict arrived without the current draft to resolve
+   * it against: whatever the bridge says now — the draft, a tombstone, or a
+   * refusal — the editor is usable again, and the local content is untouched.
+   */
+  async reload(): Promise<WorkingDraftView> {
+    this.conflict = false
+    this.serverDraft = null
+    this.error = null
+    this.offline = false
+    await this.refresh()
+    // An outstanding edit resumes once the bridge has answered; a conflict it
+    // re-reported or a refusal it gave schedules nothing.
+    if (!this.conflict && !this.offline) this.schedule()
+    await this.persist()
+    this.emit()
     return this.view()
   }
 
@@ -721,6 +768,8 @@ export class WorkingDraftController {
     this.offline = false
     this.error = null
     this.pendingRequest = null
+    // Resolving the conflict invalidates a frozen removal's version as well.
+    this.pendingRemoval = null
     await this.persist()
     this.emit()
     return this.view()
@@ -739,6 +788,9 @@ export class WorkingDraftController {
     this.serverDraft = null
     this.conflict = false
     this.error = null
+    // The version a frozen removal expected is gone with the conflict: the next
+    // removal attempt is a new request, exactly as the next save is.
+    this.pendingRemoval = null
     if (this.local === null) this.local = cloneContent(this.base)
     await this.persist()
     await this.flush()
@@ -797,6 +849,7 @@ export class WorkingDraftController {
     if (!this.draftId || this.draftId.startsWith(LOCAL_DRAFT_PREFIX)) return 'Save this draft before converting it.'
     if (this.draftState === 'deleted') return 'This draft was deleted, so it cannot be converted.'
     if (this.draftState === 'converted') return 'This draft is already a factory item.'
+    if (this.pendingRemoval) return 'This draft is being removed, so it cannot be converted.'
     if (this.pendingRequest !== null || this.isAhead()) return 'Save the draft before converting: the review submits the saved version.'
     if (review.expectedVersion !== this.baseVersion) return 'This draft changed since the review. Review the saved version again.'
     return ''
@@ -902,6 +955,131 @@ export class WorkingDraftController {
     this.clearTimer()
   }
 
+  // ---- removal -----------------------------------------------------------
+
+  /**
+   * Remove this draft on the bridge, once the user has confirmed it.
+   *
+   * The removal is frozen before it is sent — its request id and the version it
+   * expects — exactly as a conversion is frozen: a retry after an outcome
+   * nothing could establish (a lost answer, a 5xx) sends that request again
+   * instead of minting a second delete, and the bridge's replay rules make the
+   * retry a no-op. An answer the bridge confirmed frees the id: a stale version
+   * shows the current draft instead of deleting anything, and a refusal is a
+   * visible error. The local copy is never discarded — after a tombstone it is
+   * the only record of the work, and the deleted draft still offers a copy.
+   */
+  async remove(): Promise<WorkingDraftView> {
+    const refusal = this.removalRefusal()
+    if (refusal) {
+      this.error = refusal
+      this.emit()
+      return this.view()
+    }
+    await this.enqueueSend(() => this.sendRemoval())
+    return this.view()
+  }
+
+  /**
+   * Why this draft cannot be removed right now, or '' when it can. Only a live
+   * draft on the bridge can be deleted: a local-only draft, a tombstone, a
+   * factory item and a draft whose conversion is unresolved all refuse here,
+   * and a version conflict has to be resolved before the draft can be removed.
+   */
+  private removalRefusal(): string {
+    if (this.projectRoot === null) return 'This draft has no project, so the bridge holds nothing to remove.'
+    if (!this.draftId || this.draftId.startsWith(LOCAL_DRAFT_PREFIX)) return 'This draft is only on this device, so there is nothing to remove on the bridge.'
+    if (this.draftState === 'deleted') return 'This draft was already deleted.'
+    if (this.draftState === 'converting') return 'The conversion has to settle before this draft can be removed.'
+    if (this.draftState === 'converted') return 'This draft is already a factory item.'
+    if (this.pendingConversion) return 'The conversion outcome is not settled yet, so this draft cannot be removed.'
+    if (this.conflict) return 'Resolve the newer version before removing this draft.'
+    return ''
+  }
+
+  private async sendRemoval(): Promise<void> {
+    // A tombstone that arrived while this removal waited in the queue answers
+    // it already.
+    if (this.draftState === 'deleted') {
+      this.pendingRemoval = null
+      return
+    }
+    const refusal = this.removalRefusal()
+    if (this.pendingRemoval === null && refusal) {
+      this.error = refusal
+      this.emit()
+      return
+    }
+    const frozen: PendingWorkingDraftRemoval =
+      this.pendingRemoval ?? { requestId: this.newId(), expectedVersion: this.baseVersion, enqueuedAt: this.now() }
+    this.pendingRemoval = frozen
+    this.error = null
+    this.offline = false
+    // The frozen request is on this device before it is sent, so a tab that
+    // dies in flight carries the same id into its next attempt.
+    await this.persist()
+    this.saving = true
+    this.emit()
+    try {
+      // The route's answer is the tombstone; what matters locally is that it
+      // answered at all.
+      await this.requests.remove(this.draftId as string, {
+        requestId: frozen.requestId,
+        expectedVersion: frozen.expectedVersion,
+      })
+      this.applyRemovalAck(frozen)
+    } catch (e) {
+      if (e instanceof WorkingDraftConflictError) this.applyRemovalConflict(frozen, e.current)
+      else if (isConfirmedRefusal(e)) {
+        // The bridge decided and deleted nothing: the id is freed, the refusal
+        // is visible, and the local copy is untouched.
+        this.pendingRemoval = null
+        this.error = describeError(e)
+      } else {
+        // Nothing establishes the outcome: the request stays frozen and a
+        // retry sends it as it is, under the same id.
+        this.offline = true
+        this.error = describeError(e)
+      }
+    } finally {
+      this.saving = false
+    }
+    await this.persist()
+    this.emit()
+  }
+
+  private applyRemovalAck(frozen: PendingWorkingDraftRemoval): void {
+    // An answer for a request that is no longer the frozen one says nothing
+    // about what this tab holds.
+    if (this.pendingRemoval !== frozen) return
+    this.pendingRemoval = null
+    this.draftState = 'deleted'
+    this.offline = false
+    this.error = null
+    this.conflict = false
+    this.serverDraft = null
+    // A tombstone ends every other outstanding request: no save may write over
+    // a draft the user deleted, and a conversion's fate is the item's. Base and
+    // local content are kept: the copy here is the record of the work.
+    this.pendingRequest = null
+    this.pendingConversion = null
+    this.clearTimer()
+  }
+
+  private applyRemovalConflict(frozen: PendingWorkingDraftRemoval, current: WorkingDraft | null): void {
+    if (this.pendingRemoval !== frozen) return
+    if (current && current.state === 'deleted') {
+      // The bridge already holds the tombstone: the removal is done, and the
+      // reply only reports it.
+      this.applyRemovalAck(frozen)
+      return
+    }
+    // The draft moved on, so nothing was deleted: the bridge's current draft is
+    // shown beside the local content, exactly as a save conflict is.
+    this.pendingRemoval = null
+    this.applyConflict(current)
+  }
+
   /** Stop the debounce timer and forget listeners. In-flight requests are left to finish. */
   destroy(): void {
     this.clearTimer()
@@ -957,6 +1135,7 @@ export class WorkingDraftController {
       state: this.draftState,
       pending: clonePending(this.pendingRequest),
       conversion: cloneConversion(this.pendingConversion),
+      removal: cloneRemoval(this.pendingRemoval),
       updatedAt: this.now(),
     }
     try {
@@ -1009,8 +1188,16 @@ export class WorkingDraftController {
     }
     const key = this.stored
     const isThisDraft = (r: WorkingDraftRecord): boolean => r.draftId === key.draftId && r.projectRoot === key.projectRoot
+    // Every record `list` returned is this installation's work in this project,
+    // and only this page writes such records, so any of them can be offered
+    // for recovery. A fresh controller also mints fresh editor and local-draft
+    // keys, so the offer must not depend on the record's draft id matching:
+    // an unsent draft from an earlier session has no bridge id this tab could
+    // ever match, and its content would be stranded with no way back.
+    // Records from a different project never reach `records`: `list` is
+    // scoped to this installation and this project.
     this.recoverable = records
-      .filter((r) => r.editorId !== this.editorId && isThisDraft(r))
+      .filter((r) => r.editorId !== this.editorId)
       .map((r) => ({ editorId: r.editorId, content: { ...r.content }, baseVersion: r.baseVersion, pending: r.pending !== null, updatedAt: r.updatedAt }))
       .sort((a, b) => b.updatedAt - a.updatedAt)
     const mine = records.find((r) => r.editorId === this.editorId && isThisDraft(r))
@@ -1023,6 +1210,7 @@ export class WorkingDraftController {
     this.draftState = mine.state
     this.pendingRequest = clonePending(mine.pending)
     this.pendingConversion = cloneConversion(mine.conversion ?? null)
+    this.pendingRemoval = cloneRemoval(mine.removal ?? null)
     this.hasRecord = true
     // A tab that closed with a request in flight left it here; send it again,
     // with its own id and bytes, once the debounce allows.
@@ -1044,9 +1232,11 @@ export class WorkingDraftController {
     this.draftState = draft.state
     if (draft.factoryItemId) this.factoryItemId = draft.factoryItemId
     if (draft.state === 'deleted') {
-      // A tombstone: keep whatever is local for recovery, send nothing.
+      // A tombstone: keep whatever is local for recovery, send nothing. It
+      // answers an outstanding removal too, so that request is not retried.
       this.pendingRequest = null
       this.pendingConversion = null
+      this.pendingRemoval = null
       this.clearTimer()
       return
     }
@@ -1092,6 +1282,9 @@ export class WorkingDraftController {
     // the item it became is not this draft. Local edits stay here for the
     // "new working draft from these edits" path.
     if (this.draftState === 'converting' || this.draftState === 'converted') return
+    // A removal is the draft's last request: while its outcome is open no save
+    // may race it, and once it lands the tombstone above refuses everything.
+    if (this.pendingRemoval) return
     this.timerHandle = this.timer.setTimeout(() => {
       this.timerHandle = undefined
       void this.flush()
@@ -1115,6 +1308,8 @@ export class WorkingDraftController {
     // A conversion is the draft's last save: once it is in flight or done,
     // autosave must never write over it.
     if (this.draftState === 'converting' || this.draftState === 'converted') return
+    // A removal is the same: the answer that is coming decides the draft.
+    if (this.pendingRemoval) return
     this.error = null
     this.offline = false
     if (!this.pendingRequest) {
@@ -1147,7 +1342,16 @@ export class WorkingDraftController {
       this.applyAck(sent, draft)
     } catch (e) {
       if (e instanceof WorkingDraftConflictError) this.applyConflict(e.current)
-      else {
+      else if (isConfirmedRefusal(e)) {
+        // The bridge refused this request and applied nothing: the draft stays
+        // editable, the content is kept, and the next send mints a fresh
+        // request id instead of replaying bytes the bridge has already
+        // answered. A refusal is not "offline": the user is online, and the
+        // status strip reports the refusal itself.
+        this.pendingRequest = null
+        this.error = describeError(e)
+        this.schedule()
+      } else {
         // Transport or server trouble: keep the pending request untouched so
         // the retry is the same request, not a new one.
         this.offline = true

@@ -9,6 +9,7 @@ import {
   type WorkingDraftContent,
   type WorkingDraftConvertRequest,
   type WorkingDraftCreateRequest,
+  type WorkingDraftRemoveRequest,
   type WorkingDraftRequests,
   type WorkingDraftSaveRequest,
   type WorkingDraftStore,
@@ -55,6 +56,7 @@ function fakeBridge() {
     save: [] as { id: string; req: WorkingDraftSaveRequest }[],
     get: [] as string[],
     convert: [] as { id: string; req: WorkingDraftConvertRequest }[],
+    remove: [] as { id: string; req: WorkingDraftRemoveRequest }[],
   }
   const held: { draft: WorkingDraft | null } = { draft: null }
   const requests: WorkingDraftRequests = {
@@ -80,6 +82,13 @@ function fakeBridge() {
       const draft = { ...acknowledged(id, req.expectedVersion + 1, content, 'converted'), factoryItemId: 'item-1' }
       held.draft = draft
       return { draft }
+    }),
+    remove: vi.fn(async (id: string, req: WorkingDraftRemoveRequest) => {
+      calls.remove.push({ id, req })
+      // The tombstone keeps the content and moves the version on, exactly as
+      // the bridge's delete does.
+      held.draft = acknowledged(id, req.expectedVersion + 1, held.draft ? held.draft.content : draftContent(), 'deleted')
+      return held.draft
     }),
   }
   return { requests, calls, held }
@@ -259,6 +268,50 @@ describe('working draft autosave', () => {
     expect(tab.view().saved).toBe(true)
   })
 
+  it('a confirmed refusal frees the request for the next correction', async () => {
+    vi.useFakeTimers()
+    const bridge = fakeBridge()
+    const storage = createMemoryWorkingDraftStore()
+    const { controller: tab } = makeController(bridge, storage, 'tab-1')
+    await tab.load('/p', null)
+
+    const first = draftContent({ title: 'first' })
+    await tab.edit(first)
+    await vi.advanceTimersByTimeAsync(WORKING_DRAFT_DEBOUNCE_MS)
+    expect(tab.view()).toMatchObject({ draftId: 'd1', baseVersion: 1, saved: true })
+
+    // The bridge refuses the next save outright: the body is over its limit.
+    const online = bridge.requests.save
+    const refused = vi.fn(async (_id: string, _req: WorkingDraftSaveRequest) => {
+      throw Object.assign(new Error('plan and specification exceed 1 MiB'), { status: 400 })
+    })
+    bridge.requests.save = refused
+
+    const huge = draftContent({ title: 'first', plan: 'far too long' })
+    await tab.edit(huge)
+    await vi.advanceTimersByTimeAsync(WORKING_DRAFT_DEBOUNCE_MS)
+    expect(refused).toHaveBeenCalledTimes(1)
+    const refusedId = refused.mock.calls[0][1].requestId
+
+    // The refusal is a visible error, not "offline": the bridge answered, the
+    // content is kept, and no frozen request holds the draft hostage.
+    const refusedView = tab.view()
+    expect(refusedView).toMatchObject({ offline: false, error: 'plan and specification exceed 1 MiB', pending: true, saved: false })
+    expect(refusedView.local).toEqual(huge)
+    const [record] = await recordsFor(storage)
+    expect(record.pending).toBeNull()
+
+    // The user shortens the plan: the correction goes out under a fresh id.
+    bridge.requests.save = online
+    const corrected = draftContent({ title: 'first', plan: 'shorter now' })
+    await tab.edit(corrected)
+    await vi.advanceTimersByTimeAsync(WORKING_DRAFT_DEBOUNCE_MS)
+    expect(bridge.calls.save).toHaveLength(1)
+    expect(bridge.calls.save[0].req.requestId).not.toBe(refusedId)
+    expect(bridge.calls.save[0].req.content).toEqual(corrected)
+    expect(tab.view()).toMatchObject({ saved: true, error: null, offline: false })
+  })
+
   it('offline edits remain local', async () => {
     vi.useFakeTimers()
     const bridge = fakeBridge()
@@ -392,6 +445,51 @@ describe('working draft autosave', () => {
     expect(await recordsFor(storage, '')).toEqual([])
     expect((await recordsFor(storage)).map((r) => [r.projectRoot, r.draftId])).toEqual([['/p', 'd1']])
     expect(tab.view().saved).toBe(true)
+  })
+
+  it('a later session can recover a draft stranded with no project', async () => {
+    vi.useFakeTimers()
+    const bridge = fakeBridge()
+    const storage = createMemoryWorkingDraftStore()
+    // A draft from another project must never be offered to this one.
+    await storage.write({
+      installationId: 'inst-1',
+      projectRoot: '/elsewhere',
+      draftId: 'd9',
+      editorId: 'editor-c',
+      content: draftContent({ title: 'Another project' }),
+      base: null,
+      baseVersion: 0,
+      server: null,
+      state: 'editing',
+      pending: null,
+      updatedAt: 900,
+    })
+
+    const { controller: first } = makeController(bridge, storage, 'editor-a')
+    await first.load(null)
+    const typed = draftContent({ title: 'Typed with no project', plan: 'Still here' })
+    await first.edit(typed)
+    await vi.advanceTimersByTimeAsync(WORKING_DRAFT_DEBOUNCE_MS * 2)
+    // No project was chosen, so nothing was ever sent: the content exists only
+    // on this device, under the first session's own keys.
+    expect(bridge.calls.create).toHaveLength(0)
+    first.destroy()
+
+    // A reload is a fresh controller: a new editor tab and a new local draft
+    // key, neither of which the earlier record matches.
+    const { controller: reloaded } = makeController(bridge, storage, 'editor-b')
+    const restored = await reloaded.load(null)
+    expect(restored.local).toBeNull()
+    // The record is still this page's scope, so it is offered rather than
+    // stranded, and nothing from another project is.
+    expect(restored.recoverable.map((r) => r.editorId)).toEqual(['editor-a'])
+    expect(restored.recoverable[0]).toMatchObject({ content: typed, pending: false })
+
+    // Adopting it yields the original content, through the existing path.
+    await reloaded.adopt('editor-a')
+    expect(reloaded.view()).toMatchObject({ local: typed, pending: true })
+    reloaded.destroy()
   })
 
   it('migrates the local key atomically', async () => {
@@ -632,5 +730,170 @@ describe('working draft conversion', () => {
     const converted = await tab.convert(review(handoff('conv-2'), tab.view().baseVersion, { requestId: 'conv-2' }))
     expect(converted).toMatchObject({ state: 'converted', factoryItemId: 'item-2', error: null })
     expect(bridge.calls.convert.map((c) => c.req.requestId)).toEqual(['conv-2'])
+  })
+})
+
+describe('working draft removal', () => {
+  afterEach(() => vi.useRealTimers())
+
+  /** A tab with one saved draft: id 'd1', version 1, titled 'No longer needed'. */
+  async function savedTab(bridge: ReturnType<typeof fakeBridge>, storage: WorkingDraftStore, editorId = 'tab-1') {
+    const made = makeController(bridge, storage, editorId)
+    const typed = draftContent({ title: 'No longer needed', plan: 'Kept anyway' })
+    await made.controller.load('/p', null)
+    await made.controller.edit(typed)
+    await vi.advanceTimersByTimeAsync(WORKING_DRAFT_DEBOUNCE_MS)
+    expect(made.controller.view()).toMatchObject({ draftId: 'd1', baseVersion: 1, saved: true })
+    return { ...made, typed }
+  }
+
+  it('removes with a frozen request and keeps the local copy', async () => {
+    vi.useFakeTimers()
+    const bridge = fakeBridge()
+    const storage = createMemoryWorkingDraftStore()
+    const { controller: tab, typed } = await savedTab(bridge, storage)
+
+    const removed = await tab.remove()
+    // The frozen request reached the bridge with the version it expected.
+    expect(bridge.calls.remove).toHaveLength(1)
+    expect(bridge.calls.remove[0]).toMatchObject({ id: 'd1' })
+    expect(bridge.calls.remove[0].req).toMatchObject({ requestId: expect.any(String), expectedVersion: 1 })
+    // The tombstone is the draft's state, and the local copy is its record.
+    expect(removed).toMatchObject({ state: 'deleted', conflict: false, error: null, offline: false, removal: null })
+    expect(removed.local).toEqual(typed)
+    expect(removed.base).toEqual(typed)
+    const [record] = await recordsFor(storage)
+    expect([record.state, record.content, record.removal]).toEqual(['deleted', typed, null])
+
+    // The tombstone ends autosave: later typing stays here and is never sent.
+    const after = draftContent({ ...typed, title: 'Typed after the removal' })
+    await tab.edit(after)
+    await vi.advanceTimersByTimeAsync(WORKING_DRAFT_DEBOUNCE_MS * 3)
+    await tab.flush()
+    expect(bridge.calls.save).toHaveLength(0)
+    expect(bridge.calls.remove).toHaveLength(1)
+    expect((await recordsFor(storage))[0].content).toEqual(after)
+  })
+
+  it('an unknown outcome replays the same request', async () => {
+    vi.useFakeTimers()
+    const bridge = fakeBridge()
+    const storage = createMemoryWorkingDraftStore()
+    const { controller: tab, typed } = await savedTab(bridge, storage)
+    const serving = bridge.requests.remove
+
+    const attempts: WorkingDraftRemoveRequest[] = []
+    bridge.requests.remove = vi.fn(async (_id: string, req: WorkingDraftRemoveRequest): Promise<WorkingDraft | null> => {
+      attempts.push(req)
+      // First the answer is lost; then the bridge answers with a 5xx.
+      if (attempts.length === 1) throw new Error('network down')
+      throw Object.assign(new Error('gateway exploded'), { status: 502 })
+    })
+
+    const lost = await tab.remove()
+    expect(lost).toMatchObject({ state: 'editing', offline: true, error: 'network down' })
+    expect(lost.local).toEqual(typed)
+    expect(attempts).toHaveLength(1)
+    // The request is frozen on this device before it is sent.
+    const [record] = await recordsFor(storage)
+    expect(record.removal).toMatchObject({ requestId: attempts[0].requestId, expectedVersion: 1 })
+
+    // A retry sends the same id and version, not a new request.
+    await tab.remove()
+    expect(attempts).toHaveLength(2)
+    expect(attempts[1].requestId).toBe(attempts[0].requestId)
+    expect(attempts[1].expectedVersion).toBe(attempts[0].expectedVersion)
+
+    // While the outcome is open, an edit stays local: no save races the removal.
+    const edited = draftContent({ ...typed, title: 'Edited while the removal is open' })
+    await tab.edit(edited)
+    await vi.advanceTimersByTimeAsync(WORKING_DRAFT_DEBOUNCE_MS * 3)
+    expect(bridge.calls.save).toHaveLength(0)
+    // The reconnect hook replays the removal too, still under the same id.
+    await tab.flush()
+    expect(attempts).toHaveLength(3)
+    expect(attempts[2].requestId).toBe(attempts[0].requestId)
+
+    // The bridge comes back: the replayed request deletes, and the copy stays.
+    bridge.requests.remove = serving
+    await tab.flush()
+    expect(bridge.calls.remove).toHaveLength(1)
+    expect(bridge.calls.remove[0].req.requestId).toBe(attempts[0].requestId)
+    expect(bridge.calls.remove[0].req.expectedVersion).toBe(1)
+    expect(tab.view()).toMatchObject({ state: 'deleted', offline: false, error: null })
+    expect(tab.view().local).toEqual(edited)
+  })
+
+  it('a stale version refreshes instead of deleting', async () => {
+    vi.useFakeTimers()
+    const bridge = fakeBridge()
+    const storage = createMemoryWorkingDraftStore()
+    const { controller: tab, typed } = await savedTab(bridge, storage)
+
+    const theirs = draftContent({ title: 'theirs', plan: 'their plan' })
+    const attempts: WorkingDraftRemoveRequest[] = []
+    bridge.requests.remove = vi.fn(async (_id: string, req: WorkingDraftRemoveRequest): Promise<WorkingDraft | null> => {
+      attempts.push(req)
+      throw new WorkingDraftConflictError('stale version', acknowledged('d1', 4, theirs))
+    })
+
+    const conflicted = await tab.remove()
+    expect(attempts).toHaveLength(1)
+    // Nothing was deleted: the bridge's current draft replaces the removal.
+    expect(conflicted).toMatchObject({ state: 'editing', conflict: true, error: null, removal: null })
+    expect(conflicted.server).toEqual(theirs)
+    expect(conflicted.local).toEqual(typed)
+    const [record] = await recordsFor(storage)
+    expect([record.state, record.removal]).toEqual(['editing', null])
+
+    // Resolving the conflict sends against the version the bridge reported.
+    bridge.requests.save = vi.fn(async (id: string, req: WorkingDraftSaveRequest) => {
+      bridge.calls.save.push({ id, req })
+      return acknowledged(id, req.expectedVersion + 1, req.content)
+    })
+    await tab.keepLocal()
+    expect(bridge.calls.save[0].req).toMatchObject({ expectedVersion: 4, content: typed })
+    expect(tab.view()).toMatchObject({ conflict: false, saved: true })
+    // The removal was never re-sent behind the user's back.
+    expect(attempts).toHaveLength(1)
+  })
+
+  it('a reply already saying deleted settles the removal', async () => {
+    vi.useFakeTimers()
+    const bridge = fakeBridge()
+    const storage = createMemoryWorkingDraftStore()
+    const { controller: tab, typed } = await savedTab(bridge, storage)
+
+    bridge.requests.remove = vi.fn(async (_id: string, _req: WorkingDraftRemoveRequest): Promise<WorkingDraft | null> => {
+      // The bridge already holds the tombstone, and its refusal says so.
+      throw new WorkingDraftConflictError('draft is already deleted', acknowledged('d1', 2, typed, 'deleted'))
+    })
+    const done = await tab.remove()
+    expect(done).toMatchObject({ state: 'deleted', conflict: false, error: null, offline: false, removal: null })
+    expect(done.local).toEqual(typed)
+  })
+
+  it('a confirmed refusal is a visible error that frees the request', async () => {
+    vi.useFakeTimers()
+    const bridge = fakeBridge()
+    const storage = createMemoryWorkingDraftStore()
+    const { controller: tab, typed } = await savedTab(bridge, storage)
+
+    // The project is no longer registered, so the bridge has no such draft.
+    const refused = vi.fn(async (_id: string, _req: WorkingDraftRemoveRequest): Promise<WorkingDraft | null> => {
+      throw Object.assign(new Error('working draft not found: project is not registered'), { status: 404 })
+    })
+    bridge.requests.remove = refused
+
+    const answered = await tab.remove()
+    expect(answered).toMatchObject({ state: 'editing', offline: false, conflict: false })
+    expect(answered.error).toBe('working draft not found: project is not registered')
+    expect(answered.local).toEqual(typed)
+    expect(answered.removal).toBeNull()
+    // The refusal frees the frozen request: the next attempt is a new one.
+    const fresh = await tab.remove()
+    expect(refused).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(refused).mock.calls[1][1].requestId).not.toBe(vi.mocked(refused).mock.calls[0][1].requestId)
+    expect(fresh.local).toEqual(typed)
   })
 })

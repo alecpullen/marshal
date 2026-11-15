@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte'
+  import { onDestroy, untrack } from 'svelte'
   import Card from '../lib/ui/Card.svelte'
   import Button from '../lib/ui/Button.svelte'
   import Tag from '../lib/ui/Tag.svelte'
@@ -12,6 +12,7 @@
     getVersionedProjectSettings,
     listRepos,
     listWorkingDrafts,
+    removeWorkingDraft,
     saveWorkingDraft,
     type ProjectSettings,
     type RepoRow,
@@ -79,13 +80,14 @@
     get: getWorkingDraft,
     save: saveWorkingDraft,
     convert: convertWorkingDraft,
+    remove: removeWorkingDraft,
   }
   // Only constructed when the caller did not supply one; the adapter opens its
   // database lazily, so this costs nothing until a draft is actually kept.
   const store: WorkingDraftStore = storage ?? createIndexedDbWorkingDraftStore()
   const storeFor = (): WorkingDraftStore => store
 
-  let controller: WorkingDraftController | null = null
+  let controller = $state<WorkingDraftController | null>(null)
   let unsubscribe: (() => void) | null = null
   let view = $state<WorkingDraftView | null>(null)
   let rows = $state<WorkingDraft[]>([])
@@ -148,15 +150,19 @@
     const root = projectRoot
     const openId = draftId ?? null
     const creating = newDraft
-    if (controller && root !== bound.projectRoot && openId === bound.draftId && creating === bound.creating) {
+    // The controller is this effect's own output, not its input: reading it
+    // tracked would make every assignment re-run the effect and tear down the
+    // controller that assignment installed (a copy of a deleted draft, below).
+    const current = untrack(() => controller)
+    if (current && root !== bound.projectRoot && openId === bound.draftId && creating === bound.creating) {
       bound = { ...bound, projectRoot: root }
-      void controller.assignProject(root)
+      void current.assignProject(root)
       return
     }
-    if (controller && openId === bound.draftId && creating === bound.creating) return
+    if (current && openId === bound.draftId && creating === bound.creating) return
 
     unsubscribe?.()
-    controller?.destroy()
+    current?.destroy()
     const next = makeController()
     controller = next
     bound = { draftId: openId, creating, projectRoot: root }
@@ -237,6 +243,46 @@
     copied = true
     await next.load(projectRoot || null, null)
     await next.edit({ ...content })
+  }
+
+  // ---- removing -----------------------------------------------------------
+
+  /**
+   * Removing a draft is not undoable on the bridge — the journal keeps the
+   * tombstone, and the local copy survives it — so it is confirmed before
+   * anything is sent. The request id and the version it expects are the
+   * controller's to mint and freeze; a retry after an unknown outcome replays
+   * them.
+   */
+  let removeOpen = $state(false)
+  let removing = $state(false)
+
+  /** A live draft on the bridge can be removed; a copy or a tombstone cannot. */
+  const removable = $derived(
+    !!view && !loading && view.state === 'editing' && !!view.draftId && !view.conflict,
+  )
+
+  function openRemove(): void {
+    removeOpen = true
+  }
+  function cancelRemove(): void {
+    removeOpen = false
+  }
+
+  async function confirmRemove(): Promise<void> {
+    if (!controller || removing) return
+    removing = true
+    try {
+      await controller.remove()
+    } finally {
+      removing = false
+      removeOpen = false
+    }
+  }
+
+  /** A conflict the bridge could not describe is re-read, never guessed over. */
+  async function reloadFromBridge(): Promise<void> {
+    await controller?.reload()
   }
 
   // ---- converting ---------------------------------------------------------
@@ -335,6 +381,7 @@
     if (v.pending) return 'Save the draft first: the review converts the saved version.'
     if (v.state === 'converted') return 'This draft is already a factory item.'
     if (v.state === 'deleted') return 'This draft was deleted, so it cannot be converted.'
+    if (v.removal) return 'This draft is being removed, so it cannot be converted.'
     if (reviewContent && !sameWorkingDraftContent(reviewContent, v.base)) return 'The saved draft changed since this review. Review it again.'
     return ''
   })
@@ -403,12 +450,15 @@
     // before anything about the local copy.
     if (v.state === 'converting') return { text: 'Conversion sent — outcome uncertain, retry to confirm it', tone: 'text-warn' }
     if (v.state === 'converted') return { text: 'Converted — this draft is read-only', tone: 'text-ok' }
+    // A tombstone is not a pending state: the bridge is done with this draft,
+    // and the copy here is all that is left of the work.
+    if (v.state === 'deleted') return { text: 'Deleted — your copy is still here', tone: 'text-warn' }
     if (v.conflict) return { text: 'This draft changed elsewhere — resolve the conflict below', tone: 'text-warn' }
     // A transport failure is its own state: the request is kept and retried
     // byte for byte, so "offline" says more than the message it came with.
     if (v.offline) return { text: 'Offline — kept on this device, will retry', tone: 'text-warn' }
     if (v.error) return { text: `Could not save: ${v.error}`, tone: 'text-err' }
-    if (v.saving) return { text: 'Saving…', tone: 'text-muted' }
+    if (v.saving) return { text: v.removal ? 'Removing…' : 'Saving…', tone: 'text-muted' }
     if (v.localOnly) return { text: 'Only on this device — open this draft from a project to save it', tone: 'text-warn' }
     if (v.pending) return { text: 'Pending — saved on this device', tone: 'text-muted' }
     if (v.saved) return { text: 'Saved', tone: 'text-ok' }
@@ -510,6 +560,7 @@
         <a class="text-sm text-accent underline" href="#factory/new" onclick={go('#factory/new')}>New work item</a>
       </div>
     </header>
+    <p class="min-w-0 break-words text-xs text-muted">Plan and specification text is saved on this device and on the bridge.</p>
 
     {#if view}
       <div class="flex min-w-0 flex-wrap items-center gap-2">
@@ -557,6 +608,19 @@
           {/if}
         </Card>
       {:else}
+        {#if view.conflict}
+          <Card class="flex min-w-0 flex-col gap-3 border-attention text-sm" role="alert" data-testid="conflict-unreadable">
+            <h2 class="text-sm font-semibold">This draft changed on the bridge</h2>
+            <p class="min-w-0 break-words">
+              The bridge's current copy could not be read, so the two versions cannot be compared here. Your copy stays on
+              this device and has not been sent anywhere.
+            </p>
+            <div class="flex min-w-0 flex-wrap items-center gap-2">
+              <Button onclick={() => void reloadFromBridge()}>Reload from the bridge</Button>
+              <a class="text-sm text-accent underline" href={listHref} onclick={go(listHref)}>All drafts</a>
+            </div>
+          </Card>
+        {/if}
         {#if view.state === 'deleted'}
           <Card class="flex min-w-0 flex-col gap-3 border-attention text-sm" role="alert" data-testid="draft-deleted">
             <p>This draft was deleted on the server. Your copy is still here and has not been sent anywhere.</p>
@@ -565,7 +629,7 @@
         {/if}
         {#if view.recoverable.length}
           <Card class="flex min-w-0 flex-col gap-2 text-sm" data-testid="draft-recovery">
-            <p>Another editor left a copy of this draft on this device.</p>
+            <p>Another editor left a draft on this device.</p>
             {#each view.recoverable as copy (copy.editorId)}
               <div class="flex min-w-0 flex-wrap items-center gap-2">
                 <span class="min-w-0 break-words text-xs text-muted">{copy.content.title || 'Untitled draft'}{#if copy.pending} · unsent{/if}</span>
@@ -671,6 +735,21 @@
               </div>
             {/if}
           </Card>
+        {/if}
+        {#if removable}
+          {#if removeOpen}
+            <Card class="flex min-w-0 flex-col gap-2 text-sm" data-testid="remove-confirm" role="group" aria-label="Remove this working draft">
+              <p class="min-w-0 break-words">
+                Remove this working draft on the bridge? The bridge cannot undo it. Your copy stays on this device.
+              </p>
+              <div class="flex min-w-0 flex-wrap items-center gap-2">
+                <Button disabled={removing} onclick={() => void confirmRemove()}>{removing ? 'Removing…' : 'Remove it'}</Button>
+                <Button variant="ghost" onclick={cancelRemove}>Keep this draft</Button>
+              </div>
+            </Card>
+          {:else}
+            <div><Button variant="ghost" class="min-h-9 px-2 py-1 text-xs" onclick={openRemove}>Remove this working draft</Button></div>
+          {/if}
         {/if}
         <FactoryNew {projectRoot} {onNavigate} draft={{ controller, draftId: view.draftId ?? undefined }} />
       {/if}

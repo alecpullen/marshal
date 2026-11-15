@@ -12,6 +12,7 @@ import {
   type WorkingDraftConvertRequest,
   type WorkingDraftCreateRequest,
   type WorkingDraftRecord,
+  type WorkingDraftRemoveRequest,
   type WorkingDraftRequests,
   type WorkingDraftSaveRequest,
   type WorkingDraftTimer,
@@ -104,6 +105,7 @@ function fakeBridge(initial: WorkingDraft | null = null) {
     save: [] as { id: string; req: WorkingDraftSaveRequest }[],
     get: [] as string[],
     convert: [] as { id: string; req: WorkingDraftConvertRequest }[],
+    remove: [] as { id: string; req: WorkingDraftRemoveRequest }[],
   }
   const held = { draft: initial }
   const requests: WorkingDraftRequests = {
@@ -128,6 +130,11 @@ function fakeBridge(initial: WorkingDraft | null = null) {
       const draft = draftOf(id, req.expectedVersion + 1, body, 'converted', { factoryItemId: 'item-1' })
       held.draft = draft
       return { draft }
+    }),
+    remove: vi.fn(async (id: string, req: WorkingDraftRemoveRequest) => {
+      calls.remove.push({ id, req })
+      held.draft = { ...(held.draft ?? draftOf(id, req.expectedVersion, content())), version: req.expectedVersion + 1, state: 'deleted' }
+      return held.draft
     }),
   }
   return { requests, calls, held }
@@ -203,6 +210,35 @@ it('newDraftIsLocalUntilProjectSelected', async () => {
   await waitFor(() => expect(screen.getByTestId('draft-status').textContent).toContain('Saved'))
 })
 
+it('offersAStrandedLocalDraftToALaterSession', async () => {
+  // Two repositories, so no repository is chosen on the draft's behalf: that
+  // default is recorded as an edit of its own and would race the adoption.
+  vi.mocked(api.listRepos).mockResolvedValue([
+    { id: 'repo', url: 'https://example.test', branch: 'main' },
+    { id: 'other', url: 'https://example.test/other', branch: 'main' },
+  ])
+  // What an earlier session typed on this page with no project chosen, plus a
+  // record from another project that must never be offered here.
+  const storage = createMemoryWorkingDraftStore([
+    recordOf({ projectRoot: '', draftId: 'local-old', editorId: 'editor-a', content: content({ title: 'Typed before the reload' }) }),
+    recordOf({ projectRoot: '/elsewhere', draftId: 'd9', editorId: 'editor-c', content: content({ title: 'Another project' }) }),
+  ])
+  const bridge = fakeBridge()
+  const { timer } = manualTimer()
+  mount({ projectRoot: '', newDraft: true, storage, requests: bridge.requests, timer, editorId: 'editor-b' })
+
+  // The fresh controller cannot match the earlier session's editor or draft
+  // id, but the record is still this page's scope, so a way back is offered.
+  expect(await screen.findByTestId('draft-recovery')).toBeTruthy()
+  expect(screen.getByText('Typed before the reload')).toBeTruthy()
+  expect(screen.queryByText('Another project')).toBeNull()
+  expect(screen.getAllByRole('button', { name: 'Restore this copy' })).toHaveLength(1)
+
+  // Adopting it yields the original content in the editor.
+  await fireEvent.click(screen.getByRole('button', { name: 'Restore this copy' }))
+  await waitFor(() => expect((screen.getByLabelText('Title') as HTMLInputElement).value).toBe('Typed before the reload'))
+})
+
 it('restoresIncompleteFieldsAndInheritance', async () => {
   vi.mocked(api.getProjectSettings).mockResolvedValue({ intake: {}, workspace: 'go-dev', routing: { profile: 'fast' } })
   const bridge = fakeBridge(draftOf('d1', 3, content({ title: 'Partial draft', repoId: 'repo', native: false })))
@@ -250,6 +286,7 @@ it('showsSavingAndOffline', async () => {
     convert: vi.fn(async (id: string, req: WorkingDraftConvertRequest) => ({
       draft: draftOf(id, req.expectedVersion + 1, content(), 'converted'),
     })),
+    remove: vi.fn(async (id: string, req: WorkingDraftRemoveRequest) => draftOf(id, req.expectedVersion + 1, content(), 'deleted')),
   }
   const { timer, run } = manualTimer()
   mount({ projectRoot: ROOT, newDraft: true, storage: createMemoryWorkingDraftStore(), requests, timer })
@@ -268,6 +305,51 @@ it('showsSavingAndOffline', async () => {
   expect(new Set(attempts.map((a) => a.requestId)).size).toBe(1)
   expect(attempts[1].content.title).toBe('Task')
   expect(first.content.title).toBe('Task')
+})
+
+it('refusedSaveIsAVisibleErrorNotOffline', async () => {
+  // Two repositories, so no repository is chosen on the draft's behalf and the
+  // only sends are the ones this test makes.
+  vi.mocked(api.listRepos).mockResolvedValue([
+    { id: 'repo', url: 'https://example.test', branch: 'main' },
+    { id: 'other', url: 'https://example.test/other', branch: 'main' },
+  ])
+  const attempts: WorkingDraftCreateRequest[] = []
+  const requests: WorkingDraftRequests = {
+    installation: async () => 'inst-1',
+    create: vi.fn((req: WorkingDraftCreateRequest) => {
+      attempts.push(req)
+      return attempts.length === 1
+        ? Promise.reject(Object.assign(new Error('plan and specification exceed 1 MiB'), { status: 400 }))
+        : Promise.resolve(draftOf('d-new', 1, req.content))
+    }),
+    get: vi.fn(async (id: string) => draftOf(id, 1, content())),
+    save: vi.fn(async (id: string, req: WorkingDraftSaveRequest) => draftOf(id, req.expectedVersion + 1, req.content)),
+    convert: vi.fn(async (id: string, req: WorkingDraftConvertRequest) => ({
+      draft: draftOf(id, req.expectedVersion + 1, content(), 'converted'),
+    })),
+    remove: vi.fn(async (id: string, req: WorkingDraftRemoveRequest) => draftOf(id, req.expectedVersion + 1, content(), 'deleted')),
+  }
+  const { timer, run } = manualTimer()
+  mount({ projectRoot: ROOT, newDraft: true, storage: createMemoryWorkingDraftStore(), requests, timer })
+
+  await fireEvent.input(await screen.findByLabelText('Title'), { target: { value: 'Too big' } })
+  run()
+  // A confirmed refusal is the bridge answering, not the network failing: the
+  // strip reports the refusal itself, and no offline retry button is offered.
+  await waitFor(() => expect(screen.getByTestId('draft-status').textContent).toContain('Could not save: plan and specification exceed 1 MiB'))
+  expect(screen.getByTestId('draft-status').textContent).not.toContain('Offline')
+  expect(screen.queryByRole('button', { name: 'Retry now' })).toBeNull()
+  expect(attempts).toHaveLength(1)
+
+  // The user shortens the plan: the correction goes out under a fresh request
+  // id, not as a byte-for-byte replay of the refused body.
+  await fireEvent.input(screen.getByLabelText('Title'), { target: { value: 'Small' } })
+  run()
+  await waitFor(() => expect(attempts).toHaveLength(2))
+  expect(attempts[1].content.title).toBe('Small')
+  expect(attempts[1].requestId).not.toBe(attempts[0].requestId)
+  await waitFor(() => expect(screen.getByTestId('draft-status').textContent).toContain('Saved'))
 })
 
 it('unavailableOptionsRemainVisible', async () => {
@@ -410,4 +492,99 @@ it('settingsChangeRequiresNewReview', async () => {
   await fireEvent.click(screen.getByRole('button', { name: 'Convert and create the item' }))
   await waitFor(() => expect(convert).toHaveBeenCalledTimes(2))
   expect(vi.mocked(convert).mock.calls[1][1].settingsVersion).toBe('settings-v2')
+})
+
+it('removesADraftOnlyAfterConfirmation', async () => {
+  const bridge = fakeBridge(draftOf('d1', 2, content({ title: 'Not needed after all', plan: 'The plan' })))
+  const { timer } = manualTimer()
+  mount({ projectRoot: ROOT, draftId: 'd1', storage: createMemoryWorkingDraftStore(), requests: bridge.requests, timer, editorId: 'tab-1' })
+
+  await screen.findByLabelText('Title')
+  // Removal is asked about first: opening the question sends nothing, and
+  // keeping the draft sends nothing either.
+  await fireEvent.click(screen.getByRole('button', { name: 'Remove this working draft' }))
+  expect(bridge.calls.remove).toHaveLength(0)
+  await fireEvent.click(screen.getByRole('button', { name: 'Keep this draft' }))
+  expect(bridge.calls.remove).toHaveLength(0)
+
+  await fireEvent.click(screen.getByRole('button', { name: 'Remove this working draft' }))
+  await fireEvent.click(screen.getByRole('button', { name: 'Remove it' }))
+  await waitFor(() => expect(bridge.calls.remove).toHaveLength(1))
+  // The frozen request went out against the version the editor had.
+  expect(bridge.calls.remove[0]).toMatchObject({ id: 'd1' })
+  expect(bridge.calls.remove[0].req).toMatchObject({ requestId: expect.any(String), expectedVersion: 2 })
+
+  // The tombstone shows, and the local copy stays readable and recoverable.
+  await waitFor(() => expect(screen.getByTestId('draft-deleted')).toBeTruthy())
+  expect(screen.getByTestId('draft-status').textContent).toContain('Deleted')
+  expect((screen.getByLabelText('Title') as HTMLInputElement).value).toBe('Not needed after all')
+  expect((screen.getByLabelText('Plan') as HTMLTextAreaElement).value).toBe('The plan')
+  expect(screen.getByRole('button', { name: 'Copy to new working draft' })).toBeTruthy()
+  // The control is gone: the bridge already holds the tombstone.
+  expect(screen.queryByRole('button', { name: 'Remove this working draft' })).toBeNull()
+})
+
+it('aStaleRemovalRefreshesTheDraftInsteadOfDeleting', async () => {
+  const mine = content({ title: 'Mine' })
+  const bridge = fakeBridge(draftOf('d1', 2, mine))
+  const theirs = content({ title: 'Theirs', plan: 'Their plan' })
+  const remove = vi.fn(async (_id: string, _req: WorkingDraftRemoveRequest): Promise<WorkingDraft | null> => {
+    throw new WorkingDraftConflictError('stale version', draftOf('d1', 5, theirs))
+  })
+  const requests: WorkingDraftRequests = { ...bridge.requests, remove }
+  const { timer } = manualTimer()
+  mount({ projectRoot: ROOT, draftId: 'd1', storage: createMemoryWorkingDraftStore(), requests, timer, editorId: 'tab-1' })
+
+  await screen.findByLabelText('Title')
+  await fireEvent.click(screen.getByRole('button', { name: 'Remove this working draft' }))
+  await fireEvent.click(screen.getByRole('button', { name: 'Remove it' }))
+
+  // Nothing was deleted: the bridge's current draft is what shows instead.
+  await waitFor(() => expect(screen.getByTestId('draft-conflict')).toBeTruthy())
+  expect(screen.getByTestId('local-title').textContent).toBe('Mine')
+  expect(screen.getByTestId('server-title').textContent).toBe('Theirs')
+  expect(remove).toHaveBeenCalledTimes(1)
+  expect(screen.queryByTestId('draft-deleted')).toBeNull()
+  // The control is gone while the conflict is open.
+  expect(screen.queryByRole('button', { name: 'Remove this working draft' })).toBeNull()
+})
+
+it('aConflictWithNoCurrentDraftOffersAReload', async () => {
+  const mine = content({ title: 'Mine' })
+  let reads = 0
+  const requests: WorkingDraftRequests = {
+    installation: async () => 'inst-1',
+    create: vi.fn(async (req: WorkingDraftCreateRequest) => draftOf('d-new', 1, req.content)),
+    get: vi.fn(async (id: string) => {
+      reads++
+      if (reads > 1) throw Object.assign(new Error('working draft not found: project is not registered'), { status: 404 })
+      return draftOf(id, 2, mine)
+    }),
+    save: vi.fn(async (_id: string, _req: WorkingDraftSaveRequest) => {
+      throw new WorkingDraftConflictError('expected version 2, have 7', null)
+    }),
+    convert: vi.fn(async (id: string, req: WorkingDraftConvertRequest) => ({
+      draft: draftOf(id, req.expectedVersion + 1, content(), 'converted'),
+    })),
+    remove: vi.fn(async (id: string, req: WorkingDraftRemoveRequest) => draftOf(id, req.expectedVersion + 1, content(), 'deleted')),
+  }
+  const { timer, run } = manualTimer()
+  mount({ projectRoot: ROOT, draftId: 'd1', storage: createMemoryWorkingDraftStore(), requests, timer, editorId: 'tab-1' })
+
+  // An edit meets a 409 that carries no current draft to compare against.
+  const title = (await screen.findByLabelText('Title')) as HTMLInputElement
+  await fireEvent.input(title, { target: { value: 'Mine, edited' } })
+  run()
+  await waitFor(() => expect(screen.getByTestId('conflict-unreadable')).toBeTruthy())
+  expect(screen.getByTestId('draft-status').textContent).toContain('changed elsewhere')
+  // The editor keeps the local text, and sends are blocked rather than guessed.
+  expect(title.value).toBe('Mine, edited')
+
+  // Reloading asks the bridge again: it no longer has the draft, so the
+  // conflict clears and the editor is usable again, local text intact.
+  await fireEvent.click(screen.getByRole('button', { name: 'Reload from the bridge' }))
+  await waitFor(() => expect(screen.queryByTestId('conflict-unreadable')).toBeNull())
+  expect((screen.getByLabelText('Title') as HTMLInputElement).value).toBe('Mine, edited')
+  expect(screen.getByTestId('draft-status').textContent).not.toContain('changed elsewhere')
+  expect(screen.getByTestId('draft-status').textContent).toContain('Offline')
 })

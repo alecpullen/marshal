@@ -213,16 +213,6 @@ func (s *Server) workingDraftCurrent(store *WorkingDraftStore, id string) *Worki
 	return &draft
 }
 
-// workingDraftRequestSeen reports whether the store has already accepted an
-// operation with this request ID, which is how a create tells a fresh draft
-// (201) from a replay of the original (200).
-func workingDraftRequestSeen(store *WorkingDraftStore, requestID string) bool {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	_, ok := store.requests[requestID]
-	return ok
-}
-
 // workingDraftCreate stores a new draft for a registered project.
 func (s *Server) workingDraftCreate(w http.ResponseWriter, r *http.Request, store *WorkingDraftStore) {
 	if store == nil {
@@ -241,8 +231,7 @@ func (s *Server) workingDraftCreate(w http.ResponseWriter, r *http.Request, stor
 		workingDraftWriteError(w, err, nil)
 		return
 	}
-	replay := workingDraftRequestSeen(store, body.RequestID)
-	draft, err := store.Create(body.ProjectRoot, body.RequestID, body.Content)
+	draft, replay, err := store.create(body.ProjectRoot, body.RequestID, body.Content)
 	if err != nil {
 		// A create has no draft to show: the stored one may belong to another
 		// project, and a reused request ID names no draft the caller may see.

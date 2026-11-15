@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,12 @@ const (
 	workingDraftJournalName   = "journal.log"
 	workingDraftLockName      = "owner.lock"
 	workingDraftJournalSchema = 1
+	// workingDraftLockPIDPrefix starts the ownership lock's first line, which
+	// names the process that took it. A complete lock is that line, then a
+	// hex-encoded 32-byte token: workingDraftLockTokenLength is its length, so a
+	// half-written file is never mistaken for a stale one.
+	workingDraftLockPIDPrefix   = "pid:"
+	workingDraftLockTokenLength = 64
 )
 
 // Journal operation kinds. The kind is part of every operation's digest, so a
@@ -63,13 +70,13 @@ type workingDraftRequestRecord struct {
 type workingDraftConversionRecord struct {
 	// RequestID is the conversion request that reserved the record, so a
 	// reconciliation knows the journal identity of the association it makes.
-	// It is optional: a journal written before the field existed replays with
-	// an empty one, which still derives a stable identity from the draft.
+	// It is always set by this version; deriving from an empty one still yields
+	// a stable identity, which is what keeps a replayed reservation safe.
 	RequestID       string
 	Request         json.RawMessage
 	SettingsVersion string
-	// Sequence is the journal sequence of the reservation, so reconciliation
-	// can finish the oldest conversion first.
+	// Sequence is the journal sequence of the reservation, which orders
+	// reconciliation's work newest first.
 	Sequence uint64
 }
 
@@ -84,9 +91,10 @@ type workingDraftPayload struct {
 	Draft           WorkingDraft    `json:"draft"`
 	FactoryRequest  json.RawMessage `json:"factoryRequest,omitempty"`
 	SettingsVersion string          `json:"settingsVersion,omitempty"`
-	// ConversionRequestID is the conversion request a reservation belongs to.
-	// It is optional so records written before it existed still replay; the
-	// field is not a schema change.
+	// ConversionRequestID records which conversion request a reservation
+	// belongs to, so reconciliation can derive the same journal identities a
+	// live conversion would. It is part of the reservation's meaning, not a
+	// schema change.
 	ConversionRequestID string `json:"conversionRequestId,omitempty"`
 }
 
@@ -166,10 +174,7 @@ func OpenWorkingDraftStore(dir string, now func() time.Time) (*WorkingDraftStore
 		return nil, fmt.Errorf("%w: %v", ErrWorkingDraftUnavailable, e)
 	}
 	lockPath := filepath.Join(dir, workingDraftLockName)
-	l, e := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
-	if os.IsExist(e) {
-		return nil, fmt.Errorf("%w: %v", ErrWorkingDraftUnavailable, errWorkingDraftOwned)
-	}
+	l, e := acquireWorkingDraftLock(lockPath)
 	if e != nil {
 		return nil, fmt.Errorf("%w: %v", ErrWorkingDraftUnavailable, e)
 	}
@@ -182,7 +187,7 @@ func OpenWorkingDraftStore(dir string, now func() time.Time) (*WorkingDraftStore
 	if _, e = rand.Read(token); e != nil {
 		return fail(e)
 	}
-	if _, e = l.Write(token); e != nil {
+	if _, e = io.WriteString(l, workingDraftLockContent(os.Getpid(), token)); e != nil {
 		return fail(e)
 	}
 	if e = l.Sync(); e != nil {
@@ -321,9 +326,13 @@ func (s *WorkingDraftStore) apply(p workingDraftPayload) error {
 	s.drafts[d.ID] = d
 	s.requests[p.RequestID] = workingDraftRequestRecord{DraftID: d.ID, Digest: p.Digest, Draft: d}
 	if p.Operation == workingDraftOpConvertBegin {
-		// The conversion record is retained indefinitely, including after the
-		// draft is associated with an item or deleted.
 		s.conversions[d.ID] = workingDraftConversionRecord{RequestID: p.ConversionRequestID, Request: p.FactoryRequest, SettingsVersion: p.SettingsVersion, Sequence: p.Sequence}
+	} else if p.Operation == workingDraftOpConvertDone || p.Operation == workingDraftOpConvertFail {
+		// A conversion record lives only as long as the draft is reserved.
+		// Once the draft reached an item, or was returned to editing, nothing
+		// may replay it, and keeping every frozen request alive would grow the
+		// store without bound in a long-lived bridge.
+		delete(s.conversions, d.ID)
 	}
 	return nil
 }
@@ -425,22 +434,91 @@ func (s *WorkingDraftStore) List(projectRoot string) ([]WorkingDraft, error) {
 	return out, nil
 }
 
+// acquireWorkingDraftLock takes the store's ownership lock.
+//
+// A lock left behind by a process that no longer exists is reclaimed. Recovering
+// what a crash interrupted is this store's reason to exist, and leaving that
+// recovery to somebody remembering to delete a file in the state directory
+// would silently defeat it. A lock whose owner cannot be shown dead is refused,
+// never taken.
+func acquireWorkingDraftLock(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+	if err == nil {
+		return f, nil
+	}
+	if !os.IsExist(err) {
+		return nil, err
+	}
+	if !workingDraftLockStale(path) {
+		return nil, errWorkingDraftOwned
+	}
+	if err := os.Remove(path); err != nil {
+		return nil, errWorkingDraftOwned
+	}
+	f, err = os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+	if err != nil {
+		// Another opener won the reclaim: it owns the store now.
+		if os.IsExist(err) {
+			return nil, errWorkingDraftOwned
+		}
+		return nil, err
+	}
+	return f, nil
+}
+
+// workingDraftLockStale reports whether a lock file names an owner that is
+// provably gone. Only a complete lock this version wrote is considered: an
+// opaque token left by an older bridge, a partially written file, or anything
+// unreadable stays owned, because a live store's lock must never be taken by
+// mistake.
+func workingDraftLockStale(path string) bool {
+	raw, err := os.ReadFile(path)
+	if err != nil || !bytes.HasSuffix(raw, []byte("\n")) {
+		return false
+	}
+	lines := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+	if len(lines) != 2 || !strings.HasPrefix(lines[0], workingDraftLockPIDPrefix) || len(lines[1]) != workingDraftLockTokenLength {
+		return false
+	}
+	pid, err := strconv.Atoi(strings.TrimPrefix(lines[0], workingDraftLockPIDPrefix))
+	if err != nil || pid <= 0 || pid == os.Getpid() {
+		// Our own process holding the lock means this store is open here.
+		return false
+	}
+	return !workingDraftOwnerAlive(pid)
+}
+
+// workingDraftLockContent is what the ownership lock records: the writing
+// process, so a later opener can tell an abandoned lock from a live one, and a
+// random token, so the file is unique.
+func workingDraftLockContent(pid int, token []byte) string {
+	return fmt.Sprintf("%s%d\n%s\n", workingDraftLockPIDPrefix, pid, hex.EncodeToString(token))
+}
+
 // Create stores a new editing draft for one project. Project root is opaque
 // here: registering and authorizing it is the service boundary's job.
 func (s *WorkingDraftStore) Create(projectRoot, requestID string, content WorkingDraftContent) (WorkingDraft, error) {
+	d, _, err := s.create(projectRoot, requestID, content)
+	return d, err
+}
+
+// create reports whether the request ID was already accepted, so an HTTP caller
+// can tell a fresh draft (201) from a replay (200) without peeking at the store
+// first: the answer is decided under the same lock as the append.
+func (s *WorkingDraftStore) create(projectRoot, requestID string, content WorkingDraftContent) (WorkingDraft, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if e := s.writable(); e != nil {
-		return WorkingDraft{}, e
+		return WorkingDraft{}, false, e
 	}
 	if strings.TrimSpace(requestID) == "" {
-		return WorkingDraft{}, fmt.Errorf("requestId required")
+		return WorkingDraft{}, false, fmt.Errorf("requestId required")
 	}
 	if strings.TrimSpace(projectRoot) == "" {
-		return WorkingDraft{}, fmt.Errorf("project root required")
+		return WorkingDraft{}, false, fmt.Errorf("project root required")
 	}
 	if _, e := workingDraftContentBytes(content); e != nil {
-		return WorkingDraft{}, e
+		return WorkingDraft{}, false, e
 	}
 	// The project is part of the create payload: the same request ID cannot
 	// replay a draft into a different project.
@@ -449,18 +527,19 @@ func (s *WorkingDraftStore) Create(projectRoot, requestID string, content Workin
 		Content     WorkingDraftContent `json:"content"`
 	}{projectRoot, content})
 	if e != nil {
-		return WorkingDraft{}, e
+		return WorkingDraft{}, false, e
 	}
 	digest := workingDraftDigest(workingDraftOpCreate, "", requestID, identity)
 	if d, ok, e := s.replayRequest(requestID, "", digest); ok {
-		return d, e
+		return d, true, e
 	}
 	idBytes := make([]byte, 16)
 	if _, e = rand.Read(idBytes); e != nil {
-		return WorkingDraft{}, e
+		return WorkingDraft{}, false, e
 	}
 	d := WorkingDraft{ID: hex.EncodeToString(idBytes), ProjectRoot: projectRoot, Version: 1, State: workingDraftEditing, Content: content, UpdatedAt: s.now().UTC()}
-	return s.append(workingDraftPayload{Operation: workingDraftOpCreate, RequestID: requestID, Digest: digest, Draft: d})
+	stored, e := s.append(workingDraftPayload{Operation: workingDraftOpCreate, RequestID: requestID, Digest: digest, Draft: d})
+	return stored, false, e
 }
 
 // Save conditionally replaces the content of one editing draft.

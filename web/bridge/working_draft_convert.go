@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -145,6 +146,9 @@ func (c *workingDraftConverter) Convert(ctx context.Context, id, requestID strin
 		// no conversion can be reserved for it.
 		return WorkingDraft{}, nil, err
 	}
+	if draft.State == workingDraftConverting {
+		return c.resume(ctx, draft)
+	}
 	if draft.State != workingDraftEditing {
 		return WorkingDraft{}, nil, fmt.Errorf("%w: draft is %s", ErrWorkingDraftConflict, draft.State)
 	}
@@ -192,34 +196,85 @@ func (c *workingDraftConverter) Convert(ctx context.Context, id, requestID strin
 	}
 
 	// Recheck the settings version now that the intent is durable and the
-	// draft store's lock is released. A settings write that landed in between
-	// leaves the draft reserved but not created: reconciliation finishes it
-	// with the frozen values, which are the ones that were reviewed.
+	// draft store's lock is released. Nothing has been created yet, so a
+	// settings write in this window is a refusal rather than an orphaned item:
+	// the reservation is released back to editing and the next conversion is
+	// reviewed against the settings that now apply. Leaving it reserved would
+	// admit no save, delete, or conversion until the next restart.
 	current, err := c.settings.ProjectSettingsETag(draft.ProjectRoot)
 	if err != nil {
-		return reserved, nil, fmt.Errorf("%w: project settings unavailable: %v", ErrWorkingDraftUncertain, err)
+		return c.abandonReservation(id, requestID, "project settings unavailable; review the conversion again")
 	}
 	if current != reservedSettings {
-		return reserved, nil, fmt.Errorf("%w: project settings changed while reserving the conversion; the reviewed values are frozen", ErrWorkingDraftConflict)
+		return c.abandonReservation(id, requestID, "project settings changed while reserving the conversion; review the conversion again")
 	}
 	return c.convertReserved(ctx, id, frozen, requestID)
+}
+
+// resume finishes a conversion the store reserved but never associated.
+//
+// A reservation is the linearization point: the draft's content is frozen while
+// it is converting, so every caller asking to convert it is asking for the same
+// reviewed handoff, and the frozen request — not the caller — decides what is
+// created. Resuming is therefore the same path reconciliation takes, which is
+// what makes a retry after a lost answer, a crash, or a factory that was
+// briefly unavailable complete the one handoff instead of dead-ending until the
+// next restart.
+func (c *workingDraftConverter) resume(ctx context.Context, draft WorkingDraft) (WorkingDraft, *FactoryItem, error) {
+	record, ok := c.store.conversionRecord(draft.ID)
+	if !ok || len(record.Request) == 0 {
+		// Converting without a reservation: there is nothing to replay, so the
+		// draft is left for reconciliation rather than guessed at.
+		return draft, nil, fmt.Errorf("%w: draft is %s with no reserved conversion", ErrWorkingDraftConflict, draft.State)
+	}
+	var frozen FactoryCreate
+	if err := json.Unmarshal(record.Request, &frozen); err != nil {
+		return draft, nil, fmt.Errorf("%w: frozen factory request: %v", ErrWorkingDraftUncertain, err)
+	}
+	return c.convertReserved(ctx, draft.ID, frozen, record.RequestID)
+}
+
+// abandonReservation releases a reservation no factory call was made for, which
+// is only safe before the create: the draft returns to editing carrying the
+// reason, so a browser can show a stale review, and the failure is reported as
+// a conflict so the caller re-reads and reviews again instead of retrying bytes
+// whose defaults have already moved.
+func (c *workingDraftConverter) abandonReservation(id, requestID, reason string) (WorkingDraft, *FactoryItem, error) {
+	failed, err := c.store.FailConversion(id, derivedFailID(id, requestID), reason)
+	if err != nil {
+		return c.currentDraft(id), nil, fmt.Errorf("%w: %v", ErrWorkingDraftUncertain, err)
+	}
+	return failed, nil, fmt.Errorf("%w: %s", ErrWorkingDraftConflict, reason)
 }
 
 // convertReserved runs the factory half of an already reserved conversion and
 // associates the item. It is shared by Convert and Reconcile, so a conversion
 // that is retried after a crash takes exactly the path a live one does.
 func (c *workingDraftConverter) convertReserved(ctx context.Context, id string, frozen FactoryCreate, requestID string) (WorkingDraft, *FactoryItem, error) {
+	// Only a live reservation may create. A conversion whose factory attempt was
+	// already refused still has its reservation retained, but its draft is back
+	// in editing: creating from that retained request would make an item no
+	// association could ever reach, and the next conversion would make a second
+	// one. The state is read under the per-draft lock, so it cannot move while
+	// the create runs.
+	current, err := c.store.Get(id)
+	if err != nil {
+		return WorkingDraft{}, nil, err
+	}
+	if current.State != workingDraftConverting {
+		return current, nil, fmt.Errorf("%w: draft is %s", ErrWorkingDraftConflict, current.State)
+	}
 	if err := ctx.Err(); err != nil {
 		// Starting a factory call the caller has already abandoned would make
 		// the outcome unknowable, so the draft stays reserved instead.
-		return c.currentDraft(id), nil, fmt.Errorf("%w: %v", ErrWorkingDraftUncertain, err)
+		return current, nil, fmt.Errorf("%w: %v", ErrWorkingDraftUncertain, err)
 	}
 	item, err := c.factory.CreateFrozen(frozen, frozen)
 	if err != nil {
 		if workingDraftConfirmedFactoryError(err) {
 			// The factory definitely created nothing, so the draft can be
 			// edited again, carrying the reason, with a new version.
-			failed, failErr := c.store.FailConversion(id, derivedFailID(id, requestID), err.Error())
+			failed, failErr := c.store.FailConversion(id, derivedFailID(id, requestID), workingDraftFailureText(err))
 			if failErr != nil {
 				return c.currentDraft(id), nil, fmt.Errorf("%w: %v", ErrWorkingDraftUncertain, errors.Join(err, failErr))
 			}
@@ -242,6 +297,19 @@ func (c *workingDraftConverter) convertReserved(ctx context.Context, id string, 
 // request and lost the response.
 func workingDraftConfirmedFactoryError(err error) bool {
 	return errors.Is(err, errFactoryInput) || errors.Is(err, errFactoryConfig)
+}
+
+// workingDraftFailureText is the reason a browser is shown for a refused
+// conversion: the factory's own words, with a filesystem failure reduced to its
+// operation and cause. The draft's error text is persisted and rendered, and an
+// absolute path names the bridge's own directories, not anything the person
+// editing the draft can act on.
+func workingDraftFailureText(err error) string {
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) && pathErr.Op != "" {
+		return fmt.Sprintf("conversion failed: %s: %v", pathErr.Op, pathErr.Err)
+	}
+	return err.Error()
 }
 
 // currentDraft is the draft as the store holds it now, for a caller that must

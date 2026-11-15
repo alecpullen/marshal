@@ -647,34 +647,109 @@ func TestWorkingDraftConvertChangedSettingsRequiresReview(t *testing.T) {
 		// the intent is reserved.
 		f.factory.prepareHook = func() { f.settings.set(`"settings-2"`) }
 
-		reserved, item, err := f.converter.Convert(context.Background(), draft.ID, "convert-1", draft.Version, FactoryCreate{}, "")
+		failed, item, err := f.converter.Convert(context.Background(), draft.ID, "convert-1", draft.Version, FactoryCreate{}, "")
 		if !errors.Is(err, ErrWorkingDraftConflict) {
 			t.Fatalf("settings changed during the reserve: %v", err)
 		}
 		if item != nil {
 			t.Fatalf("a conflicted conversion produced an item: %+v", item)
 		}
-		if reserved.State != workingDraftConverting || reserved.Version != draft.Version+1 {
-			t.Fatalf("the reservation is not durable: %+v", reserved)
+		// Nothing reached the factory, so the reservation is released rather
+		// than left converting: the draft must be editable again, carrying the
+		// reason the review has to be repeated.
+		if failed.State != workingDraftEditing || failed.Version != draft.Version+2 {
+			t.Fatalf("the refused reservation was not released: %+v", failed)
+		}
+		if failed.Error == "" {
+			t.Fatal("a refused conversion must carry a reason")
 		}
 		if _, creates := f.factory.calls(); creates != 0 {
 			t.Fatal("a conflicted conversion reached the factory")
 		}
-
-		// The reserved conversion finishes with the values it was reviewed
-		// with, so nothing is lost by the refusal.
-		f.factory.prepareHook = nil
-		if err := f.converter.Reconcile(context.Background()); err != nil {
-			t.Fatalf("reconcile: %v", err)
+		if pending, err := f.store.convertingDrafts(); err != nil || len(pending) != 0 {
+			t.Fatalf("a refused reservation was left pending: %v %+v", err, pending)
 		}
-		done, err := f.store.Get(draft.ID)
-		if err != nil || done.State != workingDraftConverted || done.FactoryItemID != "item-1" {
-			t.Fatalf("reconciled draft: %v %+v", err, done)
+
+		// The next conversion is reviewed against the settings that now apply.
+		f.factory.prepareHook = nil
+		done, converted, err := f.converter.Convert(context.Background(), draft.ID, "convert-2", failed.Version, FactoryCreate{}, `"settings-2"`)
+		if err != nil {
+			t.Fatalf("reviewed conversion: %v", err)
+		}
+		if converted == nil || done.State != workingDraftConverted || done.FactoryItemID != converted.ID {
+			t.Fatalf("converted draft: %+v %+v", done, converted)
 		}
 		if n := f.factory.itemCount(); n != 1 {
 			t.Fatalf("factory journal holds %d items", n)
 		}
 	})
+}
+
+// TestWorkingDraftConvertResumesReservedConversion proves a reservation is
+// finished by the next conversion request rather than dead-ending until the
+// process restarts: the frozen request, not the caller, decides what is created.
+func TestWorkingDraftConvertResumesReservedConversion(t *testing.T) {
+	f := newConvertFixture(t)
+	draft := f.createDraft(convertTestContent())
+	// The intent is reserved and the factory was unreachable, so nothing is
+	// known about whether an item exists.
+	f.factory.failCreate(ErrFactoryUnavailable, false)
+	if _, _, err := f.converter.Convert(context.Background(), draft.ID, "convert-1", draft.Version, FactoryCreate{}, ""); !errors.Is(err, ErrWorkingDraftUncertain) {
+		t.Fatalf("unavailable factory: %v", err)
+	}
+
+	// The factory comes back. The next conversion request resumes the
+	// reservation: it creates the item the reviewed request names, under the
+	// factory request ID recorded when the intent was reserved.
+	f.factory.failCreate(nil, false)
+	done, item, err := f.converter.Convert(context.Background(), draft.ID, "convert-2", draft.Version, FactoryCreate{}, "")
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if item == nil || done.State != workingDraftConverted || done.FactoryItemID != item.ID {
+		t.Fatalf("resumed draft: %+v %+v", done, item)
+	}
+	if n := f.factory.itemCount(); n != 1 {
+		t.Fatalf("the resume created %d items", n)
+	}
+	if want := derivedFactoryRequestID(draft.ID, "convert-1"); item.Draft.RequestID != want {
+		t.Fatalf("the resume minted a new factory request: %q, want %q", item.Draft.RequestID, want)
+	}
+}
+
+// TestWorkingDraftConvertRefusedRetryCreatesNothing is the exactly-once guard
+// for a retried request ID whose factory attempt was already refused: the
+// reservation is retained, the draft is editing again, and replaying it must not
+// create an item the association can no longer reach.
+func TestWorkingDraftConvertRefusedRetryCreatesNothing(t *testing.T) {
+	f := newConvertFixture(t)
+	draft := f.createDraft(convertTestContent())
+	f.factory.failCreate(fmt.Errorf("%w: invalid check identity", errFactoryInput), false)
+
+	failed, _, err := f.converter.Convert(context.Background(), draft.ID, "convert-1", draft.Version, FactoryCreate{}, "")
+	if !errors.Is(err, errFactoryInput) {
+		t.Fatalf("confirmed refusal: %v", err)
+	}
+	if failed.State != workingDraftEditing {
+		t.Fatalf("draft after a confirmed refusal: %+v", failed)
+	}
+
+	// A client that read the returned draft and reused the refused request ID,
+	// so its expected version matches the draft as it now stands.
+	f.factory.failCreate(nil, false)
+	refused, item, err := f.converter.Convert(context.Background(), draft.ID, "convert-1", failed.Version, FactoryCreate{}, "")
+	if !errors.Is(err, ErrWorkingDraftConflict) {
+		t.Fatalf("a refused conversion was replayed: %v", err)
+	}
+	if item != nil {
+		t.Fatalf("the replayed refusal produced an item: %+v", item)
+	}
+	if refused.State != workingDraftEditing || refused.FactoryItemID != "" {
+		t.Fatalf("the replay changed the draft: %+v", refused)
+	}
+	if n := f.factory.itemCount(); n != 0 {
+		t.Fatalf("a replayed refusal created %d items", n)
+	}
 }
 
 // newRealFactoryForConvert builds the production factory API over a real fleet,
@@ -710,7 +785,7 @@ func newRealFactoryForConvert(t *testing.T) (*factoryAPI, *Fleet, string) {
 	return api, fleet, root
 }
 
-func TestWorkingDraftConvertFrozenEmptyFieldsDoNotRinherit(t *testing.T) {
+func TestWorkingDraftConvertFrozenEmptyFieldsDoNotReinherit(t *testing.T) {
 	api, fleet, root := newRealFactoryForConvert(t)
 	store, _ := openWorkingDraftStore(t)
 

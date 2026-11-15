@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { cleanup, render, screen } from '@testing-library/svelte'
 import FactoryItem from './FactoryItem.svelte'
 import * as api from '../lib/api'
-import type { FactoryItem as Item } from '../lib/factory'
+import type { FactoryApproval, FactoryItem as Item, FactoryRoute } from '../lib/factory'
 import type { FactoryState } from '../lib/factoryStore'
 import type { PreviewDeployment, PreviewReport } from '../lib/preview'
 vi.mock('../lib/api', async (actual) => ({ ...await actual<typeof import('../lib/api')>(), commandFactoryItem: vi.fn(), getPreviewEnvironments: vi.fn() }))
@@ -11,12 +11,15 @@ beforeEach(() => {
   getItem.mockReset()
   upsert.mockReset()
   onRefresh.mockReset()
+  onNavigate.mockReset()
   // The store's own refresh resolves unless a test says its read failed.
   onRefresh.mockImplementation(async () => {})
   vi.mocked(api.commandFactoryItem).mockReset()
   vi.mocked(api.getPreviewEnvironments).mockReset()
 })
 const base = { id: 'x', title: 'Task', repoId: 'repo', state: 'draft', stage: '', version: 1, draft: { plan: 'Build', spec: '', config: { targetBranch: 'main', repoId: 'repo', maxRounds: 5, implementerRouting: {}, reviewerRouting: {}, expectedChecks: [] } }, rounds: [], grants: [], prs: [], workers: [], history: [] } as unknown as Item
+/** One recorded approval revision, as the bridge reports one. */
+const approval = (revision: number, plan: string, spec = '') => ({ revision, plan, spec, planHash: `hash-${revision}`, config: base.draft.config, approvedAt: `2026-01-0${revision}T00:00:00Z` }) as FactoryApproval
 /** The shell store's projection, as App hands it to a view. */
 const factoryState = (over: Partial<FactoryState> = {}): FactoryState => ({ items: [], loading: false, refreshing: false, error: null, lastUpdated: null, ...over })
 /**
@@ -24,8 +27,15 @@ const factoryState = (over: Partial<FactoryState> = {}): FactoryState => ({ item
  * answers the first read, `upsert` publishes a command's result, `onRefresh`
  * is the store's own refresh — the one the stale-version path awaits.
  */
-const getItem = vi.fn<(id: string) => Promise<Item>>(), upsert = vi.fn<(item: Item) => void>(), onRefresh = vi.fn<() => Promise<void>>()
-const renderItem = (state: FactoryState = factoryState()) => render(FactoryItem, { itemId: 'x', factory: state, getItem, upsert, onRefresh, onNavigate: vi.fn() })
+const getItem = vi.fn<(id: string) => Promise<Item>>(), upsert = vi.fn<(item: Item) => void>(), onRefresh = vi.fn<() => Promise<void>>(), onNavigate = vi.fn<(hash: string) => void>()
+/**
+ * The item at a route. The route is the shell's parse, so a test opens a view
+ * exactly as a deep link does; nothing here writes the hash itself.
+ */
+const renderItem = (state: FactoryState = factoryState(), route: Partial<FactoryRoute> = {}) =>
+  render(FactoryItem, { itemId: 'x', route: { itemId: 'x', ...route }, factory: state, getItem, upsert, onRefresh, onNavigate })
+/** The CI-first review view: CI evidence, the report and previews live at the review route. */
+const renderReview = (state: FactoryState = factoryState()) => renderItem(state, { view: 'review' })
 it('requires explicit approval before a draft starts', async () => {
   getItem.mockResolvedValue({ ...base, draft: { ...base.draft, config: { ...base.draft.config, implementerRouting: { profile: 'careful', model: 'opus' }, reviewerRouting: { profile: 'strict' } } } } as Item)
   renderItem()
@@ -34,18 +44,18 @@ it('requires explicit approval before a draft starts', async () => {
   expect(screen.getByRole('button', { name: 'Approve & start' })).toBeTruthy()
   // The approval reads the resolved rows creation previews, so the draft's
   // routing objects never appear here as JSON.
-  const approval = screen.getByTestId('draft-approval')
+  const approvalBlock = screen.getByTestId('draft-approval')
   expect(screen.getByTestId('config-implementer').textContent).toBe('careful')
   expect(screen.getByTestId('config-reviewer').textContent).toBe('strict')
-  expect(approval.textContent).not.toContain('"profile"')
-  expect(approval.textContent).not.toContain('{')
+  expect(approvalBlock.textContent).not.toContain('"profile"')
+  expect(approvalBlock.textContent).not.toContain('{')
 })
 it('shows failed CI before compact passes', async () => {
   const item = { ...base, state: 'needs_input', rounds: [{ ci: { complete: true, checks: [
     { key: { name: 'fail' }, conclusion: 'failure', logTail: 'trace' }, { key: { name: 'pass' }, conclusion: 'success' },
   ] } }] } as Item
   getItem.mockResolvedValue(item)
-  renderItem()
+  renderReview()
   await screen.findByText(/fail: failure/)
   expect(screen.getByText('1 passing checks')).toBeTruthy()
 })
@@ -218,21 +228,24 @@ it('shows structured review findings, question and reason, and ordinary agent dr
     review: { summary: 'Needs repair', question: 'Which API?', reason: 'Inputs missing', findings: [{ severity: 'high', path: 'web/a.go', line: 42, title: 'Unsafe call', body: 'Handle the error' }] },
   }] } as Item
   getItem.mockResolvedValue(item)
-  renderItem()
+  const view = renderReview()
   await screen.findByText('high: Unsafe call')
   expect(screen.getByText('web/a.go:42')).toBeTruthy()
   expect(screen.getByText('Handle the error')).toBeTruthy()
   expect(screen.getByText('Reviewer question: Which API?')).toBeTruthy()
   expect(screen.getByText('Reviewer reason: Inputs missing')).toBeTruthy()
-  expect(screen.getByRole('link', { name: 'reviewer: agent/1' }).getAttribute('href')).toBe('#chat/agent%2F1')
+  // The worker's own conversation is still opened from the activity view.
+  view.unmount()
+  renderItem()
+  expect((await screen.findByRole('link', { name: 'reviewer: agent/1' })).getAttribute('href')).toBe('#chat/agent%2F1')
 })
 it('distinguishes empty from unavailable CI evidence', async () => {
   getItem.mockResolvedValue({ ...base, state: 'checking', rounds: [{ ci: { complete: false, checks: [] } }] } as unknown as Item)
-  const view = renderItem()
+  const view = renderReview()
   expect(await screen.findByText(/CI evidence unavailable or incomplete/)).toBeTruthy()
   view.unmount()
   getItem.mockResolvedValue({ ...base, state: 'checking', rounds: [{ ci: { complete: true, checks: [] } }] } as unknown as Item)
-  renderItem()
+  renderReview()
   expect(await screen.findByText('Observation complete; no checks reported.')).toBeTruthy()
 })
 it('previews material environment and permission settings before approval', async () => {
@@ -253,7 +266,7 @@ const narration = {
 it('renders the narration sections in order', async () => {
   const item = { ...base, state: 'checking', rounds: [{ implementation: { summary: 'Bare summary', narration } }] } as unknown as Item
   getItem.mockResolvedValue(item)
-  renderItem()
+  renderReview()
   await screen.findByText('Issue')
   expect(screen.getAllByRole('heading', { level: 3 }).map((heading) => heading.textContent)).toEqual([
     'Issue', 'Approach', 'Existing behaviour', 'Alternatives and trade-offs', 'Implementation choice', 'Verification', 'Limitations', 'Selected code',
@@ -270,7 +283,7 @@ it('renders each excerpt with its path and code', async () => {
   const item = { ...base, state: 'checking', rounds: [{ implementation: { summary: 'Bare summary', narration: { ...narration,
     excerpts: [{ path: 'web/bridge/factory_types.go', lang: 'go', code: 'type FactoryNarration struct{}' }, { path: 'web/ui/src/lib/factory.ts', code: 'interface FactoryExcerpt {}' }] } } }] } as unknown as Item
   getItem.mockResolvedValue(item)
-  renderItem()
+  renderReview()
   await screen.findByText('web/bridge/factory_types.go')
   expect(screen.getByText('type FactoryNarration struct{}')).toBeTruthy()
   expect(screen.getByText('web/ui/src/lib/factory.ts')).toBeTruthy()
@@ -283,7 +296,7 @@ it('renders the narration alongside the CI card', async () => {
     implementation: { summary: 'Bare summary', narration },
   }] } as unknown as Item
   getItem.mockResolvedValue(item)
-  renderItem()
+  renderReview()
   expect((await screen.findByText(/fail: failure/)).textContent).toContain('failure')
   expect(screen.getByText('trace')).toBeTruthy()
   expect(screen.getByText('1 passing checks').closest('details')?.hasAttribute('open')).toBe(false)
@@ -293,7 +306,7 @@ it('renders the narration alongside the CI card', async () => {
 it('falls back to the summary when there is no narration', async () => {
   const item = { ...base, state: 'checking', rounds: [{ implementation: { summary: 'Bare summary' } }] } as unknown as Item
   getItem.mockResolvedValue(item)
-  renderItem()
+  renderReview()
   expect(await screen.findByText('Bare summary')).toBeTruthy()
   expect(screen.queryByText('Issue')).toBeNull()
 })
@@ -310,7 +323,7 @@ it('badges preview rows against the last factory-recorded PR head', async () => 
     deployment({ id: 'd1', environment: 'production', sha: 'ABC1234', state: 'success', environmentUrl: 'https://preview.example.internal' }),
     deployment({ id: 'd2', environment: 'staging', sha: 'fff9999', state: 'pending' }),
   ] } as PreviewReport)
-  renderItem()
+  renderReview()
   expect(await screen.findByText('matches the last factory-recorded PR head')).toBeTruthy()
   expect(screen.getByText('differs from the last factory-recorded PR head')).toBeTruthy()
   for (const badge of screen.getAllByText(/factory-recorded PR head/)) expect(badge.parentElement?.textContent).toContain('abc1234')
@@ -321,7 +334,7 @@ it('after an external push labels the badge as the last factory-recorded head, n
   vi.mocked(api.getPreviewEnvironments).mockResolvedValueOnce({ ...previewReport, deployments: [
     deployment({ id: 'd1', environment: 'production', sha: 'abc1234', state: 'success' }),
   ] } as PreviewReport)
-  renderItem()
+  renderReview()
   expect(await screen.findByText('differs from the last factory-recorded PR head')).toBeTruthy()
   expect(screen.getByText('fedcba9')).toBeTruthy()
   expect(screen.queryByText('matches the PR head')).toBeNull()
@@ -333,7 +346,7 @@ it('shows preview rows unbadged when no PR is recorded', async () => {
   vi.mocked(api.getPreviewEnvironments).mockResolvedValueOnce({ ...previewReport, deployments: [
     deployment({ id: 'd1', environment: 'production', sha: 'abc1234', state: 'success' }),
   ] } as PreviewReport)
-  renderItem()
+  renderReview()
   expect(await screen.findByText('abc1234')).toBeTruthy()
   expect(screen.queryByText('matches the last factory-recorded PR head')).toBeNull()
   expect(screen.queryByText('differs from the last factory-recorded PR head')).toBeNull()
@@ -345,7 +358,7 @@ it('lists commit-status links as provider links', async () => {
   ] } }] } as unknown as Item
   getItem.mockResolvedValue(item)
   vi.mocked(api.getPreviewEnvironments).mockResolvedValueOnce({ ...previewReport } as PreviewReport)
-  renderItem()
+  renderReview()
   expect(await screen.findByText('Links reported by commit statuses:')).toBeTruthy()
   const link = screen.getByRole('link', { name: 'https://preview.example.internal' })
   expect(link.getAttribute('target')).toBe('_blank')
@@ -363,7 +376,7 @@ it('renders valid http(s) URLs as links and unsafe ones as text with no href', a
     ],
     environments: [{ name: 'staging', id: 'e1', htmlUrl: 'gopher://staging.example.internal', branchPolicy: '', protectionRuleCount: 0 }],
   } as unknown as PreviewReport)
-  renderItem()
+  renderReview()
   const link = await screen.findByRole('link', { name: 'https://preview.example.internal' })
   expect(link.getAttribute('target')).toBe('_blank')
   expect(link.getAttribute('rel')).toBe('noopener noreferrer')
@@ -383,7 +396,7 @@ it('matches the bridge D10 validator: C1 controls and opaque https: URLs are pla
       deployment({ id: 'd3', environment: 'good', sha: '', state: 'success', environmentUrl: 'https://example.test/x' }),
     ],
   } as PreviewReport)
-  renderItem()
+  renderReview()
   expect((await screen.findByRole('link', { name: 'https://example.test/x' })).getAttribute('rel')).toBe('noopener noreferrer')
   expect(screen.getByText('https://example.test/x\u0085').closest('a')).toBeNull()
   expect(screen.getByText('https:foo').closest('a')).toBeNull()
@@ -391,13 +404,13 @@ it('matches the bridge D10 validator: C1 controls and opaque https: URLs are pla
 it('shows the preview empty state', async () => {
   getItem.mockResolvedValue({ ...base, state: 'checking' } as Item)
   vi.mocked(api.getPreviewEnvironments).mockResolvedValueOnce({ ...previewReport } as PreviewReport)
-  renderItem()
+  renderReview()
   expect(await screen.findByText('No preview deployments or test environments are configured for this revision.')).toBeTruthy()
 })
 it('shows the preview error state', async () => {
   getItem.mockResolvedValue({ ...base, state: 'checking' } as Item)
   vi.mocked(api.getPreviewEnvironments).mockRejectedValueOnce(new Error('forge unreachable'))
-  renderItem()
+  renderReview()
   expect(await screen.findByText('Preview and test environments could not be read.')).toBeTruthy()
   expect(screen.getByText('forge unreachable')).toBeTruthy()
 })
@@ -406,7 +419,7 @@ it('refreshes the preview report on demand', async () => {
   getItem.mockResolvedValue({ ...base, state: 'checking' } as Item)
   const report = { ...previewReport, deployments: [deployment({ id: 'd1', environment: 'production', sha: 'abc1234', state: 'success' })] } as PreviewReport
   vi.mocked(api.getPreviewEnvironments).mockResolvedValueOnce(report).mockResolvedValueOnce(report)
-  renderItem()
+  renderReview()
   await screen.findByText('abc1234')
   expect(api.getPreviewEnvironments).toHaveBeenCalledTimes(1)
   await fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
@@ -419,7 +432,7 @@ it('loadsPreviewOnceAcrossStoreUpdates', async () => {
   vi.mocked(api.getPreviewEnvironments).mockResolvedValue({ ...previewReport, deployments: [
     deployment({ id: 'd1', environment: 'production', sha: 'abc1234', state: 'success' }),
   ] } as PreviewReport)
-  const view = renderItem(factoryState({ items: [first] }))
+  const view = renderReview(factoryState({ items: [first] }))
   expect(await screen.findByText('abc1234')).toBeTruthy()
   expect(api.getPreviewEnvironments).toHaveBeenCalledTimes(1)
   // A store update redraws the item in place, without remounting it...
@@ -438,7 +451,7 @@ it('keeps the newest preview response when an older in-flight request resolves l
   let releaseStale: () => void = () => {}
   const gate = new Promise<void>((resolve) => { releaseStale = resolve })
   vi.mocked(api.getPreviewEnvironments).mockImplementationOnce(() => gate.then(() => stale)).mockImplementationOnce(async () => fresh)
-  renderItem()
+  renderReview()
   await screen.findByText('Reading preview environments…')
   await fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
   await screen.findByText('fresh')
@@ -446,4 +459,87 @@ it('keeps the newest preview response when an older in-flight request resolves l
   await new Promise((resolve) => setTimeout(resolve, 0))
   expect(screen.queryByText('stale')).toBeNull()
   expect(screen.getByText('fresh')).toBeTruthy()
+})
+it('initialViewFollowsStateOnlyOnce', async () => {
+  const ready = { ...base, state: 'ready' } as Item
+  getItem.mockResolvedValue(ready)
+  const view = renderItem()
+  // Ready work opens on its review, because that is what a person does next.
+  expect(await screen.findByRole('heading', { name: 'CI evidence' })).toBeTruthy()
+  expect(screen.getByRole('tab', { name: 'Review' }).getAttribute('aria-selected')).toBe('true')
+  // A poll reports the next state; the tab the reader is on does not move with it.
+  await view.rerender({ factory: factoryState({ items: [{ ...ready, state: 'implementing', stage: 'second' } as Item] }) })
+  expect(await screen.findByText('second')).toBeTruthy()
+  expect(screen.getByRole('tab', { name: 'Review' }).getAttribute('aria-selected')).toBe('true')
+})
+it('explicitViewSurvivesStatePolling', async () => {
+  const item = { ...base, state: 'checking', approvals: [approval(1, 'First plan'), approval(2, 'Second plan')] } as Item
+  getItem.mockResolvedValue(item)
+  const view = renderItem(factoryState(), { view: 'documents' })
+  expect(await screen.findByTestId('documents-view')).toBeTruthy()
+  await view.rerender({ factory: factoryState({ items: [{ ...item, state: 'ready', stage: 'second' } as Item] }) })
+  expect(await screen.findByText('second')).toBeTruthy()
+  // The route named this view explicitly, so a state change cannot take it away.
+  expect(screen.getByTestId('documents-view')).toBeTruthy()
+  expect(screen.getByRole('tab', { name: 'Documents' }).getAttribute('aria-selected')).toBe('true')
+})
+it('approvalOnNonDraftFallsBackToActivity', async () => {
+  const item = { ...base, state: 'implementing', history: [{ sequence: 1, at: '2026-01-01T00:00:00Z', kind: 'factory', message: 'started', effectId: '' }] } as Item
+  getItem.mockResolvedValue(item)
+  renderItem(factoryState(), { view: 'approval' })
+  expect(await screen.findByTestId('activity-timeline')).toBeTruthy()
+  expect(screen.queryByTestId('draft-approval')).toBeNull()
+  // There is nothing to approve, so the tab is not offered at all.
+  expect(screen.queryByRole('tab', { name: 'Approval' })).toBeNull()
+  expect(screen.getByRole('tab', { name: 'Activity' }).getAttribute('aria-selected')).toBe('true')
+})
+it('tabsNavigateWithoutRemountingItem', async () => {
+  const { fireEvent } = await import('@testing-library/svelte')
+  const item = { ...base, state: 'implementing', prs: [{ number: 7, url: 'https://forge.example/pull/7', headRef: 'feat/x', baseRef: 'main', headSha: 'abc1234ff', baseSha: 'def5678aa', state: 'open', draft: false }] } as unknown as Item
+  getItem.mockResolvedValue(item)
+  const view = renderItem()
+  await screen.findByTestId('activity-timeline')
+  await fireEvent.click(screen.getByRole('tab', { name: 'Pull requests' }))
+  // A tab is a route, not local state: the shell is told where to go and keeps
+  // this same keyed item mounted for a query-only change.
+  expect(onNavigate).toHaveBeenCalledWith('#factory/x?view=prs')
+  await view.rerender({ route: { itemId: 'x', view: 'prs' } })
+  expect(await screen.findByTestId('pull-requests-view')).toBeTruthy()
+  expect(getItem).toHaveBeenCalledTimes(1)
+})
+it('documentsShowCurrentAndPriorApprovalRevisions', async () => {
+  const item = { ...base, state: 'checking', approvals: [approval(1, 'First plan', 'First spec'), approval(2, 'Second plan', 'Second spec')] } as Item
+  getItem.mockResolvedValue(item)
+  renderItem(factoryState(), { view: 'documents' })
+  // The latest revision is what governs, so it is the document shown.
+  expect(await screen.findByText('Second plan')).toBeTruthy()
+  expect(screen.getByText('Second spec')).toBeTruthy()
+  expect(screen.getByText('Approved revision 2')).toBeTruthy()
+  // The superseded revision stays readable, collapsed behind its own summary.
+  const earlier = screen.getByTestId('previous-revision')
+  expect(earlier.hasAttribute('open')).toBe(false)
+  expect(earlier.textContent).toContain('Revision 1')
+  expect(earlier.textContent).toContain('First plan')
+  expect(earlier.textContent).toContain('First spec')
+})
+it('pullRequestsShowRealRevisionAndState', async () => {
+  const item = { ...base, state: 'ready', prs: [
+    { number: 7, url: 'https://forge.example/pull/7', headRef: 'feat/x', baseRef: 'main', headSha: 'abc1234ff', baseSha: 'def5678aa', state: 'open', draft: false },
+    { number: 8, url: 'javascript:alert(1)', headRef: 'feat/y', baseRef: 'main', headSha: '9999999aa', baseSha: '8888888bb', state: 'open', draft: true },
+  ] } as unknown as Item
+  getItem.mockResolvedValue(item)
+  renderItem(factoryState(), { view: 'prs' })
+  const rows = await screen.findAllByTestId('pull-request')
+  expect(rows[0].textContent).toContain('PR #7')
+  expect(rows[0].textContent).toContain('open')
+  expect(rows[0].textContent).toContain('feat/x')
+  expect(rows[0].textContent).toContain('main')
+  // The recorded revision, not a live forge read.
+  expect(rows[0].textContent).toContain('head abc1234 · base def5678')
+  const link = screen.getByRole('link', { name: 'https://forge.example/pull/7' })
+  expect(link.getAttribute('target')).toBe('_blank')
+  expect(link.getAttribute('rel')).toBe('noreferrer noopener')
+  // A draft PR says so, and a URL that is not absolute http(s) stays text.
+  expect(rows[1].textContent).toContain('draft')
+  expect(rows[1].querySelector('a')).toBeNull()
 })

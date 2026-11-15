@@ -85,6 +85,10 @@ func NewServer(target any, args ...any) *Server {
 	for _, arg := range args {
 		if factory, ok := arg.(FactoryAPI); ok {
 			s.factoryRoutes(factory)
+			// Working drafts live beside the factory journal, in a store of
+			// their own. Only a factory API with a fleet state directory can
+			// host one; anything else keeps its routes as they were.
+			s.workingDraftSetup(factory)
 		}
 	}
 	s.http = s.mux

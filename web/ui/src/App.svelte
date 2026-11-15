@@ -21,6 +21,7 @@
   import Factory from './views/Factory.svelte'
   import FactoryNew from './views/FactoryNew.svelte'
   import FactoryItem from './views/FactoryItem.svelte'
+  import WorkingDrafts from './views/WorkingDrafts.svelte'
   import ReviewBot from './views/automations/ReviewBot.svelte'
   import CIFixer from './views/automations/CIFixer.svelte'
   import Sidebar from './lib/Sidebar.svelte'
@@ -312,7 +313,16 @@
       </div>
     {:else if factoryRoute}
       <div class="h-full overflow-y-auto">
-        {#if factoryRoute.create}
+        {#if factoryRoute.drafts}
+          {#key `${factoryRoute.draftId ?? ''}|${factoryRoute.create ? 'new' : 'list'}`}
+            <WorkingDrafts
+              projectRoot={new URLSearchParams(hash.split('?')[1] ?? '').get('project') ?? ''}
+              draftId={factoryRoute.draftId ?? null}
+              newDraft={factoryRoute.create === true}
+              onNavigate={navigate}
+            />
+          {/key}
+        {:else if factoryRoute.create}
           <FactoryNew projectRoot={new URLSearchParams(hash.split('?')[1] ?? '').get('project') ?? ''} onNavigate={navigate} />
         {:else if factoryRoute.itemId}
           {#key factoryRoute.itemId}<FactoryItem itemId={factoryRoute.itemId} onNavigate={navigate} />{/key}

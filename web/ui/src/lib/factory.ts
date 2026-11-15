@@ -50,7 +50,12 @@ export interface FactoryDecision { id: string; kind: string; question: string; r
 export interface FactoryEvent { sequence: number; at: string; kind: string; message: string; effectId: string }
 export interface FactoryItem { id: string; title: string; state: string; stage: string; repoId: string; projectRoot: string; hostId: string; branch: string; baseSha: string; version: number; draft: Omit<FactoryCreate, 'config'> & { config: FactoryConfig }; approvals: FactoryApproval[] | null; grants: FactoryGrant[] | null; rounds: FactoryRound[] | null; workers: FactoryWorker[] | null; prs: FactoryPR[] | null; effects: FactoryEffect[] | null; decision: FactoryDecision | null; history: FactoryEvent[] | null; createdAt: string; approvedAt: string; updatedAt: string }
 export interface FactoryCommand { requestId: string; kind: 'approve' | 'answer' | 'stop' | 'retry' | 'reconcile' | 'recover'; expectedVersion: number; decisionId?: string; answer?: string; reason?: string; additionalRounds?: number; replacement?: FactoryCreate; implementerRouting?: Record<string, unknown>; reviewerRouting?: Record<string, unknown>; confirmPreviousWorkerStopped?: boolean }
-export interface FactoryRoute { itemId?: string; create?: boolean }
+/**
+ * A factory hash. `create` means a new work item on `#factory/new`, and a new
+ * working draft on `#factory/drafts/new`; `drafts` marks the working-drafts
+ * routes, whose `draftId` is the bridge's draft id (never a project path).
+ */
+export interface FactoryRoute { itemId?: string; create?: boolean; drafts?: boolean; draftId?: string }
 
 interface PollSeam {
   document?: Pick<Document, 'hidden' | 'addEventListener' | 'removeEventListener'>

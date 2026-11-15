@@ -56,7 +56,8 @@ func allowedOnTheWireSide(path string) bool {
 		"marshal/internal/app/config",
 		"marshal/internal/llm/routing",
 		"marshal/internal/llm/schema",
-		"marshal/internal/interaction":
+		"marshal/internal/interaction",
+		"marshal/web/bridge/contract":
 		return true
 	}
 	// A first path element without a dot is a standard library package.

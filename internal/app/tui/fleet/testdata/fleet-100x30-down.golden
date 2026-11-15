@@ -1,0 +1,30 @@
+╭─ Agents ────────────────────────────────────────────── 7─╮╭─ [Activity]  Info ───────────────────╮
+│ Needs you                                                ││ status    awaiting-approval          │
+│ ⚠ fix-flaky-hooks      38%   2    2m marshal      act    ││ activity  waiting on an approval     │
+│ Running                                                  ││ waiting   approval                   │
+│ ● s3b-egress           41%   7    0s marshal      ask    ││ request   go test ./internal/app/tu… │
+│ Ready                                                    ││ context   38%                        │
+│ ✓ docs-deploy          22%   4    1h notes        act    ││ changed   2                          │
+│ Earlier                                                  ││ age       2m                         │
+│ · docs-sweep           12%   0    5s notes        ?      ││ gate      pass · 22:11               │
+│ ✗ ci-fixer              9%   0    3h infra        act    ││                                      │
+│ Sessions                                                 ││                                      │
+│ · marshal 3f2a91bc 2 viewers                         3m  ││                                      │
+│ · marshal 9c1d4e5f 1 viewer                          1m  ││                                      │
+│                                                          ││                                      │
+│                                                          ││                                      │
+│                                                          ││                                      │
+╰──────────────────────────────────────────────────────────╯│                                      │
+╭─ Needs you ─────────────────────────────────────────── 2─╮│                                      │
+│ fix-flaky-hooks approval                                 ││                                      │
+│ intake github: fix the flaky test                        ││                                      │
+╰──────────────────────────────────────────────────────────╯│                                      │
+╭─ Events ────────────────────────────────────────────── 3─╮│                                      │
+│ 14:58 connected to local                                 ││                                      │
+│ 14:59 docs-deploy is ready                               ││                                      │
+│ 15:00 fix-flaky-hooks needs you: approval                ││                                      │
+│                                                          ││                                      │
+│                                                          ││                                      │
+│                                                          ││                                      │
+╰──────────────────────────────────────────────────────────╯╰──────────────────────────────────────╯
+local ✗ dial tcp 127.0.0.1:7700: connect: connection refused  j/k move                  ?help q quit

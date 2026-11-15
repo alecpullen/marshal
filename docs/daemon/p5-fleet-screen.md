@@ -525,10 +525,12 @@ first, then the alternative it was weighed against.
     minute connected.
   - Each reconnect resumes with `Last-Event-ID`, and refetches what it read on
     connect, since the ring may have moved past it.
-  - The connection state is one of three:
+  - The connection state is one of five:
+    - connecting, before the first read;
     - connected;
     - reconnecting, while the retries run;
-    - down, once retries have failed for a minute. It keeps retrying every 30s.
+    - down, once retries have failed for a minute. It keeps retrying every 30s;
+    - rejected, when a 401 stops everything.
 - **A 401.**
   - A 401 on any request stops the stream and every retry.
   - The state says "token rejected for <profile>".
@@ -621,8 +623,8 @@ first, then the alternative it was weighed against.
     starts.
   - `q` and `ctrl-c` leave the fleet program for the shell.
 - **Connection and failures** follow fleet-cli §5.
-  - The footer shows the state as a dot: `●` connected, `◌` reconnecting, `✗`
-    down.
+  - The footer shows the state as a dot: `●` connected, `◌` connecting or
+    reconnecting, `✗` down or rejected.
   - While down, the panels keep the last state, dimmed. Actions are refused
     with a status-line message.
   - A failed action shows on the status line for 4s, and as a line in Events.
@@ -632,7 +634,9 @@ first, then the alternative it was weighed against.
     `·` otherwise. `glyph.Live` (`●`, sharing `Brand`'s shape, which the fleet
     screen never shows) and `glyph.Waiting` (`◌`) join the vocabulary.
   - **The layout's numbers:**
-    - The left column is 28 columns below 100, and 40% from 100 up.
+- The left column is 28 columns below 100. From 100 up the Agents table
+      takes the larger pane and the right panel keeps 40%: the table's fixed
+      columns alone fill a 40% pane, so the rule is the other way round.
     - Needs you shows 1 to 5 rows, as many as it has items.
     - Events shows 3 rows below 30 rows of height, and 6 from 30 up.
     - Agents takes the rest.
@@ -1195,7 +1199,206 @@ thing, and both are fixed here.
 
 ### Plan 3 — the fleet client and a read-only fleet screen
 
-Not yet run. Plan 3's last task fills this in.
+**What was built.** The seam grew a fleet interface beside its `Host` and
+`Session`: `acpclient.Fleet` with `State()` and `Changed()`, the `FleetState`
+it returns, the `FleetConn` the connection is in, and `acpclient.FleetRoutes`,
+a table of the bridge routes that serve each method. The TUI may now import
+`web/bridge/contract`, and `acpclient` may too, so the fleet's values cross
+the seam as the contract's own types rather than as copies.
+
+`internal/fleetclient/` is the client over one bridge. It opens
+`GET /api/events?stream=fleet`, and once the stream has answered it reads
+`/api/agents`, `/api/inbox`, `/api/projects`, `/api/budgets` and — locally —
+`/api/daemon`, each bounded by ten seconds. The deltas that arrive while
+those reads are in flight are held and applied after them, in order, so
+nothing that happened between the snapshot and the stream is lost. Every delta
+kind the bridge sends is applied: activity, telemetry, mode, hold, pending,
+gate, run, budget, project_removed and inbox, each by the rules the web UI
+follows. A stream that ends is reconnected, with the wait doubling from a
+second to thirty, the last event's id sent back so the bridge replays what
+was missed; a failure that lasts a minute puts the connection down and it
+keeps retrying at the maximum wait; a 401 stops everything, says the token was
+rejected and is never retried. Locally the daemon's own listing is reread
+every five seconds, because the daemon's sessions are not on the stream.
+
+`internal/app/tui/fleet/` is the screen: the model holds the fleet as the
+client last read it, the Events ring, the selection and the focus, and the
+keys that move them; `view.go` draws the layout, with the Agents table on the
+left above the needs-you queue and the Events ring, and the selected agent's
+Activity or Info on the right. Six golden frames pin it at 80×24, 100×30 and
+140×40, with the Info tab, with the connection down, and below the minimum
+size.
+
+`marshal fleet` runs the screen on the local daemon. `launch.Fleet` probes the
+daemon, refuses one that is not the local profile, reads the user's `[tui]`
+config without the project layer, builds the client, and runs the model
+through the program runner.
+
+**Where the plan was short, and how that was filled.**
+
+- **The `Routes:` doc line.** The plan's contract block wraps `State`'s routes
+  over two comment lines, and its own rule is that the doc line lists the
+  routes in order. A wrapped line cannot be that, so the test reads the whole
+  statement and joins it, and the declaration keeps the plan's own wording.
+- **The layout's width.** Decision 11 gives the left column 40% of the width
+  from 100 columns up. The plan's own column set does not fit in it: at 100
+  columns the table's fixed columns and their gaps need 37 cells of the 36 a
+  40% pane leaves, and at 140 they need 50 of 52 — so NAME and ACTIVITY would
+  each be one cell, and every name would read `…`. The Agents table therefore
+  takes the larger pane and the right panel keeps the 40%, which keeps every
+  column and the flex rule usable. The spec's F4 bullet is changed to say so.
+- **`tea.KeyShiftTab` and `tea.KeyCtrlC` do not exist** in the Bubble Tea
+  version this repository builds against. Shift-tab is `tea.KeyTab` with
+  `tea.ModShift`, the idiom the session screen already uses, and ctrl+c is
+  matched on the key's text.
+- **The goldens hold no escape sequences.** Under `NO_COLOR` the renderer
+  still emits bold and faint attributes, so the goldens are written and
+  compared with the ANSI stripped, and `TestColourAddsNoText` strips the
+  coloured render the same way.
+- **The model's theme is read through an accessor.** `launch.Fleet`'s test has
+  to see which theme the model resolved, and the model's fields are
+  unexported, so `Model.Theme()` was added for it.
+- **A 401 has to be recognisable.** The client now carries the status on its
+  own error type, so a rejected token is told from a transient failure
+  wherever it appears — the stream, a snapshot read or the daemon reread.
+- **The overflow's refetch keeps what it can.** A failed budgets read leaves
+  the budgets nil; the other reads keep their previous value, and the epoch
+  still moves.
+- **The allowlists grew by one path each.** `internal/app/tui/` and
+  `acpclient` may now import `marshal/web/bridge/contract`, and nothing else
+  was added to either.
+
+**The manual run.** The screen was run against a real local daemon: a
+`webbridge --profile local` on a scratch unix socket under `/private/tmp`, its
+own scratch state and config directories, the local Ollama's
+`llama3.1:8b-instruct-q4_K_M` as the provider, and a scratch git project
+added over the socket's `POST /api/projects`. An agent was spawned over the
+socket's `POST /api/agents` and ran there.
+
+- **The screen draws at every size.** `marshal fleet` in an 80×24 terminal
+  showed the Agents table with ST, NAME, CTX, Δ and AGE, the needs-you panel
+  below it and the Events panel under that, the Activity panel on the right,
+  and the footer reading `local ●  j/k move` with `?help q quit` at the far
+  right. At 100 columns the table gained PROJECT and MODE; at 140 it gained
+  ACTIVITY, COST and CHECK, with the gate and the spend shown for the
+  selected agent.
+- **The daemon's own sessions appear under Sessions.** A plain `marshal`
+  session running in another terminal put one child with one session in the
+  daemon's listing, and the fleet screen showed it a few seconds later — the
+  daemon's listing is reread every five seconds, because those sessions are
+  not on the stream — as `· project sess_179 1 viewer`, with its age.
+- **The connection's state is shown, and it recovers.** Stopping the daemon
+  turned the footer's dot from `●` to `◌` and put the dial error beside it,
+  while the panels kept the last state they had. The Events ring recorded
+  `reconnecting to local` and then `local is down: …`. Starting the daemon
+  again brought the client back on its own: the dot returned to `●` and the
+  ring recorded `connected to local`, with no key pressed.
+- **What was not driven.** The needs-you queue was never filled by a real
+  approval, for the reason plan 2's run found: the only local model is an 8B
+  one, and it did not raise a request. The Diff tab, the actions and `⏎` are
+  plans 4b and 5, and were not built.
+
+**The branch review.** A reviewer read the whole branch against the base and
+found two defects and three gaps. All five are fixed, and a second reviewer
+verified each fix by reverting the four source files and watching the new
+tests fail against them.
+
+- **The model's quit never released its wait.** The model held a `done`
+  channel that nothing closed: the quit keys returned `tea.Quit`, and Bubble
+  Tea v2 handles `tea.QuitMsg` inside its own event loop without ever
+  delivering it to `Update`, so the model never learned the program was
+  ending. The armed wait goroutine stayed blocked on the client's signal
+  forever — one leaked goroutine per program run, which matters for plan 4b's
+  fleet program run repeatedly in one process. The model now holds a gate
+  whose close is guarded, and its quit command releases the gate before it
+  quits.
+- **The model never seeded itself from the client,** so before the first
+  read the panels said "Connecting to …" with no name and the footer's server
+  cell was blank. It now takes the client's state when it is built, which
+  carries the server's name from the start.
+- **A 401 on a mid-stream refetch was swallowed.** The plan says a 401 on any
+  read stops everything, but the refetches a pending, budget, inbox or
+  overflow delta triggers ignored their errors, so the client stayed
+  "connected" with stale rows. They now reject, and the overflow's reread
+  stops at the first rejection rather than finishing the batch.
+- **An inbox delta that changed only a submission's title fired no change,** so
+  the screen kept the old title. The queue's submissions are now compared by
+  their identity, title and origin.
+- **`State` shared pointed-to values with the client,** though the seam says
+  every slice and map is the caller's own copy. The agent's pending request,
+  workspace, gate override, push time and each queue item's submission are
+  now copied too, the pending request's payload into a fresh byte slice.
+
+**The second branch review.** Four more reviewers read the branch, one over
+the client, one over the screen, one over the seam and the launch path, and
+one over this record and the plan. They found two defects in the client, two
+in the screen, and two stale sentences in the documents. All are fixed, and
+each fix has a test that fails without it.
+
+- **A 401 in the connect's own window was overwritten.** The deltas that
+  arrive while the connect reads the fleet are applied after the read, and
+  one of them can ask for a refetch that meets the 401. The rejection stopped
+  the client, but the connected state that followed presented the connection
+  as live: the screen showed a stream that would never update again, and
+  never said the token had been rejected. The connected state now leaves a
+  rejection standing, with its message.
+- **`State` still shared two values with the client:** a project's orphan
+  worktrees, and the daemon's refresh record. They are copied now, and the
+  test that says every slice and map is the caller's own copy mutates both.
+- **The client never said it was closed.** A reader waiting on its change
+  signal waited forever — one goroutine per program run, which matters for
+  plan 4b's fleet program run repeatedly in one process. The client closes its
+  signal when it closes, and the screen's wait ends on a closed signal rather
+  than reading it as a change.
+- **The Needs you panel could hide the row under the cursor.** It showed the
+  queue's oldest rows, so a queue longer than the panel kept the cursor's row
+  out of sight, and the right panel followed a selection nobody could see. The
+  panel now scrolls around the cursor.
+- **Two documents had gone stale.** This spec's connection-state list still
+  said three states, and `AGENTS.md`'s `internal/acpclient` row did not
+  mention the fleet seam. Both are corrected, and the plan's layout decision
+  now carries a pointer to the corrected rule.
+- **Smaller things, fixed with tests:** the help screen claimed `esc` clears
+  the filter (it does not, unless the filter is open) and offered `j`/`k`
+  without saying where they move a cursor; `tab` did nothing while the filter
+  was open, so the focus could not move until it was closed; a row with no
+  time read as a count of days since 1970; an identifier cut to eight bytes
+  could split a character; the model kept a `prev` field it never read; and
+  the stream parser dropped a field line with no colon, which the event
+  stream format reads as a field with an empty value.
+- **Two gaps in the launch path's own tests are now closed:** the production
+  path — the client built over the socket, run and closed — had no test, and
+  neither did the branch where the user's config cannot be read.
+- **The screen's own untested keys are now tested:** `1` and `3` pick the
+  right panel's tab, `z` and `?` toggle their overlays, and the view asks for
+  the alternate screen and no mouse.
+
+One finding was not a defect: the review noted that the execution claims in
+this record are not code-checkable from the tree. That is what a record is —
+the run's own account of what it saw — and the record says so.
+
+**Verification.**
+
+| Command | Result |
+| --- | --- |
+| `gofmt -l internal cmd test web` | No output. |
+| `go vet ./...` | Clean. |
+| `TMPDIR=/private/tmp/p5-3-suite CGO_ENABLED=1 go test -p=1 ./... -count=1 -timeout 30m -skip '^Test(NoticeCallBudget\|ControlCallBudget\|AnswerCallBudget\|ResponseBarrierBudget\|SettingsCallBudget\|NoteCallBudget\|BrowserCallBudget\|EndCallBudget\|StackBusyFlipBudget\|StackPatchApplyBudget\|StackRoundTripBudget\|AKeyPressOverThePipeBudget)$'` | Passed: 125 packages ok, no failure, exit 0. The twelve skipped tests are the wall-clock budget family CI skips; the base's two known failures are among them, so no package failed here. |
+| `TMPDIR=/private/tmp/p5-3-suite go test -race ./internal/fleetclient/ ./internal/app/tui/fleet/ -count=1` | `ok marshal/internal/fleetclient 3.009s`, `ok marshal/internal/app/tui/fleet 1.532s`, no data race. |
+| `CGO_ENABLED=1 go build -o marshal ./cmd/marshal` | Built (git-ignored via `.gitignore`'s `/marshal`). |
+| `./marshal fleet --embedded` | Refused, as it must be: `marshal fleet: --embedded cannot be combined with fleet: the fleet screen needs the daemon`, exit 1. |
+| `TMPDIR=/private/tmp/p5-3-suite go test ./test/usability/... -run TestScripted -timeout 5m` | Passed (`marshal/test/usability` ok, 45.1s). |
+
+**The second review's verification.** The same tree, after the fixes above.
+
+| Command | Result |
+| --- | --- |
+| `gofmt -l internal cmd test web` | No output. |
+| `go vet ./...` | Clean. |
+| `TMPDIR=/private/tmp/p5-3-suite CGO_ENABLED=1 go test -p=1 ./... -count=1 -timeout 30m -skip '^Test(NoticeCallBudget\|ControlCallBudget\|AnswerCallBudget\|ResponseBarrierBudget\|SettingsCallBudget\|NoteCallBudget\|BrowserCallBudget\|EndCallBudget\|StackBusyFlipBudget\|StackPatchApplyBudget\|StackRoundTripBudget\|AKeyPressOverThePipeBudget)$'` | Passed: every package ok, no failure, exit 0. The twelve skipped tests are the wall-clock budget family CI skips. |
+| `TMPDIR=/private/tmp/p5-3-suite CGO_ENABLED=1 go test -race ./internal/fleetclient/ ./internal/app/tui/fleet/ ./internal/acpclient/ ./internal/launch/ -count=1` | `ok marshal/internal/fleetclient 3.407s`, `ok marshal/internal/app/tui/fleet 1.745s`, `ok marshal/internal/acpclient 1.522s`, `ok marshal/internal/launch 13.940s`, no data race. |
+| `CGO_ENABLED=1 go build -o marshal ./cmd/marshal` | Built (git-ignored via `.gitignore`'s `/marshal`). |
+| `./marshal fleet --embedded` | Refused, as it must be: `marshal: marshal fleet: --embedded cannot be combined with fleet: the fleet screen needs the daemon`, exit 1. |
 
 ### Plan 4a — fleet requests reach the bridge, and leave it
 

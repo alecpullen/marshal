@@ -19,6 +19,7 @@ import (
 
 var appRunner = launch.Run
 var attachRunner = launch.Attach
+var fleetRunner = launch.Fleet
 var acpRunner = acp.Run
 var acpListener = acp.ListenAndServe
 var acpViewersRunner = acp.RunWithViewers
@@ -125,6 +126,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	if len(args) > 0 && args[0] == "attach" {
 		return runAttach(ctx, args[1:], stdout, *embeddedFlag)
 	}
+	if len(args) > 0 && args[0] == "fleet" {
+		return runFleet(ctx, args[1:], stdout, *embeddedFlag)
+	}
 	if len(args) > 0 {
 		return fmt.Errorf("unknown argument %q", args[0])
 	}
@@ -171,6 +175,29 @@ func runAttach(ctx context.Context, args []string, stdout io.Writer, embedded bo
 		return fmt.Errorf("marshal attach: find home directory: %w", err)
 	}
 	return attachRunner(ctx, stdout, config.DaemonSocketPath(home), sessionID)
+}
+
+// runFleet dispatches `marshal fleet`: it runs the fleet screen on the local
+// daemon (P5 F4), which is the only daemon that serves one.
+func runFleet(ctx context.Context, args []string, stdout io.Writer, embedded bool) error {
+	// --embedded is refused wherever it appears in the invocation, and says
+	// why: the fleet screen reads a daemon, so there is nothing to embed.
+	if embedded {
+		return fmt.Errorf("marshal fleet: --embedded cannot be combined with fleet: the fleet screen needs the daemon")
+	}
+	for _, arg := range args {
+		if arg == "--embedded" || strings.HasPrefix(arg, "--embedded=") {
+			return fmt.Errorf("marshal fleet: --embedded cannot be combined with fleet: the fleet screen needs the daemon")
+		}
+	}
+	if len(args) > 0 {
+		return fmt.Errorf("marshal fleet: unexpected argument %q", args[0])
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("marshal fleet: find home directory: %w", err)
+	}
+	return fleetRunner(ctx, stdout, config.DaemonSocketPath(home))
 }
 
 // acpListenSpec extracts the value of --listen (or --listen=VALUE) from

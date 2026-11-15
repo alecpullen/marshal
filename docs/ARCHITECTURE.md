@@ -78,10 +78,10 @@ plans retain the legacy agent strategy.
 
 | Layer | Packages | Responsibility |
 |-------|----------|----------------|
-| Entrypoint | `cmd/marshal/`, `internal/launch/` | Thin main that delegates to `internal/launch`, embedded mode's composition root: the run loop, the agent host on a pipe, and the TUI over its client. `marshal daemon` installs and drives the user's local daemon through `internal/daemon`. |
+| Entrypoint | `cmd/marshal/`, `internal/launch/` | Thin main that delegates to `internal/launch`, embedded mode's composition root: the run loop, the agent host on a pipe, and the TUI over its client. `marshal daemon` installs and drives the user's local daemon through `internal/daemon`. `marshal fleet` runs the fleet screen on that local daemon. |
 | App shell | `internal/app/`, `internal/app/session/` | Dependency wiring, config, logging, shared session state: `app.Embedded` owns the runtimes and the host registry, and `(*Runtime).ServiceDeps` builds what the client seam's service needs. It imports no TUI. |
 | TUI | `internal/app/tui/` | Bubble Tea model, panels, settings, chrome, themes, help footer. |
-| Client seam | `internal/acpwire/`, `internal/acpclient/`, `internal/acp/service/`, `internal/acpclient/rpc/` | The TUI's only path to the agent side: the wire types and error codes, the `Host` and `Session` interfaces, their implementation in `internal/acp/service/`, and `rpc`, the JSON-RPC client the TUI runs on; `internal/acp/acptest` is the test agent. `TestTUIStaysOnTheClientSeam` enforces it with no allowlist. |
+| Client seam | `internal/acpwire/`, `internal/acpclient/`, `internal/acp/service/`, `internal/acpclient/rpc/` | The TUI's only path to the agent side: the wire types and error codes, the `Host` and `Session` interfaces, their implementation in `internal/acp/service/`, and `rpc`, the JSON-RPC client the TUI runs on; `internal/acp/acptest` is the test agent. `TestTUIStaysOnTheClientSeam` enforces it with no allowlist. `acpclient.Fleet` and `internal/fleetclient` are the fleet screen's read of a bridge: one consistent state, kept live from the fleet stream. |
 | Agent | `internal/agent/`, `internal/agent/swarm/` | Single-agent loop and multi-agent swarm orchestration. |
 | Pipeline | `internal/pipeline/` | Plan execution with implementer/reviewer subagents. |
 | LLM | `internal/llm/`, `internal/llm/routing/` | Provider abstraction, model presets, role-based routing. Assistant messages carry provider-bound reasoning (`schema.ChatMessage.Reasoning`) that each adapter replays in its own wire format. |

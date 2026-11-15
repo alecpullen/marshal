@@ -14,6 +14,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/acp/service"
+	"marshal/internal/acpclient"
 	"marshal/internal/app"
 	"marshal/internal/app/clipboard"
 	"marshal/internal/app/tui"
@@ -49,6 +50,9 @@ type options struct {
 	workingDir string
 	// agentVersion replaces acp.AgentVersion as this build's version.
 	agentVersion string
+	// fleetClient replaces the client the fleet screen builds for the socket;
+	// tests inject it.
+	fleetClient acpclient.Fleet
 }
 
 type Option func(*options)

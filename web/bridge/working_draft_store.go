@@ -35,6 +35,9 @@ const (
 	workingDraftOpDelete       = "delete"
 	workingDraftOpConvertBegin = "convert-begin"
 	workingDraftOpConvertDone  = "convert-complete"
+	// workingDraftOpConvertFail is a reserved conversion the factory definitely
+	// refused: the draft returns to editing carrying the reason.
+	workingDraftOpConvertFail = "convert-fail"
 )
 
 // errWorkingDraftCorrupt is a journal that cannot be trusted: a bad checksum,
@@ -58,8 +61,16 @@ type workingDraftRequestRecord struct {
 // workingDraftConversionRecord is a conversion's frozen input. The exact
 // FactoryCreate is retained only here; WorkingDraft never exposes it.
 type workingDraftConversionRecord struct {
+	// RequestID is the conversion request that reserved the record, so a
+	// reconciliation knows the journal identity of the association it makes.
+	// It is optional: a journal written before the field existed replays with
+	// an empty one, which still derives a stable identity from the draft.
+	RequestID       string
 	Request         json.RawMessage
 	SettingsVersion string
+	// Sequence is the journal sequence of the reservation, so reconciliation
+	// can finish the oldest conversion first.
+	Sequence uint64
 }
 
 // workingDraftPayload is one journal record's content. Records are versioned by
@@ -73,6 +84,10 @@ type workingDraftPayload struct {
 	Draft           WorkingDraft    `json:"draft"`
 	FactoryRequest  json.RawMessage `json:"factoryRequest,omitempty"`
 	SettingsVersion string          `json:"settingsVersion,omitempty"`
+	// ConversionRequestID is the conversion request a reservation belongs to.
+	// It is optional so records written before it existed still replay; the
+	// field is not a schema change.
+	ConversionRequestID string `json:"conversionRequestId,omitempty"`
 }
 
 type workingDraftRecord struct {
@@ -296,6 +311,10 @@ func (s *WorkingDraftStore) apply(p workingDraftPayload) error {
 		if !next(workingDraftConverted) || old.State != workingDraftConverting || d.FactoryItemID == "" {
 			return errWorkingDraftCorrupt
 		}
+	case workingDraftOpConvertFail:
+		if !next(workingDraftEditing) || old.State != workingDraftConverting || strings.TrimSpace(d.Error) == "" {
+			return errWorkingDraftCorrupt
+		}
 	default:
 		return errWorkingDraftCorrupt
 	}
@@ -304,7 +323,7 @@ func (s *WorkingDraftStore) apply(p workingDraftPayload) error {
 	if p.Operation == workingDraftOpConvertBegin {
 		// The conversion record is retained indefinitely, including after the
 		// draft is associated with an item or deleted.
-		s.conversions[d.ID] = workingDraftConversionRecord{Request: p.FactoryRequest, SettingsVersion: p.SettingsVersion}
+		s.conversions[d.ID] = workingDraftConversionRecord{RequestID: p.ConversionRequestID, Request: p.FactoryRequest, SettingsVersion: p.SettingsVersion, Sequence: p.Sequence}
 	}
 	return nil
 }
@@ -555,7 +574,7 @@ func (s *WorkingDraftStore) BeginConversion(id, requestID string, expectedVersio
 	d.State = workingDraftConverting
 	d.Error = ""
 	d.UpdatedAt = s.now().UTC()
-	return s.append(workingDraftPayload{Operation: workingDraftOpConvertBegin, RequestID: requestID, Digest: digest, Draft: d, FactoryRequest: frozen, SettingsVersion: settingsVersion})
+	return s.append(workingDraftPayload{Operation: workingDraftOpConvertBegin, RequestID: requestID, Digest: digest, Draft: d, FactoryRequest: frozen, SettingsVersion: settingsVersion, ConversionRequestID: requestID})
 }
 
 // CompleteConversion durably associates the factory item a reserved conversion
@@ -589,6 +608,94 @@ func (s *WorkingDraftStore) CompleteConversion(id, requestID, itemID string) (Wo
 	d.FactoryItemID = itemID
 	d.UpdatedAt = s.now().UTC()
 	return s.append(workingDraftPayload{Operation: workingDraftOpConvertDone, RequestID: requestID, Digest: digest, Draft: d})
+}
+
+// FailConversion returns a reserved conversion to editing with the reason the
+// factory definitely refused it. It is only reachable from converting: a
+// draft that is not mid-conversion has nothing to fail, and a draft this call
+// already failed replays its original result rather than failing twice.
+func (s *WorkingDraftStore) FailConversion(id, requestID, message string) (WorkingDraft, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e := s.writable(); e != nil {
+		return WorkingDraft{}, e
+	}
+	if strings.TrimSpace(requestID) == "" {
+		return WorkingDraft{}, fmt.Errorf("requestId required")
+	}
+	if strings.TrimSpace(message) == "" {
+		// The record must carry a reason: an empty one would be
+		// indistinguishable from a draft that never left editing.
+		message = "conversion failed"
+	}
+	digest := workingDraftDigest(workingDraftOpConvertFail, id, requestID, []byte(message))
+	if d, ok, e := s.replayRequest(requestID, id, digest); ok {
+		return d, e
+	}
+	old, ok := s.drafts[id]
+	if !ok {
+		return WorkingDraft{}, ErrWorkingDraftNotFound
+	}
+	if old.State != workingDraftConverting {
+		return WorkingDraft{}, fmt.Errorf("%w: draft is %s", ErrWorkingDraftConflict, old.State)
+	}
+	d := old
+	d.Version = old.Version + 1
+	d.State = workingDraftEditing
+	d.Error = message
+	d.UpdatedAt = s.now().UTC()
+	return s.append(workingDraftPayload{Operation: workingDraftOpConvertFail, RequestID: requestID, Digest: digest, Draft: d})
+}
+
+// workingDraftConvertingDraft is one draft a crash left mid-conversion,
+// together with the frozen request and settings version its reservation
+// recorded. The frozen bytes stay package-private: WorkingDraft never exposes
+// them.
+type workingDraftConvertingDraft struct {
+	ID              string
+	RequestID       string
+	Request         json.RawMessage
+	SettingsVersion string
+	Sequence        uint64
+}
+
+// convertingDrafts returns every draft whose conversion is reserved but not
+// associated, newest reservation first, so startup reconciliation can finish
+// them in the order they were started.
+func (s *WorkingDraftStore) convertingDrafts() ([]workingDraftConvertingDraft, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e := s.readable(); e != nil {
+		return nil, e
+	}
+	var out []workingDraftConvertingDraft
+	for id, d := range s.drafts {
+		if d.State != workingDraftConverting {
+			continue
+		}
+		r, ok := s.conversions[id]
+		if !ok || len(r.Request) == 0 {
+			// A converting draft always has a reservation; without one there is
+			// nothing to replay, so it is left for a later reconciliation
+			// rather than guessed at.
+			continue
+		}
+		out = append(out, workingDraftConvertingDraft{ID: id, RequestID: r.RequestID, Request: r.Request, SettingsVersion: r.SettingsVersion, Sequence: r.Sequence})
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].Sequence > out[b].Sequence })
+	return out, nil
+}
+
+// conversionRecord returns the conversion the store froze for a draft, which is
+// what its reservation recorded or replayed.
+func (s *WorkingDraftStore) conversionRecord(id string) (workingDraftConversionRecord, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.readable() != nil {
+		return workingDraftConversionRecord{}, false
+	}
+	r, ok := s.conversions[id]
+	return r, ok
 }
 
 // append durably writes one record and only then makes it observable. A

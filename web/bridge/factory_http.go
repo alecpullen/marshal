@@ -74,6 +74,58 @@ func (a *factoryAPI) Create(req FactoryCreate) (FactoryItem, error) {
 	}
 	return a.store.CreateResolved(req, resolved, time.Now().UTC())
 }
+
+// PrepareFrozen resolves, normalizes and preflights one handoff without
+// writing anything, so a conversion can freeze the exact configuration and the
+// project-settings version it was reviewed against before it reserves an
+// intent. It is the read-only half of Create: Create's own behaviour is
+// unchanged, and nothing here touches the factory journal.
+func (a *factoryAPI) PrepareFrozen(req FactoryCreate) (FactoryCreate, string, error) {
+	resolved, err := a.factoryResolveDefaults(req)
+	if err != nil {
+		return FactoryCreate{}, "", err
+	}
+	if err = factoryNormalize(&resolved); err != nil {
+		return FactoryCreate{}, "", fmt.Errorf("%w: %v", errFactoryInput, err)
+	}
+	if err = a.preflight(context.Background(), resolved.Config, false); err != nil {
+		return FactoryCreate{}, "", err
+	}
+	if a.fleet == nil || a.fleet.ws == nil {
+		return FactoryCreate{}, "", fmt.Errorf("%w: fleet unavailable", ErrFactoryUnavailable)
+	}
+	settingsVersion, err := a.fleet.ws.ProjectSettingsETag(resolved.Config.ProjectRoot)
+	if err != nil {
+		return FactoryCreate{}, "", fmt.Errorf("%w: project settings version: %v", ErrFactoryUnavailable, err)
+	}
+	return resolved, settingsVersion, nil
+}
+
+// CreateFrozen creates the handoff a conversion froze. It is callable only
+// after that conversion has durably reserved its intent, and it never reads
+// the project's mutable defaults: the configuration it receives is exactly the
+// one that was reviewed, so an empty field cannot inherit a value that changed
+// while the intent was in flight. That is why it exists next to Create, which
+// resolves defaults on every attempt.
+//
+// The journal is consulted first, exactly as Create does, so a crash after the
+// factory accepted the request replays the item it produced instead of
+// creating a second one.
+func (a *factoryAPI) CreateFrozen(req, resolved FactoryCreate) (FactoryItem, error) {
+	if a.store == nil {
+		return FactoryItem{}, ErrFactoryUnavailable
+	}
+	if a.priorRequest(req.RequestID) {
+		return a.store.Create(req, time.Now().UTC())
+	}
+	if err := factoryNormalize(&resolved); err != nil {
+		return FactoryItem{}, fmt.Errorf("%w: %v", errFactoryInput, err)
+	}
+	if err := a.preflight(context.Background(), resolved.Config, false); err != nil {
+		return FactoryItem{}, err
+	}
+	return a.store.CreateResolved(req, resolved, time.Now().UTC())
+}
 func (a *factoryAPI) Command(ctx context.Context, id string, cmd FactoryCommand) (FactoryItem, error) {
 	if a.store == nil || a.controller == nil {
 		return FactoryItem{}, ErrFactoryUnavailable

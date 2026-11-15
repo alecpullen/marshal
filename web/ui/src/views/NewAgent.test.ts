@@ -289,4 +289,69 @@ describe('NewAgent', () => {
       expect(sent().routing).toBeUndefined()
     })
   })
+
+  it('routeProjectOverridesRememberedProject', async () => {
+    localStorage.setItem('marshal.ui.newagent', JSON.stringify({ project: '/work/alpha', mode: 'ask', isolated: true, model: { kind: 'preset', name: 'big' } }))
+    render(NewAgent, { onDone: vi.fn(), projectRoot: '/work/plain' })
+    // The route names where to work; how to work stays as remembered.
+    expect(await screen.findByText('big preset')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Project: plain/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Mode: Ask/ })).toBeTruthy()
+    // Plain cannot isolate, so the remembered worktree choice goes with the project.
+    expect(screen.getByRole('button', { name: /Isolation: off/ })).toBeTruthy()
+    await fireEvent.click(screen.getByText('Create agent'))
+    await waitFor(() =>
+      expect(api.spawnAgent).toHaveBeenCalledWith({
+        project: '/work/plain',
+        prompt: undefined,
+        mode: 'ask',
+        auto: false,
+        isolated: undefined,
+        branch: undefined,
+        baseRef: undefined,
+        routing: { overrides: { implementer: 'big', reviewer: 'big' } },
+      }),
+    )
+  })
+
+  it('unavailableRouteProjectCannotStart', async () => {
+    render(NewAgent, { onDone: vi.fn(), projectRoot: '/work/gone' })
+    expect(await screen.findByText(/unavailable, so no agent can start/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Project: gone/ })).toBeTruthy()
+    const create = screen.getByRole('button', { name: /Create agent/ }) as HTMLButtonElement
+    expect(create.disabled).toBe(true)
+    // The keyboard shortcut reaches create() directly, which must refuse too.
+    await fireEvent.keyDown(screen.getByLabelText('Prompt'), { key: 'Enter', metaKey: true })
+    expect((await screen.findByRole('alert')).textContent).toMatch(/unavailable/)
+    expect(api.spawnAgent).not.toHaveBeenCalled()
+  })
+
+  it('unknownRouteProjectShowsNoticeAndRequiresSelection', async () => {
+    render(NewAgent, { onDone: vi.fn(), projectRoot: '/work/nope' })
+    expect(await screen.findByText(/does not list, so nothing is selected/)).toBeTruthy()
+    // An unknown root does not quietly become the first listed project.
+    expect(screen.getByRole('button', { name: /Project: none/ })).toBeTruthy()
+    expect((screen.getByRole('button', { name: /Create agent/ }) as HTMLButtonElement).disabled).toBe(true)
+    await fireEvent.keyDown(screen.getByLabelText('Prompt'), { key: 'Enter', metaKey: true })
+    expect((await screen.findByRole('alert')).textContent).toContain('Pick a project first.')
+    expect(api.spawnAgent).not.toHaveBeenCalled()
+
+    // An explicit choice clears the notice and unblocks creation.
+    await fireEvent.click(screen.getByRole('button', { name: /Project: none/ }))
+    await fireEvent.click(screen.getByText('/work/alpha'))
+    await waitFor(() => expect(screen.getByRole('button', { name: /Project: alpha/ })).toBeTruthy())
+    expect(screen.queryByText(/does not list/)).toBeNull()
+    await fireEvent.click(screen.getByRole('button', { name: /Create agent/ }))
+    await waitFor(() => expect(api.spawnAgent).toHaveBeenCalledWith(expect.objectContaining({ project: '/work/alpha' })))
+  })
+
+  it('bareRouteKeepsRememberedDefaults', async () => {
+    localStorage.setItem('marshal.ui.newagent', JSON.stringify({ project: '/work/plain', mode: 'ask', isolated: false, model: { kind: 'profile', name: 'cheap' } }))
+    render(NewAgent, { onDone: vi.fn() })
+    expect(await screen.findByText('cheap profile')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Project: plain/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Mode: Ask/ })).toBeTruthy()
+    expect(screen.queryByText(/does not list/)).toBeNull()
+    expect(screen.queryByText(/unavailable, so no agent can start/)).toBeNull()
+  })
 })

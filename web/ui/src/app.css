@@ -113,3 +113,67 @@ textarea {
 .studio-control {
   border-radius: 8px;
 }
+
+/*
+  The Studio shell (design C4). Three widths, one navigation model:
+
+  - below 768px: the phone chrome — a top app bar and the bottom primary
+    navigation — floats over the content column;
+  - 768–1199px: the collapsed icon rail (StudioNav's collapsed form, which the
+    shell opens by default at this width);
+  - 1200px and above: the labelled sidebar.
+
+  Only the phone band needs layout here: the rail and the sidebar are the same
+  component in its two forms, and which one starts open is the shell's
+  preference, not a media query. The widths must match PHONE_QUERY in
+  App.svelte.
+*/
+.studio-shell {
+  /* The bars MobileNav draws, reserved as content padding on a phone. */
+  --studio-top-bar: 3rem;
+  --studio-bottom-bar: 3.75rem;
+  /*
+    `dvh` keeps the bottom navigation above a phone's dynamic browser chrome;
+    the `vh` line above it is the fallback where `dvh` is unknown.
+  */
+  height: 100vh;
+  height: 100dvh;
+}
+
+/*
+  Fixed, so the content column keeps the whole width. Only the bar and the
+  bottom destinations take pointer events: everything between them is page
+  content, which must stay clickable.
+*/
+.studio-phone-chrome {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  pointer-events: none;
+}
+
+.studio-phone-chrome > div > header,
+.studio-phone-chrome > div > nav {
+  pointer-events: auto;
+}
+
+/*
+  Reserve the floating bars' height so nothing — a composer above all — is
+  covered by them, and add the home-indicator inset the bottom bar carries.
+  Outside the phone band both bars are gone and this contributes nothing.
+*/
+.studio-phone-main {
+  padding-top: var(--studio-top-bar);
+  padding-bottom: calc(var(--studio-bottom-bar) + env(safe-area-inset-bottom));
+}
+
+@media (min-width: 768px) {
+  .studio-phone-chrome {
+    display: none;
+  }
+
+  .studio-phone-main {
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+}

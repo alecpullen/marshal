@@ -9,11 +9,13 @@
   import { DEFAULT_MODEL, MODES, canIsolate, clearRemembered, defaults, loadRemembered, loadWorkspace, modelLabel, overridableRoles, remember, rememberedReset, rememberWorkspace, routingFor, validModel, type Choice, type ModelChoice } from '../lib/newagent/newAgent'
   import WorkspaceChip from '../lib/workspaces/WorkspaceChip.svelte'
 
-  let { onDone }: { onDone: (id: string | null, warning?: string) => void } = $props()
+  let { onDone, projectRoot }: { onDone: (id: string | null, warning?: string) => void; projectRoot?: string } = $props()
 
   let projects = $state<ProjectStatus[]>([])
   let choice = $state<Choice>({ project: '', mode: 'act', auto: false, isolated: false, branch: '', baseRef: '' })
   let resetNotice = $state(false)
+  // A project-prefilled link that cannot be honoured says why instead of silently starting somewhere else.
+  let routeNotice = $state('')
   let workspace = $state('')
 
   let models = $state<ModelsConfig | null>(null)
@@ -40,7 +42,29 @@
 
   const selected = $derived(projects.find((p) => p.root === choice.project))
   const isolationOk = $derived(canIsolate(selected))
+  // A project the bridge has listed but cannot serve starts nothing; neither does no project at all.
+  const canCreate = $derived(!!choice.project && selected?.available !== false)
   const projectName = (root: string) => root.split('/').filter(Boolean).pop() || root
+
+  /*
+    `#new?project=<root>` prefills where to work, not how: the remembered mode,
+    Auto and model still apply, while the remembered project and its isolation
+    choice are replaced. An unknown root selects nothing rather than quietly
+    becoming the first listed project — that agent would not be the one the
+    link asked for — and an unavailable root is selected, so its reason shows
+    and creation stays disabled.
+  */
+  function applyRouteProject() {
+    if (!projectRoot) return
+    const routed = projects.find((p) => p.root === projectRoot)
+    if (!routed) {
+      choice = { ...choice, project: '', isolated: false }
+      routeNotice = 'This link names a project this bridge does not list, so nothing is selected. Pick a project to continue.'
+      return
+    }
+    routeNotice = routed.available ? '' : `${projectName(routed.root)} is unavailable, so no agent can start in it.`
+    choice = { ...choice, project: routed.root, isolated: canIsolate(routed) ? choice.isolated : false }
+  }
 
   onMount(async () => {
     promptEl?.focus()
@@ -50,6 +74,7 @@
     try {
       projects = await listProjects()
       choice = defaults(projects, remembered)
+      applyRouteProject()
       workspace = loadWorkspace(choice.project)
       recipes = await listRecipes().catch(() => [])
     } catch (e) {
@@ -78,6 +103,8 @@
   function pickProject(root: string) {
     const p = projects.find((x) => x.root === root)
     choice = { ...choice, project: root, isolated: canIsolate(p) ? choice.isolated : false }
+    // An explicit choice answers a route-prefill link that could not be honoured.
+    routeNotice = ''
     workspace = loadWorkspace(root)
   }
 
@@ -113,6 +140,11 @@
   async function create() {
     if (!choice.project) {
       error = 'Pick a project first.'
+      return
+    }
+    if (selected && !selected.available) {
+      // The button is disabled for this, and ⌘Enter reaches here directly.
+      error = `${projectName(selected.root)} is unavailable, so no agent can start in it.`
       return
     }
     if (recipe) {
@@ -162,6 +194,11 @@
   </header>
 
   {#if error}<div class="rounded border border-danger bg-danger/10 p-3 text-sm" role="alert">{error}</div>{/if}
+  {#if routeNotice}
+    <div class="flex flex-wrap items-center gap-2 rounded border border-attention bg-surface p-3 text-sm" role="status" data-testid="route-project-notice">
+      {routeNotice}
+    </div>
+  {/if}
   {#if resetNotice}
     <div class="flex flex-wrap items-center gap-2 rounded border border-border bg-surface p-3 text-sm" role="status">
       The remembered mode could not be read, so this form started fresh in <strong>Act</strong> with Auto off.
@@ -292,7 +329,7 @@
         </Chip>
       {/if}
 
-      <Button class="ml-auto" disabled={busy || !choice.project} onclick={create}>Create agent <span class="text-xs opacity-70">⌘↵</span></Button>
+      <Button class="ml-auto" disabled={busy || !canCreate} onclick={create}>Create agent <span class="text-xs opacity-70">⌘↵</span></Button>
     </div>
   </div>
 

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import Dashboard from './views/Dashboard.svelte'
+  import Fleet from './views/Fleet.svelte'
   import NewAgent from './views/NewAgent.svelte'
   import Chat from './views/Chat.svelte'
   import Runs from './views/Runs.svelte'
@@ -23,10 +23,14 @@
   import FactoryItem from './views/FactoryItem.svelte'
   import ReviewBot from './views/automations/ReviewBot.svelte'
   import CIFixer from './views/automations/CIFixer.svelte'
-  import Sidebar from './lib/Sidebar.svelte'
-  import Rail from './lib/Rail.svelte'
   import Palette from './lib/Palette.svelte'
   import Home from './views/Home.svelte'
+  import Roadmap from './views/Roadmap.svelte'
+  import StudioNav from './lib/nav/StudioNav.svelte'
+  import MobileNav from './lib/nav/MobileNav.svelte'
+  import { buildNavModel } from './lib/nav/model'
+  import { filterFactoryItems } from './lib/studio/model'
+  import StateMessage from './lib/ui/StateMessage.svelte'
   import PendingList from './lib/PendingList.svelte'
   import ProjectsPanel from './lib/ProjectsPanel.svelte'
   import SessionsPanel from './lib/SessionsPanel.svelte'
@@ -37,7 +41,7 @@
   import { loadPrefs, maybeNotify, show as showNotification, type FleetLike } from './lib/notify'
   import DecisionOutcomeView from './lib/inbox/DecisionOutcome.svelte'
   import { outcomeFor, type DecisionOutcome } from './lib/inbox/decision'
-  import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, parseRunRoute, parseLiveRoute, parseLibraryRoute, parseSettingsRoute, parseUsageRoute, parseWorkspacesRoute, parseNetworkRoute, parseProjectRoute, parseWatchesRoute, parseFactoryRoute, redirectLegacy } from './lib/routes'
+  import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, parseRunRoute, parseLiveRoute, parseLibraryRoute, parseSettingsRoute, parseUsageRoute, parseWorkspacesRoute, parseNetworkRoute, parseProjectRoute, parseWatchesRoute, parseFactoryRoute, parseNewAgentRoute, parseRoadmapRoute, redirectLegacy } from './lib/routes'
   import { isTokenRejected, listPending, listClients, requestToken, type PendingSubmission, type MCPClient, type NetDecisionKind } from './lib/api'
 
   let hash = $state('#')
@@ -66,12 +70,24 @@
   /*
     Collapsed is a rail that keeps its place in the layout rather than an
     overlay, so it works at any width without a backdrop or focus trap and
-    can never cover the content. The default follows the viewport: wide
-    screens have room for the index, narrow ones do not.
+    can never cover the content. The default follows the viewport: the labelled
+    sidebar needs 1200px (design C4), so the tablet band between 768 and 1199
+    starts as the icon rail. A stored preference — `marshal.ui.sidebar`, "1"
+    open and "0" collapsed — still wins at any width.
   */
   let navOpen = $state(true)
 
   const NAV_KEY = 'marshal.ui.sidebar'
+
+  /*
+    Below 768px the shell is the phone one: a top app bar and a bottom primary
+    navigation, and no sidebar at all. It replaces the sidebar in the markup
+    rather than hiding it, so a phone never carries a second navigation
+    landmark or its focus order. The width here and the shell classes in
+    app.css must stay the same number.
+  */
+  const PHONE_QUERY = '(max-width: 767px)'
+  let phone = $state(false)
 
   let paletteOpen = $state(false)
 
@@ -156,10 +172,21 @@
   onMount(() => {
     try {
       const stored = localStorage.getItem(NAV_KEY)
-      navOpen = stored === null ? window.innerWidth >= 1024 : stored === '1'
+      navOpen = stored === null ? window.innerWidth >= 1200 : stored === '1'
     } catch {
-      navOpen = window.innerWidth >= 1024
+      navOpen = window.innerWidth >= 1200
     }
+
+    /*
+      The phone shell is a different structure, not a different width of the
+      same one, so it is decided here rather than in a media query and the
+      result is passed down as markup. A missing `matchMedia` (an old embedded
+      webview) keeps the desktop shell, which every route still renders.
+    */
+    const width = typeof window.matchMedia === 'function' ? window.matchMedia(PHONE_QUERY) : null
+    phone = width?.matches ?? false
+    const onWidth = (e: MediaQueryListEvent) => (phone = e.matches)
+    width?.addEventListener('change', onWidth)
 
     tokenRejected = isTokenRejected()
     const tokenPoll = setInterval(() => {
@@ -220,6 +247,7 @@
     return () => {
       window.removeEventListener('hashchange', update)
       window.removeEventListener('keydown', onKey)
+      width?.removeEventListener('change', onWidth)
       clearInterval(tokenPoll)
       factoryStore.stop()
       ctl.abort()
@@ -239,6 +267,24 @@
   const networkRoute = $derived(parseNetworkRoute(hash))
   const projectRoute = $derived(parseProjectRoute(hash))
   const factoryRoute = $derived(parseFactoryRoute(hash))
+  const newAgentRoute = $derived(parseNewAgentRoute(hash))
+  const roadmapRoute = $derived(parseRoadmapRoute(hash))
+  const page = $derived(pageFromHash(hash))
+
+  /*
+    One navigation model for the whole shell, so the sidebar, the rail and the
+    phone navigation cannot disagree about a destination. The count is the same
+    three sources Fleet treats as needing a person: factory work waiting on an
+    approval, requests in the inbox queue, and blocked network requests.
+  */
+  const navModel = $derived(
+    buildNavModel({
+      route: hash,
+      projects: $fleet.projects,
+      factoryItems: $factory.items,
+      needsCount: filterFactoryItems($factory.items, 'needs-you').length + $fleet.inbox.queue.length + $fleet.decisions.length,
+    }),
+  )
 
   /*
     Sessions open either unscoped (#sessions — the project picker) or
@@ -255,21 +301,22 @@
   }
 </script>
 
-<div class="flex h-screen overflow-hidden">
-  <Rail route={hash} onNavigate={navigate} />
-  <Sidebar
-    open={navOpen}
-    onToggle={toggleNav}
-    agents={$fleet.agents}
-    projects={$fleet.projects}
-    inbox={$fleet.inbox}
-    clientCount={clients.length}
-    route={hash}
-    activeAgentId={chatSessionId}
-    onNavigate={navigate}
-  />
+<div class="studio-shell flex h-screen overflow-hidden">
+  {#if phone}
+    <!--
+      The phone chrome floats over the content column instead of taking a
+      column of its own, so a view keeps the full width and `studio-phone-main`
+      reserves the bars' height as padding — a composer at the bottom of a view
+      stays above the bottom destinations rather than under them.
+    -->
+    <div class="studio-phone-chrome">
+      <MobileNav model={navModel} onNavigate={navigate} />
+    </div>
+  {:else}
+    <StudioNav model={navModel} open={navOpen} onToggle={toggleNav} onNavigate={navigate} />
+  {/if}
 
-  <main class="min-w-0 flex-1 overflow-hidden">
+  <main class="studio-phone-main min-w-0 flex-1 overflow-hidden">
     {#if chatSessionId}
       <!--
         Keyed so a hash change from one chat to another builds a fresh Chat
@@ -286,7 +333,12 @@
               navigate(o.kind === 'pushed' ? `#chat/${chatSessionId}` : '#')
             }} />
         {:else}
-          <Chat sessionId={chatSessionId} route={chatRoute} agent={$fleet.agents.find((a) => a.id === chatSessionId)} onBack={() => navigate('#')} />
+          <!--
+            Back returns to the factory item this session was opened from when
+            the route carries one; parseChatRoute already drops a `from` that
+            names no item, so the fallback is Fleet itself.
+          -->
+          <Chat sessionId={chatSessionId} route={chatRoute} agent={$fleet.agents.find((a) => a.id === chatSessionId)} onBack={() => navigate(chatRoute?.from ?? '#')} />
         {/if}
       {/key}
     {:else if runRoute}
@@ -374,9 +426,14 @@
           <Watches agents={$fleet.agents} tick={$fleet.watchTick} onNavigate={navigate} />
         {/if}
       </div>
-    {:else if hash === '#new'}
+    {:else if roadmapRoute}
+      <div class="h-full overflow-y-auto">
+        <Roadmap area={roadmapRoute.area} onNavigate={navigate} />
+      </div>
+    {:else if newAgentRoute}
       <div class="h-full overflow-y-auto">
         <NewAgent
+          projectRoot={newAgentRoute.projectRoot}
           onDone={(id, warning) => {
             if (warning) flashToast(warning)
             navigate(id ? `#chat/${id}` : '#')
@@ -405,7 +462,36 @@
           {/if}
         </div>
       </div>
-    {:else if pageFromHash(hash) === 'fleet'}
+    {:else if page === 'fleet'}
+      <div class="h-full overflow-y-auto">
+        <!--
+          The fleet stream is shell state, so its connection error is reported
+          here rather than inside a page: retiring the old dashboard must not
+          silently drop the only surface that told the user the stream broke.
+        -->
+        {#if $fleet.error}
+          <div class="mx-auto max-w-6xl px-6 pt-6">
+            <div class="rounded-md border border-danger bg-danger/10 p-3 text-sm">{$fleet.error}</div>
+          </div>
+        {/if}
+        <Fleet
+          agents={$fleet.agents}
+          inbox={$fleet.inbox}
+          notices={$fleet.notices}
+          onDismissNotice={actions.dismissNotice}
+          projects={$fleet.projects}
+          automationTick={$fleet.automationTick}
+          decisions={$fleet.decisions}
+          onDecide={decideNetwork}
+          onRefreshPending={refreshPending}
+          onOpenAgent={(id) => navigate(`#chat/${id}`)}
+          onNavigate={navigate}
+          factory={$factory}
+          onRefreshFactory={refreshFactory}
+          onRefreshFleet={actions.refresh}
+        />
+      </div>
+    {:else if page === 'inbox'}
       <div class="h-full overflow-y-auto">
         <Home
           agents={$fleet.agents}
@@ -423,12 +509,15 @@
       </div>
     {:else}
       <div class="h-full overflow-y-auto">
-        <Dashboard
-          fleet={$fleet}
-          onRefresh={actions.refresh}
-          onOpenAgent={(id) => navigate(`#chat/${id}`)}
-          onNewAgent={() => navigate('#new')}
-        />
+        <div class="mx-auto max-w-3xl p-6">
+          <StateMessage
+            tone="neutral"
+            title="Not Found"
+            body="There is no page at {hash || '#'}. The shell only routes the pages in its navigation."
+            actionLabel="Go to Fleet"
+            onAction={() => navigate('#')}
+          />
+        </div>
       </div>
     {/if}
   </main>

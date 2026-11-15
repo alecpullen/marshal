@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -189,11 +190,24 @@ func (s *Server) factoryToolList(w http.ResponseWriter, c MCPClient, id json.Raw
 			continue
 		}
 		items = append(items, s.factoryToolSummary(item))
-		if len(items) == factoryToolListLimit {
-			break
-		}
 	}
-	writeFactoryToolResult(w, id, map[string]any{"projectId": a.ProjectID, "items": items})
+	// Newest first: the store orders by ID, which is random hex, so a
+	// truncated list would otherwise drop an arbitrary subset and drop a
+	// different one only when an unrelated item was added.
+	sort.Slice(items, func(i, j int) bool {
+		if !items[i].UpdatedAt.Equal(items[j].UpdatedAt) {
+			return items[i].UpdatedAt.After(items[j].UpdatedAt)
+		}
+		return items[i].ItemID < items[j].ItemID
+	})
+	result := map[string]any{"projectId": a.ProjectID, "items": items, "total": len(items)}
+	if len(items) > factoryToolListLimit {
+		// A truncated list says so: without the marker and the total, a
+		// client cannot tell a dropped item from a deleted one.
+		result["items"] = items[:factoryToolListLimit]
+		result["truncated"] = true
+	}
+	writeFactoryToolResult(w, id, result)
 }
 
 // factoryToolGet returns one stored item: its plan, specification, effective
@@ -537,6 +551,18 @@ type factoryToolItemSummary struct {
 	Link      string    `json:"link"`
 }
 
+// factoryToolDecisionView is the get view of the open decision. The question
+// and the reason are worker- and runtime-authored text, so they are bounded
+// like every other string this surface reports.
+type factoryToolDecisionView struct {
+	ID        string    `json:"id"`
+	Kind      string    `json:"kind"`
+	Question  string    `json:"question"`
+	Reason    string    `json:"reason"`
+	EffectID  string    `json:"effectId,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
 // factoryToolDraftView is a stored draft with the server-resolved project root
 // removed: it is a host path, and it is not the client's to see.
 type factoryToolDraftView struct {
@@ -571,22 +597,22 @@ type factoryToolOutcomeView struct {
 
 // factoryToolDetail is the get view of one item.
 type factoryToolDetail struct {
-	ProjectID string                  `json:"projectId"`
-	ItemID    string                  `json:"itemId"`
-	Title     string                  `json:"title"`
-	State     string                  `json:"state"`
-	Stage     string                  `json:"stage,omitempty"`
-	Version   uint64                  `json:"version"`
-	RepoID    string                  `json:"repoId"`
-	Branch    string                  `json:"branch,omitempty"`
-	Approvals int                     `json:"approvals"`
-	CreatedAt time.Time               `json:"createdAt"`
-	UpdatedAt time.Time               `json:"updatedAt"`
-	Draft     factoryToolDraftView    `json:"draft"`
-	Decision  *FactoryDecision        `json:"decision,omitempty"`
-	Outcome   *factoryToolOutcomeView `json:"outcome,omitempty"`
-	History   []FactoryEvent          `json:"history"`
-	Link      string                  `json:"link"`
+	ProjectID string                   `json:"projectId"`
+	ItemID    string                   `json:"itemId"`
+	Title     string                   `json:"title"`
+	State     string                   `json:"state"`
+	Stage     string                   `json:"stage,omitempty"`
+	Version   uint64                   `json:"version"`
+	RepoID    string                   `json:"repoId"`
+	Branch    string                   `json:"branch,omitempty"`
+	Approvals int                      `json:"approvals"`
+	CreatedAt time.Time                `json:"createdAt"`
+	UpdatedAt time.Time                `json:"updatedAt"`
+	Draft     factoryToolDraftView     `json:"draft"`
+	Decision  *factoryToolDecisionView `json:"decision,omitempty"`
+	Outcome   *factoryToolOutcomeView  `json:"outcome,omitempty"`
+	History   []FactoryEvent           `json:"history"`
+	Link      string                   `json:"link"`
 }
 
 // factoryToolStoredItem is the result of a mutation: what was stored, its id
@@ -618,7 +644,7 @@ func (s *Server) factoryToolDetail(projectID string, item FactoryItem) factoryTo
 		Stage: item.Stage, Version: item.Version, RepoID: item.RepoID, Branch: item.Branch,
 		Approvals: len(item.Approvals), CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
 		Draft:    factoryToolDraftView{Title: item.Draft.Title, Plan: item.Draft.Plan, Spec: item.Draft.Spec, Config: factoryToolConfigView(item.Draft.Config)},
-		Decision: item.Decision,
+		Decision: factoryToolDecision(item.Decision),
 		Outcome:  factoryToolOutcome(item),
 		History:  factoryToolHistory(item.History),
 		Link:     s.factoryToolLink(item.ID),
@@ -640,6 +666,21 @@ func factoryToolStored(projectID, link string, item FactoryItem) factoryToolStor
 func factoryToolConfigView(c FactoryConfig) FactoryConfig {
 	c.ProjectRoot = ""
 	return c
+}
+
+// factoryToolDecision bounds the open decision. Its question and reason are
+// authored by a worker or a runtime failure, so they get the same clip as
+// every other reported string rather than being passed through whole.
+func factoryToolDecision(d *FactoryDecision) *factoryToolDecisionView {
+	if d == nil {
+		return nil
+	}
+	return &factoryToolDecisionView{
+		ID: d.ID, Kind: d.Kind,
+		Question: factoryToolClip(d.Question, factoryToolTextLimit),
+		Reason:   factoryToolClip(d.Reason, factoryToolTextLimit),
+		EffectID: d.EffectID, CreatedAt: d.CreatedAt,
+	}
 }
 
 // factoryToolOutcome summarises the latest effect that settled with an

@@ -687,31 +687,41 @@ func (w *Workspace) AddProject(root string) error {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	registered := false
 	for _, p := range w.projects {
 		// Registering a project again keeps the ID it already has: the
 		// grant an operator wrote against it must survive a re-add.
 		if p == root {
-			return nil
+			registered = true
+			break
 		}
 	}
-	w.projects = append(w.projects, root)
-	if _, ok := w.projectIdentities[root]; !ok {
-		fresh, err := newProjectID()
-		if err != nil {
+	if !registered {
+		w.projects = append(w.projects, root)
+	}
+	if _, ok := w.projectIdentities[root]; ok {
+		return w.save()
+	}
+	// An identity whose save failed earlier is minted here rather than
+	// re-exposed: nothing could have been granted against an ID that never
+	// became observable, and the registration it belongs to may already be
+	// in place.
+	fresh, err := newProjectID()
+	if err != nil {
+		if !registered {
 			w.projects = w.projects[: len(w.projects)-1 : len(w.projects)-1]
-			return err
 		}
-		w.projectIdentities[root] = MCPProjectIdentity{ID: fresh, Root: root}
-		if err := w.save(); err != nil {
-			// The registration stays, as it always has, but no ID is
-			// exposed for it: one that did not reach the disk would point
-			// at a project the next start could not resolve.
-			delete(w.projectIdentities, root)
-			return err
-		}
-		return nil
+		return err
 	}
-	return w.save()
+	w.projectIdentities[root] = MCPProjectIdentity{ID: fresh, Root: root}
+	if err := w.save(); err != nil {
+		// The registration stays, as it always has, but no ID is
+		// exposed for it: one that did not reach the disk would point
+		// at a project the next start could not resolve.
+		delete(w.projectIdentities, root)
+		return err
+	}
+	return nil
 }
 
 func (w *Workspace) RemoveProject(root string) error {
@@ -1062,6 +1072,17 @@ func (w *Workspace) DeleteClient(id string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	delete(w.clients, id)
+	// A delegation designation names one client, so it cannot outlive it:
+	// the project settings that named the deleted client are cleared in the
+	// same save rather than left pointing at nothing.
+	for root, ps := range w.projectSettings {
+		if ps.DesignatedMCPClientID != id {
+			continue
+		}
+		ps.DesignatedMCPClientID = ""
+		ps.PlannerDelegationEnabled = false
+		w.projectSettings[root] = ps
+	}
 	return w.save()
 }
 
@@ -1106,7 +1127,14 @@ func (w *Workspace) ProjectRootByID(id string) (string, bool) {
 // factoryGrantVersion is the opaque version of one grant: a lowercase hex
 // SHA-256 of its JSON encoding. The grant is all scalars, so the encoding is
 // deterministic and two equal grants always carry the same version.
+//
+// An empty authority means the same refusal as the explicit "none" the write
+// path stores, so both encode alike: otherwise the zero grant a read reports
+// would move to a new version the moment it was saved unchanged.
 func factoryGrantVersion(g MCPFactoryProjectGrant) string {
+	if g.ApprovalAuthority == "" {
+		g.ApprovalAuthority = factoryAuthorityNone
+	}
 	data, _ := json.Marshal(g)
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])

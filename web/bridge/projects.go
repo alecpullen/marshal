@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -224,6 +225,20 @@ func (f *Fleet) validateProjectSettings(root string, ps ProjectSettings) (Projec
 	// "unset" and passes; factoryValidateDefaults fills nothing in.
 	if err := factoryValidateDefaults(ps.FactoryDefaults); err != nil {
 		return ProjectSettings{}, Repo{}, fmt.Errorf("%w: factoryDefaults: %v", errInvalidProjectSettings, err)
+	}
+	// Planner delegation names the one client that may answer for the
+	// planner. Enabling it with nobody designated is a state the Studio
+	// refuses to save, and so does the bridge: an inert toggle that looks
+	// configured is worse than a refused write. A designation must name a
+	// client that exists, and deleting a client clears the designations that
+	// name it, so this cannot lock a project out of its own settings.
+	if ps.PlannerDelegationEnabled && strings.TrimSpace(ps.DesignatedMCPClientID) == "" {
+		return ProjectSettings{}, Repo{}, fmt.Errorf("%w: planner delegation needs a designated client", errInvalidProjectSettings)
+	}
+	if id := ps.DesignatedMCPClientID; id != "" {
+		if _, ok := f.ws.Client(id); !ok {
+			return ProjectSettings{}, Repo{}, fmt.Errorf("%w: designatedMCPClientId %q is not a registered client", errInvalidProjectSettings, id)
+		}
 	}
 	return ps, repo, nil
 }

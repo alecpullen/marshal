@@ -520,7 +520,11 @@ func (s *FactoryStore) ReplaceDraft(id, requestID string, expectedVersion uint64
 		if c.Config.RepoID != i.RepoID || c.Config.ProjectRoot != i.ProjectRoot || c.Config.HostID != i.HostID {
 			return ErrFactoryConflict
 		}
+		// The item's title and its draft's title are one field reported
+		// twice, so a replacement moves both: a stale Draft.Title would be
+		// projected beside the new title and read as a contradiction.
 		i.Title = c.Title
+		i.Draft.Title = c.Title
 		i.Draft.Plan = c.Plan
 		i.Draft.Spec = c.Spec
 		i.Draft.Config = c.Config

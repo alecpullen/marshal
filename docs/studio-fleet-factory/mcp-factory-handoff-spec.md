@@ -97,6 +97,8 @@ and the existing factory approval, preflight and journal paths are unchanged.
 | — | `web/bridge/factory_controller.go` reformatted with `gofmt` in task 6 | Task 3 committed it with a formatting drift; no behaviour change |
 | — | `web/bridge/testdata/contract/ProjectStatus.json` re-recorded | `TestTheWireIsUnchanged` pins the project-list wire byte for byte; `mcpProjectId` is a deliberate contract addition, so the recording was regenerated with `-update` and no other recording changed |
 | Raise the `/mcp` envelope to `factoryRequestLimit` (2 MiB) | Delivered as specified; `factoryImportLimit` (1 MiB) still bounds the combined plan and spec | No change; recorded because the two limits are easy to conflate |
+| — | Planner delegation is validated at the settings boundary: enabling it with nobody designated is refused, a designation must name a registered client, and deleting a client clears the designations naming it | The plan left the two new fields unvalidated. An inert toggle that looks configured is worse than a refused write, and the cascade means a project is never locked out of saving its own settings |
+| — | `factory_list` reports `total` and, past 100 items, `truncated: true`, newest first; the open decision's question and reason are clipped at 4000 runes | Review round. The store orders by random hex ID, so the old silent cap could hide an item indistinguishably from a deletion, and `Decision` was the one projection with no bound |
 
 ### Acceptance gates, measured on this branch
 

@@ -293,6 +293,30 @@ describe('ClientsPanel', () => {
     expect(screen.queryByTestId('grant-conflict')).toBeNull()
   })
 
+  it('bareConflictIsReportedNotSilent', async () => {
+    ;(api.getFactoryGrant as Mock).mockResolvedValue({
+      clientId: 'c1',
+      projectId: 'p1',
+      grant: zeroGrant(),
+      version: 'v0',
+    })
+    // A 409 the client cannot read: the bridge reported no winning state, so
+    // there is no box to show. The refusal still has to be visible, or the
+    // operator reads silence as a successful save.
+    ;(api.putFactoryGrant as Mock).mockRejectedValue(new api.FactoryGrantConflictError(null))
+
+    const user = await openGrant()
+    await screen.findByRole('button', { name: 'Save authority' })
+    await user.click(screen.getByLabelText('Read work items'))
+    await user.click(screen.getByRole('button', { name: 'Save authority' }))
+
+    expect(await screen.findByText(/did not report what it stored/)).toBeTruthy()
+    expect(screen.queryByTestId('grant-conflict')).toBeNull()
+    // The unsaved edit is still there, and nothing was re-read.
+    expect((screen.getByLabelText('Read work items') as HTMLInputElement).checked).toBe(true)
+    expect(api.getFactoryGrant).toHaveBeenCalledTimes(1)
+  })
+
   it('unauthorizedGrantIsNotEditable', async () => {
     // The route answers one 404 for an unknown client and an unknown project
     // alike, so neither can become an oracle for which IDs exist.

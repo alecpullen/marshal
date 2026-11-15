@@ -737,6 +737,58 @@ func TestMCPProjectIdentityStableAcrossRestart(t *testing.T) {
 	}
 }
 
+// TestMCPProjectIdentityRemintedAfterAFailedSave checks that a registration
+// whose identity could not be persisted is given one on the next add, rather
+// than being left without an ID until the process restarts.
+func TestMCPProjectIdentityRemintedAfterAFailedSave(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fleet.json")
+	w := NewWorkspace(path)
+	if _, err := w.Load(); err != nil {
+		t.Fatal(err)
+	}
+	// Make every save fail: the path's directory is replaced by a file, as it
+	// is for a bridge whose data directory went away.
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.AddProject("/srv/code/app"); err == nil {
+		t.Fatal("the add succeeded while the workspace could not be saved")
+	}
+	// The registration stays, and no identity is exposed for it.
+	if _, ok := w.ProjectID("/srv/code/app"); ok {
+		t.Fatal("an identity that never reached the disk was exposed")
+	}
+	// The data directory comes back, and registering the project again — what
+	// an operator's retry does — mints the identity now.
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.AddProject("/srv/code/app"); err != nil {
+		t.Fatalf("re-adding the registered project: %v", err)
+	}
+	id, ok := w.ProjectID("/srv/code/app")
+	if !ok || len(id) != 2*projectIDBytes {
+		t.Fatalf("the retry minted no identity: (%q, %v)", id, ok)
+	}
+	if root, ok := w.ProjectRootByID(id); !ok || root != "/srv/code/app" {
+		t.Fatalf("ProjectRootByID = (%q, %v)", root, ok)
+	}
+	reloaded := NewWorkspace(path)
+	if _, err := reloaded.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := reloaded.ProjectID("/srv/code/app"); !ok || got != id {
+		t.Fatalf("after restart ProjectID = (%q, %v), want %q", got, ok, id)
+	}
+}
+
 // TestMCPProjectRemoveRevokesAndReregisterGetsNewID checks that removing a
 // registration drops its identity and every grant naming it in the same save,
 // that the other projects' grants survive, and that registering the project

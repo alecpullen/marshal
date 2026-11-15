@@ -131,20 +131,27 @@
     grantError = null
     grantNotice = null
     grantWinner = null
+    // Two reads can be in flight when the pair changes quickly. Only the one
+    // that still matches the selected pair may fill the form: a late answer
+    // for the previous pair would otherwise describe authority the selects
+    // no longer show, and the next save would be refused against it.
+    const current = () => clientId === grantClientId && projectId === grantProjectId
     try {
       const state = await getFactoryGrant(clientId, projectId)
+      if (!current()) return
       if (!state?.version) throw new APIError(0, { error: 'The bridge did not return a grant version, so this authority cannot be edited safely.' })
       grant = state.grant ? { ...state.grant, projectId } : emptyFactoryGrant(projectId)
       grantVersion = state.version
     } catch (e) {
       // An unknown pair is one 404 answer that names neither ID: the route is
       // authenticated, but it still must not become an oracle.
+      if (!current()) return
       grantError =
         e instanceof APIError && e.status === 404
           ? 'This client and project pair is unknown to the bridge, so there is no authority to edit here.'
           : errMessage(e)
     } finally {
-      grantLoading = false
+      if (current()) grantLoading = false
     }
   }
 
@@ -186,9 +193,11 @@
     } catch (e) {
       if (e instanceof FactoryGrantConflictError) {
         // The user's edit stays on screen; the winning version is reported
-        // beside it, and only an explicit reload replaces the draft.
+        // beside it, and only an explicit reload replaces the draft. A 409
+        // this build cannot read still has to be reported: silence would
+        // look like the save had succeeded.
         grantWinner = e.state
-        grantError = null
+        grantError = e.state ? null : 'Another change won the race, and the bridge did not report what it stored. Reload the saved authority before saving again.'
       } else {
         grantError = errMessage(e)
       }

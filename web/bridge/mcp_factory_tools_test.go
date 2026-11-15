@@ -31,6 +31,29 @@ func newMCPFactoryToolFixture(t *testing.T, grant MCPFactoryProjectGrant) *mcpFa
 	return &mcpFactoryToolFixture{factoryMCPFixture: fx, clientID: id, token: token}
 }
 
+// TestFactoryToolDecisionIsBounded checks that the open decision's text — the
+// one field a worker or a runtime failure authors — is clipped like every
+// other string this surface reports, and that an absent decision stays absent.
+func TestFactoryToolDecisionIsBounded(t *testing.T) {
+	long := strings.Repeat("x", factoryToolTextLimit+500)
+	view := factoryToolDecision(&FactoryDecision{ID: "d1", Kind: "question", Question: long, Reason: long})
+	if view == nil {
+		t.Fatal("a decision was dropped from the projection")
+	}
+	if len(view.Question) > factoryToolTextLimit+4 || len(view.Reason) > factoryToolTextLimit+4 {
+		t.Fatalf("an unbounded decision text survived: %d and %d runes", len(view.Question), len(view.Reason))
+	}
+	if !strings.HasSuffix(view.Question, "…") || !strings.HasSuffix(view.Reason, "…") {
+		t.Fatal("a clipped decision text is not marked as clipped")
+	}
+	if view.ID != "d1" || view.Kind != "question" {
+		t.Fatalf("the projected decision lost its identity: %+v", view)
+	}
+	if factoryToolDecision(nil) != nil {
+		t.Fatal("an absent decision was projected")
+	}
+}
+
 // proposal is the create_draft argument object for this fixture's project.
 func (f *mcpFactoryToolFixture) proposal(requestID string) map[string]any {
 	return map[string]any{
@@ -407,6 +430,12 @@ func TestMCPFactoryProjectAndRepoScope(t *testing.T) {
 	items, _ := list["items"].([]any)
 	if len(items) != 1 || items[0].(map[string]any)["itemId"] != itemID {
 		t.Fatalf("factory_list returned %v, want only %s", items, itemID)
+	}
+	if total, ok := list["total"].(float64); !ok || int(total) != 1 {
+		t.Fatalf("factory_list total = %v, want 1", list["total"])
+	}
+	if _, ok := list["truncated"]; ok {
+		t.Fatalf("an untruncated list reported truncation: %v", list)
 	}
 	if n := len(f.api.List()); n != 2 {
 		t.Fatalf("the journal holds %d items, want the two created here", n)

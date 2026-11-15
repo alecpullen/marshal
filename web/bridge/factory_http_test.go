@@ -293,7 +293,8 @@ func TestFactoryMCPDraftReplaceVersionAndIdentity(t *testing.T) {
 	if replaced.Draft.RequestID != draft.Draft.RequestID {
 		t.Fatalf("replace rewrote the draft's create identity to %q", replaced.Draft.RequestID)
 	}
-	if replaced.Title != "A better title" || replaced.Draft.Plan != "a better plan" || replaced.Draft.Spec != "a better spec" ||
+	if replaced.Title != "A better title" || replaced.Draft.Title != "A better title" ||
+		replaced.Draft.Plan != "a better plan" || replaced.Draft.Spec != "a better spec" ||
 		replaced.Draft.Config.MaxRounds != 7 || replaced.Draft.Config.CIPollSeconds != 15 || replaced.Draft.Config.RepoID != "repo-1" {
 		t.Fatalf("replace stored %+v", replaced.Draft)
 	}

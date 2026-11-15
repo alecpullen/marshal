@@ -93,13 +93,24 @@ negotiates `2025-06-18` and carries the `MCP-Protocol-Version` header;
 
 | Test | What it proves |
 |---|---|
-| `TestMCPFactoryEndToEnd` | A complete authorized handoff. A fake `FactoryEffects` drives the **real** `FactoryController` through `spawn → seed → publish → create_pr → implement`, where `implement` returns `needs_input` with a question. The client then reads the item, answers the question, and the assertion checks the journal's approval hash and question attribution. |
-| `TestMCPFactoryEndToEndLostResponse` | Response loss after a durable commit: the retried request produces one durable operation, not two. |
-| `TestMCPFactoryEndToEndRevokedAndOffline` | Studio-side grant revocation driven over the same listener's authenticated management routes, and an external client that is stopped while the factory continues from its durable queue with the bridge answering zero requests. |
+| `TestMCPFactoryEndToEnd` | A complete authorized handoff. A fake `FactoryEffects` drives the **real** `FactoryController` through `spawn → seed → publish → create_pr → implement`, where `implement` returns `needs_input` with a question; the assertion checks the journal's approval hash and question attribution. The client is then stopped: the factory continues from its durable queue on its own, and a request counter on the listener asserts the bridge answered **zero** requests while the client was gone. A new connection with the same token reads the question and answers it. |
+| `TestMCPFactoryEndToEndLostResponse` | Response loss after a durable commit: the retried request produces one durable operation, not two, and reusing the request ID with different content is refused as a conflict. |
+| `TestMCPFactoryEndToEndRevokedAndOffline` | Studio-side grant revocation written through the same listener's authenticated management routes, raced against an in-flight MCP write: exactly one of two orderings happens, each checked against the journal. Afterwards a write is refused, the draft accepted before the revocation survives, reconnecting with the same token changes nothing, and a client that never held the grant gets the same answers. This test does not start the factory. |
 
-Across the three, the responses are checked for host-path leakage and for
-cross-project leakage, and unauthorized and nonexistent indirect IDs are
-required to be indistinguishable.
+All three check every tool response for host-path leakage, and
+`assertNoUnauthorizedAccess` requires the revoked client, the reconnected one
+and the never-granted one to learn nothing: no capability, no
+`approvalAuthority`, no item or project ID, no root, and the same `not_found`
+code every time.
+
+Two properties belong to the unit suites rather than the end-to-end one,
+because the end-to-end fixture registers a single project and never invents a
+nonexistent indirect ID: cross-project isolation and the indistinguishability
+of an unknown ID from an unauthorized one. They are pinned by
+`TestMCPFactoryUnauthorizedIDDoesNotLeak` (a second registered project, and
+unknown client / unknown project / ungranted project answered identically) and
+`TestMCPFactoryProjectAndRepoScope` (an item belonging to another project is
+neither listed nor readable, and an unknown project answers `not_found`).
 
 Measured on this branch:
 
@@ -126,6 +137,12 @@ MCP.
 New factory tools return a standard MCP `CallToolResult` whose
 `content[0].text` is one JSON object. The pre-existing fleet tools keep their
 previous result shapes so legacy consumers are unaffected.
+
+Two result-shape details worth a client's attention: `factory_list` reports
+`total` and, past its 100-item cap, `truncated: true` alongside a
+newest-first page — a dropped item is therefore never mistaken for a deleted
+one — and every reported string, the open decision's question and reason
+included, is clipped at 4000 runes without splitting a rune.
 
 ## 6. Studio-side surfaces
 
@@ -194,5 +211,12 @@ implemented:
 - No OAuth authorization-server discovery or automatic client enrolment.
 - No waking, pushing to, or notifying an external session. Clients poll with
   `factory_get`; factory work continues while they are disconnected.
+- A retry of an already-committed create or update re-runs the preflight
+  before the journal's replay check, because the networked half of the
+  operation is deliberately kept outside the policy lock. If the forge or the
+  workspace preflight is failing at retry time the client is told
+  `unavailable`/`unsupported` instead of receiving the accepted result, and it
+  recovers once preflight passes. The replay itself stays exactly-once: no
+  second mutation is written in any ordering.
 - All existing factory ownership, preflight, revision, CI and human-merge gates
   are unchanged.

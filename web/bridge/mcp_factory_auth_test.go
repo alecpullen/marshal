@@ -558,6 +558,21 @@ func TestMCPFactoryGrantManagementConflict(t *testing.T) {
 	if again := fx.readGrant("c1"); again.Version != zero.Version {
 		t.Fatalf("the zero version moved: %q then %q", zero.Version, again.Version)
 	}
+	// Saving the reported zero grant unchanged is a no-op rather than a
+	// version bump: an empty authority and the explicit "none" the write path
+	// stores are one refusal, so they encode to one version.
+	unchanged := doReq(t, fx.s, http.MethodPut, fx.grantPath("c1"), map[string]any{
+		"grant":   fx.scoped(MCPFactoryProjectGrant{ApprovalAuthority: factoryAuthorityNone}),
+		"version": zero.Version,
+	}, nil)
+	if unchanged.Code != http.StatusOK {
+		t.Fatalf("saving the reported zero grant = %d %s", unchanged.Code, unchanged.Body)
+	}
+	var kept FactoryGrantState
+	decodeBody(t, unchanged, &kept)
+	if kept.Version != zero.Version {
+		t.Fatalf("saving the zero grant unchanged moved its version to %q", kept.Version)
+	}
 	// The response never carries the client's token hash.
 	stored, ok := fx.s.fleet.ws.Client("c1")
 	if !ok || stored.TokenHash == "" {

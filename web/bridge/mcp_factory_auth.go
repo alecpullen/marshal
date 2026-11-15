@@ -220,7 +220,9 @@ func (a *factoryMCPAuthorizer) grantAllows(g MCPFactoryProjectGrant, capability 
 // the same lock every grant write and authorized factory mutation takes.
 func (a *factoryMCPAuthorizer) withPolicy(fn func() error) error {
 	if a == nil {
-		return fn()
+		// A missing authorizer is a wiring fault, not permission to run a
+		// policy mutation unlocked: every other method here fails closed.
+		return fmt.Errorf("%w: no authorizer", ErrFactoryUnavailable)
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()

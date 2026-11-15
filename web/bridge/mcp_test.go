@@ -193,6 +193,15 @@ func TestMCPStreamableHTTPVersionAndOrigin(t *testing.T) {
 		t.Fatalf("initialize advertised %v, want a tools capability", init.Result.Capabilities)
 	}
 
+	// Initialization is where the version is chosen, so a client that carries
+	// another revision's header on that one request is negotiated with rather
+	// than refused: otherwise a version-pinned client could never get in.
+	rec = post(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}`,
+		map[string]string{mcpProtocolVersionHeader: "2025-03-26"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("initialize carrying another revision's header = %d %s, want 200", rec.Code, rec.Body)
+	}
+
 	// The negotiated version on a later request is accepted, with the headers
 	// the transport requires.
 	rec = post(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`, map[string]string{
@@ -229,6 +238,15 @@ func TestMCPStreamableHTTPVersionAndOrigin(t *testing.T) {
 	}
 	if rec.Body.Len() != 0 {
 		t.Fatalf("notification response body = %q, want none", rec.Body)
+	}
+	// A notifications/* method is a notification whatever id it carried: it
+	// is not answered with a result, and it is not a method-not-found.
+	rec = post(`{"jsonrpc":"2.0","id":9,"method":"notifications/initialized"}`, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("a notification carrying an id = %d, want 202", rec.Code)
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("a notification carrying an id answered %q, want no body", rec.Body)
 	}
 
 	// There is no server-initiated stream, so GET is answered 405 for POST

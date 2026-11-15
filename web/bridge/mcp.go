@@ -87,13 +87,6 @@ func (s *Server) mcpHandler(w http.ResponseWriter, r *http.Request) {
 		unauthorized(w)
 		return
 	}
-	if !mcpVersionAccepted(r.Header.Get(mcpProtocolVersionHeader)) {
-		// After initialization the client must send the negotiated version;
-		// a version this bridge does not speak is refused rather than
-		// answered with a result it would misread.
-		writeRPCStatus(w, http.StatusBadRequest, nil, nil, &rpcError{rpcInvalidRequest, "unsupported " + mcpProtocolVersionHeader})
-		return
-	}
 	if !mcpContentTypeAccepted(r.Header.Get("Content-Type")) {
 		writeRPCStatus(w, http.StatusUnsupportedMediaType, nil, nil, &rpcError{rpcInvalidRequest, "Content-Type must be application/json"})
 		return
@@ -121,9 +114,19 @@ func (s *Server) mcpHandler(w http.ResponseWriter, r *http.Request) {
 		writeRPC(w, req.ID, nil, &rpcError{rpcInvalidRequest, "invalid request"})
 		return
 	}
+	// After initialization the client must send the negotiated version; a
+	// version this bridge does not speak is refused rather than answered with
+	// a result it would misread. Initialization itself is where the version
+	// is chosen, so a client that carries another revision's header on that
+	// one request is negotiated with, not refused.
+	if req.Method != "initialize" && !mcpVersionAccepted(r.Header.Get(mcpProtocolVersionHeader)) {
+		writeRPCStatus(w, http.StatusBadRequest, nil, nil, &rpcError{rpcInvalidRequest, "unsupported " + mcpProtocolVersionHeader})
+		return
+	}
 	id := req.ID
-	if len(id) == 0 || string(id) == "null" {
-		// A notification carries no id and expects no response body. The
+	if len(id) == 0 || string(id) == "null" || strings.HasPrefix(req.Method, "notifications/") {
+		// A notification carries no id and expects no response body, and a
+		// notifications/* method is one whatever id it carried. The
 		// transport prescribes 202 with an empty body for it.
 		w.WriteHeader(http.StatusAccepted)
 		return

@@ -154,6 +154,49 @@ and the existing factory approval, preflight and journal paths are unchanged.
 | One task-6 commit | Two commits (end-to-end proof, then conversion review) plus this docs commit | The Go tests and the UI review are independently verifiable and have disjoint files |
 | Draft editor inside `FactoryNew.svelte` | Editor host in `WorkingDrafts.svelte`, `FactoryNew.svelte` reduced to the shared form | Task 5's list/editor split; the manual flow and `buildConfig` semantics are unchanged and pinned by `manualFactoryFlowStillWorks` |
 | `Convert(id, requestID, expectedVersion, request, settingsVersion)` only | Added store-level `FailConversion` and a package-private conversion interface | The spec requires returning a draft to `editing` on a confirmed preflight refusal, which Task 1's contract list did not name |
+| Task 4's nine camelCase test names; `TestWorkingDraftConvertFrozenEmptyFieldsDoNotReinherit` | Behaviour delivered under sentence-case `it()` titles; the two Go test names are used, with the typo corrected | Every named behaviour is covered by title and assertion; only the spelling differs |
+
+### Review round
+
+Three independent reviewers audited the finished branch — the Go bridge, the
+browser client and views, and spec/wiring conformance — and every finding below
+was either fixed on the branch or recorded as accepted. Fixes carry their own
+regression test, and the gates in the next section were re-run afterwards.
+
+| Severity | Finding | Resolution |
+|---|---|---|
+| blocker | A retried conversion request ID whose factory attempt had been refused could create an item no association could reach (`convertReserved` never rechecked the draft's state) | `convertReserved` reads the draft under the per-draft lock and refuses unless it is `converting`; `TestWorkingDraftConvertRefusedRetryCreatesNothing` |
+| major | A settings write between the durable reserve and the recheck left the draft stuck `converting` until the process restarted | Nothing has been created at that point, so the reservation is released back to `editing` with the reason (`abandonReservation`), and the next conversion is reviewed against the current settings; the retried request is refused rather than dead-ended |
+| major | A draft left `converting` by a crash or a lost answer only advanced at the next restart | `Convert` now resumes a reserved draft through the same path reconciliation takes (`resume`), so the next request finishes the one handoff; `TestWorkingDraftConvertResumesReservedConversion` |
+| major | An `owner.lock` left by an unclean exit permanently disabled every working-draft route | The lock records its writer's PID and is reclaimed only when that process is provably gone; a live, half-written or older opaque lock is still refused (`working_draft_lock_{unix,other}.go`, both behaviours tested) |
+| major | A confirmed 4xx refusal of a save wedged the pending request forever and was reported as "offline" | The save path mirrors conversion: a confirmed refusal frees the request id, surfaces the error and re-schedules, so corrected text goes out under a new id |
+| major | Content typed with no project became unreachable after a reload (fresh editor key per instance, project-scoped lists) | `restore()` offers every record in the same `(installation, projectRoot)` scope, whatever editor wrote it; adoption is unchanged |
+| major | `DELETE` was implemented end to end but unreachable from the UI, so tombstones and deleted-draft recovery shipped dead | The editor gains a confirmed "Remove this working draft" control driven by a controller `remove()` that freezes its request id and version, retries an unknown outcome identically, and keeps the local copy recoverable |
+| minor | Concurrent creates could both answer `201` (a peek raced the append) | `Store.create` reports the replay from inside the lock, and the peek is gone |
+| minor | Error text in a `503` body and in a draft's failure message could carry absolute journal paths | Journal write failures are reduced to their operation and cause; the converter's failure text strips `*os.PathError` down the same way |
+| minor | Conversion records were retained forever | A record is dropped when its draft leaves `converting`, bounding the map; accepted request IDs still replay by contract |
+| minor | A `409` that carries no current draft dead-ended the editor | A "Reload from the bridge" card refetches and clears the conflict once the bridge no longer has the draft |
+| minor | The UI never said where plan and spec text is kept | One muted line under the editor header, as the spec requires |
+| nit | Status fallback claimed "Pending — saved on this device" for `deleted` drafts | `deleted` has its own accurate line |
+| nit | `non_reactive_update` on the editor's controller binding | Declared `$state`, read through `untrack` in the effect so it stays keyed on props |
+| nit | Reconciliation ordering and a schema-history comment contradicted the code | Comments corrected; the conversion record is documented as part of the reservation, not a schema change |
+| nit | A store test name was misspelled | Renamed to `TestWorkingDraftConvertFrozenEmptyFieldsDoNotReinherit` |
+
+Accepted, with the reason recorded rather than fixed:
+
+- **The production IndexedDB adapter has no dedicated test.** Every suite injects
+  the in-memory adapter, which is the behavioural reference; the IndexedDB
+  adapter is lazy, feature-detected and reviewed by reading. Covering it needs
+  `fake-indexeddb`, a new test dependency, which is out of scope for a fix
+  round. It is listed under Known limitations.
+- **The conflict panel's flag group is one click, not three.** The plan listed
+  native+chosen, implementer auto and the no-CI acknowledgement as separate
+  atomic choices. Spec §5 is still met — every field stays individually
+  editable in the combined result — and the coarser grouping is friendlier than
+  three controls that always move together.
+- **The `requests` replay map is unbounded.** Retaining every accepted request
+  ID's result is the replay contract itself, not an oversight; bounding it is a
+  retention feature, which the spec explicitly defers.
 
 ### Known limitations
 
@@ -165,7 +208,14 @@ and the existing factory approval, preflight and journal paths are unchanged.
   otherwise; local persistence failure is surfaced, never hidden.
 - Conversion is reconciliation across two durable stores, not a transaction.
   An outcome that cannot be established stays `converting` and is reported as
-  uncertain; the UI retries the frozen request and never mints a second one.
+  uncertain. A retried request finishes it, and a restart reconciles it first;
+  the UI retries the frozen request and never mints a second one.
+- A store abandoned by an unclean exit is reopened on the next start, but only
+  where the platform can prove the previous owner is gone (Linux and macOS). On
+  other platforms the ownership lock still has to be removed by hand.
+- The browser's IndexedDB adapter has no dedicated test; the in-memory adapter
+  is what the suite exercises. Covering the real adapter needs a fake IndexedDB
+  dependency this change does not add.
 - The manual desktop and 390px two-context walkthrough in Task 6's last step
   was not performed in this environment (no browser session was driven). The
   390px and keyboard requirements are covered only by the component tests and

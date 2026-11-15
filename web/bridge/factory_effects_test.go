@@ -199,7 +199,7 @@ func TestFactoryEffectReadyPublishesComposedDescription(t *testing.T) {
 	if err != nil || !out.Confirmed || out.Error != "" {
 		t.Fatalf("ready: %+v %v", out, err)
 	}
-	want, err := composeFactoryPRBody(i.Rounds[0], nil, "")
+	want, err := composeFactoryPRBody(i.Rounds[0], nil, "old")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,6 +209,112 @@ func TestFactoryEffectReadyPublishesComposedDescription(t *testing.T) {
 	if len(forge.order) < 2 || forge.order[0] != "description" || forge.order[1] != "draft" {
 		t.Fatalf("description write did not precede the draft clear: %v", forge.order)
 	}
+}
+
+func TestFactoryEffectReadyFetchesPreviewAtRender(t *testing.T) {
+	i := narratedItem("the issue")
+	forge := newRacingFactoryForge(i.PRs[0])
+	report := &PreviewReport{
+		Status: "ok",
+		Ref:    i.PRs[0].HeadRef,
+		SHA:    "old",
+		Deployments: []PreviewDeployment{{
+			Environment:    "preview",
+			State:          "success",
+			Ref:            i.PRs[0].HeadRef,
+			SHA:            "old",
+			EnvironmentURL: "https://preview.example.test",
+		}},
+	}
+	var filters []PreviewFilter
+	effects := &factoryEffects{
+		openForge: openForgeWith(forge, forge),
+		previewSource: func(_ context.Context, _ Repo, filter PreviewFilter) (*PreviewReport, error) {
+			filters = append(filters, filter)
+			return report, nil
+		},
+	}
+	out, err := effects.Execute(context.Background(), i, FactoryEffect{ID: "ready", Kind: "set_ready", ExpectedHead: "old", ExpectedBase: "base"})
+	if err != nil || !out.Confirmed {
+		t.Fatalf("ready: %+v %v", out, err)
+	}
+	if len(filters) != 1 {
+		t.Fatalf("preview fetches=%v, want exactly one", filters)
+	}
+	if want := (PreviewFilter{Ref: i.PRs[0].HeadRef}); filters[0] != want {
+		t.Fatalf("filter=%+v, want %+v", filters[0], want)
+	}
+	if filters[0].SHA != "" {
+		t.Fatalf("filter scoped by SHA: %+v", filters[0])
+	}
+	want, err := composeFactoryPRBody(i.Rounds[0], report, "old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(forge.bodies) != 1 || forge.bodies[0] != want {
+		t.Fatalf("bodies=%q, want %q", forge.bodies, want)
+	}
+	// The row is badged against the pre-check head, which proves the section
+	// rendered from what the fetch returned.
+	if !strings.Contains(forge.bodies[0], "matches the PR head") {
+		t.Fatalf("deployment not badged against the confirmed head: %q", forge.bodies[0])
+	}
+}
+
+func TestFactoryEffectReadyPreviewFailureStillWritesDescription(t *testing.T) {
+	const unreadable = "Preview and test environments could not be read when this description was written."
+	const failureText = "preview transport exploded"
+	for _, tc := range []struct {
+		name   string
+		source func(context.Context, Repo, PreviewFilter) (*PreviewReport, error)
+	}{
+		{"fetch error", func(context.Context, Repo, PreviewFilter) (*PreviewReport, error) {
+			return nil, errors.New(failureText)
+		}},
+		{"unavailable report", func(context.Context, Repo, PreviewFilter) (*PreviewReport, error) {
+			return &PreviewReport{Status: "unavailable", Error: failureText}, nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			i := narratedItem("the issue")
+			forge := newRacingFactoryForge(i.PRs[0])
+			effects := &factoryEffects{openForge: openForgeWith(forge, forge), previewSource: tc.source}
+			out, err := effects.Execute(context.Background(), i, FactoryEffect{ID: "ready", Kind: "set_ready", ExpectedHead: "old", ExpectedBase: "base"})
+			if err != nil || !out.Confirmed || out.Error != "" {
+				t.Fatalf("ready: %+v %v", out, err)
+			}
+			if len(forge.bodies) != 1 {
+				t.Fatalf("bodies=%q, want exactly one", forge.bodies)
+			}
+			if !strings.Contains(forge.bodies[0], unreadable) {
+				t.Fatalf("body lacks the unreadable line: %q", forge.bodies[0])
+			}
+			if strings.Contains(forge.bodies[0], failureText) {
+				t.Fatalf("internal error text reached the body: %q", forge.bodies[0])
+			}
+			if forge.pr.Draft {
+				t.Fatal("draft flag still set after a confirmed set_ready")
+			}
+		})
+	}
+	t.Run("set_draft never fetches", func(t *testing.T) {
+		i := narratedItem("the issue")
+		i.PRs[0].Draft = false
+		forge := newRacingFactoryForge(i.PRs[0])
+		effects := &factoryEffects{
+			openForge: openForgeWith(forge, forge),
+			previewSource: func(context.Context, Repo, PreviewFilter) (*PreviewReport, error) {
+				t.Error("set_draft fetched a preview report")
+				return nil, errors.New(failureText)
+			},
+		}
+		if _, err := effects.Execute(context.Background(), i, FactoryEffect{ID: "draft", Kind: "set_draft"}); err != nil {
+			t.Fatal(err)
+		}
+		if len(forge.bodies) != 0 {
+			t.Fatalf("set_draft wrote a description: %q", forge.bodies)
+		}
+	})
 }
 
 func TestFactoryEffectReadyWritesDescriptionForReviewedHead(t *testing.T) {

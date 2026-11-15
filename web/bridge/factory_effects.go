@@ -21,6 +21,9 @@ type factoryEffects struct {
 	workers   *factoryWorkers
 	git       *factoryGit
 	openForge func(context.Context, FactoryItem) (Repo, Forge, FactoryForge, Credential, error)
+	// previewSource reads the preview-environment report a description
+	// renders. It is a seam so a test can state the report without a forge.
+	previewSource func(context.Context, Repo, PreviewFilter) (*PreviewReport, error)
 }
 
 func NewFactoryEffects(fleet *Fleet) FactoryEffects {
@@ -43,6 +46,18 @@ func (f *factoryEffects) forge(ctx context.Context, item FactoryItem) (Repo, For
 	}
 	factory, err := FactoryForgeFor(base)
 	return repo, base, factory, cred, err
+}
+
+// preview resolves the preview-environment source the description reads,
+// defaulting to the fleet exactly as forge defaults to it.
+func (f *factoryEffects) preview(ctx context.Context, repo Repo, filter PreviewFilter) (*PreviewReport, error) {
+	if f.previewSource != nil {
+		return f.previewSource(ctx, repo, filter)
+	}
+	if f.fleet == nil {
+		return nil, fmt.Errorf("%w: fleet unavailable", ErrFactoryRefused)
+	}
+	return f.fleet.PreviewEnvironments(ctx, repo, filter)
 }
 func (f *factoryEffects) Observe(ctx context.Context, item FactoryItem) (FactoryObservation, error) {
 	if f.fleet == nil {
@@ -273,7 +288,15 @@ func (f *factoryEffects) Execute(ctx context.Context, item FactoryItem, e Factor
 			if round.Implementation == nil || round.Implementation.Narration == nil {
 				return out, fmt.Errorf("%w: newest round %d carries no narration", ErrFactoryRefused, round.Number)
 			}
-			body, err := composeFactoryPRBody(round, nil, "")
+			// The fetch is best-effort: a report that cannot be read leaves
+			// the fixed unreadable line, never a failed set_ready (spec D11),
+			// and it is scoped by the pre-check head's ref, never its SHA
+			// (spec D4).
+			preview, previewErr := f.preview(ctx, repo, PreviewFilter{Ref: before.HeadRef})
+			if previewErr != nil {
+				preview = nil
+			}
+			body, err := composeFactoryPRBody(round, preview, before.HeadSHA)
 			if err != nil {
 				return out, fmt.Errorf("%w: %v", ErrFactoryRefused, err)
 			}

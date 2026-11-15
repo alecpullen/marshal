@@ -1820,7 +1820,134 @@ listed so a task does not investigate them or pass by repairing them:
 
 ### Plan 5a — the fleet's actions
 
-Not yet run. Plan 5a's last task fills this in.
+**What was built.** The fleet screen answers, spawns and cancels without
+opening an agent. Each action crosses `acpclient.Fleet`, whose `FleetRoutes`
+gained seven rows.
+
+- **The answer bodies join the contract.** `web/bridge/contract/answers.go`
+  holds `Decision`, `ModeAccessChoice`, `Answer`, `Answers` and
+  `RecentPrompts`, with their tags unchanged; `registry.go` and
+  `interaction.go` keep their names as aliases, `recentPrompts` encodes
+  `contract.RecentPrompts`, `contract.ts` is regenerated, and `api.ts`
+  re-exports the three answer types in place of its hand-written interfaces.
+- **The seam** gained `Spawn`, `AnswerPermission`, `AnswerQuestion`, `Cancel`,
+  `ApproveIntake`, `DenyIntake` and `RecentPrompts`, each with its `Routes:`
+  line and a table row; `FleetError` carries the status and the bridge's
+  sentence, and `ErrSettled` is a 410. Both fakes embed the interface, so an
+  action a test did not set up fails loudly; the fleet model's fake records
+  every call for Tasks 4 to 6.
+- **The client** sends each action through `post`, `get`'s twin: the token,
+  the JSON body, a 2xx check and the decode, bounded by the caller's context.
+  `actionError` reads the bridge's `error`, turns a 429's `scope` into "Budget
+  reached (<scope>)", and a 410 into `ErrSettled`; a dial failure is status 0.
+  The route test substitutes `missing` for a `{…}` segment and counts a 404 or
+  405 as an unserved route only when its body is not the bridge's JSON error.
+- **The model** holds one open `modal`, the `answer` agent whose approval is
+  inline, and a `status` line. `a` opens the selected agent's request: an
+  approval inline in Activity, with its tool, command, risk and reason and
+  `[y]es [n]o`; a question in a modal that walks questions in order, toggles
+  under a multi one, takes a typed answer when there are no options, declines
+  on `d`. Every action is one command with a 30s context; a refusal shows its
+  sentence on the status line for 4s and as an Events line, `ErrSettled` says
+  "<name>: already answered" in Events alone, and every action is refused
+  while the connection is not connected.
+- **Spawn, cancel and intake.** The four-field form moves with `tab`, picks
+  the project with `j`/`k` from the available ones, cycles the mode through
+  the project's default, `ask`, `act` and `act` with auto (leaving `mode` and
+  `auto` out on the default), and reads the project's recent prompts behind
+  `ctrl+r`. `x` cancels only a running agent. `⏎` on a needs-you intake item
+  asks "approve <title>? [y]es [n]o, deny". The help screen and the footer
+  hints name the new keys.
+- **The goldens** gain the plan's four frames at 100×30 and their four
+  `NO_COLOR` twins at 80×24, and the five existing frames are regenerated
+  because the footer's hints legitimately changed: each of those five diffs is
+  the footer line alone.
+
+**Where the plan was short, and how that was filled.**
+
+- **The web UI's multi-select answer was a live bug, and Task 1's re-export
+  surfaced it.** `api.ts` typed `Answer.answer` as `string | string[]`, but
+  the bridge decodes `Answers` with `Answer string`, so a multi-select answer
+  would have been answered 400 by `resolveQuestion`. Re-exporting the
+  contract's `Answer` broke `svelte-check` on `QuestionModal.svelte`, which is
+  outside the task's files, so the task stopped and the user chose to fix it
+  here: the modal joins its picks with ", ", exactly as
+  `internal/app/tui/question.go` records them. That is also the one place this
+  plan changes the web UI's behaviour.
+- **Tasks 2 and 3 build each other.** The seam grows the interface that
+  `*fleetclient.Client` implements, and the client needs the seam's
+  `FleetError` and `ErrSettled`, so either task alone leaves
+  `./internal/launch` unbuildable (it assigns the client to the interface).
+  The plan counted only the two fakes as implementers. The two tasks therefore
+  land as one commit.
+- **Task 5's footer hints rewrite the existing goldens.** Task 5 item 4 adds
+  `a`, `n` and `x` to the footer, which every existing golden renders, while
+  the same task forbids touching `testdata`. Task 6 regenerated the five
+  changed frames after checking that each diff is the footer line only. Task
+  4's `TestNOutsideTheApprovalIsSpawn` also moved to Task 5, because the spawn
+  modal it asserts on is Task 5's file.
+- **Tasks 4 to 6 land as one commit,** because their edits interleave in
+  `keys.go` and `view.go`; the plan's per-task commits could not be staged
+  apart.
+- **Decision 6's no-project sentence is wrapped,** not cut, so it fits the
+  right panel whole; its test drops the frame's colour and borders before
+  asserting the sentence, since it spans two lines.
+- **The recent-prompts read is synchronous,** bounded by 5s, at the moment the
+  spawn form opens. `Model.Update` routes only key presses and
+  `actionDoneMsg` into an open modal, and `model.go` was outside Task 5's
+  files; a command would need a `promptsMsg` case there. A failed read leaves
+  `ctrl+r` with nothing to cycle.
+- **The real-bridge test's cancel step is skipped, and that is a finding.**
+  `POST /api/sessions/{id}/cancel` ends the turn — the bridge's own snapshot
+  goes `running` to `idle` within about a second — but the fleet stream
+  carries no agent-status delta for a turn ending, so the client's row keeps
+  saying `running` until something refetches (`pending`, a replay overflow, or
+  an inbox delta that moves an agent between groups, itself throttled to once
+  a second with no retry). The action is served; the read path does not report
+  it. That belongs to the fleet client's freshness rules (F3), not to this
+  plan's actions.
+- **The harness cannot start a git-sourced agent's own child,** so approving a
+  repo-backed submission asserts the bridge's `FleetError` — a refusal, not a
+  transport failure — which is what proves the route was served.
+- **`npm run check` fails at the baseline** with six pre-existing errors in
+  fixtures (recorded under "Plan 4c" above). Every task left exactly those
+  six, and none of them is in a file this plan adds.
+- **The plan's `TMPDIR=/private/tmp/...` is macOS's;** every run here used
+  `TMPDIR=/tmp/p5-5a-suite` on Linux.
+
+**The manual run.** Not run. Task 7's third item needs an interactive fleet
+screen against a real local daemon with a real model, and this environment has
+neither a TTY driver for the fleet program nor provider credentials. What a
+human should drive, in order:
+
+1. `webbridge --profile local` with a built `marshal`, a scratch
+   `MARSHAL_DATA_DIR` and state directory.
+2. `marshal fleet`, then `n`: spawn an agent with a prompt.
+3. `a` on its approval: `y`, and see the turn finish.
+4. `a` on a question, if the model asks one: answer it in the modal.
+5. `x` on a running agent: its turn stops.
+6. `⏎` on an intake submission: approve it, then deny another.
+7. Confirm each refusal's status line and Events line, and that every action
+   is refused with the connection down.
+
+**Verification.**
+
+| Command | Result |
+| --- | --- |
+| `gofmt -l internal cmd test web` | No output. |
+| `go vet ./...` | Clean. |
+| `TMPDIR=/tmp/p5-5a-suite scripts/test.sh full` | Passed: every package `ok`, exit 0. |
+| `TMPDIR=/tmp/p5-5a-suite CGO_ENABLED=1 go test ./web/... -count=1 -timeout 20m` | Passed (`marshal/web/bridge` 133.7s). |
+| `go test ./web/bridge/contract/tsgen -run TestTypeScriptContractIsCurrent -count=1` | Passed. |
+| `cd web/ui && npm run check` | The baseline's six errors and one warning, no seventh. |
+| `cd web/ui && npm test` | Passed: 985 tests in 88 files. |
+| `cd web/ui && npm run build` | Built in 4.3s; `web/bridge/static/` recommitted, since CI's `git diff --exit-code -- web/bridge/static` requires the bundle to match its source. |
+| `CGO_ENABLED=1 go build -o marshal ./cmd/marshal` | Built. |
+
+Each task's mutation check was run and restored: dropping the body's sentence
+in `actionError` failed `TestARefusalCarriesTheBridgesSentence` with
+`the refusal says "status 409", want "the agent is held by another operator"`,
+and only that one.
 
 ### Plan 5b — the diff tab and finishing an agent
 

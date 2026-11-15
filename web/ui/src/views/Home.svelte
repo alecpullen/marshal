@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
   import Card from '../lib/ui/Card.svelte'
   import Button from '../lib/ui/Button.svelte'
   import Tag from '../lib/ui/Tag.svelte'
@@ -10,8 +11,9 @@
   import ActivityFeed from '../lib/ActivityFeed.svelte'
   import { mineOnly } from '../lib/inbox'
   import { describePending, type AgentRow, type NetworkDecisionItem, type RerouteNotice } from '../lib/fleet'
-  import { APIError, approvePending, denyPending, undoReroute, errMessage, listCIHistory, listReviewDrafts, type CIHistory, type Inbox, type PendingSubmission, type ProjectStatus, type ReviewDraft } from '../lib/api'
-  import { prNumber, recentFixes, severityCounts, severityTone } from '../lib/automations/model'
+  import { APIError, approvePending, denyPending, undoReroute, errMessage, type CIHistory, type Inbox, type PendingSubmission, type ProjectStatus, type ReviewDraft } from '../lib/api'
+  import { prNumber, severityCounts, severityTone } from '../lib/automations/model'
+  import { loadAutomationSummaries } from '../lib/automations/summary'
   import { formatAutomationRoute } from '../lib/routes'
   import { shortName } from '../lib/utils'
 
@@ -96,21 +98,20 @@
   // Review drafts and CI fixes are optional extras: a bridge without automations just shows none.
   let drafts = $state<{ root: string; draft: ReviewDraft }[]>([])
   let fixes = $state<CIHistory[]>([])
+  let automationErrors = $state<{ root: string; message: string }[]>([])
   const roots = $derived(projects.map((p) => p.root).join('\n'))
   $effect(() => {
     void automationTick
-    const rs = roots ? roots.split('\n') : []
+    void roots
+    // The project rows are read untracked: `roots` above decides when to reload,
+    // so an unrelated fleet delta does not repeat every project's read.
+    const list = untrack(() => projects)
     let stale = false
-    void Promise.all(
-      rs.map(async (root) => ({
-        root,
-        drafts: await listReviewDrafts({ project: root, status: 'draft' }).catch(() => []),
-        history: await listCIHistory({ project: root }).catch(() => []),
-      })),
-    ).then((all) => {
+    void loadAutomationSummaries(list).then((s) => {
       if (stale) return
-      drafts = all.flatMap((r) => r.drafts.filter((d) => d.status === 'draft').map((draft) => ({ root: r.root, draft })))
-      fixes = all.flatMap((r) => recentFixes(r.history, Date.now()))
+      drafts = s.drafts
+      fixes = s.fixes
+      automationErrors = s.errors
     })
     return () => {
       stale = true
@@ -155,7 +156,7 @@
 
 <div class="mx-auto flex max-w-6xl flex-col gap-4 p-6">
   <header class="flex items-center justify-between gap-3">
-    <h1 class="text-lg font-semibold">Home</h1>
+    <h1 class="text-lg font-semibold">Inbox</h1>
     <Segmented
       label="Scope"
       value={scope}
@@ -169,6 +170,14 @@
 
   {#if notice}
     <Card class="border-attention text-sm">{notice}</Card>
+  {/if}
+
+  {#if automationErrors.length}
+    <Card class="border-attention text-sm" data-testid="automation-error">
+      {#each automationErrors as e (e.root)}
+        <p class="truncate">{shortName(e.root)} · {e.message}</p>
+      {/each}
+    </Card>
   {/if}
 
   {#each notices as n (n.id)}

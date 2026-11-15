@@ -19,8 +19,11 @@ import (
 
 // fakeFleet is a fleet the test owns: it answers State from a field and never
 // signals Changed. Fleet neither starts nor closes an injected client, so it
-// has no lifecycle of its own.
+// has no lifecycle of its own. The seam is embedded, so an action this test
+// does not set up fails loudly instead of quietly answering nothing.
 type fakeFleet struct {
+	acpclient.Fleet
+
 	state   acpclient.FleetState
 	changed chan struct{}
 }

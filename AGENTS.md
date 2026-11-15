@@ -125,7 +125,9 @@ TUI (rendering only)
                            shared panel host, session sheet, browse inspector, list engine, dressing
   internal/app/tui/{settings,connect,agents,memory,skills,plugins,mcpauth,modeloptions,presetflow,probe,doctorpanel}
                            interactive surfaces for config, providers, roles, MCP, models
-  internal/app/tui/fleet/   the fleet screen: the agents list, needs you, events, and an agent's Activity or Info
+  internal/app/tui/fleet/   the fleet screen: the agents list, needs you, events,
+                           an agent's Activity or Info, and its actions —
+                           answering, spawn, cancel and intake
   internal/app/tui/{sddreview,castlist,gatepanel,postmortempanel,trustpanel,liveregion,textfield}
 
 Models

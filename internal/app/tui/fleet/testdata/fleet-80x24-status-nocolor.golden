@@ -1,0 +1,24 @@
+╭─ Agents ────────────── 7─╮╭─ [Activity]  Info ───────────────────────────────╮
+│ Needs you                ││ status    running                                │
+│ ⚠ fix-fl…  38%   2    2m ││ activity  go test ./internal/...                 │
+│ Running                  ││ waiting   –                                      │
+│ ● s3b-eg…  41%   7    0s ││ context   41%                                    │
+│ Ready                    ││ changed   7                                      │
+│ ✓ docs-d…  22%   4    1h ││ age       0s                                     │
+│ Earlier                  ││                                                  │
+│ · docs-s…  12%   0    5s ││                                                  │
+│ ✗ ci-fix…   9%   0    3h ││                                                  │
+│ Sessions                 ││                                                  │
+│ · marshal 3f2a91bc 2… 3m ││                                                  │
+│ · marshal 9c1d4e5f 1… 1m ││                                                  │
+╰──────────────────────────╯│                                                  │
+╭─ Needs you ─────────── 2─╮│                                                  │
+│ fix-flaky-hooks approval ││                                                  │
+│ intake github: fix the … ││                                                  │
+╰──────────────────────────╯│                                                  │
+╭─ Events ────────────── 4─╮│                                                  │
+│ 14:59 docs-deploy is re… ││                                                  │
+│ 15:00 fix-flaky-hooks n… ││                                                  │
+│ 22:13 cancel s3b-egress… ││                                                  │
+╰──────────────────────────╯╰──────────────────────────────────────────────────╯
+local ●                                   cancel s3b-egress failed: no such turn

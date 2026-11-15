@@ -1,0 +1,24 @@
+╭─ Agents ────────────── 7─╮╭─ New agent ────── tab next · ⏎ spawn · esc close─╮
+│ Needs you                ││ project   /repo/marshal  j/k                     │
+│ ⚠ fix-fl…  38%   2    2m ││ name      > unnamed                              │
+│ Running                  ││ mode      default  space                         │
+│ ● s3b-eg…  41%   7    0s ││ prompt    > the first prompt              ctrl+r │
+│ Ready                    ││                                                  │
+│ ✓ docs-d…  22%   4    1h ││                                                  │
+│ Earlier                  ││                                                  │
+│ · docs-s…  12%   0    5s ││                                                  │
+│ ✗ ci-fix…   9%   0    3h ││                                                  │
+│ Sessions                 ││                                                  │
+│ · marshal 3f2a91bc 2… 3m ││                                                  │
+│ · marshal 9c1d4e5f 1… 1m ││                                                  │
+╰──────────────────────────╯│                                                  │
+╭─ Needs you ─────────── 2─╮│                                                  │
+│ fix-flaky-hooks approval ││                                                  │
+│ intake github: fix the … ││                                                  │
+╰──────────────────────────╯│                                                  │
+╭─ Events ────────────── 3─╮│                                                  │
+│ 14:58 connected to local ││                                                  │
+│ 14:59 docs-deploy is re… ││                                                  │
+│ 15:00 fix-flaky-hooks n… ││                                                  │
+╰──────────────────────────╯╰──────────────────────────────────────────────────╯
+local ●  j/k move a answer x cancel n spawn                         ?help q quit

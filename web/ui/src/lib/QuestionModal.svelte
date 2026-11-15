@@ -39,7 +39,12 @@
       if (q.options && q.allowOther && isOtherSelected(i)) {
         answer = others[i]
       }
-      return { question: q.question, answer }
+      // A multi-select answer is joined into one string, as the TUI records it
+      // (internal/app/tui/question.go). Answer.answer is a string on the wire,
+      // so an array here would be rejected by the bridge's decoder. The TUI
+      // trims a typed answer, so this does too: both surfaces answer alike.
+      const joined = Array.isArray(answer) ? answer.join(', ') : answer
+      return { question: q.question, answer: joined.trim() }
     })
     await onResolve({ answers })
   }

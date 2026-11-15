@@ -431,7 +431,7 @@
           <FactoryNew projectRoot={new URLSearchParams(hash.split('?')[1] ?? '').get('project') ?? ''} onNavigate={navigate} registerGuard={guard.register} upsert={factoryStore.upsert} />
         {:else if factoryRoute.itemId}
           {#key factoryRoute.itemId}<FactoryItem itemId={factoryRoute.itemId} factory={$factory} getItem={factoryStore.getItem} upsert={factoryStore.upsert} onRefresh={factoryStore.refresh} onNavigate={navigate} />{/key}
-        {:else}<Factory factory={$factory} onRefresh={refreshFactory} projectRoot={factoryRoute.projectRoot} filter={factoryRoute.filter} onNavigate={navigate} />{/if}
+        {:else}<Factory factory={$factory} onRefresh={refreshFactory} projectRoot={factoryRoute.projectRoot} filter={factoryRoute.filter} agents={$fleet.agents} onNavigate={navigate} />{/if}
       </div>
     {:else if projectRoute}
       <div class="h-full overflow-y-auto">

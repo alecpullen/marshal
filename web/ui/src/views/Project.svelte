@@ -27,7 +27,7 @@
   import { MODES, SHIP_TARGETS, autoFrom, autoOf, healthChecks, soft, isolatedFrom, isolationOf, latestAgent, parseWorkspaceRef, type AutoChoice, type Dot, type IsolationChoice } from '../lib/project/model'
   import { shortName } from '../lib/utils'
   import type { RouteLeaveGuard } from '../lib/navigationGuard'
-  import { formatAutomationRoute, type AutomationPage } from '../lib/routes'
+  import { formatAutomationRoute, formatFactoryRoute, type AutomationPage } from '../lib/routes'
 
   let { root, agents, telemetry = {}, onNavigate, registerGuard = () => {} }: { root: string; agents: AgentRow[]; telemetry?: Record<string, AgentTelemetry>; onNavigate: (hash: string) => void; registerGuard?: (guard?: RouteLeaveGuard) => void } = $props()
 
@@ -404,7 +404,10 @@
     <p class="truncate font-mono text-xs text-muted">{root}</p>
   </header>
 
-  <a class="text-sm text-accent underline" href={`#factory/new?project=${encodeURIComponent(root)}`} onclick={(e) => { e.preventDefault(); onNavigate(`#factory/new?project=${encodeURIComponent(root)}`) }}>Create factory work item for this project{repoId ? ` (${repoId})` : ''}</a>
+  <div class="flex flex-wrap items-center gap-3 text-sm">
+    <a class="text-accent underline" href={`#factory/new?project=${encodeURIComponent(root)}`} onclick={(e) => { e.preventDefault(); onNavigate(`#factory/new?project=${encodeURIComponent(root)}`) }}>Create factory work item for this project{repoId ? ` (${repoId})` : ''}</a>
+    <a class="text-accent underline" href={formatFactoryRoute({ projectRoot: root })} onclick={(e) => { e.preventDefault(); onNavigate(formatFactoryRoute({ projectRoot: root })) }}>Open project factory</a>
+  </div>
   <Tabs label="Project" tabs={[{ value: 'overview', label: 'Overview' }, { value: 'session', label: 'Session sheet' }, { value: 'automations', label: 'Automations' }]} value={tab} onchange={(t) => (tab = t as 'overview' | 'session' | 'automations')} />
 
   {#if error}

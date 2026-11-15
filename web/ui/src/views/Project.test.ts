@@ -176,6 +176,17 @@ describe('Project overview', () => {
 })
 
 describe('Project factory and agent defaults', () => {
+  it('linksToHandoffAndScopedFactory', async () => {
+    const onNavigate = vi.fn()
+    mount({ onNavigate })
+    // The header carries both factory destinations: creating work for this
+    // project, and the project's own factory dashboard.
+    await fireEvent.click(await screen.findByRole('link', { name: /Create factory work item for this project/ }))
+    expect(onNavigate).toHaveBeenLastCalledWith('#factory/new?project=%2Fhome%2Fu%2Falpha')
+    await fireEvent.click(screen.getByRole('link', { name: 'Open project factory' }))
+    expect(onNavigate).toHaveBeenLastCalledWith('#projects/%2Fhome%2Fu%2Falpha/factory')
+  })
+
   it('followsAgentDefaultsUntilOverridden', async () => {
     ;(api.getVersionedProjectSettings as Mock).mockResolvedValue(versioned({ workspace: 'go-dev', routing: { profile: 'fast' }, intake: {} }))
     mount()

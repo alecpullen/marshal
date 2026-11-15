@@ -1536,4 +1536,113 @@ settled channel from the approval goroutine's `promptRPCContext` call failed
 
 ### Plan 4b — opening an agent
 
-Not yet run. Plan 4b's last task fills this in.
+**What was built.** `⏎` on the fleet screen opens the selected agent's session
+or a daemon session, and leaving it returns to the fleet with the row still
+selected. The bridge gained `POST /api/agents/{id}/attach`
+(`web/bridge/attach.go`): `SocketHandler` dispatches it beside the project
+attach, so the TCP handler still answers 404, and it answers `101` with
+`Marshal-Session` and `Marshal-Agent`. Its refusals are ordered as decided:
+404 for an unknown agent, 409 for a paused one (`resume it first`), 502 for a
+runtime that failed to start, 409 for an agent on a child of its own, and 409
+for an agent with no session yet; it never resumes. `Fleet.agentOwning`
+answers "whose session is this" for both attaches — the classifier's map
+first, then every record whose `SessionID` matches — and `finishFromFleet`
+owns the one sentence. The relay now refuses a `session/close` and a replacing
+`session/new` that name an agent's session, on either attach: `refusal` shares
+one decode with `watchedRequest`, the refused frame is answered and neither
+forwarded nor watched, and `clientMu` serialises the client writes of both
+pumps. The project attach's 409 consults `agentOwning` too, which closes P4
+H15. `internal/daemon` split `Attach` into `upgrade(ctx, path, body)`, gained
+`Attachment.AgentID`, and `AttachAgent` requires the answer's `Marshal-Agent`
+to be the agent asked for. The session screen gained `WithAgentSession` and
+refuses every ending on an agent's session in `beginEnd` (`/exit`, `/quit`,
+`/new`, `/clear`, Ctrl+C's quit and a resume; `/detach` still detaches), names
+the agent in the status line, and `/fleet` leaves the daemon session running
+and opens the fleet. The fleet model gained `Target`, `Open`, `Selected`,
+`WithSelected`, `WithNotice`, the `⏎` key and `⏎ open` in the footer. Launch
+gained `ProgramResult.ToFleet`/`Open`, `daemonClient.AttachAgent`, and one loop
+over `daemonStep`s: a fleet step builds and keeps the fleet client for the
+loop, a session step dials through `AttachAgent` or `Attach`, and once the
+fleet has run every ending — detach, quit, `/fleet`, a lost connection, a
+refused open — returns to the fleet, with the reason as an Events line. Before
+the fleet has run, every ending behaves as it did. `test/daemon` proves W4, W5
+and W6 over a real local-profile bridge (`fleet_loop_test.go`,
+`agent_attach_test.go`), and `AGENTS.md`, `docs/ARCHITECTURE.md` and
+`cmd/webbridge/README.md` describe the route, the header and the refusals.
+
+**Where the plan was short, and how that was filled.**
+
+- Task 1's `relay` signature change broke the one other call site,
+  `relay_test.go`'s pair. It passes `""`, as `attachProject` does.
+- Task 6's footer lives in `view.go`, which its Files list omitted; step 5 is
+  the footer. Five goldens moved by exactly their footer line, as required.
+- Task 2's mutation check cannot work as written. Dropping `clientMu` leaves
+  `-race -run Relay` green, because the pair's client is a `net.Pipe` whose
+  every `Write` is internally serialised, which gives the detector a
+  happens-before edge. The guard was proven load-bearing instead with a
+  temporary fixture that drives the two pumps against a recording `net.Conn`
+  with an unsynchronised `Write`: unguarded reports `WARNING: DATA RACE` at
+  the two client-write sites, guarded is clean. The fixture was removed, so
+  the guarantee stays a frame-integrity property the detector cannot observe
+  in this test.
+- Task 7 left the placement of the user `[tui]` config open. It is read
+  lazily on the loop's first fleet step and cached for the loop (warn and
+  default on error), so a plain daemon session still reads no user config and
+  `Fleet`'s own behaviour is unchanged. `daemonStep.label()` falls back to
+  "a new session" for a step that names neither an agent nor a session, which
+  no loop-built step reaches.
+- `Selected()` is only meaningful once the screen has laid its rows out. Both
+  loop tests open and close the filter (`/`, then esc) to apply
+  `WithSelected` — the only public path that reaches a start selection without
+  a real `tea.Program` — and list a decoy agent first, so "restored on the
+  right row" is distinguishable from "cursor on row one".
+- Task 9's docs and its record were written as two commits (task 9a, then
+  task 9b), so the prose did not wait on the suite.
+
+**The manual run.** `marshal` and `webbridge` were built from the branch, and
+`webbridge --profile local` was run on a temporary socket with a temporary git
+project and the built marshal as its `--marshal-bin`.
+
+- `POST /api/agents` spawned agent `e0ef295e2b7d345f`.
+- `POST /api/agents/{id}/attach` answered `101 Switching Protocols` with
+  `Marshal-Session: sess_1794745621253409000` and
+  `Marshal-Agent: e0ef295e2b7d345f`.
+- The project attach naming that session answered `409 Conflict` with
+  `{"error":"session sess_1794745621253409000 belongs to a fleet agent"}` —
+  P4 H15 closed against the real binary.
+- An unknown agent answered `404`.
+- A `session/close` frame sent over the agent attach's stream was answered
+  `-32000` with `This is agent manual agent's session: finish it from the
+  fleet screen.`, as the message and as the message of the `acpwire`-shaped
+  `data` with an empty code.
+
+Not driven by hand: the TUI keystrokes — `⏎` on the fleet screen, `/exit` and
+`/new` in a session screen, `/fleet` and detach back, and `/fleet` from a
+plain `marshal` session. This environment cannot type into a Bubble Tea
+program. Those paths are covered by W4's
+`TestTheFleetOpensAnAgentAndLeavesItRunning` (real bridge, real launch loop),
+W5, W6, and the screen's own tests (`agent_session_test.go`,
+`open_test.go`).
+
+**Verification.** The baseline at `bcceadab` was green: the union of every
+task's Verify commands, run before any edit, failed nothing.
+
+| Command | Result |
+| --- | --- |
+| `gofmt -l internal cmd test web` | No output. |
+| `go vet ./...` | Clean. |
+| `GOOS=linux go vet ./web/...` | Clean. |
+| `GOOS=windows go vet ./web/bridge/...` | Clean. |
+| `TMPDIR=/private/tmp/p5-4b-suite CGO_ENABLED=1 go test -p=1 ./... -count=1 -timeout 30m -skip '^Test(NoticeCallBudget\|ControlCallBudget\|AnswerCallBudget\|ResponseBarrierBudget\|SettingsCallBudget\|NoteCallBudget\|BrowserCallBudget\|EndCallBudget\|StackBusyFlipBudget\|StackPatchApplyBudget\|StackRoundTripBudget\|AKeyPressOverThePipeBudget)$'` | Passed; no package failed (`web/bridge` 120.5s, `test/daemon` 8.7s). The twelve skipped tests are the wall-clock budget tests CI also skips. |
+| `go test -race ./web/bridge/ -run 'Attach\|Relay' -count=1` | Passed (`ok marshal/web/bridge 6.4s`). |
+| `go test -race ./internal/launch/ ./internal/daemon/ -count=1` | Passed (`14.8s`, `2.3s`). |
+| `CGO_ENABLED=1 go build -o marshal ./cmd/marshal` | Built (git-ignored via `.gitignore`'s `/marshal`). |
+| `go test ./test/usability/... -run TestScripted -count=1 -timeout 5m` | Passed (`ok marshal/test/usability 44.4s`). |
+
+Each task's own Verify ran green before its commit: `web/bridge`'s
+`Attach\|Relay` filter, its full package and `-race Relay`; `internal/daemon`
+and `-race`; the tui's `Agent\|Fleet\|Detach` filter with the client-seam
+boundary test; `internal/commands`; `internal/app/tui/fleet`; `internal/launch`
+and `-race`; and `test/daemon`'s `Agent` filter and full package. The two
+mutation checks that could run were run and restored: dropping the agent
+attach's paused refusal failed `TestTheAgentAttachRefusals/a_paused_agent`.

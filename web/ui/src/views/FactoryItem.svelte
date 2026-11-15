@@ -13,14 +13,24 @@
   let replaceImplementerProfile = $state(''), replaceReviewerProfile = $state('')
   let attest = $state(false), workerName = $state(''), pending = $state<FactoryCommand | null>(null)
   let preview = $state<PreviewReport | null>(null), previewLoading = $state(false), previewError = $state('')
-  let previewLoadedOnce = false
-  type PreviewSegment = { kind: 'code'; text: string } | { kind: 'text'; text: string } | { kind: 'link'; url: string; logs: string }
-  function previewBadge(sha: string, head: string) { return sha.toLowerCase() === head.toLowerCase() ? 'matches the PR head' : 'not the PR head' }
+  let previewStarted = $state(false), previewRequest = 0, alive = true
+  type PreviewSegment = { kind: 'code'; text: string } | { kind: 'text'; text: string } | { kind: 'link'; url: string; logs: string } | { kind: 'badge'; label: string; sha: string }
+  const textEncoder = new TextEncoder(), unsafeUrlPattern = /[\s`<>\u0000-\u001f\u007f]/
+  /** Spec D10: clickable only as an absolute http(s) URL with a nonempty host, no whitespace/control/angle/backtick characters, at most 2048 bytes. No repair. */
+  function isHttpUrl(value: string) {
+    if (!value || value.length > 2048 || textEncoder.encode(value).length > 2048 || unsafeUrlPattern.test(value)) return false
+    try {
+      const parsed = new URL(value)
+      return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && !!parsed.hostname
+    } catch { return false }
+  }
+  const displayText = (value: string) => { const chars = [...value]; return chars.length > 512 ? chars.slice(0, 512).join('') + '…' : value }
+  function previewBadge(sha: string, head: string) { return sha.toLowerCase() === head.toLowerCase() ? 'matches the last factory-recorded PR head' : 'differs from the last factory-recorded PR head' }
   function deploymentSegments(d: PreviewDeployment, head: string): PreviewSegment[] {
     const segments: PreviewSegment[] = [{ kind: 'code', text: d.environment }, d.state ? { kind: 'code', text: d.state } : { kind: 'text', text: '(no status reported by the provider)' }]
     if (d.sha) {
       segments.push({ kind: 'code', text: d.sha.slice(0, 7) })
-      if (head) segments.push({ kind: 'text', text: previewBadge(d.sha, head) })
+      if (head) segments.push({ kind: 'badge', label: previewBadge(d.sha, head), sha: head.slice(0, 7) })
     } else segments.push({ kind: 'text', text: 'revision not reported by the provider' })
     if (d.environmentUrl) segments.push({ kind: 'link', url: d.environmentUrl, logs: d.logUrl })
     if (d.description) segments.push({ kind: 'code', text: d.description })
@@ -32,13 +42,30 @@
   function checkState(c: FactoryCheck) { return c.conclusion || c.status || 'pending' }
   async function loadPreview() {
     if (!item?.repoId) return
+    const seq = ++previewRequest
     previewLoading = true; previewError = ''
-    try { preview = (await getPreviewEnvironments(item.repoId, item.branch)) ?? null }
-    catch (e) { previewError = errMessage(e) }
-    finally { previewLoading = false }
+    try {
+      const report = (await getPreviewEnvironments(item.repoId, item.branch)) ?? null
+      if (!alive || seq !== previewRequest) return
+      preview = report
+    } catch (e) {
+      if (!alive || seq !== previewRequest) return
+      previewError = errMessage(e)
+    }
+    if (alive && seq === previewRequest) previewLoading = false
   }
-  async function refresh() { item = await getFactoryItem(itemId); error = ''; if (!previewLoadedOnce) { previewLoadedOnce = true; await loadPreview() } }
-  onMount(() => { const p = createFactoryPoller(refresh, () => !!item && !['draft', 'ready', 'stopped', 'closed', 'needs_input'].includes(item.state), (e) => { error = errMessage(e) }); p.start(); return p.stop })
+  async function refresh() { item = await getFactoryItem(itemId); error = '' }
+  // Spec §6: the initial preview load fires once from the mount path, never from the item poller's refresh.
+  $effect(() => {
+    if (!item?.repoId || previewStarted) return
+    previewStarted = true
+    void loadPreview()
+  })
+  onMount(() => {
+    void (async () => { try { item = await getFactoryItem(itemId); error = '' } catch (e) { error = errMessage(e) } })()
+    const p = createFactoryPoller(refresh, () => !!item && !['draft', 'ready', 'stopped', 'closed', 'needs_input'].includes(item.state), (e) => { error = errMessage(e) }); p.start()
+    return () => { alive = false; p.stop() }
+  })
   async function command(kind: FactoryCommand['kind']) {
     if (!item || busy) return
     busy = true; error = ''; notice = ''
@@ -199,9 +226,9 @@
         {:else if preview}
           {#each previewGaps as gap}<p class="break-words text-sm"><code class="text-xs">{gap.key}</code> — {gap.state} — {gap.detail}</p>{/each}
           {#if previewEmpty}<p class="text-sm text-muted">No preview deployments or test environments are configured for this revision.</p>{/if}
-          {#if previewDeployments.length}<ul class="grid gap-1">{#each previewDeployments as segments}<li class="break-words text-sm">{#each segments as segment, i}{#if i}<span class="text-muted"> — </span>{/if}{#if segment.kind === 'code'}<code class="text-xs">{segment.text}</code>{:else if segment.kind === 'link'}<a class="break-all text-accent underline" href={segment.url} target="_blank" rel="noopener noreferrer">{segment.url}</a>{#if segment.logs} (logs: {segment.logs}){/if}{:else}{segment.text}{/if}{/each}</li>{/each}</ul>{/if}
-          {#if previewEnvironments.length}<p class="text-sm">Configured environments:</p><ul class="grid gap-1">{#each previewEnvironments as segments}<li class="break-words text-sm">{#each segments as segment, i}{#if i}<span class="text-muted"> — </span>{/if}{#if segment.kind === 'code'}<code class="text-xs">{segment.text}</code>{:else if segment.kind === 'link'}<a class="break-all text-accent underline" href={segment.url} target="_blank" rel="noopener noreferrer">{segment.url}</a>{:else}{segment.text}{/if}{/each}</li>{/each}</ul>{/if}
-          {#if statusLinks.length}<p class="text-sm">Links reported by commit statuses:</p><ul class="grid gap-1">{#each statusLinks as check}<li class="break-words text-sm"><code class="text-xs">{check.key.name}</code> (<code class="text-xs">{checkState(check)}</code>): <a class="break-all text-accent underline" href={check.url} target="_blank" rel="noopener noreferrer">{check.url}</a></li>{/each}</ul>{/if}
+          {#if previewDeployments.length}<ul class="grid gap-1">{#each previewDeployments as segments}<li class="break-words text-sm">{#each segments as segment, i}{#if i}<span class="text-muted"> — </span>{/if}{#if segment.kind === 'code'}<code class="text-xs">{segment.text}</code>{:else if segment.kind === 'badge'}{segment.label} <code class="text-xs">{segment.sha}</code>{:else if segment.kind === 'link'}{#if isHttpUrl(segment.url)}<a class="break-all text-accent underline" href={segment.url} target="_blank" rel="noopener noreferrer">{segment.url}</a>{:else}<span class="break-all">{displayText(segment.url)}</span>{/if}{#if segment.logs} (logs: {#if isHttpUrl(segment.logs)}<a class="break-all text-accent underline" href={segment.logs} target="_blank" rel="noopener noreferrer">{segment.logs}</a>{:else}<span class="break-all">{displayText(segment.logs)}</span>{/if}){/if}{:else if segment.kind === 'text'}{segment.text}{/if}{/each}</li>{/each}</ul>{/if}
+          {#if previewEnvironments.length}<p class="text-sm">Configured environments:</p><ul class="grid gap-1">{#each previewEnvironments as segments}<li class="break-words text-sm">{#each segments as segment, i}{#if i}<span class="text-muted"> — </span>{/if}{#if segment.kind === 'code'}<code class="text-xs">{segment.text}</code>{:else if segment.kind === 'link'}{#if isHttpUrl(segment.url)}<a class="break-all text-accent underline" href={segment.url} target="_blank" rel="noopener noreferrer">{segment.url}</a>{:else}<span class="break-all">{displayText(segment.url)}</span>{/if}{:else if segment.kind === 'text'}{segment.text}{/if}{/each}</li>{/each}</ul>{/if}
+          {#if statusLinks.length}<p class="text-sm">Links reported by commit statuses:</p><ul class="grid gap-1">{#each statusLinks as check}<li class="break-words text-sm"><code class="text-xs">{check.key.name}</code> (<code class="text-xs">{checkState(check)}</code>): {#if isHttpUrl(check.url)}<a class="break-all text-accent underline" href={check.url} target="_blank" rel="noopener noreferrer">{check.url}</a>{:else}<span class="break-all">{displayText(check.url)}</span>{/if}</li>{/each}</ul>{/if}
         {/if}
       </Card>{/if}
       {#if item.workers?.length}<Card><h2 class="font-semibold">Agents</h2>{#each item.workers as worker}<a class="block text-sm text-accent underline" href={`#chat/${encodeURIComponent(worker.agentId)}`} onclick={(e) => { e.preventDefault(); onNavigate(`#chat/${encodeURIComponent(worker.agentId)}`) }}>{worker.role}: {worker.agentId}</a>{/each}</Card>{/if}

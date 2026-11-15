@@ -1,7 +1,10 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onMount, tick } from 'svelte'
   import Card from '../lib/ui/Card.svelte'
   import Button from '../lib/ui/Button.svelte'
+  import EffectiveConfigSummary from '../lib/factory/EffectiveConfigSummary.svelte'
+  import ProfileSelect from '../lib/factory/ProfileSelect.svelte'
+  import { formatFactoryCheck, keepUnavailable, profileOf, resolvedConfigRows, type ConfigSummaryRow } from '../lib/factory/config'
   import { createFactoryItem, errMessage, getModels, getProjectSettings, listRepos, listWorkspaces, type ProjectSettings, type RepoRow, type WorkspaceListItem } from '../lib/api'
   import type { FactoryCheckKey, FactoryCreate, FactoryCreateConfig, FactoryItem } from '../lib/factory'
   import type { RouteLeaveGuard } from '../lib/navigationGuard'
@@ -50,8 +53,6 @@
     builtin: 'Built-in',
     none: 'Not configured',
   }
-  const describe = (e: Effective, missing: string): string =>
-    e.value ? `${SOURCE_TEXT[e.source]}: ${e.value}` : `${SOURCE_TEXT.none} — ${missing}`
   const pick = (handoff: string, factory: string, project: string): Effective => {
     if (handoff) return { value: handoff, source: 'handoff' }
     if (factory) return { value: factory, source: 'factory' }
@@ -63,9 +64,9 @@
     if (factory) return { value: String(factory), source: 'factory' }
     return { value: String(builtin), source: 'builtin' }
   }
-  // A routing object only ever contributes its profile; every other member
-  // belongs to the route it came from and is left untouched.
-  const profileOf = (route: { profile?: unknown } | undefined): string => (typeof route?.profile === 'string' ? route.profile : '')
+  // A row names the value and, when it follows something, where it came from.
+  const sourced = (label: string, e: Effective, missing: string): ConfigSummaryRow =>
+    e.value ? { label, value: e.value, source: SOURCE_TEXT[e.source] } : { label, value: 'Not set', source: `${SOURCE_TEXT.none} — ${missing}` }
 
   const factoryDefaults = $derived(settings?.factoryDefaults ?? {})
   const projectWorkspace = $derived(settings?.workspace ?? '')
@@ -84,16 +85,13 @@
   const maxRounds = $derived(pickLimit(maxRoundsOverride, factoryDefaults.maxRounds, 5))
   const ciPoll = $derived(pickLimit(ciPollOverride, factoryDefaults.ciPollSeconds, 15))
   const ciWait = $derived(pickLimit(ciWaitOverride, factoryDefaults.ciWaitSeconds, 1800))
-  const reviewerInstructionsEffective = $derived(pick('', factoryDefaults.reviewerInstructions ?? '', ''))
+  const reviewerInstructionsEffective = $derived(reviewerInstructions.trim() ? '' : factoryDefaults.reviewerInstructions ?? '')
 
   // A native handoff suppresses the *project agent* workspace fallback; only a
   // separately configured factory workspace remains an explicit conflict.
   const workspaceConflict = $derived(native && factoryWorkspace !== '')
 
-  function formatCheck(c: FactoryCheckKey): string {
-    return c.kind === 'commit_status' ? `${c.kind}:${c.name}` : `${c.kind}:${c.name}:${c.appId}`
-  }
-  const formatChecks = (list: FactoryCheckKey[]): string => (list.length ? list.map(formatCheck).join(', ') : 'none')
+  const formatChecks = (list: FactoryCheckKey[]): string => (list.length ? list.map(formatFactoryCheck).join(', ') : 'none')
   function parseChecks(text: string): FactoryCheckKey[] {
     return text.split('\n').map((line) => line.trim()).filter(Boolean).map((line) => {
       const [kind, name, app] = line.split(':')
@@ -108,28 +106,72 @@
     try { return { checks: parseChecks(expectedChecksText), error: '' } }
     catch (e) { return { checks: [], error: errMessage(e) } }
   })
-  const checksEffective = $derived(
-    checksMode === 'inherit'
-      ? (factoryDefaults.expectedChecks?.length
-        ? `Project factory default: ${formatChecks(factoryDefaults.expectedChecks)}`
-        : 'Not configured — no required checks are inherited')
-      : checksMode === 'none'
-        ? 'This handoff: no required checks'
-        : (checkPlan.error ? checkPlan.error : `This handoff: ${formatChecks(checkPlan.checks)}`),
-  )
+  const checksRow = $derived<ConfigSummaryRow>(checksSummary())
+  function checksSummary(): ConfigSummaryRow {
+    const label = 'Expected checks'
+    if (checksMode === 'none') {
+      // The deliberate "none" choice is only a decision once it is acknowledged.
+      return { label, value: 'None', source: 'This handoff: no required checks', warning: !noRequiredCiAcknowledged }
+    }
+    if (checksMode === 'inherit') {
+      const inherited = factoryDefaults.expectedChecks ?? []
+      return inherited.length
+        ? { label, value: formatChecks(inherited), source: SOURCE_TEXT.factory }
+        : { label, value: 'None', source: `${SOURCE_TEXT.none} — no required checks are inherited`, warning: true }
+    }
+    if (checkPlan.error) return { label, value: checkPlan.error, source: SOURCE_TEXT.handoff, warning: true }
+    return {
+      label,
+      value: checkPlan.checks.length ? formatChecks(checkPlan.checks) : 'None',
+      source: SOURCE_TEXT.handoff,
+      warning: !checkPlan.checks.length && !noRequiredCiAcknowledged,
+    }
+  }
   // Kept visible when a saved value is no longer in a picker, so the choice is
   // never silently discarded.
-  const keepUnavailable = (options: { value: string; label: string }[], value: string) =>
-    value && !options.some((o) => o.value === value) ? [...options, { value, label: `${value} (unavailable)` }] : options
   const wsOptions = $derived(workspaces.map((w) => ({ value: w.source === 'repo' ? `repo:${w.name}` : w.name, label: w.source === 'repo' ? `${w.name} (repo)` : w.name })))
   const workspaceChoices = $derived(keepUnavailable(wsOptions, workspaceOverride))
-  // Each role keeps its own unavailable value. Sharing one list would leave the
-  // second role's saved profile out of its picker, so the select would show a
-  // blank choice and touching it would silently replace a value the user never
-  // meant to change.
-  const profileOptions = $derived(profiles.map((p) => ({ value: p, label: p })))
-  const implementerChoices = $derived(keepUnavailable(profileOptions, implementerOverride))
-  const reviewerChoices = $derived(keepUnavailable(profileOptions, reviewerOverride))
+
+  // What this handoff will create, and where every value came from. It reads
+  // the same effective values the payload is built from, so an override shows
+  // up here the moment it is chosen and nothing is written back into a field
+  // that is still following.
+  const summaryRows = $derived<ConfigSummaryRow[]>([
+    { label: 'Repository', value: repoId || 'Not set' },
+    { label: 'Project', value: projectRoot || 'Not set' },
+    { label: 'Target branch', value: branch.value || 'Not set', source: SOURCE_TEXT[branch.source] },
+    native
+      ? { label: 'Environment', value: 'Native', source: 'This handoff — no workspace is used' }
+      : sourced('Environment', workspace, 'choose a workspace or run natively'),
+    sourced('Implementer', implementer, 'set a project model profile or choose one here'),
+    sourced('Reviewer', reviewer, 'set a project model profile or choose one here'),
+    {
+      label: 'Reviewer instructions',
+      value: reviewerInstructions.trim() ? 'This handoff\'s own instructions' : reviewerInstructionsEffective || 'None',
+      source: reviewerInstructions.trim() ? SOURCE_TEXT.handoff : reviewerInstructionsEffective ? SOURCE_TEXT.factory : SOURCE_TEXT.none,
+    },
+    checksRow,
+    { label: 'Auto permission', value: implementerAuto ? 'Automatic' : 'Asks before each action', source: SOURCE_TEXT.handoff },
+    { label: 'Total rounds', value: maxRounds.value, source: SOURCE_TEXT[maxRounds.source] },
+    { label: 'CI poll', value: `${ciPoll.value}s`, source: SOURCE_TEXT[ciPoll.source] },
+    { label: 'CI wait', value: `${ciWait.value}s`, source: SOURCE_TEXT[ciWait.source] },
+  ])
+
+  /*
+    Below 768px the form's sections are disclosures and the Scope section and
+    the summary stay open, so a phone shows the work being handed over, then
+    the consequence. A missing `matchMedia` keeps the wide form, which every
+    control still renders in.
+  */
+  const PHONE_QUERY = '(max-width: 767px)'
+  let phone = $state(false)
+  onMount(() => {
+    const width = typeof window.matchMedia === 'function' ? window.matchMedia(PHONE_QUERY) : null
+    phone = width?.matches ?? false
+    const onWidth = (e: MediaQueryListEvent) => (phone = e.matches)
+    width?.addEventListener('change', onWidth)
+    return () => width?.removeEventListener('change', onWidth)
+  })
 
   onMount(() => { void load() })
   async function load() {
@@ -150,6 +192,42 @@
     if (!repoId && repos.length === 1) repoId = repos[0].id
   }
 
+  /** The controls a failed submission can point at, in the order they appear. */
+  type FieldKey = 'title' | 'plan' | 'repoId' | 'implementer' | 'reviewer' | 'checks' | 'noCi'
+  const FIELD_ORDER: FieldKey[] = ['title', 'plan', 'repoId', 'implementer', 'reviewer', 'checks', 'noCi']
+
+  /**
+   * A validation failure that names its control. Every rule lives where it
+   * always did — this only adds the link between a rule and the field it is
+   * about, so the message can be shown beside the control as well as above
+   * the form. A rule with no single control leaves the field empty.
+   */
+  class FieldError extends Error {
+    field: FieldKey | ''
+    constructor(field: FieldKey | '', message: string) {
+      super(message)
+      this.field = field
+    }
+  }
+
+  let fieldErrors = $state<Partial<Record<FieldKey, string>>>({})
+  function clearField(field: FieldKey) {
+    if (!(field in fieldErrors)) return
+    const next = { ...fieldErrors }
+    delete next[field]
+    fieldErrors = next
+  }
+  function focusField(field: FieldKey) {
+    const host = document.querySelector<HTMLElement>(`[data-field="${field}"]`)
+    if (!host) return
+    // The marker sits on the control itself or, for a shared control, on the
+    // wrapper around it: focus whatever a person would actually type into.
+    const target = host.matches('input, select, textarea, button')
+      ? host
+      : host.querySelector<HTMLElement>('input, select, textarea, button')
+    ;(target ?? host).focus()
+  }
+
   function positive(text: string, what: string): number {
     const n = Number(text)
     if (!Number.isFinite(n) || n <= 0) throw new Error(`${what} must be a positive number`)
@@ -157,13 +235,14 @@
   }
 
   function buildConfig(): FactoryCreateConfig {
-    if (workspaceConflict) throw new Error(`The project's factory workspace "${factoryWorkspace}" cannot be combined with a native run. Choose a non-native environment, or change the project's factory settings.`)
-    if (!native && !workspace.value) throw new Error('This project has no workspace. Choose one, or run natively.')
-    if (!implementer.value || !reviewer.value) throw new Error('Choose both model profiles, or set a project model profile.')
-    if (!branch.value) throw new Error('Choose a target branch')
-    if (checkPlan.error) throw new Error(checkPlan.error)
-    if (checksMode === 'custom' && !checkPlan.checks.length) throw new Error('Enter at least one expected check, or choose no required checks')
-    if (!checkPlan.checks.length && !noRequiredCiAcknowledged) throw new Error('Confirm that this repository has no required CI, or enter expected checks')
+    if (workspaceConflict) throw new FieldError('', `The project's factory workspace "${factoryWorkspace}" cannot be combined with a native run. Choose a non-native environment, or change the project's factory settings.`)
+    if (!native && !workspace.value) throw new FieldError('', 'This project has no workspace. Choose one, or run natively.')
+    if (!implementer.value) throw new FieldError('implementer', 'Choose an implementer model profile, or set a project model profile.')
+    if (!reviewer.value) throw new FieldError('reviewer', 'Choose a reviewer model profile, or set a project model profile.')
+    if (!branch.value) throw new FieldError('', 'Choose a target branch')
+    if (checkPlan.error) throw new FieldError('checks', checkPlan.error)
+    if (checksMode === 'custom' && !checkPlan.checks.length) throw new FieldError('checks', 'Enter at least one expected check, or choose no required checks')
+    if (!checkPlan.checks.length && !noRequiredCiAcknowledged) throw new FieldError('noCi', 'Confirm that this repository has no required CI, or enter expected checks')
 
     const config: FactoryCreateConfig = { repoId, projectRoot, native, implementerAuto, noRequiredCiAcknowledged }
     // Every field the backend can resolve is omitted while it follows: an
@@ -184,8 +263,9 @@
   }
 
   function payload(): FactoryCreate {
-    if (!title.trim() || !plan.trim()) throw new Error('Title and plan are required')
-    if (!repoId) throw new Error('Choose a registered repository')
+    if (!title.trim()) throw new FieldError('title', 'A title is required')
+    if (!plan.trim()) throw new FieldError('plan', 'A plan is required')
+    if (!repoId) throw new FieldError('repoId', 'Choose a registered repository')
     return { requestId: crypto.randomUUID(), title: title.trim(), plan, spec, config: buildConfig() }
   }
 
@@ -194,6 +274,8 @@
 
   async function save() {
     busy = true; error = ''
+    // The previous attempt's field links are stale the moment this one starts.
+    fieldErrors = {}
     try {
       const next = payload()
       const retry = pending && signature(pending) === signature(next) ? pending : next
@@ -204,8 +286,17 @@
       upsert(saved)
       draft = saved
       pending = null
-    } catch (e) { error = errMessage(e) }
-    finally { busy = false }
+    } catch (e) {
+      error = errMessage(e)
+      if (e instanceof FieldError) {
+        // One rule failed, so one control is marked — and focused once the
+        // message it is described by has been rendered.
+        if (e.field) fieldErrors = { [e.field]: e.message }
+        await tick()
+        const first = FIELD_ORDER.find((field) => field in fieldErrors)
+        if (first) focusField(first)
+      }
+    } finally { busy = false }
   }
 
   // An in-progress handoff is only lost on purpose: the browser covers reload
@@ -241,7 +332,7 @@
     return () => window.removeEventListener('beforeunload', warn)
   })
 </script>
-<div class="mx-auto flex max-w-4xl flex-col gap-4 p-4 sm:p-6">
+<div class="mx-auto flex max-w-4xl flex-col gap-4 p-4 sm:p-6 min-[1200px]:max-w-7xl">
   <div class="flex flex-wrap items-center justify-between gap-2">
     <a class="text-sm text-accent underline" href="#factory" onclick={(e) => { e.preventDefault(); onNavigate('#factory') }}>Factory</a>
     {#if projectRoot}
@@ -258,101 +349,166 @@
     <Card role="alert" class="border-attention text-sm">{error}{#if error.includes('network') || error.includes('fetch') || error.includes('offline')} <span>Your input is kept, and an unchanged retry reuses the same request ID.</span>{/if}</Card>
   {/if}
   {#if draft}
-    <Card class="flex flex-col gap-3" data-testid="draft-preview">
-      <h2 class="font-semibold">Draft saved — review before starting</h2>
-      <p>{draft.title} · {draft.repoId} · {draft.state}</p>
-      <p class="whitespace-pre-wrap break-words text-sm">{draft.draft.plan}</p>
-      <dl class="grid gap-x-3 gap-y-1 text-sm sm:grid-cols-[max-content_minmax(0,1fr)]">
-        <dt class="text-muted">Target branch</dt><dd data-testid="draft-target-branch">{draft.draft.config.targetBranch || 'Not set'}</dd>
-        <dt class="text-muted">Environment</dt><dd data-testid="draft-environment">{draft.draft.config.native ? 'Native' : draft.draft.config.workspace || 'No workspace'}</dd>
-        <dt class="text-muted">Host</dt><dd>{draft.draft.config.hostId || 'local'}</dd>
-        <dt class="text-muted">Implementer</dt><dd data-testid="draft-implementer">{profileOf(draft.draft.config.implementerRouting) || 'Not set'}</dd>
-        <dt class="text-muted">Reviewer</dt><dd data-testid="draft-reviewer">{profileOf(draft.draft.config.reviewerRouting) || 'Not set'}</dd>
-        <dt class="text-muted">Expected CI checks</dt>
-        <dd data-testid="draft-checks">{#if draft.draft.config.expectedChecks.length}{#each draft.draft.config.expectedChecks as c (formatCheck(c))}<span class="mr-2 font-mono">{formatCheck(c)}</span>{/each}{:else}None — no required CI acknowledged{/if}</dd>
-        <dt class="text-muted">Rounds</dt><dd data-testid="draft-rounds">{draft.draft.config.maxRounds}</dd>
-        <dt class="text-muted">CI poll / wait</dt><dd>{draft.draft.config.ciPollSeconds}s / {draft.draft.config.ciWaitSeconds}s</dd>
-        <dt class="text-muted">Reviewer instructions</dt><dd class="whitespace-pre-wrap break-words">{draft.draft.config.reviewerInstructions || 'None'}</dd>
-      </dl>
+    <div class="grid gap-3" data-testid="draft-preview">
+      <Card class="flex flex-col gap-1">
+        <h2 class="font-semibold">Draft saved — review before starting</h2>
+        <p class="text-sm text-muted">{draft.title} · {draft.repoId} · {draft.state}</p>
+      </Card>
+      <EffectiveConfigSummary
+        rows={resolvedConfigRows(draft.draft.config)}
+        title="Resolved configuration"
+        consequence="Approving this draft is what authorizes execution under the configuration above. Saving it started nothing."
+        plan={draft.draft.plan}
+        spec={draft.draft.spec}
+      />
       <a class="text-accent underline" href={formatFactoryRoute({ itemId: draft.id })} onclick={(e) => { e.preventDefault(); onNavigate(formatFactoryRoute({ itemId: draft!.id })) }}>Review and approve this draft</a>
-    </Card>
+    </div>
   {:else}
-    <form class="grid gap-4" onsubmit={(e) => { e.preventDefault(); void save() }}>
-      <Card class="grid gap-3">
-        <label class="grid gap-1 text-sm">Title <input class="rounded border border-border bg-bg p-2" bind:value={title} required /></label>
-        <label class="grid gap-1 text-sm">Plan <textarea class="min-h-40 rounded border border-border bg-bg p-2" bind:value={plan} required></textarea></label>
-        <label class="grid gap-1 text-sm">Specification (optional) <textarea class="min-h-24 rounded border border-border bg-bg p-2" bind:value={spec}></textarea></label>
-      </Card>
-      <Card class="grid gap-3">
-        <h2 class="text-sm font-semibold">Environment</h2>
-        <label class="grid gap-1 text-sm">Repository <select class="rounded border border-border bg-bg p-2" bind:value={repoId} required><option value="">Choose repository</option>{#each repos as repo (repo.id)}<option value={repo.id}>{repo.id}</option>{/each}</select></label>
-        <label class="grid gap-1 text-sm">Target branch
-          <input class="rounded border border-border bg-bg p-2" bind:value={targetBranchOverride} placeholder={branch.value} />
-        </label>
-        <p class="text-xs text-muted" data-testid="target-branch-effective">{describe(branch, 'no branch to target')}</p>
-        <label class="flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={native} onchange={() => (nativeChosen = true)} /> Native environment</label>
-        <label class="grid gap-1 text-sm">Workspace
-          <select class="rounded border border-border bg-bg p-2" bind:value={workspaceOverride} disabled={native} onchange={() => { native = false; nativeChosen = true }}>
-            <option value="">Follow inherited setting</option>
-            {#each workspaceChoices as ws (ws.value)}<option value={ws.value}>{ws.label}</option>{/each}
-          </select>
-        </label>
-        <p class="text-xs text-muted" data-testid="workspace-effective">{native ? 'Native environment — no workspace is used' : describe(workspace, 'choose a workspace or run natively')}</p>
-        {#if workspaceConflict}
-          <p class="text-xs text-attention" data-testid="workspace-conflict">The project's factory workspace "{factoryWorkspace}" and a native run cannot both apply. Choose a non-native environment above, or change the project's factory settings.</p>
-        {/if}
-      </Card>
-      <Card class="grid gap-3">
-        <h2 class="text-sm font-semibold">Model profiles</h2>
-        <label class="grid gap-1 text-sm">Implementer model profile
-          <select class="rounded border border-border bg-bg p-2" bind:value={implementerOverride}>
-            <option value="">Follow inherited setting</option>
-            {#each implementerChoices as o (o.value)}<option value={o.value}>{o.label}</option>{/each}
-          </select>
-        </label>
-        <p class="text-xs text-muted" data-testid="implementer-effective">{describe(implementer, 'set a project model profile or choose one here')}</p>
-        <label class="grid gap-1 text-sm">Reviewer model profile
-          <select class="rounded border border-border bg-bg p-2" bind:value={reviewerOverride}>
-            <option value="">Follow inherited setting</option>
-            {#each reviewerChoices as o (o.value)}<option value={o.value}>{o.label}</option>{/each}
-          </select>
-        </label>
-        <p class="text-xs text-muted" data-testid="reviewer-effective">{describe(reviewer, 'set a project model profile or choose one here')}</p>
-        <label class="flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={implementerAuto} /> Implementer auto permission setting</label>
-      </Card>
-      <Card class="grid gap-3">
-        <label class="grid gap-1 text-sm">Reviewer instructions <textarea class="min-h-24 rounded border border-border bg-bg p-2" bind:value={reviewerInstructions} placeholder={factoryDefaults.reviewerInstructions || ''}></textarea></label>
-        <p class="text-xs text-muted" data-testid="reviewer-instructions-effective">{reviewerInstructions.trim() ? 'This handoff: its own instructions' : describe(reviewerInstructionsEffective, 'no instructions')}</p>
-        <label class="grid gap-1 text-sm">Expected checks source
-          <select class="rounded border border-border bg-bg p-2" bind:value={checksMode}>
-            <option value="inherit">Inherit from the project's factory defaults</option>
-            <option value="none">No required checks</option>
-            <option value="custom">List this handoff's checks</option>
-          </select>
-        </label>
-        {#if checksMode === 'custom'}
-          <label class="grid gap-1 text-sm">Expected CI checks (one per line: check_run:name:appId or commit_status:context) <textarea class="min-h-24 rounded border border-border bg-bg p-2 font-mono" bind:value={expectedChecksText}></textarea></label>
-        {/if}
-        <p class="text-xs text-muted" data-testid="checks-effective">{checksEffective}</p>
-        <label class="flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={noRequiredCiAcknowledged} /> This repository has no required CI</label>
-        <label class="grid gap-1 text-sm">Total rounds
-          <input class="rounded border border-border bg-bg p-2" type="number" min="1" value={maxRoundsOverride} oninput={(e) => (maxRoundsOverride = e.currentTarget.value)} placeholder={maxRounds.value} />
-        </label>
-        <p class="text-xs text-muted" data-testid="max-rounds-effective">{describe(maxRounds, 'no round limit')}</p>
-        <details class="min-w-0">
-          <summary class="cursor-pointer text-xs text-muted">Advanced</summary>
-          <div class="mt-2 grid gap-3">
-            <label class="grid gap-1 text-sm">CI poll seconds
-              <input class="rounded border border-border bg-bg p-2" type="number" min="1" value={ciPollOverride} oninput={(e) => (ciPollOverride = e.currentTarget.value)} placeholder={ciPoll.value} />
+    <form class="grid gap-4" novalidate onsubmit={(e) => { e.preventDefault(); void save() }}>
+      <div class="grid gap-4 min-[1200px]:grid-cols-[minmax(0,1fr)_minmax(0,22rem)] min-[1200px]:items-start">
+        <div class="grid gap-4">
+          <Card class="grid gap-3" data-testid="handoff-scope">
+            <h2 class="text-sm font-semibold">Scope</h2>
+            <label class="grid gap-1 text-sm">Title
+              <input
+                class="rounded border border-border bg-bg p-2"
+                class:border-attention={!!fieldErrors.title}
+                bind:value={title}
+                data-field="title"
+                aria-invalid={fieldErrors.title ? 'true' : undefined}
+                aria-describedby={fieldErrors.title ? 'error-title' : undefined}
+                oninput={() => clearField('title')}
+              />
             </label>
-            <p class="text-xs text-muted" data-testid="ci-poll-effective">{describe(ciPoll, 'no polling interval')}</p>
-            <label class="grid gap-1 text-sm">CI wait seconds
-              <input class="rounded border border-border bg-bg p-2" type="number" min="1" value={ciWaitOverride} oninput={(e) => (ciWaitOverride = e.currentTarget.value)} placeholder={ciWait.value} />
+            {#if fieldErrors.title}<p class="text-xs text-attention" id="error-title" data-testid="error-title">{fieldErrors.title}</p>{/if}
+            <label class="grid gap-1 text-sm">Plan
+              <textarea
+                class="min-h-40 rounded border border-border bg-bg p-2"
+                class:border-attention={!!fieldErrors.plan}
+                bind:value={plan}
+                data-field="plan"
+                aria-invalid={fieldErrors.plan ? 'true' : undefined}
+                aria-describedby={fieldErrors.plan ? 'error-plan' : undefined}
+                oninput={() => clearField('plan')}
+              ></textarea>
             </label>
-            <p class="text-xs text-muted" data-testid="ci-wait-effective">{describe(ciWait, 'no wait limit')}</p>
-          </div>
-        </details>
-      </Card>
+            {#if fieldErrors.plan}<p class="text-xs text-attention" id="error-plan" data-testid="error-plan">{fieldErrors.plan}</p>{/if}
+            <label class="grid gap-1 text-sm">Specification (optional) <textarea class="min-h-24 rounded border border-border bg-bg p-2" bind:value={spec}></textarea></label>
+          </Card>
+          <details class="min-w-0" open={!phone}>
+            <summary class="cursor-pointer text-sm"><h2 class="inline text-sm font-semibold">Repository and environment</h2></summary>
+            <Card class="mt-2 grid gap-3">
+              <label class="grid gap-1 text-sm">Repository
+                <select
+                  class="rounded border border-border bg-bg p-2"
+                  class:border-attention={!!fieldErrors.repoId}
+                  bind:value={repoId}
+                  data-field="repoId"
+                  aria-invalid={fieldErrors.repoId ? 'true' : undefined}
+                  aria-describedby={fieldErrors.repoId ? 'error-repoId' : undefined}
+                  onchange={() => clearField('repoId')}
+                ><option value="">Choose repository</option>{#each repos as repo (repo.id)}<option value={repo.id}>{repo.id}</option>{/each}</select>
+              </label>
+              {#if fieldErrors.repoId}<p class="text-xs text-attention" id="error-repoId" data-testid="error-repoId">{fieldErrors.repoId}</p>{/if}
+              <label class="grid gap-1 text-sm">Target branch
+                <input class="rounded border border-border bg-bg p-2" bind:value={targetBranchOverride} placeholder={branch.value} />
+              </label>
+              <label class="flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={native} onchange={() => (nativeChosen = true)} /> Native environment</label>
+              <label class="grid gap-1 text-sm">Workspace
+                <select class="rounded border border-border bg-bg p-2" bind:value={workspaceOverride} disabled={native} onchange={() => { native = false; nativeChosen = true }}>
+                  <option value="">Follow inherited setting</option>
+                  {#each workspaceChoices as ws (ws.value)}<option value={ws.value}>{ws.label}</option>{/each}
+                </select>
+              </label>
+              {#if workspaceConflict}
+                <p class="text-xs text-attention" data-testid="workspace-conflict">The project's factory workspace "{factoryWorkspace}" and a native run cannot both apply. Choose a non-native environment above, or change the project's factory settings.</p>
+              {/if}
+            </Card>
+          </details>
+          <details class="min-w-0" open={!phone}>
+            <summary class="cursor-pointer text-sm"><h2 class="inline text-sm font-semibold">Roles and review</h2></summary>
+            <Card class="mt-2 grid gap-3">
+              <div class="grid gap-1" data-field="implementer">
+                <ProfileSelect
+                  label="Implementer model profile"
+                  bind:value={implementerOverride}
+                  profiles={profiles}
+                  followLabel="Follow inherited setting"
+                />
+                {#if fieldErrors.implementer}<p class="text-xs text-attention" id="error-implementer" data-testid="error-implementer">{fieldErrors.implementer}</p>{/if}
+              </div>
+              <div class="grid gap-1" data-field="reviewer">
+                <ProfileSelect
+                  label="Reviewer model profile"
+                  bind:value={reviewerOverride}
+                  profiles={profiles}
+                  followLabel="Follow inherited setting"
+                />
+                {#if fieldErrors.reviewer}<p class="text-xs text-attention" id="error-reviewer" data-testid="error-reviewer">{fieldErrors.reviewer}</p>{/if}
+              </div>
+              <label class="grid gap-1 text-sm">Reviewer instructions <textarea class="min-h-24 rounded border border-border bg-bg p-2" bind:value={reviewerInstructions} placeholder={factoryDefaults.reviewerInstructions || ''}></textarea></label>
+              <label class="grid gap-1 text-sm">Expected checks source
+                <select class="rounded border border-border bg-bg p-2" bind:value={checksMode}>
+                  <option value="inherit">Inherit from the project's factory defaults</option>
+                  <option value="none">No required checks</option>
+                  <option value="custom">List this handoff's checks</option>
+                </select>
+              </label>
+              {#if checksMode === 'custom'}
+                <label class="grid gap-1 text-sm">Expected CI checks (one per line: check_run:name:appId or commit_status:context)
+                  <textarea
+                    class="min-h-24 rounded border border-border bg-bg p-2 font-mono"
+                    class:border-attention={!!fieldErrors.checks}
+                    bind:value={expectedChecksText}
+                    data-field="checks"
+                    aria-invalid={fieldErrors.checks ? 'true' : undefined}
+                    aria-describedby={fieldErrors.checks ? 'error-checks' : undefined}
+                    oninput={() => clearField('checks')}
+                  ></textarea>
+                </label>
+              {/if}
+              {#if fieldErrors.checks}<p class="text-xs text-attention" id="error-checks" data-testid="error-checks">{fieldErrors.checks}</p>{/if}
+              <label class="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  bind:checked={noRequiredCiAcknowledged}
+                  data-field="noCi"
+                  aria-invalid={fieldErrors.noCi ? 'true' : undefined}
+                  aria-describedby={fieldErrors.noCi ? 'error-noCi' : undefined}
+                  onchange={() => clearField('noCi')}
+                /> This repository has no required CI
+              </label>
+              {#if fieldErrors.noCi}<p class="text-xs text-attention" id="error-noCi" data-testid="error-noCi">{fieldErrors.noCi}</p>{/if}
+            </Card>
+          </details>
+          <details class="min-w-0" open={!phone}>
+            <summary class="cursor-pointer text-sm"><h2 class="inline text-sm font-semibold">Authority and limits</h2></summary>
+            <Card class="mt-2 grid gap-3">
+              <label class="flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={implementerAuto} /> Implementer auto permission setting</label>
+              <label class="grid gap-1 text-sm">Total rounds
+                <input class="rounded border border-border bg-bg p-2" type="number" min="1" value={maxRoundsOverride} oninput={(e) => (maxRoundsOverride = e.currentTarget.value)} placeholder={maxRounds.value} />
+              </label>
+              <details class="min-w-0">
+                <summary class="cursor-pointer text-xs text-muted">Advanced</summary>
+                <div class="mt-2 grid gap-3">
+                  <label class="grid gap-1 text-sm">CI poll seconds
+                    <input class="rounded border border-border bg-bg p-2" type="number" min="1" value={ciPollOverride} oninput={(e) => (ciPollOverride = e.currentTarget.value)} placeholder={ciPoll.value} />
+                  </label>
+                  <label class="grid gap-1 text-sm">CI wait seconds
+                    <input class="rounded border border-border bg-bg p-2" type="number" min="1" value={ciWaitOverride} oninput={(e) => (ciWaitOverride = e.currentTarget.value)} placeholder={ciWait.value} />
+                  </label>
+                </div>
+              </details>
+            </Card>
+          </details>
+        </div>
+        <div class="grid gap-4 min-[1200px]:sticky min-[1200px]:top-4">
+          <EffectiveConfigSummary
+            rows={summaryRows}
+            consequence="Save draft records this handoff and the configuration above. No work starts until you review the saved draft and approve it."
+          />
+        </div>
+      </div>
       <Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save draft'}</Button>
     </form>
   {/if}

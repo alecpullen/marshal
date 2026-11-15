@@ -2,7 +2,7 @@
   import Badge from '../ui/Badge.svelte'
   import Card from '../ui/Card.svelte'
   import type { ProjectSettings } from '../api'
-  import type { FactoryCheckKey } from '../factory'
+  import { formatFactoryCheck } from '../factory/config'
   import { formatProjectRoute } from '../routes'
 
   /**
@@ -14,10 +14,9 @@
    * It renders and never fetches. `Factory.svelte` owns the read and its
    * failure state, so a bridge that cannot answer still shows the work items.
    *
-   * The check text is the editor's own `kind:name[:appId]` syntax, copied
-   * component-locally from `Project.svelte`'s formatter: Task 13 owns the
-   * shared `formatFactoryCheck`, and inventing a second vocabulary here would
-   * be worse than repeating the one line.
+   * The check text is the editor's own `kind:name[:appId]` syntax, rendered by
+   * the shared `formatFactoryCheck` so this summary and the handoff's never
+   * drift into two vocabularies.
    */
   export interface FactoryDefaultsSummaryProps {
     root: string
@@ -35,11 +34,8 @@
   const inherited = (own: string, fallback: string): string =>
     own ? own : `Following the project default: ${fallback || 'Not configured'}`
 
-  const formatCheck = (c: FactoryCheckKey): string =>
-    c.kind === 'commit_status' ? `${c.kind}:${c.name}` : `${c.kind}:${c.name}:${c.appId}`
-
   const checksText = $derived(
-    defaults.expectedChecks?.length ? defaults.expectedChecks.map(formatCheck).join(', ') : 'Follows the handoff',
+    defaults.expectedChecks?.length ? defaults.expectedChecks.map(formatFactoryCheck).join(', ') : 'Follows the handoff',
   )
 
   const ciText = $derived.by(() => {

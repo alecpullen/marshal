@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -14,10 +15,57 @@ import (
 )
 
 // fakeFleet is the seam's client with a state the test sets and a change
-// channel the test fires.
+// channel the test fires. The seam is embedded, so an action a test does not
+// set up fails loudly; the actions the screen drives are recorded below.
 type fakeFleet struct {
+	acpclient.Fleet
+
 	state   acpclient.FleetState
 	changed chan struct{}
+
+	// Each action keeps its calls' arguments and answers what the test set.
+	spawns      []contract.SpawnRequest
+	spawnAnswer contract.SpawnResult
+	spawnErr    error
+
+	permissions   []permissionAnswer
+	permissionErr error
+
+	questions   []questionAnswer
+	questionErr error
+
+	cancels   []string
+	cancelErr error
+
+	approvals     []string
+	approveAnswer contract.ApproveResult
+	approveErr    error
+
+	denials []string
+	denyErr error
+
+	promptReads []promptRead
+	prompts     []string
+	promptsErr  error
+}
+
+// permissionAnswer is one AnswerPermission call: the request it answered and
+// the decision it carried.
+type permissionAnswer struct {
+	id string
+	d  contract.Decision
+}
+
+// questionAnswer is one AnswerQuestion call.
+type questionAnswer struct {
+	id string
+	a  contract.Answers
+}
+
+// promptRead is one RecentPrompts call.
+type promptRead struct {
+	project string
+	limit   int
 }
 
 func newFakeFleet() *fakeFleet {
@@ -26,6 +74,48 @@ func newFakeFleet() *fakeFleet {
 
 func (f *fakeFleet) State() acpclient.FleetState { return f.state }
 func (f *fakeFleet) Changed() <-chan struct{}    { return f.changed }
+
+// Spawn records the request and answers what the test set.
+func (f *fakeFleet) Spawn(_ context.Context, req contract.SpawnRequest) (contract.SpawnResult, error) {
+	f.spawns = append(f.spawns, req)
+	return f.spawnAnswer, f.spawnErr
+}
+
+// AnswerPermission records the request and the decision.
+func (f *fakeFleet) AnswerPermission(_ context.Context, id string, d contract.Decision) error {
+	f.permissions = append(f.permissions, permissionAnswer{id: id, d: d})
+	return f.permissionErr
+}
+
+// AnswerQuestion records the request and the answers.
+func (f *fakeFleet) AnswerQuestion(_ context.Context, id string, a contract.Answers) error {
+	f.questions = append(f.questions, questionAnswer{id: id, a: a})
+	return f.questionErr
+}
+
+// Cancel records the agent whose turn was stopped.
+func (f *fakeFleet) Cancel(_ context.Context, agentID string) error {
+	f.cancels = append(f.cancels, agentID)
+	return f.cancelErr
+}
+
+// ApproveIntake records the submission it spawned.
+func (f *fakeFleet) ApproveIntake(_ context.Context, id string) (contract.ApproveResult, error) {
+	f.approvals = append(f.approvals, id)
+	return f.approveAnswer, f.approveErr
+}
+
+// DenyIntake records the submission it discarded.
+func (f *fakeFleet) DenyIntake(_ context.Context, id string) error {
+	f.denials = append(f.denials, id)
+	return f.denyErr
+}
+
+// RecentPrompts records the read and answers the prompts the test set.
+func (f *fakeFleet) RecentPrompts(_ context.Context, project string, limit int) ([]string, error) {
+	f.promptReads = append(f.promptReads, promptRead{project: project, limit: limit})
+	return f.prompts, f.promptsErr
+}
 
 // fire signals a change the way the client does.
 func (f *fakeFleet) fire() {

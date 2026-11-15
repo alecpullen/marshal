@@ -17,6 +17,15 @@ import (
 type TurnMetrics struct {
 	StartedAt  time.Time
 	DurationMs int64
+	// PromptReadyMs is the wall time from turn start to the moment the first
+	// request became buildable — everything the turn does before the model is
+	// asked anything. DurationMs covers the whole turn and so cannot show this.
+	PromptReadyMs int64
+	// Phases breaks PromptReadyMs down by the preflight step that consumed it,
+	// in execution order. The sum is normally below PromptReadyMs because the
+	// spans do not cover every instruction; the difference is time no phase
+	// claimed, which is exactly what a missing span looks like.
+	Phases     []TurnPhase
 	Goal       string
 	Class      string
 	Role       string

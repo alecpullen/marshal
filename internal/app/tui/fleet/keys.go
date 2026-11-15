@@ -1,6 +1,8 @@
 package fleet
 
 import (
+	"context"
+
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/web/bridge/contract"
@@ -24,6 +26,19 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleFilterKey(msg)
 	}
 
+	// An open modal takes every key while it is open (decision 5).
+	if m.modal != nil {
+		return m.modal.update(m, msg)
+	}
+	// An open approval answers y and n, and esc closes it (decision 4).
+	// Everything else falls through to the screen. The prompt is drawn only
+	// for the selected agent, so it answers only while its agent is selected.
+	if m.answer != "" && m.answer == m.selected {
+		if next, cmd, handled := m.answerKey(msg); handled {
+			return next, cmd
+		}
+	}
+
 	if msg.Code == tea.KeyTab {
 		m.cycleFocus(msg.Mod.Contains(tea.ModShift))
 		return m, nil
@@ -40,11 +55,21 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEsc:
 		m.zoom = false
 		return m, nil
+	case tea.KeyEnter:
+		// ⏎ settles an intake item in Needs you (decision 8). Every other
+		// row has nothing to open here.
+		return m.openIntake()
 	}
 
 	switch msg.String() {
 	case "q":
 		return m, m.quit()
+	case "a":
+		return m.openSelected()
+	case "n":
+		return m.openSpawn()
+	case "x":
+		return m.cancelSelected()
 	case "j":
 		m.moveCursor(1)
 	case "k":
@@ -63,6 +88,35 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.help = !m.help
 	}
 	return m, nil
+}
+
+// cancelSelected stops the selected agent's turn (decision 7), with no
+// confirmation, as the web UI's stop has none. Only a running agent has a turn
+// to stop: anywhere else x does nothing.
+func (m Model) cancelSelected() (tea.Model, tea.Cmd) {
+	row, ok := m.selectedRow()
+	if !ok || row.session {
+		return m, nil
+	}
+	a, ok := m.agentByID(row.id)
+	if !ok || a.Status != contract.AgentRunning {
+		return m, nil
+	}
+	if m.refusedWhileDown() {
+		return m, nil
+	}
+	return m, m.cancelCmd(a)
+}
+
+// cancelCmd stops the agent's turn in a command, bounded by actionTimeout.
+func (m Model) cancelCmd(a contract.AgentStatus) tea.Cmd {
+	f, id, name := m.fleet, a.ID, agentName(a)
+	seq := m.nextActionSeq()
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), actionTimeout)
+		defer cancel()
+		return actionDoneMsg{what: "cancel", name: name, err: f.Cancel(ctx, id), seq: seq}
+	}
 }
 
 // handleFilterKey applies one key press while the Agents filter input is open:
@@ -123,6 +177,16 @@ func (m *Model) moveAgents(delta int) {
 	}
 	m.agentCursor = clamp(m.agentCursor+delta, 0, len(rows)-1)
 	m.selected = rows[m.agentCursor].id
+	m.closeStaleAnswer()
+}
+
+// closeStaleAnswer drops an inline approval once the selection has left its
+// agent: the prompt is drawn only for the selected agent, so nothing may
+// answer it after the cursor moves on.
+func (m *Model) closeStaleAnswer() {
+	if m.answer != "" && m.answer != m.selected {
+		m.answer = ""
+	}
 }
 
 // moveNeedsYou moves the Needs you panel's cursor over the queue and selects
@@ -145,4 +209,5 @@ func (m *Model) moveNeedsYou(delta int) {
 			m.agentCursor = idx
 		}
 	}
+	m.closeStaleAnswer()
 }

@@ -89,6 +89,11 @@ func (m Model) screen() string {
 	leftLines = append(leftLines, splitLines(m.panelNeedsYou(left, needsH))...)
 	leftLines = append(leftLines, splitLines(m.panelEvents(left, eventsH))...)
 	rightLines := splitLines(m.panelRight(right, avail))
+	if m.modal != nil {
+		// A modal is drawn over the right panel: the left column and the
+		// footer stay where they are.
+		rightLines = splitLines(m.modal.view(m, right, avail))
+	}
 
 	body := joinColumns(leftLines, left, rightLines, right)
 	lines := fitScreen(body, m.width, avail)
@@ -258,7 +263,7 @@ func (m Model) panelRight(outer, h int) string {
 		if m.tab == 3 {
 			body = m.infoLines(a)
 		} else {
-			body = m.activityLines(a)
+			body = m.activityLines(a, inner)
 		}
 	}
 	return m.frame(title, "", body, outer, h, focused)
@@ -505,7 +510,7 @@ func (m Model) needsYouText(item contract.InboxItem) string {
 
 // activityLines is the Activity tab: the agent's status and activity, what it
 // waits on, its context, changed files and age, and its latest gate.
-func (m Model) activityLines(a contract.AgentStatus) []string {
+func (m Model) activityLines(a contract.AgentStatus, inner int) []string {
 	lines := []string{
 		m.kv("status", statusText(a.Status)),
 		m.kv("activity", nonEmpty(a.Activity)),
@@ -513,6 +518,11 @@ func (m Model) activityLines(a contract.AgentStatus) []string {
 	}
 	if a.Pending != nil {
 		lines = append(lines, m.kv("request", describePending(a.Pending)))
+		if m.answer == a.ID {
+			// The approval is answered here, inline under the status
+			// (decision 4).
+			lines = append(lines, m.approvalLines(a.Pending, inner)...)
+		}
 	}
 	lines = append(lines,
 		m.kv("context", fmt.Sprintf("%d%%", a.ContextPct)),
@@ -728,6 +738,65 @@ func describePending(p *contract.PendingRequest) string {
 	return fallback
 }
 
+// approvalLines is the open approval's prompt, drawn under the agent's status
+// (decision 4): the request's text, its risk and its reason when present, and
+// the two keys that answer it. Each is wrapped to the panel, so a long reason
+// stays readable. A typed access request is shown but not answered here, so it
+// offers no keys.
+func (m Model) approvalLines(p *contract.PendingRequest, inner int) []string {
+	width := max(inner-labelWidth, 8)
+	var lines []string
+	appendText := func(text string) {
+		for _, ln := range wrapText(text, width) {
+			lines = append(lines, m.plain(strings.Repeat(" ", labelWidth)+ln))
+		}
+	}
+	if accessOnly(p) {
+		appendText("open the agent to answer this access request")
+		return lines
+	}
+	params := approvalOf(p)
+	// The request's own text is the Activity tab's request row, directly
+	// above: repeating it here would print the command twice.
+	if params.Risk != "" {
+		appendText("risk " + params.Risk)
+	}
+	if params.Reason != "" {
+		appendText("reason " + params.Reason)
+	}
+	appendText("[y]es [n]o")
+	return lines
+}
+
+// wrapText breaks plain text into lines of at most width cells, on its spaces.
+// A word longer than a line is cut to fit.
+func wrapText(s string, width int) []string {
+	if width < 1 {
+		return []string{s}
+	}
+	var lines []string
+	line := ""
+	for _, word := range strings.Fields(s) {
+		word = cut(word, width)
+		switch {
+		case line == "":
+			line = word
+		case ansi.StringWidth(line)+1+ansi.StringWidth(word) <= width:
+			line += " " + word
+		default:
+			lines = append(lines, line)
+			line = word
+		}
+	}
+	if line != "" {
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return []string{""}
+	}
+	return lines
+}
+
 // footer is the bottom row: the server and its connection dot, the focused
 // panel's keys, and the global hints.
 func (m Model) footer() string {
@@ -745,17 +814,32 @@ func (m Model) footer() string {
 	}
 	keys := ""
 	switch m.focus {
-	case focusAgents, focusNeedsYou:
-		keys = "j/k move"
+	case focusAgents:
+		keys = "j/k move a answer x cancel n spawn"
+	case focusNeedsYou:
+		keys = "j/k move ⏎ intake n spawn"
 	case focusRight:
-		keys = "1/3 tab"
+		keys = "1/3 tab n spawn"
 	}
 	middle := ""
 	if keys != "" {
 		middle = "  " + chrome.TertiaryStyle().Render(keys)
 	}
 	hints := chrome.TertiaryStyle().Render("?help q quit")
+	if status := m.statusText(); status != "" {
+		// An action's failure, or a refusal while down, takes the hints'
+		// place while it lasts, and the panel keys' room with it: the
+		// sentence — the bridge's own reason — must not be clipped to make
+		// room for keys nobody is pressing.
+		hints = chrome.TertiaryStyle().Render(status)
+		middle = ""
+	}
 	room := m.width - ansi.StringWidth(middle) - ansi.StringWidth(hints) - 2
+	if room < 1 && m.statusText() != "" {
+		// A sentence wider than the footer: it keeps every cell, rather than
+		// yielding them to a one-cell stub of the server label.
+		return padTo(cut(hints, m.width), m.width)
+	}
 	left = cut(left, max(room, 1))
 	gap := m.width - ansi.StringWidth(left) - ansi.StringWidth(middle) - ansi.StringWidth(hints)
 	line := left + middle + strings.Repeat(" ", max(gap, 1)) + hints
@@ -767,6 +851,10 @@ func (m Model) helpScreen() string {
 	body := m.frame("Help", "", []string{
 		"tab / shift-tab  focus the next or previous panel",
 		"j / k            move the cursor in a list panel",
+		"⏎                approve or deny the intake item in Needs you",
+		"a                answer the selected agent's request",
+		"n                spawn an agent",
+		"x                cancel the selected agent's turn",
 		"1 / 3            Activity or Info tab",
 		"z                zoom the focused panel",
 		"esc              unzoom, or clear the filter while it is open",

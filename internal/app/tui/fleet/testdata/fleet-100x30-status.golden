@@ -1,0 +1,30 @@
+╭─ Agents ────────────────────────────────────────────── 7─╮╭─ [Activity]  Info ───────────────────╮
+│ Needs you                                                ││ status    running                    │
+│ ⚠ fix-flaky-hooks      38%   2    2m marshal      act    ││ activity  go test ./internal/...     │
+│ Running                                                  ││ waiting   –                          │
+│ ● s3b-egress           41%   7    0s marshal      ask    ││ context   41%                        │
+│ Ready                                                    ││ changed   7                          │
+│ ✓ docs-deploy          22%   4    1h notes        act    ││ age       0s                         │
+│ Earlier                                                  ││                                      │
+│ · docs-sweep           12%   0    5s notes        ?      ││                                      │
+│ ✗ ci-fixer              9%   0    3h infra        act    ││                                      │
+│ Sessions                                                 ││                                      │
+│ · marshal 3f2a91bc 2 viewers                         3m  ││                                      │
+│ · marshal 9c1d4e5f 1 viewer                          1m  ││                                      │
+│                                                          ││                                      │
+│                                                          ││                                      │
+│                                                          ││                                      │
+╰──────────────────────────────────────────────────────────╯│                                      │
+╭─ Needs you ─────────────────────────────────────────── 2─╮│                                      │
+│ fix-flaky-hooks approval                                 ││                                      │
+│ intake github: fix the flaky test                        ││                                      │
+╰──────────────────────────────────────────────────────────╯│                                      │
+╭─ Events ────────────────────────────────────────────── 4─╮│                                      │
+│ 14:58 connected to local                                 ││                                      │
+│ 14:59 docs-deploy is ready                               ││                                      │
+│ 15:00 fix-flaky-hooks needs you: approval                ││                                      │
+│ 22:13 cancel s3b-egress failed: no such turn             ││                                      │
+│                                                          ││                                      │
+│                                                          ││                                      │
+╰──────────────────────────────────────────────────────────╯╰──────────────────────────────────────╯
+local ●                                                       cancel s3b-egress failed: no such turn

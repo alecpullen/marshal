@@ -143,13 +143,6 @@ type ModeAccessRequest struct {
 	MissingSystem  bool        `json:"missingSystem"`
 }
 
-// ModeAccessChoice is the typed answer to a ModeAccessRequest. The outer
-// Decision.Approved remains the decision; this carries identity, the presented
-// tuple and the selected editing variant only. The bridge forwards it without
-// judging it: the agent validates the identity and applies the grant.
-type ModeAccessChoice struct {
-	RequestID string      `json:"requestId"`
-	SessionID string      `json:"sessionId"`
-	Current   AccessState `json:"current"`
-	Mode      string      `json:"mode,omitempty"`
-}
+// ModeAccessChoice is contract.ModeAccessChoice; the outer Decision.Approved
+// remains the decision, and the bridge forwards this without judging it.
+type ModeAccessChoice = contract.ModeAccessChoice

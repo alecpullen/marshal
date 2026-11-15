@@ -383,7 +383,7 @@
           {/if}
         </div>
       </div>
-    {:else if pageFromHash(hash) === 'home'}
+    {:else if pageFromHash(hash) === 'fleet'}
       <div class="h-full overflow-y-auto">
         <Home
           agents={$fleet.agents}

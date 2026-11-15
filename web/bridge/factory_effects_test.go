@@ -199,7 +199,7 @@ func TestFactoryEffectReadyPublishesComposedDescription(t *testing.T) {
 	if err != nil || !out.Confirmed || out.Error != "" {
 		t.Fatalf("ready: %+v %v", out, err)
 	}
-	want, err := composeFactoryPRBody(i.Rounds[0])
+	want, err := composeFactoryPRBody(i.Rounds[0], nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

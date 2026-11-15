@@ -273,7 +273,7 @@ func (f *factoryEffects) Execute(ctx context.Context, item FactoryItem, e Factor
 			if round.Implementation == nil || round.Implementation.Narration == nil {
 				return out, fmt.Errorf("%w: newest round %d carries no narration", ErrFactoryRefused, round.Number)
 			}
-			body, err := composeFactoryPRBody(round)
+			body, err := composeFactoryPRBody(round, nil, "")
 			if err != nil {
 				return out, fmt.Errorf("%w: %v", ErrFactoryRefused, err)
 			}

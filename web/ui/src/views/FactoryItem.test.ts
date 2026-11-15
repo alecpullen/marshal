@@ -1,11 +1,50 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/svelte'
+import { cleanup, render, screen, within } from '@testing-library/svelte'
 import FactoryItem from './FactoryItem.svelte'
 import * as api from '../lib/api'
-import type { FactoryApproval, FactoryItem as Item, FactoryRoute } from '../lib/factory'
+import { connectSSE } from '../lib/sse.js'
+import { parseChatRoute, parseFactoryRoute } from '../lib/routes'
+import type { FactoryApproval, FactoryItem as Item, FactoryRoute, FactoryWorker } from '../lib/factory'
 import type { FactoryState } from '../lib/factoryStore'
 import type { PreviewDeployment, PreviewReport } from '../lib/preview'
-vi.mock('../lib/api', async (actual) => ({ ...await actual<typeof import('../lib/api')>(), commandFactoryItem: vi.fn(), getPreviewEnvironments: vi.fn(), getModels: vi.fn() }))
+vi.mock('../lib/api', async (actual) => ({
+  ...await actual<typeof import('../lib/api')>(),
+  commandFactoryItem: vi.fn(), getPreviewEnvironments: vi.fn(), getModels: vi.fn(),
+  /*
+    The activity view's conversation is the real embeddable one, so the
+    session reads it owns are mocked exactly as Chat's own test does: off
+    fetch, with the real APIError still coming along.
+  */
+  listAgents: vi.fn(), loadSession: vi.fn(), getStack: vi.fn(), cancelSession: vi.fn(),
+  getNode: vi.fn(), getLastRequest: vi.fn(), getDiff: vi.fn(), getGate: vi.fn(), getStepDiffs: vi.fn(),
+  listFiles: vi.fn(), readFile: vi.fn(), getAccess: vi.fn(), patchAccess: vi.fn(),
+}))
+/** The store only needs the connect/disconnect pair; the stream is not this test's subject. */
+vi.mock('../lib/sse.js', () => ({ connectSSE: vi.fn(() => () => {}) }))
+/** Shiki's grammars are a heavyweight async load the empty transcripts never need. */
+vi.mock('../lib/markdown.js', () => ({
+  renderMarkdown: vi.fn((s: string) => s),
+  initHighlighter: vi.fn(() => Promise.resolve()),
+}))
+/*
+  The split between activity and a conversation is decided from one width
+  query, so the viewport is stubbed here rather than inferred: `desktop` is
+  the answer the query gives, and the listener set is what the item must let
+  go of when it unmounts.
+*/
+let desktop = true
+const widthListeners = new Set<(e: MediaQueryListEvent) => void>()
+const viewport = (isDesktop: boolean) => { desktop = isDesktop }
+const stubMatchMedia = () => vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
+  matches: query.includes('min-width: 1200px') ? desktop : false,
+  media: query,
+  onchange: null,
+  addEventListener: (_: string, listener: (e: MediaQueryListEvent) => void) => { widthListeners.add(listener) },
+  removeEventListener: (_: string, listener: (e: MediaQueryListEvent) => void) => { widthListeners.delete(listener) },
+  addListener: vi.fn(),
+  removeListener: vi.fn(),
+  dispatchEvent: vi.fn(),
+})))
 afterEach(cleanup)
 beforeEach(() => {
   getItem.mockReset()
@@ -21,10 +60,28 @@ beforeEach(() => {
   vi.mocked(api.getModels).mockResolvedValue({ profiles: {
     'cheap-review': {}, frontier: {}, 'new-impl': {}, 'new-review': {}, old: {}, 'old-review': {},
   } } as never)
+  // The embedded conversation, with nothing live behind it.
+  viewport(true)
+  widthListeners.clear()
+  stubMatchMedia()
+  vi.mocked(connectSSE).mockClear()
+  vi.mocked(api.listAgents).mockResolvedValue([])
+  vi.mocked(api.loadSession).mockResolvedValue({ events: [] } as never)
+  vi.mocked(api.getStack).mockRejectedValue(new Error('no stack'))
+  vi.mocked(api.getNode).mockResolvedValue({ node: {}, detail: {} } as never)
+  vi.mocked(api.getLastRequest).mockResolvedValue('unsupported' as never)
+  vi.mocked(api.getDiff).mockResolvedValue({ files: [] } as never)
+  vi.mocked(api.getGate).mockResolvedValue(null)
+  vi.mocked(api.getStepDiffs).mockResolvedValue([])
+  vi.mocked(api.listFiles).mockResolvedValue({ entries: [] } as never)
+  vi.mocked(api.getAccess).mockResolvedValue({ mode: 'act', auto: false, system_access: false, access_revision: 1 } as never)
+  vi.mocked(api.patchAccess).mockResolvedValue({ mode: 'act', auto: false, system_access: false, access_revision: 2 } as never)
 })
 const base = { id: 'x', title: 'Task', repoId: 'repo', state: 'draft', stage: '', version: 1, draft: { plan: 'Build', spec: '', config: { targetBranch: 'main', repoId: 'repo', maxRounds: 5, implementerRouting: {}, reviewerRouting: {}, expectedChecks: [] } }, rounds: [], grants: [], prs: [], workers: [], history: [] } as unknown as Item
 /** One recorded approval revision, as the bridge reports one. */
 const approval = (revision: number, plan: string, spec = '') => ({ revision, plan, spec, planHash: `hash-${revision}`, config: base.draft.config, approvedAt: `2026-01-0${revision}T00:00:00Z` }) as FactoryApproval
+/** One worker the item reports: the agent, and the session its conversation runs in. */
+const worker = (agentId: string, sessionId: string, role = 'implementer', parked = false): FactoryWorker => ({ agentId, sessionId, role, spawnEffectId: '', parked })
 /** The shell store's projection, as App hands it to a view. */
 const factoryState = (over: Partial<FactoryState> = {}): FactoryState => ({ items: [], loading: false, refreshing: false, error: null, lastUpdated: null, ...over })
 /**
@@ -236,7 +293,7 @@ it('requires exact last agent ID before recovery attestation', async () => {
   expect(vi.mocked(api.commandFactoryItem).mock.calls.at(-1)?.[1]).toMatchObject({ kind: 'recover', confirmPreviousWorkerStopped: true, reason: 'agent-2: Process stopped' })
 })
 it('shows structured review findings, question and reason, and ordinary agent drill-in', async () => {
-  const item = { ...base, state: 'needs_input', workers: [{ agentId: 'agent/1', role: 'reviewer' }], rounds: [{
+  const item = { ...base, state: 'needs_input', workers: [{ agentId: 'agent/1', sessionId: 's1', role: 'reviewer' }], rounds: [{
     review: { summary: 'Needs repair', question: 'Which API?', reason: 'Inputs missing', findings: [{ severity: 'high', path: 'web/a.go', line: 42, title: 'Unsafe call', body: 'Handle the error' }] },
   }] } as Item
   getItem.mockResolvedValue(item)
@@ -246,10 +303,10 @@ it('shows structured review findings, question and reason, and ordinary agent dr
   expect(screen.getByText('Handle the error')).toBeTruthy()
   expect(screen.getByText('Reviewer question: Which API?')).toBeTruthy()
   expect(screen.getByText('Reviewer reason: Inputs missing')).toBeTruthy()
-  // The worker's own conversation is still opened from the activity view.
+  // The worker's own conversation opens in this item, not on the chat page.
   view.unmount()
   renderItem()
-  expect((await screen.findByRole('link', { name: 'reviewer: agent/1' })).getAttribute('href')).toBe('#chat/agent%2F1')
+  expect((await screen.findByRole('link', { name: 'reviewer: agent/1' })).getAttribute('href')).toBe('#factory/x?view=activity&agent=agent%2F1')
 })
 it('previews material environment and permission settings before approval', async () => {
   getItem.mockResolvedValue({ ...base, draft: { ...base.draft, config: { ...base.draft.config, native: false, workspace: 'go-dev', implementerAuto: true, reviewerInstructions: 'Check migration safety' } } } as Item)
@@ -365,4 +422,91 @@ it('pullRequestsShowRealRevisionAndState', async () => {
   // A draft PR says so, and a URL that is not absolute http(s) stays text.
   expect(rows[1].textContent).toContain('draft')
   expect(rows[1].querySelector('a')).toBeNull()
+})
+it('explicitAgentRouteWins', async () => {
+  const item = { ...base, state: 'implementing', workers: [worker('agent-1', 's1'), worker('agent-2', 's2', 'reviewer')] } as Item
+  getItem.mockResolvedValue(item)
+  renderItem(factoryState(), { view: 'activity', agent: 'agent-1' })
+  // The route names this worker, so the route owns the conversation at a width
+  // that would otherwise have picked the last worker.
+  const pane = await screen.findByTestId('agent-conversation')
+  expect(within(pane).getByText('agent-1')).toBeTruthy()
+  expect(within(pane).queryByText('agent-2')).toBeNull()
+})
+it('initialDesktopSelectionUsesLastWorker', async () => {
+  const item = { ...base, state: 'implementing', workers: [worker('agent-1', 's1'), worker('agent-2', 's2', 'reviewer')] } as Item
+  getItem.mockResolvedValue(item)
+  const view = renderItem()
+  // Entering on a wide screen with no agent shows the newest worker.
+  expect(within(await screen.findByTestId('agent-conversation')).getByText('agent-2')).toBeTruthy()
+  // A poll that records another worker does not move the selection: the
+  // conversation the person is reading stays theirs.
+  await view.rerender({ factory: factoryState({ items: [{ ...item, version: 2, workers: [...(item.workers ?? []), worker('agent-3', 's3')] } as Item] }) })
+  const pane = await screen.findByTestId('agent-conversation')
+  expect(within(pane).getByText('agent-2')).toBeTruthy()
+  expect(within(pane).queryByText('agent-3')).toBeNull()
+  expect(connectSSE).toHaveBeenCalledTimes(1)
+})
+it('noWorkersUsesFullWidthActivity', async () => {
+  getItem.mockResolvedValue({ ...base, state: 'implementing', workers: [] } as Item)
+  renderItem()
+  expect(await screen.findByTestId('activity-timeline')).toBeTruthy()
+  // There is nobody to talk to, so no empty conversation shell is drawn and
+  // activity keeps the whole width.
+  expect(screen.queryByTestId('agent-conversation')).toBeNull()
+  expect(screen.queryByTestId('agent-unavailable')).toBeNull()
+  expect(screen.getByTestId('factory-activity-layout').className).not.toContain('xl:grid-cols-2')
+})
+it('phoneDrillInHasBackToActivity', async () => {
+  const { fireEvent } = await import('@testing-library/svelte')
+  viewport(false)
+  const item = { ...base, state: 'implementing', workers: [worker('agent-1', 's1')] } as Item
+  getItem.mockResolvedValue(item)
+  renderItem(factoryState(), { view: 'activity', agent: 'agent-1' })
+  // On a phone the drill-in is the page: activity is hidden, not unmounted.
+  const activity = await screen.findByTestId('activity-timeline')
+  await vi.waitFor(() => expect(activity.getAttribute('aria-hidden')).toBe('true'))
+  expect(within(await screen.findByTestId('agent-conversation')).getByText('agent-1')).toBeTruthy()
+  await fireEvent.click(screen.getByRole('button', { name: '← Activity' }))
+  // Back removes the agent parameter and nothing else.
+  expect(onNavigate).toHaveBeenCalledWith('#factory/x?view=activity')
+})
+it('queryChangesDoNotRemountFactoryItem', async () => {
+  const item = { ...base, state: 'implementing', workers: [worker('agent-1', 's1')] } as Item
+  getItem.mockResolvedValue(item)
+  const view = renderItem()
+  const activity = await screen.findByTestId('activity-timeline')
+  // An agent parameter is a query change on the same keyed item: the shell
+  // hands the new route down, and nothing here re-reads the item or rebuilds
+  // the pane the reader was in.
+  await view.rerender({ route: { itemId: 'x', view: 'activity', agent: 'agent-1' } })
+  expect(within(await screen.findByTestId('agent-conversation')).getByText('agent-1')).toBeTruthy()
+  expect(screen.getByTestId('activity-timeline')).toBe(activity)
+  expect(getItem).toHaveBeenCalledTimes(1)
+})
+it('openFullSessionCarriesValidatedFromRoute', async () => {
+  const { fireEvent } = await import('@testing-library/svelte')
+  const item = { ...base, state: 'implementing', workers: [worker('agent-1', 's1')] } as Item
+  getItem.mockResolvedValue(item)
+  renderItem(factoryState(), { view: 'activity', agent: 'agent-1' })
+  await fireEvent.click(await screen.findByRole('button', { name: 'Open full session' }))
+  const hash = onNavigate.mock.calls.at(-1)?.[0] as string
+  // The full session carries where it came from, and the shell reads that back
+  // as the same item, view and worker — a return path, not a factory list.
+  const chat = parseChatRoute(hash)
+  expect(chat?.id).toBe('agent-1')
+  expect(chat?.view).toBe('session')
+  expect(parseFactoryRoute(chat?.from ?? '')).toMatchObject({ itemId: 'x', view: 'activity', agent: 'agent-1' })
+})
+it('unknownAgentShowsInlineUnavailable', async () => {
+  const { fireEvent } = await import('@testing-library/svelte')
+  const item = { ...base, state: 'implementing', workers: [worker('agent-1', 's1')] } as Item
+  getItem.mockResolvedValue(item)
+  renderItem(factoryState(), { view: 'activity', agent: 'gone' })
+  expect(await screen.findByTestId('agent-unavailable')).toBeTruthy()
+  expect(screen.getByText(/No worker named gone/)).toBeTruthy()
+  // An unknown id is not silently swapped for the last worker.
+  expect(screen.queryByTestId('agent-conversation')).toBeNull()
+  await fireEvent.click(screen.getByRole('button', { name: 'Back to activity' }))
+  expect(onNavigate).toHaveBeenCalledWith('#factory/x?view=activity')
 })

@@ -9,9 +9,13 @@
   import DocumentsView from '../lib/factory/DocumentsView.svelte'
   import PullRequestsView from '../lib/factory/PullRequestsView.svelte'
   import ReviewView from '../lib/factory/ReviewView.svelte'
+  import Button from '../lib/ui/Button.svelte'
+  import AgentConversation from '../lib/session/AgentConversation.svelte'
   import { APIError, commandFactoryItem, errMessage } from '../lib/api'
-  import { formatFactoryRoute, parseFactoryRoute } from '../lib/routes'
+  import { formatChatRoute, formatFactoryRoute, parseFactoryRoute } from '../lib/routes'
+  import type { DockTabParam } from '../lib/routes'
   import { defaultFactoryItemView } from '../lib/studio/model'
+  import type { AgentRow } from '../lib/fleet'
   import type { FactoryCommand, FactoryCreate, FactoryItem, FactoryItemView, FactoryRoute } from '../lib/factory'
 
   import type { FactoryState } from '../lib/factoryStore'
@@ -39,6 +43,7 @@
     itemId,
     route,
     factory,
+    agents = [],
     getItem,
     upsert,
     onRefresh,
@@ -47,6 +52,8 @@
     itemId: string
     route: FactoryRoute
     factory: FactoryState
+    /** The fleet's live rows, so a drilled-in worker keeps its own gate and change count. */
+    agents?: AgentRow[]
     getItem: (id: string) => Promise<FactoryItem>
     upsert: (item: FactoryItem) => void
     onRefresh: () => Promise<void>
@@ -91,6 +98,80 @@
     view. The tab strip keeps it visible for exactly that reason.
   */
   const selectedView = $derived<FactoryItemView>(view ?? 'activity')
+  /*
+    The side-by-side layout is a different structure, not a narrower version of
+    the same one, so it is decided from one media query and the result is
+    rendered as markup. At 1200px and above activity sits beside the selected
+    worker's conversation; below it activity is the page and a conversation is
+    a focused drill-in the route asks for. The listener is the shell's own:
+    it is removed when this item unmounts, so a resize cannot write to a
+    component that is gone.
+  */
+  const DESKTOP_QUERY = '(min-width: 1200px)'
+  let desktop = $state(window.matchMedia(DESKTOP_QUERY).matches)
+  onMount(() => {
+    const width = window.matchMedia(DESKTOP_QUERY)
+    desktop = width.matches
+    const onWidth = (e: MediaQueryListEvent) => (desktop = e.matches)
+    width.addEventListener('change', onWidth)
+    return () => width.removeEventListener('change', onWidth)
+  })
+  /*
+    The conversation the reader is looking at. An explicit `agent` on the route
+    wins at every width: a drill-in and a return from the full session both
+    leave one behind. A wide screen with no explicit agent selects the item's
+    last worker — once, on entry — and later polls never move that selection,
+    because a worker list that grows or reorders must not take the
+    conversation away from the person reading it. Below 1200px nothing opens a
+    conversation that the route did not ask for.
+  */
+  let pickedAgent = $state<string | null>(null)
+  let pickedOnce = false
+  $effect(() => {
+    if (pickedOnce || !item || !desktop) return
+    pickedOnce = true
+    if (route.agent) return
+    pickedAgent = item.workers?.at(-1)?.agentId ?? null
+  })
+  /** The worker whose conversation this page shows, or null for none. */
+  const conversationId = $derived(route.agent ?? (desktop ? pickedAgent : null))
+  /*
+    The item's own worker list is the authority on whether an agent is still
+    part of this work: an id it no longer carries is unavailable rather than a
+    reason to fall back to whichever worker happens to be last.
+  */
+  const conversationWorker = $derived(
+    conversationId ? (item?.workers?.find((worker) => worker.agentId === conversationId) ?? null) : null,
+  )
+  const conversationRow = $derived(agents.find((row) => row.id === conversationId))
+  /*
+    Below 1200px the drill-in replaces the page. Activity is hidden rather than
+    unmounted, so the list keeps the reader's scroll position and its own cue
+    state and gives them back on the way out; beside a conversation on a wide
+    screen it simply stays where it is.
+  */
+  const activityHidden = $derived(!desktop && !!conversationId)
+  /** This item at the route it is on, which a full session returns to verbatim. */
+  const currentItemRoute = $derived(
+    formatFactoryRoute({ itemId, view: selectedView, ...(conversationId ? { agent: conversationId } : {}) }),
+  )
+  /*
+    Back to activity is the route minus its agent: the item, the selected view
+    and anything else the route carries stay, so the reader lands on this work
+    item rather than the factory list.
+  */
+  function backToActivity() {
+    onNavigate(formatFactoryRoute({ ...route, itemId, agent: undefined }))
+  }
+  /*
+    The full session is a page of its own, so the way back has to be carried to
+    it: `from` names this item, this view and this worker, Chat's Back consumes
+    it, and a later dock change keeps it because the chat route carries it on.
+  */
+  function openFull(tab?: DockTabParam) {
+    if (!conversationId) return
+    onNavigate(formatChatRoute({ id: conversationId, view: 'session', tab, from: currentItemRoute }))
+  }
   /*
     The decisions' answers, reasons, allowances, replacement documents and
     attestations belong to the panels that collect them, so a refresh of the
@@ -194,22 +275,75 @@
     {:else if selectedView === 'documents'}
       <DocumentsView {item} />
     {:else}
-      <div class="grid min-w-0 gap-4">
-        {#if item.decision}
-          <!--
-            The panel is chosen by the decision kind, never keyed by the item's
-            version: the same decision refreshed in place keeps the panel — and
-            what the person typed into it — mounted. A different decision kind
-            is a different decision, so it legitimately starts fresh.
-          -->
-          {#if RECOVERY_KINDS.includes(item.decision.kind)}
-            <RecoveryPanel {item} {busy} run={command} />
+      <!--
+        Activity is the page, and beside it a wide screen shows the selected
+        worker's conversation. Drilling in on a narrow screen hides activity
+        without unmounting it, so the list's scroll position and its own state
+        come back with the reader; the conversation is keyed by session, so
+        switching workers disconnects the one that was showing.
+      -->
+      <div class={conversationId && desktop ? 'grid min-w-0 items-start gap-4 xl:grid-cols-2' : 'grid min-w-0 gap-4'} data-testid="factory-activity-layout">
+        <div class={activityHidden ? 'hidden' : 'grid min-w-0 gap-4'} data-testid="factory-activity-pane">
+          {#if item.decision}
+            <!--
+              The panel is chosen by the decision kind, never keyed by the item's
+              version: the same decision refreshed in place keeps the panel — and
+              what the person typed into it — mounted. A different decision kind
+              is a different decision, so it legitimately starts fresh.
+            -->
+            {#if RECOVERY_KINDS.includes(item.decision.kind)}
+              <RecoveryPanel {item} {busy} run={command} />
+            {:else}
+              <DecisionPanel {item} {busy} run={command} />
+            {/if}
+          {/if}
+          {#if item.workers?.length}
+            <Card data-testid="worker-links">
+              <h2 class="font-semibold">Agents</h2>
+              {#each item.workers as worker}
+                <!-- A worker is opened in this item, not on the chat page: the
+                     same route, with the agent it names. Parked says so, but
+                     the retained conversation stays openable. -->
+                <a
+                  class="block text-sm text-accent underline"
+                  href={formatFactoryRoute({ itemId, view: 'activity', agent: worker.agentId })}
+                  onclick={(e) => { e.preventDefault(); onNavigate(formatFactoryRoute({ itemId, view: 'activity', agent: worker.agentId })) }}
+                >{worker.role}: {worker.agentId}{worker.parked ? ' (parked)' : ''}</a>
+              {/each}
+            </Card>
+          {/if}
+          <ActivityTimeline {item} hidden={activityHidden} />
+        </div>
+        {#if conversationId}
+          {#if conversationWorker}
+            <div class="h-[70vh] min-h-[32rem] min-w-0 overflow-hidden rounded-lg border border-border" data-testid="agent-conversation">
+              <!--
+                Keyed by the conversation it owns, not by the item: switching
+                workers remounts the conversation, which is what disconnects
+                the previous session's stream. The id is the agent's, the one
+                `#chat/<id>` uses and the fleet's rows are keyed by, so the
+                header still resolves the name it reports.
+              -->
+              {#key conversationWorker.agentId}
+                <AgentConversation
+                  sessionId={conversationWorker.agentId}
+                  onBack={backToActivity}
+                  agent={conversationRow}
+                  embedded
+                  onOpenFull={openFull}
+                />
+              {/key}
+            </div>
           {:else}
-            <DecisionPanel {item} {busy} run={command} />
+            <!-- An id the item does not carry is not quietly swapped for
+                 another worker: the pane says so and offers the way back. -->
+            <Card class="grid gap-2" data-testid="agent-unavailable">
+              <h2 class="font-semibold">This worker is unavailable</h2>
+              <p class="text-sm">No worker named {conversationId} belongs to this work item, so there is no conversation to show.</p>
+              <Button variant="ghost" onclick={backToActivity}>Back to activity</Button>
+            </Card>
           {/if}
         {/if}
-        {#if item.workers?.length}<Card><h2 class="font-semibold">Agents</h2>{#each item.workers as worker}<a class="block text-sm text-accent underline" href={`#chat/${encodeURIComponent(worker.agentId)}`} onclick={(e) => { e.preventDefault(); onNavigate(`#chat/${encodeURIComponent(worker.agentId)}`) }}>{worker.role}: {worker.agentId}</a>{/each}</Card>{/if}
-        <ActivityTimeline {item} />
       </div>
     {/if}
   {:else}<p role="status">Loading work item…</p>{/if}

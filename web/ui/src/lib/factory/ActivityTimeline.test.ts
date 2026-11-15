@@ -87,4 +87,38 @@ describe('ActivityTimeline', () => {
     await fireEvent.click(cue)
     expect(screen.queryByRole('button', { name: 'New activity' })).toBeNull()
   })
+
+  it('keepsScrollPositionWhileHidden', async () => {
+    const view = render(ActivityTimeline, { item: item({ history: [event(1, 'first'), event(2, 'second'), event(3, 'third')] }) })
+    const list = screen.getByTestId('activity-scroll')
+    // A long list the reader has scrolled back from the end of.
+    Object.defineProperty(list, 'scrollHeight', { value: 1000, configurable: true })
+    Object.defineProperty(list, 'clientHeight', { value: 100, configurable: true })
+    Object.defineProperty(list, 'scrollTop', { value: 400, writable: true, configurable: true })
+    await fireEvent.scroll(list)
+    // Drilling into an agent hides the pane without unmounting it.
+    await view.rerender({ hidden: true })
+    expect(screen.getByTestId('activity-timeline').getAttribute('aria-hidden')).toBe('true')
+    await view.rerender({ hidden: false })
+    // The same list, still where the reader left it: hiding is not a remount
+    // and not a jump to the newest event.
+    expect(screen.getByTestId('activity-scroll')).toBe(list)
+    expect(list.scrollTop).toBe(400)
+  })
+
+  it('keepsItsNewActivityCueWhileHidden', async () => {
+    const first = item({ history: [event(1, 'first'), event(2, 'second')] })
+    const view = render(ActivityTimeline, { item: first })
+    const list = screen.getByTestId('activity-scroll')
+    Object.defineProperty(list, 'scrollHeight', { value: 1000, configurable: true })
+    Object.defineProperty(list, 'clientHeight', { value: 100, configurable: true })
+    Object.defineProperty(list, 'scrollTop', { value: 0, writable: true, configurable: true })
+    await fireEvent.scroll(list)
+    // Activity arrives while the reader is inside an agent's conversation; the
+    // hidden pane neither marks it seen nor scrolls them off their place.
+    await view.rerender({ hidden: true, item: item({ history: [event(1, 'first'), event(2, 'second'), event(3, 'third')] }) })
+    await view.rerender({ hidden: false })
+    expect(screen.getByRole('button', { name: 'New activity' })).toBeTruthy()
+    expect(list.scrollTop).toBe(0)
+  })
 })

@@ -2,7 +2,23 @@
   import Card from './ui/Card.svelte'
   import Button from './ui/Button.svelte'
   import Badge from './ui/Badge.svelte'
-  import { listClients, createClient, deleteClient, errMessage, type MCPClient, type CreateClientResult } from './api'
+  import {
+    APIError,
+    FactoryGrantConflictError,
+    createClient,
+    deleteClient,
+    emptyFactoryGrant,
+    errMessage,
+    getFactoryGrant,
+    listClients,
+    listProjects,
+    putFactoryGrant,
+    type CreateClientResult,
+    type FactoryGrantState,
+    type MCPClient,
+    type MCPFactoryProjectGrant,
+    type ProjectStatus,
+  } from './api'
 
   let clients = $state<MCPClient[]>([])
   let loading = $state(false)
@@ -17,16 +33,51 @@
   let created = $state<CreateClientResult | null>(null)
   let copied = $state(false)
 
+  // Factory authority: one grant per (client, project) pair, and nothing is
+  // inherited. A pair that was never granted has no capability and no
+  // approval authority, which the bridge reports as the zero grant rather
+  // than an error.
+  let projects = $state<ProjectStatus[]>([])
+  let projectsError = $state<string | null>(null)
+  let grantClientId = $state('')
+  // The opaque `mcpProjectId`, never a path: it is the only project identifier
+  // a grant names.
+  let grantProjectId = $state('')
+  let grant = $state<MCPFactoryProjectGrant | null>(null)
+  let grantVersion = $state('')
+  let grantLoading = $state(false)
+  let grantSaving = $state(false)
+  let grantError = $state<string | null>(null)
+  let grantNotice = $state<string | null>(null)
+  // The value that won a 409, shown beside the unsaved edit. It is never
+  // adopted: only the explicit reload replaces what the user typed.
+  let grantWinner = $state<FactoryGrantState | null>(null)
+
   async function refresh() {
     loading = true
     error = null
     try {
       clients = await listClients()
+      // A client deleted elsewhere cannot keep editing its grant.
+      if (grantClientId && !clients.some((c) => c.id === grantClientId)) grantClientId = ''
     } catch (e) {
       error = errMessage(e)
     } finally {
       loading = false
     }
+    await loadProjects()
+  }
+
+  /** Only projects with a minted opaque ID can be named by a grant. */
+  async function loadProjects() {
+    projectsError = null
+    try {
+      projects = (await listProjects()).filter((p) => !!p.mcpProjectId)
+    } catch (e) {
+      projects = []
+      projectsError = `Projects could not be read: ${errMessage(e)}`
+    }
+    if (grantProjectId && !projects.some((p) => p.mcpProjectId === grantProjectId)) grantProjectId = ''
   }
 
   async function create() {
@@ -59,11 +110,101 @@
     error = null
     try {
       await deleteClient(id)
+      // The pair is gone, so its editor goes with it rather than lingering
+      // against an ID the bridge no longer has.
+      if (grantClientId === id) grantClientId = ''
       await refresh()
     } catch (e) {
       error = errMessage(e)
     }
   }
+
+  /**
+   * Read the chosen pair's grant. Nothing is editable unless this succeeded:
+   * a write needs the version the bridge showed, and guessing one would
+   * replace authority the user never saw.
+   */
+  async function loadGrant(clientId: string, projectId: string) {
+    grantLoading = true
+    grant = null
+    grantVersion = ''
+    grantError = null
+    grantNotice = null
+    grantWinner = null
+    try {
+      const state = await getFactoryGrant(clientId, projectId)
+      if (!state?.version) throw new APIError(0, { error: 'The bridge did not return a grant version, so this authority cannot be edited safely.' })
+      grant = state.grant ? { ...state.grant, projectId } : emptyFactoryGrant(projectId)
+      grantVersion = state.version
+    } catch (e) {
+      // An unknown pair is one 404 answer that names neither ID: the route is
+      // authenticated, but it still must not become an oracle.
+      grantError =
+        e instanceof APIError && e.status === 404
+          ? 'This client and project pair is unknown to the bridge, so there is no authority to edit here.'
+          : errMessage(e)
+    } finally {
+      grantLoading = false
+    }
+  }
+
+  function resetGrant() {
+    grant = null
+    grantVersion = ''
+    grantError = null
+    grantNotice = null
+    grantWinner = null
+    grantLoading = false
+  }
+
+  /** Approving without an authority is refused by the bridge, so the two are never left in a state that cannot be saved. */
+  function setAuthority(value: MCPFactoryProjectGrant['approvalAuthority']) {
+    if (!grant) return
+    grant.approvalAuthority = value
+    if (value === 'none') grant.approveAndQueue = false
+  }
+
+  function setCapability(key: 'read' | 'createDraft' | 'editDraft' | 'answerQuestion' | 'approveAndQueue', on: boolean) {
+    if (grant) grant[key] = on
+  }
+
+  async function saveGrant() {
+    if (!grant || !grantClientId || !grantProjectId || grantSaving) return
+    if (grant.approveAndQueue && grant.approvalAuthority === 'none') {
+      grantError = 'Approving and queueing needs user-directed or standing authority; pick one before saving.'
+      return
+    }
+    grantSaving = true
+    grantError = null
+    grantNotice = null
+    try {
+      const state = await putFactoryGrant(grantClientId, grantProjectId, { ...grant, projectId: grantProjectId }, grantVersion)
+      grant = state.grant ? { ...state.grant, projectId: grantProjectId } : grant
+      grantVersion = state.version || grantVersion
+      grantWinner = null
+      grantNotice = 'Factory authority saved. Changes apply to future actions only.'
+    } catch (e) {
+      if (e instanceof FactoryGrantConflictError) {
+        // The user's edit stays on screen; the winning version is reported
+        // beside it, and only an explicit reload replaces the draft.
+        grantWinner = e.state
+        grantError = null
+      } else {
+        grantError = errMessage(e)
+      }
+    } finally {
+      grantSaving = false
+    }
+  }
+
+  // Every pair change is a fresh read; a save never re-reads, so an unsaved
+  // edit is never overwritten behind the user's back.
+  $effect(() => {
+    const clientId = grantClientId
+    const projectId = grantProjectId
+    if (clientId && projectId) void loadGrant(clientId, projectId)
+    else resetGrant()
+  })
 
   async function copyToken() {
     if (!created?.token) return
@@ -170,4 +311,107 @@
       </li>
     {/each}
   </ul>
+
+  <div class="mt-4 flex flex-col gap-3 border-t border-border pt-3" data-testid="factory-authority">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <h3 class="text-sm font-semibold">Factory authority</h3>
+      <Badge tone="muted">per client and project</Badge>
+    </div>
+    <p class="text-xs text-muted">
+      A client has no factory authority until you grant it here, and each permission is independent:
+      reading and drafting never imply approval. <strong>User-directed</strong> approval or answer is the
+      client's own claim that a person asked for it — it is recorded as such and never treated as verified
+      human approval. <strong>Standing</strong> authority is optional: it lets the client approve or queue
+      without being asked each time, so grant it only to a client you trust to decide unsupervised. Changing
+      or revoking authority affects future actions only; work already accepted, approved or queued keeps the
+      provenance it was recorded with.
+    </p>
+    <div class="flex flex-col gap-2 sm:flex-row">
+      <label class="flex min-w-0 flex-1 flex-col gap-1 text-xs">Client
+        <select class="w-full min-w-0 rounded-md border border-border bg-bg px-3 py-2 text-sm" bind:value={grantClientId}>
+          <option value="">Choose a client</option>
+          {#each clients as c (c.id)}<option value={c.id}>{c.name || c.id}</option>{/each}
+        </select>
+      </label>
+      <label class="flex min-w-0 flex-1 flex-col gap-1 text-xs">Project
+        <select class="w-full min-w-0 rounded-md border border-border bg-bg px-3 py-2 text-sm" bind:value={grantProjectId}>
+          <option value="">Choose a project</option>
+          {#each projects as p (p.mcpProjectId)}<option value={p.mcpProjectId}>{p.root}</option>{/each}
+        </select>
+      </label>
+    </div>
+    {#if projectsError}
+      <div class="rounded-md border border-danger bg-danger/10 p-3 text-sm text-danger" role="alert">{projectsError}</div>
+    {:else if projects.length === 0}
+      <p class="text-xs text-muted">No project on this bridge has a factory project ID yet, so there is nothing to grant.</p>
+    {/if}
+
+    {#if grantLoading}
+      <p class="text-sm text-muted" role="status">Reading factory authority…</p>
+    {:else if grantError}
+      <div class="rounded-md border border-danger bg-danger/10 p-3 text-sm text-danger" role="alert">{grantError}</div>
+    {/if}
+
+    {#if grantWinner}
+      <div class="rounded-md border border-attention bg-attention/10 p-3 text-sm" data-testid="grant-conflict">
+        <p class="font-medium text-attention">These permissions changed elsewhere. Your edits are kept.</p>
+        <p class="mt-1 text-xs text-muted">
+          Version {grantWinner.version} is saved now, with approval authority
+          {grantWinner.grant?.approvalAuthority ?? 'none'}. Reloading discards what you typed and shows the
+          saved values; comparing them first changes nothing on the bridge.
+        </p>
+        <Button variant="ghost" class="mt-2" onclick={() => void loadGrant(grantClientId, grantProjectId)}>Reload saved authority</Button>
+      </div>
+    {/if}
+
+    {#if grant}
+      <div class="flex flex-col gap-2">
+        <label class="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={grant.read} disabled={grantSaving} onchange={(e) => setCapability('read', e.currentTarget.checked)} />
+          Read work items
+        </label>
+        <label class="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={grant.createDraft} disabled={grantSaving} onchange={(e) => setCapability('createDraft', e.currentTarget.checked)} />
+          Create drafts
+        </label>
+        <label class="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={grant.editDraft} disabled={grantSaving} onchange={(e) => setCapability('editDraft', e.currentTarget.checked)} />
+          Edit drafts
+        </label>
+        <label class="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={grant.answerQuestion} disabled={grantSaving} onchange={(e) => setCapability('answerQuestion', e.currentTarget.checked)} />
+          Answer questions
+        </label>
+        <label class="flex flex-col gap-1 text-xs">Approval authority
+          <select
+            class="w-full min-w-0 rounded-md border border-border bg-bg px-3 py-2 text-sm"
+            value={grant.approvalAuthority}
+            disabled={grantSaving}
+            onchange={(e) => setAuthority(e.currentTarget.value as MCPFactoryProjectGrant['approvalAuthority'])}
+          >
+            <option value="none">None</option>
+            <option value="user_directed">User-directed (client assertion)</option>
+            <option value="standing">Standing (approve without asking)</option>
+          </select>
+        </label>
+        <label class="flex items-center gap-2 text-sm" class:opacity-60={grant.approvalAuthority === 'none'}>
+          <input
+            type="checkbox"
+            checked={grant.approveAndQueue}
+            disabled={grantSaving || grant.approvalAuthority === 'none'}
+            onchange={(e) => setCapability('approveAndQueue', e.currentTarget.checked)}
+          />
+          Approve and queue
+        </label>
+        {#if grant.approvalAuthority === 'none'}
+          <p class="text-xs text-muted">Approving and queueing needs user-directed or standing authority.</p>
+        {/if}
+        <div class="flex flex-wrap items-center gap-3">
+          <Button onclick={saveGrant} disabled={grantSaving || grantLoading}>Save authority</Button>
+          {#if grantVersion}<span class="text-xs text-muted">Version {grantVersion}</span>{/if}
+        </div>
+        {#if grantNotice}<p class="text-sm text-muted" role="status">{grantNotice}</p>{/if}
+      </div>
+    {/if}
+  </div>
 </Card>

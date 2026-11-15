@@ -3,8 +3,8 @@
   import Card from '../lib/ui/Card.svelte'
   import Button from '../lib/ui/Button.svelte'
   import Tag from '../lib/ui/Tag.svelte'
-  import { APIError, commandFactoryItem, errMessage, getFactoryItem, getPreviewEnvironments } from '../lib/api'
-  import { createFactoryPoller, type FactoryCheck, type FactoryCommand, type FactoryCreate, type FactoryItem } from '../lib/factory'
+  import { APIError, commandFactoryItem, errMessage, getFactoryItem, getPreviewEnvironments, listClients } from '../lib/api'
+  import { createFactoryPoller, provenanceLine, type FactoryCheck, type FactoryCommand, type FactoryCreate, type FactoryItem } from '../lib/factory'
   import type { PreviewDeployment, PreviewEnvironment, PreviewReport } from '../lib/preview'
   let { itemId, onNavigate }: { itemId: string; onNavigate: (hash: string) => void } = $props()
   let item = $state<FactoryItem | null>(null), error = $state(''), notice = $state(''), busy = $state(false)
@@ -14,6 +14,9 @@
   let attest = $state(false), workerName = $state(''), pending = $state<FactoryCommand | null>(null)
   let preview = $state<PreviewReport | null>(null), previewLoading = $state(false), previewError = $state('')
   let previewStarted = $state(false), previewRequest = 0, alive = true
+  // Client names decorate provenance: a failed read leaves the stable IDs,
+  // which are still accurate, so this never becomes a page error.
+  let clientNames = $state<Record<string, string>>({})
   type PreviewSegment = { kind: 'code'; text: string } | { kind: 'text'; text: string } | { kind: 'link'; url: string; logs: string } | { kind: 'badge'; label: string; sha: string }
   const textEncoder = new TextEncoder(), unsafeUrlPattern = /[\s`<>\u0000-\u001f\u007f-\u009f]/
   /** Spec D10: clickable only as a literal absolute http(s) URL with a nonempty host, no whitespace/control (C0+C1)/angle/backtick characters, at most 2048 bytes. Matches the bridge validator factoryURLClickable (web/bridge/factory_prbody.go). No repair. */
@@ -55,6 +58,17 @@
     if (alive && seq === previewRequest) previewLoading = false
   }
   async function refresh() { item = await getFactoryItem(itemId); error = '' }
+  /** Names are a convenience on the history line; the IDs stay as the fallback. */
+  async function loadClientNames() {
+    try {
+      const list = await listClients()
+      const names: Record<string, string> = {}
+      for (const c of list) if (c.name) names[c.id] = c.name
+      clientNames = names
+    } catch {
+      // The stable IDs identify the client just as well.
+    }
+  }
   // Spec §6: the initial preview load fires once from the mount path, never from the item poller's refresh.
   $effect(() => {
     if (!item?.repoId || previewStarted) return
@@ -62,6 +76,7 @@
     void loadPreview()
   })
   onMount(() => {
+    void loadClientNames()
     // The poller's immediate tick performs the initial item fetch (exactly one
     // fetch at mount); its errors land on the same onError handler that sets error.
     const p = createFactoryPoller(refresh, () => !!item && !['draft', 'ready', 'stopped', 'closed', 'needs_input'].includes(item.state), (e) => { error = errMessage(e) }); p.start()
@@ -233,6 +248,6 @@
         {/if}
       </Card>{/if}
       {#if item.workers?.length}<Card><h2 class="font-semibold">Agents</h2>{#each item.workers as worker}<a class="block text-sm text-accent underline" href={`#chat/${encodeURIComponent(worker.agentId)}`} onclick={(e) => { e.preventDefault(); onNavigate(`#chat/${encodeURIComponent(worker.agentId)}`) }}>{worker.role}: {worker.agentId}</a>{/each}</Card>{/if}
-    </div><Card class="min-w-0"><h2 class="mb-2 font-semibold">Activity</h2>{#if !item.history?.length}<p class="text-sm text-muted">No activity yet.</p>{:else}<ol class="grid gap-3 text-sm">{#each [...item.history].reverse() as event}<li class="min-w-0 border-b border-border pb-2"><time class="text-xs text-muted">{event.at}</time><p class="whitespace-pre-wrap break-words">{event.message}</p></li>{/each}</ol>{/if}</Card></div>
+    </div><Card class="min-w-0"><h2 class="mb-2 font-semibold">Activity</h2>{#if !item.history?.length}<p class="text-sm text-muted">No activity yet.</p>{:else}<ol class="grid gap-3 text-sm">{#each [...item.history].reverse() as event}<li class="min-w-0 border-b border-border pb-2"><time class="text-xs text-muted">{event.at}</time><p class="whitespace-pre-wrap break-words">{event.message}</p>{#if event.provenance}<p class="mt-1 break-words text-xs text-muted" data-testid="factory-provenance">{provenanceLine(event.provenance, clientNames[event.provenance.clientId])}</p>{/if}</li>{/each}</ol>{/if}</Card></div>
   {:else}<p role="status">Loading work item…</p>{/if}
 </div>

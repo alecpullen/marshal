@@ -537,6 +537,79 @@ export async function deleteClient(id: string): Promise<void> {
   await request('DELETE', `/api/clients/${encodeURIComponent(id)}`)
 }
 
+/**
+ * One MCP client's factory authority over one project, mirroring
+ * `web/bridge/client.go`. Every capability is independent, and the approval
+ * authority is independent of them: a client may read and draft without ever
+ * being allowed to approve. `projectId` is the opaque `mcpProjectId`, never a
+ * host path.
+ */
+export interface MCPFactoryProjectGrant {
+  projectId: string
+  read: boolean
+  createDraft: boolean
+  editDraft: boolean
+  answerQuestion: boolean
+  approveAndQueue: boolean
+  approvalAuthority: 'none' | 'user_directed' | 'standing'
+}
+
+/** One (client, project) pair's stored grant and the opaque version a write must name. */
+export interface FactoryGrantState {
+  clientId: string
+  projectId: string
+  grant: MCPFactoryProjectGrant
+  version: string
+}
+
+/** The grant a pair that was never granted has: no capability and no authority, which is not an error. */
+export function emptyFactoryGrant(projectId: string): MCPFactoryProjectGrant {
+  return {
+    projectId,
+    read: false,
+    createDraft: false,
+    editDraft: false,
+    answerQuestion: false,
+    approveAndQueue: false,
+    approvalAuthority: 'none',
+  }
+}
+
+/** A 409 from a grant write, carrying the state that won so the editor can keep the unsaved edit. */
+export class FactoryGrantConflictError extends APIError {
+  state: FactoryGrantState | null
+  constructor(body: unknown) {
+    super(409, body)
+    this.name = 'FactoryGrantConflictError'
+    const state = body as FactoryGrantState | undefined
+    this.state = state && typeof state === 'object' && state.grant && typeof state.version === 'string' ? state : null
+  }
+}
+
+/** `GET /api/clients/{clientId}/factory-grants/{projectId}`; a valid pair with nothing stored reports the zero grant. */
+export async function getFactoryGrant(clientId: string, projectId: string): Promise<FactoryGrantState> {
+  return request('GET', `/api/clients/${encodeURIComponent(clientId)}/factory-grants/${encodeURIComponent(projectId)}`)
+}
+
+/**
+ * `PUT` the whole grant plus the version it was edited from. A 409 rejects with
+ * a {@link FactoryGrantConflictError}: the bridge sends the value that won, and
+ * re-reading blind would discard what the user typed.
+ */
+export async function putFactoryGrant(
+  clientId: string,
+  projectId: string,
+  grant: MCPFactoryProjectGrant,
+  version: string,
+): Promise<FactoryGrantState> {
+  try {
+    return await request('PUT', `/api/clients/${encodeURIComponent(clientId)}/factory-grants/${encodeURIComponent(projectId)}`, { grant, version })
+  } catch (e) {
+    if (e instanceof APIError && e.status === 409) throw new FactoryGrantConflictError(e.body)
+    throw e
+  }
+}
+
 export async function listPending(): Promise<PendingSubmission[]> {
   return request('GET', '/api/pending')
 }
@@ -1100,6 +1173,14 @@ export interface ProjectSettings {
   shipTarget?: 'merge' | 'push' | 'patch' | ''
   intake: { repoId?: string; labels?: string[]; clients?: string[] }
   automations?: { reviewBot?: ReviewBotSettings; ciFixer?: CIFixerSettings }
+  /**
+   * Planner delegation (MCP factory handoff): when true, the one designated MCP
+   * client may answer this project's planner questions. Both fields are
+   * omitted by default, so a record written before they existed is unchanged
+   * and delegation stays off with no client designated.
+   */
+  plannerDelegationEnabled?: boolean
+  designatedMCPClientId?: string
   /**
    * This project's factory defaults. Absent fields follow the handoff, or the
    * project's agent defaults where those apply; never materialise a fallback

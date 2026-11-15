@@ -74,6 +74,11 @@
   let labels = $state<string[]>([])
   let newLabel = $state('')
   let clientIds = $state<string[]>([])
+  // Planner delegation drafts (MCP factory handoff). Off and unselected by
+  // default: a client that was never designated answers nothing, and an off
+  // toggle stores no client at all.
+  let delegation = $state(false)
+  let delegateClient = $state('')
   // The drafts as adopted, so an unsaved edit can be recognised.
   let baseline = $state('')
 
@@ -87,7 +92,7 @@
       workspace, factoryWorkspace, profile, implementerProfile, reviewerProfile,
       mode, autoMode, isolation, shipTarget,
       targetBranch, expectedChecksText, reviewerInstructions, maxRoundsText, ciPollText, ciWaitText,
-      repoId, labels, clientIds,
+      repoId, labels, clientIds, delegation, delegateClient,
     ])
   }
   const dirty = $derived(!!saved && draftSignature() !== baseline)
@@ -119,6 +124,10 @@
     repoId = s.intake.repoId ?? ''
     labels = [...(s.intake.labels ?? [])]
     clientIds = [...(s.intake.clients ?? [])]
+    // Both delegation fields are optional: absent means off and nobody
+    // designated, which is what the drafts start from.
+    delegation = s.plannerDelegationEnabled === true
+    delegateClient = s.designatedMCPClientId ?? ''
     baseline = draftSignature()
     stale = false
   }
@@ -293,6 +302,36 @@
     void save({ ...settings, intake: { repoId: repoId || undefined, labels: repoId ? labels : [], clients: clientIds } }, 'Intake')
   }
 
+  /**
+   * Only the two delegation fields change here; every other member of the
+   * record is carried through exactly as it was read. Client records hold no
+   * tokens, so nothing secret can be written back by this save.
+   */
+  function delegationBody(): ProjectSettings {
+    const base = settings
+    if (!base) throw new Error('Project settings could not be read; reload before saving.')
+    const next: ProjectSettings = { ...base }
+    if (delegation) next.plannerDelegationEnabled = true
+    else delete next.plannerDelegationEnabled
+    // Off stores no designation: an inert client ID in the record would look
+    // like authority the user did not grant.
+    if (delegation && delegateClient) next.designatedMCPClientId = delegateClient
+    else delete next.designatedMCPClientId
+    return next
+  }
+
+  /** Delegation with nobody designated answers nothing, so it is not a savable state. */
+  const delegationIncomplete = $derived(delegation && !delegateClient)
+
+  function saveDelegation() {
+    try {
+      void save(delegationBody(), 'Delegation')
+    } catch (e) {
+      notice = ''
+      error = errMessage(e)
+    }
+  }
+
   function addLabel() {
     const l = newLabel.trim()
     // The bridge's issue poller watches one label per repo, so the card keeps one.
@@ -387,6 +426,9 @@
   const effectiveImplementer = $derived(following(implementerProfile, profile))
   const effectiveReviewer = $derived(following(reviewerProfile, profile))
   const repoChoices = $derived([...new Set([...repos.map((r) => r.id), ...(repoId ? [repoId] : [])])])
+  // A designated client the list no longer offers stays selected and labelled,
+  // so saving an unrelated field cannot silently clear the designation.
+  const clientChoices = $derived(keepUnavailable(clients.map((c) => ({ value: c.id, label: c.name || c.id })), delegateClient))
   const canReload = $derived(stale || (loaded && !saved))
   const field = 'w-full min-w-0 rounded border border-border bg-bg p-2 text-sm'
 </script>
@@ -553,6 +595,27 @@
           {/each}
         </fieldset>
         <div><Button onclick={saveIntake} disabled={saving || !saved}>Save intake</Button></div>
+      </Card>
+
+      <Card class="flex min-w-0 flex-col gap-3" data-testid="delegation-card">
+        <h2 class="text-sm font-semibold">Planner delegation</h2>
+        <p class="text-xs text-muted">
+          Off by default. When on, the one client you designate may answer this project's planner questions
+          on your behalf; it cannot approve or queue work from that, and the delegation is recorded as the
+          planner's answer, not as your own.
+        </p>
+        <label class="flex items-center gap-2 text-sm">
+          <input type="checkbox" bind:checked={delegation} />
+          Allow one MCP client to answer planner questions
+        </label>
+        <label class="flex min-w-0 flex-col gap-1 text-xs">Designated MCP client
+          <select aria-label="Designated MCP client" bind:value={delegateClient} disabled={!delegation} class={field}>
+            <option value="">No client designated</option>
+            {#each clientChoices as o (o.value)}<option value={o.value}>{o.label}</option>{/each}
+          </select>
+        </label>
+        {#if delegationIncomplete}<p class="text-xs text-attention">Choose the client that may answer before saving; delegation with nobody designated answers nothing.</p>{/if}
+        <div><Button onclick={saveDelegation} disabled={saving || !saved || delegationIncomplete}>Save delegation</Button></div>
       </Card>
 
       <Card class="flex min-w-0 flex-col gap-3" data-testid="health-card">

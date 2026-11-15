@@ -701,3 +701,81 @@ Expected: all commands pass, or an actually pre-existing baseline failure is rep
 - Mocked Playwright fixtures are named and documented as presentation tests. Only real bridge/API tests support claims about actual persistence or execution.
 - Each slice's `npm run build` regenerates the tracked embedded SPA. Review generated asset diffs with the source diff and rebuild `webbridge` before the final smoke test.
 - The original HIFI HTML/screenshots remain unchanged. New visual evidence belongs in `.docs-archive/studio-uiux/` unless deliberately promoted to public docs.
+
+## Outcome record
+
+Executed on branch `feat/studio-uiux-alignment` from base `f42a7c59`, in an isolated git worktree. One commit per task; tasks with disjoint files were run concurrently, which is why the commit order is not the numeric order.
+
+| Commit | Task |
+|---|---|
+| `16fb94c9` | adds the approved design and this plan |
+| `68854810` | task 1 — extend Studio hash routes |
+| `0208bb5a` | task 2 — build Fleet and factory projections |
+| `91cc34a4` | task 3 — add shared factory store |
+| `995a996f` | task 6 — extract automation summaries |
+| `16a4c000` | task 4 — add roadmap and page primitives |
+| `48f60a46` | task 5 — build responsive Studio navigation |
+| `f349473d` | task 7 — build the Fleet home |
+| `cde6f5c7` | task 8 — wire shared factory state |
+| `7d4c7c95` | task 9 — replace the Studio app shell |
+| `7c994227` | task 10 — guard unsaved Studio routes |
+| `8b2f33ce` | task 11 — verify Fleet and navigation |
+| `804f08d0` | task 12 — build the project factory dashboard |
+| `8a1ef3af` | task 13 — reorganize factory handoff |
+| `0787f18d` | task 14 — extract readable draft approval |
+| `7324872f` | task 15 — verify project factory and handoff |
+| `8f939e42` | task 16 — add work-item views and activity |
+| `a66d37b8` | task 17 — extract decisions and recovery |
+| `2ee4f248` | task 18 — extract CI-first factory review |
+| `6f4444b6` | task 19 — extract embeddable agent conversation |
+| `e85c10ef` | task 20 — integrate factory agent drill-in |
+| `90882147` | task 21 — verify execution and review |
+| this commit | task 22 — reconcile docs and verify Studio |
+
+### Deviations from the plan
+
+- **Task 1, `Page` union.** The plan's C1 `Page` type has no `home` member, but `App.svelte` (not a task-1 file) still compared against it. A temporary `home` member kept the exported type compatible for one task; task 9 removed it together with the old shell, so the shipped `Page` is exactly C1's.
+- **Task 1, anchor drift.** `listFactoryItems`/`getFactoryItem` live in `web/ui/src/lib/api.ts`, not `lib/factory.ts`; the store imports them from where they are rather than moving them.
+- **Task order.** Tasks 6, 4 and 5 were executed before task 3's neighbours completed because their files are disjoint. Each still landed as its own commit with its own verification.
+- **Task 11, tablet viewport.** Step 1 adds a third project (768×1024) to the Playwright config, which multiplies the pre-existing `project settings` failure from 6 to 9 (three cases × three widths). The plan's "exactly 6 pre-existing failures" bar is therefore unachievable after step 1; 9 is the recorded baseline.
+- **Task 15, stale browser assertions.** Three assertions in `project-settings.pw.ts` still named the handoff summary's old `*-effective` hooks, which task 13 replaced with `config-*` rows. They were updated in place (3 lines, same intent) rather than restoring the old hooks, which is what returned the suite to exactly the 9-case baseline.
+- **Task 21, zoom review.** The 200% zoom review is a measured Playwright case at a 720×450 CSS viewport (desktop only, skipped at the other two widths) rather than a hand-driven check. All four surfaces reported `clientWidth` 720 with `scrollWidth` 720, and the primary action stayed 44px tall and unclipped.
+- **Task 21, extra cases.** Seven cases beyond the ten the plan names — one aggregate several-workers/PRs case, five accessibility/robustness cases, one zoom measurement — because step 4's requirements had no case of their own. 17 cases total.
+- **Task 22, scope of the older design doc.** `docs/web-studio/design.md` §6–7 were reconciled as the plan requires; §8's page-level specs and the historical mockup HTML were left untouched.
+- **Task 7/9, retired Dashboard behaviour.** The fleet store's `error` string is no longer rendered anywhere. `#pending`/`#sessions` remain routed and reachable from the palette and project cards.
+
+### Final verification
+
+Run at the repository root in the execution worktree unless the command changes directory.
+
+| Command | Result |
+|---|---|
+| `cd web/ui && npm test` | 110 files, **1154 tests passed**, exit 0 |
+| `cd web/ui && npm run check` | **5 errors and 1 warning in 6 files** (the recorded baseline, unchanged) |
+| `cd web/ui && npm run build` | exit 0; no resulting asset diff |
+| `scripts/e2e/run_browser_checks.sh` | **150 cases: 139 passed, 2 skipped, 9 failed** |
+| `go test ./web/bridge/...` | ok (`marshal/web/bridge` 131.3s; `contract`, `contract/tsgen` ok) |
+| `CGO_ENABLED=1 go build ./cmd/webbridge` | exit 0 |
+| `go vet ./...` | exit 0 |
+| `scripts/test.sh quick` | exit 0 |
+| `git diff --check` | clean |
+
+The five `npm run check` errors, all pre-existing and all outside this redesign's new code: `lib/session/AgentConversation.svelte:754:92` (the `Chat.svelte` error, moved with the extracted component), `views/Run.svelte:336:74`, `lib/fleet.test.ts:78:42`, `views/Review.test.ts:49:3`, `views/Runs.test.ts:15:52`.
+
+The 9 browser failures are the three `project settings` cases — role overrides, the stale-save warning, and unsaved-edit confirmation — each at desktop, tablet and phone. They time out on `selectOption('gamma')` because the credential-free fixture bridge serves no model profiles for that case. No other case fails. The 2 skips are the 720×450 zoom case at the two widths it does not measure.
+
+### Smoke pass
+
+The real-bridge Playwright projects review the SPA the binary serves, not Vite: `studio-shell.pw.ts` and `project-settings.pw.ts` cover Fleet, Inbox, deep-link reload, browser Back, the roadmap pages, project settings, and the handoff's inherited sources and validation. `web/bridge/static/index.html` references the rebuilt `assets/index-CrFh852g.js` and `assets/index-CHqPrMo8.css`, so the embedded build is what was exercised. The fixture bridge runs with `--egress off`, a provider pointed at `http://127.0.0.1:9` that is never called, and no credential, forge or live agent.
+
+### Known defects left in place
+
+The axe scans surface two pre-existing palette defects in `web/ui/src/app.css` and `web/ui/src/lib/ui/Button.svelte` (an unlayered `button { color: inherit }` defeating `text-bg`, and a light variant that redefines only neutrals). Neither file is a redesign file. Every reported contrast pair is pinned by its exact values, so any new violation still fails the scan and the pinned list must shrink when the palette is fixed.
+
+### Remaining roadmap capabilities
+
+Planning workspace, voice capture, the extensible workflow editor, host management, richer connection and environment flows, merge, and cross-device continuity. Each is reachable in the shell as a roadmap page, which a real-bridge browser case asserts is planned and read-only; that is not an implementation.
+
+### Evidence
+
+Screenshots are in the gitignored `.docs-archive/studio-uiux/`: `fleet-desktop.png`, `fleet-tablet.png`, `fleet-phone.png`, `factory-desktop.png`, `factory-phone.png`, `handoff-desktop.png`, `handoff-phone.png`, `draft-phone.png`, `execution-desktop.png`, `execution-phone.png`, `decision-phone.png`, `recovery-desktop.png`, `ready-review-desktop.png`, `ready-review-phone.png`. Per-slice implementation records, including commits and test counts at each slice boundary, are in §16 of `docs/studio-fleet-factory/studio-uiux-alignment-design.md`.

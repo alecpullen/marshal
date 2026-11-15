@@ -1,6 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { APIError, BudgetError, answerRun, errMessage, getCommitDraft, getRoster, getRun, listReviewComments, listRuns, postReviewComment, recentPrompts, resolveReviewComment, startRun, undoReroute, getGate, getLastRequest, getNode, getStack, getStepDiffs, listFiles, readFile, runGate, getAccess, patchAccess, setToken, confirmPlugin, confirmSkill, createWatch, deleteMemory, discardPlugin, discardSkill, getBudgets, getModels, getUsage, listMemory, listPlugins, listSkills, listWatches, overrideBudget, previewSkill, probeProvider, removePlugin, removeSkill, scanPlugin, setBudgets, setMemoryConfidence, setPresets, setProviderKey, setProviders, setRouting, spawnAgent, stopWatch, createWorkspace, diffWorkspace, getWorkspace, listBuilds, listWorkspaces, patchWorkspace, publishWorkspace, rotateWorkspaceCA, saveWorkspaceDraft, setWorkspacePool, startBuild, deleteWorkspace, getNetworkHosts, getNetworkRequests, getNetworkAgents, postNetworkDecision, getSecretsStatus, listSecrets, putSecret, deleteSecret, listCredentials, putCredential, deleteCredential, listRepos, registerRepo, removeRepo, getProjectSettings, putProjectSettings, getProjectHealth, getNetworkPending, listReviewDrafts, getReviewDraft, editReviewDraft, postReviewDraft, discardReviewDraft, sendDraftToAuthor, runReviewBot, listCIHistory, getCIHistory, createWebhookSecret, openTerminal, openWorkspaceShell, terminalInput, terminalResize, terminalRelease, closeTerminal, terminalEventsUrl, openPreview, listRecipes, getRecipe, saveRecipe, deleteRecipe, copyRecipe, runRecipe, listSchedules, saveSchedule, deleteSchedule, runSchedule, getNotifications, saveNotifications, testNotifications, createStatusLink, listStatusLinks, revokeStatusLink, memorySuggestions, promoteMemory, getVersionedProjectSettings, putVersionedProjectSettings } from './api'
 
+import {
+  convertWorkingDraft,
+  createWorkingDraft,
+  getWorkingDraft,
+  getWorkingDraftInstallation,
+  listWorkingDrafts,
+  removeWorkingDraft,
+  saveWorkingDraft,
+} from './api'
+import { WorkingDraftConflictError, emptyWorkingDraftContent, type WorkingDraft } from './working-drafts'
+import type { FactoryCreate, FactoryItem } from './factory'
+
 function reply(status: number, body?: unknown) {
   return vi.fn().mockResolvedValue({
     ok: status >= 200 && status < 300,
@@ -652,5 +664,101 @@ describe('versioned project settings API', () => {
     await putProjectSettings('/p', { intake: {} })
     expect(f.mock.calls[0][0]).toBe('/api/projects/settings?root=%2Fp')
     expect(f.mock.calls[1][1].headers['If-Match']).toBeUndefined()
+  })
+})
+
+describe('working drafts API', () => {
+  beforeEach(() => setToken('t'))
+  afterEach(() => vi.unstubAllGlobals())
+
+  const content = emptyWorkingDraftContent()
+  const draft: WorkingDraft = { id: 'd/1', projectRoot: '/p', version: 2, state: 'editing', content, updatedAt: '2026-01-01T00:00:00Z' }
+
+  it('creates, reads, saves, removes and converts through the draft routes', async () => {
+    const f = reply(200, { draft })
+    vi.stubGlobal('fetch', f)
+
+    const create = { projectRoot: '/p q', requestId: 'r1', content }
+    expect(await createWorkingDraft(create)).toEqual(draft)
+    expect(f.mock.calls[0][0]).toBe('/api/factory/working-drafts')
+    expect(f.mock.calls[0][1].method).toBe('POST')
+    expect(JSON.parse(f.mock.calls[0][1].body)).toEqual(create)
+
+    expect(await getWorkingDraft('d/1')).toEqual(draft)
+    expect(f.mock.calls[1][0]).toBe('/api/factory/working-drafts/d%2F1')
+    expect(f.mock.calls[1][1].method).toBe('GET')
+
+    const save = { requestId: 'r2', expectedVersion: 2, content }
+    expect(await saveWorkingDraft('d/1', save)).toEqual(draft)
+    expect(f.mock.calls[2][0]).toBe('/api/factory/working-drafts/d%2F1')
+    expect(f.mock.calls[2][1].method).toBe('PUT')
+    expect(JSON.parse(f.mock.calls[2][1].body)).toEqual(save)
+
+    const remove = { requestId: 'r3', expectedVersion: 3 }
+    expect(await removeWorkingDraft('d/1', remove)).toEqual(draft)
+    expect(f.mock.calls[3][0]).toBe('/api/factory/working-drafts/d%2F1')
+    expect(f.mock.calls[3][1].method).toBe('DELETE')
+    expect(JSON.parse(f.mock.calls[3][1].body)).toEqual(remove)
+
+    const convert = { requestId: 'r4', expectedVersion: 2, factoryRequest: {} as FactoryCreate }
+    expect(await convertWorkingDraft('d/1', convert)).toEqual({ draft })
+    expect(f.mock.calls[4][0]).toBe('/api/factory/working-drafts/d%2F1/convert')
+    expect(f.mock.calls[4][1].method).toBe('POST')
+    expect(JSON.parse(f.mock.calls[4][1].body)).toEqual(convert)
+  })
+
+  it('accepts a bare draft and either list envelope', async () => {
+    vi.stubGlobal('fetch', reply(200, draft))
+    expect(await getWorkingDraft('d1')).toEqual(draft)
+
+    const f = reply(200, { drafts: [draft] })
+    vi.stubGlobal('fetch', f)
+    expect(await listWorkingDrafts('/p q')).toEqual([draft])
+    expect(f.mock.calls[0][0]).toBe('/api/factory/working-drafts?projectRoot=%2Fp+q')
+    expect(f.mock.calls[0][1].method).toBe('GET')
+
+    vi.stubGlobal('fetch', reply(200, [draft]))
+    expect(await listWorkingDrafts('/p')).toEqual([draft])
+    vi.stubGlobal('fetch', reply(200, { drafts: null }))
+    expect(await listWorkingDrafts('/p')).toEqual([])
+  })
+
+  it('returns the converted factory item when the route sends one', async () => {
+    const item = { id: 'i1' } as FactoryItem
+    vi.stubGlobal('fetch', reply(200, { draft, item }))
+    const r = await convertWorkingDraft('d1', { requestId: 'r', expectedVersion: 1, factoryRequest: {} as FactoryCreate })
+    expect(r).toEqual({ draft, item })
+  })
+
+  it('reads the installation identity from the authenticated bridge', async () => {
+    const f = reply(200, { installationId: 'inst-9' })
+    vi.stubGlobal('fetch', f)
+    expect(await getWorkingDraftInstallation()).toBe('inst-9')
+    expect(f.mock.calls[0][0]).toBe('/api/factory/working-drafts/installation')
+    expect(f.mock.calls[0][1].method).toBe('GET')
+    // A body without one is an error: there is nothing safe to key records by.
+    vi.stubGlobal('fetch', reply(200, {}))
+    await expect(getWorkingDraftInstallation()).rejects.toBeInstanceOf(APIError)
+  })
+
+  it('reports a stale version as a conflict carrying the current draft', async () => {
+    vi.stubGlobal('fetch', reply(409, { error: 'stale version', draft }))
+    const stale = await saveWorkingDraft('d1', { requestId: 'r', expectedVersion: 1, content }).catch((e) => e)
+    expect(stale).toBeInstanceOf(WorkingDraftConflictError)
+    expect(stale.message).toBe('stale version')
+    expect(stale.current).toEqual(draft)
+
+    // A refusal that carries no draft still reports the conflict.
+    vi.stubGlobal('fetch', reply(409, { error: 'stale version' }))
+    const bare = await removeWorkingDraft('d1', { requestId: 'r', expectedVersion: 1 }).catch((e) => e)
+    expect(bare).toBeInstanceOf(WorkingDraftConflictError)
+    expect(bare.current).toBeNull()
+
+    // Everything else keeps its own shape.
+    vi.stubGlobal('fetch', reply(500, { error: 'boom' }))
+    const other = await saveWorkingDraft('d1', { requestId: 'r', expectedVersion: 1, content }).catch((e) => e)
+    expect(other).toBeInstanceOf(APIError)
+    expect(other).not.toBeInstanceOf(WorkingDraftConflictError)
+    expect(errMessage(other)).toBe('boom')
   })
 })

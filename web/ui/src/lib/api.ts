@@ -1422,6 +1422,114 @@ export async function commandFactoryItem(id: string, cmd: FactoryCommand): Promi
   return (await request<{ item: FactoryItem }>('POST', `/api/factory/items/${encodeURIComponent(id)}/commands`, cmd)).item
 }
 
+import type {
+  WorkingDraft,
+  WorkingDraftContent,
+  WorkingDraftConvertRequest,
+  WorkingDraftConvertResult,
+  WorkingDraftCreateRequest,
+  WorkingDraftRemoveRequest,
+  WorkingDraftSaveRequest,
+} from './working-drafts'
+import { WorkingDraftConflictError } from './working-drafts'
+
+/** `{draft}` on a write, the bare draft on a read: accept both, name the draft once. */
+function unwrapWorkingDraft(body: unknown): WorkingDraft {
+  if (body && typeof body === 'object') {
+    const wrapped = (body as { draft?: WorkingDraft | null }).draft
+    if (wrapped) return wrapped
+    if ('id' in body && 'version' in body) return body as WorkingDraft
+  }
+  throw new APIError(204, { error: 'The bridge returned no working draft.' })
+}
+
+/** The current draft a 409 reports, in either shape the route may use. */
+function conflictCurrent(body: unknown): WorkingDraft | null {
+  if (!body || typeof body !== 'object') return null
+  const wrapped = (body as { draft?: WorkingDraft | null; current?: WorkingDraft | null })
+  const draft = wrapped.draft ?? wrapped.current
+  if (draft) return draft
+  return 'id' in body && 'version' in body ? (body as WorkingDraft) : null
+}
+
+/**
+ * A stale version is not a plain error: the refusal carries the server's
+ * current draft, and the caller has to show it beside the local content rather
+ * than retry. Everything else is rethrown untouched.
+ */
+function asDraftConflict(e: unknown): unknown {
+  if (e instanceof APIError && e.status === 409) {
+    return new WorkingDraftConflictError(errMessage(e), conflictCurrent(e.body))
+  }
+  return e
+}
+
+const workingDraftPath = (id: string) => `/api/factory/working-drafts/${encodeURIComponent(id)}`
+
+/**
+ * The authenticated bridge's stable installation identity. Local draft records
+ * are keyed by it, so it must come from the bridge that answered: a URL is
+ * shared by several bridges and says nothing about which drafts belong here.
+ */
+export async function getWorkingDraftInstallation(): Promise<string> {
+  const r = await request<{ installationId?: string } | null>('GET', '/api/factory/working-drafts/installation')
+  const id = r?.installationId
+  if (!id) throw new APIError(500, { error: 'The bridge returned no installation identity.' })
+  return id
+}
+
+/** Pass the same request object on a retry: the request id is what makes it a replay. */
+export async function createWorkingDraft(req: WorkingDraftCreateRequest): Promise<WorkingDraft> {
+  return unwrapWorkingDraft(await request('POST', '/api/factory/working-drafts', req))
+}
+
+/** The project's non-deleted drafts, including the ones converted into factory items. */
+export async function listWorkingDrafts(projectRoot: string): Promise<WorkingDraft[]> {
+  const r = await request<{ drafts?: WorkingDraft[] | null } | WorkingDraft[] | null>('GET', `/api/factory/working-drafts${query({ projectRoot })}`)
+  if (Array.isArray(r)) return r
+  return r?.drafts ?? []
+}
+
+export async function getWorkingDraft(id: string): Promise<WorkingDraft> {
+  return unwrapWorkingDraft(await request('GET', workingDraftPath(id)))
+}
+
+/** A stale `expectedVersion` rejects with `WorkingDraftConflictError` carrying the server's draft. */
+export async function saveWorkingDraft(id: string, req: WorkingDraftSaveRequest): Promise<WorkingDraft> {
+  try {
+    return unwrapWorkingDraft(await request('PUT', workingDraftPath(id), req))
+  } catch (e) {
+    throw asDraftConflict(e)
+  }
+}
+
+/** Records a tombstone; the draft's body is returned when the route sends one. */
+export async function removeWorkingDraft(id: string, req: WorkingDraftRemoveRequest): Promise<WorkingDraft | null> {
+  try {
+    const body = await request<unknown>('DELETE', workingDraftPath(id), req)
+    return body && typeof body === 'object' && Object.keys(body).length > 0 ? unwrapWorkingDraft(body) : null
+  } catch (e) {
+    throw asDraftConflict(e)
+  }
+}
+
+/** `item` is present once the conversion is confirmed; a retry returns the same item. */
+export async function convertWorkingDraft(id: string, req: WorkingDraftConvertRequest): Promise<WorkingDraftConvertResult> {
+  try {
+    const r = await request<{ draft?: WorkingDraft | null; item?: WorkingDraftConvertResult['item'] | null } | null>(
+      'POST',
+      `${workingDraftPath(id)}/convert`,
+      req,
+    )
+    const draft = unwrapWorkingDraft(r)
+    return r?.item ? { draft, item: r.item } : { draft }
+  } catch (e) {
+    throw asDraftConflict(e)
+  }
+}
+
+export type { WorkingDraft, WorkingDraftContent }
+
 export async function getPreviewEnvironments(repoId: string, ref: string): Promise<PreviewReport> {
   return request<PreviewReport>('GET', `/api/repos/${encodeURIComponent(repoId)}/preview-environments${ref ? `?ref=${encodeURIComponent(ref)}` : ''}`)
 }

@@ -4,10 +4,12 @@ import type { ComponentProps } from 'svelte'
 import WorkingDrafts from './WorkingDrafts.svelte'
 import * as api from '../lib/api'
 import {
+  WorkingDraftConflictError,
   createMemoryWorkingDraftStore,
   emptyWorkingDraftContent,
   type WorkingDraft,
   type WorkingDraftContent,
+  type WorkingDraftConvertRequest,
   type WorkingDraftCreateRequest,
   type WorkingDraftRecord,
   type WorkingDraftRequests,
@@ -26,6 +28,7 @@ vi.mock('../lib/api', async (actual) => ({
   listWorkspaces: vi.fn(),
   getModels: vi.fn(),
   getProjectSettings: vi.fn(),
+  getVersionedProjectSettings: vi.fn(),
   createFactoryItem: vi.fn(),
   getFactoryItem: vi.fn(),
   listWorkingDrafts: vi.fn(),
@@ -33,6 +36,7 @@ vi.mock('../lib/api', async (actual) => ({
   createWorkingDraft: vi.fn(),
   getWorkingDraft: vi.fn(),
   saveWorkingDraft: vi.fn(),
+  convertWorkingDraft: vi.fn(),
 }))
 afterEach(cleanup)
 
@@ -63,6 +67,7 @@ const recordOf = (patch: Partial<WorkingDraftRecord> = {}): WorkingDraftRecord =
   server: null,
   state: 'editing',
   pending: null,
+  conversion: null,
   updatedAt: 10,
   ...patch,
 })
@@ -98,6 +103,7 @@ function fakeBridge(initial: WorkingDraft | null = null) {
     create: [] as WorkingDraftCreateRequest[],
     save: [] as { id: string; req: WorkingDraftSaveRequest }[],
     get: [] as string[],
+    convert: [] as { id: string; req: WorkingDraftConvertRequest }[],
   }
   const held = { draft: initial }
   const requests: WorkingDraftRequests = {
@@ -115,6 +121,13 @@ function fakeBridge(initial: WorkingDraft | null = null) {
       calls.save.push({ id, req })
       held.draft = draftOf(id, req.expectedVersion + 1, req.content)
       return held.draft
+    }),
+    convert: vi.fn(async (id: string, req: WorkingDraftConvertRequest) => {
+      calls.convert.push({ id, req })
+      const body = held.draft ? held.draft.content : emptyWorkingDraftContent()
+      const draft = draftOf(id, req.expectedVersion + 1, body, 'converted', { factoryItemId: 'item-1' })
+      held.draft = draft
+      return { draft }
     }),
   }
   return { requests, calls, held }
@@ -135,6 +148,7 @@ beforeEach(() => {
   vi.mocked(api.listWorkspaces).mockResolvedValue([{ source: 'studio', name: 'go-dev', usage: 0 }])
   vi.mocked(api.getModels).mockResolvedValue({ profiles: { careful: {}, fast: {} } } as never)
   vi.mocked(api.getProjectSettings).mockResolvedValue({ intake: {} })
+  vi.mocked(api.getVersionedProjectSettings).mockResolvedValue({ settings: { intake: {}, routing: { profile: 'fast' } }, etag: 'settings-v1' })
   vi.mocked(api.listWorkingDrafts).mockResolvedValue([])
 })
 
@@ -233,6 +247,9 @@ it('showsSavingAndOffline', async () => {
     }),
     get: vi.fn(async (id: string) => draftOf(id, 1, content())),
     save: vi.fn(async (id: string, req: WorkingDraftSaveRequest) => draftOf(id, req.expectedVersion + 1, req.content)),
+    convert: vi.fn(async (id: string, req: WorkingDraftConvertRequest) => ({
+      draft: draftOf(id, req.expectedVersion + 1, content(), 'converted'),
+    })),
   }
   const { timer, run } = manualTimer()
   mount({ projectRoot: ROOT, newDraft: true, storage: createMemoryWorkingDraftStore(), requests, timer })
@@ -313,4 +330,84 @@ it('deletedRemoteOffersCopy', async () => {
   expect(screen.queryByTestId('draft-deleted')).toBeNull()
   const rows = await storage.list({ installationId: 'inst-1', projectRoot: ROOT })
   expect(rows.some((r) => r.draftId !== 'd1' && r.content.title === 'Rescued work')).toBe(true)
+})
+
+const convertible = (patch: Partial<WorkingDraftContent> = {}): WorkingDraftContent =>
+  content({ title: 'Ready to convert', plan: 'Do it', repoId: 'repo', noRequiredCiAcknowledged: true, ...patch })
+
+it('conversionRequiresSavedReview', async () => {
+  const bridge = fakeBridge(draftOf('d1', 2, convertible()))
+  const storage = createMemoryWorkingDraftStore()
+  const { timer, run } = manualTimer()
+  mount({ projectRoot: ROOT, draftId: 'd1', storage, requests: bridge.requests, timer, editorId: 'tab-1' })
+
+  const title = (await screen.findByLabelText('Title')) as HTMLInputElement
+  await waitFor(() => expect(title.value).toBe('Ready to convert'))
+  const convertButton = () => screen.getByRole('button', { name: 'Convert to factory draft' }) as HTMLButtonElement
+  await waitFor(() => expect(convertButton().disabled).toBe(false))
+
+  // An unsent edit is not reviewable: the conversion submits a saved version.
+  await fireEvent.input(title, { target: { value: 'Ready to convert now' } })
+  await waitFor(() => expect(convertButton().disabled).toBe(true))
+  expect(screen.getByTestId('convert-blocked').textContent).toContain('Save the draft first')
+  await until(run, () => expect(bridge.calls.save.length).toBeGreaterThan(0))
+  await waitFor(() => expect(convertButton().disabled).toBe(false))
+
+  // The review shows the saved content, the resolved configuration, and the
+  // exact settings version the conversion is bound to.
+  await fireEvent.click(convertButton())
+  const review = await screen.findByTestId('convert-review')
+  expect(review.textContent).toContain('Ready to convert now')
+  await waitFor(() => expect(screen.getByTestId('convert-settings-version').textContent).toBe('settings-v1'))
+  expect(screen.getByTestId('convert-branch').textContent).toContain('Repository branch: main')
+  expect(screen.getByTestId('convert-repo').textContent).toBe('repo')
+  // Opening a review sends nothing on its own.
+  expect(bridge.calls.convert).toHaveLength(0)
+
+  await fireEvent.click(screen.getByRole('button', { name: 'Convert and create the item' }))
+  await waitFor(() => expect(bridge.calls.convert).toHaveLength(1))
+  const sent = bridge.calls.convert[0].req
+  // The reviewed version and settings version are what a retry replays.
+  expect(sent.expectedVersion).toBe(3)
+  expect(sent.settingsVersion).toBe('settings-v1')
+  expect(sent.factoryRequest.title).toBe('Ready to convert now')
+  expect(sent.factoryRequest.requestId).toBe(sent.requestId)
+})
+
+it('settingsChangeRequiresNewReview', async () => {
+  const draft = convertible({ title: 'Reviewed draft' })
+  const bridge = fakeBridge(draftOf('d1', 2, draft))
+  vi.mocked(api.getVersionedProjectSettings)
+    .mockResolvedValueOnce({ settings: { intake: {}, routing: { profile: 'fast' } }, etag: 'settings-v1' })
+    .mockResolvedValueOnce({ settings: { intake: {}, routing: { profile: 'careful' } }, etag: 'settings-v2' })
+
+  // The bridge refuses: the draft did not move, so the reviewed settings did.
+  const convert = vi.fn(async (id: string, req: WorkingDraftConvertRequest) => {
+    throw new WorkingDraftConflictError(`project settings changed at ${req.requestId}; review required`, draftOf(id, 2, draft))
+  })
+  const requests: WorkingDraftRequests = { ...bridge.requests, convert }
+  const storage = createMemoryWorkingDraftStore()
+  const { timer } = manualTimer()
+  mount({ projectRoot: ROOT, draftId: 'd1', storage, requests, timer, editorId: 'tab-1' })
+
+  const convertButton = () => screen.getByRole('button', { name: 'Convert to factory draft' }) as HTMLButtonElement
+  await waitFor(() => expect(convertButton().disabled).toBe(false))
+  await fireEvent.click(convertButton())
+  await waitFor(() => expect(screen.getByTestId('convert-settings-version').textContent).toBe('settings-v1'))
+
+  await fireEvent.click(screen.getByRole('button', { name: 'Convert and create the item' }))
+  // The refusal is reported, the settings are read again, and nothing is
+  // resubmitted on the user's behalf.
+  await waitFor(() => expect(screen.getByTestId('convert-notice')).toBeTruthy())
+  expect(screen.getByTestId('convert-notice').textContent).toContain('settings changed')
+  await waitFor(() => expect(screen.getByTestId('convert-settings-version').textContent).toBe('settings-v2'))
+  expect(convert).toHaveBeenCalledTimes(1)
+  expect(api.getVersionedProjectSettings).toHaveBeenCalledTimes(2)
+  // The new configuration is what the second review shows.
+  expect(screen.getByTestId('convert-review').textContent).toContain('Project agent default: careful')
+
+  // A second confirmation is what sends again, against the settings it shows.
+  await fireEvent.click(screen.getByRole('button', { name: 'Convert and create the item' }))
+  await waitFor(() => expect(convert).toHaveBeenCalledTimes(2))
+  expect(vi.mocked(convert).mock.calls[1][1].settingsVersion).toBe('settings-v2')
 })

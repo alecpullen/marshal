@@ -88,10 +88,20 @@ export interface WorkingDraftRemoveRequest {
   expectedVersion: number
 }
 
+/**
+ * One review, frozen: the request id, the draft version it was reviewed at, the
+ * exact body it will create, and the project settings version it was read
+ * against. A retry sends these bytes again; a new review is a new request.
+ *
+ * `settingsVersion` is optional because the bridge treats an absent version as
+ * "do not check it": a caller that did not read the settings is not claiming
+ * they are current. The controller always sends the version it reviewed.
+ */
 export interface WorkingDraftConvertRequest {
   requestId: string
   expectedVersion: number
   factoryRequest: FactoryCreate
+  settingsVersion?: string
 }
 
 export interface WorkingDraftConvertResult {
@@ -177,6 +187,19 @@ export interface WorkingDraftKey {
   editorId: string
 }
 
+/**
+ * A conversion this tab sent and has not had a conclusive answer to. It holds
+ * the exact review — id, body, version and settings version — so a reload or a
+ * lost answer retries that request instead of minting a second conversion.
+ */
+export interface PendingWorkingDraftConversion {
+  requestId: string
+  expectedVersion: number
+  factoryRequest: FactoryCreate
+  settingsVersion: string
+  enqueuedAt: number
+}
+
 /** One device's record of one draft edited by one tab. */
 export interface WorkingDraftRecord extends WorkingDraftKey {
   content: WorkingDraftContent
@@ -187,6 +210,8 @@ export interface WorkingDraftRecord extends WorkingDraftKey {
   server: WorkingDraft | null
   state: WorkingDraftState | 'unknown'
   pending: PendingWorkingDraftRequest | null
+  /** The conversion this tab is holding until its outcome is established. */
+  conversion?: PendingWorkingDraftConversion | null
   updatedAt: number
 }
 
@@ -213,12 +238,18 @@ export function workingDraftKeyString(key: WorkingDraftKey): string {
 const clonePending = (pending: PendingWorkingDraftRequest | null): PendingWorkingDraftRequest | null =>
   pending ? { ...pending, content: { ...pending.content } } : null
 
+const cloneFactoryRequest = (request: FactoryCreate): FactoryCreate => ({ ...request, config: { ...request.config } })
+
+const cloneConversion = (conversion: PendingWorkingDraftConversion | null): PendingWorkingDraftConversion | null =>
+  conversion ? { ...conversion, factoryRequest: cloneFactoryRequest(conversion.factoryRequest) } : null
+
 const cloneRecord = (record: WorkingDraftRecord): WorkingDraftRecord => ({
   ...record,
   content: { ...record.content },
   base: cloneContent(record.base),
   server: record.server ? cloneDraft(record.server) : null,
   pending: clonePending(record.pending),
+  conversion: cloneConversion(record.conversion ?? null),
 })
 
 const scopeOf = (key: Pick<WorkingDraftKey, 'installationId' | 'projectRoot'>): string =>
@@ -381,6 +412,7 @@ export interface WorkingDraftRequests {
   create(req: WorkingDraftCreateRequest): Promise<WorkingDraft>
   get(id: string): Promise<WorkingDraft>
   save(id: string, req: WorkingDraftSaveRequest): Promise<WorkingDraft>
+  convert(id: string, req: WorkingDraftConvertRequest): Promise<WorkingDraftConvertResult>
 }
 
 /**
@@ -440,6 +472,13 @@ export interface WorkingDraftView {
   error: string | null
   /** No project has been chosen yet, so nothing can be sent. */
   localOnly: boolean
+  /** The factory item this draft became, once the bridge reports one. */
+  factoryItemId: string | null
+  /**
+   * The conversion this tab holds until its outcome is established: the exact
+   * request a reload or a lost answer replays.
+   */
+  conversion: PendingWorkingDraftConversion | null
   /** Other editors' copies of this draft that can be adopted. */
   recoverable: WorkingDraftRecoverable[]
 }
@@ -471,6 +510,35 @@ function randomId(): string {
 function describeError(e: unknown): string {
   if (e instanceof Error) return e.message
   return typeof e === 'string' ? e : String(e)
+}
+
+/**
+ * The identity of a review: everything but its request id. A re-confirmed
+ * review has the same signature and therefore replays the frozen request
+ * instead of minting a new one. The request id inside the body is dropped for
+ * the same reason the bridge drops it: it is never the caller's to claim.
+ */
+function conversionSignature(review: {
+  expectedVersion: number
+  settingsVersion?: string
+  factoryRequest: FactoryCreate
+}): string {
+  return JSON.stringify({
+    expectedVersion: review.expectedVersion,
+    settingsVersion: review.settingsVersion ?? '',
+    factoryRequest: { ...review.factoryRequest, requestId: '' },
+  })
+}
+
+/**
+ * A refusal the bridge confirmed with a status: it decided before creating
+ * anything, so the draft is editable again and a new review is a new request. A
+ * failure with no status is transport trouble, whose outcome nothing here can
+ * establish — that request has to be replayed, not replaced.
+ */
+function isConfirmedRefusal(e: unknown): boolean {
+  const status = (e as { status?: unknown } | null | undefined)?.status
+  return typeof status === 'number' && status >= 400 && status < 409
 }
 
 const defaultTimer: WorkingDraftTimer = {
@@ -509,6 +577,8 @@ export class WorkingDraftController {
   private serverDraft: WorkingDraft | null = null
   private draftState: WorkingDraftState | 'unknown' = 'unknown'
   private pendingRequest: PendingWorkingDraftRequest | null = null
+  private pendingConversion: PendingWorkingDraftConversion | null = null
+  private factoryItemId: string | null = null
   private saving = false
   private offline = false
   private conflict = false
@@ -554,6 +624,8 @@ export class WorkingDraftController {
       state: this.draftState,
       error: this.error,
       localOnly: this.projectRoot === null,
+      factoryItemId: this.factoryItemId,
+      conversion: cloneConversion(this.pendingConversion),
       recoverable: this.recoverable,
     }
   }
@@ -586,6 +658,9 @@ export class WorkingDraftController {
     await this.ensureInstallation()
     await this.restore()
     await this.refresh()
+    // A refresh can reconcile a conversion (or clear the request it froze), so
+    // the record is written back rather than left holding a finished request.
+    await this.persist()
     this.emit()
     return this.view()
   }
@@ -670,6 +745,163 @@ export class WorkingDraftController {
     return this.view()
   }
 
+  /**
+   * Convert the reviewed draft into one factory item.
+   *
+   * The review is frozen before anything is sent: its request id, its exact
+   * body, the draft version and the settings version it was read against all go
+   * into this tab's record, so a reload or a lost answer replays that request
+   * rather than minting a second conversion. Only a refusal the bridge confirms
+   * (nothing was created) frees the id for a new attempt.
+   */
+  async convert(review: WorkingDraftConvertRequest): Promise<WorkingDraftView> {
+    const refusal = this.conversionRefusal(review)
+    if (refusal) {
+      this.error = refusal
+      this.emit()
+      return this.view()
+    }
+    const held = this.pendingConversion
+    // The same review re-confirmed is the same request, id included.
+    const frozen: PendingWorkingDraftConversion =
+      held && conversionSignature(held) === conversionSignature(review)
+        ? held
+        : {
+            requestId: review.requestId,
+            expectedVersion: review.expectedVersion,
+            factoryRequest: cloneFactoryRequest(review.factoryRequest),
+            settingsVersion: review.settingsVersion ?? '',
+            enqueuedAt: this.now(),
+          }
+    return this.sendConversion(frozen)
+  }
+
+  /** Replay this tab's frozen conversion: the same request, byte for byte. */
+  async retryConversion(): Promise<WorkingDraftView> {
+    const held = this.pendingConversion
+    if (!held) {
+      this.error = 'There is no conversion request to retry.'
+      this.emit()
+      return this.view()
+    }
+    return this.sendConversion(held)
+  }
+
+  /**
+   * Why this review cannot be converted, or '' when it can. A conversion is of
+   * one saved version of one draft: an unsent edit, a version the review was not
+   * read at, or a draft that is already factory work all refuse here.
+   */
+  private conversionRefusal(review: WorkingDraftConvertRequest): string {
+    if (this.projectRoot === null) return 'This draft has no project, so it cannot become factory work.'
+    if (!this.draftId || this.draftId.startsWith(LOCAL_DRAFT_PREFIX)) return 'Save this draft before converting it.'
+    if (this.draftState === 'deleted') return 'This draft was deleted, so it cannot be converted.'
+    if (this.draftState === 'converted') return 'This draft is already a factory item.'
+    if (this.pendingRequest !== null || this.isAhead()) return 'Save the draft before converting: the review submits the saved version.'
+    if (review.expectedVersion !== this.baseVersion) return 'This draft changed since the review. Review the saved version again.'
+    return ''
+  }
+
+  private async sendConversion(frozen: PendingWorkingDraftConversion): Promise<WorkingDraftView> {
+    this.pendingConversion = frozen
+    this.error = null
+    this.offline = false
+    // The frozen request is on this device before it is sent, so a tab that
+    // dies in flight carries the same id and body into its next attempt.
+    await this.persist()
+    this.saving = true
+    this.emit()
+    try {
+      const result = await this.requests.convert(this.draftId as string, {
+        requestId: frozen.requestId,
+        expectedVersion: frozen.expectedVersion,
+        factoryRequest: cloneFactoryRequest(frozen.factoryRequest),
+        settingsVersion: frozen.settingsVersion,
+      })
+      this.applyConversion(frozen, result)
+    } catch (e) {
+      if (e instanceof WorkingDraftConflictError) this.applyConversionConflict(frozen, e.current)
+      else if (isConfirmedRefusal(e)) {
+        // The bridge decided before it created anything: the draft is editable
+        // again, and a fresh review is a new request.
+        this.pendingConversion = null
+        this.error = describeError(e)
+      } else {
+        // Nothing establishes what happened, so the request stays frozen and is
+        // replayed as it is.
+        this.offline = true
+        this.error = describeError(e)
+      }
+    } finally {
+      this.saving = false
+    }
+    await this.persist()
+    this.emit()
+    return this.view()
+  }
+
+  private applyConversion(frozen: PendingWorkingDraftConversion, result: WorkingDraftConvertResult): void {
+    // An answer to a request that is no longer the frozen one says nothing
+    // about what this tab holds.
+    if (this.pendingConversion !== frozen) return
+    this.pendingConversion = null
+    const draft = result.draft
+    this.offline = false
+    this.error = null
+    this.conflict = false
+    this.serverDraft = null
+    this.draftState = draft.state
+    this.factoryItemId = draft.factoryItemId ?? result.item?.id ?? null
+    if (draft.id) this.draftId = draft.id
+    if (draft.state === 'deleted') return
+    // The converted content is the base: anything typed after it is ahead of
+    // it, and is what "new working draft from these edits" carries.
+    this.base = { ...draft.content }
+    this.baseVersion = draft.version
+  }
+
+  private applyConversionConflict(frozen: PendingWorkingDraftConversion, current: WorkingDraft | null): void {
+    if (current && current.state === 'converting') {
+      // The bridge holds the conversion but could not establish its outcome.
+      // The frozen request is kept, so the retry is that request, never a new
+      // one, and the draft is not presented as saved or as failed.
+      this.draftState = 'converting'
+      this.pendingConversion = frozen
+      this.error = 'The conversion was sent but its outcome is uncertain. Retrying sends the same request.'
+      return
+    }
+    this.pendingConversion = null
+    if (current && current.state === 'converted') {
+      // Someone else's conversion of this draft won the race: adopt the outcome
+      // rather than offering a choice this tab can no longer act on.
+      this.draftState = 'converted'
+      if (current.factoryItemId) this.factoryItemId = current.factoryItemId
+      this.pendingRequest = null
+      this.serverDraft = null
+      this.conflict = false
+      this.error = null
+      this.base = { ...current.content }
+      this.baseVersion = current.version
+      this.clearTimer()
+      return
+    }
+    if (current && current.state === 'editing' && current.version === frozen.expectedVersion) {
+      // Nothing about the draft moved, so the reviewed settings did: the review
+      // is stale and needs re-confirming against the settings it now has.
+      this.error = 'The project settings changed. Review the conversion again.'
+      return
+    }
+    // The draft itself moved on: show it beside the local content, exactly as a
+    // save conflict does.
+    this.error = null
+    this.conflict = true
+    if (current) {
+      this.serverDraft = current
+      this.draftState = current.state
+    }
+    this.clearTimer()
+  }
+
   /** Stop the debounce timer and forget listeners. In-flight requests are left to finish. */
   destroy(): void {
     this.clearTimer()
@@ -724,6 +956,7 @@ export class WorkingDraftController {
       server: this.serverDraft ? cloneDraft(this.serverDraft) : null,
       state: this.draftState,
       pending: clonePending(this.pendingRequest),
+      conversion: cloneConversion(this.pendingConversion),
       updatedAt: this.now(),
     }
     try {
@@ -789,6 +1022,7 @@ export class WorkingDraftController {
     this.conflict = mine.server !== null
     this.draftState = mine.state
     this.pendingRequest = clonePending(mine.pending)
+    this.pendingConversion = cloneConversion(mine.conversion ?? null)
     this.hasRecord = true
     // A tab that closed with a request in flight left it here; send it again,
     // with its own id and bytes, once the debounce allows.
@@ -808,10 +1042,25 @@ export class WorkingDraftController {
       return
     }
     this.draftState = draft.state
+    if (draft.factoryItemId) this.factoryItemId = draft.factoryItemId
     if (draft.state === 'deleted') {
       // A tombstone: keep whatever is local for recovery, send nothing.
       this.pendingRequest = null
+      this.pendingConversion = null
       this.clearTimer()
+      return
+    }
+    if (draft.state === 'converting' || draft.state === 'converted') {
+      // The conversion's outcome is the draft's, not this tab's. A converted
+      // draft settles the frozen request; a still-converting one keeps it, so
+      // the retry that finishes it is the same request.
+      if (draft.state === 'converted') this.pendingConversion = null
+      this.clearTimer()
+      this.conflict = false
+      this.serverDraft = null
+      this.base = { ...draft.content }
+      this.baseVersion = draft.version
+      if (this.local === null) this.local = { ...draft.content }
       return
     }
     if (this.local === null) {
@@ -839,6 +1088,10 @@ export class WorkingDraftController {
   private schedule(): void {
     this.clearTimer()
     if (this.conflict || this.draftState === 'deleted') return
+    // A draft the bridge is converting, or has converted, must never be saved:
+    // the item it became is not this draft. Local edits stay here for the
+    // "new working draft from these edits" path.
+    if (this.draftState === 'converting' || this.draftState === 'converted') return
     this.timerHandle = this.timer.setTimeout(() => {
       this.timerHandle = undefined
       void this.flush()
@@ -859,6 +1112,9 @@ export class WorkingDraftController {
     // The bridge recorded a tombstone; sending would re-create the draft the
     // user deleted. The local copy is kept for recovery instead.
     if (this.draftState === 'deleted') return
+    // A conversion is the draft's last save: once it is in flight or done,
+    // autosave must never write over it.
+    if (this.draftState === 'converting' || this.draftState === 'converted') return
     this.error = null
     this.offline = false
     if (!this.pendingRequest) {

@@ -7,6 +7,7 @@ import {
   emptyWorkingDraftContent,
   type WorkingDraft,
   type WorkingDraftContent,
+  type WorkingDraftConvertRequest,
   type WorkingDraftCreateRequest,
   type WorkingDraftRequests,
   type WorkingDraftSaveRequest,
@@ -17,6 +18,23 @@ import {
 const draftContent = (patch: Partial<WorkingDraftContent> = {}): WorkingDraftContent => ({
   ...emptyWorkingDraftContent(),
   ...patch,
+})
+
+/** The saved draft every conversion test reviews. */
+const CONVERTED = draftContent({ title: 'Ready to convert', plan: 'Do it', repoId: 'repo', noRequiredCiAcknowledged: true })
+
+/** One reviewed conversion of a saved draft. */
+function review(body: WorkingDraftConvertRequest['factoryRequest'], version: number, patch: Partial<WorkingDraftConvertRequest> = {}): WorkingDraftConvertRequest {
+  return { requestId: 'conv-1', expectedVersion: version, factoryRequest: body, settingsVersion: 'settings-v1', ...patch }
+}
+
+/** The handoff body a conversion submits for `CONVERTED`. */
+const handoff = (requestId = 'conv-1'): WorkingDraftConvertRequest['factoryRequest'] => ({
+  requestId,
+  title: CONVERTED.title,
+  plan: CONVERTED.plan,
+  spec: '',
+  config: { repoId: 'repo', projectRoot: '/p', native: true, implementerAuto: false, noRequiredCiAcknowledged: true },
 })
 
 const acknowledged = (
@@ -36,6 +54,7 @@ function fakeBridge() {
     create: [] as WorkingDraftCreateRequest[],
     save: [] as { id: string; req: WorkingDraftSaveRequest }[],
     get: [] as string[],
+    convert: [] as { id: string; req: WorkingDraftConvertRequest }[],
   }
   const held: { draft: WorkingDraft | null } = { draft: null }
   const requests: WorkingDraftRequests = {
@@ -53,6 +72,14 @@ function fakeBridge() {
       calls.save.push({ id, req })
       held.draft = acknowledged(id, req.expectedVersion + 1, req.content)
       return held.draft
+    }),
+    convert: vi.fn(async (id: string, req: WorkingDraftConvertRequest) => {
+      calls.convert.push({ id, req })
+      // The bridge converts the draft it holds, so the content is the draft's.
+      const content = held.draft ? held.draft.content : draftContent()
+      const draft = { ...acknowledged(id, req.expectedVersion + 1, content, 'converted'), factoryItemId: 'item-1' }
+      held.draft = draft
+      return { draft }
     }),
   }
   return { requests, calls, held }
@@ -465,5 +492,145 @@ describe('working draft autosave', () => {
     await pendingSave
 
     expect(other.view()).toMatchObject({ local: draftContent({ title: 'v1' }), baseVersion: 1, saved: true, pending: false })
+  })
+})
+
+describe('working draft conversion', () => {
+  afterEach(() => vi.useRealTimers())
+
+  /** A tab with `CONVERTED` saved at version 1. */
+  async function savedTab(bridge: ReturnType<typeof fakeBridge>, storage: WorkingDraftStore, editorId = 'tab-1') {
+    const made = makeController(bridge, storage, editorId)
+    await made.controller.load('/p', null)
+    await made.controller.edit(CONVERTED)
+    await vi.advanceTimersByTimeAsync(WORKING_DRAFT_DEBOUNCE_MS)
+    expect(made.controller.view()).toMatchObject({ baseVersion: 1, saved: true })
+    return made
+  }
+
+  it('convertedDraftCannotBeAutosaved', async () => {
+    vi.useFakeTimers()
+    const bridge = fakeBridge()
+    const storage = createMemoryWorkingDraftStore()
+    const { controller: tab } = await savedTab(bridge, storage)
+
+    const converted = await tab.convert(review(handoff(), 1))
+    expect(converted).toMatchObject({ state: 'converted', factoryItemId: 'item-1', pending: false, error: null })
+    expect(bridge.calls.convert).toHaveLength(1)
+    expect(bridge.calls.convert[0].req).toMatchObject({ requestId: 'conv-1', expectedVersion: 1, settingsVersion: 'settings-v1' })
+    expect(bridge.calls.convert[0].req.factoryRequest.title).toBe(CONVERTED.title)
+
+    // A converted draft is read-only: later typing stays here and is never
+    // written over the item the draft became.
+    const after = draftContent({ ...CONVERTED, plan: 'Do it, then more' })
+    await tab.edit(after)
+    await vi.advanceTimersByTimeAsync(WORKING_DRAFT_DEBOUNCE_MS * 3)
+    await tab.flush()
+    expect(bridge.calls.save).toHaveLength(0)
+    expect(bridge.calls.create).toHaveLength(1)
+    expect(tab.view()).toMatchObject({ state: 'converted', local: after, pending: true })
+
+    // And converting it again creates nothing at all.
+    const again = await tab.convert(review(handoff('conv-2'), tab.view().baseVersion, { requestId: 'conv-2' }))
+    expect(again.error).toMatch(/already a factory item/i)
+    expect(bridge.calls.convert).toHaveLength(1)
+  })
+
+  it('lostConversionResponseReconciles', async () => {
+    vi.useFakeTimers()
+    const bridge = fakeBridge()
+    const storage = createMemoryWorkingDraftStore()
+    const { controller: tab } = await savedTab(bridge, storage)
+
+    // The bridge took the conversion; this tab never saw the answer.
+    bridge.requests.convert = vi.fn(async () => {
+      throw new Error('socket closed')
+    })
+    const lost = await tab.convert(review(handoff(), 1))
+    expect(lost).toMatchObject({ state: 'editing', offline: true, error: 'socket closed' })
+    // The review is frozen on this device rather than replaced.
+    expect(lost.conversion).toMatchObject({ requestId: 'conv-1', expectedVersion: 1, settingsVersion: 'settings-v1' })
+    const [record] = await recordsFor(storage)
+    expect(record.conversion).toMatchObject({ requestId: 'conv-1', factoryRequest: { title: CONVERTED.title } })
+
+    // A reload reconciles: the draft is converted, so nothing is sent again.
+    bridge.held.draft = { ...acknowledged('d1', 2, CONVERTED, 'converted'), factoryItemId: 'item-1' }
+    const convert = vi.fn(async () => {
+      throw new Error('a reconciled conversion must not be retried')
+    })
+    bridge.requests.convert = convert
+    const { controller: reopened } = makeController(bridge, storage, 'tab-1')
+    const reconciled = await reopened.load('/p', 'd1')
+    expect(reconciled).toMatchObject({ state: 'converted', factoryItemId: 'item-1', conversion: null, offline: false })
+    expect(convert).not.toHaveBeenCalled()
+    expect((await recordsFor(storage)).map((r) => r.conversion)).toEqual([null])
+  })
+
+  it('simultaneousConvertReturnsOneItem', async () => {
+    vi.useFakeTimers()
+    const bridge = fakeBridge()
+    const storage = createMemoryWorkingDraftStore()
+    const { controller: tabA } = await savedTab(bridge, storage, 'tab-a')
+
+    // A second tab opened the same saved version.
+    const { controller: tabB } = makeController(bridge, storage, 'tab-b')
+    expect(await tabB.load('/p', 'd1')).toMatchObject({ baseVersion: 1, saved: true })
+
+    const first = await tabA.convert(review(handoff(), 1))
+    expect(first).toMatchObject({ state: 'converted', factoryItemId: 'item-1' })
+
+    // The other tab's conversion arrives after the draft is factory work: the
+    // bridge reports its current state, and no second item is created.
+    bridge.requests.convert = vi.fn(async (id: string, req: WorkingDraftConvertRequest) => {
+      bridge.calls.convert.push({ id, req })
+      throw new WorkingDraftConflictError('draft is converted', {
+        ...acknowledged(id, 2, CONVERTED, 'converted'),
+        factoryItemId: 'item-1',
+      })
+    })
+    const second = await tabB.convert(review(handoff('conv-2'), tabB.view().baseVersion, { requestId: 'conv-2' }))
+    expect(second).toMatchObject({ state: 'converted', factoryItemId: 'item-1', conflict: false, pending: false })
+    expect(second.factoryItemId).toBe(first.factoryItemId)
+    expect(bridge.calls.convert.map((c) => c.req.requestId)).toEqual(['conv-1', 'conv-2'])
+
+    // Neither tab can autosave over the item afterwards.
+    const edited = draftContent({ ...CONVERTED, title: 'Ready to convert, edited' })
+    await tabA.edit(edited)
+    await tabB.edit(edited)
+    await vi.advanceTimersByTimeAsync(WORKING_DRAFT_DEBOUNCE_MS * 2)
+    expect(bridge.calls.save).toHaveLength(0)
+  })
+
+  it('validationErrorKeepsWorkingDraft', async () => {
+    vi.useFakeTimers()
+    const bridge = fakeBridge()
+    const storage = createMemoryWorkingDraftStore()
+    const { controller: tab } = await savedTab(bridge, storage)
+
+    // A confirmed refusal: the bridge created nothing and said why.
+    bridge.requests.convert = vi.fn(async () => {
+      throw Object.assign(new Error('title is too long'), { status: 400 })
+    })
+    const refused = await tab.convert(review(handoff(), 1))
+    expect(refused).toMatchObject({ state: 'editing', error: 'title is too long', pending: false, conversion: null })
+    expect(refused.local).toEqual(CONVERTED)
+    expect(refused.base).toEqual(CONVERTED)
+    expect((await recordsFor(storage)).map((r) => r.conversion)).toEqual([null])
+
+    // The draft is still editable, and it still autosaves.
+    const shortened = draftContent({ ...CONVERTED, title: 'Short title' })
+    await tab.edit(shortened)
+    await vi.advanceTimersByTimeAsync(WORKING_DRAFT_DEBOUNCE_MS)
+    expect(bridge.calls.save).toHaveLength(1)
+    expect(tab.view().saved).toBe(true)
+
+    // Nothing was left holding the refused request: the next attempt is new.
+    bridge.requests.convert = vi.fn(async (id: string, req: WorkingDraftConvertRequest) => {
+      bridge.calls.convert.push({ id, req })
+      return { draft: { ...acknowledged(id, req.expectedVersion + 1, shortened, 'converted'), factoryItemId: 'item-2' } }
+    })
+    const converted = await tab.convert(review(handoff('conv-2'), tab.view().baseVersion, { requestId: 'conv-2' }))
+    expect(converted).toMatchObject({ state: 'converted', factoryItemId: 'item-2', error: null })
+    expect(bridge.calls.convert.map((c) => c.req.requestId)).toEqual(['conv-2'])
   })
 })

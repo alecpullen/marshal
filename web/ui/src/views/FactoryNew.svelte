@@ -1,11 +1,195 @@
+<script module lang="ts">
+  import { errMessage, type ProjectSettings, type RepoRow } from '../lib/api'
+  import type { FactoryCheckKey, FactoryCreate, FactoryCreateConfig, FactoryDefaults } from '../lib/factory'
+  import type { WorkingDraftContent } from '../lib/working-drafts'
+
+  /**
+   * The handoff's configuration rules, as pure functions of a working draft's
+   * content, its project's settings and its repositories.
+   *
+   * The conversion review in `WorkingDrafts.svelte` imports them, so what it
+   * shows before converting is exactly what this form would submit: one
+   * implementation of the inheritance rules, not two that can drift.
+   */
+  export type EffectiveSource = 'handoff' | 'factory' | 'project' | 'repository' | 'builtin' | 'none'
+  export interface Effective { value: string; source: EffectiveSource }
+  const SOURCE_TEXT: Record<EffectiveSource, string> = {
+    handoff: 'This handoff',
+    factory: 'Project factory default',
+    project: 'Project agent default',
+    repository: 'Repository branch',
+    builtin: 'Built-in',
+    none: 'Not configured',
+  }
+  /** One effective value and where it came from, worded once for every surface. */
+  export const describeEffective = (e: Effective, missing: string): string =>
+    e.value ? `${SOURCE_TEXT[e.source]}: ${e.value}` : `${SOURCE_TEXT.none} — ${missing}`
+  const describe = describeEffective
+  const pick = (handoff: string, factory: string, project: string): Effective => {
+    if (handoff) return { value: handoff, source: 'handoff' }
+    if (factory) return { value: factory, source: 'factory' }
+    if (project) return { value: project, source: 'project' }
+    return { value: '', source: 'none' }
+  }
+  const pickLimit = (handoff: string, factory: number | undefined, builtin: number): Effective => {
+    if (handoff.trim()) return { value: handoff.trim(), source: 'handoff' }
+    if (factory) return { value: String(factory), source: 'factory' }
+    return { value: String(builtin), source: 'builtin' }
+  }
+  // A routing object only ever contributes its profile; every other member
+  // belongs to the route it came from and is left untouched.
+  const profileOf = (route: { profile?: unknown } | undefined): string => (typeof route?.profile === 'string' ? route.profile : '')
+
+  const formatCheck = (c: FactoryCheckKey): string =>
+    c.kind === 'commit_status' ? `${c.kind}:${c.name}` : `${c.kind}:${c.name}:${c.appId}`
+  const formatChecks = (list: FactoryCheckKey[]): string => (list.length ? list.map(formatCheck).join(', ') : 'none')
+  function parseChecks(text: string): FactoryCheckKey[] {
+    return text.split('\n').map((line) => line.trim()).filter(Boolean).map((line) => {
+      const [kind, name, app] = line.split(':')
+      if (kind === 'check_run' && name && Number(app) > 0) return { kind, name, appId: Number(app) } as FactoryCheckKey
+      if (kind === 'commit_status' && name && !app) return { kind, name, appId: 0 } as FactoryCheckKey
+      throw new Error('Each check must be check_run:name:appId or commit_status:context')
+    })
+  }
+  function positive(text: string, what: string): number {
+    const n = Number(text)
+    if (!Number.isFinite(n) || n <= 0) throw new Error(`${what} must be a positive number`)
+    return Math.trunc(n)
+  }
+  // Kept visible when a saved value is no longer in a picker, so the choice is
+  // never silently discarded.
+  const keepUnavailable = (options: { value: string; label: string }[], value: string) =>
+    value && !options.some((o) => o.value === value) ? [...options, { value, label: `${value} (unavailable)` }] : options
+
+  /** Everything the form shows and the review shows, from one draft and project. */
+  export interface FactoryInput {
+    content: WorkingDraftContent
+    projectRoot: string
+    settings: ProjectSettings | null
+    repos: RepoRow[]
+  }
+
+  export interface FactoryResolution {
+    factoryDefaults: FactoryDefaults
+    projectWorkspace: string
+    projectProfile: string
+    factoryWorkspace: string
+    factoryBranch: string
+    repoBranch: string
+    workspace: Effective
+    implementer: Effective
+    reviewer: Effective
+    branch: Effective
+    maxRounds: Effective
+    ciPoll: Effective
+    ciWait: Effective
+    reviewerInstructionsEffective: Effective
+    workspaceConflict: boolean
+    checkPlan: { checks: FactoryCheckKey[]; error: string }
+    checksEffective: string
+  }
+
+  function resolveChecks(content: WorkingDraftContent, defaults: FactoryDefaults): { checks: FactoryCheckKey[]; error: string } {
+    if (content.checksMode === 'none') return { checks: [], error: '' }
+    if (content.checksMode === 'inherit') return { checks: defaults.expectedChecks ?? [], error: '' }
+    try { return { checks: parseChecks(content.expectedChecksText), error: '' } }
+    catch (e) { return { checks: [], error: errMessage(e) } }
+  }
+
+  function describeChecks(content: WorkingDraftContent, plan: { checks: FactoryCheckKey[]; error: string }, defaults: FactoryDefaults): string {
+    if (content.checksMode === 'inherit') {
+      return defaults.expectedChecks?.length
+        ? `Project factory default: ${formatChecks(defaults.expectedChecks)}`
+        : 'Not configured — no required checks are inherited'
+    }
+    if (content.checksMode === 'none') return 'This handoff: no required checks'
+    return plan.error ? plan.error : `This handoff: ${formatChecks(plan.checks)}`
+  }
+
+  /** Every effective value, each with the source it came from. */
+  export function resolveFactory(input: FactoryInput): FactoryResolution {
+    const { content, settings, repos } = input
+    const factoryDefaults: FactoryDefaults = settings?.factoryDefaults ?? {}
+    const projectWorkspace = settings?.workspace ?? ''
+    const projectProfile = profileOf(settings?.routing)
+    const factoryWorkspace = factoryDefaults.workspace ?? ''
+    const factoryBranch = factoryDefaults.targetBranch ?? ''
+    const repoBranch = repos.find((r) => r.id === content.repoId)?.branch || 'main'
+    const checkPlan = resolveChecks(content, factoryDefaults)
+    return {
+      factoryDefaults,
+      projectWorkspace,
+      projectProfile,
+      factoryWorkspace,
+      factoryBranch,
+      repoBranch,
+      workspace: pick(content.workspaceOverride, factoryWorkspace, projectWorkspace),
+      implementer: pick(content.implementerOverride, profileOf(factoryDefaults.implementerRouting), projectProfile),
+      reviewer: pick(content.reviewerOverride, profileOf(factoryDefaults.reviewerRouting), projectProfile),
+      branch: content.targetBranchOverride.trim()
+        ? { value: content.targetBranchOverride.trim(), source: 'handoff' }
+        : factoryBranch
+          ? { value: factoryBranch, source: 'factory' }
+          : { value: repoBranch, source: 'repository' },
+      maxRounds: pickLimit(content.maxRoundsOverride, factoryDefaults.maxRounds, 5),
+      ciPoll: pickLimit(content.ciPollOverride, factoryDefaults.ciPollSeconds, 15),
+      ciWait: pickLimit(content.ciWaitOverride, factoryDefaults.ciWaitSeconds, 1800),
+      reviewerInstructionsEffective: pick('', factoryDefaults.reviewerInstructions ?? '', ''),
+      // A native handoff suppresses the *project agent* workspace fallback; only
+      // a separately configured factory workspace remains an explicit conflict.
+      workspaceConflict: content.native && factoryWorkspace !== '',
+      checkPlan,
+      checksEffective: describeChecks(content, checkPlan, factoryDefaults),
+    }
+  }
+
+  /** The configuration this handoff submits, or the reason it cannot be one. */
+  export function factoryConfigOf(input: FactoryInput): FactoryCreateConfig {
+    const { content, projectRoot, repos } = input
+    const r = resolveFactory(input)
+    if (r.workspaceConflict) throw new Error(`The project's factory workspace "${r.factoryWorkspace}" cannot be combined with a native run. Choose a non-native environment, or change the project's factory settings.`)
+    if (!content.native && !r.workspace.value) throw new Error('This project has no workspace. Choose one, or run natively.')
+    if (!r.implementer.value || !r.reviewer.value) throw new Error('Choose both model profiles, or set a project model profile.')
+    if (!r.branch.value) throw new Error('Choose a target branch')
+    if (r.checkPlan.error) throw new Error(r.checkPlan.error)
+    if (content.checksMode === 'custom' && !r.checkPlan.checks.length) throw new Error('Enter at least one expected check, or choose no required checks')
+    if (!r.checkPlan.checks.length && !content.noRequiredCiAcknowledged) throw new Error('Confirm that this repository has no required CI, or enter expected checks')
+
+    const config: FactoryCreateConfig = { repoId: content.repoId, projectRoot, native: content.native, implementerAuto: content.implementerAuto, noRequiredCiAcknowledged: content.noRequiredCiAcknowledged }
+    // Every field the backend can resolve is omitted while it follows: an
+    // empty string or zero would be a different, explicit choice.
+    if (!content.native && content.workspaceOverride) config.workspace = content.workspaceOverride
+    // A target branch is required to create: inherit the project's factory
+    // default when it has one, otherwise submit the repository's branch.
+    if (content.targetBranchOverride.trim()) config.targetBranch = content.targetBranchOverride.trim()
+    else if (!r.factoryBranch) config.targetBranch = r.repoBranch
+    if (content.implementerOverride) config.implementerRouting = { profile: content.implementerOverride }
+    if (content.reviewerOverride) config.reviewerRouting = { profile: content.reviewerOverride }
+    if (content.reviewerInstructions.trim()) config.reviewerInstructions = content.reviewerInstructions.trim()
+    if (content.checksMode !== 'inherit') config.expectedChecks = r.checkPlan.checks
+    if (content.maxRoundsOverride.trim()) config.maxRounds = positive(content.maxRoundsOverride, 'Total rounds')
+    if (content.ciPollOverride.trim()) config.ciPollSeconds = positive(content.ciPollOverride, 'CI poll seconds')
+    if (content.ciWaitOverride.trim()) config.ciWaitSeconds = positive(content.ciWaitOverride, 'CI wait seconds')
+    return config
+  }
+
+  /** The exact body a handoff — or a conversion review — sends. */
+  export function factoryRequestOf(input: FactoryInput & { requestId: string }): FactoryCreate {
+    const { content, requestId } = input
+    if (!content.title.trim() || !content.plan.trim()) throw new Error('Title and plan are required')
+    if (!content.repoId) throw new Error('Choose a registered repository')
+    return { requestId, title: content.title.trim(), plan: content.plan, spec: content.spec, config: factoryConfigOf(input) }
+  }
+</script>
+
 <script lang="ts">
   import { onMount } from 'svelte'
   import Card from '../lib/ui/Card.svelte'
   import Button from '../lib/ui/Button.svelte'
-  import { createFactoryItem, errMessage, getModels, getProjectSettings, listRepos, listWorkspaces, type ProjectSettings, type RepoRow, type WorkspaceListItem } from '../lib/api'
-  import type { FactoryCheckKey, FactoryCreate, FactoryCreateConfig, FactoryItem } from '../lib/factory'
+  import { createFactoryItem, getModels, getProjectSettings, listRepos, listWorkspaces, type WorkspaceListItem } from '../lib/api'
+  import type { FactoryItem } from '../lib/factory'
   import { formatFactoryRoute, formatProjectRoute, formatWorkingDraftsRoute } from '../lib/routes'
-  import { emptyWorkingDraftContent, sameWorkingDraftContent, type WorkingDraftContent, type WorkingDraftController } from '../lib/working-drafts'
+  import { emptyWorkingDraftContent, sameWorkingDraftContent, type WorkingDraftController } from '../lib/working-drafts'
 
   /**
    * A saved working draft this view edits. With one, every change is handed to
@@ -60,87 +244,26 @@
   let error = $state(''), settingsError = $state(''), busy = $state(false)
   let item = $state<FactoryItem | null>(null), pending = $state<FactoryCreate | null>(null)
 
-  type EffectiveSource = 'handoff' | 'factory' | 'project' | 'repository' | 'builtin' | 'none'
-  interface Effective { value: string; source: EffectiveSource }
-  const SOURCE_TEXT: Record<EffectiveSource, string> = {
-    handoff: 'This handoff',
-    factory: 'Project factory default',
-    project: 'Project agent default',
-    repository: 'Repository branch',
-    builtin: 'Built-in',
-    none: 'Not configured',
-  }
-  const describe = (e: Effective, missing: string): string =>
-    e.value ? `${SOURCE_TEXT[e.source]}: ${e.value}` : `${SOURCE_TEXT.none} — ${missing}`
-  const pick = (handoff: string, factory: string, project: string): Effective => {
-    if (handoff) return { value: handoff, source: 'handoff' }
-    if (factory) return { value: factory, source: 'factory' }
-    if (project) return { value: project, source: 'project' }
-    return { value: '', source: 'none' }
-  }
-  const pickLimit = (handoff: string, factory: number | undefined, builtin: number): Effective => {
-    if (handoff.trim()) return { value: handoff.trim(), source: 'handoff' }
-    if (factory) return { value: String(factory), source: 'factory' }
-    return { value: String(builtin), source: 'builtin' }
-  }
-  // A routing object only ever contributes its profile; every other member
-  // belongs to the route it came from and is left untouched.
-  const profileOf = (route: { profile?: unknown } | undefined): string => (typeof route?.profile === 'string' ? route.profile : '')
-
-  const factoryDefaults = $derived(settings?.factoryDefaults ?? {})
-  const projectWorkspace = $derived(settings?.workspace ?? '')
-  const projectProfile = $derived(profileOf(settings?.routing))
-  const factoryWorkspace = $derived(factoryDefaults.workspace ?? '')
-  const factoryBranch = $derived(factoryDefaults.targetBranch ?? '')
-  const repoBranch = $derived(repos.find((r) => r.id === content.repoId)?.branch || 'main')
-
+  /**
+   * Every effective value comes from the same resolution the conversion review
+   * uses, so the two surfaces cannot describe the same handoff differently.
+   */
+  const resolved = $derived(resolveFactory({ content, projectRoot, settings, repos }))
+  const factoryDefaults = $derived(resolved.factoryDefaults)
+  const factoryWorkspace = $derived(resolved.factoryWorkspace)
   // Effective values, each with the source it came from.
-  const workspace = $derived(pick(content.workspaceOverride, factoryWorkspace, projectWorkspace))
-  const implementer = $derived(pick(content.implementerOverride, profileOf(factoryDefaults.implementerRouting), projectProfile))
-  const reviewer = $derived(pick(content.reviewerOverride, profileOf(factoryDefaults.reviewerRouting), projectProfile))
-  const branch = $derived<Effective>(content.targetBranchOverride.trim()
-    ? { value: content.targetBranchOverride.trim(), source: 'handoff' }
-    : factoryBranch ? { value: factoryBranch, source: 'factory' } : { value: repoBranch, source: 'repository' })
-  const maxRounds = $derived(pickLimit(content.maxRoundsOverride, factoryDefaults.maxRounds, 5))
-  const ciPoll = $derived(pickLimit(content.ciPollOverride, factoryDefaults.ciPollSeconds, 15))
-  const ciWait = $derived(pickLimit(content.ciWaitOverride, factoryDefaults.ciWaitSeconds, 1800))
-  const reviewerInstructionsEffective = $derived(pick('', factoryDefaults.reviewerInstructions ?? '', ''))
-
+  const workspace = $derived(resolved.workspace)
+  const implementer = $derived(resolved.implementer)
+  const reviewer = $derived(resolved.reviewer)
+  const branch = $derived(resolved.branch)
+  const maxRounds = $derived(resolved.maxRounds)
+  const ciPoll = $derived(resolved.ciPoll)
+  const ciWait = $derived(resolved.ciWait)
+  const reviewerInstructionsEffective = $derived(resolved.reviewerInstructionsEffective)
   // A native handoff suppresses the *project agent* workspace fallback; only a
   // separately configured factory workspace remains an explicit conflict.
-  const workspaceConflict = $derived(content.native && factoryWorkspace !== '')
-
-  function formatCheck(c: FactoryCheckKey): string {
-    return c.kind === 'commit_status' ? `${c.kind}:${c.name}` : `${c.kind}:${c.name}:${c.appId}`
-  }
-  const formatChecks = (list: FactoryCheckKey[]): string => (list.length ? list.map(formatCheck).join(', ') : 'none')
-  function parseChecks(text: string): FactoryCheckKey[] {
-    return text.split('\n').map((line) => line.trim()).filter(Boolean).map((line) => {
-      const [kind, name, app] = line.split(':')
-      if (kind === 'check_run' && name && Number(app) > 0) return { kind, name, appId: Number(app) } as FactoryCheckKey
-      if (kind === 'commit_status' && name && !app) return { kind, name, appId: 0 } as FactoryCheckKey
-      throw new Error('Each check must be check_run:name:appId or commit_status:context')
-    })
-  }
-  const checkPlan = $derived.by((): { checks: FactoryCheckKey[]; error: string } => {
-    if (content.checksMode === 'none') return { checks: [], error: '' }
-    if (content.checksMode === 'inherit') return { checks: factoryDefaults.expectedChecks ?? [], error: '' }
-    try { return { checks: parseChecks(content.expectedChecksText), error: '' } }
-    catch (e) { return { checks: [], error: errMessage(e) } }
-  })
-  const checksEffective = $derived(
-    content.checksMode === 'inherit'
-      ? (factoryDefaults.expectedChecks?.length
-        ? `Project factory default: ${formatChecks(factoryDefaults.expectedChecks)}`
-        : 'Not configured — no required checks are inherited')
-      : content.checksMode === 'none'
-        ? 'This handoff: no required checks'
-        : (checkPlan.error ? checkPlan.error : `This handoff: ${formatChecks(checkPlan.checks)}`),
-  )
-  // Kept visible when a saved value is no longer in a picker, so the choice is
-  // never silently discarded.
-  const keepUnavailable = (options: { value: string; label: string }[], value: string) =>
-    value && !options.some((o) => o.value === value) ? [...options, { value, label: `${value} (unavailable)` }] : options
+  const workspaceConflict = $derived(resolved.workspaceConflict)
+  const checksEffective = $derived(resolved.checksEffective)
   const repoChoices = $derived(keepUnavailable(repos.map((r) => ({ value: r.id, label: r.id })), content.repoId))
   const wsOptions = $derived(workspaces.map((w) => ({ value: w.source === 'repo' ? `repo:${w.name}` : w.name, label: w.source === 'repo' ? `${w.name} (repo)` : w.name })))
   const workspaceChoices = $derived(keepUnavailable(wsOptions, content.workspaceOverride))
@@ -172,43 +295,15 @@
     if (!content.repoId && repos.length === 1) content.repoId = repos[0].id
   }
 
-  function positive(text: string, what: string): number {
-    const n = Number(text)
-    if (!Number.isFinite(n) || n <= 0) throw new Error(`${what} must be a positive number`)
-    return Math.trunc(n)
-  }
+  /** This form's inputs, in the one shape the shared rules and the review take. */
+  const factoryInput = (): FactoryInput => ({ content, projectRoot, settings, repos })
 
   function buildConfig(): FactoryCreateConfig {
-    if (workspaceConflict) throw new Error(`The project's factory workspace "${factoryWorkspace}" cannot be combined with a native run. Choose a non-native environment, or change the project's factory settings.`)
-    if (!content.native && !workspace.value) throw new Error('This project has no workspace. Choose one, or run natively.')
-    if (!implementer.value || !reviewer.value) throw new Error('Choose both model profiles, or set a project model profile.')
-    if (!branch.value) throw new Error('Choose a target branch')
-    if (checkPlan.error) throw new Error(checkPlan.error)
-    if (content.checksMode === 'custom' && !checkPlan.checks.length) throw new Error('Enter at least one expected check, or choose no required checks')
-    if (!checkPlan.checks.length && !content.noRequiredCiAcknowledged) throw new Error('Confirm that this repository has no required CI, or enter expected checks')
-
-    const config: FactoryCreateConfig = { repoId: content.repoId, projectRoot, native: content.native, implementerAuto: content.implementerAuto, noRequiredCiAcknowledged: content.noRequiredCiAcknowledged }
-    // Every field the backend can resolve is omitted while it follows: an
-    // empty string or zero would be a different, explicit choice.
-    if (!content.native && content.workspaceOverride) config.workspace = content.workspaceOverride
-    // A target branch is required to create: inherit the project's factory
-    // default when it has one, otherwise submit the repository's branch.
-    if (content.targetBranchOverride.trim()) config.targetBranch = content.targetBranchOverride.trim()
-    else if (!factoryBranch) config.targetBranch = repoBranch
-    if (content.implementerOverride) config.implementerRouting = { profile: content.implementerOverride }
-    if (content.reviewerOverride) config.reviewerRouting = { profile: content.reviewerOverride }
-    if (content.reviewerInstructions.trim()) config.reviewerInstructions = content.reviewerInstructions.trim()
-    if (content.checksMode !== 'inherit') config.expectedChecks = checkPlan.checks
-    if (content.maxRoundsOverride.trim()) config.maxRounds = positive(content.maxRoundsOverride, 'Total rounds')
-    if (content.ciPollOverride.trim()) config.ciPollSeconds = positive(content.ciPollOverride, 'CI poll seconds')
-    if (content.ciWaitOverride.trim()) config.ciWaitSeconds = positive(content.ciWaitOverride, 'CI wait seconds')
-    return config
+    return factoryConfigOf(factoryInput())
   }
 
   function payload(): FactoryCreate {
-    if (!content.title.trim() || !content.plan.trim()) throw new Error('Title and plan are required')
-    if (!content.repoId) throw new Error('Choose a registered repository')
-    return { requestId: crypto.randomUUID(), title: content.title.trim(), plan: content.plan, spec: content.spec, config: buildConfig() }
+    return factoryRequestOf({ ...factoryInput(), requestId: crypto.randomUUID() })
   }
 
   /** Identity of a request, so a byte-identical retry keeps the same ID. */

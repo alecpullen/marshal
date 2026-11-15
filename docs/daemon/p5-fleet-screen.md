@@ -1591,11 +1591,15 @@ and W6 over a real local-profile bridge (`fleet_loop_test.go`,
   `Fleet`'s own behaviour is unchanged. `daemonStep.label()` falls back to
   "a new session" for a step that names neither an agent nor a session, which
   no loop-built step reaches.
-- `Selected()` is only meaningful once the screen has laid its rows out. Both
-  loop tests open and close the filter (`/`, then esc) to apply
+- `Selected()` is only meaningful once the screen has laid its rows out. Every
+  loop test opens and closes the filter (`/`, then esc) to apply
   `WithSelected` — the only public path that reaches a start selection without
-  a real `tea.Program` — and list a decoy agent first, so "restored on the
-  right row" is distinguishable from "cursor on row one".
+  a real `tea.Program` — and puts a row before the agent it opens, so "restored
+  on the right row" is distinguishable from "cursor on row one": the launch
+  fake lists a decoy agent (`loopDecoyID`), and W4 in `test/daemon` spawns a
+  decoy agent before the one it opens. The decoy was added to W4 in the branch
+  review below; without it the agent was row one, and the assertion would have
+  passed even had nothing been restored.
 - Task 9's docs and its record were written as two commits (task 9a, then
   task 9b), so the prose did not wait on the suite.
 
@@ -1646,3 +1650,40 @@ boundary test; `internal/commands`; `internal/app/tui/fleet`; `internal/launch`
 and `-race`; and `test/daemon`'s `Agent` filter and full package. The two
 mutation checks that could run were run and restored: dropping the agent
 attach's paused refusal failed `TestTheAgentAttachRefusals/a_paused_agent`.
+
+## Branch review record
+
+The branch was reviewed against `bcceadab` by three independent
+`glm-5.3-flash` reviewers through `ollama-cloud`, split by file set: the
+bridge (`web/bridge/attach.go`, `fleet.go`, `relay.go` and their tests), the
+daemon client and loop (`internal/daemon`, `internal/launch`), and the screen,
+the fleet model, the real-bridge tests and the docs. Each verdict was "sound";
+no Important finding was raised. All ten findings are addressed in the
+follow-up commit.
+
+| Severity | Finding | Resolution |
+|---|---|---|
+| Minor | The agent attach's post-dial failures were implemented and untested, though task 1 requires each one to close what it opened and to leave the agent's session alone | `TestAnAgentAttachWhoseDialFailsKeepsTheSession` drives an agent whose child's socket is gone: 502 with the `dial the project child: ` prefix, and the session stays open and mapped to the agent, as the project attach's `TestAFailedDialClosesTheNewSession` proves the other way |
+| Minor | W4's fleet pass asserted the cursor came back to the agent, but the roster held only that agent, so the assertion would have passed had nothing been restored — and this record claimed both loop tests carried a decoy | W4 now spawns a decoy agent first and fails if the first pass already sits on the agent's row; the launch fake's decoy and W4's are now distinguished above |
+| Minor | Once the fleet had run, a failed or refused dial became an Events line carrying `daemonServingError`'s tail, which advises `marshal attach` or `marshal --embedded` — wrong inside a running fleet | `dialDaemon` now reports a `daemonDialFailure`; the fleet notice uses its plain sentence, and only the pre-fleet path adds the way out through `daemonServingError`, whose wording is unchanged |
+| Minor | Three loop behaviours the plan's task 7 requires had no test: the zero target's error propagation, a resume after the fleet has run, and the restored selection on `/fleet` | `TestAFleetProgramsErrorEndsTheLoop`, `TestAResumeFromTheFleetOpensThatSession`, and an `onSession` hook in `TestSlashFleetFromAPlainSessionOpensTheFleet` that lists the session the daemon really minted and asserts the cursor lands on it |
+| Nit | `refusal` only sees frames `decodeClientRequest` accepts, so an id-less `session/close` notification naming an agent's session would be forwarded | Documented on `refusal` as the same request-only assumption `watchedRequest` makes — ACP sends both methods as requests — and the widening, if ever wanted, belongs in the shared decode |
+| Nit | `runtimeForAgent` released `f.mu` before `attachAgent` retook it to read `rt.project` and `rt.sessionID`; a `Pause` in between let the attach proceed against a released child | New `Fleet.attachTargetFor` reads the lookup and both fields in one critical section; `runtimeForAgent` keeps its other callers and its shape |
+| Nit | A fleet target naming a root but no session would dial `Attach` with an empty id, opening a new session the fleet never asked for | `fleetStep` requires both a root and a session for that branch and otherwise reports "could not open a session: the fleet named none" on the Events ring |
+| Nit | The refusal sentence exists twice across the `web/` boundary with nothing tying the copies together | Cross-referencing comments on `finishFromFleet` and `beginEnd` state that the copies are deliberate and must change together; each suite already pins its own literal |
+| Nit | `footer` rebuilt the whole row list through `openTarget` on every render, after the Agents panel had already built it | `panelAgents` returns the rows it drew, and `footer`, `openTarget` and `zoomScreen` take them; the goldens are byte-identical |
+| Nit | `url.PathEscape` guarantees no path confusion but not a match: an id containing `/` would decode back and be rejected as a second segment | Recorded here as unreachable — the bridge mints hex ids — and left unchanged; a future non-hex id would need the bridge to read the escaped path |
+
+The reviewers also confirmed the clean areas explicitly: the refusal order is
+exactly decision 5's and every branch is production-reachable; the dial,
+hijack and `101` sequence mirrors the project attach with both headers in the
+one pre-relay write; the linger rearm is right on both sides; every client
+write goes through `clientMu` and a refusal answer is one complete locked
+frame; the `web/` boundary holds with the error `data` built inline; the
+recorded `net.Pipe` race-detector caveat is an honest one; every ending route
+on an agent's session funnels through `beginEnd`; `/fleet`'s ordering cannot be
+interrupted because `detach` cannot fail synchronously; the loop cannot spin
+and every ending is terminal; `ProgramResult`'s interface assertions match
+exactly one model type each; the five goldens moved by exactly their footer
+line; and `AGENTS.md`, `cmd/webbridge/README.md` and `docs/ARCHITECTURE.md`
+are true of the code as committed.

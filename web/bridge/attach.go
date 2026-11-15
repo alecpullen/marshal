@@ -223,7 +223,7 @@ func (s *Server) attachAgent(w http.ResponseWriter, r *http.Request, id string) 
 		return
 	}
 	name := agentDisplayName(a)
-	rt, err := s.fleet.runtimeForAgent(id)
+	pc, sessionID, err := s.fleet.attachTargetFor(id)
 	if err != nil {
 		if errors.Is(err, ErrUnknownAgent) {
 			// A paused agent keeps its record and loses its runtime. Resuming
@@ -234,9 +234,6 @@ func (s *Server) attachAgent(w http.ResponseWriter, r *http.Request, id string) 
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
-	s.fleet.mu.Lock()
-	pc, sessionID := rt.project, rt.sessionID
-	s.fleet.mu.Unlock()
 	if pc == nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "agent " + name + " runs on a child of its own, which has no viewer socket yet"})
 		return

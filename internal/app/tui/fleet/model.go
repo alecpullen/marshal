@@ -292,12 +292,12 @@ func (m *Model) restoreStart(rows []agentRow) {
 	m.startSelected = ""
 }
 
-// openTarget is what ⏎ opens from the current selection. An agent row gives
-// its ID, its name and its project root; a Sessions row gives its child's root
-// and its session ID; a Needs you agent item gives that agent's target. An
-// intake item, and an empty selection, open nothing: plan 5 gives intake items
-// approve and deny.
-func (m Model) openTarget() Target {
+// openTarget is what ⏎ opens from the current selection, over the rows the view
+// already built. An agent row gives its ID, its name and its project root; a
+// Sessions row gives its child's root and its session ID; a Needs you agent
+// item gives that agent's target. An intake item, and an empty selection, open
+// nothing: plan 5 gives intake items approve and deny.
+func (m Model) openTarget(rows []agentRow) Target {
 	id := m.selected
 	if m.focus == focusNeedsYou {
 		queue := m.state.Inbox.Queue
@@ -310,7 +310,6 @@ func (m Model) openTarget() Target {
 		}
 		id = item.AgentID
 	}
-	_, rows := m.agentLines()
 	idx, ok := rowIndex(rows, id)
 	if !ok {
 		return Target{}

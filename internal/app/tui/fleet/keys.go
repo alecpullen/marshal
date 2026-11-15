@@ -73,7 +73,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // selection — leaves the screen running: plan 5 gives those items approve and
 // deny.
 func (m Model) openSelected() (tea.Model, tea.Cmd) {
-	target := m.openTarget()
+	_, rows := m.agentLines()
+	target := m.openTarget(rows)
 	if target == (Target{}) {
 		return m, nil
 	}

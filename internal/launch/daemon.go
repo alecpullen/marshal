@@ -296,8 +296,13 @@ func (l *daemonLoop) fleetStep(ctx context.Context, step daemonStep) (*daemonSte
 		return nil, result.Err
 	case target.AgentID != "":
 		return &daemonStep{agentID: target.AgentID, agentName: target.AgentName, root: target.Root}, nil
-	default:
+	case target.Root != "" && target.SessionID != "":
 		return &daemonStep{root: target.Root, sessionID: target.SessionID}, nil
+	default:
+		// A target that names a root but no session would dial Attach with an
+		// empty id, which opens a new session: a create the fleet never asked
+		// for. Report it on the Events ring instead.
+		return &daemonStep{fleet: true, notice: "could not open a session: the fleet named none"}, nil
 	}
 }
 
@@ -307,9 +312,15 @@ func (l *daemonLoop) sessionStep(ctx context.Context, step daemonStep) (*daemonS
 	conn, err := dialDaemon(ctx, l.opts, step)
 	if err != nil {
 		// Once the fleet has run, a session it could not open is a line on
-		// its Events ring rather than the end of the loop.
+		// its Events ring rather than the end of the loop. The notice carries
+		// the plain failure: the "marshal attach / --embedded" way out that
+		// daemonServingError adds is wrong here, where a fleet is already up.
 		if l.fleetRan {
 			return &daemonStep{fleet: true, notice: fmt.Sprintf("could not open %s: %v", step.label(), err)}, nil
+		}
+		var refused *daemonDialFailure
+		if errors.As(err, &refused) {
+			return nil, daemonServingError(l.opts, refused.what, refused.err)
 		}
 		return nil, err
 	}
@@ -507,7 +518,7 @@ func dialDaemon(ctx context.Context, opts *options, step daemonStep) (*daemonCon
 		attachment, err = opts.daemonClientFor().Attach(handshakeCtx, step.root, step.sessionID)
 	}
 	if err != nil {
-		return nil, daemonServingError(opts, "it could not be asked for a session", err)
+		return nil, &daemonDialFailure{what: "it could not be asked for a session", err: err}
 	}
 
 	stream := rpc.NewStream(attachment.Conn, attachment.Conn, rpc.MaxFrameBytes)
@@ -518,16 +529,30 @@ func dialDaemon(ctx context.Context, opts *options, step daemonStep) (*daemonCon
 	host, err := rpc.Dial(handshakeCtx, stream, rpc.DialOptions{SharedFilesystem: true})
 	if err != nil {
 		_ = stream.Close()
-		return nil, daemonServingError(opts, "its agent could not be dialled", err)
+		return nil, &daemonDialFailure{what: "its agent could not be dialled", err: err}
 	}
 
 	sess, err := host.Attach(handshakeCtx, attachment.SessionID)
 	if err != nil {
 		_ = stream.Close()
-		return nil, daemonServingError(opts, fmt.Sprintf("session %q could not be attached", attachment.SessionID), err)
+		return nil, &daemonDialFailure{what: fmt.Sprintf("session %q could not be attached", attachment.SessionID), err: err}
 	}
 	return newDaemonConn(host, sess), nil
 }
+
+// daemonDialFailure is what dialDaemon reports when the daemon answered but the
+// step's session could not be opened. It keeps the failure in two forms: the
+// plain one, which the fleet screen puts on its Events ring, and its parts,
+// which daemonServingError adds the way out to for a loop that has not reached
+// the fleet yet. That way out is wrong inside a running fleet — there is
+// nothing to retry and nothing to run embedded — so the notice never carries it.
+type daemonDialFailure struct {
+	what string
+	err  error
+}
+
+func (e *daemonDialFailure) Error() string { return e.what + ": " + e.err.Error() }
+func (e *daemonDialFailure) Unwrap() error { return e.err }
 
 // daemonServingError wraps a failure that lands after the daemon answered the
 // probe. Because a daemon is demonstrably there, the message names it and says

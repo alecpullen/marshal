@@ -973,17 +973,27 @@ func TestDetachingAnOpenedSessionReturnsToTheFleet(t *testing.T) {
 }
 
 // TestSlashFleetFromAPlainSessionOpensTheFleet: /fleet on the daemon hands the
-// loop a session step that ends with ToFleet, and the fleet program runs next.
+// loop a session step that ends with ToFleet, and the fleet program runs next
+// with its cursor on the session that ran.
 func TestSlashFleetFromAPlainSessionOpensTheFleet(t *testing.T) {
 	dir := t.TempDir()
 	fake := newFakeDaemon(t, dir, t.TempDir())
 	root := filepath.Clean(dir)
+	fleetClient := loopFleet(root, "sess-row")
 
 	script := &loopScript{
 		t:           t,
 		sessionEnds: []ProgramResult{{ToFleet: true}},
 	}
-	if err := runOnTheDaemon(t, fake, dir, io.Discard, script, loopFleet(root, "sess-row")); err != nil {
+	// The daemon mints the session's ID when it attaches, so the roster the
+	// fleet will show is only known inside the session pass: list the session
+	// the loop really ran, as the daemon's own fleet does. Doing it here leaves
+	// the cursor something to restore onto that is not the roster's first row.
+	script.onSession = func(context.Context, tui.Model) {
+		id := fake.lastRuntime().SessionID
+		fleetClient.state.Daemon.Children[0].Sessions = []contract.DaemonSession{{ID: id}}
+	}
+	if err := runOnTheDaemon(t, fake, dir, io.Discard, script, fleetClient); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -995,6 +1005,66 @@ func TestSlashFleetFromAPlainSessionOpensTheFleet(t *testing.T) {
 	}
 	if n := len(fake.attachCalls()); n != 1 {
 		t.Errorf("attaches = %d, want 1", n)
+	}
+	ran := fake.lastRuntime().SessionID
+	if got := script.fleetPasses[0].selected; got != ran {
+		t.Errorf("the fleet came up with %q selected, want the session that ran, %q (the first row is %q)", got, ran, loopDecoyID)
+	}
+}
+
+// TestAFleetProgramsErrorEndsTheLoop: a fleet screen that ends with an error and
+// no target ends the loop with that error, as every program's ending does,
+// rather than coming back to a fleet nobody asked for.
+func TestAFleetProgramsErrorEndsTheLoop(t *testing.T) {
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, t.TempDir())
+	root := filepath.Clean(dir)
+
+	boom := errors.New("the fleet screen failed")
+	script := &loopScript{t: t, fleetEnds: []ProgramResult{{Err: boom}}}
+	err := runTheFleet(t, fake, dir, io.Discard, script, loopFleet(root, "sess-row"))
+	if !errors.Is(err, boom) {
+		t.Fatalf("Fleet = %v, want the fleet program's error", err)
+	}
+	if len(script.sessions) != 0 {
+		t.Errorf("session screens = %d, want none", len(script.sessions))
+	}
+	if n := len(fake.attachCalls()) + len(fake.agentAttachCalls()); n != 0 {
+		t.Errorf("%d attaches, want none: the zero target opens nothing", n)
+	}
+}
+
+// TestAResumeFromTheFleetOpensThatSession: a resume wins over the return to the
+// fleet even once the fleet has run, so the step after a fleet session is the
+// resumed one, not the fleet screen.
+func TestAResumeFromTheFleetOpensThatSession(t *testing.T) {
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, t.TempDir())
+	root := filepath.Clean(dir)
+
+	stop := errors.New("the resumed session ended")
+	script := &loopScript{
+		t: t,
+		fleetEnds: []ProgramResult{
+			{Open: fleet.Target{AgentID: loopAgentID, AgentName: loopAgentName, Root: root}},
+			{}, // ends the loop, should it come back to the fleet
+		},
+		sessionEnds: []ProgramResult{{ResumeSession: "sess-resumed"}, {Err: stop}},
+	}
+	err := runTheFleet(t, fake, dir, io.Discard, script, loopFleet(root, "sess-row"))
+	if !errors.Is(err, stop) {
+		t.Fatalf("Fleet = %v, want the resumed session's ending %v", err, stop)
+	}
+
+	calls := fake.attachCalls()
+	if len(calls) != 1 || calls[0].sessionID != "sess-resumed" {
+		t.Fatalf("attaches = %+v, want one to %q", calls, "sess-resumed")
+	}
+	if len(script.sessions) != 2 {
+		t.Fatalf("session screens = %d, want the fleet's own and the resumed one", len(script.sessions))
+	}
+	if len(script.fleetPasses) != 1 {
+		t.Errorf("fleet screens = %d, want 1: a resume does not return to the fleet", len(script.fleetPasses))
 	}
 }
 

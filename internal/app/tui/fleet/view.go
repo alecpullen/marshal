@@ -85,14 +85,15 @@ func (m Model) screen() string {
 	left, right := m.columnWidths()
 	agentsH, needsH, eventsH := m.leftHeights(avail)
 
-	leftLines := splitLines(m.panelAgents(left, agentsH))
+	agents, rows := m.panelAgents(left, agentsH)
+	leftLines := splitLines(agents)
 	leftLines = append(leftLines, splitLines(m.panelNeedsYou(left, needsH))...)
 	leftLines = append(leftLines, splitLines(m.panelEvents(left, eventsH))...)
 	rightLines := splitLines(m.panelRight(right, avail))
 
 	body := joinColumns(leftLines, left, rightLines, right)
 	lines := fitScreen(body, m.width, avail)
-	lines = append(lines, m.footer())
+	lines = append(lines, m.footer(rows))
 	return strings.Join(fitScreen(lines, m.width, m.height), "\n")
 }
 
@@ -140,12 +141,12 @@ func (m Model) frame(title, hints string, content []string, outer, h int, focuse
 	return f.Render(strings.Join(content, "\n"), outer, h, m.th)
 }
 
-// panelAgents draws the Agents panel: the inbox's groups, with a header per
-// non-empty group, then the daemon's sessions.
-func (m Model) panelAgents(outer, h int) string {
+// panelAgents draws the Agents panel and reports the rows it drew, so the
+// footer can tell whether ⏎ would open anything without rebuilding them.
+func (m Model) panelAgents(outer, h int) (string, []agentRow) {
 	focused := m.focus == focusAgents
 	if !m.state.Loaded {
-		return m.frame("Agents", "", []string{m.connecting()}, outer, h, focused)
+		return m.frame("Agents", "", []string{m.connecting()}, outer, h, focused), nil
 	}
 	lines, rows := m.agentLines()
 	cols := m.agentColumns()
@@ -167,10 +168,10 @@ func (m Model) panelAgents(outer, h int) string {
 		}
 		body = append(body, m.agentLine(row, cols, widths, selected))
 	}
-	if rows := max(h-2, 0); rows > 0 && len(body) > rows {
-		body = splitLines(chrome.ClipLines(body, focusLine, rows, m.th))
+	if room := max(h-2, 0); room > 0 && len(body) > room {
+		body = splitLines(chrome.ClipLines(body, focusLine, room, m.th))
 	}
-	return m.frame("Agents", strconv.Itoa(len(rows)), body, outer, h, focused)
+	return m.frame("Agents", strconv.Itoa(len(rows)), body, outer, h, focused), rows
 }
 
 // panelNeedsYou draws the needs-you queue, oldest first. A queue longer than
@@ -730,7 +731,7 @@ func describePending(p *contract.PendingRequest) string {
 
 // footer is the bottom row: the server and its connection dot, the focused
 // panel's keys, and the global hints.
-func (m Model) footer() string {
+func (m Model) footer(rows []agentRow) string {
 	dot, col := glyph.Waiting, m.th.StatusWarning
 	switch m.state.Conn {
 	case acpclient.FleetConnected:
@@ -751,7 +752,7 @@ func (m Model) footer() string {
 		keys = "1/3 tab"
 	}
 	// ⏎ is only worth naming while it would do something.
-	if m.openTarget() != (Target{}) {
+	if m.openTarget(rows) != (Target{}) {
 		if keys == "" {
 			keys = "⏎ open"
 		} else {
@@ -783,7 +784,8 @@ func (m Model) helpScreen() string {
 		"q / ctrl+c       quit",
 	}, m.width, m.height-footerRows, true)
 	lines := fitScreen(splitLines(body), m.width, m.height-footerRows)
-	lines = append(lines, m.footer())
+	_, rows := m.agentLines()
+	lines = append(lines, m.footer(rows))
 	return strings.Join(fitScreen(lines, m.width, m.height), "\n")
 }
 
@@ -791,9 +793,10 @@ func (m Model) helpScreen() string {
 func (m Model) zoomScreen() string {
 	avail := m.height - footerRows
 	var body string
+	var rows []agentRow
 	switch m.focus {
 	case focusAgents:
-		body = m.panelAgents(m.width, avail)
+		body, rows = m.panelAgents(m.width, avail)
 	case focusNeedsYou:
 		body = m.panelNeedsYou(m.width, avail)
 	case focusEvents:
@@ -801,8 +804,11 @@ func (m Model) zoomScreen() string {
 	default:
 		body = m.panelRight(m.width, avail)
 	}
+	if rows == nil {
+		_, rows = m.agentLines()
+	}
 	lines := fitScreen(splitLines(body), m.width, avail)
-	lines = append(lines, m.footer())
+	lines = append(lines, m.footer(rows))
 	return strings.Join(fitScreen(lines, m.width, m.height), "\n")
 }
 

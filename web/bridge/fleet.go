@@ -805,6 +805,32 @@ func (f *Fleet) runtimeForAgent(id string) (*agentRuntime, error) {
 	return rt, nil
 }
 
+// attachTargetFor returns the project child and session an agent's session runs
+// on, read in one critical section (P5 F5).
+//
+// The runtime lookup and the read of its fields must not be two critical
+// sections: a Pause between them deletes the runtime, and the attach would then
+// dial a child the fleet has just released. The spawn error is kept separate
+// from the unknown-agent error so the caller can tell "paused" from "failed to
+// start" as runtimeForAgent does.
+func (f *Fleet) attachTargetFor(id string) (*projectChild, string, error) {
+	f.mu.Lock()
+	rt, ok := f.runtimes[id]
+	var pc *projectChild
+	var sessionID string
+	if ok {
+		pc, sessionID = rt.project, rt.sessionID
+	}
+	f.mu.Unlock()
+	if !ok {
+		return nil, "", fmt.Errorf("%w: agent %s", ErrUnknownAgent, id)
+	}
+	if rt.spawnErr != nil {
+		return nil, "", rt.spawnErr
+	}
+	return pc, sessionID, nil
+}
+
 // runtimeForRoot returns any live runtime for a project root. With
 // per-agent runtimes there may be several; callers that need a specific
 // agent should use runtimeForAgent.
@@ -1878,6 +1904,10 @@ func agentDisplayName(a Agent) string {
 
 // finishFromFleet is the refusal's sentence (decision 3), shared by the relay
 // and the session screen.
+//
+// The session screen keeps its own copy (internal/app/tui/model.go), because
+// web/ is standard library only and the TUI cannot import it. Both suites pin
+// the sentence, so the two copies must change together.
 func finishFromFleet(a Agent) string {
 	return "This is agent " + agentDisplayName(a) + "'s session: finish it from the fleet screen."
 }

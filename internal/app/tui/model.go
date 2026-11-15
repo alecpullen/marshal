@@ -4386,6 +4386,10 @@ func (m *Model) beginEnd(intent *endIntent) tea.Cmd {
 	// all end the session the same way, so every one of them is refused here,
 	// before any state changes. Ctrl+C's quit is already a detach in daemon
 	// mode, which stays allowed.
+	//
+	// The wording is the bridge's finishFromFleet (web/bridge/fleet.go). The
+	// TUI may not import web/, so the two copies are deliberate and must change
+	// together; this package's tests pin their own copy.
 	if m.agentSessionID != "" {
 		m.note(fmt.Sprintf("This is agent %s's session: finish it from the fleet screen.", m.agentSessionName))
 		m.refreshViewport()

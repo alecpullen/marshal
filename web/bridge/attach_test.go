@@ -905,6 +905,56 @@ func TestTheAgentAttachRefusals(t *testing.T) {
 	}
 }
 
+// TestAnAgentAttachWhoseDialFailsKeepsTheSession: a dial failure after the
+// handshake closes what the attach opened but never closes the agent's session,
+// which belongs to the fleet (P5 F5 decision 5). The project attach closes the
+// session it just created; this one must not, and the fleet must still own it
+// afterwards.
+func TestAnAgentAttachWhoseDialFailsKeepsTheSession(t *testing.T) {
+	root := t.TempDir()
+	h := newAttachHarness(t)
+
+	// An agent whose project child is gone: the runtime is live and the session
+	// is the agent's, but nothing listens where the child's viewer socket would
+	// be, so the dial is what fails.
+	sessionID := "agent-gone-session"
+	pc := &projectChild{root: root, socket: filepath.Join(root, "gone.sock")}
+	if err := h.fleet.ws.PutAgent(Agent{
+		ID: "agent-gone", Project: root, Name: "reviewer", SessionID: sessionID,
+		OwnerID: "owner-1", Origin: OriginUI,
+	}); err != nil {
+		t.Fatalf("record agent: %v", err)
+	}
+	h.fleet.mu.Lock()
+	h.fleet.runtimes["agent-gone"] = &agentRuntime{id: "agent-gone", root: root, project: pc, sessionID: sessionID}
+	h.fleet.sessionAgent[sessionID] = "agent-gone"
+	h.fleet.mu.Unlock()
+
+	res := h.attachAgent(http.MethodPost, "agent-gone", true)
+	if res.status != http.StatusBadGateway {
+		t.Fatalf("agent attach whose viewer dial fails = %d, want 502: %s", res.status, res.refusal(t))
+	}
+	const want = "dial the project child: "
+	if got := res.refusal(t); !strings.HasPrefix(got, want) {
+		t.Errorf("refusal = %q, want the %q prefix", got, want)
+	}
+
+	// The session is the agent's, so it stays open and the agent keeps it.
+	h.fleet.mu.Lock()
+	owner, tracked := h.fleet.sessionAgent[sessionID]
+	h.fleet.mu.Unlock()
+	if !tracked || owner != "agent-gone" {
+		t.Errorf("the failed attach left the session with owner %q (tracked %v), want agent-gone", owner, tracked)
+	}
+	a, ok := h.fleet.ws.Agent("agent-gone")
+	if !ok {
+		t.Fatal("the failed attach dropped the agent's record")
+	}
+	if a.SessionID != sessionID {
+		t.Errorf("agent session = %q, want %q", a.SessionID, sessionID)
+	}
+}
+
 func TestAgentAttachIDParsesOnlyItsPath(t *testing.T) {
 	tests := []struct {
 		path string

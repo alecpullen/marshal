@@ -33,6 +33,12 @@ func TestTheFleetOpensAnAgentAndLeavesItRunning(t *testing.T) {
 	if !ok {
 		t.Fatalf("agent %s has no record", agentID)
 	}
+	// A decoy row lands before the agent's, so the fleet's default cursor sits
+	// somewhere other than the agent: "the cursor came back to the agent's row"
+	// is then told apart from "the cursor never moved off row one".
+	if decoyID, _ := spawnFleetAgent(t, h, ctx); decoyID == agentID {
+		t.Fatalf("the decoy spawned as %q, the agent's own id", agentID)
+	}
 
 	var (
 		fleetPasses int
@@ -46,6 +52,12 @@ func TestTheFleetOpensAnAgentAndLeavesItRunning(t *testing.T) {
 		case fleet.Model:
 			fleetPasses++
 			if fleetPasses == 1 {
+				// The decoy is spawned first, so a first pass already on the
+				// agent's row means the roster put no row before it and the
+				// restored cursor below would prove nothing.
+				if got := fleetSelected(t, model); got == agentID {
+					t.Fatalf("the first fleet pass selected the agent %q already: the roster has no row before it", agentID)
+				}
 				// The operator opens the agent's row: this is the target the
 				// screen's key produces for it.
 				return launch.ProgramResult{Open: fleet.Target{

@@ -242,6 +242,12 @@ func decodeClientRequest(frame []byte) (clientRequest, bool) {
 // or a replacing session/new that names an agent's session. ok is false for
 // every other frame.
 //
+// Only a request is refused. A frame without an id is not decoded at all,
+// exactly as watchedRequest treats it: ACP sends both methods as requests, so
+// an id-less notification naming an agent's session would be forwarded like any
+// other frame. Widening this means widening decodeClientRequest, which the
+// watch side shares.
+//
 // No viewer may finish an agent's session, on either attach (decision 1), so
 // the frame is answered to the client instead of being forwarded. The answer
 // echoes the request's id and says what the fleet screen says: data carries an

@@ -158,6 +158,157 @@ func TestTheRelayChangesNoByte(t *testing.T) {
 	})
 }
 
+// ownedByAgent makes sessionID an agent's on the pair's fleet, as Spawn leaves
+// it: a record naming the session and the classifier's map that names the
+// agent (P4 D10 / decision 2).
+func (p *relayPair) ownedByAgent(t *testing.T, sessionID, id, name string) {
+	t.Helper()
+	if err := p.fleet.ws.PutAgent(Agent{
+		ID: id, Project: p.pc.root, Name: name, SessionID: sessionID,
+		OwnerID: "owner-1", Origin: OriginUI,
+	}); err != nil {
+		t.Fatalf("record agent %s: %v", id, err)
+	}
+	p.fleet.mu.Lock()
+	p.fleet.sessionAgent[sessionID] = id
+	p.fleet.mu.Unlock()
+}
+
+// readLine reads one newline-terminated frame from one side of the relay.
+func readLine(t *testing.T, src *bufio.Reader) string {
+	t.Helper()
+	line, err := src.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read a frame: %v", err)
+	}
+	return line
+}
+
+// readsNothing fails when the side delivers a frame within a short budget.
+func readsNothing(t *testing.T, conn net.Conn) {
+	t.Helper()
+	_ = conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	buf := make([]byte, 1)
+	n, err := conn.Read(buf)
+	if err == nil {
+		t.Fatalf("the relay forwarded %d bytes: %q", n, buf[:n])
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+}
+
+// checkRefusalAnswer decodes a relay's error answer and asserts its shape: the
+// request's own id, -32000, and the sentence as both the message and the
+// message of an acpwire.Error-shaped data with an empty code, which is how a
+// marshal client reads it as that sentence.
+func checkRefusalAnswer(t *testing.T, answer, wantID, wantSentence string) {
+	t.Helper()
+	var out struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Error   struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+			Data    struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"data"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(answer), &out); err != nil {
+		t.Fatalf("decode the refusal %q: %v", answer, err)
+	}
+	if out.JSONRPC != "2.0" {
+		t.Errorf("refusal jsonrpc = %q, want 2.0", out.JSONRPC)
+	}
+	if got := compactID(out.ID); got != wantID {
+		t.Errorf("refusal id = %s, want %s", got, wantID)
+	}
+	if out.Error.Code != -32000 {
+		t.Errorf("refusal code = %d, want -32000", out.Error.Code)
+	}
+	if out.Error.Message != wantSentence {
+		t.Errorf("refusal message = %q, want %q", out.Error.Message, wantSentence)
+	}
+	if out.Error.Data.Code != "" {
+		t.Errorf("refusal data code = %q, want empty", out.Error.Data.Code)
+	}
+	if out.Error.Data.Message != wantSentence {
+		t.Errorf("refusal data message = %q, want %q", out.Error.Data.Message, wantSentence)
+	}
+}
+
+// refusedSentence is decision 3's one sentence, named as the fleet names the
+// agent.
+const refusedSentence = "This is agent reviewer's session: finish it from the fleet screen."
+
+// TestAViewerCannotCloseAnAgentsSession: a close naming an agent's session is
+// answered to the client and never reaches the child (decision 1, F5).
+func TestAViewerCannotCloseAnAgentsSession(t *testing.T) {
+	p := newRelayPair(t, "s-1")
+	p.ownedByAgent(t, p.sessionID, "agent-a", "reviewer")
+	p.start(nil)
+
+	relayWrite(t, p.client, `{"jsonrpc":"2.0","id":7,"method":"session/close","params":{"sessionId":"s-1"}}`+"\n")
+
+	answer := readLine(t, bufio.NewReader(p.client))
+	checkRefusalAnswer(t, answer, "7", refusedSentence)
+	readsNothing(t, p.agent)
+}
+
+// TestAViewerCannotReplaceAnAgentsSession: a replacing session/new naming an
+// agent's session is refused the same way, and the child never sees it
+// (decision 1).
+func TestAViewerCannotReplaceAnAgentsSession(t *testing.T) {
+	p := newRelayPair(t, "s-1")
+	p.ownedByAgent(t, p.sessionID, "agent-a", "reviewer")
+	p.start(nil)
+
+	relayWrite(t, p.client, `{"jsonrpc":"2.0","id":8,"method":"session/new","params":{"cwd":"/tmp","replaces":"s-1","mcpServers":[]}}`+"\n")
+
+	answer := readLine(t, bufio.NewReader(p.client))
+	checkRefusalAnswer(t, answer, "8", refusedSentence)
+	readsNothing(t, p.agent)
+}
+
+// TestAProjectViewerCannotCloseAnotherAgentsSession: the rule is one rule, on
+// every relay. A project viewer attached to its own session cannot close a
+// different session a fleet agent owns on the same child (decision 1).
+func TestAProjectViewerCannotCloseAnotherAgentsSession(t *testing.T) {
+	p := newRelayPair(t, "s-1")
+	p.ownedByAgent(t, "s-2", "agent-a", "reviewer")
+	p.start(nil)
+
+	relayWrite(t, p.client, `{"jsonrpc":"2.0","id":9,"method":"session/close","params":{"sessionId":"s-2"}}`+"\n")
+
+	answer := readLine(t, bufio.NewReader(p.client))
+	checkRefusalAnswer(t, answer, "9", refusedSentence)
+	readsNothing(t, p.agent)
+}
+
+// TestOtherFramesStillPass: the refusal is narrow. A prompt and a close of a
+// session no agent owns are forwarded unchanged (decision 1).
+func TestOtherFramesStillPass(t *testing.T) {
+	p := newRelayPair(t, "s-1")
+	// An agent owns a different session: the pair's own is nobody's.
+	p.ownedByAgent(t, "agent-a-session", "agent-a", "reviewer")
+	p.start(nil)
+
+	prompt := `{"jsonrpc":"2.0","id":10,"method":"session/prompt","params":{"sessionId":"s-1","prompt":[{"type":"text","text":"hi"}]}}` + "\n"
+	relayWrite(t, p.client, prompt)
+	if got := string(readExactly(t, p.agent, len(prompt))); got != prompt {
+		t.Fatalf("a prompt changed on the way:\n sent %q\n got  %q", prompt, got)
+	}
+
+	closing := `{"jsonrpc":"2.0","id":11,"method":"session/close","params":{"sessionId":"s-1"}}` + "\n"
+	relayWrite(t, p.client, closing)
+	if got := string(readExactly(t, p.agent, len(closing))); got != closing {
+		t.Fatalf("a close of a session no agent owns changed on the way:\n sent %q\n got  %q", closing, got)
+	}
+	// Nothing was answered to the client: the child's answer is the client's
+	// answer, and the relay adds none of its own.
+	readsNothing(t, p.client)
+}
+
 // padFrame builds a valid JSON frame of exactly n bytes.
 func padFrame(n int) string {
 	head := `{"jsonrpc":"2.0","id":1,"method":"session/status","params":{"pad":"`

@@ -588,6 +588,49 @@ func TestAnAttachToASpawningFleetSessionIsRefused(t *testing.T) {
 	}
 }
 
+// TestAnAttachToAPausedAgentsSessionIsRefused: a paused agent keeps its record
+// and loses its runtime, and the session that record names is still the
+// agent's. The project attach refuses it with the fleet session's sentence,
+// the one place a paused session was still attachable (decision 2, P4 H15).
+func TestAnAttachToAPausedAgentsSessionIsRefused(t *testing.T) {
+	root := t.TempDir()
+	h := newAttachHarness(t)
+
+	// A client's session starts the child and holds one viewer, so the
+	// refusal below is measured against a live relay.
+	first := h.attach(http.MethodPost, root, "", true)
+	if first.status != http.StatusSwitchingProtocols {
+		t.Fatalf("opening attach = %d, want 101", first.status)
+	}
+	fake := h.fake(root)
+	if fake == nil {
+		t.Fatal("no fake was built for the project child")
+	}
+	eventually(t, "the first viewer to connect", func() bool { return fake.viewers() == 1 })
+	viewers := fake.viewers()
+
+	// A paused agent: the record survives and the runtime does not, so
+	// neither the registry's fleet flag nor the classifier's map knows the
+	// session. Only the record names it.
+	if err := h.fleet.ws.PutAgent(Agent{
+		ID: "agent-a", Project: root, Name: "reviewer", SessionID: "paused-1",
+		OwnerID: "owner-1", Origin: OriginUI,
+	}); err != nil {
+		t.Fatalf("record agent: %v", err)
+	}
+
+	res := h.attach(http.MethodPost, root, "paused-1", true)
+	if res.status != http.StatusConflict {
+		t.Fatalf("attach to a paused agent's session = %d, want 409", res.status)
+	}
+	if got, want := res.refusal(t), "session paused-1 belongs to a fleet agent"; got != want {
+		t.Errorf("409 refusal = %q, want %q", got, want)
+	}
+	if got := fake.viewers(); got != viewers {
+		t.Errorf("a refused attach opened a viewer connection: %d before, %d after", viewers, got)
+	}
+}
+
 func TestAFailedDialClosesTheNewSession(t *testing.T) {
 	root := t.TempDir()
 	h := newAttachHarness(t)

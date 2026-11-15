@@ -112,12 +112,16 @@ func (s *Server) attachProject(w http.ResponseWriter, r *http.Request) {
 		// decision 6). Refused before any viewer connection opens; the child
 		// keeps its session, so no linger is rearmed.
 		//
-		// Both sources are consulted. The registry's flag is the fast path, but
-		// it is set after session/new returns: a Spawn in that window is live on
-		// the child and not yet tracked, so the classifier's map — which Spawn
-		// fills first — closes it.
+		// Three sources are consulted. The registry's flag is the fast path,
+		// but it is set after session/new returns: a Spawn in that window is
+		// live on the child and not yet tracked, so the classifier's map —
+		// which Spawn fills first — closes it. agentOwning then covers what
+		// neither sees: a record naming the session, live or paused (decision
+		// 2), which is the one source that knows a paused agent's session is
+		// still the agent's.
 		_, classified := s.fleet.agentForSession(sessionID)
-		if pc.reg.IsFleet(sessionID) || classified {
+		_, owned := s.fleet.agentOwning(sessionID)
+		if pc.reg.IsFleet(sessionID) || classified || owned {
 			logAttach("refused", root, sessionID, "fleet session")
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "session " + sessionID + " belongs to a fleet agent"})
 			return

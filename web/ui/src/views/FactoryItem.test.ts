@@ -1,10 +1,12 @@
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { cleanup, render, screen } from '@testing-library/svelte'
 import FactoryItem from './FactoryItem.svelte'
 import * as api from '../lib/api'
 import type { FactoryItem as Item } from '../lib/factory'
-vi.mock('../lib/api', async (actual) => ({ ...await actual<typeof import('../lib/api')>(), getFactoryItem: vi.fn(), commandFactoryItem: vi.fn() }))
+import type { PreviewDeployment, PreviewReport } from '../lib/preview'
+vi.mock('../lib/api', async (actual) => ({ ...await actual<typeof import('../lib/api')>(), getFactoryItem: vi.fn(), commandFactoryItem: vi.fn(), getPreviewEnvironments: vi.fn() }))
 afterEach(cleanup)
+beforeEach(() => { vi.mocked(api.getPreviewEnvironments).mockReset() })
 const base = { id: 'x', title: 'Task', repoId: 'repo', state: 'draft', stage: '', version: 1, draft: { plan: 'Build', spec: '', config: { targetBranch: 'main', repoId: 'repo', maxRounds: 5, implementerRouting: {}, reviewerRouting: {}, expectedChecks: [] } }, rounds: [], grants: [], prs: [], workers: [], history: [] } as unknown as Item
 it('requires explicit approval before a draft starts', async () => {
   vi.mocked(api.getFactoryItem).mockResolvedValue(base)
@@ -229,4 +231,70 @@ it('falls back to the summary when there is no narration', async () => {
   render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
   expect(await screen.findByText('Bare summary')).toBeTruthy()
   expect(screen.queryByText('Issue')).toBeNull()
+})
+const previewReport = { repoId: 'repo', forge: 'github', status: 'ok', ref: 'feature/x', sha: '', capabilities: [], environments: [], deployments: [], gaps: [] } as unknown as PreviewReport
+const deployment = (over: Partial<PreviewDeployment>) => ({
+  id: 'd', environment: 'production', originalEnvironment: 'production', ref: 'feature/x', sha: '', task: 'deploy',
+  state: '', environmentUrl: '', targetUrl: '', logUrl: '', description: '', transient: false, production: false,
+  createdAt: '', updatedAt: '', ...over,
+}) as PreviewDeployment
+it('shows preview rows badged against the newest PR head', async () => {
+  const item = { ...base, state: 'checking', prs: [{ number: 7, url: 'https://forge/pull/7', headSha: 'abc1234', state: 'open', draft: false }] } as unknown as Item
+  vi.mocked(api.getFactoryItem).mockResolvedValue(item)
+  vi.mocked(api.getPreviewEnvironments).mockResolvedValueOnce({ ...previewReport, deployments: [
+    deployment({ id: 'd1', environment: 'production', sha: 'ABC1234', state: 'success', environmentUrl: 'https://preview.example.internal' }),
+    deployment({ id: 'd2', environment: 'staging', sha: 'fff9999', state: 'pending' }),
+  ] } as PreviewReport)
+  render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
+  expect(await screen.findByText('matches the PR head')).toBeTruthy()
+  expect(screen.getByText('not the PR head')).toBeTruthy()
+})
+it('shows preview rows unbadged when no PR is recorded', async () => {
+  vi.mocked(api.getFactoryItem).mockResolvedValue({ ...base, state: 'checking' } as Item)
+  vi.mocked(api.getPreviewEnvironments).mockResolvedValueOnce({ ...previewReport, deployments: [
+    deployment({ id: 'd1', environment: 'production', sha: 'abc1234', state: 'success' }),
+  ] } as PreviewReport)
+  render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
+  expect(await screen.findByText('abc1234')).toBeTruthy()
+  expect(screen.queryByText('matches the PR head')).toBeNull()
+  expect(screen.queryByText('not the PR head')).toBeNull()
+})
+it('lists commit-status links as provider links', async () => {
+  const item = { ...base, state: 'checking', rounds: [{ headSha: 'abc1234', ci: { headSha: 'abc1234', complete: true, checks: [
+    { id: 's1', key: { kind: 'commit_status', name: 'deploy/preview', appId: 0 }, sha: 'abc1234', status: 'success', conclusion: 'success', url: 'https://preview.example.internal', logTail: '', observedAt: '' },
+    { id: 'c1', key: { kind: 'check_run', name: 'ci/build', appId: 0 }, sha: 'abc1234', status: 'completed', conclusion: 'success', url: 'https://ci.example/run/1', logTail: '', observedAt: '' },
+  ] } }] } as unknown as Item
+  vi.mocked(api.getFactoryItem).mockResolvedValue(item)
+  vi.mocked(api.getPreviewEnvironments).mockResolvedValueOnce({ ...previewReport } as PreviewReport)
+  render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
+  expect(await screen.findByText('Links reported by commit statuses:')).toBeTruthy()
+  const link = screen.getByRole('link', { name: 'https://preview.example.internal' })
+  expect(link.getAttribute('target')).toBe('_blank')
+  expect(link.closest('li')?.textContent).toContain('deploy/preview')
+  expect(link.closest('li')?.textContent).toContain('success')
+  expect(screen.queryByRole('link', { name: 'https://ci.example/run/1' })).toBeNull()
+})
+it('shows the preview empty state', async () => {
+  vi.mocked(api.getFactoryItem).mockResolvedValue({ ...base, state: 'checking' } as Item)
+  vi.mocked(api.getPreviewEnvironments).mockResolvedValueOnce({ ...previewReport } as PreviewReport)
+  render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
+  expect(await screen.findByText('No preview deployments or test environments are configured for this revision.')).toBeTruthy()
+})
+it('shows the preview error state', async () => {
+  vi.mocked(api.getFactoryItem).mockResolvedValue({ ...base, state: 'checking' } as Item)
+  vi.mocked(api.getPreviewEnvironments).mockRejectedValueOnce(new Error('forge unreachable'))
+  render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
+  expect(await screen.findByText('Preview and test environments could not be read.')).toBeTruthy()
+  expect(screen.getByText('forge unreachable')).toBeTruthy()
+})
+it('refreshes the preview report on demand', async () => {
+  const { fireEvent } = await import('@testing-library/svelte')
+  vi.mocked(api.getFactoryItem).mockResolvedValue({ ...base, state: 'checking' } as Item)
+  const report = { ...previewReport, deployments: [deployment({ id: 'd1', environment: 'production', sha: 'abc1234', state: 'success' })] } as PreviewReport
+  vi.mocked(api.getPreviewEnvironments).mockResolvedValueOnce(report).mockResolvedValueOnce(report)
+  render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
+  await screen.findByText('abc1234')
+  expect(api.getPreviewEnvironments).toHaveBeenCalledTimes(1)
+  await fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+  await vi.waitFor(() => { expect(api.getPreviewEnvironments).toHaveBeenCalledTimes(2) })
 })

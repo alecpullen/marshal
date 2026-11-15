@@ -1845,6 +1845,43 @@ func (f *Fleet) agentForSession(sessionID string) (string, bool) {
 	return id, ok
 }
 
+// agentOwning is the agent whose session sessionID is: a record naming it,
+// live or paused, or the classifier's live map (decision 2). An empty session
+// id owns nothing.
+func (f *Fleet) agentOwning(sessionID string) (Agent, bool) {
+	if sessionID == "" {
+		return Agent{}, false
+	}
+	if id, ok := f.agentForSession(sessionID); ok {
+		if a, ok := f.ws.Agent(id); ok {
+			return a, true
+		}
+		// A mapped session whose record is gone still names an agent: the id
+		// is what the sentence needs.
+		return Agent{ID: id, SessionID: sessionID}, true
+	}
+	for _, a := range f.ws.Agents() {
+		if a.SessionID == sessionID {
+			return a, true
+		}
+	}
+	return Agent{}, false
+}
+
+// agentDisplayName is an agent as a sentence names it: its Name, else its ID.
+func agentDisplayName(a Agent) string {
+	if a.Name != "" {
+		return a.Name
+	}
+	return a.ID
+}
+
+// finishFromFleet is the refusal's sentence (decision 3), shared by the relay
+// and the session screen.
+func finishFromFleet(a Agent) string {
+	return "This is agent " + agentDisplayName(a) + "'s session: finish it from the fleet screen."
+}
+
 // installClassifier chains the fleet's classifier onto child's notifications
 // and reg's events, keying each delta by agentOf's answer. It must run before
 // child starts, as Attach must: the hook fields are read unsynchronized by the

@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -19,7 +20,27 @@ const (
 	attachPath     = "/api/projects/attach"
 	attachProtocol = "marshal-acp"
 	sessionHeader  = "Marshal-Session"
+	agentHeader    = "Marshal-Agent"
 )
+
+// agentAttachPrefix and agentAttachSuffix bracket the agent id in an agent
+// attach's path: /api/agents/{id}/attach.
+const (
+	agentAttachPrefix = "/api/agents/"
+	agentAttachSuffix = "/attach"
+)
+
+// agentAttachID returns the agent ID a /api/agents/{id}/attach path names.
+func agentAttachID(path string) (string, bool) {
+	if !strings.HasPrefix(path, agentAttachPrefix) || !strings.HasSuffix(path, agentAttachSuffix) {
+		return "", false
+	}
+	id := strings.TrimSuffix(strings.TrimPrefix(path, agentAttachPrefix), agentAttachSuffix)
+	if id == "" || strings.Contains(id, "/") {
+		return "", false
+	}
+	return id, true
+}
 
 // attachRequest is the attach handshake's body.
 type attachRequest struct {
@@ -168,7 +189,101 @@ func (s *Server) attachProject(w http.ResponseWriter, r *http.Request) {
 	// A viewer that arrives while the session is being closed attaches to
 	// nothing: the relay still runs for it, and detach/touch become no-ops.
 	pc.reg.attachViewer(sessionID)
-	go s.fleet.relay(pc, sessionID, client, buffered.Reader, conn)
+	go s.fleet.relay(pc, sessionID, "", client, buffered.Reader, conn)
+}
+
+// attachAgent serves POST /api/agents/{id}/attach on the socket (P5 F5). It is
+// the fleet's view of an agent's session: the same handshake as the project
+// attach, naming an agent the fleet already started instead of opening one.
+// Every refusal is an ordinary JSON answer, and none of them resumes the
+// agent: the fleet's resume is the way back.
+func (s *Server) attachAgent(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "attach is a POST"})
+		return
+	}
+	if !hasToken(r.Header.Get("Connection"), "upgrade") ||
+		!strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), attachProtocol) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "attach needs an " + attachProtocol + " upgrade"})
+		return
+	}
+	// The handshake carries no body: the path names the agent.
+	if s.fleet == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "this bridge has no fleet"})
+		return
+	}
+	a, ok := s.fleet.ws.Agent(id)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown agent " + id})
+		return
+	}
+	name := agentDisplayName(a)
+	rt, err := s.fleet.runtimeForAgent(id)
+	if err != nil {
+		if errors.Is(err, ErrUnknownAgent) {
+			// A paused agent keeps its record and loses its runtime. Resuming
+			// it here would start an agent behind the fleet's back.
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "agent " + name + " is paused: resume it first"})
+			return
+		}
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	s.fleet.mu.Lock()
+	pc, sessionID := rt.project, rt.sessionID
+	s.fleet.mu.Unlock()
+	if pc == nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "agent " + name + " runs on a child of its own, which has no viewer socket yet"})
+		return
+	}
+	if sessionID == "" {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "agent " + name + " has no session yet"})
+		return
+	}
+
+	conn, err := net.Dial("unix", pc.socket)
+	if err != nil {
+		s.fleet.rearmLinger(pc)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "dial the project child: " + err.Error()})
+		return
+	}
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		_ = conn.Close()
+		s.fleet.rearmLinger(pc)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "attach needs a hijackable connection"})
+		return
+	}
+	client, buffered, err := hj.Hijack()
+	if err != nil {
+		_ = conn.Close()
+		s.fleet.rearmLinger(pc)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "hijack the connection: " + err.Error()})
+		return
+	}
+
+	// From here the connection is ours: the server's deadlines are dropped so
+	// a long-lived stream is never cut off by the handshake's.
+	_ = client.SetDeadline(time.Time{})
+	head := "HTTP/1.1 101 Switching Protocols\r\n" +
+		"Connection: Upgrade\r\n" +
+		"Upgrade: " + attachProtocol + "\r\n" +
+		sessionHeader + ": " + sessionID + "\r\n" +
+		agentHeader + ": " + a.ID + "\r\n\r\n"
+	if _, err := io.WriteString(client, head); err != nil {
+		// The client is gone before the stream began. The session is the
+		// agent's, so it stays open: only what the attach opened is closed.
+		_ = client.Close()
+		_ = conn.Close()
+		s.fleet.rearmLinger(pc)
+		return
+	}
+
+	// A viewer that arrives while the session is being closed attaches to
+	// nothing: the relay still runs for it, and detach/touch become no-ops.
+	pc.reg.attachViewer(sessionID)
+	go s.fleet.relay(pc, sessionID, a.ID, client, buffered.Reader, conn)
 }
 
 // hasToken reports whether a comma-separated header value carries want, case

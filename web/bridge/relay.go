@@ -62,13 +62,17 @@ type relayWatch struct {
 // until either side ends (P4 D3). Every frame passes through unchanged, in
 // order, in both directions; the only frames it interprets are the answers
 // to a session/new that replaces a session and to a session/close.
-func (f *Fleet) relay(pc *projectChild, sessionID string, client net.Conn, buffered *bufio.Reader, agent net.Conn) {
+//
+// agentID is the agent whose session an agent attach opened, "" for a project
+// attach.
+func (f *Fleet) relay(pc *projectChild, sessionID, agentID string, client net.Conn, buffered *bufio.Reader, agent net.Conn) {
 	r := &relay{
 		fleet:   f,
 		pc:      pc,
 		client:  client,
 		agent:   agent,
 		session: sessionID,
+		agentID: agentID,
 		watches: make(map[string]*relayWatch),
 		cap:     f.frameCap(),
 	}
@@ -91,6 +95,10 @@ type relay struct {
 	pc     *projectChild
 	client net.Conn
 	agent  net.Conn
+
+	// agentID is the agent whose session this attach opened, "" for a project
+	// attach.
+	agentID string
 
 	sessMu  sync.Mutex
 	session string

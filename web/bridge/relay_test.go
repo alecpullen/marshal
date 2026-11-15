@@ -63,7 +63,7 @@ func (p *relayPair) start(reader *bufio.Reader) {
 	if reader == nil {
 		reader = bufio.NewReader(p.relayClient)
 	}
-	go p.fleet.relay(p.pc, p.sessionID, p.relayClient, reader, p.relayAgent)
+	go p.fleet.relay(p.pc, p.sessionID, "", p.relayClient, reader, p.relayAgent)
 }
 
 // write puts raw bytes on one side of the relay.

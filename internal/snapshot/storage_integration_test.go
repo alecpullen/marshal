@@ -1950,6 +1950,9 @@ func lastIntegrationRecord(recs []integrationRecord) (integrationRecord, bool) {
 // accounted, and compliant. That is the "inactive workspace and worktree stores"
 // half of the design, proven across processes rather than in one object graph.
 func TestIntegrationMultiProcessManyWorkspacesUnderTinyBudgets(t *testing.T) {
+	if testing.Short() {
+		t.Skip("several helper processes against one shared root")
+	}
 	requireGit(t)
 
 	dataDir := t.TempDir()
@@ -2222,6 +2225,9 @@ var integrationCrashBoundaries = []struct {
 //     ceilings, measured independently at every boundary;
 //   - the store is usable again: a fresh capture publishes.
 func TestIntegrationCrashRecoveryPreservesEveryPublishedHash(t *testing.T) {
+	if testing.Short() {
+		t.Skip("a real process death at every durable boundary")
+	}
 	requireGit(t)
 
 	files := []integrationFile{
@@ -2456,6 +2462,9 @@ func canonicalRootFor(t *testing.T, root string) string {
 // store under both ceilings — the accounting that makes a global bound real has
 // to be correct across workspaces, not only within one.
 func TestIntegrationCrashInOneWorkspaceLeavesAnotherIntact(t *testing.T) {
+	if testing.Short() {
+		t.Skip("kills a helper process mid-capture")
+	}
 	requireGit(t)
 	ctx := context.Background()
 

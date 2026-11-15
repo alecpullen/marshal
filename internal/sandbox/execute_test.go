@@ -76,7 +76,9 @@ func TestExecuteCommandCallsOnStartOnce(t *testing.T) {
 }
 
 func TestExecuteCommandDurationSet(t *testing.T) {
-	cmd := exec.Command("/bin/sh", "-lc", "echo hello")
+	// DurationMS truncates to whole milliseconds, so the command sleeps to
+	// keep a sub-millisecond run from reporting 0 and failing on machine speed.
+	cmd := exec.Command("/bin/sh", "-lc", "sleep 0.05; echo hello")
 
 	ctx := context.Background()
 	req := native.CommandRequest{}

@@ -989,6 +989,9 @@ func TestResetNeverTargetsAGeneration(t *testing.T) {
 // A migration restart at EVERY crash boundary must be recoverable and must never
 // lose a published ref.
 func TestMigrateRestartAtEveryBoundaryRecovers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("restarts the migration at every crash boundary")
+	}
 	boundaries := []struct {
 		name string
 		hook func() *RecoveryHooks

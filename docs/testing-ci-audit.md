@@ -58,6 +58,40 @@ inspect package `Elapsed` values. Do not compare parallel package elapsed
 values by summing them as wall-clock time. Results depend on hardware, caches,
 services and the Go version.
 
+### `scripts/test.sh`
+
+`scripts/test.sh` wraps the choices below so nobody has to retype them. It
+always exports `CGO_ENABLED=1` and passes anything that is not its own flag
+through to `go test`. Naming a package narrows the mode rather than widening it,
+so `scripts/test.sh quick ./internal/acp -run TestStack` runs that package's
+short tests and nothing else; name no package and `quick`/`full` cover `./...`
+while `budgets` covers its own two. Its own flags are `--base REF` (the
+changed-mode base, defaulting to `origin/main` or `BASE_REF`; a base you name
+explicitly must resolve, and a typo exits 2 instead of reporting an empty green
+run) and `--go-only` (CI mode, Go job and vet only).
+
+| Mode | Runs | Measured here |
+| --- | --- | ---: |
+| `changed` (default) | the packages the diff touches, plus every package that imports them, with `-count=1` | 2m22 for a test-only change in two packages |
+| `quick` | `go test -short ./...`, cache enabled | 2m09 for 123 packages with a warm cache |
+| `full` | `go test -count=1 ./...`, parallel | 2m50 warm, ~9m cold |
+| `budgets` | only the 12 named latency budgets, `-p=1` | under a minute when the machine is idle |
+| `ci` | the three CI jobs in workflow order | ~7m Go job, plus usability and web |
+
+`changed` is the default because most edits touch one or two packages. It maps
+each changed file to its nearest package ancestor (`testdata/` and `//go:embed`
+directories are inputs to that package), then walks `go list -test -deps` to
+include transitive dependents, test variants included, so a package whose test
+imports something you changed is still tested. A rename counts on both sides:
+the package that lost the file is as affected as the one that gained it. A diff
+that touches no package runs nothing and says so; one whose files sit under no
+Go package at all (`web/ui/src`) says that a Go run cannot cover it and that
+`ci` can. It uses `-count=1` deliberately: the
+point of the mode is a real result for the cone, not a cached report for the
+one package whose inputs changed. Go's own cache already makes an unchanged
+`go test ./...` cheap, so the cone pays off by removing *uncached* runs of
+unaffected packages, not by removing cached ones.
+
 In the full Go run, `TestExitAnalysisAutomaticallyGrantsAndRestoresSystemAccess`
 panicked in `act/success` at `internal/app/interaction_test.go:327`; the same
 test passed alone and the full app package passed with a private temporary
@@ -83,10 +117,21 @@ Use `go test -short ./internal/app/tui` for quicker TUI feedback. Short mode
 also skips other tests, including performance budgets; it is not a replacement
 for the full suite.
 
-Only 24 Go test locations check `testing.Short()`, including some tagged live
-tests, so `-short` is not a comprehensive fast-suite switch. The serialized
-CI command (`-p=1`) trades speed for reduced concurrency; do not copy it as
-the default local command without measuring on the laptop.
+32 Go test locations check `testing.Short()`, including some tagged live tests,
+so `-short` is not a comprehensive fast-suite switch. (The text here previously
+said 24; that was accurate for the tree before this change, which adds eight.)
+It is, however, enough to make `scripts/test.sh quick` usable: short mode now
+skips the scenarios that dominate the two slowest packages — in the bridge
+`TestFactoryEndToEndInterrupted` (fifteen interruption scenarios against real
+Git) and `TestChildStopDuringRestartReturns` (a deliberately widened two-second
+respawn window), leaving `TestFactoryEndToEnd` ungated so `quick` still
+exercises real Git delivery end to end; and in `internal/snapshot` the
+multi-process tiny-budget run, crash recovery at every durable boundary, the
+crash-in-one-workspace case, the closure walk larger than one batch, and the
+migration restart at every boundary. Every one of those still runs in `full` and
+in CI; `quick` trades them for wall-clock time, not for a category of test. The
+serialized CI command (`-p=1`) trades speed for reduced concurrency; do not copy
+it as the default local command without measuring on the laptop.
 
 The first GitHub run exposed a race in `TestASecondEmbeddingWaitsAndTakesOver`:
 its first runtime retried at the production 30-second interval after a probe

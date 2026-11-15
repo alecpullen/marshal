@@ -616,6 +616,9 @@ func TestChildStderrCapture(t *testing.T) {
 // replacement kept running; supervise stayed blocked in Wait on the new
 // generation and Stop's wait on done never returned.
 func TestChildStopDuringRestartReturns(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out a widened respawn window")
+	}
 	// Widen the respawn window so the timing below is deterministic.
 	prev := restartBackoff
 	restartBackoff = 2 * time.Second

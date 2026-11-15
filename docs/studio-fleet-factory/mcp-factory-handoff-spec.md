@@ -56,3 +56,67 @@ The MCP bearer credential remains an explicitly configured token. This slice doe
 Tests use isolated project/client stores, fake factory effects and disposable repos, never ambient credentials or external services. Cover old client records with zero factory grants; distinct clients and projects; allowed and denied repos; all capability and authority combinations; a client changing another client's item only when granted; unauthorized IDs; concurrent revoke/admission; exact artifacts and limits; stale draft, approval and question races; duplicate request and lost response; journal replay including legacy records; and policy persistence across restart. Test that a client cannot modify permissions through MCP, `Autonomous` doesn't grant factory privileges, and an offline external session does not stop work.
 
 Build and exercise the real MCP endpoint using protocol-conformant automated fixtures. A live Claude Code and second-client round trip use explicitly supplied disposable projects and credentials; if unavailable report **untested**, not passed. Test the permissions editor and provenance display at 390px and desktop. Recheck the Claude ACP planner branch, factory defaults and P5 work against the implementation base. That work may introduce shared interfaces; do not duplicate or overwrite them, and never assume its unmerged contracts exist.
+
+## Implementation record
+
+Delivered on branch `mcp-factory-handoff` from base `b79748c`, one commit per
+task. The tasks ran in the order 1, 2, 5, 3, 4, 6: task 5 consumes only task
+2's management routes, so the Studio controls landed before the journal and
+tool work whose files they do not share.
+
+| Task | Deliverable | Commit |
+|---|---|---|
+| 1 | `MCPFactoryProjectGrant`, stable opaque project identity records in the workspace save, persisted `plannerDelegationEnabled`/`designatedMCPClientId` | `bf21e231` |
+| 2 | `factoryMCPAuthorizer` with the shared policy lock, grant management GET/PUT routes, `mcpProjectId` on the Studio project list | `7d089a39` |
+| 5 | The grant editor in `ClientsPanel.svelte`, the delegation settings in `Project.svelte`, provenance in the factory history | `7b4f352c` |
+| 3 | `FactoryProvenance` appended in the same journal mutation, version-checked draft replacement in `FactoryStore.Update` | `22ca2360` |
+| 4 | The seven factory tools and `2025-06-18` Streamable HTTP in `mcp.go`/`mcp_factory_tools.go` | `571f2350` |
+| 6 | The end-to-end proof, this record, the README entry and the [compatibility report](mcp-factory-handoff-compatibility.md) | task 6 — verify MCP handoff, committed by the controller after this documentation lands |
+
+Files: `web/bridge/mcp_factory_auth.go`, `web/bridge/mcp_factory_tools.go` and
+their tests, and `web/bridge/mcp_factory_integration_test.go` are new;
+`web/bridge/client.go`, `workspace.go`, `projects.go`, `http.go`, `mcp.go`,
+`mcptools.go`, `factory_types.go`, `factory_store.go`, `factory_controller.go`,
+`factory_http.go` and `contract/projects.go` are modified, with the matching
+`_test.go` files. In `web/ui`: `src/lib/ClientsPanel.svelte`,
+`src/views/Project.svelte`, `src/views/FactoryItem.svelte`, `src/lib/api.ts`,
+`src/lib/factory.ts` and the generated `src/lib/contract.ts`, plus their tests.
+`web/` stays Go standard library only, nothing under `internal/...` is touched,
+and the existing factory approval, preflight and journal paths are unchanged.
+
+### Deviations from the plan, and why
+
+| Planned | Delivered | Reason |
+|---|---|---|
+| "Register the six tools" | Seven tools — every row of §3: `factory_projects`, `factory_list`, `factory_get`, `factory_create_draft`, `factory_update_draft`, `factory_approve_and_queue`, `factory_answer_question` | The plan's prose miscounted; the §3 table is the contract. No grant or revoke tool is exposed over MCP |
+| Task 2's file list did not name `web/bridge/contract` | `mcpProjectId` added to `contract.ProjectStatus` and `contract.ts` regenerated | The field §"Management endpoints" requires in the project-list response belongs to the shared wire contract; the TUI/bridge boundary rule leaves no alternative |
+| `WithAuthorizedMutation` only | Added `WithAuthorizedMutationAuthority` beside it | A mutation that must accept `user_directed` only under the grant's configured authority has to learn that authority from inside the policy lock, where it is read |
+| One capability name for answers | A delegated answer is authorized through the internal capability `answerQuestion:delegated`; plain `answerQuestion` is the user-directed answer | §3 says the delegation toggle does not prohibit a user-directed answer, so the two must be distinguishable capabilities |
+| — | `FactoryProvenance` applied exactly as the approved contract struct, which carries no item-version field | An entry's version is therefore its position in the append-only journal |
+| — | A question decision records the worker's question text in `Decision.Reason` | Pre-existing controller behaviour; that is the field Studio already renders and the MCP projection carries. The end-to-end test initially asserted `Decision.Question` and was corrected to assert the field production actually fills |
+| — | `web/bridge/factory_controller.go` reformatted with `gofmt` in task 6 | Task 3 committed it with a formatting drift; no behaviour change |
+| — | `web/bridge/testdata/contract/ProjectStatus.json` re-recorded | `TestTheWireIsUnchanged` pins the project-list wire byte for byte; `mcpProjectId` is a deliberate contract addition, so the recording was regenerated with `-update` and no other recording changed |
+| Raise the `/mcp` envelope to `factoryRequestLimit` (2 MiB) | Delivered as specified; `factoryImportLimit` (1 MiB) still bounds the combined plan and spec | No change; recorded because the two limits are easy to conflate |
+
+### Acceptance gates, measured on this branch
+
+| Gate | Result |
+|---|---|
+| `go test ./web/bridge -run '^TestMCPFactoryEndToEnd' -count=1` | `ok` — `TestMCPFactoryEndToEnd`, `TestMCPFactoryEndToEndLostResponse`, `TestMCPFactoryEndToEndRevokedAndOffline` |
+| Repository-wide `go test ./...` excluding `web/bridge`, and `go vet ./...` | green at this base; no pre-existing failures to report |
+| `cd web/ui && npm test` | PASS — 91 files, 1037 tests |
+| `cd web/ui && npm run check` | 6 errors, 4 warnings in 10 files, all pre-existing at the base in files this work does not touch |
+| `cd web/ui && npm run build` | PASS — the embedded bundle in `web/bridge/static` is rebuilt from this source |
+
+### What remains untested
+
+The [compatibility report](mcp-factory-handoff-compatibility.md) holds the
+detail. In short: no live Claude Code MCP session and no second independent MCP
+client were run (no explicitly configured credentials and disposable project
+were available), so both are **untested** and no interoperability is claimed;
+and the desktop and 390px browser walkthrough of the permissions editor and the
+provenance display — including refresh and the revoked-access state — is
+**untested**, with only the component tests and `svelte-check` covering those
+screens. The Claude ACP planner (PR #81) was still open, so its contracts are
+not in this base; working drafts (#88), P5 plans (#84) and fleet actions (#87)
+are merged, and no unmerged contract was assumed.

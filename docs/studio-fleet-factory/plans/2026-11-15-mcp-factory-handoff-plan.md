@@ -135,3 +135,49 @@ Tests: `TestMCPFactoryToolsListedWithSchemas`, `TestMCPFactoryProjectAndRepoScop
 ## Integration notes
 
 The user approved this plan on 2026-11-15; execution follows the factory handoff. The external client can truthfully report an instruction but cannot prove the human gave it; authorization, attribution and UI copy must retain that distinction. Keep factory dispatch and remote forge I/O outside the policy mutex; define the commit linearization point exactly as Contracts. An existing client with unrestricted `AllowedRepos` still has no factory project grant until the user creates one. P5 and Claude ACP may change shared routes or ownership before this plan runs: reconcile against the actual base rather than assuming historical line numbers or introducing a second factory store.
+
+## Implementation record
+
+Delivered on branch `mcp-factory-handoff` from base `b79748c`, one commit per
+task, in the order 1, 2, 5, 3, 4, 6. Task 5 consumes only task 2's management
+routes, so it landed before the journal and tool work it shares no files with.
+The specification's [implementation record](../mcp-factory-handoff-spec.md#implementation-record)
+holds the full deviation table and the untested list; the
+[compatibility report](../mcp-factory-handoff-compatibility.md) holds the
+protocol, transport and client evidence.
+
+| Task | Deliverable | Commit |
+|---|---|---|
+| 1 | Project identity records, per-client factory grants, delegation settings | `bf21e231` |
+| 2 | `factoryMCPAuthorizer`, grant management GET/PUT, `mcpProjectId` in the project list | `7d089a39` |
+| 5 | Studio grant editor, delegation settings, provenance in the factory history | `7b4f352c` |
+| 3 | Atomic `FactoryProvenance` and version-checked draft replacement | `22ca2360` |
+| 4 | The seven factory tools and the `2025-06-18` Streamable HTTP transport | `571f2350` |
+| 6 | `TestMCPFactoryEndToEnd`, `TestMCPFactoryEndToEndLostResponse`, `TestMCPFactoryEndToEndRevokedAndOffline`, the compatibility report, the spec and README records, the rebuilt embedded bundle | task 6 — verify MCP handoff, committed by the controller after the documentation lands |
+
+Four deviations are worth repeating here because they change what a reader of
+this plan would otherwise expect. The plan's Task 4 prose says six tools; §3's
+table has seven and all seven shipped, with no grant or revoke tool over MCP.
+`mcpProjectId` needed `web/bridge/contract/projects.go` and a regenerated
+`contract.ts`, which Task 2's file list did not name. Delegated answers are
+authorized through `answerQuestion:delegated`, so that a plain `answerQuestion`
+stays the user-directed answer the delegation toggle does not prohibit. And
+`WithAuthorizedMutationAuthority` was added beside the planned
+`WithAuthorizedMutation` so approval can read the configured authority inside
+the policy lock rather than trusting a caller-supplied one.
+
+Acceptance gates measured on this branch: `go test ./web/bridge -run
+'^TestMCPFactoryEndToEnd' -count=1` passes its three tests; the repository-wide
+`go test ./...` excluding `web/bridge`, and `go vet ./...`, are green at this
+base with no pre-existing failures; `cd web/ui && npm test` passes 91 files and
+1037 tests; `npm run check` reports the same 6 errors and 4 warnings as the
+base, all in files this work does not touch; and `npm run build` rebuilds the
+embedded bundle in `web/bridge/static`.
+
+Two things this plan asks for are **untested**, not passed: no live Claude Code
+MCP session and no second independent MCP client were run, because no
+explicitly configured credentials and disposable project were available, so no
+interoperability is claimed; and the desktop and 390px browser walkthrough of
+the permissions editor and provenance display, including refresh and revoked
+access, was not performed — their automated tests and `svelte-check` are the
+only evidence for those screens.

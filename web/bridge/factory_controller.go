@@ -1014,6 +1014,7 @@ func (c *FactoryController) command(ctx context.Context, itemID string, cmd Fact
 	}
 	return i, err
 }
+
 // factoryCommandJournal renders the payload the journal's replay identity is
 // hashed over. A Studio command is hashed exactly as it always was; an MCP
 // command also binds the authority it was admitted under, so the same client

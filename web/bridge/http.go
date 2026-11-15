@@ -55,6 +55,11 @@ type Server struct {
 	// server, over the workspace it reads, so every route that can change
 	// authority or act under it shares one mutex.
 	factoryAuth *factoryMCPAuthorizer
+	// factory is the same factory service the Studio routes serve, kept here
+	// so the MCP tools compose the identical instance. It is nil when this
+	// server was built without one, and a factory tool then answers
+	// unavailable instead of taking an unauthorised path.
+	factory FactoryAPI
 }
 
 func NewServer(target any, args ...any) *Server {
@@ -95,6 +100,7 @@ func NewServer(target any, args ...any) *Server {
 	s.routes()
 	for _, arg := range args {
 		if factory, ok := arg.(FactoryAPI); ok {
+			s.factory = factory
 			s.factoryRoutes(factory)
 			// Working drafts live beside the factory journal, in a store of
 			// their own. Only a factory API with a fleet state directory can

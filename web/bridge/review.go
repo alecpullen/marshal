@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // ErrUnknownReviewComment is returned for a comment id the agent doesn't have.
@@ -205,5 +207,5 @@ func (s *Server) resolveReviewComment(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) recentPrompts(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	writeJSON(w, http.StatusOK, map[string]any{"prompts": s.fleet.RecentPrompts(r.URL.Query().Get("project"), limit)})
+	writeJSON(w, http.StatusOK, contract.RecentPrompts{Prompts: s.fleet.RecentPrompts(r.URL.Query().Get("project"), limit)})
 }

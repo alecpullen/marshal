@@ -309,14 +309,22 @@ type State struct {
 	// attempt Marshal submitted to its provider adapter. It is in-memory only
 	// (see request_inspection.go): nothing persists it, and it is never logged.
 	requestInspection *RequestInspection
-	activeRoute       RouteInfo
-	turnToolCache     map[string]registry.ToolResult
-	toolCacheOrder    []string
-	toolCacheBytes    int
-	activity          Activity
-	plan              []string
-	todos             []db.TodoItem
-	activeSkills      map[string]bool
+	// preflightSamples, preflightTurns, preflightDropped and preflightAgg are
+	// the preflight-timing collector (see preflight.go). Guarded by mu and
+	// in-memory only: nothing persists them, so a resumed process starts with
+	// an empty history and a postmortem reports that as unavailable coverage.
+	preflightSamples []PreflightSample
+	preflightTurns   int
+	preflightDropped int
+	preflightAgg     map[string]PhaseAggregate
+	activeRoute      RouteInfo
+	turnToolCache    map[string]registry.ToolResult
+	toolCacheOrder   []string
+	toolCacheBytes   int
+	activity         Activity
+	plan             []string
+	todos            []db.TodoItem
+	activeSkills     map[string]bool
 	// skillOrder records activation sequence per skill so eviction can pick
 	// the least-recently-activated. Kept separate from activeSkills because
 	// ActiveSkills() must stay alphabetically sorted for prefix caching —

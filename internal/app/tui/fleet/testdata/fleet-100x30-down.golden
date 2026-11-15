@@ -27,4 +27,4 @@
 │                                                          ││                                      │
 │                                                          ││                                      │
 ╰──────────────────────────────────────────────────────────╯╰──────────────────────────────────────╯
-local ✗ dial tcp 127.0.0.1:7700: connect: connection refused  j/k move  ⏎ open          ?help q quit
+local ✗ dial tcp 127.0.0.1:7700: connect:…  j/k move a answer x cancel n spawn  ⏎ open  ?help q quit

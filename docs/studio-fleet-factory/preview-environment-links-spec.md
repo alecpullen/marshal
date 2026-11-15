@@ -506,3 +506,57 @@ separated card loading from item polling, and clarified that the Studio badge
 uses the last factory-recorded head, which may be stale. The implementation
 plan also keeps each task compilable. These refinements supersede conflicting
 wording in the earlier review record above.
+
+## Implementation record
+
+Delivered on branch `preview-environment-links` as Tasks 1–4 of the
+[plan](plans/2026-11-15-preview-environment-links-plan.md), test-first, with one
+commit per task, then rebased onto `main` after PRs #76 and #78 landed.
+
+| Task | Deliverable |
+|---|---|
+| 1 | The description section: the scope line, gap groups, deployment, environment and status-link rows, the empty and unreadable lines, the 10-row bounds and the four pure helpers |
+| 2 | The `previewSource` seam on `factoryEffects` and the best-effort fetch before composing at `set_ready` |
+| 3 | `web/ui/src/lib/preview.ts` wire mirrors and `getPreviewEnvironments` |
+| 4 | The live preview card on the studio work-item view |
+| 5 | Specification record, README entry and the rebuilt embedded bundle |
+
+Files: `web/bridge/factory_prbody.go`, `web/bridge/factory_effects.go`, their
+tests, `web/ui/src/lib/preview.ts`, `web/ui/src/lib/api.ts`,
+`web/ui/src/views/FactoryItem.svelte` and its test, and the rebuilt
+`web/bridge/static`. The frozen preview contract (`preview_environment.go`,
+`previewCapabilityOrder`, the report's JSON shape), `contract.ts`,
+`FactoryRound`/`FactoryItem`, and the `Forge`, `DiscoveryForge` and
+`PreviewForge` interfaces are byte-unchanged; `web/bridge` stays standard
+library only.
+
+Acceptance gates, run from the repository root on this branch:
+
+| Gate | Result |
+|---|---|
+| `go test ./web/bridge -count=1` | PASS — `ok marshal/web/bridge 102.639s` |
+| `go test ./web/bridge -run '^(TestFactoryPreviewBody\|TestFactoryPRBody)' -count=1` | PASS |
+| `go test ./web/bridge -run '^TestFactoryEffect' -count=1` | PASS |
+| `go test ./web/bridge -run '^(TestPreviewCapabilityOrderIsStable\|TestPreviewContractJSONUsesStableShape\|TestDiscoveryCapabilityOrderIsStable\|TestWebIsStdlibOnly)$' -count=1` | PASS, unmodified |
+| `go test ./web/bridge/contract/tsgen -run TestTypeScriptContractIsCurrent -count=1` | PASS |
+| `gofmt -l web/bridge` and `go vet ./web/bridge/...` | no output, exit 0 |
+| `CGO_ENABLED=1 go build ./...` | exit 0 |
+| `CGO_ENABLED=1 go test ./...` | PASS — every package ok, run alone on an unloaded machine |
+| `cd web/ui && npm test` | PASS — 88 files, 980 tests |
+| `cd web/ui && npm run build` | PASS — the bundle in `web/bridge/static` is rebuilt from this source |
+| `cd web/ui && npm run check` | 6 errors, 1 warning in 6 files — **all pre-existing at the base commit** (`src/views/Chat.svelte:697`, `src/views/Run.svelte:336`, `src/lib/Sidebar.test.ts:16`, `src/lib/fleet.test.ts:78`, `src/views/Review.test.ts:49`, `src/views/Runs.test.ts:15`: `AccessState`/`AgentRow` fixture drift in files this slice does not touch). No diagnostic names this slice's files. |
+
+Two choices the plan left open are worth recording. The plan's Task 1 prose
+lists the environment rows before the deployment rows where §5's subsection
+order and §5.7's full example list deployments first; the plan defers every
+ordering rule to §5, so the description renders deployments, then
+`Configured environments:`, then the status links. And D10 says URLs render with
+newlines "stripped": the implementation replaces each newline with a space
+instead of deleting it, so a provider URL cannot fuse two tokens across a line
+break while no newline can reach the body.
+
+One plan inconsistency was resolved from the plan's own integration note: the
+composer's signature change made `factory_effects.go` and
+`factory_effects_test.go` uncompilable until their call sites moved, so Task 1
+carried both as `(round, nil, "")` and Task 2 replaced the production one with
+the real fetch.

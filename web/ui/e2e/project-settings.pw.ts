@@ -137,9 +137,9 @@ test.describe('factory handoff', () => {
     await page.getByLabel('Plan', { exact: true }).fill('Plan body')
 
     // Each choice names where it came from.
-    await expect(page.getByTestId('implementer-effective')).toContainText('alpha')
-    await expect(page.getByTestId('reviewer-effective')).toContainText('alpha')
-    await expect(page.getByTestId('target-branch-effective')).toContainText('trunk')
+    await expect(page.getByTestId('config-implementer')).toContainText('alpha')
+    await expect(page.getByTestId('config-reviewer')).toContainText('alpha')
+    await expect(page.getByTestId('config-target-branch')).toContainText('trunk')
 
     // Opening project settings is a new tab, so this form stays mounted.
     const popupPromise = page.waitForEvent('popup')

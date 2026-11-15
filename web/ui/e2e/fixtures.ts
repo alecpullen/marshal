@@ -1,6 +1,7 @@
 import { expect, type Page, type Route } from '@playwright/test'
 import type { AgentStatus, Inbox, ProjectStatus } from '../src/lib/contract'
-import type { FactoryConfig, FactoryItem } from '../src/lib/factory'
+import type { FactoryCommand, FactoryConfig, FactoryCreate, FactoryItem } from '../src/lib/factory'
+import type { ProjectSettings } from '../src/lib/api'
 import { env } from './env'
 
 /*
@@ -180,6 +181,27 @@ export function factoryItem(overrides: Partial<FactoryItem> = {}): FactoryItem {
   }
 }
 
+/**
+ * The answer to a create the bridge accepted: the request saved as one draft.
+ *
+ * Only the fields the handoff sent are carried; everything else is resolved
+ * the way the bridge would resolve it, from `factoryConfig`'s defaults. A case
+ * that needs to prove the saved draft reads the *server's* resolution rather
+ * than the handoff's own summary supplies its own `create`.
+ */
+export function savedDraft(request: FactoryCreate): FactoryItem {
+  return factoryItem({
+    id: 'item-saved',
+    title: request.title,
+    state: 'draft',
+    version: 1,
+    draft: {
+      ...request,
+      config: factoryConfig({ ...request.config, expectedChecks: request.config.expectedChecks ?? [] }),
+    },
+  })
+}
+
 export function agentStatus(overrides: Partial<AgentStatus> = {}): AgentStatus {
   return {
     id: 'agent-1',
@@ -229,6 +251,24 @@ export interface MockFleetOptions {
   factoryItems?: FactoryItem[]
   /** Status for `GET /api/factory/items`; a non-2xx makes the read fail. */
   factoryStatus?: number
+  /**
+   * Answer `GET /api/projects/settings` with this project's settings, so a
+   * factory defaults card or a handoff inherits values the case chose. Omitted
+   * means the real fixture bridge answers, as it does for every other read.
+   */
+  settings?: ProjectSettings
+  /** Model profiles the profile pickers offer. Omitted leaves the bridge's list. */
+  profiles?: string[]
+  /**
+   * Answer a create. The default saves the request as a draft (`savedDraft`);
+   * a case proving server-side resolution answers with its own record.
+   */
+  create?: (request: FactoryCreate) => FactoryItem
+  /**
+   * Answer a command. The default echoes the item it was sent for. Either way
+   * the fixture's list is updated, so a later poll agrees with the command.
+   */
+  command?: (id: string, command: FactoryCommand, item: FactoryItem | undefined) => FactoryItem | undefined
 }
 
 export interface MockedFleet {
@@ -238,21 +278,30 @@ export interface MockedFleet {
   fleetStreams(): number
   /** Factory list reads, from the shell's poller or from a view. */
   factoryReads(): number
+  /** Create requests the SPA sent, in order, so a case can assert its payload. */
+  creates(): FactoryCreate[]
+  /** Command requests the SPA sent, with the item each named. */
+  commands(): { id: string; command: FactoryCommand }[]
 }
 
 /**
- * Answer the fleet, the inbox and the factory list with fixtures.
+ * Answer the fleet, the inbox, the factory list, the project settings and the
+ * model profiles with fixtures.
  *
  * The fleet stream is held open rather than completed: a completed stream is
  * one the SPA reconnects to on a timer, and that timer would make a request
- * count meaningless. Everything not listed here (settings, disk, audit) still
- * goes to the real fixture bridge.
+ * count meaningless. Creates and commands are recorded and answered here too,
+ * because a case that asserts a payload must not reach the bridge's real
+ * factory store. Everything else still goes to the real fixture bridge.
  */
 export async function mockFleet(page: Page, options: MockFleetOptions = {}): Promise<MockedFleet> {
   const agents = options.agents ?? []
   const projects = options.projects ?? []
   const inbox = options.inbox ?? inboxOf()
-  const items = options.factoryItems ?? []
+  // Copied, because a create or a command updates the list a later poll reads.
+  const items = [...(options.factoryItems ?? [])]
+  const creates: FactoryCreate[] = []
+  const commands: { id: string; command: FactoryCommand }[] = []
   let streams = 0
   let reads = 0
   let releaseStream = () => {}
@@ -262,6 +311,27 @@ export async function mockFleet(page: Page, options: MockFleetOptions = {}): Pro
     const url = new URL(route.request().url())
     const json = (body: unknown, status = 200) =>
       route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+
+    // A command, and the single-item read a drill-in makes when the list has
+    // not landed yet. Answered before the switch: neither is a list read.
+    const command = /^\/api\/factory\/items\/([^/]+)\/commands$/.exec(url.pathname)
+    if (command && route.request().method() === 'POST') {
+      const id = decodeURIComponent(command[1])
+      const sent = route.request().postDataJSON() as FactoryCommand
+      commands.push({ id, command: sent })
+      const target = items.find((candidate) => candidate.id === id)
+      const applied = options.command ? options.command(id, sent, target) : target
+      if (!applied) return json({ error: 'no such work item' }, 404)
+      const at = items.findIndex((candidate) => candidate.id === id)
+      if (at >= 0) items[at] = applied
+      return json({ item: applied })
+    }
+    const one = /^\/api\/factory\/items\/([^/]+)$/.exec(url.pathname)
+    if (one && route.request().method() === 'GET') {
+      const target = items.find((candidate) => candidate.id === decodeURIComponent(one[1]))
+      return target ? json({ item: target }) : json({ error: 'no such work item' }, 404)
+    }
+
     switch (url.pathname) {
       case '/api/agents':
         return json(agents)
@@ -275,11 +345,27 @@ export async function mockFleet(page: Page, options: MockFleetOptions = {}): Pro
         return json({ drafts: [] })
       case '/api/automations/ci/history':
         return json({ history: [] })
-      case '/api/factory/items':
+      case '/api/projects/settings':
+        return options.settings ? json(options.settings) : route.continue()
+      case '/api/models':
+        // Only the profile names matter to a picker; the bindings are the
+        // bridge's own business, and a case reads them through the handoff.
+        return options.profiles
+          ? json({ profiles: Object.fromEntries(options.profiles.map((name) => [name, {}])) })
+          : route.continue()
+      case '/api/factory/items': {
+        if (route.request().method() === 'POST') {
+          const request = route.request().postDataJSON() as FactoryCreate
+          creates.push(request)
+          const saved = (options.create ?? savedDraft)(request)
+          items.push(saved)
+          return json({ item: saved })
+        }
         reads++
         return options.factoryStatus
           ? json({ error: 'factory store is unavailable' }, options.factoryStatus)
           : json({ items })
+      }
       case '/api/events':
         if (url.searchParams.get('stream') !== 'fleet') return route.continue()
         streams++
@@ -303,5 +389,7 @@ export async function mockFleet(page: Page, options: MockFleetOptions = {}): Pro
     },
     fleetStreams: () => streams,
     factoryReads: () => reads,
+    creates: () => creates,
+    commands: () => commands,
   }
 }

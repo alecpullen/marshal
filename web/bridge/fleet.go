@@ -213,6 +213,10 @@ type Fleet struct {
 	blockedPending map[string]networkBlockDelta
 	// stateDir is where git mirrors and agent working trees live.
 	stateDir string
+	// workingDrafts is the durable store of incomplete manual factory
+	// handoffs. The factory routes open it beside stateDir and Close
+	// releases it; nil when this fleet has no factory API.
+	workingDrafts *WorkingDraftStore
 	// stateVolume is the name of the shared state volume mounted at
 	// stateDir. Agents mount subpaths of it.
 	stateVolume string
@@ -2229,6 +2233,12 @@ func (f *Fleet) Close() {
 	f.runtimes = make(map[string]*agentRuntime)
 	f.sessionAgent = make(map[string]string)
 	f.mu.Unlock()
+
+	// The working-draft store releases its journal and ownership lock with the
+	// bridge; a failed close leaves nothing a caller could still write.
+	if f.workingDrafts != nil {
+		_ = f.workingDrafts.Close()
+	}
 
 	// The bridge is going away; the agents are not. Detaching leaves
 	// each container running under its name, so Open reattaches to it

@@ -48,6 +48,32 @@ type WorkingDraft struct {
 	Error         string              `json:"error,omitempty"`
 }
 
+// Wire requests for the working-draft API. The JSON names are the contract with
+// the Studio client: it sends and reads exactly these envelopes.
+type workingDraftCreateBody struct {
+	ProjectRoot string              `json:"projectRoot"`
+	RequestID   string              `json:"requestId"`
+	Content     WorkingDraftContent `json:"content"`
+}
+
+type workingDraftSaveBody struct {
+	RequestID       string              `json:"requestId"`
+	ExpectedVersion uint64              `json:"expectedVersion"`
+	Content         WorkingDraftContent `json:"content"`
+}
+
+type workingDraftDeleteBody struct {
+	RequestID       string `json:"requestId"`
+	ExpectedVersion uint64 `json:"expectedVersion"`
+}
+
+type workingDraftConvertBody struct {
+	RequestID       string         `json:"requestId"`
+	ExpectedVersion uint64         `json:"expectedVersion"`
+	FactoryRequest  *FactoryCreate `json:"factoryRequest"`
+	SettingsVersion string         `json:"settingsVersion"`
+}
+
 // Working draft lifecycle states. A draft is only ever edited while editing;
 // converting and converted are read-only, and deleted is a tombstone that List
 // excludes and no mutation resurrects.

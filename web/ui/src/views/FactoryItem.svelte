@@ -3,6 +3,7 @@
   import Card from '../lib/ui/Card.svelte'
   import Button from '../lib/ui/Button.svelte'
   import Tag from '../lib/ui/Tag.svelte'
+  import DraftApproval from '../lib/factory/DraftApproval.svelte'
   import { APIError, commandFactoryItem, errMessage, getPreviewEnvironments } from '../lib/api'
   import type { FactoryCheck, FactoryCommand, FactoryCreate, FactoryItem } from '../lib/factory'
   import type { FactoryState } from '../lib/factoryStore'
@@ -197,17 +198,9 @@
   {#if item}
     <header class="grid gap-2"><h1 class="break-words text-xl font-semibold">{item.title}</h1><p class="text-sm text-muted">{item.repoId} · {item.branch || item.draft.config.targetBranch}</p><div class="flex gap-2"><Tag tone={item.decision ? 'warn' : 'neutral'}>{item.state}</Tag><span class="text-sm">{item.stage}</span></div></header>
     {#if item.state === 'draft'}
-      <Card class="grid gap-3" data-testid="draft-approval">
-        <h2 class="font-semibold">Review draft before starting</h2>
-        <p class="text-sm">Repository: {item.draft.config.repoId} · Branch: {item.draft.config.targetBranch} · {item.draft.config.maxRounds} rounds</p>
-        <p class="text-sm">Implementer: {JSON.stringify(item.draft.config.implementerRouting)} · Reviewer: {JSON.stringify(item.draft.config.reviewerRouting)}</p>
-        <p class="text-sm">CI: {item.draft.config.expectedChecks?.length ? item.draft.config.expectedChecks.map((c) => c.name).join(', ') : 'No required CI acknowledged'}</p>
-        <p class="text-sm">Environment: {item.draft.config.native ? 'Native' : item.draft.config.workspace || 'Unspecified workspace'} · Implementer auto permission: {item.draft.config.implementerAuto ? 'on' : 'off'}</p>
-        <p class="whitespace-pre-wrap break-words text-sm">Reviewer instructions: {item.draft.config.reviewerInstructions || 'None'}</p>
-        <pre class="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded border border-border p-3 text-sm">{item.draft.plan}</pre>
-        {#if item.draft.spec}<details><summary>Specification</summary><pre class="max-h-72 overflow-auto whitespace-pre-wrap break-words text-sm">{item.draft.spec}</pre></details>{/if}
-        <Button onclick={() => void command('approve')} disabled={busy}>Approve &amp; start</Button>
-      </Card>
+      <div data-testid="draft-approval">
+        <DraftApproval item={item} busy={busy} onApprove={() => void command('approve')} />
+      </div>
     {/if}
     {#if item.decision}
       <Card class="grid gap-3 border-attention" data-testid="factory-decision">

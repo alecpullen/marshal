@@ -27,11 +27,18 @@ const factoryState = (over: Partial<FactoryState> = {}): FactoryState => ({ item
 const getItem = vi.fn<(id: string) => Promise<Item>>(), upsert = vi.fn<(item: Item) => void>(), onRefresh = vi.fn<() => Promise<void>>()
 const renderItem = (state: FactoryState = factoryState()) => render(FactoryItem, { itemId: 'x', factory: state, getItem, upsert, onRefresh, onNavigate: vi.fn() })
 it('requires explicit approval before a draft starts', async () => {
-  getItem.mockResolvedValue(base)
+  getItem.mockResolvedValue({ ...base, draft: { ...base.draft, config: { ...base.draft.config, implementerRouting: { profile: 'careful', model: 'opus' }, reviewerRouting: { profile: 'strict' } } } } as Item)
   renderItem()
   expect(await screen.findByText('Review draft before starting')).toBeTruthy()
   expect(api.commandFactoryItem).not.toHaveBeenCalled()
   expect(screen.getByRole('button', { name: 'Approve & start' })).toBeTruthy()
+  // The approval reads the resolved rows creation previews, so the draft's
+  // routing objects never appear here as JSON.
+  const approval = screen.getByTestId('draft-approval')
+  expect(screen.getByTestId('config-implementer').textContent).toBe('careful')
+  expect(screen.getByTestId('config-reviewer').textContent).toBe('strict')
+  expect(approval.textContent).not.toContain('"profile"')
+  expect(approval.textContent).not.toContain('{')
 })
 it('shows failed CI before compact passes', async () => {
   const item = { ...base, state: 'needs_input', rounds: [{ ci: { complete: true, checks: [
@@ -231,8 +238,10 @@ it('distinguishes empty from unavailable CI evidence', async () => {
 it('previews material environment and permission settings before approval', async () => {
   getItem.mockResolvedValue({ ...base, draft: { ...base.draft, config: { ...base.draft.config, native: false, workspace: 'go-dev', implementerAuto: true, reviewerInstructions: 'Check migration safety' } } } as Item)
   renderItem()
-  expect(await screen.findByText(/Environment: go-dev · Implementer auto permission: on/)).toBeTruthy()
-  expect(screen.getByText('Reviewer instructions: Check migration safety')).toBeTruthy()
+  expect(await screen.findByText('Review draft before starting')).toBeTruthy()
+  expect(screen.getByTestId('config-environment').textContent).toBe('go-dev')
+  expect(screen.getByTestId('config-auto-permission').textContent).toBe('Automatic')
+  expect(screen.getByTestId('config-reviewer-instructions').textContent).toBe('Check migration safety')
 })
 const narration = {
   issue: 'The report hides the reasoning', approach: 'Narrate the change in the report',

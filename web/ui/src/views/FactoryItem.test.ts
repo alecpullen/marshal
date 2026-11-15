@@ -5,7 +5,7 @@ import * as api from '../lib/api'
 import type { FactoryApproval, FactoryItem as Item, FactoryRoute } from '../lib/factory'
 import type { FactoryState } from '../lib/factoryStore'
 import type { PreviewDeployment, PreviewReport } from '../lib/preview'
-vi.mock('../lib/api', async (actual) => ({ ...await actual<typeof import('../lib/api')>(), commandFactoryItem: vi.fn(), getPreviewEnvironments: vi.fn() }))
+vi.mock('../lib/api', async (actual) => ({ ...await actual<typeof import('../lib/api')>(), commandFactoryItem: vi.fn(), getPreviewEnvironments: vi.fn(), getModels: vi.fn() }))
 afterEach(cleanup)
 beforeEach(() => {
   getItem.mockReset()
@@ -16,6 +16,11 @@ beforeEach(() => {
   onRefresh.mockImplementation(async () => {})
   vi.mocked(api.commandFactoryItem).mockReset()
   vi.mocked(api.getPreviewEnvironments).mockReset()
+  // The retry's route pickers offer the real profiles the models API reports.
+  vi.mocked(api.getModels).mockReset()
+  vi.mocked(api.getModels).mockResolvedValue({ profiles: {
+    'cheap-review': {}, frontier: {}, 'new-impl': {}, 'new-review': {}, old: {}, 'old-review': {},
+  } } as never)
 })
 const base = { id: 'x', title: 'Task', repoId: 'repo', state: 'draft', stage: '', version: 1, draft: { plan: 'Build', spec: '', config: { targetBranch: 'main', repoId: 'repo', maxRounds: 5, implementerRouting: {}, reviewerRouting: {}, expectedChecks: [] } }, rounds: [], grants: [], prs: [], workers: [], history: [] } as unknown as Item
 /** One recorded approval revision, as the bridge reports one. */
@@ -36,6 +41,18 @@ const renderItem = (state: FactoryState = factoryState(), route: Partial<Factory
   render(FactoryItem, { itemId: 'x', route: { itemId: 'x', ...route }, factory: state, getItem, upsert, onRefresh, onNavigate })
 /** The CI-first review view: CI evidence, the report and previews live at the review route. */
 const renderReview = (state: FactoryState = factoryState()) => renderItem(state, { view: 'review' })
+/**
+ * One retry route picker: a real select, so the choice is made from the
+ * profiles the models API reports once that read has landed.
+ */
+const pickProfile = async (label: string, profile: string) => {
+  const { fireEvent } = await import('@testing-library/svelte')
+  await vi.waitFor(() => {
+    const select = screen.getByLabelText(label) as HTMLSelectElement
+    expect([...select.options].map((option) => option.value)).toContain(profile)
+  })
+  await fireEvent.change(screen.getByLabelText(label), { target: { value: profile } })
+}
 it('requires explicit approval before a draft starts', async () => {
   getItem.mockResolvedValue({ ...base, draft: { ...base.draft, config: { ...base.draft.config, implementerRouting: { profile: 'careful', model: 'opus' }, reviewerRouting: { profile: 'strict' } } } } as Item)
   renderItem()
@@ -123,8 +140,8 @@ it('sends route changes in the replacement approval config', async () => {
   await fireEvent.input(screen.getByLabelText('Reason'), { target: { value: 'Change route' } })
   await fireEvent.click(screen.getByLabelText('Change approved plan or reviewer instructions'))
   expect((screen.getByLabelText('Replacement plan') as HTMLTextAreaElement).value).toBe('Approved plan')
-  await fireEvent.input(screen.getByLabelText('New implementer profile (optional)'), { target: { value: 'new-impl' } })
-  await fireEvent.input(screen.getByLabelText('New reviewer profile (optional)'), { target: { value: 'new-review' } })
+  await pickProfile('Implementer profile', 'new-impl')
+  await pickProfile('Reviewer profile', 'new-review')
   await fireEvent.input(screen.getByLabelText('Reviewer instructions'), { target: { value: 'Review carefully' } })
   await fireEvent.click(screen.getByRole('button', { name: 'Grant rounds and retry' }))
   expect(vi.mocked(api.commandFactoryItem).mock.calls.at(-1)?.[1]).toMatchObject({
@@ -145,7 +162,7 @@ it('sends a route-only retry without the plan-replacement checkbox', async () =>
   renderItem()
   await screen.findByText('Try again')
   await fireEvent.input(screen.getByLabelText('Reason'), { target: { value: 'Change route' } })
-  await fireEvent.input(screen.getByLabelText('New implementer profile (optional)'), { target: { value: 'new-impl' } })
+  await pickProfile('Implementer profile', 'new-impl')
   await fireEvent.click(screen.getByRole('button', { name: 'Grant rounds and retry' }))
   const cmd = vi.mocked(api.commandFactoryItem).mock.calls.at(-1)?.[1]
   expect(cmd).toMatchObject({ kind: 'retry', implementerRouting: { profile: 'new-impl' } })
@@ -162,14 +179,14 @@ it('stale409RefreshesWithoutClearingRetryInput', async () => {
   await screen.findByText('Try again')
   await fireEvent.input(screen.getByLabelText('Reason'), { target: { value: 'Change route' } })
   await fireEvent.input(screen.getByLabelText('Additional rounds'), { target: { value: '3' } })
-  await fireEvent.input(screen.getByLabelText('New implementer profile (optional)'), { target: { value: 'new-impl' } })
+  await pickProfile('Implementer profile', 'new-impl')
   await fireEvent.click(screen.getByRole('button', { name: 'Grant rounds and retry' }))
   await screen.findByText(/Item changed. Review the refreshed version/)
   // The store's refresh is awaited, and a stale version costs nobody their input.
   expect(onRefresh).toHaveBeenCalledTimes(1)
   expect((screen.getByLabelText('Reason') as HTMLTextAreaElement).value).toBe('Change route')
   expect((screen.getByLabelText('Additional rounds') as HTMLInputElement).value).toBe('3')
-  expect((screen.getByLabelText('New implementer profile (optional)') as HTMLInputElement).value).toBe('new-impl')
+  expect((screen.getByLabelText('Implementer profile') as HTMLSelectElement).value).toBe('new-impl')
   expect(upsert).not.toHaveBeenCalled()
 })
 it('sends both routes in a route-only retry', async () => {
@@ -181,22 +198,26 @@ it('sends both routes in a route-only retry', async () => {
   renderItem()
   await screen.findByText('Try again')
   await fireEvent.input(screen.getByLabelText('Reason'), { target: { value: 'Change both routes' } })
-  await fireEvent.input(screen.getByLabelText('New implementer profile (optional)'), { target: { value: 'new-impl' } })
-  await fireEvent.input(screen.getByLabelText('New reviewer profile (optional)'), { target: { value: 'new-review' } })
+  await pickProfile('Implementer profile', 'new-impl')
+  await pickProfile('Reviewer profile', 'new-review')
   await fireEvent.click(screen.getByRole('button', { name: 'Grant rounds and retry' }))
   const cmd = vi.mocked(api.commandFactoryItem).mock.calls.at(-1)?.[1]
   expect(cmd).toMatchObject({ kind: 'retry', implementerRouting: { profile: 'new-impl' }, reviewerRouting: { profile: 'new-review' } })
   expect(cmd?.replacement).toBeUndefined()
 })
-it('shows the routes currently in force and leaves the new-route inputs empty', async () => {
+it('shows the routes currently in force as the retry pickers start', async () => {
   const item = { ...base, state: 'needs_input', decision: { id: 'd', kind: 'exhausted', question: 'Try again' },
     approvals: [{ plan: 'Approved plan', spec: 'Approved spec', config: { ...base.draft.config, implementerRouting: { profile: 'frontier' }, reviewerRouting: { profile: 'cheap-review' } } }] } as unknown as Item
   getItem.mockResolvedValue(item)
   renderItem()
   await screen.findByText('Try again')
   expect(screen.getByText('Routes in force: implementer frontier · reviewer cheap-review')).toBeTruthy()
-  expect((screen.getByLabelText('New implementer profile (optional)') as HTMLInputElement).value).toBe('')
-  expect((screen.getByLabelText('New reviewer profile (optional)') as HTMLInputElement).value).toBe('')
+  // The pickers start at the routes that actually run, so touching one is a
+  // deliberate change rather than an accidental loss of the current route.
+  await pickProfile('Implementer profile', 'frontier')
+  await pickProfile('Reviewer profile', 'cheap-review')
+  expect((screen.getByLabelText('Implementer profile') as HTMLSelectElement).value).toBe('frontier')
+  expect((screen.getByLabelText('Reviewer profile') as HTMLSelectElement).value).toBe('cheap-review')
 })
 it('states that a route-only retry starts a fresh round', async () => {
   const item = { ...base, state: 'needs_input', decision: { id: 'd', kind: 'exhausted', question: 'Try again' },

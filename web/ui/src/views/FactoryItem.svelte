@@ -5,14 +5,30 @@
   import DraftApproval from '../lib/factory/DraftApproval.svelte'
   import WorkItemHeader from '../lib/factory/WorkItemHeader.svelte'
   import ActivityTimeline from '../lib/factory/ActivityTimeline.svelte'
+  import DecisionPanel from '../lib/factory/DecisionPanel.svelte'
+  import RecoveryPanel from '../lib/factory/RecoveryPanel.svelte'
   import DocumentsView from '../lib/factory/DocumentsView.svelte'
   import PullRequestsView from '../lib/factory/PullRequestsView.svelte'
   import { APIError, commandFactoryItem, errMessage, getPreviewEnvironments } from '../lib/api'
   import { formatFactoryRoute, parseFactoryRoute } from '../lib/routes'
   import { defaultFactoryItemView } from '../lib/studio/model'
   import type { FactoryCheck, FactoryCommand, FactoryCreate, FactoryItem, FactoryItemView, FactoryRoute } from '../lib/factory'
+
   import type { FactoryState } from '../lib/factoryStore'
   import type { PreviewDeployment, PreviewEnvironment, PreviewReport } from '../lib/preview'
+
+  /** C5: what a decision or recovery panel hands back with a command kind. */
+  interface FactoryCommandInput {
+    answer?: string
+    reason?: string
+    additionalRounds?: number
+    replacement?: FactoryCreate
+    implementerRouting?: Record<string, unknown>
+    reviewerRouting?: Record<string, unknown>
+    confirmPreviousWorkerStopped?: boolean
+  }
+  /** The decision kinds the recovery panel presents; everything else is a question. */
+  const RECOVERY_KINDS = ['exhausted', 'no_progress', 'worker_failed', 'invalid_result', 'ci_unavailable', 'ci_wait', 'conflict', 'recovery']
   /*
     One item, read through the shell's store instead of a poller of its own:
     the store answers the first read, the shell's list poll keeps it current,
@@ -76,10 +92,14 @@
     view. The tab strip keeps it visible for exactly that reason.
   */
   const selectedView = $derived<FactoryItemView>(view ?? 'activity')
-  let answer = $state(''), reason = $state(''), additionalRounds = $state(1)
-  let changePlan = $state(false), replacementPlan = $state(''), replacementSpec = $state(''), replacementInstructions = $state('')
-  let replaceImplementerProfile = $state(''), replaceReviewerProfile = $state('')
-  let attest = $state(false), workerName = $state(''), pending = $state<FactoryCommand | null>(null)
+  /*
+    The decisions' answers, reasons, allowances, replacement documents and
+    attestations belong to the panels that collect them, so a refresh of the
+    same decision cannot take them away. Only the in-flight command's identity
+    is kept here, because request identity is the one thing every panel's
+    submission shares.
+  */
+  let pending = $state<FactoryCommand | null>(null)
   let preview = $state<PreviewReport | null>(null), previewLoading = $state(false), previewError = $state('')
   let previewStarted = $state(false), previewRequest = 0, alive = true
   type PreviewSegment = { kind: 'code'; text: string } | { kind: 'text'; text: string } | { kind: 'link'; url: string; logs: string } | { kind: 'badge'; label: string; sha: string }
@@ -145,28 +165,19 @@
     previewStarted = true
     void loadPreview()
   })
-  async function command(kind: FactoryCommand['kind']) {
+  /*
+    One command path for every control (design C5). The panels own what a
+    person typed; the identity a request must carry — its request ID, the
+    version it was reviewed against, and the decision it answers — is built
+    here from the latest item, so a panel can never submit a stale decision
+    binding of its own.
+  */
+  async function command(kind: FactoryCommand['kind'], input: FactoryCommandInput = {}) {
     if (!item || busy) return
     busy = true; error = ''; notice = ''
     try {
       {
-        const c: FactoryCommand = { requestId: crypto.randomUUID(), kind, expectedVersion: item.version, decisionId: item.decision?.id }
-        if (kind === 'answer') c.answer = answer
-        if (kind === 'retry') {
-          c.reason = reason; c.additionalRounds = additionalRounds
-          const latest = item.approvals?.at(-1)?.config ?? item.draft.config
-          if (changePlan) {
-            const draft: FactoryCreate = { ...item.draft, requestId: crypto.randomUUID(), plan: replacementPlan, spec: replacementSpec,
-              config: { ...latest, reviewerInstructions: replacementInstructions,
-                implementerRouting: replaceImplementerProfile.trim() ? { profile: replaceImplementerProfile.trim() } : latest.implementerRouting,
-                reviewerRouting: replaceReviewerProfile.trim() ? { profile: replaceReviewerProfile.trim() } : latest.reviewerRouting } }
-            c.replacement = draft
-          } else {
-            if (replaceImplementerProfile.trim()) c.implementerRouting = { profile: replaceImplementerProfile.trim() }
-            if (replaceReviewerProfile.trim()) c.reviewerRouting = { profile: replaceReviewerProfile.trim() }
-          }
-        }
-        if (kind === 'recover') { c.confirmPreviousWorkerStopped = attest; c.reason = `${workerName.trim()}: ${reason.trim()}` }
+        const c: FactoryCommand = { requestId: crypto.randomUUID(), kind, expectedVersion: item.version, decisionId: item.decision?.id, ...input }
         pending = pending && JSON.stringify({ ...pending, requestId: '', replacement: pending.replacement && { ...pending.replacement, requestId: '' } }) === JSON.stringify({ ...c, requestId: '', replacement: c.replacement && { ...c.replacement, requestId: '' } }) ? pending : c
       }
       const applied = await commandFactoryItem(itemId, pending)
@@ -175,10 +186,12 @@
       upsert(applied)
       fetched = applied
       pending = null; notice = kind === 'stop' ? 'Stop requested. Waiting for worker confirmation.' : `${kind} accepted`
-      if (kind === 'answer') answer = ''
     } catch (e) {
       error = errMessage(e)
       if (e instanceof APIError && e.status === 409) {
+        // Only the obsolete command is dropped: the panel that submitted it
+        // stays mounted, so the person keeps their input and retries it
+        // against the version the refresh just showed them.
         pending = null
         // Awaited, and its own failure reported: a stale command must say so
         // rather than leave the person on a version that cannot succeed.
@@ -202,11 +215,6 @@
   const failed = $derived((ci?.checks ?? []).filter((c) => c.conclusion && !['success', 'neutral', 'skipped'].includes(c.conclusion)))
   const passed = $derived((ci?.checks ?? []).filter((c) => c.conclusion === 'success'))
   const other = $derived((ci?.checks ?? []).filter((c) => !failed.includes(c) && !passed.includes(c)))
-  const granted = $derived((item?.grants ?? []).reduce((sum, g) => sum + g.additionalRounds, 0))
-  const lastWorkerId = $derived(item?.workers?.at(-1)?.agentId ?? '')
-  const currentConfig = $derived(item?.approvals?.at(-1)?.config ?? item?.draft.config ?? null)
-  const currentImplementerProfile = $derived((currentConfig?.implementerRouting as { profile?: string } | undefined)?.profile || 'none')
-  const currentReviewerProfile = $derived((currentConfig?.reviewerRouting as { profile?: string } | undefined)?.profile || 'none')
   const narration = $derived(round?.implementation?.narration ?? null)
   const narrationSections = $derived.by(() => {
     const n = narration
@@ -298,41 +306,17 @@
     {:else}
       <div class="grid min-w-0 gap-4">
         {#if item.decision}
-          <Card class="grid gap-3 border-attention" data-testid="factory-decision">
-            <h2 class="font-semibold">Action needed: {item.decision.kind}</h2>
-            {#if item.decision.question}<p class="whitespace-pre-wrap break-words">{item.decision.question}</p>{/if}
-            {#if item.decision.reason}<p class="whitespace-pre-wrap break-words text-sm text-muted">{item.decision.reason}</p>{/if}
-            {#if item.decision.kind === 'question'}
-              <label class="grid gap-1 text-sm">Answer <textarea class="min-h-24 rounded border border-border bg-bg p-2" bind:value={answer}></textarea></label>
-              <Button disabled={busy || !answer.trim()} onclick={() => void command('answer')}>Send answer</Button>
-            {/if}
-            {#if ['exhausted', 'no_progress', 'worker_failed', 'invalid_result', 'ci_unavailable', 'ci_wait', 'conflict'].includes(item.decision.kind)}
-              <p class="text-sm">{(item.rounds ?? []).length} rounds used · {granted} granted total. An additional allowance is required to resume work.</p>
-              <label class="grid gap-1 text-sm">Reason <textarea class="rounded border border-border bg-bg p-2" bind:value={reason}></textarea></label>
-              <label class="grid gap-1 text-sm">Additional rounds <input class="rounded border border-border bg-bg p-2" type="number" min="1" bind:value={additionalRounds} /></label>
-              <p class="text-sm">Routes in force: implementer {currentImplementerProfile} · reviewer {currentReviewerProfile}</p>
-              <label class="grid gap-1 text-sm">New implementer profile (optional) <input class="rounded border border-border bg-bg p-2" bind:value={replaceImplementerProfile} /></label>
-              <label class="grid gap-1 text-sm">New reviewer profile (optional) <input class="rounded border border-border bg-bg p-2" bind:value={replaceReviewerProfile} /></label>
-              <p class="text-sm">A route-only retry starts a fresh round. The interrupted round's review is not reused, and one granted round is spent.</p>
-              <label class="flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={changePlan} onchange={() => { if (changePlan && item) { const approval = item.approvals?.at(-1); replacementPlan = approval?.plan ?? item.draft.plan; replacementSpec = approval?.spec ?? item.draft.spec; replacementInstructions = approval?.config.reviewerInstructions ?? item.draft.config.reviewerInstructions } }} /> Change approved plan or reviewer instructions</label>
-              {#if changePlan}<details open><summary>Replacement plan and reviewer instructions</summary><div class="grid gap-2 pt-2">
-                <p class="text-sm">Review these changes before submitting. Retry records a new approval revision with this plan, the selected routes and reviewer instructions before work resumes.</p>
-                <label class="grid gap-1 text-sm">Replacement plan <textarea class="min-h-40 rounded border border-border bg-bg p-2" bind:value={replacementPlan}></textarea></label>
-                <label class="grid gap-1 text-sm">Replacement specification <textarea class="min-h-24 rounded border border-border bg-bg p-2" bind:value={replacementSpec}></textarea></label>
-                <label class="grid gap-1 text-sm">Reviewer instructions <textarea class="min-h-24 rounded border border-border bg-bg p-2" bind:value={replacementInstructions}></textarea></label>
-              </div></details>{/if}
-              <Button disabled={busy || !reason.trim() || additionalRounds < 1 || (changePlan && !replacementPlan.trim())} onclick={() => void command('retry')}>Grant rounds and retry</Button>
-            {/if}
-            {#if item.decision.kind === 'recovery'}
-              <p class="text-sm">Refresh evidence first. Attest only after independently confirming the previous named worker has stopped. Attestation cannot prove an unreachable worker stopped.</p>
-              <Button disabled={busy} onclick={() => void command('reconcile')}>Refresh evidence</Button>
-              <p class="break-all font-mono text-sm">Last worker agent ID: {lastWorkerId || "Unavailable"}</p>
-              <label class="grid gap-1 text-sm">Type the exact last worker agent ID <input class="rounded border border-border bg-bg p-2" bind:value={workerName} /></label>
-              <label class="grid gap-1 text-sm">How you confirmed it <textarea class="rounded border border-border bg-bg p-2" bind:value={reason}></textarea></label>
-              <label class="flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={attest} /> I confirm this named previous worker has stopped</label>
-              <Button disabled={busy || !attest || !lastWorkerId || workerName.trim() !== lastWorkerId || !reason.trim()} onclick={() => void command('recover')}>Record named-worker attestation</Button>
-            {/if}
-          </Card>
+          <!--
+            The panel is chosen by the decision kind, never keyed by the item's
+            version: the same decision refreshed in place keeps the panel — and
+            what the person typed into it — mounted. A different decision kind
+            is a different decision, so it legitimately starts fresh.
+          -->
+          {#if RECOVERY_KINDS.includes(item.decision.kind)}
+            <RecoveryPanel {item} {busy} run={command} />
+          {:else}
+            <DecisionPanel {item} {busy} run={command} />
+          {/if}
         {/if}
         {#if item.workers?.length}<Card><h2 class="font-semibold">Agents</h2>{#each item.workers as worker}<a class="block text-sm text-accent underline" href={`#chat/${encodeURIComponent(worker.agentId)}`} onclick={(e) => { e.preventDefault(); onNavigate(`#chat/${encodeURIComponent(worker.agentId)}`) }}>{worker.role}: {worker.agentId}</a>{/each}</Card>{/if}
         <ActivityTimeline {item} />

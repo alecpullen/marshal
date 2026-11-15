@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestFactoryEffectAdapterConstruction(t *testing.T) {
@@ -313,6 +314,76 @@ func TestFactoryEffectReadyPreviewFailureStillWritesDescription(t *testing.T) {
 		}
 		if len(forge.bodies) != 0 {
 			t.Fatalf("set_draft wrote a description: %q", forge.bodies)
+		}
+	})
+}
+
+func TestFactoryEffectReadyPreviewTimeout(t *testing.T) {
+	const unreadable = "Preview and test environments could not be read when this description was written."
+	effect := FactoryEffect{ID: "ready", Kind: "set_ready", ExpectedHead: "old", ExpectedBase: "base"}
+	// waitingSource never returns on its own; it waits for its context, so the
+	// effect's bound and its treatment of a done context are observable.
+	waitingSource := func(ctx context.Context, _ Repo, _ PreviewFilter) (*PreviewReport, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	t.Run("the fetch is bounded at five seconds and ready still writes", func(t *testing.T) {
+		i := narratedItem("the issue")
+		forge := newRacingFactoryForge(i.PRs[0])
+		fetched := make(chan context.Context, 1)
+		effects := &factoryEffects{
+			openForge: openForgeWith(forge, forge),
+			previewSource: func(ctx context.Context, _ Repo, _ PreviewFilter) (*PreviewReport, error) {
+				fetched <- ctx
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(8 * time.Second):
+					// The unbounded predecessor never cancelled the fetch
+					// context; returning here makes that a clean failure
+					// instead of a deadlock.
+					return nil, errors.New("the fetch context was never done")
+				}
+			},
+		}
+		start := time.Now()
+		out, err := effects.Execute(context.Background(), i, effect)
+		if err != nil || !out.Confirmed || out.Error != "" {
+			t.Fatalf("a child deadline must not fail set_ready: %+v %v", out, err)
+		}
+		deadline, ok := (<-fetched).Deadline()
+		if !ok {
+			t.Fatal("the fetch context carried no deadline")
+		}
+		// The child's deadline is bounded at five seconds from the fetch;
+		// the check stays tolerant of scheduling.
+		if remaining := deadline.Sub(start); remaining > 5*time.Second+250*time.Millisecond || remaining <= 0 {
+			t.Fatalf("the fetch context deadline was %v after the effect started, want within five seconds", remaining)
+		}
+		if len(forge.order) < 2 || forge.order[0] != "description" || forge.order[1] != "draft" {
+			t.Fatalf("ready transitions did not follow fetch: %v", forge.order)
+		}
+		if len(forge.bodies) != 1 || !strings.Contains(forge.bodies[0], unreadable) {
+			t.Fatalf("the child timeout did not yield the exact unreadable line: %q", forge.bodies)
+		}
+		if forge.pr.Draft || len(forge.mutations) != 1 || forge.mutations[0] {
+			t.Fatalf("the draft clear did not survive the child timeout: %+v %v", forge.pr, forge.mutations)
+		}
+	})
+
+	t.Run("parent cancellation stops the effect", func(t *testing.T) {
+		i := narratedItem("the issue")
+		forge := newRacingFactoryForge(i.PRs[0])
+		parent, cancel := context.WithCancel(context.Background())
+		cancel()
+		effects := &factoryEffects{openForge: openForgeWith(forge, forge), previewSource: waitingSource}
+		_, err := effects.Execute(parent, i, effect)
+		if !errors.Is(err, ErrFactoryUncertain) || !errors.Is(err, context.Canceled) {
+			t.Fatalf("parent cancellation must stop the effect normally, not be swallowed: %v", err)
+		}
+		if len(forge.bodies) != 0 || len(forge.mutations) != 0 || !forge.pr.Draft {
+			t.Fatalf("a cancelled effect wrote anyway: bodies=%q mutations=%v draft=%v", forge.bodies, forge.mutations, forge.pr.Draft)
 		}
 	})
 }

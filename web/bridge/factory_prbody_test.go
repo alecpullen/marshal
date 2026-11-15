@@ -382,7 +382,7 @@ func TestFactoryPreviewBodyRowsFollowTheRenderingContract(t *testing.T) {
 				Transient: true, Production: true,
 				CreatedAt: "2024-01-01T00:00:00Z", UpdatedAt: "2024-01-02T00:00:00Z",
 			},
-			row: "- `production` — `success` — `8e4c1b2` matches the PR head — https://preview.example.internal (logs: https://ci.example/run/42/log) — `preview up`",
+			row: "- `production` — `success` — `8e4c1b2` matches the PR head — <https://preview.example.internal> (logs: <https://ci.example/run/42/log>) — `preview up`",
 		},
 		{
 			name: "an empty state states the provider reported none",
@@ -431,7 +431,7 @@ func TestFactoryPreviewBodyGroupsGapsByDetail(t *testing.T) {
 				{Key: "preview_deployments", Section: "deployments", State: DiscoveryCapabilityUnconfigured, Detail: "no token"},
 				{Key: "preview_statuses", Section: "statuses", State: DiscoveryCapabilityUnconfigured, Detail: "no token"},
 			},
-			lines: []string{"Not fully read — `preview_environments`, `preview_deployments`, `preview_statuses`: no token"},
+			lines: []string{"Not fully read — `preview_environments`, `preview_deployments`, `preview_statuses`: `no token`"},
 		},
 		{
 			name: "keys join in frozen order whatever the report order",
@@ -439,7 +439,7 @@ func TestFactoryPreviewBodyGroupsGapsByDetail(t *testing.T) {
 				{Key: "preview_deployments", Detail: "no token"},
 				{Key: "preview_environments", Detail: "no token"},
 			},
-			lines: []string{"Not fully read — `preview_environments`, `preview_deployments`: no token"},
+			lines: []string{"Not fully read — `preview_environments`, `preview_deployments`: `no token`"},
 		},
 		{
 			name: "distinct details render separate lines",
@@ -449,9 +449,9 @@ func TestFactoryPreviewBodyGroupsGapsByDetail(t *testing.T) {
 				{Key: "preview_statuses", Detail: "statuses unreadable"},
 			},
 			lines: []string{
-				"Not fully read — `preview_environments`: environments unreadable",
-				"Not fully read — `preview_deployments`: deployments unreadable",
-				"Not fully read — `preview_statuses`: statuses unreadable",
+				"Not fully read — `preview_environments`: `environments unreadable`",
+				"Not fully read — `preview_deployments`: `deployments unreadable`",
+				"Not fully read — `preview_statuses`: `statuses unreadable`",
 			},
 		},
 		{
@@ -462,8 +462,8 @@ func TestFactoryPreviewBodyGroupsGapsByDetail(t *testing.T) {
 				{Key: "preview_statuses", Detail: "later"},
 			},
 			lines: []string{
-				"Not fully read — `preview_environments`, `preview_statuses`: later",
-				"Not fully read — `preview_deployments`: sooner",
+				"Not fully read — `preview_environments`, `preview_statuses`: `later`",
+				"Not fully read — `preview_deployments`: `sooner`",
 			},
 		},
 	}
@@ -494,10 +494,10 @@ func TestFactoryPreviewBodyStatusLinksFilterSortAndGuard(t *testing.T) {
 	}}
 	body := factoryPreviewBody(round, previewOKReport(), "8e4c1b2")
 	want := previewScopeHead + "\n\n" + previewEmpty + "\n\n" + previewLinksHeading + "\n\n" + strings.Join([]string{
-		"- `alpha` (`in_progress`): https://deploy.example/alpha",
-		"- `deploy/preview` (`success`): https://deploy.example/a",
-		"- `deploy/preview` (`pending`): https://deploy.example/b",
-		"- `zeta` (`pending`): https://deploy.example/zeta",
+		"- `alpha` (`in_progress`): <https://deploy.example/alpha>",
+		"- `deploy/preview` (`success`): <https://deploy.example/a>",
+		"- `deploy/preview` (`pending`): <https://deploy.example/b>",
+		"- `zeta` (`pending`): <https://deploy.example/zeta>",
 	}, "\n")
 	if body != want {
 		t.Fatalf("status-link body mismatch:\ngot  %q\nwant %q", body, want)
@@ -584,7 +584,7 @@ func TestFactoryPreviewBodyStatesEmptyAndUnreadable(t *testing.T) {
 		r := previewRound()
 		r.CI.Checks = []FactoryCheck{{Key: FactoryCheckKey{Kind: "commit_status", Name: "deploy/preview"}, ID: "1", SHA: r.HeadSHA, Conclusion: "success", URL: "https://preview.example.internal"}}
 		body := factoryPreviewBody(r, previewOKReport(), "8e4c1b2")
-		want := previewScopeHead + "\n\n" + previewEmpty + "\n\n" + previewLinksHeading + "\n\n- `deploy/preview` (`success`): https://preview.example.internal"
+		want := previewScopeHead + "\n\n" + previewEmpty + "\n\n" + previewLinksHeading + "\n\n- `deploy/preview` (`success`): <https://preview.example.internal>"
 		if body != want {
 			t.Fatalf("hybrid body:\ngot  %q\nwant %q", body, want)
 		}
@@ -594,7 +594,7 @@ func TestFactoryPreviewBodyStatesEmptyAndUnreadable(t *testing.T) {
 		report := previewOKReport()
 		report.Gaps = []DiscoveryGap{{Key: "preview_deployments", Section: "deployments", State: DiscoveryCapabilityTemporarilyUnavailable, Detail: "the forge timed out"}}
 		body := factoryPreviewBody(previewRound(), report, "8e4c1b2")
-		if want := previewScopeHead + "\n\nNot fully read — `preview_deployments`: the forge timed out"; body != want {
+		if want := previewScopeHead + "\n\nNot fully read — `preview_deployments`: `the forge timed out`"; body != want {
 			t.Fatalf("gaps-only body:\ngot  %q\nwant %q", body, want)
 		}
 		if strings.Contains(body, previewEmpty) {
@@ -636,7 +636,7 @@ func TestFactoryPreviewBodyTruncatesAtTenRowsPerList(t *testing.T) {
 			})
 		}
 		body := factoryPreviewBody(previewRound(), report, "8e4c1b2")
-		if last := "- `env-09` — https://env.example/09"; !strings.Contains(body, last+"\n- …and 1 more") {
+		if last := "- `env-09` — <https://env.example/09>"; !strings.Contains(body, last+"\n- …and 1 more") {
 			t.Fatalf("missing the truncation line after the tenth environment:\n%s", body)
 		}
 		if strings.Count(body, "- …and 1 more") != 1 {
@@ -645,7 +645,7 @@ func TestFactoryPreviewBodyTruncatesAtTenRowsPerList(t *testing.T) {
 		if strings.Contains(body, "env-10") {
 			t.Fatalf("the eleventh environment rendered:\n%s", body)
 		}
-		if !strings.Contains(body, "Configured environments:\n\n- `env-00` — https://env.example/00") {
+		if !strings.Contains(body, "Configured environments:\n\n- `env-00` — <https://env.example/00>") {
 			t.Fatalf("the environment block is not headed and ordered as reported:\n%s", body)
 		}
 		order := make([]string, 0, 10)
@@ -667,7 +667,7 @@ func TestFactoryPreviewBodyTruncatesAtTenRowsPerList(t *testing.T) {
 			})
 		}
 		body := factoryPreviewBody(r, previewOKReport(), "8e4c1b2")
-		if last := "- `link-09` (`success`): https://link.example/09"; !strings.Contains(body, last+"\n- …and 1 more") {
+		if last := "- `link-09` (`success`): <https://link.example/09>"; !strings.Contains(body, last+"\n- …and 1 more") {
 			t.Fatalf("missing the truncation line after the tenth link:\n%s", body)
 		}
 		if strings.Count(body, "- …and 1 more") != 1 {
@@ -727,19 +727,48 @@ func TestFactoryPreviewBodyProtectsProviderStrings(t *testing.T) {
 		})
 	}
 
-	t.Run("URLs render bare and never as markdown links", func(t *testing.T) {
+	t.Run("valid URLs render as autolinks", func(t *testing.T) {
 		report := previewOKReport()
 		report.Deployments = []PreviewDeployment{{
 			Environment: "production", State: "success", SHA: "8e4c1b2",
 			EnvironmentURL: "https://preview.example/a?x=1&y=2", LogURL: "https://ci.example/log/1",
 		}}
 		body := factoryPreviewBody(previewRound(), report, "8e4c1b2")
-		want := previewScopeHead + "\n\n- `production` — `success` — `8e4c1b2` matches the PR head — https://preview.example/a?x=1&y=2 (logs: https://ci.example/log/1)"
+		want := previewScopeHead + "\n\n- `production` — `success` — `8e4c1b2` matches the PR head — <https://preview.example/a?x=1&y=2> (logs: <https://ci.example/log/1>)"
 		if body != want {
 			t.Fatalf("URL row mismatch:\ngot  %q\nwant %q", body, want)
 		}
-		if strings.Contains(body, "](") || strings.Contains(body, "<https://") {
-			t.Fatalf("a URL rendered as link syntax:\n%s", body)
+		if strings.Contains(body, "](") {
+			t.Fatalf("a URL rendered as markdown link text:\n%s", body)
+		}
+	})
+
+	t.Run("rejected URLs render as untrusted code, never clickable", func(t *testing.T) {
+		rejected := []string{
+			"javascript:alert(1)",
+			"data:text/html;base64,PHNjcmlwdD4=",
+			"relative/path/only",
+			"https:///missing-host.example",
+			"https://preview.example/has space",
+			"https://preview.example/has\ttab",
+			"https://preview.example/one\ntwo",
+			"https://preview.example/angle< injecting",
+			"https://preview.example/back`tick",
+			"https://oversize.example/" + strings.Repeat("a", 2048),
+		}
+		for _, value := range rejected {
+			report := previewOKReport()
+			report.Environments = []PreviewEnvironment{{Name: "production", HTMLURL: value}}
+			body := factoryPreviewBody(previewRound(), report, "8e4c1b2")
+			if !strings.Contains(body, "`Untrusted URL: ") {
+				t.Fatalf("rejected %q did not render as Untrusted URL code:\n%s", value, body)
+			}
+			if strings.Contains(body, "<"+value) || strings.Contains(body, "](") {
+				t.Fatalf("rejected %q rendered clickable:\n%s", value, body)
+			}
+			if strings.Contains(body, "<https://preview.example/has") || strings.Contains(body, "<https://preview.example/back") {
+				t.Fatalf("rejected %q was repaired into an autolink:\n%s", value, body)
+			}
 		}
 	})
 
@@ -765,6 +794,35 @@ func TestFactoryPreviewBodyProtectsProviderStrings(t *testing.T) {
 			if got := factoryInlineCode(in); got != want {
 				t.Fatalf("factoryInlineCode(%q) = %q, want %q", in, got, want)
 			}
+		}
+	})
+
+	t.Run("a gap detail cannot break out of its span", func(t *testing.T) {
+		report := previewOKReport()
+		report.Gaps = []DiscoveryGap{{Key: "preview_environments", Detail: "line one\n```fence\nline `two`"}}
+		body := factoryPreviewBody(previewRound(), report, "8e4c1b2")
+		want := previewScopeHead + "\n\nNot fully read — `preview_environments`: ````line one ```fence line `two` ````"
+		if body != want {
+			t.Fatalf("gap detail mismatch:\ngot  %q\nwant %q", body, want)
+		}
+		if strings.Contains(body, "\n```") {
+			t.Fatalf("the gap detail opened a line of its own:\n%s", body)
+		}
+	})
+
+	t.Run("a displayed provider text caps at 512 code points with an ellipsis", func(t *testing.T) {
+		// é is two bytes, so a byte-based cap would keep only 256 code points.
+		report := previewOKReport()
+		report.Gaps = []DiscoveryGap{{Key: "preview_environments", Detail: strings.Repeat("é", 600)}}
+		body := factoryPreviewBody(previewRound(), report, "8e4c1b2")
+		if got := strings.Count(body, "é"); got != 512 {
+			t.Fatalf("the display cap kept %d code points, want 512:\n%s", got, body)
+		}
+		if !strings.Contains(body, "…`") {
+			t.Fatalf("the capped gap detail did not close with an ellipsis:\n%s", body)
+		}
+		if got, want := factoryInlineCode(strings.Repeat("x", 600)), "`"+strings.Repeat("x", 512)+"…`"; got != want {
+			t.Fatalf("factoryInlineCode cap mismatch:\ngot  %q\nwant %q", got, want)
 		}
 	})
 }

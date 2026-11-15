@@ -2,8 +2,10 @@ package bridge
 
 import (
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // composeFactoryPRBody renders one round's CI evidence, the preview and test
@@ -216,7 +218,7 @@ func factoryPreviewGapLines(gaps []DiscoveryGap) string {
 		for _, key := range keys {
 			spans = append(spans, factoryInlineCode(key))
 		}
-		lines = append(lines, fmt.Sprintf("Not fully read — %s: %s", strings.Join(spans, ", "), detail))
+		lines = append(lines, fmt.Sprintf("Not fully read — %s: %s", strings.Join(spans, ", "), factoryInlineCode(detail)))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -360,12 +362,40 @@ func factoryShortSHA(sha string) string {
 	return sha[:7]
 }
 
+// factoryDisplayBound caps each displayed provider text at 512 Unicode code
+// points (spec D10).
+const factoryDisplayBound = 512
+
+// factoryDisplayText prepares one provider string for display: newlines become
+// single spaces, every other control character becomes a space, and the result
+// is capped at 512 Unicode code points with an ellipsis. Only the rendered
+// string is changed; the underlying report keeps its full value.
+func factoryDisplayText(value string) string {
+	value = strings.ReplaceAll(value, "\r\n", " ")
+	value = strings.ReplaceAll(value, "\n", " ")
+	value = strings.ReplaceAll(value, "\r", " ")
+	var b strings.Builder
+	b.Grow(len(value))
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			r = ' '
+		}
+		b.WriteRune(r)
+	}
+	text := b.String()
+	if runes := []rune(text); len(runes) > factoryDisplayBound {
+		return string(runes[:factoryDisplayBound]) + "…"
+	}
+	return text
+}
+
 // factoryInlineCode renders a provider string as one protected inline span: its
-// newlines become spaces and the wrapping run is one backtick longer than the
-// longest run inside it, padded where the value begins or ends with a backtick
-// so no provider string can close the span early.
+// control characters become spaces and are capped for display, and the wrapping
+// run is one backtick longer than the longest run inside it, padded where the
+// value begins or ends with a backtick so no provider string can close the span
+// early.
 func factoryInlineCode(value string) string {
-	value = factoryPreviewURL(value)
+	value = factoryDisplayText(value)
 	longest, run := 0, 0
 	for _, r := range value {
 		if r != '`' {
@@ -391,10 +421,44 @@ func factoryInlineCode(value string) string {
 	return b.String()
 }
 
-// factoryPreviewURL renders a provider URL bare — never inside a code span and
-// never as markdown link text — so no provider string can inject link syntax.
-func factoryPreviewURL(url string) string {
-	url = strings.ReplaceAll(url, "\r\n", " ")
-	url = strings.ReplaceAll(url, "\n", " ")
-	return strings.ReplaceAll(url, "\r", " ")
+// factoryProviderURLBound caps a clickable provider URL in bytes (spec D10).
+const factoryProviderURLBound = 2048
+
+// factoryURLClickable reports whether a provider-reported URL may render as a
+// Markdown autolink: an absolute HTTP or HTTPS URL with a nonempty host, at
+// most 2048 bytes, and no whitespace, control character, angle bracket or
+// backtick. An invalid value is judged as the provider reported it — nothing is
+// trimmed or repaired into validity (spec D10).
+func factoryURLClickable(value string) bool {
+	if value == "" || len(value) > factoryProviderURLBound {
+		return false
+	}
+	for _, r := range value {
+		if r <= ' ' || unicode.IsControl(r) || unicode.IsSpace(r) || r == '<' || r == '>' || r == '`' {
+			return false
+		}
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return false
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return false
+	}
+	return parsed.Host != ""
+}
+
+// factoryPreviewURL renders one provider-reported URL (spec D10). A valid URL
+// renders as a Markdown autolink; a rejected nonempty value renders as bounded
+// protected inline code prefixed "Untrusted URL:" — never an href or autolink.
+// An empty value renders as nothing, so a caller that drops empty segments
+// keeps dropping them.
+func factoryPreviewURL(value string) string {
+	if value == "" {
+		return ""
+	}
+	if factoryURLClickable(value) {
+		return "<" + value + ">"
+	}
+	return factoryInlineCode("Untrusted URL: " + value)
 }

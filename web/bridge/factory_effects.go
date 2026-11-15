@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 var ErrFactoryInvalidResult = errors.New("factory worker result invalid")
@@ -288,12 +289,22 @@ func (f *factoryEffects) Execute(ctx context.Context, item FactoryItem, e Factor
 			if round.Implementation == nil || round.Implementation.Narration == nil {
 				return out, fmt.Errorf("%w: newest round %d carries no narration", ErrFactoryRefused, round.Number)
 			}
-			// The fetch is best-effort: a report that cannot be read leaves
-			// the fixed unreadable line, never a failed set_ready (spec D11),
-			// and it is scoped by the pre-check head's ref, never its SHA
+			// The fetch is best effort (spec D11): it runs under a
+			// five-second child of the effect context, which is cancelled as
+			// soon as the fetch returns. A child timeout or a fetch error
+			// leaves the fixed unreadable line and lets set_ready complete,
+			// while parent cancellation still stops the effect normally. The
+			// fetch is scoped by the pre-check head's ref, never its SHA
 			// (spec D4).
-			preview, previewErr := f.preview(ctx, repo, PreviewFilter{Ref: before.HeadRef})
+			pctx, pcancel := context.WithTimeout(ctx, 5*time.Second)
+			preview, previewErr := f.preview(pctx, repo, PreviewFilter{Ref: before.HeadRef})
+			pcancel()
 			if previewErr != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil && (errors.Is(ctxErr, context.Canceled) || errors.Is(ctxErr, context.DeadlineExceeded)) {
+					// A done parent stops the effect normally; only the
+					// child's own deadline is swallowed (spec D11).
+					return out, fmt.Errorf("%w: preview fetch: %w", ErrFactoryUncertain, ctxErr)
+				}
 				preview = nil
 			}
 			body, err := composeFactoryPRBody(round, preview, before.HeadSHA)

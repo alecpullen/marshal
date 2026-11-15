@@ -6,7 +6,7 @@ import type { FactoryItem as Item } from '../lib/factory'
 import type { PreviewDeployment, PreviewReport } from '../lib/preview'
 vi.mock('../lib/api', async (actual) => ({ ...await actual<typeof import('../lib/api')>(), getFactoryItem: vi.fn(), commandFactoryItem: vi.fn(), getPreviewEnvironments: vi.fn() }))
 afterEach(cleanup)
-beforeEach(() => { vi.mocked(api.getPreviewEnvironments).mockReset() })
+beforeEach(() => { vi.mocked(api.getFactoryItem).mockReset(); vi.mocked(api.getPreviewEnvironments).mockReset() })
 const base = { id: 'x', title: 'Task', repoId: 'repo', state: 'draft', stage: '', version: 1, draft: { plan: 'Build', spec: '', config: { targetBranch: 'main', repoId: 'repo', maxRounds: 5, implementerRouting: {}, reviewerRouting: {}, expectedChecks: [] } }, rounds: [], grants: [], prs: [], workers: [], history: [] } as unknown as Item
 it('requires explicit approval before a draft starts', async () => {
   vi.mocked(api.getFactoryItem).mockResolvedValue(base)
@@ -309,6 +309,20 @@ it('renders valid http(s) URLs as links and unsafe ones as text with no href', a
   const hrefs = [...document.querySelectorAll('a')].map((a) => a.getAttribute('href') ?? '')
   expect(hrefs.filter((href) => href.startsWith('javascript:') || href.startsWith('data:')).length).toBe(0)
 })
+it('matches the bridge D10 validator: C1 controls and opaque https: URLs are plain text, absolute http(s) is a link', async () => {
+  vi.mocked(api.getFactoryItem).mockResolvedValue({ ...base, state: 'checking' } as Item)
+  vi.mocked(api.getPreviewEnvironments).mockResolvedValueOnce({ ...previewReport,
+    deployments: [
+      deployment({ id: 'd1', environment: 'c1', sha: '', state: 'success', environmentUrl: 'https://example.test/x\u0085' }),
+      deployment({ id: 'd2', environment: 'opaque', sha: '', state: 'success', environmentUrl: 'https:foo' }),
+      deployment({ id: 'd3', environment: 'good', sha: '', state: 'success', environmentUrl: 'https://example.test/x' }),
+    ],
+  } as PreviewReport)
+  render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
+  expect((await screen.findByRole('link', { name: 'https://example.test/x' })).getAttribute('rel')).toBe('noopener noreferrer')
+  expect(screen.getByText('https://example.test/x\u0085').closest('a')).toBeNull()
+  expect(screen.getByText('https:foo').closest('a')).toBeNull()
+})
 it('shows the preview empty state', async () => {
   vi.mocked(api.getFactoryItem).mockResolvedValue({ ...base, state: 'checking' } as Item)
   vi.mocked(api.getPreviewEnvironments).mockResolvedValueOnce({ ...previewReport } as PreviewReport)
@@ -343,6 +357,7 @@ it('loads the preview once on mount and no more on repeated item poll ticks', as
     render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
     await vi.advanceTimersByTimeAsync(0)
     await vi.advanceTimersByTimeAsync(0)
+    expect(api.getFactoryItem).toHaveBeenCalledTimes(1)
     expect(api.getPreviewEnvironments).toHaveBeenCalledTimes(1)
     expect(screen.getByText('abc1234')).toBeTruthy()
     await vi.advanceTimersByTimeAsync(20000)

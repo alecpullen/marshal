@@ -15,10 +15,10 @@
   let preview = $state<PreviewReport | null>(null), previewLoading = $state(false), previewError = $state('')
   let previewStarted = $state(false), previewRequest = 0, alive = true
   type PreviewSegment = { kind: 'code'; text: string } | { kind: 'text'; text: string } | { kind: 'link'; url: string; logs: string } | { kind: 'badge'; label: string; sha: string }
-  const textEncoder = new TextEncoder(), unsafeUrlPattern = /[\s`<>\u0000-\u001f\u007f]/
-  /** Spec D10: clickable only as an absolute http(s) URL with a nonempty host, no whitespace/control/angle/backtick characters, at most 2048 bytes. No repair. */
+  const textEncoder = new TextEncoder(), unsafeUrlPattern = /[\s`<>\u0000-\u001f\u007f-\u009f]/
+  /** Spec D10: clickable only as a literal absolute http(s) URL with a nonempty host, no whitespace/control (C0+C1)/angle/backtick characters, at most 2048 bytes. Matches the bridge validator factoryURLClickable (web/bridge/factory_prbody.go). No repair. */
   function isHttpUrl(value: string) {
-    if (!value || value.length > 2048 || textEncoder.encode(value).length > 2048 || unsafeUrlPattern.test(value)) return false
+    if (!value || !/^https?:\/\//i.test(value) || value.length > 2048 || textEncoder.encode(value).length > 2048 || unsafeUrlPattern.test(value)) return false
     try {
       const parsed = new URL(value)
       return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && !!parsed.hostname
@@ -62,7 +62,8 @@
     void loadPreview()
   })
   onMount(() => {
-    void (async () => { try { item = await getFactoryItem(itemId); error = '' } catch (e) { error = errMessage(e) } })()
+    // The poller's immediate tick performs the initial item fetch (exactly one
+    // fetch at mount); its errors land on the same onError handler that sets error.
     const p = createFactoryPoller(refresh, () => !!item && !['draft', 'ready', 'stopped', 'closed', 'needs_input'].includes(item.state), (e) => { error = errMessage(e) }); p.start()
     return () => { alive = false; p.stop() }
   })

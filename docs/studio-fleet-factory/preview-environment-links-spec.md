@@ -542,7 +542,7 @@ Acceptance gates, run from the repository root on this branch:
 | `gofmt -l web/bridge` and `go vet ./web/bridge/...` | no output, exit 0 |
 | `CGO_ENABLED=1 go build ./...` | exit 0 |
 | `CGO_ENABLED=1 go test ./...` | PASS — every package ok, run alone on an unloaded machine |
-| `cd web/ui && npm test` | PASS — 88 files, 980 tests |
+| `cd web/ui && npm test` | PASS — 88 files, 985 tests |
 | `cd web/ui && npm run build` | PASS — the bundle in `web/bridge/static` is rebuilt from this source |
 | `cd web/ui && npm run check` | 6 errors, 1 warning in 6 files — **all pre-existing at the base commit** (`src/views/Chat.svelte:697`, `src/views/Run.svelte:336`, `src/lib/Sidebar.test.ts:16`, `src/lib/fleet.test.ts:78`, `src/views/Review.test.ts:49`, `src/views/Runs.test.ts:15`: `AccessState`/`AgentRow` fixture drift in files this slice does not touch). No diagnostic names this slice's files. |
 
@@ -560,3 +560,22 @@ composer's signature change made `factory_effects.go` and
 `factory_effects_test.go` uncompilable until their call sites moved, so Task 1
 carried both as `(round, nil, "")` and Task 2 replaced the production one with
 the real fetch.
+
+## 14. Implementation branch review — 2026-11-15
+
+The implemented branch received an independent `glm-5.3-flash` review through
+`ollama-cloud` against `origin/main`, and a focused re-review verified the
+fixes. Six findings were raised: all six are fixed, and so are the two minor
+issues the re-review surfaced. No finding required a contract or spec change;
+every one was the code diverging from a decision already recorded here.
+
+| Severity | Finding | Resolution |
+|---|---|---|
+| Major | The five-second best-effort bound (D11) was absent, so a hanging forge probe could block `set_ready` and the ready transition | The fetch runs under `context.WithTimeout(ctx, 5*time.Second)`, cancelled as soon as it returns. A child deadline still writes the §5.6 unreadable line and completes `set_ready`; parent cancellation stops the effect. `TestFactoryEffectReadyPreviewTimeout` pins both paths |
+| Major | D10's URL rule was unimplemented: values were emitted bare, so a provider URL carrying angle brackets or control characters reached the body | `factoryURLClickable` validates — absolute http/https, nonempty host, no whitespace, control character, angle bracket or backtick, at most 2048 bytes, no repair. Valid values autolink as `<…>`; rejected nonempty values render as bounded `Untrusted URL:` inline code |
+| Major | The gap detail was interpolated raw, and no displayed provider text was capped | `factoryDisplayText` replaces control characters and caps at 512 code points with an ellipsis, inside `factoryInlineCode`. Gap details and every other provider string take that path, so none can break its span |
+| Major | The studio badge used the description's wording, so a stale recorded head was still described as "the PR head" | The card renders `matches`/`differs from the last factory-recorded PR head` with the recorded short SHA, and a test pins that an external push cannot make it claim currency |
+| Major | Studio URLs became links without validation, so a provider-controlled `javascript:` or `data:` value stayed clickable | One `isHttpUrl` validator guards every link; a rejected nonempty value renders as text |
+| Minor | The initial preview load was chained to the item poller and had no stale-response guard | It fires once from the mount path, poll ticks never refetch it, and a request sequence plus an unmount flag discard superseded responses |
+| Minor | The mount path fetched the factory item twice | The poller's immediate tick is the single mount fetch |
+| Minor | The two D10 validators disagreed on C1 control characters and opaque `https:foo` values | Both reject them: the studio pattern covers `\u007f-\u009f` and requires the literal `http(s)://` form, matching `factoryURLClickable` |

@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import Project from './Project.svelte'
 import * as api from '../lib/api.js'
 import { toRow } from '../lib/fleet'
+import { createNavigationGuard, type RouteLeaveGuard } from '../lib/navigationGuard'
 import { healthChecks, latestAgent, parseWorkspaceRef, autoFrom, autoOf } from '../lib/project/model'
 
 vi.mock('../lib/api.js', async (importActual) => {
@@ -402,27 +403,72 @@ describe('Project factory and agent defaults', () => {
     expect(cleared.reviewerInstructions).toBe('Be strict')
   })
 
-  it('unsavedNavigationRequiresConfirmation', async () => {
+})
+
+describe('Project route guard', () => {
+  /** The shell's guard, plus the registration calls the view makes on it. */
+  const wired = () => {
+    const guard = createNavigationGuard()
+    const registerGuard = vi.fn((fn?: RouteLeaveGuard) => guard.register(fn))
+    return { guard, registerGuard }
+  }
+
+  it('registersAndClearsDirtyGuard', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    const onNavigate = vi.fn()
-    mount({ onNavigate })
+    const { guard, registerGuard } = wired()
+    const { unmount } = mount({ registerGuard })
     await waitFor(() => expect((screen.getByLabelText('Mode') as HTMLSelectElement).value).toBe('ask'))
-    // A pristine screen leaves without asking.
-    await fireEvent.click(screen.getByRole('link', { name: /Create factory work item/ }))
+    // A pristine screen registers itself, and leaving asks nothing.
+    expect(registerGuard).toHaveBeenCalledTimes(1)
+    expect(guard.allow()).toBe(true)
     expect(confirm).not.toHaveBeenCalled()
-    expect(onNavigate).toHaveBeenCalledTimes(1)
-    // An edit is protected by the in-app prompt and the browser's own warning.
+    // An edit is protected by the shell's guard and by the browser's warning.
     await fireEvent.change(screen.getByLabelText('Mode'), { target: { value: 'act' } })
+    await waitFor(() => expect(screen.getByTestId('unsaved')).toBeTruthy())
     const unload = new Event('beforeunload', { cancelable: true })
     window.dispatchEvent(unload)
     expect(unload.defaultPrevented).toBe(true)
-    await fireEvent.click(screen.getByRole('link', { name: /Create factory work item/ }))
+    expect(guard.allow()).toBe(false)
+    expect(confirm).toHaveBeenCalledWith('You have unsaved project settings. Leave without saving them?')
+    // A screen that is gone answers for nothing.
+    unmount()
+    expect(registerGuard).toHaveBeenLastCalledWith(undefined)
+    expect(guard.allow()).toBe(true)
+    confirm.mockRestore()
+  })
+
+  it('savedDraftClearsNavigationWarning', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const { guard, registerGuard } = wired()
+    mount({ registerGuard })
+    await waitFor(() => expect((screen.getByLabelText('Mode') as HTMLSelectElement).value).toBe('ask'))
+    await fireEvent.change(screen.getByLabelText('Mode'), { target: { value: 'act' } })
+    await waitFor(() => expect(screen.getByTestId('unsaved')).toBeTruthy())
+    expect(guard.allow()).toBe(false)
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(screen.queryByTestId('unsaved')).toBeNull())
+    // The stored record matches the drafts again, so leaving is free.
+    expect(guard.allow()).toBe(true)
     expect(confirm).toHaveBeenCalledTimes(1)
-    expect(onNavigate).toHaveBeenCalledTimes(1)
-    // With confirmation, the edit is only lost deliberately.
-    confirm.mockReturnValue(true)
-    await fireEvent.click(screen.getByRole('link', { name: /Create factory work item/ }))
-    expect(onNavigate).toHaveBeenCalledTimes(2)
+    confirm.mockRestore()
+  })
+
+  it('cancelledNavigationKeepsAllInput', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const { guard, registerGuard } = wired()
+    const onNavigate = vi.fn()
+    mount({ onNavigate, registerGuard })
+    await waitFor(() => expect((screen.getByLabelText('Mode') as HTMLSelectElement).value).toBe('ask'))
+    await fireEvent.change(screen.getByLabelText('Mode'), { target: { value: 'act' } })
+    await fireEvent.change(screen.getByLabelText('Ship target'), { target: { value: 'patch' } })
+    // The shell asks the guard before it changes the route; a refusal leaves
+    // the route alone.
+    expect(guard.allow()).toBe(false)
+    expect(onNavigate).not.toHaveBeenCalled()
+    // Every draft is still as the person left it, and nothing was written.
+    expect((screen.getByLabelText('Mode') as HTMLSelectElement).value).toBe('act')
+    expect((screen.getByLabelText('Ship target') as HTMLSelectElement).value).toBe('patch')
+    expect(api.putVersionedProjectSettings).not.toHaveBeenCalled()
     confirm.mockRestore()
   })
 })

@@ -4,15 +4,19 @@
   import Button from '../lib/ui/Button.svelte'
   import { createFactoryItem, errMessage, getModels, getProjectSettings, listRepos, listWorkspaces, type ProjectSettings, type RepoRow, type WorkspaceListItem } from '../lib/api'
   import type { FactoryCheckKey, FactoryCreate, FactoryCreateConfig, FactoryItem } from '../lib/factory'
+  import type { RouteLeaveGuard } from '../lib/navigationGuard'
   import { formatFactoryRoute, formatProjectRoute } from '../lib/routes'
 
   let {
     projectRoot = '',
     onNavigate,
+    // The shell's route guard, so unsaved input is protected wherever the
+    // person leaves from — a nav link, the palette, or browser Back.
+    registerGuard = () => {},
     // The shell's store, so a saved draft is already in the list the moment
     // it exists. A view rendered without it simply does not publish.
     upsert = () => {},
-  }: { projectRoot?: string; onNavigate: (hash: string) => void; upsert?: (item: FactoryItem) => void } = $props()
+  }: { projectRoot?: string; onNavigate: (hash: string) => void; registerGuard?: (guard?: RouteLeaveGuard) => void; upsert?: (item: FactoryItem) => void } = $props()
 
   // The handoff itself.
   let title = $state(''), plan = $state(''), spec = $state(''), repoId = $state('')
@@ -209,9 +213,27 @@
   function hasInput(): boolean {
     return !!(title.trim() || plan.trim() || spec.trim())
   }
+  /*
+    A draft the bridge already saved is not unsaved input: leaving the form
+    costs nothing at that point, so neither the route guard nor the reload
+    warning may treat the text still in the fields as dirty.
+  */
+  const hasUnsavedInput = $derived(!draft && hasInput())
+  /*
+    The guard asks before the shell changes the route, so it is registered for
+    as long as this screen is mounted and cleared when it is torn down — a
+    screen that is gone must never answer for the one that replaced it.
+  */
+  $effect(() => {
+    registerGuard(() => {
+      if (!hasUnsavedInput) return true
+      return window.confirm('You have an unsaved factory handoff. Leave without saving it?')
+    })
+    return () => registerGuard(undefined)
+  })
   $effect(() => {
     const warn = (e: BeforeUnloadEvent) => {
-      if (!hasInput()) return
+      if (!hasUnsavedInput) return
       e.preventDefault()
       e.returnValue = ''
     }

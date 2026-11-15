@@ -30,6 +30,7 @@
   import MobileNav from './lib/nav/MobileNav.svelte'
   import { buildNavModel } from './lib/nav/model'
   import { filterFactoryItems } from './lib/studio/model'
+  import { createNavigationGuard } from './lib/navigationGuard'
   import StateMessage from './lib/ui/StateMessage.svelte'
   import PendingList from './lib/PendingList.svelte'
   import ProjectsPanel from './lib/ProjectsPanel.svelte'
@@ -165,7 +166,28 @@
     }
   }
 
+  /*
+    One guard for the shell's lifetime. A view that holds unsaved input
+    registers itself and clears itself when it is destroyed; the shell asks
+    here, once per navigation, so a view never has to intercept a link.
+    Nothing registered means every route is free to leave.
+  */
+  const guard = createNavigationGuard()
+
+  /*
+    The hash `navigate` already asked about. Assigning `location.hash` fires
+    `hashchange`, and that handler would otherwise ask the same question a
+    second time — or ask it about a route the person just approved.
+  */
+  let approvedNext: string | null = null
+
+  /** The hash the shell displays, in the same shape the routes are parsed in. */
+  const currentHash = () => window.location.hash || '#'
+
   function navigate(next: string) {
+    if (next === currentHash()) return
+    if (!guard.allow()) return
+    approvedNext = next
     window.location.hash = next
   }
 
@@ -198,13 +220,32 @@
     // so returning from these routes is the moment to bring it back in
     // sync, ahead of the next SSE delta.
     const update = () => {
+      const current = hash
+      const incoming = currentHash()
+      if (incoming !== current) {
+        // A route `navigate` already asked about is not asked about again:
+        // the pending answer is consumed either way, so a stale approval can
+        // never wave through a different route.
+        const approved = approvedNext
+        approvedNext = null
+        if (approved !== incoming && !guard.allow()) {
+          /*
+            Browser Back, or a hash typed by hand, was declined. Putting the
+            displayed hash back with `replaceState` rewrites the URL without
+            firing another `hashchange`, so the mounted form — and every bit
+            of input in it — is left exactly as it was.
+          */
+          history.replaceState(null, '', current)
+          return
+        }
+      }
       // Old standalone pages moved; replace the entry so Back does not bounce.
-      const moved = redirectLegacy(window.location.hash)
+      const moved = redirectLegacy(incoming)
       if (moved) {
         window.location.replace(moved)
         return
       }
-      hash = window.location.hash || '#'
+      hash = incoming
       if (hash === '#projects' || isScopedSessions(hash) || hash === '#sessions') actions.refresh()
     }
     window.addEventListener('hashchange', update)
@@ -387,7 +428,7 @@
     {:else if factoryRoute}
       <div class="h-full overflow-y-auto">
         {#if factoryRoute.create}
-          <FactoryNew projectRoot={new URLSearchParams(hash.split('?')[1] ?? '').get('project') ?? ''} onNavigate={navigate} upsert={factoryStore.upsert} />
+          <FactoryNew projectRoot={new URLSearchParams(hash.split('?')[1] ?? '').get('project') ?? ''} onNavigate={navigate} registerGuard={guard.register} upsert={factoryStore.upsert} />
         {:else if factoryRoute.itemId}
           {#key factoryRoute.itemId}<FactoryItem itemId={factoryRoute.itemId} factory={$factory} getItem={factoryStore.getItem} upsert={factoryStore.upsert} onRefresh={factoryStore.refresh} onNavigate={navigate} />{/key}
         {:else}<Factory factory={$factory} onRefresh={refreshFactory} projectRoot={factoryRoute.projectRoot} filter={factoryRoute.filter} onNavigate={navigate} />{/if}
@@ -400,7 +441,7 @@
           {:else if projectRoute.automations === 'ci-fixer'}
             <CIFixer root={projectRoute.root} agents={$fleet.agents} refreshTick={$fleet.automationTick} onNavigate={navigate} />
           {:else}
-            <Project root={projectRoute.root} agents={$fleet.agents} telemetry={$fleet.telemetry} onNavigate={navigate} />
+            <Project root={projectRoute.root} agents={$fleet.agents} telemetry={$fleet.telemetry} onNavigate={navigate} registerGuard={guard.register} />
           {/if}
         {/key}
       </div>

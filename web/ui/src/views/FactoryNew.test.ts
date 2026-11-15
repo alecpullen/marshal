@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/sv
 import FactoryNew from './FactoryNew.svelte'
 import * as api from '../lib/api'
 import type { FactoryCheckKey, FactoryConfig, FactoryCreate, FactoryItem } from '../lib/factory'
+import { createNavigationGuard, type RouteLeaveGuard } from '../lib/navigationGuard'
 
 vi.mock('../lib/api', async (actual) => ({
   ...await actual<typeof import('../lib/api')>(),
@@ -40,6 +41,13 @@ const sent = (n = 0): FactoryCreate => vi.mocked(api.createFactoryItem).mock.cal
 const save = () => fireEvent.click(screen.getByRole('button', { name: 'Save draft' }))
 /** The shell store's write: a saved draft is published, never re-read. */
 const upsert = vi.fn()
+
+/** The shell's route guard, plus the registration calls the view makes on it. */
+function wiredGuard() {
+  const guard = createNavigationGuard()
+  const registerGuard = vi.fn((fn?: RouteLeaveGuard) => guard.register(fn))
+  return { guard, registerGuard }
+}
 
 async function fillHandoff() {
   await fireEvent.input(screen.getByLabelText('Title'), { target: { value: 'Task' } })
@@ -309,4 +317,63 @@ it('reusesRequestIdOnIdenticalRetry', async () => {
   await save()
   await waitFor(() => expect(api.createFactoryItem).toHaveBeenCalledTimes(4))
   expect(vi.mocked(api.createFactoryItem).mock.calls[3][0].requestId).not.toBe(ids[0])
+})
+
+it('registersAndClearsDirtyGuard', async () => {
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  const { guard, registerGuard } = wiredGuard()
+  const { unmount } = render(FactoryNew, { onNavigate: vi.fn(), registerGuard })
+  await screen.findByRole('option', { name: 'repo' })
+  // An untouched handoff registers itself, and leaving asks nothing.
+  expect(registerGuard).toHaveBeenCalledTimes(1)
+  expect(guard.allow()).toBe(true)
+  expect(confirm).not.toHaveBeenCalled()
+  await fillHandoff()
+  expect(guard.allow()).toBe(false)
+  expect(confirm).toHaveBeenCalledWith('You have an unsaved factory handoff. Leave without saving it?')
+  // A screen that is gone answers for nothing.
+  unmount()
+  expect(registerGuard).toHaveBeenLastCalledWith(undefined)
+  expect(guard.allow()).toBe(true)
+  confirm.mockRestore()
+})
+
+it('savedDraftClearsNavigationWarning', async () => {
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  const { guard, registerGuard } = wiredGuard()
+  vi.mocked(api.getProjectSettings).mockResolvedValue(projectSettings({ workspace: 'go-dev', routing: { profile: 'fast' } }))
+  render(FactoryNew, { projectRoot: ROOT, onNavigate: vi.fn(), registerGuard })
+  await waitFor(() => expect(screen.getByTestId('workspace-effective').textContent).toContain('go-dev'))
+  await fillHandoff()
+  // Nothing is inherited for checks, so the handoff acknowledges it explicitly.
+  await fireEvent.click(screen.getByLabelText('This repository has no required CI'))
+  expect(guard.allow()).toBe(false)
+  await save()
+  await screen.findByTestId('draft-preview')
+  // A saved draft is not unsaved input: leaving it, or reloading, is free.
+  const unload = new Event('beforeunload', { cancelable: true })
+  window.dispatchEvent(unload)
+  expect(unload.defaultPrevented).toBe(false)
+  expect(guard.allow()).toBe(true)
+  expect(confirm).toHaveBeenCalledTimes(1)
+  confirm.mockRestore()
+})
+
+it('cancelledNavigationKeepsAllInput', async () => {
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  const { guard, registerGuard } = wiredGuard()
+  const onNavigate = vi.fn()
+  render(FactoryNew, { onNavigate, registerGuard })
+  await screen.findByRole('option', { name: 'repo' })
+  await fillHandoff()
+  await fireEvent.input(screen.getByLabelText('Specification (optional)'), { target: { value: 'Keep this' } })
+  // The shell asks the guard before it changes the route; a refusal leaves
+  // the handoff exactly as it was.
+  expect(guard.allow()).toBe(false)
+  expect(confirm).toHaveBeenCalledTimes(1)
+  expect(onNavigate).not.toHaveBeenCalled()
+  expect((screen.getByLabelText('Title') as HTMLInputElement).value).toBe('Task')
+  expect((screen.getByLabelText('Plan') as HTMLTextAreaElement).value).toBe('Build it')
+  expect((screen.getByLabelText('Specification (optional)') as HTMLTextAreaElement).value).toBe('Keep this')
+  confirm.mockRestore()
 })

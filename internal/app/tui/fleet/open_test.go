@@ -291,3 +291,27 @@ func TestWithNoticeAddsAnEvent(t *testing.T) {
 		"15:04 connected to local",
 	})
 }
+
+// TestEnterDuringAnApprovalOpensTheAgent checks ⏎ while an inline approval is
+// open. An approval answers y, n and esc only, so ⏎ falls through to the
+// screen and opens the row — the same key the screen answers everywhere, and
+// the affordance the prompt itself names for an access request.
+func TestEnterDuringAnApprovalOpensTheAgent(t *testing.T) {
+	f := newFakeFleet()
+	m := openApproval(t, answering(t, f, approvalRequest(), clock()))
+	if m.answer != "a1" {
+		t.Fatalf("answer = %q, want the prompt open on a1", m.answer)
+	}
+
+	next, cmd := press(t, m, enter())
+	if cmd == nil {
+		t.Fatal("⏎ during an approval returned no command")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("⏎ during an approval returned %T, want tea.QuitMsg", cmd())
+	}
+	want := Target{AgentID: "a1", AgentName: "Alpha"}
+	if got := next.Open(); got != want {
+		t.Fatalf("Open() during an approval = %+v, want %+v", got, want)
+	}
+}

@@ -1850,9 +1850,11 @@ and W6 over a real local-profile bridge (`fleet_loop_test.go`,
   a real `tea.Program` — and puts a row before the agent it opens, so "restored
   on the right row" is distinguishable from "cursor on row one": the launch
   fake lists a decoy agent (`loopDecoyID`), and W4 in `test/daemon` spawns a
-  decoy agent before the one it opens. The decoy was added to W4 in the branch
-  review below; without it the agent was row one, and the assertion would have
-  passed even had nothing been restored.
+  second agent beside the one it opens, so the roster holds a row before it —
+  the decoy lands there through the inbox's ordering (most recently updated
+  first within a group). The decoy was added to W4 in the branch review below;
+  without it the agent was row one, and the assertion would have passed even
+  had nothing been restored.
 - Task 9's docs and its record were written as two commits (task 9a, then
   task 9b), so the prose did not wait on the suite.
 
@@ -2121,7 +2123,7 @@ follow-up commit.
 | Severity | Finding | Resolution |
 |---|---|---|
 | Minor | The agent attach's post-dial failures were implemented and untested, though task 1 requires each one to close what it opened and to leave the agent's session alone | `TestAnAgentAttachWhoseDialFailsKeepsTheSession` drives an agent whose child's socket is gone: 502 with the `dial the project child: ` prefix, and the session stays open and mapped to the agent, as the project attach's `TestAFailedDialClosesTheNewSession` proves the other way |
-| Minor | W4's fleet pass asserted the cursor came back to the agent, but the roster held only that agent, so the assertion would have passed had nothing been restored — and this record claimed both loop tests carried a decoy | W4 now spawns a decoy agent first and fails if the first pass already sits on the agent's row; the launch fake's decoy and W4's are now distinguished above |
+| Minor | W4's fleet pass asserted the cursor came back to the agent, but the roster held only that agent, so the assertion would have passed had nothing been restored — and this record claimed both loop tests carried a decoy | W4 now spawns a second agent beside the one it opens, and fails if the first pass already sits on the agent's row; the launch fake's decoy and W4's are now distinguished above |
 | Minor | Once the fleet had run, a failed or refused dial became an Events line carrying `daemonServingError`'s tail, which advises `marshal attach` or `marshal --embedded` — wrong inside a running fleet | `dialDaemon` now reports a `daemonDialFailure`; the fleet notice uses its plain sentence, and only the pre-fleet path adds the way out through `daemonServingError`, whose wording is unchanged |
 | Minor | Three loop behaviours the plan's task 7 requires had no test: the zero target's error propagation, a resume after the fleet has run, and the restored selection on `/fleet` | `TestAFleetProgramsErrorEndsTheLoop`, `TestAResumeFromTheFleetOpensThatSession`, and an `onSession` hook in `TestSlashFleetFromAPlainSessionOpensTheFleet` that lists the session the daemon really minted and asserts the cursor lands on it |
 | Nit | `refusal` only sees frames `decodeClientRequest` accepts, so an id-less `session/close` notification naming an agent's session would be forwarded | Documented on `refusal` as the same request-only assumption `watchedRequest` makes — ACP sends both methods as requests — and the widening, if ever wanted, belongs in the shared decode |
@@ -2144,3 +2146,17 @@ and every ending is terminal; `ProgramResult`'s interface assertions match
 exactly one model type each; the five goldens moved by exactly their footer
 line; and `AGENTS.md`, `cmd/webbridge/README.md` and `docs/ARCHITECTURE.md`
 are true of the code as committed.
+
+### The merge with main
+
+The branch merged `origin/main` (PR #87, the fleet's actions) in `583faba2`.
+Main had given `⏎` to the intake prompt and added an `openSelected` of its own
+for answering a parked agent's request, so this plan's row open is now
+`openRow`, and `⏎` settles an intake item when the Needs you cursor is on one
+and opens the row otherwise. An open approval answers only `y`, `n` and `esc`,
+so `⏎` during one falls through to the screen and opens the row — the prompt's
+own "open the agent to answer this access request" affordance — which
+`TestEnterDuringAnApprovalOpensTheAgent` pins. The footer names `⏎` once, and
+every golden main had changed moved by that footer segment alone
+(`fleet-100x30-down` also cuts its connection error one character shorter for
+it).

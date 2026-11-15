@@ -270,16 +270,44 @@ export function redirectLegacy(hash: string): string | null {
   }
 }
 
-/** Factory list, creation, and one encoded item segment. */
+/**
+ * Factory list, creation, working drafts, and one encoded item segment.
+ *
+ * The working-drafts forms are matched before the generic item segment: the
+ * generic pattern would otherwise read `#factory/drafts` as an item called
+ * "drafts". A draft route never carries a project path; its project comes from
+ * the `?project=` query, exactly as `#factory/new` does.
+ */
 export function parseFactoryRoute(hash: string): import('./factory').FactoryRoute | null {
   if (hash === '#factory') return {}
   if (/^#factory\/new(?:\?project=[^#]+)?$/.test(hash)) return { create: true }
+  if (hash === '#factory/drafts' || /^#factory\/drafts\?[^#]*$/.test(hash)) return { drafts: true }
+  if (/^#factory\/drafts\/new(?:\?[^#]*)?$/.test(hash)) return { drafts: true, create: true }
+  const working = /^#factory\/drafts\/([^/?#]+)(?:\?[^#]*)?$/.exec(hash)
+  if (working) {
+    try { return { drafts: true, draftId: decodeURIComponent(working[1]) } } catch { return null }
+  }
   const match = /^#factory\/([^/?#]+)$/.exec(hash)
   if (!match) return null
   try { return { itemId: decodeURIComponent(match[1]) } } catch { return null }
 }
 export function formatFactoryRoute(route: import('./factory').FactoryRoute): string {
+  if (route.drafts) {
+    if (route.create) return '#factory/drafts/new'
+    if (route.draftId) return `#factory/drafts/${encodeURIComponent(route.draftId)}`
+    return '#factory/drafts'
+  }
   if (route.create) return '#factory/new'
   if (route.itemId) return `#factory/${encodeURIComponent(route.itemId)}`
   return '#factory'
+}
+
+/**
+ * A project-scoped working-drafts hash: the list, a new draft, or one draft.
+ * The project stays in the query so the draft id is never a path and no route
+ * ever carries a plan, a spec or a credential.
+ */
+export function formatWorkingDraftsRoute(route: { create?: boolean; draftId?: string | null }, projectRoot?: string): string {
+  const segment = route.create ? '/new' : route.draftId ? `/${encodeURIComponent(route.draftId)}` : ''
+  return `#factory/drafts${segment}${projectRoot ? `?project=${encodeURIComponent(projectRoot)}` : ''}`
 }

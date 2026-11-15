@@ -79,3 +79,37 @@ input,
 textarea {
   color: inherit;
 }
+
+/*
+  Shared Studio page primitives (design C5). Everything below is an addition:
+  the Warm Sunset tokens and the theme blocks above are untouched, so a new
+  rule here can never shift an existing page's colours.
+*/
+
+/*
+  One focus ring for the whole app, in the accent rather than the UA blue.
+  `:focus-visible` only, so a pointer click on a button still shows nothing —
+  the ring means "the keyboard is here", not "you clicked".
+*/
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/*
+  Bottom padding that clears a phone's home indicator. `env()` is 0 where the
+  inset does not exist, so `max()` keeps the page's own rhythm everywhere
+  else instead of collapsing to the safe area alone.
+*/
+.studio-safe-bottom {
+  padding-bottom: max(1.5rem, env(safe-area-inset-bottom));
+}
+
+/* The approved surfaces: 12px for a panel, 8px for a control inside one. */
+.studio-panel {
+  border-radius: 12px;
+}
+
+.studio-control {
+  border-radius: 8px;
+}

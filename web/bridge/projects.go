@@ -491,9 +491,20 @@ func (s *Server) putProjectSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	// Delegation settings are policy: this project's toggle and designated
+	// client decide whether a client may answer as the planner, so the write
+	// takes the same lock authorization reads them under. An ordinary settings
+	// save on this path would be correct without the lock, but sharing it is
+	// simpler than deciding, per field, whether this write is the policy one.
+	policy := s.factoryAuth
 	if conditional {
-		stored, ok, err := s.fleet.putProjectSettingsIfMatch(root, ps, expected)
-		if err != nil {
+		var stored ProjectSettings
+		var ok bool
+		if err := policy.withPolicy(func() error {
+			var perr error
+			stored, ok, perr = s.fleet.putProjectSettingsIfMatch(root, ps, expected)
+			return perr
+		}); err != nil {
 			writeErr(w, err)
 			return
 		}
@@ -508,8 +519,12 @@ func (s *Server) putProjectSettings(w http.ResponseWriter, r *http.Request) {
 		writeSettings(w, http.StatusOK, stored)
 		return
 	}
-	stored, err := s.fleet.putProjectSettings(root, ps)
-	if err != nil {
+	var stored ProjectSettings
+	if err := policy.withPolicy(func() error {
+		var perr error
+		stored, perr = s.fleet.putProjectSettings(root, ps)
+		return perr
+	}); err != nil {
 		writeErr(w, err)
 		return
 	}

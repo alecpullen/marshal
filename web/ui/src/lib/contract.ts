@@ -502,6 +502,13 @@ export interface ProjectStatus {
    */
   isolation: string;
   /**
+   * MCPProjectID is the project's stable opaque factory ID: what a client
+   * grant is keyed by, and the only project identifier an MCP client is
+   * given. It is optional so a bridge that has not minted one yet keeps the
+   * response it always had.
+   */
+  mcpProjectId?: string;
+  /**
    * OrphanWorktrees are worktrees under this project that no known agent
    * claims. Reported, never deleted — they may hold uncommitted work.
    */

@@ -46,6 +46,9 @@ func TestWorkspaceRoundTrip(t *testing.T) {
 // and no revision appear, and the file on disk is not rewritten.
 func TestStoredInteractionDefaultsMigrateWithoutGrantRestore(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "fleet.json")
+	// The project identity is already present, so Load has nothing to mint:
+	// this fixture pins the interaction migration alone, and minting an
+	// identity is the one change Load is allowed to write.
 	raw := `{
   "version": 11,
   "projects": ["/p"],
@@ -58,7 +61,8 @@ func TestStoredInteractionDefaultsMigrateWithoutGrantRestore(t *testing.T) {
     {"id": "p1", "origin": "ui", "title": "t", "repoId": "r1", "mode": "plan",
      "createdAt": "2026-01-01T00:00:00Z", "expiresAt": "2026-01-02T00:00:00Z"}
   ],
-  "projectSettings": {"/p": {"mode": "copilot"}}
+  "projectSettings": {"/p": {"mode": "copilot"}},
+  "projectIdentities": [{"id": "0123456789abcdef0123456789abcdef", "root": "/p"}]
 }`
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatal(err)
@@ -640,4 +644,362 @@ func compactJSON(t *testing.T, raw json.RawMessage) string {
 		t.Fatal(err)
 	}
 	return b.String()
+}
+
+// TestMCPProjectIdentityStableAcrossRestart checks that a project's ID is
+// minted for a registration, written before it is observed, and reused by a
+// restart and by a repeated registration of the same root. An older file
+// gains identities on its first start, and keeps them afterwards.
+func TestMCPProjectIdentityStableAcrossRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.json")
+	w := NewWorkspace(path)
+	if _, err := w.Load(); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{"/srv/code/app", "/srv/code/lib"} {
+		if err := w.AddProject(root); err != nil {
+			t.Fatalf("AddProject(%q): %v", root, err)
+		}
+	}
+	appID, ok := w.ProjectID("/srv/code/app")
+	if !ok {
+		t.Fatal("a registered project has no identity")
+	}
+	if len(appID) != 2*projectIDBytes {
+		t.Fatalf("project id %q is not 128 bits of hex", appID)
+	}
+	libID, ok := w.ProjectID("/srv/code/lib")
+	if !ok || libID == appID {
+		t.Fatalf("project ids = %q and %q, want two distinct ids", appID, libID)
+	}
+	if root, ok := w.ProjectRootByID(appID); !ok || root != "/srv/code/app" {
+		t.Fatalf("ProjectRootByID(%q) = (%q, %v)", appID, root, ok)
+	}
+	// A path is never an ID: only what the bridge minted resolves.
+	if _, ok := w.ProjectRootByID("/srv/code/app"); ok {
+		t.Fatal("a host path resolved as a project id")
+	}
+
+	// Registering the same project again keeps the ID it already has.
+	if err := w.AddProject("/srv/code/app"); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := w.ProjectID("/srv/code/app"); again != appID {
+		t.Fatalf("re-registering minted %q, want the original %q", again, appID)
+	}
+
+	// The ID reached the file, so the next start finds it instead of minting.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), appID) {
+		t.Fatalf("the project identity never reached the file: %s", raw)
+	}
+	reloaded := NewWorkspace(path)
+	if _, err := reloaded.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := reloaded.ProjectID("/srv/code/app"); !ok || got != appID {
+		t.Fatalf("after restart ProjectID = (%q, %v), want %q", got, ok, appID)
+	}
+	if root, ok := reloaded.ProjectRootByID(appID); !ok || root != "/srv/code/app" {
+		t.Fatalf("after restart ProjectRootByID = (%q, %v)", root, ok)
+	}
+
+	// An older file holds no identities at all. The first start mints them
+	// and saves before Load returns, so the ID it reports is durable.
+	old := filepath.Join(t.TempDir(), "fleet.json")
+	if err := os.WriteFile(old, []byte(`{"version":11,"projects":["/srv/code/app"],"agents":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	upgraded := NewWorkspace(old)
+	if _, err := upgraded.Load(); err != nil {
+		t.Fatal(err)
+	}
+	minted, ok := upgraded.ProjectID("/srv/code/app")
+	if !ok || len(minted) != 2*projectIDBytes {
+		t.Fatalf("the upgrade minted no identity: (%q, %v)", minted, ok)
+	}
+	upgradedRaw, err := os.ReadFile(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(upgradedRaw), minted) {
+		t.Fatalf("the minted identity was not persisted: %s", upgradedRaw)
+	}
+	restarted := NewWorkspace(old)
+	if _, err := restarted.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := restarted.ProjectID("/srv/code/app"); again != minted {
+		t.Fatalf("the second start minted %q, want the saved %q", again, minted)
+	}
+}
+
+// TestMCPProjectRemoveRevokesAndReregisterGetsNewID checks that removing a
+// registration drops its identity and every grant naming it in the same save,
+// that the other projects' grants survive, and that registering the project
+// again is a new registration with a fresh ID and no inherited authority.
+func TestMCPProjectRemoveRevokesAndReregisterGetsNewID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.json")
+	w := NewWorkspace(path)
+	if _, err := w.Load(); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{"/srv/app", "/srv/lib"} {
+		if err := w.AddProject(root); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appID, ok := w.ProjectID("/srv/app")
+	if !ok {
+		t.Fatal("no identity for the first project")
+	}
+	libID, ok := w.ProjectID("/srv/lib")
+	if !ok {
+		t.Fatal("no identity for the second project")
+	}
+	if err := w.PutClient(MCPClient{
+		ID: "c1", Name: "claude-code", TokenHash: "hash", OwnerID: DefaultOwnerID,
+		FactoryGrants: []MCPFactoryProjectGrant{
+			{ProjectID: appID, Read: true, CreateDraft: true},
+			{ProjectID: libID, Read: true, AnswerQuestion: true, ApprovalAuthority: "standing"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := w.RemoveProject("/srv/app"); err != nil {
+		t.Fatalf("RemoveProject: %v", err)
+	}
+	if _, ok := w.ProjectID("/srv/app"); ok {
+		t.Fatal("a removed project kept its identity")
+	}
+	if _, ok := w.ProjectRootByID(appID); ok {
+		t.Fatal("a removed project's id still resolves")
+	}
+	if _, ok := w.FactoryGrant("c1", appID); ok {
+		t.Fatal("removal left a grant authorizing the removed project")
+	}
+	if st, ok := w.FactoryGrant("c1", libID); !ok || !st.Grant.Read || !st.Grant.AnswerQuestion || st.Grant.ApprovalAuthority != "standing" {
+		t.Fatalf("the surviving project's grant changed: %+v", st)
+	}
+
+	// The revocation is part of the removal's own save, not a later one.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), appID) {
+		t.Fatalf("the workspace still references the removed project's id: %s", raw)
+	}
+	reloaded := NewWorkspace(path)
+	if _, err := reloaded.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reloaded.FactoryGrant("c1", appID); ok {
+		t.Fatal("the grant survived a restart")
+	}
+
+	// Registering the project again mints a new ID, and no stale authority
+	// attaches to it.
+	if err := reloaded.AddProject("/srv/app"); err != nil {
+		t.Fatal(err)
+	}
+	fresh, ok := reloaded.ProjectID("/srv/app")
+	if !ok {
+		t.Fatal("re-registration minted no identity")
+	}
+	if fresh == appID {
+		t.Fatalf("re-registration reused the removed id %q", fresh)
+	}
+	if _, ok := reloaded.FactoryGrant("c1", fresh); ok {
+		t.Fatal("a stale grant attached to the new identity")
+	}
+	if st, ok := reloaded.FactoryGrant("c1", libID); !ok || st.Grant.ApprovalAuthority != "standing" {
+		t.Fatalf("re-registration disturbed another project's grant: %+v", st)
+	}
+
+	// Deleting the client revokes everything it held.
+	if err := reloaded.DeleteClient("c1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reloaded.FactoryGrant("c1", libID); ok {
+		t.Fatal("a deleted client still reports a grant")
+	}
+}
+
+// TestMCPFactoryGrantConditionalConflict checks that one grant is written
+// against one version: a stale version is refused with the current state, a
+// missing version and an unknown client are errors, and a refused write
+// changes nothing on disk.
+func TestMCPFactoryGrantConditionalConflict(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.json")
+	w := NewWorkspace(path)
+	if _, err := w.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.AddProject("/srv/app"); err != nil {
+		t.Fatal(err)
+	}
+	projectID, ok := w.ProjectID("/srv/app")
+	if !ok {
+		t.Fatal("no identity for the project")
+	}
+	if err := w.PutClient(MCPClient{ID: "c1", Name: "claude-code", TokenHash: "hash", OwnerID: DefaultOwnerID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, stored := w.FactoryGrant("c1", projectID); stored {
+		t.Fatal("a fresh pair already has a stored grant")
+	}
+	// With nothing stored, the pair still has a stable version: the zero
+	// grant's. An editor that read it can write against it.
+	zeroVersion := factoryGrantVersion(MCPFactoryProjectGrant{ProjectID: projectID})
+	if zeroVersion != factoryGrantVersion(MCPFactoryProjectGrant{ProjectID: projectID}) {
+		t.Fatal("the zero grant's version is not stable")
+	}
+
+	first := MCPFactoryProjectGrant{ProjectID: projectID, Read: true}
+	wrote, state, err := w.PutFactoryGrantIfMatch("c1", first, zeroVersion)
+	if err != nil {
+		t.Fatalf("PutFactoryGrantIfMatch: %v", err)
+	}
+	if !wrote || state.Grant != first {
+		t.Fatalf("wrote %v, state %+v, want the first grant", wrote, state)
+	}
+	if state.Version == zeroVersion {
+		t.Fatal("writing the grant did not move its version")
+	}
+
+	// A second editor holding that version wins, and the version moves again.
+	second := MCPFactoryProjectGrant{ProjectID: projectID, Read: true, CreateDraft: true, ApprovalAuthority: "user_directed"}
+	wrote, state2, err := w.PutFactoryGrantIfMatch("c1", second, state.Version)
+	if err != nil || !wrote {
+		t.Fatalf("the second write = %v, %v", wrote, err)
+	}
+	if state2.Grant != second || state2.Version == state.Version {
+		t.Fatalf("second state = %+v, want the second grant at a new version", state2)
+	}
+
+	// The first editor's retry now holds a stale version: refused, told what
+	// it lost to, and nothing written.
+	wrote, current, err := w.PutFactoryGrantIfMatch("c1", first, state.Version)
+	if err != nil {
+		t.Fatalf("a conflict must not be an error: %v", err)
+	}
+	if wrote {
+		t.Fatal("a stale version overwrote a newer grant")
+	}
+	if current.Grant != second || current.Version != state2.Version {
+		t.Fatalf("conflict reported %+v, want the current state %+v", current, state2)
+	}
+	if stored, ok := w.FactoryGrant("c1", projectID); !ok || stored.Grant != second {
+		t.Fatalf("the refused write changed the store: %+v", stored)
+	}
+	reloaded := NewWorkspace(path)
+	if _, err := reloaded.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if stored, ok := reloaded.FactoryGrant("c1", projectID); !ok || stored.Grant != second || stored.Version != state2.Version {
+		t.Fatalf("after restart the grant = %+v, want %+v", stored, state2)
+	}
+
+	// A write naming no version is not a conditional write.
+	if _, _, err := w.PutFactoryGrantIfMatch("c1", first, ""); err == nil {
+		t.Fatal("an empty version must be refused")
+	}
+	// A grant that names no project is refused, and an unknown client is
+	// reported rather than silently dropped.
+	if _, _, err := w.PutFactoryGrantIfMatch("c1", MCPFactoryProjectGrant{Read: true}, state2.Version); err == nil {
+		t.Fatal("a grant with no project id must be refused")
+	}
+	if _, _, err := w.PutFactoryGrantIfMatch("ghost", first, state2.Version); err == nil {
+		t.Fatal("an unknown client must be reported")
+	}
+}
+
+// TestMCPFactoryDelegationDefaultsOff checks that planner delegation is off
+// for a project that predates the fields, that a settings record without them
+// still marshals as it did, and that turning delegation on persists through
+// the existing conditional settings write.
+func TestMCPFactoryDelegationDefaultsOff(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.json")
+	old := `{
+  "version": 11,
+  "projects": ["/srv/app"],
+  "agents": [],
+  "projectSettings": {"/srv/app": {"workspace": "svc", "mode": "act"}}
+}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w := NewWorkspace(path)
+	if _, err := w.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.AddProject("/srv/other"); err != nil {
+		t.Fatal(err)
+	}
+
+	// An unset project starts with no delegation and no designated client.
+	ps := w.ProjectSettingsFor("/srv/other")
+	if ps.PlannerDelegationEnabled || ps.DesignatedMCPClientID != "" {
+		t.Fatalf("delegation defaults on: %+v", ps)
+	}
+	// The old record defaults the same way and, being unset, keeps its
+	// original encoding: neither field appears.
+	ps = w.ProjectSettingsFor("/srv/app")
+	if ps.PlannerDelegationEnabled || ps.DesignatedMCPClientID != "" || ps.Workspace != "svc" {
+		t.Fatalf("settings = %+v, want the stored value with delegation off", ps)
+	}
+	blob, err := json.Marshal(ps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(blob) != `{"workspace":"svc","mode":"act","intake":{}}` {
+		t.Fatalf("an unset delegation field changed the encoding: %s", blob)
+	}
+
+	// The operator turns delegation on and designates one client, through
+	// the conditional settings write the settings surface already uses.
+	etag, err := w.ProjectSettingsETag("/srv/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps.PlannerDelegationEnabled = true
+	ps.DesignatedMCPClientID = "c1"
+	wrote, _, err := w.PutProjectSettingsIfMatch("/srv/app", ps, etag)
+	if err != nil || !wrote {
+		t.Fatalf("PutProjectSettingsIfMatch = %v, %v", wrote, err)
+	}
+	// A writer holding the pre-change tag loses, so two settings surfaces
+	// cannot disagree about delegation.
+	stale := ProjectSettings{Workspace: "svc", Mode: "act"}
+	if wrote, _, err := w.PutProjectSettingsIfMatch("/srv/app", stale, etag); err != nil || wrote {
+		t.Fatalf("a stale settings write = %v, %v", wrote, err)
+	}
+
+	reloaded := NewWorkspace(path)
+	if _, err := reloaded.Load(); err != nil {
+		t.Fatal(err)
+	}
+	got := reloaded.ProjectSettingsFor("/srv/app")
+	if !got.PlannerDelegationEnabled || got.DesignatedMCPClientID != "c1" {
+		t.Fatalf("delegation did not persist: %+v", got)
+	}
+	if got.Workspace != "svc" || got.Mode != "act" {
+		t.Fatalf("the write dropped unrelated settings: %+v", got)
+	}
+	if ps := reloaded.ProjectSettingsFor("/srv/other"); ps.PlannerDelegationEnabled || ps.DesignatedMCPClientID != "" {
+		t.Fatalf("delegation leaked to another project: %+v", ps)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"plannerDelegationEnabled": true`) ||
+		!strings.Contains(string(raw), `"designatedMCPClientId": "c1"`) {
+		t.Fatalf("the delegation fields are not on disk: %s", raw)
+	}
 }

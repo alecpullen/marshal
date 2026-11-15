@@ -29,9 +29,49 @@ type MCPClient struct {
 	MaxPerDay     int `json:"maxPerDay,omitempty"`
 	// AllowedRepos restricts which registered repos this client may
 	// target. Empty means every registered repo.
-	AllowedRepos []string  `json:"allowedRepos,omitempty"`
-	OwnerID      string    `json:"ownerId"`
-	CreatedAt    time.Time `json:"createdAt"`
+	AllowedRepos []string `json:"allowedRepos,omitempty"`
+	// FactoryGrants are this client's explicit factory authority, one
+	// record per project. It is additive and optional: a client
+	// registered before grants existed holds none, and holding none is
+	// the same as holding no authority at all.
+	FactoryGrants []MCPFactoryProjectGrant `json:"factoryGrants,omitempty"`
+	OwnerID       string                   `json:"ownerId"`
+	CreatedAt     time.Time                `json:"createdAt"`
+}
+
+// MCPFactoryProjectGrant is one client's factory authority over one
+// project. Every capability is independent and defaults to refused, so a
+// grant that exists but names nothing grants nothing. Nothing here is
+// implied by Autonomous or AllowedRepos: those are fleet-spawn policy, and
+// a client that may spawn agents may still propose no factory work.
+type MCPFactoryProjectGrant struct {
+	ProjectID         string `json:"projectId"`
+	Read              bool   `json:"read"`
+	CreateDraft       bool   `json:"createDraft"`
+	EditDraft         bool   `json:"editDraft"`
+	AnswerQuestion    bool   `json:"answerQuestion"`
+	ApproveAndQueue   bool   `json:"approveAndQueue"`
+	ApprovalAuthority string `json:"approvalAuthority"` // none, user_directed, standing
+}
+
+// FactoryGrantState is one client/project pair's stored grant and the
+// opaque version that guards writes to it. Version is a hash of the
+// canonical grant JSON, so an editor that writes from a stale read is
+// refused rather than silently overwriting someone else's edit.
+type FactoryGrantState struct {
+	ClientID  string                 `json:"clientId"`
+	ProjectID string                 `json:"projectId"`
+	Grant     MCPFactoryProjectGrant `json:"grant"`
+	Version   string                 `json:"version"`
+}
+
+// clone returns a copy that shares no mutable storage with c, so a caller
+// cannot reach into the store through the value it was handed.
+func (c MCPClient) clone() MCPClient {
+	out := c
+	out.AllowedRepos = append([]string(nil), c.AllowedRepos...)
+	out.FactoryGrants = append([]MCPFactoryProjectGrant(nil), c.FactoryGrants...)
+	return out
 }
 
 // tokenBytes is the entropy in a client token. 32 bytes is well beyond

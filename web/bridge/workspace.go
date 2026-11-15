@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -113,6 +114,30 @@ type Agent struct {
 // AgentWorkspace is contract.AgentWorkspace; see that declaration.
 type AgentWorkspace = contract.AgentWorkspace
 
+// MCPProjectIdentity is one registered project's stable ID.
+//
+// It exists so an MCP client can name a project across restarts and
+// equivalent spellings of the same path without ever being handed — or
+// being able to supply — a host path. Root is server-only: it is written
+// when the project is registered and never projected into a response.
+type MCPProjectIdentity struct {
+	ID   string `json:"id"`   // 128-bit random hex, assigned on registration
+	Root string `json:"root"` // server-only canonical registered root
+}
+
+// projectIDBytes is the entropy in a project ID: 128 bits, hex encoded, so
+// one project's ID cannot be guessed from another's.
+const projectIDBytes = 16
+
+// newProjectID mints a fresh project ID.
+func newProjectID() (string, error) {
+	var b [projectIDBytes]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("bridge: generate project id: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
 // ProjectSettings are a project's defaults for new agents and runs, and
 // its intake wiring (v9).
 type ProjectSettings struct {
@@ -137,6 +162,17 @@ type ProjectSettings struct {
 	// workspace file format does not change and workspaceVersion stays 11 —
 	// the same reasoning the Automations field already follows.
 	FactoryDefaults *FactoryDefaults `json:"factoryDefaults,omitempty"`
+	// PlannerDelegationEnabled lets one designated MCP client answer the
+	// planner's questions for this project. It is off by default: a client
+	// that was never given delegation answers nothing.
+	PlannerDelegationEnabled bool `json:"plannerDelegationEnabled,omitempty"`
+	// DesignatedMCPClientID names the one client that may answer while
+	// delegation is enabled. Empty means no client is designated.
+	//
+	// Both fields are optional, so a settings record written before they
+	// existed still marshals byte-identically, and workspaceVersion does
+	// not change.
+	DesignatedMCPClientID string `json:"designatedMCPClientId,omitempty"`
 }
 
 // ProjectIntake mirrors Repo.Watch/WatchLabel and the client allowedRepos.
@@ -225,6 +261,11 @@ type workspaceFile struct {
 	Credentials []Credential `json:"credentials,omitempty"`
 	// ProjectSettings maps a project root to its settings (v9).
 	ProjectSettings map[string]ProjectSettings `json:"projectSettings,omitempty"`
+	// ProjectIdentities are the stable project IDs of the registered
+	// projects. They are server-only and optional: an older file has none,
+	// and Load mints what its registrations are missing, so the file
+	// format and workspaceVersion do not change.
+	ProjectIdentities []MCPProjectIdentity `json:"projectIdentities,omitempty"`
 	// Schedules run recipes on a cron (v11).
 	Schedules []Schedule `json:"schedules,omitempty"`
 	// Notifications configures outbound webhooks (v11).
@@ -266,26 +307,31 @@ type Workspace struct {
 	watchRules      map[string]WatchRule
 	credentials     map[string]Credential
 	projectSettings map[string]ProjectSettings
-	schedules       map[string]Schedule
-	notifications   NotifyConfig
-	statusLinks     map[string]StatusLink
-	pinned          []string
+	// projectIdentities maps a canonical registered project root to its
+	// stable ID. It is keyed by root because the registrations are, and
+	// only a root the store already holds ever acquires one.
+	projectIdentities map[string]MCPProjectIdentity
+	schedules         map[string]Schedule
+	notifications     NotifyConfig
+	statusLinks       map[string]StatusLink
+	pinned            []string
 }
 
 func NewWorkspace(path string) *Workspace {
 	return &Workspace{
-		path:            path,
-		repos:           make(map[string]Repo),
-		agents:          make(map[string]Agent),
-		clients:         make(map[string]MCPClient),
-		pending:         make(map[string]PendingSpawn),
-		submittedIssues: make(map[string][]int),
-		reviews:         make(map[string][]ReviewComment),
-		watchRules:      make(map[string]WatchRule),
-		credentials:     make(map[string]Credential),
-		projectSettings: make(map[string]ProjectSettings),
-		schedules:       make(map[string]Schedule),
-		statusLinks:     make(map[string]StatusLink),
+		path:              path,
+		repos:             make(map[string]Repo),
+		agents:            make(map[string]Agent),
+		clients:           make(map[string]MCPClient),
+		pending:           make(map[string]PendingSpawn),
+		submittedIssues:   make(map[string][]int),
+		reviews:           make(map[string][]ReviewComment),
+		watchRules:        make(map[string]WatchRule),
+		credentials:       make(map[string]Credential),
+		projectSettings:   make(map[string]ProjectSettings),
+		projectIdentities: make(map[string]MCPProjectIdentity),
+		schedules:         make(map[string]Schedule),
+		statusLinks:       make(map[string]StatusLink),
 	}
 }
 
@@ -378,7 +424,56 @@ func (w *Workspace) Load() (string, error) {
 		seenPins[p] = true
 		w.pinned = append(w.pinned, p)
 	}
+	w.projectIdentities = make(map[string]MCPProjectIdentity, len(f.ProjectIdentities))
+	for _, id := range f.ProjectIdentities {
+		if id.ID == "" || id.Root == "" {
+			continue
+		}
+		w.projectIdentities[id.Root] = id
+	}
+	// Every registered project has an ID, and no unregistered one does. A
+	// first run on an older file mints what is missing and writes it before
+	// Load returns: an ID that never reached the disk is not an ID, because
+	// a grant saved against it would be lost at the next restart.
+	loaded := w.projectIdentities
+	changed, err := w.syncProjectIdentitiesLocked()
+	if err != nil {
+		return "", err
+	}
+	if changed {
+		if err := w.save(); err != nil {
+			w.projectIdentities = loaded
+			return "", fmt.Errorf("persist project identities: %w", err)
+		}
+	}
 	return "", nil
+}
+
+// syncProjectIdentitiesLocked keys the identity collection to the
+// registrations: a registered project with no identity gets one, and an
+// identity whose project is no longer registered is dropped. It reports
+// whether the collection changed, and installs the new collection before
+// returning, so a caller that cannot persist it restores what it had.
+func (w *Workspace) syncProjectIdentitiesLocked() (bool, error) {
+	next := make(map[string]MCPProjectIdentity, len(w.projects))
+	changed := false
+	for _, root := range w.projects {
+		if id, ok := w.projectIdentities[root]; ok && id.ID != "" && id.Root == root {
+			next[root] = id
+			continue
+		}
+		fresh, err := newProjectID()
+		if err != nil {
+			return false, err
+		}
+		next[root] = MCPProjectIdentity{ID: fresh, Root: root}
+		changed = true
+	}
+	if !changed && len(next) != len(w.projectIdentities) {
+		changed = true
+	}
+	w.projectIdentities = next
+	return changed, nil
 }
 
 // migrateWorkspace upgrades an older workspace file in place. A v1
@@ -527,6 +622,12 @@ func (w *Workspace) save() error {
 			f.ProjectSettings[root] = ps
 		}
 	}
+	// Project identities are server-only and sorted by root, so an
+	// unchanged collection writes the same bytes on every save.
+	for _, id := range w.projectIdentities {
+		f.ProjectIdentities = append(f.ProjectIdentities, id)
+	}
+	sort.Slice(f.ProjectIdentities, func(i, j int) bool { return f.ProjectIdentities[i].Root < f.ProjectIdentities[j].Root })
 	for _, sc := range w.schedules {
 		f.Schedules = append(f.Schedules, sc)
 	}
@@ -587,11 +688,29 @@ func (w *Workspace) AddProject(root string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	for _, p := range w.projects {
+		// Registering a project again keeps the ID it already has: the
+		// grant an operator wrote against it must survive a re-add.
 		if p == root {
 			return nil
 		}
 	}
 	w.projects = append(w.projects, root)
+	if _, ok := w.projectIdentities[root]; !ok {
+		fresh, err := newProjectID()
+		if err != nil {
+			w.projects = w.projects[: len(w.projects)-1 : len(w.projects)-1]
+			return err
+		}
+		w.projectIdentities[root] = MCPProjectIdentity{ID: fresh, Root: root}
+		if err := w.save(); err != nil {
+			// The registration stays, as it always has, but no ID is
+			// exposed for it: one that did not reach the disk would point
+			// at a project the next start could not resolve.
+			delete(w.projectIdentities, root)
+			return err
+		}
+		return nil
+	}
 	return w.save()
 }
 
@@ -617,7 +736,40 @@ func (w *Workspace) RemoveProject(root string) error {
 		}
 	}
 	delete(w.projectSettings, root)
+	// The identity goes with the registration, and every grant naming it
+	// goes in the same save: an ID that no longer resolves must not keep
+	// authority alive, and re-registering the project mints a fresh one.
+	if identity, ok := w.projectIdentities[root]; ok {
+		delete(w.projectIdentities, root)
+		w.revokeProjectGrantsLocked(identity.ID)
+	}
 	return w.save()
+}
+
+// revokeProjectGrantsLocked drops every client grant naming projectID. It
+// runs inside the removal's own save, so no grant outlives the project it
+// authorizes.
+func (w *Workspace) revokeProjectGrantsLocked(projectID string) {
+	if projectID == "" {
+		return
+	}
+	for id, c := range w.clients {
+		if len(c.FactoryGrants) == 0 {
+			continue
+		}
+		next := c.clone()
+		kept := make([]MCPFactoryProjectGrant, 0, len(next.FactoryGrants))
+		for _, g := range next.FactoryGrants {
+			if g.ProjectID != projectID {
+				kept = append(kept, g)
+			}
+		}
+		if len(kept) == len(next.FactoryGrants) {
+			continue
+		}
+		next.FactoryGrants = kept
+		w.clients[id] = next
+	}
 }
 
 // Pinned returns the project roots the local daemon keeps running, sorted.
@@ -890,7 +1042,7 @@ func (w *Workspace) Clients() []MCPClient {
 	defer w.mu.Unlock()
 	out := make([]MCPClient, 0, len(w.clients))
 	for _, c := range w.clients {
-		out = append(out, c)
+		out = append(out, c.clone())
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
@@ -902,7 +1054,7 @@ func (w *Workspace) PutClient(c MCPClient) error {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.clients[c.ID] = c
+	w.clients[c.ID] = c.clone()
 	return w.save()
 }
 
@@ -917,7 +1069,124 @@ func (w *Workspace) Client(id string) (MCPClient, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	c, ok := w.clients[id]
-	return c, ok
+	if !ok {
+		return MCPClient{}, false
+	}
+	return c.clone(), true
+}
+
+// ProjectID returns the stable ID of a registered project. An unregistered
+// root has none: an ID is minted for a registration and dies with it.
+func (w *Workspace) ProjectID(root string) (string, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	id, ok := w.projectIdentities[root]
+	if !ok || id.ID == "" {
+		return "", false
+	}
+	return id.ID, true
+}
+
+// ProjectRootByID returns the registered root a project ID belongs to. Only
+// an ID this store minted resolves: a browser-supplied path is never a key.
+func (w *Workspace) ProjectRootByID(id string) (string, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if id == "" {
+		return "", false
+	}
+	for root, identity := range w.projectIdentities {
+		if identity.ID == id {
+			return root, true
+		}
+	}
+	return "", false
+}
+
+// factoryGrantVersion is the opaque version of one grant: a lowercase hex
+// SHA-256 of its JSON encoding. The grant is all scalars, so the encoding is
+// deterministic and two equal grants always carry the same version.
+func factoryGrantVersion(g MCPFactoryProjectGrant) string {
+	data, _ := json.Marshal(g)
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// factoryGrantState builds the pair's reported state from a grant.
+func factoryGrantState(clientID, projectID string, g MCPFactoryProjectGrant) FactoryGrantState {
+	return FactoryGrantState{ClientID: clientID, ProjectID: projectID, Grant: g, Version: factoryGrantVersion(g)}
+}
+
+// FactoryGrant returns a copy of one client's grant for one project and its
+// version. The second result is false when nothing is stored — no such
+// client, or a client that names this project nowhere — which is the same
+// answer as a grant that refuses everything: no authority.
+func (w *Workspace) FactoryGrant(clientID, projectID string) (FactoryGrantState, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	c, ok := w.clients[clientID]
+	if !ok || projectID == "" {
+		return FactoryGrantState{}, false
+	}
+	for _, g := range c.FactoryGrants {
+		if g.ProjectID == projectID {
+			return factoryGrantState(clientID, projectID, g), true
+		}
+	}
+	return FactoryGrantState{}, false
+}
+
+// PutFactoryGrantIfMatch stores one client's grant for one project only when
+// the stored grant still carries expected as its version, and reports
+// whether it wrote. It returns the pair's state either way: on a conflict
+// that is the current state, so a caller can show what it lost to.
+//
+// The comparison, the client update and the save happen under one lock, so
+// of two editors naming the same version exactly one wins. A failed save
+// restores the exact prior client value. An empty expected is refused: a
+// caller that names no version is not editing a grant, it is resetting one.
+func (w *Workspace) PutFactoryGrantIfMatch(clientID string, grant MCPFactoryProjectGrant, expected string) (bool, FactoryGrantState, error) {
+	if expected == "" {
+		return false, FactoryGrantState{}, errors.New("bridge: conditional grant write needs an If-Match value")
+	}
+	if strings.TrimSpace(grant.ProjectID) == "" {
+		return false, FactoryGrantState{}, errors.New("bridge: grant needs a project id")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	c, ok := w.clients[clientID]
+	if !ok {
+		return false, FactoryGrantState{}, fmt.Errorf("bridge: unknown client %q", clientID)
+	}
+	prev := MCPFactoryProjectGrant{ProjectID: grant.ProjectID}
+	for _, g := range c.FactoryGrants {
+		if g.ProjectID == grant.ProjectID {
+			prev = g
+			break
+		}
+	}
+	current := factoryGrantState(clientID, grant.ProjectID, prev)
+	if current.Version != expected {
+		return false, current, nil
+	}
+	next := c.clone()
+	replaced := false
+	for i := range next.FactoryGrants {
+		if next.FactoryGrants[i].ProjectID == grant.ProjectID {
+			next.FactoryGrants[i] = grant
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		next.FactoryGrants = append(next.FactoryGrants, grant)
+	}
+	w.clients[clientID] = next
+	if err := w.save(); err != nil {
+		w.clients[clientID] = c
+		return false, current, err
+	}
+	return true, factoryGrantState(clientID, grant.ProjectID, grant), nil
 }
 
 func (w *Workspace) Pending() []PendingSpawn {

@@ -1,6 +1,8 @@
 package fleet
 
 import (
+	"context"
+
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/web/bridge/contract"
@@ -24,6 +26,18 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleFilterKey(msg)
 	}
 
+	// An open modal takes every key while it is open (decision 5).
+	if m.modal != nil {
+		return m.modal.update(m, msg)
+	}
+	// An open approval answers y and n, and esc closes it (decision 4).
+	// Everything else falls through to the screen.
+	if m.answer != "" {
+		if next, cmd, handled := m.answerKey(msg); handled {
+			return next, cmd
+		}
+	}
+
 	if msg.Code == tea.KeyTab {
 		m.cycleFocus(msg.Mod.Contains(tea.ModShift))
 		return m, nil
@@ -40,11 +54,21 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEsc:
 		m.zoom = false
 		return m, nil
+	case tea.KeyEnter:
+		// ⏎ settles an intake item in Needs you (decision 8). Every other
+		// row has nothing to open here.
+		return m.openIntake()
 	}
 
 	switch msg.String() {
 	case "q":
 		return m, m.quit()
+	case "a":
+		return m.openSelected()
+	case "n":
+		return m.openSpawn()
+	case "x":
+		return m.cancelSelected()
 	case "j":
 		m.moveCursor(1)
 	case "k":
@@ -63,6 +87,34 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.help = !m.help
 	}
 	return m, nil
+}
+
+// cancelSelected stops the selected agent's turn (decision 7), with no
+// confirmation, as the web UI's stop has none. Only a running agent has a turn
+// to stop: anywhere else x does nothing.
+func (m Model) cancelSelected() (tea.Model, tea.Cmd) {
+	row, ok := m.selectedRow()
+	if !ok || row.session {
+		return m, nil
+	}
+	a, ok := m.agentByID(row.id)
+	if !ok || a.Status != contract.AgentRunning {
+		return m, nil
+	}
+	if m.refusedWhileDown() {
+		return m, nil
+	}
+	return m, m.cancelCmd(a)
+}
+
+// cancelCmd stops the agent's turn in a command, bounded by actionTimeout.
+func (m Model) cancelCmd(a contract.AgentStatus) tea.Cmd {
+	f, id, name := m.fleet, a.ID, agentName(a)
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), actionTimeout)
+		defer cancel()
+		return actionDoneMsg{what: "cancel", name: name, err: f.Cancel(ctx, id)}
+	}
 }
 
 // handleFilterKey applies one key press while the Agents filter input is open:

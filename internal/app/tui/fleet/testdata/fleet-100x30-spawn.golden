@@ -1,0 +1,30 @@
+╭─ Agents ────────────────────────────────────────────── 7─╮╭─ New agent ──────────────────────────╮
+│ Needs you                                                ││ project   /repo/marshal  j/k         │
+│ ⚠ fix-flaky-hooks      38%   2    2m marshal      act    ││ name      > unnamed                … │
+│ Running                                                  ││ mode      default  space             │
+│ ● s3b-egress           41%   7    0s marshal      ask    ││ prompt    > the first prompt       … │
+│ Ready                                                    ││                                      │
+│ ✓ docs-deploy          22%   4    1h notes        act    ││                                      │
+│ Earlier                                                  ││                                      │
+│ · docs-sweep           12%   0    5s notes        ?      ││                                      │
+│ ✗ ci-fixer              9%   0    3h infra        act    ││                                      │
+│ Sessions                                                 ││                                      │
+│ · marshal 3f2a91bc 2 viewers                         3m  ││                                      │
+│ · marshal 9c1d4e5f 1 viewer                          1m  ││                                      │
+│                                                          ││                                      │
+│                                                          ││                                      │
+│                                                          ││                                      │
+╰──────────────────────────────────────────────────────────╯│                                      │
+╭─ Needs you ─────────────────────────────────────────── 2─╮│                                      │
+│ fix-flaky-hooks approval                                 ││                                      │
+│ intake github: fix the flaky test                        ││                                      │
+╰──────────────────────────────────────────────────────────╯│                                      │
+╭─ Events ────────────────────────────────────────────── 3─╮│                                      │
+│ 14:58 connected to local                                 ││                                      │
+│ 14:59 docs-deploy is ready                               ││                                      │
+│ 15:00 fix-flaky-hooks needs you: approval                ││                                      │
+│                                                          ││                                      │
+│                                                          ││                                      │
+│                                                          ││                                      │
+╰──────────────────────────────────────────────────────────╯╰──────────────────────────────────────╯
+local ●  j/k move a answer x cancel n spawn                                             ?help q quit

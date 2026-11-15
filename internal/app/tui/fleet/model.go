@@ -67,10 +67,38 @@ type Model struct {
 
 	width, height int
 
+	modal  modal  // nil when no modal is open
+	answer string // the agent whose approval is open inline; "" for none
+	status statusLine
+
 	// done releases the wait command when the program quits, so the wait
 	// cannot block a program that has stopped reading its messages. It is
 	// held by pointer: Model is a value, and every copy shares one release.
 	done *quitGate
+}
+
+// modal is one open modal: the question, the spawn form or the intake
+// prompt. Each takes the keys while it is open.
+type modal interface {
+	update(m Model, msg tea.KeyPressMsg) (Model, tea.Cmd)
+	view(m Model, width, height int) string
+}
+
+// statusLine is the footer's message: an action's failure, or a refusal
+// while down, shown until until.
+type statusLine struct {
+	text  string
+	until time.Time
+}
+
+// actionDoneMsg is one action's answer.
+type actionDoneMsg struct {
+	what string // the Events line's verb: "answer", "spawn", "cancel", …
+	name string // the agent's or submission's name
+	err  error
+	// selectID is the row to select once it appears; "" for none.
+	selectID string
+	warning  string
 }
 
 // quitGate releases the wait command when the program quits. The close is
@@ -190,6 +218,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.waitForChange()
 	case tickMsg:
 		return m, tickCmd()
+	case actionDoneMsg:
+		m.actionDone(msg)
+		return m, nil
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}

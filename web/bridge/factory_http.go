@@ -17,6 +17,16 @@ type FactoryAPI interface {
 	Get(string) (FactoryItem, error)
 	List() []FactoryItem
 	Command(context.Context, string, FactoryCommand) (FactoryItem, error)
+
+	// The four below are the MCP service surface. Each takes the
+	// server-authenticated principal as an argument, because the REST body and
+	// the MCP arguments must never be able to name their own client. The
+	// Prepare step runs outside the policy lock; the three durable steps run
+	// inside it and do no external work.
+	PrepareDraft(FactoryCreate) (FactoryCreate, error)
+	CreateDraftAuthorized(FactoryCreate, FactoryCreate, factoryPrincipal) (FactoryItem, error)
+	ReplaceDraftAuthorized(string, FactoryCreate, uint64, factoryPrincipal) (FactoryItem, error)
+	CommandAuthorized(context.Context, string, FactoryCommand, factoryPrincipal) (FactoryItem, error)
 }
 type factoryAPI struct {
 	store      *FactoryStore
@@ -81,14 +91,8 @@ func (a *factoryAPI) Create(req FactoryCreate) (FactoryItem, error) {
 // intent. It is the read-only half of Create: Create's own behaviour is
 // unchanged, and nothing here touches the factory journal.
 func (a *factoryAPI) PrepareFrozen(req FactoryCreate) (FactoryCreate, string, error) {
-	resolved, err := a.factoryResolveDefaults(req)
+	resolved, err := a.prepareDraft(req)
 	if err != nil {
-		return FactoryCreate{}, "", err
-	}
-	if err = factoryNormalize(&resolved); err != nil {
-		return FactoryCreate{}, "", fmt.Errorf("%w: %v", errFactoryInput, err)
-	}
-	if err = a.preflight(context.Background(), resolved.Config, false); err != nil {
 		return FactoryCreate{}, "", err
 	}
 	if a.fleet == nil || a.fleet.ws == nil {
@@ -99,6 +103,92 @@ func (a *factoryAPI) PrepareFrozen(req FactoryCreate) (FactoryCreate, string, er
 		return FactoryCreate{}, "", fmt.Errorf("%w: project settings version: %v", ErrFactoryUnavailable, err)
 	}
 	return resolved, settingsVersion, nil
+}
+
+// PrepareDraft resolves, normalizes and preflights one candidate draft without
+// writing anything: the half of an authorized create or replacement that must
+// not run while the policy lock is held, because resolution reads mutable
+// project state and preflight reaches the forge and the workspace store.
+func (a *factoryAPI) PrepareDraft(req FactoryCreate) (FactoryCreate, error) {
+	return a.prepareDraft(req)
+}
+
+// prepareDraft is the shared no-lock half of every create path.
+func (a *factoryAPI) prepareDraft(req FactoryCreate) (FactoryCreate, error) {
+	resolved, err := a.factoryResolveDefaults(req)
+	if err != nil {
+		return FactoryCreate{}, err
+	}
+	if err = factoryNormalize(&resolved); err != nil {
+		return FactoryCreate{}, fmt.Errorf("%w: %v", errFactoryInput, err)
+	}
+	if err = a.preflight(context.Background(), resolved.Config, false); err != nil {
+		return FactoryCreate{}, err
+	}
+	return resolved, nil
+}
+
+// CreateDraftAuthorized journals a draft an authenticated MCP client proposed.
+// It is the durable half of an authorized create: the caller holds the policy
+// lock, has authorized createDraft, and has already resolved, normalized and
+// preflighted the candidate with PrepareDraft. Nothing here does external work,
+// and the provenance rides the same append that creates the item.
+//
+// The journal's request identity is namespaced and the client's own ID survives
+// only in provenance. A request that already committed replays its original
+// item before the candidate is read, so a retry after a lost response returns
+// what is durable instead of a second draft.
+func (a *factoryAPI) CreateDraftAuthorized(req, resolved FactoryCreate, p factoryPrincipal) (FactoryItem, error) {
+	if a.store == nil {
+		return FactoryItem{}, ErrFactoryUnavailable
+	}
+	if strings.TrimSpace(p.ClientID) == "" || strings.TrimSpace(p.Action) == "" {
+		return FactoryItem{}, fmt.Errorf("%w: authenticated client and action required", errFactoryInput)
+	}
+	if strings.TrimSpace(req.RequestID) == "" {
+		return FactoryItem{}, fmt.Errorf("%w: requestId required", errFactoryInput)
+	}
+	p.RequestID = req.RequestID
+	scoped := factoryScopedRequestID(p.ClientID, req.RequestID)
+	req.RequestID = scoped
+	resolved.RequestID = scoped
+	return a.store.CreateAuthorized(req, resolved, p, time.Now().UTC())
+}
+
+// ReplaceDraftAuthorized replaces an unapproved draft's content on behalf of an
+// authenticated MCP client. It is the durable half of an authorized edit: the
+// caller holds the policy lock, has authorized editDraft, and has already
+// validated the candidate with PrepareDraft. The store rechecks the state, the
+// item/project/repo identity and the expected version under its own lock, so a
+// draft approved in the meantime is refused rather than rewritten.
+func (a *factoryAPI) ReplaceDraftAuthorized(id string, candidate FactoryCreate, expectedVersion uint64, p factoryPrincipal) (FactoryItem, error) {
+	if a.store == nil {
+		return FactoryItem{}, ErrFactoryUnavailable
+	}
+	if strings.TrimSpace(p.ClientID) == "" || strings.TrimSpace(p.Action) == "" {
+		return FactoryItem{}, fmt.Errorf("%w: authenticated client and action required", errFactoryInput)
+	}
+	if strings.TrimSpace(id) == "" || strings.TrimSpace(candidate.RequestID) == "" || expectedVersion == 0 {
+		return FactoryItem{}, fmt.Errorf("%w: item, requestId and expectedVersion required", errFactoryInput)
+	}
+	p.RequestID = candidate.RequestID
+	request := factoryScopedRequestID(p.ClientID, candidate.RequestID)
+	return a.store.ReplaceDraft(id, request, expectedVersion, candidate, p, time.Now().UTC())
+}
+
+// CommandAuthorized applies an approval or an answer on behalf of an
+// authenticated MCP client. It is the durable half of an authorized command:
+// the caller holds the policy lock, has authorized the capability and has
+// preflighted whatever the command needs outside it. Only local validation and
+// the journal append happen here.
+func (a *factoryAPI) CommandAuthorized(ctx context.Context, id string, cmd FactoryCommand, p factoryPrincipal) (FactoryItem, error) {
+	if a.store == nil || a.controller == nil {
+		return FactoryItem{}, ErrFactoryUnavailable
+	}
+	if strings.TrimSpace(cmd.RequestID) == "" || cmd.ExpectedVersion == 0 {
+		return FactoryItem{}, fmt.Errorf("%w: requestId and expectedVersion required", errFactoryInput)
+	}
+	return a.controller.CommandAuthorized(ctx, id, cmd, p)
 }
 
 // CreateFrozen creates the handoff a conversion froze. It is callable only

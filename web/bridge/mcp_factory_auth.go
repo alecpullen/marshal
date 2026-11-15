@@ -80,6 +80,24 @@ func (a *factoryMCPAuthorizer) WithAuthorizedMutation(clientID, projectID, repoI
 	if fn == nil {
 		return FactoryItem{}, fmt.Errorf("%w: no mutation to authorize", errFactoryDenied)
 	}
+	return a.withAuthorizedMutation(clientID, projectID, repoID, capability, func(string) (FactoryItem, error) { return fn() })
+}
+
+// WithAuthorizedMutationAuthority is WithAuthorizedMutation for the one
+// mutation that journals the authority it was admitted under. An approval
+// records the grant's approvalAuthority as it stood under the policy lock, so
+// the entry names the authority that admitted it rather than one the caller
+// claimed.
+func (a *factoryMCPAuthorizer) WithAuthorizedMutationAuthority(clientID, projectID, repoID, capability string, fn func(authority string) (FactoryItem, error)) (FactoryItem, error) {
+	if fn == nil {
+		return FactoryItem{}, fmt.Errorf("%w: no mutation to authorize", errFactoryDenied)
+	}
+	return a.withAuthorizedMutation(clientID, projectID, repoID, capability, fn)
+}
+
+// withAuthorizedMutation is the shared body of both entry points: authorize
+// under the policy lock, then run the caller's local commit while holding it.
+func (a *factoryMCPAuthorizer) withAuthorizedMutation(clientID, projectID, repoID, capability string, fn func(authority string) (FactoryItem, error)) (FactoryItem, error) {
 	if a == nil {
 		return FactoryItem{}, fmt.Errorf("%w: no workspace", ErrFactoryUnavailable)
 	}
@@ -88,7 +106,21 @@ func (a *factoryMCPAuthorizer) WithAuthorizedMutation(clientID, projectID, repoI
 	if err := a.authorizeLocked(clientID, projectID, repoID, capability); err != nil {
 		return FactoryItem{}, err
 	}
-	return fn()
+	return fn(a.authorityLocked(clientID, projectID))
+}
+
+// authorityLocked is the approval authority the stored grant carries. The
+// caller holds the policy lock, so this is the value that admitted the
+// operation.
+func (a *factoryMCPAuthorizer) authorityLocked(clientID, projectID string) string {
+	if a == nil || a.ws == nil {
+		return ""
+	}
+	state, ok := a.ws.FactoryGrant(clientID, projectID)
+	if !ok {
+		return ""
+	}
+	return state.Grant.ApprovalAuthority
 }
 
 // AuthorizeRead checks the read capability for one client/project/repo.

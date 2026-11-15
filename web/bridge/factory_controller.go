@@ -901,6 +901,43 @@ func (c *FactoryController) finishDispatch(ctx context.Context, dispatched Facto
 	return err
 }
 func (c *FactoryController) Command(ctx context.Context, itemID string, cmd FactoryCommand) (FactoryItem, error) {
+	return c.command(ctx, itemID, cmd, nil)
+}
+
+// CommandAuthorized is Command for a mutation an authenticated MCP client
+// proposed. The caller holds the policy lock and has authorized the capability;
+// the journal records the client's provenance in the same append that applies
+// the command, and the request identity is namespaced so two clients naming one
+// ID remain two operations.
+//
+// Nothing external runs here: the caller has already preflighted the candidate
+// (including an approval's draft configuration) outside the policy lock.
+func (c *FactoryController) CommandAuthorized(ctx context.Context, itemID string, cmd FactoryCommand, p factoryPrincipal) (FactoryItem, error) {
+	if strings.TrimSpace(p.ClientID) == "" || strings.TrimSpace(p.Action) == "" {
+		return FactoryItem{}, fmt.Errorf("%w: authenticated client and action required", errFactoryInput)
+	}
+	if c.store == nil {
+		return FactoryItem{}, ErrFactoryUnavailable
+	}
+	if cmd.Kind == "approve" {
+		// The acknowledgement is a local check on the stored draft: the part of
+		// the approval that needs the network was preflighted by the caller.
+		item, err := c.store.Get(itemID)
+		if err != nil {
+			return FactoryItem{}, err
+		}
+		if len(item.Draft.Config.ExpectedChecks) == 0 && !item.Draft.Config.NoRequiredCIAcknowledged {
+			return FactoryItem{}, fmt.Errorf("%w: select expected CI checks or acknowledge none are required", errFactoryConfig)
+		}
+	}
+	// Provenance keeps the identity the client sent; the journal, and every
+	// store key, get the namespaced one.
+	p.RequestID = cmd.RequestID
+	cmd.RequestID = p.scoped(cmd.RequestID)
+	return c.command(ctx, itemID, cmd, &p)
+}
+
+func (c *FactoryController) command(ctx context.Context, itemID string, cmd FactoryCommand, p *factoryPrincipal) (FactoryItem, error) {
 	if cmd.Kind == "reconcile" || cmd.Kind == "recover" {
 		before, err := c.store.Get(itemID)
 		if err != nil {
@@ -911,7 +948,7 @@ func (c *FactoryController) Command(ctx context.Context, itemID string, cmd Fact
 				return FactoryItem{}, ErrFactoryConflict
 			}
 		}
-		raw, err := json.Marshal(cmd)
+		raw, err := factoryCommandJournal(cmd, p)
 		if err != nil {
 			return FactoryItem{}, err
 		}
@@ -954,11 +991,11 @@ func (c *FactoryController) Command(ctx context.Context, itemID string, cmd Fact
 		}
 	}
 	before, _ := c.store.Get(itemID)
-	raw, err := json.Marshal(cmd)
+	raw, err := factoryCommandJournal(cmd, p)
 	if err != nil {
 		return FactoryItem{}, err
 	}
-	i, err := c.store.Update(itemID, cmd.RequestID, cmd.ExpectedVersion, raw, func(i *FactoryItem) error { return factoryApplyCommand(i, cmd, c.now()) }, c.now())
+	i, err := c.store.Update(itemID, cmd.RequestID, cmd.ExpectedVersion, raw, func(i *FactoryItem) error { return factoryApplyCommandFrom(i, cmd, p, c.now()) }, c.now())
 	if err == nil {
 		if cmd.Kind == "stop" && before.Version == cmd.ExpectedVersion {
 			if canceler, ok := c.effects.(interface {
@@ -977,7 +1014,39 @@ func (c *FactoryController) Command(ctx context.Context, itemID string, cmd Fact
 	}
 	return i, err
 }
+// factoryCommandJournal renders the payload the journal's replay identity is
+// hashed over. A Studio command is hashed exactly as it always was; an MCP
+// command also binds the authority it was admitted under, so the same client
+// approving one draft under two different authorities is two operations.
+func factoryCommandJournal(cmd FactoryCommand, p *factoryPrincipal) (json.RawMessage, error) {
+	if p == nil {
+		return json.Marshal(cmd)
+	}
+	return json.Marshal(struct {
+		Command   FactoryCommand `json:"command"`
+		ClientID  string         `json:"clientId"`
+		ProjectID string         `json:"projectId"`
+		Action    string         `json:"action"`
+		Authority string         `json:"authority,omitempty"`
+	}{
+		Command:   cmd,
+		ClientID:  p.ClientID,
+		ProjectID: p.ProjectID,
+		Action:    p.Action,
+		Authority: p.Authority,
+	})
+}
+
+// factoryApplyCommand applies one command the Studio surfaces sent: it writes
+// no provenance, so its journal bytes are the ones those surfaces have always
+// produced.
 func factoryApplyCommand(i *FactoryItem, c FactoryCommand, now time.Time) error {
+	return factoryApplyCommandFrom(i, c, nil, now)
+}
+
+// factoryApplyCommandFrom applies one command, attributing the entries it
+// journals to p in the same mutation.
+func factoryApplyCommandFrom(i *FactoryItem, c FactoryCommand, p *factoryPrincipal, now time.Time) error {
 	switch c.Kind {
 	case "approve":
 		if i.State != "draft" {
@@ -988,6 +1057,11 @@ func factoryApplyCommand(i *FactoryItem, c FactoryCommand, now time.Time) error 
 		i.Grants = append(i.Grants, FactoryGrant{ID: c.RequestID, Reason: "initial approval", AdditionalRounds: a.Config.MaxRounds, At: now})
 		i.State = "queued"
 		i.ApprovedAt = now
+		if p != nil {
+			// An approval's attribution is journalled beside the approval it
+			// describes, never instead of it.
+			i.History = append(i.History, p.event("approve", "draft approved and queued", "", now))
+		}
 	case "answer":
 		if i.Decision == nil || i.Decision.ID != c.DecisionID || i.Decision.Kind != "question" || strings.TrimSpace(c.Answer) == "" || len(i.Effects) == 0 {
 			return ErrFactoryConflict
@@ -996,7 +1070,9 @@ func factoryApplyCommand(i *FactoryItem, c FactoryCommand, now time.Time) error 
 		if i.Decision.EffectID == "" || i.Decision.EffectID != e.ID || e.Status != "completed" || e.Outcome == nil || e.Outcome.Report == nil || e.Outcome.Report.Outcome != "needs_input" {
 			return ErrFactoryConflict
 		}
-		i.History = append(i.History, FactoryEvent{At: now, Kind: "answer", Message: c.Answer})
+		// The answer's own event carries the attribution and names the
+		// decision it resolved: a nil principal writes the entry unchanged.
+		i.History = append(i.History, p.event("answer", c.Answer, c.DecisionID, now))
 		i.Decision = nil
 		i.State = "repairing"
 	case "stop":

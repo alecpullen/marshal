@@ -18,6 +18,18 @@ import (
 // post sends one action: body encoded as JSON when it is not nil, out
 // decoded when it is not nil. A non-2xx answer is a *acpclient.FleetError.
 func (c *Client) post(ctx context.Context, path string, body, out any) error {
+	return c.action(ctx, http.MethodPost, path, body, out)
+}
+
+// getAction reads one action's answer with post's refusal handling: an action's
+// read refuses the same way its writes do (decision 2).
+func (c *Client) getAction(ctx context.Context, path string, out any) error {
+	return c.action(ctx, http.MethodGet, path, nil, out)
+}
+
+// action sends one action's request. Every action goes through here, so every
+// action's refusal is the seam's error whatever its method.
+func (c *Client) action(ctx context.Context, method, path string, body, out any) error {
 	var sent io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -26,7 +38,7 @@ func (c *Client) post(ctx context.Context, path string, body, out any) error {
 		}
 		sent = bytes.NewReader(encoded)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.transport.BaseURL+path, sent)
+	req, err := http.NewRequestWithContext(ctx, method, c.transport.BaseURL+path, sent)
 	if err != nil {
 		return fmt.Errorf("fleet action: %w", err)
 	}
@@ -36,7 +48,7 @@ func (c *Client) post(ctx context.Context, path string, body, out any) error {
 	if err := c.authorize(ctx, req); err != nil {
 		return err
 	}
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.actionClient().Do(req)
 	if err != nil {
 		// The bridge was not reached: status 0 and the dial's text (decision 2).
 		return &acpclient.FleetError{Message: err.Error()}
@@ -53,6 +65,16 @@ func (c *Client) post(ctx context.Context, path string, body, out any) error {
 		return fmt.Errorf("fleet action %s: %w", path, err)
 	}
 	return nil
+}
+
+// actionClient is the transport's HTTP client with redirects refused: a
+// redirect answers as a refusal instead of re-sending the request elsewhere.
+func (c *Client) actionClient() *http.Client {
+	client := *c.httpClient()
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &client
 }
 
 // actionError turns a refused answer into the seam's error (decision 2).
@@ -119,7 +141,7 @@ func (c *Client) RecentPrompts(ctx context.Context, project string, limit int) (
 	query.Set("limit", strconv.Itoa(limit))
 
 	var out contract.RecentPrompts
-	if err := c.get(ctx, "/api/prompts/recent?"+query.Encode(), &out); err != nil {
+	if err := c.getAction(ctx, "/api/prompts/recent?"+query.Encode(), &out); err != nil {
 		return nil, err
 	}
 	return out.Prompts, nil

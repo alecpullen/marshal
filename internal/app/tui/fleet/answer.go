@@ -57,6 +57,15 @@ func (m *Model) refusedWhileDown() bool {
 // Events alone, and any other failure shows its sentence on the status line
 // and in Events.
 func (m *Model) actionDone(msg actionDoneMsg) {
+	if m.staleAction(msg.seq) {
+		// A newer action was dispatched since this one: its answer describes
+		// the screen, so this one must not clear the newer message or move
+		// the selection. A failure still reaches Events.
+		if msg.err != nil && !errors.Is(msg.err, acpclient.ErrSettled) {
+			m.addEvent(msg.what + " " + msg.name + " failed: " + msg.err.Error())
+		}
+		return
+	}
 	switch {
 	case msg.err == nil:
 		m.status = statusLine{}
@@ -149,10 +158,11 @@ func (m Model) decide(approved bool) (tea.Model, tea.Cmd, bool) {
 	if accessOnly(a.Pending) {
 		return m, nil, true
 	}
-	m.answer = ""
 	if m.refusedWhileDown() {
+		// The prompt stays open: a refusal is not an answer.
 		return m, nil, true
 	}
+	m.answer = ""
 	return m, m.answerPermissionCmd(a, contract.Decision{Approved: approved}), true
 }
 
@@ -160,10 +170,11 @@ func (m Model) decide(approved bool) (tea.Model, tea.Cmd, bool) {
 // actionTimeout.
 func (m Model) answerPermissionCmd(a contract.AgentStatus, d contract.Decision) tea.Cmd {
 	f, id, name := m.fleet, a.Pending.ID, agentName(a)
+	seq := m.nextActionSeq()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), actionTimeout)
 		defer cancel()
-		return actionDoneMsg{what: "answer", name: name, err: f.AnswerPermission(ctx, id, d)}
+		return actionDoneMsg{what: "answer", name: name, err: f.AnswerPermission(ctx, id, d), seq: seq}
 	}
 }
 
@@ -171,10 +182,11 @@ func (m Model) answerPermissionCmd(a contract.AgentStatus, d contract.Decision) 
 // actionTimeout.
 func (m Model) answerQuestionCmd(name, id string, a contract.Answers) tea.Cmd {
 	f := m.fleet
+	seq := m.nextActionSeq()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), actionTimeout)
 		defer cancel()
-		return actionDoneMsg{what: "answer", name: name, err: f.AnswerQuestion(ctx, id, a)}
+		return actionDoneMsg{what: "answer", name: name, err: f.AnswerQuestion(ctx, id, a), seq: seq}
 	}
 }
 
@@ -410,10 +422,12 @@ func (q *questionModal) toggle(i int) {
 
 // answer sends the request's answers in a command and closes the modal.
 func (q *questionModal) answer(m Model, a contract.Answers) (Model, tea.Cmd) {
-	m.modal = nil
 	if m.refusedWhileDown() {
+		// The modal stays open with its answers: a refusal is not a reason to
+		// throw away what the user typed.
 		return m, nil
 	}
+	m.modal = nil
 	name := shortID(q.agent)
 	if agent, ok := m.agentByID(q.agent); ok {
 		name = agentName(agent)
@@ -424,17 +438,27 @@ func (q *questionModal) answer(m Model, a contract.Answers) (Model, tea.Cmd) {
 // view draws the modal over the right panel: the question being answered, its
 // options with the cursor, or the field that takes a typed answer.
 func (q *questionModal) view(m Model, width, height int) string {
-	title, hints := "Question", "enter answer · d decline · esc close"
+	inner := max(width-4, 1)
+	title := "Question"
 	if n := len(q.qs); n > 1 {
 		title = fmt.Sprintf("Question %d/%d", q.at+1, n)
 	}
-	inner := max(width-4, 1)
 	cur, ok := q.cur()
 	if !ok {
 		return m.frame(title, "esc close", []string{m.plain(cut("the question could not be read", inner))}, width, height, true)
 	}
+	// The hints name the keys that do something for this question: a
+	// question with no options takes d as text, so it does not decline.
+	hints := "enter answer · d decline · esc close"
+	if len(cur.options) == 0 {
+		hints = "enter answer · esc close"
+	} else if cur.multi {
+		hints = "space toggle · enter answer · d decline · esc close"
+	}
 	body := []string{m.plain(cut(cur.text, inner)), ""}
 	if len(cur.options) == 0 {
+		// One cell goes to the input's cursor past its width.
+		q.field.SetWidth(clamp(inner-len("answer: ")-1, 8, questionFieldWidth))
 		body = append(body, m.plain("answer: ")+q.field.View())
 	} else {
 		for i := range cur.options {

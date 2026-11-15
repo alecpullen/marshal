@@ -3,12 +3,12 @@
 │ ⚠ fix-fl…  38%   2    2m ││ activity  waiting on an approval                 │
 │ Running                  ││ waiting   approval                               │
 │ ● s3b-eg…  41%   7    0s ││ request   go test ./internal/app/tui/...         │
-│ Ready                    ││           go test ./internal/app/tui/...         │
-│ ✓ docs-d…  22%   4    1h ││           [y]es [n]o                             │
-│ Earlier                  ││ context   38%                                    │
-│ · docs-s…  12%   0    5s ││ changed   2                                      │
-│ ✗ ci-fix…   9%   0    3h ││ age       2m                                     │
-│ Sessions                 ││ gate      pass · 22:11                           │
+│ Ready                    ││           [y]es [n]o                             │
+│ ✓ docs-d…  22%   4    1h ││ context   38%                                    │
+│ Earlier                  ││ changed   2                                      │
+│ · docs-s…  12%   0    5s ││ age       2m                                     │
+│ ✗ ci-fix…   9%   0    3h ││ gate      pass · 22:11                           │
+│ Sessions                 ││                                                  │
 │ · marshal 3f2a91bc 2… 3m ││                                                  │
 │ · marshal 9c1d4e5f 1… 1m ││                                                  │
 ╰──────────────────────────╯│                                                  │

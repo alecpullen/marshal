@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"marshal/internal/acpclient"
@@ -297,5 +300,121 @@ func TestAnActionSendsTheToken(t *testing.T) {
 
 	if _, _, _, _, auth := b.recorded(); auth != "Bearer tok-1" {
 		t.Fatalf("the action carried %q, want %q", auth, "Bearer tok-1")
+	}
+}
+
+// TestAnUnreachableBridgeIsAStatusZeroRefusal: a dial failure is a refusal with
+// no status and the dial's sentence, not a bare error (decision 2).
+func TestAnUnreachableBridgeIsAStatusZeroRefusal(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close the listener: %v", err)
+	}
+
+	c := New(Transport{Server: "gone", BaseURL: "http://" + addr})
+	err = c.Cancel(context.Background(), "a1")
+
+	var refusal *acpclient.FleetError
+	if !errors.As(err, &refusal) {
+		t.Fatalf("the dial failure is %T (%v), want *acpclient.FleetError", err, err)
+	}
+	if refusal.Status != 0 {
+		t.Errorf("the refusal carries status %d, want 0", refusal.Status)
+	}
+	if refusal.Message == "" {
+		t.Error("the refusal carries no sentence, want the dial's")
+	}
+}
+
+// TestARefusalWithoutASentenceSaysItsStatus: a refusal body with no "error"
+// field still reads as a sentence, and still carries its status.
+func TestARefusalWithoutASentenceSaysItsStatus(t *testing.T) {
+	b := newActionBridge(t)
+	b.reply(http.StatusConflict, `{}`)
+
+	err := b.client(nil).Cancel(context.Background(), "a1")
+
+	var refusal *acpclient.FleetError
+	if !errors.As(err, &refusal) {
+		t.Fatalf("the refusal is %T (%v), want *acpclient.FleetError", err, err)
+	}
+	if refusal.Status != http.StatusConflict {
+		t.Errorf("the refusal carries status %d, want %d", refusal.Status, http.StatusConflict)
+	}
+	if want := "status 409"; refusal.Error() != want {
+		t.Errorf("the refusal says %q, want %q", refusal.Error(), want)
+	}
+}
+
+// TestAnUnreadableAnswerIsAnError: a 2xx body that is not the action's result
+// fails loudly rather than passing a zero value off as an answer.
+func TestAnUnreadableAnswerIsAnError(t *testing.T) {
+	b := newActionBridge(t)
+	b.reply(http.StatusOK, `not json`)
+
+	_, err := b.client(nil).Spawn(context.Background(), contract.SpawnRequest{Project: "/repo/a"})
+	if err == nil {
+		t.Fatal("an unreadable answer was accepted")
+	}
+	if !strings.Contains(err.Error(), "fleet action") {
+		t.Errorf("the failure is %q, want it to name the action", err)
+	}
+	var refusal *acpclient.FleetError
+	if errors.As(err, &refusal) {
+		t.Errorf("an unreadable answer is a refusal (%v), want a decode failure", refusal)
+	}
+}
+
+// TestARedirectIsRefusedNotFollowed: a redirect answers as a refusal, so an
+// action's body is never re-sent to wherever it points.
+func TestARedirectIsRefusedNotFollowed(t *testing.T) {
+	var reached atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached.Add(1)
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer target.Close()
+
+	bridge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer bridge.Close()
+
+	c := New(Transport{Server: "redirecting", BaseURL: bridge.URL, HTTP: bridge.Client()})
+	err := c.Cancel(context.Background(), "a1")
+
+	var refusal *acpclient.FleetError
+	if !errors.As(err, &refusal) {
+		t.Fatalf("the redirect is %T (%v), want *acpclient.FleetError", err, err)
+	}
+	if refusal.Status != http.StatusFound {
+		t.Errorf("the refusal carries status %d, want %d", refusal.Status, http.StatusFound)
+	}
+	if got := reached.Load(); got != 0 {
+		t.Errorf("the redirect was followed: the target answered %d times", got)
+	}
+}
+
+// TestAReadRefusesLikeAnActionDoes: RecentPrompts is an action too, so its
+// refusal is the seam's error with its sentence — not a plain read failure.
+func TestAReadRefusesLikeAnActionDoes(t *testing.T) {
+	b := newActionBridge(t)
+	b.reply(http.StatusTooManyRequests, `{"error":"budget_exceeded","scope":"daily"}`)
+
+	_, err := b.client(nil).RecentPrompts(context.Background(), "/repo/a", 5)
+
+	var refusal *acpclient.FleetError
+	if !errors.As(err, &refusal) {
+		t.Fatalf("the read's refusal is %T (%v), want *acpclient.FleetError", err, err)
+	}
+	if refusal.Status != http.StatusTooManyRequests {
+		t.Errorf("the refusal carries status %d, want %d", refusal.Status, http.StatusTooManyRequests)
+	}
+	if want := "Budget reached (daily)"; refusal.Error() != want {
+		t.Errorf("the refusal says %q, want %q", refusal.Error(), want)
 	}
 }

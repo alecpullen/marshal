@@ -8,6 +8,7 @@ package fleet
 import (
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -71,6 +72,11 @@ type Model struct {
 	answer string // the agent whose approval is open inline; "" for none
 	status statusLine
 
+	// actions numbers the actions dispatched, so a slow answer cannot undo a
+	// newer one. It is shared by pointer: Model is a value, and every copy
+	// must number from the same count.
+	actions *actionTally
+
 	// done releases the wait command when the program quits, so the wait
 	// cannot block a program that has stopped reading its messages. It is
 	// held by pointer: Model is a value, and every copy shares one release.
@@ -99,6 +105,34 @@ type actionDoneMsg struct {
 	// selectID is the row to select once it appears; "" for none.
 	selectID string
 	warning  string
+	// seq is the action's number, from nextActionSeq; 0 for a message no
+	// action dispatched.
+	seq uint64
+}
+
+// actionTally numbers the actions dispatched since the screen opened.
+type actionTally struct {
+	seq atomic.Uint64
+}
+
+// next hands out the next action's number.
+func (t *actionTally) next() uint64 { return t.seq.Add(1) }
+
+// current is the last number handed out.
+func (t *actionTally) current() uint64 { return t.seq.Load() }
+
+// nextActionSeq numbers one action at the moment it is dispatched.
+func (m Model) nextActionSeq() uint64 {
+	if m.actions == nil {
+		return 0
+	}
+	return m.actions.next()
+}
+
+// staleAction reports whether a newer action was dispatched after this one:
+// its answer no longer describes the screen.
+func (m Model) staleAction(seq uint64) bool {
+	return seq != 0 && m.actions != nil && seq < m.actions.current()
 }
 
 // quitGate releases the wait command when the program quits. The close is
@@ -136,12 +170,13 @@ func WithNow(now func() time.Time) Option {
 // exactly as the session screen's loadTheme does.
 func New(f acpclient.Fleet, opts ...Option) Model {
 	m := &Model{
-		fleet:  f,
-		now:    time.Now,
-		cfg:    config.Default().TUI,
-		tab:    1,
-		dimmed: true,
-		done:   newQuitGate(),
+		fleet:   f,
+		now:     time.Now,
+		cfg:     config.Default().TUI,
+		tab:     1,
+		dimmed:  true,
+		done:    newQuitGate(),
+		actions: &actionTally{},
 	}
 	for _, opt := range opts {
 		opt(m)

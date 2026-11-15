@@ -1,8 +1,8 @@
 ╭─ Agents ────────────────────────────────────────────── 7─╮╭─ New agent ──────────────────────────╮
 │ Needs you                                                ││ project   /repo/marshal  j/k         │
-│ ⚠ fix-flaky-hooks      38%   2    2m marshal      act    ││ name      > unnamed                … │
+│ ⚠ fix-flaky-hooks      38%   2    2m marshal      act    ││ name      > unnamed                  │
 │ Running                                                  ││ mode      default  space             │
-│ ● s3b-egress           41%   7    0s marshal      ask    ││ prompt    > the first prompt       … │
+│ ● s3b-egress           41%   7    0s marshal      ask    ││ prompt    > the first prompt  ctrl+r │
 │ Ready                                                    ││                                      │
 │ ✓ docs-deploy          22%   4    1h notes        act    ││                                      │
 │ Earlier                                                  ││                                      │

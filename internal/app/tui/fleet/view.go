@@ -756,7 +756,8 @@ func (m Model) approvalLines(p *contract.PendingRequest, inner int) []string {
 		return lines
 	}
 	params := approvalOf(p)
-	appendText(describePending(p))
+	// The request's own text is the Activity tab's request row, directly
+	// above: repeating it here would print the command twice.
 	if params.Risk != "" {
 		appendText("risk " + params.Risk)
 	}
@@ -825,12 +826,20 @@ func (m Model) footer() string {
 		middle = "  " + chrome.TertiaryStyle().Render(keys)
 	}
 	hints := chrome.TertiaryStyle().Render("?help q quit")
-	if line := m.statusText(); line != "" {
+	if status := m.statusText(); status != "" {
 		// An action's failure, or a refusal while down, takes the hints'
-		// place while it lasts.
-		hints = chrome.TertiaryStyle().Render(cut(line, m.width))
+		// place while it lasts, and the panel keys' room with it: the
+		// sentence — the bridge's own reason — must not be clipped to make
+		// room for keys nobody is pressing.
+		hints = chrome.TertiaryStyle().Render(status)
+		middle = ""
 	}
 	room := m.width - ansi.StringWidth(middle) - ansi.StringWidth(hints) - 2
+	if room < 1 && m.statusText() != "" {
+		// A sentence wider than the footer: it keeps every cell, rather than
+		// yielding them to a one-cell stub of the server label.
+		return padTo(cut(hints, m.width), m.width)
+	}
 	left = cut(left, max(room, 1))
 	gap := m.width - ansi.StringWidth(left) - ansi.StringWidth(middle) - ansi.StringWidth(hints)
 	line := left + middle + strings.Repeat(" ", max(gap, 1)) + hints

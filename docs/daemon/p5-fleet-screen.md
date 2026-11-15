@@ -702,7 +702,8 @@ first, then the alternative it was weighed against.
     UI's stop is. Anywhere else it does nothing. It reaches a turn a viewer
     started once plan 4c is merged.
   - **Intake is a two-line prompt.** `⏎` on an intake item in Needs you asks
-    "approve <title>? [y]es [n]o, deny", and `esc` closes it. Approving
+    "approve <title>?" over "[y]es [n]o, deny", the footer naming the keys
+    ("y approve · n deny · esc close"), and `esc` closes it. Approving
     selects the spawned agent once it appears.
   - **Refused while down.** With the connection anything but connected, each
     action key sets the status line to "not connected to <server>" and calls
@@ -1856,12 +1857,48 @@ gained seven rows.
   the project's default, `ask`, `act` and `act` with auto (leaving `mode` and
   `auto` out on the default), and reads the project's recent prompts behind
   `ctrl+r`. `x` cancels only a running agent. `⏎` on a needs-you intake item
-  asks "approve <title>? [y]es [n]o, deny". The help screen and the footer
-  hints name the new keys.
+  asks "approve <title>?" over "[y]es [n]o, deny". The help screen and the
+  footer hints name the new keys.
 - **The goldens** gain the plan's four frames at 100×30 and their four
-  `NO_COLOR` twins at 80×24, and the five existing frames are regenerated
-  because the footer's hints legitimately changed: each of those five diffs is
-  the footer line alone.
+  `NO_COLOR` twins at 80×24. Existing frames were regenerated twice: Task 6
+  changed five of them for the footer's new hints (the footer line alone), and
+  the review pass below changed six for the status line, the approval's
+  duplicate request line and the spawn fields' widths.
+
+**Review follow-ups applied.** A three-way review of the branch (contract and
+client, TUI surface, web UI and docs) found no blockers, four should-fix
+defects and a set of nits; every defect and every nit that changed behaviour
+was fixed in place.
+
+- **`RecentPrompts` refused unlike an action.** It went through the plain read
+  path, so its refusal was not a `FleetError` and a 429 there lost the
+  "Budget reached (<scope>)" sentence. Every action now sends through one
+  `action` path, whatever its method, and an action's request refuses a
+  redirect instead of following it.
+- **An inline approval outlived the selection.** `y` answered a prompt that
+  the right panel had stopped drawing, because the key path did not care
+  which agent was selected. The prompt now closes when the cursor leaves its
+  agent, and the key path requires the answered agent to be the selected one.
+- **A refused submit discarded the answer.** A connection that dropped while
+  the question modal was open closed it on `⏎`, typed answer and all; a
+  refused `y` closed the inline prompt the same way. A refusal now leaves
+  both open, as the intake and spawn forms already did.
+- **A late result could undo a newer one.** `actionDone` applied its message
+  whatever else had happened since, so a slow success cleared a newer
+  failure's status line and moved the selection. Actions are numbered when
+  they are dispatched; a stale answer no longer applies, though its failure
+  still reaches Events.
+- **The footer clipped its own message.** A status line longer than about 43
+  cells lost its tail at 80 columns to the panel keys. While a status shows it
+  takes the keys' room, so the bridge's reason survives.
+- **Smaller rendering fixes.** The inline approval no longer prints the
+  request twice; the spawn and question fields are clamped to their line (an
+  ellipsis now means the value is longer, not that the field is too wide); the
+  question modal's hints name only the keys that act for that question; and
+  the web question modal trims a typed answer, as the TUI does.
+- **New tests** cover each fix above, and the fleetclient error paths that had
+  none: a dial failure as a status-zero refusal, a refusal body with no
+  sentence, an unreadable answer, a redirect, and a read's refusal shape.
 
 **Where the plan was short, and how that was filled.**
 

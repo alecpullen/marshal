@@ -1,8 +1,8 @@
 ╭─ Agents ────────────── 7─╮╭─ New agent ────── tab next · ⏎ spawn · esc close─╮
 │ Needs you                ││ project   /repo/marshal  j/k                     │
-│ ⚠ fix-fl…  38%   2    2m ││ name      > unnamed                            … │
+│ ⚠ fix-fl…  38%   2    2m ││ name      > unnamed                              │
 │ Running                  ││ mode      default  space                         │
-│ ● s3b-eg…  41%   7    0s ││ prompt    > the first prompt                   … │
+│ ● s3b-eg…  41%   7    0s ││ prompt    > the first prompt              ctrl+r │
 │ Ready                    ││                                                  │
 │ ✓ docs-d…  22%   4    1h ││                                                  │
 │ Earlier                  ││                                                  │

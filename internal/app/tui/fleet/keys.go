@@ -31,8 +31,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.modal.update(m, msg)
 	}
 	// An open approval answers y and n, and esc closes it (decision 4).
-	// Everything else falls through to the screen.
-	if m.answer != "" {
+	// Everything else falls through to the screen. The prompt is drawn only
+	// for the selected agent, so it answers only while its agent is selected.
+	if m.answer != "" && m.answer == m.selected {
 		if next, cmd, handled := m.answerKey(msg); handled {
 			return next, cmd
 		}
@@ -110,10 +111,11 @@ func (m Model) cancelSelected() (tea.Model, tea.Cmd) {
 // cancelCmd stops the agent's turn in a command, bounded by actionTimeout.
 func (m Model) cancelCmd(a contract.AgentStatus) tea.Cmd {
 	f, id, name := m.fleet, a.ID, agentName(a)
+	seq := m.nextActionSeq()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), actionTimeout)
 		defer cancel()
-		return actionDoneMsg{what: "cancel", name: name, err: f.Cancel(ctx, id)}
+		return actionDoneMsg{what: "cancel", name: name, err: f.Cancel(ctx, id), seq: seq}
 	}
 }
 
@@ -175,6 +177,16 @@ func (m *Model) moveAgents(delta int) {
 	}
 	m.agentCursor = clamp(m.agentCursor+delta, 0, len(rows)-1)
 	m.selected = rows[m.agentCursor].id
+	m.closeStaleAnswer()
+}
+
+// closeStaleAnswer drops an inline approval once the selection has left its
+// agent: the prompt is drawn only for the selected agent, so nothing may
+// answer it after the cursor moves on.
+func (m *Model) closeStaleAnswer() {
+	if m.answer != "" && m.answer != m.selected {
+		m.answer = ""
+	}
 }
 
 // moveNeedsYou moves the Needs you panel's cursor over the queue and selects
@@ -197,4 +209,5 @@ func (m *Model) moveNeedsYou(delta int) {
 			m.agentCursor = idx
 		}
 	}
+	m.closeStaleAnswer()
 }

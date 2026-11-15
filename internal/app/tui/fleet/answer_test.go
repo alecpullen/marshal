@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -172,6 +173,127 @@ func TestAnAccessRequestIsNotAnsweredHere(t *testing.T) {
 	}
 	if len(f.permissions) != 0 {
 		t.Fatalf("permission answers = %+v, want none", f.permissions)
+	}
+	if m.answer != "a1" {
+		t.Fatalf("y closed the prompt: answer = %q, want the agent a1", m.answer)
+	}
+}
+
+// TestMovingOffAnApprovalClosesIt: the prompt is drawn for the selected agent,
+// so moving the cursor off it must close it rather than leave a hidden prompt
+// that y would still answer.
+func TestMovingOffAnApprovalClosesIt(t *testing.T) {
+	f := newFakeFleet()
+	state := parkedState(approvalRequest())
+	state.Agents = append(state.Agents, contract.AgentStatus{ID: "b1", Name: "Bravo", Status: contract.AgentRunning})
+	state.Inbox.Groups.Ready = []string{"b1"}
+	m := sized(t, f.change(t, New(f, fixedClock()), state))
+	m = openApproval(t, m)
+
+	if m.answer != "a1" {
+		t.Fatalf("answer = %q, want the agent a1", m.answer)
+	}
+	m, _ = press(t, m, tea.KeyPressMsg{Code: 'j', Text: "j"})
+	if m.selected != "b1" {
+		t.Fatalf("selected = %q, want the agent b1 after j", m.selected)
+	}
+	if m.answer != "" {
+		t.Fatalf("the approval stayed open off its agent: %q", m.answer)
+	}
+	if strings.Contains(m.View().Content, "[y]es [n]o") {
+		t.Fatalf("the closed approval is still drawn:\n%s", m.View().Content)
+	}
+
+	if _, cmd := press(t, m, tea.KeyPressMsg{Code: 'y', Text: "y"}); cmd != nil {
+		t.Fatal("y answered a prompt that is no longer on screen")
+	}
+	if len(f.permissions) != 0 {
+		t.Fatalf("permission answers = %+v, want none", f.permissions)
+	}
+}
+
+// TestARefusedSubmitKeepsTheQuestion: a connection that drops while the modal
+// is open refuses the submit without throwing away what the user typed.
+func TestARefusedSubmitKeepsTheQuestion(t *testing.T) {
+	f := newFakeFleet()
+	p := questionRequest(`{"questions":[{"question":"Name it"}]}`)
+	m := openApproval(t, answering(t, f, p, clock()))
+	m = typeText(t, m, "blue")
+
+	down := parkedState(p)
+	down.Conn = acpclient.FleetDown
+	down.ConnErr = "dial tcp 127.0.0.1:7700: connect: connection refused"
+	m = sized(t, f.change(t, m, down))
+
+	m, cmd := press(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("the refused submit returned a command")
+	}
+	q, ok := m.modal.(*questionModal)
+	if !ok {
+		t.Fatalf("the modal is %T, want it still open", m.modal)
+	}
+	if got := q.field.Value(); got != "blue" {
+		t.Fatalf("the typed answer was lost: %q", got)
+	}
+	if len(f.questions) != 0 {
+		t.Fatalf("question answers = %+v, want none", f.questions)
+	}
+	if got, want := m.statusText(), "not connected to local"; got != want {
+		t.Fatalf("status line = %q, want %q", got, want)
+	}
+}
+
+// TestALateSuccessDoesNotClearANewerFailure: an action that answers after a
+// newer one started leaves the newer message and the selection alone.
+func TestALateSuccessDoesNotClearANewerFailure(t *testing.T) {
+	f := newFakeFleet()
+	m := answering(t, f, approvalRequest(), clock())
+
+	slow := m.nextActionSeq()
+	newer := m.nextActionSeq()
+	const want = "cancel Alpha failed: no such turn"
+	m.actionDone(actionDoneMsg{what: "cancel", name: "Alpha", err: errors.New("no such turn"), seq: newer})
+	if got := m.statusText(); got != want {
+		t.Fatalf("status line = %q, want %q", got, want)
+	}
+
+	m.actionDone(actionDoneMsg{what: "answer", name: "Alpha", seq: slow})
+	if got := m.statusText(); got != want {
+		t.Fatalf("a late success cleared a newer failure: status = %q, want %q", got, want)
+	}
+
+	// A late failure still reaches Events: a dropped answer is worth knowing
+	// about, even when it no longer describes the screen.
+	m.actionDone(actionDoneMsg{what: "answer", name: "Alpha", err: errors.New("late refusal"), seq: slow})
+	if got, want := lastEvent(m), "15:04 answer Alpha failed: late refusal"; got != want {
+		t.Fatalf("last event = %q, want %q", got, want)
+	}
+	if got := m.statusText(); got != want {
+		t.Fatalf("a late failure replaced the newer message: status = %q, want %q", got, want)
+	}
+}
+
+// TestDFallsThroughOnATextualQuestion: a question with no options takes every
+// printable key, d included, so d types rather than declining.
+func TestDFallsThroughOnATextualQuestion(t *testing.T) {
+	f := newFakeFleet()
+	m := openApproval(t, answering(t, f, questionRequest(`{"questions":[{"question":"Name it"}]}`), clock()))
+
+	m = typeText(t, m, "delete")
+	if m.modal == nil {
+		t.Fatal("d declined a textual question")
+	}
+	m, cmd := press(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = answer(t, m, cmd)
+
+	if len(f.questions) != 1 {
+		t.Fatalf("question answers = %+v, want one", f.questions)
+	}
+	want := []contract.Answer{{Question: "Name it", Answer: "delete"}}
+	got := f.questions[0].a.Answers
+	if len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("answers = %+v, want %+v", got, want)
 	}
 }
 

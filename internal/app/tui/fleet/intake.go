@@ -88,14 +88,15 @@ func (p *intakePrompt) answer(m Model, approve bool) (Model, tea.Cmd) {
 // 8).
 func (m Model) intakeCmd(p *intakePrompt, approve bool) tea.Cmd {
 	f, id, title := m.fleet, p.id, p.title
+	seq := m.nextActionSeq()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), actionTimeout)
 		defer cancel()
 		if !approve {
-			return actionDoneMsg{what: "deny", name: title, err: f.DenyIntake(ctx, id)}
+			return actionDoneMsg{what: "deny", name: title, err: f.DenyIntake(ctx, id), seq: seq}
 		}
 		res, err := f.ApproveIntake(ctx, id)
-		return actionDoneMsg{what: "approve", name: title, err: err, selectID: res.AgentID}
+		return actionDoneMsg{what: "approve", name: title, err: err, selectID: res.AgentID, seq: seq}
 	}
 }
 

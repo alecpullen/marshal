@@ -286,11 +286,12 @@ func (m Model) spawnCmd(req contract.SpawnRequest) tea.Cmd {
 	if name == "" {
 		name = projectName(req.Project)
 	}
+	seq := m.nextActionSeq()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), actionTimeout)
 		defer cancel()
 		res, err := f.Spawn(ctx, req)
-		return actionDoneMsg{what: "spawn", name: name, err: err, selectID: res.AgentID, warning: res.Warning}
+		return actionDoneMsg{what: "spawn", name: name, err: err, selectID: res.AgentID, warning: res.Warning, seq: seq}
 	}
 }
 
@@ -312,11 +313,16 @@ func (s *spawnModal) projectText() string {
 // there is nothing to spawn in.
 func (s *spawnModal) view(m Model, width, height int) string {
 	inner := max(width-4, 1)
+	// Each field takes the width its own line has left, so a value that fits
+	// is never cut and an ellipsis means the value really is longer. The
+	// text input renders one cell past its width for the cursor.
+	s.name.SetWidth(clamp(inner-labelWidth-3, 8, spawnFieldWidth))
+	s.prompt.SetWidth(clamp(inner-labelWidth-3-len("  ctrl+r"), 8, spawnFieldWidth))
 	body := []string{
 		s.line(m, spawnFieldProject, "project", s.projectText(), "j/k", inner),
 		s.line(m, spawnFieldName, "name", s.name.View(), "", inner),
 		s.line(m, spawnFieldMode, "mode", spawnModes[clamp(s.mode, 0, len(spawnModes)-1)].text, "space", inner),
-		s.line(m, spawnFieldPrompt, "prompt", s.prompt.View(), "ctrl+r recent", inner),
+		s.line(m, spawnFieldPrompt, "prompt", s.prompt.View(), "ctrl+r", inner),
 	}
 	if s.refusal != "" {
 		body = append(body, "")

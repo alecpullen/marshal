@@ -12,12 +12,15 @@ import (
 	"time"
 
 	"marshal/internal/acp"
+	"marshal/internal/acpclient"
 	"marshal/internal/acpclient/rpc"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/clipboard"
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui"
+	"marshal/internal/app/tui/fleet"
 	"marshal/internal/daemon"
+	"marshal/internal/fleetclient"
 	"marshal/internal/repo"
 )
 
@@ -38,6 +41,39 @@ const (
 type daemonClient interface {
 	Info(ctx context.Context) (daemon.Info, error)
 	Attach(ctx context.Context, root, sessionID string) (*daemon.Attachment, error)
+	AttachAgent(ctx context.Context, agentID string) (*daemon.Attachment, error)
+}
+
+// daemonStep is what the daemon loop runs next.
+type daemonStep struct {
+	fleet     bool
+	selected  string // the fleet's selection to restore
+	notice    string // an Events line for the fleet program
+	agentID   string
+	agentName string
+	root      string // the project
+	sessionID string // a daemon session; "" opens a new one on root
+}
+
+// label names the step's session in a message: the agent's name, else the
+// session's ID, else the new session the daemon would have started.
+func (s daemonStep) label() string {
+	switch {
+	case s.agentName != "":
+		return s.agentName
+	case s.sessionID != "":
+		return s.sessionID
+	}
+	return "a new session"
+}
+
+// selection is the fleet row this step's session is: the agent's ID, else the
+// session's.
+func (s daemonStep) selection(sessionID string) string {
+	if s.agentID != "" {
+		return s.agentID
+	}
+	return sessionID
 }
 
 // WithDaemon makes Run try the local daemon on socket first (P4 D5): when a
@@ -152,7 +188,7 @@ func Attach(ctx context.Context, stdout io.Writer, socket, sessionID string, opt
 			return fmt.Errorf("launch: no daemon session for %s; `marshal` starts one", root)
 		}
 	}
-	return runDaemon(ctx, stdout, &runOpts, sessionID)
+	return runDaemon(ctx, stdout, &runOpts, daemonStep{root: root, sessionID: sessionID})
 }
 
 // firstSessionFor is the first session of the child serving root, or "" when
@@ -170,13 +206,16 @@ func firstSessionFor(info daemon.Info, root string) string {
 	return ""
 }
 
-// runDaemon runs the TUI over the daemon's relay until the program ends, the
-// connection is lost, or the user detaches. sessionID is the session to
-// attach, "" for a new one; every resume after that names the chosen session.
-func runDaemon(ctx context.Context, stdout io.Writer, opts *options, sessionID string) error {
+// runDaemon runs the daemon's TUI from the first step until the loop ends: the
+// fleet screen and a session, either of which can lead to the other (P5 F5).
+func runDaemon(ctx context.Context, stdout io.Writer, opts *options, first daemonStep) error {
 	root, home, err := daemonTarget(opts)
 	if err != nil {
 		return err
+	}
+	// A step that does not say which project it is for is this one's.
+	if first.root == "" {
+		first.root = root
 	}
 
 	logger, closeLog, err := openClientLog(home)
@@ -185,61 +224,200 @@ func runDaemon(ctx context.Context, stdout io.Writer, opts *options, sessionID s
 	}
 	defer closeLog()
 
-	for {
-		conn, err := dialDaemon(ctx, opts, root, sessionID)
-		if err != nil {
+	loop := &daemonLoop{
+		opts:        opts,
+		stdout:      stdout,
+		home:        home,
+		logger:      logger,
+		fleetClient: opts.fleetClient,
+	}
+	return loop.run(ctx, first)
+}
+
+// daemonLoop is one run of the daemon's TUI and the state that outlives its
+// steps: the fleet client it builds and the user config it reads.
+type daemonLoop struct {
+	opts   *options
+	stdout io.Writer
+	home   string
+	logger *slog.Logger
+
+	// fleetClient is the loop's fleet client, built on the first fleet step
+	// and kept for the rest of the loop (decision 7). built is the one the
+	// loop made, which it alone closes; an injected client is the test's.
+	fleetClient acpclient.Fleet
+	built       *fleetclient.Client
+	// fleetRan reports whether the fleet program has run in this loop.
+	fleetRan bool
+
+	cfg       config.Config
+	cfgLoaded bool
+}
+
+// run runs the steps until one ends the loop, and returns why it did.
+func (l *daemonLoop) run(ctx context.Context, first daemonStep) error {
+	defer func() {
+		if l.built != nil {
+			_ = l.built.Close()
+		}
+	}()
+
+	step := &first
+	for step != nil {
+		var err error
+		if step.fleet {
+			step, err = l.fleetStep(ctx, *step)
+		} else {
+			step, err = l.sessionStep(ctx, *step)
+		}
+		if step == nil {
 			return err
 		}
-
-		// A daemon from a different build still serves the session, but its
-		// agent is not this binary: say so once, so an upgrade that left the
-		// daemon running is not mistaken for the new build's behaviour.
-		if theirs := conn.host.Agent().Version; theirs != opts.version() {
-			note := fmt.Sprintf(
-				"This marshal is %s; the daemon's agent is %s. Restart the daemon after upgrading: `marshal daemon stop` then `marshal daemon start`.",
-				daemonVersionLabel(opts.version()), daemonVersionLabel(theirs),
-			)
-			if nerr := conn.sess.AddNote(ctx, acpwire.Note{Text: note, ContentType: acpwire.ContentTypePlain}); nerr != nil {
-				logger.Warn("launch: writing the daemon's version note", "error", nerr)
-			}
-		}
-
-		progCtx, progCancel := context.WithCancel(ctx)
-		go func() {
-			select {
-			case <-conn.lost():
-				progCancel()
-			case <-progCtx.Done():
-			}
-		}()
-
-		progResult := opts.programRunner(progCtx, tui.New(conn.host, conn.sess, daemonTUIOptions(ctx, conn, root, home, logger)...), stdout)
-		progCancel()
-
-		if cerr := conn.close(); cerr != nil {
-			logger.Warn("launch: closing the daemon's connection", "error", cerr)
-		}
-
-		if conn.connectionLost() {
-			lostErr := conn.err()
-			if lostErr == nil {
-				lostErr = errors.New("the connection closed")
-			}
-			return fmt.Errorf("launch: the daemon's connection closed: %w; `marshal attach %s` reattaches", lostErr, conn.sess.ID())
-		}
-
-		if progResult.Detached != "" {
-			fmt.Fprintf(stdout, "Detached from session %s. `marshal attach %s` reattaches.\n", progResult.Detached, progResult.Detached)
-			return nil
-		}
-
-		if progResult.ResumeSession != "" && progResult.Err == nil {
-			sessionID = progResult.ResumeSession
-			continue
-		}
-
-		return progResult.Err
 	}
+	return nil
+}
+
+// fleetStep runs the fleet screen and reports the session it opened. The zero
+// target ends the loop with the program's error.
+func (l *daemonLoop) fleetStep(ctx context.Context, step daemonStep) (*daemonStep, error) {
+	opts := []fleet.Option{
+		fleet.WithTUIConfig(l.tuiConfig()),
+		fleet.WithSelected(step.selected),
+	}
+	if step.notice != "" {
+		opts = append(opts, fleet.WithNotice(step.notice))
+	}
+
+	result := l.opts.programRunner(ctx, fleet.New(l.fleetClientFor(ctx), opts...), l.stdout)
+	l.fleetRan = true
+
+	switch target := result.Open; {
+	case target == fleet.Target{}:
+		return nil, result.Err
+	case target.AgentID != "":
+		return &daemonStep{agentID: target.AgentID, agentName: target.AgentName, root: target.Root}, nil
+	default:
+		return &daemonStep{root: target.Root, sessionID: target.SessionID}, nil
+	}
+}
+
+// sessionStep dials the step's session, runs the TUI on it, and reports what
+// comes next.
+func (l *daemonLoop) sessionStep(ctx context.Context, step daemonStep) (*daemonStep, error) {
+	conn, err := dialDaemon(ctx, l.opts, step)
+	if err != nil {
+		// Once the fleet has run, a session it could not open is a line on
+		// its Events ring rather than the end of the loop.
+		if l.fleetRan {
+			return &daemonStep{fleet: true, notice: fmt.Sprintf("could not open %s: %v", step.label(), err)}, nil
+		}
+		return nil, err
+	}
+
+	// A daemon from a different build still serves the session, but its
+	// agent is not this binary: say so once, so an upgrade that left the
+	// daemon running is not mistaken for the new build's behaviour.
+	if theirs := conn.host.Agent().Version; theirs != l.opts.version() {
+		note := fmt.Sprintf(
+			"This marshal is %s; the daemon's agent is %s. Restart the daemon after upgrading: `marshal daemon stop` then `marshal daemon start`.",
+			daemonVersionLabel(l.opts.version()), daemonVersionLabel(theirs),
+		)
+		if nerr := conn.sess.AddNote(ctx, acpwire.Note{Text: note, ContentType: acpwire.ContentTypePlain}); nerr != nil {
+			l.logger.Warn("launch: writing the daemon's version note", "error", nerr)
+		}
+	}
+
+	progCtx, progCancel := context.WithCancel(ctx)
+	go func() {
+		select {
+		case <-conn.lost():
+			progCancel()
+		case <-progCtx.Done():
+		}
+	}()
+
+	tuiOpts := daemonTUIOptions(ctx, conn, step.root, l.home, l.logger)
+	if step.agentID != "" {
+		tuiOpts = append(tuiOpts, tui.WithAgentSession(step.agentID, step.agentName))
+	}
+	progResult := l.opts.programRunner(progCtx, tui.New(conn.host, conn.sess, tuiOpts...), l.stdout)
+	progCancel()
+
+	if cerr := conn.close(); cerr != nil {
+		l.logger.Warn("launch: closing the daemon's connection", "error", cerr)
+	}
+
+	// The session the TUI ran on, read after the close as the loss below is.
+	sessionID := conn.sess.ID()
+
+	if conn.connectionLost() {
+		lostErr := conn.err()
+		if lostErr == nil {
+			lostErr = errors.New("the connection closed")
+		}
+		lost := fmt.Errorf("launch: the daemon's connection closed: %w; `marshal attach %s` reattaches", lostErr, sessionID)
+		if l.fleetRan {
+			return &daemonStep{fleet: true, notice: fmt.Sprintf("lost the connection to %s: %v", step.label(), lost)}, nil
+		}
+		return nil, lost
+	}
+
+	if progResult.Err != nil {
+		return nil, progResult.Err
+	}
+
+	if progResult.ToFleet {
+		return &daemonStep{fleet: true, selected: step.selection(sessionID)}, nil
+	}
+
+	if progResult.ResumeSession != "" {
+		return &daemonStep{root: step.root, sessionID: progResult.ResumeSession}, nil
+	}
+
+	if progResult.Detached != "" {
+		if l.fleetRan {
+			return &daemonStep{fleet: true, selected: step.selection(progResult.Detached)}, nil
+		}
+		fmt.Fprintf(l.stdout, "Detached from session %s. `marshal attach %s` reattaches.\n", progResult.Detached, progResult.Detached)
+		return nil, nil
+	}
+
+	// Any other end goes back to the fleet once it has run, and ends the
+	// program as it always did before that.
+	if l.fleetRan {
+		return &daemonStep{fleet: true, selected: step.selection(sessionID)}, nil
+	}
+	return nil, nil
+}
+
+// fleetClientFor is the loop's fleet client: the injected one as it is, else
+// one built for the socket the first time the loop needs it (decision 7).
+func (l *daemonLoop) fleetClientFor(ctx context.Context) acpclient.Fleet {
+	if l.fleetClient != nil {
+		return l.fleetClient
+	}
+	built := fleetclient.New(fleetclient.Socket(l.opts.daemonSocket))
+	built.Start(ctx)
+	l.built = built
+	l.fleetClient = built
+	return built
+}
+
+// tuiConfig is the user's [tui] config, read once for the loop: decision 13's
+// read, with no project layer, and the defaults standing in when it cannot be
+// read, because a config that does not parse must not stop the screen from
+// opening.
+func (l *daemonLoop) tuiConfig() config.TUIConfig {
+	if !l.cfgLoaded {
+		l.cfgLoaded = true
+		l.cfg = config.Default()
+		if loaded, err := config.Load(config.LoadOptions{HomeDir: l.home, SkipProjectConfig: true}); err != nil {
+			l.logger.Warn("launch: reading the user config", "error", err)
+		} else {
+			l.cfg = loaded
+		}
+	}
+	return l.cfg.TUI
 }
 
 // daemonTUIOptions is the daemon mode's TUI wiring: detaching leaves the
@@ -310,14 +488,24 @@ type daemonConn struct {
 	done     chan struct{}
 }
 
-// dialDaemon attaches a session on the daemon and dials its relay: the
+// dialDaemon attaches the step's session on the daemon and dials its relay: the
 // attachment's ID names the session the client runs on. A failed dial closes
 // the stream.
-func dialDaemon(ctx context.Context, opts *options, root, sessionID string) (*daemonConn, error) {
+func dialDaemon(ctx context.Context, opts *options, step daemonStep) (*daemonConn, error) {
 	handshakeCtx, cancel := context.WithTimeout(ctx, daemonHandshakeTimeout)
 	defer cancel()
 
-	attachment, err := opts.daemonClientFor().Attach(handshakeCtx, root, sessionID)
+	var (
+		attachment *daemon.Attachment
+		err        error
+	)
+	if step.agentID != "" {
+		// An agent's session is the daemon's own: it is opened as a viewer of
+		// that agent, not as a session of the project.
+		attachment, err = opts.daemonClientFor().AttachAgent(handshakeCtx, step.agentID)
+	} else {
+		attachment, err = opts.daemonClientFor().Attach(handshakeCtx, step.root, step.sessionID)
+	}
 	if err != nil {
 		return nil, daemonServingError(opts, "it could not be asked for a session", err)
 	}

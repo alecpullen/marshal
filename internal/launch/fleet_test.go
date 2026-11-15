@@ -4,10 +4,14 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -239,5 +243,95 @@ func TestFleetUsesTheUsersTheme(t *testing.T) {
 	warm, _ := theme.LookupPreset("warm-sunset")
 	if got.Theme().AccentPrimary == warm.AccentPrimary && want.AccentPrimary != warm.AccentPrimary {
 		t.Errorf("the model kept the default theme's accent %v, want nord's %v", got.Theme().AccentPrimary, want.AccentPrimary)
+	}
+}
+
+// fleetStream is just enough of the bridge's HTTP surface for the fleet client
+// the loop builds: the snapshot's reads, and a stream it holds open until the
+// client hangs up.
+type fleetStream struct {
+	opened chan struct{} // closed when the stream request arrives
+	closed chan struct{} // closed when the client hangs up
+}
+
+// serveFleetStream serves fleetStream on the unix socket at path.
+func serveFleetStream(t *testing.T, socket string) *fleetStream {
+	t.Helper()
+	s := &fleetStream{opened: make(chan struct{}), closed: make(chan struct{})}
+	var openedOnce, closedOnce sync.Once
+
+	answer := func(body string) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, body)
+		}
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/events", func(w http.ResponseWriter, r *http.Request) {
+		openedOnce.Do(func() { close(s.opened) })
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// The stream is the client's request: it ends when the client hangs
+		// up, which is what closing the client does.
+		<-r.Context().Done()
+		closedOnce.Do(func() { close(s.closed) })
+	})
+	mux.HandleFunc("/api/agents", answer("[]"))
+	mux.HandleFunc("/api/inbox", answer("{}"))
+	mux.HandleFunc("/api/projects", answer("[]"))
+	mux.HandleFunc("/api/budgets", answer("{}"))
+	mux.HandleFunc("/api/daemon", answer("{}"))
+
+	ln, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatalf("listen on %s: %v", socket, err)
+	}
+	srv := &http.Server{Handler: mux}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	return s
+}
+
+// TestTheLoopClosesTheFleetClientItCreated pins decision 7's ownership: the
+// client the loop builds over the socket is closed when the loop returns.
+func TestTheLoopClosesTheFleetClientItCreated(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, home)
+
+	socket := filepath.Join(t.TempDir(), "fleet.sock")
+	stream := serveFleetStream(t, socket)
+
+	// No client is injected, so the loop builds and owns one. The program
+	// waits for it to be up before quitting, so the stream is demonstrably
+	// open when the loop closes it.
+	script := &loopScript{t: t}
+	script.onFleet = func(context.Context, fleet.Model) {
+		select {
+		case <-stream.opened:
+		case <-time.After(10 * time.Second):
+			t.Error("the loop's fleet client never reached the bridge")
+		}
+	}
+
+	if err := Fleet(context.Background(), io.Discard, socket,
+		withDaemonClient(fake),
+		withWorkingDir(dir),
+		WithProgramRunner(script.run),
+	); err != nil {
+		t.Fatalf("Fleet: %v", err)
+	}
+
+	select {
+	case <-stream.closed:
+	case <-time.After(10 * time.Second):
+		t.Error("the loop did not close the fleet client it built")
 	}
 }

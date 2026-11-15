@@ -66,7 +66,7 @@ export interface FactoryRoute {
   agent?: string
 }
 
-interface PollSeam {
+export interface PollSeam {
   document?: Pick<Document, 'hidden' | 'addEventListener' | 'removeEventListener'>
   setTimeout?: typeof setTimeout
   clearTimeout?: typeof clearTimeout

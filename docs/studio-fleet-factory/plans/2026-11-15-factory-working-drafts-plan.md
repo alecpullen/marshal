@@ -111,3 +111,83 @@ Add `TestWorkingDraftEndToEnd` with real local HTTP service, temporary workspace
 ## Integration notes
 
 The user approved the implementation specification and plan on 2026-11-15. Autosaved working drafts are not factory items; conversion records a durable intent and reuses the factory's existing idempotent journal rather than promising a transaction across stores. Browser data can be evicted; only backend-confirmed edits are cross-device durable. Never report an ambiguous response as saved, approved, or completed. Recheck the settings and MCP implementation's landed interfaces before starting, especially project-settings versioning and `FactoryCreate` fields.
+
+## Implementation record
+
+Delivered on branch `factory-working-drafts`, one commit per task. The approved
+documents came in first, by merging [PR #85](https://github.com/alecpullen/marshal/pull/85)
+(`4fb99598`); the plan's historical base `16bc3952` was not reproduced, and no
+unrelated branch was merged. Tasks 1–2 and 4–5 ran two at a time — the Go store
+and conversion chain sequential inside package `web/bridge`, the browser client
+and Studio views sequential inside `web/ui` — because those two halves have
+disjoint files and separate build/test units. Tasks 3 and 6 each waited for the
+task whose surface they consume.
+
+| Task | Deliverable | Commit |
+|---|---|---|
+| 1 | `WorkingDraft`/`WorkingDraftContent`, checksummed append-only journal, tombstones, replay identities, conversion reservation records | `8701ab4e` |
+| 4 | Typed API methods, `WorkingDraftController` with injected storage/requests/clock/timer, IndexedDB and in-memory adapters, conflict/offline/pending state | `8285e57d` |
+| 2 | `workingDraftConverter.Convert`/`Reconcile`, `factoryAPI.PrepareFrozen`/`CreateFrozen`, `FailConversion`, derived namespaced factory and association IDs | `790b279a` |
+| 5 | `#factory/drafts` routes, `WorkingDrafts.svelte`, `WorkingDraftConflict.svelte`, `FactoryNew.svelte` moved onto one `WorkingDraftContent` | `095e9b2b` |
+| 3 | Authenticated `/api/factory/working-drafts` routes, installation identity, store lifecycle on the fleet, startup reconciliation | `8bfb148b` |
+| 6 (Go) | `TestWorkingDraftEndToEnd`, `TestWorkingDraftEndToEndRecovery` over a real local HTTP service | `08528110` |
+| 6 (UI) | Conversion review, frozen conversion request across reload, uncertain/retry card, converted links | `f9a8035b` |
+| 6 (docs) | This record, the spec status and the README entry | this documentation commit |
+
+Files: `web/bridge/working_draft_types.go`, `working_draft_store.go`,
+`working_draft_convert.go`, `working_draft_http.go`, their tests and
+`working_draft_integration_test.go` are new; `web/bridge/factory_http.go`,
+`http.go`, `fleet.go` and `working_draft_types.go` (wire bodies) are modified.
+In `web/ui`: `src/lib/working-drafts.ts`, `src/views/WorkingDrafts.svelte` and
+`src/lib/WorkingDraftConflict.svelte` are new; `src/lib/api.ts`,
+`src/lib/factory.ts`, `src/lib/routes.ts`, `src/App.svelte` and
+`src/views/FactoryNew.svelte` are modified. `web/` stays Go standard library
+only, nothing under `internal/...` is touched, no route outside `/api` is added,
+and the existing factory approval, preflight and journal paths are unchanged.
+
+### Deviations from the plan, and why
+
+| Planned | Delivered | Reason |
+|---|---|---|
+| Store constructed in `http.go`'s `factoryRoutes` | Constructed by `NewServer`'s FactoryAPI loop via `workingDraftSetup` | `NewServer` is that loop's caller in `http.go`; the plan limited `http.go` to lifecycle, and `factory_http.go` was another task's file |
+| Extend the settings API for a conditional version | Reused the existing `(*Workspace).ProjectSettingsETag` and the settings `ETag` header | The conditional token already existed; no legacy client changed |
+| One task-6 commit | Two commits (end-to-end proof, then conversion review) plus this docs commit | The Go tests and the UI review are independently verifiable and have disjoint files |
+| Draft editor inside `FactoryNew.svelte` | Editor host in `WorkingDrafts.svelte`, `FactoryNew.svelte` reduced to the shared form | Task 5's list/editor split; the manual flow and `buildConfig` semantics are unchanged and pinned by `manualFactoryFlowStillWorks` |
+| `Convert(id, requestID, expectedVersion, request, settingsVersion)` only | Added store-level `FailConversion` and a package-private conversion interface | The spec requires returning a draft to `editing` on a confirmed preflight refusal, which Task 1's contract list did not name |
+
+### Known limitations
+
+- The backend store is single-user and unexpired, as specified: tombstones,
+  rejected conversion attempts and superseded versions are retained until a
+  separately designed retention feature exists.
+- Cross-device durability covers only backend-confirmed saves. A browser that
+  evicts IndexedDB loses unsent edits, and the UI says so rather than implying
+  otherwise; local persistence failure is surfaced, never hidden.
+- Conversion is reconciliation across two durable stores, not a transaction.
+  An outcome that cannot be established stays `converting` and is reported as
+  uncertain; the UI retries the frozen request and never mints a second one.
+- The manual desktop and 390px two-context walkthrough in Task 6's last step
+  was not performed in this environment (no browser session was driven). The
+  390px and keyboard requirements are covered only by the component tests and
+  the layout conventions the new views follow, so a real-device pass is still
+  owed before release.
+
+### Acceptance gates
+
+All gates below ran from the worktree root at the final commit; the SPA build
+was run after the last UI change so the embedded assets match the source.
+
+| Gate | Result |
+|---|---|
+| `go test ./web/bridge -run '^(TestWorkingDraft\|TestFactoryHTTPCreateApprovalAndReplay\|TestWebIsStdlibOnly)' -count=1` | PASS — `ok marshal/web/bridge`; every `TestWorkingDraft*`, including the two end-to-end tests and all 12 conversion tests, plus the pre-existing factory create/replay and stdlib-boundary tests |
+| `go test -race ./web/bridge -run '^TestWorkingDraftConcurrentSaves$' -count=1` | PASS |
+| `go test -race ./web/bridge -run '^TestWorkingDraftConvertConcurrentOneItem$' -count=1` | PASS |
+| `cd web/ui && npm test` | PASS — 91 files, 1015 tests |
+| `cd web/ui && npm run check` | 6 errors, all pre-existing and outside this work: `views/Chat.svelte`, `views/Run.svelte`, `lib/Sidebar.test.ts`, `lib/fleet.test.ts`, `views/Review.test.ts`, `views/Runs.test.ts`; no new error in any new or changed file |
+| `cd web/ui && npm run build` | PASS — rebuilt `web/bridge/static/`; the regenerated assets are committed with this record |
+| `CGO_ENABLED=1 go build ./cmd/marshal` | PASS |
+| `go build ./cmd/webbridge` | PASS |
+| `go vet ./...` | PASS — no output |
+| `CGO_ENABLED=1 go test -p=1 ./... -count=1 -timeout 25m` | PASS — exit 0 under `set -o pipefail`; every package `ok`, `web/bridge` 135.7s |
+| `git diff --check` | PASS — no output |
+| `gofmt -l` on every changed Go file | no output |

@@ -1,7 +1,7 @@
 # Cross-device factory working drafts — feature specification
 
 Date: 2026-11-15
-Status: implementation specification drafted from the approved [working-drafts design](factory-working-drafts-design.md); implementation plan approved 2026-11-15.
+Status: implementation specification drafted from the approved [working-drafts design](factory-working-drafts-design.md); implementation plan approved 2026-11-15 and implemented on branch `factory-working-drafts`, whose acceptance gates, deviations and known limitations are recorded in the plan's [implementation record](plans/2026-11-15-factory-working-drafts-plan.md#implementation-record).
 
 ## 1. Outcome and scope
 

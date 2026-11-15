@@ -1,12 +1,15 @@
 import type { AuditEvent } from './audit'
-import { accessPatchBody, type AccessPatch, type AccessStateWire, type ModeAccessChoice } from './interaction'
+import { accessPatchBody, type AccessPatch, type AccessStateWire } from './interaction'
 import type {
   AgentStatus as ContractAgentStatus,
+  Answer as ContractAnswer,
+  Answers as ContractAnswers,
   ApproveResult as ContractApproveResult,
   BudgetAgentSpend as ContractBudgetAgentSpend,
   BudgetReport as ContractBudgetReport,
   Budgets as ContractBudgets,
   CommitDraft as ContractCommitDraft,
+  Decision as ContractDecision,
   DiffFile as ContractDiffFile,
   DiffResult as ContractDiffResult,
   ExitResult as ContractExitResult,
@@ -31,11 +34,14 @@ import type {
   Do not hand-write these again: change web/bridge/contract and regenerate.
 */
 export type AgentStatus = ContractAgentStatus
+export type Answer = ContractAnswer
+export type Answers = ContractAnswers
 export type ApproveResult = ContractApproveResult
 export type BudgetAgent = ContractBudgetAgentSpend
 /** `GET /api/budgets` (bridge budgetReport). `loaded` is false while the caps could not be read, so `budgets` is zeroes, not the real caps. */
 export type BudgetStatus = ContractBudgetReport
 export type Budgets = ContractBudgets
+export type Decision = ContractDecision
 export type DiffFile = ContractDiffFile
 export type DiffResult = ContractDiffResult
 export type ExitResult = ContractExitResult
@@ -487,28 +493,8 @@ export async function patchAccess(sessionId: string, patch: AccessPatch): Promis
   return request('PATCH', `/api/sessions/${encodeURIComponent(sessionId)}/access`, accessPatchBody(patch))
 }
 
-export interface Decision {
-  approved: boolean
-  edited?: string
-  /**
-   * The typed capability choice. It carries the presented identity and
-   * committed tuple; the agent validates them before applying anything.
-   */
-  modeAccess?: ModeAccessChoice
-}
-
 export async function resolvePermission(toolCallId: string, decision: Decision): Promise<void> {
   await request('POST', `/api/permissions/${encodeURIComponent(toolCallId)}`, decision)
-}
-
-export interface Answer {
-  question: string
-  answer: string | string[]
-}
-
-export interface Answers {
-  answers?: Answer[]
-  declined?: boolean
 }
 
 export async function resolveQuestion(questionId: string, answers: Answers): Promise<void> {

@@ -322,6 +322,9 @@ func (h *deliveryHarness) tick() FactoryItem {
 	return i
 }
 func TestFactoryEndToEnd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("full factory delivery against real Git")
+	}
 	h := newDeliveryHarness(t)
 	var i FactoryItem
 	for n := 0; n < 80; n++ {
@@ -431,6 +434,9 @@ func TestFactoryEndToEnd(t *testing.T) {
 	}
 }
 func TestFactoryEndToEndInterrupted(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fifteen interruption scenarios against real Git")
+	}
 	// Each scenario owns its repositories, server, store and fleet. Run them
 	// concurrently while preserving the real Git and recovery assertions.
 	t.Run("lost cancellation acknowledgement is not replayed", func(t *testing.T) {

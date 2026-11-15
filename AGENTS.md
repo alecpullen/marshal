@@ -24,11 +24,18 @@ sessions over ACP from a browser.
 CGO_ENABLED=1 go build ./cmd/marshal
 
 go run ./cmd/marshal          # run the TUI
-go test ./...                 # all tests
+scripts/test.sh               # the packages your diff can affect, uncached
+scripts/test.sh quick         # whole suite with -short, heavy scenarios skipped
+scripts/test.sh full          # whole suite, uncached
 go test ./internal/app/...    # one package (prefer the narrowest scope)
 go vet ./...
 gofmt -w .
 ```
+
+`scripts/test.sh` is the entry point for test runs; its modes, and what each one
+keeps, are documented in `docs/testing-ci-audit.md`. Everything after the mode
+that is not `--base`/`--go-only` is passed through to `go test`, so
+`scripts/test.sh quick ./internal/acp -run TestStack` works.
 
 `marshal` also dispatches subcommands: `acp` (headless JSON-RPC server),
 `attach` (reattach to a daemon session), `daemon` (install and drive the local

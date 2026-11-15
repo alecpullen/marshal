@@ -676,6 +676,9 @@ func removeOldestLooseObject(t *testing.T, gitDir string) {
 // The closure walk must survive an object database containing more objects than
 // one batch, which is what proves the batching is real rather than incidental.
 func TestLegacyClosureBatchesAcrossManyObjects(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a closure larger than one batch")
+	}
 	f := newLegacyFixture(t)
 	// More than closureBatchSize objects: 300 blobs, trees, and commits.
 	n := closureBatchSize + 64

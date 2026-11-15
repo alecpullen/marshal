@@ -37,6 +37,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyUp:
 		m.moveCursor(-1)
 		return m, nil
+	case tea.KeyEnter:
+		// The filter has already taken Enter above, so this one opens.
+		return m.openSelected()
 	case tea.KeyEsc:
 		m.zoom = false
 		return m, nil
@@ -63,6 +66,19 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.help = !m.help
 	}
 	return m, nil
+}
+
+// openSelected ends the program with the selected row's target, so the loop
+// can attach to it. A row with nothing to open — an intake item, or no
+// selection — leaves the screen running: plan 5 gives those items approve and
+// deny.
+func (m Model) openSelected() (tea.Model, tea.Cmd) {
+	target := m.openTarget()
+	if target == (Target{}) {
+		return m, nil
+	}
+	m.target = target
+	return m, m.quit()
 }
 
 // handleFilterKey applies one key press while the Agents filter input is open:

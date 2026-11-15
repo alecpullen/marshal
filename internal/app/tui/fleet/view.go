@@ -750,6 +750,14 @@ func (m Model) footer() string {
 	case focusRight:
 		keys = "1/3 tab"
 	}
+	// ⏎ is only worth naming while it would do something.
+	if m.openTarget() != (Target{}) {
+		if keys == "" {
+			keys = "⏎ open"
+		} else {
+			keys += "  ⏎ open"
+		}
+	}
 	middle := ""
 	if keys != "" {
 		middle = "  " + chrome.TertiaryStyle().Render(keys)

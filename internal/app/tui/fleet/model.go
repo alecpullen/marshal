@@ -49,6 +49,14 @@ type Model struct {
 	// selected is the selected row's ID — an agent's or a session's — so the
 	// selection survives a reorder.
 	selected string
+	// startSelected is WithSelected's ID until a loaded state lists it: the
+	// cursor starts there, once.
+	startSelected string
+	// notice is WithNotice's line, added to Events when the model starts.
+	notice string
+	// target is what the program ended to open. Only ⏎ sets it, so the quit
+	// keys end with the zero target.
+	target Target
 	// agentCursor indexes the Agents panel's selectable rows, never a group
 	// header. needsCursor indexes the Needs you panel's queue.
 	agentCursor int
@@ -86,6 +94,15 @@ func newQuitGate() *quitGate { return &quitGate{ch: make(chan struct{})} }
 // release closes the gate, once.
 func (g *quitGate) release() { g.once.Do(func() { close(g.ch) }) }
 
+// Target is what the fleet program ended to open (P5 F5). The zero value
+// means quit.
+type Target struct {
+	AgentID   string // an agent's session, through the agent attach
+	AgentName string
+	Root      string // the project: an agent's, or a daemon session's child
+	SessionID string // a daemon session, through the project attach; "" for an agent
+}
+
 // Option configures a Model.
 type Option func(*Model)
 
@@ -101,6 +118,19 @@ func WithNow(now func() time.Time) Option {
 			m.now = now
 		}
 	}
+}
+
+// WithSelected starts the cursor on the row with this ID — an agent's, or a
+// daemon session's — as soon as a loaded state lists it.
+func WithSelected(id string) Option {
+	return func(m *Model) { m.startSelected = id }
+}
+
+// WithNotice adds a line to the Events ring when the model starts: the loop
+// says why the fleet screen came back. It is not a transition, so the baseline
+// rule does not apply to it.
+func WithNotice(line string) Option {
+	return func(m *Model) { m.notice = line }
 }
 
 // New builds the fleet screen over f. It resolves the theme from the TUI config
@@ -127,8 +157,20 @@ func New(f acpclient.Fleet, opts ...Option) Model {
 	m.dimmed = m.state.Conn != acpclient.FleetConnected
 	m.th = theme.LoadWithConfig(m.cfg.Theme, m.cfg.Mode, theme.ParseDepth(m.cfg.Depth), theme.PaletteOverrides(m.cfg.Palette))
 	theme.Reload(m.th)
+	// The notice is the loop's line, not a transition: it goes in before the
+	// first read can add one of its own.
+	if m.notice != "" {
+		m.addEvent(m.notice)
+	}
 	return *m
 }
+
+// Open is the target the program ended to open: the row ⏎ chose. The zero
+// target means the program ended without opening anything.
+func (m Model) Open() Target { return m.target }
+
+// Selected is the selected row's ID: an agent's or a daemon session's.
+func (m Model) Selected() string { return m.selected }
 
 // Theme is the theme the model resolved from its TUI config.
 func (m Model) Theme() theme.Theme { return m.th }
@@ -214,6 +256,7 @@ func (m *Model) applyState() {
 // index, clamped to the list.
 func (m *Model) reconcile() {
 	_, rows := m.agentLines()
+	m.restoreStart(rows)
 	switch {
 	case len(rows) == 0:
 		m.agentCursor = 0
@@ -231,6 +274,52 @@ func (m *Model) reconcile() {
 	} else {
 		m.needsCursor = clamp(m.needsCursor, 0, n-1)
 	}
+}
+
+// restoreStart applies WithSelected: the cursor starts on the row with its ID
+// the first time a loaded state lists it, and never again, so a later reorder
+// leaves the operator's own move alone.
+func (m *Model) restoreStart(rows []agentRow) {
+	if m.startSelected == "" {
+		return
+	}
+	idx, ok := rowIndex(rows, m.startSelected)
+	if !ok {
+		return
+	}
+	m.agentCursor = idx
+	m.selected = rows[idx].id
+	m.startSelected = ""
+}
+
+// openTarget is what ⏎ opens from the current selection. An agent row gives
+// its ID, its name and its project root; a Sessions row gives its child's root
+// and its session ID; a Needs you agent item gives that agent's target. An
+// intake item, and an empty selection, open nothing: plan 5 gives intake items
+// approve and deny.
+func (m Model) openTarget() Target {
+	id := m.selected
+	if m.focus == focusNeedsYou {
+		queue := m.state.Inbox.Queue
+		if m.needsCursor < 0 || m.needsCursor >= len(queue) {
+			return Target{}
+		}
+		item := queue[m.needsCursor]
+		if item.Kind != contract.InboxItemAgent || item.AgentID == "" {
+			return Target{}
+		}
+		id = item.AgentID
+	}
+	_, rows := m.agentLines()
+	idx, ok := rowIndex(rows, id)
+	if !ok {
+		return Target{}
+	}
+	row := rows[idx]
+	if row.session {
+		return Target{Root: row.project, SessionID: row.id}
+	}
+	return Target{AgentID: row.id, AgentName: row.name, Root: row.project}
 }
 
 // agentRow is one selectable row in the Agents panel: an agent from a group of

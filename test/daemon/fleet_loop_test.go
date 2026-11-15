@@ -52,9 +52,10 @@ func TestTheFleetOpensAnAgentAndLeavesItRunning(t *testing.T) {
 		case fleet.Model:
 			fleetPasses++
 			if fleetPasses == 1 {
-				// The decoy is spawned first, so a first pass already on the
-				// agent's row means the roster put no row before it and the
-				// restored cursor below would prove nothing.
+				// The decoy was spawned second, and lands on the earlier row
+				// through the inbox's ordering, so a first pass already on
+				// the agent's row means the roster put no row before it and
+				// the restored cursor below would prove nothing.
 				if got := fleetSelected(t, model); got == agentID {
 					t.Fatalf("the first fleet pass selected the agent %q already: the roster has no row before it", agentID)
 				}

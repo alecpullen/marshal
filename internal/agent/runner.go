@@ -1056,6 +1056,11 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	// Start before any startup work or cancellation exit. Emission is the
 	// outermost defer so elapsed time includes this turn's cleanup as well.
 	startedAt := r.Now()
+	// Measure the preflight phase by phase. Everything between here and the
+	// first provider request runs with no transcript row, so without this a
+	// slow turn is indistinguishable from a slow model. Phases are reported
+	// on TurnMetrics and, past the warn threshold, logged.
+	phases := newPhaseClock(r.Now, startedAt)
 	task := NewTask(goal, startedAt)
 	r.statsMu.Lock()
 	r.stats = &turnStats{m: TurnMetrics{
@@ -1074,6 +1079,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	// cleanup keeps the turn eligible for the whole of its own
 	// cleanup (the interruption a final answer races must still be able to land)
 	// and is closed exactly once, after operation cleanup has run.
+	phases.begin("register")
 	if r.EnableSteering && r.role() == RoleGeneral && r.State != nil && r.State.SubagentDepth() == 0 {
 		if _, inherited := session.OperationFromContext(ctx); !inherited {
 			if turnID, err := r.State.BeginSteeringTurn(ctx); err == nil {
@@ -1148,6 +1154,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	if stopGroup != nil {
 		defer r.finishTurnStop(stopGroup)
 	}
+	phases.end()
 	// A stop accepted before this registration is adopted now: the turn was
 	// stopped while it was still starting, so it does no work at all.
 	if stopPendingCause != "" {
@@ -1161,8 +1168,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		// Optional old-intent work: an interruption during titling must cancel
 		// the title call, not the turn. A title that never arrives simply leaves
 		// the current one in place.
-		r.withSetupOperation(ctx, func(setupCtx context.Context) {
-			r.TitleManager.OnUserTurn(setupCtx, goal)
+		phases.span("title", func() {
+			r.withSetupOperation(ctx, func(setupCtx context.Context) {
+				r.TitleManager.OnUserTurn(setupCtx, goal)
+			})
 		})
 	}
 	// If the previous turn was interrupted (Esc), surface a one-line note in
@@ -1178,7 +1187,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	// what it guarantees is that a skipped or failed capture at the top of the
 	// turn is VISIBLE rather than only logged. Continuation is unchanged.
 	r.withSetupOperation(ctx, func(setupCtx context.Context) {
-		r.snapshotCapture(setupCtx, SnapshotPhaseTurnStart, nil)
+		phases.span("snapshot", func() {
+			r.snapshotCapture(setupCtx, SnapshotPhaseTurnStart, nil)
+		})
 	})
 
 	r.trackerMu.Lock()
@@ -1210,25 +1221,29 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	if fc != "" {
 		task.Class = TaskClass(fc)
 	} else {
-		task.Class = Classify(goal)
-		if task.Class == ClassQuestion && r.Classifier != nil {
-			// The classifier is optional old-intent work. Running it under a
-			// setup scope means an interruption cancels the classification
-			// rather than the turn; the local Classify result stands when it
-			// cannot answer, so initialization continues exactly once.
-			var class TaskClass
-			r.withSetupOperation(ctx, func(setupCtx context.Context) {
-				if c, err := r.Classifier(setupCtx, goal); err == nil {
-					class = c
+		phases.span("classify", func() {
+			task.Class = Classify(goal)
+			if task.Class == ClassQuestion && r.Classifier != nil {
+				// The classifier is optional old-intent work. Running it under a
+				// setup scope means an interruption cancels the classification
+				// rather than the turn; the local Classify result stands when it
+				// cannot answer, so initialization continues exactly once.
+				var class TaskClass
+				r.withSetupOperation(ctx, func(setupCtx context.Context) {
+					if c, err := r.Classifier(setupCtx, goal); err == nil {
+						class = c
+					}
+				})
+				switch class {
+				case ClassEdit, ClassCommand, ClassQuestion:
+					task.Class = class
 				}
-			})
-			switch class {
-			case ClassEdit, ClassCommand, ClassQuestion:
-				task.Class = class
 			}
-		}
+		})
 	}
+	phases.begin("route")
 	turnProvider, turnModel, route := r.resolveRoute(ctx, task)
+	phases.end()
 	if route.MaxOutput > 0 {
 		r.turnRequestOptions.maxTokens = intPtr(route.MaxOutput)
 	} else {
@@ -1280,9 +1295,15 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		"source", budgetSource)
 	r.turnToolResultChars = deriveToolResultChars(turnThreshold)
 	r.semTracker = newSemanticRequeryTracker()
+	phases.begin("memories")
 	r.mergeMemories(route.ContextBudget.MaxRepoContextTokens)
+	phases.end()
+	phases.begin("semantic")
 	r.mergeSemantic(ctx, goal, r.ProjectID, route.ContextBudget.MaxRepoContextTokens)
+	phases.end()
+	phases.begin("todos")
 	r.mergeTodos(route.ContextBudget.MaxRepoContextTokens)
+	phases.end()
 
 	effectiveRF := r.ResponseFormat
 
@@ -1290,16 +1311,19 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	// context pack before it is appended to the model messages. Unknown
 	// paths and unreadable files are silently skipped (see
 	// extractPinnedFiles); the TUI only inserts the literal "@path" text.
+	phases.begin("pins")
 	if pinned := extractPinnedFiles(goal, r, r.ProjectID); len(pinned) > 0 {
 		r.State.UpdateContextPack(func(pack contextpack.Pack) contextpack.Pack {
 			return contextpack.PinFiles(pack, pinned)
 		})
 	}
+	phases.end()
 
 	r.pinPromptAccess()
 	messages := []schema.ChatMessage{r.systemPromptMessage()}
 	messages = r.setContextPackMessage(messages, r.State.ContextPack())
 	messages = r.appendSkillBodies(messages)
+	phases.begin("history")
 	if r.role() == RoleGeneral {
 		// Task 4/A2: load the cross-turn ledger. Best-effort — a DB
 		// error here falls back to the legacy placeholder rather than
@@ -1318,8 +1342,32 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		budget := historyBudget(route.Window, r.HistoryBudgetTokens)
 		messages = append(messages, buildHistoryMessages(priorTranscript, budget, r.State.Generation(), ledger, route.Preset.ReasoningHistory)...)
 	}
+	phases.end()
 	markCacheAnchor(messages)
 	messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
+
+	// The prompt is complete: freeze the preflight breakdown here, the last
+	// point where the turn's elapsed time is all preparation rather than the
+	// model. A gap between the sum of the phases and prompt_ready_ms is time
+	// no span covered, so an unattributed pause stays visible instead of
+	// being folded into whichever phase happened to run next.
+	readyMs := phases.promptReadyMs()
+	breakdown := phases.String()
+	r.withStats(func(s *turnStats) {
+		s.m.PromptReadyMs = readyMs
+		s.m.Phases = phases.phases()
+	})
+	// Hand the measurement to the session's bounded collector. The postmortem
+	// reads it back at session end, so the breakdown survives without a
+	// per-phase database row per turn.
+	if r.State != nil {
+		r.State.RecordPreflightTiming(readyMs, phases.sessionTimings())
+	}
+	if readyMs >= preflightWarnThreshold.Milliseconds() {
+		r.State.Logger().Info("turn preflight", "prompt_ready_ms", readyMs, "phases", breakdown)
+	} else {
+		r.State.Logger().Debug("turn preflight", "prompt_ready_ms", readyMs, "phases", breakdown)
+	}
 
 	// T12: end-of-turn flushArchive and maybeRollover so cross-turn rollover
 	// actually fires. The defer captures the final value of messages at return

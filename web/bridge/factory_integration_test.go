@@ -322,9 +322,6 @@ func (h *deliveryHarness) tick() FactoryItem {
 	return i
 }
 func TestFactoryEndToEnd(t *testing.T) {
-	if testing.Short() {
-		t.Skip("full factory delivery against real Git")
-	}
 	h := newDeliveryHarness(t)
 	var i FactoryItem
 	for n := 0; n < 80; n++ {

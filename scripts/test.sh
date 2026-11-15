@@ -4,26 +4,34 @@
 # for. Modes trade coverage for latency:
 #
 #   changed   (default) only the packages your diff can affect, uncached
-#   quick     the whole suite with -short          (~2 min, skips the heavy scenarios)
-#   full      the whole suite uncached             (~4 min warm, ~9 min cold)
+#   quick     the whole suite with -short          (~2 min warm cache, heavy scenarios skipped)
+#   full      the whole suite uncached             (2m50 warm, ~9m cold)
 #   budgets   the 12 wall-clock latency budgets    (needs an idle laptop)
 #   ci        the three CI jobs, in order          (what a PR must pass)
 #
-# Everything after the mode that is not `--base` is passed through to `go test`:
+# Everything after the mode that is not `--base`/`--go-only` is passed through to
+# `go test`. Name a package and the mode covers only that one; name none and
+# `quick`/`full` cover ./... while `budgets` covers its own two packages:
 #
 #   scripts/test.sh                                # what did my working tree touch?
 #   scripts/test.sh changed --base origin/main     # ... compared with a specific ref
-#   scripts/test.sh quick ./internal/acp           # -short, one package
-#   scripts/test.sh full -run TestSnapshot
+#   scripts/test.sh quick ./internal/acp           # -short, that package only
+#   scripts/test.sh full -run TestSnapshot         # ./..., one test name
 #   scripts/test.sh budgets
 #   scripts/test.sh ci --go-only                   # skip the web and usability jobs
 #
-# The base ref also reads BASE_REF. See docs/testing-ci-audit.md for the
+# `quick` leaves Go's test cache on, so a repeat run is only as slow as what
+# changed; pass -count=1 to force the whole suite.
+#
+# The base ref also reads BASE_REF and must resolve: an explicit --base that does
+# not is an error, not an empty green run. See docs/testing-ci-audit.md for the
 # measurements behind these modes.
 
 set -euo pipefail
 
-repo_root=$(cd "$(dirname "$0")/.." && pwd)
+# -P: the physical path, so it matches the absolute Dir `go list` reports even
+# from a symlinked checkout.
+repo_root=$(cd -P "$(dirname "$0")/.." && pwd -P)
 cd "$repo_root"
 
 # tree-sitter (internal/repo/symbols.go) links a C library, so every build and
@@ -36,8 +44,10 @@ export CGO_ENABLED=1
 readonly latency_tests='^Test(NoticeCallBudget|ControlCallBudget|AnswerCallBudget|ResponseBarrierBudget|SettingsCallBudget|NoteCallBudget|BrowserCallBudget|EndCallBudget|StackBusyFlipBudget|StackPatchApplyBudget|StackRoundTripBudget|AKeyPressOverThePipeBudget)$'
 readonly budget_packages='./internal/acp ./internal/app/tui'
 
+# The header comment is the help text: print it up to the first line that is not
+# a comment, so the two cannot drift apart.
 usage() {
-	sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+	awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"
 }
 
 die() {
@@ -57,16 +67,25 @@ list_packages() {
 
 # The files this checkout has touched: committed since the base ref, staged,
 # unstaged and untracked. Duplicates are removed.
+#
+# Renames matter in both directions: `--name-only` prints only the new path, so a
+# file moved out of a package would leave that package untested — and it is the
+# package that just lost a symbol whose tests break. `--name-status -M` names
+# both sides of an R/C entry; every other status names one path in $2.
 changed_files() {
 	local base=${1:-}
 	{
 		if [ -n "$base" ]; then
-			git diff --name-only "$base"...HEAD
+			git diff --name-status -M "$base"...HEAD
 		fi
-		git diff --name-only
-		git diff --cached --name-only
+		git diff --name-status -M
+		git diff --cached --name-status -M
 		git ls-files --others --exclude-standard
-	} | sort -u
+	} | awk -F'\t' '
+		$1 ~ /^[RC][0-9]*$/ { print $2; print $3; next }
+		NF >= 2 { print $2; next }
+		NF == 1 { print $1 }
+	' | sort -u
 }
 
 # The package owning each changed file. A file below a package directory
@@ -125,10 +144,15 @@ run_changed() {
 	# the time the EXIT trap fires.
 	trap "rm -rf '$scratch'" EXIT
 
+	# A base the caller named must resolve. Degrading to "nothing changed" would
+	# report a green run that executed no tests at all, which is the one failure a
+	# test runner must not have; only the implicit origin/main default may fall
+	# back, and it says so.
 	if ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
-		if [ -n "${BASE_REF:-}" ]; then
+		if $base_explicit; then
 			die "base ref '$base' is not a commit"
 		fi
+		printf 'test.sh: base ref %s not found; checking the working tree only\n' "$base" >&2
 		base=''
 	fi
 
@@ -136,8 +160,14 @@ run_changed() {
 	changed_files "$base" >"$scratch/files"
 	packages_for_files "$scratch/packages" "$scratch/files" >"$scratch/direct"
 
+	if [ ! -s "$scratch/files" ]; then
+		printf 'test.sh: nothing changed against %s\n' "${base:-the working tree}" >&2
+		return 0
+	fi
 	if [ ! -s "$scratch/direct" ]; then
-		printf 'test.sh: no Go package changed against %s\n' "${base:-the working tree}" >&2
+		printf 'test.sh: %s file(s) changed against %s, none of them under a Go package\n' \
+			"$(wc -l <"$scratch/files" | tr -d ' ')" "${base:-the working tree}" >&2
+		printf 'test.sh: a Go test run cannot cover those; `scripts/test.sh ci` can\n' >&2
 		return 0
 	fi
 
@@ -161,7 +191,7 @@ run_changed() {
 # ---------------------------------------------------------------------------
 
 mode=${1:-changed}
-[ "$#" -gt 0 ] && shift
+if [ "$#" -gt 0 ]; then shift; fi
 
 case "$mode" in
 changed | quick | full | budgets | ci) ;;
@@ -173,6 +203,11 @@ esac
 # accepted and dropped so `full -- -run X` cannot be mistaken for a go flag.
 go_only=false
 base=${BASE_REF:-origin/main}
+# A base the caller named must resolve, so that a typo cannot turn into a green
+# run that tested nothing. The implicit origin/main default is allowed to fall
+# back to the working tree.
+base_explicit=false
+if [ -n "${BASE_REF:-}" ]; then base_explicit=true; fi
 args=()
 while [ "$#" -gt 0 ]; do
 	case "$1" in
@@ -182,13 +217,17 @@ while [ "$#" -gt 0 ]; do
 	--go-only) go_only=true; shift ;;
 	--base | --base=*)
 		if [ "$1" = '--base' ]; then
-			[ "$#" -ge 2 ] || die '--base needs a ref'
+			case "${2-}" in
+			'' | -*) die '--base needs a ref' ;;
+			esac
 			base=$2
 			shift 2
 		else
 			base=${1#--base=}
+			[ -n "$base" ] || die '--base needs a ref'
 			shift
 		fi
+		base_explicit=true
 		;;
 	*)
 		args+=("$1")
@@ -198,6 +237,20 @@ while [ "$#" -gt 0 ]; do
 done
 if [ "${#args[@]}" -gt 0 ]; then set -- "${args[@]}"; else set --; fi
 
+# Did the caller name packages, or only pass flags? Appending ./... to a call that
+# already named one would silently widen it to the whole suite — the opposite of
+# what `quick ./internal/acp` asks for. A flag's value (`-run TestStack`) is a
+# bare word, so only path-shaped words count as packages.
+names_packages() {
+	local arg
+	for arg in "$@"; do
+		case "$arg" in
+		./* | ../* | /* | .) return 0 ;;
+		esac
+	done
+	return 1
+}
+
 case "$mode" in
 changed)
 	run_changed "$@"
@@ -206,15 +259,27 @@ quick)
 	# -short keeps every state and theme in the TUI sweep but cuts the size
 	# matrix, and skips the heavy Git, crash-recovery and process-integration
 	# scenarios listed in docs/testing-ci-audit.md.
-	go test -short -timeout 20m "$@" ./...
+	if names_packages "$@"; then
+		go test -short -timeout 20m "$@"
+	else
+		go test -short -timeout 20m "$@" ./...
+	fi
 	;;
 full)
-	go test -count=1 -timeout 20m "$@" ./...
+	if names_packages "$@"; then
+		go test -count=1 -timeout 20m "$@"
+	else
+		go test -count=1 -timeout 20m "$@" ./...
+	fi
 	;;
 budgets)
 	# Wall-clock thresholds: run these with no other work on the machine.
-	# shellcheck disable=SC2086
-	go test -count=1 -p=1 -timeout 20m -run "$latency_tests" "$@" $budget_packages
+	if names_packages "$@"; then
+		go test -count=1 -p=1 -timeout 20m -run "$latency_tests" "$@"
+	else
+		# shellcheck disable=SC2086
+		go test -count=1 -p=1 -timeout 20m -run "$latency_tests" "$@" $budget_packages
+	fi
 	;;
 ci)
 	# The Go job, then vet; the remaining two jobs only with the full run.

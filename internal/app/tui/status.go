@@ -290,6 +290,14 @@ func (m Model) statusLeftSegments() []statusSeg {
 		{text: m.modeSegmentStyle().Render(modeSegmentFor(st.Interaction)), priority: 0, pinned: true},
 	}
 
+	// A fleet agent's session names its agent right after the mode cue: which
+	// agent is running is the identity of the screen, not a metric, so it
+	// sheds only after everything else and is never pinned in place of the
+	// conversation's own state.
+	if m.agentSessionID != "" {
+		segs = append(segs, statusSeg{text: identityStyle().Render(glyph.Agent + " " + m.agentSessionName), priority: 0})
+	}
+
 	if !st.Trusted {
 		segs = append(segs, statusSeg{text: untrustedStyle().Render("untrusted"), priority: 0})
 	}

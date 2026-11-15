@@ -455,6 +455,14 @@ type Model struct {
 	detachOnQuit bool
 	detached     bool
 
+	// agentSessionID/agentSessionName mark this program as the screen on a
+	// fleet agent's session (P5 F5): the agent's work belongs to the fleet,
+	// so every ending is refused here. toFleet records that this program
+	// ended by asking for the fleet screen.
+	agentSessionID   string
+	agentSessionName string
+	toFleet          bool
+
 	// Connect panel (docked; opened by /connect, /models, Ctrl+P).
 	connectModel *connect.Model
 	discovered   map[string][]schema.ModelInfo
@@ -605,6 +613,15 @@ func WithHomeDir(homeDir string) Option {
 // session as it always has.
 func WithDetachOnQuit() Option {
 	return func(m *Model) { m.detachOnQuit = true }
+}
+
+// WithAgentSession marks the session as fleet agent id's, called name
+// (P5 F5): every ending is refused, and the status line names the agent.
+func WithAgentSession(id, name string) Option {
+	return func(m *Model) {
+		m.agentSessionID = id
+		m.agentSessionName = name
+	}
 }
 
 // WithOpenBrowser overrides the browser launcher used by /mcp auth and the
@@ -4364,6 +4381,16 @@ func (m *Model) cancelTurn() bool {
 // session, the announcement) is mutated or announced until the runtime accepts
 // the membership the user was shown.
 func (m *Model) beginEnd(intent *endIntent) tea.Cmd {
+	// A fleet agent's session belongs to the fleet screen, which owns its
+	// ending (P5 F5): /exit, /quit, Ctrl+C's quit, /new, /clear and a resume
+	// all end the session the same way, so every one of them is refused here,
+	// before any state changes. Ctrl+C's quit is already a detach in daemon
+	// mode, which stays allowed.
+	if m.agentSessionID != "" {
+		m.note(fmt.Sprintf("This is agent %s's session: finish it from the fleet screen.", m.agentSessionName))
+		m.refreshViewport()
+		return nil
+	}
 	// Already ending: a repeated quit/Ctrl+C is a retry of the settlement (or
 	// an idempotent no-op while the warning is up), never a second warning and
 	// never a bypass of the one on screen.
@@ -6741,6 +6768,12 @@ func (m Model) Detached() string {
 	}
 	return m.sess.ID()
 }
+
+// AgentSession is the agent whose session this is, "" for any other.
+func (m Model) AgentSession() string { return m.agentSessionID }
+
+// ToFleet reports whether the program ended with /fleet.
+func (m Model) ToFleet() bool { return m.toFleet }
 
 // beginResume records a pending REPLACEMENT for the requested session. The
 // resume ID is applied and announced only after the runtime accepts the work

@@ -32,6 +32,7 @@
   import SessionsPanel from './lib/SessionsPanel.svelte'
   import { connectFleetSSE } from './lib/sse'
   import { createFleetStore, type NetworkDecisionItem } from './lib/fleet'
+  import { createFactoryStore } from './lib/factoryStore'
   import { get } from 'svelte/store'
   import { loadPrefs, maybeNotify, show as showNotification, type FleetLike } from './lib/notify'
   import DecisionOutcomeView from './lib/inbox/DecisionOutcome.svelte'
@@ -99,6 +100,25 @@
     their own before.
   */
   const { state: fleet, actions } = createFleetStore()
+
+  /*
+    The factory work list is shell state for the same reason: the list, one
+    item and the create view share one store, so a command's own result is
+    already visible wherever it is next read and no view needs a poller of its
+    own. `start`/`stop` are idempotent and mirror the fleet store's lifecycle.
+  */
+  const factoryStore = createFactoryStore()
+  const factory = factoryStore.state
+
+  /*
+    The views treat a manual refresh as fire-and-forget: the store records the
+    error it wants shown, and this only swallows the rejection that keeps a
+    poller's backoff counting. The item view does not use this — its stale-409
+    path awaits the store's own `refresh` and reports a failure itself.
+  */
+  function refreshFactory() {
+    void factoryStore.refresh().catch(() => {})
+  }
 
   // Finished runs already announced by a browser notification.
   const announcedRuns = new Set<string>()
@@ -171,6 +191,7 @@
     update()
 
     actions.refresh()
+    factoryStore.start()
     refreshPending()
     refreshClients()
 
@@ -200,6 +221,7 @@
       window.removeEventListener('hashchange', update)
       window.removeEventListener('keydown', onKey)
       clearInterval(tokenPoll)
+      factoryStore.stop()
       ctl.abort()
       disconnect()
     }
@@ -313,10 +335,10 @@
     {:else if factoryRoute}
       <div class="h-full overflow-y-auto">
         {#if factoryRoute.create}
-          <FactoryNew projectRoot={new URLSearchParams(hash.split('?')[1] ?? '').get('project') ?? ''} onNavigate={navigate} />
+          <FactoryNew projectRoot={new URLSearchParams(hash.split('?')[1] ?? '').get('project') ?? ''} onNavigate={navigate} upsert={factoryStore.upsert} />
         {:else if factoryRoute.itemId}
-          {#key factoryRoute.itemId}<FactoryItem itemId={factoryRoute.itemId} onNavigate={navigate} />{/key}
-        {:else}<Factory onNavigate={navigate} />{/if}
+          {#key factoryRoute.itemId}<FactoryItem itemId={factoryRoute.itemId} factory={$factory} getItem={factoryStore.getItem} upsert={factoryStore.upsert} onRefresh={factoryStore.refresh} onNavigate={navigate} />{/key}
+        {:else}<Factory factory={$factory} onRefresh={refreshFactory} projectRoot={factoryRoute.projectRoot} filter={factoryRoute.filter} onNavigate={navigate} />{/if}
       </div>
     {:else if projectRoute}
       <div class="h-full overflow-y-auto">

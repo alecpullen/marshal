@@ -6,7 +6,13 @@
   import type { FactoryCheckKey, FactoryCreate, FactoryCreateConfig, FactoryItem } from '../lib/factory'
   import { formatFactoryRoute, formatProjectRoute } from '../lib/routes'
 
-  let { projectRoot = '', onNavigate }: { projectRoot?: string; onNavigate: (hash: string) => void } = $props()
+  let {
+    projectRoot = '',
+    onNavigate,
+    // The shell's store, so a saved draft is already in the list the moment
+    // it exists. A view rendered without it simply does not publish.
+    upsert = () => {},
+  }: { projectRoot?: string; onNavigate: (hash: string) => void; upsert?: (item: FactoryItem) => void } = $props()
 
   // The handoff itself.
   let title = $state(''), plan = $state(''), spec = $state(''), repoId = $state('')
@@ -188,7 +194,11 @@
       const next = payload()
       const retry = pending && signature(pending) === signature(next) ? pending : next
       pending = retry
-      draft = await createFactoryItem(retry)
+      const saved = await createFactoryItem(retry)
+      // Publish the saved draft before its preview renders, so whichever view
+      // the person opens next reads the store rather than fetching again.
+      upsert(saved)
+      draft = saved
       pending = null
     } catch (e) { error = errMessage(e) }
     finally { busy = false }

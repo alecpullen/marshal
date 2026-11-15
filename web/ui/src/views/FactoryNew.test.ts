@@ -38,6 +38,8 @@ const projectSettings = (over: Partial<api.ProjectSettings> = {}): api.ProjectSe
 /** The body of the nth create request. */
 const sent = (n = 0): FactoryCreate => vi.mocked(api.createFactoryItem).mock.calls[n][0]
 const save = () => fireEvent.click(screen.getByRole('button', { name: 'Save draft' }))
+/** The shell store's write: a saved draft is published, never re-read. */
+const upsert = vi.fn()
 
 async function fillHandoff() {
   await fireEvent.input(screen.getByLabelText('Title'), { target: { value: 'Task' } })
@@ -214,6 +216,21 @@ it('distinguishesInheritedAndExplicitEmptyChecks', async () => {
   await waitFor(() => expect(api.createFactoryItem).toHaveBeenCalledTimes(2))
   expect(sent(1).config.expectedChecks).toEqual([])
   expect(sent(1).config.noRequiredCiAcknowledged).toBe(true)
+})
+
+it('upsertsTheSavedDraftIntoTheSharedStore', async () => {
+  vi.mocked(api.getProjectSettings).mockResolvedValue(projectSettings({ workspace: 'go-dev', routing: { profile: 'fast' } }))
+  render(FactoryNew, { projectRoot: ROOT, onNavigate: vi.fn(), upsert })
+  await waitFor(() => expect(screen.getByTestId('workspace-effective').textContent).toContain('go-dev'))
+  await fillHandoff()
+  // Nothing is inherited for checks, so the handoff acknowledges it explicitly.
+  await fireEvent.click(screen.getByLabelText('This repository has no required CI'))
+  await save()
+  await screen.findByTestId('draft-preview')
+  // The shared store is the list every view reads, so the saved draft is
+  // published as the response lands — not left for the next list read.
+  expect(upsert).toHaveBeenCalledTimes(1)
+  expect(upsert).toHaveBeenCalledWith(resolvedItem())
 })
 
 it('usesResolvedServerDraft', async () => {

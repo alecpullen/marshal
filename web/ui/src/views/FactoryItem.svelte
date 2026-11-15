@@ -3,11 +3,43 @@
   import Card from '../lib/ui/Card.svelte'
   import Button from '../lib/ui/Button.svelte'
   import Tag from '../lib/ui/Tag.svelte'
-  import { APIError, commandFactoryItem, errMessage, getFactoryItem, getPreviewEnvironments } from '../lib/api'
-  import { createFactoryPoller, type FactoryCheck, type FactoryCommand, type FactoryCreate, type FactoryItem } from '../lib/factory'
+  import { APIError, commandFactoryItem, errMessage, getPreviewEnvironments } from '../lib/api'
+  import type { FactoryCheck, FactoryCommand, FactoryCreate, FactoryItem } from '../lib/factory'
+  import type { FactoryState } from '../lib/factoryStore'
   import type { PreviewDeployment, PreviewEnvironment, PreviewReport } from '../lib/preview'
-  let { itemId, onNavigate }: { itemId: string; onNavigate: (hash: string) => void } = $props()
-  let item = $state<FactoryItem | null>(null), error = $state(''), notice = $state(''), busy = $state(false)
+  /*
+    One item, read through the shell's store instead of a poller of its own:
+    the store answers the first read, the shell's list poll keeps it current,
+    and a command's own result is published back so every view agrees. The
+    callbacks are the shell's, so the poller and the error handling stay in
+    one place.
+  */
+  let {
+    itemId,
+    factory,
+    getItem,
+    upsert,
+    onRefresh,
+    onNavigate,
+  }: {
+    itemId: string
+    factory: FactoryState
+    getItem: (id: string) => Promise<FactoryItem>
+    upsert: (item: FactoryItem) => void
+    onRefresh: () => Promise<void>
+    onNavigate: (hash: string) => void
+  } = $props()
+  let error = $state(''), notice = $state(''), busy = $state(false)
+  /** The first read, until the shell's store carries this item. */
+  let fetched = $state<FactoryItem | null>(null)
+  /*
+    Once the store carries the item it is the source of truth: the shell's list
+    poll, another view's command and this view's own upsert all land there.
+    Deriving rather than copying keeps one value, so a store update redraws the
+    item in place and nothing here re-reads the preview.
+  */
+  const stored = $derived(factory.items.find((candidate) => candidate.id === itemId) ?? null)
+  const item = $derived(stored ?? fetched)
   let answer = $state(''), reason = $state(''), additionalRounds = $state(1)
   let changePlan = $state(false), replacementPlan = $state(''), replacementSpec = $state(''), replacementInstructions = $state('')
   let replaceImplementerProfile = $state(''), replaceReviewerProfile = $state('')
@@ -54,18 +86,28 @@
     }
     if (alive && seq === previewRequest) previewLoading = false
   }
-  async function refresh() { item = await getFactoryItem(itemId); error = '' }
-  // Spec §6: the initial preview load fires once from the mount path, never from the item poller's refresh.
+  /*
+    The first read goes through the shell store's getItem, so an item the last
+    list snapshot already carries costs no request.
+  */
+  onMount(() => {
+    void (async () => {
+      try {
+        const next = await getItem(itemId)
+        if (!alive) return
+        fetched = next
+        error = ''
+      } catch (e) {
+        if (alive) error = errMessage(e)
+      }
+    })()
+    return () => { alive = false }
+  })
+  // Spec §6: the initial preview load fires once from the mount path, never from a store update.
   $effect(() => {
     if (!item?.repoId || previewStarted) return
     previewStarted = true
     void loadPreview()
-  })
-  onMount(() => {
-    // The poller's immediate tick performs the initial item fetch (exactly one
-    // fetch at mount); its errors land on the same onError handler that sets error.
-    const p = createFactoryPoller(refresh, () => !!item && !['draft', 'ready', 'stopped', 'closed', 'needs_input'].includes(item.state), (e) => { error = errMessage(e) }); p.start()
-    return () => { alive = false; p.stop() }
   })
   async function command(kind: FactoryCommand['kind']) {
     if (!item || busy) return
@@ -91,14 +133,20 @@
         if (kind === 'recover') { c.confirmPreviousWorkerStopped = attest; c.reason = `${workerName.trim()}: ${reason.trim()}` }
         pending = pending && JSON.stringify({ ...pending, requestId: '', replacement: pending.replacement && { ...pending.replacement, requestId: '' } }) === JSON.stringify({ ...c, requestId: '', replacement: c.replacement && { ...c.replacement, requestId: '' } }) ? pending : c
       }
-      item = await commandFactoryItem(itemId, pending)
+      const applied = await commandFactoryItem(itemId, pending)
+      // The command's own result is the newest truth: publish it before the
+      // list can render again, then show it here.
+      upsert(applied)
+      fetched = applied
       pending = null; notice = kind === 'stop' ? 'Stop requested. Waiting for worker confirmation.' : `${kind} accepted`
       if (kind === 'answer') answer = ''
     } catch (e) {
       error = errMessage(e)
       if (e instanceof APIError && e.status === 409) {
         pending = null
-        try { await refresh(); notice = 'Item changed. Review the refreshed version before trying again.' } catch (refreshError) { error += `; refresh failed: ${errMessage(refreshError)}` }
+        // Awaited, and its own failure reported: a stale command must say so
+        // rather than leave the person on a version that cannot succeed.
+        try { await onRefresh(); notice = 'Item changed. Review the refreshed version before trying again.' } catch (refreshError) { error += `; refresh failed: ${errMessage(refreshError)}` }
       }
     } finally { busy = false }
   }

@@ -507,17 +507,27 @@ func embeddingRouteResolves(cfg config.Config) bool {
 // indexPass runs one index pass over the host root with the current config:
 // scan, file index, symbols and embeddings. It is the startup scan and every
 // watcher rerun. A successful pass is published on the host's report broker.
+//
+// An unreachable embedding backend does not fail the pass. The file and
+// symbol index do not depend on it, so a down Ollama must not take indexing
+// down with it: the probe drops the embedder, the pass continues without
+// embeddings, and the warning rides along on the published report. The next
+// pass probes again and picks the backend up when it returns.
 func (h *ProjectHost) indexPass(c context.Context) error {
 	h.mu.Lock()
 	cfg, projectID := h.cfg, h.projectID
 	h.mu.Unlock()
 
 	embedder := resolveEmbedderFromConfig(cfg)
+	var embedWarning string
 	if embedder != nil {
 		probeCtx, cancel := context.WithTimeout(c, 30*time.Second)
-		defer cancel()
-		if _, err := embedding.Probe(probeCtx, embedder); err != nil {
-			return fmt.Errorf("embedding probe failed: %w", err)
+		_, err := embedding.Probe(probeCtx, embedder)
+		cancel()
+		if err != nil {
+			embedder = nil
+			embedWarning = "embedding: " + err.Error()
+			h.log.Warn("embedding probe failed; indexing without embeddings", "root", h.root, "error", err)
 		}
 	}
 
@@ -530,6 +540,9 @@ func (h *ProjectHost) indexPass(c context.Context) error {
 		MaxBytes:   cfg.Indexing.MaxIndexableFileBytes,
 		Embedder:   embedder,
 		OnProgress: h.progress,
+	}
+	if embedWarning != "" {
+		deps.Warnings = []string{embedWarning}
 	}
 	// Document symbols come from a language server the pool already runs for
 	// the root, if any; the pass never starts one.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 )
 
 // This file is the gate every managed write passes through.
@@ -694,12 +695,36 @@ func (m *Manager) AdmitAndCaptureWithCleanup(ctx context.Context, cat *Catalog, 
 // admission pass re-measures it and decides then, and sealing on an
 // unmeasurable figure would rotate a healthy generation for no reason.
 func (m *Manager) overRotationTarget(ctx context.Context, cat *Catalog, id string) bool {
-	gens, err := m.MeasureWorkspaceGenerations(ctx, cat.Workspace())
+	if err := ctx.Err(); err != nil {
+		return false
+	}
+	// Lstat of the target alone follows symlinks in earlier path components.
+	// Preserve the workspace/generations no-follow checks the full measurement
+	// performed, without listing or measuring unrelated generations.
+	for _, parent := range []string{cat.Root(), cat.GenerationsDir()} {
+		info, err := os.Lstat(parent)
+		if err != nil || !info.IsDir() {
+			return false
+		}
+	}
+	man, err := cat.Load()
+	if err != nil || man == nil {
+		return false
+	}
+	rec := man.Generation(id)
+	if rec == nil || rec.IsProtected() {
+		return false
+	}
+	path, err := cat.GenerationDir(id)
 	if err != nil {
 		return false
 	}
-	gu := gens.ByID[id]
-	if gu == nil || gu.Protected || gu.Refs < 0 {
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	gu, err := m.generationUsage(ctx, path, id, info, man, nil)
+	if err != nil || gu.Protected || gu.Refs < 0 {
 		return false
 	}
 	return gu.Allocated >= m.rotationTarget()

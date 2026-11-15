@@ -2,7 +2,6 @@ package snapshot
 
 import (
 	"bytes"
-	"compress/flate"
 	"compress/zlib"
 	"context"
 	"crypto/sha1"
@@ -482,6 +481,8 @@ type objectWriter struct {
 	writeoutDir func(string) error
 	barrier     func(string) error
 
+	codec objectCodec
+
 	hashVerified int
 	deduped      int
 }
@@ -544,12 +545,12 @@ func newObjectWriter(ctx context.Context, m *Manager, gitDir string, budget *obj
 // only after it has been VERIFIED to hold exactly these bytes: the name is
 // derived from the content, so a hit must be proven rather than assumed. A
 // present-but-different object is corruption and is returned as an error.
-func (w *objectWriter) knownObject(hash, dst string, header []byte, contentLen int64) (bool, error) {
+func (w *objectWriter) knownObject(hash, dst string, header []byte, contentLen int64, buffered []byte) (bool, error) {
 	if w.pendingByHash[hash] {
 		w.deduped++
 		return true, nil
 	}
-	existing, err := storedObjectMatches(dst, hash, header, contentLen)
+	existing, err := w.storedObjectMatches(dst, hash, header, contentLen, buffered)
 	if err != nil {
 		return false, err
 	}
@@ -579,6 +580,7 @@ func (w *objectWriter) cleanup() {
 		_ = os.Remove(name)
 	}
 	w.temps = nil
+	w.codec = objectCodec{}
 }
 
 // objectPath returns the loose-object path for a hash, validating the hash
@@ -653,7 +655,7 @@ func (w *objectWriter) installObject(obj gitObject) (bool, error) {
 		w.deduped++
 		return true, nil
 	}
-	existing, err := verifyExistingObject(dst, raw)
+	existing, err := w.storedObjectMatches(dst, obj.Hash, header, int64(len(obj.Content)), obj.Content)
 	if err != nil {
 		return false, err
 	}
@@ -720,6 +722,7 @@ func (w *objectWriter) writeBlob(src blobSource) (string, error) {
 			"negative blob length %d", size)
 	}
 	header := objectHeader(objTypeBlob, size)
+	var buffered []byte
 	if size <= maxBufferedBlobBytes {
 		data, hash, err := w.readBlob(src, header)
 		if err != nil {
@@ -729,13 +732,14 @@ func (w *objectWriter) writeBlob(src blobSource) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		known, err := w.knownObject(hash, dst, header, size)
+		known, err := w.knownObject(hash, dst, header, size, data)
 		if err != nil {
 			return "", err
 		}
 		if known {
 			return hash, nil
 		}
+		buffered = data
 		src = &bytesBlobSource{desc: src.Description(), data: data}
 	}
 	rawLen, err := addInt64(int64(len(header)), size)
@@ -775,7 +779,7 @@ func (w *objectWriter) writeBlob(src blobSource) (string, error) {
 	}
 	// Checked again after the write: a streamed blob's name was unknown until
 	// now, and another writer may have installed this object meanwhile.
-	existing, err := w.knownObject(hash, dst, header, size)
+	existing, err := w.knownObject(hash, dst, header, size, buffered)
 	if err != nil {
 		_ = os.Remove(installed)
 		return "", err
@@ -809,7 +813,10 @@ func (w *objectWriter) writeBlob(src blobSource) (string, error) {
 // and their object hash.
 func (w *objectWriter) readBlob(src blobSource, header []byte) ([]byte, string, error) {
 	declared := src.Size()
-	data := make([]byte, declared)
+	if int64(cap(w.codec.blobBuf)) < declared {
+		w.codec.blobBuf = make([]byte, declared)
+	}
+	data := w.codec.blobBuf[:declared]
 	var read int64
 	for read < declared {
 		if err := w.ctx.Err(); err != nil {
@@ -858,18 +865,19 @@ func (w *objectWriter) writeBlobStream(src blobSource, header []byte, hasher io.
 	}
 
 	capped := &cappedWriter{dst: tmp, limit: reservation}
-	zw, err := zlib.NewWriterLevel(capped, flate.NoCompression)
+	zw, err := w.codec.writer(capped)
 	if err != nil {
 		discard()
 		return "", w.manager.storeError(ReasonUnreadableFile, tmpName, err)
 	}
+	defer w.codec.releaseWriter()
 	if _, err := zw.Write(header); err != nil {
 		discard()
 		return "", storeError(ReasonBudgetExhausted, err)
 	}
 
 	declared := src.Size()
-	buf := make([]byte, 64*1024)
+	buf := w.codec.buffer()
 	var read int64
 	for read < declared {
 		if err := w.ctx.Err(); err != nil {
@@ -1010,13 +1018,14 @@ func (w *objectWriter) writeLooseObject(raw []byte, reservation int64, dst strin
 	}
 	tmpName := tmp.Name()
 	capped := &cappedWriter{dst: tmp, limit: reservation}
-	zw, err := zlib.NewWriterLevel(capped, flate.NoCompression)
+	zw, err := w.codec.writer(capped)
 	if err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
 		w.forgetTemp(tmpName)
 		return "", w.manager.storeError(ReasonUnreadableFile, tmpName, err)
 	}
+	defer w.codec.releaseWriter()
 	if _, err := zw.Write(raw); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
@@ -1371,36 +1380,37 @@ func (rc *readerCloser) Close() error {
 // followed by contentLen bytes: nothing shorter, nothing longer, and no
 // trailing data.
 func (w *objectWriter) verifyStoredObject(path string, header []byte, contentLen int64) error {
-	got, err := decompressLooseObject(path)
+	f, err := os.Open(path)
 	if err != nil {
-		return err
+		return w.manager.storeError(ReasonUnreadableFile, path, err)
 	}
-	want, err := addInt64(int64(len(header)), contentLen)
+	defer f.Close()
+	zr, err := w.codec.reader(f)
 	if err != nil {
-		return err
+		return w.manager.storeError(ReasonUnverifiedObject, path, err)
 	}
-	if int64(len(got)) != want {
-		return w.manager.storeErrorf(ReasonUnverifiedObject, path,
-			"stored object decompressed to %d bytes, not the declared %d", len(got), want)
+	defer w.codec.releaseReader()
+	if err := w.codec.compare(zr, header); err != nil {
+		return w.manager.storeError(ReasonUnverifiedObject, path, err)
 	}
-	if !bytes.HasPrefix(got, header) {
-		return w.manager.storeErrorf(ReasonUnverifiedObject, path,
-			"stored object does not begin with its declared header %q", header)
+	n, err := io.CopyBuffer(io.Discard, io.LimitReader(zr, contentLen), w.codec.buffer())
+	if err != nil {
+		return w.manager.storeError(ReasonUnreadableFile, path, err)
+	}
+	if n != contentLen {
+		return w.manager.storeErrorf(ReasonUnverifiedObject, path, "stored object holds %d bytes, want %d", n, contentLen)
+	}
+	if err := objectEOF(zr); err != nil {
+		return w.manager.storeError(ReasonUnverifiedObject, path, err)
 	}
 	return nil
 }
 
-// storedObjectMatches reports whether the object at path is exactly the object
-// named wantHash.
-//
-// It streams the stored bytes rather than materialising them, so a large blob is
-// verified without being held in memory. An absent file is not an error (there
-// is simply nothing to deduplicate against). A file that is present but holds
-// anything else IS an error: the name is derived from the content, so a mismatch
-// is corruption or a hash collision, and treating it as a hit — or as a hole to
-// be filled — would silently change what a snapshot that already referenced it
-// can restore.
-func storedObjectMatches(path, wantHash string, header []byte, contentLen int64) (bool, error) {
+// storedObjectMatches verifies installed bytes on every capture. When the
+// source has already been read and hashed into buffered, exact byte comparison
+// proves the same identity without a second hash. Streaming sources keep the
+// hash verifier. Neither a path nor filesystem metadata is a verified hit.
+func (w *objectWriter) storedObjectMatches(path, wantHash string, header []byte, contentLen int64, buffered []byte) (bool, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -1409,57 +1419,44 @@ func storedObjectMatches(path, wantHash string, header []byte, contentLen int64)
 		return false, storeErrorf(ReasonUnreadableFile, "stat existing object %s: %v", path, err)
 	}
 	if !info.Mode().IsRegular() || info.Size() == 0 {
-		return false, storeErrorf(ReasonUnverifiedObject,
-			"path %s exists but is not a readable object file", path)
+		return false, storeErrorf(ReasonUnverifiedObject, "path %s exists but is not a readable object file", path)
 	}
-
 	f, err := os.Open(path)
 	if err != nil {
 		return false, storeErrorf(ReasonUnreadableFile, "open object %s: %v", path, err)
 	}
 	defer f.Close()
-	zr, err := zlib.NewReader(f)
+	zr, err := w.codec.reader(f)
 	if err != nil {
-		return false, storeErrorf(ReasonUnverifiedObject,
-			"an object exists at %s but is not a readable zlib stream: %v", path, err)
+		return false, storeErrorf(ReasonUnverifiedObject, "an object exists at %s but is not a readable zlib stream: %v", path, err)
 	}
-	defer zr.Close()
-
-	got := make([]byte, len(header))
-	if _, err := io.ReadFull(zr, got); err != nil {
-		return false, storeErrorf(ReasonUnverifiedObject,
-			"an object exists at %s but has no readable header: %v", path, err)
+	defer w.codec.releaseReader()
+	if err := w.codec.compare(zr, header); err != nil {
+		return false, storeErrorf(ReasonUnverifiedObject, "object %s has no matching header: %v", path, err)
 	}
-	if !bytes.Equal(got, header) {
-		return false, storeErrorf(ReasonUnverifiedObject,
-			"an object exists at %s with header %q, not the expected %q", path, got, header)
+	if buffered != nil {
+		if int64(len(buffered)) != contentLen {
+			return false, storeErrorf(ReasonInternal, "buffered object length mismatch")
+		}
+		if err := w.codec.compare(zr, buffered); err != nil {
+			return false, storeErrorf(ReasonUnverifiedObject, "object %s differs from captured source: %v", path, err)
+		}
+	} else {
+		hasher := sha1.New()
+		_, _ = hasher.Write(header)
+		n, err := io.CopyBuffer(hasher, io.LimitReader(zr, contentLen), w.codec.buffer())
+		if err != nil {
+			return false, storeErrorf(ReasonUnreadableFile, "read object %s: %v", path, err)
+		}
+		if n != contentLen {
+			return false, storeErrorf(ReasonUnverifiedObject, "object %s holds %d bytes, want %d", path, n, contentLen)
+		}
+		if hex.EncodeToString(hasher.Sum(nil)) != strings.ToLower(wantHash) {
+			return false, storeErrorf(ReasonUnverifiedObject, "object %s does not hash to its own name %s", path, wantHash)
+		}
 	}
-	hasher := sha1.New()
-	if _, err := hasher.Write(header); err != nil {
-		return false, storeError(ReasonInternal, err)
-	}
-	counter := &countingReader{r: io.LimitReader(zr, contentLen)}
-	if _, err := io.Copy(hasher, counter); err != nil {
-		return false, storeErrorf(ReasonUnreadableFile, "read object %s: %v", path, err)
-	}
-	if counter.n != contentLen {
-		return false, storeErrorf(ReasonUnverifiedObject,
-			"an object exists at %s holding %d content bytes, not the expected %d", path, counter.n, contentLen)
-	}
-	// Trailing data means the stored object describes more than its header
-	// declares, which is the corruption this check exists to catch.
-	probe := make([]byte, 1)
-	n, probeErr := zr.Read(probe)
-	if n > 0 {
-		return false, storeErrorf(ReasonUnverifiedObject,
-			"an object exists at %s with trailing data after its %d declared bytes", path, contentLen)
-	}
-	if probeErr != nil && !errors.Is(probeErr, io.EOF) {
-		return false, storeErrorf(ReasonUnreadableFile, "read object %s: %v", path, probeErr)
-	}
-	if hex.EncodeToString(hasher.Sum(nil)) != strings.ToLower(wantHash) {
-		return false, storeErrorf(ReasonUnverifiedObject,
-			"an object exists at %s but does not hash to its own name %s", path, wantHash)
+	if err := objectEOF(zr); err != nil {
+		return false, storeErrorf(ReasonUnverifiedObject, "object %s: %v", path, err)
 	}
 	return true, nil
 }
@@ -1481,39 +1478,6 @@ func decompressLooseObject(path string) ([]byte, error) {
 		return nil, storeErrorf(ReasonUnreadableFile, "read object %s: %v", path, err)
 	}
 	return out, nil
-}
-
-// verifyExistingObject reports whether path already holds exactly raw. A file
-// that exists but holds different bytes is NOT a deduplicated object: it is
-// corruption or a collision, and treating it as a hit would install a snapshot
-// whose objects do not contain what the snapshot claims. Because the path is
-// derived from the object's own hash, a mismatch here is a hash collision and
-// is reported rather than silently overwritten.
-func verifyExistingObject(path string, raw []byte) (bool, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		return false, storeErrorf(ReasonUnreadableFile,
-			"stat existing object %s: %v", path, err)
-	}
-	if !info.Mode().IsRegular() || info.Size() == 0 {
-		return false, nil
-	}
-	got, err := decompressLooseObject(path)
-	if err != nil {
-		// An object that exists but cannot be decoded is corruption at a
-		// content-addressed path. Rewriting it would silently change what any
-		// snapshot that already referenced it can restore, so it is reported.
-		return false, storeErrorf(ReasonUnverifiedObject,
-			"an object exists at %s but is not a readable zlib stream: %v", path, err)
-	}
-	if !bytes.Equal(got, raw) {
-		return false, storeErrorf(ReasonUnverifiedObject,
-			"an object already exists at %s but holds different bytes", path)
-	}
-	return true, nil
 }
 
 // min64 returns the smaller of two int64 values.

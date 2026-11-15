@@ -1,0 +1,26 @@
+File: snapshot-after.test
+Type: cpu
+Time: 2026-11-14 20:23:27 AEDT
+Duration: 5.52s, Total samples = 3.68s (66.66%)
+Showing nodes accounting for 3.23s, 87.77% of 3.68s total
+Dropped 74 nodes (cum <= 0.02s)
+Showing top 18 nodes out of 168
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%      3.34s 90.76%  marshal/internal/snapshot.(*Manager).AdmitAndCaptureWithCleanup
+         0     0%     0%      3.34s 90.76%  marshal/internal/snapshot.(*Service).Track
+         0     0%     0%      3.34s 90.76%  marshal/internal/snapshot.(*Service).Track.func1
+         0     0%     0%      3.34s 90.76%  marshal/internal/snapshot.(*Service).withStore
+         0     0%     0%      3.34s 90.76%  marshal/internal/snapshot.TestSnapshotTraversalProbe
+         0     0%     0%      3.34s 90.76%  marshal/internal/snapshot.TestSnapshotTraversalProbe.func2 (inline)
+         0     0%     0%      3.34s 90.76%  testing.tRunner
+     3.23s 87.77% 87.77%      3.23s 87.77%  syscall.rawsyscalln
+         0     0% 87.77%      3.23s 87.77%  syscall.syscalln
+         0     0% 87.77%      3.05s 82.88%  syscall.syscall
+         0     0% 87.77%      1.96s 53.26%  os.ignoringEINTR (inline)
+         0     0% 87.77%      1.90s 51.63%  marshal/internal/snapshot.(*Manager).captureToGeneration
+         0     0% 87.77%      1.72s 46.74%  marshal/internal/snapshot.(*objectWriter).writeEntry
+         0     0% 87.77%      1.48s 40.22%  syscall.Open
+         0     0% 87.77%      1.27s 34.51%  marshal/internal/snapshot.(*Manager).AdmitCapture
+         0     0% 87.77%      1.23s 33.42%  marshal/internal/snapshot.(*objectWriter).writeBlob
+         0     0% 87.77%      1.17s 31.79%  marshal/internal/snapshot.(*objectWriter).storedObjectMatches
+         0     0% 87.77%      1.12s 30.43%  marshal/internal/snapshot.(*Manager).measureTreeWith

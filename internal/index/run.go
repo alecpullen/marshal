@@ -24,6 +24,10 @@ type Deps struct {
 	Embedder   embedding.Embedder   // nil => embeddings skipped
 	LSP        LSPSymbols           // nil => LSP symbols not available
 	OnProgress func(message string) // nil => no progress reporting
+	// Warnings are conditions the caller already knows about (an embedding
+	// backend that could not be reached, say). They are reported ahead of
+	// the ones this pass finds.
+	Warnings []string
 }
 
 type Report struct {
@@ -38,7 +42,7 @@ type Report struct {
 // Run performs one full incremental index pass: scan → file index (full
 // replace) → tree-sitter symbols (full replace) → embeddings (incremental).
 func Run(ctx context.Context, deps Deps, projectID int64) (Report, error) {
-	rep := Report{LangCounts: map[string]int{}}
+	rep := Report{LangCounts: map[string]int{}, Warnings: append([]string(nil), deps.Warnings...)}
 
 	scanner := repo.NewScanner(repo.Config{Root: deps.Root, Ignore: deps.Ignore, MaxIndexableFileBytes: deps.MaxBytes})
 	scanned, err := scanner.ScanDetailed(ctx)

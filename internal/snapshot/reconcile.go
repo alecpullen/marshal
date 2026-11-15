@@ -432,11 +432,11 @@ func (m *Manager) discoverV2Root(ctx context.Context, v2Root string, out *StoreD
 // where it came from.
 func (m *Manager) discoverV2Workspace(ctx context.Context, workspace, path string, info os.FileInfo) (*DiscoveredWorkspace, error) {
 	ws := &DiscoveredWorkspace{Workspace: workspace, Path: path, Layout: LayoutV2}
-	measure, err := m.measureTreeAllocated(path, info)
+	inv, measured, err := m.inventoryTree(ctx, path, info, StoreKindWorkspace, workspace, m.limits.Normalize().AllocationUnitBytes)
 	if err != nil {
 		return nil, err
 	}
-	ws.Bytes = measure
+	ws.Bytes = measured.Allocated
 
 	cat, err := m.Catalog(workspace)
 	if err != nil {
@@ -465,10 +465,10 @@ func (m *Manager) discoverV2Workspace(ctx context.Context, workspace, path strin
 		ws.Root = man.Root
 	}
 
-	if err := m.discoverGenerations(ctx, ws, cat); err != nil {
+	if err := m.discoverGenerations(ctx, ws, cat, inv); err != nil {
 		return nil, err
 	}
-	if err := m.discoverCatalogScratch(ws, cat); err != nil {
+	if err := m.discoverCatalogScratch(ctx, ws, cat, inv); err != nil {
 		return nil, err
 	}
 	return ws, nil
@@ -476,7 +476,7 @@ func (m *Manager) discoverV2Workspace(ctx context.Context, workspace, path strin
 
 // discoverGenerations enumerates the generation directories of a versioned
 // workspace and reconciles each against the manifest.
-func (m *Manager) discoverGenerations(ctx context.Context, ws *DiscoveredWorkspace, cat *Catalog) error {
+func (m *Manager) discoverGenerations(ctx context.Context, ws *DiscoveredWorkspace, cat *Catalog, inv *usageInventory) error {
 	dir := cat.GenerationsDir()
 	entries, err := readDirNoFollow(dir)
 	if err != nil {
@@ -508,7 +508,7 @@ func (m *Manager) discoverGenerations(ctx context.Context, ws *DiscoveredWorkspa
 		if ws.Manifest != nil {
 			g.Record = ws.Manifest.Generation(name)
 		}
-		if g.Bytes, err = m.measureTreeAllocated(path, info); err != nil {
+		if g.Bytes, err = m.allocatedFromInventory(ctx, path, info, inv); err != nil {
 			return err
 		}
 		if !repositoryLooksInitialised(path) {
@@ -564,7 +564,7 @@ func (m *Manager) discoverGenerations(ctx context.Context, ws *DiscoveredWorkspa
 // Both live in namespaces only this package writes, which is what makes them
 // "known" — unlike a stray directory anywhere else in the store, their
 // provenance needs no guesswork.
-func (m *Manager) discoverCatalogScratch(ws *DiscoveredWorkspace, cat *Catalog) error {
+func (m *Manager) discoverCatalogScratch(ctx context.Context, ws *DiscoveredWorkspace, cat *Catalog, inv *usageInventory) error {
 	unit := m.limits.Normalize().AllocationUnitBytes
 
 	stagingDir := cat.StagingDir()
@@ -588,7 +588,7 @@ func (m *Manager) discoverCatalogScratch(ws *DiscoveredWorkspace, cat *Catalog) 
 			})
 			continue
 		}
-		bytes, err := m.measureTreeAllocated(path, info)
+		bytes, err := m.allocatedFromInventory(ctx, path, info, inv)
 		if err != nil {
 			return err
 		}

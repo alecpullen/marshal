@@ -1,0 +1,12 @@
+goos: darwin
+goarch: arm64
+pkg: marshal/internal/app
+cpu: Apple M5
+BenchmarkCompletedCommandProjectionProbe/current_durable_and_retained-10         	   30277	     12528 ns/op	    4784 B/op	      98 allocs/op
+BenchmarkCompletedCommandProjectionProbe/current_durable_and_retained-10         	   29037	     12640 ns/op	    4773 B/op	      98 allocs/op
+BenchmarkCompletedCommandProjectionProbe/current_durable_and_retained-10         	   29602	     12424 ns/op	    4768 B/op	      98 allocs/op
+BenchmarkCompletedCommandProjectionProbe/durable_winners_only-10                 	   26881	     11553 ns/op	    4176 B/op	      88 allocs/op
+BenchmarkCompletedCommandProjectionProbe/durable_winners_only-10                 	   31180	     11315 ns/op	    4164 B/op	      88 allocs/op
+BenchmarkCompletedCommandProjectionProbe/durable_winners_only-10                 	   31354	     12413 ns/op	    4167 B/op	      88 allocs/op
+PASS
+ok  	marshal/internal/app	3.496s

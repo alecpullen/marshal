@@ -1,8 +1,25 @@
 package bridge
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
 
-// factoryResolveDefaults applies the project's factory defaults to a handoff.
+// factoryResolveDefaults applies the project's defaults to a handoff.
+//
+// Resolution has two precedence levels, and the handoff wins over both. Each
+// level only fills a field the levels above it left unset, so a value the
+// handoff states itself is never rewritten:
+//
+//  1. the project's factory defaults (FactoryDefaults), which cover every
+//     inheritable factory field;
+//  2. the project's agent defaults (ProjectSettings.Workspace and the routing
+//     profile in ProjectSettings.Routing), which apply to exactly three
+//     fields: the workspace, the implementer's routing and the reviewer's
+//     routing.
+//
+// Both levels are read from one snapshot of the project's settings, and
+// existing normalisation and validation then run on the result unchanged.
 //
 // The project is the one the handoff names, because a valid handoff always
 // names a registered, trusted root and the handoff is the primary place
@@ -37,31 +54,109 @@ func (a *factoryAPI) factoryResolveDefaults(req FactoryCreate) (FactoryCreate, e
 	if root == "" {
 		return req, nil
 	}
-	defaults := a.fleet.ws.ProjectSettingsFor(root).FactoryDefaults
-	if defaults == nil {
-		return req, nil
+	// One read of the settings serves both precedence levels, so resolution
+	// never mixes a factory default from one snapshot with an agent default
+	// from another.
+	settings := a.fleet.ws.ProjectSettingsFor(root)
+	defaults := settings.FactoryDefaults
+	if defaults != nil {
+		if err := factoryValidateDefaults(defaults); err != nil {
+			return FactoryCreate{}, fmt.Errorf("%w: project factory defaults for %s: %v", errFactoryConfig, root, err)
+		}
+		// The only cross-source conflict is a project default workspace
+		// against a handoff that asks for a native run. Native is the only
+		// non-inheritable field that can collide with an inheritable one, so
+		// it is the only conflict resolution has to report. A handoff that
+		// sets both itself is a handoff-internal conflict: the project's
+		// defaults are not involved, and factoryNormalize stays responsible
+		// for it unchanged. The check runs before the lower level's workspace
+		// fallback, which a native handoff suppresses rather than conflicts
+		// with.
+		if req.Config.Native && req.Config.Workspace == "" && defaults.Workspace != "" {
+			return FactoryCreate{}, fmt.Errorf("%w: factory configuration conflict: workspace and native are mutually exclusive (project defaults for %s set workspace; handoff sets native)", errFactoryInput, root)
+		}
+		req.Config = factoryMergeDefaults(req.Config, defaults)
 	}
-	if err := factoryValidateDefaults(defaults); err != nil {
-		return FactoryCreate{}, fmt.Errorf("%w: project factory defaults for %s: %v", errFactoryConfig, root, err)
-	}
-	// The only cross-source conflict is a project default workspace against a
-	// handoff that asks for a native run. Native is the only non-inheritable
-	// field that can collide with an inheritable one, so it is the only
-	// conflict resolution has to report. A handoff that sets both itself is a
-	// handoff-internal conflict: the project's defaults are not involved, and
-	// factoryNormalize stays responsible for it unchanged.
-	if req.Config.Native && req.Config.Workspace == "" && defaults.Workspace != "" {
-		return FactoryCreate{}, fmt.Errorf("%w: factory configuration conflict: workspace and native are mutually exclusive (project defaults for %s set workspace; handoff sets native)", errFactoryInput, root)
-	}
-	req.Config = factoryMergeDefaults(req.Config, defaults)
+	req.Config = factoryApplyProjectAgentDefaults(req.Config, settings)
 	return req, nil
 }
 
-// factoryMergeDefaults applies a project's defaults to a handoff's
-// configuration. The handoff wins for every field it sets; "unset" is
-// per-type, as the specification's §4.3 defines it: an empty string, a zero
-// int, a nil or zero-length raw message, and a nil check list. A non-nil empty
-// check list is an explicit choice and survives.
+// factoryApplyProjectAgentDefaults is resolution's lower precedence level: it
+// fills the three fields a project's agent settings cover — the workspace, the
+// implementer's routing and the reviewer's routing — where the handoff and the
+// project's factory defaults both left them unset.
+//
+// An explicit native handoff suppresses the workspace fallback instead of
+// conflicting with it: native and a workspace are mutually exclusive, so
+// inheriting a project workspace into a native run would turn a valid handoff
+// into an invalid one. The fallback is the only direction the suppression
+// runs: the backend never infers native from an empty project workspace, so a
+// project with none leaves the handoff exactly as it was.
+//
+// The routing fallback is the project's routing *profile* and nothing else.
+// The project's per-role overrides belong to its interactive agents, not to
+// this run, and an explicit factory or handoff route is never rewritten. A
+// project with no usable profile contributes no fallback at all, and the
+// stored routing message is only ever read.
+func factoryApplyProjectAgentDefaults(c FactoryConfig, ps ProjectSettings) FactoryConfig {
+	if !c.Native && c.Workspace == "" {
+		c.Workspace = ps.Workspace
+	}
+	profile := factoryProjectRoutingProfile(ps.Routing)
+	if profile == "" {
+		return c
+	}
+	if len(c.ImplementerRouting) == 0 {
+		c.ImplementerRouting = factoryProfileRouting(profile)
+	}
+	if len(c.ReviewerRouting) == 0 {
+		c.ReviewerRouting = factoryProfileRouting(profile)
+	}
+	return c
+}
+
+// projectRoutingProfileRoute is the whole route the fallback constructs: the
+// project's routing profile, with no per-role overrides.
+type projectRoutingProfileRoute struct {
+	Profile string `json:"profile"`
+}
+
+// factoryProfileRouting renders the fallback route for a profile.
+func factoryProfileRouting(profile string) json.RawMessage {
+	raw, err := json.Marshal(projectRoutingProfileRoute{Profile: profile})
+	if err != nil {
+		// A string always marshals; keeping the route unset is the only
+		// safe answer if that ever changed.
+		return nil
+	}
+	return raw
+}
+
+// factoryProjectRoutingProfile reads the routing profile a project's agent
+// settings select, or "" when they select none. Routing is stored as raw JSON,
+// so an absent, null, malformed or non-string profile all read as "none": the
+// fallback contributes nothing rather than guessing, and nothing is written
+// back to the stored message.
+func factoryProjectRoutingProfile(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var route projectRoutingProfileRoute
+	if err := json.Unmarshal(raw, &route); err != nil {
+		return ""
+	}
+	return route.Profile
+}
+
+// factoryMergeDefaults is resolution's upper precedence level: it applies a
+// project's factory defaults to a handoff's configuration. The handoff wins
+// for every field it sets; "unset" is per-type, as the specification's §4.3
+// defines it: an empty string, a zero int, a nil or zero-length raw message,
+// and a nil check list. A non-nil empty check list is an explicit choice and
+// survives. Native is not among these fields: it is non-inheritable, so the
+// handoff's value is the only one that can be in effect when the lower level
+// (factoryApplyProjectAgentDefaults) decides whether to suppress its workspace
+// fallback.
 //
 // The defaults are never mutated: the inherited check list is copied rather
 // than aliased.

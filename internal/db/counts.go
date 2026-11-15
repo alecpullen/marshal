@@ -17,8 +17,8 @@ func (db *DB) CountSymbols(projectID int64) (int, error) {
 }
 
 // CountEmbeddedChunks returns the number of chunks that have an embedding.
-// Chunks are written even when embeddings are disabled, so only the join
-// proves the embedding phase actually ran.
+// Only chunks written with a vector carry one, so this counts the work the
+// embedding phase actually did.
 func (db *DB) CountEmbeddedChunks(projectID int64) (int, error) {
 	return db.countRows(`SELECT COUNT(*) FROM embeddings e JOIN chunks c ON c.id = e.chunk_id WHERE c.project_id = ?`, projectID)
 }

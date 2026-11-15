@@ -1,0 +1,27 @@
+File: marshal-profile
+Type: cpu
+Time: 2026-11-14 18:32:02 AEDT
+Duration: 10.02s, Total samples = 470ms ( 4.69%)
+Showing nodes accounting for 0, 0% of 470ms total
+Showing top 20 nodes out of 172
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%      220ms 46.81%  charm.land/bubbletea/v2.(*Program).Run
+         0     0%     0%      220ms 46.81%  charm.land/bubbletea/v2.(*Program).eventLoop
+         0     0%     0%      220ms 46.81%  main.main
+         0     0%     0%      220ms 46.81%  main.run
+         0     0%     0%      220ms 46.81%  marshal/internal/launch.Run
+         0     0%     0%      220ms 46.81%  marshal/internal/launch.runProgram
+         0     0%     0%      220ms 46.81%  runtime.main
+         0     0%     0%      140ms 29.79%  runtime.mcall
+         0     0%     0%      140ms 29.79%  runtime.park_m
+         0     0%     0%      140ms 29.79%  runtime.schedule
+         0     0%     0%      120ms 25.53%  runtime.findRunnable
+         0     0%     0%      110ms 23.40%  charm.land/bubbletea/v2.(*Program).render
+         0     0%     0%      110ms 23.40%  marshal/internal/app/tui.(*Model).updateViewportHeight
+         0     0%     0%      110ms 23.40%  marshal/internal/app/tui.Model.Update
+         0     0%     0%      110ms 23.40%  marshal/internal/app/tui.Model.View
+         0     0%     0%      110ms 23.40%  marshal/internal/app/tui.Model.update
+         0     0%     0%      100ms 21.28%  marshal/internal/app/tui.(*Model).viewString
+         0     0%     0%      100ms 21.28%  marshal/internal/app/tui.Model.dispatchRuntimeMessage
+         0     0%     0%      100ms 21.28%  marshal/internal/app/tui.Model.handleAgentTick
+         0     0%     0%      100ms 21.28%  marshal/internal/app/tui.Model.handleRuntimeMessage

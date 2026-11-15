@@ -248,6 +248,12 @@ Investigate Gitea as an underlying service and potentially forking it to interna
 
 ## 7. External planners and MCP
 
+The 14 November follow-up on Studio-hosted Claude sessions, reusable workers,
+shared project context and opt-in planner delegation is recorded in
+[Workers and external planners](worker-and-planner-integration.md). It extends
+this section's MCP handoff direction with an ACP-hosted path; neither path has
+been validated end to end.
+
 ### Agreed
 
 Some planning models are available only through their provider's harness. Marshal needs a handoff path from those environments, with MCP the intended integration avenue.

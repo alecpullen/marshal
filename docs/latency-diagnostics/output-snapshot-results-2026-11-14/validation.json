@@ -1,0 +1,29 @@
+{
+  "go_version": "go1.26.1 darwin/arm64",
+  "command": "CGO_ENABLED=1 go test -p=1 ./... -count=1 -json -timeout 20m",
+  "exit_code": 0,
+  "passed_packages": 123,
+  "packages_without_tests": [
+    "marshal/internal/agent/agenttest",
+    "marshal/internal/app/session/sessiontest",
+    "marshal/internal/app/tui/glyph",
+    "marshal/internal/watch/watchctx",
+    "marshal/test/usability/actor",
+    "marshal/web/bridge/contract"
+  ],
+  "test_and_subtest_pass_events": 13043,
+  "test_skip_events": 10,
+  "elapsed_event_interval_seconds": 533.567443,
+  "log_sha256": "881b7971e6c80d809046df316d0a94f3806835b8c6ae08b77139847a13d31bbd",
+  "binary": "private freshly built marshal --embedded wrapper, USABILITY_REQUIRE_BINARY=1",
+  "failures": [],
+  "vet": {
+    "repository": "passed",
+    "latencyprobe_app_snapshot_usability": "passed"
+  },
+  "race": {
+    "go_version": "go1.27.0",
+    "app_redact": "passed",
+    "snapshot_source_corruption_deferred_publication": "passed"
+  }
+}

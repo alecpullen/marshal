@@ -553,3 +553,62 @@ the two predicates are identical today. A later change to only one of them would
 make a default valid when written and invalid when resolved, or the reverse,
 with a resolve-time error that blames the workspace file. The next slice that
 modifies `factoryNormalize` should extract the shared rule.
+
+## Implementation record — project agent fallback and conditional writes
+
+Delivered on branch `project-factory-settings` from `40c2194d` (current `main`)
+as the five tasks of the
+[project factory settings plan](plans/2026-11-15-project-factory-settings-plan.md).
+This section records what changed against the contract above; it does not
+rewrite that contract's historical claims.
+
+### Resolution gained a lower precedence level
+
+§4.4's order is now `handoff > project factory defaults > project agent
+defaults > existing normalisation/validation`. The new level applies to exactly
+three fields — the workspace, the implementer route and the reviewer route —
+and each role falls back independently to `{"profile": <ProjectSettings.Routing.profile>}`.
+The project's other routing members are never used as a fallback and are never
+rewritten; a stored routing object without a usable `profile` contributes
+nothing.
+
+An explicit handoff `native: true` suppresses the *agent* workspace fallback
+only. §4.7's factory-workspace-versus-native conflict keeps its error naming
+both sources, and the backend still never infers `native: true` from an empty
+project workspace. Existing projects with no factory override follow their agent
+defaults for future creates; §4.4's snapshot, replay and retry rules are
+unchanged, so prior drafts, approvals and retry replacements keep the
+configuration they were created with.
+
+### Project settings writes can be conditional
+
+`GET /api/projects/settings` returns an `ETag` — a quoted, lowercase SHA-256 of
+the JSON encoding of the typed `ProjectSettings`. `PUT` accepts `If-Match`; the
+comparison, the map update and `Workspace.save()` all happen under
+`Workspace.mu`, so of two writers naming the same version exactly one wins. A
+mismatch is 412 with no write, no intake mirroring and no audit. Exactly one
+quoted 64-hex tag is accepted; `*`, multiple tags, unquoted, weak and
+wrong-length values are 400. A `PUT` without `If-Match` keeps the legacy
+unconditional behaviour, and both routes now carry an `ETag` computed from the
+exact value written or read rather than a later racing read.
+
+### UI contract
+
+`web/ui/src/lib/factory.ts` carries the shared create/response split: the create
+form's `config` is a `FactoryCreateConfig` whose inheritable fields are optional
+and omitted to follow, while a returned draft's `config` stays the resolved
+`FactoryConfig`. The combined project screen holds one versioned saved record
+for every write, spreads the fetched record so unknown fields and nested routing
+members survive, and on 412 keeps the user's edits and offers an explicit
+reload. A successful write updates the stored record and the version token but
+does not revert a field changed while the write was in flight — a defect the
+browser checks caught, fixed in `Project.svelte`.
+
+### Acceptance
+
+`go test ./web/bridge` (inheritance, conditional writes, HTTP end-to-end),
+`npm test` in `web/ui` (963 jsdom tests) and `web/ui/e2e/project-settings.pw.ts`
+(12 real-browser checks at 1280px and 390px via
+`scripts/e2e/run_browser_checks.sh`) all pass. The e2e fixture uses three agent
+profiles and a provider pointed at a closed loopback port; no credentials are
+read and no model is called.

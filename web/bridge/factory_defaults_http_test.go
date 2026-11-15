@@ -82,6 +82,42 @@ func (f *factoryDefaultsFixture) headers() map[string]string {
 	return map[string]string{"Authorization": "Bearer secret"}
 }
 
+// addProfile registers an extra routing profile in the canned model
+// configuration, so a test can move a project's routing profile between two
+// creates without preflight rejecting the new one.
+func (f *factoryDefaultsFixture) addProfile(t *testing.T, name string) {
+	t.Helper()
+	config, ok := f.agent.results["config/get"].(map[string]any)
+	if !ok {
+		t.Fatalf("canned model configuration is %T, not an object", f.agent.results["config/get"])
+	}
+	profiles, ok := config["profiles"].(map[string]any)
+	if !ok {
+		t.Fatalf("canned model profiles is %T, not an object", config["profiles"])
+	}
+	profiles[name] = map[string]any{
+		"implementer": map[string]any{"preset": "test/model"},
+		"reviewer":    map[string]any{"preset": "test/model"},
+	}
+}
+
+// resolve runs resolution alone: no normalisation and no preflight. A
+// published workspace cannot be resolved or built offline, so the workspace
+// half of a precedence level is pinned here; the create path covers every
+// field preflight can check.
+func (f *factoryDefaultsFixture) resolve(t *testing.T, req FactoryCreate) FactoryConfig {
+	t.Helper()
+	concrete, ok := f.api.(*factoryAPI)
+	if !ok {
+		t.Fatalf("factory API is %T, not *factoryAPI", f.api)
+	}
+	resolved, err := concrete.factoryResolveDefaults(req)
+	if err != nil {
+		t.Fatalf("resolve defaults: %v", err)
+	}
+	return resolved.Config
+}
+
 // putSettings writes a project's settings through the real settings surface,
 // so the stored defaults are exactly what a client would persist.
 func (f *factoryDefaultsFixture) putSettings(t *testing.T, root string, ps ProjectSettings) {
@@ -768,4 +804,502 @@ func TestFactoryBootstrapAcceptanceContractStillHolds(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestFactoryAgentDefaultsFollowProject pins resolution's lower precedence
+// level: the project's agent workspace and routing profile are what a handoff
+// inherits when neither the handoff nor the project's factory defaults set
+// them. A change between two creates reaches only the second one, and each
+// draft stays a snapshot of the settings its own create resolved against.
+func TestFactoryAgentDefaultsFollowProject(t *testing.T) {
+	f := newFactoryDefaultsFixture(t)
+	f.addProfile(t, "later")
+	firstWorkspace, secondWorkspace := "first", "second"
+	f.putSettings(t, f.root, ProjectSettings{
+		Workspace: firstWorkspace,
+		Routing:   json.RawMessage(`{"profile":"chosen"}`),
+	})
+
+	// Resolution alone pins the workspace half of the fallback: a published
+	// workspace cannot be resolved or built offline, so preflight is out of
+	// reach here.
+	plain := f.handoff("agent-defaults-plain-1", f.root)
+	plain.Config.Native = false
+	resolved := f.resolve(t, plain)
+	if resolved.Workspace != firstWorkspace {
+		t.Fatalf("workspace = %q, want the project agent workspace %q", resolved.Workspace, firstWorkspace)
+	}
+	assertFactoryRoutes(t, resolved, `{"profile":"chosen"}`)
+
+	// A native handoff suppresses that fallback, so these creates need no
+	// published workspace to reach preflight.
+	nativeCreate := func(requestID string) FactoryCreate {
+		req := f.handoff(requestID, f.root)
+		req.Config.TargetBranch = "main"
+		return req
+	}
+	first := f.created(t, nativeCreate("agent-defaults-create-1"))
+	if first.Draft.Config.Workspace != "" {
+		t.Fatalf("workspace = %q, want none for a native handoff", first.Draft.Config.Workspace)
+	}
+	assertFactoryRoutes(t, first.Draft.Config, `{"profile":"chosen"}`)
+
+	// Move both project agent defaults between the two creates.
+	f.putSettings(t, f.root, ProjectSettings{
+		Workspace: secondWorkspace,
+		Routing:   json.RawMessage(`{"profile":"later"}`),
+	})
+	plain = f.handoff("agent-defaults-plain-2", f.root)
+	plain.Config.Native = false
+	resolved = f.resolve(t, plain)
+	if resolved.Workspace != secondWorkspace {
+		t.Fatalf("workspace = %q, want the project agent workspace %q", resolved.Workspace, secondWorkspace)
+	}
+	assertFactoryRoutes(t, resolved, `{"profile":"later"}`)
+
+	second := f.created(t, nativeCreate("agent-defaults-create-2"))
+	assertFactoryRoutes(t, second.Draft.Config, `{"profile":"later"}`)
+
+	// The first draft keeps the profile it resolved against: both roles follow
+	// the project, but only for creates made after the change.
+	stored, err := f.store.Get(first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFactoryRoutes(t, stored.Draft.Config, `{"profile":"chosen"}`)
+}
+
+// TestFactoryExplicitOverridesAndReset pins the precedence of each of the three
+// fields the project agent defaults cover. An explicit handoff value wins, the
+// project's factory default outranks the agent fallback, and removing an
+// override restores the fallback for that field alone.
+func TestFactoryExplicitOverridesAndReset(t *testing.T) {
+	f := newFactoryDefaultsFixture(t)
+	f.addProfile(t, "later")
+	projectWorkspace := "project"
+	fallback := json.RawMessage(`{"profile":"later"}`)
+	f.putSettings(t, f.root, ProjectSettings{Workspace: projectWorkspace, Routing: fallback})
+	explicit := json.RawMessage(`{"profile":"chosen"}`)
+
+	// The three fields resolve independently, so setting one leaves the other
+	// two on the project's fallback.
+	cases := []struct {
+		key           string
+		name          string
+		implementer   json.RawMessage
+		reviewer      json.RawMessage
+		workspace     string
+		wantImpl      string
+		wantRev       string
+		wantWorkspace string
+	}{
+		{
+			key: "none", name: "nothing explicit",
+			wantImpl: `{"profile":"later"}`, wantRev: `{"profile":"later"}`, wantWorkspace: projectWorkspace,
+		},
+		{
+			key: "implementer", name: "implementer profile only",
+			implementer: explicit,
+			wantImpl:    `{"profile":"chosen"}`, wantRev: `{"profile":"later"}`, wantWorkspace: projectWorkspace,
+		},
+		{
+			key: "reviewer", name: "reviewer profile only",
+			reviewer: explicit,
+			wantImpl: `{"profile":"later"}`, wantRev: `{"profile":"chosen"}`, wantWorkspace: projectWorkspace,
+		},
+		{
+			key: "workspace", name: "workspace only",
+			workspace: "ws://handoff/explicit",
+			wantImpl:  `{"profile":"later"}`, wantRev: `{"profile":"later"}`, wantWorkspace: "ws://handoff/explicit",
+		},
+		{
+			key: "all", name: "all three explicit",
+			implementer: explicit, reviewer: explicit, workspace: "ws://handoff/explicit",
+			wantImpl: `{"profile":"chosen"}`, wantRev: `{"profile":"chosen"}`, wantWorkspace: "ws://handoff/explicit",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := f.handoff("override-"+tc.key, f.root)
+			req.Config.Native = false
+			req.Config.ImplementerRouting = tc.implementer
+			req.Config.ReviewerRouting = tc.reviewer
+			req.Config.Workspace = tc.workspace
+			got := f.resolve(t, req)
+			if !bytes.Equal(got.ImplementerRouting, json.RawMessage(tc.wantImpl)) {
+				t.Fatalf("implementer routing = %q, want %q", got.ImplementerRouting, tc.wantImpl)
+			}
+			if !bytes.Equal(got.ReviewerRouting, json.RawMessage(tc.wantRev)) {
+				t.Fatalf("reviewer routing = %q, want %q", got.ReviewerRouting, tc.wantRev)
+			}
+			if got.Workspace != tc.wantWorkspace {
+				t.Fatalf("workspace = %q, want %q", got.Workspace, tc.wantWorkspace)
+			}
+		})
+	}
+
+	// Removing one override restores the fallback for exactly that field.
+	full := f.handoff("override-removed", f.root)
+	full.Config.Native = false
+	full.Config.Workspace = "ws://handoff/explicit"
+	full.Config.ImplementerRouting, full.Config.ReviewerRouting = explicit, explicit
+
+	noImplementer := full
+	noImplementer.Config.ImplementerRouting = nil
+	got := f.resolve(t, noImplementer)
+	if !bytes.Equal(got.ImplementerRouting, fallback) || !bytes.Equal(got.ReviewerRouting, explicit) || got.Workspace != "ws://handoff/explicit" {
+		t.Fatalf("removing the implementer route did not restore only that fallback: %+v", got)
+	}
+	noReviewer := full
+	noReviewer.Config.ReviewerRouting = json.RawMessage{}
+	got = f.resolve(t, noReviewer)
+	if !bytes.Equal(got.ReviewerRouting, fallback) || !bytes.Equal(got.ImplementerRouting, explicit) || got.Workspace != "ws://handoff/explicit" {
+		t.Fatalf("removing the reviewer route did not restore only that fallback: %+v", got)
+	}
+	noWorkspace := full
+	noWorkspace.Config.Workspace = ""
+	got = f.resolve(t, noWorkspace)
+	if got.Workspace != projectWorkspace || !bytes.Equal(got.ImplementerRouting, explicit) || !bytes.Equal(got.ReviewerRouting, explicit) {
+		t.Fatalf("removing the workspace did not restore only that fallback: %+v", got)
+	}
+
+	// A project factory default outranks the agent fallback for the field it
+	// sets, and the agent fallback still fills the fields it leaves unset.
+	f.putSettings(t, f.root, ProjectSettings{
+		Workspace: projectWorkspace,
+		Routing:   fallback,
+		FactoryDefaults: &FactoryDefaults{
+			Workspace:          "ws://published/factory",
+			ImplementerRouting: explicit,
+		},
+	})
+	req := f.handoff("override-factory-first", f.root)
+	req.Config.Native = false
+	got = f.resolve(t, req)
+	if got.Workspace != "ws://published/factory" {
+		t.Fatalf("workspace = %q, want the factory default %q", got.Workspace, "ws://published/factory")
+	}
+	if !bytes.Equal(got.ImplementerRouting, explicit) {
+		t.Fatalf("implementer routing = %q, want the factory default %q", got.ImplementerRouting, explicit)
+	}
+	if !bytes.Equal(got.ReviewerRouting, fallback) {
+		t.Fatalf("reviewer routing = %q, want the project agent fallback %q", got.ReviewerRouting, fallback)
+	}
+
+	// The upper level alone still gives the handoff the last word, so the two
+	// steps are independent of the API around them.
+	merged := factoryMergeDefaults(
+		FactoryConfig{Workspace: "ws://handoff/explicit", ReviewerRouting: explicit},
+		&FactoryDefaults{Workspace: "ws://published/factory", ImplementerRouting: explicit},
+	)
+	if merged.Workspace != "ws://handoff/explicit" || !bytes.Equal(merged.ImplementerRouting, explicit) || !bytes.Equal(merged.ReviewerRouting, explicit) {
+		t.Fatalf("factory defaults overrode an explicit handoff: %+v", merged)
+	}
+}
+
+// TestFactoryNativeSuppressesAgentWorkspace pins the one direction the
+// suppression runs in: an explicit native handoff wins over the project's agent
+// workspace without becoming a conflict, and the backend never infers native
+// from an empty project workspace.
+func TestFactoryNativeSuppressesAgentWorkspace(t *testing.T) {
+	f := newFactoryDefaultsFixture(t)
+	projectWorkspace := "example"
+	f.putSettings(t, f.root, ProjectSettings{
+		Workspace: projectWorkspace,
+		Routing:   json.RawMessage(`{"profile":"chosen"}`),
+	})
+
+	// A native handoff suppresses the fallback rather than conflicting with
+	// it: the conflict rule covers only a workspace a project default states.
+	native := f.handoff("native-suppresses", f.root)
+	resolved := f.resolve(t, native)
+	if !resolved.Native || resolved.Workspace != "" {
+		t.Fatalf("native handoff resolved to native=%v workspace=%q, want true and empty", resolved.Native, resolved.Workspace)
+	}
+	create := native
+	create.RequestID = "native-suppresses-create"
+	create.Config.TargetBranch = "main"
+	created := f.created(t, create)
+	if created.Draft.Config.Workspace != "" {
+		t.Fatalf("workspace = %q, want none", created.Draft.Config.Workspace)
+	}
+	assertFactoryRoutes(t, created.Draft.Config, `{"profile":"chosen"}`)
+
+	// Without native the same project supplies the workspace.
+	plain := native
+	plain.Config.Native = false
+	if got := f.resolve(t, plain).Workspace; got != projectWorkspace {
+		t.Fatalf("workspace = %q, want the project agent workspace %q", got, projectWorkspace)
+	}
+
+	// The suppression is one-directional. A project with no workspace leaves a
+	// non-native handoff non-native, so preflight still rejects it instead of
+	// the backend choosing native on the operator's behalf.
+	empty := t.TempDir()
+	if err := f.fleet.ws.AddProject(empty); err != nil {
+		t.Fatal(err)
+	}
+	req := f.handoff("native-not-inferred", empty)
+	req.Config.Native = false
+	req.Config.TargetBranch = "main"
+	resolved = f.resolve(t, req)
+	if resolved.Native || resolved.Workspace != "" {
+		t.Fatalf("empty project resolved to native=%v workspace=%q, want neither", resolved.Native, resolved.Workspace)
+	}
+	rec := f.create(t, req)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("non-native handoff without a workspace: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "select native or a published workspace") {
+		t.Fatalf("error does not name the missing choice: %s", rec.Body.String())
+	}
+	if items := f.store.List(); len(items) != 1 {
+		t.Fatalf("work items = %d, want only the earlier native create", len(items))
+	}
+}
+
+// TestFactoryReplayAfterAgentDefaultsChange pins the durability side of the
+// lower level: a replay returns the original draft even though the settings
+// resolution reads have changed, a new request id is resolved against them, and
+// a retry replacement stays literal.
+func TestFactoryReplayAfterAgentDefaultsChange(t *testing.T) {
+	f := newFactoryDefaultsFixture(t)
+	f.addProfile(t, "later")
+	f.putSettings(t, f.root, ProjectSettings{
+		Workspace: "first",
+		Routing:   json.RawMessage(`{"profile":"chosen"}`),
+	})
+	req := f.handoff("replay-agent-defaults", f.root)
+	req.Config.TargetBranch = "main"
+	original := f.created(t, req)
+	assertFactoryRoutes(t, original.Draft.Config, `{"profile":"chosen"}`)
+
+	// Move both project agent defaults between the request and its replay.
+	f.putSettings(t, f.root, ProjectSettings{
+		Workspace: "second",
+		Routing:   json.RawMessage(`{"profile":"later"}`),
+	})
+
+	// The same request id and payload returns the original draft: replay
+	// identity is the request the operator sent, never the settings resolution
+	// reads.
+	replay := f.create(t, req)
+	if replay.Code != http.StatusOK {
+		t.Fatalf("replay: status %d, body %s", replay.Code, replay.Body.String())
+	}
+	var body struct {
+		Item FactoryItem `json:"item"`
+	}
+	decodeBody(t, replay, &body)
+	if body.Item.ID != original.ID || body.Item.Version != original.Version {
+		t.Fatalf("replay returned %s@%d, want the original %s@%d", body.Item.ID, body.Item.Version, original.ID, original.Version)
+	}
+	assertFactoryRoutes(t, body.Item.Draft.Config, `{"profile":"chosen"}`)
+	stored, err := f.store.Get(original.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFactoryRoutes(t, stored.Draft.Config, `{"profile":"chosen"}`)
+
+	// A request the journal has not seen is resolved against the new settings,
+	// which proves the change took effect.
+	fresh := f.handoff("replay-agent-defaults-fresh", f.root)
+	fresh.Config.TargetBranch = "main"
+	assertFactoryRoutes(t, f.created(t, fresh).Draft.Config, `{"profile":"later"}`)
+
+	// The retry path stays unchanged: a replacement is an authored
+	// configuration and remains literal, so the project's new profile is not
+	// applied to a route the replacement states.
+	parked, err := f.store.Update(original.ID, "park-for-question", original.Version, json.RawMessage(`{"decision":"question"}`), func(dst *FactoryItem) error {
+		dst.State = "needs_input"
+		dst.Decision = &FactoryDecision{ID: "q", Kind: "question", Question: "continue?", Reason: "implementer needs input"}
+		return nil
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := FactoryCreate{
+		RequestID: "replacement",
+		Title:     "Add the thing",
+		Plan:      "implement the thing a different way",
+		Config: FactoryConfig{
+			RepoID:                   "repo-1",
+			ProjectRoot:              f.root,
+			TargetBranch:             "main",
+			Native:                   true,
+			ImplementerRouting:       json.RawMessage(`{"profile":"chosen"}`),
+			ReviewerRouting:          json.RawMessage(`{"profile":"chosen"}`),
+			NoRequiredCIAcknowledged: true,
+		},
+	}
+	got, err := f.api.Command(context.Background(), parked.ID, FactoryCommand{
+		RequestID:        "retry-agent-defaults",
+		Kind:             "retry",
+		DecisionID:       "q",
+		Reason:           "restart with a replacement",
+		ExpectedVersion:  parked.Version,
+		AdditionalRounds: 1,
+		Replacement:      &replacement,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Approvals) != 1 {
+		t.Fatalf("approvals = %+v, want the replacement's single approval", got.Approvals)
+	}
+	assertFactoryRoutes(t, got.Approvals[0].Config, `{"profile":"chosen"}`)
+}
+
+// TestFactoryDefaultsEndToEnd drives the defaults chain through the served API
+// alone: it writes a project's defaults with the same endpoint an operator
+// uses, creates a handoff that omits every inheritable field, changes the
+// defaults, creates a second handoff, and reads both drafts back as the
+// snapshots their own create resolved. The three fields resolution contributes
+// are each exercised the same way: an explicit role override on a handoff, the
+// native choice suppressing the project's agent workspace, and an explicitly
+// empty check list approved with the acknowledgement that stands in for
+// required checks.
+func TestFactoryDefaultsEndToEnd(t *testing.T) {
+	f := newFactoryDefaultsFixture(t)
+	f.addProfile(t, "later")
+
+	// The first set of project defaults: a routing profile both roles follow,
+	// an agent workspace the native choice suppresses, and a target branch the
+	// handoff never states.
+	f.putSettings(t, f.root, ProjectSettings{
+		Workspace:       "project-one",
+		Routing:         json.RawMessage(`{"profile":"chosen"}`),
+		FactoryDefaults: &FactoryDefaults{TargetBranch: "main"},
+	})
+	// The workspace really is in effect, so the empty workspace on the draft
+	// below is the native choice suppressing it rather than nothing being set.
+	served := doReq(t, f.srv, http.MethodGet, "/api/projects/settings?root="+url.QueryEscape(f.root), nil, f.headers())
+	if served.Code != http.StatusOK {
+		t.Fatalf("get project settings: status %d, body %s", served.Code, served.Body.String())
+	}
+	var serving ProjectSettings
+	decodeBody(t, served, &serving)
+	if serving.Workspace != "project-one" {
+		t.Fatalf("project workspace = %q, want %q", serving.Workspace, "project-one")
+	}
+
+	firstWant := FactoryConfig{
+		RepoID:                   "repo-1",
+		ProjectRoot:              f.root,
+		HostID:                   "local",
+		TargetBranch:             "main",
+		Native:                   true,
+		ImplementerRouting:       json.RawMessage(`{"profile":"chosen"}`),
+		ReviewerRouting:          json.RawMessage(`{"profile":"chosen"}`),
+		NoRequiredCIAcknowledged: true,
+		MaxRounds:                5,
+		CIPollSeconds:            15,
+		CIWaitSeconds:            1800,
+	}
+	first := f.created(t, f.handoff("end-to-end-1", f.root))
+	if first.State != "draft" {
+		t.Fatalf("state = %q, want draft", first.State)
+	}
+	if first.Draft.Config.Workspace != "" {
+		t.Fatalf("workspace = %q, want none for a native handoff", first.Draft.Config.Workspace)
+	}
+	sameFactoryConfig(t, first.Draft.Config, firstWant)
+
+	// Move the project's defaults between the two creates: a second profile,
+	// a second agent workspace, a different target branch and an inherited
+	// check list the first set did not have.
+	f.putSettings(t, f.root, ProjectSettings{
+		Workspace: "project-two",
+		Routing:   json.RawMessage(`{"profile":"later"}`),
+		FactoryDefaults: &FactoryDefaults{
+			TargetBranch:   "trunk",
+			ExpectedChecks: []FactoryCheckKey{{Kind: "check_run", Name: "build", AppID: 7}},
+		},
+	})
+	secondWant := FactoryConfig{
+		RepoID:                   "repo-1",
+		ProjectRoot:              f.root,
+		HostID:                   "local",
+		TargetBranch:             "trunk",
+		Native:                   true,
+		ImplementerRouting:       json.RawMessage(`{"profile":"later"}`),
+		ReviewerRouting:          json.RawMessage(`{"profile":"later"}`),
+		ExpectedChecks:           []FactoryCheckKey{{Kind: "check_run", Name: "build", AppID: 7}},
+		NoRequiredCIAcknowledged: true,
+		MaxRounds:                5,
+		CIPollSeconds:            15,
+		CIWaitSeconds:            1800,
+	}
+	second := f.created(t, f.handoff("end-to-end-2", f.root))
+	if second.Draft.Config.Workspace != "" {
+		t.Fatalf("workspace = %q, want none for a native handoff", second.Draft.Config.Workspace)
+	}
+	sameFactoryConfig(t, second.Draft.Config, secondWant)
+
+	// The two snapshots differ because the defaults changed in between, and
+	// the first draft keeps the set its own create resolved against.
+	firstJSON, err := json.Marshal(first.Draft.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondJSON, err := json.Marshal(second.Draft.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(firstJSON, secondJSON) {
+		t.Fatalf("both drafts resolved to the same snapshot after the defaults changed: %s", firstJSON)
+	}
+	reread := doReq(t, f.srv, http.MethodGet, "/api/factory/items/"+first.ID, nil, f.headers())
+	if reread.Code != http.StatusOK {
+		t.Fatalf("get draft: status %d, body %s", reread.Code, reread.Body.String())
+	}
+	var rereadBody struct {
+		Item FactoryItem `json:"item"`
+	}
+	decodeBody(t, reread, &rereadBody)
+	sameFactoryConfig(t, rereadBody.Item.Draft.Config, firstWant)
+
+	// A handoff that states one role's route outranks both project levels for
+	// that role alone: the reviewer still follows the project's profile.
+	override := f.handoff("end-to-end-3", f.root)
+	override.Config.ImplementerRouting = json.RawMessage(`{"profile":"chosen"}`)
+	overrideWant := secondWant
+	overrideWant.ImplementerRouting = json.RawMessage(`{"profile":"chosen"}`)
+	overridden := f.created(t, override)
+	sameFactoryConfig(t, overridden.Draft.Config, overrideWant)
+
+	// An explicitly empty check list is a choice, not an omission: it replaces
+	// the inherited list, and the acknowledgement is what lets the draft be
+	// approved. Both are exercised through the served endpoints.
+	empty := f.handoff("end-to-end-4", f.root)
+	empty.Config.ExpectedChecks = []FactoryCheckKey{}
+	empty.Config.NoRequiredCIAcknowledged = true
+	emptyWant := secondWant
+	emptyWant.ExpectedChecks = []FactoryCheckKey{}
+	emptyDraft := f.created(t, empty)
+	sameFactoryConfig(t, emptyDraft.Draft.Config, emptyWant)
+
+	approved := doReq(t, f.srv, http.MethodPost, "/api/factory/items/"+emptyDraft.ID+"/commands",
+		FactoryCommand{RequestID: "end-to-end-approve", Kind: "approve", ExpectedVersion: 1}, f.headers())
+	if approved.Code != http.StatusOK {
+		t.Fatalf("approve: status %d, body %s", approved.Code, approved.Body.String())
+	}
+	var approvalBody struct {
+		Item FactoryItem `json:"item"`
+	}
+	decodeBody(t, approved, &approvalBody)
+	if len(approvalBody.Item.Approvals) != 1 {
+		t.Fatalf("approvals = %+v, want one", approvalBody.Item.Approvals)
+	}
+	snapshot := approvalBody.Item.Approvals[0].Config
+	if snapshot.ExpectedChecks == nil {
+		t.Fatal("explicitly empty expectedChecks became nil in the approval snapshot")
+	}
+	if len(snapshot.ExpectedChecks) != 0 {
+		t.Fatalf("expectedChecks = %+v, want an empty list", snapshot.ExpectedChecks)
+	}
+	if !snapshot.NoRequiredCIAcknowledged {
+		t.Fatal("approval snapshot dropped the no-required-CI acknowledgement")
+	}
+	sameFactoryConfig(t, snapshot, emptyWant)
 }

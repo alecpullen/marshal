@@ -69,6 +69,39 @@ func pollUntil(t *testing.T, timeout time.Duration, fn func() bool) {
 	}
 }
 
+// sentFrames decodes every JSON frame the peer has been sent so far.
+func sentFrames(out *lockedBuffer) []map[string]any {
+	var frames []map[string]any
+	for _, line := range bytes.Split(out.Bytes(), []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var frame map[string]any
+		if err := json.Unmarshal(line, &frame); err != nil {
+			continue
+		}
+		frames = append(frames, frame)
+	}
+	return frames
+}
+
+// waitForSentFrames waits until the peer has received at least want frames.
+func waitForSentFrames(t *testing.T, out *lockedBuffer, want int) []map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		frames := sentFrames(out)
+		if len(frames) >= want {
+			return frames
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d sent frames; got %d", want, len(frames))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestServerInitialize(t *testing.T) {
 	in := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}` + "\n")
 	out := &bytes.Buffer{}
@@ -611,6 +644,137 @@ func TestServerOutboundRequestReceivesResponse(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Logf("Serve did not return; harmless in pipe EOF race")
+	}
+}
+
+// TestACancelledOutboundRequestTellsThePeer verifies that an outbound request
+// whose context ends before an answer tells the peer with $/cancel_request for
+// its own id, and still returns the context's error.
+func TestACancelledOutboundRequestTellsThePeer(t *testing.T) {
+	pr, pw := io.Pipe()
+	out := &lockedBuffer{}
+	srv := NewServer(pr, out)
+
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- srv.Serve(context.Background())
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	reqErr := make(chan error, 1)
+	go func() {
+		reqErr <- srv.Request(ctx, "session/request_permission",
+			map[string]any{"toolName": "shell.run"}, nil)
+	}()
+
+	frames := waitForSentFrames(t, out, 1)
+	id, _ := frames[0]["id"].(string)
+	if id == "" {
+		t.Fatalf("sent id = %v, want non-empty string", frames[0]["id"])
+	}
+
+	cancel()
+
+	select {
+	case err := <-reqErr:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Request error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Request did not return after its context was cancelled")
+	}
+
+	frames = waitForSentFrames(t, out, 2)
+	var cancelFrame map[string]any
+	for _, frame := range frames {
+		if frame["method"] != acpwire.MethodCancelRequest {
+			continue
+		}
+		params, _ := frame["params"].(map[string]any)
+		if got, _ := params["id"].(string); got == id {
+			cancelFrame = frame
+			break
+		}
+	}
+	if cancelFrame == nil {
+		t.Fatalf("no %s naming %q reached the peer; sent frames: %v",
+			acpwire.MethodCancelRequest, id, frames)
+	}
+
+	pw.Close()
+	select {
+	case <-serveErr:
+	case <-time.After(time.Second):
+		t.Log("Serve did not return; harmless in pipe EOF race")
+	}
+}
+
+// TestAnAnsweredOutboundRequestSendsNoCancel verifies that an ordinary answered
+// request tells the peer nothing about cancellation.
+func TestAnAnsweredOutboundRequestSendsNoCancel(t *testing.T) {
+	pr, pw := io.Pipe()
+	out := &lockedBuffer{}
+	srv := NewServer(pr, out)
+
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- srv.Serve(context.Background())
+	}()
+
+	reqErr := make(chan error, 1)
+	go func() {
+		var got struct {
+			Approved bool `json:"approved"`
+		}
+		reqErr <- srv.Request(context.Background(), "session/request_permission",
+			map[string]any{"toolName": "shell.run"}, &got)
+	}()
+
+	frames := waitForSentFrames(t, out, 1)
+	id, _ := frames[0]["id"].(string)
+	if id == "" {
+		t.Fatalf("sent id = %v, want non-empty string", frames[0]["id"])
+	}
+	respFrame := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"result":  map[string]any{"approved": true},
+	}
+	rb, _ := json.Marshal(respFrame)
+	if _, err := pw.Write(append(rb, '\n')); err != nil {
+		t.Fatalf("write response: %v", err)
+	}
+
+	select {
+	case err := <-reqErr:
+		if err != nil {
+			t.Fatalf("Request error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Request never returned")
+	}
+
+	// A cancel for an answered request would already be on the wire when
+	// Request returned; poll a short window anyway, in case of an ordering bug.
+	for _, frame := range sentFrames(out) {
+		if frame["method"] == acpwire.MethodCancelRequest {
+			t.Fatalf("an answered request sent %s: %v", acpwire.MethodCancelRequest, frame)
+		}
+	}
+	pollUntil(t, 200*time.Millisecond, func() bool {
+		for _, frame := range sentFrames(out) {
+			if frame["method"] == acpwire.MethodCancelRequest {
+				t.Fatalf("an answered request sent %s: %v", acpwire.MethodCancelRequest, frame)
+			}
+		}
+		return false
+	})
+
+	pw.Close()
+	select {
+	case <-serveErr:
+	case <-time.After(time.Second):
+		t.Log("Serve did not return; harmless in pipe EOF race")
 	}
 }
 

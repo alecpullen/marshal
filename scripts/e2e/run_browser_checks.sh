@@ -1,10 +1,23 @@
 #!/usr/bin/env bash
-# Browser checks for the project/factory settings surfaces.
+# Browser checks for the Fleet-first Studio shell and the project/factory
+# settings surfaces.
 #
 # Builds the SPA and `webbridge`, starts the bridge against a throwaway project
 # with an isolated HOME/config/data dir and a fixture config, then runs the
-# Playwright suite at desktop and phone widths. No provider is reachable and no
-# credentials are read: every case reads and writes settings and drafts.
+# Playwright suite at desktop (1440x900), tablet (768x1024) and phone (390x844).
+#
+# Two fixture styles run here and they are not interchangeable:
+#   - real bridge: the shell's routes, deep links, route guard, roadmap and the
+#     project/factory settings reads and writes, driven against the API this
+#     bridge really serves (e2e/studio-shell.pw.ts, e2e/project-settings.pw.ts);
+#   - mocked presentation: e2e/studio-fleet.pw.ts answers the fleet, inbox and
+#     factory reads from e2e/fixtures.ts to render states this credential-free
+#     bridge cannot hold. That is evidence about rendering only, never that the
+#     bridge produced the state.
+#
+# Neither style creates, approves, retries or recovers factory work: there is no
+# GitHub credential here and factoryAPI.preflight requires one. No provider is
+# reachable and no credentials are read.
 #
 #   scripts/e2e/run_browser_checks.sh
 #   PW_PORT=7801 KEEP=1 scripts/e2e/run_browser_checks.sh   # keep the fixture

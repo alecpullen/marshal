@@ -587,4 +587,27 @@ No unapproved product assumptions remain. The design relies on the verified curr
 
 ## 15. Open questions
 
-None. The task-by-task implementation plan is `plans/2026-11-15-studio-uiux-alignment-plan.md`. The user approved the plan on 2026-11-15 and chose to execute it later or manually; no plan tasks have started.
+None. The task-by-task implementation plan is `plans/2026-11-15-studio-uiux-alignment-plan.md`. The user approved the plan on 2026-11-15 and chose to execute it later or manually. Slice 1 is implemented and browser-verified; its record is §16.
+
+## 16. Implementation records
+
+### Slice 1 — Fleet and navigation
+
+Delivered on branch `feat/studio-uiux-alignment` in commit order: routes (`68854810`), Fleet and factory projections (`0208bb5a`), the shared factory store (`91cc34a4`), roadmap and page primitives (`16a4c000`), responsive navigation (`48f60a46`), automation summaries (`995a996f`), the Fleet home (`f349473d`), shared factory state in the shell (`cde6f5c7`), the application shell (`7d4c7c95`), the route guard (`7c994227`), and the browser verification this record covers.
+
+Browser verification is `scripts/e2e/run_browser_checks.sh`, which builds the SPA and `webbridge`, starts an isolated fixture bridge, and runs the Playwright suite at desktop (1440×900), tablet (768×1024) and phone (390×844).
+
+**Result: 63 cases, 54 pass, 9 fail.** The 9 are one known baseline, not a slice defect: the three `project-settings.pw.ts` cases below fail at *each* of the three widths. At the base commit `f42a7c59` the same three cases failed at the two widths that existed then (6 failures of 12 cases), for the same reason — the fixture bridge serves no model profiles, so the "Model profile" select offers no `gamma` option and `selectOption` times out after 30s. Adding the tablet project multiplies that same baseline by three widths rather than adding a new failure. The cases are `role overrides follow the agent default independently and reset`, `a stale save warns, keeps the edit, and offers reload`, and `unsaved edits are confirmed before in-app navigation`.
+
+All 45 new cases pass at all three widths: 6 real-bridge cases in `e2e/studio-shell.pw.ts` (`emptyFleetHasWorkingStartActions`, `allRoadmapPagesArePlannedAndReadOnly`, `projectPrefillAndUnknownProject`, `shellDeepLinksAndBrowserBack`, `routeGuardCoversShellNavigationAndBrowserBack`, `unknownRouteHasFleetReturn`) and 9 cases in `e2e/studio-fleet.pw.ts` (the six mocked-presentation cases plus the axe, keyboard and reduced-motion cases), each run in the desktop, tablet and phone projects. Real-bridge cases create, approve, retry and recover nothing: this bridge has no GitHub credential and `factoryAPI.preflight` requires one, so no live factory execution is claimed here. The mocked-presentation cases answer the fleet, inbox and factory reads from `e2e/fixtures.ts`; they are evidence about rendering only.
+
+Accessibility. `fleetFitsAndScansCleanInBothThemes` runs axe on Fleet in dark and light at every width and asserts no horizontal overflow. It found two pre-existing palette defects that this slice may not fix, because their fixes live in `web/ui/src/app.css` and `web/ui/src/lib/ui/Button.svelte`, outside this task's files:
+
+1. `Button`'s filled variants request `text-bg`, but app.css sets an unlayered `button { color: inherit }` so form controls inherit the page colour. Unlayered rules outrank Tailwind's utility layer, so `text-bg` is lost and an accent-filled button draws `--color-fg` on `--color-accent` (1.95:1) instead of `--color-bg`.
+2. The light variant redefines only the neutrals, so the signal colours keep their dark-theme values on a light background: accent and attention headings at 2.23:1 and 1.71:1, a muted `Planned` badge on `--color-line` at 3.78:1, and a tinted attention badge at 1.44:1.
+
+Both are pinned by the exact contrast pair axe reports, so any violation outside those pairs — including a new rule — still fails the scan, and the pinned list must shrink when the palette is fixed. Keyboard-only navigation and `prefers-reduced-motion` are covered by their own cases.
+
+Screenshots are the deterministic presentation fixture, taken through Playwright's test output and copied to the gitignored `.docs-archive/studio-uiux/`: `fleet-desktop.png` (1440×900), `fleet-tablet.png` (768×1024), `fleet-phone.png` (390×844). They are hierarchy and spacing evidence, not a live factory.
+
+Unit and type baselines are unchanged by this slice: `npm test` is 1070 passing, and `npm run check` reports the same 5 errors and 1 warning in the same 6 files as before it. The regenerated embedded SPA is committed as `web/bridge/static/index.html` with `assets/index-BSG0H76E.js` and `assets/index-DRxGVYUe.css`.

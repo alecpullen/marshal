@@ -158,8 +158,12 @@ func TestContainerRunWithObserverAndStart(t *testing.T) {
 	var stdoutObs, stderrObs bytes.Buffer
 	var startPid int
 
+	// The command sleeps before printing so the run cannot finish inside the
+	// millisecond that DurationMS truncates to. Without it a fast machine
+	// legitimately reports DurationMS = 0 and the assertion below fails on
+	// machine speed rather than on the observer/start path it is testing.
 	res, err := c.Run(context.Background(), native.CommandRequest{
-		Command:        "echo hello_world",
+		Command:        "sleep 0.05; echo hello_world",
 		Dir:            dir,
 		Timeout:        5 * time.Second,
 		MaxOutputBytes: 16,

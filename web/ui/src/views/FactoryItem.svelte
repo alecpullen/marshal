@@ -3,16 +3,70 @@
   import Card from '../lib/ui/Card.svelte'
   import Button from '../lib/ui/Button.svelte'
   import Tag from '../lib/ui/Tag.svelte'
-  import { APIError, commandFactoryItem, errMessage, getFactoryItem } from '../lib/api'
-  import { createFactoryPoller, type FactoryCommand, type FactoryCreate, type FactoryItem } from '../lib/factory'
+  import { APIError, commandFactoryItem, errMessage, getFactoryItem, getPreviewEnvironments } from '../lib/api'
+  import { createFactoryPoller, type FactoryCheck, type FactoryCommand, type FactoryCreate, type FactoryItem } from '../lib/factory'
+  import type { PreviewDeployment, PreviewEnvironment, PreviewReport } from '../lib/preview'
   let { itemId, onNavigate }: { itemId: string; onNavigate: (hash: string) => void } = $props()
   let item = $state<FactoryItem | null>(null), error = $state(''), notice = $state(''), busy = $state(false)
   let answer = $state(''), reason = $state(''), additionalRounds = $state(1)
   let changePlan = $state(false), replacementPlan = $state(''), replacementSpec = $state(''), replacementInstructions = $state('')
   let replaceImplementerProfile = $state(''), replaceReviewerProfile = $state('')
   let attest = $state(false), workerName = $state(''), pending = $state<FactoryCommand | null>(null)
+  let preview = $state<PreviewReport | null>(null), previewLoading = $state(false), previewError = $state('')
+  let previewStarted = $state(false), previewRequest = 0, alive = true
+  type PreviewSegment = { kind: 'code'; text: string } | { kind: 'text'; text: string } | { kind: 'link'; url: string; logs: string } | { kind: 'badge'; label: string; sha: string }
+  const textEncoder = new TextEncoder(), unsafeUrlPattern = /[\s`<>\u0000-\u001f\u007f-\u009f]/
+  /** Spec D10: clickable only as a literal absolute http(s) URL with a nonempty host, no whitespace/control (C0+C1)/angle/backtick characters, at most 2048 bytes. Matches the bridge validator factoryURLClickable (web/bridge/factory_prbody.go). No repair. */
+  function isHttpUrl(value: string) {
+    if (!value || !/^https?:\/\//i.test(value) || value.length > 2048 || textEncoder.encode(value).length > 2048 || unsafeUrlPattern.test(value)) return false
+    try {
+      const parsed = new URL(value)
+      return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && !!parsed.hostname
+    } catch { return false }
+  }
+  const displayText = (value: string) => { const chars = [...value]; return chars.length > 512 ? chars.slice(0, 512).join('') + '…' : value }
+  function previewBadge(sha: string, head: string) { return sha.toLowerCase() === head.toLowerCase() ? 'matches the last factory-recorded PR head' : 'differs from the last factory-recorded PR head' }
+  function deploymentSegments(d: PreviewDeployment, head: string): PreviewSegment[] {
+    const segments: PreviewSegment[] = [{ kind: 'code', text: d.environment }, d.state ? { kind: 'code', text: d.state } : { kind: 'text', text: '(no status reported by the provider)' }]
+    if (d.sha) {
+      segments.push({ kind: 'code', text: d.sha.slice(0, 7) })
+      if (head) segments.push({ kind: 'badge', label: previewBadge(d.sha, head), sha: head.slice(0, 7) })
+    } else segments.push({ kind: 'text', text: 'revision not reported by the provider' })
+    if (d.environmentUrl) segments.push({ kind: 'link', url: d.environmentUrl, logs: d.logUrl })
+    if (d.description) segments.push({ kind: 'code', text: d.description })
+    return segments
+  }
+  function environmentSegments(e: PreviewEnvironment): PreviewSegment[] {
+    return e.htmlUrl ? [{ kind: 'code', text: e.name }, { kind: 'link', url: e.htmlUrl, logs: '' }] : [{ kind: 'code', text: e.name }]
+  }
+  function checkState(c: FactoryCheck) { return c.conclusion || c.status || 'pending' }
+  async function loadPreview() {
+    if (!item?.repoId) return
+    const seq = ++previewRequest
+    previewLoading = true; previewError = ''
+    try {
+      const report = (await getPreviewEnvironments(item.repoId, item.branch)) ?? null
+      if (!alive || seq !== previewRequest) return
+      preview = report
+    } catch (e) {
+      if (!alive || seq !== previewRequest) return
+      previewError = errMessage(e)
+    }
+    if (alive && seq === previewRequest) previewLoading = false
+  }
   async function refresh() { item = await getFactoryItem(itemId); error = '' }
-  onMount(() => { const p = createFactoryPoller(refresh, () => !!item && !['draft', 'ready', 'stopped', 'closed', 'needs_input'].includes(item.state), (e) => { error = errMessage(e) }); p.start(); return p.stop })
+  // Spec §6: the initial preview load fires once from the mount path, never from the item poller's refresh.
+  $effect(() => {
+    if (!item?.repoId || previewStarted) return
+    previewStarted = true
+    void loadPreview()
+  })
+  onMount(() => {
+    // The poller's immediate tick performs the initial item fetch (exactly one
+    // fetch at mount); its errors land on the same onError handler that sets error.
+    const p = createFactoryPoller(refresh, () => !!item && !['draft', 'ready', 'stopped', 'closed', 'needs_input'].includes(item.state), (e) => { error = errMessage(e) }); p.start()
+    return () => { alive = false; p.stop() }
+  })
   async function command(kind: FactoryCommand['kind']) {
     if (!item || busy) return
     busy = true; error = ''; notice = ''
@@ -76,6 +130,17 @@
     return sections
   })
   const excerpts = $derived(narration?.excerpts ?? [])
+  const prHead = $derived(item?.prs?.at(-1)?.headSha ?? '')
+  const previewDeployments = $derived((preview?.deployments ?? []).map((d) => deploymentSegments(d, prHead)))
+  const previewEnvironments = $derived((preview?.environments ?? []).map(environmentSegments))
+  const previewGaps = $derived(preview?.gaps ?? [])
+  const statusLinks = $derived.by(() => {
+    const last = item?.rounds?.at(-1), ci = last?.ci
+    if (!last || !ci || ci.headSha !== last.headSha) return [] as FactoryCheck[]
+    return [...(ci.checks ?? [])].filter((c) => c.key.kind === 'commit_status' && c.url)
+      .sort((a, b) => (a.key.name < b.key.name ? -1 : a.key.name > b.key.name ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+  })
+  const previewEmpty = $derived(!previewDeployments.length && !previewEnvironments.length && !previewGaps.length)
 </script>
 <div class="mx-auto flex max-w-6xl flex-col gap-4 p-4 sm:p-6">
   <a class="text-sm text-accent underline" href="#factory" onclick={(e) => { e.preventDefault(); onNavigate('#factory') }}>Factory</a>
@@ -154,6 +219,19 @@
         {/if}
         {#if !round?.implementation && !round?.review}<p class="text-sm text-muted">No report yet.</p>{/if}</Card>
       {#if item.prs?.length}<Card><h2 class="font-semibold">Pull requests</h2>{#each item.prs as pr}<a class="block text-sm text-accent underline" href={pr.url} target="_blank" rel="noopener noreferrer">PR #{pr.number} ({pr.draft ? 'draft' : pr.state})</a>{/each}</Card>{/if}
+      {#if item.repoId}<Card class="grid min-w-0 gap-2" data-testid="factory-preview">
+        <div class="flex flex-wrap items-center justify-between gap-2"><h2 class="font-semibold">Preview and test environments</h2><Button disabled={previewLoading} onclick={() => void loadPreview()}>Refresh</Button></div>
+        {#if previewLoading}<p class="text-sm text-muted">Reading preview environments…</p>
+        {:else if previewError}<p class="text-sm">Preview and test environments could not be read.</p><p class="break-words text-sm text-muted">{previewError}</p>
+        {:else if preview?.status === 'unavailable'}<p class="text-sm">Preview and test environments could not be read.</p>{#if preview.error}<p class="break-words text-sm text-muted">{preview.error}</p>{/if}
+        {:else if preview}
+          {#each previewGaps as gap}<p class="break-words text-sm"><code class="text-xs">{gap.key}</code> — {gap.state} — {gap.detail}</p>{/each}
+          {#if previewEmpty}<p class="text-sm text-muted">No preview deployments or test environments are configured for this revision.</p>{/if}
+          {#if previewDeployments.length}<ul class="grid gap-1">{#each previewDeployments as segments}<li class="break-words text-sm">{#each segments as segment, i}{#if i}<span class="text-muted"> — </span>{/if}{#if segment.kind === 'code'}<code class="text-xs">{segment.text}</code>{:else if segment.kind === 'badge'}{segment.label} <code class="text-xs">{segment.sha}</code>{:else if segment.kind === 'link'}{#if isHttpUrl(segment.url)}<a class="break-all text-accent underline" href={segment.url} target="_blank" rel="noopener noreferrer">{segment.url}</a>{:else}<span class="break-all">{displayText(segment.url)}</span>{/if}{#if segment.logs} (logs: {#if isHttpUrl(segment.logs)}<a class="break-all text-accent underline" href={segment.logs} target="_blank" rel="noopener noreferrer">{segment.logs}</a>{:else}<span class="break-all">{displayText(segment.logs)}</span>{/if}){/if}{:else if segment.kind === 'text'}{segment.text}{/if}{/each}</li>{/each}</ul>{/if}
+          {#if previewEnvironments.length}<p class="text-sm">Configured environments:</p><ul class="grid gap-1">{#each previewEnvironments as segments}<li class="break-words text-sm">{#each segments as segment, i}{#if i}<span class="text-muted"> — </span>{/if}{#if segment.kind === 'code'}<code class="text-xs">{segment.text}</code>{:else if segment.kind === 'link'}{#if isHttpUrl(segment.url)}<a class="break-all text-accent underline" href={segment.url} target="_blank" rel="noopener noreferrer">{segment.url}</a>{:else}<span class="break-all">{displayText(segment.url)}</span>{/if}{:else if segment.kind === 'text'}{segment.text}{/if}{/each}</li>{/each}</ul>{/if}
+          {#if statusLinks.length}<p class="text-sm">Links reported by commit statuses:</p><ul class="grid gap-1">{#each statusLinks as check}<li class="break-words text-sm"><code class="text-xs">{check.key.name}</code> (<code class="text-xs">{checkState(check)}</code>): {#if isHttpUrl(check.url)}<a class="break-all text-accent underline" href={check.url} target="_blank" rel="noopener noreferrer">{check.url}</a>{:else}<span class="break-all">{displayText(check.url)}</span>{/if}</li>{/each}</ul>{/if}
+        {/if}
+      </Card>{/if}
       {#if item.workers?.length}<Card><h2 class="font-semibold">Agents</h2>{#each item.workers as worker}<a class="block text-sm text-accent underline" href={`#chat/${encodeURIComponent(worker.agentId)}`} onclick={(e) => { e.preventDefault(); onNavigate(`#chat/${encodeURIComponent(worker.agentId)}`) }}>{worker.role}: {worker.agentId}</a>{/each}</Card>{/if}
     </div><Card class="min-w-0"><h2 class="mb-2 font-semibold">Activity</h2>{#if !item.history?.length}<p class="text-sm text-muted">No activity yet.</p>{:else}<ol class="grid gap-3 text-sm">{#each [...item.history].reverse() as event}<li class="min-w-0 border-b border-border pb-2"><time class="text-xs text-muted">{event.at}</time><p class="whitespace-pre-wrap break-words">{event.message}</p></li>{/each}</ol>{/if}</Card></div>
   {:else}<p role="status">Loading work item…</p>{/if}

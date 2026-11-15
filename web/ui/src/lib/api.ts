@@ -1407,6 +1407,7 @@ export async function revokeStatusLink(id: string): Promise<void> { await reques
 
 
 import type { FactoryItem, FactoryCreate, FactoryCommand, FactoryDefaults } from './factory'
+import type { PreviewReport } from './preview'
 export async function listFactoryItems(): Promise<FactoryItem[]> {
   return (await request<{ items: FactoryItem[] | null }>('GET', '/api/factory/items')).items ?? []
 }
@@ -1419,4 +1420,8 @@ export async function createFactoryItem(req: FactoryCreate): Promise<FactoryItem
 }
 export async function commandFactoryItem(id: string, cmd: FactoryCommand): Promise<FactoryItem> {
   return (await request<{ item: FactoryItem }>('POST', `/api/factory/items/${encodeURIComponent(id)}/commands`, cmd)).item
+}
+
+export async function getPreviewEnvironments(repoId: string, ref: string): Promise<PreviewReport> {
+  return request<PreviewReport>('GET', `/api/repos/${encodeURIComponent(repoId)}/preview-environments${ref ? `?ref=${encodeURIComponent(ref)}` : ''}`)
 }

@@ -559,6 +559,11 @@ func (m Model) infoLines(a contract.AgentStatus) []string {
 		m.kv("cost", m.costCapText(a.ID)),
 		m.kv("branch", branchText(a)),
 	}
+	if a.VersionWarning != "" {
+		// The daemon's own sentence, as it arrived and in the warning
+		// colour (decision 5).
+		lines = append(lines, m.kvCell("version", m.warn(a.VersionWarning)))
+	}
 	if text, ok := m.gateText(a.ID); ok {
 		lines = append(lines, m.kv("gate", text+" · "+m.gateTime(a.ID)))
 	} else {
@@ -591,10 +596,24 @@ func (m Model) sessionLines(r agentRow, inner int) []string {
 
 // kv renders one label and value of the right panel.
 func (m Model) kv(label, value string) string {
+	return m.kvCell(label, m.plain(value))
+}
+
+// kvCell renders one label and an already-styled value.
+func (m Model) kvCell(label, value string) string {
 	if len(label) >= labelWidth {
 		label = label[:labelWidth-1]
 	}
-	return label + strings.Repeat(" ", labelWidth-len(label)) + m.plain(value)
+	return label + strings.Repeat(" ", labelWidth-len(label)) + value
+}
+
+// warn is text in the warning colour, muted like every other value while the
+// fleet is disconnected.
+func (m Model) warn(s string) string {
+	if m.dimmed {
+		return m.plain(s)
+	}
+	return lipgloss.NewStyle().Foreground(m.th.StatusWarning).Render(s)
 }
 
 // contextBar draws the 20-cell context bar and its percentage.

@@ -13,7 +13,7 @@
   import AgentConversation from '../lib/session/AgentConversation.svelte'
   import FactoryRevision from '../lib/FactoryRevision.svelte'
   import { APIError, commandFactoryItem, errMessage, factoryRevisionCommand, getProjectSettings, listClients } from '../lib/api'
-  import { effectiveAutoAssess, provenanceLine } from '../lib/factory'
+  import { delegatedState, effectiveAutoAssess, provenanceLine, workerChildren, workerDelegated, workerIsReviewer, workerRoleLabel } from '../lib/factory'
   import { formatChatRoute, formatFactoryRoute, parseFactoryRoute } from '../lib/routes'
   import type { DockTabParam } from '../lib/routes'
   import { defaultFactoryItemView } from '../lib/studio/model'
@@ -385,16 +385,75 @@
           {#if item.workers?.length}
             <Card data-testid="worker-links">
               <h2 class="font-semibold">Agents</h2>
-              {#each item.workers as worker}
-                <!-- A worker is opened in this item, not on the chat page: the
-                     same route, with the agent it names. Parked says so, but
-                     the retained conversation stays openable. -->
-                <a
-                  class="block text-sm text-accent underline"
-                  href={formatFactoryRoute({ itemId, view: 'activity', agent: worker.agentId })}
-                  onclick={(e) => { e.preventDefault(); onNavigate(formatFactoryRoute({ itemId, view: 'activity', agent: worker.agentId })) }}
-                >{worker.role}: {worker.agentId}{worker.parked ? ' (parked)' : ''}</a>
-              {/each}
+              <p class="text-xs text-muted">
+                A worker opens its own conversation. The children a worker delegated sit under it; the
+                factory reviewer is its own worker, never one of the implementer's children.
+              </p>
+              <ul class="grid min-w-0 gap-2 text-sm">
+                {#each item.workers as worker (worker.agentId)}
+                  {@const turn = workerDelegated(item, worker)}
+                  {@const state = delegatedState(turn)}
+                  {@const children = workerChildren(item, worker)}
+                  {@const href = formatFactoryRoute({ itemId, view: 'activity', agent: worker.agentId })}
+                  <li class="grid min-w-0 gap-1" data-testid="worker-row" data-role={worker.role}>
+                    <p class="flex min-w-0 flex-wrap items-center gap-2">
+                      <!-- A worker is opened in this item, not on the chat page:
+                           the same route, with the agent it names. Parked says
+                           so, but the retained conversation stays openable. -->
+                      <a
+                        class="break-words text-accent underline"
+                        href={href}
+                        onclick={(e) => { e.preventDefault(); onNavigate(href) }}
+                      >{workerRoleLabel(worker.role)}: {worker.agentId}</a>
+                      {#if worker.parked}<span class="text-xs text-muted">(parked)</span>{/if}
+                      {#if state}
+                        <span
+                          class="rounded bg-warn/15 px-1.5 py-px text-xs text-warn"
+                          data-testid="worker-waiting"
+                          data-state={state.state}
+                          title={state.meaning}
+                        >{state.headline}</span>
+                      {/if}
+                    </p>
+                    {#if workerIsReviewer(worker)}
+                      <!-- The factory's own reviewer: a worker of its own, so it
+                           is never nested under the implementer's children. -->
+                      <p class="text-xs text-muted" data-testid="worker-role-note">
+                        Independent of the implementer — not one of its children.
+                      </p>
+                    {:else if children.length}
+                      <ul
+                        class="ml-3 grid min-w-0 gap-1 border-l border-border pl-2"
+                        data-testid="worker-children"
+                        aria-label={`Children of ${workerRoleLabel(worker.role)}`}
+                      >
+                        {#each children as child (child.id)}
+                          <li
+                            class="flex min-w-0 flex-wrap items-center gap-2"
+                            data-testid="worker-child"
+                            data-child={child.id}
+                            data-session={child.sessionId}
+                          >
+                            <!-- A child has no route of its own: it lives in
+                                 the conversation of the session that owns it,
+                                 and child ids are session-local. -->
+                            <a
+                              class="break-words text-accent underline"
+                              href={href}
+                              aria-label={`${child.label} in ${workerRoleLabel(worker.role)}'s conversation`}
+                              onclick={(e) => { e.preventDefault(); onNavigate(href) }}
+                            >{child.label}</a>
+                            <span class="text-xs text-muted">{child.status || 'status not reported here'}</span>
+                          </li>
+                        {/each}
+                      </ul>
+                      <p class="text-xs text-muted" data-testid="worker-children-note">
+                        Delegated children of the implementer — part of this worker's run, not the factory reviewer.
+                      </p>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
             </Card>
           {/if}
           <ActivityTimeline {item} {clientNames} hidden={activityHidden} />

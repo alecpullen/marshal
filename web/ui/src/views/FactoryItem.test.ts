@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 // @ts-expect-error -- vitest runs on node, and this project installs no node type package.
 import { webcrypto } from 'node:crypto'
-import { cleanup, render, screen, within } from '@testing-library/svelte'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/svelte'
 import FactoryItem from './FactoryItem.svelte'
 import * as api from '../lib/api'
 import { factoryPlanHash } from '../lib/factory'
@@ -439,7 +439,9 @@ it('shows structured review findings, question and reason, and ordinary agent dr
   // The worker's own conversation opens in this item, not on the chat page.
   view.unmount()
   renderItem()
-  expect((await screen.findByRole('link', { name: 'reviewer: agent/1' })).getAttribute('href')).toBe('#factory/x?view=activity&agent=agent%2F1')
+  // The factory's reviewer is named as such, so it cannot be read as one of
+  // the implementer's delegated children.
+  expect((await screen.findByRole('link', { name: 'Independent factory reviewer: agent/1' })).getAttribute('href')).toBe('#factory/x?view=activity&agent=agent%2F1')
 })
 it('previews material environment and permission settings before approval', async () => {
   getItem.mockResolvedValue({ ...base, draft: { ...base.draft, config: { ...base.draft.config, native: false, workspace: 'go-dev', implementerAuto: true, reviewerInstructions: 'Check migration safety' } } } as Item)
@@ -694,4 +696,114 @@ it('legacyEventsRender', async () => {
   // line is invented for it, and nothing claims a client acted.
   expect(screen.queryAllByTestId('factory-provenance')).toHaveLength(0)
   expect(screen.queryByText(/Requested by/)).toBeNull()
+})
+
+/** One worker turn's delegated child work, as the bridge journals it on the effect. */
+const delegatedTurn = (workerId: string, sessionId: string, childIds: number[], state = 'waiting') => ({
+  effectId: `e-${workerId}`,
+  workerId,
+  sessionId,
+  parentTurnId: 'turn-1',
+  childIds,
+  state,
+})
+/** One recorded effect, with the delegated turn it carries while its children are unsettled. */
+const recordedEffect = (id: string, workerId: string, delegated?: ReturnType<typeof delegatedTurn>) =>
+  ({
+    id,
+    kind: 'implement',
+    status: 'running',
+    workerRole: 'implementer',
+    round: 1,
+    approvalRevision: 1,
+    worker: null,
+    outcome: null,
+    expectedHead: '',
+    expectedBase: '',
+    createdAt: '2026-01-01T00:00:00Z',
+    ...(delegated ? { delegated } : {}),
+  }) as never
+
+it('nests a worker’s delegated children under it and keeps the reviewer separate', async () => {
+  const item = {
+    ...base,
+    state: 'working',
+    workers: [worker('impl', 'sess-impl'), worker('rev', 'sess-rev', 'reviewer')],
+    effects: [recordedEffect('e1', 'impl', delegatedTurn('impl', 'sess-impl', [5, 2]))],
+  } as unknown as Item
+  getItem.mockResolvedValue(item)
+  renderItem()
+
+  const card = await screen.findByTestId('worker-links')
+  const rows = within(card).getAllByTestId('worker-row')
+  expect(rows.map((row) => row.getAttribute('data-role'))).toEqual(['implementer', 'reviewer'])
+
+  // The children hang under the worker that delegated them, in id order, and
+  // their identity carries the session that owns them.
+  const children = within(rows[0]).getAllByTestId('worker-child')
+  expect(children.map((child) => child.getAttribute('data-child'))).toEqual(['2', '5'])
+  expect(children.map((child) => child.getAttribute('data-session'))).toEqual(['sess-impl', 'sess-impl'])
+  // No projection was read here, so no child claims a status: unreported is
+  // said out loud rather than rendered as finished.
+  expect(children[0].textContent).toContain('status not reported here')
+  expect(within(rows[0]).getByTestId('worker-children-note').textContent).toContain('not the factory reviewer')
+
+  // The factory reviewer is a worker of its own: never nested under the
+  // implementer, and labelled so it cannot be read as one of its children.
+  expect(within(rows[1]).queryByTestId('worker-children')).toBeNull()
+  expect(within(rows[1]).getByTestId('worker-role-note').textContent).toContain('Independent of the implementer')
+  expect(rows[1].textContent).toContain('Independent factory reviewer')
+
+  // A turn whose children are not proven settled says so.
+  expect(within(rows[0]).getByTestId('worker-waiting').textContent).toContain('Waiting for delegated work')
+  expect((await screen.findByTestId('activity-delegated')).textContent).toContain('Waiting for delegated work')
+
+  // Every row opens the worker's shared conversation, which is where a child is
+  // read and steered; a child has no route of its own.
+  await fireEvent.click(children[0].querySelector('a') as HTMLAnchorElement)
+  expect(onNavigate).toHaveBeenCalled()
+  expect(onNavigate.mock.calls.at(-1)![0]).toContain('agent=impl')
+})
+
+it('keeps the waiting state visible while nothing answers', async () => {
+  const item = {
+    ...base,
+    state: 'working',
+    workers: [worker('impl', 'sess-impl')],
+    effects: [recordedEffect('e1', 'impl', delegatedTurn('impl', 'sess-impl', [2], 'uncertain'))],
+  } as unknown as Item
+  // Both reads fail: the view's own first read and the store's refresh. The
+  // last item the screen had is what a person keeps looking at.
+  getItem.mockRejectedValue(new api.APIError(503, { error: 'bridge unreachable' }))
+  onRefresh.mockRejectedValue(new Error('offline'))
+  renderItem(factoryState({ items: [item], error: 'bridge unreachable' }))
+
+  expect(await screen.findByText('bridge unreachable')).toBeTruthy()
+  const card = screen.getByTestId('worker-links')
+  expect(within(card).getByTestId('worker-waiting').textContent).toContain('Delegated work uncertain')
+  const marker = screen.getByTestId('activity-delegated-turn')
+  expect(marker.getAttribute('data-state')).toBe('uncertain')
+  // Uncertain is not settled, in either place.
+  expect(screen.getByTestId('activity-delegated').textContent).toContain('unfinished')
+})
+
+it('renders the same child number in two sessions independently', async () => {
+  const item = {
+    ...base,
+    state: 'working',
+    workers: [worker('a1', 'sess-a'), worker('a2', 'sess-b')],
+    effects: [
+      recordedEffect('e1', 'a1', delegatedTurn('a1', 'sess-a', [1])),
+      recordedEffect('e2', 'a2', delegatedTurn('a2', 'sess-b', [1])),
+    ],
+  } as unknown as Item
+  getItem.mockResolvedValue(item)
+  renderItem()
+
+  const rows = within(await screen.findByTestId('worker-links')).getAllByTestId('worker-row')
+  const first = within(rows[0]).getAllByTestId('worker-child')
+  const second = within(rows[1]).getAllByTestId('worker-child')
+  // Child 1 of sess-a is not child 1 of sess-b: the pair is the identity.
+  expect([first[0].getAttribute('data-child'), first[0].getAttribute('data-session')]).toEqual(['1', 'sess-a'])
+  expect([second[0].getAttribute('data-child'), second[0].getAttribute('data-session')]).toEqual(['1', 'sess-b'])
 })

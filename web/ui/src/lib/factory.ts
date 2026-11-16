@@ -44,8 +44,37 @@ export interface FactoryNarration {
 }
 export interface FactoryReport { operationId: string; outcome: string; summary: string; question: string; reason: string; baseSha: string; headSha: string; inputsAccessible: boolean; findings: FactoryFinding[] | null; narration?: FactoryNarration }
 export interface FactoryRound { number: number; approvalRevision: number; implementEffectId: string; baseSha: string; headSha: string; treeSha: string; ci: FactoryCI | null; implementation: FactoryReport | null; review: FactoryReport | null; startedAt: string; finishedAt: string }
-export interface FactoryOutcome { effectId: string; stopReason: string; error: string; headSha: string; treeSha: string; baseSha: string; worker: FactoryWorker | null; pr: FactoryPR | null; report: FactoryReport | null; confirmed: boolean }
-export interface FactoryEffect { outcome: FactoryOutcome | null; id: string; kind: string; status: string; workerRole: string; round: number; approvalRevision: number; worker: FactoryWorker | null; expectedHead: string; expectedBase: string; createdAt: string }
+export interface FactoryOutcome { effectId: string; stopReason: string; error: string; headSha: string; treeSha: string; baseSha: string; worker: FactoryWorker | null; pr: FactoryPR | null; report: FactoryReport | null; confirmed: boolean; /** The waiting turn a worker effect hands back instead of a result. */ delegated?: FactoryDelegatedTurn | null }
+export interface FactoryEffect { outcome: FactoryOutcome | null; id: string; kind: string; status: string; workerRole: string; round: number; approvalRevision: number; worker: FactoryWorker | null; expectedHead: string; expectedBase: string; createdAt: string; /** The turn's launched child work while it is not proven settled. */ delegated?: FactoryDelegatedTurn | null }
+/**
+ * One worker turn's delegated child work, mirroring FactoryDelegatedTurn: the
+ * children the turn launched, and how far they have been proven. It is journalled
+ * beside the effect that dispatched the turn, so a waiting turn keeps the effect
+ * and its candidate identity until the children settle. A waiting turn is not an
+ * outcome — the report it wrote before those children settled is early.
+ */
+export interface FactoryDelegatedTurn {
+  effectId: string
+  workerId: string
+  sessionId: string
+  parentTurnId: string
+  childIds: number[] | null
+  continuationId?: string
+  /** waiting | prepared | dispatched | settled | uncertain, as the bridge names them. */
+  state: string
+}
+/**
+ * One child of a worker session, as that session's own status projects it,
+ * mirroring FactoryChild. Its identity is the pair, never the id alone: child
+ * ids are session-local, so two sessions can both contain child 1.
+ */
+export interface FactoryChild { sessionId: string; id: number; label?: string; status: string; terminal: boolean }
+/**
+ * One worker session's child projection, mirroring FactoryChildSession.
+ * `known` is false when the bridge could not read it, which is unknown work
+ * rather than a settled empty set.
+ */
+export interface FactoryChildSession { sessionId: string; known: boolean; children: FactoryChild[] | null }
 export interface FactoryDecision { id: string; kind: string; question: string; reason: string; effectId: string; createdAt: string }
 /**
  * Who asked for one factory action, as the bridge journaled it beside the
@@ -213,6 +242,107 @@ export function provenanceLine(p: FactoryProvenance, clientName?: string): strin
   if (p.decisionId) parts.push(`decision ${p.decisionId}`)
   return parts.join(' · ')
 }
+/** How a worker's role is named on the factory screen. */
+export function workerRoleLabel(role: string): string {
+  switch (role) {
+    case 'implementer': return 'Implementer'
+    case 'reviewer': return 'Independent factory reviewer'
+    default: return role || 'Worker'
+  }
+}
+
+/**
+ * True for the factory's own reviewer. It is not a child of the implementer:
+ * its session is its own worker, so it is never nested under a worker's child
+ * list and never read as work the implementer delegated.
+ */
+export function workerIsReviewer(worker: Pick<FactoryWorker, 'role'>): boolean {
+  return worker.role === 'reviewer'
+}
+
+/** How one delegated turn reads: whether work is waiting, and what it means. */
+export interface DelegatedState { state: string; waiting: boolean; headline: string; meaning: string }
+
+/**
+ * A delegated turn's presentation, or null when there is nothing to mark. Every
+ * state before `settled` means the turn's children are not proven finished, so
+ * the report the turn wrote before them is early; `uncertain` says the bridge
+ * cannot tell either way and is never shown as settled.
+ */
+export function delegatedState(turn: FactoryDelegatedTurn | null | undefined): DelegatedState | null {
+  if (!turn || turn.state === 'settled') return null
+  switch (turn.state) {
+    case 'waiting':
+      return { state: turn.state, waiting: true, headline: 'Waiting for delegated work', meaning: 'This turn launched children it has not proven settled. The report it wrote before them is early, so it is not the turn\'s result.' }
+    case 'prepared':
+      return { state: turn.state, waiting: true, headline: 'Continuation prepared', meaning: 'The children have not been proven settled. A continuation is recorded but has not been sent, so nothing has resumed yet.' }
+    case 'dispatched':
+      return { state: turn.state, waiting: true, headline: 'Continuation dispatched', meaning: 'The continuation was handed to the worker session. Its children are still not proven settled.' }
+    case 'uncertain':
+      return { state: turn.state, waiting: true, headline: 'Delegated work uncertain', meaning: 'The bridge cannot tell whether this turn\'s children finished. Treat the work as unfinished until it says otherwise.' }
+    default:
+      return { state: turn.state, waiting: true, headline: `Delegated work ${turn.state}`, meaning: 'This build does not know this delegated state, so the work is unconfirmed rather than finished.' }
+  }
+}
+
+/**
+ * The delegated turn one worker still owes work for: the newest of its effects'
+ * turns that is not settled. Null means nothing is waiting, which includes a
+ * record written before delegated turns existed.
+ */
+export function workerDelegated(
+  item: Pick<FactoryItem, 'effects'>,
+  worker: Pick<FactoryWorker, 'agentId'>,
+): FactoryDelegatedTurn | null {
+  const effects = item.effects ?? []
+  for (let n = effects.length - 1; n >= 0; n--) {
+    const turn = effects[n].delegated
+    if (!turn || turn.workerId !== worker.agentId) continue
+    if (turn.state !== 'settled') return turn
+  }
+  return null
+}
+
+/** One child of a worker, as the worker's delegated turn names it. */
+export interface FactoryChildLink {
+  sessionId: string
+  id: number
+  label: string
+  /** The child's status as its session reported it; empty means unreported, never finished. */
+  status: string
+  terminal: boolean
+  /** True only when the child's own session reported this child. */
+  known: boolean
+}
+
+/**
+ * The children under one worker, from the delegated turn that launched them and,
+ * when the caller has it, the worker session's own child projection. A child the
+ * projection does not name keeps an empty status: an unread projection is
+ * unknown work, never an empty settled set.
+ */
+export function workerChildren(
+  item: Pick<FactoryItem, 'effects'>,
+  worker: Pick<FactoryWorker, 'agentId'>,
+  sessions: FactoryChildSession[] = [],
+): FactoryChildLink[] {
+  const turn = workerDelegated(item, worker)
+  if (!turn) return []
+  const projection = sessions.find((session) => session.sessionId === turn.sessionId)
+  const ids = [...(turn.childIds ?? [])].sort((a, b) => a - b)
+  return ids.map((id) => {
+    const reported = projection?.children?.find((child) => child.id === id)
+    return {
+      sessionId: turn.sessionId,
+      id,
+      label: reported?.label || `child ${id}`,
+      status: reported?.status ?? '',
+      terminal: reported?.terminal === true,
+      known: reported !== undefined,
+    }
+  })
+}
+
 /**
  * The proposal a screen shows: the newest one the item carries, which is the
  * one an action would apply to. Nothing here decides what the bridge accepts;

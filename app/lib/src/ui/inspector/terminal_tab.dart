@@ -1,7 +1,5 @@
 import 'dart:async';
 
-import 'package:xterm/xterm.dart';
-
 import '../../model/terminal_session.dart';
 import '../kit/kit.dart';
 import 'terminal_view.dart';
@@ -25,7 +23,7 @@ class TerminalTab extends StatefulWidget {
 }
 
 class _TerminalTabState extends State<TerminalTab> {
-  final _terminal = Terminal(maxLines: 3000);
+  final _terminal = newTerminal();
   StreamSubscription<String>? _output;
 
   @override

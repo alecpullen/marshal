@@ -168,15 +168,18 @@ func (f *Fleet) observePull(ctx context.Context, rec contract.PullRecord, pass *
 	case cErr == nil:
 		next.Unavailable = ""
 		next.Checks = checks
-	case errors.Is(cErr, ErrChecksUnavailable), len(rec.Checks) == 0:
-		// Nothing observed for this head can stand in for a check that could
-		// not be read.
+	case errors.Is(cErr, ErrChecksUnavailable):
+		// A credential that cannot call the forge's API is a standing fact
+		// about the record, not a read that failed: the record says so and
+		// holds no checks at all, so nothing observed earlier can stand in for
+		// them.
 		next.Unavailable = cErr.Error()
 		next.Checks = []contract.PullCheck{}
 	default:
-		// The checks already held are this head's, from an earlier pass; a
-		// failed read does not make them untrue.
-		next.Unavailable = ""
+		// A transient failure — a 5xx, a network error — is not evidence about
+		// the head: what the record already holds stands and the next pass
+		// reads again. Right after a head move that is nothing, which is the
+		// truth for a head whose checks have not reported yet.
 	}
 	next.ObservedAt = now
 	f.applyPull(rec, next)

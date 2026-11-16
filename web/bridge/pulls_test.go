@@ -161,6 +161,9 @@ type pullForge struct {
 	checks   map[string][]map[string]any
 	log      string
 	requests []string
+	// checksStatus, when set, is the status the check-runs endpoint answers
+	// with instead of the checks: a read that failed.
+	checksStatus int
 }
 
 func newPullForge(t *testing.T) *pullForge {
@@ -174,6 +177,10 @@ func newPullForge(t *testing.T) *pullForge {
 		case r.URL.Path == "/repos/you/r/pulls":
 			_ = json.NewEncoder(w).Encode(pf.open)
 		case strings.HasPrefix(r.URL.Path, "/repos/you/r/commits/") && strings.HasSuffix(r.URL.Path, "/check-runs"):
+			if pf.checksStatus != 0 {
+				w.WriteHeader(pf.checksStatus)
+				return
+			}
 			sha := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/repos/you/r/commits/"), "/check-runs")
 			_ = json.NewEncoder(w).Encode(map[string]any{"check_runs": pf.checks[sha]})
 		case strings.Contains(r.URL.Path, "/actions/jobs/") && strings.HasSuffix(r.URL.Path, "/logs"):
@@ -184,6 +191,13 @@ func newPullForge(t *testing.T) *pullForge {
 	}))
 	t.Cleanup(pf.Close)
 	return pf
+}
+
+// failChecks makes the check-runs endpoint answer with status; zero clears it.
+func (pf *pullForge) failChecks(status int) {
+	pf.mu.Lock()
+	defer pf.mu.Unlock()
+	pf.checksStatus = status
 }
 
 // setOpen is the open pull request list the forge answers with.
@@ -302,6 +316,43 @@ func TestMovedHeadClearsChecks(t *testing.T) {
 	}
 	if rec.State != contract.PullInProgress {
 		t.Fatalf("state = %q, want in_progress for a head with no evidence", rec.State)
+	}
+}
+
+// A read that failed is not a credential that cannot read: the record must not
+// claim its checks are unavailable, and the next pass reads them.
+func TestATransientCheckReadIsNotUnavailable(t *testing.T) {
+	pf := newPullForge(t)
+	pf.setOpen(7, "abc123", false)
+	pf.failChecks(http.StatusBadGateway)
+	f := pullTestFleet(t, pf)
+	if err := f.recordPull(contract.PullRecord{RepoID: "r1", Number: 7, HeadSHA: "abc123",
+		Origin: contract.PullOriginAgent, ObservedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	f.observePulls(context.Background())
+
+	rec, ok := f.pull("r1#7")
+	if !ok {
+		t.Fatal("the open record was removed")
+	}
+	if rec.Unavailable != "" {
+		t.Fatalf("a transient check read was recorded as unavailable: %q", rec.Unavailable)
+	}
+	if rec.State != contract.PullInProgress {
+		t.Fatalf("state = %q, want in_progress", rec.State)
+	}
+
+	// The next pass reads the checks that had not reported.
+	pf.failChecks(0)
+	pf.setChecks("abc123", map[string]any{"id": 1, "name": "lint", "status": "completed", "conclusion": "success"})
+	if _, err := f.updatePull("r1#7", func(r *contract.PullRecord) error { r.ObservedAt = 1; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	f.observePulls(context.Background())
+	if rec, _ := f.pull("r1#7"); len(rec.Checks) != 1 || rec.State != contract.PullReady {
+		t.Fatalf("the next pass did not read the checks: %+v", rec)
 	}
 }
 

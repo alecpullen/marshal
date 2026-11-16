@@ -58,6 +58,7 @@ func (rt *Runtime) ServiceDeps(ctx context.Context) service.Deps {
 		Steering:        steeringBroker,
 		Workspace:       workspaceBroker,
 		Subagents:       subagentBroker,
+		Images:          rt.Images,
 		ProjectID:       projectID,
 		ReferenceFinder: refFinder,
 		AccessRequest:   rt.AccessRequest,

@@ -257,6 +257,62 @@ void main() {
     );
   });
 
+  test('an inbox delta reads the agent it names', () async {
+    final fixture = await fixtureWith();
+    await fixture.refresh();
+    expect([for (final a in fixture.store.agents()) a.id], ['a-1']);
+
+    // The stream is already live, so no live transition will read the rows:
+    // this test is about what the inbox delta itself does.
+    fixture.frames['local']!.write(': hb\n\n');
+    await eventually(() => fixture.store.reach('local') == HostReach.live);
+
+    // The bridge names an agent this snapshot did not have: it spawned one
+    // mid-session, so the inbox is newer than the rows are.
+    fixture.serve('local', '/api/agents', [
+      agent(id: 'a-1', status: AgentState.agentRunning).toJson(),
+      agent(
+        id: 'z-1',
+        status: AgentState.agentAwaitingApproval,
+        pending: const PendingRequest(
+          kind: PendingKind.pendingApproval,
+          id: 'tc-9',
+          params: {'command': 'git push'},
+        ),
+      ).toJson(),
+    ]);
+    fixture.delta('local', {
+      'kind': 'inbox',
+      'inbox': {
+        'groups': {
+          'needsYou': ['z-1'],
+          'running': ['a-1'],
+          'ready': [],
+          'earlier': [],
+        },
+        'queue': [
+          {'kind': 'agent', 'agentId': 'z-1', 'at': '2026-11-17T04:10:00Z'},
+        ],
+      },
+    });
+
+    // No reconnect, no gap, no manual refresh: the delta is what brings the
+    // row its ask needs.
+    await eventually(
+      () => fixture.store.agents().any((agent) => agent.id == 'z-1'),
+      reason: 'the agent an inbox delta names is read again',
+    );
+    expect(
+      fixture.store
+          .agents()
+          .where((agent) => agent.id == 'z-1')
+          .single
+          .pending
+          ?.id,
+      'tc-9',
+    );
+  });
+
   test('removed project drops its agents', () async {
     final fixture = await ModelFixture.start([
       FixtureHost(

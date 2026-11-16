@@ -248,7 +248,7 @@ class FleetStore extends ChangeNotifier {
     try {
       switch (kind) {
         case 'inbox':
-          _applyInbox(state, InboxDelta.fromJson(decoded));
+          _applyInbox(host, state, InboxDelta.fromJson(decoded));
         case 'budget':
           // A budget delta says which way the spend moved, not the day's
           // whole report: read the report again, as the Svelte store's views
@@ -324,11 +324,32 @@ class FleetStore extends ChangeNotifier {
   }
 
   /// The bridge's whole queue, which it recomputes and re-sends as it moves.
-  void _applyInbox(_HostState state, InboxDelta delta) {
+  ///
+  /// An inbox that names an agent the rows do not have is newer than the
+  /// snapshot behind them — the bridge spawned it mid-session — so the agents
+  /// are read again. Without that the ask's row never arrives, and
+  /// `InboxModel` cannot render a queue entry whose agent it does not know:
+  /// the work waits invisibly. It is `web/ui/src/lib/fleet.ts`'s
+  /// `refetchAgentsFor`, kept to one read at a time here (see
+  /// [_refreshAgents]), which coalesces a burst of deltas rather than
+  /// throttling by the clock.
+  void _applyInbox(String host, _HostState state, InboxDelta delta) {
     state
       ..deltaSeq += 1
       ..queueSeq = state.deltaSeq
       ..queue = List.unmodifiable(delta.inbox.queue);
+    final known = {for (final agent in state.agents) agent.id};
+    final named = [
+      ...delta.inbox.groups.needsYou,
+      ...delta.inbox.groups.running,
+      ...delta.inbox.groups.ready,
+      ...delta.inbox.groups.earlier,
+      for (final item in delta.inbox.queue)
+        if (item.kind == InboxItemKind.inboxItemAgent) item.agentID,
+    ];
+    if (named.any((id) => !known.contains(id))) {
+      unawaited(_refreshAgents(host));
+    }
   }
 
   /// A project left the daemon: it and every agent in it are gone from the

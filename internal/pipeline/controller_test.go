@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -98,18 +100,31 @@ func scriptedDispatch(t *testing.T, outputs ...string) (Dispatcher, *[]string) {
 	return d, prompts
 }
 
-// testController builds a Controller over fakes with a two-task plan. The
-// controller's Run() sets Dispatcher.ExecCtx (Critical 1) to the run dir,
-// so prompts now reference @run/... artifact paths. This wraps the given
-// dispatcher's exec so @run/ resolves to the run directory, mirroring what
-// the production RegistryFactory does for a real child registry.
+// defaultTestPlanBody is the plan body testController (and every test that
+// does not care about the plan) runs over: two tasks, the second depending
+// on the first through the default dependency rule.
+const defaultTestPlanBody = "# Test Plan\n\n## Global Constraints\n\n- Constraint A.\n\n---\n\n" +
+	"### Task 1: First\n\n**Interfaces:**\n- Produces: `func A() error`\n\nBody one.\n\n" +
+	"### Task 2: Second\n\nBody two.\n"
+
+// testController builds a Controller over fakes with the default two-task
+// plan.
 func testController(t *testing.T, d Dispatcher, fakeCmd *FakeCommandRunner) *Controller {
+	t.Helper()
+	return testControllerWithPlan(t, d, fakeCmd, defaultTestPlanBody)
+}
+
+// testControllerWithPlan builds a Controller over a caller-supplied plan
+// body, mirroring testController (same fakes, same @run prompt rewrite).
+// The controller's Run() sets Dispatcher.ExecCtx (Critical 1) to the run
+// dir, so prompts now reference @run/... artifact paths. This wraps the
+// given dispatcher's exec so @run/ resolves to the run directory,
+// mirroring what the production RegistryFactory does for a real child
+// registry.
+func testControllerWithPlan(t *testing.T, d Dispatcher, fakeCmd *FakeCommandRunner, body string) *Controller {
 	t.Helper()
 	root := t.TempDir()
 	planPath := filepath.Join(root, "2026-07-27-test-plan.md")
-	body := "# Test Plan\n\n## Global Constraints\n\n- Constraint A.\n\n---\n\n" +
-		"### Task 1: First\n\n**Interfaces:**\n- Produces: `func A() error`\n\nBody one.\n\n" +
-		"### Task 2: Second\n\nBody two.\n"
 	if err := os.WriteFile(planPath, []byte(body), 0o644); err != nil {
 		t.Fatalf("write plan: %v", err)
 	}
@@ -1669,5 +1684,306 @@ func TestAdaptiveFallbackScopePersistsThroughGateFixer(t *testing.T) {
 	}
 	if got := st.SDDFallbackAllowedFiles(); got != nil {
 		t.Errorf("SDDFallbackAllowedFiles must be cleared after verify gate; got %v", got)
+	}
+}
+
+// implementedTaskRe matches the implementer prompt's task marker
+// ("You are implementing Task 3: Title"), the order marker AUD-06's
+// regression tests assert on.
+var implementedTaskRe = regexp.MustCompile(`You are implementing Task (\d+):`)
+
+// implementedTasks returns, in dispatch order, the task numbers the
+// implementer prompts named.
+func implementedTasks(prompts []string) []int {
+	var out []int
+	for _, p := range prompts {
+		m := implementedTaskRe.FindStringSubmatch(p)
+		if m == nil {
+			continue
+		}
+		n, err := strconv.Atoi(m[1])
+		if err != nil {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// implPromptFor returns the implementer prompt that named task n, or "" when
+// the scripted dispatcher never implemented it.
+func implPromptFor(prompts []string, n int) string {
+	marker := fmt.Sprintf("You are implementing Task %d:", n)
+	for _, p := range prompts {
+		if strings.Contains(p, marker) {
+			return p
+		}
+	}
+	return ""
+}
+
+// AUD-06: a task that declares an earlier task as its dependency must run
+// after it, not in file order.
+func TestRunExecutesTasksInDependencyOrder(t *testing.T) {
+	body := "# Dep Plan\n\n## Global Constraints\n\n- None.\n\n---\n\n" +
+		"### Task 1: First\n\nDepends on: 2\n\nBody one.\n\n" +
+		"### Task 2: Second\n\nDepends on: none\n\nBody two.\n"
+	d, prompts := scriptedDispatch(t, implDone, reviewOK, implDone, reviewOK, reviewOK)
+	c := testControllerWithPlan(t, d, NewFakeCommandRunner(), body)
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got, want := fmt.Sprint(implementedTasks(*prompts)), "[2 1]"; got != want {
+		t.Fatalf("implementation order = %s, want %s (a dependency runs before its dependent)", got, want)
+	}
+}
+
+// AUD-06: among tasks that are ready at the same time, file order is kept.
+func TestRunPreservesFileOrderAmongReadyTasks(t *testing.T) {
+	body := "# Ready Plan\n\n## Global Constraints\n\n- None.\n\n---\n\n" +
+		"### Task 1: First\n\nDepends on: 3\n\nBody one.\n\n" +
+		"### Task 2: Second\n\nDepends on: 3\n\nBody two.\n\n" +
+		"### Task 3: Third\n\nDepends on: none\n\nBody three.\n"
+	d, prompts := scriptedDispatch(t,
+		implDone, reviewOK, // task 3
+		implDone, reviewOK, // task 1
+		implDone, reviewOK, // task 2
+		reviewOK, // branch review
+	)
+	c := testControllerWithPlan(t, d, NewFakeCommandRunner(), body)
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got, want := fmt.Sprint(implementedTasks(*prompts)), "[3 1 2]"; got != want {
+		t.Fatalf("implementation order = %s, want %s (dependency first, then file order)", got, want)
+	}
+}
+
+// AUD-06: a resumed run whose ledger marks a middle task complete keeps the
+// dependency order of the remaining tasks.
+//
+// Task 2 is complete (its commit is verified by the ledger), so both task 1 —
+// whose only dependency is task 2 — and task 3, the root, are ready; file
+// order then puts task 1 first. What must not happen is task 2 running again.
+func TestRunResumesPartiallyCompletedRunInDependencyOrder(t *testing.T) {
+	body := "# Partial Plan\n\n## Global Constraints\n\n- None.\n\n---\n\n" +
+		"### Task 1: First\n\nDepends on: 2\n\nBody one.\n\n" +
+		"### Task 2: Second\n\nDepends on: 3\n\nBody two.\n\n" +
+		"### Task 3: Third\n\nDepends on: none\n\nBody three.\n"
+	d, prompts := scriptedDispatch(t,
+		implDone, reviewOK, // task 1
+		implDone, reviewOK, // task 3
+		reviewOK, // branch review
+	)
+	c := testControllerWithPlan(t, d, NewFakeCommandRunner(), body)
+	c.Git.(*worktree.FakeGitOps).Dirty = true
+	if err := c.Ledger.MarkComplete(2, "aaaaaaaa", "bbbbbbbb"); err != nil {
+		t.Fatalf("MarkComplete: %v", err)
+	}
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got, want := fmt.Sprint(implementedTasks(*prompts)), "[1 3]"; got != want {
+		t.Fatalf("implementation order = %s, want %s (task 2 is done and must not re-run)", got, want)
+	}
+}
+
+// AUD-06: a dependency's "Produces:" interfaces reach its dependent even when
+// the dependency has the higher task number.
+func TestRunShowsInterfacesOfCompletedDependencyTask(t *testing.T) {
+	body := "# Iface Plan\n\n## Global Constraints\n\n- None.\n\n---\n\n" +
+		"### Task 1: First\n\nDepends on: 2\n\nBody one.\n\n" +
+		"### Task 2: Second\n\nDepends on: none\n\n**Interfaces:**\n- Produces: `func B() error`\n\nBody two.\n"
+	d, prompts := scriptedDispatch(t, implDone, reviewOK, implDone, reviewOK, reviewOK)
+	c := testControllerWithPlan(t, d, NewFakeCommandRunner(), body)
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	p1 := implPromptFor(*prompts, 1)
+	if p1 == "" {
+		t.Fatalf("task 1 was never implemented; prompts:\n%v", *prompts)
+	}
+	if !strings.Contains(p1, "Task 2 produced: `func B() error`") {
+		t.Fatalf("task 1's implementer does not see its completed dependency's interfaces:\n%s", p1)
+	}
+}
+
+// AUD-06 guard: the scheduling change must not weaken cycle rejection — a
+// cyclic plan is rejected before any task is dispatched.
+func TestRunRejectsCyclicPlanBeforeAnyTaskRuns(t *testing.T) {
+	root := t.TempDir()
+	planPath := filepath.Join(root, "cyclic-plan.md")
+	body := "# Cycle Plan\n\n## Global Constraints\n\n- None.\n\n---\n\n" +
+		"### Task 1: First\n\nDepends on: 2\n\nBody one.\n\n" +
+		"### Task 2: Second\n\nDepends on: 1\n\nBody two.\n"
+	if err := os.WriteFile(planPath, []byte(body), 0o644); err != nil {
+		t.Fatalf("write plan: %v", err)
+	}
+	d, prompts := scriptedDispatch(t)
+	g := worktree.NewFakeGitOps()
+	_, err := NewController(ControllerOpts{
+		PlanPath:     planPath,
+		RepoRoot:     root,
+		Git:          g,
+		Dispatch:     d,
+		Verifier:     Verifier{Build: "go build ./...", Timeout: time.Minute, Runner: NewFakeCommandRunner()},
+		MaxFixRounds: 2,
+	})
+	if err == nil || !strings.Contains(err.Error(), "dependency cycle") {
+		t.Fatalf("NewController = %v, want a dependency cycle error", err)
+	}
+	if len(*prompts) != 0 {
+		t.Fatalf("%d dispatches before the cycle was rejected, want 0", len(*prompts))
+	}
+}
+
+// lockTestController builds the default two-task controller with a manifest
+// owned by runID and a pre-existing run lock owned by lockRunID.
+func lockTestController(t *testing.T, d Dispatcher, runID, lockRunID, host string, pid int) *Controller {
+	t.Helper()
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Git.(*worktree.FakeGitOps).Dirty = true
+	c.RunStore = NewRunStore(c.Paths)
+	if err := c.RunStore.CreateManifest(Manifest{
+		RunID: runID, PlanPath: c.Plan.Path,
+		RepoRoot: c.RepoRoot, PipelineBranch: "pipeline/test-plan",
+	}); err != nil {
+		t.Fatalf("CreateManifest: %v", err)
+	}
+	if err := c.RunStore.AcquireLock(RunLock{
+		RunID: lockRunID, PID: pid, Host: host,
+		AcquiredAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+	return c
+}
+
+// localHostname returns this machine's hostname, which the lock tests need
+// to build a lock that is provably local.
+func localHostname(t *testing.T) string {
+	t.Helper()
+	h, err := os.Hostname()
+	if err != nil || h == "" {
+		t.Fatalf("hostname: %v", err)
+	}
+	return h
+}
+
+// AUD-07: a crashed run leaves a lock whose RunID equals the manifest's. When
+// the owner is demonstrably gone, the resume must take it over instead of
+// demanding a manual delete.
+func TestRunResumesPastStaleSameRunLock(t *testing.T) {
+	d, prompts := scriptedDispatch(t,
+		implDone, reviewOK,
+		implDone, reviewOK,
+		reviewOK,
+	)
+	c := lockTestController(t, d, "r1", "r1", localHostname(t), 4242)
+	c.liveness = func(string, int) Liveness { return LivenessDead }
+
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(*prompts) != 5 {
+		t.Fatalf("dispatches = %d, want the full run (2 tasks + branch review)", len(*prompts))
+	}
+	if _, ok, _ := c.RunStore.Lock(); ok {
+		t.Error("lock should be released after a successful run")
+	}
+}
+
+// AUD-07 guard: a demonstrably live same-run owner is never displaced.
+func TestRunRefusesLiveSameRunLock(t *testing.T) {
+	d, prompts := scriptedDispatch(t)
+	c := lockTestController(t, d, "r1", "r1", localHostname(t), 4242)
+	c.liveness = func(string, int) Liveness { return LivenessAlive }
+
+	err := c.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run should refuse a lock held by a live owner")
+	}
+	if !strings.Contains(err.Error(), "locked") {
+		t.Errorf("error should mention the lock: %v", err)
+	}
+	if len(*prompts) != 0 {
+		t.Errorf("%d dispatches despite the live lock, want 0", len(*prompts))
+	}
+	l, ok, lerr := c.RunStore.Lock()
+	if lerr != nil || !ok {
+		t.Fatalf("lock = %+v ok=%v err=%v, want the live owner's lock untouched", l, ok, lerr)
+	}
+	if l.RunID != "r1" || l.PID != 4242 {
+		t.Errorf("lock = %+v, want the original owner r1/4242", l)
+	}
+}
+
+// AUD-07: a same-run lock from another host cannot be probed, so the run
+// refuses with an explicit message instead of taking the lock over blindly.
+func TestRunRefusesSameRunLockFromAnotherHost(t *testing.T) {
+	d, prompts := scriptedDispatch(t)
+	c := lockTestController(t, d, "r1", "r1", "other-host", 4242)
+
+	err := c.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run should refuse a lock whose owner's liveness is unknown")
+	}
+	for _, want := range []string{"locked", "other-host", "4242", c.RunStore.LockPath(), "cannot be determined"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+	if len(*prompts) != 0 {
+		t.Errorf("%d dispatches despite the ambiguous lock, want 0", len(*prompts))
+	}
+	l, ok, lerr := c.RunStore.Lock()
+	if lerr != nil || !ok {
+		t.Fatalf("lock = %+v ok=%v err=%v, want the lock untouched", l, ok, lerr)
+	}
+	if l.RunID != "r1" || l.Host != "other-host" {
+		t.Errorf("lock = %+v, want the original owner's lock preserved", l)
+	}
+}
+
+// AUD-07 guard: the different-run rule is unchanged — a stale lock from a
+// different run on this host whose owner is gone is taken over.
+func TestRunTakesOverDeadDifferentRunLockOnSameHost(t *testing.T) {
+	d, prompts := scriptedDispatch(t,
+		implDone, reviewOK,
+		implDone, reviewOK,
+		reviewOK,
+	)
+	c := lockTestController(t, d, "r1", "older-run", localHostname(t), 4242)
+	c.liveness = func(string, int) Liveness { return LivenessDead }
+
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(*prompts) != 5 {
+		t.Fatalf("dispatches = %d, want the full run (2 tasks + branch review)", len(*prompts))
+	}
+	if _, ok, _ := c.RunStore.Lock(); ok {
+		t.Error("lock should be released after a successful run")
+	}
+}
+
+// AUD-07: taking over a stale same-run lock must not re-dispatch tasks the
+// ledger already marks complete.
+func TestRunResumesPastStaleSameRunLockSkipsCompletedTasks(t *testing.T) {
+	d, prompts := scriptedDispatch(t,
+		implDone, reviewOK,
+		reviewOK,
+	)
+	c := lockTestController(t, d, "r1", "r1", localHostname(t), 4242)
+	c.liveness = func(string, int) Liveness { return LivenessDead }
+	if err := c.Ledger.MarkComplete(1, "aaaaaaaa", "bbbbbbbb"); err != nil {
+		t.Fatalf("MarkComplete: %v", err)
+	}
+
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got, want := fmt.Sprint(implementedTasks(*prompts)), "[2]"; got != want {
+		t.Fatalf("implemented tasks = %s, want %s (task 1 is complete)", got, want)
 	}
 }

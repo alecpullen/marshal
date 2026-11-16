@@ -66,6 +66,11 @@ type ControllerOpts struct {
 	// Sleep is the delay implementation used between dispatch retries.
 	// When nil, sleepCtx is used. Tests override this to avoid real time.
 	Sleep func(context.Context, time.Duration) error
+
+	// LivenessProbe decides whether an existing run lock's owner is still
+	// running. When nil, LocalLiveness is used. An unknown verdict is never
+	// treated as stale.
+	LivenessProbe LivenessProbe
 }
 
 // Controller executes a plan task-by-task. It is single-threaded: exactly
@@ -103,6 +108,17 @@ type Controller struct {
 	// Sleep is the delay implementation used between dispatch retries.
 	// When nil, sleepCtx is used. Tests override this to avoid real time.
 	Sleep func(context.Context, time.Duration) error
+
+	// liveness decides whether an existing run lock's owner is still
+	// running. NewController never leaves it nil.
+	liveness LivenessProbe
+
+	// completedTasks is the set of tasks finished before or during this run:
+	// the ledger's, the replayed checkpoints' and this run's. The scheduler
+	// consumes it, and interfacesBefore uses it to tell which tasks ran
+	// "earlier" once execution order stops following task numbers. It is
+	// assigned by Run.
+	completedTasks map[int]bool
 
 	// pendingQuestion and pendingAnswer carry a human gate across Run calls.
 	pendingQuestion string
@@ -170,6 +186,10 @@ func NewController(opts ControllerOpts) (*Controller, error) {
 	if opts.Sleep == nil {
 		opts.Sleep = sleepCtx
 	}
+	liveness := opts.LivenessProbe
+	if liveness == nil {
+		liveness = LocalLiveness
+	}
 	return &Controller{
 		Plan:               plan,
 		Paths:              paths,
@@ -187,6 +207,7 @@ func NewController(opts ControllerOpts) (*Controller, error) {
 		Strategy:           opts.Strategy,
 		MaxTokensCfg:       opts.MaxTokensCfg,
 		Setup:              opts.Setup,
+		liveness:           liveness,
 	}, nil
 }
 
@@ -826,13 +847,18 @@ func (c *Controller) takeAnswer() string {
 
 var producesRe = regexp.MustCompile(`(?m)^-\s*Produces:\s*(.+)$`)
 
-// interfacesBefore collects the "Produces:" lines from every task before n.
-// A fresh implementer cannot read earlier tasks, but it must know the names
-// and signatures they created.
+// interfacesBefore collects the "Produces:" lines from the tasks that ran
+// before n. A fresh implementer cannot read earlier tasks, but it must know
+// the names and signatures they created.
+//
+// "Earlier" means already complete, not lower-numbered: with dependency
+// scheduling a task may run before a lower-numbered one. For a plan without
+// explicit dependencies the completed tasks are exactly the lower-numbered
+// ones, so the set is unchanged.
 func (c *Controller) interfacesBefore(n int) string {
 	var out []string
 	for _, t := range c.Plan.Tasks {
-		if t.N >= n {
+		if t.N >= n && !c.completedTasks[t.N] {
 			continue
 		}
 		for _, m := range producesRe.FindAllStringSubmatch(t.Body, -1) {
@@ -1135,13 +1161,40 @@ func (c *Controller) Run(ctx context.Context) error {
 		}
 	}
 	if err := c.RunStore.AcquireLock(newLock()); err != nil {
-		if l, ok, _ := c.RunStore.Lock(); ok && l.RunID != c.runID {
+		l, ok, lerr := c.RunStore.Lock()
+		switch {
+		case lerr != nil:
+			return fmt.Errorf("pipeline: run is already locked and %s could not be read: %w",
+				c.RunStore.LockPath(), lerr)
+		case !ok:
+			// The owner released the lock between our acquire and our read.
+			if err := c.RunStore.AcquireLock(newLock()); err != nil {
+				return err
+			}
+		case l.RunID != c.runID:
+			// A different run of this plan: stale by definition.
 			c.noteLedger("Taking over stale lock from run %s (pid %d)", l.RunID, l.PID)
 			if err := c.RunStore.TakeoverLock(newLock()); err != nil {
 				return err
 			}
-		} else {
-			return err
+		default:
+			// Same run: the owner may be the crashed instance we are
+			// resuming. Only a demonstrably dead owner is displaced.
+			switch c.liveness(l.Host, l.PID) {
+			case LivenessDead:
+				c.noteLedger("Taking over stale lock from crashed run %s (pid %d on %s)",
+					l.RunID, l.PID, l.Host)
+				if err := c.RunStore.TakeoverLock(newLock()); err != nil {
+					return err
+				}
+			case LivenessAlive:
+				return fmt.Errorf("pipeline: run %s is already locked by pid %d on host %s",
+					c.runID, l.PID, l.Host)
+			default:
+				return fmt.Errorf("pipeline: run %s is already locked by pid %d on host %s; "+
+					"the owner's liveness cannot be determined (it may be running on another host) "+
+					"— delete %s to recover", c.runID, l.PID, l.Host, c.RunStore.LockPath())
+			}
 		}
 	}
 	defer c.RunStore.ReleaseLock()
@@ -1227,14 +1280,16 @@ func (c *Controller) Run(ctx context.Context) error {
 	if c.pendingQuestion != "" {
 		return ErrHumanGateRequired
 	}
-	for _, t := range c.Plan.Tasks {
+	c.completedTasks = done
+	for {
+		t, ready := c.Plan.NextReady(done)
+		if !ready {
+			break
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-		}
-		if done[t.N] {
-			continue
 		}
 		if c.overBudget() {
 			return fmt.Errorf("pipeline: token budget exhausted (%d/%d) — resumable", c.UsageTokens, c.maxTokens)
@@ -1263,6 +1318,10 @@ func (c *Controller) Run(ctx context.Context) error {
 		if err := c.Ledger.MarkComplete(t.N, res.Base, res.Head); err != nil {
 			return err
 		}
+		// The scheduler consumes done, so the task must be marked complete
+		// before the next iteration. Only after MarkComplete succeeds, so a
+		// failed task can never be selected twice.
+		done[t.N] = true
 		c.checkpoint("task_completed", t.N, func(cp *Checkpoint) {
 			cp.BaseSHA = res.Base
 			cp.HeadSHA = res.Head

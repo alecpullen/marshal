@@ -230,6 +230,33 @@ func extractSection(lines []string, heading string) string {
 	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
+// NextReady returns the first task in file order whose dependencies are all
+// satisfied. A task is ready when every number in its DependsOn is already
+// complete; tasks that are already complete are skipped. ok is false when
+// no task is ready — the plan's dependency graph is acyclic (rejected at
+// parse time), so that means every task is complete.
+//
+// File order is preserved among simultaneously ready tasks: the first ready
+// task in file order always wins.
+func (p *Plan) NextReady(done map[int]bool) (TaskSpec, bool) {
+	for _, t := range p.Tasks {
+		if done[t.N] {
+			continue
+		}
+		ready := true
+		for _, d := range t.DependsOn {
+			if !done[d] {
+				ready = false
+				break
+			}
+		}
+		if ready {
+			return t, true
+		}
+	}
+	return TaskSpec{}, false
+}
+
 // Task returns the task with the given number.
 func (p *Plan) Task(n int) (TaskSpec, bool) {
 	for _, t := range p.Tasks {

@@ -211,10 +211,19 @@ func TestCtrlRCyclesRecentPrompts(t *testing.T) {
 	}
 }
 
-func TestTheSpawnModalNeedsAProject(t *testing.T) {
-	f := newFakeFleet()
+// noProjectState is a fleet whose only project cannot be spawned in: what the
+// refusal sentence is for.
+func noProjectState() acpclient.FleetState {
 	state := spawnState()
 	state.Projects = []contract.ProjectStatus{{Root: "/work/gone", Available: false}}
+	return state
+}
+
+// refusedSpawn opens the spawn modal over a fleet whose only project is
+// unavailable, presses enter, and answers the screen it shows.
+func refusedSpawn(t *testing.T, state acpclient.FleetState) string {
+	t.Helper()
+	f := newFakeFleet()
 	m := sized(t, f.change(t, New(f, fixedClock()), state))
 
 	s, m := openedSpawn(t, m)
@@ -226,11 +235,47 @@ func TestTheSpawnModalNeedsAProject(t *testing.T) {
 	if cmd != nil {
 		t.Fatalf("enter returned a command")
 	}
-	if view := textOf(m.View().Content); !strings.Contains(view, noProjectText) {
-		t.Fatalf("the modal does not say what to do without a project:\n%s", view)
-	}
 	if len(f.spawns) != 0 {
 		t.Fatalf("spawns = %+v, want none", f.spawns)
+	}
+	return textOf(m.View().Content)
+}
+
+func TestTheSpawnModalNeedsAProject(t *testing.T) {
+	state := noProjectState()
+	// The local daemon's fleet carries its info, so the sentence names the pin
+	// that can add a project here (decisions 6 and 11).
+	state.Daemon = &contract.DaemonInfo{Profile: "local"}
+
+	if view := refusedSpawn(t, state); !strings.Contains(view, noProjectText) {
+		t.Fatalf("the modal does not say what to do without a project:\n%s", view)
+	}
+}
+
+// TestTheSpawnRefusalOnTheDaemonNamesPin pins the daemon's half of decision 11:
+// a project can be added from the web UI or pinned on this machine.
+func TestTheSpawnRefusalOnTheDaemonNamesPin(t *testing.T) {
+	state := noProjectState()
+	state.Daemon = &contract.DaemonInfo{Profile: "local"}
+
+	if view := refusedSpawn(t, state); !strings.Contains(view, "`marshal daemon pin`") {
+		t.Fatalf("the daemon's refusal does not name the pin:\n%s", view)
+	}
+}
+
+// TestTheSpawnRefusalOnAServerOmitsPin pins the server's half of decision 11: a
+// server's state has no daemon info, and there is no daemon here to pin a
+// project on, so the sentence names only the web UI.
+func TestTheSpawnRefusalOnAServerOmitsPin(t *testing.T) {
+	state := noProjectState()
+	state.Daemon = nil
+
+	view := refusedSpawn(t, state)
+	if strings.Contains(view, "marshal daemon pin") {
+		t.Fatalf("a server's refusal names the daemon's pin:\n%s", view)
+	}
+	if !strings.Contains(view, noProjectOnServerText) {
+		t.Fatalf("a server's refusal does not say where a project is added:\n%s", view)
 	}
 }
 

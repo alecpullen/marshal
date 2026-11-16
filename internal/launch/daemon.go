@@ -101,11 +101,14 @@ func withAgentVersion(v string) Option {
 	return func(o *options) { o.agentVersion = v }
 }
 
-// daemonClientFor is the client daemon mode talks to: the seam's, else one
-// built for the socket.
+// daemonClientFor is the client daemon mode talks to: the seam's, else the
+// remote one a server profile's loop was given, else one built for the socket.
 func (o *options) daemonClientFor() daemonClient {
 	if o.daemon != nil {
 		return o.daemon
+	}
+	if o.remote != nil {
+		return o.remote.attach
 	}
 	return daemon.NewClient(o.daemonSocket)
 }
@@ -346,11 +349,7 @@ func (l *daemonLoop) sessionStep(ctx context.Context, step daemonStep) (*daemonS
 	// agent is not this binary: say so once, so an upgrade that left the
 	// daemon running is not mistaken for the new build's behaviour.
 	if theirs := conn.host.Agent().Version; theirs != l.opts.version() {
-		note := fmt.Sprintf(
-			"This marshal is %s; the daemon's agent is %s. Restart the daemon after upgrading: `marshal daemon stop` then `marshal daemon start`.",
-			daemonVersionLabel(l.opts.version()), daemonVersionLabel(theirs),
-		)
-		if nerr := conn.sess.AddNote(ctx, acpwire.Note{Text: note, ContentType: acpwire.ContentTypePlain}); nerr != nil {
+		if nerr := conn.sess.AddNote(ctx, acpwire.Note{Text: l.opts.versionNote(theirs), ContentType: acpwire.ContentTypePlain}); nerr != nil {
 			l.logger.Warn("launch: writing the daemon's version note", "error", nerr)
 		}
 	}
@@ -364,7 +363,7 @@ func (l *daemonLoop) sessionStep(ctx context.Context, step daemonStep) (*daemonS
 		}
 	}()
 
-	tuiOpts := daemonTUIOptions(ctx, conn, step.root, l.home, l.logger)
+	tuiOpts := daemonTUIOptions(ctx, conn, step.root, l.home, l.logger, l.opts.remote == nil)
 	// Decision 8: every daemon session screen counts with the loop's fleet
 	// client, and gets the watch once the fleet has run. The watch is nil
 	// before that, so a plain `marshal` counts without notifying.
@@ -424,13 +423,19 @@ func (l *daemonLoop) sessionStep(ctx context.Context, step daemonStep) (*daemonS
 }
 
 // fleetClientFor is the loop's fleet client: the injected one as it is, else
-// one built for the socket the first time the loop needs it (decision 7). The
-// loop asks on its first step, so its client outlives every screen it shows.
+// one built for the loop's transport the first time the loop needs it
+// (decision 7): the server profile's HTTPS transport for a server's loop, the
+// socket's for the daemon's. The loop asks on its first step, so its client
+// outlives every screen it shows.
 func (l *daemonLoop) fleetClientFor(ctx context.Context) acpclient.Fleet {
 	if l.fleetClient != nil {
 		return l.fleetClient
 	}
-	built := fleetclient.New(fleetclient.Socket(l.opts.daemonSocket))
+	transport := fleetclient.Socket(l.opts.daemonSocket)
+	if l.opts.remote != nil {
+		transport = l.opts.remote.fleet
+	}
+	built := fleetclient.New(transport)
 	built.Start(ctx)
 	l.built = built
 	l.fleetClient = built
@@ -494,9 +499,11 @@ func (l *daemonLoop) tuiConfig() config.TUIConfig {
 }
 
 // daemonTUIOptions is the daemon mode's TUI wiring: detaching leaves the
-// session running, the directories are the daemon's project's, and the
-// connect panel opens when this machine has no user config yet.
-func daemonTUIOptions(ctx context.Context, conn *daemonConn, root, home string, logger *slog.Logger) []tui.Option {
+// session running, the directories are the daemon's project's, and the connect
+// panel opens when this machine has no user config yet. local says whether the
+// session runs on this machine's daemon: a server's screen never offers the
+// panel, because a server's config is not this machine's (decision 8).
+func daemonTUIOptions(ctx context.Context, conn *daemonConn, root, home string, logger *slog.Logger, local bool) []tui.Option {
 	tuiOpts := []tui.Option{
 		tui.WithDetachOnQuit(),
 		tui.WithHomeDir(home),
@@ -513,7 +520,7 @@ func daemonTUIOptions(ctx context.Context, conn *daemonConn, root, home string, 
 	if filePaths, ferr := conn.sess.FileIndex(ctx); ferr == nil && len(filePaths) > 0 {
 		tuiOpts = append(tuiOpts, tui.WithFileIndex(filePaths))
 	}
-	if _, serr := os.Stat(config.UserConfigPath(home)); os.IsNotExist(serr) {
+	if _, serr := os.Stat(config.UserConfigPath(home)); local && os.IsNotExist(serr) {
 		tuiOpts = append(tuiOpts, tui.WithOpenConnectOnStart())
 	}
 	// Copy prefers a local clipboard helper and falls back to OSC 52 over SSH
@@ -532,6 +539,20 @@ func daemonVersionLabel(v string) string {
 		return "dev"
 	}
 	return v
+}
+
+// versionNote is what a session screen says when its agent is not this build
+// (decision 8). A server's agent is not restarted from here, so that note
+// carries no advice; the daemon's does.
+func (o *options) versionNote(theirs string) string {
+	ours := daemonVersionLabel(o.version())
+	if o.remote != nil {
+		return fmt.Sprintf("This marshal is %s; the server's agent is %s.", ours, daemonVersionLabel(theirs))
+	}
+	return fmt.Sprintf(
+		"This marshal is %s; the daemon's agent is %s. Restart the daemon after upgrading: `marshal daemon stop` then `marshal daemon start`.",
+		ours, daemonVersionLabel(theirs),
+	)
 }
 
 // openClientLog opens the daemon client's log: the daemon directory's tui.log,
@@ -584,11 +605,12 @@ func dialDaemon(ctx context.Context, opts *options, step daemonStep) (*daemonCon
 	}
 
 	stream := rpc.NewStream(attachment.Conn, attachment.Conn, rpc.MaxFrameBytes)
-	// The agent is a different process on the same filesystem, so the client
-	// reads the daemon's files directly; the version is not pinned, because a
-	// daemon older than this binary still serves the session (the note says
-	// so).
-	host, err := rpc.Dial(handshakeCtx, stream, rpc.DialOptions{SharedFilesystem: true})
+	// The local daemon's agent is a different process on the same filesystem,
+	// so the client reads its files directly. A server's agent is not on it at
+	// all (decision 8), so nothing of the session is read as a local file. The
+	// version is not pinned either way, because a daemon older than this binary
+	// still serves the session (the note says so).
+	host, err := rpc.Dial(handshakeCtx, stream, rpc.DialOptions{SharedFilesystem: opts.remote == nil})
 	if err != nil {
 		_ = stream.Close()
 		return nil, &daemonDialFailure{what: "its agent could not be dialled", err: err}

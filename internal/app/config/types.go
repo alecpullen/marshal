@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"marshal/internal/imagepayload"
 	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
 	"marshal/internal/trust"
@@ -43,6 +44,7 @@ type Config struct {
 	LSP           LSPConfig                             `toml:"lsp"`
 	Scratchpad    ScratchpadConfig                      `toml:"scratchpad"`
 	Budgets       BudgetsConfig                         `toml:"budgets"`
+	Images        ImagesConfig                          `toml:"images"`
 	// SessionRouting is a per-session routing choice supplied by the host
 	// (ACP session/new). It is never read from or written to a config file.
 	SessionRouting SessionRouting `toml:"-"`
@@ -670,6 +672,67 @@ type SkillsConfig struct {
 	// their window loading skills they do not need; raise it or set 0 to
 	// opt out.
 	LoadGateThresholdTokens int `toml:"load_gate_threshold_tokens"`
+}
+
+// ImagesConfig bounds what the image store accepts and keeps. It mirrors
+// imagepayload.Config field for field.
+type ImagesConfig struct {
+	MaxInputBytes   int64 `toml:"max_input_bytes"`
+	MaxStoredBytes  int   `toml:"max_stored_bytes"`
+	MaxEdge         int   `toml:"max_edge"`
+	JPEGQuality     int   `toml:"jpeg_quality"`
+	MaxPerMessage   int   `toml:"max_per_message"`
+	MaxRequestBytes int64 `toml:"max_request_bytes"`
+	MaxStoreBytes   int64 `toml:"max_store_bytes"`
+	RetainDays      int   `toml:"retain_days"`
+}
+
+// Normalize replaces zero or negative values with the defaults, so a config
+// that sets nothing (or a nonsense value) degrades to the default rather than
+// disabling a limit. Written back to the receiving Config by Default/merge.
+func (c ImagesConfig) Normalize() ImagesConfig {
+	def := Default().Images
+	if c.MaxInputBytes <= 0 {
+		c.MaxInputBytes = def.MaxInputBytes
+	}
+	if c.MaxStoredBytes <= 0 {
+		c.MaxStoredBytes = def.MaxStoredBytes
+	}
+	if c.MaxEdge <= 0 {
+		c.MaxEdge = def.MaxEdge
+	}
+	if c.JPEGQuality <= 0 {
+		c.JPEGQuality = def.JPEGQuality
+	}
+	if c.MaxPerMessage <= 0 {
+		c.MaxPerMessage = def.MaxPerMessage
+	}
+	if c.MaxRequestBytes <= 0 {
+		c.MaxRequestBytes = def.MaxRequestBytes
+	}
+	if c.MaxStoreBytes <= 0 {
+		c.MaxStoreBytes = def.MaxStoreBytes
+	}
+	if c.RetainDays <= 0 {
+		c.RetainDays = def.RetainDays
+	}
+	return c
+}
+
+// PayloadConfig converts to the store's own config type. config importing
+// imagepayload is safe: imagepayload imports only internal/llm/schema and the
+// standard library.
+func (c ImagesConfig) PayloadConfig() imagepayload.Config {
+	return imagepayload.Config{
+		MaxInputBytes:   c.MaxInputBytes,
+		MaxStoredBytes:  c.MaxStoredBytes,
+		MaxEdge:         c.MaxEdge,
+		JPEGQuality:     c.JPEGQuality,
+		MaxPerMessage:   c.MaxPerMessage,
+		MaxRequestBytes: c.MaxRequestBytes,
+		MaxStoreBytes:   c.MaxStoreBytes,
+		RetainDays:      c.RetainDays,
+	}
 }
 
 type IndexingConfig struct {

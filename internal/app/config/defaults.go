@@ -44,6 +44,16 @@ func Default() Config {
 			BodyFullTurns:           3,
 			LoadGateThresholdTokens: 131072,
 		},
+		Images: ImagesConfig{
+			MaxInputBytes:   20971520,
+			MaxStoredBytes:  4194304,
+			MaxEdge:         1568,
+			JPEGQuality:     85,
+			MaxPerMessage:   10,
+			MaxRequestBytes: 12582912,
+			MaxStoreBytes:   536870912,
+			RetainDays:      14,
+		},
 		Indexing: IndexingConfig{
 			UseTreesitter:          false,
 			UseEmbeddings:          false,

@@ -293,6 +293,11 @@ class _InboxState extends State<Inbox> {
         case model.AskActionKind.decline:
         case model.AskActionKind.option:
           break;
+        case model.AskActionKind.open:
+        case model.AskActionKind.retry:
+        case model.AskActionKind.dismiss:
+          // A pull request's ask offers these; a question's does not.
+          return;
       }
     }
     _lastAction[ask.id] = action;
@@ -430,6 +435,7 @@ class _InboxState extends State<Inbox> {
     model.AskKind.approval => AskKind.approval,
     model.AskKind.question => AskKind.question,
     model.AskKind.intake => AskKind.intake,
+    model.AskKind.pull => AskKind.pull,
     model.AskKind.reviewDraft => AskKind.review,
   };
 }

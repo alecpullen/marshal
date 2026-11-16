@@ -2320,6 +2320,7 @@ class InboxGroups {
 enum InboxItemKind {
   inboxItemAgent('agent'),
   inboxItemIntake('intake'),
+  inboxItemPull('pull'),
   unknown('unknown');
 
   const InboxItemKind(this.wire);
@@ -2345,6 +2346,7 @@ class InboxItem {
     required this.kind,
     this.agentID,
     this.submission,
+    this.pull,
     required this.at,
     this.rawEnums = const {},
   });
@@ -2352,6 +2354,8 @@ class InboxItem {
   final InboxItemKind kind;
   final String? agentID;
   final PendingSubmission? submission;
+  /// Pull carries a "pull" item's ask. It is nil for every other kind.
+  final PullAsk? pull;
   final String at;
 
   /// The wire text of each enum field this build has no value
@@ -2372,6 +2376,10 @@ class InboxItem {
         json['submission'],
         PendingSubmission.fromJson,
       ),
+      pull: _objectOrNull(
+        json['pull'],
+        PullAsk.fromJson,
+      ),
       at: json['at'] as String,
       rawEnums: rawEnums,
     );
@@ -2385,6 +2393,9 @@ class InboxItem {
     }
     if (submission != null) {
       json['submission'] = submission!.toJson();
+    }
+    if (pull != null) {
+      json['pull'] = pull!.toJson();
     }
     json['at'] = at;
     return json;
@@ -4505,6 +4516,470 @@ class ProjectStatus {
     }
     if (orphanWorktrees != null) {
       json['orphanWorktrees'] = orphanWorktrees!;
+    }
+    return json;
+  }
+}
+
+/// PullOrigin is where a recorded pull request came from: an agent that
+/// shipped, a factory item, or one of the bridge's automations.
+enum PullOrigin {
+  pullOriginAgent('agent'),
+  pullOriginFactory('factory'),
+  pullOriginAutomation('automation'),
+  unknown('unknown');
+
+  const PullOrigin(this.wire);
+
+  /// The wire text this value stands for.
+  final String wire;
+
+  /// The value [wire] names, or [unknown] when this build does not
+  /// know it.
+  static PullOrigin fromWire(String wire) {
+    for (final value in values) {
+      if (value != unknown && value.wire == wire) {
+        return value;
+      }
+    }
+    return unknown;
+  }
+}
+
+/// PullState is a pull request's derived state, which is what a client shows.
+/// It is derived from the evidence on the current head and is never a claim
+/// about a head that has moved.
+enum PullState {
+  pullReady('ready'),
+  pullFailing('failing'),
+  pullInProgress('in_progress'),
+  pullBeingFixed('being_fixed'),
+  pullChecksUnavailable('checks_unavailable'),
+  unknown('unknown');
+
+  const PullState(this.wire);
+
+  /// The wire text this value stands for.
+  final String wire;
+
+  /// The value [wire] names, or [unknown] when this build does not
+  /// know it.
+  static PullState fromWire(String wire) {
+    for (final value in values) {
+      if (value != unknown && value.wire == wire) {
+        return value;
+      }
+    }
+    return unknown;
+  }
+}
+
+/// CheckState is one check's state on a pull request's head.
+enum CheckState {
+  checkPassed('passed'),
+  checkFailed('failed'),
+  checkRunning('running'),
+  checkPending('pending'),
+  unknown('unknown');
+
+  const CheckState(this.wire);
+
+  /// The wire text this value stands for.
+  final String wire;
+
+  /// The value [wire] names, or [unknown] when this build does not
+  /// know it.
+  static CheckState fromWire(String wire) {
+    for (final value in values) {
+      if (value != unknown && value.wire == wire) {
+        return value;
+      }
+    }
+    return unknown;
+  }
+}
+
+/// PullCheck is one check on a pull request's head.
+class PullCheck {
+  const PullCheck({
+    required this.name,
+    required this.state,
+    this.url,
+    this.logTail,
+    this.rawEnums = const {},
+  });
+
+  final String name;
+  final CheckState state;
+  final String? url;
+  /// LogTail is the tail of a failed check's log. Only the detail route
+  /// fills it, so an index stays small.
+  final String? logTail;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory PullCheck.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final stateWire = json['state'] as String;
+    final state = CheckState.fromWire(stateWire);
+    if (state == CheckState.unknown) {
+      rawEnums['state'] = stateWire;
+    }
+    return PullCheck(
+      name: json['name'] as String,
+      state: state,
+      url: json['url'] as String?,
+      logTail: json['logTail'] as String?,
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    json['state'] = rawEnums['state'] ?? state.wire;
+    if (url != null) {
+      json['url'] = url;
+    }
+    if (logTail != null) {
+      json['logTail'] = logTail;
+    }
+    return json;
+  }
+}
+
+/// PullRecord is one pull request the bridge opened, with the evidence it holds
+/// for the head it last observed. Its id is &lt;repoId&gt;#&lt;number&gt;.
+class PullRecord {
+  const PullRecord({
+    required this.id,
+    required this.repoID,
+    required this.projectRoot,
+    required this.number,
+    required this.url,
+    required this.title,
+    required this.headRef,
+    required this.baseRef,
+    required this.headSHA,
+    required this.draft,
+    required this.additions,
+    required this.deletions,
+    required this.origin,
+    this.agentID,
+    this.factoryItem,
+    this.automation,
+    required this.state,
+    required this.checks,
+    required this.reviews,
+    this.unavailable,
+    this.report,
+    this.fix,
+    required this.observedAt,
+    required this.updatedAt,
+    this.rawEnums = const {},
+  });
+
+  final String id;
+  final String repoID;
+  final String projectRoot;
+  final int number;
+  final String url;
+  final String title;
+  final String headRef;
+  final String baseRef;
+  final String headSHA;
+  final bool draft;
+  final int additions;
+  final int deletions;
+  final PullOrigin origin;
+  final String? agentID;
+  final String? factoryItem;
+  final String? automation;
+  final PullState state;
+  final List<PullCheck> checks;
+  final String reviews;
+  /// Unavailable says why the checks cannot be read, when they cannot.
+  /// A record carrying it is never shown as passing.
+  final String? unavailable;
+  /// Report is the engineer's narrated report, when the origin has one.
+  /// Only the detail route fills it.
+  final String? report;
+  /// Fix is the dispatched fix, when a worker is on this pull request.
+  final PullFix? fix;
+  /// ObservedAt is when the evidence above was last read, in Unix millis.
+  /// UpdatedAt is when the record itself last changed.
+  final int observedAt;
+  final int updatedAt;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory PullRecord.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final originWire = json['origin'] as String;
+    final origin = PullOrigin.fromWire(originWire);
+    if (origin == PullOrigin.unknown) {
+      rawEnums['origin'] = originWire;
+    }
+    final stateWire = json['state'] as String;
+    final state = PullState.fromWire(stateWire);
+    if (state == PullState.unknown) {
+      rawEnums['state'] = stateWire;
+    }
+    return PullRecord(
+      id: json['id'] as String,
+      repoID: json['repoId'] as String,
+      projectRoot: json['projectRoot'] as String,
+      number: (json['number'] as num).toInt(),
+      url: json['url'] as String,
+      title: json['title'] as String,
+      headRef: json['headRef'] as String,
+      baseRef: json['baseRef'] as String,
+      headSHA: json['headSha'] as String,
+      draft: json['draft'] as bool,
+      additions: (json['additions'] as num).toInt(),
+      deletions: (json['deletions'] as num).toInt(),
+      origin: origin,
+      agentID: json['agentId'] as String?,
+      factoryItem: json['factoryItemId'] as String?,
+      automation: json['automation'] as String?,
+      state: state,
+      checks: _list(
+        json['checks'],
+        (value) => _object(value, PullCheck.fromJson),
+      ),
+      reviews: json['reviews'] as String,
+      unavailable: json['checksUnavailable'] as String?,
+      report: json['report'] as String?,
+      fix: _objectOrNull(
+        json['fix'],
+        PullFix.fromJson,
+      ),
+      observedAt: (json['observedAt'] as num).toInt(),
+      updatedAt: (json['updatedAt'] as num).toInt(),
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['repoId'] = repoID;
+    json['projectRoot'] = projectRoot;
+    json['number'] = number;
+    json['url'] = url;
+    json['title'] = title;
+    json['headRef'] = headRef;
+    json['baseRef'] = baseRef;
+    json['headSha'] = headSHA;
+    json['draft'] = draft;
+    json['additions'] = additions;
+    json['deletions'] = deletions;
+    json['origin'] = rawEnums['origin'] ?? origin.wire;
+    if (agentID != null) {
+      json['agentId'] = agentID;
+    }
+    if (factoryItem != null) {
+      json['factoryItemId'] = factoryItem;
+    }
+    if (automation != null) {
+      json['automation'] = automation;
+    }
+    json['state'] = rawEnums['state'] ?? state.wire;
+    json['checks'] = [
+      for (final value in checks) value.toJson(),
+    ];
+    json['reviews'] = reviews;
+    if (unavailable != null) {
+      json['checksUnavailable'] = unavailable;
+    }
+    if (report != null) {
+      json['report'] = report;
+    }
+    if (fix != null) {
+      json['fix'] = fix!.toJson();
+    }
+    json['observedAt'] = observedAt;
+    json['updatedAt'] = updatedAt;
+    return json;
+  }
+}
+
+/// PullFix is one dispatched fix. It is bound to the head it was asked about:
+/// a worker that starts after the head has moved is cancelled rather than run
+/// against different code.
+class PullFix {
+  const PullFix({
+    required this.id,
+    required this.check,
+    required this.headSHA,
+    required this.mode,
+    this.agentID,
+    required this.startedAt,
+  });
+
+  final String id;
+  final String check;
+  final String headSHA;
+  /// "fix" | "investigate"
+  final String mode;
+  final String? agentID;
+  final int startedAt;
+
+  factory PullFix.fromJson(Map<String, dynamic> json) {
+    return PullFix(
+      id: json['id'] as String,
+      check: json['check'] as String,
+      headSHA: json['headSha'] as String,
+      mode: json['mode'] as String,
+      agentID: json['agentId'] as String?,
+      startedAt: (json['startedAt'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['check'] = check;
+    json['headSha'] = headSHA;
+    json['mode'] = mode;
+    if (agentID != null) {
+      json['agentId'] = agentID;
+    }
+    json['startedAt'] = startedAt;
+    return json;
+  }
+}
+
+/// PullFixRequest is what POST /api/pulls/{id}/fix accepts.
+class PullFixRequest {
+  const PullFixRequest({
+    required this.check,
+    this.mode,
+    this.note,
+    this.routing,
+  });
+
+  final String check;
+  /// Mode is "fix" or "investigate"; empty means fix.
+  final String? mode;
+  final String? note;
+  final Object? routing;
+
+  factory PullFixRequest.fromJson(Map<String, dynamic> json) {
+    return PullFixRequest(
+      check: json['check'] as String,
+      mode: json['mode'] as String?,
+      note: json['note'] as String?,
+      routing: json['routing'],
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['check'] = check;
+    if (mode != null) {
+      json['mode'] = mode;
+    }
+    if (note != null) {
+      json['note'] = note;
+    }
+    if (routing != null) {
+      json['routing'] = routing;
+    }
+    return json;
+  }
+}
+
+/// PullDelta is the "pull" fleet delta's payload: the record that changed, or
+/// the id of one that went away.
+class PullDelta {
+  const PullDelta({
+    this.pull,
+    this.removed,
+  });
+
+  final PullRecord? pull;
+  final String? removed;
+
+  factory PullDelta.fromJson(Map<String, dynamic> json) {
+    return PullDelta(
+      pull: _objectOrNull(
+        json['pull'],
+        PullRecord.fromJson,
+      ),
+      removed: json['removed'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (pull != null) {
+      json['pull'] = pull!.toJson();
+    }
+    if (removed != null) {
+      json['removed'] = removed;
+    }
+    return json;
+  }
+}
+
+/// PullAsk is the inbox item a fix that could not finish leaves behind: which
+/// pull request and check, what the worker tried, what it found, and what the
+/// user can do next. An investigate-only run always ends in one, carrying the
+/// finding.
+class PullAsk {
+  const PullAsk({
+    required this.pull,
+    required this.check,
+    required this.outcome,
+    this.tried,
+    this.finding,
+    this.action,
+    this.at,
+  });
+
+  final String pull;
+  final String check;
+  /// Outcome is what became of the fix: "not_reproduced", "gave_up",
+  /// "forbidden_change", "stopped", "head_moved" or "investigated".
+  final String outcome;
+  final String? tried;
+  final String? finding;
+  final String? action;
+  final int? at;
+
+  factory PullAsk.fromJson(Map<String, dynamic> json) {
+    return PullAsk(
+      pull: json['pull'] as String,
+      check: json['check'] as String,
+      outcome: json['outcome'] as String,
+      tried: json['tried'] as String?,
+      finding: json['finding'] as String?,
+      action: json['action'] as String?,
+      at: (json['at'] as num?)?.toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['pull'] = pull;
+    json['check'] = check;
+    json['outcome'] = outcome;
+    if (tried != null) {
+      json['tried'] = tried;
+    }
+    if (finding != null) {
+      json['finding'] = finding;
+    }
+    if (action != null) {
+      json['action'] = action;
+    }
+    if (at != null) {
+      json['at'] = at;
     }
     return json;
   }
@@ -6685,6 +7160,7 @@ enum DeltaKind {
   deltaBudget('budget'),
   deltaProjectRemoved('project_removed'),
   deltaInbox('inbox'),
+  deltaPull('pull'),
   unknown('unknown');
 
   const DeltaKind(this.wire);

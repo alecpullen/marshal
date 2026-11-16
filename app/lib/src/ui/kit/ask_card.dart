@@ -8,14 +8,16 @@ import 'tip.dart';
 import 'vocabulary.dart';
 
 /// What an ask is. The first four block work and draw as needing you; a
-/// review draft and an intake proposal are there to look at.
+/// review draft, an intake proposal and a pull request's failed fix are there
+/// to look at.
 enum AskKind {
   decision('Decision', Glyphs.arrow_branch, blocking: true),
   question('Question', Glyphs.question_circle, blocking: true),
   approval('Approval', Glyphs.lock_shield, blocking: true),
   network('Network', Glyphs.globe, blocking: true),
   review('Review draft', Glyphs.text_bubble, blocking: false),
-  intake('Intake', Glyphs.tray_arrow_down, blocking: false);
+  intake('Intake', Glyphs.tray_arrow_down, blocking: false),
+  pull('Pull request', Glyphs.arrow_merge, blocking: false);
 
   const AskKind(this.word, this.icon, {required this.blocking});
 

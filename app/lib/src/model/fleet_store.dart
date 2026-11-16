@@ -310,8 +310,13 @@ class FleetStore extends ChangeNotifier {
       case DeltaKind.deltaBudget:
       case DeltaKind.deltaProjectRemoved:
       case DeltaKind.deltaInbox:
-      case DeltaKind.unknown:
         // Handled elsewhere, or a kind this build does not know.
+        return;
+      case DeltaKind.deltaPull:
+        // Pull requests are not agent rows: `PullsStore` follows the same
+        // stream for them, and this store has nothing to say about one.
+        return;
+      case DeltaKind.unknown:
         return;
     }
     state

@@ -1,5 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:marshal_app/src/client/contract.g.dart';
+// The contract's CheckState is a CI check's wire state; the kit's is a check
+// drawn in the interface. This test reads the kit's.
+import 'package:marshal_app/src/client/contract.g.dart' hide CheckState;
 import 'package:marshal_app/src/model/changes_model.dart';
 import 'package:marshal_app/src/model/inspector_state.dart';
 import 'package:marshal_app/src/model/stack_store.dart';

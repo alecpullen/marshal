@@ -500,4 +500,113 @@ void main() {
 
     expect(inbox.asks, isEmpty);
   });
+
+  test('a failed outcome becomes an ask', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        queue: [
+          InboxItem(
+            kind: InboxItemKind.inboxItemPull,
+            pull: PullAsk(
+              pull: 'acme/widgets#131',
+              check: 'unit',
+              outcome: 'forbidden_change',
+              tried: 'it wanted to delete the failing test',
+              finding: 'the test is right and the code is wrong',
+              action: 'Fix it by hand, or ask a worker with a note',
+              at: now.millisecondsSinceEpoch,
+            ),
+            at: now.subtract(const Duration(minutes: 5)).toIso8601String(),
+          ),
+        ],
+      ),
+    ], now: now);
+
+    final inbox = await inboxFor(fixture);
+    final ask = inbox.asks.single;
+
+    expect(ask.kind, AskKind.pull);
+    expect(ask.title, '#131 · the fix was refused as a forbidden change');
+    expect(ask.body, contains('unit'));
+    expect(ask.body, contains('the test is right and the code is wrong'));
+    expect(
+      [for (final action in ask.actions) action.label],
+      ['Open', 'Try again', 'Dismiss'],
+    );
+    expect(
+      [for (final action in ask.actions) action.kind],
+      [AskActionKind.open, AskActionKind.retry, AskActionKind.dismiss],
+      reason: 'the first action is the primary one, and it comes first',
+    );
+    expect(ask.actions.first.primary, isTrue);
+  });
+
+  test('trying again asks a worker for the same check', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        queue: [
+          InboxItem(
+            kind: InboxItemKind.inboxItemPull,
+            pull: PullAsk(
+              pull: 'acme/widgets#131',
+              check: 'unit',
+              outcome: 'gave_up',
+              at: now.millisecondsSinceEpoch,
+            ),
+            at: now.subtract(const Duration(minutes: 5)).toIso8601String(),
+          ),
+        ],
+      ),
+    ], now: now);
+    final inbox = await inboxFor(fixture);
+    fixture.bridges['local']!.reply(
+      'POST',
+      '/api/pulls/${Uri.encodeComponent('acme/widgets#131')}/fix',
+      const FakeReply(202, body: '{}'),
+    );
+
+    final ask = inbox.asks.single;
+    final retry = ask.actions[1];
+    await inbox.answer(ask, retry);
+
+    final posted = fixture
+        .requests('local')
+        .where((r) => r.method == 'POST' && r.uri.contains('/fix'))
+        .toList();
+    expect(posted, hasLength(1));
+    expect(posted.single.body, contains('"check":"unit"'));
+  });
+
+  test('dismissing a pull request ask closes it here', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        queue: [
+          InboxItem(
+            kind: InboxItemKind.inboxItemPull,
+            pull: PullAsk(
+              pull: 'acme/widgets#131',
+              check: 'unit',
+              outcome: 'gave_up',
+              at: now.millisecondsSinceEpoch,
+            ),
+            at: now.subtract(const Duration(minutes: 5)).toIso8601String(),
+          ),
+        ],
+      ),
+    ], now: now);
+    final inbox = await inboxFor(fixture);
+    final ask = inbox.asks.single;
+
+    await inbox.answer(ask, ask.actions[2]);
+
+    expect(inbox.asks, isEmpty, reason: 'the bridge has no dismissal route');
+    expect(
+      fixture.requests('local').where((r) => r.method != 'GET'),
+      isEmpty,
+      reason: 'nothing is posted for a dismissal',
+    );
+  });
 }

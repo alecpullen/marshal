@@ -3,6 +3,8 @@ package bridge
 import (
 	"encoding/json"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // The planner is the web UI's own agent session: one persistent identity, one
@@ -238,26 +240,13 @@ type PlannerSnapshotArtifact struct {
 	SHA256  string `json:"sha256"`
 }
 
-// SelectedFile is one repository-relative file a snapshot captured. Path is a
-// slash path relative to the planner's workspace root, never a host path, and
-// Operation is exactly create, modify or delete.
-type SelectedFile struct {
-	Path          string `json:"path"`
-	Operation     string `json:"operation"`
-	BaseSHA256    string `json:"baseSha256,omitempty"`
-	ContentSHA256 string `json:"contentSha256,omitempty"`
-	Executable    bool   `json:"executable"`
-}
+// EditSnapshot is contract.EditSnapshot: the hashed core of a captured
+// selection.
+type EditSnapshot = contract.EditSnapshot
 
-// EditSnapshot is the hashed core of a snapshot: the base commit it was taken
-// against and the files it froze, in the order the caller selected them. Its
-// SHA256 is the digest of exactly those two fields, so the same capture always
-// hashes the same way, whatever else the record carries.
-type EditSnapshot struct {
-	BaseCommit string         `json:"baseCommit"`
-	Files      []SelectedFile `json:"files"`
-	SHA256     string         `json:"sha256"`
-}
+// SelectedFile is contract.SelectedFile: one repository-relative file a
+// snapshot captured.
+type SelectedFile = contract.SelectedFile
 
 // PlannerSnapshotRequest is the POST /api/planners/{id}/snapshots body: the
 // exact plan and spec text the user approved, and the repository-relative

@@ -16,6 +16,7 @@ const _fixtures = [
   'automations',
   'budgets',
   'clients',
+  'factory',
   'finish',
   'inbox',
   'intake',
@@ -101,6 +102,56 @@ final _codecs = <String, _Codec>{
   'FactoryGrantState': (json) =>
       FactoryGrantState.fromJson(_object(json)).toJson(),
   'PutGrantRequest': (json) => PutGrantRequest.fromJson(_object(json)).toJson(),
+  // factory.json — a work item in each of its four resting states, its parts,
+  // and the command a client posts back.
+  'FactoryItemDraft': (json) => FactoryItem.fromJson(_object(json)).toJson(),
+  'FactoryItemNeedsInput': (json) =>
+      FactoryItem.fromJson(_object(json)).toJson(),
+  'FactoryItemReady': (json) => FactoryItem.fromJson(_object(json)).toJson(),
+  'FactoryItemClosed': (json) => FactoryItem.fromJson(_object(json)).toJson(),
+  'FactoryConfig': (json) => FactoryConfig.fromJson(_object(json)).toJson(),
+  'FactoryCreate': (json) => FactoryCreate.fromJson(_object(json)).toJson(),
+  'FactoryApproval': (json) => FactoryApproval.fromJson(_object(json)).toJson(),
+  'FactoryWorker': (json) => FactoryWorker.fromJson(_object(json)).toJson(),
+  'FactoryPR': (json) => FactoryPR.fromJson(_object(json)).toJson(),
+  'FactoryCheckKey': (json) =>
+      FactoryCheckKey.fromJson(_object(json)).toJson(),
+  'FactoryCheck': (json) => FactoryCheck.fromJson(_object(json)).toJson(),
+  'FactoryCI': (json) => FactoryCI.fromJson(_object(json)).toJson(),
+  'FactoryRound': (json) => FactoryRound.fromJson(_object(json)).toJson(),
+  'FactoryReport': (json) => FactoryReport.fromJson(_object(json)).toJson(),
+  'FactoryDecision': (json) => FactoryDecision.fromJson(_object(json)).toJson(),
+  'FactoryEvent': (json) => FactoryEvent.fromJson(_object(json)).toJson(),
+  'FactoryGrant': (json) => FactoryGrant.fromJson(_object(json)).toJson(),
+  'FactoryCompletion': (json) =>
+      FactoryCompletion.fromJson(_object(json)).toJson(),
+  'FactoryCompletionRecord': (json) =>
+      FactoryCompletionRecord.fromJson(_object(json)).toJson(),
+  'FactoryAssessment': (json) =>
+      FactoryAssessment.fromJson(_object(json)).toJson(),
+  'FactoryPRLink': (json) => FactoryPRLink.fromJson(_object(json)).toJson(),
+  'FactoryMergeBatch': (json) =>
+      FactoryMergeBatch.fromJson(_object(json)).toJson(),
+  'FactoryMergeStep': (json) =>
+      FactoryMergeStep.fromJson(_object(json)).toJson(),
+  'FactorySubagentSettings': (json) =>
+      FactorySubagentSettings.fromJson(_object(json)).toJson(),
+  'FactorySubagentOverrides': (json) =>
+      FactorySubagentOverrides.fromJson(_object(json)).toJson(),
+  'EditSnapshot': (json) => EditSnapshot.fromJson(_object(json)).toJson(),
+  'SelectedFile': (json) => SelectedFile.fromJson(_object(json)).toJson(),
+  'ReviewFinding': (json) => ReviewFinding.fromJson(_object(json)).toJson(),
+  'FactoryRevisionAssessment': (json) =>
+      FactoryRevisionAssessment.fromJson(_object(json)).toJson(),
+  'FactoryRevisionProposal': (json) =>
+      FactoryRevisionProposal.fromJson(_object(json)).toJson(),
+  'FactoryRevisionCommand': (json) =>
+      FactoryRevisionCommand.fromJson(_object(json)).toJson(),
+  'FactoryCompletionPR': (json) =>
+      FactoryCompletionPR.fromJson(_object(json)).toJson(),
+  'FactoryCompletionCommand': (json) =>
+      FactoryCompletionCommand.fromJson(_object(json)).toJson(),
+  'FactoryCommand': (json) => FactoryCommand.fromJson(_object(json)).toJson(),
   // library.json
   'SkillEntry': (json) => SkillEntry.fromJson(_object(json)).toJson(),
   'SkillPreview': (json) => SkillPreview.fromJson(_object(json)).toJson(),

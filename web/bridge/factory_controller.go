@@ -1354,7 +1354,7 @@ func (c *FactoryController) cancelDelegatedChildren(ctx context.Context, item Fa
 // never satisfy it.
 func factoryContinuationOutcome(e FactoryEffect, out FactoryOutcome) bool {
 	d := e.Delegated
-	if d == nil || d.ContinuationID == "" || out.continuation != d.ContinuationID {
+	if d == nil || d.ContinuationID == "" || out.Continuation != d.ContinuationID {
 		return false
 	}
 	if !out.Confirmed || out.EffectID != e.ID || out.Report == nil || out.Report.OperationID != e.ID {
@@ -1693,10 +1693,10 @@ func factoryApplyCommandFrom(i *FactoryItem, c FactoryCommand, p *factoryPrincip
 			return ErrFactoryConflict
 		}
 		a := FactoryApproval{Revision: uint64(len(i.Approvals) + 1), Plan: i.Draft.Plan, Spec: i.Draft.Spec, PlanHash: factoryApprovalHash(i.Draft.Plan, i.Draft.Spec, i.Draft.EditSnapshot), Config: i.Draft.Config, EditSnapshot: factoryCloneSnapshot(i.Draft.EditSnapshot), ApprovedAt: now}
-		if c.subagents != nil {
+		if c.ImplementerFreeze != nil && c.ReviewerFreeze != nil {
 			// The resolved pair this revision freezes rides the same append as
 			// the approval, so a later default change cannot reach it.
-			a.ImplementerSubagents, a.ReviewerSubagents = c.subagents.implementer, c.subagents.reviewer
+			a.ImplementerSubagents, a.ReviewerSubagents = *c.ImplementerFreeze, *c.ReviewerFreeze
 		}
 		i.Approvals = append(i.Approvals, a)
 		i.Grants = append(i.Grants, FactoryGrant{ID: c.RequestID, Reason: "initial approval", AdditionalRounds: a.Config.MaxRounds, At: now})
@@ -1758,8 +1758,8 @@ func factoryApplyCommandFrom(i *FactoryItem, c FactoryCommand, p *factoryPrincip
 			// omits the snapshot drops the selection, because the caller said
 			// what this draft is now made of.
 			a := FactoryApproval{Revision: uint64(len(i.Approvals) + 1), Plan: r.Plan, Spec: r.Spec, PlanHash: factoryApprovalHash(r.Plan, r.Spec, r.EditSnapshot), Config: r.Config, EditSnapshot: factoryCloneSnapshot(r.EditSnapshot), ApprovedAt: now}
-			if c.subagents != nil {
-				a.ImplementerSubagents, a.ReviewerSubagents = c.subagents.implementer, c.subagents.reviewer
+			if c.ImplementerFreeze != nil && c.ReviewerFreeze != nil {
+				a.ImplementerSubagents, a.ReviewerSubagents = *c.ImplementerFreeze, *c.ReviewerFreeze
 			}
 			i.Approvals = append(i.Approvals, a)
 		} else {

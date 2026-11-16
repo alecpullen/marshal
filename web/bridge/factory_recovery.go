@@ -239,7 +239,7 @@ func (c *FactoryController) recoveryContinuationOutcome(item FactoryItem, e Fact
 	}
 	out.Report = &report
 	out.Worker = worker
-	out.continuation = d.ContinuationID
+	out.Continuation = d.ContinuationID
 	if report.Outcome == "needs_input" {
 		return out, true
 	}

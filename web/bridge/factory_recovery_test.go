@@ -936,7 +936,7 @@ func (f *continuationRecoveryEffects) Continue(_ context.Context, item FactoryIt
 	}
 	out := *f.outcome
 	out.EffectID = e.ID
-	out.continuation = e.Delegated.ContinuationID
+	out.Continuation = e.Delegated.ContinuationID
 	if e.Worker != nil {
 		// The real turn binds its result to the worker it prompted.
 		out.Worker = e.Worker

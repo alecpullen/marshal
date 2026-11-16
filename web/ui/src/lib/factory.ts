@@ -1,5 +1,37 @@
-/** Factory API shapes mirror web/bridge/factory_types.go. */
-export interface FactoryCheckKey { kind: 'check_run' | 'commit_status'; name: string; appId: number }
+/**
+ * Factory API shapes (F6 decision 1). The wire types are generated from
+ * `web/bridge/contract` and re-exported here, so this module and the Flutter
+ * client are read from one declaration: a shape below that says
+ * `= FactoryWire.X` is that type and nothing else.
+ *
+ * Two shapes stay local on purpose. `FactoryCheckKey` narrows the check's
+ * `kind` to the two the bridge emits, and a command names only the fields it
+ * sets — the wire's `FactoryCommand` is the *journaled* command, whose every
+ * field is present, which is not what a client sends. The handoff shapes
+ * (`FactoryConfig`, `FactoryCreate`, `FactoryCreateConfig`, `FactoryDefaults`,
+ * `FactoryApproval`, `FactoryItem`) stay local for the same reason: a
+ * configuration the user left alone is absent, not empty.
+ */
+import type * as FactoryWire from './contract'
+
+export type FactoryPR = FactoryWire.FactoryPR
+export type FactoryGrant = FactoryWire.FactoryGrant
+export type FactoryReport = FactoryWire.FactoryReport
+export type FactoryDecision = FactoryWire.FactoryDecision
+export type FactoryEvent = FactoryWire.FactoryEvent
+export type FactoryProvenance = FactoryWire.FactoryProvenance
+export type FactoryPRLink = FactoryWire.FactoryPRLink
+export type FactoryAssessment = FactoryWire.FactoryAssessment
+export type FactoryCompletionRecord = FactoryWire.FactoryCompletionRecord
+export type FactoryRevisionAssessment = FactoryWire.FactoryRevisionAssessment
+export type FactoryRevisionDelivery = FactoryWire.FactoryRevisionDelivery
+export type FactoryRevisionProposal = FactoryWire.FactoryRevisionProposal
+export type FactoryCompletionPR = FactoryWire.FactoryCompletionPR
+export type FactoryExcerpt = FactoryWire.FactoryExcerpt
+export type FactoryNarration = FactoryWire.FactoryNarration
+export type FactoryDelegatedTurn = FactoryWire.FactoryDelegatedTurn
+export type FactoryEffect = FactoryWire.FactoryEffect
+export type FactoryOutcome = FactoryWire.FactoryOutcome
 /**
  * One role's subagent settings as a work item's draft or a project's factory
  * defaults state them. Every field is optional on purpose: an absent field
@@ -7,22 +39,54 @@ export interface FactoryCheckKey { kind: 'check_run' | 'commit_status'; name: st
  * explicit empty `model` is a stated choice — normal child routing — rather
  * than "follow".
  */
-export interface FactorySubagentOverrides {
-  enabled?: boolean
-  model?: string
-  concurrency?: number
-}
+export type FactorySubagentOverrides = FactoryWire.FactorySubagentOverrides
 /**
  * One role's resolved subagent settings: what the chain produced for a draft,
  * and what an approval revision freezes. An approval journalled before these
  * existed carries the zero value, so a zero `concurrency` means "no snapshot"
  * rather than a cap of zero.
  */
-export interface FactorySubagentSettings {
-  enabled: boolean
-  model: string
-  concurrency: number
+export type FactorySubagentSettings = FactoryWire.FactorySubagentSettings
+export interface FactoryWorker { agentId: string; sessionId: string; role: string; spawnEffectId: string; parked: boolean }
+
+export interface FactoryCompletionCommand {
+  link?: string
+  prs?: FactoryCompletionPR[]
+  strategy?: FactoryMergeStrategy
+  completeAfter?: boolean
+  runChoice?: 'continue' | 'request_stop'
 }
+
+export interface FactoryChild { sessionId: string; id: number; label?: string; status: string; terminal: boolean }
+
+export interface FactoryChildSession { sessionId: string; known: boolean; children: FactoryChild[] | null }
+export interface FactoryRound { number: number; approvalRevision: number; implementEffectId: string; baseSha: string; headSha: string; treeSha: string; ci: FactoryCI | null; implementation: FactoryReport | null; review: FactoryReport | null; startedAt: string; finishedAt: string }
+export interface FactoryMergeStep {
+  repoId: string; number: number; nodeId: string; headSha: string; baseRef: string
+  strategy: FactoryMergeStrategy
+  state: 'unattempted' | 'prepared' | 'dispatched' | 'confirmed' | 'failed' | 'uncertain' | string
+  result?: string
+}
+export interface FactoryMergeBatch {
+  id: string; requestId: string
+  state: 'active' | 'stopped' | 'complete' | string
+  completeAfter: boolean
+  runChoice?: 'continue' | 'request_stop' | string
+  steps: FactoryMergeStep[]
+}
+export interface FactoryCompletion {
+  status: 'open' | 'complete' | string
+  links?: FactoryPRLink[] | null
+  assessment?: FactoryAssessment
+  records?: FactoryCompletionRecord[] | null
+  batch?: FactoryMergeBatch | null
+  stopState?: 'requested' | 'stopped' | 'failed' | 'unknown' | string
+}
+export type FactoryCheck = FactoryWire.FactoryCheck
+/** One finding of a review, as a factory report and a recipe both carry it. */
+export type FactoryFinding = FactoryWire.ReviewFinding
+
+export interface FactoryCheckKey { kind: 'check_run' | 'commit_status'; name: string; appId: number }
 export interface FactoryConfig {
   repoId: string; projectRoot: string; hostId: string; targetBranch: string; workspace: string; native: boolean
   implementerRouting: Record<string, unknown>; reviewerRouting: Record<string, unknown>
@@ -78,21 +142,7 @@ export interface FactoryApproval { revision: number; plan: string; spec: string;
   implementerSubagents?: FactorySubagentSettings
   reviewerSubagents?: FactorySubagentSettings
 }
-export interface FactoryGrant { id: string; reason: string; additionalRounds: number; at: string }
-export interface FactoryWorker { agentId: string; sessionId: string; role: string; spawnEffectId: string; parked: boolean }
-export interface FactoryPR { number: number; url: string; nodeId: string; headRef: string; baseRef: string; headSha: string; baseSha: string; state: string; draft: boolean }
-export interface FactoryCheck { key: FactoryCheckKey; id: string; sha: string; status: string; conclusion: string; url: string; logTail: string; observedAt: string }
 export interface FactoryCI { headSha: string; checks: FactoryCheck[] | null; complete: boolean; observedAt: string }
-export interface FactoryFinding { severity: string; path?: string; line?: number; title: string; body?: string; stepNode?: string }
-export interface FactoryExcerpt { path: string; lang?: string; code: string }
-export interface FactoryNarration {
-  issue: string; approach: string; existingBehaviour: string; alternatives: string; tradeoffs: string
-  choice: string; verification: string; limitations: string; excerpts?: FactoryExcerpt[]
-}
-export interface FactoryReport { operationId: string; outcome: string; summary: string; question: string; reason: string; baseSha: string; headSha: string; inputsAccessible: boolean; findings: FactoryFinding[] | null; narration?: FactoryNarration }
-export interface FactoryRound { number: number; approvalRevision: number; implementEffectId: string; baseSha: string; headSha: string; treeSha: string; ci: FactoryCI | null; implementation: FactoryReport | null; review: FactoryReport | null; startedAt: string; finishedAt: string }
-export interface FactoryOutcome { effectId: string; stopReason: string; error: string; headSha: string; treeSha: string; baseSha: string; worker: FactoryWorker | null; pr: FactoryPR | null; report: FactoryReport | null; confirmed: boolean; /** The waiting turn a worker effect hands back instead of a result. */ delegated?: FactoryDelegatedTurn | null }
-export interface FactoryEffect { outcome: FactoryOutcome | null; id: string; kind: string; status: string; workerRole: string; round: number; approvalRevision: number; worker: FactoryWorker | null; expectedHead: string; expectedBase: string; createdAt: string; /** The turn's launched child work while it is not proven settled. */ delegated?: FactoryDelegatedTurn | null }
 /**
  * One worker turn's delegated child work, mirroring FactoryDelegatedTurn: the
  * children the turn launched, and how far they have been proven. It is journalled
@@ -100,29 +150,16 @@ export interface FactoryEffect { outcome: FactoryOutcome | null; id: string; kin
  * and its candidate identity until the children settle. A waiting turn is not an
  * outcome — the report it wrote before those children settled is early.
  */
-export interface FactoryDelegatedTurn {
-  effectId: string
-  workerId: string
-  sessionId: string
-  parentTurnId: string
-  childIds: number[] | null
-  continuationId?: string
-  /** waiting | prepared | dispatched | settled | uncertain, as the bridge names them. */
-  state: string
-}
 /**
  * One child of a worker session, as that session's own status projects it,
  * mirroring FactoryChild. Its identity is the pair, never the id alone: child
  * ids are session-local, so two sessions can both contain child 1.
  */
-export interface FactoryChild { sessionId: string; id: number; label?: string; status: string; terminal: boolean }
 /**
  * One worker session's child projection, mirroring FactoryChildSession.
  * `known` is false when the bridge could not read it, which is unknown work
  * rather than a settled empty set.
  */
-export interface FactoryChildSession { sessionId: string; known: boolean; children: FactoryChild[] | null }
-export interface FactoryDecision { id: string; kind: string; question: string; reason: string; effectId: string; createdAt: string }
 /**
  * Who asked for one factory action, as the bridge journaled it beside the
  * action itself (spec §4). It is optional on every event: a record written
@@ -133,43 +170,23 @@ export interface FactoryDecision { id: string; kind: string; question: string; r
  * an answer. `user_directed` is the calling client's own claim, so the display
  * must say so and never present it as a verified human approval.
  */
-export interface FactoryProvenance {
-  clientId: string; projectId: string; action: string; requestId: string
-  authority?: string; decisionId?: string
-}
-export interface FactoryEvent { sequence: number; at: string; kind: string; message: string; effectId: string; provenance?: FactoryProvenance }
 /**
  * One pull request linked to a work item's completion, with the observation
  * the bridge made of it. `fresh` is the server's own judgement of whether that
  * observation still describes the linked pull request, so a surface states
  * staleness rather than trusting a stale head.
  */
-export interface FactoryPRLink { repoId: string; pr: FactoryPR; origin: 'factory' | 'user' | string; observedAt: string; fresh: boolean }
 /**
  * One piece of completion evidence, assessed against exactly one set of
  * inputs. `fresh` is derived on every read from `inputDigest` and is never
  * stored: an assessment whose inputs have since moved keeps its summary and
  * loses its freshness.
  */
-export interface FactoryAssessment {
-  status: 'pending' | 'available' | 'failed' | 'unavailable' | string
-  summary?: string
-  source?: string
-  inputDigest: string
-  observedAt: string
-  fresh: boolean
-}
 /**
  * What the user called done, snapshotted. The goal, the criteria and the links
  * are copied when the decision is made, so a later approval or a pull request
  * that moves cannot rewrite what this record says.
  */
-export interface FactoryCompletionRecord {
-  id: string; at: string; actor: string; goal: string; criteria: string
-  assessment?: FactoryAssessment
-  links: FactoryPRLink[] | null
-  runChoice?: 'continue' | 'request_stop' | string
-}
 /** The merge strategies a reviewed batch may carry; the bridge refuses any other as input. */
 export type FactoryMergeStrategy = 'merge' | 'squash' | 'rebase'
 /**
@@ -177,44 +194,22 @@ export type FactoryMergeStrategy = 'merge' | 'squash' | 'rebase'
  * only `confirmed` means the pull request merged at the reviewed identity, and
  * `uncertain` is a merge whose outcome has to be read again, never sent again.
  */
-export interface FactoryMergeStep {
-  repoId: string; number: number; nodeId: string; headSha: string; baseRef: string
-  strategy: FactoryMergeStrategy
-  state: 'unattempted' | 'prepared' | 'dispatched' | 'confirmed' | 'failed' | 'uncertain' | string
-  result?: string
-}
 /**
  * The ordered merges a user authorised, driven one step per pass. Every entry
  * after a stopped one stays unattempted: a stopped batch needs a new explicit
  * decision, and nothing resumes it on its own.
  */
-export interface FactoryMergeBatch {
-  id: string; requestId: string
-  state: 'active' | 'stopped' | 'complete' | string
-  completeAfter: boolean
-  runChoice?: 'continue' | 'request_stop' | string
-  steps: FactoryMergeStep[]
-}
 /**
  * The item's business completion, which is independent of `state`: the work
  * counts as done as far as the user is concerned, whatever the run is doing.
  * An absent record and an empty status both mean open.
  */
-export interface FactoryCompletion {
-  status: 'open' | 'complete' | string
-  links?: FactoryPRLink[] | null
-  assessment?: FactoryAssessment
-  records?: FactoryCompletionRecord[] | null
-  batch?: FactoryMergeBatch | null
-  stopState?: 'requested' | 'stopped' | 'failed' | 'unknown' | string
-}
 /**
  * One pull request a user reviewed for a merge. It is the identity the batch
  * pins, so a head or base that no longer matches the linked pull request is
  * refused rather than adapted. `reviewedPR` is the only way to build one from
  * a link, so a caller cannot send a head the user was never shown.
  */
-export interface FactoryCompletionPR { repoId: string; number: number; nodeId: string; headSha: string; baseRef: string }
 export interface FactoryItem { id: string; title: string; state: string; stage: string; repoId: string; projectRoot: string; hostId: string; branch: string; baseSha: string; version: number; draft: Omit<FactoryCreate, 'config'> & { config: FactoryConfig }; approvals: FactoryApproval[] | null; grants: FactoryGrant[] | null; rounds: FactoryRound[] | null; workers: FactoryWorker[] | null; prs: FactoryPR[] | null; effects: FactoryEffect[] | null; decision: FactoryDecision | null; history: FactoryEvent[] | null; createdAt: string; approvedAt: string; updatedAt: string; /** Plan-change proposals; absent on a record written before revisions existed. */ proposals?: FactoryRevisionProposal[] | null; /** Business completion, independent of `state`; absent on a record written before completion existed, and an absent record or empty status means open. */ completion?: FactoryCompletion | null }
 
 /**
@@ -223,30 +218,11 @@ export interface FactoryItem { id: string; title: string; state: string; stage: 
  * already in flight, and `hold` means it cannot be delivered while that work
  * runs.
  */
-export interface FactoryRevisionAssessment {
-  classification: 'routine_clarification' | 'scope_change' | 'needs_user' | string
-  reason: string
-  affectedEffectId?: string
-  affectedWorkerId?: string
-  recommendation: 'amend' | 'follow_up' | string
-  strategy: 'wait_safe' | 'interrupt' | 'hold' | string
-  assessorId: string
-  candidateHash: string
-  baseRevision: number
-}
 /**
  * An attempt to hand one revision to the session doing the work. Every state
  * before `delivered` is a receipt about the request, never a claim that the
  * agent applied anything.
  */
-export interface FactoryRevisionDelivery {
-  strategy: 'wait_safe' | 'interrupt' | 'hold' | string
-  state: 'pending' | 'dispatching' | 'accepted' | 'interrupting' | 'waiting_safe_boundary' | 'waiting_for_resume' | 'delivered' | 'undelivered' | 'uncertain' | string
-  sessionId?: string
-  turnId?: string
-  requestId?: string
-  candidateHash: string
-}
 /**
  * One candidate revision of a work item's plan and specification. It is not
  * work: a proposal is authorized separately, and its delivery is a third step
@@ -254,31 +230,6 @@ export interface FactoryRevisionDelivery {
  * revision it was written against, so evidence recorded for that revision
  * cannot be read as covering this candidate.
  */
-export interface FactoryRevisionProposal {
-  id: string
-  version: number
-  baseRevision: number
-  baseHash: string
-  plan: string
-  spec: string
-  candidateHash: string
-  createdBy: string
-  autoAssess: boolean
-  status: 'proposed' | 'awaiting_authorization' | 'authorized' | 'activated' | 'rejected' | 'superseded' | 'follow_up_pending' | 'followed_up' | string
-  assessmentState: 'not_requested' | 'pending' | 'assessing' | 'assessed' | 'unavailable' | 'uncertain' | 'failed' | string
-  assessmentAttemptId?: string
-  assessment?: FactoryRevisionAssessment
-  authorizedBy?: string
-  authority?: string
-  routing?: 'amend' | 'follow_up' | string
-  pauseState?: 'requested' | 'stopping' | 'paused' | 'uncertain' | string
-  pauseRequestId?: string
-  delivery?: FactoryRevisionDelivery
-  followUpRequestId?: string
-  followUpItemId?: string
-  createdAt: string
-  updatedAt: string
-}
 /**
  * The revision half of a command. Only the fields the command names are sent;
  * the envelope (request id, expected version, decision) stays in `FactoryCommand`.
@@ -314,13 +265,6 @@ export type FactoryRevisionCommandKind =
  * `FactoryCommand`. `prs` is the reviewed set a merge command authorizes, and
  * `completeAfter` must agree with the kind that carries it.
  */
-export interface FactoryCompletionCommand {
-  link?: string
-  prs?: FactoryCompletionPR[]
-  strategy?: FactoryMergeStrategy
-  completeAfter?: boolean
-  runChoice?: 'continue' | 'request_stop'
-}
 /** The completion lifecycle commands the bridge accepts in `FactoryCommand.completion`. */
 export type FactoryCompletionCommandKind =
   | 'complete'

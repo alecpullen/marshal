@@ -8,34 +8,17 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
-// FactoryCompletionCommand is the structured payload of the completion
-// commands. Each kind reads only the fields it needs, so a command those
-// kinds do not carry marshals as it always did.
-type FactoryCompletionCommand struct {
-	// Link is the pull request a link_pr command names: a number or a URL.
-	Link string `json:"link,omitempty"`
-	// PRs is the reviewed, ordered set a merge_pr or merge_and_complete
-	// command authorizes.
-	PRs []FactoryCompletionPR `json:"prs,omitempty"`
-	// Strategy is the reviewed merge strategy.
-	Strategy string `json:"strategy,omitempty"`
-	// CompleteAfter completes the item once every reviewed merge confirms.
-	CompleteAfter bool `json:"completeAfter,omitempty"`
-	// RunChoice is continue or request_stop when the item's own run is
-	// active or its state cannot be established.
-	RunChoice string `json:"runChoice,omitempty"`
-}
+// FactoryCompletionCommand is contract.FactoryCompletionCommand: the
+// structured payload of the completion commands.
+type FactoryCompletionCommand = contract.FactoryCompletionCommand
 
-// FactoryCompletionPR is one pull request a user reviewed for a merge batch.
-type FactoryCompletionPR struct {
-	RepoID  string `json:"repoId"`
-	Number  int    `json:"number"`
-	NodeID  string `json:"nodeId"`
-	HeadSHA string `json:"headSha"`
-	BaseRef string `json:"baseRef"`
-}
+// FactoryCompletionPR is contract.FactoryCompletionPR: one pull request a user
+// reviewed for a merge batch.
+type FactoryCompletionPR = contract.FactoryCompletionPR
 
 // factoryCompletionEvidence is what the controller learned from the forge
 // before the store update: the one pull request a link_pr command resolved, or

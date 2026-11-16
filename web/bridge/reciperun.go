@@ -9,21 +9,17 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // errNoStructuredResult is the result error when a recipe with a
 // structured output ends without a parseable final json block.
 const errNoStructuredResult = "gave up: no structured result"
 
-// ReviewFinding is one finding of a review-findings result.
-type ReviewFinding struct {
-	Severity string `json:"severity"`
-	Path     string `json:"path,omitempty"`
-	Line     int    `json:"line,omitempty"`
-	Title    string `json:"title"`
-	Body     string `json:"body,omitempty"`
-	StepNode string `json:"stepNode,omitempty"`
-}
+// ReviewFinding is contract.ReviewFinding: one finding of a review-findings
+// result.
+type ReviewFinding = contract.ReviewFinding
 
 // ReviewFindings is the review-findings structured output.
 type ReviewFindings struct {

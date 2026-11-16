@@ -200,6 +200,128 @@ export interface RecentPrompts {
 }
 
 /**
+ * Automations is a project's forge automation settings
+ * (web/bridge/automation.go).
+ */
+export interface Automations {
+  reviewBot?: ReviewBotSettings;
+  ciFixer?: CIFixerSettings;
+}
+
+/**
+ * ReviewBotSettings configures the pull-request review bot.
+ */
+export interface ReviewBotSettings {
+  enabled: boolean;
+  repoId: string;
+  /**
+   * Labels, Authors and SkipDrafts filter which pull requests are
+   * reviewed. Empty lists match everything.
+   */
+  labels?: string[];
+  skipDrafts: boolean;
+  authors?: string[];
+  /**
+   * Routing overrides the review recipe's model routing.
+   */
+  routing?: unknown;
+  /**
+   * AutoPost posts a finished review without waiting, unless a finding has
+   * a severity in HoldSeverities.
+   */
+  autoPost: boolean;
+  holdSeverities?: string[];
+}
+
+/**
+ * CIFixerSettings configures the CI fixer.
+ */
+export interface CIFixerSettings {
+  enabled: boolean;
+  repoId: string;
+  /**
+   * Branches are the watched branches, as path.Match patterns.
+   */
+  branches: string[];
+  maxMinutes?: number;
+  maxUsd?: number;
+  /**
+   * Push pushes a fix straight to a branch matching PushBranches; every
+   * other fix opens a pull request.
+   */
+  push: boolean;
+  pushBranches?: string[];
+}
+
+/**
+ * ProjectAutomations is the part of a project's settings document the
+ * Automations screens read: GET and PUT /api/projects/settings carry the
+ * whole document, of which this is the one key these screens change.
+ */
+export interface ProjectAutomations {
+  automations?: Automations;
+}
+
+/**
+ * Finding is one finding of a review draft. The bridge's DraftFinding embeds
+ * its review finding, so the wire is flat and this is too.
+ */
+export interface Finding {
+  id: string;
+  severity: string;
+  path?: string;
+  line?: number;
+  title: string;
+  body?: string;
+  stepNode?: string;
+}
+
+/**
+ * ReviewDraft is one review awaiting a person: GET
+ * /api/automations/review/drafts' answer, and what post and edit answer
+ * (web/bridge/reviewbot.go).
+ */
+export interface ReviewDraft {
+  id: string;
+  repoId: string;
+  number: number;
+  title?: string;
+  prUrl?: string;
+  headRef?: string;
+  headSha: string;
+  project?: string;
+  agentId?: string;
+  findings: Finding[];
+  summary: string;
+  status: string;
+  error?: string;
+  reviewUrl?: string;
+  createdAt: string;
+}
+
+/**
+ * CIHistory is one CI fixer run: GET /api/automations/ci/history's answer
+ * (web/bridge/cifixer.go).
+ */
+export interface CIHistory {
+  id: string;
+  repoId: string;
+  branch?: string;
+  sha: string;
+  check: string;
+  status: string;
+  reason?: string;
+  prUrl?: string;
+  agentId?: string;
+  costUsd: number;
+  createdAt: string;
+  /**
+   * Pushed marks a fix pushed straight to the branch.
+   */
+  pushed?: boolean;
+}
+
+/**
  * Budgets mirrors the engine's [budgets] section on the wire.
  */
 export interface Budgets {
@@ -240,6 +362,96 @@ export interface BudgetReport {
    * clients know Budgets is the zero value rather than the real caps.
    */
   loaded: boolean;
+}
+
+/**
+ * ApprovalAuthority is how much approval power a factory grant carries.
+ */
+export type ApprovalAuthority = 'none' | 'user_directed' | 'standing';
+
+/**
+ * MCPClient is one registered MCP client: GET /api/clients' answer
+ * (web/bridge/client.go). Its token is never here; it is shown once, when the
+ * client is created.
+ */
+export interface MCPClient {
+  id: string;
+  name: string;
+  autonomous?: boolean;
+  maxConcurrent?: number;
+  maxPerDay?: number;
+  /**
+   * AllowedRepos restricts which registered repos the client may target.
+   * Empty means every one.
+   */
+  allowedRepos?: string[];
+  ownerId: string;
+  createdAt: string;
+}
+
+/**
+ * CreateClientRequest is the body POST /api/clients takes.
+ */
+export interface CreateClientRequest {
+  name: string;
+  autonomous?: boolean;
+  maxConcurrent?: number;
+  maxPerDay?: number;
+  allowedRepos?: string[];
+}
+
+/**
+ * CreateClientResult is what creating a client answers. It is the one place
+ * the token appears.
+ */
+export interface CreateClientResult {
+  id: string;
+  name: string;
+  token: string;
+  autonomous: boolean;
+}
+
+/**
+ * MCPFactoryProjectGrant is one client's factory authority over one project.
+ * Every capability is independent of the others, and the approval authority
+ * is independent of them all.
+ */
+export interface MCPFactoryProjectGrant {
+  projectId: string;
+  read: boolean;
+  createDraft: boolean;
+  editDraft: boolean;
+  answerQuestion: boolean;
+  approveAndQueue: boolean;
+  approvalAuthority: ApprovalAuthority;
+  /**
+   * AssessPlanChanges and ApproveRoutineRevision are optional so a grant
+   * written before they existed round trips unchanged: absent grants
+   * nothing.
+   */
+  assessPlanChanges?: boolean;
+  approveRoutineRevision?: boolean;
+}
+
+/**
+ * FactoryGrantState is one (client, project) pair's stored grant and the
+ * opaque version a write must name.
+ */
+export interface FactoryGrantState {
+  clientId: string;
+  projectId: string;
+  grant: MCPFactoryProjectGrant;
+  version: string;
+}
+
+/**
+ * PutGrantRequest is the body PUT
+ * /api/clients/{clientId}/factory-grants/{projectId} takes: the whole grant
+ * and the version it was edited from.
+ */
+export interface PutGrantRequest {
+  grant: MCPFactoryProjectGrant;
+  version: string;
 }
 
 /**
@@ -310,6 +522,777 @@ export interface PinState {
   root: string;
   pinned: boolean;
   running: boolean;
+}
+
+/**
+ * FactorySubagentOverrides is one role's subagent settings as a draft or a
+ * project's factory defaults state them. Every field is a pointer because the
+ * resolution chain distinguishes "unset" from "stated": a missing override
+ * inherits the next source, and an explicit false or an explicit empty model
+ * is a choice that is preserved.
+ *
+ * A nil Model or a Model pointing at "" both mean normal child routing: only
+ * an explicit override is ever written here, so an empty string is a stated
+ * choice rather than an absence.
+ */
+export interface FactorySubagentOverrides {
+  enabled?: boolean;
+  model?: string;
+  concurrency?: number;
+}
+
+/**
+ * FactorySubagentSettings is one role's resolved subagent settings. It is what
+ * the resolution chain produced for a draft, and what an approval revision
+ * freezes: a later default change cannot reach an active revision through it.
+ *
+ * An approval journalled before subagent settings existed carries the zero
+ * value, which is why a zero Concurrency means "no snapshot" rather than a
+ * cap of zero.
+ */
+export interface FactorySubagentSettings {
+  enabled: boolean;
+  model?: string;
+  concurrency: number;
+}
+
+/**
+ * SelectedFile is one repository-relative file a snapshot captured. Path is a
+ * slash path relative to the planner's workspace root, never a host path, and
+ * Operation is exactly create, modify or delete.
+ */
+export interface SelectedFile {
+  path: string;
+  operation: string;
+  baseSha256?: string;
+  contentSha256?: string;
+  executable: boolean;
+}
+
+/**
+ * EditSnapshot is the hashed core of a snapshot: the base commit it was taken
+ * against and the files it froze, in the order the caller selected them. Its
+ * SHA256 is the digest of exactly those two fields, so the same capture always
+ * hashes the same way, whatever else the record carries.
+ */
+export interface EditSnapshot {
+  baseCommit: string;
+  files: SelectedFile[];
+  sha256: string;
+}
+
+/**
+ * ReviewFinding is one finding of a review-findings result.
+ */
+export interface ReviewFinding {
+  severity: string;
+  path?: string;
+  line?: number;
+  title: string;
+  body?: string;
+  stepNode?: string;
+}
+
+export interface FactoryConfig {
+  repoId: string;
+  projectRoot: string;
+  hostId: string;
+  targetBranch: string;
+  workspace: string;
+  native: boolean;
+  implementerRouting: unknown;
+  reviewerRouting: unknown;
+  reviewerInstructions: string;
+  implementerAuto: boolean;
+  expectedChecks: FactoryCheckKey[];
+  noRequiredCIAcknowledged: boolean;
+  maxRounds: number;
+  ciPollSeconds: number;
+  ciWaitSeconds: number;
+  /**
+   * ImplementerSubagents and ReviewerSubagents hold only the work item's
+   * explicit subagent overrides: nil means inherit. Nothing is copied onto
+   * the draft from the project's defaults, so a draft follows a project
+   * default it never stated while an override it does state stays fixed.
+   * They are omitted when nil, so a journal written before they existed
+   * keeps its bytes.
+   */
+  implementerSubagents?: FactorySubagentOverrides;
+  reviewerSubagents?: FactorySubagentOverrides;
+}
+
+export interface FactoryCreate {
+  requestId: string;
+  title: string;
+  plan: string;
+  spec: string;
+  config: FactoryConfig;
+  /**
+   * EditSnapshot is the reviewed selection a planner handoff bound to this
+   * draft. It is optional and absent on every draft a Studio surface creates,
+   * so those journals keep their bytes. The field is a pointer because
+   * "no selection" and "an empty selection" are different approvals.
+   */
+  editSnapshot?: EditSnapshot;
+}
+
+export interface FactoryApproval {
+  revision: number;
+  plan: string;
+  spec: string;
+  /**
+   * PlanHash binds the exact plan, spec and selection this revision was
+   * approved with (see factoryApprovalHash). An approval without a snapshot
+   * holds the digest it always has.
+   */
+  planHash: string;
+  config: FactoryConfig;
+  editSnapshot?: EditSnapshot;
+  /**
+   * ImplementerSubagents and ReviewerSubagents are the subagent settings
+   * this revision froze: runtime defaults, then the project's override, then
+   * the draft's override, resolved when the approval was written. They are
+   * values, not pointers, because an approval states what was approved.
+   * An approval journalled before they existed carries the zero value and
+   * keeps its bytes; nothing re-derives them for it.
+   */
+  implementerSubagents: FactorySubagentSettings;
+  reviewerSubagents: FactorySubagentSettings;
+  approvedAt: string;
+}
+
+/**
+ * legacyFactoryApproval is the approval object a journal written before
+ * subagent settings carried: the same fields, in the same order, without the
+ * two settings snapshots.
+ */
+export interface legacyFactoryApproval {
+  revision: number;
+  plan: string;
+  spec: string;
+  planHash: string;
+  config: FactoryConfig;
+  editSnapshot?: EditSnapshot;
+  approvedAt: string;
+}
+
+/**
+ * legacyFactoryWorker is the worker object a journal written before approved
+ * subagent settings carried: the same fields, in the same order, without the
+ * snapshot a worker now binds.
+ */
+export interface legacyFactoryWorker {
+  agentId: string;
+  sessionId: string;
+  role: string;
+  spawnEffectId: string;
+  parked: boolean;
+}
+
+export interface FactoryGrant {
+  id: string;
+  reason: string;
+  additionalRounds: number;
+  at: string;
+}
+
+export interface FactoryWorker {
+  agentId: string;
+  sessionId: string;
+  role: string;
+  spawnEffectId: string;
+  parked: boolean;
+  /**
+   * ApprovalRevision and Subagents bind the snapshot this worker was started
+   * with: the approval revision it came from and that revision's settings for
+   * this worker's own role. A worker started before they existed carries the
+   * zero value for both, and FactoryWorker's marshalling keeps that worker's
+   * record byte-identical so an older journal still replays.
+   */
+  approvalRevision?: number;
+  subagents: FactorySubagentSettings;
+}
+
+export interface FactoryPR {
+  number: number;
+  url: string;
+  nodeId: string;
+  headRef: string;
+  baseRef: string;
+  headSha: string;
+  baseSha: string;
+  state: string;
+  draft: boolean;
+}
+
+export interface FactoryCheckKey {
+  kind: string;
+  name: string;
+  appId: number;
+}
+
+export interface FactoryCheck {
+  key: FactoryCheckKey;
+  id: string;
+  sha: string;
+  status: string;
+  conclusion: string;
+  url: string;
+  logTail: string;
+  observedAt: string;
+}
+
+export interface FactoryCI {
+  headSha: string;
+  checks: FactoryCheck[];
+  complete: boolean;
+  observedAt: string;
+}
+
+export interface FactoryReport {
+  operationId: string;
+  outcome: string;
+  summary: string;
+  question: string;
+  reason: string;
+  baseSha: string;
+  headSha: string;
+  inputsAccessible: boolean;
+  findings: ReviewFinding[];
+  narration?: FactoryNarration;
+}
+
+/**
+ * FactoryNarration is the engineer's account of the change: the issue and the
+ * proposed solution, the reasoning behind the implementation, and the
+ * verification that backs it.
+ *
+ * The sections are the approved list. Constraints are narrated inside the
+ * approach and the implementation choice, because they are the reasons those
+ * two sections take the shape they do.
+ */
+export interface FactoryNarration {
+  issue: string;
+  approach: string;
+  existingBehaviour: string;
+  alternatives: string;
+  tradeoffs: string;
+  choice: string;
+  verification: string;
+  limitations: string;
+  excerpts?: FactoryExcerpt[];
+}
+
+/**
+ * FactoryExcerpt is a selected piece of code that supports the narration. It
+ * is a selection, not a diff: the narration avoids narrating every changed
+ * line.
+ */
+export interface FactoryExcerpt {
+  path: string;
+  lang?: string;
+  code: string;
+}
+
+export interface FactoryRound {
+  number: number;
+  approvalRevision: number;
+  implementEffectId: string;
+  baseSha: string;
+  headSha: string;
+  treeSha: string;
+  ci: FactoryCI | null;
+  implementation: FactoryReport | null;
+  review: FactoryReport | null;
+  startedAt: string;
+  finishedAt: string;
+}
+
+/**
+ * FactoryDelegatedTurn is one worker turn's delegated child work: the children
+ * the turn launched, and how far they have been proven. It is journalled beside
+ * the effect that dispatched the turn, so the item keeps the effect and the
+ * candidate identity it was dispatched with until its children are settled.
+ * The waiting state is not an outcome: the report the turn wrote before those
+ * children settled is early, and is never the effect's result.
+ */
+export interface FactoryDelegatedTurn {
+  effectId: string;
+  workerId: string;
+  sessionId: string;
+  parentTurnId: string;
+  childIds: number[];
+  continuationId?: string;
+  /**
+   * waiting, prepared, dispatched, settled, uncertain
+   */
+  state: string;
+}
+
+export interface FactoryEffect {
+  /**
+   * Outcome retains accepted stop reasons and confirmed adapter evidence.
+   */
+  outcome: FactoryOutcome | null;
+  id: string;
+  kind: string;
+  status: string;
+  workerRole: string;
+  round: number;
+  approvalRevision: number;
+  worker: FactoryWorker | null;
+  expectedHead: string;
+  expectedBase: string;
+  createdAt: string;
+  /**
+   * Delegated is the turn's launched child work while it is not proven
+   * settled, and the waiting state Studio shows beside the effect's status.
+   * It is omitted when nil, so a record journalled before delegated turns
+   * existed keeps its bytes.
+   */
+  delegated?: FactoryDelegatedTurn;
+}
+
+export interface FactoryOutcome {
+  effectId: string;
+  stopReason: string;
+  error: string;
+  headSha: string;
+  treeSha: string;
+  baseSha: string;
+  worker: FactoryWorker | null;
+  pr: FactoryPR | null;
+  report: FactoryReport | null;
+  confirmed: boolean;
+  /**
+   * Delegated is the waiting turn a worker effect hands back instead of a
+   * result: the turn launched children it did not prove settled, so the report
+   * it wrote before they settled is early and is never applied. It is omitted
+   * when nil, so a completed outcome keeps the bytes it always wrote.
+   */
+  delegated?: FactoryDelegatedTurn;
+}
+
+export interface FactoryDecision {
+  id: string;
+  kind: string;
+  question: string;
+  reason: string;
+  effectId: string;
+  createdAt: string;
+}
+
+/**
+ * FactoryProvenance attributes one journaled factory mutation to the MCP
+ * client that caused it. It is optional: an entry written before provenance
+ * existed still replays, and an ordinary Studio mutation records none.
+ *
+ * Action is the capability the mutation was admitted under, RequestID is the
+ * client's own request identity (the journal's is namespaced), and Authority
+ * is the grant's approvalAuthority or the answer mode the client claimed. It
+ * records what the server accepted, which for a user-directed action is a
+ * client assertion rather than a verified human instruction.
+ */
+export interface FactoryProvenance {
+  clientId: string;
+  projectId: string;
+  action: string;
+  requestId: string;
+  authority?: string;
+  decisionId?: string;
+  /**
+   * The authenticated built-in principal, when the mutation came from a
+   * session association rather than an MCP client. Every field is optional
+   * and appended last, so a record written before session principals existed
+   * — and a client's own provenance — marshals byte for byte as it always
+   * did. AuthorityOrigin says where Authority came from; it is never claimed
+   * by a caller.
+   */
+  instanceId?: string;
+  sessionId?: string;
+  workerId?: string;
+  role?: string;
+  authorityOrigin?: string;
+}
+
+export interface FactoryEvent {
+  sequence: number;
+  at: string;
+  kind: string;
+  message: string;
+  effectId: string;
+  /**
+   * Provenance is absent from every entry the Studio surfaces write, and
+   * from every record journalled before it existed, so those bytes are
+   * unchanged.
+   */
+  provenance?: FactoryProvenance;
+}
+
+export interface FactoryItem {
+  id: string;
+  title: string;
+  state: string;
+  stage: string;
+  repoId: string;
+  projectRoot: string;
+  hostId: string;
+  branch: string;
+  baseSha: string;
+  version: number;
+  draft: FactoryCreate;
+  approvals: FactoryApproval[];
+  /**
+   * Proposals is the append-only history of plan/specification revisions
+   * proposed against this item. It is optional, so an item journalled
+   * before proposals existed replays unchanged.
+   */
+  proposals?: FactoryRevisionProposal[];
+  grants: FactoryGrant[];
+  rounds: FactoryRound[];
+  workers: FactoryWorker[];
+  prs: FactoryPR[];
+  effects: FactoryEffect[];
+  decision: FactoryDecision | null;
+  history: FactoryEvent[];
+  /**
+   * Completion is the durable business completion status, which is
+   * independent of State: the work counts as done as far as the user is
+   * concerned, whatever the run happens to be doing. It is optional, so an
+   * item journalled before completion existed replays unchanged, and a nil
+   * record (or one whose status is empty) is open.
+   */
+  completion?: FactoryCompletion;
+  createdAt: string;
+  approvedAt: string;
+  updatedAt: string;
+}
+
+export interface FactoryCommand {
+  requestId: string;
+  kind: string;
+  decisionId: string;
+  answer: string;
+  reason: string;
+  expectedVersion: number;
+  additionalRounds: number;
+  replacement: FactoryCreate | null;
+  implementerRouting: unknown;
+  reviewerRouting: unknown;
+  confirmPreviousWorkerStopped: boolean;
+  /**
+   * Revision is the structured payload of a plan-revision command:
+   * revision_propose, revision_supersede, revision_reject,
+   * revision_assess_request, revision_assess_claim, revision_assess_result,
+   * revision_assess_retry, revision_authorize, revision_delivery_choice and
+   * revision_follow_up_confirm read it, and every other kind leaves it nil,
+   * so a command those kinds do not carry marshals as it always did.
+   */
+  revision?: FactoryRevisionCommand;
+  /**
+   * Completion is the structured payload of the completion commands:
+   * link_pr reads the pull request it names, refresh_pr_evidence carries
+   * nothing of its own, and the merge kinds read the reviewed set, the
+   * strategy, the completion intent and the run choice. Every other kind
+   * leaves it nil, so a command those kinds do not carry marshals as it
+   * always did.
+   */
+  completion?: FactoryCompletionCommand;
+  /**
+   * SettingsVersion is the settings version the review surface displayed:
+   * the project's settings ETag and the session's reported defaults digest,
+   * as one string. An approval that carries it is refused when either side
+   * has changed since review; an approval that omits it — a legacy client,
+   * or a command replayed from an older journal — proceeds as it always did.
+   */
+  settingsVersion?: string;
+}
+
+/**
+ * FactoryRevisionAssessment is a planner's recorded judgement about one
+ * proposed revision. It is advisory: it names the classification it asserts,
+ * the work it believes is affected, the routing it recommends and whether the
+ * proposal can wait for a safe boundary or needs the running turn interrupted.
+ *
+ * Classification and strategy are assertions by a trusted planner, not proofs:
+ * the journal records what was claimed, and authorization rechecks who may act
+ * on it.
+ */
+export interface FactoryRevisionAssessment {
+  /**
+   * routine_clarification | scope_change | needs_user
+   */
+  classification: string;
+  reason: string;
+  affectedEffectId?: string;
+  affectedWorkerId?: string;
+  /**
+   * amend | follow_up
+   */
+  recommendation: string;
+  /**
+   * wait_safe | interrupt | hold
+   */
+  strategy: string;
+  assessorId: string;
+  candidateHash: string;
+  baseRevision: number;
+}
+
+/**
+ * FactoryRevisionDelivery is the recorded intent and evidence for handing an
+ * authorized revision to the worker that is running, or will run, the item.
+ *
+ * It is evidence, not a request log: a state here was observed, or the outcome
+ * of the attempt is explicitly unknown. "delivered" means the runtime accepted
+ * the input, never that the agent followed it.
+ */
+export interface FactoryRevisionDelivery {
+  /**
+   * wait_safe | interrupt | hold
+   */
+  strategy: string;
+  /**
+   * pending | dispatching | accepted | interrupting | waiting_safe_boundary | waiting_for_resume | delivered | undelivered | uncertain
+   */
+  state: string;
+  sessionId?: string;
+  turnId?: string;
+  requestId?: string;
+  candidateHash: string;
+}
+
+/**
+ * FactoryRevisionProposal is one immutable plan/specification revision
+ * proposed against an approved factory revision.
+ *
+ * The candidate bytes, the base it was proposed against, its hash and its
+ * creator are journal history: an edit is a new proposal, and replacing an
+ * unresolved one explicitly supersedes it rather than rewriting it. Only
+ * state, assessment, authority and delivery move afterwards, and every one of
+ * those moves bumps Version so a caller writing from a stale read is refused.
+ *
+ * While an amendment is authorized but not yet activated, the item's active
+ * approval stays the last entry of FactoryItem.Approvals: an in-flight worker
+ * keeps the revision it was started under.
+ */
+export interface FactoryRevisionProposal {
+  id: string;
+  version: number;
+  baseRevision: number;
+  baseHash: string;
+  plan: string;
+  spec: string;
+  candidateHash: string;
+  createdBy: string;
+  autoAssess: boolean;
+  /**
+   * proposed | awaiting_authorization | authorized | activated | rejected | superseded | follow_up_pending | followed_up
+   */
+  status: string;
+  /**
+   * not_requested | pending | assessing | assessed | unavailable | uncertain | failed
+   */
+  assessmentState: string;
+  assessmentAttemptId?: string;
+  assessment?: FactoryRevisionAssessment;
+  authorizedBy?: string;
+  authority?: string;
+  /**
+   * amend | follow_up
+   */
+  routing?: string;
+  /**
+   * requested | stopping | paused | uncertain
+   */
+  pauseState?: string;
+  pauseRequestId?: string;
+  delivery?: FactoryRevisionDelivery;
+  followUpRequestId?: string;
+  followUpItemId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * FactoryRevisionCommand is one plan-revision command's structured payload.
+ *
+ * A candidate is named by its exact bytes and the hash that binds them, and
+ * every mutation names the proposal and the version the caller read, so a
+ * stale command conflicts instead of silently rebasing. BaseRevision and
+ * BaseHash name the approved revision the candidate was written against.
+ */
+export interface FactoryRevisionCommand {
+  proposalId?: string;
+  proposalVersion?: number;
+  baseRevision?: number;
+  baseHash?: string;
+  plan?: string;
+  spec?: string;
+  candidateHash?: string;
+  attemptId?: string;
+  assessment?: FactoryRevisionAssessment;
+  routing?: string;
+  strategy?: string;
+  followUp?: FactoryCreate;
+}
+
+/**
+ * FactoryCompletionCommand is the structured payload of the completion
+ * commands. Each kind reads only the fields it needs, so a command those
+ * kinds do not carry marshals as it always did.
+ */
+export interface FactoryCompletionCommand {
+  /**
+   * Link is the pull request a link_pr command names: a number or a URL.
+   */
+  link?: string;
+  /**
+   * PRs is the reviewed, ordered set a merge_pr or merge_and_complete
+   * command authorizes.
+   */
+  prs?: FactoryCompletionPR[];
+  /**
+   * Strategy is the reviewed merge strategy.
+   */
+  strategy?: string;
+  /**
+   * CompleteAfter completes the item once every reviewed merge confirms.
+   */
+  completeAfter?: boolean;
+  /**
+   * RunChoice is continue or request_stop when the item's own run is
+   * active or its state cannot be established.
+   */
+  runChoice?: string;
+}
+
+/**
+ * FactoryCompletionPR is one pull request a user reviewed for a merge batch.
+ */
+export interface FactoryCompletionPR {
+  repoId: string;
+  number: number;
+  nodeId: string;
+  headSha: string;
+  baseRef: string;
+}
+
+export interface FactoryPRLink {
+  repoId: string;
+  pr: FactoryPR;
+  /**
+   * factory or user
+   */
+  origin: string;
+  observedAt: string;
+  fresh: boolean;
+}
+
+export interface FactoryAssessment {
+  /**
+   * pending, available, failed, unavailable
+   */
+  status: string;
+  summary?: string;
+  source?: string;
+  inputDigest: string;
+  observedAt: string;
+  /**
+   * Fresh is derived, never stored: the server recomputes it on every item
+   * it serves by comparing InputDigest with the item's current input digest,
+   * so a result computed against inputs that have since moved is shown with
+   * its summary intact and fresh false. The journalled value is never
+   * trusted on read.
+   */
+  fresh: boolean;
+}
+
+export interface FactoryCompletionRecord {
+  id: string;
+  at: string;
+  actor: string;
+  goal: string;
+  criteria: string;
+  assessment?: FactoryAssessment;
+  links: FactoryPRLink[];
+  /**
+   * continue or request_stop
+   */
+  runChoice?: string;
+}
+
+export interface FactoryMergeStep {
+  repoId: string;
+  number: number;
+  nodeId: string;
+  headSha: string;
+  baseRef: string;
+  strategy: string;
+  /**
+   * unattempted, prepared, dispatched, confirmed, failed, uncertain
+   */
+  state: string;
+  result?: string;
+}
+
+export interface FactoryMergeBatch {
+  id: string;
+  requestId: string;
+  /**
+   * active, stopped, complete
+   */
+  state: string;
+  completeAfter: boolean;
+  runChoice?: string;
+  steps: FactoryMergeStep[];
+}
+
+export interface FactoryCompletion {
+  /**
+   * open or complete; empty means open
+   */
+  status: string;
+  links?: FactoryPRLink[];
+  assessment?: FactoryAssessment;
+  records?: FactoryCompletionRecord[];
+  batch?: FactoryMergeBatch;
+  /**
+   * requested, stopped, failed, unknown
+   */
+  stopState?: string;
+}
+
+/**
+ * FileEntry is one directory entry.
+ */
+export interface FileEntry {
+  name: string;
+  dir: boolean;
+  size: number;
+}
+
+/**
+ * FileList is one directory's entries. Root is the workspace directory the
+ * paths are relative to, and Path is the directory asked for, empty for the
+ * root. Directories come first, then names, both in order.
+ */
+export interface FileList {
+  root: string;
+  path: string;
+  entries: FileEntry[];
+}
+
+/**
+ * FileContent is one regular file's content, capped by the agent. A Binary
+ * file carries no Content, and a Truncated one carries its first megabyte.
+ */
+export interface FileContent {
+  path: string;
+  size: number;
+  binary: boolean;
+  truncated: boolean;
+  content: string;
 }
 
 /**
@@ -387,6 +1370,12 @@ export interface ExitRequest {
    * Override, when non-nil, pushes despite a failed or skipped gate.
    */
   override?: GateOverride;
+  /**
+   * NoPR pushes the branch without opening a pull request. It is the
+   * app's "open a pull request" choice, off; absent means open one, so a
+   * client that predates the field keeps today's behaviour.
+   */
+  noPr?: boolean;
 }
 
 /**
@@ -463,6 +1452,319 @@ export interface InboxDelta {
 }
 
 /**
+ * StepDiff is one step's part of the session's diff, for the by-step view.
+ * Files is the paths it touched and Diff is their unified diff.
+ */
+export interface StepDiff {
+  stepNode: string;
+  turnNode: string;
+  headline: string;
+  at?: number;
+  files: string[];
+  diff: string;
+}
+
+/**
+ * StepDiffs is GET /api/sessions/{id}/step-diffs' answer: the session's
+ * steps in order.
+ */
+export interface StepDiffs {
+  steps: StepDiff[];
+}
+
+/**
+ * NodeDetail is everything about one node that the projected transcript
+ * caps or leaves out.
+ */
+export interface NodeDetail {
+  calls?: CallDetail[];
+  narration?: string[];
+  /**
+   * Thinking is a beat's thoughts, or a message's reasoning as one entry.
+   */
+  thinking?: ThoughtDetail[];
+  todo?: TodoDetail;
+  relations?: RelationDetail;
+  /**
+   * Step is the step record behind this node: a call's own step, or a
+   * beat's first. It carries who spoke, the model, the "why" line and the
+   * todo the step began under.
+   */
+  step?: StepDetail;
+  /**
+   * Completion is a completion's retained output and its report, neither
+   * capped.
+   */
+  completion?: CompletionDetail;
+  /**
+   * Body is a run event's whole body.
+   */
+  body?: string;
+}
+
+/**
+ * NodeDetailResponse is GET /api/sessions/{id}/nodes/{nodeId}'s answer: the
+ * node's wire form and the detail the projection left out.
+ */
+export interface NodeDetailResponse {
+  node: WireNode;
+  detail: NodeDetail;
+}
+
+/**
+ * CallDetail is one tool call with nothing capped.
+ */
+export interface CallDetail {
+  callId?: string;
+  stepId?: number;
+  toolName: string;
+  args?: string;
+  originalArgs?: string;
+  output?: string;
+  diff?: string;
+  error?: string;
+  exitCode?: number;
+  model?: string;
+  finishReason?: string;
+  rewritten?: boolean;
+  /**
+   * Hooks is the hooks audit trail as the registry encodes it: an array of
+   * records whose failed_open key is not camelCase, which the wire rules
+   * refuse in a typed field, so each travels as raw bytes.
+   */
+  hooks?: unknown[];
+  sandbox?: unknown;
+  symbols?: SymbolDetail[];
+  notice?: NoticeDetail;
+  /**
+   * Execution is the structured command-execution evidence this call
+   * carries: what was launched, who owned it, and how it ended. It is
+   * separate from Notice, which is coaching prose written for the model.
+   */
+  execution?: ExecutionDetail;
+  /**
+   * Summary is the call's own summary, uncut.
+   */
+  summary?: string;
+}
+
+/**
+ * ExecutionDetail is one managed command execution's structured evidence:
+ * what was launched, who owned it, how the launching caller related to it
+ * and how it ended.
+ *
+ * Every field is optional. An absent Exit means no exit code was ever
+ * observed — a start-up failure, a still-running continuation, a lost
+ * record — and is never success. Empty State or Outcome means the record
+ * predates structured evidence or has not settled, which is likewise
+ * unknown rather than zero-valued fact.
+ */
+export interface ExecutionDetail {
+  version?: number;
+  executionId?: string;
+  displayId?: string;
+  conversationId?: string;
+  actor?: string;
+  turnId?: string;
+  stepId?: string;
+  toolCallId?: string;
+  cwd?: string;
+  generation?: number;
+  pid?: number;
+  /**
+   * State is the lifecycle status ("running", "stopping", "completed",
+   * "failed", "killed", "timed_out"); Outcome is the finer cause
+   * ("nonzero_exit", "startup_failure", "stopped", "resource_limit", …).
+   */
+  state?: string;
+  outcome?: string;
+  attachment?: string;
+  /**
+   * Wait is the effective foreground wait the launch used; DetachReason
+   * is why and DetachedAt when a wait handed the execution to the
+   * background.
+   */
+  wait?: string;
+  detachReason?: string;
+  detachedAt?: number;
+  /**
+   * StopCause and StopRequestedAt record an accepted explicit stop
+   * request separately from the outcome it produced.
+   */
+  stopCause?: string;
+  stopRequestedAt?: number;
+  /**
+   * Exit is the observed exit code; absent means none was observed.
+   */
+  exit?: number;
+  truncated?: boolean;
+  startedAt?: number;
+  endedAt?: number;
+}
+
+/**
+ * SymbolDetail is a symbol a call touched.
+ */
+export interface SymbolDetail {
+  file: string;
+  name: string;
+  kind?: string;
+}
+
+/**
+ * NoticeDetail is a tool-UX notice attached to a call.
+ */
+export interface NoticeDetail {
+  kind: string;
+  text: string;
+}
+
+/**
+ * ThoughtDetail is one finished reasoning block.
+ */
+export interface ThoughtDetail {
+  text: string;
+  durationMs?: number;
+}
+
+/**
+ * TodoDetail is the todo a step or task belongs to.
+ */
+export interface TodoDetail {
+  id: string;
+  content: string;
+  status: string;
+  startedAt?: number;
+  completedAt?: number;
+}
+
+/**
+ * RelationDetail lists node keys of related steps.
+ */
+export interface RelationDetail {
+  causedBy?: string[];
+  fixedBy?: string[];
+}
+
+/**
+ * StepDetail is the step record behind a node: who spoke, with which model,
+ * and why.
+ */
+export interface StepDetail {
+  id?: number;
+  owner?: string;
+  model?: string;
+  provider?: string;
+  /**
+   * Why is the line the step was taken for.
+   */
+  why?: string;
+  todoId?: string;
+}
+
+/**
+ * CompletionDetail is a completion's retained output and its report,
+ * neither capped.
+ */
+export interface CompletionDetail {
+  output?: string;
+  report?: string;
+  /**
+   * Truncated is the completion's own flag: the job dropped earlier
+   * output before it was retained.
+   */
+  truncated?: boolean;
+}
+
+/**
+ * LastRequest is GET /api/sessions/{id}/last-request's answer: the newest
+ * model request the session made, or a null Request when it has made none.
+ */
+export interface LastRequest {
+  request: ModelRequest | null;
+}
+
+/**
+ * ModelRequest is one model request as it went out, with what came of it.
+ */
+export interface ModelRequest {
+  attemptId: number;
+  at?: number;
+  provider?: string;
+  model?: string;
+  generation?: string;
+  leafId?: number;
+  messages: RequestMessage[];
+  tools: RequestTool[];
+  options: RequestOptions;
+  outcome: RequestOutcome;
+  truncated?: boolean;
+  omittedBytes?: number;
+  messagesOmitted?: number;
+  toolsOmitted?: number;
+  packTokens?: number;
+  packWindow?: number;
+  packTruncated?: boolean;
+  packSections?: number;
+  packKnown?: boolean;
+}
+
+/**
+ * RequestMessage is one message of the request.
+ */
+export interface RequestMessage {
+  role: string;
+  content: string;
+  toolCalls?: RequestToolCall[];
+  toolCallId?: string;
+  truncated?: boolean;
+  omittedBytes?: number;
+}
+
+/**
+ * RequestToolCall is a tool call attached to a message.
+ */
+export interface RequestToolCall {
+  id: string;
+  name: string;
+  args: string;
+  truncated?: boolean;
+  omittedBytes?: number;
+}
+
+/**
+ * RequestTool is a tool definition offered on the request.
+ */
+export interface RequestTool {
+  name: string;
+  description?: string;
+  parameters?: string;
+  truncated?: boolean;
+  omittedBytes?: number;
+}
+
+/**
+ * RequestOptions records the options that actually went out.
+ */
+export interface RequestOptions {
+  thinking?: string;
+  streaming: boolean;
+  maxTokens?: number;
+  temperature?: number;
+  responseFormat?: string;
+  toolChoice?: string;
+}
+
+/**
+ * RequestOutcome is what became of the attempt.
+ */
+export interface RequestOutcome {
+  status: string;
+  err?: string;
+  at?: number;
+}
+
+/**
  * PendingSubmission is one submission awaiting an operator's decision, as
  * GET /api/pending lists it.
  */
@@ -512,6 +1814,195 @@ export interface ApproveResult {
  */
 export interface ActionStatus {
   status: string;
+}
+
+/**
+ * RepoIssue is one issue GET /api/repos/{id}/issues lists.
+ */
+export interface RepoIssue {
+  Number: number;
+  Title: string;
+  Body: string;
+  URL: string;
+  Labels?: string[];
+}
+
+/**
+ * SkillEntry is one installed skill: GET /api/library/skills' answer, one
+ * entry per scope (web/bridge/library.go).
+ */
+export interface SkillEntry {
+  name: string;
+  description: string;
+  risk: string;
+  scope: string;
+}
+
+/**
+ * SkillPreview is what staging a skill answers: what it would install, and
+ * the token that confirms or discards it.
+ */
+export interface SkillPreview {
+  stagingToken: string;
+  name: string;
+  description: string;
+  risk: string;
+  source: string;
+}
+
+/**
+ * SkillList is GET /api/library/skills' body.
+ */
+export interface SkillList {
+  skills: SkillEntry[];
+}
+
+/**
+ * SkillStage and SkillConfirm are the bodies the skills routes take. The
+ * confirm must name the same scope and project the preview was staged on.
+ */
+export interface SkillStage {
+  source: string;
+  scope?: string;
+  project?: string;
+}
+
+export interface SkillConfirm {
+  stagingToken: string;
+  scope?: string;
+  project?: string;
+}
+
+export interface SkillDiscard {
+  stagingToken: string;
+}
+
+/**
+ * PluginEntry is one installed plugin: GET /api/library/plugins' answer.
+ */
+export interface PluginEntry {
+  name: string;
+  source: string;
+  ref?: string;
+  commit: string;
+  contentHash: string;
+  installedAt: string;
+  scope: string;
+}
+
+/**
+ * PluginContents is what a scanned plugin ships.
+ */
+export interface PluginContents {
+  hasManifest: boolean;
+  skillCount: number;
+  commandCount: number;
+  hookCount: number;
+  mcpServerCount: number;
+  mcpPolicyCount: number;
+}
+
+/**
+ * PluginScan is what scanning a plugin answers: what it ships, and the token
+ * that confirms or discards it.
+ */
+export interface PluginScan {
+  scanToken: string;
+  name: string;
+  source: string;
+  ref?: string;
+  commit: string;
+  contents: PluginContents;
+}
+
+/**
+ * PluginList is GET /api/library/plugins' body.
+ */
+export interface PluginList {
+  plugins: PluginEntry[];
+}
+
+/**
+ * PluginStage, PluginConfirm and PluginDiscard are the bodies the plugin
+ * routes take.
+ */
+export interface PluginStage {
+  source: string;
+  ref?: string;
+  scope?: string;
+  project?: string;
+}
+
+export interface PluginConfirm {
+  scanToken: string;
+  scope?: string;
+  project?: string;
+}
+
+export interface PluginDiscard {
+  scanToken: string;
+}
+
+/**
+ * MemoryEntry is one memory: GET /api/library/memory's answer, one entry per
+ * project's memory store.
+ */
+export interface MemoryEntry {
+  id: number;
+  kind: string;
+  content: string;
+  confidence: string;
+  /**
+   * SourceSessionID is the session that learned it, when the store kept it.
+   */
+  sourceSessionId?: string;
+  createdAt: string;
+  updatedAt: string;
+  scope?: string;
+  scopeKey?: string;
+  /**
+   * LearnedProjectRoot, LearnedAgent and LearnedStep are its provenance.
+   */
+  learnedProjectRoot?: string;
+  learnedAgent?: string;
+  learnedStep?: number;
+  confirmedBy?: string[];
+}
+
+/**
+ * MemoryList is GET /api/library/memory's body.
+ */
+export interface MemoryList {
+  entries: MemoryEntry[];
+}
+
+/**
+ * MemorySuggestion is a project memory another project holds too, with the
+ * scope it could be promoted to. Promoting it is the person's decision.
+ */
+export interface MemorySuggestion {
+  memoryId: number;
+  matchProjectRoot: string;
+  suggestedScope: string;
+}
+
+/**
+ * MemorySuggestions is GET /api/library/memory/suggestions' body.
+ */
+export interface MemorySuggestions {
+  suggestions: MemorySuggestion[];
+}
+
+/**
+ * MemoryPromote and MemoryConfidence are the bodies the memory routes take.
+ */
+export interface MemoryPromote {
+  scope: string;
+  scopeKey?: string;
+}
+
+export interface MemoryConfidence {
+  confidence: string;
 }
 
 /**
@@ -685,6 +2176,234 @@ export interface PullAsk {
 }
 
 /**
+ * RecipeInput declares one placeholder a recipe's prompt may use.
+ */
+export interface RecipeInput {
+  name: string;
+  label?: string;
+  required?: boolean;
+}
+
+/**
+ * RecipeLimits bound one run. Zero means unlimited.
+ */
+export interface RecipeLimits {
+  maxMinutes?: number;
+  maxUsd?: number;
+}
+
+/**
+ * Recipe is a stored, parameterised prompt (or run) with limits:
+ * GET /api/recipes' answer and the body PUT /api/recipes/{name} takes
+ * (web/bridge/recipes.go).
+ *
+ * A built-in recipe cannot be changed or deleted; the bridge refuses both, and
+ * copying it under a new name is the way to edit one.
+ */
+export interface Recipe {
+  name: string;
+  title?: string;
+  description?: string;
+  kind: string;
+  mode?: string;
+  /**
+   * Auto is the starting Auto choice; absent means the recipe sets none.
+   */
+  auto?: boolean;
+  workspace?: string;
+  routing?: unknown;
+  inputs?: RecipeInput[];
+  prompt: string;
+  limits?: RecipeLimits;
+  output?: string;
+  /**
+   * Builtin marks a recipe the bridge ships, which is copy only.
+   */
+  builtin?: boolean;
+  /**
+   * Diagnostic reports why a stored recipe could not be read or validated.
+   * It never appears on a built-in or a successfully saved recipe.
+   */
+  diagnostic?: string;
+}
+
+/**
+ * RecipeRun is the body POST /api/recipes/{name}/run takes: where the run
+ * starts, and the value of each of the recipe's inputs.
+ */
+export interface RecipeRun {
+  project: string;
+  repoId: string;
+  ref: string;
+  inputs: Record<string, string>;
+}
+
+/**
+ * RecipeCopy is the body POST /api/recipes/{name}/copy takes: the name the
+ * copy is stored under.
+ */
+export interface RecipeCopy {
+  name: string;
+}
+
+/**
+ * ReviewComment is one line comment on an agent's diff.
+ *
+ * The routes are GET and POST /api/agents/{id}/review/comments, and
+ * POST /api/agents/{id}/review/comments/{cid}/resolve. A comment is
+ * delivered to the agent as steering when a turn is running and as a new
+ * prompt when it is not, so the thread it starts is the agent's reply in the
+ * same conversation.
+ */
+export interface ReviewComment {
+  id: string;
+  agentId: string;
+  path: string;
+  line: number;
+  /**
+   * Side is "old" or "new": which side of the diff the line is on.
+   */
+  side: string;
+  /**
+   * Quote is the diff lines the comment is anchored to, shown to the
+   * agent above the body.
+   */
+  quote: string;
+  body: string;
+  createdAt: string;
+  /**
+   * SentAt is when the bridge delivered the comment; it is zero until it
+   * has.
+   */
+  sentAt: string;
+  /**
+   * ResolvedAt is when the operator resolved the thread, absent while it
+   * is open.
+   */
+  resolvedAt?: string;
+  ownerId: string;
+}
+
+/**
+ * ReviewCommentRequest is a comment's operator-supplied fields: the body of
+ * POST /api/agents/{id}/review/comments. Everything else about a comment is
+ * the bridge's to fill in.
+ */
+export interface ReviewCommentRequest {
+  path: string;
+  line: number;
+  side: string;
+  quote: string;
+  body: string;
+}
+
+/**
+ * Schedule is one cron entry that runs a recipe: GET /api/schedules' answer,
+ * and the body POST /api/schedules and PUT /api/schedules/{id} take
+ * (web/bridge/schedules.go). `lastRun` is omitted until the schedule has
+ * run, so a client reading it must allow for its absence.
+ */
+export interface Schedule {
+  id: string;
+  name: string;
+  recipe: string;
+  project?: string;
+  /**
+   * RepoID and Ref run the recipe on a fresh checkout of a registered repo
+   * instead of a local project.
+   */
+  repoId?: string;
+  ref?: string;
+  inputs?: Record<string, string>;
+  cron: string;
+  enabled: boolean;
+  lastRun?: string;
+  lastRunAgent?: string;
+  lastResult?: string;
+  /**
+   * OwnerID is the owner the bridge stored the schedule under.
+   */
+  ownerId: string;
+}
+
+/**
+ * SessionSummary is one session as GET /api/sessions lists it: the entry an
+ * agent's session/list returns for this project.
+ */
+export interface SessionSummary {
+  sessionId: string;
+  title?: string;
+  /**
+   * UpdatedAt is when the session last changed, Unix milliseconds.
+   */
+  updatedAt?: number;
+  messageCount?: number;
+}
+
+/**
+ * SessionList is GET /api/sessions' answer: the project's sessions.
+ */
+export interface SessionList {
+  sessions: SessionSummary[];
+}
+
+/**
+ * PromptRequest is a POST /api/sessions/{id}/prompt body: the text that
+ * starts a turn.
+ */
+export interface PromptRequest {
+  text: string;
+}
+
+/**
+ * SteerRequest is a POST /api/sessions/{id}/steer body: an instruction for
+ * the turn already running.
+ */
+export interface SteerRequest {
+  text: string;
+}
+
+/**
+ * ModeRequest is a POST /api/sessions/{id}/mode body: the permission mode to
+ * switch to.
+ */
+export interface ModeRequest {
+  mode: string;
+}
+
+/**
+ * Roster is GET /api/sessions/{id}/roster's answer: every role's live model
+ * binding, plus the swarm and SDD budgets.
+ */
+export interface Roster {
+  roles: RosterRole[];
+  swarmBudget: RosterBudget;
+  sddBudget: RosterBudget;
+}
+
+/**
+ * RosterRole is one role's resolved binding.
+ */
+export interface RosterRole {
+  role: string;
+  profile: string;
+  provider?: string;
+  model?: string;
+  presetName?: string;
+  customAgent?: string;
+  localOnly: boolean;
+  error?: string;
+}
+
+/**
+ * RosterBudget is one subsystem's token and round budget.
+ */
+export interface RosterBudget {
+  maxFixRounds: number;
+  maxTotalTokens: number;
+}
+
+/**
  * SpawnRequest is a POST /api/agents body.
  */
 export interface SpawnRequest {
@@ -720,6 +2439,372 @@ export interface SpawnResult {
    * minted.
    */
   warning?: string;
+}
+
+/**
+ * WireNode is one node. Exactly one payload pointer is set, chosen by Kind;
+ * a turn node carries none.
+ */
+export interface WireNode {
+  id: string;
+  kind: string;
+  parent?: string;
+  children?: string[];
+  live?: boolean;
+  /**
+   * Version is the hex of the node's payload hash: a client caches a
+   * rendered row while it is unchanged.
+   */
+  version?: string;
+  step?: WireStep;
+  tool?: WireTool;
+  message?: WireMessage;
+  thinking?: WireThinking;
+  runEvent?: WireRunEvent;
+  completion?: WireCompletion;
+  plan?: WirePlan;
+  receipt?: WireReceipt;
+  band?: WireBand;
+}
+
+/**
+ * WireStep is a step's header and reasoning.
+ */
+export interface WireStep {
+  headline: string;
+  rest?: string;
+  stepIds?: number[];
+  owner?: string;
+  roleWord?: string;
+  role?: string;
+  model?: string;
+  provider?: string;
+  todoId?: string;
+  todo?: WireTodoLabel;
+  startedAt?: number;
+  endedAt?: number;
+  thoughts?: WireThought[];
+  /**
+   * Narration is the beat's narration texts in order, each trimmed and an
+   * empty one kept, so the count is the beat's narration count.
+   */
+  narration?: string[];
+}
+
+/**
+ * WireTodoLabel marks the beat where work moves to a different todo.
+ */
+export interface WireTodoLabel {
+  id: string;
+  index: number;
+  total: number;
+  content: string;
+}
+
+/**
+ * WireThought is one finished reasoning block inside a step.
+ */
+export interface WireThought {
+  text: string;
+  durationMs?: number;
+}
+
+/**
+ * WireTool is a tool row: one call, a merged run of same-tool calls, or a
+ * call still running.
+ */
+export interface WireTool {
+  name: string;
+  display: string;
+  /**
+   * Verb is the word the row leads with.
+   */
+  verb?: string;
+  /**
+   * WorkKey is the stable conversation-work identity this row dispatched,
+   * so a client can pair the retained dispatch row with the pinned live
+   * card by identity rather than by display text.
+   */
+  workKey?: string;
+  calls?: WireCall[];
+  running?: WireRunning;
+  /**
+   * SubagentID names the subagent this row started, 0 when it started none.
+   */
+  subagentId?: number;
+  /**
+   * Callers says the row's call changed a resolved symbol whose callers the
+   * agent can look up.
+   */
+  callers?: boolean;
+}
+
+/**
+ * WireCall is one finished call.
+ */
+export interface WireCall {
+  callId?: string;
+  target?: string;
+  args?: string;
+  summary?: string;
+  output?: string;
+  error?: string;
+  exitCode?: number;
+  failed?: boolean;
+  approval?: string;
+  risk?: string;
+  files?: string[];
+  role?: string;
+  notice?: string;
+  durationMs?: number;
+  at?: number;
+  truncated?: boolean;
+  /**
+   * Subject is what the call acted on, scrubbed, its first line.
+   */
+  subject?: string;
+  /**
+   * SummaryLine is the summary's first line, scrubbed.
+   */
+  summaryLine?: string;
+  /**
+   * DiffStat is "+N −M" over the whole diff of an edit or a whole-file
+   * write.
+   */
+  diffStat?: string;
+  /**
+   * HookHint is the hook decision the row shows first.
+   */
+  hookHint?: string;
+  /**
+   * KilledReason is why the sandbox killed the command.
+   */
+  killedReason?: string;
+  /**
+   * JobID is the background job the call started.
+   */
+  jobId?: string;
+  /**
+   * Tail is a failed call's last output lines.
+   */
+  tail?: string[];
+}
+
+/**
+ * WireRunning is a call that has not finished.
+ */
+export interface WireRunning {
+  target?: string;
+  output?: string;
+  startedAt?: number;
+  truncated?: boolean;
+  /**
+   * Subject is what the call acts on, scrubbed.
+   */
+  subject?: string;
+  callId?: string;
+  /**
+   * Args is the arguments as the tool shows them, capped.
+   */
+  args?: string;
+}
+
+/**
+ * WireCompletion is one finished piece of background work at the moment it
+ * ended: a background job's exit or a subagent's end. Expanded, it is the
+ * issue report.
+ */
+export interface WireCompletion {
+  source: string;
+  id: string;
+  subagentId?: number;
+  label: string;
+  outcome: string;
+  failed?: boolean;
+  exitCode?: number;
+  stopCause?: string;
+  startedAt?: number;
+  endedAt?: number;
+  durationMs?: number;
+  measure?: string;
+  summary?: string;
+  command?: string;
+  cwd?: string;
+  output?: string;
+  report?: string;
+  error?: string;
+  workKey?: string;
+  executionId?: string;
+  reportMessageId?: number;
+  truncated?: boolean;
+}
+
+/**
+ * WirePlan is a beat's plan line: the todo list as the beat's last
+ * todo.write left it.
+ */
+export interface WirePlan {
+  /**
+   * Status is each item's status in list order: "completed",
+   * "in_progress" or "pending".
+   */
+  status?: string[];
+  done: number;
+  total: number;
+  active?: number;
+  activeText?: string;
+  cleared?: boolean;
+}
+
+/**
+ * WireMessage is a user prompt, an assistant reply, or any other message the
+ * transcript shows on its own row.
+ */
+export interface WireMessage {
+  role: string;
+  contentType?: string;
+  content: string;
+  /**
+   * IsFinal is the wire's "final": the field is spelled out here because
+   * Dart reserves the bare word, and both generators name a Dart field (but
+   * never a JSON key) after the Go field.
+   */
+  final?: boolean;
+  usage?: string;
+  salvaged?: boolean;
+  salvageReason?: string;
+  thinkMs?: number;
+  at?: number;
+  /**
+   * Reasoning is the message's reasoning text, capped.
+   */
+  reasoning?: string;
+  /**
+   * Truncated says the reasoning was cut.
+   */
+  truncated?: boolean;
+}
+
+/**
+ * WireThinking is a reasoning row outside any step, finished or live.
+ */
+export interface WireThinking {
+  text: string;
+  durationMs?: number;
+  /**
+   * StartedAt is when the live reasoning began.
+   */
+  startedAt?: number;
+}
+
+/**
+ * WireRunEvent is one plan-run event (verify failure, review, commit, …).
+ */
+export interface WireRunEvent {
+  kind: string;
+  taskN?: number;
+  title?: string;
+  detail?: string;
+  body?: string;
+  severity?: string;
+  at?: number;
+  truncated?: boolean;
+  /**
+   * BodyLines is the whole body's line count.
+   */
+  bodyLines?: number;
+}
+
+/**
+ * WireReceipt is the summary line closing a finished turn.
+ */
+export interface WireReceipt {
+  durationMs: number;
+  tasks: number;
+  steps: number;
+  tools: number;
+  files: number;
+  usage?: string;
+  salvaged?: boolean;
+}
+
+/**
+ * WireBand is the pinned band: todo progress with its stale signal, and the
+ * running cards. It travels as a node with ID "band" that is deliberately
+ * not in roots, so a transcript walk ignores it.
+ */
+export interface WireBand {
+  todos?: boolean;
+  done: number;
+  total: number;
+  active?: string;
+  stale?: boolean;
+  staleAgeMs?: number;
+  /**
+   * StaleSince is when the stale clock started, so a client can keep the
+   * age current between patches.
+   */
+  staleSince?: number;
+  next?: string[];
+  /**
+   * Tasks is the whole list for the Tasks tab, sent whenever the session
+   * has a list, idle or not.
+   */
+  tasks?: WireTask[];
+  entities?: WireBandEntity[];
+}
+
+/**
+ * WireTask is one todo in the Tasks tab, with its share of the transcript.
+ */
+export interface WireTask {
+  id?: string;
+  content: string;
+  status: string;
+  startedAt?: number;
+  completedAt?: number;
+  steps?: number;
+  workMs?: number;
+  /**
+   * Ref is the first beat bound to the todo, where a click jumps.
+   */
+  ref?: string;
+}
+
+/**
+ * WireBandEntity is one running card the band lists.
+ */
+export interface WireBandEntity {
+  ref: string;
+  label: string;
+  detail?: string;
+  startedAt?: number;
+}
+
+/**
+ * StackSnapshot is the whole stack at Rev, as session/stack answers.
+ */
+export interface StackSnapshot {
+  sessionId: string;
+  subagentId?: number;
+  rev: number;
+  roots: string[];
+  nodes: WireNode[];
+}
+
+/**
+ * StackPatch is one stack_patch update: what changed in one stack since
+ * BaseRev. A client whose revision is BaseRev applies it and moves to Rev; a
+ * client whose revision is anything else refetches the snapshot.
+ */
+export interface StackPatch {
+  kind: string;
+  subagentId?: number;
+  rev: number;
+  baseRev: number;
+  roots: string[];
+  upsert?: WireNode[];
+  remove?: string[];
 }
 
 /**
@@ -774,6 +2859,47 @@ export interface BudgetDelta {
 export interface ProjectRemovedDelta {
   kind: DeltaKind;
   project: string;
+}
+
+/**
+ * TerminalOpened is POST …/terminal's answer.
+ */
+export interface TerminalOpened {
+  terminalId: string;
+}
+
+/**
+ * TerminalChunk is one message of the terminal's event stream: output bytes
+ * in Data, base64 as SSE carries them, or the shell's end with its exit code
+ * and, when the shell never really started, why. A chunk carries one or the
+ * other, and the bridge replays retained output from the start, so a client
+ * never resumes a stream it lost.
+ */
+export interface TerminalChunk {
+  data?: string;
+  exit?: number;
+  /**
+   * Error is why the shell failed to start, on the chunk that ends the
+   * stream.
+   */
+  error?: string;
+}
+
+/**
+ * TerminalInput is POST …/input's body: base64 of at most 64 KiB of
+ * keystrokes. A client sends in pieces, in order, one request at a time.
+ */
+export interface TerminalInput {
+  data: string;
+}
+
+/**
+ * TerminalResize is POST …/resize's body, and what opening a terminal asks
+ * for: the shell's size in character cells.
+ */
+export interface TerminalResize {
+  cols: number;
+  rows: number;
 }
 
 /**
@@ -839,4 +2965,67 @@ export interface SubagentCancelParams {
  */
 export interface SubagentCancelResult {
   cancelled: boolean;
+}
+
+/**
+ * WatchSample is one reading of a watch's condition.
+ */
+export interface WatchSample {
+  at: number;
+  value: number;
+  tripped: boolean;
+}
+
+/**
+ * RerouteRule names the role a tripped watch rebinds and the preset it binds
+ * it to.
+ */
+export interface RerouteRule {
+  role: string;
+  preset: string;
+}
+
+/**
+ * OnTrip is what a watch does when it trips. On a row it is what the bridge
+ * started it with; on a create request only `reroute` is sent.
+ */
+export interface OnTrip {
+  notify?: boolean;
+  resume?: boolean;
+  reroute?: RerouteRule;
+}
+
+/**
+ * WatchInfo is one watch as GET /api/watches answers it: what the engine
+ * reports about it, the agent that started it, and what it does on trip
+ * (web/bridge/watches.go, internal/acp/watch.go). Times are Unix
+ * milliseconds.
+ */
+export interface WatchInfo {
+  /**
+   * AgentID is the agent whose session started the watch, or `studio` for
+   * the bridge's own control session.
+   */
+  agentId: string;
+  id: string;
+  name: string;
+  kind: string;
+  state: string;
+  condition?: string;
+  mode: string;
+  intervalMs: number;
+  owner?: string;
+  fireCount: number;
+  lastSample?: string;
+  lastError?: string;
+  createdAt: number;
+  lastFiredAt?: number;
+  samples: WatchSample[];
+  /**
+   * OnTrip, Notify and Resume are held by the bridge, so they appear only
+   * on watches it started.
+   */
+  onTrip?: OnTrip;
+  notify?: boolean;
+  resume?: boolean;
 }

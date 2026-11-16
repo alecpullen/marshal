@@ -34,8 +34,11 @@ type Server struct {
 	fleet *Fleet
 	mux   *http.ServeMux
 	http  http.Handler
-	reg   *Registry
-	log   *EventLog
+	// networkAttach is the agent attach behind the bearer check; nil without
+	// a token, and then the network listener answers the attach 404 (D7).
+	networkAttach http.Handler
+	reg           *Registry
+	log           *EventLog
 	// publicURLBase is the externally reachable base URL, used to build
 	// absolute links (e.g. the operator-approval URL an MCP spawn
 	// returns). Empty falls back to the listen address.
@@ -111,6 +114,9 @@ func NewServer(target any, args ...any) *Server {
 	s.http = s.mux
 	if token != "" {
 		s.http = bearerAuth(token, s.mux)
+		// The network listener also serves the agent attach, behind the same
+		// bearer check and, past it, the transport rule (decision 7).
+		s.networkAttach = s.networkAgentAttach(token)
 	}
 	return s
 }
@@ -128,8 +134,16 @@ func (s *Server) publicURL(path string) string {
 // ServeHTTP implements http.Handler. Non-API paths are served by the
 // embedded SPA (index.html fallback for client-side routing); /api paths
 // go through the mux (with optional bearer auth) so method mismatches
-// still produce 405.
+// still produce 405. The agent attach is the one /api route that is not
+// on the mux: it goes to networkAttach, which owns the bearer check and
+// the transport rule, and is absent without a token (decision 7).
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if s.networkAttach != nil {
+		if _, ok := agentAttachID(r.URL.Path); ok {
+			s.networkAttach.ServeHTTP(w, r)
+			return
+		}
+	}
 	s.route(s.http, w, r)
 }
 
@@ -137,9 +151,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // routing without the bearer check (decision 7). /mcp keeps its own
 // per-client auth, so it is on the bare mux here either way.
 //
-// The attach and pin routes exist only here: the network listener never
-// upgrades a connection to a session's stream and never changes what the
-// daemon keeps running, so ServeHTTP answers both 404 (P4 D3, D9).
+// The project attach and the pin route exist only here: the network
+// listener never opens a project's child and never changes what the daemon
+// keeps running, so ServeHTTP answers both 404 (P4 D3, D9). The agent
+// attach is the one route ServeHTTP shares, through networkAttach.
 func (s *Server) SocketHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == attachPath {

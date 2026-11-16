@@ -79,8 +79,12 @@ Two routes upgrade a marshal client onto a session and relay its frames
 unchanged: `POST /api/projects/attach` onto a project's child, and
 `POST /api/agents/{id}/attach` onto one agent's session, whose `101 Switching
 Protocols` carries `Marshal-Session` (the agent's session) and `Marshal-Agent`
-(its ID). The agent attach is served on the socket alone — the TCP listener
-answers 404 there — and it never resumes a paused agent: it refuses an unknown
+(its ID). The project attach is served on the socket alone — the TCP listener
+answers 404 there. The agent attach is served on both: the socket without a
+token, and the TCP listener behind the same bearer token as every `/api`
+route, and only for a request that arrived over TLS or on a loopback
+connection, which the listener refuses with 403 `the agent attach needs TLS`.
+Neither attach resumes a paused agent: it refuses an unknown
 agent with 404, a runtime that fails to start with 502, and an agent that is
 paused (`resume it first`), runs on a child of its own with no viewer socket
 yet, or has no session yet with 409. A viewer on either attach still cannot

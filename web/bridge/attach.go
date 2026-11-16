@@ -336,6 +336,51 @@ func (s *Server) attachAgent(w http.ResponseWriter, r *http.Request, id string) 
 	go s.fleet.relay(end, sessionID, a.ID, client, buffered.Reader, conn)
 }
 
+// attachNeedsTLS is the network listener's refusal (decision 7).
+const attachNeedsTLS = "the agent attach needs TLS"
+
+// overTLSOrLoopback reports whether r arrived over TLS, or on a connection
+// whose local address is loopback.
+func overTLSOrLoopback(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	switch addr := r.Context().Value(http.LocalAddrContextKey).(type) {
+	case *net.TCPAddr:
+		return addr != nil && addr.IP.IsLoopback()
+	case net.Addr:
+		host, _, err := net.SplitHostPort(addr.String())
+		if err != nil {
+			return false
+		}
+		ip := net.ParseIP(host)
+		return ip != nil && ip.IsLoopback()
+	}
+	// A request with no local address never came off a socket this process
+	// listens on, so it is not loopback.
+	return false
+}
+
+// networkAgentAttach is the network listener's agent attach (decision 7): the
+// socket's agent attach, behind the bearer check passed here and, past it, the
+// transport rule. A request that is neither TLS nor on a loopback connection
+// is refused before attachAgent can reach a viewer socket; anything else that
+// this handler does not serve is a 404, as on the mux.
+func (s *Server) networkAgentAttach(token string) http.Handler {
+	return bearerAuth(token, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := agentAttachID(r.URL.Path)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if !overTLSOrLoopback(r) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": attachNeedsTLS})
+			return
+		}
+		s.attachAgent(w, r, id)
+	}))
+}
+
 // hasToken reports whether a comma-separated header value carries want, case
 // insensitively, as "Connection: keep-alive, Upgrade" does.
 func hasToken(header, want string) bool {

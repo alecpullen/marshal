@@ -274,6 +274,34 @@ These are load-bearing; code comments and tests point back at them.
   the transcript mid-turn; `TestPromptPrefixStableAcrossSteps` fails if
   you do.
 
+## The Studio's UI (`app/lib/src/ui/`)
+
+Before changing anything under `app/lib/src/ui/`, read
+`docs/studio-flutter/design-system.md`; it is normative there. In short:
+
+- Build screens only from the kit (`app/lib/src/ui/kit/kit.dart`). A screen
+  imports nothing from Material or Cupertino.
+- Every colour, text role, spacing, radius and size comes from
+  `app/lib/src/ui/tokens.dart`. Write no other number or colour.
+- Reuse `AskCard`, `PrCard`, `ThreadRow` and `StateMessage` wherever their
+  subject appears; never draw a second version.
+- Give every unlabelled control a tooltip, and handle loading, empty,
+  stale, error and unavailable on every screen that shows data. Register a
+  new screen, with fixture data for each state, in
+  `app/test/support/screens.dart`.
+- If the kit lacks a piece, extend the design system first (its §10): the
+  document, the kit, the gallery and the goldens together. Never a one-off
+  in a screen.
+
+These tests hold the line, in `app/test/` (`cd app && flutter test`):
+`design_rules_test.dart`, `tooltips_test.dart`, `states_test.dart`,
+`overflow_test.dart`, `gallery_test.dart`, `contrast_test.dart`,
+`fonts_test.dart`, `boundary_test.dart` and one `kit/<component>_test.dart`
+per component. The gallery goldens are pinned to macOS (regenerate there
+with `flutter test --update-goldens test/gallery_test.dart`). As with
+`TestWebIsStdlibOnly`, a failure is fixed by using the kit or extending the
+system, never by an exception in the test.
+
 ## Config
 
 Merged in order, later wins:

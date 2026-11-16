@@ -207,6 +207,21 @@ Web control plane
   cmd/webbridge/           HTTP + SSE server supervising `marshal acp` children
   web/bridge/              bridge subsystems (see the boundary rule below)
   web/ui/                  Svelte 5 + Vite SPA (dev-only Node toolchain)
+
+Native app
+  app/                     Flutter desktop app: the tray screen — a menu-bar
+                           item whose menu reports the daemon's state and runs
+                           its commands. Pure Dart under lib/src except
+                           lib/src/daemon/cli.dart, the only file allowed
+                           `dart:io`: it reaches Marshal only by running
+                           `marshal daemon status --json` and the commands in
+                           its menu, and never opens the daemon's socket, never
+                           reads `fleet.json`, the state directory or the
+                           config, and embeds no agent-side Go type.
+                           `app/test/no_io_test.dart` enforces the import rule.
+                           The release workflow copies `marshal` and
+                           `webbridge` into the bundle; the app does not
+                           contain them.
 ```
 
 This tree is complete: several subsystems that sound like they still need

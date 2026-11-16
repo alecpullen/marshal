@@ -509,6 +509,152 @@ func validateFactoryItem(i FactoryItem) error {
 	if unresolved > 1 {
 		return fmt.Errorf("multiple unresolved proposals")
 	}
+	return validateFactoryCompletion(i)
+}
+
+// factoryCompletionStates are the values FactoryCompletion.Status accepts.
+// The empty status is not here because it is not stored: it is the same "open"
+// a missing record is, and an item that carries one is read as open rather
+// than rewritten.
+var factoryCompletionStates = map[string]bool{"open": true, "complete": true}
+
+var factoryCompletionStopStates = map[string]bool{"requested": true, "stopped": true, "failed": true, "unknown": true}
+
+var factoryAssessmentStates = map[string]bool{"pending": true, "available": true, "failed": true, "unavailable": true}
+
+var factoryLinkOrigins = map[string]bool{"factory": true, "user": true}
+
+var factoryMergeBatchStates = map[string]bool{"active": true, "stopped": true, "complete": true}
+
+var factoryMergeStepStates = map[string]bool{"unattempted": true, "prepared": true, "dispatched": true, "confirmed": true, "failed": true, "uncertain": true}
+
+// validateFactoryCompletion checks the business completion record the journal
+// stores. It is absent on every item journalled before completion existed, so
+// a nil record validates, and so does a record whose status is empty: both are
+// open, and neither is rewritten to say so.
+//
+// What is checked is the evidence a surface switches on — the statuses, the
+// stop state, the merge batch and its steps, and the origin of every PR link —
+// plus the record identities, which are the keys a later reopen or merge batch
+// names. A value no surface can render is corrupt rather than merely
+// unfamiliar.
+func validateFactoryCompletion(i FactoryItem) error {
+	c := i.Completion
+	if c == nil {
+		return nil
+	}
+	if c.Status != "" && !factoryCompletionStates[c.Status] {
+		return fmt.Errorf("invalid completion status")
+	}
+	if c.StopState != "" && !factoryCompletionStopStates[c.StopState] {
+		return fmt.Errorf("invalid completion stop state")
+	}
+	if e := validateFactoryAssessment(c.Assessment); e != nil {
+		return e
+	}
+	if e := validateFactoryPRLinks(c.Links); e != nil {
+		return e
+	}
+	seen := make(map[string]bool, len(c.Records))
+	for _, r := range c.Records {
+		if strings.TrimSpace(r.ID) == "" || r.At.IsZero() || strings.TrimSpace(r.Actor) == "" {
+			return fmt.Errorf("invalid completion record identity")
+		}
+		if seen[r.ID] {
+			return fmt.Errorf("duplicate completion record id")
+		}
+		seen[r.ID] = true
+		if e := validateFactoryRunChoice(r.RunChoice); e != nil {
+			return e
+		}
+		if e := validateFactoryAssessment(r.Assessment); e != nil {
+			return e
+		}
+		if e := validateFactoryPRLinks(r.Links); e != nil {
+			return e
+		}
+	}
+	b := c.Batch
+	if b == nil {
+		return nil
+	}
+	if strings.TrimSpace(b.ID) == "" || strings.TrimSpace(b.RequestID) == "" || !factoryMergeBatchStates[b.State] {
+		return fmt.Errorf("invalid merge batch")
+	}
+	if e := validateFactoryRunChoice(b.RunChoice); e != nil {
+		return e
+	}
+	// A batch is the reviewed, ordered set the user authorized: one entry per
+	// pull request, not two attempts at the same one.
+	seenSteps := make(map[string]bool, len(b.Steps))
+	for _, s := range b.Steps {
+		if !factoryMergeStepStates[s.State] {
+			return fmt.Errorf("invalid merge step state")
+		}
+		// A step names the reviewed pull request a merge is sent for, so a
+		// step without that identity — or with a strategy no forge applies —
+		// is corrupt rather than merely unfamiliar: no surface could render it
+		// and no batch could drive it.
+		if strings.TrimSpace(s.RepoID) == "" || s.Number <= 0 || strings.TrimSpace(s.NodeID) == "" || strings.TrimSpace(s.HeadSHA) == "" || strings.TrimSpace(s.BaseRef) == "" {
+			return fmt.Errorf("invalid merge step identity")
+		}
+		key := s.RepoID + "\x00" + s.NodeID
+		if seenSteps[key] {
+			return fmt.Errorf("duplicate merge step")
+		}
+		seenSteps[key] = true
+		if !factoryMergeStrategies[s.Strategy] {
+			return fmt.Errorf("invalid merge step strategy")
+		}
+	}
+	return nil
+}
+
+// validateFactoryRunChoice checks the decision a completion or a merge batch
+// records about the run that follows it.
+func validateFactoryRunChoice(choice string) error {
+	if choice != "" && choice != "continue" && choice != "request_stop" {
+		return fmt.Errorf("invalid completion run choice")
+	}
+	return nil
+}
+
+// validateFactoryAssessment checks one piece of completion evidence. Its status
+// is what a surface renders in place of the summary, so it is required.
+func validateFactoryAssessment(a *FactoryAssessment) error {
+	if a == nil {
+		return nil
+	}
+	if !factoryAssessmentStates[a.Status] {
+		return fmt.Errorf("invalid completion assessment status")
+	}
+	return nil
+}
+
+// validateFactoryPRLinks checks the pull requests a completion or an
+// assessment is about. The origin is optional, because a link observed before
+// it recorded who opened the PR still names a real PR, and the empty origin
+// says exactly that.
+//
+// The identity is not optional. A link without a repository or node ID is one
+// no command can observe again — link_pr would append a second, correct entry
+// beside it and leave the broken one stale for ever — so it is corrupt rather
+// than merely unfamiliar, and so is a second entry for the same identity.
+func validateFactoryPRLinks(links []FactoryPRLink) error {
+	seen := make(map[string]bool, len(links))
+	for _, l := range links {
+		if l.Origin != "" && !factoryLinkOrigins[l.Origin] {
+			return fmt.Errorf("invalid pr link origin")
+		}
+		if strings.TrimSpace(l.RepoID) == "" || strings.TrimSpace(l.PR.NodeID) == "" || l.PR.Number <= 0 || l.ObservedAt.IsZero() {
+			return fmt.Errorf("invalid pr link identity")
+		}
+		key := l.RepoID + "\x00" + l.PR.NodeID
+		if seen[key] {
+			return fmt.Errorf("duplicate pr link identity")
+		}
+		seen[key] = true
+	}
 	return nil
 }
 

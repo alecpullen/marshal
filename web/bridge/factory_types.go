@@ -322,17 +322,23 @@ type FactoryItem struct {
 	// Proposals is the append-only history of plan/specification revisions
 	// proposed against this item. It is optional, so an item journalled
 	// before proposals existed replays unchanged.
-	Proposals  []FactoryRevisionProposal `json:"proposals,omitempty"`
-	Grants     []FactoryGrant            `json:"grants"`
-	Rounds     []FactoryRound            `json:"rounds"`
-	Workers    []FactoryWorker           `json:"workers"`
-	PRs        []FactoryPR               `json:"prs"`
-	Effects    []FactoryEffect           `json:"effects"`
-	Decision   *FactoryDecision          `json:"decision"`
-	History    []FactoryEvent            `json:"history"`
-	CreatedAt  time.Time                 `json:"createdAt"`
-	ApprovedAt time.Time                 `json:"approvedAt"`
-	UpdatedAt  time.Time                 `json:"updatedAt"`
+	Proposals []FactoryRevisionProposal `json:"proposals,omitempty"`
+	Grants    []FactoryGrant            `json:"grants"`
+	Rounds    []FactoryRound            `json:"rounds"`
+	Workers   []FactoryWorker           `json:"workers"`
+	PRs       []FactoryPR               `json:"prs"`
+	Effects   []FactoryEffect           `json:"effects"`
+	Decision  *FactoryDecision          `json:"decision"`
+	History   []FactoryEvent            `json:"history"`
+	// Completion is the durable business completion status, which is
+	// independent of State: the work counts as done as far as the user is
+	// concerned, whatever the run happens to be doing. It is optional, so an
+	// item journalled before completion existed replays unchanged, and a nil
+	// record (or one whose status is empty) is open.
+	Completion *FactoryCompletion `json:"completion,omitempty"`
+	CreatedAt  time.Time          `json:"createdAt"`
+	ApprovedAt time.Time          `json:"approvedAt"`
+	UpdatedAt  time.Time          `json:"updatedAt"`
 }
 
 type FactoryCommand struct {
@@ -354,6 +360,13 @@ type FactoryCommand struct {
 	// revision_follow_up_confirm read it, and every other kind leaves it nil,
 	// so a command those kinds do not carry marshals as it always did.
 	Revision *FactoryRevisionCommand `json:"revision,omitempty"`
+	// Completion is the structured payload of the completion commands:
+	// link_pr reads the pull request it names, refresh_pr_evidence carries
+	// nothing of its own, and the merge kinds read the reviewed set, the
+	// strategy, the completion intent and the run choice. Every other kind
+	// leaves it nil, so a command those kinds do not carry marshals as it
+	// always did.
+	Completion *FactoryCompletionCommand `json:"completion,omitempty"`
 }
 
 // FactoryPlanHash binds exact plan and spec bytes, including whitespace.

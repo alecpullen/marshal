@@ -99,10 +99,56 @@ func factoryPRMatches(i FactoryItem, p FactoryPR) bool {
 	return p.Number == saved.Number && p.NodeID == saved.NodeID && p.HeadRef == i.Branch && p.BaseRef == target && saved.HeadRef == i.Branch && saved.BaseRef == target
 }
 
+// factoryDeliveryMergeContinued reports whether the run was explicitly
+// continued and p is the delivery pull request the completion's merge batch
+// merged. Only a batch that merged this pull request itself and was authorized
+// to carry on keeps the run: a pull request closed outside the factory, or one
+// the batch never merged, is an ordinary external closure.
+func factoryDeliveryMergeContinued(i FactoryItem, p FactoryPR) bool {
+	if i.Completion == nil || i.Completion.Batch == nil {
+		return false
+	}
+	b := i.Completion.Batch
+	if b.RunChoice != "continue" || !b.CompleteAfter || strings.TrimSpace(p.NodeID) == "" {
+		return false
+	}
+	for _, s := range b.Steps {
+		if s.State == "confirmed" && s.NodeID == p.NodeID {
+			return true
+		}
+	}
+	return false
+}
+
 // Record external closure before cleanup; stopping retains worker and branch
 // ownership across cancellation, uncertain observations, and process restart.
-func factoryBeginClosure(i *FactoryItem, p FactoryPR, now time.Time) {
-	i.PRs[len(i.PRs)-1].State = p.State
+//
+// continued is the user's own run choice after a completion merged the delivery
+// pull request: the run keeps its checkout and its outputs, an effect in flight
+// is allowed to settle, and the item is asked what the continued run does next
+// instead of being closed. Nothing is published or dispatched against a merged
+// pull request meanwhile, because a decision blocks dispatch exactly as
+// needs_input always has.
+func factoryBeginClosure(i *FactoryItem, p FactoryPR, now time.Time, continued bool) {
+	last := len(i.PRs) - 1
+	recorded := i.PRs[last].State
+	i.PRs[last].State = p.State
+	if continued {
+		if recorded != p.State {
+			i.History = append(i.History, FactoryEvent{At: now, Kind: "delivery_merge_continued", Message: fmt.Sprintf("delivery pull request #%d merged by the completion; the run continues and keeps its checkout", p.Number)})
+		}
+		for _, e := range i.Effects {
+			if e.Status == "dispatched" || e.Status == "uncertain" {
+				// The in-flight effect settles first; the closure path runs
+				// again on a later pass and decides then.
+				return
+			}
+		}
+		if i.Decision == nil {
+			factoryDecision(i, "delivery_decision", fmt.Sprintf("the completion merged delivery pull request #%d; decide what the continued run does next", p.Number), now)
+		}
+		return
+	}
 	i.State = "closed"
 	i.Decision = nil
 	for n := range i.Effects {
@@ -133,8 +179,12 @@ func AdvanceFactory(item FactoryItem, observed FactoryObservation, now time.Time
 		}
 		i.BaseSHA = observed.BaseSHA
 	}
+	// The delivery PR the factory owns is completion evidence of the factory's
+	// own making: recording it here keeps the link current with what the
+	// observation confirmed, and changes nothing about its ownership.
+	factoryAssociateDelivery(&i, observed, now)
 	if len(i.PRs) > 0 && observed.PR != nil && (observed.PR.State == "closed" || observed.PR.State == "merged") && i.State != "closed" && i.State != "stopping" {
-		factoryBeginClosure(&i, *observed.PR, now)
+		factoryBeginClosure(&i, *observed.PR, now, factoryDeliveryMergeContinued(i, *observed.PR))
 		return i, nil, nil
 	}
 	if i.Decision != nil || i.State == "draft" || i.State == "stopped" || i.State == "stopping" || i.State == "recovering" || i.State == "closed" {
@@ -753,6 +803,16 @@ func (c *FactoryController) tick(ctx context.Context) error {
 	if err := c.activateRevisionAtSafeBoundary(ctx); err != nil {
 		return err
 	}
+	// A confirmed merge batch reconciles whatever it dispatched before it
+	// merges anything else, and sends at most one reviewed merge per pass.
+	if err := c.advanceCompletionBatches(ctx); err != nil {
+		return err
+	}
+	// A run the completion asked to stop settles from observation: only the
+	// journal may call it stopped, and only once nothing is running.
+	if err := c.settleCompletionStops(ctx); err != nil {
+		return err
+	}
 	items := c.store.List()
 	// Observe closure even while a turn is dispatched or a stage is prepared.
 	// Persist stopping before cancellation so completion cannot restart stages.
@@ -764,7 +824,13 @@ func (c *FactoryController) tick(ctx context.Context) error {
 		if o.PR == nil || (o.PR.State != "closed" && o.PR.State != "merged") {
 			continue
 		}
-		saved, err := c.internalUpdate(item, "external_closure", func(dst *FactoryItem) error { factoryBeginClosure(dst, *o.PR, c.now()); return nil })
+		saved, err := c.internalUpdate(item, "external_closure", func(dst *FactoryItem) error {
+			// The closure observation is the last fresh look at the delivery
+			// PR, so the link it confirms is journaled in the same append.
+			factoryAssociateDelivery(dst, o, c.now())
+			factoryBeginClosure(dst, *o.PR, c.now(), factoryDeliveryMergeContinued(*dst, *o.PR))
+			return nil
+		})
 		if errors.Is(err, ErrFactoryConflict) {
 			return nil
 		} // A completion won; observe again next tick.
@@ -1080,6 +1146,21 @@ func (c *FactoryController) command(ctx context.Context, itemID string, cmd Fact
 		}
 	}
 	before, _ := c.store.Get(itemID)
+	// The evidence commands resolve their pull requests through the item's
+	// forge before the atomic update: the store stays the journal's boundary,
+	// and the observation is carried into the apply rather than into the bytes
+	// a replay hashes.
+	var evidence *factoryCompletionEvidence
+	switch cmd.Kind {
+	case "link_pr":
+		ev, resolveErr := c.completionLinkEvidence(ctx, before, cmd)
+		if resolveErr != nil {
+			return FactoryItem{}, resolveErr
+		}
+		evidence = ev
+	case "refresh_pr_evidence":
+		evidence = c.completionRefreshEvidence(ctx, before)
+	}
 	raw, err := factoryCommandJournal(cmd, p)
 	if err != nil {
 		return FactoryItem{}, err
@@ -1087,7 +1168,7 @@ func (c *FactoryController) command(ctx context.Context, itemID string, cmd Fact
 	// The effective automatic-assessment preference is read before the
 	// journal append and recorded on the proposal in that same mutation.
 	autoAssess := c.autoAssess(before.ProjectRoot)
-	i, err := c.store.Update(itemID, cmd.RequestID, cmd.ExpectedVersion, raw, func(i *FactoryItem) error { return factoryApplyCommandFrom(i, cmd, p, autoAssess, c.now()) }, c.now())
+	i, err := c.store.Update(itemID, cmd.RequestID, cmd.ExpectedVersion, raw, func(i *FactoryItem) error { return factoryApplyCommandFrom(i, cmd, p, autoAssess, evidence, c.now()) }, c.now())
 	if err == nil {
 		if cmd.Kind == "revision_follow_up_confirm" {
 			// The intent is durable before anything is created, and both the
@@ -1098,6 +1179,11 @@ func (c *FactoryController) command(ctx context.Context, itemID string, cmd Fact
 				return confirmed, confirmErr
 			}
 			i = confirmed
+		}
+		if (cmd.Kind == "merge_pr" || cmd.Kind == "merge_and_complete") && cmd.Completion != nil && cmd.Completion.RunChoice == "request_stop" && before.Version == cmd.ExpectedVersion {
+			if stopErr := c.requestCompletionStop(ctx, i); stopErr != nil {
+				return i, stopErr
+			}
 		}
 		if cmd.Kind == "stop" && before.Version == cmd.ExpectedVersion {
 			if canceler, ok := c.effects.(interface {
@@ -1145,13 +1231,14 @@ func factoryCommandJournal(cmd FactoryCommand, p *factoryPrincipal) (json.RawMes
 // produced. It has no project to consult, so a proposal it saves records the
 // documented default for automatic assessment.
 func factoryApplyCommand(i *FactoryItem, c FactoryCommand, now time.Time) error {
-	return factoryApplyCommandFrom(i, c, nil, true, now)
+	return factoryApplyCommandFrom(i, c, nil, true, nil, now)
 }
 
 // factoryApplyCommandFrom applies one command, attributing the entries it
 // journals to p in the same mutation. autoAssess is the effective
-// automatic-assessment preference of the item's project.
-func factoryApplyCommandFrom(i *FactoryItem, c FactoryCommand, p *factoryPrincipal, autoAssess bool, now time.Time) error {
+// automatic-assessment preference of the item's project, and evidence is the
+// forge observation a completion command resolved before this mutation.
+func factoryApplyCommandFrom(i *FactoryItem, c FactoryCommand, p *factoryPrincipal, autoAssess bool, evidence *factoryCompletionEvidence, now time.Time) error {
 	switch c.Kind {
 	case "approve":
 		if i.State != "draft" {
@@ -1244,6 +1331,12 @@ func factoryApplyCommandFrom(i *FactoryItem, c FactoryCommand, p *factoryPrincip
 		if attested {
 			factoryNext(i, "resume", "implementer", 0, now)
 		}
+	case "complete", "reopen":
+		return factoryApplyCompletion(i, c, p, now)
+	case "merge_pr", "merge_and_complete":
+		return factoryApplyMergeCommand(i, c, p, now)
+	case "link_pr", "refresh_pr_evidence":
+		return factoryApplyCompletionLinks(i, c, p, evidence, now)
 	case "reconcile", "recover":
 		return ErrFactoryConflict
 	case "revision_propose":
@@ -1270,6 +1363,92 @@ func factoryApplyCommandFrom(i *FactoryItem, c FactoryCommand, p *factoryPrincip
 		return ErrFactoryConflict
 	}
 	return nil
+}
+
+// factoryApplyCompletion journals the user's own business decision about an
+// item. Completing snapshots what the user is calling done — the goal, the
+// criteria the latest approval bound it to, and the assessment and PR links
+// the item already carries — into a new append-only record. It changes neither
+// State nor any effect, worker or grant: "the work is done" and "the run has
+// stopped" are different statements, and open PRs or absent evidence do not
+// make the first one untrue.
+//
+// Reopening retires that decision without rewriting it. The records, the
+// assessment and the links stay exactly as they were journalled, and nothing
+// is spawned or stopped by either command.
+//
+// Both are Studio commands. An MCP client's authority is a grant over named
+// actions of a run, and declaring the business outcome is not one of them.
+func factoryApplyCompletion(i *FactoryItem, c FactoryCommand, p *factoryPrincipal, now time.Time) error {
+	if p != nil {
+		return fmt.Errorf("%w: %s is not an action an MCP client may take", ErrFactoryConflict, c.Kind)
+	}
+	completion := factoryCompletionOf(*i)
+	switch c.Kind {
+	case "complete":
+		if factoryCompletionStatus(*i) == "complete" {
+			return fmt.Errorf("%w: item %s is already complete", ErrFactoryConflict, i.ID)
+		}
+		criteria := ""
+		if n := len(i.Approvals); n > 0 {
+			criteria = i.Approvals[n-1].Spec
+		}
+		completion.Records = append(completion.Records, FactoryCompletionRecord{
+			ID:    fmt.Sprintf("completion-%s-%d", i.ID, len(completion.Records)+1),
+			At:    now,
+			Actor: factoryStudioRevisionActor,
+			Goal:  i.Title,
+			// The record names the specification it was completed against,
+			// copied rather than referenced: a later approval does not change
+			// what this one called done.
+			Criteria:   criteria,
+			Assessment: factoryCloneAssessment(completion.Assessment),
+			Links:      factoryCopy(completion.Links),
+		})
+		completion.Status = "complete"
+		i.Completion = &completion
+		i.History = append(i.History, p.event("completion_completed", "work item completed", "", now))
+	case "reopen":
+		if factoryCompletionStatus(*i) != "complete" {
+			return fmt.Errorf("%w: item %s is not complete", ErrFactoryConflict, i.ID)
+		}
+		completion.Status = "open"
+		i.Completion = &completion
+		i.History = append(i.History, p.event("completion_reopened", "work item reopened", "", now))
+	default:
+		return ErrFactoryConflict
+	}
+	return nil
+}
+
+// factoryCompletionStatus is the item's business completion status, read the
+// way every surface reads it: a missing record and an empty status both mean
+// open, so an item journalled before completion existed is open without its
+// record being rewritten.
+func factoryCompletionStatus(i FactoryItem) string {
+	if i.Completion == nil || strings.TrimSpace(i.Completion.Status) == "" {
+		return "open"
+	}
+	return i.Completion.Status
+}
+
+// factoryCompletionOf returns the item's completion record with storage of its
+// own, so a mutation never rewrites the value it was handed.
+func factoryCompletionOf(i FactoryItem) FactoryCompletion {
+	if i.Completion == nil {
+		return FactoryCompletion{}
+	}
+	return factoryCopy(*i.Completion)
+}
+
+// factoryCloneAssessment copies one piece of completion evidence, so a record
+// that snapshots it shares no field with the item's live assessment.
+func factoryCloneAssessment(a *FactoryAssessment) *FactoryAssessment {
+	if a == nil {
+		return nil
+	}
+	b := *a
+	return &b
 }
 
 // factoryRevisionSavable refuses a proposal mutation the item's state cannot
@@ -1430,4 +1609,199 @@ func factoryApplyRevisionAssessRequest(i *FactoryItem, c FactoryCommand, p *fact
 	proposal.UpdatedAt = now
 	i.History = append(i.History, p.event("revision_assessment_requested", "plan revision assessment requested", "", now))
 	return nil
+}
+
+// requestCompletionStop journals the user's stop intent for one item's run and
+// then asks that run to stop through the existing cancellation path.
+//
+// The intent is durable before anything is cancelled, so a restart while
+// stopping settles from the journal rather than from a call that may or may not
+// have been sent. It names one item and reaches no other: an item whose run was
+// continued is never cancelled by a neighbour's choice.
+//
+// A journal that refuses the intent (another writer moved the item) does
+// nothing further: nothing is cancelled on an intent that was not recorded. A
+// cancellation that fails is journaled as failed and the completion the user
+// asked for is retained — declaring the work done is not undone by a run that
+// could not be stopped.
+func (c *FactoryController) requestCompletionStop(ctx context.Context, item FactoryItem) error {
+	now := c.now()
+	// The intent is idempotent, so a concurrent writer that moved the item
+	// between the merge journal and this append is re-read and re-applied
+	// rather than dropped: the run choice the user recorded must reach the run
+	// it names, or the record says stopped and nothing was ever asked to stop.
+	current := item
+	var saved FactoryItem
+	for attempt := 0; ; attempt++ {
+		refused := false
+		written, err := c.internalUpdate(current, "completion_stop_requested", func(dst *FactoryItem) error {
+			completion := factoryCompletionOf(*dst)
+			// A stop already in flight, or one that already took, is the
+			// user's own earlier decision and this intent must not overwrite
+			// it. A failed or unconfirmed stop is not settled work: asking
+			// again is a new attempt, and refusing it would leave the run
+			// choice recorded on the batch with nothing delivering it.
+			if completion.StopState == "requested" || completion.StopState == "stopped" {
+				refused = true
+				return ErrFactoryConflict
+			}
+			completion.StopState = "requested"
+			dst.Completion = &completion
+			dst.History = append(dst.History, FactoryEvent{At: now, Kind: "completion_stop_requested", Message: "the run choice asked for the work item's run to stop"})
+			return nil
+		})
+		if err == nil {
+			saved = written
+			break
+		}
+		if !errors.Is(err, ErrFactoryConflict) {
+			return err
+		}
+		if refused {
+			// The journal already carries this stop; there is nothing to
+			// deliver and nothing to retry.
+			return nil
+		}
+		if attempt >= 2 {
+			return nil
+		}
+		latest, getErr := c.store.Get(item.ID)
+		if getErr != nil {
+			return nil
+		}
+		current = latest
+	}
+	canceler, ok := c.effects.(interface {
+		Cancel(context.Context, FactoryItem) error
+	})
+	if !ok {
+		return nil
+	}
+	cancelErr := canceler.Cancel(ctx, saved)
+	if cancelErr == nil {
+		return nil
+	}
+	latest, getErr := c.store.Get(saved.ID)
+	if getErr != nil {
+		return nil
+	}
+	_, _ = c.internalUpdate(latest, "completion_stop_failed", func(dst *FactoryItem) error {
+		completion := factoryCompletionOf(*dst)
+		// Guarded like every other StopState write: an observation that
+		// already proved the stop must not be rewritten as a failure because a
+		// late cancellation error arrived after it.
+		if completion.StopState != "requested" {
+			return ErrFactoryConflict
+		}
+		completion.StopState = "failed"
+		dst.Completion = &completion
+		dst.History = append(dst.History, FactoryEvent{At: c.now(), Kind: "completion_stop_failed", Message: cancelErr.Error()})
+		return nil
+	})
+	return nil
+}
+
+// settleCompletionStops moves requested stops forward, so a stop that could not
+// be observed yet is retried on the next tick rather than blocking anything
+// else. A stop that settled in this pass spends it; one that is still waiting
+// does not, because nothing about it moved.
+func (c *FactoryController) settleCompletionStops(ctx context.Context) error {
+	if c == nil || c.store == nil || c.effects == nil {
+		return nil
+	}
+	for _, item := range c.store.List() {
+		if item.Completion == nil || item.Completion.StopState != "requested" {
+			continue
+		}
+		if err := c.settleCompletionStop(ctx, item); err != nil {
+			return err
+		}
+		if after, err := c.store.Get(item.ID); err == nil && after.Version != item.Version {
+			return nil
+		}
+	}
+	return nil
+}
+
+// settleCompletionStop journals what the observation proves about a requested
+// stop: stopped once nothing of the run is running, unknown when the journal
+// still records running workers and the runtime cannot be established, and left
+// requested while the run is demonstrably still working or the observation
+// could not be made at all. A stop that already settled — failed, unknown or
+// stopped — is never rewritten.
+func (c *FactoryController) settleCompletionStop(ctx context.Context, item FactoryItem) error {
+	obs, err := c.effects.Observe(ctx, item)
+	state := ""
+	switch {
+	case factoryCompletionStopSettled(item, obs, err):
+		state = "stopped"
+	case factoryCompletionStopUnknown(item, obs, err):
+		state = "unknown"
+	}
+	if state == "" {
+		return nil
+	}
+	now := c.now()
+	message := "the work item's run stopped"
+	if state == "unknown" {
+		message = "the work item's run cannot be observed; its stop is unconfirmed"
+	}
+	_, err = c.internalUpdate(item, "completion_stop_"+state, func(dst *FactoryItem) error {
+		completion := factoryCompletionOf(*dst)
+		if completion.StopState != "requested" {
+			return ErrFactoryConflict
+		}
+		completion.StopState = state
+		dst.Completion = &completion
+		dst.History = append(dst.History, FactoryEvent{At: now, Kind: "completion_stop_" + state, Message: message})
+		return nil
+	})
+	if errors.Is(err, ErrFactoryConflict) {
+		return nil
+	}
+	return err
+}
+
+// factoryCompletionStopSettled reports whether the observation proves the
+// requested stop took. The journal decides first: a run with no unparked worker
+// and no effect in flight is stopped whatever the runtime would say, because
+// there is nothing left for an observation to prove and waiting for one that
+// will never come would leave the stop requested for ever. A run the journal
+// still shows live needs that observation: the row alone does not prove the
+// turn ended.
+func factoryCompletionStopSettled(item FactoryItem, obs FactoryObservation, err error) bool {
+	if !factoryCompletionRunLive(item) {
+		return true
+	}
+	if err != nil {
+		return false
+	}
+	return obs.RuntimeKnown && obs.TurnIdle && obs.ActiveWorkKnown && obs.WorkIdle
+}
+
+// factoryCompletionRunLive reports whether the journal still records the item's
+// run doing anything: a worker that is not parked, or an effect that was
+// prepared or dispatched and has not settled.
+func factoryCompletionRunLive(item FactoryItem) bool {
+	for _, w := range item.Workers {
+		if !w.Parked {
+			return true
+		}
+	}
+	for _, e := range item.Effects {
+		if e.Status == "prepared" || e.Status == "dispatched" {
+			return true
+		}
+	}
+	return false
+}
+
+// factoryCompletionStopUnknown reports whether the requested stop cannot be
+// settled at all: the journal still records a running worker, and the runtime
+// that would say otherwise cannot be established.
+func factoryCompletionStopUnknown(item FactoryItem, obs FactoryObservation, err error) bool {
+	if err != nil || obs.RuntimeKnown {
+		return false
+	}
+	return factoryCompletionRunLive(item)
 }

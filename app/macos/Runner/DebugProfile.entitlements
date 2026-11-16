@@ -2,8 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Not sandboxed, for the reason in Release.entitlements: the `marshal`
+	     binary the app execs must reach the daemon's socket and the user's
+	     data directory. "flutter run -d macos" runs a debug build under this
+	     file, so a debug run that could not read the daemon would hide the
+	     problem from whoever is developing the app. -->
 	<key>com.apple.security.app-sandbox</key>
-	<true/>
+	<false/>
+	<!-- Kept from the template: the debug engine JITs, and the debugger
+	     attaches over the loopback. Harmless without a sandbox, and needed if
+	     one is ever turned back on. -->
 	<key>com.apple.security.cs.allow-jit</key>
 	<true/>
 	<key>com.apple.security.network.server</key>

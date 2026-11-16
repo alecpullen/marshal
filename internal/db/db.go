@@ -67,6 +67,10 @@ var migrationColumns = []columnAdd{
 	// F14: message tree + session leaf.
 	{"messages", "parent_id", "INTEGER REFERENCES messages(id) ON DELETE SET NULL"},
 	{"agent_sessions", "leaf_message_id", "INTEGER"},
+	// The empty root: the branch tip was explicitly rewound to before the
+	// first turn. leaf_message_id cannot store that, because it references
+	// messages(id) and no message has id 0 (AUD-09).
+	{"agent_sessions", "branch_emptied", "INTEGER NOT NULL DEFAULT 0"},
 	{"agent_sessions", "active_root", "TEXT"},
 	{"agent_sessions", "worktree_branch", "TEXT"},
 	{"agent_sessions", "worktree_target_branch", "TEXT"},
@@ -151,11 +155,14 @@ func (db *DB) Migrate() error {
 			return fmt.Errorf("backfill parent_id: %w", err)
 		}
 	}
-	// Set each session's leaf to its max message id.
+	// Set each session's leaf to its max message id. branch_emptied = 0 keeps
+	// this away from a session whose branch was explicitly rewound to the
+	// empty root (AUD-09): the backfill runs on every startup, so without the
+	// guard it would resurrect the branch the user rewound away from.
 	if _, err := db.sqlDB.Exec(`
 		UPDATE agent_sessions SET leaf_message_id = (
 			SELECT MAX(id) FROM messages WHERE messages.session_id = agent_sessions.id
-		) WHERE leaf_message_id IS NULL AND EXISTS (
+		) WHERE leaf_message_id IS NULL AND branch_emptied = 0 AND EXISTS (
 			SELECT 1 FROM messages WHERE messages.session_id = agent_sessions.id
 		)
 	`); err != nil {

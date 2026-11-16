@@ -249,8 +249,16 @@ end, separately from real failures.
 - **`FilesModel.open` returns the model's `FileText`**, and `InspectModel`
   exposes `InspectFacts`, so `ui/` never imports `client/` (the boundary test
   is the reason).
-- **Keystrokes are sent base64-encoded but unchunked.** The wire's cap is
-  64 KiB per body, and a keystroke string is far below it.
+- **Keystrokes go through one ordered queue in pieces of 16 KiB.** Two
+  bodies must not race to the pty, and a key typed before the shell has an id
+  is held rather than dropped (findings/terminal.md asks for exactly that).
+  The wire's own cap is 64 KiB per body; the cut is on a character boundary,
+  so a multi-byte character is never split across two bodies.
+- **A ship whose answer never arrives is a sixth outcome, `failed`.** Decision
+  7's five results all describe what the bridge said. The bridge pushes
+  before it answers, so a dropped connection or a 5xx cannot say whether the
+  work reached the forge: that is an error state with Try again, and only a
+  4xx refusal is drawn as "nothing was pushed".
 
 ### Not built in this phase
 

@@ -3,6 +3,7 @@ import 'dart:async';
 import '../../model/pulls_model.dart';
 import '../kit/kit.dart';
 import 'merge_control.dart';
+import 'pull_facts.dart';
 
 /// The fix control behind a failing pull request's card (F5 decision 12): one
 /// primary action that posts the dispatch with no further input, and a caret
@@ -26,8 +27,16 @@ PrActions pullCardActions(
   // A merge always confirms first, naming the pull request and its base
   // branch, because it cannot be undone (§9). A caller that passes its own
   // still confirms; this is only the default.
-  merge:
-      merge ?? () => unawaited(confirmMerge(context, pull: pull, model: model)),
+  //
+  // A factory item's pull request is the exception: the only route that merges
+  // it needs the reviewed node id a pull record does not carry, so Merge is
+  // drawn disabled with the reason rather than offered and refused (F5
+  // review; F6 brings the work item that holds it).
+  merge: pull.fromFactoryItem
+      ? null
+      : merge ??
+            () => unawaited(confirmMerge(context, pull: pull, model: model)),
+  mergeNote: pull.fromFactoryItem ? workItemMergeNote : null,
   openOnForge: openOnForge,
   fullLog: fullLog,
   watch: watch,

@@ -230,9 +230,11 @@ read, and the card says why in its own line. It is never drawn as passing and
 never as failing: its border is `border`, its mark `muted`. A failing card
 whose dispatch is in flight reads `Sending…` with the primary disabled (§7: an
 action taken is acknowledged at once), and the bridge's refusal, when there is
-one, sits above its buttons in `err`. `AskKind.pull` is the ask a fix that
-could not finish leaves: the pull request and the check, what was tried, and
-Open, Try again and Dismiss.
+one, sits above its buttons in `err`. A ready card whose merge this build
+cannot make draws Merge disabled under a `Tip` that names what brings it
+(`PrActions.mergeNote`), never as a button that would fail. `AskKind.pull` is
+the ask a fix that could not finish leaves: the pull request and the check,
+what was tried, and Open, Try again and Dismiss.
 
 Supporting pieces, shared by the components and exported with them by
 `kit.dart`. None is drawn on its own, and none has variants:

@@ -126,51 +126,6 @@ class BridgeClient {
     MergeRequest(commitMessage: commitMessage ?? ''),
   );
 
-  /// POST /api/factory/items/{id}/commands with a `merge_and_complete`: the
-  /// factory's own merge order for the pull request it reviewed.
-  ///
-  /// The item's version is read first, because the command must name the
-  /// version it was reviewed against — the controller refuses a command built
-  /// against a version it no longer holds (web/bridge/factory_types.go).
-  Future<void> mergeFactoryItem(
-    String itemID, {
-    required String repoID,
-    required int number,
-    required String headSHA,
-    required String baseRef,
-    String strategy = 'squash',
-  }) async {
-    final body = await _objectOf<Map<String, dynamic>>(
-      '/api/factory/items/${Uri.encodeComponent(itemID)}',
-      (json) => json,
-    );
-    final item = body['item'];
-    final version = item is Map<String, dynamic>
-        ? (item['version'] as num?)?.toInt() ?? 0
-        : 0;
-    await _post(
-      '/api/factory/items/${Uri.encodeComponent(itemID)}/commands',
-      <String, dynamic>{
-        'requestId': 'app-merge-${DateTime.now().microsecondsSinceEpoch}',
-        'kind': 'merge_and_complete',
-        'expectedVersion': version,
-        'completion': <String, dynamic>{
-          'prs': [
-            {
-              'repoId': repoID,
-              'number': number,
-              'nodeId': '',
-              'headSha': headSHA,
-              'baseRef': baseRef,
-            },
-          ],
-          'strategy': strategy,
-          'completeAfter': true,
-        },
-      },
-    );
-  }
-
   /// Sets one project's automatic pull-request fixing: it reads the project's
   /// whole settings document, changes `automations.autoFix` and writes it
   /// back.

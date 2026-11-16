@@ -103,6 +103,29 @@ void main() {
     expect(reviewed, 1);
   });
 
+  testWidgets('ready: a merge it cannot make is disabled and says why', (
+    tester,
+  ) async {
+    // A merge the app has no reviewed identity for is not offered as a button
+    // that would fail: it is drawn disabled with the phase that supplies it.
+    const note =
+        'Merging a work item’s pull request arrives with work items '
+        '(F6)';
+    await pump(
+      tester,
+      PrState.ready,
+      actions: const PrActions(mergeNote: note),
+    );
+
+    final merge = tester.widget<Btn>(find.widgetWithText(Btn, 'Merge'));
+    expect(merge.onTap, isNull);
+    expect(
+      hasTip(tester, find.widgetWithText(Btn, 'Merge'), note),
+      isTrue,
+      reason: 'a disabled merge says why',
+    );
+  });
+
   testWidgets('failing: failing border, the log tail, Fix with a worker', (
     tester,
   ) async {

@@ -242,6 +242,80 @@ func (w *factoryWorkers) Observe(ctx context.Context, item FactoryItem) (Factory
 	return obs, nil
 }
 
+// revisionTarget resolves the live runtime that runs one item's worker, which
+// is what a delivery or a pause reaches. The ownership checks mirror Observe: a
+// parked, replaced or foreign worker is not this item's to steer.
+func (w *factoryWorkers) revisionTarget(item FactoryItem) (*Registry, string, error) {
+	if w == nil || w.fleet == nil {
+		return nil, "", fmt.Errorf("%w: factory runtime unavailable", ErrFactoryRefused)
+	}
+	for n := len(item.Workers) - 1; n >= 0; n-- {
+		worker := item.Workers[n]
+		if worker.Parked || worker.SessionID == "" {
+			continue
+		}
+		a, ok := w.fleet.ws.Agent(worker.AgentID)
+		if !ok || a.FactoryItemID != item.ID || a.FactoryRole != worker.Role || a.FactorySpawnEffectID != worker.SpawnEffectID || a.FactoryParked {
+			continue
+		}
+		rt, err := w.fleet.runtimeForAgent(worker.AgentID)
+		if err != nil || rt.reg == nil {
+			continue
+		}
+		if w.fleet.sessionIDFor(rt) != worker.SessionID {
+			continue
+		}
+		if _, ok := rt.reg.lookup(worker.SessionID); !ok {
+			continue
+		}
+		return rt.reg, worker.SessionID, nil
+	}
+	return nil, "", fmt.Errorf("%w: no live worker runtime for item %s", ErrFactoryRefused, item.ID)
+}
+
+// RevisionSession is the session a delivery or a pause is aimed at.
+func (w *factoryWorkers) RevisionSession(_ context.Context, item FactoryItem) (string, error) {
+	_, session, err := w.revisionTarget(item)
+	return session, err
+}
+
+// RevisionSteeringStatus reads the worker session's Send now snapshot.
+func (w *factoryWorkers) RevisionSteeringStatus(ctx context.Context, item FactoryItem) (RevisionSteeringState, error) {
+	reg, session, err := w.revisionTarget(item)
+	if err != nil {
+		return RevisionSteeringState{}, err
+	}
+	return reg.RevisionSteeringStatus(ctx, session)
+}
+
+// RevisionSendNow submits one Send now request to the worker session.
+func (w *factoryWorkers) RevisionSendNow(ctx context.Context, item FactoryItem, turnID, requestID, text string) (RevisionSteeringReceipt, error) {
+	reg, session, err := w.revisionTarget(item)
+	if err != nil {
+		return RevisionSteeringReceipt{}, err
+	}
+	return reg.RevisionSendNow(ctx, session, turnID, requestID, text)
+}
+
+// RevisionPause asks the worker session to stop through the one existing cancel
+// path. It is not the factory's terminal stop: nothing is parked or discarded.
+func (w *factoryWorkers) RevisionPause(ctx context.Context, item FactoryItem) error {
+	reg, session, err := w.revisionTarget(item)
+	if err != nil {
+		return err
+	}
+	return reg.Cancel(ctx, session)
+}
+
+// RevisionReceipt reads the newest receipt this registry observed for a request.
+func (w *factoryWorkers) RevisionReceipt(item FactoryItem, requestID string) (RevisionSteeringReceipt, bool) {
+	reg, session, err := w.revisionTarget(item)
+	if err != nil {
+		return RevisionSteeringReceipt{}, false
+	}
+	return reg.revisionReceipt(session, requestID)
+}
+
 func (f *Fleet) ParkFactoryWorker(ctx context.Context, worker FactoryWorker) error {
 	a, ok := f.ws.Agent(worker.AgentID)
 	if !ok || a.FactoryItemID == "" || a.FactoryRole != worker.Role || a.FactorySpawnEffectID != worker.SpawnEffectID || a.SessionID == "" || a.SessionID != worker.SessionID || a.FactoryParked {

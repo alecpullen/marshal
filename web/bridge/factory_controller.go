@@ -731,7 +731,15 @@ func (c *FactoryController) tick(ctx context.Context) error {
 	if err := c.reconcileRevisionFollowUps(); err != nil {
 		return err
 	}
-	if err := c.activateAuthorizedRevisions(ctx); err != nil {
+	// Pauses first: an item whose affected work was asked to stop must not have
+	// a revision steered into the turn that is being cancelled.
+	if err := c.advanceRevisionPauses(ctx); err != nil {
+		return err
+	}
+	if err := c.deliverAuthorizedRevisions(ctx); err != nil {
+		return err
+	}
+	if err := c.activateRevisionAtSafeBoundary(ctx); err != nil {
 		return err
 	}
 	items := c.store.List()
@@ -774,7 +782,16 @@ func (c *FactoryController) tick(ctx context.Context) error {
 			}
 		}
 	}
-	active := factoryPick(items, func(i FactoryItem) bool {
+	// A paused item is not dispatchable work: the scheduler starts nothing for
+	// it until a user explicitly resumes the paused worker.
+	pickable := make([]FactoryItem, 0, len(items))
+	for _, item := range items {
+		if factoryRevisionWorkPaused(item) {
+			continue
+		}
+		pickable = append(pickable, item)
+	}
+	active := factoryPick(pickable, func(i FactoryItem) bool {
 		for _, w := range i.Workers {
 			if !w.Parked {
 				o, err := c.effects.Observe(ctx, i)
@@ -1235,7 +1252,7 @@ func factoryApplyCommandFrom(i *FactoryItem, c FactoryCommand, p *factoryPrincip
 	case "revision_authorize":
 		return factoryApplyRevisionAuthorize(i, c, p, now)
 	case "revision_delivery_choice":
-		return factoryApplyRevisionDeliveryChoice(i, c, p, now)
+		return factoryApplyRevisionDelivery(i, c, p, now)
 	case "revision_follow_up_confirm":
 		return factoryApplyRevisionFollowUpConfirm(i, c, p, now)
 	default:

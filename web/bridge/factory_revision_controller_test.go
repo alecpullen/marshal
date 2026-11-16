@@ -40,6 +40,13 @@ func (e *revisionFakeEffects) Execute(_ context.Context, i FactoryItem, fx Facto
 	return FactoryOutcome{EffectID: fx.ID, Confirmed: true}, nil
 }
 
+// executedEffects is the effects this adapter was asked to dispatch.
+func (e *revisionFakeEffects) executedEffects() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]string(nil), e.executed...)
+}
+
 // revisionIdleObservation is the whole conjunction the scheduler and the
 // activation gate require, with the item observed as its own reviewed head.
 func revisionIdleObservation(i FactoryItem) FactoryObservation {

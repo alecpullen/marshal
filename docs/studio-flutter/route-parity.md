@@ -70,7 +70,7 @@ method nor a `dropped:` reason fails it, and so does a method that is not in
 | POST | `/api/library/skills/confirm` | confirmSkill |  |
 | POST | `/api/library/skills/discard` | discardSkill |  |
 | POST | `/api/library/skills/preview` | previewSkill |  |
-| GET | `/api/marshal/access${suffix ` | — | dropped: the Studio has no access-selection screen; the web client stores that choice itself |
+| GET | `/api/marshal/access?host=…` | — | dropped: the Studio has no access-selection screen; the web client stores that choice itself |
 | PUT | `/api/marshal/access/default` | — | dropped: the Studio has no access-selection screen; the web client stores that choice itself |
 | PUT | `/api/marshal/access/override` | — | dropped: the Studio has no access-selection screen; the web client stores that choice itself |
 | PUT | `/api/marshal/access/selection` | — | dropped: the Studio has no access-selection screen; the web client stores that choice itself |
@@ -111,7 +111,7 @@ method nor a `dropped:` reason fails it, and so does a method that is not in
 | DELETE | `/api/repos/X` | removeRepo |  |
 | GET | `/api/repos/X/issues` | issues |  |
 | POST | `/api/repos/X/issues/X/spawn` | — | dropped: the new-work dialog starts an agent through spawn; the issue shortcut has no caller |
-| GET | `/api/repos/X/preview-environments${ref ` | — | dropped: preview environments are F5’s; no screen reads them yet |
+| GET | `/api/repos/X/preview-environments?ref=…` | — | dropped: preview environments are F5’s; no screen reads them yet |
 | POST | `/api/repos/X/webhook-secret` | — | dropped: issuing a webhook secret is the web client’s forge setup |
 | POST | `/api/reroutes/X/undo` | undoReroute |  |
 | GET | `/api/runs` | — | dropped: the Runs screen is F6’s; the transcript reaches a run through its thread |
@@ -151,7 +151,7 @@ method nor a `dropped:` reason fails it, and so does a method that is not in
 | DELETE | `/api/watches/X/X` | — | dropped: the app lists watches and undoes a reroute; creating and stopping them is not built |
 | GET | `/api/workspaces` | environments |  |
 | POST | `/api/workspaces` | createEnvironment |  |
-| GET | `/api/workspaces/X${version ` | environment |  |
+| GET | `/api/workspaces/X?version=…` | environment |  |
 | GET | `/api/workspaces/X/builds` | environmentBuilds |  |
 | POST | `/api/workspaces/X/builds` | startEnvironmentBuild |  |
 | POST | `/api/workspaces/X/ca/rotate` | — | dropped: rotating a template’s certificate is not built |

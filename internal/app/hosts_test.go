@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,11 +17,42 @@ import (
 	"marshal/internal/index"
 )
 
+// hostRegistries records the project-host registries each test created, so a
+// root's cleanup can close them before it removes the directory. hostRoot and
+// testHosts register their cleanups in the order a test calls them, and
+// t.Cleanup runs LIFO: a test that asks for its hosts first, as most do, would
+// remove a root while that host's index work still runs. The work then
+// recreates .marshal/index.lock after the removal emptied .marshal, and the
+// test fails in cleanup with "RemoveAll ... directory not empty" (see the
+// "Go tests and vet" failure on main, run 43716767089).
+var (
+	hostRegistriesMu sync.Mutex
+	hostRegistries   = map[*testing.T][]*Hosts{}
+)
+
+// closeTestHosts closes every registry t created and forgets them. Close is
+// idempotent, so it does not matter whether testHosts' own cleanup already
+// ran.
+func closeTestHosts(t *testing.T) {
+	hostRegistriesMu.Lock()
+	registries := hostRegistries[t]
+	delete(hostRegistries, t)
+	hostRegistriesMu.Unlock()
+	for _, hs := range registries {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = hs.Close(ctx)
+		cancel()
+	}
+}
+
 // hostRoot is a project root with the .marshal directory startRuntime would
 // already have created.
 func hostRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
+	// Registered after t.TempDir's own cleanup, so it runs first: the host
+	// must stop writing into root before the directory is removed.
+	t.Cleanup(func() { closeTestHosts(t) })
 	if err := os.MkdirAll(filepath.Join(root, ".marshal"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -30,10 +62,11 @@ func hostRoot(t *testing.T) string {
 func testHosts(t *testing.T, indexing bool, linger time.Duration) *Hosts {
 	t.Helper()
 	hs := newHosts(indexing, linger)
+	hostRegistriesMu.Lock()
+	hostRegistries[t] = append(hostRegistries[t], hs)
+	hostRegistriesMu.Unlock()
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = hs.Close(ctx)
+		closeTestHosts(t)
 	})
 	return hs
 }

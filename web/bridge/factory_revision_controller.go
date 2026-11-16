@@ -466,14 +466,11 @@ func (c *FactoryController) activateRevision(item FactoryItem, n int) (FactoryIt
 		if len(dst.Effects) > 0 && dst.Effects[len(dst.Effects)-1].Status != "completed" {
 			return ErrFactoryConflict
 		}
-		approval := FactoryApproval{
-			Revision:   active.Revision + 1,
-			Plan:       p.Plan,
-			Spec:       p.Spec,
-			PlanHash:   p.CandidateHash,
-			Config:     active.Config,
-			ApprovedAt: now,
-		}
+		approval := FactoryApproval{Revision: active.Revision + 1, Plan: p.Plan, Spec: p.Spec, PlanHash: factoryApprovalHash(
+
+			p.Plan,
+			p.Spec, active.EditSnapshot), Config: active.Config, EditSnapshot: factoryCloneSnapshot(active.EditSnapshot), ApprovedAt: now}
+
 		dst.Approvals = append(dst.Approvals, approval)
 		p.Status = "activated"
 		p.Version++

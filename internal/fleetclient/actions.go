@@ -30,6 +30,13 @@ func (c *Client) getAction(ctx context.Context, path string, out any) error {
 // action sends one action's request. Every action goes through here, so every
 // action's refusal is the seam's error whatever its method.
 func (c *Client) action(ctx context.Context, method, path string, body, out any) error {
+	return c.actionAnswering(ctx, method, path, body, out, 0)
+}
+
+// actionAnswering is action with one refused status read as the action's
+// result: a status equal to accept (when not 0) decodes out instead of
+// refusing, because the bridge reports that refusal in the result's own shape.
+func (c *Client) actionAnswering(ctx context.Context, method, path string, body, out any, accept int) error {
 	var sent io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -56,7 +63,9 @@ func (c *Client) action(ctx context.Context, method, path string, body, out any)
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return actionError(resp)
+		if resp.StatusCode != accept {
+			return actionError(resp)
+		}
 	}
 	if out == nil {
 		return nil
@@ -145,4 +154,53 @@ func (c *Client) RecentPrompts(ctx context.Context, project string, limit int) (
 		return nil, err
 	}
 	return out.Prompts, nil
+}
+
+// Diff is an agent's changed files and, when path is not "", that file's diff.
+func (c *Client) Diff(ctx context.Context, agentID, path string) (contract.DiffResult, error) {
+	route := "/api/agents/" + url.PathEscape(agentID) + "/diff"
+	if path != "" {
+		query := url.Values{}
+		query.Set("path", path)
+		route += "?" + query.Encode()
+	}
+
+	var out contract.DiffResult
+	err := c.getAction(ctx, route, &out)
+	return out, err
+}
+
+// CommitDraft is the agent's suggested commit message.
+func (c *Client) CommitDraft(ctx context.Context, agentID string) (contract.CommitDraft, error) {
+	var out contract.CommitDraft
+	err := c.getAction(ctx, "/api/agents/"+url.PathEscape(agentID)+"/commit-draft", &out)
+	return out, err
+}
+
+// Verify runs the agent's gate and answers its record.
+func (c *Client) Verify(ctx context.Context, agentID string) (contract.GateRecord, error) {
+	var out contract.GateRecord
+	err := c.post(ctx, "/api/agents/"+url.PathEscape(agentID)+"/verify", nil, &out)
+	return out, err
+}
+
+// Merge merges a local agent's branch. The bridge reports a refusal as a 409
+// whose body is the result, so that body is the answer, not an error.
+func (c *Client) Merge(ctx context.Context, agentID string, req contract.MergeRequest) (contract.MergeResult, error) {
+	var out contract.MergeResult
+	err := c.actionAnswering(ctx, http.MethodPost,
+		"/api/agents/"+url.PathEscape(agentID)+"/merge", req, &out, http.StatusConflict)
+	return out, err
+}
+
+// Exit commits, verifies and pushes a git agent's work.
+func (c *Client) Exit(ctx context.Context, agentID string, req contract.ExitRequest) (contract.ExitResult, error) {
+	var out contract.ExitResult
+	err := c.post(ctx, "/api/agents/"+url.PathEscape(agentID)+"/exit", req, &out)
+	return out, err
+}
+
+// Discard throws the agent's work away and retires it.
+func (c *Client) Discard(ctx context.Context, agentID string) error {
+	return c.post(ctx, "/api/agents/"+url.PathEscape(agentID)+"/discard", nil, nil)
 }

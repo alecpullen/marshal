@@ -572,7 +572,93 @@ _To be filled by the executor._
 
 ### Plan 2 — the reconnect and the drafts
 
-_To be filled by the executor._
+**What was built,** against B2, in the order the plan's tasks built it:
+
+- **`marshal/restarting`** (`internal/acpwire/restart.go`): `MethodRestarting`
+  and `RestartingParams{Reason, Version}`, with `TestRestartingParamsRoundTrip`
+  pinning the wire names. Nothing sends it yet: that is plan 4's half.
+- **The draft** (`internal/app/tui/draft.go`): `Draft` — the composer's text
+  and its paste attachments — `Draft.Empty()`, `Model.Draft()`, and
+  `WithDraft`, which seeds the composer when `tui.New` builds it. Tests:
+  `TestADraftRoundTrips`, `TestAnEmptyComposerIsAnEmptyDraft` and
+  `TestADraftIsACopy`.
+- **The waiting screen** (`internal/app/tui/reconnect/`):
+  `New(label, reason, deadline, attempts, opts...)` reads "Reconnecting to
+  <label>…", or, once a `marshal/restarting` has arrived, "<label> is
+  restarting: <reason>", with the attempt count, the last error's first line
+  and the seconds left. `esc` and `q` give up (`GaveUp()`); a closed attempts
+  channel ends the wait without giving up. Tests:
+  `TestTheWaitingScreenNamesTheSession`,
+  `TestTheWaitingScreenSaysWhyARestartHappens`, `TestEachAttemptRepaints`,
+  `TestSecondsLeftRoundUpAndStopAtZero`, `TestTheScreenEndsWhenTheAttemptsDo`,
+  `TestEscGivesUp` and the golden `TestTheWaitingScreenMatchesItsGoldens`.
+- **The loop** (`internal/launch/daemon.go`): `sessionStep` keeps the draft of
+  every ending, keyed by the session ID and cleared when the composer is
+  empty, and a connection that ends on its own — not by quit, `/detach`,
+  `/fleet` or a resume — runs `reconnect`. The attempts run on their own
+  goroutine while the waiting screen runs, at 1s, 2s, 4s and then 5s, inside a
+  60s window; a 4xx refusal ends them at once, and a dial failure, a 5xx and a
+  session the child cannot attach yet are retried. A successful attempt rides
+  on the step, so the screen after it runs on the new connection rather than
+  dialling again, and it is the same session's ID, so the draft comes back
+  with it. Giving up builds today's message (`marshal attach <id>`) or, once
+  the fleet has run, the fleet with that line in Events. The last
+  `marshal/restarting` is recorded on the connection and titles the waiting
+  screen when the attempt is retried. Tests:
+  `TestALostConnectionReconnectsToTheSameSession`,
+  `TestAReconnectedScreenHasTheDraft`, `TestAReturnFromTheFleetHasTheDraft`,
+  `TestAnEmptyDraftClearsTheEntry`,
+  `TestTheRestartReasonReachesTheWaitingScreen`,
+  `TestTheReconnectGivesUpAfterItsWindow`, `TestARefusedReconnectStopsAtOnce`,
+  `TestGivingUpStopsTheAttempts` and `TestTheVersionNoteIsAddedOnce`.
+- **L1's screen half against a real bridge** (`test/daemon/reconnect_test.go`,
+  `TestAScreenComesBackAfterTheChildRestarts`): `launch.Attach` on a real
+  harness session types a draft into the screen with key messages, ends the
+  project child with SIGTERM — the unexpected exit the bridge respawns after
+  100ms — and checks that the screen which comes back is the same session,
+  holding that draft and the transcript the restart resumed. The child's
+  process ID comes from `MARSHAL_DAEMON_TEST_CHILD_PID`, which `runChild`
+  writes for `acp --viewers` only (`test/daemon/main_test.go`): the bridge
+  also starts its control agent from this binary with no arguments, and its
+  write would name the wrong process. `GET /api/daemon` reports no process
+  IDs. The waiting screen is driven there by a small command pump, because
+  the attempts channel is unbuffered and only the screen reads it.
+
+**Where it differs from B2.** B2 says "the loop adds a note only when the
+session's newest message is not already that note". The implementation reads a
+bounded window of the session's newest messages (`noteOnceWindow = 32`, in
+`internal/launch/daemon.go`) and looks for the note's exact text in it. A
+resumed session appends its own startup messages — the autoloaded skill bodies
+among them — after the transcript it reloaded, so the note the loop wrote
+before a daemon restart is not the newest message when the next attach reads
+it. Under the literal newest-message rule the note is rewritten once per
+restart, which is the stacking B2 exists to stop; `TestTheVersionNoteIsAddedOnce`
+fails with it (checked by dumping the resumed transcript).
+
+**The manual run is still to be done.** It is one person's check at a
+terminal with the daemon installed from this build: type a draft in a session
+screen, run `marshal daemon stop` and then `marshal daemon start` from another
+terminal, and record what the screen shows meanwhile and whether it comes back
+with the draft. It was not run for this record — it needs a human at a
+terminal with that daemon installed — and nothing here claims it passed. The
+rest of this plan is the automated half.
+
+**Verification,** on Linux (where the plan's `TMPDIR=/private/tmp/p6-2-suite`
+does not exist, so `/tmp/p6-2-suite` was used throughout):
+
+- `TMPDIR=/tmp/p6-2-suite CGO_ENABLED=1 go test ./test/daemon/ -run Comes
+  -count=1 -timeout 15m` — `ok marshal/test/daemon 2.173s`; `-count=2` passed
+  again (`4.304s`).
+- `gofmt -l internal cmd test web` printed nothing.
+- `CGO_ENABLED=1 go vet ./...` was clean.
+- CI's suite command (`.github/workflows/go-checks.yml`: `-p=1 ./... -count=1
+  -timeout 20m`, the twelve latency budgets skipped by name — the two in the
+  batch's baseline among them) passed under `TMPDIR=/tmp/p6-2-suite`, every
+  package `ok`, `test/daemon` in 13.575s and `web/bridge` in 141.687s.
+- `CGO_ENABLED=1 go build -o marshal ./cmd/marshal` built.
+- The scripted usability suite passed with the built binary at the repository
+  root (`USABILITY_REQUIRE_BINARY=1 go test ./test/usability/... -run
+  TestScripted -timeout 5m`).
 
 ### Plan 3 — staleness in the agent
 

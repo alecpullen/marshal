@@ -193,7 +193,13 @@ func (s *Server) attachProject(w http.ResponseWriter, r *http.Request) {
 	// A viewer that arrives while the session is being closed attaches to
 	// nothing: the relay still runs for it, and detach/touch become no-ops.
 	pc.reg.attachViewer(sessionID)
-	go s.fleet.relay(pc, sessionID, "", client, buffered.Reader, conn)
+	// The relay rearms the child's linger when the viewer goes: an empty
+	// registry is what reaps a project child (P4 D2).
+	go s.fleet.relay(relayEnd{
+		reg:    pc.reg,
+		linger: func() { s.fleet.rearmLinger(pc) },
+		root:   pc.root,
+	}, sessionID, "", client, buffered.Reader, conn)
 }
 
 // attachAgent serves POST /api/agents/{id}/attach on the socket (P5 F5). It is
@@ -234,32 +240,68 @@ func (s *Server) attachAgent(w http.ResponseWriter, r *http.Request, id string) 
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
-	if pc == nil {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "agent " + name + " runs on a child of its own, which has no viewer socket yet"})
-		return
+	// What the attach dials and what its relay needs: an agent on a project
+	// child uses that child's socket, registry, linger rearm and root; an
+	// agent whose runtime records a viewer socket of its own is dialled there
+	// and counted on its own registry, with no linger to rearm (decision 2).
+	var socket string
+	end := relayEnd{}
+	if pc != nil {
+		socket = pc.socket
+		end = relayEnd{reg: pc.reg, linger: func() { s.fleet.rearmLinger(pc) }, root: pc.root}
+	} else {
+		// An agent with a child of its own serves its viewers on that child's
+		// socket, and its viewer is counted on the agent's own registry. A
+		// container's agent has no viewer socket: its viewers are the
+		// container's business, and the fleet's resume is the way back, not
+		// an attach.
+		s.fleet.mu.Lock()
+		rt := s.fleet.runtimes[id]
+		if rt != nil {
+			socket, end = rt.viewerSocket, relayEnd{reg: rt.reg, root: name}
+		}
+		s.fleet.mu.Unlock()
+		if socket == "" {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "agent " + name + " runs in a container, which has no viewer socket yet"})
+			return
+		}
 	}
 	if sessionID == "" {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "agent " + name + " has no session yet"})
 		return
 	}
 
-	conn, err := net.Dial("unix", pc.socket)
+	// rearm is what a refusal that leaves nothing behind owes a project child:
+	// resolving the child cancelled its linger, so it must be armed again. An
+	// own child has none, and there end.linger is nil.
+	rearm := func() {
+		if end.linger != nil {
+			end.linger()
+		}
+	}
+	// A failed dial names what it could not reach.
+	dialled := "the agent's own child"
+	if pc != nil {
+		dialled = "the project child"
+	}
+
+	conn, err := net.Dial("unix", socket)
 	if err != nil {
-		s.fleet.rearmLinger(pc)
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "dial the project child: " + err.Error()})
+		rearm()
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "dial " + dialled + ": " + err.Error()})
 		return
 	}
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		_ = conn.Close()
-		s.fleet.rearmLinger(pc)
+		rearm()
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "attach needs a hijackable connection"})
 		return
 	}
 	client, buffered, err := hj.Hijack()
 	if err != nil {
 		_ = conn.Close()
-		s.fleet.rearmLinger(pc)
+		rearm()
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "hijack the connection: " + err.Error()})
 		return
 	}
@@ -277,14 +319,14 @@ func (s *Server) attachAgent(w http.ResponseWriter, r *http.Request, id string) 
 		// agent's, so it stays open: only what the attach opened is closed.
 		_ = client.Close()
 		_ = conn.Close()
-		s.fleet.rearmLinger(pc)
+		rearm()
 		return
 	}
 
 	// A viewer that arrives while the session is being closed attaches to
 	// nothing: the relay still runs for it, and detach/touch become no-ops.
-	pc.reg.attachViewer(sessionID)
-	go s.fleet.relay(pc, sessionID, a.ID, client, buffered.Reader, conn)
+	end.reg.attachViewer(sessionID)
+	go s.fleet.relay(end, sessionID, a.ID, client, buffered.Reader, conn)
 }
 
 // hasToken reports whether a comma-separated header value carries want, case

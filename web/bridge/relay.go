@@ -58,6 +58,16 @@ type relayWatch struct {
 	sessionID string
 }
 
+// relayEnd is what a relay needs from the child its attach reached (decision
+// 2): the registry that counts the viewer, the hook that rearms a project
+// child's linger — nil for a child of the agent's own — and the name the
+// attach's log lines carry.
+type relayEnd struct {
+	reg    *Registry // counts the viewer
+	linger func()    // rearms a project child's linger; nil for an own child
+	root   string    // the name the attach's log lines carry
+}
+
 // relay copies frames between an attached client and its viewer connection
 // until either side ends (P4 D3). Every frame passes through unchanged, in
 // order, in both directions; the only frames it interprets are the answers
@@ -65,10 +75,10 @@ type relayWatch struct {
 //
 // agentID is the agent whose session an agent attach opened, "" for a project
 // attach.
-func (f *Fleet) relay(pc *projectChild, sessionID, agentID string, client net.Conn, buffered *bufio.Reader, agent net.Conn) {
+func (f *Fleet) relay(end relayEnd, sessionID, agentID string, client net.Conn, buffered *bufio.Reader, agent net.Conn) {
 	r := &relay{
 		fleet:   f,
-		pc:      pc,
+		end:     end,
 		client:  client,
 		agent:   agent,
 		session: sessionID,
@@ -76,7 +86,7 @@ func (f *Fleet) relay(pc *projectChild, sessionID, agentID string, client net.Co
 		watches: make(map[string]*relayWatch),
 		cap:     f.frameCap(),
 	}
-	logAttach("attached", pc.root, sessionID, "requested")
+	logAttach("attached", end.root, sessionID, "requested")
 
 	done := make(chan string, 2)
 	go func() { done <- r.pumpClient(buffered) }()
@@ -92,7 +102,7 @@ func (f *Fleet) relay(pc *projectChild, sessionID, agentID string, client net.Co
 // and the answers it is waiting for.
 type relay struct {
 	fleet  *Fleet
-	pc     *projectChild
+	end    relayEnd
 	client net.Conn
 	agent  net.Conn
 
@@ -140,16 +150,19 @@ func (r *relay) stop() {
 }
 
 // finish uncounts the viewer, touches the session, and arms the linger when
-// the close that ended the relay left the project child with no session.
+// the close that ended the relay left the project child with no session. An
+// own child has no linger to arm: end.linger is nil.
 func (r *relay) finish(reason string) {
 	id := r.currentSession()
-	r.pc.reg.detachViewer(id)
-	r.pc.reg.touch(id)
+	r.end.reg.detachViewer(id)
+	r.end.reg.touch(id)
 	// Neither pump is running now, so an answer that has not arrived cannot
 	// arrive: drop the watches rather than keep decoding every frame for them.
 	r.clearWatches()
-	r.fleet.rearmLinger(r.pc)
-	logAttach("detached", r.pc.root, id, reason)
+	if r.end.linger != nil {
+		r.end.linger()
+	}
+	logAttach("detached", r.end.root, id, reason)
 }
 
 // pumpClient forwards the client's frames to the child. It reads the
@@ -182,7 +195,7 @@ func (r *relay) pumpClient(src *bufio.Reader) string {
 		if _, err := r.agent.Write(frame); err != nil {
 			return "child write: " + err.Error()
 		}
-		r.pc.reg.touch(r.currentSession())
+		r.end.reg.touch(r.currentSession())
 	}
 }
 
@@ -207,7 +220,7 @@ func (r *relay) pumpAgent(src *bufio.Reader) string {
 		if err != nil {
 			return "client write: " + err.Error()
 		}
-		r.pc.reg.touch(r.currentSession())
+		r.end.reg.touch(r.currentSession())
 		if after != nil {
 			after()
 		}
@@ -343,13 +356,13 @@ func (r *relay) answer(frame []byte) func() {
 		if err := json.Unmarshal(resp.Result, &res); err != nil || res.SessionID == "" {
 			return nil
 		}
-		if r.pc.reg.rename(r.currentSession(), res.SessionID) {
+		if r.end.reg.rename(r.currentSession(), res.SessionID) {
 			r.setSession(res.SessionID)
 		}
 		return nil
 	case watchClose:
 		id := watch.sessionID
-		return func() { r.fleet.closeRelayedSession(r.pc, id) }
+		return func() { r.fleet.closeRelayedSession(r.end.reg, r.end.root, id) }
 	}
 	return nil
 }
@@ -357,13 +370,13 @@ func (r *relay) answer(frame []byte) func() {
 // closeRelayedSession ends a session's runtime through the bridge's own
 // connection after a viewer closed it. It runs off the relay's goroutine so a
 // slow agent never delays the client's stream (decision 8).
-func (f *Fleet) closeRelayedSession(pc *projectChild, id string) {
+func (f *Fleet) closeRelayedSession(reg *Registry, root, id string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), controlHandshakeTimeout)
 		defer cancel()
-		if err := pc.reg.Close(ctx, id); err != nil {
+		if err := reg.Close(ctx, id); err != nil {
 			slog.Default().Warn("webbridge: close a viewer-closed session",
-				"root", pc.root, "session", id, "err", err)
+				"root", root, "session", id, "err", err)
 		}
 	}()
 }

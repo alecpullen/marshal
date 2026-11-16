@@ -171,6 +171,11 @@ type Model struct {
 	host  acpclient.Host
 	sess  acpclient.Session
 	input textarea.Model
+	// pendingCommandRaw is the command line dispatchCommand is running. A
+	// refusal that fires after the Enter handler already cleared the composer
+	// reads it to put the draft back, so an argument-heavy command is not
+	// retyped (AUD-12).
+	pendingCommandRaw string
 	// pendingDraft is the draft WithDraft recorded. An Option runs before
 	// the composer exists, so New seeds the textarea and m.pastes from it
 	// once they do, and drops it then (see draft.go).
@@ -4280,6 +4285,7 @@ func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.busy {
+		m.refuseBusyCommand("/sdd new", "plan authoring")
 		return m, nil
 	}
 	goal := parsed.Goal
@@ -6465,6 +6471,9 @@ func (m Model) handleSuggestionMsg(msg suggestionMsg) (Model, tea.Cmd) {
 
 func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 	m.leaveBrowse() // running a command ends browsing
+	// Stashed for a refusal that has to hand the line back: the Enter handler
+	// clears the composer before dispatch, so this is the only copy left.
+	m.pendingCommandRaw = raw
 	// /send-now is recognized from the raw line before shlex.Split can
 	// reinterpret its payload: the argument is literal steering text, so
 	// quotes, newlines and interior whitespace must survive verbatim. The

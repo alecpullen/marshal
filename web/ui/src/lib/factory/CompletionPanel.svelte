@@ -8,6 +8,7 @@
     completionLinks,
     completionStatus,
     linksStale,
+    mergeCommandKind,
     remainingMergeLinks,
     revisionLabel,
     reviewedPR,
@@ -107,11 +108,28 @@
   }
   let confirming = $state<Confirmation | null>(null)
   let confirmEl = $state<HTMLElement | null>(null)
+  // The control that opened the confirmation, so closing it returns focus
+  // where the person left off instead of dropping them at the top of the page.
+  let opener = $state<HTMLElement | null>(null)
 
   // Focus moves into the confirmation, so a keyboard or screen-reader user
   // lands on the decision they opened rather than at the top of the panel.
   $effect(() => {
     if (confirming && confirmEl) confirmEl.focus()
+  })
+
+  // Escape closes it wherever focus is. The dialog is deliberately non-modal,
+  // so focus can Tab past its end and a container handler would stop receiving
+  // the key exactly then.
+  $effect(() => {
+    if (!confirming) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      cancel()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
   })
 
   function toggle(link: FactoryPRLink, on: boolean) {
@@ -148,6 +166,7 @@
   function authorize(target: FactoryPRLink[], completeAfter: boolean, origin: 'selected' | 'remaining', useStrategy: FactoryMergeStrategy) {
     if (busy || !target.length || linksStale(target)) return
     if (needsRunChoice && !choice) return
+    opener = typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null
     confirming = {
       origin,
       completeAfter,
@@ -158,14 +177,17 @@
     }
   }
 
-  function cancel() {
-    confirming = null
+  /** Close the confirmation and hand focus back to the control that opened it. */
+  function releaseFocus() {
+    const previous = opener
+    opener = null
+    previous?.focus?.()
   }
 
-  function onConfirmKey(event: KeyboardEvent) {
-    if (event.key !== 'Escape') return
-    event.preventDefault()
-    cancel()
+  function cancel() {
+    if (!confirming) return
+    confirming = null
+    releaseFocus()
   }
 
   function confirm() {
@@ -178,7 +200,8 @@
       completeAfter: pending.completeAfter,
       ...(pending.runChoice ? { runChoice: pending.runChoice } : {}),
     }
-    void run(pending.completeAfter ? 'merge_and_complete' : 'merge_pr', { completion: completionCommand })
+    void run(mergeCommandKind(pending.completeAfter), { completion: completionCommand })
+    releaseFocus()
   }
 
   function assessmentLabel(state: FactoryAssessment): string {
@@ -234,8 +257,11 @@
   const remaining = $derived(remainingMergeLinks(item))
   const remainingStale = $derived(linksStale(remaining))
   const retryBlocked = $derived(busy || !remaining.length || remainingStale || (needsRunChoice && !choice))
-  /** True while the batch still has something a person could act on. */
-  const recoverable = $derived(!!batch && (batch.state !== 'complete' || (batch.steps ?? []).some((step) => step.state !== 'confirmed')))
+  /** True only while the batch is stopped. An active batch is being driven by
+   * the bridge — its entries move on their own — and a new merge command for it
+   * is refused as a conflict, so offering a retry there could only produce an
+   * error. A complete batch has nothing left to authorize. */
+  const recoverable = $derived(batch?.state === 'stopped')
   const hasUncertain = $derived((batch?.steps ?? []).some((step) => step.state === 'uncertain'))
 
   /** Everything completing without merging would leave behind, said plainly. */
@@ -411,7 +437,6 @@
       tabindex="-1"
       data-testid="completion-confirm"
       bind:this={confirmEl}
-      onkeydown={onConfirmKey}
     >
       <h3 id="completion-confirm-title" class="font-semibold">
         {confirming.completeAfter ? 'Merge these pull requests and complete' : 'Merge these pull requests'}
@@ -425,7 +450,7 @@
       <ol class="grid min-w-0 gap-1 text-sm">
         {#each confirming.links as link, index (keyOf(link))}
           <li class="break-all" data-testid="completion-confirm-pr">
-            {index + 1}. PR #{link.pr.number} — head <code>{revisionLabel(link.pr.headSha)}</code> → base <code>{link.pr.baseRef || 'unknown'}</code>
+            {index + 1}. PR #{link.pr.number} — head <code>{link.pr.headSha || 'unknown'}</code> → base <code>{link.pr.baseRef || 'unknown'}</code>
           </li>
         {/each}
       </ol>
@@ -468,7 +493,7 @@
         <div class="grid min-w-0 gap-2" data-testid="completion-batch-recovery">
           <p class="text-sm">A stopped batch resumes only on a new decision. Refresh evidence first, then retry what is left, or complete with the pull requests still open.</p>
           <div class="flex flex-wrap gap-2">
-            <Button variant="ghost" disabled={busy} aria-label="Refresh pull request evidence for the remaining batch" onclick={() => void run('refresh_pr_evidence')}>Refresh evidence</Button>
+            <Button variant="ghost" disabled={busy || !links.length} aria-label="Refresh pull request evidence for the remaining batch" onclick={() => void run('refresh_pr_evidence')}>Refresh evidence</Button>
             <Button
               disabled={retryBlocked}
               onclick={() => authorize(remaining, batch.completeAfter, 'remaining', batchStrategy)}

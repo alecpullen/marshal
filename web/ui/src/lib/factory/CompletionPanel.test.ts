@@ -195,8 +195,8 @@ describe('CompletionPanel', () => {
     expect(within(confirm).getByText(/merge in this order/)).toBeTruthy()
     expect(confirm.textContent).toContain('squash')
     expect(confirmLines()).toEqual([
-      '1. PR #13 — head head-13 → base main',
-      '2. PR #12 — head head-12 → base main',
+      '1. PR #13 — head head-13-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa → base main',
+      '2. PR #12 — head head-12-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa → base main',
     ])
     // Focus is moved into the confirmation, and Back leaves without sending.
     await waitFor(() => expect(document.activeElement).toBe(confirm))
@@ -315,8 +315,8 @@ describe('CompletionPanel', () => {
     // Retrying names only what the batch never confirmed, keeping its intent.
     await fireEvent.click(screen.getByRole('button', { name: 'Retry remaining' }))
     expect(confirmLines()).toEqual([
-      '1. PR #13 — head head-13 → base main',
-      '2. PR #14 — head head-14 → base main',
+      '1. PR #13 — head head-13-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa → base main',
+      '2. PR #14 — head head-14-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa → base main',
     ])
     await fireEvent.click(screen.getByRole('button', { name: 'Confirm merge and complete' }))
     const [kind, input] = sent(run)
@@ -327,6 +327,29 @@ describe('CompletionPanel', () => {
     // Completing with the pull requests still open is offered beside the retry.
     await fireEvent.click(screen.getByRole('button', { name: 'Complete with open PRs' }))
     expect(run).toHaveBeenLastCalledWith('complete')
+  })
+
+  it('offers no recovery while the batch is still being driven', () => {
+    render(CompletionPanel, {
+      item: item({
+        completion: completion({
+          links: [link(12), link(13)],
+          batch: batch({
+            state: 'active',
+            completeAfter: true,
+            steps: [step(12, 'dispatched'), step(13, 'unattempted')],
+          }),
+        }),
+      }),
+      busy: false,
+      run: vi.fn(),
+    })
+    // The entries stay readable while the bridge drives them, but a merge
+    // command for an active batch is refused as a conflict, so nothing here
+    // pretends the remainder can be authorized.
+    expect(screen.getAllByTestId('completion-batch-step').map((row) => row.getAttribute('data-state'))).toEqual(['dispatched', 'unattempted'])
+    expect(screen.queryByTestId('completion-batch-recovery')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Retry remaining' })).toBeNull()
   })
 
   it('never retries an uncertain merge and says why', async () => {
@@ -345,7 +368,7 @@ describe('CompletionPanel', () => {
     expect(screen.getByTestId('completion-uncertain').textContent).toContain('never sent a second time')
     await fireEvent.click(screen.getByRole('button', { name: 'Retry remaining' }))
     // The uncertain entry's outcome has to be read again, so it is not re-sent.
-    expect(confirmLines()).toEqual(['1. PR #14 — head head-14 → base main'])
+    expect(confirmLines()).toEqual(['1. PR #14 — head head-14-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa → base main'])
   })
 
   it('keeps the stop outcome apart from the completion status', () => {

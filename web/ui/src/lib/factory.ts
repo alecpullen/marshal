@@ -327,6 +327,10 @@ export function assessCompletionCommand(requestId: string, expectedVersion: numb
   return { requestId, kind: 'assess_completion', expectedVersion }
 }
 
+export function mergeCommandKind(completeAfter: boolean): 'merge_pr' | 'merge_and_complete' {
+  return completeAfter ? 'merge_and_complete' : 'merge_pr'
+}
+
 /**
  * Authorise the ordered merges the user reviewed. The kind is derived from the
  * intent because the bridge refuses a merge command whose completion intent
@@ -346,7 +350,7 @@ export function mergePRsCommand(
 ): FactoryCommand {
   return {
     requestId,
-    kind: completeAfter ? 'merge_and_complete' : 'merge_pr',
+    kind: mergeCommandKind(completeAfter),
     expectedVersion,
     completion: { prs, strategy, completeAfter, ...(runChoice ? { runChoice } : {}) },
   }

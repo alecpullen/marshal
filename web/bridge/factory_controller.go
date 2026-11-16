@@ -604,8 +604,23 @@ func (c *FactoryController) Quiesce() error {
 			if len(item.Effects) == 0 || item.Effects[len(item.Effects)-1].Status != "dispatched" {
 				break
 			}
+			if d := item.Effects[len(item.Effects)-1].Delegated; d != nil && d.State == factoryDelegatedWaiting {
+				// A waiting turn has nothing in flight: its report is early, not
+				// lost, so a restarted bridge resumes the same cycle instead of
+				// being handed an ambiguity the operator would have to clear.
+				break
+			}
 			_, err = c.internalUpdate(item, "shutdown_uncertain", func(dst *FactoryItem) error {
-				dst.Effects[len(dst.Effects)-1].Status = "uncertain"
+				last := &dst.Effects[len(dst.Effects)-1]
+				last.Status = "uncertain"
+				if last.Delegated != nil {
+					// A continuation in flight is exactly what a shutdown makes
+					// unprovable: the journal says it was sent and the session's
+					// own transcript is what a restart reads to accept it.
+					next := *last.Delegated
+					next.State = factoryDelegatedUncertain
+					last.Delegated = &next
+				}
 				factoryDecision(dst, "recovery", "bridge shut down before effect outcome was confirmed", c.now())
 				return nil
 			})
@@ -786,6 +801,13 @@ func (c *FactoryController) tick(ctx context.Context) error {
 		}
 		return nil
 	}
+	// A delegated turn whose children settled takes its one continuation. The
+	// journal is written first — prepared, then dispatched — and the prompt is
+	// last, so a crash between the two writes is visible to the recovery path
+	// instead of leaving a prompt that ran unrecorded.
+	if dispatched, err := c.advanceDelegated(ctx, items); err != nil || dispatched {
+		return err
+	}
 	for _, item := range items {
 		for _, effect := range item.Effects {
 			if effect.Status == "dispatched" || effect.Status == "uncertain" {
@@ -827,6 +849,18 @@ func (c *FactoryController) tick(ctx context.Context) error {
 		}
 	}
 	if i.State == "stopping" {
+		// The children a turn launched are part of what a stop stops. A
+		// cancellation acknowledgement is not a terminal outcome, so the item
+		// stays stopping until the projection reports each child finished.
+		if settled, err := c.delegatedChildrenSettled(ctx, i); err != nil || !settled {
+			if cerr := c.cancelDelegatedChildren(ctx, i); cerr != nil {
+				_, _ = c.internalUpdate(i, "stop_cancel_children", func(dst *FactoryItem) error {
+					dst.History = append(dst.History, FactoryEvent{At: c.now(), Kind: "stop_cancel_children_uncertain", Message: cerr.Error()})
+					return nil
+				})
+			}
+			return nil
+		}
 		for _, w := range i.Workers {
 			if !w.Parked {
 				workerItem := factoryCopy(i)
@@ -937,8 +971,261 @@ func (c *FactoryController) dispatch(ctx context.Context, i FactoryItem, e Facto
 	}
 	return <-done
 }
+
+// advanceDelegated runs the one continuation a settled delegated turn takes.
+// The journal is written first and the prompt last: prepared says a
+// continuation exists, dispatched says it was sent, and only then does the
+// second turn run. A crash before the second write leaves a continuation the
+// recovery path may dispatch; a crash after it leaves one it refuses to send
+// twice.
+func (c *FactoryController) advanceDelegated(ctx context.Context, items []FactoryItem) (bool, error) {
+	for _, item := range items {
+		if !factoryOwnsState(item.State) {
+			continue
+		}
+		e, ok := factoryDelegatedEffect(item)
+		if !ok {
+			continue
+		}
+		if item.State == "stopping" {
+			// A stop owns this turn's children: cancel them here and let the
+			// stop path above confirm their terminal outcomes.
+			if err := c.cancelDelegatedChildren(ctx, item); err != nil {
+				return false, err
+			}
+			continue
+		}
+		switch e.Delegated.State {
+		case factoryDelegatedWaiting:
+			settled, err := c.delegatedSettled(ctx, item, e)
+			if err != nil || !settled {
+				continue
+			}
+			prepared, preparedEffect, err := c.prepareContinuation(item, e)
+			if errors.Is(err, ErrFactoryConflict) {
+				continue
+			}
+			if err != nil {
+				return false, err
+			}
+			return c.startContinuation(ctx, prepared, preparedEffect)
+		case factoryDelegatedPrepared:
+			return c.startContinuation(ctx, item, e)
+		}
+	}
+	return false, nil
+}
+
+// prepareContinuation journals a fresh continuation identity as prepared,
+// bound to the effect, the worker session and the parent turn it continues. A
+// second continuation for one iteration is a conflict, never a second prompt.
+func (c *FactoryController) prepareContinuation(item FactoryItem, e FactoryEffect) (FactoryItem, FactoryEffect, error) {
+	continuationID := factoryContinuationID(e)
+	if continuationID == "" {
+		return item, e, ErrFactoryConflict
+	}
+	prepared, err := c.internalUpdate(item, "continuation_prepared", func(dst *FactoryItem) error {
+		last := &dst.Effects[len(dst.Effects)-1]
+		if last.ID != e.ID || last.Delegated == nil || last.Delegated.State != factoryDelegatedWaiting {
+			return ErrFactoryConflict
+		}
+		next := *last.Delegated
+		if next.ContinuationID != "" {
+			return ErrFactoryConflict
+		}
+		next.ContinuationID = continuationID
+		next.State = factoryDelegatedPrepared
+		last.Delegated = &next
+		dst.History = append(dst.History, FactoryEvent{At: c.now(), Kind: "continuation_prepared", EffectID: e.ID, Message: continuationID})
+		return nil
+	})
+	if err != nil {
+		return item, e, err
+	}
+	last := prepared.Effects[len(prepared.Effects)-1]
+	return prepared, last, nil
+}
+
+// startContinuation journals the prepared continuation as dispatched and only
+// then sends the prompt, on the same session the effect was dispatched to.
+func (c *FactoryController) startContinuation(ctx context.Context, item FactoryItem, e FactoryEffect) (bool, error) {
+	dispatched, err := c.dispatchContinuation(ctx, item, e)
+	if errors.Is(err, ErrFactoryConflict) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return dispatched, nil
+}
+
+// dispatchPreparedContinuation re-dispatches a continuation the journal already
+// holds as prepared: the same write order applies, and no prompt is sent before
+// the dispatched record exists.
+func (c *FactoryController) dispatchPreparedContinuation(ctx context.Context, item FactoryItem, e FactoryEffect) (FactoryItem, error) {
+	_, err := c.dispatchContinuation(ctx, item, e)
+	if errors.Is(err, ErrFactoryConflict) {
+		return item, nil
+	}
+	if err != nil {
+		return item, err
+	}
+	return c.store.Get(item.ID)
+}
+
+// dispatchContinuation performs the dispatch of one prepared continuation and
+// reports whether it started. A continuation for this effect is one operation:
+// the write refuses a turn that is no longer prepared exactly as it was.
+func (c *FactoryController) dispatchContinuation(ctx context.Context, item FactoryItem, e FactoryEffect) (bool, error) {
+	d := e.Delegated
+	if d == nil || d.ContinuationID == "" {
+		return false, ErrFactoryConflict
+	}
+	c.mu.Lock()
+	if c.closing {
+		c.mu.Unlock()
+		return false, nil
+	}
+	dispatchID := fmt.Sprintf("%s@%s", e.ID, d.ContinuationID)
+	dispatched, err := c.internalUpdate(item, "continuation_dispatch", func(dst *FactoryItem) error {
+		last := &dst.Effects[len(dst.Effects)-1]
+		if last.ID != e.ID || last.Delegated == nil || last.Delegated.ContinuationID != d.ContinuationID || last.Delegated.State != factoryDelegatedPrepared {
+			return ErrFactoryConflict
+		}
+		next := *last.Delegated
+		next.State = factoryDelegatedDispatched
+		last.Delegated = &next
+		dst.History = append(dst.History, FactoryEvent{At: c.now(), Kind: "continuation_dispatched", EffectID: e.ID, Message: d.ContinuationID})
+		return nil
+	})
+	c.mu.Unlock()
+	if err != nil {
+		return false, err
+	}
+	if c.beforeExecute != nil {
+		c.beforeExecute()
+	}
+	c.mu.Lock()
+	if c.closing {
+		c.mu.Unlock()
+		return false, nil
+	}
+	execCtx, cancel := context.WithCancel(ctx)
+	c.execCancels[dispatchID] = cancel
+	c.active.Add(1)
+	go func() {
+		defer c.active.Done()
+		defer func() { c.mu.Lock(); delete(c.execCancels, dispatchID); c.mu.Unlock(); cancel() }()
+		if c.afterAdmission != nil {
+			c.afterAdmission(execCtx)
+		}
+		if execCtx.Err() != nil {
+			return
+		}
+		_ = c.finishContinuation(execCtx, dispatched, e)
+	}()
+	c.mu.Unlock()
+	return true, nil
+}
+
+// delegatedSettled asks the worker session's own projection whether every child
+// the turn waited on is terminal. An unread projection is unknown work, never a
+// settled empty set.
+func (c *FactoryController) delegatedSettled(ctx context.Context, item FactoryItem, e FactoryEffect) (bool, error) {
+	if e.Delegated == nil {
+		return true, nil
+	}
+	observer, ok := c.effects.(interface {
+		ObserveChildren(context.Context, FactoryItem, FactoryDelegatedTurn) (FactoryChildSession, error)
+	})
+	if !ok {
+		return false, fmt.Errorf("%w: child observation unsupported", ErrFactoryUncertain)
+	}
+	projection, err := observer.ObserveChildren(ctx, item, *e.Delegated)
+	if err != nil {
+		return false, err
+	}
+	return factoryDelegatedSettled(*e.Delegated, FactoryObservation{Children: []FactoryChildSession{projection}}), nil
+}
+
+// delegatedChildrenSettled reports whether the children a turn launched are
+// proven terminal. An item with no delegated turn has none to settle, which is
+// the ordinary item whose stop needs no child evidence.
+func (c *FactoryController) delegatedChildrenSettled(ctx context.Context, item FactoryItem) (bool, error) {
+	e, ok := factoryDelegatedEffect(item)
+	if !ok || len(e.Delegated.ChildIDs) == 0 {
+		return true, nil
+	}
+	return c.delegatedSettled(ctx, item, e)
+}
+
+// cancelDelegatedChildren stops the children the turn owns through the existing
+// session/subagent_cancel control. It is the request, not the outcome: the stop
+// is confirmed only by the observation that each child finished.
+func (c *FactoryController) cancelDelegatedChildren(ctx context.Context, item FactoryItem) error {
+	e, ok := factoryDelegatedEffect(item)
+	if !ok || len(e.Delegated.ChildIDs) == 0 {
+		return nil
+	}
+	canceler, ok := c.effects.(interface {
+		CancelChildren(context.Context, FactoryItem) error
+	})
+	if !ok {
+		return fmt.Errorf("%w: child cancellation unsupported", ErrFactoryUncertain)
+	}
+	return canceler.CancelChildren(ctx, item)
+}
+
+// factoryContinuationOutcome binds a finished turn's result to the continuation
+// that asked for it: the same worker and session, the same candidate, and the
+// fresh continuation identity the prompt named. The earlier final message can
+// never satisfy it.
+func factoryContinuationOutcome(e FactoryEffect, out FactoryOutcome) bool {
+	d := e.Delegated
+	if d == nil || d.ContinuationID == "" || out.continuation != d.ContinuationID {
+		return false
+	}
+	if !out.Confirmed || out.EffectID != e.ID || out.Report == nil || out.Report.OperationID != e.ID {
+		return false
+	}
+	if e.Worker == nil || out.Worker == nil || out.Worker.AgentID != d.WorkerID || out.Worker.SessionID != d.SessionID || out.Worker.Role != e.Worker.Role {
+		return false
+	}
+	if r := out.Report; r != nil {
+		if e.ExpectedBase != "" && r.BaseSHA != "" && r.BaseSHA != e.ExpectedBase {
+			return false
+		}
+		if e.ExpectedHead != "" && r.HeadSHA != "" && r.HeadSHA != e.ExpectedHead {
+			return false
+		}
+	}
+	if e.Kind == "review" && e.ExpectedHead != "" && out.HeadSHA != "" && out.HeadSHA != e.ExpectedHead {
+		return false
+	}
+	return true
+}
+
 func (c *FactoryController) finishDispatch(ctx context.Context, dispatched FactoryItem, e FactoryEffect) error {
-	out, runErr := c.effects.Execute(ctx, dispatched, e)
+	return c.finishEffect(ctx, dispatched, e, func(ctx context.Context, item FactoryItem, e FactoryEffect) (FactoryOutcome, error) {
+		return c.effects.Execute(ctx, item, e)
+	})
+}
+
+// finishContinuation finishes the second turn a delegated effect takes. It runs
+// through the continuation seam, never FactoryEffects.Execute: a continuation is
+// another turn of one effect, not a new effect.
+func (c *FactoryController) finishContinuation(ctx context.Context, dispatched FactoryItem, e FactoryEffect) error {
+	return c.finishEffect(ctx, dispatched, e, func(ctx context.Context, item FactoryItem, e FactoryEffect) (FactoryOutcome, error) {
+		seams, ok := c.continuationSeams()
+		if !ok {
+			return FactoryOutcome{EffectID: e.ID}, fmt.Errorf("%w: continuation unsupported", ErrFactoryRefused)
+		}
+		return seams.Continue(ctx, item, e)
+	})
+}
+
+func (c *FactoryController) finishEffect(ctx context.Context, dispatched FactoryItem, e FactoryEffect, execute func(context.Context, FactoryItem, FactoryEffect) (FactoryOutcome, error)) error {
+	out, runErr := execute(ctx, dispatched, e)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closing {
@@ -952,6 +1239,9 @@ func (c *FactoryController) finishDispatch(ctx context.Context, dispatched Facto
 		return ErrFactoryConflict
 	}
 	dispatched = latest
+	// The binding is against the turn the journal holds, not the one this
+	// goroutine was started with: a restart may have reconciled it.
+	e.Delegated = latest.Effects[len(latest.Effects)-1].Delegated
 	if runErr != nil {
 		out.Error = runErr.Error()
 		out.EffectID = e.ID
@@ -976,11 +1266,37 @@ func (c *FactoryController) finishDispatch(ctx context.Context, dispatched Facto
 	// with, and the delegated turn beside it is what a continuation resolves.
 	if out.Delegated != nil {
 		delegated := *out.Delegated
+		previous := ""
+		if e.Delegated != nil {
+			previous = e.Delegated.ContinuationID
+		}
 		_, err := c.internalUpdate(dispatched, "delegated", func(dst *FactoryItem) error {
 			last := &dst.Effects[len(dst.Effects)-1]
 			last.Delegated = &delegated
-			dst.History = append(dst.History, FactoryEvent{At: c.now(), Kind: "delegated_waiting", EffectID: e.ID,
-				Message: fmt.Sprintf("waiting on %d child(ren) the turn launched", len(delegated.ChildIDs))})
+			message := fmt.Sprintf("waiting on %d child(ren) the turn launched", len(delegated.ChildIDs))
+			if previous != "" {
+				// The continuation that launched them is spent: the new cycle
+				// carries a new identity, and this report is not its result.
+				message += "; continuation " + previous + " launched new child work"
+			}
+			dst.History = append(dst.History, FactoryEvent{At: c.now(), Kind: "delegated_waiting", EffectID: e.ID, Message: message})
+			return nil
+		})
+		return err
+	}
+	// A continuation's result is accepted only when it names the iteration that
+	// asked for it, the same worker and session, and the same candidate. The
+	// earlier final message can never stand in for it.
+	if d := e.Delegated; d != nil && d.ContinuationID != "" && !factoryContinuationOutcome(e, out) {
+		next := *d
+		next.State = factoryDelegatedUncertain
+		_, err := c.internalUpdate(dispatched, "continuation_rejected", func(dst *FactoryItem) error {
+			last := &dst.Effects[len(dst.Effects)-1]
+			last.Delegated = &next
+			last.Status = "uncertain"
+			reason := "continuation report does not name continuation " + d.ContinuationID + " for this worker and candidate"
+			dst.History = append(dst.History, FactoryEvent{At: c.now(), Kind: "continuation_rejected", EffectID: e.ID, Message: reason})
+			factoryDecision(dst, "recovery", reason, c.now())
 			return nil
 		})
 		return err

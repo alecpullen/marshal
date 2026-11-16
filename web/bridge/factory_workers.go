@@ -445,8 +445,372 @@ func (w *factoryWorkers) delegatedTurn(ctx context.Context, rt *agentRuntime, wo
 		SessionID:    worker.SessionID,
 		ParentTurnID: factoryParentTurn(after, effect.ID),
 		ChildIDs:     ids,
-		State:        "waiting",
+		State:        factoryDelegatedWaiting,
 	}, true
+}
+
+// factoryEffectRole is the worker role an effect kind belongs to.
+func factoryEffectRole(kind string) string {
+	switch kind {
+	case "implement":
+		return "implementer"
+	case "review":
+		return "reviewer"
+	}
+	return ""
+}
+
+// factoryItemWorker is one recorded worker by its agent identity.
+func factoryItemWorker(i FactoryItem, agentID string) (FactoryWorker, bool) {
+	for _, w := range i.Workers {
+		if w.AgentID == agentID {
+			return w, true
+		}
+	}
+	return FactoryWorker{}, false
+}
+
+// workerRuntime resolves the live runtime that runs one effect's own worker,
+// under the ownership checks every worker call makes. A parked, replaced or
+// foreign worker is not this item's to prompt.
+func (w *factoryWorkers) workerRuntime(item FactoryItem, worker FactoryWorker) (*agentRuntime, error) {
+	if w == nil || w.fleet == nil {
+		return nil, fmt.Errorf("%w: factory runtime unavailable", ErrFactoryRefused)
+	}
+	a, ok := w.fleet.ws.Agent(worker.AgentID)
+	if !ok || a.FactoryItemID != item.ID || a.FactoryRole != worker.Role || a.FactorySpawnEffectID != worker.SpawnEffectID || a.FactoryParked {
+		return nil, fmt.Errorf("factory: worker ownership or state mismatch")
+	}
+	rt, err := w.fleet.runtimeForAgent(worker.AgentID)
+	if err != nil {
+		return nil, err
+	}
+	if worker.SessionID == "" || worker.SessionID != w.fleet.sessionIDFor(rt) {
+		return nil, fmt.Errorf("factory: worker session mismatch")
+	}
+	return rt, nil
+}
+
+// factoryDelegatedChildList renders the children a continuation reports on, in
+// the order the delegated turn recorded them, so the same settled set always
+// produces the same prompt.
+func factoryDelegatedChildList(d FactoryDelegatedTurn, projection FactoryChildSession) []FactoryChild {
+	byID := make(map[int64]FactoryChild, len(projection.Children))
+	for _, child := range projection.Children {
+		byID[child.ID] = child
+	}
+	out := make([]FactoryChild, 0, len(d.ChildIDs))
+	for _, id := range d.ChildIDs {
+		child, ok := byID[id]
+		if !ok {
+			child = FactoryChild{SessionID: d.SessionID, ID: id, Status: "unknown"}
+		}
+		out = append(out, child)
+	}
+	return out
+}
+
+// BuildFactoryContinuationPrompt asks a worker for the report its first turn
+// wrote too early. The continuation is a second turn of the same effect: it
+// names the iteration and the children that settled since, and it asks for a
+// fresh report for the original operation and candidate, so the earlier final
+// message can never be read as this turn's result.
+func BuildFactoryContinuationPrompt(item FactoryItem, effect FactoryEffect, delegated FactoryDelegatedTurn, children []FactoryChild) (string, error) {
+	if effect.ID == "" || (effect.Kind != "implement" && effect.Kind != "review") {
+		return "", fmt.Errorf("factory: unsupported continuation effect")
+	}
+	if delegated.ContinuationID == "" || delegated.EffectID != effect.ID {
+		return "", fmt.Errorf("factory: continuation identity mismatch")
+	}
+	if len(item.Approvals) == 0 {
+		return "", fmt.Errorf("factory: missing approval")
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Factory operation ID: %s\nContinuation ID: %s\n", effect.ID, delegated.ContinuationID)
+	fmt.Fprintf(&b, "Task: %s\n", item.Title)
+	b.WriteString("The child work this turn started has finished. Read each child's report, incorporate what it established, and do not repeat work a child already completed.\n")
+	for _, child := range children {
+		label := child.Label
+		if label == "" {
+			label = "child"
+		}
+		fmt.Fprintf(&b, "Child %d (%s): %s\n", child.ID, label, child.Status)
+	}
+	b.WriteString("Assess every child that failed or was stopped: state what it did not finish and what that means for this work.\n")
+	if effect.Kind == "review" {
+		fmt.Fprintf(&b, "Review base SHA: %s\nCandidate head SHA: %s\nUse ask mode; do not edit files.\n", effect.ExpectedBase, effect.ExpectedHead)
+	} else {
+		b.WriteString("Stay inside the approved scope; do not push or merge.\n")
+	}
+	fmt.Fprintf(&b, "Emit a fresh report for the original operation %s and the same candidate. The report written before the children settled is not this result.\n", effect.ID)
+	fmt.Fprintf(&b, "Finish with a fenced JSON block containing continuationId (%q), operationId, outcome (complete or needs_input), summary, question, reason, baseSha, headSha, inputsAccessible, and findings.\n", delegated.ContinuationID)
+	if effect.Kind == "implement" {
+		b.WriteString("A complete report must also include narration with issue, approach, existingBehaviour, alternatives, tradeoffs, choice, verification, limitations, and excerpts, each excerpt carrying path, lang and code.\n")
+	}
+	return b.String(), nil
+}
+
+// factoryReportContinuationID reads the continuation identity a report names.
+// An empty result is a report that does not say which iteration it answers,
+// which is never evidence for a continuation.
+func factoryReportContinuationID(message string) string {
+	block, ok := lastJSONBlock(message)
+	if !ok {
+		return ""
+	}
+	var wire struct {
+		ContinuationID string `json:"continuationId"`
+	}
+	if json.Unmarshal([]byte(block), &wire) != nil {
+		return ""
+	}
+	return wire.ContinuationID
+}
+
+// Continue runs the one continuation a delegated turn takes once its children
+// settle. It is a second turn of the same effect, never a new effect: the
+// prompt asks for a fresh report for the original operation and candidate, and
+// the result is bound to the continuation identity that asked for it.
+func (f *factoryEffects) Continue(ctx context.Context, item FactoryItem, effect FactoryEffect) (FactoryOutcome, error) {
+	if f == nil || f.workers == nil {
+		return FactoryOutcome{EffectID: effect.ID}, fmt.Errorf("%w: fleet unavailable", ErrFactoryRefused)
+	}
+	return f.workers.Continue(ctx, item, effect)
+}
+
+// ObserveChildren reads one delegated turn's session projection. It costs one
+// session/status call and no checkout work: a tick that asks only whether the
+// children settled does not need the rest of an observation.
+func (f *factoryEffects) ObserveChildren(ctx context.Context, item FactoryItem, delegated FactoryDelegatedTurn) (FactoryChildSession, error) {
+	if f == nil || f.workers == nil {
+		return FactoryChildSession{SessionID: delegated.SessionID}, fmt.Errorf("%w: fleet unavailable", ErrFactoryRefused)
+	}
+	return f.workers.observeChildren(ctx, item, delegated)
+}
+
+// CancelChildren stops the children one delegated turn owns.
+func (f *factoryEffects) CancelChildren(ctx context.Context, item FactoryItem) error {
+	if f == nil || f.workers == nil {
+		return fmt.Errorf("%w: fleet unavailable", ErrFactoryRefused)
+	}
+	return f.workers.cancelChildren(ctx, item)
+}
+
+// ContinuationEvidence reads what the worker session's own transcript proves
+// about a delegated continuation.
+func (f *factoryEffects) ContinuationEvidence(ctx context.Context, item FactoryItem, effect FactoryEffect) (factoryContinuationEvidence, error) {
+	if f == nil || f.workers == nil {
+		return factoryContinuationEvidence{}, fmt.Errorf("%w: fleet unavailable", ErrFactoryRefused)
+	}
+	return f.workers.continuationEvidence(ctx, item, effect)
+}
+
+// Continue is the worker-turn half of a continuation. Nothing is sent until the
+// continuation's children are proven settled again, and the report is accepted
+// only when it is a new final message that names this iteration, so the turn
+// that wrote the early report can never answer for the continuation.
+func (w *factoryWorkers) Continue(ctx context.Context, item FactoryItem, effect FactoryEffect) (result FactoryOutcome, err error) {
+	result = FactoryOutcome{EffectID: effect.ID}
+	dispatched := false
+	defer func() {
+		if err != nil && !errors.Is(err, ErrFactoryRefused) && !errors.Is(err, ErrFactoryUncertain) && !errors.Is(err, ErrFactoryInvalidResult) && !errors.Is(err, ErrFactoryWorkerFailed) {
+			if dispatched {
+				err = fmt.Errorf("%w: %v", ErrFactoryUncertain, err)
+			} else {
+				err = fmt.Errorf("%w: %v", ErrFactoryRefused, err)
+			}
+		}
+	}()
+	d := effect.Delegated
+	if d == nil || d.ContinuationID == "" {
+		return result, fmt.Errorf("factory: no continuation to run")
+	}
+	if effect.Worker == nil {
+		return result, fmt.Errorf("factory: effect has no worker")
+	}
+	worker := *effect.Worker
+	if worker.Role != factoryEffectRole(effect.Kind) || worker.Role == "" {
+		return result, fmt.Errorf("factory: worker role mismatch")
+	}
+	if d.EffectID != effect.ID || d.WorkerID != worker.AgentID || d.SessionID != worker.SessionID {
+		return result, fmt.Errorf("factory: continuation identity mismatch")
+	}
+	rt, err := w.workerRuntime(item, worker)
+	if err != nil {
+		return result, err
+	}
+	children := w.sessionChildren(ctx, rt, worker.SessionID)
+	if !factoryDelegatedSettled(*d, FactoryObservation{Children: []FactoryChildSession{children}}) {
+		// The children are not proven settled: nothing is sent, and the turn
+		// waits for a projection that says otherwise.
+		waiting := *d
+		waiting.State = factoryDelegatedWaiting
+		result.Delegated = &waiting
+		return result, nil
+	}
+	prompt, err := BuildFactoryContinuationPrompt(item, effect, *d, factoryDelegatedChildList(*d, children))
+	if err != nil {
+		return result, err
+	}
+	before, err := rt.reg.Stack(ctx, worker.SessionID, 0)
+	if err != nil {
+		return result, fmt.Errorf("factory: read pre-continuation stack: %w", err)
+	}
+	oldFinal, _, _ := factoryFinal(before)
+	dispatched = true
+	turn, err := rt.reg.PromptResult(ctx, worker.SessionID, prompt)
+	result.StopReason = turn.StopReason
+	if err != nil {
+		return result, err
+	}
+	if turn.StopReason != "end_turn" {
+		return result, fmt.Errorf("%w: worker turn ended with %q", ErrFactoryWorkerFailed, turn.StopReason)
+	}
+	after, err := rt.reg.Stack(ctx, worker.SessionID, 0)
+	if err != nil {
+		return result, fmt.Errorf("factory: read post-continuation stack: %w", err)
+	}
+	// A continuation that launched children of its own is waiting again: the
+	// cycle repeats with a fresh identity, and no report is accepted while
+	// those children run.
+	if delegated, waiting := w.delegatedTurn(ctx, rt, worker, effect, before, after); waiting {
+		result.Delegated = delegated
+		return result, nil
+	}
+	final, message, hasMessage := factoryFinal(after)
+	if final == "" || final == oldFinal || !hasMessage || strings.TrimSpace(message) == "" {
+		return result, fmt.Errorf("%w: no new final report in the continuation turn", ErrFactoryInvalidResult)
+	}
+	if got := factoryReportContinuationID(message); got != d.ContinuationID {
+		return result, fmt.Errorf("%w: continuation report names %q, want %q", ErrFactoryInvalidResult, got, d.ContinuationID)
+	}
+	report, err := ParseFactoryReport(message, effect.ID, worker.Role, effect.ExpectedBase, effect.ExpectedHead)
+	if err != nil {
+		return result, fmt.Errorf("%w: %v", ErrFactoryInvalidResult, err)
+	}
+	result.Report = &report
+	result.Worker = &worker
+	result.continuation = d.ContinuationID
+	if report.Outcome == "needs_input" {
+		result.Confirmed = true
+		return result, nil
+	}
+	obs, err := w.Observe(ctx, item)
+	if err != nil {
+		return result, err
+	}
+	if obs.Dirty && worker.Role == "reviewer" {
+		return result, fmt.Errorf("factory: reviewer checkout changed")
+	}
+	result.HeadSHA, result.TreeSHA, result.BaseSHA = obs.HeadSHA, obs.TreeSHA, item.BaseSHA
+	if obs.HeadSHA == "" || obs.TreeSHA == "" {
+		return result, fmt.Errorf("factory: checkout Git state unavailable")
+	}
+	if worker.Role == "reviewer" && obs.HeadSHA != effect.ExpectedHead {
+		return result, fmt.Errorf("factory: reviewer checkout head changed")
+	}
+	result.Confirmed = true
+	return result, nil
+}
+
+// observeChildren reads one delegated turn's session projection.
+func (w *factoryWorkers) observeChildren(ctx context.Context, item FactoryItem, delegated FactoryDelegatedTurn) (FactoryChildSession, error) {
+	worker, ok := factoryItemWorker(item, delegated.WorkerID)
+	if !ok {
+		return FactoryChildSession{SessionID: delegated.SessionID}, fmt.Errorf("factory: worker ownership unconfirmed")
+	}
+	rt, err := w.workerRuntime(item, worker)
+	if err != nil {
+		return FactoryChildSession{SessionID: delegated.SessionID}, err
+	}
+	return w.sessionChildren(ctx, rt, delegated.SessionID), nil
+}
+
+// cancelChildren asks every child the delegated turn owns to stop, through the
+// existing session/subagent_cancel control. The pair (session, child) is what
+// names a child, so it is sent exactly as the turn recorded it: child ids are
+// session-local and a bare id would name another session's work in a second
+// session. An acknowledgement is not a terminal outcome, which is why nothing
+// here reports a child stopped.
+func (w *factoryWorkers) cancelChildren(ctx context.Context, item FactoryItem) error {
+	e, ok := factoryDelegatedEffect(item)
+	if !ok || e.Delegated == nil || len(e.Delegated.ChildIDs) == 0 {
+		return nil
+	}
+	d := *e.Delegated
+	worker, ok := factoryItemWorker(item, d.WorkerID)
+	if !ok {
+		return fmt.Errorf("%w: child ownership unconfirmed", ErrFactoryUncertain)
+	}
+	rt, err := w.workerRuntime(item, worker)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrFactoryUncertain, err)
+	}
+	for _, id := range d.ChildIDs {
+		if _, err := rt.child.Request(ctx, "session/subagent_cancel", map[string]any{"sessionId": d.SessionID, "subagentId": id}); err != nil {
+			return fmt.Errorf("%w: child %d cancel: %v", ErrFactoryUncertain, id, err)
+		}
+	}
+	return nil
+}
+
+// continuationEvidence reads what the worker session's own transcript proves
+// about one delegated continuation: whether a turn after the delegated parent
+// turn exists at all, and the fresh final report that names this iteration.
+//
+// A transcript the bridge cannot read proves nothing, and nothing is ever
+// inferred from its absence: the caller marks the turn uncertain instead of
+// sending a second prompt.
+func (w *factoryWorkers) continuationEvidence(ctx context.Context, item FactoryItem, effect FactoryEffect) (factoryContinuationEvidence, error) {
+	d := effect.Delegated
+	if d == nil || d.ContinuationID == "" || effect.Worker == nil {
+		return factoryContinuationEvidence{}, fmt.Errorf("factory: no continuation to reconcile")
+	}
+	rt, err := w.workerRuntime(item, *effect.Worker)
+	if err != nil {
+		return factoryContinuationEvidence{}, err
+	}
+	raw, err := rt.reg.Stack(ctx, d.SessionID, 0)
+	if err != nil {
+		return factoryContinuationEvidence{}, err
+	}
+	var tree struct {
+		Roots []string `json:"roots"`
+		Nodes []struct {
+			ID      string `json:"id"`
+			Kind    string `json:"kind"`
+			Parent  string `json:"parent"`
+			Message *struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"nodes"`
+	}
+	if json.Unmarshal(raw, &tree) != nil {
+		return factoryContinuationEvidence{}, fmt.Errorf("factory: unreadable worker transcript")
+	}
+	// A transcript that names no turn cannot say the dispatch is absent, and an
+	// unread one says even less.
+	ev := factoryContinuationEvidence{Known: len(tree.Roots) > 0}
+	for _, root := range tree.Roots {
+		if root != "" && root != d.ParentTurnID {
+			ev.Dispatched = true
+		}
+	}
+	for _, node := range tree.Nodes {
+		if node.Kind != "final" || node.Message == nil {
+			continue
+		}
+		if factoryReportContinuationID(node.Message.Content) != d.ContinuationID {
+			continue
+		}
+		ev.Dispatched = true
+		if node.Parent != "" && node.Parent != d.ParentTurnID {
+			ev.Accepted = true
+			ev.Report = node.Message.Content
+			ev.Turn = node.Parent
+		}
+	}
+	return ev, nil
 }
 
 func (w *factoryWorkers) Observe(ctx context.Context, item FactoryItem) (FactoryObservation, error) {

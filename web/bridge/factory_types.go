@@ -297,6 +297,18 @@ type FactoryDelegatedTurn struct {
 	State          string  `json:"state"` // waiting, prepared, dispatched, settled, uncertain
 }
 
+// The delegated turn's states. A waiting turn is not an outcome: the report it
+// wrote is early. A continuation is journaled as prepared before anything is
+// sent and as dispatched only after the journal says so, and the prompt itself
+// is the last step — so a crash between the two writes leaves evidence the
+// recovery path can read instead of a prompt that ran unrecorded.
+const (
+	factoryDelegatedWaiting    = "waiting"
+	factoryDelegatedPrepared   = "prepared"
+	factoryDelegatedDispatched = "dispatched"
+	factoryDelegatedUncertain  = "uncertain"
+)
+
 // FactoryChild is one child of a worker session as that session's own status
 // projects it. Its identity is the pair, never the id alone: child ids are
 // session-local, so two worker sessions can both contain child 1 and must never
@@ -357,6 +369,11 @@ type FactoryOutcome struct {
 	// it wrote before they settled is early and is never applied. It is omitted
 	// when nil, so a completed outcome keeps the bytes it always wrote.
 	Delegated *FactoryDelegatedTurn `json:"delegated,omitempty"`
+	// continuation is the iteration this result was produced for. It is
+	// unexported because it never crosses the wire or the journal: the
+	// delegated turn beside the effect is what persists, and a recovered
+	// outcome is proved from the session's own transcript instead.
+	continuation string
 }
 
 type FactoryObservation struct {

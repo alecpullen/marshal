@@ -113,7 +113,7 @@ FactoryItem factoryItem({
       'reviewerInstructions': '',
       'implementerAuto': true,
       'expectedChecks': [],
-      'noRequiredCIAcknowledged': true,
+      'noRequiredCiAcknowledged': true,
       'maxRounds': 3,
       'ciPollSeconds': 30,
       'ciWaitSeconds': 900,

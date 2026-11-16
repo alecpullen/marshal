@@ -1,5 +1,6 @@
 import 'package:marshal_app/src/client/contract.g.dart'
     show
+        DaemonInfo,
         DiffFile,
         FileEntry,
         GateResult,
@@ -17,6 +18,8 @@ import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
 import 'package:marshal_app/src/model/bots_model.dart';
 import 'package:marshal_app/src/model/clients_model.dart';
 import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
+import 'package:marshal_app/src/model/general_model.dart';
+import 'package:marshal_app/src/model/hosts_model.dart';
 import 'package:marshal_app/src/model/library_model.dart';
 import 'package:marshal_app/src/model/inbox_model.dart' as model;
 import 'package:marshal_app/src/model/changes_model.dart';
@@ -46,6 +49,9 @@ import 'package:marshal_app/src/ui/library/mcp_tab.dart';
 import 'package:marshal_app/src/ui/library/memory_tab.dart';
 import 'package:marshal_app/src/ui/library/plugins_tab.dart';
 import 'package:marshal_app/src/ui/library/skills_tab.dart';
+import 'package:marshal_app/src/ui/settings/general_section.dart';
+import 'package:marshal_app/src/ui/settings/hosts_section.dart';
+import 'package:marshal_app/src/ui/settings/settings_place.dart';
 import 'package:marshal_app/src/ui/inbox/inbox.dart';
 import 'package:marshal_app/src/ui/inspector/changes_tab.dart';
 import 'package:marshal_app/src/ui/inspector/files_tab.dart';
@@ -572,6 +578,57 @@ Widget _library({StateKind? state, int tab = 0}) {
   );
 }
 
+/// The Settings place, with the sections this build has and the rest planned.
+/// [section] is the index in the design's order: 0 Hosts … 9 General.
+Widget _settings({int section = 0, StateKind? state}) {
+  final preferences = GeneralPreferences();
+  final hosts = HostsModel.fixture([
+    HostView(
+      name: 'local',
+      kind: HostKind.local,
+      reach: HostReach.live,
+      lastContact: shellNow,
+    ),
+    HostView(
+      name: 'studio',
+      kind: HostKind.server,
+      reach: HostReach.unreachable,
+      lastContact: shellNow.subtract(const Duration(minutes: 4)),
+    ),
+  ]);
+  final general = GeneralModel.fixture(
+    preferences: preferences,
+    keyboard: [for (final key in threadKeys) (key.key, key.description)],
+    daemon: _daemonInfo,
+    now: () => shellNow,
+  );
+  return SettingsPlace(
+    preferences: preferences,
+    index: section,
+    state: state,
+    sections: {
+      SettingsSectionKind.hosts: (state) =>
+          HostsSection(model: hosts, state: state, now: shellNow),
+      SettingsSectionKind.general: (state) =>
+          GeneralSection(model: general, state: state),
+    },
+  );
+}
+
+/// The daemon document General's fixture reports.
+final _daemonInfo = DaemonInfo(
+  version: '1.4.0',
+  profile: 'local',
+  pid: 4821,
+  startedAt: shellNow
+      .subtract(const Duration(hours: 3, minutes: 12))
+      .millisecondsSinceEpoch,
+  socket: '/home/u/.local/state/marshal/daemon.sock',
+  projects: const ['/home/u/marshal'],
+  pinned: const ['/home/u/widgets'],
+  children: const [],
+);
+
 /// The registry of screens. F0 has one, the gallery; each later phase adds
 /// its screens here with fixture data, and `tooltips_test.dart`,
 /// `states_test.dart` and `overflow_test.dart` then hold them to the design
@@ -652,6 +709,22 @@ final screens = <ScreenCase>[
     states: {
       for (final kind in requiredStates)
         kind: () => _library(tab: 3, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'settings · hosts',
+    ready: () => _settings(section: 0),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _settings(section: 0, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'settings · general',
+    ready: () => _settings(section: 9),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _settings(section: 9, state: kind),
     },
   ),
   ScreenCase(

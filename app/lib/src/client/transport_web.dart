@@ -4,6 +4,7 @@ import 'dart:js_interop';
 
 import 'package:web/web.dart' as web;
 
+import 'line_decoder.dart';
 import 'token_store_web.dart';
 import 'transport.dart';
 
@@ -43,27 +44,24 @@ class WebTransport implements Transport {
     if (body == null) return;
 
     final reader = body.getReader() as web.ReadableStreamDefaultReader;
-    final pending = StringBuffer();
+    // The decoder spans chunks: a chunk boundary can fall inside a
+    // character's UTF-8 bytes, and decoding each chunk on its own would throw
+    // on the split character and kill the stream.
+    final decoder = LineDecoder();
     try {
       while (true) {
         final result = await reader.read().toDart;
         if (result.done) break;
         final value = result.value;
         if (value == null) continue;
-        pending.write(utf8.decode((value as JSUint8Array).toDart));
-        var text = pending.toString();
-        var newline = text.indexOf('\n');
-        while (newline >= 0) {
-          yield text.substring(0, newline);
-          text = text.substring(newline + 1);
-          newline = text.indexOf('\n');
+        for (final line in decoder.add((value as JSUint8Array).toDart)) {
+          yield line;
         }
-        pending
-          ..clear()
-          ..write(text);
       }
       // A last line the body did not terminate is still a line.
-      if (pending.isNotEmpty) yield pending.toString();
+      for (final line in decoder.close()) {
+        yield line;
+      }
     } finally {
       reader.releaseLock();
     }

@@ -36,12 +36,14 @@ type Sample struct {
 	Raw      json.RawMessage `json:"raw"`
 	Tags     []string        `json:"tags"`
 	Lookup   map[string]int  `json:"lookup"`
-	Shade    Color           `json:"shade"`
-	Nested   Inner           `json:"nested"`
-	Fallback Label           `json:"fallback"`
-	Enabled  bool            `json:"enabled"`
-	Count    uint64          `json:"count"`
-	Ratio    float64         `json:"ratio"`
+	// OptLabels is a map dropped from the wire when it is empty.
+	OptLabels map[string]string `json:"optLabels,omitempty"`
+	Shade     Color             `json:"shade"`
+	Nested    Inner             `json:"nested"`
+	Fallback  Label             `json:"fallback"`
+	Enabled   bool              `json:"enabled"`
+	Count     uint64            `json:"count"`
+	Ratio     float64           `json:"ratio"`
 	// Pointers holds pointers, so its element type is a union and needs
 	// its own parentheses.
 	Pointers []*Inner `json:"pointers"`

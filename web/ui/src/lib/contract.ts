@@ -389,6 +389,27 @@ export interface MergeRequest {
   commitMessage?: string;
 }
 
+export interface PromptImage {
+  hash: string;
+  mime: string;
+  width: number;
+  height: number;
+  bytes: number;
+  label?: string;
+}
+
+export interface ImageUpload {
+  /**
+   * base64
+   */
+  data: string;
+  label?: string;
+}
+
+export interface ImageUploadResult {
+  image: PromptImage;
+}
+
 /**
  * Inbox is the fleet's inbox (P5 F2).
  */

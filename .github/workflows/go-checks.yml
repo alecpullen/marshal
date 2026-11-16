@@ -76,3 +76,30 @@ jobs:
         run: |
           git diff --exit-code -- web/bridge/static
           test -z "$(git ls-files --others --exclude-standard -- web/bridge/static)"
+
+  release-config:
+    name: Installer and release config
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shellcheck the installer
+        run: shellcheck scripts/install.sh
+      - name: Install GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: '~> v2'
+          install-only: true
+      # `check` parses the config only: no build, no C toolchain. It exits 1
+      # on a config that would fail at tag time and 2 when the config is valid
+      # but uses a property this GoReleaser deprecates — `brews` today, which
+      # is still the only spelling that parses for the formula.
+      - name: GoReleaser config
+        run: |
+          set +e
+          goreleaser check
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ] && [ "$code" -ne 2 ]; then
+            exit "$code"
+          fi

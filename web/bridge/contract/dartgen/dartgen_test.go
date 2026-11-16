@@ -113,6 +113,22 @@ func TestGeneratorRules(t *testing.T) {
 			}
 		})
 	}
+
+	// 6. Two field names that meet in one Dart name is a named error too,
+	// not a class declaring the member twice. This fixture is dartgen's own:
+	// tsgen emits the Go names, so the two do not collide there.
+	t.Run("unsupported/fieldcollision", func(t *testing.T) {
+		_, err := Generate("testdata/collision")
+		if err == nil {
+			t.Fatalf("Generate accepted two fields that map to one Dart name")
+		}
+		msg := err.Error()
+		for _, want := range []string{"collision.go", "field name collision", `"foo"`, strconv.Itoa(9)} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("error %q does not name %q", msg, want)
+			}
+		}
+	})
 }
 
 // TestDartContractIsCurrent holds the generated app module to the contract

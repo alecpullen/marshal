@@ -743,6 +743,10 @@ func (g *generator) structClass(name string, st *ast.StructType, doc *ast.Commen
 // fields reads a struct's exported, wire-visible fields in source order.
 func (g *generator) fields(st *ast.StructType) ([]*field, error) {
 	var fields []*field
+	// seen holds each Dart field name this struct already declares, so two
+	// Go names that land on one Dart name is an error rather than a class
+	// with the member twice (Foo and FOO both become foo).
+	seen := make(map[string]string, len(st.Fields.List))
 	for _, f := range st.Fields.List {
 		if len(f.Names) == 0 {
 			return nil, g.unsupported(f.Pos(), "embedded field")
@@ -777,6 +781,10 @@ func (g *generator) fields(st *ast.StructType) ([]*field, error) {
 			if err != nil {
 				return nil, g.unsupported(ident.Pos(), err.Error())
 			}
+			if first, clash := seen[dartName]; clash {
+				return nil, g.unsupported(ident.Pos(), fmt.Sprintf("field name collision: %s and %s both map to the Dart name %q", first, ident.Name, dartName))
+			}
+			seen[dartName] = ident.Name
 			desc, err := g.describe(f.Type)
 			if err != nil {
 				return nil, err
@@ -1070,6 +1078,9 @@ func (g *generator) describe(expr ast.Expr) (*typeDesc, error) {
 		case "float32", "float64":
 			return &typeDesc{kind: typePrim, prim: "double"}, nil
 		}
+		// complex64 and complex128 are not listed: unlike tsgen, which maps
+		// them to `number`, this module has no Dart type for them, so the
+		// fall-through below rejects them by name.
 		if k, declared := g.kinds[t.Name]; declared {
 			switch k {
 			case kindString:

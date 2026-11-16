@@ -29,7 +29,11 @@ String placeTitle(Place place, NavModel nav) => _about(place, nav).$1;
     case PlaceKind.inbox:
       return ('Inbox', 'The Inbox arrives with the next step of this phase');
     case PlaceKind.pulls:
-      return ('Pull requests', 'Pull requests arrive in a later phase');
+      return (
+        'Pull requests',
+        'The Pull requests screen is built; it opens once the shell wires the '
+            'per-host bridge',
+      );
     case PlaceKind.automations:
       return (
         'Automations',

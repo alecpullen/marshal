@@ -7,12 +7,15 @@ import '../../model/inbox_model.dart' as inbox;
 import '../../model/nav_model.dart';
 import '../../model/overview_model.dart' show buildOverview;
 import '../../model/place.dart';
+import '../../model/pulls_model.dart';
 import '../../model/stack_store.dart';
 import '../../model/thread_ref.dart' as model;
 import '../../model/thread_view_state.dart';
 import '../inbox/inbox.dart' show Inbox;
 import '../kit/kit.dart';
 import '../overview/overview.dart' show Overview;
+import '../pulls/fix_control.dart';
+import '../pulls/pulls_place.dart';
 import '../sections/unsaved_guard.dart';
 import '../new_work/new_work_dialog.dart';
 import '../thread/thread_composer.dart';
@@ -271,6 +274,7 @@ class Studio extends StatefulWidget {
     super.key,
     required this.store,
     required this.inbox,
+    this.pulls,
     this.read,
     this.threadStore,
     this.composerFor,
@@ -280,6 +284,11 @@ class Studio extends StatefulWidget {
 
   final FleetStore store;
   final InboxModel inbox;
+
+  /// The pull requests: their place, their ready count in the sidebar, and
+  /// the one click a failing card offers. Null leaves the place planned, so a
+  /// host that wires no bridge never draws one as working.
+  final PullsModel? pulls;
 
   /// Reads the fleet: discovery when the app starts, and again when a person
   /// asks.
@@ -346,7 +355,11 @@ class _StudioState extends State<Studio> {
       builder: (context, _) {
         final store = widget.store;
         final place = _place;
-        final nav = buildNavModel(place, store);
+        final nav = buildNavModel(
+          place,
+          store,
+          pullsReady: widget.pulls?.readyCount ?? 0,
+        );
         return Shell(
           nav: nav,
           hosts: store.hosts,
@@ -401,6 +414,26 @@ class _StudioState extends State<Studio> {
         onRetry: _reread,
       );
     }
+    if (place.kind == PlaceKind.pulls) {
+      final pulls = widget.pulls;
+      // A host with no pull model has no index to draw: the place says which
+      // phase wires it rather than drawing an empty list (§7).
+      if (pulls == null) return plannedPlace(place, nav);
+      return PullsPlace(
+        groups: pulls.groups,
+        now: widget.store.now,
+        onRetry: _reread,
+        actionsFor: (context, pull) => pullCardActions(
+          context,
+          pull: pull,
+          model: pulls,
+          // Reviewing and opening the source land on the thread: its review
+          // head is where a pull request is read (decision 13).
+          review: _openThread(navigation, pull),
+          openSource: _openThread(navigation, pull),
+        ),
+      );
+    }
     if (place.kind == PlaceKind.thread) {
       final build = widget.threadStore;
       final thread = _threadRef(place);
@@ -437,6 +470,16 @@ class _StudioState extends State<Studio> {
       if (agent.id == id) return model.threadFor(host, agent);
     }
     return null;
+  }
+
+  /// Opens the thread a pull request came from, when the fleet still lists it.
+  /// Null leaves the card's button disabled rather than opening nothing.
+  VoidCallback? _openThread(PlaceNavigation navigation, PullView pull) {
+    final thread = pull.thread;
+    if (thread == null) return null;
+    return () => navigation.go(
+      Place(PlaceKind.thread, host: thread.host, id: thread.id),
+    );
   }
 }
 

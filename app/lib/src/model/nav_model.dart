@@ -110,7 +110,11 @@ bool isEarlier(ThreadRef thread, DateTime now) =>
     now.difference(thread.lastActive) > earlierAfter;
 
 /// The sidebar for [place], from what [store] holds.
-NavModel buildNavModel(Place place, FleetStore store) {
+///
+/// [pullsReady] is how many pull requests wait for review: the Pull requests
+/// row carries it (F5 decision 14), and the row is no longer planned — the
+/// place exists.
+NavModel buildNavModel(Place place, FleetStore store, {int pullsReady = 0}) {
   final now = store.now;
   final inboxCount = store.inbox().length;
   final fixed = [
@@ -125,8 +129,13 @@ NavModel buildNavModel(Place place, FleetStore store) {
       count: inboxCount,
       active: place.kind == PlaceKind.inbox,
     ),
+    NavPlace(
+      kind: PlaceKind.pulls,
+      label: _label(PlaceKind.pulls),
+      count: pullsReady,
+      active: place.kind == PlaceKind.pulls,
+    ),
     for (final kind in const [
-      PlaceKind.pulls,
       PlaceKind.automations,
       PlaceKind.library,
       PlaceKind.settings,

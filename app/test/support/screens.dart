@@ -1,8 +1,13 @@
+import 'package:marshal_app/src/client/contract.g.dart' as contract;
 import 'package:marshal_app/src/client/contract.g.dart'
     show
         DiffFile,
         FileEntry,
         GateResult,
+        PullCheck,
+        PullOrigin,
+        PullRecord,
+        PullState,
         Recipe,
         Schedule,
         StackSnapshot,
@@ -24,6 +29,7 @@ import 'package:marshal_app/src/model/files_model.dart';
 import 'package:marshal_app/src/model/inspect_model.dart';
 import 'package:marshal_app/src/model/inspector_state.dart';
 import 'package:marshal_app/src/model/preview_model.dart';
+import 'package:marshal_app/src/model/pulls_model.dart';
 import 'package:marshal_app/src/model/terminal_session.dart';
 import 'package:marshal_app/src/model/nav_model.dart';
 import 'package:marshal_app/src/model/overview_model.dart';
@@ -54,6 +60,7 @@ import 'package:marshal_app/src/ui/inspector/preview_tab.dart';
 import 'package:marshal_app/src/ui/inspector/terminal_tab.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 import 'package:marshal_app/src/ui/overview/overview.dart';
+import 'package:marshal_app/src/ui/pulls/pulls_place.dart';
 import 'package:marshal_app/src/ui/shell/placeholder.dart';
 import 'package:marshal_app/src/ui/shell/shell.dart';
 import 'package:marshal_app/src/ui/thread/thread_screen.dart';
@@ -152,8 +159,14 @@ NavModel shellNavFor(Place place) => NavModel(
       count: 3,
       active: place.kind == PlaceKind.inbox,
     ),
+    NavPlace(
+      kind: PlaceKind.pulls,
+      label: 'Pull requests',
+      // F5: the place exists, so its row opens it and carries the ready count.
+      count: 1,
+      active: place.kind == PlaceKind.pulls,
+    ),
     for (final kind in const [
-      PlaceKind.pulls,
       PlaceKind.automations,
       PlaceKind.library,
       PlaceKind.settings,
@@ -161,7 +174,6 @@ NavModel shellNavFor(Place place) => NavModel(
       NavPlace(
         kind: kind,
         label: switch (kind) {
-          PlaceKind.pulls => 'Pull requests',
           PlaceKind.automations => 'Automations',
           PlaceKind.library => 'Library',
           _ => 'Settings',
@@ -572,6 +584,142 @@ Widget _library({StateKind? state, int tab = 0}) {
   );
 }
 
+/// One pull request the enforcement tests draw: a record and the view a card
+/// reads, so the place and the card are pumped together.
+PullView _pull({
+  required int number,
+  required String title,
+  required PullGroup group,
+  String checkSummary = '2 of 2 checks passed',
+  List<PullCheckView> checks = const [
+    PullCheckView('build', PullCheckState.passed),
+    PullCheckView('unit', PullCheckState.passed),
+  ],
+  String? failureTail,
+  bool draft = false,
+  bool sending = false,
+  String? error,
+}) => PullView(
+  record: PullRecord(
+    id: 'acme/widgets#$number',
+    repoID: 'acme/widgets',
+    projectRoot: '/home/u/marshal',
+    number: number,
+    url: 'https://forge.example/acme/widgets/pull/$number',
+    title: title,
+    headRef: 'agent/quiet-capture',
+    baseRef: 'main',
+    headSHA: 'a1b2c3d4',
+    draft: draft,
+    additions: 412,
+    deletions: 96,
+    origin: PullOrigin.pullOriginAgent,
+    agentID: 'a-1',
+    state: switch (group) {
+      PullGroup.ready => PullState.pullReady,
+      PullGroup.failing => PullState.pullFailing,
+      PullGroup.beingFixed => PullState.pullBeingFixed,
+      PullGroup.inProgress => PullState.pullInProgress,
+      PullGroup.unavailable => PullState.pullChecksUnavailable,
+    },
+    checks: [
+      for (final check in checks)
+        PullCheck(name: check.name, state: _wireStateOf(check.state)),
+    ],
+    reviews: '2 reviews passed',
+    observedAt: shellNow.millisecondsSinceEpoch,
+    updatedAt: shellNow.millisecondsSinceEpoch - 26 * 60 * 1000,
+  ),
+  thread: _shellThread('a-1', 'Quiet capture mode', model.ThreadStatus.ready),
+  group: group,
+  checkSummary: checkSummary,
+  checks: checks,
+  failureTail: failureTail,
+  sending: sending,
+  error: error,
+);
+
+/// The wire check state a fixture's check state stands for. The kit's
+/// `CheckState` is the drawn one, so the contract's is reached through its
+/// prefix.
+contract.CheckState _wireStateOf(PullCheckState state) => switch (state) {
+  PullCheckState.passed => contract.CheckState.checkPassed,
+  PullCheckState.failed => contract.CheckState.checkFailed,
+  PullCheckState.running => contract.CheckState.checkRunning,
+  PullCheckState.pending => contract.CheckState.checkPending,
+};
+
+/// The pull requests the place's fixture lists: one in every group.
+Map<PullGroup, List<PullView>> _pullGroups() => {
+  PullGroup.ready: [
+    _pull(
+      number: 118,
+      title: 'CI-first change review',
+      group: PullGroup.ready,
+      checkSummary: '2 of 2 checks passed',
+    ),
+  ],
+  PullGroup.failing: [
+    _pull(
+      number: 123,
+      title: 'Voice planning: quiet capture mode',
+      group: PullGroup.failing,
+      checkSummary: '1 failing: unit',
+      checks: const [
+        PullCheckView('build', PullCheckState.passed),
+        PullCheckView('unit', PullCheckState.failed),
+      ],
+      failureTail: '--- FAIL: TestScriptedRecorderQuietMode (4.21s)',
+    ),
+  ],
+  PullGroup.beingFixed: [
+    _pull(
+      number: 122,
+      title: 'Fix flaky calendar test',
+      group: PullGroup.beingFixed,
+      checkSummary: '1 failing: test',
+      checks: const [
+        PullCheckView('build', PullCheckState.passed),
+        PullCheckView('test', PullCheckState.failed),
+      ],
+    ),
+  ],
+  PullGroup.inProgress: [
+    _pull(
+      number: 124,
+      title: 'P6 plan 4: daemon upgrade',
+      group: PullGroup.inProgress,
+      checkSummary: '1 of 3 checks passed, the rest running',
+      checks: const [
+        PullCheckView('build', PullCheckState.passed),
+        PullCheckView('test', PullCheckState.running),
+        PullCheckView('lint', PullCheckState.pending),
+      ],
+      draft: true,
+    ),
+  ],
+  PullGroup.unavailable: [
+    _pull(
+      number: 125,
+      title: 'Release config: sign the binaries',
+      group: PullGroup.unavailable,
+      checkSummary:
+          'Checks unavailable: the credential is an SSH key, which cannot '
+          'call the API',
+      checks: const [],
+    ),
+  ],
+};
+
+/// The Pull requests place with its fixture data.
+Widget _pullsPlace({StateKind? state}) => PullsPlace(
+  groups: _pullGroups(),
+  now: shellNow,
+  state: state,
+  onRetry: () {},
+  actionsFor: (context, pull) => const PrActions(),
+);
+
 /// The registry of screens. F0 has one, the gallery; each later phase adds
 /// its screens here with fixture data, and `tooltips_test.dart`,
 /// `states_test.dart` and `overflow_test.dart` then hold them to the design
@@ -613,6 +761,13 @@ final screens = <ScreenCase>[
     ready: () => _overview(),
     states: {
       for (final kind in requiredStates) kind: () => _overview(state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'pull requests',
+    ready: () => _pullsPlace(),
+    states: {
+      for (final kind in requiredStates) kind: () => _pullsPlace(state: kind),
     },
   ),
   ScreenCase(

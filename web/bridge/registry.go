@@ -79,9 +79,12 @@ type sessionInfo struct {
 	// child running, but the idle sweep, the daemon's listing, an attach and
 	// the client-trust mark all leave it alone. Not serialized.
 	fleet bool
-	// followed is true once session/follow was accepted: a restart's resume
-	// follows the session again (P5 F5, plan 4c). Not serialized.
-	followed bool
+	// followAsked is true once this bridge has asked the agent to follow the
+	// session (session/follow), whatever the reply: a restart's resume asks
+	// again, so a follow that failed on a spawn's dying request context is
+	// retried rather than lost for the session's life (P5 F5, plan 4c). Not
+	// serialized.
+	followAsked bool
 	// ownTurn is true while the bridge's own prompt is in flight, so a
 	// followed run's end cannot hide it. Not serialized.
 	ownTurn bool
@@ -330,7 +333,7 @@ func (r *Registry) closeTracked(ctx context.Context, id string, cwd AgentPath) e
 	}
 	r.cancelSession(id)
 	r.mu.Lock()
-	delete(r.sessions, id)
+	r.dropSessionLocked(id)
 	r.mu.Unlock()
 	return nil
 }
@@ -340,8 +343,15 @@ func (r *Registry) closeTracked(ctx context.Context, id string, cwd AgentPath) e
 func (r *Registry) forget(id string) {
 	r.cancelSession(id)
 	r.mu.Lock()
-	delete(r.sessions, id)
+	r.dropSessionLocked(id)
 	r.mu.Unlock()
+}
+
+// dropSessionLocked removes id's record and the follow log kept for it, so
+// followWarned tracks live sessions only. The caller holds mu.
+func (r *Registry) dropSessionLocked(id string) {
+	delete(r.sessions, id)
+	delete(r.followWarned, id)
 }
 
 // idleCandidates lists the tracked sessions with no viewer whose last
@@ -398,6 +408,12 @@ func (r *Registry) rename(oldID, newID string) bool {
 	}
 	delete(r.sessions, oldID)
 	r.sessions[newID] = info
+	// The record is the same session, so its follow log comes with it: a
+	// rename must not make an older agent's missing method be reported twice.
+	if warned := r.followWarned[oldID]; warned {
+		r.followWarned[newID] = true
+		delete(r.followWarned, oldID)
+	}
 	return true
 }
 
@@ -476,7 +492,7 @@ func (r *Registry) Delete(ctx context.Context, id string) error {
 	}
 	r.cancelSession(id)
 	r.mu.Lock()
-	delete(r.sessions, id)
+	r.dropSessionLocked(id)
 	r.mu.Unlock()
 	return nil
 }
@@ -610,17 +626,21 @@ func (r *Registry) call(ctx context.Context, id, method, feature string, params 
 // logged once per session. Follow changes no status by itself; a followed
 // run's own update is what marks the session busy.
 func (r *Registry) Follow(ctx context.Context, id string) error {
+	// The request is recorded before the reply, so a follow the agent never
+	// confirmed, a transient context cancellation at spawn included, is asked
+	// again after a restart instead of leaving the session unfollowed for its
+	// life.
+	r.mu.Lock()
+	if info, ok := r.sessions[id]; ok {
+		info.followAsked = true
+	}
+	r.mu.Unlock()
 	if _, err := r.call(ctx, id, "session/follow", "follow", nil); err != nil {
 		if errors.Is(err, ErrUnsupported{Feature: "follow"}) {
 			r.warnFollowUnsupported(id)
 		}
 		return err
 	}
-	r.mu.Lock()
-	if info, ok := r.sessions[id]; ok {
-		info.followed = true
-	}
-	r.mu.Unlock()
 	return nil
 }
 
@@ -672,6 +692,12 @@ func (r *Registry) observeFollowedRun(params json.RawMessage) {
 	}
 	switch p.Update.State {
 	case "started":
+		if p.Update.RunID == "" {
+			// A start with no id can never be matched by an end: recording it
+			// would leave the session busy for good.
+			r.mu.Unlock()
+			return
+		}
 		info.followedRun = p.Update.RunID
 		info.Busy = true
 		info.accepting = true
@@ -1124,12 +1150,12 @@ func (r *Registry) resumeAll() {
 	ids := make([]string, 0, len(r.sessions))
 	cwds := make(map[string]AgentPath, len(r.sessions))
 	fleets := make(map[string]bool, len(r.sessions))
-	followed := make(map[string]bool, len(r.sessions))
+	followAsked := make(map[string]bool, len(r.sessions))
 	for id, info := range r.sessions {
 		ids = append(ids, id)
 		cwds[id] = info.Cwd
 		fleets[id] = info.fleet
-		followed[id] = info.followed
+		followAsked[id] = info.followAsked
 		// Both kinds of turn in flight were interrupted by the restart.
 		info.Busy = false
 		info.ownTurn = false
@@ -1144,7 +1170,7 @@ func (r *Registry) resumeAll() {
 		// keeps the registry-wide one, a fleet agent's omits it.
 		trust := r.ClientTrust && !fleets[id]
 		_, _ = r.child.Request(ctx, "session/resume", sessionParams{Cwd: cwds[id], SessionID: id, MCPServers: &[]json.RawMessage{}, ClientTrust: trust})
-		if followed[id] {
+		if followAsked[id] {
 			// The follow lived in the process that just died: ask the
 			// replacement for the same reports (P5 F5, plan 4c). A failure is
 			// logged, never fatal to the resume.

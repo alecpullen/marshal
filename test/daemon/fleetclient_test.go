@@ -33,8 +33,10 @@ func TestTheFleetClientFollowsARealBridge(t *testing.T) {
 	h := newDaemonHarness(t)
 	ctx := callCtx(t)
 
+	// The stream outlives the waits below: run() returns when its context
+	// ends and State then freezes at its last value. Close is the teardown.
 	client := fleetclient.New(fleetclient.Socket(h.socket))
-	client.Start(ctx)
+	client.Start(context.Background())
 	defer client.Close()
 
 	agentID, err := h.fleet.Spawn(ctx, h.root, bridge.SpawnOptions{Name: "fleet client agent"})
@@ -127,7 +129,7 @@ func TestTheClientsActionsReachARealBridge(t *testing.T) {
 	ctx := callCtx(t)
 
 	client := fleetclient.New(fleetclient.Socket(h.socket))
-	client.Start(ctx)
+	client.Start(context.Background())
 	defer client.Close()
 
 	// 1. Spawn through the client: the route starts an agent and prompts it.

@@ -5454,6 +5454,33 @@ func expectNoQuestionAnswer(t *testing.T, ch <-chan []session.Answer) {
 	}
 }
 
+// skillGateEvent is the session event a pending skill gate publishes.
+func skillGateEvent(p *session.PendingSkillGate) pubsub.Event[session.Event] {
+	return pubsub.Event[session.Event]{
+		Type:    session.EventPendingSkillGateChanged,
+		Payload: session.Event{PendingSkillGate: p},
+	}
+}
+
+// registerTurnGate installs a canonical skill gate in the session, so a test
+// can tell whether the forwarder answered it.
+func registerTurnGate(t *testing.T, state *session.State, pending *session.PendingSkillGate) {
+	t.Helper()
+	if _, err := state.RegisterSkillGate(context.Background(), pending); err != nil {
+		t.Fatalf("RegisterSkillGate: %v", err)
+	}
+}
+
+// expectNoGateAnswer checks that no choice reached the skill gate.
+func expectNoGateAnswer(t *testing.T, ch <-chan session.SkillGateChoice) {
+	t.Helper()
+	select {
+	case got := <-ch:
+		t.Fatalf("the forwarder answered the skill gate: %v", got)
+	default:
+	}
+}
+
 // TestTheTurnsForwarderKeepsItsFailureRules pins that moving runTurn's forward
 // closure into turnForwarder changed nothing for runTurn: a failing bridge
 // still cancels the turn for an approval, still answers Unanswered for a
@@ -5543,6 +5570,20 @@ func TestAFollowedForwarderNeverAnswersForTheViewer(t *testing.T) {
 		expectNoQuestionAnswer(t, response)
 	})
 
+	t.Run("failing skill gate bridge", func(t *testing.T) {
+		fx := newForwarderFixture(t, true,
+			&recordingPermissionClient{err: errors.New("permission bridge down")}, nil)
+		response := make(chan session.SkillGateChoice, 1)
+		pending := &session.PendingSkillGate{Skill: "go-testing", ResponseChan: response}
+		registerTurnGate(t, fx.state, pending)
+		fx.fw.forward(skillGateEvent(pending))
+		fx.expectFailure(t)
+		if fx.state.PendingSkillGate() == nil {
+			t.Fatal("the followed forwarder answered the skill gate it never answered")
+		}
+		expectNoGateAnswer(t, response)
+	})
+
 	t.Run("missing bridges", func(t *testing.T) {
 		fx := newForwarderFixture(t, true, nil, nil)
 		approvals := make(chan session.UserApprovalDecision, 1)
@@ -5558,6 +5599,11 @@ func TestAFollowedForwarderNeverAnswersForTheViewer(t *testing.T) {
 		registerTurnQuestion(t, fx.state, question)
 		fx.fw.forward(questionEvent(question))
 
+		gates := make(chan session.SkillGateChoice, 1)
+		gate := &session.PendingSkillGate{Skill: "go-testing", ResponseChan: gates}
+		registerTurnGate(t, fx.state, gate)
+		fx.fw.forward(skillGateEvent(gate))
+
 		// A missing bridge is a warning, not a failure.
 		fx.expectNoFailure(t)
 		if fx.state.PendingApproval() == nil {
@@ -5566,8 +5612,12 @@ func TestAFollowedForwarderNeverAnswersForTheViewer(t *testing.T) {
 		if fx.state.PendingQuestion() == nil {
 			t.Fatal("a followed forwarder with no bridge answered the question")
 		}
+		if fx.state.PendingSkillGate() == nil {
+			t.Fatal("a followed forwarder with no bridge answered the skill gate")
+		}
 		expectNoApprovalAnswer(t, approvals)
 		expectNoQuestionAnswer(t, questions)
+		expectNoGateAnswer(t, gates)
 	})
 }
 

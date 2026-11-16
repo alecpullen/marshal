@@ -80,8 +80,13 @@ func TestAViewersTurnShowsAsRunningInTheFleet(t *testing.T) {
 	commitMarshalIgnored(t, h.root)
 	ctx := callCtx(t)
 
+	// The client's stream outlives the waits below. run() returns when its
+	// context ends and its refetches then fail silently, so State freezes at
+	// its last value: on callCtx's 60s, a two-minute wait would burn its whole
+	// budget polling stale rows and blame the fleet state. Close is the
+	// teardown.
 	client := fleetclient.New(fleetclient.Socket(h.socket))
-	client.Start(ctx)
+	client.Start(context.Background())
 	defer client.Close()
 
 	agentID, agentSID := spawnFleetAgent(t, h, ctx)
@@ -112,8 +117,8 @@ func TestAViewersTurnShowsAsRunningInTheFleet(t *testing.T) {
 	close(gate)
 	waitPrompt(t, promptErr)
 
-	// The turn's end reaches the bridge too: the agent goes idle and reports
-	// the one file the turn changed.
+	// The turn's end reaches the bridge too: the agent goes idle, reports the
+	// one file the turn changed, and the inbox drops it from running.
 	waitWithin(t, 2*time.Minute, "the fleet reporting the viewer's turn as ended", func() error {
 		st, ok := agentStatus(h, agentID)
 		if !ok {
@@ -125,10 +130,17 @@ func TestAViewersTurnShowsAsRunningInTheFleet(t *testing.T) {
 		if st.ChangedFiles != 1 {
 			return fmt.Errorf("the agent reports %d changed files, want the turn's 1", st.ChangedFiles)
 		}
+		if inGroup(client.State().Inbox.Groups.Running, agentID) {
+			return fmt.Errorf("the inbox still lists %s as running: %+v",
+				agentID, client.State().Inbox.Groups)
+		}
 		return nil
 	})
 	if got := fixture.Completions(); got != 2 {
 		t.Fatalf("the provider served %d completions, want 2 (the tool call and the reply)", got)
+	}
+	for _, r := range fixture.Refusals() {
+		t.Errorf("the provider refused a request: %s", r)
 	}
 }
 
@@ -150,8 +162,9 @@ func TestAViewersTurnsApprovalReachesTheFleet(t *testing.T) {
 	trustProject(t, h.root)
 	ctx := callCtx(t)
 
+	// The stream outlives the waits below, as the first test's does.
 	client := fleetclient.New(fleetclient.Socket(h.socket))
-	client.Start(ctx)
+	client.Start(context.Background())
 	defer client.Close()
 
 	agentID, agentSID := spawnFleetAgent(t, h, ctx)
@@ -200,6 +213,12 @@ func TestAViewersTurnsApprovalReachesTheFleet(t *testing.T) {
 		}
 		return nil
 	})
+	if got := fixture.Completions(); got != 2 {
+		t.Fatalf("the provider served %d completions, want 2 (the tool call and the reply)", got)
+	}
+	for _, r := range fixture.Refusals() {
+		t.Errorf("the provider refused a request: %s", r)
+	}
 }
 
 // TestTheFleetCancelsAViewersTurn is the cancel direction: the viewer's turn is
@@ -214,8 +233,9 @@ func TestTheFleetCancelsAViewersTurn(t *testing.T) {
 	h := newDaemonHarness(t)
 	ctx := callCtx(t)
 
+	// The stream outlives the waits below, as the first test's does.
 	client := fleetclient.New(fleetclient.Socket(h.socket))
-	client.Start(ctx)
+	client.Start(context.Background())
 	defer client.Close()
 
 	_, agentSID := spawnFleetAgent(t, h, ctx)
@@ -244,5 +264,15 @@ func TestTheFleetCancelsAViewersTurn(t *testing.T) {
 		t.Logf("the cancelled prompt returned: %v", err)
 	case <-time.After(2 * time.Minute):
 		t.Fatal("the viewer's prompt did not return after the fleet cancelled its turn")
+	}
+	// The cancelled turn is the only refusal this test expects: the scripted
+	// provider records a gated turn cut short by its context as a refusal, and
+	// that cancellation is the thing under test. Any other refusal would be a
+	// request this test never asked for.
+	for _, r := range fixture.Refusals() {
+		if r == "turn 0 cancelled while gated" {
+			continue
+		}
+		t.Errorf("the provider refused a request: %s", r)
 	}
 }

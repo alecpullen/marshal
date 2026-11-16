@@ -1518,6 +1518,37 @@ func TestAFollowedRunMarksTheSessionBusy(t *testing.T) {
 	})
 }
 
+// TestAStartedRunWithoutAnIdIsIgnored: a followed_run start carries the id its
+// end will match. One without an id can never be cleared, so it leaves the
+// session's state as it was instead of wedging the row running (P5 4c).
+func TestAStartedRunWithoutAnIdIsIgnored(t *testing.T) {
+	r, _ := newTestRegistry(t, "registry")
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := r.child.Request(ctx, "test/followed_run", map[string]any{"state": "started", "runId": "run-1"}); err != nil {
+		t.Fatalf("followed_run started: %v", err)
+	}
+	waitFor(t, 2*time.Second, "the followed run marking the session busy", func() bool {
+		return r.Sessions()["s-1"].followedRun == "run-1"
+	})
+	// An id-less start, then the real run's end. The notifications are applied
+	// in the order they arrive, so an id-less start that had replaced the run
+	// in flight would leave the end unmatched and the session busy for good.
+	if _, err := r.child.Request(ctx, "test/followed_run", map[string]any{"state": "started"}); err != nil {
+		t.Fatalf("followed_run started without a runId: %v", err)
+	}
+	if _, err := r.child.Request(ctx, "test/followed_run", map[string]any{"state": "ended", "runId": "run-1", "outcome": "done"}); err != nil {
+		t.Fatalf("followed_run ended: %v", err)
+	}
+	waitFor(t, 2*time.Second, "the id-less start leaving the run in flight alone", func() bool {
+		return !r.Sessions()["s-1"].Busy && !r.sessionAccepting("s-1")
+	})
+}
+
 // TestAFollowedRunsApprovalIsBrokered: a run reported from another connection
 // is in flight on this session, so its permission request waits for a
 // decision instead of being denied. Without one, the same request is denied
@@ -1565,6 +1596,11 @@ func TestAFollowedRunsApprovalIsBrokered(t *testing.T) {
 	if err := r.ResolvePermission("tc-1", Decision{Approved: true}); err != nil {
 		t.Fatalf("ResolvePermission: %v", err)
 	}
+	// The decision the bridge sends back is the one the child receives: the
+	// waiter is unblocked with approval, not denied as a stale request.
+	waitFor(t, 2*time.Second, "the followed run's approval reaching the child", func() bool {
+		return strings.Contains(c.StderrLog(), `"approved":true`)
+	})
 }
 
 // TestAFollowedRunsEndIsATurnEnd: a followed run's end becomes the
@@ -1729,7 +1765,9 @@ func TestAFleetAgentsSessionIsFollowed(t *testing.T) {
 }
 
 // TestAnAgentWithoutFollowIsLeftAsItWas: an agent that answers
-// method-not-found still spawns, and its session is not marked followed.
+// method-not-found still spawns and keeps behaving as it did. The session
+// records that the bridge asked, which is what a restart retries, but the
+// report it never accepted is not implied.
 func TestAnAgentWithoutFollowIsLeftAsItWas(t *testing.T) {
 	f := testFleet(t)
 	bin, args, env := helperCommand("registry-nofollow")
@@ -1747,10 +1785,103 @@ func TestAnAgentWithoutFollowIsLeftAsItWas(t *testing.T) {
 	if !ok {
 		t.Fatalf("the spawn's session is not tracked: %+v", rt.reg.Sessions())
 	}
-	if info.followed {
-		t.Fatal("an agent without session/follow marked the session followed")
+	if !info.followAsked {
+		t.Fatal("the follow attempt was not recorded for the session")
+	}
+	if info.Busy || info.followedRun != "" {
+		t.Fatalf("an agent without session/follow marked the session busy: %+v", info)
 	}
 	waitFor(t, 2*time.Second, "the follow attempt in the child's log", func() bool {
 		return strings.Contains(rt.child.StderrLog(), "helper saw request session/follow")
 	})
+}
+
+// TestATransientFollowFailureIsRetriedAfterARestart: the session records the
+// follow request, not the reply, so a follow the agent never confirmed (a
+// spawn's request context cancelled under it) is asked again by the restart's
+// resume instead of leaving the session unfollowed for its life (P5 4c).
+func TestATransientFollowFailureIsRetriedAfterARestart(t *testing.T) {
+	fake := newFakeAgent()
+	// Only the fake's own read goroutine touches the counter.
+	var follows int
+	fake.handler = func(method string, params json.RawMessage) (any, *rpcError, bool) {
+		if method != "session/follow" {
+			return nil, nil, false
+		}
+		follows++
+		if follows == 1 {
+			return nil, &rpcError{Code: -32603, Message: "the request context was cancelled"}, true
+		}
+		return nil, nil, false
+	}
+	c := &Child{Transport: fake}
+	if err := c.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(c.Stop)
+	r := NewRegistry(c)
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.Follow(ctx, "s-1"); err == nil {
+		t.Fatal("the injected follow failure was not reported")
+	}
+	if info, ok := r.lookup("s-1"); !ok || !info.followAsked {
+		t.Fatalf("a failed follow was not recorded as asked: %+v", info)
+	}
+	// The replacement process needs the follow too, failed request or not.
+	r.resumeAll()
+	if got := len(fake.calls("session/follow")); got != 2 {
+		t.Fatalf("follow calls after the restart = %d, want the failed attempt retried", got)
+	}
+	if got := fake.calls("session/follow")[1]; !strings.Contains(got, `"sessionId":"s-1"`) {
+		t.Fatalf("the retried follow's params = %s, want the session's id", got)
+	}
+}
+
+// TestAFollowWarningIsForgottenWithItsSession: the once-per-session log of an
+// older agent's missing session/follow is dropped with the session record, so
+// the map tracks live sessions rather than growing for the registry's
+// lifetime (P5 4c).
+func TestAFollowWarningIsForgottenWithItsSession(t *testing.T) {
+	removals := []struct {
+		name   string
+		remove func(*Registry, context.Context, string) error
+	}{
+		{"delete", func(r *Registry, ctx context.Context, id string) error { return r.Delete(ctx, id) }},
+		{"close", func(r *Registry, ctx context.Context, id string) error { return r.Close(ctx, id) }},
+		{"forget", func(r *Registry, _ context.Context, id string) error { r.forget(id); return nil }},
+	}
+	for _, tc := range removals {
+		t.Run(tc.name, func(t *testing.T) {
+			r, _ := newTestRegistry(t, "registry-nofollow")
+			ctx, cancel := testContext(t)
+			defer cancel()
+
+			if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if err := r.Follow(ctx, "s-1"); !errors.Is(err, ErrUnsupported{Feature: "follow"}) {
+				t.Fatalf("Follow on an older agent = %v, want ErrUnsupported", err)
+			}
+			r.mu.Lock()
+			warned := r.followWarned["s-1"]
+			r.mu.Unlock()
+			if !warned {
+				t.Fatal("the missing session/follow was not logged for the session")
+			}
+			if err := tc.remove(r, ctx, "s-1"); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			r.mu.Lock()
+			_, kept := r.followWarned["s-1"]
+			r.mu.Unlock()
+			if kept {
+				t.Fatalf("the follow log outlived the session record removed by %s", tc.name)
+			}
+		})
+	}
 }

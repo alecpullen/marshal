@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"marshal/internal/acp/service"
@@ -82,6 +83,11 @@ type runFollower struct {
 	runID   string
 	fwd     *turnForwarder
 	runStop context.CancelFunc
+
+	// closing is set only by stop (the connection's teardown, or a replaced
+	// runtime): nobody is left to inform, so a run still followed when the
+	// follower ends is dropped rather than reported.
+	closing atomic.Bool
 }
 
 // newRunFollower builds the follower for one session and runtime.
@@ -114,7 +120,10 @@ func (f *runFollower) start() {
 }
 
 // stop ends the follower and every followed run's forwarder with it.
-func (f *runFollower) stop() { f.cancel() }
+func (f *runFollower) stop() {
+	f.closing.Store(true)
+	f.cancel()
+}
 
 // run is the follower's one goroutine. It selects over the session's events,
 // the status ticker and the run flush ticker, so "started" is written before an
@@ -131,18 +140,24 @@ func (f *runFollower) run(events <-chan pubsub.Event[session.Event]) {
 	for {
 		select {
 		case <-f.ctx.Done():
+			f.shutdownEnded()
 			return
 		case ev, ok := <-events:
 			if !ok {
+				f.shutdownEnded()
 				return
 			}
-			f.syncRun(events)
-			// An event that arrives while no run is followed is not forwarded:
-			// the bridge's own turn forwards its events, and the service
-			// reports no run for it (decision 2).
-			f.forward(ev)
+			// syncRun forwards the held event itself when it ends a run:
+			// endRun closes the forwarder, so a forward afterwards would
+			// drop the event the loop already took off the channel.
+			if !f.syncRun(events, &ev) {
+				// An event that arrives while no run is followed is not
+				// forwarded: the bridge's own turn forwards its events, and
+				// the service reports no run for it (decision 2).
+				f.forward(ev)
+			}
 		case <-statusTicker.C:
-			f.syncRun(events)
+			f.syncRun(events, nil)
 		case <-flush.C:
 			if f.following() && f.state != nil {
 				f.tm.flushDirtyStack(f.sessionID, f.state)
@@ -154,22 +169,34 @@ func (f *runFollower) run(events <-chan pubsub.Event[session.Event]) {
 // syncRun reads the service's run and starts or ends the followed one. A
 // different run than the one followed ends the old run first, then starts the
 // new one.
-func (f *runFollower) syncRun(events <-chan pubsub.Event[session.Event]) {
+//
+// held is the event the run loop is holding, nil when the status ticker called.
+// An event taken off the channel belongs to the run that is about to be
+// closed, so ending a run forwards it here and reports true: the caller must
+// not forward it afterwards, because endRun closes the forwarder.
+func (f *runFollower) syncRun(events <-chan pubsub.Event[session.Event], held *pubsub.Event[session.Event]) bool {
 	status := f.service.Status()
 	cur := f.currentRunID()
 	if status.Run != nil {
 		if status.Run.ID == cur {
-			return
+			return false
 		}
 		if cur != "" {
-			f.endRun(events, status.LastRun)
+			// The old run's events are published before the slot is released,
+			// so the held event is the old run's tail even when the new run
+			// has started.
+			f.endRun(events, status.LastRun, held)
+			f.startRun(*status.Run)
+			return true
 		}
 		f.startRun(*status.Run)
-		return
+		return false
 	}
 	if cur != "" {
-		f.endRun(events, status.LastRun)
+		f.endRun(events, status.LastRun, held)
+		return true
 	}
+	return false
 }
 
 // currentRunID reports the ID of the run being followed, empty when none.
@@ -214,11 +241,17 @@ func (f *runFollower) startRun(run acpwire.Run) {
 // buffered is forwarded, the stack is flushed, the telemetry finishTurn sends
 // goes out, and only then "ended" with the outcome the service's last run
 // reports.
-func (f *runFollower) endRun(events <-chan pubsub.Event[session.Event], last *acpwire.RunResult) {
+func (f *runFollower) endRun(events <-chan pubsub.Event[session.Event], last *acpwire.RunResult, held *pubsub.Event[session.Event]) {
+	// The event the loop was holding is the oldest of what is left, so it goes
+	// before the buffered tail. It must be forwarded here: endRun closes the
+	// forwarder below, and a forward after that drops the event.
+	if held != nil {
+		f.forward(*held)
+	}
 	// Everything still buffered belongs to the run that has just ended, so it
 	// is forwarded before the run is closed.
 drain:
-	for {
+	for events != nil {
 		select {
 		case ev, ok := <-events:
 			if !ok {
@@ -251,6 +284,38 @@ drain:
 	if runStop != nil {
 		runStop()
 	}
+}
+
+// shutdownEnded reports the run a stopping runtime left followed, so a bridge
+// showing that row as running can clear it. Nothing is drained or flushed: the
+// runtime is going away and the connection may be too. The outcome is the
+// service's last run for this id, unnamed when the service never recorded one
+// (the follower does not know how the stop ended the work).
+func (f *runFollower) shutdownEnded() {
+	f.mu.Lock()
+	runID, runStop := f.runID, f.runStop
+	f.runID, f.fwd, f.runStop = "", nil, nil
+	f.mu.Unlock()
+	if runID == "" {
+		return
+	}
+	if runStop != nil {
+		runStop()
+	}
+	// A connection that is itself closing has no viewer left to inform.
+	if f.closing.Load() {
+		return
+	}
+	update := followedRunUpdate{Kind: updateFollowedRun, State: followedRunEnded, RunID: runID}
+	if f.service != nil {
+		if last := f.service.Status().LastRun; last != nil && last.ID == runID {
+			update.Outcome = last.Outcome
+			if last.Outcome == acpwire.RunFailed && last.Error != nil {
+				update.Error = last.Error.Message
+			}
+		}
+	}
+	f.notifyUpdate(update)
 }
 
 // forward dispatches one event through the followed run's forwarder. With no
@@ -306,7 +371,9 @@ func (m *TurnManager) Follow(ctx context.Context, params json.RawMessage) (any, 
 	}
 	svc, ok := m.service(p.SessionID)
 	if !ok || svc == nil {
-		return nil, serverErrorf("session %s not found", p.SessionID)
+		// Not an unknown session any more, but one nothing can run: the
+		// distinction the contract asks for is kept.
+		return nil, serverErrorf("session %s has no run service", p.SessionID)
 	}
 	m.ensureFollower(p.SessionID, rt, svc)
 	return map[string]any{}, nil

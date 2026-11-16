@@ -2035,8 +2035,13 @@ check for the run's identity, which the row cannot name.
 - **The real-bridge row is read from the bridge's own projection, not the
   client's rows.** `test/daemon`'s first test reads the agent's row with
   `agentStatus` — the `Snapshot()` that `GET /api/agents` serializes — and the
-  inbox through the fleet client, because the client refetches its rows only
-  on a throttled inbox move. A helper commits a `.gitignore` covering
+  inbox through the fleet client. That row is reached by a bare status move,
+  which the client turns into rows only through the throttled inbox-move
+  refetch (`internal/fleetclient/apply.go`'s `applyInbox`), so what the test
+  reads there is the bridge's own projection rather than the client's. A
+  pending delta is the other case: `applyPending` refetches the agent rows
+  immediately, every time, which is what the approval test downstream relies
+  on. A helper commits a `.gitignore` covering
   `.marshal/` in the harness's temp project, since the child writes that file
   itself and an uncommitted one would count as the turn's second changed file.
   A second helper prompts from the viewer on a goroutine.
@@ -2071,7 +2076,7 @@ should drive, in order:
 
 | Command | Result |
 | --- | --- |
-| `TMPDIR=/tmp/p5-4c-suite CGO_ENABLED=1 go test ./internal/acp/ -count=1 -timeout 20m -skip '<the twelve budget tests>'` | Passed (16.4s), after every task that touched it. |
+| `TMPDIR=/tmp/p5-4c-suite CGO_ENABLED=1 go test ./internal/acp/ -count=1 -timeout 20m -skip '^Test(NoticeCallBudget\|ControlCallBudget\|AnswerCallBudget\|ResponseBarrierBudget\|SettingsCallBudget\|NoteCallBudget\|BrowserCallBudget\|EndCallBudget\|StackBusyFlipBudget\|StackPatchApplyBudget\|StackRoundTripBudget)$'` | Passed (16.4s), after every task that touched it. The eleven names are the budget tests `internal/acp` holds; the family's twelfth, `internal/app/tui`'s `TestAKeyPressOverThePipeBudget`, is only in the repo-wide CI row below, which names all twelve. |
 | `TMPDIR=/tmp/p5-4c-suite CGO_ENABLED=1 go test ./web/bridge/ -count=1 -timeout 20m` | Passed (135.0s). |
 | `GOOS=linux go vet ./web/...` and `GOOS=windows go vet ./web/bridge/...` | Clean. |
 | `TMPDIR=/tmp/p5-4c-suite CGO_ENABLED=1 go test ./test/daemon/ -count=1 -timeout 15m` | Passed (7.6s). |

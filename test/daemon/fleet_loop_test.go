@@ -129,8 +129,11 @@ func TestTheFleetOpensAnAgentAndLeavesItRunning(t *testing.T) {
 		t.Fatalf("the run in flight is %q, want %q", run.ID, runID)
 	}
 
+	// The stream outlives the wait below: run() returns when its context
+	// ends, and a dead stream freezes State at its last value, so callCtx's
+	// 60s would leave the rows below to a stale read. Close is the teardown.
 	client := fleetclient.New(fleetclient.Socket(h.socket))
-	client.Start(ctx)
+	client.Start(context.Background())
 	defer client.Close()
 	waitFor(t, func() error {
 		agents := client.State().Agents

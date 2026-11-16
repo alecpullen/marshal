@@ -18,15 +18,46 @@ jobs:
       contents: write
     runs-on: ubuntu-latest
     container:
-      image: goreleaser/goreleaser-cross:latest
+      image: goreleaser/goreleaser-cross:v1.27.3
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Trust the workspace checkout
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Decide optional publishers
+        id: optional
+        env:
+          TAP: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$TAP" ]; then
+            echo "skip=--skip=homebrew" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=" >> "$GITHUB_OUTPUT"
+          fi
       # Registry publishing is not configured; create a binaries-only draft.
       - name: Run GoReleaser
-        run: goreleaser release --clean --skip=docker
+        run: goreleaser release --clean --skip=docker ${{ steps.optional.outputs.skip }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+  install-smoke:
+    name: Installer smoke (${{ matrix.os }})
+    needs: release
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the release this workflow just cut
+        run: |
+          prefix="$RUNNER_TEMP/marshal-bin"
+          ./scripts/install.sh --no-daemon --version "$GITHUB_REF_NAME" --prefix "$prefix"
+          "$prefix/marshal" --version
+          "$prefix/webbridge" --version

@@ -13,9 +13,11 @@ import (
 
 	"marshal/internal/acp"
 	"marshal/internal/app/config"
+	"marshal/internal/buildinfo"
 	"marshal/internal/credentials"
 	"marshal/internal/fleetprofile"
 	"marshal/internal/launch"
+	"marshal/internal/llm/provider"
 	"marshal/internal/trust"
 )
 
@@ -476,6 +478,82 @@ func TestVersionStringFallsBackToDev(t *testing.T) {
 	got := versionString()
 	if !strings.Contains(got, "dev") {
 		t.Errorf("versionString() = %q, want it to mention %q", got, "dev")
+	}
+}
+
+// TestEveryModeSetsTheAgentVersion pins decision 2's second half: run computes
+// the version once and stamps it into acp.AgentVersion before dispatching, so
+// every mode's TUI has this build's version — not only `marshal acp`.
+func TestEveryModeSetsTheAgentVersion(t *testing.T) {
+	const stamped = "1.2.3-test"
+	oldVersion, oldAgent, oldUserAgent := version, acp.AgentVersion, provider.UserAgent
+	t.Cleanup(func() {
+		version, acp.AgentVersion, provider.UserAgent = oldVersion, oldAgent, oldUserAgent
+	})
+
+	oldApp, oldAttach, oldFleet := appRunner, attachRunner, fleetRunner
+	t.Cleanup(func() { appRunner, attachRunner, fleetRunner = oldApp, oldAttach, oldFleet })
+	appRunner = func(ctx context.Context, out io.Writer, opts ...launch.Option) error {
+		return nil
+	}
+	attachRunner = func(ctx context.Context, out io.Writer, socket, sessionID string, opts ...launch.Option) error {
+		return nil
+	}
+	fleetRunner = func(ctx context.Context, out io.Writer, socket string, opts ...launch.Option) error {
+		return nil
+	}
+
+	version = stamped
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "the app", args: nil},
+		{name: "attach", args: []string{"attach"}},
+		{name: "fleet", args: []string{"fleet"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateHome(t)
+			// Cleared first, so a mode that never sets it cannot pass by
+			// inheriting the value another mode left behind.
+			acp.AgentVersion = ""
+			if err := run(context.Background(), tc.args, strings.NewReader(""), io.Discard, io.Discard); err != nil {
+				t.Fatalf("run(%v): %v", tc.args, err)
+			}
+			if acp.AgentVersion != stamped {
+				t.Fatalf("run(%v): acp.AgentVersion = %q, want the stamped %q", tc.args, acp.AgentVersion, stamped)
+			}
+		})
+	}
+}
+
+// TestTheUserAgentCarriesTheVersion pins decision 2's User-Agent half: it
+// always names this build and its version, so a source build names its commit
+// there too instead of the package's marshal/dev default.
+func TestTheUserAgentCarriesTheVersion(t *testing.T) {
+	oldVersion, oldUserAgent := version, provider.UserAgent
+	t.Cleanup(func() { version, provider.UserAgent = oldVersion, oldUserAgent })
+
+	for _, tc := range []struct {
+		name  string
+		stamp string
+	}{
+		{name: "stamped", stamp: "1.2.3-alpha"},
+		{name: "unstamped", stamp: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			version = tc.stamp
+			// A value run must overwrite, so a run that never set it fails.
+			provider.UserAgent = "sentinel"
+			if err := run(context.Background(), []string{"--version"}, strings.NewReader(""), io.Discard, io.Discard); err != nil {
+				t.Fatalf("run(--version): %v", err)
+			}
+			want := "marshal/" + buildinfo.Version(tc.stamp)
+			if provider.UserAgent != want {
+				t.Fatalf("UserAgent = %q, want %q", provider.UserAgent, want)
+			}
+		})
 	}
 }
 

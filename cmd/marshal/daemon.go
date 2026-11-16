@@ -17,6 +17,7 @@ import (
 
 	"marshal/internal/app"
 	"marshal/internal/app/config"
+	"marshal/internal/buildinfo"
 	"marshal/internal/daemon"
 	"marshal/internal/llm/provider"
 	"marshal/internal/repo"
@@ -556,13 +557,11 @@ func sessionCount(n int) string {
 	return "sessions"
 }
 
-// daemonVersion is this marshal's version, with the same `dev` fallback
-// versionString uses for an unstamped build.
+// daemonVersion is this marshal's version, as run computes it for the banner,
+// the User-Agent and the agent: a stamped release, else the dev form naming
+// the commit (decision 2).
 func daemonVersion() string {
-	if version == "" {
-		return "dev"
-	}
-	return version
+	return buildinfo.Version(version)
 }
 
 // daemonHome is where PathsFor and NewManager anchor.

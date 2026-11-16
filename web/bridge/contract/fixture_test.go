@@ -18,6 +18,7 @@ var fixtureFiles = []string{
 	"automations.json",
 	"budgets.json",
 	"clients.json",
+	"connections.json",
 	"files.json",
 	"finish.json",
 	"inbox.json",
@@ -25,6 +26,7 @@ var fixtureFiles = []string{
 	"intake.json",
 	"issues.json",
 	"library.json",
+	"models.json",
 	"projects.json",
 	"recipes.json",
 	"review.json",
@@ -196,6 +198,24 @@ var fixtureTypes = map[string]reflect.Type{
 	"CreateClientRequest": reflect.TypeOf(CreateClientRequest{}),
 	"CreateClientResult":  reflect.TypeOf(CreateClientResult{}),
 	"MCPClient":           reflect.TypeOf(MCPClient{}),
+	// connections.go — forges, their credentials and what they permit.
+	"Credential":      reflect.TypeOf(Credential{}),
+	"CredentialInput": reflect.TypeOf(CredentialInput{}),
+	"Repo":            reflect.TypeOf(Repo{}),
+	// models.go — providers, presets, routing and the caps.
+	"Binding":         reflect.TypeOf(Binding{}),
+	"BudgetsUpdate":   reflect.TypeOf(BudgetsUpdate{}),
+	"ModelsConfig":    reflect.TypeOf(ModelsConfig{}),
+	"Preset":          reflect.TypeOf(Preset{}),
+	"PresetsUpdate":   reflect.TypeOf(PresetsUpdate{}),
+	"ProbeModel":      reflect.TypeOf(ProbeModel{}),
+	"ProbeRequest":    reflect.TypeOf(ProbeRequest{}),
+	"ProbeResult":     reflect.TypeOf(ProbeResult{}),
+	"ProviderKey":     reflect.TypeOf(ProviderKey{}),
+	"ProviderView":    reflect.TypeOf(ProviderView{}),
+	"ProviderWrite":   reflect.TypeOf(ProviderWrite{}),
+	"ProvidersUpdate": reflect.TypeOf(ProvidersUpdate{}),
+	"RoutingUpdate":   reflect.TypeOf(RoutingUpdate{}),
 }
 
 // TestContractFixturesRoundTrip holds the contract types to the shared

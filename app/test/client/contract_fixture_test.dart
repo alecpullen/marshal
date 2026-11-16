@@ -16,11 +16,13 @@ const _fixtures = [
   'automations',
   'budgets',
   'clients',
+  'connections',
   'finish',
   'inbox',
   'intake',
   'issues',
   'library',
+  'models',
   'projects',
   'recipes',
   'schedules',
@@ -179,6 +181,26 @@ final _codecs = <String, _Codec>{
   'FleetDelta': (json) => FleetDelta.fromJson(_object(json)).toJson(),
   'ProjectRemovedDelta': (json) =>
       ProjectRemovedDelta.fromJson(_object(json)).toJson(),
+  // connections.json
+  'Credential': (json) => Credential.fromJson(_object(json)).toJson(),
+  'CredentialInput': (json) =>
+      CredentialInput.fromJson(_object(json)).toJson(),
+  'Repo': (json) => Repo.fromJson(_object(json)).toJson(),
+  // models.json
+  'Binding': (json) => Binding.fromJson(_object(json)).toJson(),
+  'BudgetsUpdate': (json) => BudgetsUpdate.fromJson(_object(json)).toJson(),
+  'ModelsConfig': (json) => ModelsConfig.fromJson(_object(json)).toJson(),
+  'Preset': (json) => Preset.fromJson(_object(json)).toJson(),
+  'PresetsUpdate': (json) => PresetsUpdate.fromJson(_object(json)).toJson(),
+  'ProbeModel': (json) => ProbeModel.fromJson(_object(json)).toJson(),
+  'ProbeRequest': (json) => ProbeRequest.fromJson(_object(json)).toJson(),
+  'ProbeResult': (json) => ProbeResult.fromJson(_object(json)).toJson(),
+  'ProviderKey': (json) => ProviderKey.fromJson(_object(json)).toJson(),
+  'ProviderView': (json) => ProviderView.fromJson(_object(json)).toJson(),
+  'ProviderWrite': (json) => ProviderWrite.fromJson(_object(json)).toJson(),
+  'ProvidersUpdate': (json) =>
+      ProvidersUpdate.fromJson(_object(json)).toJson(),
+  'RoutingUpdate': (json) => RoutingUpdate.fromJson(_object(json)).toJson(),
 };
 
 void main() {

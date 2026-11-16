@@ -448,6 +448,86 @@ class BridgeClient {
     return FactoryGrantState.fromJson(_object(response));
   }
 
+  /// GET /api/repos: every registered repository, with the forge and the
+  /// credential it is reached with.
+  Future<List<Repo>> repos() => _listOf('/api/repos', Repo.fromJson);
+
+  /// POST /api/repos: registers one, or replaces the one with its id.
+  Future<Repo> registerRepo(Repo repo) =>
+      _objectOf('/api/repos', Repo.fromJson, method: 'POST', body: repo);
+
+  /// DELETE /api/repos/{id}.
+  Future<void> removeRepo(String id) => _send(
+    Request(method: 'DELETE', path: '/api/repos/${Uri.encodeComponent(id)}'),
+  );
+
+  /// GET /api/credentials: every forge credential. It carries no value, only
+  /// whether the secret it names exists.
+  Future<List<Credential>> credentials() =>
+      _listOf('/api/credentials', Credential.fromJson);
+
+  /// POST /api/credentials: stores one and answers what the bridge kept.
+  Future<Credential> putCredential(CredentialInput input) => _objectOf(
+    '/api/credentials',
+    Credential.fromJson,
+    method: 'POST',
+    body: input,
+  );
+
+  /// DELETE /api/credentials/{id}: refused while a repo still names it.
+  Future<void> deleteCredential(String id) => _send(
+    Request(
+      method: 'DELETE',
+      path: '/api/credentials/${Uri.encodeComponent(id)}',
+    ),
+  );
+
+  /// GET /api/models: the user-global config's providers, presets, roles and
+  /// caps. Providers and presets are user-global only.
+  Future<ModelsConfig> models() =>
+      _objectOf('/api/models', ModelsConfig.fromJson);
+
+  /// PUT /api/models/providers: sends the named providers; a null one is
+  /// removed.
+  Future<void> setProviders(ProvidersUpdate update) => _put(
+    '/api/models/providers',
+    update,
+  );
+
+  /// PUT /api/models/providers/{name}/key: stores a provider's key. Nothing
+  /// on any route answers it back.
+  Future<void> setProviderKey(String name, String key) => _put(
+    '/api/models/providers/${Uri.encodeComponent(name)}/key',
+    ProviderKey(key: key),
+  );
+
+  /// PUT /api/models/presets: sends the named presets; a null one is removed.
+  Future<void> setPresets(PresetsUpdate update) =>
+      _put('/api/models/presets', update);
+
+  /// PUT /api/models/routing: the profiles, the default profile and the active
+  /// preset, in the user's global config.
+  Future<void> setRouting(RoutingUpdate update) =>
+      _put('/api/models/routing', update);
+
+  /// POST /api/models/probe: lists the models a provider answers with. A probe
+  /// that fails is its answer, not a refusal.
+  Future<ProbeResult> probeProvider(String name) => _objectOf(
+    '/api/models/probe',
+    ProbeResult.fromJson,
+    method: 'POST',
+    body: ProbeRequest(name: name),
+  );
+
+  /// PUT /api/budgets: writes the caps to the user's global config and
+  /// answers the report the engine stored, which may clamp what was sent.
+  Future<BudgetReport> saveBudgets(Budgets budgets) => _objectOf(
+    '/api/budgets',
+    BudgetReport.fromJson,
+    method: 'PUT',
+    body: BudgetsUpdate(budgets: budgets),
+  );
+
   /// GET /api/sessions/{id}/stack: one transcript's tree at its current
   /// revision. [subagentId] names a child transcript; 0 is the parent's.
   Future<StackSnapshot> stack(String sessionId, {int subagentId = 0}) =>
@@ -745,5 +825,13 @@ class BridgeClient {
     Map<String, String> query = const {},
   }) async {
     await _send(Request(method: 'POST', path: path, query: query, body: body));
+  }
+
+  Future<void> _put(
+    String path,
+    Object? body, {
+    Map<String, String> query = const {},
+  }) async {
+    await _send(Request(method: 'PUT', path: path, query: query, body: body));
   }
 }

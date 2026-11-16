@@ -1,10 +1,17 @@
 import 'package:marshal_app/src/client/contract.g.dart'
     show
+        Binding,
+        Budgets,
+        Credential,
         DaemonInfo,
         DiffFile,
         FileEntry,
         GateResult,
+        ModelsConfig,
+        Preset,
+        ProviderView,
         Recipe,
+        Repo,
         Schedule,
         StackSnapshot,
         StepDiff,
@@ -17,10 +24,12 @@ import 'package:marshal_app/src/client/contract.g.dart'
 import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
 import 'package:marshal_app/src/model/bots_model.dart';
 import 'package:marshal_app/src/model/clients_model.dart';
+import 'package:marshal_app/src/model/connections_model.dart';
 import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
 import 'package:marshal_app/src/model/general_model.dart';
 import 'package:marshal_app/src/model/hosts_model.dart';
 import 'package:marshal_app/src/model/library_model.dart';
+import 'package:marshal_app/src/model/models_model.dart';
 import 'package:marshal_app/src/model/inbox_model.dart' as model;
 import 'package:marshal_app/src/model/changes_model.dart';
 import 'package:marshal_app/src/model/files_model.dart';
@@ -49,8 +58,10 @@ import 'package:marshal_app/src/ui/library/mcp_tab.dart';
 import 'package:marshal_app/src/ui/library/memory_tab.dart';
 import 'package:marshal_app/src/ui/library/plugins_tab.dart';
 import 'package:marshal_app/src/ui/library/skills_tab.dart';
+import 'package:marshal_app/src/ui/settings/connections_section.dart';
 import 'package:marshal_app/src/ui/settings/general_section.dart';
 import 'package:marshal_app/src/ui/settings/hosts_section.dart';
+import 'package:marshal_app/src/ui/settings/models_section.dart';
 import 'package:marshal_app/src/ui/settings/settings_place.dart';
 import 'package:marshal_app/src/ui/inbox/inbox.dart';
 import 'package:marshal_app/src/ui/inspector/changes_tab.dart';
@@ -602,6 +613,28 @@ Widget _settings({int section = 0, StateKind? state}) {
     daemon: _daemonInfo,
     now: () => shellNow,
   );
+  final connections = ConnectionsModel.fixture(
+    repos: const [
+      Repo(
+        id: 'acme-widgets',
+        url: 'github.com/acme/widgets',
+        branch: 'main',
+        credRef: 'deploy',
+        ownerID: 'owner-1',
+        forge: 'github',
+      ),
+    ],
+    credentials: const [
+      Credential(
+        id: 'deploy',
+        kind: 'ssh',
+        keyPath: '/home/u/.ssh/id_ed25519',
+        set: true,
+      ),
+    ],
+    models: _settingsModels,
+  );
+  final models = ModelsModel.fixture(_settingsModels);
   return SettingsPlace(
     preferences: preferences,
     index: section,
@@ -609,11 +642,48 @@ Widget _settings({int section = 0, StateKind? state}) {
     sections: {
       SettingsSectionKind.hosts: (state) =>
           HostsSection(model: hosts, state: state, now: shellNow),
+      SettingsSectionKind.connections: (state) =>
+          ConnectionsSection(model: connections, state: state),
+      SettingsSectionKind.models: (state) =>
+          ModelsSection(model: models, state: state),
       SettingsSectionKind.general: (state) =>
           GeneralSection(model: general, state: state),
     },
   );
 }
+
+/// The global models config the Settings fixtures show.
+const _settingsModels = ModelsConfig(
+  providers: {
+    'local': ProviderView(
+      type: 'ollama',
+      baseURL: 'http://127.0.0.1:11434',
+      toolCalling: true,
+      hasKey: false,
+      keySource: 'none',
+    ),
+  },
+  presets: {
+    'local/qwen': Preset(
+      provider: 'local',
+      model: 'qwen3-coder',
+      contextWindow: 131072,
+    ),
+  },
+  profiles: {
+    'default': {'implementer': Binding(preset: 'local/qwen')},
+  },
+  customAgents: [],
+  defaultProfile: 'default',
+  activePreset: 'local/qwen',
+  roles: ['implementer', 'reviewer'],
+  budgets: Budgets(
+    dailyUSD: 5,
+    perAgentUSD: 2,
+    onDailyCap: 'warn',
+    onAgentCap: 'block',
+  ),
+);
 
 /// The daemon document General's fixture reports.
 final _daemonInfo = DaemonInfo(
@@ -717,6 +787,22 @@ final screens = <ScreenCase>[
     states: {
       for (final kind in requiredStates)
         kind: () => _settings(section: 0, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'settings · connections',
+    ready: () => _settings(section: 2),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _settings(section: 2, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'settings · models',
+    ready: () => _settings(section: 3),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _settings(section: 3, state: kind),
     },
   ),
   ScreenCase(

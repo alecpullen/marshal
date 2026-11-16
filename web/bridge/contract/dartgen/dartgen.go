@@ -997,21 +997,40 @@ func (g *generator) encodeList(desc *typeDesc, jsonName, dartName string) []stri
 	}
 }
 
-// encodeMap emits a map assignment, converting struct values back to JSON.
+// encodeMap emits a map assignment, converting values back to JSON. A map
+// whose values are maps of structs nests the same literal, which is what a
+// profile-to-role-to-binding document needs.
 func (g *generator) encodeMap(desc *typeDesc, jsonName, dartName string) []string {
-	elem := desc.elem
-	if !elem.writesJSON() {
+	if !writesJSONDeep(desc) {
 		return []string{"json['" + jsonName + "'] = " + dartName + ";"}
 	}
-	call := "value.toJson()"
-	if elem.nullable {
-		call = "value?.toJson()"
+	return []string{"json['" + jsonName + "'] = " + mapLiteral(desc, dartName) + ";"}
+}
+
+// mapLiteral is the Dart expression that writes a Map<String, T> as JSON.
+func mapLiteral(desc *typeDesc, expr string) string {
+	elem := desc.elem
+	item := "entry.value"
+	switch elem.kind {
+	case typeMap:
+		item = mapLiteral(elem, "entry.value")
+	case typeStruct, typeEnum:
+		if elem.nullable {
+			item = "entry.value?.toJson()"
+		} else {
+			item = "entry.value.toJson()"
+		}
 	}
-	return []string{
-		"json['" + jsonName + "'] = {",
-		"  for (final entry in " + dartName + ".entries) entry.key: " + call + ",",
-		"};",
+	return "{for (final entry in " + expr + ".entries) entry.key: " + item + "}"
+}
+
+// writesJSONDeep reports whether a value of this type needs encoding back to
+// JSON: a struct, an enum, or a map of either.
+func writesJSONDeep(desc *typeDesc) bool {
+	if desc.kind == typeMap {
+		return writesJSONDeep(desc.elem)
 	}
+	return desc.writesJSON()
 }
 
 // typeKind is what a Dart field type is made of.

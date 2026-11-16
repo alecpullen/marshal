@@ -455,6 +455,82 @@ export interface PutGrantRequest {
 }
 
 /**
+ * Credential is one forge credential as GET /api/credentials answers it
+ * (web/bridge/repos_http.go). It never carries a value: Set says whether the
+ * secret it points at can be read now, and nothing on the wire can write or
+ * read that secret.
+ */
+export interface Credential {
+  id: string;
+  /**
+   * none, pat, ssh or vault
+   */
+  kind: string;
+  /**
+   * EnvVar is where a pat credential's token is read from.
+   */
+  envVar?: string;
+  /**
+   * KeyPath is the private key an ssh credential names.
+   */
+  keyPath?: string;
+  /**
+   * Ref is the vault path a vault credential names.
+   */
+  ref?: string;
+  user?: string;
+  /**
+   * Set reports whether the secret exists; the credential is refused at use
+   * when it does not.
+   */
+  set: boolean;
+}
+
+/**
+ * CredentialInput is POST /api/credentials' body: the same record without the
+ * read-only Set.
+ */
+export interface CredentialInput {
+  id: string;
+  kind: string;
+  envVar?: string;
+  keyPath?: string;
+  ref?: string;
+  user?: string;
+}
+
+/**
+ * Repo is one registered repository: GET /api/repos' row and POST /api/repos'
+ * body (web/bridge/workspace.go).
+ */
+export interface Repo {
+  id: string;
+  url: string;
+  branch?: string;
+  credRef?: string;
+  ownerId: string;
+  /**
+   * Forge names the hosting provider's API family: github or gitea.
+   */
+  forge?: string;
+  /**
+   * APIBase overrides the API root for a self-hosted instance.
+   */
+  apiBase?: string;
+  /**
+   * Watch turns the issue poller on, and WatchLabel is the label that
+   * triggers a spawn.
+   */
+  watch?: boolean;
+  watchLabel?: string;
+  /**
+   * LastPolled and LastPollErr are what the poller last did.
+   */
+  lastPolled?: string;
+  lastPollErr?: string;
+}
+
+/**
  * DaemonInfo is what GET /api/daemon answers about the local daemon.
  */
 export interface DaemonInfo {
@@ -1260,6 +1336,165 @@ export interface MemoryPromote {
 
 export interface MemoryConfidence {
   confidence: string;
+}
+
+/**
+ * ProviderView is one provider as clients see it. A provider's key is never
+ * part of it: HasKey and KeySource are all a client learns, and
+ * PUT /api/models/providers/{name}/key is the only way a key goes in.
+ */
+export interface ProviderView {
+  type: string;
+  baseUrl: string;
+  apiKeyEnv?: string;
+  toolCalling: boolean;
+  template?: string;
+  auth?: string;
+  keepAlive?: string;
+  /**
+   * ThinkingBudget, ReasoningSummary, ReasoningField, StructuredOutput and
+   * TemperatureLocked are the provider's own knobs, passed through.
+   */
+  thinkingBudget?: number;
+  reasoningSummary?: boolean;
+  reasoningField?: string;
+  structuredOutput?: boolean;
+  temperatureLocked?: boolean;
+  /**
+   * HasKey says a key can be read for this provider now; KeySource says
+   * where from: config, env or none.
+   */
+  hasKey: boolean;
+  keySource: string;
+}
+
+/**
+ * ProviderWrite is one provider as PUT /api/models/providers takes it: the
+ * same record without the read-only credential facts.
+ */
+export interface ProviderWrite {
+  type: string;
+  baseUrl: string;
+  apiKeyEnv?: string;
+  toolCalling: boolean;
+  template?: string;
+  auth?: string;
+  keepAlive?: string;
+  thinkingBudget?: number;
+  reasoningSummary?: boolean;
+  reasoningField?: string;
+  structuredOutput?: boolean;
+  temperatureLocked?: boolean;
+}
+
+/**
+ * ProvidersUpdate is PUT /api/models/providers' body. A null provider is
+ * removed.
+ */
+export interface ProvidersUpdate {
+  providers: Record<string, ProviderWrite | null>;
+}
+
+/**
+ * Preset is one model preset: a provider and a model with the limits it is
+ * run with.
+ */
+export interface Preset {
+  provider: string;
+  model: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  toolCalling?: string;
+  localOnly?: boolean;
+  thinking?: string;
+  temperature?: number;
+  /**
+   * VerificationGate turns the gate off for a preset that cannot reach it.
+   */
+  verificationGate?: boolean;
+}
+
+/**
+ * PresetsUpdate is PUT /api/models/presets' body. A null preset is removed.
+ */
+export interface PresetsUpdate {
+  presets: Record<string, Preset | null>;
+}
+
+/**
+ * Binding is what one role runs: a preset, or a custom agent.
+ */
+export interface Binding {
+  preset?: string;
+  customAgent?: string;
+}
+
+/**
+ * RoutingUpdate is PUT /api/models/routing' body: the parts of the routing
+ * document a client changes. An omitted part is left as it was.
+ */
+export interface RoutingUpdate {
+  profiles?: Record<string, Record<string, Binding>>;
+  defaultProfile?: string;
+  activePreset?: string;
+}
+
+/**
+ * ProviderKey is PUT /api/models/providers/{name}/key's body. It goes one way:
+ * no route answers a key back.
+ */
+export interface ProviderKey {
+  key: string;
+}
+
+/**
+ * ProbeRequest is POST /api/models/probe's body.
+ */
+export interface ProbeRequest {
+  name: string;
+}
+
+/**
+ * ProbeModel is one model a probe found.
+ */
+export interface ProbeModel {
+  id: string;
+  contextWindow?: number;
+}
+
+/**
+ * ProbeResult is POST /api/models/probe's answer. A probe that failed is a
+ * result with Error set, not a refusal.
+ */
+export interface ProbeResult {
+  models: ProbeModel[];
+  error?: string;
+}
+
+/**
+ * ModelsConfig is GET /api/models' answer: the user-global config's providers,
+ * presets, roles and caps.
+ */
+export interface ModelsConfig {
+  providers: Record<string, ProviderView>;
+  presets: Record<string, Preset>;
+  /**
+   * Profiles maps a profile name to its roles, and a role to its binding.
+   */
+  profiles: Record<string, Record<string, Binding>>;
+  customAgents: string[];
+  defaultProfile: string;
+  activePreset: string;
+  roles: string[];
+  budgets: Budgets;
+}
+
+/**
+ * BudgetsUpdate is PUT /api/budgets' body: the caps, written to the user's
+ * global config, which answers the report it stored.
+ */
+export interface BudgetsUpdate {
+  budgets: Budgets;
 }
 
 /**

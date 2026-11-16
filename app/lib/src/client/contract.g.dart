@@ -1535,6 +1535,201 @@ class PutGrantRequest {
   }
 }
 
+/// Credential is one forge credential as GET /api/credentials answers it
+/// (web/bridge/repos_http.go). It never carries a value: Set says whether the
+/// secret it points at can be read now, and nothing on the wire can write or
+/// read that secret.
+class Credential {
+  const Credential({
+    required this.id,
+    required this.kind,
+    this.envVar,
+    this.keyPath,
+    this.ref,
+    this.user,
+    required this.set,
+  });
+
+  final String id;
+  /// none, pat, ssh or vault
+  final String kind;
+  /// EnvVar is where a pat credential's token is read from.
+  final String? envVar;
+  /// KeyPath is the private key an ssh credential names.
+  final String? keyPath;
+  /// Ref is the vault path a vault credential names.
+  final String? ref;
+  final String? user;
+  /// Set reports whether the secret exists; the credential is refused at use
+  /// when it does not.
+  final bool set;
+
+  factory Credential.fromJson(Map<String, dynamic> json) {
+    return Credential(
+      id: json['id'] as String,
+      kind: json['kind'] as String,
+      envVar: json['envVar'] as String?,
+      keyPath: json['keyPath'] as String?,
+      ref: json['ref'] as String?,
+      user: json['user'] as String?,
+      set: json['set'] as bool,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['kind'] = kind;
+    if (envVar != null) {
+      json['envVar'] = envVar;
+    }
+    if (keyPath != null) {
+      json['keyPath'] = keyPath;
+    }
+    if (ref != null) {
+      json['ref'] = ref;
+    }
+    if (user != null) {
+      json['user'] = user;
+    }
+    json['set'] = set;
+    return json;
+  }
+}
+
+/// CredentialInput is POST /api/credentials' body: the same record without the
+/// read-only Set.
+class CredentialInput {
+  const CredentialInput({
+    required this.id,
+    required this.kind,
+    this.envVar,
+    this.keyPath,
+    this.ref,
+    this.user,
+  });
+
+  final String id;
+  final String kind;
+  final String? envVar;
+  final String? keyPath;
+  final String? ref;
+  final String? user;
+
+  factory CredentialInput.fromJson(Map<String, dynamic> json) {
+    return CredentialInput(
+      id: json['id'] as String,
+      kind: json['kind'] as String,
+      envVar: json['envVar'] as String?,
+      keyPath: json['keyPath'] as String?,
+      ref: json['ref'] as String?,
+      user: json['user'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['kind'] = kind;
+    if (envVar != null) {
+      json['envVar'] = envVar;
+    }
+    if (keyPath != null) {
+      json['keyPath'] = keyPath;
+    }
+    if (ref != null) {
+      json['ref'] = ref;
+    }
+    if (user != null) {
+      json['user'] = user;
+    }
+    return json;
+  }
+}
+
+/// Repo is one registered repository: GET /api/repos' row and POST /api/repos'
+/// body (web/bridge/workspace.go).
+class Repo {
+  const Repo({
+    required this.id,
+    required this.url,
+    this.branch,
+    this.credRef,
+    required this.ownerID,
+    this.forge,
+    this.apiBase,
+    this.watch,
+    this.watchLabel,
+    this.lastPolled,
+    this.lastPollErr,
+  });
+
+  final String id;
+  final String url;
+  final String? branch;
+  final String? credRef;
+  final String ownerID;
+  /// Forge names the hosting provider's API family: github or gitea.
+  final String? forge;
+  /// APIBase overrides the API root for a self-hosted instance.
+  final String? apiBase;
+  /// Watch turns the issue poller on, and WatchLabel is the label that
+  /// triggers a spawn.
+  final bool? watch;
+  final String? watchLabel;
+  /// LastPolled and LastPollErr are what the poller last did.
+  final String? lastPolled;
+  final String? lastPollErr;
+
+  factory Repo.fromJson(Map<String, dynamic> json) {
+    return Repo(
+      id: json['id'] as String,
+      url: json['url'] as String,
+      branch: json['branch'] as String?,
+      credRef: json['credRef'] as String?,
+      ownerID: json['ownerId'] as String,
+      forge: json['forge'] as String?,
+      apiBase: json['apiBase'] as String?,
+      watch: json['watch'] as bool?,
+      watchLabel: json['watchLabel'] as String?,
+      lastPolled: json['lastPolled'] as String?,
+      lastPollErr: json['lastPollErr'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['url'] = url;
+    if (branch != null) {
+      json['branch'] = branch;
+    }
+    if (credRef != null) {
+      json['credRef'] = credRef;
+    }
+    json['ownerId'] = ownerID;
+    if (forge != null) {
+      json['forge'] = forge;
+    }
+    if (apiBase != null) {
+      json['apiBase'] = apiBase;
+    }
+    if (watch != null) {
+      json['watch'] = watch;
+    }
+    if (watchLabel != null) {
+      json['watchLabel'] = watchLabel;
+    }
+    if (lastPolled != null) {
+      json['lastPolled'] = lastPolled;
+    }
+    if (lastPollErr != null) {
+      json['lastPollErr'] = lastPollErr;
+    }
+    return json;
+  }
+}
+
 /// DaemonInfo is what GET /api/daemon answers about the local daemon.
 class DaemonInfo {
   const DaemonInfo({
@@ -4407,6 +4602,570 @@ class MemoryConfidence {
   Map<String, dynamic> toJson() {
     final json = <String, dynamic>{};
     json['confidence'] = confidence;
+    return json;
+  }
+}
+
+/// ProviderView is one provider as clients see it. A provider's key is never
+/// part of it: HasKey and KeySource are all a client learns, and
+/// PUT /api/models/providers/{name}/key is the only way a key goes in.
+class ProviderView {
+  const ProviderView({
+    required this.type,
+    required this.baseURL,
+    this.apiKeyEnv,
+    required this.toolCalling,
+    this.template,
+    this.auth,
+    this.keepAlive,
+    this.thinkingBudget,
+    this.reasoningSummary,
+    this.reasoningField,
+    this.structuredOutput,
+    this.temperatureLocked,
+    required this.hasKey,
+    required this.keySource,
+  });
+
+  final String type;
+  final String baseURL;
+  final String? apiKeyEnv;
+  final bool toolCalling;
+  final String? template;
+  final String? auth;
+  final String? keepAlive;
+  /// ThinkingBudget, ReasoningSummary, ReasoningField, StructuredOutput and
+  /// TemperatureLocked are the provider's own knobs, passed through.
+  final int? thinkingBudget;
+  final bool? reasoningSummary;
+  final String? reasoningField;
+  final bool? structuredOutput;
+  final bool? temperatureLocked;
+  /// HasKey says a key can be read for this provider now; KeySource says
+  /// where from: config, env or none.
+  final bool hasKey;
+  final String keySource;
+
+  factory ProviderView.fromJson(Map<String, dynamic> json) {
+    return ProviderView(
+      type: json['type'] as String,
+      baseURL: json['baseUrl'] as String,
+      apiKeyEnv: json['apiKeyEnv'] as String?,
+      toolCalling: json['toolCalling'] as bool,
+      template: json['template'] as String?,
+      auth: json['auth'] as String?,
+      keepAlive: json['keepAlive'] as String?,
+      thinkingBudget: (json['thinkingBudget'] as num?)?.toInt(),
+      reasoningSummary: json['reasoningSummary'] as bool?,
+      reasoningField: json['reasoningField'] as String?,
+      structuredOutput: json['structuredOutput'] as bool?,
+      temperatureLocked: json['temperatureLocked'] as bool?,
+      hasKey: json['hasKey'] as bool,
+      keySource: json['keySource'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['type'] = type;
+    json['baseUrl'] = baseURL;
+    if (apiKeyEnv != null) {
+      json['apiKeyEnv'] = apiKeyEnv;
+    }
+    json['toolCalling'] = toolCalling;
+    if (template != null) {
+      json['template'] = template;
+    }
+    if (auth != null) {
+      json['auth'] = auth;
+    }
+    if (keepAlive != null) {
+      json['keepAlive'] = keepAlive;
+    }
+    if (thinkingBudget != null) {
+      json['thinkingBudget'] = thinkingBudget;
+    }
+    if (reasoningSummary != null) {
+      json['reasoningSummary'] = reasoningSummary;
+    }
+    if (reasoningField != null) {
+      json['reasoningField'] = reasoningField;
+    }
+    if (structuredOutput != null) {
+      json['structuredOutput'] = structuredOutput;
+    }
+    if (temperatureLocked != null) {
+      json['temperatureLocked'] = temperatureLocked;
+    }
+    json['hasKey'] = hasKey;
+    json['keySource'] = keySource;
+    return json;
+  }
+}
+
+/// ProviderWrite is one provider as PUT /api/models/providers takes it: the
+/// same record without the read-only credential facts.
+class ProviderWrite {
+  const ProviderWrite({
+    required this.type,
+    required this.baseURL,
+    this.apiKeyEnv,
+    required this.toolCalling,
+    this.template,
+    this.auth,
+    this.keepAlive,
+    this.thinkingBudget,
+    this.reasoningSummary,
+    this.reasoningField,
+    this.structuredOutput,
+    this.temperatureLocked,
+  });
+
+  final String type;
+  final String baseURL;
+  final String? apiKeyEnv;
+  final bool toolCalling;
+  final String? template;
+  final String? auth;
+  final String? keepAlive;
+  final int? thinkingBudget;
+  final bool? reasoningSummary;
+  final String? reasoningField;
+  final bool? structuredOutput;
+  final bool? temperatureLocked;
+
+  factory ProviderWrite.fromJson(Map<String, dynamic> json) {
+    return ProviderWrite(
+      type: json['type'] as String,
+      baseURL: json['baseUrl'] as String,
+      apiKeyEnv: json['apiKeyEnv'] as String?,
+      toolCalling: json['toolCalling'] as bool,
+      template: json['template'] as String?,
+      auth: json['auth'] as String?,
+      keepAlive: json['keepAlive'] as String?,
+      thinkingBudget: (json['thinkingBudget'] as num?)?.toInt(),
+      reasoningSummary: json['reasoningSummary'] as bool?,
+      reasoningField: json['reasoningField'] as String?,
+      structuredOutput: json['structuredOutput'] as bool?,
+      temperatureLocked: json['temperatureLocked'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['type'] = type;
+    json['baseUrl'] = baseURL;
+    if (apiKeyEnv != null) {
+      json['apiKeyEnv'] = apiKeyEnv;
+    }
+    json['toolCalling'] = toolCalling;
+    if (template != null) {
+      json['template'] = template;
+    }
+    if (auth != null) {
+      json['auth'] = auth;
+    }
+    if (keepAlive != null) {
+      json['keepAlive'] = keepAlive;
+    }
+    if (thinkingBudget != null) {
+      json['thinkingBudget'] = thinkingBudget;
+    }
+    if (reasoningSummary != null) {
+      json['reasoningSummary'] = reasoningSummary;
+    }
+    if (reasoningField != null) {
+      json['reasoningField'] = reasoningField;
+    }
+    if (structuredOutput != null) {
+      json['structuredOutput'] = structuredOutput;
+    }
+    if (temperatureLocked != null) {
+      json['temperatureLocked'] = temperatureLocked;
+    }
+    return json;
+  }
+}
+
+/// ProvidersUpdate is PUT /api/models/providers' body. A null provider is
+/// removed.
+class ProvidersUpdate {
+  const ProvidersUpdate({
+    required this.providers,
+  });
+
+  final Map<String, ProviderWrite?> providers;
+
+  factory ProvidersUpdate.fromJson(Map<String, dynamic> json) {
+    return ProvidersUpdate(
+      providers: _map(
+        json['providers'],
+        (value) => _objectOrNull(value, ProviderWrite.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['providers'] = {for (final entry in providers.entries) entry.key: entry.value?.toJson()};
+    return json;
+  }
+}
+
+/// Preset is one model preset: a provider and a model with the limits it is
+/// run with.
+class Preset {
+  const Preset({
+    required this.provider,
+    required this.model,
+    this.contextWindow,
+    this.maxOutputTokens,
+    this.toolCalling,
+    this.localOnly,
+    this.thinking,
+    this.temperature,
+    this.verificationGate,
+  });
+
+  final String provider;
+  final String model;
+  final int? contextWindow;
+  final int? maxOutputTokens;
+  final String? toolCalling;
+  final bool? localOnly;
+  final String? thinking;
+  final double? temperature;
+  /// VerificationGate turns the gate off for a preset that cannot reach it.
+  final bool? verificationGate;
+
+  factory Preset.fromJson(Map<String, dynamic> json) {
+    return Preset(
+      provider: json['provider'] as String,
+      model: json['model'] as String,
+      contextWindow: (json['contextWindow'] as num?)?.toInt(),
+      maxOutputTokens: (json['maxOutputTokens'] as num?)?.toInt(),
+      toolCalling: json['toolCalling'] as String?,
+      localOnly: json['localOnly'] as bool?,
+      thinking: json['thinking'] as String?,
+      temperature: (json['temperature'] as num?)?.toDouble(),
+      verificationGate: json['verificationGate'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['provider'] = provider;
+    json['model'] = model;
+    if (contextWindow != null) {
+      json['contextWindow'] = contextWindow;
+    }
+    if (maxOutputTokens != null) {
+      json['maxOutputTokens'] = maxOutputTokens;
+    }
+    if (toolCalling != null) {
+      json['toolCalling'] = toolCalling;
+    }
+    if (localOnly != null) {
+      json['localOnly'] = localOnly;
+    }
+    if (thinking != null) {
+      json['thinking'] = thinking;
+    }
+    if (temperature != null) {
+      json['temperature'] = temperature;
+    }
+    if (verificationGate != null) {
+      json['verificationGate'] = verificationGate;
+    }
+    return json;
+  }
+}
+
+/// PresetsUpdate is PUT /api/models/presets' body. A null preset is removed.
+class PresetsUpdate {
+  const PresetsUpdate({
+    required this.presets,
+  });
+
+  final Map<String, Preset?> presets;
+
+  factory PresetsUpdate.fromJson(Map<String, dynamic> json) {
+    return PresetsUpdate(
+      presets: _map(
+        json['presets'],
+        (value) => _objectOrNull(value, Preset.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['presets'] = {for (final entry in presets.entries) entry.key: entry.value?.toJson()};
+    return json;
+  }
+}
+
+/// Binding is what one role runs: a preset, or a custom agent.
+class Binding {
+  const Binding({
+    this.preset,
+    this.customAgent,
+  });
+
+  final String? preset;
+  final String? customAgent;
+
+  factory Binding.fromJson(Map<String, dynamic> json) {
+    return Binding(
+      preset: json['preset'] as String?,
+      customAgent: json['customAgent'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (preset != null) {
+      json['preset'] = preset;
+    }
+    if (customAgent != null) {
+      json['customAgent'] = customAgent;
+    }
+    return json;
+  }
+}
+
+/// RoutingUpdate is PUT /api/models/routing' body: the parts of the routing
+/// document a client changes. An omitted part is left as it was.
+class RoutingUpdate {
+  const RoutingUpdate({
+    this.profiles,
+    this.defaultProfile,
+    this.activePreset,
+  });
+
+  final Map<String, Map<String, Binding>>? profiles;
+  final String? defaultProfile;
+  final String? activePreset;
+
+  factory RoutingUpdate.fromJson(Map<String, dynamic> json) {
+    return RoutingUpdate(
+      profiles: _mapOrNull(
+        json['profiles'],
+        (value) => _map(value, (value) => _object(value, Binding.fromJson)),
+      ),
+      defaultProfile: json['defaultProfile'] as String?,
+      activePreset: json['activePreset'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (profiles != null) {
+      json['profiles'] = {for (final entry in profiles!.entries) entry.key: {for (final entry in entry.value.entries) entry.key: entry.value.toJson()}};
+    }
+    if (defaultProfile != null) {
+      json['defaultProfile'] = defaultProfile;
+    }
+    if (activePreset != null) {
+      json['activePreset'] = activePreset;
+    }
+    return json;
+  }
+}
+
+/// ProviderKey is PUT /api/models/providers/{name}/key's body. It goes one way:
+/// no route answers a key back.
+class ProviderKey {
+  const ProviderKey({
+    required this.key,
+  });
+
+  final String key;
+
+  factory ProviderKey.fromJson(Map<String, dynamic> json) {
+    return ProviderKey(
+      key: json['key'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['key'] = key;
+    return json;
+  }
+}
+
+/// ProbeRequest is POST /api/models/probe's body.
+class ProbeRequest {
+  const ProbeRequest({
+    required this.name,
+  });
+
+  final String name;
+
+  factory ProbeRequest.fromJson(Map<String, dynamic> json) {
+    return ProbeRequest(
+      name: json['name'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    return json;
+  }
+}
+
+/// ProbeModel is one model a probe found.
+class ProbeModel {
+  const ProbeModel({
+    required this.id,
+    this.contextWindow,
+  });
+
+  final String id;
+  final int? contextWindow;
+
+  factory ProbeModel.fromJson(Map<String, dynamic> json) {
+    return ProbeModel(
+      id: json['id'] as String,
+      contextWindow: (json['contextWindow'] as num?)?.toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    if (contextWindow != null) {
+      json['contextWindow'] = contextWindow;
+    }
+    return json;
+  }
+}
+
+/// ProbeResult is POST /api/models/probe's answer. A probe that failed is a
+/// result with Error set, not a refusal.
+class ProbeResult {
+  const ProbeResult({
+    required this.models,
+    this.error,
+  });
+
+  final List<ProbeModel> models;
+  final String? error;
+
+  factory ProbeResult.fromJson(Map<String, dynamic> json) {
+    return ProbeResult(
+      models: _list(
+        json['models'],
+        (value) => _object(value, ProbeModel.fromJson),
+      ),
+      error: json['error'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['models'] = [
+      for (final value in models) value.toJson(),
+    ];
+    if (error != null) {
+      json['error'] = error;
+    }
+    return json;
+  }
+}
+
+/// ModelsConfig is GET /api/models' answer: the user-global config's providers,
+/// presets, roles and caps.
+class ModelsConfig {
+  const ModelsConfig({
+    required this.providers,
+    required this.presets,
+    required this.profiles,
+    required this.customAgents,
+    required this.defaultProfile,
+    required this.activePreset,
+    required this.roles,
+    required this.budgets,
+  });
+
+  final Map<String, ProviderView> providers;
+  final Map<String, Preset> presets;
+  /// Profiles maps a profile name to its roles, and a role to its binding.
+  final Map<String, Map<String, Binding>> profiles;
+  final List<String> customAgents;
+  final String defaultProfile;
+  final String activePreset;
+  final List<String> roles;
+  final Budgets budgets;
+
+  factory ModelsConfig.fromJson(Map<String, dynamic> json) {
+    return ModelsConfig(
+      providers: _map(
+        json['providers'],
+        (value) => _object(value, ProviderView.fromJson),
+      ),
+      presets: _map(
+        json['presets'],
+        (value) => _object(value, Preset.fromJson),
+      ),
+      profiles: _map(
+        json['profiles'],
+        (value) => _map(value, (value) => _object(value, Binding.fromJson)),
+      ),
+      customAgents: _list(
+        json['customAgents'],
+        (value) => value as String,
+      ),
+      defaultProfile: json['defaultProfile'] as String,
+      activePreset: json['activePreset'] as String,
+      roles: _list(
+        json['roles'],
+        (value) => value as String,
+      ),
+      budgets: _object(
+        json['budgets'],
+        Budgets.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['providers'] = {for (final entry in providers.entries) entry.key: entry.value.toJson()};
+    json['presets'] = {for (final entry in presets.entries) entry.key: entry.value.toJson()};
+    json['profiles'] = {for (final entry in profiles.entries) entry.key: {for (final entry in entry.value.entries) entry.key: entry.value.toJson()}};
+    json['customAgents'] = customAgents;
+    json['defaultProfile'] = defaultProfile;
+    json['activePreset'] = activePreset;
+    json['roles'] = roles;
+    json['budgets'] = budgets.toJson();
+    return json;
+  }
+}
+
+/// BudgetsUpdate is PUT /api/budgets' body: the caps, written to the user's
+/// global config, which answers the report it stored.
+class BudgetsUpdate {
+  const BudgetsUpdate({
+    required this.budgets,
+  });
+
+  final Budgets budgets;
+
+  factory BudgetsUpdate.fromJson(Map<String, dynamic> json) {
+    return BudgetsUpdate(
+      budgets: _object(
+        json['budgets'],
+        Budgets.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['budgets'] = budgets.toJson();
     return json;
   }
 }

@@ -47,6 +47,10 @@ type Sample struct {
 	// Pointers holds pointers, so its element type is a union and needs
 	// its own parentheses.
 	Pointers []*Inner `json:"pointers"`
+	// ByName and OptByName hold structs, so each value needs encoding back
+	// to JSON rather than being written as it is.
+	ByName    map[string]Inner  `json:"byName"`
+	OptByName map[string]*Inner `json:"optByName,omitempty"`
 	// Tricky has a tricky */ terminator in its comment.
 	Tricky string `json:"tricky"`
 }

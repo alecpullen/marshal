@@ -22,6 +22,9 @@ type Message struct {
 	// StepSeq is the step that produced the message (narration only); 0 when
 	// the message belongs to no step.
 	StepSeq int64
+	// ImagesJSON is the JSON array of image refs the message carried; ""
+	// means none. It is stored and returned raw: the session parses it.
+	ImagesJSON string
 }
 
 type Session struct {
@@ -217,6 +220,12 @@ func (db *DB) SaveMessage(sessionID string, role string, content string, content
 // SaveMessageStep is SaveMessage plus the step the message belongs to
 // (stepSeq 0 stores NULL).
 func (db *DB) SaveMessageStep(sessionID string, role string, content string, contentType string, createdAt time.Time, reasoning string, thinkDuration time.Duration, final bool, parentID int64, stepSeq int64) (int64, error) {
+	return db.SaveMessageWithImages(sessionID, role, content, contentType, createdAt, reasoning, thinkDuration, final, parentID, stepSeq, "")
+}
+
+// SaveMessageWithImages is SaveMessageStep plus the message's image refs,
+// already marshalled to JSON. An empty imagesJSON stores ”.
+func (db *DB) SaveMessageWithImages(sessionID, role, content, contentType string, createdAt time.Time, reasoning string, thinkDuration time.Duration, final bool, parentID, stepSeq int64, imagesJSON string) (int64, error) {
 	var reasoningArg sql.NullString
 	if reasoning != "" {
 		reasoningArg = sql.NullString{String: reasoning, Valid: true}
@@ -238,9 +247,9 @@ func (db *DB) SaveMessageStep(sessionID string, role string, content string, con
 		stepArg = sql.NullInt64{Int64: stepSeq, Valid: true}
 	}
 	res, err := db.sqlDB.Exec(
-		`INSERT INTO messages (session_id, role, content, content_type, reasoning, think_duration_ms, created_at, final, parent_id, step_seq)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sessionID, role, content, contentTypeArg, reasoningArg, thinkDurationArg, createdAt.UTC().Format(time.RFC3339), final, parentArg, stepArg,
+		`INSERT INTO messages (session_id, role, content, content_type, reasoning, think_duration_ms, created_at, final, parent_id, step_seq, images_json)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, role, content, contentTypeArg, reasoningArg, thinkDurationArg, createdAt.UTC().Format(time.RFC3339), final, parentArg, stepArg, imagesJSON,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("save message: %w", err)
@@ -298,7 +307,7 @@ WITH RECURSIVE chain(id, parent_id) AS (
      WHERE m.session_id = ?
 )
 SELECT m.id, m.role, m.content, m.content_type, m.reasoning, m.think_duration_ms,
-       m.created_at, m.final, m.parent_id, m.step_seq
+       m.created_at, m.final, m.parent_id, m.step_seq, m.images_json
   FROM messages m
   JOIN chain c ON m.id = c.id
  ORDER BY m.id ASC`
@@ -314,7 +323,7 @@ func scanMessage(rows *sql.Rows) (Message, error) {
 	var final sql.NullInt64
 	var parentID sql.NullInt64
 	var stepSeq sql.NullInt64
-	if err := rows.Scan(&m.ID, &m.Role, &m.Content, &contentType, &reasoning, &thinkDurationMs, &created, &final, &parentID, &stepSeq); err != nil {
+	if err := rows.Scan(&m.ID, &m.Role, &m.Content, &contentType, &reasoning, &thinkDurationMs, &created, &final, &parentID, &stepSeq, &m.ImagesJSON); err != nil {
 		return Message{}, fmt.Errorf("scan message: %w", err)
 	}
 	if contentType.Valid {
@@ -393,7 +402,7 @@ func (db *DB) ListBranches(sessionID string) ([]int64, error) {
 // GetMessages returns all messages for a session in chronological order.
 func (db *DB) GetMessages(sessionID string) ([]Message, error) {
 	rows, err := db.sqlDB.Query(
-		`SELECT id, role, content, content_type, reasoning, think_duration_ms, created_at, final, parent_id, step_seq
+		`SELECT id, role, content, content_type, reasoning, think_duration_ms, created_at, final, parent_id, step_seq, images_json
 		 FROM messages
 		 WHERE session_id = ?
 		 ORDER BY id ASC`,

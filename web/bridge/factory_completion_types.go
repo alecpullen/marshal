@@ -18,6 +18,12 @@ type FactoryAssessment struct {
 	Source      string    `json:"source,omitempty"`
 	InputDigest string    `json:"inputDigest"`
 	ObservedAt  time.Time `json:"observedAt"`
+	// Fresh is derived, never stored: the server recomputes it on every item
+	// it serves by comparing InputDigest with the item's current input digest,
+	// so a result computed against inputs that have since moved is shown with
+	// its summary intact and fresh false. The journalled value is never
+	// trusted on read.
+	Fresh bool `json:"fresh"`
 }
 type FactoryCompletionRecord struct {
 	ID         string             `json:"id"`

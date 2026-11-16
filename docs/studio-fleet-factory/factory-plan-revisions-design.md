@@ -137,3 +137,60 @@ phone-width and desktop UI with no silent reordering or loss of proposal text.
 Live planner/daemon tests are opt-in and should be reported as untested when no
 configured endpoint is available. The implementation specification and plan
 follow only after this design is approved.
+
+## Implementation record
+
+Delivered on branch `factory-revisions` from base `8e983911`, the commit that
+added this design with its [specification](factory-plan-revisions-spec.md) and
+[plan](plans/2026-11-16-factory-plan-revisions-plan.md). One commit per task;
+the [specification's implementation record](factory-plan-revisions-spec.md#implementation-record)
+holds the commit table, the deviations, the acceptance gates and the limits in
+full. This section records what the delivered behavior is and what the runtime
+actually supports.
+
+The agreed behavior above is delivered as written. A proposal is journal
+history: it changes neither the active revision nor a running turn. Assessment is
+requested by default and is a durable intent before any planner is contacted.
+Authorization binds the exact candidate bytes, candidate hash and base approval
+revision, and records who authorized it. The old turn keeps the approval and
+revision it started under; the candidate activates only at a verified safe
+boundary, after a ready pull request has been returned to draft and that
+transition confirmed. The fresh implementation, CI and review then run under the
+new approval, and no result from the old revision can mark the new one ready.
+Direct human steering remains the ordinary queued steer, recorded without being
+mistaken for this proposal's delivery.
+
+The ready-PR redraft is reachable and covered. It was blocked while
+`factoryWorkers.Observe` skipped a parked worker entirely: a ready item's
+workers are all parked, so `RuntimeKnown`, `TurnIdle`, `ActiveWorkKnown` and
+`WorkIdle` all stayed false and `activateAuthorizedRevision` returned before the
+`set_draft` transition. Commit `29272851` makes `Observe` report a fully parked
+item as known-idle — a parked worker has no runtime, hence no turn and no active
+work. The activation gate itself is unchanged and still requires the full
+conjunction, so `TestFactoryRevisionInterruptDoesNotAssumeIdle` and
+`TestFactoryRevisionDetachedWorkBlocksActivation` still hold. The integration
+test's ready subtest, `TestFactoryRevisionEndToEndFollowUp/ready PR returns to draft before activation`,
+now runs and passes, and fails rather than skips if that conjunction ever stops
+being observable again.
+
+### Runtime facts and limits
+
+- Studio identity for authorization is derived server-side; a browser cannot
+  assert who authorized a revision.
+- MCP routine authorization stays on the task 2 assessment-result path under the
+  existing `factoryMCPAuthorizer` policy lock. A classification remains the
+  planner's assertion within the user's grant, never a machine proof of scope.
+- The planner and `projectSettings` seams are nil-safe and are **not** wired in
+  `cmd/webbridge/main.go`. Production therefore runs the unavailable planner by
+  default: the intent is recorded `unavailable`, nothing is synthesized or
+  retried in the background, and the user chooses `wait_safe`, `interrupt` or
+  `hold` explicitly.
+- `wait_safe` keeps `waiting_safe_boundary`; it never claims `delivered`. The
+  activated approval is the evidence that the next factory prompt carries the
+  candidate.
+- A `delivered` receipt means the runtime accepted the input. It is never proof
+  that the model complied with it or that any work completed.
+- Live planner and live daemon integration is untested (opt-in, no configured
+  disposable project in this run), and the Studio surfaces were not walked in a
+  real browser at 390px or desktop. Neither is a pass: the planner, the steering
+  runtime and the forge in the end-to-end tests are scripted fakes.

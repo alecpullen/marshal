@@ -171,3 +171,73 @@ Tests: `TestFactoryRevisionDelegatedAssessmentRequestsPause`, `TestFactoryRevisi
 ## Integration notes
 
 The user approved the implementation specification and plan on 2026-11-16. The factory's journal is the owner of authorization and evidence; the planner supplies assessments, not new independent control authority. Avoid assuming in-flight Claude or P5 work has landed. A queued/send-now request and a runtime `delivered` receipt are not equivalent to an agent executing the change. Uncertain effects, unobserved detached work and old-revision results remain unresolved until proven or explicitly reconciled.
+
+## Implementation record
+
+Delivered on branch `factory-revisions`, every task committed
+as the plan directed, and the approved task text above is unchanged. The header's
+historical base `1bc6d64b` was not reproduced: execution started from `8e983911`,
+the commit that added the approved design, specification and this plan, so the
+work sits on top of exactly the documents it implements. No unrelated branch was
+merged and nothing under `internal/...` or `cmd/` was modified.
+
+| Task | Deliverable | Commit |
+|---|---|---|
+| 1 | Proposal journal: `FactoryRevisionProposal`, append-only history, `ProjectSettings.AutoAssessPlanChanges`, the two grant booleans | `65f468cf` |
+| 5 | Studio controls: `FactoryRevision.svelte`, factory item, project settings, clients panel, typed `factory.ts`/`api.ts` | `79bd7e82` |
+| 2 | Assessment: `revisionPlanner` seam with the unavailable default, intents and claim/result/retry, the three MCP tools, delegated authority under the policy lock | `7ddc8184` |
+| 3 | Authorization and activation: the three revision commands, safe-boundary gate, ready-PR redraft, follow-up intent and reconciliation, server-derived Studio identity | `92475ce9` |
+| 4 | Delivery: `RevisionSteeringState`/`Receipt`, `RevisionSteeringStatus`/`RevisionSendNow`, receipt correlation, `wait_safe`/`interrupt`/`hold`, pause and explicit resume | `11c8fd87` |
+| fix | `factoryWorkers.Observe` reports a fully parked item as known-idle, so the ready-PR redraft is reachable in production | `29272851` |
+| 6 | `web/bridge/factory_revision_integration_test.go` and this record; controller commits it after the documentation lands | task 6 |
+
+The tasks ran 1, 5, 2, 3, 4, 6 rather than in numeric order: task 5 consumes only
+task 1's types and shares no file with tasks 2–4, so the Studio controls could
+land first. Task 6's four tests are `TestFactoryRevisionEndToEnd`,
+`TestFactoryRevisionEndToEndInterruptRecovery`,
+`TestFactoryRevisionEndToEndFollowUp` (with the subtest
+`ready PR returns to draft before activation`) and
+`TestFactoryRevisionEndToEndLegacyReplay`; they drive an old turn continuing, a
+proposal, assessment, authorization, an interrupt with a correlated receipt, the
+old effect settling, activation, and a fresh implementation/CI/review on the new
+revision, plus the missing-planner manual choice, ready-PR redraft, a direct
+steering event, the exhausted allowance, lost responses at assessment, delivery,
+activation and follow-up, restart without duplicate, and retained prior
+approval/review history. Each asserts that no old review marks the new revision
+ready.
+
+### Deviations from this plan, and why
+
+| Planned | Delivered | Reason |
+|---|---|---|
+| Base current `main` at `1bc6d64b` | Base `8e983911`, the approved-documents commit | The plan's base predates its own documents; starting from the commit that carries them keeps the diff to the work described |
+| Task 1 also modifies `web/bridge/projects.go` | Not modified | The new setting is optional (nil means true) and round-trips through the existing project-settings path |
+| Ready-PR redraft recorded as an open limitation if unreachable | Fixed in `29272851`; the subtest runs and passes | The blocker was a real defect — `Observe` skipped parked workers, so a fully parked ready item was never known-idle. A parked worker has no runtime, hence no turn and no active work. The activation gate is unchanged and its idle-safety tests still pass |
+| The integration test began with a conditional `t.Skipf` | The guard now fails (`t.Fatalf`) | A regression must be visible; the ready transition is reachable and covered |
+| Task 6 creates the integration test only | Also appended this record and the design, specification and README records | The plan's own step requires the implementation record; the approved text is preserved and the records are additive |
+
+### Acceptance gates, measured on this branch
+
+| Gate | Result |
+|---|---|
+| `go test ./web/bridge -run '^(TestFactoryRevision\|TestMCPRevision\|TestFactoryEndToEnd\|TestWebIsStdlibOnly)' -count=1` | `ok marshal/web/bridge 1.951s`; 47 revision/MCP tests pass, none skipped |
+| `go test ./web/bridge -run '^TestFactoryRevisionEndToEnd' -count=1 -v` | PASS — four tests; the ready subtest runs, no SKIP |
+| `cd web/ui && npm test` | PASS — 115 files, 1229 tests |
+| `cd web/ui && npm run check` | 5 errors in the same 5 pre-existing files as the base (`AgentConversation.svelte:754`, `Run.svelte:336`, `fleet.test.ts:78`, `Review.test.ts:49`, `Runs.test.ts:15`), 4 warnings; no new error |
+| `cd web/ui && npm run build` | PASS — `built in 4.90s`, `web/bridge/static` regenerated and left in the tree |
+| `CGO_ENABLED=1 go build ./cmd/marshal` | OK |
+| `go build ./cmd/webbridge` | OK |
+| `go test ./...` | PASS — exit 0; the two known load-sensitive flakes did not appear this run and are untouched by this diff |
+| `go vet ./...` | clean |
+| `git diff --check` | clean |
+| `gofmt -l` on the changed Go file | no output |
+
+### What remains untested
+
+Live planner and live daemon integration are **untested**, not passed: both are
+opt-in and need an explicitly configured disposable project and credentials,
+which this run did not have. The planner, the steering runtime and the forge in
+the end-to-end tests are scripted fakes, so nothing here is evidence of a live
+endpoint. The Studio walkthrough at 390px and desktop — disconnected planner,
+pending/sent/uncertain receipts, conditional settings — is also **untested** in a
+browser, covered only by the component and view tests and `svelte-check`.

@@ -215,6 +215,12 @@ func (s *Server) route(api http.Handler, w http.ResponseWriter, r *http.Request)
 		http.NotFound(w, r)
 		return
 	}
+	if isNextPath(r.URL.Path) {
+		// The Flutter Studio, before the Svelte one: both are client-side
+		// applications, and only the prefix tells them apart.
+		nextHandler().ServeHTTP(w, r)
+		return
+	}
 	if !strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/mcp" {
 		staticHandler().ServeHTTP(w, r)
 		return

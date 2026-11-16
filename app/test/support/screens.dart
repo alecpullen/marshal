@@ -10,6 +10,7 @@ import 'package:marshal_app/src/client/contract.g.dart'
 import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
 import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
 import 'package:marshal_app/src/model/inbox_model.dart' as model;
+import 'package:marshal_app/src/model/inspector_state.dart';
 import 'package:marshal_app/src/model/overview_model.dart';
 import 'package:marshal_app/src/model/nav_model.dart';
 import 'package:marshal_app/src/model/place.dart';
@@ -343,7 +344,19 @@ final screens = <ScreenCase>[
       for (final kind in requiredStates) kind: () => _threadScreen(state: kind),
     },
   ),
+  ScreenCase(
+    name: 'thread with inspector',
+    ready: () => _threadScreen(inspector: _inspectorState()),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _threadScreen(state: kind, inspector: _inspectorState()),
+    },
+  ),
 ];
+
+/// The inspector the screen cases show, with each tab's frame placeholder
+/// until the task that builds that tab supplies its body.
+InspectorState _inspectorState() => InspectorState();
 
 /// The states every screen that shows data must handle (§7). Planned is a
 /// row, not a screen state, so it is not required here.
@@ -432,9 +445,11 @@ StackSnapshot _threadSnapshot() => StackSnapshot(
   ],
 );
 
-Widget _threadScreen({StateKind? state}) => ThreadScreen(
-  thread: _threadRef,
-  store: StackStore.seeded(_threadSnapshot()),
-  view: ThreadViewState(),
-  state: state,
-);
+Widget _threadScreen({StateKind? state, InspectorState? inspector}) =>
+    ThreadScreen(
+      thread: _threadRef,
+      store: StackStore.seeded(_threadSnapshot()),
+      view: ThreadViewState(),
+      inspector: inspector,
+      state: state,
+    );

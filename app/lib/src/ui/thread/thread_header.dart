@@ -17,6 +17,7 @@ class ThreadHeader extends StatelessWidget {
     this.onShare,
     this.onStop,
     this.onHold,
+    this.onInspect,
   });
 
   /// The thread this header names.
@@ -37,6 +38,10 @@ class ThreadHeader extends StatelessWidget {
 
   /// Holds the thread, keeping its work. Null hides the action.
   final VoidCallback? onHold;
+
+  /// Opens the inspector over the conversation. Null on a wide window, where
+  /// the inspector is a column beside it (F4 decision 3).
+  final VoidCallback? onInspect;
 
   @override
   Widget build(BuildContext context) {
@@ -92,6 +97,12 @@ class ThreadHeader extends StatelessWidget {
             ),
           ),
           const SizedBox(width: Space.s8),
+          if (onInspect != null)
+            IconBtn(
+              Glyphs.sidebar_right,
+              tooltip: 'Inspector',
+              onTap: onInspect,
+            ),
           IconBtn(
             Glyphs.share,
             tooltip: onShare == null

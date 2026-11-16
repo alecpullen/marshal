@@ -16,6 +16,12 @@ enum PlaceKind {
   settings,
 }
 
+/// The query key a link carries the inspector's width under.
+const linkWidthKey = 'w';
+
+/// The query key a link carries the inspector's tab under.
+const linkTabKey = 't';
+
 /// One place, with the target it names: a project's id, or a thread's host
 /// and id.
 ///
@@ -24,7 +30,7 @@ enum PlaceKind {
 /// same parser serves a deep link on the desktop, where there is no URL.
 @immutable
 class Place {
-  const Place(this.kind, {this.host, this.id})
+  const Place(this.kind, {this.host, this.id, this.query = const {}})
     : assert(
         kind != PlaceKind.project || id != null,
         'a project place names its project',
@@ -48,20 +54,43 @@ class Place {
   /// The project's id (its root) or the thread's id.
   final String? id;
 
+  /// What a link carries beyond the place itself: the inspector's width
+  /// ([linkWidthKey]) and tab ([linkTabKey]) (F4 decision 3). Only the keys
+  /// this build honours are kept, so a query a person adds by hand does not
+  /// make a link a different place.
+  final Map<String, String> query;
+
+  /// This place with [query] instead of its own.
+  Place withQuery(Map<String, String> query) => Place(
+    kind,
+    host: host,
+    id: id,
+    query: Map<String, String>.unmodifiable(query),
+  );
+
   @override
   bool operator ==(Object other) =>
       other is Place &&
       other.kind == kind &&
       other.host == host &&
-      other.id == id;
+      other.id == id &&
+      mapEquals(other.query, query);
 
   @override
-  int get hashCode => Object.hash(kind, host, id);
+  int get hashCode => Object.hash(
+    kind,
+    host,
+    id,
+    Object.hashAllUnordered(
+      query.entries.map((entry) => Object.hash(entry.key, entry.value)),
+    ),
+  );
 
   @override
   String toString() =>
       'Place(${kind.name}${host == null ? '' : ', $host'}'
-      '${id == null ? '' : ', $id'})';
+      '${id == null ? '' : ', $id'}'
+      '${query.isEmpty ? '' : ', $query'})';
 }
 
 /// The path segment of each simple place. `project` and `thread` carry a
@@ -80,7 +109,8 @@ const _segments = {
 /// cannot be honoured shows the fleet rather than nothing.
 ///
 /// [path] is the part below the studio's base, so `/inbox` rather than
-/// `/next/inbox`; a query and a fragment are ignored.
+/// `/next/inbox`; a fragment is ignored, and the query carries the keys in
+/// [linkQuery] and no others.
 Place parsePlace(String path) {
   final cut = path.indexOf(RegExp(r'[?#]'));
   final bare = cut < 0 ? path : path.substring(0, cut);
@@ -94,6 +124,35 @@ Place parsePlace(String path) {
       return const Place.overview();
     }
   }
+  final query = linkQuery(path);
+  final place = _placeOf(parts);
+  return query.isEmpty ? place : place.withQuery(query);
+}
+
+/// The link keys [path]'s query carries, and no others: a query a person
+/// adds by hand does not make a link a different place.
+Map<String, String> linkQuery(String path) {
+  final start = path.indexOf('?');
+  if (start < 0) return const {};
+  var end = path.indexOf('#', start);
+  if (end < 0) end = path.length;
+  final out = <String, String>{};
+  try {
+    final params = Uri.splitQueryString(path.substring(start + 1, end));
+    for (final key in const [linkWidthKey, linkTabKey]) {
+      final value = params[key];
+      if (value != null && value.isNotEmpty) out[key] = value;
+    }
+  } on ArgumentError {
+    // A malformed query names no link keys; the place still stands.
+  } on FormatException {
+    // The same, for a percent escape the parser refuses.
+  }
+  return out.isEmpty ? const {} : Map<String, String>.unmodifiable(out);
+}
+
+/// The place [parts] name, with no query.
+Place _placeOf(List<String> parts) {
   if (parts.isEmpty) return const Place.overview();
 
   switch (parts.first) {
@@ -122,16 +181,26 @@ Place parsePlace(String path) {
 const _unknown = Place.overview();
 
 /// The path that names [place], the inverse of [parsePlace] for every place
-/// that carries its target.
+/// that carries its target, its query keys in order.
 String formatPlace(Place place) {
   final segment = _segments[place.kind];
-  if (segment != null) return '/$segment';
-  return switch (place.kind) {
-    PlaceKind.project => '/project/${Uri.encodeComponent(place.id ?? '')}',
-    PlaceKind.thread =>
-      '/thread/${Uri.encodeComponent(place.host ?? '')}'
-          '/${Uri.encodeComponent(place.id ?? '')}',
-    // Unreachable: every simple place is in _segments.
-    _ => '/',
-  };
+  final path = segment != null
+      ? '/$segment'
+      : switch (place.kind) {
+          PlaceKind.project =>
+            '/project/${Uri.encodeComponent(place.id ?? '')}',
+          PlaceKind.thread =>
+            '/thread/${Uri.encodeComponent(place.host ?? '')}'
+                '/${Uri.encodeComponent(place.id ?? '')}',
+          // Unreachable: every simple place is in _segments.
+          _ => '/',
+        };
+  if (place.query.isEmpty) return path;
+  final keys = place.query.keys.toList()..sort();
+  final query = [
+    for (final key in keys)
+      '${Uri.encodeQueryComponent(key)}='
+          '${Uri.encodeQueryComponent(place.query[key]!)}',
+  ].join('&');
+  return '$path?$query';
 }

@@ -488,11 +488,19 @@ class Overview extends StatelessWidget {
       onSelect == null ? null : () => onSelect!(place);
 
   /// An ask's kind in the kit's vocabulary (§5: one card, every ask).
+  ///
+  /// A work item's four asks are drawn with the kit's existing kinds (F6):
+  /// the card's title and body say what is being decided, and four new kinds
+  /// would be a design-system change that says nothing more.
   static AskKind _askKind(model.AskKind kind) => switch (kind) {
     model.AskKind.approval => AskKind.approval,
     model.AskKind.question => AskKind.question,
     model.AskKind.intake => AskKind.intake,
     model.AskKind.pull => AskKind.pull,
     model.AskKind.reviewDraft => AskKind.review,
+    model.AskKind.approvalDraft => AskKind.approval,
+    model.AskKind.decision => AskKind.decision,
+    model.AskKind.recovery => AskKind.decision,
+    model.AskKind.completion => AskKind.decision,
   };
 }

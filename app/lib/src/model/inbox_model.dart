@@ -5,12 +5,34 @@ import '../client/contract.g.dart';
 import '../client/transport.dart';
 import 'fleet_store.dart';
 import 'thread_ref.dart';
+import 'factory_store.dart';
+import 'work_item_model.dart' show asksOf;
 
 /// What an ask is (F2 decision 7). The fleet contract carries an agent's
 /// approval, an agent's question and an intake submission; F5 adds a pull
 /// request's failed fix; F7 adds the review bot's held draft, which a person
-/// posts, sends to the author's agent or discards.
-enum AskKind { approval, question, intake, pull, reviewDraft }
+/// posts, sends to the author's agent or discards; F6 adds the four things a
+/// work item waits on a person for.
+enum AskKind {
+  approval,
+  question,
+  intake,
+  pull,
+  reviewDraft,
+
+  /// A work item's draft is awaiting approval (F6 decision 5).
+  approvalDraft,
+
+  /// A worker asked a question that stops the item.
+  decision,
+
+  /// The work stalled or ran out of rounds, and a person decides how it goes
+  /// on.
+  recovery,
+
+  /// The work reached its pull request, and a person says whether it is done.
+  completion,
+}
 
 /// Where an answer has got to. A posted answer stays sending until the
 /// stream stops reporting the ask: a sent message is not shown as done work
@@ -204,12 +226,18 @@ class Ask {
 /// writes no fleet state: the store is still the only writer, and an ask
 /// leaves when the stream stops reporting it.
 class InboxModel extends ChangeNotifier {
-  InboxModel(this._store, {required this.client}) {
+  InboxModel(this._store, {required this.client, this.factory}) {
     _store.addListener(_rebuild);
+    factory?.addListener(_rebuild);
     _rebuild();
   }
 
   final FleetStore _store;
+
+  /// The work items, when the app holds them: their asks join the queue, so a
+  /// draft or a decision is never waiting with nothing showing it (F6
+  /// decision 5). Null leaves the inbox to the fleet alone.
+  final FactoryStore? factory;
 
   /// The client that reaches a host, for the answer an ask posts.
   final BridgeClient Function(String host) client;
@@ -254,6 +282,22 @@ class InboxModel extends ChangeNotifier {
   }) async {
     final key = _key(ask);
     if (ask.state == AskState.sending) return;
+    switch (ask.kind) {
+      case AskKind.approvalDraft:
+      case AskKind.decision:
+      case AskKind.recovery:
+      case AskKind.completion:
+        // A work item's ask is answered in its own thread, where the action
+        // carries the item's version (F6 decision 5): the list only shows it,
+        // and opening it is the screen's.
+        return;
+      case AskKind.approval:
+      case AskKind.question:
+      case AskKind.intake:
+      case AskKind.reviewDraft:
+      case AskKind.pull:
+        break;
+    }
     if (ask.kind == AskKind.pull) {
       switch (action.kind) {
         case AskActionKind.open:
@@ -386,6 +430,12 @@ class InboxModel extends ChangeNotifier {
           ask.id,
           PullFixRequest(check: ask.pull?.check ?? ''),
         );
+      case AskKind.approvalDraft:
+      case AskKind.decision:
+      case AskKind.recovery:
+      case AskKind.completion:
+        // Answered in the item's thread; nothing is posted from the list.
+        return;
     }
   }
 
@@ -461,6 +511,12 @@ class InboxModel extends ChangeNotifier {
         final ask = _askForDraft(host.name, draft);
         if (seen.add(_key(ask))) asks.add(_withOverlay(ask));
       }
+      for (final item
+          in factory?.items(host: host.name) ?? const <FactoryItem>[]) {
+        for (final ask in asksOf(host.name, item)) {
+          if (seen.add(_key(ask))) asks.add(_withOverlay(ask));
+        }
+      }
     }
     asks.sort((a, b) {
       final byTime = a.since.compareTo(b.since);
@@ -477,6 +533,7 @@ class InboxModel extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _store.removeListener(_rebuild);
+    factory?.removeListener(_rebuild);
     super.dispose();
   }
 

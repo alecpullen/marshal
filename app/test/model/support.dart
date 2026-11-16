@@ -53,6 +53,7 @@ class FixtureHost {
     this.projects = const [],
     this.queue = const [],
     this.budget,
+    this.factoryItems = const [],
   });
 
   final String name;
@@ -61,7 +62,104 @@ class FixtureHost {
   final List<ProjectStatus> projects;
   final List<InboxItem> queue;
   final BudgetReport? budget;
+
+  /// The work items its bridge reports (F6).
+  final List<FactoryItem> factoryItems;
 }
+
+/// One work item as a test writes one: every field it does not name is the
+/// quietest value there is.
+FactoryItem factoryItem({
+  String id = 'item-1',
+  String title = 'Work item thread',
+  String state = 'implementing',
+  String stage = '',
+  String project = '/home/u/alpha',
+  int version = 1,
+  String plan = '## Task 1\nRead the item.\n## Task 2\nApprove it.\n',
+  List<FactoryWorker> workers = const [],
+  List<FactoryRound> rounds = const [],
+  List<FactoryPR> prs = const [],
+  List<FactoryEffect> effects = const [],
+  List<FactoryEvent> history = const [],
+  FactoryDecision? decision,
+  FactoryCompletion? completion,
+  DateTime? updatedAt,
+}) => FactoryItem.fromJson({
+  'id': id,
+  'title': title,
+  'state': state,
+  'stage': stage,
+  'repoId': 'repo-1',
+  'projectRoot': project,
+  'hostId': 'local',
+  'branch': 'factory/$id',
+  'baseSha': 'base-1',
+  'version': version,
+  'draft': {
+    'requestId': 'req-1',
+    'title': title,
+    'plan': plan,
+    'spec': 'Ship the work item thread.',
+    'config': {
+      'repoId': 'repo-1',
+      'projectRoot': project,
+      'hostId': 'local',
+      'targetBranch': 'main',
+      'workspace': '',
+      'native': true,
+      'implementerRouting': null,
+      'reviewerRouting': null,
+      'reviewerInstructions': '',
+      'implementerAuto': true,
+      'expectedChecks': [],
+      'noRequiredCIAcknowledged': true,
+      'maxRounds': 3,
+      'ciPollSeconds': 30,
+      'ciWaitSeconds': 900,
+    },
+  },
+  'approvals': [],
+  'grants': [],
+  'rounds': [for (final round in rounds) round.toJson()],
+  'workers': [for (final worker in workers) worker.toJson()],
+  'prs': [for (final pr in prs) pr.toJson()],
+  'effects': [for (final effect in effects) effect.toJson()],
+  'decision': decision?.toJson(),
+  'history': [for (final event in history) event.toJson()],
+  if (completion != null) 'completion': completion.toJson(),
+  'createdAt': '2026-11-17T09:00:00Z',
+  'approvedAt': '2026-11-17T09:05:00Z',
+  'updatedAt': (updatedAt ?? DateTime.utc(2026, 11, 17, 10)).toIso8601String(),
+});
+
+/// One factory worker as a test writes one.
+FactoryWorker factoryWorker({
+  String agentId = 'agent-1',
+  String sessionId = 'sess-1',
+  String role = 'implementer',
+}) => FactoryWorker.fromJson({
+  'agentId': agentId,
+  'sessionId': sessionId,
+  'role': role,
+  'spawnEffectId': 'effect-$role',
+  'parked': false,
+  'subagents': {'enabled': false, 'concurrency': 0},
+});
+
+/// One history entry as a test writes one.
+FactoryEvent factoryEvent(
+  int sequence,
+  String kind,
+  String message, {
+  String effectId = '',
+}) => FactoryEvent.fromJson({
+  'sequence': sequence,
+  'at': '2026-11-17T09:30:00Z',
+  'kind': kind,
+  'message': message,
+  'effectId': effectId,
+});
 
 /// A store over in-process fake bridges, one per host: the fixture every
 /// model test reads fleet state through, so no test touches the developer's
@@ -138,6 +236,13 @@ class ModelFixture {
               queue: host.queue,
             ).toJson(),
           ),
+        )
+        ..reply(
+          'GET',
+          '/api/factory/items',
+          _json({
+            'items': [for (final item in host.factoryItems) item.toJson()],
+          }),
         )
         ..reply(
           'GET',

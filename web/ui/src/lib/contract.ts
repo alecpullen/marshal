@@ -661,34 +661,6 @@ export interface FactoryApproval {
   approvedAt: string;
 }
 
-/**
- * legacyFactoryApproval is the approval object a journal written before
- * subagent settings carried: the same fields, in the same order, without the
- * two settings snapshots.
- */
-export interface legacyFactoryApproval {
-  revision: number;
-  plan: string;
-  spec: string;
-  planHash: string;
-  config: FactoryConfig;
-  editSnapshot?: EditSnapshot;
-  approvedAt: string;
-}
-
-/**
- * legacyFactoryWorker is the worker object a journal written before approved
- * subagent settings carried: the same fields, in the same order, without the
- * snapshot a worker now binds.
- */
-export interface legacyFactoryWorker {
-  agentId: string;
-  sessionId: string;
-  role: string;
-  spawnEffectId: string;
-  parked: boolean;
-}
-
 export interface FactoryGrant {
   id: string;
   reason: string;

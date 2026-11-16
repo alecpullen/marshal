@@ -193,7 +193,10 @@ func daemonEnsureLinger(ctx context.Context, m *daemon.Manager, skip bool, stdou
 		return
 	}
 	if !state.Supported {
-		fmt.Fprintln(stdout, "linger: not supported (loginctl not found)")
+		// Supported is false for two causes — loginctl missing, and no
+		// logind to answer for this user — so the parenthetical names
+		// neither.
+		fmt.Fprintln(stdout, "linger: not supported (loginctl unavailable)")
 		return
 	}
 	if state.Enabled {
@@ -214,12 +217,16 @@ func daemonLingerLine(ctx context.Context, m *daemon.Manager) (string, bool) {
 	if m.GOOS != "linux" {
 		return "", false
 	}
-	state, err := m.Linger(ctx)
+	// status has to answer even when loginctl hangs: the socket read below
+	// is bounded the same way, so a stuck read is a line, not a wait.
+	lingerCtx, cancel := context.WithTimeout(ctx, daemonStatusTimeout)
+	defer cancel()
+	state, err := m.Linger(lingerCtx)
 	if err != nil {
 		return fmt.Sprintf("linger: unknown (%v)", err), true
 	}
 	if !state.Supported {
-		return "linger: not supported (loginctl not found)", true
+		return "linger: not supported (loginctl unavailable)", true
 	}
 	if state.Enabled {
 		return "linger: enabled", true

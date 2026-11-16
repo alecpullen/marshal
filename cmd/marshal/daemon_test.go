@@ -395,6 +395,95 @@ func TestDaemonInstallLeavesLingerOffWithTheFlag(t *testing.T) {
 	}
 }
 
+// TestDaemonInstallPrintsLingerAtAFixedPosition: the linger line holds one
+// place in install's output — after the unit and socket it names, and before
+// the readiness note — so a script that reads the block sees it in the same
+// spot whether or not linger needed setting.
+func TestDaemonInstallPrintsLingerAtAFixedPosition(t *testing.T) {
+	daemonTestEnv(t)
+	t.Setenv("PATH", "/usr/bin:/bin")
+
+	webbridge := filepath.Join(t.TempDir(), "webbridge")
+	if err := os.WriteFile(webbridge, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	fakeDaemonManagerOS(t, "linux", func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		line := strings.Join(append([]string{name}, args...), " ")
+		if line == "loginctl show-user 501 -p Linger" {
+			return []byte("Linger=yes\n"), nil
+		}
+		return nil, nil
+	})
+	// An answering daemon makes the readiness note the single "answering"
+	// line rather than a poll that runs for daemonStartTimeout.
+	fakeDaemonSocket(t, fakeDaemonClient{})
+
+	var out, errOut bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"install", "--webbridge", webbridge},
+		strings.NewReader(""), &out, &errOut); err != nil {
+		t.Fatalf("runDaemon install: %v\nstderr: %s", err, errOut.String())
+	}
+
+	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+	at := func(prefix string) int {
+		for i, line := range lines {
+			if strings.HasPrefix(line, prefix) {
+				return i
+			}
+		}
+		return -1
+	}
+	unit, socket, linger, ready := at("unit:"), at("socket:"), at("linger:"), at("answering")
+	if unit < 0 || socket < 0 || linger < 0 || ready < 0 {
+		t.Fatalf("install printed %d lines %q, want unit:, socket:, linger: and the readiness note:\n%s",
+			len(lines), lines, out.String())
+	}
+	if !(unit < socket && socket < linger && linger < ready) {
+		t.Errorf("install order unit@%d socket@%d linger@%d ready@%d, want unit < socket < linger < ready:\n%s",
+			unit, socket, linger, ready, out.String())
+	}
+}
+
+// TestDaemonInstallReportsAnAlreadyEnabledLinger: with the bit already set,
+// install says so and issues no enable-linger — the privilege is not asked for
+// again when the wanted end state already holds.
+func TestDaemonInstallReportsAnAlreadyEnabledLinger(t *testing.T) {
+	daemonTestEnv(t)
+	t.Setenv("PATH", "/usr/bin:/bin")
+
+	webbridge := filepath.Join(t.TempDir(), "webbridge")
+	if err := os.WriteFile(webbridge, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls []string
+	fakeDaemonManagerOS(t, "linux", func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		line := strings.Join(append([]string{name}, args...), " ")
+		calls = append(calls, line)
+		if line == "loginctl show-user 501 -p Linger" {
+			return []byte("Linger=yes\n"), nil
+		}
+		return nil, nil
+	})
+	fakeDaemonSocket(t, fakeDaemonClient{})
+
+	var out, errOut bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"install", "--webbridge", webbridge},
+		strings.NewReader(""), &out, &errOut); err != nil {
+		t.Fatalf("runDaemon install: %v\nstderr: %s", err, errOut.String())
+	}
+
+	if !strings.Contains(out.String(), "linger: already enabled") {
+		t.Errorf("install printed %q, want it to say linger: already enabled", out.String())
+	}
+	for _, call := range calls {
+		if strings.Contains(call, "enable-linger") {
+			t.Errorf("install ran %q with linger already on; it must not set it again", call)
+		}
+	}
+}
+
 // TestDaemonStatusReportsLinger: status answers whether the install survives
 // logout, on the line after the service line and exactly once.
 func TestDaemonStatusReportsLinger(t *testing.T) {

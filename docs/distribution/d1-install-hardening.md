@@ -219,6 +219,28 @@ What was confirmed read-only on that Linux host is the assumption the parse
 rests on: `command -v loginctl` resolves and `loginctl show-user "$(id -u)" -p
 Linger` answers `Linger=yes`, keyed as parsed.
 
+**Review follow-ups.** Two findings from PR #102's review, both fixed at the
+command layer; `LingerState` keeps its two fields, so the Contracts section
+stands unchanged. First, the "not supported" line said `(loginctl not found)`
+for two different causes — `Manager.Linger` sets `Supported: false` both when
+the binary is missing (`exec.ErrNotFound`) and when `loginctl` exists but the
+bus or `logind` cannot answer (`notLoaded`) — so both sites,
+`daemonEnsureLinger` and `daemonLingerLine`, now print `linger: not supported
+(loginctl unavailable)`, true for either cause and identical in `install` and
+`status`. Second, `daemonLingerLine` read the bit on the caller's unbounded
+context while the socket read in the same command is bounded by
+`daemonStatusTimeout` (2s), so a hung `loginctl` could stall `marshal daemon
+status` forever; the read is now wrapped in
+`context.WithTimeout(ctx, daemonStatusTimeout)` and a deadline falls through the
+existing error path to the `linger: unknown (<err>)` line, leaving the exit code
+alone. The install path deliberately keeps no bound: a slow polkit prompt there
+is the user answering, not a hang. Two tests close the cheapest gaps —
+`TestDaemonInstallPrintsLingerAtAFixedPosition` asserts the linger line sits
+after `unit:`/`socket:` and before the readiness note (position, not substring),
+and `TestDaemonInstallReportsAnAlreadyEnabledLinger` asserts `linger: already
+enabled` with no `enable-linger` call when the scripted runner reports
+`Linger=yes`. Neither touches a real `loginctl` or `systemctl`.
+
 **Verification.** Per task: `scripts/test.sh quick ./internal/daemon -run
 TestLinger` and the whole `./internal/daemon` package;
 `scripts/test.sh quick ./cmd/marshal -run 'TestDaemonInstall'`;

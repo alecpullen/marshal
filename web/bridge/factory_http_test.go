@@ -7,11 +7,370 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+// factoryMCPFixture is one factory service with an MCP client holding a grant
+// on the fixture's project: the shape the MCP tools drive, minus the protocol.
+// The journal is on disk under dir, so "one append" is countable.
+type factoryMCPFixture struct {
+	*factoryDefaultsFixture
+	projectID string
+	dir       string
+}
+
+func newFactoryMCPFixture(t *testing.T, grant MCPFactoryProjectGrant) *factoryMCPFixture {
+	t.Helper()
+	f := newFactoryDefaultsFixture(t)
+	projectID, ok := f.fleet.ws.ProjectID(f.root)
+	if !ok {
+		t.Fatal("a registered project has no factory id")
+	}
+	fx := &factoryMCPFixture{factoryDefaultsFixture: f, projectID: projectID, dir: filepath.Dir(f.store.file.Name())}
+	fx.addClient(t, "c1", grant)
+	return fx
+}
+
+// addClient registers one more MCP consumer holding grant on this project.
+func (fx *factoryMCPFixture) addClient(t *testing.T, id string, grant MCPFactoryProjectGrant) {
+	t.Helper()
+	grant.ProjectID = fx.projectID
+	if err := fx.fleet.ws.PutClient(MCPClient{ID: id, OwnerID: DefaultOwnerID, FactoryGrants: []MCPFactoryProjectGrant{grant}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// principal is the server-authenticated identity of a client on this project.
+func (fx *factoryMCPFixture) principal(clientID, action string) factoryPrincipal {
+	return factoryPrincipal{ClientID: clientID, ProjectID: fx.projectID, Action: action}
+}
+
+// handoff is a valid proposal: native, one target branch, no required checks,
+// and the routing profile the fixture's canned model configuration serves.
+func (fx *factoryMCPFixture) handoff(requestID string) FactoryCreate {
+	routing := factoryDefaultsRouting()
+	return FactoryCreate{
+		RequestID: requestID,
+		Title:     "Add the thing",
+		Plan:      "implement the thing",
+		Spec:      "the specification",
+		Config: FactoryConfig{
+			RepoID:                   "repo-1",
+			ProjectRoot:              fx.root,
+			TargetBranch:             "main",
+			Native:                   true,
+			ImplementerRouting:       routing,
+			ReviewerRouting:          routing,
+			NoRequiredCIAcknowledged: true,
+		},
+	}
+}
+
+// createDraft runs the approved MCP order: resolve, normalize and preflight
+// outside the policy lock, then authorize and commit inside it.
+func (fx *factoryMCPFixture) createDraft(t *testing.T, clientID string, req FactoryCreate) FactoryItem {
+	t.Helper()
+	resolved, err := fx.api.PrepareDraft(req)
+	if err != nil {
+		t.Fatalf("prepare draft: %v", err)
+	}
+	item, err := fx.srv.factoryAuth.WithAuthorizedMutation(clientID, fx.projectID, req.Config.RepoID, factoryCapabilityCreateDraft, func() (FactoryItem, error) {
+		return fx.api.CreateDraftAuthorized(req, resolved, fx.principal(clientID, factoryCapabilityCreateDraft))
+	})
+	if err != nil {
+		t.Fatalf("create draft: %v", err)
+	}
+	return item
+}
+
+// journalLines is what the journal holds: one record per accepted mutation,
+// which is exactly what "the same append" means.
+func (fx *factoryMCPFixture) journalLines(t *testing.T) int {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(fx.dir, "journal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Count(string(raw), "\n")
+}
+
+// mustJSON renders an item for byte comparisons.
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func TestFactoryMCPCreateProvenanceAtomic(t *testing.T) {
+	fx := newFactoryMCPFixture(t, fullGrant())
+	req := fx.handoff("create-1")
+	resolved, err := fx.api.PrepareDraft(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := fx.srv.factoryAuth.WithAuthorizedMutation("c1", fx.projectID, "repo-1", factoryCapabilityCreateDraft, func() (FactoryItem, error) {
+		return fx.api.CreateDraftAuthorized(req, resolved, fx.principal("c1", factoryCapabilityCreateDraft))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.State != "draft" || item.Version != 1 {
+		t.Fatalf("created %+v", item)
+	}
+	if len(item.History) != 1 {
+		t.Fatalf("create journalled %d entries, want exactly its own attribution", len(item.History))
+	}
+	event := item.History[0]
+	if event.Kind != "create" || event.Provenance == nil {
+		t.Fatalf("create entry %+v", event)
+	}
+	want := FactoryProvenance{ClientID: "c1", ProjectID: fx.projectID, Action: factoryCapabilityCreateDraft, RequestID: "create-1"}
+	if *event.Provenance != want {
+		t.Fatalf("provenance = %+v, want %+v", *event.Provenance, want)
+	}
+	// The journal's request identity is namespaced; the client's own ID exists
+	// only in provenance.
+	if item.Draft.RequestID != factoryScopedRequestID("c1", "create-1") {
+		t.Fatalf("draft request identity %q is not namespaced", item.Draft.RequestID)
+	}
+	if lines := fx.journalLines(t); lines != 1 {
+		t.Fatalf("create wrote %d journal records, want 1", lines)
+	}
+	// One append is the whole provenance: a restart replays it byte for byte,
+	// with no second audit record to reconcile.
+	if err := fx.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenFactoryStore(fx.dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer reopened.Close()
+	got, err := reopened.Get(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(mustJSON(t, got), mustJSON(t, item)) {
+		t.Fatal("replayed item lost its create provenance")
+	}
+	if got.History[0].Provenance == nil || got.History[0].Provenance.ClientID != "c1" {
+		t.Fatalf("replayed provenance %+v", got.History[0].Provenance)
+	}
+}
+
+func TestFactoryMCPScopedRequestReplay(t *testing.T) {
+	fx := newFactoryMCPFixture(t, fullGrant())
+	fx.addClient(t, "c2", fullGrant())
+	first := fx.createDraft(t, "c1", fx.handoff("same"))
+	second := fx.createDraft(t, "c2", fx.handoff("same"))
+	if first.ID == second.ID {
+		t.Fatal("two clients naming one request id share a work item")
+	}
+	if first.Draft.RequestID == second.Draft.RequestID {
+		t.Fatal("the namespaced request identities collided")
+	}
+	if lines := fx.journalLines(t); lines != 2 {
+		t.Fatalf("two creates wrote %d journal records", lines)
+	}
+	// A lost response retried after the commit returns what the journal holds.
+	replayed := fx.createDraft(t, "c1", fx.handoff("same"))
+	if replayed.ID != first.ID || replayed.Version != first.Version {
+		t.Fatalf("replay returned %s v%d, want %s v%d", replayed.ID, replayed.Version, first.ID, first.Version)
+	}
+	if lines := fx.journalLines(t); lines != 2 {
+		t.Fatalf("the retry wrote a second record: %d", lines)
+	}
+	for _, c := range []struct {
+		clientID string
+		item     FactoryItem
+	}{{"c1", first}, {"c2", second}} {
+		if len(c.item.History) != 1 || c.item.History[0].Provenance == nil {
+			t.Fatalf("%s create entries %+v", c.clientID, c.item.History)
+		}
+		p := c.item.History[0].Provenance
+		if p.ClientID != c.clientID || p.RequestID != "same" {
+			t.Fatalf("%s attributed as %+v", c.clientID, p)
+		}
+	}
+	// Commands are namespaced the same way: one request id from two clients is
+	// two approvals, and each replays its own.
+	approved := map[string]FactoryItem{}
+	for _, c := range []struct {
+		clientID string
+		item     FactoryItem
+	}{{"c1", first}, {"c2", second}} {
+		item, err := fx.srv.factoryAuth.WithAuthorizedMutation(c.clientID, fx.projectID, "repo-1", factoryCapabilityApproveAndQueue, func() (FactoryItem, error) {
+			return fx.api.CommandAuthorized(context.Background(), c.item.ID, FactoryCommand{RequestID: "approve-same", Kind: "approve", ExpectedVersion: c.item.Version}, fx.principal(c.clientID, factoryCapabilityApproveAndQueue))
+		})
+		if err != nil {
+			t.Fatalf("%s approve: %v", c.clientID, err)
+		}
+		if item.State != "queued" {
+			t.Fatalf("%s state %q after approve", c.clientID, item.State)
+		}
+		approved[c.clientID] = item
+	}
+	if lines := fx.journalLines(t); lines != 4 {
+		t.Fatalf("%d journal records after two approvals", lines)
+	}
+	replay, err := fx.srv.factoryAuth.WithAuthorizedMutation("c1", fx.projectID, "repo-1", factoryCapabilityApproveAndQueue, func() (FactoryItem, error) {
+		return fx.api.CommandAuthorized(context.Background(), first.ID, FactoryCommand{RequestID: "approve-same", Kind: "approve", ExpectedVersion: first.Version}, fx.principal("c1", factoryCapabilityApproveAndQueue))
+	})
+	if err != nil {
+		t.Fatalf("approve replay: %v", err)
+	}
+	if replay.Version != approved["c1"].Version {
+		t.Fatalf("approve replay returned v%d, want v%d", replay.Version, approved["c1"].Version)
+	}
+	if lines := fx.journalLines(t); lines != 4 {
+		t.Fatalf("the approve retry wrote a second record: %d", lines)
+	}
+}
+
+func TestFactoryMCPDraftReplaceVersionAndIdentity(t *testing.T) {
+	fx := newFactoryMCPFixture(t, fullGrant())
+	draft := fx.createDraft(t, "c1", fx.handoff("create-1"))
+	candidate := fx.handoff("edit-1")
+	candidate.Title = "A better title"
+	candidate.Plan = "a better plan"
+	candidate.Spec = "a better spec"
+	candidate.Config.MaxRounds = 7
+	prepared, err := fx.api.PrepareDraft(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replace := func(c FactoryCreate, expectedVersion uint64) (FactoryItem, error) {
+		return fx.srv.factoryAuth.WithAuthorizedMutation("c1", fx.projectID, "repo-1", factoryCapabilityEditDraft, func() (FactoryItem, error) {
+			return fx.api.ReplaceDraftAuthorized(draft.ID, c, expectedVersion, fx.principal("c1", factoryCapabilityEditDraft))
+		})
+	}
+	// A version the work item never had is refused: the replacement is
+	// conditional on what the client reviewed.
+	stale := prepared
+	stale.RequestID = "edit-stale"
+	if _, err := replace(stale, draft.Version+1); !errors.Is(err, ErrFactoryConflict) {
+		t.Fatalf("a future version replaced the draft: %v", err)
+	}
+	// Another repository or another project is another work item, not an edit.
+	for _, move := range []struct {
+		name  string
+		apply func(*FactoryCreate)
+	}{
+		{"repository", func(c *FactoryCreate) { c.Config.RepoID = "other" }},
+		{"project", func(c *FactoryCreate) { c.Config.ProjectRoot = t.TempDir() }},
+	} {
+		moved := prepared
+		move.apply(&moved)
+		if _, err := replace(moved, draft.Version); !errors.Is(err, ErrFactoryConflict) {
+			t.Fatalf("a replacement moved the %s: %v", move.name, err)
+		}
+		still, err := fx.store.Get(draft.ID)
+		if err != nil || !bytes.Equal(mustJSON(t, still), mustJSON(t, draft)) {
+			t.Fatalf("a refused replacement touched the draft (%s): %v", move.name, err)
+		}
+	}
+	lines := fx.journalLines(t)
+	replaced, err := replace(prepared, draft.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replaced.Version != draft.Version+1 {
+		t.Fatalf("version %d after replace, want %d", replaced.Version, draft.Version+1)
+	}
+	// Only the content moves; the identity is the same work item.
+	if replaced.ID != draft.ID || replaced.RepoID != draft.RepoID || replaced.ProjectRoot != draft.ProjectRoot ||
+		replaced.HostID != draft.HostID || replaced.Branch != draft.Branch || !replaced.CreatedAt.Equal(draft.CreatedAt) {
+		t.Fatalf("replace moved the identity: %+v", replaced)
+	}
+	if replaced.Draft.RequestID != draft.Draft.RequestID {
+		t.Fatalf("replace rewrote the draft's create identity to %q", replaced.Draft.RequestID)
+	}
+	if replaced.Title != "A better title" || replaced.Draft.Title != "A better title" ||
+		replaced.Draft.Plan != "a better plan" || replaced.Draft.Spec != "a better spec" ||
+		replaced.Draft.Config.MaxRounds != 7 || replaced.Draft.Config.CIPollSeconds != 15 || replaced.Draft.Config.RepoID != "repo-1" {
+		t.Fatalf("replace stored %+v", replaced.Draft)
+	}
+	if len(replaced.Approvals) != 0 || len(replaced.Rounds) != 0 || len(replaced.Effects) != 0 || len(replaced.Grants) != 0 {
+		t.Fatalf("replace invented history: %+v", replaced)
+	}
+	if len(replaced.History) != 2 || replaced.History[0].Kind != "create" {
+		t.Fatalf("replace lost the earlier entries: %+v", replaced.History)
+	}
+	attribution := replaced.History[1]
+	if attribution.Kind != "replace" || attribution.Provenance == nil {
+		t.Fatalf("replacement entry %+v", attribution)
+	}
+	if p := attribution.Provenance; p.ClientID != "c1" || p.Action != factoryCapabilityEditDraft || p.RequestID != "edit-1" || p.ProjectID != fx.projectID {
+		t.Fatalf("replacement provenance %+v", attribution.Provenance)
+	}
+	if got := fx.journalLines(t); got != lines+1 {
+		t.Fatalf("the replacement wrote %d records, want 1", got-lines)
+	}
+	// A lost response retried after the commit returns the journaled item.
+	again, err := replace(prepared, draft.Version)
+	if err != nil {
+		t.Fatalf("replacement replay: %v", err)
+	}
+	if again.Version != replaced.Version {
+		t.Fatalf("replay returned v%d, want v%d", again.Version, replaced.Version)
+	}
+	if got := fx.journalLines(t); got != lines+1 {
+		t.Fatalf("the replacement retry wrote another record: %d", got-lines)
+	}
+	// The version the replacement spent is spent.
+	next := fx.handoff("edit-2")
+	if _, err := replace(next, draft.Version); !errors.Is(err, ErrFactoryConflict) {
+		t.Fatalf("a stale version replaced the draft again: %v", err)
+	}
+}
+
+func TestFactoryMCPApprovedDraftImmutable(t *testing.T) {
+	fx := newFactoryMCPFixture(t, fullGrant())
+	draft := fx.createDraft(t, "c1", fx.handoff("create-1"))
+	approved, err := fx.srv.factoryAuth.WithAuthorizedMutation("c1", fx.projectID, "repo-1", factoryCapabilityApproveAndQueue, func() (FactoryItem, error) {
+		p := fx.principal("c1", factoryCapabilityApproveAndQueue)
+		p.Authority = factoryAuthorityUserDirected
+		return fx.api.CommandAuthorized(context.Background(), draft.ID, FactoryCommand{RequestID: "approve-1", Kind: "approve", ExpectedVersion: draft.Version}, p)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved.State != "queued" || len(approved.Approvals) != 1 {
+		t.Fatalf("approval did not queue: %+v", approved)
+	}
+	candidate := fx.handoff("edit-1")
+	candidate.Title = "different"
+	candidate.Plan = "a different plan"
+	candidate.Config.MaxRounds = 2
+	lines := fx.journalLines(t)
+	_, err = fx.srv.factoryAuth.WithAuthorizedMutation("c1", fx.projectID, "repo-1", factoryCapabilityEditDraft, func() (FactoryItem, error) {
+		return fx.api.ReplaceDraftAuthorized(approved.ID, candidate, approved.Version, fx.principal("c1", factoryCapabilityEditDraft))
+	})
+	if !errors.Is(err, ErrFactoryConflict) {
+		t.Fatalf("an approved draft was replaced: %v", err)
+	}
+	after, err := fx.store.Get(approved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(mustJSON(t, after), mustJSON(t, approved)) {
+		t.Fatal("a refused replacement touched the approved work item")
+	}
+	if got := fx.journalLines(t); got != lines {
+		t.Fatalf("a refused replacement wrote %d journal records", got-lines)
+	}
+	if after.Approvals[0].PlanHash != FactoryPlanHash(draft.Draft.Plan, draft.Draft.Spec) {
+		t.Fatalf("approval hash %q", after.Approvals[0].PlanHash)
+	}
+}
 
 func TestFactoryHTTP(t *testing.T) {
 	store, err := OpenFactoryStore(filepath.Join(t.TempDir(), "factory"))
@@ -220,6 +579,300 @@ func (f *httpContinuationEffects) Execute(ctx context.Context, _ FactoryItem, e 
 	}
 	<-f.release
 	return FactoryOutcome{EffectID: e.ID, Confirmed: true}, nil
+}
+
+func TestFactoryMCPApproveProvenanceAndQueue(t *testing.T) {
+	standing := fullGrant()
+	standing.ApprovalAuthority = factoryAuthorityStanding
+	fx := newFactoryMCPFixture(t, standing)
+	draft := fx.createDraft(t, "c1", fx.handoff("create-1"))
+	approve := func(requestID string, expectedVersion uint64) (FactoryItem, error) {
+		return fx.srv.factoryAuth.WithAuthorizedMutationAuthority("c1", fx.projectID, "repo-1", factoryCapabilityApproveAndQueue, func(authority string) (FactoryItem, error) {
+			p := fx.principal("c1", factoryCapabilityApproveAndQueue)
+			// The authority is the one the stored grant carries under the
+			// policy lock, not one a caller supplied.
+			p.Authority = authority
+			return fx.api.CommandAuthorized(context.Background(), draft.ID, FactoryCommand{RequestID: requestID, Kind: "approve", ExpectedVersion: expectedVersion}, p)
+		})
+	}
+	queued, err := approve("approve-1", draft.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued.State != "queued" || queued.ApprovedAt.IsZero() {
+		t.Fatalf("approval did not queue: %+v", queued)
+	}
+	if len(queued.Approvals) != 1 {
+		t.Fatalf("approvals %+v", queued.Approvals)
+	}
+	approval := queued.Approvals[0]
+	if approval.Revision != 1 || approval.Plan != draft.Draft.Plan || approval.Spec != draft.Draft.Spec ||
+		approval.PlanHash != FactoryPlanHash(draft.Draft.Plan, draft.Draft.Spec) {
+		t.Fatalf("the approval is not the stored draft: %+v", approval)
+	}
+	sameFactoryConfig(t, approval.Config, draft.Draft.Config)
+	if len(queued.Grants) != 1 || queued.Grants[0].ID != factoryScopedRequestID("c1", "approve-1") {
+		t.Fatalf("grants %+v", queued.Grants)
+	}
+	// One attribution entry sits beside the approval, in the same append, and
+	// names the authority that admitted it.
+	if len(queued.History) != 2 || queued.History[1].Kind != "approve" {
+		t.Fatalf("approval entries %+v", queued.History)
+	}
+	p := queued.History[1].Provenance
+	if p == nil || p.ClientID != "c1" || p.ProjectID != fx.projectID ||
+		p.Action != factoryCapabilityApproveAndQueue || p.RequestID != "approve-1" || p.Authority != factoryAuthorityStanding {
+		t.Fatalf("approval provenance %+v", p)
+	}
+	if lines := fx.journalLines(t); lines != 2 {
+		t.Fatalf("%d journal records after create and approve, want 2", lines)
+	}
+	// A lost response retried after the commit returns the same approval
+	// instead of queueing a second one.
+	replay, err := approve("approve-1", draft.Version)
+	if err != nil {
+		t.Fatalf("approval replay: %v", err)
+	}
+	if replay.Version != queued.Version || len(replay.Approvals) != 1 {
+		t.Fatalf("replay returned v%d with %d approvals", replay.Version, len(replay.Approvals))
+	}
+	if lines := fx.journalLines(t); lines != 2 {
+		t.Fatalf("the approval retry wrote a second record: %d", lines)
+	}
+}
+
+func TestFactoryMCPAnswerDecisionRace(t *testing.T) {
+	store, err := OpenFactoryStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now().UTC()
+	item, err := store.Create(factoryReq(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err = store.Update(item.ID, "question", item.Version, json.RawMessage(`{"question":true}`), func(i *FactoryItem) error {
+		i.State = "needs_input"
+		i.Grants = []FactoryGrant{{ID: "initial", AdditionalRounds: 5}}
+		i.Effects = []FactoryEffect{{ID: "impl", Kind: "implement", Status: "completed", Outcome: &FactoryOutcome{
+			EffectID: "impl", Confirmed: true, Report: &FactoryReport{Outcome: "needs_input", Question: "which file?"},
+		}}}
+		i.Decision = &FactoryDecision{ID: "q", Kind: "question", EffectID: "impl", Question: "which file?"}
+		return nil
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller := NewFactoryController(store, nil, nil)
+	answers := []struct {
+		clientID string
+		action   string
+		answer   string
+	}{
+		{"c1", factoryCapabilityAnswerQuestion, "use A"},
+		{"c2", factoryCapabilityDelegatedAnswer, "use B"},
+	}
+	// Both clients answer the same decision against the same version at the
+	// same moment: exactly one answer may be journaled.
+	start := make(chan struct{})
+	results := make(chan error, len(answers))
+	var wg sync.WaitGroup
+	for _, a := range answers {
+		a := a
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			p := factoryPrincipal{ClientID: a.clientID, ProjectID: "project-1", Action: a.action}
+			_, err := controller.CommandAuthorized(context.Background(), item.ID,
+				FactoryCommand{RequestID: "answer-" + a.clientID, Kind: "answer", DecisionID: "q", Answer: a.answer, ExpectedVersion: item.Version}, p)
+			results <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	succeeded, conflicted := 0, 0
+	for err := range results {
+		switch {
+		case err == nil:
+			succeeded++
+		case errors.Is(err, ErrFactoryConflict):
+			conflicted++
+		default:
+			t.Fatalf("answer race: %v", err)
+		}
+	}
+	if succeeded != 1 || conflicted != 1 {
+		t.Fatalf("%d answers succeeded and %d conflicted, want one each", succeeded, conflicted)
+	}
+	after, err := store.Get(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var answered []FactoryEvent
+	for _, e := range after.History {
+		if e.Kind == "answer" {
+			answered = append(answered, e)
+		}
+	}
+	if len(answered) != 1 {
+		t.Fatalf("%d answer entries journaled: %+v", len(answered), after.History)
+	}
+	winner := answered[0]
+	if winner.Provenance == nil || winner.Provenance.DecisionID != "q" {
+		t.Fatalf("the answer carries %+v", winner.Provenance)
+	}
+	// The entry belongs to whoever actually applied it, not to both.
+	if (winner.Message == "use A") != (winner.Provenance.ClientID == "c1") {
+		t.Fatalf("answer %q attributed to %+v", winner.Message, winner.Provenance)
+	}
+	if after.Decision != nil || after.State != "repairing" {
+		t.Fatalf("the decision was not consumed once: %+v state %q", after.Decision, after.State)
+	}
+}
+
+func TestFactoryMCPJournalFailureNoSuccess(t *testing.T) {
+	now := time.Now().UTC()
+	failing := func([]byte) (int, error) { return 0, os.ErrPermission }
+	for _, op := range []string{"create", "replace"} {
+		t.Run(op, func(t *testing.T) {
+			dir := t.TempDir()
+			s, err := OpenFactoryStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			journal := func() int {
+				t.Helper()
+				raw, err := os.ReadFile(filepath.Join(dir, "journal.jsonl"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return strings.Count(string(raw), "\n")
+			}
+			owner := factoryPrincipal{ClientID: "c1", ProjectID: "project-1", Action: factoryCapabilityCreateDraft}
+			editor := owner
+			editor.Action = factoryCapabilityEditDraft
+			req := factoryReq()
+			req.RequestID = factoryScopedRequestID(owner.ClientID, "create")
+			draft, err := s.CreateAuthorized(req, req, owner, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := journal()
+			s.write = failing
+			if op == "create" {
+				refused := factoryReq()
+				refused.RequestID = factoryScopedRequestID(owner.ClientID, "create-refused")
+				if _, err := s.CreateAuthorized(refused, refused, owner, now); !errors.Is(err, ErrFactoryUnavailable) {
+					t.Fatalf("failed create: %v", err)
+				}
+				if len(s.List()) != 1 {
+					t.Fatalf("a failed create published an item: %+v", s.List())
+				}
+			} else {
+				candidate := draft.Draft
+				candidate.RequestID = "edit-1"
+				candidate.Plan = "a plan that must not be published"
+				if _, err := s.ReplaceDraft(draft.ID, factoryScopedRequestID(editor.ClientID, "edit-1"), draft.Version, candidate, editor, now); !errors.Is(err, ErrFactoryUnavailable) {
+					t.Fatalf("failed replacement: %v", err)
+				}
+				after, err := s.Get(draft.ID)
+				if err != nil || !bytes.Equal(mustJSON(t, after), mustJSON(t, draft)) {
+					t.Fatal("a failed replacement was published")
+				}
+			}
+			if got := journal(); got != before {
+				t.Fatalf("a failed %s wrote %d journal records", op, got-before)
+			}
+			// The store stays unavailable, so a retry cannot slip a success
+			// entry past the failure either.
+			again := factoryReq()
+			again.RequestID = factoryScopedRequestID(owner.ClientID, "after-failure")
+			if _, err := s.CreateAuthorized(again, again, owner, now); !errors.Is(err, ErrFactoryUnavailable) {
+				t.Fatalf("retry after a failed append: %v", err)
+			}
+			if got := journal(); got != before {
+				t.Fatalf("the retry wrote a success entry: %d", got-before)
+			}
+		})
+	}
+}
+
+func TestFactoryMCPLegacyJournalReplay(t *testing.T) {
+	// A record written before provenance existed: an approval, an event, and
+	// no attribution anywhere.
+	dir := t.TempDir()
+	now := time.Now().UTC()
+	req := factoryReq()
+	config := req.Config
+	config.TargetBranch = "main"
+	item := FactoryItem{
+		ID: "legacy-item", Title: req.Title, State: "checking", Version: 1, RepoID: config.RepoID,
+		Branch: "marshal/factory/legacy-item", BaseSHA: "base", Draft: req,
+		Approvals: []FactoryApproval{{Revision: 1, Plan: req.Plan, Spec: req.Spec, PlanHash: FactoryPlanHash(req.Plan, req.Spec), Config: config, ApprovedAt: now}},
+		History:   []FactoryEvent{{At: now, Kind: "question", Message: "which file?", EffectID: "effect-1"}},
+		CreatedAt: now, UpdatedAt: now,
+	}
+	payload, err := json.Marshal(factoryPayload{Format: 1, Sequence: 1, RequestID: "legacy", ItemID: item.ID, CommandHash: "legacy", Item: item})
+	if err != nil {
+		t.Fatal(err)
+	}
+	line, err := json.Marshal(factoryRecord{Payload: payload, Checksum: factoryDigest(payload)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "journal.jsonl"), append(line, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenFactoryStore(dir)
+	if err != nil {
+		t.Fatalf("legacy journal did not open: %v", err)
+	}
+	defer s.Close()
+	got, err := s.Get(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(mustJSON(t, got), []byte("provenance")) {
+		t.Fatal("replaying a legacy record added a provenance field")
+	}
+	if got.Approvals[0].PlanHash != FactoryPlanHash(item.Draft.Plan, item.Draft.Spec) || len(got.History) != 1 ||
+		got.History[0].Message != "which file?" || got.History[0].EffectID != "effect-1" {
+		t.Fatalf("legacy record lost its contents: %+v", got)
+	}
+	// A Studio mutation still writes the journal bytes it always did: no
+	// attribution appears anywhere in the file.
+	fresh := t.TempDir()
+	studio, err := OpenFactoryStore(fresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer studio.Close()
+	created, err := studio.Create(factoryReq(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved, err := NewFactoryController(studio, nil, nil).Command(context.Background(), created.ID,
+		FactoryCommand{RequestID: "approve", Kind: "approve", ExpectedVersion: created.Version})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved.State != "queued" || len(approved.History) != 0 {
+		t.Fatalf("a Studio approval journalled %+v", approved.History)
+	}
+	if approved.Approvals[0].PlanHash != FactoryPlanHash(created.Draft.Plan, created.Draft.Spec) {
+		t.Fatalf("Studio approval hash %q", approved.Approvals[0].PlanHash)
+	}
+	raw, err := os.ReadFile(filepath.Join(fresh, "journal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("provenance")) {
+		t.Fatal("a Studio mutation journalled provenance")
+	}
 }
 
 func TestFactoryStartupQuiescePersistsUncertainty(t *testing.T) {

@@ -4,9 +4,15 @@ import FactoryItem from './FactoryItem.svelte'
 import * as api from '../lib/api'
 import type { FactoryItem as Item } from '../lib/factory'
 import type { PreviewDeployment, PreviewReport } from '../lib/preview'
-vi.mock('../lib/api', async (actual) => ({ ...await actual<typeof import('../lib/api')>(), getFactoryItem: vi.fn(), commandFactoryItem: vi.fn(), getPreviewEnvironments: vi.fn() }))
+vi.mock('../lib/api', async (actual) => ({ ...await actual<typeof import('../lib/api')>(), getFactoryItem: vi.fn(), commandFactoryItem: vi.fn(), getPreviewEnvironments: vi.fn(), listClients: vi.fn() }))
 afterEach(cleanup)
-beforeEach(() => { vi.mocked(api.getFactoryItem).mockReset(); vi.mocked(api.getPreviewEnvironments).mockReset() })
+beforeEach(() => {
+  vi.mocked(api.getFactoryItem).mockReset()
+  vi.mocked(api.getPreviewEnvironments).mockReset()
+  vi.mocked(api.listClients).mockReset()
+  // Provenance names a client when the list knows it and shows the stable ID otherwise.
+  vi.mocked(api.listClients).mockResolvedValue([{ id: 'c1', name: 'Cursor' }] as unknown as api.MCPClient[])
+})
 const base = { id: 'x', title: 'Task', repoId: 'repo', state: 'draft', stage: '', version: 1, draft: { plan: 'Build', spec: '', config: { targetBranch: 'main', repoId: 'repo', maxRounds: 5, implementerRouting: {}, reviewerRouting: {}, expectedChecks: [] } }, rounds: [], grants: [], prs: [], workers: [], history: [] } as unknown as Item
 it('requires explicit approval before a draft starts', async () => {
   vi.mocked(api.getFactoryItem).mockResolvedValue(base)
@@ -381,4 +387,56 @@ it('keeps the newest preview response when an older in-flight request resolves l
   await new Promise((resolve) => setTimeout(resolve, 0))
   expect(screen.queryByText('stale')).toBeNull()
   expect(screen.getByText('fresh')).toBeTruthy()
+})
+
+/** One history entry's line: the message's row carries the provenance beside it. */
+const provenanceFor = (message: string) => screen.getByText(message).closest('li')?.textContent ?? ''
+
+it('provenanceDistinguishesAuthority', async () => {
+  const item = {
+    ...base,
+    state: 'checking',
+    history: [
+      { sequence: 1, at: '2026-01-01T00:00:00Z', kind: 'mcp', message: 'Approval queued', effectId: '',
+        provenance: { clientId: 'c1', projectId: 'p1', action: 'factory_approve_and_queue', requestId: 'r1', authority: 'user_directed' } },
+      { sequence: 2, at: '2026-01-02T00:00:00Z', kind: 'mcp', message: 'Standing approval queued', effectId: '',
+        provenance: { clientId: 'ghost', projectId: 'p1', action: 'factory_approve_and_queue', requestId: 'r2', authority: 'standing' } },
+      { sequence: 3, at: '2026-01-03T00:00:00Z', kind: 'mcp', message: 'Question answered', effectId: '',
+        provenance: { clientId: 'c1', projectId: 'p1', action: 'factory_answer_question', requestId: 'r3', authority: 'delegated', decisionId: 'd1' } },
+    ],
+  } as unknown as Item
+  vi.mocked(api.getFactoryItem).mockResolvedValue(item)
+  render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
+  await screen.findByText('Approval queued')
+
+  // A known client is named; a client the list no longer has falls back to its
+  // stable ID rather than going unattributed.
+  expect(provenanceFor('Approval queued')).toContain('Cursor (c1)')
+  expect(provenanceFor('Standing approval queued')).toContain('ghost')
+  // user_directed is the client's own assertion, never a verified approval.
+  expect(provenanceFor('Approval queued')).toContain('client reports user-directed')
+  expect(provenanceFor('Approval queued')).not.toContain('standing authority')
+  expect(provenanceFor('Standing approval queued')).toContain('standing authority')
+  expect(provenanceFor('Question answered')).toContain('delegated planner')
+  expect(provenanceFor('Question answered')).toContain('decision d1')
+})
+
+it('legacyEventsRender', async () => {
+  const item = {
+    ...base,
+    state: 'checking',
+    history: [
+      { sequence: 1, at: '2026-01-01T00:00:00Z', kind: 'state', message: 'Draft created', effectId: '' },
+      { sequence: 2, at: '2026-01-02T00:00:00Z', kind: 'approval', message: 'Approved by the operator', effectId: '' },
+    ],
+  } as unknown as Item
+  vi.mocked(api.getFactoryItem).mockResolvedValue(item)
+  render(FactoryItem, { itemId: 'x', onNavigate: vi.fn() })
+
+  expect(await screen.findByText('Draft created')).toBeTruthy()
+  expect(screen.getByText('Approved by the operator')).toBeTruthy()
+  // A record written before provenance existed is ordinary history: no origin
+  // line is invented for it, and nothing claims a client acted.
+  expect(screen.queryAllByTestId('factory-provenance')).toHaveLength(0)
+  expect(screen.queryByText(/Requested by/)).toBeNull()
 })

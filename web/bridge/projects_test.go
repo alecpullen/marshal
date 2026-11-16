@@ -58,6 +58,11 @@ func TestProjectSettingsRoundTripAndValidation(t *testing.T) {
 		"repo":       {Intake: ProjectIntake{RepoID: "nope"}},
 		"labels":     {Intake: ProjectIntake{Labels: []string{"x"}}},
 		"routing":    {Routing: json.RawMessage(`[1]`)},
+		// Planner delegation names one client: enabling it with nobody
+		// designated is the state the Studio refuses to save, and a
+		// designation must name a client this bridge has.
+		"delegation without a client": {PlannerDelegationEnabled: true},
+		"delegation to a stranger":    {DesignatedMCPClientID: "nope"},
 	}
 	for name, ps := range bad {
 		if code := putSettings(t, s, root, ps); code != http.StatusBadRequest {
@@ -67,6 +72,27 @@ func TestProjectSettingsRoundTripAndValidation(t *testing.T) {
 	// A refused request leaves the stored settings alone.
 	if st := e.f.ws.ProjectSettingsFor(root); st.Workspace != "svc@2" {
 		t.Fatalf("settings changed by a refused request: %+v", st)
+	}
+	// Delegation to a registered client is a savable state, and it round-trips.
+	if err := e.f.ws.PutClient(MCPClient{ID: "c1", Name: "claude", OwnerID: DefaultOwnerID}); err != nil {
+		t.Fatal(err)
+	}
+	delegated := good
+	delegated.PlannerDelegationEnabled = true
+	delegated.DesignatedMCPClientID = "c1"
+	if code := putSettings(t, s, root, delegated); code != http.StatusOK {
+		t.Fatalf("delegation to a registered client = %d", code)
+	}
+	if st := e.f.ws.ProjectSettingsFor(root); !st.PlannerDelegationEnabled || st.DesignatedMCPClientID != "c1" {
+		t.Fatalf("delegation stored as %+v", st)
+	}
+	// A client that goes away takes its designation with it, so a project is
+	// never left unable to save its own settings.
+	if err := e.f.ws.DeleteClient("c1"); err != nil {
+		t.Fatal(err)
+	}
+	if st := e.f.ws.ProjectSettingsFor(root); st.PlannerDelegationEnabled || st.DesignatedMCPClientID != "" {
+		t.Fatalf("a deleted client kept its designation: %+v", st)
 	}
 	if code := putSettings(t, s, "/not/registered", good); code != http.StatusBadRequest {
 		t.Fatalf("unregistered root = %d", code)

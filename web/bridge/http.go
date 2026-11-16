@@ -49,6 +49,17 @@ type Server struct {
 	// refresh, when set, is the daemon's refresh helper, reported per
 	// request by GET /api/daemon (see SetRefreshHelper).
 	refresh *Helper
+	// factoryAuth is the one factory policy lock: grant management, client
+	// deletion, project removal, delegation settings and the authorization
+	// guarding a durable factory mutation all take it. It is created with the
+	// server, over the workspace it reads, so every route that can change
+	// authority or act under it shares one mutex.
+	factoryAuth *factoryMCPAuthorizer
+	// factory is the same factory service the Studio routes serve, kept here
+	// so the MCP tools compose the identical instance. It is nil when this
+	// server was built without one, and a factory tool then answers
+	// unavailable instead of taking an unauthorised path.
+	factory FactoryAPI
 }
 
 func NewServer(target any, args ...any) *Server {
@@ -80,10 +91,16 @@ func NewServer(target any, args ...any) *Server {
 	if fleet != nil && publicURLBase != "" {
 		fleet.SetPublicURLBase(publicURLBase)
 	}
-	s := &Server{fleet: fleet, reg: reg, log: log, publicURLBase: publicURLBase, mux: http.NewServeMux()}
+	var ws *Workspace
+	if fleet != nil {
+		ws = fleet.ws
+	}
+	s := &Server{fleet: fleet, reg: reg, log: log, publicURLBase: publicURLBase, mux: http.NewServeMux(),
+		factoryAuth: newFactoryMCPAuthorizer(ws)}
 	s.routes()
 	for _, arg := range args {
 		if factory, ok := arg.(FactoryAPI); ok {
+			s.factory = factory
 			s.factoryRoutes(factory)
 			// Working drafts live beside the factory journal, in a store of
 			// their own. Only a factory API with a fleet state directory can
@@ -235,6 +252,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/clients", s.listClients)
 	s.mux.HandleFunc("POST /api/clients", s.createClient)
 	s.mux.HandleFunc("DELETE /api/clients/{id}", s.deleteClient)
+	// Factory grants are a Studio management surface. They hang off /api/, so
+	// /mcp — which authenticates per client and is not under /api/ — can never
+	// reach them: an MCP client cannot change its own authority.
+	s.mux.HandleFunc("GET /api/clients/{clientId}/factory-grants/{projectId}", s.getFactoryGrant)
+	s.mux.HandleFunc("PUT /api/clients/{clientId}/factory-grants/{projectId}", s.putFactoryGrant)
 	s.mux.HandleFunc("GET /api/pending", s.listPending)
 	s.mux.HandleFunc("POST /api/pending/{id}/approve", s.approvePending)
 	s.mux.HandleFunc("POST /api/pending/{id}/deny", s.denyPending)
@@ -399,7 +421,20 @@ func (s *Server) config(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.fleet.ProjectStatus())
+	writeJSON(w, http.StatusOK, s.projectsWithFactoryIDs())
+}
+
+// projectsWithFactoryIDs is the project list with each entry's stable factory
+// project ID attached. The ID is what a grant is keyed by and what an MCP
+// client may name; every other field is exactly what the fleet reported.
+func (s *Server) projectsWithFactoryIDs() []contract.ProjectStatus {
+	statuses := s.fleet.ProjectStatus()
+	for i := range statuses {
+		if id, ok := s.fleet.ws.ProjectID(statuses[i].Root); ok {
+			statuses[i].MCPProjectID = id
+		}
+	}
+	return statuses
 }
 
 func (s *Server) addProject(w http.ResponseWriter, r *http.Request) {
@@ -440,7 +475,10 @@ func (s *Server) removeProject(w http.ResponseWriter, r *http.Request) {
 			s.fleet.dropGate(a.ID)
 		}
 	}
-	if err := s.fleet.ws.RemoveProject(body.Root); err != nil {
+	// Removal drops the project's identity and every grant naming it in one
+	// save, so it takes the policy lock: an authorization either sees the
+	// project or does not, and never sees it after its grants are gone.
+	if err := s.factoryAuth.withPolicy(func() error { return s.fleet.ws.RemoveProject(body.Root) }); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -1239,7 +1277,10 @@ func (s *Server) deleteClient(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
 		return
 	}
-	if err := s.fleet.ws.DeleteClient(id); err != nil {
+	// Deleting a client revokes its grants in the same save, and it shares the
+	// policy lock with authorization: a mutation either admits under the
+	// client that still existed or is denied by its absence.
+	if err := s.factoryAuth.withPolicy(func() error { return s.fleet.ws.DeleteClient(id) }); err != nil {
 		writeErr(w, err)
 		return
 	}

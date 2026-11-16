@@ -222,12 +222,79 @@ type FactoryDecision struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
+// FactoryProvenance attributes one journaled factory mutation to the MCP
+// client that caused it. It is optional: an entry written before provenance
+// existed still replays, and an ordinary Studio mutation records none.
+//
+// Action is the capability the mutation was admitted under, RequestID is the
+// client's own request identity (the journal's is namespaced), and Authority
+// is the grant's approvalAuthority or the answer mode the client claimed. It
+// records what the server accepted, which for a user-directed action is a
+// client assertion rather than a verified human instruction.
+type FactoryProvenance struct {
+	ClientID   string `json:"clientId"`
+	ProjectID  string `json:"projectId"`
+	Action     string `json:"action"`
+	RequestID  string `json:"requestId"`
+	Authority  string `json:"authority,omitempty"`
+	DecisionID string `json:"decisionId,omitempty"`
+}
+
 type FactoryEvent struct {
 	Sequence uint64    `json:"sequence"`
 	At       time.Time `json:"at"`
 	Kind     string    `json:"kind"`
 	Message  string    `json:"message"`
 	EffectID string    `json:"effectId"`
+	// Provenance is absent from every entry the Studio surfaces write, and
+	// from every record journalled before it existed, so those bytes are
+	// unchanged.
+	Provenance *FactoryProvenance `json:"provenance,omitempty"`
+}
+
+// factoryPrincipal is the server-authenticated MCP client behind a factory
+// mutation. It is an argument threaded by the caller, never a field on a
+// request type: neither the REST payload nor an MCP argument can name it, and
+// the authority it carries is read from the stored grant while the policy lock
+// is held.
+//
+// RequestID is the identity the client sent, not the journal's: every service
+// entry point scopes it into the journal namespace and keeps the original here
+// so provenance names what the client asked for.
+type factoryPrincipal struct {
+	ClientID  string
+	ProjectID string
+	Action    string
+	RequestID string
+	Authority string
+}
+
+// provenance renders the attribution a journal entry carries. decisionID names
+// the question an answer resolved and is empty for every other action.
+func (p *factoryPrincipal) provenance(decisionID string) *FactoryProvenance {
+	if p == nil {
+		return nil
+	}
+	return &FactoryProvenance{
+		ClientID:   p.ClientID,
+		ProjectID:  p.ProjectID,
+		Action:     p.Action,
+		RequestID:  p.RequestID,
+		Authority:  p.Authority,
+		DecisionID: decisionID,
+	}
+}
+
+// event is one journaled entry attributed to p. A nil principal produces
+// exactly the entry the Studio surfaces have always written, so a legacy
+// journal keeps its bytes.
+func (p *factoryPrincipal) event(kind, message, decisionID string, now time.Time) FactoryEvent {
+	return FactoryEvent{At: now, Kind: kind, Message: message, Provenance: p.provenance(decisionID)}
+}
+
+// scoped is the journal's request identity for a request this client sent.
+func (p *factoryPrincipal) scoped(requestID string) string {
+	return factoryScopedRequestID(p.ClientID, requestID)
 }
 
 type FactoryItem struct {

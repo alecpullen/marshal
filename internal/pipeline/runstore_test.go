@@ -1,8 +1,10 @@
 package pipeline
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -250,5 +252,102 @@ func TestRunStoreLockRelease(t *testing.T) {
 	// Re-acquire after release should work.
 	if err := rs.AcquireLock(RunLock{RunID: "r2", PID: 2}); err != nil {
 		t.Fatalf("re-acquire after release: %v", err)
+	}
+}
+
+// AUD-07: concurrent takeovers of the same stale lock must produce exactly
+// one new owner. A remove-then-create takeover lets a later taker delete the
+// earlier taker's fresh lock, so two callers could both "succeed".
+//
+// The takers are released into the takeover's read-then-swap window together,
+// so every one of them judges the same stale lock; that is the interleaving
+// the assertion is about, and it is deterministic instead of timing-dependent.
+func TestTakeoverLockIsAtomicUnderConcurrentAttempts(t *testing.T) {
+	dir := t.TempDir()
+	paths, err := NewPaths(dir, "test-plan")
+	if err != nil {
+		t.Fatalf("NewPaths: %v", err)
+	}
+	rs := NewRunStore(paths)
+	if err := rs.AcquireLock(RunLock{RunID: "stale", PID: 1, Host: "h", AcquiredAt: "old"}); err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+
+	const takers = 8
+	var arrived sync.WaitGroup
+	arrived.Add(takers)
+	release := make(chan struct{})
+	go func() {
+		arrived.Wait()
+		close(release)
+	}()
+	rs.takeoverSwapHook = func() {
+		arrived.Done()
+		<-release
+	}
+
+	errs := make([]error, takers)
+	var finished sync.WaitGroup
+	finished.Add(takers)
+	for i := 0; i < takers; i++ {
+		go func(i int) {
+			defer finished.Done()
+			errs[i] = rs.TakeoverLock(RunLock{
+				RunID: fmt.Sprintf("taker-%d", i), PID: 100 + i, Host: "h", AcquiredAt: "new",
+			})
+		}(i)
+	}
+	finished.Wait()
+
+	var winners []string
+	for i, err := range errs {
+		if err == nil {
+			winners = append(winners, fmt.Sprintf("taker-%d", i))
+		}
+	}
+	if len(winners) != 1 {
+		t.Fatalf("%d takeovers succeeded, want exactly 1 (errors: %v)", len(winners), errs)
+	}
+	l, ok, lerr := rs.Lock()
+	if lerr != nil || !ok {
+		t.Fatalf("lock = %+v ok=%v err=%v, want the winner's lock to survive", l, ok, lerr)
+	}
+	if l.RunID != winners[0] {
+		t.Errorf("surviving lock names %q, want the successful taker %q", l.RunID, winners[0])
+	}
+}
+
+// AUD-07: when the lock changes between the read and the swap, the takeover
+// must not destroy the lock it did not judge stale — it fails and leaves a
+// lock file behind.
+func TestTakeoverLockRestoresADisplacedLock(t *testing.T) {
+	dir := t.TempDir()
+	paths, err := NewPaths(dir, "test-plan")
+	if err != nil {
+		t.Fatalf("NewPaths: %v", err)
+	}
+	rs := NewRunStore(paths)
+	if err := rs.AcquireLock(RunLock{RunID: "stale", PID: 1, Host: "h", AcquiredAt: "old"}); err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+	// A competing owner replaces the lock in the window between the
+	// takeover's read and its move-aside.
+	rs.takeoverSwapHook = func() {
+		content := []byte(`{"run_id":"live","pid":7,"host":"h","acquired_at":"new"}`)
+		if err := os.WriteFile(rs.lockPath(), content, 0o644); err != nil {
+			t.Errorf("write competing lock: %v", err)
+		}
+	}
+
+	err = rs.TakeoverLock(RunLock{RunID: "me", PID: 2, Host: "h", AcquiredAt: "now"})
+	if err == nil {
+		t.Fatal("TakeoverLock should refuse a lock that changed under it")
+	}
+	l, ok, lerr := rs.Lock()
+	if lerr != nil || !ok {
+		t.Fatalf("lock = %+v ok=%v err=%v, want the displaced lock restored", l, ok, lerr)
+	}
+	if l.RunID != "live" {
+		t.Errorf("lock names %q after the aborted takeover, want the competing owner \"live\"", l.RunID)
 	}
 }

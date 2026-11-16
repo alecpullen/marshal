@@ -330,6 +330,31 @@ the kit inside a screen, is not merged.
 
 Token values change only here and in `tokens.dart`, together.
 
+### `Chart` (added for F7's Usage section)
+
+What it is: a row of vertical bars, each labelled directly underneath with its
+own name and value, and tipped with the same.
+
+When to use it: the one place a series of numbers is easier to read as a shape
+than as a list — today only Settings' Usage, whose detail the design makes the
+one exception to the list-and-detail rule (F7 decision 8).
+
+What it must not be used for:
+
+- A trend over time inside a row: that is `Spark`.
+- Progress towards a total: that is `Meter` or `Segments`.
+- Two series in one chart: two charts, each with its own labels. There is no
+  legend, so a second series could not be told apart without colour, and
+  colour here means status.
+
+Its colour: a single series is `fg`. A bar whose value *is* a status takes that
+status's colour, and never more than `ok`, `warn` and `err` — never `accent`,
+never a fourth hue. A bar with no status is `fg` in both themes.
+
+Its numbers: every bar carries its own label and value as text, so the shape is
+never the only way to read the chart, and text scaled up wraps under the bar
+rather than being clipped.
+
 ## 11. Enforcement
 
 These tests live in `app/test/` and run in CI. Each reads the source or the

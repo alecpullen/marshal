@@ -64,6 +64,30 @@ class BridgeClient {
   Future<BudgetReport> budgets() =>
       _objectOf('/api/budgets', BudgetReport.fromJson);
 
+  /// GET /api/usage?range=&by=: what the fleet spent over a window, grouped by
+  /// day, project, role or model.
+  Future<UsageReport> usage({String range = '7d', String by = 'project'}) =>
+      _objectOf(
+        '/api/usage',
+        UsageReport.fromJson,
+        query: {'range': range, 'by': by},
+      );
+
+  /// GET /api/audit?limit=: the audit log, newest first.
+  Future<List<AuditEvent>> audit({int limit = 50}) => _listOf(
+    '/api/audit',
+    AuditEvent.fromJson,
+    query: {'limit': '$limit'},
+  );
+
+  /// GET /api/disk: the bytes each part of the state directory takes.
+  Future<DiskStatus> disk() => _objectOf('/api/disk', DiskStatus.fromJson);
+
+  /// POST /api/prune: reclaims unreferenced mirrors and orphaned work
+  /// directories, and answers what it freed.
+  Future<PruneResult> prune() =>
+      _objectOf('/api/prune', PruneResult.fromJson, method: 'POST');
+
   /// GET /api/prompts/recent: the prompts worth offering again.
   Future<RecentPrompts> recentPrompts() =>
       _objectOf('/api/prompts/recent', RecentPrompts.fromJson);

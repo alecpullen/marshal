@@ -39,6 +39,7 @@ var fixtureFiles = []string{
 	"stack.json",
 	"stream.json",
 	"terminal.json",
+	"usage.json",
 	"watches.json",
 }
 
@@ -257,6 +258,13 @@ var fixtureTypes = map[string]reflect.Type{
 	"EnvStarts":     reflect.TypeOf(EnvStarts{}),
 	"EnvVersion":    reflect.TypeOf(EnvVersion{}),
 	"EnvWorkspace":  reflect.TypeOf(EnvWorkspace{}),
+	// usage.go — spend, the audit log and the disk.
+	"AuditEvent":  reflect.TypeOf(AuditEvent{}),
+	"DiskStatus":  reflect.TypeOf(DiskStatus{}),
+	"PruneResult": reflect.TypeOf(PruneResult{}),
+	"UsagePoint":  reflect.TypeOf(UsagePoint{}),
+	"UsageReport": reflect.TypeOf(UsageReport{}),
+	"UsageTotals": reflect.TypeOf(UsageTotals{}),
 }
 
 // TestContractFixturesRoundTrip holds the contract types to the shared

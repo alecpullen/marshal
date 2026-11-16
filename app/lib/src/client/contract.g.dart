@@ -9226,6 +9226,255 @@ class TerminalResize {
   }
 }
 
+/// UsageTotals is the report's totals over its window.
+class UsageTotals {
+  const UsageTotals({
+    required this.costUSD,
+    required this.promptTokens,
+    required this.completionTokens,
+    required this.agentHours,
+    required this.pRsShipped,
+  });
+
+  final double costUSD;
+  final int promptTokens;
+  final int completionTokens;
+  final double agentHours;
+  final int pRsShipped;
+
+  factory UsageTotals.fromJson(Map<String, dynamic> json) {
+    return UsageTotals(
+      costUSD: (json['costUsd'] as num).toDouble(),
+      promptTokens: (json['promptTokens'] as num).toInt(),
+      completionTokens: (json['completionTokens'] as num).toInt(),
+      agentHours: (json['agentHours'] as num).toDouble(),
+      pRsShipped: (json['prsShipped'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['costUsd'] = costUSD;
+    json['promptTokens'] = promptTokens;
+    json['completionTokens'] = completionTokens;
+    json['agentHours'] = agentHours;
+    json['prsShipped'] = pRsShipped;
+    return json;
+  }
+}
+
+/// UsagePoint is one series entry: a day, a project, a role or a model.
+class UsagePoint {
+  const UsagePoint({
+    required this.key,
+    required this.costUSD,
+    required this.tokens,
+  });
+
+  final String key;
+  final double costUSD;
+  final int tokens;
+
+  factory UsagePoint.fromJson(Map<String, dynamic> json) {
+    return UsagePoint(
+      key: json['key'] as String,
+      costUSD: (json['costUsd'] as num).toDouble(),
+      tokens: (json['tokens'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['key'] = key;
+    json['costUsd'] = costUSD;
+    json['tokens'] = tokens;
+    return json;
+  }
+}
+
+/// UsageReport is GET /api/usage?range=&amp;by='s answer.
+class UsageReport {
+  const UsageReport({
+    required this.range,
+    required this.totals,
+    required this.series,
+  });
+
+  final String range;
+  final UsageTotals totals;
+  final List<UsagePoint> series;
+
+  factory UsageReport.fromJson(Map<String, dynamic> json) {
+    return UsageReport(
+      range: json['range'] as String,
+      totals: _object(
+        json['totals'],
+        UsageTotals.fromJson,
+      ),
+      series: _list(
+        json['series'],
+        (value) => _object(value, UsagePoint.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['range'] = range;
+    json['totals'] = totals.toJson();
+    json['series'] = [
+      for (final value in series) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// AuditEvent is one row of GET /api/audit?limit=, newest first.
+class AuditEvent {
+  const AuditEvent({
+    required this.ts,
+    required this.event,
+    this.ownerID,
+    this.agentID,
+    this.clientID,
+    this.repoID,
+    this.origin,
+    this.reason,
+    this.detail,
+    this.bytes,
+  });
+
+  final String ts;
+  final String event;
+  final String? ownerID;
+  final String? agentID;
+  final String? clientID;
+  final String? repoID;
+  final String? origin;
+  /// Reason is an operator- or policy-supplied explanation.
+  final String? reason;
+  /// Detail is a short non-sensitive specific: a branch name, a repo id.
+  final String? detail;
+  /// Bytes is set by prune records.
+  final int? bytes;
+
+  factory AuditEvent.fromJson(Map<String, dynamic> json) {
+    return AuditEvent(
+      ts: json['ts'] as String,
+      event: json['event'] as String,
+      ownerID: json['ownerId'] as String?,
+      agentID: json['agentId'] as String?,
+      clientID: json['clientId'] as String?,
+      repoID: json['repoId'] as String?,
+      origin: json['origin'] as String?,
+      reason: json['reason'] as String?,
+      detail: json['detail'] as String?,
+      bytes: (json['bytes'] as num?)?.toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['ts'] = ts;
+    json['event'] = event;
+    if (ownerID != null) {
+      json['ownerId'] = ownerID;
+    }
+    if (agentID != null) {
+      json['agentId'] = agentID;
+    }
+    if (clientID != null) {
+      json['clientId'] = clientID;
+    }
+    if (repoID != null) {
+      json['repoId'] = repoID;
+    }
+    if (origin != null) {
+      json['origin'] = origin;
+    }
+    if (reason != null) {
+      json['reason'] = reason;
+    }
+    if (detail != null) {
+      json['detail'] = detail;
+    }
+    if (bytes != null) {
+      json['bytes'] = bytes;
+    }
+    return json;
+  }
+}
+
+/// DiskStatus is GET /api/disk's answer: the bytes each part of the state
+/// directory takes, and the budget it is held to.
+class DiskStatus {
+  const DiskStatus({
+    required this.repos,
+    required this.work,
+    required this.total,
+    required this.measuredAt,
+    required this.budgetMB,
+  });
+
+  final int repos;
+  final int work;
+  final int total;
+  final String measuredAt;
+  final int budgetMB;
+
+  factory DiskStatus.fromJson(Map<String, dynamic> json) {
+    return DiskStatus(
+      repos: (json['repos'] as num).toInt(),
+      work: (json['work'] as num).toInt(),
+      total: (json['total'] as num).toInt(),
+      measuredAt: json['measuredAt'] as String,
+      budgetMB: (json['budgetMB'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['repos'] = repos;
+    json['work'] = work;
+    json['total'] = total;
+    json['measuredAt'] = measuredAt;
+    json['budgetMB'] = budgetMB;
+    return json;
+  }
+}
+
+/// PruneResult is POST /api/prune's answer. A partial prune answers the bytes
+/// it did reclaim with a warning, rather than failing.
+class PruneResult {
+  const PruneResult({
+    required this.reclaimed,
+    required this.total,
+    this.warning,
+  });
+
+  final int reclaimed;
+  final int total;
+  final String? warning;
+
+  factory PruneResult.fromJson(Map<String, dynamic> json) {
+    return PruneResult(
+      reclaimed: (json['reclaimed'] as num).toInt(),
+      total: (json['total'] as num).toInt(),
+      warning: json['warning'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['reclaimed'] = reclaimed;
+    json['total'] = total;
+    if (warning != null) {
+      json['warning'] = warning;
+    }
+    return json;
+  }
+}
+
 /// SubagentCapabilities is which child controls a session registers. A false
 /// (or absent) bit is unavailable: a client offers no control and never infers
 /// one from another session.

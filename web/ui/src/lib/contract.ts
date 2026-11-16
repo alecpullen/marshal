@@ -2659,6 +2659,82 @@ export interface TerminalResize {
 }
 
 /**
+ * UsageTotals is the report's totals over its window.
+ */
+export interface UsageTotals {
+  costUsd: number;
+  promptTokens: number;
+  completionTokens: number;
+  agentHours: number;
+  prsShipped: number;
+}
+
+/**
+ * UsagePoint is one series entry: a day, a project, a role or a model.
+ */
+export interface UsagePoint {
+  key: string;
+  costUsd: number;
+  tokens: number;
+}
+
+/**
+ * UsageReport is GET /api/usage?range=&by='s answer.
+ */
+export interface UsageReport {
+  range: string;
+  totals: UsageTotals;
+  series: UsagePoint[];
+}
+
+/**
+ * AuditEvent is one row of GET /api/audit?limit=, newest first.
+ */
+export interface AuditEvent {
+  ts: string;
+  event: string;
+  ownerId?: string;
+  agentId?: string;
+  clientId?: string;
+  repoId?: string;
+  origin?: string;
+  /**
+   * Reason is an operator- or policy-supplied explanation.
+   */
+  reason?: string;
+  /**
+   * Detail is a short non-sensitive specific: a branch name, a repo id.
+   */
+  detail?: string;
+  /**
+   * Bytes is set by prune records.
+   */
+  bytes?: number;
+}
+
+/**
+ * DiskStatus is GET /api/disk's answer: the bytes each part of the state
+ * directory takes, and the budget it is held to.
+ */
+export interface DiskStatus {
+  repos: number;
+  work: number;
+  total: number;
+  measuredAt: string;
+  budgetMB: number;
+}
+
+/**
+ * PruneResult is POST /api/prune's answer. A partial prune answers the bytes
+ * it did reclaim with a warning, rather than failing.
+ */
+export interface PruneResult {
+  reclaimed: number;
+  total: number;
+  warning?: string;
+}
+
+/**
  * SubagentCapabilities is which child controls a session registers. A false
  * (or absent) bit is unavailable: a client offers no control and never infers
  * one from another session.

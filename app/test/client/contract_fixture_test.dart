@@ -33,6 +33,7 @@ const _fixtures = [
   'spawn',
   'stack',
   'stream',
+  'usage',
   'watches',
 ];
 
@@ -241,6 +242,13 @@ final _codecs = <String, _Codec>{
   'EnvStarts': (json) => EnvStarts.fromJson(_object(json)).toJson(),
   'EnvVersion': (json) => EnvVersion.fromJson(_object(json)).toJson(),
   'EnvWorkspace': (json) => EnvWorkspace.fromJson(_object(json)).toJson(),
+  // usage.json
+  'AuditEvent': (json) => AuditEvent.fromJson(_object(json)).toJson(),
+  'DiskStatus': (json) => DiskStatus.fromJson(_object(json)).toJson(),
+  'PruneResult': (json) => PruneResult.fromJson(_object(json)).toJson(),
+  'UsagePoint': (json) => UsagePoint.fromJson(_object(json)).toJson(),
+  'UsageReport': (json) => UsageReport.fromJson(_object(json)).toJson(),
+  'UsageTotals': (json) => UsageTotals.fromJson(_object(json)).toJson(),
 };
 
 void main() {

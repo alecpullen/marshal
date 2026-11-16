@@ -27,6 +27,11 @@ import 'package:marshal_app/src/client/contract.g.dart'
         SecretsStatus,
         StackSnapshot,
         StepDiff,
+        UsagePoint,
+        UsageReport,
+        UsageTotals,
+        AuditEvent,
+        DiskStatus,
         WireCall,
         WireMessage,
         WireNode,
@@ -61,6 +66,7 @@ import 'package:marshal_app/src/model/schedules_model.dart';
 import 'package:marshal_app/src/model/stack_store.dart';
 import 'package:marshal_app/src/model/thread_ref.dart' as model;
 import 'package:marshal_app/src/model/thread_view_state.dart';
+import 'package:marshal_app/src/model/usage_model.dart';
 import 'package:marshal_app/src/model/watches_model.dart';
 import 'package:marshal_app/src/ui/automations/automations_place.dart';
 import 'package:marshal_app/src/ui/automations/bots_tab.dart';
@@ -82,6 +88,7 @@ import 'package:marshal_app/src/ui/settings/hosts_section.dart';
 import 'package:marshal_app/src/ui/settings/models_section.dart';
 import 'package:marshal_app/src/ui/settings/network_section.dart';
 import 'package:marshal_app/src/ui/settings/secrets_section.dart';
+import 'package:marshal_app/src/ui/settings/usage_section.dart';
 import 'package:marshal_app/src/ui/settings/settings_place.dart';
 import 'package:marshal_app/src/ui/inbox/inbox.dart';
 import 'package:marshal_app/src/ui/inspector/changes_tab.dart';
@@ -692,6 +699,34 @@ Widget _settings({int section = 0, StateKind? state}) {
     ],
     loaded: const {'go-service': _settingsEnvLoaded},
   );
+  final usage = UsageModel.fixture(
+    report: const UsageReport(
+      range: '7d',
+      totals: UsageTotals(
+        costUSD: 12.4,
+        promptTokens: 820000,
+        completionTokens: 96000,
+        agentHours: 6.5,
+        pRsShipped: 3,
+      ),
+      series: [
+        UsagePoint(key: 'go-service', costUSD: 7.25, tokens: 610000),
+        UsagePoint(key: 'widgets', costUSD: 5.15, tokens: 306000),
+      ],
+    ),
+    audit: const [
+      AuditEvent(ts: '2026-11-17T03:00:00Z', event: 'prune', bytes: 1048576),
+      AuditEvent(ts: '2026-11-17T02:00:00Z', event: 'spawn', agentID: 'a-1'),
+    ],
+    disk: const DiskStatus(
+      repos: 734003200,
+      work: 209715200,
+      total: 943718400,
+      measuredAt: '2026-11-17T04:00:00Z',
+      budgetMB: 4096,
+    ),
+    now: () => shellNow,
+  );
   final secrets = SecretsModel.fixture(
     status: const SecretsStatus(backend: 'local', healthy: true),
     refs: const ['vault:forge/github-token'],
@@ -773,6 +808,8 @@ Widget _settings({int section = 0, StateKind? state}) {
           SecretsSection(model: secrets, state: state),
       SettingsSectionKind.network: (state) =>
           NetworkSection(model: network, state: state),
+      SettingsSectionKind.usage: (state) =>
+          UsageSection(model: usage, state: state),
       SettingsSectionKind.general: (state) =>
           GeneralSection(model: general, state: state),
     },
@@ -1006,6 +1043,14 @@ final screens = <ScreenCase>[
     states: {
       for (final kind in requiredStates)
         kind: () => _settings(section: 5, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'settings · usage',
+    ready: () => _settings(section: 6),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _settings(section: 6, state: kind),
     },
   ),
   ScreenCase(

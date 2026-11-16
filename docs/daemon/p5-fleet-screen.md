@@ -11,11 +11,10 @@ relay and its fleet agents on project children.
 Depends on: P4, implemented (all ten plans merged at `7ae94a9b`; its hands-on
 acceptance run is still to do).
 Status: approved, 2026-11-12, with all ten decisions as recommended.
-Behaviour written 2026-11-13. Plans 1 and 2 are implemented (merged at
-`fcebaa8b`). Plans 3, 4a and 4b are written (2026-11-14), with their anchors
-checked at `cef1e353`. Plan 4a is new: authoring plan 4 found that no real
-agent's approval reaches the bridge (Findings), so plan 4 became 4a, the
-requests, and 4b, opening an agent.
+Behaviour written 2026-11-13. Plans 1 to 6 are implemented (plans 4a, 4b
+and 4c, and 5a and 5b, included), all merged at `1bc6d64b`. Plans 7 and 8
+are written (2026-11-16), with their anchors checked at `1bc6d64b`. Plan 4
+became three plans and plan 5 two, as Migration order says.
 
 ## Goal
 
@@ -972,6 +971,30 @@ first, then the alternative it was weighed against.
     - The relay takes from the project child what it used it for: the
       registry that counts the viewer, and a hook that rearms a project
       child's linger, which is nil for an own child.
+- **Decided by plan 8:**
+  - **The list** is `contract.ContainerViewerMethods`: 63 methods, in the
+    groups F6 names, and the connection's own (`initialize`,
+    `session/status`, `session/sync`, `session/stack_busy`,
+    `$/cancel_request`). Every `Host` method is off it, and so are the
+    lifecycle and ending calls, the sudo password, MCP sign-ins and the
+    settings' writes. A test in `internal/acp` fails when a session-screen
+    method is on neither side.
+  - **The bridge names the viewer socket in the environment, not a flag:**
+    `MARSHAL_ACP_VIEWERS=unix:///run/marshal/viewers.sock` on the agent's run
+    vector. A custom image whose marshal predates plan 8 ignores it and starts
+    as before, with no viewer socket. A flag would make that marshal refuse its
+    arguments, failing every spawn on the image, which is the outage
+    `checkAgentVersion` avoids by warning rather than refusing. `marshal acp
+    --listen` reads the variable once and removes it from its environment.
+    `--viewers` with `--listen` is accepted too, for running an agent by hand.
+  - **Viewers beside `--listen` always get the allowlist.** No flag turns it
+    on, because a flag the bridge could leave out would fail open.
+  - **A container's viewer socket is on its `Child`,** set where `newRuntime`
+    sets the container transport, as `Containerized` is. The attach dials it
+    with the list on the relay's end. A failed dial is 502, adding "rebuild
+    it" when the agent's version differs from the bridge's.
+  - **A restricted relay fails closed:** a batch or a frame that does not
+    decode is dropped. A refused notification is dropped and logged.
 
 ### F7. Server profiles
 
@@ -1007,6 +1030,36 @@ first, then the alternative it was weighed against.
     answer is 403, "the agent attach needs TLS".
   - The project attach and pin stay socket-only, answering 404 on TCP as today.
 - **A remote session** is dialled with `SharedFilesystem: false`.
+- **Decided by plan 7:**
+  - **A new package, `internal/fleetprofile`,** owns the file, its tokens and
+    its TLS. The fleet client and the daemon client take a TLS configuration
+    and a token function, and never import it.
+  - **The file's rules.** A server's name is letters, digits, `.`, `_` and
+    `-`, and not `local`, which the footer shows for the daemon. `url` is an
+    origin: no path, query, fragment or user information. `ca_file` is
+    absolute or relative to the file. fleet-cli's `default` key is an unknown
+    field. A missing file is an empty one. The owner and mode check is unix
+    only.
+  - **The token is resolved once per run,** before the screen starts, and used
+    for every request and attach. "Once per connect" becomes once per `marshal
+    fleet --server` run: a rejected token stops the client anyway (F3).
+    `token_cmd`'s stdin is the terminal and its stderr reaches it, so a command
+    can prompt.
+  - **TLS offers only `http/1.1`,** with TLS 1.2 at least: the attach is an
+    HTTP/1.1 upgrade, and an HTTP/2 connection cannot be hijacked.
+  - **The attach on the network listener** is behind the same bearer check as
+    every `/api/` route, and a server built without a token answers it 404.
+    "Loopback" is the connection's local address.
+  - **`launch.ServerFleet`** runs the loop on a server without probing it: an
+    unreachable server is the screen's connection state. Its sessions never
+    open the connect panel, and their version note names the server, not the
+    daemon.
+  - **Reading the file.** `marshal fleet`, in either form, refuses a file it
+    cannot load. Plain `marshal` and `marshal attach` read only
+    `local.notify`, and say on stderr why they could not, keeping
+    notifications on.
+  - **`marshal fleet login NAME`** refuses a profile with `token_cmd`, and
+    reads one line from stdin when stdin is not a terminal.
 
 ### F8. Needs you and notifications
 
@@ -1087,16 +1140,17 @@ first, then the alternative it was weighed against.
 | `web/bridge/contract` (new) | The fleet loop's wire types, their enumerations and the container viewers' method list (plans 1, 2, 5a, 8); the answer bodies (plan 5a); `tsgen`, the TypeScript generator, and its staleness test (plan 1). |
 | `web/bridge` | Type aliases onto the contract (plan 1); the answer bodies' aliases in `registry.go` and `interaction.go`, and the recent prompts on `contract.RecentPrompts` (plan 5a); the inbox, its loop, route and delta (plan 2); the child's requests kept by their raw ID, and `$/cancel_request` honoured (plan 4a); followed runs, their updates and their `turn_end` (plan 4c); the agent attach and the relay's refusals, and the widened project attach (plan 4b); viewer sockets on agents' own children (plan 6); the attach on the TLS listener (plan 7); container viewers and the allowlist in the relay (plan 8). `TestWebIsStdlibOnly` allows `marshal/web/` imports (plan 1). |
 | `web/ui` | `contract.ts`, generated; `api.ts` and `fleet.ts` re-export it; `npm run check` (plan 1); the answer types re-exported from it (plan 5a). The sidebar and Home on the inbox; `groupAgents` and `buildInbox` deleted (plan 2). |
-| `internal/daemon` | Its mirrored types become contract aliases (plan 1); `AttachAgent` and the attachment's agent ID (plan 4b). |
+| `internal/daemon` | Its mirrored types become contract aliases (plan 1); `AttachAgent` and the attachment's agent ID (plan 4b); `Remote`, the attach over TCP and TLS with the bearer token (plan 7). |
+| `internal/fleetprofile` (new) | `fleet.toml`: its rules and privacy check, the token from `token_cmd` or the keychain, and the client TLS configuration (plan 7). |
 | `internal/fleetclient` (new) | The fleet client over the socket (plan 3) and HTTPS (plan 7); its actions, `post` and `FleetError` (plan 5a); its finishing actions (plan 5b). |
 | `internal/acpclient` | The `Fleet` interface and its route table (plan 3); the actions, `FleetError` and `ErrSettled` (plan 5a); the finishing actions (plan 5b). |
-| `internal/app/tui` | The fleet model in `fleet/` and two glyphs (plans 3, 5a, 5b); the answers, the question and spawn modals, cancel and intake (plan 5a); the Diff tab and the finish modal (plan 5b); the fleet model opening a target (plan 4b); `/fleet`, and every ending refused on an agent's session (plan 4b); the needs-you count (plan 6); the notifications' watch (plan 6). The boundary test allows the contract package (plan 3). |
-| `internal/launch` | `launch.Fleet` (plan 3); the loop between the fleet and the session screen (plan 4b); the notifier (plan 6); remote profiles (plan 7). |
+| `internal/app/tui` | The fleet model in `fleet/` and two glyphs (plans 3, 5a, 5b); the answers, the question and spawn modals, cancel and intake (plan 5a); the Diff tab and the finish modal (plan 5b); the fleet model opening a target (plan 4b); `/fleet`, and every ending refused on an agent's session (plan 4b); the needs-you count (plan 6); the notifications' watch (plan 6); the spawn modal's sentence on a server (plan 7). The boundary test allows the contract package (plan 3). |
+| `internal/launch` | `launch.Fleet` (plan 3); the loop between the fleet and the session screen (plan 4b); the notifier (plan 6); `launch.ServerFleet`, the loop on a server profile (plan 7). |
 | `internal/app/notify` (new) | The desktop notifier launch passes in (plan 6). |
-| `cmd/marshal` | `marshal fleet` (plan 3), `--server` and `marshal fleet login` (plan 7); `acp --listen` with `--viewers` (plan 8). |
-| `internal/acp` | The test that the agent's forwarded replies decode into the contract (plan 1); `$/cancel_request` sent when an outbound request stops waiting, and a forwarded prompt's RPC ended by its settlement (plan 4a); `session/follow` and the follower that reports a service run, through the turn's own forwarder (plan 4c); the viewers' allowlist when started for a container (plan 8). |
+| `cmd/marshal` | `marshal fleet` (plan 3), `--server`, `marshal fleet login` and `fleet.toml`'s `notify` (plan 7); `acp --listen` with viewers, from `--viewers` or `MARSHAL_ACP_VIEWERS` (plan 8). |
+| `internal/acp` | The test that the agent's forwarded replies decode into the contract (plan 1); `$/cancel_request` sent when an outbound request stops waiting, and a forwarded prompt's RPC ended by its settlement (plan 4a); `session/follow` and the follower that reports a service run, through the turn's own forwarder (plan 4c); the viewers beside `--listen`, every one on the container allowlist, and the test that pins the list against the session screen's methods (plan 8). |
 | `internal/app/session` | `PromptSettled` (plan 4a). |
-| `test/daemon` | The fleet client and its routes against a real bridge (plan 3); requests on both paths (plan 4a); the agent attach and the fleet loop (plan 4b); a viewer's turn through the fleet (plan 4c); the actions (plan 5a), the diff, the gate and a finish (plan 5b), and viewers everywhere (plan 6); a server profile over TLS (plan 7). |
+| `test/daemon` | The fleet client and its routes against a real bridge (plan 3); requests on both paths (plan 4a); the agent attach and the fleet loop (plan 4b); a viewer's turn through the fleet (plan 4c); the actions (plan 5a), the diff, the gate and a finish (plan 5b), and viewers everywhere (plan 6); a server profile over TLS (plan 7); a container's viewer driving the session screen through the real agent (plan 8). |
 
 ## Migration order
 
@@ -1155,10 +1209,16 @@ first, then the alternative it was weighed against.
      plan 4b on `main`.
 7. **Server profiles.** `fleet.toml`, the HTTPS transport, `token_cmd` and the
    keychain, `marshal fleet login`, and the agent attach over TLS.
+   - `internal/fleetprofile`, the transports, the network listener's attach,
+     `launch.ServerFleet`, then `cmd/marshal`, then W8 against a real bridge.
+   - It needs plan 6, which is on `main`.
 8. **Containers.**
-   - `--listen` with `--viewers`.
+   - `--listen` with viewers, named by `MARSHAL_ACP_VIEWERS`.
    - The container viewer's allowlist in the relay and in the agent.
-   - It needs plans 6 and 7.
+   - It needs plan 6, and runs beside plan 7: none of its tasks touches plan
+     7's files except `cmd/marshal/main.go`, in a different function. Only
+     its manual run waits for plan 7 on `main`, since only plan 7 reaches a
+     server's container from the TUI.
 
 ## Tests
 
@@ -1247,6 +1307,23 @@ first, then the alternative it was weighed against.
   session, rather than the bridge taking the session over, and rather than
   the bridge polling the session's status for it. F5 holds the decision, and
   plan 4c is it.
+- **A viewer flag would break older custom images** (found while authoring
+  plan 8, by reading). An agent's marshal from before plan 8 refuses
+  `--viewers` with `--listen` (`cmd/marshal/main.go:96`), and the bridge runs
+  custom and derived images as they are, so a new flag on the run vector would
+  fail every spawn on such an image. Plan 8 names the socket in the
+  environment instead, which an older marshal ignores.
+- **The attach cannot run over HTTP/2** (found while authoring plan 7). The
+  bridge's TLS listener offers HTTP/2, and the attach hijacks its connection,
+  which HTTP/2 does not allow. Plan 7's client offers only `http/1.1`.
+- **The fleet client asks for its token on every request**
+  (`internal/fleetclient/client.go:483`), so a `token_cmd` read through it
+  would run once per request. Plan 7 resolves the token once per run and
+  hands the client a function that returns it.
+- **A git agent is not spawnable from the TUI on the local profile** (plan
+  6's manual run): `contract.SpawnRequest` names a project, not a repository.
+  A server's projects are its own registered roots, which the spawn modal
+  lists, so plan 7's loop spawns there as it does locally.
 
 ## Implementation record
 
@@ -2564,6 +2641,19 @@ seam; `internal/app/notify` and `internal/launch` mutate no package global; no
 test spawns a real notifier or reads the developer's config; and every claim in
 this record — including the blocked manual run, and the epoch mutation check
 that does not bite — is true of the code as committed.
+
+### Plan 7 — server profiles
+
+**The batch's baseline** (plans 7 and 8), run at `1bc6d64b` on macOS with
+`TMPDIR=/private/tmp/p5-78`: CI's suite command, `scripts/test.sh full`,
+passed with 127 packages ok and exit 0. No Go test failed, so no failure is
+to be re-proved by either plan.
+
+_To be filled by the executor of plan 7._
+
+### Plan 8 — containers' viewers and their allowlist
+
+_To be filled by the executor of plan 8._
 
 ## Branch review record
 

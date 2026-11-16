@@ -126,11 +126,128 @@ func (a *factoryAPI) PrepareFrozen(req FactoryCreate) (FactoryCreate, string, er
 	if a.fleet == nil || a.fleet.ws == nil {
 		return FactoryCreate{}, "", fmt.Errorf("%w: fleet unavailable", ErrFactoryUnavailable)
 	}
-	settingsVersion, err := a.fleet.ws.ProjectSettingsETag(resolved.Config.ProjectRoot)
+	settingsVersion, err := a.factorySettingsVersion(context.Background(), resolved.Config.ProjectRoot)
 	if err != nil {
-		return FactoryCreate{}, "", fmt.Errorf("%w: project settings version: %v", ErrFactoryUnavailable, err)
+		return FactoryCreate{}, "", err
 	}
 	return resolved, settingsVersion, nil
+}
+
+// factorySessionSubagents reads the Marshal session's reported child state
+// from the control session's status. It is the only place the bridge learns
+// what defaults the runtime would apply, and it reads them from the status
+// JSON: the bridge never imports the agent side.
+//
+// Every failure — no control agent, no session, an agent that does not answer
+// the method — contributes nothing, which is exactly what a session reporting
+// neither defaults nor capabilities contributes. An override that demands
+// enforcement is then refused at approval rather than resolved against a
+// guess, and a configuration that states no override keeps the behaviour it
+// has always had.
+func (a *factoryAPI) factorySessionSubagents(ctx context.Context) *factorySubagentRuntime {
+	if a == nil || a.fleet == nil {
+		return nil
+	}
+	raw, err := a.fleet.controlCall(ctx, "session/status", nil, true)
+	if err != nil {
+		return nil
+	}
+	var status struct {
+		SubagentControls *struct {
+			Settings bool `json:"settings"`
+		} `json:"subagentControls"`
+		SubagentDefaults *struct {
+			Settings struct {
+				Enabled     bool   `json:"enabled"`
+				Model       string `json:"model"`
+				Concurrency int    `json:"concurrency"`
+			} `json:"settings"`
+			Digest string `json:"digest"`
+		} `json:"subagentDefaults"`
+	}
+	if json.Unmarshal(raw, &status) != nil || status.SubagentDefaults == nil {
+		return nil
+	}
+	return &factorySubagentRuntime{
+		Settings:    status.SubagentControls != nil && status.SubagentControls.Settings,
+		Enabled:     status.SubagentDefaults.Settings.Enabled,
+		Model:       status.SubagentDefaults.Settings.Model,
+		Concurrency: status.SubagentDefaults.Settings.Concurrency,
+		Digest:      status.SubagentDefaults.Digest,
+	}
+}
+
+// factorySettingsVersion is the version a review surface displays and an
+// approval echoes back: the project's settings ETag and, when the session
+// reports them, the digest of the defaults it derived. A change on either
+// side makes a reviewed version stale, because the approval would otherwise
+// freeze settings nobody looked at.
+//
+// A session that reports no defaults contributes no digest, so the version
+// stays the project's ETag alone and a review of a project without a Marshal
+// snapshot behaves exactly as it always did.
+func (a *factoryAPI) factorySettingsVersion(ctx context.Context, root string) (string, error) {
+	return a.factorySettingsVersionOf(root, a.factorySessionSubagents(ctx))
+}
+
+// factorySettingsVersionOf composes the version from an already-read runtime
+// report, so an approval that needs the report for resolution as well reads
+// the control session once.
+func (a *factoryAPI) factorySettingsVersionOf(root string, rt *factorySubagentRuntime) (string, error) {
+	if a == nil || a.fleet == nil || a.fleet.ws == nil {
+		return "", fmt.Errorf("%w: fleet unavailable", ErrFactoryUnavailable)
+	}
+	etag, err := a.fleet.ws.ProjectSettingsETag(root)
+	if err != nil {
+		return "", fmt.Errorf("%w: project settings version: %v", ErrFactoryUnavailable, err)
+	}
+	if rt != nil && rt.Digest != "" {
+		return etag + ":" + rt.Digest, nil
+	}
+	return etag, nil
+}
+
+// factoryFreezeSubagents resolves the subagent settings an approval revision
+// freezes, refusing the two cases that cannot be honoured.
+//
+// displayed is the version the reviewer saw. When the caller sends one it must
+// still be current, or the approval is refused as a conflict: the settings it
+// would freeze are not the settings that were displayed. A caller that sends
+// none — a legacy client, or a command replayed from an older journal — is not
+// checked, and proceeds as it always did.
+//
+// An override that asks the runtime to enforce subagent settings needs a
+// session that advertises per-session settings; without one the request is
+// refused as unsupported rather than approved and quietly ignored. A resolved
+// concurrency outside the enforceable range is refused too, never clamped.
+func (a *factoryAPI) factoryFreezeSubagents(ctx context.Context, root string, c FactoryConfig, displayed string) (*factorySubagentFreeze, error) {
+	runtime := a.factorySessionSubagents(ctx)
+	current, err := a.factorySettingsVersionOf(root, runtime)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(displayed) != "" && displayed != current {
+		return nil, fmt.Errorf("%w: project or session settings changed since review (reviewed %q, now %q)", ErrFactoryConflict, displayed, current)
+	}
+	var defaults *FactoryDefaults
+	if a.fleet != nil && a.fleet.ws != nil && root != "" {
+		defaults = a.fleet.ws.ProjectSettingsFor(root).FactoryDefaults
+	}
+	implementer, reviewer := factoryResolveSubagents(c, defaults, runtime)
+	if factorySubagentEnforcement(c, defaults) {
+		if runtime == nil || !runtime.Settings {
+			return nil, fmt.Errorf("%w: the session does not support per-session subagent settings, so the override cannot be enforced", errFactoryConfig)
+		}
+		for _, role := range []struct {
+			name string
+			r    factorySubagentResolution
+		}{{"implementer", implementer}, {"reviewer", reviewer}} {
+			if !factorySubagentConcurrencySupported(role.r.Settings.Concurrency) {
+				return nil, fmt.Errorf("%w: %s subagent concurrency %d is outside %d..%d", errFactoryConfig, role.name, role.r.Settings.Concurrency, factorySubagentMinConcurrency, factorySubagentMaxConcurrency)
+			}
+		}
+	}
+	return &factorySubagentFreeze{implementer: implementer.Settings, reviewer: reviewer.Settings}, nil
 }
 
 // PrepareDraft resolves, normalizes and preflights one candidate draft without
@@ -274,6 +391,15 @@ func (a *factoryAPI) Command(ctx context.Context, id string, cmd FactoryCommand)
 		if err := a.preflight(ctx, item.Draft.Config, true); err != nil {
 			return FactoryItem{}, err
 		}
+		// The settings the approval freezes are resolved here, outside the
+		// journal's lock, and ride the append that writes the revision. The
+		// version the reviewer displayed is checked against the current one,
+		// so an approval whose settings moved after review is a conflict.
+		frozen, err := a.factoryFreezeSubagents(ctx, item.Draft.Config.ProjectRoot, item.Draft.Config, cmd.SettingsVersion)
+		if err != nil {
+			return FactoryItem{}, err
+		}
+		cmd.subagents = frozen
 	}
 	if cmd.Kind == "retry" {
 		if cmd.Replacement != nil {
@@ -311,6 +437,15 @@ func (a *factoryAPI) Command(ctx context.Context, id string, cmd FactoryCommand)
 			if err := a.factoryValidateRoutes(ctx, candidate); err != nil {
 				return FactoryItem{}, err
 			}
+		}
+		if cmd.Replacement != nil {
+			// A replacement is a new approved revision, so it freezes the
+			// subagent settings in force for the configuration it states.
+			frozen, err := a.factoryFreezeSubagents(ctx, cmd.Replacement.Config.ProjectRoot, cmd.Replacement.Config, cmd.SettingsVersion)
+			if err != nil {
+				return FactoryItem{}, err
+			}
+			cmd.subagents = frozen
 		}
 	}
 	if cmd.Kind == "revision_follow_up_confirm" {

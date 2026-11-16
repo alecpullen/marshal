@@ -5,6 +5,43 @@ import (
 	"time"
 )
 
+// FactorySubagentOverrides is one role's subagent settings as a draft or a
+// project's factory defaults state them. Every field is a pointer because the
+// resolution chain distinguishes "unset" from "stated": a missing override
+// inherits the next source, and an explicit false or an explicit empty model
+// is a choice that is preserved.
+//
+// A nil Model or a Model pointing at "" both mean normal child routing: only
+// an explicit override is ever written here, so an empty string is a stated
+// choice rather than an absence.
+type FactorySubagentOverrides struct {
+	Enabled     *bool   `json:"enabled,omitempty"`
+	Model       *string `json:"model,omitempty"`
+	Concurrency *int    `json:"concurrency,omitempty"`
+}
+
+// FactorySubagentSettings is one role's resolved subagent settings. It is what
+// the resolution chain produced for a draft, and what an approval revision
+// freezes: a later default change cannot reach an active revision through it.
+//
+// An approval journalled before subagent settings existed carries the zero
+// value, which is why a zero Concurrency means "no snapshot" rather than a
+// cap of zero.
+type FactorySubagentSettings struct {
+	Enabled     bool   `json:"enabled"`
+	Model       string `json:"model,omitempty"`
+	Concurrency int    `json:"concurrency"`
+}
+
+// factorySubagentFreeze is the resolved pair an approval revision records. It
+// is computed outside the journal's lock and carried on the command that
+// writes the revision, so the settings land in the same append as the
+// approval they belong to.
+type factorySubagentFreeze struct {
+	implementer FactorySubagentSettings
+	reviewer    FactorySubagentSettings
+}
+
 // FactoryDefaults are a project's default factory configuration. A handoff
 // inherits every field it leaves unset.
 //
@@ -25,6 +62,12 @@ type FactoryDefaults struct {
 	MaxRounds            int               `json:"maxRounds,omitempty"`
 	CIPollSeconds        int               `json:"ciPollSeconds,omitempty"`
 	CIWaitSeconds        int               `json:"ciWaitSeconds,omitempty"`
+	// ImplementerSubagents and ReviewerSubagents are the project's subagent
+	// overrides. They are pointers for the same reason the handoff's are: an
+	// absent field inherits the session's reported defaults, and an explicit
+	// false is not an absence.
+	ImplementerSubagents *FactorySubagentOverrides `json:"implementerSubagents,omitempty"`
+	ReviewerSubagents    *FactorySubagentOverrides `json:"reviewerSubagents,omitempty"`
 }
 
 type FactoryConfig struct {
@@ -43,6 +86,14 @@ type FactoryConfig struct {
 	MaxRounds                int               `json:"maxRounds"`
 	CIPollSeconds            int               `json:"ciPollSeconds"`
 	CIWaitSeconds            int               `json:"ciWaitSeconds"`
+	// ImplementerSubagents and ReviewerSubagents hold only the work item's
+	// explicit subagent overrides: nil means inherit. Nothing is copied onto
+	// the draft from the project's defaults, so a draft follows a project
+	// default it never stated while an override it does state stays fixed.
+	// They are omitted when nil, so a journal written before they existed
+	// keeps its bytes.
+	ImplementerSubagents *FactorySubagentOverrides `json:"implementerSubagents,omitempty"`
+	ReviewerSubagents    *FactorySubagentOverrides `json:"reviewerSubagents,omitempty"`
 }
 
 type FactoryCreate struct {
@@ -68,7 +119,53 @@ type FactoryApproval struct {
 	PlanHash     string        `json:"planHash"`
 	Config       FactoryConfig `json:"config"`
 	EditSnapshot *EditSnapshot `json:"editSnapshot,omitempty"`
+	// ImplementerSubagents and ReviewerSubagents are the subagent settings
+	// this revision froze: runtime defaults, then the project's override, then
+	// the draft's override, resolved when the approval was written. They are
+	// values, not pointers, because an approval states what was approved.
+	// An approval journalled before they existed carries the zero value and
+	// keeps its bytes; nothing re-derives them for it.
+	ImplementerSubagents FactorySubagentSettings `json:"implementerSubagents"`
+	ReviewerSubagents    FactorySubagentSettings `json:"reviewerSubagents"`
+	ApprovedAt           time.Time               `json:"approvedAt"`
+}
+
+// legacyFactoryApproval is the approval object a journal written before
+// subagent settings carried: the same fields, in the same order, without the
+// two settings snapshots.
+type legacyFactoryApproval struct {
+	Revision     uint64        `json:"revision"`
+	Plan         string        `json:"plan"`
+	Spec         string        `json:"spec"`
+	PlanHash     string        `json:"planHash"`
+	Config       FactoryConfig `json:"config"`
+	EditSnapshot *EditSnapshot `json:"editSnapshot,omitempty"`
 	ApprovedAt   time.Time     `json:"approvedAt"`
+}
+
+// MarshalJSON keeps a journal written before subagent settings existed
+// byte-identical. The journal is replayed by re-marshalling each record and
+// comparing it with the stored bytes, so an approval that froze nothing has to
+// write exactly the keys it always did: the two settings snapshots are omitted
+// when both are zero, which is also the value a legacy record decodes to.
+//
+// An approval that froze settings writes them, and only an approval that froze
+// settings can be enforced.
+func (a FactoryApproval) MarshalJSON() ([]byte, error) {
+	if a.ImplementerSubagents == (FactorySubagentSettings{}) && a.ReviewerSubagents == (FactorySubagentSettings{}) {
+		return json.Marshal(legacyFactoryApproval{
+			Revision:     a.Revision,
+			Plan:         a.Plan,
+			Spec:         a.Spec,
+			PlanHash:     a.PlanHash,
+			Config:       a.Config,
+			EditSnapshot: a.EditSnapshot,
+			ApprovedAt:   a.ApprovedAt,
+		})
+	}
+	// The alias keeps this function off the value's own method set.
+	type plain FactoryApproval
+	return json.Marshal(plain(a))
 }
 
 type FactoryGrant struct {
@@ -354,6 +451,17 @@ type FactoryCommand struct {
 	// revision_follow_up_confirm read it, and every other kind leaves it nil,
 	// so a command those kinds do not carry marshals as it always did.
 	Revision *FactoryRevisionCommand `json:"revision,omitempty"`
+	// SettingsVersion is the settings version the review surface displayed:
+	// the project's settings ETag and the session's reported defaults digest,
+	// as one string. An approval that carries it is refused when either side
+	// has changed since review; an approval that omits it — a legacy client,
+	// or a command replayed from an older journal — proceeds as it always did.
+	SettingsVersion string `json:"settingsVersion,omitempty"`
+	// subagents is the resolved subagent pair an approval freezes, computed
+	// outside the journal's lock and never serialised: it rides the same
+	// append as the approval it belongs to, and a journal replays the item it
+	// stored rather than the command.
+	subagents *factorySubagentFreeze
 }
 
 // FactoryPlanHash binds exact plan and spec bytes, including whitespace.

@@ -118,10 +118,16 @@ type anthropicImageSource struct {
 // anthropicToolResultBlock is a tool_result whose content is a block array
 // (text plus images). A text-only tool result keeps using
 // anthropicContentBlock, whose Content is a plain string.
+//
+// It carries CacheControl because the Messages API accepts cache_control on
+// a tool_result, and a tool message is exactly the kind of stable block the
+// rolling breakpoint lands on. Without the field, an image-bearing tool
+// result would silently lose the breakpoint the text-only form receives.
 type anthropicToolResultBlock struct {
-	Type    string                  `json:"type"` // "tool_result"
-	ID      string                  `json:"tool_use_id"`
-	Content []anthropicContentBlock `json:"content"`
+	Type         string                  `json:"type"` // "tool_result"
+	ID           string                  `json:"tool_use_id"`
+	Content      []anthropicContentBlock `json:"content"`
+	CacheControl *anthropicCacheControl  `json:"cache_control,omitempty"`
 }
 
 type anthropicMessage struct {
@@ -222,7 +228,13 @@ func toAnthropicMessages(ctx context.Context, src schema.ImageSource, msgs []sch
 				Text: "<system-reminder>\n" + m.Content + "\n</system-reminder>",
 			})
 		case schema.RoleUser:
-			out = appendAnthropicUserBlock(out, anthropicContentBlock{Type: "text", Text: m.Content})
+			// The Messages API rejects an empty text block, and the 400 it
+			// returns talks about "text" rather than images, so the retry
+			// never recognises it. An image-only message therefore sends
+			// its image blocks alone; a text-only message is unchanged.
+			if m.Content != "" || len(m.Images) == 0 {
+				out = appendAnthropicUserBlock(out, anthropicContentBlock{Type: "text", Text: m.Content})
+			}
 			for _, img := range m.Images {
 				b64, imageErr := imageB64(ctx, src, img)
 				if imageErr != nil {
@@ -243,7 +255,12 @@ func toAnthropicMessages(ctx context.Context, src schema.ImageSource, msgs []sch
 				break
 			}
 			content := make([]anthropicContentBlock, 0, len(m.Images)+1)
-			content = append(content, anthropicContentBlock{Type: "text", Text: m.Content})
+			// An empty text block is a 400 from the Messages API, and that
+			// 400 talks about "text", so the retry would not recognise it as
+			// a refusal. An images-only tool_result is valid content.
+			if m.Content != "" {
+				content = append(content, anthropicContentBlock{Type: "text", Text: m.Content})
+			}
 			for _, img := range m.Images {
 				b64, imageErr := imageB64(ctx, src, img)
 				if imageErr != nil {
@@ -302,19 +319,21 @@ func appendAnthropicUserBlock(out []anthropicMessage, block any) []anthropicMess
 
 // setAnthropicCacheControl marks the block at ref as a cache breakpoint.
 // A converted message holds heterogeneous blocks, so the breakpoint is
-// placed by rewriting the stored value. A tool_result that carries images is
-// a block array rather than an anthropicContentBlock and has no
-// cache_control field of its own, so it takes no breakpoint.
+// placed by rewriting the stored value. Both block shapes that can hold a
+// rolling breakpoint carry the field: a text/tool_result anthropicContentBlock
+// and a tool_result that carries images, whose content is a block array.
 func setAnthropicCacheControl(messages []anthropicMessage, ref anthropicBlockRef) {
 	if !ref.ok {
 		return
 	}
-	block, ok := messages[ref.msg].Content[ref.block].(anthropicContentBlock)
-	if !ok {
-		return
+	switch block := messages[ref.msg].Content[ref.block].(type) {
+	case anthropicContentBlock:
+		block.CacheControl = anthropicEphemeralCache
+		messages[ref.msg].Content[ref.block] = block
+	case anthropicToolResultBlock:
+		block.CacheControl = anthropicEphemeralCache
+		messages[ref.msg].Content[ref.block] = block
 	}
-	block.CacheControl = anthropicEphemeralCache
-	messages[ref.msg].Content[ref.block] = block
 }
 
 // anthropicFinishReason maps Messages API stop reasons to the OpenAI-style

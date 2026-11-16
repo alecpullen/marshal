@@ -48,11 +48,30 @@ func newImageSource() fakeSource { return fakeSource{testImageRef.Hash: onePixel
 // decodedAnthropicBlock reads one converted block generically: a tool_result
 // that carries images holds a nested block array in Content.
 type decodedAnthropicBlock struct {
-	Type      string                  `json:"type"`
-	Text      string                  `json:"text"`
-	ToolUseID string                  `json:"tool_use_id"`
-	Source    *decodedAnthropicSource `json:"source"`
-	Content   []decodedAnthropicBlock `json:"content"`
+	Type         string                  `json:"type"`
+	Text         string                  `json:"text"`
+	ToolUseID    string                  `json:"tool_use_id"`
+	CacheControl *anthropicCacheControl  `json:"cache_control"`
+	Source       *decodedAnthropicSource `json:"source"`
+	Content      decodedAnthropicBlocks  `json:"content"`
+}
+
+// decodedAnthropicBlocks decodes a block's content field, which is a block
+// array on a tool_result that carries images and a plain string on any other
+// tool_result. The string form decodes to no blocks.
+type decodedAnthropicBlocks []decodedAnthropicBlock
+
+func (b *decodedAnthropicBlocks) UnmarshalJSON(data []byte) error {
+	if len(data) > 0 && data[0] == '"' {
+		*b = nil
+		return nil
+	}
+	var blocks []decodedAnthropicBlock
+	if err := json.Unmarshal(data, &blocks); err != nil {
+		return err
+	}
+	*b = blocks
+	return nil
 }
 
 type decodedAnthropicSource struct {
@@ -150,6 +169,156 @@ func TestAnthropicUserMessageCarriesImages(t *testing.T) {
 	if image.Type != "image" || image.Source == nil || image.Source.Type != "base64" {
 		t.Fatalf("second block = %+v, want a base64 image block", image)
 	}
+}
+
+// An image-only user message sends its image blocks alone. The Messages API
+// rejects an empty text block, and the 400 that comes back talks about
+// "text" rather than images, so the send-time retry never recognises it.
+func TestAnthropicImageOnlyUserMessageHasNoTextBlock(t *testing.T) {
+	req := schema.ChatRequest{
+		Model:       "test-model",
+		ImageSource: newImageSource(),
+		Messages:    []schema.ChatMessage{{Role: schema.RoleUser, Images: []schema.ImageRef{testImageRef}}},
+	}
+	msgs := decodedAnthropicMessages(t, req)
+
+	if len(msgs) != 1 || len(msgs[0].Content) != 1 {
+		t.Fatalf("messages = %+v, want one user message holding only the image", msgs)
+	}
+	if block := msgs[0].Content[0]; block.Type != "image" {
+		t.Fatalf("block = %+v, want the image block alone", block)
+	}
+}
+
+// countDecodedBreakpoints counts cache_control marks on converted messages,
+// including one on a tool_result that carries images.
+func countDecodedBreakpoints(msgs []decodedAnthropicMessage) int {
+	n := 0
+	for _, m := range msgs {
+		for _, b := range m.Content {
+			if b.CacheControl != nil {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// The rolling breakpoint lands on the last stable block, which for a tool
+// turn is the tool_result. An image-bearing tool result is a block array
+// rather than a flat text block, so it must still take the breakpoint: a
+// dropped one would quietly send an uncached transcript every image read.
+func TestAnthropicCacheBreakpointOnImageBearingToolResult(t *testing.T) {
+	t.Run("images", func(t *testing.T) {
+		msgs := decodedAnthropicMessages(t, toolImageChatRequest(newImageSource()))
+		if n := countDecodedBreakpoints(msgs); n != 1 {
+			t.Fatalf("breakpoints = %d, want exactly one", n)
+		}
+		last := msgs[len(msgs)-1].Content[0]
+		if last.Type != "tool_result" || last.CacheControl == nil {
+			t.Fatalf("last block = %+v, want the tool_result carrying the breakpoint", last)
+		}
+	})
+
+	t.Run("text only", func(t *testing.T) {
+		req := toolImageChatRequest(newImageSource())
+		req.Messages[len(req.Messages)-1].Images = nil
+		msgs := decodedAnthropicMessages(t, req)
+		if n := countDecodedBreakpoints(msgs); n != 1 {
+			t.Fatalf("breakpoints = %d, want exactly one", n)
+		}
+		last := msgs[len(msgs)-1].Content[0]
+		if last.Type != "tool_result" || last.CacheControl == nil {
+			t.Fatalf("last block = %+v, want the text tool_result carrying the breakpoint", last)
+		}
+	})
+}
+
+// A message with no images serializes exactly as it did before images
+// existed, empty text included. The Responses API requires the field on a
+// text part, so omitempty on the part's Text would 400 every empty prompt.
+func TestResponsesTextPartsKeepTheirTextField(t *testing.T) {
+	req := schema.ChatRequest{Model: "test-model", Messages: []schema.ChatMessage{
+		{Role: schema.RoleUser},
+		{Role: schema.RoleUser, Content: "hi"},
+		{Role: schema.RoleAssistant, Content: "hello"},
+	}}
+	items := responsesInputItems(t, req)
+
+	want := []string{
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":""}]}`,
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}`,
+		`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}`,
+	}
+	if len(items) != len(want) {
+		t.Fatalf("input items = %d, want %d: %s", len(items), len(want), items)
+	}
+	for i, w := range want {
+		if got := string(items[i]); got != w {
+			t.Errorf("input[%d] = %s, want %s", i, got, w)
+		}
+	}
+}
+
+// An image-only prompt has no text to send: it goes as image parts alone,
+// and the image part itself carries no text field.
+func TestResponsesImageOnlyMessageDropsTheTextPart(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name: "image only",
+			want: `{"type":"message","role":"user","content":[{"type":"input_image","image_url":"` +
+				imageDataURLFixture() + `"}]}`,
+		},
+		{
+			name:    "text and image",
+			content: "what is this?",
+			want: `{"type":"message","role":"user","content":[{"type":"input_text","text":"what is this?"},` +
+				`{"type":"input_image","image_url":"` + imageDataURLFixture() + `"}]}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := schema.ChatRequest{
+				Model:       "test-model",
+				ImageSource: newImageSource(),
+				Messages: []schema.ChatMessage{{
+					Role: schema.RoleUser, Content: tc.content, Images: []schema.ImageRef{testImageRef},
+				}},
+			}
+			items := responsesInputItems(t, req)
+			if len(items) != 1 {
+				t.Fatalf("input items = %d, want 1: %s", len(items), items)
+			}
+			if got := string(items[0]); got != tc.want {
+				t.Errorf("input[0] = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// imageDataURLFixture is onePixelPNG as the data URL the encoder emits.
+func imageDataURLFixture() string {
+	return "data:" + testImageRef.MIME + ";base64," + base64.StdEncoding.EncodeToString(onePixelPNG)
+}
+
+// responsesInputItems builds a Responses body and returns the input array
+// as raw JSON, so a test can pin the exact wire shape of each item.
+func responsesInputItems(t *testing.T, req schema.ChatRequest) []json.RawMessage {
+	t.Helper()
+	raw, err := buildResponsesRequestBody(t.Context(), req, false)
+	if err != nil {
+		t.Fatalf("buildResponsesRequestBody: %v", err)
+	}
+	var body struct {
+		Input []json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	return body.Input
 }
 
 // OpenAI's role:"tool" content is text-only, so a tool message's images ride

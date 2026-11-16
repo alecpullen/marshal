@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -186,6 +187,47 @@ void main() {
     await _settle();
 
     expect(fetcher.calls, 2);
+    store.dispose();
+  });
+
+  test('a snapshot that lands after a patch does not rewind it', () async {
+    final sequence = _Sequence.load('turn-arrives.json');
+    final gate = Completer<void>();
+    var calls = 0;
+    final store = StackStore(
+      BridgeClient(_UnusedTransport()),
+      's-1',
+      // The second fetch is held in flight, as a slow HTTP answer is while the
+      // stream's patch for the same tree arrives.
+      fetcher: (sessionId, subagentId) async {
+        calls++;
+        if (calls == 2) await gate.future;
+        return sequence.snapshot;
+      },
+    );
+    await store.refresh();
+    expect(store.status, StackStatus.ready);
+    expect(store.rev, sequence.snapshot.rev);
+
+    // A refresh starts — a reconnect, say — and does not answer yet.
+    final pending = store.refresh();
+    await _settle();
+
+    // A patch for this transcript lands while the snapshot is on its way.
+    store.onUpdate(sequence.update(0));
+    expect(store.rev, 2);
+    expect(store.node('tool:1:call_0'), isNotNull);
+
+    // The held fetch answers the tree from before that patch.
+    gate.complete();
+    await pending;
+
+    expect(store.rev, 2, reason: 'the older snapshot must not win');
+    expect(
+      store.node('tool:1:call_0')?.tool?.name,
+      'file.read',
+      reason: 'the patch that landed mid-flight is not undone',
+    );
     store.dispose();
   });
 

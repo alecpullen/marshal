@@ -205,6 +205,13 @@ class StackStore extends ChangeNotifier {
       return;
     }
     if (_disposed || generation != _generation) return;
+    if (snapshot.rev < _rev) {
+      // The fetch started before a patch landed and answered a tree older than
+      // the one already held: a slow snapshot must not rewind a patch that
+      // arrived while it was in flight, and an idle session may never send
+      // another trigger to recover. What is newer wins.
+      return;
+    }
     _nodes
       ..clear()
       ..addEntries([

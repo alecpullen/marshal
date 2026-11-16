@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -224,6 +225,20 @@ func (f *Fleet) validateProjectSettings(root string, ps ProjectSettings) (Projec
 	// "unset" and passes; factoryValidateDefaults fills nothing in.
 	if err := factoryValidateDefaults(ps.FactoryDefaults); err != nil {
 		return ProjectSettings{}, Repo{}, fmt.Errorf("%w: factoryDefaults: %v", errInvalidProjectSettings, err)
+	}
+	// Planner delegation names the one client that may answer for the
+	// planner. Enabling it with nobody designated is a state the Studio
+	// refuses to save, and so does the bridge: an inert toggle that looks
+	// configured is worse than a refused write. A designation must name a
+	// client that exists, and deleting a client clears the designations that
+	// name it, so this cannot lock a project out of its own settings.
+	if ps.PlannerDelegationEnabled && strings.TrimSpace(ps.DesignatedMCPClientID) == "" {
+		return ProjectSettings{}, Repo{}, fmt.Errorf("%w: planner delegation needs a designated client", errInvalidProjectSettings)
+	}
+	if id := ps.DesignatedMCPClientID; id != "" {
+		if _, ok := f.ws.Client(id); !ok {
+			return ProjectSettings{}, Repo{}, fmt.Errorf("%w: designatedMCPClientId %q is not a registered client", errInvalidProjectSettings, id)
+		}
 	}
 	return ps, repo, nil
 }
@@ -491,9 +506,20 @@ func (s *Server) putProjectSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	// Delegation settings are policy: this project's toggle and designated
+	// client decide whether a client may answer as the planner, so the write
+	// takes the same lock authorization reads them under. An ordinary settings
+	// save on this path would be correct without the lock, but sharing it is
+	// simpler than deciding, per field, whether this write is the policy one.
+	policy := s.factoryAuth
 	if conditional {
-		stored, ok, err := s.fleet.putProjectSettingsIfMatch(root, ps, expected)
-		if err != nil {
+		var stored ProjectSettings
+		var ok bool
+		if err := policy.withPolicy(func() error {
+			var perr error
+			stored, ok, perr = s.fleet.putProjectSettingsIfMatch(root, ps, expected)
+			return perr
+		}); err != nil {
 			writeErr(w, err)
 			return
 		}
@@ -508,8 +534,12 @@ func (s *Server) putProjectSettings(w http.ResponseWriter, r *http.Request) {
 		writeSettings(w, http.StatusOK, stored)
 		return
 	}
-	stored, err := s.fleet.putProjectSettings(root, ps)
-	if err != nil {
+	var stored ProjectSettings
+	if err := policy.withPolicy(func() error {
+		var perr error
+		stored, perr = s.fleet.putProjectSettings(root, ps)
+		return perr
+	}); err != nil {
 		writeErr(w, err)
 		return
 	}

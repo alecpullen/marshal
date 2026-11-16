@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import Project from './Project.svelte'
 import * as api from '../lib/api.js'
 import { toRow } from '../lib/fleet'
+import { createNavigationGuard, type RouteLeaveGuard } from '../lib/navigationGuard'
 import { healthChecks, latestAgent, parseWorkspaceRef, autoFrom, autoOf } from '../lib/project/model'
 
 vi.mock('../lib/api.js', async (importActual) => {
@@ -175,6 +176,17 @@ describe('Project overview', () => {
 })
 
 describe('Project factory and agent defaults', () => {
+  it('linksToHandoffAndScopedFactory', async () => {
+    const onNavigate = vi.fn()
+    mount({ onNavigate })
+    // The header carries both factory destinations: creating work for this
+    // project, and the project's own factory dashboard.
+    await fireEvent.click(await screen.findByRole('link', { name: /Create factory work item for this project/ }))
+    expect(onNavigate).toHaveBeenLastCalledWith('#factory/new?project=%2Fhome%2Fu%2Falpha')
+    await fireEvent.click(screen.getByRole('link', { name: 'Open project factory' }))
+    expect(onNavigate).toHaveBeenLastCalledWith('#projects/%2Fhome%2Fu%2Falpha/factory')
+  })
+
   it('followsAgentDefaultsUntilOverridden', async () => {
     ;(api.getVersionedProjectSettings as Mock).mockResolvedValue(versioned({ workspace: 'go-dev', routing: { profile: 'fast' }, intake: {} }))
     mount()
@@ -402,28 +414,113 @@ describe('Project factory and agent defaults', () => {
     expect(cleared.reviewerInstructions).toBe('Be strict')
   })
 
-  it('unsavedNavigationRequiresConfirmation', async () => {
+})
+
+describe('Project route guard', () => {
+  /** The shell's guard, plus the registration calls the view makes on it. */
+  const wired = () => {
+    const guard = createNavigationGuard()
+    const registerGuard = vi.fn((fn?: RouteLeaveGuard) => guard.register(fn))
+    return { guard, registerGuard }
+  }
+
+  it('registersAndClearsDirtyGuard', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    const onNavigate = vi.fn()
-    mount({ onNavigate })
+    const { guard, registerGuard } = wired()
+    const { unmount } = mount({ registerGuard })
     await waitFor(() => expect((screen.getByLabelText('Mode') as HTMLSelectElement).value).toBe('ask'))
-    // A pristine screen leaves without asking.
-    await fireEvent.click(screen.getByRole('link', { name: /Create factory work item/ }))
+    // A pristine screen registers itself, and leaving asks nothing.
+    expect(registerGuard).toHaveBeenCalledTimes(1)
+    expect(guard.allow()).toBe(true)
     expect(confirm).not.toHaveBeenCalled()
-    expect(onNavigate).toHaveBeenCalledTimes(1)
-    // An edit is protected by the in-app prompt and the browser's own warning.
+    // An edit is protected by the shell's guard and by the browser's warning.
     await fireEvent.change(screen.getByLabelText('Mode'), { target: { value: 'act' } })
+    await waitFor(() => expect(screen.getByTestId('unsaved')).toBeTruthy())
     const unload = new Event('beforeunload', { cancelable: true })
     window.dispatchEvent(unload)
     expect(unload.defaultPrevented).toBe(true)
-    await fireEvent.click(screen.getByRole('link', { name: /Create factory work item/ }))
-    expect(confirm).toHaveBeenCalledTimes(1)
-    expect(onNavigate).toHaveBeenCalledTimes(1)
-    // With confirmation, the edit is only lost deliberately.
-    confirm.mockReturnValue(true)
-    await fireEvent.click(screen.getByRole('link', { name: /Create factory work item/ }))
-    expect(onNavigate).toHaveBeenCalledTimes(2)
+    expect(guard.allow()).toBe(false)
+    expect(confirm).toHaveBeenCalledWith('You have unsaved project settings. Leave without saving them?')
+    // A screen that is gone answers for nothing.
+    unmount()
+    expect(registerGuard).toHaveBeenLastCalledWith(undefined)
+    expect(guard.allow()).toBe(true)
     confirm.mockRestore()
+  })
+
+  it('savedDraftClearsNavigationWarning', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const { guard, registerGuard } = wired()
+    mount({ registerGuard })
+    await waitFor(() => expect((screen.getByLabelText('Mode') as HTMLSelectElement).value).toBe('ask'))
+    await fireEvent.change(screen.getByLabelText('Mode'), { target: { value: 'act' } })
+    await waitFor(() => expect(screen.getByTestId('unsaved')).toBeTruthy())
+    expect(guard.allow()).toBe(false)
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(screen.queryByTestId('unsaved')).toBeNull())
+    // The stored record matches the drafts again, so leaving is free.
+    expect(guard.allow()).toBe(true)
+    expect(confirm).toHaveBeenCalledTimes(1)
+    confirm.mockRestore()
+  })
+
+  it('cancelledNavigationKeepsAllInput', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const { guard, registerGuard } = wired()
+    const onNavigate = vi.fn()
+    mount({ onNavigate, registerGuard })
+    await waitFor(() => expect((screen.getByLabelText('Mode') as HTMLSelectElement).value).toBe('ask'))
+    await fireEvent.change(screen.getByLabelText('Mode'), { target: { value: 'act' } })
+    await fireEvent.change(screen.getByLabelText('Ship target'), { target: { value: 'patch' } })
+    // The shell asks the guard before it changes the route; a refusal leaves
+    // the route alone.
+    expect(guard.allow()).toBe(false)
+    expect(onNavigate).not.toHaveBeenCalled()
+    // Every draft is still as the person left it, and nothing was written.
+    expect((screen.getByLabelText('Mode') as HTMLSelectElement).value).toBe('act')
+    expect((screen.getByLabelText('Ship target') as HTMLSelectElement).value).toBe('patch')
+    expect(api.putVersionedProjectSettings).not.toHaveBeenCalled()
+    confirm.mockRestore()
+  })
+
+  it('delegationDefaultsOffAndDesignatesClient', async () => {
+    mount()
+    const card = await screen.findByTestId('delegation-card')
+    const toggle = () => screen.getByLabelText('Allow one MCP client to answer planner questions') as HTMLInputElement
+    // Off and unselected by default: absent fields, not stored values.
+    expect(toggle().checked).toBe(false)
+    expect((screen.getByLabelText('Designated MCP client') as HTMLSelectElement).value).toBe('')
+    await waitFor(() => expect((within(card).getByRole('button', { name: 'Save delegation' }) as HTMLButtonElement).disabled).toBe(false))
+
+    await fireEvent.click(within(card).getByRole('button', { name: 'Save delegation' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalled())
+    // Neither field is written, and every unrelated field round trips as read.
+    expect(written()).not.toHaveProperty('plannerDelegationEnabled')
+    expect(written()).not.toHaveProperty('designatedMCPClientId')
+    expect(written().workspace).toBe('go-dev')
+    expect(written().routing).toEqual(settings.routing)
+    expect(written().intake).toEqual(settings.intake)
+
+    // Delegation with nobody designated would answer nothing, so it is not a
+    // savable state.
+    await fireEvent.click(toggle())
+    const save = within(card).getByRole('button', { name: 'Save delegation' }) as HTMLButtonElement
+    expect(save.disabled).toBe(true)
+    await waitFor(() => expect([...(screen.getByLabelText('Designated MCP client') as HTMLSelectElement).options].map((o) => o.value)).toEqual(['', 'c1', 'c2']))
+    await fireEvent.change(screen.getByLabelText('Designated MCP client'), { target: { value: 'c2' } })
+    await fireEvent.click(save)
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalledTimes(2))
+    expect(written(1).plannerDelegationEnabled).toBe(true)
+    expect(written(1).designatedMCPClientId).toBe('c2')
+    // The conditional write still names the version the read returned.
+    expect((api.putVersionedProjectSettings as Mock).mock.calls[1][2]).toBe('"v1"+')
+
+    // Turning it off stores no designation either.
+    await fireEvent.click(toggle())
+    await fireEvent.click(within(card).getByRole('button', { name: 'Save delegation' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalledTimes(3))
+    expect(written(2)).not.toHaveProperty('plannerDelegationEnabled')
+    expect(written(2)).not.toHaveProperty('designatedMCPClientId')
   })
 })
 

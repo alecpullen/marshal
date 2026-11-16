@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"image/color"
 	"os"
@@ -27,7 +28,8 @@ var updateGoldens = flag.Bool("update", false, "rewrite the fleet goldens")
 // UTC so the gate's time of day is the same on every machine.
 var fleetNow = time.Unix(1_700_000_000, 0).UTC()
 
-// fleetGolden is one golden frame: a size, and the two scene variations.
+// fleetGolden is one golden frame: a size, the two scene variations, and the
+// interaction the frame pins.
 type fleetGolden struct {
 	name          string
 	width, height int
@@ -37,9 +39,22 @@ type fleetGolden struct {
 	down bool
 	// colour renders with the 256-colour theme instead of NO_COLOR.
 	colour bool
+	// scene is the interaction the frame pins: the inline approval, the
+	// question modal, the spawn form, or a failed action's status line. The
+	// zero value is the plain screen.
+	scene string
 }
 
-// fleetGoldens is the six frames W3 asks for.
+// The interactions a frame can pin (fleetGolden.scene).
+const (
+	sceneApproval = "approval"
+	sceneQuestion = "question"
+	sceneSpawn    = "spawn"
+	sceneStatus   = "status"
+)
+
+// fleetGoldens is the six plain frames W3 asks for, then the four interactions
+// at 100×30 and again at 80×24, so the modals' narrowest layout is pinned too.
 func fleetGoldens() []fleetGolden {
 	return []fleetGolden{
 		{name: "fleet-80x24", width: 80, height: 24},
@@ -48,6 +63,15 @@ func fleetGoldens() []fleetGolden {
 		{name: "fleet-100x30-info", width: 100, height: 30, tab: 3},
 		{name: "fleet-100x30-down", width: 100, height: 30, down: true},
 		{name: "fleet-too-small", width: 79, height: 24},
+
+		{name: "fleet-100x30-approval", width: 100, height: 30, scene: sceneApproval},
+		{name: "fleet-100x30-question", width: 100, height: 30, scene: sceneQuestion},
+		{name: "fleet-100x30-spawn", width: 100, height: 30, scene: sceneSpawn},
+		{name: "fleet-100x30-status", width: 100, height: 30, scene: sceneStatus},
+		{name: "fleet-80x24-approval-nocolor", width: 80, height: 24, scene: sceneApproval},
+		{name: "fleet-80x24-question-nocolor", width: 80, height: 24, scene: sceneQuestion},
+		{name: "fleet-80x24-spawn-nocolor", width: 80, height: 24, scene: sceneSpawn},
+		{name: "fleet-80x24-status-nocolor", width: 80, height: 24, scene: sceneStatus},
 	}
 }
 
@@ -162,6 +186,37 @@ func fleetSceneState() acpclient.FleetState {
 	}
 }
 
+// errCancelFailed is the failure the status frame's action answers: the turn
+// it tried to stop had already finished.
+var errCancelFailed = errors.New("no such turn")
+
+// multiQuestionRequest is the question the question frame's agent is parked on:
+// one multi question, whose options are the checkbox rows the modal draws.
+func multiQuestionRequest() *contract.PendingRequest {
+	return &contract.PendingRequest{
+		Kind:   contract.PendingQuestion,
+		ID:     "p1",
+		Params: json.RawMessage(`{"questions":[{"question":"Which checks should the fix run before it lands?","multi":true,"options":[{"label":"unit tests"},{"label":"integration tests"},{"label":"usability suite","description":"slow"}]}]}`),
+	}
+}
+
+// goldenSceneState is the fixed scene adjusted for the frame's interaction: the
+// question frame parks its needs-you agent on a multi question instead of an
+// approval, and the spawn frame offers the project the form starts on.
+func goldenSceneState(sc fleetGolden) acpclient.FleetState {
+	state := fleetSceneState()
+	switch sc.scene {
+	case sceneQuestion:
+		// Agents[0] is a-needs-you, the scene's needs-you agent.
+		state.Agents[0].Status = contract.AgentAwaitingQuestion
+		state.Agents[0].Activity = "waiting on a question"
+		state.Agents[0].Pending = multiQuestionRequest()
+	case sceneSpawn:
+		state.Projects = []contract.ProjectStatus{{Root: "/repo/marshal", Available: true}}
+	}
+	return state
+}
+
 // fleetSceneEvents is the fixed Events ring: three lines, newest last.
 func fleetSceneEvents() []string {
 	return []string{
@@ -184,7 +239,11 @@ func fleetModel(t *testing.T, sc fleetGolden) Model {
 	theme.Reload(theme.LoadWithConfig("", "", theme.DepthFlat, nil))
 
 	f := newFakeFleet()
-	f.state = fleetSceneState()
+	f.state = goldenSceneState(sc)
+	if sc.scene == sceneStatus {
+		// The action the frame pins fails, so its sentence takes the footer.
+		f.cancelErr = errCancelFailed
+	}
 	m := New(f, WithNow(func() time.Time { return fleetNow }))
 	m = deliver(t, m)
 	m.events = fleetSceneEvents()
@@ -202,7 +261,46 @@ func fleetModel(t *testing.T, sc fleetGolden) Model {
 		m.tab = sc.tab
 	}
 	next, _ := m.Update(tea.WindowSizeMsg{Width: sc.width, Height: sc.height})
-	return next.(Model)
+	return sceneKeys(t, next.(Model), sc)
+}
+
+// sceneKeys drives the frame's interaction with the keys the screen answers, so
+// a golden pins what the user sees after the key, not just the idle screen.
+func sceneKeys(t *testing.T, m Model, sc fleetGolden) Model {
+	t.Helper()
+	switch sc.scene {
+	case sceneApproval:
+		// a opens the selected agent's approval inline in the Activity tab.
+		m, _ = press(t, m, tea.KeyPressMsg{Code: 'a', Text: "a"})
+	case sceneQuestion:
+		// a opens the question modal; space toggles the option under the
+		// cursor and j moves off it, so the frame carries a checked and an
+		// unchecked row.
+		m, _ = press(t, m, tea.KeyPressMsg{Code: 'a', Text: "a"})
+		m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+		m, _ = press(t, m, tea.KeyPressMsg{Code: 'j', Text: "j"})
+	case sceneSpawn:
+		// n opens the form; three tabs take its focus to the prompt field.
+		// The goldens hold text, so they cannot show the focus band: assert
+		// the field here, so the frame cannot drift off it silently.
+		m, _ = press(t, m, tea.KeyPressMsg{Code: 'n', Text: "n"})
+		m = tabTo(t, m, 3)
+		s, ok := m.modal.(*spawnModal)
+		if !ok {
+			t.Fatalf("n opened %T, want the spawn modal", m.modal)
+		}
+		if s.field != spawnFieldPrompt {
+			t.Fatalf("the spawn form is on field %d, want the prompt field", s.field)
+		}
+	case sceneStatus:
+		// x on the running agent fails, and its sentence takes the hints'
+		// place in the footer.
+		m, _ = press(t, m, tea.KeyPressMsg{Code: 'j', Text: "j"})
+		var cmd tea.Cmd
+		m, cmd = press(t, m, tea.KeyPressMsg{Code: 'x', Text: "x"})
+		m = answer(t, m, cmd)
+	}
+	return m
 }
 
 // renderFleet builds the scene twice and fails unless the two renders match, so

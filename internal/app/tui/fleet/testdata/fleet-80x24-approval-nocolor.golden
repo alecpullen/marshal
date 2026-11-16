@@ -1,0 +1,24 @@
+╭─ Agents ────────────── 7─╮╭─ [Activity]  Info ───────────────────────────────╮
+│ Needs you                ││ status    awaiting-approval                      │
+│ ⚠ fix-fl…  38%   2    2m ││ activity  waiting on an approval                 │
+│ Running                  ││ waiting   approval                               │
+│ ● s3b-eg…  41%   7    0s ││ request   go test ./internal/app/tui/...         │
+│ Ready                    ││           [y]es [n]o                             │
+│ ✓ docs-d…  22%   4    1h ││ context   38%                                    │
+│ Earlier                  ││ changed   2                                      │
+│ · docs-s…  12%   0    5s ││ age       2m                                     │
+│ ✗ ci-fix…   9%   0    3h ││ gate      pass · 22:11                           │
+│ Sessions                 ││                                                  │
+│ · marshal 3f2a91bc 2… 3m ││                                                  │
+│ · marshal 9c1d4e5f 1… 1m ││                                                  │
+╰──────────────────────────╯│                                                  │
+╭─ Needs you ─────────── 2─╮│                                                  │
+│ fix-flaky-hooks approval ││                                                  │
+│ intake github: fix the … ││                                                  │
+╰──────────────────────────╯│                                                  │
+╭─ Events ────────────── 3─╮│                                                  │
+│ 14:58 connected to local ││                                                  │
+│ 14:59 docs-deploy is re… ││                                                  │
+│ 15:00 fix-flaky-hooks n… ││                                                  │
+╰──────────────────────────╯╰──────────────────────────────────────────────────╯
+local ●  j/k move a answer x cancel n spawn  ⏎ open                 ?help q quit

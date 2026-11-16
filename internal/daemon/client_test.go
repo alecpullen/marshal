@@ -269,12 +269,22 @@ func attachStub(t *testing.T, serve func(conn net.Conn, req *http.Request)) stri
 // writeUpgrade writes a 101 and, in the same write, the bytes the stream
 // should start with.
 func writeUpgrade(w io.Writer, session, stream string) error {
+	return writeUpgradeFor(w, session, "", stream)
+}
+
+// writeUpgradeFor writes the 101 an agent or project attach answers with: the
+// session, the agent it belongs to when there is one, and the bytes the
+// stream should start with.
+func writeUpgradeFor(w io.Writer, session, agent, stream string) error {
 	var b strings.Builder
 	b.WriteString("HTTP/1.1 101 Switching Protocols\r\n")
 	b.WriteString("Connection: Upgrade\r\n")
 	b.WriteString("Upgrade: " + attachProtocol + "\r\n")
 	if session != "" {
 		b.WriteString(sessionHeader + ": " + session + "\r\n")
+	}
+	if agent != "" {
+		b.WriteString(agentHeader + ": " + agent + "\r\n")
 	}
 	b.WriteString("\r\n")
 	b.WriteString(stream)
@@ -438,6 +448,149 @@ func TestAnUpgradeWithoutASessionIsRefused(t *testing.T) {
 			}
 			if att != nil {
 				t.Errorf("Attach() returned an attachment alongside an error")
+			}
+
+			select {
+			case readErr := <-closed:
+				if !errors.Is(readErr, io.EOF) {
+					t.Errorf("the connection was not closed: read = %v", readErr)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("the stub never saw the connection close")
+			}
+		})
+	}
+}
+
+// TestAttachAgentUpgrades: an agent attach asks the agent's own route, sends
+// no body, and reads both the session and the agent off the 101.
+func TestAttachAgentUpgrades(t *testing.T) {
+	requests := make(chan *http.Request, 1)
+	bodies := make(chan string, 1)
+
+	socket := attachStub(t, func(conn net.Conn, req *http.Request) {
+		body, _ := io.ReadAll(req.Body)
+		requests <- req
+		bodies <- string(body)
+		if err := writeUpgradeFor(conn, "sess-7", "agent-7", ""); err != nil {
+			t.Errorf("stub write: %v", err)
+		}
+	})
+
+	att, err := NewClient(socket).AttachAgent(context.Background(), "agent-7")
+	if err != nil {
+		t.Fatalf("AttachAgent(): %v", err)
+	}
+	defer att.Conn.Close()
+
+	if att.SessionID != "sess-7" {
+		t.Errorf("SessionID = %q, want %q", att.SessionID, "sess-7")
+	}
+	if att.AgentID != "agent-7" {
+		t.Errorf("AgentID = %q, want %q", att.AgentID, "agent-7")
+	}
+
+	req := <-requests
+	if req.Method != http.MethodPost {
+		t.Errorf("method = %q, want POST", req.Method)
+	}
+	if req.URL.Path != "/api/agents/agent-7/attach" {
+		t.Errorf("path = %q, want /api/agents/agent-7/attach", req.URL.Path)
+	}
+	if got := req.Header.Get("Upgrade"); got != attachProtocol {
+		t.Errorf("Upgrade = %q, want %q", got, attachProtocol)
+	}
+	if req.ContentLength != 0 {
+		t.Errorf("ContentLength = %d, want none: an agent attach carries no body", req.ContentLength)
+	}
+	if raw := <-bodies; raw != "" {
+		t.Errorf("body = %q, want none", raw)
+	}
+}
+
+// TestAttachAgentRefusalIsAnAttachError: a daemon that will not open the
+// agent answers an *AttachError carrying its status and its sentence.
+func TestAttachAgentRefusalIsAnAttachError(t *testing.T) {
+	const sentence = "unknown agent"
+
+	socket := attachStub(t, func(conn net.Conn, req *http.Request) {
+		_ = req.Body.Close()
+		body := fmt.Sprintf(`{"error":%q}`, sentence)
+		if _, err := io.WriteString(conn, "HTTP/1.1 404 Not Found\r\n"+
+			"Content-Type: application/json\r\n"+
+			fmt.Sprintf("Content-Length: %d\r\n", len(body))+
+			"\r\n"+body); err != nil {
+			t.Errorf("stub write: %v", err)
+		}
+	})
+
+	att, err := NewClient(socket).AttachAgent(context.Background(), "agent-gone")
+	if err == nil {
+		_ = att.Conn.Close()
+		t.Fatalf("AttachAgent() = %+v, want a refusal", att)
+	}
+	if att != nil {
+		t.Errorf("AttachAgent() returned an attachment alongside a refusal")
+	}
+
+	var refused *AttachError
+	if !errors.As(err, &refused) {
+		t.Fatalf("AttachAgent() error = %v (%T), want an *AttachError", err, err)
+	}
+	if refused.Status != http.StatusNotFound {
+		t.Errorf("Status = %d, want %d", refused.Status, http.StatusNotFound)
+	}
+	const want = "daemon refused attach (404): unknown agent"
+	if got := refused.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+// TestAttachAgentNeedsTheAgentHeader: an upgrade naming no agent, or another
+// one, is not the stream that was asked for, and is closed.
+func TestAttachAgentNeedsTheAgentHeader(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		response string
+	}{
+		{
+			name: "no agent",
+			response: "HTTP/1.1 101 Switching Protocols\r\n" +
+				"Connection: Upgrade\r\n" +
+				"Upgrade: " + attachProtocol + "\r\n" +
+				sessionHeader + ": sess-7\r\n\r\n",
+		},
+		{
+			name: "another agent",
+			response: "HTTP/1.1 101 Switching Protocols\r\n" +
+				"Connection: Upgrade\r\n" +
+				"Upgrade: " + attachProtocol + "\r\n" +
+				sessionHeader + ": sess-7\r\n" +
+				agentHeader + ": agent-other\r\n\r\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			closed := make(chan error, 1)
+			socket := attachStub(t, func(conn net.Conn, req *http.Request) {
+				_ = req.Body.Close()
+				if _, err := io.WriteString(conn, tc.response); err != nil {
+					closed <- err
+					return
+				}
+				// The refusal must close the connection rather than
+				// leave it dangling: a read on the far side sees EOF.
+				_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+				_, err := conn.Read(make([]byte, 1))
+				closed <- err
+			})
+
+			att, err := NewClient(socket).AttachAgent(context.Background(), "agent-7")
+			if err == nil {
+				_ = att.Conn.Close()
+				t.Fatalf("AttachAgent() accepted an upgrade with %s", tc.name)
+			}
+			if att != nil {
+				t.Errorf("AttachAgent() returned an attachment alongside an error")
 			}
 
 			select {

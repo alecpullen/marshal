@@ -18,14 +18,17 @@ import (
 	"marshal/internal/app"
 	"marshal/internal/app/clipboard"
 	"marshal/internal/app/tui"
+	"marshal/internal/app/tui/fleet"
 )
 
 // ProgramResult is the value returned by a ProgramRunner. It carries the
 // program's outcome plus an optional request to resume another session.
 type ProgramResult struct {
 	Err           error
-	ResumeSession string // non-empty => tear down and restart WithExistingSession
-	Detached      string // the session a detach left running; "" otherwise
+	ResumeSession string       // non-empty => tear down and restart WithExistingSession
+	Detached      string       // the session a detach left running; "" otherwise
+	ToFleet       bool         // the session screen ended with /fleet
+	Open          fleet.Target // the fleet program's target; zero means quit
 }
 
 // ProgramRunner runs the TUI program. The default runs a tea.Program; tests
@@ -93,8 +96,8 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 	// P4 D5: a local daemon that answers serves the TUI over its relay.
 	// Anything else runs embedded, exactly as it did before.
 	if runOpts.daemonSocket != "" {
-		if _, _, onDaemon := chooseDaemon(ctx, &runOpts); onDaemon {
-			return runDaemon(ctx, stdout, &runOpts, "")
+		if root, _, onDaemon := chooseDaemon(ctx, &runOpts); onDaemon {
+			return runDaemon(ctx, stdout, &runOpts, daemonStep{root: root})
 		}
 	}
 
@@ -223,6 +226,12 @@ func runProgram(ctx context.Context, model tea.Model, output io.Writer) ProgramR
 	}
 	if detacher, ok := finalModel.(interface{ Detached() string }); ok {
 		res.Detached = detacher.Detached()
+	}
+	if toFleeter, ok := finalModel.(interface{ ToFleet() bool }); ok {
+		res.ToFleet = toFleeter.ToFleet()
+	}
+	if opener, ok := finalModel.(interface{ Open() fleet.Target }); ok {
+		res.Open = opener.Open()
 	}
 	return res
 }

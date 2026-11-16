@@ -26,9 +26,10 @@
   import type { AgentRow, AgentTelemetry } from '../lib/fleet'
   import { MODES, SHIP_TARGETS, autoFrom, autoOf, healthChecks, soft, isolatedFrom, isolationOf, latestAgent, parseWorkspaceRef, type AutoChoice, type Dot, type IsolationChoice } from '../lib/project/model'
   import { shortName } from '../lib/utils'
-  import { formatAutomationRoute, type AutomationPage } from '../lib/routes'
+  import type { RouteLeaveGuard } from '../lib/navigationGuard'
+  import { formatAutomationRoute, formatFactoryRoute, type AutomationPage } from '../lib/routes'
 
-  let { root, agents, telemetry = {}, onNavigate }: { root: string; agents: AgentRow[]; telemetry?: Record<string, AgentTelemetry>; onNavigate: (hash: string) => void } = $props()
+  let { root, agents, telemetry = {}, onNavigate, registerGuard = () => {} }: { root: string; agents: AgentRow[]; telemetry?: Record<string, AgentTelemetry>; onNavigate: (hash: string) => void; registerGuard?: (guard?: RouteLeaveGuard) => void } = $props()
 
   let tab = $state<'overview' | 'session' | 'automations'>('overview')
   let error = $state('')
@@ -74,6 +75,11 @@
   let labels = $state<string[]>([])
   let newLabel = $state('')
   let clientIds = $state<string[]>([])
+  // Planner delegation drafts (MCP factory handoff). Off and unselected by
+  // default: a client that was never designated answers nothing, and an off
+  // toggle stores no client at all.
+  let delegation = $state(false)
+  let delegateClient = $state('')
   // The drafts as adopted, so an unsaved edit can be recognised.
   let baseline = $state('')
 
@@ -87,7 +93,7 @@
       workspace, factoryWorkspace, profile, implementerProfile, reviewerProfile,
       mode, autoMode, isolation, shipTarget,
       targetBranch, expectedChecksText, reviewerInstructions, maxRoundsText, ciPollText, ciWaitText,
-      repoId, labels, clientIds,
+      repoId, labels, clientIds, delegation, delegateClient,
     ])
   }
   const dirty = $derived(!!saved && draftSignature() !== baseline)
@@ -119,6 +125,10 @@
     repoId = s.intake.repoId ?? ''
     labels = [...(s.intake.labels ?? [])]
     clientIds = [...(s.intake.clients ?? [])]
+    // Both delegation fields are optional: absent means off and nobody
+    // designated, which is what the drafts start from.
+    delegation = s.plannerDelegationEnabled === true
+    delegateClient = s.designatedMCPClientId ?? ''
     baseline = draftSignature()
     stale = false
   }
@@ -293,6 +303,36 @@
     void save({ ...settings, intake: { repoId: repoId || undefined, labels: repoId ? labels : [], clients: clientIds } }, 'Intake')
   }
 
+  /**
+   * Only the two delegation fields change here; every other member of the
+   * record is carried through exactly as it was read. Client records hold no
+   * tokens, so nothing secret can be written back by this save.
+   */
+  function delegationBody(): ProjectSettings {
+    const base = settings
+    if (!base) throw new Error('Project settings could not be read; reload before saving.')
+    const next: ProjectSettings = { ...base }
+    if (delegation) next.plannerDelegationEnabled = true
+    else delete next.plannerDelegationEnabled
+    // Off stores no designation: an inert client ID in the record would look
+    // like authority the user did not grant.
+    if (delegation && delegateClient) next.designatedMCPClientId = delegateClient
+    else delete next.designatedMCPClientId
+    return next
+  }
+
+  /** Delegation with nobody designated answers nothing, so it is not a savable state. */
+  const delegationIncomplete = $derived(delegation && !delegateClient)
+
+  function saveDelegation() {
+    try {
+      void save(delegationBody(), 'Delegation')
+    } catch (e) {
+      notice = ''
+      error = errMessage(e)
+    }
+  }
+
   function addLabel() {
     const l = newLabel.trim()
     // The bridge's issue poller watches one label per repo, so the card keeps one.
@@ -347,16 +387,21 @@
     void loadHealth()
   })
 
-  // Unsaved edits are only lost on purpose: in-app navigation asks first, and
-  // the browser's own unload warning covers reload and close.
+  // Unsaved edits are only lost on purpose: in-app navigation asks the shell's
+  // route guard, and the browser's own unload warning covers reload and close.
   function confirmLeave(): boolean {
     if (!dirty) return true
     return window.confirm('You have unsaved project settings. Leave without saving them?')
   }
-  function navigate(hash: string) {
-    if (!confirmLeave()) return
-    onNavigate(hash)
-  }
+  /*
+    The guard asks before the shell changes the route, so it is registered for
+    as long as this screen is mounted and cleared when it is torn down — a
+    screen that is gone must never answer for the one that replaced it.
+  */
+  $effect(() => {
+    registerGuard(confirmLeave)
+    return () => registerGuard(undefined)
+  })
   $effect(() => {
     const warn = (e: BeforeUnloadEvent) => {
       if (!dirty) return
@@ -387,18 +432,24 @@
   const effectiveImplementer = $derived(following(implementerProfile, profile))
   const effectiveReviewer = $derived(following(reviewerProfile, profile))
   const repoChoices = $derived([...new Set([...repos.map((r) => r.id), ...(repoId ? [repoId] : [])])])
+  // A designated client the list no longer offers stays selected and labelled,
+  // so saving an unrelated field cannot silently clear the designation.
+  const clientChoices = $derived(keepUnavailable(clients.map((c) => ({ value: c.id, label: c.name || c.id })), delegateClient))
   const canReload = $derived(stale || (loaded && !saved))
   const field = 'w-full min-w-0 rounded border border-border bg-bg p-2 text-sm'
 </script>
 
 <div class="mx-auto flex max-w-5xl flex-col gap-4 p-3 sm:p-6">
   <header class="min-w-0">
-    <p class="text-xs text-muted"><a class="text-accent hover:underline" href="#projects" onclick={(e) => { e.preventDefault(); navigate('#projects') }}>Projects</a> /</p>
+    <p class="text-xs text-muted"><a class="text-accent hover:underline" href="#projects" onclick={(e) => { e.preventDefault(); onNavigate('#projects') }}>Projects</a> /</p>
     <h1 class="text-lg font-semibold" title={root}>{shortName(root)}</h1>
     <p class="truncate font-mono text-xs text-muted">{root}</p>
   </header>
 
-  <a class="text-sm text-accent underline" href={`#factory/new?project=${encodeURIComponent(root)}`} onclick={(e) => { e.preventDefault(); navigate(`#factory/new?project=${encodeURIComponent(root)}`) }}>Create factory work item for this project{repoId ? ` (${repoId})` : ''}</a>
+  <div class="flex flex-wrap items-center gap-3 text-sm">
+    <a class="text-accent underline" href={`#factory/new?project=${encodeURIComponent(root)}`} onclick={(e) => { e.preventDefault(); onNavigate(`#factory/new?project=${encodeURIComponent(root)}`) }}>Create factory work item for this project{repoId ? ` (${repoId})` : ''}</a>
+    <a class="text-accent underline" href={formatFactoryRoute({ projectRoot: root })} onclick={(e) => { e.preventDefault(); onNavigate(formatFactoryRoute({ projectRoot: root })) }}>Open project factory</a>
+  </div>
   <Tabs label="Project" tabs={[{ value: 'overview', label: 'Overview' }, { value: 'session', label: 'Session sheet' }, { value: 'automations', label: 'Automations' }]} value={tab} onchange={(t) => (tab = t as 'overview' | 'session' | 'automations')} />
 
   {#if error}
@@ -555,6 +606,27 @@
         <div><Button onclick={saveIntake} disabled={saving || !saved}>Save intake</Button></div>
       </Card>
 
+      <Card class="flex min-w-0 flex-col gap-3" data-testid="delegation-card">
+        <h2 class="text-sm font-semibold">Planner delegation</h2>
+        <p class="text-xs text-muted">
+          Off by default. When on, the one client you designate may answer this project's planner questions
+          on your behalf; it cannot approve or queue work from that, and the delegation is recorded as the
+          planner's answer, not as your own.
+        </p>
+        <label class="flex items-center gap-2 text-sm">
+          <input type="checkbox" bind:checked={delegation} />
+          Allow one MCP client to answer planner questions
+        </label>
+        <label class="flex min-w-0 flex-col gap-1 text-xs">Designated MCP client
+          <select aria-label="Designated MCP client" bind:value={delegateClient} disabled={!delegation} class={field}>
+            <option value="">No client designated</option>
+            {#each clientChoices as o (o.value)}<option value={o.value}>{o.label}</option>{/each}
+          </select>
+        </label>
+        {#if delegationIncomplete}<p class="text-xs text-attention">Choose the client that may answer before saving; delegation with nobody designated answers nothing.</p>{/if}
+        <div><Button onclick={saveDelegation} disabled={saving || !saved || delegationIncomplete}>Save delegation</Button></div>
+      </Card>
+
       <Card class="flex min-w-0 flex-col gap-3" data-testid="health-card">
         <div class="flex items-center justify-between">
           <h2 class="text-sm font-semibold">Health</h2>
@@ -577,7 +649,7 @@
         <div class="flex items-center justify-between">
           <h2 class="text-sm font-semibold">Policy</h2>
           {#if designerHash}
-            <a class="text-sm text-accent hover:underline" href={designerHash} onclick={(e) => { e.preventDefault(); navigate(designerHash) }}>Edit in designer</a>
+            <a class="text-sm text-accent hover:underline" href={designerHash} onclick={(e) => { e.preventDefault(); onNavigate(designerHash) }}>Edit in designer</a>
           {/if}
         </div>
         {#if policy}
@@ -598,7 +670,7 @@
         <Card class="flex min-w-0 flex-col gap-2">
           <div class="flex items-center gap-2"><h2 class="text-sm font-semibold">{a.title}</h2><Tag tone={a.on ? 'ok' : 'neutral'}>{a.on ? 'on' : 'off'}</Tag></div>
           <p class="text-sm text-muted">{a.blurb}</p>
-          <a class="text-sm text-accent hover:underline" href={formatAutomationRoute(root, a.page as AutomationPage)} onclick={(e) => { e.preventDefault(); navigate(formatAutomationRoute(root, a.page as AutomationPage)) }}>Open {a.title}</a>
+          <a class="text-sm text-accent hover:underline" href={formatAutomationRoute(root, a.page as AutomationPage)} onclick={(e) => { e.preventDefault(); onNavigate(formatAutomationRoute(root, a.page as AutomationPage)) }}>Open {a.title}</a>
         </Card>
       {/each}
     </div>
@@ -609,7 +681,7 @@
           <h2 class="text-sm font-semibold">{agent.name || agent.id}</h2>
           <Tag tone="neutral">{agent.status}</Tag>
           <span class="flex-1"></span>
-          <a class="text-sm text-accent hover:underline" href="#chat/{agent.id}" onclick={(e) => { e.preventDefault(); navigate(`#chat/${agent.id}`) }}>Open session</a>
+          <a class="text-sm text-accent hover:underline" href="#chat/{agent.id}" onclick={(e) => { e.preventDefault(); onNavigate(`#chat/${agent.id}`) }}>Open session</a>
         </div>
         <section aria-label="Context">
           <h3 class="mb-1 text-xs tracking-wide text-muted uppercase">Context</h3>

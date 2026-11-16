@@ -64,7 +64,9 @@ host processes only, and no container machinery. Each project runs its own
 after its last session closes; `POST /api/projects/attach` upgrades a marshal
 client onto that child's viewer socket, relaying its frames unchanged. Plain
 `marshal` starts its session on that daemon when one answers, the quit key and
-`/detach` leave it running, and `marshal attach [id]` comes back to it. A
+`/detach` leave it running, and `marshal attach [id]` comes back to it.
+`marshal fleet` opens an agent's or a daemon session's screen with `⏎`, and
+`/fleet` returns to the fleet from any daemon session. A
 daemon session on an untrusted project asks its TUI, as embedded mode does,
 and a trust there applies to the running session without restarting the
 program. `marshal daemon pin [dir]` keeps a project's child running with no
@@ -125,7 +127,9 @@ TUI (rendering only)
                            shared panel host, session sheet, browse inspector, list engine, dressing
   internal/app/tui/{settings,connect,agents,memory,skills,plugins,mcpauth,modeloptions,presetflow,probe,doctorpanel}
                            interactive surfaces for config, providers, roles, MCP, models
-  internal/app/tui/fleet/   the fleet screen: the agents list, needs you, events, and an agent's Activity or Info
+  internal/app/tui/fleet/   the fleet screen: the agents list, needs you, events,
+                           an agent's Activity or Info, and its actions —
+                           answering, spawn, cancel and intake
   internal/app/tui/{sddreview,castlist,gatepanel,postmortempanel,trustpanel,liveregion,textfield}
 
 Models

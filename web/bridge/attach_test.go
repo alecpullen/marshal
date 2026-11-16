@@ -99,8 +99,22 @@ type attachResult struct {
 func (h *attachHarness) attach(method, root, sessionID string, upgrade bool) *attachResult {
 	h.t.Helper()
 	body := fmt.Sprintf(`{"root":%s,"sessionId":%s}`, strconv.Quote(root), strconv.Quote(sessionID))
+	return h.handshake(attachPath, method, body, upgrade)
+}
+
+// attachAgent writes one /api/agents/{id}/attach handshake on a fresh
+// connection. The path names the agent, so the handshake carries no body.
+func (h *attachHarness) attachAgent(method, id string, upgrade bool) *attachResult {
+	h.t.Helper()
+	return h.handshake("/api/agents/"+id+"/attach", method, "", upgrade)
+}
+
+// handshake writes one attach request for path on a fresh connection and reads
+// the response head by hand, as both attaches answer it.
+func (h *attachHarness) handshake(path, method, body string, upgrade bool) *attachResult {
+	h.t.Helper()
 	var req strings.Builder
-	fmt.Fprintf(&req, "%s %s HTTP/1.1\r\nHost: daemon\r\n", method, attachPath)
+	fmt.Fprintf(&req, "%s %s HTTP/1.1\r\nHost: daemon\r\n", method, path)
 	if upgrade {
 		req.WriteString("Connection: Upgrade\r\nUpgrade: " + attachProtocol + "\r\n")
 	}
@@ -574,6 +588,49 @@ func TestAnAttachToASpawningFleetSessionIsRefused(t *testing.T) {
 	}
 }
 
+// TestAnAttachToAPausedAgentsSessionIsRefused: a paused agent keeps its record
+// and loses its runtime, and the session that record names is still the
+// agent's. The project attach refuses it with the fleet session's sentence,
+// the one place a paused session was still attachable (decision 2, P4 H15).
+func TestAnAttachToAPausedAgentsSessionIsRefused(t *testing.T) {
+	root := t.TempDir()
+	h := newAttachHarness(t)
+
+	// A client's session starts the child and holds one viewer, so the
+	// refusal below is measured against a live relay.
+	first := h.attach(http.MethodPost, root, "", true)
+	if first.status != http.StatusSwitchingProtocols {
+		t.Fatalf("opening attach = %d, want 101", first.status)
+	}
+	fake := h.fake(root)
+	if fake == nil {
+		t.Fatal("no fake was built for the project child")
+	}
+	eventually(t, "the first viewer to connect", func() bool { return fake.viewers() == 1 })
+	viewers := fake.viewers()
+
+	// A paused agent: the record survives and the runtime does not, so
+	// neither the registry's fleet flag nor the classifier's map knows the
+	// session. Only the record names it.
+	if err := h.fleet.ws.PutAgent(Agent{
+		ID: "agent-a", Project: root, Name: "reviewer", SessionID: "paused-1",
+		OwnerID: "owner-1", Origin: OriginUI,
+	}); err != nil {
+		t.Fatalf("record agent: %v", err)
+	}
+
+	res := h.attach(http.MethodPost, root, "paused-1", true)
+	if res.status != http.StatusConflict {
+		t.Fatalf("attach to a paused agent's session = %d, want 409", res.status)
+	}
+	if got, want := res.refusal(t), "session paused-1 belongs to a fleet agent"; got != want {
+		t.Errorf("409 refusal = %q, want %q", got, want)
+	}
+	if got := fake.viewers(); got != viewers {
+		t.Errorf("a refused attach opened a viewer connection: %d before, %d after", viewers, got)
+	}
+}
+
 func TestAFailedDialClosesTheNewSession(t *testing.T) {
 	root := t.TempDir()
 	h := newAttachHarness(t)
@@ -629,6 +686,301 @@ func TestTheTCPHandlerHasNoAttach(t *testing.T) {
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("attach on the network listener = %d, want 404", rec.Code)
+	}
+}
+
+// TestTheTCPHandlerHasNoAgentAttach: the agent attach is a socket-only route
+// for the same reason the project attach is, so the network listener answers
+// it 404 (P4 D3).
+func TestTheTCPHandlerHasNoAgentAttach(t *testing.T) {
+	f := testFleet(t)
+	srv := NewServer(f, "secret")
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/agent-a/attach", nil)
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", attachProtocol)
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("agent attach on the network listener = %d, want 404", rec.Code)
+	}
+}
+
+// fleetAgent gives the harness the state Spawn leaves a local-profile agent
+// in: a record in the workspace, a live runtime on the project's child, and
+// the session tracked as the fleet's (P4 D10). It returns the child.
+func (h *attachHarness) fleetAgent(t *testing.T, root, id, name string) *projectChild {
+	t.Helper()
+	pc, err := h.fleet.projectChildFor(context.Background(), root)
+	if err != nil {
+		t.Fatalf("projectChildFor: %v", err)
+	}
+	sessionID := id + "-session"
+	if err := h.fleet.ws.PutAgent(Agent{
+		ID: id, Project: root, Name: name, SessionID: sessionID,
+		OwnerID: "owner-1", Origin: OriginUI,
+	}); err != nil {
+		t.Fatalf("record agent %s: %v", id, err)
+	}
+	// The session is tracked as a fleet session and mapped to its agent, as
+	// Spawn does it.
+	pc.reg.TrackFleet(sessionID, AgentPath(root))
+	h.fleet.mu.Lock()
+	h.fleet.runtimes[id] = &agentRuntime{id: id, root: root, project: pc, reg: pc.reg, sessionID: sessionID}
+	h.fleet.sessionAgent[sessionID] = id
+	h.fleet.mu.Unlock()
+	return pc
+}
+
+// TestTheAgentAttachUpgrades: POST /api/agents/{id}/attach on the socket hands
+// the client the agent's own session, named in both headers, and counts it as
+// a viewer of that session (P5 F5).
+func TestTheAgentAttachUpgrades(t *testing.T) {
+	root := t.TempDir()
+	h := newAttachHarness(t)
+	pc := h.fleetAgent(t, root, "agent-a", "reviewer")
+	sessionID := "agent-a-session"
+
+	res := h.attachAgent(http.MethodPost, "agent-a", true)
+	if res.status != http.StatusSwitchingProtocols {
+		t.Fatalf("agent attach = %d, want 101: %s", res.status, res.refusal(t))
+	}
+	if got := res.header.Get("Upgrade"); got != attachProtocol {
+		t.Errorf("Upgrade = %q, want %q", got, attachProtocol)
+	}
+	if got := res.header.Get(sessionHeader); got != sessionID {
+		t.Errorf("%s = %q, want %q", sessionHeader, got, sessionID)
+	}
+	if got := res.header.Get(agentHeader); got != "agent-a" {
+		t.Errorf("%s = %q, want agent-a", agentHeader, got)
+	}
+
+	fake := h.fake(root)
+	if fake == nil {
+		t.Fatal("no fake was built for the project child")
+	}
+	eventually(t, "the agent's viewer to connect", func() bool { return fake.viewers() == 1 })
+	// summaries leaves a fleet agent's session out, so the count is read where
+	// the registry keeps it.
+	eventually(t, "the viewer to be counted on the agent's session", func() bool {
+		pc.reg.mu.Lock()
+		defer pc.reg.mu.Unlock()
+		info, ok := pc.reg.sessions[sessionID]
+		return ok && info.viewers == 1
+	})
+}
+
+// TestTheAgentAttachRefusals: every way the agent attach refuses, with its
+// status and its sentence, and no viewer connection opened by any of them
+// (P5 F5 decision 5).
+func TestTheAgentAttachRefusals(t *testing.T) {
+	live := func(t *testing.T, h *attachHarness, root string) string {
+		h.fleetAgent(t, root, "agent-a", "reviewer")
+		return "agent-a"
+	}
+	// A paused agent keeps its record and loses its runtime.
+	paused := func(t *testing.T, h *attachHarness, root string) string {
+		id := live(t, h, root)
+		h.fleet.mu.Lock()
+		delete(h.fleet.runtimes, id)
+		h.fleet.mu.Unlock()
+		return id
+	}
+	failedStart := func(t *testing.T, h *attachHarness, root string) string {
+		id := live(t, h, root)
+		h.fleet.mu.Lock()
+		h.fleet.runtimes[id] = &agentRuntime{id: id, root: root, spawnErr: fmt.Errorf("no such binary")}
+		h.fleet.mu.Unlock()
+		return id
+	}
+	ownChild := func(t *testing.T, h *attachHarness, root string) string {
+		id := live(t, h, root)
+		h.fleet.mu.Lock()
+		h.fleet.runtimes[id].project = nil
+		h.fleet.mu.Unlock()
+		return id
+	}
+	noSession := func(t *testing.T, h *attachHarness, root string) string {
+		id := live(t, h, root)
+		h.fleet.mu.Lock()
+		h.fleet.runtimes[id].sessionID = ""
+		h.fleet.mu.Unlock()
+		return id
+	}
+
+	tests := []struct {
+		name     string
+		method   string
+		upgrade  bool
+		noFleet  bool
+		setup    func(t *testing.T, h *attachHarness, root string) string
+		want     int
+		sentence string
+	}{
+		{
+			name: "a wrong method", method: http.MethodGet, upgrade: true, setup: live,
+			want: http.StatusMethodNotAllowed, sentence: "attach is a POST",
+		},
+		{
+			name: "no upgrade headers", method: http.MethodPost, setup: live,
+			want: http.StatusBadRequest, sentence: "attach needs an " + attachProtocol + " upgrade",
+		},
+		{
+			name: "a bridge with no fleet", method: http.MethodPost, upgrade: true, noFleet: true,
+			want: http.StatusNotImplemented, sentence: "this bridge has no fleet",
+		},
+		{
+			name: "an agent with no record", method: http.MethodPost, upgrade: true,
+			setup: func(t *testing.T, h *attachHarness, root string) string { return "no-such-agent" },
+			want:  http.StatusNotFound, sentence: "unknown agent no-such-agent",
+		},
+		{
+			name: "a paused agent", method: http.MethodPost, upgrade: true, setup: paused,
+			want: http.StatusConflict, sentence: "agent reviewer is paused: resume it first",
+		},
+		{
+			name: "an agent whose runtime failed to start", method: http.MethodPost, upgrade: true, setup: failedStart,
+			want: http.StatusBadGateway, sentence: "no such binary",
+		},
+		{
+			name: "an agent on a child of its own", method: http.MethodPost, upgrade: true, setup: ownChild,
+			want:     http.StatusConflict,
+			sentence: "agent reviewer runs on a child of its own, which has no viewer socket yet",
+		},
+		{
+			name: "an agent with no session yet", method: http.MethodPost, upgrade: true, setup: noSession,
+			want: http.StatusConflict, sentence: "agent reviewer has no session yet",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.noFleet {
+				srv := NewServer(nil)
+				req := httptest.NewRequest(tc.method, "/api/agents/agent-a/attach", nil)
+				if tc.upgrade {
+					req.Header.Set("Connection", "Upgrade")
+					req.Header.Set("Upgrade", attachProtocol)
+				}
+				rec := httptest.NewRecorder()
+				srv.SocketHandler().ServeHTTP(rec, req)
+				if rec.Code != tc.want {
+					t.Fatalf("agent attach on a server without a fleet = %d, want %d", rec.Code, tc.want)
+				}
+				var out struct {
+					Error string `json:"error"`
+				}
+				if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.Error != tc.sentence {
+					t.Errorf("refusal = %q, want %q", out.Error, tc.sentence)
+				}
+				return
+			}
+
+			root := t.TempDir()
+			h := newAttachHarness(t)
+			id := tc.setup(t, h, root)
+
+			// A child exists for every case whose setup resolved one; a refusal
+			// must not open a viewer connection on it.
+			viewers := 0
+			fake := h.fake(root)
+			if fake != nil {
+				viewers = fake.viewers()
+			}
+
+			res := h.attachAgent(tc.method, id, tc.upgrade)
+			if res.status != tc.want {
+				t.Fatalf("agent attach = %d, want %d", res.status, tc.want)
+			}
+			if got := res.refusal(t); got != tc.sentence {
+				t.Errorf("refusal = %q, want %q", got, tc.sentence)
+			}
+			if fake != nil {
+				if got := fake.viewers(); got != viewers {
+					t.Errorf("a refused attach opened a viewer connection: %d before, %d after", viewers, got)
+				}
+			}
+		})
+	}
+}
+
+// TestAnAgentAttachWhoseDialFailsKeepsTheSession: a dial failure after the
+// handshake closes what the attach opened but never closes the agent's session,
+// which belongs to the fleet (P5 F5 decision 5). The project attach closes the
+// session it just created; this one must not, and the fleet must still own it
+// afterwards.
+func TestAnAgentAttachWhoseDialFailsKeepsTheSession(t *testing.T) {
+	root := t.TempDir()
+	h := newAttachHarness(t)
+
+	// An agent whose project child is gone: the runtime is live and the session
+	// is the agent's, but nothing listens where the child's viewer socket would
+	// be, so the dial is what fails.
+	sessionID := "agent-gone-session"
+	pc := &projectChild{root: root, socket: filepath.Join(root, "gone.sock")}
+	if err := h.fleet.ws.PutAgent(Agent{
+		ID: "agent-gone", Project: root, Name: "reviewer", SessionID: sessionID,
+		OwnerID: "owner-1", Origin: OriginUI,
+	}); err != nil {
+		t.Fatalf("record agent: %v", err)
+	}
+	h.fleet.mu.Lock()
+	h.fleet.runtimes["agent-gone"] = &agentRuntime{id: "agent-gone", root: root, project: pc, sessionID: sessionID}
+	h.fleet.sessionAgent[sessionID] = "agent-gone"
+	h.fleet.mu.Unlock()
+
+	res := h.attachAgent(http.MethodPost, "agent-gone", true)
+	if res.status != http.StatusBadGateway {
+		t.Fatalf("agent attach whose viewer dial fails = %d, want 502: %s", res.status, res.refusal(t))
+	}
+	const want = "dial the project child: "
+	if got := res.refusal(t); !strings.HasPrefix(got, want) {
+		t.Errorf("refusal = %q, want the %q prefix", got, want)
+	}
+
+	// The session is the agent's, so it stays open and the agent keeps it.
+	h.fleet.mu.Lock()
+	owner, tracked := h.fleet.sessionAgent[sessionID]
+	h.fleet.mu.Unlock()
+	if !tracked || owner != "agent-gone" {
+		t.Errorf("the failed attach left the session with owner %q (tracked %v), want agent-gone", owner, tracked)
+	}
+	a, ok := h.fleet.ws.Agent("agent-gone")
+	if !ok {
+		t.Fatal("the failed attach dropped the agent's record")
+	}
+	if a.SessionID != sessionID {
+		t.Errorf("agent session = %q, want %q", a.SessionID, sessionID)
+	}
+}
+
+func TestAgentAttachIDParsesOnlyItsPath(t *testing.T) {
+	tests := []struct {
+		path string
+		want string
+		ok   bool
+	}{
+		{path: "/api/agents/agent-1/attach", want: "agent-1", ok: true},
+		{path: "/api/agents/2f3a9c/attach", want: "2f3a9c", ok: true},
+		{path: "/api/agents/a1/attach", want: "a1", ok: true},
+		{path: "/api/agents//attach"},
+		{path: "/api/agents/"},
+		{path: "/api/agents/agent-1"},
+		{path: "/api/agents/agent-1/attach/"},
+		{path: "/api/agents/one/two/attach"},
+		{path: "/api/agents/agent-1/detach"},
+		{path: "/api/projects/attach"},
+		{path: "/api/agents"},
+		{path: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.path, func(t *testing.T) {
+			id, ok := agentAttachID(tc.path)
+			if ok != tc.ok || id != tc.want {
+				t.Errorf("agentAttachID(%q) = %q, %v; want %q, %v", tc.path, id, ok, tc.want, tc.ok)
+			}
+		})
 	}
 }
 

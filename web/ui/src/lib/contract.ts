@@ -151,6 +151,48 @@ export interface AgentWorkspace {
 }
 
 /**
+ * Decision is a POST /api/permissions/{id} body.
+ */
+export interface Decision {
+  approved: boolean;
+  edited?: string;
+  modeAccess?: ModeAccessChoice;
+}
+
+/**
+ * ModeAccessChoice is a typed capability choice, forwarded untouched.
+ */
+export interface ModeAccessChoice {
+  requestId: string;
+  sessionId: string;
+  current: AccessState;
+  mode?: string;
+}
+
+/**
+ * Answer is one question-and-response pair.
+ */
+export interface Answer {
+  question: string;
+  answer: string;
+}
+
+/**
+ * Answers is a POST /api/questions/{id} body.
+ */
+export interface Answers {
+  answers?: Answer[];
+  declined?: boolean;
+}
+
+/**
+ * RecentPrompts is the GET /api/prompts/recent answer.
+ */
+export interface RecentPrompts {
+  prompts: string[];
+}
+
+/**
  * Budgets mirrors the engine's [budgets] section on the wire.
  */
 export interface Budgets {
@@ -459,6 +501,13 @@ export interface ProjectStatus {
    * the reason, rather than letting a spawn fail.
    */
   isolation: string;
+  /**
+   * MCPProjectID is the project's stable opaque factory ID: what a client
+   * grant is keyed by, and the only project identifier an MCP client is
+   * given. It is optional so a bridge that has not minted one yet keeps the
+   * response it always had.
+   */
+  mcpProjectId?: string;
   /**
    * OrphanWorktrees are worktrees under this project that no known agent
    * claims. Reported, never deleted — they may hold uncommitted work.

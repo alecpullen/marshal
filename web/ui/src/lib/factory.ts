@@ -47,12 +47,81 @@ export interface FactoryRound { number: number; approvalRevision: number; implem
 export interface FactoryOutcome { effectId: string; stopReason: string; error: string; headSha: string; treeSha: string; baseSha: string; worker: FactoryWorker | null; pr: FactoryPR | null; report: FactoryReport | null; confirmed: boolean }
 export interface FactoryEffect { outcome: FactoryOutcome | null; id: string; kind: string; status: string; workerRole: string; round: number; approvalRevision: number; worker: FactoryWorker | null; expectedHead: string; expectedBase: string; createdAt: string }
 export interface FactoryDecision { id: string; kind: string; question: string; reason: string; effectId: string; createdAt: string }
-export interface FactoryEvent { sequence: number; at: string; kind: string; message: string; effectId: string }
+/**
+ * Who asked for one factory action, as the bridge journaled it beside the
+ * action itself (spec §4). It is optional on every event: a record written
+ * before provenance existed is normal history, not damage, and must render
+ * exactly as it always did.
+ *
+ * `authority` is present only where the operation carried one — an approval or
+ * an answer. `user_directed` is the calling client's own claim, so the display
+ * must say so and never present it as a verified human approval.
+ */
+export interface FactoryProvenance {
+  clientId: string; projectId: string; action: string; requestId: string
+  authority?: string; decisionId?: string
+}
+export interface FactoryEvent { sequence: number; at: string; kind: string; message: string; effectId: string; provenance?: FactoryProvenance }
 export interface FactoryItem { id: string; title: string; state: string; stage: string; repoId: string; projectRoot: string; hostId: string; branch: string; baseSha: string; version: number; draft: Omit<FactoryCreate, 'config'> & { config: FactoryConfig }; approvals: FactoryApproval[] | null; grants: FactoryGrant[] | null; rounds: FactoryRound[] | null; workers: FactoryWorker[] | null; prs: FactoryPR[] | null; effects: FactoryEffect[] | null; decision: FactoryDecision | null; history: FactoryEvent[] | null; createdAt: string; approvedAt: string; updatedAt: string }
 export interface FactoryCommand { requestId: string; kind: 'approve' | 'answer' | 'stop' | 'retry' | 'reconcile' | 'recover'; expectedVersion: number; decisionId?: string; answer?: string; reason?: string; additionalRounds?: number; replacement?: FactoryCreate; implementerRouting?: Record<string, unknown>; reviewerRouting?: Record<string, unknown>; confirmPreviousWorkerStopped?: boolean }
-export interface FactoryRoute { itemId?: string; create?: boolean }
+export type FactoryFilter = 'current' | 'needs-you' | 'ready' | 'history'
+export type FactoryItemView = 'approval' | 'activity' | 'review' | 'prs' | 'documents'
+/**
+ * One factory hash, as `lib/routes` parses it: the global or project-scoped
+ * list, creation, working drafts, or one item drill-in. `view` and `agent`
+ * belong to an item; `filter` to a list. `drafts` marks the working-drafts
+ * routes, whose `draftId` is the bridge's draft id (never a project path).
+ * Parsing and formatting live in `lib/routes`.
+ */
+export interface FactoryRoute {
+  itemId?: string
+  create?: boolean
+  projectRoot?: string
+  filter?: FactoryFilter
+  view?: FactoryItemView
+  agent?: string
+  drafts?: boolean
+  draftId?: string
+}
 
-interface PollSeam {
+/**
+ * How an action's authority is described. `user_directed` is worded as the
+ * client's own assertion because that is all it is: the bridge records the
+ * claim, it does not verify that a human asked. An authority this build does
+ * not know is shown as unverified rather than guessed at.
+ */
+export function authorityLabel(authority: string | undefined): string {
+  switch (authority) {
+    case undefined:
+    case '':
+    case 'none':
+      return ''
+    case 'user_directed':
+      return 'client reports user-directed'
+    case 'standing':
+      return 'standing authority'
+    case 'delegated':
+      return 'delegated planner'
+    default:
+      return `unrecognised authority ${authority}`
+  }
+}
+
+/**
+ * One history entry's origin: the client's name when the client list knows the
+ * ID and the stable ID otherwise, so a renamed or deleted client is still
+ * attributable.
+ */
+export function provenanceLine(p: FactoryProvenance, clientName?: string): string {
+  const who = clientName ? `${clientName} (${p.clientId})` : p.clientId
+  const parts = [`Requested by ${who}`, `project ${p.projectId}`]
+  if (p.action) parts.push(p.action)
+  const authority = authorityLabel(p.authority)
+  if (authority) parts.push(authority)
+  if (p.decisionId) parts.push(`decision ${p.decisionId}`)
+  return parts.join(' · ')
+}
+export interface PollSeam {
   document?: Pick<Document, 'hidden' | 'addEventListener' | 'removeEventListener'>
   setTimeout?: typeof setTimeout
   clearTimeout?: typeof clearTimeout

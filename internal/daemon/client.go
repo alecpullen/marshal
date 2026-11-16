@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ const (
 	attachPath     = "/api/projects/attach"
 	attachProtocol = "marshal-acp"
 	sessionHeader  = "Marshal-Session"
+	agentHeader    = "Marshal-Agent"
 	pinPath        = "/api/projects/pin"
 )
 
@@ -150,6 +152,7 @@ func (c *Client) Pin(ctx context.Context, root string, pinned bool) (PinState, e
 // Attachment is an attached session: its ID and the upgraded stream.
 type Attachment struct {
 	SessionID string
+	AgentID   string // the agent whose session this is; "" for a project attach
 	Conn      io.ReadWriteCloser
 }
 
@@ -178,8 +181,37 @@ func (c *Client) Attach(ctx context.Context, root, sessionID string) (*Attachmen
 	if err != nil {
 		return nil, fmt.Errorf("encode attach request: %w", err)
 	}
+	return c.upgrade(ctx, attachPath, body)
+}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://daemon"+attachPath, bytes.NewReader(body))
+// AttachAgent opens agentID's session as a viewer (P5 F5). ctx bounds the
+// handshake only. A refusal is an *AttachError.
+func (c *Client) AttachAgent(ctx context.Context, agentID string) (*Attachment, error) {
+	// The path is the ID's, so an ID carrying a slash or a space stays one
+	// segment of the route.
+	att, err := c.upgrade(ctx, "/api/agents/"+url.PathEscape(agentID)+"/attach", nil)
+	if err != nil {
+		return nil, err
+	}
+	if att.AgentID == "" {
+		_ = att.Conn.Close()
+		return nil, fmt.Errorf("daemon upgraded without a %s header", agentHeader)
+	}
+	if att.AgentID != agentID {
+		_ = att.Conn.Close()
+		return nil, fmt.Errorf("daemon opened agent %q, want %q", att.AgentID, agentID)
+	}
+	return att, nil
+}
+
+// upgrade is the handshake both attaches share: path, and body when it is
+// not nil.
+func (c *Client) upgrade(ctx context.Context, path string, body []byte) (*Attachment, error) {
+	var payload io.Reader
+	if body != nil {
+		payload = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://daemon"+path, payload)
 	if err != nil {
 		return nil, fmt.Errorf("daemon request: %w", err)
 	}
@@ -187,7 +219,9 @@ func (c *Client) Attach(ctx context.Context, root, sessionID string) (*Attachmen
 	// its own: a *http.Client would take the connection back.
 	req.Host = "daemon"
 	req.ContentLength = int64(len(body))
-	req.Header.Set("Content-Type", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	req.Header.Set("Connection", "Upgrade")
 	req.Header.Set("Upgrade", attachProtocol)
 
@@ -277,6 +311,9 @@ func (c *Client) Attach(ctx context.Context, root, sessionID string) (*Attachmen
 		_ = conn.Close()
 		return nil, fmt.Errorf("daemon upgraded without a %s header", sessionHeader)
 	}
+	// A project attach leaves this empty; an agent attach names the agent
+	// whose session the stream is.
+	agent := strings.TrimSpace(resp.Header.Get(agentHeader))
 
 	if err := conn.SetDeadline(time.Time{}); err != nil {
 		_ = conn.Close()
@@ -293,6 +330,7 @@ func (c *Client) Attach(ctx context.Context, root, sessionID string) (*Attachmen
 	}
 	return &Attachment{
 		SessionID: attached,
+		AgentID:   agent,
 		Conn:      &attachConn{reader: reader, conn: conn},
 	}, nil
 }

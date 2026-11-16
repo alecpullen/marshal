@@ -202,6 +202,19 @@ TLS with `--tls-cert`/`--tls-key` (both, or it refuses to start), and remember
 the bearer token then travels in an `Authorization` header over whatever
 network that is.
 
+`tailscale serve` is tailnet-only, so it is not the LAN answer: the LAN needs
+its own TLS front on a LAN address — any reverse proxy pointed at
+`127.0.0.1:7700` whose origin has a certificate, or a direct
+`--tls-cert`/`--tls-key` bind — and the plain-HTTP rebind above is never it.
+Prefer the tailnet: it reaches the same studio with a valid certificate and no
+LAN exposure.
+
+Which origin is actually live is not something you should have to guess:
+`scripts/dev-studio.sh --status` prints a `remote:` line for every
+`tailscale serve` entry that proxies to the studio's loopback port. Use it —
+on a box where 443 already belongs to another service, the bare tailnet
+hostname is that other service (`401 Unauthorized` here), not studio.
+
 Two things do not travel through the forward:
 
 - **Preview URLs** are gated to localhost hostnames (`isLocalhostName` in

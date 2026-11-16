@@ -222,6 +222,137 @@ void main() {
     );
   });
 
+  /// Two questions in one request, which the agent answers as a pair: it
+  /// requires exactly one Answer per Question, in order, and reads anything
+  /// else as a decline (internal/acp/questions.go).
+  Future<InboxModel> twoQuestions(ModelFixture fixture) async {
+    fixture.serve('local', '/api/agents', [
+      agent(
+        id: 'a-1',
+        status: AgentState.agentAwaitingQuestion,
+        pending: const PendingRequest(
+          kind: PendingKind.pendingQuestion,
+          id: 'q-2',
+          params: {
+            'questions': [
+              {
+                'question': 'Which branch?',
+                'options': [
+                  {'label': 'main', 'value': 'main'},
+                  {'label': 'next', 'value': 'release/next'},
+                ],
+              },
+              {'question': 'When should it land?'},
+            ],
+          },
+        ),
+      ).toJson(),
+    ]);
+    await fixture.refresh();
+    final model = InboxModel(fixture.store, client: fixture.clientFor);
+    addTearDown(model.dispose);
+    return model;
+  }
+
+  test('a two-question ask posts one answer per question, in order', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(name: 'local', projects: [project('/home/u/alpha')]),
+    ], now: now);
+    final inbox = await twoQuestions(fixture);
+    fixture.bridges['local']!.reply(
+      'POST',
+      '/api/questions/q-2',
+      const FakeReply(200),
+    );
+
+    final ask = inbox.asks.single;
+    expect(ask.questions, hasLength(2));
+    expect(
+      [for (final q in ask.questions) q.text],
+      ['Which branch?', 'When should it land?'],
+    );
+    // One action commits both questions; a decline says so outright rather
+    // than posting a shape the agent would read as one.
+    expect(
+      [for (final action in ask.actions) action.label],
+      ['Answer', 'Decline'],
+    );
+    expect(ask.actions.first.primary, isTrue);
+    expect(ask.body, '1 more question');
+
+    await inbox.answer(ask, ask.actions.first, answers: ['main', 'Friday']);
+
+    expect(
+      fixture.requests('local').last.body,
+      '{"answers":['
+      '{"question":"Which branch?","answer":"main"},'
+      '{"question":"When should it land?","answer":"Friday"}'
+      ']}',
+      reason: 'exactly one Answer per Question, in the request’s order',
+    );
+    expect(inbox.asks.single.state, AskState.sending);
+  });
+
+  test('a collected answer names the option’s wire value', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(name: 'local', projects: [project('/home/u/alpha')]),
+    ], now: now);
+    final inbox = await twoQuestions(fixture);
+    fixture.bridges['local']!.reply(
+      'POST',
+      '/api/questions/q-2',
+      const FakeReply(200),
+    );
+
+    final ask = inbox.asks.single;
+    await inbox.answer(ask, ask.actions.first, answers: ['next', 'Friday']);
+
+    expect(
+      fixture.requests('local').last.body,
+      '{"answers":['
+      '{"question":"Which branch?","answer":"release/next"},'
+      '{"question":"When should it land?","answer":"Friday"}'
+      ']}',
+      reason:
+          'the label a person reads is not always the value the agent reads',
+    );
+  });
+
+  test('a collected answer that misses a question is not posted', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(name: 'local', projects: [project('/home/u/alpha')]),
+    ], now: now);
+    final inbox = await twoQuestions(fixture);
+    final before = fixture.requests('local').length;
+
+    final ask = inbox.asks.single;
+    // One answer for two questions, no answers at all, and a blank one: each
+    // would be read as every question declined, so none is sent.
+    await inbox.answer(ask, ask.actions.first, answers: ['main']);
+    await inbox.answer(ask, ask.actions.first);
+    await inbox.answer(ask, ask.actions.first, answers: ['main', '   ']);
+
+    expect(fixture.requests('local'), hasLength(before));
+    expect(inbox.asks.single.state, AskState.waiting);
+  });
+
+  test('declining a two-question ask says so outright', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(name: 'local', projects: [project('/home/u/alpha')]),
+    ], now: now);
+    final inbox = await twoQuestions(fixture);
+    fixture.bridges['local']!.reply(
+      'POST',
+      '/api/questions/q-2',
+      const FakeReply(200),
+    );
+
+    final ask = inbox.asks.single;
+    await inbox.answer(ask, ask.actions.last);
+
+    expect(fixture.requests('local').last.body, '{"declined":true}');
+  });
+
   test('a reply with no words is not sent', () async {
     final fixture = await ModelFixture.start([
       FixtureHost(

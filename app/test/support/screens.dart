@@ -261,7 +261,7 @@ Widget _inbox({StateKind? state}) => Inbox(
   state: state,
   onRetry: () {},
   onSelect: (_) {},
-  onAnswer: (_, _, {reply}) {},
+  onAnswer: (_, _, {reply, answers}) {},
 );
 
 Widget _overview({StateKind? state}) => Overview(
@@ -271,7 +271,7 @@ Widget _overview({StateKind? state}) => Overview(
   state: state,
   onRetry: () {},
   onSelect: (_) {},
-  onAnswer: (_, _) {},
+  onAnswer: (_, _, {reply, answers}) {},
 );
 
 /// The registry of screens. F0 has one, the gallery; each later phase adds

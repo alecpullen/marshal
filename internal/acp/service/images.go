@@ -43,6 +43,20 @@ func (s *Session) PutImage(ctx context.Context, p acpwire.ImagesPutParams) (acpw
 	return acpwire.ImagesPutResult{Image: promptImageOf(ref)}, nil
 }
 
+// ImagesPut uploads one image and returns its ref, as the client seam's method
+// names it: the in-process session stores it through PutImage.
+func (s *Session) ImagesPut(ctx context.Context, sessionID string, data []byte, label string) (acpwire.PromptImage, error) {
+	res, err := s.PutImage(ctx, acpwire.ImagesPutParams{
+		SessionID: sessionID,
+		Data:      base64.StdEncoding.EncodeToString(data),
+		Label:     label,
+	})
+	if err != nil {
+		return acpwire.PromptImage{}, err
+	}
+	return res.Image, nil
+}
+
 // promptImages resolves a prompt's image refs. A ref the store does not hold
 // fails the prompt before the turn starts: the store, not the route, is what
 // cannot answer, so the caller gets a plain error rather than a vision refusal.

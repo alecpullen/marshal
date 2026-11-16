@@ -125,7 +125,7 @@ func TestASubmitPromptsThroughTheSession(t *testing.T) {
 	}
 	m = drainCmds(m, cmd)
 
-	if len(rec.prompts) != 1 || rec.prompts[0] != (acpwire.PromptParams{Text: "hello"}) {
+	if len(rec.prompts) != 1 || rec.prompts[0].Text != "hello" || len(rec.prompts[0].Images) != 0 {
 		t.Fatalf("prompts = %+v, want one {Text: hello}", rec.prompts)
 	}
 	select {
@@ -156,7 +156,7 @@ func TestAFollowUpIsAQueuedPrompt(t *testing.T) {
 	m = drainCmds(m, cmd)
 
 	want := acpwire.PromptParams{Text: "later", Queued: true}
-	if len(rec.prompts) != 1 || rec.prompts[0] != want {
+	if len(rec.prompts) != 1 || rec.prompts[0].Text != want.Text || rec.prompts[0].Queued != want.Queued || len(rec.prompts[0].Images) != 0 {
 		t.Fatalf("prompts = %+v, want one %+v", rec.prompts, want)
 	}
 }

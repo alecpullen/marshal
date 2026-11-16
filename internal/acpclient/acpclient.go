@@ -464,6 +464,12 @@ type Session interface {
 	// service.
 	Prompt(ctx context.Context, params acpwire.PromptParams) (acpwire.PromptResult, error)
 
+	// ImagesPut uploads one image and returns the ref a later prompt attaches.
+	// The bytes travel once, here, so the prompt carries the ref only.
+	//
+	// ACP: session/images_put (exists).
+	ImagesPut(ctx context.Context, sessionID string, data []byte, label string) (acpwire.PromptImage, error)
+
 	// Stop stops the session's run: the commands attached to it first, then
 	// the run itself. With nothing running it does nothing.
 	//

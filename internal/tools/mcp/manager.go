@@ -454,6 +454,7 @@ func (m *Manager) makeHandler(c caller, serverName, mcpToolName string) registry
 				// Bounded per result: an image-heavy server cannot flood one
 				// tool result with more than four refs.
 				if len(images) >= maxResultImages {
+					fullContent += "[image omitted: a tool result carries at most four images]\n"
 					continue
 				}
 				raw, decodeErr := base64.StdEncoding.DecodeString(content.Data)

@@ -198,6 +198,12 @@ func (s *Store) Sweep(ctx context.Context, referenced func() (map[string]struct{
 			return werr
 		}
 		hash := strings.TrimSuffix(filepath.Base(p), ".json")
+		if !validHash(hash) {
+			// Not one of ours: a short or non-hex name would panic on the
+			// two-character shard below, and deleting it is not the
+			// store's business either way.
+			return nil
+		}
 		sc, _, rerr := s.readSidecar(hash)
 		if rerr != nil {
 			return nil

@@ -1566,12 +1566,16 @@ const imageSweepTimeout = 10 * time.Second
 // openImageStore prepares the content-addressed image store under the data
 // directory. A failure is logged and yields nil: the agent runs without
 // images rather than not at all.
-func openImageStore(dataDir string, cfg config.Config) *imagepayload.Store {
+func openImageStore(dataDir string, cfg config.Config, logger *slog.Logger) *imagepayload.Store {
 	if dataDir == "" {
 		return nil
 	}
 	store, err := imagepayload.Open(filepath.Join(dataDir, "images"), cfg.Images.PayloadConfig())
 	if err != nil {
+		// Silence here would surface much later as "this session has no
+		// image store", which reads like an internal invariant rather than
+		// the storage problem it is.
+		logger.Warn("image store unavailable", "dir", dataDir, "error", err)
 		return nil
 	}
 	return store
@@ -1901,7 +1905,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	// startup sweep all share this handle, so no second store is opened over
 	// the same directory. nil when the data directory could not be prepared,
 	// which every consumer reads as "this process serves no images".
-	images := openImageStore(dataDir, cfg)
+	images := openImageStore(dataDir, cfg, logger)
 	runner, toolReg, swarmRunner, mcpMgr, snapSvc, commandService, watchMgr, desktopCloser, subagentFactory, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(workCtx, cfg, state, database, projectID, skillIndex, dataDir, images, runOpts.additionalDirs, jobBroker, watchBroker, watchResumeCell, runOpts.configReloader, homeDir, writeLock, nil, lspHandle, authResolver)
 	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
 		runner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)

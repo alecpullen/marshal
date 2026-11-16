@@ -1,0 +1,142 @@
+{
+  "SkillEntry": {
+    "name": "recovery",
+    "description": "How this project recovers a lost session",
+    "risk": "low",
+    "scope": "project"
+  },
+  "SkillPreview": {
+    "stagingToken": "sk-1",
+    "name": "recovery",
+    "description": "How this project recovers a lost session",
+    "risk": "low",
+    "source": "github.com/acme/skills/recovery"
+  },
+  "SkillList": {
+    "skills": [
+      {
+        "name": "recovery",
+        "description": "How this project recovers a lost session",
+        "risk": "low",
+        "scope": "project"
+      }
+    ]
+  },
+  "SkillStage": {
+    "source": "github.com/acme/skills/recovery",
+    "scope": "project",
+    "project": "/home/u/marshal"
+  },
+  "SkillConfirm": {
+    "stagingToken": "sk-1",
+    "scope": "project",
+    "project": "/home/u/marshal"
+  },
+  "SkillDiscard": {
+    "stagingToken": "sk-1"
+  },
+  "PluginEntry": {
+    "name": "acme-tools",
+    "source": "github.com/acme/tools",
+    "ref": "v1",
+    "commit": "9f1ad475",
+    "contentHash": "sha256:ab",
+    "installedAt": "2026-11-17T03:00:00Z",
+    "scope": "global"
+  },
+  "PluginContents": {
+    "hasManifest": true,
+    "skillCount": 2,
+    "commandCount": 1,
+    "hookCount": 0,
+    "mcpServerCount": 0,
+    "mcpPolicyCount": 0
+  },
+  "PluginScan": {
+    "scanToken": "pl-1",
+    "name": "acme-tools",
+    "source": "github.com/acme/tools",
+    "ref": "v1",
+    "commit": "9f1ad475",
+    "contents": {
+      "hasManifest": true,
+      "skillCount": 2,
+      "commandCount": 1,
+      "hookCount": 0,
+      "mcpServerCount": 0,
+      "mcpPolicyCount": 0
+    }
+  },
+  "PluginList": {
+    "plugins": [
+      {
+        "name": "acme-tools",
+        "source": "github.com/acme/tools",
+        "commit": "9f1ad475",
+        "contentHash": "sha256:ab",
+        "installedAt": "2026-11-17T03:00:00Z",
+        "scope": "global"
+      }
+    ]
+  },
+  "PluginStage": {
+    "source": "github.com/acme/tools",
+    "ref": "v1",
+    "scope": "global"
+  },
+  "PluginConfirm": {
+    "scanToken": "pl-1",
+    "scope": "global"
+  },
+  "PluginDiscard": {
+    "scanToken": "pl-1"
+  },
+  "MemoryEntry": {
+    "id": 7,
+    "kind": "fact",
+    "content": "The gate runs on Go 1.24",
+    "confidence": "confirmed",
+    "sourceSessionId": "a-1",
+    "createdAt": "2026-11-17T03:00:00Z",
+    "updatedAt": "2026-11-17T03:05:00Z",
+    "scope": "project",
+    "scopeKey": "/home/u/marshal",
+    "learnedProjectRoot": "/home/u/marshal",
+    "learnedAgent": "a-1",
+    "learnedStep": 3,
+    "confirmedBy": ["alec"]
+  },
+  "MemoryList": {
+    "entries": [
+      {
+        "id": 7,
+        "kind": "fact",
+        "content": "The gate runs on Go 1.24",
+        "confidence": "confirmed",
+        "createdAt": "2026-11-17T03:00:00Z",
+        "updatedAt": "2026-11-17T03:05:00Z",
+        "scope": "project"
+      }
+    ]
+  },
+  "MemorySuggestion": {
+    "memoryId": 7,
+    "matchProjectRoot": "/home/u/other",
+    "suggestedScope": "global"
+  },
+  "MemorySuggestions": {
+    "suggestions": [
+      {
+        "memoryId": 7,
+        "matchProjectRoot": "/home/u/other",
+        "suggestedScope": "global"
+      }
+    ]
+  },
+  "MemoryPromote": {
+    "scope": "global"
+  },
+  "MemoryConfidence": {
+    "confidence": "stale"
+  }
+}

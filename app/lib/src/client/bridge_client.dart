@@ -169,10 +169,7 @@ class BridgeClient {
       _listOf(
         '/api/automations/review/drafts',
         ReviewDraft.fromJson,
-        query: {
-          if (project != null) 'project': project,
-          if (status != null) 'status': status,
-        },
+        query: {'project': ?project, 'status': ?status},
       );
 
   /// GET /api/automations/review/drafts/{id}.
@@ -236,7 +233,7 @@ class BridgeClient {
   Future<List<CIHistory>> ciHistory({String? project}) => _listOf(
     '/api/automations/ci/history',
     CIHistory.fromJson,
-    query: {if (project != null) 'project': project},
+    query: {'project': ?project},
   );
 
   /// GET /api/automations/ci/history/{id}.
@@ -244,6 +241,202 @@ class BridgeClient {
     '/api/automations/ci/history/${Uri.encodeComponent(id)}',
     CIHistory.fromJson,
   );
+
+  // Library: skills, plugins and memory (F7).
+
+  /// GET /api/library/skills: the installed skills of [scope].
+  Future<List<SkillEntry>> skills({
+    required String scope,
+    String? project,
+  }) async {
+    final body = await _objectOf(
+      '/api/library/skills',
+      SkillList.fromJson,
+      query: {'scope': scope, 'project': ?project},
+    );
+    return body.skills;
+  }
+
+  /// POST /api/library/skills/preview: stages a skill so a person can see
+  /// what it is before it is installed.
+  Future<SkillPreview> previewSkill(SkillStage stage) async {
+    final response = await _send(
+      Request(method: 'POST', path: '/api/library/skills/preview', body: stage),
+    );
+    return SkillPreview.fromJson(_object(response));
+  }
+
+  /// POST /api/library/skills/confirm: installs the staged skill.
+  Future<void> confirmSkill(SkillConfirm body) =>
+      _post('/api/library/skills/confirm', body);
+
+  /// POST /api/library/skills/discard: drops a staged skill.
+  Future<void> discardSkill(String stagingToken) => _post(
+    '/api/library/skills/discard',
+    SkillDiscard(stagingToken: stagingToken),
+  );
+
+  /// DELETE /api/library/skills/{name}?scope=…: removes an installed skill.
+  Future<void> removeSkill(
+    String name, {
+    required String scope,
+    String? project,
+  }) => _send(
+    Request(
+      method: 'DELETE',
+      path: '/api/library/skills/${Uri.encodeComponent(name)}',
+      query: {'scope': scope, 'project': ?project},
+    ),
+  );
+
+  /// GET /api/library/plugins: the installed plugins of [scope].
+  Future<List<PluginEntry>> plugins({
+    required String scope,
+    String? project,
+  }) async {
+    final body = await _objectOf(
+      '/api/library/plugins',
+      PluginList.fromJson,
+      query: {'scope': scope, 'project': ?project},
+    );
+    return body.plugins;
+  }
+
+  /// POST /api/library/plugins/scan: scans a plugin before it is installed.
+  Future<PluginScan> scanPlugin(PluginStage stage) async {
+    final response = await _send(
+      Request(method: 'POST', path: '/api/library/plugins/scan', body: stage),
+    );
+    return PluginScan.fromJson(_object(response));
+  }
+
+  /// POST /api/library/plugins/confirm: installs the scanned plugin.
+  Future<void> confirmPlugin(PluginConfirm body) =>
+      _post('/api/library/plugins/confirm', body);
+
+  /// POST /api/library/plugins/discard: drops a scanned plugin.
+  Future<void> discardPlugin(String scanToken) => _post(
+    '/api/library/plugins/discard',
+    PluginDiscard(scanToken: scanToken),
+  );
+
+  /// DELETE /api/library/plugins/{name}?scope=…: removes an installed plugin.
+  Future<void> removePlugin(
+    String name, {
+    required String scope,
+    String? project,
+  }) => _send(
+    Request(
+      method: 'DELETE',
+      path: '/api/library/plugins/${Uri.encodeComponent(name)}',
+      query: {'scope': scope, 'project': ?project},
+    ),
+  );
+
+  /// GET /api/library/memory?project=…: the project's memory.
+  Future<List<MemoryEntry>> memory({
+    required String project,
+    String? scope,
+  }) async {
+    final body = await _objectOf(
+      '/api/library/memory',
+      MemoryList.fromJson,
+      query: {'project': project, 'scope': ?scope},
+    );
+    return body.entries;
+  }
+
+  /// DELETE /api/library/memory/{id}?project=….
+  Future<void> deleteMemory(int id, {required String project}) => _send(
+    Request(
+      method: 'DELETE',
+      path: '/api/library/memory/$id',
+      query: {'project': project},
+    ),
+  );
+
+  /// GET /api/library/memory/suggestions?project=…: the memories another
+  /// project holds too, and the scope each could be promoted to.
+  Future<List<MemorySuggestion>> memorySuggestions({
+    required String project,
+  }) async {
+    final body = await _objectOf(
+      '/api/library/memory/suggestions',
+      MemorySuggestions.fromJson,
+      query: {'project': project},
+    );
+    return body.suggestions;
+  }
+
+  /// POST /api/library/memory/{id}/promote?project=…: widens a memory's
+  /// scope. It is the person's decision, never automatic.
+  Future<void> promoteMemory(
+    int id,
+    MemoryPromote promote, {
+    required String project,
+  }) => _post(
+    '/api/library/memory/$id/promote',
+    promote,
+    query: {'project': project},
+  );
+
+  /// POST /api/library/memory/{id}/confidence?project=….
+  Future<void> setMemoryConfidence(
+    int id,
+    MemoryConfidence confidence, {
+    required String project,
+  }) => _post(
+    '/api/library/memory/$id/confidence',
+    confidence,
+    query: {'project': project},
+  );
+
+  // MCP clients and their factory grants (F7).
+
+  /// GET /api/clients: every registered MCP client.
+  Future<List<MCPClient>> clients() =>
+      _listOf('/api/clients', MCPClient.fromJson);
+
+  /// POST /api/clients: registers one. Its token is in the answer, once.
+  Future<CreateClientResult> createClient(CreateClientRequest request) async {
+    final response = await _send(
+      Request(method: 'POST', path: '/api/clients', body: request),
+    );
+    return CreateClientResult.fromJson(_object(response));
+  }
+
+  /// DELETE /api/clients/{id}.
+  Future<void> deleteClient(String id) => _send(
+    Request(method: 'DELETE', path: '/api/clients/${Uri.encodeComponent(id)}'),
+  );
+
+  /// GET /api/clients/{clientId}/factory-grants/{projectId}: one pair's
+  /// stored grant and the version a write must name.
+  Future<FactoryGrantState> factoryGrant(String clientID, String projectID) =>
+      _objectOf(
+        '/api/clients/${Uri.encodeComponent(clientID)}/factory-grants/'
+        '${Uri.encodeComponent(projectID)}',
+        FactoryGrantState.fromJson,
+      );
+
+  /// PUT the whole grant plus the version it was edited from. A 409 carries
+  /// the state that won, so the caller keeps the edit and offers a reload.
+  Future<FactoryGrantState> putFactoryGrant(
+    String clientID,
+    String projectID,
+    PutGrantRequest request,
+  ) async {
+    final response = await _send(
+      Request(
+        method: 'PUT',
+        path:
+            '/api/clients/${Uri.encodeComponent(clientID)}/factory-grants/'
+            '${Uri.encodeComponent(projectID)}',
+        body: request,
+      ),
+    );
+    return FactoryGrantState.fromJson(_object(response));
+  }
 
   Future<Response> _send(Request request) async {
     final response = await _transport.send(request);
@@ -277,7 +470,11 @@ class BridgeClient {
     ];
   }
 
-  Future<void> _post(String path, Object? body) async {
-    await _send(Request(method: 'POST', path: path, body: body));
+  Future<void> _post(
+    String path,
+    Object? body, {
+    Map<String, String> query = const {},
+  }) async {
+    await _send(Request(method: 'POST', path: path, query: query, body: body));
   }
 }

@@ -1,7 +1,9 @@
 import 'package:marshal_app/src/client/contract.g.dart' show Recipe, Schedule;
 import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
 import 'package:marshal_app/src/model/bots_model.dart';
+import 'package:marshal_app/src/model/clients_model.dart';
 import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
+import 'package:marshal_app/src/model/library_model.dart';
 import 'package:marshal_app/src/model/inbox_model.dart' as model;
 import 'package:marshal_app/src/model/nav_model.dart';
 import 'package:marshal_app/src/model/overview_model.dart';
@@ -12,12 +14,16 @@ import 'package:marshal_app/src/model/thread_ref.dart' as model;
 import 'package:marshal_app/src/model/watches_model.dart';
 import 'package:marshal_app/src/ui/automations/automations_place.dart';
 import 'package:marshal_app/src/ui/automations/bots_tab.dart';
-import 'package:marshal_app/src/ui/automations/placeholder.dart';
 import 'package:marshal_app/src/ui/automations/recipes_tab.dart';
 import 'package:marshal_app/src/ui/automations/schedules_tab.dart';
 import 'package:marshal_app/src/ui/automations/watches_tab.dart';
 import 'package:marshal_app/src/ui/debug/connection_check.dart';
 import 'package:marshal_app/src/ui/gallery/gallery.dart';
+import 'package:marshal_app/src/ui/library/library_place.dart';
+import 'package:marshal_app/src/ui/library/mcp_tab.dart';
+import 'package:marshal_app/src/ui/library/memory_tab.dart';
+import 'package:marshal_app/src/ui/library/plugins_tab.dart';
+import 'package:marshal_app/src/ui/library/skills_tab.dart';
 import 'package:marshal_app/src/ui/inbox/inbox.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 import 'package:marshal_app/src/ui/overview/overview.dart';
@@ -471,6 +477,73 @@ Widget _automations({StateKind? state, int tab = 1}) {
   );
 }
 
+/// The Library fixture: one skill, one plugin, one client and one memory, with
+/// the memory a promotion is suggested for.
+Widget _library({StateKind? state, int tab = 0}) {
+  final skills = SkillsModel.fixture(const [
+    SkillEntry(
+      name: 'recovery',
+      description: 'How this project recovers a lost session',
+      risk: 'low',
+      scope: 'global',
+    ),
+  ], scope: 'global');
+  final plugins = PluginsModel.fixture(const [
+    PluginEntry(
+      name: 'acme-tools',
+      source: 'github.com/acme/tools',
+      commit: '9f1ad475',
+      contentHash: 'sha256:ab',
+      installedAt: '2026-11-17T03:00:00Z',
+      scope: 'global',
+    ),
+  ], scope: 'global');
+  final clients = ClientsModel.fixture(
+    const [
+      MCPClient(
+        id: 'c-1',
+        name: 'editor',
+        allowedRepos: ['acme/widgets'],
+        ownerID: 'owner-1',
+        createdAt: '2026-11-17T03:00:00Z',
+      ),
+    ],
+    projects: const ['/home/u/marshal'],
+  );
+  final memory = MemoryModel.fixture(
+    const [
+      MemoryEntry(
+        id: 7,
+        kind: 'fact',
+        content: 'The gate runs on Go 1.24',
+        confidence: 'confirmed',
+        createdAt: '2026-11-17T03:00:00Z',
+        updatedAt: '2026-11-17T03:05:00Z',
+        scope: 'project',
+        learnedAgent: 'a-1',
+        learnedProjectRoot: '/home/u/marshal',
+      ),
+    ],
+    project: '/home/u/marshal',
+    suggestions: const [
+      MemorySuggestion(
+        memoryID: 7,
+        matchProjectRoot: '/home/u/other',
+        suggestedScope: 'global',
+      ),
+    ],
+  );
+  return LibraryPlace(
+    skills: (tabs, state) => SkillsTab(model: skills, tabs: tabs, state: state),
+    plugins: (tabs, state) =>
+        PluginsTab(model: plugins, tabs: tabs, state: state),
+    mcp: (tabs, state) => McpTab(model: clients, tabs: tabs, state: state),
+    memory: (tabs, state) => MemoryTab(model: memory, tabs: tabs, state: state),
+    tab: tab,
+    state: state,
+  );
+}
+
 /// The registry of screens. F0 has one, the gallery; each later phase adds
 /// its screens here with fixture data, and `tooltips_test.dart`,
 /// `states_test.dart` and `overflow_test.dart` then hold them to the design
@@ -519,6 +592,38 @@ final screens = <ScreenCase>[
     ready: () => _shell(),
     states: {
       for (final kind in requiredStates) kind: () => _shell(state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'library · skills',
+    ready: () => _library(tab: 0),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _library(tab: 0, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'library · plugins',
+    ready: () => _library(tab: 1),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _library(tab: 1, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'library · mcp',
+    ready: () => _library(tab: 2),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _library(tab: 2, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'library · memory',
+    ready: () => _library(tab: 3),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _library(tab: 3, state: kind),
     },
   ),
   ScreenCase(

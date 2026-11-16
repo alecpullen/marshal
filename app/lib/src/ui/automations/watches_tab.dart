@@ -1,4 +1,3 @@
-import '../../model/fleet_store.dart' show describeFailure;
 import '../../model/watches_model.dart';
 import '../kit/kit.dart';
 import '../sections/section_page.dart';
@@ -91,7 +90,6 @@ class _WatchDetail extends StatefulWidget {
 }
 
 class _WatchDetailState extends State<_WatchDetail> {
-  var _undoing = false;
   String? _note;
   String? _error;
 
@@ -161,10 +159,7 @@ class _WatchDetailState extends State<_WatchDetail> {
         ],
         if (_reroute case final reroute?) ...[
           const SizedBox(height: Space.s20),
-          if (_undoing)
-            Text('Undoing the reroute…', style: e.small.tint(e.muted))
-          else
-            Btn('Undo the reroute', onTap: null),
+          Btn('Undo the reroute', onTap: null),
           const SizedBox(height: Space.s4),
           Text(
             'The bridge does not report which reroute ${reroute.role} → '

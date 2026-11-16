@@ -1224,6 +1224,317 @@ class BudgetReport {
   }
 }
 
+/// ApprovalAuthority is how much approval power a factory grant carries.
+enum ApprovalAuthority {
+  approvalAuthorityNone('none'),
+  approvalAuthorityUserDirected('user_directed'),
+  approvalAuthorityStanding('standing'),
+  unknown('unknown');
+
+  const ApprovalAuthority(this.wire);
+
+  /// The wire text this value stands for.
+  final String wire;
+
+  /// The value [wire] names, or [unknown] when this build does not
+  /// know it.
+  static ApprovalAuthority fromWire(String wire) {
+    for (final value in values) {
+      if (value != unknown && value.wire == wire) {
+        return value;
+      }
+    }
+    return unknown;
+  }
+}
+
+/// MCPClient is one registered MCP client: GET /api/clients' answer
+/// (web/bridge/client.go). Its token is never here; it is shown once, when the
+/// client is created.
+class MCPClient {
+  const MCPClient({
+    required this.id,
+    required this.name,
+    this.autonomous,
+    this.maxConcurrent,
+    this.maxPerDay,
+    this.allowedRepos,
+    required this.ownerID,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String name;
+  final bool? autonomous;
+  final int? maxConcurrent;
+  final int? maxPerDay;
+  /// AllowedRepos restricts which registered repos the client may target.
+  /// Empty means every one.
+  final List<String>? allowedRepos;
+  final String ownerID;
+  final String createdAt;
+
+  factory MCPClient.fromJson(Map<String, dynamic> json) {
+    return MCPClient(
+      id: json['id'] as String,
+      name: json['name'] as String,
+      autonomous: json['autonomous'] as bool?,
+      maxConcurrent: (json['maxConcurrent'] as num?)?.toInt(),
+      maxPerDay: (json['maxPerDay'] as num?)?.toInt(),
+      allowedRepos: _listOrNull(
+        json['allowedRepos'],
+        (value) => value as String,
+      ),
+      ownerID: json['ownerId'] as String,
+      createdAt: json['createdAt'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['name'] = name;
+    if (autonomous != null) {
+      json['autonomous'] = autonomous;
+    }
+    if (maxConcurrent != null) {
+      json['maxConcurrent'] = maxConcurrent;
+    }
+    if (maxPerDay != null) {
+      json['maxPerDay'] = maxPerDay;
+    }
+    if (allowedRepos != null) {
+      json['allowedRepos'] = allowedRepos!;
+    }
+    json['ownerId'] = ownerID;
+    json['createdAt'] = createdAt;
+    return json;
+  }
+}
+
+/// CreateClientRequest is the body POST /api/clients takes.
+class CreateClientRequest {
+  const CreateClientRequest({
+    required this.name,
+    this.autonomous,
+    this.maxConcurrent,
+    this.maxPerDay,
+    this.allowedRepos,
+  });
+
+  final String name;
+  final bool? autonomous;
+  final int? maxConcurrent;
+  final int? maxPerDay;
+  final List<String>? allowedRepos;
+
+  factory CreateClientRequest.fromJson(Map<String, dynamic> json) {
+    return CreateClientRequest(
+      name: json['name'] as String,
+      autonomous: json['autonomous'] as bool?,
+      maxConcurrent: (json['maxConcurrent'] as num?)?.toInt(),
+      maxPerDay: (json['maxPerDay'] as num?)?.toInt(),
+      allowedRepos: _listOrNull(
+        json['allowedRepos'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    if (autonomous != null) {
+      json['autonomous'] = autonomous;
+    }
+    if (maxConcurrent != null) {
+      json['maxConcurrent'] = maxConcurrent;
+    }
+    if (maxPerDay != null) {
+      json['maxPerDay'] = maxPerDay;
+    }
+    if (allowedRepos != null) {
+      json['allowedRepos'] = allowedRepos!;
+    }
+    return json;
+  }
+}
+
+/// CreateClientResult is what creating a client answers. It is the one place
+/// the token appears.
+class CreateClientResult {
+  const CreateClientResult({
+    required this.id,
+    required this.name,
+    required this.token,
+    required this.autonomous,
+  });
+
+  final String id;
+  final String name;
+  final String token;
+  final bool autonomous;
+
+  factory CreateClientResult.fromJson(Map<String, dynamic> json) {
+    return CreateClientResult(
+      id: json['id'] as String,
+      name: json['name'] as String,
+      token: json['token'] as String,
+      autonomous: json['autonomous'] as bool,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['name'] = name;
+    json['token'] = token;
+    json['autonomous'] = autonomous;
+    return json;
+  }
+}
+
+/// MCPFactoryProjectGrant is one client's factory authority over one project.
+/// Every capability is independent of the others, and the approval authority
+/// is independent of them all.
+class MCPFactoryProjectGrant {
+  const MCPFactoryProjectGrant({
+    required this.projectID,
+    required this.read,
+    required this.createDraft,
+    required this.editDraft,
+    required this.answerQuestion,
+    required this.approveAndQueue,
+    required this.approvalAuthority,
+    this.assessPlanChanges,
+    this.approveRoutineRevision,
+    this.rawEnums = const {},
+  });
+
+  final String projectID;
+  final bool read;
+  final bool createDraft;
+  final bool editDraft;
+  final bool answerQuestion;
+  final bool approveAndQueue;
+  final ApprovalAuthority approvalAuthority;
+  /// AssessPlanChanges and ApproveRoutineRevision are optional so a grant
+  /// written before they existed round trips unchanged: absent grants
+  /// nothing.
+  final bool? assessPlanChanges;
+  final bool? approveRoutineRevision;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory MCPFactoryProjectGrant.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final approvalAuthorityWire = json['approvalAuthority'] as String;
+    final approvalAuthority = ApprovalAuthority.fromWire(approvalAuthorityWire);
+    if (approvalAuthority == ApprovalAuthority.unknown) {
+      rawEnums['approvalAuthority'] = approvalAuthorityWire;
+    }
+    return MCPFactoryProjectGrant(
+      projectID: json['projectId'] as String,
+      read: json['read'] as bool,
+      createDraft: json['createDraft'] as bool,
+      editDraft: json['editDraft'] as bool,
+      answerQuestion: json['answerQuestion'] as bool,
+      approveAndQueue: json['approveAndQueue'] as bool,
+      approvalAuthority: approvalAuthority,
+      assessPlanChanges: json['assessPlanChanges'] as bool?,
+      approveRoutineRevision: json['approveRoutineRevision'] as bool?,
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['projectId'] = projectID;
+    json['read'] = read;
+    json['createDraft'] = createDraft;
+    json['editDraft'] = editDraft;
+    json['answerQuestion'] = answerQuestion;
+    json['approveAndQueue'] = approveAndQueue;
+    json['approvalAuthority'] = rawEnums['approvalAuthority'] ?? approvalAuthority.wire;
+    if (assessPlanChanges != null) {
+      json['assessPlanChanges'] = assessPlanChanges;
+    }
+    if (approveRoutineRevision != null) {
+      json['approveRoutineRevision'] = approveRoutineRevision;
+    }
+    return json;
+  }
+}
+
+/// FactoryGrantState is one (client, project) pair's stored grant and the
+/// opaque version a write must name.
+class FactoryGrantState {
+  const FactoryGrantState({
+    required this.clientID,
+    required this.projectID,
+    required this.grant,
+    required this.version,
+  });
+
+  final String clientID;
+  final String projectID;
+  final MCPFactoryProjectGrant grant;
+  final String version;
+
+  factory FactoryGrantState.fromJson(Map<String, dynamic> json) {
+    return FactoryGrantState(
+      clientID: json['clientId'] as String,
+      projectID: json['projectId'] as String,
+      grant: _object(
+        json['grant'],
+        MCPFactoryProjectGrant.fromJson,
+      ),
+      version: json['version'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['clientId'] = clientID;
+    json['projectId'] = projectID;
+    json['grant'] = grant.toJson();
+    json['version'] = version;
+    return json;
+  }
+}
+
+/// PutGrantRequest is the body PUT
+/// /api/clients/{clientId}/factory-grants/{projectId} takes: the whole grant
+/// and the version it was edited from.
+class PutGrantRequest {
+  const PutGrantRequest({
+    required this.grant,
+    required this.version,
+  });
+
+  final MCPFactoryProjectGrant grant;
+  final String version;
+
+  factory PutGrantRequest.fromJson(Map<String, dynamic> json) {
+    return PutGrantRequest(
+      grant: _object(
+        json['grant'],
+        MCPFactoryProjectGrant.fromJson,
+      ),
+      version: json['version'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['grant'] = grant.toJson();
+    json['version'] = version;
+    return json;
+  }
+}
+
 /// DaemonInfo is what GET /api/daemon answers about the local daemon.
 class DaemonInfo {
   const DaemonInfo({
@@ -2129,6 +2440,661 @@ class ActionStatus {
   Map<String, dynamic> toJson() {
     final json = <String, dynamic>{};
     json['status'] = status;
+    return json;
+  }
+}
+
+/// SkillEntry is one installed skill: GET /api/library/skills' answer, one
+/// entry per scope (web/bridge/library.go).
+class SkillEntry {
+  const SkillEntry({
+    required this.name,
+    required this.description,
+    required this.risk,
+    required this.scope,
+  });
+
+  final String name;
+  final String description;
+  final String risk;
+  final String scope;
+
+  factory SkillEntry.fromJson(Map<String, dynamic> json) {
+    return SkillEntry(
+      name: json['name'] as String,
+      description: json['description'] as String,
+      risk: json['risk'] as String,
+      scope: json['scope'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    json['description'] = description;
+    json['risk'] = risk;
+    json['scope'] = scope;
+    return json;
+  }
+}
+
+/// SkillPreview is what staging a skill answers: what it would install, and
+/// the token that confirms or discards it.
+class SkillPreview {
+  const SkillPreview({
+    required this.stagingToken,
+    required this.name,
+    required this.description,
+    required this.risk,
+    required this.source,
+  });
+
+  final String stagingToken;
+  final String name;
+  final String description;
+  final String risk;
+  final String source;
+
+  factory SkillPreview.fromJson(Map<String, dynamic> json) {
+    return SkillPreview(
+      stagingToken: json['stagingToken'] as String,
+      name: json['name'] as String,
+      description: json['description'] as String,
+      risk: json['risk'] as String,
+      source: json['source'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['stagingToken'] = stagingToken;
+    json['name'] = name;
+    json['description'] = description;
+    json['risk'] = risk;
+    json['source'] = source;
+    return json;
+  }
+}
+
+/// SkillList is GET /api/library/skills' body.
+class SkillList {
+  const SkillList({
+    required this.skills,
+  });
+
+  final List<SkillEntry> skills;
+
+  factory SkillList.fromJson(Map<String, dynamic> json) {
+    return SkillList(
+      skills: _list(
+        json['skills'],
+        (value) => _object(value, SkillEntry.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['skills'] = [
+      for (final value in skills) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// SkillStage and SkillConfirm are the bodies the skills routes take. The
+/// confirm must name the same scope and project the preview was staged on.
+class SkillStage {
+  const SkillStage({
+    required this.source,
+    this.scope,
+    this.project,
+  });
+
+  final String source;
+  final String? scope;
+  final String? project;
+
+  factory SkillStage.fromJson(Map<String, dynamic> json) {
+    return SkillStage(
+      source: json['source'] as String,
+      scope: json['scope'] as String?,
+      project: json['project'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['source'] = source;
+    if (scope != null) {
+      json['scope'] = scope;
+    }
+    if (project != null) {
+      json['project'] = project;
+    }
+    return json;
+  }
+}
+
+class SkillConfirm {
+  const SkillConfirm({
+    required this.stagingToken,
+    this.scope,
+    this.project,
+  });
+
+  final String stagingToken;
+  final String? scope;
+  final String? project;
+
+  factory SkillConfirm.fromJson(Map<String, dynamic> json) {
+    return SkillConfirm(
+      stagingToken: json['stagingToken'] as String,
+      scope: json['scope'] as String?,
+      project: json['project'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['stagingToken'] = stagingToken;
+    if (scope != null) {
+      json['scope'] = scope;
+    }
+    if (project != null) {
+      json['project'] = project;
+    }
+    return json;
+  }
+}
+
+class SkillDiscard {
+  const SkillDiscard({
+    required this.stagingToken,
+  });
+
+  final String stagingToken;
+
+  factory SkillDiscard.fromJson(Map<String, dynamic> json) {
+    return SkillDiscard(
+      stagingToken: json['stagingToken'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['stagingToken'] = stagingToken;
+    return json;
+  }
+}
+
+/// PluginEntry is one installed plugin: GET /api/library/plugins' answer.
+class PluginEntry {
+  const PluginEntry({
+    required this.name,
+    required this.source,
+    this.ref,
+    required this.commit,
+    required this.contentHash,
+    required this.installedAt,
+    required this.scope,
+  });
+
+  final String name;
+  final String source;
+  final String? ref;
+  final String commit;
+  final String contentHash;
+  final String installedAt;
+  final String scope;
+
+  factory PluginEntry.fromJson(Map<String, dynamic> json) {
+    return PluginEntry(
+      name: json['name'] as String,
+      source: json['source'] as String,
+      ref: json['ref'] as String?,
+      commit: json['commit'] as String,
+      contentHash: json['contentHash'] as String,
+      installedAt: json['installedAt'] as String,
+      scope: json['scope'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    json['source'] = source;
+    if (ref != null) {
+      json['ref'] = ref;
+    }
+    json['commit'] = commit;
+    json['contentHash'] = contentHash;
+    json['installedAt'] = installedAt;
+    json['scope'] = scope;
+    return json;
+  }
+}
+
+/// PluginContents is what a scanned plugin ships.
+class PluginContents {
+  const PluginContents({
+    required this.hasManifest,
+    required this.skillCount,
+    required this.commandCount,
+    required this.hookCount,
+    required this.mcpServerCount,
+    required this.mcpPolicyCount,
+  });
+
+  final bool hasManifest;
+  final int skillCount;
+  final int commandCount;
+  final int hookCount;
+  final int mcpServerCount;
+  final int mcpPolicyCount;
+
+  factory PluginContents.fromJson(Map<String, dynamic> json) {
+    return PluginContents(
+      hasManifest: json['hasManifest'] as bool,
+      skillCount: (json['skillCount'] as num).toInt(),
+      commandCount: (json['commandCount'] as num).toInt(),
+      hookCount: (json['hookCount'] as num).toInt(),
+      mcpServerCount: (json['mcpServerCount'] as num).toInt(),
+      mcpPolicyCount: (json['mcpPolicyCount'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['hasManifest'] = hasManifest;
+    json['skillCount'] = skillCount;
+    json['commandCount'] = commandCount;
+    json['hookCount'] = hookCount;
+    json['mcpServerCount'] = mcpServerCount;
+    json['mcpPolicyCount'] = mcpPolicyCount;
+    return json;
+  }
+}
+
+/// PluginScan is what scanning a plugin answers: what it ships, and the token
+/// that confirms or discards it.
+class PluginScan {
+  const PluginScan({
+    required this.scanToken,
+    required this.name,
+    required this.source,
+    this.ref,
+    required this.commit,
+    required this.contents,
+  });
+
+  final String scanToken;
+  final String name;
+  final String source;
+  final String? ref;
+  final String commit;
+  final PluginContents contents;
+
+  factory PluginScan.fromJson(Map<String, dynamic> json) {
+    return PluginScan(
+      scanToken: json['scanToken'] as String,
+      name: json['name'] as String,
+      source: json['source'] as String,
+      ref: json['ref'] as String?,
+      commit: json['commit'] as String,
+      contents: _object(
+        json['contents'],
+        PluginContents.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['scanToken'] = scanToken;
+    json['name'] = name;
+    json['source'] = source;
+    if (ref != null) {
+      json['ref'] = ref;
+    }
+    json['commit'] = commit;
+    json['contents'] = contents.toJson();
+    return json;
+  }
+}
+
+/// PluginList is GET /api/library/plugins' body.
+class PluginList {
+  const PluginList({
+    required this.plugins,
+  });
+
+  final List<PluginEntry> plugins;
+
+  factory PluginList.fromJson(Map<String, dynamic> json) {
+    return PluginList(
+      plugins: _list(
+        json['plugins'],
+        (value) => _object(value, PluginEntry.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['plugins'] = [
+      for (final value in plugins) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// PluginStage, PluginConfirm and PluginDiscard are the bodies the plugin
+/// routes take.
+class PluginStage {
+  const PluginStage({
+    required this.source,
+    this.ref,
+    this.scope,
+    this.project,
+  });
+
+  final String source;
+  final String? ref;
+  final String? scope;
+  final String? project;
+
+  factory PluginStage.fromJson(Map<String, dynamic> json) {
+    return PluginStage(
+      source: json['source'] as String,
+      ref: json['ref'] as String?,
+      scope: json['scope'] as String?,
+      project: json['project'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['source'] = source;
+    if (ref != null) {
+      json['ref'] = ref;
+    }
+    if (scope != null) {
+      json['scope'] = scope;
+    }
+    if (project != null) {
+      json['project'] = project;
+    }
+    return json;
+  }
+}
+
+class PluginConfirm {
+  const PluginConfirm({
+    required this.scanToken,
+    this.scope,
+    this.project,
+  });
+
+  final String scanToken;
+  final String? scope;
+  final String? project;
+
+  factory PluginConfirm.fromJson(Map<String, dynamic> json) {
+    return PluginConfirm(
+      scanToken: json['scanToken'] as String,
+      scope: json['scope'] as String?,
+      project: json['project'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['scanToken'] = scanToken;
+    if (scope != null) {
+      json['scope'] = scope;
+    }
+    if (project != null) {
+      json['project'] = project;
+    }
+    return json;
+  }
+}
+
+class PluginDiscard {
+  const PluginDiscard({
+    required this.scanToken,
+  });
+
+  final String scanToken;
+
+  factory PluginDiscard.fromJson(Map<String, dynamic> json) {
+    return PluginDiscard(
+      scanToken: json['scanToken'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['scanToken'] = scanToken;
+    return json;
+  }
+}
+
+/// MemoryEntry is one memory: GET /api/library/memory's answer, one entry per
+/// project's memory store.
+class MemoryEntry {
+  const MemoryEntry({
+    required this.id,
+    required this.kind,
+    required this.content,
+    required this.confidence,
+    this.sourceSessionID,
+    required this.createdAt,
+    required this.updatedAt,
+    this.scope,
+    this.scopeKey,
+    this.learnedProjectRoot,
+    this.learnedAgent,
+    this.learnedStep,
+    this.confirmedBy,
+  });
+
+  final int id;
+  final String kind;
+  final String content;
+  final String confidence;
+  /// SourceSessionID is the session that learned it, when the store kept it.
+  final String? sourceSessionID;
+  final String createdAt;
+  final String updatedAt;
+  final String? scope;
+  final String? scopeKey;
+  /// LearnedProjectRoot, LearnedAgent and LearnedStep are its provenance.
+  final String? learnedProjectRoot;
+  final String? learnedAgent;
+  final int? learnedStep;
+  final List<String>? confirmedBy;
+
+  factory MemoryEntry.fromJson(Map<String, dynamic> json) {
+    return MemoryEntry(
+      id: (json['id'] as num).toInt(),
+      kind: json['kind'] as String,
+      content: json['content'] as String,
+      confidence: json['confidence'] as String,
+      sourceSessionID: json['sourceSessionId'] as String?,
+      createdAt: json['createdAt'] as String,
+      updatedAt: json['updatedAt'] as String,
+      scope: json['scope'] as String?,
+      scopeKey: json['scopeKey'] as String?,
+      learnedProjectRoot: json['learnedProjectRoot'] as String?,
+      learnedAgent: json['learnedAgent'] as String?,
+      learnedStep: (json['learnedStep'] as num?)?.toInt(),
+      confirmedBy: _listOrNull(
+        json['confirmedBy'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['kind'] = kind;
+    json['content'] = content;
+    json['confidence'] = confidence;
+    if (sourceSessionID != null) {
+      json['sourceSessionId'] = sourceSessionID;
+    }
+    json['createdAt'] = createdAt;
+    json['updatedAt'] = updatedAt;
+    if (scope != null) {
+      json['scope'] = scope;
+    }
+    if (scopeKey != null) {
+      json['scopeKey'] = scopeKey;
+    }
+    if (learnedProjectRoot != null) {
+      json['learnedProjectRoot'] = learnedProjectRoot;
+    }
+    if (learnedAgent != null) {
+      json['learnedAgent'] = learnedAgent;
+    }
+    if (learnedStep != null) {
+      json['learnedStep'] = learnedStep;
+    }
+    if (confirmedBy != null) {
+      json['confirmedBy'] = confirmedBy!;
+    }
+    return json;
+  }
+}
+
+/// MemoryList is GET /api/library/memory's body.
+class MemoryList {
+  const MemoryList({
+    required this.entries,
+  });
+
+  final List<MemoryEntry> entries;
+
+  factory MemoryList.fromJson(Map<String, dynamic> json) {
+    return MemoryList(
+      entries: _list(
+        json['entries'],
+        (value) => _object(value, MemoryEntry.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['entries'] = [
+      for (final value in entries) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// MemorySuggestion is a project memory another project holds too, with the
+/// scope it could be promoted to. Promoting it is the person's decision.
+class MemorySuggestion {
+  const MemorySuggestion({
+    required this.memoryID,
+    required this.matchProjectRoot,
+    required this.suggestedScope,
+  });
+
+  final int memoryID;
+  final String matchProjectRoot;
+  final String suggestedScope;
+
+  factory MemorySuggestion.fromJson(Map<String, dynamic> json) {
+    return MemorySuggestion(
+      memoryID: (json['memoryId'] as num).toInt(),
+      matchProjectRoot: json['matchProjectRoot'] as String,
+      suggestedScope: json['suggestedScope'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['memoryId'] = memoryID;
+    json['matchProjectRoot'] = matchProjectRoot;
+    json['suggestedScope'] = suggestedScope;
+    return json;
+  }
+}
+
+/// MemorySuggestions is GET /api/library/memory/suggestions' body.
+class MemorySuggestions {
+  const MemorySuggestions({
+    required this.suggestions,
+  });
+
+  final List<MemorySuggestion> suggestions;
+
+  factory MemorySuggestions.fromJson(Map<String, dynamic> json) {
+    return MemorySuggestions(
+      suggestions: _list(
+        json['suggestions'],
+        (value) => _object(value, MemorySuggestion.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['suggestions'] = [
+      for (final value in suggestions) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// MemoryPromote and MemoryConfidence are the bodies the memory routes take.
+class MemoryPromote {
+  const MemoryPromote({
+    required this.scope,
+    this.scopeKey,
+  });
+
+  final String scope;
+  final String? scopeKey;
+
+  factory MemoryPromote.fromJson(Map<String, dynamic> json) {
+    return MemoryPromote(
+      scope: json['scope'] as String,
+      scopeKey: json['scopeKey'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['scope'] = scope;
+    if (scopeKey != null) {
+      json['scopeKey'] = scopeKey;
+    }
+    return json;
+  }
+}
+
+class MemoryConfidence {
+  const MemoryConfidence({
+    required this.confidence,
+  });
+
+  final String confidence;
+
+  factory MemoryConfidence.fromJson(Map<String, dynamic> json) {
+    return MemoryConfidence(
+      confidence: json['confidence'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['confidence'] = confidence;
     return json;
   }
 }

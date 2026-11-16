@@ -32,6 +32,8 @@ class SectionPage<T> extends StatelessWidget {
     this.createLabel,
     this.blank,
     this.readOnly = false,
+    this.header = const [],
+    this.footer = const [],
   });
 
   /// The page's title.
@@ -82,6 +84,12 @@ class SectionPage<T> extends StatelessWidget {
   /// Close instead of Save and Cancel.
   final bool readOnly;
 
+  /// What the section draws above its rows — a suggestion, an offer — and
+  /// below them. Both are the section's own content, never a second list
+  /// pattern.
+  final List<Widget> header;
+  final List<Widget> footer;
+
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
@@ -104,7 +112,13 @@ class SectionPage<T> extends StatelessWidget {
               Tabs(tabs: tabs, index: tabIndex, onChanged: onTab ?? (_) {}),
               const SizedBox(height: Space.s20),
             ],
+            ...header,
+            if (header.isNotEmpty) const SizedBox(height: Space.s20),
             ..._content(context),
+            if (footer.isNotEmpty) ...[
+              const SizedBox(height: Space.s20),
+              ...footer,
+            ],
           ],
         );
       },

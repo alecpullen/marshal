@@ -365,6 +365,96 @@ export interface BudgetReport {
 }
 
 /**
+ * ApprovalAuthority is how much approval power a factory grant carries.
+ */
+export type ApprovalAuthority = 'none' | 'user_directed' | 'standing';
+
+/**
+ * MCPClient is one registered MCP client: GET /api/clients' answer
+ * (web/bridge/client.go). Its token is never here; it is shown once, when the
+ * client is created.
+ */
+export interface MCPClient {
+  id: string;
+  name: string;
+  autonomous?: boolean;
+  maxConcurrent?: number;
+  maxPerDay?: number;
+  /**
+   * AllowedRepos restricts which registered repos the client may target.
+   * Empty means every one.
+   */
+  allowedRepos?: string[];
+  ownerId: string;
+  createdAt: string;
+}
+
+/**
+ * CreateClientRequest is the body POST /api/clients takes.
+ */
+export interface CreateClientRequest {
+  name: string;
+  autonomous?: boolean;
+  maxConcurrent?: number;
+  maxPerDay?: number;
+  allowedRepos?: string[];
+}
+
+/**
+ * CreateClientResult is what creating a client answers. It is the one place
+ * the token appears.
+ */
+export interface CreateClientResult {
+  id: string;
+  name: string;
+  token: string;
+  autonomous: boolean;
+}
+
+/**
+ * MCPFactoryProjectGrant is one client's factory authority over one project.
+ * Every capability is independent of the others, and the approval authority
+ * is independent of them all.
+ */
+export interface MCPFactoryProjectGrant {
+  projectId: string;
+  read: boolean;
+  createDraft: boolean;
+  editDraft: boolean;
+  answerQuestion: boolean;
+  approveAndQueue: boolean;
+  approvalAuthority: ApprovalAuthority;
+  /**
+   * AssessPlanChanges and ApproveRoutineRevision are optional so a grant
+   * written before they existed round trips unchanged: absent grants
+   * nothing.
+   */
+  assessPlanChanges?: boolean;
+  approveRoutineRevision?: boolean;
+}
+
+/**
+ * FactoryGrantState is one (client, project) pair's stored grant and the
+ * opaque version a write must name.
+ */
+export interface FactoryGrantState {
+  clientId: string;
+  projectId: string;
+  grant: MCPFactoryProjectGrant;
+  version: string;
+}
+
+/**
+ * PutGrantRequest is the body PUT
+ * /api/clients/{clientId}/factory-grants/{projectId} takes: the whole grant
+ * and the version it was edited from.
+ */
+export interface PutGrantRequest {
+  grant: MCPFactoryProjectGrant;
+  version: string;
+}
+
+/**
  * DaemonInfo is what GET /api/daemon answers about the local daemon.
  */
 export interface DaemonInfo {
@@ -630,6 +720,184 @@ export interface ApproveResult {
  */
 export interface ActionStatus {
   status: string;
+}
+
+/**
+ * SkillEntry is one installed skill: GET /api/library/skills' answer, one
+ * entry per scope (web/bridge/library.go).
+ */
+export interface SkillEntry {
+  name: string;
+  description: string;
+  risk: string;
+  scope: string;
+}
+
+/**
+ * SkillPreview is what staging a skill answers: what it would install, and
+ * the token that confirms or discards it.
+ */
+export interface SkillPreview {
+  stagingToken: string;
+  name: string;
+  description: string;
+  risk: string;
+  source: string;
+}
+
+/**
+ * SkillList is GET /api/library/skills' body.
+ */
+export interface SkillList {
+  skills: SkillEntry[];
+}
+
+/**
+ * SkillStage and SkillConfirm are the bodies the skills routes take. The
+ * confirm must name the same scope and project the preview was staged on.
+ */
+export interface SkillStage {
+  source: string;
+  scope?: string;
+  project?: string;
+}
+
+export interface SkillConfirm {
+  stagingToken: string;
+  scope?: string;
+  project?: string;
+}
+
+export interface SkillDiscard {
+  stagingToken: string;
+}
+
+/**
+ * PluginEntry is one installed plugin: GET /api/library/plugins' answer.
+ */
+export interface PluginEntry {
+  name: string;
+  source: string;
+  ref?: string;
+  commit: string;
+  contentHash: string;
+  installedAt: string;
+  scope: string;
+}
+
+/**
+ * PluginContents is what a scanned plugin ships.
+ */
+export interface PluginContents {
+  hasManifest: boolean;
+  skillCount: number;
+  commandCount: number;
+  hookCount: number;
+  mcpServerCount: number;
+  mcpPolicyCount: number;
+}
+
+/**
+ * PluginScan is what scanning a plugin answers: what it ships, and the token
+ * that confirms or discards it.
+ */
+export interface PluginScan {
+  scanToken: string;
+  name: string;
+  source: string;
+  ref?: string;
+  commit: string;
+  contents: PluginContents;
+}
+
+/**
+ * PluginList is GET /api/library/plugins' body.
+ */
+export interface PluginList {
+  plugins: PluginEntry[];
+}
+
+/**
+ * PluginStage, PluginConfirm and PluginDiscard are the bodies the plugin
+ * routes take.
+ */
+export interface PluginStage {
+  source: string;
+  ref?: string;
+  scope?: string;
+  project?: string;
+}
+
+export interface PluginConfirm {
+  scanToken: string;
+  scope?: string;
+  project?: string;
+}
+
+export interface PluginDiscard {
+  scanToken: string;
+}
+
+/**
+ * MemoryEntry is one memory: GET /api/library/memory's answer, one entry per
+ * project's memory store.
+ */
+export interface MemoryEntry {
+  id: number;
+  kind: string;
+  content: string;
+  confidence: string;
+  /**
+   * SourceSessionID is the session that learned it, when the store kept it.
+   */
+  sourceSessionId?: string;
+  createdAt: string;
+  updatedAt: string;
+  scope?: string;
+  scopeKey?: string;
+  /**
+   * LearnedProjectRoot, LearnedAgent and LearnedStep are its provenance.
+   */
+  learnedProjectRoot?: string;
+  learnedAgent?: string;
+  learnedStep?: number;
+  confirmedBy?: string[];
+}
+
+/**
+ * MemoryList is GET /api/library/memory's body.
+ */
+export interface MemoryList {
+  entries: MemoryEntry[];
+}
+
+/**
+ * MemorySuggestion is a project memory another project holds too, with the
+ * scope it could be promoted to. Promoting it is the person's decision.
+ */
+export interface MemorySuggestion {
+  memoryId: number;
+  matchProjectRoot: string;
+  suggestedScope: string;
+}
+
+/**
+ * MemorySuggestions is GET /api/library/memory/suggestions' body.
+ */
+export interface MemorySuggestions {
+  suggestions: MemorySuggestion[];
+}
+
+/**
+ * MemoryPromote and MemoryConfidence are the bodies the memory routes take.
+ */
+export interface MemoryPromote {
+  scope: string;
+  scopeKey?: string;
+}
+
+export interface MemoryConfidence {
+  confidence: string;
 }
 
 /**

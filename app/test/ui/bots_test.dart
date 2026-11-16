@@ -100,11 +100,9 @@ void main() {
           status: 200,
           body: jsonEncode(historyJson()),
         ),
-        if (post != null) 'POST /api/automations/review/drafts/d-1/post': post,
-        if (send != null)
-          'POST /api/automations/review/drafts/d-1/send-to-author': send,
-        if (discard != null)
-          'POST /api/automations/review/drafts/d-1/discard': discard,
+        'POST /api/automations/review/drafts/d-1/post': ?post,
+        'POST /api/automations/review/drafts/d-1/send-to-author': ?send,
+        'POST /api/automations/review/drafts/d-1/discard': ?discard,
       });
 
   Future<BotsModel> modelFor(_Scripted transport) async {

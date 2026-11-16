@@ -38,9 +38,6 @@ class UnsavedGuard extends ChangeNotifier {
       context,
       Sheet(
         title: 'Leave without saving?',
-        child: const Text(
-          'The edit you have not saved is lost. Nothing else changes.',
-        ),
         actions: [
           Btn.primary(
             'Keep editing',
@@ -48,6 +45,9 @@ class UnsavedGuard extends ChangeNotifier {
           ),
           Btn('Discard the edit', onTap: () => Navigator.of(context).pop(true)),
         ],
+        child: const Text(
+          'The edit you have not saved is lost. Nothing else changes.',
+        ),
       ),
     );
     if (leave != true) return false;

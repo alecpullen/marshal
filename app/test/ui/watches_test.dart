@@ -58,7 +58,7 @@ void main() {
       {'at': 1763352300000, 'value': 0, 'tripped': false},
       {'at': 1763352600000, 'value': 1, 'tripped': true},
     ],
-    if (onTrip != null) 'onTrip': onTrip,
+    'onTrip': ?onTrip,
   };
 
   Future<void> pump(WidgetTester tester, Widget screen) async {

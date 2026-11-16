@@ -59,7 +59,7 @@ void main() {
     bool builtin = false,
   }) => {
     'name': name,
-    if (title != null) 'title': title,
+    'title': ?title,
     'kind': 'prompt',
     'prompt': 'Run the gate',
     if (builtin) 'builtin': true,

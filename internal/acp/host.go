@@ -92,6 +92,11 @@ type agentHost struct {
 	cancellers   []TurnCanceller
 
 	holds *projectHolds // nil when runConfig.hold is nil
+
+	// restrictViewers puts the container allowlist on every viewer this host
+	// serves (decision 4): set from runConfig for a listener beside a
+	// container's --listen.
+	restrictViewers bool
 }
 
 // newAgentHost constructs the session manager and turn manager in
@@ -125,6 +130,8 @@ func newAgentHost(cfg runConfig) (*agentHost, error) {
 		sink:     sink,
 		log:      log,
 		shutdown: cfg.shutdown,
+
+		restrictViewers: cfg.restrictViewers,
 	}
 	if cfg.hold != nil {
 		h.holds = &projectHolds{hold: cfg.hold, held: map[string]func(){}}

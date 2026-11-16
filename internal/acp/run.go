@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"time"
 
@@ -53,6 +54,14 @@ type runConfig struct {
 
 	// hold serves project/hold and project/release; nil serves neither.
 	hold projectHoldFunc
+
+	// viewers is a viewer socket beside --listen; nil for none.
+	viewers net.Listener
+
+	// restrictViewers puts the container allowlist on every viewer: only a
+	// container runs --listen, so there is no unrestricted pairing
+	// (decision 4).
+	restrictViewers bool
 }
 
 // runWithConfig constructs the agentHost, serves a single connection, then

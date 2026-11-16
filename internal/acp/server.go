@@ -149,6 +149,10 @@ type Server struct {
 	// before Serve.
 	MarshalOnly bool
 
+	// Allow, when set, refuses every method it answers false for, before the
+	// handler is looked up (decision 2). Set it before Serve.
+	Allow func(method string) bool
+
 	// fatalErr is a buffered channel that handler goroutines use to
 	// report fatal write errors to the Serve loop. Created in Serve.
 	fatalErr chan error
@@ -937,36 +941,50 @@ func (s *Server) dispatch(ctx context.Context, req Request) (result any, err err
 	if s.MarshalOnly && req.Method != "initialize" && !s.marshalClient() {
 		return nil, viewerCapabilityRefusal()
 	}
+	// A restricted viewer refuses every method off its allowlist here, before
+	// the handler is looked up (decision 2), so a refused method's handler
+	// never runs. initialize is on the list, so the marshal handshake still
+	// runs first.
+	if s.Allow != nil && !s.Allow(req.Method) {
+		return nil, s.failure(containerViewerRefusal(req.Method))
+	}
 	handler, ok := s.handlers[req.Method]
 	if !ok {
 		return nil, &jsonRPCError{Code: methodNotFound, Message: "method not found: " + req.Method}
 	}
 	res, herr := handler(ctx, req.Params)
 	if herr != nil {
-		// A marshal client's error keeps its sentence (decision 1). The marshal
-		// client is the embedding's own TUI, which shows these sentences in
-		// process, so a plain error is sent as the uncoded *acpwire.Error
-		// settingsFailure builds; a coded error, a JSON-RPC error and a
-		// cancellation pass through unchanged. Every other client keeps
-		// F-SEC-37's fixed text.
-		if s.marshalClient() {
-			herr = settingsFailure(herr)
-		}
-		// An *acpwire.Error travels as itself: code serverError, its own
-		// message, and the whole error as data, so the client rebuilds it and
-		// IsCode, NoticeOf and err.Error() read as they do in process (P3 R2).
-		var wired *acpwire.Error
-		if errors.As(herr, &wired) {
-			data, encErr := json.Marshal(wired)
-			if encErr != nil {
-				return nil, &jsonRPCError{
-					Code:    internalError,
-					Message: "internal error: encode error data: " + encErr.Error(),
-				}
-			}
-			return nil, &jsonRPCError{Code: serverError, Message: wired.Message, Data: data}
-		}
-		return nil, &jsonRPCError{Code: codeFor(herr), Message: herr.Error()}
+		return nil, s.failure(herr)
 	}
 	return res, nil
+}
+
+// failure turns a handler's error, or the gate's refusal, into the error the
+// client is answered with.
+func (s *Server) failure(herr error) error {
+	// A marshal client's error keeps its sentence (decision 1). The marshal
+	// client is the embedding's own TUI, which shows these sentences in
+	// process, so a plain error is sent as the uncoded *acpwire.Error
+	// settingsFailure builds; a coded error, a JSON-RPC error and a
+	// cancellation pass through unchanged. Every other client keeps
+	// F-SEC-37's fixed text.
+	if s.marshalClient() {
+		herr = settingsFailure(herr)
+	}
+	// An *acpwire.Error travels as itself: code serverError, its own
+	// message, and the whole error as data, so the client rebuilds it and
+	// IsCode, NoticeOf and err.Error() read as they do in process (P3 R2).
+	// A containerized agent's refusal is one of these (decision 2).
+	var wired *acpwire.Error
+	if errors.As(herr, &wired) {
+		data, encErr := json.Marshal(wired)
+		if encErr != nil {
+			return &jsonRPCError{
+				Code:    internalError,
+				Message: "internal error: encode error data: " + encErr.Error(),
+			}
+		}
+		return &jsonRPCError{Code: serverError, Message: wired.Message, Data: data}
+	}
+	return &jsonRPCError{Code: codeFor(herr), Message: herr.Error()}
 }

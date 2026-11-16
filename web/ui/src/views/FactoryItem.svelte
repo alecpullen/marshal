@@ -6,6 +6,7 @@
   import ActivityTimeline from '../lib/factory/ActivityTimeline.svelte'
   import DecisionPanel from '../lib/factory/DecisionPanel.svelte'
   import RecoveryPanel from '../lib/factory/RecoveryPanel.svelte'
+  import CompletionPanel from '../lib/factory/CompletionPanel.svelte'
   import DocumentsView from '../lib/factory/DocumentsView.svelte'
   import PullRequestsView from '../lib/factory/PullRequestsView.svelte'
   import ReviewView from '../lib/factory/ReviewView.svelte'
@@ -18,7 +19,7 @@
   import type { DockTabParam } from '../lib/routes'
   import { defaultFactoryItemView } from '../lib/studio/model'
   import type { AgentRow } from '../lib/fleet'
-  import type { FactoryCommand, FactoryCreate, FactoryItem, FactoryItemView, FactoryRevisionCommand, FactoryRoute } from '../lib/factory'
+  import type { FactoryCommand, FactoryCompletionCommand, FactoryCreate, FactoryItem, FactoryItemView, FactoryRevisionCommand, FactoryRoute } from '../lib/factory'
 
   import type { FactoryState } from '../lib/factoryStore'
 
@@ -35,6 +36,8 @@
     settingsVersion?: string
     /** A revision lifecycle command's own half, sent beside the envelope. */
     revision?: FactoryRevisionCommand
+    /** A completion command's own half, sent beside the envelope. */
+    completion?: FactoryCompletionCommand
   }
   /**
    * What each command says when it lands. The revision kinds say what did *not*
@@ -50,6 +53,13 @@
     revision_authorize: 'Revision approved. Delivery is reported separately.',
     revision_delivery_choice: 'Delivery choice recorded. The receipt below says how far it got.',
     revision_follow_up_confirm: 'Follow-up requested. This item keeps its approved revision.',
+    complete: 'Completion recorded. That is your decision about the work; the run itself is unchanged.',
+    reopen: 'Reopened. Nothing was started, and the records that called this work done stay as they are.',
+    link_pr: 'Pull request linked. Its head, base and state are the bridge\'s own observation.',
+    refresh_pr_evidence: 'Evidence refresh requested. A link whose read fails keeps its snapshot and comes back stale.',
+    assess_completion: 'Assessment requested. It is evidence about the work; it neither completes nor reopens it.',
+    merge_pr: 'Merge authorized. Each pull request is reported merged only once the forge confirms it.',
+    merge_and_complete: 'Merge authorized. This work item completes only when every reviewed merge confirms.',
   }
   /** The decision kinds the recovery panel presents; everything else is a question. */
   const RECOVERY_KINDS = ['exhausted', 'no_progress', 'worker_failed', 'invalid_result', 'ci_unavailable', 'ci_wait', 'conflict', 'recovery']
@@ -379,7 +389,16 @@
         <ReviewView {item} />
       </div>
     {:else if selectedView === 'prs'}
-      <PullRequestsView {item} />
+      <div class="grid min-w-0 content-start gap-4">
+        <!--
+          Completion is a person's decision about this work, so it lives with
+          the pull requests it is judged against rather than in a view of its
+          own. The delivery history below it stays what it is: the pull
+          requests the factory actually recorded.
+        -->
+        <CompletionPanel {item} {busy} run={panelRun} />
+        <PullRequestsView {item} />
+      </div>
     {:else if selectedView === 'documents'}
       <DocumentsView {item} />
     {:else}

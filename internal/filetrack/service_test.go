@@ -95,8 +95,10 @@ func TestRecordReadUpsert(t *testing.T) {
 	if err := svc.RecordRead("src/main.go", second, 0); err != nil {
 		t.Fatalf("second RecordRead: %v", err)
 	}
-	// An out-of-order read at the same revision must not move the timestamp
-	// backwards and clear a later reader's clearance.
+	// read_at records the displayed version's modification time, so the latest
+	// read at a revision wins even when the version it shows is stamped behind
+	// the mark it replaces: a path restored with an older timestamp must stay
+	// editable instead of being refused for the rest of the session.
 	if err := svc.RecordRead("src/main.go", first, 0); err != nil {
 		t.Fatalf("third RecordRead: %v", err)
 	}
@@ -108,8 +110,8 @@ func TestRecordReadUpsert(t *testing.T) {
 	if !got.OK {
 		t.Fatal("expected file to be found")
 	}
-	if !got.At.Equal(second) {
-		t.Fatalf("expected %v, got %v", second, got.At)
+	if !got.At.Equal(first) {
+		t.Fatalf("expected the latest read at the revision to win (%v), got %v", first, got.At)
 	}
 }
 

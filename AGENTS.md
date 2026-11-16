@@ -65,8 +65,10 @@ after its last session closes; `POST /api/projects/attach` upgrades a marshal
 client onto that child's viewer socket, relaying its frames unchanged. Plain
 `marshal` starts its session on that daemon when one answers, the quit key and
 `/detach` leave it running, and `marshal attach [id]` comes back to it.
-`marshal fleet` opens an agent's or a daemon session's screen with `⏎`, and
-`/fleet` returns to the fleet from any daemon session. A
+A session screen whose connection closes reconnects to its session for up to a
+minute, keeping its draft. `marshal fleet` opens an agent's or a daemon
+session's screen with `⏎`, and `/fleet` returns to the fleet from any daemon
+session. A
 daemon session on an untrusted project asks its TUI, as embedded mode does,
 and a trust there applies to the running session without restarting the
 program. `marshal daemon pin [dir]` keeps a project's child running with no
@@ -150,6 +152,8 @@ App shell & config
 
 TUI (rendering only)
   internal/app/tui/        Bubble Tea model; model.go is the hub
+  internal/app/tui/reconnect/  the waiting screen a lost connection shows while
+                           the loop dials its session again
   internal/app/tui/{dock,sessionsheet,inspector,docpanel,listpanel,chrome,layout,picker,fuzzy,glyph,theme,help}
                            shared panel host, session sheet, browse inspector, list engine, dressing
   internal/app/tui/{settings,connect,agents,memory,skills,plugins,mcpauth,modeloptions,presetflow,probe,doctorpanel}

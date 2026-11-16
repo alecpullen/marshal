@@ -71,6 +71,32 @@
     return out
   })
 
+  /**
+   * The completion kinds, named so the journal reads as what happened rather
+   * than as a run of PR events: the person's own decisions, the batch's
+   * receipts, what a merge did to a pull request, what the run did afterwards
+   * and what an assessment reported are four different things. A kind outside
+   * this map is rendered exactly as it always was.
+   */
+  const COMPLETION_KIND_LABELS: Record<string, string> = {
+    completion_completed: 'You completed this work item',
+    completion_reopened: 'You reopened this work item',
+    completion_pr_linked: 'Pull request linked',
+    completion_batch_authorized: 'Merge batch authorized',
+    completion_batch_completed: 'Merge batch completed',
+    completion_batch_stopped: 'Merge batch stopped',
+    completion_merge_dispatched: 'Merge sent — not confirmed',
+    completion_merge_confirmed: 'Merge confirmed',
+    completion_stop_requested: 'Run stop requested',
+    completion_stop_stopped: 'Run stopped',
+    completion_stop_failed: 'Run stop failed',
+    completion_stop_unknown: 'Run stop unknown',
+    completion_assessment_requested: 'Assessment requested',
+    completion_assessment_recorded: 'Assessment recorded',
+    delivery_merge_continued: 'Delivery continued after the merge',
+  }
+  const kindLabel = (kind: string) => COMPLETION_KIND_LABELS[kind] ?? ''
+
   let viewport = $state<HTMLDivElement | null>(null)
   let atLatest = $state(true)
   /** Events the reader had already reached the end for. */
@@ -142,6 +168,7 @@
             <div class="flex flex-wrap items-center gap-2">
               <time class="text-xs text-muted" datetime={event.at}>{event.at}</time>
               <Tag role={roleOf(event)} />
+              {#if kindLabel(event.kind)}<span class="text-xs font-medium" data-testid="factory-event-kind">{kindLabel(event.kind)}</span>{/if}
             </div>
             <p class="whitespace-pre-wrap break-words">{event.message}</p>
             {#if event.provenance}<p class="mt-1 break-words text-xs text-muted" data-testid="factory-provenance">{provenanceLine(event.provenance, clientNames[event.provenance.clientId])}</p>{/if}

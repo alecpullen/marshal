@@ -93,15 +93,30 @@ class _TerminalTabState extends State<TerminalTab> {
     ),
   };
 
-  Widget _body(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      // The terminal paints its own background from the theme.
-      Expanded(child: TerminalPane(terminal: _terminal)),
-      const Hairline(),
-      _footer(context),
-    ],
-  );
+  Widget _body(BuildContext context) {
+    // The bridge names why a shell never started on the chunk that ends its
+    // stream (decision 9): without this the tab would show an empty terminal
+    // for a shell that failed before it could print anything.
+    final error = widget.session.error;
+    if (error != null) {
+      return StateMessage.error(
+        message: 'The shell could not be opened: $error',
+        retry: StateAction(
+          'Try again',
+          onTap: () => unawaited(widget.session.reopen()),
+        ),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // The terminal paints its own background from the theme.
+        Expanded(child: TerminalPane(terminal: _terminal)),
+        const Hairline(),
+        _footer(context),
+      ],
+    );
+  }
 
   /// The pause rule, and the way out of it.
   Widget _footer(BuildContext context) {

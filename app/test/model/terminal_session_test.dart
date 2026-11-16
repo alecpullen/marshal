@@ -136,6 +136,58 @@ void main() {
     await session.close();
   });
 
+  test('the bridge’s reason for a shell that never started is kept', () async {
+    final session = TerminalSession(client, agentId: 'a-1');
+    await session.open();
+
+    // The bridge attaches the failure to the chunk that ends the stream
+    // (contract.TerminalChunk.Error): without reading it a shell that never
+    // started ends silently.
+    events.write(
+      'data: ${jsonEncode({'error': 'the shell could not be started: no pty'})}\n\n',
+    );
+    await settle();
+
+    expect(session.error, 'the shell could not be started: no pty');
+    expect(session.running, isFalse);
+    await session.close();
+  });
+
+  test('a shell that exits cleanly has no error', () async {
+    final session = TerminalSession(client, agentId: 'a-1');
+    await session.open();
+
+    events.write('data: ${jsonEncode({'exit': 0})}\n\n');
+    await settle();
+
+    expect(session.error, isNull);
+    expect(session.exit, '0');
+    expect(session.running, isFalse);
+    await session.close();
+  });
+
+  test('reopen asks for a fresh shell after one failed', () async {
+    final session = TerminalSession(client, agentId: 'a-1');
+    await session.open();
+    events.write(
+      'data: ${jsonEncode({'error': 'the shell could not be started'})}\n\n',
+    );
+    await settle();
+    expect(session.error, isNotNull);
+
+    await session.reopen();
+
+    expect(session.error, isNull);
+    expect(session.isOpen, isTrue);
+    expect(
+      bridge.requests.where(
+        (r) => r.method == 'POST' && r.uri == '/api/agents/a-1/terminal',
+      ),
+      hasLength(2),
+    );
+    await session.close();
+  });
+
   test('keys typed before the shell has an id are sent after it', () async {
     // The terminal route answers slowly, so the id arrives after the typing.
     bridge.reply(

@@ -28,8 +28,11 @@ class TerminalSession extends ChangeNotifier {
   }) : _wait = wait ?? ((duration) => Future<void>.delayed(duration));
 
   /// A session with no bridge: what a fixture or the gallery draws.
-  TerminalSession.seeded({this.agentId = ''})
+  /// [shellError] is why a shell failed to start, so a fixture can show that
+  /// state (a named parameter cannot be the private field itself).
+  TerminalSession.seeded({this.agentId = '', String? shellError})
     : _client = null,
+      _error = shellError,
       idleLimit = const Duration(minutes: 2),
       _wait = ((duration) => Future<void>.delayed(duration));
 
@@ -64,6 +67,7 @@ class TerminalSession extends ChangeNotifier {
   bool _running = false;
   int _generation = 0;
   String? _exit;
+  String? _error;
   bool _disposed = false;
 
   /// The shell's output, as text.
@@ -83,6 +87,10 @@ class TerminalSession extends ChangeNotifier {
   /// The shell's exit code, once it has one.
   String? get exit => _exit;
 
+  /// Why the shell never started, when the bridge said so on the chunk that
+  /// ended its stream. Null while it is running, or when it exited cleanly.
+  String? get error => _error;
+
   /// Opens the shell and follows its stream.
   Future<void> open({int cols = 80, int rows = 24}) async {
     final client = _client;
@@ -97,6 +105,23 @@ class TerminalSession extends ChangeNotifier {
     stream.start();
     // Keys typed while the shell was opening waited for this id.
     _flush();
+  }
+
+  /// Opens the shell again after it failed to start: the old stream is
+  /// dropped, its id forgotten, and a fresh terminal asked for.
+  Future<void> reopen({int cols = 80, int rows = 24}) async {
+    if (_client == null) return;
+    await _subscription?.cancel();
+    _subscription = null;
+    _stream?.stop();
+    _stream = null;
+    _terminalId = null;
+    _running = false;
+    _exit = null;
+    _error = null;
+    _pending.clear();
+    notifyListeners();
+    await open(cols: cols, rows: rows);
   }
 
   /// Sends keystrokes. The first one holds the agent.
@@ -233,6 +258,14 @@ class TerminalSession extends ChangeNotifier {
       } on FormatException {
         // A chunk the bridge did not base64 is not output.
       }
+    }
+    // Why the shell never started, on the chunk that ends its stream: a
+    // shell that failed this way ends silently unless the reason is kept.
+    final error = json['error'];
+    if (error is String && error.isNotEmpty) {
+      _error = error;
+      _running = false;
+      notifyListeners();
     }
     final exit = json['exit'];
     if (exit is int) {

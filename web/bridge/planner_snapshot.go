@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -52,6 +53,9 @@ const (
 	plannerSnapshotFileLimit  = 1 << 20
 	plannerSnapshotTotalLimit = 10 << 20
 	plannerSnapshotFileCount  = 100
+	// plannerSnapshotPathLimit bounds how many paths one request may name,
+	// before any of them costs an Lstat or a git call.
+	plannerSnapshotPathLimit = 512
 	// plannerSnapshotDiffLimit caps one file's diff text.
 	plannerSnapshotDiffLimit = 256 << 10
 	// plannerSnapshotBinaryProbe is how much of a file is inspected for a NUL
@@ -75,6 +79,10 @@ const (
 var (
 	errPlannerFileChanged     = errors.New("file changed during capture; retry")
 	errPlannerSnapshotCorrupt = errors.New("snapshot corrupt")
+	// errPlannerBaseTooLarge marks a base-commit object bigger than a capture
+	// may hold: it is refused before it is read, and reported as a rejection
+	// rather than failing the whole capture.
+	errPlannerBaseTooLarge = errors.New("base content exceeds the capture limit")
 )
 
 // plannerCommitPattern is the shape of a base commit id: a lowercase hex
@@ -126,8 +134,24 @@ func plannerGitBaseFile(fleet *Fleet) func(ctx context.Context, dir, commit, rel
 			return nil, false, fmt.Errorf("%w: git is not available in this bridge", errPlannerUnavailable)
 		}
 		spec := commit + ":" + rel
+		// A commit that does not resolve is a repository error, and it is what
+		// makes a failed path lookup below readable: only when the commit is
+		// sound does a missing object name mean "not in this commit". Reading
+		// every failure as absence would relabel a tracked file as a create.
+		if _, err := fleet.git.runCtx(ctx, dir, Credential{}, "cat-file", "-e", commit+"^{commit}"); err != nil {
+			return nil, false, fmt.Errorf("%w: base commit %s does not resolve: %v", errPlannerUnavailable, commit, err)
+		}
 		if _, err := fleet.git.runCtx(ctx, dir, Credential{}, "cat-file", "-e", spec); err != nil {
 			return nil, false, nil
+		}
+		// The base side is read into memory, so an object larger than any
+		// capture may hold is refused before it is materialised.
+		size, err := fleet.git.runCtx(ctx, dir, Credential{}, "cat-file", "-s", spec)
+		if err != nil {
+			return nil, false, fmt.Errorf("%w: %v", errPlannerUnavailable, err)
+		}
+		if n, parseErr := strconv.ParseInt(strings.TrimSpace(string(size)), 10, 64); parseErr == nil && n > plannerSnapshotFileLimit {
+			return nil, false, fmt.Errorf("%w: base content exceeds %d bytes", errPlannerBaseTooLarge, plannerSnapshotFileLimit)
 		}
 		out, err := fleet.git.runCtx(ctx, dir, Credential{}, "show", spec)
 		if err != nil {
@@ -185,6 +209,11 @@ func (s *PlannerService) CreateSnapshot(ctx context.Context, id string, req Plan
 	if len(artifacts) == 0 && len(req.Paths) == 0 {
 		return PlannerSnapshotReply{}, fmt.Errorf("%w: a snapshot needs plan text, spec text or at least one selected path", errPlannerInvalid)
 	}
+	// Bounded before the loop: an unbounded list would let one request drive a
+	// git call per junk path.
+	if len(req.Paths) > plannerSnapshotPathLimit {
+		return PlannerSnapshotReply{}, fmt.Errorf("%w: a capture selects at most %d paths", errPlannerInvalid, plannerSnapshotPathLimit)
+	}
 	dir := workspaceDirFor(s.stateDir, rec.WorkspaceID)
 	if info, statErr := os.Stat(dir); statErr != nil || !info.IsDir() {
 		return PlannerSnapshotReply{}, fmt.Errorf("%w: the planner's workspace is not available", errPlannerUnavailable)
@@ -232,7 +261,11 @@ func (s *PlannerService) CreateSnapshot(ctx context.Context, id string, req Plan
 			continue
 		}
 		total += len(captured.content)
-		if len(captured.content) > 0 {
+		// A delete has no content and no ContentSHA256, so there is nothing to
+		// store. A file with bytes — including an empty one, whose digest is
+		// the digest of no bytes — names a blob the record must be able to
+		// verify, so it is written here.
+		if captured.file.ContentSHA256 != "" {
 			if s.beforeBlobWrite != nil {
 				s.beforeBlobWrite()
 			}
@@ -332,6 +365,12 @@ func (s *PlannerService) Context(id string) (PlannerContextView, error) {
 			if _, ok := approved[artifact.Kind]; ok {
 				continue
 			}
+			// A briefing may only report as approved what still hashes to its
+			// record: a stale or edited snapshot is skipped, so an older
+			// verified capture can answer instead of a corrupt newer one.
+			if plannerDigest([]byte(artifact.Content)) != artifact.SHA256 {
+				continue
+			}
 			approved[artifact.Kind] = struct {
 				snapshotID string
 				artifact   PlannerSnapshotArtifact
@@ -396,6 +435,31 @@ func (s *PlannerService) Context(id string) (PlannerContextView, error) {
 	return view, nil
 }
 
+// errPlannerSymlink marks the one refusal a capture reports as "symlink".
+var errPlannerSymlink = errors.New("symlink")
+
+// plannerNoSymlinkComponent refuses a path whose existing elements are
+// symlinks. A leaf symlink would be caught by the caller's own mode check, but
+// joining a path through a directory symlink reads whatever that directory
+// points at, which need not be inside the workspace at all.
+func plannerNoSymlinkComponent(root, rel string) error {
+	cur := root
+	for _, part := range strings.Split(rel, "/") {
+		cur = filepath.Join(cur, part)
+		info, err := os.Lstat(cur)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return errPlannerSymlink
+		}
+	}
+	return nil
+}
+
 // plannerCapturedFile is one file a capture froze, with the bytes whose blob is
 // written next and the diff text the review will show.
 type plannerCapturedFile struct {
@@ -408,6 +472,15 @@ type plannerCapturedFile struct {
 // A non-empty reason means the path was refused; an error means the capture
 // itself could not continue.
 func (s *PlannerService) captureSelectedFile(ctx context.Context, dir, base, rel string) (plannerCapturedFile, string, error) {
+	// Every existing component is checked, not just the leaf: joining a path
+	// through a directory symlink would read a file the user never selected,
+	// possibly outside the workspace.
+	if err := plannerNoSymlinkComponent(dir, rel); err != nil {
+		if errors.Is(err, errPlannerSymlink) {
+			return plannerCapturedFile{}, "symlink", nil
+		}
+		return plannerCapturedFile{}, "", err
+	}
 	abs := filepath.Join(dir, filepath.FromSlash(rel))
 	info, statErr := os.Lstat(abs)
 	onDisk := statErr == nil
@@ -423,6 +496,9 @@ func (s *PlannerService) captureSelectedFile(ctx context.Context, dir, base, rel
 	}
 	baseBytes, atBase, err := s.snapshotBaseFile(ctx, dir, base, rel)
 	if err != nil {
+		if errors.Is(err, errPlannerBaseTooLarge) {
+			return plannerCapturedFile{}, fmt.Sprintf("file exceeds the %d byte limit", plannerSnapshotFileLimit), nil
+		}
 		return plannerCapturedFile{}, "", err
 	}
 	operation := ""
@@ -488,11 +564,19 @@ func (s *PlannerService) readFileTwice(abs, rel string) ([]byte, os.FileInfo, er
 	}
 	first, firstInfo, err := read(abs)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: read %s: %v", errPlannerUnavailable, rel, err)
+		// The cause carries the absolute path; the caller only needs the
+		// repository-relative one.
+		return nil, nil, fmt.Errorf("%w: the file %s could not be read", errPlannerUnavailable, rel)
+	}
+	// The leaf was validated before the read; if it is a symlink now, the
+	// bytes that came back may be another file's, so the capture is refused
+	// rather than frozen.
+	if firstInfo != nil && firstInfo.Mode()&os.ModeSymlink != 0 {
+		return nil, nil, fmt.Errorf("%w: %s", errPlannerFileChanged, rel)
 	}
 	second, secondInfo, err := read(abs)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: read %s: %v", errPlannerUnavailable, rel, err)
+		return nil, nil, fmt.Errorf("%w: the file %s could not be read", errPlannerUnavailable, rel)
 	}
 	if firstInfo == nil || secondInfo == nil ||
 		!os.SameFile(firstInfo, secondInfo) ||
@@ -863,8 +947,8 @@ func unifiedFileDiff(rel, operation string, oldBytes, newBytes []byte) string {
 	if operation == plannerFileDelete {
 		newLabel = "/dev/null"
 	}
-	oldLines := plannerDiffLines(oldBytes)
-	newLines := plannerDiffLines(newBytes)
+	oldLines, oldFinalNewline := plannerDiffLines(oldBytes)
+	newLines, newFinalNewline := plannerDiffLines(newBytes)
 	prefix := 0
 	for prefix < len(oldLines) && prefix < len(newLines) && oldLines[prefix] == newLines[prefix] {
 		prefix++
@@ -876,43 +960,79 @@ func unifiedFileDiff(rel, operation string, oldBytes, newBytes []byte) string {
 		}
 		suffix++
 	}
+	// A final newline that appeared or disappeared is a change even when every
+	// line reads the same. Without pulling the last line into the hunk the
+	// reviewer would be shown pure context for bytes that differ.
+	if oldFinalNewline != newFinalNewline && prefix > 0 && prefix == len(oldLines) && len(oldLines) == len(newLines) {
+		prefix--
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "--- %s\n+++ %s\n", oldLabel, newLabel)
-	fmt.Fprintf(&b, "@@ -1,%d +1,%d @@\n", len(oldLines), len(newLines))
+	// An empty side has no line to start at, so its range starts at 0: that is
+	// how git and POSIX spell "@@ -0,0 +1,3 @@".
+	fmt.Fprintf(&b, "@@ -%d,%d +%d,%d @@\n", diffRangeStart(len(oldLines)), len(oldLines), diffRangeStart(len(newLines)), len(newLines))
+	removed := oldLines[prefix : len(oldLines)-suffix]
+	added := newLines[prefix : len(newLines)-suffix]
 	for _, line := range oldLines[:prefix] {
 		b.WriteString(" " + line + "\n")
 	}
-	for _, line := range oldLines[prefix : len(oldLines)-suffix] {
+	for _, line := range removed {
 		b.WriteString("-" + line + "\n")
 	}
-	for _, line := range newLines[prefix : len(newLines)-suffix] {
+	if !oldFinalNewline && suffix == 0 && len(removed) > 0 {
+		b.WriteString("\\ No newline at end of file\n")
+	}
+	for _, line := range added {
 		b.WriteString("+" + line + "\n")
+	}
+	if !newFinalNewline && suffix == 0 && len(added) > 0 {
+		b.WriteString("\\ No newline at end of file\n")
 	}
 	if suffix > 0 {
 		for _, line := range newLines[len(newLines)-suffix:] {
 			b.WriteString(" " + line + "\n")
 		}
+		if !newFinalNewline {
+			b.WriteString("\\ No newline at end of file\n")
+		}
 	}
 	return plannerCapDiff(b.String())
 }
 
-// plannerLooksBinary reports whether the inspected prefix of data holds a NUL
-// byte, which is what git uses to decide a file is not text.
-func plannerLooksBinary(data []byte) bool {
-	if len(data) > plannerSnapshotBinaryProbe {
-		data = data[:plannerSnapshotBinaryProbe]
+// diffRangeStart is the line a hunk range starts at, which is 0 for an empty
+// range and 1 otherwise.
+func diffRangeStart(lines int) int {
+	if lines == 0 {
+		return 0
 	}
-	return bytes.IndexByte(data, 0) >= 0
+	return 1
+}
+
+// plannerLooksBinary reports whether the inspected prefix of data holds a NUL
+// byte, which is what git uses to decide a file is not text, or whether the
+// bytes are not valid UTF-8: Go's JSON encoder rewrites invalid UTF-8 to
+// U+FFFD, so a frozen "exact" diff of such bytes would not describe them.
+func plannerLooksBinary(data []byte) bool {
+	probe := data
+	if len(probe) > plannerSnapshotBinaryProbe {
+		probe = probe[:plannerSnapshotBinaryProbe]
+	}
+	if bytes.IndexByte(probe, 0) >= 0 {
+		return true
+	}
+	return !utf8.Valid(data)
 }
 
 // plannerDiffLines splits data into lines without the trailing newline of the
-// last one, so line counts match what a reader sees.
-func plannerDiffLines(data []byte) []string {
+// last one, so line counts match what a reader sees, and reports whether the
+// data ended with a newline at all.
+func plannerDiffLines(data []byte) ([]string, bool) {
 	if len(data) == 0 {
-		return nil
+		return nil, true
 	}
+	finalNewline := data[len(data)-1] == '\n'
 	text := strings.TrimSuffix(string(data), "\n")
-	return strings.Split(text, "\n")
+	return strings.Split(text, "\n"), finalNewline
 }
 
 // plannerCapDiff bounds one diff, cutting on a rune boundary and saying so.

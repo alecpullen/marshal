@@ -764,6 +764,11 @@ func TestACPWorkerPromptCancel(t *testing.T) {
 	if err := backend.Cancel(ctx, sessionID); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
+	// The notification is written synchronously; the adapter parses it on its
+	// own read goroutine, so the frame is awaited rather than assumed parsed.
+	waitFor(t, acpTestTimeout, "the cancel frame to reach the adapter", func() bool {
+		return len(agent.framesFor("session/cancel")) == 1
+	})
 	cancels := agent.framesFor("session/cancel")
 	if len(cancels) != 1 {
 		t.Fatalf("session/cancel frames = %d, want 1", len(cancels))
@@ -844,7 +849,7 @@ func TestACPWorkerTransportLossIsUncertain(t *testing.T) {
 	// The child respawns; the session's conversation went with the process
 	// that died, so a later turn is uncertain rather than silently replayed.
 	waitFor(t, acpTestTimeout, "the adapter generation to be replaced", func() bool {
-		return backend.currentGeneration() == 1
+		return backend.currentGeneration() == 2
 	})
 	second := promptAsync(ctx, backend, sessionID, "try again")
 	select {
@@ -889,7 +894,7 @@ func TestACPWorkerNoAutomaticTurnReplay(t *testing.T) {
 	}
 
 	waitFor(t, acpTestTimeout, "the adapter to be respawned", func() bool {
-		return agent.generationCount() >= 2 && backend.currentGeneration() == 1
+		return agent.generationCount() >= 2 && backend.currentGeneration() == 2
 	})
 	// Give a reissue every chance to happen before asserting it did not.
 	time.Sleep(100 * time.Millisecond)

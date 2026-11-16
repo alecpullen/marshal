@@ -34,6 +34,11 @@ const (
 	acpMethodSessionUpdate  = "session/update"
 )
 
+// acpStopReasonCancelled is the stop reason an adapter reports for a turn it
+// ended because it was asked to. It is the only evidence that a cancel took
+// effect, so the cancelled event is emitted from it, not from the request.
+const acpStopReasonCancelled = "cancelled"
+
 // Methods the adapter may send the client and this backend forwards to the
 // planner's request sink: a permission request and an elicitation (a question).
 const (
@@ -86,12 +91,11 @@ type acpWorkerBackend struct {
 	handshakeGen  uint64
 	handshakeCaps WorkerCapabilities
 
-	mu         sync.Mutex
-	closed     bool
-	generation uint64
-	sessions   map[string]*acpWorkerSession
-	nextID     int
-	nextReqID  int
+	mu        sync.Mutex
+	closed    bool
+	sessions  map[string]*acpWorkerSession
+	nextID    int
+	nextReqID int
 }
 
 // acpWorkerSession is one session this backend started on the adapter. Its
@@ -103,8 +107,12 @@ type acpWorkerSession struct {
 	mode       string
 	modeOK     bool
 	generation uint64
-	seq        uint64
-	pending    map[string]*acpPendingRequest
+	// emitMu serializes numbering with delivery: the sequence is assigned and
+	// the sink is called under it, so a session's events reach the sink in the
+	// order they were numbered even when several goroutines emit at once.
+	emitMu  sync.Mutex
+	seq     uint64
+	pending map[string]*acpPendingRequest
 }
 
 // acpPendingRequest is one adapter request forwarded to the planner and not
@@ -130,7 +138,6 @@ func newACPWorkerBackend(transport agentTransport, events workerEventSink, reque
 		Transport:      transport,
 		OnNotification: b.onNotification,
 		OnRequest:      b.onRequest,
-		OnRestart:      b.onRestart,
 	}
 	return b
 }
@@ -148,6 +155,10 @@ func (b *acpWorkerBackend) Start(ctx context.Context, spec WorkerSessionSpec) (s
 	if err != nil {
 		return "", WorkerCapabilities{}, err
 	}
+	// The session belongs to the process that is live now. If a replacement
+	// takes over while the handshake below runs, everything created after this
+	// point lives in a generation that is already gone.
+	generation := b.child.Generation()
 
 	res, err := b.child.Request(ctx, acpMethodSessionNew, map[string]any{
 		"cwd": cwd,
@@ -202,6 +213,12 @@ func (b *acpWorkerBackend) Start(ctx context.Context, spec WorkerSessionSpec) (s
 	reportedCaps := caps
 	reportedCaps.Modes = append([]string(nil), available...)
 
+	if live := b.child.Generation(); live != generation {
+		// The adapter was replaced while the session was being created: the
+		// session exists only in a process that is already gone.
+		return "", WorkerCapabilities{}, fmt.Errorf("%w: the adapter process was replaced while the session was created", ErrWorkerUncertain)
+	}
+
 	b.mu.Lock()
 	if b.closed {
 		b.mu.Unlock()
@@ -216,7 +233,7 @@ func (b *acpWorkerBackend) Start(ctx context.Context, spec WorkerSessionSpec) (s
 		caps:       sessionCaps,
 		mode:       mode,
 		modeOK:     true,
-		generation: b.generation,
+		generation: generation,
 		pending:    map[string]*acpPendingRequest{},
 	}
 	b.mu.Unlock()
@@ -239,7 +256,7 @@ func (b *acpWorkerBackend) Start(ctx context.Context, spec WorkerSessionSpec) (s
 func (b *acpWorkerBackend) Prompt(ctx context.Context, sessionID, text string) (WorkerTurnResult, error) {
 	b.mu.Lock()
 	sess := b.sessions[sessionID]
-	generation := b.generation
+	generation := b.child.Generation()
 	if sess == nil {
 		b.mu.Unlock()
 		return WorkerTurnResult{}, fmt.Errorf("acp worker: unknown session %q", sessionID)
@@ -283,11 +300,19 @@ func (b *acpWorkerBackend) Prompt(ctx context.Context, sessionID, text string) (
 			return WorkerTurnResult{}, b.uncertain(sessionID, fmt.Errorf("session/prompt result: %w", err))
 		}
 	}
+	if out.StopReason == acpStopReasonCancelled {
+		// The adapter reports the outcome. Cancel only asked for it, and an
+		// ignored cancel must not be journaled as a cancelled turn.
+		b.emit(sessionID, workerEventTurnCancelled, map[string]any{"stopReason": out.StopReason})
+	}
 	return WorkerTurnResult{StopReason: out.StopReason}, nil
 }
 
 // Cancel asks the adapter to end the turn in flight. A session that is unknown
-// or already closed has nothing to cancel, and that is not an error.
+// or already closed has nothing to cancel, and that is not an error. The turn's
+// outcome is journaled when the adapter reports it, not when the request is
+// written: a cancel the adapter ignores must not be recorded as a cancelled
+// turn.
 func (b *acpWorkerBackend) Cancel(ctx context.Context, sessionID string) error {
 	b.mu.Lock()
 	sess := b.sessions[sessionID]
@@ -298,7 +323,6 @@ func (b *acpWorkerBackend) Cancel(ctx context.Context, sessionID string) error {
 	if err := b.child.Notify(acpMethodSessionCancel, map[string]any{"sessionId": sessionID}); err != nil {
 		return fmt.Errorf("acp worker: session/cancel: %w", err)
 	}
-	b.emit(sessionID, workerEventTurnCancelled, map[string]any{})
 	return nil
 }
 
@@ -309,34 +333,45 @@ func (b *acpWorkerBackend) Cancel(ctx context.Context, sessionID string) error {
 func (b *acpWorkerBackend) Close(ctx context.Context, sessionID string) error {
 	b.mu.Lock()
 	sess := b.sessions[sessionID]
-	if sess == nil {
-		b.mu.Unlock()
-		return nil
+	var cancels []context.CancelFunc
+	if sess != nil {
+		delete(b.sessions, sessionID)
+		cancels = make([]context.CancelFunc, 0, len(sess.pending))
+		for id, req := range sess.pending {
+			cancels = append(cancels, req.cancel)
+			delete(sess.pending, id)
+		}
 	}
-	delete(b.sessions, sessionID)
-	cancels := make([]context.CancelFunc, 0, len(sess.pending))
-	for id, req := range sess.pending {
-		cancels = append(cancels, req.cancel)
-		delete(sess.pending, id)
-	}
-	last := len(b.sessions) == 0
-	if last {
-		b.closed = true
-	}
+	idle := len(b.sessions) == 0
 	b.mu.Unlock()
 
 	for _, cancel := range cancels {
 		cancel()
 	}
-
-	if last {
-		b.startMu.Lock()
-		started := b.childStarted
-		b.startMu.Unlock()
-		if started {
-			b.child.Stop()
-		}
+	if !idle {
+		return nil
 	}
+
+	// A backend with no sessions has nothing left to serve. This is also the
+	// only way a process spawned by a Start that then failed is released: the
+	// planner discards such a backend, so no session will ever be closed.
+	b.startMu.Lock()
+	started := b.childStarted
+	b.startMu.Unlock()
+	if !started {
+		return nil
+	}
+
+	b.mu.Lock()
+	stillIdle := len(b.sessions) == 0
+	if stillIdle {
+		b.closed = true
+	}
+	b.mu.Unlock()
+	if !stillIdle {
+		return nil
+	}
+	b.child.Stop()
 	return nil
 }
 
@@ -350,8 +385,9 @@ func (b *acpWorkerBackend) handshake(ctx context.Context) (WorkerCapabilities, e
 	if err := b.startChild(); err != nil {
 		return WorkerCapabilities{}, err
 	}
+	generation := b.child.Generation()
 	b.mu.Lock()
-	generation, closed := b.generation, b.closed
+	closed := b.closed
 	b.mu.Unlock()
 	if closed {
 		return WorkerCapabilities{}, errors.New("acp worker: backend is closed")
@@ -433,19 +469,9 @@ func (b *acpWorkerBackend) selectMode(ctx context.Context, sessionID, mode strin
 	return nil
 }
 
-// onRestart records that the adapter process was replaced. Every session this
-// backend holds lived in the generation that died.
-func (b *acpWorkerBackend) onRestart() {
-	b.mu.Lock()
-	b.generation++
-	b.mu.Unlock()
-}
-
 // currentGeneration is the adapter generation a new session would join.
 func (b *acpWorkerBackend) currentGeneration() uint64 {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.generation
+	return b.child.Generation()
 }
 
 // onNotification routes one adapter notification. A supported update becomes
@@ -628,14 +654,25 @@ func (b *acpWorkerBackend) emit(sessionID, kind string, data any) {
 	b.mu.Lock()
 	sess := b.sessions[sessionID]
 	sink := b.events
+	b.mu.Unlock()
 	if sess == nil || sink == nil {
-		b.mu.Unlock()
+		return
+	}
+	// Numbering and delivery happen under the session's own lock. Several
+	// goroutines emit (the read loop for notifications, one per adapter
+	// request, and prompt callers), so numbering alone would let a later
+	// sequence reach the sink first.
+	sess.emitMu.Lock()
+	defer sess.emitMu.Unlock()
+	// A session removed while this emitter waited has no sink to deliver to.
+	b.mu.Lock()
+	current := b.sessions[sessionID] == sess
+	b.mu.Unlock()
+	if !current {
 		return
 	}
 	sess.seq++
-	seq := sess.seq
-	b.mu.Unlock()
-	sink(sessionID, seq, kind, raw)
+	sink(sessionID, sess.seq, kind, raw)
 }
 
 // uncertain reports a dispatched turn whose outcome this backend could not

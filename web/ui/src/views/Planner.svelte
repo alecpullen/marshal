@@ -3,6 +3,7 @@
   import Button from '../lib/ui/Button.svelte'
   import Card from '../lib/ui/Card.svelte'
   import {
+    APIError,
     answerPlanner,
     cancelPlanner,
     createPlanner,
@@ -34,7 +35,7 @@
     plannerModeLabel,
     plannerRequests,
     plannerTurnInFlight,
-    questionAnswer,
+    questionAnswers,
     unknownTurn,
     type PlannerContextView,
     type PlannerEvent,
@@ -143,6 +144,11 @@
   let answered = $state<string[]>([])
   let answering = $state('')
   let answers = $state<Record<string, string>>({})
+
+  /** The draft answer for one question of one request: a request may ask several. */
+  function answerKey(requestId: string, index: number): string {
+    return `${requestId}:${index}`
+  }
   let answerError = $state('')
 
   let context = $state<PlannerContextView | null>(null)
@@ -225,6 +231,9 @@
     }
   }
 
+  /** The last handoff attempt, so an unchanged retry replays rather than re-drafts. */
+  let pendingDraft = $state<{ signature: string; requestId: string } | null>(null)
+
   /** Creates the draft the reviewed snapshot approves, then opens the real item. */
   async function createDraft() {
     if (!id || !reviewed) return
@@ -232,23 +241,26 @@
     draftError = ''
     try {
       const repo = repos.find((r) => r.id === (view?.repoId ?? ''))
-      const item = await handoffPlanner(
-        id,
-        reviewed.id,
-        plannerHandoffRequest({
-          requestId: crypto.randomUUID(),
-          title: draftTitle.trim(),
-          plan: artifactText(reviewed, 'plan'),
-          spec: artifactText(reviewed, 'spec'),
-          repoId: view?.repoId ?? '',
-          projectRoot: view?.projectRoot ?? '',
-          projectWorkspace: settings?.workspace,
-          factoryWorkspace: settings?.factoryDefaults?.workspace,
-          factoryTargetBranch: settings?.factoryDefaults?.targetBranch,
-          repoBranch: repo?.branch,
-          noRequiredCiAcknowledged: acknowledged,
-        }),
-      )
+      const inputs = {
+        title: draftTitle.trim(),
+        plan: artifactText(reviewed, 'plan'),
+        spec: artifactText(reviewed, 'spec'),
+        repoId: view?.repoId ?? '',
+        projectRoot: view?.projectRoot ?? '',
+        projectWorkspace: settings?.workspace,
+        factoryWorkspace: settings?.factoryDefaults?.workspace,
+        factoryTargetBranch: settings?.factoryDefaults?.targetBranch,
+        repoBranch: repo?.branch,
+        noRequiredCiAcknowledged: acknowledged,
+      }
+      // The bridge dedupes a handoff by request ID, so an unchanged retry must
+      // carry the same one: a draft that was created but whose answer was lost
+      // is then replayed instead of created twice.
+      const signature = JSON.stringify(inputs)
+      const requestId =
+        pendingDraft && pendingDraft.signature === signature ? pendingDraft.requestId : crypto.randomUUID()
+      pendingDraft = { signature, requestId }
+      const item = await handoffPlanner(id, reviewed.id, plannerHandoffRequest({ requestId, ...inputs }))
       onNavigate(formatFactoryRoute({ itemId: item.id }))
     } catch (e) {
       draftError = errMessage(e)
@@ -272,6 +284,15 @@
       loadError = ''
       void loadSettings()
     } catch (e) {
+      // A planner that does not exist is not a connection problem: say so once
+      // and stop replaying reads into a permanent 404.
+      if (e instanceof APIError && e.status === 404) {
+        loadError = 'This planner does not exist. It may have been ended or the link may be wrong.'
+        connected = false
+        stopped = true
+        if (timer) clearTimeout(timer)
+        return
+      }
       connected = false
       readError = errMessage(e)
     }
@@ -580,15 +601,28 @@
               <Button type="button" variant="ghost" disabled={answering === card.requestId} onclick={() => void answer(card, permissionAnswer(false))}>Deny</Button>
             </div>
           {:else}
-            <label class="grid gap-1">Your answer
-              <input
-                class="min-w-0 rounded border border-border bg-bg p-2"
-                value={answers[card.requestId] ?? ''}
-                oninput={(e) => (answers[card.requestId] = e.currentTarget.value)}
-              />
-            </label>
+            {#each card.questions as question, i}
+              <label class="grid gap-1">{question || 'Your answer'}
+                <input
+                  class="min-w-0 rounded border border-border bg-bg p-2"
+                  value={answers[answerKey(card.requestId, i)] ?? ''}
+                  oninput={(e) => (answers[answerKey(card.requestId, i)] = e.currentTarget.value)}
+                />
+              </label>
+            {/each}
             <div>
-              <Button type="button" disabled={answering === card.requestId} onclick={() => void answer(card, questionAnswer(card.detail, answers[card.requestId] ?? ''))}>Send answer</Button>
+              <Button
+                type="button"
+                disabled={answering === card.requestId}
+                onclick={() =>
+                  void answer(
+                    card,
+                    questionAnswers(
+                      card.questions,
+                      card.questions.map((_, i) => answers[answerKey(card.requestId, i)] ?? ''),
+                    ),
+                  )}
+              >Send answer</Button>
             </div>
           {/if}
         </Card>

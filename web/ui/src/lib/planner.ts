@@ -303,15 +303,15 @@ export function describePlannerEvent(event: PlannerEvent): PlannerEventLine {
     case 'turn.prompt':
       return { label: 'Prompt sent', text: 'The prompt was dispatched to the planner.' }
     case 'turn.permission':
-      return { label: 'Permission request', text: requestLine('permission', data.params) }
+      return { label: 'Permission request', text: requestLine('permission', data.params ?? data.update) }
     case 'turn.question':
-      return { label: 'Question', text: requestLine('question', data.params) }
+      return { label: 'Question', text: requestLine('question', data.params ?? data.update) }
     case 'turn.cancelled':
       return { label: 'Turn cancelled', text: str(data.reason) }
     case 'turn.uncertain':
       return { label: 'Turn outcome unknown', text: str(data.reason) || 'The backend could not observe the turn; it was not resent.' }
     case 'turn.unknown':
-      return { label: 'Unrecognised update', text: str(data.kind) || 'The adapter sent an update this bridge does not model.' }
+      return { label: 'Unrecognised update', text: str(data.method) || str(data.kind) || 'The adapter sent an update this bridge does not model.' }
     case 'session.mode':
       return { label: 'Mode', text: str(data.modeId) }
     case 'session.started':
@@ -341,7 +341,12 @@ function toolLine(data: Record<string, unknown>): string {
 /** The extra context a bounded event still carries, or a preview of what was cut. */
 function paramsPreview(raw: unknown): { payload: Record<string, unknown>; preview: string } {
   const rec = asRecord(raw)
-  return { payload: asRecord(rec.payload), preview: str(rec.preview) }
+  const payload = asRecord(rec.payload)
+  // A request-shaped event nests its payload; an update-shaped one (the raw
+  // session update) carries the fields directly. Reading both keeps a question
+  // readable whichever path emitted it.
+  const effective = Object.keys(payload).length ? payload : rec
+  return { payload: effective, preview: str(rec.preview) }
 }
 
 function requestLine(kind: 'permission' | 'question', raw: unknown): string {
@@ -357,7 +362,15 @@ function requestLine(kind: 'permission' | 'question', raw: unknown): string {
   }
   const questions = Array.isArray(payload.questions) ? payload.questions : []
   const first = asRecord(questions[0])
-  return str(first.question) || str(payload.message) || str(payload.prompt) || preview || 'The planner is waiting for an answer.'
+  const text = str(first.question) || str(payload.message) || str(payload.prompt)
+  if (text) return text
+  // A payload the journal had to cut carries no question text. Showing its raw
+  // preview would post that JSON back as the answer's question, so say what
+  // happened instead.
+  if (asRecord(raw).truncated === true) {
+    return 'The planner is waiting for an answer (its request exceeded the journal limit).'
+  }
+  return preview || 'The planner is waiting for an answer.'
 }
 
 /* ------------------------------------------------------------------ */
@@ -372,6 +385,12 @@ export interface PlannerRequestCard {
   title: string
   /** The command, the question, or whatever the payload still carried. */
   detail: string
+  /**
+   * Every question the request asks, in the order the answers must be posted.
+   * A request may ask several, and one answer per question is the only shape
+   * `session/request_question` settles with; anything else is a decline.
+   */
+  questions: string[]
 }
 
 function requestKindOf(method: string, kind: string): 'permission' | 'question' {
@@ -401,7 +420,8 @@ export function plannerRequests(view: PlannerView | null, events: PlannerEvent[]
     if (record && record.state !== 'pending') continue
     const method = str(data.method)
     const kind = requestKindOf(method, event.kind)
-    cards.set(requestId, requestCard(requestId, method, kind, requestLine(kind, data.params)))
+    const asked = questionTexts(data.params)
+    cards.set(requestId, requestCard(requestId, method, kind, requestLine(kind, data.params), asked))
   }
   // A request the record knows about but the journal did not replay is still
   // open: it gets a card with what the record can say, rather than vanishing.
@@ -409,18 +429,28 @@ export function plannerRequests(view: PlannerView | null, events: PlannerEvent[]
     if (record.state !== 'pending' || cards.has(record.requestId)) continue
     const method = record.method ?? ''
     const kind = requestKindOf(method, '')
-    cards.set(record.requestId, requestCard(record.requestId, method, kind, ''))
+    cards.set(record.requestId, requestCard(record.requestId, method, kind, '', []))
   }
   return [...cards.values()]
 }
 
-function requestCard(requestId: string, method: string, kind: 'permission' | 'question', detail: string): PlannerRequestCard {
+/** The question texts one request payload asks, in their own order. */
+function questionTexts(raw: unknown): string[] {
+  const payload = asRecord(asRecord(raw).payload)
+  if (!Array.isArray(payload.questions)) return []
+  return payload.questions.map((q) => str(asRecord(q).question)).filter((q) => q !== '')
+}
+
+function requestCard(requestId: string, method: string, kind: 'permission' | 'question', detail: string, questions: string[]): PlannerRequestCard {
   return {
     requestId,
     method,
     kind,
     title: kind === 'permission' ? 'Permission requested' : 'Question from the planner',
     detail,
+    // A question card with no readable text still needs an answer slot: the
+    // one the person types stands in for the question it could not name.
+    questions: questions.length ? questions : kind === 'question' ? [detail] : [],
   }
 }
 
@@ -432,6 +462,15 @@ export function permissionAnswer(allow: boolean): unknown {
 /** The response one question answer posts, in the shape `session/request_question` settles with. */
 export function questionAnswer(question: string, answer: string): unknown {
   return { answers: [{ question, answer }] }
+}
+
+/**
+ * The response a card with several questions posts: one answer per question,
+ * in the order the request asked them. A request settled with any other shape
+ * is treated as declined, so the answers are never merged into one.
+ */
+export function questionAnswers(questions: string[], answers: string[]): unknown {
+  return { answers: questions.map((question, i) => ({ question, answer: answers[i] ?? '' })) }
 }
 
 /* ------------------------------------------------------------------ */
@@ -483,13 +522,16 @@ export interface PlannerHandoffInputs {
  */
 export function plannerHandoffRequest(input: PlannerHandoffInputs): FactoryCreate {
   const workspace = input.factoryWorkspace || input.projectWorkspace || ''
+  // A branch the caller could not resolve is left out, so the bridge applies
+  // the factory's own default instead of being pinned to a guess.
+  const targetBranch = input.factoryTargetBranch || input.repoBranch || ''
   const config: FactoryCreateConfig = {
     repoId: input.repoId,
     projectRoot: input.projectRoot,
     native: !workspace,
     implementerAuto: false,
     noRequiredCiAcknowledged: input.noRequiredCiAcknowledged,
-    targetBranch: input.factoryTargetBranch || input.repoBranch || 'main',
+    ...(targetBranch ? { targetBranch } : {}),
     ...(workspace ? { workspace } : {}),
   }
   return { requestId: input.requestId, title: input.title, plan: input.plan, spec: input.spec, config }

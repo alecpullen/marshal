@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -138,6 +139,14 @@ func factoryValidateSnapshot(s *EditSnapshot) error {
 	if !factoryDigestPattern.MatchString(s.SHA256) {
 		return fmt.Errorf("%w: edit snapshot digest is not a SHA-256", errFactoryInput)
 	}
+	// The recorded digest must describe this selection. A client that supplies
+	// its own EditSnapshot is not trusted to have hashed what it sent, and the
+	// approval digest binds this string, not the file list behind it.
+	if digest, err := plannerSnapshotDigest(*s); err != nil {
+		return fmt.Errorf("%w: edit snapshot digest: %v", errFactoryInput, err)
+	} else if digest != s.SHA256 {
+		return fmt.Errorf("%w: edit snapshot does not match its recorded digest", errFactoryInput)
+	}
 	if len(s.Files) > factorySnapshotFileLimit {
 		return fmt.Errorf("%w: an edit snapshot holds at most %d files", errFactoryInput, factorySnapshotFileLimit)
 	}
@@ -173,6 +182,16 @@ func factoryValidateSnapshot(s *EditSnapshot) error {
 			return fmt.Errorf("%w: selected path %q has operation %q, not create, modify or delete", errFactoryInput, file.Path, file.Operation)
 		}
 	}
+	// A selection that nests one path inside another cannot be applied in any
+	// order: the seed would write the parent as a file and then fail to make a
+	// directory of it, leaving a half-applied checkout.
+	for _, file := range s.Files {
+		for parent := path.Dir(file.Path); parent != "."; parent = path.Dir(parent) {
+			if seen[parent] {
+				return fmt.Errorf("%w: selected path %q is inside selected path %q", errFactoryInput, file.Path, parent)
+			}
+		}
+	}
 	return nil
 }
 
@@ -188,6 +207,10 @@ func factorySnapshotPathProblem(p string) string {
 		return "is absolute"
 	case strings.ContainsRune(p, '\\'):
 		return "is not a slash path"
+	case strings.HasPrefix(p, ":"):
+		// git reads a leading ':' as pathspec magic even after "--", so this
+		// path would stage a different file than the one selected.
+		return "names git pathspec magic"
 	}
 	for _, part := range strings.Split(p, "/") {
 		switch part {

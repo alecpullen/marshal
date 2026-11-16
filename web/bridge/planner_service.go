@@ -122,6 +122,11 @@ type PlannerService struct {
 
 	mu       sync.Mutex
 	planners map[string]*plannerInstance
+	// claims reserves a workspace for a create that has passed the occupancy
+	// check but not yet registered its planner, so two concurrent creates
+	// naming the same workspace cannot both claim it. A claim is removed when
+	// the create finishes, either way: from then on the record owns it.
+	claims map[string]string
 }
 
 // plannerInstance is one running planner: its record, its backend session and
@@ -169,6 +174,7 @@ func newPlannerService(fleet *Fleet, stateDir string) *PlannerService {
 		store:              newPlannerStore(stateDir),
 		now:                time.Now,
 		planners:           map[string]*plannerInstance{},
+		claims:             map[string]string{},
 		provisionWorkspace: plannerGitWorkspace(fleet, stateDir),
 	}
 	svc.backendFor = newPlannerACPBackend
@@ -300,6 +306,15 @@ func (s *PlannerService) Create(ctx context.Context, req PlannerCreateRequest) (
 	if err != nil {
 		return PlannerView{}, fmt.Errorf("%w: %v", errPlannerUnavailable, err)
 	}
+	// Claim the workspace before provisioning, so a second create that named it
+	// cannot pass the same free check while this one has not registered yet. A
+	// shared-use create is deliberately not exclusive.
+	if !fresh && !req.ProceedShared {
+		if !s.claimWorkspace(workspaceID, id) {
+			return PlannerView{}, &plannerOccupancyError{WorkspaceID: workspaceID, Occupancy: plannerOccupancyInUse}
+		}
+		defer s.releaseClaim(workspaceID, id)
+	}
 	backendID, err := newPlannerID()
 	if err != nil {
 		return PlannerView{}, fmt.Errorf("%w: %v", errPlannerUnavailable, err)
@@ -350,6 +365,9 @@ func (s *PlannerService) Create(ctx context.Context, req PlannerCreateRequest) (
 
 	sessionID, caps, err := backend.Start(ctx, spec)
 	if err != nil {
+		// The backend may already have spawned its process; nothing else will
+		// close it once this instance is abandoned.
+		_ = backend.Close(context.Background(), "")
 		s.abandon(inst, "the backend refused to start a session: "+err.Error())
 		return PlannerView{}, fmt.Errorf("%w: start worker session: %v", errPlannerUnavailable, err)
 	}
@@ -395,6 +413,11 @@ func (s *PlannerService) Get(id string) (PlannerView, error) {
 	}
 	rec, err := s.store.read(id)
 	if err != nil {
+		// A malformed id names no planner on every route, not just here; the
+		// other handlers report it as not found, so this one does too.
+		if errors.Is(err, errPlannerInvalid) {
+			return PlannerView{}, fmt.Errorf("%w: %s", errPlannerNotFound, id)
+		}
 		return PlannerView{}, err
 	}
 	return s.view(rec, s.recordLive(rec, s.nowUTC())), nil
@@ -519,11 +542,40 @@ func (s *PlannerService) workspaceKnown(workspaceID string) bool {
 // finds records whose heartbeat still looks fresh, and none of them is live
 // because no instance is driving it.
 func (s *PlannerService) recordLive(rec PlannerRecord, now time.Time) bool {
+	// This service drives it: an instance in the planner map is live by
+	// definition, and its heartbeat only has to prove ownership to a bridge
+	// that does not hold it. Without this, a planner idle between turns, or a
+	// turn that emits nothing for 90s, decays to "unknown" while it runs.
+	if _, owned := s.live(rec.ID); owned {
+		return true
+	}
 	if !plannerRecordLive(rec, now) {
 		return false
 	}
-	_, owned := s.live(rec.ID)
-	return owned
+	return false
+}
+
+// claimWorkspace reserves a workspace for one create. It fails when another
+// create already holds it, which is what makes the check-then-claim window
+// atomic with respect to other creates.
+func (s *PlannerService) claimWorkspace(workspaceID, plannerID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, taken := s.claims[workspaceID]; taken {
+		return false
+	}
+	s.claims[workspaceID] = plannerID
+	return true
+}
+
+// releaseClaim drops a create's reservation. It is called however the create
+// ends: once it succeeds, the planner's own record owns the workspace.
+func (s *PlannerService) releaseClaim(workspaceID, plannerID string) {
+	s.mu.Lock()
+	if s.claims[workspaceID] == plannerID {
+		delete(s.claims, workspaceID)
+	}
+	s.mu.Unlock()
 }
 
 // occupancy reports what a workspace looks like to a new planner, with the IDs
@@ -532,8 +584,22 @@ func (s *PlannerService) recordLive(rec PlannerRecord, now time.Time) bool {
 // account for, and it will not claim a free one without a record.
 func (s *PlannerService) occupancy(workspaceID string) (PlannerOccupancy, []string) {
 	now := s.nowUTC()
+	// A create that has claimed the workspace and not yet registered its
+	// planner owns it: the record that will prove it does not exist yet.
+	s.mu.Lock()
+	claimant, claimed := s.claims[workspaceID]
+	s.mu.Unlock()
+	if claimed {
+		return plannerOccupancyInUse, []string{claimant}
+	}
 	owned, live := false, []string{}
-	for _, rec := range s.records() {
+	records, err := s.records()
+	if err != nil {
+		// A store this bridge cannot read may hold the workspace's owner: the
+		// honest answer is unknown, never free.
+		return plannerOccupancyUnknown, nil
+	}
+	for _, rec := range records {
 		if rec.WorkspaceID != workspaceID || rec.State != plannerStateActive {
 			continue
 		}
@@ -555,8 +621,13 @@ func (s *PlannerService) occupancy(workspaceID string) (PlannerOccupancy, []stri
 // records is every planner record this bridge knows: the ones on disk, with a
 // live instance's fresher copy winning. The instances are snapshotted outside
 // the service lock so no instance lock is ever held while the service's is.
-func (s *PlannerService) records() []PlannerRecord {
-	onDisk, _ := s.store.list()
+// The error is the store's: a caller deciding occupancy must not treat an
+// unreadable listing as "nothing owns this workspace".
+func (s *PlannerService) records() ([]PlannerRecord, error) {
+	onDisk, err := s.store.list()
+	if err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	live := make([]*plannerInstance, 0, len(s.planners))
 	for _, inst := range s.planners {
@@ -583,7 +654,7 @@ func (s *PlannerService) records() []PlannerRecord {
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return out
+	return out, nil
 }
 
 // view projects a record for the browser. A record with no live owner reports
@@ -775,6 +846,14 @@ func (inst *plannerInstance) onRequest(ctx context.Context, _ string, requestID,
 	_ = inst.persistLocked()
 	inst.mu.Unlock()
 
+	// An answer that landed at the instant the backend gave up is still the
+	// user's answer: prefer it, so the recorded decision and what the backend
+	// is told cannot diverge.
+	select {
+	case answer := <-pending.answer:
+		return answer.response, answer.err
+	default:
+	}
 	select {
 	case answer := <-pending.answer:
 		return answer.response, answer.err
@@ -954,6 +1033,19 @@ type plannerTurnDispatch struct {
 // never retries: a turn whose outcome the backend could not observe is
 // unknown, because it may already have changed the workspace.
 func (inst *plannerInstance) runTurn(ctx context.Context, backend WorkerBackend, session, requestID, text string, dispatch plannerTurnDispatch) {
+	// Whatever the backend does, the turn stops running: a panic that left
+	// turnRunning set would answer every later prompt with 409 until the
+	// bridge restarted.
+	defer func() {
+		if r := recover(); r != nil {
+			inst.setTurnState(requestID, plannerTurnFailed, "", fmt.Sprintf("the backend panicked: %v", r))
+		}
+		inst.mu.Lock()
+		inst.turnRunning = false
+		inst.turnCancel = nil
+		inst.touchLocked()
+		inst.mu.Unlock()
+	}()
 	// The journal identifies the turn without holding the prompt: a replay of
 	// the journal can prove which text was sent, not leak it.
 	inst.appendEvent("turn.prompt", map[string]any{
@@ -975,17 +1067,17 @@ func (inst *plannerInstance) runTurn(ctx context.Context, backend WorkerBackend,
 	default:
 		inst.setTurnState(requestID, plannerTurnFailed, "", err.Error())
 	}
-	inst.mu.Lock()
-	inst.turnRunning = false
-	inst.turnCancel = nil
-	inst.touchLocked()
-	inst.mu.Unlock()
 }
 
 // setTurnState records one turn's state transition durably.
 func (inst *plannerInstance) setTurnState(requestID, state, stopReason, reason string) {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
+	// End() already rewrote in-flight turns to cancelled; a late backend result
+	// must not overwrite an ended record.
+	if inst.ended {
+		return
+	}
 	now := inst.svc.nowUTC()
 	for i := range inst.rec.Turns {
 		if inst.rec.Turns[i].RequestID != requestID {
@@ -1182,8 +1274,10 @@ func (svc *PlannerService) handleHandoff(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	replay := false
-	if concrete, ok := svc.factoryAPI().(*factoryAPI); ok {
-		replay = concrete.priorRequest(body.RequestID)
+	// A factory that can say whether it already recorded this request reports
+	// the replay; the handoff does not depend on the concrete implementation.
+	if reporter, ok := svc.factoryAPI().(interface{ priorRequest(string) bool }); ok {
+		replay = reporter.priorRequest(body.RequestID)
 	}
 	item, err := svc.handoff(r.Context(), r.PathValue("id"), r.PathValue("snapshotId"), body)
 	if err != nil {
@@ -1213,7 +1307,7 @@ func writeHandoffError(w http.ResponseWriter, err error) {
 
 func (svc *PlannerService) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var body PlannerCreateRequest
-	if !decodeJSON(w, r, &body) {
+	if !decodeStrictJSON(w, r, &body) {
 		return
 	}
 	view, err := svc.Create(r.Context(), body)
@@ -1235,7 +1329,7 @@ func (svc *PlannerService) handleGet(w http.ResponseWriter, r *http.Request) {
 
 func (svc *PlannerService) handlePrompt(w http.ResponseWriter, r *http.Request) {
 	var body PlannerPromptRequest
-	if !decodeJSON(w, r, &body) {
+	if !decodeStrictJSON(w, r, &body) {
 		return
 	}
 	// The request context is deliberately not passed on: a browser that closes
@@ -1262,10 +1356,11 @@ func (svc *PlannerService) handleCancel(w http.ResponseWriter, r *http.Request) 
 
 func (svc *PlannerService) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	var body PlannerAnswerRequest
-	if !decodeJSON(w, r, &body) {
+	if !decodeStrictJSON(w, r, &body) {
 		return
 	}
-	if len(strings.TrimSpace(string(body.Response))) == 0 {
+	response := strings.TrimSpace(string(body.Response))
+	if len(response) == 0 || response == "null" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "response is required"})
 		return
 	}

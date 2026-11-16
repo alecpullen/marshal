@@ -191,6 +191,11 @@ func (g *factoryGit) raw(ctx context.Context, dir string, args ...string) ([]byt
 // that commit does not hold is reported as absent rather than as an error.
 func (g *factoryGit) baseFileAt(ctx context.Context, dir, commit, rel string) ([]byte, bool, error) {
 	spec := commit + ":" + rel
+	// The commit must resolve before a failed lookup can be read as absence;
+	// otherwise a repository error would pass a create over a tracked file.
+	if _, err := g.raw(ctx, dir, "cat-file", "-e", commit+"^{commit}"); err != nil {
+		return nil, false, fmt.Errorf("factory: base commit %s does not resolve: %v", commit, err)
+	}
 	if _, err := g.raw(ctx, dir, "cat-file", "-e", spec); err != nil {
 		return nil, false, nil
 	}
@@ -230,6 +235,14 @@ func (g *factoryGit) preflightSeed(ctx context.Context, dir, base string, snap *
 		case plannerFileCreate:
 			if present {
 				return nil, fmt.Errorf("factory: snapshot creates %s, which the approved base already holds", file.Path)
+			}
+			// The worktree can hold a file the base does not (an untracked or
+			// ignored one). Writing over it would lose bytes the user never
+			// reviewed, so a create requires the path to be absent.
+			if _, statErr := os.Lstat(filepath.Join(dir, filepath.FromSlash(file.Path))); statErr == nil {
+				return nil, fmt.Errorf("factory: snapshot creates %s, which the checkout already holds", file.Path)
+			} else if !errors.Is(statErr, os.ErrNotExist) {
+				return nil, statErr
 			}
 		case plannerFileModify, plannerFileDelete:
 			if !present {
@@ -306,6 +319,11 @@ func applySeedEdit(root string, edit factorySeedEdit) error {
 	}
 	if present && (info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
 		return fmt.Errorf("factory: selected path %q is not a regular file", edit.Path)
+	}
+	if present && edit.Operation == plannerFileCreate {
+		// Preflight already refused this; re-checking here closes the window
+		// between the two, which is the one a concurrent writer could use.
+		return fmt.Errorf("factory: selected path %q is present, so it cannot be created", edit.Path)
 	}
 	if edit.Operation == plannerFileDelete {
 		if !present {

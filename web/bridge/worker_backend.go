@@ -59,7 +59,9 @@ type WorkerTurnResult struct {
 
 // WorkerBackend drives one provider of worker sessions. Start returns the
 // stable session ID the planner and the browser both use, together with the
-// capabilities that session actually has.
+// capabilities that session actually has. Close ends one session; called for a
+// session that does not exist on a backend holding none, it releases the
+// backend's own resources, which is how a failed Start's process is stopped.
 type WorkerBackend interface {
 	Start(context.Context, WorkerSessionSpec) (string, WorkerCapabilities, error)
 	Prompt(context.Context, string, string) (WorkerTurnResult, error)
@@ -68,7 +70,9 @@ type WorkerBackend interface {
 }
 
 // workerEventSink receives one ordered backend notification. sequence is
-// monotonic per backend; data is bounded JSON the planner journals as-is.
+// monotonic per session, starting at 1, and events reach the sink in that
+// order; data is bounded JSON the planner journals as-is. A consumer may ignore
+// the sequence when it journals each event under its own counter.
 type workerEventSink func(sessionID string, sequence uint64, kind string, data json.RawMessage)
 
 // workerRequestSink delivers one agent request to the planner and returns the

@@ -336,6 +336,92 @@ func TestStopClearsTheFix(t *testing.T) {
 	}
 }
 
+// startDeferredFix dispatches a fix whose recipe run is under way and not
+// finished: the run exists, and its completion has not fired. It returns the
+// completion, so a test can settle the run later.
+func startDeferredFix(t *testing.T, f *Fleet, id string) func(RecipeResult) {
+	t.Helper()
+	var done func(RecipeResult)
+	f.auto.runRecipe = func(ctx context.Context, name string, req RecipeRunRequest) (string, error) {
+		done = req.OnDone
+		return "fixer-1", nil
+	}
+	runFixInline(f)
+	if _, err := f.dispatchPullFix(context.Background(), id,
+		contract.PullFixRequest{Check: "lint"}, DefaultOwnerID); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if done == nil {
+		t.Fatal("the fix run never started")
+	}
+	return done
+}
+
+// failingLintForge is a forge reporting one failing lint check on abc123.
+func failingLintForge(t *testing.T) *pullForge {
+	t.Helper()
+	pf := newPullForge(t)
+	pf.setChecks("abc123", map[string]any{
+		"id": 412, "name": "lint", "status": "completed", "conclusion": "failure",
+		"html_url":    "https://github.com/you/r/runs/412",
+		"details_url": "https://github.com/you/r/actions/runs/412/job/9002",
+	})
+	return pf
+}
+
+func TestStopReachesTheLiveWorker(t *testing.T) {
+	f := pullTestFleet(t, failingLintForge(t))
+	id := fixTestPull(t, f, "abc123", "lint")
+	discarded := ""
+	f.auto.discard = func(ctx context.Context, agentID string) error {
+		discarded = agentID
+		return nil
+	}
+	startDeferredFix(t, f, id)
+
+	rec, _ := f.pull(id)
+	if rec.Fix == nil || rec.Fix.AgentID != "fixer-1" {
+		t.Fatalf("the running fix does not name its worker: %+v", rec.Fix)
+	}
+	if _, err := f.stopPullFix(context.Background(), id, DefaultOwnerID); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if discarded != "fixer-1" {
+		t.Fatalf("stop discarded %q, want the live worker fixer-1", discarded)
+	}
+}
+
+func TestAStoppedFixPushesNothing(t *testing.T) {
+	f := pullTestFleet(t, failingLintForge(t))
+	id := fixTestPull(t, f, "abc123", "lint")
+	f.auto.discard = func(context.Context, string) error { return nil }
+	shipped := false
+	f.auto.exit = func(context.Context, string, ExitOptions) (ExitResult, error) {
+		shipped = true
+		return ExitResult{Destination: "push"}, nil
+	}
+	f.auto.diff = func(context.Context, string, string) (json.RawMessage, error) {
+		return json.RawMessage(`{"files":[]}`), nil
+	}
+	done := startDeferredFix(t, f, id)
+
+	if _, err := f.stopPullFix(context.Background(), id, DefaultOwnerID); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	// The stopped worker's turn reports anyway; nothing it produced may land.
+	done(RecipeResult{AgentID: "fixer-1", Parsed: CIResult{Reproduced: true, Fixed: true}})
+
+	if shipped {
+		t.Fatal("a fix stopped while it ran pushed its work")
+	}
+	if cur, _ := f.pull(id); cur.Fix != nil {
+		t.Fatalf("the stopped fix came back: %+v", cur.Fix)
+	}
+	if ask := pullAsk(t, f, id); ask.Outcome != pullFixStopped {
+		t.Fatalf("ask = %+v, want the stop's own ask", ask)
+	}
+}
+
 func TestFixOutcomeBecomesAnAsk(t *testing.T) {
 	cases := []struct {
 		name string

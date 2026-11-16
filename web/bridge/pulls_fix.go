@@ -209,12 +209,18 @@ func (f *Fleet) runFixerPullFix(ctx context.Context, rec contract.PullRecord, fi
 		note = strings.TrimSpace("Investigate only: do not change any file in the repository. " +
 			"Reproduce the failure, find the cause, and report it.\n" + note)
 	}
-	if err := f.startCIFixWith(ctx, rec.ProjectRoot, ci, repo, forge, cred, ev, check, key, note,
-		func(res RecipeResult) { f.finishPullFixRun(rec, fix, res) }); err != nil {
+	agentID, err := f.startCIFixWith(ctx, rec.ProjectRoot, ci, repo, forge, cred, ev, check, key, note,
+		func(res RecipeResult) { f.finishPullFixRun(rec, fix, res) })
+	if err != nil {
 		f.autoRelease(key)
 		f.finishPullFix(rec, fix, pullFixGaveUp, "started the fix recipe", err.Error())
 		return nil
 	}
+	// The worker's id is known as soon as the run exists, so a stop reaches the
+	// worker for as long as it runs, not only once it has finished. A run that
+	// ended before this line has already cleared the fix, so the note is then a
+	// no-op.
+	f.notePullFixAgent(rec.ID, fix.ID, agentID)
 	return nil
 }
 
@@ -242,6 +248,16 @@ func (f *Fleet) pullFixerSettings(rec contract.PullRecord) *CIFixerSettings {
 func (f *Fleet) finishPullFixRun(rec contract.PullRecord, fix contract.PullFix, res RecipeResult) {
 	ctx, cancel := f.autoContext()
 	defer cancel()
+	// The run's result lands only while it is still the record's fix. A stop
+	// clears the fix — and discards the worker — before the run reports, and a
+	// record that is gone has nothing left to write to: neither may push, and
+	// neither leaves a second ask, because the stop's own ask already says what
+	// happened.
+	if cur, ok := f.pull(rec.ID); !ok || cur.Fix == nil || cur.Fix.ID != fix.ID {
+		slog.Default().Info("webbridge: pull fix finished after it was cleared",
+			"pull", rec.ID, "fix", fix.ID)
+		return
+	}
 	f.notePullFixAgent(rec.ID, fix.ID, res.AgentID)
 	discard := func() {
 		if res.AgentID == "" {

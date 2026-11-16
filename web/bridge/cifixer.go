@@ -283,15 +283,18 @@ func (f *Fleet) recordCIGaveUp(repo Repo, ev checkEvent, check CheckInfo, reason
 }
 
 func (f *Fleet) startCIFix(ctx context.Context, root string, ci *CIFixerSettings, repo Repo, forge Forge, cred Credential, ev checkEvent, check CheckInfo, key string) error {
-	return f.startCIFixWith(ctx, root, ci, repo, forge, cred, ev, check, key, "",
+	_, err := f.startCIFixWith(ctx, root, ci, repo, forge, cred, ev, check, key, "",
 		func(res RecipeResult) { f.finishCI(repo, ci, ev, check, res) })
+	return err
 }
 
 // startCIFixWith is startCIFix with the run's own completion and an extra note
 // for the recipe's prompt. A user-requested fix uses it to end on the pull
-// request's own outcome instead of the fixer's history.
+// request's own outcome instead of the fixer's history. It returns the worker's
+// id, so a caller can reach the worker while it runs and not only when its
+// completion callback fires.
 func (f *Fleet) startCIFixWith(ctx context.Context, root string, ci *CIFixerSettings, repo Repo, forge Forge,
-	cred Credential, ev checkEvent, check CheckInfo, key, note string, done func(RecipeResult)) error {
+	cred Credential, ev checkEvent, check CheckInfo, key, note string, done func(RecipeResult)) (string, error) {
 	log, err := forge.CheckLog(ctx, repo, check, cred)
 	if err != nil {
 		// The fixer can still try from the check's name.
@@ -320,8 +323,7 @@ func (f *Fleet) startCIFixWith(ctx context.Context, root string, ci *CIFixerSett
 	if ci.MaxMinutes > 0 || ci.MaxUSD > 0 {
 		req.Limits = &RecipeLimits{MaxMinutes: ci.MaxMinutes, MaxUSD: ci.MaxUSD}
 	}
-	_, err = f.autoRunRecipe(ctx, "fix-ci", req)
-	return err
+	return f.autoRunRecipe(ctx, "fix-ci", req)
 }
 
 // agentDiff reads an agent's changed files and each file's diff.

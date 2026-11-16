@@ -1,10 +1,12 @@
-<!-- tools: file.read, repo.search, symbols, codebase_search, transcript_read -->
+<!-- tools: file.read, repo.search, symbols, codebase_search, transcript_read, image.view -->
 
 # Reading and searching
 
-Five tools answer "what does this code say?" and "where is it?". They are not
+These tools answer "what does this code say?" and "where is it?". They are not
 interchangeable, and the corpus shows agents reaching for the wrong one — most
 often `shell.run` with `grep`, or `repo.search` when they wanted a whole file.
+`image.view` is the odd one out: the same habit of looking before answering, but
+the subject is a picture rather than a file of text.
 
 The boundary, in one line each:
 
@@ -15,6 +17,7 @@ The boundary, in one line each:
 | `symbols` | where is this declaration, and who uses it |
 | `codebase_search` | which code is about this concept |
 | `transcript_read` | what happened earlier in this session |
+| `image.view` | what does this picture actually show |
 
 ## file.read
 
@@ -170,3 +173,45 @@ a plain int would make both unreachable.
 command, then `turn_seq` to re-read that turn in full. For source code use
 `file.read`, `repo.search`, or `symbols` instead — the transcript is history, not
 the repository.
+
+## image.view
+
+**For:** seeing a picture — a screenshot, a diagram, a photo, a chart — instead
+of guessing what it shows from its name or from the code that produced it.
+
+**Surface** (`internal/tools/native/image.go:39`), risk `read_only`:
+
+| Arg | Required | Notes |
+|---|---|---|
+| `path` | one of | image file, resolved the way `file.read` resolves a path |
+| `ref` | one of | hash of an image an earlier `image.view` stored |
+| `max_edge` | no | longest edge in pixels; defaults to the configured limit |
+| `format` | no | `png` or `jpeg`; defaults to the source format, or JPEG when re-encoding |
+| `quality` | no | JPEG quality, 1-100 |
+| `label` | no | a short label, e.g. `screenshot of /tmp/ui.png` |
+
+Exactly one of `path` and `ref` is required; the schema's `oneOf` refuses both
+and neither. PNG, JPEG, GIF (first frame) and WebP sources are accepted. The
+bytes are normalised — downscaled to the long edge and stored as PNG, or as JPEG
+when PNG does not fit — and the result carries the hash a later turn can name.
+
+**Call sequence:** build or capture the thing → `image.view` on the file it
+produced → answer from what the picture actually shows. After a UI change,
+viewing the rendered result is the evidence; reading the code that produced it
+is not.
+
+The image is part of the conversation from then on: it is replayed with the
+transcript until pruning or rollover drops it. A tool result's images are shed
+first when the prompt overflows, so an older screenshot costs less than the
+user's own.
+
+**Failure modes:**
+
+- `image.view requires one of path or ref` — neither argument was given.
+- `image.view takes exactly one of path or ref; both were given`.
+- `image.view is unavailable: this session has no image store` — the runtime
+  started without one.
+- A `ref` that names no stored image fails with the hash.
+- The model must be able to take images: on a route with vision off the tool is
+  not offered at all, and a prompt carrying an image is refused with a line
+  naming the preset to change.

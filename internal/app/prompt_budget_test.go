@@ -15,9 +15,17 @@ import (
 // Ceilings for the fixed prefix of a default native-tools request, set by
 // the context-diet Tier 1 work (docs/context-diet/design.md). Lower them as
 // later tiers cut more; never raise them without a design note saying why.
+//
+// Design note — raised for the images feature (docs/vision/design.md).
+// image.view adds one model-facing tool with six arguments, and the schemas
+// sat at 14.7 KB of the 15 KB ceiling before it: no trimming of the new
+// tool's arguments or descriptions brings a six-argument schema under the
+// 300 bytes that were left. The tool is the agent's only way to see a
+// picture, which is the point of the feature, so the ceiling moves rather
+// than the surface. The system-prompt ceiling is unchanged.
 const (
 	maxSystemPromptBytes = 9000
-	maxToolSchemaBytes   = 15000
+	maxToolSchemaBytes   = 17500
 )
 
 // budgetFixtureWorkingDir is the fixed working-directory input used when

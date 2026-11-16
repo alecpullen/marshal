@@ -33,7 +33,10 @@ package contract
 //     state and workspace, and none writes user config;
 //   - notes (session/note, session/notice_set, session/notice_clear,
 //     session/notice_dismiss): a session's transcript keeps what the screen
-//     writes into it.
+//     writes into it;
+//   - images (session/images_put): the screen pastes or uploads a picture into
+//     the session it is watching. The bytes land in the agent's own store,
+//     which the container holds; nothing about the write reaches the host.
 //
 // A method that is not here is refused: every Host method and with it every
 // config/ and trust/ method, the lifecycle and the ending, credentials and
@@ -58,6 +61,7 @@ var ContainerViewerMethods = []string{
 	"session/diff",
 	"session/file",
 	"session/file_index",
+	"session/images_put",
 	"session/intelligence",
 	"session/memory_delete",
 	"session/memory_list",

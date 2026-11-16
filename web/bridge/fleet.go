@@ -129,9 +129,9 @@ type Fleet struct {
 	gatesMu sync.Mutex
 	gates   map[string]gateRecord
 
-	// buildVersion is the release version of the webbridge binary, stamped
-	// at build time via -ldflags -X. Empty when built from source; the
-	// --version banner reports "dev" in that case.
+	// buildVersion is the bridge's own version, the same value daemonVersion
+	// reports: the release stamp, else the source build's dev+<commit>
+	// (bridge.SourceBuild's rule).
 	buildVersion string
 
 	// runner executes container-runtime commands for derived-image builds.
@@ -1043,8 +1043,9 @@ func (f *Fleet) checkAgentVersion(ctx context.Context, rt *agentRuntime) {
 }
 
 // versionSkew is checkAgentVersion's rule: both versions real and different.
-// Both sides must carry a real version; an empty or "dev" value on either side
-// means a source build, where skew is meaningless.
+// An empty or plain "dev" value on either side means a source build that named
+// no commit, so there is nothing to compare; two dev+<commit> builds carry
+// commits, and different ones are skew.
 func versionSkew(agentVersion, bridgeVersion string) bool {
 	if agentVersion == "" || agentVersion == "dev" ||
 		bridgeVersion == "" || bridgeVersion == "dev" {

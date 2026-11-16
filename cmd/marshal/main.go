@@ -14,6 +14,7 @@ import (
 
 	"marshal/internal/acp"
 	"marshal/internal/app/config"
+	"marshal/internal/buildinfo"
 	"marshal/internal/credentials"
 	"marshal/internal/fleetprofile"
 	"marshal/internal/launch"
@@ -73,14 +74,21 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	args = fs.Args()
 
-	// Stamp the release version into the provider HTTP client's
-	// self-identifying User-Agent. OpenCode Zen asks clients to send their
-	// own name and version rather than a generic HTTP-library default; a
-	// plain `go build` leaves version empty and keeps the marshal/dev
-	// default. acp.AgentVersion is stamped the same way below.
-	if version != "" {
-		provider.UserAgent = "marshal/" + version
-	}
+	// Decision 2: this build's version is computed once, here, and everything
+	// that names it uses this one value. buildinfo.Version folds in the VCS
+	// stamps Go embeds, so a source build names the commit it came from
+	// wherever it names itself.
+	v := buildinfo.Version(version)
+
+	// Name this build in the provider HTTP client's User-Agent. OpenCode Zen
+	// asks clients to send their own name and version rather than a generic
+	// HTTP-library default.
+	provider.UserAgent = "marshal/" + v
+
+	// Report the agent's own version in the initialize handshake so a bridge
+	// can detect skew on derived/custom images — and set it in every mode, so
+	// the TUI's own version is this build's rather than empty.
+	acp.AgentVersion = v
 
 	if *versionFlag {
 		fmt.Fprintln(stdout, versionString())
@@ -100,9 +108,6 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return calibrateRunner(args[1:], stdout)
 	}
 	if len(args) > 0 && args[0] == "acp" {
-		// Report the agent's own version in the initialize handshake so a
-		// bridge can detect skew on derived/custom images.
-		acp.AgentVersion = version
 		spec, err := acpListenSpec(args[1:])
 		if err != nil {
 			return err

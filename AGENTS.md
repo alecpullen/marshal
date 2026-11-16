@@ -140,6 +140,7 @@ App shell & config
   internal/app/notify/     the desktop notifier launch gives the fleet's watch (osascript / notify-send)
   internal/app/config/     TOML loading, defaults, merge rules
   internal/app/session/    shared mutable state between TUI and agent
+  internal/buildinfo/      a binary's version: the release stamp when there is one, else dev+<12 hex of the commit>, with +dirty for a modified tree
   internal/trust/          folder-trust store, resolver, project-config hashing
   internal/credentials/    OS-keychain secret store
   internal/oauth/          OAuth 2.1 + PKCE client (loopback, DCR)

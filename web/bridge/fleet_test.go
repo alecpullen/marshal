@@ -149,6 +149,39 @@ func TestVersionMismatchWarnsButDoesNotRefuse(t *testing.T) {
 	}
 }
 
+// TestTwoSourceBuildsWarnOfSkew: dev+<commit> is a version, so two source
+// builds from different commits are skewed and warn; plain dev is no
+// version at all, so it never does (decision 7).
+func TestTwoSourceBuildsWarnOfSkew(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		bridgeVersion string
+		agentVersion  string
+		wantWarn      bool
+	}{
+		{"different commits", "dev+bbbbbbbbbbbb", "dev+aaaaaaaaaaaa", true},
+		// The same commit is the same build: dev+<commit> carries one, so it
+		// is compared and found equal — skew needs a difference, not merely
+		// two source builds.
+		{"same commit", "dev+aaaaaaaaaaaa", "dev+aaaaaaaaaaaa", false},
+		{"plain dev bridge", "dev", "dev+aaaaaaaaaaaa", false},
+		{"plain dev agent", "dev+bbbbbbbbbbbb", "dev", false},
+		{"both plain dev", "dev", "dev", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := testFleetWithVersion(t, tc.bridgeVersion)
+			id, err := f.spawnWithAgentVersion(context.Background(), tc.agentVersion)
+			if err != nil {
+				t.Fatalf("the spawn was refused: %v", err)
+			}
+			if got := f.versionWarned(id); got != tc.wantWarn {
+				t.Fatalf("agent %s under bridge %s: warned = %v, want %v",
+					tc.agentVersion, tc.bridgeVersion, got, tc.wantWarn)
+			}
+		})
+	}
+}
+
 func newTestFleetWithLimit(t *testing.T, limit int) *Fleet {
 	t.Helper()
 	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))

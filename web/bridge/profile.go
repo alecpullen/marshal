@@ -19,15 +19,22 @@ const agentImageRepo = "ghcr.io/marshal/agent"
 // run an agent.
 const defaultAgentImage = agentImageRepo + ":latest"
 
+// SourceBuild is buildinfo.IsSource, repeated because web/ imports no
+// internal package (decision 3).
+func SourceBuild(v string) bool {
+	return v == "dev" || strings.HasPrefix(v, "dev+")
+}
+
 // defaultAgentImageFor pins the agent image to the bridge's own build,
 // so the marshal inside the container speaks the same ACP as the bridge
 // outside it.
 //
-// A dev or unstamped build has no published tag to pin to and falls back
-// to :latest. A released build never does — that is the case where a
-// silent version mismatch would be hardest to diagnose.
+// A source build — dev, or dev+<commit> — has no published tag to pin to
+// and falls back to :latest (decision 4). A released build never does —
+// that is the case where a silent version mismatch would be hardest to
+// diagnose.
 func defaultAgentImageFor(version string) string {
-	if version == "" || version == "dev" {
+	if version == "" || SourceBuild(version) {
 		return agentImageRepo + ":latest"
 	}
 	return agentImageRepo + ":" + version

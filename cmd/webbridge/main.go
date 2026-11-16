@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"marshal/internal/buildinfo"
 	"marshal/internal/procenv"
 	"marshal/web/bridge"
 )
@@ -36,14 +37,12 @@ func versionString() string {
 	return fmt.Sprintf("webbridge %s", daemonVersion())
 }
 
-// daemonVersion is the bare version, "dev" when the build was not
-// stamped. The local profile reports it through GET /api/daemon, which
-// wants the version itself rather than the banner around it.
+// daemonVersion is the bare version: the stamped release version, else the
+// source build's dev+<commit> (decision 7). The local profile reports it
+// through GET /api/daemon, which wants the version itself rather than the
+// banner around it, and the fleet carries it as its build version.
 func daemonVersion() string {
-	if version == "" {
-		return "dev"
-	}
-	return version
+	return buildinfo.Version(version)
 }
 
 // defaultStateDir is the in-container mount point for the state volume.
@@ -546,7 +545,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		MaxConcurrent: cfg.maxConcurrent,
 		MaxDiskMB:     cfg.maxDiskMB,
 		MaxCloneMB:    cfg.maxCloneMB,
-	}, version, cfg.projectMounts, cfg.stateVolume)
+	}, daemonVersion(), cfg.projectMounts, cfg.stateVolume)
 
 	// The local profile runs its fleet as host processes (decision 4).
 	// This must precede every start below — egress, reattach, the poller

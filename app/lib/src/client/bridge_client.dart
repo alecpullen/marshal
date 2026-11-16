@@ -71,6 +71,51 @@ class BridgeClient {
   /// GET /api/events: the fleet stream, which the caller starts.
   EventStream fleetEvents() => EventStream(_transport, '/api/events');
 
+  /// GET /api/sessions/{id}/stack: one transcript's tree at its current
+  /// revision. [subagentId] names a child transcript; 0 is the parent's.
+  Future<StackSnapshot> stack(String sessionId, {int subagentId = 0}) =>
+      _objectOf(
+        '/api/sessions/${Uri.encodeComponent(sessionId)}/stack',
+        StackSnapshot.fromJson,
+        query: {if (subagentId != 0) 'subagent': '$subagentId'},
+      );
+
+  /// GET /api/events?sessionId=: one session's stream, whose `session/update`
+  /// notifications carry its stack patches. The caller starts it.
+  EventStream sessionEvents(String sessionId) =>
+      EventStream(_transport, '/api/events', query: {'sessionId': sessionId});
+
+  /// POST /api/sessions/{id}/prompt: starts a turn.
+  Future<void> prompt(String sessionId, PromptRequest request) =>
+      _post('/api/sessions/${Uri.encodeComponent(sessionId)}/prompt', request);
+
+  /// POST /api/sessions/{id}/steer: redirects the turn already running.
+  Future<void> steer(String sessionId, SteerRequest request) =>
+      _post('/api/sessions/${Uri.encodeComponent(sessionId)}/steer', request);
+
+  /// POST /api/sessions/{id}/cancel: stops the turn.
+  Future<void> cancel(String sessionId) =>
+      _post('/api/sessions/${Uri.encodeComponent(sessionId)}/cancel', null);
+
+  /// POST /api/sessions/{id}/mode: switches the permission mode.
+  Future<void> setMode(String sessionId, ModeRequest request) =>
+      _post('/api/sessions/${Uri.encodeComponent(sessionId)}/mode', request);
+
+  /// GET /api/sessions/{id}/access: the session's committed access tuple.
+  /// A mode without editing is a session the user can only read.
+  Future<AccessState> access(String sessionId) => _objectOf(
+    '/api/sessions/${Uri.encodeComponent(sessionId)}/access',
+    AccessState.fromJson,
+  );
+
+  /// POST /api/agents: starts an agent, which is a new thread.
+  Future<SpawnResult> spawn(SpawnRequest request) async {
+    final response = await _send(
+      Request(method: 'POST', path: '/api/agents', body: request),
+    );
+    return SpawnResult.fromJson(_object(response));
+  }
+
   Future<Response> _send(Request request) async {
     final response = await _transport.send(request);
     if (!response.ok) {
@@ -87,8 +132,9 @@ class BridgeClient {
 
   Future<T> _objectOf<T>(
     String path,
-    T Function(Map<String, dynamic> json) fromJson,
-  ) async => fromJson(_object(await _send(Request(path: path))));
+    T Function(Map<String, dynamic> json) fromJson, {
+    Map<String, String> query = const {},
+  }) async => fromJson(_object(await _send(Request(path: path, query: query))));
 
   Future<List<T>> _listOf<T>(
     String path,

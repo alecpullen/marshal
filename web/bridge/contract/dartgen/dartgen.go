@@ -517,6 +517,16 @@ Map<String, T> _map<T>(Object? json, T Function(Object? value) convert) => {
     entry.key: convert(entry.value),
 };
 `},
+	{"_mapOrNull", `/// The object [json] names, or null when it is absent, each value
+/// decoded by [convert].
+Map<String, T>? _mapOrNull<T>(Object? json, T Function(Object? value) convert) =>
+    json == null
+    ? null
+    : {
+        for (final entry in (json as Map<String, dynamic>).entries)
+          entry.key: convert(entry.value),
+      };
+`},
 	{"_enumOrNull", `/// The enum value [json] names, or null when it is absent.
 T? _enumOrNull<T>(Object? json, T Function(String wire) fromWire) =>
     json == null ? null : fromWire(json as String);

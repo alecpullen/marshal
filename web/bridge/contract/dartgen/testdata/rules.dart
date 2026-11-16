@@ -26,6 +26,16 @@ Map<String, T> _map<T>(Object? json, T Function(Object? value) convert) => {
     entry.key: convert(entry.value),
 };
 
+/// The object [json] names, or null when it is absent, each value
+/// decoded by [convert].
+Map<String, T>? _mapOrNull<T>(Object? json, T Function(Object? value) convert) =>
+    json == null
+    ? null
+    : {
+        for (final entry in (json as Map<String, dynamic>).entries)
+          entry.key: convert(entry.value),
+      };
+
 /// Color is a named string type with typed constants.
 enum Color {
   colorRed('red'),
@@ -84,6 +94,7 @@ class Sample {
     required this.raw,
     required this.tags,
     required this.lookup,
+    this.optLabels,
     required this.shade,
     required this.nested,
     required this.fallback,
@@ -104,6 +115,8 @@ class Sample {
   final Object? raw;
   final List<String> tags;
   final Map<String, int> lookup;
+  /// OptLabels is a map dropped from the wire when it is empty.
+  final Map<String, String>? optLabels;
   final Color shade;
   final Inner nested;
   final String fallback;
@@ -145,6 +158,10 @@ class Sample {
         json['lookup'],
         (value) => (value as num).toInt(),
       ),
+      optLabels: _mapOrNull(
+        json['optLabels'],
+        (value) => value as String,
+      ),
       shade: shade,
       nested: _object(
         json['nested'],
@@ -177,6 +194,9 @@ class Sample {
     json['raw'] = raw;
     json['tags'] = tags;
     json['lookup'] = lookup;
+    if (optLabels != null) {
+      json['optLabels'] = optLabels!;
+    }
     json['shade'] = rawEnums['shade'] ?? shade.wire;
     json['nested'] = nested.toJson();
     json['fallback'] = fallback;

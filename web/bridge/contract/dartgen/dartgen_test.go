@@ -64,7 +64,24 @@ func TestGeneratorRules(t *testing.T) {
 		}
 	})
 
-	// 4. Each unsupported construct fails, naming the file, the construct
+	// 4. Every decoder the module calls, it also declares: a call to an
+	// undeclared helper compiles nowhere, so a missing helper fails here
+	// rather than in a Dart build. The fixture's optional map field is
+	// the case that found this (review fix 1).
+	t.Run("helpers are declared", func(t *testing.T) {
+		module, err := Generate(fixture)
+		if err != nil {
+			t.Fatalf("Generate(%s): %v", fixture, err)
+		}
+		for _, name := range helperCalls(module) {
+			// Every helper is generic, so a declaration writes `<`.
+			if !bytes.Contains(module, []byte(name+"<")) {
+				t.Errorf("the module calls %s but never declares it", name)
+			}
+		}
+	})
+
+	// 5. Each unsupported construct fails, naming the file, the construct
 	// and the source line. The fixtures are tsgen's, so both generators
 	// reject the same package for the same reason.
 	unsupported := []struct {
@@ -121,6 +138,33 @@ func TestDartContractIsCurrent(t *testing.T) {
 	if !bytes.Equal(generated, current) {
 		t.Fatalf("%s is stale; regenerate it with:\n\t%s", appPath, regeneration)
 	}
+}
+
+// helperCalls returns the names of the private helpers the module calls, in
+// the order they first appear. A call is a helper name followed by `(`, which
+// a declaration never is: every helper is generic and writes `<`.
+func helperCalls(module []byte) []string {
+	var names []string
+	seen := make(map[string]bool)
+	text := string(module)
+	for i := 0; i < len(text); i++ {
+		if text[i] != '_' {
+			continue
+		}
+		j := i + 1
+		for j < len(text) && (text[j] == '_' || text[j] >= 'a' && text[j] <= 'z' || text[j] >= 'A' && text[j] <= 'Z' || text[j] >= '0' && text[j] <= '9') {
+			j++
+		}
+		if j == i+1 || j >= len(text) || text[j] != '(' {
+			continue
+		}
+		name := text[i:j]
+		if !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // tail returns the last few bytes of b for a failure message.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -321,4 +322,82 @@ func (g *githubForge) UpdateFactoryPRDescription(ctx context.Context, repo Repo,
 		return fmt.Errorf("GitHub description update returned mismatched pull request confirmation")
 	}
 	return nil
+}
+
+// factoryMergeMatches reports whether pr is still the reviewed pull request:
+// the same node, at the same head, merging into the same base.
+func factoryMergeMatches(pr FactoryPR, req FactoryPRMergeRequest) bool {
+	return pr.NodeID == req.NodeID && pr.HeadSHA == req.HeadSHA && pr.BaseRef == req.BaseRef
+}
+
+// MergeFactoryPR asks GitHub to merge an explicitly reviewed pull request.
+//
+// It issues at most one merge mutation and never retries it. The reviewed
+// identity is re-read before the write so a review that no longer describes
+// the pull request is refused rather than merged, and the outcome is proven by
+// a read afterwards: the response body alone never counts as success, and a
+// timeout after the request was sent is not proof of failure.
+func (g *githubForge) MergeFactoryPR(ctx context.Context, repo Repo, req FactoryPRMergeRequest, cred Credential) error {
+	switch req.Strategy {
+	case "merge", "squash", "rebase":
+	default:
+		return fmt.Errorf("unsupported merge strategy %q", req.Strategy)
+	}
+	if req.Number <= 0 || req.NodeID == "" || req.HeadSHA == "" || req.BaseRef == "" {
+		return fmt.Errorf("incomplete factory merge request")
+	}
+	root, err := factoryRepoPath(repo)
+	if err != nil {
+		return err
+	}
+	before, err := g.GetFactoryPR(ctx, repo, req.Number, cred)
+	if err != nil {
+		return fmt.Errorf("read factory pull request before merge: %w", err)
+	}
+	if factoryMergeMatches(before, req) && before.State == "merged" {
+		// Already merged at the reviewed revision: an external merge, which
+		// the coordinator records as provenance rather than repeating.
+		return nil
+	}
+	if !factoryMergeMatches(before, req) {
+		return fmt.Errorf("%w: pull request no longer matches the reviewed revision", ErrFactoryMergeRejected)
+	}
+	if before.State == "closed" {
+		return fmt.Errorf("%w: pull request is closed without merging", ErrFactoryMergeRejected)
+	}
+	payload, err := json.Marshal(map[string]string{"sha": req.HeadSHA, "merge_method": req.Strategy})
+	if err != nil {
+		return err
+	}
+	httpReq, err := g.newRequest(repo, "PUT", root+"/pulls/"+strconv.Itoa(req.Number)+"/merge", bytes.NewReader(payload), cred)
+	if err != nil {
+		return err
+	}
+	var response struct {
+		Merged bool   `json:"merged"`
+		SHA    string `json:"sha"`
+	}
+	if err = doJSON(ctx, g.client, httpReq, &response); err != nil {
+		var apiErr *forgeAPIError
+		if errors.As(err, &apiErr) && apiErr.statusCode >= 400 && apiErr.statusCode < 500 {
+			return fmt.Errorf("%w: %w", ErrFactoryMergeRejected, err)
+		}
+		// A 5xx or a dropped connection may have applied the merge anyway, so
+		// only the pull request's own state can settle the outcome.
+		if after, readErr := g.GetFactoryPR(ctx, repo, req.Number, cred); readErr == nil && factoryMergeMatches(after, req) && after.State == "merged" {
+			return nil
+		}
+		return fmt.Errorf("%w: %w", ErrFactoryMergeUncertain, err)
+	}
+	after, readErr := g.GetFactoryPR(ctx, repo, req.Number, cred)
+	if readErr == nil && factoryMergeMatches(after, req) && after.State == "merged" {
+		return nil
+	}
+	if readErr != nil {
+		return fmt.Errorf("%w: %w", ErrFactoryMergeUncertain, readErr)
+	}
+	if !response.Merged {
+		return fmt.Errorf("%w: forge reported no merge and the pull request is not merged", ErrFactoryMergeUncertain)
+	}
+	return fmt.Errorf("%w: forge reported a merge the pull request does not show", ErrFactoryMergeUncertain)
 }

@@ -809,6 +809,32 @@ func (f *Fleet) runtimeForAgent(id string) (*agentRuntime, error) {
 	return rt, nil
 }
 
+// attachTargetFor returns the project child and session an agent's session runs
+// on, read in one critical section (P5 F5).
+//
+// The runtime lookup and the read of its fields must not be two critical
+// sections: a Pause between them deletes the runtime, and the attach would then
+// dial a child the fleet has just released. The spawn error is kept separate
+// from the unknown-agent error so the caller can tell "paused" from "failed to
+// start" as runtimeForAgent does.
+func (f *Fleet) attachTargetFor(id string) (*projectChild, string, error) {
+	f.mu.Lock()
+	rt, ok := f.runtimes[id]
+	var pc *projectChild
+	var sessionID string
+	if ok {
+		pc, sessionID = rt.project, rt.sessionID
+	}
+	f.mu.Unlock()
+	if !ok {
+		return nil, "", fmt.Errorf("%w: agent %s", ErrUnknownAgent, id)
+	}
+	if rt.spawnErr != nil {
+		return nil, "", rt.spawnErr
+	}
+	return pc, sessionID, nil
+}
+
 // runtimeForRoot returns any live runtime for a project root. With
 // per-agent runtimes there may be several; callers that need a specific
 // agent should use runtimeForAgent.
@@ -1847,6 +1873,47 @@ func (f *Fleet) agentForSession(sessionID string) (string, bool) {
 	defer f.mu.Unlock()
 	id, ok := f.sessionAgent[sessionID]
 	return id, ok
+}
+
+// agentOwning is the agent whose session sessionID is: a record naming it,
+// live or paused, or the classifier's live map (decision 2). An empty session
+// id owns nothing.
+func (f *Fleet) agentOwning(sessionID string) (Agent, bool) {
+	if sessionID == "" {
+		return Agent{}, false
+	}
+	if id, ok := f.agentForSession(sessionID); ok {
+		if a, ok := f.ws.Agent(id); ok {
+			return a, true
+		}
+		// A mapped session whose record is gone still names an agent: the id
+		// is what the sentence needs.
+		return Agent{ID: id, SessionID: sessionID}, true
+	}
+	for _, a := range f.ws.Agents() {
+		if a.SessionID == sessionID {
+			return a, true
+		}
+	}
+	return Agent{}, false
+}
+
+// agentDisplayName is an agent as a sentence names it: its Name, else its ID.
+func agentDisplayName(a Agent) string {
+	if a.Name != "" {
+		return a.Name
+	}
+	return a.ID
+}
+
+// finishFromFleet is the refusal's sentence (decision 3), shared by the relay
+// and the session screen.
+//
+// The session screen keeps its own copy (internal/app/tui/model.go), because
+// web/ is standard library only and the TUI cannot import it. Both suites pin
+// the sentence, so the two copies must change together.
+func finishFromFleet(a Agent) string {
+	return "This is agent " + agentDisplayName(a) + "'s session: finish it from the fleet screen."
 }
 
 // installClassifier chains the fleet's classifier onto child's notifications

@@ -76,6 +76,12 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			TUIOnly:     true,
 		},
 		{
+			Name:        "fleet",
+			Description: "Leave this daemon session running and open the fleet screen",
+			Group:       groupChat,
+			TUIOnly:     true,
+		},
+		{
 			Name:        "new",
 			Description: "Start a new conversation",
 			Args:        "[name]",

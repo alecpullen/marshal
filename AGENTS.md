@@ -64,7 +64,9 @@ host processes only, and no container machinery. Each project runs its own
 after its last session closes; `POST /api/projects/attach` upgrades a marshal
 client onto that child's viewer socket, relaying its frames unchanged. Plain
 `marshal` starts its session on that daemon when one answers, the quit key and
-`/detach` leave it running, and `marshal attach [id]` comes back to it. A
+`/detach` leave it running, and `marshal attach [id]` comes back to it.
+`marshal fleet` opens an agent's or a daemon session's screen with `⏎`, and
+`/fleet` returns to the fleet from any daemon session. A
 daemon session on an untrusted project asks its TUI, as embedded mode does,
 and a trust there applies to the running session without restarting the
 program. `marshal daemon pin [dir]` keeps a project's child running with no

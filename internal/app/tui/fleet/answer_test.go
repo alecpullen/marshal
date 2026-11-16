@@ -417,23 +417,23 @@ func TestAFailedAnswerShowsForFourSeconds(t *testing.T) {
 	if got := lastEvent(m); got != "15:04 "+want {
 		t.Fatalf("last event = %q, want %q", got, "15:04 "+want)
 	}
-	if !strings.Contains(m.footer(), want) {
-		t.Fatalf("the footer does not draw the failure: %q", m.footer())
+	if !strings.Contains(m.footer(nil), want) {
+		t.Fatalf("the footer does not draw the failure: %q", m.footer(nil))
 	}
 
 	// Three seconds on, the line is still there; past four it is gone. The
 	// Events panel keeps its own copy either way, so the footer is what the
 	// two checks read.
 	now = now.Add(3 * time.Second)
-	if !strings.Contains(m.footer(), want) {
-		t.Fatalf("the status line cleared before its four seconds: %q", m.footer())
+	if !strings.Contains(m.footer(nil), want) {
+		t.Fatalf("the status line cleared before its four seconds: %q", m.footer(nil))
 	}
 	now = now.Add(2 * time.Second)
 	if got := m.statusText(); got != "" {
 		t.Fatalf("status line after four seconds = %q, want none", got)
 	}
-	if strings.Contains(m.footer(), want) {
-		t.Fatalf("the footer still draws the cleared status line: %q", m.footer())
+	if strings.Contains(m.footer(nil), want) {
+		t.Fatalf("the footer still draws the cleared status line: %q", m.footer(nil))
 	}
 }
 

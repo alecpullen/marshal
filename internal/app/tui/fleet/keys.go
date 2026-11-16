@@ -52,13 +52,19 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyUp:
 		m.moveCursor(-1)
 		return m, nil
+	case tea.KeyEnter:
+		// ⏎ settles an intake item in Needs you (decision 8); on any other
+		// row it opens that row. The filter has already taken its own Enter
+		// above, so this one never types.
+		if m.focus == focusNeedsYou {
+			if _, ok := m.intakeItem(); ok {
+				return m.openIntake()
+			}
+		}
+		return m.openRow()
 	case tea.KeyEsc:
 		m.zoom = false
 		return m, nil
-	case tea.KeyEnter:
-		// ⏎ settles an intake item in Needs you (decision 8). Every other
-		// row has nothing to open here.
-		return m.openIntake()
 	}
 
 	switch msg.String() {
@@ -88,6 +94,19 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.help = !m.help
 	}
 	return m, nil
+}
+
+// openRow ends the program with the selected row's target, so the loop can
+// attach to it. A row with nothing to open — an intake item, which ⏎ settles
+// instead, or no selection — leaves the screen running.
+func (m Model) openRow() (tea.Model, tea.Cmd) {
+	_, rows := m.agentLines()
+	target := m.openTarget(rows)
+	if target == (Target{}) {
+		return m, nil
+	}
+	m.target = target
+	return m, m.quit()
 }
 
 // cancelSelected stops the selected agent's turn (decision 7), with no

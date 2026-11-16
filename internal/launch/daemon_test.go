@@ -17,11 +17,14 @@ import (
 
 	"marshal/internal/acp"
 	"marshal/internal/acp/service"
+	"marshal/internal/acpclient"
 	"marshal/internal/acpclient/rpc"
 	"marshal/internal/app"
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui"
+	"marshal/internal/app/tui/fleet"
 	"marshal/internal/daemon"
+	"marshal/web/bridge/contract"
 )
 
 // fakeAttach is one call the fake daemon saw.
@@ -68,15 +71,18 @@ type fakeDaemon struct {
 	// attachErr makes Attach fail: a daemon that answers the probe but cannot
 	// serve a session.
 	attachErr error
-	ctx       context.Context
-	cancel    context.CancelFunc
+	// agentAttachErr does the same for AttachAgent, as a refused open does.
+	agentAttachErr error
+	ctx            context.Context
+	cancel         context.CancelFunc
 
-	mu        sync.Mutex
-	infoCalls int
-	attaches  []fakeAttach
-	current   *fakeRuntime
-	started   []*fakeRuntime
-	lastRT    *app.Runtime
+	mu            sync.Mutex
+	infoCalls     int
+	attaches      []fakeAttach
+	agentAttaches []string
+	current       *fakeRuntime
+	started       []*fakeRuntime
+	lastRT        *app.Runtime
 	// seq numbers the runtimes the fake starts, so each one's clock differs.
 	seq int
 }
@@ -120,10 +126,26 @@ func (f *fakeDaemon) Attach(ctx context.Context, root, sessionID string) (*daemo
 	f.mu.Lock()
 	f.attaches = append(f.attaches, fakeAttach{root: root, sessionID: sessionID})
 	attachErr := f.attachErr
+	f.mu.Unlock()
+	return f.serve(attachErr, "")
+}
+
+func (f *fakeDaemon) AttachAgent(ctx context.Context, agentID string) (*daemon.Attachment, error) {
+	f.mu.Lock()
+	f.agentAttaches = append(f.agentAttaches, agentID)
+	attachErr := f.agentAttachErr
+	f.mu.Unlock()
+	return f.serve(attachErr, agentID)
+}
+
+// serve builds the runtime an attach runs on and hands back the agent's end of
+// it, as the real daemon's child serves a session; agentID marks a fleet
+// agent's session.
+func (f *fakeDaemon) serve(attachErr error, agentID string) (*daemon.Attachment, error) {
 	if attachErr != nil {
-		f.mu.Unlock()
 		return nil, attachErr
 	}
+	f.mu.Lock()
 	previous := f.current
 	f.current = nil
 	// Each attach's runtime gets its own clock: the session ID derives from it,
@@ -171,7 +193,7 @@ func (f *fakeDaemon) Attach(ctx context.Context, root, sessionID string) (*daemo
 	f.lastRT = rt
 	f.mu.Unlock()
 
-	return &daemon.Attachment{SessionID: rt.SessionID, Conn: client}, nil
+	return &daemon.Attachment{SessionID: rt.SessionID, AgentID: agentID, Conn: client}, nil
 }
 
 // drop closes the fake's end of the pipe, as a daemon that goes away does.
@@ -188,6 +210,13 @@ func (f *fakeDaemon) attachCalls() []fakeAttach {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]fakeAttach(nil), f.attaches...)
+}
+
+// agentAttachCalls is the agents AttachAgent was asked for, in order.
+func (f *fakeDaemon) agentAttachCalls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.agentAttaches...)
 }
 
 func (f *fakeDaemon) infoCount() int {
@@ -687,4 +716,505 @@ func TestTheClientLogIsTheOwnersOnly(t *testing.T) {
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Errorf("mode = %04o, want 0600", got)
 	}
+}
+
+const (
+	// loopAgentID and loopAgentName are the agent the fleet screen opens in
+	// the loop's tests.
+	loopAgentID   = "agent-7"
+	loopAgentName = "scout"
+	// loopDecoyID is the agent the fleet's cursor lands on when the loop gives
+	// it no selection to restore: the first row, so a selection is told apart
+	// from the default.
+	loopDecoyID = "agent-0"
+	// loopSocket is the socket the loop's tests pretend a daemon answers on.
+	loopSocket = "/tmp/marshal-test-loop.sock"
+)
+
+// fleetPass is one run of the loop's fleet program, and what the loop gave it.
+type fleetPass struct {
+	selected string
+	screen   string
+}
+
+// loopScript is the program runner the loop's tests inject: it switches on the
+// model's type, records what the loop gave each program, and answers from its
+// script — one result per pass, the zero result past the script's end.
+type loopScript struct {
+	t *testing.T
+	// onSession runs inside a session pass before it returns its result: a
+	// test drops the connection there.
+	onSession func(ctx context.Context, m tui.Model)
+	// onFleet runs inside a fleet pass before it returns its result.
+	onFleet func(ctx context.Context, m fleet.Model)
+
+	fleetEnds   []ProgramResult
+	sessionEnds []ProgramResult
+
+	fleetPasses []fleetPass
+	sessions    []tui.Model
+}
+
+func (s *loopScript) run(ctx context.Context, m tea.Model, _ io.Writer) ProgramResult {
+	s.t.Helper()
+	switch model := m.(type) {
+	case fleet.Model:
+		if s.onFleet != nil {
+			s.onFleet(ctx, model)
+		}
+		s.fleetPasses = append(s.fleetPasses, fleetPass{
+			selected: fleetSelection(s.t, model),
+			screen:   fleetScreen(model),
+		})
+		return nextResult(&s.fleetEnds)
+	case tui.Model:
+		if s.onSession != nil {
+			s.onSession(ctx, model)
+		}
+		s.sessions = append(s.sessions, model)
+		return nextResult(&s.sessionEnds)
+	default:
+		s.t.Fatalf("the daemon loop ran a %T", m)
+		return ProgramResult{}
+	}
+}
+
+// nextResult is the script's next result: the zero result past its end.
+func nextResult(script *[]ProgramResult) ProgramResult {
+	if len(*script) == 0 {
+		return ProgramResult{}
+	}
+	next := (*script)[0]
+	*script = (*script)[1:]
+	return next
+}
+
+// fleetSelection is the row the fleet program's cursor starts on. The start
+// selection lands the first time the screen lays its rows out, which a filter
+// opened and closed does without moving the cursor or opening anything.
+func fleetSelection(t *testing.T, m fleet.Model) string {
+	t.Helper()
+	for _, key := range []tea.KeyPressMsg{
+		{Code: '/', Text: "/"}, // open the filter
+		{Code: tea.KeyEsc},     // clear it, and lay the rows out again
+	} {
+		next, _ := m.Update(key)
+		got, ok := next.(fleet.Model)
+		if !ok {
+			t.Fatalf("the fleet model updated to %T, want fleet.Model", next)
+		}
+		m = got
+	}
+	return m.Selected()
+}
+
+// fleetScreen is the fleet program's screen at a usual terminal size, so a test
+// can read the Events lines the loop wrote to it.
+func fleetScreen(m fleet.Model) string {
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	return next.View().Content
+}
+
+// loopFleet is the fake fleet the loop's tests inject: it lists the agent the
+// loop opens after a decoy row, and the session its targets name, so the
+// screen's selection has a row to land on and a different row to start from.
+func loopFleet(root, sessionID string) *fakeFleet {
+	f := newFakeFleet()
+	f.state = acpclient.FleetState{
+		Server: "local",
+		Conn:   acpclient.FleetConnected,
+		Loaded: true,
+		Epoch:  1,
+		Agents: []contract.AgentStatus{
+			{ID: loopDecoyID, Project: root, Name: "decoy", Status: contract.AgentRunning},
+			{ID: loopAgentID, Project: root, Name: loopAgentName, Status: contract.AgentRunning},
+		},
+		Inbox: contract.Inbox{Groups: contract.InboxGroups{
+			Running: []string{loopDecoyID},
+			Earlier: []string{loopAgentID},
+		}},
+		Daemon: &contract.DaemonInfo{
+			Profile:  "local",
+			Children: []contract.DaemonChild{{Root: root, Sessions: []contract.DaemonSession{{ID: sessionID}}}},
+		},
+	}
+	return f
+}
+
+// runOnTheDaemon runs Run in daemon mode with the scripted programs.
+func runOnTheDaemon(t *testing.T, fake *fakeDaemon, dir string, stdout io.Writer, script *loopScript, client *fakeFleet) error {
+	t.Helper()
+	return Run(context.Background(), stdout,
+		WithDaemon(loopSocket),
+		withDaemonClient(fake),
+		withWorkingDir(dir),
+		withFleetClient(client),
+		WithProgramRunner(script.run),
+	)
+}
+
+// runTheFleet runs Fleet with the scripted programs, as `marshal fleet` does.
+func runTheFleet(t *testing.T, fake *fakeDaemon, dir string, stdout io.Writer, script *loopScript, client *fakeFleet) error {
+	t.Helper()
+	return Fleet(context.Background(), stdout, loopSocket,
+		withDaemonClient(fake),
+		withWorkingDir(dir),
+		withFleetClient(client),
+		WithProgramRunner(script.run),
+	)
+}
+
+// TestTheFleetOpensAnAgentAndComesBack: the fleet opens an agent, the session
+// screen comes up marked as that agent's, quitting it returns to the fleet with
+// the cursor on the agent, and quitting there ends the loop.
+func TestTheFleetOpensAnAgentAndComesBack(t *testing.T) {
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, t.TempDir())
+	root := filepath.Clean(dir)
+
+	script := &loopScript{
+		t: t,
+		fleetEnds: []ProgramResult{
+			{Open: fleet.Target{AgentID: loopAgentID, AgentName: loopAgentName, Root: root}},
+			{}, // the zero target ends the loop
+		},
+		sessionEnds: []ProgramResult{{}}, // a plain end of the session screen
+	}
+	if err := runTheFleet(t, fake, dir, io.Discard, script, loopFleet(root, "sess-plain")); err != nil {
+		t.Fatalf("Fleet: %v", err)
+	}
+
+	if len(script.sessions) != 1 {
+		t.Fatalf("session screens = %d, want 1", len(script.sessions))
+	}
+	if got := script.sessions[0].AgentSession(); got != loopAgentID {
+		t.Errorf("the session screen is agent %q's, want %q", got, loopAgentID)
+	}
+	if calls := fake.agentAttachCalls(); len(calls) != 1 || calls[0] != loopAgentID {
+		t.Errorf("agent attaches = %v, want exactly %q", calls, loopAgentID)
+	}
+	if calls := fake.attachCalls(); len(calls) != 0 {
+		t.Errorf("the loop opened project sessions: %+v", calls)
+	}
+	if len(script.fleetPasses) != 2 {
+		t.Fatalf("fleet screens = %d, want 2", len(script.fleetPasses))
+	}
+	if got := script.fleetPasses[0].selected; got != loopDecoyID {
+		t.Errorf("the first fleet screen selected %q, want its first row %q: the loop restored nothing", got, loopDecoyID)
+	}
+	if got := script.fleetPasses[1].selected; got != loopAgentID {
+		t.Errorf("the fleet came back with %q selected, want the agent %q", got, loopAgentID)
+	}
+}
+
+// TestTheFleetOpensADaemonSession: a session row opens that session of that
+// project through the project attach.
+func TestTheFleetOpensADaemonSession(t *testing.T) {
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, t.TempDir())
+	root := filepath.Clean(dir)
+
+	script := &loopScript{
+		t: t,
+		fleetEnds: []ProgramResult{
+			{Open: fleet.Target{Root: root, SessionID: "sess-row"}},
+			{},
+		},
+		sessionEnds: []ProgramResult{{}},
+	}
+	if err := runTheFleet(t, fake, dir, io.Discard, script, loopFleet(root, "sess-row")); err != nil {
+		t.Fatalf("Fleet: %v", err)
+	}
+
+	calls := fake.attachCalls()
+	if len(calls) != 1 {
+		t.Fatalf("attaches = %d, want 1: %+v", len(calls), calls)
+	}
+	if calls[0].root != root {
+		t.Errorf("attach root = %q, want %q", calls[0].root, root)
+	}
+	if calls[0].sessionID != "sess-row" {
+		t.Errorf("attach session ID = %q, want %q", calls[0].sessionID, "sess-row")
+	}
+	if n := len(fake.agentAttachCalls()); n != 0 {
+		t.Errorf("agent attaches = %d, want none", n)
+	}
+}
+
+// TestDetachingAnOpenedSessionReturnsToTheFleet: /detach on a session the fleet
+// opened goes back to the fleet instead of printing the reattach command.
+func TestDetachingAnOpenedSessionReturnsToTheFleet(t *testing.T) {
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, t.TempDir())
+	root := filepath.Clean(dir)
+
+	var stdout bytes.Buffer
+	script := &loopScript{
+		t: t,
+		fleetEnds: []ProgramResult{
+			{Open: fleet.Target{AgentID: loopAgentID, AgentName: loopAgentName, Root: root}},
+			{},
+		},
+		sessionEnds: []ProgramResult{{Detached: "sess-detached"}},
+	}
+	if err := runTheFleet(t, fake, dir, &stdout, script, loopFleet(root, "sess-row")); err != nil {
+		t.Fatalf("Fleet: %v", err)
+	}
+
+	if len(script.fleetPasses) != 2 {
+		t.Fatalf("fleet screens = %d, want 2: a detach on an opened session returns to the fleet", len(script.fleetPasses))
+	}
+	if got := script.fleetPasses[1].selected; got != loopAgentID {
+		t.Errorf("the fleet came back with %q selected, want the agent %q", got, loopAgentID)
+	}
+	if out := stdout.String(); strings.Contains(out, "Detached from session") {
+		t.Errorf("stdout = %q, want no detach message once the fleet has run", out)
+	}
+}
+
+// TestSlashFleetFromAPlainSessionOpensTheFleet: /fleet on the daemon hands the
+// loop a session step that ends with ToFleet, and the fleet program runs next
+// with its cursor on the session that ran.
+func TestSlashFleetFromAPlainSessionOpensTheFleet(t *testing.T) {
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, t.TempDir())
+	root := filepath.Clean(dir)
+	fleetClient := loopFleet(root, "sess-row")
+
+	script := &loopScript{
+		t:           t,
+		sessionEnds: []ProgramResult{{ToFleet: true}},
+	}
+	// The daemon mints the session's ID when it attaches, so the roster the
+	// fleet will show is only known inside the session pass: list the session
+	// the loop really ran, as the daemon's own fleet does. Doing it here leaves
+	// the cursor something to restore onto that is not the roster's first row.
+	script.onSession = func(context.Context, tui.Model) {
+		id := fake.lastRuntime().SessionID
+		fleetClient.state.Daemon.Children[0].Sessions = []contract.DaemonSession{{ID: id}}
+	}
+	if err := runOnTheDaemon(t, fake, dir, io.Discard, script, fleetClient); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(script.sessions) != 1 {
+		t.Fatalf("session screens = %d, want 1", len(script.sessions))
+	}
+	if len(script.fleetPasses) != 1 {
+		t.Fatalf("fleet screens = %d, want the one /fleet asked for", len(script.fleetPasses))
+	}
+	if n := len(fake.attachCalls()); n != 1 {
+		t.Errorf("attaches = %d, want 1", n)
+	}
+	ran := fake.lastRuntime().SessionID
+	if got := script.fleetPasses[0].selected; got != ran {
+		t.Errorf("the fleet came up with %q selected, want the session that ran, %q (the first row is %q)", got, ran, loopDecoyID)
+	}
+}
+
+// TestAFleetProgramsErrorEndsTheLoop: a fleet screen that ends with an error and
+// no target ends the loop with that error, as every program's ending does,
+// rather than coming back to a fleet nobody asked for.
+func TestAFleetProgramsErrorEndsTheLoop(t *testing.T) {
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, t.TempDir())
+	root := filepath.Clean(dir)
+
+	boom := errors.New("the fleet screen failed")
+	script := &loopScript{t: t, fleetEnds: []ProgramResult{{Err: boom}}}
+	err := runTheFleet(t, fake, dir, io.Discard, script, loopFleet(root, "sess-row"))
+	if !errors.Is(err, boom) {
+		t.Fatalf("Fleet = %v, want the fleet program's error", err)
+	}
+	if len(script.sessions) != 0 {
+		t.Errorf("session screens = %d, want none", len(script.sessions))
+	}
+	if n := len(fake.attachCalls()) + len(fake.agentAttachCalls()); n != 0 {
+		t.Errorf("%d attaches, want none: the zero target opens nothing", n)
+	}
+}
+
+// TestAResumeFromTheFleetOpensThatSession: a resume wins over the return to the
+// fleet even once the fleet has run, so the step after a fleet session is the
+// resumed one, not the fleet screen.
+func TestAResumeFromTheFleetOpensThatSession(t *testing.T) {
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, t.TempDir())
+	root := filepath.Clean(dir)
+
+	stop := errors.New("the resumed session ended")
+	script := &loopScript{
+		t: t,
+		fleetEnds: []ProgramResult{
+			{Open: fleet.Target{AgentID: loopAgentID, AgentName: loopAgentName, Root: root}},
+			{}, // ends the loop, should it come back to the fleet
+		},
+		sessionEnds: []ProgramResult{{ResumeSession: "sess-resumed"}, {Err: stop}},
+	}
+	err := runTheFleet(t, fake, dir, io.Discard, script, loopFleet(root, "sess-row"))
+	if !errors.Is(err, stop) {
+		t.Fatalf("Fleet = %v, want the resumed session's ending %v", err, stop)
+	}
+
+	calls := fake.attachCalls()
+	if len(calls) != 1 || calls[0].sessionID != "sess-resumed" {
+		t.Fatalf("attaches = %+v, want one to %q", calls, "sess-resumed")
+	}
+	if len(script.sessions) != 2 {
+		t.Fatalf("session screens = %d, want the fleet's own and the resumed one", len(script.sessions))
+	}
+	if len(script.fleetPasses) != 1 {
+		t.Errorf("fleet screens = %d, want 1: a resume does not return to the fleet", len(script.fleetPasses))
+	}
+}
+
+// TestALostConnectionReturnsToTheFleetWithANotice: once the fleet has run, a
+// daemon that goes away is an Events line on the fleet screen, not the end of
+// the loop.
+func TestALostConnectionReturnsToTheFleetWithANotice(t *testing.T) {
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, t.TempDir())
+	root := filepath.Clean(dir)
+
+	script := &loopScript{
+		t: t,
+		fleetEnds: []ProgramResult{
+			{Open: fleet.Target{AgentID: loopAgentID, AgentName: loopAgentName, Root: root}},
+			{},
+		},
+	}
+	script.onSession = func(ctx context.Context, _ tui.Model) {
+		// The daemon goes away while the screen waits for work.
+		fake.drop()
+		select {
+		case <-ctx.Done():
+		case <-time.After(10 * time.Second):
+			t.Error("the screen's context never ended after the daemon closed")
+		}
+	}
+	if err := runTheFleet(t, fake, dir, io.Discard, script, loopFleet(root, "sess-row")); err != nil {
+		t.Fatalf("Fleet: %v", err)
+	}
+
+	if len(script.fleetPasses) != 2 {
+		t.Fatalf("fleet screens = %d, want 2: a lost connection returns to the fleet", len(script.fleetPasses))
+	}
+	if got := script.fleetPasses[1].screen; !strings.Contains(got, "lost the connection to "+loopAgentName) {
+		t.Errorf("the fleet's Events do not name the lost connection:\n%s", got)
+	}
+}
+
+// TestARefusedOpenReturnsToTheFleet: an agent the daemon refuses to open sends
+// the loop back to the fleet with the reason on its Events ring.
+func TestARefusedOpenReturnsToTheFleet(t *testing.T) {
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, t.TempDir())
+	fake.agentAttachErr = &daemon.AttachError{Status: 409, Message: "the agent has no session to view"}
+	root := filepath.Clean(dir)
+
+	script := &loopScript{
+		t: t,
+		fleetEnds: []ProgramResult{
+			{Open: fleet.Target{AgentID: loopAgentID, AgentName: loopAgentName, Root: root}},
+			{},
+		},
+	}
+	if err := runTheFleet(t, fake, dir, io.Discard, script, loopFleet(root, "sess-row")); err != nil {
+		t.Fatalf("Fleet: %v", err)
+	}
+
+	if len(script.sessions) != 0 {
+		t.Fatalf("session screens = %d, want none: the open was refused", len(script.sessions))
+	}
+	if len(script.fleetPasses) != 2 {
+		t.Fatalf("fleet screens = %d, want 2: a refused open returns to the fleet", len(script.fleetPasses))
+	}
+	if got := script.fleetPasses[1].screen; !strings.Contains(got, "could not open "+loopAgentName) {
+		t.Errorf("the fleet's Events do not say the open was refused:\n%s", got)
+	}
+	if n := len(fake.agentAttachCalls()); n != 1 {
+		t.Errorf("agent attaches = %d, want the one refused attempt", n)
+	}
+}
+
+// TestBeforeTheFleetEndingsAreUnchanged: a loop that has not run the fleet
+// behaves exactly as it did — the detach message, the plain end, the resume,
+// and the lost connection's error.
+func TestBeforeTheFleetEndingsAreUnchanged(t *testing.T) {
+	t.Run("a detach prints the reattach command and ends the loop", func(t *testing.T) {
+		dir := t.TempDir()
+		fake := newFakeDaemon(t, dir, t.TempDir())
+
+		var stdout bytes.Buffer
+		script := &loopScript{t: t, sessionEnds: []ProgramResult{{Detached: "sess-gone"}}}
+		if err := runOnTheDaemon(t, fake, dir, &stdout, script, loopFleet(dir, "sess-row")); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if len(script.fleetPasses) != 0 {
+			t.Errorf("fleet screens = %d, want none before the fleet has run", len(script.fleetPasses))
+		}
+		if want := "Detached from session sess-gone. `marshal attach sess-gone` reattaches."; !strings.Contains(stdout.String(), want) {
+			t.Errorf("stdout = %q, want it to contain %q", stdout.String(), want)
+		}
+	})
+
+	t.Run("an end ends the loop", func(t *testing.T) {
+		dir := t.TempDir()
+		fake := newFakeDaemon(t, dir, t.TempDir())
+
+		script := &loopScript{t: t}
+		if err := runOnTheDaemon(t, fake, dir, io.Discard, script, loopFleet(dir, "sess-row")); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if len(script.fleetPasses) != 0 {
+			t.Errorf("fleet screens = %d, want none before the fleet has run", len(script.fleetPasses))
+		}
+	})
+
+	t.Run("a resume reattaches to the chosen session", func(t *testing.T) {
+		dir := t.TempDir()
+		fake := newFakeDaemon(t, dir, t.TempDir())
+
+		script := &loopScript{t: t, sessionEnds: []ProgramResult{{ResumeSession: "chosen"}}}
+		if err := runOnTheDaemon(t, fake, dir, io.Discard, script, loopFleet(dir, "sess-row")); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		calls := fake.attachCalls()
+		if len(calls) != 2 {
+			t.Fatalf("attaches = %d, want 2: %+v", len(calls), calls)
+		}
+		if calls[1].sessionID != "chosen" {
+			t.Errorf("the resumed attach names session %q, want %q", calls[1].sessionID, "chosen")
+		}
+		if len(script.fleetPasses) != 0 {
+			t.Errorf("fleet screens = %d, want none before the fleet has run", len(script.fleetPasses))
+		}
+	})
+
+	t.Run("a lost connection is the loop's error", func(t *testing.T) {
+		dir := t.TempDir()
+		fake := newFakeDaemon(t, dir, t.TempDir())
+
+		script := &loopScript{t: t}
+		script.onSession = func(ctx context.Context, _ tui.Model) {
+			fake.drop()
+			select {
+			case <-ctx.Done():
+			case <-time.After(10 * time.Second):
+				t.Error("the screen's context never ended after the daemon closed")
+			}
+		}
+		err := runOnTheDaemon(t, fake, dir, io.Discard, script, loopFleet(dir, "sess-row"))
+		if err == nil {
+			t.Fatal("Run succeeded after the daemon's connection closed")
+		}
+		for _, want := range []string{"marshal attach", "connection closed"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("Run error = %q, want it to name %q", err, want)
+			}
+		}
+		if len(script.fleetPasses) != 0 {
+			t.Errorf("fleet screens = %d, want none before the fleet has run", len(script.fleetPasses))
+		}
+	})
 }

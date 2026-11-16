@@ -129,6 +129,10 @@ func (s *Server) SocketHandler() http.Handler {
 			s.attachProject(w, r)
 			return
 		}
+		if id, ok := agentAttachID(r.URL.Path); ok {
+			s.attachAgent(w, r, id)
+			return
+		}
 		if r.URL.Path == pinPath {
 			s.pinProject(w, r)
 			return

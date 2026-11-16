@@ -1535,6 +1535,7 @@ func (m Model) sheetDataFor() sessionsheet.Data {
 		Skills:      sh.Skills,
 		StartedAt:   acpwire.Time(sh.StartedAt),
 		ToolBudget:  sh.ToolBudget,
+		Restart:     st.Restart,
 		LoadedTools: sh.LoadedTools,
 		Sandbox:     sh.Sandbox,
 		Spinner:     m.turnSpinnerFrame(),

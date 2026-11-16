@@ -10,20 +10,24 @@ import (
 // from Session.Sheet and Session.Status on every frame. Sections never reach
 // outside it, and the session caches everything expensive off the render path.
 type Data struct {
-	Git         acpwire.Git
-	Repo        acpwire.SheetRepo
-	Turns       []acpwire.SheetTurn // most recent first
-	Totals      acpwire.SheetTotals
-	Changed     []acpwire.SheetChangedFile
-	Fleet       []acpwire.SheetFleetRow
-	Now         time.Time // injected so elapsed-time rendering is deterministic
-	Context     acpwire.SheetContext
-	Tools       []acpwire.SheetTool
-	Files       []acpwire.SheetFile
-	Rules       []string
-	Skills      []string
-	StartedAt   time.Time // the session's start; zero when there is no session
-	ToolBudget  acpwire.SheetToolBudget
+	Git        acpwire.Git
+	Repo       acpwire.SheetRepo
+	Turns      []acpwire.SheetTurn // most recent first
+	Totals     acpwire.SheetTotals
+	Changed    []acpwire.SheetChangedFile
+	Fleet      []acpwire.SheetFleetRow
+	Now        time.Time // injected so elapsed-time rendering is deterministic
+	Context    acpwire.SheetContext
+	Tools      []acpwire.SheetTool
+	Files      []acpwire.SheetFile
+	Rules      []string
+	Skills     []string
+	StartedAt  time.Time // the session's start; zero when there is no session
+	ToolBudget acpwire.SheetToolBudget
+	// Restart is the session child's pending restart, nil while it is current
+	// (B3). It comes from the status, not the sheet: it is the child's own
+	// state, not a subagent-scoped value.
+	Restart     *acpwire.PendingRestart
 	LoadedTools int
 	Sandbox     acpwire.SheetSandbox
 	Swarm       acpwire.SwarmProgress

@@ -122,17 +122,19 @@ func (m Model) statusClusters(width int) (left, right string) {
 	// The fleet's count names work waiting on another screen, which no other
 	// cue on this line reports, so it is never shed with the hints: it sits
 	// before the session's own right-hand segment whatever happens to that
-	// segment (decision 9).
-	count := m.needsYouSegment()
+	// segment (decision 9). The child's pending restart is pinned the same
+	// way, beside the count: it is the one cue that the running child is no
+	// longer the one on disk, and it must survive a narrow terminal.
+	aside := joinRight(m.needsYouSegment(), m.restartSegment())
 	own := m.sessionRightSegment()
-	right = joinRight(count, own)
+	right = joinRight(aside, own)
 
 	// When the terminal is narrow, drop the button-hint cluster first so
 	// that project path, worktree, and other identity segments remain
 	// visible. Approval/error indicators are never dropped this way.
 	if own != "" && !m.hasPendingApproval() && !m.noticeVisible() && m.ctrlCArmed() == ctrlCNone {
 		fits := func(s string) bool {
-			return visibleRunes(left)+visibleRunes(joinRight(count, s))+statusHorizontalPadding+statusMinGap <= width
+			return visibleRunes(left)+visibleRunes(joinRight(aside, s))+statusHorizontalPadding+statusMinGap <= width
 		}
 		// Shed the optional mouse hint before sacrificing the whole
 		// cluster: dropping "clear queue" to keep a mouse-mode reminder is
@@ -161,7 +163,7 @@ func (m Model) statusClusters(width int) (left, right string) {
 				own = ""
 			}
 		}
-		right = joinRight(count, own)
+		right = joinRight(aside, own)
 	}
 
 	for len(segs) > 1 && visibleRunes(left)+visibleRunes(right)+statusHorizontalPadding+statusMinGap > width {
@@ -537,6 +539,17 @@ func (m Model) needsYouSegment() string {
 		return warningStyle().Render(fmt.Sprintf("needs you %d", n))
 	}
 	return ""
+}
+
+// restartSegment is the child's pending restart in the warning colour: the
+// running child is no longer the one on disk, and the sessions sheet says
+// why. Empty while the child is current. It is pinned beside the fleet's
+// count, outside the hint shedding, so a narrow terminal keeps it.
+func (m Model) restartSegment() string {
+	if m.sess.Status().Restart == nil {
+		return ""
+	}
+	return warningStyle().Render("restart pending")
 }
 
 // needsYouCount is how many queued items are not the shown agent's own. On a

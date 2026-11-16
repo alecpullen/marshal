@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"marshal/internal/llm/schema"
 	"marshal/internal/progress"
 )
 
@@ -732,6 +733,10 @@ type ToolResult struct {
 	// Symbols are the symbols this call touched, when the tool and the
 	// file's language support attribution. Always safe to be empty.
 	Symbols []SymbolRef
+	// Images are the images this call produced. Content stays the
+	// human-readable text: spill, the audit trail and text-only consumers
+	// read only that.
+	Images []schema.ImageRef
 }
 
 // SandboxMeta records how a command was executed under the Milestone Q

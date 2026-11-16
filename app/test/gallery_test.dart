@@ -9,19 +9,18 @@ import 'support/source.dart';
 /// design-system.md §11: a kit component missing from the gallery, or a
 /// gallery golden that differs in light or dark, fails here.
 ///
-/// **The goldens are pinned to macOS.** They are drawn with the bundled
+/// **The goldens are pinned to Linux.** They are drawn with the bundled
 /// Geist fonts, and the test engine rasterizes a font through the host's
 /// text stack — CoreText on macOS, FreeType on Linux — so the same build
 /// does not give the same pixels on both (f0-foundations.md, open
-/// question). They were generated on macOS with Flutter 3.50.0, and the
-/// comparisons run on macOS only; elsewhere they are skipped and say why.
-/// Regenerate with `flutter test --update-goldens test/gallery_test.dart`
-/// on a Mac. Pinning them to the Linux runner instead means regenerating
-/// them there and flipping [goldenHost].
+/// question). They are generated and compared on Linux, which is the host
+/// CI's `app` job runs on (F1, task 1). Elsewhere they are skipped and say
+/// why. Regenerate with `flutter test --update-goldens
+/// test/gallery_test.dart` on Linux.
 void main() {
-  final goldenHost = Platform.isMacOS;
+  final goldenHost = Platform.isLinux;
   const goldenSkip =
-      'gallery goldens are pinned to macOS: Linux rasterizes Geist '
+      'gallery goldens are pinned to Linux: macOS rasterizes Geist '
       'differently (see the comment at the top of this file)';
 
   test('every public kit widget is named in the gallery source', () {

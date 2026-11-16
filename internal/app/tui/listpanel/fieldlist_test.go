@@ -211,9 +211,16 @@ func TestMaskedRowKeepsOnEmptyAndClearsOnD(t *testing.T) {
 	if secret != "sk-abcd1234" {
 		t.Fatalf("empty apply must keep the secret, got %q", secret)
 	}
+	// Clearing the secret is a delete, and deletion is a two-press gesture
+	// (AUD-13): the first d arms, the second clears. The masked-row semantics
+	// themselves are unchanged — an empty apply still keeps the stored value.
+	fl.Update(kp("d"))
+	if secret != "sk-abcd1234" {
+		t.Fatalf("the first d must only arm, got %q", secret)
+	}
 	fl.Update(kp("d"))
 	if secret != "" {
-		t.Fatalf("d must clear the secret, got %q", secret)
+		t.Fatalf("the confirming d must clear the secret, got %q", secret)
 	}
 }
 

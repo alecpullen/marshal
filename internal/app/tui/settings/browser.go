@@ -825,6 +825,16 @@ func rowHints(b *BrowserPanel, atRoot bool) string {
 		}
 		h += " · → " + target
 	}
+	// Deletion is a two-press gesture on rows that have one, so the hint names
+	// the key, and names the confirmation once the first press armed it
+	// (AUD-13). Rows without a delete keep their existing text.
+	if row.Del != nil {
+		if list.DeleteArmed() {
+			h += " · d again to delete"
+		} else {
+			h += " · d delete"
+		}
+	}
 	return h + " · " + back
 }
 

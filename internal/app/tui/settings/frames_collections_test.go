@@ -611,8 +611,14 @@ func TestHooksAddWithoutPromptAndDelete(t *testing.T) {
 	if len(s.cfg.Hooks.Entries) != 1 || s.cfg.Hooks.Entries[0].Event != "pre_tool" {
 		t.Fatalf("a should append a pre_tool hook, got %v", s.cfg.Hooks.Entries)
 	}
+	// Deletion is a two-press gesture (AUD-13): the first d arms the row and
+	// says so, the second deletes it. This test pinned the single press.
+	ps.Update(kp("d"))
+	if len(s.cfg.Hooks.Entries) != 1 {
+		t.Fatalf("the first d must only arm, got %v", s.cfg.Hooks.Entries)
+	}
 	ps.Update(kp("d"))
 	if len(s.cfg.Hooks.Entries) != 0 {
-		t.Fatalf("d should delete the hook, got %v", s.cfg.Hooks.Entries)
+		t.Fatalf("the confirming d should delete the hook, got %v", s.cfg.Hooks.Entries)
 	}
 }

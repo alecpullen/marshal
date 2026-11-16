@@ -19,7 +19,7 @@ lib/main.dart          the tray's entry point
 lib/src/daemon/        the tray's CLI path: cli.dart runs marshal, status.dart parses it
 lib/src/menu/          the tray's menu model, its host interface and its renderer
 lib/src/client/        the bridge client: the only code that opens a socket (from F1)
-lib/src/model/         pure Dart stores and view models (from F1)
+lib/src/model/         stores and view models; Flutter's foundation only (from F1)
 lib/src/ui/            widgets: tokens.dart, the kit in kit/, the gallery in gallery/
 ```
 

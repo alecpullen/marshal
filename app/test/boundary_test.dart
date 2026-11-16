@@ -13,8 +13,10 @@ import 'support/source.dart';
 /// - `client/` — the only code that opens a socket or makes a request: a
 ///   native transport in files ending `_io.dart` and a browser one in files
 ///   ending `_web.dart`, behind one interface.
-/// - `model/` — pure Dart stores and view models, so every rule in them is a
-///   plain unit test: no Flutter, no `dart:io`, no browser.
+/// - `model/` — stores and view models, so every rule in them is a plain
+///   unit test: no `dart:io`, no browser, and of Flutter only
+///   `package:flutter/foundation.dart` (for `ChangeNotifier`), never
+///   widgets, `dart:ui`, Material or Cupertino.
 /// - `ui/` — widgets. It reads `model/` and never touches `client/`, and
 ///   only its kit and its tokens may reach for Material or Cupertino.
 ///
@@ -73,6 +75,15 @@ void main() {
       isMaterial(uri) ||
       isCupertino(uri);
 
+  /// The one Flutter library `model/` may import: `ChangeNotifier` lives in
+  /// it, and it draws nothing.
+  const modelFlutter = 'package:flutter/foundation.dart';
+
+  /// What `model/` may not import: any Flutter library but [modelFlutter],
+  /// `dart:io` or a browser API.
+  bool modelForbidden(String uri) =>
+      (isFlutter(uri) && uri != modelFlutter) || isIo(uri) || isBrowser(uri);
+
   /// Each file under `lib/` that names a URI [forbidden] says it may not,
   /// as `path: uri` lines for the failure message.
   List<String> offenders(
@@ -115,18 +126,38 @@ void main() {
     );
   });
 
-  test('model/ imports no Flutter, no dart:io and no browser API', () {
+  test('model/ imports only Flutter\'s foundation, no dart:io, no browser', () {
     final found = offenders(
       (file) => file.isUnder(model),
-      (_, uri) => isFlutter(uri) || isIo(uri) || isBrowser(uri),
+      (_, uri) => modelForbidden(uri),
     );
     expect(
       found,
       isEmpty,
       reason:
-          '$model is pure Dart, tested without Flutter:\n'
+          '$model may import $modelFlutter and no other Flutter library:\n'
           '${found.join('\n')}',
     );
+  });
+
+  test('the model/ rule allows foundation and forbids the rest', () {
+    expect(modelForbidden('package:flutter/foundation.dart'), isFalse);
+    expect(modelForbidden('dart:async'), isFalse);
+    expect(modelForbidden('package:meta/meta.dart'), isFalse);
+    for (final uri in [
+      'package:flutter/widgets.dart',
+      'package:flutter/services.dart',
+      'package:flutter/material.dart',
+      'package:flutter/cupertino.dart',
+      'package:flutter/src/foundation/change_notifier.dart',
+      'package:material_ui/material_ui.dart',
+      'dart:ui',
+      'dart:io',
+      'dart:js_interop',
+      'package:web/web.dart',
+    ]) {
+      expect(modelForbidden(uri), isTrue, reason: uri);
+    }
   });
 
   test('ui/ never imports client/', () {

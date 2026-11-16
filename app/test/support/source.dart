@@ -86,7 +86,9 @@ String normalize(String path) {
   return out.join('/');
 }
 
-final _directive = RegExp(r'(?:^|[;}])\s*(?:import|export)\b([^;]*);');
+// The `;` before a directive is looked behind, not consumed: otherwise the
+// previous directive's own `;` is spent and the next import is never read.
+final _directive = RegExp(r'(?:^|(?<=[;}]))\s*(?:import|export)\b([^;]*);');
 final _quoted = RegExp(r'''(?:'([^']*)'|"([^"]*)")''');
 
 List<String> _directiveUris(String source) {

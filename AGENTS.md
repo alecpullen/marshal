@@ -219,11 +219,12 @@ Native app
                            daemon's state and runs its commands — and the
                            Studio's foundations. lib/src has four lanes:
                            daemon/ + menu/ (the tray), client/ (the only code
-                           that opens a socket), model/ (pure Dart) and ui/
+                           that opens a socket), model/ (stores and view models) and ui/
                            (widgets). `dart:io` only in daemon/cli.dart and
                            client/*_io.dart; browser APIs only in
-                           client/*_web.dart; model/ imports no Flutter,
-                           `dart:io` or browser API; ui/ never imports
+                           client/*_web.dart; model/ imports only
+                           `package:flutter/foundation.dart` from Flutter, and
+                           no `dart:io` or browser API; ui/ never imports
                            client/; Material and Cupertino only in ui/kit/,
                            ui/tokens.dart and the tray's files.
                            `app/test/boundary_test.dart` enforces it. The tray

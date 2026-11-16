@@ -54,7 +54,9 @@ are re-created in `app/` to the design system's rules.
    - `daemon/` and `menu/` — the tray, untouched apart from imports.
    - `client/` — the bridge client. Empty in F0 apart from a README stating
      its rule.
-   - `model/` — pure Dart stores and view models. Empty in F0 likewise.
+   - `model/` — stores and view models; it may import
+     `package:flutter/foundation.dart` and nothing else from Flutter. Empty
+     in F0 likewise.
    - `ui/tokens.dart` — the Ember tokens and the named text roles.
    - `ui/kit/` — the components in design-system.md §5, one file each, and
      `kit.dart` exporting them together with the parts of Flutter's widgets

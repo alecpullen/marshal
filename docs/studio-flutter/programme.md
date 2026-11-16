@@ -90,8 +90,9 @@ before it, and opens with what to re-read before starting.
 5. **Layers inside `app/lib/src/`, enforced by the boundary test.**
    - `client/` — the only code that opens a socket or makes a request. It
      has a native transport and a browser transport behind one interface.
-   - `model/` — pure Dart: stores and view models. It imports neither
-     Flutter nor `dart:io`, so every rule in it is a plain unit test.
+   - `model/` — stores and view models. It imports
+     `package:flutter/foundation.dart` and nothing else from Flutter, and no
+     `dart:io`, so every rule in it is a plain unit test.
    - `ui/` — widgets. It reads `model/` and never touches `client/`.
    - `daemon/` — the tray's existing CLI path, unchanged.
 6. **No state-management package.** The stores are `ChangeNotifier`s handed
@@ -111,11 +112,8 @@ before it, and opens with what to re-read before starting.
 
 ## Raised by F0
 
-- **Decision 6 conflicts with the boundary rule.** Stores were to be
-  `ChangeNotifier`s, but that class is in Flutter and `model/` may not
-  import Flutter. Undecided. Recommended: allow `model/` to import
-  `package:flutter/foundation.dart` and nothing else from Flutter, and
-  change the boundary test to say so.
+- Decided 2026-11-17: stores are `ChangeNotifier`s and `model/` imports
+  `package:flutter/foundation.dart` only; the boundary test says so.
 - **Goldens are pinned to macOS**, where they were made. CI runs on Linux
   and skips the pixel comparison there. Undecided: regenerate them on Linux,
   or add a macOS step to CI.
@@ -158,7 +156,7 @@ Nothing in this phase talks to a daemon.
 - Lay out `client/`, `model/` and `ui/` and rewrite the boundary rule in
   `app/README.md`, `AGENTS.md` and `d3-tray-app.md`. Extend
   `no_io_test.dart` to the new rule: which files may import `dart:io`, that
-  `model/` imports no Flutter, that `ui/` imports no `client/`.
+  `model/` imports only Flutter's foundation library, that `ui/` imports no `client/`.
 - Correct D3's statement that Dart cannot use a unix socket, and record the
   spike.
 - Bring the Ember tokens and the shared widgets over from the mock, with

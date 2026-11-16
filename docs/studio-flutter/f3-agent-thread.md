@@ -174,3 +174,79 @@ Suggested pull requests, in order.
   updates or waits for the next stack patch. The Svelte client uses the
   updates; keep that unless the stack stream proves sufficient.
 - The dropped-frame budget for the performance check.
+
+## Implementation record (2026-11-17)
+
+Both open questions are settled: live tool output is drawn from the tool-call
+rows the stack already carries (a running call is a `WireTool.running`), and
+the budget is **no frame over 32 ms** while scrolling a 5,000-node transcript
+(`app/test/ui/thread/performance_test.dart`).
+
+**What exists.** Tasks 1–8 of the plan, one commit each on
+`studio/f3-agent-thread`:
+
+1. `web/bridge/contract/stack.go` and `session.go`, the bridge switched to
+   `contract.PromptRequest`/`SteerRequest`/`ModeRequest`, `stack.ts`
+   re-exporting the generated types, and `test/contract/{stack,session}.json`
+   in both round-trip tests.
+2. `model/stack_store.dart` (revision rule, refetch on a gap or a reconnect,
+   `plainText`), `model/thread_view_state.dart`, the new session routes on
+   `client/bridge_client.dart`, and `test/fixtures/stack/`.
+3. The seven kit components, the design system's §3/§5 entries, Noto Sans
+   Symbols 2 as a fallback family, the gallery and its Linux goldens.
+4. `ui/thread/thread_screen.dart`, `thread_header.dart`, `transcript.dart`,
+   one key map (`threadKeys`), following and "Jump to live", and the thread
+   place wired through `Studio`.
+5. `model/selection.dart` and `ui/thread/selection_layer.dart`: model-backed
+   anchors, pointer hit-testing to an anchor, per-row highlight boxes, edge
+   auto-scroll, ⌘C/⌘A, word/line/shift-click and a Copy context menu.
+6. `model/composer_model.dart`, `ui/thread/thread_composer.dart`, and asks
+   pinned in the transcript as the Inbox's `AskCard`.
+7. `model/new_work_model.dart` and `ui/new_work/new_work_dialog.dart`, opened
+   from a thread with ⌘N; Start posts `SpawnRequest` and opens the agent.
+8. The performance test, the end-to-end flow (`test/ui/thread/e2e_test.dart`
+   and `integration_test/f3_test.dart`), and this record.
+
+**Fixture provenance.** Tasks 1 and 2 ask for fixtures recorded from a real
+session. This environment has no model provider, no credentials and no
+network to an agent, so a live turn was impossible. The fixtures were instead
+produced by the **production projection and patch code**: a temporary Go test
+built `viewmodel.Node` trees, called `viewmodel.Project`, and ran
+`acp.stackProjector.diff` on them, writing the snapshot and the patches it
+returned. The JSON in `test/contract/stack.json` and
+`app/test/fixtures/stack/*.json` is therefore genuine projector output, but
+the transcript behind it is constructed, not recorded from a model's turn.
+The recorder test was deleted after it wrote the files.
+
+**Choices and deviations.**
+
+- `SessionAccess` is `contract.AccessState`, the type the access routes
+  already write; a second Go type for one wire shape would have been worse
+  than reusing the name.
+- `WireMessage.IsFinal` carries the JSON key `final`, because Dart reserves
+  the bare word.
+- `StackStore.plainText` for a receipt says what the row says (counts, then
+  usage), so a copy of the transcript matches what is drawn.
+- `Ask` gained an optional `step`, read from a pending request's `stepId`, so
+  the transcript can pin the card where it was raised.
+- The new-work dialog's Issues and Recipes lists need routes the F1 client
+  does not have (`GET /api/repos/{id}/issues`, `GET /api/recipes`); the
+  model takes them as injected functions and the production factory returns
+  empty lists, which the dialog draws as "No issues for this project" and
+  "No recipes yet". Recent prompts work end to end.
+- The new-work dialog is a `Sheet`, not a `ScreenCase`: it is not registered
+  in `test/support/screens.dart`, because the §7 states it has are its
+  lists' empty states and a failure line, not a screen's.
+- Selection highlight boxes are computed from each row's laid-out
+  paragraphs; a row drawn from several paragraphs (a tool row) maps the
+  selection onto them in order, which is exact for one paragraph and an
+  approximation for several.
+- The context menu is the kit's `Box` and `Btn` at the pointer: `Menu`
+  anchors to a control, and a pointer anchor would be a §10 change to it.
+
+**Environment-blocked, not failures.** `flutter test --platform chrome`
+(no working browser: the Chrome host stalls on CanvasKit), so the browser
+half of selection is unverified here. `flutter build linux` and
+`flutter test integration_test -d linux` (no CMake/GTK3 headers, no display),
+so `integration_test/f3_test.dart` is written but has not run. `npm run
+check` has a pre-existing five errors, unchanged by this phase.

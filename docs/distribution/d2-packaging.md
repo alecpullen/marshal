@@ -188,3 +188,77 @@ set it — a browser download, and the D3 app bundle.
 ## Open questions
 
 None.
+
+## Implementation record
+
+Implemented 2026-11-16 on branch `d2-packaging`, based on `main` at `4e748e6c`.
+
+### The pinned image
+
+`.github/workflows/release.yaml` uses `goreleaser/goreleaser-cross:v1.27.3`,
+the newest tag on `goreleaser/goreleaser-cross` named exactly `vX.Y.Z`
+(published 2026-10-20). Later rebuilds of the same version exist
+(`v1.27.3-1` … `v1.27.3-3`, the last on 2026-11-12); they carry the same
+GoReleaser, and the plan asked for a `vX.Y.Z` tag. `goreleaser-cross`
+numbers its tags by the Go toolchain it pins (v1.27.3 ships Go 1.27.3, the
+release notes say `feat(go): bump go to v1.27.3`); the image bundles
+**GoReleaser 2.18.3**, and that is the version every schema claim below was
+checked against. The checks ran with `podman` — `docker` is not installed in
+the environment this was implemented in — against the pulled image, with the
+config placed in a throwaway git repository because `goreleaser check`
+refuses to run outside one.
+
+### The keys the pinned version accepts
+
+`goreleaser check` parses `.goreleaser.yaml` with no unknown-field error, so
+both new blocks use the pinned version's spelling:
+
+- `notarize.macos[]`: `enabled`, `sign.certificate`, `sign.password`,
+  `notarize.issuer_id`, `notarize.key_id`, `notarize.key` — exactly as
+  written in the plan, including the `isEnvSet "MACOS_SIGN_P12"` gate. No
+  fallback to a post-build `codesign`/`notarytool` step is needed: the
+  assumption that the pinned image bundles `notarize.macos` holds.
+- `brews[]`: `name`, `repository.{owner,name,token}`, `directory`,
+  `homepage`, `description`, `license`, `skip_upload`, `install`, `caveats`
+  — all accepted, and no `service:` key is declared (the unit stays
+  `marshal daemon install`'s).
+
+`brews` sits after the `checksum:` and `notarize:` blocks rather than
+immediately after `archives:`, with the same effect: the plan's step 1 and
+step 2 are two separate additions to the same region of the file.
+
+### What this plan got short
+
+1. **`goreleaser check` exits 2, not 0, once `brews` is in the config.**
+   GoReleaser 2.18.3 prints `DEPRECATED: brews should not be used anymore`
+   and `configuration is valid, but uses deprecated properties`. There is no
+   replacement spelling to adopt in that version — `homebrew_formulae`,
+   `homebrew_formulas`, `homebrew_formula` and `formulae` each fail with
+   `field … not found in type config.Project` — and the formula still
+   publishes, so `brews` is kept. GoReleaser 2.20.0 behaves identically, so
+   the config will not rot when CI's `~> v2` moves.
+2. **CI's `check` step therefore tolerates exit 2.** The plan's step would
+   fail every PR over a deprecation it cannot avoid. `.github/workflows/
+   go-checks.yml` installs GoReleaser with `goreleaser-action@v6`
+   (`install-only: true`) and runs `check` itself, failing on any code other
+   than 0 and 2. Exit 1 — a config that would break at tag time — still
+   fails; that distinction was verified against both image versions.
+3. **The `dockers`/`docker_manifests` phase-out notices are informational.**
+   The pre-change config exits 0 with them, so D2 adds no new failure.
+4. **`scripts/install.sh` was verified on Linux only.** `sh -n` is clean,
+   `shellcheck` (the `koalaman/shellcheck:stable` image, since it is not
+   installed here) reports nothing, `--help` exits 0, `--bogus` exits 2
+   naming the option, and `--uninstall --prefix <temp dir>` exits 0, removes
+   nothing and prints the kept-data line. The macOS path, the download and
+   checksum paths, and `daemon install` were not exercised: they need a real
+   release and a macOS host.
+5. **Nothing was published.** No tag, no release, no tap push, and no
+   notarization run: a real release needs the tag, `HOMEBREW_TAP_TOKEN` and
+   the five Apple secrets. The signing gate is therefore verified as
+   *configuring* off when `MACOS_SIGN_P12` is unset, not as producing a
+   signed binary.
+6. **The manual checks in the plan are still manual.** `brew install
+   alecpullen/tap/marshal`, `marshal daemon status` after it, `brew
+   uninstall` leaving the daemon running, and a browser download on macOS
+   running without `xattr` all wait for the first tagged release from this
+   branch.

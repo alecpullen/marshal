@@ -168,6 +168,31 @@ class BridgeClient {
     StepDiffs.fromJson,
   );
 
+  /// GET /api/sessions/{id}/nodes/{nodeId}: one node's wire form and the
+  /// detail the projection left out.
+  Future<NodeDetailResponse> node(
+    String sessionId,
+    String nodeId, [
+    int subagentId = 0,
+  ]) => _objectOf(
+    '/api/sessions/${Uri.encodeComponent(sessionId)}/nodes/'
+    '${Uri.encodeComponent(nodeId)}',
+    NodeDetailResponse.fromJson,
+    query: {if (subagentId != 0) 'subagent': '$subagentId'},
+  );
+
+  /// GET /api/sessions/{id}/last-request: the newest model request, or null
+  /// when the session has made none.
+  Future<LastRequest?> lastRequest(String sessionId) async {
+    final response = await _send(
+      Request(
+        path: '/api/sessions/${Uri.encodeComponent(sessionId)}/last-request',
+      ),
+    );
+    if (response.body.isEmpty) return null;
+    return LastRequest.fromJson(_object(response));
+  }
+
   /// GET /api/agents/{id}/review/comments: the change set's comments, oldest
   /// first.
   Future<List<ReviewComment>> reviewComments(String agentId) async {
@@ -202,6 +227,20 @@ class BridgeClient {
     '${Uri.encodeComponent(commentId)}/resolve',
     null,
   );
+
+  /// POST /api/agents/{id}/preview/{port}: the URL the agent's app is served
+  /// at, for a port its workspace declares under `[preview]`.
+  Future<String> preview(String agentId, int port) async {
+    final response = await _send(
+      Request(
+        method: 'POST',
+        path:
+            '/api/agents/${Uri.encodeComponent(agentId)}/preview/$port',
+      ),
+    );
+    final json = _object(response);
+    return (json['url'] ?? json['previewUrl'] ?? '') as String;
+  }
 
   /// POST /api/agents/{id}/exit: commits, verifies and ships the work.
   Future<ExitResult> exit(String agentId, ExitRequest request) => _objectOf(

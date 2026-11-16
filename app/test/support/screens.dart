@@ -16,6 +16,8 @@ import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
 import 'package:marshal_app/src/model/inbox_model.dart' as model;
 import 'package:marshal_app/src/model/changes_model.dart';
 import 'package:marshal_app/src/model/files_model.dart';
+import 'package:marshal_app/src/model/inspect_model.dart';
+import 'package:marshal_app/src/model/preview_model.dart';
 import 'package:marshal_app/src/model/terminal_session.dart';
 import 'package:marshal_app/src/model/inspector_state.dart';
 import 'package:marshal_app/src/model/overview_model.dart';
@@ -29,6 +31,8 @@ import 'package:marshal_app/src/ui/gallery/gallery.dart';
 import 'package:marshal_app/src/ui/inbox/inbox.dart';
 import 'package:marshal_app/src/ui/inspector/changes_tab.dart';
 import 'package:marshal_app/src/ui/inspector/files_tab.dart';
+import 'package:marshal_app/src/ui/inspector/inspect_tab.dart';
+import 'package:marshal_app/src/ui/inspector/preview_tab.dart';
 import 'package:marshal_app/src/ui/inspector/terminal_tab.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 import 'package:marshal_app/src/ui/overview/overview.dart';
@@ -363,6 +367,26 @@ final screens = <ScreenCase>[
     },
   ),
   ScreenCase(
+    name: 'inspector preview',
+    ready: () =>
+        PreviewTab(model: PreviewModel.seeded(ports: const [5173, 8080])),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => PreviewTab(
+          model: PreviewModel.seeded(ports: const [5173, 8080]),
+          state: kind,
+        ),
+    },
+  ),
+  ScreenCase(
+    name: 'inspector inspect',
+    ready: () => InspectTab(model: _inspectModel()),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => InspectTab(model: _inspectModel(), state: kind),
+    },
+  ),
+  ScreenCase(
     name: 'inspector terminal',
     ready: () => TerminalTab(session: TerminalSession.seeded()),
     states: {
@@ -391,6 +415,23 @@ final screens = <ScreenCase>[
 /// The inspector the screen cases show, with each tab's frame placeholder
 /// until the task that builds that tab supplies its body.
 InspectorState _inspectorState() => InspectorState();
+
+/// The node the inspector's Inspect tab shows.
+InspectModel _inspectModel() => InspectModel.seeded(
+  facts: const InspectFacts(
+    title: 'edit  internal/viewmodel/testdata/index.json',
+    kind: 'tool',
+    actor: 'agent',
+    why: 'Drop three index entries whose files no test loads',
+    took: '300 ms',
+    sandbox: 'restricted · network isolated',
+    approval: 'auto',
+    callId: 'call_8f21c0',
+    output: 'Applied 1 edit. 9 lines removed.',
+    arguments: '{\n  "path": "internal/viewmodel/testdata/index.json"\n}',
+    thinking: ['The fold test loads stack_fold.json.'],
+  ),
+);
 
 /// The workspace tree the inspector's Files tab shows.
 FilesModel _filesModel() => FilesModel.seeded(

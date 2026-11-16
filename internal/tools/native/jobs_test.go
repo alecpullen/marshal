@@ -704,6 +704,19 @@ func TestJobCommittedPolicyChangesFutureLaunchesOnly(t *testing.T) {
 		t.Fatalf("new runner runs = %d, want 0: an admitted command keeps its captured runner", got)
 	}
 
+	// A settled completion releases its capacity slot only once its record is
+	// reported: settlement decrements the active count after the exit sink has
+	// been handed the completion, so Wait's settled snapshot can precede the
+	// free slot by that much. MaxJobs is 1 here, so wait for the slot instead of
+	// racing the bookkeeping.
+	slotDeadline := time.Now().Add(5 * time.Second)
+	for jm.ActiveCount() != 0 {
+		if time.Now().After(slotDeadline) {
+			t.Fatalf("active count = %d after the admitted command settled, want 0", jm.ActiveCount())
+		}
+		time.Sleep(time.Millisecond)
+	}
+
 	// A later launch resolves the committed generation wholesale.
 	next, err := jm.Launch(ctx, LaunchSpec{Command: "short", Detached: true})
 	if err != nil {

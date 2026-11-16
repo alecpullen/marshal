@@ -253,6 +253,85 @@ func TestGetSessionNotFound(t *testing.T) {
 	}
 }
 
+// TestGetLeafMessageIDDistinguishesEmptyRootFromUnset pins the three states
+// the active branch tip can be in (AUD-09): a real message, an explicitly
+// emptied root (rewound before the first turn), and a legacy NULL that must
+// keep falling back to MAX(id).
+func TestGetLeafMessageIDDistinguishesEmptyRootFromUnset(t *testing.T) {
+	now := time.Now().UTC()
+
+	t.Run("explicit empty root", func(t *testing.T) {
+		db := newTestDB(t)
+		defer db.Close()
+		sid := createTestSession(t, db)
+		if _, err := db.SaveMessage(sid, "user", "a", "plain", now, "", 0, false, 0); err != nil {
+			t.Fatalf("SaveMessage: %v", err)
+		}
+		newest, err := db.SaveMessage(sid, "assistant", "b", "plain", now, "", 0, false, 0)
+		if err != nil {
+			t.Fatalf("SaveMessage: %v", err)
+		}
+		// The write itself must succeed. leaf_message_id references
+		// messages(id) and foreign keys are enforced, so a literal 0 is
+		// rejected: the empty root has to be stored some other way.
+		if err := db.SetBranchLeaf(sid, 0); err != nil {
+			t.Fatalf("SetBranchLeaf(0): %v", err)
+		}
+		got, err := db.GetLeafMessageID(sid)
+		if err != nil {
+			t.Fatalf("GetLeafMessageID: %v", err)
+		}
+		if got != 0 {
+			t.Fatalf("leaf after rewind to the root = %d, want 0 (stale leaf %d resurrects the branch)", got, newest)
+		}
+	})
+
+	t.Run("legacy null falls back to newest", func(t *testing.T) {
+		db := newTestDB(t)
+		defer db.Close()
+		sid := createTestSession(t, db)
+		if _, err := db.SaveMessage(sid, "user", "a", "plain", now, "", 0, false, 0); err != nil {
+			t.Fatalf("SaveMessage: %v", err)
+		}
+		newest, err := db.SaveMessage(sid, "assistant", "b", "plain", now, "", 0, false, 0)
+		if err != nil {
+			t.Fatalf("SaveMessage: %v", err)
+		}
+		// Never call SetBranchLeaf: the column stays NULL, which for a
+		// legacy session means "the tip was never recorded".
+		got, err := db.GetLeafMessageID(sid)
+		if err != nil {
+			t.Fatalf("GetLeafMessageID: %v", err)
+		}
+		if got != newest {
+			t.Fatalf("legacy NULL leaf = %d, want MAX(id) %d", got, newest)
+		}
+	})
+
+	t.Run("non-zero leaf round trips", func(t *testing.T) {
+		db := newTestDB(t)
+		defer db.Close()
+		sid := createTestSession(t, db)
+		first, err := db.SaveMessage(sid, "user", "a", "plain", now, "", 0, false, 0)
+		if err != nil {
+			t.Fatalf("SaveMessage: %v", err)
+		}
+		if _, err := db.SaveMessage(sid, "assistant", "b", "plain", now, "", 0, false, 0); err != nil {
+			t.Fatalf("SaveMessage: %v", err)
+		}
+		if err := db.SetBranchLeaf(sid, first); err != nil {
+			t.Fatalf("SetBranchLeaf(%d): %v", first, err)
+		}
+		got, err := db.GetLeafMessageID(sid)
+		if err != nil {
+			t.Fatalf("GetLeafMessageID: %v", err)
+		}
+		if got != first {
+			t.Fatalf("leaf = %d, want %d", got, first)
+		}
+	})
+}
+
 func newTestDB(t *testing.T) *DB {
 	t.Helper()
 	db, err := Open(":memory:")

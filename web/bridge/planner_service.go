@@ -52,6 +52,11 @@ var (
 	errPlannerRequestUnknown  = errors.New("unknown planner request")
 	errPlannerRequestSettled  = errors.New("planner request already settled")
 	errPlannerUnavailable     = errors.New("planner unavailable")
+	// errPlannerHandoffMismatch is a handoff whose configuration names a project
+	// or repository the snapshot was not captured in. It is a conflict: the
+	// caller must resolve which work the snapshot belongs to, and nothing is
+	// created until it does.
+	errPlannerHandoffMismatch = errors.New("snapshot does not belong to the named project and repository")
 )
 
 // plannerOccupancyError is the conflict a create request gets when the
@@ -105,6 +110,15 @@ type PlannerService struct {
 	// beforeBlobWrite runs before each blob write, so a test can cancel a
 	// capture at an observable point instead of racing a sleep.
 	beforeBlobWrite func()
+
+	// factory is the factory service a snapshot handoff drafts through. It is
+	// nil on a bridge that has none, and a handoff then answers unavailable
+	// rather than creating anything.
+	factory FactoryAPI
+	// factorySource resolves that service when the bridge installs its factory
+	// routes after the planner's (see plannerRoutes): the server's own field is
+	// read when a handoff runs, not when the planner's routes were registered.
+	factorySource func() FactoryAPI
 
 	mu       sync.Mutex
 	planners map[string]*plannerInstance
@@ -1067,6 +1081,11 @@ func (inst *plannerInstance) end() error {
 // not know.
 func (s *Server) plannerRoutes() {
 	svc := newPlannerService(s.fleet, s.fleet.stateDir)
+	// The factory service is read when a handoff runs, not when this route is
+	// registered: NewServer installs the factory routes after the planner's, so
+	// the field is still unset here. A bridge without one leaves the source
+	// returning nil and a handoff answers unavailable.
+	svc.factorySource = func() FactoryAPI { return s.factory }
 	svc.routes(s.mux)
 }
 
@@ -1082,7 +1101,114 @@ func (svc *PlannerService) routes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/planners/{id}", svc.handleEnd)
 	mux.HandleFunc("POST /api/planners/{id}/snapshots", svc.handleCreateSnapshot)
 	mux.HandleFunc("GET /api/planners/{id}/snapshots/{snapshotId}", svc.handleSnapshot)
+	mux.HandleFunc("POST /api/planners/{id}/snapshots/{snapshotId}/handoff", svc.handleHandoff)
 	mux.HandleFunc("GET /api/planners/{id}/context", svc.handleContext)
+}
+
+// setFactory binds the factory service a snapshot handoff drafts through. A
+// service with none answers that a handoff is unavailable rather than creating
+// a work item through a path it does not own.
+func (svc *PlannerService) setFactory(f FactoryAPI) { svc.factory = f }
+
+// factoryAPI resolves the factory service this bridge offers, preferring the
+// one bound directly and falling back to the source the server installs.
+func (svc *PlannerService) factoryAPI() FactoryAPI {
+	if svc.factory != nil {
+		return svc.factory
+	}
+	if svc.factorySource != nil {
+		return svc.factorySource()
+	}
+	return nil
+}
+
+// handoff binds one reviewed snapshot to a new factory draft.
+//
+// The draft is built from the bytes the snapshot froze, never from the
+// planner's workspace: the user approved a capture, and the workspace may have
+// moved on — or be gone — by the time the handoff runs. The snapshot is
+// attached to the draft and to the approval that follows it, which is what
+// makes a seed apply exactly the reviewed selection.
+//
+// A replayed request ID goes through the factory's own create path, which
+// returns the draft it recorded the first time instead of creating a second
+// one.
+func (svc *PlannerService) handoff(ctx context.Context, id, snapshotID string, draft FactoryCreate) (FactoryItem, error) {
+	rec, err := svc.plannerRecord(id)
+	if err != nil {
+		return FactoryItem{}, err
+	}
+	snapshot, err := svc.readSnapshot(id, snapshotID)
+	if err != nil {
+		return FactoryItem{}, err
+	}
+	// The snapshot belongs to this planner by record identity; its project must
+	// be the planner's too, or the selection was captured somewhere else.
+	if snapshot.ProjectRoot != rec.ProjectRoot {
+		return FactoryItem{}, fmt.Errorf("%w: snapshot %s was captured in another project", errPlannerHandoffMismatch, snapshotID)
+	}
+	// Every byte the draft names is verified before the factory sees it, so a
+	// snapshot whose store is missing or changed creates nothing at all.
+	if err := svc.verifySnapshot(snapshot); err != nil {
+		return FactoryItem{}, err
+	}
+	if draft.Config.RepoID != rec.RepoID || draft.Config.ProjectRoot != rec.ProjectRoot {
+		return FactoryItem{}, fmt.Errorf("%w: snapshot %s belongs to %s in %s", errPlannerHandoffMismatch, snapshotID, rec.RepoID, rec.ProjectRoot)
+	}
+	factory := svc.factoryAPI()
+	if factory == nil {
+		return FactoryItem{}, fmt.Errorf("%w: no factory service is available in this bridge", errPlannerUnavailable)
+	}
+	// The approved text is the artifact the snapshot froze. A body that carries
+	// its own plan or spec is not a source here: the capture is.
+	for _, artifact := range snapshot.Artifacts {
+		switch artifact.Kind {
+		case plannerArtifactPlan:
+			draft.Plan = artifact.Content
+		case plannerArtifactSpec:
+			draft.Spec = artifact.Content
+		}
+	}
+	// The selection is copied into the draft, so the request body, the snapshot
+	// record and the stored draft never share one.
+	draft.EditSnapshot = factoryCloneSnapshot(&snapshot.EditSnapshot)
+	return factory.Create(draft)
+}
+
+// handleHandoff creates the draft a reviewed snapshot approves.
+func (svc *PlannerService) handleHandoff(w http.ResponseWriter, r *http.Request) {
+	var body FactoryCreate
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	replay := false
+	if concrete, ok := svc.factoryAPI().(*factoryAPI); ok {
+		replay = concrete.priorRequest(body.RequestID)
+	}
+	item, err := svc.handoff(r.Context(), r.PathValue("id"), r.PathValue("snapshotId"), body)
+	if err != nil {
+		writeHandoffError(w, err)
+		return
+	}
+	status := http.StatusCreated
+	if replay {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, map[string]any{"item": item})
+}
+
+// writeHandoffError reports a handoff failure. A planner error keeps its own
+// status; anything the factory's create path refuses is reported exactly as
+// POST /api/factory/items reports it, because that is the path that ran.
+func writeHandoffError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, errPlannerNotFound), errors.Is(err, errPlannerInvalid),
+		errors.Is(err, errPlannerUnavailable), errors.Is(err, errPlannerSnapshotCorrupt),
+		errors.Is(err, errPlannerFileChanged), errors.Is(err, errPlannerHandoffMismatch):
+		writePlannerError(w, err)
+	default:
+		factoryWriteError(w, err, "", 0)
+	}
 }
 
 func (svc *PlannerService) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -1201,7 +1327,7 @@ func writePlannerError(w http.ResponseWriter, err error) {
 	case errors.Is(err, errPlannerOccupancy), errors.Is(err, errPlannerBusy),
 		errors.Is(err, errPlannerModeUnconfirmed), errors.Is(err, errPlannerUnknownTurn),
 		errors.Is(err, errPlannerRequestSettled), errors.Is(err, errPlannerNotLive),
-		errors.Is(err, errPlannerFileChanged):
+		errors.Is(err, errPlannerFileChanged), errors.Is(err, errPlannerHandoffMismatch):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, errPlannerUnavailable), errors.Is(err, errPlannerSnapshotCorrupt):
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})

@@ -181,6 +181,13 @@ type FactoryWorker struct {
 	Role          string `json:"role"`
 	SpawnEffectID string `json:"spawnEffectId"`
 	Parked        bool   `json:"parked"`
+	// ApprovalRevision and Subagents bind the snapshot this worker was started
+	// with: the approval revision it came from and that revision's settings for
+	// this worker's own role. A worker started before they existed carries the
+	// zero value for both, and FactoryWorker.MarshalJSON keeps that worker's
+	// record byte-identical so an older journal still replays.
+	ApprovalRevision uint64                  `json:"approvalRevision,omitempty"`
+	Subagents        FactorySubagentSettings `json:"subagents"`
 }
 
 type FactoryPR struct {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -373,5 +374,365 @@ func TestFactorySpawnFactoryWorkerUsesTheLatestApprovalRouting(t *testing.T) {
 	routing, _ := params["routing"].(map[string]any)
 	if routing["profile"] != "cheap-review" {
 		t.Fatalf("session/new routing = %v, want the reviewer route from the latest approval", params["routing"])
+	}
+}
+
+// factorySubagentWorkerFixture is the smallest world a factory worker spawn
+// needs: a registered repository it can clone offline, one runtime per agent
+// whose session/new frames a test can read, and a control agent that reports
+// whether the runtime binds per-session child settings.
+type factorySubagentWorkerFixture struct {
+	f   *Fleet
+	ctl *fakeAgent
+	// mu guards runtimes, which the spawn path records as it starts each agent.
+	mu       sync.Mutex
+	runtimes map[string]*captureTransport
+	base     string
+	root     string
+}
+
+func newFactorySubagentWorkerFixture(t *testing.T) *factorySubagentWorkerFixture {
+	t.Helper()
+	bare := newBareRepoFixture(t)
+	fx := &factorySubagentWorkerFixture{
+		runtimes: map[string]*captureTransport{},
+		base:     gitText(t, bare, "rev-parse", "main"),
+		root:     t.TempDir(),
+	}
+	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))
+	if _, err := ws.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.PutRepo(Repo{ID: "repo-1", URL: bare, Branch: "main", OwnerID: DefaultOwnerID}); err != nil {
+		t.Fatal(err)
+	}
+	fx.f = NewFleet(ws, "", nil, t.TempDir(), Limits{}, "", nil, "")
+	fx.ctl = newFakeAgent()
+	fx.f.newControl = func() (*Child, error) { return &Child{Transport: fx.ctl}, nil }
+	fx.f.newRuntime = func(a Agent) (*Child, error) {
+		tr := &captureTransport{results: map[string]json.RawMessage{
+			"session/new": json.RawMessage(`{"sessionId":"session-` + a.ID + `"}`),
+		}}
+		fx.mu.Lock()
+		fx.runtimes[a.ID] = tr
+		fx.mu.Unlock()
+		return &Child{Transport: tr}, nil
+	}
+	t.Cleanup(fx.f.Close)
+	return fx
+}
+
+// reportSettings is the control session's session/status answer: whether the
+// runtime binds per-session child settings, and the ordinary defaults it would
+// apply to a session that bound none.
+func (fx *factorySubagentWorkerFixture) reportSettings(t *testing.T, settings bool, defaults FactorySubagentSettings) {
+	t.Helper()
+	fx.ctl.results["session/status"] = map[string]any{
+		"subagentControls": map[string]any{"settings": settings},
+		"subagentDefaults": map[string]any{
+			"settings": map[string]any{"enabled": defaults.Enabled, "model": defaults.Model, "concurrency": defaults.Concurrency},
+			"digest":   "digest",
+		},
+	}
+}
+
+// silenceSettings is a runtime that does not report the capability at all,
+// which is what an agent that does not know session/status answers.
+func (fx *factorySubagentWorkerFixture) silenceSettings() { delete(fx.ctl.results, "session/status") }
+
+// approval is one approved revision carrying the two role snapshots a test
+// states, with the configuration a worker spawn needs.
+func (fx *factorySubagentWorkerFixture) approval(impl, rev FactorySubagentSettings) FactoryApproval {
+	return FactoryApproval{
+		Plan: "plan", Spec: "spec", PlanHash: FactoryPlanHash("plan", "spec"),
+		Config: FactoryConfig{
+			RepoID: "repo-1", ProjectRoot: fx.root, TargetBranch: "main", Native: true,
+			ImplementerRouting:       json.RawMessage(`{"profile":"frontier"}`),
+			ReviewerRouting:          json.RawMessage(`{"profile":"cheap-review"}`),
+			NoRequiredCIAcknowledged: true,
+			MaxRounds:                5,
+		},
+		ImplementerSubagents: impl,
+		ReviewerSubagents:    rev,
+	}
+}
+
+// item is one approved handoff whose approvals are numbered in the order given,
+// which is the order an approval is appended in.
+func (fx *factorySubagentWorkerFixture) item(id string, approvals ...FactoryApproval) FactoryItem {
+	for n := range approvals {
+		approvals[n].Revision = uint64(n + 1)
+	}
+	return FactoryItem{
+		ID: id, RepoID: "repo-1", BaseSHA: fx.base, Approvals: approvals,
+		Branch: "marshal/factory/" + id,
+		Rounds: []FactoryRound{{Number: 1, ApprovalRevision: uint64(len(approvals)), HeadSHA: fx.base}},
+	}
+}
+
+// recoverableWorker saves the agent one worker row names over a real checkout on
+// the item's branch, which is the state the fresh-session path verifies before
+// it recreates a session. bound carries the identity the worker had before it
+// was lost.
+func (fx *factorySubagentWorkerFixture) recoverableWorker(t *testing.T, item FactoryItem, role string, bound FactoryWorker) FactoryWorker {
+	t.Helper()
+	project := t.TempDir()
+	mustGit(t, project, "init", "--initial-branch="+item.Branch)
+	mustGit(t, project, "config", "user.email", "test@example.com")
+	mustGit(t, project, "config", "user.name", "Test")
+	mustGit(t, project, "commit", "--allow-empty", "-m", "seed")
+	worker := bound
+	worker.AgentID, worker.SessionID = "a-"+role, "session-lost-"+role
+	worker.Role, worker.SpawnEffectID = role, "spawn-1"
+	if err := fx.f.ws.PutAgent(Agent{
+		ID: worker.AgentID, Project: project, SessionID: worker.SessionID,
+		OwnerID: DefaultOwnerID, Origin: OriginUI,
+		FactoryItemID: item.ID, FactoryRole: role, FactorySpawnEffectID: worker.SpawnEffectID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return worker
+}
+
+// sentSettings returns the subagentSettings one worker's session/new carried,
+// and whether the frame carried the key at all.
+func (fx *factorySubagentWorkerFixture) sentSettings(t *testing.T, agentID string) (map[string]any, bool) {
+	t.Helper()
+	fx.mu.Lock()
+	tr := fx.runtimes[agentID]
+	fx.mu.Unlock()
+	if tr == nil {
+		t.Fatalf("no runtime was started for agent %s", agentID)
+	}
+	tr.mu.Lock()
+	frames := append([]capturedFrame(nil), tr.seen...)
+	tr.mu.Unlock()
+	var params map[string]any
+	for _, frame := range frames {
+		if frame.method != "session/new" {
+			continue
+		}
+		if err := json.Unmarshal([]byte(frame.params), &params); err != nil {
+			t.Fatalf("decode session/new params %s: %v", frame.params, err)
+		}
+	}
+	if params == nil {
+		t.Fatalf("agent %s was sent no session/new: %+v", agentID, frames)
+	}
+	settings, ok := params["subagentSettings"].(map[string]any)
+	return settings, ok
+}
+
+// wantSubagentSettings pins a frame's subagentSettings to the snapshot a role's
+// approval froze, and to the shape the session accepts.
+func wantSubagentSettings(t *testing.T, got map[string]any, want FactorySubagentSettings) {
+	t.Helper()
+	if got == nil {
+		t.Fatalf("session/new carried no subagentSettings, want %+v", want)
+	}
+	for key := range got {
+		switch key {
+		case "enabled", "model", "concurrency":
+		default:
+			t.Fatalf("subagentSettings carried %q, which the session does not accept", key)
+		}
+	}
+	if enabled, _ := got["enabled"].(bool); enabled != want.Enabled {
+		t.Fatalf("subagentSettings enabled = %v, want %v", got["enabled"], want.Enabled)
+	}
+	model, _ := got["model"].(string)
+	if model != want.Model {
+		t.Fatalf("subagentSettings model = %v, want %q", got["model"], want.Model)
+	}
+	concurrency, _ := got["concurrency"].(float64)
+	if int(concurrency) != want.Concurrency {
+		t.Fatalf("subagentSettings concurrency = %v, want %d", got["concurrency"], want.Concurrency)
+	}
+}
+
+// TestFactoryWorkerAppliesApprovedSubagents proves a spawned worker binds the
+// snapshot its own role's approval froze, rather than the runtime's global
+// defaults, and that an approval that froze nothing still sends nothing.
+func TestFactoryWorkerAppliesApprovedSubagents(t *testing.T) {
+	t.Run("a spawn applies the settings its approval froze", func(t *testing.T) {
+		fx := newFactorySubagentWorkerFixture(t)
+		// The runtime's own defaults are not what was approved, so a fallback
+		// to them is visible in the frame.
+		fx.reportSettings(t, true, FactorySubagentSettings{Enabled: true, Model: "test/default", Concurrency: 8})
+		approved := FactorySubagentSettings{Enabled: true, Model: "test/big", Concurrency: 2}
+		item := fx.item("i-1", fx.approval(approved, FactorySubagentSettings{Enabled: false, Concurrency: 1}))
+		worker, err := fx.f.SpawnFactoryWorker(context.Background(), item, "implementer", "spawn-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		settings, ok := fx.sentSettings(t, worker.AgentID)
+		if !ok {
+			t.Fatal("session/new carried no subagentSettings")
+		}
+		wantSubagentSettings(t, settings, approved)
+		if worker.Subagents != approved {
+			t.Fatalf("worker bound %+v, want the approved %+v", worker.Subagents, approved)
+		}
+		if worker.ApprovalRevision != 1 {
+			t.Fatalf("worker bound approval revision %d, want 1", worker.ApprovalRevision)
+		}
+	})
+
+	t.Run("a later approval replaces the settings a worker binds", func(t *testing.T) {
+		fx := newFactorySubagentWorkerFixture(t)
+		fx.reportSettings(t, true, FactorySubagentSettings{Enabled: true, Concurrency: 4})
+		first := FactorySubagentSettings{Enabled: true, Model: "test/first", Concurrency: 2}
+		second := FactorySubagentSettings{Enabled: false, Concurrency: 3}
+		item := fx.item("i-1",
+			fx.approval(first, FactorySubagentSettings{}),
+			fx.approval(second, FactorySubagentSettings{}))
+		worker, err := fx.f.SpawnFactoryWorker(context.Background(), item, "implementer", "spawn-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		settings, ok := fx.sentSettings(t, worker.AgentID)
+		if !ok {
+			t.Fatal("session/new carried no subagentSettings")
+		}
+		wantSubagentSettings(t, settings, second)
+		if worker.ApprovalRevision != 2 || worker.Subagents != second {
+			t.Fatalf("worker bound revision %d settings %+v, want revision 2 settings %+v",
+				worker.ApprovalRevision, worker.Subagents, second)
+		}
+	})
+
+	t.Run("an approval that froze nothing sends nothing", func(t *testing.T) {
+		fx := newFactorySubagentWorkerFixture(t)
+		// A legacy approval never asks for the capability, so a runtime that
+		// reports none is still enough to spawn on.
+		fx.silenceSettings()
+		item := fx.item("i-1", fx.approval(FactorySubagentSettings{}, FactorySubagentSettings{}))
+		worker, err := fx.f.SpawnFactoryWorker(context.Background(), item, "implementer", "spawn-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := fx.sentSettings(t, worker.AgentID); ok {
+			t.Fatal("a legacy approval sent subagentSettings")
+		}
+		if worker.Subagents != (FactorySubagentSettings{}) {
+			t.Fatalf("a legacy worker bound %+v", worker.Subagents)
+		}
+	})
+
+	t.Run("a runtime that cannot bind the settings refuses before any worker starts", func(t *testing.T) {
+		approved := FactorySubagentSettings{Enabled: true, Model: "test/big", Concurrency: 2}
+		for _, tc := range []struct {
+			name  string
+			setup func(*factorySubagentWorkerFixture, *testing.T)
+		}{
+			{"no session status at all", func(fx *factorySubagentWorkerFixture, _ *testing.T) { fx.silenceSettings() }},
+			{"status without subagent controls", func(fx *factorySubagentWorkerFixture, t *testing.T) {
+				fx.reportSettings(t, true, FactorySubagentSettings{Enabled: true, Concurrency: 4})
+				delete(fx.ctl.results["session/status"].(map[string]any), "subagentControls")
+			}},
+			{"settings reported false", func(fx *factorySubagentWorkerFixture, t *testing.T) {
+				fx.reportSettings(t, false, FactorySubagentSettings{Enabled: true, Concurrency: 4})
+			}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				fx := newFactorySubagentWorkerFixture(t)
+				tc.setup(fx, t)
+				item := fx.item("i-1", fx.approval(approved, FactorySubagentSettings{}))
+				if _, err := fx.f.SpawnFactoryWorker(context.Background(), item, "implementer", "spawn-1"); !errors.Is(err, ErrFactoryUnsupported) {
+					t.Fatalf("spawn err = %v, want ErrFactoryUnsupported", err)
+				}
+				// Nothing started: no runtime, no slot.
+				fx.mu.Lock()
+				started := len(fx.runtimes)
+				fx.mu.Unlock()
+				if started != 0 {
+					t.Fatalf("refused spawn started %d runtimes", started)
+				}
+				if n, _ := fx.f.slots.stats(); n != 0 {
+					t.Fatalf("refused spawn took %d slots", n)
+				}
+			})
+		}
+	})
+}
+
+// TestFactoryWorkerSubagentSettingsAreRoleScoped proves each role's session
+// binds that role's own snapshot: an implementer never runs under the reviewer's
+// settings, and neither spawn writes the other role's approval.
+func TestFactoryWorkerSubagentSettingsAreRoleScoped(t *testing.T) {
+	fx := newFactorySubagentWorkerFixture(t)
+	fx.reportSettings(t, true, FactorySubagentSettings{Enabled: true, Concurrency: 4})
+	implementerSettings := FactorySubagentSettings{Enabled: true, Model: "test/big", Concurrency: 2}
+	reviewerSettings := FactorySubagentSettings{Enabled: false, Model: "test/cheap", Concurrency: 6}
+	item := fx.item("i-1", fx.approval(implementerSettings, reviewerSettings))
+	ctx := context.Background()
+	implementer, err := fx.f.SpawnFactoryWorker(ctx, item, "implementer", "spawn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewer, err := fx.f.SpawnFactoryWorker(ctx, item, "reviewer", "spawn-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := fx.sentSettings(t, implementer.AgentID)
+	if !ok {
+		t.Fatal("the implementer session carried no subagentSettings")
+	}
+	wantSubagentSettings(t, got, implementerSettings)
+	got, ok = fx.sentSettings(t, reviewer.AgentID)
+	if !ok {
+		t.Fatal("the reviewer session carried no subagentSettings")
+	}
+	wantSubagentSettings(t, got, reviewerSettings)
+	if implementer.Subagents != implementerSettings || reviewer.Subagents != reviewerSettings {
+		t.Fatalf("bound settings implementer=%+v reviewer=%+v", implementer.Subagents, reviewer.Subagents)
+	}
+	// Neither spawn rewrote the approval it read: the frozen pair is what each
+	// worker was measured against.
+	if item.Approvals[0].ImplementerSubagents != implementerSettings || item.Approvals[0].ReviewerSubagents != reviewerSettings {
+		t.Fatalf("the approval was rewritten: %+v", item.Approvals[0])
+	}
+}
+
+// TestFactoryWorkerBoundSnapshotKeepsLegacyRecordsByteIdentical proves the two
+// fields a worker now binds do not change the record a worker that bound
+// nothing writes. The journal replays by re-marshalling each record and
+// comparing it with the stored bytes, so this is what keeps an older journal
+// loadable.
+func TestFactoryWorkerBoundSnapshotKeepsLegacyRecordsByteIdentical(t *testing.T) {
+	legacy := func() json.RawMessage {
+		raw, err := json.Marshal(struct {
+			AgentID       string `json:"agentId"`
+			SessionID     string `json:"sessionId"`
+			Role          string `json:"role"`
+			SpawnEffectID string `json:"spawnEffectId"`
+			Parked        bool   `json:"parked"`
+		}{"a1", "s1", "implementer", "spawn-1", false})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}()
+	unbound := FactoryWorker{AgentID: "a1", SessionID: "s1", Role: "implementer", SpawnEffectID: "spawn-1"}
+	raw, err := json.Marshal(unbound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != string(legacy) {
+		t.Fatalf("unbound worker record = %s, want %s", raw, legacy)
+	}
+	// A bound worker states the snapshot it runs under, and reads back as one.
+	bound := unbound
+	bound.ApprovalRevision, bound.Subagents = 2, FactorySubagentSettings{Enabled: true, Model: "test/big", Concurrency: 2}
+	raw, err = json.Marshal(bound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back FactoryWorker
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatal(err)
+	}
+	if back != bound {
+		t.Fatalf("bound worker round-tripped as %+v, want %+v", back, bound)
 	}
 }

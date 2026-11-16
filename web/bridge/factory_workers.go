@@ -13,6 +13,62 @@ type factoryWorkers struct{ fleet *Fleet }
 
 func newFactoryWorkers(fleet *Fleet) *factoryWorkers { return &factoryWorkers{fleet: fleet} }
 
+// ErrFactoryUnsupported reports the one thing that makes an approved snapshot
+// unenforceable: a runtime that cannot bind a session's child settings. The
+// worker is refused before it starts rather than run under the runtime's
+// global settings, which is not what was approved.
+var ErrFactoryUnsupported = errors.New("factory worker settings unsupported")
+
+// legacyFactoryWorker is the worker object a journal written before approved
+// subagent settings carried: the same fields, in the same order, without the
+// snapshot a worker now binds.
+type legacyFactoryWorker struct {
+	AgentID       string `json:"agentId"`
+	SessionID     string `json:"sessionId"`
+	Role          string `json:"role"`
+	SpawnEffectID string `json:"spawnEffectId"`
+	Parked        bool   `json:"parked"`
+}
+
+// MarshalJSON keeps a worker that bound nothing byte-identical to the record it
+// always wrote. The journal is replayed by re-marshalling each record and
+// comparing it with the stored bytes, so a record written before a worker bound
+// its snapshot has to write exactly the keys it always did. It is the same rule
+// FactoryApproval.MarshalJSON follows, for the same reason.
+func (w FactoryWorker) MarshalJSON() ([]byte, error) {
+	if w.ApprovalRevision == 0 && w.Subagents == (FactorySubagentSettings{}) {
+		return json.Marshal(legacyFactoryWorker{w.AgentID, w.SessionID, w.Role, w.SpawnEffectID, w.Parked})
+	}
+	// The alias keeps this function off the value's own method set.
+	type plain FactoryWorker
+	return json.Marshal(plain(w))
+}
+
+// factorySubagentSettingsSupported reports whether the runtime binds and
+// enforces a session's child-settings snapshot. It reads the same control
+// session's session/status that factoryAPI.factorySessionSubagents reads, so
+// the capability costs no session of its own. An agent that does not answer the
+// method, answers {}, or reports settings false cannot enforce a snapshot, and
+// says so here rather than at the first child it fails to limit.
+func (f *Fleet) factorySubagentSettingsSupported(ctx context.Context) bool {
+	if f == nil {
+		return false
+	}
+	raw, err := f.controlCall(ctx, "session/status", nil, true)
+	if err != nil {
+		return false
+	}
+	var status struct {
+		SubagentControls *struct {
+			Settings bool `json:"settings"`
+		} `json:"subagentControls"`
+	}
+	if json.Unmarshal(raw, &status) != nil {
+		return false
+	}
+	return status.SubagentControls != nil && status.SubagentControls.Settings
+}
+
 func (f *Fleet) SpawnFactoryWorker(ctx context.Context, item FactoryItem, role, effectID string) (FactoryWorker, error) {
 	if item.ID == "" || effectID == "" || (role != "implementer" && role != "reviewer") {
 		return FactoryWorker{}, fmt.Errorf("factory: invalid worker identity")
@@ -20,7 +76,8 @@ func (f *Fleet) SpawnFactoryWorker(ctx context.Context, item FactoryItem, role, 
 	if len(item.Approvals) == 0 {
 		return FactoryWorker{}, fmt.Errorf("factory: missing approval")
 	}
-	conf := item.Approvals[len(item.Approvals)-1].Config
+	approval := item.Approvals[len(item.Approvals)-1]
+	conf := approval.Config
 	if conf.Native && conf.Workspace != "" {
 		return FactoryWorker{}, fmt.Errorf("factory: native and workspace cannot both be selected")
 	}
@@ -34,16 +91,32 @@ func (f *Fleet) SpawnFactoryWorker(ctx context.Context, item FactoryItem, role, 
 	mode := "act"
 	auto := conf.ImplementerAuto
 	routing := conf.ImplementerRouting
+	// The snapshot a worker runs under is the one its own role's approval
+	// froze. The other role's snapshot is neither this worker's to run under
+	// nor this worker's to change.
+	subagents := approval.ImplementerSubagents
 	if role == "reviewer" {
 		mode = "ask"
 		auto = false
 		routing = conf.ReviewerRouting
+		subagents = approval.ReviewerSubagents
 		if len(item.Rounds) == 0 || item.Rounds[len(item.Rounds)-1].HeadSHA == "" {
 			return FactoryWorker{}, fmt.Errorf("factory: missing reviewer candidate head")
 		}
 		ref = item.Rounds[len(item.Rounds)-1].HeadSHA
 	}
-	opts := SpawnOptions{Name: "Factory " + role + " " + item.ID, Mode: mode, Auto: &auto, RepoID: conf.RepoID, Ref: ref, Routing: routing, Workspace: conf.Workspace}
+	// An approval that froze settings states what the worker must run under; a
+	// runtime that cannot bind them is refused before any worker starts. A
+	// legacy approval carries the zero value and sends nothing, which is the
+	// behaviour it always had.
+	var snapshot *FactorySubagentSettings
+	if subagents != (FactorySubagentSettings{}) {
+		if !f.factorySubagentSettingsSupported(ctx) {
+			return FactoryWorker{}, fmt.Errorf("%w: the runtime cannot bind the approved %s subagent settings", ErrFactoryUnsupported, role)
+		}
+		snapshot = &subagents
+	}
+	opts := SpawnOptions{Name: "Factory " + role + " " + item.ID, Mode: mode, Auto: &auto, RepoID: conf.RepoID, Ref: ref, Routing: routing, Subagents: snapshot, Workspace: conf.Workspace}
 	id, err := f.spawn(ctx, conf.ProjectRoot, opts, &factorySpawnTag{itemID: item.ID, role: role, effectID: effectID, native: conf.Native})
 	if err != nil {
 		return FactoryWorker{}, err
@@ -52,7 +125,7 @@ func (f *Fleet) SpawnFactoryWorker(ctx context.Context, item FactoryItem, role, 
 	if !ok || a.SessionID == "" {
 		return FactoryWorker{}, fmt.Errorf("factory: spawned worker has no saved session")
 	}
-	return FactoryWorker{AgentID: id, SessionID: a.SessionID, Role: role, SpawnEffectID: effectID}, nil
+	return FactoryWorker{AgentID: id, SessionID: a.SessionID, Role: role, SpawnEffectID: effectID, ApprovalRevision: approval.Revision, Subagents: subagents}, nil
 }
 
 func (w *factoryWorkers) Execute(ctx context.Context, item FactoryItem, effect FactoryEffect) (result FactoryOutcome, err error) {

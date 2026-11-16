@@ -76,3 +76,52 @@ jobs:
         run: |
           git diff --exit-code -- web/bridge/static
           test -z "$(git ls-files --others --exclude-standard -- web/bridge/static)"
+
+  release-config:
+    name: Installer and release config
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shellcheck the installer
+        run: shellcheck scripts/install.sh
+      - name: Test the installer's uninstall gate
+        run: sh scripts/install_test.sh
+      - name: Install GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: '~> v2'
+          install-only: true
+      # `check` parses the config only: no build, no C toolchain. It exits 1
+      # on a config that would fail at tag time and 2 when the config parses
+      # but uses a property this GoReleaser deprecates. `brews` is the one
+      # deprecation this repository accepts — the formula still publishes and
+      # the pinned version has no replacement spelling — so exit 2 passes only
+      # when every DEPRECATED line names `brews`. A new, unrelated deprecation
+      # must fail here rather than quietly join the tolerated set. The match on
+      # `DEPRECATED` is case-sensitive on purpose: GoReleaser's own trailing
+      # "configuration is valid, but uses deprecated properties" summary is
+      # lowercase, and it names no property.
+      - name: GoReleaser config
+        run: |
+          set +e
+          out="$(goreleaser check 2>&1)"
+          code=$?
+          set -e
+          printf '%s\n' "$out"
+          case "$code" in
+          0) exit 0 ;;
+          2) ;;
+          *) exit "$code" ;;
+          esac
+          deprecated="$(printf '%s\n' "$out" | grep 'DEPRECATED' || true)"
+          if [ -z "$deprecated" ]; then
+            echo "goreleaser check exited 2 with no DEPRECATED line to inspect" >&2
+            exit 1
+          fi
+          unexpected="$(printf '%s\n' "$deprecated" | grep -v 'brews' || true)"
+          if [ -n "$unexpected" ]; then
+            echo "goreleaser check: deprecations other than 'brews' are not accepted:" >&2
+            printf '%s\n' "$unexpected" >&2
+            exit 1
+          fi

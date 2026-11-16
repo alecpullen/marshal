@@ -35,14 +35,24 @@ that:
   many projects in one browser UI, with worktree isolation, an egress proxy,
   and automations that watch your repos.
 
+## Install
+
+```bash
+# macOS
+brew install alecpullen/tap/marshal
+
+# Linux, or macOS without Homebrew
+curl -fsSL https://raw.githubusercontent.com/alecpullen/marshal/main/scripts/install.sh | sh
+```
+
+Both install `marshal` and `webbridge` and run `marshal daemon install`,
+which starts the background daemon. Add `--no-daemon` to install only the
+binaries, and `--uninstall` to remove them (your data is kept).
+
 ## Quickstart
 
 ```bash
-# Grab a prebuilt binary (Linux, macOS)
-tar -xzf marshal_*_<os>_<arch>.tar.gz
-sudo mv marshal /usr/local/bin/
-
-# Or build from source (Go 1.26+ and a C toolchain)
+# Build from source (Go 1.26+ and a C toolchain)
 CGO_ENABLED=1 go build ./cmd/marshal
 ```
 

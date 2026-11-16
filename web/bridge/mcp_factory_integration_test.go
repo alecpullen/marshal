@@ -1129,3 +1129,107 @@ func assertNoHostPath(t *testing.T, text, root string) {
 		t.Fatalf("a tool result disclosed this host's project root: %s", text)
 	}
 }
+
+// TestMarshalStudioToolsLostResponse proves a built-in session's lost response
+// costs nothing. The session enrolls on the daemon's owner-only socket, calls
+// the factory surface with the credential it was issued, and never reads the
+// answer — yet the approval is committed once, and the retry (the same
+// requestId under the same credential) returns the operation already in the
+// journal instead of approving a second time.
+func TestMarshalStudioToolsLostResponse(t *testing.T) {
+	b := newHandoffBridge(t)
+
+	// One draft to approve, authored by the fixture's external client: a
+	// built-in session reads and drafts through its own access policy, while an
+	// approval is the operation it is granted here.
+	author := newHandoffClient(b, b.token)
+	author.initialize(t)
+	created, _ := author.mustCall(t, factoryToolCreateDraft, b.handoffProposal("studio-author"))
+	itemID, _ := created["itemId"].(string)
+	if itemID == "" {
+		t.Fatalf("the fixture created no draft: %v", created)
+	}
+
+	// The daemon identity a credential is scoped to, and the server-owned
+	// association enrollment resolves this session against.
+	b.srv.SetDaemonInfo(testMarshalInstance(testMarshalPID, testMarshalStarted))
+	if err := b.fleet.ws.PutAgent(Agent{
+		ID: "a1", Project: b.root, SessionID: "studio-s1", OwnerID: DefaultOwnerID, Origin: "cli",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The project's own standing authority for an approval: the configured
+	// policy a person set up in advance, which owes no per-operation receipt.
+	version := marshalAccessState(b.projectID, "", "", MarshalFactoryAccess{}).Version
+	if current, ok := b.fleet.ws.marshalAccessDefault(b.projectID); ok {
+		version = current.Version
+	}
+	if _, _, err := b.srv.factoryAuth.putMarshalAccessDefault(b.projectID, MarshalFactoryAccess{
+		ApproveAndQueue:   boolPtr(true),
+		ApprovalAuthority: authorityPtr(factoryAuthorityStanding),
+	}, version); err != nil {
+		t.Fatalf("grant this project's standing authority: %v", err)
+	}
+
+	// Enroll the way the trusted transport does: on the owner-only socket
+	// handler, never on the network listener.
+	body, err := json.Marshal(MarshalEnrollmentRequest{ProjectRoot: b.root, SessionID: "studio-s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, marshalEnrollPath, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	b.srv.SocketHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("enroll: %d %s", rec.Code, rec.Body)
+	}
+	var enrollment MarshalEnrollmentResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &enrollment); err != nil {
+		t.Fatalf("decode enrollment: %v", err)
+	}
+	if enrollment.State != marshalStateConnected || enrollment.Token == "" {
+		t.Fatalf("enrollment = %+v, want a connected binding with a credential", enrollment)
+	}
+	if enrollment.SessionID != "studio-s1" || enrollment.ProjectID != b.projectID {
+		t.Fatalf("the binding is %+v, not this session on this project", enrollment)
+	}
+
+	client := newHandoffClient(b, enrollment.Token)
+	client.initialize(t)
+
+	// The approval happens; its answer never arrives.
+	args := b.approve(itemID, "studio-lost", 1, factoryAuthorityStanding)
+	before := b.journalLines(t)
+	b.loseResponse.Store(true)
+	if _, _, err := client.call(factoryToolApproveAndQueue, args); err == nil {
+		t.Fatal("the session read a response the bridge never delivered")
+	}
+	if lines := b.journalLines(t); lines != before+1 {
+		t.Fatalf("the lost response wrote %d journal records, want exactly one", lines-before)
+	}
+	approved, err := b.store.Get(itemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved.State != "queued" || len(approved.Approvals) != 1 {
+		t.Fatalf("the lost response left the item %+v, want one approval", approved)
+	}
+
+	// The retry is that same operation: the journal's own answer, with no
+	// second approval and no second append.
+	retried, _ := client.mustCall(t, factoryToolApproveAndQueue, args)
+	if retried["version"].(float64) != float64(approved.Version) || retried["state"] != approved.State {
+		t.Fatalf("the retry returned %v, want the committed item at version %d", retried, approved.Version)
+	}
+	if lines := b.journalLines(t); lines != before+1 {
+		t.Fatalf("the retry wrote a second journal record: %d", lines-before)
+	}
+	again, err := b.store.Get(itemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Approvals) != 1 {
+		t.Fatalf("the retry approved the item a second time: %d approvals", len(again.Approvals))
+	}
+}

@@ -719,3 +719,131 @@ func ResolveMarshalInstance(candidates []MarshalInstance, selected string) (Mars
 	}
 	return candidates[0], nil
 }
+
+// Access. These are a person's settings for the built-in Studio integration —
+// a project's access defaults, one session's override and, when enrollment was
+// ambiguous, the project that session acts on. They are user-side routes on the
+// authenticated socket; no MCP route and nothing on the model-facing surface
+// names them.
+
+const (
+	marshalAccessPath          = "/api/marshal/access"
+	marshalAccessDefaultPath   = marshalAccessPath + "/default"
+	marshalAccessOverridePath  = marshalAccessPath + "/override"
+	marshalAccessSelectionPath = marshalAccessPath + "/selection"
+)
+
+// MarshalAccessAnswer is one answer from the access surface: the status the
+// bridge returned and its body, which is the seam's access view as JSON.
+//
+// A 409 is an answer and not an error: it carries the state that won, so the
+// editor can show the conflict and keep the edit it was making. Every other
+// non-2xx is an error, described without the workspace path.
+type MarshalAccessAnswer struct {
+	Status int
+	Body   []byte
+}
+
+// MarshalAccess reads the access surface for one session. An empty projectID
+// lets the bridge resolve the project the session acts on, and an empty
+// workerID resolves the session's own worker identity.
+func (c *Client) MarshalAccess(ctx context.Context, projectID, sessionID, workerID string) (MarshalAccessAnswer, error) {
+	query := url.Values{}
+	if projectID != "" {
+		query.Set("projectId", projectID)
+	}
+	if sessionID != "" {
+		query.Set("sessionId", sessionID)
+	}
+	if workerID != "" {
+		query.Set("workerId", workerID)
+	}
+	path := marshalAccessPath
+	if encoded := query.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	return c.marshalAccessDo(ctx, http.MethodGet, path, nil)
+}
+
+// SaveMarshalAccessDefault writes one project's access defaults against the
+// version the caller read.
+func (c *Client) SaveMarshalAccessDefault(ctx context.Context, body []byte) (MarshalAccessAnswer, error) {
+	return c.marshalAccessDo(ctx, http.MethodPut, marshalAccessDefaultPath, body)
+}
+
+// SaveMarshalAccessOverride writes one session's or worker's override against
+// the version the caller read.
+func (c *Client) SaveMarshalAccessOverride(ctx context.Context, body []byte) (MarshalAccessAnswer, error) {
+	return c.marshalAccessDo(ctx, http.MethodPut, marshalAccessOverridePath, body)
+}
+
+// SelectMarshalInstance records the project an ambiguous session acts on, or
+// clears the choice when the body names none.
+func (c *Client) SelectMarshalInstance(ctx context.Context, body []byte) (MarshalAccessAnswer, error) {
+	return c.marshalAccessDo(ctx, http.MethodPut, marshalAccessSelectionPath, body)
+}
+
+// marshalAccessDo issues one access request. A remote carries its configured
+// credential, and the local socket needs none: its routes are served on the
+// bare mux, where only the owner can reach them.
+func (c *Client) marshalAccessDo(ctx context.Context, method, path string, body []byte) (MarshalAccessAnswer, error) {
+	var payload io.Reader
+	if body != nil {
+		payload = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, "http://"+c.host+path, payload)
+	if err != nil {
+		return MarshalAccessAnswer{}, fmt.Errorf("daemon request: %w", err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.remote {
+		if c.token == nil {
+			return MarshalAccessAnswer{}, fmt.Errorf("%w: %s has no credential", ErrMarshalUnsupported, c.socket)
+		}
+		token, err := c.token(ctx)
+		if err != nil {
+			return MarshalAccessAnswer{}, fmt.Errorf("%w: access token: %w", ErrMarshalUnsupported, err)
+		}
+		if token == "" {
+			return MarshalAccessAnswer{}, fmt.Errorf("%w: %s has no credential", ErrMarshalUnsupported, c.socket)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return MarshalAccessAnswer{}, fmt.Errorf("%w: daemon at %s: %w", ErrMarshalUnavailable, c.socket, err)
+	}
+	defer resp.Body.Close()
+	answer, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return MarshalAccessAnswer{}, fmt.Errorf("%w: read access answer: %w", ErrMarshalUnavailable, err)
+	}
+
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusConflict:
+		// A conflict is a conditional write that lost: the body names the
+		// value that won, so the caller shows it instead of guessing.
+		return MarshalAccessAnswer{Status: resp.StatusCode, Body: answer}, nil
+	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
+		return MarshalAccessAnswer{}, fmt.Errorf("%w: %s does not serve access settings", ErrMarshalUnsupported, c.socket)
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return MarshalAccessAnswer{}, fmt.Errorf("%w: %s refused access settings: %s", ErrMarshalUnsupported, c.socket, marshalAccessDetail(answer, resp.Status))
+	default:
+		return MarshalAccessAnswer{}, fmt.Errorf("%w: %s answered %s: %s", ErrMarshalUnavailable, c.socket, resp.Status, marshalAccessDetail(answer, resp.Status))
+	}
+}
+
+// marshalAccessDetail is the bridge's own error text when it sent one, and the
+// status otherwise. It never includes a body that was not an error object.
+func marshalAccessDetail(body []byte, status string) string {
+	var refused struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(body, &refused) == nil && strings.TrimSpace(refused.Error) != "" {
+		return refused.Error
+	}
+	return status
+}

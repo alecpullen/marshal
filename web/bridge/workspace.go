@@ -268,6 +268,11 @@ type workspaceFile struct {
 	// MarshalFactoryOverrides are the per-session overrides, one per project
 	// and session, with the worker a worker override names.
 	MarshalFactoryOverrides []marshalFactoryAccessRecord `json:"marshalFactoryOverrides,omitempty"`
+	// MarshalFactorySelections are the projects a person picked for a
+	// session whose enrollment was ambiguous, one record per session. They
+	// are a user's answer to a question the server refused to guess, so they
+	// sit with the access records rather than with anything a request names.
+	MarshalFactorySelections []marshalFactorySelectionRecord `json:"marshalFactorySelections,omitempty"`
 	// Reviews maps an agent ID to its review comments (v7).
 	Reviews map[string][]ReviewComment `json:"reviews,omitempty"`
 	// WatchRules maps a Studio watch id to the action the bridge takes when
@@ -336,10 +341,15 @@ type Workspace struct {
 	// by marshalOverrideKey. A worker override is a session override that also
 	// names the worker, so it lives here too.
 	marshalOverrides map[string]marshalFactoryAccessRecord
-	schedules        map[string]Schedule
-	notifications    NotifyConfig
-	statusLinks      map[string]StatusLink
-	pinned           []string
+	// marshalSelections maps a session ID to the project a person chose for
+	// it when its enrollment named more than one. It is keyed by session
+	// because the ambiguity is: the same project is not ambiguous for the
+	// next session that enrolls against it.
+	marshalSelections map[string]marshalFactorySelectionRecord
+	schedules         map[string]Schedule
+	notifications     NotifyConfig
+	statusLinks       map[string]StatusLink
+	pinned            []string
 }
 
 func NewWorkspace(path string) *Workspace {
@@ -357,6 +367,7 @@ func NewWorkspace(path string) *Workspace {
 		projectIdentities: make(map[string]MCPProjectIdentity),
 		marshalDefaults:   make(map[string]MarshalFactoryAccess),
 		marshalOverrides:  make(map[string]marshalFactoryAccessRecord),
+		marshalSelections: make(map[string]marshalFactorySelectionRecord),
 		schedules:         make(map[string]Schedule),
 		statusLinks:       make(map[string]StatusLink),
 	}
@@ -420,6 +431,13 @@ func (w *Workspace) Load() (string, error) {
 		w.marshalOverrides[marshalOverrideKey(r.ProjectID, r.SessionID)] = marshalFactoryAccessRecord{
 			ProjectID: r.ProjectID, SessionID: r.SessionID, WorkerID: r.WorkerID, Access: r.Access.clone(),
 		}
+	}
+	w.marshalSelections = make(map[string]marshalFactorySelectionRecord, len(f.MarshalFactorySelections))
+	for _, r := range f.MarshalFactorySelections {
+		if r.SessionID == "" || r.ProjectID == "" {
+			continue
+		}
+		w.marshalSelections[r.SessionID] = r
 	}
 	w.pending = make(map[string]PendingSpawn, len(f.Pending))
 	for _, p := range f.Pending {
@@ -658,6 +676,12 @@ func (w *Workspace) save() error {
 			return f.MarshalFactoryOverrides[i].ProjectID < f.MarshalFactoryOverrides[j].ProjectID
 		}
 		return f.MarshalFactoryOverrides[i].SessionID < f.MarshalFactoryOverrides[j].SessionID
+	})
+	for _, r := range w.marshalSelections {
+		f.MarshalFactorySelections = append(f.MarshalFactorySelections, r)
+	}
+	sort.Slice(f.MarshalFactorySelections, func(i, j int) bool {
+		return f.MarshalFactorySelections[i].SessionID < f.MarshalFactorySelections[j].SessionID
 	})
 	for _, p := range w.pending {
 		f.Pending = append(f.Pending, p)
@@ -1260,6 +1284,96 @@ func marshalAccessState(projectID, sessionID, workerID string, a MarshalFactoryA
 // and the session ID, the pair the record is versioned and written against.
 func marshalOverrideKey(projectID, sessionID string) string {
 	return projectID + "\x00" + sessionID
+}
+
+// marshalFactorySelectionRecord is one person's answer to an ambiguous
+// enrollment: the project the session called SessionID acts on. An empty
+// ProjectID is the absence of an answer, which is what a reset stores.
+type marshalFactorySelectionRecord struct {
+	SessionID string `json:"sessionId"`
+	ProjectID string `json:"projectId,omitempty"`
+}
+
+// marshalFactorySelectionState is one stored selection and its opaque version:
+// the pair a conditional write is made against. An absent selection reports the
+// zero value and the stable version of it, so an editor's first write can be
+// conditional on what it was shown.
+type marshalFactorySelectionState struct {
+	SessionID string
+	ProjectID string
+	Version   string
+}
+
+// marshalSelectionVersion is the opaque version of one selection: a lowercase
+// hex SHA-256 of the JSON encoding of the project chosen. Clearing a selection
+// moves the version back to the absent value's, which is the same version a
+// session that was never ambiguous has.
+func marshalSelectionVersion(projectID string) string {
+	data, _ := json.Marshal(marshalFactorySelectionRecord{ProjectID: projectID})
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// marshalSelectionState builds one reported selection from a stored value.
+func marshalSelectionState(sessionID, projectID string) marshalFactorySelectionState {
+	return marshalFactorySelectionState{
+		SessionID: sessionID, ProjectID: projectID, Version: marshalSelectionVersion(projectID),
+	}
+}
+
+// marshalSelection returns the project a person chose for one session and the
+// version the choice carries. The second result is false when there is no
+// answer stored, which an absent selection reports as the zero state: a
+// selection nobody made is not a selection of the empty project.
+func (w *Workspace) marshalSelection(sessionID string) (marshalFactorySelectionState, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if sessionID == "" {
+		return marshalFactorySelectionState{}, false
+	}
+	r, ok := w.marshalSelections[sessionID]
+	if !ok || r.ProjectID == "" {
+		return marshalFactorySelectionState{}, false
+	}
+	return marshalSelectionState(sessionID, r.ProjectID), true
+}
+
+// putMarshalSelectionIfMatch stores one session's selected project only when
+// the stored selection still carries expected as its version, under the same
+// rule as the access writes: one lock, a conditional write, and the exact prior
+// record restored when the save fails. An empty projectID clears the selection
+// — the session is ambiguous again, which is a reset rather than a choice.
+func (w *Workspace) putMarshalSelectionIfMatch(sessionID, projectID, expected string) (bool, marshalFactorySelectionState, error) {
+	if strings.TrimSpace(expected) == "" {
+		return false, marshalFactorySelectionState{}, errors.New("bridge: conditional selection write needs a version")
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		return false, marshalFactorySelectionState{}, errors.New("bridge: a selection needs a session id")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.marshalSelections == nil {
+		w.marshalSelections = make(map[string]marshalFactorySelectionRecord)
+	}
+	prev, had := w.marshalSelections[sessionID]
+	current := marshalSelectionState(sessionID, prev.ProjectID)
+	if current.Version != expected {
+		return false, current, nil
+	}
+	if projectID == "" {
+		delete(w.marshalSelections, sessionID)
+	} else {
+		w.marshalSelections[sessionID] = marshalFactorySelectionRecord{SessionID: sessionID, ProjectID: projectID}
+	}
+	if err := w.save(); err != nil {
+		if had {
+			w.marshalSelections[sessionID] = prev
+		} else {
+			delete(w.marshalSelections, sessionID)
+		}
+		return false, current, err
+	}
+	return true, marshalSelectionState(sessionID, projectID), nil
 }
 
 // FactoryGrant returns a copy of one client's grant for one project and its

@@ -120,6 +120,9 @@ var Methods = []Method{
 	{Iface: "Session", Name: "ReconnectMCP", ACP: "session/mcp_reconnect", Exists: true},
 	{Iface: "Session", Name: "SaveProjectConfig", ACP: "session/save_project_config", Exists: true},
 	{Iface: "Session", Name: "SaveVerifyCommands", ACP: "session/save_verify_commands", Exists: true},
+	{Iface: "Session", Name: "MarshalAccess", ACP: "session/marshal_access", Exists: true},
+	{Iface: "Session", Name: "SaveMarshalAccess", ACP: "session/save_marshal_access", Exists: true},
+	{Iface: "Session", Name: "SelectMarshalInstance", ACP: "session/select_marshal_instance", Exists: true},
 
 	{Iface: "Session", Name: "RecentPrompts", ACP: "session/prompt_history", Exists: true},
 	{Iface: "Session", Name: "SavePrompt", ACP: "session/prompt_history_save", Exists: true},

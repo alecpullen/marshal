@@ -10,6 +10,10 @@ import ServiceManagement
 /// (docs/studio-flutter/findings/tray-and-window.md). Closing it hides it;
 /// only Quit quits.
 class MainFlutterWindow: NSWindow, NSWindowDelegate {
+  /// The `marshal/window` channel, kept so a native close can be reported to
+  /// Dart.
+  private var windowChannel: FlutterMethodChannel?
+
   override func awakeFromNib() {
     // This app has no window at launch: the xib's window is the Flutter
     // template's, marked visible at launch, and would otherwise open as a
@@ -49,6 +53,9 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
       name: "marshal/window",
       binaryMessenger: controller.engine.binaryMessenger
     )
+    // Kept so a close made with the window's own controls can be reported
+    // back to Dart, which otherwise thinks the window is still open.
+    self.windowChannel = channel
     channel.setMethodCallHandler { [weak self] (call: FlutterMethodCall, result: @escaping FlutterResult) in
       switch call.method {
       case "show":
@@ -88,6 +95,9 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
   /// it never destroys the window and never quits the app.
   func windowShouldClose(_ sender: NSWindow) -> Bool {
     hideStudio()
+    // Dart is told, so its window state follows the red button and Cmd-W
+    // instead of thinking a window is still in front of the person.
+    windowChannel?.invokeMethod("closed", arguments: nil)
     return false
   }
 

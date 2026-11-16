@@ -59,10 +59,18 @@ static void window_method_call_cb(FlMethodChannel* channel,
 // Closing the window hides it. Returning TRUE keeps GTK from destroying the
 // window, which would take the Flutter view with it; the app is a menu-bar
 // item and outlives every window it opens.
+//
+// Dart is told too, so its window state follows the close button instead of
+// thinking a window is still in front of the person.
 static gboolean window_delete_event_cb(GtkWidget* widget,
                                        GdkEvent* event,
                                        gpointer user_data) {
   gtk_widget_hide(widget);
+  MyApplication* self = MY_APPLICATION(user_data);
+  if (self->window_channel != nullptr) {
+    fl_method_channel_invoke_method(self->window_channel, "closed", nullptr,
+                                    nullptr, nullptr, nullptr);
+  }
   return TRUE;
 }
 

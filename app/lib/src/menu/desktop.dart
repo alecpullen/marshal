@@ -22,7 +22,7 @@ const pollInterval = Duration(seconds: 5);
 Future<void> startTray() async {
   await TrayApp(
     cli: DaemonCli(),
-    window: WindowController(const ChannelWindowHost()),
+    window: WindowController(ChannelWindowHost()),
   ).start();
 }
 
@@ -37,7 +37,7 @@ class TrayApp {
   /// The Studio's window, which "Open Studio" opens or focuses.
   final WindowController window;
 
-  late final RenderHost _host = RenderHost(onSelect: _onSelect, log: cli.log);
+  late final RenderHost _host = RenderHost(onSelect: select, log: cli.log);
 
   DaemonStatus? _status;
   String? _failure;
@@ -87,7 +87,12 @@ class TrayApp {
     );
   }
 
-  Future<void> _onSelect(String id) async {
+  /// select runs one menu item, by its id, as a click does.
+  ///
+  /// The tray itself needs a display and a menu bar (no test here has one), so
+  /// this is the entry point a test drives the menu through: everything below
+  /// it is the menu's rules.
+  Future<void> select(String id) async {
     switch (id) {
       case 'studio':
         return window.show();
@@ -104,8 +109,10 @@ class TrayApp {
       case 'login':
         return _toggleLaunchAtLogin();
       case 'quit':
-        cli.quit();
-        return;
+        // Quit is the window's own call (the `quit` channel method, answered
+        // by both runners), not a `dart:io` exit: the Runner owns the app's
+        // life, and the window is the one thing that can end it.
+        return window.quit();
     }
   }
 

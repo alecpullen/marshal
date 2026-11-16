@@ -22,6 +22,7 @@ const _fixtures = [
   'schedules',
   'spawn',
   'stream',
+  'watches',
 ];
 
 /// The codec for every type a fixture names. An enum type is held to its wire
@@ -81,6 +82,11 @@ final _codecs = <String, _Codec>{
   'RecipeRun': (json) => RecipeRun.fromJson(_object(json)).toJson(),
   // schedules.json
   'Schedule': (json) => Schedule.fromJson(_object(json)).toJson(),
+  // watches.json
+  'OnTrip': (json) => OnTrip.fromJson(_object(json)).toJson(),
+  'RerouteRule': (json) => RerouteRule.fromJson(_object(json)).toJson(),
+  'WatchInfo': (json) => WatchInfo.fromJson(_object(json)).toJson(),
+  'WatchSample': (json) => WatchSample.fromJson(_object(json)).toJson(),
   // spawn.json
   'SpawnRequest': (json) => SpawnRequest.fromJson(_object(json)).toJson(),
   'SpawnResult': (json) => SpawnResult.fromJson(_object(json)).toJson(),

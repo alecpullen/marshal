@@ -8,10 +8,12 @@ import 'package:marshal_app/src/model/place.dart';
 import 'package:marshal_app/src/model/recipes_model.dart';
 import 'package:marshal_app/src/model/schedules_model.dart';
 import 'package:marshal_app/src/model/thread_ref.dart' as model;
+import 'package:marshal_app/src/model/watches_model.dart';
 import 'package:marshal_app/src/ui/automations/automations_place.dart';
 import 'package:marshal_app/src/ui/automations/placeholder.dart';
 import 'package:marshal_app/src/ui/automations/recipes_tab.dart';
 import 'package:marshal_app/src/ui/automations/schedules_tab.dart';
+import 'package:marshal_app/src/ui/automations/watches_tab.dart';
 import 'package:marshal_app/src/ui/debug/connection_check.dart';
 import 'package:marshal_app/src/ui/gallery/gallery.dart';
 import 'package:marshal_app/src/ui/inbox/inbox.dart';
@@ -275,6 +277,14 @@ Widget _overview({StateKind? state}) => Overview(
   overview: _overviewModel(),
   now: shellNow,
   hosts: shellHosts,
+  automations: [
+    TrippedWatch(
+      name: 'the gate',
+      agent: 'Agent a-1',
+      action: 'Reroutes implementer to local',
+      age: '4m',
+    ),
+  ],
   state: state,
   onRetry: () {},
   onSelect: (_) {},
@@ -323,10 +333,58 @@ RecipesModel _recipesFixture() => RecipesModel.fixture(const [
   ),
 ]);
 
-/// The Automations place, on [tab] (1 is Schedules, 3 Recipes). Bots and
-/// Watches are planned until F7 plan 1's later steps land.
+/// The watches the Automations fixture lists: one that tripped with a
+/// reroute, and one watching quietly from the bridge's own session.
+WatchesModel _watchesFixture() => WatchesModel.fixture([
+  WatchInfo(
+    agentID: 'a-1',
+    id: 'w-1',
+    name: 'the gate',
+    kind: 'command',
+    state: 'fired',
+    condition: 'exit != 0',
+    mode: 'interval',
+    intervalMs: 5000,
+    owner: 'a-1',
+    fireCount: 2,
+    lastSample: 'exit 1',
+    createdAt: 1763352000000,
+    lastFiredAt: shellNow.millisecondsSinceEpoch - 4 * 60 * 1000,
+    samples: const [
+      WatchSample(at: 1763352300000, value: 0, tripped: false),
+      WatchSample(at: 1763352600000, value: 1, tripped: true),
+    ],
+    onTrip: const OnTrip(
+      notify: true,
+      resume: false,
+      reroute: RerouteRule(role: 'implementer', preset: 'local'),
+    ),
+    notify: true,
+    resume: false,
+  ),
+  WatchInfo(
+    agentID: 'studio',
+    id: 'w-2',
+    name: 'the queue',
+    kind: 'file',
+    state: 'watching',
+    condition: 'the file appears',
+    mode: 'interval',
+    intervalMs: 60000,
+    fireCount: 0,
+    createdAt: 1763352000000,
+    samples: const [
+      WatchSample(at: 1763352300000, value: 0, tripped: false),
+      WatchSample(at: 1763352600000, value: 0, tripped: false),
+    ],
+  ),
+], now: shellNow);
+
+/// The Automations place, on [tab] (1 is Schedules, 2 Watches, 3 Recipes).
+/// Bots is planned until F7 plan 1's later step lands.
 Widget _automations({StateKind? state, int tab = 1}) {
   final schedules = _schedulesFixture();
+  final watches = _watchesFixture();
   final recipes = _recipesFixture();
   return AutomationsPlace(
     bots: plannedAutomationsTab(
@@ -335,10 +393,8 @@ Widget _automations({StateKind? state, int tab = 1}) {
     ),
     schedules: (tabs, state) =>
         SchedulesTab(model: schedules, tabs: tabs, state: state),
-    watches: plannedAutomationsTab(
-      'Watches',
-      'Watches arrive with a later step of this phase.',
-    ),
+    watches: (tabs, state) =>
+        WatchesTab(model: watches, tabs: tabs, state: state),
     recipes: (tabs, state) =>
         RecipesTab(model: recipes, tabs: tabs, state: state),
     tab: tab,
@@ -401,6 +457,14 @@ final screens = <ScreenCase>[
     ready: () => _automations(),
     states: {
       for (final kind in requiredStates) kind: () => _automations(state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'automations · watches',
+    ready: () => _automations(tab: 2),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _automations(tab: 2, state: kind),
     },
   ),
   ScreenCase(

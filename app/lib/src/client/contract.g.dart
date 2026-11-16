@@ -2680,3 +2680,217 @@ class SubagentCancelResult {
     return json;
   }
 }
+
+/// WatchSample is one reading of a watch's condition.
+class WatchSample {
+  const WatchSample({
+    required this.at,
+    required this.value,
+    required this.tripped,
+  });
+
+  final int at;
+  final double value;
+  final bool tripped;
+
+  factory WatchSample.fromJson(Map<String, dynamic> json) {
+    return WatchSample(
+      at: (json['at'] as num).toInt(),
+      value: (json['value'] as num).toDouble(),
+      tripped: json['tripped'] as bool,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['at'] = at;
+    json['value'] = value;
+    json['tripped'] = tripped;
+    return json;
+  }
+}
+
+/// RerouteRule names the role a tripped watch rebinds and the preset it binds
+/// it to.
+class RerouteRule {
+  const RerouteRule({
+    required this.role,
+    required this.preset,
+  });
+
+  final String role;
+  final String preset;
+
+  factory RerouteRule.fromJson(Map<String, dynamic> json) {
+    return RerouteRule(
+      role: json['role'] as String,
+      preset: json['preset'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['role'] = role;
+    json['preset'] = preset;
+    return json;
+  }
+}
+
+/// OnTrip is what a watch does when it trips. On a row it is what the bridge
+/// started it with; on a create request only `reroute` is sent.
+class OnTrip {
+  const OnTrip({
+    this.notify,
+    this.resume,
+    this.reroute,
+  });
+
+  final bool? notify;
+  final bool? resume;
+  final RerouteRule? reroute;
+
+  factory OnTrip.fromJson(Map<String, dynamic> json) {
+    return OnTrip(
+      notify: json['notify'] as bool?,
+      resume: json['resume'] as bool?,
+      reroute: _objectOrNull(
+        json['reroute'],
+        RerouteRule.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (notify != null) {
+      json['notify'] = notify;
+    }
+    if (resume != null) {
+      json['resume'] = resume;
+    }
+    if (reroute != null) {
+      json['reroute'] = reroute!.toJson();
+    }
+    return json;
+  }
+}
+
+/// WatchInfo is one watch as GET /api/watches answers it: what the engine
+/// reports about it, the agent that started it, and what it does on trip
+/// (web/bridge/watches.go, internal/acp/watch.go). Times are Unix
+/// milliseconds.
+class WatchInfo {
+  const WatchInfo({
+    required this.agentID,
+    required this.id,
+    required this.name,
+    required this.kind,
+    required this.state,
+    this.condition,
+    required this.mode,
+    required this.intervalMs,
+    this.owner,
+    required this.fireCount,
+    this.lastSample,
+    this.lastError,
+    required this.createdAt,
+    this.lastFiredAt,
+    required this.samples,
+    this.onTrip,
+    this.notify,
+    this.resume,
+  });
+
+  /// AgentID is the agent whose session started the watch, or `studio` for
+  /// the bridge's own control session.
+  final String agentID;
+  final String id;
+  final String name;
+  final String kind;
+  final String state;
+  final String? condition;
+  final String mode;
+  final int intervalMs;
+  final String? owner;
+  final int fireCount;
+  final String? lastSample;
+  final String? lastError;
+  final int createdAt;
+  final int? lastFiredAt;
+  final List<WatchSample> samples;
+  /// OnTrip, Notify and Resume are held by the bridge, so they appear only
+  /// on watches it started.
+  final OnTrip? onTrip;
+  final bool? notify;
+  final bool? resume;
+
+  factory WatchInfo.fromJson(Map<String, dynamic> json) {
+    return WatchInfo(
+      agentID: json['agentId'] as String,
+      id: json['id'] as String,
+      name: json['name'] as String,
+      kind: json['kind'] as String,
+      state: json['state'] as String,
+      condition: json['condition'] as String?,
+      mode: json['mode'] as String,
+      intervalMs: (json['intervalMs'] as num).toInt(),
+      owner: json['owner'] as String?,
+      fireCount: (json['fireCount'] as num).toInt(),
+      lastSample: json['lastSample'] as String?,
+      lastError: json['lastError'] as String?,
+      createdAt: (json['createdAt'] as num).toInt(),
+      lastFiredAt: (json['lastFiredAt'] as num?)?.toInt(),
+      samples: _list(
+        json['samples'],
+        (value) => _object(value, WatchSample.fromJson),
+      ),
+      onTrip: _objectOrNull(
+        json['onTrip'],
+        OnTrip.fromJson,
+      ),
+      notify: json['notify'] as bool?,
+      resume: json['resume'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['agentId'] = agentID;
+    json['id'] = id;
+    json['name'] = name;
+    json['kind'] = kind;
+    json['state'] = state;
+    if (condition != null) {
+      json['condition'] = condition;
+    }
+    json['mode'] = mode;
+    json['intervalMs'] = intervalMs;
+    if (owner != null) {
+      json['owner'] = owner;
+    }
+    json['fireCount'] = fireCount;
+    if (lastSample != null) {
+      json['lastSample'] = lastSample;
+    }
+    if (lastError != null) {
+      json['lastError'] = lastError;
+    }
+    json['createdAt'] = createdAt;
+    if (lastFiredAt != null) {
+      json['lastFiredAt'] = lastFiredAt;
+    }
+    json['samples'] = [
+      for (final value in samples) value.toJson(),
+    ];
+    if (onTrip != null) {
+      json['onTrip'] = onTrip!.toJson();
+    }
+    if (notify != null) {
+      json['notify'] = notify;
+    }
+    if (resume != null) {
+      json['resume'] = resume;
+    }
+    return json;
+  }
+}

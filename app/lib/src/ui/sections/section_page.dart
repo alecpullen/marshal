@@ -31,6 +31,7 @@ class SectionPage<T> extends StatelessWidget {
     this.detailTitle,
     this.createLabel,
     this.blank,
+    this.readOnly = false,
   });
 
   /// The page's title.
@@ -76,6 +77,10 @@ class SectionPage<T> extends StatelessWidget {
   /// that opens [blank]'s detail, where a save creates it. Both or neither.
   final String? createLabel;
   final T Function()? blank;
+
+  /// A detail with nothing to save — a watch, a read-only view: it draws a
+  /// Close instead of Save and Cancel.
+  final bool readOnly;
 
   @override
   Widget build(BuildContext context) {
@@ -166,7 +171,7 @@ class SectionPage<T> extends StatelessWidget {
       context,
       title: detailTitle?.call(item) ?? row(item, () {}).name,
       body: _Detail<T>(model: model, detail: detail),
-      actions: [_DetailActions<T>(model: model)],
+      actions: [_DetailActions<T>(model: model, readOnly: readOnly)],
     );
   }
 }
@@ -253,15 +258,23 @@ class _Refusal extends StatelessWidget {
 /// one primary action and it comes first; while a save is in flight both
 /// Save and Cancel are disabled, because the bridge has not answered yet.
 class _DetailActions<T> extends StatelessWidget {
-  const _DetailActions({required this.model});
+  const _DetailActions({required this.model, required this.readOnly});
 
   final SectionModel<T> model;
+  final bool readOnly;
 
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: model,
       builder: (context, _) {
+        if (readOnly) {
+          return Wrap(
+            spacing: Space.s8,
+            runSpacing: Space.s8,
+            children: [Btn('Close', onTap: () => _close(context))],
+          );
+        }
         final state = model.saveState;
         final saving = state == SaveState.saving;
         return Wrap(

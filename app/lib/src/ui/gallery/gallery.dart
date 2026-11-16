@@ -375,6 +375,15 @@ class _GalleryState extends State<Gallery> {
         description: 'Mirrors, workspaces and images',
         value: '41 of 120 GB',
       ),
+      const RowItem(
+        name: 'The gate',
+        description: 'command · exit != 0 · every 5s',
+        spark: RowSpark(
+          [0, 0, 1, 1, 0, 1, 0],
+          label: 'Today’s readings of the gate',
+        ),
+        value: 'Fired 2m ago',
+      ),
       const RowItem.planned(
         name: 'Signal and Element',
         description: 'Notifications there are planned.',

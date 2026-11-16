@@ -799,3 +799,66 @@ export interface SubagentCancelParams {
 export interface SubagentCancelResult {
   cancelled: boolean;
 }
+
+/**
+ * WatchSample is one reading of a watch's condition.
+ */
+export interface WatchSample {
+  at: number;
+  value: number;
+  tripped: boolean;
+}
+
+/**
+ * RerouteRule names the role a tripped watch rebinds and the preset it binds
+ * it to.
+ */
+export interface RerouteRule {
+  role: string;
+  preset: string;
+}
+
+/**
+ * OnTrip is what a watch does when it trips. On a row it is what the bridge
+ * started it with; on a create request only `reroute` is sent.
+ */
+export interface OnTrip {
+  notify?: boolean;
+  resume?: boolean;
+  reroute?: RerouteRule;
+}
+
+/**
+ * WatchInfo is one watch as GET /api/watches answers it: what the engine
+ * reports about it, the agent that started it, and what it does on trip
+ * (web/bridge/watches.go, internal/acp/watch.go). Times are Unix
+ * milliseconds.
+ */
+export interface WatchInfo {
+  /**
+   * AgentID is the agent whose session started the watch, or `studio` for
+   * the bridge's own control session.
+   */
+  agentId: string;
+  id: string;
+  name: string;
+  kind: string;
+  state: string;
+  condition?: string;
+  mode: string;
+  intervalMs: number;
+  owner?: string;
+  fireCount: number;
+  lastSample?: string;
+  lastError?: string;
+  createdAt: number;
+  lastFiredAt?: number;
+  samples: WatchSample[];
+  /**
+   * OnTrip, Notify and Resume are held by the bridge, so they appear only
+   * on watches it started.
+   */
+  onTrip?: OnTrip;
+  notify?: boolean;
+  resume?: boolean;
+}

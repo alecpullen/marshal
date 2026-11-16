@@ -23,6 +23,7 @@ var fixtureFiles = []string{
 	"recipes.json",
 	"schedules.json",
 	"spawn.json",
+	"watches.json",
 	"stream.json",
 }
 
@@ -83,6 +84,10 @@ var fixtureTypes = map[string]reflect.Type{
 	"RecipeInput":         reflect.TypeOf(RecipeInput{}),
 	"RecipeLimits":        reflect.TypeOf(RecipeLimits{}),
 	"RecipeRun":           reflect.TypeOf(RecipeRun{}),
+	"OnTrip":              reflect.TypeOf(OnTrip{}),
+	"RerouteRule":         reflect.TypeOf(RerouteRule{}),
+	"WatchInfo":           reflect.TypeOf(WatchInfo{}),
+	"WatchSample":         reflect.TypeOf(WatchSample{}),
 }
 
 // TestContractFixturesRoundTrip holds the contract types to the shared

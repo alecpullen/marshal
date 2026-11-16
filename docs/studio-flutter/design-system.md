@@ -176,7 +176,7 @@ Cupertino**. If the kit lacks a piece, see §10.
 | `Meter` | A labelled bar | Capacity and quota. Bar is `muted` unless it reports a fault |
 | `Spark` | A small line | One series, `fg`, no axes |
 | `CheckStrip` | One block per CI check | Order is the forge's order; tooltip names each check |
-| `Rows` | A list of name, description, value | Every settings-style list |
+| `Rows` | A list of name, description, value, and optionally a day's `Spark` | Every settings-style list |
 | `NavRow` | A row of the sidebar | An icon, a label, an optional count; a project's row has a disclosure chevron instead of an icon. Only threads carry a status, in a `ThreadRow` |
 | `PageBody` | Title, subtitle, actions, content | Every page that is not a thread |
 | `AskCard` | Something waiting on the user | The only way an ask is shown |

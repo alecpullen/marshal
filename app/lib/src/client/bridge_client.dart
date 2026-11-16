@@ -146,6 +146,15 @@ class BridgeClient {
     run,
   );
 
+  /// GET /api/watches: every watch the bridge's sources report.
+  Future<List<WatchInfo>> watches() =>
+      _listOf('/api/watches', WatchInfo.fromJson);
+
+  /// POST /api/reroutes/{id}/undo: puts back the binding a tripped watch
+  /// changed. [id] is the reroute record's id.
+  Future<void> undoReroute(String id) =>
+      _post('/api/reroutes/${Uri.encodeComponent(id)}/undo', null);
+
   Future<Response> _send(Request request) async {
     final response = await _transport.send(request);
     if (!response.ok) {

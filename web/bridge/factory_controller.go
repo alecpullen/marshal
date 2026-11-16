@@ -590,6 +590,10 @@ type FactoryController struct {
 	// is contacted, nothing is retried, and the intent waits for an explicit
 	// request.
 	planner revisionPlanner
+	// pulls, when set, is told about a pull request the controller first
+	// stored on an item, so the fleet's one index of pull requests knows it.
+	// A controller built without a fleet records nothing.
+	pulls func(item FactoryItem, pr FactoryPR)
 }
 
 func NewFactoryController(store *FactoryStore, effects FactoryEffects, now func() time.Time) *FactoryController {
@@ -597,6 +601,42 @@ func NewFactoryController(store *FactoryStore, effects FactoryEffects, now func(
 		now = time.Now
 	}
 	return &FactoryController{store: store, effects: effects, now: now, execCancels: map[string]context.CancelFunc{}, wake: make(chan struct{}, 1), readyWake: make(chan struct{}, 1), after: time.After}
+}
+
+// SetPullRecorder installs the recorder the controller calls when it first
+// stores a pull request on an item. A nil recorder records nothing.
+func (c *FactoryController) SetPullRecorder(fn func(item FactoryItem, pr FactoryPR)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pulls = fn
+}
+
+// Item returns one item from the journal, and whether it is there.
+func (c *FactoryController) Item(id string) (FactoryItem, bool) {
+	if c == nil || c.store == nil {
+		return FactoryItem{}, false
+	}
+	i, err := c.store.Get(id)
+	return i, err == nil
+}
+
+// Items returns every item in the journal.
+func (c *FactoryController) Items() []FactoryItem {
+	if c == nil || c.store == nil {
+		return nil
+	}
+	return c.store.List()
+}
+
+// noteNewPulls tells the recorder about each pull request the update added, so
+// the fleet's index gains a record the moment the factory journals one.
+func (c *FactoryController) noteNewPulls(before, after FactoryItem) {
+	if c.pulls == nil || len(after.PRs) <= len(before.PRs) {
+		return
+	}
+	for _, pr := range after.PRs[len(before.PRs):] {
+		c.pulls(after, pr)
+	}
 }
 
 // autoAssess reports whether a proposal saved for projectRoot records an
@@ -1407,6 +1447,7 @@ func (c *FactoryController) finishEffect(ctx context.Context, dispatched Factory
 	}
 	_, err = c.internalUpdate(dispatched, "complete", func(dst *FactoryItem) error { *dst = next; dst.Version = dispatched.Version; return nil })
 	if err == nil {
+		c.noteNewPulls(dispatched, next)
 		c.Wake()
 	}
 	return err

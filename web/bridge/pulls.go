@@ -3,7 +3,11 @@ package bridge
 import (
 	"errors"
 	"fmt"
+	"log/slog"
+	"regexp"
 	"sort"
+	"strconv"
+	"strings"
 
 	"marshal/web/bridge/contract"
 )
@@ -112,4 +116,173 @@ func (f *Fleet) removePull(id string) error {
 	}
 	f.emitPullRemoved(id)
 	return nil
+}
+
+// pullNumberFromURL reads a pull request's number out of its forge URL: the
+// trailing /pull/<n> or /pulls/<n> both forges print. A URL without one has no
+// number to record.
+var pullURLNumberRe = regexp.MustCompile(`/pulls?/(\d+)/?$`)
+
+func pullNumberFromURL(u string) (int, bool) {
+	m := pullURLNumberRe.FindStringSubmatch(strings.TrimSpace(u))
+	if m == nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+// recordExitPull records the pull request an exit path opened. The record's
+// origin is the agent that asked, unless an automation started that agent: the
+// CI fixer's and the review bot's pull requests are the automation's, not the
+// worker's that happened to push. A failure here never fails the exit — the
+// work is already on the remote — so it is logged and dropped.
+func (f *Fleet) recordExitPull(a Agent, branch string, pr PR) {
+	if pr.Number <= 0 {
+		return
+	}
+	repoID := a.SourceRef
+	if r, ok := f.ws.Repo(repoID); ok {
+		repoID = r.ID
+	}
+	rec := contract.PullRecord{
+		RepoID:      repoID,
+		ProjectRoot: a.Project,
+		Number:      pr.Number,
+		URL:         pr.URL,
+		Title:       a.Name,
+		HeadRef:     branch,
+		BaseRef:     a.TargetBranch,
+		Origin:      contract.PullOriginAgent,
+		AgentID:     a.ID,
+	}
+	switch a.Origin {
+	case OriginCI:
+		rec.Origin, rec.Automation = contract.PullOriginAutomation, "ci-fixer"
+	case OriginReviewBot:
+		rec.Origin, rec.Automation = contract.PullOriginAutomation, "review-bot"
+	}
+	if err := f.recordPull(rec); err != nil {
+		slog.Default().Warn("webbridge: record pull request", "agent", a.ID, "number", pr.Number, "err", err)
+	}
+}
+
+// recordFactoryPull records a pull request a factory item opened. It is the
+// controller's recorder: the factory writes its item, and this keeps the one
+// index of pull requests in step with it.
+func (f *Fleet) recordFactoryPull(item FactoryItem, pr FactoryPR) {
+	if pr.Number <= 0 {
+		return
+	}
+	if _, ok := f.pull(pullID(item.RepoID, pr.Number)); ok {
+		return
+	}
+	rec := contract.PullRecord{
+		RepoID:      item.RepoID,
+		ProjectRoot: item.ProjectRoot,
+		Number:      pr.Number,
+		URL:         pr.URL,
+		Title:       item.Title,
+		HeadRef:     pr.HeadRef,
+		BaseRef:     pr.BaseRef,
+		HeadSHA:     pr.HeadSHA,
+		Draft:       pr.Draft,
+		Origin:      contract.PullOriginFactory,
+		FactoryItem: item.ID,
+	}
+	if err := f.recordPull(rec); err != nil {
+		slog.Default().Warn("webbridge: record factory pull request", "item", item.ID, "number", pr.Number, "err", err)
+	}
+}
+
+// backfillPulls records what the fleet already knew before it kept records: an
+// agent's exit pull request URL, and each factory item's open pull requests. It
+// runs once per source, whichever start hook comes first, and adds only what is
+// missing, so running it again changes nothing.
+func (f *Fleet) backfillPulls() {
+	f.backfillAgentsOnce.Do(f.backfillAgentPulls)
+	f.backfillFactoryOnce.Do(f.backfillFactoryPulls)
+}
+
+// backfillAgentPulls records the pull request each agent's exit already
+// reported.
+func (f *Fleet) backfillAgentPulls() {
+	for _, a := range f.ws.Agents() {
+		if a.PRUrl == "" {
+			continue
+		}
+		number, ok := pullNumberFromURL(a.PRUrl)
+		if !ok {
+			continue
+		}
+		repoID := a.SourceRef
+		if r, ok := f.ws.Repo(repoID); ok {
+			repoID = r.ID
+		}
+		if repoID == "" {
+			continue
+		}
+		if _, ok := f.pull(pullID(repoID, number)); ok {
+			continue
+		}
+		rec := contract.PullRecord{
+			RepoID:      repoID,
+			ProjectRoot: a.Project,
+			Number:      number,
+			URL:         a.PRUrl,
+			Title:       a.Name,
+			HeadRef:     a.Branch,
+			BaseRef:     a.TargetBranch,
+			Origin:      contract.PullOriginAgent,
+			AgentID:     a.ID,
+		}
+		switch a.Origin {
+		case OriginCI:
+			rec.Origin, rec.Automation = contract.PullOriginAutomation, "ci-fixer"
+		case OriginReviewBot:
+			rec.Origin, rec.Automation = contract.PullOriginAutomation, "review-bot"
+		}
+		if err := f.recordPull(rec); err != nil {
+			slog.Default().Warn("webbridge: backfill pull request", "agent", a.ID, "err", err)
+		}
+	}
+}
+
+// backfillFactoryPulls records each factory item's open pull requests.
+func (f *Fleet) backfillFactoryPulls() {
+	if f.factory == nil {
+		return
+	}
+	for _, item := range f.factory.Items() {
+		for _, pr := range item.PRs {
+			if pr.State == "closed" || pr.State == "merged" {
+				continue
+			}
+			if pr.Number <= 0 {
+				continue
+			}
+			if _, ok := f.pull(pullID(item.RepoID, pr.Number)); ok {
+				continue
+			}
+			rec := contract.PullRecord{
+				RepoID:      item.RepoID,
+				ProjectRoot: item.ProjectRoot,
+				Number:      pr.Number,
+				URL:         pr.URL,
+				Title:       item.Title,
+				HeadRef:     pr.HeadRef,
+				BaseRef:     pr.BaseRef,
+				HeadSHA:     pr.HeadSHA,
+				Draft:       pr.Draft,
+				Origin:      contract.PullOriginFactory,
+				FactoryItem: item.ID,
+			}
+			if err := f.recordPull(rec); err != nil {
+				slog.Default().Warn("webbridge: backfill factory pull request", "item", item.ID, "err", err)
+			}
+		}
+	}
 }

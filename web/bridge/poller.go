@@ -23,6 +23,10 @@ func (f *Fleet) StartPoller(interval time.Duration) {
 		interval = defaultPollInterval
 	}
 	go func() {
+		// The index starts from what the fleet already knew: agents that
+		// shipped before the bridge kept pull request records are backfilled
+		// once, here and when the factory controller is wired.
+		f.backfillPulls()
 		t := time.NewTicker(interval)
 		defer t.Stop()
 		for {

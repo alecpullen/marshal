@@ -1,11 +1,13 @@
 package bridge
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"marshal/web/bridge/contract"
 )
@@ -140,5 +142,172 @@ func TestRecordPullIsIdempotentByID(t *testing.T) {
 	}
 	if recs[0].Title != "A newer title" || recs[0].HeadSHA != "def456" {
 		t.Fatalf("the second recording did not replace the first: %+v", recs[0])
+	}
+}
+
+func TestPullNumberFromURL(t *testing.T) {
+	cases := map[string]int{
+		"https://github.com/you/r/pull/7":         7,
+		"https://github.com/you/r/pull/7/":        7,
+		"https://code.example.com/you/r/pulls/12": 12,
+		" https://gitea.example.com/o/r/pulls/3 ": 3,
+	}
+	for in, want := range cases {
+		got, ok := pullNumberFromURL(in)
+		if !ok || got != want {
+			t.Errorf("pullNumberFromURL(%q) = %d, %v; want %d", in, got, ok, want)
+		}
+	}
+	for _, in := range []string{"", "https://github.com/you/r", "https://github.com/you/r/pull/"} {
+		if n, ok := pullNumberFromURL(in); ok {
+			t.Errorf("pullNumberFromURL(%q) = %d, want no number", in, n)
+		}
+	}
+}
+
+func TestExitRecordsThePull(t *testing.T) {
+	f, srv := testFleetWithForge(t)
+	defer srv.Close()
+	id := spawnGitAgentWithPAT(t, f, srv.URL)
+
+	res, err := f.Exit(context.Background(), id, ExitOptions{CommitMessage: "work"})
+	if err != nil {
+		t.Fatalf("Exit: %v", err)
+	}
+	if res.PRUrl == "" {
+		t.Fatal("the exit opened no pull request")
+	}
+
+	rec, ok := f.pull(pullID("r1", 7))
+	if !ok {
+		t.Fatalf("no record for r1#7; records = %+v", f.pulls())
+	}
+	if rec.Origin != contract.PullOriginAgent || rec.AgentID != id {
+		t.Fatalf("record origin/agent = %q/%q, want agent/%s", rec.Origin, rec.AgentID, id)
+	}
+	if rec.Number != 7 || rec.URL != res.PRUrl {
+		t.Fatalf("record = %+v", rec)
+	}
+	// The exit knows the branch it pushed; the title comes from the agent's
+	// name, so a nameless agent records none and the observer fills it in.
+	if rec.HeadRef != res.Branch || rec.BaseRef != "main" {
+		t.Fatalf("record head/base = %q/%q, want %q/main", rec.HeadRef, rec.BaseRef, res.Branch)
+	}
+}
+
+func TestFactoryRecordsThePullOnce(t *testing.T) {
+	f := testFleet(t)
+	c := NewFactoryController(nil, nil, f.now)
+	c.SetPullRecorder(f.recordFactoryPull)
+
+	item := FactoryItem{ID: "item-1", RepoID: "repo-1", ProjectRoot: "/p", Title: "Work"}
+	withPR := item
+	withPR.PRs = []FactoryPR{{
+		Number: 9, URL: "https://github.com/you/r/pull/9", HeadRef: "factory/item-1",
+		BaseRef: "main", HeadSHA: "abc", Draft: true, State: "open",
+	}}
+	c.noteNewPulls(item, withPR)
+	// The same completion applied again adds no second record.
+	c.noteNewPulls(item, withPR)
+
+	recs := f.pulls()
+	if len(recs) != 1 {
+		t.Fatalf("recorded %d records for one factory pull request, want 1: %+v", len(recs), recs)
+	}
+	rec := recs[0]
+	if rec.ID != "repo-1#9" || rec.Origin != contract.PullOriginFactory || rec.FactoryItem != "item-1" {
+		t.Fatalf("record = %+v", rec)
+	}
+	if rec.HeadRef != "factory/item-1" || rec.HeadSHA != "abc" || !rec.Draft {
+		t.Fatalf("record lost the factory evidence: %+v", rec)
+	}
+}
+
+func TestCIFixerRecordsThePull(t *testing.T) {
+	f := testFleet(t)
+	if err := f.ws.PutRepo(Repo{ID: "r1", URL: "https://github.com/you/r.git",
+		OwnerID: DefaultOwnerID, Forge: "github"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The fixer's fix ships through the same exit path as any agent, so the
+	// record is written there — and it names the automation, not the worker.
+	fixer := Agent{ID: "ci-1", Project: "/p", SourceRef: "r1", OwnerID: DefaultOwnerID, Origin: OriginCI}
+	f.recordExitPull(fixer, "marshal/fix-ci", PR{Number: 3, URL: "https://github.com/you/r/pull/3"})
+	rec, ok := f.pull("r1#3")
+	if !ok {
+		t.Fatalf("the CI fixer's pull request was not recorded: %+v", f.pulls())
+	}
+	if rec.Origin != contract.PullOriginAutomation || rec.Automation != "ci-fixer" {
+		t.Fatalf("CI fixer record origin/automation = %q/%q", rec.Origin, rec.Automation)
+	}
+
+	// The review bot's pull request is the automation's too.
+	bot := Agent{ID: "rb-1", Project: "/p", SourceRef: "r1", OwnerID: DefaultOwnerID, Origin: OriginReviewBot}
+	f.recordExitPull(bot, "marshal/review", PR{Number: 4, URL: "https://github.com/you/r/pull/4"})
+	rec, ok = f.pull("r1#4")
+	if !ok {
+		t.Fatalf("the review bot's pull request was not recorded: %+v", f.pulls())
+	}
+	if rec.Origin != contract.PullOriginAutomation || rec.Automation != "review-bot" {
+		t.Fatalf("review bot record origin/automation = %q/%q", rec.Origin, rec.Automation)
+	}
+}
+
+func TestBackfillAddsOnlyMissingRecords(t *testing.T) {
+	f := testFleet(t)
+	if err := f.ws.PutRepo(Repo{ID: "r1", URL: "https://github.com/you/r.git",
+		OwnerID: DefaultOwnerID, Forge: "github"}); err != nil {
+		t.Fatal(err)
+	}
+	// An agent that shipped before the bridge kept records.
+	if err := f.ws.PutAgent(Agent{ID: "a1", Project: "/p", SourceRef: "r1", OwnerID: DefaultOwnerID,
+		Origin: OriginUI, PRUrl: "https://github.com/you/r/pull/11", Branch: "marshal/a1"}); err != nil {
+		t.Fatal(err)
+	}
+	// One record already exists, and a backfill must not overwrite it.
+	if err := f.recordPull(contract.PullRecord{RepoID: "r1", Number: 11, Title: "already known",
+		Origin: contract.PullOriginAgent}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A factory item with one open pull request and one merged one.
+	s, err := OpenFactoryStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	now := time.Now().UTC()
+	created, err := s.Create(factoryReq(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Update(created.ID, "item-prs", created.Version, json.RawMessage(`{"kind":"item-prs"}`),
+		func(i *FactoryItem) error {
+			i.RepoID, i.ProjectRoot, i.Title = "r1", "/p", "Factory work"
+			i.PRs = []FactoryPR{
+				{Number: 21, URL: "https://github.com/you/r/pull/21", HeadRef: "factory/x",
+					BaseRef: "main", State: "open", Draft: true},
+				{Number: 22, URL: "https://github.com/you/r/pull/22", State: "merged"},
+			}
+			return nil
+		}, now); err != nil {
+		t.Fatal(err)
+	}
+	f.SetFactoryController(NewFactoryController(s, &loopEffects{store: s}, f.now))
+	// Wiring backfills; running it again changes nothing.
+	f.backfillPulls()
+
+	if rec, ok := f.pull("r1#11"); !ok || rec.Title != "already known" {
+		t.Fatalf("the backfill overwrote an existing record: %+v, %v", rec, ok)
+	}
+	if rec, ok := f.pull("r1#21"); !ok || rec.Origin != contract.PullOriginFactory || rec.FactoryItem != created.ID {
+		t.Fatalf("the factory's open pull request was not backfilled: %+v, %v", rec, ok)
+	}
+	if _, ok := f.pull("r1#22"); ok {
+		t.Fatal("the backfill recorded a merged pull request")
+	}
+	if got := len(f.pulls()); got != 2 {
+		t.Fatalf("recorded %d pull requests, want 2: %+v", got, f.pulls())
 	}
 }

@@ -390,9 +390,23 @@ type Fleet struct {
 	// pruneMu; provMu is a leaf, so that is the only order it is ever
 	// taken in.
 	pruneMu sync.Mutex
+
+	// backfillAgentsOnce and backfillFactoryOnce run the pull request record
+	// backfill once per source: the agents when polling starts, the factory
+	// items when the controller is wired, whichever comes first.
+	backfillAgentsOnce  sync.Once
+	backfillFactoryOnce sync.Once
 }
 
-func (f *Fleet) SetFactoryController(c *FactoryController) { f.factory = c }
+func (f *Fleet) SetFactoryController(c *FactoryController) {
+	f.factory = c
+	if c != nil {
+		c.SetPullRecorder(f.recordFactoryPull)
+	}
+	// The factory's items may already carry pull requests from before the
+	// bridge kept records; once the controller is wireable, backfill them.
+	f.backfillPulls()
+}
 
 func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stateDir string, limits Limits, buildVersion string, projectMounts []ProjectMount, stateVolume string) *Fleet {
 	if stateDir == "" {

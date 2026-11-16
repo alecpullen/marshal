@@ -75,20 +75,33 @@ webbridge --profile local --socket ~/.local/share/marshal/daemon/marshal.sock --
   git-sourced, workspace or containerized agent keeps a child each. Releasing
   an agent closes its session, never the child.
 
-Two routes upgrade a marshal client onto a session and relay its frames
-unchanged: `POST /api/projects/attach` onto a project's child, and
-`POST /api/agents/{id}/attach` onto one agent's session, whose `101 Switching
+Two routes upgrade a marshal client onto a session and relay its frames: `POST
+/api/projects/attach` onto a project's child, and `POST
+/api/agents/{id}/attach` onto one agent's session, whose `101 Switching
 Protocols` carries `Marshal-Session` (the agent's session) and `Marshal-Agent`
 (its ID). The agent attach is served on the socket alone — the TCP listener
 answers 404 there — and it never resumes a paused agent: it refuses an unknown
 agent with 404, a runtime that fails to start with 502, and an agent that is
 paused (`resume it first`), runs on a child of its own with no viewer socket
-yet, or has no session yet with 409. A viewer on either attach still cannot
-close or replace the session: `session/close` naming an agent's session, and a
-replacing `session/new`, are answered with JSON-RPC `-32000` and the sentence
-`This is agent <name>'s session: finish it from the fleet screen.`, and the
-project attach's 409 refuses every session an agent record names, paused or
-live.
+yet, or has no session yet with 409.
+
+A containerized agent's session opens too. Its viewers reach the host side of
+the socket the container's agent serves beside `agent.sock`, and a dial that
+fails there is 502 with `dial the agent's container: <error>` — plus `; its
+image runs another marshal version, which may serve no viewer socket: rebuild
+it` when the agent reported a different marshal version. Such a relay is
+restricted: its viewer may call only the methods the session screen uses, so
+any other request is answered with JSON-RPC `-32000` and `<method> is not
+available for a containerized agent`, any other notification is dropped and
+logged once per method, and a batch or malformed frame is dropped rather than
+forwarded. Answers to the agent's own requests carry no method and still pass,
+so approvals and questions work. A project attach relays every frame unchanged.
+
+A viewer on either attach still cannot close or replace the session:
+`session/close` naming an agent's session, and a replacing `session/new`, are
+answered with JSON-RPC `-32000` and the sentence `This is agent <name>'s
+session: finish it from the fleet screen.`, and the project attach's 409 refuses
+every session an agent record names, paused or live.
 
 A project can be pinned, which keeps its child running with no session:
 `marshal daemon pin [dir]` and `marshal daemon unpin [dir]` change the pins

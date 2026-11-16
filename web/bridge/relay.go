@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+
+	"marshal/web/bridge/contract"
 )
 
 // readFrame reads one newline-terminated frame, newline included, up to cap. A
@@ -64,9 +66,10 @@ type relayWatch struct {
 // child on the attach's log lines: a project child's root directory, or an
 // agent's own child's display name.
 type relayEnd struct {
-	reg    *Registry // counts the viewer
-	linger func()    // rearms a project child's linger; nil for an own child
-	root   string    // names the child on the attach's log lines
+	reg    *Registry       // counts the viewer
+	linger func()          // rearms a project child's linger; nil for an own child
+	root   string          // names the child on the attach's log lines
+	allow  map[string]bool // a container's methods; nil forwards every frame
 }
 
 // relay copies frames between an attached client and its viewer connection
@@ -125,6 +128,12 @@ type relay struct {
 	watchMu sync.Mutex
 	watches map[string]*relayWatch
 
+	// dropMu guards dropped, the methods this attach has already logged a
+	// drop for: decision 2 asks for the first one of each method, not one per
+	// frame.
+	dropMu  sync.Mutex
+	dropped map[string]bool
+
 	stopOnce sync.Once
 }
 
@@ -174,6 +183,22 @@ func (r *relay) pumpClient(src *bufio.Reader) string {
 		frame, err := readFrame(src, r.cap)
 		if err != nil {
 			return "client: " + frameErrReason(err)
+		}
+		// A restricted relay comes first: a container's viewer may send only
+		// the methods its session screen uses, and everything else is answered
+		// or dropped here rather than forwarded (decisions 2 and 7).
+		if r.end.allow != nil {
+			if answer, refused := r.restricted(frame); refused {
+				if answer != nil {
+					r.clientMu.Lock()
+					_, err := r.client.Write(answer)
+					r.clientMu.Unlock()
+					if err != nil {
+						return "client write: " + err.Error()
+					}
+				}
+				continue
+			}
 		}
 		// A frame the relay refuses is answered here instead of being
 		// forwarded: no viewer may finish an agent's session, so neither a
@@ -252,6 +277,85 @@ func decodeClientRequest(frame []byte) (clientRequest, bool) {
 	return req, true
 }
 
+// clientFrame is what a restricted relay reads of every client frame: its id,
+// when it has one, and its method, when it has one.
+type clientFrame struct {
+	ID     json.RawMessage `json:"id"`
+	Method string          `json:"method"`
+}
+
+// restricted answers a frame a container's relay does not forward
+// (decisions 2 and 7): answer is nil for a frame that is only dropped.
+//
+// A container's viewer may call only the methods its session screen uses
+// (contract.ContainerViewerMethods): every other request is answered with
+// decision 2's sentence and every other notification is dropped. A frame that
+// does not decode as one JSON-RPC message — a batch, or malformed JSON — is
+// dropped, and so is one with neither a method nor an id: the relay fails
+// closed (decision 7). An answer to one of the agent's own requests carries no
+// method and passes unchanged, so approvals and questions still reach the
+// viewer and its answers reach the agent.
+func (r *relay) restricted(frame []byte) (answer []byte, refused bool) {
+	var cf clientFrame
+	if err := json.Unmarshal(frame, &cf); err != nil {
+		r.dropFrame("", "not one JSON-RPC message")
+		return nil, true
+	}
+	if cf.Method == "" {
+		if len(cf.ID) == 0 {
+			r.dropFrame("", "neither a method nor an id")
+			return nil, true
+		}
+		return nil, false
+	}
+	if r.end.allow[cf.Method] {
+		return nil, false
+	}
+	// The close rule is asked before the list is enforced: decision 1 is a rule
+	// about sessions rather than about a method's surface, so a session/close or
+	// a replacing session/new the close rule refuses falls through to refusal,
+	// which answers it with its own sentence.
+	if _, closes := r.refusal(frame); closes {
+		return nil, false
+	}
+	if len(cf.ID) == 0 {
+		r.dropFrame(cf.Method, "not available for a containerized agent")
+		return nil, true
+	}
+	return refusalAnswer(cf.ID, cf.Method+" is not available for a containerized agent"), true
+}
+
+// dropFrame logs the first frame of each method this attach drops, so a client
+// retrying a refused notification cannot flood the log (decision 2). An
+// undecodable frame has no method and is logged once per attach.
+func (r *relay) dropFrame(method, why string) {
+	r.dropMu.Lock()
+	if r.dropped == nil {
+		r.dropped = make(map[string]bool)
+	}
+	first := !r.dropped[method]
+	r.dropped[method] = true
+	r.dropMu.Unlock()
+	if !first {
+		return
+	}
+	named := method
+	if named == "" {
+		named = "(no method)"
+	}
+	slog.Default().Warn("webbridge: restricted relay dropped a frame",
+		"root", r.end.root, "session", r.currentSession(), "method", named, "why", why)
+}
+
+// containerViewerSet is ContainerViewerMethods as the relay looks them up.
+func containerViewerSet() map[string]bool {
+	set := make(map[string]bool, len(contract.ContainerViewerMethods))
+	for _, method := range contract.ContainerViewerMethods {
+		set[method] = true
+	}
+	return set
+}
+
 // refusal answers a client frame the relay does not forward: a session/close
 // or a replacing session/new that names an agent's session. ok is false for
 // every other frame.
@@ -290,20 +394,32 @@ func (r *relay) refusal(frame []byte) (answer []byte, ok bool) {
 	// is already valid JSON and quoting the sentence cannot fail, so a refused
 	// frame is never lost to an encoding error and never falls through to the
 	// child.
-	sentence := finishFromFleet(agent)
+	return refusalAnswer(req.ID, finishFromFleet(agent)), true
+}
+
+// refusalAnswer writes an error answer to one client request: the request's own
+// id, -32000, and a sentence a marshal client reads as that sentence. data
+// carries an acpwire.Error-shaped object whose code is empty, which is how a
+// marshal client reads an error's own sentence; web/ is standard library only,
+// so that shape is written out here rather than imported.
+//
+// The answer is assembled rather than marshalled whole: the id is already valid
+// JSON and quoting the sentence cannot fail, so a refused frame is never lost
+// to an encoding error.
+func refusalAnswer(id json.RawMessage, sentence string) []byte {
 	// json.Marshal of a string cannot fail: the sentence is quoted, never
 	// rejected.
 	quoted, _ := json.Marshal(sentence)
 	var out bytes.Buffer
 	out.WriteString(`{"jsonrpc":"2.0","id":`)
-	out.Write(req.ID)
+	out.Write(id)
 	out.WriteString(`,"error":{"code":-32000,"message":`)
 	out.Write(quoted)
 	out.WriteString(`,"data":{"code":"","message":`)
 	out.Write(quoted)
 	out.WriteString(`}}}`)
 	out.WriteByte('\n')
-	return out.Bytes(), true
+	return out.Bytes()
 }
 
 // watchedRequest reports the request a client frame asks the relay to follow.

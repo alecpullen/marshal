@@ -66,6 +66,15 @@ func budgetLabel(d Data) string {
 	return fmt.Sprintf(" tools %d · no cap", b.Used)
 }
 
+// restartLabel renders the pending-restart row: the child's stale reason and
+// what it is waiting for. Empty while the child is current.
+func restartLabel(d Data) string {
+	if d.Restart == nil {
+		return ""
+	}
+	return fmt.Sprintf(" Restart: %s, waiting for %s", d.Restart.Reason, d.Restart.WaitingFor)
+}
+
 // cachedShare is the percentage of the session's prompt tokens served from
 // the provider's prompt cache; 0 when nothing was reported.
 func cachedShare(t acpwire.SheetTotals) int {
@@ -87,6 +96,9 @@ func (SessionSection) Render(d Data, width, maxRows int) []string {
 	rows := []string{
 		ansi.Truncate(fmt.Sprintf(" turn %d · %s", d.Totals.Turns, shortDuration(sessionElapsed(d))), width, "…"),
 		ansi.Truncate(tokens, width, "…"),
+	}
+	if r := restartLabel(d); r != "" {
+		rows = append(rows, ansi.Truncate(r, width, "…"))
 	}
 	if label := budgetLabel(d); label != "" {
 		rows = append(rows, ansi.Truncate(label, width, "…"))

@@ -62,6 +62,11 @@ type runConfig struct {
 	// container runs --listen, so there is no unrestricted pairing
 	// (decision 4).
 	restrictViewers bool
+
+	// record is what this child started from, for a project child the bridge
+	// starts; nil elsewhere (decision 1). With no record, nothing the host
+	// serves changes.
+	record *startRecord
 }
 
 // runWithConfig constructs the agentHost, serves a single connection, then

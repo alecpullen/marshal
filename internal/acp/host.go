@@ -97,6 +97,11 @@ type agentHost struct {
 	// serves (decision 4): set from runConfig for a listener beside a
 	// container's --listen.
 	restrictViewers bool
+
+	// record is what this child started from, nil when it is not a project
+	// child (decision 1). It answers project/state and feeds every session's
+	// pending restart.
+	record *startRecord
 }
 
 // newAgentHost constructs the session manager and turn manager in
@@ -119,10 +124,12 @@ func newAgentHost(cfg runConfig) (*agentHost, error) {
 	sink := &notifySink{}
 
 	manager := NewSessionManager(SessionManagerConfig{
-		StartRuntime: cfg.startRuntime,
-		CloseRuntime: cfg.closeRuntime,
-		Lister:       cfg.lister,
-		Notify:       sink.Notify,
+		StartRuntime:   cfg.startRuntime,
+		CloseRuntime:   cfg.closeRuntime,
+		Lister:         cfg.lister,
+		Notify:         sink.Notify,
+		ConfigWritten:  recordWrote(cfg.record),
+		PendingRestart: recordPending(cfg.record),
 	}, WithSessionManagerLogger(log))
 
 	h := &agentHost{
@@ -132,6 +139,7 @@ func newAgentHost(cfg runConfig) (*agentHost, error) {
 		shutdown: cfg.shutdown,
 
 		restrictViewers: cfg.restrictViewers,
+		record:          cfg.record,
 	}
 	if cfg.hold != nil {
 		h.holds = &projectHolds{hold: cfg.hold, held: map[string]func(){}}
@@ -361,6 +369,123 @@ func responseBarrier(fencers ...sessionFencer) func(ctx context.Context, session
 	}
 }
 
+// recordWrote is the session manager's ConfigWritten for rec: the record's own
+// write, or nil when the child keeps no record (decision 3).
+func recordWrote(rec *startRecord) func(path string) {
+	if rec == nil {
+		return nil
+	}
+	return rec.wrote
+}
+
+// recordPending is the session manager's PendingRestart for rec: the record's
+// remembered answer, or nil when the child keeps no record (decision 4).
+func recordPending(rec *startRecord) func() *acpwire.PendingRestart {
+	if rec == nil {
+		return nil
+	}
+	return rec.pending
+}
+
+// projectState answers project/state on the bridge's connection (B3): the
+// reasons this child is stale, what keeps it busy, and its version. It keeps
+// the answer, so every session's status shows it as its pending restart
+// (decision 4); nothing hashes a file until the bridge asks again.
+func (h *agentHost) projectState(ctx context.Context, params json.RawMessage) (any, error) {
+	stale := h.record.stale()
+	busy := h.busy()
+	h.record.remember(stale, busy)
+	return acpwire.ProjectState{Stale: stale, Busy: busy, Version: AgentVersion}, nil
+}
+
+// projectNote serves project/note: its text becomes a plain note in every live
+// session (decision 7), and the answer is how many sessions it reached.
+func (h *agentHost) projectNote(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.ProjectNoteParams
+	if err := decodeParams(params, &p, acpwire.MethodProjectNote); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	n := 0
+	for _, rt := range h.liveRuntimes() {
+		sess, ok := h.manager.Service(rt.SessionID)
+		if !ok || sess == nil {
+			continue
+		}
+		if err := sess.AddNote(ctx, acpwire.Note{Text: p.Text}); err != nil {
+			continue
+		}
+		n++
+	}
+	return n, nil
+}
+
+// busy lists what holds the child up (decision 5): one line per item, in each
+// session's own fixed order, visiting the sessions in creation order so the
+// first line is stable. A session is named by its title, else its ID.
+func (h *agentHost) busy() []string {
+	var out []string
+	for _, rt := range h.liveRuntimes() {
+		name := rt.SessionID
+		if rt.State != nil {
+			if title := rt.State.Title(); title != "" {
+				name = title
+			}
+		}
+		if sess, ok := h.manager.Service(rt.SessionID); ok && sess != nil {
+			status := sess.Status()
+			if status.Run != nil {
+				out = append(out, "a run in "+name)
+			}
+			if anySubagentRunning(status.Subagents) {
+				out = append(out, "subagents in "+name)
+			}
+			if status.RunningJobs > 0 {
+				out = append(out, "jobs in "+name)
+			}
+			if status.Swarm.Active {
+				out = append(out, "a swarm in "+name)
+			}
+			if status.SDD.Active {
+				out = append(out, "an SDD run in "+name)
+			}
+		}
+		if wm := rt.CurrentWatchManager(); wm != nil {
+			for _, info := range wm.List() {
+				if info.State == watch.StateWatching {
+					out = append(out, "watch "+info.Name+" in "+name)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// liveRuntimes is every published runtime, in creation order, with no nil
+// entry: what project/note tells and what busy reports.
+func (h *agentHost) liveRuntimes() []*app.Runtime {
+	if h.manager == nil {
+		return nil
+	}
+	all := h.manager.All()
+	out := make([]*app.Runtime, 0, len(all))
+	for _, rt := range all {
+		if rt != nil {
+			out = append(out, rt)
+		}
+	}
+	return out
+}
+
+// anySubagentRunning reports whether any of the session's subagents is running.
+func anySubagentRunning(subagents []acpwire.Subagent) bool {
+	for _, sub := range subagents {
+		if sub.Status == acpwire.SubagentRunning {
+			return true
+		}
+	}
+	return false
+}
+
 // registerHandlers registers every JSON-RPC handler on srv, constructing
 // the per-handler managers in the same dependency order as before. The
 // managers are wired to this specific connection's server.
@@ -418,6 +543,10 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool, notify Not
 		srv.Handle("session/delete", refuse)
 		srv.Handle("project/hold", refuse)
 		srv.Handle("project/release", refuse)
+		// A viewer is not the project's driver, so it neither asks the child's
+		// state nor tells its sessions anything (decision 6).
+		srv.Handle(acpwire.MethodProjectState, refuse)
+		srv.Handle(acpwire.MethodProjectNote, refuse)
 	} else {
 		srv.Handle("session/new", manager.Create)
 		srv.Handle("session/load", manager.Load)
@@ -428,6 +557,12 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool, notify Not
 		if h.holds != nil {
 			srv.Handle("project/hold", h.holds.Hold)
 			srv.Handle("project/release", h.holds.Release)
+		}
+		// Only a project child keeps a record, so only it serves the two
+		// project requests (decision 1).
+		if h.record != nil {
+			srv.Handle(acpwire.MethodProjectState, h.projectState)
+			srv.Handle(acpwire.MethodProjectNote, h.projectNote)
 		}
 	}
 
@@ -555,6 +690,11 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool, notify Not
 
 	home, _ := os.UserHomeDir()
 	cfgMgr := NewConfigManager(home, nil, nil)
+	// A project child hears about its own config writes through the record, so
+	// its own settings change never marks it stale (decision 3).
+	if h.record != nil {
+		cfgMgr.wrote = h.record.wrote
+	}
 	srv.Handle("config/get", cfgMgr.Get)
 	srv.Handle("config/set_providers", cfgMgr.SetProviders)
 	srv.Handle("config/set_presets", cfgMgr.SetPresets)

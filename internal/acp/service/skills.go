@@ -279,6 +279,7 @@ func (s *Session) SetSkillAutoload(ctx context.Context, name string, on bool) er
 	if err := config.SaveUserConfigValue(path, "skills.autoload", next); err != nil {
 		return err
 	}
+	s.reportConfigWrite(path)
 	refreshLayers(s.state, s.reloadLayers)
 	cfg := s.state.ConfigSnapshot()
 	cfg.Skills.Autoload = next

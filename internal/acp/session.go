@@ -69,6 +69,12 @@ type SessionManagerConfig struct {
 	// Lister provides session discovery for session/list. When nil,
 	// List returns a server error.
 	Lister SessionLister
+	// ConfigWritten is told the path of every user or project config write a
+	// session makes, after it succeeds (decision 3). Nil tells no one.
+	ConfigWritten func(path string)
+	// PendingRestart is the child's pending restart; nil, or a nil answer,
+	// means none.
+	PendingRestart func() *acpwire.PendingRestart
 }
 
 // SessionManager owns the map from ACP session IDs to *app.Runtime. It
@@ -91,9 +97,21 @@ type SessionManager struct {
 	cancel TurnCanceller
 	lister SessionLister
 
+	// configWritten and pendingRestart are what every session's service is
+	// built with (decision 3): the child's record of its own writes and its
+	// pending restart. Both are nil when the child keeps no record.
+	configWritten  func(path string)
+	pendingRestart func() *acpwire.PendingRestart
+
 	mu          sync.RWMutex
 	sessions    map[string]*app.Runtime
 	lifecycleMu sync.Mutex
+
+	// seq numbers the runtimes as they are published, so All answers in
+	// creation order even though the map does not (decision 5). Both are
+	// guarded by mu.
+	seq     map[*app.Runtime]uint64
+	seqNext uint64
 
 	// closeOnce guards each runtime's closer so a given *app.Runtime
 	// pointer is torn down at most once, regardless of which lifecycle
@@ -186,13 +204,16 @@ func NewSessionManager(cfg SessionManagerConfig, opts ...SessionManagerOption) *
 		}
 	}
 	m := &SessionManager{
-		start:     cfg.StartRuntime,
-		close:     closeFn,
-		notify:    cfg.Notify,
-		lister:    cfg.Lister,
-		options:   cfg.Options,
-		sessions:  map[string]*app.Runtime{},
-		closeOnce: map[*app.Runtime]*sync.Once{},
+		start:          cfg.StartRuntime,
+		close:          closeFn,
+		notify:         cfg.Notify,
+		lister:         cfg.Lister,
+		options:        cfg.Options,
+		configWritten:  cfg.ConfigWritten,
+		pendingRestart: cfg.PendingRestart,
+		sessions:       map[string]*app.Runtime{},
+		seq:            map[*app.Runtime]uint64{},
+		closeOnce:      map[*app.Runtime]*sync.Once{},
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -521,6 +542,7 @@ func (m *SessionManager) replace(ctx context.Context, replaces, name string) (an
 	m.mu.Lock()
 	delete(m.sessions, replaces)
 	m.sessions[newID] = rt
+	m.number(rt)
 	m.mu.Unlock()
 
 	// The host's swap already closed the replaced session, so the pair points
@@ -842,6 +864,7 @@ func (m *SessionManager) adopt(rt *app.Runtime, host *service.Host, sess *servic
 	_, taken := m.sessions[rt.SessionID]
 	if !taken {
 		m.sessions[rt.SessionID] = rt
+		m.number(rt)
 	}
 	m.mu.Unlock()
 	if taken {
@@ -880,9 +903,19 @@ func (m *SessionManager) servicePair(id string) (*service.Host, *service.Session
 	if closing {
 		return nil, nil, false
 	}
-	host, sess := service.New(rt.ServiceDeps(context.Background()))
+	host, sess := service.New(m.serviceDeps(rt))
 	m.services[rt] = &servicePair{host: host, sess: sess}
 	return host, sess, true
+}
+
+// serviceDeps is the runtime's service dependencies with the child's record
+// on them (decision 3): every session this manager builds reports its own
+// config writes and carries the pending restart.
+func (m *SessionManager) serviceDeps(rt *app.Runtime) service.Deps {
+	deps := rt.ServiceDeps(context.Background())
+	deps.ConfigWritten = m.configWritten
+	deps.PendingRestart = m.pendingRestart
+	return deps
 }
 
 // releaseService removes rt's pair from the registry and releases its
@@ -897,8 +930,9 @@ func (m *SessionManager) releaseService(rt *app.Runtime) {
 	}
 }
 
-// All returns every published runtime. Used by worktree orphan detection,
-// which must know every session's active root.
+// All returns every published runtime, in creation order. Used by worktree
+// orphan detection, which must know every session's active root, and by the
+// project's busy report, whose first line must be stable (decision 5).
 func (m *SessionManager) All() []*app.Runtime {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -906,11 +940,30 @@ func (m *SessionManager) All() []*app.Runtime {
 	for _, rt := range m.sessions {
 		out = append(out, rt)
 	}
+	sort.SliceStable(out, func(i, j int) bool { return m.seq[out[i]] < m.seq[out[j]] })
 	return out
 }
 
-// detach removes the runtime for id from the map under both locks and
-// returns the removed pointer (or false if id was unknown).
+// number records rt's place in creation order, once: a runtime published under
+// a new session ID by a replacement keeps the number it first got. The caller
+// holds mu.
+func (m *SessionManager) number(rt *app.Runtime) {
+	if rt == nil {
+		return
+	}
+	if m.seq == nil {
+		m.seq = map[*app.Runtime]uint64{}
+	}
+	if _, ok := m.seq[rt]; ok {
+		return
+	}
+	m.seqNext++
+	m.seq[rt] = m.seqNext
+}
+
+// detach removes the runtime for id from the map under both locks, forgets
+// its creation-order entry, and returns the removed pointer (or false if id
+// was unknown).
 func (m *SessionManager) detach(id string) (*app.Runtime, bool) {
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
@@ -921,6 +974,13 @@ func (m *SessionManager) detach(id string) (*app.Runtime, bool) {
 		return nil, false
 	}
 	delete(m.sessions, id)
+	// The runtime's creation-order entry leaves with the session: number
+	// records every published runtime and removes nothing itself, so without
+	// this a long-lived project child retains one *app.Runtime per closed
+	// session. A replacement is not pruned this way: publishReplacement
+	// republishes a pointer number already knows, and number keeps the first
+	// number it gave it.
+	delete(m.seq, rt)
 	return rt, true
 }
 
@@ -965,6 +1025,7 @@ func (m *SessionManager) publishReplacement(ctx context.Context, id string, rt *
 	samePointer := prior == rt
 	if !samePointer {
 		m.sessions[id] = rt
+		m.number(rt)
 	}
 	m.mu.Unlock()
 

@@ -37,20 +37,21 @@ type SessionStatus struct {
 	LastRun *RunResult `json:"lastRun,omitempty"`
 	// AgentReady says the session's agent runner is built, so Prompt, Review
 	// and RunAgent can start. It is false while the provider is not built.
-	AgentReady   bool          `json:"agentReady,omitempty"`
-	Workspace    Workspace     `json:"workspace"`
-	Browser      Browser       `json:"browser"`
-	Sandbox      Sandbox       `json:"sandbox"`
-	Steering     Steering      `json:"steering"`
-	RunningJobs  int           `json:"runningJobs,omitempty"`
-	Subagents    []Subagent    `json:"subagents,omitempty"`
-	Swarm        SwarmProgress `json:"swarm"`
-	SDD          SDDProgress   `json:"sdd"`
-	SDDGate      SDDGate       `json:"sddGate"`
-	Git          Git           `json:"git"`
-	ChangedFiles int           `json:"changedFiles,omitempty"` // against the sheet's base; 0 means "no changes", never "not refreshed"
-	WatchResume  *WatchResume  `json:"watchResume,omitempty"`
-	Notice       *Notice       `json:"notice,omitempty"` // the banner; nil when none
+	AgentReady   bool            `json:"agentReady,omitempty"`
+	Workspace    Workspace       `json:"workspace"`
+	Browser      Browser         `json:"browser"`
+	Sandbox      Sandbox         `json:"sandbox"`
+	Steering     Steering        `json:"steering"`
+	RunningJobs  int             `json:"runningJobs,omitempty"`
+	Subagents    []Subagent      `json:"subagents,omitempty"`
+	Swarm        SwarmProgress   `json:"swarm"`
+	SDD          SDDProgress     `json:"sdd"`
+	SDDGate      SDDGate         `json:"sddGate"`
+	Git          Git             `json:"git"`
+	ChangedFiles int             `json:"changedFiles,omitempty"` // against the sheet's base; 0 means "no changes", never "not refreshed"
+	WatchResume  *WatchResume    `json:"watchResume,omitempty"`
+	Notice       *Notice         `json:"notice,omitempty"`  // the banner; nil when none
+	Restart      *PendingRestart `json:"restart,omitempty"` // nil while the child is current
 	// SkillGate is the session's skill load gate (C11, plan 8b).
 	SkillGate SkillGateState `json:"skillGate"`
 	// UserConfigPath and ProjectConfigPath are the files the config writes
@@ -58,6 +59,12 @@ type SessionStatus struct {
 	// empty when the agent cannot locate it.
 	UserConfigPath    string `json:"userConfigPath,omitempty"`
 	ProjectConfigPath string `json:"projectConfigPath,omitempty"`
+}
+
+// PendingRestart is a stale child's restart as its sessions show it (B3).
+type PendingRestart struct {
+	Reason     string `json:"reason"`
+	WaitingFor string `json:"waitingFor"`
 }
 
 // Route mirrors the session's RouteInfo: the route a turn runs on.

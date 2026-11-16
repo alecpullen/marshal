@@ -139,6 +139,12 @@ type Deps struct {
 	// TrustRefresh advances the permanent-trust record's config hash for dir
 	// after a project save. Nil means no hash is refreshed.
 	TrustRefresh func(dir string)
+	// ConfigWritten is told the path of every user or project config write
+	// this session makes, after it succeeds (decision 3). Nil tells no one.
+	ConfigWritten func(path string)
+	// PendingRestart is the child's pending restart; nil, or a nil answer,
+	// means none.
+	PendingRestart func() *acpwire.PendingRestart
 	// HomeDir is the home directory the user config is found under. Empty
 	// means os.UserHomeDir().
 	HomeDir string
@@ -257,6 +263,11 @@ type Session struct {
 	trustRefresh   func(dir string)
 	homeDir        string
 	userConfigFile string
+	// configWritten and pendingRestart are Deps.ConfigWritten and
+	// Deps.PendingRestart: the child's record of its own writes and its
+	// pending restart (decision 3).
+	configWritten  func(path string)
+	pendingRestart func() *acpwire.PendingRestart
 	// modelCacheDir is Deps.ModelCacheDir, for preset setup's catalog and
 	// provenance sidecar.
 	modelCacheDir string
@@ -314,8 +325,17 @@ var errSessionClosed = &acpwire.Error{
 
 // New builds the host and the session over d.State.
 func New(d Deps) (*Host, *Session) {
-	sess := newSession(d)
+	sess := withRecord(newSession(d), d)
 	return &Host{deps: d, current: sess}, sess
+}
+
+// withRecord gives sess the child's record dependencies (decision 3): the
+// config write it reports and the pending restart its status carries. They are
+// applied here rather than in newSession so every construction path keeps them.
+func withRecord(sess *Session, d Deps) *Session {
+	sess.configWritten = d.ConfigWritten
+	sess.pendingRestart = d.PendingRestart
+	return sess
 }
 
 // swap closes the current session and returns a new one over state. It is the
@@ -335,7 +355,7 @@ func (h *Host) swap(state *session.State) *Session {
 	}
 	d := h.deps
 	d.State = state
-	sess := newSession(d)
+	sess := withRecord(newSession(d), d)
 	h.current = sess
 	return sess
 }
@@ -364,6 +384,23 @@ func (s *Session) ID() string { return s.state.SessionID() }
 // reach the state behind a model, and the TUI cannot: it holds only the wire
 // types.
 func (s *Session) State() *session.State { return s.state }
+
+// reportConfigWrite tells the child's record about a config write the host made
+// in this session, after it succeeded (decision 3). A host with no record tells
+// no one.
+func (h *Host) reportConfigWrite(path string) {
+	if fn := h.clientDeps().ConfigWritten; fn != nil {
+		fn(path)
+	}
+}
+
+// reportConfigWrite tells the child's record about a config write this session
+// made, after it succeeded (decision 3). A session with no record tells no one.
+func (s *Session) reportConfigWrite(path string) {
+	if s.configWritten != nil {
+		s.configWritten(path)
+	}
+}
 
 // Status is the session's current status (C5). It reads the state one field at
 // a time, as the TUI read them before, so the value is not one atomic
@@ -480,6 +517,11 @@ func (s *Session) Status() acpwire.SessionStatus {
 		status.Notice = &n
 	}
 	status.WatchResume = s.watchResume()
+	// The pending restart the child's last project/state answer left, or nil
+	// while it is current (decision 4).
+	if s.pendingRestart != nil {
+		status.Restart = s.pendingRestart()
+	}
 	// The two files a config write changes, when the agent can locate them. A
 	// home it cannot find leaves the user path empty rather than failing a
 	// read that never blocks.

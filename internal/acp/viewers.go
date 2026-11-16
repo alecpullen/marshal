@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"sync"
@@ -26,6 +27,11 @@ const viewerMaxFrameBytes = 64 << 20
 // ViewersEnv is the variable the bridge names a container's viewer socket in
 // (decision 3).
 const ViewersEnv = "MARSHAL_ACP_VIEWERS"
+
+// ProjectChildEnv marks the child the bridge starts for a project, the only
+// one that keeps a start record (P6 B3): a fleet agent's own child serves
+// viewers too, and keeps none.
+const ProjectChildEnv = "MARSHAL_ACP_PROJECT_CHILD"
 
 // viewerLifecycleRefusal is what a viewer connection answers a call that would
 // start or load a runtime (P4 D2): the bridge owns sessions' lifecycles.
@@ -83,6 +89,29 @@ func (h *agentHost) serveViewer(ctx context.Context, conn net.Conn) error {
 	return srv.Serve(ctx)
 }
 
+// startExecutable is the executable the record keeps: os.Executable's path, or
+// "" when it cannot be found, which keeps no executable entry (decision 2).
+func startExecutable(log *slog.Logger) string {
+	exe, err := os.Executable()
+	if err != nil {
+		log.Warn("acp: the start record could not locate the executable", "err", err)
+		return ""
+	}
+	return exe
+}
+
+// startProjectConfig is the project config the record keeps:
+// config.ProjectConfigPath of the child's working directory, which the bridge
+// sets to the project's root. An unreadable working directory keeps none.
+func startProjectConfig(log *slog.Logger) string {
+	wd, err := os.Getwd()
+	if err != nil {
+		log.Warn("acp: the start record could not read the working directory", "err", err)
+		return ""
+	}
+	return config.ProjectConfigPath(wd)
+}
+
 // RunWithViewers is Run plus a viewer listener on the unix socket at path
 // (P4 D2): stdio serves the bridge's own connection while any number of
 // marshal clients attach on the socket.
@@ -93,6 +122,18 @@ func RunWithViewers(ctx context.Context, stdin io.Reader, stdout, stderr io.Writ
 		return fmt.Errorf("acp: find home directory: %w", err)
 	}
 	trustStore := trust.NewStore(config.DataDir(home))
+	// What this child started from (decision 1): its executable and the two
+	// config files it read. Only a project child keeps one (P6 B3): the
+	// bridge marks the children it starts with ProjectChildEnv, so embedded
+	// mode, a `--listen` container and a fleet agent's own child keep none.
+	// The mark is read and dropped here, before anything can be spawned, so
+	// nothing this child starts inherits it.
+	projectChild := os.Getenv(ProjectChildEnv) != ""
+	os.Unsetenv(ProjectChildEnv)
+	var record *startRecord
+	if projectChild {
+		record = newStartRecord(startExecutable(log), config.UserConfigPath(home), startProjectConfig(log), log)
+	}
 
 	// One project-host registry for the process, shared by every connection's
 	// sessions and closed after all of them (see Run).
@@ -112,6 +153,7 @@ func RunWithViewers(ctx context.Context, stdin io.Reader, stdout, stderr io.Writ
 		shutdown: connectionShutdownTimeout,
 		logger:   log,
 		hold:     hostsHold(hosts, home, trust.NewHeadlessResolver(trustStore, log)),
+		record:   record,
 	})
 	return errors.Join(err, closeHosts(hosts))
 }

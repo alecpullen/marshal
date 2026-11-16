@@ -88,12 +88,14 @@ func (s *Session) alwaysRule(call *session.PendingToolCall) func() error {
 		// one the save path would be a relative config.toml in the process's
 		// working directory, so the rule stays on the session instead.
 		if dir := userConfigDir(); dir != "" {
-			err := config.SaveUserConfigRule(filepath.Join(dir, "config.toml"), config.PermissionRule{
+			path := filepath.Join(dir, "config.toml")
+			err := config.SaveUserConfigRule(path, config.PermissionRule{
 				Permission: rule.Permission,
 				Pattern:    rule.Pattern,
 				Action:     string(rule.Action),
 			})
 			if err == nil {
+				s.reportConfigWrite(path)
 				newCfg := s.state.ConfigSnapshot()
 				newCfg.Permissions.Rules = append(newCfg.Permissions.Rules, config.PermissionRule{
 					Permission: rule.Permission,

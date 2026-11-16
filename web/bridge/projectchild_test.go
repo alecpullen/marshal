@@ -219,8 +219,9 @@ func TestTheChildRunsInTheRootWithItsSocket(t *testing.T) {
 	if warning != "" {
 		t.Fatalf("warning = %q, want none without a resolver", warning)
 	}
-	if child.Env != nil {
-		t.Fatalf("Env = %q, want nil without a resolver", child.Env)
+	marked := projectChildEnv + "=1"
+	if !slices.Contains(child.Env, marked) {
+		t.Fatalf("Env = %q, want %q on it", child.Env, marked)
 	}
 	if child.Dir != root {
 		t.Fatalf("Dir = %q, want the project root %q", child.Dir, root)
@@ -667,8 +668,9 @@ func TestAFallbackIsReportedOnTheChild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("projectChildFor: %v", err)
 	}
-	if !slices.Equal(pc.child.Env, base) {
-		t.Fatalf("the child's Env = %q, want the resolver's Base %q", pc.child.Env, base)
+	want := append(slices.Clone(base), projectChildEnv+"=1")
+	if !slices.Equal(pc.child.Env, want) {
+		t.Fatalf("the child's Env = %q, want the resolver's Base %q with the project-child mark", pc.child.Env, want)
 	}
 
 	children := f.projectChildren()
@@ -681,7 +683,8 @@ func TestAFallbackIsReportedOnTheChild(t *testing.T) {
 }
 
 // TestWithoutAResolverChildrenInherit: a fleet nothing configured with a
-// resolver leaves Env nil, which is the child inheriting the bridge's.
+// resolver leaves the child the bridge's own environment, with the project
+// child's mark on it (P6 B3), so it inherits and keeps its record.
 func TestWithoutAResolverChildrenInherit(t *testing.T) {
 	f, _ := projectFleet(t)
 	ctx := ctlContext(t)
@@ -691,8 +694,12 @@ func TestWithoutAResolverChildrenInherit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("projectChildFor: %v", err)
 	}
-	if pc.child.Env != nil {
-		t.Fatalf("the child's Env = %q, want nil so it inherits", pc.child.Env)
+	if got, wantN := len(pc.child.Env), len(os.Environ())+1; got != wantN {
+		t.Fatalf("the child's Env holds %d entries, want the bridge's %d plus the mark", got, wantN)
+	}
+	marked := projectChildEnv + "=1"
+	if !slices.Contains(pc.child.Env, marked) {
+		t.Fatalf("the child's Env = %q, want %q on it", pc.child.Env, marked)
 	}
 	if children := f.projectChildren(); len(children) != 1 || children[0].EnvWarning != "" {
 		t.Fatalf("projectChildren() = %+v, want one child with no warning", children)

@@ -30,12 +30,21 @@ scripts/test.sh full          # whole suite, uncached
 go test ./internal/app/...    # one package (prefer the narrowest scope)
 go vet ./...
 gofmt -w .
+scripts/dev-daemon.sh         # rebuild this tree, restart the local daemon, print status
+scripts/dev-studio.sh         # rebuild the SPA and binaries, restart the browser studio, print status
+                              #   --dev-image also refreshes the agent container image from ./marshal
 ```
 
 `scripts/test.sh` is the entry point for test runs; its modes, and what each one
 keeps, are documented in `docs/testing-ci-audit.md`. Everything after the mode
 that is not `--base`/`--go-only` is passed through to `go test`, so
 `scripts/test.sh quick ./internal/acp -run TestStack` works.
+
+`scripts/dev-daemon.sh` and `scripts/dev-studio.sh` keep a development box's
+daemon and browser studio running this checkout's build without cutting a
+release. Setup, the rebuild-and-restart loop, the agent image, and how to
+recreate the services from scratch are documented in
+[`docs/dev-loop.md`](docs/dev-loop.md).
 
 `marshal` also dispatches subcommands: `acp` (headless JSON-RPC server),
 `attach` (reattach to a daemon session), `daemon` (install and drive the local

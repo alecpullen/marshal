@@ -56,24 +56,31 @@ class TrayMenu {
 /// A [failure] beside a status keeps the last good status — the menu still
 /// names the daemon and still offers its actions — and says the state is
 /// stale, rather than emptying itself over one failed poll.
+///
+/// [marshalMissing] is the one state with no status to keep: the binary the
+/// menu would have asked is not there, so the line names it (§5) and no
+/// daemon action is offered, whether or not a stale status is still around.
 TrayMenu menuFor({
   required String appVersion,
   required bool logExists,
   required bool launchAtLogin,
   DaemonStatus? status,
   String? failure,
+  bool marshalMissing = false,
 }) {
   final entries = <Object>[
     TrayItem(
       id: 'status',
-      label: _statusLine(appVersion, status, failure),
+      label: _statusLine(appVersion, status, failure, marshalMissing),
       enabled: false,
     ),
     const TraySeparator(),
     const TrayItem(id: 'fleet', label: 'Open Fleet…'),
   ];
 
-  if (status != null) {
+  // A missing binary backs no daemon action, so none is offered even over a
+  // stale status (§5): an action that cannot work is not offered at all.
+  if (status != null && !marshalMissing) {
     if (!status.service.installed) {
       entries.add(
         const TrayItem(id: 'install', label: 'Install Marshal Daemon…'),
@@ -102,7 +109,16 @@ TrayMenu menuFor({
   return TrayMenu(title: 'Marshal', entries: entries);
 }
 
-String _statusLine(String appVersion, DaemonStatus? status, String? failure) {
+String _statusLine(
+  String appVersion,
+  DaemonStatus? status,
+  String? failure,
+  bool marshalMissing,
+) {
+  // A missing binary is named for itself, not dressed up as "status
+  // unavailable": the menu has nothing left to ask, and §5 gives the state
+  // its own reading.
+  if (marshalMissing) return 'Marshal — marshal not found';
   if (status == null) {
     return failure != null
         ? 'Marshal — status unavailable'
@@ -115,7 +131,14 @@ String _statusLine(String appVersion, DaemonStatus? status, String? failure) {
 String _stateLine(String appVersion, DaemonStatus status) {
   if (!status.service.installed) return 'Marshal — not installed';
   final daemon = status.daemon;
-  if (daemon == null) return 'Marshal — daemon stopped';
+  if (daemon == null) {
+    // A running service whose socket stays silent is a hung daemon, not a
+    // stopped one — the service manager contradicts "stopped" — so the
+    // reading is "not answering" (§4), with Stop still the offered action.
+    return status.service.running
+        ? 'Marshal — daemon not answering'
+        : 'Marshal — daemon stopped';
+  }
   final projects = daemon.projects.length;
   final noun = projects == 1 ? 'project' : 'projects';
   final line =

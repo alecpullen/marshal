@@ -36,6 +36,7 @@ class TrayApp {
 
   DaemonStatus? _status;
   String? _failure;
+  bool _marshalMissing = false;
   bool _launchAtLogin = false;
 
   /// start draws the menu once and then keeps it current. It returns as soon
@@ -49,14 +50,22 @@ class TrayApp {
 
   /// _refresh re-reads the status and redraws the menu. A failed read keeps
   /// the last good status: a daemon restarting for a second is not a reason
-  /// to empty the menu.
+  /// to empty the menu. A missing binary is the exception (§5): there is no
+  /// status left to keep, the menu names `marshal not found`, and the daemon
+  /// actions are dropped with it.
   Future<void> _refresh() async {
+    var missing = false;
     try {
       _status = await cli.status();
+      _failure = null;
+    } on MarshalMissingException {
+      missing = true;
+      _status = null;
       _failure = null;
     } catch (error) {
       _failure = error.toString();
     }
+    _marshalMissing = missing;
     await _show();
   }
 
@@ -68,6 +77,7 @@ class TrayApp {
         launchAtLogin: _launchAtLogin,
         status: _status,
         failure: _failure,
+        marshalMissing: _marshalMissing,
       ),
     );
   }

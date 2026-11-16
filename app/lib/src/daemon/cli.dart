@@ -3,6 +3,11 @@ import 'dart:io';
 
 import 'status.dart';
 
+/// _enoent is errno 2, no such file or directory: what `Process.run`
+/// completes with when the executable it was given is not there, on every
+/// platform this app runs on.
+const _enoent = 2;
+
 /// DaemonCli runs the marshal binary the app ships. Everything the app knows
 /// about Marshal comes through it: the app never opens the daemon's socket
 /// and never reads its files.
@@ -33,11 +38,12 @@ class DaemonCli {
     return 'marshal';
   }
 
-  /// status reads one status document. It throws [DaemonException] when the
+  /// status reads one status document. It throws [MarshalMissingException]
+  /// when there is no marshal binary to run, and [DaemonException] when the
   /// binary said nothing or when its output is not a document this app
   /// speaks.
   Future<DaemonStatus> status() async {
-    final result = await Process.run(binary, const [
+    final result = await _spawn(const [
       'daemon',
       'status',
       '--json',
@@ -53,9 +59,11 @@ class DaemonCli {
   }
 
   /// run runs one marshal subcommand and throws [DaemonException] if it
-  /// failed, carrying the binary's own message.
+  /// failed, carrying the binary's own message; a missing binary is
+  /// [MarshalMissingException] here too, so what a broken bundle reports
+  /// does not depend on which action hit it.
   Future<void> run(List<String> args) async {
-    final result = await Process.run(binary, args);
+    final result = await _spawn(args);
     if (result.exitCode != 0) {
       final err = (result.stderr as String).trim();
       throw DaemonException(
@@ -63,6 +71,19 @@ class DaemonCli {
             ? 'marshal ${args.join(' ')} exited ${result.exitCode}'
             : err,
       );
+    }
+  }
+
+  /// _spawn runs the binary with `args` and names a missing binary
+  /// specifically: an absent `marshal` is [MarshalMissingException], §5's
+  /// own menu state, while any other spawn failure keeps the raw error — a
+  /// permission or an OS problem is not "marshal not found".
+  Future<ProcessResult> _spawn(List<String> args) async {
+    try {
+      return await Process.run(binary, args);
+    } on ProcessException catch (error) {
+      if (error.errorCode == _enoent) throw const MarshalMissingException();
+      rethrow;
     }
   }
 
@@ -124,4 +145,17 @@ class DaemonException implements Exception {
 
   @override
   String toString() => message;
+}
+
+/// MarshalMissingException is no marshal binary at all: the app's bundle
+/// lost its binaries, or PATH has no marshal. It is distinct from
+/// [DaemonException] because the menu treats it differently — §5 makes a
+/// missing binary non-fatal, read as `marshal not found` with the daemon
+/// actions dropped, where a binary that answered wrongly is the ordinary
+/// stale-status state.
+class MarshalMissingException implements Exception {
+  const MarshalMissingException();
+
+  @override
+  String toString() => 'marshal not found';
 }

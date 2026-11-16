@@ -43,6 +43,7 @@ Future<TrayMenu> draw(
   FakeTrayHost host, {
   bool logExists = true,
   bool launchAtLogin = false,
+  bool marshalMissing = false,
   DaemonStatus? status,
   String? failure,
 }) async {
@@ -50,6 +51,7 @@ Future<TrayMenu> draw(
     appVersion: '0.9.1',
     logExists: logExists,
     launchAtLogin: launchAtLogin,
+    marshalMissing: marshalMissing,
     status: status,
     failure: failure,
   );
@@ -89,6 +91,16 @@ void main() {
     expect(stopped.item('stop'), isNull);
     expect(stopped.item('install'), isNull);
     expect(stopped.item('status')!.label, 'Marshal — daemon stopped');
+  });
+
+  test('a running service with a silent daemon says not answering', () async {
+    final menu = await draw(FakeTrayHost(), status: statusWith(daemon: null));
+
+    expect(menu.item('status')!.label, 'Marshal — daemon not answering');
+    // A running daemon that does not answer is still a running daemon:
+    // Stop stays offered, and Start is not.
+    expect(menu.item('stop'), isNotNull);
+    expect(menu.item('start'), isNull);
   });
 
   test('names the version skew', () async {
@@ -150,6 +162,18 @@ void main() {
     expect(menu.item('install'), isNull);
     expect(menu.item('start'), isNull);
     expect(menu.item('stop'), isNull);
+  });
+
+  test('a missing binary names itself and offers no daemon action', () async {
+    final menu = await draw(FakeTrayHost(), marshalMissing: true);
+
+    expect(menu.item('status')!.label, 'Marshal — marshal not found');
+    // No daemon action over a binary that is not there (§5).
+    expect(menu.item('install'), isNull);
+    expect(menu.item('start'), isNull);
+    expect(menu.item('stop'), isNull);
+    // Fleet, the log and the login toggle are not daemon actions and stay.
+    expect(menu.item('fleet'), isNotNull);
   });
 
   test('draws launch-at-login as a checkbox that follows the state', () async {

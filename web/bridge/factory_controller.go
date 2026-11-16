@@ -1244,6 +1244,8 @@ func factoryApplyCommandFrom(i *FactoryItem, c FactoryCommand, p *factoryPrincip
 		if attested {
 			factoryNext(i, "resume", "implementer", 0, now)
 		}
+	case "complete", "reopen":
+		return factoryApplyCompletion(i, c, p, now)
 	case "reconcile", "recover":
 		return ErrFactoryConflict
 	case "revision_propose":
@@ -1270,6 +1272,92 @@ func factoryApplyCommandFrom(i *FactoryItem, c FactoryCommand, p *factoryPrincip
 		return ErrFactoryConflict
 	}
 	return nil
+}
+
+// factoryApplyCompletion journals the user's own business decision about an
+// item. Completing snapshots what the user is calling done — the goal, the
+// criteria the latest approval bound it to, and the assessment and PR links
+// the item already carries — into a new append-only record. It changes neither
+// State nor any effect, worker or grant: "the work is done" and "the run has
+// stopped" are different statements, and open PRs or absent evidence do not
+// make the first one untrue.
+//
+// Reopening retires that decision without rewriting it. The records, the
+// assessment and the links stay exactly as they were journalled, and nothing
+// is spawned or stopped by either command.
+//
+// Both are Studio commands. An MCP client's authority is a grant over named
+// actions of a run, and declaring the business outcome is not one of them.
+func factoryApplyCompletion(i *FactoryItem, c FactoryCommand, p *factoryPrincipal, now time.Time) error {
+	if p != nil {
+		return fmt.Errorf("%w: %s is not an action an MCP client may take", ErrFactoryConflict, c.Kind)
+	}
+	completion := factoryCompletionOf(*i)
+	switch c.Kind {
+	case "complete":
+		if factoryCompletionStatus(*i) == "complete" {
+			return fmt.Errorf("%w: item %s is already complete", ErrFactoryConflict, i.ID)
+		}
+		criteria := ""
+		if n := len(i.Approvals); n > 0 {
+			criteria = i.Approvals[n-1].Spec
+		}
+		completion.Records = append(completion.Records, FactoryCompletionRecord{
+			ID:    fmt.Sprintf("completion-%s-%d", i.ID, len(completion.Records)+1),
+			At:    now,
+			Actor: factoryStudioRevisionActor,
+			Goal:  i.Title,
+			// The record names the specification it was completed against,
+			// copied rather than referenced: a later approval does not change
+			// what this one called done.
+			Criteria:   criteria,
+			Assessment: factoryCloneAssessment(completion.Assessment),
+			Links:      factoryCopy(completion.Links),
+		})
+		completion.Status = "complete"
+		i.Completion = &completion
+		i.History = append(i.History, p.event("completion_completed", "work item completed", "", now))
+	case "reopen":
+		if factoryCompletionStatus(*i) != "complete" {
+			return fmt.Errorf("%w: item %s is not complete", ErrFactoryConflict, i.ID)
+		}
+		completion.Status = "open"
+		i.Completion = &completion
+		i.History = append(i.History, p.event("completion_reopened", "work item reopened", "", now))
+	default:
+		return ErrFactoryConflict
+	}
+	return nil
+}
+
+// factoryCompletionStatus is the item's business completion status, read the
+// way every surface reads it: a missing record and an empty status both mean
+// open, so an item journalled before completion existed is open without its
+// record being rewritten.
+func factoryCompletionStatus(i FactoryItem) string {
+	if i.Completion == nil || strings.TrimSpace(i.Completion.Status) == "" {
+		return "open"
+	}
+	return i.Completion.Status
+}
+
+// factoryCompletionOf returns the item's completion record with storage of its
+// own, so a mutation never rewrites the value it was handed.
+func factoryCompletionOf(i FactoryItem) FactoryCompletion {
+	if i.Completion == nil {
+		return FactoryCompletion{}
+	}
+	return factoryCopy(*i.Completion)
+}
+
+// factoryCloneAssessment copies one piece of completion evidence, so a record
+// that snapshots it shares no field with the item's live assessment.
+func factoryCloneAssessment(a *FactoryAssessment) *FactoryAssessment {
+	if a == nil {
+		return nil
+	}
+	b := *a
+	return &b
 }
 
 // factoryRevisionSavable refuses a proposal mutation the item's state cannot

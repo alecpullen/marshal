@@ -322,17 +322,23 @@ type FactoryItem struct {
 	// Proposals is the append-only history of plan/specification revisions
 	// proposed against this item. It is optional, so an item journalled
 	// before proposals existed replays unchanged.
-	Proposals  []FactoryRevisionProposal `json:"proposals,omitempty"`
-	Grants     []FactoryGrant            `json:"grants"`
-	Rounds     []FactoryRound            `json:"rounds"`
-	Workers    []FactoryWorker           `json:"workers"`
-	PRs        []FactoryPR               `json:"prs"`
-	Effects    []FactoryEffect           `json:"effects"`
-	Decision   *FactoryDecision          `json:"decision"`
-	History    []FactoryEvent            `json:"history"`
-	CreatedAt  time.Time                 `json:"createdAt"`
-	ApprovedAt time.Time                 `json:"approvedAt"`
-	UpdatedAt  time.Time                 `json:"updatedAt"`
+	Proposals []FactoryRevisionProposal `json:"proposals,omitempty"`
+	Grants    []FactoryGrant            `json:"grants"`
+	Rounds    []FactoryRound            `json:"rounds"`
+	Workers   []FactoryWorker           `json:"workers"`
+	PRs       []FactoryPR               `json:"prs"`
+	Effects   []FactoryEffect           `json:"effects"`
+	Decision  *FactoryDecision          `json:"decision"`
+	History   []FactoryEvent            `json:"history"`
+	// Completion is the durable business completion status, which is
+	// independent of State: the work counts as done as far as the user is
+	// concerned, whatever the run happens to be doing. It is optional, so an
+	// item journalled before completion existed replays unchanged, and a nil
+	// record (or one whose status is empty) is open.
+	Completion *FactoryCompletion `json:"completion,omitempty"`
+	CreatedAt  time.Time          `json:"createdAt"`
+	ApprovedAt time.Time          `json:"approvedAt"`
+	UpdatedAt  time.Time          `json:"updatedAt"`
 }
 
 type FactoryCommand struct {

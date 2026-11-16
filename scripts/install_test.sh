@@ -124,6 +124,14 @@ expect_kept() {
 	fi
 }
 
+expect_delete_hint() {
+	if grep -q 'delete it with: rm -rf' "$sandbox/output"; then
+		ok "$case_name: says how to delete the kept data"
+	else
+		fail "$case_name: does not say how to delete the kept data: $(cat "$sandbox/output")"
+	fi
+}
+
 # (a) The installed-but-stopped daemon: the case that used to slip through.
 case_name="stopped service"
 new_sandbox
@@ -132,6 +140,7 @@ socket: /run/user/1000/marshal/marshal.sock (not answering)'
 expect_success
 expect_daemon_uninstall
 expect_removed
+expect_delete_hint
 
 # (b) A running daemon with a pid.
 case_name="loaded and running (pid 1)"

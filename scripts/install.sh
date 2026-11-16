@@ -30,6 +30,13 @@ die() {
 	exit 1
 }
 
+# die_usage exits 2, which the spec reserves for "this machine or this flag is
+# not supported, nothing was done" (docs/distribution/d2-packaging.md, Platform).
+die_usage() {
+	echo "install.sh: $*" >&2
+	exit 2
+}
+
 say() {
 	echo "$*"
 }
@@ -71,13 +78,13 @@ command -v curl >/dev/null 2>&1 || die "curl is required"
 case "$(uname -s)" in
 Darwin) os="darwin" ;;
 Linux) os="linux" ;;
-*) die "unsupported operating system: $(uname -s); Marshal runs on macOS and Linux" ;;
+*) die_usage "unsupported operating system: $(uname -s); Marshal runs on macOS and Linux" ;;
 esac
 
 case "$(uname -m)" in
 x86_64 | amd64) arch="amd64" ;;
 arm64 | aarch64) arch="arm64" ;;
-*) die "unsupported architecture: $(uname -m); Marshal ships amd64 and arm64" ;;
+*) die_usage "unsupported architecture: $(uname -m); Marshal ships amd64 and arm64" ;;
 esac
 
 if [ "$UNINSTALL" -eq 1 ]; then
@@ -104,14 +111,37 @@ if [ "$UNINSTALL" -eq 1 ]; then
 	fi
 	rm -f "$PREFIX/marshal" "$PREFIX/webbridge"
 	say "removed marshal and webbridge from $PREFIX"
-	say "kept your data in ${MARSHAL_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/marshal}"
+	data_dir="${MARSHAL_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/marshal}"
+	say "kept your data in $data_dir"
+	say "delete it with: rm -rf \"$data_dir\""
 	exit 0
 fi
 
+if command -v sha256sum >/dev/null 2>&1; then
+	hash_tool=sha256sum
+elif command -v shasum >/dev/null 2>&1; then
+	hash_tool=shasum
+else
+	die "no sha256 tool found (need sha256sum or shasum)"
+fi
+
 if [ -z "$VERSION" ]; then
-	latest="$(curl -fsSIL -o /dev/null -w '%{url_effective}' \
-		"https://github.com/$REPO/releases/latest")" ||
+	# `-f` is left off so the HTTP status survives: a 404 here means every tag
+	# cut so far is still a draft, which is not a network failure.
+	probe="$(curl -sSIL -o /dev/null -w '%{url_effective} %{http_code}' \
+		"https://github.com/$REPO/releases/latest" 2>/dev/null)" ||
 		die "could not reach github.com to find the latest release"
+	code="${probe##* }"
+	latest="${probe% *}"
+	case "$code" in
+	200) ;;
+	404)
+		die "no published release found yet: tags are cut as drafts. Rerun with --version V once a release is published"
+		;;
+	*)
+		die "could not find the latest release (github.com answered HTTP $code)"
+		;;
+	esac
 	VERSION="${latest##*/}"
 fi
 VERSION="${VERSION#v}"
@@ -130,7 +160,7 @@ curl -fsSL -o "$tmp/$checksums" "$base/$checksums" || die "no $checksums at $bas
 
 grep "  $archive\$" "$tmp/$checksums" >"$tmp/$archive.sha256" ||
 	die "$checksums does not list $archive"
-if command -v sha256sum >/dev/null 2>&1; then
+if [ "$hash_tool" = sha256sum ]; then
 	(cd "$tmp" && sha256sum -c "$archive.sha256") >/dev/null ||
 		die "checksum mismatch for $archive"
 else

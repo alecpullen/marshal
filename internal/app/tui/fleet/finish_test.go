@@ -369,8 +369,8 @@ func TestAnExitToAnotherDestinationSaysSo(t *testing.T) {
 		t.Fatalf("the modal is on step %d, want the result", modal.step)
 	}
 	screen := finishScreen(m)
-	if !strings.Contains(screen, "patch") {
-		t.Fatalf("the result does not say the work is a patch:\n%s", screen)
+	if !strings.Contains(screen, "leaves as a patch") {
+		t.Fatalf("the result does not say the work leaves as a patch:\n%s", screen)
 	}
 	if strings.Contains(screen, "pushed") {
 		t.Fatalf("an exit that answered a patch pretended it pushed:\n%s", screen)
@@ -416,23 +416,79 @@ func TestDiscardNeedsTheNameTyped(t *testing.T) {
 }
 
 func TestEscClosesTheModalWithoutActing(t *testing.T) {
-	for _, step := range []finishStep{finishMessage, finishDiscard} {
-		t.Run("", func(t *testing.T) {
+	// Every step, the blocked one included: esc there drops an armed override
+	// rather than sending it (decision 4).
+	cases := []struct {
+		name  string
+		step  finishStep
+		exit  contract.ExitResult
+		press func(t *testing.T, m Model) Model
+	}{
+		{name: "message", step: finishMessage},
+		{
+			name: "discard",
+			step: finishDiscard,
+			press: func(t *testing.T, m Model) Model {
+				return finishPress(t, m, tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
+			},
+		},
+		{name: "blocked", step: finishBlocked, exit: blockedAnswer(), press: enterFinish},
+		{
+			name:  "result",
+			step:  finishResult,
+			exit:  contract.ExitResult{Destination: "push", Branch: "marshal/alpha"},
+			press: enterFinish,
+		},
+	}
+	for _, sc := range cases {
+		t.Run(sc.name, func(t *testing.T) {
 			f := newFakeFleet()
-			m := finishing(t, f, finishState())
-			_, m = openedFinish(t, m)
-			if step == finishDiscard {
-				m = finishPress(t, m, tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
+			f.exitAnswer = sc.exit
+			m := finishing(t, f, gitFinishState(false))
+			modal, m := openedFinish(t, m)
+			if sc.press != nil {
+				m = sc.press(t, m)
 			}
+			if modal.step != sc.step {
+				t.Fatalf("the modal is on step %d, want %d", modal.step, sc.step)
+			}
+			before := len(f.merges) + len(f.exits) + len(f.discards)
 
 			m = finishPress(t, m, tea.KeyPressMsg{Code: tea.KeyEsc})
 			if m.modal != nil {
 				t.Fatalf("esc left %T open", m.modal)
 			}
-			if n := len(f.merges) + len(f.exits) + len(f.discards); n != 0 {
-				t.Fatalf("esc acted %d times, want none", n)
+			if n := len(f.merges) + len(f.exits) + len(f.discards); n != before {
+				t.Fatalf("esc acted: %d calls, want the %d it came with", n, before)
 			}
 		})
+	}
+}
+
+// TestAnAnswerAfterEscIsStillAnEvent: esc during a call closes the modal, and
+// the work still happens — so its result is still an Events line (decision 8)
+// even though there is no step left to draw it on.
+func TestAnAnswerAfterEscIsStillAnEvent(t *testing.T) {
+	f := newFakeFleet()
+	f.exitAnswer = contract.ExitResult{Destination: "push", Branch: "marshal/alpha"}
+	m := finishing(t, f, gitFinishState(false))
+	_, m = openedFinish(t, m)
+
+	// ⏎ sends the exit; its answer is held until after esc has closed the modal.
+	m, cmd := press(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("⏎ sent no exit")
+	}
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if m.modal != nil {
+		t.Fatalf("esc left %T open", m.modal)
+	}
+
+	next, _ := m.Update(cmd())
+	m = next.(Model)
+
+	if got, want := lastEvent(m), "pushed marshal/alpha"; !strings.HasSuffix(got, want) {
+		t.Fatalf("the result after esc = %q, want it to end with %q", got, want)
 	}
 }
 

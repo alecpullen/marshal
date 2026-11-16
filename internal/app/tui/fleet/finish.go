@@ -295,12 +295,23 @@ func (m Model) handleFinishDraft(msg finishDraftMsg) (tea.Model, tea.Cmd) {
 
 // handleFinishDone routes one finish action's answer to the open modal. A
 // failure is an action failure, as plan 5a shows them, and an answer that
-// arrives after the modal closed has nothing left to draw on.
+// arrives after the modal closed still happened: its result is an Events line,
+// drawn by a throwaway modal whose result step nothing keeps (decision 8).
 func (m Model) handleFinishDone(msg finishDoneMsg) (tea.Model, tea.Cmd) {
 	f, ok := m.modal.(*finishModal)
 	if !ok || f.agent != msg.agentID {
 		if msg.err != nil {
 			m.actionDone(actionDoneMsg{what: msg.what, name: msg.name, err: msg.err})
+			return m, nil
+		}
+		closed := &finishModal{agent: msg.agentID, name: msg.name}
+		switch msg.what {
+		case "merge":
+			m = closed.merge(m, msg.merge)
+		case "push":
+			m = closed.exit(m, msg.exit)
+		case "discard":
+			m = closed.discarded(m)
 		}
 		return m, nil
 	}

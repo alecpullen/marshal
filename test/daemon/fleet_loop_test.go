@@ -3,6 +3,7 @@ package daemon_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"testing"
 	"time"
@@ -12,7 +13,9 @@ import (
 	"marshal/internal/acpwire"
 	"marshal/internal/app/tui"
 	"marshal/internal/app/tui/fleet"
+	"marshal/internal/fleetclient"
 	"marshal/internal/launch"
+	"marshal/web/bridge/contract"
 )
 
 // TestTheFleetOpensAnAgentAndLeavesItRunning is W4 against a real bridge: the
@@ -110,9 +113,11 @@ func TestTheFleetOpensAnAgentAndLeavesItRunning(t *testing.T) {
 		t.Fatalf("the fleet ran %d times, want 2", fleetPasses)
 	}
 
-	// The agent's run is still in flight, as the second viewer shows. The
-	// fleet's own `running` is not checked: a viewer's turn does not reach the
-	// bridge's connection (F5), so the bridge lists the agent as it was.
+	// The agent's run is still in flight. The viewer's check below is kept for
+	// what the fleet's row cannot say: the identity of the run. The fleet's own
+	// `running` is checked beside it, because the bridge follows the agent's
+	// session (P5 plan 4c), so a viewer's turn reaches its connection and the
+	// row is `running` while the gate holds the reply.
 	if viewer == nil {
 		t.Fatal("the session screen never opened a viewer")
 	}
@@ -123,6 +128,26 @@ func TestTheFleetOpensAnAgentAndLeavesItRunning(t *testing.T) {
 	if run.ID != runID {
 		t.Fatalf("the run in flight is %q, want %q", run.ID, runID)
 	}
+
+	client := fleetclient.New(fleetclient.Socket(h.socket))
+	client.Start(ctx)
+	defer client.Close()
+	waitFor(t, func() error {
+		agents := client.State().Agents
+		if len(agents) == 0 {
+			return errors.New("the fleet lists no agents")
+		}
+		for _, row := range agents {
+			if row.ID != agentID {
+				continue
+			}
+			if row.Status != contract.AgentRunning {
+				return fmt.Errorf("the fleet lists the agent %q, want %q", row.Status, contract.AgentRunning)
+			}
+			return nil
+		}
+		return fmt.Errorf("agent %s is not among the fleet's %d agents", agentID, len(agents))
+	})
 
 	// Opening the gate serves the reply, which ends the run as done.
 	close(gate)

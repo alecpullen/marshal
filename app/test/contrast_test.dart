@@ -25,6 +25,9 @@ void main() {
       'ok': (0xFF6FBF8E, 0xFF2C7A52),
       'warn': (0xFFE2B04A, 0xFF8F6300),
       'err': (0xFFE0606E, 0xFFB8324A),
+      'termBlue': (0xFF7AA6DA, 0xFF2F6294),
+      'termMagenta': (0xFFC49ADB, 0xFF7E4A9E),
+      'termCyan': (0xFF6FBFC4, 0xFF1F6F75),
     };
 
     for (final MapEntry(key: name, value: (dark, light)) in table.entries) {
@@ -52,7 +55,17 @@ void main() {
   group('contrast on bg meets §2 in both themes', () {
     for (final MapEntry(key: theme, value: e) in themes.entries) {
       // §2: these meet 4.5:1 on bg.
-      for (final name in ['fg', 'muted', 'accent', 'ok', 'warn', 'err']) {
+      for (final name in [
+        'fg',
+        'muted',
+        'accent',
+        'ok',
+        'warn',
+        'err',
+        'termBlue',
+        'termMagenta',
+        'termCyan',
+      ]) {
         test('$theme $name on bg is at least 4.5:1', () {
           final ratio = contrast(_palette(e)[name]!, e.bg);
           expect(
@@ -104,6 +117,9 @@ Map<String, Color> _palette(Ember e) => {
   'ok': e.ok,
   'warn': e.warn,
   'err': e.err,
+  'termBlue': e.termBlue,
+  'termMagenta': e.termMagenta,
+  'termCyan': e.termCyan,
 };
 
 void _alpha(Color derived, Color base, double alpha) {

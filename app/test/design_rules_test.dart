@@ -173,6 +173,18 @@ void main() {
     ], 'a kit component reaches for model/ or client/; pass it data');
   });
 
+  test('terminal colours stay in the terminal widget', () {
+    // §2 "Terminal colours": termBlue, termMagenta and termCyan exist for
+    // the terminal's ANSI palette and for nothing else. The terminal widget
+    // is `terminal_view.dart` (F4); tokens.dart defines them.
+    final terminalOnly = RegExp(r'\b(termBlue|termMagenta|termCyan)\b');
+    expectNone([
+      for (final f in files)
+        if (f.path != tokens && f.name != 'terminal_view.dart')
+          ...matches(f, terminalOnly),
+    ], 'a terminal-only colour used outside terminal_view.dart');
+  });
+
   test('the rules read real code', () {
     // A guard against the rules going quiet: the kit is where the tokens
     // are used, so the scan must see it, and must see tokens.dart's own

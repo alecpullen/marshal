@@ -38,6 +38,9 @@ final class Ember {
     required this.ok,
     required this.warn,
     required this.err,
+    required this.termBlue,
+    required this.termMagenta,
+    required this.termCyan,
   });
 
   static const dark = Ember._(
@@ -52,6 +55,9 @@ final class Ember {
     ok: Color(0xFF6FBF8E),
     warn: Color(0xFFE2B04A),
     err: Color(0xFFE0606E),
+    termBlue: Color(0xFF7AA6DA),
+    termMagenta: Color(0xFFC49ADB),
+    termCyan: Color(0xFF6FBFC4),
   );
 
   static const light = Ember._(
@@ -66,6 +72,9 @@ final class Ember {
     ok: Color(0xFF2C7A52),
     warn: Color(0xFF8F6300),
     err: Color(0xFFB8324A),
+    termBlue: Color(0xFF2F6294),
+    termMagenta: Color(0xFF7E4A9E),
+    termCyan: Color(0xFF1F6F75),
   );
 
   /// The tokens for [brightness].
@@ -121,6 +130,21 @@ final class Ember {
 
   /// Failed, blocked, destructive.
   final Color err;
+
+  // §2 — terminal colours. Only the terminal widget reads these three
+  // (`test/design_rules_test.dart`): the ANSI hues Ember has no token for.
+  // The other ANSI colours reuse tokens: black is [faint], red [err],
+  // green [ok], yellow [warn], white [fg]; bright variants reuse the same
+  // eight.
+
+  /// ANSI blue, in the terminal only.
+  final Color termBlue;
+
+  /// ANSI magenta, in the terminal only.
+  final Color termMagenta;
+
+  /// ANSI cyan, in the terminal only.
+  final Color termCyan;
 
   // §2 — derived, defined here and nowhere else.
 

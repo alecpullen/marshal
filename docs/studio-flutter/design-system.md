@@ -63,6 +63,29 @@ Derived, defined once in `tokens.dart` and nowhere else:
 | `scrim` | black at 45% dark, 30% light | What a sheet dims behind it |
 | `none` | fully transparent | An absent underline. Not a colour, the lack of one (added in F0) |
 
+### Terminal colours
+
+Used **only inside the terminal widget** (`terminal_view.dart`), never
+elsewhere in the UI. The eight ANSI colours map onto Ember where it has the
+hue, and three tokens cover the hues it lacks. Bright variants reuse the same
+eight.
+
+| ANSI | Token | Dark | Light |
+|---|---|---|---|
+| black | `faint` | `#6A645F` | `#8A7E73` |
+| red | `err` | `#E0606E` | `#B8324A` |
+| green | `ok` | `#6FBF8E` | `#2C7A52` |
+| yellow | `warn` | `#E2B04A` | `#8F6300` |
+| white | `fg` | `#ECE7E1` | `#2A2420` |
+| blue | `termBlue` | `#7AA6DA` | `#2F6294` |
+| magenta | `termMagenta` | `#C49ADB` | `#7E4A9E` |
+| cyan | `termCyan` | `#6FBFC4` | `#1F6F75` |
+
+Each of the three new tokens meets 4.5:1 on `bg` in its theme. They must not
+be used for anything else: no status, no accent, no chart. A rule in
+`design_rules_test.dart` fails on a reference outside `tokens.dart` and
+`terminal_view.dart`.
+
 Rules:
 
 - `fg`, `muted`, `accent`, `ok`, `warn` and `err` meet 4.5:1 on `bg` in both
@@ -290,6 +313,7 @@ widget tree; none needs a daemon.
 | · `radii are on the scale` | A radius is not one of the four |
 | · `screens use the kit` | A file under `ui/` outside `kit/` and `tokens.dart` imports Material or Cupertino |
 | · `kit components do not fetch` | A file under `ui/kit/` imports `model/` or `client/` |
+| · `terminal colours stay in the terminal widget` | `termBlue`, `termMagenta` or `termCyan` is used under `ui/` outside `tokens.dart` and `terminal_view.dart` |
 | `tooltips_test.dart` | Any screen, pumped with fixture data at each width, contains an icon-only control, dot, chip icon or strip without a tooltip |
 | `states_test.dart` | A registered screen lacks a case for loading, empty, stale, error or unavailable |
 | `contrast_test.dart` | A token pair in §2 falls below its ratio in either theme |

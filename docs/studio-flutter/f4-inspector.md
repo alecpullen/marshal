@@ -24,9 +24,9 @@ From [findings/terminal.md](findings/terminal.md):
   problem.
 - It takes strings, so decode the stream with a streaming UTF-8 decoder: a
   character split across two chunks is otherwise corrupted.
-- Ember has no blue, magenta or cyan. Before the Terminal tab is built, add
-  a terminal-only set of ANSI colours to design-system.md by its §10, or
-  map them to existing tokens. This is undecided.
+- Ember has no blue, magenta or cyan. The terminal-only set of ANSI colours
+  exists in design-system.md §2 ("Terminal colours") and `tokens.dart`; use
+  it only in `terminal_view.dart`.
 - Not verified: mouse selection and copy, paste, input methods, heavy
   output, and a live stream from a bridge.
 

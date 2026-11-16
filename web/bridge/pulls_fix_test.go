@@ -464,6 +464,26 @@ func TestAStoppedFixPushesNothing(t *testing.T) {
 	}
 }
 
+func TestAnAskIsNotStoredForAGonePull(t *testing.T) {
+	f := pullTestFleet(t, failingLintForge(t))
+	id := fixTestPull(t, f, "abc123", "lint")
+	fix := contract.PullFix{ID: "fix-1", Check: "lint", HeadSHA: "abc123", Mode: contract.PullFixModeFix}
+	if _, err := f.updatePull(id, func(r *contract.PullRecord) error { r.Fix = &fix; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	rec, _ := f.pull(id)
+
+	// The pull request was closed while the fix ran, so its record is gone.
+	if err := f.removePull(id); err != nil {
+		t.Fatal(err)
+	}
+	f.finishPullFix(rec, fix, pullFixGaveUp, "ran the fix recipe", "the worker crashed")
+
+	if asks := f.ws.PullAsks(); len(asks) != 0 {
+		t.Fatalf("an ask was stored for a pull request that is gone: %+v", asks)
+	}
+}
+
 func TestFixOutcomeBecomesAnAsk(t *testing.T) {
 	cases := []struct {
 		name string

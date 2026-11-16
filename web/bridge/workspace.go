@@ -1811,14 +1811,19 @@ func (w *Workspace) RemovePull(id string) (contract.PullRecord, bool, error) {
 }
 
 // PutPullAsk stores the ask the Inbox shows about one pull request's fix. One
-// ask per pull request: a newer one replaces the older.
+// ask per pull request: a newer one replaces the older. A record that is gone
+// takes no ask: the pull request was closed while the fix finished, and an ask
+// naming it would have no card to show on and no route to dismiss it.
 func (w *Workspace) PutPullAsk(pull string, ask contract.PullAsk) error {
 	if pull == "" {
 		return errors.New("a pull ask needs a pull id")
 	}
-	ask.Pull = pull
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if _, ok := w.pulls[pull]; !ok {
+		return nil
+	}
+	ask.Pull = pull
 	w.pullAsks[pull] = ask
 	return w.save()
 }

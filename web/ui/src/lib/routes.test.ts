@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, formatChatRoute, parseRunRoute, formatRunRoute, parseLiveRoute, formatLiveRoute, parseLibraryRoute, formatLibraryRoute, parseSettingsRoute, parseUsageRoute, parseNetworkRoute, formatNetworkRoute, parseProjectRoute, formatProjectRoute, formatAutomationRoute, redirectLegacy, parseWorkspacesRoute, formatWorkspacesRoute, type ChatRoute } from './routes'
+import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, formatChatRoute, parseRunRoute, formatRunRoute, parseLiveRoute, formatLiveRoute, parseLibraryRoute, formatLibraryRoute, parseSettingsRoute, parseUsageRoute, parseNetworkRoute, formatNetworkRoute, parseProjectRoute, formatProjectRoute, formatAutomationRoute, redirectLegacy, parseWorkspacesRoute, formatWorkspacesRoute, parseFactoryRoute, formatFactoryRoute, parseNewAgentRoute, parseRoadmapRoute, ROADMAP_AREAS, type ChatRoute } from './routes'
+import type { FactoryRoute } from './factory'
 
 describe('sessionsProjectFromHash', () => {
   it('returns null for the unscoped route and non-sessions hashes', () => {
@@ -50,10 +51,11 @@ describe('isScopedSessions', () => {
 })
 
 describe('pageFromHash', () => {
-  it('resolves the empty hash to Home and #fleet to the old Dashboard', () => {
-    expect(pageFromHash('')).toBe('home')
-    expect(pageFromHash('#')).toBe('home')
+  it('resolves the empty hash, # and #fleet to the fleet screen, and #inbox to its attention list', () => {
+    expect(pageFromHash('')).toBe('fleet')
+    expect(pageFromHash('#')).toBe('fleet')
     expect(pageFromHash('#fleet')).toBe('fleet')
+    expect(pageFromHash('#inbox')).toBe('inbox')
   })
   it('still resolves every existing route', () => {
     expect(pageFromHash('#new')).toBe('new')
@@ -86,6 +88,32 @@ describe('chat route', () => {
     expect(parseChatRoute('#chat/a?tab=tasks')).toEqual({ id: 'a', view: 'session', tab: 'tasks' })
     expect(parseChatRoute('#fleet')).toBeNull()
     expect(parseChatRoute('#chat/')).toBeNull()
+  })
+
+  it('chat route round-trips a validated factory return', () => {
+    const r: ChatRoute = { id: 'a1', view: 'session', node: 'step:2', tab: 'inspect', from: '#factory/x%2Fy' }
+    expect(parseChatRoute(formatChatRoute(r))).toEqual(r)
+    expect(parseChatRoute('#chat/a?from=%23factory%2Fx%252Fy')).toEqual({ id: 'a', view: 'session', from: '#factory/x%2Fy' })
+    // The return route may coexist with the review view and the dock.
+    expect(parseChatRoute('#chat/a/review?dock=docked&from=%23factory%2Fb')).toEqual({ id: 'a', view: 'review', dock: 'docked', from: '#factory/b' })
+    expect(formatChatRoute({ id: 'a', view: 'review', from: '#factory/b' })).toBe('#chat/a/review?from=%23factory%2Fb')
+  })
+
+  it('chat route drops an invalid return', () => {
+    expect(parseChatRoute('#chat/a?from=%23fleet')).toEqual({ id: 'a', view: 'session' })
+    expect(parseChatRoute('#chat/a?from=%23factory')).toEqual({ id: 'a', view: 'session' })
+    expect(parseChatRoute('#chat/a?from=%23factory%2F')).toEqual({ id: 'a', view: 'session' })
+    expect(parseChatRoute('#chat/a?from=%23factory%2Fa%2Fb')).toEqual({ id: 'a', view: 'session' })
+    expect(parseChatRoute('#chat/a?from=')).toEqual({ id: 'a', view: 'session' })
+  })
+
+  it('chat route encodes and decodes agent IDs', () => {
+    expect(parseChatRoute('#chat/a%2Fb')).toEqual({ id: 'a/b', view: 'session' })
+    expect(parseChatRoute('#chat/a%20b/review')).toEqual({ id: 'a b', view: 'review' })
+    expect(parseChatRoute('#chat/a%2Fb%20c?tab=files')).toEqual({ id: 'a/b c', view: 'session', tab: 'files' })
+    expect(formatChatRoute({ id: 'a/b c', view: 'session' })).toBe('#chat/a%2Fb%20c')
+    expect(formatChatRoute({ id: 'a b', view: 'review' })).toBe('#chat/a%20b/review')
+    expect(parseChatRoute('#chat/%E0%A4%A')).toEqual({ id: '%E0%A4%A', view: 'session' })
   })
 })
 
@@ -165,10 +193,12 @@ describe('control page routes', () => {
   })
 
   it('redirects the old routes', () => {
+    expect(redirectLegacy('#fleet')).toBe('#')
     expect(redirectLegacy('#clients')).toBe('#library/mcp')
     expect(redirectLegacy('#disk')).toBe('#usage?tab=disk')
     expect(redirectLegacy('#activity')).toBe('#usage?tab=audit')
     expect(redirectLegacy('#runs')).toBeNull()
+    expect(redirectLegacy('#inbox')).toBeNull()
   })
 })
 
@@ -223,6 +253,67 @@ describe('factory routes', () => {
     expect(pageFromHash('#factory/new')).toBe('factory')
   })
 
+  it('factory routes parse scoped filters and item drill-ins', () => {
+    expect(parseFactoryRoute('#projects/%2Fhome%2Fu%2Falpha/factory')).toEqual({ projectRoot: '/home/u/alpha' })
+    expect(parseFactoryRoute('#projects/%2Fp/factory?filter=needs-you')).toEqual({ projectRoot: '/p', filter: 'needs-you' })
+    expect(parseFactoryRoute('#projects/%E0%A4%A/factory')).toEqual({ projectRoot: '%E0%A4%A' })
+    expect(parseFactoryRoute('#factory?filter=ready')).toEqual({ filter: 'ready' })
+    expect(parseFactoryRoute('#factory/new?project=%2Fp')).toEqual({ create: true, projectRoot: '/p' })
+    expect(parseFactoryRoute('#factory/a%2Fb?view=approval')).toEqual({ itemId: 'a/b', view: 'approval' })
+    expect(parseFactoryRoute('#factory/a?view=review&agent=w%2F1')).toEqual({ itemId: 'a', view: 'review', agent: 'w/1' })
+    expect(parseFactoryRoute('#factory/a?agent=w1')).toEqual({ itemId: 'a', view: 'activity', agent: 'w1' })
+    expect(parseFactoryRoute('#factory/%E0%A4%A')).toEqual({ itemId: '%E0%A4%A' })
+    // The scoped list is one factory route, not a project page.
+    expect(parseProjectRoute('#projects/%2Fp/factory')).toBeNull()
+    expect(pageFromHash('#projects/%2Fp/factory')).toBe('factory')
+    expect(pageFromHash('#factory?filter=history')).toBe('factory')
+  })
+
+  it('factory routes canonicalize defaults and reject malformed paths', () => {
+    expect(parseFactoryRoute('#factory?filter=current')).toEqual({})
+    expect(parseFactoryRoute('#factory?filter=bogus')).toEqual({})
+    expect(parseFactoryRoute('#factory/a?view=bogus')).toEqual({ itemId: 'a' })
+    expect(formatFactoryRoute({})).toBe('#factory')
+    expect(formatFactoryRoute({ filter: 'current' })).toBe('#factory')
+    expect(formatFactoryRoute({ filter: 'history' })).toBe('#factory?filter=history')
+    expect(formatFactoryRoute({ projectRoot: '/p q' })).toBe('#projects/%2Fp%20q/factory')
+    expect(formatFactoryRoute({ projectRoot: '/p', filter: 'needs-you' })).toBe('#projects/%2Fp/factory?filter=needs-you')
+    expect(formatFactoryRoute({ create: true })).toBe('#factory/new')
+    expect(formatFactoryRoute({ create: true, projectRoot: '/p q' })).toBe('#factory/new?project=%2Fp%20q')
+    expect(formatFactoryRoute({ itemId: 'a/b', view: 'approval' })).toBe('#factory/a%2Fb?view=approval')
+    expect(formatFactoryRoute({ itemId: 'a/b', view: 'prs', agent: 'w 1' })).toBe('#factory/a%2Fb?view=prs&agent=w+1')
+    // An agent without an explicit view is formatted as its activity tab.
+    expect(formatFactoryRoute({ itemId: 'a', agent: 'w1' })).toBe('#factory/a?view=activity&agent=w1')
+    const cases: FactoryRoute[] = [
+      {},
+      { filter: 'ready' },
+      { projectRoot: '/p q' },
+      { projectRoot: '/p', filter: 'history' },
+      { create: true },
+      { create: true, projectRoot: '/p' },
+      { itemId: 'a/b' },
+      { itemId: 'a/b', view: 'documents' },
+      { itemId: 'a', view: 'activity', agent: 'w/1' },
+    ]
+    for (const route of cases) expect(parseFactoryRoute(formatFactoryRoute(route))).toEqual(route)
+    expect(parseFactoryRoute('#factory/')).toBeNull()
+    expect(parseFactoryRoute('#factories')).toBeNull()
+    expect(parseFactoryRoute('#factory/new/x')).toBeNull()
+    expect(parseFactoryRoute('#projects/%2Fp/factory/x')).toBeNull()
+    expect(parseFactoryRoute('#projects/%2Fp/factory/a')).toBeNull()
+    expect(parseFactoryRoute('#projects/%2Fp')).toBeNull()
+  })
+
+  it('factory routes decode the agent param exactly once, like the chat return', () => {
+    // URLSearchParams.get has already decoded once, so an id whose own text
+    // holds a percent escape survives the round trip unchanged.
+    expect(formatFactoryRoute({ itemId: 'a', view: 'activity', agent: 'w%2F1' })).toBe('#factory/a?view=activity&agent=w%252F1')
+    expect(parseFactoryRoute(formatFactoryRoute({ itemId: 'a', view: 'activity', agent: 'w%2F1' }))).toEqual({ itemId: 'a', view: 'activity', agent: 'w%2F1' })
+    // A plain id still round-trips.
+    expect(formatFactoryRoute({ itemId: 'a', view: 'review', agent: 'w1' })).toBe('#factory/a?view=review&agent=w1')
+    expect(parseFactoryRoute(formatFactoryRoute({ itemId: 'a', view: 'review', agent: 'w1' }))).toEqual({ itemId: 'a', view: 'review', agent: 'w1' })
+  })
+
   it('parses the working-drafts list, new and one open draft', async () => {
     const { parseFactoryRoute, formatFactoryRoute, formatWorkingDraftsRoute, pageFromHash } = await import('./routes')
     expect(parseFactoryRoute('#factory/drafts')).toEqual({ drafts: true })
@@ -244,5 +335,27 @@ describe('factory routes', () => {
     expect(parseFactoryRoute(formatWorkingDraftsRoute({ draftId: 'd 1' }, '/p'))).toEqual({ drafts: true, draftId: 'd 1' })
     expect(pageFromHash('#factory/drafts/d1')).toBe('factory')
     expect(pageFromHash('#factory/drafts/new')).toBe('factory')
+  })
+})
+
+describe('new agent route', () => {
+  it('new agent route reads the project query', () => {
+    expect(parseNewAgentRoute('#new')).toEqual({})
+    expect(parseNewAgentRoute('#new?project=%2Fhome%2Fu%2Falpha')).toEqual({ projectRoot: '/home/u/alpha' })
+    expect(parseNewAgentRoute('#new?project=')).toEqual({})
+    expect(parseNewAgentRoute('#newer')).toBeNull()
+    expect(parseNewAgentRoute('#new/')).toBeNull()
+    expect(pageFromHash('#new?project=%2Fp')).toBe('new')
+  })
+})
+
+describe('roadmap route', () => {
+  it('roadmap route accepts only named areas', () => {
+    for (const area of ROADMAP_AREAS) expect(parseRoadmapRoute(`#roadmap/${area}`)).toEqual({ area })
+    expect(parseRoadmapRoute('#roadmap')).toBeNull()
+    expect(parseRoadmapRoute('#roadmap/billing')).toBeNull()
+    expect(parseRoadmapRoute('#roadmap/planning/x')).toBeNull()
+    expect(pageFromHash('#roadmap/planning')).toBe('roadmap')
+    expect(pageFromHash('#roadmap')).toBe('other')
   })
 })

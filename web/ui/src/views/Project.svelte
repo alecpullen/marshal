@@ -26,9 +26,10 @@
   import type { AgentRow, AgentTelemetry } from '../lib/fleet'
   import { MODES, SHIP_TARGETS, autoFrom, autoOf, healthChecks, soft, isolatedFrom, isolationOf, latestAgent, parseWorkspaceRef, type AutoChoice, type Dot, type IsolationChoice } from '../lib/project/model'
   import { shortName } from '../lib/utils'
-  import { formatAutomationRoute, type AutomationPage } from '../lib/routes'
+  import type { RouteLeaveGuard } from '../lib/navigationGuard'
+  import { formatAutomationRoute, formatFactoryRoute, type AutomationPage } from '../lib/routes'
 
-  let { root, agents, telemetry = {}, onNavigate }: { root: string; agents: AgentRow[]; telemetry?: Record<string, AgentTelemetry>; onNavigate: (hash: string) => void } = $props()
+  let { root, agents, telemetry = {}, onNavigate, registerGuard = () => {} }: { root: string; agents: AgentRow[]; telemetry?: Record<string, AgentTelemetry>; onNavigate: (hash: string) => void; registerGuard?: (guard?: RouteLeaveGuard) => void } = $props()
 
   let tab = $state<'overview' | 'session' | 'automations'>('overview')
   let error = $state('')
@@ -386,16 +387,21 @@
     void loadHealth()
   })
 
-  // Unsaved edits are only lost on purpose: in-app navigation asks first, and
-  // the browser's own unload warning covers reload and close.
+  // Unsaved edits are only lost on purpose: in-app navigation asks the shell's
+  // route guard, and the browser's own unload warning covers reload and close.
   function confirmLeave(): boolean {
     if (!dirty) return true
     return window.confirm('You have unsaved project settings. Leave without saving them?')
   }
-  function navigate(hash: string) {
-    if (!confirmLeave()) return
-    onNavigate(hash)
-  }
+  /*
+    The guard asks before the shell changes the route, so it is registered for
+    as long as this screen is mounted and cleared when it is torn down — a
+    screen that is gone must never answer for the one that replaced it.
+  */
+  $effect(() => {
+    registerGuard(confirmLeave)
+    return () => registerGuard(undefined)
+  })
   $effect(() => {
     const warn = (e: BeforeUnloadEvent) => {
       if (!dirty) return
@@ -435,12 +441,15 @@
 
 <div class="mx-auto flex max-w-5xl flex-col gap-4 p-3 sm:p-6">
   <header class="min-w-0">
-    <p class="text-xs text-muted"><a class="text-accent hover:underline" href="#projects" onclick={(e) => { e.preventDefault(); navigate('#projects') }}>Projects</a> /</p>
+    <p class="text-xs text-muted"><a class="text-accent hover:underline" href="#projects" onclick={(e) => { e.preventDefault(); onNavigate('#projects') }}>Projects</a> /</p>
     <h1 class="text-lg font-semibold" title={root}>{shortName(root)}</h1>
     <p class="truncate font-mono text-xs text-muted">{root}</p>
   </header>
 
-  <a class="text-sm text-accent underline" href={`#factory/new?project=${encodeURIComponent(root)}`} onclick={(e) => { e.preventDefault(); navigate(`#factory/new?project=${encodeURIComponent(root)}`) }}>Create factory work item for this project{repoId ? ` (${repoId})` : ''}</a>
+  <div class="flex flex-wrap items-center gap-3 text-sm">
+    <a class="text-accent underline" href={`#factory/new?project=${encodeURIComponent(root)}`} onclick={(e) => { e.preventDefault(); onNavigate(`#factory/new?project=${encodeURIComponent(root)}`) }}>Create factory work item for this project{repoId ? ` (${repoId})` : ''}</a>
+    <a class="text-accent underline" href={formatFactoryRoute({ projectRoot: root })} onclick={(e) => { e.preventDefault(); onNavigate(formatFactoryRoute({ projectRoot: root })) }}>Open project factory</a>
+  </div>
   <Tabs label="Project" tabs={[{ value: 'overview', label: 'Overview' }, { value: 'session', label: 'Session sheet' }, { value: 'automations', label: 'Automations' }]} value={tab} onchange={(t) => (tab = t as 'overview' | 'session' | 'automations')} />
 
   {#if error}
@@ -640,7 +649,7 @@
         <div class="flex items-center justify-between">
           <h2 class="text-sm font-semibold">Policy</h2>
           {#if designerHash}
-            <a class="text-sm text-accent hover:underline" href={designerHash} onclick={(e) => { e.preventDefault(); navigate(designerHash) }}>Edit in designer</a>
+            <a class="text-sm text-accent hover:underline" href={designerHash} onclick={(e) => { e.preventDefault(); onNavigate(designerHash) }}>Edit in designer</a>
           {/if}
         </div>
         {#if policy}
@@ -661,7 +670,7 @@
         <Card class="flex min-w-0 flex-col gap-2">
           <div class="flex items-center gap-2"><h2 class="text-sm font-semibold">{a.title}</h2><Tag tone={a.on ? 'ok' : 'neutral'}>{a.on ? 'on' : 'off'}</Tag></div>
           <p class="text-sm text-muted">{a.blurb}</p>
-          <a class="text-sm text-accent hover:underline" href={formatAutomationRoute(root, a.page as AutomationPage)} onclick={(e) => { e.preventDefault(); navigate(formatAutomationRoute(root, a.page as AutomationPage)) }}>Open {a.title}</a>
+          <a class="text-sm text-accent hover:underline" href={formatAutomationRoute(root, a.page as AutomationPage)} onclick={(e) => { e.preventDefault(); onNavigate(formatAutomationRoute(root, a.page as AutomationPage)) }}>Open {a.title}</a>
         </Card>
       {/each}
     </div>
@@ -672,7 +681,7 @@
           <h2 class="text-sm font-semibold">{agent.name || agent.id}</h2>
           <Tag tone="neutral">{agent.status}</Tag>
           <span class="flex-1"></span>
-          <a class="text-sm text-accent hover:underline" href="#chat/{agent.id}" onclick={(e) => { e.preventDefault(); navigate(`#chat/${agent.id}`) }}>Open session</a>
+          <a class="text-sm text-accent hover:underline" href="#chat/{agent.id}" onclick={(e) => { e.preventDefault(); onNavigate(`#chat/${agent.id}`) }}>Open session</a>
         </div>
         <section aria-label="Context">
           <h3 class="mb-1 text-xs tracking-wide text-muted uppercase">Context</h3>

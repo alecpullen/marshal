@@ -1,5 +1,5 @@
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
-import { env } from './env'
+import { expect, test, type APIRequestContext } from '@playwright/test'
+import { BASE, ROOT, auth, expectNoHorizontalOverflow, open } from './fixtures'
 
 /*
   These cases drive the SPA the bridge actually serves. A fixture bridge
@@ -11,14 +11,8 @@ import { env } from './env'
   needs through the API, then reads or writes through the UI.
 */
 
-const BASE = env('PW_BASE_URL', 'http://127.0.0.1:7799')
-const TOKEN = env('PW_TOKEN', 'e2e-token')
-const ROOT = env('PW_PROJECT_ROOT', '/tmp/pf/proj')
-
 const projectHash = `#projects/${encodeURIComponent(ROOT)}`
 const factoryHash = `#factory/new?project=${encodeURIComponent(ROOT)}`
-
-const auth = () => ({ Authorization: `Bearer ${TOKEN}` })
 
 interface Versioned { settings: Record<string, unknown>; etag: string }
 
@@ -45,27 +39,6 @@ async function writeSettings(request: APIRequestContext, settings: Record<string
 async function seed(request: APIRequestContext, settings: Record<string, unknown>) {
   const { etag } = await readSettings(request)
   await writeSettings(request, { intake: {}, ...settings }, etag)
-}
-
-/** Open a route with the bearer token already in sessionStorage, so no prompt appears. */
-async function open(page: Page, hash: string) {
-  await page.addInitScript(([key, token]) => {
-    try { sessionStorage.setItem(key, token) } catch { /* storage may be unavailable */ }
-  }, ['marshal:token', TOKEN])
-  await page.goto(`${BASE}/${hash}`)
-}
-
-/** The narrow-width requirement: no sideways scrolling, every control inside the viewport. */
-async function expectNoHorizontalOverflow(page: Page, labels: string[]) {
-  const width = await page.evaluate(() => document.documentElement.clientWidth)
-  const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth)
-  expect(scrollWidth, `the document scrolls horizontally at ${width}px`).toBeLessThanOrEqual(width + 1)
-  for (const label of labels) {
-    const box = await page.getByLabel(label, { exact: true }).boundingBox()
-    expect(box, `${label} is not visible`).not.toBeNull()
-    expect(box!.x, `${label} starts off-screen`).toBeGreaterThanOrEqual(0)
-    expect(box!.x + box!.width, `${label} overflows the ${width}px viewport`).toBeLessThanOrEqual(width + 1)
-  }
 }
 
 test.describe('project settings', () => {
@@ -164,9 +137,9 @@ test.describe('factory handoff', () => {
     await page.getByLabel('Plan', { exact: true }).fill('Plan body')
 
     // Each choice names where it came from.
-    await expect(page.getByTestId('implementer-effective')).toContainText('alpha')
-    await expect(page.getByTestId('reviewer-effective')).toContainText('alpha')
-    await expect(page.getByTestId('target-branch-effective')).toContainText('trunk')
+    await expect(page.getByTestId('config-implementer')).toContainText('alpha')
+    await expect(page.getByTestId('config-reviewer')).toContainText('alpha')
+    await expect(page.getByTestId('config-target-branch')).toContainText('trunk')
 
     // Opening project settings is a new tab, so this form stays mounted.
     const popupPromise = page.waitForEvent('popup')

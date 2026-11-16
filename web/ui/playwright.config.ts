@@ -27,7 +27,11 @@ export default defineConfig({
     video: 'off',
   },
   projects: [
-    { name: 'desktop', use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 900 } } },
+    // Design §10: 1440 px desktop, 768 px tablet, 390 px phone. The tablet band
+    // is the one where the labelled sidebar becomes the icon rail, so it is a
+    // different shell shape, not just a narrower desktop.
+    { name: 'desktop', use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } } },
+    { name: 'tablet', use: { ...devices['Desktop Chrome'], viewport: { width: 768, height: 1024 } } },
     // The design's narrow-width target: a phone viewport, one column.
     { name: 'phone', use: { ...devices['Desktop Chrome'], viewport: { width: 390, height: 844 } } },
   ],

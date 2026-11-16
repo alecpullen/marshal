@@ -64,6 +64,25 @@ export interface FactoryProvenance {
 export interface FactoryEvent { sequence: number; at: string; kind: string; message: string; effectId: string; provenance?: FactoryProvenance }
 export interface FactoryItem { id: string; title: string; state: string; stage: string; repoId: string; projectRoot: string; hostId: string; branch: string; baseSha: string; version: number; draft: Omit<FactoryCreate, 'config'> & { config: FactoryConfig }; approvals: FactoryApproval[] | null; grants: FactoryGrant[] | null; rounds: FactoryRound[] | null; workers: FactoryWorker[] | null; prs: FactoryPR[] | null; effects: FactoryEffect[] | null; decision: FactoryDecision | null; history: FactoryEvent[] | null; createdAt: string; approvedAt: string; updatedAt: string }
 export interface FactoryCommand { requestId: string; kind: 'approve' | 'answer' | 'stop' | 'retry' | 'reconcile' | 'recover'; expectedVersion: number; decisionId?: string; answer?: string; reason?: string; additionalRounds?: number; replacement?: FactoryCreate; implementerRouting?: Record<string, unknown>; reviewerRouting?: Record<string, unknown>; confirmPreviousWorkerStopped?: boolean }
+export type FactoryFilter = 'current' | 'needs-you' | 'ready' | 'history'
+export type FactoryItemView = 'approval' | 'activity' | 'review' | 'prs' | 'documents'
+/**
+ * One factory hash, as `lib/routes` parses it: the global or project-scoped
+ * list, creation, working drafts, or one item drill-in. `view` and `agent`
+ * belong to an item; `filter` to a list. `drafts` marks the working-drafts
+ * routes, whose `draftId` is the bridge's draft id (never a project path).
+ * Parsing and formatting live in `lib/routes`.
+ */
+export interface FactoryRoute {
+  itemId?: string
+  create?: boolean
+  projectRoot?: string
+  filter?: FactoryFilter
+  view?: FactoryItemView
+  agent?: string
+  drafts?: boolean
+  draftId?: string
+}
 
 /**
  * How an action's authority is described. `user_directed` is worded as the
@@ -102,14 +121,7 @@ export function provenanceLine(p: FactoryProvenance, clientName?: string): strin
   if (p.decisionId) parts.push(`decision ${p.decisionId}`)
   return parts.join(' · ')
 }
-/**
- * A factory hash. `create` means a new work item on `#factory/new`, and a new
- * working draft on `#factory/drafts/new`; `drafts` marks the working-drafts
- * routes, whose `draftId` is the bridge's draft id (never a project path).
- */
-export interface FactoryRoute { itemId?: string; create?: boolean; drafts?: boolean; draftId?: string }
-
-interface PollSeam {
+export interface PollSeam {
   document?: Pick<Document, 'hidden' | 'addEventListener' | 'removeEventListener'>
   setTimeout?: typeof setTimeout
   clearTimeout?: typeof clearTimeout

@@ -44,7 +44,7 @@ class FakeReply {
 /// else that arrives over time. Each frame is written and flushed as it is
 /// queued, so a test sees one before the body ends.
 class FakeStream {
-  final _events = StreamController<String?>();
+  var _events = StreamController<String?>();
   var _closed = false;
 
   /// Queues [frame] for the client.
@@ -67,6 +67,15 @@ class FakeStream {
     _closed = true;
     _events.add(null);
     await _events.close();
+  }
+
+  /// The bridge comes back: the next request for this route gets a fresh body,
+  /// and frames written before it arrives are held for it. It is what a host
+  /// going live again looks like to a client that is retrying.
+  void reopen() {
+    if (!_closed) return;
+    _events = StreamController<String?>();
+    _closed = false;
   }
 }
 

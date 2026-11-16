@@ -529,6 +529,44 @@ void main() {
     expect(fixture.store.projects(), hasLength(1));
   });
 
+  test('a host that comes back is live again and reads its rows', () async {
+    final fixture = await fixtureWith();
+    await fixture.refresh();
+
+    // Live, then gone: the body ends and the connection is not there.
+    fixture.frames['local']!.write(': hb\n\n');
+    await eventually(() => fixture.store.reach('local') == HostReach.live);
+    await fixture.frames['local']!.end();
+    await eventually(
+      () => fixture.store.reach('local') == HostReach.unreachable,
+      reason: 'the connection died',
+    );
+
+    // The bridge comes back, and its snapshot carries what changed meanwhile.
+    fixture.serve('local', '/api/agents', [
+      agent(
+        id: 'a-1',
+        status: AgentState.agentRunning,
+        activity: 'Back again',
+      ).toJson(),
+    ]);
+    fixture.frames['local']!
+      ..reopen()
+      ..write(': hb\n\n');
+
+    // The client retries with backoff; the fixture's clock moves it on.
+    fixture.clock.advance(const Duration(seconds: 2));
+
+    await eventually(
+      () => fixture.store.reach('local') == HostReach.live,
+      reason: 'the stream reconnected',
+    );
+    await eventually(
+      () => fixture.store.agents().single.activity == 'Back again',
+      reason: 'a host that came back has its rows read again',
+    );
+  });
+
   test('a failed read keeps the rows and says what failed', () async {
     final fixture = await fixtureWith();
     await fixture.refresh();

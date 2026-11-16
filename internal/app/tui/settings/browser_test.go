@@ -87,11 +87,7 @@ func TestBrowserToggleSavesAndEmitsChangedMsg(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("mutating update must emit a command")
 	}
-	msg := cmd()
-	changed, ok := msg.(ChangedMsg)
-	if !ok {
-		t.Fatalf("want ChangedMsg, got %T", msg)
-	}
+	changed := changedNow(t, b, cmd)
 	if changed.SaveErr != nil {
 		t.Fatalf("save failed: %v", changed.SaveErr)
 	}
@@ -118,11 +114,7 @@ func TestBrowserSaveFailurePreservesConfigWithoutReceipt(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("mutating update must emit a command")
 	}
-	msg := cmd()
-	changed, ok := msg.(ChangedMsg)
-	if !ok {
-		t.Fatalf("want ChangedMsg, got %T", msg)
-	}
+	changed := changedNow(t, b, cmd)
 	if changed.SaveErr == nil {
 		t.Fatal("save should fail")
 	}
@@ -173,11 +165,7 @@ func TestBrowserRetriesFailedSaveOnRepeatedCommit(t *testing.T) {
 		if cmd == nil {
 			t.Fatal("confirming an inline edit must emit a command")
 		}
-		msg, ok := cmd().(ChangedMsg)
-		if !ok {
-			t.Fatalf("want ChangedMsg, got %T", msg)
-		}
-		return msg
+		return changedNow(t, b, cmd)
 	}
 
 	first := commit()
@@ -227,7 +215,7 @@ func TestBrowserPendingSaveDoesNotRetryOnNavigationOrFilterTyping(t *testing.T) 
 
 	b := NewBrowser(config.Default(), "shell.allow_network", WithHost(host), WithSession(sess))
 	cmd := b.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
-	changed := cmd().(ChangedMsg)
+	changed := changedNow(t, b, cmd)
 	if changed.SaveErr == nil {
 		t.Fatal("expected the toggle save to fail")
 	}
@@ -899,10 +887,7 @@ func TestGlobalRowWithoutHostFallsThroughToProjectSave(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("cycling an enum must produce a command")
 	}
-	changed, ok := cmd().(ChangedMsg)
-	if !ok {
-		t.Fatalf("want ChangedMsg, got %T", cmd())
-	}
+	changed := changedNow(t, b, cmd)
 	if changed.SaveErr != nil {
 		t.Fatalf("save failed: %v", changed.SaveErr)
 	}
@@ -933,11 +918,7 @@ func TestGlobalTargetRowWritesUserConfigOnly(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("cycling an enum must produce a command")
 	}
-	msg := cmd()
-	changed, ok := msg.(ChangedMsg)
-	if !ok {
-		t.Fatalf("want ChangedMsg, got %T", msg)
-	}
+	changed := changedNow(t, b, cmd)
 	if changed.SaveErr != nil {
 		t.Fatalf("save failed: %v", changed.SaveErr)
 	}
@@ -1007,10 +988,7 @@ func TestFlushChangesWritesProvidersAndPresetsGlobally(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("flush should produce a ChangedMsg command")
 	}
-	changed, ok := cmd().(ChangedMsg)
-	if !ok {
-		t.Fatalf("want ChangedMsg, got %T", cmd())
-	}
+	changed := changedNow(t, b, cmd)
 	if changed.SaveErr != nil {
 		t.Fatalf("save failed: %v", changed.SaveErr)
 	}
@@ -1046,10 +1024,7 @@ func TestFlushChangesWithoutProviderChangesSkipsUserConfig(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("flush should produce a ChangedMsg command")
 	}
-	changed, ok := cmd().(ChangedMsg)
-	if !ok {
-		t.Fatalf("want ChangedMsg, got %T", cmd())
-	}
+	changed := changedNow(t, b, cmd)
 	if changed.SaveErr != nil {
 		t.Fatalf("save failed: %v", changed.SaveErr)
 	}
@@ -1124,10 +1099,7 @@ func TestBrowserRenameKeepsTheProvidersKey(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("flush should produce a ChangedMsg command")
 	}
-	changed, ok := cmd().(ChangedMsg)
-	if !ok {
-		t.Fatalf("want ChangedMsg, got %T", cmd())
-	}
+	changed := changedNow(t, b, cmd)
 	if changed.SaveErr != nil {
 		t.Fatalf("save failed: %v", changed.SaveErr)
 	}

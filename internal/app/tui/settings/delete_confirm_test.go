@@ -65,7 +65,17 @@ func TestBrowserDeleteFlushesOnlyAfterConfirmation(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("the confirmed delete did not flush the config change")
 	}
-	if _, ok := cmd().(ChangedMsg); !ok {
-		t.Fatalf("the confirmed delete returned %T, want ChangedMsg", cmd())
+	// AUD-10 moved every settings write off the Update goroutine, so the
+	// confirmed delete answers with the commit it started (SaveDoneMsg) instead
+	// of the applied result; applying that yields the ChangedMsg the model sees.
+	// A blocked save still answers synchronously with ChangedMsg.
+	switch msg := cmd().(type) {
+	case SaveDoneMsg:
+		if msg.Err != nil {
+			t.Fatalf("the confirmed delete failed to save: %v", msg.Err)
+		}
+	case ChangedMsg:
+	default:
+		t.Fatalf("the confirmed delete returned %T, want a commit result", msg)
 	}
 }

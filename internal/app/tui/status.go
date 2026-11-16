@@ -602,6 +602,12 @@ func (m Model) sessionRightSegment() string {
 		}
 		return errorStyle().Render("✘ error")
 	}
+	if m.browsePending != "" {
+		// A browse action is waiting on the session: the detail fetch, the copy
+		// or the open runs off the Update goroutine, and this is what the user
+		// sees instead of a frozen screen (AUD-10).
+		return dimStyle().Render(m.browsePending)
+	}
 	if m.flashActive() {
 		return dimStyle().Render(m.flash)
 	}

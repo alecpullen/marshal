@@ -30,18 +30,10 @@ func (f *fakeClipboard) Available() bool { return f.available }
 // through Update, returning the model and the messages the copy produced.
 func runCopy(t *testing.T, m Model) (Model, []string) {
 	t.Helper()
-	cmd := m.copyCursorNode()
-	if cmd == nil {
-		t.Fatal("no copy command")
-	}
+	m, msgs := runBrowseAction(t, m, m.copyCursorNode())
 	var seen []string
-	for _, msg := range flattenCmd(cmd) {
+	for _, msg := range msgs {
 		seen = append(seen, fmt.Sprintf("%T %v", msg, msg))
-		next, follow := m.Update(msg)
-		m = next.(Model)
-		for _, f := range flattenCmd(follow) {
-			seen = append(seen, fmt.Sprintf("%T %v", f, f))
-		}
 	}
 	return m, seen
 }

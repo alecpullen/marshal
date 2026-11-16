@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"context"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -301,14 +303,113 @@ func isPrintable(msg tea.KeyPressMsg) bool {
 // wireNode is id's wire form from the last refresh, or nil.
 func (m *Model) wireNode(id nodeID) *acpwire.WireNode { return m.wire[id.Key] }
 
-// nodeDetail asks the session for id's detail, in the drilled-in subagent's
-// transcript while the view is drilled in. ok is false when the call fails.
+// nodeDetail is id's detail as the render path cached it, for the version the
+// wire index holds now. It never asks the session (AUD-10): a browse action
+// that needs a detail the cache does not hold queues the fetch with
+// queueBrowse, which fills the cache and then applies the action back on the
+// Update goroutine. ok is false when nothing is cached for this version, or
+// the last fetch for it failed.
 func (m *Model) nodeDetail(id nodeID) (acpwire.StackNodeResult, bool) {
-	res, err := m.sess.StackNode(m.ctx, id.Key, m.drilledSheetID())
-	if err != nil {
+	w := m.wireNode(id)
+	if w == nil || w.Version == "" {
 		return acpwire.StackNodeResult{}, false
 	}
-	return res, true
+	c, ok := m.details[id.Key]
+	if !ok || c.version != w.Version || c.failed {
+		return acpwire.StackNodeResult{}, false
+	}
+	return acpwire.StackNodeResult{Node: *w, Detail: c.detail}, true
+}
+
+// browseDetailTimeout bounds one browse action's detail fetch. A daemon that
+// never answers therefore holds the pending indicator for a bounded time and
+// not forever.
+const browseDetailTimeout = 10 * time.Second
+
+// browseWant is one node a browse action asked the session for.
+type browseWant struct {
+	key      string
+	version  string
+	subagent int64
+}
+
+// queueBrowse runs a browse action off the Update goroutine (AUD-10). ids are
+// the nodes whose detail the action reads: the ones already cached for their
+// current version cost nothing, and only the rest are fetched from the session
+// — inside the call queue's run, so a slow daemon cannot hold the update loop.
+// apply runs back on the Update goroutine, at most once, with the answers
+// stored in the cache nodeDetail reads.
+//
+// name is what the status line shows while the action is outstanding. It is
+// cleared by whichever outcome is the newest, so a stale answer never leaves
+// the indicator up and never clears a newer action's.
+func (m *Model) queueBrowse(name string, ids []nodeID, apply func(m *Model) tea.Cmd) tea.Cmd {
+	if m.sess == nil {
+		return apply(m)
+	}
+	var missing []browseWant
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if seen[id.Key] {
+			continue
+		}
+		if _, ok := m.nodeDetail(id); ok {
+			continue
+		}
+		w := m.wireNode(id)
+		if w == nil || w.Version == "" {
+			continue
+		}
+		seen[id.Key] = true
+		missing = append(missing, browseWant{key: id.Key, version: w.Version, subagent: m.drilledSheetID()})
+	}
+	if len(missing) == 0 {
+		return apply(m)
+	}
+	m.browseSeq++
+	seq := m.browseSeq
+	m.browsePending = name
+	sess := m.sess
+	m.enqueueCall(func(mm *Model) callRun {
+		return func(ctx context.Context) callOutcome {
+			ctx, cancel := context.WithTimeout(ctx, browseDetailTimeout)
+			defer cancel()
+			var firstErr error
+			fetched := make([]detailMsg, 0, len(missing))
+			for _, want := range missing {
+				res, err := sess.StackNode(ctx, want.key, want.subagent)
+				if err != nil {
+					if firstErr == nil {
+						firstErr = err
+					}
+					continue
+				}
+				fetched = append(fetched, detailMsg{key: want.key, version: want.version, res: res})
+			}
+			// A cancelled call is a quit or a shutdown: its outcome says
+			// nothing against a model that is already going away.
+			cancelled := ctx.Err() != nil
+			return func(mm *Model) tea.Cmd {
+				if seq != mm.browseSeq || seq <= mm.browseApplied {
+					// A newer browse action owns the pending indicator and the
+					// surface, or this one already landed: either way it is
+					// dropped rather than applied twice.
+					return nil
+				}
+				mm.browseApplied = seq
+				mm.browsePending = ""
+				for _, msg := range fetched {
+					updated, _ := mm.handleDetail(msg)
+					*mm = updated
+				}
+				if len(fetched) == 0 && firstErr != nil && !cancelled {
+					return mm.setFlash("Could not load the node detail: " + firstErr.Error())
+				}
+				return apply(mm)
+			}
+		}
+	})
+	return m.serveCalls()
 }
 
 // enterBoxStop acts on a box stop the way a click does: a running card opens

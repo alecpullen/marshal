@@ -1748,14 +1748,16 @@ func (r *Runner) RunTaskWithImages(ctx context.Context, goal string, images []sc
 				var compactErr error
 				// Prune first: compaction resends the transcript, so an
 				// oversize wire must shrink before summarisation can succeed.
-				if prunedMsgs, n := pruneStaleToolOutputs(messages, pruneMinSizeDefault); n > 0 {
+				shrunkMsgs, pruned, shed := shrinkOverflowWire(messages, turnThreshold)
+				if pruned > 0 || shed > 0 {
+					messages = shrunkMsgs
+				}
+				if r.calibratedEstimate(r.withWorkingState(messages)) <= turnThreshold {
 					// The hard prune is already past the overflow gate, so
-					// shedding applies unconditionally here.
-					messages, _ = shedImages(prunedMsgs, turnThreshold)
-					if r.calibratedEstimate(r.withWorkingState(messages)) <= turnThreshold {
-						r.State.AddMessage(session.RoleSystem,
-							fmt.Sprintf("Pruned %d stale tool result(s) after the provider rejected the prompt as too long.", n),
-							session.ContentTypeCompaction)
+					// shedding applies whether or not anything was pruned: an
+					// images-only overflow has no stale output to drop.
+					if notice := overflowDropNotice(pruned, shed, "after the provider rejected the prompt as too long"); notice != "" {
+						r.State.AddMessage(session.RoleSystem, notice, session.ContentTypeCompaction)
 						continue
 					}
 				}

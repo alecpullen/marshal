@@ -5,6 +5,7 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/db"
+	"marshal/internal/imagepayload"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 )
@@ -234,6 +235,13 @@ func tierSelect(exchanges []exchange, cands []candEntry, budgetChars int) []tier
 	costFor := func(i int, l tierLevel) int {
 		n := 0
 		for _, ce := range cands[exchanges[i].start:exchanges[i].end] {
+			// Images are charged in the same rune currency estimateTokens
+			// uses. Leaving them free let history keep every image-bearing
+			// exchange and hand the overflow to the request gate, which then
+			// shed them all at once instead of ageing the oldest ones out.
+			for _, img := range ce.images {
+				n += imagepayload.EstimateTokens(img.Width, img.Height) * 4
+			}
 			if ce.kind == "assistant-full" {
 				switch l {
 				case tieredFull:

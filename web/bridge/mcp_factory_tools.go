@@ -517,7 +517,7 @@ func (s *Server) factoryToolRevisionClaim(w http.ResponseWriter, r *http.Request
 		RequestID: a.RequestID, Kind: "revision_assess_claim", ExpectedVersion: a.ExpectedVersion,
 		Revision: &FactoryRevisionCommand{ProposalID: a.ProposalID, ProposalVersion: a.ProposalVersion, AttemptID: a.AttemptID},
 	}
-	saved, err := s.factoryAuth.WithAuthorizedMutation(c.ID, a.ProjectID, item.RepoID, factoryCapabilityAssessPlanChanges, func() (FactoryItem, error) {
+	saved, err := s.factoryAuth.WithAuthorizedRevisionMutation(c.ID, a.ProjectID, item.RepoID, func() (FactoryItem, error) {
 		return s.factory.CommandAuthorized(r.Context(), a.ItemID, cmd,
 			factoryToolPrincipal(c.ID, a.ProjectID, factoryCapabilityAssessPlanChanges, a.RequestID, ""))
 	})

@@ -200,10 +200,18 @@ func (w *factoryWorkers) Observe(ctx context.Context, item FactoryItem) (Factory
 	// unknown there made a fully parked item — which is what a ready item
 	// always is, its implementer parked after the last publish and its reviewer
 	// after the review — unable to reach a safe boundary at all.
-	matched, live := 0, 0
+	matched, live, unaccounted := 0, 0, 0
 	for _, worker := range item.Workers {
 		a, ok := w.fleet.ws.Agent(worker.AgentID)
 		if !ok || a.FactoryItemID != item.ID || a.FactoryRole != worker.Role || a.FactorySpawnEffectID != worker.SpawnEffectID {
+			// A worker the registry cannot account for is unobserved work. The
+			// item's own record may still say it is parked — that is how a row
+			// survives its agent being pruned — in which case it contributes no
+			// runtime. A row the journal does not already record as parked may
+			// be running, so the shortcut below cannot speak for it.
+			if !worker.Parked {
+				unaccounted++
+			}
 			continue
 		}
 		matched++
@@ -211,7 +219,7 @@ func (w *factoryWorkers) Observe(ctx context.Context, item FactoryItem) (Factory
 			live++
 		}
 	}
-	if matched > 0 && live == 0 {
+	if matched > 0 && live == 0 && unaccounted == 0 {
 		obs.RuntimeKnown, obs.TurnIdle, obs.ActiveWorkKnown, obs.WorkIdle = true, true, true, true
 	}
 	for _, worker := range item.Workers {

@@ -109,6 +109,24 @@ func (a *factoryMCPAuthorizer) WithAuthorizedMutationAuthority(clientID, project
 	return a.withAuthorizedMutation(clientID, projectID, repoID, capability, fn)
 }
 
+// WithAuthorizedRevisionMutation is WithAuthorizedMutation for a plan-revision
+// mutation that hands back plan text (a claim). The assessment capability alone
+// would let a grant that cannot read the project's plans claim an assignment
+// carrying the approved and proposed text, so both capabilities are checked
+// under the policy lock, in one admission.
+func (a *factoryMCPAuthorizer) WithAuthorizedRevisionMutation(clientID, projectID, repoID string, fn func() (FactoryItem, error)) (FactoryItem, error) {
+	if fn == nil {
+		return FactoryItem{}, fmt.Errorf("%w: no mutation to authorize", errFactoryDenied)
+	}
+	return a.withAuthorizedMutation(clientID, projectID, repoID, factoryCapabilityAssessPlanChanges,
+		func(string) (FactoryItem, error) {
+			if err := a.authorizeLocked(clientID, projectID, repoID, factoryCapabilityRead); err != nil {
+				return FactoryItem{}, err
+			}
+			return fn()
+		})
+}
+
 // withAuthorizedMutation is the shared body of both entry points: authorize
 // under the policy lock, then run the caller's local commit while holding it.
 func (a *factoryMCPAuthorizer) withAuthorizedMutation(clientID, projectID, repoID, capability string, fn func(authority string) (FactoryItem, error)) (FactoryItem, error) {
@@ -251,16 +269,26 @@ func (a *factoryMCPAuthorizer) grantAllows(g MCPFactoryProjectGrant, capability 
 // reports, while still holding the policy lock, whether that client may also
 // carry routine authorization for the result it delivers.
 //
-// Both answers come from the store as it stands under the lock, so a revoked
-// grant, a delegation toggle or a changed designated client either lands
-// entirely before this operation was admitted or entirely after its journal
-// append committed. Nothing is cached and nothing is taken from the caller.
+// Both answers come from the store as it stands under the lock. Grant writes
+// take that same lock, so a revoked grant lands entirely before this operation
+// was admitted or entirely after its journal append committed. Delegation
+// settings are the weaker case: PutProjectSettingsIfMatch serializes on the
+// workspace, not on this lock, so a toggle flipped while an admitted delivery
+// is in flight does not cancel it. At most one proposal is authorized under the
+// settings the admission read, the journal records who authorized it, and every
+// later operation reads the new settings. Nothing is cached and nothing is
+// taken from the caller.
 func (a *factoryMCPAuthorizer) WithAuthorizedRevisionAssessment(clientID, projectID, repoID string, fn func(routine bool) (FactoryItem, error)) (FactoryItem, error) {
 	if fn == nil {
 		return FactoryItem{}, fmt.Errorf("%w: no mutation to authorize", errFactoryDenied)
 	}
 	return a.withAuthorizedMutation(clientID, projectID, repoID, factoryCapabilityAssessPlanChanges,
 		func(string) (FactoryItem, error) {
+			// Delivering an assessment names the plan text this client was
+			// handed when it claimed the attempt, so it needs read as well.
+			if err := a.authorizeLocked(clientID, projectID, repoID, factoryCapabilityRead); err != nil {
+				return FactoryItem{}, err
+			}
 			return fn(a.routineRevisionLocked(clientID, projectID))
 		})
 }

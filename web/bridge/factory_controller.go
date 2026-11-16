@@ -323,7 +323,9 @@ func AdvanceFactory(item FactoryItem, observed FactoryObservation, now time.Time
 				role = "implementer"
 			}
 		case "set_draft":
-			if proposalID, ok := factoryRevisionTransition(i, last.ID); ok && last.Outcome != nil && last.Outcome.Confirmed && last.Outcome.Error == "" && factoryRevisionTransitionConfirmed(i, proposalID) && len(i.Approvals) > 0 && last.ApprovalRevision < i.Approvals[len(i.Approvals)-1].Revision {
+			proposalID, revision := factoryRevisionTransition(i, last.ID)
+			transitioned := revision && last.Outcome != nil && last.Outcome.Confirmed && last.Outcome.Error == "" && factoryRevisionTransitionConfirmed(i, proposalID)
+			if transitioned && len(i.Approvals) > 0 && last.ApprovalRevision < i.Approvals[len(i.Approvals)-1].Revision {
 				// The ready PR returned to draft and the authorized revision
 				// activated: fresh work starts under the new approval, exactly
 				// as it does after a readiness that could not be confirmed.
@@ -335,6 +337,15 @@ func AdvanceFactory(item FactoryItem, observed FactoryObservation, now time.Time
 					role = "implementer"
 				}
 				break
+			}
+			if transitioned {
+				// The draft transition completed but the authorized revision has
+				// not been activated yet: the item is standing at the activation
+				// boundary, which is not a question for a person. Changing
+				// nothing leaves it schedulable, so the activation pass and then
+				// this branch can run; needs_input here would be a state no
+				// dispatch ever picks up again.
+				return i, nil, nil
 			}
 			i.State = "needs_input"
 			return i, nil, nil
@@ -1365,7 +1376,20 @@ func factoryApplyRevisionState(i *FactoryItem, c FactoryCommand, p *factoryPrinc
 		return err
 	}
 	proposal := &i.Proposals[n]
-	if proposal.Status != "proposed" && proposal.Status != "awaiting_authorization" {
+	// Authorization is not activation: an authorized amendment still has to be
+	// delivered and activated, and the situation may change under it. It has to
+	// be retirable, or an amendment somebody decided against blocks every later
+	// proposal on the item for ever.
+	retirable := proposal.Status == "proposed" || proposal.Status == "awaiting_authorization"
+	switch status {
+	case "superseded":
+		// A follow-up intent nobody confirmed is retirable for the same reason:
+		// it counts as unresolved, so no other proposal may replace it.
+		retirable = retirable || proposal.Status == "authorized" || proposal.Status == "follow_up_pending"
+	case "rejected":
+		retirable = retirable || proposal.Status == "authorized"
+	}
+	if !retirable {
 		return fmt.Errorf("%w: proposal %s is %s and cannot be %s", ErrFactoryConflict, proposal.ID, proposal.Status, status)
 	}
 	proposal.Status = status

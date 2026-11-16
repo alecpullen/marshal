@@ -478,9 +478,12 @@ func (c *FactoryController) activateRevision(item FactoryItem, n int) (FactoryIt
 		p.Status = "activated"
 		p.Version++
 		p.UpdatedAt = now
-		if dst.State == "ready" {
-			// The readiness the old approval earned does not survive the
-			// revision it was earned under.
+		if dst.State == "ready" || (dst.State == "needs_input" && dst.Decision == nil) {
+			// The readiness the old approval earned does not survive the revision
+			// it was earned under. A decision-less needs_input is the same case:
+			// it is where an older redraft left an item whose activation had to
+			// wait, and the fresh work is the scheduler's to start, not a
+			// person's to answer.
 			dst.State = "checking"
 		}
 		dst.History = append(dst.History, FactoryEvent{
@@ -584,7 +587,20 @@ func (c *FactoryController) reconcileRevisionFollowUps() error {
 	for _, item := range c.store.List() {
 		for n := range item.Proposals {
 			proposal := item.Proposals[n]
-			if proposal.FollowUpRequestID == "" || proposal.FollowUpItemID != "" {
+			if proposal.FollowUpRequestID == "" {
+				continue
+			}
+			if proposal.FollowUpItemID != "" {
+				// The association committed. The source link is a second
+				// mutation, so a crash between the two would otherwise leave the
+				// created draft without the link in its own history for ever.
+				// Recording it is idempotent and replays harmlessly.
+				if err := c.recordRevisionSource(proposal.FollowUpItemID, item.ID, proposal.ID); err != nil {
+					if errors.Is(err, ErrFactoryNotFound) || errors.Is(err, ErrFactoryConflict) {
+						continue
+					}
+					return err
+				}
 				continue
 			}
 			created, ok := c.store.ItemForRequest(proposal.FollowUpRequestID)

@@ -483,9 +483,24 @@ func validateFactoryItem(i FactoryItem) error {
 		}
 	}
 	unresolved := 0
+	seenProposals := make(map[string]bool, len(i.Proposals))
 	for _, p := range i.Proposals {
 		if e := validateFactoryRevisionProposal(p); e != nil {
 			return e
+		}
+		if seenProposals[p.ID] {
+			return fmt.Errorf("duplicate proposal id")
+		}
+		seenProposals[p.ID] = true
+		// A proposal's base names the approval it was written against, and both
+		// sides are immutable, so the binding is checkable here as well as by the
+		// controller. A record naming an approval that does not exist, or a hash
+		// that is not that approval's, is corrupt rather than merely stale.
+		if p.BaseRevision > uint64(len(i.Approvals)) {
+			return fmt.Errorf("proposal names an approval that does not exist")
+		}
+		if i.Approvals[p.BaseRevision-1].PlanHash != p.BaseHash {
+			return fmt.Errorf("proposal base hash does not match its approval")
 		}
 		if factoryRevisionUnresolved(p.Status) {
 			unresolved++
@@ -546,7 +561,39 @@ func factoryRevisionCarryOver(a, b FactoryRevisionProposal) error {
 	if b.Version < a.Version || b.Version > a.Version+1 {
 		return fmt.Errorf("invalid proposal version")
 	}
+	// A state that moved has to say so in the version. Without this, two item
+	// versions could carry the same proposal version with different states, and
+	// the ProposalVersion guard would admit a command written from the older
+	// read: the promise in FactoryRevisionProposal's comment would rest on
+	// caller discipline instead of on the layer that makes it.
+	if !bytes.Equal(factoryRevisionState(a), factoryRevisionState(b)) && b.Version != a.Version+1 {
+		return fmt.Errorf("proposal state moved without a version step")
+	}
 	return nil
+}
+
+// factoryRevisionState projects the fields a mutation may move, so the store
+// can tell a proposal carried forward unchanged from one that advanced.
+// Everything absent here is immutable history, checked by factoryRevisionCarryOver.
+func factoryRevisionState(p FactoryRevisionProposal) []byte {
+	b, _ := json.Marshal(struct {
+		Status              string                     `json:"status"`
+		AssessmentState     string                     `json:"assessmentState"`
+		AssessmentAttemptID string                     `json:"assessmentAttemptId"`
+		Assessment          *FactoryRevisionAssessment `json:"assessment"`
+		AuthorizedBy        string                     `json:"authorizedBy"`
+		Authority           string                     `json:"authority"`
+		Routing             string                     `json:"routing"`
+		PauseState          string                     `json:"pauseState"`
+		PauseRequestID      string                     `json:"pauseRequestId"`
+		Delivery            *FactoryRevisionDelivery   `json:"delivery"`
+		FollowUpRequestID   string                     `json:"followUpRequestId"`
+		FollowUpItemID      string                     `json:"followUpItemId"`
+		UpdatedAt           time.Time                  `json:"updatedAt"`
+	}{p.Status, p.AssessmentState, p.AssessmentAttemptID, p.Assessment, p.AuthorizedBy,
+		p.Authority, p.Routing, p.PauseState, p.PauseRequestID, p.Delivery,
+		p.FollowUpRequestID, p.FollowUpItemID, p.UpdatedAt})
+	return b
 }
 func (s *FactoryStore) replayRequest(request, id, hash string) (FactoryItem, bool, error) {
 	if p, ok := s.requests[request]; ok {

@@ -344,6 +344,24 @@ func factoryApplyRevisionAssessRetry(i *FactoryItem, c FactoryCommand, p *factor
 	return nil
 }
 
+// factoryRevisionPlannerTimeout bounds one planner dispatch. The controller
+// loop is a single goroutine, so a planner that never answers would stall
+// factory scheduling for every project; a dispatch that runs out of time is a
+// lost answer, which the journal already knows how to record as uncertain.
+const factoryRevisionPlannerTimeout = 2 * time.Minute
+
+// factoryPlannerCall runs one planner method and turns a panic into an error.
+// The planner is an injected seam — an adapter this bridge does not own — and a
+// bug in one must cost an attempt, not the whole process.
+func factoryPlannerCall(fn func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("planner failed: %v", r)
+		}
+	}()
+	return fn()
+}
+
 // assessPending dispatches at most one durable assessment intent per pass.
 //
 // The order is the durable one: the attempt is asked about and the claim is
@@ -361,22 +379,39 @@ func (c *FactoryController) assessPending(ctx context.Context) error {
 		if !ok {
 			continue
 		}
-		available, err := planner.Available(ctx, item.ProjectRoot)
+		// One bounded dispatch at a time. A planner that hangs costs this
+		// attempt, not the scheduling loop.
+		dctx, cancel := context.WithTimeout(ctx, factoryRevisionPlannerTimeout)
+		var available bool
+		err := factoryPlannerCall(func() error {
+			var e error
+			available, e = planner.Available(dctx, item.ProjectRoot)
+			return e
+		})
 		if ctx.Err() != nil {
+			cancel()
 			return nil
 		}
 		if err != nil || !available {
+			cancel()
 			return c.markRevisionAssessmentUnavailable(item, n)
 		}
 		claimed, err := c.claimRevisionAssessmentForPlanner(item, n)
 		if err != nil {
+			cancel()
 			if errors.Is(err, ErrFactoryConflict) {
 				return nil
 			}
 			return err
 		}
 		req := factoryRevisionAssessmentRequest(claimed, n)
-		assessment, assessErr := planner.Assess(ctx, req)
+		var assessment FactoryRevisionAssessment
+		assessErr := factoryPlannerCall(func() error {
+			var e error
+			assessment, e = planner.Assess(dctx, req)
+			return e
+		})
+		cancel()
 		if ctx.Err() != nil {
 			// A shutdown in the middle of a dispatch is a lost answer, not a
 			// reason to requeue: the attempt is journalled uncertain below and

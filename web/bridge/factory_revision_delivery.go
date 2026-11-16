@@ -596,7 +596,15 @@ func (c *FactoryController) interruptRevisionDelivery(ctx context.Context, item 
 	switch d.State {
 	case "dispatching":
 		// A recorded intent whose outcome was never journalled: a restart or a
-		// disconnect. It is unproven, and it is never sent again.
+		// disconnect. A receipt the runtime did emit may still be in hand — the
+		// pass that sent it may have lost its journal write — so it is consulted
+		// before the outcome is called unknown. Either way it is never sent
+		// again.
+		if ok {
+			if rec, observed := seam.RevisionReceipt(item, d.RequestID); observed {
+				return c.applyRevisionReceipt(item, n, rec)
+			}
+		}
 		return c.journalRevisionDelivery(item, n, "uncertain",
 			"the Send now intent was recorded and its outcome is unknown; reconcile before delivering again")
 	case "accepted", "interrupting", "waiting_safe_boundary", "waiting_for_resume":
@@ -713,7 +721,9 @@ func (c *FactoryController) applyRevisionReceipt(item FactoryItem, n int, rec Re
 	if rec.RequestID == "" || rec.RequestID != d.RequestID {
 		return nil
 	}
-	if d.TurnID != "" && rec.TurnID != "" && rec.TurnID != d.TurnID {
+	// The receipt must name the turn the intent named. The wire always carries
+	// one, so a receipt without it cannot be correlated and is not evidence.
+	if d.TurnID != "" && rec.TurnID != d.TurnID {
 		return nil
 	}
 	if !revisionSteeringReceiptStatuses[rec.Status] || rec.Status == d.State {

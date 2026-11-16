@@ -37,6 +37,7 @@ import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
 import 'package:marshal_app/src/model/bots_model.dart';
 import 'package:marshal_app/src/model/clients_model.dart';
 import 'package:marshal_app/src/model/connections_model.dart';
+import 'package:marshal_app/src/model/environment_model.dart';
 import 'package:marshal_app/src/model/environments_model.dart';
 import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
 import 'package:marshal_app/src/model/general_model.dart';
@@ -74,6 +75,7 @@ import 'package:marshal_app/src/ui/library/memory_tab.dart';
 import 'package:marshal_app/src/ui/library/plugins_tab.dart';
 import 'package:marshal_app/src/ui/library/skills_tab.dart';
 import 'package:marshal_app/src/ui/settings/connections_section.dart';
+import 'package:marshal_app/src/ui/settings/environment_designer.dart';
 import 'package:marshal_app/src/ui/settings/environments_section.dart';
 import 'package:marshal_app/src/ui/settings/general_section.dart';
 import 'package:marshal_app/src/ui/settings/hosts_section.dart';
@@ -607,6 +609,30 @@ Widget _library({StateKind? state, int tab = 0}) {
   );
 }
 
+/// The environment designer, on its fixture template.
+Widget _designer({StateKind? state}) => EnvironmentDesigner(
+  model: EnvironmentModel.fixture(
+    name: 'go-service',
+    source: _settingsEnvSource,
+    builds: const EnvironmentBuilds(
+      versions: [
+        EnvironmentVersion(
+          n: 3,
+          detail: 'marshal-ws/go-service:3',
+          state: 'ok',
+        ),
+      ],
+      poolSize: 2,
+      poolIdle: 1,
+      poolStarting: 0,
+      coldMs: 24000,
+      warmMs: 1800,
+      sizeBytes: 734003200,
+    ),
+  ),
+  state: state,
+);
+
 /// The Settings place, with the sections this build has and the rest planned.
 /// [section] is the index in the design's order: 0 Hosts … 9 General.
 Widget _settings({int section = 0, StateKind? state}) {
@@ -714,8 +740,31 @@ Widget _settings({int section = 0, StateKind? state}) {
     sections: {
       SettingsSectionKind.hosts: (state) =>
           HostsSection(model: hosts, state: state, now: shellNow),
-      SettingsSectionKind.environments: (state) =>
-          EnvironmentsSection(model: environments, state: state),
+      SettingsSectionKind.environments: (state) => EnvironmentsSection(
+        model: environments,
+        state: state,
+        designer: (row) => EnvironmentDesigner(
+          model: EnvironmentModel.fixture(
+            name: row.name,
+            source: _settingsEnvSource,
+            builds: const EnvironmentBuilds(
+              versions: [
+                EnvironmentVersion(
+                  n: 3,
+                  detail: 'marshal-ws/go-service:3',
+                  state: 'ok',
+                ),
+              ],
+              poolSize: 2,
+              poolIdle: 1,
+              poolStarting: 0,
+              coldMs: 24000,
+              warmMs: 1800,
+              sizeBytes: 734003200,
+            ),
+          ),
+        ),
+      ),
       SettingsSectionKind.connections: (state) =>
           ConnectionsSection(model: connections, state: state),
       SettingsSectionKind.models: (state) =>
@@ -729,6 +778,23 @@ Widget _settings({int section = 0, StateKind? state}) {
     },
   );
 }
+
+/// The source the Settings fixture's designer shows: two layers and a setup
+/// command, so the panel has facts to report.
+const _settingsEnvSource = '''[workspace]
+name = "go-service"
+base = "ubuntu:24.04"
+toolchains = ["go@1.24"]
+
+[packages]
+go = ["golang.org/x/tools/gopls@latest"]
+
+[network]
+mode = "allowlist"
+
+[setup]
+run = "go mod download"
+''';
 
 /// One template's parsed document, as the Environments fixture shows it.
 const _settingsEnvLoaded = EnvLoaded(
@@ -893,6 +959,13 @@ final screens = <ScreenCase>[
     states: {
       for (final kind in requiredStates)
         kind: () => _settings(section: 0, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'settings · environment designer',
+    ready: () => _designer(),
+    states: {
+      for (final kind in requiredStates) kind: () => _designer(state: kind),
     },
   ),
   ScreenCase(

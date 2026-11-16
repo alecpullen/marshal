@@ -9,15 +9,25 @@ import 'builds_view.dart';
 /// templates — name, contents in one line, version and use — with the builds
 /// behind each and the import that starts a draft.
 class EnvironmentsSection extends StatelessWidget {
-  const EnvironmentsSection({super.key, required this.model, this.state});
+  const EnvironmentsSection({
+    super.key,
+    required this.model,
+    this.state,
+    this.designer,
+  });
 
   final EnvironmentsModel model;
 
   /// The state the shell knows, when it knows more than the model does.
   final StateKind? state;
 
+  /// Builds the designer for one template (F7 decision 6). Null leaves the
+  /// detail as what the template is, with its builds.
+  final Widget Function(EnvironmentRow row)? designer;
+
   @override
   Widget build(BuildContext context) {
+    final designer = this.designer;
     return SectionPage<EnvironmentRow>(
       title: 'Environments',
       subtitle: 'The containers agents run in, and the builds behind them',
@@ -34,7 +44,9 @@ class EnvironmentsSection extends StatelessWidget {
         value: row.value,
         onTap: onTap,
       ),
-      detail: (context, row) => _TemplateDetail(model: model, row: row),
+      detail: (context, row) => designer == null
+          ? _TemplateDetail(model: model, row: row)
+          : designer(row),
     );
   }
 

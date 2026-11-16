@@ -47,6 +47,7 @@ class EnvironmentBuilds {
     required this.poolStarting,
     required this.coldMs,
     required this.warmMs,
+    required this.sizeBytes,
   });
 
   final List<EnvironmentVersion> versions;
@@ -55,6 +56,9 @@ class EnvironmentBuilds {
   final int poolStarting;
   final int coldMs;
   final int warmMs;
+
+  /// The newest build's size, or 0 before one exists.
+  final int sizeBytes;
 }
 
 /// One build's log, streamed from its event route.
@@ -241,6 +245,9 @@ class EnvironmentsModel extends SectionModel<EnvironmentRow> {
       poolStarting: builds.pool.starting,
       coldMs: builds.starts.coldMs,
       warmMs: builds.starts.warmMs,
+      sizeBytes: builds.versions.isEmpty
+          ? 0
+          : builds.versions.last.sizeBytes ?? 0,
     );
   }
 

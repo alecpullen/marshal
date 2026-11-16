@@ -187,10 +187,14 @@ type PlannerCreateRequest struct {
 	Mode          string `json:"mode,omitempty"`
 }
 
-// PlannerPromptRequest is the POST /api/planners/{id}/prompt body.
+// PlannerPromptRequest is the POST /api/planners/{id}/prompt body. Context is
+// the additional bounded text a user supplied alongside the prompt (see the
+// planner's context briefing): it is composed into the dispatched text after
+// the prompt's own text, and the journal keeps only its hash and length.
 type PlannerPromptRequest struct {
 	RequestID string `json:"requestId"`
 	Text      string `json:"text"`
+	Context   string `json:"context,omitempty"`
 }
 
 // PlannerAnswerRequest is the POST /api/planners/{id}/requests/{requestId}
@@ -215,4 +219,127 @@ type PlannerEvent struct {
 	Kind      string          `json:"kind"`
 	Data      json.RawMessage `json:"data,omitempty"`
 	Truncated bool            `json:"truncated,omitempty"`
+}
+
+// The snapshot shapes below are what a planner handoff freezes for review. A
+// snapshot is the user's own selection, captured once and never rewritten: the
+// bridge stores the bytes, and the hashes are what a reviewer holds the review
+// to. PlannerArtifact above is a reference a planner record carries; a
+// PlannerSnapshotArtifact is captured text, which is why the two are separate
+// types.
+
+// PlannerSnapshotArtifact is one piece of text a snapshot froze: the plan or
+// the spec the user approved. Its content is stored with the snapshot record
+// and its SHA256 is verified on every read, so a review never shows bytes that
+// differ from the hash it reports.
+type PlannerSnapshotArtifact struct {
+	Kind    string `json:"kind"`
+	Content string `json:"content"`
+	SHA256  string `json:"sha256"`
+}
+
+// SelectedFile is one repository-relative file a snapshot captured. Path is a
+// slash path relative to the planner's workspace root, never a host path, and
+// Operation is exactly create, modify or delete.
+type SelectedFile struct {
+	Path          string `json:"path"`
+	Operation     string `json:"operation"`
+	BaseSHA256    string `json:"baseSha256,omitempty"`
+	ContentSHA256 string `json:"contentSha256,omitempty"`
+	Executable    bool   `json:"executable"`
+}
+
+// EditSnapshot is the hashed core of a snapshot: the base commit it was taken
+// against and the files it froze, in the order the caller selected them. Its
+// SHA256 is the digest of exactly those two fields, so the same capture always
+// hashes the same way, whatever else the record carries.
+type EditSnapshot struct {
+	BaseCommit string         `json:"baseCommit"`
+	Files      []SelectedFile `json:"files"`
+	SHA256     string         `json:"sha256"`
+}
+
+// PlannerSnapshotRequest is the POST /api/planners/{id}/snapshots body: the
+// exact plan and spec text the user approved, and the repository-relative
+// paths they selected. An empty Paths list is a documents-only snapshot.
+type PlannerSnapshotRequest struct {
+	Plan  string   `json:"plan"`
+	Spec  string   `json:"spec"`
+	Paths []string `json:"paths"`
+}
+
+// PlannerRejection names one path a capture refused and why. A selected path
+// is either captured or reported here; it is never silently dropped.
+type PlannerRejection struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
+}
+
+// PlannerSnapshotFile is one captured file as a review reports it: the frozen
+// metadata plus its diff against the base commit. The diff is the text that
+// was built at capture time, so the review still works after the workspace it
+// came from is gone.
+type PlannerSnapshotFile struct {
+	SelectedFile
+	Diff string `json:"diff"`
+}
+
+// PlannerSnapshotView is a snapshot as the routes report it. It carries no
+// absolute host path: every path in it is the repository-relative one the
+// caller selected.
+type PlannerSnapshotView struct {
+	ID         string                    `json:"id"`
+	SHA256     string                    `json:"sha256"`
+	BaseCommit string                    `json:"baseCommit"`
+	Artifacts  []PlannerSnapshotArtifact `json:"artifacts"`
+	Files      []PlannerSnapshotFile     `json:"files"`
+	CreatedAt  time.Time                 `json:"createdAt"`
+}
+
+// PlannerSnapshotReply is what a capture answers: the snapshot it froze and
+// the paths it refused.
+type PlannerSnapshotReply struct {
+	PlannerSnapshotView
+	Rejected []PlannerRejection `json:"rejected"`
+}
+
+// PlannerContextArtifact is one artifact source a briefing found. Approved is
+// true only for text a user captured in a snapshot; a reference the planner
+// record merely names is reported as unapproved, carrying no captured content
+// and no hash this bridge can vouch for.
+type PlannerContextArtifact struct {
+	Kind       string `json:"kind"`
+	SHA256     string `json:"sha256,omitempty"`
+	Source     string `json:"source"`
+	Approved   bool   `json:"approved"`
+	SnapshotID string `json:"snapshotId,omitempty"`
+	Ref        string `json:"ref,omitempty"`
+}
+
+// PlannerContextDecision is one settled agent request a briefing reports, with
+// the request it came from as its source.
+type PlannerContextDecision struct {
+	Source    string    `json:"source"`
+	RequestID string    `json:"requestId"`
+	Method    string    `json:"method,omitempty"`
+	State     string    `json:"state"`
+	At        time.Time `json:"at"`
+}
+
+// PlannerContextQuestion is one recorded question that is still unresolved.
+type PlannerContextQuestion struct {
+	Source    string    `json:"source"`
+	RequestID string    `json:"requestId"`
+	Method    string    `json:"method,omitempty"`
+	State     string    `json:"state"`
+	At        time.Time `json:"at"`
+}
+
+// PlannerContextView is the bounded briefing a planner record supports. Absent
+// names the sources it does not hold: nothing here is invented to fill one in.
+type PlannerContextView struct {
+	Artifacts  []PlannerContextArtifact `json:"artifacts"`
+	Decisions  []PlannerContextDecision `json:"decisions"`
+	Unresolved []PlannerContextQuestion `json:"unresolved"`
+	Absent     []string                 `json:"absent"`
 }

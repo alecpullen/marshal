@@ -89,6 +89,23 @@ type PlannerService struct {
 	// now is the clock, so a test can age a heartbeat without sleeping.
 	now func() time.Time
 
+	// The snapshot seams. Capture reads one selected file twice and refuses it
+	// if it changed, so readFile is the hook a test uses to make a file change
+	// under the capture instead of racing a real one. The git hooks resolve the
+	// base commit, its contents and the repository's own ignore rules. Only
+	// readFile has a default that does not need git; a nil git hook refuses the
+	// capture rather than inventing a base.
+	readFile func(path string) ([]byte, os.FileInfo, error)
+	gitHead  func(ctx context.Context, dir string) (string, error)
+	// gitBaseFile reads one repository-relative path at commit; exists is false
+	// when that commit does not hold the path.
+	gitBaseFile func(ctx context.Context, dir, commit, rel string) ([]byte, bool, error)
+	// gitIgnored reports whether an untracked path is ignored by the repository.
+	gitIgnored func(ctx context.Context, dir, rel string) (bool, error)
+	// beforeBlobWrite runs before each blob write, so a test can cancel a
+	// capture at an observable point instead of racing a sleep.
+	beforeBlobWrite func()
+
 	mu       sync.Mutex
 	planners map[string]*plannerInstance
 }
@@ -141,6 +158,10 @@ func newPlannerService(fleet *Fleet, stateDir string) *PlannerService {
 		provisionWorkspace: plannerGitWorkspace(fleet, stateDir),
 	}
 	svc.backendFor = newPlannerACPBackend
+	svc.readFile = plannerSnapshotReadFile
+	svc.gitHead = plannerGitHead(fleet)
+	svc.gitBaseFile = plannerGitBaseFile(fleet)
+	svc.gitIgnored = plannerGitIgnored(fleet)
 	svc.recover()
 	return svc
 }
@@ -830,10 +851,20 @@ func (inst *plannerInstance) prompt(req PlannerPromptRequest) (PlannerTurnReply,
 	if strings.TrimSpace(req.Text) == "" {
 		return PlannerTurnReply{}, fmt.Errorf("%w: text is required", errPlannerInvalid)
 	}
-	if len(req.Text) > plannerMaxPromptText {
+	extra := strings.TrimSpace(req.Context)
+	if len(extra) > plannerSnapshotContextLimit {
+		return PlannerTurnReply{}, fmt.Errorf("%w: context exceeds %d bytes", errPlannerInvalid, plannerSnapshotContextLimit)
+	}
+	// Additional text the user supplied follows the prompt's own text: the
+	// planner sees one message, and the journal below keeps only its hash.
+	text := req.Text
+	if extra != "" {
+		text = req.Text + "\n\n" + extra
+	}
+	if len(text) > plannerMaxPromptText {
 		return PlannerTurnReply{}, fmt.Errorf("%w: text exceeds %d bytes", errPlannerInvalid, plannerMaxPromptText)
 	}
-	textHash := plannerTextHash(req.Text)
+	textHash := plannerTextHash(text)
 
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
@@ -884,15 +915,40 @@ func (inst *plannerInstance) prompt(req PlannerPromptRequest) (PlannerTurnReply,
 	// The turn owns its context: closing the HTTP connection cancels nothing.
 	ctx, cancel := context.WithCancel(context.Background())
 	inst.turnCancel = cancel
-	backend, session, text := inst.backend, inst.session, req.Text
-	go inst.runTurn(ctx, backend, session, requestID, text)
+	backend, session := inst.backend, inst.session
+	dispatch := plannerTurnDispatch{
+		TextHash:     textHash,
+		TextBytes:    len(text),
+		ContextHash:  plannerTextHash(extra),
+		ContextBytes: len(extra),
+	}
+	go inst.runTurn(ctx, backend, session, requestID, text, dispatch)
 	return PlannerTurnReply{RequestID: requestID, State: plannerTurnDispatched}, nil
+}
+
+// plannerTurnDispatch is what the journal records about one dispatched prompt:
+// a hash and a length for the text and for the additional context the user
+// supplied, never either text itself.
+type plannerTurnDispatch struct {
+	TextHash     string
+	TextBytes    int
+	ContextHash  string
+	ContextBytes int
 }
 
 // runTurn drives one dispatched turn and records what actually happened. It
 // never retries: a turn whose outcome the backend could not observe is
 // unknown, because it may already have changed the workspace.
-func (inst *plannerInstance) runTurn(ctx context.Context, backend WorkerBackend, session, requestID, text string) {
+func (inst *plannerInstance) runTurn(ctx context.Context, backend WorkerBackend, session, requestID, text string, dispatch plannerTurnDispatch) {
+	// The journal identifies the turn without holding the prompt: a replay of
+	// the journal can prove which text was sent, not leak it.
+	inst.appendEvent("turn.prompt", map[string]any{
+		"requestId":    requestID,
+		"textHash":     dispatch.TextHash,
+		"textBytes":    dispatch.TextBytes,
+		"contextHash":  dispatch.ContextHash,
+		"contextBytes": dispatch.ContextBytes,
+	})
 	inst.setTurnState(requestID, plannerTurnRunning, "", "")
 	result, err := backend.Prompt(ctx, session, text)
 	switch {
@@ -1024,6 +1080,9 @@ func (svc *PlannerService) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/planners/{id}/requests/{requestId}", svc.handleAnswer)
 	mux.HandleFunc("GET /api/planners/{id}/events", svc.handleEvents)
 	mux.HandleFunc("DELETE /api/planners/{id}", svc.handleEnd)
+	mux.HandleFunc("POST /api/planners/{id}/snapshots", svc.handleCreateSnapshot)
+	mux.HandleFunc("GET /api/planners/{id}/snapshots/{snapshotId}", svc.handleSnapshot)
+	mux.HandleFunc("GET /api/planners/{id}/context", svc.handleContext)
 }
 
 func (svc *PlannerService) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -1141,9 +1200,10 @@ func writePlannerError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, errPlannerOccupancy), errors.Is(err, errPlannerBusy),
 		errors.Is(err, errPlannerModeUnconfirmed), errors.Is(err, errPlannerUnknownTurn),
-		errors.Is(err, errPlannerRequestSettled), errors.Is(err, errPlannerNotLive):
+		errors.Is(err, errPlannerRequestSettled), errors.Is(err, errPlannerNotLive),
+		errors.Is(err, errPlannerFileChanged):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
-	case errors.Is(err, errPlannerUnavailable):
+	case errors.Is(err, errPlannerUnavailable), errors.Is(err, errPlannerSnapshotCorrupt):
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	default:
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})

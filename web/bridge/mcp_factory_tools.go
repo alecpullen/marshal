@@ -24,6 +24,12 @@ const (
 	factoryToolUpdateDraft     = "factory_update_draft"
 	factoryToolApproveAndQueue = "factory_approve_and_queue"
 	factoryToolAnswerQuestion  = "factory_answer_question"
+	// The plan-revision tools. A proposal's assessment is a two-step
+	// handshake — claim, then deliver — so a client that disappears between
+	// the two leaves a journalled attempt rather than an unrecorded one.
+	factoryToolRevisionPending = "factory_revision_pending"
+	factoryToolRevisionClaim   = "factory_revision_claim"
+	factoryToolRevisionAssess  = "factory_revision_assess"
 )
 
 // factoryAuthorityDelegated is the one answer authority that is not a stored
@@ -97,7 +103,8 @@ func factoryFailureOf(err error) factoryToolFailure {
 func (s *Server) factoryToolCall(w http.ResponseWriter, r *http.Request, c MCPClient, id json.RawMessage, name string, args json.RawMessage) bool {
 	switch name {
 	case factoryToolProjects, factoryToolList, factoryToolGet, factoryToolCreateDraft,
-		factoryToolUpdateDraft, factoryToolApproveAndQueue, factoryToolAnswerQuestion:
+		factoryToolUpdateDraft, factoryToolApproveAndQueue, factoryToolAnswerQuestion,
+		factoryToolRevisionPending, factoryToolRevisionClaim, factoryToolRevisionAssess:
 	default:
 		return false
 	}
@@ -122,6 +129,12 @@ func (s *Server) factoryToolCall(w http.ResponseWriter, r *http.Request, c MCPCl
 		s.factoryToolApproveAndQueue(w, r, c, id, args)
 	case factoryToolAnswerQuestion:
 		s.factoryToolAnswerQuestion(w, r, c, id, args)
+	case factoryToolRevisionPending:
+		s.factoryToolRevisionPending(w, c, id, args)
+	case factoryToolRevisionClaim:
+		s.factoryToolRevisionClaim(w, r, c, id, args)
+	case factoryToolRevisionAssess:
+		s.factoryToolRevisionAssess(w, r, c, id, args)
 	}
 	return true
 }
@@ -427,6 +440,233 @@ func (s *Server) factoryToolAnswerQuestion(w http.ResponseWriter, r *http.Reques
 	writeFactoryToolResult(w, id, factoryToolStored(a.ProjectID, s.factoryToolLink(saved.ID), saved))
 }
 
+// factoryToolRevisionPending lists the proposals of one project whose
+// assessment is waiting for a planner: the attempt intent, the candidate it is
+// bound to and the item version to act against. It requires the read and
+// assessPlanChanges capabilities, and it contacts no planner itself.
+func (s *Server) factoryToolRevisionPending(w http.ResponseWriter, c MCPClient, id json.RawMessage, args json.RawMessage) {
+	var a factoryToolProjectArgs
+	if err := decodeFactoryToolArgs(args, &a); err != nil {
+		writeFactoryToolFailure(w, id, factoryFailureOf(err))
+		return
+	}
+	root, err := s.factoryToolRevisionRoot(c.ID, a.ProjectID)
+	if err != nil {
+		writeFactoryToolFailure(w, id, factoryFailureOf(err))
+		return
+	}
+	proposals := []factoryToolRevisionPendingView{}
+	for _, item := range s.factory.List() {
+		if item.ProjectRoot != root {
+			continue
+		}
+		// The grant scopes the project; the client's repository allowlist
+		// scopes the items inside it, exactly as every other factory read does.
+		if err := s.factoryAuth.AuthorizeAssessPlanChanges(c.ID, a.ProjectID, item.RepoID); err != nil {
+			continue
+		}
+		for _, p := range item.Proposals {
+			if !factoryRevisionAssessmentAwaiting(p) {
+				continue
+			}
+			proposals = append(proposals, factoryToolRevisionPendingView{
+				ItemID: item.ID, ItemVersion: item.Version,
+				ProposalID: p.ID, ProposalVersion: p.Version,
+				CandidateHash: p.CandidateHash, BaseRevision: p.BaseRevision,
+				AttemptID: p.AssessmentAttemptID, AutoAssess: p.AutoAssess,
+				UpdatedAt: p.UpdatedAt,
+			})
+		}
+	}
+	sort.Slice(proposals, func(i, j int) bool {
+		if !proposals[i].UpdatedAt.Equal(proposals[j].UpdatedAt) {
+			return proposals[i].UpdatedAt.After(proposals[j].UpdatedAt)
+		}
+		return proposals[i].ProposalID < proposals[j].ProposalID
+	})
+	writeFactoryToolResult(w, id, map[string]any{
+		"projectId": a.ProjectID, "proposals": proposals, "total": len(proposals),
+	})
+}
+
+// factoryToolRevisionClaim journals this client's claim on one proposal's
+// assessment attempt and returns the assignment it is to judge. The claim is
+// durable before the tool answers, so a client that disappears while assessing
+// leaves an attempt the journal knows about.
+func (s *Server) factoryToolRevisionClaim(w http.ResponseWriter, r *http.Request, c MCPClient, id json.RawMessage, args json.RawMessage) {
+	var a factoryToolRevisionClaimArgs
+	if err := decodeFactoryToolArgs(args, &a); err != nil {
+		writeFactoryToolFailure(w, id, factoryFailureOf(err))
+		return
+	}
+	if msg := a.validate(); msg != "" {
+		writeFactoryToolFailure(w, id, factoryToolFailure{Code: factoryCodeInvalidInput, Message: msg})
+		return
+	}
+	root, err := s.factoryToolMutationRoot(a.ProjectID)
+	if err != nil {
+		writeFactoryToolFailure(w, id, factoryFailureOf(err))
+		return
+	}
+	item, err := s.factoryToolActionable(a.ItemID, root)
+	if err != nil {
+		writeFactoryToolFailure(w, id, factoryFailureOf(err))
+		return
+	}
+	cmd := FactoryCommand{
+		RequestID: a.RequestID, Kind: "revision_assess_claim", ExpectedVersion: a.ExpectedVersion,
+		Revision: &FactoryRevisionCommand{ProposalID: a.ProposalID, ProposalVersion: a.ProposalVersion, AttemptID: a.AttemptID},
+	}
+	saved, err := s.factoryAuth.WithAuthorizedMutation(c.ID, a.ProjectID, item.RepoID, factoryCapabilityAssessPlanChanges, func() (FactoryItem, error) {
+		return s.factory.CommandAuthorized(r.Context(), a.ItemID, cmd,
+			factoryToolPrincipal(c.ID, a.ProjectID, factoryCapabilityAssessPlanChanges, a.RequestID, ""))
+	})
+	if err != nil {
+		writeFactoryToolFailure(w, id, factoryFailureOf(err))
+		return
+	}
+	assignment, err := factoryToolRevisionAssignment(a.ProjectID, saved, a.ProposalID)
+	if err != nil {
+		writeFactoryToolFailure(w, id, factoryFailureOf(err))
+		return
+	}
+	writeFactoryToolResult(w, id, assignment)
+}
+
+// factoryToolRevisionAssess delivers the assessment the claiming client
+// produced. Routine authorization is decided under the policy lock by the
+// authorizer and journalled with the result; a classification this client may
+// not act on is recorded and left for an authenticated Studio user.
+func (s *Server) factoryToolRevisionAssess(w http.ResponseWriter, r *http.Request, c MCPClient, id json.RawMessage, args json.RawMessage) {
+	var a factoryToolRevisionAssessArgs
+	if err := decodeFactoryToolArgs(args, &a); err != nil {
+		writeFactoryToolFailure(w, id, factoryFailureOf(err))
+		return
+	}
+	if msg := a.factoryToolRevisionClaimArgs.validate(); msg != "" {
+		writeFactoryToolFailure(w, id, factoryToolFailure{Code: factoryCodeInvalidInput, Message: msg})
+		return
+	}
+	// The assertion is decoded strictly as the journal stores it: a field this
+	// bridge does not read — an authority, a status — is refused rather than
+	// ignored, so no client can talk itself into authority.
+	var assessment FactoryRevisionAssessment
+	if err := decodeFactoryToolArgs(a.Assessment, &assessment); err != nil {
+		writeFactoryToolFailure(w, id, factoryToolFailure{Code: factoryCodeInvalidInput, Message: "assessment must be an assessment object"})
+		return
+	}
+	root, err := s.factoryToolMutationRoot(a.ProjectID)
+	if err != nil {
+		writeFactoryToolFailure(w, id, factoryFailureOf(err))
+		return
+	}
+	item, err := s.factoryToolActionable(a.ItemID, root)
+	if err != nil {
+		writeFactoryToolFailure(w, id, factoryFailureOf(err))
+		return
+	}
+	cmd := FactoryCommand{
+		RequestID: a.RequestID, Kind: "revision_assess_result", ExpectedVersion: a.ExpectedVersion,
+		Revision: &FactoryRevisionCommand{
+			ProposalID: a.ProposalID, ProposalVersion: a.ProposalVersion, AttemptID: a.AttemptID,
+			CandidateHash: assessment.CandidateHash, BaseRevision: assessment.BaseRevision,
+			Assessment: &assessment,
+		},
+	}
+	saved, err := s.factoryAuth.WithAuthorizedRevisionAssessment(c.ID, a.ProjectID, item.RepoID, func(routine bool) (FactoryItem, error) {
+		p := factoryToolPrincipal(c.ID, a.ProjectID, factoryCapabilityAssessPlanChanges, a.RequestID, "")
+		if routine {
+			// One of the four facts the authorizer rechecked under the policy
+			// lock, and the only way this authority is ever set.
+			p.Authority = factoryAuthorityRoutineRevision
+		}
+		return s.factory.CommandAuthorized(r.Context(), a.ItemID, cmd, p)
+	})
+	if err != nil {
+		writeFactoryToolFailure(w, id, factoryFailureOf(err))
+		return
+	}
+	writeFactoryToolResult(w, id, factoryToolRevisionAssessed(a.ProjectID, s.factoryToolLink(saved.ID), saved, a.ProposalID))
+}
+
+// factoryToolRevisionRoot resolves the project a plan-revision read names and
+// requires both the read and the assessment capability. A client holding one
+// but not the other is told nothing about the project rather than shown an
+// empty list.
+func (s *Server) factoryToolRevisionRoot(clientID, projectID string) (string, error) {
+	root, err := s.factoryToolRoot(clientID, projectID)
+	if err != nil {
+		return "", err
+	}
+	state, err := s.factoryAuth.grantState(clientID, projectID)
+	if err != nil || !s.factoryAuth.grantAllows(state.Grant, factoryCapabilityAssessPlanChanges) {
+		return "", errFactoryDenied
+	}
+	return root, nil
+}
+
+// factoryToolRevisionAssignment projects the assignment one claim returned:
+// the journal's candidate and base, the approved revision it was written
+// against, and the work running now. Nothing here is client supplied.
+func factoryToolRevisionAssignment(projectID string, i FactoryItem, proposalID string) (factoryToolRevisionAssignmentView, error) {
+	for n := range i.Proposals {
+		p := i.Proposals[n]
+		if p.ID != proposalID {
+			continue
+		}
+		view := factoryToolRevisionAssignmentView{
+			ProjectID: projectID, ItemID: i.ID, ItemVersion: i.Version,
+			ProposalID: p.ID, ProposalVersion: p.Version, AttemptID: p.AssessmentAttemptID,
+			BaseRevision: p.BaseRevision, CandidateHash: p.CandidateHash,
+			ApprovedPlan: "", ApprovedSpec: "", ProposedPlan: p.Plan, ProposedSpec: p.Spec,
+		}
+		if len(i.Approvals) > 0 {
+			active := i.Approvals[len(i.Approvals)-1]
+			view.ApprovedPlan, view.ApprovedSpec = active.Plan, active.Spec
+		}
+		if e := factoryLastEffect(i); e != nil {
+			view.EffectID = e.ID
+		}
+		for w := len(i.Workers) - 1; w >= 0; w-- {
+			if !i.Workers[w].Parked {
+				view.WorkerID = i.Workers[w].AgentID
+				break
+			}
+		}
+		return view, nil
+	}
+	return factoryToolRevisionAssignmentView{}, ErrFactoryNotFound
+}
+
+// factoryToolRevisionAssessed projects the result of one delivered assessment.
+func factoryToolRevisionAssessed(projectID, link string, i FactoryItem, proposalID string) factoryToolRevisionAssessedView {
+	view := factoryToolRevisionAssessedView{ProjectID: projectID, ItemID: i.ID, ItemVersion: i.Version, ProposalID: proposalID, Link: link}
+	for n := range i.Proposals {
+		p := i.Proposals[n]
+		if p.ID != proposalID {
+			continue
+		}
+		view.ProposalVersion = p.Version
+		view.Status = p.Status
+		view.AssessmentState = p.AssessmentState
+		view.AttemptID = p.AssessmentAttemptID
+		view.Routing = p.Routing
+		view.Authority = p.Authority
+		view.PauseState = p.PauseState
+		if a := p.Assessment; a != nil {
+			view.Classification = a.Classification
+			view.Recommendation = a.Recommendation
+			view.Strategy = a.Strategy
+			view.Reason = factoryToolClip(a.Reason, factoryToolTextLimit)
+			view.AssessorID = a.AssessorID
+			view.AffectedEffectID = a.AffectedEffectID
+			view.AffectedWorkerID = a.AffectedWorkerID
+		}
+		break
+	}
+	return view
+}
+
 // factoryToolRoot resolves the project a read names and checks the read
 // capability that gates it. An unknown project and a project this client holds
 // nothing on are one answer, and no root leaves this function.
@@ -662,6 +902,66 @@ func factoryToolStored(projectID, link string, item FactoryItem) factoryToolStor
 	}
 }
 
+// factoryToolRevisionPendingView is one proposal whose assessment is waiting
+// for a planner.
+type factoryToolRevisionPendingView struct {
+	ItemID          string    `json:"itemId"`
+	ItemVersion     uint64    `json:"itemVersion"`
+	ProposalID      string    `json:"proposalId"`
+	ProposalVersion uint64    `json:"proposalVersion"`
+	CandidateHash   string    `json:"candidateHash"`
+	BaseRevision    uint64    `json:"baseRevision"`
+	AttemptID       string    `json:"attemptId"`
+	AutoAssess      bool      `json:"autoAssess"`
+	UpdatedAt       time.Time `json:"updatedAt"`
+}
+
+// factoryToolRevisionAssignmentView is what one claim hands back: the exact
+// candidate and base it is bound to, the approved revision it was written
+// against, and the work running now.
+type factoryToolRevisionAssignmentView struct {
+	ProjectID       string `json:"projectId"`
+	ItemID          string `json:"itemId"`
+	ItemVersion     uint64 `json:"itemVersion"`
+	ProposalID      string `json:"proposalId"`
+	ProposalVersion uint64 `json:"proposalVersion"`
+	AttemptID       string `json:"attemptId"`
+	BaseRevision    uint64 `json:"baseRevision"`
+	CandidateHash   string `json:"candidateHash"`
+	ApprovedPlan    string `json:"approvedPlan"`
+	ApprovedSpec    string `json:"approvedSpec"`
+	ProposedPlan    string `json:"proposedPlan"`
+	ProposedSpec    string `json:"proposedSpec"`
+	EffectID        string `json:"effectId,omitempty"`
+	WorkerID        string `json:"workerId,omitempty"`
+}
+
+// factoryToolRevisionAssessedView is the result of one delivered assessment:
+// what was recorded, and the state the proposal moved to — which authority
+// authorized it, if any, and whether a pause is recorded (a recommendation
+// never is).
+type factoryToolRevisionAssessedView struct {
+	ProjectID        string `json:"projectId"`
+	ItemID           string `json:"itemId"`
+	ItemVersion      uint64 `json:"itemVersion"`
+	ProposalID       string `json:"proposalId"`
+	ProposalVersion  uint64 `json:"proposalVersion"`
+	Status           string `json:"status"`
+	AssessmentState  string `json:"assessmentState"`
+	AttemptID        string `json:"attemptId"`
+	Classification   string `json:"classification"`
+	Recommendation   string `json:"recommendation"`
+	Strategy         string `json:"strategy"`
+	Routing          string `json:"routing,omitempty"`
+	Authority        string `json:"authority,omitempty"`
+	PauseState       string `json:"pauseState,omitempty"`
+	Reason           string `json:"reason,omitempty"`
+	AssessorID       string `json:"assessorId"`
+	AffectedEffectID string `json:"affectedEffectId,omitempty"`
+	AffectedWorkerID string `json:"affectedWorkerId,omitempty"`
+	Link             string `json:"link"`
+}
+
 // factoryToolConfigView removes the fields a client may not see.
 func factoryToolConfigView(c FactoryConfig) FactoryConfig {
 	c.ProjectRoot = ""
@@ -740,9 +1040,10 @@ func factoryToolClip(s string, limit int) string {
 }
 
 // factoryToolProjectArgs, factoryToolItemArgs, factoryToolCreateArgs,
-// factoryToolUpdateArgs, factoryToolApproveArgs and factoryToolAnswerArgs are
-// the argument shapes of the seven tools. They are separate types because a
-// field one tool does not take must be refused by it, not ignored.
+// factoryToolUpdateArgs, factoryToolApproveArgs, factoryToolAnswerArgs and the
+// two revision shapes are the argument shapes of the ten tools. They are
+// separate types because a field one tool does not take must be refused by it,
+// not ignored.
 type factoryToolProjectArgs struct {
 	ProjectID string `json:"projectId"`
 }
@@ -788,6 +1089,48 @@ type factoryToolAnswerArgs struct {
 	DecisionID      string `json:"decisionId"`
 	Answer          string `json:"answer"`
 	Authority       string `json:"authority"`
+}
+
+// factoryToolRevisionClaimArgs is the argument shape the claim tool takes, and
+// the shape the assess tool repeats: an assessment answers the assignment a
+// claim named, so both name the same item, proposal, proposal version and
+// attempt. Neither takes an authority or a state — what the claim is admitted
+// under comes from the stored grant, never from the caller.
+type factoryToolRevisionClaimArgs struct {
+	ProjectID       string `json:"projectId"`
+	ItemID          string `json:"itemId"`
+	RequestID       string `json:"requestId"`
+	ExpectedVersion uint64 `json:"expectedVersion"`
+	ProposalID      string `json:"proposalId"`
+	ProposalVersion uint64 `json:"proposalVersion"`
+	AttemptID       string `json:"attemptId"`
+}
+
+// factoryToolRevisionAssessArgs is that shape plus the assessment a planner
+// produced.
+type factoryToolRevisionAssessArgs struct {
+	factoryToolRevisionClaimArgs
+	Assessment json.RawMessage `json:"assessment"`
+}
+
+// validate reports the first required argument this shape is missing, so both
+// tools answer the same way about the same arguments.
+func (a factoryToolRevisionClaimArgs) validate() string {
+	switch {
+	case strings.TrimSpace(a.ItemID) == "":
+		return "itemId is required"
+	case strings.TrimSpace(a.RequestID) == "":
+		return "requestId is required"
+	case a.ExpectedVersion == 0:
+		return "expectedVersion is required"
+	case strings.TrimSpace(a.ProposalID) == "":
+		return "proposalId is required"
+	case a.ProposalVersion == 0:
+		return "proposalVersion is required"
+	case strings.TrimSpace(a.AttemptID) == "":
+		return "attemptId is required"
+	}
+	return ""
 }
 
 // decodeFactoryToolArgs decodes one tool's arguments strictly: unknown fields,
@@ -861,7 +1204,7 @@ func writeFactoryToolFailure(w http.ResponseWriter, id json.RawMessage, failure 
 	}, nil)
 }
 
-// factoryMCPToolDefinitions returns the seven factory tools. Each accepts only
+// factoryMCPToolDefinitions returns the ten factory tools. Each accepts only
 // the arguments it is documented with: the schema is what a client validates
 // against, and the decoder refuses anything else.
 func factoryMCPToolDefinitions() []map[string]any {
@@ -896,6 +1239,14 @@ func factoryMCPToolDefinitions() []map[string]any {
 			"required": []string{"repoId"},
 		},
 	}
+	revisionArgs := map[string]any{
+		"projectId": projectID, "itemId": itemID, "requestId": requestID,
+		"expectedVersion": expectedVersion,
+		"proposalId":      map[string]any{"type": "string", "description": "Opaque proposal id from factory_revision_pending"},
+		"proposalVersion": map[string]any{"type": "integer", "minimum": 1, "description": "The proposal version this request was made against"},
+		"attemptId":       map[string]any{"type": "string", "description": "The assessment attempt the journal recorded, as factory_revision_pending or the claim reported it"},
+	}
+	revisionRequired := []string{"projectId", "itemId", "requestId", "expectedVersion", "proposalId", "proposalVersion", "attemptId"}
 	return []map[string]any{
 		{
 			"name":        factoryToolProjects,
@@ -983,6 +1334,58 @@ func factoryMCPToolDefinitions() []map[string]any {
 				},
 				"required":             []string{"projectId", "itemId", "requestId", "expectedVersion", "decisionId", "answer", "authority"},
 				"additionalProperties": false,
+			},
+		},
+		{
+			"name":        factoryToolRevisionPending,
+			"description": "List one project's plan revisions whose assessment is waiting for a planner, with the candidate hash, base revision and attempt id each is bound to. Requires the read and assessPlanChanges capabilities.",
+			"inputSchema": map[string]any{
+				"type":                 "object",
+				"properties":           map[string]any{"projectId": projectID},
+				"required":             []string{"projectId"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			"name":        factoryToolRevisionClaim,
+			"description": "Claim one proposal's assessment attempt and receive the assignment to judge. The claim is journalled before this returns, so an attempt whose answer is lost stays uncertain until the user retries it. Requires the assessPlanChanges capability.",
+			"inputSchema": map[string]any{
+				"type":                 "object",
+				"properties":           revisionArgs,
+				"required":             revisionRequired,
+				"additionalProperties": false,
+			},
+		},
+		{
+			"name":        factoryToolRevisionAssess,
+			"description": "Deliver the assessment of the attempt this client claimed. A routine clarification is authorized only while the project delegates planners to this client and its grant carries approveRoutineRevision; anything else is recorded and left for the operator. Requires the assessPlanChanges capability.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"projectId": projectID, "itemId": itemID, "requestId": requestID,
+					"expectedVersion": expectedVersion,
+					"proposalId":      revisionArgs["proposalId"],
+					"proposalVersion": revisionArgs["proposalVersion"],
+					"attemptId":       revisionArgs["attemptId"],
+					"assessment": map[string]any{
+						"type":                 "object",
+						"description":          "The planner's judgement, bound to the exact candidate it judged",
+						"additionalProperties": false,
+						"properties": map[string]any{
+							"classification":   map[string]any{"type": "string", "enum": []string{"routine_clarification", "scope_change", "needs_user"}},
+							"reason":           map[string]any{"type": "string"},
+							"affectedEffectId": map[string]any{"type": "string", "description": "An effect this item already carries, if the planner believes one is affected"},
+							"affectedWorkerId": map[string]any{"type": "string", "description": "A worker this item already carries, if the planner believes one is affected"},
+							"recommendation":   map[string]any{"type": "string", "enum": []string{"amend", "follow_up"}},
+							"strategy":         map[string]any{"type": "string", "enum": []string{"wait_safe", "interrupt", "hold"}, "description": "A recommendation only: it interrupts nothing and claims no pause"},
+							"assessorId":       map[string]any{"type": "string"},
+							"candidateHash":    map[string]any{"type": "string", "description": "Must equal the candidate the claim named"},
+							"baseRevision":     map[string]any{"type": "integer", "minimum": 1, "description": "Must equal the base revision the claim named"},
+						},
+						"required": []string{"classification", "reason", "recommendation", "strategy", "assessorId", "candidateHash", "baseRevision"},
+					},
+				},
+				"required": append(append([]string{}, revisionRequired...), "assessment"),
 			},
 		},
 	}

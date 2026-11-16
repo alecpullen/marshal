@@ -19,7 +19,21 @@ const (
 	factoryCapabilityAnswerQuestion  = "answerQuestion"
 	factoryCapabilityDelegatedAnswer = "answerQuestion:delegated"
 	factoryCapabilityApproveAndQueue = "approveAndQueue"
+	// The plan-revision capabilities. assessPlanChanges admits a claim on one
+	// proposal's assessment and the result the claiming client delivers;
+	// approveRoutineRevision is one of the four facts that must hold, under
+	// the policy lock, before a routine clarification is authorized.
+	factoryCapabilityAssessPlanChanges      = "assessPlanChanges"
+	factoryCapabilityApproveRoutineRevision = "approveRoutineRevision"
 )
+
+// factoryAuthorityRoutineRevision is the authority an assessment result is
+// journalled under when the client delivering it may carry routine planner
+// authorization. It is never supplied by a caller: the authorizer sets it on
+// the server-authenticated principal while the policy lock is held, after
+// rechecking the grant, the project's delegation toggle and the designated
+// client.
+const factoryAuthorityRoutineRevision = "delegated_routine"
 
 // Approval authority values a stored grant may carry. The zero value is
 // none: a grant written without an authority authorizes no approval.
@@ -125,12 +139,24 @@ func (a *factoryMCPAuthorizer) authorityLocked(clientID, projectID string) strin
 
 // AuthorizeRead checks the read capability for one client/project/repo.
 func (a *factoryMCPAuthorizer) AuthorizeRead(clientID, projectID, repoID string) error {
+	return a.AuthorizeCapability(clientID, projectID, repoID, factoryCapabilityRead)
+}
+
+// AuthorizeAssessPlanChanges checks the plan-revision assessment capability for
+// one client/project/repo, the way the read-only revision views check it.
+func (a *factoryMCPAuthorizer) AuthorizeAssessPlanChanges(clientID, projectID, repoID string) error {
+	return a.AuthorizeCapability(clientID, projectID, repoID, factoryCapabilityAssessPlanChanges)
+}
+
+// AuthorizeCapability checks one capability under the policy lock, so a grant
+// change that arrives first is respected and one that arrives second waits.
+func (a *factoryMCPAuthorizer) AuthorizeCapability(clientID, projectID, repoID, capability string) error {
 	if a == nil {
 		return fmt.Errorf("%w: no workspace", ErrFactoryUnavailable)
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.authorizeLocked(clientID, projectID, repoID, factoryCapabilityRead)
+	return a.authorizeLocked(clientID, projectID, repoID, capability)
 }
 
 // authorizeLocked resolves the pair and checks one capability. The caller
@@ -186,7 +212,8 @@ func (a *factoryMCPAuthorizer) authorizeLocked(clientID, projectID, repoID, capa
 func (a *factoryMCPAuthorizer) validCapability(capability string) error {
 	switch capability {
 	case factoryCapabilityRead, factoryCapabilityCreateDraft, factoryCapabilityEditDraft,
-		factoryCapabilityAnswerQuestion, factoryCapabilityDelegatedAnswer, factoryCapabilityApproveAndQueue:
+		factoryCapabilityAnswerQuestion, factoryCapabilityDelegatedAnswer, factoryCapabilityApproveAndQueue,
+		factoryCapabilityAssessPlanChanges, factoryCapabilityApproveRoutineRevision:
 		return nil
 	}
 	return fmt.Errorf("%w: %q", errFactoryCapabilityUnsupported, capability)
@@ -212,8 +239,50 @@ func (a *factoryMCPAuthorizer) grantAllows(g MCPFactoryProjectGrant, capability 
 		// yes without one cannot approve, and an authority this bridge does not
 		// know (a hand-edited file) fails closed rather than being trusted.
 		return g.ApproveAndQueue && (g.ApprovalAuthority == factoryAuthorityUserDirected || g.ApprovalAuthority == factoryAuthorityStanding)
+	case factoryCapabilityAssessPlanChanges:
+		return g.AssessPlanChanges
+	case factoryCapabilityApproveRoutineRevision:
+		return g.ApproveRoutineRevision
 	}
 	return false
+}
+
+// WithAuthorizedRevisionAssessment authorizes one plan-revision assessment and
+// reports, while still holding the policy lock, whether that client may also
+// carry routine authorization for the result it delivers.
+//
+// Both answers come from the store as it stands under the lock, so a revoked
+// grant, a delegation toggle or a changed designated client either lands
+// entirely before this operation was admitted or entirely after its journal
+// append committed. Nothing is cached and nothing is taken from the caller.
+func (a *factoryMCPAuthorizer) WithAuthorizedRevisionAssessment(clientID, projectID, repoID string, fn func(routine bool) (FactoryItem, error)) (FactoryItem, error) {
+	if fn == nil {
+		return FactoryItem{}, fmt.Errorf("%w: no mutation to authorize", errFactoryDenied)
+	}
+	return a.withAuthorizedMutation(clientID, projectID, repoID, factoryCapabilityAssessPlanChanges,
+		func(string) (FactoryItem, error) {
+			return fn(a.routineRevisionLocked(clientID, projectID))
+		})
+}
+
+// routineRevisionLocked reports whether routine planner authorization is
+// delegated to this client right now: its grant carries approveRoutineRevision,
+// the project turns planner delegation on, and the project names this very
+// client as the designated one. The caller holds the policy lock.
+func (a *factoryMCPAuthorizer) routineRevisionLocked(clientID, projectID string) bool {
+	if a == nil || a.ws == nil || strings.TrimSpace(clientID) == "" {
+		return false
+	}
+	state, ok := a.ws.FactoryGrant(clientID, projectID)
+	if !ok || !a.grantAllows(state.Grant, factoryCapabilityApproveRoutineRevision) {
+		return false
+	}
+	root, ok := a.ws.ProjectRootByID(projectID)
+	if !ok {
+		return false
+	}
+	ps := a.ws.ProjectSettingsFor(root)
+	return ps.PlannerDelegationEnabled && ps.DesignatedMCPClientID == clientID
 }
 
 // withPolicy runs one durable policy mutation under the authorizer's mutex, on

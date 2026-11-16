@@ -502,6 +502,11 @@ type FactoryController struct {
 	// preference lives. A nil seam means no project override is known, and
 	// the documented default applies.
 	projectSettings func(projectRoot string) (ProjectSettings, bool)
+	// planner judges a proposed plan revision when a project's assessment
+	// intent asks for one. A nil seam is the unavailable default: no planner
+	// is contacted, nothing is retried, and the intent waits for an explicit
+	// request.
+	planner revisionPlanner
 }
 
 func NewFactoryController(store *FactoryStore, effects FactoryEffects, now func() time.Time) *FactoryController {
@@ -589,6 +594,12 @@ func (c *FactoryController) Run(ctx context.Context) error {
 	defer func() { cancel(); <-monitorDone }()
 	for {
 		if c.isReady() {
+			// Assessment intents are served before scheduling: a proposal is
+			// judged while the work it may amend keeps running under the
+			// revision it started under.
+			if err := c.assessPending(runCtx); err != nil {
+				return err
+			}
 			if err := c.tick(runCtx); err != nil {
 				return err
 			}
@@ -1159,6 +1170,12 @@ func factoryApplyCommandFrom(i *FactoryItem, c FactoryCommand, p *factoryPrincip
 		return factoryApplyRevisionState(i, c, p, "rejected", "revision_rejected", now)
 	case "revision_assess_request":
 		return factoryApplyRevisionAssessRequest(i, c, p, now)
+	case "revision_assess_claim":
+		return factoryApplyRevisionAssessClaim(i, c, p, now)
+	case "revision_assess_result":
+		return factoryApplyRevisionAssessResult(i, c, p, now)
+	case "revision_assess_retry":
+		return factoryApplyRevisionAssessRetry(i, c, p, now)
 	default:
 		return ErrFactoryConflict
 	}

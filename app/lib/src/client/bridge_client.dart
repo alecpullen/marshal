@@ -88,6 +88,51 @@ class BridgeClient {
   Future<PruneResult> prune() =>
       _objectOf('/api/prune', PruneResult.fromJson, method: 'POST');
 
+  /// GET /api/notifications: where Marshal reaches the user.
+  Future<NotifyConfig> notifications() =>
+      _objectOf('/api/notifications', NotifyConfig.fromJson);
+
+  /// PUT /api/notifications: writes the webhooks and answers what the bridge
+  /// kept.
+  Future<NotifyConfig> saveNotifications(NotifyConfig config) => _objectOf(
+    '/api/notifications',
+    NotifyConfig.fromJson,
+    method: 'PUT',
+    body: config,
+  );
+
+  /// POST /api/notifications/test: queues a test for every webhook and answers
+  /// how many it was queued for.
+  Future<NotifyTestResult> testNotifications() => _objectOf(
+    '/api/notifications/test',
+    NotifyTestResult.fromJson,
+    method: 'POST',
+  );
+
+  /// GET /api/status-links: every link, revoked ones included. The token is
+  /// never listed.
+  Future<List<StatusLink>> statusLinks() =>
+      _listOf('/api/status-links', StatusLink.fromJson);
+
+  /// POST /api/status-links: makes one, and answers the only copy of its URL.
+  Future<StatusLinkCreated> createStatusLink(
+    String agentId, {
+    int ttlHours = 0,
+  }) => _objectOf(
+    '/api/status-links',
+    StatusLinkCreated.fromJson,
+    method: 'POST',
+    body: StatusLinkCreate(agentID: agentId, ttlHours: ttlHours),
+  );
+
+  /// DELETE /api/status-links/{id}: revokes one, so its URL stops working.
+  Future<void> revokeStatusLink(String id) => _send(
+    Request(
+      method: 'DELETE',
+      path: '/api/status-links/${Uri.encodeComponent(id)}',
+    ),
+  );
+
   /// GET /api/prompts/recent: the prompts worth offering again.
   Future<RecentPrompts> recentPrompts() =>
       _objectOf('/api/prompts/recent', RecentPrompts.fromJson);

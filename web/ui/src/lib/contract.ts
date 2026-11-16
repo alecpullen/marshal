@@ -1871,6 +1871,32 @@ export interface NetDecisionResult {
 }
 
 /**
+ * NotifyWebhook is one outbound notification target. Its signing secret is a
+ * reference: the secret itself is never returned.
+ */
+export interface NotifyWebhook {
+  id: string;
+  url: string;
+  secretRef?: string;
+  events: string[];
+}
+
+/**
+ * NotifyConfig is GET and PUT /api/notifications' body: the webhooks.
+ */
+export interface NotifyConfig {
+  webhooks: NotifyWebhook[];
+}
+
+/**
+ * NotifyTestResult is POST /api/notifications/test's answer: how many webhooks
+ * the test was queued for.
+ */
+export interface NotifyTestResult {
+  sent: number;
+}
+
+/**
  * TrustState is a project's trust decision.
  */
 export type TrustState = 'na' | 'untrusted' | 'trusted';
@@ -2561,6 +2587,36 @@ export interface StackPatch {
   roots: string[];
   upsert?: WireNode[];
   remove?: string[];
+}
+
+/**
+ * StatusLink is one link as GET /api/status-links lists it.
+ */
+export interface StatusLink {
+  id: string;
+  agentId: string;
+  createdAt: string;
+  expiresAt: string;
+  revokedAt?: string;
+}
+
+/**
+ * StatusLinkCreate is POST /api/status-links' body. A zero TTL takes the
+ * bridge's default.
+ */
+export interface StatusLinkCreate {
+  agentId: string;
+  ttlHours?: number;
+}
+
+/**
+ * StatusLinkCreated is that route's answer: the only time the URL is ever
+ * given out.
+ */
+export interface StatusLinkCreated {
+  id: string;
+  url: string;
+  expiresAt: string;
 }
 
 /**

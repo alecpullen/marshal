@@ -29,6 +29,7 @@ var fixtureFiles = []string{
 	"library.json",
 	"models.json",
 	"network.json",
+	"notifications.json",
 	"projects.json",
 	"recipes.json",
 	"review.json",
@@ -37,6 +38,7 @@ var fixtureFiles = []string{
 	"session.json",
 	"spawn.json",
 	"stack.json",
+	"statuslinks.json",
 	"stream.json",
 	"terminal.json",
 	"usage.json",
@@ -265,6 +267,14 @@ var fixtureTypes = map[string]reflect.Type{
 	"UsagePoint":  reflect.TypeOf(UsagePoint{}),
 	"UsageReport": reflect.TypeOf(UsageReport{}),
 	"UsageTotals": reflect.TypeOf(UsageTotals{}),
+	// notifications.go — where Marshal reaches the user.
+	"NotifyConfig":     reflect.TypeOf(NotifyConfig{}),
+	"NotifyTestResult": reflect.TypeOf(NotifyTestResult{}),
+	"NotifyWebhook":    reflect.TypeOf(NotifyWebhook{}),
+	// statuslinks.go — one agent's revocable public link.
+	"StatusLink":        reflect.TypeOf(StatusLink{}),
+	"StatusLinkCreate":  reflect.TypeOf(StatusLinkCreate{}),
+	"StatusLinkCreated": reflect.TypeOf(StatusLinkCreated{}),
 }
 
 // TestContractFixturesRoundTrip holds the contract types to the shared

@@ -27,6 +27,8 @@ import 'package:marshal_app/src/client/contract.g.dart'
         SecretsStatus,
         StackSnapshot,
         StepDiff,
+        NotifyWebhook,
+        StatusLink,
         UsagePoint,
         UsageReport,
         UsageTotals,
@@ -67,6 +69,8 @@ import 'package:marshal_app/src/model/stack_store.dart';
 import 'package:marshal_app/src/model/thread_ref.dart' as model;
 import 'package:marshal_app/src/model/thread_view_state.dart';
 import 'package:marshal_app/src/model/usage_model.dart';
+import 'package:marshal_app/src/model/notifications_model.dart';
+import 'package:marshal_app/src/model/access_model.dart';
 import 'package:marshal_app/src/model/watches_model.dart';
 import 'package:marshal_app/src/ui/automations/automations_place.dart';
 import 'package:marshal_app/src/ui/automations/bots_tab.dart';
@@ -89,6 +93,8 @@ import 'package:marshal_app/src/ui/settings/models_section.dart';
 import 'package:marshal_app/src/ui/settings/network_section.dart';
 import 'package:marshal_app/src/ui/settings/secrets_section.dart';
 import 'package:marshal_app/src/ui/settings/usage_section.dart';
+import 'package:marshal_app/src/ui/settings/notifications_section.dart';
+import 'package:marshal_app/src/ui/settings/access_section.dart';
 import 'package:marshal_app/src/ui/settings/settings_place.dart';
 import 'package:marshal_app/src/ui/inbox/inbox.dart';
 import 'package:marshal_app/src/ui/inspector/changes_tab.dart';
@@ -727,6 +733,27 @@ Widget _settings({int section = 0, StateKind? state}) {
     ),
     now: () => shellNow,
   );
+  final notifications = NotificationsModel.fixture(
+    webhooks: const [
+      NotifyWebhook(
+        id: 'wh-1',
+        url: 'https://hooks.example.com/marshal',
+        secretRef: 'vault:notify/signing',
+        events: ['needs_you', 'run_finished'],
+      ),
+    ],
+  );
+  final access = AccessModel.fixture(
+    links: const [
+      StatusLink(
+        id: 'sl-1',
+        agentID: 'a-1',
+        createdAt: '2026-11-17T03:00:00Z',
+        expiresAt: '2026-11-18T03:00:00Z',
+      ),
+    ],
+    now: () => shellNow,
+  );
   final secrets = SecretsModel.fixture(
     status: const SecretsStatus(backend: 'local', healthy: true),
     refs: const ['vault:forge/github-token'],
@@ -810,6 +837,10 @@ Widget _settings({int section = 0, StateKind? state}) {
           NetworkSection(model: network, state: state),
       SettingsSectionKind.usage: (state) =>
           UsageSection(model: usage, state: state),
+      SettingsSectionKind.notifications: (state) =>
+          NotificationsSection(model: notifications, state: state),
+      SettingsSectionKind.access: (state) =>
+          AccessSection(model: access, state: state),
       SettingsSectionKind.general: (state) =>
           GeneralSection(model: general, state: state),
     },
@@ -1051,6 +1082,22 @@ final screens = <ScreenCase>[
     states: {
       for (final kind in requiredStates)
         kind: () => _settings(section: 6, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'settings · notifications',
+    ready: () => _settings(section: 7),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _settings(section: 7, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'settings · access',
+    ready: () => _settings(section: 8),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _settings(section: 8, state: kind),
     },
   ),
   ScreenCase(

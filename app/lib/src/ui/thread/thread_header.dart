@@ -5,9 +5,9 @@ import '../kit/kit.dart';
 /// branch, environment and host on one line; the status dot, the title and
 /// the live headline on the next; Share and the overflow menu at the right.
 ///
-/// Share is drawn disabled until F7 has a status link to hand out: a control
-/// that cannot work is shown as unavailable, never as working (design-system
-/// §7).
+/// Share makes a read-only status link for the thread (F7 decision 7). It is
+/// drawn disabled until a caller hands it one: a control that cannot work is
+/// shown as unavailable, never as working (design-system §7).
 class ThreadHeader extends StatelessWidget {
   const ThreadHeader({
     super.key,
@@ -29,8 +29,8 @@ class ThreadHeader extends StatelessWidget {
   /// The environment it runs in, when the fleet reports one.
   final String? environment;
 
-  /// Shares a read-only status link. Null until F7: the control is disabled
-  /// and its tooltip says so.
+  /// Shares a read-only status link for this thread. Null disables the
+  /// control and its tooltip says why.
   final VoidCallback? onShare;
 
   /// Stops the thread. Null hides the action.

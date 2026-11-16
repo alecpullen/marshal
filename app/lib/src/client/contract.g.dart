@@ -6487,6 +6487,93 @@ class NetDecisionResult {
   }
 }
 
+/// NotifyWebhook is one outbound notification target. Its signing secret is a
+/// reference: the secret itself is never returned.
+class NotifyWebhook {
+  const NotifyWebhook({
+    required this.id,
+    required this.url,
+    this.secretRef,
+    required this.events,
+  });
+
+  final String id;
+  final String url;
+  final String? secretRef;
+  final List<String> events;
+
+  factory NotifyWebhook.fromJson(Map<String, dynamic> json) {
+    return NotifyWebhook(
+      id: json['id'] as String,
+      url: json['url'] as String,
+      secretRef: json['secretRef'] as String?,
+      events: _list(
+        json['events'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['url'] = url;
+    if (secretRef != null) {
+      json['secretRef'] = secretRef;
+    }
+    json['events'] = events;
+    return json;
+  }
+}
+
+/// NotifyConfig is GET and PUT /api/notifications' body: the webhooks.
+class NotifyConfig {
+  const NotifyConfig({
+    required this.webhooks,
+  });
+
+  final List<NotifyWebhook> webhooks;
+
+  factory NotifyConfig.fromJson(Map<String, dynamic> json) {
+    return NotifyConfig(
+      webhooks: _list(
+        json['webhooks'],
+        (value) => _object(value, NotifyWebhook.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['webhooks'] = [
+      for (final value in webhooks) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// NotifyTestResult is POST /api/notifications/test's answer: how many webhooks
+/// the test was queued for.
+class NotifyTestResult {
+  const NotifyTestResult({
+    required this.sent,
+  });
+
+  final int sent;
+
+  factory NotifyTestResult.fromJson(Map<String, dynamic> json) {
+    return NotifyTestResult(
+      sent: (json['sent'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['sent'] = sent;
+    return json;
+  }
+}
+
 /// TrustState is a project's trust decision.
 enum TrustState {
   trustNA('na'),
@@ -8823,6 +8910,103 @@ class StackPatch {
     if (remove != null) {
       json['remove'] = remove!;
     }
+    return json;
+  }
+}
+
+/// StatusLink is one link as GET /api/status-links lists it.
+class StatusLink {
+  const StatusLink({
+    required this.id,
+    required this.agentID,
+    required this.createdAt,
+    required this.expiresAt,
+    this.revokedAt,
+  });
+
+  final String id;
+  final String agentID;
+  final String createdAt;
+  final String expiresAt;
+  final String? revokedAt;
+
+  factory StatusLink.fromJson(Map<String, dynamic> json) {
+    return StatusLink(
+      id: json['id'] as String,
+      agentID: json['agentId'] as String,
+      createdAt: json['createdAt'] as String,
+      expiresAt: json['expiresAt'] as String,
+      revokedAt: json['revokedAt'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['agentId'] = agentID;
+    json['createdAt'] = createdAt;
+    json['expiresAt'] = expiresAt;
+    if (revokedAt != null) {
+      json['revokedAt'] = revokedAt;
+    }
+    return json;
+  }
+}
+
+/// StatusLinkCreate is POST /api/status-links' body. A zero TTL takes the
+/// bridge's default.
+class StatusLinkCreate {
+  const StatusLinkCreate({
+    required this.agentID,
+    this.ttlHours,
+  });
+
+  final String agentID;
+  final int? ttlHours;
+
+  factory StatusLinkCreate.fromJson(Map<String, dynamic> json) {
+    return StatusLinkCreate(
+      agentID: json['agentId'] as String,
+      ttlHours: (json['ttlHours'] as num?)?.toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['agentId'] = agentID;
+    if (ttlHours != null) {
+      json['ttlHours'] = ttlHours;
+    }
+    return json;
+  }
+}
+
+/// StatusLinkCreated is that route's answer: the only time the URL is ever
+/// given out.
+class StatusLinkCreated {
+  const StatusLinkCreated({
+    required this.id,
+    required this.url,
+    required this.expiresAt,
+  });
+
+  final String id;
+  final String url;
+  final String expiresAt;
+
+  factory StatusLinkCreated.fromJson(Map<String, dynamic> json) {
+    return StatusLinkCreated(
+      id: json['id'] as String,
+      url: json['url'] as String,
+      expiresAt: json['expiresAt'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['url'] = url;
+    json['expiresAt'] = expiresAt;
     return json;
   }
 }

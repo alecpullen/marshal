@@ -25,6 +25,7 @@ const _fixtures = [
   'library',
   'models',
   'network',
+  'notifications',
   'projects',
   'recipes',
   'schedules',
@@ -32,6 +33,7 @@ const _fixtures = [
   'session',
   'spawn',
   'stack',
+  'statuslinks',
   'stream',
   'usage',
   'watches',
@@ -249,6 +251,17 @@ final _codecs = <String, _Codec>{
   'UsagePoint': (json) => UsagePoint.fromJson(_object(json)).toJson(),
   'UsageReport': (json) => UsageReport.fromJson(_object(json)).toJson(),
   'UsageTotals': (json) => UsageTotals.fromJson(_object(json)).toJson(),
+  // notifications.json
+  'NotifyConfig': (json) => NotifyConfig.fromJson(_object(json)).toJson(),
+  'NotifyTestResult': (json) =>
+      NotifyTestResult.fromJson(_object(json)).toJson(),
+  'NotifyWebhook': (json) => NotifyWebhook.fromJson(_object(json)).toJson(),
+  // statuslinks.json
+  'StatusLink': (json) => StatusLink.fromJson(_object(json)).toJson(),
+  'StatusLinkCreate': (json) =>
+      StatusLinkCreate.fromJson(_object(json)).toJson(),
+  'StatusLinkCreated': (json) =>
+      StatusLinkCreated.fromJson(_object(json)).toJson(),
 };
 
 void main() {

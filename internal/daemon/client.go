@@ -90,6 +90,11 @@ func Remote(base string, tlsConfig *tls.Config, token func(ctx context.Context) 
 	if u.Host == "" {
 		return nil, fmt.Errorf("server profile %q names no host", base)
 	}
+	// The attach speaks TLS or plain TCP; anything else would silently become
+	// a plain dial to the scheme's default port rather than being refused.
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf("server profile %q is %q: the attach speaks http or https", base, u.Scheme)
+	}
 
 	// The port is the scheme's default when the URL carries none, so a
 	// profile can name a host alone.

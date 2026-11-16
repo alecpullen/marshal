@@ -219,7 +219,10 @@ func runFleet(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--server":
-			if i+1 >= len(args) {
+			// An empty value is refused here as it is after `--server=`: an
+			// empty name is indistinguishable from no flag, and would quietly
+			// open the local daemon's fleet instead of the one named.
+			if i+1 >= len(args) || args[i+1] == "" {
 				return fmt.Errorf("marshal fleet: --server requires a server name")
 			}
 			if server != "" {

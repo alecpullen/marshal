@@ -16,10 +16,9 @@ import (
 )
 
 // remoteTarget is what a server's loop dials instead of the daemon: the
-// profile's name, its fleet transport, and the client that attaches its
-// sessions (decision 8).
+// profile's fleet transport and the client that attaches its sessions
+// (decision 8).
 type remoteTarget struct {
-	name   string
 	fleet  fleetclient.Transport
 	attach daemonClient
 }
@@ -131,7 +130,6 @@ func ServerFleet(ctx context.Context, stdout io.Writer, srv fleetprofile.Server,
 	}
 
 	runOpts.remote = &remoteTarget{
-		name:   srv.Name,
 		fleet:  fleetclient.HTTPS(srv.Name, srv.URL, tlsConfig, tokenFor),
 		attach: attach,
 	}

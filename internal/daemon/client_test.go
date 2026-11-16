@@ -1088,3 +1088,22 @@ func TestARemoteAttachOffersHTTP1(t *testing.T) {
 		t.Errorf("negotiated protocol = %q, want %q", got, "http/1.1")
 	}
 }
+
+// TestRemoteRefusesANonHTTPScheme pins the attach's own rule: a base that is
+// neither http nor https is refused, not dialled as plain TCP on the scheme's
+// default port.
+func TestRemoteRefusesANonHTTPScheme(t *testing.T) {
+	for _, base := range []string{"ftp://fleet.example.com", "ws://fleet.example.com"} {
+		client, err := Remote(base, nil, nil)
+		if err == nil {
+			t.Errorf("Remote(%q) = %+v, want a refusal", base, client)
+			continue
+		}
+		if client != nil {
+			t.Errorf("Remote(%q) returned a client alongside an error", base)
+		}
+		if !strings.Contains(err.Error(), "http or https") {
+			t.Errorf("Remote(%q) error = %q, want it to name the schemes", base, err)
+		}
+	}
+}

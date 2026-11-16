@@ -474,6 +474,7 @@ func TestFleetRefusesArgumentsAndEmbedded(t *testing.T) {
 		{[]string{"fleet", "stray"}, "unexpected argument"},
 		{[]string{"fleet", "--server"}, "requires a server name"},
 		{[]string{"fleet", "--server="}, "requires a server name"},
+		{[]string{"fleet", "--server", ""}, "requires a server name"},
 		{[]string{"fleet", "--server", "a", "--server", "b"}, "given more than once"},
 		{[]string{"fleet", "--frobnicate"}, "unexpected flag"},
 		{[]string{"fleet", "--server", "a", "login", "b"}, "cannot be combined with login"},

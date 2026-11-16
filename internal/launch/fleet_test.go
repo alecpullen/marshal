@@ -20,6 +20,7 @@ import (
 	"marshal/internal/app/tui"
 	"marshal/internal/app/tui/fleet"
 	"marshal/internal/app/tui/theme"
+	"marshal/internal/credentials"
 	"marshal/internal/fleetprofile"
 	"marshal/web/bridge/contract"
 )
@@ -482,6 +483,45 @@ func TestAServerFleetFailsWithoutAToken(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), serverProfile().Name) {
 		t.Errorf("ServerFleet error = %q, want it to name %q", err, serverProfile().Name)
+	}
+}
+
+// TestAServerFleetReadsTheTokenFromTheKeychain pins decision 4's other half: a
+// profile without token_cmd takes its token from the store withTokenStore
+// injects, opened once for the whole loop, and runs no shell.
+func TestAServerFleetReadsTheTokenFromTheKeychain(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, home)
+
+	profile := fleetprofile.Server{Name: "studio", URL: "http://127.0.0.1:1"}
+	store := credentials.NewMemStore()
+	if err := store.Set(fleetprofile.KeychainKey(profile.Name), []byte("a-keychain-token")); err != nil {
+		t.Fatalf("set the token: %v", err)
+	}
+
+	opens := 0
+	err := ServerFleet(context.Background(), io.Discard, profile,
+		withDaemonClient(fake),
+		withWorkingDir(dir),
+		withTokenStore(func() (credentials.Store, error) {
+			opens++
+			return store, nil
+		}),
+		withTokenRunner(func(context.Context, string, io.Writer) ([]byte, error) {
+			t.Error("the token command ran for a profile that has none")
+			return nil, nil
+		}),
+		WithProgramRunner(loopFleetScript(t, dir).run),
+	)
+	if err != nil {
+		t.Fatalf("ServerFleet: %v", err)
+	}
+	if opens != 1 {
+		t.Fatalf("the keychain was opened %d times, want once", opens)
 	}
 }
 

@@ -94,6 +94,19 @@ func TestTLSConfigOffersHTTP1Only(t *testing.T) {
 	}
 }
 
+func TestTLSConfigRefusesHTTPOffLoopback(t *testing.T) {
+	// Load refuses this URL, but the exported function is reachable with a
+	// Server built by hand, and plain http off this machine carries the token
+	// in clear.
+	_, err := TLSConfig(Server{Name: "home", URL: "http://fleet.example.com"})
+	if err == nil {
+		t.Fatal("an http profile off loopback was accepted")
+	}
+	if !strings.Contains(err.Error(), "not loopback") {
+		t.Fatalf("error = %q, want it to say the host is not loopback", err)
+	}
+}
+
 func TestACAFileMustHoldACertificate(t *testing.T) {
 	srv := Server{Name: "home", URL: "https://fleet.example.com"}
 

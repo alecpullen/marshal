@@ -52,8 +52,8 @@ The session routes this phase uses: `stack`, `nodes/{nodeId}`, `prompt`,
 `steer`, `cancel`, `mode`, `load`, `access`, `roster`, and
 `POST /api/permissions/{toolCallId}` and `POST /api/questions/{questionId}`
 for asks. Starting an agent is `POST /api/agents`, with
-`GET /api/prompts/recent`, `GET /api/repos/{id}/issues` and
-`GET /api/recipes` behind the dialog's three lists.
+`GET /api/prompts/recent`, `GET /api/recipes` and
+`GET /api/repos/{id}/issues` behind the dialog's three lists.
 
 The stack types are hand-written TypeScript in `lib/stack.ts` today.
 
@@ -229,11 +229,44 @@ The recorder test was deleted after it wrote the files.
   usage), so a copy of the transcript matches what is drawn.
 - `Ask` gained an optional `step`, read from a pending request's `stepId`, so
   the transcript can pin the card where it was raised.
-- The new-work dialog's Issues and Recipes lists need routes the F1 client
-  does not have (`GET /api/repos/{id}/issues`, `GET /api/recipes`); the
-  model takes them as injected functions and the production factory returns
-  empty lists, which the dialog draws as "No issues for this project" and
-  "No recipes yet". Recent prompts work end to end.
+- The new-work dialog's three lists are the bridge's own routes. Recipes come
+  from `GET /api/recipes` (`web/bridge/recipes_http.go`) through
+  `BridgeClient.recipes` and the `contract.Recipe` declaration, whose type
+  names and JSON keys are the ones `studio/f7-1-automations-library` also
+  declares, so the two branches merge rather than diverge. Issues come from
+  `GET /api/repos/{id}/issues` through `BridgeClient.issues` and
+  `contract.RepoIssue`, which transcribes the keys the route actually sends
+  (`web/bridge/forge.go`'s `Issue` carries no struct tags, so they are the Go
+  field names) — `TestListRepoIssuesAnswerIsContractRepoIssue` in
+  `web/bridge` holds the two together.
+- **Issues need a repo id the app cannot yet name.** An issue belongs to a
+  registered remote repo (`GET /api/repos` reports ids such as
+  `owner/name`), while a project is a local checkout: no bridge route maps a
+  project root to a repo id, and `GET /api/projects` carries none. So
+  `NewWorkModel.forProject` takes an optional `repoId` and wires the route
+  when it is given one; with none it asks nothing, and the dialog says "No
+  registered repo for this project" rather than "No issues for this project"
+  (`NewWorkModel.issuesFromRepo`). Disclosed, not papered over: the app gets
+  the mapping with the project settings surface that names a project's repo
+  (F6's project defaults, F7's repositories), and the client method and
+  contract type are already in place for it.
+- The dialog's chips each show what they really are (decision 11 promises a
+  menu per chip; a menu whose only entry is the value already set changes
+  nothing, so it is not drawn). What opens a menu is what a route or a fixed
+  wire set can fill, and what the choice changes in the posted request:
+  - **Project** — the daemon's own projects (`GET /api/projects`), and it is
+    the request's `project`.
+  - **Permission mode** — `Act` and `Ask`, the two modes the session's mode
+    route takes, and it is the request's `mode`.
+  - **Workspace** — `Project` and `Isolated worktree` when
+    `ProjectStatus.isolation` says isolation is available (the request's
+    `isolated`); when the project cannot offer isolation, a pill whose
+    tooltip is the bridge's own reason.
+  What stays a pill, with the phase that brings the choice:
+  **Base branch** (F6's project defaults), **Environment** and **Model**
+  (F6's handoff review), and **Host** (F7's Settings). `NewWorkChip` is the
+  one shape both draw, and `setChoice` refuses a value no menu offered, so a
+  chip cannot hold a value the dialog never showed.
 - The new-work dialog is a `Sheet`, not a `ScreenCase`: it is not registered
   in `test/support/screens.dart`, because the §7 states it has are its
   lists' empty states and a failure line, not a screen's.
@@ -244,9 +277,41 @@ The recorder test was deleted after it wrote the files.
 - The context menu is the kit's `Box` and `Btn` at the pointer: `Menu`
   anchors to a control, and a pointer anchor would be a §10 change to it.
 
+- The plan's three outstanding tests exist now. `a selection spans rows that
+  are not built` (`test/ui/thread/selection_test.dart`) holds the pointer past
+  the list's bottom edge, so the edge auto-scroll walks the anchor down over
+  rows that leave the built window, and asserts the copy still spans the row
+  that is gone. `drag selects in a browser`
+  (`test/ui/thread/browser_selection_test.dart`) is `@TestOn('browser')`, so
+  the VM run skips it. `start posts the request and opens the thread`
+  (`test/ui/new_work/start_opens_the_thread_test.dart`) drives `⌘N`, the
+  dialog and Start through `Studio`, and asserts both the request and the
+  place the app lands on (`onThreadStarted` in `ui/shell/shell.dart`) — it
+  found a real defect: a sheet that closes disposes the model while `load()`
+  is still waiting on a route, so the answer that landed afterwards notified
+  a disposed notifier. `NewWorkModel` now refuses to notify after dispose.
+
+- **The dialog's defaults are only what the phase knows.** The project root
+  and the workspace (`ProjectStatus.isolation` says whether an isolated
+  worktree can be offered) come from the project. The base branch does not:
+  no route lists a project's branches, and `GET /api/projects` carries none,
+  so the chip says "The project default" and the spawn request omits
+  `baseRef` — the bridge resolves the repo's own default — rather than the
+  dialog sending a guessed `main`. `Environment: Local` is a statement about
+  what a spawn does in this phase (a host process on this daemon), and
+  `Permission mode: Act` is the dialog's own default, not a project field;
+  both are named as such here and in the chips' tooltips. The request also
+  carries the workspace choice as the `isolated` flag the bridge reads, not
+  as a made-up workspace name: no workspace reference exists in this phase.
+  A permission mode the bridge's route does not take (`act`, `ask`) is
+  refused with a line in the dialog, never coerced — defaulting to `act`
+  would silently start the most permissive mode.
+
 **Environment-blocked, not failures.** `flutter test --platform chrome`
-(no working browser: the Chrome host stalls on CanvasKit), so the browser
-half of selection is unverified here. `flutter build linux` and
+(no working browser: the Chrome host stalls on CanvasKit), so
+`test/ui/thread/browser_selection_test.dart` — the plan's `drag selects in a
+browser` — is written and skipped by the VM run, and the browser half of
+selection stays unverified here. `flutter build linux` and
 `flutter test integration_test -d linux` (no CMake/GTK3 headers, no display),
 so `integration_test/f3_test.dart` is written but has not run. `npm run
 check` has a pre-existing five errors, unchanged by this phase.

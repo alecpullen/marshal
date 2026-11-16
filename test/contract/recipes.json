@@ -1,0 +1,36 @@
+{
+  "Recipe": {
+    "name": "fix-a-bug",
+    "title": "Fix a bug",
+    "description": "Find the bug, fix it, and add a test.",
+    "kind": "prompt",
+    "mode": "act",
+    "auto": false,
+    "workspace": "default",
+    "routing": { "role": "implementer" },
+    "inputs": [{ "name": "file", "label": "The file", "required": true }],
+    "prompt": "Fix the bug in {{file}} and add a test that would have caught it.",
+    "limits": { "maxMinutes": 30, "maxUsd": 2.5 },
+    "output": "review-findings",
+    "builtin": true,
+    "diagnostic": "a stored recipe of the same name overrides this one"
+  },
+  "RecipeInput": {
+    "name": "file",
+    "label": "The file",
+    "required": true
+  },
+  "RecipeLimits": {
+    "maxMinutes": 30,
+    "maxUsd": 2.5
+  },
+  "RecipeRun": {
+    "project": "/home/u/src/marshal",
+    "repoId": "owner/name",
+    "ref": "main",
+    "inputs": { "file": "internal/app/app.go" }
+  },
+  "RecipeCopy": {
+    "name": "fix-a-bug-copy"
+  }
+}

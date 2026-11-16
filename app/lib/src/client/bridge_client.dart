@@ -68,6 +68,19 @@ class BridgeClient {
   Future<RecentPrompts> recentPrompts() =>
       _objectOf('/api/prompts/recent', RecentPrompts.fromJson);
 
+  /// GET /api/recipes: every recipe the bridge stores, its built-ins
+  /// included, for the new-work dialog's Recipes list.
+  Future<List<Recipe>> recipes() => _listOf('/api/recipes', Recipe.fromJson);
+
+  /// GET /api/repos/{id}/issues: one registered repo's open issues, from the
+  /// forge its registration names. [repoId] is the id `GET /api/repos`
+  /// reports — not a project root: a project is a local checkout and an issue
+  /// belongs to the remote repo.
+  Future<List<RepoIssue>> issues(String repoId) => _listOf(
+    '/api/repos/${Uri.encodeComponent(repoId)}/issues',
+    RepoIssue.fromJson,
+  );
+
   /// GET /api/events: the fleet stream, which the caller starts.
   EventStream fleetEvents() => EventStream(_transport, '/api/events');
 

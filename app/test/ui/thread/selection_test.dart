@@ -1,5 +1,6 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/model/thread_view_state.dart';
 
@@ -116,6 +117,49 @@ void main() {
     await _copy(tester);
 
     expect(_clipboard, before);
+
+    store.dispose();
+    view.dispose();
+  });
+
+  testWidgets('a selection spans rows that are not built', (tester) async {
+    _captureClipboard();
+    // More rows than the window holds, so a row can leave the built window
+    // while the drag is still going. The view opens at the top rather than
+    // following the live end, so the drag starts on the first row.
+    final store = fixtureStore(steps: 40);
+    final view = ThreadViewState()..following = false;
+    await pumpThread(tester, store: store, view: view);
+
+    const message = 'Clean up the test fixtures nobody uses any more.';
+    final from = _centreOf(tester, message);
+    final window = tester.getRect(find.byType(ListView));
+    final gesture = await tester.startGesture(
+      from,
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pump();
+    // The pointer is held past the list's bottom edge: the layer's edge
+    // auto-scroll walks the anchor down the list on its own timer, which is
+    // the path nothing else exercises.
+    await gesture.moveTo(Offset(from.dx, window.bottom + 8));
+    for (var i = 0; i < 40; i++) {
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    await gesture.up();
+    await tester.pump();
+
+    // The row the drag began on is out of the tree now.
+    expect(find.text(message), findsNothing, reason: 'the row left the tree');
+
+    await _copy(tester);
+
+    // The selection still spans it, and the rows the scroll brought in,
+    // because an anchor is a position in the model rather than in the window.
+    // The drag began mid-message, so the copy is the message's tail.
+    expect(_clipboard, startsWith('s nobody uses any more.'));
+    expect(_clipboard, contains('Step number 1 mapped the fixtures'));
+    expect(_clipboard, contains('Step number 5 mapped the fixtures'));
 
     store.dispose();
     view.dispose();

@@ -71,7 +71,9 @@ class StepHeader extends StatelessWidget {
         ),
         if (took != null) ...[
           const SizedBox(width: Space.s8),
-          Text(took, style: e.monoSmall.tint(e.faint)),
+          // A duration is read, not decoration: design-system.md §2 keeps
+          // `faint` for what never carries information by itself.
+          Text(took, style: e.monoSmall.tint(e.muted)),
         ],
         if (foldable) ...[
           const SizedBox(width: Space.s6),

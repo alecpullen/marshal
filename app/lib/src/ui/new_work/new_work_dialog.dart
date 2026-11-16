@@ -119,22 +119,30 @@ class _NewWorkFormState extends State<NewWorkForm> {
               runSpacing: Space.s8,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                for (final name in model.chipNames)
-                  Menu(
-                    choices: [
-                      MenuChoice(
-                        '${model.choices[name]}',
-                        'The ${name.toLowerCase()} this agent starts with',
-                        onSelect: () =>
-                            model.setChoice(name, model.choices[name]!),
-                      ),
-                    ],
-                    anchor: (context, toggle) => Btn(
-                      '$name: ${model.choices[name]}',
-                      icon: Glyphs.chevron_down,
-                      onTap: toggle,
-                    ),
-                  ),
+                for (final chip in model.chips)
+                  chip.chooseable
+                      ? Menu(
+                          choices: [
+                            for (final option in chip.options)
+                              MenuChoice(
+                                option,
+                                option == chip.value
+                                    ? 'The ${chip.name.toLowerCase()} this '
+                                          'agent starts with'
+                                    : 'Change the '
+                                          '${chip.name.toLowerCase()} to '
+                                          '$option',
+                                onSelect: () =>
+                                    model.setChoice(chip.name, option),
+                              ),
+                          ],
+                          anchor: (context, toggle) => Btn(
+                            '${chip.name}: ${chip.value}',
+                            icon: Glyphs.chevron_down,
+                            onTap: toggle,
+                          ),
+                        )
+                      : Pill('${chip.name}: ${chip.value}', tooltip: chip.note),
               ],
             ),
             const SizedBox(height: Space.s16),
@@ -142,14 +150,20 @@ class _NewWorkFormState extends State<NewWorkForm> {
               spacing: Space.s8,
               runSpacing: Space.s8,
               children: [
-                _fillMenu('Issues', [
-                  for (final issue in model.issues)
-                    MenuChoice(
-                      issue.title,
-                      'Fill the prompt from this issue',
-                      onSelect: () => model.prefill(issue.title),
-                    ),
-                ], empty: 'No issues for this project'),
+                _fillMenu(
+                  'Issues',
+                  [
+                    for (final issue in model.issues)
+                      MenuChoice(
+                        issue.title,
+                        'Fill the prompt from this issue',
+                        onSelect: () => model.prefill(issue.title),
+                      ),
+                  ],
+                  empty: model.issuesFromRepo
+                      ? 'No issues for this project'
+                      : 'No registered repo for this project',
+                ),
                 _fillMenu('Recent prompts', [
                   for (final prompt in model.recentPrompts)
                     MenuChoice(
@@ -161,7 +175,7 @@ class _NewWorkFormState extends State<NewWorkForm> {
                 _fillMenu('Recipes', [
                   for (final recipe in model.recipes)
                     MenuChoice(
-                      recipe.name,
+                      recipe.title ?? recipe.name,
                       'Fill the prompt from this recipe',
                       onSelect: () => model.prefill(recipe.prompt),
                     ),

@@ -25,7 +25,12 @@ void main() {
       tester,
       const StepHeader(number: '1', headline: 'Mapped', took: '41s'),
     );
-    expect(styleOf(tester, '41s').fontFamily, Ember.monoFamily);
+    final took = styleOf(tester, '41s');
+    expect(took.fontFamily, Ember.monoFamily);
+    // A duration is information a person reads, so it is muted rather than
+    // faint (design-system.md §2).
+    expect(took.color, e.muted);
+    expect(took.color, isNot(e.faint));
 
     await pumpKit(tester, const StepHeader(number: '1', headline: 'Mapped'));
     expect(find.text('41s'), findsNothing);

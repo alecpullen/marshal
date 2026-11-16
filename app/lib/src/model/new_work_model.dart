@@ -47,10 +47,10 @@ enum NewWorkKind {
 
   final String word;
 
-  /// Whether this phase can start it. "Work item" arrives with the handoff
-  /// review (F6 plan 2, task 2); an agent and a planner both start here, the
-  /// second as a planning thread that hands off when its plan is ready.
-  bool get planned => this == NewWorkKind.workItem;
+  /// Whether this phase can start it. All three do: an agent spawns, "Plan
+  /// first" starts a planning thread, and "Work item" opens the handoff
+  /// review (F6 decisions 8 and 9).
+  bool get planned => false;
 }
 
 /// The choices the dialog opens with: the project's root and the workspace it
@@ -435,6 +435,11 @@ class NewWorkModel extends ChangeNotifier {
     notifyListeners();
     if (_kind == NewWorkKind.planFirst) {
       await _startPlanning();
+      return;
+    }
+    if (_kind == NewWorkKind.workItem) {
+      // A work item opens the handoff review (F6 decision 9): the dialog shows
+      // the sheet, and nothing is spawned here.
       return;
     }
     final label = _choices['Permission mode']!;

@@ -3,6 +3,7 @@ import 'dart:async';
 import '../../model/age.dart';
 import '../../model/composer_model.dart';
 import '../../model/factory_store.dart';
+import '../../model/handoff_model.dart';
 import '../../model/new_work_model.dart';
 import '../../model/fleet_store.dart';
 import '../../model/inbox_model.dart';
@@ -19,6 +20,7 @@ import '../../model/thread_view_state.dart';
 import '../../model/work_item_model.dart'
     show WorkItemView, WorkItemWorker, threadOfItem;
 import '../inbox/inbox.dart' show Inbox;
+import '../factory/handoff_sheet.dart';
 import '../factory/planning_screen.dart';
 import '../factory/revision_sheet.dart';
 import '../factory/work_item_screen.dart';
@@ -292,6 +294,7 @@ class Studio extends StatefulWidget {
     this.composerFor,
     this.newWorkFor,
     this.planningFor,
+    this.handoffFor,
     this.initialPlace = const Place.overview(),
   });
 
@@ -330,6 +333,12 @@ class Studio extends StatefulWidget {
   /// decision 8). Null leaves the planning place unbuilt rather than drawing
   /// an empty one.
   final PlanningModel Function(String host, String plannerID)? planningFor;
+
+  /// Builds the handoff review for a plan (F6 decision 8). Null leaves the one
+  /// action that hands a plan off out, rather than offering a sheet that
+  /// cannot create an item.
+  final HandoffModel Function(model.ThreadRef thread, String plan, String spec)?
+  handoffFor;
 
   /// The place a deep link names.
   final Place initialPlace;
@@ -477,7 +486,11 @@ class _StudioState extends State<Studio> {
             key: ValueKey('planning/${thread.host}/${thread.id}'),
             thread: thread,
             plan: plan,
+            handoffFor: widget.handoffFor,
             now: widget.store.now,
+            onOpenItem: (id) => navigation.go(
+              Place(PlaceKind.thread, host: thread.host, id: id),
+            ),
           );
         }
       }
@@ -503,6 +516,9 @@ class _StudioState extends State<Studio> {
           composerFor: widget.composerFor,
           newWorkFor: widget.newWorkFor,
           onThreadStarted: (id) =>
+              navigation.go(Place(PlaceKind.thread, host: thread.host, id: id)),
+          handoffFor: widget.handoffFor,
+          onOpenItem: (id) =>
               navigation.go(Place(PlaceKind.thread, host: thread.host, id: id)),
           onPlannerStarted: (planner) {
             _rememberPlanner(thread.host, thread.project, planner);
@@ -585,6 +601,8 @@ class _ThreadPlace extends StatefulWidget {
     this.newWorkFor,
     this.onThreadStarted,
     this.onPlannerStarted,
+    this.handoffFor,
+    this.onOpenItem,
     this.asks = const [],
     this.onAnswer,
     this.now,
@@ -603,6 +621,11 @@ class _ThreadPlace extends StatefulWidget {
 
   /// Opens the planning thread a "Plan first" started (F6 decision 8).
   final void Function(StartedPlanner planner)? onPlannerStarted;
+
+  /// The handoff review's model, and where an approved item opens.
+  final HandoffModel Function(model.ThreadRef thread, String plan, String spec)?
+  handoffFor;
+  final void Function(String itemID)? onOpenItem;
   final List<inbox.Ask> asks;
   final void Function(inbox.Ask ask, inbox.AskAction action)? onAnswer;
   final DateTime? now;
@@ -655,9 +678,27 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
           Navigator.maybePop(context);
           widget.onPlannerStarted?.call(planner);
         },
+        onWorkItem: (prompt) {
+          Navigator.maybePop(context);
+          unawaited(_openHandoff(context, prompt, ''));
+        },
       ),
     );
     model.dispose();
+  }
+
+  /// Opens the handoff review for [plan], and the item it creates.
+  Future<void> _openHandoff(
+    BuildContext context,
+    String plan,
+    String spec,
+  ) async {
+    final build = widget.handoffFor;
+    if (build == null) return;
+    final model = build(widget.thread, plan, spec);
+    final item = await showHandoffSheet(context, model);
+    model.dispose();
+    if (item != null) widget.onOpenItem?.call(item);
   }
 
   @override
@@ -981,12 +1022,17 @@ class _PlanningPlace extends StatefulWidget {
     super.key,
     required this.thread,
     required this.plan,
+    this.handoffFor,
     this.now,
+    this.onOpenItem,
   });
 
   final model.ThreadRef thread;
   final PlanningModel plan;
+  final HandoffModel Function(model.ThreadRef thread, String plan, String spec)?
+  handoffFor;
   final DateTime? now;
+  final void Function(String itemID)? onOpenItem;
 
   @override
   State<_PlanningPlace> createState() => _PlanningPlaceState();
@@ -999,6 +1045,17 @@ class _PlanningPlaceState extends State<_PlanningPlace> {
     super.dispose();
   }
 
+  /// Opens the handoff review for the plan the last snapshot froze.
+  Future<void> _handOff(BuildContext context) async {
+    final build = widget.handoffFor;
+    if (build == null) return;
+    final latest = widget.plan.latest;
+    final model = build(widget.thread, latest?.plan ?? '', latest?.spec ?? '');
+    final item = await showHandoffSheet(context, model);
+    model.dispose();
+    if (item != null) widget.onOpenItem?.call(item);
+  }
+
   @override
   Widget build(BuildContext context) => PlanningScreen(
     plan: widget.plan,
@@ -1006,5 +1063,8 @@ class _PlanningPlaceState extends State<_PlanningPlace> {
     subtitle: widget.thread.headline,
     now: widget.now,
     onRetry: () => unawaited(widget.plan.refresh()),
+    onHandToFactory: widget.handoffFor == null
+        ? null
+        : () => unawaited(_handOff(context)),
   );
 }

@@ -89,19 +89,19 @@ void main() {
     model.dispose();
   });
 
-  testWidgets('a kind the phase cannot start is drawn disabled, naming F6', (
-    tester,
-  ) async {
+  testWidgets('all three kinds are live choices', (tester) async {
     final (:model, spawns: _) = _dialog();
     await pumpKit(tester, newWorkDialog(model), height: 900);
 
-    // "Work item" arrives with the handoff review (F6 plan 2, task 2); "Plan
-    // first" starts a planning thread now, so it is a live control.
-    final plan = tester.widget<Btn>(find.widgetWithText(Btn, 'Plan first'));
-    final item = tester.widget<Btn>(find.widgetWithText(Btn, 'Work item'));
-    expect(plan.onTap, isNotNull);
-    expect(item.onTap, isNull);
-    expect(hasTip(tester, find.text('Work item'), 'Planned for F6'), isTrue);
+    // F6 decisions 8 and 9: an agent spawns, "Plan first" starts a planning
+    // thread, and "Work item" opens the handoff review.
+    for (final word in ['Agent', 'Plan first', 'Work item']) {
+      expect(
+        tester.widget<Btn>(find.widgetWithText(Btn, word)).onTap,
+        isNotNull,
+        reason: '$word is drawn disabled',
+      );
+    }
 
     model.dispose();
   });

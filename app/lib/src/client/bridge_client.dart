@@ -126,6 +126,18 @@ class BridgeClient {
     MergeRequest(commitMessage: commitMessage ?? ''),
   );
 
+  /// POST /api/factory/items: create a work item from a handoff review. The
+  /// route answers `{"item": {...}}`, and 201 the first time.
+  Future<FactoryItem> createFactoryItem(FactoryCreate draft) async {
+    final body = await _objectOf<Map<String, dynamic>>(
+      '/api/factory/items',
+      (json) => json,
+      method: 'POST',
+      body: draft,
+    );
+    return FactoryItem.fromJson(body['item'] as Map<String, dynamic>);
+  }
+
   /// POST /api/factory/items/{id}/commands with a `merge_and_complete`: the
   /// factory's own merge order for the pull request it reviewed.
   ///

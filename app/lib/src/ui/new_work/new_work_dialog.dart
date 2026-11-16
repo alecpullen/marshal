@@ -17,12 +17,19 @@ Sheet newWorkDialog(
   VoidCallback? onCancel,
   void Function(String agentId)? onStarted,
   void Function(StartedPlanner planner)? onPlanned,
+  void Function(String prompt)? onWorkItem,
 }) => Sheet(
   title: 'Start a new agent',
   actions: [
     Btn.primary(
       'Start',
       onTap: () async {
+        if (model.kind == NewWorkKind.workItem) {
+          // "Work item" opens the handoff review with the prompt as the
+          // plan's starting text (F6 decision 9); nothing is spawned here.
+          onWorkItem?.call(model.prompt.trim());
+          return;
+        }
         await model.start();
         final planner = model.startedPlanner;
         if (planner != null) {

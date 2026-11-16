@@ -185,6 +185,20 @@ class FactoryStore extends ChangeNotifier {
     }
   }
 
+  /// Creates a work item from a handoff review and keeps it (F6 decision 8).
+  ///
+  /// The draft is the sheet's own: this store only posts it and folds the
+  /// item it made into the list, so the work item's thread opens from the
+  /// same data every other item comes from.
+  Future<FactoryItem> create(String host, FactoryCreate draft) async {
+    final owner = _ownerOf(host);
+    if (owner == null) throw StateError('no host named $host');
+    final item = await owner.client.createFactoryItem(draft);
+    _apply(host, item);
+    notifyListeners();
+    return item;
+  }
+
   // The commands a screen sends (F6 decision 5). Each names what the person
   // decided, never a wire payload: `ui/` reads `model/` and never touches
   // `client/` (F1's boundary), and a command is built here where the wire is.

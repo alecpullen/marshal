@@ -6,6 +6,7 @@ import 'src/menu/desktop_stub.dart'
     if (dart.library.io) 'src/menu/desktop.dart';
 import 'src/model/factory_store.dart';
 import 'src/model/fleet_store.dart';
+import 'src/model/handoff_model.dart';
 import 'src/model/composer_model.dart';
 import 'src/model/inbox_model.dart';
 import 'src/model/new_work_model.dart';
@@ -95,6 +96,19 @@ Future<void> main() async {
             read: () => client.planner(plannerID),
           );
         },
+        // The handoff review of a plan (F6 decision 8): its inherited values
+        // come from the project's factory defaults, which no route reports
+        // yet, so the sheet states what the project does not and the person
+        // chooses the rest. Approving creates the item through the one store
+        // that reads the factory.
+        handoffFor: (thread, plan, spec) => HandoffModel(
+          defaults: ProjectDefaults(hostID: thread.host),
+          projectRoot: thread.project,
+          title: thread.title,
+          plan: plan,
+          spec: spec,
+          create: (draft) => factory.create(thread.host, draft),
+        ),
       ),
     ),
   );

@@ -121,6 +121,31 @@ func TestASubmissionNotifies(t *testing.T) {
 	}
 }
 
+func TestTwoSubmissionsSharingATitleBothNotify(t *testing.T) {
+	n := &recordingNotifier{}
+	w := NewWatch(n, newTestClock().now)
+	w.Observe(loadedState(1))
+
+	// One title, two queued submissions: each is its own thing to approve, so
+	// the burst's key must be the submission's ID, not its title.
+	s := loadedState(1)
+	s.Inbox.Queue = []contract.InboxItem{
+		{Kind: contract.InboxItemIntake, Submission: &contract.PendingSubmission{ID: "s1", Title: "Ship the parser"}},
+		{Kind: contract.InboxItemIntake, Submission: &contract.PendingSubmission{ID: "s2", Title: "Ship the parser"}},
+	}
+	got := w.Observe(s)
+	want := []Notification{
+		{Key: "s1", Text: "Ship the parser needs you: intake"},
+		{Key: "s2", Text: "Ship the parser needs you: intake"},
+	}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("notified %v, want %v", got, want)
+	}
+	if len(n.notes) != len(want) || n.notes[0] != want[0] || n.notes[1] != want[1] {
+		t.Fatalf("the notifier got %v, want %v", n.notes, want)
+	}
+}
+
 func TestReadyNotifies(t *testing.T) {
 	n := &recordingNotifier{}
 	w := NewWatch(n, newTestClock().now)

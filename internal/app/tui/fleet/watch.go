@@ -71,7 +71,7 @@ func (w *Watch) Observe(state acpclient.FleetState) []Notification {
 	now := w.now()
 	var out []Notification
 	for _, t := range transitions(prev, state) {
-		n, ok := notificationOf(state, t)
+		n, ok := notificationOf(t)
 		if !ok {
 			continue
 		}
@@ -90,14 +90,15 @@ func (w *Watch) Observe(state acpclient.FleetState) []Notification {
 // notificationOf is the notification for one transition, and whether it is
 // one at all: a failed agent is an Events line, not a notification (decision
 // 4).
-func notificationOf(state acpclient.FleetState, t transition) (Notification, bool) {
+func notificationOf(t transition) (Notification, bool) {
 	switch t.Kind {
 	case transitionNeedsYou:
 		if t.AgentID == "" {
 			// A submission: its title is what the operator reads, and its ID
-			// is the burst's key.
+			// is the burst's key, so two submissions that share a title are
+			// still two notifications.
 			return Notification{
-				Key:  submissionKeyIn(state, t.Name),
+				Key:  t.SubmissionID,
 				Text: t.Name + " needs you: intake",
 			}, true
 		}
@@ -116,20 +117,4 @@ func notificationOf(state acpclient.FleetState, t transition) (Notification, boo
 	default:
 		return Notification{}, false
 	}
-}
-
-// submissionKeyIn is the burst's key for a submission transition: the ID of
-// the queued submission with this title. transitions names a submission by its
-// title alone, which is the operator's read of it; the title is the fallback
-// for an item the state no longer lists.
-func submissionKeyIn(state acpclient.FleetState, title string) string {
-	for _, item := range state.Inbox.Queue {
-		if item.Kind != contract.InboxItemIntake || item.Submission == nil {
-			continue
-		}
-		if item.Submission.Title == title {
-			return item.Submission.ID
-		}
-	}
-	return title
 }

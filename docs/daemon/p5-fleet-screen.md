@@ -2187,7 +2187,10 @@ after it. Embedded mode gets neither.
   row with both the count and the hints.
 - **A submission's burst key.** Plan 3's transitions name a submission by its
   title, so the watch maps a title to the queued submission's ID and falls back
-  to the title for an item the state no longer lists.
+  to the title for an item the state no longer lists. The review showed that
+  map collapses two submissions that share a title: `transition` now carries
+  the submission's ID beside its title, so the key is the ID and
+  `submissionKeyIn` is gone.
 - **One mutation check does not bite, as written.** Dropping `Observe`'s epoch
   guard leaves `TestANewEpochNotifiesNothing` passing, because `transitions`
   already returns nothing for a foreign or unloaded epoch (`transitions.go`),
@@ -2236,6 +2239,39 @@ config: `webbridge --profile local` started and answered `GET /api/daemon`
 ./...` is clean; CI's suite command (`scripts/test.sh full`) passes at
 `TMPDIR=/tmp/p5-6-suite`, as it did at this batch's baseline; `CGO_ENABLED=1 go
 build ./cmd/marshal` succeeds; the scripted usability suite passes.
+
+**Branch review.** Three independent `glm-5.3-flash` reviewers through
+`ollama-cloud` read the branch against `c37c3585`, split by file set: the
+bridge and its real-bridge test, the screen with the fleet model and the
+notifier, and the launch wiring with the second real-bridge test and the
+docs. No blocker and no major finding was raised. Three findings were acted on
+and three recorded:
+
+| Severity | Finding | Resolution |
+|---|---|---|
+| Minor | Two queued submissions that share a title got one burst key, because the watch mapped a title back to the first matching queue item, so the second submission's notification was dropped as the first's burst | `transition` carries the submission's ID (`transitions.go`), the notification's key is that ID, and `submissionKeyIn` is gone; `TestTwoSubmissionsSharingATitleBothNotify` fails if the title is used again |
+| Minor | The own-child refusal told an agent whose runtime had gone away — and any agent in a fleet with no state root — that it "runs in a container" | The refusal branches on the runtime's `containerized`, so the container sentence stays exact and anything else reads "agent <name> has no viewer socket yet"; the refusals table has a row for each |
+| Nit | `statusRightSegment` lost its production caller when the count moved into `statusClusters`, leaving a test-only method beside the real cluster | Deleted; the four tests that used it call `sessionRightSegment`, which is the same string for their fleet-less models |
+| Nit | `relayEnd.root` held a project child's root directory for one attach kind and an agent's display name for the other | Recorded as intended: the field names the child on the attach's log lines, and its comment now says which value each kind passes |
+| Nit | After a crash, a `v/a-<hash>.sock` whose agent is never resumed or destroyed stays in `v/`; project children self-heal because their names are per root | Left as it is: bounded by the agents alive at the crash, and removed when that agent next starts. A sweep at `NewFleet` could delete a live child's socket when two bridges share a state root, which is the worse failure |
+| Nit | Nothing asserts that the loop does not close an injected fleet client | Not assertable: `acpclient.Fleet` has no `Close`, so the invariant holds by construction — the deferred close only ever sees the concrete `*fleetclient.Client` the loop built |
+
+The reviewers also confirmed the clean areas explicitly: no path counts a
+viewer on the wrong registry and no error path leaves one counted or a linger
+armed; the stale socket is removed before the child starts and the child's
+socket after it stops, with the detach path keeping it; agent IDs are hashed
+into a `0700` directory, so no traversal or length overflow; the own-child
+branch mirrors the project branch and the container refusal keeps its slot in
+decision 5's order; the notifications cannot break out of the AppleScript
+string or `notify-send` argv and never block the update loop; the pump and the
+quit gate cannot read a closed channel or outlive the program, and no
+transition is dropped between programs; the count matches the fleet screen's
+Needs-you rows, excludes only the shown agent's own, and survives hint
+shedding; the TUI still imports nothing of the notifier and stays on the client
+seam; `internal/app/notify` and `internal/launch` mutate no package global; no
+test spawns a real notifier or reads the developer's config; and every claim in
+this record — including the blocked manual run, and the epoch mutation check
+that does not bite — is true of the code as committed.
 
 ## Branch review record
 

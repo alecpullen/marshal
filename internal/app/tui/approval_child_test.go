@@ -148,8 +148,8 @@ func TestChildApprovalRenderedInInputArea(t *testing.T) {
 	if m.modeSegment() != "Act" {
 		t.Errorf("modeSegment = %q, want Act while approval is pending", m.modeSegment())
 	}
-	if got := stripANSI(m.statusRightSegment()); !strings.Contains(got, "approval") {
-		t.Errorf("statusRightSegment = %q, want the approval indicator", got)
+	if got := stripANSI(m.sessionRightSegment()); !strings.Contains(got, "approval") {
+		t.Errorf("sessionRightSegment = %q, want the approval indicator", got)
 	}
 }
 

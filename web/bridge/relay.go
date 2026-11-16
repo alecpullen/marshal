@@ -60,12 +60,13 @@ type relayWatch struct {
 
 // relayEnd is what a relay needs from the child its attach reached (decision
 // 2): the registry that counts the viewer, the hook that rearms a project
-// child's linger — nil for a child of the agent's own — and the name the
-// attach's log lines carry.
+// child's linger — nil for a child of the agent's own — and what names the
+// child on the attach's log lines: a project child's root directory, or an
+// agent's own child's display name.
 type relayEnd struct {
 	reg    *Registry // counts the viewer
 	linger func()    // rearms a project child's linger; nil for an own child
-	root   string    // the name the attach's log lines carry
+	root   string    // names the child on the attach's log lines
 }
 
 // relay copies frames between an attached client and its viewer connection

@@ -938,6 +938,17 @@ func TestTheAgentAttachRefusals(t *testing.T) {
 		h.fleet.mu.Unlock()
 		return id
 	}
+	// A host agent whose runtime went away between the record lookup and the
+	// target lookup has no viewer socket either, and is not a container.
+	noViewer := func(t *testing.T, h *attachHarness, root string) string {
+		id := live(t, h, root)
+		h.fleet.mu.Lock()
+		h.fleet.runtimes[id].project = nil
+		h.fleet.runtimes[id].containerized = false
+		h.fleet.runtimes[id].viewerSocket = ""
+		h.fleet.mu.Unlock()
+		return id
+	}
 	noSession := func(t *testing.T, h *attachHarness, root string) string {
 		id := live(t, h, root)
 		h.fleet.mu.Lock()
@@ -984,6 +995,11 @@ func TestTheAgentAttachRefusals(t *testing.T) {
 			name: "an agent in a container", method: http.MethodPost, upgrade: true, setup: container,
 			want:     http.StatusConflict,
 			sentence: "agent reviewer runs in a container, which has no viewer socket yet",
+		},
+		{
+			name: "an agent with no viewer socket", method: http.MethodPost, upgrade: true, setup: noViewer,
+			want:     http.StatusConflict,
+			sentence: "agent reviewer has no viewer socket yet",
 		},
 		{
 			name: "an agent with no session yet", method: http.MethodPost, upgrade: true, setup: noSession,

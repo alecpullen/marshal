@@ -262,7 +262,14 @@ func (s *Server) attachAgent(w http.ResponseWriter, r *http.Request, id string) 
 		}
 		s.fleet.mu.Unlock()
 		if socket == "" {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "agent " + name + " runs in a container, which has no viewer socket yet"})
+			// A container's agent has no viewer socket by design; anything
+			// else without one is an agent whose runtime went away before the
+			// attach reached it, or a fleet with no state root to put one in.
+			if rt != nil && rt.containerized {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "agent " + name + " runs in a container, which has no viewer socket yet"})
+				return
+			}
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "agent " + name + " has no viewer socket yet"})
 			return
 		}
 	}

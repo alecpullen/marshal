@@ -257,7 +257,7 @@ func modeSegmentFor(access acpwire.Interaction) string {
 // questions.
 //
 // There is deliberately no "edit cmd" cue: an approval edit only exists while
-// its approval is still pending, and statusRightSegment reports that pending
+// its approval is still pending, and sessionRightSegment reports that pending
 // decision first. Replacing it with the edit cue would hide the one persistent
 // reminder that a decision is outstanding.
 func (m Model) transientStatusSegment() string {
@@ -516,12 +516,6 @@ func browserStatusText(bi acpwire.Browser) string {
 	return g + " " + url
 }
 
-// statusRightSegment is the right cluster: the fleet's count of what waits for
-// the operator first, then the session's own right-hand segment (decision 9).
-func (m Model) statusRightSegment() string {
-	return joinRight(m.needsYouSegment(), m.sessionRightSegment())
-}
-
 // joinRight puts the fleet's count before the session's own right-hand
 // segment. Either side may be empty: the count is present without a hint
 // cluster, and the cluster is present with nothing waiting elsewhere.
@@ -618,7 +612,7 @@ func (m Model) accessRequestQueued() bool {
 }
 
 // noticeVisible reports whether a session notice is currently up. The
-// error indicator in statusRightSegment is never shed for width, so the
+// error indicator in sessionRightSegment is never shed for width, so the
 // hint-cluster drop logic must skip it when a notice is visible.
 func (m Model) noticeVisible() bool {
 	return m.sess.Status().Notice != nil

@@ -102,6 +102,10 @@ type agentRuntime struct {
 	// warning only — the spawn is never refused on skew.
 	versionWarning bool
 
+	// agentVersion is the version the agent's handshake reported (decision
+	// 4), kept beside versionWarning so the warning can name it.
+	agentVersion string
+
 	// caps are the capability names the agent advertised in initialize.
 	// Set once during startRuntime, before the runtime is published.
 	caps map[string]bool
@@ -927,7 +931,7 @@ func (f *Fleet) projectRuntime(ctx context.Context, a Agent) (*agentRuntime, err
 
 	rt := &agentRuntime{id: a.ID, root: a.Project, profile: a.Profile,
 		child: child, reg: reg, log: log, sourceKind: a.SourceKind,
-		project: pc, caps: caps}
+		project: pc, caps: caps, agentVersion: version}
 	// The child's version is the rule checkAgentVersion applies to a child of
 	// an agent's own: a mismatch is a warning, never a refusal.
 	if versionSkew(version, f.buildVersion) {
@@ -1035,6 +1039,7 @@ func (f *Fleet) checkAgentVersion(ctx context.Context, rt *agentRuntime) {
 	for k := range res.SessionCapabilities {
 		rt.caps[k] = true
 	}
+	rt.agentVersion = res.AgentInfo.Version
 	if versionSkew(res.AgentInfo.Version, f.buildVersion) {
 		rt.versionWarning = true
 		slog.Default().Warn("webbridge: agent version differs from bridge",
@@ -2060,6 +2065,12 @@ func (f *Fleet) Snapshot() []AgentStatus {
 			st.UpdatedAt = a.CreatedAt
 		}
 		if rt, err := f.runtimeForAgent(a.ID); err == nil {
+			// The version warning is a sentence, not a flag (decision 5):
+			// it names both versions, so the screen shows it as it is.
+			if rt.versionWarning {
+				st.VersionWarning = fmt.Sprintf("agent runs marshal %s; the daemon is %s",
+					rt.agentVersion, f.buildVersion)
+			}
 			sid := f.sessionIDFor(rt)
 			// Registry.Pending is the authority on whether anything is
 			// still outstanding; live.pending only supplies the payload.

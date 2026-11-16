@@ -154,6 +154,10 @@ func RunWithViewers(ctx context.Context, stdin io.Reader, stdout, stderr io.Writ
 		logger:   log,
 		hold:     hostsHold(hosts, home, trust.NewHeadlessResolver(trustStore, log)),
 		record:   record,
+		// A viewer only reads, so no connection of this child's is bound to a
+		// session's turns: each session's wake resumes through its own service
+		// unless a marshal viewer is on its screen (decisions 1, 2).
+		resumeDetached: true,
 	})
 	return errors.Join(err, closeHosts(hosts))
 }

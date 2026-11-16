@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+// @ts-expect-error -- vitest runs on node, and this project installs no node type package.
+import { webcrypto } from 'node:crypto'
 import { cleanup, render, screen, within } from '@testing-library/svelte'
 import FactoryItem from './FactoryItem.svelte'
 import * as api from '../lib/api'
+import { factoryPlanHash } from '../lib/factory'
 import { connectSSE } from '../lib/sse.js'
 import { parseChatRoute, parseFactoryRoute } from '../lib/routes'
 import type { FactoryApproval, FactoryItem as Item, FactoryRoute, FactoryWorker } from '../lib/factory'
@@ -51,6 +54,11 @@ const stubMatchMedia = () => vi.stubGlobal('matchMedia', vi.fn((query: string) =
 })))
 afterEach(cleanup)
 beforeEach(() => {
+  // jsdom's crypto has randomUUID but no SubtleCrypto; the plan revision
+  // section hashes the candidate with the platform's SHA-256.
+  if (!globalThis.crypto.subtle) {
+    Object.defineProperty(globalThis.crypto, 'subtle', { value: webcrypto.subtle, configurable: true })
+  }
   getItem.mockReset()
   upsert.mockReset()
   onRefresh.mockReset()
@@ -156,9 +164,14 @@ it('proposalSaveDoesNotApprove', async () => {
   await fireEvent.input(plan, { target: { value: 'Changed plan' } })
   await fireEvent.click(screen.getByRole('button', { name: 'Save proposal' }))
 
+  await vi.waitFor(() => expect(vi.mocked(api.commandFactoryItem)).toHaveBeenCalled())
   const cmd = vi.mocked(api.commandFactoryItem).mock.calls.at(-1)?.[1]
   expect(cmd?.kind).toBe('revision_propose')
   expect(cmd?.revision).toMatchObject({ plan: 'Changed plan', baseRevision: 1, baseHash: 'hash-1' })
+  // The candidate hash the bridge re-derives from plan/spec, over exactly the
+  // bytes in this command: the propose is refused when it does not bind them.
+  // This item has no proposal yet, so the specification is the draft's (empty).
+  expect(cmd?.revision?.candidateHash).toBe(await factoryPlanHash('Changed plan', ''))
   // Saving is exactly one act: no approve-and-queue, no authorize, no answer.
   expect(vi.mocked(api.commandFactoryItem)).toHaveBeenCalledTimes(1)
   expect(vi.mocked(api.commandFactoryItem).mock.calls.some(([, c]) => c.kind === 'revision_authorize')).toBe(false)
@@ -166,6 +179,68 @@ it('proposalSaveDoesNotApprove', async () => {
   // And the screen says what it did, not that anything is approved.
   expect(await screen.findByText(/Proposal saved\. It is not approved/)).toBeTruthy()
   expect(screen.queryByText(/Revision approved/)).toBeNull()
+})
+it('replacingALiveProposalSupersedesItFirst', async () => {
+  const { fireEvent } = await import('@testing-library/svelte')
+  const live = {
+    id: 'p1', version: 2, baseRevision: 1, baseHash: 'hash-1', plan: 'Live plan', spec: 'Approved spec',
+    candidateHash: 'cand-live', createdBy: 'user', autoAssess: true, status: 'proposed', assessmentState: 'pending',
+    createdAt: '', updatedAt: '',
+  }
+  const item = { ...base, state: 'implementing', version: 4, approvals: [approval(1, 'Approved plan', 'Approved spec')], proposals: [live] } as unknown as Item
+  // The supersede's answer is the read the new proposal must be written from.
+  const superseded = { ...item, version: 5, proposals: [{ ...live, version: 3, status: 'superseded' }] } as unknown as Item
+  getItem.mockResolvedValue(item)
+  vi.mocked(api.commandFactoryItem).mockResolvedValueOnce(superseded).mockResolvedValueOnce(superseded)
+  renderItem()
+
+  const plan = await screen.findByLabelText('Proposed plan')
+  await fireEvent.input(plan, { target: { value: 'Replacement plan' } })
+  await fireEvent.click(screen.getByRole('button', { name: 'Save proposal' }))
+
+  await vi.waitFor(() => expect(vi.mocked(api.commandFactoryItem)).toHaveBeenCalledTimes(2))
+  const [[firstId, first], [secondId, second]] = vi.mocked(api.commandFactoryItem).mock.calls
+  // Supersede the one the bridge still holds, then propose: a second proposal
+  // beside it is refused with "supersede it explicitly".
+  expect(first.kind).toBe('revision_supersede')
+  expect(first.revision).toMatchObject({ proposalId: 'p1', proposalVersion: 2 })
+  expect(first.expectedVersion).toBe(4)
+  expect(second.kind).toBe('revision_propose')
+  expect(second.expectedVersion).toBe(5)
+  expect(second.revision?.candidateHash).toBe(await factoryPlanHash('Replacement plan', 'Approved spec'))
+})
+it('followUpAuthorizesThenConfirmsThroughTheApi', async () => {
+  const { fireEvent } = await import('@testing-library/svelte')
+  const live = {
+    id: 'p1', version: 1, baseRevision: 1, baseHash: 'hash-1', plan: 'Separate work', spec: 'Its own spec',
+    candidateHash: 'cand-1', createdBy: 'user', autoAssess: true, status: 'awaiting_authorization', assessmentState: 'assessed',
+    assessment: { classification: 'scope_change', reason: 'Needs its own item', recommendation: 'follow_up', strategy: 'wait_safe', assessorId: 'a1', candidateHash: 'cand-1', baseRevision: 1 },
+    createdAt: '', updatedAt: '',
+  }
+  const item = { ...base, state: 'implementing', version: 4, approvals: [approval(1, 'Approved plan', 'Approved spec')], proposals: [live] } as unknown as Item
+  // The authorization bumps the proposal version; the confirmation has to name
+  // the version that command returned, not the one that was read.
+  const routed = { ...item, version: 5, proposals: [{ ...live, version: 2, status: 'follow_up_pending', routing: 'follow_up' }] } as unknown as Item
+  getItem.mockResolvedValue(item)
+  vi.mocked(api.commandFactoryItem).mockResolvedValueOnce(routed).mockResolvedValueOnce({ ...routed, version: 6 })
+  renderItem()
+
+  await fireEvent.click(await screen.findByLabelText('I confirm this starts a separate work item instead of changing this one'))
+  await fireEvent.click(screen.getByRole('button', { name: 'Start a follow-up item' }))
+
+  await vi.waitFor(() => expect(vi.mocked(api.commandFactoryItem)).toHaveBeenCalledTimes(2))
+  const [[, first], [, second]] = vi.mocked(api.commandFactoryItem).mock.calls
+  // A follow-up is authorized first: that is what records the intent the
+  // confirmation needs, and it carries the exact candidate and base.
+  expect(first.kind).toBe('revision_authorize')
+  expect(first.revision).toEqual({
+    proposalId: 'p1', proposalVersion: 1, candidateHash: 'cand-1',
+    baseRevision: 1, baseHash: 'hash-1', routing: 'follow_up', strategy: 'wait_safe',
+  })
+  expect(second.kind).toBe('revision_follow_up_confirm')
+  expect(second.revision?.proposalVersion).toBe(2)
+  expect(second.revision?.followUp).toMatchObject({ title: 'Task (follow-up)', plan: 'Separate work', spec: 'Its own spec' })
+  expect(second.revision?.routing).toBeUndefined()
 })
 it('answers the current decision and refreshes on a stale version', async () => {
   const item = { ...base, state: 'needs_input', decision: { id: 'q1', kind: 'question', question: 'Which route?', reason: '' } } as Item

@@ -241,8 +241,8 @@
     binding of its own. A revision command rides in the same envelope, so a
     proposal, its assessment and its delivery are never sent apart from it.
   */
-  async function command(kind: FactoryCommand['kind'], input: FactoryCommandInput = {}): Promise<boolean> {
-    if (!item || busy) return false
+  async function command(kind: FactoryCommand['kind'], input: FactoryCommandInput = {}): Promise<FactoryItem | null> {
+    if (!item || busy) return null
     busy = true; error = ''; notice = ''
     try {
       {
@@ -256,7 +256,10 @@
       upsert(applied)
       fetched = applied
       pending = null; notice = NOTICES[kind] ?? `${kind} accepted`
-      return true
+      // Handed back as well as shown: a multi-step revision path takes its next
+      // command's versions and base from this item, which is the only read that
+      // carries what the bridge just wrote.
+      return applied
     } catch (e) {
       error = errMessage(e)
       if (e instanceof APIError && e.status === 409) {
@@ -268,7 +271,7 @@
         // rather than leave the person on a version that cannot succeed.
         try { await onRefresh(); notice = 'Item changed. Review the refreshed version before trying again.' } catch (refreshError) { error += `; refresh failed: ${errMessage(refreshError)}` }
       }
-      return false
+      return null
     } finally { busy = false }
   }
   /**
@@ -280,11 +283,13 @@
   }
   /*
     The project's automatic-assessment preference decides what "automatic"
-    means on this screen. It is read once per project and never guessed at: a
-    failed read falls back to the handoff's default, which is on, and says so
-    through the component's own wording rather than inventing an override.
+    means on this screen. It is read once per project and never guessed at: the
+    handoff's default is on, but a failed read is reported as a read that
+    failed — the screen must not claim a setting nobody managed to open.
   */
   let autoAssess = $state(true)
+  /** False once a read failed, so the section says it could not read the setting. */
+  let autoAssessKnown = $state(true)
   let assessRoot = $state('')
   $effect(() => {
     const root = item?.projectRoot
@@ -293,8 +298,10 @@
     void (async () => {
       try {
         autoAssess = effectiveAutoAssess(await getProjectSettings(root))
+        autoAssessKnown = true
       } catch {
         autoAssess = true
+        autoAssessKnown = false
       }
     })()
   })
@@ -357,7 +364,7 @@
             approved revision to revise yet, so it is left to the approval tab.
           -->
           {#if item.state !== 'draft' || item.proposals?.length}
-            <FactoryRevision {item} {busy} {autoAssess} run={(kind, revision) => command(kind, { revision })} />
+            <FactoryRevision {item} {busy} {autoAssess} {autoAssessKnown} run={(kind, revision) => command(kind, { revision })} />
           {/if}
           {#if item.decision}
             <!--

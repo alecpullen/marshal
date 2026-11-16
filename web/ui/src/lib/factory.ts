@@ -150,6 +150,8 @@ export type FactoryRevisionCommandKind =
   | 'revision_supersede'
   | 'revision_reject'
   | 'revision_assess_request'
+  /** An explicit retry of an attempt whose outcome was lost (assessing/uncertain). */
+  | 'revision_assess_retry'
   | 'revision_authorize'
   | 'revision_delivery_choice'
   | 'revision_follow_up_confirm'
@@ -244,12 +246,93 @@ export function assessmentPending(proposal: Pick<FactoryRevisionProposal, 'asses
   return proposal.assessmentState === 'pending' || proposal.assessmentState === 'assessing'
 }
 
+/**
+ * The states the bridge accepts a first assessment request from
+ * (factoryApplyRevisionAssessRequest). Every other state is refused, so no
+ * control is offered for it.
+ */
+export function assessmentRequestable(proposal: Pick<FactoryRevisionProposal, 'assessmentState'>): boolean {
+  return proposal.assessmentState === 'not_requested' || proposal.assessmentState === 'unavailable'
+}
+
+/**
+ * The states the bridge accepts an explicit retry from
+ * (factoryApplyRevisionAssessRetry). A `failed` assessment is in neither set:
+ * the bridge retires an attempt that was lost, not one that answered badly, so
+ * a failed assessment needs a fresh proposal rather than a dead control.
+ */
+export function assessmentRetryable(proposal: Pick<FactoryRevisionProposal, 'assessmentState'>): boolean {
+  return proposal.assessmentState === 'assessing' || proposal.assessmentState === 'uncertain'
+}
+
 /** The proposal states that still accept a decision. */
 const LIVE_PROPOSAL = new Set(['proposed', 'awaiting_authorization', 'authorized'])
 
 /** True when this proposal is still the one an approve, amend or follow-up applies to. */
 export function proposalIsLive(proposal: Pick<FactoryRevisionProposal, 'status'>): boolean {
   return LIVE_PROPOSAL.has(proposal.status)
+}
+
+/**
+ * The statuses the bridge counts as awaiting a decision
+ * (factoryRevisionUnresolved): only one may exist per item, so a new proposal
+ * has to supersede it explicitly instead of being refused.
+ */
+const UNRESOLVED_PROPOSAL = new Set(['proposed', 'awaiting_authorization', 'authorized', 'follow_up_pending'])
+
+/** True when the bridge still counts this proposal as awaiting a decision. */
+export function proposalUnresolved(proposal: Pick<FactoryRevisionProposal, 'status'>): boolean {
+  return UNRESOLVED_PROPOSAL.has(proposal.status)
+}
+
+/**
+ * The newest proposal that still awaits a decision, which is the one a save
+ * must supersede before it can propose a replacement. Null when the item is
+ * free to take a new proposal.
+ */
+export function unresolvedProposal(item: Pick<FactoryItem, 'proposals'>): FactoryRevisionProposal | null {
+  const list = item.proposals ?? []
+  for (let n = list.length - 1; n >= 0; n--) if (proposalUnresolved(list[n])) return list[n]
+  return null
+}
+
+/**
+ * The assessment that judged exactly this candidate at exactly this base,
+ * which is the only one the bridge lets an authorization take its strategy
+ * from. Anything else is history: it stays readable, but it cannot decide how
+ * these bytes are delivered.
+ */
+export function matchingAssessment(proposal: FactoryRevisionProposal | null): FactoryRevisionAssessment | null {
+  const assessment = proposal?.assessment
+  if (!proposal || !assessment) return null
+  return assessment.candidateHash === proposal.candidateHash && assessment.baseRevision === proposal.baseRevision
+    ? assessment
+    : null
+}
+
+/**
+ * The factory's approval digest, mirrored from `FactoryPlanHash`
+ * (web/bridge/factory_store.go): SHA-256 over each of the plan and the
+ * specification, prefixed with its own 8-byte big-endian UTF-8 byte length.
+ *
+ * It is computed here because the bridge refuses a proposal whose
+ * `candidateHash` does not bind the bytes it carries. web/bridge's
+ * TestFactoryPlanHashVectors pins this algorithm with literal digests, and the
+ * TypeScript test asserts the same two values, so the two sides cannot drift.
+ */
+export async function factoryPlanHash(plan: string, spec: string): Promise<string> {
+  const encoder = new TextEncoder()
+  const parts = [encoder.encode(plan), encoder.encode(spec)]
+  const bytes = new Uint8Array(16 + parts[0].length + parts[1].length)
+  const view = new DataView(bytes.buffer)
+  // setBigUint64 is big-endian by default, which is what Go's binary.BigEndian
+  // writes; the length is the UTF-8 byte count, never a character count.
+  view.setBigUint64(0, BigInt(parts[0].length))
+  bytes.set(parts[0], 8)
+  view.setBigUint64(8 + parts[0].length, BigInt(parts[1].length))
+  bytes.set(parts[1], 16 + parts[0].length)
+  const digest = await crypto.subtle.digest('SHA-256', bytes)
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
 export function proposalStatusLabel(status: string): string {
@@ -314,7 +397,13 @@ export interface DeliveryReceipt { tone: 'ok' | 'warn' | 'neutral'; headline: st
 export function deliveryReceipt(delivery: FactoryRevisionDelivery): DeliveryReceipt {
   switch (delivery.state) {
     case 'delivered':
-      return { tone: 'ok', headline: 'Delivered', meaning: 'The agent has this revision. This is the only state that means it was delivered.' }
+      // Delivered is the runtime accepting the input, never the agent acting on
+      // it: the spec draws that line and the wording has to draw it too.
+      return {
+        tone: 'ok',
+        headline: 'Delivered',
+        meaning: 'The agent has this revision. This is the only state that means it was delivered, and delivery into the runtime is not proof the agent followed it: check the work before relying on it.',
+      }
     case 'accepted':
       return { tone: 'warn', headline: 'Accepted — not delivered', meaning: 'The session accepted the request and recorded it. That is a receipt, not a delivery: the agent has not necessarily read or applied anything yet.' }
     case 'pending':
@@ -340,10 +429,14 @@ export function deliveryReceipt(delivery: FactoryRevisionDelivery): DeliveryRece
 export const DELIVERY_STRATEGIES: FactoryRevisionDelivery['strategy'][] = ['wait_safe', 'interrupt', 'hold']
 
 /**
- * One revision command's trip to the bridge: `true` when the bridge accepted
- * it, `false` when it refused, which leaves the person's text where it is.
+ * One revision command's trip to the bridge: the item the bridge answered with
+ * when it accepted the command, `null` when it refused (which leaves the
+ * person's text where it is). A multi-step path — supersede then propose,
+ * authorize then confirm — takes the next command's payload from the item the
+ * previous one returned, because that is the only read carrying the versions
+ * the bridge now holds.
  */
-export type FactoryRevisionRun = (kind: FactoryRevisionCommandKind, revision: FactoryRevisionCommand) => Promise<boolean>
+export type FactoryRevisionRun = (kind: FactoryRevisionCommandKind, revision: FactoryRevisionCommand) => Promise<FactoryItem | null>
 
 export interface PollSeam {
   document?: Pick<Document, 'hidden' | 'addEventListener' | 'removeEventListener'>

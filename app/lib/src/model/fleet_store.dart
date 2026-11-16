@@ -356,8 +356,7 @@ class FleetStore extends ChangeNotifier {
     Map<String, Object?> changes,
   ) => AgentStatus.fromJson({
     ...agent.toJson(),
-    for (final MapEntry(:key, :value) in changes.entries)
-      if (value != null) key: value,
+    for (final MapEntry(:key, :value) in changes.entries) key: ?value,
   });
 
   /// Reads one host's agents again, without touching the projects or the
@@ -477,7 +476,8 @@ class _HostWiring {
     events.cancel();
     gaps.cancel();
     final listen = this.listen;
-    if (listen != null) state.removeListener(listen);
+    if (listen == null) return;
+    state.removeListener(listen);
   }
 }
 

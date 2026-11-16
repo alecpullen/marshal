@@ -106,14 +106,15 @@ class Ask {
 /// writes no fleet state: the store is still the only writer, and an ask
 /// leaves when the stream stops reporting it.
 class InboxModel extends ChangeNotifier {
-  InboxModel(this._store, {required BridgeClient Function(String host) client})
-    : _client = client {
+  InboxModel(this._store, {required this.client}) {
     _store.addListener(_rebuild);
     _rebuild();
   }
 
   final FleetStore _store;
-  final BridgeClient Function(String host) _client;
+
+  /// The client that reaches a host, for the answer an ask posts.
+  final BridgeClient Function(String host) client;
   final _overlays = <String, ({AskState state, String? error})>{};
 
   /// The parameters behind each ask, so an answer can name the question it
@@ -159,7 +160,7 @@ class InboxModel extends ChangeNotifier {
   }
 
   Future<void> _post(Ask ask, AskAction action, String reply) async {
-    final client = _client(ask.host);
+    final client = this.client(ask.host);
     switch (ask.kind) {
       case AskKind.approval:
         await client.answerPermission(

@@ -1,7 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/contract.g.dart';
 import 'package:marshal_app/src/client/host.dart';
-import 'package:marshal_app/src/model/fleet_store.dart';
 
 import '../support/fake_bridge.dart';
 import 'support.dart';

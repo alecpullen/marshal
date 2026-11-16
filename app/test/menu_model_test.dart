@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/daemon/status.dart';
 import 'package:marshal_app/src/menu/host.dart';
 import 'package:marshal_app/src/menu/model.dart';
+import 'package:marshal_app/src/ui/shell/window_host.dart';
 
 /// FakeTrayHost records what the app drew, so the menu is asserted as data.
 class FakeTrayHost implements TrayHost {
@@ -192,4 +193,56 @@ void main() {
     );
     expect(on.item('login')!.checked, isTrue);
   });
+
+  test('Open Studio is the first menu item', () async {
+    final menu = await draw(FakeTrayHost(), status: statusWith());
+
+    final first = menu.entries.first;
+    expect(first, isA<TrayItem>());
+    expect((first as TrayItem).id, 'studio');
+    expect(first.label, 'Open Studio');
+    expect(first.enabled, isTrue);
+  });
+
+  test('closing the window hides and does not quit', () async {
+    final host = FakeWindowHost();
+    final window = WindowController(host);
+
+    await window.show();
+    expect(host.calls, ['show']);
+    expect(window.open, isTrue);
+
+    // The red button, Cmd-W and the Linux close button all mean this: the
+    // window goes away and the app stays, because Quit is in the menu.
+    await window.closed();
+    expect(host.calls, ['show', 'hide']);
+    expect(window.open, isFalse);
+
+    // Opening it again focuses the same window; nothing was destroyed.
+    await window.show();
+    expect(host.calls, ['show', 'hide', 'show']);
+  });
+
+  test('quitting is its own call', () async {
+    final host = FakeWindowHost();
+    final window = WindowController(host);
+
+    await window.quit();
+
+    expect(host.calls, ['quit']);
+  });
+}
+
+/// FakeWindowHost records what the app asked of its window.
+class FakeWindowHost implements WindowHost {
+  final calls = <String>[];
+
+  @override
+  Future<void> show() async => calls.add('show');
+
+  @override
+  Future<void> hide() async => calls.add('hide');
+
+  @override
+  Future<void> quit() async => calls.add('quit');
 }

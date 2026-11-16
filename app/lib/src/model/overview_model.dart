@@ -39,7 +39,7 @@ class ProjectSummary {
   int get threads => needsYou + running + ready + failed + idle;
 
   @override
-  String toString() => 'ProjectSummary($name, ${threads} threads)';
+  String toString() => 'ProjectSummary($name, $threads threads)';
 }
 
 /// What one host is running now, and whether it answers.

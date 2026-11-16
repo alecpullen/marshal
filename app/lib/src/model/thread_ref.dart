@@ -135,8 +135,9 @@ String headlineFor(AgentStatus agent) {
   final activity = agent.activity?.trim() ?? '';
   if (activity.isNotEmpty) return activity;
   final changed = agent.changedFiles ?? 0;
-  if (changed > 0)
+  if (changed > 0) {
     return changed == 1 ? '1 file changed' : '$changed files changed';
+  }
   return '';
 }
 

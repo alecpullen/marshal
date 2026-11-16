@@ -1490,3 +1490,267 @@ func TestACancelledQuestionStopsBeingPending(t *testing.T) {
 		t.Fatalf("resolve after the cancel: want ErrGone, got %v", err)
 	}
 }
+
+// TestAFollowedRunMarksTheSessionBusy: the run a follower reports marks the
+// session busy for everything that reads Sessions(), and its end clears it
+// (P5 4c).
+func TestAFollowedRunMarksTheSessionBusy(t *testing.T) {
+	r, _ := newTestRegistry(t, "registry")
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := r.child.Request(ctx, "test/followed_run", map[string]any{"state": "started", "runId": "run-1"}); err != nil {
+		t.Fatalf("followed_run started: %v", err)
+	}
+	waitFor(t, 2*time.Second, "the followed run marking the session busy", func() bool {
+		info := r.Sessions()["s-1"]
+		return info.Busy && info.followedRun == "run-1"
+	})
+	if _, err := r.child.Request(ctx, "test/followed_run", map[string]any{"state": "ended", "runId": "run-1", "outcome": "done"}); err != nil {
+		t.Fatalf("followed_run ended: %v", err)
+	}
+	waitFor(t, 2*time.Second, "the followed run's end clearing the session", func() bool {
+		info := r.Sessions()["s-1"]
+		return !info.Busy && info.followedRun == ""
+	})
+}
+
+// TestAFollowedRunsApprovalIsBrokered: a run reported from another connection
+// is in flight on this session, so its permission request waits for a
+// decision instead of being denied. Without one, the same request is denied
+// as it always was.
+func TestAFollowedRunsApprovalIsBrokered(t *testing.T) {
+	r, c := newTestRegistry(t, "registry")
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// The bridge's own turn ends, so the session stops accepting: an approval
+	// after it belongs to no run this bridge knows is in flight.
+	if err := r.Prompt(ctx, "s-1", "hello"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if r.sessionAccepting("s-1") {
+		t.Fatal("the session still accepts after its own turn ended")
+	}
+	if _, err := r.child.Request(ctx, "test/ask_permission", nil); err != nil {
+		t.Fatalf("permission trigger: %v", err)
+	}
+	waitFor(t, 2*time.Second, "the runless approval denied", func() bool {
+		return strings.Contains(c.StderrLog(), `"approved":false`)
+	})
+	if got := r.Pending("s-1"); got != "" {
+		t.Fatalf("a runless approval parked as %q, want it denied", got)
+	}
+
+	// A followed run's start makes the session accepting again: the same
+	// request now waits in Pending for a decision.
+	if _, err := r.child.Request(ctx, "test/followed_run", map[string]any{"state": "started", "runId": "run-1"}); err != nil {
+		t.Fatalf("followed_run started: %v", err)
+	}
+	waitFor(t, 2*time.Second, "the followed run accepting the session", func() bool {
+		return r.sessionAccepting("s-1")
+	})
+	if _, err := r.child.Request(ctx, "test/ask_permission", nil); err != nil {
+		t.Fatalf("permission trigger: %v", err)
+	}
+	waitFor(t, 2*time.Second, "the followed run's approval parked", func() bool {
+		return r.Pending("s-1") == "approval"
+	})
+	if err := r.ResolvePermission("tc-1", Decision{Approved: true}); err != nil {
+		t.Fatalf("ResolvePermission: %v", err)
+	}
+}
+
+// TestAFollowedRunsEndIsATurnEnd: a followed run's end becomes the
+// bridge-side turn_end its clients already understand (decision 9), and a
+// failed run's message rides as the event's error.
+func TestAFollowedRunsEndIsATurnEnd(t *testing.T) {
+	r, _ := newTestRegistry(t, "registry")
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	var mu sync.Mutex
+	var ends []map[string]any
+	r.OnEvent = func(sessionId string, payload any) {
+		m, ok := payload.(map[string]any)
+		if !ok || m["type"] != "turn_end" {
+			return
+		}
+		mu.Lock()
+		ends = append(ends, m)
+		mu.Unlock()
+	}
+
+	if _, err := r.New(ctx, AgentPath("/tmp/work"), ""); err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, p := range []map[string]any{
+		{"state": "started", "runId": "run-1"},
+		{"state": "ended", "runId": "run-1", "outcome": "cancelled"},
+	} {
+		if _, err := r.child.Request(ctx, "test/followed_run", p); err != nil {
+			t.Fatalf("followed_run %v: %v", p, err)
+		}
+	}
+	waitFor(t, 2*time.Second, "the cancelled run's turn_end", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(ends) == 1
+	})
+	mu.Lock()
+	if got := ends[0]["stopReason"]; got != "cancelled" {
+		mu.Unlock()
+		t.Fatalf("stopReason = %v, want cancelled", got)
+	}
+	if _, ok := ends[0]["error"]; ok {
+		mu.Unlock()
+		t.Fatalf("a cancelled run's turn_end carried an error: %v", ends[0])
+	}
+	mu.Unlock()
+
+	for _, p := range []map[string]any{
+		{"state": "started", "runId": "run-2"},
+		{"state": "ended", "runId": "run-2", "outcome": "failed", "error": "the run blew up"},
+	} {
+		if _, err := r.child.Request(ctx, "test/followed_run", p); err != nil {
+			t.Fatalf("followed_run %v: %v", p, err)
+		}
+	}
+	waitFor(t, 2*time.Second, "the failed run's turn_end", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(ends) == 2
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if got := ends[1]["error"]; got != "the run blew up" {
+		t.Fatalf("error = %v, want the run's own message", got)
+	}
+	if _, ok := ends[1]["stopReason"]; ok {
+		t.Fatalf("a failed run's turn_end carried a stop reason: %v", ends[1])
+	}
+}
+
+// TestALateEndDoesNotHideTheBridgesTurn: an ended for an earlier run clears
+// that run without clearing the bridge's own prompt, which is still in
+// flight.
+//
+// The prompt is held by the fake's own handler, and the earlier run's end is
+// injected straight onto the pipe: the helper child's script answers requests
+// one at a time, so it cannot report a run end while a prompt is in flight.
+func TestALateEndDoesNotHideTheBridgesTurn(t *testing.T) {
+	fake := newFakeAgent()
+	release := make(chan struct{})
+	fake.handler = func(method string, params json.RawMessage) (any, *rpcError, bool) {
+		if method == "session/prompt" {
+			<-release
+			return map[string]any{"stopReason": "end_turn"}, nil, true
+		}
+		return nil, nil, false
+	}
+	c := &Child{Transport: fake}
+	if err := c.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(c.Stop)
+	r := NewRegistry(c)
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	id, err := r.New(ctx, AgentPath("/tmp/work"), "")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// An earlier run is in flight on another connection...
+	fake.notify("session/update", map[string]any{
+		"sessionId": id,
+		"update":    map[string]any{"kind": "followed_run", "state": "started", "runId": "run-1"},
+	})
+	waitFor(t, 2*time.Second, "the followed run marking the session busy", func() bool {
+		return r.Sessions()[id].Busy && r.Sessions()[id].followedRun == "run-1"
+	})
+	// ...and the bridge's own prompt starts on top of it.
+	promptErr := make(chan error, 1)
+	go func() { promptErr <- r.Prompt(ctx, id, "hello") }()
+	waitFor(t, 2*time.Second, "the bridge's own turn starting", func() bool {
+		return r.Sessions()[id].ownTurn
+	})
+	fake.notify("session/update", map[string]any{
+		"sessionId": id,
+		"update":    map[string]any{"kind": "followed_run", "state": "ended", "runId": "run-1", "outcome": "done"},
+	})
+	waitFor(t, 2*time.Second, "the earlier run cleared", func() bool {
+		return r.Sessions()[id].followedRun == ""
+	})
+	if !r.Sessions()[id].Busy {
+		t.Fatal("a late end cleared the session while the bridge's own prompt was in flight")
+	}
+	close(release)
+	if err := <-promptErr; err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	waitFor(t, 2*time.Second, "the bridge's own prompt ending the session", func() bool {
+		return !r.Sessions()[id].Busy && r.Sessions()[id].ownTurn == false
+	})
+}
+
+// TestAFleetAgentsSessionIsFollowed: a spawn follows the session it created,
+// and a restart's resume follows it again — the follow lived in the process
+// that died (P5 4c).
+func TestAFleetAgentsSessionIsFollowed(t *testing.T) {
+	f, _, agentOf := agentFleet(t)
+	ctx := ctlContext(t)
+
+	id, err := f.Spawn(ctx, "/home/u/a", SpawnOptions{Name: "one"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	fake := agentOf(id)
+	if fake == nil {
+		t.Fatal("the spawn built no agent child")
+	}
+	waitFor(t, 5*time.Second, "the spawn following its session", func() bool {
+		return len(fake.calls("session/follow")) == 1
+	})
+	if got := fake.calls("session/follow")[0]; !strings.Contains(got, `"sessionId":"s-1"`) {
+		t.Fatalf("session/follow params = %s, want the new session's id", got)
+	}
+
+	fake.die()
+	waitFor(t, 10*time.Second, "the restart following the session again", func() bool {
+		return len(fake.calls("session/follow")) == 2
+	})
+}
+
+// TestAnAgentWithoutFollowIsLeftAsItWas: an agent that answers
+// method-not-found still spawns, and its session is not marked followed.
+func TestAnAgentWithoutFollowIsLeftAsItWas(t *testing.T) {
+	f := testFleet(t)
+	bin, args, env := helperCommand("registry-nofollow")
+	f.newRuntime = func(a Agent) (*Child, error) { return &Child{MarshalBin: bin, Args: args, Env: env}, nil }
+
+	id, err := f.Spawn(ctlContext(t), "/home/u/a", SpawnOptions{Name: "one"})
+	if err != nil {
+		t.Fatalf("a spawn against an agent without session/follow: %v", err)
+	}
+	rt, err := f.runtimeForAgent(id)
+	if err != nil {
+		t.Fatalf("runtimeForAgent: %v", err)
+	}
+	info, ok := rt.reg.Sessions()["s-1"]
+	if !ok {
+		t.Fatalf("the spawn's session is not tracked: %+v", rt.reg.Sessions())
+	}
+	if info.followed {
+		t.Fatal("an agent without session/follow marked the session followed")
+	}
+	waitFor(t, 2*time.Second, "the follow attempt in the child's log", func() bool {
+		return strings.Contains(rt.child.StderrLog(), "helper saw request session/follow")
+	})
+}

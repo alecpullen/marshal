@@ -77,6 +77,36 @@ jobs:
           git diff --exit-code -- web/bridge/static
           test -z "$(git ls-files --others --exclude-standard -- web/bridge/static)"
 
+  # The tray app's Dart tests. `flutter test` here is the pure-Dart half of the
+  # app — the status models, the menu model, and the fixture both languages
+  # read — so it needs no GTK, no display and no build of the desktop runner.
+  # The bundles themselves are built in the release workflow, on the OSes that
+  # can build them.
+  app:
+    name: Tray app tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      # Pinned to the version this app was developed and last verified against,
+      # not a floating channel: a Flutter upgrade changes the analyzer's rules
+      # and the formatter's output, and neither should arrive unannounced on a
+      # branch that did not touch the app. `app/pubspec.lock` is committed, so
+      # `flutter pub get` resolves to the same plugin versions.
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.35.1'
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      - name: Check formatting
+        run: dart format --output=none --set-exit-if-changed lib test
+
   release-config:
     name: Installer and release config
     runs-on: ubuntu-latest

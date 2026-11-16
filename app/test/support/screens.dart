@@ -1,6 +1,13 @@
+import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
+import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
+import 'package:marshal_app/src/model/nav_model.dart';
+import 'package:marshal_app/src/model/place.dart';
+import 'package:marshal_app/src/model/thread_ref.dart' as model;
 import 'package:marshal_app/src/ui/debug/connection_check.dart';
 import 'package:marshal_app/src/ui/gallery/gallery.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
+import 'package:marshal_app/src/ui/shell/placeholder.dart';
+import 'package:marshal_app/src/ui/shell/shell.dart';
 
 /// One screen the enforcement tests pump: its ready state with fixture data,
 /// and one case for each §7 state it handles.
@@ -47,6 +54,107 @@ final _checkHosts = [
   ),
 ];
 
+/// The moment the shell's fixtures are measured against.
+final shellNow = DateTime.utc(2026, 11, 17, 4, 12);
+
+/// The hosts the shell's fixture lists: one answering, one away for four
+/// minutes.
+final shellHosts = [
+  HostView(
+    name: 'local',
+    kind: HostKind.local,
+    reach: HostReach.live,
+    lastContact: shellNow,
+  ),
+  HostView(
+    name: 'studio',
+    kind: HostKind.server,
+    reach: HostReach.unreachable,
+    lastContact: shellNow.subtract(const Duration(minutes: 4)),
+  ),
+];
+
+model.ThreadRef _shellThread(
+  String id,
+  String title,
+  model.ThreadStatus status,
+) => model.ThreadRef(
+  host: 'local',
+  id: id,
+  project: '/home/u/marshal',
+  title: title,
+  kind: model.ThreadKind.agent,
+  status: status,
+  headline: 'Reading internal/acp',
+  lastActive: shellNow.subtract(const Duration(minutes: 8)),
+);
+
+/// The sidebar the shell's fixture draws, at [place].
+NavModel shellNavFor(Place place) => NavModel(
+  fixed: [
+    NavPlace(
+      kind: PlaceKind.overview,
+      label: 'Overview',
+      active: place.kind == PlaceKind.overview,
+    ),
+    NavPlace(
+      kind: PlaceKind.inbox,
+      label: 'Inbox',
+      count: 3,
+      active: place.kind == PlaceKind.inbox,
+    ),
+    for (final kind in const [
+      PlaceKind.pulls,
+      PlaceKind.automations,
+      PlaceKind.library,
+      PlaceKind.settings,
+    ])
+      NavPlace(
+        kind: kind,
+        label: switch (kind) {
+          PlaceKind.pulls => 'Pull requests',
+          PlaceKind.automations => 'Automations',
+          PlaceKind.library => 'Library',
+          _ => 'Settings',
+        },
+        planned: true,
+        active: place.kind == kind,
+      ),
+  ],
+  projects: [
+    NavProject(
+      id: '/home/u/marshal',
+      name: 'marshal',
+      current: [
+        _shellThread(
+          'a-1',
+          'Reliable session recovery',
+          model.ThreadStatus.running,
+        ),
+        _shellThread('a-2', 'Web studio contract', model.ThreadStatus.needsYou),
+        _shellThread('a-3', 'Bump the gate', model.ThreadStatus.ready),
+      ],
+      earlier: 12,
+      active: place.kind == PlaceKind.thread && place.id == 'a-1',
+    ),
+  ],
+);
+
+/// The shell with its fixture data, in [state] when one is given.
+Widget _shell({StateKind? state, Place place = const Place.overview()}) {
+  final nav = shellNavFor(place);
+  return Shell(
+    nav: nav,
+    hosts: shellHosts,
+    place: place,
+    state: state,
+    now: shellNow,
+    onRetry: () {},
+    onSelect: (_) {},
+    content: plannedPlace(place, nav),
+  );
+}
+
 /// The registry of screens. F0 has one, the gallery; each later phase adds
 /// its screens here with fixture data, and `tooltips_test.dart`,
 /// `states_test.dart` and `overflow_test.dart` then hold them to the design
@@ -74,6 +182,13 @@ final screens = <ScreenCase>[
           state: kind,
           onRetry: () {},
         ),
+    },
+  ),
+  ScreenCase(
+    name: 'shell',
+    ready: () => _shell(),
+    states: {
+      for (final kind in requiredStates) kind: () => _shell(state: kind),
     },
   ),
 ];

@@ -8,6 +8,7 @@ import '../client/contract.g.dart';
 import '../client/event_stream.dart';
 import '../client/host.dart';
 import '../client/transport.dart';
+import 'age.dart';
 
 /// The one writer of the fleet's state (F2 decision 6).
 ///
@@ -525,6 +526,20 @@ class HostView {
 
   /// When it was last heard from, or null when it never has been.
   final DateTime? lastContact;
+
+  /// Whether the host is answering now.
+  bool get live => reach.name == 'live';
+
+  /// The reach in the design system's words, with its age when the host is
+  /// not answering: "live", "stale 4m", "unreachable 4m", "token refused".
+  /// A screen shows this rather than colouring a dot it cannot explain.
+  String reachWords(DateTime now) => switch (reach.name) {
+    'live' => 'live',
+    'stale' => 'stale ${relativeAge(lastContact ?? now, now)}',
+    'unreachable' => 'unreachable ${relativeAge(lastContact ?? now, now)}',
+    'unauthorized' => 'token refused',
+    _ => 'connecting',
+  };
 
   @override
   String toString() => 'HostView($name, ${reach.name})';

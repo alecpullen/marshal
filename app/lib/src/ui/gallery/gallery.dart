@@ -79,6 +79,7 @@ class _GalleryState extends State<Gallery> {
         ..._section('Spark', _spark()),
         ..._section('CheckStrip', _strips()),
         ..._section('Rows', _rows()),
+        ..._section('NavRow', _navRows()),
         ..._section('AskCard', _asks()),
         ..._section('PrCard', _pulls()),
         ..._section('ThreadRow', _threads()),
@@ -606,6 +607,48 @@ class _GalleryState extends State<Gallery> {
   ];
 
   /// A specimen held to [width], as it would be in a sidebar or a form.
+  /// The sidebar's rows (F2): a selected place with a count, a plain place,
+  /// and a project open and closed.
+  List<Widget> _navRows() => [
+    _narrow(
+      Layout.sidebar,
+      Column(
+        children: [
+          NavRow(
+            icon: Glyphs.tray,
+            label: 'Inbox',
+            count: 3,
+            selected: true,
+            onTap: () {},
+          ),
+          NavRow(
+            icon: Glyphs.arrow_merge,
+            label: 'Pull requests',
+            onTap: () {},
+          ),
+          NavRow(
+            label: 'marshal',
+            expanded: true,
+            onToggle: () {},
+            onTap: () {},
+          ),
+          NavRow(
+            label: 'Design docs',
+            expanded: false,
+            onToggle: () {},
+            onTap: () {},
+          ),
+          NavRow(
+            icon: Glyphs.gear,
+            label: 'Settings',
+            indent: true,
+            onTap: () {},
+          ),
+        ],
+      ),
+    ),
+  ];
+
   Widget _narrow(double width, Widget child) => Align(
     alignment: Alignment.topLeft,
     child: ConstrainedBox(

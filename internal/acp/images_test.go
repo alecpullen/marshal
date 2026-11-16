@@ -246,8 +246,15 @@ func TestPromptWithImagesOnAPlainRunner(t *testing.T) {
 	if !acpclient.IsCode(err, acpwire.CodeVisionUnsupported) {
 		t.Fatalf("err = %v, want CodeVisionUnsupported", err)
 	}
-	if !strings.Contains(err.Error(), "has vision off") {
-		t.Fatalf("err = %v, want the vision wording", err)
+	// The message must name the runner, not the vision setting: turning
+	// vision on does not give a plain runner the ability to carry images,
+	// so offering that as the fix would send the user to a change that
+	// does nothing.
+	if !strings.Contains(err.Error(), "runner cannot carry images") {
+		t.Fatalf("err = %v, want the runner wording", err)
+	}
+	if strings.Contains(err.Error(), "vision = ") {
+		t.Fatalf("err = %v, must not offer the vision setting as the fix", err)
 	}
 	if goals := runner.goalsSeen(); len(goals) != 0 {
 		t.Fatalf("the plain runner ran %v, want it never to run", goals)

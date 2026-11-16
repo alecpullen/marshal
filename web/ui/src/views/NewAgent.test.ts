@@ -354,4 +354,37 @@ describe('NewAgent', () => {
     expect(screen.queryByText(/does not list/)).toBeNull()
     expect(screen.queryByText(/unavailable, so no agent can start/)).toBeNull()
   })
+
+  it('a second ⌘Enter while create is pending does not spawn twice', async () => {
+    const onDone = vi.fn()
+    let release!: (v: unknown) => void
+    ;(api.spawnAgent as Mock).mockReturnValue(new Promise((r) => (release = r)))
+    render(NewAgent, { onDone })
+    await screen.findByText('alpha')
+    const box = screen.getByLabelText('Prompt')
+
+    await fireEvent.keyDown(box, { key: 'Enter', metaKey: true })
+    // The shortcut and the button share one guard, so the pending create
+    // disables the button too.
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: /Create agent/ }) as HTMLButtonElement).disabled).toBe(true),
+    )
+    await fireEvent.keyDown(box, { key: 'Enter', metaKey: true })
+    await new Promise((r) => setTimeout(r, 0))
+    release({ agentId: 'a9' })
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith('a9', undefined))
+    expect(api.spawnAgent).toHaveBeenCalledTimes(1)
+  })
+
+  it('arrow keys move the selection of the local tablist', async () => {
+    render(NewAgent, { onDone: vi.fn() })
+    await screen.findByText('alpha')
+
+    expect(screen.getByRole('tab', { name: 'Recent prompts' }).getAttribute('aria-selected')).toBe('true')
+    await fireEvent.keyDown(screen.getByRole('tablist'), { key: 'ArrowRight' })
+    expect(screen.getByRole('tab', { name: 'Issues' }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('tab', { name: 'Recent prompts' }).getAttribute('aria-selected')).toBe('false')
+    // Focus follows the newly selected tab.
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Issues' }))
+  })
 })

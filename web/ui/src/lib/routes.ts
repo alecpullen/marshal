@@ -349,7 +349,12 @@ export function parseFactoryRoute(hash: string): FactoryRoute | null {
   if (view && FACTORY_VIEWS.includes(view)) route.view = view as FactoryItemView
   const agent = q.get('agent')
   if (agent) {
-    route.agent = decodeSafe(agent)
+    /*
+      `agent` is decoded exactly once: formatFactoryRoute hands it to
+      URLSearchParams, which escapes it, and `get` undoes that escape and
+      nothing more — a further decode would eat an agent id's own `%2F`.
+    */
+    route.agent = agent
     // A worker drill-in without an explicit tab shows that worker's activity.
     if (!route.view) route.view = 'activity'
   }

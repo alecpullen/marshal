@@ -32,11 +32,12 @@
 
 <Card class="flex flex-wrap items-center gap-3 p-3" data-testid="attention-card">
   <button class="min-w-0 flex-1 cursor-pointer text-left" onclick={() => onNavigate(href)}>
-    <div class="text-[11px] tracking-wide text-muted uppercase">{source}</div>
+    <!-- Block spans, not divs: a button's content is phrasing only. -->
+    <span class="block text-[11px] tracking-wide text-muted uppercase">{source}</span>
     <!-- A long title wraps inside the card instead of overflowing it. -->
-    <div class="break-words text-sm font-medium">{title}</div>
-    {#if body}<div class="break-words text-xs text-muted">{body}</div>{/if}
-    {#if meta}<div class="break-words text-xs text-muted">{meta}</div>{/if}
+    <span class="block break-words text-sm font-medium">{title}</span>
+    {#if body}<span class="block break-words text-xs text-muted">{body}</span>{/if}
+    {#if meta}<span class="block break-words text-xs text-muted">{meta}</span>{/if}
   </button>
   {#if actions}
     <div class="flex flex-wrap items-center gap-2">{@render actions()}</div>

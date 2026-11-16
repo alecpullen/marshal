@@ -137,7 +137,30 @@
     prompt = ''
   }
 
+  /*
+    The hand-rolled tablist honours the ARIA tabs keyboard model, like the
+    shared Tabs primitive: the arrows move the selection (wrapping at the
+    ends), Home and End jump, and focus follows the newly selected tab. Every
+    tab keeps its place in the normal tab order.
+  */
+  const tabKeys = ['recent', 'issues', 'recipes'] as const
+  function onTablistKeydown(e: KeyboardEvent) {
+    const current = tabKeys.indexOf(tab)
+    if (current < 0) return
+    let next: number
+    if (e.key === 'ArrowRight') next = (current + 1) % tabKeys.length
+    else if (e.key === 'ArrowLeft') next = (current - 1 + tabKeys.length) % tabKeys.length
+    else if (e.key === 'Home') next = 0
+    else if (e.key === 'End') next = tabKeys.length - 1
+    else return
+    e.preventDefault()
+    tab = tabKeys[next]
+    ;(e.currentTarget as HTMLElement).querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus()
+  }
+
   async function create() {
+    // The ⌘Enter shortcut reaches here directly too, so it shares one guard.
+    if (busy) return
     if (!choice.project) {
       error = 'Pick a project first.'
       return
@@ -334,7 +357,10 @@
   </div>
 
   <div class="flex flex-col gap-3">
-    <div class="flex gap-2 border-b border-border text-sm" role="tablist">
+    <!-- The tablist itself never takes focus — its tab buttons do, and they
+         keep their places in the normal tab order, so no roving tabindex on either. -->
+    <!-- svelte-ignore a11y_interactive_supports_focus -->
+    <div class="flex gap-2 border-b border-border text-sm" role="tablist" onkeydown={onTablistKeydown}>
       <button type="button" role="tab" aria-selected={tab === 'recent'} class="px-3 py-1.5 {tab === 'recent' ? 'border-b-2 border-accent' : 'text-muted'}" onclick={() => (tab = 'recent')}>Recent prompts</button>
       <button type="button" role="tab" aria-selected={tab === 'issues'} class="px-3 py-1.5 {tab === 'issues' ? 'border-b-2 border-accent' : 'text-muted'}" onclick={() => (tab = 'issues')}>Issues</button>
       <button type="button" role="tab" aria-selected={tab === 'recipes'} class="px-3 py-1.5 {tab === 'recipes' ? 'border-b-2 border-accent' : 'text-muted'}" onclick={() => (tab = 'recipes')}>Recipes</button>

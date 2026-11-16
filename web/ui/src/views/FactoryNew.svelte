@@ -434,6 +434,8 @@
                   bind:value={implementerOverride}
                   profiles={profiles}
                   followLabel="Follow inherited setting"
+                  invalid={!!fieldErrors.implementer}
+                  describedBy={fieldErrors.implementer ? 'error-implementer' : undefined}
                 />
                 {#if fieldErrors.implementer}<p class="text-xs text-attention" id="error-implementer" data-testid="error-implementer">{fieldErrors.implementer}</p>{/if}
               </div>
@@ -443,6 +445,8 @@
                   bind:value={reviewerOverride}
                   profiles={profiles}
                   followLabel="Follow inherited setting"
+                  invalid={!!fieldErrors.reviewer}
+                  describedBy={fieldErrors.reviewer ? 'error-reviewer' : undefined}
                 />
                 {#if fieldErrors.reviewer}<p class="text-xs text-attention" id="error-reviewer" data-testid="error-reviewer">{fieldErrors.reviewer}</p>{/if}
               </div>

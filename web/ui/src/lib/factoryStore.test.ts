@@ -149,6 +149,27 @@ describe('factory store single items', () => {
     expect(store.itemById('a')?.state).toBe('approved')
   })
 
+  it('staleItemReadCannotOverwriteNewerListSnapshot', async () => {
+    let finishItem!: (item: FactoryItem) => void
+    const readOne = vi.fn(() => new Promise<FactoryItem>((resolve) => { finishItem = resolve }))
+    let finishList!: (items: FactoryItem[]) => void
+    const list = vi.fn(() => new Promise<FactoryItem[]>((resolve) => { finishList = resolve }))
+    const store = createFactoryStore({ list, get: readOne })
+
+    // The item read is in flight when the list snapshot lands with a newer copy.
+    const reading = store.getItem('a')
+    const listing = store.refresh()
+    finishList([item('a', { state: 'approved' })])
+    await listing
+    finishItem(item('a', { state: 'draft' }))
+
+    // The item read started before the snapshot, so it keeps the newer copy.
+    await expect(reading).resolves.toMatchObject({ state: 'approved' })
+    expect(store.itemById('a')?.state).toBe('approved')
+    expect(list).toHaveBeenCalledTimes(1)
+    expect(readOne).toHaveBeenCalledTimes(1)
+  })
+
   it('unrelatedUpsertDoesNotDiscardMissingItemRead', async () => {
     let finishItem!: (item: FactoryItem) => void
     const readOne = vi.fn(() => new Promise<FactoryItem>((resolve) => { finishItem = resolve }))

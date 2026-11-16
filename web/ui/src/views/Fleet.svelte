@@ -228,7 +228,7 @@
   {/if}
 
   {#if factory.error}
-    <Card class="border-attention text-sm" data-testid="factory-error">
+    <Card role="alert" class="border-attention text-sm" data-testid="factory-error">
       <div class="flex flex-wrap items-center gap-3">
         <div class="min-w-0 flex-1">
           <p class="font-medium">Factory work could not be refreshed</p>
@@ -243,7 +243,7 @@
   {/if}
 
   {#if automationErrors.length}
-    <Card class="border-attention text-sm" data-testid="automation-error">
+    <Card role="alert" class="border-attention text-sm" data-testid="automation-error">
       {#each automationErrors as e (e.root)}
         <p class="truncate">{shortName(e.root)} · {e.message}</p>
       {/each}

@@ -6,7 +6,6 @@ import {
   factoryWorkerIds,
   filterFactoryItems,
   isFactoryActive,
-  isIndependentAgent,
   partitionFactoryChecks,
   sortedFactoryHistory,
   summarizeFactoryProject,
@@ -164,14 +163,17 @@ describe('factory workers', () => {
   it('excludesHistoricalFactoryWorkersFromIndependentAgents', () => {
     // Every item by default: a worker on a closed item is still a factory worker,
     // so the fleet does not show its agent twice.
-    expect(factoryWorkerIds(items)).toEqual(new Set(['w1', 'w2', 'w3']))
+    const held = factoryWorkerIds(items)
+    expect(held).toEqual(new Set(['w1', 'w2', 'w3']))
     // Current only: the closed item's worker is history.
     expect(factoryWorkerIds(items, true)).toEqual(new Set(['w1', 'w2']))
-    expect(isIndependentAgent('w1', items)).toBe(false)
-    expect(isIndependentAgent('w3', items)).toBe(false)
-    expect(isIndependentAgent('solo', items)).toBe(true)
-    // An empty ID is no agent at all, so it is never an independent one.
-    expect(isIndependentAgent('', items)).toBe(false)
+    // A worker of a current item, and one only of a history item, are both
+    // held; an id no item holds is what independence means.
+    expect(held.has('w1')).toBe(true)
+    expect(held.has('w3')).toBe(true)
+    expect(held.has('solo')).toBe(false)
+    // An empty ID is no agent at all, so the held set never holds one.
+    expect(held.has('')).toBe(false)
     expect(factoryWorkerIds([])).toEqual(new Set())
     expect([...factoryWorkerIds(items)].length).toBe(3)
   })

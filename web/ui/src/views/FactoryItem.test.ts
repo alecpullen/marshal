@@ -237,6 +237,21 @@ it('stale409RefreshesWithoutClearingRetryInput', async () => {
   expect((screen.getByLabelText('Implementer profile') as HTMLSelectElement).value).toBe('new-impl')
   expect(upsert).not.toHaveBeenCalled()
 })
+it('aNewDecisionOfTheSameKindReseedsThePanel', async () => {
+  const item1 = { ...base, state: 'needs_input', decision: { id: 'd1', kind: 'exhausted', question: 'Try again' },
+    approvals: [{ plan: 'Approved plan', spec: 'Approved spec', config: { ...base.draft.config, implementerRouting: { profile: 'old' }, reviewerRouting: { profile: 'old-review' } } }] } as unknown as Item
+  const item2 = { ...item1, version: 2, decision: { id: 'd2', kind: 'exhausted', question: 'Try again' } } as unknown as Item
+  getItem.mockResolvedValue(item1)
+  const view = renderItem()
+  await screen.findByText('Try again')
+  await pickProfile('Implementer profile', 'new-impl')
+  expect((screen.getByLabelText('Implementer profile') as HTMLSelectElement).value).toBe('new-impl')
+  // A poll replaces the decision with a new one of the same kind: the panel
+  // remounts, so the pickers reseed from the routes in force instead of
+  // carrying the stale choice over.
+  await view.rerender({ factory: factoryState({ items: [item2] }) })
+  expect((screen.getByLabelText('Implementer profile') as HTMLSelectElement).value).toBe('old')
+})
 it('sends both routes in a route-only retry', async () => {
   const { fireEvent } = await import('@testing-library/svelte')
   const item = { ...base, state: 'needs_input', decision: { id: 'd', kind: 'exhausted', question: 'Try again' },

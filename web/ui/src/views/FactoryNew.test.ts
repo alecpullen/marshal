@@ -149,6 +149,11 @@ it('focusesFirstInvalidField', async () => {
   // control is the implementer's model profile.
   await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Implementer model profile')))
   expect(screen.getByTestId('error-implementer').textContent).toContain('implementer model profile')
+  // The failing select carries its own mark and description, like the form's
+  // other fields.
+  const implementer = screen.getByLabelText('Implementer model profile') as HTMLSelectElement
+  expect(implementer.getAttribute('aria-invalid')).toBe('true')
+  expect(implementer.getAttribute('aria-describedby')).toBe('error-implementer')
   // Nothing was sent: a validation failure is not a request.
   expect(api.createFactoryItem).not.toHaveBeenCalled()
 })

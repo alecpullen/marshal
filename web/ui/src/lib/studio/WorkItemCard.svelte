@@ -61,7 +61,7 @@
 <Card class="flex flex-col gap-2 p-3" data-testid="work-item-card">
   <div class="flex flex-wrap items-start justify-between gap-2">
     <div class="min-w-0 flex-1">
-      <h2 class="break-words text-sm font-medium">{item.title}</h2>
+      <h3 class="break-words text-sm font-medium">{item.title}</h3>
       <p class="break-words text-xs text-muted">{item.repoId}{#if item.branch} · {item.branch}{/if}</p>
     </div>
     <span data-testid="work-item-state"><Badge {tone}>{item.state}</Badge></span>

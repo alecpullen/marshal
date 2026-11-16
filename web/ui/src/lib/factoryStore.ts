@@ -93,6 +93,15 @@ export function createFactoryStore(options: FactoryStoreOptions = {}): FactorySt
       return
     }
     snapshot = true
+    /*
+      The snapshot is the newest read of every id it carries: bump the
+      per-item revisions the way `upsert` does, so a single-item read that
+      started before this tick takes its staleness branch and keeps the
+      snapshot's copy instead of overwriting it. Ids absent from the
+      snapshot keep their revisions, and the global `revision` is untouched
+      — it is the command-mutation counter and only `upsert` writes it.
+    */
+    for (const it of items) itemRevisions.set(it.id, (itemRevisions.get(it.id) ?? 0) + 1)
     state.set({ items, loading: false, refreshing: false, error: null, lastUpdated: now() })
   }
 
@@ -115,7 +124,7 @@ export function createFactoryStore(options: FactoryStoreOptions = {}): FactorySt
     const read = readOne(id)
       .then((item) => {
         if ((itemRevisions.get(id) ?? 0) !== startedAt) {
-          // An upsert of this item landed first; its copy is the newer one.
+          // An upsert, or a newer list snapshot of this item, landed first.
           const current = itemById(id)
           if (current) return current
         }

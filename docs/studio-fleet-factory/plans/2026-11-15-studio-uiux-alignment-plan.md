@@ -560,7 +560,7 @@ The component owns the existing session/stack stores and closes them on destroy.
 4. Append the slice-2 implementation record with commits, test counts, screenshots, and the explicit statement that real draft creation/approval was not run because the isolated bridge has no GitHub credential. Update the browser README's coverage table.
 5. Regenerate embedded assets with the browser runner's build step.
 
-**Verify:** From the repository root, `scripts/e2e/run_browser_checks.sh` — all cases pass. `git diff --check` — no output. Commit `studio-uiux-alignment: task 15 — verify project factory and handoff`.
+**Verify:** From the repository root, `scripts/e2e/run_browser_checks.sh` — all cases pass except the recorded 9-case baseline (the three `project settings` cases at three widths); no other failure. `git diff --check` — no output. Commit `studio-uiux-alignment: task 15 — verify project factory and handoff`.
 
 ## Task 16: Add work-item views, activity, documents, and PRs
 
@@ -659,7 +659,7 @@ The component owns the existing session/stack stores and closes them on destroy.
 5. Capture `execution-desktop.png`, `execution-phone.png`, `decision-phone.png`, `recovery-desktop.png`, `ready-review-desktop.png`, and `ready-review-phone.png` into `.docs-archive/studio-uiux/` through test output. Compare them with the approved HIFI anchors for hierarchy and interaction, not palette/sample data.
 6. Append the slice-3 implementation record with commits, test counts, screenshots, and explicit mocked-fixture limits. Update browser README coverage. Regenerate embedded assets through the runner.
 
-**Verify:** From the repository root, `scripts/e2e/run_browser_checks.sh` — all cases pass. `git diff --check` — no output. Commit `studio-uiux-alignment: task 21 — verify execution and review`.
+**Verify:** From the repository root, `scripts/e2e/run_browser_checks.sh` — all cases pass except the recorded 9-case baseline (the three `project settings` cases at three widths); no other failure. `git diff --check` — no output. Commit `studio-uiux-alignment: task 21 — verify execution and review`.
 
 ## Task 22: Reconcile documentation and run final verification
 

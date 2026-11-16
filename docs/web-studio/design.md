@@ -240,12 +240,12 @@ These go in from W1, so adding users later doesn't need a redesign:
   | `◉` | live |
   | `⌂` | home |
 
-  The shell's own navigation (`lib/nav/model.ts`) reuses that vocabulary and
-  adds four marks it owns: `◉` Inbox, `▸` Live (anything in flight), `◆` a
-  project, `┆` a work item, and `▹` a planned destination that opens its
-  roadmap page. The Fleet-first shell keeps the Warm Sunset palette: the
-  approved HIFI work supplies layouts and interaction, not a new visual
-  system.
+  The shell's own navigation (`lib/nav/model.ts`) assigns each row a mark from
+  that vocabulary, with two fresh reinterpretations — `◉` for Inbox and `▸`
+  for Live (anything in flight) — while `◆` marks a project, `┆` a work item,
+  and `▹` a planned destination that opens its roadmap page. The Fleet-first
+  shell keeps the Warm Sunset palette: the approved HIFI work supplies
+  layouts and interaction, not a new visual system.
 
 - **Components:**
   - rail, sidebar list items, cards, tags (semantic and role-coloured);

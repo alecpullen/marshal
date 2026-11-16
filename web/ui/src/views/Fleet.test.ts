@@ -332,6 +332,8 @@ describe('Fleet loading and failures', () => {
 
     // The failed read is reported, and what the last good snapshot held still stands.
     expect(screen.getByTestId('factory-error').textContent).toContain('factory is unreachable')
+    // The failure card is announced, as the sibling views' failure cards are.
+    expect(screen.getByTestId('factory-error').getAttribute('role')).toBe('alert')
     expect(screen.getByText(/Showing the last update from/)).toBeTruthy()
     expect(screen.getByText('Approve the plan?')).toBeTruthy()
     expect(screen.queryByText('Nothing needs you')).toBeNull()
@@ -349,6 +351,7 @@ describe('Fleet loading and failures', () => {
 
     // One project's read failed; the rest of Fleet is untouched.
     const card = await screen.findByTestId('automation-error')
+    expect(card.getAttribute('role')).toBe('alert')
     expect(card.textContent).toContain('alpha · automations are down')
     expect(screen.getByText(/Needs you · 1/)).toBeTruthy()
     expect(screen.getAllByTestId('attention-card')[0].textContent).toContain('go test ./...')

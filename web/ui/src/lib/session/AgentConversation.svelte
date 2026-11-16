@@ -629,7 +629,7 @@
       <a class="review" href="#chat/{sessionId}/review">Review</a>
       <a class="review" href="#network?agent={encodeURIComponent(sessionId)}">Network</a>
     {/if}
-    <span class="connection" class:connected={$session.connected} title={$session.connected ? 'connected' : 'disconnected'}>
+    <span class="connection" class:connected={$session.connected} title={$session.connected ? 'connected' : 'disconnected'} aria-label={$session.connected ? 'Connected' : 'Reconnecting'}>
       {$session.connected ? '●' : '○'}
     </span>
   </header>

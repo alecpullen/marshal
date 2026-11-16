@@ -286,16 +286,19 @@
         <div class={activityHidden ? 'hidden' : 'grid min-w-0 gap-4'} data-testid="factory-activity-pane">
           {#if item.decision}
             <!--
-              The panel is chosen by the decision kind, never keyed by the item's
-              version: the same decision refreshed in place keeps the panel — and
-              what the person typed into it — mounted. A different decision kind
-              is a different decision, so it legitimately starts fresh.
+              Keyed by the decision's id, never by the item's version: the same
+              decision refreshed in place keeps the panel — and what the person
+              typed into it — mounted, while a poll that replaces the decision
+              with a new one of the same kind remounts the panel, so its pickers
+              and answer reseed.
             -->
-            {#if RECOVERY_KINDS.includes(item.decision.kind)}
-              <RecoveryPanel {item} {busy} run={command} />
-            {:else}
-              <DecisionPanel {item} {busy} run={command} />
-            {/if}
+            {#key item.decision.id}
+              {#if RECOVERY_KINDS.includes(item.decision.kind)}
+                <RecoveryPanel {item} {busy} run={command} />
+              {:else}
+                <DecisionPanel {item} {busy} run={command} />
+              {/if}
+            {/key}
           {/if}
           {#if item.workers?.length}
             <Card data-testid="worker-links">

@@ -303,6 +303,16 @@ describe('factory routes', () => {
     expect(parseFactoryRoute('#projects/%2Fp/factory/a')).toBeNull()
     expect(parseFactoryRoute('#projects/%2Fp')).toBeNull()
   })
+
+  it('factory routes decode the agent param exactly once, like the chat return', () => {
+    // URLSearchParams.get has already decoded once, so an id whose own text
+    // holds a percent escape survives the round trip unchanged.
+    expect(formatFactoryRoute({ itemId: 'a', view: 'activity', agent: 'w%2F1' })).toBe('#factory/a?view=activity&agent=w%252F1')
+    expect(parseFactoryRoute(formatFactoryRoute({ itemId: 'a', view: 'activity', agent: 'w%2F1' }))).toEqual({ itemId: 'a', view: 'activity', agent: 'w%2F1' })
+    // A plain id still round-trips.
+    expect(formatFactoryRoute({ itemId: 'a', view: 'review', agent: 'w1' })).toBe('#factory/a?view=review&agent=w1')
+    expect(parseFactoryRoute(formatFactoryRoute({ itemId: 'a', view: 'review', agent: 'w1' }))).toEqual({ itemId: 'a', view: 'review', agent: 'w1' })
+  })
 })
 
 describe('new agent route', () => {

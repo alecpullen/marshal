@@ -337,7 +337,7 @@ One visibility-aware poller serves Fleet, global/scoped factory dashboards, and 
 - Active retains the current meaning: state is not one of `draft`, `ready`, `stopped`, `closed`, or `needs_input`.
 - Hidden-document polling is suspended; becoming visible schedules an immediate refresh.
 - Create and command responses upsert immediately. A command that makes an item active schedules reconciliation.
-- Each list or single-item read records the store's mutation revision. If a create/command upsert occurs while that read is in flight, the older response is discarded. A discarded list response schedules another refresh; a discarded single-item read returns the current cached item. Neither can overwrite the newer command response.
+- Each list or single-item read records the store's mutation revision. If a create/command upsert occurs while that read is in flight, the older response is discarded. A discarded list response records nothing and is reconciled by the next poll tick; a discarded single-item read returns the current cached item. Neither can overwrite the newer command response.
 - `lastUpdated` changes only after an applied authoritative list snapshot.
 - Work-item commands use the latest item `version` and current decision ID.
 
@@ -478,7 +478,7 @@ Core journeys are:
 - answer, route-only retry, stop requested, and named-worker recovery;
 - ready item → CI → narration → previews → forge;
 - factory failure, uncertain command, stale refresh, `409`/`412`/`410`, and missing item;
-- every roadmap page, including Planned labeling, current alternatives, no fake data, and no speculative requests.
+- every roadmap page, including Planned labeling, current alternatives, no fake data, and no writes (the real-bridge case records non-GET requests and asserts there are none).
 
 ### Visual and performance evidence
 
@@ -593,7 +593,7 @@ None. The task-by-task implementation plan is `plans/2026-11-15-studio-uiux-alig
 
 ### Slice 1 — Fleet and navigation
 
-Delivered on branch `feat/studio-uiux-alignment` in commit order: routes (`68854810`), Fleet and factory projections (`0208bb5a`), the shared factory store (`91cc34a4`), roadmap and page primitives (`16a4c000`), responsive navigation (`48f60a46`), automation summaries (`995a996f`), the Fleet home (`f349473d`), shared factory state in the shell (`cde6f5c7`), the application shell (`7d4c7c95`), the route guard (`7c994227`), and the browser verification this record covers.
+Delivered on branch `feat/studio-uiux-alignment` in commit order: routes (`68854810`), Fleet and factory projections (`0208bb5a`), the shared factory store (`91cc34a4`), automation summaries (`995a996f`), roadmap and page primitives (`16a4c000`), responsive navigation (`48f60a46`), the Fleet home (`f349473d`), shared factory state in the shell (`cde6f5c7`), the application shell (`7d4c7c95`), the route guard (`7c994227`), and the browser verification this record covers.
 
 Browser verification is `scripts/e2e/run_browser_checks.sh`, which builds the SPA and `webbridge`, starts an isolated fixture bridge, and runs the Playwright suite at desktop (1440×900), tablet (768×1024) and phone (390×844).
 
@@ -618,7 +618,7 @@ Delivered on branch `feat/studio-uiux-alignment` in commit order: the project fa
 
 Browser verification is `scripts/e2e/run_browser_checks.sh`, unchanged from slice 1: it builds the SPA and `webbridge`, starts an isolated fixture bridge, and runs the Playwright suite at desktop (1440×900), tablet (768×1024) and phone (390×844). Slice 2 adds `web/ui/e2e/factory-handoff.pw.ts` (12 cases) and extends `web/ui/e2e/fixtures.ts` with mocked project settings, model profiles, create and command interception, and their payload recorders.
 
-**Result: 99 cases, 87 pass, 12 fail.** Nine are the known baseline, unchanged from slice 1: `role overrides follow the agent default independently and reset`, `a stale save warns, keeps the edit, and offers reload` and `unsaved edits are confirmed before in-app navigation`, each failing at all three widths because the fixture bridge serves no model profiles, so the "Model profile" select offers no `gamma` option. The other three are one case this slice surfaced, also at all three widths: `factory handoff › shows inherited sources and keeps its input when opening settings` in `project-settings.pw.ts` asserts the handoff form's old `implementer-effective`, `reviewer-effective` and `target-branch-effective` hooks, which task 13 replaced with the `config-<slug>` rows of the shared effective-configuration summary. The case is stale, not the UI — the shipped handoff shows the same values under the new hooks — and `project-settings.pw.ts` is outside this task's files, so this task did not change it. The fix belongs to whichever task owns that file (update the three assertions to `config-implementer`, `config-reviewer` and `config-target-branch`, or restore the old hooks on the summary); the slice-2 browser result stays at 12 failures until that decision is taken.
+**Result on the first run: 99 cases, 87 pass, 12 fail.** Nine are the known baseline, unchanged from slice 1: `role overrides follow the agent default independently and reset`, `a stale save warns, keeps the edit, and offers reload` and `unsaved edits are confirmed before in-app navigation`, each failing at all three widths because the fixture bridge serves no model profiles, so the "Model profile" select offers no `gamma` option. The other three are one case this slice surfaced, also at all three widths: `factory handoff › shows inherited sources and keeps its input when opening settings` in `project-settings.pw.ts` asserts the handoff form's old `implementer-effective`, `reviewer-effective` and `target-branch-effective` hooks, which task 13 replaced with the `config-<slug>` rows of the shared effective-configuration summary. The case was stale, not the UI: the shipped handoff shows the same values under the new hooks. This verification task itself updated the three assertions in place to `config-implementer`, `config-reviewer` and `config-target-branch` — same intent, no UI change — which returned the suite to the 9-case baseline. The 87 pass / 12 fail above is therefore the pre-fix run recorded within this task, not the state the slice delivered.
 
 All 36 slice-2 cases pass at all three widths — 12 cases in each of the desktop, tablet and phone projects:
 

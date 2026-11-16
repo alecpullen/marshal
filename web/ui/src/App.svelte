@@ -242,6 +242,10 @@
       // Old standalone pages moved; replace the entry so Back does not bounce.
       const moved = redirectLegacy(incoming)
       if (moved) {
+        // The replace fires another hashchange; approve the destination up
+        // front so that pass consumes the approval and never asks the same
+        // leave-guard question again.
+        approvedNext = moved
         window.location.replace(moved)
         return
       }

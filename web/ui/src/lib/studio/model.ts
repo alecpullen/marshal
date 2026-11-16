@@ -102,12 +102,6 @@ export function factoryWorkerIds(items: FactoryItem[], currentOnly = false): Set
   return ids
 }
 
-/** True for a named agent that no factory item holds, history included. */
-export function isIndependentAgent(agentId: string, items: FactoryItem[]): boolean {
-  if (!agentId) return false
-  return !factoryWorkerIds(items).has(agentId)
-}
-
 /**
  * One project's factory summary. The root matches exactly: a sibling
  * directory that merely shares a prefix is a different project. Every one of

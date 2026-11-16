@@ -31,6 +31,7 @@ export 'package:flutter/widgets.dart'
         TextStyle;
 
 export '../tokens.dart';
+export 'activity_row.dart';
 export 'ask_card.dart';
 export 'box.dart';
 export 'btn.dart';
@@ -57,6 +58,7 @@ export 'rows.dart';
 export 'segments.dart';
 export 'sheet.dart';
 export 'spark.dart';
+export 'stage_strip.dart';
 export 'state_message.dart';
 export 'step_header.dart';
 export 'tabs.dart';

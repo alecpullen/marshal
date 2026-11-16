@@ -88,6 +88,7 @@ class _GalleryState extends State<Gallery> {
         ..._section('Label', _labels()),
         ..._section('Tabs', _tabs()),
         ..._section('Segments', _segments()),
+        ..._section('Activity', _activity()),
         ..._section('Meter', _meters()),
         ..._section('Spark', _spark()),
         ..._section('CheckStrip', _strips()),
@@ -330,6 +331,33 @@ class _GalleryState extends State<Gallery> {
     Segments(done: 3, total: 6, status: Status.running),
     Segments(done: 1, total: 4, status: Status.failed),
     Segments(done: 4, total: 4, status: Status.ready),
+    StageStrip(
+      labels: ['Plan', 'Implement', 'Review', 'Ready'],
+      current: 1,
+      status: Status.running,
+    ),
+    StageStrip(
+      labels: ['Plan', 'Implement', 'Review', 'Ready'],
+      current: 3,
+      status: Status.idle,
+      endWord: 'Closed',
+    ),
+  ];
+
+  List<Widget> _activity() => const [
+    ActivityRow(
+      who: 'The implementer',
+      text: 'started round 1',
+      age: '8m',
+      detail: 'implement_started',
+    ),
+    ActivityRow(who: 'You', text: 'revision 1 was approved', age: '12m'),
+    ActivityRow(
+      who: 'The reviewer',
+      text: 'left one finding',
+      age: '4m',
+      detail: 'review_completed',
+    ),
   ];
 
   List<Widget> _meters() => const [

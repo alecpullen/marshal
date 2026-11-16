@@ -2,6 +2,7 @@ import 'dart:async';
 
 import '../../model/age.dart';
 import '../../model/composer_model.dart';
+import '../../model/factory_store.dart';
 import '../../model/new_work_model.dart';
 import '../../model/fleet_store.dart';
 import '../../model/inbox_model.dart';
@@ -13,7 +14,9 @@ import '../../model/pulls_model.dart';
 import '../../model/stack_store.dart';
 import '../../model/thread_ref.dart' as model;
 import '../../model/thread_view_state.dart';
+import '../../model/work_item_model.dart' show WorkItemView, threadOfItem;
 import '../inbox/inbox.dart' show Inbox;
+import '../factory/work_item_screen.dart';
 import '../kit/kit.dart';
 import '../overview/overview.dart' show Overview;
 import '../pulls/fix_control.dart';
@@ -278,6 +281,7 @@ class Studio extends StatefulWidget {
     required this.store,
     required this.inbox,
     this.pulls,
+    this.factory,
     this.read,
     this.threadStore,
     this.composerFor,
@@ -292,6 +296,12 @@ class Studio extends StatefulWidget {
   /// the one click a failing card offers. Null leaves the place planned, so a
   /// host that wires no bridge never draws one as working.
   final PullsModel? pulls;
+
+  /// The work items, when the app holds them: a work item is a thread of its
+  /// own kind, with its stage, its activity and its five tabs (F6 decisions
+  /// 13 and 14). Null leaves a work item's place unbuilt rather than drawing
+  /// an empty thread.
+  final FactoryStore? factory;
 
   /// Reads the fleet: discovery when the app starts, and again when a person
   /// asks.
@@ -362,6 +372,7 @@ class _StudioState extends State<Studio> {
           place,
           store,
           pullsReady: widget.pulls?.readyCount ?? 0,
+          factory: widget.factory,
         );
         return Shell(
           nav: nav,
@@ -442,6 +453,19 @@ class _StudioState extends State<Studio> {
     if (place.kind == PlaceKind.thread) {
       final build = widget.threadStore;
       final thread = _threadRef(place);
+      final factory = widget.factory;
+      if (thread != null &&
+          factory != null &&
+          thread.kind == model.ThreadKind.workItem) {
+        return _WorkItemPlace(
+          key: ValueKey('work-item/${thread.host}/${thread.id}'),
+          thread: thread,
+          factory: factory,
+          pulls: widget.pulls,
+          now: widget.store.now,
+          onRetry: () => unawaited(factory.refresh(thread.host)),
+        );
+      }
       if (build != null && thread != null) {
         return _ThreadPlace(
           key: ValueKey('${thread.host}/${thread.id}'),
@@ -467,11 +491,15 @@ class _StudioState extends State<Studio> {
     return plannedPlace(place, nav);
   }
 
-  /// The thread a place names, when the fleet still lists its agent.
+  /// The thread a place names: a work item the factory reports, or an agent the
+  /// fleet still lists. A work item is looked up first, because its id is its
+  /// own namespace and no agent can share it.
   model.ThreadRef? _threadRef(Place place) {
     final host = place.host;
     final id = place.id;
     if (host == null || id == null) return null;
+    final item = widget.factory?.byId(host, id);
+    if (item != null) return threadOfItem(host, item);
     for (final agent in widget.store.agents(host: host)) {
       if (agent.id == id) return model.threadFor(host, agent);
     }
@@ -665,4 +693,87 @@ class PlaceNavigation {
   /// The shell's one guard. A place watches the models it is editing when it
   /// mounts and drops them when it goes.
   final UnsavedGuard? unsaved;
+}
+
+/// One work item's place: the item as the factory store holds it, with the
+/// asks it waits on and the pull requests it reached.
+///
+/// The place keeps the item current — the store polls — so a stage, an ask and
+/// a card move without the person leaving the thread.
+class _WorkItemPlace extends StatefulWidget {
+  const _WorkItemPlace({
+    super.key,
+    required this.thread,
+    required this.factory,
+    this.pulls,
+    this.now,
+    this.onRetry,
+  });
+
+  final model.ThreadRef thread;
+  final FactoryStore factory;
+  final PullsModel? pulls;
+  final DateTime? now;
+  final VoidCallback? onRetry;
+
+  @override
+  State<_WorkItemPlace> createState() => _WorkItemPlaceState();
+}
+
+class _WorkItemPlaceState extends State<_WorkItemPlace> {
+  @override
+  void initState() {
+    super.initState();
+    widget.factory.addListener(_changed);
+  }
+
+  @override
+  void dispose() {
+    widget.factory.removeListener(_changed);
+    super.dispose();
+  }
+
+  void _changed() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final host = widget.thread.host;
+    final item = widget.factory.byId(host, widget.thread.id);
+    if (item == null) return _missing(context, host);
+    final pulls = widget.pulls?.forThread(widget.thread) ?? const <PullView>[];
+    return WorkItemScreen(
+      item: WorkItemView.of(host, item),
+      now: widget.now,
+      pulls: pulls,
+      onRetry: widget.onRetry,
+      pullActionsFor: widget.pulls == null
+          ? null
+          : (context, pull) =>
+                pullCardActions(context, pull: pull, model: widget.pulls!),
+    );
+  }
+
+  /// The item until the store has it: loading while the first read is in
+  /// flight, and the bridge's own words when the read failed (§7).
+  Widget _missing(BuildContext context, String host) {
+    final retry = StateAction(
+      'Read the factory again',
+      onTap: widget.onRetry ?? () {},
+    );
+    final failure = widget.factory.failure(host);
+    return PageBody(
+      title: widget.thread.title,
+      children: [
+        if (failure == null)
+          const StateMessage.loading(lines: 4)
+        else
+          StateMessage.error(
+            message: 'The work item could not be read.',
+            retry: retry,
+          ),
+      ],
+    );
+  }
 }

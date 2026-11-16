@@ -28,6 +28,9 @@ Stage stageOf(FactoryItem item) => switch (item.state) {
   'reviewing' || 'checking' => Stage.review,
   'ready' => Stage.ready,
   'needs_input' || 'recovering' => _interruptedStage(item),
+  // An ending item keeps the stage it reached: the end itself is a word
+  // beside the strip, not a fifth stage.
+  'stopping' || 'stopped' || 'closed' => _endStage(item),
   _ => Stage.plan,
 };
 
@@ -41,6 +44,15 @@ Stage _interruptedStage(FactoryItem item) => switch (item.stage) {
   // An interrupting state is past planning by definition: the item was
   // approved and a worker was running when it was interrupted.
   _ => Stage.implement,
+};
+
+/// The stage an ending item is drawn at: the one the bridge recorded, or the
+/// first one when it recorded none.
+Stage _endStage(FactoryItem item) => switch (item.stage) {
+  'implement' => Stage.implement,
+  'review' => Stage.review,
+  'ready' => Stage.ready,
+  _ => Stage.plan,
 };
 
 /// The word shown beside the strip for an item that is ending, and null for an
@@ -357,4 +369,237 @@ String completionDetail(FactoryItem item) {
     if (prs > 0) '$prs ${prs == 1 ? 'pull request' : 'pull requests'}',
     if (checks > 0) '$checks ${checks == 1 ? 'check' : 'checks'}',
   ].join(' · ');
+}
+
+
+/// One worker as a work item's screen draws it.
+class WorkItemWorker {
+  const WorkItemWorker({
+    required this.agentID,
+    required this.role,
+    required this.parked,
+  });
+
+  final String agentID;
+
+  /// The bridge's word for the role: planner, implementer, reviewer.
+  final String role;
+
+  final bool parked;
+
+  /// The role in the design system's words.
+  String get words => roleWords(role);
+}
+
+/// One CI check as a work item's screen draws it (F6 decision 6).
+enum WorkItemCheckState { passed, failed, running, pending }
+
+class WorkItemCheck {
+  const WorkItemCheck(this.name, this.state);
+
+  final String name;
+  final WorkItemCheckState state;
+}
+
+/// One review finding as a work item's screen draws it.
+class WorkItemFinding {
+  const WorkItemFinding(this.title, this.detail);
+
+  final String title;
+
+  /// Severity and the file it names, in one line.
+  final String detail;
+}
+
+/// One of the approved revision's settings, in words.
+class WorkItemSetting {
+  const WorkItemSetting(this.name, this.description, this.value);
+
+  final String name;
+  final String description;
+  final String value;
+}
+
+/// A work item as its screen draws it: everything the thread needs, read from
+/// the wire once here.
+///
+/// The screen takes this and never the bridge's own type: `ui/` reads `model/`
+/// and never touches `client/` (F1's boundary), so the projection lives beside
+/// the rules it applies.
+class WorkItemView {
+  const WorkItemView({
+    required this.host,
+    required this.id,
+    required this.title,
+    required this.state,
+    required this.stage,
+    required this.status,
+    required this.endWord,
+    required this.lastActive,
+    required this.version,
+    required this.plan,
+    required this.spec,
+    required this.settings,
+    required this.workers,
+    required this.checks,
+    required this.hasRound,
+    required this.findings,
+    required this.activity,
+    required this.asks,
+    required this.proposals,
+  });
+
+  /// Reads [item] as [host]'s screen draws it.
+  factory WorkItemView.of(String host, FactoryItem item) {
+    final approval = item.approvals.isEmpty ? null : item.approvals.last;
+    final config = approval?.config ?? item.draft.config;
+    final round = item.rounds.isEmpty ? null : item.rounds.last;
+    final review = round?.review;
+    return WorkItemView(
+      host: host,
+      id: item.id,
+      title: item.title.trim().isEmpty ? item.id : item.title.trim(),
+      state: item.state,
+      stage: stageOf(item),
+      status: statusOfItem(item),
+      endWord: endStateWord(item),
+      lastActive: lastActiveOfItem(item),
+      version: item.version,
+      plan: approval?.plan ?? item.draft.plan,
+      spec: approval?.spec ?? item.draft.spec,
+      settings: _settings(config, approval),
+      workers: [
+        for (final worker in item.workers)
+          WorkItemWorker(
+            agentID: worker.agentID,
+            role: worker.role,
+            parked: worker.parked,
+          ),
+      ],
+      checks: [
+        for (final check in round?.ci?.checks ?? const <FactoryCheck>[])
+          _check(check),
+      ],
+      hasRound: round != null,
+      findings: [
+        for (final finding in review?.findings ?? const <ReviewFinding>[])
+          WorkItemFinding(
+            finding.title,
+            [
+              finding.severity,
+              if ((finding.path ?? '').isNotEmpty)
+                '${finding.path}${(finding.line ?? 0) > 0 ? ':${finding.line}' : ''}',
+            ].join(' · '),
+          ),
+      ],
+      activity: activityOf(item),
+      asks: asksOf(host, item),
+      proposals: [
+        for (final proposal in item.proposals ?? const <FactoryRevisionProposal>[])
+          'Revision ${proposal.baseRevision + 1} · '
+              '${proposal.status.replaceAll('_', ' ')}',
+      ],
+    );
+  }
+
+  final String host;
+  final String id;
+  final String title;
+
+  /// The bridge's state word, as it reported it.
+  final String state;
+
+  final Stage stage;
+  final ThreadStatus status;
+
+  /// The word beside the strip for an ending item, or null.
+  final String? endWord;
+
+  final DateTime lastActive;
+
+  /// The version a command must name as the one on screen.
+  final int version;
+
+  final String plan;
+  final String spec;
+
+  final List<WorkItemSetting> settings;
+  final List<WorkItemWorker> workers;
+  final List<WorkItemCheck> checks;
+
+  /// Whether the item has run a round yet: what its checks tab says.
+  final bool hasRound;
+
+  final List<WorkItemFinding> findings;
+  final List<ActivityEntry> activity;
+
+  /// What it waits on a person for, pinned above its activity.
+  final List<Ask> asks;
+
+  /// Its proposed plan revisions, in words.
+  final List<String> proposals;
+
+  /// The stage in the design system's words, with the end word beside it.
+  String get stageWords {
+    final words = switch (stage) {
+      Stage.plan => 'Planning',
+      Stage.implement => 'Implementing',
+      Stage.review => 'Reviewing',
+      Stage.ready => 'Ready for review',
+    };
+    final end = endWord;
+    if (end != null) return '$words · $end';
+    if (state == 'needs_input') return '$words · Needs you';
+    return words;
+  }
+
+  static List<WorkItemSetting> _settings(
+    FactoryConfig config,
+    FactoryApproval? approval,
+  ) => [
+    WorkItemSetting('Repository', 'What the work is on', config.repoID),
+    WorkItemSetting(
+      'Target branch',
+      'What the pull request lands on',
+      config.targetBranch,
+    ),
+    WorkItemSetting(
+      'Where it runs',
+      config.native ? 'On this host' : 'In a workspace',
+      config.native
+          ? 'Native'
+          : (config.workspace.isEmpty ? 'Workspace' : config.workspace),
+    ),
+    WorkItemSetting(
+      'Rounds',
+      'How many repair rounds it may take',
+      '${config.maxRounds}',
+    ),
+    WorkItemSetting(
+      'Expected checks',
+      'What must pass before it is ready',
+      config.expectedChecks.isEmpty
+          ? 'None required'
+          : config.expectedChecks.map((check) => check.name).join(', '),
+    ),
+    if (approval != null)
+      WorkItemSetting(
+        'Approved revision',
+        'The settings the workers were started with',
+        '${approval.revision}',
+      ),
+  ];
+
+  /// One wire check in the model's vocabulary: only a finished conclusion can
+  /// pass or fail, and anything else is still on its way.
+  static WorkItemCheck _check(FactoryCheck check) => WorkItemCheck(
+    check.key.name.isEmpty ? check.id : check.key.name,
+    switch (check.conclusion) {
+      'success' || 'neutral' || 'skipped' => WorkItemCheckState.passed,
+      '' => check.status == 'in_progress' || check.status == 'queued'
+          ? WorkItemCheckState.running
+          : WorkItemCheckState.pending,
+      _ => WorkItemCheckState.failed,
+    },
+  );
 }

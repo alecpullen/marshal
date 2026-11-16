@@ -119,22 +119,30 @@ class _NewWorkFormState extends State<NewWorkForm> {
               runSpacing: Space.s8,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                for (final name in model.chipNames)
-                  Menu(
-                    choices: [
-                      MenuChoice(
-                        '${model.choices[name]}',
-                        'The ${name.toLowerCase()} this agent starts with',
-                        onSelect: () =>
-                            model.setChoice(name, model.choices[name]!),
-                      ),
-                    ],
-                    anchor: (context, toggle) => Btn(
-                      '$name: ${model.choices[name]}',
-                      icon: Glyphs.chevron_down,
-                      onTap: toggle,
-                    ),
-                  ),
+                for (final chip in model.chips)
+                  chip.chooseable
+                      ? Menu(
+                          choices: [
+                            for (final option in chip.options)
+                              MenuChoice(
+                                option,
+                                option == chip.value
+                                    ? 'The ${chip.name.toLowerCase()} this '
+                                          'agent starts with'
+                                    : 'Change the '
+                                          '${chip.name.toLowerCase()} to '
+                                          '$option',
+                                onSelect: () =>
+                                    model.setChoice(chip.name, option),
+                              ),
+                          ],
+                          anchor: (context, toggle) => Btn(
+                            '${chip.name}: ${chip.value}',
+                            icon: Glyphs.chevron_down,
+                            onTap: toggle,
+                          ),
+                        )
+                      : Pill('${chip.name}: ${chip.value}', tooltip: chip.note),
               ],
             ),
             const SizedBox(height: Space.s16),

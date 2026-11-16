@@ -64,6 +64,39 @@ class NewWorkDefaults {
   final String host;
 }
 
+/// One chip the dialog draws: what it is set to, and the values a menu offers
+/// for it (spec decision 11).
+///
+/// A chip with fewer than two [options] has nothing to choose this phase, and
+/// the dialog draws it as a plain pill carrying [note] — never a menu whose
+/// only entry is the value already set.
+@immutable
+class NewWorkChip {
+  const NewWorkChip(
+    this.name,
+    this.value, {
+    this.options = const [],
+    this.note,
+  });
+
+  /// The chip's name, as the dialog writes it: `Base branch`.
+  final String name;
+
+  /// The value it holds now.
+  final String value;
+
+  /// Every value a menu offers, the current one included.
+  final List<String> options;
+
+  /// What a pill's tooltip says when there is nothing to choose: either why
+  /// the value is what it is, or the phase that brings the choice.
+  final String? note;
+
+  /// Whether a menu is worth drawing: a menu that offers one value — the one
+  /// already set — changes nothing.
+  bool get chooseable => options.length > 1;
+}
+
 /// One new-work dialog's state: the prompt, the kind, the chips, and the
 /// three lists that fill the prompt (spec decision 11).
 ///
@@ -81,11 +114,17 @@ class NewWorkModel extends ChangeNotifier {
     required Future<List<Recipe>> Function() recipes,
     required Future<SpawnResult> Function(SpawnRequest request) spawn,
     bool issuesFromRepo = false,
+    Map<String, List<String>> options = const {},
+    Map<String, String> notes = const {},
+    Future<List<String>> Function()? projects,
   }) : _recentPrompts = recentPrompts,
        _issues = issues,
        _recipes = recipes,
        _spawn = spawn,
        _issuesFromRepo = issuesFromRepo,
+       _options = options,
+       _notes = notes,
+       _projects = projects,
        _choices = {
          'Project': defaults.project,
          'Base branch': defaults.baseBranch,
@@ -132,6 +171,26 @@ class NewWorkModel extends ChangeNotifier {
     },
     spawn: (request) => client.spawn(request),
     issuesFromRepo: repoId != null && repoId.isNotEmpty,
+    // What a menu can offer this phase, from data that exists: the two
+    // permission modes the session's mode route takes, the two workspaces
+    // the project's isolation answer allows, and the daemon's own projects.
+    options: {
+      'Permission mode': const ['Ask'],
+      'Workspace': project.isolation == 'available'
+          ? const ['Project']
+          : const [],
+    },
+    // The rest have one value this phase, and a pill says why rather than
+    // opening a menu that changes nothing.
+    notes: {
+      'Base branch': 'The project default branch; F6 brings the choice',
+      'Environment': 'A local spawn; F6 brings the choice',
+      'Model': 'The project default; F6 brings the models by role',
+      'Host': 'The thread runs here; F7 lists hosts',
+      if (project.isolation != 'available' && project.isolation.isNotEmpty)
+        'Workspace': project.isolation,
+    },
+    projects: () async => [for (final p in await client.projects()) p.root],
   );
 
   /// The values the dialog opened with.
@@ -143,6 +202,20 @@ class NewWorkModel extends ChangeNotifier {
   final Future<SpawnResult> Function(SpawnRequest request) _spawn;
 
   final Map<String, String> _choices;
+
+  /// What a caller says each chip may be set to, apart from the value it
+  /// opens with.
+  final Map<String, List<String>> _options;
+
+  /// What a pill's tooltip says when there is nothing to choose.
+  final Map<String, String> _notes;
+
+  /// The route that names the daemon's projects, when the dialog can ask it.
+  final Future<List<String>> Function()? _projects;
+
+  /// Values a route supplied after the model was built: the project menu's
+  /// alternatives come from `GET /api/projects`, which is read in [load].
+  final Map<String, List<String>> _loaded = {};
 
   /// Whether the issues list came from a registered repo's own route.
   final bool _issuesFromRepo;
@@ -164,6 +237,29 @@ class NewWorkModel extends ChangeNotifier {
 
   /// Every chip's value by its name, in the order the dialog draws them.
   Map<String, String> get choices => Map.unmodifiable(_choices);
+
+  /// The chips the dialog draws, in order: each with its value, the values a
+  /// menu offers, and — where nothing can be chosen — the line its pill's
+  /// tooltip gives.
+  List<NewWorkChip> get chips => [
+    for (final entry in _choices.entries)
+      NewWorkChip(
+        entry.key,
+        entry.value,
+        options: _optionsFor(entry.key, entry.value),
+        note: _notes[entry.key],
+      ),
+  ];
+
+  /// Every value the menu for [name] offers: the current one first, then what
+  /// the caller declared, then what a route supplied.
+  List<String> _optionsFor(String name, String value) {
+    final seen = <String>{};
+    return [
+      for (final option in [value, ...?_options[name], ...?_loaded[name]])
+        if (seen.add(option)) option,
+    ];
+  }
 
   List<String> get chipNames => List.unmodifiable(_choices.keys);
 
@@ -193,7 +289,7 @@ class NewWorkModel extends ChangeNotifier {
   /// Whether Start can post: a prompt, and a kind this phase can start.
   bool get canStart => _prompt.trim().isNotEmpty && !_kind.planned;
 
-  /// Loads the three lists.
+  /// Loads the three lists, and the project menu's alternatives.
   Future<void> load() async {
     _loading = true;
     _failure = null;
@@ -206,8 +302,25 @@ class NewWorkModel extends ChangeNotifier {
     } catch (error) {
       _failure = '$error';
     }
+    await _loadProjects();
     _loading = false;
     notifyListeners();
+  }
+
+  /// Reads the project menu's alternatives. A route that refuses leaves the
+  /// chip with the one project it started with, rather than failing the
+  /// dialog: the project set is an extra, not one of the three lists.
+  Future<void> _loadProjects() async {
+    final projects = _projects;
+    if (projects == null) return;
+    try {
+      _loaded['Project'] = [
+        for (final root in await projects())
+          if (root != defaults.project) root,
+      ];
+    } catch (_) {
+      // The current project is still the chip's value.
+    }
   }
 
   /// Chooses the kind. A planned kind is refused here and drawn disabled:
@@ -218,9 +331,15 @@ class NewWorkModel extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Sets one chip.
+  /// Sets one chip to one of the values its menu offered.
+  ///
+  /// A value the menu does not offer is refused: the set is the whole promise
+  /// of the menu, so a caller cannot set a chip to something the dialog never
+  /// drew.
   void setChoice(String name, String value) {
-    if (_choices[name] == value) return;
+    final current = _choices[name];
+    if (current == null || current == value) return;
+    if (!_optionsFor(name, current).contains(value)) return;
     _choices[name] = value;
     notifyListeners();
   }

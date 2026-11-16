@@ -250,10 +250,23 @@ The recorder test was deleted after it wrote the files.
   the mapping with the project settings surface that names a project's repo
   (F6's project defaults, F7's repositories), and the client method and
   contract type are already in place for it.
-- The two lists' `const []` fallbacks are for a genuine failure only: a route
-  that answers non-2xx leaves that one list empty and the dialog's other
-  lists loading (`a route that refuses leaves an empty list, not a failed
-  dialog` in `app/test/model/new_work_model_test.dart`).
+- The dialog's chips each show what they really are (decision 11 promises a
+  menu per chip; a menu whose only entry is the value already set changes
+  nothing, so it is not drawn). What opens a menu is what a route or a fixed
+  wire set can fill, and what the choice changes in the posted request:
+  - **Project** — the daemon's own projects (`GET /api/projects`), and it is
+    the request's `project`.
+  - **Permission mode** — `Act` and `Ask`, the two modes the session's mode
+    route takes, and it is the request's `mode`.
+  - **Workspace** — `Project` and `Isolated worktree` when
+    `ProjectStatus.isolation` says isolation is available (the request's
+    `isolated`); when the project cannot offer isolation, a pill whose
+    tooltip is the bridge's own reason.
+  What stays a pill, with the phase that brings the choice:
+  **Base branch** (F6's project defaults), **Environment** and **Model**
+  (F6's handoff review), and **Host** (F7's Settings). `NewWorkChip` is the
+  one shape both draw, and `setChoice` refuses a value no menu offered, so a
+  chip cannot hold a value the dialog never showed.
 - The new-work dialog is a `Sheet`, not a `ScreenCase`: it is not registered
   in `test/support/screens.dart`, because the §7 states it has are its
   lists' empty states and a failure line, not a screen's.

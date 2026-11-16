@@ -1,4 +1,3 @@
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/contract.g.dart';
 import 'package:marshal_app/src/model/new_work_model.dart';
@@ -40,6 +39,18 @@ import '../../support/kit.dart';
     spawn: (request) async {
       spawns.add(request);
       return const SpawnResult(agentID: 'a-9');
+    },
+    // The sets a real project offers: the two modes the bridge's mode route
+    // takes, and the two workspaces an isolating project allows.
+    options: {
+      'Permission mode': const ['Ask'],
+      'Workspace': const ['Project'],
+    },
+    notes: {
+      'Base branch': 'The project default branch; F6 brings the choice',
+      'Environment': 'A local spawn; F6 brings the choice',
+      'Model': 'The project default; F6 brings the models by role',
+      'Host': 'The thread runs here; F7 lists hosts',
     },
   );
   return (model: model, spawns: spawns);
@@ -109,21 +120,49 @@ void main() {
     model.dispose();
   });
 
-  testWidgets('a chip opens its menu, and the lists open theirs', (
+  testWidgets('a chip opens a menu that changes what Start posts', (
+    tester,
+  ) async {
+    final (:model, :spawns) = _dialog();
+    await pumpKit(tester, newWorkDialog(model), height: 900);
+
+    await tester.tap(find.textContaining('Permission mode:'));
+    await tester.pumpAndSettle();
+    // The menu offers the mode this agent does not start with, and it can be
+    // chosen: the chip is not a menu of one value.
+    expect(find.text('Ask'), findsOneWidget);
+
+    await tester.tap(find.text('Ask'));
+    await tester.pumpAndSettle();
+    expect(model.choices['Permission mode'], 'Ask');
+    expect(find.textContaining('Permission mode: Ask'), findsOneWidget);
+
+    await tester.enterText(find.byType(EditableText), 'Do the work');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Start'));
+    await tester.pumpAndSettle();
+    expect(spawns.single.mode, 'ask');
+
+    await tester.tap(find.text('Recent prompts'));
+    await tester.pumpAndSettle();
+    expect(find.text('Clean up the fixtures'), findsOneWidget);
+
+    model.dispose();
+  });
+
+  testWidgets('a chip with nothing to choose is a pill naming its phase', (
     tester,
   ) async {
     final (:model, spawns: _) = _dialog();
     await pumpKit(tester, newWorkDialog(model), height: 900);
 
-    await tester.tap(find.textContaining('Base branch:'));
-    await tester.pumpAndSettle();
-    expect(find.text('main'), findsOneWidget);
-    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.text('Recent prompts'));
-    await tester.pumpAndSettle();
-    expect(find.text('Clean up the fixtures'), findsOneWidget);
+    // No route lists a project's branches, so the chip is a pill with the
+    // reason, never a menu whose only entry is the value already set.
+    final pill = tester.widget<Pill>(
+      find.widgetWithText(Pill, 'Base branch: main'),
+    );
+    expect(pill.tooltip, contains('F6'));
+    expect(find.widgetWithText(Btn, 'Base branch: main'), findsNothing);
 
     model.dispose();
   });

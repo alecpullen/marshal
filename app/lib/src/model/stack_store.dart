@@ -410,7 +410,16 @@ class StackStore extends ChangeNotifier {
     final band = node.band;
     if (band != null) add(band.active);
     final receipt = node.receipt;
-    if (receipt != null) add(receipt.usage);
+    if (receipt != null) {
+      add(
+        [
+          '${receipt.steps} steps',
+          '${receipt.tools} calls',
+          '${receipt.files} files',
+          ?receipt.usage,
+        ].join(' · '),
+      );
+    }
     return parts.join('\n');
   }
 

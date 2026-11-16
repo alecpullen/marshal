@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/services.dart';
 
+import '../../model/selection.dart';
 import '../../model/stack_store.dart';
 import '../../model/thread_ref.dart' as model;
 import '../../model/thread_view_state.dart';
@@ -37,6 +40,8 @@ const threadKeys = <ThreadKey>[
   ThreadKey('Enter', 'density', 'Cycle outline, comfortable and full'),
   ThreadKey('z', 'fold', 'Fold or unfold the cursor row'),
   ThreadKey('y', 'copy', 'Copy the cursor row'),
+  ThreadKey('⌘C', 'copySelection', 'Copy the selection'),
+  ThreadKey('⌘A', 'selectAll', 'Select every row'),
   ThreadKey('i', 'inspector', 'The inspector arrives in F4'),
   ThreadKey('⌘N', 'newWork', 'Start a new agent'),
 ];
@@ -70,6 +75,7 @@ class ThreadScreen extends StatefulWidget {
     this.onStop,
     this.onNewWork,
     this.onCopyRow,
+    this.selection,
   });
 
   /// The thread this screen is showing.
@@ -105,9 +111,13 @@ class ThreadScreen extends StatefulWidget {
   /// Opens the new-work dialog (`⌘N`).
   final VoidCallback? onNewWork;
 
-  /// Copies the cursor row. Selection provides the real copy in Task 5; this
-  /// is the key's action until then.
+  /// Copies the cursor row (`y`). The free selection copies with `⌘C`, which
+  /// this screen owns so one instance serves both.
   final void Function(String nodeId)? onCopyRow;
+
+  /// The text selection across the transcript. Null gives the screen its own,
+  /// which it disposes with itself.
+  final TranscriptSelection? selection;
 
   @override
   State<ThreadScreen> createState() => _ThreadScreenState();
@@ -115,14 +125,20 @@ class ThreadScreen extends StatefulWidget {
 
 class _ThreadScreenState extends State<ThreadScreen> {
   final _focus = FocusNode(debugLabel: 'thread');
+  late final TranscriptSelection _selection =
+      widget.selection ?? TranscriptSelection(textOf: widget.store.plainText);
 
   @override
   void dispose() {
     _focus.dispose();
+    if (widget.selection == null) _selection.dispose();
     super.dispose();
   }
 
   List<TranscriptRow> get _rows => flattenRows(widget.store, widget.view);
+
+  /// The node ids the list draws, in order: what a selection is expressed in.
+  List<String> get _order => [for (final row in _rows) row.id];
 
   /// The cursor's position in the row list, or null when nothing is cursored.
   int? get _cursorIndex {
@@ -151,6 +167,17 @@ class _ThreadScreenState extends State<ThreadScreen> {
 
     if ((meta || control) && key == LogicalKeyboardKey.keyN) {
       widget.onNewWork?.call();
+      return KeyEventResult.handled;
+    }
+    if ((meta || control) && key == LogicalKeyboardKey.keyC) {
+      final text = _selection.copy(widget.store, _order);
+      if (text.isNotEmpty) {
+        unawaited(Clipboard.setData(ClipboardData(text: text)));
+      }
+      return KeyEventResult.handled;
+    }
+    if ((meta || control) && key == LogicalKeyboardKey.keyA) {
+      _selection.selectAll(_order);
       return KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.escape) {
@@ -248,6 +275,7 @@ class _ThreadScreenState extends State<ThreadScreen> {
               : Transcript(
                   store: store,
                   view: widget.view,
+                  selection: _selection,
                   onOpenNode: widget.onOpenNode,
                 ),
         ),

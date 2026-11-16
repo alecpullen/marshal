@@ -1,6 +1,8 @@
+import '../../model/selection.dart';
 import '../../model/stack_store.dart';
 import '../../model/thread_view_state.dart';
 import '../kit/kit.dart';
+import 'selection_layer.dart';
 
 /// One row of the flattened transcript: a node, and how deep it sits.
 @immutable
@@ -60,6 +62,7 @@ class Transcript extends StatefulWidget {
     super.key,
     required this.store,
     required this.view,
+    this.selection,
     this.onOpenNode,
   });
 
@@ -68,6 +71,10 @@ class Transcript extends StatefulWidget {
 
   /// The user's choices: density, folds, cursor, and whether it follows.
   final ThreadViewState view;
+
+  /// The text selection across the transcript. Null gives this transcript its
+  /// own, which it disposes with itself.
+  final TranscriptSelection? selection;
 
   /// Opens a node's detail. Null leaves rows that are not controls plain.
   final void Function(String nodeId)? onOpenNode;
@@ -78,6 +85,8 @@ class Transcript extends StatefulWidget {
 
 class _TranscriptState extends State<Transcript> {
   final _controller = ScrollController();
+  late final TranscriptSelection _selection =
+      widget.selection ?? TranscriptSelection(textOf: widget.store.plainText);
   List<TranscriptRow> _rows = const [];
 
   @override
@@ -108,6 +117,7 @@ class _TranscriptState extends State<Transcript> {
     widget.store.removeListener(_onStore);
     widget.view.removeListener(_onView);
     _controller.dispose();
+    if (widget.selection == null) _selection.dispose();
     super.dispose();
   }
 
@@ -184,30 +194,39 @@ class _TranscriptState extends State<Transcript> {
             ),
           ),
         Expanded(
-          child: ListView.builder(
+          child: SelectionLayer(
+            selection: _selection,
+            store: widget.store,
+            order: [for (final row in _rows) row.id],
             controller: _controller,
-            padding: const EdgeInsets.symmetric(
-              horizontal: Layout.pageSide,
-              vertical: Space.s12,
-            ),
-            itemCount: _rows.length,
-            itemBuilder: (context, index) {
-              final row = _rows[index];
-              return Align(
-                alignment: Alignment.topCenter,
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: Layout.reading),
-                  child: _Row(
-                    nodeId: row.id,
-                    index: index,
-                    depth: row.depth,
-                    store: widget.store,
-                    view: widget.view,
-                    onOpen: widget.onOpenNode,
+            child: ListView.builder(
+              controller: _controller,
+              padding: const EdgeInsets.symmetric(
+                horizontal: Layout.pageSide,
+                vertical: Space.s12,
+              ),
+              itemCount: _rows.length,
+              itemBuilder: (context, index) {
+                final row = _rows[index];
+                return Align(
+                  alignment: Alignment.topCenter,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: Layout.reading),
+                    child: SelectableRow(
+                      nodeId: row.id,
+                      child: _Row(
+                        nodeId: row.id,
+                        index: index,
+                        depth: row.depth,
+                        store: widget.store,
+                        view: widget.view,
+                        onOpen: widget.onOpenNode,
+                      ),
+                    ),
                   ),
-                ),
-              );
-            },
+                );
+              },
+            ),
           ),
         ),
       ],

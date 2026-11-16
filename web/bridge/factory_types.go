@@ -1,7 +1,10 @@
 package bridge
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -231,6 +234,16 @@ type FactoryDecision struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
+// Approval authority origin values, recorded in provenance so an entry says
+// where the authority it acted under came from. Standing authority is what the
+// store itself holds — a grant's approvalAuthority, or a built-in project or
+// session default; client_assertion is authority a client claimed and the
+// server did not verify against a human instruction.
+const (
+	factoryAuthorityOriginStanding        = "standing"
+	factoryAuthorityOriginClientAssertion = "client_assertion"
+)
+
 // FactoryProvenance attributes one journaled factory mutation to the MCP
 // client that caused it. It is optional: an entry written before provenance
 // existed still replays, and an ordinary Studio mutation records none.
@@ -247,6 +260,17 @@ type FactoryProvenance struct {
 	RequestID  string `json:"requestId"`
 	Authority  string `json:"authority,omitempty"`
 	DecisionID string `json:"decisionId,omitempty"`
+	// The authenticated built-in principal, when the mutation came from a
+	// session association rather than an MCP client. Every field is optional
+	// and appended last, so a record written before session principals existed
+	// — and a client's own provenance — marshals byte for byte as it always
+	// did. AuthorityOrigin says where Authority came from; it is never claimed
+	// by a caller.
+	InstanceID      string `json:"instanceId,omitempty"`
+	SessionID       string `json:"sessionId,omitempty"`
+	WorkerID        string `json:"workerId,omitempty"`
+	Role            string `json:"role,omitempty"`
+	AuthorityOrigin string `json:"authorityOrigin,omitempty"`
 }
 
 type FactoryEvent struct {
@@ -270,12 +294,23 @@ type FactoryEvent struct {
 // RequestID is the identity the client sent, not the journal's: every service
 // entry point scopes it into the journal namespace and keeps the original here
 // so provenance names what the client asked for.
+//
+// A built-in session's principal fills the instance, session, worker and role
+// instead of ClientID, and its authority origin says the store held it. Every
+// one of those fields is empty for a client, so its scope and its provenance
+// are the ones it has always had.
 type factoryPrincipal struct {
 	ClientID  string
 	ProjectID string
 	Action    string
 	RequestID string
 	Authority string
+
+	InstanceID      string
+	SessionID       string
+	WorkerID        string
+	Role            string
+	AuthorityOrigin string
 }
 
 // provenance renders the attribution a journal entry carries. decisionID names
@@ -285,12 +320,17 @@ func (p *factoryPrincipal) provenance(decisionID string) *FactoryProvenance {
 		return nil
 	}
 	return &FactoryProvenance{
-		ClientID:   p.ClientID,
-		ProjectID:  p.ProjectID,
-		Action:     p.Action,
-		RequestID:  p.RequestID,
-		Authority:  p.Authority,
-		DecisionID: decisionID,
+		ClientID:        p.ClientID,
+		ProjectID:       p.ProjectID,
+		Action:          p.Action,
+		RequestID:       p.RequestID,
+		Authority:       p.Authority,
+		DecisionID:      decisionID,
+		InstanceID:      p.InstanceID,
+		SessionID:       p.SessionID,
+		WorkerID:        p.WorkerID,
+		Role:            p.Role,
+		AuthorityOrigin: p.AuthorityOrigin,
 	}
 }
 
@@ -301,9 +341,48 @@ func (p *factoryPrincipal) event(kind, message, decisionID string, now time.Time
 	return FactoryEvent{At: now, Kind: kind, Message: message, Provenance: p.provenance(decisionID)}
 }
 
-// scoped is the journal's request identity for a request this client sent.
+// scoped is the journal's request identity for a request this principal sent.
+//
+// A built-in session is scoped by the association that authenticated it —
+// instance, project, session and, when it names one, worker — so two sessions
+// in one project can use the same request id without colliding, while one
+// session retrying is still one operation. An MCP client keeps exactly the
+// identity it has always had.
 func (p *factoryPrincipal) scoped(requestID string) string {
+	if p.InstanceID != "" || p.SessionID != "" {
+		return marshalScopedRequestID(p.InstanceID, p.ProjectID, p.SessionID, p.WorkerID, requestID)
+	}
 	return factoryScopedRequestID(p.ClientID, requestID)
+}
+
+// marshalScopedRequestID is the journal identity of one built-in session's
+// request. The separator is a NUL, so no concatenation of two different scopes
+// can produce one identity.
+func marshalScopedRequestID(instanceID, projectID, sessionID, workerID, requestID string) string {
+	h := sha256.Sum256([]byte(strings.Join([]string{instanceID, projectID, sessionID, workerID, requestID}, "\x00")))
+	return "marshal:" + hex.EncodeToString(h[:])
+}
+
+// principal is the journaled identity of one mutation a verified built-in
+// session performed: the scope its request identity is namespaced by and the
+// attribution it is recorded under. Its authority is the effective approval
+// authority and its origin is standing, because the store — not the caller —
+// holds that authority.
+func (b MarshalSessionBinding) principal(action string, access MarshalFactoryAccess) factoryPrincipal {
+	authority := ""
+	if access.ApprovalAuthority != nil {
+		authority = *access.ApprovalAuthority
+	}
+	return factoryPrincipal{
+		InstanceID:      b.InstanceID,
+		ProjectID:       b.ProjectID,
+		SessionID:       b.SessionID,
+		WorkerID:        b.WorkerID,
+		Role:            b.Role,
+		Action:          action,
+		Authority:       authority,
+		AuthorityOrigin: factoryAuthorityOriginStanding,
+	}
 }
 
 type FactoryItem struct {

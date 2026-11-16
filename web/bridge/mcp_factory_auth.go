@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Factory capabilities. Four are the grant's own booleans, and the fifth is
@@ -311,6 +312,250 @@ func (a *factoryMCPAuthorizer) routineRevisionLocked(clientID, projectID string)
 	}
 	ps := a.ws.ProjectSettingsFor(root)
 	return ps.PlannerDelegationEnabled && ps.DesignatedMCPClientID == clientID
+}
+
+// Built-in sessions.
+//
+// A built-in session is not an MCP client: it holds no client record and no
+// MCPFactoryProjectGrant. Its authority is a project's defaults plus, at most,
+// one override for the session (or for one worker of it). The binding that
+// names it is established by the control plane's trusted session association —
+// never by a tool argument or a request body — so no caller can mint one.
+//
+// The lock order and the linearization point are unchanged: policy ->
+// workspace -> factory store. An access write takes this same policy lock, so
+// a revocation lands entirely before a mutation was admitted or entirely after
+// that mutation's journal append committed, and every admission re-reads the
+// store instead of trusting a cache.
+//
+// Nothing here widens an external client's authority, and no built-in default
+// ever reaches one: AuthorizeCapability and WithAuthorizedMutation still read
+// the stored grant and nothing else.
+
+// AuthorizeMarshalRead checks the read capability for one verified built-in
+// binding, the way the read-only factory views check it.
+func (a *factoryMCPAuthorizer) AuthorizeMarshalRead(binding MarshalSessionBinding, repoID string) error {
+	return a.AuthorizeMarshalCapability(binding, repoID, factoryCapabilityRead)
+}
+
+// AuthorizeMarshalCapability checks one capability for a verified built-in
+// binding under the policy lock, so an access change that arrives first is
+// respected and one that arrives second waits.
+func (a *factoryMCPAuthorizer) AuthorizeMarshalCapability(binding MarshalSessionBinding, repoID, capability string) error {
+	if a == nil {
+		return fmt.Errorf("%w: no workspace", ErrFactoryUnavailable)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.authorizeMarshalLocked(binding, capability)
+}
+
+// WithAuthorizedMarshalMutation authorizes one capability for a verified
+// built-in binding and, only when it holds, runs fn while still holding the
+// policy lock. fn is the local validation and the journal append — the durable
+// commit is the linearization point — so an access change either lands
+// entirely before this operation was admitted or entirely after it committed.
+//
+// fn receives the principal to journal under: the scope its request identity is
+// namespaced by and the attribution the entry carries.
+//
+// repoID is the repository the mutation acts on. It is accepted for symmetry
+// with the client path and is deliberately not a gate: a built-in principal is
+// scoped by the project its binding names, which is checked here, and its
+// ceiling is the effective access — the project defaults, then the session or
+// worker override. A worker's role and item name what it is working on; neither
+// grants anything.
+func (a *factoryMCPAuthorizer) WithAuthorizedMarshalMutation(binding MarshalSessionBinding, repoID, capability string, fn func(factoryPrincipal) (FactoryItem, error)) (FactoryItem, error) {
+	if fn == nil {
+		return FactoryItem{}, fmt.Errorf("%w: no mutation to authorize", errFactoryDenied)
+	}
+	if a == nil {
+		return FactoryItem{}, fmt.Errorf("%w: no workspace", ErrFactoryUnavailable)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	principal, err := a.admitMarshalLocked(binding, capability)
+	if err != nil {
+		return FactoryItem{}, err
+	}
+	return fn(principal)
+}
+
+// marshalStatus reports one verified binding's effective access under the
+// policy lock, with every pointer resolved: the answer a status surface shows.
+func (a *factoryMCPAuthorizer) marshalStatus(binding MarshalSessionBinding) (MarshalConnectionStatus, error) {
+	if a == nil {
+		return MarshalConnectionStatus{}, fmt.Errorf("%w: no workspace", ErrFactoryUnavailable)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.marshalStatusLocked(binding)
+}
+
+// authorizeMarshalLocked is the admission for one built-in capability. The
+// caller holds the policy lock, so the access it reads is the access the
+// following journal append runs under.
+func (a *factoryMCPAuthorizer) authorizeMarshalLocked(binding MarshalSessionBinding, capability string) error {
+	_, err := a.admitMarshalLocked(binding, capability)
+	return err
+}
+
+// admitMarshalLocked resolves one binding's effective access, checks the
+// capability against it, and renders the principal the operation is journalled
+// under. Resolution and check are one step on purpose: a second read would be a
+// second answer. The caller holds the policy lock.
+func (a *factoryMCPAuthorizer) admitMarshalLocked(binding MarshalSessionBinding, capability string) (factoryPrincipal, error) {
+	// A capability this bridge does not define is a caller bug, not an
+	// authority question, so it is reported apart from a denial exactly as it
+	// is for an MCP client.
+	if err := a.validCapability(capability); err != nil {
+		return factoryPrincipal{}, err
+	}
+	status, err := a.marshalStatusLocked(binding)
+	if err != nil {
+		return factoryPrincipal{}, err
+	}
+	if !marshalAccessAllows(status.Access, capability) {
+		return factoryPrincipal{}, errFactoryDenied
+	}
+	return binding.principal(capability, status.Access), nil
+}
+
+// marshalStatusLocked resolves the effective access one verified binding holds
+// and reports it. The caller holds the policy lock.
+//
+// The default is read-only, and each layer replaces only the fields it carries:
+// an override reset to unset inherits the layer beneath it again, while an
+// explicit false keeps denying.
+func (a *factoryMCPAuthorizer) marshalStatusLocked(binding MarshalSessionBinding) (MarshalConnectionStatus, error) {
+	if a == nil || a.ws == nil {
+		return MarshalConnectionStatus{}, fmt.Errorf("%w: no workspace", ErrFactoryUnavailable)
+	}
+	if err := a.validMarshalBindingLocked(binding); err != nil {
+		return MarshalConnectionStatus{}, err
+	}
+	project, stored := a.ws.marshalAccessDefault(binding.ProjectID)
+	effective := resolveMarshalFactoryAccess(project.Access)
+	source := map[string]string{"project": "default"}
+	if stored {
+		source["project"] = "override"
+	}
+	if override, ok := a.ws.marshalAccessOverride(binding.ProjectID, binding.SessionID); ok && marshalOverrideApplies(override, binding) {
+		effective = resolveMarshalFactoryAccess(project.Access, override.Access)
+		source["session"] = "override"
+	}
+	return MarshalConnectionStatus{
+		State:      marshalStateConnected,
+		InstanceID: binding.InstanceID,
+		ProjectID:  binding.ProjectID,
+		SessionID:  binding.SessionID,
+		VerifiedAt: time.Now().UTC().Format(time.RFC3339),
+		Access:     effective,
+		Source:     source,
+	}, nil
+}
+
+// validMarshalBindingLocked refuses a binding the server has not established.
+// Every identity the association is made of must be present: a partly verified
+// binding is a denial, not a default, and it says nothing about which field was
+// missing.
+func (a *factoryMCPAuthorizer) validMarshalBindingLocked(binding MarshalSessionBinding) error {
+	if a == nil || a.ws == nil {
+		return fmt.Errorf("%w: no workspace", ErrFactoryUnavailable)
+	}
+	for _, field := range []string{binding.InstanceID, binding.ProjectID, binding.SessionID, binding.Generation} {
+		if strings.TrimSpace(field) == "" {
+			return errFactoryDenied
+		}
+	}
+	// The project ID mapping is the only way in, exactly as it is for a client:
+	// an ID this store did not mint names no project.
+	if _, ok := a.ws.ProjectRootByID(binding.ProjectID); !ok {
+		return errFactoryDenied
+	}
+	return nil
+}
+
+// marshalOverrideApplies reports whether a stored session override applies to
+// this binding. A record that names no worker is the session's own; one that
+// names a worker is that worker's, and a sibling worker inherits the project
+// default instead.
+func marshalOverrideApplies(override marshalFactoryAccessState, binding MarshalSessionBinding) bool {
+	return override.WorkerID == "" || override.WorkerID == binding.WorkerID
+}
+
+// marshalAccessAllows reports whether one effective access value carries a
+// capability. Every check is positive, and the planner capabilities a
+// designated MCP client carries are denied rather than derived: a built-in
+// session has no designation, so nothing here can be claimed by a role.
+func marshalAccessAllows(access MarshalFactoryAccess, capability string) bool {
+	switch capability {
+	case factoryCapabilityRead:
+		return access.Read != nil && *access.Read
+	case factoryCapabilityCreateDraft:
+		return access.CreateDraft != nil && *access.CreateDraft
+	case factoryCapabilityEditDraft:
+		return access.EditDraft != nil && *access.EditDraft
+	case factoryCapabilityAnswerQuestion:
+		return access.AnswerQuestion != nil && *access.AnswerQuestion
+	case factoryCapabilityApproveAndQueue:
+		// Approval additionally needs a configured authority, exactly as a
+		// grant does: an authority this bridge does not know (a hand-edited
+		// file) fails closed rather than being trusted.
+		return access.ApproveAndQueue != nil && *access.ApproveAndQueue &&
+			access.ApprovalAuthority != nil &&
+			(*access.ApprovalAuthority == factoryAuthorityUserDirected || *access.ApprovalAuthority == factoryAuthorityStanding)
+	}
+	return false
+}
+
+// putMarshalAccessDefault stores one project's built-in defaults under the
+// policy lock, so an access change and an authorized mutation cannot
+// interleave. An unknown project is refused without saying which ID was wrong.
+func (a *factoryMCPAuthorizer) putMarshalAccessDefault(projectID string, access MarshalFactoryAccess, expected string) (bool, marshalFactoryAccessState, error) {
+	if a == nil || a.ws == nil {
+		return false, marshalFactoryAccessState{}, fmt.Errorf("%w: no workspace", ErrFactoryUnavailable)
+	}
+	var (
+		wrote bool
+		state marshalFactoryAccessState
+	)
+	err := a.withPolicy(func() error {
+		if _, ok := a.ws.ProjectRootByID(projectID); !ok {
+			return errFactoryUnknownPair
+		}
+		next, current, err := a.ws.putMarshalAccessDefaultIfMatch(projectID, access, expected)
+		wrote, state = next, current
+		return err
+	})
+	if err != nil {
+		return false, state, err
+	}
+	return wrote, state, nil
+}
+
+// putMarshalAccessOverride stores one session's override under the same policy
+// lock, so a revocation of it cannot land inside an admitted mutation.
+func (a *factoryMCPAuthorizer) putMarshalAccessOverride(projectID, sessionID, workerID string, access MarshalFactoryAccess, expected string) (bool, marshalFactoryAccessState, error) {
+	if a == nil || a.ws == nil {
+		return false, marshalFactoryAccessState{}, fmt.Errorf("%w: no workspace", ErrFactoryUnavailable)
+	}
+	var (
+		wrote bool
+		state marshalFactoryAccessState
+	)
+	err := a.withPolicy(func() error {
+		if _, ok := a.ws.ProjectRootByID(projectID); !ok {
+			return errFactoryUnknownPair
+		}
+		next, current, err := a.ws.putMarshalAccessOverrideIfMatch(projectID, sessionID, workerID, access, expected)
+		wrote, state = next, current
+		return err
+	})
+	if err != nil {
+		return false, state, err
+	}
+	return wrote, state, nil
 }
 
 // withPolicy runs one durable policy mutation under the authorizer's mutex, on

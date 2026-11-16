@@ -25,7 +25,9 @@ Future<void> main() async {
         hosts.hosts.firstWhere((host) => host.name == name).client,
   );
   runApp(
-    EmberApp(home: Studio(store: store, inbox: inbox, read: hosts.discover)),
+    EmberApp(
+      home: Studio(store: store, inbox: inbox, read: hosts.discover),
+    ),
   );
   await startTray();
 }

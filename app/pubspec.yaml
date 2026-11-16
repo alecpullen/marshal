@@ -23,6 +23,10 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  # F2's end-to-end flow (integration_test/f2_test.dart): the same flow as
+  # test/ui/f2_flow_test.dart, driven on a device where one exists.
+  integration_test:
+    sdk: flutter
   flutter_lints: ^6.0.0
 
 flutter:

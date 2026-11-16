@@ -22,6 +22,12 @@ import (
 type Automations struct {
 	ReviewBot *ReviewBotSettings `json:"reviewBot,omitempty"`
 	CIFixer   *CIFixerSettings   `json:"ciFixer,omitempty"`
+	// AutoFix fixes a failing check on any of this project's Marshal pull
+	// requests without being asked, exactly as a click would. It is off by
+	// default: a bridge that changes a pull request on its own is a surprise
+	// unless the project asked for it. Factory items are unaffected, because
+	// they already repair inside their own allowance.
+	AutoFix bool `json:"autoFix,omitempty"`
 }
 
 // ReviewBotSettings configures the PR review bot.
@@ -180,6 +186,11 @@ type autoState struct {
 	// pullFix replaces the background start of a dispatched pull request fix
 	// (tests): it runs the fix inline, so the test sees its outcome.
 	pullFix func(context.Context, contract.PullRecord, contract.PullFix, contract.PullFixRequest) error
+	// pullsAutoFix remembers which head an automatic fix was dispatched for,
+	// per pull request, so a failure that survives a fix is not fixed again on
+	// its own. It is memory only: after a restart a head may be tried once
+	// more, and the single-fix rule refuses it while a fix runs.
+	pullsAutoFix map[string]string
 }
 
 // autoClaim marks key as in flight. It reports false when it already is.

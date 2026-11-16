@@ -180,6 +180,12 @@ func (f *Fleet) observePull(ctx context.Context, rec contract.PullRecord, pass *
 	}
 	next.ObservedAt = now
 	f.applyPull(rec, next)
+	if cur, ok := f.pull(rec.ID); ok {
+		// A project that asked for automatic fixes gets one here, without a
+		// click. A factory item's record is never fixed this way: the factory
+		// already repairs inside its own allowance.
+		f.autoFixPull(ctx, cur)
+	}
 }
 
 // openPull finds one pull request in a repo's open list.
@@ -291,6 +297,53 @@ func (f *Fleet) dropPull(id string) {
 	if err := f.removePull(id); err != nil {
 		slog.Default().Warn("webbridge: remove a pull record", "pull", id, "err", err)
 	}
+}
+
+// autoFixPull dispatches a fix for a record's first failing check when the
+// project asked for failures to be fixed automatically. It is the same dispatch
+// a click makes, so every guard, limit and ask applies, and it runs once per
+// head: a failure that survives a fix is not fixed again on its own.
+func (f *Fleet) autoFixPull(ctx context.Context, rec contract.PullRecord) {
+	if rec.Origin == contract.PullOriginFactory || rec.Fix != nil {
+		return
+	}
+	if !f.projectAutoFixesPulls(rec.ProjectRoot) {
+		return
+	}
+	check, ok := pullFailingCheck(rec, "")
+	if !ok {
+		return
+	}
+	if !f.claimPullAutoFix(rec.ID, rec.HeadSHA) {
+		return
+	}
+	if _, err := f.dispatchPullFix(ctx, rec.ID, contract.PullFixRequest{Check: check.Name}, DefaultOwnerID); err != nil {
+		slog.Default().Warn("webbridge: automatic pull fix", "pull", rec.ID, "err", err)
+	}
+}
+
+// projectAutoFixesPulls reports whether a project asked for automatic fixes.
+func (f *Fleet) projectAutoFixesPulls(root string) bool {
+	if root == "" {
+		return false
+	}
+	ps := f.ws.ProjectSettingsFor(root)
+	return ps.Automations != nil && ps.Automations.AutoFix
+}
+
+// claimPullAutoFix marks that an automatic fix was dispatched for head, and
+// reports false when one already was.
+func (f *Fleet) claimPullAutoFix(id, head string) bool {
+	f.auto.mu.Lock()
+	defer f.auto.mu.Unlock()
+	if f.auto.pullsAutoFix == nil {
+		f.auto.pullsAutoFix = map[string]string{}
+	}
+	if f.auto.pullsAutoFix[id] == head {
+		return false
+	}
+	f.auto.pullsAutoFix[id] = head
+	return true
 }
 
 // factoryItem returns one factory item, or false without a controller.

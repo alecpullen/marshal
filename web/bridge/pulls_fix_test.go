@@ -411,3 +411,128 @@ func TestFixIsAudited(t *testing.T) {
 		t.Fatal("the stop left no audit record")
 	}
 }
+
+// autoFixFleet is a fleet whose project /p holds automations, with one failing
+// pull request the forge reports.
+func autoFixFleet(t *testing.T, automations *Automations) (*Fleet, *pullForge, *int) {
+	t.Helper()
+	pf := newPullForge(t)
+	pf.setOpen(7, "abc123", false)
+	pf.setChecks("abc123", map[string]any{
+		"id": 412, "name": "lint", "status": "completed", "conclusion": "failure",
+		"html_url": "https://github.com/you/r/runs/412",
+	})
+	f := pullTestFleet(t, pf)
+	if err := f.ws.PutProjectSettings("/p", ProjectSettings{Automations: automations}); err != nil {
+		t.Fatal(err)
+	}
+	dispatches := 0
+	f.auto.pullFix = func(context.Context, contract.PullRecord, contract.PullFix, contract.PullFixRequest) error {
+		dispatches++
+		return nil
+	}
+	if err := f.recordPull(contract.PullRecord{RepoID: "r1", ProjectRoot: "/p", Number: 7,
+		HeadRef: "marshal/a1", BaseRef: "main", HeadSHA: "abc123",
+		Origin: contract.PullOriginAgent, ObservedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	return f, pf, &dispatches
+}
+
+func TestAutoFixDispatchesOncePerHead(t *testing.T) {
+	f, pf, dispatches := autoFixFleet(t, &Automations{AutoFix: true})
+	f.observePulls(context.Background())
+	if *dispatches != 1 {
+		t.Fatalf("dispatches = %d, want 1", *dispatches)
+	}
+	rec, _ := f.pull("r1#7")
+	if rec.Fix == nil || rec.Fix.Check != "lint" {
+		t.Fatalf("the automatic fix was not recorded: %+v", rec.Fix)
+	}
+
+	// The fix finishes without moving the head, and the same check still
+	// fails: an automatic pass does not fix it again.
+	if _, err := f.updatePull("r1#7", func(r *contract.PullRecord) error {
+		r.Fix = nil
+		r.ObservedAt = 1
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.observePulls(context.Background())
+	if *dispatches != 1 {
+		t.Fatalf("a second pass over the same head dispatched %d fixes", *dispatches)
+	}
+
+	// A new head is a new failure, and it is fixed on its own.
+	pf.setOpen(7, "def456", false)
+	pf.setChecks("def456", map[string]any{
+		"id": 413, "name": "lint", "status": "completed", "conclusion": "failure",
+		"html_url": "https://github.com/you/r/runs/413",
+	})
+	if _, err := f.updatePull("r1#7", func(r *contract.PullRecord) error { r.ObservedAt = 1; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	f.observePulls(context.Background())
+	if *dispatches != 2 {
+		t.Fatalf("dispatches on a new head = %d, want 2", *dispatches)
+	}
+}
+
+func TestAutoFixIsOffByDefault(t *testing.T) {
+	cases := map[string]*Automations{
+		"no automation settings": nil,
+		"another automation":     {CIFixer: &CIFixerSettings{Enabled: true, RepoID: "r1", Branches: []string{"main"}}},
+	}
+	for name, automations := range cases {
+		t.Run(name, func(t *testing.T) {
+			f, _, dispatches := autoFixFleet(t, automations)
+			f.observePulls(context.Background())
+			if *dispatches != 0 {
+				t.Fatalf("dispatched %d fixes without the setting", *dispatches)
+			}
+			if rec, _ := f.pull("r1#7"); rec.Fix != nil {
+				t.Fatalf("a fix was recorded without the setting: %+v", rec.Fix)
+			}
+		})
+	}
+}
+
+func TestAutoFixLeavesFactoryPullsAlone(t *testing.T) {
+	f := testFleet(t)
+	if err := f.ws.PutProjectSettings("/p", ProjectSettings{
+		Automations: &Automations{AutoFix: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dispatches := 0
+	f.auto.pullFix = func(context.Context, contract.PullRecord, contract.PullFix, contract.PullFixRequest) error {
+		dispatches++
+		return nil
+	}
+	s, item := factoryPullItem(t, 9, "abc123", []FactoryCheck{{
+		Key: FactoryCheckKey{Kind: "check", Name: "test"}, SHA: "abc123",
+		Status: "completed", Conclusion: "failure",
+	}})
+	if err := f.recordPull(contract.PullRecord{RepoID: "r1", ProjectRoot: "/p", Number: 9,
+		HeadRef: "factory/x", BaseRef: "main", HeadSHA: "abc123",
+		Origin: contract.PullOriginFactory, FactoryItem: item.ID, ObservedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	f.SetFactoryController(NewFactoryController(s, &loopEffects{store: s}, f.now))
+
+	f.observePulls(context.Background())
+
+	if dispatches != 0 {
+		t.Fatalf("a factory item's pull request was fixed automatically %d times", dispatches)
+	}
+	rec, _ := f.pull("r1#9")
+	if rec.Fix != nil {
+		t.Fatalf("a fix was dispatched for a factory item: %+v", rec.Fix)
+	}
+	// The factory's own repair is what answers its failures, and its evidence
+	// is still the record's.
+	if rec.State != contract.PullFailing {
+		t.Fatalf("state = %q, want failing", rec.State)
+	}
+}

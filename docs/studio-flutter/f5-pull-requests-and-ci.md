@@ -200,3 +200,85 @@ Suggested pull requests, in order.
   writes refused.
 - The default time and cost limits for a user-requested fix; start from
   `CIFixerSettings`' defaults.
+
+## Implementation record (F5.1)
+
+Landed by [plan 1](plans/2026-11-17-f5-1-pulls-bridge-plan.md): the bridge half
+only. Everything is under `web/`, and `TestWebIsStdlibOnly` still holds.
+
+- **Records.** `contract.PullRecord`, keyed `<repoId>#<number>`, in fleet state
+  at `workspaceVersion` 12. A version-11 file loads with no records, and a save
+  from one writes 12 with no `pulls` key. Written by the exit path (an agent's
+  pull request, and the CI fixer's and review bot's as their automations'),
+  when the factory controller journals a new `FactoryPR`, and backfilled once
+  per source at start — agents at `StartPoller`, factory items when
+  `SetFactoryController` is wired — so a restart order does not matter. A
+  backfill adds only what is missing.
+- **Checks.** `Forge.ListChecks` for GitHub (check runs) and Gitea/Forgejo
+  (commit statuses, newest report per context), mapped to
+  `passed|failed|running|pending`. A credential that is not a PAT returns
+  `ErrChecksUnavailable`, and the record carries the reason in
+  `checksUnavailable`; it is never shown as passing.
+- **Observation.** `observePulls` re-reads a record every 30 s while a check is
+  running or pending and every 5 min otherwise. A moved head replaces `headSha`
+  and clears the checks before any new ones are stored, so an old head's
+  evidence can never be shown as current. A pull request that is no longer in
+  the repo's open list was closed or merged, and its record is removed. A
+  factory item's record copies the item's `FactoryPR` and its round's
+  `FactoryCI`, and is never polled: the controller already asked the forge.
+- **Index.** `GET /api/pulls` (`{"pulls": [...]}`) and
+  `GET /api/pulls/{id}` — the detail adds each failing check's log tail and a
+  factory item's narrated report. `derivePullState` yields `ready`, `failing`,
+  `in_progress`, `being_fixed` or `checks_unavailable`. Every change is a
+  `pull` delta on the fleet stream (`kind: "pull"`, with the record or the
+  removed id); a poll that finds nothing but a newer observation time changes
+  nothing on the stream.
+- **Fix dispatch.** `POST /api/pulls/{id}/fix` names a failing check and
+  answers at once with the record; the work is asynchronous.
+  `POST /api/pulls/{id}/fix/stop` stops it. A second request is refused 409 with
+  the running fix's id. A factory item's pull request is repaired by the
+  factory's own round, and one more round is granted — reason "requested by the
+  user" — only when the allowance is spent. Any other pull request runs the CI
+  fixer's own recipe against the record's head branch and pushes to that same
+  branch, under the project's `CIFixerSettings` limits or 30 minutes and 2 USD,
+  with `forbiddenChange` unchanged. A dispatch is bound to the head it was asked
+  about: if the head has moved when the worker starts, the fix is cancelled and
+  reported. Every dispatch, stop, granted round and outcome is audited with who
+  asked.
+- **Outcomes.** A pushed fix clears the fix and leaves no ask; the record is in
+  progress until the new head's checks report. Did not reproduce, gave up, a
+  forbidden change, stopped, a moved head and every investigate-only result
+  leave an inbox item of kind `pull` naming the pull request, the check, what
+  was tried, the finding and what the user can do.
+- **Automatic fixing.** `autoFix` on the project's `Automations`, default off.
+  When on, the observer dispatches a fix for the first failing check of that
+  project's non-factory pull requests, once per head. A factory item's pull
+  request is never fixed this way: the factory already repairs inside its
+  allowance.
+
+### Choices the plan left to the implementation
+
+- **The ask's payload.** `contract.PullAsk` (`pull`, `check`, `outcome`,
+  `tried`, `finding`, `action`, `at`) rides `InboxItem.Pull` under the `pull`
+  kind. Asks live in fleet state beside the records, one per pull request: a new
+  dispatch replaces the last one, and removing the record removes its ask. There
+  is no dismissal route in this plan; the app's Inbox is what closes them.
+- **Investigate-only.** It runs the same `fix-ci` recipe, with the prompt told
+  not to change a file, and the bridge refuses the outcome whatever the run did:
+  nothing is pushed, the worker is discarded, and the ask always carries the
+  finding. `web/` has no per-session write-deny seam (the `session/new` policy's
+  `allow` list is a command allow-list, not a tool allow-list), so "refused by
+  policy" is enforced at the outcome rather than in the sandbox.
+- **The note.** It is appended to the recipe's log input, which reaches the same
+  rendered prompt; the `fix-ci` recipe declares the inputs it accepts and
+  refuses unknown ones.
+- **Closed or merged.** `Forge.GetPR` reports no state, so the observer asks the
+  repo's open list once per pass and treats absence as closure. Several records
+  on one repo share that one listing.
+- **The once-per-head marker for automatic fixing** is in memory
+  (`autoState.pullsAutoFix`), not in the record: the persisted format is the
+  plan's. After a restart a head may be tried once more, and the single-fix rule
+  refuses it while a fix runs.
+- **Stopping a factory fix** issues the factory's own `stop` command for the
+  item, because the worker is the factory's implementer; any other fix stops by
+  discarding its worker.

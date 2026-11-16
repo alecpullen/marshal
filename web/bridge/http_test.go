@@ -2,13 +2,16 @@ package bridge
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -826,5 +829,406 @@ func TestAccessRouteRejectsNullPatch(t *testing.T) {
 		if f.method == "session/set_mode" {
 			t.Fatalf("rejected patch was forwarded: %s", f.params)
 		}
+	}
+}
+
+// subagentFrames returns every frame the fake child received for one method.
+func subagentFrames(t *testing.T, tr *captureTransport, method string) []capturedFrame {
+	t.Helper()
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	var out []capturedFrame
+	for _, f := range tr.seen {
+		if f.method == method {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// silentTransport answers every method but one, which it receives and never
+// answers: what the bridge sees when the child died, or lost the reply, after
+// taking the request. sent counts what it took, since a swallowed frame never
+// reaches the fake child's recorder.
+type silentTransport struct {
+	*captureTransport
+	method string
+	sent   *atomic.Int64
+}
+
+func (s silentTransport) Open() (io.WriteCloser, io.ReadCloser, io.ReadCloser, error) {
+	stdin, stdout, stderr, err := s.captureTransport.Open()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return silentWriter{next: stdin, method: s.method, sent: s.sent}, stdout, stderr, nil
+}
+
+type silentWriter struct {
+	next   io.WriteCloser
+	method string
+	sent   *atomic.Int64
+}
+
+func (w silentWriter) Write(p []byte) (int, error) {
+	var frame struct {
+		Method string `json:"method"`
+	}
+	if json.Unmarshal(bytes.TrimSpace(p), &frame) == nil && frame.Method == w.method {
+		// Taken, never answered: the frame is not forwarded to the fake child.
+		w.sent.Add(1)
+		return len(p), nil
+	}
+	return w.next.Write(p)
+}
+
+func (w silentWriter) Close() error { return w.next.Close() }
+
+// TestSubagentSteerRouteForwards pins the route's shape: the session and the
+// child come from the URL, the body carries only the request and its text, the
+// forwarded frame names the owning session, and the answer is the session's
+// acceptance — never a claim that the child read it.
+func TestSubagentSteerRouteForwards(t *testing.T) {
+	tr := &captureTransport{results: map[string]json.RawMessage{
+		"session/subagent_steer": json.RawMessage(`{"requestId":"req-1","status":"accepted"}`),
+	}}
+	s, reg, _, _ := newTestServer(t, "", tr)
+	reg.track("s-1", AgentPath("/tmp/work"))
+
+	rec := doReq(t, s, http.MethodPost, "/api/sessions/s-1/subagents/7/steer",
+		map[string]any{"requestId": "req-1", "message": "wrap up and report"}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		RequestID string `json:"requestId"`
+		Status    string `json:"status"`
+	}
+	decodeBody(t, rec, &out)
+	if out.RequestID != "req-1" || out.Status != "accepted" {
+		t.Fatalf("result = %+v, want request req-1 accepted", out)
+	}
+	// Acceptance is not consumption: the body says no more than the session did.
+	if body := rec.Body.String(); strings.Contains(body, "consumed") || strings.Contains(body, "applied") {
+		t.Fatalf("body %s claims delivery or consumption", body)
+	}
+
+	frames := subagentFrames(t, tr, "session/subagent_steer")
+	if len(frames) != 1 {
+		t.Fatalf("session/subagent_steer frames = %d, want 1", len(frames))
+	}
+	var params struct {
+		SessionID  string `json:"sessionId"`
+		SubagentID int64  `json:"subagentId"`
+		RequestID  string `json:"requestId"`
+		Message    string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(frames[0].params), &params); err != nil {
+		t.Fatalf("decode params %s: %v", frames[0].params, err)
+	}
+	if params.SessionID != "s-1" || params.SubagentID != 7 || params.RequestID != "req-1" || params.Message != "wrap up and report" {
+		t.Fatalf("params = %+v, want the route's session and child with the body's request", params)
+	}
+}
+
+// TestSubagentCancelRouteUsesTheExistingControl pins the cancel half: it is a
+// route onto session/subagent_cancel, not a second cancellation mechanism, and
+// its answer is an acknowledgement rather than a stopped child.
+func TestSubagentCancelRouteUsesTheExistingControl(t *testing.T) {
+	tr := &captureTransport{results: map[string]json.RawMessage{
+		"session/subagent_cancel": json.RawMessage(`{"cancelled":true}`),
+	}}
+	s, reg, _, _ := newTestServer(t, "", tr)
+	reg.track("s-1", AgentPath("/tmp/work"))
+
+	rec := doReq(t, s, http.MethodPost, "/api/sessions/s-1/subagents/3/cancel", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Cancelled bool `json:"cancelled"`
+	}
+	decodeBody(t, rec, &out)
+	if !out.Cancelled {
+		t.Fatalf("cancelled = false, want the session's acknowledgement")
+	}
+
+	frames := subagentFrames(t, tr, "session/subagent_cancel")
+	if len(frames) != 1 {
+		t.Fatalf("session/subagent_cancel frames = %d, want 1", len(frames))
+	}
+	var params struct {
+		SessionID  string `json:"sessionId"`
+		SubagentID int64  `json:"subagentId"`
+	}
+	if err := json.Unmarshal([]byte(frames[0].params), &params); err != nil {
+		t.Fatalf("decode params %s: %v", frames[0].params, err)
+	}
+	if params.SessionID != "s-1" || params.SubagentID != 3 {
+		t.Fatalf("params = %+v, want s-1's child 3", params)
+	}
+
+	// No turn-level cancel rides along: the child's stop is the only one asked
+	// for, through the one control that exists for it.
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	for _, f := range tr.seen {
+		if strings.Contains(f.method, "cancel") && f.method != "session/subagent_cancel" {
+			t.Fatalf("cancel route sent %s: a second cancellation mechanism", f.method)
+		}
+	}
+}
+
+// TestSubagentRoutesRejectMalformedIDs keeps a typo out of the agent: a child
+// ID that is not a positive integer, or a body missing its request or text, is
+// refused here and never forwarded.
+func TestSubagentRoutesRejectMalformedIDs(t *testing.T) {
+	s, reg, _, _ := newTestServer(t, "", &captureTransport{})
+	reg.track("s-1", AgentPath("/tmp/work"))
+
+	for _, tc := range []struct{ name, path, body, code string }{
+		{"child id is not a number", "/api/sessions/s-1/subagents/child-1/steer", `{"requestId":"r","message":"hi"}`, "invalid"},
+		{"child id is zero", "/api/sessions/s-1/subagents/0/steer", `{"requestId":"r","message":"hi"}`, "invalid"},
+		{"child id is negative", "/api/sessions/s-1/subagents/-2/steer", `{"requestId":"r","message":"hi"}`, "invalid"},
+		{"child id is fractional", "/api/sessions/s-1/subagents/1.5/steer", `{"requestId":"r","message":"hi"}`, "invalid"},
+		{"cancel child id is not a number", "/api/sessions/s-1/subagents/child-1/cancel", ``, "invalid"},
+		{"missing request id", "/api/sessions/s-1/subagents/1/steer", `{"message":"hi"}`, "invalid"},
+		{"blank request id", "/api/sessions/s-1/subagents/1/steer", `{"requestId":"  ","message":"hi"}`, "invalid"},
+		{"missing message", "/api/sessions/s-1/subagents/1/steer", `{"requestId":"r"}`, "invalid"},
+		{"blank message", "/api/sessions/s-1/subagents/1/steer", `{"requestId":"r","message":"  "}`, "invalid"},
+		// A body that is not one JSON value is refused by the decoder itself.
+		{"trailing value", "/api/sessions/s-1/subagents/1/steer", `{"requestId":"r","message":"hi"}{}`, ""},
+		{"null body", "/api/sessions/s-1/subagents/1/steer", `null`, "invalid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			rec := httptest.NewRecorder()
+			s.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 (body %s)", rec.Code, rec.Body.String())
+			}
+			if tc.code == "" {
+				return
+			}
+			var body struct {
+				Error string `json:"error"`
+				Code  string `json:"code"`
+			}
+			decodeBody(t, rec, &body)
+			if body.Code != tc.code {
+				t.Fatalf("code = %q, want %q (body %s)", body.Code, tc.code, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestSubagentRoutesAreAuthorizedAndSessionScoped pins the two refusals around
+// the controls — no token, no such session — and the rule that makes a child ID
+// safe to route on: it is session-local, so two sessions holding child 1 each
+// reach only their own.
+func TestSubagentRoutesAreAuthorizedAndSessionScoped(t *testing.T) {
+	tr := &captureTransport{results: map[string]json.RawMessage{
+		"session/subagent_steer":  json.RawMessage(`{"requestId":"r","status":"accepted"}`),
+		"session/subagent_cancel": json.RawMessage(`{"cancelled":true}`),
+	}}
+	s, reg, _, _ := newTestServer(t, "tok", tr)
+	reg.track("s-1", AgentPath("/tmp/one"))
+	reg.track("s-2", AgentPath("/tmp/two"))
+	auth := map[string]string{"Authorization": "Bearer tok"}
+
+	// No token: refused before the session is even resolved.
+	rec := doReq(t, s, http.MethodPost, "/api/sessions/s-1/subagents/1/steer",
+		map[string]any{"requestId": "r", "message": "hi"}, nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no token: status = %d, want 401", rec.Code)
+	}
+
+	// A session this bridge does not serve: 404, with nothing forwarded.
+	rec = doReq(t, s, http.MethodPost, "/api/sessions/nope/subagents/1/steer",
+		map[string]any{"requestId": "r", "message": "hi"}, auth)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown session: status = %d, want 404 (body %s)", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	decodeBody(t, rec, &body)
+	if body.Code != "unknown_session" {
+		t.Fatalf("unknown session code = %q, want unknown_session", body.Code)
+	}
+	if got := len(subagentFrames(t, tr, "session/subagent_steer")); got != 0 {
+		t.Fatalf("refused requests were forwarded: %d frames", got)
+	}
+
+	// Two sessions, the same child ID: each request reaches its own session.
+	for _, session := range []string{"s-1", "s-2"} {
+		rec := doReq(t, s, http.MethodPost, "/api/sessions/"+session+"/subagents/1/steer",
+			map[string]any{"requestId": "req-" + session, "message": "hi"}, auth)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200 (body %s)", session, rec.Code, rec.Body.String())
+		}
+	}
+	frames := subagentFrames(t, tr, "session/subagent_steer")
+	if len(frames) != 2 {
+		t.Fatalf("session/subagent_steer frames = %d, want 2", len(frames))
+	}
+	for i, session := range []string{"s-1", "s-2"} {
+		var params struct {
+			SessionID  string `json:"sessionId"`
+			SubagentID int64  `json:"subagentId"`
+			RequestID  string `json:"requestId"`
+		}
+		if err := json.Unmarshal([]byte(frames[i].params), &params); err != nil {
+			t.Fatalf("decode params %s: %v", frames[i].params, err)
+		}
+		if params.SessionID != session || params.SubagentID != 1 || params.RequestID != "req-"+session {
+			t.Fatalf("frame %d = %+v, want child 1 of %s carrying its own request", i, params, session)
+		}
+	}
+}
+
+// TestSubagentSteerUnsupportedIsNotAConflict pins an older agent's answer: a
+// missing session/subagent_steer is 501 unsupported, never the session's 409.
+func TestSubagentSteerUnsupportedIsNotAConflict(t *testing.T) {
+	tr := &captureTransport{errs: map[string]*rpcError{
+		"session/subagent_steer": {Code: rpcMethodNotFound, Message: "method not found: session/subagent_steer"},
+	}}
+	s, reg, _, _ := newTestServer(t, "", tr)
+	reg.track("s-1", AgentPath("/tmp/work"))
+
+	rec := doReq(t, s, http.MethodPost, "/api/sessions/s-1/subagents/9/steer",
+		map[string]any{"requestId": "req-1", "message": "hi"}, nil)
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501 (body %s)", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	decodeBody(t, rec, &body)
+	if body.Code != "unsupported" {
+		t.Fatalf("code = %q, want unsupported", body.Code)
+	}
+	if !strings.Contains(body.Error, "subagent_steer") {
+		t.Fatalf("error = %q, want the method named as unsupported", body.Error)
+	}
+}
+
+// TestSubagentSteerRefusalsAreDistinct pins the session's own refusals: a
+// request ID reused for something else is a conflict, a child that is unknown
+// or no longer live is an unknown delivery, and anything the bridge does not
+// recognise stays a plain refusal instead of being guessed into a conflict.
+func TestSubagentSteerRefusalsAreDistinct(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		message string
+		status  int
+		code    string
+	}{
+		{
+			"reused request id",
+			`session: subagent steer request "req-1" was already used for a different child or instruction`,
+			http.StatusConflict, "conflict",
+		},
+		{
+			"unknown child",
+			`session: unknown subagent id 9`,
+			http.StatusNotFound, "unknown_delivery",
+		},
+		{
+			"finished child",
+			`session: subagent 9 is no longer running; a message cannot reach a finished subagent`,
+			http.StatusNotFound, "unknown_delivery",
+		},
+		{
+			"child with no live session",
+			`session: subagent 9 has no live session to steer`,
+			http.StatusNotFound, "unknown_delivery",
+		},
+		{
+			"unrecognised refusal",
+			`session: this session refuses for its own reason`,
+			http.StatusConflict, "refused",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := &captureTransport{errs: map[string]*rpcError{
+				"session/subagent_steer": {Code: rpcServerError, Message: tc.message},
+			}}
+			s, reg, _, _ := newTestServer(t, "", tr)
+			reg.track("s-1", AgentPath("/tmp/work"))
+
+			rec := doReq(t, s, http.MethodPost, "/api/sessions/s-1/subagents/9/steer",
+				map[string]any{"requestId": "req-1", "message": "hi"}, nil)
+			if rec.Code != tc.status {
+				t.Fatalf("status = %d, want %d (body %s)", rec.Code, tc.status, rec.Body.String())
+			}
+			var body struct {
+				Error string `json:"error"`
+				Code  string `json:"code"`
+			}
+			decodeBody(t, rec, &body)
+			if body.Code != tc.code {
+				t.Fatalf("code = %q, want %q", body.Code, tc.code)
+			}
+			if body.Error != tc.message {
+				t.Fatalf("error = %q, want the session's own sentence %q", body.Error, tc.message)
+			}
+		})
+	}
+}
+
+// TestSubagentSteerLostReplyIsConnectionLoss pins the one outcome a retry must
+// treat differently: the request reached the child and no answer came back, so
+// whether it was accepted is unknown and the answer says so.
+func TestSubagentSteerLostReplyIsConnectionLoss(t *testing.T) {
+	var sent atomic.Int64
+	tr := silentTransport{captureTransport: &captureTransport{}, method: "session/subagent_steer", sent: &sent}
+	s, reg, _, _ := newTestServer(t, "", tr)
+	reg.track("s-1", AgentPath("/tmp/work"))
+
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/s-1/subagents/5/steer",
+		strings.NewReader(`{"requestId":"req-1","message":"wrap up"}`)).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 (body %s)", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	decodeBody(t, rec, &body)
+	if body.Code != "connection_lost" {
+		t.Fatalf("code = %q, want connection_lost", body.Code)
+	}
+	// The frame was written, which is exactly why the outcome is unknown.
+	if got := sent.Load(); got != 1 {
+		t.Fatalf("swallowed frames = %d, want the request to have been sent once", got)
+	}
+}
+
+// TestSubagentSteerWithoutAnAcceptanceIsNotSuccess pins a reply that arrives
+// but carries no acceptance: it is not reported as one.
+func TestSubagentSteerWithoutAnAcceptanceIsNotSuccess(t *testing.T) {
+	// The fake child's default answer to an unknown method is an empty object.
+	s, reg, _, _ := newTestServer(t, "", &captureTransport{})
+	reg.track("s-1", AgentPath("/tmp/work"))
+
+	rec := doReq(t, s, http.MethodPost, "/api/sessions/s-1/subagents/5/steer",
+		map[string]any{"requestId": "req-1", "message": "wrap up"}, nil)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 (body %s)", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	decodeBody(t, rec, &body)
+	if body.Code != "connection_lost" {
+		t.Fatalf("code = %q, want connection_lost", body.Code)
 	}
 }

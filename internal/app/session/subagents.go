@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -424,6 +425,175 @@ func (s *State) CancelSubagent(id int64) bool {
 	cancel()
 	s.publishSubagentEvent(broker, updated, epoch, rev)
 	return true
+}
+
+// subagentSteerReceipt is one accepted user instruction to a live child. It is
+// the session's receipt for a session/subagent_steer request: the request ID
+// that names the delivery, and the child and instruction it delivered. A replay
+// of the same request must match all three or be refused, so a reused request ID
+// can never deliver a second, different instruction.
+type subagentSteerReceipt struct {
+	RequestID  string `json:"requestId"`
+	SubagentID int64  `json:"subagentId"`
+	Message    string `json:"message"`
+	Label      string `json:"label,omitempty"`
+}
+
+// subagentSteerReceiptPrefix marks the durable receipt message the parent
+// transcript carries. It is stored as a subagent notice, which the transcript
+// projection drops: the human-readable notice beside it is what the reader
+// sees, while the receipt is what a replay is answered from.
+const subagentSteerReceiptPrefix = "subagent_steer_receipt:"
+
+// SteerSubagent delivers a USER's instruction to a live child exactly once per
+// request ID. It locates the running child under the session lock, records the
+// delivery, enqueues the instruction on the child's own steering queue — the
+// same PushSteering path the parent's agent.steer tool uses — and records a
+// parent-visible notice naming the child and the instruction.
+//
+// Acceptance is not consumption: the result says the child's queue took the
+// instruction, not that the model read it. A child that settles before its next
+// step never drains it, and the notice still honestly reports that it was
+// accepted.
+//
+// A replay of the same request ID with the same child and message returns nil
+// without enqueuing a second time, so a retry after a lost response cannot
+// deliver twice. A reused request ID naming a different child or a different
+// instruction is an error, as is a blank instruction, an unknown child and a
+// child that is no longer running.
+func (s *State) SteerSubagent(requestID string, subagentID int64, message string) error {
+	requestID = strings.TrimSpace(requestID)
+	message = strings.TrimSpace(message)
+	if requestID == "" {
+		return errors.New("session: subagent steer requires a request id")
+	}
+	if message == "" {
+		return errors.New("session: subagent steer message must not be empty")
+	}
+
+	s.mu.Lock()
+	if receipt, seen := s.subagentSteerReceiptLocked(requestID); seen {
+		s.mu.Unlock()
+		if receipt.SubagentID == subagentID && receipt.Message == message {
+			// The same request, already accepted: answer it the same way and
+			// enqueue nothing.
+			return nil
+		}
+		return fmt.Errorf("session: subagent steer request %q was already used for a different child or instruction", requestID)
+	}
+	var receipt subagentSteerReceipt
+	// The guard and the enqueue share one critical section with the receipt
+	// reservation: a caller replaying this request ID finds it reserved, and a
+	// settlement cannot land between the liveness check and the enqueue.
+	_, err := s.steerChildLocked(subagentID, message, func(view SubagentView) {
+		receipt = subagentSteerReceipt{
+			RequestID:  requestID,
+			SubagentID: subagentID,
+			Message:    message,
+			Label:      view.Label,
+		}
+		if s.subagentSteers == nil {
+			s.subagentSteers = make(map[string]subagentSteerReceipt)
+		}
+		s.subagentSteers[requestID] = receipt
+	})
+	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
+
+	s.recordSubagentSteer(receipt)
+	return nil
+}
+
+// steerChildLocked validates that a child is live and still draining its
+// steering queue, then enqueues message on it. The caller holds s.mu across
+// both, so a settlement landing in between cannot turn an accepted instruction
+// into one nothing will read: FinishSubagent takes the same lock. Lock order is
+// the parent's mu then the child's, which no path reverses — a child never
+// reaches its parent.
+//
+// record, when non-nil, runs inside the same critical section before the
+// enqueue, so a caller can reserve what it is about to deliver without opening
+// a window in which a concurrent caller delivers it too.
+func (s *State) steerChildLocked(subagentID int64, message string, record func(SubagentView)) (SubagentView, error) {
+	idx := -1
+	for i := range s.subagents {
+		if s.subagents[i].ID == subagentID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return SubagentView{}, fmt.Errorf("session: unknown subagent id %d", subagentID)
+	}
+	view := s.subagents[idx]
+	// A child that has settled — or is settling its terminal result — no longer
+	// drains its steering queue, so accepting the instruction would silently
+	// drop it and leave the caller believing it landed.
+	if view.Child == nil {
+		return SubagentView{}, fmt.Errorf("session: subagent %d has no live session to steer", subagentID)
+	}
+	if view.Status != SubagentRunning || s.subagentSettling[subagentID] {
+		return SubagentView{}, fmt.Errorf("session: subagent %d is no longer running; a message cannot reach a finished subagent", subagentID)
+	}
+	if record != nil {
+		record(view)
+	}
+	view.Child.PushSteering(message)
+	return view, nil
+}
+
+// SteerChild delivers a parent agent's instruction to a live child under the
+// same liveness rules session/subagent_steer applies, so the agent.steer tool
+// and the session-owned path cannot drift apart. It records nothing: a parent's
+// own instruction is not a user request with a receipt to replay.
+func (s *State) SteerChild(subagentID int64, message string) (SubagentView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.steerChildLocked(subagentID, message, nil)
+}
+
+// subagentSteerReceiptLocked finds the receipt for a request ID, checking the
+// accepted-request ledger first and then the durable receipt messages in the
+// transcript, so a State that restored its transcript still answers a replayed
+// request instead of enqueuing it a second time. Callers must hold s.mu.
+func (s *State) subagentSteerReceiptLocked(requestID string) (subagentSteerReceipt, bool) {
+	if receipt, ok := s.subagentSteers[requestID]; ok {
+		return receipt, true
+	}
+	for i := len(s.messages) - 1; i >= 0; i-- {
+		m := s.messages[i]
+		if m.ContentType != ContentTypeSubagentNotice || !strings.HasPrefix(m.Content, subagentSteerReceiptPrefix) {
+			continue
+		}
+		var receipt subagentSteerReceipt
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(m.Content, subagentSteerReceiptPrefix)), &receipt); err != nil {
+			continue
+		}
+		if receipt.RequestID != requestID {
+			continue
+		}
+		if s.subagentSteers == nil {
+			s.subagentSteers = make(map[string]subagentSteerReceipt)
+		}
+		s.subagentSteers[requestID] = receipt
+		return receipt, true
+	}
+	return subagentSteerReceipt{}, false
+}
+
+// recordSubagentSteer writes the accepted request into the session's transcript:
+// the durable receipt a replay is answered from, and the parent-visible notice
+// naming the child and the instruction, so the parent's transcript shows what
+// its child was told and its model does not have to guess.
+func (s *State) recordSubagentSteer(receipt subagentSteerReceipt) {
+	if data, err := json.Marshal(receipt); err == nil {
+		s.AddMessage(RoleSystem, subagentSteerReceiptPrefix+string(data), ContentTypeSubagentNotice)
+	} else {
+		s.Logger().Warn("record subagent steer receipt failed", "error", err, "subagent_id", receipt.SubagentID)
+	}
+	s.AddMessage(RoleSystem, fmt.Sprintf("steered subagent %d (%s): %s", receipt.SubagentID, receipt.Label, receipt.Message), ContentTypePlain)
 }
 
 // AddSubagentTokens increments the token counter for a running subagent

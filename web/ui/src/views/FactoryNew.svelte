@@ -1,6 +1,8 @@
 <script module lang="ts">
   import { errMessage, type ProjectSettings, type RepoRow } from '../lib/api'
-  import type { FactoryCheckKey, FactoryCreate, FactoryCreateConfig, FactoryDefaults } from '../lib/factory'
+  import type { FactoryCheckKey, FactoryCreate, FactoryCreateConfig, FactoryDefaults, FactorySubagentOverrides, SubagentRoleView } from '../lib/factory'
+  import { resolveSubagentRole, subagentOverridesOf, subagentOverridesPresent, subagentValueLine } from '../lib/factory'
+  import { DRAFT_SUBAGENT_SOURCES, SUBAGENT_INHERIT, subagentFieldLines, subagentOverridesOfControls, subagentSummaryRows, type SubagentEnabledChoice } from '../lib/factory/config'
   import type { WorkingDraftContent } from '../lib/working-drafts'
 
   /**
@@ -83,6 +85,12 @@
     projectRoot: string
     settings: ProjectSettings | null
     repos: RepoRow[]
+    /**
+     * The work item's own subagent overrides. They ride here rather than in the
+     * draft's content because a draft's content is the bridge's record of the
+     * handoff's fields, and these are the item's own, stated choice by choice.
+     */
+    subagents?: { implementer?: FactorySubagentOverrides; reviewer?: FactorySubagentOverrides }
   }
 
   export interface FactoryResolution {
@@ -103,6 +111,9 @@
     workspaceConflict: boolean
     checkPlan: { checks: FactoryCheckKey[]; error: string }
     checksEffective: string
+    /** Each role's subagent settings as this handoff would state them. */
+    implementerSubagents: SubagentRoleView
+    reviewerSubagents: SubagentRoleView
   }
 
   function resolveChecks(content: WorkingDraftContent, defaults: FactoryDefaults): { checks: FactoryCheckKey[]; error: string } {
@@ -156,6 +167,14 @@
       workspaceConflict: content.native && factoryWorkspace !== '',
       checkPlan,
       checksEffective: describeChecks(content, checkPlan, factoryDefaults),
+      implementerSubagents: resolveSubagentRole('implementer', {
+        item: input.subagents?.implementer,
+        project: subagentOverridesOf(factoryDefaults, 'implementer'),
+      }),
+      reviewerSubagents: resolveSubagentRole('reviewer', {
+        item: input.subagents?.reviewer,
+        project: subagentOverridesOf(factoryDefaults, 'reviewer'),
+      }),
     }
   }
 
@@ -187,6 +206,10 @@
     if (content.maxRoundsOverride.trim()) config.maxRounds = positive(content.maxRoundsOverride, 'Total rounds')
     if (content.ciPollOverride.trim()) config.ciPollSeconds = positive(content.ciPollOverride, 'CI poll seconds')
     if (content.ciWaitOverride.trim()) config.ciWaitSeconds = positive(content.ciWaitOverride, 'CI wait seconds')
+    // Only an override this handoff states is submitted: an absent field keeps
+    // following the project default, so a later default change reaches it.
+    if (subagentOverridesPresent(input.subagents?.implementer)) config.implementerSubagents = input.subagents?.implementer
+    if (subagentOverridesPresent(input.subagents?.reviewer)) config.reviewerSubagents = input.subagents?.reviewer
     return config
   }
 
@@ -257,6 +280,21 @@
    */
   let synced: WorkingDraftContent | null = restored ? { ...restored } : null
 
+  /*
+    The work item's own subagent settings, per role. The controls are tri-state:
+    "inherit" deletes the field it belongs to, so a default the user never
+    overrode still reaches this item, while an explicit false or an explicit
+    empty model stays a stated choice of its own.
+  */
+  let implementerSubagentsEnabled = $state<SubagentEnabledChoice>('inherit')
+  let implementerSubagentsModel = $state<string>(SUBAGENT_INHERIT)
+  let implementerSubagentsConcurrency = $state('')
+  let reviewerSubagentsEnabled = $state<SubagentEnabledChoice>('inherit')
+  let reviewerSubagentsModel = $state<string>(SUBAGENT_INHERIT)
+  let reviewerSubagentsConcurrency = $state('')
+  const implementerSubagents = $derived(subagentOverridesOfControls(implementerSubagentsEnabled, implementerSubagentsModel, implementerSubagentsConcurrency))
+  const reviewerSubagents = $derived(subagentOverridesOfControls(reviewerSubagentsEnabled, reviewerSubagentsModel, reviewerSubagentsConcurrency))
+
   // A working draft is autosaved. The controller stores the content on this
   // device before it sends anything, so this is the whole write path.
   $effect(() => {
@@ -288,7 +326,11 @@
    * Every effective value comes from the same resolution the conversion review
    * uses, so the two surfaces cannot describe the same handoff differently.
    */
-  const resolved = $derived(resolveFactory({ content, projectRoot, settings, repos }))
+  const resolved = $derived(resolveFactory({ content, projectRoot, settings, repos, subagents: { implementer: implementerSubagents, reviewer: reviewerSubagents } }))
+  const implementerSubagentsView = $derived(resolved.implementerSubagents)
+  const reviewerSubagentsView = $derived(resolved.reviewerSubagents)
+  const subagentEffective = (view: SubagentRoleView): string => subagentFieldLines(view, DRAFT_SUBAGENT_SOURCES)
+  const subagentUnsupported = (view: SubagentRoleView): string => view.fields.find((f) => f.unsupported)?.unsupported ?? ''
   const factoryDefaults = $derived(resolved.factoryDefaults)
   const workspace = $derived(resolved.workspace)
   const implementer = $derived(resolved.implementer)
@@ -349,6 +391,7 @@
     { label: 'Total rounds', value: maxRounds.value, source: SOURCE_TEXT[maxRounds.source] },
     { label: 'CI poll', value: `${ciPoll.value}s`, source: SOURCE_TEXT[ciPoll.source] },
     { label: 'CI wait', value: `${ciWait.value}s`, source: SOURCE_TEXT[ciWait.source] },
+    ...subagentSummaryRows([implementerSubagentsView, reviewerSubagentsView], DRAFT_SUBAGENT_SOURCES),
   ])
 
   /*
@@ -417,7 +460,16 @@
     // The previous attempt's field links are stale the moment this one starts.
     fieldErrors = {}
     try {
-      const next = factoryRequestOf({ content, projectRoot, settings, repos, requestId: crypto.randomUUID() })
+      const next = factoryRequestOf({
+        content,
+        projectRoot,
+        settings,
+        repos,
+        // The item's own subagent overrides ride with the handoff: without them
+        // the form's controls would describe settings the request never states.
+        subagents: { implementer: implementerSubagents, reviewer: reviewerSubagents },
+        requestId: crypto.randomUUID(),
+      })
       const retry = pending && signature(pending) === signature(next) ? pending : next
       pending = retry
       const created = await createFactoryItem(retry)
@@ -443,7 +495,10 @@
   // and close; nothing here claims the draft outlives the tab. A working draft
   // is already kept on this device by its controller, so it needs no warning.
   function hasInput(): boolean {
-    return !!(content.title.trim() || content.plan.trim() || content.spec.trim())
+    // A stated subagent override is input too: leaving the form would discard
+    // a choice the person made even with an empty plan.
+    return !!(content.title.trim() || content.plan.trim() || content.spec.trim()
+      || subagentOverridesPresent(implementerSubagents) || subagentOverridesPresent(reviewerSubagents))
   }
   /*
     A draft the bridge already saved is not unsaved input: leaving the form
@@ -613,6 +668,103 @@
                 {#if fieldErrors.reviewer}<p class="text-xs text-attention" id="error-reviewer" data-testid="error-reviewer">{fieldErrors.reviewer}</p>{/if}
               </div>
               <p class="text-xs text-muted" data-testid="reviewer-effective">{describe(reviewer, 'set a project model profile or choose one here')}</p>
+              <!--
+                This item's own subagent settings, per role. "Inherit" is a
+                value of each control rather than a missing selection, so an
+                explicit off and an explicit empty model stay stated choices.
+              -->
+              <fieldset class="grid gap-2 border-t border-line pt-3" data-testid="subagents-implementer">
+                <legend class="text-xs font-medium">
+                  <span class="sm:hidden">Implementer</span>
+                  <span class="hidden sm:inline">Implementer subagents</span>
+                </legend>
+                <label class="grid gap-1 text-sm">Enabled
+                  <select
+                    class="rounded border border-border bg-bg p-2"
+                    aria-label="Implementer subagents enabled"
+                    value={implementerSubagentsEnabled}
+                    onchange={(e) => (implementerSubagentsEnabled = e.currentTarget.value as SubagentEnabledChoice)}
+                  >
+                    <option value="inherit">Inherit the project factory setting</option>
+                    <option value="on">On</option>
+                    <option value="off">Off — stated, not inherited</option>
+                  </select>
+                </label>
+                <label class="grid gap-1 text-sm">Model
+                  <select
+                    class="rounded border border-border bg-bg p-2"
+                    aria-label="Implementer subagents model"
+                    value={implementerSubagentsModel}
+                    onchange={(e) => (implementerSubagentsModel = e.currentTarget.value)}
+                  >
+                    <option value={SUBAGENT_INHERIT}>Inherit the project factory setting</option>
+                    <option value="">Normal child routing</option>
+                    {#each keepUnavailable(profiles.map((p) => ({ value: p, label: p })), implementerSubagentsModel === SUBAGENT_INHERIT ? '' : implementerSubagentsModel) as o (o.value)}<option value={o.value}>{o.label}</option>{/each}
+                  </select>
+                </label>
+                <label class="grid gap-1 text-sm">Concurrency (1–8)
+                  <input
+                    class="rounded border border-border bg-bg p-2"
+                    type="number"
+                    min="1"
+                    max="8"
+                    aria-label="Implementer subagents concurrency"
+                    value={implementerSubagentsConcurrency}
+                    oninput={(e) => (implementerSubagentsConcurrency = e.currentTarget.value)}
+                    placeholder="Inherit the project factory setting"
+                  />
+                </label>
+                <p class="text-xs text-muted" data-testid="implementer-subagents-effective">{subagentEffective(implementerSubagentsView)}</p>
+                {#if subagentUnsupported(implementerSubagentsView)}
+                  <p class="text-xs text-attention" data-testid="implementer-subagents-unsupported">{subagentUnsupported(implementerSubagentsView)}</p>
+                {/if}
+              </fieldset>
+              <fieldset class="grid gap-2 border-t border-line pt-3" data-testid="subagents-reviewer">
+                <legend class="text-xs font-medium">
+                  <span class="sm:hidden">Reviewer</span>
+                  <span class="hidden sm:inline">Reviewer subagents</span>
+                </legend>
+                <label class="grid gap-1 text-sm">Enabled
+                  <select
+                    class="rounded border border-border bg-bg p-2"
+                    aria-label="Reviewer subagents enabled"
+                    value={reviewerSubagentsEnabled}
+                    onchange={(e) => (reviewerSubagentsEnabled = e.currentTarget.value as SubagentEnabledChoice)}
+                  >
+                    <option value="inherit">Inherit the project factory setting</option>
+                    <option value="on">On</option>
+                    <option value="off">Off — stated, not inherited</option>
+                  </select>
+                </label>
+                <label class="grid gap-1 text-sm">Model
+                  <select
+                    class="rounded border border-border bg-bg p-2"
+                    aria-label="Reviewer subagents model"
+                    value={reviewerSubagentsModel}
+                    onchange={(e) => (reviewerSubagentsModel = e.currentTarget.value)}
+                  >
+                    <option value={SUBAGENT_INHERIT}>Inherit the project factory setting</option>
+                    <option value="">Normal child routing</option>
+                    {#each keepUnavailable(profiles.map((p) => ({ value: p, label: p })), reviewerSubagentsModel === SUBAGENT_INHERIT ? '' : reviewerSubagentsModel) as o (o.value)}<option value={o.value}>{o.label}</option>{/each}
+                  </select>
+                </label>
+                <label class="grid gap-1 text-sm">Concurrency (1–8)
+                  <input
+                    class="rounded border border-border bg-bg p-2"
+                    type="number"
+                    min="1"
+                    max="8"
+                    aria-label="Reviewer subagents concurrency"
+                    value={reviewerSubagentsConcurrency}
+                    oninput={(e) => (reviewerSubagentsConcurrency = e.currentTarget.value)}
+                    placeholder="Inherit the project factory setting"
+                  />
+                </label>
+                <p class="text-xs text-muted" data-testid="reviewer-subagents-effective">{subagentEffective(reviewerSubagentsView)}</p>
+                {#if subagentUnsupported(reviewerSubagentsView)}
+                  <p class="text-xs text-attention" data-testid="reviewer-subagents-unsupported">{subagentUnsupported(reviewerSubagentsView)}</p>
+                {/if}
+              </fieldset>
               <label class="grid gap-1 text-sm">Reviewer instructions <textarea class="min-h-24 rounded border border-border bg-bg p-2" bind:value={content.reviewerInstructions} placeholder={factoryDefaults.reviewerInstructions || ''}></textarea></label>
               <p class="text-xs text-muted" data-testid="reviewer-instructions-effective">{content.reviewerInstructions.trim() ? 'This handoff: its own instructions' : describe(resolved.reviewerInstructionsEffective, 'no instructions')}</p>
               <label class="grid gap-1 text-sm">Expected checks source

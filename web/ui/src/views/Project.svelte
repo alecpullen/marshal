@@ -23,7 +23,19 @@
     type VersionedProjectSettings,
     type WorkspaceListItem,
   } from '../lib/api'
-  import type { FactoryCheckKey, FactoryDefaults } from '../lib/factory'
+  import type { FactoryCheckKey, FactoryDefaults, FactorySubagentOverrides, SubagentRoleView } from '../lib/factory'
+  import { resolveSubagentRole } from '../lib/factory'
+  import {
+    PROJECT_SUBAGENT_SOURCES,
+    SUBAGENT_INHERIT,
+    concurrencyText,
+    enabledChoice,
+    modelChoice,
+    subagentFieldLines,
+    subagentOverridesBody,
+    subagentOverridesOfControls,
+    type SubagentEnabledChoice,
+  } from '../lib/factory/config'
   import type { AgentRow, AgentTelemetry } from '../lib/fleet'
   import MarshalAccessPanel from '../lib/marshal/MarshalAccessPanel.svelte'
   import { MODES, SHIP_TARGETS, autoFrom, autoOf, healthChecks, soft, isolatedFrom, isolationOf, latestAgent, parseWorkspaceRef, type AutoChoice, type Dot, type IsolationChoice } from '../lib/project/model'
@@ -79,6 +91,17 @@
   // A stored host, kept verbatim. Only a value this build does not offer is
   // shown; 'local' needs no field of its own but is preserved all the same.
   let factoryHost = $state('')
+  /*
+    Per-role subagent defaults. Each control's "inherit" value is its own, so an
+    explicit false and an explicit empty model stay stated choices rather than
+    becoming absences: a save writes only what the user actually chose.
+  */
+  let implementerSubagentsEnabled = $state<SubagentEnabledChoice>('inherit')
+  let implementerSubagentsModel = $state<string>(SUBAGENT_INHERIT)
+  let implementerSubagentsConcurrency = $state('')
+  let reviewerSubagentsEnabled = $state<SubagentEnabledChoice>('inherit')
+  let reviewerSubagentsModel = $state<string>(SUBAGENT_INHERIT)
+  let reviewerSubagentsConcurrency = $state('')
   // Intake drafts.
   let repoId = $state('')
   let labels = $state<string[]>([])
@@ -102,6 +125,8 @@
       workspace, factoryWorkspace, profile, implementerProfile, reviewerProfile,
       mode, autoMode, isolation, shipTarget, autoAssessMode,
       targetBranch, expectedChecksText, reviewerInstructions, maxRoundsText, ciPollText, ciWaitText,
+      implementerSubagentsEnabled, implementerSubagentsModel, implementerSubagentsConcurrency,
+      reviewerSubagentsEnabled, reviewerSubagentsModel, reviewerSubagentsConcurrency,
       repoId, labels, clientIds, delegation, delegateClient,
     ])
   }
@@ -135,6 +160,14 @@
     ciPollText = f.ciPollSeconds ? String(f.ciPollSeconds) : ''
     ciWaitText = f.ciWaitSeconds ? String(f.ciWaitSeconds) : ''
     factoryHost = f.hostId ?? ''
+    // Each subagent field starts from what the record states: an absent field
+    // is "inherit", an explicit false or empty model is a stated choice.
+    implementerSubagentsEnabled = enabledChoice(f.implementerSubagents)
+    implementerSubagentsModel = modelChoice(f.implementerSubagents)
+    implementerSubagentsConcurrency = concurrencyText(f.implementerSubagents)
+    reviewerSubagentsEnabled = enabledChoice(f.reviewerSubagents)
+    reviewerSubagentsModel = modelChoice(f.reviewerSubagents)
+    reviewerSubagentsConcurrency = concurrencyText(f.reviewerSubagents)
     repoId = s.intake.repoId ?? ''
     labels = [...(s.intake.labels ?? [])]
     clientIds = [...(s.intake.clients ?? [])]
@@ -269,6 +302,12 @@
     if (reviewerInstructions.trim()) f.reviewerInstructions = reviewerInstructions.trim()
     const checks = parseChecks()
     if (checks.length) f.expectedChecks = checks
+    // Only a stated field is written: an inherit choice leaves the record's
+    // field out so the session's reported default still reaches it.
+    const implementerSubagents = subagentOverridesBody(implementerSubagentsEnabled, implementerSubagentsModel, implementerSubagentsConcurrency)
+    if (implementerSubagents) f.implementerSubagents = implementerSubagents
+    const reviewerSubagents = subagentOverridesBody(reviewerSubagentsEnabled, reviewerSubagentsModel, reviewerSubagentsConcurrency)
+    if (reviewerSubagents) f.reviewerSubagents = reviewerSubagents
     const rounds = positiveInt(maxRoundsText)
     if (rounds !== undefined) f.maxRounds = rounds
     const poll = positiveInt(ciPollText)
@@ -453,6 +492,23 @@
   const profileChoices = $derived(keepUnavailable(profileOptions, profile))
   const implementerChoices = $derived(keepUnavailable(profileOptions, implementerProfile))
   const reviewerChoices = $derived(keepUnavailable(profileOptions, reviewerProfile))
+  /**
+   * The overrides the current controls would save. A field left on "inherit"
+   * is absent from the record, so the session's reported default still reaches
+   * it; a non-numeric cap is left out of the description and reported by the
+   * save instead of being clamped.
+   */
+  // What each role resolves to right now, and where every field came from. On
+  // this screen the project's own record is the most specific layer, so a field
+  // it states is explicit; the session's reported defaults are named as the
+  // source and never guessed at.
+  const implementerSubagentsView = $derived(resolveSubagentRole('implementer', { item: subagentOverridesOfControls(implementerSubagentsEnabled, implementerSubagentsModel, implementerSubagentsConcurrency) }))
+  const reviewerSubagentsView = $derived(resolveSubagentRole('reviewer', { item: subagentOverridesOfControls(reviewerSubagentsEnabled, reviewerSubagentsModel, reviewerSubagentsConcurrency) }))
+  const subagentEffective = (view: SubagentRoleView): string => subagentFieldLines(view, PROJECT_SUBAGENT_SOURCES)
+  const subagentUnsupported = (view: SubagentRoleView): string =>
+    view.fields.find((f) => f.unsupported)?.unsupported ?? ''
+  /** Profiles a subagent model control offers; a saved one the picker lost stays visible. */
+  const subagentModelChoices = (value: string) => keepUnavailable(profileOptions, value === SUBAGENT_INHERIT ? '' : value)
   // What each factory choice resolves to right now, inherited or overridden.
   const following = (own: string, inherited: string) => (own ? `${own} (own choice)` : `Following the project default: ${inherited || 'Not configured'}`)
   const effectiveWorkspace = $derived(following(factoryWorkspace, workspace))
@@ -546,6 +602,83 @@
         <label class="flex min-w-0 flex-col gap-1 text-xs">Reviewer instructions
           <textarea aria-label="Reviewer instructions" bind:value={reviewerInstructions} class="min-h-24 w-full min-w-0 rounded border border-border bg-bg p-2"></textarea>
         </label>
+        <!--
+          Subagent settings, per role. Each field is a tri-state control whose
+          own "inherit" value is a real choice: an explicit false and an
+          explicit empty model are stated choices, never absences.
+        -->
+        <fieldset class="flex min-w-0 flex-col gap-2 border-t border-line pt-3" data-testid="subagents-implementer">
+          <legend class="text-xs font-medium">
+            <span class="sm:hidden">Implementer</span>
+            <span class="hidden sm:inline">Implementer subagents</span>
+          </legend>
+          <label class="flex min-w-0 flex-col gap-1 text-xs">Enabled
+            <select aria-label="Implementer subagents enabled" bind:value={implementerSubagentsEnabled} class={field}>
+              <option value="inherit">Inherit from the session</option>
+              <option value="on">On</option>
+              <option value="off">Off — stated, not inherited</option>
+            </select>
+          </label>
+          <label class="flex min-w-0 flex-col gap-1 text-xs">Model
+            <select aria-label="Implementer subagents model" bind:value={implementerSubagentsModel} class={field}>
+              <option value={SUBAGENT_INHERIT}>Inherit from the session</option>
+              <option value="">Normal child routing</option>
+              {#each subagentModelChoices(implementerSubagentsModel) as o (o.value)}<option value={o.value}>{o.label}</option>{/each}
+            </select>
+          </label>
+          <label class="flex min-w-0 flex-col gap-1 text-xs">Concurrency (1–8)
+            <input
+              aria-label="Implementer subagents concurrency"
+              type="number"
+              min="1"
+              max="8"
+              value={implementerSubagentsConcurrency}
+              oninput={(e) => (implementerSubagentsConcurrency = e.currentTarget.value)}
+              placeholder="Inherit from the session"
+              class={field}
+            />
+          </label>
+          <p class="text-xs text-muted" data-testid="subagents-implementer-effective">{subagentEffective(implementerSubagentsView)}</p>
+          {#if subagentUnsupported(implementerSubagentsView)}
+            <p class="text-xs text-attention" data-testid="subagents-implementer-unsupported">{subagentUnsupported(implementerSubagentsView)}</p>
+          {/if}
+        </fieldset>
+        <fieldset class="flex min-w-0 flex-col gap-2 border-t border-line pt-3" data-testid="subagents-reviewer">
+          <legend class="text-xs font-medium">
+            <span class="sm:hidden">Reviewer</span>
+            <span class="hidden sm:inline">Reviewer subagents</span>
+          </legend>
+          <label class="flex min-w-0 flex-col gap-1 text-xs">Enabled
+            <select aria-label="Reviewer subagents enabled" bind:value={reviewerSubagentsEnabled} class={field}>
+              <option value="inherit">Inherit from the session</option>
+              <option value="on">On</option>
+              <option value="off">Off — stated, not inherited</option>
+            </select>
+          </label>
+          <label class="flex min-w-0 flex-col gap-1 text-xs">Model
+            <select aria-label="Reviewer subagents model" bind:value={reviewerSubagentsModel} class={field}>
+              <option value={SUBAGENT_INHERIT}>Inherit from the session</option>
+              <option value="">Normal child routing</option>
+              {#each subagentModelChoices(reviewerSubagentsModel) as o (o.value)}<option value={o.value}>{o.label}</option>{/each}
+            </select>
+          </label>
+          <label class="flex min-w-0 flex-col gap-1 text-xs">Concurrency (1–8)
+            <input
+              aria-label="Reviewer subagents concurrency"
+              type="number"
+              min="1"
+              max="8"
+              value={reviewerSubagentsConcurrency}
+              oninput={(e) => (reviewerSubagentsConcurrency = e.currentTarget.value)}
+              placeholder="Inherit from the session"
+              class={field}
+            />
+          </label>
+          <p class="text-xs text-muted" data-testid="subagents-reviewer-effective">{subagentEffective(reviewerSubagentsView)}</p>
+          {#if subagentUnsupported(reviewerSubagentsView)}
+            <p class="text-xs text-attention" data-testid="subagents-reviewer-unsupported">{subagentUnsupported(reviewerSubagentsView)}</p>
+          {/if}
+        </fieldset>
         <label class="flex min-w-0 flex-col gap-1 text-xs">Max rounds
           <input aria-label="Max rounds" type="number" min="1" value={maxRoundsText} oninput={(e) => (maxRoundsText = e.currentTarget.value)} placeholder="Follow the handoff" class={field} />
         </label>

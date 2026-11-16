@@ -259,6 +259,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/sessions/{id}/prompt", s.prompt)
 	s.mux.HandleFunc("POST /api/sessions/{id}/cancel", s.cancel)
 	s.mux.HandleFunc("POST /api/sessions/{id}/steer", s.steer)
+	// The child controls: one live child of the named session, addressed by
+	// the child ID its session reports. Steering and cancellation reach the
+	// owning ACP session only; cancel reuses session/subagent_cancel.
+	s.mux.HandleFunc("POST /api/sessions/{id}/subagents/{subagentId}/steer", s.steerSubagent)
+	s.mux.HandleFunc("POST /api/sessions/{id}/subagents/{subagentId}/cancel", s.cancelSubagent)
 	s.mux.HandleFunc("POST /api/sessions/{id}/mode", s.setMode)
 	s.mux.HandleFunc("GET /api/sessions/{id}/access", s.getAccess)
 	s.mux.HandleFunc("PATCH /api/sessions/{id}/access", s.patchAccess)
@@ -1045,6 +1050,189 @@ func (s *Server) steer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "steered"})
+}
+
+// The child-control outcomes writeSubagentErr separates, as the response
+// body's "code". A caller must be able to tell them apart without parsing a
+// sentence: a conflict is a request ID the session already used for something
+// else, an unsupported backend registers no such control, an unknown delivery
+// names no live child of this session, and a lost connection left the outcome
+// unknown — the one case where a retry must carry the same request ID.
+const (
+	subagentCodeInvalid         = "invalid"
+	subagentCodeUnknownSession  = "unknown_session"
+	subagentCodeUnknownDelivery = "unknown_delivery"
+	subagentCodeConflict        = "conflict"
+	subagentCodeRefused         = "refused"
+	subagentCodeUnsupported     = "unsupported"
+	subagentCodeConnectionLost  = "connection_lost"
+)
+
+// rpcServerError is JSON-RPC's server-error code. ACP sends it for a session's
+// own refusal, and the bridge may not import internal/acp, so the code is a
+// literal here beside method-not-found and invalid-params.
+const rpcServerError = -32000
+
+// subagentIDPath reads the route's child ID. A child ID is an int64 on the
+// wire and session-local; anything else is the caller's mistake and must not
+// reach the agent, where 0 names no child and would answer "unknown" to a typo.
+func subagentIDPath(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	raw := r.PathValue("subagentId")
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "subagentId must be a positive integer: " + raw,
+			"code":  subagentCodeInvalid,
+		})
+		return 0, false
+	}
+	return id, true
+}
+
+// steerSubagent forwards one user instruction to one live child of the named
+// session (session/subagent_steer).
+//
+// The session is resolved first, which is the authorization step: a child ID
+// is session-local, so two sessions that both hold child 1 each reach only
+// their own. The route owns the session and child IDs and the body names only
+// the request and its text, so a caller cannot address another session's child
+// through either field.
+//
+// The bridge keeps no receipt of its own: the session deduplicates by request
+// ID, so a retry after a lost reply is answered from its receipt instead of
+// being enqueued twice. Accepted is not consumed, and nothing here upgrades
+// one into the other.
+func (s *Server) steerSubagent(w http.ResponseWriter, r *http.Request) {
+	subagentID, ok := subagentIDPath(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		RequestID string `json:"requestId"`
+		Message   string `json:"message"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if strings.TrimSpace(body.RequestID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "requestId is required", "code": subagentCodeInvalid})
+		return
+	}
+	if strings.TrimSpace(body.Message) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "message is required", "code": subagentCodeInvalid})
+		return
+	}
+	reg, _, sessionID, err := s.registryForSession(r.PathValue("id"))
+	if err != nil {
+		writeSubagentErr(w, err, "subagent_steer")
+		return
+	}
+	res, err := reg.call(r.Context(), sessionID, "session/subagent_steer", "subagent_steer", map[string]any{
+		"subagentId": subagentID,
+		"requestId":  body.RequestID,
+		"message":    body.Message,
+	})
+	if err != nil {
+		writeSubagentErr(w, err, "subagent_steer")
+		return
+	}
+	var out struct {
+		RequestID string `json:"requestId"`
+		Status    string `json:"status"`
+	}
+	if err := json.Unmarshal(res, &out); err != nil || out.RequestID == "" || out.Status == "" {
+		// The call ended without an acceptance. Whether the child's queue took
+		// the instruction is unknown, so this is a lost reply, not a success.
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": "bridge: session/subagent_steer returned no acceptance",
+			"code":  subagentCodeConnectionLost,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, contract.SubagentSteerResult{RequestID: body.RequestID, Status: out.Status})
+}
+
+// cancelSubagent asks one live child of the named session to stop through the
+// existing session/subagent_cancel control: a second route, never a second
+// cancellation mechanism. Cancelled is the acknowledgement — the child's
+// terminal state arrives as its own completion, so a caller must not read this
+// as "stopped".
+func (s *Server) cancelSubagent(w http.ResponseWriter, r *http.Request) {
+	subagentID, ok := subagentIDPath(w, r)
+	if !ok {
+		return
+	}
+	reg, _, sessionID, err := s.registryForSession(r.PathValue("id"))
+	if err != nil {
+		writeSubagentErr(w, err, "subagent_cancel")
+		return
+	}
+	res, err := reg.call(r.Context(), sessionID, "session/subagent_cancel", "subagent_cancel", map[string]any{
+		"subagentId": subagentID,
+	})
+	if err != nil {
+		writeSubagentErr(w, err, "subagent_cancel")
+		return
+	}
+	var out contract.SubagentCancelResult
+	if err := json.Unmarshal(res, &out); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": "bridge: decode session/subagent_cancel result: " + err.Error(),
+			"code":  subagentCodeConnectionLost,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// writeSubagentErr answers a failed child control with a body whose "code"
+// tells the four apart: a conflict (409), an unsupported backend (501), an
+// unknown delivery (404) and a lost connection (502). An unknown session is
+// 404 before any control is attempted.
+func writeSubagentErr(w http.ResponseWriter, err error, feature string) {
+	var rpc *rpcError
+	var unsupported ErrUnsupported
+	switch {
+	case errors.Is(err, ErrUnknownSession), errors.Is(err, ErrUnknownAgent):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error(), "code": subagentCodeUnknownSession})
+	case errors.As(err, &unsupported):
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": unsupported.Error(), "code": subagentCodeUnsupported})
+	case errors.As(err, &rpc) && rpc.Code == rpcInvalidParams:
+		// The session refused the input itself.
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": rpc.Message, "code": subagentCodeInvalid})
+	case errors.As(err, &rpc) && rpc.Code == rpcServerError:
+		// The session refused the request; its sentence says which refusal.
+		code := subagentRefusalCode(rpc.Message)
+		if code == subagentCodeUnknownDelivery {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": rpc.Message, "code": code})
+			return
+		}
+		writeJSON(w, http.StatusConflict, map[string]string{"error": rpc.Message, "code": code})
+	default:
+		// No reply at all: the child stopped, the write failed, or the call was
+		// cancelled. The request may have been accepted before the connection
+		// went, so the outcome is unknown and a retry must reuse its ID.
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error(), "code": subagentCodeConnectionLost})
+	}
+}
+
+// subagentRefusalCode reads which refusal a session's sentence is. web/ is
+// standard library only, so the bridge may not import the session's error
+// values or a typed code: the sentences internal/app/session/subagents.go
+// writes are the seam, and http_test.go pins each one. A sentence it does not
+// recognise stays "refused" rather than being guessed into a conflict a client
+// would act on.
+func subagentRefusalCode(message string) string {
+	switch {
+	case strings.Contains(message, "was already used"):
+		return subagentCodeConflict
+	case strings.Contains(message, "unknown subagent"),
+		strings.Contains(message, "has no live session"),
+		strings.Contains(message, "no longer running"):
+		return subagentCodeUnknownDelivery
+	default:
+		return subagentCodeRefused
+	}
 }
 
 // setMode switches the session's permission mode. It is the legacy

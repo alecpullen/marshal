@@ -2,12 +2,15 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -130,6 +133,10 @@ type options struct {
 	workers           []worker.Worker
 	configReloader    func(config.Config) error
 	sessionRouting    config.SessionRouting
+	// subagentSettings is the resolved child-settings snapshot a client
+	// supplied at session creation, nil when it supplied none. It binds to
+	// this runtime's session only and is never written to a config file.
+	subagentSettings *session.SubagentSettings
 	// hosts is the process's project-host registry (WithHosts). Nil gives the
 	// runtime a private one.
 	hosts *Hosts
@@ -185,6 +192,23 @@ func resolveAuthResolver(opts options) (provider.AuthResolver, error) {
 		return nil, ErrAuthResolverRequired
 	}
 	return opts.authResolver, nil
+}
+
+// ErrInvalidSubagentSettings is returned (wrapped) by StartRuntime when the
+// child-settings snapshot given to WithSubagentSettings cannot be enforced.
+var ErrInvalidSubagentSettings = errors.New("invalid subagent settings")
+
+// WithSubagentSettings binds a resolved child-settings snapshot to the
+// runtime's session. It applies for the life of the session, including across
+// config reloads, and to that session only: it is never written to a config
+// file and never reaches another session. A snapshot supplied here is
+// enforced, not clamped, so an invalid cap fails StartRuntime. The TUI path
+// never sets it.
+func WithSubagentSettings(settings session.SubagentSettings) Option {
+	return func(opts *options) {
+		snapshot := settings
+		opts.subagentSettings = &snapshot
+	}
 }
 
 // WithSessionRouting gives the runtime's session its own routing: profile
@@ -858,6 +882,34 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	return runner, reg, swarmRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err
 }
 
+// subagentDefaultsFor derives the ordinary child settings a session reports:
+// what agent.run does with no per-session snapshot. The cap comes from the
+// configured limit, normalized by the same rule WithSubagentMaxConcurrency
+// uses; the model is empty because ordinary children inherit the parent's
+// route rather than a worker model. The digest fingerprints the inputs the
+// defaults were derived from — the effective cap and the resolved route — so
+// a client holding its own resolved snapshot can tell when the ordinary
+// defaults changed under it.
+func subagentDefaultsFor(cfg config.Config, route routing.Route) session.SubagentDefaults {
+	concurrency := session.EffectiveSubagentConcurrency(cfg.Agent.MaxConcurrentSubagents)
+	digest := sha256.Sum256([]byte(strings.Join([]string{
+		"cap=" + strconv.Itoa(concurrency),
+		"profile=" + cfg.Profile.Default,
+		"preset=" + route.Preset.Name,
+		"provider=" + route.Preset.Provider,
+		"model=" + route.Preset.Model,
+		"local_only=" + strconv.FormatBool(route.Preset.LocalOnly),
+	}, "\n")))
+	return session.SubagentDefaults{
+		Settings: session.SubagentSettings{
+			Enabled:     true,
+			Model:       "", // normal child routing
+			Concurrency: concurrency,
+		},
+		Digest: hex.EncodeToString(digest[:8]),
+	}
+}
+
 // buildAgentRunnerWithLock is the production form of buildAgentRunner. It
 // takes the runtime's stable WriteLock so the parent runner and every
 // agent.run child serialize writes on the same gate, and so a config reload
@@ -894,6 +946,13 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
+	// Report the ordinary child settings this session applies with no
+	// per-session snapshot, alongside the digest of the config and route
+	// inputs they came from. Derived right here because this is where the
+	// effective project config and the resolved route meet the runner, so the
+	// defaults a client reads are exactly what agent.run does unconfigured.
+	// A reload re-derives them; a session's own bound snapshot is untouched.
+	state.SetSubagentDefaults(subagentDefaultsFor(cfg, route))
 
 	// Resolve rollover enablement against the route once, up front: when
 	// session.rollover.enabled is unset, local routes with small windows

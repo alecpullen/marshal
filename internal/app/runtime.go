@@ -1689,6 +1689,14 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		}
 		cfg.SessionRouting = runOpts.sessionRouting
 	}
+	// A resolved child-settings snapshot is enforced, not clamped: an invalid
+	// cap fails startup here, before any state, session row or provider exists,
+	// rather than silently downgrading what the client asked for.
+	if runOpts.subagentSettings != nil {
+		if err := session.ValidateSubagentSettings(*runOpts.subagentSettings); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidSubagentSettings, err)
+		}
+	}
 	// Strictly validate the configured starting tuple before any state exists:
 	// a malformed interaction default fails startup explicitly instead of being
 	// silently replaced by Ask inside session construction.
@@ -1805,7 +1813,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 
 	pluginCommands := loadPluginContents(&cfg, skillIndex, homeDir, workingDir, projectTrusted, logger)
 
-	state := session.New(cfg, workingDir, now, session.Persistence{DB: database, SessionID: sessionID, Logger: logger}, session.WithSubagentMaxConcurrency(cfg.Agent.MaxConcurrentSubagents))
+	state := session.New(cfg, workingDir, now, session.Persistence{DB: database, SessionID: sessionID, Logger: logger}, sessionOptions(cfg, runOpts.subagentSettings)...)
 	state.SetTrusted(projectTrusted)
 	// Surface the merged-config layering snapshot to commands and the TUI.
 	// startRuntime already produced `layers` via LoadLayers; copying it
@@ -2437,7 +2445,16 @@ func (rt *Runtime) newSessionLocked(name string, replacing bool) (*session.State
 		return nil, fmt.Errorf("create session: %w", err)
 	}
 
-	newState := session.New(rt.Config, rt.WorkingDir, now, session.Persistence{DB: db, SessionID: sessionID, Logger: rt.Logger}, session.WithSubagentMaxConcurrency(rt.Config.Agent.MaxConcurrentSubagents))
+	// A session replaced inside its own runtime keeps the child settings the
+	// runtime's session bound at creation: /session new starts a new
+	// conversation, not a new client, so dropping the resolved snapshot there
+	// would silently widen delegation back to the ordinary defaults. A
+	// runtime whose session bound none stays on the ordinary defaults.
+	var carried *session.SubagentSettings
+	if settings, ok := rt.State.SubagentSettings(); ok {
+		carried = &settings
+	}
+	newState := session.New(rt.Config, rt.WorkingDir, now, session.Persistence{DB: db, SessionID: sessionID, Logger: rt.Logger}, sessionOptions(rt.Config, carried)...)
 	if name != "" {
 		newState.SetTitleManual(name)
 		// Persist the manual flag; the title itself was written by
@@ -2675,6 +2692,19 @@ func resolveWorkingDir(override string) (string, error) {
 		return root, nil
 	}
 	return dir, nil
+}
+
+// sessionOptions are the child-concurrency options a runtime's session is
+// constructed with: the configured cap from agent.max_concurrent_subagents,
+// and — when a client supplied one at creation — its resolved child-settings
+// snapshot, which replaces that cap and holds its own model for this session
+// only.
+func sessionOptions(cfg config.Config, settings *session.SubagentSettings) []session.Option {
+	opts := []session.Option{session.WithSubagentMaxConcurrency(cfg.Agent.MaxConcurrentSubagents)}
+	if settings != nil {
+		opts = append(opts, session.WithSubagentSettings(*settings))
+	}
+	return opts
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

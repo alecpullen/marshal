@@ -1171,6 +1171,11 @@ type SpawnOptions struct {
 	// Routing selects per-session model routing, forwarded verbatim as
 	// session/new's routing parameter.
 	Routing json.RawMessage
+	// Subagents, when set, is the resolved child-settings snapshot the new
+	// session binds, forwarded as session/new's subagentSettings. Nil sends
+	// nothing, so a spawn that resolved no snapshot keeps the runtime's own
+	// defaults and its frame stays byte-for-byte what it always was.
+	Subagents *FactorySubagentSettings
 	// Workspace is a workspace reference (see ParseWSRef). Empty falls back
 	// to the project's default, then to the profile and devcontainer.
 	Workspace string
@@ -1552,6 +1557,12 @@ func (f *Fleet) spawn(ctx context.Context, root string, opts SpawnOptions, tag *
 	}
 	if len(opts.Routing) > 0 && string(opts.Routing) != "null" {
 		params["routing"] = opts.Routing
+	}
+	// The resolved child-settings snapshot, when the caller has one, binds to
+	// this session alone. Sending nothing is not the same as sending zeros:
+	// an absent key is what every spawn sent before this field existed.
+	if opts.Subagents != nil {
+		params["subagentSettings"] = *opts.Subagents
 	}
 	// One combined starting policy goes to session/new. The requested tuple
 	// (which the caller already merged over the project's defaults) wins over

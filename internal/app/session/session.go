@@ -403,6 +403,14 @@ type State struct {
 	subagentDepth          int
 	subagentConcurr        int
 	subagentMaxConcurrency int
+	// subagentSettings is the resolved child-settings snapshot this session
+	// bound at creation, nil when it has none. Immutable after construction,
+	// like subagentDepth.
+	subagentSettings *SubagentSettings
+	// subagentDefaults is what a child gets with no snapshot bound, and the
+	// digest of the config and route inputs it was derived from. Set once by
+	// the runtime build; nil until then.
+	subagentDefaults *SubagentDefaults
 	// subagents is the registry of subagent summary cards (see subagents.go)
 	// surfaced in the parent transcript; subagentBroker publishes their
 	// lifecycle events so the TUI re-renders without polling.
@@ -429,6 +437,13 @@ type State struct {
 	// failure and the source revision it belonged to, so a save that covers
 	// that revision clears exactly the errors it covered. Guarded by mu.
 	subagentSaveErrors map[int64]subagentSaveFailure
+	// subagentSteers is the accepted user-steering ledger: one receipt per
+	// request ID, naming the child and the instruction that request delivered.
+	// It is the in-memory index over the durable receipt messages the parent
+	// transcript carries, so a retry after a lost response — and a replay after
+	// a restart that restored the transcript — cannot enqueue a request twice.
+	// Guarded by mu.
+	subagentSteers map[string]subagentSteerReceipt
 	// runEvents is the plan-run event log: verify failures, review
 	// findings, commits, retries. In-memory only, never persisted.
 	runEvents []RunEvent
@@ -913,15 +928,59 @@ func WithDepth(d int) Option {
 // <= 0 keep the built-in default (3); values above 8 clamp to 8.
 func WithSubagentMaxConcurrency(n int) Option {
 	return func(s *State) {
-		switch {
-		case n <= 0:
-			// keep the default
-		case n > 8:
-			s.subagentMaxConcurrency = 8
-		default:
-			s.subagentMaxConcurrency = n
+		s.subagentMaxConcurrency = EffectiveSubagentConcurrency(n)
+	}
+}
+
+// WithSubagentSettings binds a resolved child-settings snapshot to this
+// session. It applies at creation only and only to this session: nothing is
+// written to a config file and no other session sees it. Callers validate the
+// snapshot with ValidateSubagentSettings first — an explicit snapshot is
+// validated, never clamped. The snapshot's cap replaces the configured cap
+// for this session, and an empty model means normal child routing.
+func WithSubagentSettings(settings SubagentSettings) Option {
+	return func(s *State) {
+		snapshot := settings
+		s.subagentSettings = &snapshot
+		if snapshot.Concurrency > 0 {
+			s.subagentMaxConcurrency = snapshot.Concurrency
 		}
 	}
+}
+
+// SetSubagentDefaults records the ordinary child settings, and the digest of
+// the config and route inputs they were derived from, for a session with no
+// per-session snapshot. The runtime computes them where the effective project
+// config and route resolution meet the runner; a reload recomputes them, while
+// a bound snapshot stays exactly as creation left it.
+func (s *State) SetSubagentDefaults(defaults SubagentDefaults) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stored := defaults
+	s.subagentDefaults = &stored
+}
+
+// SubagentDefaults returns the ordinary child settings this session reports,
+// and whether the runtime has derived them yet.
+func (s *State) SubagentDefaults() (SubagentDefaults, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.subagentDefaults == nil {
+		return SubagentDefaults{}, false
+	}
+	return *s.subagentDefaults, true
+}
+
+// SubagentSettings returns the child-settings snapshot this session bound at
+// creation, and whether it has one. An unbound session keeps Marshal's
+// ordinary behaviour.
+func (s *State) SubagentSettings() (SubagentSettings, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.subagentSettings == nil {
+		return SubagentSettings{}, false
+	}
+	return *s.subagentSettings, true
 }
 
 // WithClock overrides the state's clock. Tests pass a frozen clock so the
@@ -1742,7 +1801,60 @@ const (
 	// WithSubagentMaxConcurrency (sourced from
 	// agent.max_concurrent_subagents).
 	defaultSubagentMaxConcurrency = 3
+	// MaxSubagentConcurrency is the largest cap a session's child settings
+	// may carry. A configured cap above it clamps to it
+	// (WithSubagentMaxConcurrency); a snapshot supplied at session creation
+	// is validated against it instead, because explicitly supplied means
+	// validated, not silently clamped.
+	MaxSubagentConcurrency = 8
 )
+
+// EffectiveSubagentConcurrency normalizes a configured cap on parallel
+// agent.run children: values <= 0 keep the built-in default, values above
+// the maximum clamp to it. WithSubagentMaxConcurrency and the ordinary
+// defaults a session reports both use this one rule.
+func EffectiveSubagentConcurrency(n int) int {
+	switch {
+	case n <= 0:
+		return defaultSubagentMaxConcurrency
+	case n > MaxSubagentConcurrency:
+		return MaxSubagentConcurrency
+	default:
+		return n
+	}
+}
+
+// SubagentSettings is a session's child settings: whether agent.run is
+// offered, the model children run on and the cap on children in flight. A
+// session binds one only at creation, and only that session enforces it;
+// nothing is written to any config file.
+type SubagentSettings struct {
+	Enabled bool
+	// Model is the child's model as a "provider/model" pair. Empty means
+	// normal child routing: the child inherits the parent's route exactly as
+	// it does with no snapshot at all. It is not the worker model.
+	Model       string
+	Concurrency int
+}
+
+// ValidateSubagentSettings reports whether a resolved child-settings snapshot
+// can be enforced. A snapshot supplied at creation is validated, not clamped:
+// a cap outside 1..MaxSubagentConcurrency is a caller error, and an empty
+// model is valid (it means normal child routing).
+func ValidateSubagentSettings(s SubagentSettings) error {
+	if s.Concurrency < 1 || s.Concurrency > MaxSubagentConcurrency {
+		return fmt.Errorf("session: subagent settings concurrency %d is out of range 1..%d", s.Concurrency, MaxSubagentConcurrency)
+	}
+	return nil
+}
+
+// SubagentDefaults is the ordinary child settings a session reports with no
+// per-session snapshot bound, and the digest of the config and route inputs
+// they were derived from.
+type SubagentDefaults struct {
+	Settings SubagentSettings
+	Digest   string
+}
 
 var (
 	ErrSubagentDepthLimit       = fmt.Errorf("session: subagent depth limit exceeded (max %d)", subagentMaxDepth)

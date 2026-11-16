@@ -3,7 +3,7 @@
   import Card from '../ui/Card.svelte'
   import Tag from '../ui/Tag.svelte'
   import { sortedFactoryHistory } from '../studio/model'
-  import { provenanceLine, type FactoryEvent, type FactoryItem } from '../factory'
+  import { delegatedState, provenanceLine, workerRoleLabel, type FactoryEvent, type FactoryItem } from '../factory'
 
   /**
    * One work item's factory activity (design C5): every recorded event, oldest
@@ -49,6 +49,27 @@
 
   const roles = $derived(roleByEffect(item))
   const roleOf = (event: FactoryEvent) => roles.get(event.effectId) ?? 'Factory'
+
+  /**
+   * Every worker turn this item still owes work for. A delegated turn's state is
+   * not an outcome: while its children are not proven settled the report the turn
+   * wrote is early, and the timeline says so beside the events rather than
+   * reading the last event as the end of the work.
+   *
+   * It is derived from `item` alone, so a failed read or a dropped connection
+   * leaves the last item it had and the waiting state stays on screen — the one
+   * thing a person must not lose while nothing is answering.
+   */
+  const waiting = $derived.by(() => {
+    const out: { state: NonNullable<ReturnType<typeof delegatedState>>; role: string; children: number; sessionId: string }[] = []
+    for (const effect of item.effects ?? []) {
+      const state = delegatedState(effect.delegated)
+      if (!state) continue
+      const role = effect.workerRole || effect.worker?.role || roles.get(effect.id) || ''
+      out.push({ state, role, children: effect.delegated?.childIds?.length ?? 0, sessionId: effect.delegated?.sessionId ?? '' })
+    }
+    return out
+  })
 
   /**
    * The completion kinds, named so the journal reads as what happened rather
@@ -118,6 +139,25 @@
       <Button variant="ghost" onclick={jumpToLatest}>New activity</Button>
     {/if}
   </div>
+  {#if waiting.length}
+    <!--
+      An unsettled delegated turn is not an outcome. It stays here, from the item
+      the screen already holds, so a dropped connection or a failed read does not
+      make the work look finished.
+    -->
+    <ul class="grid gap-2" data-testid="activity-delegated" aria-label="Delegated work">
+      {#each waiting as turn}
+        <li class="grid min-w-0 gap-0.5" data-testid="activity-delegated-turn" data-state={turn.state.state}>
+          <p class="flex flex-wrap items-center gap-2 text-sm">
+            <strong class="text-warn">{turn.state.headline}</strong>
+            {#if turn.role}<span class="text-xs text-muted">{workerRoleLabel(turn.role)}</span>{/if}
+            <span class="text-xs text-muted">{turn.children} {turn.children === 1 ? 'child' : 'children'}</span>
+          </p>
+          <p class="whitespace-pre-wrap break-words text-xs text-muted">{turn.state.meaning}</p>
+        </li>
+      {/each}
+    </ul>
+  {/if}
   {#if !events.length}
     <p class="text-sm text-muted">No activity yet.</p>
   {:else}

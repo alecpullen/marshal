@@ -654,3 +654,76 @@ describe('project model helpers', () => {
     expect(JSON.stringify({ auto: autoFrom('off') })).toBe('{"auto":false}')
   })
 })
+
+describe('Project subagent defaults', () => {
+  /** A record whose factory defaults state one role's subagent settings. */
+  const withSubagents = (factoryDefaults: NonNullable<api.ProjectSettings['factoryDefaults']>) =>
+    (api.getVersionedProjectSettings as Mock).mockResolvedValue(versioned({ intake: {}, factoryDefaults }))
+
+  it('loads a stated role and names the source of each field', async () => {
+    withSubagents({ implementerSubagents: { enabled: false, model: '', concurrency: 3 } })
+    mount()
+    // An explicit false is shown as off; an explicit empty model is normal
+    // child routing, which is not the same as following.
+    await waitFor(() => expect((screen.getByLabelText('Implementer subagents enabled') as HTMLSelectElement).value).toBe('off'))
+    expect((screen.getByLabelText('Implementer subagents model') as HTMLSelectElement).value).toBe('')
+    expect((screen.getByLabelText('Implementer subagents concurrency') as HTMLInputElement).value).toBe('3')
+    const effective = screen.getByTestId('subagents-implementer-effective').textContent ?? ''
+    expect(effective).toContain('Enabled: Off — Your project setting')
+    expect(effective).toContain('Model: Normal child routing — Your project setting')
+    expect(effective).toContain('Concurrency: 3 at a time — Your project setting')
+    // The other role states nothing, so the session's defaults decide — and
+    // this screen says it cannot read them rather than inventing a value.
+    expect((screen.getByLabelText('Reviewer subagents enabled') as HTMLSelectElement).value).toBe('inherit')
+    expect(screen.getByTestId('subagents-reviewer-effective').textContent).toContain('Inherited from the session')
+  })
+
+  it('writes only the fields a role states, and keeps the roles separate', async () => {
+    mount()
+    // Nothing may be typed before the record is adopted: a read that lands
+    // afterwards replaces the drafts the person is editing.
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Save defaults' }) as HTMLButtonElement).disabled).toBe(false))
+    await waitFor(() => expect([...(screen.getByLabelText('Reviewer subagents model') as HTMLSelectElement).options].map((o) => o.value)).toContain('careful'))
+    await fireEvent.change(screen.getByLabelText('Reviewer subagents enabled'), { target: { value: 'off' } })
+    await fireEvent.change(screen.getByLabelText('Reviewer subagents model'), { target: { value: 'careful' } })
+    await fireEvent.input(screen.getByLabelText('Reviewer subagents concurrency'), { target: { value: '4' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalled())
+    // The implementer states nothing at all, so it is absent rather than
+    // materialised into a fallback of this screen's own choosing.
+    expect(written().factoryDefaults?.implementerSubagents).toBeUndefined()
+    expect(written().factoryDefaults?.reviewerSubagents).toEqual({ enabled: false, model: 'careful', concurrency: 4 })
+  })
+
+  it('resets one field to inherit without clearing the others', async () => {
+    withSubagents({ implementerSubagents: { enabled: false, concurrency: 3 } })
+    mount()
+    await waitFor(() => expect((screen.getByLabelText('Implementer subagents enabled') as HTMLSelectElement).value).toBe('off'))
+    // Enabled goes back to following; the stated cap stays put.
+    await fireEvent.change(screen.getByLabelText('Implementer subagents enabled'), { target: { value: 'inherit' } })
+    expect(screen.getByTestId('subagents-implementer-effective').textContent).toContain('Enabled: Inherited')
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalled())
+    expect(written().factoryDefaults?.implementerSubagents).toEqual({ concurrency: 3 })
+    // Resetting the last stated field drops the role entirely.
+    await waitFor(() => expect((screen.getByLabelText('Implementer subagents concurrency') as HTMLInputElement).value).toBe('3'))
+    await fireEvent.input(screen.getByLabelText('Implementer subagents concurrency'), { target: { value: '' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalledTimes(2))
+    expect(written(1).factoryDefaults?.implementerSubagents).toBeUndefined()
+  })
+
+  it('shows an unenforceable concurrency as unsupported and never clamps it', async () => {
+    mount()
+    // The record has to be adopted before anything is typed, or the read
+    // replaces the draft this test is editing.
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Save defaults' }) as HTMLButtonElement).disabled).toBe(false))
+    await fireEvent.input(screen.getByLabelText('Implementer subagents concurrency'), { target: { value: '9' } })
+    // The backend refuses an out-of-range cap at approval, so the surface says
+    // so instead of silently writing 8.
+    await waitFor(() => expect(screen.getByTestId('subagents-implementer-unsupported').textContent).toContain('1 to 8'))
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalled())
+    expect(written().factoryDefaults?.implementerSubagents).toEqual({ concurrency: 9 })
+  })
+})

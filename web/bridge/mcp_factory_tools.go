@@ -166,6 +166,12 @@ func (s *Server) factoryToolCall(w http.ResponseWriter, r *http.Request, c MCPCl
 // factoryToolProjects lists this client's project ids and the capabilities it
 // holds on each. Nothing here is fleet policy: a grant is the only authority.
 func (s *Server) factoryToolProjects(w http.ResponseWriter, c MCPClient, id json.RawMessage) {
+	if principal := s.toolPrincipal(c); principal.Builtin {
+		// A built-in session holds no client grant: its authority is the
+		// access the store holds for the project its binding names.
+		s.factoryToolProjectsBuiltin(w, principal, id)
+		return
+	}
 	client, ok := s.fleet.ws.Client(c.ID)
 	if !ok {
 		writeFactoryToolFailure(w, id, factoryFailureOf(errFactoryDenied))
@@ -211,7 +217,7 @@ func (s *Server) factoryToolList(w http.ResponseWriter, c MCPClient, id json.Raw
 		writeFactoryToolFailure(w, id, factoryFailureOf(err))
 		return
 	}
-	root, err := s.factoryToolRoot(c.ID, a.ProjectID)
+	root, err := s.authorizeToolRoot(c.ID, a.ProjectID)
 	if err != nil {
 		writeFactoryToolFailure(w, id, factoryFailureOf(err))
 		return
@@ -223,7 +229,7 @@ func (s *Server) factoryToolList(w http.ResponseWriter, c MCPClient, id json.Raw
 		}
 		// The grant scopes the project; the client's repository allowlist
 		// scopes the items inside it, exactly as the authorizer checks it.
-		if err := s.factoryAuth.AuthorizeRead(c.ID, a.ProjectID, item.RepoID); err != nil {
+		if err := s.authorizeToolRead(c.ID, a.ProjectID, item.RepoID); err != nil {
 			continue
 		}
 		items = append(items, s.factoryToolSummary(item))
@@ -255,7 +261,7 @@ func (s *Server) factoryToolGet(w http.ResponseWriter, c MCPClient, id json.RawM
 		writeFactoryToolFailure(w, id, factoryFailureOf(err))
 		return
 	}
-	root, err := s.factoryToolRoot(c.ID, a.ProjectID)
+	root, err := s.authorizeToolRoot(c.ID, a.ProjectID)
 	if err != nil {
 		writeFactoryToolFailure(w, id, factoryFailureOf(err))
 		return
@@ -291,10 +297,11 @@ func (s *Server) factoryToolCreateDraft(w http.ResponseWriter, c MCPClient, id j
 		writeFactoryToolFailure(w, id, factoryFailureOf(err))
 		return
 	}
-	item, err := s.factoryAuth.WithAuthorizedMutation(c.ID, a.ProjectID, req.Config.RepoID, factoryCapabilityCreateDraft, func() (FactoryItem, error) {
-		return s.factory.CreateDraftAuthorized(req, resolved,
-			factoryToolPrincipal(c.ID, a.ProjectID, factoryCapabilityCreateDraft, a.RequestID, ""))
-	})
+	item, err := s.withAuthorizedToolMutation(c, a.ProjectID, req.Config.RepoID, factoryCapabilityCreateDraft, a.RequestID, "",
+		func(p factoryPrincipal) (FactoryItem, error) {
+			p.RequestID = a.RequestID
+			return s.factory.CreateDraftAuthorized(req, resolved, p)
+		})
 	if err != nil {
 		writeFactoryToolFailure(w, id, factoryFailureOf(err))
 		return
@@ -330,15 +337,16 @@ func (s *Server) factoryToolUpdateDraft(w http.ResponseWriter, c MCPClient, id j
 		writeFactoryToolFailure(w, id, factoryFailureOf(err))
 		return
 	}
-	item, err := s.factoryAuth.WithAuthorizedMutation(c.ID, a.ProjectID, req.Config.RepoID, factoryCapabilityEditDraft, func() (FactoryItem, error) {
-		// Only this project's items are reachable: the store refuses a moved
-		// identity, and this refuses to look across projects at all.
-		if err := s.factoryToolOwned(a.ItemID, req.Config.ProjectRoot); err != nil {
-			return FactoryItem{}, err
-		}
-		return s.factory.ReplaceDraftAuthorized(a.ItemID, resolved, a.ExpectedVersion,
-			factoryToolPrincipal(c.ID, a.ProjectID, factoryCapabilityEditDraft, a.RequestID, ""))
-	})
+	item, err := s.withAuthorizedToolMutation(c, a.ProjectID, req.Config.RepoID, factoryCapabilityEditDraft, a.RequestID, "",
+		func(p factoryPrincipal) (FactoryItem, error) {
+			// Only this project's items are reachable: the store refuses a
+			// moved identity, and this refuses to look across projects at all.
+			if err := s.factoryToolOwned(a.ItemID, req.Config.ProjectRoot); err != nil {
+				return FactoryItem{}, err
+			}
+			p.RequestID = a.RequestID
+			return s.factory.ReplaceDraftAuthorized(a.ItemID, resolved, a.ExpectedVersion, p)
+		})
 	if err != nil {
 		writeFactoryToolFailure(w, id, factoryFailureOf(err))
 		return
@@ -806,7 +814,7 @@ func (s *Server) factoryToolRead(clientID, projectID, root, itemID string) (Fact
 	if item.ProjectRoot != root {
 		return FactoryItem{}, ErrFactoryNotFound
 	}
-	if err := s.factoryAuth.AuthorizeRead(clientID, projectID, item.RepoID); err != nil {
+	if err := s.authorizeToolRead(clientID, projectID, item.RepoID); err != nil {
 		return FactoryItem{}, err
 	}
 	return item, nil

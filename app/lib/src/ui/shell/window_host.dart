@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
@@ -15,6 +17,15 @@ abstract class WindowHost {
 
   /// Ends the process.
   Future<void> quit();
+
+  /// Registers [listener] for a close the person made with the window's own
+  /// controls — the red button, Cmd-W, the Linux close button — which the
+  /// window reports so Dart's state does not go stale. A host with no window
+  /// to close (a test, the browser) never fires it.
+  void addCloseListener(VoidCallback listener) {}
+
+  /// Removes a listener added with [addCloseListener].
+  void removeCloseListener(VoidCallback listener) {}
 }
 
 /// The real window: the `marshal/window` method channel, answered by the
@@ -23,10 +34,13 @@ abstract class WindowHost {
 /// No window plugin is used: the Runner already owns the window, and the
 /// finding's forty lines on each side keep it that way.
 class ChannelWindowHost implements WindowHost {
-  const ChannelWindowHost();
+  ChannelWindowHost();
 
   /// The channel both runners answer.
   static const channel = MethodChannel('marshal/window');
+
+  final _closes = <VoidCallback>[];
+  bool _listening = false;
 
   @override
   Future<void> show() => _invoke('show');
@@ -36,6 +50,29 @@ class ChannelWindowHost implements WindowHost {
 
   @override
   Future<void> quit() => _invoke('quit');
+
+  @override
+  void addCloseListener(VoidCallback listener) {
+    _closes.add(listener);
+    _listen();
+  }
+
+  @override
+  void removeCloseListener(VoidCallback listener) => _closes.remove(listener);
+
+  /// The runners call `closed` on this channel when the window was closed
+  /// with its own controls. Nothing else is expected from them: a method this
+  /// build does not know is ignored.
+  void _listen() {
+    if (_listening) return;
+    _listening = true;
+    channel.setMethodCallHandler((call) async {
+      if (call.method != 'closed') return;
+      for (final listener in List.of(_closes)) {
+        listener();
+      }
+    });
+  }
 
   /// A host without the channel — the browser, a widget test — has no window
   /// for the app to act on, and asking is not an error worth showing anyone.
@@ -57,7 +94,12 @@ class ChannelWindowHost implements WindowHost {
 /// button, Cmd-W and the Linux close button mean — hides, and there is no
 /// close that quits.
 class WindowController extends ChangeNotifier {
-  WindowController(this._host);
+  WindowController(this._host) {
+    // A close made natively is the person closing the window: the runner has
+    // already hidden it, and this is what keeps [open] true only while a
+    // window is in front of them.
+    _host.addCloseListener(_closedNatively);
+  }
 
   final WindowHost _host;
   bool _open = false;
@@ -84,9 +126,17 @@ class WindowController extends ChangeNotifier {
   /// Quits, and only from the menu's Quit.
   Future<void> quit() => _host.quit();
 
+  void _closedNatively() => unawaited(closed());
+
   void _set({required bool open}) {
     if (_open == open) return;
     _open = open;
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _host.removeCloseListener(_closedNatively);
+    super.dispose();
   }
 }

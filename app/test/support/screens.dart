@@ -278,7 +278,7 @@ Widget _inbox({StateKind? state}) => Inbox(
   state: state,
   onRetry: () {},
   onSelect: (_) {},
-  onAnswer: (_, _, {reply}) {},
+  onAnswer: (_, _, {reply, answers}) {},
 );
 
 Widget _overview({StateKind? state}) => Overview(
@@ -296,7 +296,7 @@ Widget _overview({StateKind? state}) => Overview(
   state: state,
   onRetry: () {},
   onSelect: (_) {},
-  onAnswer: (_, _) {},
+  onAnswer: (_, _, {reply, answers}) {},
 );
 
 /// The schedules the Automations fixture lists: one that ran, one paused.

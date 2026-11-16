@@ -179,6 +179,73 @@ void main() {
     },
   );
 
+  test('an agent that parks during a re-read still gets its request', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        projects: [project('/home/u/alpha')],
+        agents: [
+          agent(id: 'a-1', status: AgentState.agentRunning),
+          agent(id: 'a-2', status: AgentState.agentRunning),
+        ],
+      ),
+    ]);
+    await fixture.refresh();
+
+    PendingRequest parked(String id) => PendingRequest(
+      kind: PendingKind.pendingApproval,
+      id: id,
+      params: {'command': 'git push'},
+    );
+
+    // The first re-read is held at the bridge, so the second agent parks
+    // while it is still in flight.
+    fixture.serve('local', '/api/agents', [
+      agent(
+        id: 'a-1',
+        status: AgentState.agentAwaitingApproval,
+        pending: parked('tc-1'),
+      ).toJson(),
+      agent(id: 'a-2', status: AgentState.agentRunning).toJson(),
+    ], delay: const Duration(milliseconds: 150));
+
+    fixture.delta('local', {
+      'kind': 'pending',
+      'sessionId': 'a-1',
+      'pendingKind': 'approval',
+    });
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+
+    // The bridge's next answer carries both requests.
+    fixture.serve('local', '/api/agents', [
+      agent(
+        id: 'a-1',
+        status: AgentState.agentAwaitingApproval,
+        pending: parked('tc-1'),
+      ).toJson(),
+      agent(
+        id: 'a-2',
+        status: AgentState.agentAwaitingApproval,
+        pending: parked('tc-2'),
+      ).toJson(),
+    ]);
+    fixture.delta('local', {
+      'kind': 'pending',
+      'sessionId': 'a-2',
+      'pendingKind': 'approval',
+    });
+
+    await eventually(
+      () =>
+          fixture.store.agents().any((a) => a.id == 'a-2' && a.pending != null),
+      reason: 'the second request is coalesced into a follow-up read, not lost',
+    );
+    expect(
+      fixture.store.agents().firstWhere((a) => a.id == 'a-2').pending?.id,
+      'tc-2',
+    );
+  });
+
   test('a gate delta is accepted and set aside', () async {
     final fixture = await fixtureWith();
     await fixture.refresh();
@@ -229,6 +296,43 @@ void main() {
     );
   });
 
+  test('a slow budget read does not put older spend back', () async {
+    final fixture = await fixtureWith();
+    await fixture.refresh();
+    expect(fixture.store.budgets('local')?.daily.spentUSD, 1.5);
+
+    // The delta's read is held at the bridge, and answers with the report as
+    // it was before the spend moved.
+    fixture.serve(
+      'local',
+      '/api/budgets',
+      report(spent: 1.5).toJson(),
+      delay: const Duration(milliseconds: 120),
+    );
+    fixture.delta('local', {
+      'kind': 'budget',
+      'sessionId': 'a-1',
+      'scope': 'daily',
+      'spentUsd': 7.0,
+      'capUsd': 10.0,
+      'action': 'warn',
+    });
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+
+    // A snapshot meanwhile reads the spend as it is now.
+    fixture.serve('local', '/api/budgets', report(spent: 7.0).toJson());
+    await fixture.store.refresh('local');
+    expect(fixture.store.budgets('local')?.daily.spentUSD, 7.0);
+
+    // The held answer lands after it, superseded, and is discarded.
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    expect(
+      fixture.store.budgets('local')?.daily.spentUSD,
+      7.0,
+      reason: 'an answer read before a newer snapshot is not the current spend',
+    );
+  });
+
   test('an inbox delta replaces the queue', () async {
     final fixture = await fixtureWith();
     await fixture.refresh();
@@ -254,6 +358,62 @@ void main() {
     expect(
       [for (final item in fixture.store.inbox()) item.agentID],
       ['a-1', 'a-2'],
+    );
+  });
+
+  test('an inbox delta reads the agent it names', () async {
+    final fixture = await fixtureWith();
+    await fixture.refresh();
+    expect([for (final a in fixture.store.agents()) a.id], ['a-1']);
+
+    // The stream is already live, so no live transition will read the rows:
+    // this test is about what the inbox delta itself does.
+    fixture.frames['local']!.write(': hb\n\n');
+    await eventually(() => fixture.store.reach('local') == HostReach.live);
+
+    // The bridge names an agent this snapshot did not have: it spawned one
+    // mid-session, so the inbox is newer than the rows are.
+    fixture.serve('local', '/api/agents', [
+      agent(id: 'a-1', status: AgentState.agentRunning).toJson(),
+      agent(
+        id: 'z-1',
+        status: AgentState.agentAwaitingApproval,
+        pending: const PendingRequest(
+          kind: PendingKind.pendingApproval,
+          id: 'tc-9',
+          params: {'command': 'git push'},
+        ),
+      ).toJson(),
+    ]);
+    fixture.delta('local', {
+      'kind': 'inbox',
+      'inbox': {
+        'groups': {
+          'needsYou': ['z-1'],
+          'running': ['a-1'],
+          'ready': [],
+          'earlier': [],
+        },
+        'queue': [
+          {'kind': 'agent', 'agentId': 'z-1', 'at': '2026-11-17T04:10:00Z'},
+        ],
+      },
+    });
+
+    // No reconnect, no gap, no manual refresh: the delta is what brings the
+    // row its ask needs.
+    await eventually(
+      () => fixture.store.agents().any((agent) => agent.id == 'z-1'),
+      reason: 'the agent an inbox delta names is read again',
+    );
+    expect(
+      fixture.store
+          .agents()
+          .where((agent) => agent.id == 'z-1')
+          .single
+          .pending
+          ?.id,
+      'tc-9',
     );
   });
 
@@ -367,6 +527,44 @@ void main() {
     );
     expect(fixture.store.agents(), hasLength(1));
     expect(fixture.store.projects(), hasLength(1));
+  });
+
+  test('a host that comes back is live again and reads its rows', () async {
+    final fixture = await fixtureWith();
+    await fixture.refresh();
+
+    // Live, then gone: the body ends and the connection is not there.
+    fixture.frames['local']!.write(': hb\n\n');
+    await eventually(() => fixture.store.reach('local') == HostReach.live);
+    await fixture.frames['local']!.end();
+    await eventually(
+      () => fixture.store.reach('local') == HostReach.unreachable,
+      reason: 'the connection died',
+    );
+
+    // The bridge comes back, and its snapshot carries what changed meanwhile.
+    fixture.serve('local', '/api/agents', [
+      agent(
+        id: 'a-1',
+        status: AgentState.agentRunning,
+        activity: 'Back again',
+      ).toJson(),
+    ]);
+    fixture.frames['local']!
+      ..reopen()
+      ..write(': hb\n\n');
+
+    // The client retries with backoff; the fixture's clock moves it on.
+    fixture.clock.advance(const Duration(seconds: 2));
+
+    await eventually(
+      () => fixture.store.reach('local') == HostReach.live,
+      reason: 'the stream reconnected',
+    );
+    await eventually(
+      () => fixture.store.agents().single.activity == 'Back again',
+      reason: 'a host that came back has its rows read again',
+    );
   });
 
   test('a failed read keeps the rows and says what failed', () async {

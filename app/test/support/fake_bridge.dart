@@ -24,18 +24,27 @@ class RecordedRequest {
 
 /// A canned answer to one route.
 class FakeReply {
-  const FakeReply(this.status, {this.headers = const {}, this.body = ''});
+  const FakeReply(
+    this.status, {
+    this.headers = const {},
+    this.body = '',
+    this.delay,
+  });
 
   final int status;
   final Map<String, String> headers;
   final String body;
+
+  /// How long the answer is held before it is written: a read a test wants
+  /// still in flight while it does something else.
+  final Duration? delay;
 }
 
 /// A body a test writes to, frame by frame: the fleet stream, and anything
 /// else that arrives over time. Each frame is written and flushed as it is
 /// queued, so a test sees one before the body ends.
 class FakeStream {
-  final _events = StreamController<String?>();
+  var _events = StreamController<String?>();
   var _closed = false;
 
   /// Queues [frame] for the client.
@@ -58,6 +67,15 @@ class FakeStream {
     _closed = true;
     _events.add(null);
     await _events.close();
+  }
+
+  /// The bridge comes back: the next request for this route gets a fresh body,
+  /// and frames written before it arrives are held for it. It is what a host
+  /// going live again looks like to a client that is retrying.
+  void reopen() {
+    if (!_closed) return;
+    _events = StreamController<String?>();
+    _closed = false;
   }
 }
 
@@ -183,6 +201,12 @@ class FakeBridge {
         await response.close();
         return;
       }
+      // A held answer keeps the client waiting, so a test can have one read
+      // in flight while it does something else. The reply is looked up when
+      // the request arrives, so re-serving the route changes the next
+      // request, not this one.
+      final delay = reply.delay;
+      if (delay != null) await Future<void>.delayed(delay);
       response.statusCode = reply.status;
       reply.headers.forEach(response.headers.set);
       response.write(reply.body);

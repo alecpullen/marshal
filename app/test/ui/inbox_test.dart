@@ -12,11 +12,14 @@ import '../support/screens.dart';
 void main() {
   final answers = <String>[];
   final replies = <String?>[];
+  final collected = <List<String>?>[];
 
   model.Ask ask({
     required String id,
     required model.AskKind kind,
     required List<String> actions,
+    List<model.AskAction>? askActions,
+    List<model.AskQuestion> questions = const [],
     model.AskState state = model.AskState.waiting,
     String? error,
     Map<String, Object?>? params,
@@ -36,14 +39,27 @@ void main() {
     ),
     title: kind == model.AskKind.question ? 'Which branch?' : 'git push',
     body: '',
-    actions: [
-      for (final (index, label) in actions.indexed)
-        model.AskAction(label, primary: index == 0),
-    ],
+    actions:
+        askActions ??
+        [
+          for (final (index, label) in actions.indexed)
+            model.AskAction(
+              label,
+              primary: index == 0,
+              kind: label == 'Reply'
+                  ? model.AskActionKind.reply
+                  : model.AskActionKind.option,
+            ),
+        ],
+    questions: questions,
     since: shellNow.subtract(const Duration(minutes: 12)),
     state: state,
     error: error,
   );
+
+  /// The answers posted, as "ask id:label": the list the widget calls back
+  /// into, named once here so a closure's own `answers` can shadow it.
+  final posted = answers;
 
   Widget show(List<model.Ask> asks, {StateKind? state}) => EmberApp(
     brightness: Brightness.light,
@@ -52,9 +68,10 @@ void main() {
       now: shellNow,
       state: state,
       onSelect: (_) {},
-      onAnswer: (ask, action, {reply}) {
-        answers.add('${ask.id}:${action.label}');
+      onAnswer: (ask, action, {reply, answers}) {
+        posted.add('${ask.id}:${action.label}');
         replies.add(reply);
+        collected.add(answers);
       },
       onRetry: () {},
     ),
@@ -63,6 +80,7 @@ void main() {
   setUp(() {
     answers.clear();
     replies.clear();
+    collected.clear();
   });
 
   testWidgets('approve once posts the decision', (tester) async {
@@ -124,6 +142,59 @@ void main() {
 
     expect(answers, ['q-1:Reply']);
     expect(replies, ['a topic branch']);
+  });
+
+  testWidgets('a two-question card collects both answers', (tester) async {
+    const questions = [
+      model.AskQuestion(
+        text: 'Which branch?',
+        options: [
+          model.AskOption('main'),
+          model.AskOption('next', value: 'release/next'),
+        ],
+      ),
+      model.AskQuestion(text: 'When should it land?'),
+    ];
+    await tester.pumpWidget(
+      show([
+        ask(
+          id: 'q-2',
+          kind: model.AskKind.question,
+          actions: const [],
+          askActions: const [
+            model.AskAction(
+              'Answer',
+              primary: true,
+              kind: model.AskActionKind.answer,
+            ),
+            model.AskAction('Decline', kind: model.AskActionKind.decline),
+          ],
+          questions: questions,
+        ),
+      ]),
+    );
+
+    // One field per question, and the actions that commit them together.
+    expect(find.byType(Field), findsNWidgets(2));
+    // The first question is also the card's title, so it appears twice: as
+    // the card and as its field's label.
+    expect(find.text('Which branch?'), findsNWidgets(2));
+    expect(find.text('When should it land?'), findsOneWidget);
+
+    // Nothing is sent until every question has an answer.
+    await tester.enterText(find.byType(Field).first, 'next');
+    await tester.pump();
+    await tester.tap(find.text('Answer'));
+    await tester.pump();
+    expect(collected, isEmpty);
+
+    await tester.enterText(find.byType(Field).last, 'Friday');
+    await tester.pump();
+    await tester.tap(find.text('Answer'));
+    await tester.pump();
+
+    expect(answers, ['q-2:Answer']);
+    expect(collected.single, ['next', 'Friday']);
   });
 
   testWidgets('a failure shows retry', (tester) async {

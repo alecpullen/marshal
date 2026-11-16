@@ -1,5 +1,8 @@
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:marshal_app/src/daemon/cli.dart';
 import 'package:marshal_app/src/daemon/status.dart';
+import 'package:marshal_app/src/menu/desktop.dart';
 import 'package:marshal_app/src/menu/host.dart';
 import 'package:marshal_app/src/menu/model.dart';
 import 'package:marshal_app/src/ui/shell/window_host.dart';
@@ -231,11 +234,71 @@ void main() {
 
     expect(host.calls, ['quit']);
   });
+
+  test('the menu’s Quit quits through the window', () async {
+    final cli = DaemonCli();
+    final host = FakeWindowHost();
+    final app = TrayApp(cli: cli, window: WindowController(host));
+
+    await app.select('quit');
+
+    // The window's `quit` channel method is the one that ends the app: it is
+    // what both runners answer, and what leaves the process under the
+    // Runner's control. Nothing in the tray exits on its own.
+    expect(host.calls, ['quit']);
+  });
+
+  test('a close made natively hides the window', () async {
+    final host = FakeWindowHost();
+    final window = WindowController(host);
+    var notified = 0;
+    window.addListener(() => notified++);
+
+    await window.show();
+    expect(host.calls, ['show']);
+    expect(window.open, isTrue);
+
+    // The runner reports the red button, Cmd-W and the Linux close button on
+    // the channel; the controller hides, and never quits.
+    host.closeNatively();
+    await pumpEventQueue();
+
+    expect(host.calls, ['show', 'hide']);
+    expect(window.open, isFalse);
+    expect(
+      notified,
+      2,
+      reason: 'open when it was shown, closed after the hide',
+    );
+
+    // It keeps answering: a window closed natively and opened again is
+    // tracked the same way.
+    await window.show();
+    expect(window.open, isTrue);
+  });
+
+  testWidgets('the channel reports a native close to its listeners', (
+    tester,
+  ) async {
+    final host = ChannelWindowHost();
+    var closed = 0;
+    host.addCloseListener(() => closed++);
+
+    await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+      'marshal/window',
+      const StandardMethodCodec().encodeMethodCall(const MethodCall('closed')),
+      (_) {},
+    );
+
+    expect(closed, 1);
+  });
 }
 
-/// FakeWindowHost records what the app asked of its window.
+/// FakeWindowHost records what the app asked of its window, and reports a
+/// native close when a test wants one.
 class FakeWindowHost implements WindowHost {
   final calls = <String>[];
+  final _closes = <VoidCallback>[];
 
   @override
   Future<void> show() async => calls.add('show');
@@ -245,4 +308,17 @@ class FakeWindowHost implements WindowHost {
 
   @override
   Future<void> quit() async => calls.add('quit');
+
+  @override
+  void addCloseListener(VoidCallback listener) => _closes.add(listener);
+
+  @override
+  void removeCloseListener(VoidCallback listener) => _closes.remove(listener);
+
+  /// The window was closed with its own controls, as the runner reports it.
+  void closeNatively() {
+    for (final listener in List.of(_closes)) {
+      listener();
+    }
+  }
 }

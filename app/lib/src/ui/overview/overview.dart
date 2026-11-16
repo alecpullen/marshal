@@ -45,8 +45,16 @@ class Overview extends StatelessWidget {
   /// Opens a thread, a project or the Inbox.
   final void Function(Place place)? onSelect;
 
-  /// Answers an ask in place, without leaving the Overview.
-  final void Function(model.Ask ask, model.AskAction action)? onAnswer;
+  /// Answers an ask in place, without leaving the Overview. [reply] is a
+  /// question's free text and [answers] the one collected per question when
+  /// a request asks more than one.
+  final void Function(
+    model.Ask ask,
+    model.AskAction action, {
+    String? reply,
+    List<String>? answers,
+  })?
+  onAnswer;
 
   /// Reads the fleet again, for the one action a state offers.
   final VoidCallback? onRetry;
@@ -167,15 +175,27 @@ class Overview extends StatelessWidget {
                 : '${ask.thread!.project.split('/').last} › ${ask.thread!.title}',
             onOpenSource: ask.thread == null ? null : _thread(ask.thread!),
             placement: AskPlacement.overview,
-            actions: [
-              for (final action in ask.actions)
-                AskAction(
-                  action.label,
-                  onTap: ask.state == model.AskState.sending
-                      ? null
-                      : () => onAnswer?.call(ask, action),
-                ),
-            ],
+            actions: ask.questions.length > 1
+                // Several questions need an answer for each, and the
+                // Overview has no room to collect them: the card sends the
+                // person to the Inbox, which draws every question of the
+                // request. Answering here would post a partial shape, which
+                // the agent reads as declined (internal/acp/questions.go).
+                ? [
+                    AskAction(
+                      'Open inbox',
+                      onTap: _open(const Place(PlaceKind.inbox)),
+                    ),
+                  ]
+                : [
+                    for (final action in ask.actions)
+                      AskAction(
+                        action.label,
+                        onTap: ask.state == model.AskState.sending
+                            ? null
+                            : () => onAnswer?.call(ask, action),
+                      ),
+                  ],
           ),
           const SizedBox(height: Space.s8),
         ],

@@ -24,3 +24,22 @@ flutter:
   uses-material-design: true
   assets:
     - assets/
+    # Shipped with the fonts it licenses, as the OFL requires.
+    - assets/fonts/OFL.txt
+  # Geist and Geist Mono, from the official release v1.9.2
+  # (github.com/vercel/geist-font, geist-font-v1.9.2.zip), static TTFs at
+  # the weights the text roles in lib/src/ui/tokens.dart use. Bundled so no
+  # build fetches a font at run time; licence in assets/fonts/OFL.txt.
+  fonts:
+    - family: Geist
+      fonts:
+        - asset: assets/fonts/Geist-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Geist-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Geist-SemiBold.ttf
+          weight: 600
+    - family: Geist Mono
+      fonts:
+        - asset: assets/fonts/GeistMono-Regular.ttf
+          weight: 400

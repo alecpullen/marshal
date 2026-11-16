@@ -194,5 +194,10 @@ void main() {
         reason: '$dir is a layer the rule names; it has moved',
       );
     }
+    expect(
+      File('$ui/tokens.dart').existsSync(),
+      isTrue,
+      reason: '$ui/tokens.dart is exempt from the Material rule; it has moved',
+    );
   });
 }

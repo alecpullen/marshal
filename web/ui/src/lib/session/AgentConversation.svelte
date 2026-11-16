@@ -11,7 +11,7 @@
   import ExitPanel from '../ExitPanel.svelte'
   import { renderMarkdown, initHighlighter } from '../markdown'
   import { listAgents, APIError, type AgentStatus } from '../api'
-  import { createStackStore, type StackStore, type WireNode } from '../stack'
+  import { createStackStore, createSubagentControls, NO_SUBAGENT_CONTROLS, subagentControls, type SubagentControls, type StackStore, type WireNode, type WireSubagentControls } from '../stack'
   import { get } from 'svelte/store'
   import { formatChatRoute, type ChatRoute, type DockTabParam } from '../routes'
   import type { AgentRow } from '../fleet'
@@ -67,6 +67,22 @@
   // svelte-ignore state_referenced_locally
   const stack = createStackStore(sessionId)
   /*
+    Which child controls this session reports, read from the session status it
+    streams. Absent until the session says: support is per session, so an
+    update from another session never sets it and Marshal's controls are never
+    inferred from an unrelated one.
+  */
+  let capabilities = $state<WireSubagentControls>(NO_SUBAGENT_CONTROLS)
+  function applyCapabilities(e: unknown) {
+    const ev = e as
+      | { method?: string; params?: { sessionId?: string; update?: { kind?: string; status?: unknown } } }
+      | null
+    if (ev?.method !== 'session/update' || ev.params?.sessionId !== sessionId) return
+    const update = ev.params?.update
+    if (update?.kind !== 'session_status') return
+    capabilities = subagentControls(update.status)
+  }
+  /*
     One stream carries every transcript's patches, so the session store hands
     each event to the parent store and to every drilled-in child store; each
     keeps only the patches that are its own.
@@ -74,6 +90,7 @@
   function routeEvent(e: unknown) {
     stack.onEvent(e)
     for (const d of drill) d.store.onEvent(e)
+    applyCapabilities(e)
   }
   // svelte-ignore state_referenced_locally
   const { state: session, actions } = createSessionStore(sessionId, '/', routeEvent)
@@ -85,6 +102,10 @@
     store: StackStore
     /** The parent's browse cursor, restored on the way back. */
     parentCursor: string | null
+    /** This child's steer and stop, through its owning session. */
+    controls: SubagentControls
+    /** What the session reports it supports; an absent report is nothing. */
+    capabilities: WireSubagentControls
   }
   let drill = $state<Drill[]>([])
   const shown = $derived<StackStore>(drill.at(-1)?.store ?? stack)
@@ -255,7 +276,21 @@
       selectNode(id)
       return
     }
-    drill = [...drill, { subagentId: subId, label, store, parentCursor: cursor }]
+    drill = [
+      ...drill,
+      {
+        subagentId: subId,
+        label,
+        store,
+        parentCursor: cursor,
+        // This child's own controls, through the session that owns it. The
+        // capability report says whether they exist; the drilled-in view
+        // renders them (task 8), so nothing here offers a control the session
+        // never claimed.
+        controls: createSubagentControls(sessionId, subId),
+        capabilities,
+      },
+    ]
     cursor = null
     dispatch({ type: 'backToLive' })
     scrollToLatest()

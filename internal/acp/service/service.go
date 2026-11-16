@@ -487,8 +487,12 @@ func (s *Session) Status() acpwire.SessionStatus {
 		},
 		RunningJobs: st.RunningJobsCount(),
 		Subagents:   subagentsOf(st.Subagents()),
-		Swarm:       swarmOf(st.SwarmProgress()),
-		SDD:         sddOf(st.SDDProgress()),
+		// Which child controls this session registers: steering and stopping
+		// a live child, and observing it. Absent means unsupported, so this
+		// one field is what a Studio client reads instead of guessing.
+		SubagentControls: acpwire.MarshalSubagentCapabilities(),
+		Swarm:            swarmOf(st.SwarmProgress()),
+		SDD:              sddOf(st.SDDProgress()),
 		SDDGate: acpwire.SDDGate{
 			TaskN:     gate.TaskN,
 			Question:  gate.Question,

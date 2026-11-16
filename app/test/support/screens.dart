@@ -35,6 +35,7 @@ import 'package:marshal_app/src/model/nav_model.dart';
 import 'package:marshal_app/src/model/overview_model.dart';
 import 'package:marshal_app/src/model/place.dart';
 import 'package:marshal_app/src/model/planning_model.dart';
+import 'package:marshal_app/src/model/run_model.dart';
 import 'package:marshal_app/src/model/recipes_model.dart';
 import 'package:marshal_app/src/model/schedules_model.dart';
 import 'package:marshal_app/src/model/stack_store.dart';
@@ -66,6 +67,7 @@ import 'package:marshal_app/src/ui/pulls/pulls_place.dart';
 import 'package:marshal_app/src/ui/shell/placeholder.dart';
 import 'package:marshal_app/src/ui/shell/shell.dart';
 import 'package:marshal_app/src/ui/factory/planning_screen.dart';
+import 'package:marshal_app/src/ui/factory/run_screen.dart';
 import 'package:marshal_app/src/ui/factory/work_item_screen.dart';
 import 'package:marshal_app/src/ui/thread/thread_screen.dart';
 
@@ -819,6 +821,13 @@ final screens = <ScreenCase>[
     },
   ),
   ScreenCase(
+    name: 'plan run',
+    ready: () => _runScreen(),
+    states: {
+      for (final kind in requiredStates) kind: () => _runScreen(state: kind),
+    },
+  ),
+  ScreenCase(
     name: 'shell',
     ready: () => _shell(),
     states: {
@@ -1351,6 +1360,68 @@ PlanningModel _planningModel() => PlanningModel(
     rejected: const [],
   ),
 );
+
+/// A plan run: two tasks, the first passed with a repair round, the second
+/// running, and a question waiting on a person.
+RunModel _runModel() => RunModel(
+  agentID: 'a-1',
+  run: contract.SDDRun.fromJson({
+    'active': true,
+    'planName': 'F6 plan 2',
+    'branch': 'sdd/run-1',
+    'totalTasks': 2,
+    'doneTasks': 1,
+    'currentTask': 2,
+    'phase': 'verify',
+    'detail': 'go test ./... is running',
+    'fixRound': 0,
+    'maxFixRounds': 3,
+    'tokensUsed': 12000,
+    'tokensMax': 200000,
+    'finished': false,
+    'succeeded': false,
+    'startedAt': 1763351900000,
+    'phaseStartedAt': 1763352000000,
+    'tasks': [
+      {
+        'n': 1,
+        'title': 'Read the item',
+        'dependsOn': <int>[],
+        'status': 'done',
+        'startedAt': 1763351900000,
+        'endedAt': 1763351990000,
+        'fixRounds': 1,
+        'commit': {'base': 'base-1', 'head': 'head-1'},
+        'stages': [
+          {'name': 'implement', 'state': 'done'},
+          {'name': 'verify', 'state': 'done', 'detail': 'go test ./... passed'},
+          {'name': 'review', 'state': 'done'},
+          {'name': 'commit', 'state': 'done'},
+        ],
+      },
+      {
+        'n': 2,
+        'title': 'Approve it',
+        'dependsOn': [1],
+        'status': 'active',
+        'startedAt': 1763352000000,
+        'fixRounds': 0,
+        'stages': [
+          {'name': 'implement', 'state': 'active'},
+        ],
+      },
+    ],
+    'gate': {
+      'taskN': 2,
+      'question': 'Should the fixtures be regenerated in the same commit?',
+    },
+  }),
+  answer: (answer) async {},
+);
+
+/// The plan run, or one of its §7 states.
+Widget _runScreen({StateKind? state}) =>
+    RunScreen(model: _runModel(), state: state, now: shellNow);
 
 /// The planning thread, or one of its §7 states.
 Widget _planningScreen({StateKind? state}) => PlanningScreen(

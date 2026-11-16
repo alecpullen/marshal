@@ -182,6 +182,8 @@ Cupertino**. If the kit lacks a piece, see §10.
 | `Tabs` | Underlined text tabs | Views of one object. Never used for navigation between objects |
 | `Segments` | Progress as steps | Done is `ok`, current is the status colour, pending is `border` |
 | `StageStrip` | A work item's four stages, the one it is at marked | The stages as a `Segments` bar and as words; a stage the item left is `muted` and one ahead is `faint`. Never a fifth stage: an item that is ending says so in one word beside it |
+| `Lanes` | A run's tasks by role | One row per task, one column per lane — Implement, Verify, Review, Commit. Every cell is a status dot and its word, never colour alone; a cell with an action opens that role's conversation and one without is a fact |
+| `TaskGraph` | A plan's tasks as a dependency graph | Tasks laid out in dependency layers, left to right, with straight `border` edges and no free dragging. A plan that declares no dependency is drawn as one chain, in order, because that is the work it describes |
 | `ActivityRow` | One entry of a thread's activity | Who acted, in words, and what they did, with the event's own kind small beneath it and its age at the right. A timeline, not a transcript |
 | `Meter` | A labelled bar | Capacity and quota. Bar is `muted` unless it reports a fault |
 | `Spark` | A small line | One series, `fg`, no axes |
@@ -245,6 +247,16 @@ four asks — a draft awaiting approval, a decision, a recovery and a completion
 assessment — are drawn with the kit's existing `AskCard` kinds: the card's
 title and body say what is being decided, and a new kind for each would be a
 kind name that says nothing the title does not.
+
+Added in F6 for the plan run (§10): `Lanes` draws a run's tasks by role, one
+row per task and one column per lane, each cell a status dot and its word. It is
+a grid of facts, not a control: a cell that opens a role's conversation is
+clickable, and one that does not is read only. `TaskGraph` draws the same tasks
+as a dependency graph — dependency layers left to right, straight edges in
+`border`, no dragging — and draws a plan that declares no dependency as a single
+chain, because that is the work the plan describes. The run's third view, the
+timeline, is not a component of its own: it is `Segments`' bar per role over the
+run's own span, so its colours are the ones `Segments` already states.
 
 Supporting pieces, shared by the components and exported with them by
 `kit.dart`. None is drawn on its own, and none has variants:

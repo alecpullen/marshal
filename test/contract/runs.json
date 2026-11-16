@@ -1,0 +1,97 @@
+{
+  "RunCommit": {
+    "base": "base-1",
+    "head": "head-1"
+  },
+  "RunGate": {
+    "question": "Should the fixtures be regenerated in the same commit?",
+    "taskN": 2
+  },
+  "RunListEntry": {
+    "agentId": "a-1",
+    "at": 1763352000000,
+    "name": "SDD run",
+    "project": "/home/u/marshal",
+    "run": {
+      "active": true
+    }
+  },
+  "RunStage": {
+    "detail": "go test ./... passed",
+    "name": "verify",
+    "state": "done"
+  },
+  "RunTask": {
+    "commit": {
+      "base": "base-1",
+      "head": "head-1"
+    },
+    "dependsOn": [
+      1
+    ],
+    "endedAt": 1763352060000,
+    "fixRounds": 1,
+    "n": 2,
+    "startedAt": 1763352000000,
+    "stages": [
+      {
+        "name": "implement",
+        "state": "done"
+      },
+      {
+        "detail": "go test ./... passed",
+        "name": "verify",
+        "state": "done"
+      }
+    ],
+    "status": "done",
+    "title": "Read the item"
+  },
+  "SDDRun": {
+    "active": true,
+    "baseRef": "main",
+    "branch": "sdd/run-1",
+    "currentTask": 2,
+    "detail": "Verifying task 2",
+    "doneTasks": 1,
+    "finished": false,
+    "fixRound": 0,
+    "maxFixRounds": 3,
+    "phase": "verify",
+    "planName": "f6-2 plan",
+    "planPath": "docs/studio-flutter/plans/2026-11-17-f6-2-planning-runs-project-plan.md",
+    "startedAt": 1763351900000,
+    "succeeded": false,
+    "tasks": [
+      {
+        "commit": {
+          "base": "base-1",
+          "head": "head-1"
+        },
+        "dependsOn": [
+          1
+        ],
+        "endedAt": 1763352060000,
+        "fixRounds": 1,
+        "n": 2,
+        "startedAt": 1763352000000,
+        "stages": [
+          {
+            "name": "implement",
+            "state": "done"
+          },
+          {
+            "detail": "go test ./... passed",
+            "name": "verify",
+            "state": "done"
+          }
+        ],
+        "status": "done",
+        "title": "Read the item"
+      }
+    ],
+    "tokensMax": 200000,
+    "tokensUsed": 12000,
+    "totalTasks": 2
+  }
+}

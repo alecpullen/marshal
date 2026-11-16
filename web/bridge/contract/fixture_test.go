@@ -31,6 +31,7 @@ var fixtureFiles = []string{
 	"projects.json",
 	"recipes.json",
 	"review.json",
+	"runs.json",
 	"schedules.json",
 	"session.json",
 	"spawn.json",
@@ -263,6 +264,13 @@ var fixtureTypes = map[string]reflect.Type{
 	"WorkingDraftCreateRequest": reflect.TypeOf(WorkingDraftCreateRequest{}),
 	"WorkingDraftSaveRequest":   reflect.TypeOf(WorkingDraftSaveRequest{}),
 	"WorkingDraftDeleteRequest": reflect.TypeOf(WorkingDraftDeleteRequest{}),
+	// runs.json — a plan run, its tasks and the list entry.
+	"SDDRun":        reflect.TypeOf(SDDRun{}),
+	"RunTask":       reflect.TypeOf(RunTask{}),
+	"RunStage":      reflect.TypeOf(RunStage{}),
+	"RunCommit":     reflect.TypeOf(RunCommit{}),
+	"RunGate":       reflect.TypeOf(RunGate{}),
+	"RunListEntry":  reflect.TypeOf(RunListEntry{}),
 }
 
 // TestContractFixturesRoundTrip holds the contract types to the shared

@@ -8949,6 +8949,350 @@ class ReviewCommentRequest {
   }
 }
 
+/// RunStage is one stage of one task: the implementer's work, the verify gate,
+/// the reviewer's reading and the commit.
+class RunStage {
+  const RunStage({
+    required this.name,
+    required this.state,
+    this.detail,
+  });
+
+  final String name;
+  final String state;
+  final String? detail;
+
+  factory RunStage.fromJson(Map<String, dynamic> json) {
+    return RunStage(
+      name: json['name'] as String,
+      state: json['state'] as String,
+      detail: json['detail'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    json['state'] = state;
+    if (detail != null) {
+      json['detail'] = detail;
+    }
+    return json;
+  }
+}
+
+/// RunCommit is the range a task's commit covers: the base it started from and
+/// the head it reached.
+class RunCommit {
+  const RunCommit({
+    required this.base,
+    required this.head,
+  });
+
+  final String base;
+  final String head;
+
+  factory RunCommit.fromJson(Map<String, dynamic> json) {
+    return RunCommit(
+      base: json['base'] as String,
+      head: json['head'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['base'] = base;
+    json['head'] = head;
+    return json;
+  }
+}
+
+/// RunTask is one task of a plan run, with what each of its stages reported.
+class RunTask {
+  const RunTask({
+    required this.n,
+    required this.title,
+    required this.dependsOn,
+    required this.status,
+    this.startedAt,
+    this.endedAt,
+    this.execType,
+    this.commit,
+    required this.fixRounds,
+    required this.stages,
+  });
+
+  final int n;
+  final String title;
+  final List<int> dependsOn;
+  final String status;
+  final int? startedAt;
+  final int? endedAt;
+  final String? execType;
+  final RunCommit? commit;
+  final int fixRounds;
+  final List<RunStage> stages;
+
+  factory RunTask.fromJson(Map<String, dynamic> json) {
+    return RunTask(
+      n: (json['n'] as num).toInt(),
+      title: json['title'] as String,
+      dependsOn: _list(
+        json['dependsOn'],
+        (value) => (value as num).toInt(),
+      ),
+      status: json['status'] as String,
+      startedAt: (json['startedAt'] as num?)?.toInt(),
+      endedAt: (json['endedAt'] as num?)?.toInt(),
+      execType: json['execType'] as String?,
+      commit: _objectOrNull(
+        json['commit'],
+        RunCommit.fromJson,
+      ),
+      fixRounds: (json['fixRounds'] as num).toInt(),
+      stages: _list(
+        json['stages'],
+        (value) => _object(value, RunStage.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['n'] = n;
+    json['title'] = title;
+    json['dependsOn'] = dependsOn;
+    json['status'] = status;
+    if (startedAt != null) {
+      json['startedAt'] = startedAt;
+    }
+    if (endedAt != null) {
+      json['endedAt'] = endedAt;
+    }
+    if (execType != null) {
+      json['execType'] = execType;
+    }
+    if (commit != null) {
+      json['commit'] = commit!.toJson();
+    }
+    json['fixRounds'] = fixRounds;
+    json['stages'] = [
+      for (final value in stages) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// RunGate is the question a run stops on, when it stops on one.
+class RunGate {
+  const RunGate({
+    required this.taskN,
+    required this.question,
+  });
+
+  final int taskN;
+  final String question;
+
+  factory RunGate.fromJson(Map<String, dynamic> json) {
+    return RunGate(
+      taskN: (json['taskN'] as num).toInt(),
+      question: json['question'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['taskN'] = taskN;
+    json['question'] = question;
+    return json;
+  }
+}
+
+/// SDDRun is a plan run as `session/run` reports it: the whole digest, so a
+/// client that missed a delta can draw the run from one read.
+class SDDRun {
+  const SDDRun({
+    required this.active,
+    this.planName,
+    this.planPath,
+    this.branch,
+    required this.totalTasks,
+    required this.doneTasks,
+    required this.currentTask,
+    this.phase,
+    this.detail,
+    required this.fixRound,
+    required this.maxFixRounds,
+    required this.tokensUsed,
+    required this.tokensMax,
+    required this.finished,
+    required this.succeeded,
+    this.baseRef,
+    this.startedAt,
+    this.endedAt,
+    this.phaseStartedAt,
+    this.error,
+    required this.tasks,
+    this.gate,
+  });
+
+  final bool active;
+  final String? planName;
+  final String? planPath;
+  final String? branch;
+  final int totalTasks;
+  final int doneTasks;
+  final int currentTask;
+  final String? phase;
+  final String? detail;
+  final int fixRound;
+  final int maxFixRounds;
+  final int tokensUsed;
+  final int tokensMax;
+  final bool finished;
+  final bool succeeded;
+  final String? baseRef;
+  final int? startedAt;
+  final int? endedAt;
+  final int? phaseStartedAt;
+  final String? error;
+  final List<RunTask> tasks;
+  final RunGate? gate;
+
+  factory SDDRun.fromJson(Map<String, dynamic> json) {
+    return SDDRun(
+      active: json['active'] as bool,
+      planName: json['planName'] as String?,
+      planPath: json['planPath'] as String?,
+      branch: json['branch'] as String?,
+      totalTasks: (json['totalTasks'] as num).toInt(),
+      doneTasks: (json['doneTasks'] as num).toInt(),
+      currentTask: (json['currentTask'] as num).toInt(),
+      phase: json['phase'] as String?,
+      detail: json['detail'] as String?,
+      fixRound: (json['fixRound'] as num).toInt(),
+      maxFixRounds: (json['maxFixRounds'] as num).toInt(),
+      tokensUsed: (json['tokensUsed'] as num).toInt(),
+      tokensMax: (json['tokensMax'] as num).toInt(),
+      finished: json['finished'] as bool,
+      succeeded: json['succeeded'] as bool,
+      baseRef: json['baseRef'] as String?,
+      startedAt: (json['startedAt'] as num?)?.toInt(),
+      endedAt: (json['endedAt'] as num?)?.toInt(),
+      phaseStartedAt: (json['phaseStartedAt'] as num?)?.toInt(),
+      error: json['error'] as String?,
+      tasks: _list(
+        json['tasks'],
+        (value) => _object(value, RunTask.fromJson),
+      ),
+      gate: _objectOrNull(
+        json['gate'],
+        RunGate.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['active'] = active;
+    if (planName != null) {
+      json['planName'] = planName;
+    }
+    if (planPath != null) {
+      json['planPath'] = planPath;
+    }
+    if (branch != null) {
+      json['branch'] = branch;
+    }
+    json['totalTasks'] = totalTasks;
+    json['doneTasks'] = doneTasks;
+    json['currentTask'] = currentTask;
+    if (phase != null) {
+      json['phase'] = phase;
+    }
+    if (detail != null) {
+      json['detail'] = detail;
+    }
+    json['fixRound'] = fixRound;
+    json['maxFixRounds'] = maxFixRounds;
+    json['tokensUsed'] = tokensUsed;
+    json['tokensMax'] = tokensMax;
+    json['finished'] = finished;
+    json['succeeded'] = succeeded;
+    if (baseRef != null) {
+      json['baseRef'] = baseRef;
+    }
+    if (startedAt != null) {
+      json['startedAt'] = startedAt;
+    }
+    if (endedAt != null) {
+      json['endedAt'] = endedAt;
+    }
+    if (phaseStartedAt != null) {
+      json['phaseStartedAt'] = phaseStartedAt;
+    }
+    if (error != null) {
+      json['error'] = error;
+    }
+    json['tasks'] = [
+      for (final value in tasks) value.toJson(),
+    ];
+    if (gate != null) {
+      json['gate'] = gate!.toJson();
+    }
+    return json;
+  }
+}
+
+/// RunListEntry is one run as `GET /api/runs` lists it: the agent it runs on,
+/// the digest it last sent, and where it came from.
+class RunListEntry {
+  const RunListEntry({
+    required this.agentID,
+    this.name,
+    required this.project,
+    required this.run,
+    required this.at,
+    this.error,
+  });
+
+  final String agentID;
+  final String? name;
+  final String project;
+  /// Run is the agent's last run digest, as it sent it.
+  final Object? run;
+  /// At is when the digest arrived, in Unix milliseconds, like the run delta
+  /// and the usage rows.
+  final int at;
+  final String? error;
+
+  factory RunListEntry.fromJson(Map<String, dynamic> json) {
+    return RunListEntry(
+      agentID: json['agentId'] as String,
+      name: json['name'] as String?,
+      project: json['project'] as String,
+      run: json['run'],
+      at: (json['at'] as num).toInt(),
+      error: json['error'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['agentId'] = agentID;
+    if (name != null) {
+      json['name'] = name;
+    }
+    json['project'] = project;
+    json['run'] = run;
+    json['at'] = at;
+    if (error != null) {
+      json['error'] = error;
+    }
+    return json;
+  }
+}
+
 /// Schedule is one cron entry that runs a recipe: GET /api/schedules' answer,
 /// and the body POST /api/schedules and PUT /api/schedules/{id} take
 /// (web/bridge/schedules.go). `lastRun` is omitted until the schedule has

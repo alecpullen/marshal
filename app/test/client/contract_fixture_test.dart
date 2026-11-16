@@ -26,6 +26,7 @@ const _fixtures = [
   'planner',
   'projects',
   'recipes',
+  'runs',
   'schedules',
   'session',
   'spawn',
@@ -271,6 +272,13 @@ final _codecs = <String, _Codec>{
   'WireTask': (json) => WireTask.fromJson(_object(json)).toJson(),
   'WireBandEntity': (json) => WireBandEntity.fromJson(_object(json)).toJson(),
   'WireReceipt': (json) => WireReceipt.fromJson(_object(json)).toJson(),
+  // runs.json — a plan run, its tasks and the list entry.
+  'SDDRun': (json) => SDDRun.fromJson(_object(json)).toJson(),
+  'RunTask': (json) => RunTask.fromJson(_object(json)).toJson(),
+  'RunStage': (json) => RunStage.fromJson(_object(json)).toJson(),
+  'RunCommit': (json) => RunCommit.fromJson(_object(json)).toJson(),
+  'RunGate': (json) => RunGate.fromJson(_object(json)).toJson(),
+  'RunListEntry': (json) => RunListEntry.fromJson(_object(json)).toJson(),
   // stream.json
   'BudgetDelta': (json) => BudgetDelta.fromJson(_object(json)).toJson(),
   'BudgetScope': (json) => BudgetScope.fromWire(json! as String).wire,

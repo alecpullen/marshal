@@ -14,6 +14,7 @@ import '../../model/place.dart';
 import '../../model/planning_model.dart';
 import '../../model/pulls_model.dart';
 import '../../model/revision_model.dart';
+import '../../model/run_model.dart';
 import '../../model/stack_store.dart';
 import '../../model/thread_ref.dart' as model;
 import '../../model/thread_view_state.dart';
@@ -23,6 +24,7 @@ import '../inbox/inbox.dart' show Inbox;
 import '../factory/handoff_sheet.dart';
 import '../factory/planning_screen.dart';
 import '../factory/revision_sheet.dart';
+import '../factory/run_screen.dart';
 import '../factory/work_item_screen.dart';
 import '../kit/kit.dart';
 import '../overview/overview.dart' show Overview;
@@ -295,6 +297,7 @@ class Studio extends StatefulWidget {
     this.newWorkFor,
     this.planningFor,
     this.handoffFor,
+    this.runFor,
     this.initialPlace = const Place.overview(),
   });
 
@@ -340,6 +343,10 @@ class Studio extends StatefulWidget {
   final HandoffModel Function(model.ThreadRef thread, String plan, String spec)?
   handoffFor;
 
+  /// Builds a plan run's model for one agent (F6 decision 11). Null leaves a
+  /// plan run's place unbuilt rather than drawing an empty run.
+  final RunModel Function(String host, String agentID)? runFor;
+
   /// The place a deep link names.
   final Place initialPlace;
 
@@ -360,6 +367,10 @@ class _StudioState extends State<Studio> {
   /// A planner is none of the things the fleet lists, so the screen that
   /// started it is the only one that can name its place.
   final _planners = <String, model.ThreadRef>{};
+
+  /// The plan runs this screen opened, by agent id (F6 decision 11). A run is
+  /// an agent's session, so the agent id is its identity.
+  final _runs = <String, model.ThreadRef>{};
 
   @override
   void initState() {
@@ -479,6 +490,17 @@ class _StudioState extends State<Studio> {
       final build = widget.threadStore;
       final thread = _threadRef(place);
       final factory = widget.factory;
+      if (thread != null && thread.kind == model.ThreadKind.planRun) {
+        final build = widget.runFor;
+        if (build != null) {
+          return _RunPlace(
+            key: ValueKey('run/${thread.host}/${thread.id}'),
+            thread: thread,
+            run: build(thread.host, thread.id),
+            now: widget.store.now,
+          );
+        }
+      }
       if (thread != null && thread.planning) {
         final plan = widget.planningFor?.call(thread.host, thread.id);
         if (plan != null) {
@@ -552,6 +574,8 @@ class _StudioState extends State<Studio> {
     if (host == null || id == null) return null;
     final planner = _planners[id];
     if (planner != null && planner.host == host) return planner;
+    final run = _runs[id];
+    if (run != null && run.host == host) return run;
     final item = widget.factory?.byId(host, id);
     if (item != null) return threadOfItem(host, item);
     for (final agent in widget.store.agents(host: host)) {
@@ -1067,4 +1091,35 @@ class _PlanningPlaceState extends State<_PlanningPlace> {
         ? null
         : () => unawaited(_handOff(context)),
   );
+}
+
+/// One plan run's place (F6 decision 11): the run's tasks as lanes, graph or
+/// timeline, with the live step beneath and the question it stopped on pinned
+/// above.
+class _RunPlace extends StatefulWidget {
+  const _RunPlace({
+    super.key,
+    required this.thread,
+    required this.run,
+    this.now,
+  });
+
+  final model.ThreadRef thread;
+  final RunModel run;
+  final DateTime? now;
+
+  @override
+  State<_RunPlace> createState() => _RunPlaceState();
+}
+
+class _RunPlaceState extends State<_RunPlace> {
+  @override
+  void dispose() {
+    widget.run.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      RunScreen(model: widget.run, now: widget.now);
 }

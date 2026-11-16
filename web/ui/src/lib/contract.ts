@@ -2623,6 +2623,98 @@ export interface ReviewCommentRequest {
 }
 
 /**
+ * RunStage is one stage of one task: the implementer's work, the verify gate,
+ * the reviewer's reading and the commit.
+ */
+export interface RunStage {
+  name: string;
+  state: string;
+  detail?: string;
+}
+
+/**
+ * RunCommit is the range a task's commit covers: the base it started from and
+ * the head it reached.
+ */
+export interface RunCommit {
+  base: string;
+  head: string;
+}
+
+/**
+ * RunTask is one task of a plan run, with what each of its stages reported.
+ */
+export interface RunTask {
+  n: number;
+  title: string;
+  dependsOn: number[];
+  status: string;
+  startedAt?: number;
+  endedAt?: number;
+  execType?: string;
+  commit?: RunCommit;
+  fixRounds: number;
+  stages: RunStage[];
+}
+
+/**
+ * RunGate is the question a run stops on, when it stops on one.
+ */
+export interface RunGate {
+  taskN: number;
+  question: string;
+}
+
+/**
+ * SDDRun is a plan run as `session/run` reports it: the whole digest, so a
+ * client that missed a delta can draw the run from one read.
+ */
+export interface SDDRun {
+  active: boolean;
+  planName?: string;
+  planPath?: string;
+  branch?: string;
+  totalTasks: number;
+  doneTasks: number;
+  currentTask: number;
+  phase?: string;
+  detail?: string;
+  fixRound: number;
+  maxFixRounds: number;
+  tokensUsed: number;
+  tokensMax: number;
+  finished: boolean;
+  succeeded: boolean;
+  baseRef?: string;
+  startedAt?: number;
+  endedAt?: number;
+  phaseStartedAt?: number;
+  error?: string;
+  tasks: RunTask[];
+  gate?: RunGate;
+}
+
+/**
+ * RunListEntry is one run as `GET /api/runs` lists it: the agent it runs on,
+ * the digest it last sent, and where it came from.
+ */
+export interface RunListEntry {
+  agentId: string;
+  name?: string;
+  project: string;
+  /**
+   * Run is the agent's last run digest, as it sent it.
+   */
+  run: unknown;
+  /**
+   * At is when the digest arrived, in Unix milliseconds, like the run delta
+   * and the usage rows.
+   */
+  at: number;
+  error?: string;
+}
+
+/**
  * Schedule is one cron entry that runs a recipe: GET /api/schedules' answer,
  * and the body POST /api/schedules and PUT /api/schedules/{id} take
  * (web/bridge/schedules.go). `lastRun` is omitted until the schedule has

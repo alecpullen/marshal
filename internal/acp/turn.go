@@ -669,6 +669,285 @@ func (m *TurnManager) SwarmStart(ctx context.Context, params json.RawMessage) (a
 	return result, nil
 }
 
+// forwarderOptions is what differs between the forwarders runTurn and the
+// follower build.
+type forwarderOptions struct {
+	// failed is called when a bridge call fails for a reason other than
+	// the prompt's own settlement. runTurn cancels its turn; the follower
+	// logs.
+	failed func()
+	// followed marks the follower's forwarder: no prompt is ever answered
+	// for lack of a bridge (decision 5).
+	followed bool
+}
+
+// turnForwarder is runTurn's forward closure as a value both runTurn and the
+// follower build (decision 4). It holds what the closure captured: the
+// manager, the session, the runtime the prompts' RPCs derive their contexts
+// from, the forwarder's own context, the turn's projection, the options that
+// differ between its two builders, and the three once-per-identity guards.
+type turnForwarder struct {
+	m         *TurnManager
+	sessionID string
+	rt        *TurnRuntime
+	// ctx is the forwarder's context: runTurn's turn context, which parents
+	// each prompt's outbound RPC and the access resolution.
+	ctx  context.Context
+	proj *turnProjection
+	opts forwarderOptions
+
+	// turnAnswered guards the pending-question send so the unanswered
+	// answer is delivered at most once per question identity (F-BUG-51).
+	turnAnswered sync.Map
+
+	// turnGateAnswered guards the skill-gate permission request so a
+	// duplicate pending publish cannot double-request the client (same
+	// identity pattern as turnAnswered).
+	turnGateAnswered sync.Map
+
+	// accessAsked guards the typed capability requests so a duplicate pending
+	// publish cannot ask the client twice for one request. Keyed by the
+	// request's own opaque ID, which the session mints per request — a
+	// provider call ID is reused across steps and would collide.
+	accessAsked sync.Map
+}
+
+// newTurnForwarder builds the forwarder for one turn (runTurn) or one followed
+// run (the follower). The projection is the forwarder's own: nothing else
+// reads or writes the per-turn projection state.
+func (m *TurnManager) newTurnForwarder(ctx context.Context, sessionID string, rt *TurnRuntime, opts forwarderOptions) *turnForwarder {
+	return &turnForwarder{
+		m:         m,
+		sessionID: sessionID,
+		rt:        rt,
+		ctx:       ctx,
+		proj:      &turnProjection{},
+		opts:      opts,
+	}
+}
+
+// fail reports a failure its builder treats as fatal to forwarding: runTurn
+// cancels the turn and its subscription, the follower logs.
+func (f *turnForwarder) fail() {
+	if f.opts.failed != nil {
+		f.opts.failed()
+	}
+}
+
+// forward dispatches one session event to the connection.
+func (f *turnForwarder) forward(ev pubsub.Event[session.Event]) {
+	// A child actor's approval is collected by the session-lifetime
+	// child collector, not by this turn: the root turn must not answer a
+	// request it does not own, and the tagged event carries no root
+	// payload to project.
+	if ev.Payload.ApprovalSource != nil {
+		return
+	}
+	f.m.markStackDirty(f.sessionID)
+	update, hasUpdate := eventToSessionUpdate(ev, f.proj)
+	if hasUpdate {
+		if notifyErr := f.m.notify("session/update", SessionUpdateParams{
+			SessionID: f.sessionID,
+			Update:    update,
+		}); notifyErr != nil {
+			// Treat notify error as fatal.
+			f.fail()
+		}
+	}
+
+	// A marshal client's requests are the request mirror's (P3 R5): the
+	// mirror shows the request, and nothing here may answer it, deny it
+	// or fail it.
+	if f.m.isMarshal() {
+		return
+	}
+
+	// Drive pending approvals through the permission bridge
+	// in a goroutine so the forwarder never blocks on the
+	// bridge (F-CON-54).
+	if ev.Type == session.EventPendingApprovalChanged &&
+		ev.Payload.PendingApproval != nil {
+		pa := ev.Payload.PendingApproval
+		// A typed capability request takes the runtime resolution path
+		// instead of the ordinary bridge: the runtime validates and
+		// applies the grant, and only the session's own settlement helper
+		// may acknowledge it. This is checked before the bridge-nil branch
+		// because a typed request is never answered by delivering an
+		// ordinary decision on the event copy.
+		if pa.Access != nil {
+			requestID := pa.Access.RequestID
+			if _, loaded := f.accessAsked.LoadOrStore(requestID, true); !loaded {
+				go func() {
+					if err := f.m.resolveAccessRequest(f.ctx, f.sessionID, f.rt, requestID, pa.ID); err != nil {
+						// A transport/client failure is fatal to the turn,
+						// exactly as an ordinary bridge failure is.
+						f.fail()
+					}
+				}()
+			}
+		} else if f.m.bridge == nil {
+			if f.opts.followed {
+				// A follower never answers for the viewer: a missing bridge
+				// leaves the approval waiting for whoever owns it.
+				slog.Default().Warn("acp: followed approval has no permission bridge; left unanswered",
+					"session", f.sessionID, "approval", pa.ID)
+			} else {
+				// F-SEC-13: without a bridge, the runner is blocked on
+				// ResponseChan. Send a deny so the runner unblocks and the
+				// turn proceeds. Log so operators can see the misconfig.
+				pa.Respond(session.UserApprovalDecision{Approved: false})
+				slog.Default().Warn("acp: pending approval arrived but no permission bridge; denied",
+					"session", f.sessionID, "approval", pa.ID)
+			}
+		} else {
+			go func() {
+				// The outbound RPC runs under a context that also stops when
+				// the prompt's owning operation is interrupted or the session
+				// settles the prompt itself, so either ends this one request
+				// without cancelling the turn or leaking the goroutine until a
+				// late client answer.
+				original := promptContextFor(f.rt, pa.Key)
+				settled := promptSettledFor(f.rt, pa.Key)
+				rpcCtx, cleanup := promptRPCContext(f.ctx, original, settled)
+				defer cleanup()
+				decision, err := f.m.bridge.Request(rpcCtx, f.sessionID, pa)
+				if err != nil {
+					if settledElsewhere(settled) {
+						// The session settled this request itself (an answer
+						// from another viewer, a cancellation or a steering
+						// interruption). Nothing is left to fail here; the
+						// turn continues.
+						return
+					}
+					if steeringEndedPrompt(f.rt, pa.Key, original, err) {
+						// Steering ended this RPC; the session already settled
+						// the canonical request. The turn continues.
+						return
+					}
+					f.fail()
+					return
+				}
+				_ = decision
+			}()
+		}
+	}
+
+	// Drive pending questions through the question bridge in a
+	// goroutine so the forwarder never blocks on the client (mirrors
+	// the permission bridge, F-CON-54). Without a bridge, preserve the
+	// pre-extension behavior: auto-answer Unanswered. The turn-scoped
+	// sync.Map guards against duplicate delivery when the event
+	// re-fires (F-BUG-51).
+	if ev.Type == session.EventPendingQuestionChanged &&
+		ev.Payload.PendingQuestion != nil {
+		pending := ev.Payload.PendingQuestion
+		if _, loaded := f.turnAnswered.LoadOrStore(promptGuardKey(pending.Key, pending.ResponseChan), true); loaded {
+			return
+		}
+		if f.m.qbridge == nil {
+			if f.opts.followed {
+				// A follower never answers for the viewer: leave the question
+				// pending for whoever owns it.
+				slog.Default().Warn("acp: followed question has no question bridge; left unanswered",
+					"session", f.sessionID)
+			} else {
+				pending.Respond(session.UnansweredAnswers(pending.Questions))
+			}
+		} else {
+			go func() {
+				// No wall-clock question timeout: the wait ends on client
+				// disconnect / session shutdown (turnCtx cancellation), on a
+				// steering cancellation of the owning operation, on the
+				// session's own settlement of the question, or on a bridge
+				// error, which still answers Unanswered.
+				original := promptContextFor(f.rt, pending.Key)
+				settled := promptSettledFor(f.rt, pending.Key)
+				rpcCtx, cleanup := promptRPCContext(f.ctx, original, settled)
+				defer cleanup()
+				if err := f.m.qbridge.Ask(rpcCtx, f.sessionID, pending); err != nil {
+					if settledElsewhere(settled) {
+						// The session settled this question itself, so its
+						// answer is already the canonical one; never overwrite
+						// it with a fabricated Unanswered.
+						return
+					}
+					if steeringEndedPrompt(f.rt, pending.Key, original, err) {
+						// A canceled question must never be answered with a
+						// fabricated Unanswered: the session's canonical
+						// settlement already reported the interruption.
+						return
+					}
+					if f.opts.followed {
+						// A follower leaves the question unanswered and reports
+						// the failure; answering here would forge an answer
+						// the viewer never gave.
+						slog.Default().Warn("acp: followed question bridge failed; left unanswered",
+							"session", f.sessionID, "err", err)
+						f.fail()
+						return
+					}
+					slog.Default().Warn("acp: question bridge failed; answering Unanswered",
+						"session", f.sessionID, "err", err)
+					pending.Respond(session.UnansweredAnswers(pending.Questions))
+				}
+			}()
+		}
+	}
+
+	// Drive skill-gate prompts through the permission bridge in a
+	// goroutine so the forwarder never blocks on the bridge (mirrors
+	// the approval/question bridges, F-CON-54). ACP clients see an
+	// approve/deny pair: approve = allow once, deny = sticky deny.
+	if ev.Type == session.EventPendingSkillGateChanged &&
+		ev.Payload.PendingSkillGate != nil {
+		sg := ev.Payload.PendingSkillGate
+		if _, loaded := f.turnGateAnswered.LoadOrStore(promptGuardKey(sg.Key, sg.ResponseChan), true); loaded {
+			return
+		}
+		if f.m.bridge == nil {
+			if f.opts.followed {
+				// A follower never answers for the viewer: leave the gate
+				// pending for whoever owns it.
+				slog.Default().Warn("acp: followed skill gate has no permission bridge; left unanswered",
+					"session", f.sessionID, "skill", sg.Skill)
+			} else {
+				// Without a bridge the runner is blocked on ResponseChan.
+				// Deny so the turn proceeds; log the misconfig (F-SEC-13).
+				sg.Respond(session.SkillGateDeny)
+				slog.Default().Warn("acp: skill gate prompt arrived but no permission bridge; denied",
+					"session", f.sessionID, "skill", sg.Skill)
+			}
+		} else {
+			go func() {
+				original := promptContextFor(f.rt, sg.Key)
+				settled := promptSettledFor(f.rt, sg.Key)
+				rpcCtx, cleanup := promptRPCContext(f.ctx, original, settled)
+				defer cleanup()
+				if _, err := f.m.bridge.RequestSkillGate(rpcCtx, f.sessionID, sg); err != nil {
+					if settledElsewhere(settled) {
+						// The session settled the gate itself; nothing is
+						// left to fail here, and the turn continues.
+						return
+					}
+					if steeringEndedPrompt(f.rt, sg.Key, original, err) {
+						// A canceled gate must not be recorded as a sticky
+						// denial. The session's canonical settlement already
+						// reported the interruption; the turn continues.
+						return
+					}
+					if f.opts.followed {
+						// A follower leaves the gate pending and reports the
+						// failure rather than recording a decision.
+						slog.Default().Warn("acp: followed skill gate bridge failed; left unanswered",
+							"session", f.sessionID, "skill", sg.Skill, "err", err)
+					}
+					f.fail()
+				}
+			}()
+		}
+	}
+}
+
 // runTurn reserves the per-session active-turn slot, runs run(turnCtx, arg)
 // to completion while forwarding session events as session/update
 // notifications, and resolves the result via resultOf once run finishes
@@ -833,208 +1112,17 @@ func (m *TurnManager) runTurn(
 		runErr <- run(turnCtx, arg)
 	}()
 
-	// proj carries per-turn projection state: the accumulated thinking
-	// text (for computing deltas) and the most recent active tool call
-	// (for correlating tool_call_update with tool_call).
-	proj := &turnProjection{}
-
-	// turnAnswered guards the pending-question send so the unanswered
-	// answer is delivered at most once per question identity (F-BUG-51).
-	var turnAnswered sync.Map
-
-	// turnGateAnswered guards the skill-gate permission request so a
-	// duplicate pending publish cannot double-request the client (same
-	// identity pattern as turnAnswered).
-	var turnGateAnswered sync.Map
-
-	// accessAsked guards the typed capability requests so a duplicate pending
-	// publish cannot ask the client twice for one request. Keyed by the
-	// request's own opaque ID, which the session mints per request — a
-	// provider call ID is reused across steps and would collide.
-	var accessAsked sync.Map
-
-	// forward dispatches one session event to the ACP client. Defined
-	// once and used in both the main loop and the post-run drain.
-	forward := func(ev pubsub.Event[session.Event]) {
-		// A child actor's approval is collected by the session-lifetime
-		// child collector, not by this turn: the root turn must not answer a
-		// request it does not own, and the tagged event carries no root
-		// payload to project.
-		if ev.Payload.ApprovalSource != nil {
-			return
-		}
-		m.markStackDirty(sessionID)
-		update, hasUpdate := eventToSessionUpdate(ev, proj)
-		if hasUpdate {
-			if notifyErr := m.notify("session/update", SessionUpdateParams{
-				SessionID: sessionID,
-				Update:    update,
-			}); notifyErr != nil {
-				// Treat notify error as fatal.
-				slotCancel()
-				subCancel()
-			}
-		}
-
-		// A marshal client's requests are the request mirror's (P3 R5): the
-		// mirror shows the request, and nothing here may answer it, deny it
-		// or fail it.
-		if m.isMarshal() {
-			return
-		}
-
-		// Drive pending approvals through the permission bridge
-		// in a goroutine so the forwarder never blocks on the
-		// bridge (F-CON-54).
-		if ev.Type == session.EventPendingApprovalChanged &&
-			ev.Payload.PendingApproval != nil {
-			pa := ev.Payload.PendingApproval
-			// A typed capability request takes the runtime resolution path
-			// instead of the ordinary bridge: the runtime validates and
-			// applies the grant, and only the session's own settlement helper
-			// may acknowledge it. This is checked before the bridge-nil branch
-			// because a typed request is never answered by delivering an
-			// ordinary decision on the event copy.
-			if pa.Access != nil {
-				requestID := pa.Access.RequestID
-				if _, loaded := accessAsked.LoadOrStore(requestID, true); !loaded {
-					go func() {
-						if err := m.resolveAccessRequest(turnCtx, sessionID, rt, requestID, pa.ID); err != nil {
-							// A transport/client failure is fatal to the turn,
-							// exactly as an ordinary bridge failure is.
-							slotCancel()
-							subCancel()
-						}
-					}()
-				}
-			} else if m.bridge == nil {
-				// F-SEC-13: without a bridge, the runner is blocked on
-				// ResponseChan. Send a deny so the runner unblocks and the
-				// turn proceeds. Log so operators can see the misconfig.
-				pa.Respond(session.UserApprovalDecision{Approved: false})
-				slog.Default().Warn("acp: pending approval arrived but no permission bridge; denied",
-					"session", sessionID, "approval", pa.ID)
-			} else {
-				go func() {
-					// The outbound RPC runs under a context that also stops when
-					// the prompt's owning operation is interrupted or the session
-					// settles the prompt itself, so either ends this one request
-					// without cancelling the turn or leaking the goroutine until a
-					// late client answer.
-					original := promptContextFor(rt, pa.Key)
-					settled := promptSettledFor(rt, pa.Key)
-					rpcCtx, cleanup := promptRPCContext(turnCtx, original, settled)
-					defer cleanup()
-					decision, err := m.bridge.Request(rpcCtx, sessionID, pa)
-					if err != nil {
-						if settledElsewhere(settled) {
-							// The session settled this request itself (an answer
-							// from another viewer, a cancellation or a steering
-							// interruption). Nothing is left to fail here; the
-							// turn continues.
-							return
-						}
-						if steeringEndedPrompt(rt, pa.Key, original, err) {
-							// Steering ended this RPC; the session already settled
-							// the canonical request. The turn continues.
-							return
-						}
-						slotCancel()
-						subCancel()
-						return
-					}
-					_ = decision
-				}()
-			}
-		}
-
-		// Drive pending questions through the question bridge in a
-		// goroutine so the forwarder never blocks on the client (mirrors
-		// the permission bridge, F-CON-54). Without a bridge, preserve the
-		// pre-extension behavior: auto-answer Unanswered. The turn-scoped
-		// sync.Map guards against duplicate delivery when the event
-		// re-fires (F-BUG-51).
-		if ev.Type == session.EventPendingQuestionChanged &&
-			ev.Payload.PendingQuestion != nil {
-			pending := ev.Payload.PendingQuestion
-			if _, loaded := turnAnswered.LoadOrStore(promptGuardKey(pending.Key, pending.ResponseChan), true); loaded {
-				return
-			}
-			if m.qbridge == nil {
-				pending.Respond(session.UnansweredAnswers(pending.Questions))
-			} else {
-				go func() {
-					// No wall-clock question timeout: the wait ends on client
-					// disconnect / session shutdown (turnCtx cancellation), on a
-					// steering cancellation of the owning operation, on the
-					// session's own settlement of the question, or on a bridge
-					// error, which still answers Unanswered.
-					original := promptContextFor(rt, pending.Key)
-					settled := promptSettledFor(rt, pending.Key)
-					rpcCtx, cleanup := promptRPCContext(turnCtx, original, settled)
-					defer cleanup()
-					if err := m.qbridge.Ask(rpcCtx, sessionID, pending); err != nil {
-						if settledElsewhere(settled) {
-							// The session settled this question itself, so its
-							// answer is already the canonical one; never overwrite
-							// it with a fabricated Unanswered.
-							return
-						}
-						if steeringEndedPrompt(rt, pending.Key, original, err) {
-							// A canceled question must never be answered with a
-							// fabricated Unanswered: the session's canonical
-							// settlement already reported the interruption.
-							return
-						}
-						slog.Default().Warn("acp: question bridge failed; answering Unanswered",
-							"session", sessionID, "err", err)
-						pending.Respond(session.UnansweredAnswers(pending.Questions))
-					}
-				}()
-			}
-		}
-
-		// Drive skill-gate prompts through the permission bridge in a
-		// goroutine so the forwarder never blocks on the bridge (mirrors
-		// the approval/question bridges, F-CON-54). ACP clients see an
-		// approve/deny pair: approve = allow once, deny = sticky deny.
-		if ev.Type == session.EventPendingSkillGateChanged &&
-			ev.Payload.PendingSkillGate != nil {
-			sg := ev.Payload.PendingSkillGate
-			if _, loaded := turnGateAnswered.LoadOrStore(promptGuardKey(sg.Key, sg.ResponseChan), true); loaded {
-				return
-			}
-			if m.bridge == nil {
-				// Without a bridge the runner is blocked on ResponseChan.
-				// Deny so the turn proceeds; log the misconfig (F-SEC-13).
-				sg.Respond(session.SkillGateDeny)
-				slog.Default().Warn("acp: skill gate prompt arrived but no permission bridge; denied",
-					"session", sessionID, "skill", sg.Skill)
-			} else {
-				go func() {
-					original := promptContextFor(rt, sg.Key)
-					settled := promptSettledFor(rt, sg.Key)
-					rpcCtx, cleanup := promptRPCContext(turnCtx, original, settled)
-					defer cleanup()
-					if _, err := m.bridge.RequestSkillGate(rpcCtx, sessionID, sg); err != nil {
-						if settledElsewhere(settled) {
-							// The session settled the gate itself; nothing is
-							// left to fail here, and the turn continues.
-							return
-						}
-						if steeringEndedPrompt(rt, sg.Key, original, err) {
-							// A canceled gate must not be recorded as a sticky
-							// denial. The session's canonical settlement already
-							// reported the interruption; the turn continues.
-							return
-						}
-						slotCancel()
-						subCancel()
-					}
-				}()
-			}
-		}
-	}
+	// forward dispatches one session event to the connection, both from the
+	// main loop and from the post-run drain. The forwarder is the closure
+	// that used to live here, built as a value so the follower can share it:
+	// a failed notify, a failed bridge call or a failed access resolution
+	// cancels the turn and its subscription, as those paths always did.
+	forward := m.newTurnForwarder(turnCtx, sessionID, rt, forwarderOptions{
+		failed: func() {
+			slotCancel()
+			subCancel()
+		},
+	}).forward
 
 	// serveFence answers one fence request: it forwards the events already
 	// buffered in the subscription — the ones published before the caller

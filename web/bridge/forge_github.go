@@ -10,9 +10,12 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // githubForge implements Forge against the GitHub REST API.
@@ -406,6 +409,66 @@ func (g *githubForge) ListFailedChecks(ctx context.Context, repo Repo, ref strin
 		out = append(out, ci)
 	}
 	return out, nil
+}
+
+// ListChecks returns every check run on ref, whatever its state.
+func (g *githubForge) ListChecks(ctx context.Context, repo Repo, ref string, cred Credential) ([]contract.PullCheck, error) {
+	if err := checksAvailable(cred); err != nil {
+		return nil, err
+	}
+	owner, name, err := parseOwnerRepo(repo.URL)
+	if err != nil {
+		return nil, err
+	}
+	req, err := g.newRequest(repo, "GET", "/repos/"+owner+"/"+name+"/commits/"+url.PathEscape(ref)+"/check-runs?per_page=100", nil, cred)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		CheckRuns []struct {
+			Name       string `json:"name"`
+			Status     string `json:"status"`
+			Conclusion string `json:"conclusion"`
+			HTMLURL    string `json:"html_url"`
+			DetailsURL string `json:"details_url"`
+		} `json:"check_runs"`
+	}
+	if err := doJSON(ctx, g.client, req, &resp); err != nil {
+		return nil, err
+	}
+	out := make([]contract.PullCheck, 0, len(resp.CheckRuns))
+	for _, c := range resp.CheckRuns {
+		url := c.HTMLURL
+		if url == "" {
+			url = c.DetailsURL
+		}
+		out = append(out, contract.PullCheck{Name: c.Name, State: githubCheckState(c.Status, c.Conclusion), URL: url})
+	}
+	// The API's order follows when a run started; the index shows the checks
+	// by name, so a poll that returns them in another order is no change.
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+// githubCheckState maps a check run's status and conclusion to a check state.
+// A completed run is decided by its conclusion. A conclusion that neither
+// passes nor fails — a neutral run, a skipped one, or one the contract does not
+// name — is not reported as a failure.
+func githubCheckState(status, conclusion string) contract.CheckState {
+	if status != "completed" {
+		if status == "in_progress" {
+			return contract.CheckRunning
+		}
+		return contract.CheckPending
+	}
+	switch conclusion {
+	case "success", "neutral", "skipped":
+		return contract.CheckPassed
+	case "failure", "timed_out", "cancelled", "action_required", "startup_failure", "stale":
+		return contract.CheckFailed
+	default:
+		return contract.CheckPending
+	}
 }
 
 func (g *githubForge) CheckLog(ctx context.Context, repo Repo, check CheckInfo, cred Credential) (string, error) {

@@ -102,10 +102,8 @@ class BridgeClient {
   );
 
   /// POST /api/schedules/{id}/run: starts the schedule now.
-  Future<void> runSchedule(String id) => _post(
-    '/api/schedules/${Uri.encodeComponent(id)}/run',
-    null,
-  );
+  Future<void> runSchedule(String id) =>
+      _post('/api/schedules/${Uri.encodeComponent(id)}/run', null);
 
   /// GET /api/recipes: every recipe, built-in and the user's.
   Future<List<Recipe>> recipes() => _listOf('/api/recipes', Recipe.fromJson);
@@ -125,7 +123,10 @@ class BridgeClient {
 
   /// DELETE /api/recipes/{name}. The bridge refuses a built-in.
   Future<void> deleteRecipe(String name) => _send(
-    Request(method: 'DELETE', path: '/api/recipes/${Uri.encodeComponent(name)}'),
+    Request(
+      method: 'DELETE',
+      path: '/api/recipes/${Uri.encodeComponent(name)}',
+    ),
   );
 
   /// POST /api/recipes/{name}/copy: stores a copy under [as] and answers it.
@@ -141,10 +142,8 @@ class BridgeClient {
   }
 
   /// POST /api/recipes/{name}/run: starts the recipe where [run] says.
-  Future<void> runRecipe(String name, RecipeRun run) => _post(
-    '/api/recipes/${Uri.encodeComponent(name)}/run',
-    run,
-  );
+  Future<void> runRecipe(String name, RecipeRun run) =>
+      _post('/api/recipes/${Uri.encodeComponent(name)}/run', run);
 
   /// GET /api/watches: every watch the bridge's sources report.
   Future<List<WatchInfo>> watches() =>
@@ -154,6 +153,97 @@ class BridgeClient {
   /// changed. [id] is the reroute record's id.
   Future<void> undoReroute(String id) =>
       _post('/api/reroutes/${Uri.encodeComponent(id)}/undo', null);
+
+  // Bots: the review bot and the CI fixer (F7).
+
+  /// GET /api/projects/settings?project=…: the part of the project's settings
+  /// the Automations screens read.
+  Future<ProjectAutomations> projectAutomations(String project) => _objectOf(
+    '/api/projects/settings',
+    ProjectAutomations.fromJson,
+    query: {'project': project},
+  );
+
+  /// GET /api/automations/review/drafts: the held reviews, newest first.
+  Future<List<ReviewDraft>> reviewDrafts({String? project, String? status}) =>
+      _listOf(
+        '/api/automations/review/drafts',
+        ReviewDraft.fromJson,
+        query: {
+          if (project != null) 'project': project,
+          if (status != null) 'status': status,
+        },
+      );
+
+  /// GET /api/automations/review/drafts/{id}.
+  Future<ReviewDraft> reviewDraft(String id) => _objectOf(
+    '/api/automations/review/drafts/${Uri.encodeComponent(id)}',
+    ReviewDraft.fromJson,
+  );
+
+  /// PUT /api/automations/review/drafts/{id}: the edit a person made.
+  Future<ReviewDraft> editReviewDraft(
+    String id, {
+    required List<Finding> findings,
+    required String summary,
+  }) async {
+    final response = await _send(
+      Request(
+        method: 'PUT',
+        path: '/api/automations/review/drafts/${Uri.encodeComponent(id)}',
+        body: {'findings': findings, 'summary': summary},
+      ),
+    );
+    return ReviewDraft.fromJson(_object(response));
+  }
+
+  /// POST /api/automations/review/drafts/{id}/post: posts the review.
+  Future<ReviewDraft> postReviewDraft(String id) async {
+    final response = await _send(
+      Request(
+        method: 'POST',
+        path: '/api/automations/review/drafts/${Uri.encodeComponent(id)}/post',
+      ),
+    );
+    return ReviewDraft.fromJson(_object(response));
+  }
+
+  /// POST /api/automations/review/drafts/{id}/discard.
+  Future<void> discardReviewDraft(String id) => _post(
+    '/api/automations/review/drafts/${Uri.encodeComponent(id)}/discard',
+    null,
+  );
+
+  /// POST /api/automations/review/drafts/{id}/send-to-author: hands the
+  /// findings to the agent that owns the pull request.
+  Future<void> sendDraftToAuthor(
+    String id, {
+    List<String> findingIds = const [],
+  }) => _post(
+    '/api/automations/review/drafts/${Uri.encodeComponent(id)}'
+    '/send-to-author',
+    {'findingIds': findingIds},
+  );
+
+  /// POST /api/automations/review/run: reviews a pull request now.
+  Future<void> runReviewBot({required String repoID, required int number}) =>
+      _post('/api/automations/review/run', {
+        'repoId': repoID,
+        'number': number,
+      });
+
+  /// GET /api/automations/ci/history: the fixer's runs, newest first.
+  Future<List<CIHistory>> ciHistory({String? project}) => _listOf(
+    '/api/automations/ci/history',
+    CIHistory.fromJson,
+    query: {if (project != null) 'project': project},
+  );
+
+  /// GET /api/automations/ci/history/{id}.
+  Future<CIHistory> ciHistoryEntry(String id) => _objectOf(
+    '/api/automations/ci/history/${Uri.encodeComponent(id)}',
+    CIHistory.fromJson,
+  );
 
   Future<Response> _send(Request request) async {
     final response = await _transport.send(request);
@@ -171,14 +261,16 @@ class BridgeClient {
 
   Future<T> _objectOf<T>(
     String path,
-    T Function(Map<String, dynamic> json) fromJson,
-  ) async => fromJson(_object(await _send(Request(path: path))));
+    T Function(Map<String, dynamic> json) fromJson, {
+    Map<String, String> query = const {},
+  }) async => fromJson(_object(await _send(Request(path: path, query: query))));
 
   Future<List<T>> _listOf<T>(
     String path,
-    T Function(Map<String, dynamic> json) fromJson,
-  ) async {
-    final response = await _send(Request(path: path));
+    T Function(Map<String, dynamic> json) fromJson, {
+    Map<String, String> query = const {},
+  }) async {
+    final response = await _send(Request(path: path, query: query));
     final values = _decode(response) as List<dynamic>;
     return [
       for (final value in values) fromJson(value as Map<String, dynamic>),

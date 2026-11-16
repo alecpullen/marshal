@@ -659,6 +659,430 @@ class RecentPrompts {
   }
 }
 
+/// Automations is a project's forge automation settings
+/// (web/bridge/automation.go).
+class Automations {
+  const Automations({
+    this.reviewBot,
+    this.ciFixer,
+  });
+
+  final ReviewBotSettings? reviewBot;
+  final CIFixerSettings? ciFixer;
+
+  factory Automations.fromJson(Map<String, dynamic> json) {
+    return Automations(
+      reviewBot: _objectOrNull(
+        json['reviewBot'],
+        ReviewBotSettings.fromJson,
+      ),
+      ciFixer: _objectOrNull(
+        json['ciFixer'],
+        CIFixerSettings.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (reviewBot != null) {
+      json['reviewBot'] = reviewBot!.toJson();
+    }
+    if (ciFixer != null) {
+      json['ciFixer'] = ciFixer!.toJson();
+    }
+    return json;
+  }
+}
+
+/// ReviewBotSettings configures the pull-request review bot.
+class ReviewBotSettings {
+  const ReviewBotSettings({
+    required this.enabled,
+    required this.repoID,
+    this.labels,
+    required this.skipDrafts,
+    this.authors,
+    this.routing,
+    required this.autoPost,
+    this.holdSeverities,
+  });
+
+  final bool enabled;
+  final String repoID;
+  /// Labels, Authors and SkipDrafts filter which pull requests are
+  /// reviewed. Empty lists match everything.
+  final List<String>? labels;
+  final bool skipDrafts;
+  final List<String>? authors;
+  /// Routing overrides the review recipe's model routing.
+  final Object? routing;
+  /// AutoPost posts a finished review without waiting, unless a finding has
+  /// a severity in HoldSeverities.
+  final bool autoPost;
+  final List<String>? holdSeverities;
+
+  factory ReviewBotSettings.fromJson(Map<String, dynamic> json) {
+    return ReviewBotSettings(
+      enabled: json['enabled'] as bool,
+      repoID: json['repoId'] as String,
+      labels: _listOrNull(
+        json['labels'],
+        (value) => value as String,
+      ),
+      skipDrafts: json['skipDrafts'] as bool,
+      authors: _listOrNull(
+        json['authors'],
+        (value) => value as String,
+      ),
+      routing: json['routing'],
+      autoPost: json['autoPost'] as bool,
+      holdSeverities: _listOrNull(
+        json['holdSeverities'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['enabled'] = enabled;
+    json['repoId'] = repoID;
+    if (labels != null) {
+      json['labels'] = labels!;
+    }
+    json['skipDrafts'] = skipDrafts;
+    if (authors != null) {
+      json['authors'] = authors!;
+    }
+    if (routing != null) {
+      json['routing'] = routing;
+    }
+    json['autoPost'] = autoPost;
+    if (holdSeverities != null) {
+      json['holdSeverities'] = holdSeverities!;
+    }
+    return json;
+  }
+}
+
+/// CIFixerSettings configures the CI fixer.
+class CIFixerSettings {
+  const CIFixerSettings({
+    required this.enabled,
+    required this.repoID,
+    required this.branches,
+    this.maxMinutes,
+    this.maxUSD,
+    required this.push,
+    this.pushBranches,
+  });
+
+  final bool enabled;
+  final String repoID;
+  /// Branches are the watched branches, as path.Match patterns.
+  final List<String> branches;
+  final int? maxMinutes;
+  final double? maxUSD;
+  /// Push pushes a fix straight to a branch matching PushBranches; every
+  /// other fix opens a pull request.
+  final bool push;
+  final List<String>? pushBranches;
+
+  factory CIFixerSettings.fromJson(Map<String, dynamic> json) {
+    return CIFixerSettings(
+      enabled: json['enabled'] as bool,
+      repoID: json['repoId'] as String,
+      branches: _list(
+        json['branches'],
+        (value) => value as String,
+      ),
+      maxMinutes: (json['maxMinutes'] as num?)?.toInt(),
+      maxUSD: (json['maxUsd'] as num?)?.toDouble(),
+      push: json['push'] as bool,
+      pushBranches: _listOrNull(
+        json['pushBranches'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['enabled'] = enabled;
+    json['repoId'] = repoID;
+    json['branches'] = branches;
+    if (maxMinutes != null) {
+      json['maxMinutes'] = maxMinutes;
+    }
+    if (maxUSD != null) {
+      json['maxUsd'] = maxUSD;
+    }
+    json['push'] = push;
+    if (pushBranches != null) {
+      json['pushBranches'] = pushBranches!;
+    }
+    return json;
+  }
+}
+
+/// ProjectAutomations is the part of a project's settings document the
+/// Automations screens read: GET and PUT /api/projects/settings carry the
+/// whole document, of which this is the one key these screens change.
+class ProjectAutomations {
+  const ProjectAutomations({
+    this.automations,
+  });
+
+  final Automations? automations;
+
+  factory ProjectAutomations.fromJson(Map<String, dynamic> json) {
+    return ProjectAutomations(
+      automations: _objectOrNull(
+        json['automations'],
+        Automations.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (automations != null) {
+      json['automations'] = automations!.toJson();
+    }
+    return json;
+  }
+}
+
+/// Finding is one finding of a review draft. The bridge's DraftFinding embeds
+/// its review finding, so the wire is flat and this is too.
+class Finding {
+  const Finding({
+    required this.id,
+    required this.severity,
+    this.path,
+    this.line,
+    required this.title,
+    this.body,
+    this.stepNode,
+  });
+
+  final String id;
+  final String severity;
+  final String? path;
+  final int? line;
+  final String title;
+  final String? body;
+  final String? stepNode;
+
+  factory Finding.fromJson(Map<String, dynamic> json) {
+    return Finding(
+      id: json['id'] as String,
+      severity: json['severity'] as String,
+      path: json['path'] as String?,
+      line: (json['line'] as num?)?.toInt(),
+      title: json['title'] as String,
+      body: json['body'] as String?,
+      stepNode: json['stepNode'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['severity'] = severity;
+    if (path != null) {
+      json['path'] = path;
+    }
+    if (line != null) {
+      json['line'] = line;
+    }
+    json['title'] = title;
+    if (body != null) {
+      json['body'] = body;
+    }
+    if (stepNode != null) {
+      json['stepNode'] = stepNode;
+    }
+    return json;
+  }
+}
+
+/// ReviewDraft is one review awaiting a person: GET
+/// /api/automations/review/drafts' answer, and what post and edit answer
+/// (web/bridge/reviewbot.go).
+class ReviewDraft {
+  const ReviewDraft({
+    required this.id,
+    required this.repoID,
+    required this.number,
+    this.title,
+    this.prurl,
+    this.headRef,
+    required this.headSHA,
+    this.project,
+    this.agentID,
+    required this.findings,
+    required this.summary,
+    required this.status,
+    this.error,
+    this.reviewURL,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String repoID;
+  final int number;
+  final String? title;
+  final String? prurl;
+  final String? headRef;
+  final String headSHA;
+  final String? project;
+  final String? agentID;
+  final List<Finding> findings;
+  final String summary;
+  final String status;
+  final String? error;
+  final String? reviewURL;
+  final String createdAt;
+
+  factory ReviewDraft.fromJson(Map<String, dynamic> json) {
+    return ReviewDraft(
+      id: json['id'] as String,
+      repoID: json['repoId'] as String,
+      number: (json['number'] as num).toInt(),
+      title: json['title'] as String?,
+      prurl: json['prUrl'] as String?,
+      headRef: json['headRef'] as String?,
+      headSHA: json['headSha'] as String,
+      project: json['project'] as String?,
+      agentID: json['agentId'] as String?,
+      findings: _list(
+        json['findings'],
+        (value) => _object(value, Finding.fromJson),
+      ),
+      summary: json['summary'] as String,
+      status: json['status'] as String,
+      error: json['error'] as String?,
+      reviewURL: json['reviewUrl'] as String?,
+      createdAt: json['createdAt'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['repoId'] = repoID;
+    json['number'] = number;
+    if (title != null) {
+      json['title'] = title;
+    }
+    if (prurl != null) {
+      json['prUrl'] = prurl;
+    }
+    if (headRef != null) {
+      json['headRef'] = headRef;
+    }
+    json['headSha'] = headSHA;
+    if (project != null) {
+      json['project'] = project;
+    }
+    if (agentID != null) {
+      json['agentId'] = agentID;
+    }
+    json['findings'] = [
+      for (final value in findings) value.toJson(),
+    ];
+    json['summary'] = summary;
+    json['status'] = status;
+    if (error != null) {
+      json['error'] = error;
+    }
+    if (reviewURL != null) {
+      json['reviewUrl'] = reviewURL;
+    }
+    json['createdAt'] = createdAt;
+    return json;
+  }
+}
+
+/// CIHistory is one CI fixer run: GET /api/automations/ci/history's answer
+/// (web/bridge/cifixer.go).
+class CIHistory {
+  const CIHistory({
+    required this.id,
+    required this.repoID,
+    this.branch,
+    required this.sha,
+    required this.check,
+    required this.status,
+    this.reason,
+    this.prurl,
+    this.agentID,
+    required this.costUSD,
+    required this.createdAt,
+    this.pushed,
+  });
+
+  final String id;
+  final String repoID;
+  final String? branch;
+  final String sha;
+  final String check;
+  final String status;
+  final String? reason;
+  final String? prurl;
+  final String? agentID;
+  final double costUSD;
+  final String createdAt;
+  /// Pushed marks a fix pushed straight to the branch.
+  final bool? pushed;
+
+  factory CIHistory.fromJson(Map<String, dynamic> json) {
+    return CIHistory(
+      id: json['id'] as String,
+      repoID: json['repoId'] as String,
+      branch: json['branch'] as String?,
+      sha: json['sha'] as String,
+      check: json['check'] as String,
+      status: json['status'] as String,
+      reason: json['reason'] as String?,
+      prurl: json['prUrl'] as String?,
+      agentID: json['agentId'] as String?,
+      costUSD: (json['costUsd'] as num).toDouble(),
+      createdAt: json['createdAt'] as String,
+      pushed: json['pushed'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['repoId'] = repoID;
+    if (branch != null) {
+      json['branch'] = branch;
+    }
+    json['sha'] = sha;
+    json['check'] = check;
+    json['status'] = status;
+    if (reason != null) {
+      json['reason'] = reason;
+    }
+    if (prurl != null) {
+      json['prUrl'] = prurl;
+    }
+    if (agentID != null) {
+      json['agentId'] = agentID;
+    }
+    json['costUsd'] = costUSD;
+    json['createdAt'] = createdAt;
+    if (pushed != null) {
+      json['pushed'] = pushed;
+    }
+    return json;
+  }
+}
+
 /// Budgets mirrors the engine's [budgets] section on the wire.
 class Budgets {
   const Budgets({

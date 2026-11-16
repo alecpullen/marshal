@@ -200,6 +200,128 @@ export interface RecentPrompts {
 }
 
 /**
+ * Automations is a project's forge automation settings
+ * (web/bridge/automation.go).
+ */
+export interface Automations {
+  reviewBot?: ReviewBotSettings;
+  ciFixer?: CIFixerSettings;
+}
+
+/**
+ * ReviewBotSettings configures the pull-request review bot.
+ */
+export interface ReviewBotSettings {
+  enabled: boolean;
+  repoId: string;
+  /**
+   * Labels, Authors and SkipDrafts filter which pull requests are
+   * reviewed. Empty lists match everything.
+   */
+  labels?: string[];
+  skipDrafts: boolean;
+  authors?: string[];
+  /**
+   * Routing overrides the review recipe's model routing.
+   */
+  routing?: unknown;
+  /**
+   * AutoPost posts a finished review without waiting, unless a finding has
+   * a severity in HoldSeverities.
+   */
+  autoPost: boolean;
+  holdSeverities?: string[];
+}
+
+/**
+ * CIFixerSettings configures the CI fixer.
+ */
+export interface CIFixerSettings {
+  enabled: boolean;
+  repoId: string;
+  /**
+   * Branches are the watched branches, as path.Match patterns.
+   */
+  branches: string[];
+  maxMinutes?: number;
+  maxUsd?: number;
+  /**
+   * Push pushes a fix straight to a branch matching PushBranches; every
+   * other fix opens a pull request.
+   */
+  push: boolean;
+  pushBranches?: string[];
+}
+
+/**
+ * ProjectAutomations is the part of a project's settings document the
+ * Automations screens read: GET and PUT /api/projects/settings carry the
+ * whole document, of which this is the one key these screens change.
+ */
+export interface ProjectAutomations {
+  automations?: Automations;
+}
+
+/**
+ * Finding is one finding of a review draft. The bridge's DraftFinding embeds
+ * its review finding, so the wire is flat and this is too.
+ */
+export interface Finding {
+  id: string;
+  severity: string;
+  path?: string;
+  line?: number;
+  title: string;
+  body?: string;
+  stepNode?: string;
+}
+
+/**
+ * ReviewDraft is one review awaiting a person: GET
+ * /api/automations/review/drafts' answer, and what post and edit answer
+ * (web/bridge/reviewbot.go).
+ */
+export interface ReviewDraft {
+  id: string;
+  repoId: string;
+  number: number;
+  title?: string;
+  prUrl?: string;
+  headRef?: string;
+  headSha: string;
+  project?: string;
+  agentId?: string;
+  findings: Finding[];
+  summary: string;
+  status: string;
+  error?: string;
+  reviewUrl?: string;
+  createdAt: string;
+}
+
+/**
+ * CIHistory is one CI fixer run: GET /api/automations/ci/history's answer
+ * (web/bridge/cifixer.go).
+ */
+export interface CIHistory {
+  id: string;
+  repoId: string;
+  branch?: string;
+  sha: string;
+  check: string;
+  status: string;
+  reason?: string;
+  prUrl?: string;
+  agentId?: string;
+  costUsd: number;
+  createdAt: string;
+  /**
+   * Pushed marks a fix pushed straight to the branch.
+   */
+  pushed?: boolean;
+}
+
+/**
  * Budgets mirrors the engine's [budgets] section on the wire.
  */
 export interface Budgets {

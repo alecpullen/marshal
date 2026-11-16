@@ -13,6 +13,7 @@ typedef _Codec = Object? Function(Object? json);
 const _fixtures = [
   'agents',
   'answers',
+  'automations',
   'budgets',
   'finish',
   'inbox',
@@ -82,6 +83,16 @@ final _codecs = <String, _Codec>{
   'RecipeRun': (json) => RecipeRun.fromJson(_object(json)).toJson(),
   // schedules.json
   'Schedule': (json) => Schedule.fromJson(_object(json)).toJson(),
+  // automations.json
+  'Automations': (json) => Automations.fromJson(_object(json)).toJson(),
+  'CIFixerSettings': (json) => CIFixerSettings.fromJson(_object(json)).toJson(),
+  'CIHistory': (json) => CIHistory.fromJson(_object(json)).toJson(),
+  'Finding': (json) => Finding.fromJson(_object(json)).toJson(),
+  'ProjectAutomations': (json) =>
+      ProjectAutomations.fromJson(_object(json)).toJson(),
+  'ReviewBotSettings': (json) =>
+      ReviewBotSettings.fromJson(_object(json)).toJson(),
+  'ReviewDraft': (json) => ReviewDraft.fromJson(_object(json)).toJson(),
   // watches.json
   'OnTrip': (json) => OnTrip.fromJson(_object(json)).toJson(),
   'RerouteRule': (json) => RerouteRule.fromJson(_object(json)).toJson(),

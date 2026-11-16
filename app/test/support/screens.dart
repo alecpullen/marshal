@@ -1,5 +1,6 @@
 import 'package:marshal_app/src/client/contract.g.dart' show Recipe, Schedule;
 import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
+import 'package:marshal_app/src/model/bots_model.dart';
 import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
 import 'package:marshal_app/src/model/inbox_model.dart' as model;
 import 'package:marshal_app/src/model/nav_model.dart';
@@ -10,6 +11,7 @@ import 'package:marshal_app/src/model/schedules_model.dart';
 import 'package:marshal_app/src/model/thread_ref.dart' as model;
 import 'package:marshal_app/src/model/watches_model.dart';
 import 'package:marshal_app/src/ui/automations/automations_place.dart';
+import 'package:marshal_app/src/ui/automations/bots_tab.dart';
 import 'package:marshal_app/src/ui/automations/placeholder.dart';
 import 'package:marshal_app/src/ui/automations/recipes_tab.dart';
 import 'package:marshal_app/src/ui/automations/schedules_tab.dart';
@@ -380,17 +382,84 @@ WatchesModel _watchesFixture() => WatchesModel.fixture([
   ),
 ], now: shellNow);
 
-/// The Automations place, on [tab] (1 is Schedules, 2 Watches, 3 Recipes).
-/// Bots is planned until F7 plan 1's later step lands.
+/// The bots the Automations fixture lists: the review bot with one held
+/// review, and the CI fixer with one recent run.
+BotsModel _botsFixture() => BotsModel.fixture(
+  [
+    Bot(
+      kind: BotKind.review,
+      enabled: true,
+      repoID: 'acme/widgets',
+      summary: '1 review waits for you',
+      facts: const [
+        ('State', 'On'),
+        ('Repository', 'acme/widgets'),
+        ('Reviews', 'labelled ready · drafts too'),
+        ('Posts on its own', 'No: every review waits for you'),
+      ],
+      drafts: const [
+        ReviewDraft(
+          id: 'd-1',
+          repoID: 'acme/widgets',
+          number: 42,
+          title: 'Make the scan report a file it cannot read',
+          headSHA: '9f1ad475',
+          findings: [
+            Finding(
+              id: 'f-1',
+              severity: 'blocking',
+              path: 'internal/repo/scan.go',
+              line: 42,
+              title: 'The scan drops a file it cannot read',
+              body:
+                  'A permission error ends the walk instead of being reported.',
+            ),
+          ],
+          summary: 'One blocking finding.',
+          status: 'draft',
+          createdAt: '2026-11-17T03:00:00Z',
+        ),
+      ],
+    ),
+    Bot(
+      kind: BotKind.fixer,
+      enabled: true,
+      repoID: 'acme/widgets',
+      summary: '1 run lately',
+      facts: const [
+        ('State', 'On'),
+        ('Repository', 'acme/widgets'),
+        ('Watches', 'main, release/*'),
+        ('Sends a fix', 'As a pull request'),
+      ],
+      history: const [
+        CIHistory(
+          id: 'c-1',
+          repoID: 'acme/widgets',
+          branch: 'main',
+          sha: '9f1ad475',
+          check: 'go',
+          status: 'fixed',
+          reason: 'a nil dereference in the parser',
+          costUSD: 0.42,
+          createdAt: '2026-11-17T03:10:00Z',
+        ),
+      ],
+    ),
+  ],
+  project: '/home/u/marshal',
+  now: shellNow,
+);
+
+/// The Automations place, on [tab] (0 is Bots, 1 Schedules, 2 Watches,
+/// 3 Recipes).
 Widget _automations({StateKind? state, int tab = 1}) {
+  final bots = _botsFixture();
   final schedules = _schedulesFixture();
   final watches = _watchesFixture();
   final recipes = _recipesFixture();
   return AutomationsPlace(
-    bots: plannedAutomationsTab(
-      'Bots',
-      'The review bot and the CI fixer arrive with a later step of this phase.',
-    ),
+    bots: (tabs, state) => BotsTab(model: bots, tabs: tabs, state: state),
     schedules: (tabs, state) =>
         SchedulesTab(model: schedules, tabs: tabs, state: state),
     watches: (tabs, state) =>
@@ -450,6 +519,14 @@ final screens = <ScreenCase>[
     ready: () => _shell(),
     states: {
       for (final kind in requiredStates) kind: () => _shell(state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'automations · bots',
+    ready: () => _automations(tab: 0),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _automations(tab: 0, state: kind),
     },
   ),
   ScreenCase(

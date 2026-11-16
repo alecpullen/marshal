@@ -15,6 +15,7 @@ import (
 var fixtureFiles = []string{
 	"agents.json",
 	"answers.json",
+	"automations.json",
 	"budgets.json",
 	"finish.json",
 	"inbox.json",
@@ -88,6 +89,13 @@ var fixtureTypes = map[string]reflect.Type{
 	"RerouteRule":         reflect.TypeOf(RerouteRule{}),
 	"WatchInfo":           reflect.TypeOf(WatchInfo{}),
 	"WatchSample":         reflect.TypeOf(WatchSample{}),
+	"Automations":         reflect.TypeOf(Automations{}),
+	"CIFixerSettings":     reflect.TypeOf(CIFixerSettings{}),
+	"CIHistory":           reflect.TypeOf(CIHistory{}),
+	"Finding":             reflect.TypeOf(Finding{}),
+	"ProjectAutomations":  reflect.TypeOf(ProjectAutomations{}),
+	"ReviewBotSettings":   reflect.TypeOf(ReviewBotSettings{}),
+	"ReviewDraft":         reflect.TypeOf(ReviewDraft{}),
 }
 
 // TestContractFixturesRoundTrip holds the contract types to the shared

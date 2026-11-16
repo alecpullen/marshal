@@ -212,4 +212,13 @@ abstract class SectionModel<T> extends ChangeNotifier
     _items = List.unmodifiable(next);
     notifyListeners();
   }
+
+  /// Replaces every row at once, for a section action that changes what the
+  /// rows hold rather than one item in them: a bot whose held reviews changed
+  /// rewrites its own row.
+  @protected
+  void replaceItems(List<T> next) {
+    _items = List.unmodifiable(next);
+    notifyListeners();
+  }
 }

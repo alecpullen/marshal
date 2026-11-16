@@ -992,7 +992,26 @@ func (t *toolSet) applyFilePatches(ctx context.Context, patches []patch.FilePatc
 				}
 			}
 
-			if err := os.WriteFile(path, []byte(patched), mode); err != nil {
+			// AUD-02: persist this file's rollback evidence before the commit.
+			// writeFileAtomic cannot truncate the destination, but if the
+			// commit itself fails the recovery record must already be stored,
+			// and the accumulated set is only persisted by finalize on a
+			// complete attempt. A file that does not exist yet has nothing to
+			// protect, and an Exists:false record for a missing file would make
+			// a rollback fail on os.Remove.
+			if ws := t.wsState(); ws != nil && fileExists {
+				pending := make([]session.BackupFile, 0, len(backups)+1)
+				pending = append(pending, backups...)
+				pending = append(pending, session.BackupFile{
+					Path:    fp.Path,
+					Content: original,
+					Mode:    mode,
+					Exists:  true,
+				})
+				ws.StoreBackup(pending)
+			}
+
+			if err := writeFileAtomic(path, []byte(patched), mode, fileExists); err != nil {
 				return fmt.Errorf("write file %s: %w", fp.Path, err)
 			}
 
@@ -1212,7 +1231,21 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 			}
 		}
 
-		if err := os.WriteFile(path, []byte(content), mode); err != nil {
+		// AUD-02: persist the rollback evidence before the commit, so a failed
+		// commit still leaves a recoverable record. The previous set is merged
+		// because StoreBackup replaces it. A file that does not exist yet has
+		// nothing to protect, and an Exists:false record for a missing file
+		// would make a rollback fail on os.Remove.
+		if ws := t.wsState(); ws != nil && exists {
+			ws.StoreBackup(append(ws.Backup(), session.BackupFile{
+				Path:    args.Path,
+				Content: original,
+				Mode:    mode,
+				Exists:  true,
+			}))
+		}
+
+		if err := writeFileAtomic(path, []byte(content), mode, exists); err != nil {
 			return registry.ToolResult{}, fmt.Errorf("write file %s: %w", args.Path, err)
 		}
 

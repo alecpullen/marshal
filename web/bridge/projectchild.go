@@ -65,6 +65,13 @@ func viewerSocketPath(stateDir, root string) string {
 	return filepath.Join(stateDir, viewerSocketDir, hex.EncodeToString(sum[:8])+".sock")
 }
 
+// agentViewerSocketPath is <stateDir>/v/a-<16 hex of sha256(agentID)>.sock
+// (decision 1).
+func agentViewerSocketPath(stateDir, agentID string) string {
+	sum := sha256.Sum256([]byte(agentID))
+	return filepath.Join(stateDir, viewerSocketDir, "a-"+hex.EncodeToString(sum[:8])+".sock")
+}
+
 // buildProjectChild returns root's Child, unstarted: newProjectChild's when
 // set, else a local process running marshalBin in root with --viewers. The
 // warning is the environment's: why the child's Env fell back, empty when it

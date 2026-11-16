@@ -78,6 +78,8 @@ type agentRuntime struct {
 	reg   *Registry
 	log   *EventLog
 
+	viewerSocket string // the own child's viewer socket; "" for a container or a project child
+
 	// sessionID is the ACP session inside this agent, assigned by the
 	// agent itself once session/new returns. Empty until then.
 	sessionID string
@@ -464,6 +466,18 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 			// No container runtime: fall back to a host process so a
 			// laptop without docker still works.
 			child := &Child{MarshalBin: marshalBin}
+			// The own child serves viewers on a socket of its own, beside
+			// the project children's (decision 1). The directory is created
+			// before anything listens on it, as buildProjectChild does. A
+			// fleet with no state root has nowhere to put one and starts no
+			// viewers.
+			if f.stateDir != "" {
+				socket := agentViewerSocketPath(f.stateDir, a.ID)
+				if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
+					return nil, fmt.Errorf("bridge: create agent viewer socket dir: %w", err)
+				}
+				child.Args = []string{"--viewers", "unix://" + socket}
+			}
 			if proxied {
 				child.Env = os.Environ()
 				for k, v := range wiring.Env {
@@ -946,6 +960,18 @@ func (f *Fleet) startRuntime(ctx context.Context, a Agent) (*agentRuntime, error
 	rt := &agentRuntime{id: a.ID, root: a.Project, profile: a.Profile,
 		child: child, reg: reg, log: log, sourceKind: a.SourceKind,
 		containerized: child.Containerized}
+	// A host process's child serves viewers on a socket of its own: the bridge
+	// clears a stale one before the child starts and keeps the path so
+	// releaseAgent can remove it with the child (decision 1). A container's
+	// child has none — its viewers are the container's business — and a
+	// project child carries its own.
+	if !child.Containerized && f.stateDir != "" {
+		rt.viewerSocket = agentViewerSocketPath(f.stateDir, a.ID)
+		if err := os.Remove(rt.viewerSocket); err != nil && !os.IsNotExist(err) {
+			slog.Default().Warn("webbridge: remove stale agent viewer socket failed",
+				"agent", a.ID, "path", rt.viewerSocket, "err", err)
+		}
+	}
 	f.armWorkspaceTimeout(rt, a)
 	f.attachClassifier(rt)
 
@@ -2092,6 +2118,14 @@ func (f *Fleet) releaseAgent(id string, destroy bool) {
 	// bind-mounted workspace, then remove the git-sourced tree.
 	if rt.child != nil {
 		rt.child.Stop()
+	}
+	// The viewer socket goes with the child that served it (decision 1). A
+	// detached child returned above and keeps its own.
+	if rt.viewerSocket != "" {
+		if err := os.Remove(rt.viewerSocket); err != nil && !os.IsNotExist(err) {
+			slog.Default().Warn("webbridge: remove agent viewer socket failed",
+				"agent", id, "path", rt.viewerSocket, "err", err)
+		}
 	}
 	// A pooled agent's tree lives in its pool directory, not work/<id>.
 	if poolRoot := filepath.Join(f.stateDir, "pool") + string(filepath.Separator); strings.HasPrefix(rt.root, poolRoot) {

@@ -639,6 +639,49 @@ func (c *FactoryController) noteNewPulls(before, after FactoryItem) {
 	}
 }
 
+// RequestRepair issues the item's existing repair for a person who asked for
+// it: the controller's own scheduler then dispatches the round, with its usual
+// guards. A decision that blocks dispatch is cleared, and when the round
+// allowance is already spent the request buys exactly one more round, recorded
+// as a FactoryGrant whose reason says who asked. It reports whether it granted
+// that round.
+func (c *FactoryController) RequestRepair(itemID, requestID, reason string) (FactoryItem, bool, error) {
+	if c == nil || c.store == nil {
+		return FactoryItem{}, false, ErrFactoryConflict
+	}
+	item, err := c.store.Get(itemID)
+	if err != nil {
+		return FactoryItem{}, false, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closing {
+		return FactoryItem{}, false, ErrFactoryUnavailable
+	}
+	granted := false
+	saved, err := c.internalUpdate(item, "requested_repair", func(dst *FactoryItem) error {
+		switch dst.State {
+		case "draft", "closed", "stopped":
+			return fmt.Errorf("%w: item %s is %s", ErrFactoryConflict, dst.ID, dst.State)
+		}
+		if len(dst.Rounds) >= factoryAllowance(*dst) {
+			dst.Grants = append(dst.Grants, FactoryGrant{
+				ID: requestID, Reason: reason, AdditionalRounds: 1, At: c.now(),
+			})
+			granted = true
+		}
+		dst.Decision = nil
+		dst.State = "repairing"
+		dst.History = append(dst.History, FactoryEvent{At: c.now(), Kind: "requested_repair", Message: reason})
+		return nil
+	})
+	if err != nil {
+		return saved, false, err
+	}
+	c.Wake()
+	return saved, granted, nil
+}
+
 // autoAssess reports whether a proposal saved for projectRoot records an
 // assessment intent. The project's setting is optional and absent means on;
 // without a lookup seam there is no override to consult, so the default holds.

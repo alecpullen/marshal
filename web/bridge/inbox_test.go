@@ -190,7 +190,7 @@ func TestInboxGroupAgents(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := computeInbox(tc.agents, nil).Groups
+			got := computeInbox(tc.agents, nil, nil).Groups
 			assertIDs(t, "needsYou", got.NeedsYou, tc.want.NeedsYou)
 			assertIDs(t, "running", got.Running, tc.want.Running)
 			assertIDs(t, "ready", got.Ready, tc.want.Ready)
@@ -244,7 +244,7 @@ func TestInboxMergesIntakeIntoNeedsYou(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := computeInbox(tc.agents, tc.pending)
+			got := computeInbox(tc.agents, tc.pending, nil)
 			assertIDs(t, "queue", inboxQueueIDs(got.Queue), tc.wantQ)
 			assertIDs(t, "running", got.Groups.Running, tc.wantRun)
 			assertIDs(t, "ready", got.Groups.Ready, tc.wantRead)
@@ -255,7 +255,7 @@ func TestInboxMergesIntakeIntoNeedsYou(t *testing.T) {
 // TestInboxEncodesEmptyLists pins decision 4 on the wire: an empty inbox is
 // four empty arrays and an empty queue, never null.
 func TestInboxEncodesEmptyLists(t *testing.T) {
-	data, err := json.Marshal(computeInbox(nil, nil))
+	data, err := json.Marshal(computeInbox(nil, nil, nil))
 	if err != nil {
 		t.Fatal(err)
 	}

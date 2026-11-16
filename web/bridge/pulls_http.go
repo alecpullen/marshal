@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -78,4 +79,40 @@ func failedCheckNamed(failed []CheckInfo, name string) (CheckInfo, bool) {
 		}
 	}
 	return CheckInfo{}, false
+}
+
+// fixPull is POST /api/pulls/{id}/fix: it names a failing check, and optionally
+// a note, a mode and a worker routing, and answers at once with the dispatch
+// record. The work itself is asynchronous.
+func (s *Server) fixPull(w http.ResponseWriter, r *http.Request) {
+	if !s.requireFleet(w) {
+		return
+	}
+	var req contract.PullFixRequest
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid fix request: " + err.Error()})
+			return
+		}
+	}
+	rec, err := s.fleet.dispatchPullFix(r.Context(), r.PathValue("id"), req, DefaultOwnerID)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, rec)
+}
+
+// stopPullFix is POST /api/pulls/{id}/fix/stop: it stops the worker on the pull
+// request and clears the fix.
+func (s *Server) stopPullFix(w http.ResponseWriter, r *http.Request) {
+	if !s.requireFleet(w) {
+		return
+	}
+	rec, err := s.fleet.stopPullFix(r.Context(), r.PathValue("id"), DefaultOwnerID)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rec)
 }

@@ -218,7 +218,12 @@ func (pf *pullForge) called() bool {
 // pullTestFleet is a fleet whose registered repo points at pf with a PAT.
 func pullTestFleet(t *testing.T, pf *pullForge) *Fleet {
 	t.Helper()
-	f := testFleet(t)
+	return pullTestFleetOn(t, testFleet(t), pf)
+}
+
+// pullTestFleetOn points an existing fleet's repo r1 at pf with a PAT.
+func pullTestFleetOn(t *testing.T, f *Fleet, pf *pullForge) *Fleet {
+	t.Helper()
 	if err := f.ws.PutRepo(Repo{ID: "r1", URL: "https://github.com/you/r.git", Branch: "main",
 		CredRef: "pat1", OwnerID: DefaultOwnerID, Forge: "github", APIBase: pf.URL}); err != nil {
 		t.Fatal(err)
@@ -257,6 +262,9 @@ func factoryPullItem(t *testing.T, number int, head string, checks []FactoryChec
 	item, err := s.Update(created.ID, "item-pull", created.Version, json.RawMessage(`{"kind":"item-pull"}`),
 		func(i *FactoryItem) error {
 			i.RepoID, i.ProjectRoot, i.Title = "r1", "/p", "Factory work"
+			// A checking item is one whose pull request the controller is
+			// watching: its round carries the CI evidence.
+			i.State = "checking"
 			i.PRs = []FactoryPR{{Number: number, URL: "https://github.com/you/r/pull/" + strconv.Itoa(number),
 				HeadRef: "factory/x", BaseRef: "main", HeadSHA: head, State: "open", Draft: true}}
 			i.Rounds = []FactoryRound{{Number: 1, HeadSHA: head,

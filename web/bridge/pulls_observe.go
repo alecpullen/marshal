@@ -274,6 +274,14 @@ func (f *Fleet) syncFactoryPull(rec contract.PullRecord) {
 	if ci := factoryRoundCI(item, next.HeadSHA); ci != nil {
 		next.Checks = factoryPullChecks(ci.Checks, next.HeadSHA)
 	}
+	if next.Fix != nil {
+		// A fix on a factory item's pull request ends when the item's round
+		// pushes a new head, or when the item settles without one: the repair
+		// is the factory's round, and the item's own evidence is what says so.
+		if next.HeadSHA != next.Fix.HeadSHA || item.State == "ready" || item.State == "closed" || item.State == "stopped" {
+			next.Fix = nil
+		}
+	}
 	next.ObservedAt = now
 	f.applyPull(rec, next)
 }

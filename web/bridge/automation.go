@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"marshal/web/bridge/contract"
 )
 
 // Automations is a project's forge automation settings.
@@ -175,6 +177,9 @@ type autoState struct {
 	exit      func(context.Context, string, ExitOptions) (ExitResult, error)
 	// branchHead resolves a branch's tip commit for the polling fallback.
 	branchHead func(context.Context, Repo, string) (string, error)
+	// pullFix replaces the background start of a dispatched pull request fix
+	// (tests): it runs the fix inline, so the test sees its outcome.
+	pullFix func(context.Context, contract.PullRecord, contract.PullFix, contract.PullFixRequest) error
 }
 
 // autoClaim marks key as in flight. It reports false when it already is.

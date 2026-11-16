@@ -757,6 +757,11 @@ func (c *FactoryController) tick(ctx context.Context) error {
 	if err := c.activateRevisionAtSafeBoundary(ctx); err != nil {
 		return err
 	}
+	// A confirmed merge batch reconciles whatever it dispatched before it
+	// merges anything else, and sends at most one reviewed merge per pass.
+	if err := c.advanceCompletionBatches(ctx); err != nil {
+		return err
+	}
 	items := c.store.List()
 	// Observe closure even while a turn is dispatched or a stage is prepared.
 	// Persist stopping before cancellation so completion cannot restart stages.
@@ -1272,6 +1277,8 @@ func factoryApplyCommandFrom(i *FactoryItem, c FactoryCommand, p *factoryPrincip
 		}
 	case "complete", "reopen":
 		return factoryApplyCompletion(i, c, p, now)
+	case "merge_pr", "merge_and_complete":
+		return factoryApplyMergeCommand(i, c, p, now)
 	case "link_pr", "refresh_pr_evidence":
 		return factoryApplyCompletionLinks(i, c, p, evidence, now)
 	case "reconcile", "recover":

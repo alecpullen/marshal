@@ -588,6 +588,16 @@ func validateFactoryCompletion(i FactoryItem) error {
 		if !factoryMergeStepStates[s.State] {
 			return fmt.Errorf("invalid merge step state")
 		}
+		// A step names the reviewed pull request a merge is sent for, so a
+		// step without that identity — or with a strategy no forge applies —
+		// is corrupt rather than merely unfamiliar: no surface could render it
+		// and no batch could drive it.
+		if strings.TrimSpace(s.RepoID) == "" || s.Number <= 0 || strings.TrimSpace(s.NodeID) == "" || strings.TrimSpace(s.HeadSHA) == "" || strings.TrimSpace(s.BaseRef) == "" {
+			return fmt.Errorf("invalid merge step identity")
+		}
+		if !factoryMergeStrategies[s.Strategy] {
+			return fmt.Errorf("invalid merge step strategy")
+		}
 	}
 	return nil
 }

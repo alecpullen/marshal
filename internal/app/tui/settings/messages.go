@@ -26,6 +26,22 @@ type ChangedMsg struct {
 	GlobalTarget bool
 }
 
+// SaveDoneMsg reports the outcome of a settings write the browser made off the
+// Update goroutine (AUD-10). Seq numbers the commit, so a result for a
+// superseded commit is dropped; Receipts are the lines a successful save
+// produced; Err is the failure, if any.
+type SaveDoneMsg struct {
+	Seq          uint64
+	Cfg          config.Config
+	Receipts     []string
+	Err          error
+	Saved        bool
+	GlobalTarget bool
+	// UserCfg reports that this commit wrote the user-global file, so a
+	// successful save has stored the provider names the rename map records.
+	UserCfg bool
+}
+
 // BrowserClosedMsg is emitted when the browser closes at its root.
 type BrowserClosedMsg struct{}
 

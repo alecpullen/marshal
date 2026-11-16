@@ -192,6 +192,19 @@ type Model struct {
 	// lspCancel is called from beginShutdown.
 	lspCtx    context.Context
 	lspCancel context.CancelFunc
+	// panelCtx is the context the docked panels derive their bounded calls
+	// from (AUD-10). It is independent of m.ctx for lspCtx's reason, and
+	// cancelled on quit and detach so a panel's write in flight returns
+	// instead of outliving the program.
+	panelCtx    context.Context
+	panelCancel context.CancelFunc
+	// browseSeq numbers browse actions (AUD-10). A queued detail gather
+	// applies its result only while it is still the newest action and has not
+	// been applied yet, so a superseded answer is dropped rather than applied.
+	// browsePending is what the status line shows while one is outstanding.
+	browseSeq     uint64
+	browseApplied uint64
+	browsePending string
 	// calls is the model's call queue (P3 R6): the converted asynchronous
 	// calls and the steps that wait behind them. Update starts the head of
 	// the queue from the Update goroutine; the call itself runs off it.
@@ -1018,6 +1031,7 @@ func (m *Model) openSettingsBrowser(query string) {
 		settings.WithProvenance(m.provenanceForPath),
 		settings.WithHost(m.host),
 		settings.WithSession(m.sess),
+		settings.WithContext(m.panelCtx),
 	}
 	if userConfig := m.sess.Status().UserConfigPath; userConfig != "" {
 		opts = append(opts, settings.WithUserConfigPath(userConfig))
@@ -1282,6 +1296,11 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 	// provider-build failure). It is cancelled on shutdown so a lingering
 	// lookup never leaks past exit.
 	m.lspCtx, m.lspCancel = context.WithCancel(context.Background())
+
+	// The docked panels' context is the same shape: independent of m.ctx and
+	// cancelled on shutdown, so a settings write in flight on a slow daemon
+	// returns when the program leaves (AUD-10).
+	m.panelCtx, m.panelCancel = context.WithCancel(context.Background())
 
 	// bubbles maps wheel-left/right to horizontal panning; step 0 disables
 	// it at the viewport level too (the wheel events are already dropped in
@@ -5009,6 +5028,12 @@ func (m *Model) finishQuit() tea.Cmd {
 		m.lspCancel()
 		m.lspCancel = nil
 	}
+	// A panel's write or fetch in flight is bounded by this context (AUD-10):
+	// cancel it so the call returns rather than outliving the program.
+	if m.panelCancel != nil {
+		m.panelCancel()
+		m.panelCancel = nil
+	}
 	// Closing the session settles every pending request and shuts it down; the
 	// accepted end's settlement already stopped the work, so nothing is stopped
 	// again here.
@@ -5047,6 +5072,10 @@ func (m *Model) detach() tea.Cmd {
 	if m.lspCancel != nil {
 		m.lspCancel()
 		m.lspCancel = nil
+	}
+	if m.panelCancel != nil {
+		m.panelCancel()
+		m.panelCancel = nil
 	}
 	// Release the dock's surfaces exactly as finishQuit does: they are
 	// permanently gone once the program stops.

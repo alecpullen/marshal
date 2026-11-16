@@ -15,31 +15,49 @@ import (
 )
 
 // openInspector opens the inspector on the cursor node. Only steps, tool rows
-// and completion events have anything to inspect.
+// and completion events have anything to inspect. Whether there is anything is
+// the wire index's answer, so it is given at once; the detail itself can need
+// the session, so it is fetched off the Update goroutine (AUD-10).
 func (m *Model) openInspector() (tea.Model, tea.Cmd, bool) {
-	d, ok := m.inspectorDetail(m.cursor)
-	if !ok {
-		cmd := m.setFlash("Nothing to inspect here")
-		return *m, cmd, true
+	id := m.cursor
+	if !m.inspectable(id) {
+		return *m, m.setFlash("Nothing to inspect here"), true
 	}
-	m.dock.Open(inspector.New(d))
-	m.refreshViewport()
-	return *m, nil, true
+	cmd := m.queueBrowse("inspecting…", []nodeID{id}, func(m *Model) tea.Cmd {
+		d, ok := m.inspectorDetail(id)
+		if !ok {
+			return m.setFlash("Nothing to inspect here")
+		}
+		m.dock.Open(inspector.New(d))
+		m.refreshViewport()
+		return nil
+	})
+	return *m, cmd, true
+}
+
+// inspectable reports whether id has anything to inspect, from the wire index
+// alone. The "nothing here" answer must not wait on the session.
+func (m *Model) inspectable(id nodeID) bool {
+	w := m.wireNode(id)
+	if w == nil {
+		return false
+	}
+	tool := w.Kind == acpwire.KindTool && w.Tool != nil && len(w.Tool.Calls) > 0
+	beat := w.Kind == acpwire.KindStep && w.Step != nil
+	return tool || beat || w.Completion != nil
 }
 
 // inspectorDetail builds the inspector's view model for a step, tool row or
 // completion event. It reads the node's fields from the wire index and its
-// uncapped detail from the session: either missing means nothing to inspect.
+// uncapped detail from the cache the render path and queued actions fill:
+// either missing means nothing to inspect. It never asks the session itself.
 func (m *Model) inspectorDetail(id nodeID) (inspector.Detail, bool) {
 	w := m.wireNode(id)
-	if w == nil {
+	if w == nil || !m.inspectable(id) {
 		return inspector.Detail{}, false
 	}
 	tool := w.Kind == acpwire.KindTool && w.Tool != nil && len(w.Tool.Calls) > 0
 	beat := w.Kind == acpwire.KindStep && w.Step != nil
-	if !tool && !beat && w.Completion == nil {
-		return inspector.Detail{}, false
-	}
 	res, ok := m.nodeDetail(id)
 	if !ok {
 		return inspector.Detail{}, false
@@ -341,8 +359,7 @@ func (m *Model) handleInspectorMsg(msg tea.Msg) (tea.Cmd, bool) {
 		m.scrollToCursor()
 		return nil, true
 	case inspector.NavigateMsg:
-		m.stepInspector(v.Delta)
-		return nil, true
+		return m.stepInspector(v.Delta), true
 	case inspector.CopyMsg:
 		return m.copyText(v.Text), true
 	case inspector.OpenMsg:
@@ -352,11 +369,12 @@ func (m *Model) handleInspectorMsg(msg tea.Msg) (tea.Cmd, bool) {
 }
 
 // stepInspector moves the browse cursor to the next or previous step or tool
-// row and re-points the open inspector at it.
-func (m *Model) stepInspector(delta int) {
-	p, ok := m.dock.Panel().(*inspector.Panel)
-	if !ok {
-		return
+// row and re-points the open inspector at it. The new node's detail can need
+// the session, so it is fetched off the Update goroutine (AUD-10) and the panel
+// is re-pointed when the answer lands.
+func (m *Model) stepInspector(delta int) tea.Cmd {
+	if _, ok := m.dock.Panel().(*inspector.Panel); !ok {
+		return nil
 	}
 	i := m.cursorIndex()
 	for j := i + delta; j >= 0 && j < len(m.browseItems); j += delta {
@@ -365,11 +383,19 @@ func (m *Model) stepInspector(delta int) {
 			continue
 		}
 		m.moveCursorNoScroll(j)
-		if d, ok := m.inspectorDetail(m.cursor); ok {
-			p.SetDetail(d)
-		}
-		return
+		id := m.cursor
+		return m.queueBrowse("inspecting…", []nodeID{id}, func(mm *Model) tea.Cmd {
+			p, ok := mm.dock.Panel().(*inspector.Panel)
+			if !ok {
+				return nil
+			}
+			if d, ok := mm.inspectorDetail(id); ok {
+				p.SetDetail(d)
+			}
+			return nil
+		})
 	}
+	return nil
 }
 
 // openBrowseHelp shows the browse keys in a docked panel.

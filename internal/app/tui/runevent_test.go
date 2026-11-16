@@ -196,6 +196,7 @@ func TestCopyingACutRunEventCopiesItsWholeBody(t *testing.T) {
 	m := newTestModel(t)
 	key := thousandLineRunEvent(t, &m)
 
+	warmDetail(t, &m, nodeID{Kind: acpwire.KindRunEvent, Key: key})
 	got := m.nodeCopyText(nodeID{Kind: acpwire.KindRunEvent, Key: key})
 	if !strings.Contains(got, "line 1000") {
 		t.Fatalf("the copy must hold the whole body, got %d bytes:\n%s", len(got), got)

@@ -268,7 +268,7 @@ func (t *toolSet) fileReadOversizedHead(requestedPath string) (registry.ToolResu
 	}
 
 	if t.fileTracker != nil {
-		_ = t.fileTracker.RecordRead(path, time.Now(), observedRevision)
+		_ = t.fileTracker.RecordRead(path, readMarkTime(time.Now(), info.ModTime()), observedRevision)
 	}
 
 	return registry.ToolResult{
@@ -367,7 +367,7 @@ func (t *toolSet) fileReadOversizedRange(requestedPath string, startLine, endLin
 	// Record the read exactly as the head path does: file.write_patch's
 	// freshness guard depends on it.
 	if t.fileTracker != nil {
-		_ = t.fileTracker.RecordRead(path, time.Now(), observedRevision)
+		_ = t.fileTracker.RecordRead(path, readMarkTime(time.Now(), info.ModTime()), observedRevision)
 	}
 
 	// A start past the end of the file is an empty window, not an error —
@@ -510,7 +510,7 @@ func (t *toolSet) readWorkspaceFile(requestedPath string, maxBytes int64) ([]byt
 	}
 
 	if t.fileTracker != nil {
-		_ = t.fileTracker.RecordRead(path, time.Now(), observedRevision)
+		_ = t.fileTracker.RecordRead(path, readMarkTime(time.Now(), info2.ModTime()), observedRevision)
 	}
 	return data, nil
 }
@@ -556,6 +556,16 @@ func (t *toolSet) checkFileRead(path string, info os.FileInfo) (filetrack.WriteS
 	if err != nil {
 		return filetrack.WriteState{}, readAllowed, err
 	}
+	// A read at the path's current write revision licenses the edit no matter
+	// who made the write: it is direct knowledge of the bytes on disk, and it is
+	// how an agent recovers from a file that changed under it. This is decided
+	// before the newest writer's exemption, which would otherwise ignore every
+	// read and refuse the retry its own stale error asks for — one external
+	// touch (a formatter, a checkout, a shell-side edit) then makes the path
+	// un-editable for the rest of the session.
+	if read.OK && (!write.OK || read.Revision >= write.Revision) && !info.ModTime().After(read.At) {
+		return write, readAllowed, nil
+	}
 	if t.isNewestWriter(write) {
 		if info.ModTime().After(write.At) {
 			return write, readStale, nil
@@ -565,13 +575,21 @@ func (t *toolSet) checkFileRead(path string, info os.FileInfo) (filetrack.WriteS
 	if !read.OK {
 		return write, readNever, nil
 	}
-	if write.OK && write.Revision > read.Revision {
-		return write, readStale, nil
+	// The read predates the newest write, or the file changed after that read.
+	return write, readStale, nil
+}
+
+// readMarkTime is the instant a read is recorded against: this process's clock,
+// or the version's own modification time when that is ahead of it. A filesystem
+// whose timestamps run ahead of the reader's clock — a remote mount, or a
+// container sharing a host clock — would otherwise make every edit on the file
+// stale forever, with no read able to clear it: the mark would be recorded
+// before the version it just showed.
+func readMarkTime(now, mod time.Time) time.Time {
+	if mod.After(now) {
+		return mod
 	}
-	if info.ModTime().After(read.At) {
-		return write, readStale, nil
-	}
-	return write, readAllowed, nil
+	return now
 }
 
 // recheckWriteGuard re-runs the read/staleness check immediately before a
@@ -661,7 +679,10 @@ func (t *toolSet) changedOnDiskError(path string, fp patch.FilePatch, write file
 
 	refresh := false
 	if region != "" && refreshRead && t.fileTracker != nil {
-		if err := t.fileTracker.RecordRead(path, time.Now(), write.Revision); err == nil {
+		// Record the version that was just displayed, not the clock: the retry
+		// must be licensed by the bytes the error showed, and the file's
+		// timestamp may run ahead of this process's clock.
+		if err := t.fileTracker.RecordRead(path, mod, write.Revision); err == nil {
 			refresh = true
 		}
 	}

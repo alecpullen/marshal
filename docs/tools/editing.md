@@ -117,10 +117,15 @@ modification time. The exemption compares modification time with the recorded
 write time; on a filesystem whose timestamps are too coarse to separate an
 external write from the recorded one, that change is indistinguishable from the
 writer's own commit, while the revision epoch still orders session writes. Any
-read clears the epoch for all agents: a full `file.read` and the region embedded
-in a stale error both record the write revision they observed for the path,
-together with the time they observed it, so one agent's read satisfies the guard
-for the rest.
+read clears the epoch for all agents — the writer included: a read is checked
+before the exemption, so a read at the current revision always licenses the edit.
+Without that ordering the exemption would ignore every read mark, and a path that
+changed once after the agent's own write (a formatter, a checkout, a shell-side
+edit) could never be edited again in that session. A full `file.read` and the
+region embedded in a stale error both record the write revision they observed for
+the path together with the time they observed it — the version's own modification
+time when that runs ahead of the clock, so a timestamp ahead of this process does
+not make the path permanently stale.
 
 When the staleness check does fire, the error carries what the caller needs to
 act on it instead of paying for a whole-file re-read:

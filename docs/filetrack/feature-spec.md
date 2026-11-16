@@ -138,7 +138,14 @@ records that revision with the read:
 2. query `WriteState` (best effort; a failure is logged and observation falls
    back to revision 0);
 3. open, size-check, and read the file;
-4. `RecordRead(path, time.Now(), observedRevision)`.
+4. `RecordRead(path, readMarkTime(now, info.ModTime()), observedRevision)`.
+
+`readMarkTime` is the later of the process's clock and the version's own
+modification time. Recording the mark against the version keeps the
+`re-read it before editing` instruction true on a filesystem whose timestamps
+run ahead of the reader's clock (a remote mount, a container sharing a host
+clock): a mark taken from the clock alone would predate the file it had just
+shown, and no read could clear the path.
 
 Observing before the read is deliberately conservative. If another agent writes
 between steps 2 and 3, the reader records the older revision, and its next edit
@@ -154,15 +161,21 @@ newer write still leaves the path stale.
 For an existing file, with `read := ReadState(path)`, `write := WriteState(path)`,
 and `info := os.Stat(path)`:
 
-1. If `write.OK` and the current actor is the newest writer:
+1. If `read.OK` and (`!write.OK` or `read.Revision >= write.Revision`) and
+   `!info.ModTime().After(read.At)`, allow. A read at the path's current
+   revision is knowledge of the bytes on disk whoever wrote them, so this is
+   decided before the writer exemption. Otherwise the exemption would ignore
+   every read mark — including the one a stale error had just refreshed — and
+   a path that changed once after the writer's own commit could never be
+   edited again in that session.
+2. If `write.OK` and the current actor is the newest writer:
    - if `info.ModTime().After(write.At)`, the file changed externally after the
      write, so reject as stale;
    - otherwise allow, without advancing the shared read revision.
-2. If there is no read:
-   - reject with the existing “never read this session” error.
-3. If `write.OK && write.Revision > read.Revision`, reject as stale.
-4. If `info.ModTime().After(read.At)`, reject as stale (an external change).
-5. Otherwise allow.
+3. If there is no read, reject with the existing “never read this session”
+   error.
+4. Otherwise reject as stale: the read predates the newest write, or the file
+   changed after that read.
 
 The current actor's identity is `AgentID`, falling back to `AgentLabel` when
 `AgentID` is empty so stand-alone toolsets and tests still get a writer
@@ -174,11 +187,15 @@ Consequences:
 - W writes revision 1, another agent reads revision 1, W writes revision 2;
   the reader is stale, W is exempt;
 - W writes revision 1, an external formatter changes the file; W's next edit is
-  stale because `mtime > write.At`;
+  stale because `mtime > write.At`, and the retry from the region that error
+  embedded is accepted: the read mark it recorded is at revision 1 and no
+  later change has landed;
 - the newest writer writes again without reading; it is exempt and does not
   clear the epoch for anyone else;
 - any agent's full read or embedded-region read advances the shared read
-  revision and clears the epoch for all.
+  revision and clears the epoch for all, the writer included;
+- a refusal is always answerable by the read it asks for, so no path becomes
+  permanently un-editable while the ledger is reachable.
 
 New-file creation keeps its existing path: a path that does not exist has no
 on-disk version to be stale against. After the write, the writer is exempt and
@@ -219,7 +236,9 @@ blank line before the retry sentence.
 
 The error retains the failing chunk's nearest-matching region with exact
 `lines N-M` numbers. For exact-match patch paths (`file.edit` and the internal
-`file.write_patch`), it also records the observed revision and appends:
+`file.write_patch`), it also records the observed revision against the version
+it displayed — that file's modification time, not the clock, for the same reason
+a full read is recorded against the version — and appends:
 
 ```text
 Retry with an old_string taken from those lines; the read mark was refreshed

@@ -75,6 +75,7 @@ const (
 type harness struct {
 	t          *testing.T
 	ctx        context.Context
+	stopCtx    context.CancelFunc
 	prov       *provider
 	gits       *gitFixtures
 	forge      *forgeStub
@@ -147,7 +148,8 @@ func newHarness(t *testing.T) *harness {
 	h.server = httptest.NewServer(bridge.NewServer(h.fleet, "", "", bridge.NewFactoryAPI(h.store, h.controller, h.fleet)))
 	t.Cleanup(h.server.Close)
 
-	h.ctx, _ = context.WithTimeout(context.Background(), 4*time.Minute)
+	h.ctx, h.stopCtx = context.WithTimeout(context.Background(), 4*time.Minute)
+	t.Cleanup(h.stopCtx)
 
 	// Admission is opened by the recovery pass, exactly as a bridge starting
 	// against an existing journal does, and the loop is the production one.

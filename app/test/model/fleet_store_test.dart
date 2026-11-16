@@ -179,6 +179,73 @@ void main() {
     },
   );
 
+  test('an agent that parks during a re-read still gets its request', () async {
+    final fixture = await ModelFixture.start([
+      FixtureHost(
+        name: 'local',
+        projects: [project('/home/u/alpha')],
+        agents: [
+          agent(id: 'a-1', status: AgentState.agentRunning),
+          agent(id: 'a-2', status: AgentState.agentRunning),
+        ],
+      ),
+    ]);
+    await fixture.refresh();
+
+    PendingRequest parked(String id) => PendingRequest(
+      kind: PendingKind.pendingApproval,
+      id: id,
+      params: {'command': 'git push'},
+    );
+
+    // The first re-read is held at the bridge, so the second agent parks
+    // while it is still in flight.
+    fixture.serve('local', '/api/agents', [
+      agent(
+        id: 'a-1',
+        status: AgentState.agentAwaitingApproval,
+        pending: parked('tc-1'),
+      ).toJson(),
+      agent(id: 'a-2', status: AgentState.agentRunning).toJson(),
+    ], delay: const Duration(milliseconds: 150));
+
+    fixture.delta('local', {
+      'kind': 'pending',
+      'sessionId': 'a-1',
+      'pendingKind': 'approval',
+    });
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+
+    // The bridge's next answer carries both requests.
+    fixture.serve('local', '/api/agents', [
+      agent(
+        id: 'a-1',
+        status: AgentState.agentAwaitingApproval,
+        pending: parked('tc-1'),
+      ).toJson(),
+      agent(
+        id: 'a-2',
+        status: AgentState.agentAwaitingApproval,
+        pending: parked('tc-2'),
+      ).toJson(),
+    ]);
+    fixture.delta('local', {
+      'kind': 'pending',
+      'sessionId': 'a-2',
+      'pendingKind': 'approval',
+    });
+
+    await eventually(
+      () =>
+          fixture.store.agents().any((a) => a.id == 'a-2' && a.pending != null),
+      reason: 'the second request is coalesced into a follow-up read, not lost',
+    );
+    expect(
+      fixture.store.agents().firstWhere((a) => a.id == 'a-2').pending?.id,
+      'tc-2',
+    );
+  });
+
   test('a gate delta is accepted and set aside', () async {
     final fixture = await fixtureWith();
     await fixture.refresh();

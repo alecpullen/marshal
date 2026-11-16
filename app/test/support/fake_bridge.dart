@@ -24,11 +24,20 @@ class RecordedRequest {
 
 /// A canned answer to one route.
 class FakeReply {
-  const FakeReply(this.status, {this.headers = const {}, this.body = ''});
+  const FakeReply(
+    this.status, {
+    this.headers = const {},
+    this.body = '',
+    this.delay,
+  });
 
   final int status;
   final Map<String, String> headers;
   final String body;
+
+  /// How long the answer is held before it is written: a read a test wants
+  /// still in flight while it does something else.
+  final Duration? delay;
 }
 
 /// A body a test writes to, frame by frame: the fleet stream, and anything
@@ -183,6 +192,12 @@ class FakeBridge {
         await response.close();
         return;
       }
+      // A held answer keeps the client waiting, so a test can have one read
+      // in flight while it does something else. The reply is looked up when
+      // the request arrives, so re-serving the route changes the next
+      // request, not this one.
+      final delay = reply.delay;
+      if (delay != null) await Future<void>.delayed(delay);
       response.statusCode = reply.status;
       reply.headers.forEach(response.headers.set);
       response.write(reply.body);

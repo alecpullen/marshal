@@ -665,7 +665,10 @@ func (m Model) footerHints() help.FooterHints {
 		PopupOpen:            m.activeCompletionPopup() != nil,
 		IdleRollbackEligible: !m.busy && st.HasBackup,
 		CtrlXHint:            m.ctrlXHint(st),
-		MouseReleased:        m.mouseReleased || !m.sess.Config().TUI.MouseCapture,
+		MouseReleased:        m.mouseReleased,
+		// Capture off in config means the terminal owns the mouse and Ctrl+S
+		// is refused, so neither mouse hint would be true.
+		MouseCaptureDisabled: !m.sess.Config().TUI.MouseCapture,
 		RunActive:            st.SubagentRunning,
 		Browsing:             m.browsing,
 		// The interruption hint is only advertised when the runtime can honour

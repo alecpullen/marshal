@@ -153,6 +153,15 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		if !readlineShortcutAvailable() {
 			return *m, nil, false
 		}
+		// Capture is the user's explicit statement about who owns the mouse:
+		// View keeps MouseModeNone whenever [tui].mouse_capture is false, so a
+		// session override here would announce a handover the TUI never makes.
+		// Say where the setting lives instead of pressing a dead key.
+		if !m.sess.Config().TUI.MouseCapture {
+			m.note("Mouse capture is off in the config ([tui].mouse_capture = false), so the terminal owns the mouse. Set it to true and restart to capture it here.")
+			m.refreshViewport()
+			return *m, nil, true
+		}
 		// Release the mouse to the terminal (or take it back) for the
 		// session. Capture and native click-drag selection cannot coexist —
 		// the terminal delivers events to one or the other — so copying a

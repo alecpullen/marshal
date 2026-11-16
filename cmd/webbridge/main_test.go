@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/buildinfo"
 	"marshal/web/bridge"
 )
 
@@ -333,6 +334,36 @@ func TestWebbridgeReportsItsVersion(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "webbridge") {
 		t.Fatalf("--version output does not contain 'webbridge': %q", out.String())
+	}
+}
+
+// TestTheBridgesSourceRuleMatchesBuildinfo pins the copy: web/bridge cannot
+// import internal/buildinfo (TestWebIsStdlibOnly), so bridge.SourceBuild
+// repeats the rule and this package, which may import both, holds them
+// together (decision 3).
+func TestTheBridgesSourceRuleMatchesBuildinfo(t *testing.T) {
+	for _, tc := range []struct {
+		version string
+		source  bool
+	}{
+		{"", false},
+		{"dev", true},
+		{"dev+abc123def456", true},
+		{"dev+abc123def456+dirty", true},
+		{"v1.2.3", false},
+		{"v1.2.3+dirty", false},
+		{"devel", false},
+		{"devx", false},
+	} {
+		if got, want := bridge.SourceBuild(tc.version), buildinfo.IsSource(tc.version); got != want {
+			t.Errorf("SourceBuild(%q) = %v, buildinfo.IsSource = %v", tc.version, got, want)
+		}
+		if got := bridge.SourceBuild(tc.version); got != tc.source {
+			t.Errorf("SourceBuild(%q) = %v, want %v", tc.version, got, tc.source)
+		}
+		if got := buildinfo.IsSource(tc.version); got != tc.source {
+			t.Errorf("buildinfo.IsSource(%q) = %v, want %v", tc.version, got, tc.source)
+		}
 	}
 }
 

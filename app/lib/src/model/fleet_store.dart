@@ -455,12 +455,22 @@ class FleetStore extends ChangeNotifier {
   }
 
   /// Reads one host's budget report again.
+  ///
+  /// A delta says which way the spend moved, and the report is read rather
+  /// than invented from it. The answer is only the current spend if nothing
+  /// newer was read while it was in flight: a slow `GET /api/budgets` that
+  /// lands after a snapshot (or after a later budget read) would put older
+  /// numbers back, so it is discarded.
   Future<void> _refreshBudgets(String host) async {
     final owner = _ownerOf(host);
     if (owner == null) return;
     final state = _state(host);
+    final generation = state.generation;
+    final read = ++state.budgetReads;
     final report = await _budgets(owner.client, state);
-    if (_disposed || identical(report, state.budgets)) return;
+    if (_disposed || generation != state.generation) return;
+    if (read != state.budgetReads) return;
+    if (identical(report, state.budgets)) return;
     state.budgets = report;
     notifyListeners();
   }
@@ -489,6 +499,10 @@ class _HostState {
 
   /// Bumped by each read, so a slow answer cannot overwrite a newer one.
   int generation = 0;
+
+  /// Bumped by each budget read, so a slower earlier read cannot overwrite a
+  /// newer report.
+  int budgetReads = 0;
 
   /// A pending delta's re-read is in flight.
   bool agentsRefetching = false;

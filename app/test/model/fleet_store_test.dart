@@ -296,6 +296,43 @@ void main() {
     );
   });
 
+  test('a slow budget read does not put older spend back', () async {
+    final fixture = await fixtureWith();
+    await fixture.refresh();
+    expect(fixture.store.budgets('local')?.daily.spentUSD, 1.5);
+
+    // The delta's read is held at the bridge, and answers with the report as
+    // it was before the spend moved.
+    fixture.serve(
+      'local',
+      '/api/budgets',
+      report(spent: 1.5).toJson(),
+      delay: const Duration(milliseconds: 120),
+    );
+    fixture.delta('local', {
+      'kind': 'budget',
+      'sessionId': 'a-1',
+      'scope': 'daily',
+      'spentUsd': 7.0,
+      'capUsd': 10.0,
+      'action': 'warn',
+    });
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+
+    // A snapshot meanwhile reads the spend as it is now.
+    fixture.serve('local', '/api/budgets', report(spent: 7.0).toJson());
+    await fixture.store.refresh('local');
+    expect(fixture.store.budgets('local')?.daily.spentUSD, 7.0);
+
+    // The held answer lands after it, superseded, and is discarded.
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    expect(
+      fixture.store.budgets('local')?.daily.spentUSD,
+      7.0,
+      reason: 'an answer read before a newer snapshot is not the current spend',
+    );
+  });
+
   test('an inbox delta replaces the queue', () async {
     final fixture = await fixtureWith();
     await fixture.refresh();

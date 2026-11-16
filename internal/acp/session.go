@@ -103,6 +103,11 @@ type SessionManager struct {
 	configWritten  func(path string)
 	pendingRestart func() *acpwire.PendingRestart
 
+	// detachedResume binds a session's watch resume to the service built for
+	// it (decision 2). The host that serves viewers sets it; it is nil
+	// elsewhere, and a host without it binds nothing here, exactly as before.
+	detachedResume func(rt *app.Runtime, sessionID string, sess *service.Session)
+
 	mu          sync.RWMutex
 	sessions    map[string]*app.Runtime
 	lifecycleMu sync.Mutex
@@ -904,6 +909,11 @@ func (m *SessionManager) servicePair(id string) (*service.Host, *service.Session
 		return nil, nil, false
 	}
 	host, sess := service.New(m.serviceDeps(rt))
+	// The binding is the host's, made once per session and only where a wake
+	// may find no connection of its own (decision 2).
+	if m.detachedResume != nil {
+		m.detachedResume(rt, id, sess)
+	}
 	m.services[rt] = &servicePair{host: host, sess: sess}
 	return host, sess, true
 }

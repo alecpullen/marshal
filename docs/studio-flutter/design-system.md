@@ -136,6 +136,8 @@ Rules:
 - Numbers that change or line up (counts, durations, sizes, money) are mono.
 - Truncate with an ellipsis; never shrink text to fit and never let it
   overflow its container.
+- `mono` text is drawn, never typed, with one exception: `Field.mono` (§5),
+  the input that holds a document — a workspace's source — rather than prose.
 
 ## 4. Space, shape and size
 
@@ -199,7 +201,7 @@ Cupertino**. If the kit lacks a piece, see §10.
 | `OutputBlock` | Output the agent produced | The only filled block: `codeBg`, mono at every density. A capped block says so in words |
 | `LiveRow` | The row work is happening on | One running dot, the headline, the latest line. The only row that moves |
 | `StateMessage` | Empty, loading, stale, error, planned | The only way these states are shown (§7) |
-| `Field` | A text input | Border only; the label is above it. `Field.multiline` is the same input for prose, taller and growing with what it holds |
+| `Field` | A text input | Border only; the label is above it. `Field.multiline` is the same input for prose, taller and growing with what it holds; its `mono` flag sets the text in `mono` for a document a person edits line by line |
 | `Menu` | A popover of choices | Each item is a name and one line of explanation |
 | `Sheet` | A dialog or bottom sheet; it dims what is behind it with `scrim` | One per screen at most |
 | `Composer` | The field a thread is driven from | The draft, the mode and model chips, Stop while running, Send or Steer. A read-only session is one line saying why |
@@ -222,7 +224,9 @@ identifiers; `Meter` and `Meter.fault`; `PageBody`'s width, `full` (1180) or
 `PrCard`'s four states — ready, failing, in progress, being fixed. Added in
 F4: `RowItem.mono` and `NavRow.mono`, a row whose name is an identifier such
 as a path, and `RowItem.selected`, the row a list is showing, filled with
-`selected` as a `NavRow` is.
+`selected` as a `NavRow` is. Added in F7: `Field.mono`, the field set in
+`mono` for the environment designer's source — a document a person edits line
+by line, never prose.
 
 Supporting pieces, shared by the components and exported with them by
 `kit.dart`. None is drawn on its own, and none has variants:

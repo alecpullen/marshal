@@ -809,6 +809,12 @@ class _GalleryState extends State<Gallery> {
             label: 'Prompt',
             hint: 'Run the gate on {{ branch }}',
           ),
+          SizedBox(height: Space.s16),
+          Field.multiline(
+            label: 'Source',
+            hint: '[[mounts]]\npath = "/src"',
+            mono: true,
+          ),
         ],
       ),
     ),

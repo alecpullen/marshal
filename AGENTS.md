@@ -128,8 +128,9 @@ TUI (rendering only)
   internal/app/tui/{settings,connect,agents,memory,skills,plugins,mcpauth,modeloptions,presetflow,probe,doctorpanel}
                            interactive surfaces for config, providers, roles, MCP, models
   internal/app/tui/fleet/   the fleet screen: the agents list, needs you, events,
-                           an agent's Activity or Info, and its actions —
-                           answering, spawn, cancel and intake
+                           an agent's Activity, Diff or Info and its actions —
+                           answering, spawn, cancel, intake and finishing it:
+                           the gate, exit, merge and discard
   internal/app/tui/{sddreview,castlist,gatepanel,postmortempanel,trustpanel,liveregion,textfield}
 
 Models

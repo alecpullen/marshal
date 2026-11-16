@@ -2104,7 +2104,111 @@ and only that one.
 
 ### Plan 5b — the diff tab and finishing an agent
 
-Not yet run. Plan 5b's last task fills this in.
+**What was built.** The fleet screen reviews an agent's work and finishes it.
+The Diff tab reads the changed files and one file's patch, `v` runs the gate,
+and `f` opens a modal that ships the work to the destination decision 5 picks,
+or discards it. The calls it takes are six new actions on the seam, through
+the client, and W7 drives the whole finish against a real bridge.
+
+- **The seam** (`internal/acpclient/fleet.go`). `Fleet` gained `Diff`,
+  `CommitDraft`, `Verify`, `Merge`, `Exit` and `Discard`, each with its
+  `Routes:` doc line, and `FleetRoutes` gained six rows:
+  `GET /api/agents/{id}/diff`, `GET /api/agents/{id}/commit-draft`,
+  `POST /api/agents/{id}/verify`, `POST /api/agents/{id}/merge`,
+  `POST /api/agents/{id}/exit` and `POST /api/agents/{id}/discard`.
+  `TestFleetRouteTableCoversTheInterface` holds the table to the interface.
+- **The client** (`internal/fleetclient/actions.go`). Each action goes through
+  plan 5a's `post` and `getAction`, and so through one `action` helper. A 409
+  on `merge` is the refusal reported in the result's own shape, so it is
+  decoded as that result rather than raised as a `FleetError`: an unexported
+  `actionAnswering` accepts that one status. `Diff` sends `path` as an escaped
+  query parameter, and only when it is not empty. Both fakes that embed
+  `acpclient.Fleet` (`internal/app/tui/fleet/fleet_test.go`,
+  `internal/launch/fleet_test.go`) record the six calls.
+- **The Diff tab** (`internal/app/tui/fleet/diff.go`, new) sits behind `2`, as
+  plan 3 reserved it. `diffView` holds the shown agent and the changed-files
+  count it was read at, the files, the cursor, the selected file's raw patch,
+  its scroll and a failed read's sentence; `diffReadMsg` answers one read.
+  Reads are `tea.Cmd`s dispatched by `syncDiff`, which runs after every state
+  and every key: the file list when the agent or its count has changed, the
+  selected file's diff when the cursor moves. An answer for an agent or a path
+  no longer shown is dropped. The patch renders through `diffview.Render` at
+  the panel's inner width in unified mode with highlighting off, so the `+`
+  and `−` gutters carry the meaning under `NO_COLOR`; `J` and `K` scroll it a
+  row at a time. The header reads "<N> files +<added> −<removed>", the footer
+  names `j/k file` and `J/K scroll` while the tab is shown, a Sessions row has
+  no Diff tab, and a failed read shows its sentence in the panel and never on
+  the status line. Two frames pin it: `fleet-100x30-diff` and
+  `fleet-140x40-diff`.
+- **The gate and the finish modal** (`internal/app/tui/fleet/finish.go`, new).
+  `v` on the Info tab runs the gate, the line reading "verifying…" until the
+  call returns, its refusal shown as plan 5a shows an action failure. `f`
+  opens `finishModal` over the right panel on an idle agent, and refuses with
+  "finish needs <name> idle: cancel its turn first (x)" on a running or
+  waiting one. The modal's steps are decisions 3 to 8: a message field
+  pre-filled from `CommitDraft`, empty when that read fails or is unsupported;
+  `⏎` ships to `destination(a)`, which merges a local agent, leaves a patch
+  for a read-only git agent and exits any other git agent; `ctrl+d` asks for
+  the agent's name, and `Discard` needs it typed exactly; `esc` closes at any
+  step without acting. `mergeRefusal` turns a refused merge into decision 6's
+  sentences — `dirty` asks for a message and retries with it, `project_dirty`,
+  `target_moved` and `conflicts` say what to do and leave the modal on the
+  message step, and anything else reads "merge refused (<reason>)". A blocked
+  push shows the failed command and the last 20 lines of its output, then a
+  reason field: `⏎` on a non-empty reason exits again with the override, and
+  an empty reason is refused in the field. The result names where the work
+  went — the merged branch and target, or the pushed branch and the pull
+  request's URL — any key closes it, and every result and every failure is
+  also an Events line. Two frames pin the modal: `fleet-100x30-finish` and
+  `fleet-100x30-blocked`. The help screen and the footer gained `v` and `f`.
+- **W7** (`test/daemon/finish_test.go`, new; `test/daemon/main_test.go`).
+  Decision 9 is what makes it possible: the harness child accepts a plain
+  `acp` and runs `acp.Run` for it, because `web/bridge` starts an
+  agent-of-its-own child with no arguments, while `RunWithViewers` stays for
+  `acp --viewers unix://<socket>` and anything else is still an error.
+  `TestTheFinishFlowOverridesAFailedGate` builds a bare Go repository whose
+  one test fails, registers it, spawns a git agent from it in process, gives
+  it one change through its session, and then, through a `fleetclient` over
+  the harness's socket: the first `Exit` is blocked, its gate names
+  `go test ./...`, and nothing reached the bare repository; the second, with
+  an override reason, pushes the branch with the commit, and the row records
+  the override. `TestALocalAgentsMergeLandsOnItsTarget` merges an isolated
+  local agent and checks the project's target branch holds the change. Two
+  test-side arrangements are worth a sentence: the merge test sets a
+  committer identity in the project repository, because `session/merge` uses
+  `git merge --no-ff` and that needs one; and the override is read through a
+  client that attaches after the overridden exit, because an exit stores the
+  gate without moving an inbox group and so does not wake an already-connected
+  client to reread the agent list. No non-test file changed to make the
+  harness work.
+
+**The mutation checks.** Each was run and restored. Task 4's: sending the
+override on the first `Exit` in the client makes W7 fail on the first exit's
+result. Task 3's is the same shape on the modal: sending the override on the
+first exit fails `TestAGitAgentExits`.
+
+**The manual run.** Not performed in the environment this plan was executed
+in: it needs a live local daemon with a real model, which that environment did
+not have. The flow it would exercise is covered without one: W7 drives the
+gate, the blocked push and its override against a real bridge,
+`TestALocalAgentsMergeLandsOnItsTarget` the merge, and `TestDiscardNeedsTheNameTyped`
+the discard.
+
+**Verification.** `gofmt -l internal cmd test web` printed nothing;
+`CGO_ENABLED=1 go vet ./...` was clean; CI's suite command
+(`CGO_ENABLED=1 go test -p=1 ./... -count=1 -timeout 20m`, with the laptop
+latency budgets skipped) passed with nothing on the batch's baseline list
+failing; `CGO_ENABLED=1 go build -o marshal ./cmd/marshal` built;
+`go test ./test/usability/... -run TestScripted` passed; and the frames in
+`internal/app/tui/testdata` and `internal/app/tui/livebox/testdata` are
+unchanged from `main`.
+
+**Where the plan was short, and how that was filled.** Two deviations, both
+deliberate. The tab strip names `[Diff]` only while that tab is shown —
+`[Activity]  Info`, `Activity  [Diff]  Info`, `Activity  [Info]` — so the
+frames plan 3 pinned keep their exact text. The strip already named its tab
+that way for Activity and Info; Diff joins them rather than widening the strip
+on every tab.
 
 ### Plan 6 — viewers everywhere, needs you and notifications
 

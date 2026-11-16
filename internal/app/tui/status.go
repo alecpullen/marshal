@@ -18,6 +18,7 @@ import (
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/interaction"
 	"marshal/internal/strutil"
+	"marshal/web/bridge/contract"
 )
 
 const (
@@ -118,42 +119,49 @@ func identityStyle() lipgloss.Style {
 func (m Model) statusClusters(width int) (left, right string) {
 	segs := m.statusLeftSegments()
 	left = joinSegs(segs)
-	right = m.statusRightSegment()
+	// The fleet's count names work waiting on another screen, which no other
+	// cue on this line reports, so it is never shed with the hints: it sits
+	// before the session's own right-hand segment whatever happens to that
+	// segment (decision 9).
+	count := m.needsYouSegment()
+	own := m.sessionRightSegment()
+	right = joinRight(count, own)
 
 	// When the terminal is narrow, drop the button-hint cluster first so
 	// that project path, worktree, and other identity segments remain
 	// visible. Approval/error indicators are never dropped this way.
-	if right != "" && !m.hasPendingApproval() && !m.noticeVisible() && m.ctrlCArmed() == ctrlCNone {
+	if own != "" && !m.hasPendingApproval() && !m.noticeVisible() && m.ctrlCArmed() == ctrlCNone {
 		fits := func(s string) bool {
-			return visibleRunes(left)+visibleRunes(s)+statusHorizontalPadding+statusMinGap <= width
+			return visibleRunes(left)+visibleRunes(joinRight(count, s))+statusHorizontalPadding+statusMinGap <= width
 		}
 		// Shed the optional mouse hint before sacrificing the whole
 		// cluster: dropping "clear queue" to keep a mouse-mode reminder is
 		// the wrong trade, and the cluster is one string that goes as a unit.
-		if !fits(right) {
+		if !fits(own) {
 			hints := m.footerHints()
 			hints.SuppressMouseHint = true
-			right = help.Footer(hints)
+			own = help.Footer(hints)
 		}
-		if !fits(right) {
+		if !fits(own) {
 			hints := m.footerHints()
 			hints.SuppressMouseHint = true
 			hints.SuppressBrowseHint = true
-			right = help.Footer(hints)
+			own = help.Footer(hints)
 		}
 		// While a turn runs, the stop key outranks every other hint: a
 		// terminal too narrow for the cluster keeps the one pair that
 		// unsticks the turn, and the segment shedding below makes room for
 		// it out of the left cluster.
-		if !fits(right) {
+		if !fits(own) {
 			if m.busy {
 				hints := m.footerHints()
 				hints.StopOnly = true
-				right = help.Footer(hints)
+				own = help.Footer(hints)
 			} else {
-				right = ""
+				own = ""
 			}
 		}
+		right = joinRight(count, own)
 	}
 
 	for len(segs) > 1 && visibleRunes(left)+visibleRunes(right)+statusHorizontalPadding+statusMinGap > width {
@@ -508,7 +516,57 @@ func browserStatusText(bi acpwire.Browser) string {
 	return g + " " + url
 }
 
+// statusRightSegment is the right cluster: the fleet's count of what waits for
+// the operator first, then the session's own right-hand segment (decision 9).
 func (m Model) statusRightSegment() string {
+	return joinRight(m.needsYouSegment(), m.sessionRightSegment())
+}
+
+// joinRight puts the fleet's count before the session's own right-hand
+// segment. Either side may be empty: the count is present without a hint
+// cluster, and the cluster is present with nothing waiting elsewhere.
+func joinRight(count, own string) string {
+	switch {
+	case count == "":
+		return own
+	case own == "":
+		return count
+	}
+	return count + dimSeparator + own
+}
+
+// needsYouSegment is the fleet's queue as a count, apart from this screen's own
+// agent, in the warning colour (decision 9). It is empty when there is no fleet
+// — embedded mode has none — and when nothing waits.
+func (m Model) needsYouSegment() string {
+	if n := m.needsYouCount(); n > 0 {
+		return warningStyle().Render(fmt.Sprintf("needs you %d", n))
+	}
+	return ""
+}
+
+// needsYouCount is how many queued items are not the shown agent's own. On a
+// session that is not an agent's, every item counts: AgentSession is "" and
+// nothing is subtracted.
+func (m Model) needsYouCount() int {
+	if m.fleet == nil {
+		return 0
+	}
+	shown := m.AgentSession()
+	n := 0
+	for _, item := range m.fleet.State().Inbox.Queue {
+		if shown != "" && item.Kind == contract.InboxItemAgent && item.AgentID == shown {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+// sessionRightSegment is the session's own right-hand segment: the interrupt
+// and decision cues, the notice indicator, a flash, a transient cue, or the
+// footer hints.
+func (m Model) sessionRightSegment() string {
 	switch m.ctrlCArmed() {
 	case ctrlCStop:
 		return warningStyle().Render("Ctrl+C again to stop the turn")

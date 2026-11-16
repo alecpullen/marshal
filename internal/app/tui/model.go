@@ -37,6 +37,7 @@ import (
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/app/tui/doctorpanel"
+	"marshal/internal/app/tui/fleet"
 	"marshal/internal/app/tui/gatepanel"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/inspector"
@@ -463,6 +464,16 @@ type Model struct {
 	agentSessionName string
 	toFleet          bool
 
+	// fleet is the daemon's fleet when this screen is a session on it (P5 F6):
+	// the status line's needs-you count reads it, live, as it renders. watch is
+	// the loop's watch, which compares each change with what the program before
+	// this one read; it is nil until the fleet program first runs (decision 8).
+	// done releases the fleet's wait at quit, so no wait outlives the program.
+	// All three are nil in embedded mode, where there is no fleet.
+	fleet acpclient.Fleet
+	watch *fleet.Watch
+	done  *fleetQuitGate
+
 	// Connect panel (docked; opened by /connect, /models, Ctrl+P).
 	connectModel *connect.Model
 	discovered   map[string][]schema.ModelInfo
@@ -621,6 +632,18 @@ func WithAgentSession(id, name string) Option {
 	return func(m *Model) {
 		m.agentSessionID = id
 		m.agentSessionName = name
+	}
+}
+
+// WithFleet gives a daemon session screen the fleet, for its needs-you
+// count, and the loop's watch, which may be nil (decision 8).
+func WithFleet(f acpclient.Fleet, w *fleet.Watch) Option {
+	return func(m *Model) {
+		m.fleet = f
+		m.watch = w
+		if f != nil {
+			m.done = newFleetQuitGate()
+		}
 	}
 }
 
@@ -1324,7 +1347,48 @@ func (m Model) Init() tea.Cmd {
 	if cmd := pumpChanged(m.sess.Changed()); cmd != nil {
 		cmds = append(cmds, cmd)
 	}
+	if cmd := m.pumpFleet(); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
 	return tea.Batch(cmds...)
+}
+
+// pumpFleet arms the wait on the fleet's change signal. A model built without
+// a fleet, as embedded mode builds it, waits on nothing.
+func (m Model) pumpFleet() tea.Cmd {
+	if m.fleet == nil {
+		return nil
+	}
+	var done <-chan struct{}
+	if m.done != nil {
+		done = m.done.ch
+	}
+	return pumpFleetChanged(m.fleet.Changed(), done)
+}
+
+// handleFleetChanged handles a fleetChangedMsg: the fleet signalled that its
+// state may have changed. The count is read from the client as the status line
+// renders, so this update's own repaint is the count; what is left is to ring
+// the bell for what the loop's watch passed, and to re-arm the wait.
+func (m Model) handleFleetChanged(msg fleetChangedMsg) (Model, tea.Cmd) {
+	// A pump from a replaced fleet is ignored and not re-armed, so it ends.
+	if m.fleet == nil || msg.ch != m.fleet.Changed() {
+		return m, nil
+	}
+	return m, tea.Batch(m.pumpFleet(), m.ring())
+}
+
+// ring hands the state just read to the loop's watch and rings the bell once
+// for what it passed, as the fleet model does (decision 6). Without a watch
+// nothing is observed: the count is the fleet's, the bell is the watch's.
+func (m Model) ring() tea.Cmd {
+	if m.watch == nil || m.fleet == nil {
+		return nil
+	}
+	if len(m.watch.Observe(m.fleet.State())) == 0 {
+		return nil
+	}
+	return tea.Raw(bell)
 }
 
 func (m *Model) resize(width, height int) {
@@ -2049,7 +2113,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Runtime messages always stay with the parent model so background state
 	// remains current while a dock panel is open.
 	switch msg.(type) {
-	case agentFinishedMsg, planAuthorFinishedMsg, changedMsg, agentTickMsg, spinnerTickMsg, suggestionMsg, callersMsg, detailMsg:
+	case agentFinishedMsg, planAuthorFinishedMsg, changedMsg, fleetChangedMsg, agentTickMsg, spinnerTickMsg, suggestionMsg, callersMsg, detailMsg:
 		return m.handleRuntimeMessage(msg)
 	}
 
@@ -4936,6 +5000,11 @@ func (m *Model) finishQuit() tea.Cmd {
 	m.dock.ReleaseRetained(m.dock.Panel())
 	m.dock.ReleaseRetained(m.composerDisplaced)
 	m.dock.ReleaseRetained(m.endDisplaced)
+	// Release the fleet's wait too: the program is stopping, so nothing will
+	// read its messages, and an armed wait would block a goroutine until the
+	// client closes. It is released here rather than at the call-in-flight
+	// return above, where the program still runs.
+	m.done.release()
 	return tea.Quit
 }
 
@@ -4964,6 +5033,9 @@ func (m *Model) detach() tea.Cmd {
 	m.dock.ReleaseRetained(m.dock.Panel())
 	m.dock.ReleaseRetained(m.composerDisplaced)
 	m.dock.ReleaseRetained(m.endDisplaced)
+	// The fleet's wait is released here for finishQuit's reason: this program
+	// is stopping, and a wait left armed would block a goroutine.
+	m.done.release()
 	m.detached = true
 	return tea.Quit
 }
@@ -6339,6 +6411,8 @@ func (m Model) dispatchRuntimeMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handlePlanAuthorFinished(msg)
 	case changedMsg:
 		return m.handleChanged(msg)
+	case fleetChangedMsg:
+		return m.handleFleetChanged(msg)
 	case agentTickMsg:
 		return m.handleAgentTick(msg)
 	case spinnerTickMsg:

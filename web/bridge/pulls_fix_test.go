@@ -175,6 +175,48 @@ func TestExhaustedRoundsGrantOne(t *testing.T) {
 	}
 }
 
+func TestNeedsInputClearsTheFactoryFix(t *testing.T) {
+	f := testFleet(t)
+	s, item := factoryPullItem(t, 9, "abc123", []FactoryCheck{{
+		Key: FactoryCheckKey{Kind: "check", Name: "test"}, SHA: "abc123",
+		Status: "completed", Conclusion: "failure",
+	}})
+	grantFactoryRounds(t, s, item, 3)
+	id := factoryFixFleet(t, f, s, item)
+
+	if _, err := f.dispatchPullFix(context.Background(), id,
+		contract.PullFixRequest{Check: "test"}, DefaultOwnerID); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	// The repair round ends needing a person: no round is running on the item
+	// any more, so nothing is carrying the fix.
+	cur, err := s.Get(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Update(cur.ID, "needs-input", cur.Version, json.RawMessage(`{"kind":"needs-input"}`),
+		func(i *FactoryItem) error {
+			i.State = "needs_input"
+			i.Decision = &FactoryDecision{ID: "decision-1", Kind: "ask", Reason: "which way?", CreatedAt: time.Now().UTC()}
+			return nil
+		}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	f.observePulls(context.Background())
+
+	rec, ok := f.pull(id)
+	if !ok {
+		t.Fatal("the record was removed")
+	}
+	if rec.Fix != nil {
+		t.Fatalf("a fix stayed on an item that settled at needs_input: %+v", rec.Fix)
+	}
+	if rec.State != contract.PullFailing {
+		t.Fatalf("state = %q, want failing: the item's own checks are the evidence", rec.State)
+	}
+}
+
 func TestAgentPullFixRunsTheFixer(t *testing.T) {
 	pf := newPullForge(t)
 	pf.setChecks("abc123", map[string]any{

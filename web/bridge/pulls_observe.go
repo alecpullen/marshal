@@ -283,8 +283,9 @@ func (f *Fleet) syncFactoryPull(rec contract.PullRecord) {
 	if next.Fix != nil {
 		// A fix on a factory item's pull request ends when the item's round
 		// pushes a new head, or when the item settles without one: the repair
-		// is the factory's round, and the item's own evidence is what says so.
-		if next.HeadSHA != next.Fix.HeadSHA || item.State == "ready" || item.State == "closed" || item.State == "stopped" {
+		// is the factory's round, and only a state the controller is working in
+		// can still be carrying it.
+		if next.HeadSHA != next.Fix.HeadSHA || !factoryFixRunning(item.State) {
 			next.Fix = nil
 		}
 	}
@@ -352,6 +353,19 @@ func (f *Fleet) factoryItem(id string) (FactoryItem, bool) {
 		return FactoryItem{}, false
 	}
 	return f.factory.Item(id)
+}
+
+// factoryFixRunning reports whether the controller has work in flight on the
+// item, which is the only case a fix dispatched through RequestRepair can still
+// be carried by. Every other state — needs_input, ready, stopped, closed, and
+// the ones before work starts — has settled without a round, so a fix left on
+// the item's record would name a worker that is no longer running.
+func factoryFixRunning(state string) bool {
+	switch state {
+	case "preparing", "implementing", "checking", "reviewing", "repairing", "stopping", "recovering":
+		return true
+	}
+	return false
 }
 
 // factoryRoundCI is the item's newest CI observation, when it is evidence for

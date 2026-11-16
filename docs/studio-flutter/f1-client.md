@@ -235,6 +235,18 @@ Implemented on branch `studio/f1-client`, one commit per task, on Linux
   server for F1, and the real `webbridge` is used end to end from F2.
   `marshal fleet token` refuses a terminal, as decision 3 says.
 
+### Limitation of the fixture-coverage test
+
+`web/bridge/contract/fixture_test.go` holds `fixtureTypes` and the
+`test/contract/*.json` files to each other in both directions: a fixture value
+whose type is missing from the map fails, and an entry in the map with no
+fixture value fails. Nothing ties the map to the contract package's own
+declarations, so a type added to `web/bridge/contract` and listed in neither
+place is covered by no fixture and fails no test. Closing that needs a check
+that reads the contract source (the reverse direction this plan's file list
+does not include); until then, adding a contract type is a matter of adding it
+to `fixtureTypes` and its fixture by hand.
+
 ### Not verified on this machine
 
 - `flutter test --platform chrome test/client/transport_web_test.dart` (Task

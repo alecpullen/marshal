@@ -24,9 +24,13 @@ var fixtureFiles = []string{
 	"stream.json",
 }
 
-// fixtureTypes names the Go type each fixture value decodes into. Every
-// contract type a fixture file declares is here, and every entry appears in
-// a fixture: adding a type without its fixture value fails the test below.
+// fixtureTypes names the Go type each fixture value decodes into. The test
+// below holds this map and the fixture files to each other in both
+// directions: a fixture value whose type is not here fails (it is not a
+// contract type), and an entry here with no fixture value fails. It does not
+// read the contract package, so a type declared there that appears in
+// neither this map nor a fixture goes unnoticed; see the implementation
+// record in docs/studio-flutter/f1-client.md.
 var fixtureTypes = map[string]reflect.Type{
 	"AccessState":         reflect.TypeOf(AccessState{}),
 	"AgentState":          reflect.TypeOf(AgentState("")),
@@ -120,8 +124,10 @@ func TestContractFixturesRoundTrip(t *testing.T) {
 		})
 	}
 
-	// Every type the fixtures hold appears in one, so a new contract type
-	// cannot be added without a value that a client is written against.
+	// Every listed type appears in a fixture, so an entry cannot be added
+	// without the value a client is written against. A type declared in the
+	// contract package but listed in neither this map nor a fixture passes
+	// unnoticed (see the note on fixtureTypes).
 	names := make([]string, 0, len(fixtureTypes))
 	for name := range fixtureTypes {
 		names = append(names, name)

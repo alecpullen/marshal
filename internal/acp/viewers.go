@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"sync"
@@ -83,6 +84,29 @@ func (h *agentHost) serveViewer(ctx context.Context, conn net.Conn) error {
 	return srv.Serve(ctx)
 }
 
+// startExecutable is the executable the record keeps: os.Executable's path, or
+// "" when it cannot be found, which keeps no executable entry (decision 2).
+func startExecutable(log *slog.Logger) string {
+	exe, err := os.Executable()
+	if err != nil {
+		log.Warn("acp: the start record could not locate the executable", "err", err)
+		return ""
+	}
+	return exe
+}
+
+// startProjectConfig is the project config the record keeps:
+// config.ProjectConfigPath of the child's working directory, which the bridge
+// sets to the project's root. An unreadable working directory keeps none.
+func startProjectConfig(log *slog.Logger) string {
+	wd, err := os.Getwd()
+	if err != nil {
+		log.Warn("acp: the start record could not read the working directory", "err", err)
+		return ""
+	}
+	return config.ProjectConfigPath(wd)
+}
+
 // RunWithViewers is Run plus a viewer listener on the unix socket at path
 // (P4 D2): stdio serves the bridge's own connection while any number of
 // marshal clients attach on the socket.
@@ -93,6 +117,9 @@ func RunWithViewers(ctx context.Context, stdin io.Reader, stdout, stderr io.Writ
 		return fmt.Errorf("acp: find home directory: %w", err)
 	}
 	trustStore := trust.NewStore(config.DataDir(home))
+	// What this child started from (decision 1): its executable and the two
+	// config files it read. A child that is not a project child keeps none.
+	record := newStartRecord(startExecutable(log), config.UserConfigPath(home), startProjectConfig(log), log)
 
 	// One project-host registry for the process, shared by every connection's
 	// sessions and closed after all of them (see Run).
@@ -112,6 +139,7 @@ func RunWithViewers(ctx context.Context, stdin io.Reader, stdout, stderr io.Writ
 		shutdown: connectionShutdownTimeout,
 		logger:   log,
 		hold:     hostsHold(hosts, home, trust.NewHeadlessResolver(trustStore, log)),
+		record:   record,
 	})
 	return errors.Join(err, closeHosts(hosts))
 }

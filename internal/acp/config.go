@@ -29,6 +29,10 @@ type ConfigManager struct {
 	home  string
 	load  func() (config.Config, error)
 	probe func(ctx context.Context, name string, pc config.ProviderConfig) ([]ModelEntry, error)
+	// wrote is told the user config's path after every save succeeds, so a
+	// project child hears about its own writes (decision 3). Nil when the host
+	// keeps no record.
+	wrote func(path string)
 
 	mu sync.Mutex // serialises read-modify-write cycles on the config file
 }
@@ -68,6 +72,16 @@ func NewConfigManager(home string, load func() (config.Config, error), probe fun
 }
 
 func (m *ConfigManager) path() string { return config.UserConfigPath(m.home) }
+
+// reportWrite tells the child's record which file the manager just wrote, after
+// the save succeeded (decision 3). A manager the host gave no record to reports
+// nothing.
+func (m *ConfigManager) reportWrite() {
+	if m.wrote == nil {
+		return
+	}
+	m.wrote(m.path())
+}
 
 // providerWire is a provider as clients see it. APIKey is never part of it.
 type providerWire struct {
@@ -305,6 +319,7 @@ func (m *ConfigManager) SetProviders(ctx context.Context, params json.RawMessage
 	if err := config.SaveUserConfigProviders(m.path(), next); err != nil {
 		return nil, invalidParamsError("save providers: %v", err)
 	}
+	m.reportWrite()
 	return map[string]any{}, nil
 }
 
@@ -334,6 +349,7 @@ func (m *ConfigManager) SetProviderKey(ctx context.Context, params json.RawMessa
 	if err := config.SaveUserConfigProviderAPIKey(m.path(), p.Name, pc); err != nil {
 		return nil, serverErrorf("save provider key: %v", err)
 	}
+	m.reportWrite()
 	return map[string]any{}, nil
 }
 
@@ -382,6 +398,7 @@ func (m *ConfigManager) SetPresets(ctx context.Context, params json.RawMessage) 
 	if err := config.SaveUserConfigPresets(m.path(), next); err != nil {
 		return nil, serverErrorf("save presets: %v", err)
 	}
+	m.reportWrite()
 	return map[string]any{}, nil
 }
 
@@ -448,6 +465,7 @@ func (m *ConfigManager) SetRouting(ctx context.Context, params json.RawMessage) 
 	if err := config.SaveUserConfigSection(m.path(), cfg); err != nil {
 		return nil, serverErrorf("save routing: %v", err)
 	}
+	m.reportWrite()
 	return map[string]any{}, nil
 }
 
@@ -482,6 +500,7 @@ func (m *ConfigManager) SetBudgets(ctx context.Context, params json.RawMessage) 
 	if err := config.SaveUserConfigSection(m.path(), cfg); err != nil {
 		return nil, serverErrorf("save budgets: %v", err)
 	}
+	m.reportWrite()
 	return map[string]any{}, nil
 }
 

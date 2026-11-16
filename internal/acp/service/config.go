@@ -87,6 +87,7 @@ func (h *Host) SaveUserValue(ctx context.Context, tomlPath string, value any) er
 	if err := config.SaveUserConfigValue(path, tomlPath, value); err != nil {
 		return err
 	}
+	h.reportConfigWrite(path)
 	refreshLayers(h.currentState(), h.currentReloadLayers())
 	return nil
 }
@@ -150,6 +151,7 @@ func (h *Host) SaveUserProviders(ctx context.Context, providers, baseline map[st
 	if err := config.SaveUserConfigProviders(path, restored.Providers, baseline); err != nil {
 		return err
 	}
+	h.reportConfigWrite(path)
 	refreshLayers(h.currentState(), h.currentReloadLayers())
 	return nil
 }
@@ -164,6 +166,7 @@ func (h *Host) SaveUserPresets(ctx context.Context, presets, baseline map[string
 	if err := config.SaveUserConfigPresets(path, presets, baseline); err != nil {
 		return err
 	}
+	h.reportConfigWrite(path)
 	refreshLayers(h.currentState(), h.currentReloadLayers())
 	return nil
 }
@@ -183,6 +186,7 @@ func (h *Host) SaveProviderKey(ctx context.Context, name, key string) error {
 	if err := config.SaveUserConfigProviderAPIKey(path, name, config.ProviderConfig{APIKey: key}); err != nil {
 		return err
 	}
+	h.reportConfigWrite(path)
 	refreshLayers(h.currentState(), h.currentReloadLayers())
 	return nil
 }
@@ -375,6 +379,7 @@ func (s *Session) SaveProjectConfig(ctx context.Context, cfg config.Config) erro
 	if err := config.SaveProjectConfig(s.projectConfigPath(), restored, s.state.Layers()); err != nil {
 		return err
 	}
+	s.reportConfigWrite(s.projectConfigPath())
 	if s.trustRefresh != nil && s.state.WorkingDir != "" {
 		s.trustRefresh(s.state.WorkingDir)
 	}
@@ -391,6 +396,7 @@ func (s *Session) SaveVerifyCommands(ctx context.Context, build, test string) er
 	if err := config.SaveVerifyCommands(s.projectConfigPath(), build, test); err != nil {
 		return err
 	}
+	s.reportConfigWrite(s.projectConfigPath())
 	refreshLayers(s.state, s.reloadLayers)
 	return nil
 }

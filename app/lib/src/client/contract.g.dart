@@ -6806,6 +6806,999 @@ class MemoryConfidence {
   }
 }
 
+/// PlannerOccupancy is how a workspace looks to a new planner. Ownership is
+/// never inferred from a missing record.
+enum PlannerOccupancy {
+  plannerOccupancyFree('free'),
+  plannerOccupancyInUse('in_use'),
+  plannerOccupancyUnknown('unknown'),
+  unknown('unknown');
+
+  const PlannerOccupancy(this.wire);
+
+  /// The wire text this value stands for.
+  final String wire;
+
+  /// The value [wire] names, or [unknown] when this build does not
+  /// know it.
+  static PlannerOccupancy fromWire(String wire) {
+    for (final value in values) {
+      if (value != unknown && value.wire == wire) {
+        return value;
+      }
+    }
+    return unknown;
+  }
+}
+
+/// WorkerCapabilities is what a running worker session can actually do. It is
+/// per session rather than per backend: the same backend can offer workspace
+/// edits in one session and merely prompt in another.
+class WorkerCapabilities {
+  const WorkerCapabilities({
+    required this.prompt,
+    required this.cancel,
+    required this.permissionRequests,
+    required this.sessionLoad,
+    required this.workspaceEdits,
+    required this.modes,
+  });
+
+  final bool prompt;
+  final bool cancel;
+  final bool permissionRequests;
+  final bool sessionLoad;
+  final bool workspaceEdits;
+  final List<String> modes;
+
+  factory WorkerCapabilities.fromJson(Map<String, dynamic> json) {
+    return WorkerCapabilities(
+      prompt: json['prompt'] as bool,
+      cancel: json['cancel'] as bool,
+      permissionRequests: json['permissionRequests'] as bool,
+      sessionLoad: json['sessionLoad'] as bool,
+      workspaceEdits: json['workspaceEdits'] as bool,
+      modes: _list(
+        json['modes'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['prompt'] = prompt;
+    json['cancel'] = cancel;
+    json['permissionRequests'] = permissionRequests;
+    json['sessionLoad'] = sessionLoad;
+    json['workspaceEdits'] = workspaceEdits;
+    json['modes'] = modes;
+    return json;
+  }
+}
+
+/// PlannerArtifact is a reference to something the planner produced. The record
+/// persists the reference only; captured text lives on a snapshot instead.
+class PlannerArtifact {
+  const PlannerArtifact({
+    required this.kind,
+    required this.ref,
+    this.label,
+  });
+
+  final String kind;
+  final String ref;
+  final String? label;
+
+  factory PlannerArtifact.fromJson(Map<String, dynamic> json) {
+    return PlannerArtifact(
+      kind: json['kind'] as String,
+      ref: json['ref'] as String,
+      label: json['label'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['kind'] = kind;
+    json['ref'] = ref;
+    if (label != null) {
+      json['label'] = label;
+    }
+    return json;
+  }
+}
+
+/// PlannerTurn is one dispatched prompt. TextHash is the digest of the text the
+/// request ID was first used for, so a replay of the same request ID can be
+/// recognised without storing the prompt twice.
+class PlannerTurn {
+  const PlannerTurn({
+    required this.requestID,
+    required this.textHash,
+    required this.state,
+    this.stopReason,
+    this.reason,
+    required this.at,
+  });
+
+  final String requestID;
+  final String textHash;
+  final String state;
+  final String? stopReason;
+  final String? reason;
+  final String at;
+
+  factory PlannerTurn.fromJson(Map<String, dynamic> json) {
+    return PlannerTurn(
+      requestID: json['requestId'] as String,
+      textHash: json['textHash'] as String,
+      state: json['state'] as String,
+      stopReason: json['stopReason'] as String?,
+      reason: json['reason'] as String?,
+      at: json['at'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['requestId'] = requestID;
+    json['textHash'] = textHash;
+    json['state'] = state;
+    if (stopReason != null) {
+      json['stopReason'] = stopReason;
+    }
+    if (reason != null) {
+      json['reason'] = reason;
+    }
+    json['at'] = at;
+    return json;
+  }
+}
+
+/// PlannerDecision is one agent request and its single settlement. The chosen
+/// response is kept verbatim so a browser that reconnects learns what was
+/// decided rather than asking again.
+class PlannerDecision {
+  const PlannerDecision({
+    required this.requestID,
+    this.method,
+    required this.state,
+    this.response,
+    this.reason,
+    required this.at,
+  });
+
+  final String requestID;
+  final String? method;
+  final String state;
+  final Object? response;
+  final String? reason;
+  final String at;
+
+  factory PlannerDecision.fromJson(Map<String, dynamic> json) {
+    return PlannerDecision(
+      requestID: json['requestId'] as String,
+      method: json['method'] as String?,
+      state: json['state'] as String,
+      response: json['response'],
+      reason: json['reason'] as String?,
+      at: json['at'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['requestId'] = requestID;
+    if (method != null) {
+      json['method'] = method;
+    }
+    json['state'] = state;
+    if (response != null) {
+      json['response'] = response;
+    }
+    if (reason != null) {
+      json['reason'] = reason;
+    }
+    json['at'] = at;
+    return json;
+  }
+}
+
+/// PlannerView is a planner as the routes report it: the durable record
+/// projected for the browser, plus what the bridge can say about it right now.
+/// Resume is reported separately from the capability so an absent capability is
+/// never read as an offer.
+class PlannerView {
+  const PlannerView({
+    required this.id,
+    required this.projectRoot,
+    required this.repoID,
+    required this.backendID,
+    required this.workspaceID,
+    required this.occupancy,
+    this.owners,
+    this.sessionID,
+    required this.requestedMode,
+    this.confirmedMode,
+    required this.modeConfirmed,
+    required this.state,
+    required this.live,
+    required this.eventSequence,
+    required this.capabilities,
+    required this.sessionLoad,
+    required this.resumeAvailable,
+    this.resumeReason,
+    this.trust,
+    this.turns,
+    this.requests,
+    this.artifacts,
+    this.reason,
+    required this.createdAt,
+    required this.updatedAt,
+    this.endedAt,
+    this.rawEnums = const {},
+  });
+
+  final String id;
+  final String projectRoot;
+  final String repoID;
+  final String backendID;
+  final String workspaceID;
+  final PlannerOccupancy occupancy;
+  final List<String>? owners;
+  final String? sessionID;
+  final String requestedMode;
+  final String? confirmedMode;
+  final bool modeConfirmed;
+  final String state;
+  final bool live;
+  final int eventSequence;
+  final WorkerCapabilities capabilities;
+  final bool sessionLoad;
+  /// ResumeAvailable is true only for a backend that can load a session and a
+  /// replay this bridge actually performed. It is false today, with
+  /// ResumeReason saying why, so the browser offers a new planner instead.
+  final bool resumeAvailable;
+  final String? resumeReason;
+  final String? trust;
+  final List<PlannerTurn>? turns;
+  final List<PlannerDecision>? requests;
+  final List<PlannerArtifact>? artifacts;
+  final String? reason;
+  final String createdAt;
+  final String updatedAt;
+  final String? endedAt;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory PlannerView.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final occupancyWire = json['occupancy'] as String;
+    final occupancy = PlannerOccupancy.fromWire(occupancyWire);
+    if (occupancy == PlannerOccupancy.unknown) {
+      rawEnums['occupancy'] = occupancyWire;
+    }
+    return PlannerView(
+      id: json['id'] as String,
+      projectRoot: json['projectRoot'] as String,
+      repoID: json['repoId'] as String,
+      backendID: json['backendId'] as String,
+      workspaceID: json['workspaceId'] as String,
+      occupancy: occupancy,
+      owners: _listOrNull(
+        json['owners'],
+        (value) => value as String,
+      ),
+      sessionID: json['sessionId'] as String?,
+      requestedMode: json['requestedMode'] as String,
+      confirmedMode: json['confirmedMode'] as String?,
+      modeConfirmed: json['modeConfirmed'] as bool,
+      state: json['state'] as String,
+      live: json['live'] as bool,
+      eventSequence: (json['eventSequence'] as num).toInt(),
+      capabilities: _object(
+        json['capabilities'],
+        WorkerCapabilities.fromJson,
+      ),
+      sessionLoad: json['sessionLoad'] as bool,
+      resumeAvailable: json['resumeAvailable'] as bool,
+      resumeReason: json['resumeReason'] as String?,
+      trust: json['trust'] as String?,
+      turns: _listOrNull(
+        json['turns'],
+        (value) => _object(value, PlannerTurn.fromJson),
+      ),
+      requests: _listOrNull(
+        json['requests'],
+        (value) => _object(value, PlannerDecision.fromJson),
+      ),
+      artifacts: _listOrNull(
+        json['artifacts'],
+        (value) => _object(value, PlannerArtifact.fromJson),
+      ),
+      reason: json['reason'] as String?,
+      createdAt: json['createdAt'] as String,
+      updatedAt: json['updatedAt'] as String,
+      endedAt: json['endedAt'] as String?,
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['projectRoot'] = projectRoot;
+    json['repoId'] = repoID;
+    json['backendId'] = backendID;
+    json['workspaceId'] = workspaceID;
+    json['occupancy'] = rawEnums['occupancy'] ?? occupancy.wire;
+    if (owners != null) {
+      json['owners'] = owners!;
+    }
+    if (sessionID != null) {
+      json['sessionId'] = sessionID;
+    }
+    json['requestedMode'] = requestedMode;
+    if (confirmedMode != null) {
+      json['confirmedMode'] = confirmedMode;
+    }
+    json['modeConfirmed'] = modeConfirmed;
+    json['state'] = state;
+    json['live'] = live;
+    json['eventSequence'] = eventSequence;
+    json['capabilities'] = capabilities.toJson();
+    json['sessionLoad'] = sessionLoad;
+    json['resumeAvailable'] = resumeAvailable;
+    if (resumeReason != null) {
+      json['resumeReason'] = resumeReason;
+    }
+    if (trust != null) {
+      json['trust'] = trust;
+    }
+    if (turns != null) {
+      json['turns'] = [
+        for (final value in turns!) value.toJson(),
+      ];
+    }
+    if (requests != null) {
+      json['requests'] = [
+        for (final value in requests!) value.toJson(),
+      ];
+    }
+    if (artifacts != null) {
+      json['artifacts'] = [
+        for (final value in artifacts!) value.toJson(),
+      ];
+    }
+    if (reason != null) {
+      json['reason'] = reason;
+    }
+    json['createdAt'] = createdAt;
+    json['updatedAt'] = updatedAt;
+    if (endedAt != null) {
+      json['endedAt'] = endedAt;
+    }
+    return json;
+  }
+}
+
+/// PlannerCreateRequest is the POST /api/planners body. WorkspaceID names a
+/// workspace the bridge returned earlier; a filesystem path is never accepted
+/// in its place. ProceedShared is what a caller sets after seeing an in_use or
+/// unknown occupancy; it is never implied.
+class PlannerCreateRequest {
+  const PlannerCreateRequest({
+    required this.projectRoot,
+    required this.repoID,
+    this.workspaceID,
+    this.proceedShared,
+    this.mode,
+  });
+
+  final String projectRoot;
+  final String repoID;
+  final String? workspaceID;
+  final bool? proceedShared;
+  final String? mode;
+
+  factory PlannerCreateRequest.fromJson(Map<String, dynamic> json) {
+    return PlannerCreateRequest(
+      projectRoot: json['projectRoot'] as String,
+      repoID: json['repoId'] as String,
+      workspaceID: json['workspaceId'] as String?,
+      proceedShared: json['proceedShared'] as bool?,
+      mode: json['mode'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['projectRoot'] = projectRoot;
+    json['repoId'] = repoID;
+    if (workspaceID != null) {
+      json['workspaceId'] = workspaceID;
+    }
+    if (proceedShared != null) {
+      json['proceedShared'] = proceedShared;
+    }
+    if (mode != null) {
+      json['mode'] = mode;
+    }
+    return json;
+  }
+}
+
+/// PlannerPromptRequest is the POST /api/planners/{id}/prompt body. Context is
+/// the additional bounded text a user supplied alongside the prompt: it is
+/// composed into the dispatched text after the prompt's own text, and the
+/// journal keeps only its hash and length.
+class PlannerPromptRequest {
+  const PlannerPromptRequest({
+    required this.requestID,
+    required this.text,
+    this.context,
+  });
+
+  final String requestID;
+  final String text;
+  final String? context;
+
+  factory PlannerPromptRequest.fromJson(Map<String, dynamic> json) {
+    return PlannerPromptRequest(
+      requestID: json['requestId'] as String,
+      text: json['text'] as String,
+      context: json['context'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['requestId'] = requestID;
+    json['text'] = text;
+    if (context != null) {
+      json['context'] = context;
+    }
+    return json;
+  }
+}
+
+/// PlannerAnswerRequest is the POST /api/planners/{id}/requests/{requestId}
+/// body: the chosen response, passed through to the backend unchanged.
+class PlannerAnswerRequest {
+  const PlannerAnswerRequest({
+    required this.response,
+  });
+
+  final Object? response;
+
+  factory PlannerAnswerRequest.fromJson(Map<String, dynamic> json) {
+    return PlannerAnswerRequest(
+      response: json['response'],
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['response'] = response;
+    return json;
+  }
+}
+
+/// PlannerTurnReply is what a prompt answers: the dispatch of a new turn, or
+/// the outcome already recorded for a replayed request ID.
+class PlannerTurnReply {
+  const PlannerTurnReply({
+    required this.requestID,
+    required this.state,
+    this.stopReason,
+  });
+
+  final String requestID;
+  final String state;
+  final String? stopReason;
+
+  factory PlannerTurnReply.fromJson(Map<String, dynamic> json) {
+    return PlannerTurnReply(
+      requestID: json['requestId'] as String,
+      state: json['state'] as String,
+      stopReason: json['stopReason'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['requestId'] = requestID;
+    json['state'] = state;
+    if (stopReason != null) {
+      json['stopReason'] = stopReason;
+    }
+    return json;
+  }
+}
+
+/// PlannerEvent is one journaled event. Sequence is the planner's own strictly
+/// increasing counter, not the backend's; Truncated marks a payload that
+/// exceeded the journal's per-event bound and was replaced by its marker.
+class PlannerEvent {
+  const PlannerEvent({
+    required this.sequence,
+    required this.kind,
+    this.data,
+    this.truncated,
+  });
+
+  final int sequence;
+  final String kind;
+  final Object? data;
+  final bool? truncated;
+
+  factory PlannerEvent.fromJson(Map<String, dynamic> json) {
+    return PlannerEvent(
+      sequence: (json['sequence'] as num).toInt(),
+      kind: json['kind'] as String,
+      data: json['data'],
+      truncated: json['truncated'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['sequence'] = sequence;
+    json['kind'] = kind;
+    if (data != null) {
+      json['data'] = data;
+    }
+    if (truncated != null) {
+      json['truncated'] = truncated;
+    }
+    return json;
+  }
+}
+
+/// PlannerSnapshotArtifact is one piece of text a snapshot froze: the plan or
+/// the spec the user approved. Its content is stored with the snapshot record
+/// and its SHA256 is verified on every read, so a review never shows bytes that
+/// differ from the hash it reports.
+class PlannerSnapshotArtifact {
+  const PlannerSnapshotArtifact({
+    required this.kind,
+    required this.content,
+    required this.sha256,
+  });
+
+  final String kind;
+  final String content;
+  final String sha256;
+
+  factory PlannerSnapshotArtifact.fromJson(Map<String, dynamic> json) {
+    return PlannerSnapshotArtifact(
+      kind: json['kind'] as String,
+      content: json['content'] as String,
+      sha256: json['sha256'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['kind'] = kind;
+    json['content'] = content;
+    json['sha256'] = sha256;
+    return json;
+  }
+}
+
+/// PlannerSnapshotRequest is the POST /api/planners/{id}/snapshots body: the
+/// exact plan and spec text the user approved, and the repository-relative
+/// paths they selected. An empty Paths list is a documents-only snapshot.
+class PlannerSnapshotRequest {
+  const PlannerSnapshotRequest({
+    required this.plan,
+    required this.spec,
+    required this.paths,
+  });
+
+  final String plan;
+  final String spec;
+  final List<String> paths;
+
+  factory PlannerSnapshotRequest.fromJson(Map<String, dynamic> json) {
+    return PlannerSnapshotRequest(
+      plan: json['plan'] as String,
+      spec: json['spec'] as String,
+      paths: _list(
+        json['paths'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['plan'] = plan;
+    json['spec'] = spec;
+    json['paths'] = paths;
+    return json;
+  }
+}
+
+/// PlannerRejection names one path a capture refused and why. A selected path
+/// is either captured or reported here; it is never silently dropped.
+class PlannerRejection {
+  const PlannerRejection({
+    required this.path,
+    required this.reason,
+  });
+
+  final String path;
+  final String reason;
+
+  factory PlannerRejection.fromJson(Map<String, dynamic> json) {
+    return PlannerRejection(
+      path: json['path'] as String,
+      reason: json['reason'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['path'] = path;
+    json['reason'] = reason;
+    return json;
+  }
+}
+
+/// PlannerSnapshotFile is one captured file as a review reports it: the frozen
+/// metadata plus its diff against the base commit. The diff is the text that
+/// was built at capture time, so the review still works after the workspace it
+/// came from is gone.
+///
+/// It flattens SelectedFile, which the bridge embeds: the wire shape is
+/// SelectedFile's fields followed by Diff.
+class PlannerSnapshotFile {
+  const PlannerSnapshotFile({
+    required this.path,
+    required this.operation,
+    this.baseSHA256,
+    this.contentSHA256,
+    required this.executable,
+    required this.diff,
+  });
+
+  final String path;
+  final String operation;
+  final String? baseSHA256;
+  final String? contentSHA256;
+  final bool executable;
+  final String diff;
+
+  factory PlannerSnapshotFile.fromJson(Map<String, dynamic> json) {
+    return PlannerSnapshotFile(
+      path: json['path'] as String,
+      operation: json['operation'] as String,
+      baseSHA256: json['baseSha256'] as String?,
+      contentSHA256: json['contentSha256'] as String?,
+      executable: json['executable'] as bool,
+      diff: json['diff'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['path'] = path;
+    json['operation'] = operation;
+    if (baseSHA256 != null) {
+      json['baseSha256'] = baseSHA256;
+    }
+    if (contentSHA256 != null) {
+      json['contentSha256'] = contentSHA256;
+    }
+    json['executable'] = executable;
+    json['diff'] = diff;
+    return json;
+  }
+}
+
+/// PlannerSnapshotView is a snapshot as the routes report it. It carries no
+/// absolute host path: every path in it is the repository-relative one the
+/// caller selected.
+class PlannerSnapshotView {
+  const PlannerSnapshotView({
+    required this.id,
+    required this.sha256,
+    required this.baseCommit,
+    required this.artifacts,
+    required this.files,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String sha256;
+  final String baseCommit;
+  final List<PlannerSnapshotArtifact> artifacts;
+  final List<PlannerSnapshotFile> files;
+  final String createdAt;
+
+  factory PlannerSnapshotView.fromJson(Map<String, dynamic> json) {
+    return PlannerSnapshotView(
+      id: json['id'] as String,
+      sha256: json['sha256'] as String,
+      baseCommit: json['baseCommit'] as String,
+      artifacts: _list(
+        json['artifacts'],
+        (value) => _object(value, PlannerSnapshotArtifact.fromJson),
+      ),
+      files: _list(
+        json['files'],
+        (value) => _object(value, PlannerSnapshotFile.fromJson),
+      ),
+      createdAt: json['createdAt'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['sha256'] = sha256;
+    json['baseCommit'] = baseCommit;
+    json['artifacts'] = [
+      for (final value in artifacts) value.toJson(),
+    ];
+    json['files'] = [
+      for (final value in files) value.toJson(),
+    ];
+    json['createdAt'] = createdAt;
+    return json;
+  }
+}
+
+/// PlannerSnapshotReply is what a capture answers: the snapshot it froze and
+/// the paths it refused.
+///
+/// It flattens PlannerSnapshotView, which the bridge embeds: the wire shape is
+/// the view's fields followed by Rejected.
+class PlannerSnapshotReply {
+  const PlannerSnapshotReply({
+    required this.id,
+    required this.sha256,
+    required this.baseCommit,
+    required this.artifacts,
+    required this.files,
+    required this.createdAt,
+    required this.rejected,
+  });
+
+  final String id;
+  final String sha256;
+  final String baseCommit;
+  final List<PlannerSnapshotArtifact> artifacts;
+  final List<PlannerSnapshotFile> files;
+  final String createdAt;
+  final List<PlannerRejection> rejected;
+
+  factory PlannerSnapshotReply.fromJson(Map<String, dynamic> json) {
+    return PlannerSnapshotReply(
+      id: json['id'] as String,
+      sha256: json['sha256'] as String,
+      baseCommit: json['baseCommit'] as String,
+      artifacts: _list(
+        json['artifacts'],
+        (value) => _object(value, PlannerSnapshotArtifact.fromJson),
+      ),
+      files: _list(
+        json['files'],
+        (value) => _object(value, PlannerSnapshotFile.fromJson),
+      ),
+      createdAt: json['createdAt'] as String,
+      rejected: _list(
+        json['rejected'],
+        (value) => _object(value, PlannerRejection.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['sha256'] = sha256;
+    json['baseCommit'] = baseCommit;
+    json['artifacts'] = [
+      for (final value in artifacts) value.toJson(),
+    ];
+    json['files'] = [
+      for (final value in files) value.toJson(),
+    ];
+    json['createdAt'] = createdAt;
+    json['rejected'] = [
+      for (final value in rejected) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// PlannerContextArtifact is one artifact source a briefing found. Approved is
+/// true only for text a user captured in a snapshot; a reference the planner
+/// record merely names is reported as unapproved, carrying no captured content
+/// and no hash this bridge can vouch for.
+class PlannerContextArtifact {
+  const PlannerContextArtifact({
+    required this.kind,
+    this.sha256,
+    required this.source,
+    required this.approved,
+    this.snapshotID,
+    this.ref,
+  });
+
+  final String kind;
+  final String? sha256;
+  final String source;
+  final bool approved;
+  final String? snapshotID;
+  final String? ref;
+
+  factory PlannerContextArtifact.fromJson(Map<String, dynamic> json) {
+    return PlannerContextArtifact(
+      kind: json['kind'] as String,
+      sha256: json['sha256'] as String?,
+      source: json['source'] as String,
+      approved: json['approved'] as bool,
+      snapshotID: json['snapshotId'] as String?,
+      ref: json['ref'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['kind'] = kind;
+    if (sha256 != null) {
+      json['sha256'] = sha256;
+    }
+    json['source'] = source;
+    json['approved'] = approved;
+    if (snapshotID != null) {
+      json['snapshotId'] = snapshotID;
+    }
+    if (ref != null) {
+      json['ref'] = ref;
+    }
+    return json;
+  }
+}
+
+/// PlannerContextDecision is one settled agent request a briefing reports, with
+/// the request it came from as its source.
+class PlannerContextDecision {
+  const PlannerContextDecision({
+    required this.source,
+    required this.requestID,
+    this.method,
+    required this.state,
+    required this.at,
+  });
+
+  final String source;
+  final String requestID;
+  final String? method;
+  final String state;
+  final String at;
+
+  factory PlannerContextDecision.fromJson(Map<String, dynamic> json) {
+    return PlannerContextDecision(
+      source: json['source'] as String,
+      requestID: json['requestId'] as String,
+      method: json['method'] as String?,
+      state: json['state'] as String,
+      at: json['at'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['source'] = source;
+    json['requestId'] = requestID;
+    if (method != null) {
+      json['method'] = method;
+    }
+    json['state'] = state;
+    json['at'] = at;
+    return json;
+  }
+}
+
+/// PlannerContextQuestion is one recorded question that is still unresolved.
+class PlannerContextQuestion {
+  const PlannerContextQuestion({
+    required this.source,
+    required this.requestID,
+    this.method,
+    required this.state,
+    required this.at,
+  });
+
+  final String source;
+  final String requestID;
+  final String? method;
+  final String state;
+  final String at;
+
+  factory PlannerContextQuestion.fromJson(Map<String, dynamic> json) {
+    return PlannerContextQuestion(
+      source: json['source'] as String,
+      requestID: json['requestId'] as String,
+      method: json['method'] as String?,
+      state: json['state'] as String,
+      at: json['at'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['source'] = source;
+    json['requestId'] = requestID;
+    if (method != null) {
+      json['method'] = method;
+    }
+    json['state'] = state;
+    json['at'] = at;
+    return json;
+  }
+}
+
+/// PlannerContextView is the bounded briefing a planner record supports. Absent
+/// names the sources it does not hold: nothing here is invented to fill one in.
+class PlannerContextView {
+  const PlannerContextView({
+    required this.artifacts,
+    required this.decisions,
+    required this.unresolved,
+    required this.absent,
+  });
+
+  final List<PlannerContextArtifact> artifacts;
+  final List<PlannerContextDecision> decisions;
+  final List<PlannerContextQuestion> unresolved;
+  final List<String> absent;
+
+  factory PlannerContextView.fromJson(Map<String, dynamic> json) {
+    return PlannerContextView(
+      artifacts: _list(
+        json['artifacts'],
+        (value) => _object(value, PlannerContextArtifact.fromJson),
+      ),
+      decisions: _list(
+        json['decisions'],
+        (value) => _object(value, PlannerContextDecision.fromJson),
+      ),
+      unresolved: _list(
+        json['unresolved'],
+        (value) => _object(value, PlannerContextQuestion.fromJson),
+      ),
+      absent: _list(
+        json['absent'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['artifacts'] = [
+      for (final value in artifacts) value.toJson(),
+    ];
+    json['decisions'] = [
+      for (final value in decisions) value.toJson(),
+    ];
+    json['unresolved'] = [
+      for (final value in unresolved) value.toJson(),
+    ];
+    json['absent'] = absent;
+    return json;
+  }
+}
+
 /// TrustState is a project's trust decision.
 enum TrustState {
   trustNA('na'),

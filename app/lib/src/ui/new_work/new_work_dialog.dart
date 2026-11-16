@@ -16,6 +16,7 @@ Sheet newWorkDialog(
   NewWorkModel model, {
   VoidCallback? onCancel,
   void Function(String agentId)? onStarted,
+  void Function(StartedPlanner planner)? onPlanned,
 }) => Sheet(
   title: 'Start a new agent',
   actions: [
@@ -23,6 +24,11 @@ Sheet newWorkDialog(
       'Start',
       onTap: () async {
         await model.start();
+        final planner = model.startedPlanner;
+        if (planner != null) {
+          onPlanned?.call(planner);
+          return;
+        }
         final started = model.started;
         if (started != null) onStarted?.call(started.agentID);
       },

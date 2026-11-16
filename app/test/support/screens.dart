@@ -34,6 +34,7 @@ import 'package:marshal_app/src/model/terminal_session.dart';
 import 'package:marshal_app/src/model/nav_model.dart';
 import 'package:marshal_app/src/model/overview_model.dart';
 import 'package:marshal_app/src/model/place.dart';
+import 'package:marshal_app/src/model/planning_model.dart';
 import 'package:marshal_app/src/model/recipes_model.dart';
 import 'package:marshal_app/src/model/schedules_model.dart';
 import 'package:marshal_app/src/model/stack_store.dart';
@@ -64,6 +65,7 @@ import 'package:marshal_app/src/ui/overview/overview.dart';
 import 'package:marshal_app/src/ui/pulls/pulls_place.dart';
 import 'package:marshal_app/src/ui/shell/placeholder.dart';
 import 'package:marshal_app/src/ui/shell/shell.dart';
+import 'package:marshal_app/src/ui/factory/planning_screen.dart';
 import 'package:marshal_app/src/ui/factory/work_item_screen.dart';
 import 'package:marshal_app/src/ui/thread/thread_screen.dart';
 
@@ -809,6 +811,14 @@ final screens = <ScreenCase>[
     },
   ),
   ScreenCase(
+    name: 'planning',
+    ready: () => _planningScreen(),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _planningScreen(state: kind),
+    },
+  ),
+  ScreenCase(
     name: 'shell',
     ready: () => _shell(),
     states: {
@@ -1283,4 +1293,71 @@ Widget _workItemScreen({StateKind? state}) => WorkItemScreen(
   item: wmodel.WorkItemView.of('local', _workItem()),
   state: state,
   now: shellNow,
+);
+
+/// A planner whose routes answer from the fixture: one journaled turn, one
+/// question waiting on a person, and one frozen snapshot.
+PlanningModel _planningModel() => PlanningModel(
+  plannerID: 'p-1',
+  events: (after) async => [
+    contract.PlannerEvent(
+      sequence: 1,
+      kind: 'planner.started',
+      data: const {'mode': 'bypassPermissions', 'workspaceId': 'w-1'},
+    ),
+    contract.PlannerEvent(
+      sequence: 2,
+      kind: 'turn.text',
+      data: const {'text': 'I read the intake path. The plan has two tasks.'},
+    ),
+    contract.PlannerEvent(
+      sequence: 3,
+      kind: 'turn.question',
+      data: const {
+        'requestId': 'req-1',
+        'method': 'session/request_question',
+        'params': {
+          'questions': [
+            {'question': 'Should the inspector dock or open as a sheet?'},
+          ],
+        },
+      },
+    ),
+  ],
+  promptPlanner: (request) async => contract.PlannerTurnReply(
+    requestID: request.requestID,
+    state: 'dispatched',
+  ),
+  cancelPlanner: () async {},
+  answerPlanner: (requestID, response) async {},
+  capture: (request) async => contract.PlannerSnapshotReply(
+    id: 'snap-1',
+    sha256: '9f2c1a55',
+    baseCommit: 'base-1',
+    artifacts: [
+      contract.PlannerSnapshotArtifact(
+        kind: 'plan',
+        content: '## Task 1\nRead the item.\n## Task 2\nApprove it.\n',
+        sha256: 'a1',
+      ),
+      contract.PlannerSnapshotArtifact(
+        kind: 'spec',
+        content: 'Ship the work item thread.',
+        sha256: 'a2',
+      ),
+    ],
+    files: const [],
+    createdAt: '2026-11-17T04:00:00Z',
+    rejected: const [],
+  ),
+);
+
+/// The planning thread, or one of its §7 states.
+Widget _planningScreen({StateKind? state}) => PlanningScreen(
+  plan: _planningModel(),
+  title: 'Planning',
+  subtitle: 'Permissive · planning in w-1',
+  state: state,
+  now: shellNow,
+  onHandToFactory: () {},
 );

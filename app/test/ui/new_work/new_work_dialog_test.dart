@@ -89,15 +89,18 @@ void main() {
     model.dispose();
   });
 
-  testWidgets('planned kinds are drawn disabled, naming F6', (tester) async {
+  testWidgets('a kind the phase cannot start is drawn disabled, naming F6', (
+    tester,
+  ) async {
     final (:model, spawns: _) = _dialog();
     await pumpKit(tester, newWorkDialog(model), height: 900);
 
+    // "Work item" arrives with the handoff review (F6 plan 2, task 2); "Plan
+    // first" starts a planning thread now, so it is a live control.
     final plan = tester.widget<Btn>(find.widgetWithText(Btn, 'Plan first'));
     final item = tester.widget<Btn>(find.widgetWithText(Btn, 'Work item'));
-    expect(plan.onTap, isNull);
+    expect(plan.onTap, isNotNull);
     expect(item.onTap, isNull);
-    expect(hasTip(tester, find.text('Plan first'), 'Planned for F6'), isTrue);
     expect(hasTip(tester, find.text('Work item'), 'Planned for F6'), isTrue);
 
     model.dispose();

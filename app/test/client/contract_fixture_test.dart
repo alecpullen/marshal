@@ -22,6 +22,7 @@ const _fixtures = [
   'intake',
   'issues',
   'library',
+  'planner',
   'projects',
   'recipes',
   'schedules',
@@ -151,6 +152,43 @@ final _codecs = <String, _Codec>{
   'FactoryCompletionCommand': (json) =>
       FactoryCompletionCommand.fromJson(_object(json)).toJson(),
   'FactoryCommand': (json) => FactoryCommand.fromJson(_object(json)).toJson(),
+  // planner.json — the planning thread, its snapshots and its briefing.
+  'PlannerOccupancy': (json) => PlannerOccupancy.fromWire(json! as String).wire,
+  'WorkerCapabilities': (json) =>
+      WorkerCapabilities.fromJson(_object(json)).toJson(),
+  'PlannerArtifact': (json) => PlannerArtifact.fromJson(_object(json)).toJson(),
+  'PlannerTurn': (json) => PlannerTurn.fromJson(_object(json)).toJson(),
+  'PlannerDecision': (json) => PlannerDecision.fromJson(_object(json)).toJson(),
+  'PlannerView': (json) => PlannerView.fromJson(_object(json)).toJson(),
+  'PlannerCreateRequest': (json) =>
+      PlannerCreateRequest.fromJson(_object(json)).toJson(),
+  'PlannerPromptRequest': (json) =>
+      PlannerPromptRequest.fromJson(_object(json)).toJson(),
+  'PlannerAnswerRequest': (json) =>
+      PlannerAnswerRequest.fromJson(_object(json)).toJson(),
+  'PlannerTurnReply': (json) =>
+      PlannerTurnReply.fromJson(_object(json)).toJson(),
+  'PlannerEvent': (json) => PlannerEvent.fromJson(_object(json)).toJson(),
+  'PlannerSnapshotArtifact': (json) =>
+      PlannerSnapshotArtifact.fromJson(_object(json)).toJson(),
+  'PlannerSnapshotRequest': (json) =>
+      PlannerSnapshotRequest.fromJson(_object(json)).toJson(),
+  'PlannerRejection': (json) =>
+      PlannerRejection.fromJson(_object(json)).toJson(),
+  'PlannerSnapshotFile': (json) =>
+      PlannerSnapshotFile.fromJson(_object(json)).toJson(),
+  'PlannerSnapshotView': (json) =>
+      PlannerSnapshotView.fromJson(_object(json)).toJson(),
+  'PlannerSnapshotReply': (json) =>
+      PlannerSnapshotReply.fromJson(_object(json)).toJson(),
+  'PlannerContextArtifact': (json) =>
+      PlannerContextArtifact.fromJson(_object(json)).toJson(),
+  'PlannerContextDecision': (json) =>
+      PlannerContextDecision.fromJson(_object(json)).toJson(),
+  'PlannerContextQuestion': (json) =>
+      PlannerContextQuestion.fromJson(_object(json)).toJson(),
+  'PlannerContextView': (json) =>
+      PlannerContextView.fromJson(_object(json)).toJson(),
   // library.json
   'SkillEntry': (json) => SkillEntry.fromJson(_object(json)).toJson(),
   'SkillPreview': (json) => SkillPreview.fromJson(_object(json)).toJson(),

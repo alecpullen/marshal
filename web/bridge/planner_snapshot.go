@@ -311,7 +311,16 @@ func (s *PlannerService) CreateSnapshot(ctx context.Context, id string, req Plan
 	if rejected == nil {
 		rejected = []PlannerRejection{}
 	}
-	return PlannerSnapshotReply{PlannerSnapshotView: plannerSnapshotView(snapshot), Rejected: rejected}, nil
+	view := plannerSnapshotView(snapshot)
+	return PlannerSnapshotReply{
+		ID:         view.ID,
+		SHA256:     view.SHA256,
+		BaseCommit: view.BaseCommit,
+		Artifacts:  view.Artifacts,
+		Files:      view.Files,
+		CreatedAt:  view.CreatedAt,
+		Rejected:   rejected,
+	}, nil
 }
 
 // Snapshot answers one captured handoff for review, verifying that every byte
@@ -714,7 +723,14 @@ func plannerSnapshotView(snapshot plannerSnapshotRecord) PlannerSnapshotView {
 	}
 	files := make([]PlannerSnapshotFile, 0, len(snapshot.Files))
 	for _, file := range snapshot.Files {
-		files = append(files, PlannerSnapshotFile{SelectedFile: file, Diff: diffs[file.Path]})
+		files = append(files, PlannerSnapshotFile{
+			Path:          file.Path,
+			Operation:     file.Operation,
+			BaseSHA256:    file.BaseSHA256,
+			ContentSHA256: file.ContentSHA256,
+			Executable:    file.Executable,
+			Diff:          diffs[file.Path],
+		})
 	}
 	artifacts := snapshot.Artifacts
 	if artifacts == nil {

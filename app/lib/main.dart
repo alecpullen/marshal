@@ -9,6 +9,7 @@ import 'src/model/fleet_store.dart';
 import 'src/model/composer_model.dart';
 import 'src/model/inbox_model.dart';
 import 'src/model/new_work_model.dart';
+import 'src/model/planning_model.dart';
 import 'src/model/pulls_model.dart';
 import 'src/model/pulls_store.dart';
 import 'src/model/stack_store.dart';
@@ -75,6 +76,25 @@ Future<void> main() async {
           hosts.hosts.firstWhere((host) => host.name == thread.host).client,
           host: thread.host,
         ),
+        // A planning thread reads its planner's journal on the client that
+        // reaches its host, and captures the plan for review (F6 decision 8).
+        planningFor: (host, plannerID) {
+          final client = hosts.hosts
+              .firstWhere((owner) => owner.name == host)
+              .client;
+          return PlanningModel(
+            plannerID: plannerID,
+            events: (after) => client.plannerEvents(plannerID, after: after),
+            promptPlanner: (request) =>
+                client.promptPlanner(plannerID, request),
+            cancelPlanner: () => client.cancelPlanner(plannerID),
+            answerPlanner: (requestID, response) =>
+                client.answerPlanner(plannerID, requestID, response),
+            capture: (request) =>
+                client.createPlannerSnapshot(plannerID, request),
+            read: () => client.planner(plannerID),
+          );
+        },
       ),
     ),
   );

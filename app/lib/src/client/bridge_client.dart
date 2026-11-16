@@ -851,6 +851,84 @@ class BridgeClient {
     return FactoryItem.fromJson(body['item'] as Map<String, dynamic>);
   }
 
+  // The planner (F6). A planning thread is one of the bridge's own agent
+  // sessions: its routes are `/api/planners`, and it is driven by prompts,
+  // answers and a journal read back by sequence.
+
+  /// POST /api/planners: start a planner in a fresh checkout of the project.
+  Future<PlannerView> createPlanner(PlannerCreateRequest request) => _objectOf(
+    '/api/planners',
+    PlannerView.fromJson,
+    method: 'POST',
+    body: request,
+  );
+
+  /// GET /api/planners/{id}: one planner as the bridge reports it.
+  Future<PlannerView> planner(String id) => _objectOf(
+    '/api/planners/${Uri.encodeComponent(id)}',
+    PlannerView.fromJson,
+  );
+
+  /// POST /api/planners/{id}/prompt: dispatch a prompt, or replay its outcome.
+  Future<PlannerTurnReply> promptPlanner(
+    String id,
+    PlannerPromptRequest request,
+  ) => _objectOf(
+    '/api/planners/${Uri.encodeComponent(id)}/prompt',
+    PlannerTurnReply.fromJson,
+    method: 'POST',
+    body: request,
+  );
+
+  /// POST /api/planners/{id}/cancel: stop the turn in flight.
+  Future<void> cancelPlanner(String id) =>
+      _post('/api/planners/${Uri.encodeComponent(id)}/cancel', null);
+
+  /// POST /api/planners/{id}/requests/{requestId}: answer one agent request.
+  /// The response is the chosen payload, passed through to the backend.
+  Future<void> answerPlanner(String id, String requestId, Object? response) =>
+      _post(
+        '/api/planners/${Uri.encodeComponent(id)}/requests/'
+        '${Uri.encodeComponent(requestId)}',
+        PlannerAnswerRequest(response: response),
+      );
+
+  /// GET /api/planners/{id}/events?after=N: the journal from [after] on.
+  Future<List<PlannerEvent>> plannerEvents(String id, {int after = 0}) async {
+    final response = await _send(
+      Request(
+        path: '/api/planners/${Uri.encodeComponent(id)}/events',
+        query: {if (after > 0) 'after': '$after'},
+      ),
+    );
+    final values = _decode(response) as List<dynamic>;
+    return List.unmodifiable([
+      for (final value in values)
+        PlannerEvent.fromJson(value as Map<String, dynamic>),
+    ]);
+  }
+
+  /// POST /api/planners/{id}/snapshots: freeze the plan, the spec and the
+  /// selected files for review.
+  Future<PlannerSnapshotReply> createPlannerSnapshot(
+    String id,
+    PlannerSnapshotRequest request,
+  ) => _objectOf(
+    '/api/planners/${Uri.encodeComponent(id)}/snapshots',
+    PlannerSnapshotReply.fromJson,
+    method: 'POST',
+    body: request,
+  );
+
+  /// GET /api/planners/{id}/snapshots/{snapshotId}: one frozen snapshot, with
+  /// every blob verified against the hash it recorded.
+  Future<PlannerSnapshotView> plannerSnapshot(String id, String snapshotID) =>
+      _objectOf(
+        '/api/planners/${Uri.encodeComponent(id)}/snapshots/'
+        '${Uri.encodeComponent(snapshotID)}',
+        PlannerSnapshotView.fromJson,
+      );
+
   Future<Response> _send(Request request) async {
     final response = await _transport.send(request);
     if (!response.ok) {

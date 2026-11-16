@@ -10,6 +10,7 @@ import '../../model/inbox_model.dart' as inbox;
 import '../../model/nav_model.dart';
 import '../../model/overview_model.dart' show buildOverview;
 import '../../model/place.dart';
+import '../../model/planning_model.dart';
 import '../../model/pulls_model.dart';
 import '../../model/revision_model.dart';
 import '../../model/stack_store.dart';
@@ -18,6 +19,7 @@ import '../../model/thread_view_state.dart';
 import '../../model/work_item_model.dart'
     show WorkItemView, WorkItemWorker, threadOfItem;
 import '../inbox/inbox.dart' show Inbox;
+import '../factory/planning_screen.dart';
 import '../factory/revision_sheet.dart';
 import '../factory/work_item_screen.dart';
 import '../kit/kit.dart';
@@ -289,6 +291,7 @@ class Studio extends StatefulWidget {
     this.threadStore,
     this.composerFor,
     this.newWorkFor,
+    this.planningFor,
     this.initialPlace = const Place.overview(),
   });
 
@@ -323,6 +326,11 @@ class Studio extends StatefulWidget {
   /// `⌘N` without a dialog.
   final NewWorkModel Function(model.ThreadRef thread)? newWorkFor;
 
+  /// Builds a planning thread's model, for a planner a person started (F6
+  /// decision 8). Null leaves the planning place unbuilt rather than drawing
+  /// an empty one.
+  final PlanningModel Function(String host, String plannerID)? planningFor;
+
   /// The place a deep link names.
   final Place initialPlace;
 
@@ -338,6 +346,11 @@ class _StudioState extends State<Studio> {
   /// The one guard every place leaving this screen consults: the shell asks
   /// it, and a place that edits watches the models it holds (F7 decision 3).
   final _unsaved = UnsavedGuard();
+
+  /// The planning threads this screen started, by planner id (F6 decision 8).
+  /// A planner is none of the things the fleet lists, so the screen that
+  /// started it is the only one that can name its place.
+  final _planners = <String, model.ThreadRef>{};
 
   @override
   void initState() {
@@ -457,6 +470,17 @@ class _StudioState extends State<Studio> {
       final build = widget.threadStore;
       final thread = _threadRef(place);
       final factory = widget.factory;
+      if (thread != null && thread.planning) {
+        final plan = widget.planningFor?.call(thread.host, thread.id);
+        if (plan != null) {
+          return _PlanningPlace(
+            key: ValueKey('planning/${thread.host}/${thread.id}'),
+            thread: thread,
+            plan: plan,
+            now: widget.store.now,
+          );
+        }
+      }
       if (thread != null &&
           factory != null &&
           thread.kind == model.ThreadKind.workItem) {
@@ -480,6 +504,12 @@ class _StudioState extends State<Studio> {
           newWorkFor: widget.newWorkFor,
           onThreadStarted: (id) =>
               navigation.go(Place(PlaceKind.thread, host: thread.host, id: id)),
+          onPlannerStarted: (planner) {
+            _rememberPlanner(thread.host, thread.project, planner);
+            navigation.go(
+              Place(PlaceKind.thread, host: thread.host, id: planner.id),
+            );
+          },
           asks: [
             for (final ask in widget.inbox.asks)
               if (ask.thread?.host == thread.host &&
@@ -496,19 +526,41 @@ class _StudioState extends State<Studio> {
     return plannedPlace(place, nav);
   }
 
-  /// The thread a place names: a work item the factory reports, or an agent the
-  /// fleet still lists. A work item is looked up first, because its id is its
-  /// own namespace and no agent can share it.
+  /// The thread a place names: a planning thread the person started, a work
+  /// item the factory reports, or an agent the fleet still lists. A work item
+  /// and a planner are looked up first, because their ids are their own
+  /// namespaces and no agent can share one.
   model.ThreadRef? _threadRef(Place place) {
     final host = place.host;
     final id = place.id;
     if (host == null || id == null) return null;
+    final planner = _planners[id];
+    if (planner != null && planner.host == host) return planner;
     final item = widget.factory?.byId(host, id);
     if (item != null) return threadOfItem(host, item);
     for (final agent in widget.store.agents(host: host)) {
       if (agent.id == id) return model.threadFor(host, agent);
     }
     return null;
+  }
+
+  /// Remembers a planner a person started, so its place resolves to a planning
+  /// thread (F6 decision 8): a planner is none of the things the fleet lists,
+  /// so the screen that started it is the only one that can name it.
+  void _rememberPlanner(String host, String project, StartedPlanner planner) {
+    setState(() {
+      _planners[planner.id] = model.ThreadRef(
+        host: host,
+        id: planner.id,
+        project: planner.projectRoot.isEmpty ? project : planner.projectRoot,
+        title: 'Planning',
+        kind: model.ThreadKind.agent,
+        status: model.ThreadStatus.running,
+        headline: 'Planning in ${planner.workspaceID}',
+        lastActive: widget.store.now,
+        planning: true,
+      );
+    });
   }
 
   /// Opens the thread a pull request came from, when the fleet still lists it.
@@ -532,6 +584,7 @@ class _ThreadPlace extends StatefulWidget {
     this.composerFor,
     this.newWorkFor,
     this.onThreadStarted,
+    this.onPlannerStarted,
     this.asks = const [],
     this.onAnswer,
     this.now,
@@ -547,6 +600,9 @@ class _ThreadPlace extends StatefulWidget {
   /// `⌘N` without a dialog.
   final NewWorkModel Function(model.ThreadRef thread)? newWorkFor;
   final void Function(String agentId)? onThreadStarted;
+
+  /// Opens the planning thread a "Plan first" started (F6 decision 8).
+  final void Function(StartedPlanner planner)? onPlannerStarted;
   final List<inbox.Ask> asks;
   final void Function(inbox.Ask ask, inbox.AskAction action)? onAnswer;
   final DateTime? now;
@@ -594,6 +650,10 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
         onStarted: (agentId) {
           Navigator.maybePop(context);
           widget.onThreadStarted?.call(agentId);
+        },
+        onPlanned: (planner) {
+          Navigator.maybePop(context);
+          widget.onPlannerStarted?.call(planner);
         },
       ),
     );
@@ -909,4 +969,42 @@ class _WorkItemPlaceState extends State<_WorkItemPlace> {
       ],
     );
   }
+}
+
+/// One planning thread's place (F6 decision 8): the planner's conversation,
+/// the requests it is parked on, and the plan its last snapshot froze.
+///
+/// It owns the model it was built with, so leaving the place lets the planner
+/// alone rather than leaving its reader running.
+class _PlanningPlace extends StatefulWidget {
+  const _PlanningPlace({
+    super.key,
+    required this.thread,
+    required this.plan,
+    this.now,
+  });
+
+  final model.ThreadRef thread;
+  final PlanningModel plan;
+  final DateTime? now;
+
+  @override
+  State<_PlanningPlace> createState() => _PlanningPlaceState();
+}
+
+class _PlanningPlaceState extends State<_PlanningPlace> {
+  @override
+  void dispose() {
+    widget.plan.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => PlanningScreen(
+    plan: widget.plan,
+    title: widget.thread.title,
+    subtitle: widget.thread.headline,
+    now: widget.now,
+    onRetry: () => unawaited(widget.plan.refresh()),
+  );
 }

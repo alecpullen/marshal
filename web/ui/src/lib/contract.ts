@@ -1978,6 +1978,290 @@ export interface MemoryConfidence {
 }
 
 /**
+ * PlannerOccupancy is how a workspace looks to a new planner. Ownership is
+ * never inferred from a missing record.
+ */
+export type PlannerOccupancy = 'free' | 'in_use' | 'unknown';
+
+/**
+ * WorkerCapabilities is what a running worker session can actually do. It is
+ * per session rather than per backend: the same backend can offer workspace
+ * edits in one session and merely prompt in another.
+ */
+export interface WorkerCapabilities {
+  prompt: boolean;
+  cancel: boolean;
+  permissionRequests: boolean;
+  sessionLoad: boolean;
+  workspaceEdits: boolean;
+  modes: string[];
+}
+
+/**
+ * PlannerArtifact is a reference to something the planner produced. The record
+ * persists the reference only; captured text lives on a snapshot instead.
+ */
+export interface PlannerArtifact {
+  kind: string;
+  ref: string;
+  label?: string;
+}
+
+/**
+ * PlannerTurn is one dispatched prompt. TextHash is the digest of the text the
+ * request ID was first used for, so a replay of the same request ID can be
+ * recognised without storing the prompt twice.
+ */
+export interface PlannerTurn {
+  requestId: string;
+  textHash: string;
+  state: string;
+  stopReason?: string;
+  reason?: string;
+  at: string;
+}
+
+/**
+ * PlannerDecision is one agent request and its single settlement. The chosen
+ * response is kept verbatim so a browser that reconnects learns what was
+ * decided rather than asking again.
+ */
+export interface PlannerDecision {
+  requestId: string;
+  method?: string;
+  state: string;
+  response?: unknown;
+  reason?: string;
+  at: string;
+}
+
+/**
+ * PlannerView is a planner as the routes report it: the durable record
+ * projected for the browser, plus what the bridge can say about it right now.
+ * Resume is reported separately from the capability so an absent capability is
+ * never read as an offer.
+ */
+export interface PlannerView {
+  id: string;
+  projectRoot: string;
+  repoId: string;
+  backendId: string;
+  workspaceId: string;
+  occupancy: PlannerOccupancy;
+  owners?: string[];
+  sessionId?: string;
+  requestedMode: string;
+  confirmedMode?: string;
+  modeConfirmed: boolean;
+  state: string;
+  live: boolean;
+  eventSequence: number;
+  capabilities: WorkerCapabilities;
+  sessionLoad: boolean;
+  /**
+   * ResumeAvailable is true only for a backend that can load a session and a
+   * replay this bridge actually performed. It is false today, with
+   * ResumeReason saying why, so the browser offers a new planner instead.
+   */
+  resumeAvailable: boolean;
+  resumeReason?: string;
+  trust?: string;
+  turns?: PlannerTurn[];
+  requests?: PlannerDecision[];
+  artifacts?: PlannerArtifact[];
+  reason?: string;
+  createdAt: string;
+  updatedAt: string;
+  endedAt?: string;
+}
+
+/**
+ * PlannerCreateRequest is the POST /api/planners body. WorkspaceID names a
+ * workspace the bridge returned earlier; a filesystem path is never accepted
+ * in its place. ProceedShared is what a caller sets after seeing an in_use or
+ * unknown occupancy; it is never implied.
+ */
+export interface PlannerCreateRequest {
+  projectRoot: string;
+  repoId: string;
+  workspaceId?: string;
+  proceedShared?: boolean;
+  mode?: string;
+}
+
+/**
+ * PlannerPromptRequest is the POST /api/planners/{id}/prompt body. Context is
+ * the additional bounded text a user supplied alongside the prompt: it is
+ * composed into the dispatched text after the prompt's own text, and the
+ * journal keeps only its hash and length.
+ */
+export interface PlannerPromptRequest {
+  requestId: string;
+  text: string;
+  context?: string;
+}
+
+/**
+ * PlannerAnswerRequest is the POST /api/planners/{id}/requests/{requestId}
+ * body: the chosen response, passed through to the backend unchanged.
+ */
+export interface PlannerAnswerRequest {
+  response: unknown;
+}
+
+/**
+ * PlannerTurnReply is what a prompt answers: the dispatch of a new turn, or
+ * the outcome already recorded for a replayed request ID.
+ */
+export interface PlannerTurnReply {
+  requestId: string;
+  state: string;
+  stopReason?: string;
+}
+
+/**
+ * PlannerEvent is one journaled event. Sequence is the planner's own strictly
+ * increasing counter, not the backend's; Truncated marks a payload that
+ * exceeded the journal's per-event bound and was replaced by its marker.
+ */
+export interface PlannerEvent {
+  sequence: number;
+  kind: string;
+  data?: unknown;
+  truncated?: boolean;
+}
+
+/**
+ * PlannerSnapshotArtifact is one piece of text a snapshot froze: the plan or
+ * the spec the user approved. Its content is stored with the snapshot record
+ * and its SHA256 is verified on every read, so a review never shows bytes that
+ * differ from the hash it reports.
+ */
+export interface PlannerSnapshotArtifact {
+  kind: string;
+  content: string;
+  sha256: string;
+}
+
+/**
+ * PlannerSnapshotRequest is the POST /api/planners/{id}/snapshots body: the
+ * exact plan and spec text the user approved, and the repository-relative
+ * paths they selected. An empty Paths list is a documents-only snapshot.
+ */
+export interface PlannerSnapshotRequest {
+  plan: string;
+  spec: string;
+  paths: string[];
+}
+
+/**
+ * PlannerRejection names one path a capture refused and why. A selected path
+ * is either captured or reported here; it is never silently dropped.
+ */
+export interface PlannerRejection {
+  path: string;
+  reason: string;
+}
+
+/**
+ * PlannerSnapshotFile is one captured file as a review reports it: the frozen
+ * metadata plus its diff against the base commit. The diff is the text that
+ * was built at capture time, so the review still works after the workspace it
+ * came from is gone.
+ *
+ * It flattens SelectedFile, which the bridge embeds: the wire shape is
+ * SelectedFile's fields followed by Diff.
+ */
+export interface PlannerSnapshotFile {
+  path: string;
+  operation: string;
+  baseSha256?: string;
+  contentSha256?: string;
+  executable: boolean;
+  diff: string;
+}
+
+/**
+ * PlannerSnapshotView is a snapshot as the routes report it. It carries no
+ * absolute host path: every path in it is the repository-relative one the
+ * caller selected.
+ */
+export interface PlannerSnapshotView {
+  id: string;
+  sha256: string;
+  baseCommit: string;
+  artifacts: PlannerSnapshotArtifact[];
+  files: PlannerSnapshotFile[];
+  createdAt: string;
+}
+
+/**
+ * PlannerSnapshotReply is what a capture answers: the snapshot it froze and
+ * the paths it refused.
+ *
+ * It flattens PlannerSnapshotView, which the bridge embeds: the wire shape is
+ * the view's fields followed by Rejected.
+ */
+export interface PlannerSnapshotReply {
+  id: string;
+  sha256: string;
+  baseCommit: string;
+  artifacts: PlannerSnapshotArtifact[];
+  files: PlannerSnapshotFile[];
+  createdAt: string;
+  rejected: PlannerRejection[];
+}
+
+/**
+ * PlannerContextArtifact is one artifact source a briefing found. Approved is
+ * true only for text a user captured in a snapshot; a reference the planner
+ * record merely names is reported as unapproved, carrying no captured content
+ * and no hash this bridge can vouch for.
+ */
+export interface PlannerContextArtifact {
+  kind: string;
+  sha256?: string;
+  source: string;
+  approved: boolean;
+  snapshotId?: string;
+  ref?: string;
+}
+
+/**
+ * PlannerContextDecision is one settled agent request a briefing reports, with
+ * the request it came from as its source.
+ */
+export interface PlannerContextDecision {
+  source: string;
+  requestId: string;
+  method?: string;
+  state: string;
+  at: string;
+}
+
+/**
+ * PlannerContextQuestion is one recorded question that is still unresolved.
+ */
+export interface PlannerContextQuestion {
+  source: string;
+  requestId: string;
+  method?: string;
+  state: string;
+  at: string;
+}
+
+/**
+ * PlannerContextView is the bounded briefing a planner record supports. Absent
+ * names the sources it does not hold: nothing here is invented to fill one in.
+ */
+export interface PlannerContextView {
+  artifacts: PlannerContextArtifact[];
+  decisions: PlannerContextDecision[];
+  unresolved: PlannerContextQuestion[];
+  absent: string[];
+}
+
+/**
  * TrustState is a project's trust decision.
  */
 export type TrustState = 'na' | 'untrusted' | 'trusted';

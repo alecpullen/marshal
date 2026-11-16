@@ -8,11 +8,13 @@ import 'package:marshal_app/src/client/contract.g.dart'
         FileEntry,
         GateResult,
         ModelsConfig,
+        NetHostRow,
         Preset,
         ProviderView,
         Recipe,
         Repo,
         Schedule,
+        SecretsStatus,
         StackSnapshot,
         StepDiff,
         WireCall,
@@ -30,6 +32,8 @@ import 'package:marshal_app/src/model/general_model.dart';
 import 'package:marshal_app/src/model/hosts_model.dart';
 import 'package:marshal_app/src/model/library_model.dart';
 import 'package:marshal_app/src/model/models_model.dart';
+import 'package:marshal_app/src/model/network_model.dart';
+import 'package:marshal_app/src/model/secrets_model.dart';
 import 'package:marshal_app/src/model/inbox_model.dart' as model;
 import 'package:marshal_app/src/model/changes_model.dart';
 import 'package:marshal_app/src/model/files_model.dart';
@@ -62,6 +66,8 @@ import 'package:marshal_app/src/ui/settings/connections_section.dart';
 import 'package:marshal_app/src/ui/settings/general_section.dart';
 import 'package:marshal_app/src/ui/settings/hosts_section.dart';
 import 'package:marshal_app/src/ui/settings/models_section.dart';
+import 'package:marshal_app/src/ui/settings/network_section.dart';
+import 'package:marshal_app/src/ui/settings/secrets_section.dart';
 import 'package:marshal_app/src/ui/settings/settings_place.dart';
 import 'package:marshal_app/src/ui/inbox/inbox.dart';
 import 'package:marshal_app/src/ui/inspector/changes_tab.dart';
@@ -635,6 +641,47 @@ Widget _settings({int section = 0, StateKind? state}) {
     models: _settingsModels,
   );
   final models = ModelsModel.fixture(_settingsModels);
+  final secrets = SecretsModel.fixture(
+    status: const SecretsStatus(backend: 'local', healthy: true),
+    refs: const ['vault:forge/github-token'],
+    credentials: const [
+      Credential(
+        id: 'deploy',
+        kind: 'vault',
+        ref: 'vault:forge/github-token',
+        set: true,
+      ),
+    ],
+  );
+  final network = NetworkModel.fixture(
+    hosts: const [
+      NetHostRow(
+        workspace: 'go-service',
+        agentID: 'a-1',
+        host: 'proxy.golang.org',
+        rule: 'allowlisted',
+        requests: 42,
+        blocked: 0,
+        bytesUp: 1024,
+        bytesDown: 65536,
+        lastSeen: 1763352800000,
+        decision: 'allow',
+      ),
+      NetHostRow(
+        host: 'registry.npmjs.org',
+        rule: 'blocked',
+        requests: 7,
+        blocked: 7,
+        bytesUp: 0,
+        bytesDown: 0,
+        lastSeen: 1763352400000,
+        decision: 'block',
+      ),
+    ],
+    environments: const ['go-service'],
+    agents: const ['a-1'],
+    now: () => shellNow,
+  );
   return SettingsPlace(
     preferences: preferences,
     index: section,
@@ -646,6 +693,10 @@ Widget _settings({int section = 0, StateKind? state}) {
           ConnectionsSection(model: connections, state: state),
       SettingsSectionKind.models: (state) =>
           ModelsSection(model: models, state: state),
+      SettingsSectionKind.secrets: (state) =>
+          SecretsSection(model: secrets, state: state),
+      SettingsSectionKind.network: (state) =>
+          NetworkSection(model: network, state: state),
       SettingsSectionKind.general: (state) =>
           GeneralSection(model: general, state: state),
     },
@@ -803,6 +854,22 @@ final screens = <ScreenCase>[
     states: {
       for (final kind in requiredStates)
         kind: () => _settings(section: 3, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'settings · secrets',
+    ready: () => _settings(section: 4),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _settings(section: 4, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'settings · network',
+    ready: () => _settings(section: 5),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _settings(section: 5, state: kind),
     },
   ),
   ScreenCase(

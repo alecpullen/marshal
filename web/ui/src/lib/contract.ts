@@ -1498,6 +1498,138 @@ export interface BudgetsUpdate {
 }
 
 /**
+ * NetHostRow is one host of GET /api/network?view=hosts, with the rule that
+ * covers it.
+ */
+export interface NetHostRow {
+  workspace?: string;
+  agentId?: string;
+  host: string;
+  /**
+   * Rule is why the host is reachable or not: allowlisted, granted, open,
+   * injected or blocked.
+   */
+  rule: string;
+  requests: number;
+  blocked: number;
+  bytesUp: number;
+  bytesDown: number;
+  /**
+   * Unix milliseconds
+   */
+  lastSeen: number;
+  /**
+   * allow or block
+   */
+  decision: string;
+  injected?: boolean;
+}
+
+/**
+ * NetHosts is that view's answer.
+ */
+export interface NetHosts {
+  processMode: boolean;
+  rows: NetHostRow[];
+  /**
+   * EgressError says the proxy is down when it is set; the rows are the
+   * last thing it logged.
+   */
+  egressError?: string;
+}
+
+/**
+ * NetRecord is one connection record, from view=requests.
+ */
+export interface NetRecord {
+  /**
+   * Unix milliseconds
+   */
+  at: number;
+  agentId: string;
+  workspace?: string;
+  host: string;
+  port: number;
+  /**
+   * allow or block
+   */
+  decision: string;
+  injected?: boolean;
+  bytesUp: number;
+  bytesDown: number;
+  durationMs: number;
+}
+
+/**
+ * NetAgentRow is one agent of view=agents.
+ */
+export interface NetAgentRow {
+  agentId: string;
+  workspace?: string;
+  hosts: number;
+  requests: number;
+  blocked: number;
+  bytesUp: number;
+  bytesDown: number;
+  /**
+   * Unix milliseconds
+   */
+  lastSeen: number;
+}
+
+/**
+ * NetPending is one blocked request still awaiting a decision, in the shape of
+ * the `network_block` delta (web/bridge/egress_fleet.go).
+ */
+export interface NetPending {
+  /**
+   * network_block
+   */
+  kind: string;
+  sessionId: string;
+  agentId: string;
+  host: string;
+  workspace?: string;
+  /**
+   * Unix milliseconds
+   */
+  at: number;
+}
+
+/**
+ * NetPendingList is GET /api/network/pending's answer.
+ */
+export interface NetPendingList {
+  pending: NetPending[];
+}
+
+/**
+ * NetDecisionKind is one answer to a blocked request.
+ */
+export type NetDecisionKind = 'block' | 'allow-agent' | 'add-to-workspace';
+
+/**
+ * NetDecision is POST /api/network/decisions' body.
+ */
+export interface NetDecision {
+  agentId: string;
+  host: string;
+  decision: NetDecisionKind;
+}
+
+/**
+ * NetDecisionResult is that route's answer. A Studio template's draft changed
+ * and there is nothing to show but the workspace's name; a repo template
+ * answers a patch to apply.
+ */
+export interface NetDecisionResult {
+  ok?: boolean;
+  patch?: string;
+  workspace?: string;
+  source?: string;
+}
+
+/**
  * TrustState is a project's trust decision.
  */
 export type TrustState = 'na' | 'untrusted' | 'trusted';
@@ -1679,6 +1811,34 @@ export interface Schedule {
    * OwnerID is the owner the bridge stored the schedule under.
    */
   ownerId: string;
+}
+
+/**
+ * SecretsStatus is GET /api/secrets/status' answer: which backend holds the
+ * secrets and whether it answers.
+ */
+export interface SecretsStatus {
+  /**
+   * env, local or openbao
+   */
+  backend: string;
+  healthy: boolean;
+  error?: string;
+}
+
+/**
+ * SecretList is GET /api/secrets' answer: references only, each as
+ * `vault:<path>`.
+ */
+export interface SecretList {
+  refs: string[];
+}
+
+/**
+ * SecretWrite is PUT /api/secrets/{ref}'s body. It goes one way.
+ */
+export interface SecretWrite {
+  value: string;
 }
 
 /**

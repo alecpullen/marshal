@@ -23,9 +23,11 @@ const _fixtures = [
   'issues',
   'library',
   'models',
+  'network',
   'projects',
   'recipes',
   'schedules',
+  'secrets',
   'session',
   'spawn',
   'stack',
@@ -183,8 +185,7 @@ final _codecs = <String, _Codec>{
       ProjectRemovedDelta.fromJson(_object(json)).toJson(),
   // connections.json
   'Credential': (json) => Credential.fromJson(_object(json)).toJson(),
-  'CredentialInput': (json) =>
-      CredentialInput.fromJson(_object(json)).toJson(),
+  'CredentialInput': (json) => CredentialInput.fromJson(_object(json)).toJson(),
   'Repo': (json) => Repo.fromJson(_object(json)).toJson(),
   // models.json
   'Binding': (json) => Binding.fromJson(_object(json)).toJson(),
@@ -198,9 +199,23 @@ final _codecs = <String, _Codec>{
   'ProviderKey': (json) => ProviderKey.fromJson(_object(json)).toJson(),
   'ProviderView': (json) => ProviderView.fromJson(_object(json)).toJson(),
   'ProviderWrite': (json) => ProviderWrite.fromJson(_object(json)).toJson(),
-  'ProvidersUpdate': (json) =>
-      ProvidersUpdate.fromJson(_object(json)).toJson(),
+  'ProvidersUpdate': (json) => ProvidersUpdate.fromJson(_object(json)).toJson(),
   'RoutingUpdate': (json) => RoutingUpdate.fromJson(_object(json)).toJson(),
+  // network.json
+  'NetAgentRow': (json) => NetAgentRow.fromJson(_object(json)).toJson(),
+  'NetDecision': (json) => NetDecision.fromJson(_object(json)).toJson(),
+  'NetDecisionKind': (json) => NetDecisionKind.fromWire(json! as String).wire,
+  'NetDecisionResult': (json) =>
+      NetDecisionResult.fromJson(_object(json)).toJson(),
+  'NetHostRow': (json) => NetHostRow.fromJson(_object(json)).toJson(),
+  'NetHosts': (json) => NetHosts.fromJson(_object(json)).toJson(),
+  'NetPending': (json) => NetPending.fromJson(_object(json)).toJson(),
+  'NetPendingList': (json) => NetPendingList.fromJson(_object(json)).toJson(),
+  'NetRecord': (json) => NetRecord.fromJson(_object(json)).toJson(),
+  // secrets.json
+  'SecretList': (json) => SecretList.fromJson(_object(json)).toJson(),
+  'SecretWrite': (json) => SecretWrite.fromJson(_object(json)).toJson(),
+  'SecretsStatus': (json) => SecretsStatus.fromJson(_object(json)).toJson(),
 };
 
 void main() {

@@ -5170,6 +5170,411 @@ class BudgetsUpdate {
   }
 }
 
+/// NetHostRow is one host of GET /api/network?view=hosts, with the rule that
+/// covers it.
+class NetHostRow {
+  const NetHostRow({
+    this.workspace,
+    this.agentID,
+    required this.host,
+    required this.rule,
+    required this.requests,
+    required this.blocked,
+    required this.bytesUp,
+    required this.bytesDown,
+    required this.lastSeen,
+    required this.decision,
+    this.injected,
+  });
+
+  final String? workspace;
+  final String? agentID;
+  final String host;
+  /// Rule is why the host is reachable or not: allowlisted, granted, open,
+  /// injected or blocked.
+  final String rule;
+  final int requests;
+  final int blocked;
+  final int bytesUp;
+  final int bytesDown;
+  /// Unix milliseconds
+  final int lastSeen;
+  /// allow or block
+  final String decision;
+  final bool? injected;
+
+  factory NetHostRow.fromJson(Map<String, dynamic> json) {
+    return NetHostRow(
+      workspace: json['workspace'] as String?,
+      agentID: json['agentId'] as String?,
+      host: json['host'] as String,
+      rule: json['rule'] as String,
+      requests: (json['requests'] as num).toInt(),
+      blocked: (json['blocked'] as num).toInt(),
+      bytesUp: (json['bytesUp'] as num).toInt(),
+      bytesDown: (json['bytesDown'] as num).toInt(),
+      lastSeen: (json['lastSeen'] as num).toInt(),
+      decision: json['decision'] as String,
+      injected: json['injected'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (workspace != null) {
+      json['workspace'] = workspace;
+    }
+    if (agentID != null) {
+      json['agentId'] = agentID;
+    }
+    json['host'] = host;
+    json['rule'] = rule;
+    json['requests'] = requests;
+    json['blocked'] = blocked;
+    json['bytesUp'] = bytesUp;
+    json['bytesDown'] = bytesDown;
+    json['lastSeen'] = lastSeen;
+    json['decision'] = decision;
+    if (injected != null) {
+      json['injected'] = injected;
+    }
+    return json;
+  }
+}
+
+/// NetHosts is that view's answer.
+class NetHosts {
+  const NetHosts({
+    required this.processMode,
+    required this.rows,
+    this.egressError,
+  });
+
+  final bool processMode;
+  final List<NetHostRow> rows;
+  /// EgressError says the proxy is down when it is set; the rows are the
+  /// last thing it logged.
+  final String? egressError;
+
+  factory NetHosts.fromJson(Map<String, dynamic> json) {
+    return NetHosts(
+      processMode: json['processMode'] as bool,
+      rows: _list(
+        json['rows'],
+        (value) => _object(value, NetHostRow.fromJson),
+      ),
+      egressError: json['egressError'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['processMode'] = processMode;
+    json['rows'] = [
+      for (final value in rows) value.toJson(),
+    ];
+    if (egressError != null) {
+      json['egressError'] = egressError;
+    }
+    return json;
+  }
+}
+
+/// NetRecord is one connection record, from view=requests.
+class NetRecord {
+  const NetRecord({
+    required this.at,
+    required this.agentID,
+    this.workspace,
+    required this.host,
+    required this.port,
+    required this.decision,
+    this.injected,
+    required this.bytesUp,
+    required this.bytesDown,
+    required this.durationMs,
+  });
+
+  /// Unix milliseconds
+  final int at;
+  final String agentID;
+  final String? workspace;
+  final String host;
+  final int port;
+  /// allow or block
+  final String decision;
+  final bool? injected;
+  final int bytesUp;
+  final int bytesDown;
+  final int durationMs;
+
+  factory NetRecord.fromJson(Map<String, dynamic> json) {
+    return NetRecord(
+      at: (json['at'] as num).toInt(),
+      agentID: json['agentId'] as String,
+      workspace: json['workspace'] as String?,
+      host: json['host'] as String,
+      port: (json['port'] as num).toInt(),
+      decision: json['decision'] as String,
+      injected: json['injected'] as bool?,
+      bytesUp: (json['bytesUp'] as num).toInt(),
+      bytesDown: (json['bytesDown'] as num).toInt(),
+      durationMs: (json['durationMs'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['at'] = at;
+    json['agentId'] = agentID;
+    if (workspace != null) {
+      json['workspace'] = workspace;
+    }
+    json['host'] = host;
+    json['port'] = port;
+    json['decision'] = decision;
+    if (injected != null) {
+      json['injected'] = injected;
+    }
+    json['bytesUp'] = bytesUp;
+    json['bytesDown'] = bytesDown;
+    json['durationMs'] = durationMs;
+    return json;
+  }
+}
+
+/// NetAgentRow is one agent of view=agents.
+class NetAgentRow {
+  const NetAgentRow({
+    required this.agentID,
+    this.workspace,
+    required this.hosts,
+    required this.requests,
+    required this.blocked,
+    required this.bytesUp,
+    required this.bytesDown,
+    required this.lastSeen,
+  });
+
+  final String agentID;
+  final String? workspace;
+  final int hosts;
+  final int requests;
+  final int blocked;
+  final int bytesUp;
+  final int bytesDown;
+  /// Unix milliseconds
+  final int lastSeen;
+
+  factory NetAgentRow.fromJson(Map<String, dynamic> json) {
+    return NetAgentRow(
+      agentID: json['agentId'] as String,
+      workspace: json['workspace'] as String?,
+      hosts: (json['hosts'] as num).toInt(),
+      requests: (json['requests'] as num).toInt(),
+      blocked: (json['blocked'] as num).toInt(),
+      bytesUp: (json['bytesUp'] as num).toInt(),
+      bytesDown: (json['bytesDown'] as num).toInt(),
+      lastSeen: (json['lastSeen'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['agentId'] = agentID;
+    if (workspace != null) {
+      json['workspace'] = workspace;
+    }
+    json['hosts'] = hosts;
+    json['requests'] = requests;
+    json['blocked'] = blocked;
+    json['bytesUp'] = bytesUp;
+    json['bytesDown'] = bytesDown;
+    json['lastSeen'] = lastSeen;
+    return json;
+  }
+}
+
+/// NetPending is one blocked request still awaiting a decision, in the shape of
+/// the `network_block` delta (web/bridge/egress_fleet.go).
+class NetPending {
+  const NetPending({
+    required this.kind,
+    required this.sessionID,
+    required this.agentID,
+    required this.host,
+    this.workspace,
+    required this.at,
+  });
+
+  /// network_block
+  final String kind;
+  final String sessionID;
+  final String agentID;
+  final String host;
+  final String? workspace;
+  /// Unix milliseconds
+  final int at;
+
+  factory NetPending.fromJson(Map<String, dynamic> json) {
+    return NetPending(
+      kind: json['kind'] as String,
+      sessionID: json['sessionId'] as String,
+      agentID: json['agentId'] as String,
+      host: json['host'] as String,
+      workspace: json['workspace'] as String?,
+      at: (json['at'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['kind'] = kind;
+    json['sessionId'] = sessionID;
+    json['agentId'] = agentID;
+    json['host'] = host;
+    if (workspace != null) {
+      json['workspace'] = workspace;
+    }
+    json['at'] = at;
+    return json;
+  }
+}
+
+/// NetPendingList is GET /api/network/pending's answer.
+class NetPendingList {
+  const NetPendingList({
+    required this.pending,
+  });
+
+  final List<NetPending> pending;
+
+  factory NetPendingList.fromJson(Map<String, dynamic> json) {
+    return NetPendingList(
+      pending: _list(
+        json['pending'],
+        (value) => _object(value, NetPending.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['pending'] = [
+      for (final value in pending) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// NetDecisionKind is one answer to a blocked request.
+enum NetDecisionKind {
+  netDecisionBlock('block'),
+  netDecisionAllowAgent('allow-agent'),
+  netDecisionAddToWorkspace('add-to-workspace'),
+  unknown('unknown');
+
+  const NetDecisionKind(this.wire);
+
+  /// The wire text this value stands for.
+  final String wire;
+
+  /// The value [wire] names, or [unknown] when this build does not
+  /// know it.
+  static NetDecisionKind fromWire(String wire) {
+    for (final value in values) {
+      if (value != unknown && value.wire == wire) {
+        return value;
+      }
+    }
+    return unknown;
+  }
+}
+
+/// NetDecision is POST /api/network/decisions' body.
+class NetDecision {
+  const NetDecision({
+    required this.agentID,
+    required this.host,
+    required this.decision,
+    this.rawEnums = const {},
+  });
+
+  final String agentID;
+  final String host;
+  final NetDecisionKind decision;
+
+  /// The wire text of each enum field this build has no value
+  /// for, keyed by JSON name, so a round trip keeps it.
+  final Map<String, String> rawEnums;
+
+  factory NetDecision.fromJson(Map<String, dynamic> json) {
+    final rawEnums = <String, String>{};
+    final decisionWire = json['decision'] as String;
+    final decision = NetDecisionKind.fromWire(decisionWire);
+    if (decision == NetDecisionKind.unknown) {
+      rawEnums['decision'] = decisionWire;
+    }
+    return NetDecision(
+      agentID: json['agentId'] as String,
+      host: json['host'] as String,
+      decision: decision,
+      rawEnums: rawEnums,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['agentId'] = agentID;
+    json['host'] = host;
+    json['decision'] = rawEnums['decision'] ?? decision.wire;
+    return json;
+  }
+}
+
+/// NetDecisionResult is that route's answer. A Studio template's draft changed
+/// and there is nothing to show but the workspace's name; a repo template
+/// answers a patch to apply.
+class NetDecisionResult {
+  const NetDecisionResult({
+    this.ok,
+    this.patch,
+    this.workspace,
+    this.source,
+  });
+
+  final bool? ok;
+  final String? patch;
+  final String? workspace;
+  final String? source;
+
+  factory NetDecisionResult.fromJson(Map<String, dynamic> json) {
+    return NetDecisionResult(
+      ok: json['ok'] as bool?,
+      patch: json['patch'] as String?,
+      workspace: json['workspace'] as String?,
+      source: json['source'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (ok != null) {
+      json['ok'] = ok;
+    }
+    if (patch != null) {
+      json['patch'] = patch;
+    }
+    if (workspace != null) {
+      json['workspace'] = workspace;
+    }
+    if (source != null) {
+      json['source'] = source;
+    }
+    return json;
+  }
+}
+
 /// TrustState is a project's trust decision.
 enum TrustState {
   trustNA('na'),
@@ -5705,6 +6110,85 @@ class Schedule {
       json['lastResult'] = lastResult;
     }
     json['ownerId'] = ownerID;
+    return json;
+  }
+}
+
+/// SecretsStatus is GET /api/secrets/status' answer: which backend holds the
+/// secrets and whether it answers.
+class SecretsStatus {
+  const SecretsStatus({
+    required this.backend,
+    required this.healthy,
+    this.error,
+  });
+
+  /// env, local or openbao
+  final String backend;
+  final bool healthy;
+  final String? error;
+
+  factory SecretsStatus.fromJson(Map<String, dynamic> json) {
+    return SecretsStatus(
+      backend: json['backend'] as String,
+      healthy: json['healthy'] as bool,
+      error: json['error'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['backend'] = backend;
+    json['healthy'] = healthy;
+    if (error != null) {
+      json['error'] = error;
+    }
+    return json;
+  }
+}
+
+/// SecretList is GET /api/secrets' answer: references only, each as
+/// `vault:&lt;path&gt;`.
+class SecretList {
+  const SecretList({
+    required this.refs,
+  });
+
+  final List<String> refs;
+
+  factory SecretList.fromJson(Map<String, dynamic> json) {
+    return SecretList(
+      refs: _list(
+        json['refs'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['refs'] = refs;
+    return json;
+  }
+}
+
+/// SecretWrite is PUT /api/secrets/{ref}'s body. It goes one way.
+class SecretWrite {
+  const SecretWrite({
+    required this.value,
+  });
+
+  final String value;
+
+  factory SecretWrite.fromJson(Map<String, dynamic> json) {
+    return SecretWrite(
+      value: json['value'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['value'] = value;
     return json;
   }
 }

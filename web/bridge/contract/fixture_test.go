@@ -27,10 +27,12 @@ var fixtureFiles = []string{
 	"issues.json",
 	"library.json",
 	"models.json",
+	"network.json",
 	"projects.json",
 	"recipes.json",
 	"review.json",
 	"schedules.json",
+	"secrets.json",
 	"session.json",
 	"spawn.json",
 	"stack.json",
@@ -216,6 +218,20 @@ var fixtureTypes = map[string]reflect.Type{
 	"ProviderWrite":   reflect.TypeOf(ProviderWrite{}),
 	"ProvidersUpdate": reflect.TypeOf(ProvidersUpdate{}),
 	"RoutingUpdate":   reflect.TypeOf(RoutingUpdate{}),
+	// network.go — the egress hosts, their rules and the pending decision.
+	"NetAgentRow":       reflect.TypeOf(NetAgentRow{}),
+	"NetDecision":       reflect.TypeOf(NetDecision{}),
+	"NetDecisionKind":   reflect.TypeOf(NetDecisionKind("")),
+	"NetDecisionResult": reflect.TypeOf(NetDecisionResult{}),
+	"NetHostRow":        reflect.TypeOf(NetHostRow{}),
+	"NetHosts":          reflect.TypeOf(NetHosts{}),
+	"NetPending":        reflect.TypeOf(NetPending{}),
+	"NetPendingList":    reflect.TypeOf(NetPendingList{}),
+	"NetRecord":         reflect.TypeOf(NetRecord{}),
+	// secrets.go — references and a value that goes one way.
+	"SecretList":    reflect.TypeOf(SecretList{}),
+	"SecretWrite":   reflect.TypeOf(SecretWrite{}),
+	"SecretsStatus": reflect.TypeOf(SecretsStatus{}),
 }
 
 // TestContractFixturesRoundTrip holds the contract types to the shared

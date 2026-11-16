@@ -9,8 +9,26 @@ import 'thread_ref.dart';
 /// What an ask is (F2 decision 7). The fleet contract carries an agent's
 /// approval, an agent's question and an intake submission; F7 adds the review
 /// bot's held draft, which a person posts, sends to the author's agent or
-/// discards.
-enum AskKind { approval, question, intake, reviewDraft }
+/// discards, and the network request the egress proxy held, which a person
+/// allows for one agent, adds to the environment, or blocks.
+enum AskKind { approval, question, intake, reviewDraft, network }
+
+/// The blocked request a [AskKind.network] ask answers: who was blocked, from
+/// where, and on which host.
+@immutable
+class NetworkAsk {
+  const NetworkAsk({
+    required this.agentID,
+    required this.host,
+    required this.workspace,
+  });
+
+  final String agentID;
+  final String host;
+
+  /// The environment the agent runs in; empty when the proxy did not say.
+  final String workspace;
+}
 
 /// Where an answer has got to. A posted answer stays sending until the
 /// stream stops reporting the ask: a sent message is not shown as done work
@@ -117,6 +135,7 @@ class Ask {
     this.questions = const [],
     this.state = AskState.waiting,
     this.error,
+    this.network,
   });
 
   /// The host whose fleet reported it.
@@ -160,6 +179,10 @@ class Ask {
   /// Why the last answer failed, in the bridge's words.
   final String? error;
 
+  /// The blocked request a [AskKind.network] ask answers; null for every
+  /// other kind.
+  final NetworkAsk? network;
+
   Ask withState(AskState state, {String? error}) => Ask(
     host: host,
     id: id,
@@ -173,6 +196,7 @@ class Ask {
     questions: questions,
     state: state,
     error: error,
+    network: network,
   );
 
   @override
@@ -200,10 +224,24 @@ class InboxModel extends ChangeNotifier {
   /// The review bot's held drafts, by host, as `showHeldDrafts` last reported
   /// them.
   final _drafts = <String, List<ReviewDraft>>{};
+
+  /// The egress proxy's blocked requests, by host, as `showPendingBlocks` last
+  /// reported them.
+  final _blocks = <String, List<NetPending>>{};
   List<Ask> _asks = const [];
 
   /// Every ask, oldest first.
   List<Ask> get asks => _asks;
+
+  /// The blocked requests the Network section reports, per host: each is an
+  /// ask of kind [AskKind.network] until it is answered (F7 decision 7).
+  ///
+  /// A blocked request is not fleet state the store's stream carries in the
+  /// queue yet, so the section hands it over as the drafts are handed over.
+  void showPendingBlocks(String host, List<NetPending> blocks) {
+    _blocks[host] = List.unmodifiable(blocks);
+    _rebuild();
+  }
 
   /// The review bot's held drafts, per host, as the Bots section reports
   /// them: each is an ask of kind [AskKind.reviewDraft] until it is posted,
@@ -330,6 +368,20 @@ class InboxModel extends ChangeNotifier {
           case _discardLabel:
             await client.discardReviewDraft(ask.id);
         }
+      case AskKind.network:
+        final request = ask.network!;
+        final decision = switch (action.label) {
+          _allowAgent => NetDecisionKind.netDecisionAllowAgent,
+          _addToEnvironment => NetDecisionKind.netDecisionAddToWorkspace,
+          _ => NetDecisionKind.netDecisionBlock,
+        };
+        await client.networkDecision(
+          NetDecision(
+            agentID: request.agentID,
+            host: request.host,
+            decision: decision,
+          ),
+        );
     }
   }
 
@@ -403,6 +455,10 @@ class InboxModel extends ChangeNotifier {
       }
       for (final draft in _drafts[host.name] ?? const <ReviewDraft>[]) {
         final ask = _askForDraft(host.name, draft);
+        if (seen.add(_key(ask))) asks.add(_withOverlay(ask));
+      }
+      for (final block in _blocks[host.name] ?? const <NetPending>[]) {
+        final ask = _askForBlock(host.name, block, agents);
         if (seen.add(_key(ask))) asks.add(_withOverlay(ask));
       }
     }
@@ -629,6 +685,47 @@ class InboxModel extends ChangeNotifier {
   }
 
   static const _answer = 'Answer';
+
+  static const _allowAgent = 'Allow for this agent';
+  static const _addToEnvironment = 'Add to the environment';
+  static const _block = 'Block';
+
+  /// A blocked request offers the three answers the decision route carries:
+  /// allow it for this agent, add the host to the agent's environment, or keep
+  /// it blocked (F7 decision 7).
+  static const _networkActions = [
+    AskAction(_allowAgent, primary: true),
+    AskAction(_addToEnvironment),
+    AskAction(_block),
+  ];
+
+  /// One blocked request as an ask. Its thread is the agent's, when the fleet
+  /// still lists it, so the same card shows in the thread it blocks.
+  Ask _askForBlock(
+    String host,
+    NetPending block,
+    Map<String, AgentStatus> agents,
+  ) {
+    final agent = agents[block.agentID];
+    return Ask(
+      host: host,
+      id: '${block.agentID}|${block.host}',
+      kind: AskKind.network,
+      thread: agent == null ? null : threadFor(host, agent),
+      title: '${block.host} was blocked',
+      body: [
+        if (block.workspace?.isNotEmpty ?? false) block.workspace,
+        'agent ${block.agentID}',
+      ].join(' · '),
+      actions: _networkActions,
+      since: DateTime.fromMillisecondsSinceEpoch(block.at, isUtc: true),
+      network: NetworkAsk(
+        agentID: block.agentID,
+        host: block.host,
+        workspace: block.workspace ?? '',
+      ),
+    );
+  }
 
   /// A question with one answer offers its own options, then a free reply:
   /// choosing an option is the answer.

@@ -489,10 +489,8 @@ class BridgeClient {
 
   /// PUT /api/models/providers: sends the named providers; a null one is
   /// removed.
-  Future<void> setProviders(ProvidersUpdate update) => _put(
-    '/api/models/providers',
-    update,
-  );
+  Future<void> setProviders(ProvidersUpdate update) =>
+      _put('/api/models/providers', update);
 
   /// PUT /api/models/providers/{name}/key: stores a provider's key. Nothing
   /// on any route answers it back.
@@ -526,6 +524,96 @@ class BridgeClient {
     BudgetReport.fromJson,
     method: 'PUT',
     body: BudgetsUpdate(budgets: budgets),
+  );
+
+  /// GET /api/secrets/status: which backend holds the secrets and whether it
+  /// answers.
+  Future<SecretsStatus> secretsStatus() =>
+      _objectOf('/api/secrets/status', SecretsStatus.fromJson);
+
+  /// GET /api/secrets: references only, each as `vault:<path>`. A value has no
+  /// route out.
+  Future<List<String>> secrets({String? prefix}) async {
+    final response = await _send(
+      Request(path: '/api/secrets', query: {'prefix': ?prefix}),
+    );
+    final list = SecretList.fromJson(_object(response));
+    return list.refs;
+  }
+
+  /// PUT /api/secrets/{ref}: writes a value. It goes one way.
+  Future<void> putSecret(String ref, String value) => _send(
+    Request(
+      method: 'PUT',
+      path: _secretPath(ref),
+      body: SecretWrite(value: value),
+    ),
+  );
+
+  /// DELETE /api/secrets/{ref}.
+  Future<void> deleteSecret(String ref) =>
+      _send(Request(method: 'DELETE', path: _secretPath(ref)));
+
+  /// The `vault:` prefix stripped and every slash kept, so a nested path is
+  /// addressed as the bridge's own route does.
+  String _secretPath(String ref) {
+    final bare = ref.startsWith('vault:') ? ref.substring(6) : ref;
+    return '/api/secrets/${bare.split('/').map(Uri.encodeComponent).join('/')}';
+  }
+
+  /// GET /api/network?view=hosts: the egress hosts with the rule that covers
+  /// each, for one workspace, one agent, or all of them.
+  Future<NetHosts> networkHosts({String? workspace, String? agent}) =>
+      _objectOf(
+        '/api/network',
+        NetHosts.fromJson,
+        query: {
+          'view': 'hosts',
+          if (workspace != null && workspace.isNotEmpty) 'workspace': workspace,
+          if (agent != null && agent.isNotEmpty) 'agent': agent,
+        },
+      );
+
+  /// GET /api/network?view=requests: the connection records themselves.
+  Future<List<NetRecord>> networkRequests({String? workspace, String? agent}) =>
+      _listOf(
+        '/api/network',
+        NetRecord.fromJson,
+        query: {
+          'view': 'requests',
+          if (workspace != null && workspace.isNotEmpty) 'workspace': workspace,
+          if (agent != null && agent.isNotEmpty) 'agent': agent,
+        },
+      );
+
+  /// GET /api/network?view=agents: one row per agent that reached anything.
+  Future<List<NetAgentRow>> networkAgents({String? workspace}) => _listOf(
+    '/api/network',
+    NetAgentRow.fromJson,
+    query: {
+      'view': 'agents',
+      if (workspace != null && workspace.isNotEmpty) 'workspace': workspace,
+    },
+  );
+
+  /// GET /api/network/pending: the blocked requests still awaiting a decision,
+  /// oldest first.
+  Future<List<NetPending>> networkPending({String? agent}) async {
+    final response = await _send(
+      Request(
+        path: '/api/network/pending',
+        query: {if (agent != null && agent.isNotEmpty) 'agent': agent},
+      ),
+    );
+    return NetPendingList.fromJson(_object(response)).pending;
+  }
+
+  /// POST /api/network/decisions: answers one blocked request.
+  Future<NetDecisionResult> networkDecision(NetDecision decision) => _objectOf(
+    '/api/network/decisions',
+    NetDecisionResult.fromJson,
+    method: 'POST',
+    body: decision,
   );
 
   /// GET /api/sessions/{id}/stack: one transcript's tree at its current

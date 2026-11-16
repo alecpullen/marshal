@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 )
@@ -259,61 +260,91 @@ func TestRunStoreLockRelease(t *testing.T) {
 // one new owner. A remove-then-create takeover lets a later taker delete the
 // earlier taker's fresh lock, so two callers could both "succeed".
 //
-// The takers are released into the takeover's read-then-swap window together,
-// so every one of them judges the same stale lock; that is the interleaving
-// the assertion is about, and it is deterministic instead of timing-dependent.
+// Every round re-installs the stale lock, parks all takers on a start barrier
+// and releases them into the takeover together, so all of them judge the same
+// stale lock and the contention is real rather than hoped for. One round only
+// discriminates against a non-atomic takeover a few percent of the time, so
+// the round count is part of the assertion: at this scale a takeover that can
+// hand out two owners fails here, and that is what makes this test evidence
+// instead of luck.
 func TestTakeoverLockIsAtomicUnderConcurrentAttempts(t *testing.T) {
+	if runtime.GOMAXPROCS(0) < 2 {
+		// One P cannot overlap the takers' syscalls, which is the only way
+		// an unsynchronised take-over protocol is caught. A green run here
+		// says nothing, so do not report one.
+		t.Skip("skipping concurrent takeover: needs more than one P to overlap syscalls")
+	}
+	const (
+		takers = 8
+		rounds = 300
+	)
 	dir := t.TempDir()
 	paths, err := NewPaths(dir, "test-plan")
 	if err != nil {
 		t.Fatalf("NewPaths: %v", err)
 	}
 	rs := NewRunStore(paths)
-	if err := rs.AcquireLock(RunLock{RunID: "stale", PID: 1, Host: "h", AcquiredAt: "old"}); err != nil {
-		t.Fatalf("AcquireLock: %v", err)
-	}
+	stale := RunLock{RunID: "stale", PID: 1, Host: "h", AcquiredAt: "old"}
 
-	const takers = 8
-	var arrived sync.WaitGroup
-	arrived.Add(takers)
-	release := make(chan struct{})
-	go func() {
+	for round := 0; round < rounds; round++ {
+		// Re-install the lock every taker judges stale.
+		if err := os.Remove(rs.lockPath()); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("round %d: clear lock: %v", round, err)
+		}
+		if err := rs.AcquireLock(stale); err != nil {
+			t.Fatalf("round %d: AcquireLock: %v", round, err)
+		}
+
+		var arrived, finished sync.WaitGroup
+		arrived.Add(takers)
+		finished.Add(takers)
+		release := make(chan struct{})
+		errs := make([]error, takers)
+		for i := 0; i < takers; i++ {
+			go func(i int) {
+				defer finished.Done()
+				arrived.Done()
+				<-release
+				errs[i] = rs.TakeoverLock(RunLock{
+					RunID: fmt.Sprintf("taker-%d", i), PID: 100 + i, Host: "h", AcquiredAt: "new",
+				})
+			}(i)
+		}
 		arrived.Wait()
 		close(release)
-	}()
-	rs.takeoverSwapHook = func() {
-		arrived.Done()
-		<-release
-	}
+		finished.Wait()
 
-	errs := make([]error, takers)
-	var finished sync.WaitGroup
-	finished.Add(takers)
-	for i := 0; i < takers; i++ {
-		go func(i int) {
-			defer finished.Done()
-			errs[i] = rs.TakeoverLock(RunLock{
-				RunID: fmt.Sprintf("taker-%d", i), PID: 100 + i, Host: "h", AcquiredAt: "new",
-			})
-		}(i)
-	}
-	finished.Wait()
-
-	var winners []string
-	for i, err := range errs {
-		if err == nil {
-			winners = append(winners, fmt.Sprintf("taker-%d", i))
+		var winners []int
+		for i, err := range errs {
+			if err == nil {
+				winners = append(winners, i)
+			}
 		}
-	}
-	if len(winners) != 1 {
-		t.Fatalf("%d takeovers succeeded, want exactly 1 (errors: %v)", len(winners), errs)
-	}
-	l, ok, lerr := rs.Lock()
-	if lerr != nil || !ok {
-		t.Fatalf("lock = %+v ok=%v err=%v, want the winner's lock to survive", l, ok, lerr)
-	}
-	if l.RunID != winners[0] {
-		t.Errorf("surviving lock names %q, want the successful taker %q", l.RunID, winners[0])
+		if len(winners) != 1 {
+			t.Fatalf("round %d: %d takeovers succeeded (%v), want exactly 1 (errors: %v)",
+				round, len(winners), winners, errs)
+		}
+		want := fmt.Sprintf("taker-%d", winners[0])
+		l, ok, lerr := rs.Lock()
+		if lerr != nil || !ok {
+			t.Fatalf("round %d: lock = %+v ok=%v err=%v, want the winner's lock to survive",
+				round, l, ok, lerr)
+		}
+		if l.RunID != want {
+			t.Fatalf("round %d: surviving lock names %q, want the successful taker %q",
+				round, l.RunID, want)
+		}
+		// A refused or displaced takeover must leave the slot tidy: only the
+		// lock file itself may remain.
+		for _, pattern := range []string{"run.lock.takeover.*", "run.lock.new.*"} {
+			left, gerr := filepath.Glob(filepath.Join(paths.Dir, pattern))
+			if gerr != nil {
+				t.Fatalf("round %d: glob %s: %v", round, pattern, gerr)
+			}
+			if len(left) > 0 {
+				t.Fatalf("round %d: %d leftover %s file(s): %v", round, len(left), pattern, left)
+			}
+		}
 	}
 }
 

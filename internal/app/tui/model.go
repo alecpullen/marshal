@@ -171,6 +171,10 @@ type Model struct {
 	host  acpclient.Host
 	sess  acpclient.Session
 	input textarea.Model
+	// pendingDraft is the draft WithDraft recorded. An Option runs before
+	// the composer exists, so New seeds the textarea and m.pastes from it
+	// once they do, and drops it then (see draft.go).
+	pendingDraft *Draft
 	// approvalEdit is the isolated editor for one pending approval's command
 	// or JSON arguments, or nil while no edit is open. It owns its own
 	// textarea, so editing a decision never shares text, cursor, placeholder
@@ -1243,6 +1247,21 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 	input.Placeholder = "Ask Marshal..."
 	input.CharLimit = 4000
 	m.input = input
+	// Seed the composer from the draft WithDraft recorded, now that the
+	// textarea exists. SetValue leaves the cursor after the last rune, which
+	// is where it would be had the user typed the text. The recorded draft
+	// is dropped here so the composer and m.pastes are the only copy from
+	// now on. A draft also survives the start panels (the trust prompt, the
+	// connect panel below): neither one touches the composer.
+	if d := m.pendingDraft; d != nil {
+		m.pendingDraft = nil
+		if d.text != "" {
+			m.input.SetValue(d.text)
+		}
+		if len(d.pastes) > 0 {
+			m.pastes = append([]pasteAttachment(nil), d.pastes...)
+		}
+	}
 	// Seed the reconciliation baseline from the session's effective mode.
 	// session.New normalizes the configured value, so a blank or
 	// non-canonical config does not make the first reconcile flip the

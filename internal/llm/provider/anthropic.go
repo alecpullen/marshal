@@ -650,6 +650,7 @@ func streamAnthropicChatEvents(body io.ReadCloser, capture *wireCapture, events 
 	var haveUsage bool
 	var finishReason string
 	var hasContent bool
+	var completion streamCompletion
 
 	for dec.Next() {
 		data := strings.TrimSpace(dec.Event().Data)
@@ -699,6 +700,10 @@ func streamAnthropicChatEvents(body io.ReadCloser, capture *wireCapture, events 
 		case "message_delta":
 			if ev.Delta != nil && ev.Delta.StopReason != "" {
 				finishReason = anthropicFinishReason(ev.Delta.StopReason)
+				// A non-empty stop_reason is this protocol's terminal
+				// announcement: gateways that omit message_stop still close
+				// the stream cleanly here.
+				completion.mark()
 			}
 			if ev.Usage != nil {
 				usage.OutputTokens = ev.Usage.OutputTokens
@@ -706,7 +711,11 @@ func streamAnthropicChatEvents(body io.ReadCloser, capture *wireCapture, events 
 		case "error":
 			events <- schema.ChatEvent{Type: schema.ChatEventError, Err: fmt.Errorf("stream error event: %s", data)}
 			return
-		case "content_block_stop", "message_stop", "ping":
+		case "message_stop":
+			// The Messages API's terminal event. It marks EOF clean even
+			// when no stop_reason was reported (older gateways omit it).
+			completion.mark()
+		case "content_block_stop", "ping":
 			// Known no-op events: nothing to do, nothing to flag.
 		default:
 			capture.annotate("[unrecognized-chunk]", data)
@@ -714,6 +723,24 @@ func streamAnthropicChatEvents(body io.ReadCloser, capture *wireCapture, events 
 	}
 	if err := dec.Err(); err != nil {
 		events <- schema.ChatEvent{Type: schema.ChatEventError, Err: fmt.Errorf("read stream: %w", err)}
+		return
+	}
+
+	if !hasContent {
+		events <- schema.ChatEvent{Type: schema.ChatEventError, Err: fmt.Errorf("messages endpoint returned empty content (stream)")}
+		return
+	}
+
+	var usageOut *schema.TokenUsage
+	if haveUsage {
+		usageOut = anthropicUsageFrom(usage)
+	}
+	// A stream that ended without message_stop or a stop_reason was cut
+	// short. Report it as interrupted, with no tool calls: the blocks above
+	// may hold a partial tool_use input, and repairing it here would present
+	// a truncated stream as a complete one.
+	if !completion.seen {
+		events <- completion.interrupted("message_stop or stop_reason", usageOut)
 		return
 	}
 
@@ -733,15 +760,6 @@ func streamAnthropicChatEvents(body io.ReadCloser, capture *wireCapture, events 
 	}
 	toolCalls, _ = repairToolCalls(toolCalls)
 
-	if !hasContent {
-		events <- schema.ChatEvent{Type: schema.ChatEventError, Err: fmt.Errorf("messages endpoint returned empty content (stream)")}
-		return
-	}
-
-	var usageOut *schema.TokenUsage
-	if haveUsage {
-		usageOut = anthropicUsageFrom(usage)
-	}
 	events <- schema.ChatEvent{
 		Type:         schema.ChatEventDone,
 		FinishReason: finishReason,

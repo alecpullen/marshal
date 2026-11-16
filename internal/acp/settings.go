@@ -563,6 +563,50 @@ func (m *SettingsManager) SaveVerifyCommands(ctx context.Context, params json.Ra
 	return struct{}{}, nil
 }
 
+// MarshalAccess handles session/marshal_access: the session's Studio
+// connection and the built-in access it holds. States are answers, so every
+// connection state — including offline, ambiguous and unauthorized — reaches
+// the client as a view rather than as an error.
+func (m *SettingsManager) MarshalAccess(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.MarshalAccessParams
+	if err := decodeParams(params, &p, acpwire.MethodMarshalAccess); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	svc, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	return svc.MarshalAccess(ctx)
+}
+
+// SaveMarshalAccess handles session/save_marshal_access: one access layer,
+// written against the version it was read from.
+func (m *SettingsManager) SaveMarshalAccess(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.SaveMarshalAccessParams
+	if err := decodeParams(params, &p, acpwire.MethodSaveMarshalAccess); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	svc, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	return svc.SaveMarshalAccess(ctx, p)
+}
+
+// SelectMarshalInstance handles session/select_marshal_instance: the project an
+// ambiguous session acts on, or none to clear the choice.
+func (m *SettingsManager) SelectMarshalInstance(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.SelectMarshalInstanceParams
+	if err := decodeParams(params, &p, acpwire.MethodSelectMarshalInstance); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	svc, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	return svc.SelectMarshalInstance(ctx, p)
+}
+
 // MCPLogin handles session/mcp_login: with Prepare it answers whether the
 // browser sign-in can start, and otherwise runs it, reporting the
 // authorization URL as this call's progress, as LoginProvider does
@@ -868,6 +912,9 @@ func registerSettings(srv *Server, settings *SettingsManager, others map[string]
 	srv.Handle(acpwire.MethodMCPReconnect, settings.MCPReconnect)
 	srv.Handle(acpwire.MethodSaveProjectConfig, settingsFailureOf(settings.SaveProjectConfig))
 	srv.Handle(acpwire.MethodSaveVerifyCommands, settings.SaveVerifyCommands)
+	srv.Handle(acpwire.MethodMarshalAccess, settingsFailureOf(settings.MarshalAccess))
+	srv.Handle(acpwire.MethodSaveMarshalAccess, settingsFailureOf(settings.SaveMarshalAccess))
+	srv.Handle(acpwire.MethodSelectMarshalInstance, settingsFailureOf(settings.SelectMarshalInstance))
 	srv.Handle(acpwire.MethodMCPLogin, settingsFailureOf(settings.MCPLogin))
 	srv.Handle(acpwire.MethodProbeProvider,
 		settingsFailureOf(marshalOr(srv.marshalClient, settings.ProbeProvider, others[acpwire.MethodProbeProvider])))

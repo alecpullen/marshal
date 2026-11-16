@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -23,6 +25,7 @@ import (
 	"marshal/internal/app/logging"
 	"marshal/internal/app/session"
 	"marshal/internal/commands"
+	"marshal/internal/daemon"
 	"marshal/internal/db"
 	"marshal/internal/hooks"
 	"marshal/internal/imagepayload"
@@ -37,11 +40,13 @@ import (
 	"marshal/internal/sddauthor"
 	"marshal/internal/skills"
 	"marshal/internal/strutil"
+	"marshal/internal/tools/mcp"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
 	"marshal/internal/viewmodel"
 	"marshal/internal/watch"
+	"marshal/web/bridge"
 )
 
 // jobShutdownTimeout controls how long Quiesce waits for background jobs to
@@ -189,6 +194,21 @@ type Runtime struct {
 	// TrustPromptPending reports that a project config exists but was not
 	// applied because the trust question was deferred to the TUI.
 	TrustPromptPending bool
+
+	// MarshalStatus is what this session's one Studio enrollment attempt
+	// learned: the state it reached, the identities it verified and the
+	// candidates an ambiguity offers. It is advisory only — an absent, offline,
+	// ambiguous or unsupported instance leaves the session working exactly as it
+	// was — and it carries no credential: that belongs to the transport that
+	// presents it (see enrollMarshalStudio).
+	MarshalStatus daemon.MarshalStatus
+
+	// marshalStudio is this session's built-in Studio binding: the enrollment
+	// the daemon answered with and, while it is connected, the scoped credential
+	// the session's built-in MCP client presents. It is unexported on purpose —
+	// the credential belongs to the transport that presents it, so nothing that
+	// reads the Runtime as session content can reach it.
+	marshalStudio *marshalStudioCredential
 
 	// clientTrust is WithClientTrust's answer: the session's marshal client
 	// answers the trust question and a trust applies in place (P4 D8).
@@ -1739,6 +1759,14 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		}
 		cfg.SessionRouting = runOpts.sessionRouting
 	}
+	// A resolved child-settings snapshot is enforced, not clamped: an invalid
+	// cap fails startup here, before any state, session row or provider exists,
+	// rather than silently downgrading what the client asked for.
+	if runOpts.subagentSettings != nil {
+		if err := session.ValidateSubagentSettings(*runOpts.subagentSettings); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidSubagentSettings, err)
+		}
+	}
 	// Strictly validate the configured starting tuple before any state exists:
 	// a malformed interaction default fails startup explicitly instead of being
 	// silently replaced by Ask inside session construction.
@@ -1855,7 +1883,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 
 	pluginCommands := loadPluginContents(&cfg, skillIndex, homeDir, workingDir, projectTrusted, logger)
 
-	state := session.New(cfg, workingDir, now, session.Persistence{DB: database, SessionID: sessionID, Logger: logger}, session.WithSubagentMaxConcurrency(cfg.Agent.MaxConcurrentSubagents))
+	state := session.New(cfg, workingDir, now, session.Persistence{DB: database, SessionID: sessionID, Logger: logger}, sessionOptions(cfg, runOpts.subagentSettings)...)
 	state.SetTrusted(projectTrusted)
 	// Surface the merged-config layering snapshot to commands and the TUI.
 	// startRuntime already produced `layers` via LoadLayers; copying it
@@ -1906,7 +1934,15 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	// the same directory. nil when the data directory could not be prepared,
 	// which every consumer reads as "this process serves no images".
 	images := openImageStore(dataDir, cfg, logger)
-	runner, toolReg, swarmRunner, mcpMgr, snapSvc, commandService, watchMgr, desktopCloser, subagentFactory, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(workCtx, cfg, state, database, projectID, skillIndex, dataDir, images, runOpts.additionalDirs, jobBroker, watchBroker, watchResumeCell, runOpts.configReloader, homeDir, writeLock, nil, lspHandle, authResolver)
+	// Studio enrollment is attempted here, exactly once, and before the runner
+	// is built so the session's built-in MCP client can present what the daemon
+	// issued. It is never required: an absent, offline, ambiguous or unsupported
+	// instance leaves the session working with a status that says why, and with
+	// no built-in tools. The credential it may hold stays in this cell — never in
+	// a prompt, a tool result, a notice or a child's environment.
+	marshalStudio := newMarshalStudioCredential(homeDir, workingDir, sessionID)
+	marshalStudio.enroll()
+	runner, toolReg, swarmRunner, mcpMgr, snapSvc, commandService, watchMgr, desktopCloser, subagentFactory, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(workCtx, cfg, state, database, projectID, skillIndex, dataDir, images, runOpts.additionalDirs, jobBroker, watchBroker, watchResumeCell, runOpts.configReloader, homeDir, writeLock, nil, lspHandle, marshalStudio, authResolver)
 	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
 		runner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
 	}
@@ -1976,6 +2012,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		CommandRegistry:      cmdReg,
 		TrustPromptPending:   trustPromptPending,
 		clientTrust:          runOpts.clientTrust,
+		marshalStudio:        marshalStudio,
 		LSPManager:           lspHandle,
 		Host:                 host,
 		ConfigReloader:       runOpts.configReloader,
@@ -2054,8 +2091,372 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		SubagentEvents: subagentBroker,
 		SessionEvents:  eventBroker,
 	}, runOpts.now)
+	// Studio enrollment happened once, before the runner was built; this records
+	// what it learned so the session and any surface can report it, and points
+	// the cell's revalidation at the same record. Nothing here can fail startup
+	// (decision 8), and no tool is registered here — the MCP transport that
+	// presents the credential owns that.
+	marshalStudio.onStatus = rt.recordMarshalStatus
+	rt.recordMarshalStatus(marshalStudio.status())
 	started = true
 	return rt, nil
+}
+
+// recordMarshalStatus records what a Studio (re)validation learned: the status a
+// surface reports, and the association the session's user-direction receipts bind
+// to. A different generation or project revokes the receipts already recorded —
+// they are evidence for one generation's project and nothing carries over.
+func (rt *Runtime) recordMarshalStatus(status daemon.MarshalStatus) {
+	if rt == nil {
+		return
+	}
+	rt.mu.Lock()
+	rt.MarshalStatus = status
+	rt.mu.Unlock()
+	// The state is read through the same lock a replacement installs it under:
+	// a revalidation can land beside a session swap, and reading the field bare
+	// would race it.
+	if state := rt.currentState(); state != nil {
+		state.RecordMarshalSession(session.MarshalSession{
+			InstanceID: status.InstanceID,
+			Generation: status.Generation,
+			ProjectID:  status.ProjectID,
+		})
+	}
+}
+
+// marshalEnrollTimeout bounds the startup enrollment attempt. A daemon that
+// answers is one unix socket away; one that does not must never hold a session's
+// start.
+var marshalEnrollTimeout = 3 * time.Second
+
+// enrollMarshalStudio attempts this session's one Studio enrollment against the
+// local daemon and reports what it learned.
+//
+// Absent, offline, unsupported and ambiguous are statuses, not failures: a
+// session works without Studio, so nothing here can fail startup and no caller
+// has to handle an error. projectRoot is the root Marshal already resolved
+// (its project identity anchors at the git root), which is what makes a
+// subdirectory launch enroll as the project it belongs to.
+//
+// The credential the daemon issues is returned to the caller that will present
+// it and is never recorded here: it does not reach session content, a prompt, a
+// tool result, a log line, a project file or the child's environment.
+func enrollMarshalStudio(homeDir, projectRoot, sessionID string) daemon.MarshalEnrollment {
+	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(projectRoot) == "" {
+		return daemon.MarshalEnrollment{Status: daemon.MarshalStatus{
+			State:     daemon.MarshalStateUnavailable,
+			SessionID: sessionID,
+		}}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), marshalEnrollTimeout)
+	defer cancel()
+	client := daemon.NewClient(daemon.PathsFor(homeDir).Socket)
+	enrollment, err := client.EnrollMarshal(ctx, projectRoot, sessionID)
+	if enrollment.Status.State == "" {
+		enrollment.Status = daemon.MarshalStatus{
+			State:     daemon.MarshalStateUnavailable,
+			SessionID: sessionID,
+		}
+		if errors.Is(err, daemon.ErrMarshalUnsupported) {
+			enrollment.Status.State = daemon.MarshalStateUnsupported
+		}
+		if errors.Is(err, daemon.ErrMarshalAmbiguous) {
+			enrollment.Status.State = daemon.MarshalStateAmbiguous
+		}
+	}
+	// A "connected" answer that carries no credential is not a connection: the
+	// built-in client presents a token, so a session holding none has no Studio
+	// tools however the state is spelled. Recording it as connected would claim
+	// a Studio this session cannot use, and — because revalidation is only ever
+	// provoked by a client that was never built — nothing would correct it.
+	if enrollment.Status.State == daemon.MarshalStateConnected && enrollment.Token == "" {
+		enrollment.Status.State = daemon.MarshalStateUnavailable
+	}
+	return enrollment
+}
+
+// marshalStudioCredential is one session's built-in Studio binding: the
+// enrollment the daemon answered with — the identities it verified and, when it
+// connected, the scoped credential — and the one hook a later revalidation
+// reports through.
+//
+// The credential lives here and nowhere else. It is not session content, a
+// prompt, a tool result, a notice, a log line, a project file or a child's
+// environment: the built-in MCP client reaches it one request at a time through
+// token, so a revalidated credential is picked up without anything else being
+// able to read or copy it.
+type marshalStudioCredential struct {
+	homeDir     string
+	projectRoot string
+	sessionID   string
+
+	mu         sync.RWMutex
+	enrollment daemon.MarshalEnrollment
+	// onStatus is set once, by the Runtime this credential belongs to, so a
+	// revalidation updates the recorded status and the session's association
+	// instead of leaving a stale one behind.
+	onStatus func(daemon.MarshalStatus)
+
+	// revalidating serialises revalidation: two calls that both failed with a
+	// 401 cost one enrollment, and both then present its answer.
+	revalidating sync.Mutex
+}
+
+// newMarshalStudioCredential returns the cell for one session. Nothing is
+// enrolled here: the caller runs the one attempt, so a construction path that
+// never reaches it holds no credential at all.
+func newMarshalStudioCredential(homeDir, projectRoot, sessionID string) *marshalStudioCredential {
+	return &marshalStudioCredential{homeDir: homeDir, projectRoot: projectRoot, sessionID: sessionID}
+}
+
+// enroll runs this session's one enrollment attempt and records what it
+// learned. It is never fatal: every outcome, including "nothing answered", is a
+// status.
+func (c *marshalStudioCredential) enroll() daemon.MarshalEnrollment {
+	if c == nil {
+		return daemon.MarshalEnrollment{}
+	}
+	enrollment := enrollMarshalStudio(c.homeDir, c.projectRoot, c.sessionID)
+	c.record(enrollment)
+	return enrollment
+}
+
+// record stores one enrollment and reports its status. The callback runs
+// outside the lock, so a listener can read the cell back.
+func (c *marshalStudioCredential) record(enrollment daemon.MarshalEnrollment) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.enrollment = enrollment
+	notify := c.onStatus
+	c.mu.Unlock()
+	if notify != nil {
+		notify(enrollment.Status)
+	}
+}
+
+// status is what a surface reports: the state this session's enrollment
+// reached and the identities it agrees on. It carries no credential.
+func (c *marshalStudioCredential) status() daemon.MarshalStatus {
+	if c == nil {
+		return daemon.MarshalStatus{State: daemon.MarshalStateUnavailable}
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.enrollment.Status
+}
+
+// connected reports whether the cell holds a credential worth presenting.
+func (c *marshalStudioCredential) connected() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.enrollment.Status.State == daemon.MarshalStateConnected && c.enrollment.Token != ""
+}
+
+// token is the built-in client's per-request credential source. It reports an
+// error rather than an empty token when the session holds none, which the
+// transport turns into an authorization failure instead of an unauthenticated
+// request.
+func (c *marshalStudioCredential) token(context.Context) (string, error) {
+	if c == nil {
+		return "", errors.New("marshal studio: this session holds no enrollment")
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.enrollment.Status.State != daemon.MarshalStateConnected || c.enrollment.Token == "" {
+		return "", fmt.Errorf("marshal studio: this session is not enrolled (%s)", enrollmentState(c.enrollment.Status.State))
+	}
+	return c.enrollment.Token, nil
+}
+
+// enrollmentState names an enrollment state in words for an error, so an
+// unauthorized message says why instead of quoting an empty string.
+func enrollmentState(state string) string {
+	if strings.TrimSpace(state) == "" {
+		return daemon.MarshalStateUnavailable
+	}
+	return state
+}
+
+// revalidate re-runs discovery and enrollment, at most once per failing call and
+// bounded by the startup timeout. A revalidation that does not reconnect leaves
+// the session without built-in tools; it never fails the turn that provoked it.
+func (c *marshalStudioCredential) revalidate(ctx context.Context) error {
+	if c == nil {
+		return errors.New("marshal studio: this session holds no enrollment")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.revalidating.Lock()
+	defer c.revalidating.Unlock()
+	enrollment := c.enroll()
+	if enrollment.Status.State != daemon.MarshalStateConnected || enrollment.Token == "" {
+		return fmt.Errorf("marshal studio: revalidating left this session %s", enrollmentState(enrollment.Status.State))
+	}
+	return nil
+}
+
+// marshalStudioDialTimeout bounds the connect to the daemon's socket. The
+// daemon answers in one round trip or not at all.
+var marshalStudioDialTimeout = 5 * time.Second
+
+// mcpOptions builds the built-in client's options, or reports false when this
+// session has nothing to attach: no enrollment, an ambiguous or unsupported
+// instance, or an instance that did not answer. All of those mean "no built-in
+// tools", never a failed build.
+//
+// The transport is this session's own: it dials the daemon's owner-only socket
+// (the URL's host is a placeholder the dialer replaces) and presents this
+// session's credential. Nothing here is written to a user MCP config, and no two
+// sessions share a token or a client identity.
+func (c *marshalStudioCredential) mcpOptions(state *session.State) (*mcp.MarshalStudioOptions, bool) {
+	if !c.connected() {
+		return nil, false
+	}
+	socket := daemon.PathsFor(c.homeDir).Socket
+	dialer := &net.Dialer{Timeout: marshalStudioDialTimeout}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, "unix", socket)
+		},
+		MaxIdleConns:    2,
+		IdleConnTimeout: 30 * time.Second,
+	}
+	return &mcp.MarshalStudioOptions{
+		URL:         mcp.MarshalStudioEndpoint,
+		HTTPClient:  &http.Client{Transport: transport},
+		TokenSource: c.token,
+		// The header name is the bridge's own constant, injected from here so
+		// the transport never imports the control plane.
+		UserDirectionHeader: bridge.MarshalUserDirectionHeader,
+		ConfirmUserDirection: func(ctx context.Context, challenge mcp.UserDirectionChallenge) (string, error) {
+			return confirmMarshalUserDirection(ctx, state, challenge)
+		},
+		Revalidate: c.revalidate,
+		Timeout:    marshalEnrollTimeout,
+	}, true
+}
+
+// marshalUserDirectionAction is the ledger's name for one built-in operation:
+// the tool the instance refused. It is deliberately the instance's tool name and
+// not the session's, so a receipt names what the factory was asked to do.
+func marshalUserDirectionAction(challenge mcp.UserDirectionChallenge) string {
+	return strings.TrimSpace(challenge.Tool)
+}
+
+// marshalUserDirectionTarget is the ledger's name for the exact operation a
+// receipt covers: every argument the call carried except the request id, in
+// sorted key order. It is derived from the call and from nothing a confirmation
+// adds, so the recorded confirmation and the receipt that is later taken can
+// only match for the same operation.
+func marshalUserDirectionTarget(arguments map[string]any) string {
+	keys := make([]string, 0, len(arguments))
+	for key := range arguments {
+		if key == "requestId" {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, key := range keys {
+		encoded, err := json.Marshal(arguments[key])
+		if err != nil {
+			continue
+		}
+		b.WriteString(key)
+		b.WriteByte('=')
+		b.Write(encoded)
+		b.WriteByte(';')
+	}
+	return b.String()
+}
+
+// confirmMarshalUserDirection asks the person, through the session's ordinary
+// approval path, to direct one operation the instance refused, records the
+// confirmation in the session's ledger and returns the receipt to present.
+//
+// The receipt is the instance's, so nothing here can mint evidence of a
+// person's direction: a session can only record the confirmation it was given
+// and then present it once.
+func confirmMarshalUserDirection(ctx context.Context, state *session.State, challenge mcp.UserDirectionChallenge) (string, error) {
+	if state == nil {
+		return "", errors.New("marshal studio: no session to confirm through")
+	}
+	action := marshalUserDirectionAction(challenge)
+	target := marshalUserDirectionTarget(challenge.Arguments)
+	requestID := ""
+	if raw, ok := challenge.Arguments["requestId"]; ok {
+		requestID, _ = raw.(string)
+	}
+	projectID := ""
+	if raw, ok := challenge.Arguments["projectId"]; ok {
+		projectID, _ = raw.(string)
+	}
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		projectID = state.MarshalSession().ProjectID
+	}
+	if action == "" || target == "" || strings.TrimSpace(requestID) == "" || projectID == "" {
+		return "", fmt.Errorf("%w: the refused operation names no identity to confirm", mcp.ErrMarshalStudioUnauthorized)
+	}
+	if !requestMarshalUserDirectionApproval(ctx, state, action, target) {
+		return "", errors.New("marshal studio: the operation was not directed")
+	}
+	if _, err := state.ConfirmUserDirection(session.UserDirectionRequest{
+		ID:        challenge.Receipt,
+		ExpiresAt: challenge.ExpiresAt,
+		ProjectID: projectID,
+		Action:    action,
+		Target:    target,
+		RequestID: requestID,
+	}); err != nil {
+		return "", err
+	}
+	// Take the confirmation as it is presented, so one confirmation authorizes
+	// one attempt: the ledger's entry is spent by the retry it admits.
+	receipt, ok := state.TakeUserDirectionReceipt(projectID, action, target, requestID)
+	if !ok {
+		return "", errors.New("marshal studio: the confirmation was not recorded")
+	}
+	return receipt.ID, nil
+}
+
+// requestMarshalUserDirectionApproval shows one built-in operation on the
+// session's existing approval surface and waits for the person's answer. It
+// mirrors the subagent consent path: the same PendingToolCall mechanism, the
+// same panel, and the same cancellation behaviour.
+func requestMarshalUserDirectionApproval(ctx context.Context, state *session.State, action, target string) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	ch := make(chan session.UserApprovalDecision, 1)
+	state.SetPendingApproval(&session.PendingToolCall{
+		ID:           "marshal-user-direction",
+		Name:         "mcp." + mcp.MarshalStudioServerName + "." + action,
+		Args:         target,
+		Risk:         string(registry.RiskWorkspaceWrite),
+		Reason:       "Marshal Studio asks you to direct this factory operation.",
+		ResponseChan: ch,
+	})
+	defer state.SetPendingApproval(nil)
+	for {
+		changed := state.InteractionChanged()
+		select {
+		case decision := <-ch:
+			return decision.Approved
+		case <-ctx.Done():
+			return false
+		case <-changed:
+			continue
+		}
+	}
 }
 
 // autoloadSkills injects the configured always-on skills into the session
@@ -2130,7 +2531,16 @@ func (rt *Runtime) newSessionLocked(name string, replacing bool) (*session.State
 		return nil, fmt.Errorf("create session: %w", err)
 	}
 
-	newState := session.New(rt.Config, rt.WorkingDir, now, session.Persistence{DB: db, SessionID: sessionID, Logger: rt.Logger}, session.WithSubagentMaxConcurrency(rt.Config.Agent.MaxConcurrentSubagents))
+	// A session replaced inside its own runtime keeps the child settings the
+	// runtime's session bound at creation: /session new starts a new
+	// conversation, not a new client, so dropping the resolved snapshot there
+	// would silently widen delegation back to the ordinary defaults. A
+	// runtime whose session bound none stays on the ordinary defaults.
+	var carried *session.SubagentSettings
+	if settings, ok := rt.State.SubagentSettings(); ok {
+		carried = &settings
+	}
+	newState := session.New(rt.Config, rt.WorkingDir, now, session.Persistence{DB: db, SessionID: sessionID, Logger: rt.Logger}, sessionOptions(rt.Config, carried)...)
 	if name != "" {
 		newState.SetTitleManual(name)
 		// Persist the manual flag; the title itself was written by
@@ -2177,7 +2587,7 @@ func (rt *Runtime) newSessionLocked(name string, replacing bool) (*session.State
 		lock = &swarm.WriteLock{}
 	}
 	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(
-		rt.workCtx, rt.Config, newState, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.Images, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock, nil, rt.LSPManager, rt.AuthResolver,
+		rt.workCtx, rt.Config, newState, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.Images, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock, nil, rt.LSPManager, rt.marshalStudio, rt.AuthResolver,
 	)
 	if err != nil {
 		// Roll back the empty session row so /sessions stays clean.
@@ -2368,6 +2778,19 @@ func resolveWorkingDir(override string) (string, error) {
 		return root, nil
 	}
 	return dir, nil
+}
+
+// sessionOptions are the child-concurrency options a runtime's session is
+// constructed with: the configured cap from agent.max_concurrent_subagents,
+// and — when a client supplied one at creation — its resolved child-settings
+// snapshot, which replaces that cap and holds its own model for this session
+// only.
+func sessionOptions(cfg config.Config, settings *session.SubagentSettings) []session.Option {
+	opts := []session.Option{session.WithSubagentMaxConcurrency(cfg.Agent.MaxConcurrentSubagents)}
+	if settings != nil {
+		opts = append(opts, session.WithSubagentSettings(*settings))
+	}
+	return opts
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

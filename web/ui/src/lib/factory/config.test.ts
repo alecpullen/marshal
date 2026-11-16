@@ -1,6 +1,31 @@
 import { describe, expect, it } from 'vitest'
 import type { FactoryConfig } from '../factory'
-import { formatFactoryCheck, keepUnavailable, profileOf, resolvedConfigRows } from './config'
+import { resolveSubagentRole, subagentOverridesOf, subagentValueLine } from '../factory'
+import {
+  DRAFT_SUBAGENT_SOURCES,
+  PROJECT_SUBAGENT_SOURCES,
+  SUBAGENT_INHERIT,
+  applyConcurrencyChoice,
+  applyEnabledChoice,
+  applyModelChoice,
+  concurrencyChoice,
+  concurrencyText,
+  describeSubagentSource,
+  enabledChoice,
+  formatFactoryCheck,
+  frozenSubagentRows,
+  frozenSubagentText,
+  keepUnavailable,
+  modelChoice,
+  profileOf,
+  resolvedConfigRows,
+  settingsVersionMoved,
+  subagentConflictNotice,
+  subagentFieldLines,
+  subagentOverridesBody,
+  subagentSummaryRows,
+  subagentUnsupportedNotice,
+} from './config'
 
 /** A configuration as the bridge returns one: every field already resolved. */
 const resolved = (over: Partial<FactoryConfig> = {}): FactoryConfig => ({
@@ -124,5 +149,111 @@ describe('resolvedConfigRows empty checks', () => {
     expect(row?.value).toBe('None')
     expect(row?.source).toBe('No required CI acknowledged')
     expect(row?.warning).toBe(false)
+  })
+})
+
+describe('subagent settings presentation', () => {
+  it('keeps inherit, explicit false and explicit empty model distinct', () => {
+    // Absent is inherit — not false, and not an empty model.
+    expect(enabledChoice(undefined)).toBe('inherit')
+    expect(modelChoice(undefined)).toBe(SUBAGENT_INHERIT)
+    expect(concurrencyChoice(undefined)).toBe(SUBAGENT_INHERIT)
+    expect(concurrencyText(undefined)).toBe('')
+    // An explicit false is a stated choice, and it survives a round trip.
+    const off = applyEnabledChoice(undefined, 'off')
+    expect(off).toEqual({ enabled: false })
+    expect(enabledChoice(off)).toBe('off')
+    // An explicit empty model is normal child routing, which is not inherit.
+    const routed = applyModelChoice(undefined, '')
+    expect(routed).toEqual({ model: '' })
+    expect(modelChoice(routed)).toBe('')
+    expect(resolveSubagentRole('implementer', { item: routed }).fields[1].value).toBe('Normal child routing')
+  })
+
+  it('resets one field to inherit without clearing the others', () => {
+    const both = applyConcurrencyChoice(applyEnabledChoice(undefined, 'on'), '3')
+    expect(both).toEqual({ enabled: true, concurrency: 3 })
+    // Reset-to-inherit deletes exactly the field it belongs to.
+    expect(applyEnabledChoice(both, 'inherit')).toEqual({ concurrency: 3 })
+    expect(applyConcurrencyChoice(both, '')).toEqual({ enabled: true })
+    expect(modelChoice(applyModelChoice(both, SUBAGENT_INHERIT))).toBe(SUBAGENT_INHERIT)
+    // Nothing stated at all is nothing to write, so a default can still reach it.
+    expect(subagentOverridesBody('inherit', SUBAGENT_INHERIT, '')).toBeUndefined()
+    expect(subagentOverridesBody('off', '', '8')).toEqual({ enabled: false, model: '', concurrency: 8 })
+  })
+
+  it('resolves each role through its own chain', () => {
+    const config = { implementerSubagents: { enabled: false }, reviewerSubagents: { enabled: true, model: 'strict' } }
+    const implementer = resolveSubagentRole('implementer', { item: subagentOverridesOf(config, 'implementer') })
+    const reviewer = resolveSubagentRole('reviewer', { item: subagentOverridesOf(config, 'reviewer') })
+    expect(implementer.fields.map((f) => f.value)).toEqual(['Off', 'Inherited', 'Inherited'])
+    expect(implementer.inherited).toBe(false)
+    expect(reviewer.fields.map((f) => f.value)).toEqual(['On', 'strict', 'Inherited'])
+    // One role's override never reaches the other.
+    expect(reviewer.fields[0].source).toBe('item')
+    expect(implementer.fields[1].source).toBe('unset')
+  })
+
+  it('refreshes only inherited fields when the defaults change', () => {
+    // The item states its model and nothing else, so a project default change
+    // reaches its concurrency and leaves the stated model fixed.
+    const item = { model: 'careful' }
+    const before = resolveSubagentRole('implementer', { item, project: { model: 'fast', concurrency: 2 } })
+    expect(before.fields[1]).toMatchObject({ value: 'careful', source: 'item', explicit: true })
+    expect(before.fields[2]).toMatchObject({ value: '2 at a time', source: 'project', explicit: false })
+    const after = resolveSubagentRole('implementer', { item, project: { model: 'frontier', concurrency: 6 } })
+    expect(after.fields[1].value).toBe('careful')
+    expect(after.fields[2].value).toBe('6 at a time')
+    const line = subagentValueLine(after)
+    expect(line).toBe('Inherited · careful · 6 at a time')
+  })
+
+  it('names the source per surface and never invents a value', () => {
+    expect(describeSubagentSource('item')).toBe(DRAFT_SUBAGENT_SOURCES.item)
+    expect(describeSubagentSource('project', PROJECT_SUBAGENT_SOURCES)).toBe('Your project setting')
+    expect(describeSubagentSource('unset')).toContain('cannot read')
+    const view = resolveSubagentRole('reviewer', {})
+    // A session that reported nothing is stated as unread, never as a value.
+    expect(view.fields.every((f) => f.value === 'Inherited' && f.source === 'unset')).toBe(true)
+    expect(view.inherited).toBe(true)
+    expect(subagentFieldLines(view)).toContain('Enabled: Inherited — Inherited from the session')
+    const rows = subagentSummaryRows([view])
+    expect(rows[0].label).toBe('Reviewer subagents')
+    expect(rows[0].source).toContain('cannot read')
+  })
+
+  it('shows an unenforceable concurrency as unsupported rather than clamping it', () => {
+    const view = resolveSubagentRole('implementer', { item: { concurrency: 9 } })
+    expect(view.fields[2].value).toBe('9 at a time')
+    expect(view.fields[2].unsupported).toContain('1 to 8')
+    expect(subagentUnsupportedNotice({ settings: false })).toContain('refused at approval')
+    // A supported backend, and a caller that does not know, claim nothing.
+    expect(subagentUnsupportedNotice({ settings: true })).toBe('')
+    expect(subagentUnsupportedNotice(null)).toBe('')
+  })
+
+  it('presents a moved settings version as a conflict to reload through', () => {
+    expect(settingsVersionMoved('"v1"', '"v1"')).toBe(false)
+    expect(settingsVersionMoved('"v1"', '"v2"')).toBe(true)
+    // An unknown version is not a move: nothing is claimed either way.
+    expect(settingsVersionMoved('', '"v2"')).toBe(false)
+    const notice = subagentConflictNotice('"v1"', '"v2"')
+    expect(notice).toContain('Reload')
+    expect(notice).toContain('"v1"')
+    expect(notice).toContain('"v2"')
+  })
+
+  it('shows the settings an approved revision froze', () => {
+    expect(frozenSubagentRows({
+      implementerSubagents: { enabled: false, model: '', concurrency: 3 },
+      reviewerSubagents: { enabled: true, model: 'strict', concurrency: 1 },
+    })).toEqual([
+      { label: 'Implementer subagents', value: 'Off · Normal child routing · 3 at a time' },
+      { label: 'Reviewer subagents', value: 'On · strict · 1 at a time' },
+    ])
+    // A revision approved before the settings were frozen says so, and a zero
+    // cap is never shown as a cap of zero.
+    expect(frozenSubagentText(undefined)).toContain('Not recorded')
+    expect(frozenSubagentText({ enabled: false, model: '', concurrency: 0 })).toContain('Not recorded')
   })
 })

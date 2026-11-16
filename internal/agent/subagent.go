@@ -297,6 +297,25 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 		if err != nil {
 			return registry.ToolResult{}, err
 		}
+		// A session that bound child settings at creation enforces them here,
+		// before admission, so a refusal spends no concurrency slot and
+		// spawns no child. Settings that cannot be honoured are refused
+		// rather than silently downgraded.
+		settings, hasSettings := state.SubagentSettings()
+		if hasSettings {
+			if serr := session.ValidateSubagentSettings(settings); serr != nil {
+				return registry.ToolResult{}, fmt.Errorf("agent.run: %w", serr)
+			}
+			if !settings.Enabled {
+				return registry.ToolResult{}, errors.New("agent.run: delegation is disabled for this session")
+			}
+			// The session's configured model is the child's default. An
+			// explicit per-call model still wins, and an empty configured
+			// model keeps normal child routing.
+			if args.Model == "" {
+				args.Model = settings.Model
+			}
+		}
 		// System access is never granted upward: a child may only inherit
 		// what the parent already has. Reject before admission so the
 		// refusal costs no concurrency slot and spawns no child. The factory

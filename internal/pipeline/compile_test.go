@@ -109,6 +109,114 @@ func TestCompilePlanDiagnosticForMalformedBlock(t *testing.T) {
 	}
 }
 
+// compilePlanBody compiles a one-task plan whose body is block and returns
+// the resulting IR and diagnostics.
+func compilePlanBody(t *testing.T, block string) (*PlanIR, []Diagnostic) {
+	t.Helper()
+	dir := t.TempDir()
+	path := writeFile(t, dir, "plan.md", "# Plan\n\n## Task 1: Do it\n\n"+block+"\n")
+	plan, err := ParsePlan(path)
+	if err != nil {
+		t.Fatalf("ParsePlan: %v", err)
+	}
+	ir, diags, err := CompilePlan(plan)
+	if err != nil {
+		t.Fatalf("CompilePlan: %v", err)
+	}
+	return ir, diags
+}
+
+// requireErrorDiagnostic fails unless diags holds an error-severity
+// diagnostic mentioning fragment.
+func requireErrorDiagnostic(t *testing.T, diags []Diagnostic, fragment string) {
+	t.Helper()
+	for _, d := range diags {
+		if d.Severity == DiagError && contains(d.Message, fragment) {
+			return
+		}
+	}
+	t.Fatalf("no error diagnostic mentioning %q: %v", fragment, diags)
+}
+
+// requireNoFileOp fails if the first task carries a *FileOp.
+func requireNoFileOp(t *testing.T, ir *PlanIR) {
+	t.Helper()
+	for _, op := range ir.Tasks[0].Operations {
+		if _, ok := op.(*FileOp); ok {
+			t.Fatalf("escaping path compiled into a FileOp: %+v", op)
+		}
+	}
+}
+
+func TestCompilePlanRejectsAbsoluteFilePath(t *testing.T) {
+	ir, diags := compilePlanBody(t, "```marshal.file path=\"/etc/passwd\" replace=\"true\"\npwned\n```")
+	requireErrorDiagnostic(t, diags, "/etc/passwd")
+	requireNoFileOp(t, ir)
+}
+
+func TestCompilePlanRejectsAbsolutePatchFile(t *testing.T) {
+	ir, diags := compilePlanBody(t, "```marshal.patch file=\"/etc/passwd\"\n"+
+		"<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE\n```")
+	requireErrorDiagnostic(t, diags, "/etc/passwd")
+	for _, op := range ir.Tasks[0].Operations {
+		if _, ok := op.(*PatchOp); ok {
+			t.Fatalf("escaping path compiled into a PatchOp: %+v", op)
+		}
+	}
+}
+
+func TestCompilePlanRejectsParentEscapingFilePath(t *testing.T) {
+	ir, diags := compilePlanBody(t, "```marshal.file path=\"../outside.txt\" replace=\"true\"\npwned\n```")
+	requireErrorDiagnostic(t, diags, "../outside.txt")
+	requireNoFileOp(t, ir)
+}
+
+func TestCompilePlanRejectsParentEscapingPatchFile(t *testing.T) {
+	ir, diags := compilePlanBody(t, "```marshal.patch file=\"../../etc/passwd\"\n"+
+		"<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE\n```")
+	requireErrorDiagnostic(t, diags, "../../etc/passwd")
+	for _, op := range ir.Tasks[0].Operations {
+		if _, ok := op.(*PatchOp); ok {
+			t.Fatalf("escaping path compiled into a PatchOp: %+v", op)
+		}
+	}
+}
+
+func TestCompilePlanRejectsDeepParentEscape(t *testing.T) {
+	ir, diags := compilePlanBody(t, "```marshal.file path=\"a/../../outside.txt\" replace=\"true\"\npwned\n```")
+	requireErrorDiagnostic(t, diags, "a/../../outside.txt")
+	requireNoFileOp(t, ir)
+}
+
+func TestCompilePlanRejectsEmptyFilePath(t *testing.T) {
+	ir, diags := compilePlanBody(t, "```marshal.file path=\"\" replace=\"true\"\npwned\n```")
+	requireErrorDiagnostic(t, diags, "path")
+	requireNoFileOp(t, ir)
+}
+
+func TestCompilePlanAcceptsNormalizedWorkspaceRelativePath(t *testing.T) {
+	ir, diags := compilePlanBody(t, "```marshal.file path=\"pkg/../src/ok.txt\"\nhello\n```")
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	var got string
+	for _, op := range ir.Tasks[0].Operations {
+		if f, ok := op.(*FileOp); ok {
+			got = f.Path
+		}
+	}
+	if got != "pkg/../src/ok.txt" {
+		t.Fatalf("FileOp.Path = %q, want the author's spelling preserved", got)
+	}
+}
+
+func TestCompilePlanAcceptsNestedWorkspaceRelativePath(t *testing.T) {
+	_, diags := compilePlanBody(t, "```marshal.file path=\"internal/deep/dir/new.go\"\npackage deep\n```")
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+}
+
 func TestCompilePlanDetectsDependencyCycle(t *testing.T) {
 	dir := t.TempDir()
 	planContent := "# Plan\n\n## Global Constraints\n\n- None.\n\n---\n\n" +

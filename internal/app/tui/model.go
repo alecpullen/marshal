@@ -172,6 +172,11 @@ type Model struct {
 	host  acpclient.Host
 	sess  acpclient.Session
 	input textarea.Model
+	// pendingCommandRaw is the command line dispatchCommand is running. A
+	// refusal that fires after the Enter handler already cleared the composer
+	// reads it to put the draft back, so an argument-heavy command is not
+	// retyped (AUD-12).
+	pendingCommandRaw string
 	// pendingDraft is the draft WithDraft recorded. An Option runs before
 	// the composer exists, so New seeds the textarea and m.pastes from it
 	// once they do, and drops it then (see draft.go).
@@ -193,6 +198,19 @@ type Model struct {
 	// lspCancel is called from beginShutdown.
 	lspCtx    context.Context
 	lspCancel context.CancelFunc
+	// panelCtx is the context the docked panels derive their bounded calls
+	// from (AUD-10). It is independent of m.ctx for lspCtx's reason, and
+	// cancelled on quit and detach so a panel's write in flight returns
+	// instead of outliving the program.
+	panelCtx    context.Context
+	panelCancel context.CancelFunc
+	// browseSeq numbers browse actions (AUD-10). A queued detail gather
+	// applies its result only while it is still the newest action and has not
+	// been applied yet, so a superseded answer is dropped rather than applied.
+	// browsePending is what the status line shows while one is outstanding.
+	browseSeq     uint64
+	browseApplied uint64
+	browsePending string
 	// calls is the model's call queue (P3 R6): the converted asynchronous
 	// calls and the steps that wait behind them. Update starts the head of
 	// the queue from the Update goroutine; the call itself runs off it.
@@ -1039,6 +1057,7 @@ func (m *Model) openSettingsBrowser(query string) {
 		settings.WithProvenance(m.provenanceForPath),
 		settings.WithHost(m.host),
 		settings.WithSession(m.sess),
+		settings.WithContext(m.panelCtx),
 	}
 	if userConfig := m.sess.Status().UserConfigPath; userConfig != "" {
 		opts = append(opts, settings.WithUserConfigPath(userConfig))
@@ -1303,6 +1322,11 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 	// provider-build failure). It is cancelled on shutdown so a lingering
 	// lookup never leaks past exit.
 	m.lspCtx, m.lspCancel = context.WithCancel(context.Background())
+
+	// The docked panels' context is the same shape: independent of m.ctx and
+	// cancelled on shutdown, so a settings write in flight on a slow daemon
+	// returns when the program leaves (AUD-10).
+	m.panelCtx, m.panelCancel = context.WithCancel(context.Background())
 
 	// bubbles maps wheel-left/right to horizontal panning; step 0 disables
 	// it at the viewport level too (the wheel events are already dropped in
@@ -3918,16 +3942,45 @@ func (m *Model) drillIntoSubagent(id int64) bool {
 // running subagent onto the view stack, so inspecting live work does not
 // require a mouse. Returns false when no subagent is running.
 func (m *Model) drillIntoLatestRunningSubagent() bool {
+	id, ok := m.latestRunningSubagent()
+	return ok && m.drillIntoSubagent(id)
+}
+
+// latestRunningSubagent is the most recently registered running subagent: the
+// target Ctrl+F falls back to when nothing is selected.
+func (m *Model) latestRunningSubagent() (int64, bool) {
 	subs := m.sess.Status().Subagents
 	for i := len(subs) - 1; i >= 0; i-- {
-		if subs[i].Status != acpwire.SubagentRunning {
-			continue
-		}
-		if m.drillIntoSubagent(subs[i].ID) {
-			return true
+		if subs[i].Status == acpwire.SubagentRunning && subs[i].Drill != nil {
+			return subs[i].ID, true
 		}
 	}
-	return false
+	return 0, false
+}
+
+// drillIntoSelectedSubagent pushes the subagent the user has selected onto the
+// view stack — the transcript row or tray card under the browse cursor, else
+// the tray card they expanded — and falls back to the most recently registered
+// running one, so inspecting live work never needs a mouse. A drill-in ends
+// browse mode the way browse f does, because the child's transcript has none of
+// the parent's rows to cursor over. It reports false when nothing is drillable,
+// and while already drilled: a child dispatches no subagents, so drill-in stays
+// one level deep.
+func (m *Model) drillIntoSelectedSubagent() bool {
+	if len(m.viewStack) > 0 {
+		return false
+	}
+	id, ok := m.selectedSubagent()
+	if !ok {
+		id, ok = m.latestRunningSubagent()
+	}
+	if !ok {
+		return false
+	}
+	if m.browsing {
+		m.leaveBrowse()
+	}
+	return m.drillIntoSubagent(id)
 }
 
 // popDrill pops one level of subagent drill-down, returning false when the
@@ -4471,6 +4524,7 @@ func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.busy {
+		m.refuseBusyCommand("/sdd new", "plan authoring")
 		return m, nil
 	}
 	goal := parsed.Goal
@@ -5200,6 +5254,12 @@ func (m *Model) finishQuit() tea.Cmd {
 		m.lspCancel()
 		m.lspCancel = nil
 	}
+	// A panel's write or fetch in flight is bounded by this context (AUD-10):
+	// cancel it so the call returns rather than outliving the program.
+	if m.panelCancel != nil {
+		m.panelCancel()
+		m.panelCancel = nil
+	}
 	// Closing the session settles every pending request and shuts it down; the
 	// accepted end's settlement already stopped the work, so nothing is stopped
 	// again here.
@@ -5238,6 +5298,10 @@ func (m *Model) detach() tea.Cmd {
 	if m.lspCancel != nil {
 		m.lspCancel()
 		m.lspCancel = nil
+	}
+	if m.panelCancel != nil {
+		m.panelCancel()
+		m.panelCancel = nil
 	}
 	// Release the dock's surfaces exactly as finishQuit does: they are
 	// permanently gone once the program stops.
@@ -6670,6 +6734,9 @@ func (m Model) handleSuggestionMsg(msg suggestionMsg) (Model, tea.Cmd) {
 
 func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 	m.leaveBrowse() // running a command ends browsing
+	// Stashed for a refusal that has to hand the line back: the Enter handler
+	// clears the composer before dispatch, so this is the only copy left.
+	m.pendingCommandRaw = raw
 	// /send-now is recognized from the raw line before shlex.Split can
 	// reinterpret its payload: the argument is literal steering text, so
 	// quotes, newlines and interior whitespace must survive verbatim. The

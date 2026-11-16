@@ -132,8 +132,12 @@ func compileBlock(blk marshalBlock) (Operation, error) {
 
 	switch blk.kind {
 	case "marshal.patch":
+		file := blk.attrs["file"]
+		if err := checkPlanPath(file); err != nil {
+			return nil, fmt.Errorf("compile patch: %w", err)
+		}
 		return &PatchOp{
-			File:      blk.attrs["file"],
+			File:      file,
 			Search:    extractSEARCH(blk.content),
 			Replace:   extractREPLACE(blk.content),
 			LineStart: lineStart,
@@ -141,8 +145,12 @@ func compileBlock(blk marshalBlock) (Operation, error) {
 		}, nil
 
 	case "marshal.file":
+		path := blk.attrs["path"]
+		if err := checkPlanPath(path); err != nil {
+			return nil, fmt.Errorf("compile file: %w", err)
+		}
 		return &FileOp{
-			Path:      blk.attrs["path"],
+			Path:      path,
 			Content:   blk.content,
 			Replace:   blk.attrs["replace"] == "true",
 			LineStart: lineStart,

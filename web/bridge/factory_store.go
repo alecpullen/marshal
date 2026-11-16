@@ -472,6 +472,15 @@ func validateFactoryItem(i FactoryItem) error {
 		if len(a.Plan)+len(a.Spec) > factoryImportLimit || a.PlanHash != factoryApprovalHash(a.Plan, a.Spec, a.EditSnapshot) {
 			return fmt.Errorf("invalid approval")
 		}
+		// A frozen subagent cap is validated, never clamped, so a stored value
+		// outside the enforceable range is corruption rather than a setting.
+		// Zero stays legal: an approval journalled before subagent settings
+		// existed carries the zero value and keeps replaying unchanged.
+		for _, role := range []FactorySubagentSettings{a.ImplementerSubagents, a.ReviewerSubagents} {
+			if role.Concurrency != 0 && !factorySubagentConcurrencySupported(role.Concurrency) {
+				return fmt.Errorf("invalid approval subagent concurrency")
+			}
+		}
 	}
 	for _, r := range i.Rounds {
 		if r.CI != nil {

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import FactoryNew from './FactoryNew.svelte'
 import * as api from '../lib/api'
@@ -575,4 +575,83 @@ it('manualFactoryFlowStillWorks', async () => {
   expect(api.createWorkingDraft).not.toHaveBeenCalled()
   expect(api.saveWorkingDraft).not.toHaveBeenCalled()
   await screen.findByTestId('draft-preview')
+})
+
+describe('handoff subagent settings', () => {
+  /** The controls only exist once the project's settings and profiles arrived. */
+  async function ready(settings: api.ProjectSettings = projectSettings({ routing: { profile: 'fast' } })) {
+    vi.mocked(api.getProjectSettings).mockResolvedValue(settings)
+    render(FactoryNew, { projectRoot: ROOT, onNavigate: vi.fn() })
+    await screen.findByRole('option', { name: 'repo' })
+    await waitFor(() => expect([...(screen.getByLabelText('Implementer subagents model') as HTMLSelectElement).options].map((o) => o.value)).toContain('careful'))
+  }
+
+  /**
+   * Fill and submit the handoff. These tests are about the subagent overrides,
+   * so the two rules unrelated to them are satisfied the way the form requires:
+   * a title, a plan, and the repository's own no-required-CI acknowledgement.
+   */
+  async function submit() {
+    await fillHandoff()
+    await fireEvent.click(screen.getByLabelText('This repository has no required CI'))
+    await save()
+    await waitFor(() => expect(api.createFactoryItem).toHaveBeenCalledTimes(1))
+  }
+
+  it('sends only the overrides this handoff states, per role', async () => {
+    await ready()
+    // An explicit false, a chosen profile and a cap are the item's own choices.
+    await fireEvent.change(screen.getByLabelText('Implementer subagents enabled'), { target: { value: 'off' } })
+    await fireEvent.change(screen.getByLabelText('Implementer subagents model'), { target: { value: 'careful' } })
+    await fireEvent.input(screen.getByLabelText('Implementer subagents concurrency'), { target: { value: '3' } })
+    await submit()
+    expect(sent().config.implementerSubagents).toEqual({ enabled: false, model: 'careful', concurrency: 3 })
+    // The reviewer was left alone, so it states nothing at all.
+    expect(sent().config.reviewerSubagents).toBeUndefined()
+  })
+
+  it('keeps an explicit empty model distinct from following', async () => {
+    await ready()
+    // "Normal child routing" is a stated choice: an empty string, not an absence.
+    await fireEvent.change(screen.getByLabelText('Implementer subagents model'), { target: { value: '' } })
+    await fireEvent.input(screen.getByLabelText('Implementer subagents concurrency'), { target: { value: '2' } })
+    // The line the person reads tracks the stated choice before anything is sent.
+    expect(screen.getByTestId('implementer-subagents-effective').textContent).toContain('Normal child routing')
+    await submit()
+    expect(sent().config.implementerSubagents).toEqual({ model: '', concurrency: 2 })
+  })
+
+  it('resets a field to inherit and stops sending it', async () => {
+    await ready()
+    await fireEvent.change(screen.getByLabelText('Implementer subagents enabled'), { target: { value: 'on' } })
+    await fireEvent.change(screen.getByLabelText('Implementer subagents concurrency'), { target: { value: '4' } })
+    await fireEvent.change(screen.getByLabelText('Implementer subagents enabled'), { target: { value: 'inherit' } })
+    await fireEvent.input(screen.getByLabelText('Implementer subagents concurrency'), { target: { value: '' } })
+    await submit()
+    // Nothing is stated, so the field is omitted and a later default reaches it.
+    expect(sent().config.implementerSubagents).toBeUndefined()
+  })
+
+  it('shows inherited values and their source, and keeps roles apart', async () => {
+    await ready(projectSettings({
+      routing: { profile: 'fast' },
+      factoryDefaults: { targetBranch: 'develop', expectedChecks: [BUILD], implementerSubagents: { enabled: true, concurrency: 2 } },
+    }))
+    // The implementer inherits the project's factory default, which is named.
+    await waitFor(() => expect(screen.getByTestId('implementer-subagents-effective').textContent).toContain('On'))
+    const effective = screen.getByTestId('implementer-subagents-effective').textContent ?? ''
+    expect(effective).toContain('Enabled: On — Inherited from the project factory defaults')
+    expect(effective).toContain('Concurrency: 2 at a time — Inherited from the project factory defaults')
+    // The reviewer has no default anywhere this screen can read, and says so.
+    expect(screen.getByTestId('reviewer-subagents-effective').textContent).toContain('cannot read')
+    // Stating something for the reviewer does not touch the implementer.
+    await fireEvent.change(screen.getByLabelText('Reviewer subagents enabled'), { target: { value: 'off' } })
+    // The summary rows carry the same resolution the payload is built from.
+    expect(row('implementer-subagents')).toContain('On')
+    expect(row('reviewer-subagents')).toContain('Off')
+    expect(row('reviewer-subagents')).toContain("This draft's own setting")
+    await submit()
+    expect(sent().config.reviewerSubagents).toEqual({ enabled: false })
+    expect(sent().config.implementerSubagents).toBeUndefined()
+  })
 })

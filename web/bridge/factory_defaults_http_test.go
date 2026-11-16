@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1302,4 +1303,495 @@ func TestFactoryDefaultsEndToEnd(t *testing.T) {
 		t.Fatal("approval snapshot dropped the no-required-CI acknowledgement")
 	}
 	sameFactoryConfig(t, snapshot, emptyWant)
+}
+
+// The subagent inheritance tests below share these three helpers: pointers for
+// an override that states a value, a canned session/status result, and the
+// resolution the draft view and the approval both read.
+
+func factoryTestBool(v bool) *bool       { return &v }
+func factoryTestString(v string) *string { return &v }
+func factoryTestInt(v int) *int          { return &v }
+
+// reportSubagents points the fake control agent's session/status at one
+// Marshal session report. settings is the per-session settings capability.
+func (f *factoryDefaultsFixture) reportSubagents(t *testing.T, settings, enabled bool, model string, concurrency int, digest string) {
+	t.Helper()
+	f.agent.results["session/status"] = map[string]any{
+		"subagentControls": map[string]any{"settings": settings, "steer": settings, "stop": settings, "observe": settings},
+		"subagentDefaults": map[string]any{
+			"settings": map[string]any{"enabled": enabled, "model": model, "concurrency": concurrency},
+			"digest":   digest,
+		},
+	}
+}
+
+// silencesSubagents removes the session report entirely, which is what a
+// control agent that does not know the method answers.
+func (f *factoryDefaultsFixture) silencesSubagents() {
+	delete(f.agent.results, "session/status")
+}
+
+// putSubagentDefaults writes the project's factory defaults with the target
+// branch and routing profile a handoff needs to pass preflight, so a test
+// states only the subagent overrides it is about.
+func (f *factoryDefaultsFixture) putSubagentDefaults(t *testing.T, defaults *FactoryDefaults) {
+	t.Helper()
+	d := FactoryDefaults{TargetBranch: "main", ImplementerRouting: factoryDefaultsRouting(), ReviewerRouting: factoryDefaultsRouting()}
+	if defaults != nil {
+		d.ImplementerSubagents, d.ReviewerSubagents = defaults.ImplementerSubagents, defaults.ReviewerSubagents
+	}
+	f.putSettings(t, f.root, ProjectSettings{FactoryDefaults: &d})
+}
+
+// resolveSubagents resolves both roles of one draft against the project's
+// stored defaults and the session's current report, which is exactly what a
+// draft view and an approval read.
+func (f *factoryDefaultsFixture) resolveSubagents(t *testing.T, c FactoryConfig) (factorySubagentResolution, factorySubagentResolution) {
+	t.Helper()
+	api, ok := f.api.(*factoryAPI)
+	if !ok {
+		t.Fatalf("factory API is %T, not *factoryAPI", f.api)
+	}
+	var defaults *FactoryDefaults
+	if ps := f.fleet.ws.ProjectSettingsFor(c.ProjectRoot); ps.FactoryDefaults != nil {
+		defaults = ps.FactoryDefaults
+	}
+	implementer, reviewer := factoryResolveSubagents(c, defaults, api.factorySessionSubagents(context.Background()))
+	return implementer, reviewer
+}
+
+func (f *factoryDefaultsFixture) settingsVersion(t *testing.T) string {
+	t.Helper()
+	api := f.api.(*factoryAPI)
+	version, err := api.factorySettingsVersion(context.Background(), f.root)
+	if err != nil {
+		t.Fatalf("settings version: %v", err)
+	}
+	return version
+}
+
+func (f *factoryDefaultsFixture) approve(t *testing.T, id string, cmd FactoryCommand) *httptest.ResponseRecorder {
+	t.Helper()
+	return doReq(t, f.srv, http.MethodPost, "/api/factory/items/"+id+"/commands", cmd, f.headers())
+}
+
+// readSettingsVersion asks the served route for a root's combined version.
+func (f *factoryDefaultsFixture) readSettingsVersion(t *testing.T, root string) *httptest.ResponseRecorder {
+	t.Helper()
+	return doReq(t, f.srv, http.MethodGet, "/api/factory/settings-version?projectRoot="+url.QueryEscape(root), nil, f.headers())
+}
+
+// TestFactorySettingsVersionRoute pins the one read a review surface binds
+// itself to: the route serves the same composition an approval checks, so a
+// client can neither build a version of its own nor drift from the bridge's.
+func TestFactorySettingsVersionRoute(t *testing.T) {
+	f := newFactoryDefaultsFixture(t)
+	f.putSubagentDefaults(t, &FactoryDefaults{})
+	var body struct {
+		SettingsVersion string `json:"settingsVersion"`
+	}
+
+	// A session that reports defaults contributes their digest, so a change to
+	// the project's settings or to the session's report moves the version.
+	f.reportSubagents(t, true, true, "", 2, "digest-1")
+	rec := f.readSettingsVersion(t, f.root)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("settings version: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	decodeBody(t, rec, &body)
+	if got, want := body.SettingsVersion, f.settingsVersion(t); got != want || !strings.HasSuffix(got, ":digest-1") {
+		t.Fatalf("settings version = %q, want %q with the session digest", got, want)
+	}
+
+	// A session that reports no defaults contributes nothing, so the version is
+	// the project's ETag alone — the behaviour a project without a Marshal
+	// snapshot has always had.
+	f.silencesSubagents()
+	rec = f.readSettingsVersion(t, f.root)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("settings version without a session report: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	decodeBody(t, rec, &body)
+	etag, err := f.fleet.ws.ProjectSettingsETag(f.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body.SettingsVersion != etag || strings.Contains(body.SettingsVersion, ":") {
+		t.Fatalf("settings version = %q, want the bare ETag %q", body.SettingsVersion, etag)
+	}
+
+	// A root the route cannot resolve is a bad request, never a version.
+	for _, root := range []string{"", "relative/path"} {
+		if rec := f.readSettingsVersion(t, root); rec.Code != http.StatusBadRequest {
+			t.Fatalf("projectRoot %q: status %d, want 400: %s", root, rec.Code, rec.Body.String())
+		}
+	}
+
+	// The route is behind the same bearer check as every other factory route.
+	if rec := doReq(t, f.srv, http.MethodGet, "/api/factory/settings-version?projectRoot="+url.QueryEscape(f.root), nil, nil); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated read: status %d, want 401", rec.Code)
+	}
+}
+
+// TestFactorySubagentDefaultsInheritance pins the chain: runtime defaults,
+// then the project's factory override, then the work item's own override, per
+// field. The draft keeps only what it states, so it follows a changed default
+// it never stated while an override it did state stays fixed.
+func TestFactorySubagentDefaultsInheritance(t *testing.T) {
+	f := newFactoryDefaultsFixture(t)
+	f.putSubagentDefaults(t, &FactoryDefaults{
+		ImplementerSubagents: &FactorySubagentOverrides{Concurrency: factoryTestInt(4)},
+	})
+	f.reportSubagents(t, true, true, "", 2, "digest-1")
+
+	req := f.handoff("create-1", f.root)
+	req.Config.ReviewerSubagents = &FactorySubagentOverrides{Model: factoryTestString("prov/cheap")}
+	item := f.created(t, req)
+
+	if item.Draft.Config.ImplementerSubagents != nil {
+		t.Fatalf("the draft copied the project's implementer override: %+v", item.Draft.Config.ImplementerSubagents)
+	}
+	reviewerOverrides := item.Draft.Config.ReviewerSubagents
+	if reviewerOverrides == nil || reviewerOverrides.Model == nil || *reviewerOverrides.Model != "prov/cheap" {
+		t.Fatalf("the draft lost the reviewer's explicit model: %+v", reviewerOverrides)
+	}
+	if reviewerOverrides.Enabled != nil || reviewerOverrides.Concurrency != nil {
+		t.Fatalf("the draft invented overrides it never stated: %+v", reviewerOverrides)
+	}
+
+	implementer, reviewer := f.resolveSubagents(t, item.Draft.Config)
+	if implementer.Settings.Enabled != true || implementer.EnabledSource != factorySubagentSourceRuntime {
+		t.Fatalf("implementer enablement = %+v (%s), want the runtime's true", implementer.Settings, implementer.EnabledSource)
+	}
+	if implementer.Settings.Concurrency != 4 || implementer.ConcurrencySource != factorySubagentSourceProject {
+		t.Fatalf("implementer concurrency = %+v (%s), want the project's 4", implementer.Settings, implementer.ConcurrencySource)
+	}
+	if implementer.Settings.Model != "" || implementer.ModelSource != factorySubagentSourceRuntime {
+		t.Fatalf("implementer model = %+v (%s), want normal routing from the runtime", implementer.Settings, implementer.ModelSource)
+	}
+	if reviewer.Settings.Model != "prov/cheap" || reviewer.ModelSource != factorySubagentSourceItem {
+		t.Fatalf("reviewer model = %+v (%s), want the item's override", reviewer.Settings, reviewer.ModelSource)
+	}
+	if reviewer.Settings.Concurrency != 2 || reviewer.ConcurrencySource != factorySubagentSourceRuntime {
+		t.Fatalf("reviewer concurrency = %+v (%s), want the runtime's 2", reviewer.Settings, reviewer.ConcurrencySource)
+	}
+
+	// A project default change reaches the field the draft inherits...
+	f.putSubagentDefaults(t, &FactoryDefaults{
+		ImplementerSubagents: &FactorySubagentOverrides{Concurrency: factoryTestInt(6)},
+	})
+	implementer, reviewer = f.resolveSubagents(t, item.Draft.Config)
+	if implementer.Settings.Concurrency != 6 || implementer.ConcurrencySource != factorySubagentSourceProject {
+		t.Fatalf("the draft did not follow the changed project default: %+v", implementer)
+	}
+	// ...and leaves the override the draft does state exactly as it is.
+	if reviewer.Settings.Model != "prov/cheap" || reviewer.ModelSource != factorySubagentSourceItem {
+		t.Fatalf("a changed project default rewrote the item's override: %+v", reviewer)
+	}
+
+	// Resolution never writes the draft: the stored overrides are still only
+	// the ones the handoff stated.
+	stored, err := f.store.Get(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Draft.Config.ImplementerSubagents != nil {
+		t.Fatalf("resolution wrote a project default onto the draft: %+v", stored.Draft.Config.ImplementerSubagents)
+	}
+}
+
+// TestFactorySubagentExplicitFalseAndReset pins the two cases a zero-value
+// merge would collapse: an explicit false is not a missing value, and an
+// explicit empty model is a stated choice rather than an absence. Resetting
+// the override to absent hands the field back to the chain.
+func TestFactorySubagentExplicitFalseAndReset(t *testing.T) {
+	f := newFactoryDefaultsFixture(t)
+	f.putSubagentDefaults(t, &FactoryDefaults{
+		ImplementerSubagents: &FactorySubagentOverrides{Enabled: factoryTestBool(true)},
+		ReviewerSubagents:    &FactorySubagentOverrides{Model: factoryTestString("prov/project")},
+	})
+	f.reportSubagents(t, true, true, "prov/child", 3, "digest-1")
+
+	req := f.handoff("create-1", f.root)
+	req.Config.ImplementerSubagents = &FactorySubagentOverrides{
+		Enabled: factoryTestBool(false),
+		Model:   factoryTestString(""),
+	}
+	item := f.created(t, req)
+
+	implementer, reviewer := f.resolveSubagents(t, item.Draft.Config)
+	if implementer.Settings.Enabled {
+		t.Fatal("an explicit false enabled the implementer subagents")
+	}
+	if implementer.EnabledSource != factorySubagentSourceItem {
+		t.Fatalf("implementer enablement came from %q, want the item", implementer.EnabledSource)
+	}
+	if implementer.Settings.Model != "" || implementer.ModelSource != factorySubagentSourceItem {
+		t.Fatalf("explicit empty model = %+v (%s), want normal routing from the item", implementer.Settings, implementer.ModelSource)
+	}
+	if reviewer.Settings.Enabled != true || reviewer.EnabledSource != factorySubagentSourceRuntime {
+		t.Fatalf("reviewer enablement = %+v (%s), want the runtime's true", reviewer.Settings, reviewer.EnabledSource)
+	}
+	if reviewer.Settings.Model != "prov/project" || reviewer.ModelSource != factorySubagentSourceProject {
+		t.Fatalf("reviewer model = %+v (%s), want the project's", reviewer.Settings, reviewer.ModelSource)
+	}
+	if reviewer.Settings.Concurrency != 3 || reviewer.ConcurrencySource != factorySubagentSourceRuntime {
+		t.Fatalf("reviewer concurrency = %+v (%s), want the runtime's 3", reviewer.Settings, reviewer.ConcurrencySource)
+	}
+
+	// Resetting the override hands every field back to the chain below it.
+	reset := f.created(t, f.handoff("create-2", f.root))
+	implementer, _ = f.resolveSubagents(t, reset.Draft.Config)
+	if !implementer.Settings.Enabled || implementer.EnabledSource != factorySubagentSourceProject {
+		t.Fatalf("reset enablement = %+v (%s), want the project's true", implementer.Settings, implementer.EnabledSource)
+	}
+	if implementer.Settings.Model != "prov/child" || implementer.ModelSource != factorySubagentSourceRuntime {
+		t.Fatalf("reset model = %+v (%s), want the runtime's", implementer.Settings, implementer.ModelSource)
+	}
+	if implementer.Settings.Concurrency != 3 || implementer.ConcurrencySource != factorySubagentSourceRuntime {
+		t.Fatalf("reset concurrency = %+v (%s), want the runtime's 3", implementer.Settings, implementer.ConcurrencySource)
+	}
+}
+
+// TestFactorySubagentApprovalRace pins the review-time version check: an
+// approval that echoes a version the project settings or the session's report
+// have moved past is a conflict, and nothing is journalled.
+func TestFactorySubagentApprovalRace(t *testing.T) {
+	f := newFactoryDefaultsFixture(t)
+	f.putSubagentDefaults(t, &FactoryDefaults{
+		ImplementerSubagents: &FactorySubagentOverrides{Concurrency: factoryTestInt(3)},
+	})
+	f.reportSubagents(t, true, true, "", 2, "digest-1")
+	item := f.created(t, f.handoff("create-1", f.root))
+
+	reviewed := f.settingsVersion(t)
+	if !strings.HasSuffix(reviewed, ":digest-1") {
+		t.Fatalf("settings version %q does not carry the session digest", reviewed)
+	}
+
+	// The project's defaults change between review and approval.
+	f.putSubagentDefaults(t, &FactoryDefaults{
+		ImplementerSubagents: &FactorySubagentOverrides{Concurrency: factoryTestInt(5)},
+	})
+	stale := f.approve(t, item.ID, FactoryCommand{RequestID: "approve-stale", Kind: "approve", ExpectedVersion: 1, SettingsVersion: reviewed})
+	if stale.Code != http.StatusConflict {
+		t.Fatalf("stale approval: status %d, body %s", stale.Code, stale.Body.String())
+	}
+	stored, err := f.store.Get(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.State != "draft" || len(stored.Approvals) != 0 {
+		t.Fatalf("a refused approval was journalled: state %q, approvals %+v", stored.State, stored.Approvals)
+	}
+
+	// The session's report moving is a change too, even when the project's
+	// settings are untouched.
+	current := f.settingsVersion(t)
+	f.reportSubagents(t, true, true, "", 2, "digest-2")
+	moved := f.approve(t, item.ID, FactoryCommand{RequestID: "approve-moved", Kind: "approve", ExpectedVersion: 1, SettingsVersion: current})
+	if moved.Code != http.StatusConflict {
+		t.Fatalf("approval after the session moved: status %d, body %s", moved.Code, moved.Body.String())
+	}
+
+	// The version in force approves, and freezes what it resolved.
+	approved := f.approve(t, item.ID, FactoryCommand{RequestID: "approve-current", Kind: "approve", ExpectedVersion: 1, SettingsVersion: f.settingsVersion(t)})
+	if approved.Code != http.StatusOK {
+		t.Fatalf("approval: status %d, body %s", approved.Code, approved.Body.String())
+	}
+	var body struct {
+		Item FactoryItem `json:"item"`
+	}
+	decodeBody(t, approved, &body)
+	if len(body.Item.Approvals) != 1 {
+		t.Fatalf("approvals = %+v, want one", body.Item.Approvals)
+	}
+	if got := body.Item.Approvals[0].ImplementerSubagents; got.Concurrency != 5 || !got.Enabled {
+		t.Fatalf("frozen implementer settings = %+v, want the changed default", got)
+	}
+}
+
+// TestFactorySubagentSnapshotStable pins the approval snapshot: the resolved
+// settings are written with the revision, and a later default change neither
+// reaches it nor re-derives it.
+func TestFactorySubagentSnapshotStable(t *testing.T) {
+	f := newFactoryDefaultsFixture(t)
+	f.putSubagentDefaults(t, &FactoryDefaults{
+		ImplementerSubagents: &FactorySubagentOverrides{Concurrency: factoryTestInt(4)},
+		ReviewerSubagents:    &FactorySubagentOverrides{Model: factoryTestString("prov/review")},
+	})
+	f.reportSubagents(t, true, true, "", 2, "digest-1")
+	item := f.created(t, f.handoff("create-1", f.root))
+
+	approved := f.approve(t, item.ID, FactoryCommand{RequestID: "approve-1", Kind: "approve", ExpectedVersion: 1})
+	if approved.Code != http.StatusOK {
+		t.Fatalf("approve: status %d, body %s", approved.Code, approved.Body.String())
+	}
+	var body struct {
+		Item FactoryItem `json:"item"`
+	}
+	decodeBody(t, approved, &body)
+	frozen := body.Item.Approvals[0]
+	if frozen.ImplementerSubagents.Concurrency != 4 || frozen.ReviewerSubagents.Model != "prov/review" || !frozen.ImplementerSubagents.Enabled {
+		t.Fatalf("frozen settings = %+v / %+v, want the resolved pair", frozen.ImplementerSubagents, frozen.ReviewerSubagents)
+	}
+
+	// Every source changes after the approval.
+	f.putSubagentDefaults(t, &FactoryDefaults{
+		ImplementerSubagents: &FactorySubagentOverrides{Enabled: factoryTestBool(false), Concurrency: factoryTestInt(8)},
+		ReviewerSubagents:    &FactorySubagentOverrides{Model: factoryTestString("prov/other")},
+	})
+	f.reportSubagents(t, true, false, "prov/later", 7, "digest-2")
+
+	stored, err := f.store.Get(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Approvals) != 1 {
+		t.Fatalf("approvals = %+v, want one", stored.Approvals)
+	}
+	if got := stored.Approvals[0]; got.ImplementerSubagents != frozen.ImplementerSubagents || got.ReviewerSubagents != frozen.ReviewerSubagents {
+		t.Fatalf("a later default change reached the approval: %+v / %+v", got.ImplementerSubagents, got.ReviewerSubagents)
+	}
+
+	// The next draft follows the new sources, which is what makes the frozen
+	// revision an approval rather than a live view.
+	next := f.created(t, f.handoff("create-2", f.root))
+	implementer, reviewer := f.resolveSubagents(t, next.Draft.Config)
+	if implementer.Settings.Enabled || implementer.Settings.Concurrency != 8 {
+		t.Fatalf("next draft implementer = %+v, want the new default", implementer.Settings)
+	}
+	if reviewer.Settings.Model != "prov/other" {
+		t.Fatalf("next draft reviewer = %+v, want the new project model", reviewer.Settings)
+	}
+}
+
+// TestFactorySubagentUnsupported pins the refusals: an override that asks the
+// runtime to enforce settings it does not support is rejected instead of
+// approved, and a cap outside the enforceable range is rejected rather than
+// clamped. A configuration that asks for nothing is approved unchanged.
+func TestFactorySubagentUnsupported(t *testing.T) {
+	t.Run("no session report", func(t *testing.T) {
+		f := newFactoryDefaultsFixture(t)
+		f.putSubagentDefaults(t, &FactoryDefaults{})
+		f.silencesSubagents()
+		req := f.handoff("create-1", f.root)
+		req.Config.ImplementerSubagents = &FactorySubagentOverrides{Enabled: factoryTestBool(true)}
+		item := f.created(t, req)
+		rec := f.approve(t, item.ID, FactoryCommand{RequestID: "approve-1", Kind: "approve", ExpectedVersion: 1})
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("approval: status %d, body %s", rec.Code, rec.Body.String())
+		}
+		stored, err := f.store.Get(item.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.State != "draft" || len(stored.Approvals) != 0 {
+			t.Fatalf("an unsupported override was approved: state %q, approvals %+v", stored.State, stored.Approvals)
+		}
+	})
+
+	t.Run("settings capability absent", func(t *testing.T) {
+		f := newFactoryDefaultsFixture(t)
+		f.putSubagentDefaults(t, &FactoryDefaults{})
+		f.reportSubagents(t, false, true, "", 2, "digest-1")
+		req := f.handoff("create-1", f.root)
+		req.Config.ReviewerSubagents = &FactorySubagentOverrides{Model: factoryTestString("prov/cheap")}
+		item := f.created(t, req)
+		rec := f.approve(t, item.ID, FactoryCommand{RequestID: "approve-1", Kind: "approve", ExpectedVersion: 1})
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("approval: status %d, body %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("concurrency out of range", func(t *testing.T) {
+		f := newFactoryDefaultsFixture(t)
+		f.putSubagentDefaults(t, &FactoryDefaults{
+			ImplementerSubagents: &FactorySubagentOverrides{Concurrency: factoryTestInt(12)},
+		})
+		f.reportSubagents(t, true, true, "", 2, "digest-1")
+		item := f.created(t, f.handoff("create-1", f.root))
+		rec := f.approve(t, item.ID, FactoryCommand{RequestID: "approve-1", Kind: "approve", ExpectedVersion: 1})
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("approval: status %d, body %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("no override proceeds unchanged", func(t *testing.T) {
+		f := newFactoryDefaultsFixture(t)
+		f.putSubagentDefaults(t, &FactoryDefaults{})
+		f.silencesSubagents()
+		item := f.created(t, f.handoff("create-1", f.root))
+		rec := f.approve(t, item.ID, FactoryCommand{RequestID: "approve-1", Kind: "approve", ExpectedVersion: 1})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("approval: status %d, body %s", rec.Code, rec.Body.String())
+		}
+		var body struct {
+			Item FactoryItem `json:"item"`
+		}
+		decodeBody(t, rec, &body)
+		if got := body.Item.Approvals[0]; got.ImplementerSubagents != (FactorySubagentSettings{}) || got.ReviewerSubagents != (FactorySubagentSettings{}) {
+			t.Fatalf("an approval with nothing to enforce recorded settings: %+v / %+v", got.ImplementerSubagents, got.ReviewerSubagents)
+		}
+	})
+}
+
+// TestFactorySubagentLegacyReplay pins the compatibility rule: an approval
+// that froze no subagent settings writes exactly the bytes the previous binary
+// wrote, so a journal from before the settings existed replays, validates and
+// carries no snapshot.
+func TestFactorySubagentLegacyReplay(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC()
+	store, err := OpenFactoryStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.Create(factoryReq(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// factoryApplyCommand is the path that predates the settings: it freezes
+	// nothing, which is what a legacy approval holds.
+	approved, err := store.Update(item.ID, "approve", item.Version, json.RawMessage(`{"kind":"approve"}`), func(i *FactoryItem) error {
+		return factoryApplyCommand(i, FactoryCommand{Kind: "approve", RequestID: "approve"}, now)
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	journal, err := os.ReadFile(filepath.Join(dir, "journal.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(journal, []byte("implementerSubagents")) || bytes.Contains(journal, []byte("reviewerSubagents")) {
+		t.Fatalf("an approval that froze no settings wrote the settings keys: %s", journal)
+	}
+
+	reopened, err := OpenFactoryStore(dir)
+	if err != nil {
+		t.Fatalf("a journal written before subagent settings did not replay: %v", err)
+	}
+	defer reopened.Close()
+	got, err := reopened.Get(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Approvals) != 1 {
+		t.Fatalf("approvals = %+v, want one", got.Approvals)
+	}
+	approval := got.Approvals[0]
+	if approval.ImplementerSubagents != (FactorySubagentSettings{}) || approval.ReviewerSubagents != (FactorySubagentSettings{}) {
+		t.Fatalf("a legacy approval grew settings: %+v / %+v", approval.ImplementerSubagents, approval.ReviewerSubagents)
+	}
+	if err := validateFactoryItem(got); err != nil {
+		t.Fatalf("a legacy approval no longer validates: %v", err)
+	}
+	if again, err := reopened.Get(item.ID); err != nil || again.Version != approved.Version {
+		t.Fatalf("replayed item = %+v, %v", again, err)
+	}
 }

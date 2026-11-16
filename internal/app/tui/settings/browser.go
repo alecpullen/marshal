@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -42,10 +43,29 @@ func WithUserConfigPath(path string) BrowserOption {
 	return func(b *BrowserPanel) { b.userConfigPath = path }
 }
 
-// WithSession sets the session the browser's project-scope saves go through.
-// Without one, a project save saves nothing and counts as succeeding.
+// WithContext sets the parent context of every bounded call this panel makes.
+// The model owns it and cancels it at shutdown, so a write in flight on a slow
+// daemon returns instead of outliving the program. A nil context falls back to
+// context.Background().
+func WithContext(ctx context.Context) BrowserOption {
+	return func(b *BrowserPanel) { b.ctx = ctx }
+}
+
+// WithSession sets the session the browser's project-scope saves go through,
+// and the one the Studio section reads and writes its access through. Without
+// one, a project save saves nothing and counts as succeeding, and the Studio
+// section says it has no session to ask.
+//
+// The Studio read is not started here: a browser opens with the user's own
+// section, and reading a connection nobody looked at would make every settings
+// screen wait on a client call. The section's own rows offer the read, and a
+// write refuses until it has answered, because a write must name the version it
+// was edited from.
 func WithSession(sess acpclient.Session) BrowserOption {
-	return func(b *BrowserPanel) { b.sess = sess }
+	return func(b *BrowserPanel) {
+		b.sess = sess
+		b.reg.st.sess = sess
+	}
 }
 
 // WithHost sets the client host every probe this browser launches asks. Without
@@ -82,6 +102,15 @@ type BrowserPanel struct {
 	detectingCaps  bool
 	capProbeID     uint64
 	cancelCapProbe context.CancelFunc
+
+	// ctx is the parent of every bounded call this panel makes. The model owns
+	// it and cancels it at shutdown; nil reads as context.Background().
+	ctx context.Context
+	// saving reports that a write is in flight (AUD-10), and saveSeq numbers
+	// commits so the result of a superseded commit is dropped rather than
+	// applied over the newer one's.
+	saving  bool
+	saveSeq uint64
 
 	pendingKey  string
 	saveBlocked string
@@ -183,6 +212,51 @@ func (b *BrowserPanel) SetSaveBlocked(reason string) tea.Cmd {
 // no-ops instead of retrying the save — the caller must call this right
 // after NewBrowser whenever it knows persistence is still pending.
 func (b *BrowserPanel) SetSavePending(pending bool) { b.savePending = pending }
+
+// OwnsMsg claims this browser's own async results so the dock host delivers
+// them: the Studio access read and its writes carry an unexported type, which
+// the model cannot name and would otherwise drop on the floor.
+func (b *BrowserPanel) OwnsMsg(msg tea.Msg) bool {
+	_, ok := msg.(marshalAccessMsg)
+	return ok
+}
+
+// handleMarshalAccess applies one answer from the Studio surface: the cached
+// view becomes the answer's, the row that acted shows its receipt, and the list
+// is refreshed so every row renders the values now stored. A refused stale
+// write is not an error — its answer carries the value that won, and the row
+// says so rather than re-reading blind and discarding the user's edit.
+func (b *BrowserPanel) handleMarshalAccess(msg marshalAccessMsg) tea.Cmd {
+	st := b.reg.st
+	if msg.err != nil {
+		if msg.fieldID == "" {
+			// A refused read is the connection's own state: the section
+			// reports it and refuses writes until the next read answers.
+			st.accessErr = msg.err.Error()
+			return nil
+		}
+		// A refused write says nothing about the connection. The cached view
+		// and its versions stay as they were, so the section keeps editing
+		// instead of being locked until someone re-reads by hand.
+		st.applyActionResult(msg.fieldID, "✗ "+strutil.Truncate(msg.err.Error(), 37, true))
+		return nil
+	}
+	st.accessErr = ""
+	st.accessLoaded = true
+	st.access = msg.view
+	if list := b.activeList(); list != nil {
+		list.Refresh()
+	}
+	switch {
+	case msg.fieldID == "":
+		// A plain read: the rows already show the values it returned.
+	case msg.view.Stale:
+		st.applyActionResult(msg.fieldID, "✗ changed elsewhere; the stored value is shown")
+	default:
+		st.applyActionResult(msg.fieldID, "✓ saved")
+	}
+	return nil
+}
 
 func (b *BrowserPanel) matchedFields() []*field {
 	query := strings.TrimSpace(b.filter.Value())
@@ -359,11 +433,15 @@ func (b *BrowserPanel) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	case canProbeMsg:
 		return b.handleCanProbeAnswered(msg)
+	case SaveDoneMsg:
+		return b.handleSaveDone(msg)
 	case presetflow.CapabilityProbedMsg:
 		return b.handleCapabilityProbed(msg)
 	case actionResultMsg:
 		b.reg.st.applyActionResult(msg.FieldID, msg.Label)
 		return nil
+	case marshalAccessMsg:
+		return b.handleMarshalAccess(msg)
 	}
 
 	// Forward paste to the active picker, the drilled pane stack, the field
@@ -540,13 +618,16 @@ func (b *BrowserPanel) startConfirm(pending pendingMaterialization) tea.Cmd {
 		return nil
 	}
 	requestID := b.capProbeID
+	parent := b.callContext()
 	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(parent, settingsSaveTimeout)
+		defer cancel()
 		return canProbeMsg{
 			RequestID:   int(requestID),
 			Provider:    pending.ProviderName,
 			Model:       pending.ModelID,
 			ProviderCfg: pc,
-			CanProbe:    host.CanProbeModel(context.Background(), pending.ProviderName, pc),
+			CanProbe:    host.CanProbeModel(ctx, pending.ProviderName, pc),
 		}
 	}
 }
@@ -657,6 +738,14 @@ func (b *BrowserPanel) flushChanges(inner tea.Cmd, commitAttempted bool) tea.Cmd
 		b.pendingKey = ""
 		return inner
 	}
+	// A write already in flight owns the diff until it lands: plain navigation
+	// and filter typing must not queue a second one behind it (AUD-10). An
+	// explicit commit still goes ahead, numbered so its result supersedes the
+	// older one's.
+	if b.saving && !commitAttempted {
+		b.pendingKey = ""
+		return inner
+	}
 	if b.saveBlocked != "" {
 		b.savePending = true
 		receipts := b.receipts(lines)
@@ -696,59 +785,45 @@ func (b *BrowserPanel) flushChanges(inner tea.Cmd, commitAttempted bool) tea.Cmd
 			}
 			return tea.Batch(inner, changed)
 		}
-		saveErr := b.reg.st.host.SaveUserValue(context.Background(), row.TomlPath, value)
-		var receipts []string
-		if saveErr == nil {
-			receipts = b.receipts(lines)
-		}
-		b.savePending = saveErr != nil
-		b.baseline = cloneConfig(b.reg.Config())
+		// The write moves off the Update goroutine (AUD-10): the decision —
+		// which path, which value, which receipts — is made here on it, and the
+		// call returns its outcome as a SaveDoneMsg this panel handles.
+		host, path := b.reg.st.host, row.TomlPath
+		receipts := b.receipts(lines)
+		cfg := cloneConfig(b.reg.Config())
+		parent := b.callContext()
+		seq := b.beginSave()
 		b.pendingKey = ""
-		changed := func() tea.Msg {
-			return ChangedMsg{Receipts: receipts, Cfg: b.baseline, SaveErr: saveErr, Saved: saveErr == nil, GlobalTarget: true}
+		write := func() tea.Msg {
+			ctx, cancel := context.WithTimeout(parent, settingsSaveTimeout)
+			defer cancel()
+			err := host.SaveUserValue(ctx, path, value)
+			return SaveDoneMsg{Seq: seq, Cfg: cfg, Receipts: receipts, Err: err, Saved: err == nil, GlobalTarget: true}
 		}
 		if inner == nil {
-			return changed
+			return write
 		}
-		return tea.Batch(inner, changed)
+		return tea.Batch(inner, write)
 	}
 
-	newCfg := b.reg.Config()
+	newCfg := cloneConfig(b.reg.Config())
+	base := cloneConfig(b.baseline)
 	// Providers and presets are user-global; the project save never emits
 	// them, so persist changed sections to the user config first. DeepEqual
 	// keeps a benign project-only save from rewriting the 0600 user file.
 	// A provider rename rekeys both maps, so either change writes both. The
 	// retry branch repeats the writes because the baseline was rolled
 	// forward past the failed attempt, hiding the diff.
-	providersChanged := !reflect.DeepEqual(b.baseline.Providers, newCfg.Providers)
-	presetsChanged := !reflect.DeepEqual(b.baseline.Models.Presets, newCfg.Models.Presets)
-	var saveErr error
-	switch {
-	case (providersChanged || presetsChanged) && b.userPath() == "":
-		saveErr = fmt.Errorf("cannot save providers or presets: user config path is unavailable")
-	case providersChanged || presetsChanged || (retry && b.userPath() != ""):
-		// Baseline: the panel-open snapshot (b.baseline), the same reference
-		// the diff above used. Renames rekey the maps — the old key is in the
-		// baseline but not the write, so the merge drops it; entries another
-		// marshal process persisted meanwhile are in neither and survive.
-		if err := b.reg.st.host.SaveUserProviders(context.Background(), newCfg.Providers, b.baseline.Providers, b.reg.st.renamed); err != nil {
-			saveErr = err
-		} else if err := b.reg.st.host.SaveUserPresets(context.Background(), newCfg.Models.Presets, b.baseline.Models.Presets); err != nil {
-			saveErr = err
-		} else {
-			// The names are now the stored ones, so a later rename in this
-			// browser records against them afresh. A failed write keeps the
-			// map for the retry.
-			b.reg.st.renamed = map[string]string{}
-		}
-	}
-	if saveErr == nil && b.sess != nil {
-		saveErr = b.sess.SaveProjectConfig(context.Background(), newCfg)
+	providersChanged := !reflect.DeepEqual(base.Providers, newCfg.Providers)
+	presetsChanged := !reflect.DeepEqual(base.Models.Presets, newCfg.Models.Presets)
+	saveUsers := providersChanged || presetsChanged || (retry && b.userPath() != "")
+	var immediateErr error
+	if (providersChanged || presetsChanged) && b.userPath() == "" {
+		immediateErr = fmt.Errorf("cannot save providers or presets: user config path is unavailable")
+		saveUsers = false
 	}
 	var receipts []string
 	switch {
-	case saveErr != nil:
-		// No receipts on failure.
 	case retry:
 		// No new diff to describe — the value was already applied in
 		// memory by the failed attempt this gesture is retrying.
@@ -756,16 +831,98 @@ func (b *BrowserPanel) flushChanges(inner tea.Cmd, commitAttempted bool) tea.Cmd
 	default:
 		receipts = b.receipts(lines)
 	}
-	b.savePending = saveErr != nil
-	b.baseline = cloneConfig(b.reg.Config())
+	// Baseline for the user-config merge: the panel-open snapshot (base), the
+	// same reference the diff above used. Renames rekey the maps — the old key
+	// is in the baseline but not the write, so the merge drops it; entries
+	// another marshal process persisted meanwhile are in neither and survive.
+	renamed := make(map[string]string, len(b.reg.st.renamed))
+	for name, to := range b.reg.st.renamed {
+		renamed[name] = to
+	}
+	// The writes run off the Update goroutine (AUD-10), so a slow daemon
+	// answering them cannot freeze the screen. The panel marks itself saving
+	// here and applies the outcome in handleSaveDone.
+	host, sess := b.reg.st.host, b.sess
+	parent := b.callContext()
+	seq := b.beginSave()
 	b.pendingKey = ""
-	changed := func() tea.Msg {
-		return ChangedMsg{Receipts: receipts, Cfg: b.baseline, SaveErr: saveErr}
+	write := func() tea.Msg {
+		ctx, cancel := context.WithTimeout(parent, settingsSaveTimeout)
+		defer cancel()
+		err := immediateErr
+		if err == nil && saveUsers {
+			if err = host.SaveUserProviders(ctx, newCfg.Providers, base.Providers, renamed); err == nil {
+				err = host.SaveUserPresets(ctx, newCfg.Models.Presets, base.Models.Presets)
+			}
+		}
+		if err == nil && sess != nil {
+			err = sess.SaveProjectConfig(ctx, newCfg)
+		}
+		return SaveDoneMsg{Seq: seq, Cfg: newCfg, Receipts: receipts, Err: err, UserCfg: saveUsers}
 	}
 	if inner == nil {
-		return changed
+		return write
 	}
-	return tea.Batch(inner, changed)
+	return tea.Batch(inner, write)
+}
+
+// settingsSaveTimeout bounds one settings write, so a daemon that never answers
+// releases the panel's saving state instead of holding it forever.
+const settingsSaveTimeout = 10 * time.Second
+
+// callContext is the parent of the panel's bounded calls: the context the model
+// passed, or a background one when it passed none.
+func (b *BrowserPanel) callContext() context.Context {
+	if b.ctx == nil {
+		return context.Background()
+	}
+	return b.ctx
+}
+
+// beginSave numbers a commit and marks the panel as saving. The number travels
+// with the result, so a superseded commit's outcome is dropped (AUD-10).
+func (b *BrowserPanel) beginSave() uint64 {
+	b.saveSeq++
+	b.saving = true
+	return b.saveSeq
+}
+
+// handleSaveDone applies a settings write that ran off the Update goroutine
+// (AUD-10). A result for a superseded commit is dropped: the newer commit owns
+// the saving state, the baseline and the receipts.
+func (b *BrowserPanel) handleSaveDone(msg SaveDoneMsg) tea.Cmd {
+	if msg.Seq != b.saveSeq {
+		return nil
+	}
+	b.saving = false
+	b.savePending = msg.Err != nil
+	// The commit is spent: a replay of its result is not applied again, and the
+	// next commit numbers past it.
+	b.saveSeq++
+	if msg.Err == nil && msg.UserCfg {
+		// The names are now the stored ones, so a later rename in this browser
+		// records against them afresh. A failed write keeps the map for the
+		// retry.
+		b.reg.st.renamed = map[string]string{}
+	}
+	b.baseline = cloneConfig(msg.Cfg)
+	receipts := msg.Receipts
+	if msg.Err != nil {
+		// No receipts on failure.
+		receipts = nil
+	}
+	changed := ChangedMsg{Receipts: receipts, Cfg: msg.Cfg, SaveErr: msg.Err, Saved: msg.Saved, GlobalTarget: msg.GlobalTarget}
+	return func() tea.Msg { return changed }
+}
+
+// savingHint is what the panel shows while a write is in flight (AUD-10): the
+// same waiting idiom as the capability probe's, so a slow daemon reads as a
+// save in progress rather than a frozen screen.
+func (b *BrowserPanel) savingHint() string {
+	if !b.saving {
+		return ""
+	}
+	return "saving…"
 }
 
 func (b *BrowserPanel) receipts(lines []diffLine) []string {
@@ -824,6 +981,16 @@ func rowHints(b *BrowserPanel, atRoot bool) string {
 			target = "user config"
 		}
 		h += " · → " + target
+	}
+	// Deletion is a two-press gesture on rows that have one, so the hint names
+	// the key, and names the confirmation once the first press armed it
+	// (AUD-13). Rows without a delete keep their existing text.
+	if row.Del != nil {
+		if list.DeleteArmed() {
+			h += " · d again to delete"
+		} else {
+			h += " · d delete"
+		}
 	}
 	return h + " · " + back
 }
@@ -926,6 +1093,11 @@ func (b *BrowserPanel) View(width, maxHeight int) string {
 		footer = fmt.Sprintf("%d settings", len(b.list.Rows()))
 	}
 	hints := rowHints(b, b.stack == nil)
+	if hint := b.savingHint(); hint != "" {
+		// A write is in flight: say so rather than leave a screen that looks
+		// frozen while a slow daemon answers (AUD-10).
+		footer = hint + " · " + footer
+	}
 	content := body
 	panelHeight := min(lipgloss.Height(content)+2, maxHeight)
 	return chrome.Frame{

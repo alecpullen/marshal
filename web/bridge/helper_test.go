@@ -89,49 +89,55 @@ func TestTheHelperRuns(t *testing.T) {
 	}
 }
 
+// helperGapSlack is how far a gap between two observed restarts may sit from
+// the delay the supervisor waited between them. The restart count is read by
+// polling, so a poll the scheduler runs late reports its restart late: that
+// lateness lengthens the gap before the restart and shortens the one after
+// it. Every delay these tests check is at least twice this allowance, so a
+// supervisor that waited the wrong amount is still caught.
+const helperGapSlack = 100 * time.Millisecond
+
 // TestAnExitingHelperIsRestarted: a helper that exits at once is restarted
 // with growing delays capped at MaxBackoff, and its restart count rises.
 func TestAnExitingHelperIsRestarted(t *testing.T) {
 	requireHelperShell(t)
 	h := &Helper{
 		Argv:       scriptArgv("exit 0"),
-		Backoff:    40 * time.Millisecond,
-		MaxBackoff: 160 * time.Millisecond,
+		Backoff:    200 * time.Millisecond,
+		MaxBackoff: 800 * time.Millisecond,
 		SteadyRun:  time.Hour, // every run ends too fast to reset the delay
 	}
 	runHelper(t, h)
 
 	// The times at which the restart count rises: the gaps between them are
-	// the delays the supervisor waited.
+	// the delays the supervisor waited. Four gaps show the delay doubling,
+	// reaching MaxBackoff, and then holding there.
 	var stamps []time.Time
 	began := time.Now()
 	seen := 0
-	for len(stamps) < 4 && time.Since(began) < 20*time.Second {
+	for len(stamps) < 5 && time.Since(began) < 30*time.Second {
 		if _, restarts := h.State(); restarts > seen {
 			seen = restarts
 			stamps = append(stamps, time.Now())
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if len(stamps) < 4 {
-		t.Fatalf("the helper restarted %d times, want 4", len(stamps))
+	if len(stamps) < 5 {
+		t.Fatalf("the helper restarted %d times, want 5", len(stamps))
 	}
 
-	var gaps []time.Duration
+	// Backoff, twice Backoff, MaxBackoff, MaxBackoff. Each gap is one of those
+	// delays plus the run itself, so each is checked against its own window
+	// rather than against a growing-gap rule that one late poll breaks.
+	want := []time.Duration{h.Backoff, 2 * h.Backoff, h.MaxBackoff, h.MaxBackoff}
 	for i := 1; i < len(stamps); i++ {
-		gaps = append(gaps, stamps[i].Sub(stamps[i-1]))
-	}
-	// Backoff, twice Backoff, MaxBackoff: the delay doubles and then holds.
-	for i, gap := range gaps {
-		if gap < h.Backoff {
-			t.Fatalf("gap %d = %s, shorter than Backoff %s", i, gap, h.Backoff)
+		gap, delay := stamps[i].Sub(stamps[i-1]), want[i-1]
+		if gap < delay-helperGapSlack {
+			t.Fatalf("gap %d = %s, shorter than the delay %s before that restart", i-1, gap, delay)
 		}
-		if gap > h.MaxBackoff+150*time.Millisecond {
-			t.Fatalf("gap %d = %s, not capped at MaxBackoff %s", i, gap, h.MaxBackoff)
+		if gap > delay+helperGapSlack {
+			t.Fatalf("gap %d = %s, longer than the delay %s before that restart", i-1, gap, delay)
 		}
-	}
-	if last := gaps[len(gaps)-1]; last < 2*gaps[0] {
-		t.Fatalf("gaps did not grow: %v", gaps)
 	}
 	if _, restarts := h.State(); restarts < len(stamps) {
 		t.Fatalf("restarts = %d, want at least %d", restarts, len(stamps))

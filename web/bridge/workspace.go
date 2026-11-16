@@ -258,6 +258,21 @@ type workspaceFile struct {
 	Clients         []MCPClient      `json:"clients,omitempty"`
 	Pending         []PendingSpawn   `json:"pending,omitempty"`
 	SubmittedIssues map[string][]int `json:"submittedIssues,omitempty"`
+	// MarshalFactoryDefaults are the built-in factory access defaults, one
+	// record per project, keyed by project ID. They sit beside the clients
+	// because they are the same kind of record — an actor's authority — held
+	// for an actor that has no client record at all. Both collections are
+	// optional: a file written before they existed loads with none, and one
+	// saved with none keeps its bytes.
+	MarshalFactoryDefaults []marshalFactoryAccessRecord `json:"marshalFactoryDefaults,omitempty"`
+	// MarshalFactoryOverrides are the per-session overrides, one per project
+	// and session, with the worker a worker override names.
+	MarshalFactoryOverrides []marshalFactoryAccessRecord `json:"marshalFactoryOverrides,omitempty"`
+	// MarshalFactorySelections are the projects a person picked for a
+	// session whose enrollment was ambiguous, one record per session. They
+	// are a user's answer to a question the server refused to guess, so they
+	// sit with the access records rather than with anything a request names.
+	MarshalFactorySelections []marshalFactorySelectionRecord `json:"marshalFactorySelections,omitempty"`
 	// Reviews maps an agent ID to its review comments (v7).
 	Reviews map[string][]ReviewComment `json:"reviews,omitempty"`
 	// WatchRules maps a Studio watch id to the action the bridge takes when
@@ -318,6 +333,19 @@ type Workspace struct {
 	// stable ID. It is keyed by root because the registrations are, and
 	// only a root the store already holds ever acquires one.
 	projectIdentities map[string]MCPProjectIdentity
+	// marshalDefaults maps a project ID to the built-in factory access a
+	// verified session inherits. It is separate from the clients: a built-in
+	// session holds no client record and no factory grant.
+	marshalDefaults map[string]MarshalFactoryAccess
+	// marshalOverrides maps one session of one project to its override, keyed
+	// by marshalOverrideKey. A worker override is a session override that also
+	// names the worker, so it lives here too.
+	marshalOverrides map[string]marshalFactoryAccessRecord
+	// marshalSelections maps a session ID to the project a person chose for
+	// it when its enrollment named more than one. It is keyed by session
+	// because the ambiguity is: the same project is not ambiguous for the
+	// next session that enrolls against it.
+	marshalSelections map[string]marshalFactorySelectionRecord
 	schedules         map[string]Schedule
 	notifications     NotifyConfig
 	statusLinks       map[string]StatusLink
@@ -337,6 +365,9 @@ func NewWorkspace(path string) *Workspace {
 		credentials:       make(map[string]Credential),
 		projectSettings:   make(map[string]ProjectSettings),
 		projectIdentities: make(map[string]MCPProjectIdentity),
+		marshalDefaults:   make(map[string]MarshalFactoryAccess),
+		marshalOverrides:  make(map[string]marshalFactoryAccessRecord),
+		marshalSelections: make(map[string]marshalFactorySelectionRecord),
 		schedules:         make(map[string]Schedule),
 		statusLinks:       make(map[string]StatusLink),
 	}
@@ -384,6 +415,29 @@ func (w *Workspace) Load() (string, error) {
 	w.clients = make(map[string]MCPClient, len(f.Clients))
 	for _, c := range f.Clients {
 		w.clients[c.ID] = c
+	}
+	w.marshalDefaults = make(map[string]MarshalFactoryAccess, len(f.MarshalFactoryDefaults))
+	for _, r := range f.MarshalFactoryDefaults {
+		if r.ProjectID == "" {
+			continue
+		}
+		w.marshalDefaults[r.ProjectID] = r.Access.clone()
+	}
+	w.marshalOverrides = make(map[string]marshalFactoryAccessRecord, len(f.MarshalFactoryOverrides))
+	for _, r := range f.MarshalFactoryOverrides {
+		if r.ProjectID == "" || r.SessionID == "" {
+			continue
+		}
+		w.marshalOverrides[marshalOverrideKey(r.ProjectID, r.SessionID, r.WorkerID)] = marshalFactoryAccessRecord{
+			ProjectID: r.ProjectID, SessionID: r.SessionID, WorkerID: r.WorkerID, Access: r.Access.clone(),
+		}
+	}
+	w.marshalSelections = make(map[string]marshalFactorySelectionRecord, len(f.MarshalFactorySelections))
+	for _, r := range f.MarshalFactorySelections {
+		if r.SessionID == "" || r.ProjectID == "" {
+			continue
+		}
+		w.marshalSelections[r.SessionID] = r
 	}
 	w.pending = make(map[string]PendingSpawn, len(f.Pending))
 	for _, p := range f.Pending {
@@ -603,6 +657,38 @@ func (w *Workspace) save() error {
 		f.Clients = append(f.Clients, c)
 	}
 	sort.Slice(f.Clients, func(i, j int) bool { return f.Clients[i].ID < f.Clients[j].ID })
+	// The built-in access records are sorted by project and session, so an
+	// unchanged collection writes the same bytes on every save.
+	for projectID, access := range w.marshalDefaults {
+		f.MarshalFactoryDefaults = append(f.MarshalFactoryDefaults,
+			marshalFactoryAccessRecord{ProjectID: projectID, Access: access.clone()})
+	}
+	sort.Slice(f.MarshalFactoryDefaults, func(i, j int) bool {
+		return f.MarshalFactoryDefaults[i].ProjectID < f.MarshalFactoryDefaults[j].ProjectID
+	})
+	for _, r := range w.marshalOverrides {
+		f.MarshalFactoryOverrides = append(f.MarshalFactoryOverrides, marshalFactoryAccessRecord{
+			ProjectID: r.ProjectID, SessionID: r.SessionID, WorkerID: r.WorkerID, Access: r.Access.clone(),
+		})
+	}
+	sort.Slice(f.MarshalFactoryOverrides, func(i, j int) bool {
+		if f.MarshalFactoryOverrides[i].ProjectID != f.MarshalFactoryOverrides[j].ProjectID {
+			return f.MarshalFactoryOverrides[i].ProjectID < f.MarshalFactoryOverrides[j].ProjectID
+		}
+		if f.MarshalFactoryOverrides[i].SessionID != f.MarshalFactoryOverrides[j].SessionID {
+			return f.MarshalFactoryOverrides[i].SessionID < f.MarshalFactoryOverrides[j].SessionID
+		}
+		// One session may hold its own record and a worker's, so the worker is
+		// part of the order: an unchanged collection must still write the same
+		// bytes on every save.
+		return f.MarshalFactoryOverrides[i].WorkerID < f.MarshalFactoryOverrides[j].WorkerID
+	})
+	for _, r := range w.marshalSelections {
+		f.MarshalFactorySelections = append(f.MarshalFactorySelections, r)
+	}
+	sort.Slice(f.MarshalFactorySelections, func(i, j int) bool {
+		return f.MarshalFactorySelections[i].SessionID < f.MarshalFactorySelections[j].SessionID
+	})
 	for _, p := range w.pending {
 		f.Pending = append(f.Pending, p)
 	}
@@ -769,9 +855,11 @@ func (w *Workspace) RemoveProject(root string) error {
 	return w.save()
 }
 
-// revokeProjectGrantsLocked drops every client grant naming projectID. It
-// runs inside the removal's own save, so no grant outlives the project it
-// authorizes.
+// revokeProjectGrantsLocked drops every record that names projectID: the client
+// grants, the built-in access a verified session inherits or overrides, and the
+// selections that resolved an ambiguous enrollment onto it. It runs inside the
+// removal's own save, so no authority — and no policy row for an ID that no
+// longer resolves — outlives the project it describes.
 func (w *Workspace) revokeProjectGrantsLocked(projectID string) {
 	if projectID == "" {
 		return
@@ -792,6 +880,17 @@ func (w *Workspace) revokeProjectGrantsLocked(projectID string) {
 		}
 		next.FactoryGrants = kept
 		w.clients[id] = next
+	}
+	delete(w.marshalDefaults, projectID)
+	for key, r := range w.marshalOverrides {
+		if r.ProjectID == projectID {
+			delete(w.marshalOverrides, key)
+		}
+	}
+	for sessionID, r := range w.marshalSelections {
+		if r.ProjectID == projectID {
+			delete(w.marshalSelections, sessionID)
+		}
 	}
 }
 
@@ -1158,6 +1257,149 @@ func factoryGrantState(clientID, projectID string, g MCPFactoryProjectGrant) Fac
 	return FactoryGrantState{ClientID: clientID, ProjectID: projectID, Grant: g, Version: factoryGrantVersion(g)}
 }
 
+// marshalFactoryAccessRecord is one stored built-in access value: a project's
+// defaults (SessionID empty) or one session's override. A worker override is a
+// session override that also names the worker, so no worker has a record of
+// its own and a role is never stored as authority.
+type marshalFactoryAccessRecord struct {
+	ProjectID string               `json:"projectId"`
+	SessionID string               `json:"sessionId,omitempty"`
+	WorkerID  string               `json:"workerId,omitempty"`
+	Access    MarshalFactoryAccess `json:"access"`
+}
+
+// marshalFactoryAccessState is one stored access value and its opaque version:
+// the pair a versioned write is made against. An absent value reports the zero
+// value and the stable version of it, so an editor's first write can be
+// conditional on what it was shown — exactly as an absent grant does.
+type marshalFactoryAccessState struct {
+	ProjectID string
+	SessionID string
+	WorkerID  string
+	Access    MarshalFactoryAccess
+	Version   string
+}
+
+// marshalAccessVersion is the opaque version of one access value: a lowercase
+// hex SHA-256 of its JSON encoding. Every field is a pointer to a scalar, so
+// the encoding is deterministic and two equal values always carry the same
+// version. An unset field is omitted and an explicit false is written, so a
+// reset to unset moves the version rather than hiding as an equal value.
+func marshalAccessVersion(a MarshalFactoryAccess) string {
+	data, _ := json.Marshal(a)
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// marshalAccessState builds one reported access state from a stored value.
+func marshalAccessState(projectID, sessionID, workerID string, a MarshalFactoryAccess) marshalFactoryAccessState {
+	return marshalFactoryAccessState{
+		ProjectID: projectID, SessionID: sessionID, WorkerID: workerID,
+		Access: a.clone(), Version: marshalAccessVersion(a),
+	}
+}
+
+// marshalOverrideKey is one override record's collection key: the project, the
+// session and — when the record names one — the worker. The worker is part of
+// the key because a worker's access is the worker's: with one slot per session,
+// a worker editor that had been shown its session's record would replace that
+// record, and its session and every sibling worker would silently fall back to
+// the project default. An empty worker is the session's own record, which is
+// what a worker inherits until it is given one of its own.
+func marshalOverrideKey(projectID, sessionID, workerID string) string {
+	return projectID + "\x00" + sessionID + "\x00" + workerID
+}
+
+// marshalFactorySelectionRecord is one person's answer to an ambiguous
+// enrollment: the project the session called SessionID acts on. An empty
+// ProjectID is the absence of an answer, which is what a reset stores.
+type marshalFactorySelectionRecord struct {
+	SessionID string `json:"sessionId"`
+	ProjectID string `json:"projectId,omitempty"`
+}
+
+// marshalFactorySelectionState is one stored selection and its opaque version:
+// the pair a conditional write is made against. An absent selection reports the
+// zero value and the stable version of it, so an editor's first write can be
+// conditional on what it was shown.
+type marshalFactorySelectionState struct {
+	SessionID string
+	ProjectID string
+	Version   string
+}
+
+// marshalSelectionVersion is the opaque version of one selection: a lowercase
+// hex SHA-256 of the JSON encoding of the project chosen. Clearing a selection
+// moves the version back to the absent value's, which is the same version a
+// session that was never ambiguous has.
+func marshalSelectionVersion(projectID string) string {
+	data, _ := json.Marshal(marshalFactorySelectionRecord{ProjectID: projectID})
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// marshalSelectionState builds one reported selection from a stored value.
+func marshalSelectionState(sessionID, projectID string) marshalFactorySelectionState {
+	return marshalFactorySelectionState{
+		SessionID: sessionID, ProjectID: projectID, Version: marshalSelectionVersion(projectID),
+	}
+}
+
+// marshalSelection returns the project a person chose for one session and the
+// version the choice carries. The second result is false when there is no
+// answer stored, which an absent selection reports as the zero state: a
+// selection nobody made is not a selection of the empty project.
+func (w *Workspace) marshalSelection(sessionID string) (marshalFactorySelectionState, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if sessionID == "" {
+		return marshalFactorySelectionState{}, false
+	}
+	r, ok := w.marshalSelections[sessionID]
+	if !ok || r.ProjectID == "" {
+		return marshalFactorySelectionState{}, false
+	}
+	return marshalSelectionState(sessionID, r.ProjectID), true
+}
+
+// putMarshalSelectionIfMatch stores one session's selected project only when
+// the stored selection still carries expected as its version, under the same
+// rule as the access writes: one lock, a conditional write, and the exact prior
+// record restored when the save fails. An empty projectID clears the selection
+// — the session is ambiguous again, which is a reset rather than a choice.
+func (w *Workspace) putMarshalSelectionIfMatch(sessionID, projectID, expected string) (bool, marshalFactorySelectionState, error) {
+	if strings.TrimSpace(expected) == "" {
+		return false, marshalFactorySelectionState{}, errors.New("bridge: conditional selection write needs a version")
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		return false, marshalFactorySelectionState{}, errors.New("bridge: a selection needs a session id")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.marshalSelections == nil {
+		w.marshalSelections = make(map[string]marshalFactorySelectionRecord)
+	}
+	prev, had := w.marshalSelections[sessionID]
+	current := marshalSelectionState(sessionID, prev.ProjectID)
+	if current.Version != expected {
+		return false, current, nil
+	}
+	if projectID == "" {
+		delete(w.marshalSelections, sessionID)
+	} else {
+		w.marshalSelections[sessionID] = marshalFactorySelectionRecord{SessionID: sessionID, ProjectID: projectID}
+	}
+	if err := w.save(); err != nil {
+		if had {
+			w.marshalSelections[sessionID] = prev
+		} else {
+			delete(w.marshalSelections, sessionID)
+		}
+		return false, current, err
+	}
+	return true, marshalSelectionState(sessionID, projectID), nil
+}
+
 // FactoryGrant returns a copy of one client's grant for one project and its
 // version. The second result is false when nothing is stored — no such
 // client, or a client that names this project nowhere — which is the same
@@ -1228,6 +1470,122 @@ func (w *Workspace) PutFactoryGrantIfMatch(clientID string, grant MCPFactoryProj
 		return false, current, err
 	}
 	return true, factoryGrantState(clientID, grant.ProjectID, grant), nil
+}
+
+// marshalAccessDefault returns a project's stored built-in defaults and their
+// version. The second result is false when the project has none: that is not an
+// empty default but an absent one, and an absent one inherits the effective
+// read-only default.
+func (w *Workspace) marshalAccessDefault(projectID string) (marshalFactoryAccessState, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if projectID == "" {
+		return marshalFactoryAccessState{}, false
+	}
+	a, ok := w.marshalDefaults[projectID]
+	if !ok {
+		return marshalFactoryAccessState{}, false
+	}
+	return marshalAccessState(projectID, "", "", a), true
+}
+
+// marshalAccessOverride returns the override that applies to one worker's
+// scope and the version of that scope's own record. A worker's own record wins;
+// with none, the session's record applies, and the returned WorkerID says which
+// one this is. The version reported here is always the version of the scope
+// that was asked for, so an editor holding it writes that scope's record and
+// never its parent's.
+func (w *Workspace) marshalAccessOverride(projectID, sessionID, workerID string) (marshalFactoryAccessState, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if projectID == "" || sessionID == "" {
+		return marshalFactoryAccessState{}, false
+	}
+	if workerID != "" {
+		if r, ok := w.marshalOverrides[marshalOverrideKey(projectID, sessionID, workerID)]; ok {
+			return marshalAccessState(r.ProjectID, r.SessionID, r.WorkerID, r.Access), true
+		}
+	}
+	r, ok := w.marshalOverrides[marshalOverrideKey(projectID, sessionID, "")]
+	if !ok {
+		return marshalFactoryAccessState{}, false
+	}
+	return marshalAccessState(r.ProjectID, r.SessionID, r.WorkerID, r.Access), true
+}
+
+// putMarshalAccessDefaultIfMatch stores a project's built-in defaults only when
+// the stored value still carries expected as its version, and reports whether
+// it wrote. It returns the project's state either way: on a conflict that is
+// the current state, so an editor can show what it lost to.
+//
+// The comparison, the update and the save happen under one lock, so of two
+// editors naming one version exactly one wins, and a failed save restores the
+// exact prior value. An empty expected is refused, as for a grant: a caller
+// that names no version is resetting, not editing.
+func (w *Workspace) putMarshalAccessDefaultIfMatch(projectID string, access MarshalFactoryAccess, expected string) (bool, marshalFactoryAccessState, error) {
+	if strings.TrimSpace(expected) == "" {
+		return false, marshalFactoryAccessState{}, errors.New("bridge: conditional access write needs an If-Match value")
+	}
+	if strings.TrimSpace(projectID) == "" {
+		return false, marshalFactoryAccessState{}, errors.New("bridge: access defaults need a project id")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.marshalDefaults == nil {
+		w.marshalDefaults = make(map[string]MarshalFactoryAccess)
+	}
+	prev, had := w.marshalDefaults[projectID]
+	current := marshalAccessState(projectID, "", "", prev)
+	if current.Version != expected {
+		return false, current, nil
+	}
+	w.marshalDefaults[projectID] = access.clone()
+	if err := w.save(); err != nil {
+		if had {
+			w.marshalDefaults[projectID] = prev
+		} else {
+			delete(w.marshalDefaults, projectID)
+		}
+		return false, current, err
+	}
+	return true, marshalAccessState(projectID, "", "", access), nil
+}
+
+// putMarshalAccessOverrideIfMatch stores one session's override under the same
+// versioned rule as the project defaults: one lock, a canonical version, a
+// conditional write, and the exact prior record restored when the save fails.
+func (w *Workspace) putMarshalAccessOverrideIfMatch(projectID, sessionID, workerID string, access MarshalFactoryAccess, expected string) (bool, marshalFactoryAccessState, error) {
+	if strings.TrimSpace(expected) == "" {
+		return false, marshalFactoryAccessState{}, errors.New("bridge: conditional access write needs an If-Match value")
+	}
+	if strings.TrimSpace(projectID) == "" || strings.TrimSpace(sessionID) == "" {
+		return false, marshalFactoryAccessState{}, errors.New("bridge: an access override needs a project and a session id")
+	}
+	key := marshalOverrideKey(projectID, sessionID, workerID)
+	next := marshalFactoryAccessRecord{ProjectID: projectID, SessionID: sessionID, WorkerID: workerID, Access: access.clone()}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.marshalOverrides == nil {
+		w.marshalOverrides = make(map[string]marshalFactoryAccessRecord)
+	}
+	prev, had := w.marshalOverrides[key]
+	current := marshalAccessState(prev.ProjectID, prev.SessionID, prev.WorkerID, prev.Access)
+	if current.ProjectID == "" {
+		current = marshalAccessState(projectID, sessionID, "", MarshalFactoryAccess{})
+	}
+	if current.Version != expected {
+		return false, current, nil
+	}
+	w.marshalOverrides[key] = next
+	if err := w.save(); err != nil {
+		if had {
+			w.marshalOverrides[key] = prev
+		} else {
+			delete(w.marshalOverrides, key)
+		}
+		return false, current, err
+	}
+	return true, marshalAccessState(projectID, sessionID, workerID, access), nil
 }
 
 func (w *Workspace) Pending() []PendingSpawn {

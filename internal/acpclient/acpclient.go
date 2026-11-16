@@ -440,6 +440,17 @@ type Session interface {
 	// ACP: session/subagent_cancel (exists).
 	CancelSubagent(ctx context.Context, subagentID int64) bool
 
+	// SteerSubagent delivers the user's instruction to the session's live
+	// subagent with that ID, at most once per params.RequestID. The status is
+	// accepted, not delivered: the child's queue took it, and the child reads
+	// it at its next step. A replay of the same request ID with the same child
+	// and message returns the same accepted result without delivering again; a
+	// reused request ID naming a different child or instruction, a blank
+	// message and an unknown or finished child are errors.
+	//
+	// ACP: session/subagent_steer (exists).
+	SteerSubagent(ctx context.Context, request acpwire.SubagentSteerParams) (acpwire.SubagentSteerResult, error)
+
 	// ClearFinishedRun clears a finished run's progress and its event log.
 	//
 	// ACP: session/sdd_clear (exists).
@@ -821,6 +832,32 @@ type Session interface {
 	//
 	// ACP: session/save_verify_commands (exists).
 	SaveVerifyCommands(ctx context.Context, build, test string) error
+
+	// MarshalAccess is the session's Studio connection and the built-in access
+	// it holds: the instance and project it enrolled on, every candidate when
+	// the enrollment was ambiguous, the stored project and session layers, the
+	// effective access and each field's source. States are answers, never
+	// errors: connected, ambiguous, unavailable, unsupported and unauthorized
+	// all return a view, so a surface shows the state without an error path.
+	//
+	// ACP: session/marshal_access (exists).
+	MarshalAccess(ctx context.Context) (acpwire.MarshalAccessView, error)
+
+	// SaveMarshalAccess writes one access layer against the version it was
+	// read from: the project's defaults or this session's override. A field
+	// left unset inherits the layer beneath it, so an access with no field set
+	// is the reset. A refused stale write returns a view with Stale set,
+	// carrying the value that won; it is not an error.
+	//
+	// ACP: session/save_marshal_access (exists).
+	SaveMarshalAccess(ctx context.Context, params acpwire.SaveMarshalAccessParams) (acpwire.MarshalAccessView, error)
+
+	// SelectMarshalInstance records the project an ambiguous session acts on,
+	// so the server stops refusing to guess. An empty ProjectID clears the
+	// choice and makes the session ambiguous again.
+	//
+	// ACP: session/select_marshal_instance (exists).
+	SelectMarshalInstance(ctx context.Context, params acpwire.SelectMarshalInstanceParams) (acpwire.MarshalAccessView, error)
 
 	// RecentPrompts returns the project's input history, newest first, at
 	// most limit entries. A session without a database or a project returns

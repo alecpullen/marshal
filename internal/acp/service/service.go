@@ -119,6 +119,16 @@ type Deps struct {
 	// against. Nil, or a nil index, means the session has none.
 	SkillIndex func() *skills.Index
 
+	// MarshalAccess, SaveMarshalAccess and SelectMarshalInstance are the
+	// session's Studio access surface: the connection its enrollment reached
+	// and the built-in access it holds. Without them the session reports the
+	// association it can verify for itself and refuses writes — the policy is
+	// served by the Studio bridge, and a session that cannot reach one says so
+	// rather than inventing authority. Nil never blocks ordinary agent work.
+	MarshalAccess         func() (acpwire.MarshalAccessView, error)
+	SaveMarshalAccess     func(acpwire.SaveMarshalAccessParams) (acpwire.MarshalAccessView, error)
+	SelectMarshalInstance func(acpwire.SelectMarshalInstanceParams) (acpwire.MarshalAccessView, error)
+
 	// Auth is the runtime's credential and OAuth dependency: every provider
 	// client and sign-in the adapter builds uses it. Nil means
 	// provider.DefaultAuthResolver(), the substitution tui.New used to make.
@@ -210,6 +220,13 @@ type Session struct {
 	skillListing map[string]skills.ScopedSkill
 	pluginScans  map[string]*pluginScan
 	pluginSeq    uint64
+
+	// marshalAccess, saveMarshalAccess and selectMarshalInstance are
+	// Deps.MarshalAccess and its writes. Without them the session reports the
+	// Studio association it can verify for itself and refuses a write.
+	marshalAccess         func() (acpwire.MarshalAccessView, error)
+	saveMarshalAccess     func(acpwire.SaveMarshalAccessParams) (acpwire.MarshalAccessView, error)
+	selectMarshalInstance func(acpwire.SelectMarshalInstanceParams) (acpwire.MarshalAccessView, error)
 
 	// accessRequest and resolveAccess are the runtime's access seam. Without
 	// both, ReconcileAccess settles every typed access request as failed
@@ -495,8 +512,17 @@ func (s *Session) Status() acpwire.SessionStatus {
 		},
 		RunningJobs: st.RunningJobsCount(),
 		Subagents:   subagentsOf(st.Subagents()),
-		Swarm:       swarmOf(st.SwarmProgress()),
-		SDD:         sddOf(st.SDDProgress()),
+		// Which child controls this session registers: steering and stopping
+		// a live child, observing it, and binding per-session child settings
+		// at creation. Absent means unsupported, so this one field is what a
+		// Studio client reads instead of guessing.
+		SubagentControls: acpwire.MarshalSubagentCapabilities(),
+		// The ordinary child settings and the digest of the config and route
+		// inputs they were derived from, for a client that bound its own
+		// snapshot at creation. Nil until the runtime has derived them.
+		SubagentDefaults: subagentDefaultsOf(st),
+		Swarm:            swarmOf(st.SwarmProgress()),
+		SDD:              sddOf(st.SDDProgress()),
 		SDDGate: acpwire.SDDGate{
 			TaskN:     gate.TaskN,
 			Question:  gate.Question,
@@ -581,6 +607,25 @@ func interactionOf(s interaction.State) acpwire.Interaction {
 		Auto:     s.Auto,
 		System:   s.System,
 		Revision: s.Revision,
+	}
+}
+
+// subagentDefaultsOf maps the session's ordinary child settings onto the wire,
+// with the digest of the config and route inputs they came from. Nil until the
+// runtime has derived them, so a client never reads a zero default as a real
+// one.
+func subagentDefaultsOf(st *session.State) *acpwire.SubagentDefaults {
+	defaults, ok := st.SubagentDefaults()
+	if !ok {
+		return nil
+	}
+	return &acpwire.SubagentDefaults{
+		Settings: acpwire.SubagentSettings{
+			Enabled:     defaults.Settings.Enabled,
+			Model:       defaults.Settings.Model,
+			Concurrency: defaults.Settings.Concurrency,
+		},
+		Digest: defaults.Digest,
 	}
 }
 

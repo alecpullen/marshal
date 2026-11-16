@@ -5,17 +5,19 @@ import 'package:marshal_app/src/daemon/cli.dart';
 /// spawn's missing binary apart from every other failure, so that
 /// classification is pinned here the way the menu test pins its label.
 void main() {
-  test('a missing binary raises MarshalMissingException, not the raw error',
-      () async {
-    await expectLater(
-      DaemonCli(binary: '/nonexistent/marshal').status(),
-      throwsA(
-        isA<MarshalMissingException>().having(
-          (error) => error.toString(),
-          'message',
-          'marshal not found',
+  test(
+    'a missing binary raises MarshalMissingException, not the raw error',
+    () async {
+      await expectLater(
+        DaemonCli(binary: '/nonexistent/marshal').status(),
+        throwsA(
+          isA<MarshalMissingException>().having(
+            (error) => error.toString(),
+            'message',
+            'marshal not found',
+          ),
         ),
-      ),
-    );
-  });
+      );
+    },
+  );
 }

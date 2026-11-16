@@ -167,6 +167,23 @@ func (f *Fleet) ResumeFactoryWorkerFresh(ctx context.Context, item FactoryItem, 
 			}
 		}
 	}
+	// The recreated session must run under the same snapshot the lost one
+	// bound: the one this worker's own role's approval froze. The other role's
+	// snapshot is not this worker's to apply. A runtime that cannot bind it
+	// cannot confirm what the recovered worker is running under, so the worker
+	// stays uncertain rather than proceeding on unknown settings.
+	approval := item.Approvals[len(item.Approvals)-1]
+	subagents := approval.ImplementerSubagents
+	if previous.Role == "reviewer" {
+		subagents = approval.ReviewerSubagents
+	}
+	var snapshot *FactorySubagentSettings
+	if subagents != (FactorySubagentSettings{}) {
+		if !f.factorySubagentSettingsSupported(ctx) {
+			return FactoryWorker{}, fmt.Errorf("%w: the runtime cannot confirm the approved %s subagent settings", ErrFactoryUncertain, previous.Role)
+		}
+		snapshot = &subagents
+	}
 	if err := f.slots.acquire(ctx); err != nil {
 		return FactoryWorker{}, err
 	}
@@ -187,6 +204,9 @@ func (f *Fleet) ResumeFactoryWorkerFresh(ctx context.Context, item FactoryItem, 
 	params := map[string]any{"cwd": cwd, "mcpServers": []any{}, "name": "Factory recovery " + item.ID, "policy": map[string]any{"mode": mode, "auto": auto}}
 	if len(route) > 0 && string(route) != "null" {
 		params["routing"] = route
+	}
+	if snapshot != nil {
+		params["subagentSettings"] = *snapshot
 	}
 	raw, err := rt.child.Request(ctx, "session/new", params)
 	if err != nil {
@@ -209,5 +229,7 @@ func (f *Fleet) ResumeFactoryWorkerFresh(ctx context.Context, item FactoryItem, 
 	delete(f.sessionAgent, previous.SessionID)
 	f.mu.Unlock()
 	previous.SessionID = result.SessionID
+	previous.ApprovalRevision = approval.Revision
+	previous.Subagents = subagents
 	return previous, nil
 }

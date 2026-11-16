@@ -563,3 +563,27 @@ func (s *Session) requeue(params acpwire.PromptParams) {
 		s.state.PushSteering(params.Text)
 	}
 }
+
+// SteerSubagent delivers a user's instruction to one of this session's live
+// children, at most once per request ID. The child is resolved through the
+// session's own subagent registry, so a request that names another session's
+// child cannot reach it.
+//
+// The status is accepted, not delivered: the child's queue took the
+// instruction, and the model reads it at the child's next step. A child that
+// settles first never does, and the receipt says so honestly.
+func (s *Session) SteerSubagent(ctx context.Context, params acpwire.SubagentSteerParams) (acpwire.SubagentSteerResult, error) {
+	if s.closed.Load() {
+		return acpwire.SubagentSteerResult{}, errSessionClosed
+	}
+	if params.SessionID != "" && params.SessionID != s.state.SessionID() {
+		return acpwire.SubagentSteerResult{}, fmt.Errorf("inproc: request names session %s, not this session %s", params.SessionID, s.state.SessionID())
+	}
+	if err := s.state.SteerSubagent(params.RequestID, params.SubagentID, params.Message); err != nil {
+		return acpwire.SubagentSteerResult{}, err
+	}
+	return acpwire.SubagentSteerResult{
+		RequestID: strings.TrimSpace(params.RequestID),
+		Status:    acpwire.SubagentSteerStatusAccepted,
+	}, nil
+}

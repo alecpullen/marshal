@@ -74,6 +74,132 @@ type FactoryGrantState struct {
 	Version   string                 `json:"version"`
 }
 
+// MarshalFactoryAccess is a built-in principal's factory authority, in the
+// shape both the store and the connection status report it. Every field is a
+// pointer because "unset" and an explicit false are different answers: an
+// unset field inherits the layer beneath it, while an explicit false is a
+// denial that stays one until it is reset.
+//
+// The effective default is read-only — read on, every mutation off, no
+// approval authority — and a project default then a session/worker override
+// replace each field they carry. Nothing here is widened by a role: a worker's
+// role and item are recorded, never consulted.
+type MarshalFactoryAccess struct {
+	Read              *bool   `json:"read,omitempty"`
+	CreateDraft       *bool   `json:"createDraft,omitempty"`
+	EditDraft         *bool   `json:"editDraft,omitempty"`
+	AnswerQuestion    *bool   `json:"answerQuestion,omitempty"`
+	ApproveAndQueue   *bool   `json:"approveAndQueue,omitempty"`
+	ApprovalAuthority *string `json:"approvalAuthority,omitempty"` // none, user_directed, standing
+}
+
+// clone returns a copy that shares no storage with a. Every field is a
+// pointer, so without it a caller could reach into a stored value through the
+// one it was handed.
+func (a MarshalFactoryAccess) clone() MarshalFactoryAccess {
+	out := a
+	out.Read = copyBool(a.Read)
+	out.CreateDraft = copyBool(a.CreateDraft)
+	out.EditDraft = copyBool(a.EditDraft)
+	out.AnswerQuestion = copyBool(a.AnswerQuestion)
+	out.ApproveAndQueue = copyBool(a.ApproveAndQueue)
+	if a.ApprovalAuthority != nil {
+		authority := *a.ApprovalAuthority
+		out.ApprovalAuthority = &authority
+	}
+	return out
+}
+
+// copyBool is a fresh pointer to the same bool, or nil.
+func copyBool(b *bool) *bool {
+	if b == nil {
+		return nil
+	}
+	return boolPtr(*b)
+}
+
+// MarshalSessionBinding is the server-owned association between one
+// authenticated built-in session and the project it may act on. It is
+// established by the control plane's trusted session association and never by
+// a tool argument or a request body. Generation changes on a restart or an
+// owner change, so credentials and verified receipts cannot cross one.
+type MarshalSessionBinding struct {
+	InstanceID string `json:"instanceId"`
+	ProjectID  string `json:"projectId"`
+	SessionID  string `json:"sessionId"`
+	WorkerID   string `json:"workerId,omitempty"`
+	ItemID     string `json:"itemId,omitempty"`
+	Role       string `json:"role,omitempty"`
+	Generation string `json:"generation"`
+}
+
+// MarshalConnectionStatus is what the control plane reports about one built-in
+// session's factory connection: the state it reached, the identities it
+// verified, and the effective access every pointer of which has been resolved.
+//
+// Source names the layers that contributed and whether each was the stored
+// override or the default beneath it; it names no paths and no authority.
+type MarshalConnectionStatus struct {
+	State      string               `json:"state"` // connected, unavailable, ambiguous, unsupported, stale
+	InstanceID string               `json:"instanceId,omitempty"`
+	ProjectID  string               `json:"projectId,omitempty"`
+	SessionID  string               `json:"sessionId,omitempty"`
+	VerifiedAt string               `json:"verifiedAt,omitempty"` // RFC3339 UTC
+	Access     MarshalFactoryAccess `json:"access"`
+	Source     map[string]string    `json:"source,omitempty"` // project or session
+}
+
+// marshalStateConnected is the one connection state this task reports. The
+// enrollment states — unavailable, ambiguous, unsupported, stale — belong to
+// the session association that establishes a binding.
+const marshalStateConnected = "connected"
+
+// marshalFactoryAccessDefault is the effective access of a verified built-in
+// session nothing has been stored for: it may read the project's factory and
+// change nothing.
+func marshalFactoryAccessDefault() MarshalFactoryAccess {
+	none := factoryAuthorityNone
+	return MarshalFactoryAccess{
+		Read:              boolPtr(true),
+		CreateDraft:       boolPtr(false),
+		EditDraft:         boolPtr(false),
+		AnswerQuestion:    boolPtr(false),
+		ApproveAndQueue:   boolPtr(false),
+		ApprovalAuthority: &none,
+	}
+}
+
+// resolveMarshalFactoryAccess is the effective access of one built-in
+// principal: the read-only default, then each layer in the order it is given —
+// project defaults first, the session/worker override second. A field a layer
+// leaves unset inherits the layer beneath it; an explicit false is a denial and
+// stays one.
+func resolveMarshalFactoryAccess(layers ...MarshalFactoryAccess) MarshalFactoryAccess {
+	effective := marshalFactoryAccessDefault()
+	for _, layer := range layers {
+		if layer.Read != nil {
+			effective.Read = copyBool(layer.Read)
+		}
+		if layer.CreateDraft != nil {
+			effective.CreateDraft = copyBool(layer.CreateDraft)
+		}
+		if layer.EditDraft != nil {
+			effective.EditDraft = copyBool(layer.EditDraft)
+		}
+		if layer.AnswerQuestion != nil {
+			effective.AnswerQuestion = copyBool(layer.AnswerQuestion)
+		}
+		if layer.ApproveAndQueue != nil {
+			effective.ApproveAndQueue = copyBool(layer.ApproveAndQueue)
+		}
+		if layer.ApprovalAuthority != nil {
+			authority := *layer.ApprovalAuthority
+			effective.ApprovalAuthority = &authority
+		}
+	}
+	return effective
+}
+
 // clone returns a copy that shares no mutable storage with c, so a caller
 // cannot reach into the store through the value it was handed.
 func (c MCPClient) clone() MCPClient {

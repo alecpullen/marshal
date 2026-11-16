@@ -221,6 +221,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Ctrl+F drills into the subagent you selected — the row or tray card under the
+  browse cursor, or the tray card you expanded — instead of always opening the
+  most recently started one.
 - A skill the agent loads shows once, as its call row, instead of a second row
   that also split the step. Running work rows now show a measured rate and ETA.
 - The todo tag and turn receipts in finished turns no longer change when the

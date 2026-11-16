@@ -179,6 +179,12 @@ type sessionParams struct {
 	// Policy, when present, sets the new session's approval mode and
 	// pre-approved commands. Honored by session/new only.
 	Policy *PolicyParams `json:"policy,omitempty"`
+	// SubagentSettings, when present, is a resolved child-settings snapshot
+	// bound to this session only: whether agent.run is offered, the model
+	// children run on (empty: normal child routing) and the cap on children
+	// in flight. Absent means the ordinary defaults, so a legacy client keeps
+	// Marshal's normal behaviour. Honored by session/new only.
+	SubagentSettings *acpwire.SubagentSettings `json:"subagentSettings,omitempty"`
 	// ClientTrust starts the runtime with app.WithClientTrust, so the session's
 	// marshal client answers the trust question (P4 D8). Honoured by
 	// session/new, session/load and session/resume.
@@ -462,9 +468,23 @@ func (m *SessionManager) Create(ctx context.Context, params json.RawMessage) (an
 		}
 		extra = append(extra, app.WithSessionRouting(p.Routing.Profile, overrides))
 	}
+	if p.SubagentSettings != nil {
+		// A resolved snapshot is enforced, not clamped: reject an unusable
+		// limit before any runtime starts, so no approved worker is ever
+		// launched under settings this session cannot honour.
+		settings := session.SubagentSettings{
+			Enabled:     p.SubagentSettings.Enabled,
+			Model:       p.SubagentSettings.Model,
+			Concurrency: p.SubagentSettings.Concurrency,
+		}
+		if verr := session.ValidateSubagentSettings(settings); verr != nil {
+			return nil, invalidParamsError("%v", verr)
+		}
+		extra = append(extra, app.WithSubagentSettings(settings))
+	}
 	rt, err := m.startRuntime(ctx, p, extra...)
 	if err != nil {
-		if errors.Is(err, app.ErrInvalidSessionRouting) {
+		if errors.Is(err, app.ErrInvalidSessionRouting) || errors.Is(err, app.ErrInvalidSubagentSettings) {
 			return nil, invalidParamsError("%v", err)
 		}
 		return nil, err

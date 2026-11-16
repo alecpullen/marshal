@@ -11,7 +11,10 @@
   import ExitPanel from '../ExitPanel.svelte'
   import { renderMarkdown, initHighlighter } from '../markdown'
   import { listAgents, APIError, type AgentStatus } from '../api'
-  import { createStackStore, type StackStore, type WireNode } from '../stack'
+  import { createStackStore, createSubagentControls, NO_SUBAGENT_CONTROLS, subagentControls, type SubagentControls, type StackStore, type WireNode, type WireSubagentControls } from '../stack'
+  // The strip is named apart from the `SubagentControls` type it takes: one is
+  // a component, the other the transport a child's own session mints for it.
+  import ChildControlStrip from './SubagentControls.svelte'
   import { get } from 'svelte/store'
   import { formatChatRoute, type ChatRoute, type DockTabParam } from '../routes'
   import type { AgentRow } from '../fleet'
@@ -29,6 +32,7 @@
   import Transcript from '../transcript/Transcript.svelte'
   import NowBar from '../transcript/NowBar.svelte'
   import Segmented from '../ui/Segmented.svelte'
+  import MarshalAccessPanel from '../marshal/MarshalAccessPanel.svelte'
   import { browseKey, flattenVisible, nodeText } from '../transcript/browse'
   import { nextOverride, parseDensity, effective, type Density } from '../transcript/density'
   import type { TranscriptCtx } from '../transcript/ctx'
@@ -67,6 +71,45 @@
   // svelte-ignore state_referenced_locally
   const stack = createStackStore(sessionId)
   /*
+    Which child controls this session reports, read from the session status it
+    streams. Absent until the session says: support is per session, so an
+    update from another session never sets it and Marshal's controls are never
+    inferred from an unrelated one.
+  */
+  let capabilities = $state<WireSubagentControls>(NO_SUBAGENT_CONTROLS)
+  /*
+    Each child's status as this session last reported it, by its session-local
+    id. It is what makes a stop observed rather than merely acknowledged: a
+    child that has left `running` is finished, and one the session stops
+    reporting is unknown, never finished.
+  */
+  let childStatuses = new Map<number, string>()
+  function applyCapabilities(e: unknown) {
+    const ev = e as
+      | { method?: string; params?: { sessionId?: string; update?: { kind?: string; status?: unknown } } }
+      | null
+    if (ev?.method !== 'session/update' || ev.params?.sessionId !== sessionId) return
+    const update = ev.params?.update
+    if (update?.kind !== 'session_status') return
+    capabilities = subagentControls(update.status)
+    const subs = (update.status as { subagents?: { id?: unknown; status?: unknown }[] } | null | undefined)?.subagents
+    if (!Array.isArray(subs)) return
+    const next = new Map<number, string>()
+    for (const s of subs) if (typeof s?.id === 'number') next.set(s.id, typeof s.status === 'string' ? s.status : '')
+    childStatuses = next
+    // A drilled-in child follows its own status, and the capability report is
+    // per session, so the strip it renders is refreshed with it.
+    if (!drill.length) return
+    let changed = false
+    const updated = drill.map((d) => {
+      const status = next.get(d.subagentId) ?? ''
+      if (status === d.status && d.capabilities === capabilities) return d
+      changed = true
+      return { ...d, status, capabilities }
+    })
+    if (changed) drill = updated
+  }
+  /*
     One stream carries every transcript's patches, so the session store hands
     each event to the parent store and to every drilled-in child store; each
     keeps only the patches that are its own.
@@ -74,6 +117,7 @@
   function routeEvent(e: unknown) {
     stack.onEvent(e)
     for (const d of drill) d.store.onEvent(e)
+    applyCapabilities(e)
   }
   // svelte-ignore state_referenced_locally
   const { state: session, actions } = createSessionStore(sessionId, '/', routeEvent)
@@ -85,6 +129,23 @@
     store: StackStore
     /** The parent's browse cursor, restored on the way back. */
     parentCursor: string | null
+    /** This child's steer and stop, through its owning session. */
+    controls: SubagentControls
+    /** What the session reports it supports; an absent report is nothing. */
+    capabilities: WireSubagentControls
+    /** The task the parent delegated to this child, as the parent's row names it. */
+    task: string
+    /** The child's status as its session reports it; empty means it reported none. */
+    status: string
+    /** The child's report, when the parent's completion row carried one. */
+    report: string
+    /**
+     * Where the parent transcript was, and whether it was following the tail,
+     * given back on the way out. The transcript element is shared between the
+     * parent and the child, so the place is kept here rather than in the DOM.
+     */
+    parentScroll: number
+    parentPinned: boolean
   }
   let drill = $state<Drill[]>([])
   const shown = $derived<StackStore>(drill.at(-1)?.store ?? stack)
@@ -216,46 +277,85 @@
   const gateFailed = $derived(gateState(agent?.gate) === 'failed')
   const selectedLabel = $derived(dock.selected ? nodeLabel($shown.nodes.get(dock.selected), dock.selected) : '')
 
-  // Drilling into a subagent swaps the transcript for its own.
-  function popDrill() {
+  /*
+    Drilling into a subagent swaps the transcript for its own. Coming back puts
+    the reader where they were: the same browse cursor, the same scroll
+    position, and focus back on the transcript they came from — so a keyboard
+    path into a child and out again does not end up in the page body.
+  */
+  let restoring = false
+  async function popDrill() {
     const top = drill.at(-1)
     if (!top) return
     top.store.destroy()
+    // Following the tail must not pull the transcript to the end while the
+    // reader's own place is being put back.
+    restoring = true
     drill = drill.slice(0, -1)
     cursor = top.parentCursor
-    scrollCursorIntoView()
+    pinned = top.parentPinned
+    await tick()
+    if (transcriptEl) transcriptEl.scrollTop = top.parentScroll
+    if (browsing && cursor) scrollCursorIntoView()
+    transcriptEl?.focus?.({ preventScroll: true })
+    requestAnimationFrame(() => (restoring = false))
   }
-  function popTo(depth: number) {
-    while (drill.length > depth) popDrill()
+  async function popTo(depth: number) {
+    while (drill.length > depth) await popDrill()
   }
   async function drillInto(id: string) {
     const nodes = $shown.nodes
     const n = nodes.get(id)
     // A completion event names the subagent it reports on; the agent.run row
-    // that started it names it too. Either is a way in.
+    // that started it names it too. Either is a way in, and between them they
+    // describe the child: the task it was given and the report it filed.
     const resolve = (c: WireNode | undefined) => {
       if (!c) return undefined
       const subId = c.completion?.subagentId ?? c.tool?.subagentId
       if (!subId) return undefined
       const label = c.completion?.label ?? c.tool?.calls?.[0]?.target ?? `subagent ${subId}`
-      return { subId, label }
+      const task = c.tool?.calls?.[0]?.target ?? c.completion?.command ?? label
+      const report = c.completion?.report ?? ''
+      return { subId, label, task, report }
     }
     const found = resolve(n) ?? (n?.children ?? []).map((c) => nodes.get(c)).map(resolve).find((x) => x !== undefined)
     if (!found) {
       flash('No subagent here')
       return
     }
-    const { subId, label } = found
+    const { subId, label, task, report } = found
     const store = createStackStore(sessionId, { subagentId: subId })
     await store.load()
     if (get(store).status !== 'ready') {
-      // No transcript of its own: stay put and look at the row.
+      // No transcript of its own: stay put and look at the row. The child is
+      // unavailable from here rather than empty, and saying which is the whole
+      // of what this view can honestly report.
       store.destroy()
       flash('This subagent has no separate transcript')
       selectNode(id)
       return
     }
-    drill = [...drill, { subagentId: subId, label, store, parentCursor: cursor }]
+    drill = [
+      ...drill,
+      {
+        subagentId: subId,
+        label,
+        store,
+        parentCursor: cursor,
+        // This child's own controls, through the session that owns it. The
+        // capability report says whether they exist; the drilled-in view
+        // renders them, and nothing here offers a control the session never
+        // claimed. Child ids are session-local, so the session is the one the
+        // parent's transcript belongs to.
+        controls: createSubagentControls(sessionId, subId),
+        capabilities,
+        task,
+        status: childStatuses.get(subId) ?? '',
+        report,
+        parentScroll: transcriptEl?.scrollTop ?? 0,
+        parentPinned: pinned,
+      },
+    ]
     cursor = null
     dispatch({ type: 'backToLive' })
     scrollToLatest()
@@ -405,7 +505,7 @@
     // Backspace climbs out of a subagent's transcript.
     if (e.key === 'Backspace' && drill.length) {
       e.preventDefault()
-      popDrill()
+      void popDrill()
       return
     }
     const out = browseKey({ cursor, follow }, e.key, flat)
@@ -486,6 +586,23 @@
   // releases it; returning to the bottom re-arms it.
   let pinned = $state(true)
 
+  /*
+    A phone-width screen stacks a child's controls rather than setting them
+    beside its instruction field: the same controls, with short labels. jsdom
+    has no media queries at all, so an environment without matchMedia keeps the
+    wide layout instead of throwing on the way in.
+  */
+  const NARROW_QUERY = '(max-width: 639px)'
+  let narrow = $state(false)
+  onMount(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const query = window.matchMedia(NARROW_QUERY)
+    narrow = query.matches
+    const onWidth = (e: MediaQueryListEvent) => (narrow = e.matches)
+    query.addEventListener('change', onWidth)
+    return () => query.removeEventListener('change', onWidth)
+  })
+
   const entries = $derived(transcriptEntries($session))
 
   /*
@@ -518,6 +635,9 @@
   $effect(() => {
     // Referenced so the effect re-runs as the tail grows.
     tailSignature
+    // A return from a child puts the parent's own place back; following the
+    // tail would take it away again.
+    if (restoring) return
     if (!pinned || (browsing && !follow) || !transcriptEl) return
     // After the DOM has taken the new content, not before.
     requestAnimationFrame(() => {
@@ -634,20 +754,75 @@
     </span>
   </header>
 
+  <!--
+    This session's Studio connection and its own access overrides. It is the
+    same control set a factory worker uses; only the identities differ, and the
+    bridge resolves the project from the session's own association. It sits
+    closed so the transcript keeps the height, and it is never a gate on the
+    conversation: an offline, ambiguous or unauthorized state is shown, not
+    thrown.
+  -->
+  {#if !embedded}
+    <details class="studio-access" data-testid="session-studio-access">
+      <summary>Studio access</summary>
+      <MarshalAccessPanel
+        sessionId={sessionId}
+        levels={['session']}
+        heading="This session"
+        testId="session-marshal-access"
+      />
+    </details>
+  {/if}
+
   <div class="body">
   <div class="main">
   {#if drill.length}
+    {@const child = drill[drill.length - 1]}
     <nav class="crumbs" aria-label="Transcript path">
-      <button type="button" onclick={() => popTo(0)}>{agentName ?? sessionId}</button>
+      <button type="button" onclick={() => void popTo(0)}>{agentName ?? sessionId}</button>
       {#each drill as d, i (i)}
         <span aria-hidden="true">›</span>
-        <button type="button" disabled={i === drill.length - 1} onclick={() => popTo(i + 1)}>{d.label}</button>
+        <button type="button" disabled={i === drill.length - 1} onclick={() => void popTo(i + 1)}>{d.label}</button>
       {/each}
     </nav>
+    <!--
+      What the parent knows about this child, before its transcript: the task it
+      was given, who delegated it, the status its session reports, its report
+      when the parent's row carried one, and the controls. The capability
+      report is the session's own, so an unsupported one says so rather than
+      offering a control that would fail.
+    -->
+    <section class="child" data-testid="subagent-child" aria-label="Child task">
+      <div class="child-meta">
+        <p class="child-task" data-testid="child-task">{child.task}</p>
+        <p class="child-parent" data-testid="child-parent">
+          Delegated by
+          <button type="button" class="link" onclick={() => void popTo(0)}>{agentName ?? sessionId}</button>
+        </p>
+        <p class="child-status" data-testid="child-status" data-status={child.status || 'unknown'}>
+          {child.status ? `Status: ${child.status}` : 'Status: not reported by the session'}
+        </p>
+      </div>
+      {#if child.report}
+        <details class="child-report" data-testid="child-report">
+          <summary>Report</summary>
+          <pre>{child.report}</pre>
+        </details>
+      {/if}
+      <ChildControlStrip
+        sessionId={sessionId}
+        childId={child.subagentId}
+        label={child.label}
+        status={child.status}
+        capabilities={child.capabilities}
+        controls={child.controls}
+        compact={narrow}
+      />
+    </section>
   {/if}
 
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-  <div class="transcript" bind:this={transcriptEl} onscroll={onScroll} onclick={onTranscriptClick}>
+  <div class="transcript" bind:this={transcriptEl} onscroll={onScroll} onclick={onTranscriptClick} tabindex="-1" data-testid="transcript-scroll">
     {#if missing}
       <div class="empty">
         <p>This session could not be resumed — its agent is no longer tracked by the bridge.</p>
@@ -792,6 +967,20 @@
     min-width: 0;
     flex-direction: column;
   }
+  /* The Studio section is a disclosure, not a column: it keeps the transcript's
+     height when closed and scrolls its own card when open. */
+  .studio-access {
+    border-bottom: 1px solid var(--color-border);
+    padding: 0.5rem calc(var(--space-4, 1rem));
+  }
+  .studio-access > summary {
+    cursor: pointer;
+    font-size: 0.75rem;
+    color: var(--color-muted);
+  }
+  .studio-access[open] > summary {
+    margin-bottom: 0.5rem;
+  }
   .composer {
     width: 100%;
     max-width: 780px;
@@ -844,6 +1033,69 @@
   .crumbs button:disabled {
     color: var(--color-fg);
     cursor: default;
+  }
+  /*
+    The child's own header, above its transcript: the task, the parent it was
+    delegated by, the status its session reports, its report, and the shared
+    control strip. It wraps rather than overflowing, so a long task or a narrow
+    pane stacks instead of pushing the controls off the edge.
+  */
+  .child {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 0.5rem 1rem;
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-bg);
+  }
+  .child-meta {
+    display: grid;
+    flex: 1 1 16rem;
+    min-width: 0;
+    gap: 0.15rem;
+  }
+  .child-task {
+    margin: 0;
+    overflow-wrap: anywhere;
+    font-weight: 600;
+  }
+  .child-parent,
+  .child-status {
+    margin: 0;
+    font-size: 0.8125rem;
+    color: var(--color-muted);
+  }
+  .child-status[data-status='failed'] {
+    color: var(--color-danger);
+  }
+  .link {
+    background: transparent;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    font: inherit;
+    color: var(--color-accent);
+    text-decoration: underline;
+  }
+  .child-report {
+    flex: 1 1 100%;
+    min-width: 0;
+    font-size: 0.8125rem;
+    color: var(--color-muted);
+  }
+  .child-report pre {
+    margin: 0.25rem 0 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-family: inherit;
+  }
+  /*
+    The transcript is a focus target so returning from a child lands the
+    keyboard where the transcript is, rather than in the page body.
+  */
+  .transcript:focus {
+    outline: none;
   }
   header {
     display: flex;

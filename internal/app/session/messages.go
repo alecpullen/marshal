@@ -523,6 +523,10 @@ func (s *State) rebuildActiveBranch() {
 // turnMsgID (i.e. just before that turn), so the next AddMessage starts a
 // new branch. Returns the new leaf id. Does NOT restore files — the caller
 // (/rewind) does that via Snapshotter.
+//
+// A rewind to before the first turn sets the leaf to 0, which SetBranchLeaf
+// persists as an explicitly emptied root rather than as "never recorded"
+// (AUD-09), so the rewind survives a reload.
 func (s *State) Rewind(turnMsgID int64) int64 {
 	s.mu.Lock()
 	parent, ok := s.parentOf[turnMsgID]

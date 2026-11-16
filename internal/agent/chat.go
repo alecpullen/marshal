@@ -168,7 +168,7 @@ func (r *Runner) chatWithRetryNoNativeTools(ctx context.Context, p provider.Prov
 	// reconnect wait (retrying would start a second wait), a thinking loop,
 	// and a prompt the provider rejected as too long — resending that
 	// identical wire cannot succeed, and the runner compacts instead.
-	if !sentTools || isCancellation(err) || isNetworkError(err) || errors.Is(err, errThinkingLoop) || errors.Is(err, errContextOverflow) || (err == nil && len(res.ToolCalls) == 0) {
+	if !sentTools || isCancellation(err) || isNetworkError(err) || errors.Is(err, errThinkingLoop) || errors.Is(err, errContextOverflow) || errors.Is(err, errStreamInterrupted) || (err == nil && len(res.ToolCalls) == 0) {
 		return res, err
 	}
 	// The provider failed the request, or the model called a tool
@@ -565,6 +565,15 @@ func isRetryableChatError(err error) bool {
 // errContextOverflow marks a provider rejection caused by an oversized
 // prompt, so the runner can compact and retry instead of failing the turn.
 var errContextOverflow = errors.New("agent: provider rejected the prompt as too long")
+
+// errStreamInterrupted marks an attempt whose provider stream ended before the
+// provider's protocol announced completion (AUD-08). It is agent-internal: the
+// adapters emit schema.ChatEventInterrupted with their own detail error, and
+// chatOnce wraps that detail with this sentinel. It deliberately does not wrap
+// io.EOF or io.ErrUnexpectedEOF, so a protocol-level truncation is retried as a
+// transient failure instead of being misrouted into the reconnect wait's
+// network-error path.
+var errStreamInterrupted = errors.New("agent: provider stream ended before completion")
 
 // contextOverflowError carries a classified oversize-prompt rejection. It
 // unwraps to BOTH the sentinel and the original provider error. The sentinel
@@ -979,6 +988,13 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 	var quota *schema.QuotaInfo
 	var toolCalls []schema.ToolCall
 	var finishReason string
+	// sawDone records a protocol completion event. A stream whose channel
+	// closes without one never completed, whatever the adapter did or did not
+	// emit: the defensive half of the AUD-08 contract.
+	var sawDone bool
+	// interruptedErr carries the adapter's detail for a stream it reported as
+	// interrupted (schema.ChatEventInterrupted).
+	var interruptedErr error
 	// steeringAbort marks a stream the user's interruption ended. Once set the
 	// loop only drains: the provider's own goroutine still has to be allowed to
 	// finish its last send and close the channel, and the usage it reported on
@@ -1070,7 +1086,20 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 			// Discarding them turns a recoverable hiccup into a failed turn.
 			return chatResult{Text: sb.String(), ToolCalls: toolCalls, FinishReason: finishReason}, r.classifyStreamError(ctx, model, event.Err)
 
+		case schema.ChatEventInterrupted:
+			// The adapter saw its stream end before the provider's protocol
+			// announced completion. The text that arrived is real output, but
+			// this is not an answer: no tool call and no finish reason are
+			// taken from it, and the caller gets the interruption error below.
+			interruptedErr = event.Err
+			if event.Usage != nil {
+				usage = event.Usage
+			}
+			if event.Quota != nil {
+				quota = event.Quota
+			}
 		case schema.ChatEventDone:
+			sawDone = true
 			// A completion that arrives after the user's interruption is the
 			// response of a request the turn has already abandoned: it is not
 			// this turn's to take. Switch to draining instead, keeping the
@@ -1115,6 +1144,17 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 			return chatResult{Text: sb.String(), ToolCalls: toolCalls, FinishReason: finishReason}, r.classifyStreamError(ctx, model, cause)
 		}
 	}
+	// A stream whose channel closed with no terminal event is not a
+	// completion, whatever the adapter did or did not emit: the defensive
+	// half of the AUD-08 contract, independent of ChatEventInterrupted.
+	// Nothing buffered is executable — no tool call, no finish reason — and
+	// the partial text is returned only for the runner to preserve as a
+	// salvaged fragment.
+	interrupted := !sawDone && !steeringAbort && !errors.Is(session.CheckSteering(ctx), session.ErrSendNow)
+	interruptionDetail := "stream ended without a completion event"
+	if interruptedErr != nil {
+		interruptionDetail = interruptedErr.Error()
+	}
 	// The stream ended: completion as far as the adapter is concerned, not an
 	// acknowledgement from a server. A cancelled context still wins, so a
 	// provider that finishes a request the user stopped is not shown as done.
@@ -1134,6 +1174,11 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 		r.State.SetRequestInspectionOutcome(attemptID, session.InspectionOutcome{
 			Status: session.InspectionCancelled,
 			Err:    session.ErrSendNow.Error(),
+		})
+	} else if interrupted {
+		r.State.SetRequestInspectionOutcome(attemptID, session.InspectionOutcome{
+			Status: session.InspectionFailed,
+			Err:    interruptionDetail,
 		})
 	} else {
 		r.State.SetRequestInspectionOutcome(attemptID, session.InspectionOutcome{
@@ -1163,6 +1208,12 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 			s.m.CacheReadTokens += usage.CacheReadTokens
 			s.m.CacheWriteTokens += usage.CacheWriteTokens
 		})
+	}
+	if interrupted {
+		// The turn does not complete: the provider never announced it. The
+		// partial text is returned with the error so the runner can preserve
+		// it as a salvaged, non-final fragment.
+		return chatResult{Text: sb.String()}, fmt.Errorf("%w: %s", errStreamInterrupted, interruptionDetail)
 	}
 	if steering {
 		// Usage and quota above are already recorded; only the response is

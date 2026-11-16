@@ -627,3 +627,68 @@ export interface ProjectRemovedDelta {
   kind: DeltaKind;
   project: string;
 }
+
+/**
+ * SubagentCapabilities is which child controls a session registers. A false
+ * (or absent) bit is unavailable: a client offers no control and never infers
+ * one from another session.
+ */
+export interface SubagentCapabilities {
+  /**
+   * Settings is per-session child settings, which Marshal does not enforce
+   * yet.
+   */
+  settings: boolean;
+  /**
+   * Steer delivers one user instruction to a live child.
+   */
+  steer: boolean;
+  /**
+   * Stop asks a live child to stop.
+   */
+  stop: boolean;
+  /**
+   * Observe is the child's own transcript and lifecycle.
+   */
+  observe: boolean;
+}
+
+/**
+ * SubagentSteerParams is session/subagent_steer's params: one user instruction
+ * for a live child, named by the request ID that makes it a single delivery.
+ * The bridge never forwards its own ID: a retry must carry the caller's.
+ */
+export interface SubagentSteerParams {
+  sessionId: string;
+  subagentId: number;
+  requestId: string;
+  message: string;
+}
+
+/**
+ * SubagentSteerResult is session/subagent_steer's result. The status is
+ * accepted, never consumed: the child's queue took the instruction, and a
+ * child that settles first may never read it.
+ */
+export interface SubagentSteerResult {
+  requestId: string;
+  status: string;
+}
+
+/**
+ * SubagentCancelParams is session/subagent_cancel's params. It is the existing
+ * ACP control: the bridge's cancel route is a second route, not a second
+ * mechanism.
+ */
+export interface SubagentCancelParams {
+  sessionId: string;
+  subagentId: number;
+}
+
+/**
+ * SubagentCancelResult is session/subagent_cancel's result: the cancellation
+ * was asked for, which is not the same as the child having stopped.
+ */
+export interface SubagentCancelResult {
+  cancelled: boolean;
+}

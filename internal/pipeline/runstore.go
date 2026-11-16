@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 )
 
 // Manifest is the immutable identity of one pipeline run. It is written once
@@ -61,6 +62,12 @@ type Checkpoint struct {
 // RunStore owns the durable manifest and checkpoint files for one run.
 type RunStore struct {
 	paths Paths
+
+	// takeoverSwapHook, when non-nil, runs between the takeover's read of
+	// the existing lock and the move-aside, so a test can simulate another
+	// owner replacing the lock in that window. Production code never sets
+	// it.
+	takeoverSwapHook func()
 }
 
 func NewRunStore(paths Paths) *RunStore {
@@ -234,6 +241,12 @@ func (rs *RunStore) lockPath() string {
 	return filepath.Join(rs.paths.Dir, "run.lock")
 }
 
+// LockPath is the lock file's path, for messages that tell the user which
+// file to delete when a stale lock cannot be judged safe to take over.
+func (rs *RunStore) LockPath() string {
+	return rs.lockPath()
+}
+
 // AcquireLock creates the lock file. If one already exists, it returns an
 // error — the caller must inspect the existing lock and decide whether to
 // take over.
@@ -300,11 +313,273 @@ func (rs *RunStore) ReleaseLock() error {
 	return err
 }
 
-// TakeoverLock forcibly removes the existing lock and acquires a new one.
-// The caller must have already reported the stale owner to the user.
-func (rs *RunStore) TakeoverLock(lock RunLock) error {
-	if err := os.Remove(rs.lockPath()); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("runstore: remove stale lock: %w", err)
+// TakeoverLock replaces a run lock the caller has judged stale. expected is
+// the lock the caller read before judging it; lock is the new owner's lock.
+//
+// The whole read → park → verify → claim → verify sequence runs inside an
+// exclusive section (flock on a sidecar mutex file, so the kernel serialises
+// takers), which is what makes exactly one taker win: without it two takers
+// can both observe an absent lock file in another taker's park window and
+// both claim the slot, and a taker can read a lock a concurrent winner has
+// just installed and park that instead of the stale one.
+//
+// The stale lock is parked under a unique name rather than deleted, its
+// identity is checked against expected, the slot is claimed with a
+// create-if-absent primitive, and the claim is re-verified before the taker
+// reports ownership. A lock that does not match expected is never touched, so
+// a displaced or refused takeover leaves the lock intact.
+//
+// The caller must have already judged the existing owner stale and reported
+// it to the user.
+func (rs *RunStore) TakeoverLock(expected, lock RunLock) error {
+	return rs.withTakeoverSection(func() error {
+		return rs.takeOverLock(expected, lock)
+	})
+}
+
+// takeOverLock is TakeoverLock's body, which requires the takeover section.
+func (rs *RunStore) takeOverLock(expected, lock RunLock) error {
+	p := rs.lockPath()
+	rs.clearDeadSwapFiles(p)
+	cur, ok, err := rs.Lock()
+	if err != nil {
+		// A lock we cannot read cannot be judged; refuse to move it.
+		return err
 	}
-	return rs.AcquireLock(lock)
+	if !ok {
+		// The owner released the lock. No other taker can be mid-swap — the
+		// swap runs in this same section — so the slot is free and ours to
+		// take.
+		return rs.AcquireLock(lock)
+	}
+	if cur != expected {
+		// Not the lock the caller judged stale: another owner installed (or
+		// restored) one after the caller's read. Refuse and leave it alone.
+		return fmt.Errorf("runstore: lock changed while taking over")
+	}
+	if rs.takeoverSwapHook != nil {
+		// Test-only: simulate a foreign writer that does not take the
+		// section, landing between the read above and the move-aside.
+		rs.takeoverSwapHook()
+	}
+	suffix := nextSwapSuffix()
+	quarantine := p + ".takeover." + suffix
+	if err := os.Rename(p, quarantine); err != nil {
+		if os.IsNotExist(err) {
+			// The owner released the lock after our read.
+			return rs.AcquireLock(lock)
+		}
+		return fmt.Errorf("runstore: park stale lock: %w", err)
+	}
+	// The parked file must be the lock judged stale. When it is not, another
+	// owner replaced it in the window: put theirs back and refuse.
+	parked, perr := readLock(quarantine)
+	if perr != nil || parked != expected {
+		if rerr := restoreLock(quarantine, p); rerr != nil {
+			return fmt.Errorf("runstore: lock changed while taking over, "+
+				"and the displaced lock could not be restored: %w", rerr)
+		}
+		return fmt.Errorf("runstore: lock changed while taking over")
+	}
+	if err := rs.claimLock(lock, nextSwapSuffix()); err != nil {
+		// The claim failed. Put the parked lock back rather than leaving the
+		// run unlocked; restoreLock cannot displace a lock another owner
+		// installed in the meantime.
+		if rerr := restoreLock(quarantine, p); rerr != nil {
+			return fmt.Errorf("%w (and the parked lock could not be restored: %v)", err, rerr)
+		}
+		return err
+	}
+	// Post-claim re-verify: the lock file must now hold this taker's lock and
+	// nothing else. A claim that did not take effect must never be reported as
+	// ownership — that is a second owner.
+	got, ok, err := rs.Lock()
+	if err != nil || !ok || got != lock {
+		if rerr := restoreLock(quarantine, p); rerr != nil {
+			return fmt.Errorf("runstore: takeover did not take effect, "+
+				"and the displaced lock could not be restored: %w", rerr)
+		}
+		return fmt.Errorf("runstore: takeover did not take effect: the run lock is not ours")
+	}
+	if err := os.Remove(quarantine); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("runstore: remove parked lock: %w", err)
+	}
+	return nil
+}
+
+// withTakeoverSection runs fn while holding the run's exclusive takeover
+// section: an advisory lock on a sidecar mutex file that is never renamed or
+// replaced, so every taker in every process locks the same inode.
+func (rs *RunStore) withTakeoverSection(fn func() error) (retErr error) {
+	f, err := os.OpenFile(rs.lockMutexPath(), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return fmt.Errorf("runstore: open takeover mutex: %w", err)
+	}
+	if err := flockExclusive(f); err != nil {
+		f.Close()
+		return fmt.Errorf("runstore: take takeover mutex: %w", err)
+	}
+	defer func() {
+		if err := funlock(f); err != nil && retErr == nil {
+			retErr = fmt.Errorf("runstore: release takeover mutex: %w", err)
+		}
+		if err := f.Close(); err != nil && retErr == nil {
+			retErr = fmt.Errorf("runstore: close takeover mutex: %w", err)
+		}
+	}()
+	return fn()
+}
+
+// lockMutexPath is the sidecar file the takeover section locks.
+func (rs *RunStore) lockMutexPath() string {
+	return rs.lockPath() + ".mutex"
+}
+
+// swapSeq keeps parked and half-written lock names unique within a process.
+// Unlike a timestamp it cannot repeat, so two takers never share a name.
+var swapSeq atomic.Uint64
+
+// nextSwapSuffix returns a swap-file suffix unique across processes (pid) and
+// within one (a strictly increasing counter).
+func nextSwapSuffix() string {
+	return fmt.Sprintf("%d.%d", os.Getpid(), swapSeq.Add(1))
+}
+
+// clearDeadSwapFiles removes parked and half-written lock files left behind
+// by a taker that died inside the section. It is safe because the caller
+// holds the section: no live taker can own a swap file of its own.
+func (rs *RunStore) clearDeadSwapFiles(p string) {
+	for _, pattern := range []string{p + ".takeover.*", p + ".new.*"} {
+		left, err := filepath.Glob(pattern)
+		if err != nil {
+			continue
+		}
+		for _, f := range left {
+			os.Remove(f)
+		}
+	}
+}
+
+// claimLock installs lock at the lock path without ever replacing an existing
+// lock file: the content is written to a sibling first and hard-linked into
+// place, an atomic create-if-absent with no empty-file window. A filesystem
+// without hard links falls back to the O_CREATE|O_EXCL claim AcquireLock
+// uses, which is the same primitive.
+func (rs *RunStore) claimLock(lock RunLock, suffix string) error {
+	p := rs.lockPath()
+	data, err := json.MarshalIndent(lock, "", "  ")
+	if err != nil {
+		return fmt.Errorf("runstore: marshal lock: %w", err)
+	}
+	tmp := p + ".new." + suffix
+	// The temp is synced before it is linked, so the file that becomes the
+	// run lock is never a torn write.
+	if err := writeFileSync(tmp, data); err != nil {
+		return fmt.Errorf("runstore: write lock: %w", err)
+	}
+	defer os.Remove(tmp)
+	if err := os.Link(tmp, p); err != nil {
+		if os.IsExist(err) {
+			return fmt.Errorf("runstore: run is already locked")
+		}
+		return rs.AcquireLock(lock)
+	}
+	return nil
+}
+
+// writeFileSync writes data to path and fsyncs it, removing the file if any
+// step fails.
+func writeFileSync(path string, data []byte) (retErr error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if retErr != nil {
+			os.Remove(path)
+		}
+	}()
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// restoreLock puts a parked lock file back at dst and reports failures: a park
+// that cannot be undone is a run lock the run has lost, so the caller must
+// surface it instead of reporting a clean refusal. When another owner has
+// claimed the slot in the meantime (EEXIST), theirs is left untouched and the
+// parked copy is dropped — there is nothing to restore and nothing went wrong.
+func restoreLock(parked, dst string) error {
+	err := os.Link(parked, dst)
+	switch {
+	case err == nil:
+	case os.IsExist(err):
+		return removeParkedLock(parked)
+	default:
+		// No hard links on this filesystem: an exclusive create of the same
+		// content restores the slot with the same no-clobber semantics.
+		if rerr := restoreByExclusiveCreate(parked, dst); rerr != nil {
+			if os.IsExist(rerr) {
+				return removeParkedLock(parked)
+			}
+			return rerr
+		}
+	}
+	return removeParkedLock(parked)
+}
+
+// restoreByExclusiveCreate recreates dst from the parked file's content
+// without ever replacing an existing lock file.
+func restoreByExclusiveCreate(parked, dst string) error {
+	data, err := os.ReadFile(parked)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(dst)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(dst)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(dst)
+		return err
+	}
+	return nil
+}
+
+// removeParkedLock drops a parked lock file that has been restored or
+// superseded.
+func removeParkedLock(parked string) error {
+	if err := os.Remove(parked); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("runstore: remove parked lock %s: %w", parked, err)
+	}
+	return nil
+}
+
+// readLock decodes the lock file at p.
+func readLock(p string) (RunLock, error) {
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return RunLock{}, err
+	}
+	var l RunLock
+	if err := json.Unmarshal(data, &l); err != nil {
+		return RunLock{}, err
+	}
+	return l, nil
 }

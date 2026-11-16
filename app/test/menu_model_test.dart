@@ -28,14 +28,13 @@ DaemonStatus statusWith({
     projects: ['/home/u/src/marshal'],
     children: [],
   ),
-}) =>
-    DaemonStatus(
-      schemaVersion: DaemonStatus.supportedSchema,
-      answering: daemon != null,
-      service: ServiceState(installed: installed, running: running, pid: pid),
-      linger: const LingerState(supported: true, enabled: true),
-      daemon: daemon,
-    );
+}) => DaemonStatus(
+  schemaVersion: DaemonStatus.supportedSchema,
+  answering: daemon != null,
+  service: ServiceState(installed: installed, running: running, pid: pid),
+  linger: const LingerState(supported: true, enabled: true),
+  daemon: daemon,
+);
 
 /// draw builds the menu and puts it through a host, which is how the app
 /// draws it: the test asserts what the host was told to show.
@@ -76,22 +75,24 @@ void main() {
     expect(menu.item('status')!.label, 'Marshal — not installed');
   });
 
-  test('offers stop when it is running, and start when it is stopped',
-      () async {
-    final running = await draw(FakeTrayHost(), status: statusWith());
-    expect(running.item('stop'), isNotNull);
-    expect(running.item('start'), isNull);
-    expect(running.item('install'), isNull);
+  test(
+    'offers stop when it is running, and start when it is stopped',
+    () async {
+      final running = await draw(FakeTrayHost(), status: statusWith());
+      expect(running.item('stop'), isNotNull);
+      expect(running.item('start'), isNull);
+      expect(running.item('install'), isNull);
 
-    final stopped = await draw(
-      FakeTrayHost(),
-      status: statusWith(running: false, daemon: null),
-    );
-    expect(stopped.item('start'), isNotNull);
-    expect(stopped.item('stop'), isNull);
-    expect(stopped.item('install'), isNull);
-    expect(stopped.item('status')!.label, 'Marshal — daemon stopped');
-  });
+      final stopped = await draw(
+        FakeTrayHost(),
+        status: statusWith(running: false, daemon: null),
+      );
+      expect(stopped.item('start'), isNotNull);
+      expect(stopped.item('stop'), isNull);
+      expect(stopped.item('install'), isNull);
+      expect(stopped.item('status')!.label, 'Marshal — daemon stopped');
+    },
+  );
 
   test('a running service with a silent daemon says not answering', () async {
     final menu = await draw(FakeTrayHost(), status: statusWith(daemon: null));
@@ -126,8 +127,11 @@ void main() {
   });
 
   test('disables the log item when the file is missing', () async {
-    final missing =
-        await draw(FakeTrayHost(), logExists: false, status: statusWith());
+    final missing = await draw(
+      FakeTrayHost(),
+      logExists: false,
+      status: statusWith(),
+    );
     final log = missing.item('log');
     expect(log, isNotNull);
     expect(log!.enabled, isFalse);

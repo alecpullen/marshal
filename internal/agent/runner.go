@@ -1800,6 +1800,20 @@ func (r *Runner) RunTaskWithImages(ctx context.Context, goal string, images []sc
 				}
 				return task, r.failTurn(task, fmt.Errorf("%s: %w", msg, err))
 			}
+			if errors.Is(err, errStreamInterrupted) {
+				// The provider never announced completion. The partial text is
+				// real output the user paid for, so it is preserved — but it is
+				// not an answer, and it must not continue the turn the way a
+				// salvaged mid-stream error does. Returning here also keeps it
+				// out of the parse repair and prose-tool-call salvagers below,
+				// so a truncated tool call can never be executed.
+				if strings.TrimSpace(res.Text) != "" {
+					r.State.AddMessageSalvaged(session.RoleAssistant, res.Text,
+						session.ContentTypeMarkdown, string(reasonInterrupted))
+				}
+				return task, r.failTurn(task, fmt.Errorf(
+					"the provider's response was interrupted before it finished: %w", err))
+			}
 			// A stream that failed part-way may still have delivered a usable
 			// response — a malformed SSE chunk aborts the stream without
 			// invalidating the deltas already received. Salvage it and let the
@@ -2551,6 +2565,13 @@ func (r *Runner) Chat(ctx context.Context, messages []schema.ChatMessage) (schem
 			resp.Content += event.Delta
 		case schema.ChatEventError:
 			return schema.ChatMessage{}, event.Err
+		case schema.ChatEventInterrupted:
+			// A truncated digest request must fail loudly rather than be
+			// cached as a partial summary.
+			if event.Err != nil {
+				return schema.ChatMessage{}, event.Err
+			}
+			return schema.ChatMessage{}, errStreamInterrupted
 		case schema.ChatEventDone:
 			resp.Content += event.Delta
 		}

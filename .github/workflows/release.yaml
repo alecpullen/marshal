@@ -91,7 +91,7 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-          flutter-version: '3.35.1'
+          flutter-version: '3.50.0'
           cache: true
       - name: Fetch the daemon binaries this tag released
         run: |
@@ -216,7 +216,7 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-          flutter-version: '3.35.1'
+          flutter-version: '3.50.0'
           cache: true
       - name: Fetch the daemon binaries this tag released
         run: |

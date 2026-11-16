@@ -47,6 +47,29 @@ type fakeFleet struct {
 	promptReads []promptRead
 	prompts     []string
 	promptsErr  error
+
+	diffs      []diffRead
+	diffAnswer contract.DiffResult
+	diffErr    error
+
+	commitDrafts      []string
+	commitDraftAnswer contract.CommitDraft
+	commitDraftErr    error
+
+	verifies     []string
+	verifyAnswer contract.GateRecord
+	verifyErr    error
+
+	merges      []mergeCall
+	mergeAnswer contract.MergeResult
+	mergeErr    error
+
+	exits      []exitCall
+	exitAnswer contract.ExitResult
+	exitErr    error
+
+	discards   []string
+	discardErr error
 }
 
 // permissionAnswer is one AnswerPermission call: the request it answered and
@@ -66,6 +89,24 @@ type questionAnswer struct {
 type promptRead struct {
 	project string
 	limit   int
+}
+
+// diffRead is one Diff call: the agent and the file it named.
+type diffRead struct {
+	agentID string
+	path    string
+}
+
+// mergeCall is one Merge call: the agent and the request it carried.
+type mergeCall struct {
+	agentID string
+	req     contract.MergeRequest
+}
+
+// exitCall is one Exit call: the agent and the request it carried.
+type exitCall struct {
+	agentID string
+	req     contract.ExitRequest
 }
 
 func newFakeFleet() *fakeFleet {
@@ -115,6 +156,42 @@ func (f *fakeFleet) DenyIntake(_ context.Context, id string) error {
 func (f *fakeFleet) RecentPrompts(_ context.Context, project string, limit int) ([]string, error) {
 	f.promptReads = append(f.promptReads, promptRead{project: project, limit: limit})
 	return f.prompts, f.promptsErr
+}
+
+// Diff records the read and answers the diff the test set.
+func (f *fakeFleet) Diff(_ context.Context, agentID, path string) (contract.DiffResult, error) {
+	f.diffs = append(f.diffs, diffRead{agentID: agentID, path: path})
+	return f.diffAnswer, f.diffErr
+}
+
+// CommitDraft records the read and answers the draft the test set.
+func (f *fakeFleet) CommitDraft(_ context.Context, agentID string) (contract.CommitDraft, error) {
+	f.commitDrafts = append(f.commitDrafts, agentID)
+	return f.commitDraftAnswer, f.commitDraftErr
+}
+
+// Verify records the agent whose gate ran and answers the record the test set.
+func (f *fakeFleet) Verify(_ context.Context, agentID string) (contract.GateRecord, error) {
+	f.verifies = append(f.verifies, agentID)
+	return f.verifyAnswer, f.verifyErr
+}
+
+// Merge records the request and answers the result the test set.
+func (f *fakeFleet) Merge(_ context.Context, agentID string, req contract.MergeRequest) (contract.MergeResult, error) {
+	f.merges = append(f.merges, mergeCall{agentID: agentID, req: req})
+	return f.mergeAnswer, f.mergeErr
+}
+
+// Exit records the request and answers the result the test set.
+func (f *fakeFleet) Exit(_ context.Context, agentID string, req contract.ExitRequest) (contract.ExitResult, error) {
+	f.exits = append(f.exits, exitCall{agentID: agentID, req: req})
+	return f.exitAnswer, f.exitErr
+}
+
+// Discard records the agent whose work was thrown away.
+func (f *fakeFleet) Discard(_ context.Context, agentID string) error {
+	f.discards = append(f.discards, agentID)
+	return f.discardErr
 }
 
 // fire signals a change the way the client does.

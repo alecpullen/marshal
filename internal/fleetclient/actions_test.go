@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"sync"
@@ -416,5 +417,187 @@ func TestAReadRefusesLikeAnActionDoes(t *testing.T) {
 	}
 	if want := "Budget reached (daily)"; refusal.Error() != want {
 		t.Errorf("the refusal says %q, want %q", refusal.Error(), want)
+	}
+}
+
+// TestEachFinishingActionSendsItsRoute: every finishing action's method, path
+// and body, for one call each. The ids carry a slash so the path escaping is
+// part of the answer.
+func TestEachFinishingActionSendsItsRoute(t *testing.T) {
+	tests := []struct {
+		name   string
+		answer string
+		call   func(t *testing.T, c *Client) error
+		method string
+		path   string
+		query  string
+		body   any // nil: the action sends none
+	}{
+		{
+			name:   "Diff",
+			answer: `{"files":[{"path":"a.go","added":3,"removed":1}]}`,
+			call: func(t *testing.T, c *Client) error {
+				got, err := c.Diff(context.Background(), "a/1", "")
+				if err != nil {
+					return err
+				}
+				if want := []contract.DiffFile{{Path: "a.go", Added: 3, Removed: 1}}; !reflect.DeepEqual(got.Files, want) {
+					t.Errorf("Diff answered %+v, want %+v", got.Files, want)
+				}
+				return nil
+			},
+			method: http.MethodGet,
+			path:   "/api/agents/a%2F1/diff",
+		},
+		{
+			name:   "CommitDraft",
+			answer: `{"message":"marshal: finish the action"}`,
+			call: func(t *testing.T, c *Client) error {
+				got, err := c.CommitDraft(context.Background(), "a/2")
+				if err != nil {
+					return err
+				}
+				if want := "marshal: finish the action"; got.Message != want {
+					t.Errorf("CommitDraft answered %q, want %q", got.Message, want)
+				}
+				return nil
+			},
+			method: http.MethodGet,
+			path:   "/api/agents/a%2F2/commit-draft",
+		},
+		{
+			name:   "Verify",
+			answer: `{"result":{"ok":true,"skipped":false},"at":"2026-01-02T03:04:05Z"}`,
+			call: func(t *testing.T, c *Client) error {
+				got, err := c.Verify(context.Background(), "a/3")
+				if err != nil {
+					return err
+				}
+				if got.Result == nil || !got.Result.OK {
+					t.Errorf("Verify answered %+v, want an ok result", got)
+				}
+				return nil
+			},
+			method: http.MethodPost,
+			path:   "/api/agents/a%2F3/verify",
+		},
+		{
+			name:   "Merge",
+			answer: `{"merged":true,"branch":"marshal/a1","target":"main"}`,
+			call: func(t *testing.T, c *Client) error {
+				got, err := c.Merge(context.Background(), "a/4", contract.MergeRequest{CommitMessage: "merge it"})
+				if err != nil {
+					return err
+				}
+				if !got.Merged || got.Branch != "marshal/a1" || got.Target != "main" {
+					t.Errorf("Merge answered %+v, want marshal/a1 merged into main", got)
+				}
+				return nil
+			},
+			method: http.MethodPost,
+			path:   "/api/agents/a%2F4/merge",
+			body:   contract.MergeRequest{CommitMessage: "merge it"},
+		},
+		{
+			name:   "Exit",
+			answer: `{"destination":"pr","branch":"marshal/a1","prUrl":"https://example.test/pr/1"}`,
+			call: func(t *testing.T, c *Client) error {
+				got, err := c.Exit(context.Background(), "a/5", contract.ExitRequest{CommitMessage: "land it"})
+				if err != nil {
+					return err
+				}
+				if got.Destination != "pr" || got.PRUrl == "" {
+					t.Errorf("Exit answered %+v, want a pr destination with its url", got)
+				}
+				return nil
+			},
+			method: http.MethodPost,
+			path:   "/api/agents/a%2F5/exit",
+			body:   contract.ExitRequest{CommitMessage: "land it"},
+		},
+		{
+			name:   "Discard",
+			answer: `{"status":"discarded"}`,
+			call: func(t *testing.T, c *Client) error {
+				return c.Discard(context.Background(), "a/6")
+			},
+			method: http.MethodPost,
+			path:   "/api/agents/a%2F6/discard",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newActionBridge(t)
+			b.reply(http.StatusOK, tc.answer)
+			if err := tc.call(t, b.client(nil)); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+
+			method, path, query, body, _ := b.recorded()
+			if method != tc.method {
+				t.Errorf("%s used %s, want %s", tc.name, method, tc.method)
+			}
+			if path != tc.path {
+				t.Errorf("%s sent %s, want %s", tc.name, path, tc.path)
+			}
+			if query != tc.query {
+				t.Errorf("%s sent query %q, want %q", tc.name, query, tc.query)
+			}
+			if tc.body == nil {
+				if len(body) != 0 {
+					t.Errorf("%s sent body %q, want none", tc.name, body)
+				}
+				return
+			}
+			if !sameJSON(t, body, tc.body) {
+				t.Errorf("%s sent body %s", tc.name, body)
+			}
+		})
+	}
+}
+
+// TestARefusedMergeIsAResult: the bridge reports a refusal as a 409 whose body
+// is the result, so a dirty tree answers Merged false and its reason, and no
+// error at all.
+func TestARefusedMergeIsAResult(t *testing.T) {
+	b := newActionBridge(t)
+	b.reply(http.StatusConflict, `{"merged":false,"reason":"dirty"}`)
+
+	got, err := b.client(nil).Merge(context.Background(), "a1", contract.MergeRequest{})
+	if err != nil {
+		t.Fatalf("a refused merge is an error: %v", err)
+	}
+	if got.Merged {
+		t.Error("the refused merge reports Merged true")
+	}
+	if want := "dirty"; got.Reason != want {
+		t.Errorf("the refusal names reason %q, want %q", got.Reason, want)
+	}
+}
+
+// TestADiffReadNamesItsPath: a file's diff names the file as the path query
+// parameter, escaped, so a path with a slash or a space survives the trip.
+func TestADiffReadNamesItsPath(t *testing.T) {
+	b := newActionBridge(t)
+	b.reply(http.StatusOK, `{"files":[],"diff":"@@ -1 +1 @@\n-a\n+b\n"}`)
+
+	got, err := b.client(nil).Diff(context.Background(), "a1", "src/a b.go")
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	if got.Diff == "" {
+		t.Error("Diff answered no diff for the named file")
+	}
+
+	method, path, query, _, _ := b.recorded()
+	if method != http.MethodGet {
+		t.Errorf("Diff used %s, want %s", method, http.MethodGet)
+	}
+	if want := "/api/agents/a1/diff"; path != want {
+		t.Errorf("Diff sent %s, want %s", path, want)
+	}
+	if want := (url.Values{"path": {"src/a b.go"}}).Encode(); query != want {
+		t.Errorf("Diff sent query %q, want %q", query, want)
 	}
 }

@@ -30,12 +30,17 @@ func TestMain(m *testing.M) {
 	os.Exit(testenv.Run(m))
 }
 
-// runChild is the project child: `acp --viewers unix://<socket>`, served over
-// this process's own stdio. It returns when the bridge ends stdio, and the
-// viewers end with it.
+// runChild is the child the bridge starts, served over this process's own
+// stdio. A project's child is `acp --viewers unix://<socket>`: it returns when
+// the bridge ends stdio, and the viewers end with it. A plain `acp` is the
+// child an agent of its own gets — web/bridge starts that one with no
+// arguments — and it serves its one session over stdio.
 func runChild(args []string) error {
+	if len(args) == 1 && args[0] == "acp" {
+		return acp.Run(context.Background(), os.Stdin, os.Stdout, os.Stderr)
+	}
 	if len(args) < 3 || args[0] != "acp" || args[1] != "--viewers" {
-		return fmt.Errorf("the project child expects `acp --viewers unix://<socket>`, got %q", args)
+		return fmt.Errorf("the child expects `acp` or `acp --viewers unix://<socket>`, got %q", args)
 	}
 	network, path, err := acp.ParseListenAddr(args[2])
 	if err != nil {

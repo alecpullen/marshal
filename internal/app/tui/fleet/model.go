@@ -62,8 +62,10 @@ type Model struct {
 	// header. needsCursor indexes the Needs you panel's queue.
 	agentCursor int
 	needsCursor int
-	// tab is the right panel's tab: 1 Activity, 3 Info.
+	// tab is the right panel's tab: 1 Activity, 2 Diff, 3 Info.
 	tab int
+	// diff is the Diff tab's state for the shown agent.
+	diff diffView
 
 	zoom      bool
 	help      bool
@@ -292,12 +294,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case changedMsg:
 		m.applyState()
-		return m, m.waitForChange()
+		// The wait is armed beside the Diff tab's reads: a state can change
+		// the agent the tab shows, or its changed-files count.
+		read := m.syncDiff()
+		return m, tea.Batch(m.waitForChange(), read)
 	case tickMsg:
 		return m, tickCmd()
+	case diffReadMsg:
+		return m.handleDiffRead(msg)
 	case actionDoneMsg:
 		m.actionDone(msg)
 		return m, nil
+	case finishDraftMsg:
+		return m.handleFinishDraft(msg)
+	case finishDoneMsg:
+		return m.handleFinishDone(msg)
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}

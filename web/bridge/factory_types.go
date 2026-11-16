@@ -237,11 +237,16 @@ type FactoryDecision struct {
 // Approval authority origin values, recorded in provenance so an entry says
 // where the authority it acted under came from. Standing authority is what the
 // store itself holds — a grant's approvalAuthority, or a built-in project or
-// session default; client_assertion is authority a client claimed and the
-// server did not verify against a human instruction.
+// session default; verified_user_directed is a built-in operation admitted with
+// a receipt this bridge minted for exactly that operation and no other attempt
+// consumed, which is the only way a person's direction becomes evidence here.
+//
+// An external client's claim has no origin value: its entry names the client id
+// and claims no more than the grant it acted under, so the absence of an origin
+// is what distinguishes a client assertion from verified direction.
 const (
-	factoryAuthorityOriginStanding        = "standing"
-	factoryAuthorityOriginClientAssertion = "client_assertion"
+	factoryAuthorityOriginStanding             = "standing"
+	factoryAuthorityOriginVerifiedUserDirected = "verified_user_directed"
 )
 
 // FactoryProvenance attributes one journaled factory mutation to the MCP

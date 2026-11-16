@@ -1,9 +1,12 @@
 package bridge
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -75,10 +78,17 @@ var (
 type factoryMCPAuthorizer struct {
 	mu sync.Mutex
 	ws *Workspace
+	// userDirection holds the receipts this bridge minted for built-in
+	// operations that act on a person's instruction and that no attempt has
+	// consumed yet, in mint order. now is the clock their expiry is read
+	// against; a test injects a deterministic one. Both are guarded by mu,
+	// exactly like the policy they are consulted with.
+	userDirection []marshalUserDirectionReceipt
+	now           func() time.Time
 }
 
 func newFactoryMCPAuthorizer(ws *Workspace) *factoryMCPAuthorizer {
-	return &factoryMCPAuthorizer{ws: ws}
+	return &factoryMCPAuthorizer{ws: ws, now: time.Now}
 }
 
 // WithAuthorizedMutation authorizes one capability and, only when it holds,
@@ -507,6 +517,245 @@ func marshalAccessAllows(access MarshalFactoryAccess, capability string) bool {
 			(*access.ApprovalAuthority == factoryAuthorityUserDirected || *access.ApprovalAuthority == factoryAuthorityStanding)
 	}
 	return false
+}
+
+// User direction receipts.
+//
+// An approval or an answer that acts on a person's instruction needs evidence
+// that a person gave it, and the evidence has to be the bridge's, not the
+// caller's: a model's "authority: user_directed" argument proves nothing, and a
+// built-in session carries a credential its model can reach. So the bridge mints
+// an opaque, expiring, single-use receipt for one exact operation, answers the
+// attempt that has none with that receipt, and treats a later attempt that
+// presents it as the person's direction. The receipt travels in a header, beside
+// the tool arguments, so no argument and no model content can mint one.
+const (
+	// MarshalUserDirectionHeader carries a user-direction receipt beside the
+	// MCP request. No tool decodes a receipt from its JSON arguments, so a
+	// model cannot supply one by writing one; the trusted transport sets this
+	// header from the session's own confirmed receipt.
+	MarshalUserDirectionHeader = "X-Marshal-User-Direction"
+	// marshalUserDirectionTTL bounds how long a minted receipt stays
+	// presentable. It is short on purpose: a receipt is a confirmation of one
+	// operation happening now.
+	marshalUserDirectionTTL = 5 * time.Minute
+)
+
+// errMarshalUserDirectionRequired is what a built-in operation that acts on a
+// person's instruction reports when it has none to show: the bridge minted a
+// receipt and the caller must present it after a trusted confirmation.
+var errMarshalUserDirectionRequired = errors.New("user direction required")
+
+// marshalUserDirectionChallenge is that answer: the opaque receipt id and when
+// it lapses. It is a value the caller is told and never one it can choose.
+type marshalUserDirectionChallenge struct {
+	Receipt   string
+	ExpiresAt time.Time
+}
+
+func (c *marshalUserDirectionChallenge) Error() string {
+	return errMarshalUserDirectionRequired.Error() + ": the user must confirm this operation and present the receipt"
+}
+
+// Is makes errors.Is(err, errMarshalUserDirectionRequired) hold for the value
+// the authorizer returns, so a caller classifies the failure by its sentinel
+// while still reading the receipt from it.
+func (c *marshalUserDirectionChallenge) Is(target error) bool {
+	return target == errMarshalUserDirectionRequired
+}
+
+// marshalUserDirectionReceipt is one minted receipt: the exact operation it
+// covers and when it lapses. Every field is bound when it is minted, from the
+// authenticated binding and the validated arguments, so presenting it for any
+// other instance, project, session, worker, action, target or request matches
+// nothing.
+type marshalUserDirectionReceipt struct {
+	id         string
+	expiresAt  time.Time
+	instanceID string
+	projectID  string
+	sessionID  string
+	workerID   string
+	action     string
+	target     string
+	requestID  string
+}
+
+// covers reports whether this receipt was minted for exactly this operation.
+func (r marshalUserDirectionReceipt) covers(binding MarshalSessionBinding, action, target, requestID string) bool {
+	return r.instanceID == binding.InstanceID &&
+		r.projectID == binding.ProjectID &&
+		r.sessionID == binding.SessionID &&
+		r.workerID == binding.WorkerID &&
+		r.action == action &&
+		r.target == target &&
+		r.requestID == requestID
+}
+
+// marshalUserDirectionTarget is the exact operation a receipt covers, built
+// from the arguments the tool already validated: the item, the version the
+// request was made against, and — for an answer — the decision it resolves. A
+// receipt minted for one operation is not evidence for another.
+func marshalUserDirectionTarget(itemID string, expectedVersion uint64, decisionID string) string {
+	return strings.Join([]string{itemID, strconv.FormatUint(expectedVersion, 10), decisionID}, "\x00")
+}
+
+// WithAuthorizedMarshalUserDirection authorizes one built-in operation that
+// acts on a person's instruction and, only when it holds, runs fn while still
+// holding the policy lock.
+//
+// What admits the operation is the store's effective approval authority, read
+// under the lock — never the caller's claim. Standing authority is the
+// project's own configured policy and owes no confirmation. User-directed
+// authority needs a person: a receipt this bridge minted for exactly this
+// (instance, project, session, worker, action, target, request) that no other
+// attempt consumed. Without one nothing is admitted, and the answer is a
+// challenge carrying the receipt to present after the trusted confirmation; a
+// receipt already minted for the same exact operation is handed back rather than
+// asking the person a second time.
+//
+// A presented receipt is consumed by the attempt that presents it, so it can
+// never be replayed: a consumed, expired, mismatched or generation-stale receipt
+// is a denial like every other, and nothing is journalled for it.
+func (a *factoryMCPAuthorizer) WithAuthorizedMarshalUserDirection(binding MarshalSessionBinding, repoID, capability, receiptID, target, requestID string, fn func(factoryPrincipal) (FactoryItem, error)) (FactoryItem, error) {
+	if fn == nil {
+		return FactoryItem{}, fmt.Errorf("%w: no mutation to authorize", errFactoryDenied)
+	}
+	if a == nil {
+		return FactoryItem{}, fmt.Errorf("%w: no workspace", ErrFactoryUnavailable)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	principal, err := a.admitMarshalLocked(binding, capability)
+	if err != nil {
+		return FactoryItem{}, err
+	}
+	switch principal.Authority {
+	case factoryAuthorityStanding:
+		// The store's own policy, configured separately: the standing
+		// authority a person set up in advance owes no confirmation per
+		// operation, and it is journalled as standing.
+		return fn(principal)
+	case factoryAuthorityUserDirected:
+	default:
+		// Nothing configured admits an operation that acts on a person's
+		// instruction, so no receipt exists that could.
+		return FactoryItem{}, errFactoryDenied
+	}
+	if strings.TrimSpace(receiptID) != "" {
+		if !a.consumeUserDirectionLocked(receiptID, binding, capability, target, requestID) {
+			return FactoryItem{}, errFactoryDenied
+		}
+		principal.AuthorityOrigin = factoryAuthorityOriginVerifiedUserDirected
+		return fn(principal)
+	}
+	return FactoryItem{}, a.challengeUserDirectionsLocked(binding, capability, target, requestID)
+}
+
+// consumeUserDirectionLocked verifies one presented receipt against exactly
+// this operation and, when it covers it, consumes it. An expired receipt is
+// dropped rather than kept, so a stale one cannot linger; a receipt minted for
+// anything else is left in place and matches nothing. The caller holds the
+// policy lock.
+func (a *factoryMCPAuthorizer) consumeUserDirectionLocked(id string, binding MarshalSessionBinding, action, target, requestID string) bool {
+	for n := range a.userDirection {
+		receipt := a.userDirection[n]
+		if receipt.id != id {
+			continue
+		}
+		if !a.timestamp().Before(receipt.expiresAt) {
+			a.userDirection = append(a.userDirection[:n], a.userDirection[n+1:]...)
+			return false
+		}
+		if !receipt.covers(binding, action, target, requestID) {
+			return false
+		}
+		a.userDirection = append(a.userDirection[:n], a.userDirection[n+1:]...)
+		return true
+	}
+	return false
+}
+
+// challengeUserDirectionsLocked returns the receipt for exactly this operation,
+// minting one only when no unspent receipt already covers it: two attempts at
+// one operation must not ask a person twice, and only one confirmation is owed.
+// The caller holds the policy lock.
+func (a *factoryMCPAuthorizer) challengeUserDirectionsLocked(binding MarshalSessionBinding, action, target, requestID string) error {
+	now := a.timestamp()
+	kept := a.userDirection[:0]
+	for _, receipt := range a.userDirection {
+		if !now.Before(receipt.expiresAt) {
+			// An expired receipt is not evidence and is not kept.
+			continue
+		}
+		kept = append(kept, receipt)
+	}
+	a.userDirection = kept
+	for _, receipt := range a.userDirection {
+		if receipt.covers(binding, action, target, requestID) {
+			return &marshalUserDirectionChallenge{Receipt: receipt.id, ExpiresAt: receipt.expiresAt}
+		}
+	}
+	id, err := newMarshalUserDirectionID()
+	if err != nil {
+		// Nothing can be presented that this bridge would recognize, so the
+		// operation is refused rather than admitted unverified.
+		return fmt.Errorf("%w: no receipt could be minted", errFactoryDenied)
+	}
+	receipt := marshalUserDirectionReceipt{
+		id:         id,
+		expiresAt:  now.Add(marshalUserDirectionTTL),
+		instanceID: binding.InstanceID,
+		projectID:  binding.ProjectID,
+		sessionID:  binding.SessionID,
+		workerID:   binding.WorkerID,
+		action:     action,
+		target:     target,
+		requestID:  requestID,
+	}
+	a.userDirection = append(a.userDirection, receipt)
+	return &marshalUserDirectionChallenge{Receipt: receipt.id, ExpiresAt: receipt.expiresAt}
+}
+
+// pendingUserDirections reports how many unspent receipts this bridge holds. It
+// is the observable a test asserts "one confirmation, one receipt" with.
+func (a *factoryMCPAuthorizer) pendingUserDirections() int {
+	if a == nil {
+		return 0
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.userDirection)
+}
+
+// timestamp is the clock the receipt ledger reads. A zero authorizer built in a
+// test falls back to the wall clock rather than expiring everything at once.
+func (a *factoryMCPAuthorizer) timestamp() time.Time {
+	if a.now != nil {
+		return a.now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+// newMarshalUserDirectionID mints one opaque receipt id. It is random and
+// carries no identity: reading one tells a caller nothing about the operation it
+// covers.
+func newMarshalUserDirectionID() (string, error) {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf[:]), nil
+}
+
+// marshalUserDirectionReceiptID is the receipt presented with this request. It
+// is read from the header the trusted transport sets and from nowhere else: no
+// tool argument carries a receipt, so no tool argument can supply one.
+func marshalUserDirectionReceiptID(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.Header.Get(MarshalUserDirectionHeader))
 }
 
 // putMarshalAccessDefault stores one project's built-in defaults under the

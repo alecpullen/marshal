@@ -1981,7 +1981,18 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	// working with a status that says why (decision 8). It runs after everything
 	// else is built so it cannot fail startup, and it registers no tool — the
 	// MCP transport that presents the credential owns that.
-	rt.MarshalStatus = enrollMarshalStudio(homeDir, workingDir, sessionID).Status
+	enrollment := enrollMarshalStudio(homeDir, workingDir, sessionID)
+	rt.MarshalStatus = enrollment.Status
+	// The session records the verified association, so the user-direction
+	// receipts its trusted confirmations produce bind to this generation and
+	// project — and so a session that never enrolled holds none at all.
+	if state != nil {
+		state.RecordMarshalSession(session.MarshalSession{
+			InstanceID: enrollment.Status.InstanceID,
+			Generation: enrollment.Status.Generation,
+			ProjectID:  enrollment.Status.ProjectID,
+		})
+	}
 	started = true
 	return rt, nil
 }

@@ -52,6 +52,14 @@ const (
 type ApprovalAnswer struct {
 	Decision ApprovalDecision `json:"decision"`
 	Edited   string           `json:"edited,omitempty"` // a once answer's edited command or arguments
+	// UserDirection carries the opaque user-direction receipt a trusted
+	// confirmation returns: the id the bridge's user_direction_required
+	// challenge named, for exactly the operation the person confirmed. It is
+	// written by the surface that showed that challenge and read by the session
+	// that holds the confirmation; it is never derived from model content. It is
+	// empty on every answer that confirms nothing, so a legacy answer's bytes
+	// are unchanged.
+	UserDirection string `json:"userDirection,omitempty"`
 }
 
 // QuestionRequest is the agent's clarifying questions, asked together.

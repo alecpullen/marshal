@@ -21,6 +21,10 @@ const (
 	reasonMalformed  finalizeReason = "malformed"
 	reasonEmpty      finalizeReason = "empty"
 	reasonUnverified finalizeReason = "unverified"
+	// reasonInterrupted marks output salvaged from a stream that ended before
+	// the provider's protocol announced completion (AUD-08). It is real model
+	// output the user paid for, but it is not an answer: the turn fails.
+	reasonInterrupted finalizeReason = "interrupted"
 	// reasonRepeatFailure marks a completion salvaged because an identical
 	// tool call kept failing (see failedRepeatStall): the model was looping
 	// on the same futile call rather than a repeated successful one.

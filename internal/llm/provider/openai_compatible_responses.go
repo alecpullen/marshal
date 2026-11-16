@@ -507,6 +507,7 @@ func streamResponsesEvents(body io.ReadCloser, capture *wireCapture, events chan
 	var incompleteReason string
 	var hasContent bool
 	var reasoningItems []schema.ReasoningItem
+	var completion streamCompletion
 
 	for dec.Next() {
 		data := strings.TrimSpace(dec.Event().Data)
@@ -578,6 +579,10 @@ func streamResponsesEvents(body io.ReadCloser, capture *wireCapture, events chan
 				}
 			}
 		case "response.completed", "response.incomplete":
+			// Both are explicit protocol terminal events. An incomplete
+			// response is a *successful* completion carrying finish reason
+			// "length" — not an interruption.
+			completion.mark()
 			if ev.Response != nil {
 				usage = responsesUsageFrom(ev.Response.Usage)
 				finishReason = responsesFinishReason(ev.Response)
@@ -642,6 +647,14 @@ func streamResponsesEvents(body io.ReadCloser, capture *wireCapture, events chan
 			msg += ": " + incompleteReason
 		}
 		events <- schema.ChatEvent{Type: schema.ChatEventError, Err: errors.New(msg)}
+		return
+	}
+	// A stream that ended without response.completed / response.incomplete
+	// was cut short. Report it as interrupted, with no tool calls: the
+	// buffers above may hold partial function-call arguments, and repairing
+	// them here would present a truncated stream as a complete one.
+	if !completion.seen {
+		events <- completion.interrupted("response.completed or response.incomplete", usage)
 		return
 	}
 	// A gateway whose completed event omits the output array would leave

@@ -30,6 +30,8 @@ func ChatText(ctx context.Context, p Provider, req schema.ChatRequest) (string, 
 			b.WriteString(ev.Delta)
 		case schema.ChatEventError:
 			return b.String(), ev.Err
+		case schema.ChatEventInterrupted:
+			return b.String(), ev.Err
 		case schema.ChatEventDone:
 			done = true
 		}

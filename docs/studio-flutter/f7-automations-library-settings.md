@@ -260,12 +260,16 @@ predates this branch.
 - **Fixture constructors.** Every section model has a `.fixture(rows)`
   constructor, so the gallery and the enforcement tests draw real sections
   with no bridge; a write on one throws rather than pretending.
-- **The places are not yet wired into Studio.** `AutomationsPlace` and
-  `LibraryPlace` are real screens, registered and held to §7/§9/§11, but
-  `Studio._content` still draws the planned place for both: wiring them
-  needs a per-host `BridgeClient` provider and the shell's `unsaved` guard
-  in the composition root, which is not in this plan's files. Their tabs
-  take the state the shell knows, so the wiring is one constructor each.
+- **The places are built but not yet reachable from the shell.**
+  `AutomationsPlace` and `LibraryPlace` are real screens, registered and
+  held to §7/§9/§11, and `Studio` now owns the one unsaved-edit guard the
+  shell consults, but `Studio._content` still draws the planned place for
+  both. Wiring them needs a per-host `BridgeClient` the composition root
+  does not have: `FleetStore` keeps `owner.client` private and `HostView`
+  deliberately omits it, so exposing one means changing
+  `app/lib/src/model/fleet_store.dart`, which is outside this plan's files.
+  Their tabs take the state the shell knows, so the wiring is one
+  constructor each once that provider exists.
 - **Tests drive a scripted in-process `Transport`** for widget tests: the
   widget binding answers every real HTTP request with 400, so `FakeBridge`
   stays where it works (model-level `test()` cases) and a widget test

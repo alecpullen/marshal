@@ -88,6 +88,10 @@ class PullView {
   /// The project the pull request belongs to: where its settings live.
   String get projectRoot => record.projectRoot;
 
+  /// The commit the evidence above was read against: the head a review head
+  /// names, and the one a confirmation binds to.
+  String get headSha => record.headSHA;
+
   /// When the record last changed, which is what a card's age counts from.
   DateTime get updatedAt =>
       DateTime.fromMillisecondsSinceEpoch(record.updatedAt, isUtc: true);
@@ -113,6 +117,17 @@ class PullView {
   /// Whether a factory item opened this one: a card with no thread left draws
   /// it as a work item rather than as an agent's.
   bool get fromFactoryItem => record.origin == PullOrigin.pullOriginFactory;
+
+  /// The engineer's narrated report, when the record carries one. Only the
+  /// detail route fills it, and only an origin with a report has one.
+  String? get report {
+    final text = record.report ?? '';
+    return text.trim().isEmpty ? null : text;
+  }
+
+  /// Where the pull request lands, for a confirmation that has to name both
+  /// branches: "branch → base".
+  String get destination => '$branch → $base';
 
   PullView copyWith({bool? sending, String? error, bool clearError = false}) =>
       PullView(
@@ -238,6 +253,57 @@ class PullsModel extends ChangeNotifier {
     final host = _hostOfProject(projectRoot);
     if (host == null) return;
     await client(host).setProjectAutoFix(projectRoot, on);
+  }
+
+  /// Sends [text] to the agent that shipped [pull] (F5 decision 13): a turn in
+  /// flight takes it as steering, and an idle agent as the next thing it is
+  /// asked to do.
+  ///
+  /// The request types are built here rather than in the screen, because a
+  /// screen under `ui/` never names a wire type (F1's boundary).
+  Future<void> sendBack(PullView pull, {required String text}) async {
+    final thread = pull.thread;
+    final host = _hostOf(pull.id);
+    if (thread == null || host == null) return;
+    final words = text.trim();
+    if (words.isEmpty) return;
+    final bridge = client(host);
+    if (thread.status == ThreadStatus.running) {
+      await bridge.steer(thread.id, SteerRequest(text: words));
+    } else {
+      await bridge.prompt(thread.id, PromptRequest(text: words));
+    }
+  }
+
+  /// Merges [pull] (F5 decision 13): the agent's own merge route when an
+  /// agent shipped it, the factory's `merge_and_complete` command when a work
+  /// item did.
+  ///
+  /// It is the only thing behind the Merge button; the confirmation that names
+  /// the pull request and its base branch is the screen's, because a merge
+  /// cannot be undone.
+  Future<void> merge(PullView pull) async {
+    final host = _hostOf(pull.id);
+    if (host == null) {
+      throw StateError('no host holds ${pull.id}');
+    }
+    final bridge = client(host);
+    final item = pull.record.factoryItem ?? '';
+    if (pull.fromFactoryItem && item.isNotEmpty) {
+      await bridge.mergeFactoryItem(
+        item,
+        repoID: pull.repo,
+        number: pull.number,
+        headSHA: pull.record.headSHA,
+        baseRef: pull.base,
+      );
+      return;
+    }
+    final agent = (pull.record.agentID ?? pull.thread?.id) ?? '';
+    if (agent.isEmpty) {
+      throw StateError('this pull request was not shipped by an agent');
+    }
+    await bridge.mergeAgent(agent);
   }
 
   /// Reads one record again, so a stop or a refused dispatch shows what the

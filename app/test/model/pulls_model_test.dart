@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/contract.g.dart';
 import 'package:marshal_app/src/model/pulls_model.dart';
 import 'package:marshal_app/src/model/pulls_store.dart';
+import 'package:marshal_app/src/model/thread_ref.dart';
 
 import '../support/fake_bridge.dart';
 import 'support.dart';
@@ -352,5 +353,54 @@ void main() {
       isTrue,
       reason: 'the other automations survive the write',
     );
+  });
+
+  test('send back reaches the agent that shipped it', () async {
+    final (fixture, _, model) = await modelFor([record()]);
+    fixture.bridges['local']!
+      ..reply('POST', '/api/sessions/a-1/prompt', const FakeReply(200))
+      ..reply('POST', '/api/sessions/a-1/steer', const FakeReply(200));
+    final pull = model.views.single;
+    expect(pull.thread, isNotNull, reason: 'the fleet still lists the agent');
+
+    // An agent that has finished its turn is asked again.
+    await model.sendBack(pull, text: 'pin the clock in the fixture');
+    final first = fixture
+        .requests('local')
+        .lastWhere((r) => r.method == 'POST');
+    expect(first.uri, contains('/prompt'));
+    expect(jsonDecode(first.body), {'text': 'pin the clock in the fixture'});
+
+    // A turn in flight takes it as steering instead.
+    fixture.serve('local', '/api/agents', [
+      agent(id: 'a-1', status: AgentState.agentRunning).toJson(),
+    ]);
+    await fixture.refresh();
+    await eventually(
+      () => model.views.single.thread?.status == ThreadStatus.running,
+      reason: 'the agent is running',
+    );
+    await model.sendBack(model.views.single, text: 'and nothing else');
+    final second = fixture
+        .requests('local')
+        .lastWhere((r) => r.method == 'POST');
+    expect(second.uri, contains('/steer'));
+    expect(jsonDecode(second.body), {'text': 'and nothing else'});
+  });
+
+  test('a merge posts the agent route, or the factory command', () async {
+    final (fixture, _, model) = await modelFor([record()]);
+    fixture.bridges['local']!.reply(
+      'POST',
+      '/api/agents/a-1/merge',
+      const FakeReply(200, body: '{"merged":true}'),
+    );
+
+    await model.merge(model.views.single);
+
+    final merged = fixture
+        .requests('local')
+        .lastWhere((r) => r.method == 'POST');
+    expect(merged.uri, contains('/api/agents/a-1/merge'));
   });
 }

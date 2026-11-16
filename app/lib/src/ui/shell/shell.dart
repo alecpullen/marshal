@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import '../../model/age.dart';
 import '../../model/composer_model.dart';
 import '../../model/new_work_model.dart';
@@ -15,6 +17,7 @@ import '../inbox/inbox.dart' show Inbox;
 import '../kit/kit.dart';
 import '../overview/overview.dart' show Overview;
 import '../pulls/fix_control.dart';
+import '../pulls/merge_control.dart';
 import '../pulls/pulls_place.dart';
 import '../sections/unsaved_guard.dart';
 import '../new_work/new_work_dialog.dart';
@@ -400,6 +403,7 @@ class _StudioState extends State<Studio> {
         overview: buildOverview(widget.store, widget.inbox),
         now: widget.store.now,
         hosts: widget.store.hosts,
+        pulls: widget.pulls?.views ?? const [],
         onSelect: navigation.go,
         onAnswer: widget.inbox.answer,
         onRetry: _reread,
@@ -408,6 +412,7 @@ class _StudioState extends State<Studio> {
     if (place.kind == PlaceKind.inbox) {
       return Inbox(
         asks: widget.inbox.asks,
+        pulls: widget.pulls?.views ?? const [],
         now: widget.store.now,
         onSelect: navigation.go,
         onAnswer: widget.inbox.answer,
@@ -454,6 +459,7 @@ class _StudioState extends State<Studio> {
           ],
           onAnswer: widget.inbox.answer,
           now: widget.store.now,
+          pulls: widget.pulls,
         );
       }
       return plannedPlace(place, nav);
@@ -496,6 +502,7 @@ class _ThreadPlace extends StatefulWidget {
     this.asks = const [],
     this.onAnswer,
     this.now,
+    this.pulls,
   });
 
   final model.ThreadRef thread;
@@ -510,6 +517,10 @@ class _ThreadPlace extends StatefulWidget {
   final List<inbox.Ask> asks;
   final void Function(inbox.Ask ask, inbox.AskAction action)? onAnswer;
   final DateTime? now;
+
+  /// The pull requests this thread shipped: the review head or the failing
+  /// card at the top of its conversation (F5 decision 13).
+  final PullsModel? pulls;
 
   @override
   State<_ThreadPlace> createState() => _ThreadPlaceState();
@@ -566,11 +577,79 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
       asks: widget.asks,
       onAnswer: widget.onAnswer,
       now: widget.now,
+      pull: _pull,
+      pullActions: _pullActions(context),
+      onMerge: _mergeFor(context),
+      onSendBack: _pull == null || widget.pulls == null
+          ? null
+          : () => _sendBack(context),
       onNewWork: widget.newWorkFor == null ? null : () => _openNewWork(context),
       composer: composer == null
           ? null
           : ThreadComposer(model: composer, view: _view),
     );
+  }
+
+  /// The pull request this thread shipped, when it shipped one: the newest, so
+  /// a reopened pull request is the one at the head.
+  PullView? get _pull => widget.pulls?.forThread(widget.thread).firstOrNull;
+
+  /// The failing card's actions: the one click, the caret and the rest.
+  PrActions? _pullActions(BuildContext context) {
+    final pull = _pull;
+    final pulls = widget.pulls;
+    if (pull == null || pulls == null) return null;
+    return pullCardActions(context, pull: pull, model: pulls);
+  }
+
+  /// Merges the pull request, after the confirmation that names it.
+  VoidCallback? _mergeFor(BuildContext context) {
+    final pull = _pull;
+    final pulls = widget.pulls;
+    if (pull == null || pulls == null) return null;
+    return () => unawaited(confirmMerge(context, pull: pull, model: pulls));
+  }
+
+  /// Sends the pull request back to this thread's own agent (decision 13).
+  /// The person's words reach a turn in flight as steering, and an idle agent
+  /// as the next thing it is asked to do.
+  Future<void> _sendBack(BuildContext context) async {
+    final pulls = widget.pulls;
+    if (pulls == null) return;
+    final e = Ember.of(context);
+    final controller = TextEditingController();
+    final words = await Sheet.show<String>(
+      context,
+      Sheet(
+        title: 'Send back to the agent',
+        actions: [
+          Btn.primary(
+            'Send it',
+            onTap: () => Navigator.maybePop(context, controller.text.trim()),
+          ),
+        ],
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Field(
+              label: 'What should change?',
+              controller: controller,
+              hint: 'Pin the clock in the fixture rather than widening it',
+            ),
+            const SizedBox(height: Space.s8),
+            Text(
+              'The agent that shipped this pull request reads it in this '
+              'thread.',
+              style: e.small.tint(e.muted),
+            ),
+          ],
+        ),
+      ),
+    );
+    final text = words?.trim() ?? '';
+    controller.dispose();
+    if (text.isEmpty) return;
+    await pulls.sendBack(_pull!, text: text);
   }
 }
 

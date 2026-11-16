@@ -22,11 +22,20 @@ import 'thread_ref.dart';
 class PullsStore extends ChangeNotifier {
   PullsStore(this._hosts, this._fleet) {
     _hosts.addListener(_hostsChanged);
+    // The fleet's agents are what a record's thread is read from, so a view
+    // that says "the agent is running" must follow the fleet as well as the
+    // pull index.
+    _fleet.addListener(_fleetChanged);
     _hostsChanged();
   }
 
   final HostRegistry _hosts;
   final FleetStore _fleet;
+
+  void _fleetChanged() {
+    if (_disposed) return;
+    notifyListeners();
+  }
 
   final _pulls = <String, _HostPulls>{};
   final _wiring = <String, _StreamWiring>{};
@@ -236,6 +245,7 @@ class PullsStore extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _hosts.removeListener(_hostsChanged);
+    _fleet.removeListener(_fleetChanged);
     for (final wiring in _wiring.values) {
       wiring.dispose();
     }

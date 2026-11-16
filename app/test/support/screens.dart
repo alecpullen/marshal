@@ -315,6 +315,19 @@ Widget _inbox({StateKind? state}) => Inbox(
     ),
   ],
   now: shellNow,
+  pulls: [
+    _pull(number: 131, title: 'Quiet capture mode', group: PullGroup.ready),
+    _pull(
+      number: 132,
+      title: 'Fix flaky calendar test',
+      group: PullGroup.failing,
+      checkSummary: '1 failing: unit',
+      checks: const [
+        PullCheckView('build', PullCheckState.passed),
+        PullCheckView('unit', PullCheckState.failed),
+      ],
+    ),
+  ],
   state: state,
   onRetry: () {},
   onSelect: (_) {},
@@ -325,6 +338,19 @@ Widget _overview({StateKind? state}) => Overview(
   overview: _overviewModel(),
   now: shellNow,
   hosts: shellHosts,
+  pulls: [
+    _pull(number: 131, title: 'Quiet capture mode', group: PullGroup.ready),
+    _pull(
+      number: 132,
+      title: 'Fix flaky calendar test',
+      group: PullGroup.failing,
+      checkSummary: '1 failing: unit',
+      checks: const [
+        PullCheckView('build', PullCheckState.passed),
+        PullCheckView('unit', PullCheckState.failed),
+      ],
+    ),
+  ],
   automations: [
     TrippedWatch(
       name: 'the gate',
@@ -596,6 +622,7 @@ PullView _pull({
     PullCheckView('unit', PullCheckState.passed),
   ],
   String? failureTail,
+  String? report,
   bool draft = false,
   bool sending = false,
   String? error,
@@ -627,6 +654,7 @@ PullView _pull({
         PullCheck(name: check.name, state: _wireStateOf(check.state)),
     ],
     reviews: '2 reviews passed',
+    report: report,
     observedAt: shellNow.millisecondsSinceEpoch,
     updatedAt: shellNow.millisecondsSinceEpoch - 26 * 60 * 1000,
   ),
@@ -856,6 +884,14 @@ final screens = <ScreenCase>[
     },
   ),
   ScreenCase(
+    name: 'thread with a review head',
+    ready: () => _threadScreen(pull: _threadPull()),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _threadScreen(state: kind, pull: _threadPull()),
+    },
+  ),
+  ScreenCase(
     name: 'inspector preview',
     ready: () =>
         PreviewTab(model: PreviewModel.seeded(ports: const [5173, 8080])),
@@ -1082,11 +1118,25 @@ StackSnapshot _threadSnapshot() => StackSnapshot(
   ],
 );
 
-Widget _threadScreen({StateKind? state, InspectorState? inspector}) =>
-    ThreadScreen(
-      thread: _threadRef,
-      store: StackStore.seeded(_threadSnapshot()),
-      view: ThreadViewState(),
-      inspector: inspector,
-      state: state,
-    );
+/// The pull request the review-head case draws: a ready one from the thread
+/// the case shows.
+PullView _threadPull() => _pull(
+  number: 131,
+  title: 'Quiet capture mode',
+  group: PullGroup.ready,
+  checkSummary: '2 of 2 checks passed',
+  report: 'The clock crossed midnight in the test, so it is pinned now.',
+);
+
+Widget _threadScreen({
+  StateKind? state,
+  InspectorState? inspector,
+  PullView? pull,
+}) => ThreadScreen(
+  thread: _threadRef,
+  store: StackStore.seeded(_threadSnapshot()),
+  view: ThreadViewState(),
+  inspector: inspector,
+  pull: pull,
+  state: state,
+);

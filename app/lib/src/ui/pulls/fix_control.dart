@@ -2,6 +2,7 @@ import 'dart:async';
 
 import '../../model/pulls_model.dart';
 import '../kit/kit.dart';
+import 'merge_control.dart';
 
 /// The fix control behind a failing pull request's card (F5 decision 12): one
 /// primary action that posts the dispatch with no further input, and a caret
@@ -22,7 +23,11 @@ PrActions pullCardActions(
   VoidCallback? openSource,
 }) => PrActions(
   review: review,
-  merge: merge,
+  // A merge always confirms first, naming the pull request and its base
+  // branch, because it cannot be undone (§9). A caller that passes its own
+  // still confirms; this is only the default.
+  merge:
+      merge ?? () => unawaited(confirmMerge(context, pull: pull, model: model)),
   openOnForge: openOnForge,
   fullLog: fullLog,
   watch: watch,

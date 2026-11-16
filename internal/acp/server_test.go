@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1455,4 +1456,82 @@ func TestWireErrorStillOpaqueForKnownCodes(t *testing.T) {
 func rawMessagePtr(s string) *json.RawMessage {
 	r := json.RawMessage(s)
 	return &r
+}
+
+// TestAllowRefusesBeforeTheHandler pins decision 2's gate: a method the
+// allowlist refuses is answered with the sentence, its handler never runs, and
+// a refused notification is dropped without a write.
+func TestAllowRefusesBeforeTheHandler(t *testing.T) {
+	const method = "config/set_value"
+	var calls atomic.Int32
+
+	in := strings.NewReader(
+		`{"jsonrpc":"2.0","id":1,"method":"config/set_value","params":{}}` + "\n" +
+			`{"jsonrpc":"2.0","method":"config/set_value","params":{}}` + "\n")
+	out := &lockedBuffer{}
+	srv := NewServer(in, out)
+	srv.Allow = func(m string) bool { return containerViewerAllowed[m] }
+	srv.Handle(method, func(ctx context.Context, params json.RawMessage) (any, error) {
+		calls.Add(1)
+		return struct{}{}, nil
+	})
+	if err := srv.Serve(context.Background()); err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("the refused handler ran %d times, want 0", got)
+	}
+
+	// The request's answer is the only frame: the refused notification wrote
+	// nothing at all.
+	frames := sentFrames(out)
+	if len(frames) != 1 {
+		t.Fatalf("the peer received %d frames, want just the request's answer: %s", len(frames), out.String())
+	}
+	if id, _ := frames[0]["id"].(float64); id != 1 {
+		t.Fatalf("the answer's id = %v, want 1", frames[0]["id"])
+	}
+	respErr, ok := frames[0]["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("the answer carries no error: %s", out.String())
+	}
+	message, _ := respErr["message"].(string)
+	if want := "config/set_value is not available for a containerized agent"; !strings.Contains(message, want) {
+		t.Fatalf("the refusal = %q, want it to carry %q", message, want)
+	}
+}
+
+// TestAllowLetsListedMethodsThrough pins the other side of decision 2's gate: a
+// method on the allowlist reaches its handler and is answered.
+func TestAllowLetsListedMethodsThrough(t *testing.T) {
+	const method = "session/status"
+	var calls atomic.Int32
+
+	in := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"session/status","params":{"sessionId":"s1"}}` + "\n")
+	out := &lockedBuffer{}
+	srv := NewServer(in, out)
+	srv.Allow = func(m string) bool { return containerViewerAllowed[m] }
+	srv.Handle(method, func(ctx context.Context, params json.RawMessage) (any, error) {
+		calls.Add(1)
+		return map[string]any{"sessionId": "s1"}, nil
+	})
+	if err := srv.Serve(context.Background()); err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("the listed handler ran %d times, want 1", got)
+	}
+	frames := sentFrames(out)
+	if len(frames) != 1 {
+		t.Fatalf("the peer received %d frames, want one answer: %s", len(frames), out.String())
+	}
+	if respErr, ok := frames[0]["error"]; ok {
+		t.Fatalf("a listed method was refused: %v", respErr)
+	}
+	result, ok := frames[0]["result"].(map[string]any)
+	if !ok || result["sessionId"] != "s1" {
+		t.Fatalf("the answer's result = %v, want the handler's", frames[0]["result"])
+	}
 }

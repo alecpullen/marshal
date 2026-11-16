@@ -43,6 +43,116 @@ func TestContainerRunArgsCarryIsolationSettings(t *testing.T) {
 	}
 }
 
+// TestTheAgentsRunVectorNamesTheViewerSocket: the agent learns where to serve
+// viewers from its environment, at the viewer socket inside the container's
+// socket directory, ahead of the image (decision 3).
+func TestTheAgentsRunVectorNamesTheViewerSocket(t *testing.T) {
+	tr := newContainerTransport(ContainerConfig{
+		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "n",
+		SocketDir:   "/srv/sock/n",
+		StateVolume: "marshal-state", WorkSubpath: "work/n", SocketSubpath: "sockets/n",
+		// A spawn record may set either env map: neither may move the viewer
+		// socket, so the run vector's own assignment is written last and wins.
+		Env:      map[string]string{containerViewersEnv: "unix:///marshal/data/env.sock"},
+		ExtraEnv: map[string]string{containerViewersEnv: "unix:///marshal/data/extra.sock"},
+	})
+	args := tr.buildRunArgs()
+
+	value := "unix://" + containerSocketDir + "/" + containerViewersName
+	want := containerViewersEnv + "=" + value
+	// Neither configured env map moved the socket: the only assignment naming
+	// the variable is the vector's own.
+	for _, a := range args {
+		if strings.HasPrefix(a, containerViewersEnv+"=") && a != want {
+			t.Fatalf("run args carry %q, want only %q", a, want)
+		}
+	}
+	at, image := -1, -1
+	for i, a := range args {
+		if a == want {
+			at = i
+		}
+		if a == "img" {
+			image = i
+		}
+	}
+	if at < 0 {
+		t.Fatalf("run args carry no %q\ngot: %q", want, args)
+	}
+	if at == 0 || args[at-1] != "-e" {
+		t.Fatalf("%q is not an environment assignment in %q", want, args)
+	}
+	if image < 0 || at > image {
+		t.Fatalf("%q is not ahead of the image in %q", want, args)
+	}
+	// The address is the viewer socket in the container's socket directory,
+	// the same directory the control socket is served from.
+	if got := strings.TrimPrefix(value, "unix://"); !strings.HasPrefix(got, containerSocketDir+"/") {
+		t.Fatalf("%q is not inside %s", value, containerSocketDir)
+	}
+	if !strings.HasSuffix(value, "/"+containerViewersName) {
+		t.Fatalf("%q does not name %s", value, containerViewersName)
+	}
+}
+
+// TestTheSetupVectorHasNoViewerSocket: the one-shot setup container serves no
+// viewers, so its vector names neither the variable nor the socket.
+func TestTheSetupVectorHasNoViewerSocket(t *testing.T) {
+	tr := newContainerTransport(ContainerConfig{
+		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "marshal-agent-n",
+		SocketDir:   "/srv/sock/n",
+		StateVolume: "marshal-state", WorkSubpath: "work/n", SocketSubpath: "sockets/n",
+	})
+	joined := strings.Join(tr.buildSetupArgs("make test"), " ")
+	if strings.Contains(joined, containerViewersEnv) {
+		t.Fatalf("the setup vector names %s: %s", containerViewersEnv, joined)
+	}
+	if strings.Contains(joined, containerViewersName) {
+		t.Fatalf("the setup vector names %s: %s", containerViewersName, joined)
+	}
+}
+
+// TestStartClearsAStaleViewerSocket: a file left at either socket by a previous
+// generation is gone before the container runs (decision 6).
+func TestStartClearsAStaleViewerSocket(t *testing.T) {
+	tr := newContainerTransport(ContainerConfig{
+		Runtime: "/usr/bin/docker", Image: "img", Name: "marshal-agent-stale",
+		WorkspaceDir: "/w", SocketDir: t.TempDir(),
+	})
+	tr.dialTimeout = 50 * time.Millisecond // no socket will ever appear
+	sockets := []string{tr.socketPath(), tr.viewerSocketPath()}
+	for _, f := range sockets {
+		if err := os.WriteFile(f, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var ran bool
+	tr.run = func(name string, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "run" {
+			ran = true
+		}
+		for _, f := range sockets {
+			if _, err := os.Stat(f); err == nil {
+				t.Errorf("%s was still there when the container ran", f)
+			}
+		}
+		return nil, nil
+	}
+
+	if _, _, _, err := tr.start(); err == nil {
+		t.Fatal("start succeeded with no agent listening, want error")
+	}
+	if !ran {
+		t.Fatal("start never ran the container")
+	}
+	for _, f := range sockets {
+		if _, err := os.Stat(f); !os.IsNotExist(err) {
+			t.Fatalf("the stale socket %s survived the start: %v", f, err)
+		}
+	}
+}
+
 func TestBuildRunArgsUsesBindMountForLocalPath(t *testing.T) {
 	tr := newContainerTransport(ContainerConfig{
 		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "n",

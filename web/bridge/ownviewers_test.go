@@ -86,9 +86,11 @@ func TestAnOwnChildStartsWithAViewerSocket(t *testing.T) {
 	}
 }
 
-// TestAContainerChildHasNoViewerSocket: a containerized child's arguments are
-// unchanged and the runtime records no viewer socket (decision 1).
-func TestAContainerChildHasNoViewerSocket(t *testing.T) {
+// TestAContainerChildNamesItsViewerSocket: a containerized child's arguments are
+// unchanged, and the child names the host side of the socket the container
+// serves — viewers.sock in the agent's socket directory, beside agent.sock —
+// which the runtime records (decision 6).
+func TestAContainerChildNamesItsViewerSocket(t *testing.T) {
 	f := ownChildFleet(t)
 	f.runner = func(string, ...string) ([]byte, error) { return nil, nil }
 	f.probe = func() (path, name string, ok bool) {
@@ -106,19 +108,29 @@ func TestAContainerChildHasNoViewerSocket(t *testing.T) {
 	if len(child.Args) != 0 {
 		t.Fatalf("Args = %q, want none for a container's child", child.Args)
 	}
+	// The socket sits in the agent's own socket directory, the directory the
+	// control socket is mounted from, under the viewer name.
+	socketDir := socketDirFor(f.stateDir, a.ID)
+	want := filepath.Join(socketDir, containerViewersName)
+	if child.ViewerSocket != want {
+		t.Fatalf("ViewerSocket = %q, want %q", child.ViewerSocket, want)
+	}
+	if filepath.Base(child.ViewerSocket) != "viewers.sock" {
+		t.Fatalf("ViewerSocket = %q, want a viewers.sock name", child.ViewerSocket)
+	}
 
 	// The transport is a fake so the test never starts a container; the
 	// containerized child is what the runtime records.
 	tr := newFakeTransport()
 	f.newRuntime = func(Agent) (*Child, error) {
-		return &Child{Transport: tr, Containerized: true}, nil
+		return &Child{Transport: tr, Containerized: true, ViewerSocket: child.ViewerSocket}, nil
 	}
 	rt, err := f.startRuntime(ctlContext(t), a)
 	if err != nil {
 		t.Fatalf("startRuntime: %v", err)
 	}
-	if rt.viewerSocket != "" {
-		t.Fatalf("viewerSocket = %q, want none for a container's child", rt.viewerSocket)
+	if rt.viewerSocket != want {
+		t.Fatalf("viewerSocket = %q, want the container's %q", rt.viewerSocket, want)
 	}
 	if _, err := os.Stat(filepath.Dir(agentViewerSocketPath(f.stateDir, a.ID))); !os.IsNotExist(err) {
 		t.Fatalf("a viewer socket directory was made for a container agent: %v", err)

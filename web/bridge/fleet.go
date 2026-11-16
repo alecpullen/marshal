@@ -78,7 +78,7 @@ type agentRuntime struct {
 	reg   *Registry
 	log   *EventLog
 
-	viewerSocket string // the own child's viewer socket; "" for a container or a project child
+	viewerSocket string // the child's viewer socket: an own child's, or a container's host-side one; "" for a project child
 
 	// sessionID is the ACP session inside this agent, assigned by the
 	// agent itself once session/new returns. Empty until then.
@@ -490,7 +490,11 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		if err != nil {
 			return nil, err
 		}
-		return &Child{Transport: newContainerTransport(cfg), Containerized: true}, nil
+		// The container is told where to serve viewers through its
+		// environment (buildRunArgs, decision 3), and the host side of that
+		// socket sits beside the control socket's (decision 6).
+		tr := newContainerTransport(cfg)
+		return &Child{Transport: tr, Containerized: true, ViewerSocket: tr.viewerSocketPath()}, nil
 	}
 	return f
 }
@@ -963,9 +967,13 @@ func (f *Fleet) startRuntime(ctx context.Context, a Agent) (*agentRuntime, error
 	// A host process's child serves viewers on a socket of its own: the bridge
 	// clears a stale one before the child starts and keeps the path so
 	// releaseAgent can remove it with the child (decision 1). A container's
-	// child has none — its viewers are the container's business — and a
-	// project child carries its own.
-	if !child.Containerized && f.stateDir != "" {
+	// child names the host side of the socket the container serves (decision
+	// 6): nothing is removed here, because the transport's start clears it
+	// before the container runs and the agent removes its own again when it
+	// binds. A project child carries its own.
+	if child.Containerized {
+		rt.viewerSocket = child.ViewerSocket
+	} else if f.stateDir != "" {
 		rt.viewerSocket = agentViewerSocketPath(f.stateDir, a.ID)
 		if err := os.Remove(rt.viewerSocket); err != nil && !os.IsNotExist(err) {
 			slog.Default().Warn("webbridge: remove stale agent viewer socket failed",

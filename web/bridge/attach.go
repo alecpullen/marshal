@@ -244,31 +244,33 @@ func (s *Server) attachAgent(w http.ResponseWriter, r *http.Request, id string) 
 	// child uses that child's socket, registry, linger rearm and root; an
 	// agent whose runtime records a viewer socket of its own is dialled there
 	// and counted on its own registry, with no linger to rearm (decision 2).
+	// A container's agent is dialled on its host-side socket like an own
+	// child, and its relay carries the methods a container's viewer may call
+	// (decision 6).
 	var socket string
 	end := relayEnd{}
+	containerized := false
+	versionWarning := false
 	if pc != nil {
 		socket = pc.socket
 		end = relayEnd{reg: pc.reg, linger: func() { s.fleet.rearmLinger(pc) }, root: pc.root}
 	} else {
-		// An agent with a child of its own serves its viewers on that child's
-		// socket, and its viewer is counted on the agent's own registry. A
-		// container's agent has no viewer socket: its viewers are the
-		// container's business, and the fleet's resume is the way back, not
-		// an attach.
 		s.fleet.mu.Lock()
 		rt := s.fleet.runtimes[id]
 		if rt != nil {
 			socket, end = rt.viewerSocket, relayEnd{reg: rt.reg, root: name}
+			containerized, versionWarning = rt.containerized, rt.versionWarning
+			if containerized {
+				end.allow = containerViewerSet()
+			}
 		}
 		s.fleet.mu.Unlock()
-		if socket == "" {
-			// A container's agent has no viewer socket by design; anything
-			// else without one is an agent whose runtime went away before the
-			// attach reached it, or a fleet with no state root to put one in.
-			if rt != nil && rt.containerized {
-				writeJSON(w, http.StatusConflict, map[string]string{"error": "agent " + name + " runs in a container, which has no viewer socket yet"})
-				return
-			}
+		// A container's agent is not refused here: it serves viewers on the
+		// host side of its socket, and an absent one is a dial that fails
+		// (decision 6). Anything else without a socket is an agent whose
+		// runtime went away before the attach reached it, or a fleet with no
+		// state root to put one in.
+		if socket == "" && !containerized {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "agent " + name + " has no viewer socket yet"})
 			return
 		}
@@ -286,16 +288,25 @@ func (s *Server) attachAgent(w http.ResponseWriter, r *http.Request, id string) 
 			end.linger()
 		}
 	}
-	// A failed dial names what it could not reach.
+	// A failed dial names what it could not reach. A container's socket is on
+	// the host side of the boundary, and an image that predates the viewer
+	// socket serves none: the warning says so (decision 6).
 	dialled := "the agent's own child"
 	if pc != nil {
 		dialled = "the project child"
+	}
+	if containerized {
+		dialled = "the agent's container"
 	}
 
 	conn, err := net.Dial("unix", socket)
 	if err != nil {
 		rearm()
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "dial " + dialled + ": " + err.Error()})
+		sentence := "dial " + dialled + ": " + err.Error()
+		if containerized && versionWarning {
+			sentence += "; its image runs another marshal version, which may serve no viewer socket: rebuild it"
+		}
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": sentence})
 		return
 	}
 	hj, ok := w.(http.Hijacker)

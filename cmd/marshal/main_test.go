@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"marshal/internal/acp"
 	"marshal/internal/app/config"
 	"marshal/internal/credentials"
 	"marshal/internal/fleetprofile"
@@ -158,7 +159,6 @@ func TestACPViewersFlagRoutesToTheViewersRunner(t *testing.T) {
 	refused := [][]string{
 		{"acp", "--viewers", "tcp://127.0.0.1:1"},
 		{"acp", "--viewers"},
-		{"acp", "--viewers", "unix:///x/v.sock", "--listen", "unix:///y/a.sock"},
 		{"acp", "--viewers", "unix:///x/v.sock", "--viewers=unix:///y/w.sock"},
 	}
 	for _, args := range refused {
@@ -169,6 +169,218 @@ func TestACPViewersFlagRoutesToTheViewersRunner(t *testing.T) {
 		if gotPath != "" {
 			t.Errorf("%v: the viewers runner ran with %q, want a refusal first", args, gotPath)
 		}
+	}
+}
+
+// acpRouted records which runner the acp branch chose, and with what, so a
+// test can assert the dispatch without binding a socket or serving anything.
+type acpRouted struct {
+	stdio        int    // acpRunner (stdio) calls
+	listen       int    // acpListener calls
+	network      string // the listener's network
+	addr         string // the listener's address
+	viewers      int    // acpListenerWithViewers calls
+	viewerAt     string // the viewer socket either listener was given
+	standalone   int    // acpViewersRunner calls
+	standaloneAt string // the socket --viewers alone was given
+}
+
+// recordACPRouting replaces every runner the acp branch can reach with a
+// recorder, in the pattern of TestACPListenFlagRoutesToListener.
+func recordACPRouting(t *testing.T) *acpRouted {
+	t.Helper()
+	r := &acpRouted{}
+	origRunner, origListener, origListenerWithViewers, origViewers := acpRunner, acpListener, acpListenerWithViewers, acpViewersRunner
+	acpRunner = func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer) error {
+		r.stdio++
+		return nil
+	}
+	acpListener = func(ctx context.Context, network, addr string, stderr io.Writer) error {
+		r.listen++
+		r.network, r.addr = network, addr
+		return nil
+	}
+	acpListenerWithViewers = func(ctx context.Context, network, addr, viewers string, stderr io.Writer) error {
+		r.viewers++
+		r.network, r.addr, r.viewerAt = network, addr, viewers
+		return nil
+	}
+	acpViewersRunner = func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, path string) error {
+		r.standalone++
+		r.standaloneAt = path
+		return nil
+	}
+	t.Cleanup(func() {
+		acpRunner, acpListener, acpListenerWithViewers, acpViewersRunner = origRunner, origListener, origListenerWithViewers, origViewers
+	})
+	return r
+}
+
+// TestACPListenWithViewersRoutesToTheRestrictedListener pins F6's spelled-out
+// form: --listen with a viewer socket runs the restricted listener, whose
+// host socket and viewer socket both arrive intact in either flag spelling.
+func TestACPListenWithViewersRoutesToTheRestrictedListener(t *testing.T) {
+	for _, args := range [][]string{
+		{"acp", "--listen", "unix:///y/a.sock", "--viewers", "unix:///x/v.sock"},
+		{"acp", "--listen", "unix:///y/a.sock", "--viewers=unix:///x/v.sock"},
+		{"acp", "--listen=unix:///y/a.sock", "--viewers", "unix:///x/v.sock"},
+		{"acp", "--listen=unix:///y/a.sock", "--viewers=unix:///x/v.sock"},
+	} {
+		r := recordACPRouting(t)
+		if err := run(context.Background(), args, strings.NewReader(""), io.Discard, io.Discard); err != nil {
+			t.Fatalf("%v: run: %v", args, err)
+		}
+		if r.viewers != 1 {
+			t.Fatalf("%v: restricted listener calls = %d, want 1", args, r.viewers)
+		}
+		if r.network != "unix" || r.addr != "/y/a.sock" {
+			t.Errorf("%v: host socket = (%q, %q), want (unix, /y/a.sock)", args, r.network, r.addr)
+		}
+		if r.viewerAt != "/x/v.sock" {
+			t.Errorf("%v: viewer socket = %q, want /x/v.sock", args, r.viewerAt)
+		}
+		if r.listen != 0 || r.standalone != 0 || r.stdio != 0 {
+			t.Errorf("%v: other runners ran (listen %d, viewers %d, stdio %d)", args, r.listen, r.standalone, r.stdio)
+		}
+	}
+}
+
+// TestACPListenReadsTheViewersVariable pins decision 3: the bridge names the
+// container's viewer socket in the environment, which --listen reads when no
+// --viewers flag is given.
+func TestACPListenReadsTheViewersVariable(t *testing.T) {
+	t.Setenv(acp.ViewersEnv, "unix:///x/v.sock")
+	r := recordACPRouting(t)
+
+	if err := run(context.Background(), []string{"acp", "--listen", "unix:///y/a.sock"}, strings.NewReader(""), io.Discard, io.Discard); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if r.viewers != 1 {
+		t.Fatalf("restricted listener calls = %d, want 1", r.viewers)
+	}
+	if r.network != "unix" || r.addr != "/y/a.sock" {
+		t.Errorf("host socket = (%q, %q), want (unix, /y/a.sock)", r.network, r.addr)
+	}
+	if r.viewerAt != "/x/v.sock" {
+		t.Errorf("viewer socket = %q, want /x/v.sock", r.viewerAt)
+	}
+}
+
+// TestTheViewersVariableIsRemoved pins decision 3's second half: whatever mode
+// runs, --listen drops the variable from its own environment before any
+// runner starts, so nothing the agent spawns inherits it.
+func TestTheViewersVariableIsRemoved(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "stdio", args: []string{"acp"}},
+		{name: "listen", args: []string{"acp", "--listen", "unix:///y/a.sock"}},
+		{name: "viewers alone", args: []string{"acp", "--viewers", "unix:///x/v.sock"}},
+		{name: "listen with viewers", args: []string{"acp", "--listen", "unix:///y/a.sock", "--viewers", "unix:///x/v.sock"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(acp.ViewersEnv, "unix:///x/v.sock")
+			recordACPRouting(t)
+			if err := run(context.Background(), tc.args, strings.NewReader(""), io.Discard, io.Discard); err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if got := os.Getenv(acp.ViewersEnv); got != "" {
+				t.Fatalf("after %v, %s = %q, want it removed", tc.args, acp.ViewersEnv, got)
+			}
+		})
+	}
+}
+
+// TestTheViewersFlagBeatsTheVariable pins the precedence decision 3 states: an
+// explicit --viewers wins over what the bridge put in the environment.
+func TestTheViewersFlagBeatsTheVariable(t *testing.T) {
+	t.Setenv(acp.ViewersEnv, "unix:///env/v.sock")
+	r := recordACPRouting(t)
+
+	args := []string{"acp", "--listen", "unix:///y/a.sock", "--viewers", "unix:///flag/v.sock"}
+	if err := run(context.Background(), args, strings.NewReader(""), io.Discard, io.Discard); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if r.viewers != 1 {
+		t.Fatalf("restricted listener calls = %d, want 1", r.viewers)
+	}
+	if r.viewerAt != "/flag/v.sock" {
+		t.Errorf("viewer socket = %q, want the flag's /flag/v.sock", r.viewerAt)
+	}
+}
+
+// TestACPViewersAloneIgnoresTheVariable pins that --viewers alone, and stdio
+// with neither flag, never consult the environment: the variable belongs to
+// --listen.
+func TestACPViewersAloneIgnoresTheVariable(t *testing.T) {
+	t.Setenv(acp.ViewersEnv, "unix:///env/v.sock")
+
+	t.Run("viewers alone", func(t *testing.T) {
+		r := recordACPRouting(t)
+		args := []string{"acp", "--viewers", "unix:///flag/v.sock"}
+		if err := run(context.Background(), args, strings.NewReader(""), io.Discard, io.Discard); err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		if r.standalone != 1 || r.standaloneAt != "/flag/v.sock" {
+			t.Fatalf("viewers runner calls = %d with %q, want 1 with /flag/v.sock", r.standalone, r.standaloneAt)
+		}
+		if r.viewers != 0 || r.listen != 0 || r.stdio != 0 {
+			t.Errorf("other runners ran (listen %d, restricted %d, stdio %d)", r.listen, r.viewers, r.stdio)
+		}
+	})
+
+	t.Run("no viewers flag", func(t *testing.T) {
+		r := recordACPRouting(t)
+		if err := run(context.Background(), []string{"acp"}, strings.NewReader(""), io.Discard, io.Discard); err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		if r.stdio != 1 {
+			t.Fatalf("stdio calls = %d, want 1", r.stdio)
+		}
+		if r.viewers != 0 || r.listen != 0 || r.standalone != 0 {
+			t.Errorf("other runners ran (listen %d, restricted %d, viewers %d)", r.listen, r.viewers, r.standalone)
+		}
+	})
+}
+
+// TestACPListenWithATCPViewerIsRefused pins the unix-socket requirement for
+// the flag and for the variable's value alike: a viewer socket is a path on
+// the host either way, so --listen refuses it before any listener runs.
+func TestACPListenWithATCPViewerIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		env     string
+		wantErr string
+	}{
+		{
+			name:    "flag",
+			args:    []string{"acp", "--listen", "unix:///y/a.sock", "--viewers", "tcp://127.0.0.1:9"},
+			wantErr: "--viewers takes a unix socket",
+		},
+		{
+			name:    "variable",
+			args:    []string{"acp", "--listen", "unix:///y/a.sock"},
+			env:     "tcp://127.0.0.1:9",
+			wantErr: acp.ViewersEnv + " takes a unix socket",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(acp.ViewersEnv, tc.env)
+			r := recordACPRouting(t)
+			err := run(context.Background(), tc.args, strings.NewReader(""), io.Discard, io.Discard)
+			if err == nil {
+				t.Fatalf("run succeeded, want a refusal")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %q, want it to name %q", err, tc.wantErr)
+			}
+			if r.viewers != 0 || r.listen != 0 || r.standalone != 0 || r.stdio != 0 {
+				t.Errorf("a runner ran for a refused invocation (listen %d, restricted %d, viewers %d, stdio %d)",
+					r.listen, r.viewers, r.standalone, r.stdio)
+			}
+		})
 	}
 }
 

@@ -909,6 +909,50 @@ func (h *attachHarness) ownChildAgent(t *testing.T, root, id, name string) (*fak
 	return fake, reg, sessionID
 }
 
+// containerAgent gives the harness the state Spawn leaves an agent in when it
+// runs in a container: a record, a runtime marked containerized through the
+// production seam, and the host side of the viewer socket the container's
+// agent serves beside its control socket (decision 6). The socket is a real
+// listener that records every frame it reads, so a test can tell a forwarded
+// frame from a dropped one.
+func (h *attachHarness) containerAgent(t *testing.T, root, id, name string) *fakeProjectChild {
+	t.Helper()
+	// The socket path lives in a short directory: a unix socket path is capped
+	// at 104 bytes on macOS.
+	dir, err := os.MkdirTemp("", "p5c")
+	if err != nil {
+		t.Fatalf("make the container's socket directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socket := filepath.Join(dir, containerViewersName)
+
+	fake := newFakeProjectChild(socket)
+	child := &Child{Transport: fake, Containerized: true, ViewerSocket: socket}
+	if err := child.Start(); err != nil {
+		t.Fatalf("start the container's child: %v", err)
+	}
+	t.Cleanup(child.Stop)
+	reg := NewRegistry(child)
+	reg.RootCwd = root
+
+	sessionID := id + "-session"
+	if err := h.fleet.ws.PutAgent(Agent{
+		ID: id, Project: root, Name: name, SessionID: sessionID,
+		OwnerID: "owner-1", Origin: OriginUI,
+	}); err != nil {
+		t.Fatalf("record agent %s: %v", id, err)
+	}
+	reg.TrackFleet(sessionID, AgentPath(root))
+	h.fleet.mu.Lock()
+	h.fleet.runtimes[id] = &agentRuntime{
+		id: id, root: root, child: child, reg: reg, sessionID: sessionID,
+		containerized: child.Containerized, viewerSocket: child.ViewerSocket,
+	}
+	h.fleet.sessionAgent[sessionID] = id
+	h.fleet.mu.Unlock()
+	return fake
+}
+
 // viewerCount is the viewers a registry counts on one session.
 func viewerCount(reg *Registry, sessionID string) int {
 	reg.mu.Lock()
@@ -1045,6 +1089,81 @@ func TestDetachingFromAnOwnChildLeavesItRunning(t *testing.T) {
 	}
 }
 
+// TestAContainersAgentAttachDialsItsViewerSocket: a container's agent serves
+// viewers on the host side of its socket, so the attach dials it like an own
+// child's and the relay it runs carries the container's list (decision 6).
+func TestAContainersAgentAttachDialsItsViewerSocket(t *testing.T) {
+	root := t.TempDir()
+	h := newAttachHarness(t)
+	fake := h.containerAgent(t, root, "agent-c", "reviewer")
+
+	res := h.attachAgent(http.MethodPost, "agent-c", true)
+	if res.status != http.StatusSwitchingProtocols {
+		t.Fatalf("container attach = %d, want 101: %s", res.status, res.refusal(t))
+	}
+	sessionID := res.header.Get(sessionHeader)
+	if sessionID != "agent-c-session" {
+		t.Errorf("attach %s = %q, want agent-c-session", sessionHeader, sessionID)
+	}
+	if got := res.header.Get(agentHeader); got != "agent-c" {
+		t.Errorf("attach %s = %q, want agent-c", agentHeader, got)
+	}
+	eventually(t, "the viewer to be counted", func() bool { return viewerCount(h.fleet.runtimes["agent-c"].reg, sessionID) == 1 })
+
+	// The relay restricts: a method outside the session screen's surface is
+	// answered to the viewer and never reaches the container's agent.
+	res.send(t, `{"jsonrpc":"2.0","id":61,"method":"config/set_value","params":{"key":"theme","value":"dark"}}`)
+	checkRefusalAnswer(t, res.readLine(t), "61", "config/set_value is not available for a containerized agent")
+	if got := fake.record(); len(got) != 0 {
+		t.Errorf("the container's agent read %d frames, want none: %+v", len(got), got)
+	}
+
+	// A method the list names does reach it, so the attach dialled the socket
+	// the container serves its viewers on.
+	res.send(t, fmt.Sprintf(`{"jsonrpc":"2.0","id":62,"method":"session/status","params":{"sessionId":%q}}`, sessionID))
+	answer := res.readLine(t)
+	if !strings.Contains(answer, `"id":62`) {
+		t.Errorf("the container's answer = %q, want the reply to id 62", answer)
+	}
+	if got := len(framesOf(t, fake, 0, "session/status")); got != 1 {
+		t.Errorf("the container's agent read session/status %d times, want 1", got)
+	}
+}
+
+// TestAContainersFailedDialSaysToRebuild: a container whose viewer socket is
+// absent is a dial that fails, and when its image runs another marshal version
+// the 502 says the image may serve none and asks for a rebuild (decision 6).
+func TestAContainersFailedDialSaysToRebuild(t *testing.T) {
+	root := t.TempDir()
+	h := newAttachHarness(t)
+	h.containerAgent(t, root, "agent-c", "reviewer")
+	// Nothing listens where the container's agent would serve viewers, and its
+	// image predates the socket.
+	h.fleet.mu.Lock()
+	h.fleet.runtimes["agent-c"].viewerSocket = filepath.Join(t.TempDir(), "absent.sock")
+	h.fleet.runtimes["agent-c"].versionWarning = true
+	h.fleet.mu.Unlock()
+
+	res := h.attachAgent(http.MethodPost, "agent-c", true)
+	if res.status != http.StatusBadGateway {
+		t.Fatalf("container attach whose dial fails = %d, want 502: %s", res.status, res.refusal(t))
+	}
+	got := res.refusal(t)
+	const dialled = "dial the agent's container: "
+	if !strings.HasPrefix(got, dialled) {
+		t.Errorf("refusal = %q, want the %q prefix", got, dialled)
+	}
+	const clause = "; its image runs another marshal version, which may serve no viewer socket: rebuild it"
+	if !strings.HasSuffix(got, clause) {
+		t.Errorf("refusal = %q, want the %q suffix", got, clause)
+	}
+	// The session is the agent's: the failed dial keeps it, as an own child's
+	// does.
+	if a, ok := h.fleet.ws.Agent("agent-c"); !ok || a.SessionID != "agent-c-session" {
+		t.Errorf("agent after the failed dial = %+v (found %v), want session agent-c-session", a, ok)
+	}
+}
+
 // TestTheAgentAttachRefusals: every way the agent attach refuses, with its
 // status and its sentence, and no viewer connection opened by any of them
 // (P5 F5 decision 5).
@@ -1068,13 +1187,15 @@ func TestTheAgentAttachRefusals(t *testing.T) {
 		h.fleet.mu.Unlock()
 		return id
 	}
+	// A container's agent is dialled on the host side of its own viewer socket
+	// (decision 6). One whose socket is absent is a dial that fails, not a
+	// 409.
 	container := func(t *testing.T, h *attachHarness, root string) string {
-		id := live(t, h, root)
+		h.containerAgent(t, root, "agent-a", "reviewer")
 		h.fleet.mu.Lock()
-		h.fleet.runtimes[id].project = nil
-		h.fleet.runtimes[id].containerized = true
+		h.fleet.runtimes["agent-a"].viewerSocket = ""
 		h.fleet.mu.Unlock()
-		return id
+		return "agent-a"
 	}
 	// A host agent whose runtime went away between the record lookup and the
 	// target lookup has no viewer socket either, and is not a container.
@@ -1103,6 +1224,9 @@ func TestTheAgentAttachRefusals(t *testing.T) {
 		setup    func(t *testing.T, h *attachHarness, root string) string
 		want     int
 		sentence string
+		// prefix compares sentence as a prefix: a dial failure's own error text
+		// is the operating system's, not the bridge's.
+		prefix bool
 	}{
 		{
 			name: "a wrong method", method: http.MethodGet, upgrade: true, setup: live,
@@ -1130,9 +1254,10 @@ func TestTheAgentAttachRefusals(t *testing.T) {
 			want: http.StatusBadGateway, sentence: "no such binary",
 		},
 		{
-			name: "an agent in a container", method: http.MethodPost, upgrade: true, setup: container,
-			want:     http.StatusConflict,
-			sentence: "agent reviewer runs in a container, which has no viewer socket yet",
+			name: "an agent in a container whose viewer socket is absent", method: http.MethodPost, upgrade: true, setup: container,
+			want:     http.StatusBadGateway,
+			sentence: "dial the agent's container: ",
+			prefix:   true,
 		},
 		{
 			name: "an agent with no viewer socket", method: http.MethodPost, upgrade: true, setup: noViewer,
@@ -1184,7 +1309,12 @@ func TestTheAgentAttachRefusals(t *testing.T) {
 			if res.status != tc.want {
 				t.Fatalf("agent attach = %d, want %d", res.status, tc.want)
 			}
-			if got := res.refusal(t); got != tc.sentence {
+			got := res.refusal(t)
+			if tc.prefix {
+				if !strings.HasPrefix(got, tc.sentence) {
+					t.Errorf("refusal = %q, want the %q prefix", got, tc.sentence)
+				}
+			} else if got != tc.sentence {
 				t.Errorf("refusal = %q, want %q", got, tc.sentence)
 			}
 			if fake != nil {

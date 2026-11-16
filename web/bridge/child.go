@@ -106,6 +106,10 @@ type Child struct {
 	// translating call site untestable — which is how the primary
 	// translation site shipped with only a tautological test.
 	Containerized bool
+	// ViewerSocket is a container's host-side viewer socket, set where
+	// newRuntime sets a container Transport (decision 6); "" for a host
+	// process, whose socket the runtime names itself.
+	ViewerSocket string
 
 	// OnRestart is invoked after each unexpected exit, once the
 	// replacement process has spawned. Intended for session resume.

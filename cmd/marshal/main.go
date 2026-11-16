@@ -40,6 +40,7 @@ var notifyOption = launch.WithNotify
 
 var acpRunner = acp.Run
 var acpListener = acp.ListenAndServe
+var acpListenerWithViewers = acp.ListenAndServeWithViewers
 var acpViewersRunner = acp.RunWithViewers
 var historyRunner = runHistory
 var calibrateRunner = runCalibrateTokens
@@ -110,27 +111,44 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		if err != nil {
 			return err
 		}
-		if spec != "" && viewers != "" {
-			return fmt.Errorf("marshal acp: --viewers cannot be combined with --listen")
+		// Decision 3: the bridge names a container's viewer socket in the
+		// environment rather than a flag, so a marshal that predates this
+		// still starts. Read it once, here, and remove it again before any
+		// runner is called: nothing the agent spawns may inherit it.
+		envViewers := os.Getenv(acp.ViewersEnv)
+		if envViewers != "" {
+			os.Unsetenv(acp.ViewersEnv)
 		}
-		if viewers != "" {
-			network, path, err := acp.ParseListenAddr(viewers)
+		if spec == "" {
+			// --viewers alone ignores the variable: stdio, with or without
+			// a viewer socket of its own.
+			if viewers == "" {
+				return acpRunner(ctx, stdin, stdout, stderr)
+			}
+			path, err := acpUnixViewerPath(viewers, "--viewers")
 			if err != nil {
 				return err
 			}
-			if network != "unix" {
-				return fmt.Errorf("marshal acp: --viewers takes a unix socket, got %s://", network)
-			}
 			return acpViewersRunner(ctx, stdin, stdout, stderr, path)
-		}
-		if spec == "" {
-			return acpRunner(ctx, stdin, stdout, stderr)
 		}
 		network, addr, err := acp.ParseListenAddr(spec)
 		if err != nil {
 			return err
 		}
-		return acpListener(ctx, network, addr, stderr)
+		// An explicit --viewers wins over the variable; the variable is only
+		// consulted when --listen is given and --viewers is not.
+		viewerSpec, viewerSource := viewers, "--viewers"
+		if viewerSpec == "" {
+			viewerSpec, viewerSource = envViewers, acp.ViewersEnv
+		}
+		if viewerSpec == "" {
+			return acpListener(ctx, network, addr, stderr)
+		}
+		path, err := acpUnixViewerPath(viewerSpec, viewerSource)
+		if err != nil {
+			return err
+		}
+		return acpListenerWithViewers(ctx, network, addr, path, stderr)
 	}
 	if len(args) > 0 && args[0] == "plugin" {
 		return pluginRunner(ctx, args[1:], stdin, stdout, stderr)
@@ -412,6 +430,21 @@ func acpViewersSpec(args []string) (string, error) {
 		}
 	}
 	return spec, nil
+}
+
+// acpUnixViewerPath parses a viewer address and requires a unix socket: a
+// viewer socket is a path on the host whichever way the address arrived, so a
+// tcp address is refused whether it came from --viewers or from the
+// environment. source names where it came from in the refusal.
+func acpUnixViewerPath(spec, source string) (string, error) {
+	network, path, err := acp.ParseListenAddr(spec)
+	if err != nil {
+		return "", err
+	}
+	if network != "unix" {
+		return "", fmt.Errorf("marshal acp: %s takes a unix socket, got %s://", source, network)
+	}
+	return path, nil
 }
 
 // recordPermanentTrust writes a permanent trust record for the current

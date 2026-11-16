@@ -11,8 +11,7 @@ void main() {
   final fixture = File('../test/contract/daemon-status.json');
 
   test('parses the shared fixture', () {
-    final json =
-        jsonDecode(fixture.readAsStringSync()) as Map<String, dynamic>;
+    final json = jsonDecode(fixture.readAsStringSync()) as Map<String, dynamic>;
     final status = DaemonStatus.fromJson(json);
 
     expect(status.schemaVersion, DaemonStatus.supportedSchema);

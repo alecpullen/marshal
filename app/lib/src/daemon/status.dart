@@ -1,4 +1,4 @@
-/// The models in this file are pure Dart: no `dart:io`, no Flutter, no
+/// The models in this file are pure Dart: no I/O library, no Flutter, no
 /// plugin. They mirror `marshal daemon status --json`
 /// (`internal/daemon/status.go`), and the test beside them parses the fixture
 /// the Go test holds that document to.
@@ -65,10 +65,10 @@ class ServiceState {
   final int pid;
 
   factory ServiceState.fromJson(Map<String, dynamic> json) => ServiceState(
-    installed: json['installed'] as bool? ?? false,
-    running: json['running'] as bool? ?? false,
-    pid: json['pid'] as int? ?? 0,
-  );
+        installed: json['installed'] as bool? ?? false,
+        running: json['running'] as bool? ?? false,
+        pid: json['pid'] as int? ?? 0,
+      );
 }
 
 /// LingerState is whether the daemon survives logout. macOS has no such bit,
@@ -80,9 +80,9 @@ class LingerState {
   final bool enabled;
 
   factory LingerState.fromJson(Map<String, dynamic> json) => LingerState(
-    supported: json['supported'] as bool? ?? false,
-    enabled: json['enabled'] as bool? ?? false,
-  );
+        supported: json['supported'] as bool? ?? false,
+        enabled: json['enabled'] as bool? ?? false,
+      );
 }
 
 /// DaemonInfo is the answering daemon's own report, the part of the document
@@ -99,12 +99,13 @@ class DaemonInfo {
   final List<DaemonChild> children;
 
   factory DaemonInfo.fromJson(Map<String, dynamic> json) => DaemonInfo(
-    version: json['version'] as String? ?? '',
-    projects: ((json['projects'] as List<dynamic>?) ?? const []).cast<String>(),
-    children: ((json['children'] as List<dynamic>?) ?? const [])
-        .map((e) => DaemonChild.fromJson(e as Map<String, dynamic>))
-        .toList(),
-  );
+        version: json['version'] as String? ?? '',
+        projects:
+            ((json['projects'] as List<dynamic>?) ?? const []).cast<String>(),
+        children: ((json['children'] as List<dynamic>?) ?? const [])
+            .map((e) => DaemonChild.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
 }
 
 /// DaemonChild is one project child of the daemon.
@@ -120,8 +121,8 @@ class DaemonChild {
   final bool pinned;
 
   factory DaemonChild.fromJson(Map<String, dynamic> json) => DaemonChild(
-    root: json['root'] as String? ?? '',
-    version: json['version'] as String? ?? '',
-    pinned: json['pinned'] as bool? ?? false,
-  );
+        root: json['root'] as String? ?? '',
+        version: json['version'] as String? ?? '',
+        pinned: json['pinned'] as bool? ?? false,
+      );
 }

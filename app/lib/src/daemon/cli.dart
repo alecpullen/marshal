@@ -71,6 +71,48 @@ class DaemonCli {
     final opener = Platform.isMacOS ? 'open' : 'xdg-open';
     await Process.run(opener, [target]);
   }
+
+  /// executable is the running binary, which `launch_at_startup` needs to
+  /// name the login item. Here because this file owns `dart:io`.
+  String get executable => Platform.resolvedExecutable;
+
+  /// logPath is the daemon's log — `daemon.Paths.Log` in Go: the data
+  /// directory's `daemon/webbridge.log`. `$MARSHAL_DATA_DIR` overrides the
+  /// data directory, then `$XDG_DATA_HOME/marshal`, then
+  /// `~/.local/share/marshal`, in the same order the daemon resolves it.
+  String get logPath {
+    final env = Platform.environment;
+    final data = env['MARSHAL_DATA_DIR'] ??
+        (env['XDG_DATA_HOME'] != null
+            ? '${env['XDG_DATA_HOME']}/marshal'
+            : '${env['HOME'] ?? ''}/.local/share/marshal');
+    return '$data/daemon/webbridge.log';
+  }
+
+  /// logExists is whether there is a log to open. The menu disables
+  /// `Open Log…` when there is not, so it never offers a dead action.
+  bool get logExists => File(logPath).existsSync();
+
+  /// log appends one line to the daemon's log. It is where a message with no
+  /// window to go in ends up: the pinned tray plugin has no notification
+  /// API, so the menu's error reports land in the log the menu can open.
+  void log(String message) {
+    final file = File(logPath);
+    try {
+      file.parent.createSync(recursive: true);
+      file.writeAsStringSync(
+        '${DateTime.now().toUtc().toIso8601String()} marshal-app: $message\n',
+        mode: FileMode.append,
+        flush: true,
+      );
+    } on FileSystemException {
+      // A log write must never take the tray down with it.
+    }
+  }
+
+  /// quit ends the app. It lives here with the rest of the process I/O so no
+  /// other file under `lib/` needs `dart:io`.
+  void quit() => exit(0);
 }
 
 /// DaemonException is a marshal invocation the app could not use, with the

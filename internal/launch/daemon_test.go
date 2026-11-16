@@ -78,6 +78,9 @@ type fakeDaemon struct {
 	// attachErr makes Attach fail: a daemon that answers the probe but cannot
 	// serve a session.
 	attachErr error
+	// envWarning is what every attachment the fake hands back carries: the
+	// project child's environment warning, "" for one that resolved fully.
+	envWarning string
 	// agentAttachErr does the same for AttachAgent, as a refused open does.
 	agentAttachErr error
 	// nextSessionID, when set, is the session the next serve resumes rather
@@ -163,6 +166,7 @@ func (f *fakeDaemon) serve(attachErr error, agentID string) (*daemon.Attachment,
 	// attach's clock.
 	resume := f.nextSessionID
 	f.nextSessionID = ""
+	warning := f.envWarning
 	// Each attach's runtime gets its own clock: the session ID derives from it,
 	// so a shared clock would make a second attach collide with the first
 	// session's row.
@@ -211,7 +215,7 @@ func (f *fakeDaemon) serve(attachErr error, agentID string) (*daemon.Attachment,
 	f.lastRT = rt
 	f.mu.Unlock()
 
-	return &daemon.Attachment{SessionID: rt.SessionID, AgentID: agentID, Conn: client}, nil
+	return &daemon.Attachment{SessionID: rt.SessionID, AgentID: agentID, EnvWarning: warning, Conn: client}, nil
 }
 
 // drop closes the fake's end of the pipe, as a daemon that goes away does.
@@ -230,6 +234,14 @@ func (f *fakeDaemon) drop() {
 func (f *fakeDaemon) serveSessionNext(sessionID string) {
 	f.mu.Lock()
 	f.nextSessionID = sessionID
+	f.mu.Unlock()
+}
+
+// warnEnv makes every attachment the fake hands back carry warning, as the
+// child of a project whose environment did not resolve fully does.
+func (f *fakeDaemon) warnEnv(warning string) {
+	f.mu.Lock()
+	f.envWarning = warning
 	f.mu.Unlock()
 }
 
@@ -1952,6 +1964,95 @@ func TestTheRestartReasonReachesTheWaitingScreen(t *testing.T) {
 	screen := ansi.Strip(script.waits[0].View().Content)
 	if !strings.Contains(screen, "is restarting: upgrade") {
 		t.Errorf("the waiting screen does not say why the connection closed:\n%s", screen)
+	}
+}
+
+// envWarningNotes is the environment notes the session's transcript carries.
+func envWarningNotes(t *testing.T, fake *fakeDaemon) []string {
+	t.Helper()
+	rt := fake.lastRuntime()
+	if rt == nil {
+		t.Fatal("the fake served no runtime")
+	}
+	var notes []string
+	for _, msg := range rt.State.Messages() {
+		if strings.Contains(msg.Content, "environment could not be resolved fully") {
+			notes = append(notes, msg.Content)
+		}
+	}
+	return notes
+}
+
+// TestTheEnvWarningIsANote: a dial whose attachment carries the project
+// child's environment warning puts it on the session screen as a note, the
+// warning unchanged.
+func TestTheEnvWarningIsANote(t *testing.T) {
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, t.TempDir())
+	const warning = "the index could not be watched: too many open files"
+	fake.warnEnv(warning)
+
+	if _, err := daemonModeRun(t, fake, dir, t.TempDir()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	notes := envWarningNotes(t, fake)
+	if len(notes) != 1 {
+		t.Fatalf("notes = %d, want exactly one: %v", len(notes), notes)
+	}
+	if want := "This project's environment could not be resolved fully: " + warning; notes[0] != want {
+		t.Errorf("note = %q, want %q", notes[0], want)
+	}
+}
+
+// TestTheEnvWarningIsAddedOnce: two attaches of one session, each carrying the
+// child's warning, add one note, not one per attach (decision 6).
+func TestTheEnvWarningIsAddedOnce(t *testing.T) {
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, t.TempDir())
+	fake.warnEnv("the index could not be watched: too many open files")
+
+	dropped := false
+	script := &loopScript{t: t, sessionEnds: []ProgramResult{{}, {}}}
+	script.onSession = func(ctx context.Context, m tui.Model) tui.Model {
+		if dropped {
+			return m
+		}
+		dropped = true
+		fake.serveSessionNext(m.Session().ID())
+		fake.drop()
+		select {
+		case <-ctx.Done():
+		case <-time.After(10 * time.Second):
+			t.Error("the screen's context never ended after the daemon closed")
+		}
+		return m
+	}
+	if err := runOnTheDaemon(t, fake, dir, io.Discard, script, loopFleet(filepath.Clean(dir), "sess-row"),
+		withReconnect(5*time.Second, 10*time.Millisecond, 50*time.Millisecond)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if calls := fake.attachCalls(); len(calls) != 2 {
+		t.Fatalf("attaches = %d, want the reconnect's second one: %+v", len(calls), calls)
+	}
+
+	if notes := envWarningNotes(t, fake); len(notes) != 1 {
+		t.Fatalf("notes = %d across two attaches, want one: %v", len(notes), notes)
+	}
+}
+
+// TestNoEnvWarningAddsNoNote: an attachment that carries no warning adds no
+// note, because the child resolved its environment fully.
+func TestNoEnvWarningAddsNoNote(t *testing.T) {
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, t.TempDir())
+
+	if _, err := daemonModeRun(t, fake, dir, t.TempDir()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if notes := envWarningNotes(t, fake); len(notes) != 0 {
+		t.Errorf("notes = %v, want none when the child resolved its environment", notes)
 	}
 }
 

@@ -396,6 +396,15 @@ func (l *daemonLoop) sessionStep(ctx context.Context, step daemonStep) (*daemonS
 		}
 	}
 
+	// The project child resolved its environment with a warning: say so once,
+	// so a session running on less than it asked for is not mistaken for the
+	// agent's own behaviour.
+	if warning := conn.envWarning; warning != "" {
+		if nerr := addNoteOnce(ctx, conn.sess, envWarningNote(warning)); nerr != nil {
+			l.logger.Warn("launch: writing the environment warning note", "error", nerr)
+		}
+	}
+
 	progCtx, progCancel := context.WithCancel(ctx)
 	go func() {
 		select {
@@ -770,6 +779,12 @@ func (o *options) versionNote(theirs string) string {
 	)
 }
 
+// envWarningNote is what a session screen says when its project child could not
+// resolve the environment fully: the child's own warning, unchanged.
+func envWarningNote(warning string) string {
+	return "This project's environment could not be resolved fully: " + warning
+}
+
 // openClientLog opens the daemon client's log: the daemon directory's tui.log,
 // 0600, appended (decision 9). The caller closes it when the run returns.
 func openClientLog(home string) (*slog.Logger, func(), error) {
@@ -789,6 +804,10 @@ func openClientLog(home string) (*slog.Logger, func(), error) {
 type daemonConn struct {
 	host *rpc.Host
 	sess *rpc.Session
+	// envWarning is the project child's environment warning, as the attachment
+	// that opened this connection carried it; "" when the child resolved its
+	// environment fully.
+	envWarning string
 
 	mu       sync.Mutex
 	closed   bool
@@ -845,7 +864,9 @@ func dialDaemon(ctx context.Context, opts *options, step daemonStep) (*daemonCon
 		_ = stream.Close()
 		return nil, &daemonDialFailure{what: fmt.Sprintf("session %q could not be attached", attachment.SessionID), err: err}
 	}
-	return conn.adopt(host, sess), nil
+	dialled := conn.adopt(host, sess)
+	dialled.envWarning = attachment.EnvWarning
+	return dialled, nil
 }
 
 // daemonDialFailure is what dialDaemon reports when the daemon answered but the

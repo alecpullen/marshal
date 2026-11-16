@@ -1,0 +1,41 @@
+{
+  "BudgetAgentSpend": {
+    "agentId": "a-1",
+    "paused": true,
+    "overridden": true,
+    "spentUsd": 1.25
+  },
+  "BudgetDaily": {
+    "blocked": false,
+    "day": "2026-11-17",
+    "spentUsd": 4.5
+  },
+  "BudgetReport": {
+    "agents": [
+      {
+        "agentId": "a-1",
+        "paused": true,
+        "overridden": true,
+        "spentUsd": 1.25
+      }
+    ],
+    "budgets": {
+      "dailyUsd": 20.0,
+      "onAgentCap": "pause",
+      "onDailyCap": "pause",
+      "perAgentUsd": 5.0
+    },
+    "daily": {
+      "blocked": false,
+      "day": "2026-11-17",
+      "spentUsd": 4.5
+    },
+    "loaded": true
+  },
+  "Budgets": {
+    "dailyUsd": 20.0,
+    "onAgentCap": "pause",
+    "onDailyCap": "pause",
+    "perAgentUsd": 5.0
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "Answer": {
+    "question": "Which branch?",
+    "answer": "main"
+  },
+  "Answers": {
+    "answers": [
+      {
+        "question": "Which branch?",
+        "answer": "main"
+      },
+      {
+        "question": "Squash?",
+        "answer": "yes"
+      }
+    ]
+  },
+  "Decision": {
+    "approved": true,
+    "edited": "rm -rf ./build",
+    "modeAccess": {
+      "requestId": "r-1",
+      "sessionId": "s-1",
+      "current": {
+        "mode": "ask",
+        "auto": false,
+        "system_access": false,
+        "access_revision": 1
+      },
+      "mode": "act"
+    }
+  },
+  "ModeAccessChoice": {
+    "requestId": "r-1",
+    "sessionId": "s-1",
+    "current": {
+      "mode": "ask",
+      "auto": false,
+      "system_access": false,
+      "access_revision": 1
+    },
+    "mode": "act"
+  },
+  "RecentPrompts": {
+    "prompts": [
+      "fix the login bug",
+      "add a test for the parser"
+    ]
+  }
+}

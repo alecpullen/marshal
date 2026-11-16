@@ -4,14 +4,15 @@ import 'package:flutter/services.dart';
 
 import '../../model/preview_model.dart';
 import '../kit/kit.dart';
-import 'preview_frame.dart';
 
 /// The Preview tab (f4-inspector.md decision 10): the ports the agent's
 /// workspace declares, each loaded through the bridge's preview route.
 ///
-/// In the browser the selected port is a frame. On a desktop it is a link and
-/// a note saying why: an embedded desktop web view is not attempted in this
-/// phase.
+/// The selected port is shown as its URL, with Copy link, and a line saying
+/// why it is not framed. A frame in the browser would need the browser APIs
+/// the app's lanes keep in `client/*_web.dart`, and a desktop web view needs
+/// a platform view neither phase provides: the finding is recorded in the
+/// implementation record.
 class PreviewTab extends StatefulWidget {
   const PreviewTab({super.key, required this.model, this.state});
 
@@ -125,7 +126,6 @@ class _PreviewTabState extends State<PreviewTab> {
       );
     }
     if (url == null) return const StateMessage.loading(lines: 3);
-    if (previewFramesInApp) return previewFrame(url);
     return Padding(
       padding: const EdgeInsets.all(Space.s16),
       child: Column(

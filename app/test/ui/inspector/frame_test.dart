@@ -1,4 +1,3 @@
-import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/model/inspector_state.dart';
 import 'package:marshal_app/src/model/place.dart';

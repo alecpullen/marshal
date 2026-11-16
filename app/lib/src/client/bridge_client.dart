@@ -234,8 +234,7 @@ class BridgeClient {
     final response = await _send(
       Request(
         method: 'POST',
-        path:
-            '/api/agents/${Uri.encodeComponent(agentId)}/preview/$port',
+        path: '/api/agents/${Uri.encodeComponent(agentId)}/preview/$port',
       ),
     );
     final json = _object(response);

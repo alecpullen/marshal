@@ -31,10 +31,15 @@ enum AskKind {
 /// One answer an ask offers. The first is the primary one.
 @immutable
 class AskAction {
-  const AskAction(this.label, {required this.onTap});
+  const AskAction(this.label, {required this.onTap, this.note});
 
   final String label;
   final VoidCallback? onTap;
+
+  /// Why an action with no [onTap] cannot be taken, drawn as its tooltip
+  /// (§9). An action the app cannot perform says so rather than offering a
+  /// control that would fail, as `PrCard`'s [PrActions.mergeNote] does.
+  final String? note;
 }
 
 /// Where an ask is shown, which decides how much of it is drawn.
@@ -154,14 +159,22 @@ class AskCard extends StatelessWidget {
             runSpacing: Space.s8,
             children: [
               for (final (i, action) in actions.indexed)
-                i == 0
-                    ? Btn.primary(action.label, onTap: action.onTap)
-                    : Btn(action.label, onTap: action.onTap),
+                _action(i == 0, action),
             ],
           ),
         ],
       ),
     );
+  }
+
+  /// One action: primary when it is the first, and disabled with its reason
+  /// when it has no callback but says why (§7, §9).
+  Widget _action(bool primary, AskAction action) {
+    final button = primary
+        ? Btn.primary(action.label, onTap: action.onTap)
+        : Btn(action.label, onTap: action.onTap);
+    final note = action.note;
+    return note == null ? button : Tip(message: note, child: button);
   }
 
   Widget _since(Widget child) {

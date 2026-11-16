@@ -1,4 +1,5 @@
 import '../../model/inbox_model.dart' as model;
+import '../../model/merge_target.dart';
 import '../../model/work_item_model.dart';
 import '../kit/kit.dart';
 import 'recovery_form.dart';
@@ -137,11 +138,7 @@ class _ItemAsksState extends State<ItemAsks> {
           body: body.isEmpty ? null : body,
           waiting: waiting,
           actions: [
-            for (final action in ask.actions)
-              AskAction(
-                action.label,
-                onTap: enabled ? () => _act(ask, action) : null,
-              ),
+            for (final action in ask.actions) _action(ask, action, enabled),
           ],
         ),
         if (ask.kind == model.AskKind.recovery) ...[
@@ -165,6 +162,27 @@ class _ItemAsksState extends State<ItemAsks> {
       ],
     );
   }
+
+  /// One action of [ask]: offered while nothing is in flight, and drawn
+  /// disabled with its reason when the item cannot take it.
+  ///
+  /// A completion's merge needs the reviewed identity the item holds. With
+  /// none it is drawn disabled and says why, rather than offering a control
+  /// the bridge would refuse (web/bridge/factory_completion_batch.go).
+  AskAction _action(model.Ask ask, model.AskAction action, bool enabled) {
+    final blocked =
+        ask.kind == model.AskKind.completion &&
+        action.label == _mergeLabel &&
+        widget.item.merge == null;
+    return AskAction(
+      action.label,
+      onTap: enabled && !blocked ? () => _act(ask, action) : null,
+      note: blocked ? noMergeTargetNote : null,
+    );
+  }
+
+  /// The label the completion ask gives its merge.
+  static const _mergeLabel = 'Merge and complete';
 
   /// What one action does. A recovery's own settings are sent by its form.
   void _act(model.Ask ask, model.AskAction action) {

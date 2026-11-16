@@ -6,6 +6,7 @@ import '../client/contract.g.dart';
 import '../client/host.dart';
 import '../client/transport.dart';
 import 'fleet_store.dart' show describeFailure;
+import 'merge_target.dart';
 
 /// Every factory work item the app knows, per host (F6 decision 14).
 ///
@@ -270,37 +271,42 @@ class FactoryStore extends ChangeNotifier {
 
   /// Merges the reviewed pull request and completes the item.
   ///
-  /// The reviewed identity — the head and the base the person was shown — is
-  /// copied in, so the bridge merges exactly that and nothing the surface
-  /// assembled itself.
+  /// The reviewed identity is the item's own record of the pull request the
+  /// person was shown — the node id, the reviewed head and the base it lands
+  /// on — never a value the surface assembled (F6 decision 5). The bridge
+  /// refuses a blank node id (400) and a merge that leaves the item's active
+  /// run undecided (409), so both are resolved here: [mergeTargetOf] finds the
+  /// identity and [runActiveOfItem] decides whether a run choice must be named.
   Future<FactoryItem> mergeAndComplete(
     String host,
     String id, {
-    required String repoID,
-    required int number,
-    required String headSHA,
-    required String baseRef,
     String strategy = 'squash',
-  }) => command(
-    host,
-    id,
-    _command({
-      'kind': 'merge_and_complete',
-      'completion': {
-        'prs': [
-          {
-            'repoId': repoID,
-            'number': number,
-            'nodeId': '',
-            'headSha': headSHA,
-            'baseRef': baseRef,
-          },
-        ],
-        'strategy': strategy,
-        'completeAfter': true,
-      },
-    }),
-  );
+  }) {
+    final item = byId(host, id);
+    final target = item == null ? null : mergeTargetOf(item);
+    if (target == null) throw StateError(noMergeTargetNote);
+    return command(
+      host,
+      id,
+      _command({
+        'kind': 'merge_and_complete',
+        'completion': {
+          'prs': [
+            {
+              'repoId': target.repoID,
+              'number': target.number,
+              'nodeId': target.nodeID,
+              'headSha': target.headSHA,
+              'baseRef': target.baseRef,
+            },
+          ],
+          'strategy': strategy,
+          'completeAfter': true,
+          if (runActiveOfItem(item!)) 'runChoice': mergeRunChoice,
+        },
+      }),
+    );
+  }
 
   /// One command with every field the wire requires, so a screen names only
   /// what it decided. The request id and the expected version are the store's

@@ -821,7 +821,7 @@ class _WorkItemPlaceState extends State<_WorkItemPlace> {
         ),
       ),
       onComplete: () => _command(() => store.complete(host, item.id)),
-      onMergeAndComplete: () => _merge(host, item.id, pulls),
+      onMergeAndComplete: () => _merge(host, item.id),
       onReopen: () => _command(() => store.reopen(host, item.id)),
       onStop: () => _command(() => store.stopItem(host, item.id)),
       pullActionsFor: widget.pulls == null
@@ -870,25 +870,10 @@ class _WorkItemPlaceState extends State<_WorkItemPlace> {
   }
 
   /// Merges the reviewed pull request and completes the item. The identity is
-  /// the card's own, so nothing the surface assembled can be merged.
-  Future<void> _merge(String host, String id, List<PullView> pulls) async {
-    if (pulls.isEmpty) {
-      if (mounted) {
-        setState(() => _error = 'There is no pull request to merge yet.');
-      }
-      return;
-    }
-    final pull = pulls.first.record;
-    await _command(
-      () => widget.factory.mergeAndComplete(
-        host,
-        id,
-        repoID: pull.repoID,
-        number: pull.number,
-        headSHA: pull.headSHA,
-        baseRef: pull.baseRef,
-      ),
-    );
+  /// the item's own record of the reviewed pull request, resolved inside the
+  /// store, so nothing the surface assembled can be merged (F6 decision 5).
+  Future<void> _merge(String host, String id) async {
+    await _command(() => widget.factory.mergeAndComplete(host, id));
   }
 
   /// The item until the store has it: loading while the first read is in

@@ -103,6 +103,14 @@ Two families, bundled with the app: **Geist** for the interface and **Geist
 Mono** for code, paths, identifiers, counts and durations. No other family,
 and no font fetched at run time.
 
+Bundled beside them, and never a role's first family, is **Noto Sans Symbols
+2** as a fallback (`Ember.symbols`). Geist has no glyph for ⌘ ⌥ ⏎ ✓ ✗ ▸ ▾ ⋯,
+and the transcript and the key map need them; every role falls back to it
+rather than drawing tofu. It is from notofonts/symbols
+`NotoSansSymbols2-v2.008`, under the OFL, shipped with its licence like the
+other two. A role's `fontFamilyFallback` names it; nothing sets it as a
+`fontFamily`.
+
 Text is set with a named role from `tokens.dart`. No widget sets a size, a
 weight or a family directly.
 
@@ -182,10 +190,17 @@ Cupertino**. If the kit lacks a piece, see §10.
 | `AskCard` | Something waiting on the user | The only way an ask is shown |
 | `PrCard` | A pull request with its CI | The only way a pull request is shown in a list |
 | `ThreadRow` | A thread in a list | Dot, title, kind icon |
+| `TurnPrompt` | What the user said | Right-aligned, bordered, no fill. A row of the transcript, never a chat bubble |
+| `StepHeader` | A step's ordinal, headline and duration | The running dot while it is worked on. Its disclosure folds the step's rows; the duration is mono |
+| `ToolRow` | One tool call | Verb and target in mono, the result at the right. Indented to the step's text; `err` colours only a failed result |
+| `Narration` | The agent's prose | Markdown, parsed and drawn with the text roles. No third-party widget sets a size, weight or colour |
+| `OutputBlock` | Output the agent produced | The only filled block: `codeBg`, mono at every density. A capped block says so in words |
+| `LiveRow` | The row work is happening on | One running dot, the headline, the latest line. The only row that moves |
 | `StateMessage` | Empty, loading, stale, error, planned | The only way these states are shown (§7) |
 | `Field` | A text input | Border only; the label is above it |
 | `Menu` | A popover of choices | Each item is a name and one line of explanation |
 | `Sheet` | A dialog or bottom sheet; it dims what is behind it with `scrim` | One per screen at most |
+| `Composer` | The field a thread is driven from | The draft, the mode and model chips, Stop while running, Send or Steer. A read-only session is one line saying why |
 
 Added in F2: `NavRow`, the sidebar's row (an icon or a disclosure chevron, a
 label, an optional count; the selected row is filled and its icon is

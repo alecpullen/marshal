@@ -1,15 +1,20 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 
 import '../client/bridge_client.dart';
 import '../client/contract.g.dart';
+import '../client/event_stream.dart';
 import '../client/host.dart';
 import '../client/transport.dart';
 
 /// The one writer of the fleet's state (F2 decision 6).
 ///
 /// Per host it holds what the bridge said: the agents, the projects, the
-/// needs-you queue and the budget report. Views read it here and nowhere
-/// else; the screens take it as data and never fetch (design-system.md §5).
+/// needs-you queue and the budget report, from the snapshot and then from the
+/// host's fleet stream. Views read it here and nowhere else; the screens take
+/// it as data and never fetch (design-system.md §5).
 ///
 /// A host that is not live keeps its last data. The store exposes the host's
 /// reach and its last contact beside it, so a view can mark the rows stale
@@ -24,6 +29,7 @@ class FleetStore extends ChangeNotifier {
   final HostRegistry _registry;
   final DateTime Function() _now;
   final _states = <String, _HostState>{};
+  final _wiring = <String, _HostWiring>{};
   bool _disposed = false;
 
   /// The clock a relative age is read against. Injected so a test (and
@@ -79,11 +85,16 @@ class FleetStore extends ChangeNotifier {
   ///
   /// The four are read together so the rows and the queue describe the same
   /// moment. A failed read leaves the last data in place and records why.
+  ///
+  /// A snapshot takes time to arrive and the stream does not wait for it: a
+  /// delta that landed while the read was in flight is newer than any answer
+  /// to it, so what it changed is kept (see [_agentsFrom]).
   Future<void> refresh(String host) async {
     final owner = _ownerOf(host);
     if (owner == null) return;
     final state = _state(host);
     final generation = ++state.generation;
+    final since = state.deltaSeq;
     try {
       final agents = await owner.client.agents();
       final projects = await owner.client.projects();
@@ -91,9 +102,9 @@ class FleetStore extends ChangeNotifier {
       final budgets = await _budgets(owner.client, state);
       if (_disposed || generation != state.generation) return;
       state
-        ..agents = List.unmodifiable(agents)
-        ..projects = List.unmodifiable(projects)
-        ..queue = List.unmodifiable(inbox.queue)
+        ..agents = _agentsFrom(agents, state, since)
+        ..projects = _projectsFrom(projects, state, since)
+        ..queue = _queueFrom(inbox.queue, state, since)
         ..budgets = budgets
         ..failure = null;
       notifyListeners();
@@ -103,6 +114,42 @@ class FleetStore extends ChangeNotifier {
       notifyListeners();
     }
   }
+
+  /// The agents a snapshot leaves in place: every row it carried, except the
+  /// ones a delta has changed since the read was asked for, and the ones in a
+  /// project that was removed after it.
+  static List<AgentStatus> _agentsFrom(
+    List<AgentStatus> snapshot,
+    _HostState state,
+    int since,
+  ) {
+    final current = {for (final agent in state.agents) agent.id: agent};
+    final removed = state.removedAfter(since);
+    return List.unmodifiable([
+      for (final agent in snapshot)
+        if ((state.agentSeq[agent.id] ?? 0) > since &&
+            current[agent.id] != null)
+          current[agent.id]!
+        else if (!removed.contains(agent.project))
+          agent,
+    ]);
+  }
+
+  /// The projects a snapshot leaves in place: its own, unless one was removed
+  /// while the read was in flight.
+  static List<ProjectStatus> _projectsFrom(
+    List<ProjectStatus> snapshot,
+    _HostState state,
+    int since,
+  ) => state.removedSeq > since ? state.projects : List.unmodifiable(snapshot);
+
+  /// The queue a snapshot leaves in place, unless the bridge sent a newer one
+  /// while the read was in flight.
+  static List<InboxItem> _queueFrom(
+    List<InboxItem> snapshot,
+    _HostState state,
+    int since,
+  ) => state.queueSeq > since ? state.queue : List.unmodifiable(snapshot);
 
   /// The budget report, or the one already held: a bridge that does not know
   /// the route (a server profile of an older build) must not fail the whole
@@ -117,8 +164,20 @@ class FleetStore extends ChangeNotifier {
 
   /// The failure in words: the bridge's own when it sent some.
   static String _describe(Object error) {
-    if (error is BridgeFailure) return error.message;
-    return error.toString();
+    if (error is! BridgeFailure) return error.toString();
+    // The bridge answers `{"error": "…"}`; a screen says the words, not the
+    // JSON they are wrapped in (design-system.md §7: in plain words).
+    final message = error.message;
+    try {
+      final decoded = jsonDecode(message);
+      if (decoded is Map<String, dynamic>) {
+        final detail = decoded['error'];
+        if (detail is String && detail.trim().isNotEmpty) return detail.trim();
+      }
+    } catch (_) {
+      // Not JSON: the body is the message.
+    }
+    return message;
   }
 
   /// The host's state, created empty on first use.
@@ -136,22 +195,247 @@ class FleetStore extends ChangeNotifier {
   Iterable<String> _names(String? host) =>
       host != null ? [host] : [for (final owner in _registry.hosts) owner.name];
 
-  /// A host was discovered: start holding its state. A host already known is
-  /// left alone, exactly as the registry leaves it.
+  /// A host was discovered: hold its state and follow its stream. A host
+  /// already known is left alone, exactly as the registry leaves it.
   void _hostsChanged() {
     var added = false;
     for (final owner in _registry.hosts) {
-      if (_states.containsKey(owner.name)) continue;
-      _states[owner.name] = _HostState();
-      added = true;
+      if (!_states.containsKey(owner.name)) {
+        _states[owner.name] = _HostState();
+        added = true;
+      }
+      _follow(owner);
     }
     if (added) notifyListeners();
+  }
+
+  /// Follows one host's fleet stream: its deltas, its replay gaps, and the
+  /// moment its connection comes back.
+  ///
+  /// The snapshot is read when the store starts following the host, and again
+  /// whenever the stream reaches it after a break: a client that has just
+  /// reconnected cannot know what it missed, and the replay gap says outright
+  /// that it cannot be replayed (F1 decision 7).
+  void _follow(Host owner) {
+    if (_wiring.containsKey(owner.name)) return;
+    final stream = owner.fleet;
+    final wiring = _HostWiring(
+      events: stream.events.listen((event) {
+        _applyDelta(owner.name, event);
+      }),
+      gaps: stream.gaps.listen((_) {
+        unawaited(refresh(owner.name));
+      }),
+      state: stream.state,
+    );
+    wiring.listen = () => _followState(owner.name, stream.state.value);
+    _wiring[owner.name] = wiring;
+    wiring.state.addListener(wiring.listen!);
+    unawaited(refresh(owner.name));
+  }
+
+  /// A host's stream moved: a live stream the store was not following is a
+  /// host that has just come back, so its rows are read again.
+  void _followState(String host, StreamState now) {
+    final wiring = _wiring[host];
+    if (wiring == null) return;
+    final before = wiring.streamState;
+    wiring.streamState = now;
+    if (now == StreamState.live && before != StreamState.live) {
+      unawaited(refresh(host));
+    }
+  }
+
+  /// Applies one event from [host]'s stream.
+  ///
+  /// A delta whose kind this build does not know, and a frame that does not
+  /// parse, are ignored: a newer bridge may send more than this build
+  /// understands, and that is not a reason to empty the screen.
+  void _applyDelta(String host, StreamEvent event) {
+    final Object? decoded;
+    try {
+      decoded = jsonDecode(event.data);
+    } catch (_) {
+      return;
+    }
+    if (decoded is! Map<String, dynamic>) return;
+    final kind = decoded['kind'];
+    if (kind is! String) return;
+    final state = _state(host);
+    try {
+      switch (kind) {
+        case 'inbox':
+          _applyInbox(state, InboxDelta.fromJson(decoded));
+        case 'budget':
+          // A budget delta says which way the spend moved, not the day's
+          // whole report: read the report again, as the Svelte store's views
+          // do, rather than inventing the caps from one delta.
+          unawaited(_refreshBudgets(host));
+        case 'project_removed':
+          _applyProjectRemoved(state, ProjectRemovedDelta.fromJson(decoded));
+        default:
+          _applyFleetDelta(host, state, FleetDelta.fromJson(decoded));
+      }
+    } catch (_) {
+      // A frame this build cannot read is not a state change.
+      return;
+    }
+    notifyListeners();
+  }
+
+  /// The in-turn deltas: what one agent's session reports as it works.
+  void _applyFleetDelta(String host, _HostState state, FleetDelta delta) {
+    final index = state.agents.indexWhere(
+      (agent) => agent.id == delta.sessionID,
+    );
+    if (index < 0) return;
+    final agent = state.agents[index];
+    final AgentStatus next;
+    switch (delta.kind) {
+      case DeltaKind.deltaActivity:
+        next = _patched(agent, {'activity': delta.activity});
+      case DeltaKind.deltaMode:
+        final access = delta.access;
+        if (access == null) return;
+        next = _patched(agent, {'access': access.toJson()});
+      case DeltaKind.deltaTelemetry:
+        next = _patched(agent, {
+          if (delta.contextPct != null) 'contextPct': delta.contextPct,
+          if (delta.changedFiles != null) 'changedFiles': delta.changedFiles,
+        });
+      case DeltaKind.deltaHold:
+        next = _patched(agent, {'held': delta.held ?? false});
+      case DeltaKind.deltaPending:
+        final kind = delta.pendingKind;
+        if (kind == null) return;
+        next = _patched(agent, {
+          'status': kind == PendingKind.pendingApproval
+              ? AgentState.agentAwaitingApproval.wire
+              : AgentState.agentAwaitingQuestion.wire,
+        });
+        // The delta carries only the kind: the request itself — the command
+        // or the question — is the snapshot's to give (F1's contract, F2
+        // decision 7), so read the rows again and let the snapshot answer.
+        unawaited(_refreshAgents(host, from: {agent.id}));
+      case DeltaKind.deltaGate:
+      case DeltaKind.deltaRun:
+        // The gate record and the run detail have no place in `AgentStatus`
+        // yet: the thread's gate and run screens arrive in F3. Accepted and
+        // set aside, never guessed at.
+        return;
+      case DeltaKind.deltaWatch:
+      case DeltaKind.deltaBudget:
+      case DeltaKind.deltaProjectRemoved:
+      case DeltaKind.deltaInbox:
+      case DeltaKind.unknown:
+        // Handled elsewhere, or a kind this build does not know.
+        return;
+    }
+    state
+      ..deltaSeq += 1
+      ..agents = List.unmodifiable([
+        for (var i = 0; i < state.agents.length; i++)
+          i == index ? next : state.agents[i],
+      ]);
+    state.agentSeq[agent.id] = state.deltaSeq;
+  }
+
+  /// The bridge's whole queue, which it recomputes and re-sends as it moves.
+  void _applyInbox(_HostState state, InboxDelta delta) {
+    state
+      ..deltaSeq += 1
+      ..queueSeq = state.deltaSeq
+      ..queue = List.unmodifiable(delta.inbox.queue);
+  }
+
+  /// A project left the daemon: it and every agent in it are gone from the
+  /// view, rather than left behind as rows that can never update again.
+  void _applyProjectRemoved(_HostState state, ProjectRemovedDelta delta) {
+    state
+      ..deltaSeq += 1
+      ..removedSeq = state.deltaSeq
+      ..removedProjects.add(delta.project)
+      ..projects = List.unmodifiable([
+        for (final project in state.projects)
+          if (project.root != delta.project) project,
+      ])
+      ..agents = List.unmodifiable([
+        for (final agent in state.agents)
+          if (agent.project != delta.project) agent,
+      ]);
+  }
+
+  /// One agent, with some of its fields replaced. The generated contract
+  /// round-trips through JSON, so a field this build does not know survives
+  /// the patch (an unknown enum keeps its wire text). A null in [changes]
+  /// means "nothing new said", so the field keeps its value.
+  static AgentStatus _patched(
+    AgentStatus agent,
+    Map<String, Object?> changes,
+  ) => AgentStatus.fromJson({
+    ...agent.toJson(),
+    for (final MapEntry(:key, :value) in changes.entries)
+      if (value != null) key: value,
+  });
+
+  /// Reads one host's agents again, without touching the projects or the
+  /// queue.
+  ///
+  /// [from] names the agents the snapshot must answer for whatever the stream
+  /// said meanwhile: a pending delta carries only the kind, so the snapshot is
+  /// the authority for the request itself.
+  Future<void> _refreshAgents(
+    String host, {
+    Set<String> from = const {},
+  }) async {
+    final owner = _ownerOf(host);
+    if (owner == null) return;
+    final state = _state(host);
+    if (state.agentsRefetching) return;
+    state.agentsRefetching = true;
+    final since = state.deltaSeq;
+    try {
+      final agents = await owner.client.agents();
+      if (_disposed) return;
+      final current = {for (final agent in state.agents) agent.id: agent};
+      final removed = state.removedAfter(since);
+      state.agents = List.unmodifiable([
+        for (final agent in agents)
+          if (!from.contains(agent.id) &&
+              (state.agentSeq[agent.id] ?? 0) > since &&
+              current[agent.id] != null)
+            current[agent.id]!
+          else if (!removed.contains(agent.project))
+            agent,
+      ]);
+      notifyListeners();
+    } catch (_) {
+      // A failed re-read leaves the rows as they were; the next delta or the
+      // next reconnect reads them again.
+    } finally {
+      state.agentsRefetching = false;
+    }
+  }
+
+  /// Reads one host's budget report again.
+  Future<void> _refreshBudgets(String host) async {
+    final owner = _ownerOf(host);
+    if (owner == null) return;
+    final state = _state(host);
+    final report = await _budgets(owner.client, state);
+    if (_disposed || identical(report, state.budgets)) return;
+    state.budgets = report;
+    notifyListeners();
   }
 
   @override
   void dispose() {
     _disposed = true;
     _registry.removeListener(_hostsChanged);
+    for (final wiring in _wiring.values) {
+      wiring.dispose();
+    }
+    _wiring.clear();
     super.dispose();
   }
 }
@@ -168,6 +452,51 @@ class _HostState {
 
   /// Bumped by each read, so a slow answer cannot overwrite a newer one.
   int generation = 0;
+
+  /// A pending delta's re-read is in flight.
+  bool agentsRefetching = false;
+
+  /// Bumped by every delta applied to this host: the clock a snapshot is
+  /// compared against, so an answer asked for before a delta cannot put back
+  /// what the delta changed.
+  int deltaSeq = 0;
+
+  /// When each agent last changed by a delta.
+  final agentSeq = <String, int>{};
+
+  /// When the queue last changed by a delta.
+  int queueSeq = 0;
+
+  /// The projects removed by a delta, and when the last one was.
+  final removedProjects = <String>{};
+  int removedSeq = 0;
+
+  /// The projects a delta removed after [since].
+  Set<String> removedAfter(int since) =>
+      removedSeq > since ? removedProjects : const {};
+}
+
+/// The listeners one host's stream has in the store.
+class _HostWiring {
+  _HostWiring({required this.events, required this.gaps, required this.state})
+    : streamState = state.value;
+
+  final StreamSubscription<StreamEvent> events;
+  final StreamSubscription<void> gaps;
+  final ValueListenable<StreamState> state;
+
+  /// The store's listener on [state], kept so it can be taken off again.
+  VoidCallback? listen;
+
+  /// The stream's state as of the last notification.
+  StreamState streamState;
+
+  void dispose() {
+    events.cancel();
+    gaps.cancel();
+    final listen = this.listen;
+    if (listen != null) state.removeListener(listen);
+  }
 }
 
 /// One host as a view lists it: its name, which kind of bridge it is, and

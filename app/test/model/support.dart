@@ -194,6 +194,21 @@ class ModelFixture {
     }
   }
 
+  /// Every request [host]'s bridge received, oldest first.
+  List<RecordedRequest> requests(String host) =>
+      List.unmodifiable(bridges[host]!.requests);
+
+  /// Replaces what [host]'s bridge answers `GET path` with from now on.
+  void serve(String host, String path, Object body) => bridges[host]!.reply(
+    'GET',
+    path,
+    FakeReply(
+      200,
+      headers: const {'content-type': 'application/json'},
+      body: jsonEncode(body),
+    ),
+  );
+
   /// Sends one fleet delta, as the bridge's own frame, to [host]'s stream.
   void delta(String host, Map<String, Object?> json) {
     frames[host]!.write('data: ${jsonEncode(json)}\n\n');
@@ -210,6 +225,27 @@ FakeReply _json(Object body) => FakeReply(
   headers: const {'content-type': 'application/json'},
   body: jsonEncode(body),
 );
+
+/// Lets the event loop and the fake bridges run, so a delta written to a
+/// stream has been delivered, applied and notified.
+Future<void> settle() async {
+  for (var i = 0; i < 5; i++) {
+    await pumpEventQueue();
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
+}
+
+/// Waits for [check] to hold, letting the bridges answer meanwhile: a
+/// snapshot and a delta both land asynchronously, and a test should say what
+/// it waits for rather than how long.
+Future<void> eventually(bool Function() check, {String reason = ''}) async {
+  for (var i = 0; i < 200; i++) {
+    if (check()) return;
+    await pumpEventQueue();
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
+  fail('condition never became true${reason.isEmpty ? '' : ': $reason'}');
+}
 
 /// A clock a test advances, so a backoff, a stale deadline or an age passes
 /// at once (`test/client/event_stream_test.dart`'s FakeClock).

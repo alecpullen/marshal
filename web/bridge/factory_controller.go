@@ -497,6 +497,11 @@ type FactoryController struct {
 	readyWake      chan struct{}
 	after          func(time.Duration) <-chan time.Time
 	pauseUntil     time.Time
+	// projectSettings reads the settings of the project a factory item
+	// belongs to, which is where the effective automatic-assessment
+	// preference lives. A nil seam means no project override is known, and
+	// the documented default applies.
+	projectSettings func(projectRoot string) (ProjectSettings, bool)
 }
 
 func NewFactoryController(store *FactoryStore, effects FactoryEffects, now func() time.Time) *FactoryController {
@@ -504,6 +509,19 @@ func NewFactoryController(store *FactoryStore, effects FactoryEffects, now func(
 		now = time.Now
 	}
 	return &FactoryController{store: store, effects: effects, now: now, execCancels: map[string]context.CancelFunc{}, wake: make(chan struct{}, 1), readyWake: make(chan struct{}, 1), after: time.After}
+}
+
+// autoAssess reports whether a proposal saved for projectRoot records an
+// assessment intent. The project's setting is optional and absent means on;
+// without a lookup seam there is no override to consult, so the default holds.
+func (c *FactoryController) autoAssess(projectRoot string) bool {
+	var ps ProjectSettings
+	if c.projectSettings != nil {
+		if got, ok := c.projectSettings(projectRoot); ok {
+			ps = got
+		}
+	}
+	return autoAssessPlanChanges(ps)
 }
 func (c *FactoryController) Wake() {
 	select {
@@ -995,7 +1013,10 @@ func (c *FactoryController) command(ctx context.Context, itemID string, cmd Fact
 	if err != nil {
 		return FactoryItem{}, err
 	}
-	i, err := c.store.Update(itemID, cmd.RequestID, cmd.ExpectedVersion, raw, func(i *FactoryItem) error { return factoryApplyCommandFrom(i, cmd, p, c.now()) }, c.now())
+	// The effective automatic-assessment preference is read before the
+	// journal append and recorded on the proposal in that same mutation.
+	autoAssess := c.autoAssess(before.ProjectRoot)
+	i, err := c.store.Update(itemID, cmd.RequestID, cmd.ExpectedVersion, raw, func(i *FactoryItem) error { return factoryApplyCommandFrom(i, cmd, p, autoAssess, c.now()) }, c.now())
 	if err == nil {
 		if cmd.Kind == "stop" && before.Version == cmd.ExpectedVersion {
 			if canceler, ok := c.effects.(interface {
@@ -1040,14 +1061,16 @@ func factoryCommandJournal(cmd FactoryCommand, p *factoryPrincipal) (json.RawMes
 
 // factoryApplyCommand applies one command the Studio surfaces sent: it writes
 // no provenance, so its journal bytes are the ones those surfaces have always
-// produced.
+// produced. It has no project to consult, so a proposal it saves records the
+// documented default for automatic assessment.
 func factoryApplyCommand(i *FactoryItem, c FactoryCommand, now time.Time) error {
-	return factoryApplyCommandFrom(i, c, nil, now)
+	return factoryApplyCommandFrom(i, c, nil, true, now)
 }
 
 // factoryApplyCommandFrom applies one command, attributing the entries it
-// journals to p in the same mutation.
-func factoryApplyCommandFrom(i *FactoryItem, c FactoryCommand, p *factoryPrincipal, now time.Time) error {
+// journals to p in the same mutation. autoAssess is the effective
+// automatic-assessment preference of the item's project.
+func factoryApplyCommandFrom(i *FactoryItem, c FactoryCommand, p *factoryPrincipal, autoAssess bool, now time.Time) error {
 	switch c.Kind {
 	case "approve":
 		if i.State != "draft" {
@@ -1128,8 +1151,163 @@ func factoryApplyCommandFrom(i *FactoryItem, c FactoryCommand, p *factoryPrincip
 		}
 	case "reconcile", "recover":
 		return ErrFactoryConflict
+	case "revision_propose":
+		return factoryApplyRevisionPropose(i, c, p, autoAssess, now)
+	case "revision_supersede":
+		return factoryApplyRevisionState(i, c, p, "superseded", "revision_superseded", now)
+	case "revision_reject":
+		return factoryApplyRevisionState(i, c, p, "rejected", "revision_rejected", now)
+	case "revision_assess_request":
+		return factoryApplyRevisionAssessRequest(i, c, p, now)
 	default:
 		return ErrFactoryConflict
 	}
+	return nil
+}
+
+// factoryRevisionSavable refuses a proposal mutation the item's state cannot
+// carry: a draft is edited through the draft flow, and work that is over has
+// no revision to propose against. A proposal that was saved before the state
+// moved is retained; only new ones are refused.
+func factoryRevisionSavable(i FactoryItem) error {
+	if len(i.Approvals) == 0 {
+		return fmt.Errorf("%w: the item has no approved revision to propose against", ErrFactoryConflict)
+	}
+	switch i.State {
+	case "queued", "preparing", "implementing", "reviewing", "checking", "repairing", "needs_input", "ready":
+		return nil
+	}
+	return fmt.Errorf("%w: a plan revision cannot be saved while the item is %s", ErrFactoryConflict, i.State)
+}
+
+// factoryRevisionProposalAt finds the named proposal and refuses a command
+// written against a different version, so a caller whose view is stale
+// conflicts instead of moving someone else's decision.
+func factoryRevisionProposalAt(i *FactoryItem, r *FactoryRevisionCommand) (int, error) {
+	if r == nil || strings.TrimSpace(r.ProposalID) == "" {
+		return -1, fmt.Errorf("%w: proposalId required", errFactoryInput)
+	}
+	for n := range i.Proposals {
+		if i.Proposals[n].ID != r.ProposalID {
+			continue
+		}
+		if r.ProposalVersion == 0 || i.Proposals[n].Version != r.ProposalVersion {
+			return -1, fmt.Errorf("%w: proposal %s is at version %d", ErrFactoryConflict, r.ProposalID, i.Proposals[n].Version)
+		}
+		return n, nil
+	}
+	return -1, fmt.Errorf("%w: proposal %s is not on this item", ErrFactoryConflict, r.ProposalID)
+}
+
+// factoryApplyRevisionPropose journals one immutable candidate against the
+// revision that is active now, together with the assessment intent the
+// project's effective setting asks for. It changes no approval, effect, round
+// or readiness: pending work continues under the revision it started under.
+func factoryApplyRevisionPropose(i *FactoryItem, c FactoryCommand, p *factoryPrincipal, autoAssess bool, now time.Time) error {
+	if err := factoryRevisionSavable(*i); err != nil {
+		return err
+	}
+	r := c.Revision
+	if r == nil {
+		return fmt.Errorf("%w: revision payload required", errFactoryInput)
+	}
+	if strings.TrimSpace(r.Plan) == "" || len(r.Plan)+len(r.Spec) > factoryImportLimit {
+		return fmt.Errorf("%w: a plan is required and plan/spec must fit 1 MiB", errFactoryInput)
+	}
+	if r.CandidateHash != FactoryPlanHash(r.Plan, r.Spec) {
+		return fmt.Errorf("%w: candidateHash does not bind the proposed plan/spec", errFactoryInput)
+	}
+	active := i.Approvals[len(i.Approvals)-1]
+	if r.BaseRevision == 0 || r.BaseRevision != active.Revision || r.BaseHash != active.PlanHash {
+		return fmt.Errorf("%w: the proposal is not written against the active approved revision %d", ErrFactoryConflict, active.Revision)
+	}
+	for _, existing := range i.Proposals {
+		if factoryRevisionUnresolved(existing.Status) {
+			return fmt.Errorf("%w: proposal %s still awaits a decision; supersede it explicitly", ErrFactoryConflict, existing.ID)
+		}
+	}
+	createdBy := "studio"
+	if p != nil && p.ClientID != "" {
+		createdBy = p.ClientID
+	}
+	proposal := FactoryRevisionProposal{
+		ID:              factoryRevisionProposalID(i.ID, c.RequestID),
+		Version:         1,
+		BaseRevision:    active.Revision,
+		BaseHash:        active.PlanHash,
+		Plan:            r.Plan,
+		Spec:            r.Spec,
+		CandidateHash:   r.CandidateHash,
+		CreatedBy:       createdBy,
+		AutoAssess:      autoAssess,
+		Status:          "proposed",
+		AssessmentState: "not_requested",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if autoAssess {
+		// The intent is journalled with the proposal, in the same append: a
+		// saved proposal never exists without the intent its setting asked
+		// for, and an intent is not proof that anything was dispatched.
+		proposal.AssessmentState = "pending"
+		proposal.AssessmentAttemptID = factoryRevisionAssessmentAttemptID(proposal.ID)
+	}
+	i.Proposals = append(i.Proposals, proposal)
+	i.History = append(i.History, p.event("revision_proposed", "plan revision proposed", "", now))
+	return nil
+}
+
+// factoryApplyRevisionState retires one unresolved proposal without deleting
+// it: superseding frees the item for a replacement, and rejecting closes the
+// question. Neither restarts or approves anything.
+func factoryApplyRevisionState(i *FactoryItem, c FactoryCommand, p *factoryPrincipal, status, kind string, now time.Time) error {
+	if err := factoryRevisionSavable(*i); err != nil {
+		return err
+	}
+	n, err := factoryRevisionProposalAt(i, c.Revision)
+	if err != nil {
+		return err
+	}
+	proposal := &i.Proposals[n]
+	if proposal.Status != "proposed" && proposal.Status != "awaiting_authorization" {
+		return fmt.Errorf("%w: proposal %s is %s and cannot be %s", ErrFactoryConflict, proposal.ID, proposal.Status, status)
+	}
+	proposal.Status = status
+	proposal.Version++
+	proposal.UpdatedAt = now
+	i.History = append(i.History, p.event(kind, "plan revision "+status, "", now))
+	return nil
+}
+
+// factoryApplyRevisionAssessRequest journals the durable assessment intent for
+// a proposal whose project setting asked for none. It records the intent and
+// nothing more: no planner is contacted here, and "pending" is not proof that
+// a request was dispatched.
+func factoryApplyRevisionAssessRequest(i *FactoryItem, c FactoryCommand, p *factoryPrincipal, now time.Time) error {
+	if err := factoryRevisionSavable(*i); err != nil {
+		return err
+	}
+	n, err := factoryRevisionProposalAt(i, c.Revision)
+	if err != nil {
+		return err
+	}
+	proposal := &i.Proposals[n]
+	if proposal.Status != "proposed" && proposal.Status != "awaiting_authorization" {
+		return fmt.Errorf("%w: proposal %s is %s", ErrFactoryConflict, proposal.ID, proposal.Status)
+	}
+	switch proposal.AssessmentState {
+	case "not_requested", "unavailable":
+	default:
+		return fmt.Errorf("%w: assessment of proposal %s is %s", ErrFactoryConflict, proposal.ID, proposal.AssessmentState)
+	}
+	attempt := factoryRevisionAssessmentAttemptID(proposal.ID)
+	if r := c.Revision; r != nil && r.AttemptID != "" && r.AttemptID != attempt {
+		return fmt.Errorf("%w: attempt %s is not this proposal's assessment intent", ErrFactoryConflict, r.AttemptID)
+	}
+	proposal.AssessmentState = "pending"
+	proposal.AssessmentAttemptID = attempt
+	proposal.Version++
+	proposal.UpdatedAt = now
+	i.History = append(i.History, p.event("revision_assessment_requested", "plan revision assessment requested", "", now))
 	return nil
 }

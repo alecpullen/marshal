@@ -319,16 +319,20 @@ type FactoryItem struct {
 	Version     uint64            `json:"version"`
 	Draft       FactoryCreate     `json:"draft"`
 	Approvals   []FactoryApproval `json:"approvals"`
-	Grants      []FactoryGrant    `json:"grants"`
-	Rounds      []FactoryRound    `json:"rounds"`
-	Workers     []FactoryWorker   `json:"workers"`
-	PRs         []FactoryPR       `json:"prs"`
-	Effects     []FactoryEffect   `json:"effects"`
-	Decision    *FactoryDecision  `json:"decision"`
-	History     []FactoryEvent    `json:"history"`
-	CreatedAt   time.Time         `json:"createdAt"`
-	ApprovedAt  time.Time         `json:"approvedAt"`
-	UpdatedAt   time.Time         `json:"updatedAt"`
+	// Proposals is the append-only history of plan/specification revisions
+	// proposed against this item. It is optional, so an item journalled
+	// before proposals existed replays unchanged.
+	Proposals  []FactoryRevisionProposal `json:"proposals,omitempty"`
+	Grants     []FactoryGrant            `json:"grants"`
+	Rounds     []FactoryRound            `json:"rounds"`
+	Workers    []FactoryWorker           `json:"workers"`
+	PRs        []FactoryPR               `json:"prs"`
+	Effects    []FactoryEffect           `json:"effects"`
+	Decision   *FactoryDecision          `json:"decision"`
+	History    []FactoryEvent            `json:"history"`
+	CreatedAt  time.Time                 `json:"createdAt"`
+	ApprovedAt time.Time                 `json:"approvedAt"`
+	UpdatedAt  time.Time                 `json:"updatedAt"`
 }
 
 type FactoryCommand struct {
@@ -343,6 +347,11 @@ type FactoryCommand struct {
 	ImplementerRouting           json.RawMessage `json:"implementerRouting"`
 	ReviewerRouting              json.RawMessage `json:"reviewerRouting"`
 	ConfirmPreviousWorkerStopped bool            `json:"confirmPreviousWorkerStopped"`
+	// Revision is the structured payload of a plan-revision command:
+	// revision_propose, revision_supersede, revision_reject and
+	// revision_assess_request read it, and every other kind leaves it nil,
+	// so a command those kinds do not carry marshals as it always did.
+	Revision *FactoryRevisionCommand `json:"revision,omitempty"`
 }
 
 // FactoryPlanHash binds exact plan and spec bytes, including whitespace.

@@ -482,6 +482,70 @@ func validateFactoryItem(i FactoryItem) error {
 			}
 		}
 	}
+	unresolved := 0
+	for _, p := range i.Proposals {
+		if e := validateFactoryRevisionProposal(p); e != nil {
+			return e
+		}
+		if factoryRevisionUnresolved(p.Status) {
+			unresolved++
+		}
+	}
+	if unresolved > 1 {
+		return fmt.Errorf("multiple unresolved proposals")
+	}
+	return nil
+}
+
+// validateFactoryRevisionProposal checks one proposal as the journal stores it.
+// A proposal's candidate, base and authorship are immutable content; its state
+// moves, and a state that names an attempt must name one.
+func validateFactoryRevisionProposal(p FactoryRevisionProposal) error {
+	if strings.TrimSpace(p.ID) == "" || p.Version == 0 || p.BaseRevision == 0 || strings.TrimSpace(p.BaseHash) == "" {
+		return fmt.Errorf("invalid proposal identity")
+	}
+	if strings.TrimSpace(p.Plan) == "" || len(p.Plan)+len(p.Spec) > factoryImportLimit || p.CandidateHash != factoryPlanHash(p.Plan, p.Spec) {
+		return fmt.Errorf("invalid proposal content")
+	}
+	if !factoryRevisionProposalStates[p.Status] || !factoryRevisionAssessmentStates[p.AssessmentState] {
+		return fmt.Errorf("invalid proposal state")
+	}
+	if p.CreatedAt.IsZero() || p.UpdatedAt.IsZero() || p.UpdatedAt.Before(p.CreatedAt) {
+		return fmt.Errorf("invalid proposal timestamp")
+	}
+	if (p.AssessmentState == "pending" || p.AssessmentState == "assessing") && strings.TrimSpace(p.AssessmentAttemptID) == "" {
+		return fmt.Errorf("invalid proposal assessment attempt")
+	}
+	if a := p.Assessment; a != nil {
+		if !factoryRevisionClassifications[a.Classification] || !factoryRevisionRoutings[a.Recommendation] || !factoryRevisionStrategies[a.Strategy] || strings.TrimSpace(a.AssessorID) == "" || a.CandidateHash != p.CandidateHash || a.BaseRevision != p.BaseRevision {
+			return fmt.Errorf("invalid proposal assessment")
+		}
+	}
+	if d := p.Delivery; d != nil {
+		if !factoryRevisionStrategies[d.Strategy] || !factoryRevisionDeliveryStates[d.State] || d.CandidateHash != p.CandidateHash {
+			return fmt.Errorf("invalid proposal delivery")
+		}
+	}
+	if p.Routing != "" && !factoryRevisionRoutings[p.Routing] {
+		return fmt.Errorf("invalid proposal routing")
+	}
+	if p.PauseState != "" && !factoryRevisionPauseStates[p.PauseState] {
+		return fmt.Errorf("invalid proposal pause state")
+	}
+	return nil
+}
+
+// factoryRevisionCarryOver checks one stored proposal against the update that
+// carried it forward. Everything but its state, assessment, authority and
+// delivery is journal history, and its version moves at most one step per
+// mutation, so a caller writing from a stale read conflicts.
+func factoryRevisionCarryOver(a, b FactoryRevisionProposal) error {
+	if a.ID != b.ID || a.BaseRevision != b.BaseRevision || a.BaseHash != b.BaseHash || a.Plan != b.Plan || a.Spec != b.Spec || a.CandidateHash != b.CandidateHash || a.CreatedBy != b.CreatedBy || a.AutoAssess != b.AutoAssess || !a.CreatedAt.Equal(b.CreatedAt) {
+		return fmt.Errorf("immutable proposal content")
+	}
+	if b.Version < a.Version || b.Version > a.Version+1 {
+		return fmt.Errorf("invalid proposal version")
+	}
 	return nil
 }
 func (s *FactoryStore) replayRequest(request, id, hash string) (FactoryItem, bool, error) {
@@ -617,6 +681,16 @@ func (s *FactoryStore) Update(id, requestID string, expectedVersion uint64, comm
 		b, _ := json.Marshal(old.Grants[n])
 		if !bytes.Equal(a, b) {
 			return FactoryItem{}, fmt.Errorf("immutable grant history")
+		}
+	}
+	// Proposed revisions are journal history too: a stored proposal is
+	// carried forward, never rewritten, and only its state moves.
+	if len(i.Proposals) < len(old.Proposals) {
+		return FactoryItem{}, fmt.Errorf("immutable proposal history")
+	}
+	for n := range old.Proposals {
+		if e := factoryRevisionCarryOver(old.Proposals[n], i.Proposals[n]); e != nil {
+			return FactoryItem{}, e
 		}
 	}
 	i.Version++

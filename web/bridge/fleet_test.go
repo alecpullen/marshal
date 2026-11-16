@@ -182,6 +182,68 @@ func TestTwoSourceBuildsWarnOfSkew(t *testing.T) {
 	}
 }
 
+// agentStatus returns the agent's row as Snapshot reports it.
+func agentStatus(t *testing.T, f *Fleet, id string) AgentStatus {
+	t.Helper()
+	for _, st := range f.Snapshot() {
+		if st.ID == id {
+			return st
+		}
+	}
+	t.Fatalf("agent %s is not in the snapshot", id)
+	return AgentStatus{}
+}
+
+// TestAnAgentsVersionWarningIsOnItsStatus: the wire carries a sentence naming
+// both versions, whether the agent runs on its project's child or on a child
+// of its own (decisions 4 and 5).
+func TestAnAgentsVersionWarningIsOnItsStatus(t *testing.T) {
+	t.Run("on a project child", func(t *testing.T) {
+		f, _ := projectFleetWith(t, func(fake *fakeProjectChild) {
+			fake.fakeAgent.mu.Lock()
+			fake.fakeAgent.results["initialize"] = map[string]any{
+				"protocolVersion": 1,
+				"agentInfo":       map[string]any{"version": "v2.0.0"},
+			}
+			fake.fakeAgent.mu.Unlock()
+		})
+		f.SetHostProcessesOnly()
+		f.buildVersion = "v1.0.0"
+		id, err := f.Spawn(ctlContext(t), t.TempDir(), SpawnOptions{Name: "one"})
+		if err != nil {
+			t.Fatalf("Spawn: %v", err)
+		}
+		want := "agent runs marshal v2.0.0; the daemon is v1.0.0"
+		if got := agentStatus(t, f, id).VersionWarning; got != want {
+			t.Fatalf("VersionWarning = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("on a child of its own", func(t *testing.T) {
+		f := testFleetWithVersion(t, "v1.2.3")
+		id, err := f.spawnWithAgentVersion(context.Background(), "v1.0.0")
+		if err != nil {
+			t.Fatalf("spawn: %v", err)
+		}
+		want := "agent runs marshal v1.0.0; the daemon is v1.2.3"
+		if got := agentStatus(t, f, id).VersionWarning; got != want {
+			t.Fatalf("VersionWarning = %q, want %q", got, want)
+		}
+	})
+}
+
+// TestNoWarningLeavesTheFieldEmpty: matching versions say nothing on the wire.
+func TestNoWarningLeavesTheFieldEmpty(t *testing.T) {
+	f := testFleetWithVersion(t, "v1.2.3")
+	id, err := f.spawnWithAgentVersion(context.Background(), "v1.2.3")
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	if got := agentStatus(t, f, id).VersionWarning; got != "" {
+		t.Fatalf("VersionWarning = %q, want it empty: both sides report v1.2.3", got)
+	}
+}
+
 func newTestFleetWithLimit(t *testing.T, limit int) *Fleet {
 	t.Helper()
 	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))

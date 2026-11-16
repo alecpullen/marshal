@@ -164,7 +164,7 @@ The ready-PR redraft is reachable and covered. It was blocked while
 `factoryWorkers.Observe` skipped a parked worker entirely: a ready item's
 workers are all parked, so `RuntimeKnown`, `TurnIdle`, `ActiveWorkKnown` and
 `WorkIdle` all stayed false and `activateAuthorizedRevision` returned before the
-`set_draft` transition. Commit `29272851` makes `Observe` report a fully parked
+`set_draft` transition. Commit `2cb0e5b9` makes `Observe` report a fully parked
 item as known-idle — a parked worker has no runtime, hence no turn and no active
 work. The activation gate itself is unchanged and still requires the full
 conjunction, so `TestFactoryRevisionInterruptDoesNotAssumeIdle` and

@@ -183,13 +183,13 @@ merged and nothing under `internal/...` or `cmd/` was modified.
 
 | Task | Deliverable | Commit |
 |---|---|---|
-| 1 | Proposal journal: `FactoryRevisionProposal`, append-only history, `ProjectSettings.AutoAssessPlanChanges`, the two grant booleans | `65f468cf` |
-| 5 | Studio controls: `FactoryRevision.svelte`, factory item, project settings, clients panel, typed `factory.ts`/`api.ts` | `79bd7e82` |
-| 2 | Assessment: `revisionPlanner` seam with the unavailable default, intents and claim/result/retry, the three MCP tools, delegated authority under the policy lock | `7ddc8184` |
-| 3 | Authorization and activation: the three revision commands, safe-boundary gate, ready-PR redraft, follow-up intent and reconciliation, server-derived Studio identity | `92475ce9` |
-| 4 | Delivery: `RevisionSteeringState`/`Receipt`, `RevisionSteeringStatus`/`RevisionSendNow`, receipt correlation, `wait_safe`/`interrupt`/`hold`, pause and explicit resume | `11c8fd87` |
-| fix | `factoryWorkers.Observe` reports a fully parked item as known-idle, so the ready-PR redraft is reachable in production | `29272851` |
-| 6 | `web/bridge/factory_revision_integration_test.go` and this record; controller commits it after the documentation lands | task 6 |
+| 1 | Proposal journal: `FactoryRevisionProposal`, append-only history, `ProjectSettings.AutoAssessPlanChanges`, the two grant booleans | `1a92ec18` |
+| 5 | Studio controls: `FactoryRevision.svelte`, factory item, project settings, clients panel, typed `factory.ts`/`api.ts` | `aa483796` |
+| 2 | Assessment: `revisionPlanner` seam with the unavailable default, intents and claim/result/retry, the three MCP tools, delegated authority under the policy lock | `63c45891` |
+| 3 | Authorization and activation: the three revision commands, safe-boundary gate, ready-PR redraft, follow-up intent and reconciliation, server-derived Studio identity | `b0a899e4` |
+| 4 | Delivery: `RevisionSteeringState`/`Receipt`, `RevisionSteeringStatus`/`RevisionSendNow`, receipt correlation, `wait_safe`/`interrupt`/`hold`, pause and explicit resume | `2bc44b7d` |
+| fix | `factoryWorkers.Observe` reports a fully parked item as known-idle, so the ready-PR redraft is reachable in production | `2cb0e5b9` |
+| 6 | `web/bridge/factory_revision_integration_test.go` and this record | `c22a266c` |
 
 The tasks ran 1, 5, 2, 3, 4, 6 rather than in numeric order: task 5 consumes only
 task 1's types and shares no file with tasks 2–4, so the Studio controls could
@@ -201,10 +201,14 @@ land first. Task 6's four tests are `TestFactoryRevisionEndToEnd`,
 proposal, assessment, authorization, an interrupt with a correlated receipt, the
 old effect settling, activation, and a fresh implementation/CI/review on the new
 revision, plus the missing-planner manual choice, ready-PR redraft, a direct
-steering event, the exhausted allowance, lost responses at assessment, delivery,
-activation and follow-up, restart without duplicate, and retained prior
-approval/review history. Each asserts that no old review marks the new revision
-ready.
+steering event, the exhausted allowance, lost responses at assessment, delivery
+and follow-up, restart without duplicate, and retained prior approval/review
+history. Activation is a local journal append with no response to lose, so
+post-activation idempotence is asserted by the restart and replay passes
+instead: one `revision_activated` event and no duplicate approval after a
+restart in the interrupt-recovery and legacy-replay tests, and no duplicated
+item, approval or round after the follow-up's reconciliation. The end-to-end and
+follow-up tests assert that no old review marks the new revision ready.
 
 ### Deviations from this plan, and why
 
@@ -212,11 +216,14 @@ ready.
 |---|---|---|
 | Base current `main` at `1bc6d64b` | Base `8e983911`, the approved-documents commit | The plan's base predates its own documents; starting from the commit that carries them keeps the diff to the work described |
 | Task 1 also modifies `web/bridge/projects.go` | Not modified | The new setting is optional (nil means true) and round-trips through the existing project-settings path |
-| Ready-PR redraft recorded as an open limitation if unreachable | Fixed in `29272851`; the subtest runs and passes | The blocker was a real defect — `Observe` skipped parked workers, so a fully parked ready item was never known-idle. A parked worker has no runtime, hence no turn and no active work. The activation gate is unchanged and its idle-safety tests still pass |
-| The integration test began with a conditional `t.Skipf` | The guard now fails (`t.Fatalf`) | A regression must be visible; the ready transition is reachable and covered |
+| Ready-PR redraft recorded as an open limitation if unreachable | Fixed in `2cb0e5b9`; the subtest runs and passes | The blocker was a real defect — `Observe` skipped parked workers, so a fully parked ready item was never known-idle. A parked worker has no runtime, hence no turn and no active work. The activation gate is unchanged and its idle-safety tests still pass |
 | Task 6 creates the integration test only | Also appended this record and the design, specification and README records | The plan's own step requires the implementation record; the approved text is preserved and the records are additive |
 
 ### Acceptance gates, measured on this branch
+
+Recorded from the run at the base commit, not derived from the tree: these
+durations, counts and pass/fail lines are properties of that run, and reading
+the code cannot confirm or refute them.
 
 | Gate | Result |
 |---|---|

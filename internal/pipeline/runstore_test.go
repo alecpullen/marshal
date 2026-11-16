@@ -294,6 +294,10 @@ func TestTakeoverLockIsAtomicUnderConcurrentAttempts(t *testing.T) {
 		if err := rs.AcquireLock(stale); err != nil {
 			t.Fatalf("round %d: AcquireLock: %v", round, err)
 		}
+		expected, ok, lerr := rs.Lock()
+		if lerr != nil || !ok {
+			t.Fatalf("round %d: read stale lock: ok=%v err=%v", round, ok, lerr)
+		}
 
 		var arrived, finished sync.WaitGroup
 		arrived.Add(takers)
@@ -305,7 +309,7 @@ func TestTakeoverLockIsAtomicUnderConcurrentAttempts(t *testing.T) {
 				defer finished.Done()
 				arrived.Done()
 				<-release
-				errs[i] = rs.TakeoverLock(RunLock{
+				errs[i] = rs.TakeoverLock(expected, RunLock{
 					RunID: fmt.Sprintf("taker-%d", i), PID: 100 + i, Host: "h", AcquiredAt: "new",
 				})
 			}(i)
@@ -358,7 +362,8 @@ func TestTakeoverLockRestoresADisplacedLock(t *testing.T) {
 		t.Fatalf("NewPaths: %v", err)
 	}
 	rs := NewRunStore(paths)
-	if err := rs.AcquireLock(RunLock{RunID: "stale", PID: 1, Host: "h", AcquiredAt: "old"}); err != nil {
+	stale := RunLock{RunID: "stale", PID: 1, Host: "h", AcquiredAt: "old"}
+	if err := rs.AcquireLock(stale); err != nil {
 		t.Fatalf("AcquireLock: %v", err)
 	}
 	// A competing owner replaces the lock in the window between the
@@ -370,7 +375,7 @@ func TestTakeoverLockRestoresADisplacedLock(t *testing.T) {
 		}
 	}
 
-	err = rs.TakeoverLock(RunLock{RunID: "me", PID: 2, Host: "h", AcquiredAt: "now"})
+	err = rs.TakeoverLock(stale, RunLock{RunID: "me", PID: 2, Host: "h", AcquiredAt: "now"})
 	if err == nil {
 		t.Fatal("TakeoverLock should refuse a lock that changed under it")
 	}

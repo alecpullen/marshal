@@ -1174,7 +1174,7 @@ func (c *Controller) Run(ctx context.Context) error {
 		case l.RunID != c.runID:
 			// A different run of this plan: stale by definition.
 			c.noteLedger("Taking over stale lock from run %s (pid %d)", l.RunID, l.PID)
-			if err := c.RunStore.TakeoverLock(newLock()); err != nil {
+			if err := c.RunStore.TakeoverLock(l, newLock()); err != nil {
 				return err
 			}
 		default:
@@ -1184,7 +1184,7 @@ func (c *Controller) Run(ctx context.Context) error {
 			case LivenessDead:
 				c.noteLedger("Taking over stale lock from crashed run %s (pid %d on %s)",
 					l.RunID, l.PID, l.Host)
-				if err := c.RunStore.TakeoverLock(newLock()); err != nil {
+				if err := c.RunStore.TakeoverLock(l, newLock()); err != nil {
 					return err
 				}
 			case LivenessAlive:

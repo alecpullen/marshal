@@ -32,6 +32,7 @@
   import Transcript from '../transcript/Transcript.svelte'
   import NowBar from '../transcript/NowBar.svelte'
   import Segmented from '../ui/Segmented.svelte'
+  import MarshalAccessPanel from '../marshal/MarshalAccessPanel.svelte'
   import { browseKey, flattenVisible, nodeText } from '../transcript/browse'
   import { nextOverride, parseDensity, effective, type Density } from '../transcript/density'
   import type { TranscriptCtx } from '../transcript/ctx'
@@ -753,6 +754,26 @@
     </span>
   </header>
 
+  <!--
+    This session's Studio connection and its own access overrides. It is the
+    same control set a factory worker uses; only the identities differ, and the
+    bridge resolves the project from the session's own association. It sits
+    closed so the transcript keeps the height, and it is never a gate on the
+    conversation: an offline, ambiguous or unauthorized state is shown, not
+    thrown.
+  -->
+  {#if !embedded}
+    <details class="studio-access" data-testid="session-studio-access">
+      <summary>Studio access</summary>
+      <MarshalAccessPanel
+        sessionId={sessionId}
+        levels={['session']}
+        heading="This session"
+        testId="session-marshal-access"
+      />
+    </details>
+  {/if}
+
   <div class="body">
   <div class="main">
   {#if drill.length}
@@ -945,6 +966,20 @@
     flex: 1;
     min-width: 0;
     flex-direction: column;
+  }
+  /* The Studio section is a disclosure, not a column: it keeps the transcript's
+     height when closed and scrolls its own card when open. */
+  .studio-access {
+    border-bottom: 1px solid var(--color-border);
+    padding: 0.5rem calc(var(--space-4, 1rem));
+  }
+  .studio-access > summary {
+    cursor: pointer;
+    font-size: 0.75rem;
+    color: var(--color-muted);
+  }
+  .studio-access[open] > summary {
+    margin-bottom: 0.5rem;
   }
   .composer {
     width: 100%;

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"marshal/internal/pubsub"
@@ -102,6 +103,19 @@ type steeringControl struct {
 	// boundary). A unit admitted before the interruption finishes; a later
 	// unit is rejected while the operation is interrupted.
 	units int
+
+	// userDirection is the session-owned ledger of user-direction receipts, in
+	// confirmation order: one entry per bridge-issued receipt this session's
+	// user confirmed, and the exact operation it covers. Nothing a model
+	// writes can reach it — it is not tool arguments, prompt text or
+	// transcript content — and nothing persists it. It outlives a turn,
+	// because a confirmation is about one operation rather than one turn.
+	userDirection []UserDirectionReceipt
+	// marshalSession is the verified Studio association those receipts bind
+	// to: the instance generation and project the bridge verified for this
+	// session. A different generation or project revokes what the ledger
+	// holds; see RecordMarshalSession.
+	marshalSession MarshalSession
 }
 
 // steeringRequest is one accepted Send now submission.
@@ -1344,4 +1358,185 @@ func steeringTexts(entries []SteeringMessage) []string {
 		out[i] = e.Text
 	}
 	return out
+}
+
+// User direction receipts.
+//
+// A factory approval or answer that acts on a person's instruction needs
+// evidence that a person gave it, and that evidence is the bridge's: the bridge
+// mints one opaque, expiring receipt per exact operation and answers the attempt
+// that has none with it. The trusted confirmation path then asks the person
+// about that exact operation and, when they agree, records the receipt here. The
+// transport that retries the operation presents it, and the bridge consumes it.
+//
+// What this ledger is not: it is not reachable from model content, it holds no
+// credential, and nothing mints a receipt. The id it stores is the bridge's —
+// this session cannot fabricate one — so a confirmation that is recorded here is
+// a confirmation that the bridge will recognize for exactly one operation.
+
+// MarshalSession is the verified Studio association a user-direction receipt
+// binds to: the bridge instance generation this session enrolled on and the
+// project it acts on. The zero value means "not verified", and a session that
+// never enrolled holds no receipts at all.
+type MarshalSession struct {
+	InstanceID string
+	Generation string
+	ProjectID  string
+}
+
+// Verified reports whether there is an association a receipt can bind to. Every
+// identity must be present: a partly claimed association is not one.
+func (m MarshalSession) Verified() bool {
+	return strings.TrimSpace(m.InstanceID) != "" &&
+		strings.TrimSpace(m.Generation) != "" &&
+		strings.TrimSpace(m.ProjectID) != ""
+}
+
+// UserDirectionReceipt is one bridge-issued receipt this session's user
+// confirmed, together with the exact operation that confirmation covers: the
+// project, the action, the target (the item, the version it was made against and
+// the decision an answer resolves) and the request id the operation carries.
+type UserDirectionReceipt struct {
+	ID         string
+	ExpiresAt  time.Time
+	ProjectID  string
+	Action     string
+	Target     string
+	RequestID  string
+	Generation string
+}
+
+// UserDirectionRequest is what a trusted confirmation returns: the receipt the
+// bridge minted for the operation the person was shown, and when it lapses.
+type UserDirectionRequest struct {
+	ID        string
+	ExpiresAt time.Time
+	ProjectID string
+	Action    string
+	Target    string
+	RequestID string
+}
+
+var (
+	// errUserDirectionUnverified is a confirmation on a session whose Studio
+	// association the bridge never verified: there is no generation or project
+	// for a receipt to bind to, so none is recorded.
+	errUserDirectionUnverified = errors.New("user direction: this session has no verified Studio association")
+	// errUserDirectionInvalid is a confirmation that does not name exactly one
+	// operation.
+	errUserDirectionInvalid = errors.New("user direction: the confirmation does not name one operation")
+	// errUserDirectionExpired is a receipt that was already past its expiry when
+	// the confirmation arrived.
+	errUserDirectionExpired = errors.New("user direction: the receipt has expired")
+)
+
+// RecordMarshalSession records the verified Studio association this session
+// enrolled on. A different generation or project than the one already recorded
+// revokes every receipt the session holds: a receipt is evidence for one
+// generation's project, and nothing carries over to another.
+func (s *State) RecordMarshalSession(assoc MarshalSession) {
+	if s == nil {
+		return
+	}
+	assoc.InstanceID = strings.TrimSpace(assoc.InstanceID)
+	assoc.Generation = strings.TrimSpace(assoc.Generation)
+	assoc.ProjectID = strings.TrimSpace(assoc.ProjectID)
+	s.steeringMu.Lock()
+	defer s.steeringMu.Unlock()
+	if s.steering.marshalSession != assoc {
+		s.steering.userDirection = nil
+	}
+	s.steering.marshalSession = assoc
+}
+
+// MarshalSession returns the verified Studio association this session's receipts
+// bind to. The zero value means the session has none.
+func (s *State) MarshalSession() MarshalSession {
+	if s == nil {
+		return MarshalSession{}
+	}
+	s.steeringMu.Lock()
+	defer s.steeringMu.Unlock()
+	return s.steering.marshalSession
+}
+
+// ConfirmUserDirection records the user's confirmation of one factory
+// operation: the opaque receipt the bridge minted, the operation it covers and
+// when it lapses.
+//
+// Only the trusted approval path calls it — after the person was shown exactly
+// this operation and agreed to it. Nothing here mints a receipt: the id is the
+// bridge's, so a session can record a confirmation but never invent evidence of
+// one. The receipt binds to the recorded association's generation, and a
+// confirmation for another project is refused rather than rebound.
+func (s *State) ConfirmUserDirection(req UserDirectionRequest) (UserDirectionReceipt, error) {
+	if s == nil {
+		return UserDirectionReceipt{}, errUserDirectionInvalid
+	}
+	req.ID = strings.TrimSpace(req.ID)
+	req.ProjectID = strings.TrimSpace(req.ProjectID)
+	req.Action = strings.TrimSpace(req.Action)
+	req.RequestID = strings.TrimSpace(req.RequestID)
+	if req.ID == "" || req.ProjectID == "" || req.Action == "" || req.Target == "" || req.RequestID == "" {
+		return UserDirectionReceipt{}, errUserDirectionInvalid
+	}
+	s.steeringMu.Lock()
+	defer s.steeringMu.Unlock()
+	assoc := s.steering.marshalSession
+	if !assoc.Verified() || assoc.ProjectID != req.ProjectID {
+		return UserDirectionReceipt{}, errUserDirectionUnverified
+	}
+	if !s.clockNow().Before(req.ExpiresAt) {
+		return UserDirectionReceipt{}, errUserDirectionExpired
+	}
+	receipt := UserDirectionReceipt{
+		ID:         req.ID,
+		ExpiresAt:  req.ExpiresAt.UTC(),
+		ProjectID:  req.ProjectID,
+		Action:     req.Action,
+		Target:     req.Target,
+		RequestID:  req.RequestID,
+		Generation: assoc.Generation,
+	}
+	// A replayed confirmation replaces the entry it names rather than adding a
+	// second one: one operation owes one confirmation.
+	for i := range s.steering.userDirection {
+		if s.steering.userDirection[i].ID == receipt.ID {
+			s.steering.userDirection[i] = receipt
+			return receipt, nil
+		}
+	}
+	s.steering.userDirection = append(s.steering.userDirection, receipt)
+	return receipt, nil
+}
+
+// TakeUserDirectionReceipt consumes the confirmation for exactly this operation
+// if the session still holds one. The entry is removed as it is handed back, so
+// one confirmation authorizes one attempt, and an expired entry is dropped
+// rather than returned: a receipt past its expiry is not evidence.
+func (s *State) TakeUserDirectionReceipt(projectID, action, target, requestID string) (UserDirectionReceipt, bool) {
+	if s == nil {
+		return UserDirectionReceipt{}, false
+	}
+	s.steeringMu.Lock()
+	defer s.steeringMu.Unlock()
+	now := s.clockNow()
+	kept := s.steering.userDirection[:0]
+	var taken UserDirectionReceipt
+	found := false
+	for _, receipt := range s.steering.userDirection {
+		if !now.Before(receipt.ExpiresAt) {
+			// Expired: not evidence, and not kept.
+			continue
+		}
+		if !found && receipt.ProjectID == projectID && receipt.Action == action &&
+			receipt.Target == target && receipt.RequestID == requestID {
+			taken = receipt
+			found = true
+			continue
+		}
+		kept = append(kept, receipt)
+	}
+	s.steering.userDirection = kept
+	return taken, found
 }

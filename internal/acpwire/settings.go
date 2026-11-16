@@ -28,7 +28,124 @@ const (
 	MethodSaveVerifyCommands = "session/save_verify_commands"
 	MethodMCPLogin           = "session/mcp_login"
 	UpdateSessionConfig      = "session_config"
+	// The built-in Studio session's access surface. These are a user's
+	// settings, so they are session-scoped like every other settings call and
+	// reach the agent side only through the client seam: no tool and no model
+	// content names them.
+	MethodMarshalAccess         = "session/marshal_access"
+	MethodSaveMarshalAccess     = "session/save_marshal_access"
+	MethodSelectMarshalInstance = "session/select_marshal_instance"
 )
+
+// MarshalAccess is a built-in session's factory authority as the access
+// surface reads and writes it. Every field is a pointer because "unset" and an
+// explicit false are different answers: an unset field inherits the layer
+// beneath it, and an explicit false is a denial that stays one until it is
+// reset. The zero value therefore writes no change, which is exactly what a
+// reset stores.
+type MarshalAccess struct {
+	Read              *bool   `json:"read,omitempty"`
+	CreateDraft       *bool   `json:"createDraft,omitempty"`
+	EditDraft         *bool   `json:"editDraft,omitempty"`
+	AnswerQuestion    *bool   `json:"answerQuestion,omitempty"`
+	ApproveAndQueue   *bool   `json:"approveAndQueue,omitempty"`
+	ApprovalAuthority *string `json:"approvalAuthority,omitempty"` // none, user_directed, standing
+}
+
+// MarshalAccessLayer is one level's stored access and the opaque version a
+// write to it must name. A layer is the project's defaults when the view
+// carries no override, and one session's (or worker's) override otherwise.
+type MarshalAccessLayer struct {
+	Access  MarshalAccess `json:"access"`
+	Version string        `json:"version"`
+}
+
+// MarshalAccessView is one session's Studio connection and effective built-in
+// access. State is the connection: connected, ambiguous, unavailable,
+// unsupported or unauthorized. The layers and the effective access are the
+// policy, which is stored whether or not a connection is up.
+//
+// Stale is set on the answer to a write the server refused because the version
+// it named had moved: the view then carries the value that won, so an editor
+// shows the conflict instead of re-reading blind. A write is otherwise an
+// ordinary answer, and a surface never treats a conflict as a failed call.
+type MarshalAccessView struct {
+	State      string   `json:"state"`
+	Reason     string   `json:"reason,omitempty"`
+	InstanceID string   `json:"instanceId,omitempty"`
+	Generation string   `json:"generation,omitempty"`
+	ProjectID  string   `json:"projectId,omitempty"`
+	SessionID  string   `json:"sessionId,omitempty"`
+	WorkerID   string   `json:"workerId,omitempty"`
+	Candidates []string `json:"candidates,omitempty"`
+	// SelectedProjectID is the project picked for a session whose enrollment
+	// was ambiguous. SelectionVersion is the version a selection write names.
+	SelectedProjectID string              `json:"selectedProjectId,omitempty"`
+	SelectionVersion  string              `json:"selectionVersion,omitempty"`
+	Default           MarshalAccessLayer  `json:"default"`
+	Override          *MarshalAccessLayer `json:"override,omitempty"`
+	// OverrideVersion is the version a session-layer write must name. It is
+	// present even when no override is stored: that level reports the stable
+	// version of the absent value, so the first write from a surface that has
+	// read it is conditional on exactly what it was shown.
+	OverrideVersion string            `json:"overrideVersion,omitempty"`
+	Effective       MarshalAccess     `json:"effective"`
+	Source          map[string]string `json:"source,omitempty"`
+	// Editable says this surface may write the layers. A connection that is
+	// offline, ambiguous or unauthorized never makes it false on its own: the
+	// policy is a stored setting.
+	Editable bool `json:"editable"`
+	// Stale says a write was refused because the version it named had moved.
+	Stale bool `json:"stale,omitempty"`
+}
+
+// MarshalAccessParams is session/marshal_access's params.
+type MarshalAccessParams struct {
+	SessionID string `json:"sessionId"`
+}
+
+// The connection states an access view reports. They are the wire's words, so
+// both surfaces name the same one, and a state is never a call's failure: an
+// offline, ambiguous or unauthorized session is an answer.
+const (
+	MarshalAccessConnected    = "connected"
+	MarshalAccessAmbiguous    = "ambiguous"
+	MarshalAccessUnavailable  = "unavailable"
+	MarshalAccessUnsupported  = "unsupported"
+	MarshalAccessUnauthorized = "unauthorized"
+)
+
+// CodeMarshalAccessUnavailable is the code an access write returns when the
+// session has no Studio bridge to write to. The read surface reports the same
+// condition as a state, so only a write — which the user asked for — fails.
+const CodeMarshalAccessUnavailable ErrorCode = "marshal_access_unavailable"
+
+// The two levels an access write names. A project layer is the default every
+// session of the project inherits; a session layer is the one session's (or
+// worker's) override.
+const (
+	MarshalAccessScopeProject = "project"
+	MarshalAccessScopeSession = "session"
+)
+
+// SaveMarshalAccessParams is session/save_marshal_access's params. Scope names
+// the level: "project" writes the project's defaults and "session" this
+// session's override. The session is always the caller's own: the client never
+// names a session it does not hold.
+type SaveMarshalAccessParams struct {
+	SessionID string        `json:"sessionId"`
+	Scope     string        `json:"scope"`
+	Access    MarshalAccess `json:"access"`
+	Version   string        `json:"version"`
+}
+
+// SelectMarshalInstanceParams is session/select_marshal_instance's params: the
+// project an ambiguous session acts on, or none to clear the choice.
+type SelectMarshalInstanceParams struct {
+	SessionID string `json:"sessionId"`
+	ProjectID string `json:"projectId,omitempty"`
+	Version   string `json:"version"`
+}
 
 // HostCallParams names the session whose runtime serves a host call: the
 // client's current session. config/provider_templates and trust/prompt take

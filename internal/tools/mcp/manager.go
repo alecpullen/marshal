@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,8 @@ import (
 	"marshal/internal/redact"
 	"marshal/internal/sandbox/envutil"
 	"marshal/internal/tools/registry"
+	"net/http"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -395,6 +398,187 @@ func (m *Manager) RegisterTools(reg *registry.Registry) error {
 	return nil
 }
 
+// The built-in Marshal Studio client.
+//
+// A session that enrolled on the daemon it runs on is bound to the project the
+// daemon already tracks for it, and presents that binding to the factory's own
+// tool surface. The client is instance-scoped: it is built here, it is never a
+// user MCP config entry, and its credential, its transport and its identity
+// belong to this session alone.
+const (
+	// MarshalStudioServerName is the server name the built-in client registers
+	// under, so its tools are addressed as "mcp.marshal-studio.<tool>" exactly
+	// as a configured server's are. The name is fixed: a session cannot choose
+	// to look like another server, and the bridge's built-in identity is the
+	// credential's, not this string's.
+	MarshalStudioServerName = "marshal-studio"
+	// MarshalStudioEndpoint is the built-in client's URL. The host is a
+	// placeholder: the caller's transport dials the daemon's socket, so nothing
+	// here is resolved, and the endpoint is never a network address.
+	MarshalStudioEndpoint = "http://daemon/mcp"
+)
+
+var (
+	// ErrMarshalStudioUnauthorized is a built-in call the instance refused: the
+	// credential lapsed, the generation moved on, or the operation is outside
+	// the access this session holds.
+	ErrMarshalStudioUnauthorized = errors.New("marshal studio: not authorized")
+	// ErrMarshalStudioUnavailable is a built-in call nothing answered: the
+	// instance is gone, or the session is no longer enrolled.
+	ErrMarshalStudioUnavailable = errors.New("marshal studio: unavailable")
+	// ErrMarshalStudioUnknown is a built-in tool the instance does not
+	// advertise — a capability that was never granted rather than one that was
+	// lost.
+	ErrMarshalStudioUnknown = errors.New("marshal studio: unknown tool")
+)
+
+// MarshalStudioOptions is one session's built-in client: where it dials, what it
+// presents, and the hooks its recovery rules use. Every field is supplied by the
+// runtime that holds the enrollment; nothing here is read from a user's config
+// and nothing here is written to one.
+type MarshalStudioOptions struct {
+	// URL is the endpoint. Empty means MarshalStudioEndpoint.
+	URL string
+	// HTTPClient sends the requests. It is how the client reaches the daemon's
+	// socket; nil leaves the default transport, which cannot reach a socket.
+	HTTPClient *http.Client
+	// TokenSource supplies the enrollment credential once per request, so a
+	// revalidated credential is picked up without rebuilding the client.
+	TokenSource func(ctx context.Context) (string, error)
+	// RequestHeaders yields extra headers for one POST. Optional.
+	RequestHeaders func(ctx context.Context) map[string]string
+	// UserDirectionHeader and ConfirmUserDirection admit one operation the
+	// instance refused for want of a person's direction. The header name comes
+	// from the caller, and the confirmer is the session's ordinary approval
+	// path.
+	UserDirectionHeader  string
+	ConfirmUserDirection func(ctx context.Context, challenge UserDirectionChallenge) (string, error)
+	// Revalidate re-runs discovery and enrollment after a 401 or a transport
+	// failure. It is consulted at most once per call.
+	Revalidate func(ctx context.Context) error
+	// Timeout bounds the initialize handshake. Zero means mcpServerTimeout.
+	Timeout time.Duration
+}
+
+// AttachMarshalStudio connects this session's built-in Studio client and keeps
+// it, so RegisterTools discovers its tools through the same tools/list path a
+// configured server takes — names, schemas and bounded results are the
+// instance's, never hand-written here.
+//
+// The error is the caller's to record as a status: no enrollment, no socket and
+// an instance that refuses all leave the session exactly as it was, with no
+// built-in tools and every other tool intact. Nothing is added to a client list
+// unless the handshake succeeded, so a failed attach registers nothing.
+func (m *Manager) AttachMarshalStudio(ctx context.Context, opts MarshalStudioOptions) error {
+	if m == nil {
+		return fmt.Errorf("%w: no manager", ErrMarshalStudioUnavailable)
+	}
+	if opts.TokenSource == nil {
+		return fmt.Errorf("%w: this session holds no enrollment", ErrMarshalStudioUnauthorized)
+	}
+	url := strings.TrimSpace(opts.URL)
+	if url == "" {
+		url = MarshalStudioEndpoint
+	}
+	clientOpts := []HTTPClientOption{
+		WithHTTPClientLogger(m.log()),
+		WithHTTPOAuth(opts.TokenSource),
+	}
+	if opts.HTTPClient != nil {
+		clientOpts = append(clientOpts, WithHTTPClient(opts.HTTPClient))
+	}
+	if opts.RequestHeaders != nil {
+		clientOpts = append(clientOpts, WithHTTPRequestHeaders(opts.RequestHeaders))
+	}
+	if opts.Revalidate != nil {
+		clientOpts = append(clientOpts, WithHTTPRevalidator(opts.Revalidate))
+	}
+	if opts.ConfirmUserDirection != nil {
+		clientOpts = append(clientOpts, WithUserDirectionConfirm(opts.UserDirectionHeader, opts.ConfirmUserDirection))
+	}
+
+	client := NewHTTPClient(MarshalStudioServerName, url, nil, clientOpts...)
+	timeout := opts.Timeout
+	if timeout <= 0 {
+		timeout = mcpServerTimeout
+	}
+	startCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if err := client.Start(startCtx); err != nil {
+		// A client that never completed its handshake owns nothing worth
+		// keeping, and registering its tools would advertise a surface this
+		// session cannot use.
+		_ = client.Close()
+		return marshalStudioError(err)
+	}
+	m.clients = append(m.clients, client)
+	m.log().Info("mcp connect", "name", MarshalStudioServerName, "transport", "http")
+	return nil
+}
+
+// marshalStudioError labels a built-in failure with the cause a caller acts on.
+// The instance's own words stay in the message; the class is what a model and a
+// transcript can reason about.
+func marshalStudioError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var auth *oauth.ErrAuthRequired
+	if errors.As(err, &auth) {
+		return fmt.Errorf("%w: %v", ErrMarshalStudioUnauthorized, err)
+	}
+	var transport *url.Error
+	if errors.As(err, &transport) {
+		return fmt.Errorf("%w: %v", ErrMarshalStudioUnavailable, err)
+	}
+	var rpcErr *MCPError
+	if errors.As(err, &rpcErr) && rpcErr.Code == mcpMethodNotFoundCode {
+		return fmt.Errorf("%w: %v", ErrMarshalStudioUnknown, err)
+	}
+	return err
+}
+
+// marshalStudioFailure labels a built-in tool's failure payload with the cause a
+// caller acts on: not authorized, unavailable, or unknown. The factory's own
+// words stay in the message; the class is what a model and a transcript can
+// reason about without parsing text.
+func marshalStudioFailure(payload string) error {
+	trimmed := strings.TrimSpace(payload)
+	var refusal struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+		Detail  string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &refusal); err != nil {
+		return fmt.Errorf("marshal studio: %s", trimmed)
+	}
+	reason := strings.TrimSpace(refusal.Message)
+	if reason == "" {
+		reason = strings.TrimSpace(refusal.Detail)
+	}
+	if reason == "" {
+		reason = refusal.Code
+	}
+	switch refusal.Code {
+	case "denied", "unauthorized", "forbidden":
+		return fmt.Errorf("%w: %s", ErrMarshalStudioUnauthorized, reason)
+	case userDirectionRequiredCode:
+		// The transport asks the person and retries; reaching here means the
+		// confirmation did not happen, so the operation was not directed.
+		return fmt.Errorf("%w: this operation needs the user's direction and was not directed: %s", ErrMarshalStudioUnauthorized, reason)
+	case "unavailable":
+		return fmt.Errorf("%w: %s", ErrMarshalStudioUnavailable, reason)
+	case "not_found", "unsupported":
+		return fmt.Errorf("%w: %s", ErrMarshalStudioUnknown, reason)
+	default:
+		return fmt.Errorf("marshal studio: %s", reason)
+	}
+}
+
+// mcpMethodNotFoundCode is the JSON-RPC code an instance uses for a method or
+// tool it does not serve.
+const mcpMethodNotFoundCode = -32601
+
 func (m *Manager) makeHandler(c caller, serverName, mcpToolName string) registry.ToolHandler {
 	return func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		start := time.Now()
@@ -411,6 +595,9 @@ func (m *Manager) makeHandler(c caller, serverName, mcpToolName string) registry
 			"error", err,
 		)
 		if err != nil {
+			if serverName == MarshalStudioServerName {
+				return registry.ToolResult{}, marshalStudioError(err)
+			}
 			return registry.ToolResult{}, err
 		}
 		var summary string
@@ -424,11 +611,18 @@ func (m *Manager) makeHandler(c caller, serverName, mcpToolName string) registry
 			}
 		}
 		if res.IsError {
-			return registry.ToolResult{
+			summary := summary
+			toolResult := registry.ToolResult{
 				Summary: summary,
 				Content: fullContent,
 				Error:   "MCP tool reported error: " + summary,
-			}, errors.New("mcp: tool reported error")
+			}
+			if serverName == MarshalStudioServerName {
+				failure := marshalStudioFailure(summary)
+				toolResult.Error = failure.Error()
+				return toolResult, failure
+			}
+			return toolResult, errors.New("mcp: tool reported error")
 		}
 		return registry.ToolResult{
 			Summary: summary,

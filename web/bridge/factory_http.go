@@ -301,14 +301,18 @@ func (a *factoryAPI) CreateDraftAuthorized(req, resolved FactoryCreate, p factor
 	if a.store == nil {
 		return FactoryItem{}, ErrFactoryUnavailable
 	}
-	if strings.TrimSpace(p.ClientID) == "" || strings.TrimSpace(p.Action) == "" {
-		return FactoryItem{}, fmt.Errorf("%w: authenticated client and action required", errFactoryInput)
+	if strings.TrimSpace(p.Action) == "" ||
+		(strings.TrimSpace(p.ClientID) == "" && strings.TrimSpace(p.SessionID) == "") {
+		return FactoryItem{}, fmt.Errorf("%w: authenticated principal and action required", errFactoryInput)
 	}
 	if strings.TrimSpace(req.RequestID) == "" {
 		return FactoryItem{}, fmt.Errorf("%w: requestId required", errFactoryInput)
 	}
 	p.RequestID = req.RequestID
-	scoped := factoryScopedRequestID(p.ClientID, req.RequestID)
+	// The journal's request identity comes from the principal: a client's own
+	// identity, or a built-in session's instance, project and session. Two
+	// principals naming one request id stay two operations.
+	scoped := p.scoped(req.RequestID)
 	req.RequestID = scoped
 	resolved.RequestID = scoped
 	return a.store.CreateAuthorized(req, resolved, p, time.Now().UTC())
@@ -324,14 +328,15 @@ func (a *factoryAPI) ReplaceDraftAuthorized(id string, candidate FactoryCreate, 
 	if a.store == nil {
 		return FactoryItem{}, ErrFactoryUnavailable
 	}
-	if strings.TrimSpace(p.ClientID) == "" || strings.TrimSpace(p.Action) == "" {
-		return FactoryItem{}, fmt.Errorf("%w: authenticated client and action required", errFactoryInput)
+	if strings.TrimSpace(p.Action) == "" ||
+		(strings.TrimSpace(p.ClientID) == "" && strings.TrimSpace(p.SessionID) == "") {
+		return FactoryItem{}, fmt.Errorf("%w: authenticated principal and action required", errFactoryInput)
 	}
 	if strings.TrimSpace(id) == "" || strings.TrimSpace(candidate.RequestID) == "" || expectedVersion == 0 {
 		return FactoryItem{}, fmt.Errorf("%w: item, requestId and expectedVersion required", errFactoryInput)
 	}
 	p.RequestID = candidate.RequestID
-	request := factoryScopedRequestID(p.ClientID, candidate.RequestID)
+	request := p.scoped(candidate.RequestID)
 	return a.store.ReplaceDraft(id, request, expectedVersion, candidate, p, time.Now().UTC())
 }
 

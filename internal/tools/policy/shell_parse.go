@@ -46,6 +46,28 @@ func (a *shellAnalyzer) walkFile(f *syntax.File) {
 	}
 }
 
+// walkScript analyzes a wrapper's payload as shell syntax. Every statement the
+// wrapped shell runs becomes its own operation, so a read-only first statement
+// cannot hide what follows it.
+func (a *shellAnalyzer) walkScript(w ShellWord, depth int) {
+	if !w.Known {
+		a.addOperation([]ShellWord{w}, depth)
+		return
+	}
+	f, err := syntax.NewParser().Parse(strings.NewReader(w.Value), "")
+	if err != nil || len(f.Stmts) == 0 {
+		// An unparseable or empty payload stays visible as one unknown
+		// operation: it must never be dropped from the analysis.
+		a.addOperation([]ShellWord{w}, depth)
+		return
+	}
+	// The wrapped shell is a child process: its cd must not leak into the
+	// parent's statements, but it does apply to the payload's own remainder.
+	saved := a.cwd
+	a.walkStmts(f.Stmts, depth)
+	a.cwd = saved
+}
+
 func (a *shellAnalyzer) walkStmt(stmt *syntax.Stmt, depth int) {
 	if stmt == nil {
 		return
@@ -399,6 +421,14 @@ func (a *shellAnalyzer) addOperation(argv []ShellWord, depth int) {
 	}
 	base := lastPathSegment(name)
 
+	// A wrapper that runs a shell script hands its payload to a shell: parse it
+	// as shell syntax so every statement it executes is analyzed. The depth
+	// increment is the wrapper boundary, as for the argv wrappers below.
+	if payload, ok := scriptPayload(base, argv[1:]); ok {
+		a.walkScript(payload, depth+1)
+		return
+	}
+
 	// Transparent wrappers: consume their own flags and recurse into the
 	// payload they execute.
 	if payload, ok := wrapperPayload(base, argv[1:]); ok {
@@ -433,14 +463,17 @@ func (a *shellAnalyzer) addOperation(argv []ShellWord, depth int) {
 	}
 }
 
-// wrapperPayload returns the argv a transparent shell wrapper executes.
-func wrapperPayload(base string, args []ShellWord) ([]ShellWord, bool) {
+// scriptPayload returns the shell script a wrapper executes, as one word.
+// Shells (`sh -c`, `bash -lc`, …) and `eval` hand their payload to a shell, so
+// the payload must be parsed as shell syntax: every statement the wrapped shell
+// runs is its own operation, not one flattened argv.
+func scriptPayload(base string, args []ShellWord) (ShellWord, bool) {
 	switch base {
 	case "sh", "bash", "zsh", "dash", "ksh":
 		for i := 0; i < len(args); i++ {
 			v := args[i].Value
 			if !args[i].Known {
-				return nil, false
+				return ShellWord{}, false
 			}
 			if v == "-c" || (strings.HasPrefix(v, "-") && strings.Contains(v, "c")) {
 				// Shells accept further option words between the flag and the
@@ -449,25 +482,33 @@ func wrapperPayload(base string, args []ShellWord) ([]ShellWord, bool) {
 				for j < len(args) && len(args[j].Value) > 1 && strings.HasPrefix(args[j].Value, "-") {
 					j++
 				}
-				if j < len(args) {
-					return splitCommandWord(args[j]), true
+				if j < len(args) && args[j].Known {
+					return args[j], true
 				}
-				return nil, false
+				return ShellWord{}, false
 			}
 		}
-		return nil, false
+		return ShellWord{}, false
 	case "eval":
 		if len(args) == 0 {
-			return nil, false
+			return ShellWord{}, false
 		}
-		var parts []string
-		for _, a := range args {
-			if !a.Known {
-				return nil, false
+		parts := make([]string, 0, len(args))
+		for _, arg := range args {
+			if !arg.Known {
+				return ShellWord{}, false
 			}
-			parts = append(parts, a.Value)
+			parts = append(parts, arg.Value)
 		}
-		return splitCommandWord(ShellWord{Text: strings.Join(parts, " "), Value: strings.Join(parts, " "), Known: true, SingleField: true}), true
+		joined := strings.Join(parts, " ")
+		return ShellWord{Text: joined, Value: joined, Known: true, SingleField: true}, true
+	}
+	return ShellWord{}, false
+}
+
+// wrapperPayload returns the argv a transparent shell wrapper executes.
+func wrapperPayload(base string, args []ShellWord) ([]ShellWord, bool) {
+	switch base {
 	case "env":
 		i := 0
 		for i < len(args) {
@@ -566,31 +607,6 @@ func wrapperPayload(base string, args []ShellWord) ([]ShellWord, bool) {
 		return args[i:], true
 	}
 	return nil, false
-}
-
-// splitCommandWord parses a payload string into argv words.
-func splitCommandWord(w ShellWord) []ShellWord {
-	if !w.Known {
-		return []ShellWord{w}
-	}
-	f, err := syntax.NewParser().Parse(strings.NewReader(w.Value), "")
-	if err != nil {
-		return []ShellWord{w}
-	}
-	var out []ShellWord
-	for _, stmt := range f.Stmts {
-		call, ok := stmt.Cmd.(*syntax.CallExpr)
-		if !ok || len(call.Args) == 0 {
-			continue
-		}
-		for _, arg := range call.Args {
-			out = append(out, decodeWord(arg, nil))
-		}
-	}
-	if len(out) == 0 {
-		return []ShellWord{w}
-	}
-	return out
 }
 
 // xargsCommandPayload returns the command xargs runs.

@@ -554,6 +554,7 @@ func streamChatEvents(body io.ReadCloser, capture *wireCapture, events chan<- sc
 	dec := streaming.NewDecoder(body)
 	var finishReason string
 	var usage *schema.TokenUsage
+	var completion streamCompletion
 	toolBuffers := make(map[int]*streamingToolCallBuffer)
 	var thinkParser inlineThinkParser
 
@@ -563,6 +564,8 @@ func streamChatEvents(body io.ReadCloser, capture *wireCapture, events chan<- sc
 			continue
 		}
 		if data == "[DONE]" {
+			// The OpenAI-compatible protocol's terminal sentinel.
+			completion.mark()
 			break
 		}
 
@@ -625,6 +628,9 @@ func streamChatEvents(body io.ReadCloser, capture *wireCapture, events chan<- sc
 		if choice.FinishReason != "" {
 			recognized = true
 			finishReason = choice.FinishReason
+			// A non-empty finish_reason is this protocol's other terminal
+			// marker: some servers close the stream right after it.
+			completion.mark()
 		}
 		if !recognized {
 			capture.annotate("[unrecognized-chunk]", data)
@@ -643,6 +649,15 @@ func streamChatEvents(body io.ReadCloser, capture *wireCapture, events chan<- sc
 		if content != "" {
 			events <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: content}
 		}
+	}
+
+	// A stream that ended without [DONE] or a finish_reason was cut short.
+	// Report it as interrupted, with no tool calls: the buffers above may hold
+	// a partially accumulated call, and repairing it here would present a
+	// truncated stream as a complete one.
+	if !completion.seen {
+		events <- completion.interrupted("[DONE] or finish_reason", usage)
+		return
 	}
 
 	events <- schema.ChatEvent{

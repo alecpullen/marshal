@@ -11,6 +11,7 @@
     getVersionedProjectSettings,
     getWorkspacePolicy,
     listClients,
+    listProjects,
     listRepos,
     listWorkspaces,
     putVersionedProjectSettings,
@@ -36,6 +37,7 @@
     type SubagentEnabledChoice,
   } from '../lib/factory/config'
   import type { AgentRow, AgentTelemetry } from '../lib/fleet'
+  import MarshalAccessPanel from '../lib/marshal/MarshalAccessPanel.svelte'
   import { MODES, SHIP_TARGETS, autoFrom, autoOf, healthChecks, soft, isolatedFrom, isolationOf, latestAgent, parseWorkspaceRef, type AutoChoice, type Dot, type IsolationChoice } from '../lib/project/model'
   import { shortName } from '../lib/utils'
   import type { RouteLeaveGuard } from '../lib/navigationGuard'
@@ -182,6 +184,13 @@
   let profiles = $state<string[]>([])
   let repos = $state<RepoRow[]>([])
   let clients = $state<MCPClient[]>([])
+  /*
+    The Studio access surface is keyed by the project's opaque ID, which the
+    bridge mints from the root this page already holds. It is read with the
+    other pickers; a project the bridge has minted no ID for renders no editor,
+    rather than an editor that would write somewhere else.
+  */
+  let studioProjectId = $state('')
 
   async function load() {
     try {
@@ -194,16 +203,18 @@
       error = errMessage(e)
     }
     loaded = true
-    const [w, m, r, c] = await Promise.all([
+    const [w, m, r, c, p] = await Promise.all([
       soft(listWorkspaces(), []),
       soft(getModels().then((x) => Object.keys(x.profiles).sort()), []),
       soft(listRepos(), []),
       soft(listClients(), []),
+      soft(listProjects(), []),
     ])
     workspaces = w
     profiles = m
     repos = r
     clients = c
+    studioProjectId = p.find((entry) => entry.root === root)?.mcpProjectId ?? ''
   }
 
   const PROJECT_CHANGED = 'These settings changed elsewhere. Your edits are kept until you reload: reloading discards them and shows the saved values.'
@@ -828,6 +839,25 @@
           <p class="text-sm text-muted">{policyNote}</p>
         {/if}
       </Card>
+
+      <!--
+        The project's default read and write/approval authority: the level every
+        session of this project inherits, edited through the same controls the
+        session surface uses for its own overrides.
+      -->
+      {#if studioProjectId}
+        <MarshalAccessPanel
+          projectId={studioProjectId}
+          levels={['project']}
+          heading="Studio access"
+          testId="project-studio-access"
+        />
+      {:else}
+        <Card class="flex min-w-0 flex-col gap-3" data-testid="project-studio-access-unavailable">
+          <h2 class="text-sm font-semibold">Studio access</h2>
+          <p class="text-sm text-muted">This bridge has no Studio project ID for this project yet, so there are no defaults to edit.</p>
+        </Card>
+      {/if}
     </div>
   {:else if tab === 'automations'}
     <div class="grid gap-4 lg:grid-cols-2" data-testid="automations-tab">

@@ -197,6 +197,121 @@ func TestOllamaChatStreaming(t *testing.T) {
 	assertChannelClosed(t, events)
 }
 
+// Older Ollama servers omit done_reason. "done":true is the protocol's
+// terminal marker, so the stream is a clean completion with an empty finish
+// reason (AUD-08 §5.3) — done_reason is not the marker.
+func TestOllamaChatStreamingDoneWithoutReasonCompletes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = w.Write([]byte(
+			`{"message":{"role":"assistant","content":"hi"},"done":false}` + "\n" +
+				`{"message":{"role":"assistant","content":""},"done":true}` + "\n",
+		))
+	}))
+	defer server.Close()
+
+	p := newTestOllama(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(true))
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	ev1, _ := recvEvent(t, events)
+	if ev1.Type != schema.ChatEventDelta || ev1.Delta != "hi" {
+		t.Fatalf("event 1 = %+v, want Delta hi", ev1)
+	}
+	ev2, ok := recvEvent(t, events)
+	if !ok || ev2.Type != schema.ChatEventDone {
+		t.Fatalf("event 2 = %+v ok=%v, want Done (done:true needs no done_reason)", ev2, ok)
+	}
+	if ev2.FinishReason != "" {
+		t.Errorf("FinishReason = %q, want empty", ev2.FinishReason)
+	}
+	assertChannelClosed(t, events)
+}
+
+func TestOllamaChatStreamingBareEOFIsInterrupted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = w.Write([]byte(
+			`{"message":{"role":"assistant","content":"hi"},"done":false}` + "\n",
+		))
+		// Stream ends with no chunk carrying done:true.
+	}))
+	defer server.Close()
+
+	p := newTestOllama(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(true))
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	ev1, _ := recvEvent(t, events)
+	if ev1.Type != schema.ChatEventDelta || ev1.Delta != "hi" {
+		t.Fatalf("event 1 = %+v, want Delta hi", ev1)
+	}
+	ev2, ok := recvEvent(t, events)
+	if !ok || ev2.Type != schema.ChatEventInterrupted {
+		t.Fatalf("event 2 = %+v ok=%v, want Interrupted", ev2, ok)
+	}
+	if ev2.Err == nil {
+		t.Fatal("interrupted event carries no error")
+	}
+	assertChannelClosed(t, events)
+}
+
+func TestOllamaChatStreamingEOFDuringToolCallIsInterrupted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = w.Write([]byte(
+			`{"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"read_file","arguments":{"path":"b.go"}}}]},"done":false}` + "\n",
+		))
+		// Stream ends before the terminating done:true chunk.
+	}))
+	defer server.Close()
+
+	p := newTestOllama(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(true))
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	ev, ok := recvEvent(t, events)
+	if !ok || ev.Type != schema.ChatEventInterrupted {
+		t.Fatalf("event = %+v ok=%v, want Interrupted", ev, ok)
+	}
+	if ev.Err == nil {
+		t.Fatal("interrupted event carries no error")
+	}
+	if len(ev.ToolCalls) != 0 {
+		t.Fatalf("truncated tool call reached the event: %+v", ev.ToolCalls)
+	}
+	assertChannelClosed(t, events)
+}
+
+func TestOllamaChatStreamingTransportErrorIsError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		breakStream(t, w, "application/x-ndjson",
+			`{"message":{"role":"assistant","content":"hi"},"done":false}`+"\n")
+	}))
+	defer server.Close()
+
+	p := newTestOllama(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(true))
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	ev1, _ := recvEvent(t, events)
+	if ev1.Type != schema.ChatEventDelta || ev1.Delta != "hi" {
+		t.Fatalf("event 1 = %+v, want Delta hi", ev1)
+	}
+	ev2, ok := recvEvent(t, events)
+	if !ok || ev2.Type != schema.ChatEventError {
+		t.Fatalf("event 2 = %+v ok=%v, want Error (a read failure is not an interruption)", ev2, ok)
+	}
+	if ev2.Err == nil || !strings.Contains(ev2.Err.Error(), "read stream:") {
+		t.Fatalf("error = %v, want a read stream failure", ev2.Err)
+	}
+	assertChannelClosed(t, events)
+}
+
 func TestOllamaChatStreamingThinkingAndToolCall(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/x-ndjson")

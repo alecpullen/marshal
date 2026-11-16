@@ -874,7 +874,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	// runtime's too: the wrapper wires the tools to an empty one and returns
 	// it.
 	lspHandle := lsp.NewHandle(nil, nil, state.Logger())
-	runner, reg, swarmRunner, mcpMgr, snapSvc, commandService, _, desktopCloser, subagentFactory, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(ctx, cfg, state, database, projectID, skillIndex, dataDir, additionalDirs, jobBroker, nil, nil, configReloader, homeDir, &swarm.WriteLock{}, nil, lspHandle, auth...)
+	runner, reg, swarmRunner, mcpMgr, snapSvc, commandService, _, desktopCloser, subagentFactory, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(ctx, cfg, state, database, projectID, skillIndex, dataDir, additionalDirs, jobBroker, nil, nil, configReloader, homeDir, &swarm.WriteLock{}, nil, lspHandle, nil, auth...)
 	var jobMgr *native.JobManager
 	if commandService != nil {
 		jobMgr = commandService.manager
@@ -938,7 +938,7 @@ func subagentDefaultsFor(cfg config.Config, route routing.Route) session.Subagen
 // and the diagnostics checker are wired to. The build never creates or
 // starts a language server: the runtime points the handle at the project
 // host's pooled servers (Runtime.bindLSP). A nil handle wires no LSP.
-func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], watchBroker *pubsub.Broker[watch.Event], watchResumeCell *WatchResumeHook, configReloader func(config.Config) error, homeDir string, writeLock *swarm.WriteLock, service *conversationCommandService, lspHandle *lsp.Handle, auth ...provider.AuthResolver) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *conversationCommandService, *watch.Manager, func(), agent.SubagentRunnerFactory, func(planPath string, overrides map[routing.AgentRole]string) PipelineRunner, sddauthor.Factory, SwarmOverrideFactory, error) {
+func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], watchBroker *pubsub.Broker[watch.Event], watchResumeCell *WatchResumeHook, configReloader func(config.Config) error, homeDir string, writeLock *swarm.WriteLock, service *conversationCommandService, lspHandle *lsp.Handle, studio *marshalStudioCredential, auth ...provider.AuthResolver) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *conversationCommandService, *watch.Manager, func(), agent.SubagentRunnerFactory, func(planPath string, overrides map[routing.AgentRole]string) PipelineRunner, sddauthor.Factory, SwarmOverrideFactory, error) {
 	authResolver := effectiveAuthResolver(firstAuthResolver(auth))
 	resolver := newRoutedProviderResolver(cfg, dataDir, authResolver).withSessionID(state.SessionID())
 	modelProbe := modelProbeFunc(cfg, dataDir)
@@ -1189,7 +1189,13 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	})
 
 	var mcpMgr *mcp.Manager
-	if len(cfg.MCP.Servers) > 0 {
+	// The session's built-in Studio client, when this session enrolled. It is
+	// attached through the same manager as the configured servers, so its tools
+	// are discovered from the instance's tools/list and registered like any
+	// other — never hand-written here. studioOpts is nil when the session holds
+	// no usable enrollment, which leaves the manager exactly as it was.
+	studioOpts, studioAttached := studio.mcpOptions(state)
+	if len(cfg.MCP.Servers) > 0 || studioAttached {
 		// The manager's OAuth token store comes from the runtime's selected
 		// resolver, so a remote MCP server's tokens land where the rest of
 		// this runtime reads them — and a test runtime never reaches the
@@ -1211,6 +1217,13 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 			})
 		}
 		cleanup = append(cleanup, func() { _ = mcpMgr.Close() })
+		if studioOpts != nil {
+			// Unavailable is a status, not a failure: no built-in tools for this
+			// session, every other tool intact, and the build continues.
+			if err := mcpMgr.AttachMarshalStudio(ctx, *studioOpts); err != nil {
+				state.Logger().Warn("marshal studio: built-in tools unavailable", "error", err)
+			}
+		}
 		if err := mcpMgr.RegisterTools(reg); err != nil {
 			buildErr = err
 			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
@@ -2379,11 +2392,12 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 			// Copy non-native tools (MCP, skills, desktop) from the parent's
 			// scoped registry so the child still sees them. The authoritative
 			// exclusion list lives on SubtaskScopeView's doc comment
-			// (internal/agent/subagent.go) — don't duplicate it here.
-			for _, tool := range agent.SubtaskScopeView(parentReg).List() {
-				if _, exists := childReg.Lookup(tool.Name); !exists {
-					_ = childReg.Register(tool)
-				}
+			// (internal/agent/subagent.go) — don't duplicate it here. Inherit
+			// copies each tool's handler, so a session-bound MCP client's tool
+			// keeps this session's identity and authority in the child and the
+			// child cannot claim a stronger one.
+			if err := childReg.Inherit(agent.SubtaskScopeView(parentReg)); err != nil {
+				return nil, nil, fmt.Errorf("agent.run: inherit session tools: %w", err)
 			}
 			roReg = childReg
 		} else {
@@ -2742,7 +2756,7 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	// The build uses effectiveCfg, not cfg: a session mode override must
 	// survive the reload, so the rebuilt policy engine has to agree with what
 	// the session reports.
-	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(rt.workCtx, effectiveCfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock, service, rt.LSPManager, rt.AuthResolver)
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(rt.workCtx, effectiveCfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock, service, rt.LSPManager, rt.marshalStudio, rt.AuthResolver)
 	if err != nil {
 		// A failed dry run leaves the configured baseline, the override, the
 		// system flag and the existing runner exactly as they were.

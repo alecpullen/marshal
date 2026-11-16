@@ -372,11 +372,15 @@ String completionDetail(FactoryItem item) {
 class WorkItemWorker {
   const WorkItemWorker({
     required this.agentID,
+    required this.sessionID,
     required this.role,
     required this.parked,
   });
 
   final String agentID;
+
+  /// The session this worker's conversation is read from.
+  final String sessionID;
 
   /// The bridge's word for the role: planner, implementer, reviewer.
   final String role;
@@ -434,6 +438,8 @@ class WorkItemView {
     required this.lastActive,
     required this.version,
     required this.decisionID,
+    required this.revision,
+    required this.baseHash,
     required this.plan,
     required this.spec,
     required this.settings,
@@ -463,6 +469,8 @@ class WorkItemView {
       lastActive: lastActiveOfItem(item),
       version: item.version,
       decisionID: item.decision?.id ?? '',
+      revision: approval?.revision ?? 0,
+      baseHash: approval?.planHash ?? '',
       plan: approval?.plan ?? item.draft.plan,
       spec: approval?.spec ?? item.draft.spec,
       settings: _settings(config, approval),
@@ -470,6 +478,7 @@ class WorkItemView {
         for (final worker in item.workers)
           WorkItemWorker(
             agentID: worker.agentID,
+            sessionID: worker.sessionID,
             role: worker.role,
             parked: worker.parked,
           ),
@@ -522,6 +531,12 @@ class WorkItemView {
   /// The decision the item is blocked on, or "" when it is blocked on none:
   /// what an answer names.
   final String decisionID;
+
+  /// The approved revision a plan change is proposed against, and its hash:
+  /// a proposal that names a base the item no longer holds is refused rather
+  /// than rebased.
+  final int revision;
+  final String baseHash;
 
   final String plan;
   final String spec;

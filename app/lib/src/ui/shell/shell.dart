@@ -11,11 +11,14 @@ import '../../model/nav_model.dart';
 import '../../model/overview_model.dart' show buildOverview;
 import '../../model/place.dart';
 import '../../model/pulls_model.dart';
+import '../../model/revision_model.dart';
 import '../../model/stack_store.dart';
 import '../../model/thread_ref.dart' as model;
 import '../../model/thread_view_state.dart';
-import '../../model/work_item_model.dart' show WorkItemView, threadOfItem;
+import '../../model/work_item_model.dart'
+    show WorkItemView, WorkItemWorker, threadOfItem;
 import '../inbox/inbox.dart' show Inbox;
+import '../factory/revision_sheet.dart';
 import '../factory/work_item_screen.dart';
 import '../kit/kit.dart';
 import '../overview/overview.dart' show Overview;
@@ -462,6 +465,8 @@ class _StudioState extends State<Studio> {
           thread: thread,
           factory: factory,
           pulls: widget.pulls,
+          threadStore: build,
+          composerFor: widget.composerFor,
           now: widget.store.now,
           onRetry: () => unawaited(factory.refresh(thread.host)),
         );
@@ -706,6 +711,8 @@ class _WorkItemPlace extends StatefulWidget {
     required this.thread,
     required this.factory,
     this.pulls,
+    this.threadStore,
+    this.composerFor,
     this.now,
     this.onRetry,
   });
@@ -713,6 +720,12 @@ class _WorkItemPlace extends StatefulWidget {
   final model.ThreadRef thread;
   final FactoryStore factory;
   final PullsModel? pulls;
+
+  /// The transcript a worker's conversation is read from, and its composer:
+  /// F3's screen, embedded (F6 decision 6).
+  final StackStore Function(model.ThreadRef thread)? threadStore;
+  final ComposerModel Function(model.ThreadRef thread, ThreadViewState view)?
+  composerFor;
   final DateTime? now;
   final VoidCallback? onRetry;
 
@@ -724,6 +737,10 @@ class _WorkItemPlaceState extends State<_WorkItemPlace> {
   /// The bridge's refusal of the last action, in its own words: a conflict is
   /// not an error the person made, and the action stays available.
   String? _error;
+
+  /// The worker whose conversation is open in the centre, or null while the
+  /// item's activity is.
+  WorkItemWorker? _worker;
 
   @override
   void initState() {
@@ -749,7 +766,34 @@ class _WorkItemPlaceState extends State<_WorkItemPlace> {
     final pulls = widget.pulls?.forThread(widget.thread) ?? const <PullView>[];
     final view = WorkItemView.of(host, item);
     final store = widget.factory;
+    final worker = _worker;
+    final build = widget.threadStore;
     return WorkItemScreen(
+      center: worker == null || build == null
+          ? null
+          : _ThreadPlace(
+              key: ValueKey('worker/${worker.sessionID}'),
+              thread: model.ThreadRef(
+                host: host,
+                id: worker.sessionID,
+                project: item.projectRoot,
+                title: worker.words,
+                kind: model.ThreadKind.agent,
+                status: model.ThreadStatus.running,
+                headline: '',
+                lastActive: widget.now ?? DateTime.now(),
+              ),
+              buildStore: build,
+              composerFor: widget.composerFor,
+              now: widget.now,
+              pulls: widget.pulls,
+            ),
+      onBack: () => setState(() => _worker = null),
+      onOpenWorker: (opened) => setState(() => _worker = opened),
+      onProposeChange: build == null
+          ? null
+          : () => unawaited(_propose(context, host, view)),
+
       item: view,
       now: widget.now,
       pulls: pulls,
@@ -782,6 +826,33 @@ class _WorkItemPlaceState extends State<_WorkItemPlace> {
           : (context, pull) =>
                 pullCardActions(context, pull: pull, model: widget.pulls!),
     );
+  }
+
+  /// Opens the plan-revision sheet: the approved plan against the proposed
+  /// one, and the one action that sends it (F6 decision 6).
+  Future<void> _propose(
+    BuildContext context,
+    String host,
+    WorkItemView view,
+  ) async {
+    final model = RevisionModel(
+      approved: view.plan,
+      spec: view.spec,
+      baseRevision: view.revision,
+      baseHash: view.baseHash,
+      submit: (plan) async {
+        await widget.factory.proposeRevision(
+          host,
+          view.id,
+          plan: plan,
+          spec: view.spec,
+          baseRevision: view.revision,
+          baseHash: view.baseHash,
+        );
+      },
+    );
+    await showRevisionSheet(context, model);
+    model.dispose();
   }
 
   /// Runs one command, keeping the bridge's refusal for the thread to say and

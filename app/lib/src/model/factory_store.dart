@@ -227,6 +227,34 @@ class FactoryStore extends ChangeNotifier {
     );
   }
 
+  /// Proposes a plan revision against the approved one (F6 plan 1, task 5).
+  ///
+  /// The candidate is named by its exact bytes and the revision and hash it
+  /// was written against, so a proposal made against a plan that has moved is
+  /// refused instead of silently rebasing.
+  Future<FactoryItem> proposeRevision(
+    String host,
+    String id, {
+    required String plan,
+    required String spec,
+    required int baseRevision,
+    required String baseHash,
+    bool autoAssess = true,
+  }) => command(
+    host,
+    id,
+    _command({
+      'kind': 'revision_propose',
+      'revision': {
+        'plan': plan,
+        'spec': spec,
+        'baseRevision': baseRevision,
+        'baseHash': baseHash,
+        'autoAssess': autoAssess,
+      },
+    }),
+  );
+
   /// Says the work counts as done.
   Future<FactoryItem> complete(String host, String id) =>
       command(host, id, _command({'kind': 'complete'}));

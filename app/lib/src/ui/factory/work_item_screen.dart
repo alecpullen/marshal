@@ -31,6 +31,8 @@ class WorkItemScreen extends StatefulWidget {
     this.now,
     this.pulls = const [],
     this.changes,
+    this.center,
+    this.onBack,
     this.onRetry,
     this.conflict,
     this.onApprove,
@@ -59,6 +61,13 @@ class WorkItemScreen extends StatefulWidget {
   /// F4's Changes tab, for the item's branch. Null says the change is not
   /// being read rather than drawing an empty one.
   final Widget? changes;
+
+  /// The worker's own conversation, when one is open: the centre swaps for it
+  /// and [onBack] returns to the activity (F6 decision 6).
+  final Widget? center;
+
+  /// Returns from a worker's conversation to the item's activity.
+  final VoidCallback? onBack;
 
   final VoidCallback? onRetry;
 
@@ -111,6 +120,31 @@ class _WorkItemScreenState extends State<WorkItemScreen> {
   Widget build(BuildContext context) {
     final item = widget.item;
     final state = widget.state;
+    final center = widget.center;
+    if (center != null) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(
+              Layout.pageSide,
+              Layout.pageTop,
+              Layout.pageSide,
+              Space.s8,
+            ),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Btn(
+                'Back to activity',
+                icon: Glyphs.chevron_left,
+                onTap: widget.onBack,
+              ),
+            ),
+          ),
+          Expanded(child: center),
+        ],
+      );
+    }
     if (state != null && state != StateKind.stale) {
       return PageBody(title: item.title, children: [_stateMessage(state)]);
     }

@@ -82,12 +82,25 @@ esac
 
 if [ "$UNINSTALL" -eq 1 ]; then
 	if [ -x "$PREFIX/marshal" ]; then
-		# A loaded service is removed; a silent daemon still has a unit,
-		# so the status line, not the exit code, decides.
-		if "$PREFIX/marshal" daemon status 2>/dev/null | grep -q '^service: loaded'; then
+		# A loaded service is removed, and so is a stopped one: an installed
+		# unit that outlives its binaries points at files that no longer
+		# exist. The status line, not the exit code, decides — `daemon
+		# status` exits non-zero whenever the daemon does not answer, which
+		# a stopped service never does.
+		state="$("$PREFIX/marshal" daemon status 2>/dev/null |
+			grep '^service: ' || true)"
+		case "$state" in
+		"service: loaded"* | "service: stopped"*)
 			"$PREFIX/marshal" daemon uninstall ||
 				die "the daemon could not be uninstalled; nothing was removed"
-		fi
+			;;
+		"service: not installed"*) ;;
+		*)
+			# Removing the binaries would leave a unit pointing at deleted
+			# files, which is worse than refusing: stop here and say so.
+			die "could not read the marshal daemon's service state; nothing was removed. Run $PREFIX/marshal daemon status to see why, uninstall the service by hand, then rerun --uninstall"
+			;;
+		esac
 	fi
 	rm -f "$PREFIX/marshal" "$PREFIX/webbridge"
 	say "removed marshal and webbridge from $PREFIX"

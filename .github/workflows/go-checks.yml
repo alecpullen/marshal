@@ -85,6 +85,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Shellcheck the installer
         run: shellcheck scripts/install.sh
+      - name: Test the installer's uninstall gate
+        run: sh scripts/install_test.sh
       - name: Install GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:

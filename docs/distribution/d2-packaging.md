@@ -309,3 +309,49 @@ installer is now caught immediately **after** a human publishes, not before.
 That is the only honest option while releases are drafts, and the alternative
 — letting `install.sh` carry a token to reach draft assets — is refused,
 because a `curl | sh` installer that accepts a token is a foot-gun.
+
+### Review fixups: the signing secrets reach the release step
+
+Review caught the workflow betraying the config. The `Run GoReleaser`
+step expanded only `GITHUB_TOKEN` and `HOMEBREW_TAP_TOKEN`, and GitHub
+Actions puts a secret into a step's environment only where the workflow
+expands `${{ secrets.NAME }}` explicitly. The five variables the
+`notarize` block reads were therefore never in GoReleaser's environment
+at all, fully secreted repositories included: `isEnvSet
+"MACOS_SIGN_P12"` was false on every tag, the darwin binaries shipped
+unsigned under a release footer that said otherwise, and the signing
+path had only ever been verified to parse. The step's `env:` block now
+maps all five secrets to the names `.goreleaser.yaml` reads, in the
+config's order — the signing certificate and its password, then the
+three notarytool values.
+
+Mapping them raised the question the config alone cannot answer: an
+absent secret expands to an *empty string*, so in a repository without
+them the variables are present-but-empty, not absent, and whether the
+gate counts that as set decides between an unsigned release and an
+attempt to sign with an empty certificate. The answer is in the
+GoReleaser 2.18.3 source the pinned image bundles, `internal/tmpl/
+tmpl.go` at tag `v2.18.3`:
+
+```go
+func (t *Template) isEnvSet(name string) bool {
+	s, ok := t.fields[env].(context.Env)[name]
+	return ok && s != ""
+}
+```
+
+An emptiness guard sits beside the presence check, so
+present-but-empty is not set: the plain mapping is default-safe rather
+than optimistic. A repository without the five secrets sets five empty
+variables, the gate reads false over both the absent and the empty
+case, and the release still cuts unsigned. No GoReleaser ran again for
+this fixup — none is installed in this environment and none was
+attempted — but nothing would be checked that changed: `goreleaser
+check` reads `.goreleaser.yaml`, which this fixup does not touch.
+
+What remains unverified is the signed direction. Nothing has ever
+actually been signed or notarized: that needs a real tag, the five
+Apple secrets configured in the repository, and a macOS host being
+accepted by Gatekeeper after quarantine. Until the first such release,
+the gate is verified only in the off direction — absent and empty both
+read as off — and the signed direction stands as the risk item above.

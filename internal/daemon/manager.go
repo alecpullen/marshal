@@ -182,10 +182,12 @@ func (m *Manager) Uninstall(ctx context.Context) error {
 	return nil
 }
 
-// ServiceState is what the service manager reports.
+// ServiceState is what the service manager reports. Its tags are the status
+// document's (`daemon status --json`), the only place it is encoded.
 type ServiceState struct {
-	Installed, Running bool
-	PID                int
+	Installed bool `json:"installed"`
+	Running   bool `json:"running"`
+	PID       int  `json:"pid"`
 }
 
 // State reads the service manager's answer for the unit.

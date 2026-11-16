@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -394,16 +395,23 @@ func daemonAnswers(ctx context.Context, socket string) bool {
 // status
 // ---------------------------------------------------------------------------
 
-// runDaemonStatus prints decision 12's three lines: the service state, the
-// socket and whether it answered, and — for an answering daemon — its version
-// against this marshal's, its start time, and its projects.
+// runDaemonStatus prints decision 12's lines, or writes the JSON document
+// the tray app reads.
 //
-// It exits non-zero when the socket does not answer, but only after printing
-// what it found: a service that is loaded and silent is exactly the case the
-// user is running `status` for.
+// Text mode prints the service state, the linger line where the platform has
+// one, the socket and whether it answered, and — for an answering daemon —
+// its version against this marshal's, its start time, its refresh helper, its
+// projects and each project child. It exits non-zero when the socket does not
+// answer, but only after printing what it found: a service that is loaded and
+// silent is exactly the case the user is running `status` for.
+//
+// With --json it exits 0 whenever it wrote the document: the answer to
+// "is the daemon answering" is in the document, so a machine consumer must
+// not have to read an exit code for it.
 func runDaemonStatus(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("daemon status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "write the status as one JSON document")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -425,15 +433,33 @@ func runDaemonStatus(ctx context.Context, args []string, stdout, stderr io.Write
 	if err != nil {
 		return fmt.Errorf("read the marshal daemon service: %w", err)
 	}
+
+	status := daemon.Status{SchemaVersion: daemon.StatusSchema, Service: state}
+
+	infoCtx, cancel := context.WithTimeout(ctx, daemonStatusTimeout)
+	defer cancel()
+	info, infoErr := daemonClientFor(paths.Socket).Info(infoCtx)
+	if infoErr == nil {
+		status.Answering = true
+		status.Daemon = &info
+	}
+
+	if *asJSON {
+		// One loginctl call per invocation: text mode asks
+		// daemonLingerLine instead of reading it here.
+		if m.GOOS == "linux" {
+			if linger, err := m.Linger(ctx); err == nil {
+				status.Linger = linger
+			}
+		}
+		return json.NewEncoder(stdout).Encode(status)
+	}
+
 	fmt.Fprintln(stdout, daemonServiceLine(state))
 	if line, ok := daemonLingerLine(ctx, m); ok {
 		fmt.Fprintln(stdout, line)
 	}
-
-	infoCtx, cancel := context.WithTimeout(ctx, daemonStatusTimeout)
-	defer cancel()
-	info, err := daemonClientFor(paths.Socket).Info(infoCtx)
-	if err != nil {
+	if infoErr != nil {
 		fmt.Fprintf(stdout, "socket: %s (not answering)\n", paths.Socket)
 		return fmt.Errorf("the daemon is not answering on %s", paths.Socket)
 	}

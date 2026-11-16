@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Not sandboxed. The app's only interface to Marshal is the `marshal`
+	     binary it bundles: "marshal daemon status" with the json flag (see
+	     cli.dart) reads the data directory and connects to the daemon's unix
+	     socket, and "marshal daemon install" writes a launchd agent. A child
+	     process inherits its parent's sandbox, so a sandboxed tray app would
+	     read "status unavailable" forever and could never install the daemon,
+	     which are the two things the menu exists for. The App Store, which is
+	     what the sandbox is for, is a non-goal of this phase. -->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+</dict>
+</plist>

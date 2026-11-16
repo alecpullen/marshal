@@ -120,7 +120,8 @@ func TestEffectiveSubagentConcurrency(t *testing.T) {
 		{-3, defaultSubagentMaxConcurrency},
 		{1, 1},
 		{8, 8},
-		{9, MaxSubagentConcurrency},
+		{10, 10},
+		{11, MaxSubagentConcurrency},
 		{99, MaxSubagentConcurrency},
 	}
 	for _, tc := range cases {

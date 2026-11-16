@@ -73,8 +73,8 @@ func TestWithSubagentMaxConcurrencyOverrides(t *testing.T) {
 
 func TestWithSubagentMaxConcurrencyClamps(t *testing.T) {
 	s := New(config.Default(), t.TempDir(), time.Now(), Persistence{}, WithSubagentMaxConcurrency(99))
-	if got := s.SubagentMaxConcurrency(); got != 8 {
-		t.Fatalf("SubagentMaxConcurrency = %d, want clamp to 8", got)
+	if got := s.SubagentMaxConcurrency(); got != 10 {
+		t.Fatalf("SubagentMaxConcurrency = %d, want clamp to 10", got)
 	}
 	s0 := New(config.Default(), t.TempDir(), time.Now(), Persistence{}, WithSubagentMaxConcurrency(0))
 	if got := s0.SubagentMaxConcurrency(); got != 3 {

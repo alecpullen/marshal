@@ -925,7 +925,7 @@ func WithDepth(d int) Option {
 
 // WithSubagentMaxConcurrency sets the cap on parallel agent.run children
 // for this session, sourced from agent.max_concurrent_subagents. Values
-// <= 0 keep the built-in default (3); values above 8 clamp to 8.
+// <= 0 keep the built-in default (3); values above 10 clamp to 10.
 func WithSubagentMaxConcurrency(n int) Option {
 	return func(s *State) {
 		s.subagentMaxConcurrency = EffectiveSubagentConcurrency(n)
@@ -1806,7 +1806,7 @@ const (
 	// (WithSubagentMaxConcurrency); a snapshot supplied at session creation
 	// is validated against it instead, because explicitly supplied means
 	// validated, not silently clamped.
-	MaxSubagentConcurrency = 8
+	MaxSubagentConcurrency = 10
 )
 
 // EffectiveSubagentConcurrency normalizes a configured cap on parallel

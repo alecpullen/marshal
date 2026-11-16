@@ -8,13 +8,14 @@ import 'status.dart';
 /// platform this app runs on.
 const _enoent = 2;
 
-/// DaemonCli runs the marshal binary the app ships. Everything the app knows
-/// about Marshal comes through it: the app never opens the daemon's socket
-/// and never reads its files.
+/// DaemonCli runs the marshal binary the app ships. Everything the tray
+/// knows about Marshal comes through it: the tray never opens the daemon's
+/// socket and never reads its files.
 ///
-/// This is the only file under `lib/` allowed to import `dart:io`; every
-/// other file is pure Dart, so the menu and the models are tested without a
-/// process, a socket or a display.
+/// Outside `lib/src/client/`'s `*_io.dart` transports, this is the only file
+/// under `lib/` allowed to import `dart:io` (`test/boundary_test.dart`); the
+/// tray's other files are pure Dart, so the menu and the models are tested
+/// without a process, a socket or a display.
 class DaemonCli {
   DaemonCli({this._binary});
 

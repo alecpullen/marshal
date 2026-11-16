@@ -213,16 +213,25 @@ Web control plane
   web/ui/                  Svelte 5 + Vite SPA (dev-only Node toolchain)
 
 Native app
-  app/                     Flutter desktop app: the tray screen — a menu-bar
-                           item whose menu reports the daemon's state and runs
-                           its commands. Pure Dart under lib/src except
-                           lib/src/daemon/cli.dart, the only file allowed
-                           `dart:io`: it reaches Marshal only by running
+  app/                     Flutter app (3.50; Material and Cupertino from the
+                           material_ui / cupertino_ui packages): today the tray
+                           screen — a menu-bar item whose menu reports the
+                           daemon's state and runs its commands — and the
+                           Studio's foundations. lib/src has four lanes:
+                           daemon/ + menu/ (the tray), client/ (the only code
+                           that opens a socket), model/ (pure Dart) and ui/
+                           (widgets). `dart:io` only in daemon/cli.dart and
+                           client/*_io.dart; browser APIs only in
+                           client/*_web.dart; model/ imports no Flutter,
+                           `dart:io` or browser API; ui/ never imports
+                           client/; Material and Cupertino only in ui/kit/,
+                           ui/tokens.dart and the tray's files.
+                           `app/test/boundary_test.dart` enforces it. The tray
+                           still reaches Marshal only by running
                            `marshal daemon status --json` and the commands in
                            its menu, and never opens the daemon's socket, never
                            reads `fleet.json`, the state directory or the
                            config, and embeds no agent-side Go type.
-                           `app/test/no_io_test.dart` enforces the import rule.
                            The release workflow copies `marshal` and
                            `webbridge` into the bundle; the app does not
                            contain them.

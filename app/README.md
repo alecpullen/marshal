@@ -8,6 +8,41 @@ daemon's socket and never reads its files: everything it knows comes from
 `marshal daemon status --json` and the commands it runs, so the app works
 against the same daemon the terminal does and cannot drift from it.
 
+The Studio is being built in this same project
+([`docs/studio-flutter/`](../docs/studio-flutter/programme.md)); until its
+window ships, the tray is the only thing the app runs.
+
+## Layout and the boundary rule
+
+```
+lib/main.dart          the tray's entry point
+lib/src/daemon/        the tray's CLI path: cli.dart runs marshal, status.dart parses it
+lib/src/menu/          the tray's menu model, its host interface and its renderer
+lib/src/client/        the bridge client: the only code that opens a socket (from F1)
+lib/src/model/         pure Dart stores and view models (from F1)
+lib/src/ui/            widgets: tokens.dart, the kit in kit/, the gallery in gallery/
+```
+
+`test/boundary_test.dart` enforces what each may import:
+
+- `dart:io` only in `lib/src/daemon/cli.dart` and in files under
+  `lib/src/client/` whose name ends `_io.dart`.
+- Browser APIs (`dart:js_interop`, `package:web`, …) only in files under
+  `lib/src/client/` whose name ends `_web.dart`.
+- `lib/src/model/` imports neither Flutter nor `dart:io` nor a browser API.
+- `lib/src/ui/` never imports `lib/src/client/`.
+- Material and Cupertino (the `material_ui` and `cupertino_ui` packages; the
+  SDK's own `material.dart` and `cupertino.dart` are deprecated and imported
+  nowhere) only under `lib/src/ui/kit/`, in `lib/src/ui/tokens.dart`, and in
+  the tray's existing files.
+- The tray still learns everything from `marshal daemon status --json` and
+  the commands in its menu. It could open the daemon's socket — Dart's
+  `HttpClient` can, through `connectionFactory` — but keeps its CLI path by
+  choice.
+
+Anything under `lib/src/ui/` also follows
+[the design system](../docs/studio-flutter/design-system.md).
+
 Two commands run it from a checkout (`flutter` must be on `PATH`):
 
 ```sh

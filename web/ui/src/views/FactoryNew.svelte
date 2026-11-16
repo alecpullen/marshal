@@ -207,11 +207,11 @@
   import EffectiveConfigSummary from '../lib/factory/EffectiveConfigSummary.svelte'
   import ProfileSelect from '../lib/factory/ProfileSelect.svelte'
   import { resolvedConfigRows, type ConfigSummaryRow } from '../lib/factory/config'
-  import { createFactoryItem, errMessage, getModels, getProjectSettings, listRepos, listWorkspaces, type ProjectSettings, type RepoRow, type WorkspaceListItem } from '../lib/api'
-  import type { FactoryCreate, FactoryItem } from '../lib/factory'
+  import { createFactoryItem, getModels, getProjectSettings, listRepos, listWorkspaces, type WorkspaceListItem } from '../lib/api'
+  import type { FactoryItem } from '../lib/factory'
   import type { RouteLeaveGuard } from '../lib/navigationGuard'
   import { formatFactoryRoute, formatProjectRoute, formatWorkingDraftsRoute } from '../lib/routes'
-  import { emptyWorkingDraftContent, sameWorkingDraftContent, type WorkingDraftContent, type WorkingDraftController } from '../lib/working-drafts'
+  import { emptyWorkingDraftContent, sameWorkingDraftContent, type WorkingDraftController } from '../lib/working-drafts'
 
   /**
    * A saved working draft this view edits. With one, every change is handed to

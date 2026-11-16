@@ -1,0 +1,40 @@
+╭─ Agents ────────────────────────────────────────────────────────────────────── 7─╮╭─ Activity  [Diff]  Info ─────────────────────────────╮
+│ Needs you                                                                        ││ 2 files +5 −2                                        │
+│ ⚠ fix-flaky-hooks  38%   2    2m marshal      act    waiting on an …  $1.25 pass ││ ▸ internal/app/tui/fleet/diff.go               +4 −0 │
+│ Running                                                                          ││   internal/app/tui/fleet/keys.go               +1 −2 │
+│ ● s3b-egress       41%   7    0s marshal      ask    go test ./inte…      – –    ││                                                      │
+│ Ready                                                                            ││ @@ -1,3 +1,7 @@                                      │
+│ ✓ docs-deploy      22%   4    1h notes        act    ready to land        – –    ││   package fleet                                      │
+│ Earlier                                                                          ││ +                                                    │
+│ · docs-sweep       12%   0    5s notes        ?      –                    – –    ││ + // diffTab is the Diff tab's key, as plan 3 reserv │
+│ ✗ ci-fixer          9%   0    3h infra        act    failed               – –    ││ + const diffTab = 2                                  │
+│ Sessions                                                                         ││ +                                                    │
+│ · marshal 3f2a91bc 2 viewers                                                 3m  ││ + // diffMinus is the header's removed marker.       │
+│ · marshal 9c1d4e5f 1 viewer                                                  1m  ││   const diffMinus = "−"                              │
+│                                                                                  ││                                                      │
+│                                                                                  ││                                                      │
+│                                                                                  ││                                                      │
+│                                                                                  ││                                                      │
+│                                                                                  ││                                                      │
+│                                                                                  ││                                                      │
+│                                                                                  ││                                                      │
+│                                                                                  ││                                                      │
+│                                                                                  ││                                                      │
+│                                                                                  ││                                                      │
+│                                                                                  ││                                                      │
+│                                                                                  ││                                                      │
+│                                                                                  ││                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────╯│                                                      │
+╭─ Needs you ─────────────────────────────────────────────────────────────────── 2─╮│                                                      │
+│ fix-flaky-hooks approval                                                         ││                                                      │
+│ intake github: fix the flaky test                                                ││                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────╯│                                                      │
+╭─ Events ────────────────────────────────────────────────────────────────────── 3─╮│                                                      │
+│ 14:58 connected to local                                                         ││                                                      │
+│ 14:59 docs-deploy is ready                                                       ││                                                      │
+│ 15:00 fix-flaky-hooks needs you: approval                                        ││                                                      │
+│                                                                                  ││                                                      │
+│                                                                                  ││                                                      │
+│                                                                                  ││                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────╯
+local ●  j/k file J/K scroll 1/3 tab n spawn  ⏎ open                                                                            ?help q quit

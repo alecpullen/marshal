@@ -213,16 +213,26 @@ Web control plane
   web/ui/                  Svelte 5 + Vite SPA (dev-only Node toolchain)
 
 Native app
-  app/                     Flutter desktop app: the tray screen — a menu-bar
-                           item whose menu reports the daemon's state and runs
-                           its commands. Pure Dart under lib/src except
-                           lib/src/daemon/cli.dart, the only file allowed
-                           `dart:io`: it reaches Marshal only by running
+  app/                     Flutter app (3.50; Material and Cupertino from the
+                           material_ui / cupertino_ui packages): today the tray
+                           screen — a menu-bar item whose menu reports the
+                           daemon's state and runs its commands — and the
+                           Studio's foundations. lib/src has four lanes:
+                           daemon/ + menu/ (the tray), client/ (the only code
+                           that opens a socket), model/ (stores and view models) and ui/
+                           (widgets). `dart:io` only in daemon/cli.dart and
+                           client/*_io.dart; browser APIs only in
+                           client/*_web.dart; model/ imports only
+                           `package:flutter/foundation.dart` from Flutter, and
+                           no `dart:io` or browser API; ui/ never imports
+                           client/; Material and Cupertino only in ui/kit/,
+                           ui/tokens.dart and the tray's files.
+                           `app/test/boundary_test.dart` enforces it. The tray
+                           still reaches Marshal only by running
                            `marshal daemon status --json` and the commands in
                            its menu, and never opens the daemon's socket, never
                            reads `fleet.json`, the state directory or the
                            config, and embeds no agent-side Go type.
-                           `app/test/no_io_test.dart` enforces the import rule.
                            The release workflow copies `marshal` and
                            `webbridge` into the bundle; the app does not
                            contain them.
@@ -264,6 +274,34 @@ These are load-bearing; code comments and tests point back at them.
   directly before the goal. Never insert or rewrite a message ahead of
   the transcript mid-turn; `TestPromptPrefixStableAcrossSteps` fails if
   you do.
+
+## The Studio's UI (`app/lib/src/ui/`)
+
+Before changing anything under `app/lib/src/ui/`, read
+`docs/studio-flutter/design-system.md`; it is normative there. In short:
+
+- Build screens only from the kit (`app/lib/src/ui/kit/kit.dart`). A screen
+  imports nothing from Material or Cupertino.
+- Every colour, text role, spacing, radius and size comes from
+  `app/lib/src/ui/tokens.dart`. Write no other number or colour.
+- Reuse `AskCard`, `PrCard`, `ThreadRow` and `StateMessage` wherever their
+  subject appears; never draw a second version.
+- Give every unlabelled control a tooltip, and handle loading, empty,
+  stale, error and unavailable on every screen that shows data. Register a
+  new screen, with fixture data for each state, in
+  `app/test/support/screens.dart`.
+- If the kit lacks a piece, extend the design system first (its §10): the
+  document, the kit, the gallery and the goldens together. Never a one-off
+  in a screen.
+
+These tests hold the line, in `app/test/` (`cd app && flutter test`):
+`design_rules_test.dart`, `tooltips_test.dart`, `states_test.dart`,
+`overflow_test.dart`, `gallery_test.dart`, `contrast_test.dart`,
+`fonts_test.dart`, `boundary_test.dart` and one `kit/<component>_test.dart`
+per component. The gallery goldens are pinned to macOS (regenerate there
+with `flutter test --update-goldens test/gallery_test.dart`). As with
+`TestWebIsStdlibOnly`, a failure is fixed by using the kit or extending the
+system, never by an exception in the test.
 
 ## Config
 

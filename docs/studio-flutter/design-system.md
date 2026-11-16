@@ -60,6 +60,31 @@ Derived, defined once in `tokens.dart` and nowhere else:
 | `diffAdded` | `ok` at 12% | An added line |
 | `attention` | `warn` at 55% | The border of something that needs you |
 | `failing` | `err` at 55% | The border of something that failed |
+| `scrim` | black at 45% dark, 30% light | What a sheet dims behind it |
+| `none` | fully transparent | An absent underline. Not a colour, the lack of one (added in F0) |
+
+### Terminal colours
+
+Used **only inside the terminal widget** (`terminal_view.dart`), never
+elsewhere in the UI. The eight ANSI colours map onto Ember where it has the
+hue, and three tokens cover the hues it lacks. Bright variants reuse the same
+eight.
+
+| ANSI | Token | Dark | Light |
+|---|---|---|---|
+| black | `faint` | `#6A645F` | `#8A7E73` |
+| red | `err` | `#E0606E` | `#B8324A` |
+| green | `ok` | `#6FBF8E` | `#2C7A52` |
+| yellow | `warn` | `#E2B04A` | `#8F6300` |
+| white | `fg` | `#ECE7E1` | `#2A2420` |
+| blue | `termBlue` | `#7AA6DA` | `#2F6294` |
+| magenta | `termMagenta` | `#C49ADB` | `#7E4A9E` |
+| cyan | `termCyan` | `#6FBFC4` | `#1F6F75` |
+
+Each of the three new tokens meets 4.5:1 on `bg` in its theme. They must not
+be used for anything else: no status, no accent, no chart. A rule in
+`design_rules_test.dart` fails on a reference outside `tokens.dart` and
+`terminal_view.dart`.
 
 Rules:
 
@@ -159,7 +184,31 @@ Cupertino**. If the kit lacks a piece, see §10.
 | `StateMessage` | Empty, loading, stale, error, planned | The only way these states are shown (§7) |
 | `Field` | A text input | Border only; the label is above it |
 | `Menu` | A popover of choices | Each item is a name and one line of explanation |
-| `Sheet` | A dialog or bottom sheet | One per screen at most |
+| `Sheet` | A dialog or bottom sheet; it dims what is behind it with `scrim` | One per screen at most |
+
+Variants as built in F0, beyond the table: `Box.flush` (no inner padding,
+for rows separated by `Hairline`s, as `Rows` uses); `Btn` and `Btn.primary`;
+`Pill`, `Pill.icon` (whose tooltip is required) and a mono label for
+identifiers; `Meter` and `Meter.fault`; `PageBody`'s width, `full` (1180) or
+`list` (860), from §4; `AskCard`'s placement — Inbox (everything), Overview
+(the body only for a decision) or its own thread (no source line);
+`PrCard`'s four states — ready, failing, in progress, being fixed.
+
+Supporting pieces, shared by the components and exported with them by
+`kit.dart`. None is drawn on its own, and none has variants:
+
+- `EmberApp` — the root every window, the gallery and every widget test put
+  the kit under: tokens for light or dark, the one background, the default
+  text role, an overlay, the default shortcuts.
+- `Tip` — the one tooltip. The components put it on themselves; a screen uses
+  it for anything else it must explain, such as the exact time behind a
+  relative one (§8).
+- `Status`, `ThreadKind`, `CheckState` and `Check` — the vocabulary of §6, so
+  the kit takes data without importing `model/`.
+- `Glyphs` — the one icon set (Cupertino's, bundled by `cupertino_icons`).
+- `Press`, not exported — the one way anything is clickable (§9): pointer
+  cursor, hover, keyboard focus with the `accent` ring, Enter and Space, and
+  the 44 target on the narrow layout.
 
 Rules:
 
@@ -264,6 +313,7 @@ widget tree; none needs a daemon.
 | · `radii are on the scale` | A radius is not one of the four |
 | · `screens use the kit` | A file under `ui/` outside `kit/` and `tokens.dart` imports Material or Cupertino |
 | · `kit components do not fetch` | A file under `ui/kit/` imports `model/` or `client/` |
+| · `terminal colours stay in the terminal widget` | `termBlue`, `termMagenta` or `termCyan` is used under `ui/` outside `tokens.dart` and `terminal_view.dart` |
 | `tooltips_test.dart` | Any screen, pumped with fixture data at each width, contains an icon-only control, dot, chip icon or strip without a tooltip |
 | `states_test.dart` | A registered screen lacks a case for loading, empty, stale, error or unavailable |
 | `contrast_test.dart` | A token pair in §2 falls below its ratio in either theme |

@@ -13,6 +13,23 @@ client: `lib/dock/`, `lib/review/`, `lib/ExitPanel.svelte`,
 **Before starting.** F3 has landed. Re-read the files above at the current
 `main`.
 
+## What F0 found
+
+From [findings/terminal.md](findings/terminal.md):
+
+- Use the `xterm` package at exactly 4.0.0. It passed automated tests on
+  macOS and in Chrome for keys, resize, colours, cursor movement, wrap,
+  scrollback and the alternate screen. It was last published in February
+  2024; pin it, and vendor it under its MIT licence if it becomes a
+  problem.
+- It takes strings, so decode the stream with a streaming UTF-8 decoder: a
+  character split across two chunks is otherwise corrupted.
+- Ember has no blue, magenta or cyan. The terminal-only set of ANSI colours
+  exists in design-system.md §2 ("Terminal colours") and `tokens.dart`; use
+  it only in `terminal_view.dart`.
+- Not verified: mouse selection and copy, paste, input methods, heavy
+  output, and a live stream from a bridge.
+
 ## Context
 
 The inspector is the right-hand column of a thread. It holds what the

@@ -13,6 +13,23 @@ Read first: [design.md](design.md) §2 and §5,
 the day this phase starts: bug fixes only. Re-read the files above at the
 current `main`.
 
+## What F0 found
+
+From [findings/tray-and-window.md](findings/tray-and-window.md), verified by
+a macOS debug run and unverified on Linux:
+
+- macOS: keep `LSUIElement`, and switch the app's activation policy between
+  accessory and regular from a small method channel in
+  `MainFlutterWindow.swift`. Closing the window hides it; the window and
+  engine are never destroyed. No window plugin is needed.
+- Quit must be its own channel call that terminates the app.
+- Linux: `app/linux/runner/my_application.cc` is the unmodified template and
+  shows a window at launch, contrary to what D3 says. This phase edits it:
+  no window on the first frame, hide on close, present on open, and hold
+  the application so it survives with no window.
+- A person must still confirm by eye the menu-bar item, the Dock icon
+  coming and going, and the red button; the finding lists the steps.
+
 ## Context
 
 This is the first phase a person can use. It builds the frame every later

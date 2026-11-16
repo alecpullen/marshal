@@ -2098,6 +2098,25 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	// presents the credential owns that.
 	marshalStudio.onStatus = rt.recordMarshalStatus
 	rt.recordMarshalStatus(marshalStudio.status())
+	// Exit analysis: the exit postmortem's optional agent pass. It is installed
+	// here, in the build every composition root shares — the embedded TUI, the
+	// daemon's ACP children and every other host — rather than in Embedded
+	// alone: a session served over ACP accepts the pass (session/exit_analysis)
+	// exactly as an embedded one does, and a runtime with no operation refused
+	// it after the extraction report had already been written. RunExitAnalysis
+	// opens a dedicated work epoch and stamps its authorization onto the
+	// context it hands this operation, so the pass may start only during the
+	// postmortem phase, its commands and children inherit the epoch, and the
+	// epoch is stopped and joined before RunExitAnalysis returns. The
+	// operation's temporary Act + System grant and its restoration are owned by
+	// RunExitAnalysis; neither the transport nor the model grants access.
+	rt.SetExitAnalysisOperation(func(analysisCtx context.Context, scope *session.ExitAnalysisScope, goal string) error {
+		runner := rt.TurnRunner()
+		if runner == nil {
+			return fmt.Errorf("exit analysis: no agent runner")
+		}
+		return runner.Run(analysisCtx, goal)
+	})
 	started = true
 	return rt, nil
 }

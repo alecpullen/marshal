@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -172,8 +171,8 @@ func (e *Embedded) FirstRun() bool { return e.firstRun }
 
 // Start starts the next runtime: a new session, the one Resume named, or
 // the same session reloaded after a trust decision. It adds the embedding
-// warning, starts the OAuth refresh workers, marks the state able to raise
-// a secret prompt and installs the exit-analysis operation.
+// warning, starts the OAuth refresh workers and marks the state able to
+// raise a secret prompt.
 func (e *Embedded) Start(ctx context.Context) (*Runtime, error) {
 	rt, err := startRuntime(ctx, e.opts)
 	if err != nil {
@@ -214,25 +213,10 @@ func (e *Embedded) Start(ctx context.Context) (*Runtime, error) {
 	// transport can answer.
 	rt.State.SetSecretPromptCapable(true)
 
-	// Exit analysis (Task 8, step 5): the closure's optional postmortem pass
-	// runs as a SCOPED exit-analysis operation. The runtime opens a dedicated
-	// work epoch for it and stamps the authorization onto the context it
-	// hands this operation, so the pass may start only during the postmortem
-	// phase, its commands and children inherit the epoch, and the epoch is
-	// stopped and joined before closure whatever the outcome. It never
-	// reopens ordinary conversation work, and it cannot recursively trigger
-	// the active-work warning.
-	//
-	// RunExitAnalysis owns the temporary Act + System grant and restores it
-	// after the epoch's work is joined. The transport and model never grant
-	// access themselves.
-	rt.SetExitAnalysisOperation(func(analysisCtx context.Context, scope *session.ExitAnalysisScope, goal string) error {
-		runner := rt.TurnRunner()
-		if runner == nil {
-			return fmt.Errorf("exit analysis: no agent runner")
-		}
-		return runner.Run(analysisCtx, goal)
-	})
+	// The exit postmortem's agent pass is installed by startRuntime, in the
+	// build every composition root shares, so an embedded session and a
+	// daemon-hosted one serve session/exit_analysis identically (see
+	// Runtime.SetExitAnalysisOperation).
 
 	return rt, nil
 }

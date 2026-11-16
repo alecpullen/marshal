@@ -211,9 +211,12 @@ only. Everything is under `web/`, and `TestWebIsStdlibOnly` still holds.
   from one writes 12 with no `pulls` key. Written by the exit path (an agent's
   pull request, and the CI fixer's and review bot's as their automations'),
   when the factory controller journals a new `FactoryPR`, and backfilled once
-  per source at start — agents at `StartPoller`, factory items when
-  `SetFactoryController` is wired — so a restart order does not matter. A
-  backfill adds only what is missing.
+  per source — agents at `StartPoller`, factory items from
+  `SetFactoryController` itself, so a poller that starts before the controller
+  is wired does not spend the factory's backfill on a nil controller. The
+  controller must still be wired before `StartPoller`, because the observer
+  reads it without a lock; `cmd/webbridge` does that. A backfill adds only what
+  is missing.
 - **Checks.** `Forge.ListChecks` for GitHub (check runs) and Gitea/Forgejo
   (commit statuses, newest report per context), mapped to
   `passed|failed|running|pending`. A credential that is not a PAT returns

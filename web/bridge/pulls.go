@@ -198,12 +198,16 @@ func (f *Fleet) recordFactoryPull(item FactoryItem, pr FactoryPR) {
 }
 
 // backfillPulls records what the fleet already knew before it kept records: an
-// agent's exit pull request URL, and each factory item's open pull requests. It
-// runs once per source, whichever start hook comes first, and adds only what is
+// agent's exit pull request URL, and — once a controller is wired — each factory
+// item's open pull requests. It runs once per source and adds only what is
 // missing, so running it again changes nothing.
+//
+// The factory's backfill belongs to SetFactoryController, not to the poller's
+// start: a fleet whose poller starts before its controller is wired would
+// otherwise spend the factory's sync.Once on a nil controller and never backfill
+// it at all.
 func (f *Fleet) backfillPulls() {
 	f.backfillAgentsOnce.Do(f.backfillAgentPulls)
-	f.backfillFactoryOnce.Do(f.backfillFactoryPulls)
 }
 
 // backfillAgentPulls records the pull request each agent's exit already

@@ -719,3 +719,27 @@ func TestBackfillAddsOnlyMissingRecords(t *testing.T) {
 		t.Fatalf("recorded %d pull requests, want 2: %+v", got, f.pulls())
 	}
 }
+
+// The poller may start before the factory controller is wired. Its start must
+// not spend the factory backfill: the controller arrives later, and its items
+// are recorded then.
+func TestPollerStartBeforeTheControllerKeepsTheFactoryBackfill(t *testing.T) {
+	f := testFleet(t)
+	if err := f.ws.PutRepo(Repo{ID: "r1", URL: "https://github.com/you/r.git",
+		OwnerID: DefaultOwnerID, Forge: "github"}); err != nil {
+		t.Fatal(err)
+	}
+	// StartPoller's first act, with no controller to ask.
+	f.backfillPulls()
+
+	s, item := factoryPullItem(t, 21, "abc123", nil)
+	f.SetFactoryController(NewFactoryController(s, &loopEffects{store: s}, f.now))
+
+	rec, ok := f.pull("r1#21")
+	if !ok {
+		t.Fatal("wiring the controller after the poller started lost the factory backfill")
+	}
+	if rec.Origin != contract.PullOriginFactory || rec.FactoryItem != item.ID {
+		t.Fatalf("record = %+v, want the factory's open pull request", rec)
+	}
+}

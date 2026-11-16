@@ -3,10 +3,14 @@ import '../../model/fleet_store.dart';
 import '../../model/inbox_model.dart';
 import '../../model/nav_model.dart';
 import '../../model/place.dart';
+import '../../model/stack_store.dart';
+import '../../model/thread_ref.dart' as model;
+import '../../model/thread_view_state.dart';
 import '../inbox/inbox.dart' show Inbox;
 import '../kit/kit.dart';
 import '../overview/overview.dart' show Overview;
 import '../../model/overview_model.dart' show buildOverview;
+import '../thread/thread_screen.dart';
 import 'placeholder.dart';
 import 'sidebar.dart';
 
@@ -228,6 +232,7 @@ class Studio extends StatefulWidget {
     required this.store,
     required this.inbox,
     this.read,
+    this.threadStore,
     this.initialPlace = const Place.overview(),
   });
 
@@ -237,6 +242,11 @@ class Studio extends StatefulWidget {
   /// Reads the fleet: discovery when the app starts, and again when a person
   /// asks.
   final Future<void> Function()? read;
+
+  /// Builds the store a thread place reads its session into. Null draws a
+  /// thread place as planned: a test or an embedded host that supplies none
+  /// gets the promise, never a socket.
+  final StackStore Function(model.ThreadRef thread)? threadStore;
 
   /// The place a deep link names.
   final Place initialPlace;
@@ -329,6 +339,69 @@ class _StudioState extends State<Studio> {
         onRetry: _reread,
       );
     }
+    if (place.kind == PlaceKind.thread) {
+      final build = widget.threadStore;
+      final thread = _threadRef(place);
+      if (build != null && thread != null) {
+        return _ThreadPlace(
+          key: ValueKey('${thread.host}/${thread.id}'),
+          thread: thread,
+          buildStore: build,
+        );
+      }
+      return plannedPlace(place, nav);
+    }
     return plannedPlace(place, nav);
   }
+
+  /// The thread a place names, when the fleet still lists its agent.
+  model.ThreadRef? _threadRef(Place place) {
+    final host = place.host;
+    final id = place.id;
+    if (host == null || id == null) return null;
+    for (final agent in widget.store.agents(host: host)) {
+      if (agent.id == id) return model.threadFor(host, agent);
+    }
+    return null;
+  }
+}
+
+/// One thread place: the store and the view state a thread's screen owns,
+/// started when the place opens and stopped when it closes.
+class _ThreadPlace extends StatefulWidget {
+  const _ThreadPlace({
+    super.key,
+    required this.thread,
+    required this.buildStore,
+  });
+
+  final model.ThreadRef thread;
+  final StackStore Function(model.ThreadRef thread) buildStore;
+
+  @override
+  State<_ThreadPlace> createState() => _ThreadPlaceState();
+}
+
+class _ThreadPlaceState extends State<_ThreadPlace> {
+  late final StackStore _store = widget.buildStore(widget.thread);
+  late final ThreadViewState _view = ThreadViewState();
+
+  @override
+  void initState() {
+    super.initState();
+    _store.start();
+  }
+
+  @override
+  void dispose() {
+    _store
+      ..stop()
+      ..dispose();
+    _view.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      ThreadScreen(thread: widget.thread, store: _store, view: _view);
 }

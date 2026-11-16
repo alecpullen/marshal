@@ -8,6 +8,22 @@ import '../client/contract.g.dart';
 import '../client/event_stream.dart';
 import '../client/transport.dart';
 
+// The transcript's wire types as the UI names them. `ui/` reads `model/` and
+// never reaches into `client/` (test/boundary_test.dart), so the types a row
+// switches on are re-exported here rather than imported there.
+export '../client/contract.g.dart'
+    show
+        WireCall,
+        WireCompletion,
+        WireMessage,
+        WireNode,
+        WirePlan,
+        WireReceipt,
+        WireRunEvent,
+        WireStep,
+        WireThinking,
+        WireTool;
+
 /// What a [StackStore] has: the snapshot it was seeded with, a patch stream it
 /// is applying, or neither.
 enum StackStatus {
@@ -51,14 +67,31 @@ class StackStore extends ChangeNotifier {
                client.stack(sessionId, subagentId: subagentId)),
        _openEvents = events ?? (() => client.sessionEvents(sessionId));
 
+  /// A store that already holds [snapshot]: a screen's fixture, or a host that
+  /// was handed a transcript. It opens no stream, and [refresh] does nothing
+  /// until it is given a [fetcher].
+  StackStore.seeded(StackSnapshot snapshot)
+    : sessionId = snapshot.sessionID,
+      subagentId = snapshot.subagentID ?? 0,
+      _fetcher = null,
+      _openEvents = null {
+    _nodes.addEntries([
+      for (final node in snapshot.nodes) MapEntry(node.id, node),
+    ]);
+    _collect(_nodes, snapshot.roots);
+    _roots = snapshot.roots;
+    _rev = snapshot.rev;
+    _status = StackStatus.ready;
+  }
+
   /// The session whose transcript this is.
   final String sessionId;
 
   /// The child transcript this store holds, 0 for the parent's.
   final int subagentId;
 
-  final Future<StackSnapshot> Function(String, int) _fetcher;
-  final EventStream Function() _openEvents;
+  final Future<StackSnapshot> Function(String, int)? _fetcher;
+  final EventStream Function()? _openEvents;
 
   StackStatus _status = StackStatus.loading;
   int _rev = 0;
@@ -99,7 +132,10 @@ class StackStore extends ChangeNotifier {
   /// not open a second stream.
   void start() {
     if (_stream != null) return;
-    final stream = _stream = _openEvents();
+    final open = _openEvents;
+    // A seeded store was handed its transcript and has no session to follow.
+    if (open == null) return;
+    final stream = _stream = open();
     _events = stream.events.listen(_onEvent);
     _gaps = stream.gaps.listen((_) => onStreamGap());
     stream.state.addListener(_onStreamState);
@@ -144,9 +180,11 @@ class StackStore extends ChangeNotifier {
   }
 
   Future<void> _fetchOnce(int generation) async {
+    final fetch = _fetcher;
+    if (fetch == null) return;
     final StackSnapshot snapshot;
     try {
-      snapshot = await _fetcher(sessionId, subagentId);
+      snapshot = await fetch(sessionId, subagentId);
     } on BridgeFailure catch (failure) {
       if (_disposed || generation != _generation) return;
       if (failure.status == 501) {

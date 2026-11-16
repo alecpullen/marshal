@@ -305,6 +305,30 @@ func (m *ControlManager) SubagentCancel(ctx context.Context, params json.RawMess
 	return acpwire.SubagentCancelResult{Cancelled: sess.CancelSubagent(ctx, p.SubagentID)}, nil
 }
 
+// SubagentSteer handles session/subagent_steer: one user instruction for a live
+// child, delivered at most once per request ID. The session is resolved first,
+// so a request naming no session — or one this server does not serve — never
+// reaches a child. A blank request ID or message is invalid params, as is an
+// unreadable request; a child that is unknown or no longer running is the
+// session's refusal, which travels as it is.
+func (m *ControlManager) SubagentSteer(ctx context.Context, params json.RawMessage) (any, error) {
+	var p acpwire.SubagentSteerParams
+	if err := decodeParams(params, &p, acpwire.MethodSubagentSteer); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	if strings.TrimSpace(p.RequestID) == "" {
+		return nil, invalidParamsError("session/subagent_steer: requestId is required")
+	}
+	if strings.TrimSpace(p.Message) == "" {
+		return nil, invalidParamsError("session/subagent_steer: message is required")
+	}
+	sess, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	return sess.SteerSubagent(ctx, p)
+}
+
 // SDDClear handles session/sdd_clear: the service calls it ClearFinishedRun.
 func (m *ControlManager) SDDClear(ctx context.Context, params json.RawMessage) (any, error) {
 	var p acpwire.ControlParams
@@ -588,6 +612,7 @@ func registerControls(srv *Server, controls *ControlManager, others map[string]H
 	srv.Handle(acpwire.MethodSteeringClear, controls.SteeringClear)
 	srv.Handle(acpwire.MethodSetSudoUnlock, controls.SetSudoUnlock)
 	srv.Handle(acpwire.MethodSubagentCancel, controls.SubagentCancel)
+	srv.Handle(acpwire.MethodSubagentSteer, controls.SubagentSteer)
 	srv.Handle(acpwire.MethodSDDClear, controls.SDDClear)
 	srv.Handle(acpwire.MethodWatchResumeTake, controls.WatchResumeTake)
 	srv.Handle(acpwire.MethodSDDPreflight, controls.SDDPreflight)

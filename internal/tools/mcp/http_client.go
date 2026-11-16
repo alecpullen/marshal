@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,6 +42,21 @@ func WithHTTPClientLogger(l *slog.Logger) HTTPClientOption {
 	return func(c *HTTPClient) { c.Logger = l }
 }
 
+// WithHTTPClient installs the *http.Client whose Do sends this client's
+// requests. It replaces only where the bytes are written — a Unix-socket
+// dialer, a pinned certificate pool, a timeout — and changes nothing else: the
+// endpoint is still whatever URL the caller configured, the token-source rules
+// below still apply, and ValidateRemoteServer remains the gate for a configured
+// remote server. A nil client is ignored, leaving the default transport in
+// place.
+func WithHTTPClient(hc *http.Client) HTTPClientOption {
+	return func(c *HTTPClient) {
+		if hc != nil {
+			c.http = hc
+		}
+	}
+}
+
 // WithHTTPOAuth installs a token source that supplies an OAuth bearer token
 // for each request. src is consulted once per POST so a refreshed token is
 // picked up without rebuilding the client.
@@ -55,6 +71,90 @@ func WithHTTPClientLogger(l *slog.Logger) HTTPClientOption {
 // can drive an authorization flow.
 func WithHTTPOAuth(src func(ctx context.Context) (string, error)) HTTPClientOption {
 	return func(c *HTTPClient) { c.tokenSource = src }
+}
+
+// WithHTTPRequestHeaders installs a source of extra request headers consulted
+// once per POST, beside the token source and for the same reason: the value is
+// per-request while Headers is fixed at construction.
+//
+// The source never overrides Authorization and never replaces the client's own
+// headers, and it is consulted only while a request is being built — it is not
+// recorded, logged, described to a model, or kept after the request. A nil
+// source is ignored.
+func WithHTTPRequestHeaders(src func(ctx context.Context) map[string]string) HTTPClientOption {
+	return func(c *HTTPClient) {
+		if src != nil {
+			c.requestHeaders = src
+		}
+	}
+}
+
+// WithHTTPRevalidator installs the hook a request failure re-runs discovery and
+// enrollment through. It is consulted at most once per call, and only for a 401
+// (a credential the server no longer accepts) or a transport failure (nothing
+// answered at all): a request that failed for any other reason is returned as
+// it is.
+//
+// The retry that follows re-sends the *same* JSON-RPC request — same id, same
+// params — so an uncertain outcome is reconciled by the server's own
+// idempotency instead of becoming a second action. A failed revalidation
+// returns the original error: the caller's session keeps working without the
+// endpoint.
+func WithHTTPRevalidator(fn func(ctx context.Context) error) HTTPClientOption {
+	return func(c *HTTPClient) {
+		if fn != nil {
+			c.revalidate = fn
+		}
+	}
+}
+
+// WithUserDirectionConfirm installs the confirmer for a built-in operation the
+// server refused because it acts on a person's instruction. header names the
+// request header such a receipt travels in; confirm is called at most once per
+// call, and only when a tools/call result carries code
+// "user_direction_required" — no other failure is retried.
+//
+// confirm returns the receipt to present; the client then re-sends the same
+// request (same id, same params) once, with the receipt in header. An empty
+// receipt or an error from confirm ends the attempt: the caller sees the
+// refusal, and nothing is retried.
+func WithUserDirectionConfirm(header string, confirm func(ctx context.Context, challenge UserDirectionChallenge) (string, error)) HTTPClientOption {
+	return func(c *HTTPClient) {
+		if strings.TrimSpace(header) == "" || confirm == nil {
+			return
+		}
+		c.userDirection = &userDirectionConfirm{header: strings.TrimSpace(header), confirm: confirm}
+	}
+}
+
+// UserDirectionChallenge is one operation a built-in endpoint refused for want
+// of a person's direction, with the opaque receipt it minted for exactly that
+// operation. Receipt and ExpiresAt are the endpoint's; Tool and Arguments are
+// the operation the caller asked for, so the confirmation it produces names one
+// operation rather than the surface as a whole.
+type UserDirectionChallenge struct {
+	Receipt   string
+	ExpiresAt time.Time
+	Tool      string
+	Arguments map[string]any
+}
+
+// userDirectionConfirm is WithUserDirectionConfirm's configured hook.
+type userDirectionConfirm struct {
+	header  string
+	confirm func(ctx context.Context, challenge UserDirectionChallenge) (string, error)
+}
+
+// MCPError is a JSON-RPC error the server answered with. Code is the protocol
+// code, so a caller can tell an unknown method or tool from a refusal without
+// parsing the message.
+type MCPError struct {
+	Code    int
+	Message string
+}
+
+func (e *MCPError) Error() string {
+	return fmt.Sprintf("MCP error (%d): %s", e.Code, e.Message)
 }
 
 // tokenSourceError couples an *oauth.ErrAuthRequired with the underlying
@@ -93,6 +193,20 @@ type HTTPClient struct {
 	// tokenSource, when non-nil, supplies an OAuth bearer token for every
 	// outgoing request. It is nil unless WithHTTPOAuth was supplied.
 	tokenSource func(ctx context.Context) (string, error)
+
+	// requestHeaders, when non-nil, yields extra headers for one POST. It is
+	// nil unless WithHTTPRequestHeaders was supplied.
+	requestHeaders func(ctx context.Context) map[string]string
+
+	// revalidate, when non-nil, re-runs discovery and enrollment after a 401
+	// or a transport failure, at most once per call. It is nil unless
+	// WithHTTPRevalidator was supplied.
+	revalidate func(ctx context.Context) error
+
+	// userDirection, when non-nil, admits one refused built-in operation per
+	// call after the caller's confirmer produces the receipt. It is nil unless
+	// WithUserDirectionConfirm was supplied.
+	userDirection *userDirectionConfirm
 
 	http *http.Client
 
@@ -178,6 +292,13 @@ func (c *HTTPClient) Close() error {
 
 // Call sends a JSON-RPC request and decodes the matching response into
 // result. It is safe for concurrent use.
+//
+// A client configured with WithHTTPRevalidator or WithUserDirectionConfirm
+// applies those rules here, and only here: a 401 or a transport failure
+// revalidates once, a tool result that asks for a person's direction confirms
+// once, and every retry re-sends this same request — the id and params the
+// caller's call produced — so an uncertain outcome is reconciled rather than
+// repeated as a new action.
 func (c *HTTPClient) Call(ctx context.Context, method string, params, result any) error {
 	n := atomic.AddInt64(&c.nextID, 1)
 	id := json.Number(strconv.FormatInt(n, 10))
@@ -188,29 +309,139 @@ func (c *HTTPClient) Call(ctx context.Context, method string, params, result any
 		Params:  params,
 	}
 
-	resp, cleanup, err := c.post(ctx, req)
+	// extra carries the headers this attempt alone presents (a user-direction
+	// receipt). It is per-call and never recorded on the client.
+	extra := map[string]string{}
+	res, err := c.roundTrip(ctx, req, extra)
 	if err != nil {
+		if c.revalidate == nil || !recoverableFailure(err) {
+			return err
+		}
+		// Re-run discovery and enrollment once, then re-send the same request.
+		if rerr := c.revalidate(ctx); rerr != nil {
+			return err
+		}
+		if res, err = c.roundTrip(ctx, req, extra); err != nil {
+			return err
+		}
+	}
+	if res.Error != nil {
+		return &MCPError{Code: res.Error.Code, Message: res.Error.Message}
+	}
+	if err := decodeResult(res, result); err != nil {
 		return err
 	}
-	defer cleanup()
-	defer resp.Body.Close()
-
-	var res Response
-	if isEventStream(resp.Header.Get("Content-Type")) {
-		res, err = readSSEResponse(resp.Body, id)
-	} else {
-		res, err = readJSONResponse(resp.Body, id)
+	if c.userDirection == nil || method != toolsCallMethod {
+		return nil
 	}
+	challenge, ok := userDirectionChallengeOf(params, result)
+	if !ok {
+		return nil
+	}
+	receipt, cerr := c.userDirection.confirm(ctx, challenge)
+	if cerr != nil || receipt == "" {
+		// The person did not direct the operation: the caller keeps the
+		// refusal it already has, and nothing is retried.
+		return nil
+	}
+	extra[c.userDirection.header] = receipt
+	res, err = c.roundTrip(ctx, req, extra)
 	if err != nil {
 		return err
 	}
 	if res.Error != nil {
-		return fmt.Errorf("MCP error (%d): %s", res.Error.Code, res.Error.Message)
+		return &MCPError{Code: res.Error.Code, Message: res.Error.Message}
 	}
-	if result != nil {
-		return json.Unmarshal(res.Result, result)
+	return decodeResult(res, result)
+}
+
+// toolsCallMethod is the one method the user-direction rule observes.
+const toolsCallMethod = "tools/call"
+
+// userDirectionRequiredCode is the tool-failure code an endpoint answers with
+// when an operation needs a person's direction before it may run.
+const userDirectionRequiredCode = "user_direction_required"
+
+// decodeResult unmarshals a response's result into the caller's value.
+func decodeResult(res Response, result any) error {
+	if result == nil {
+		return nil
 	}
-	return nil
+	return json.Unmarshal(res.Result, result)
+}
+
+// roundTrip POSTs one request and reads its JSON-RPC answer. extra holds the
+// per-attempt headers; the request's id and params are never rewritten, so a
+// retry is a reconciliation of the same operation.
+func (c *HTTPClient) roundTrip(ctx context.Context, req Request, extra map[string]string) (Response, error) {
+	resp, cleanup, err := c.post(ctx, req, extra)
+	if err != nil {
+		return Response{}, err
+	}
+	defer cleanup()
+	defer resp.Body.Close()
+	if isEventStream(resp.Header.Get("Content-Type")) {
+		return readSSEResponse(resp.Body, req.ID)
+	}
+	return readJSONResponse(resp.Body, req.ID)
+}
+
+// recoverableFailure reports whether err is the class a revalidation can fix: a
+// credential the server no longer accepts, or nothing answering at all. Every
+// other failure — a refusal, a protocol error, a bad payload — is returned as
+// it is rather than repeated.
+func recoverableFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	var auth *oauth.ErrAuthRequired
+	if errors.As(err, &auth) {
+		return true
+	}
+	var transport *url.Error
+	return errors.As(err, &transport)
+}
+
+// userDirectionChallengeOf reads the challenge out of a refused tools/call
+// result. Only a tool that reported an error and whose text carries the code
+// qualifies: a successful result whose text happens to mention the code is not
+// a refusal and is never retried.
+func userDirectionChallengeOf(params, result any) (UserDirectionChallenge, bool) {
+	call, ok := params.(CallToolParams)
+	if !ok {
+		return UserDirectionChallenge{}, false
+	}
+	res, ok := result.(*CallToolResult)
+	if !ok || res == nil || !res.IsError {
+		return UserDirectionChallenge{}, false
+	}
+	for _, content := range res.Content {
+		if content.Type != "text" {
+			continue
+		}
+		var payload struct {
+			Code      string `json:"code"`
+			Receipt   string `json:"receipt"`
+			ExpiresAt string `json:"expiresAt"`
+		}
+		if err := json.Unmarshal([]byte(content.Text), &payload); err != nil {
+			continue
+		}
+		if payload.Code != userDirectionRequiredCode || payload.Receipt == "" {
+			continue
+		}
+		challenge := UserDirectionChallenge{Receipt: payload.Receipt, Tool: call.Name}
+		if payload.ExpiresAt != "" {
+			if expiresAt, err := time.Parse(time.RFC3339, payload.ExpiresAt); err == nil {
+				challenge.ExpiresAt = expiresAt
+			}
+		}
+		if len(call.Arguments) > 0 {
+			_ = json.Unmarshal(call.Arguments, &challenge.Arguments)
+		}
+		return challenge, true
+	}
+	return UserDirectionChallenge{}, false
 }
 
 // notify sends a JSON-RPC notification (no id, no response expected).
@@ -220,7 +451,7 @@ func (c *HTTPClient) notify(ctx context.Context, method string, params any) erro
 		Method:  method,
 		Params:  params,
 	}
-	resp, cleanup, err := c.post(ctx, req)
+	resp, cleanup, err := c.post(ctx, req, nil)
 	if err != nil {
 		return err
 	}
@@ -231,10 +462,11 @@ func (c *HTTPClient) notify(ctx context.Context, method string, params any) erro
 }
 
 // post marshals req, POSTs it to the endpoint, and returns the raw HTTP
-// response. The returned cleanup must be invoked once the response body has
-// been consumed; it releases the per-request timeout context. The session id
-// lock is never held across the round-trip.
-func (c *HTTPClient) post(ctx context.Context, req Request) (*http.Response, func(), error) {
+// response. extra holds the headers this attempt alone presents (a
+// user-direction receipt). The returned cleanup must be invoked once the
+// response body has been consumed; it releases the per-request timeout
+// context. The session id lock is never held across the round-trip.
+func (c *HTTPClient) post(ctx context.Context, req Request, extra map[string]string) (*http.Response, func(), error) {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
@@ -267,6 +499,15 @@ func (c *HTTPClient) post(ctx context.Context, req Request) (*http.Response, fun
 	for k, v := range c.Headers {
 		httpReq.Header.Set(k, v)
 	}
+	// Headers yielded per request come next, so a credential-bearing static
+	// header cannot be replaced by one, and the token source below still wins
+	// over everything. The source is consulted while the request is built and
+	// its values are never recorded on the client.
+	if c.requestHeaders != nil {
+		for k, v := range c.requestHeaders(ctx) {
+			httpReq.Header.Set(k, v)
+		}
+	}
 	// A configured token source wins over a static Authorization header:
 	// the token is per-request and freshly sourced, while c.Headers is fixed
 	// at construction. The header is set on the outgoing request only; the
@@ -291,6 +532,11 @@ func (c *HTTPClient) post(ctx context.Context, req Request) (*http.Response, fun
 	}
 	if sessionID != "" {
 		httpReq.Header.Set(mcpSessionIDHeader, sessionID)
+	}
+	// Last, the headers this one attempt presents — a user-direction receipt
+	// that admits exactly the operation the request carries.
+	for k, v := range extra {
+		httpReq.Header.Set(k, v)
 	}
 
 	resp, err := c.http.Do(httpReq)

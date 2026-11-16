@@ -51,10 +51,21 @@ func WithContext(ctx context.Context) BrowserOption {
 	return func(b *BrowserPanel) { b.ctx = ctx }
 }
 
-// WithSession sets the session the browser's project-scope saves go through.
-// Without one, a project save saves nothing and counts as succeeding.
+// WithSession sets the session the browser's project-scope saves go through,
+// and the one the Studio section reads and writes its access through. Without
+// one, a project save saves nothing and counts as succeeding, and the Studio
+// section says it has no session to ask.
+//
+// The Studio read is not started here: a browser opens with the user's own
+// section, and reading a connection nobody looked at would make every settings
+// screen wait on a client call. The section's own rows offer the read, and a
+// write refuses until it has answered, because a write must name the version it
+// was edited from.
 func WithSession(sess acpclient.Session) BrowserOption {
-	return func(b *BrowserPanel) { b.sess = sess }
+	return func(b *BrowserPanel) {
+		b.sess = sess
+		b.reg.st.sess = sess
+	}
 }
 
 // WithHost sets the client host every probe this browser launches asks. Without
@@ -201,6 +212,51 @@ func (b *BrowserPanel) SetSaveBlocked(reason string) tea.Cmd {
 // no-ops instead of retrying the save — the caller must call this right
 // after NewBrowser whenever it knows persistence is still pending.
 func (b *BrowserPanel) SetSavePending(pending bool) { b.savePending = pending }
+
+// OwnsMsg claims this browser's own async results so the dock host delivers
+// them: the Studio access read and its writes carry an unexported type, which
+// the model cannot name and would otherwise drop on the floor.
+func (b *BrowserPanel) OwnsMsg(msg tea.Msg) bool {
+	_, ok := msg.(marshalAccessMsg)
+	return ok
+}
+
+// handleMarshalAccess applies one answer from the Studio surface: the cached
+// view becomes the answer's, the row that acted shows its receipt, and the list
+// is refreshed so every row renders the values now stored. A refused stale
+// write is not an error — its answer carries the value that won, and the row
+// says so rather than re-reading blind and discarding the user's edit.
+func (b *BrowserPanel) handleMarshalAccess(msg marshalAccessMsg) tea.Cmd {
+	st := b.reg.st
+	if msg.err != nil {
+		if msg.fieldID == "" {
+			// A refused read is the connection's own state: the section
+			// reports it and refuses writes until the next read answers.
+			st.accessErr = msg.err.Error()
+			return nil
+		}
+		// A refused write says nothing about the connection. The cached view
+		// and its versions stay as they were, so the section keeps editing
+		// instead of being locked until someone re-reads by hand.
+		st.applyActionResult(msg.fieldID, "✗ "+strutil.Truncate(msg.err.Error(), 37, true))
+		return nil
+	}
+	st.accessErr = ""
+	st.accessLoaded = true
+	st.access = msg.view
+	if list := b.activeList(); list != nil {
+		list.Refresh()
+	}
+	switch {
+	case msg.fieldID == "":
+		// A plain read: the rows already show the values it returned.
+	case msg.view.Stale:
+		st.applyActionResult(msg.fieldID, "✗ changed elsewhere; the stored value is shown")
+	default:
+		st.applyActionResult(msg.fieldID, "✓ saved")
+	}
+	return nil
+}
 
 func (b *BrowserPanel) matchedFields() []*field {
 	query := strings.TrimSpace(b.filter.Value())
@@ -384,6 +440,8 @@ func (b *BrowserPanel) Update(msg tea.Msg) tea.Cmd {
 	case actionResultMsg:
 		b.reg.st.applyActionResult(msg.FieldID, msg.Label)
 		return nil
+	case marshalAccessMsg:
+		return b.handleMarshalAccess(msg)
 	}
 
 	// Forward paste to the active picker, the drilled pane stack, the field
@@ -923,6 +981,16 @@ func rowHints(b *BrowserPanel, atRoot bool) string {
 			target = "user config"
 		}
 		h += " · → " + target
+	}
+	// Deletion is a two-press gesture on rows that have one, so the hint names
+	// the key, and names the confirmation once the first press armed it
+	// (AUD-13). Rows without a delete keep their existing text.
+	if row.Del != nil {
+		if list.DeleteArmed() {
+			h += " · d again to delete"
+		} else {
+			h += " · d delete"
+		}
 	}
 	return h + " · " + back
 }

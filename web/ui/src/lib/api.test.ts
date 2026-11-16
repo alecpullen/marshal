@@ -600,6 +600,23 @@ describe('factory API', () => {
     vi.stubGlobal('fetch', reply(401))
     await expect(commandFactoryItem('x', { requestId: 'r2', kind: 'stop', expectedVersion: 7 })).rejects.toMatchObject({ name: 'AuthError' })
   })
+  it('reads the combined settings version a review is bound to', async () => {
+    const { getFactorySettingsVersion } = await import('./api')
+    const read = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => JSON.stringify({ settingsVersion: '"p1":digest-1' }) })
+    vi.stubGlobal('fetch', read)
+    // The root is a project root, not a settings read: the query names it as
+    // the factory routes do, and the bridge composes the version.
+    expect(await getFactorySettingsVersion('/p q')).toBe('"p1":digest-1')
+    expect(read.mock.calls[0][0]).toBe('/api/factory/settings-version?projectRoot=%2Fp+q')
+    expect(read.mock.calls[0][1].method).toBe('GET')
+
+    // A refusal is an APIError like every other request, so a review can fail
+    // closed on it rather than inventing a version.
+    vi.stubGlobal('fetch', reply(503, { error: 'fleet unavailable', code: 'unavailable' }))
+    const err = await getFactorySettingsVersion('/p').catch((e) => e)
+    expect(err).toBeInstanceOf(APIError)
+    expect(err.status).toBe(503)
+  })
 })
 
 describe('versioned project settings API', () => {

@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/acpclient"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
@@ -32,6 +33,16 @@ type state struct {
 	// host is the client host every probe launched from this state asks.
 	// A nil host fails every probe with probe's no-host error.
 	host acpclient.Host
+	// sess is the session the Studio section reads and writes through. Nil
+	// means no session: the section reports that and refuses writes.
+	sess acpclient.Session
+	// access is the Studio connection and access view the last read returned;
+	// accessErr names a read that failed and accessLoaded says a read has
+	// answered. The Studio frames render from these, and no config save
+	// depends on them.
+	access       acpwire.MarshalAccessView
+	accessErr    string
+	accessLoaded bool
 	// probed records providers already probed during this browser's
 	// lifetime, so rebuilding a frame does not re-probe on every refresh.
 	probed map[string]bool

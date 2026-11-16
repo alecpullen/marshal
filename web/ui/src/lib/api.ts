@@ -617,6 +617,125 @@ export async function putFactoryGrant(
   }
 }
 
+/*
+  The built-in session's own access. This is a Studio management surface: every
+  one of these helpers calls an /api/ route the model-facing MCP endpoint cannot
+  reach, and a session's model never sees or names one.
+*/
+
+/** One capability of a built-in session's factory authority. An unset field inherits the layer beneath it; `false` is a denial that stays one until it is reset. */
+export interface MarshalAccess {
+  read?: boolean
+  createDraft?: boolean
+  editDraft?: boolean
+  answerQuestion?: boolean
+  approveAndQueue?: boolean
+  /** `none`, `user_directed` or `standing`. Unset inherits. */
+  approvalAuthority?: string
+}
+
+/** One level's stored access and the opaque version a write to it must name. */
+export interface MarshalAccessLayer {
+  access: MarshalAccess
+  version: string
+}
+
+/**
+ * One session's Studio connection and the access it inherits or overrides.
+ *
+ * `state` is `connected`, `ambiguous`, `unavailable`, `unsupported` or
+ * `unauthorized`; it describes the connection, never the policy. `source` names
+ * the levels that contributed (`project`, `session`), and `candidates` are the
+ * projects the server tracks the session for when it refuses to guess between
+ * them.
+ */
+export interface MarshalAccessView {
+  state: string
+  reason?: string
+  instanceId?: string
+  generation?: string
+  projectId?: string
+  sessionId?: string
+  workerId?: string
+  candidates?: string[]
+  selectedProjectId?: string
+  selectionVersion?: string
+  default: MarshalAccessLayer
+  override?: MarshalAccessLayer
+  overrideVersion?: string
+  effective: MarshalAccess
+  source?: Record<string, string>
+  editable?: boolean
+  stale?: boolean
+}
+
+/** A 409 from an access write, carrying the value that won so the editor can keep the unsaved edit. */
+export class MarshalAccessConflictError extends APIError {
+  view: MarshalAccessView | null
+  constructor(body: unknown) {
+    super(409, body)
+    this.name = 'MarshalAccessConflictError'
+    const view = body as MarshalAccessView | undefined
+    this.view = view && typeof view === 'object' && view.default && typeof view.default.version === 'string' ? view : null
+  }
+}
+
+/**
+ * `GET /api/marshal/access`: one session's connection and access, or a
+ * project's defaults when no session is named. Every state is an answer, so a
+ * caller renders it instead of handling an error.
+ */
+export async function getMarshalAccess(query: { projectId?: string; sessionId?: string; workerId?: string } = {}): Promise<MarshalAccessView> {
+  const params = new URLSearchParams()
+  if (query.projectId) params.set('projectId', query.projectId)
+  if (query.sessionId) params.set('sessionId', query.sessionId)
+  if (query.workerId) params.set('workerId', query.workerId)
+  const suffix = params.toString()
+  return request('GET', `/api/marshal/access${suffix ? `?${suffix}` : ''}`)
+}
+
+/**
+ * `PUT /api/marshal/access/default`: the whole project-default layer plus the
+ * version it was edited from. A 409 rejects with a
+ * {@link MarshalAccessConflictError} carrying the value that won.
+ */
+export async function putMarshalAccessDefault(projectId: string, access: MarshalAccess, version: string): Promise<MarshalAccessView> {
+  try {
+    return await request('PUT', '/api/marshal/access/default', { projectId, access, version })
+  } catch (e) {
+    if (e instanceof APIError && e.status === 409) throw new MarshalAccessConflictError(e.body)
+    throw e
+  }
+}
+
+/**
+ * `PUT /api/marshal/access/override`: one session's (or worker's) override and
+ * the version it was edited from. An access with no field set is the reset that
+ * restores inheritance.
+ */
+export async function putMarshalAccessOverride(projectId: string, sessionId: string, access: MarshalAccess, version: string, workerId = ''): Promise<MarshalAccessView> {
+  try {
+    return await request('PUT', '/api/marshal/access/override', { projectId, sessionId, workerId, access, version })
+  } catch (e) {
+    if (e instanceof APIError && e.status === 409) throw new MarshalAccessConflictError(e.body)
+    throw e
+  }
+}
+
+/**
+ * `PUT /api/marshal/access/selection`: the project a person picked for a
+ * session whose enrollment was ambiguous. An empty `projectId` clears the
+ * choice, which makes the session ambiguous again.
+ */
+export async function putMarshalSelection(sessionId: string, projectId: string, version: string): Promise<MarshalAccessView> {
+  try {
+    return await request('PUT', '/api/marshal/access/selection', { sessionId, projectId, version })
+  } catch (e) {
+    if (e instanceof APIError && e.status === 409) throw new MarshalAccessConflictError(e.body)
+    throw e
+  }
+}
+
 export async function listPending(): Promise<PendingSubmission[]> {
   return request('GET', '/api/pending')
 }
@@ -1272,6 +1391,18 @@ async function requestVersioned<T = unknown>(method: string, path: string, body?
 export async function getVersionedProjectSettings(root: string): Promise<VersionedProjectSettings> {
   const { data, etag } = await requestVersioned<Partial<ProjectSettings> | null>('GET', `/api/projects/settings${query({ root })}`)
   return { settings: { ...data, intake: data?.intake ?? {} }, etag }
+}
+
+/**
+ * `GET /api/factory/settings-version`: the combined version a factory review
+ * displays and an approval echoes back. It is the project's settings ETag plus,
+ * when the control session reports subagent defaults, the digest of those
+ * defaults — so a change on either side makes a reviewed version stale. The
+ * bridge composes it; a client never builds one of its own.
+ */
+export async function getFactorySettingsVersion(root: string): Promise<string> {
+  const body = await request<{ settingsVersion: string }>('GET', `/api/factory/settings-version${query({ projectRoot: root })}`)
+  return body.settingsVersion
 }
 
 /** `PUT /api/projects/settings` with `If-Match`; a 412 rejects with that APIError, retaining nothing. */

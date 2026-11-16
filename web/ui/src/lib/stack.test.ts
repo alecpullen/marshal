@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { get } from 'svelte/store'
 import { APIError } from './api'
-import { createStackStore, type StackPatch, type StackSnapshot, type WireNode } from './stack'
+import { createStackStore, createSubagentControls, NO_SUBAGENT_CONTROLS, subagentControls, type StackPatch, type StackSnapshot, type WireNode } from './stack'
 
 const node = (id: string, o: Partial<WireNode> = {}): WireNode => ({ id, kind: 'step', ...o })
 
@@ -235,5 +235,90 @@ describe('stack store refusals', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('child controls', () => {
+  it('re-sends one uncertain steer with the same request ID and never reports consumption', async () => {
+    const post = vi
+      .fn()
+      .mockRejectedValueOnce(new APIError(502, { error: 'bridge: child stopped', code: 'connection_lost' }))
+      .mockResolvedValueOnce({ requestId: 'req-fixed', status: 'accepted' })
+    const controls = createSubagentControls('s1', 7, { post, newRequestId: () => 'req-fixed' })
+
+    const out = await controls.steer('wrap up and report')
+
+    // The uncertain attempt was retried, and the retry carried the same ID:
+    // the session deduplicates on it, so the child never sees it twice.
+    expect(post).toHaveBeenCalledTimes(2)
+    const paths = post.mock.calls.map(([path]) => path)
+    expect(paths).toEqual([
+      '/api/sessions/s1/subagents/7/steer',
+      '/api/sessions/s1/subagents/7/steer',
+    ])
+    const bodies = post.mock.calls.map(([, body]) => body as { requestId: string; message: string })
+    expect(bodies[0]).toEqual(bodies[1])
+    expect(bodies[0]).toEqual({ requestId: 'req-fixed', message: 'wrap up and report' })
+
+    // Acceptance is not consumption: nothing in the outcome claims the child
+    // read the instruction.
+    expect(out).toEqual({ requestId: 'req-fixed', status: 'accepted' })
+    expect(out).not.toHaveProperty('consumed')
+    expect(out).not.toHaveProperty('delivered')
+  })
+
+  it('keeps the minted request ID when the bridge does not echo one', async () => {
+    const post = vi.fn().mockResolvedValueOnce({ status: 'accepted' })
+    const controls = createSubagentControls('s1', 4, { post, newRequestId: () => 'req-minted' })
+    expect(await controls.steer('go')).toEqual({ requestId: 'req-minted', status: 'accepted' })
+  })
+
+  it('does not retry a definite refusal', async () => {
+    const post = vi.fn().mockRejectedValue(new APIError(409, { error: 'already used', code: 'conflict' }))
+    const controls = createSubagentControls('s1', 7, { post, newRequestId: () => 'req-1' })
+    await expect(controls.steer('again')).rejects.toBeInstanceOf(APIError)
+    expect(post).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not retry a 501 the session answers with', async () => {
+    // 501 is the session saying it has no such control, not a lost answer:
+    // asking twice more would only repeat the same refusal.
+    const post = vi.fn().mockRejectedValue(new APIError(501, { error: 'steer is not supported', code: 'unsupported' }))
+    const controls = createSubagentControls('s1', 7, { post, newRequestId: () => 'req-1' })
+    await expect(controls.steer('go')).rejects.toBeInstanceOf(APIError)
+    expect(post).toHaveBeenCalledTimes(1)
+  })
+
+  it('still retries an unknown 5xx, which a retry can settle', async () => {
+    const post = vi
+      .fn()
+      .mockRejectedValueOnce(new APIError(502, { error: 'bridge: connection lost', code: 'connection_lost' }))
+      .mockResolvedValueOnce({ requestId: 'req-1', status: 'accepted' })
+    const controls = createSubagentControls('s1', 7, { post, newRequestId: () => 'req-1' })
+    expect(await controls.steer('go')).toEqual({ requestId: 'req-1', status: 'accepted' })
+    expect(post).toHaveBeenCalledTimes(2)
+  })
+
+  it('reports a stop as the acknowledgement it is', async () => {
+    const post = vi.fn().mockResolvedValueOnce({ cancelled: true })
+    const controls = createSubagentControls('s1', 7, { post })
+    expect(await controls.stop()).toEqual({ cancelled: true })
+    expect(post).toHaveBeenCalledWith('/api/sessions/s1/subagents/7/cancel', {})
+  })
+
+  it('reads the session status capabilities and treats absent as unsupported', () => {
+    expect(
+      subagentControls({ subagentControls: { settings: false, steer: true, stop: true, observe: true } }),
+    ).toEqual({ settings: false, steer: true, stop: true, observe: true })
+
+    // Absent, malformed or partial is unavailable: support is never inferred.
+    expect(subagentControls({})).toEqual(NO_SUBAGENT_CONTROLS)
+    expect(subagentControls(null)).toEqual(NO_SUBAGENT_CONTROLS)
+    expect(subagentControls({ subagentControls: { steer: true } })).toEqual({
+      settings: false,
+      steer: true,
+      stop: false,
+      observe: false,
+    })
   })
 })

@@ -1,9 +1,49 @@
 package bridge
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"time"
 )
+
+// FactorySubagentOverrides is one role's subagent settings as a draft or a
+// project's factory defaults state them. Every field is a pointer because the
+// resolution chain distinguishes "unset" from "stated": a missing override
+// inherits the next source, and an explicit false or an explicit empty model
+// is a choice that is preserved.
+//
+// A nil Model or a Model pointing at "" both mean normal child routing: only
+// an explicit override is ever written here, so an empty string is a stated
+// choice rather than an absence.
+type FactorySubagentOverrides struct {
+	Enabled     *bool   `json:"enabled,omitempty"`
+	Model       *string `json:"model,omitempty"`
+	Concurrency *int    `json:"concurrency,omitempty"`
+}
+
+// FactorySubagentSettings is one role's resolved subagent settings. It is what
+// the resolution chain produced for a draft, and what an approval revision
+// freezes: a later default change cannot reach an active revision through it.
+//
+// An approval journalled before subagent settings existed carries the zero
+// value, which is why a zero Concurrency means "no snapshot" rather than a
+// cap of zero.
+type FactorySubagentSettings struct {
+	Enabled     bool   `json:"enabled"`
+	Model       string `json:"model,omitempty"`
+	Concurrency int    `json:"concurrency"`
+}
+
+// factorySubagentFreeze is the resolved pair an approval revision records. It
+// is computed outside the journal's lock and carried on the command that
+// writes the revision, so the settings land in the same append as the
+// approval they belong to.
+type factorySubagentFreeze struct {
+	implementer FactorySubagentSettings
+	reviewer    FactorySubagentSettings
+}
 
 // FactoryDefaults are a project's default factory configuration. A handoff
 // inherits every field it leaves unset.
@@ -25,6 +65,12 @@ type FactoryDefaults struct {
 	MaxRounds            int               `json:"maxRounds,omitempty"`
 	CIPollSeconds        int               `json:"ciPollSeconds,omitempty"`
 	CIWaitSeconds        int               `json:"ciWaitSeconds,omitempty"`
+	// ImplementerSubagents and ReviewerSubagents are the project's subagent
+	// overrides. They are pointers for the same reason the handoff's are: an
+	// absent field inherits the session's reported defaults, and an explicit
+	// false is not an absence.
+	ImplementerSubagents *FactorySubagentOverrides `json:"implementerSubagents,omitempty"`
+	ReviewerSubagents    *FactorySubagentOverrides `json:"reviewerSubagents,omitempty"`
 }
 
 type FactoryConfig struct {
@@ -43,6 +89,14 @@ type FactoryConfig struct {
 	MaxRounds                int               `json:"maxRounds"`
 	CIPollSeconds            int               `json:"ciPollSeconds"`
 	CIWaitSeconds            int               `json:"ciWaitSeconds"`
+	// ImplementerSubagents and ReviewerSubagents hold only the work item's
+	// explicit subagent overrides: nil means inherit. Nothing is copied onto
+	// the draft from the project's defaults, so a draft follows a project
+	// default it never stated while an override it does state stays fixed.
+	// They are omitted when nil, so a journal written before they existed
+	// keeps its bytes.
+	ImplementerSubagents *FactorySubagentOverrides `json:"implementerSubagents,omitempty"`
+	ReviewerSubagents    *FactorySubagentOverrides `json:"reviewerSubagents,omitempty"`
 }
 
 type FactoryCreate struct {
@@ -68,7 +122,53 @@ type FactoryApproval struct {
 	PlanHash     string        `json:"planHash"`
 	Config       FactoryConfig `json:"config"`
 	EditSnapshot *EditSnapshot `json:"editSnapshot,omitempty"`
+	// ImplementerSubagents and ReviewerSubagents are the subagent settings
+	// this revision froze: runtime defaults, then the project's override, then
+	// the draft's override, resolved when the approval was written. They are
+	// values, not pointers, because an approval states what was approved.
+	// An approval journalled before they existed carries the zero value and
+	// keeps its bytes; nothing re-derives them for it.
+	ImplementerSubagents FactorySubagentSettings `json:"implementerSubagents"`
+	ReviewerSubagents    FactorySubagentSettings `json:"reviewerSubagents"`
+	ApprovedAt           time.Time               `json:"approvedAt"`
+}
+
+// legacyFactoryApproval is the approval object a journal written before
+// subagent settings carried: the same fields, in the same order, without the
+// two settings snapshots.
+type legacyFactoryApproval struct {
+	Revision     uint64        `json:"revision"`
+	Plan         string        `json:"plan"`
+	Spec         string        `json:"spec"`
+	PlanHash     string        `json:"planHash"`
+	Config       FactoryConfig `json:"config"`
+	EditSnapshot *EditSnapshot `json:"editSnapshot,omitempty"`
 	ApprovedAt   time.Time     `json:"approvedAt"`
+}
+
+// MarshalJSON keeps a journal written before subagent settings existed
+// byte-identical. The journal is replayed by re-marshalling each record and
+// comparing it with the stored bytes, so an approval that froze nothing has to
+// write exactly the keys it always did: the two settings snapshots are omitted
+// when both are zero, which is also the value a legacy record decodes to.
+//
+// An approval that froze settings writes them, and only an approval that froze
+// settings can be enforced.
+func (a FactoryApproval) MarshalJSON() ([]byte, error) {
+	if a.ImplementerSubagents == (FactorySubagentSettings{}) && a.ReviewerSubagents == (FactorySubagentSettings{}) {
+		return json.Marshal(legacyFactoryApproval{
+			Revision:     a.Revision,
+			Plan:         a.Plan,
+			Spec:         a.Spec,
+			PlanHash:     a.PlanHash,
+			Config:       a.Config,
+			EditSnapshot: a.EditSnapshot,
+			ApprovedAt:   a.ApprovedAt,
+		})
+	}
+	// The alias keeps this function off the value's own method set.
+	type plain FactoryApproval
+	return json.Marshal(plain(a))
 }
 
 type FactoryGrant struct {
@@ -84,6 +184,13 @@ type FactoryWorker struct {
 	Role          string `json:"role"`
 	SpawnEffectID string `json:"spawnEffectId"`
 	Parked        bool   `json:"parked"`
+	// ApprovalRevision and Subagents bind the snapshot this worker was started
+	// with: the approval revision it came from and that revision's settings for
+	// this worker's own role. A worker started before they existed carries the
+	// zero value for both, and FactoryWorker.MarshalJSON keeps that worker's
+	// record byte-identical so an older journal still replays.
+	ApprovalRevision uint64                  `json:"approvalRevision,omitempty"`
+	Subagents        FactorySubagentSettings `json:"subagents"`
 }
 
 type FactoryPR struct {
@@ -177,6 +284,58 @@ type FactoryRound struct {
 	FinishedAt        time.Time      `json:"finishedAt"`
 }
 
+// FactoryDelegatedTurn is one worker turn's delegated child work: the children
+// the turn launched, and how far they have been proven. It is journalled beside
+// the effect that dispatched the turn, so the item keeps the effect and the
+// candidate identity it was dispatched with until its children are settled.
+// The waiting state is not an outcome: the report the turn wrote before those
+// children settled is early, and is never the effect's result.
+type FactoryDelegatedTurn struct {
+	EffectID       string  `json:"effectId"`
+	WorkerID       string  `json:"workerId"`
+	SessionID      string  `json:"sessionId"`
+	ParentTurnID   string  `json:"parentTurnId"`
+	ChildIDs       []int64 `json:"childIds"`
+	ContinuationID string  `json:"continuationId,omitempty"`
+	State          string  `json:"state"` // waiting, prepared, dispatched, settled, uncertain
+}
+
+// The delegated turn's states. A waiting turn is not an outcome: the report it
+// wrote is early. A continuation is journaled as prepared before anything is
+// sent and as dispatched only after the journal says so, and the prompt itself
+// is the last step — so a crash between the two writes leaves evidence the
+// recovery path can read instead of a prompt that ran unrecorded.
+const (
+	factoryDelegatedWaiting    = "waiting"
+	factoryDelegatedPrepared   = "prepared"
+	factoryDelegatedDispatched = "dispatched"
+	factoryDelegatedUncertain  = "uncertain"
+)
+
+// FactoryChild is one child of a worker session as that session's own status
+// projects it. Its identity is the pair, never the id alone: child ids are
+// session-local, so two worker sessions can both contain child 1 and must never
+// be conflated.
+type FactoryChild struct {
+	SessionID string `json:"sessionId"`
+	ID        int64  `json:"id"`
+	Label     string `json:"label,omitempty"`
+	Status    string `json:"status"`
+	// Terminal is true only for a state the projection names as finished.
+	Terminal bool `json:"terminal"`
+}
+
+// FactoryChildSession is one worker session's child projection: the children it
+// reported, and whether it reported at all. Known is false when the bridge
+// could not read the session's children — a missing session, an unsupported
+// projection, or an ambiguous child identity — because an unread projection can
+// never be read as a settled empty set.
+type FactoryChildSession struct {
+	SessionID string         `json:"sessionId"`
+	Known     bool           `json:"known"`
+	Children  []FactoryChild `json:"children,omitempty"`
+}
+
 type FactoryEffect struct {
 	// Outcome retains accepted stop reasons and confirmed adapter evidence.
 	Outcome          *FactoryOutcome `json:"outcome"`
@@ -190,6 +349,11 @@ type FactoryEffect struct {
 	ExpectedHead     string          `json:"expectedHead"`
 	ExpectedBase     string          `json:"expectedBase"`
 	CreatedAt        time.Time       `json:"createdAt"`
+	// Delegated is the turn's launched child work while it is not proven
+	// settled, and the waiting state Studio shows beside the effect's status.
+	// It is omitted when nil, so a record journalled before delegated turns
+	// existed keeps its bytes.
+	Delegated *FactoryDelegatedTurn `json:"delegated,omitempty"`
 }
 
 type FactoryOutcome struct {
@@ -203,6 +367,16 @@ type FactoryOutcome struct {
 	PR         *FactoryPR     `json:"pr"`
 	Report     *FactoryReport `json:"report"`
 	Confirmed  bool           `json:"confirmed"`
+	// Delegated is the waiting turn a worker effect hands back instead of a
+	// result: the turn launched children it did not prove settled, so the report
+	// it wrote before they settled is early and is never applied. It is omitted
+	// when nil, so a completed outcome keeps the bytes it always wrote.
+	Delegated *FactoryDelegatedTurn `json:"delegated,omitempty"`
+	// continuation is the iteration this result was produced for. It is
+	// unexported because it never crosses the wire or the journal: the
+	// delegated turn beside the effect is what persists, and a recovered
+	// outcome is proved from the session's own transcript instead.
+	continuation string
 }
 
 type FactoryObservation struct {
@@ -211,15 +385,21 @@ type FactoryObservation struct {
 	TurnIdle        bool            `json:"turnIdle"`
 	ActiveWorkKnown bool            `json:"activeWorkKnown"`
 	WorkIdle        bool            `json:"workIdle"`
-	HeadSHA         string          `json:"headSha"`
-	TreeSHA         string          `json:"treeSha"`
-	BaseSHA         string          `json:"baseSha"`
-	RemoteHead      string          `json:"remoteHead"`
-	Dirty           bool            `json:"dirty"`
-	PR              *FactoryPR      `json:"pr"`
-	CI              *FactoryCI      `json:"ci"`
-	Error           string          `json:"error"`
-	ObservedAt      time.Time       `json:"observedAt"`
+	// Children is each live worker session's own child projection, keyed by the
+	// session that reported it: child ids are session-local, so a child is the
+	// pair and never the id alone. A session whose projection could not be read
+	// is present with Known false, which is unknown work rather than an empty
+	// settled set.
+	Children   []FactoryChildSession `json:"children,omitempty"`
+	HeadSHA    string                `json:"headSha"`
+	TreeSHA    string                `json:"treeSha"`
+	BaseSHA    string                `json:"baseSha"`
+	RemoteHead string                `json:"remoteHead"`
+	Dirty      bool                  `json:"dirty"`
+	PR         *FactoryPR            `json:"pr"`
+	CI         *FactoryCI            `json:"ci"`
+	Error      string                `json:"error"`
+	ObservedAt time.Time             `json:"observedAt"`
 }
 
 type FactoryDecision struct {
@@ -230,6 +410,21 @@ type FactoryDecision struct {
 	EffectID  string    `json:"effectId"`
 	CreatedAt time.Time `json:"createdAt"`
 }
+
+// Approval authority origin values, recorded in provenance so an entry says
+// where the authority it acted under came from. Standing authority is what the
+// store itself holds — a grant's approvalAuthority, or a built-in project or
+// session default; verified_user_directed is a built-in operation admitted with
+// a receipt this bridge minted for exactly that operation and no other attempt
+// consumed, which is the only way a person's direction becomes evidence here.
+//
+// An external client's claim has no origin value: its entry names the client id
+// and claims no more than the grant it acted under, so the absence of an origin
+// is what distinguishes a client assertion from verified direction.
+const (
+	factoryAuthorityOriginStanding             = "standing"
+	factoryAuthorityOriginVerifiedUserDirected = "verified_user_directed"
+)
 
 // FactoryProvenance attributes one journaled factory mutation to the MCP
 // client that caused it. It is optional: an entry written before provenance
@@ -247,6 +442,17 @@ type FactoryProvenance struct {
 	RequestID  string `json:"requestId"`
 	Authority  string `json:"authority,omitempty"`
 	DecisionID string `json:"decisionId,omitempty"`
+	// The authenticated built-in principal, when the mutation came from a
+	// session association rather than an MCP client. Every field is optional
+	// and appended last, so a record written before session principals existed
+	// — and a client's own provenance — marshals byte for byte as it always
+	// did. AuthorityOrigin says where Authority came from; it is never claimed
+	// by a caller.
+	InstanceID      string `json:"instanceId,omitempty"`
+	SessionID       string `json:"sessionId,omitempty"`
+	WorkerID        string `json:"workerId,omitempty"`
+	Role            string `json:"role,omitempty"`
+	AuthorityOrigin string `json:"authorityOrigin,omitempty"`
 }
 
 type FactoryEvent struct {
@@ -270,12 +476,23 @@ type FactoryEvent struct {
 // RequestID is the identity the client sent, not the journal's: every service
 // entry point scopes it into the journal namespace and keeps the original here
 // so provenance names what the client asked for.
+//
+// A built-in session's principal fills the instance, session, worker and role
+// instead of ClientID, and its authority origin says the store held it. Every
+// one of those fields is empty for a client, so its scope and its provenance
+// are the ones it has always had.
 type factoryPrincipal struct {
 	ClientID  string
 	ProjectID string
 	Action    string
 	RequestID string
 	Authority string
+
+	InstanceID      string
+	SessionID       string
+	WorkerID        string
+	Role            string
+	AuthorityOrigin string
 }
 
 // provenance renders the attribution a journal entry carries. decisionID names
@@ -285,12 +502,17 @@ func (p *factoryPrincipal) provenance(decisionID string) *FactoryProvenance {
 		return nil
 	}
 	return &FactoryProvenance{
-		ClientID:   p.ClientID,
-		ProjectID:  p.ProjectID,
-		Action:     p.Action,
-		RequestID:  p.RequestID,
-		Authority:  p.Authority,
-		DecisionID: decisionID,
+		ClientID:        p.ClientID,
+		ProjectID:       p.ProjectID,
+		Action:          p.Action,
+		RequestID:       p.RequestID,
+		Authority:       p.Authority,
+		DecisionID:      decisionID,
+		InstanceID:      p.InstanceID,
+		SessionID:       p.SessionID,
+		WorkerID:        p.WorkerID,
+		Role:            p.Role,
+		AuthorityOrigin: p.AuthorityOrigin,
 	}
 }
 
@@ -301,9 +523,48 @@ func (p *factoryPrincipal) event(kind, message, decisionID string, now time.Time
 	return FactoryEvent{At: now, Kind: kind, Message: message, Provenance: p.provenance(decisionID)}
 }
 
-// scoped is the journal's request identity for a request this client sent.
+// scoped is the journal's request identity for a request this principal sent.
+//
+// A built-in session is scoped by the association that authenticated it —
+// instance, project, session and, when it names one, worker — so two sessions
+// in one project can use the same request id without colliding, while one
+// session retrying is still one operation. An MCP client keeps exactly the
+// identity it has always had.
 func (p *factoryPrincipal) scoped(requestID string) string {
+	if p.InstanceID != "" || p.SessionID != "" {
+		return marshalScopedRequestID(p.InstanceID, p.ProjectID, p.SessionID, p.WorkerID, requestID)
+	}
 	return factoryScopedRequestID(p.ClientID, requestID)
+}
+
+// marshalScopedRequestID is the journal identity of one built-in session's
+// request. The separator is a NUL, so no concatenation of two different scopes
+// can produce one identity.
+func marshalScopedRequestID(instanceID, projectID, sessionID, workerID, requestID string) string {
+	h := sha256.Sum256([]byte(strings.Join([]string{instanceID, projectID, sessionID, workerID, requestID}, "\x00")))
+	return "marshal:" + hex.EncodeToString(h[:])
+}
+
+// principal is the journaled identity of one mutation a verified built-in
+// session performed: the scope its request identity is namespaced by and the
+// attribution it is recorded under. Its authority is the effective approval
+// authority and its origin is standing, because the store — not the caller —
+// holds that authority.
+func (b MarshalSessionBinding) principal(action string, access MarshalFactoryAccess) factoryPrincipal {
+	authority := ""
+	if access.ApprovalAuthority != nil {
+		authority = *access.ApprovalAuthority
+	}
+	return factoryPrincipal{
+		InstanceID:      b.InstanceID,
+		ProjectID:       b.ProjectID,
+		SessionID:       b.SessionID,
+		WorkerID:        b.WorkerID,
+		Role:            b.Role,
+		Action:          action,
+		Authority:       authority,
+		AuthorityOrigin: factoryAuthorityOriginStanding,
+	}
 }
 
 type FactoryItem struct {
@@ -367,6 +628,17 @@ type FactoryCommand struct {
 	// leaves it nil, so a command those kinds do not carry marshals as it
 	// always did.
 	Completion *FactoryCompletionCommand `json:"completion,omitempty"`
+	// SettingsVersion is the settings version the review surface displayed:
+	// the project's settings ETag and the session's reported defaults digest,
+	// as one string. An approval that carries it is refused when either side
+	// has changed since review; an approval that omits it — a legacy client,
+	// or a command replayed from an older journal — proceeds as it always did.
+	SettingsVersion string `json:"settingsVersion,omitempty"`
+	// subagents is the resolved subagent pair an approval freezes, computed
+	// outside the journal's lock and never serialised: it rides the same
+	// append as the approval it belongs to, and a journal replays the item it
+	// stored rather than the command.
+	subagents *factorySubagentFreeze
 }
 
 // FactoryPlanHash binds exact plan and spec bytes, including whitespace.

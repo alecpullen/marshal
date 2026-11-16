@@ -427,6 +427,7 @@ func (p *OllamaNative) streamChatEvents(body io.ReadCloser, capture *wireCapture
 	var toolCalls []schema.ToolCall
 	var usage *schema.TokenUsage
 	var finishReason string
+	var completion streamCompletion
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -463,6 +464,10 @@ func (p *OllamaNative) streamChatEvents(body io.ReadCloser, capture *wireCapture
 		if chunk.Done {
 			finishReason = chunk.DoneReason
 			usage = ollamaUsageFrom(chunk)
+			// "done":true is the protocol's terminal marker. done_reason is
+			// optional — older servers omit it — so it must not be the
+			// marker.
+			completion.mark()
 		}
 		if !chunk.Done && chunk.Message.Thinking == "" && chunk.Message.Content == "" && len(chunk.Message.ToolCalls) == 0 {
 			capture.annotate("[unrecognized-chunk]", line)
@@ -470,6 +475,13 @@ func (p *OllamaNative) streamChatEvents(body io.ReadCloser, capture *wireCapture
 	}
 	if err := scanner.Err(); err != nil {
 		events <- schema.ChatEvent{Type: schema.ChatEventError, Err: fmt.Errorf("read stream: %w", err)}
+		return
+	}
+	if !completion.seen {
+		// The stream ended without a done:true chunk: it was cut short.
+		// No tool calls are reported — a truncated call must not be
+		// handed to the executor as if it were complete.
+		events <- completion.interrupted("done:true", nil)
 		return
 	}
 	events <- schema.ChatEvent{

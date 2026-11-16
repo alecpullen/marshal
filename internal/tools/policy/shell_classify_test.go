@@ -95,3 +95,79 @@ func TestShellOrdinaryOverwriteIsRoutineEdit(t *testing.T) {
 		t.Fatalf("redirect effects = %b, want a write", a.Operations[0].Effects)
 	}
 }
+
+// TestClassifyGitConfigReadWriteAndUnknownForms covers AUD-04: a `git config`
+// invocation is read only when it is provably a read. Local setters are
+// workspace writes, global/system mutations are environment changes, and an
+// unfamiliar form is unknown — never read.
+func TestClassifyGitConfigReadWriteAndUnknownForms(t *testing.T) {
+	reads := []string{
+		"git config --get user.name",
+		"git config --get-all user.name",
+		`git config --get-regexp '^user\.'`,
+		"git config --list",
+		"git config -l",
+		"git config user.name",
+		"git config",
+		"git config --local --get user.name",
+		"git config --global --get user.name",
+	}
+	for _, cmd := range reads {
+		op := analyze(t, cmd).Operations[0]
+		if op.Effects&ShellRead == 0 {
+			t.Fatalf("%q: effects = %b, want a read", cmd, op.Effects)
+		}
+	}
+
+	localMutations := []string{
+		"git config user.name audit-poc",
+		"git config core.hooksPath /some/path",
+		"git config --unset some.key",
+		"git config --unset-all some.key",
+		"git config --add some.key value",
+		"git config --replace-all some.key value",
+		"git config --local user.name x",
+	}
+	for _, cmd := range localMutations {
+		op := analyze(t, cmd).Operations[0]
+		if op.Effects&ShellRead != 0 {
+			t.Fatalf("%q: classified as a read (%b)", cmd, op.Effects)
+		}
+		if op.Effects&ShellWrite == 0 {
+			t.Fatalf("%q: effects = %b, want a local write", cmd, op.Effects)
+		}
+		if op.Effects&ShellEnvironment != 0 {
+			t.Fatalf("%q: effects = %b, want no environment effect", cmd, op.Effects)
+		}
+	}
+
+	scopeMutations := []string{
+		"git config --global user.name x",
+		"git config --system user.name x",
+		"git config --global --unset some.key",
+	}
+	for _, cmd := range scopeMutations {
+		op := analyze(t, cmd).Operations[0]
+		if op.Effects&ShellRead != 0 {
+			t.Fatalf("%q: classified as a read (%b)", cmd, op.Effects)
+		}
+		if op.Effects&ShellEnvironment == 0 {
+			t.Fatalf("%q: effects = %b, want environment", cmd, op.Effects)
+		}
+	}
+
+	unfamiliar := []string{
+		"git config --bogus",
+		"git config --bogus key value",
+		"git config user.name -1",
+	}
+	for _, cmd := range unfamiliar {
+		op := analyze(t, cmd).Operations[0]
+		if op.Effects&ShellRead != 0 {
+			t.Fatalf("%q: unfamiliar form classified as a read (%b)", cmd, op.Effects)
+		}
+		if op.Effects&ShellUnknown == 0 {
+			t.Fatalf("%q: effects = %b, want unknown", cmd, op.Effects)
+		}
+	}
+}

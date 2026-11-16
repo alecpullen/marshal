@@ -85,6 +85,7 @@ type seam interface {
 	SetEffort(ctx context.Context, level string) (string, error)
 	SetSudoUnlock(ctx context.Context, on bool) error
 	CancelSubagent(ctx context.Context, subagentID int64) bool
+	SteerSubagent(ctx context.Context, request acpwire.SubagentSteerParams) (acpwire.SubagentSteerResult, error)
 	ClearFinishedRun(ctx context.Context) error
 	TakeWatchResume(ctx context.Context) (name string, repeat bool, ok bool)
 	Work() (acpwire.WorkSnapshot, bool)
@@ -596,6 +597,11 @@ func statusMirrorsTheState(t *testing.T, open func(t *testing.T, d service.Deps)
 		SudoUnlock: true,
 		Trusted:    true,
 		HasBackup:  true,
+
+		// The session advertises every child control it registers (task 2 of
+		// the studio worker plan); settings are enforced since task 3, so the
+		// bit is set too.
+		SubagentControls: acpwire.MarshalSubagentCapabilities(),
 
 		SubagentRunning: true,
 		Activity: acpwire.Activity{

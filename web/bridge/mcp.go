@@ -52,16 +52,50 @@ type rpcResponse struct {
 // client identity, and without identity there is no per-client autonomy,
 // no caps, and no repo allowlist.
 func (s *Server) authenticateMCP(r *http.Request) (MCPClient, bool) {
+	principal, ok := s.authenticateMCPPrincipal(r)
+	return principal.Client, ok
+}
+
+// authenticateMCPPrincipal resolves the bearer token to the identity the request
+// acts as: a registered external client, or a built-in session.
+//
+// A client becomes built-in one way only — it holds a live enrollment whose
+// generation is the daemon's current one (marshal_enrollment.go). That binding
+// is established by the owner-only socket's enrollment operation and by nothing
+// the request carries, so no client can name itself one. An external client
+// keeps exactly the grant semantics it had, and a credential that was enrolled
+// before a restart holds no binding: it has no grants and is refused here rather
+// than left as a token with authority nobody revalidated.
+func (s *Server) authenticateMCPPrincipal(r *http.Request) (mcpPrincipal, bool) {
 	const prefix = "Bearer "
 	h := r.Header.Get("Authorization")
 	if !strings.HasPrefix(h, prefix) {
-		return MCPClient{}, false
+		return mcpPrincipal{}, false
 	}
 	presented := strings.TrimPrefix(h, prefix)
 	if presented == "" {
-		return MCPClient{}, false
+		return mcpPrincipal{}, false
 	}
-	return MatchClient(s.fleet.Clients(), presented)
+	if s == nil || s.fleet == nil {
+		return mcpPrincipal{}, false
+	}
+	client, ok := MatchClient(s.fleet.Clients(), presented)
+	if !ok {
+		return mcpPrincipal{}, false
+	}
+	if !strings.HasPrefix(client.ID, marshalClientPrefix) {
+		return mcpPrincipal{Client: client}, true
+	}
+	binding, ok := s.marshalBindingFor(client.ID)
+	if !ok {
+		// An enrollment's client record whose binding is gone (a restart, an
+		// expiry, a revoked generation) is not an external client with a
+		// fresh chance: it is a credential that no longer names anything, so
+		// it is revoked here and the request fails closed.
+		s.revokeMarshalClient(client.ID)
+		return mcpPrincipal{}, false
+	}
+	return mcpPrincipal{Client: client, Binding: binding, Builtin: true}, true
 }
 
 // mcpHandler serves MCP over the Streamable HTTP transport: JSON-RPC 2.0
@@ -82,11 +116,16 @@ func (s *Server) mcpHandler(w http.ResponseWriter, r *http.Request) {
 		writeRPCStatus(w, http.StatusForbidden, nil, nil, &rpcError{rpcInvalidRequest, "origin not allowed"})
 		return
 	}
-	client, ok := s.authenticateMCP(r)
+	principal, ok := s.authenticateMCPPrincipal(r)
 	if !ok {
 		unauthorized(w)
 		return
 	}
+	// The principal the transport authenticated travels with the request, so a
+	// tool path authorizes against that same identity — the client record, or a
+	// built-in session's verified binding — and never against anything a tool
+	// argument names.
+	r = withMCPPrincipal(r, principal)
 	if !mcpContentTypeAccepted(r.Header.Get("Content-Type")) {
 		writeRPCStatus(w, http.StatusUnsupportedMediaType, nil, nil, &rpcError{rpcInvalidRequest, "Content-Type must be application/json"})
 		return
@@ -145,7 +184,7 @@ func (s *Server) mcpHandler(w http.ResponseWriter, r *http.Request) {
 	case "tools/list":
 		writeRPC(w, id, map[string]any{"tools": mcpToolDefinitions()}, nil)
 	case "tools/call":
-		s.mcpToolCall(w, r, client, req)
+		s.mcpToolCall(w, r, principal.Client, req)
 	default:
 		writeRPC(w, id, nil, &rpcError{rpcMethodNotFound, "unknown method " + req.Method})
 	}

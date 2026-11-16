@@ -171,6 +171,11 @@ type Model struct {
 	host  acpclient.Host
 	sess  acpclient.Session
 	input textarea.Model
+	// pendingCommandRaw is the command line dispatchCommand is running. A
+	// refusal that fires after the Enter handler already cleared the composer
+	// reads it to put the draft back, so an argument-heavy command is not
+	// retyped (AUD-12).
+	pendingCommandRaw string
 	// pendingDraft is the draft WithDraft recorded. An Option runs before
 	// the composer exists, so New seeds the textarea and m.pastes from it
 	// once they do, and drops it then (see draft.go).
@@ -3916,16 +3921,45 @@ func (m *Model) drillIntoSubagent(id int64) bool {
 // running subagent onto the view stack, so inspecting live work does not
 // require a mouse. Returns false when no subagent is running.
 func (m *Model) drillIntoLatestRunningSubagent() bool {
+	id, ok := m.latestRunningSubagent()
+	return ok && m.drillIntoSubagent(id)
+}
+
+// latestRunningSubagent is the most recently registered running subagent: the
+// target Ctrl+F falls back to when nothing is selected.
+func (m *Model) latestRunningSubagent() (int64, bool) {
 	subs := m.sess.Status().Subagents
 	for i := len(subs) - 1; i >= 0; i-- {
-		if subs[i].Status != acpwire.SubagentRunning {
-			continue
-		}
-		if m.drillIntoSubagent(subs[i].ID) {
-			return true
+		if subs[i].Status == acpwire.SubagentRunning && subs[i].Drill != nil {
+			return subs[i].ID, true
 		}
 	}
-	return false
+	return 0, false
+}
+
+// drillIntoSelectedSubagent pushes the subagent the user has selected onto the
+// view stack — the transcript row or tray card under the browse cursor, else
+// the tray card they expanded — and falls back to the most recently registered
+// running one, so inspecting live work never needs a mouse. A drill-in ends
+// browse mode the way browse f does, because the child's transcript has none of
+// the parent's rows to cursor over. It reports false when nothing is drillable,
+// and while already drilled: a child dispatches no subagents, so drill-in stays
+// one level deep.
+func (m *Model) drillIntoSelectedSubagent() bool {
+	if len(m.viewStack) > 0 {
+		return false
+	}
+	id, ok := m.selectedSubagent()
+	if !ok {
+		id, ok = m.latestRunningSubagent()
+	}
+	if !ok {
+		return false
+	}
+	if m.browsing {
+		m.leaveBrowse()
+	}
+	return m.drillIntoSubagent(id)
 }
 
 // popDrill pops one level of subagent drill-down, returning false when the
@@ -4299,6 +4333,7 @@ func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.busy {
+		m.refuseBusyCommand("/sdd new", "plan authoring")
 		return m, nil
 	}
 	goal := parsed.Goal
@@ -6494,6 +6529,9 @@ func (m Model) handleSuggestionMsg(msg suggestionMsg) (Model, tea.Cmd) {
 
 func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 	m.leaveBrowse() // running a command ends browsing
+	// Stashed for a refusal that has to hand the line back: the Enter handler
+	// clears the composer before dispatch, so this is the only copy left.
+	m.pendingCommandRaw = raw
 	// /send-now is recognized from the raw line before shlex.Split can
 	// reinterpret its payload: the argument is literal steering text, so
 	// quotes, newlines and interior whitespace must survive verbatim. The

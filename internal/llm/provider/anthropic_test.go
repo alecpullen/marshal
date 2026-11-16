@@ -290,6 +290,131 @@ func TestAnthropicStreamingToolUseAccumulation(t *testing.T) {
 	assertChannelClosed(t, events)
 }
 
+// A message_stop with no stop_reason is still an explicit protocol terminal
+// event: Anthropic-shaped gateways may omit the reason, and "message_stop" is
+// what makes EOF clean. AUD-08 §5.3.
+func TestAnthropicStreamingMessageStopCompletes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			"event: content_block_delta\n" +
+				`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}` + "\n\n" +
+				"event: message_stop\n" +
+				`data: {"type":"message_stop"}` + "\n\n",
+		))
+	}))
+	defer server.Close()
+
+	p := newTestAnthropic(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(true))
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	ev1, _ := recvEvent(t, events)
+	if ev1.Type != schema.ChatEventDelta || ev1.Delta != "hi" {
+		t.Fatalf("event 1 = %+v, want Delta hi", ev1)
+	}
+	ev2, ok := recvEvent(t, events)
+	if !ok || ev2.Type != schema.ChatEventDone {
+		t.Fatalf("event 2 = %+v ok=%v, want Done (message_stop is a terminal marker)", ev2, ok)
+	}
+	if ev2.FinishReason != "" {
+		t.Errorf("FinishReason = %q, want empty: none was reported", ev2.FinishReason)
+	}
+	assertChannelClosed(t, events)
+}
+
+func TestAnthropicStreamingBareEOFIsInterrupted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			"event: content_block_delta\n" +
+				`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}` + "\n\n",
+		))
+		// Connection closes here: no message_stop, no stop_reason.
+	}))
+	defer server.Close()
+
+	p := newTestAnthropic(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(true))
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	ev1, _ := recvEvent(t, events)
+	if ev1.Type != schema.ChatEventDelta || ev1.Delta != "hi" {
+		t.Fatalf("event 1 = %+v, want Delta hi", ev1)
+	}
+	ev2, ok := recvEvent(t, events)
+	if !ok || ev2.Type != schema.ChatEventInterrupted {
+		t.Fatalf("event 2 = %+v ok=%v, want Interrupted", ev2, ok)
+	}
+	if ev2.Err == nil {
+		t.Fatal("interrupted event carries no error")
+	}
+	if len(ev2.ToolCalls) != 0 {
+		t.Fatalf("interrupted event carries tool calls: %+v", ev2.ToolCalls)
+	}
+	assertChannelClosed(t, events)
+}
+
+func TestAnthropicStreamingEOFDuringToolArgumentsIsInterrupted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			"event: content_block_start\n" +
+				`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_file"}}` + "\n\n" +
+				"event: content_block_delta\n" +
+				`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}` + "\n\n",
+		))
+		// Connection closes mid tool_use input, with no message_stop.
+	}))
+	defer server.Close()
+
+	p := newTestAnthropic(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(true))
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	ev, ok := recvEvent(t, events)
+	if !ok || ev.Type != schema.ChatEventInterrupted {
+		t.Fatalf("event = %+v ok=%v, want Interrupted", ev, ok)
+	}
+	if ev.Err == nil {
+		t.Fatal("interrupted event carries no error")
+	}
+	if len(ev.ToolCalls) != 0 {
+		t.Fatalf("truncated tool call reached the event: %+v", ev.ToolCalls)
+	}
+	assertChannelClosed(t, events)
+}
+
+func TestAnthropicStreamingTransportErrorIsError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		breakStream(t, w, "text/event-stream",
+			"event: content_block_delta\n"+
+				`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`+"\n\n")
+	}))
+	defer server.Close()
+
+	p := newTestAnthropic(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(true))
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	ev1, _ := recvEvent(t, events)
+	if ev1.Type != schema.ChatEventDelta || ev1.Delta != "hi" {
+		t.Fatalf("event 1 = %+v, want Delta hi", ev1)
+	}
+	ev2, ok := recvEvent(t, events)
+	if !ok || ev2.Type != schema.ChatEventError {
+		t.Fatalf("event 2 = %+v ok=%v, want Error (a read failure is not an interruption)", ev2, ok)
+	}
+	if ev2.Err == nil || !strings.Contains(ev2.Err.Error(), "read stream:") {
+		t.Fatalf("error = %v, want a read stream failure", ev2.Err)
+	}
+	assertChannelClosed(t, events)
+}
+
 func TestAnthropicStreamingThinkingDelta(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

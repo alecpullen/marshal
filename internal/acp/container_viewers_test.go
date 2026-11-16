@@ -81,11 +81,17 @@ var containerViewerRefusals = []string{
 	"session/mcp_reconnect",
 
 	// The settings' writes: they change the host's configuration and its
-	// installed skills and plugins, not the session's own state.
+	// installed skills and plugins, not the session's own state. The Studio
+	// access surface is the same kind of authority — the bridge's stored
+	// policy for this session — so a containerized viewer reads and writes
+	// neither.
 	"session/apply_config",
 	"session/reload_config",
 	"session/save_project_config",
 	"session/save_verify_commands",
+	"session/marshal_access",
+	"session/save_marshal_access",
+	"session/select_marshal_instance",
 	"session/skills_install",
 	"session/skills_remove",
 	"session/skills_autoload",

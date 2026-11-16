@@ -691,20 +691,13 @@ func NewSubagentSteerTool(state *session.State) registry.Tool {
 		if message == "" {
 			return registry.ToolResult{}, errors.New("message must not be empty")
 		}
-		view, ok := state.Subagent(args.ID)
-		if !ok {
-			return registry.ToolResult{}, fmt.Errorf("unknown subagent %d", args.ID)
+		// The session-owned steer path applies the same liveness rules, so a
+		// settled child is refused here exactly as it is there, with the check
+		// and the enqueue under one lock.
+		view, err := state.SteerChild(args.ID, "[steering from parent] "+message)
+		if err != nil {
+			return registry.ToolResult{}, err
 		}
-		if view.Child == nil {
-			return registry.ToolResult{}, fmt.Errorf("subagent %d has no live session to steer", args.ID)
-		}
-		// A finished child no longer drains its steering queue, so accepting
-		// the instruction would silently drop it and leave the caller
-		// believing it landed.
-		if view.Status != session.SubagentRunning {
-			return registry.ToolResult{}, fmt.Errorf("subagent %d is no longer running; a message cannot reach a finished subagent", args.ID)
-		}
-		view.Child.PushSteering("[steering from parent] " + message)
 		return registry.ToolResult{
 			Summary: fmt.Sprintf("steered subagent %d", args.ID),
 			Content: fmt.Sprintf("Pushed the instruction to subagent %d (%s); it will see it at its next step.", args.ID, view.Label),

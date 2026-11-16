@@ -699,6 +699,66 @@ func TestBrowseFDrillsFromTheDispatchRow(t *testing.T) {
 	}
 }
 
+// TestCtrlFDrillsTheSelectedSubagent pins that Ctrl+F honours the selection:
+// with two subagents running, the row under the browse cursor is the one that
+// opens, not the one registered last.
+func TestCtrlFDrillsTheSelectedSubagent(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(120, 50)
+	stateOf(m).AddMessage(session.RoleUser, "ship it", session.ContentTypePlain)
+	views := make([]session.SubagentView, 0, 2)
+	for i, label := range []string{"first", "second"} {
+		child := newChildState(t)
+		child.AddMessage(session.RoleAssistant, label+" child says hi", session.ContentTypePlain)
+		views = append(views, stateOf(m).RegisterSubagent(label, child))
+		a := stateOf(m).BeginStep(session.Actor{})
+		stateOf(m).LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "agent.run", StepID: a,
+			ToolCallID: fmt.Sprintf("ar-%d", i), Args: []byte(`{"task":"explore"}`),
+			ResultSummary: fmt.Sprintf("started as subagent %d", views[i].ID)})
+		stateOf(m).EndStep(a)
+	}
+	m.invalidateTranscript()
+	m.refreshViewport()
+
+	m = pressKeys(m, "esc")
+	it, ok := browseItemForDispatch(&m, views[0].ID)
+	if !ok {
+		t.Fatalf("no agent.run row for subagent %d in %v", views[0].ID, m.browseItems)
+	}
+	m.cursor = it.id
+
+	m = sendKey(m, tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl})
+	if len(m.viewStack) != 1 {
+		t.Fatalf("Ctrl+F on a selected subagent should drill in, viewStack = %v", m.viewStack)
+	}
+	if got := m.viewStack[0].ID; got != views[0].ID {
+		t.Fatalf("Ctrl+F drilled into subagent %d, want the selected %d", got, views[0].ID)
+	}
+}
+
+// TestCtrlFDrillsTheExpandedTrayCard pins the other selection: with no cursor,
+// the tray card the user opened is the subagent Ctrl+F reaches, not the newest
+// running one.
+func TestCtrlFDrillsTheExpandedTrayCard(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(120, 50)
+	first := stateOf(m).RegisterSubagent("first", newChildState(t))
+	second := stateOf(m).RegisterSubagent("second", newChildState(t))
+	m.workSnapshot = acpwire.WorkSnapshot{Items: []acpwire.WorkItem{
+		{TaskKey: "work:first", Kind: "agent", SourceID: strconv.FormatInt(first.ID, 10)},
+		{TaskKey: "work:second", Kind: "agent", SourceID: strconv.FormatInt(second.ID, 10)},
+	}}
+	m.workExpanded = "work:first"
+
+	m = sendKey(m, tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl})
+	if len(m.viewStack) != 1 {
+		t.Fatalf("Ctrl+F with an expanded agent card should drill in, viewStack = %v", m.viewStack)
+	}
+	if got := m.viewStack[0].ID; got != first.ID {
+		t.Fatalf("Ctrl+F drilled into subagent %d, want the expanded card's %d", got, first.ID)
+	}
+}
+
 func TestBrowseEnterExpandsACompletionEvent(t *testing.T) {
 	m, _, view := finishedSubagentFixture(t)
 	m = pressKeys(m, "esc")

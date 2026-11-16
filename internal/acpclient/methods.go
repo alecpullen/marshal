@@ -68,6 +68,7 @@ var Methods = []Method{
 	{Iface: "Session", Name: "SetEffort", ACP: "session/set_effort", Exists: true},
 	{Iface: "Session", Name: "SetSudoUnlock", ACP: "session/set_sudo_unlock", Exists: true},
 	{Iface: "Session", Name: "CancelSubagent", ACP: "session/subagent_cancel", Exists: true},
+	{Iface: "Session", Name: "SteerSubagent", ACP: "session/subagent_steer", Exists: true},
 	{Iface: "Session", Name: "ClearFinishedRun", ACP: "session/sdd_clear", Exists: true},
 	{Iface: "Session", Name: "TakeWatchResume", ACP: "session/watch_resume_take", Exists: true},
 	{Iface: "Session", Name: "Prompt", ACP: "session/prompt", Exists: true},
@@ -120,6 +121,9 @@ var Methods = []Method{
 	{Iface: "Session", Name: "ReconnectMCP", ACP: "session/mcp_reconnect", Exists: true},
 	{Iface: "Session", Name: "SaveProjectConfig", ACP: "session/save_project_config", Exists: true},
 	{Iface: "Session", Name: "SaveVerifyCommands", ACP: "session/save_verify_commands", Exists: true},
+	{Iface: "Session", Name: "MarshalAccess", ACP: "session/marshal_access", Exists: true},
+	{Iface: "Session", Name: "SaveMarshalAccess", ACP: "session/save_marshal_access", Exists: true},
+	{Iface: "Session", Name: "SelectMarshalInstance", ACP: "session/select_marshal_instance", Exists: true},
 
 	{Iface: "Session", Name: "RecentPrompts", ACP: "session/prompt_history", Exists: true},
 	{Iface: "Session", Name: "SavePrompt", ACP: "session/prompt_history_save", Exists: true},

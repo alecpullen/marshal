@@ -365,6 +365,128 @@ describe('Chat', () => {
       expect(screen.queryByRole('navigation', { name: 'Transcript path' })).toBeNull()
     })
 
+    describe('child drill-in', () => {
+      /*
+        The row that started a child, with both halves a person needs: the
+        agent.run call that names it, and the completion that reports what it
+        filed. Either alone is a way in; together they describe the child.
+      */
+      const reviewed = () =>
+        tree(
+          [
+            {
+              id: 'tool:1:g',
+              kind: 'tool',
+              parent: 'step:1',
+              tool: { name: 'agent.run', display: 'Run agent', subagentId: 3, calls: [{ target: 'review the diff' }] },
+              completion: { subagentId: 3, label: 'reviewer', command: 'review the diff', report: 'Two findings, both minor.' },
+            },
+          ],
+          ['tool:1:g'],
+        )
+      /** The session's own report of its child controls and its children's statuses. */
+      const status = (report: object) => {
+        const call = (connectSSE as Mock).mock.calls.at(-1)![0] as { onEvent: (e: unknown) => void }
+        call.onEvent({
+          type: 'message',
+          message: {
+            data: JSON.stringify({
+              method: 'session/update',
+              params: { sessionId: 's1', update: { kind: 'session_status', status: report } },
+            }),
+          },
+        })
+      }
+      const caps = { settings: true, steer: true, stop: true, observe: true }
+      const openChild = async () => {
+        await fireEvent.keyDown(document.body, { key: 'f' })
+        return await screen.findByTestId('subagent-child')
+      }
+
+      it("shows the child's task, parent, status, report and controls", async () => {
+        ;(api.getStack as Mock).mockImplementation(async (_id: string, sub?: number) => (sub === 3 ? childTree : reviewed()))
+        render(Chat, { sessionId: 's1', onBack: () => {} })
+        await browse()
+        status({ subagentControls: caps, subagents: [{ id: 3, status: 'running' }] })
+
+        const panel = await openChild()
+        expect(within(panel).getByTestId('child-task').textContent).toBe('review the diff')
+        // The parent that delegated it, named as the breadcrumb names it.
+        expect(within(panel).getByTestId('child-parent').textContent).toContain('s1')
+        expect(within(panel).getByTestId('child-status').textContent).toContain('running')
+        expect(within(panel).getByTestId('child-report').textContent).toContain('Two findings, both minor.')
+        // The controls are the session's own, and the session says they exist.
+        expect(within(panel).getByLabelText('Instruction for reviewer')).toBeTruthy()
+        expect(within(panel).getByRole('button', { name: 'Stop reviewer' })).toBeTruthy()
+        expect(within(panel).queryByTestId('subagent-unsupported')).toBeNull()
+      })
+
+      it("follows the child's own status, so a stop is observed rather than assumed", async () => {
+        ;(api.getStack as Mock).mockImplementation(async (_id: string, sub?: number) => (sub === 3 ? childTree : reviewed()))
+        render(Chat, { sessionId: 's1', onBack: () => {} })
+        await browse()
+        status({ subagentControls: caps, subagents: [{ id: 3, status: 'running' }] })
+        await openChild()
+
+        // The parent session's own report of its child is the only observation
+        // that ends a stop; the child's status leaving running is it.
+        status({ subagentControls: caps, subagents: [{ id: 3, status: 'failed' }] })
+        await waitFor(() => expect(screen.getByTestId('child-status').dataset.status).toBe('failed'))
+        expect(screen.getByTestId('child-status').textContent).toContain('failed')
+      })
+
+      it('says unsupported when the session reports no child controls', async () => {
+        ;(api.getStack as Mock).mockImplementation(async (_id: string, sub?: number) => (sub === 3 ? childTree : reviewed()))
+        render(Chat, { sessionId: 's1', onBack: () => {} })
+        await browse()
+
+        // Nothing was reported, so nothing is offered: no field, and the state
+        // is unsupported rather than a control that would fail.
+        const panel = await openChild()
+        expect(within(panel).getByTestId('subagent-unsupported')).toBeTruthy()
+        expect(within(panel).queryByRole('textbox')).toBeNull()
+        expect(within(panel).queryByRole('button', { name: 'Stop reviewer' })).toBeNull()
+      })
+
+      it("puts the parent's place and focus back on the way out", async () => {
+        ;(api.getStack as Mock).mockImplementation(async (_id: string, sub?: number) => (sub === 3 ? childTree : reviewed()))
+        Element.prototype.scrollIntoView = vi.fn()
+        render(Chat, { sessionId: 's1', onBack: () => {} })
+        await browse()
+        status({ subagentControls: caps, subagents: [{ id: 3, status: 'running' }] })
+
+        const transcript = screen.getByTestId('transcript')
+        const view = screen.getByTestId('transcript-scroll')
+        view.scrollTop = 42
+        await openChild()
+        await fireEvent.keyDown(document.body, { key: 'Backspace' })
+
+        await waitFor(() => expect(screen.queryByTestId('subagent-child')).toBeNull())
+        expect(within(transcript).getByText('Working on it')).toBeTruthy()
+        // The transcript is shared between parent and child, so its place has
+        // to be given back explicitly — and focus with it, so the keyboard path
+        // out of a child does not end in the page body.
+        await waitFor(() => expect(view.scrollTop).toBe(42))
+        expect(document.activeElement).toBe(view)
+      })
+
+      it('returns to the parent from the breadcrumb too', async () => {
+        ;(api.getStack as Mock).mockImplementation(async (_id: string, sub?: number) => (sub === 3 ? childTree : reviewed()))
+        render(Chat, { sessionId: 's1', onBack: () => {} })
+        await browse()
+        const panel = await openChild()
+
+        // The child's own crumb is where the reader is, so it is not a link back.
+        const crumbs = screen.getByRole('navigation', { name: 'Transcript path' })
+        const buttons = within(crumbs).getAllByRole('button')
+        expect((buttons.at(-1) as HTMLButtonElement).disabled).toBe(true)
+
+        await fireEvent.click(within(panel).getByRole('button', { name: 's1' }))
+        await waitFor(() => expect(screen.queryByTestId('subagent-child')).toBeNull())
+        expect(screen.queryByRole('navigation', { name: 'Transcript path' })).toBeNull()
+      })
+    })
+
     it('restores the dock state from the route', async () => {
       ;(api.getStack as Mock).mockResolvedValue(tree())
       render(Chat, { sessionId: 's1', onBack: () => {}, route: { id: 's1', view: 'session', node: 'step:1', dock: 'expanded', tab: 'files' } })

@@ -7,9 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -487,6 +490,131 @@ func waitEffect(t *testing.T, effects *handoffEffects, want string) {
 	case <-time.After(30 * time.Second):
 		t.Fatalf("the factory never dispatched %q (executed %v)", want, effects.seen())
 	}
+}
+
+// studioSocketPath returns an absolute Unix-socket path inside an owner-only
+// directory. t.TempDir() is 0700 already; the path is kept clear of sun_path
+// (104 bytes on macOS, 108 on Linux) by falling back to a short directory on a
+// platform whose temp root is long.
+func studioSocketPath(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	// t.TempDir() is not owner-only on every toolchain, and sun_path's
+	// directory must be: set the mode rather than assume it.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatalf("restrict the socket directory: %v", err)
+	}
+	if sock := filepath.Join(dir, "s.sock"); len(sock) < 100 {
+		return sock
+	}
+	short, err := os.MkdirTemp("", "mcp")
+	if err != nil {
+		t.Fatalf("short socket directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(short) })
+	if err := os.Chmod(short, 0o700); err != nil {
+		t.Fatalf("restrict the short socket directory: %v", err)
+	}
+	return filepath.Join(short, "s.sock")
+}
+
+// studioUnixClient returns an *http.Client whose transport dials sock. The
+// request's host is a name, not a lookup: the socket is the address, exactly
+// as the daemon's own client dials it.
+func studioUnixClient(sock string) *http.Client {
+	return &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", sock)
+		},
+	}}
+}
+
+// TestStudioIntegrationMCPOverOwnerOnlySocket serves the real bridge Server on
+// an owner-only Unix-socket listener — the transport a Marshal session has on
+// the local daemon — and drives it with the fixture's MCP client over real
+// JSON-RPC: initialize, tools/list, and an authorized read through the real
+// handler and the real factory grant.
+//
+// The production client (internal/tools/mcp.HTTPClient) is proven over the
+// same wire in its own package: web/ must not import marshal/internal
+// (TestWebIsStdlibOnly has no allowlist), so no single package can span both
+// halves of this proof.
+func TestStudioIntegrationMCPOverOwnerOnlySocket(t *testing.T) {
+	b := newHandoffBridge(t)
+	sock := studioSocketPath(t)
+	if info, err := os.Stat(filepath.Dir(sock)); err != nil {
+		t.Fatalf("stat the socket directory: %v", err)
+	} else if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		t.Fatalf("the socket directory mode is %04o, want owner-only", perm)
+	}
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Skipf("this platform cannot host a Unix socket: %v", err)
+	}
+	srv := &http.Server{Handler: b.srv}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	// The client speaks to the socket; the URL's host never resolves.
+	client := &handoffClient{url: "http://marshal-daemon/mcp", token: b.token, http: studioUnixClient(sock)}
+	client.initialize(t)
+
+	// Tool discovery over the socket: the real handler's advertised factory
+	// tools, with no authority tool among them.
+	tools := client.tools(t)
+	for _, name := range []string{
+		factoryToolProjects, factoryToolList, factoryToolGet, factoryToolCreateDraft,
+		factoryToolUpdateDraft, factoryToolApproveAndQueue, factoryToolAnswerQuestion,
+	} {
+		if _, ok := tools[name]; !ok {
+			t.Fatalf("tools/list over the socket is missing %s", name)
+		}
+	}
+
+	// An authorized read: the project this client's token is granted, with the
+	// authority the grant carries, and no host path in the result.
+	projects, text := client.mustCall(t, factoryToolProjects, map[string]any{})
+	entries, _ := projects["projects"].([]any)
+	if len(entries) != 1 {
+		t.Fatalf("factory_projects over the socket listed %v, want the one granted project", projects["projects"])
+	}
+	entry, _ := entries[0].(map[string]any)
+	if entry["projectId"] != b.projectID {
+		t.Fatalf("factory_projects listed %v, want %s", entry["projectId"], b.projectID)
+	}
+	capabilities, _ := entry["capabilities"].([]any)
+	if len(capabilities) == 0 {
+		t.Fatalf("the granted project reported no capability: %v", entry)
+	}
+	assertNoHostPath(t, text, b.root)
+
+	// Identity is the bearer's, and only an enrolled client token is identity.
+	// The shared API token that unlocks /api never reaches /mcp, and neither
+	// does an unknown token.
+	for name, token := range map[string]string{
+		"the bridge's shared API token": handoffAPIToken,
+		"an unknown token":              "not-an-enrolled-client",
+	} {
+		stranger := &handoffClient{url: "http://marshal-daemon/mcp", token: token, http: studioUnixClient(sock)}
+		status, _, payload, err := stranger.post(map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "initialize",
+			"params": map[string]any{"protocolVersion": mcpProtocolVersion},
+		})
+		if err != nil {
+			t.Fatalf("%s over the socket: %v", name, err)
+		}
+		if status != http.StatusUnauthorized {
+			t.Fatalf("%s over the socket: /mcp answered %d, want 401 (%s)", name, status, payload)
+		}
+	}
+
+	// A client that is enrolled but holds no grant on this project reads
+	// nothing: the same answer an unrelated project gets, naming neither.
+	_, otherToken := testAddClient(t, b.srv, MCPClient{ID: "c2", Name: "ungranted"})
+	stranger := &handoffClient{url: "http://marshal-daemon/mcp", token: otherToken, http: studioUnixClient(sock)}
+	stranger.initialize(t)
+	assertNoUnauthorizedAccess(t, stranger, b, "")
 }
 
 // TestMCPFactoryEndToEnd drives a complete authorized handoff: initialize,
@@ -999,5 +1127,109 @@ func assertNoHostPath(t *testing.T, text, root string) {
 	t.Helper()
 	if root != "" && bytes.Contains([]byte(text), []byte(root)) {
 		t.Fatalf("a tool result disclosed this host's project root: %s", text)
+	}
+}
+
+// TestMarshalStudioToolsLostResponse proves a built-in session's lost response
+// costs nothing. The session enrolls on the daemon's owner-only socket, calls
+// the factory surface with the credential it was issued, and never reads the
+// answer — yet the approval is committed once, and the retry (the same
+// requestId under the same credential) returns the operation already in the
+// journal instead of approving a second time.
+func TestMarshalStudioToolsLostResponse(t *testing.T) {
+	b := newHandoffBridge(t)
+
+	// One draft to approve, authored by the fixture's external client: a
+	// built-in session reads and drafts through its own access policy, while an
+	// approval is the operation it is granted here.
+	author := newHandoffClient(b, b.token)
+	author.initialize(t)
+	created, _ := author.mustCall(t, factoryToolCreateDraft, b.handoffProposal("studio-author"))
+	itemID, _ := created["itemId"].(string)
+	if itemID == "" {
+		t.Fatalf("the fixture created no draft: %v", created)
+	}
+
+	// The daemon identity a credential is scoped to, and the server-owned
+	// association enrollment resolves this session against.
+	b.srv.SetDaemonInfo(testMarshalInstance(testMarshalPID, testMarshalStarted))
+	if err := b.fleet.ws.PutAgent(Agent{
+		ID: "a1", Project: b.root, SessionID: "studio-s1", OwnerID: DefaultOwnerID, Origin: "cli",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The project's own standing authority for an approval: the configured
+	// policy a person set up in advance, which owes no per-operation receipt.
+	version := marshalAccessState(b.projectID, "", "", MarshalFactoryAccess{}).Version
+	if current, ok := b.fleet.ws.marshalAccessDefault(b.projectID); ok {
+		version = current.Version
+	}
+	if _, _, err := b.srv.factoryAuth.putMarshalAccessDefault(b.projectID, MarshalFactoryAccess{
+		ApproveAndQueue:   boolPtr(true),
+		ApprovalAuthority: authorityPtr(factoryAuthorityStanding),
+	}, version); err != nil {
+		t.Fatalf("grant this project's standing authority: %v", err)
+	}
+
+	// Enroll the way the trusted transport does: on the owner-only socket
+	// handler, never on the network listener.
+	body, err := json.Marshal(MarshalEnrollmentRequest{ProjectRoot: b.root, SessionID: "studio-s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, marshalEnrollPath, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	b.srv.SocketHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("enroll: %d %s", rec.Code, rec.Body)
+	}
+	var enrollment MarshalEnrollmentResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &enrollment); err != nil {
+		t.Fatalf("decode enrollment: %v", err)
+	}
+	if enrollment.State != marshalStateConnected || enrollment.Token == "" {
+		t.Fatalf("enrollment = %+v, want a connected binding with a credential", enrollment)
+	}
+	if enrollment.SessionID != "studio-s1" || enrollment.ProjectID != b.projectID {
+		t.Fatalf("the binding is %+v, not this session on this project", enrollment)
+	}
+
+	client := newHandoffClient(b, enrollment.Token)
+	client.initialize(t)
+
+	// The approval happens; its answer never arrives.
+	args := b.approve(itemID, "studio-lost", 1, factoryAuthorityStanding)
+	before := b.journalLines(t)
+	b.loseResponse.Store(true)
+	if _, _, err := client.call(factoryToolApproveAndQueue, args); err == nil {
+		t.Fatal("the session read a response the bridge never delivered")
+	}
+	if lines := b.journalLines(t); lines != before+1 {
+		t.Fatalf("the lost response wrote %d journal records, want exactly one", lines-before)
+	}
+	approved, err := b.store.Get(itemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved.State != "queued" || len(approved.Approvals) != 1 {
+		t.Fatalf("the lost response left the item %+v, want one approval", approved)
+	}
+
+	// The retry is that same operation: the journal's own answer, with no
+	// second approval and no second append.
+	retried, _ := client.mustCall(t, factoryToolApproveAndQueue, args)
+	if retried["version"].(float64) != float64(approved.Version) || retried["state"] != approved.State {
+		t.Fatalf("the retry returned %v, want the committed item at version %d", retried, approved.Version)
+	}
+	if lines := b.journalLines(t); lines != before+1 {
+		t.Fatalf("the retry wrote a second journal record: %d", lines-before)
+	}
+	again, err := b.store.Get(itemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Approvals) != 1 {
+		t.Fatalf("the retry approved the item a second time: %d approvals", len(again.Approvals))
 	}
 }

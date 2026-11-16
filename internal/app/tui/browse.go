@@ -452,8 +452,20 @@ func (m *Model) boxAgentAtCursor() (int64, bool) {
 	if !ok || t.Kind != livebox.TargetWork {
 		return 0, false
 	}
-	it, found := m.workItemByKey(t.Key)
-	if !found || it.Kind != "agent" {
+	return m.subagentForWorkKey(t.Key)
+}
+
+// subagentForWorkKey resolves the subagent a work item names: an agent item's
+// SourceID is the child session's subagent ID. It reports false for every other
+// kind of item and for a subagent Status no longer carries, so a caller that
+// found the item can fall through to another target instead of drilling into
+// nothing.
+func (m *Model) subagentForWorkKey(key string) (int64, bool) {
+	if key == "" {
+		return 0, false
+	}
+	it, ok := m.workItemByKey(key)
+	if !ok || it.Kind != "agent" {
 		return 0, false
 	}
 	id, err := strconv.ParseInt(it.SourceID, 10, 64)
@@ -461,6 +473,22 @@ func (m *Model) boxAgentAtCursor() (int64, bool) {
 		return 0, false
 	}
 	return id, m.drillable(id)
+}
+
+// selectedSubagent returns the subagent the user has selected: the transcript
+// row or tray card under the browse cursor, else the tray card they expanded.
+// It reports false when there is no such selection, which is what lets Ctrl+F
+// fall back to the newest running subagent.
+func (m *Model) selectedSubagent() (int64, bool) {
+	if m.browsing {
+		if id, ok := m.boxAgentAtCursor(); ok {
+			return id, true
+		}
+		if id, ok := m.subagentAtCursor(); ok {
+			return id, true
+		}
+	}
+	return m.subagentForWorkKey(m.workExpanded)
 }
 
 // subagentAtCursor resolves the subagent the cursor points at: the completion

@@ -381,7 +381,7 @@ func TestFactoryDefaultsNeverSupplyNonInheritableFields(t *testing.T) {
 			t.Fatalf("FactoryDefaults carries non-inheritable field %q", name)
 		}
 	}
-	want := []string{"TargetBranch", "Workspace", "HostID", "ImplementerRouting", "ReviewerRouting", "ReviewerInstructions", "ExpectedChecks", "MaxRounds", "CIPollSeconds", "CIWaitSeconds"}
+	want := []string{"TargetBranch", "Workspace", "HostID", "ImplementerRouting", "ReviewerRouting", "ReviewerInstructions", "ExpectedChecks", "MaxRounds", "CIPollSeconds", "CIWaitSeconds", "ImplementerSubagents", "ReviewerSubagents"}
 	if len(names) != len(want) {
 		t.Fatalf("FactoryDefaults fields = %v, want exactly %v", names, want)
 	}

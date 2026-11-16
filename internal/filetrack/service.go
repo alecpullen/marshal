@@ -34,18 +34,23 @@ func New(db *sql.DB, sessionID string) *Service {
 }
 
 func (s *Service) RecordRead(path string, at time.Time, revision int64) error {
+	// at is the modification time of the version the read was shown, and the
+	// edit guard compares it with the file's current stamp. The latest read at
+	// a revision therefore wins: a read of a version stamped *behind* the mark
+	// it replaces — a path restored from an archive, or a checkout that
+	// preserved timestamps — must still record that version, or the path could
+	// never be edited again. A read that observed an older revision never
+	// overwrites a newer revision's stamp, which is what keeps a lagging reader
+	// from lowering the epoch.
 	_, err := s.db.Exec(
 		`INSERT INTO file_reads (session_id, path, read_at, revision) VALUES (?, ?, ?, ?)
 		 ON CONFLICT(session_id, path) DO UPDATE SET
-			revision = MAX(file_reads.revision, excluded.revision),
 			read_at = CASE
-				WHEN excluded.revision > file_reads.revision
-					THEN excluded.read_at
-				WHEN excluded.revision = file_reads.revision
-					AND excluded.read_at > file_reads.read_at
+				WHEN excluded.revision >= file_reads.revision
 					THEN excluded.read_at
 				ELSE file_reads.read_at
-			END`,
+			END,
+			revision = MAX(file_reads.revision, excluded.revision)`,
 		s.sessionID, path, at.UTC().Format(time.RFC3339Nano), revision)
 	if err != nil {
 		return fmt.Errorf("record read: %w", err)

@@ -136,6 +136,133 @@ void main() {
     await session.close();
   });
 
+  test('keys typed before the shell has an id are sent after it', () async {
+    // The terminal route answers slowly, so the id arrives after the typing.
+    bridge.reply(
+      'POST',
+      '/api/agents/a-1/terminal',
+      FakeReply(
+        200,
+        headers: const {'content-type': 'application/json'},
+        body: jsonEncode({'terminalId': 't-1'}),
+        delay: const Duration(milliseconds: 40),
+      ),
+    );
+    final idle = Completer<void>();
+    final session = TerminalSession(
+      client,
+      agentId: 'a-1',
+      wait: (_) => idle.future,
+    );
+
+    final opening = session.open();
+    session.input('l');
+    session.input('s');
+    // Nothing is posted yet: the shell has no id to post to.
+    expect(bridge.requests.where((r) => r.uri.endsWith('/t-1/input')), isEmpty);
+
+    await opening;
+    await settle();
+
+    // Both keystrokes arrive, in the order they were typed, once the id does.
+    final bodies = [
+      for (final request in bridge.requests)
+        if (request.uri.endsWith('/t-1/input'))
+          (jsonDecode(request.body) as Map<String, dynamic>)['data'] as String,
+    ];
+    expect(bodies, [
+      base64Encode(utf8.encode('l')),
+      base64Encode(utf8.encode('s')),
+    ]);
+
+    // The hold began on the first keystroke, before the shell was open.
+    expect(session.agentPaused, isTrue);
+    idle.complete();
+    await session.close();
+  });
+
+  test('one keystroke body is in flight at a time, in order', () async {
+    // A slow answer to the first input means the second can only be posted
+    // after it: two bodies must never race to the pty.
+    bridge.reply(
+      'POST',
+      '/api/agents/a-1/terminal/t-1/input',
+      const FakeReply(204, delay: Duration(milliseconds: 60)),
+    );
+    final idle = Completer<void>();
+    final session = TerminalSession(
+      client,
+      agentId: 'a-1',
+      wait: (_) => idle.future,
+    );
+    await session.open();
+
+    session.input('a');
+    session.input('b');
+    // While the first is still unanswered, the second has not been posted.
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(
+      bridge.requests.where(
+        (r) => r.uri == '/api/agents/a-1/terminal/t-1/input',
+      ),
+      hasLength(1),
+    );
+
+    await settle();
+    final bodies = [
+      for (final request in bridge.requests)
+        if (request.uri == '/api/agents/a-1/terminal/t-1/input')
+          (jsonDecode(request.body) as Map<String, dynamic>)['data'] as String,
+    ];
+    expect(bodies, [
+      base64Encode(utf8.encode('a')),
+      base64Encode(utf8.encode('b')),
+    ]);
+    idle.complete();
+    await session.close();
+  });
+
+  test('a large paste is sent in pieces of at most 16 KiB', () async {
+    final idle = Completer<void>();
+    final session = TerminalSession(
+      client,
+      agentId: 'a-1',
+      wait: (_) => idle.future,
+    );
+    await session.open();
+
+    final paste = 'a' * (TerminalSession.inputChunk * 2 + 100);
+    session.input(paste);
+    await settle();
+
+    final bodies = [
+      for (final request in bridge.requests)
+        if (request.uri == '/api/agents/a-1/terminal/t-1/input')
+          utf8.decode(
+            base64Decode(
+              (jsonDecode(request.body) as Map<String, dynamic>)['data']
+                  as String,
+            ),
+          ),
+    ];
+    expect(bodies, hasLength(3));
+    expect(bodies.every((b) => b.length <= TerminalSession.inputChunk), isTrue);
+    expect(bodies.join(), paste);
+    idle.complete();
+    await session.close();
+  });
+
+  test('chunking never splits a character', () {
+    // A two-byte character straddling the 16 KiB boundary would be corrupted
+    // by a byte-wise cut; the pieces are cut on character boundaries.
+    final text = '${'a' * (TerminalSession.inputChunk - 1)}é';
+    final pieces = TerminalSession.chunks(text);
+    expect(pieces, hasLength(2));
+    expect(pieces.first, 'a' * (TerminalSession.inputChunk - 1));
+    expect(pieces.last, 'é');
+    expect(pieces.join(), text);
+  });
+
   test('resize posts the size', () async {
     final session = TerminalSession(client, agentId: 'a-1');
     await session.open(cols: 100, rows: 30);

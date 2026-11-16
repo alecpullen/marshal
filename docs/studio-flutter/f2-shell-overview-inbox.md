@@ -173,8 +173,8 @@ commit, `f2-shell: task N — <title>`.
 | 5 | The shell: sidebar, host switcher, the narrow panel, planned places. `NavRow` joined the kit (§10) | `app/lib/src/ui/shell/*`, `app/lib/src/ui/kit/nav_row.dart` |
 | 6 | The Overview: needs you, running now, projects, and the capacity and spend rail below 1080 | `app/lib/src/ui/overview/overview.dart` |
 | 7 | The Inbox: filters, every ask kind answered from its card, a failure kept with a retry | `app/lib/src/ui/inbox/inbox.dart` |
-| 8 | `/next/`: the Flutter web build embedded beside the Svelte one, its handler, the CI and release steps, one link | `web/bridge/assets.go`, `web/bridge/static-next/index.html`, `.github/workflows/*` |
-| 9 | The end-to-end flow, a widget test that runs it, and this record | `app/integration_test/f2_test.dart`, `app/test/ui/f2_flow_test.dart` |
+| 8 | `/next/`: the Flutter web build embedded beside the Svelte one, its handler and route, the CI and release steps, one link | `web/bridge/assets.go`, `web/bridge/http.go` (the `/next/` route registration), `web/bridge/static-next/index.html`, `.github/workflows/*` |
+| 9 | The end-to-end flow, a widget test that runs it, and this record | `app/integration_test/f2_test.dart`, `app/test/ui/f2_flow_test.dart`, `app/pubspec.yaml` (the `integration_test` dev dependency) |
 
 `webbridge` binary size: 22,417,471 bytes before the `/next/` embed, 22,412,020
 after (placeholder index only; the difference is Go build variance, not the
@@ -233,6 +233,11 @@ test (no CMake/GTK3 development headers, no display).
   `deduplicatesAllPages` (F2's model has no all-pages list), the sub-route and
   query matching (a place is an exact path, and `parsePlace` ignores a query),
   and the roadmap destinations themselves (not F2's sidebar).
+- **Why that list is here and not in the commit.** Plan task 1.4 asked for it
+  in the pull request's commit message. The list lives in this record instead:
+  task 1's commit has landed and its message is history, and rewriting a
+  landed commit only to move a note into it would cost more than it explains.
+  The record is where the list is kept current.
 
 ### Blocked on the wire, not on time
 

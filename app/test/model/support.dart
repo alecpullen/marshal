@@ -208,15 +208,21 @@ class ModelFixture {
       List.unmodifiable(bridges[host]!.requests);
 
   /// Replaces what [host]'s bridge answers `GET path` with from now on.
-  void serve(String host, String path, Object body) => bridges[host]!.reply(
-    'GET',
-    path,
-    FakeReply(
-      200,
-      headers: const {'content-type': 'application/json'},
-      body: jsonEncode(body),
-    ),
-  );
+  ///
+  /// [delay] holds the answer back, so a test can have a read in flight while
+  /// it does something else — the reply is chosen when the request arrives,
+  /// so re-serving the route afterwards changes the next request only.
+  void serve(String host, String path, Object body, {Duration? delay}) =>
+      bridges[host]!.reply(
+        'GET',
+        path,
+        FakeReply(
+          200,
+          headers: const {'content-type': 'application/json'},
+          body: jsonEncode(body),
+          delay: delay,
+        ),
+      );
 
   /// Sends one fleet delta, as the bridge's own frame, to [host]'s stream.
   void delta(String host, Map<String, Object?> json) {

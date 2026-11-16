@@ -248,7 +248,7 @@ class FleetStore extends ChangeNotifier {
     try {
       switch (kind) {
         case 'inbox':
-          _applyInbox(state, InboxDelta.fromJson(decoded));
+          _applyInbox(host, state, InboxDelta.fromJson(decoded));
         case 'budget':
           // A budget delta says which way the spend moved, not the day's
           // whole report: read the report again, as the Svelte store's views
@@ -324,11 +324,32 @@ class FleetStore extends ChangeNotifier {
   }
 
   /// The bridge's whole queue, which it recomputes and re-sends as it moves.
-  void _applyInbox(_HostState state, InboxDelta delta) {
+  ///
+  /// An inbox that names an agent the rows do not have is newer than the
+  /// snapshot behind them — the bridge spawned it mid-session — so the agents
+  /// are read again. Without that the ask's row never arrives, and
+  /// `InboxModel` cannot render a queue entry whose agent it does not know:
+  /// the work waits invisibly. It is `web/ui/src/lib/fleet.ts`'s
+  /// `refetchAgentsFor`, kept to one read at a time here (see
+  /// [_refreshAgents]), which coalesces a burst of deltas rather than
+  /// throttling by the clock.
+  void _applyInbox(String host, _HostState state, InboxDelta delta) {
     state
       ..deltaSeq += 1
       ..queueSeq = state.deltaSeq
       ..queue = List.unmodifiable(delta.inbox.queue);
+    final known = {for (final agent in state.agents) agent.id};
+    final named = [
+      ...delta.inbox.groups.needsYou,
+      ...delta.inbox.groups.running,
+      ...delta.inbox.groups.ready,
+      ...delta.inbox.groups.earlier,
+      for (final item in delta.inbox.queue)
+        if (item.kind == InboxItemKind.inboxItemAgent) item.agentID,
+    ];
+    if (named.any((id) => !known.contains(id))) {
+      unawaited(_refreshAgents(host));
+    }
   }
 
   /// A project left the daemon: it and every agent in it are gone from the
@@ -366,6 +387,11 @@ class FleetStore extends ChangeNotifier {
   /// [from] names the agents the snapshot must answer for whatever the stream
   /// said meanwhile: a pending delta carries only the kind, so the snapshot is
   /// the authority for the request itself.
+  ///
+  /// One read runs at a time per host. A request that arrives while one is in
+  /// flight is not dropped: its [from] ids are carried into a follow-up read
+  /// when the first finishes, so an agent that parks during a read still gets
+  /// its request, and a burst of deltas costs at most two reads.
   Future<void> _refreshAgents(
     String host, {
     Set<String> from = const {},
@@ -373,8 +399,39 @@ class FleetStore extends ChangeNotifier {
     final owner = _ownerOf(host);
     if (owner == null) return;
     final state = _state(host);
-    if (state.agentsRefetching) return;
+    if (state.agentsRefetching) {
+      state
+        ..agentsRefetchFrom.addAll(from)
+        ..agentsRefetchPending = true;
+      return;
+    }
     state.agentsRefetching = true;
+    // What this read must answer for, plus whatever a coalesced request adds
+    // before the next pass.
+    var answerFor = from;
+    try {
+      do {
+        state.agentsRefetchPending = false;
+        answerFor = {...answerFor, ...state.agentsRefetchFrom};
+        state.agentsRefetchFrom.clear();
+        await _readAgents(owner, state, answerFor);
+        if (_disposed) return;
+      } while (state.agentsRefetchPending);
+    } finally {
+      state
+        ..agentsRefetching = false
+        ..agentsRefetchPending = false
+        ..agentsRefetchFrom.clear();
+    }
+  }
+
+  /// One pass of [_refreshAgents]: the snapshot, with the rows a delta has
+  /// changed since the read was asked for kept in place.
+  Future<void> _readAgents(
+    Host owner,
+    _HostState state,
+    Set<String> from,
+  ) async {
     final since = state.deltaSeq;
     try {
       final agents = await owner.client.agents();
@@ -394,18 +451,26 @@ class FleetStore extends ChangeNotifier {
     } catch (_) {
       // A failed re-read leaves the rows as they were; the next delta or the
       // next reconnect reads them again.
-    } finally {
-      state.agentsRefetching = false;
     }
   }
 
   /// Reads one host's budget report again.
+  ///
+  /// A delta says which way the spend moved, and the report is read rather
+  /// than invented from it. The answer is only the current spend if nothing
+  /// newer was read while it was in flight: a slow `GET /api/budgets` that
+  /// lands after a snapshot (or after a later budget read) would put older
+  /// numbers back, so it is discarded.
   Future<void> _refreshBudgets(String host) async {
     final owner = _ownerOf(host);
     if (owner == null) return;
     final state = _state(host);
+    final generation = state.generation;
+    final read = ++state.budgetReads;
     final report = await _budgets(owner.client, state);
-    if (_disposed || identical(report, state.budgets)) return;
+    if (_disposed || generation != state.generation) return;
+    if (read != state.budgetReads) return;
+    if (identical(report, state.budgets)) return;
     state.budgets = report;
     notifyListeners();
   }
@@ -435,8 +500,19 @@ class _HostState {
   /// Bumped by each read, so a slow answer cannot overwrite a newer one.
   int generation = 0;
 
+  /// Bumped by each budget read, so a slower earlier read cannot overwrite a
+  /// newer report.
+  int budgetReads = 0;
+
   /// A pending delta's re-read is in flight.
   bool agentsRefetching = false;
+
+  /// Another re-read was asked for while one was in flight, and runs when it
+  /// finishes.
+  bool agentsRefetchPending = false;
+
+  /// The agents the next pass must answer for: a coalesced request's ids.
+  final agentsRefetchFrom = <String>{};
 
   /// Bumped by every delta applied to this host: the clock a snapshot is
   /// compared against, so an answer asked for before a delta cannot put back

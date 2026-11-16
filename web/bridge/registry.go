@@ -34,36 +34,17 @@ func isMethodNotFound(err error) bool {
 	return errors.As(err, &rpc) && rpc.Code == -32601
 }
 
-// Decision is the HTTP-facing shape of a permission decision. It maps
-// 1:1 onto the ACP session/request_permission result.
-type Decision struct {
-	Approved bool   `json:"approved"`
-	Edited   string `json:"edited,omitempty"`
-	// ModeAccess is the typed capability choice, when the client supports
-	// it. The bridge forwards it untouched: the agent validates the
-	// identity and applies the grant, so nothing here can grant a
-	// capability locally.
-	ModeAccess *ModeAccessChoice `json:"modeAccess,omitempty"`
-}
+// Decision is contract.Decision; it maps 1:1 onto the ACP
+// session/request_permission result, and ModeAccess rides along untouched.
+type Decision = contract.Decision
 
-// Answer is one question-and-response pair on the wire.
-//
-// This deliberately duplicates the agent-side shape rather than
-// importing it: web/bridge is an external ACP client, and the JSON
-// contract — not a shared Go type — is what binds the two halves. The
-// duplication is what lets web/ ship as its own module.
-type Answer struct {
-	Question string `json:"question"`
-	Answer   string `json:"answer"`
-}
+// Answer is contract.Answer; the JSON contract, not a shared Go type, is what
+// binds web/ to the agent.
+type Answer = contract.Answer
 
-// Answers is the HTTP-facing shape of a question response. Declined
-// maps to the ACP {declined:true} result; otherwise Answers carries one
-// entry per question, in order.
-type Answers struct {
-	Answers  []Answer `json:"answers,omitempty"`
-	Declined bool     `json:"declined,omitempty"`
-}
+// Answers is contract.Answers; Declined maps to the ACP {declined:true}
+// result, otherwise one entry per question, in order.
+type Answers = contract.Answers
 
 // sessionInfo tracks one active session's bridge-side state.
 type sessionInfo struct {

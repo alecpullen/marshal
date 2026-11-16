@@ -12,6 +12,10 @@ vi.mock('../lib/api', async (actual) => ({
   getModels: vi.fn(),
   getProjectSettings: vi.fn(),
   createFactoryItem: vi.fn(),
+  // The manual path must never touch a working draft; mocked so the assertion
+  // is about calls, not about a real fetch.
+  createWorkingDraft: vi.fn(),
+  saveWorkingDraft: vi.fn(),
 }))
 afterEach(cleanup)
 
@@ -536,4 +540,39 @@ it('cancelledNavigationKeepsAllInput', async () => {
   expect((screen.getByLabelText('Plan') as HTMLTextAreaElement).value).toBe('Build it')
   expect((screen.getByLabelText('Specification (optional)') as HTMLTextAreaElement).value).toBe('Keep this')
   confirm.mockRestore()
+})
+
+it('manualFactoryFlowStillWorks', async () => {
+  vi.mocked(api.getProjectSettings).mockResolvedValue(projectSettings({
+    workspace: 'go-dev',
+    routing: { profile: 'fast' },
+    factoryDefaults: { targetBranch: 'develop', expectedChecks: [BUILD] },
+  }))
+  const navigate = vi.fn()
+  render(FactoryNew, { projectRoot: ROOT, onNavigate: navigate })
+  await waitFor(() => expect(screen.getByTestId('workspace-effective').textContent).toContain('Project agent default: go-dev'))
+
+  // Without a draft binding the form is the handoff form it always was: the
+  // submit button is the only writer, and it posts one factory create.
+  expect(screen.getByRole('button', { name: 'Save draft' })).toBeTruthy()
+  const drafts = screen.getByRole('link', { name: 'Working drafts' })
+  expect(drafts.getAttribute('href')).toBe('#factory/drafts?project=%2Fhome%2Fu%2Falpha')
+  await fireEvent.click(drafts)
+  expect(navigate).toHaveBeenCalledWith('#factory/drafts?project=%2Fhome%2Fu%2Falpha')
+
+  await fillHandoff()
+  await fireEvent.input(screen.getByLabelText('Specification (optional)'), { target: { value: 'Keep this' } })
+  await fireEvent.click(screen.getByLabelText('This repository has no required CI'))
+  await save()
+  await waitFor(() => expect(api.createFactoryItem).toHaveBeenCalledTimes(1))
+  const body = sent()
+  expect(body.title).toBe('Task')
+  expect(body.plan).toBe('Build it')
+  expect(body.spec).toBe('Keep this')
+  // Inheritance semantics are untouched: a field that follows is still omitted.
+  expect(body.config).toEqual({ repoId: 'repo', projectRoot: ROOT, native: false, implementerAuto: false, noRequiredCiAcknowledged: true })
+  // And the manual path never opens a working draft or autosaves one.
+  expect(api.createWorkingDraft).not.toHaveBeenCalled()
+  expect(api.saveWorkingDraft).not.toHaveBeenCalled()
+  await screen.findByTestId('draft-preview')
 })

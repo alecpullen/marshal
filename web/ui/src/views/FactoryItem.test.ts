@@ -16,6 +16,7 @@ vi.mock('../lib/api', async (actual) => ({
     fetch, with the real APIError still coming along.
   */
   listAgents: vi.fn(), loadSession: vi.fn(), getStack: vi.fn(), cancelSession: vi.fn(),
+  listClients: vi.fn(),
   getNode: vi.fn(), getLastRequest: vi.fn(), getDiff: vi.fn(), getGate: vi.fn(), getStepDiffs: vi.fn(),
   listFiles: vi.fn(), readFile: vi.fn(), getAccess: vi.fn(), patchAccess: vi.fn(),
 }))
@@ -55,6 +56,9 @@ beforeEach(() => {
   onRefresh.mockImplementation(async () => {})
   vi.mocked(api.commandFactoryItem).mockReset()
   vi.mocked(api.getPreviewEnvironments).mockReset()
+  vi.mocked(api.listClients).mockReset()
+  // Provenance names a client when the list knows it and shows the stable ID otherwise.
+  vi.mocked(api.listClients).mockResolvedValue([{ id: 'c1', name: 'Cursor' }] as unknown as api.MCPClient[])
   // The retry's route pickers offer the real profiles the models API reports.
   vi.mocked(api.getModels).mockReset()
   vi.mocked(api.getModels).mockResolvedValue({ profiles: {
@@ -524,4 +528,56 @@ it('unknownAgentShowsInlineUnavailable', async () => {
   expect(screen.queryByTestId('agent-conversation')).toBeNull()
   await fireEvent.click(screen.getByRole('button', { name: 'Back to activity' }))
   expect(onNavigate).toHaveBeenCalledWith('#factory/x?view=activity')
+})
+
+/** One history entry's line: the message's row carries the provenance beside it. */
+const provenanceFor = (message: string) => screen.getByText(message).closest('li')?.textContent ?? ''
+
+it('provenanceDistinguishesAuthority', async () => {
+  const item = {
+    ...base,
+    state: 'checking',
+    history: [
+      { sequence: 1, at: '2026-01-01T00:00:00Z', kind: 'mcp', message: 'Approval queued', effectId: '',
+        provenance: { clientId: 'c1', projectId: 'p1', action: 'factory_approve_and_queue', requestId: 'r1', authority: 'user_directed' } },
+      { sequence: 2, at: '2026-01-02T00:00:00Z', kind: 'mcp', message: 'Standing approval queued', effectId: '',
+        provenance: { clientId: 'ghost', projectId: 'p1', action: 'factory_approve_and_queue', requestId: 'r2', authority: 'standing' } },
+      { sequence: 3, at: '2026-01-03T00:00:00Z', kind: 'mcp', message: 'Question answered', effectId: '',
+        provenance: { clientId: 'c1', projectId: 'p1', action: 'factory_answer_question', requestId: 'r3', authority: 'delegated', decisionId: 'd1' } },
+    ],
+  } as unknown as Item
+  getItem.mockResolvedValue(item)
+  renderItem(factoryState(), { view: 'activity' })
+  await screen.findByText('Approval queued')
+
+  // A known client is named; a client the list no longer has falls back to its
+  // stable ID rather than going unattributed.
+  expect(provenanceFor('Approval queued')).toContain('Cursor (c1)')
+  expect(provenanceFor('Standing approval queued')).toContain('ghost')
+  // user_directed is the client's own assertion, never a verified approval.
+  expect(provenanceFor('Approval queued')).toContain('client reports user-directed')
+  expect(provenanceFor('Approval queued')).not.toContain('standing authority')
+  expect(provenanceFor('Standing approval queued')).toContain('standing authority')
+  expect(provenanceFor('Question answered')).toContain('delegated planner')
+  expect(provenanceFor('Question answered')).toContain('decision d1')
+})
+
+it('legacyEventsRender', async () => {
+  const item = {
+    ...base,
+    state: 'checking',
+    history: [
+      { sequence: 1, at: '2026-01-01T00:00:00Z', kind: 'state', message: 'Draft created', effectId: '' },
+      { sequence: 2, at: '2026-01-02T00:00:00Z', kind: 'approval', message: 'Approved by the operator', effectId: '' },
+    ],
+  } as unknown as Item
+  getItem.mockResolvedValue(item)
+  renderItem(factoryState(), { view: 'activity' })
+
+  expect(await screen.findByText('Draft created')).toBeTruthy()
+  expect(screen.getByText('Approved by the operator')).toBeTruthy()
+  // A record written before provenance existed is ordinary history: no origin
+  // line is invented for it, and nothing claims a client acted.
+  expect(screen.queryAllByTestId('factory-provenance')).toHaveLength(0)
+  expect(screen.queryByText(/Requested by/)).toBeNull()
 })

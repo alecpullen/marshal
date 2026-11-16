@@ -482,6 +482,46 @@ describe('Project route guard', () => {
     expect(api.putVersionedProjectSettings).not.toHaveBeenCalled()
     confirm.mockRestore()
   })
+
+  it('delegationDefaultsOffAndDesignatesClient', async () => {
+    mount()
+    const card = await screen.findByTestId('delegation-card')
+    const toggle = () => screen.getByLabelText('Allow one MCP client to answer planner questions') as HTMLInputElement
+    // Off and unselected by default: absent fields, not stored values.
+    expect(toggle().checked).toBe(false)
+    expect((screen.getByLabelText('Designated MCP client') as HTMLSelectElement).value).toBe('')
+    await waitFor(() => expect((within(card).getByRole('button', { name: 'Save delegation' }) as HTMLButtonElement).disabled).toBe(false))
+
+    await fireEvent.click(within(card).getByRole('button', { name: 'Save delegation' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalled())
+    // Neither field is written, and every unrelated field round trips as read.
+    expect(written()).not.toHaveProperty('plannerDelegationEnabled')
+    expect(written()).not.toHaveProperty('designatedMCPClientId')
+    expect(written().workspace).toBe('go-dev')
+    expect(written().routing).toEqual(settings.routing)
+    expect(written().intake).toEqual(settings.intake)
+
+    // Delegation with nobody designated would answer nothing, so it is not a
+    // savable state.
+    await fireEvent.click(toggle())
+    const save = within(card).getByRole('button', { name: 'Save delegation' }) as HTMLButtonElement
+    expect(save.disabled).toBe(true)
+    await waitFor(() => expect([...(screen.getByLabelText('Designated MCP client') as HTMLSelectElement).options].map((o) => o.value)).toEqual(['', 'c1', 'c2']))
+    await fireEvent.change(screen.getByLabelText('Designated MCP client'), { target: { value: 'c2' } })
+    await fireEvent.click(save)
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalledTimes(2))
+    expect(written(1).plannerDelegationEnabled).toBe(true)
+    expect(written(1).designatedMCPClientId).toBe('c2')
+    // The conditional write still names the version the read returned.
+    expect((api.putVersionedProjectSettings as Mock).mock.calls[1][2]).toBe('"v1"+')
+
+    // Turning it off stores no designation either.
+    await fireEvent.click(toggle())
+    await fireEvent.click(within(card).getByRole('button', { name: 'Save delegation' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalledTimes(3))
+    expect(written(2)).not.toHaveProperty('plannerDelegationEnabled')
+    expect(written(2)).not.toHaveProperty('designatedMCPClientId')
+  })
 })
 
 describe('Project session sheet tab', () => {

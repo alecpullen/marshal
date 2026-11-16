@@ -273,6 +273,24 @@ func init() {
 			}
 			return m, m.detach()
 		},
+		"fleet": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
+			// The fleet screen is the daemon's: an embedded session is this
+			// program alone, with no agents to list.
+			if !m.detachOnQuit {
+				m.note("The fleet screen needs the daemon; this session runs embedded.")
+				m.refreshViewport()
+				return m, nil
+			}
+			// An ending is already settling the session; leaving now would
+			// strand it half-ended with no one to read the outcome.
+			if m.endStage != endIdle {
+				m.note("The conversation is ending; it cannot be detached now.")
+				m.refreshViewport()
+				return m, nil
+			}
+			m.toFleet = true
+			return m, m.detach()
+		},
 		"effort": func(m *Model, args []string) (tea.Model, tea.Cmd) {
 			if len(args) == 0 {
 				m.openEffortPicker()

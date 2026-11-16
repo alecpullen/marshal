@@ -18,9 +18,17 @@ func firstNonEmpty(ss ...string) string {
 	return ""
 }
 
-// mcpToolDefinitions returns the six MCP tool definitions with JSON
-// Schema inputSchema blocks.
+// mcpToolDefinitions returns the tool definitions with JSON Schema
+// inputSchema blocks: the six fleet tools first, unchanged in name and shape,
+// then the factory tools.
 func mcpToolDefinitions() []map[string]any {
+	return append(fleetMCPToolDefinitions(), factoryMCPToolDefinitions()...)
+}
+
+// fleetMCPToolDefinitions returns the six fleet tools. Their names and result
+// shapes are the ones MCP clients already depend on, so nothing here moves
+// when a tool is added beside them.
+func fleetMCPToolDefinitions() []map[string]any {
 	return []map[string]any{
 		{
 			"name":        "spawn",
@@ -123,6 +131,9 @@ func (s *Server) mcpToolCall(w http.ResponseWriter, r *http.Request, c MCPClient
 	case "list":
 		s.mcpList(w, c, req.ID)
 	default:
+		if s.factoryToolCall(w, r, c, req.ID, p.Name, p.Arguments) {
+			return
+		}
 		writeRPC(w, req.ID, nil, &rpcError{rpcInvalidParams, "unknown tool " + p.Name})
 	}
 }

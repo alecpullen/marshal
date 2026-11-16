@@ -60,6 +60,14 @@ type FactoryStore struct {
 
 func factoryCopy[T any](v T) T      { b, _ := json.Marshal(v); var c T; _ = json.Unmarshal(b, &c); return c }
 func factoryDigest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
+
+// factoryScopedRequestID namespaces a client-supplied request identity. The
+// journal keys replay by request ID, so two clients naming one ID must be two
+// operations; what the client sent survives only in provenance.
+func factoryScopedRequestID(clientID, requestID string) string {
+	h := sha256.Sum256([]byte(clientID + "\x00" + requestID))
+	return "mcp:" + hex.EncodeToString(h[:])
+}
 func factoryPlanHash(plan, spec string) string {
 	var b bytes.Buffer
 	for _, s := range []string{plan, spec} {
@@ -346,6 +354,23 @@ func (s *FactoryStore) Create(req FactoryCreate, now time.Time) (FactoryItem, er
 // so the identity is hashed over what the operator sent, never over the
 // resolved result.
 func (s *FactoryStore) CreateResolved(req, resolved FactoryCreate, now time.Time) (FactoryItem, error) {
+	return s.createResolved(req, resolved, nil, now)
+}
+
+// CreateAuthorized stores a handoff an authenticated MCP client proposed,
+// journaling its provenance in the same append that creates the item: there is
+// no second audit write that could succeed behind a failed create, or fail
+// behind a successful one.
+//
+// It performs local validation and the append only. The caller holds the
+// policy lock and has already resolved, normalized and preflighted the
+// candidate, and a request that already committed replays its original item
+// before resolved is read at all.
+func (s *FactoryStore) CreateAuthorized(req, resolved FactoryCreate, p factoryPrincipal, now time.Time) (FactoryItem, error) {
+	return s.createResolved(req, resolved, &p, now)
+}
+
+func (s *FactoryStore) createResolved(req, resolved FactoryCreate, p *factoryPrincipal, now time.Time) (FactoryItem, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed || s.unavailable {
@@ -373,6 +398,12 @@ func (s *FactoryStore) CreateResolved(req, resolved FactoryCreate, now time.Time
 	id := hex.EncodeToString(idBytes)
 	now = now.UTC()
 	i := FactoryItem{ID: id, Title: resolved.Title, State: "draft", Version: 1, Draft: resolved, RepoID: resolved.Config.RepoID, ProjectRoot: resolved.Config.ProjectRoot, HostID: resolved.Config.HostID, Branch: "marshal/factory/" + id, CreatedAt: now, UpdatedAt: now}
+	if p != nil {
+		// The attribution rides the append that creates the item, so a create
+		// that committed is never missing its provenance and a create that
+		// failed leaves nothing behind.
+		i.History = append(i.History, p.event("create", "draft created", "", now))
+	}
 	return s.append(req.RequestID, hash, i)
 }
 
@@ -440,6 +471,66 @@ func (s *FactoryStore) Update(id, requestID string, expectedVersion uint64, comm
 		return FactoryItem{}, e
 	}
 	return s.append(requestID, hash, i)
+}
+
+// factoryReplaceIdentity is the journal's replay identity for a draft
+// replacement: the version it was made against, the whole normalized
+// candidate and the authority it was admitted under.
+type factoryReplaceIdentity struct {
+	Kind      string        `json:"kind"`
+	Version   uint64        `json:"expectedVersion"`
+	Candidate FactoryCreate `json:"candidate"`
+	ClientID  string        `json:"clientId"`
+	ProjectID string        `json:"projectId"`
+	Action    string        `json:"action"`
+	Authority string        `json:"authority,omitempty"`
+}
+
+// ReplaceDraft replaces an unapproved draft's content in one journal append.
+//
+// The state, the identity and the version are checked here, under the store
+// lock, so a draft that was approved between the caller's read and this commit
+// is refused rather than overwritten: an approval is a frozen snapshot and
+// stays one. Only the title, the plan, the spec and the configuration move;
+// every earlier event, approval, grant, round, effect and every immutable
+// identity field is carried over untouched, and the replacement's attribution
+// is part of the same append.
+func (s *FactoryStore) ReplaceDraft(id, requestID string, expectedVersion uint64, candidate FactoryCreate, p factoryPrincipal, now time.Time) (FactoryItem, error) {
+	c := candidate
+	// The candidate names the journal's request identity, so two clients that
+	// sent one request ID are two operations, and the version the caller read
+	// is part of what is hashed.
+	c.RequestID = requestID
+	if e := factoryNormalize(&c); e != nil {
+		return FactoryItem{}, e
+	}
+	command, e := json.Marshal(factoryReplaceIdentity{
+		Kind: "replace", Version: expectedVersion, Candidate: c,
+		ClientID: p.ClientID, ProjectID: p.ProjectID, Action: p.Action, Authority: p.Authority,
+	})
+	if e != nil {
+		return FactoryItem{}, e
+	}
+	return s.Update(id, requestID, expectedVersion, command, func(i *FactoryItem) error {
+		if i.State != "draft" {
+			return ErrFactoryConflict
+		}
+		// What the work item is about, and which project and repository it
+		// belongs to, cannot move: an edit replaces the content of one draft.
+		if c.Config.RepoID != i.RepoID || c.Config.ProjectRoot != i.ProjectRoot || c.Config.HostID != i.HostID {
+			return ErrFactoryConflict
+		}
+		// The item's title and its draft's title are one field reported
+		// twice, so a replacement moves both: a stale Draft.Title would be
+		// projected beside the new title and read as a contradiction.
+		i.Title = c.Title
+		i.Draft.Title = c.Title
+		i.Draft.Plan = c.Plan
+		i.Draft.Spec = c.Spec
+		i.Draft.Config = c.Config
+		i.History = append(i.History, p.event("replace", "draft replaced", "", now))
+		return nil
+	}, now)
 }
 func (s *FactoryStore) append(request, hash string, i FactoryItem) (FactoryItem, error) {
 	p := factoryPayload{1, s.seq + 1, request, i.ID, hash, i}

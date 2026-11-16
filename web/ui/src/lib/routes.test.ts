@@ -313,6 +313,29 @@ describe('factory routes', () => {
     expect(formatFactoryRoute({ itemId: 'a', view: 'review', agent: 'w1' })).toBe('#factory/a?view=review&agent=w1')
     expect(parseFactoryRoute(formatFactoryRoute({ itemId: 'a', view: 'review', agent: 'w1' }))).toEqual({ itemId: 'a', view: 'review', agent: 'w1' })
   })
+
+  it('parses the working-drafts list, new and one open draft', async () => {
+    const { parseFactoryRoute, formatFactoryRoute, formatWorkingDraftsRoute, pageFromHash } = await import('./routes')
+    expect(parseFactoryRoute('#factory/drafts')).toEqual({ drafts: true })
+    expect(parseFactoryRoute('#factory/drafts/new')).toEqual({ drafts: true, create: true })
+    expect(parseFactoryRoute('#factory/drafts/d%2F1')).toEqual({ drafts: true, draftId: 'd/1' })
+    // The project is a query parameter on every one of them.
+    expect(parseFactoryRoute('#factory/drafts?project=%2Fp')).toEqual({ drafts: true })
+    expect(parseFactoryRoute('#factory/drafts/new?project=%2Fp')).toEqual({ drafts: true, create: true })
+    expect(parseFactoryRoute('#factory/drafts/d1?project=%2Fp')).toEqual({ drafts: true, draftId: 'd1' })
+    expect(parseFactoryRoute('#factory/drafts/%E0%A4%A')).toBeNull()
+    expect(formatFactoryRoute({ drafts: true })).toBe('#factory/drafts')
+    expect(formatFactoryRoute({ drafts: true, create: true })).toBe('#factory/drafts/new')
+    expect(formatFactoryRoute({ drafts: true, draftId: 'd/1' })).toBe('#factory/drafts/d%2F1')
+    expect(formatWorkingDraftsRoute({}, '/p q')).toBe('#factory/drafts?project=%2Fp%20q')
+    expect(formatWorkingDraftsRoute({ create: true }, '/p')).toBe('#factory/drafts/new?project=%2Fp')
+    expect(formatWorkingDraftsRoute({ draftId: 'd1' }, '/p')).toBe('#factory/drafts/d1?project=%2Fp')
+    expect(formatWorkingDraftsRoute({ draftId: 'd1' })).toBe('#factory/drafts/d1')
+    // Every working-drafts hash round-trips through its own formatter.
+    expect(parseFactoryRoute(formatWorkingDraftsRoute({ draftId: 'd 1' }, '/p'))).toEqual({ drafts: true, draftId: 'd 1' })
+    expect(pageFromHash('#factory/drafts/d1')).toBe('factory')
+    expect(pageFromHash('#factory/drafts/new')).toBe('factory')
+  })
 })
 
 describe('new agent route', () => {

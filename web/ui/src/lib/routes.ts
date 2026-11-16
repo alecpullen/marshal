@@ -326,16 +326,28 @@ function factoryFilter(query: string | undefined): FactoryRoute {
 
 /**
  * The factory hashes: the global list `#factory`, the project-scoped list
- * `#projects/<root>/factory`, creation `#factory/new[?project=<root>]`, and
- * one encoded item `#factory/<id>[?view=…&agent=…]`. Both lists take
- * `?filter=…`. Parsing `#projects/<root>/factory` here keeps one owner for
- * every factory route.
+ * `#projects/<root>/factory`, creation `#factory/new[?project=<root>]`,
+ * working drafts `#factory/drafts[/new|/<id>]`, and one encoded item
+ * `#factory/<id>[?view=…&agent=…]`. Both lists take `?filter=…`, and every
+ * creation and draft form takes `?project=<root>`.
+ *
+ * The working-drafts forms are matched before the generic item segment, which
+ * would otherwise read `#factory/drafts` as an item called "drafts". A draft
+ * route never carries a project path; its project comes from the `?project=`
+ * query, exactly as `#factory/new` does. Parsing `#projects/<root>/factory`
+ * here keeps one owner for every factory route.
  */
 export function parseFactoryRoute(hash: string): FactoryRoute | null {
   const global = /^#factory(?:\?(.*))?$/.exec(hash)
   if (global) return factoryFilter(global[1])
   const scoped = /^#projects\/([^/?]+)\/factory(?:\?(.*))?$/.exec(hash)
   if (scoped) return { projectRoot: decodeSafe(scoped[1]), ...factoryFilter(scoped[2]) }
+  if (hash === '#factory/drafts' || /^#factory\/drafts\?[^#]*$/.test(hash)) return { drafts: true }
+  if (/^#factory\/drafts\/new(?:\?[^#]*)?$/.test(hash)) return { drafts: true, create: true }
+  const working = /^#factory\/drafts\/([^/?#]+)(?:\?[^#]*)?$/.exec(hash)
+  if (working) {
+    try { return { drafts: true, draftId: decodeURIComponent(working[1]) } } catch { return null }
+  }
   const create = /^#factory\/new(?:\?(.*))?$/.exec(hash)
   if (create) {
     const projectRoot = new URLSearchParams(create[1] ?? '').get('project') || undefined
@@ -362,6 +374,11 @@ export function parseFactoryRoute(hash: string): FactoryRoute | null {
 }
 
 export function formatFactoryRoute(route: FactoryRoute): string {
+  if (route.drafts) {
+    if (route.create) return '#factory/drafts/new'
+    if (route.draftId) return `#factory/drafts/${encodeURIComponent(route.draftId)}`
+    return '#factory/drafts'
+  }
   if (route.create) return `#factory/new${route.projectRoot ? `?project=${encodeURIComponent(route.projectRoot)}` : ''}`
   if (route.itemId) {
     const q = new URLSearchParams()
@@ -376,4 +393,14 @@ export function formatFactoryRoute(route: FactoryRoute): string {
   const qs = q.toString()
   const base = route.projectRoot ? `#projects/${encodeURIComponent(route.projectRoot)}/factory` : '#factory'
   return `${base}${qs ? `?${qs}` : ''}`
+}
+
+/**
+ * A project-scoped working-drafts hash: the list, a new draft, or one draft.
+ * The project stays in the query so the draft id is never a path and no route
+ * ever carries a plan, a spec or a credential.
+ */
+export function formatWorkingDraftsRoute(route: { create?: boolean; draftId?: string | null }, projectRoot?: string): string {
+  const segment = route.create ? '/new' : route.draftId ? `/${encodeURIComponent(route.draftId)}` : ''
+  return `#factory/drafts${segment}${projectRoot ? `?project=${encodeURIComponent(projectRoot)}` : ''}`
 }

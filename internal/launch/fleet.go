@@ -9,9 +9,6 @@ import (
 	"syscall"
 
 	"marshal/internal/acpclient"
-	"marshal/internal/app/config"
-	"marshal/internal/app/tui/fleet"
-	"marshal/internal/fleetclient"
 )
 
 // withFleetClient replaces the client built for the socket; tests inject it.
@@ -53,37 +50,8 @@ func Fleet(ctx context.Context, stdout io.Writer, socket string, opts ...Option)
 		return fmt.Errorf("launch: the daemon on %s runs the %s profile; the fleet screen needs the local daemon", socket, info.Profile)
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("launch: resolve the home directory: %w", err)
-	}
-
-	logger, closeLog, err := openClientLog(home)
-	if err != nil {
-		return err
-	}
-	defer closeLog()
-
-	// Decision 13: the fleet screen takes the user's [tui] config alone, with
-	// no project layer. A user config that cannot be read must not stop the
-	// screen from opening, so the defaults stand in.
-	cfg := config.Default()
-	if loaded, cerr := config.Load(config.LoadOptions{HomeDir: home, SkipProjectConfig: true}); cerr != nil {
-		logger.Warn("launch: reading the user config", "error", cerr)
-	} else {
-		cfg = loaded
-	}
-
-	// An injected client is the test's: it owns its lifetime, so it is
-	// neither started nor closed here.
-	client := runOpts.fleetClient
-	if client == nil {
-		built := fleetclient.New(fleetclient.Socket(socket))
-		built.Start(ctx)
-		defer func() { _ = built.Close() }()
-		client = built
-	}
-
-	result := runOpts.programRunner(ctx, fleet.New(client, fleet.WithTUIConfig(cfg.TUI)), stdout)
-	return result.Err
+	// The fleet client and the user's [tui] config belong to the loop: its
+	// first step builds them, and it closes the client it built when it
+	// returns (decision 7).
+	return runDaemon(ctx, stdout, &runOpts, daemonStep{fleet: true})
 }

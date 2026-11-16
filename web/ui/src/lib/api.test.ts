@@ -1,6 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { APIError, BudgetError, answerRun, errMessage, getCommitDraft, getRoster, getRun, listReviewComments, listRuns, postReviewComment, recentPrompts, resolveReviewComment, startRun, undoReroute, getGate, getLastRequest, getNode, getStack, getStepDiffs, listFiles, readFile, runGate, getAccess, patchAccess, setToken, confirmPlugin, confirmSkill, createWatch, deleteMemory, discardPlugin, discardSkill, getBudgets, getModels, getUsage, listMemory, listPlugins, listSkills, listWatches, overrideBudget, previewSkill, probeProvider, removePlugin, removeSkill, scanPlugin, setBudgets, setMemoryConfidence, setPresets, setProviderKey, setProviders, setRouting, spawnAgent, stopWatch, createWorkspace, diffWorkspace, getWorkspace, listBuilds, listWorkspaces, patchWorkspace, publishWorkspace, rotateWorkspaceCA, saveWorkspaceDraft, setWorkspacePool, startBuild, deleteWorkspace, getNetworkHosts, getNetworkRequests, getNetworkAgents, postNetworkDecision, getSecretsStatus, listSecrets, putSecret, deleteSecret, listCredentials, putCredential, deleteCredential, listRepos, registerRepo, removeRepo, getProjectSettings, putProjectSettings, getProjectHealth, getNetworkPending, listReviewDrafts, getReviewDraft, editReviewDraft, postReviewDraft, discardReviewDraft, sendDraftToAuthor, runReviewBot, listCIHistory, getCIHistory, createWebhookSecret, openTerminal, openWorkspaceShell, terminalInput, terminalResize, terminalRelease, closeTerminal, terminalEventsUrl, openPreview, listRecipes, getRecipe, saveRecipe, deleteRecipe, copyRecipe, runRecipe, listSchedules, saveSchedule, deleteSchedule, runSchedule, getNotifications, saveNotifications, testNotifications, createStatusLink, listStatusLinks, revokeStatusLink, memorySuggestions, promoteMemory, getVersionedProjectSettings, putVersionedProjectSettings } from './api'
 
+import {
+  convertWorkingDraft,
+  createWorkingDraft,
+  getWorkingDraft,
+  getWorkingDraftInstallation,
+  listWorkingDrafts,
+  removeWorkingDraft,
+  saveWorkingDraft,
+} from './api'
+import { WorkingDraftConflictError, emptyWorkingDraftContent, type WorkingDraft } from './working-drafts'
+import type { FactoryCreate, FactoryItem } from './factory'
+
 function reply(status: number, body?: unknown) {
   return vi.fn().mockResolvedValue({
     ok: status >= 200 && status < 300,
@@ -652,5 +664,164 @@ describe('versioned project settings API', () => {
     await putProjectSettings('/p', { intake: {} })
     expect(f.mock.calls[0][0]).toBe('/api/projects/settings?root=%2Fp')
     expect(f.mock.calls[1][1].headers['If-Match']).toBeUndefined()
+  })
+})
+
+describe('working drafts API', () => {
+  beforeEach(() => setToken('t'))
+  afterEach(() => vi.unstubAllGlobals())
+
+  const content = emptyWorkingDraftContent()
+  const draft: WorkingDraft = { id: 'd/1', projectRoot: '/p', version: 2, state: 'editing', content, updatedAt: '2026-01-01T00:00:00Z' }
+
+  it('creates, reads, saves, removes and converts through the draft routes', async () => {
+    const f = reply(200, { draft })
+    vi.stubGlobal('fetch', f)
+
+    const create = { projectRoot: '/p q', requestId: 'r1', content }
+    expect(await createWorkingDraft(create)).toEqual(draft)
+    expect(f.mock.calls[0][0]).toBe('/api/factory/working-drafts')
+    expect(f.mock.calls[0][1].method).toBe('POST')
+    expect(JSON.parse(f.mock.calls[0][1].body)).toEqual(create)
+
+    expect(await getWorkingDraft('d/1')).toEqual(draft)
+    expect(f.mock.calls[1][0]).toBe('/api/factory/working-drafts/d%2F1')
+    expect(f.mock.calls[1][1].method).toBe('GET')
+
+    const save = { requestId: 'r2', expectedVersion: 2, content }
+    expect(await saveWorkingDraft('d/1', save)).toEqual(draft)
+    expect(f.mock.calls[2][0]).toBe('/api/factory/working-drafts/d%2F1')
+    expect(f.mock.calls[2][1].method).toBe('PUT')
+    expect(JSON.parse(f.mock.calls[2][1].body)).toEqual(save)
+
+    const remove = { requestId: 'r3', expectedVersion: 3 }
+    expect(await removeWorkingDraft('d/1', remove)).toEqual(draft)
+    expect(f.mock.calls[3][0]).toBe('/api/factory/working-drafts/d%2F1')
+    expect(f.mock.calls[3][1].method).toBe('DELETE')
+    expect(JSON.parse(f.mock.calls[3][1].body)).toEqual(remove)
+
+    const convert = { requestId: 'r4', expectedVersion: 2, factoryRequest: {} as FactoryCreate }
+    expect(await convertWorkingDraft('d/1', convert)).toEqual({ draft })
+    expect(f.mock.calls[4][0]).toBe('/api/factory/working-drafts/d%2F1/convert')
+    expect(f.mock.calls[4][1].method).toBe('POST')
+    expect(JSON.parse(f.mock.calls[4][1].body)).toEqual(convert)
+  })
+
+  it('accepts a bare draft and either list envelope', async () => {
+    vi.stubGlobal('fetch', reply(200, draft))
+    expect(await getWorkingDraft('d1')).toEqual(draft)
+
+    const f = reply(200, { drafts: [draft] })
+    vi.stubGlobal('fetch', f)
+    expect(await listWorkingDrafts('/p q')).toEqual([draft])
+    expect(f.mock.calls[0][0]).toBe('/api/factory/working-drafts?projectRoot=%2Fp+q')
+    expect(f.mock.calls[0][1].method).toBe('GET')
+
+    vi.stubGlobal('fetch', reply(200, [draft]))
+    expect(await listWorkingDrafts('/p')).toEqual([draft])
+    vi.stubGlobal('fetch', reply(200, { drafts: null }))
+    expect(await listWorkingDrafts('/p')).toEqual([])
+  })
+
+  it('returns the converted factory item when the route sends one', async () => {
+    const item = { id: 'i1' } as FactoryItem
+    vi.stubGlobal('fetch', reply(200, { draft, item }))
+    const r = await convertWorkingDraft('d1', { requestId: 'r', expectedVersion: 1, factoryRequest: {} as FactoryCreate })
+    expect(r).toEqual({ draft, item })
+  })
+
+  it('reads the installation identity from the authenticated bridge', async () => {
+    const f = reply(200, { installationId: 'inst-9' })
+    vi.stubGlobal('fetch', f)
+    expect(await getWorkingDraftInstallation()).toBe('inst-9')
+    expect(f.mock.calls[0][0]).toBe('/api/factory/working-drafts/installation')
+    expect(f.mock.calls[0][1].method).toBe('GET')
+    // A body without one is an error: there is nothing safe to key records by.
+    vi.stubGlobal('fetch', reply(200, {}))
+    await expect(getWorkingDraftInstallation()).rejects.toBeInstanceOf(APIError)
+  })
+
+  it('reports a stale version as a conflict carrying the current draft', async () => {
+    vi.stubGlobal('fetch', reply(409, { error: 'stale version', draft }))
+    const stale = await saveWorkingDraft('d1', { requestId: 'r', expectedVersion: 1, content }).catch((e) => e)
+    expect(stale).toBeInstanceOf(WorkingDraftConflictError)
+    expect(stale.message).toBe('stale version')
+    expect(stale.current).toEqual(draft)
+
+    // A refusal that carries no draft still reports the conflict.
+    vi.stubGlobal('fetch', reply(409, { error: 'stale version' }))
+    const bare = await removeWorkingDraft('d1', { requestId: 'r', expectedVersion: 1 }).catch((e) => e)
+    expect(bare).toBeInstanceOf(WorkingDraftConflictError)
+    expect(bare.current).toBeNull()
+
+    // Everything else keeps its own shape.
+    vi.stubGlobal('fetch', reply(500, { error: 'boom' }))
+    const other = await saveWorkingDraft('d1', { requestId: 'r', expectedVersion: 1, content }).catch((e) => e)
+    expect(other).toBeInstanceOf(APIError)
+    expect(other).not.toBeInstanceOf(WorkingDraftConflictError)
+    expect(errMessage(other)).toBe('boom')
+  })
+})
+
+describe('MCP factory grant API', () => {
+  beforeEach(() => setToken('t'))
+  afterEach(() => vi.unstubAllGlobals())
+
+  const grant = (over: Partial<import('./api').MCPFactoryProjectGrant> = {}): import('./api').MCPFactoryProjectGrant => ({
+    projectId: 'p/1', read: true, createDraft: false, editDraft: false, answerQuestion: false, approveAndQueue: false, approvalAuthority: 'none', ...over,
+  })
+  const state = (version: string, g = grant()): import('./api').FactoryGrantState => ({ clientId: 'c 1', projectId: 'p/1', grant: g, version })
+
+  it('reads and writes one project-scoped grant, named by the opaque project id', async () => {
+    const { getFactoryGrant, putFactoryGrant } = await import('./api')
+    const read = state('v0')
+    const f = reply(200, read)
+    vi.stubGlobal('fetch', f)
+
+    expect(await getFactoryGrant('c 1', 'p/1')).toEqual(read)
+    expect(f.mock.calls[0][0]).toBe('/api/clients/c%201/factory-grants/p%2F1')
+    expect(f.mock.calls[0][1].method).toBe('GET')
+
+    // The write carries the whole grant and the version it was edited from.
+    await putFactoryGrant('c 1', 'p/1', read.grant, 'v0')
+    expect(f.mock.calls[1][0]).toBe('/api/clients/c%201/factory-grants/p%2F1')
+    expect(f.mock.calls[1][1].method).toBe('PUT')
+    expect(JSON.parse(f.mock.calls[1][1].body)).toEqual({ grant: read.grant, version: 'v0' })
+  })
+
+  it('reports the winning state on a 409 and leaves other failures alone', async () => {
+    const { FactoryGrantConflictError, putFactoryGrant } = await import('./api')
+    const winner = state('v2', grant({ approvalAuthority: 'user_directed' }))
+    const f = reply(409, winner)
+    vi.stubGlobal('fetch', f)
+
+    const conflict = await putFactoryGrant('c 1', 'p/1', grant(), 'v0').catch((e) => e)
+    expect(conflict).toBeInstanceOf(FactoryGrantConflictError)
+    expect(conflict).toBeInstanceOf(APIError)
+    // The refusal is the only request: the caller keeps its edit and decides
+    // for itself whether to re-read.
+    expect(f).toHaveBeenCalledTimes(1)
+    expect(conflict.state).toEqual(winner)
+
+    // A 400 keeps its own shape and message, so the reason reaches the screen.
+    vi.stubGlobal('fetch', reply(400, { error: 'approveAndQueue requires user_directed or standing authority' }))
+    const bad = await putFactoryGrant('c 1', 'p/1', grant({ approveAndQueue: true }), 'v0').catch((e) => e)
+    expect(bad).toBeInstanceOf(APIError)
+    expect(bad).not.toBeInstanceOf(FactoryGrantConflictError)
+    expect(errMessage(bad)).toBe('approveAndQueue requires user_directed or standing authority')
+
+    // A 409 without a state still reports the conflict, with nothing to show.
+    vi.stubGlobal('fetch', reply(409, { error: 'stale version' }))
+    const bare = await putFactoryGrant('c 1', 'p/1', grant(), 'v0').catch((e) => e)
+    expect(bare).toBeInstanceOf(FactoryGrantConflictError)
+    expect(bare.state).toBeNull()
+  })
+
+  it('treats a never-granted pair as no authority, not an error', async () => {
+    const { emptyFactoryGrant, getFactoryGrant } = await import('./api')
+    const zero = emptyFactoryGrant('p/1')
+    expect(zero).toEqual({ projectId: 'p/1', read: false, createDraft: false, editDraft: false, answerQuestion: false, approveAndQueue: false, approvalAuthority: 'none' })
+    vi.stubGlobal('fetch', reply(200, state('v0', zero)))
+    expect(await getFactoryGrant('c1', 'p/1')).toMatchObject({ version: 'v0', grant: zero })
   })
 })

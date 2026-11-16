@@ -3,7 +3,7 @@
   import Card from '../ui/Card.svelte'
   import Tag from '../ui/Tag.svelte'
   import { sortedFactoryHistory } from '../studio/model'
-  import type { FactoryEvent, FactoryItem } from '../factory'
+  import { provenanceLine, type FactoryEvent, type FactoryItem } from '../factory'
 
   /**
    * One work item's factory activity (design C5): every recorded event, oldest
@@ -24,9 +24,11 @@
   export interface ActivityTimelineProps {
     item: FactoryItem
     hidden?: boolean
+    /** Client names for provenance lines; a missing name falls back to the stable ID. */
+    clientNames?: Record<string, string>
   }
 
-  let { item, hidden = false }: ActivityTimelineProps = $props()
+  let { item, hidden = false, clientNames = {} }: ActivityTimelineProps = $props()
 
   const events = $derived(sortedFactoryHistory(item))
 
@@ -102,6 +104,7 @@
               <Tag role={roleOf(event)} />
             </div>
             <p class="whitespace-pre-wrap break-words">{event.message}</p>
+            {#if event.provenance}<p class="mt-1 break-words text-xs text-muted" data-testid="factory-provenance">{provenanceLine(event.provenance, clientNames[event.provenance.clientId])}</p>{/if}
           </li>
         {/each}
       </ol>

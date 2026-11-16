@@ -21,6 +21,7 @@
   import Factory from './views/Factory.svelte'
   import FactoryNew from './views/FactoryNew.svelte'
   import FactoryItem from './views/FactoryItem.svelte'
+  import WorkingDrafts from './views/WorkingDrafts.svelte'
   import ReviewBot from './views/automations/ReviewBot.svelte'
   import CIFixer from './views/automations/CIFixer.svelte'
   import Palette from './lib/Palette.svelte'
@@ -431,7 +432,16 @@
       </div>
     {:else if factoryRoute}
       <div class="h-full overflow-y-auto">
-        {#if factoryRoute.create}
+        {#if factoryRoute.drafts}
+          {#key `${factoryRoute.draftId ?? ''}|${factoryRoute.create ? 'new' : 'list'}`}
+            <WorkingDrafts
+              projectRoot={new URLSearchParams(hash.split('?')[1] ?? '').get('project') ?? ''}
+              draftId={factoryRoute.draftId ?? null}
+              newDraft={factoryRoute.create === true}
+              onNavigate={navigate}
+            />
+          {/key}
+        {:else if factoryRoute.create}
           <FactoryNew projectRoot={new URLSearchParams(hash.split('?')[1] ?? '').get('project') ?? ''} onNavigate={navigate} registerGuard={guard.register} upsert={factoryStore.upsert} />
         {:else if factoryRoute.itemId}
           {#key factoryRoute.itemId}<FactoryItem itemId={factoryRoute.itemId} route={factoryRoute} factory={$factory} agents={$fleet.agents} getItem={factoryStore.getItem} upsert={factoryStore.upsert} onRefresh={factoryStore.refresh} onNavigate={navigate} />{/key}

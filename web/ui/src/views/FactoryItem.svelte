@@ -11,7 +11,8 @@
   import ReviewView from '../lib/factory/ReviewView.svelte'
   import Button from '../lib/ui/Button.svelte'
   import AgentConversation from '../lib/session/AgentConversation.svelte'
-  import { APIError, commandFactoryItem, errMessage } from '../lib/api'
+  import { APIError, commandFactoryItem, errMessage, listClients } from '../lib/api'
+  import { provenanceLine } from '../lib/factory'
   import { formatChatRoute, formatFactoryRoute, parseFactoryRoute } from '../lib/routes'
   import type { DockTabParam } from '../lib/routes'
   import { defaultFactoryItemView } from '../lib/studio/model'
@@ -182,10 +183,26 @@
   let pending = $state<FactoryCommand | null>(null)
   let alive = true
   /*
+    Client names decorate provenance: a failed read leaves the stable IDs,
+    which are still accurate, so this never becomes a page error.
+  */
+  let clientNames = $state<Record<string, string>>({})
+  async function loadClientNames() {
+    try {
+      const list = await listClients()
+      const names: Record<string, string> = {}
+      for (const c of list) if (c.name) names[c.id] = c.name
+      clientNames = names
+    } catch {
+      // The stable IDs identify the client just as well.
+    }
+  }
+  /*
     The first read goes through the shell store's getItem, so an item the last
     list snapshot already carries costs no request.
   */
   onMount(() => {
+    void loadClientNames()
     void (async () => {
       try {
         const next = await getItem(itemId)
@@ -315,7 +332,7 @@
               {/each}
             </Card>
           {/if}
-          <ActivityTimeline {item} hidden={activityHidden} />
+          <ActivityTimeline {item} {clientNames} hidden={activityHidden} />
         </div>
         {#if conversationId}
           {#if conversationWorker}

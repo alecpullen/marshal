@@ -619,3 +619,169 @@ func TestFactoryRevisionIdempotentRequestReplay(t *testing.T) {
 		t.Fatalf("replayed proposals = %+v", got.Proposals)
 	}
 }
+
+// revisionItemWithProposal seeds one approved item carrying a single pending
+// proposal, written through the store so a test can then tamper with the record
+// the way a hand-edited journal, or a raw in-package caller, would.
+func revisionItemWithProposal(t *testing.T, store *FactoryStore, now time.Time) FactoryItem {
+	t.Helper()
+	created, err := store.Create(factoryReq(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved, err := store.Update(created.ID, "approve", created.Version, json.RawMessage(`{"kind":"approve"}`), func(dst *FactoryItem) error {
+		dst.Approvals = append(dst.Approvals, FactoryApproval{Revision: 1, Plan: dst.Draft.Plan, Spec: dst.Draft.Spec, PlanHash: FactoryPlanHash(dst.Draft.Plan, dst.Draft.Spec), Config: dst.Draft.Config, ApprovedAt: now})
+		dst.State = "queued"
+		return nil
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seeded, err := store.Update(approved.ID, "propose", approved.Version, json.RawMessage(`{"kind":"revision_propose"}`), func(dst *FactoryItem) error {
+		dst.Proposals = append(dst.Proposals, pendingProposal(*dst))
+		return nil
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return seeded
+}
+
+// TestFactoryRevisionStateMoveNeedsVersionStep checks the store, rather than
+// caller discipline, refuses a proposal whose state moved without its version
+// moving: otherwise two item versions could carry the same proposal version and
+// the ProposalVersion stale-read guard would admit a command written from the
+// older one.
+func TestFactoryRevisionStateMoveNeedsVersionStep(t *testing.T) {
+	now := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	store, err := OpenFactoryStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	item := revisionItemWithProposal(t, store, now)
+
+	if _, err := store.Update(item.ID, "tamper", item.Version, json.RawMessage(`{"kind":"tamper"}`), func(dst *FactoryItem) error {
+		dst.Proposals[0].Status = "rejected"
+		return nil
+	}, now); err == nil || !strings.Contains(err.Error(), "version step") {
+		t.Fatalf("a state move without a version step was accepted: %v", err)
+	}
+
+	// The same move with the version taken is the journal's normal shape.
+	moved, err := store.Update(item.ID, "retire", item.Version, json.RawMessage(`{"kind":"revision_reject"}`), func(dst *FactoryItem) error {
+		dst.Proposals[0].Status = "rejected"
+		dst.Proposals[0].Version++
+		return nil
+	}, now)
+	if err != nil {
+		t.Fatalf("a versioned state move was refused: %v", err)
+	}
+	if moved.Proposals[0].Version != item.Proposals[0].Version+1 {
+		t.Fatalf("proposal version = %d, want %d", moved.Proposals[0].Version, item.Proposals[0].Version+1)
+	}
+}
+
+// TestFactoryRevisionProposalHistoryImmutable checks the store refuses the three
+// ways a proposal list could be rewritten: dropping one, reordering them, and
+// naming the same proposal twice.
+func TestFactoryRevisionProposalHistoryImmutable(t *testing.T) {
+	now := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	store, err := OpenFactoryStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	item := revisionItemWithProposal(t, store, now)
+	// A second, already retired proposal, so the pair can be dropped or
+	// reordered. It is written through the store, so every later tampering is
+	// against a record the journal accepted.
+	two, err := store.Update(item.ID, "second", item.Version, json.RawMessage(`{"kind":"second"}`), func(dst *FactoryItem) error {
+		second := pendingProposal(*dst)
+		second.ID = factoryRevisionProposalID(dst.ID, "fixture-2")
+		second.Status = "rejected"
+		dst.Proposals = append(dst.Proposals, second)
+		return nil
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*FactoryItem)
+	}{
+		{"drop", func(dst *FactoryItem) { dst.Proposals = dst.Proposals[:1] }},
+		{"reorder", func(dst *FactoryItem) { dst.Proposals[0], dst.Proposals[1] = dst.Proposals[1], dst.Proposals[0] }},
+		{"duplicate", func(dst *FactoryItem) {
+			duplicate := dst.Proposals[1]
+			duplicate.ID = dst.Proposals[0].ID
+			dst.Proposals = append(dst.Proposals, duplicate)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := store.Update(two.ID, tc.name, two.Version, json.RawMessage(`{"kind":"`+tc.name+`"}`), func(dst *FactoryItem) error {
+				tc.mutate(dst)
+				return nil
+			}, now); err == nil {
+				t.Fatalf("the store accepted a proposal list rewrite: %s", tc.name)
+			}
+		})
+	}
+}
+
+// TestFactoryRevisionSecondUnresolvedProposalRejectedByStore checks the store's
+// own at-most-one-unresolved rule, not only the controller's precheck: a second
+// unresolved proposal appended by a raw caller is refused.
+func TestFactoryRevisionSecondUnresolvedProposalRejectedByStore(t *testing.T) {
+	now := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	store, err := OpenFactoryStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	item := revisionItemWithProposal(t, store, now)
+
+	if _, err := store.Update(item.ID, "second", item.Version, json.RawMessage(`{"kind":"second"}`), func(dst *FactoryItem) error {
+		second := pendingProposal(*dst)
+		second.ID = factoryRevisionProposalID(dst.ID, "fixture-2")
+		dst.Proposals = append(dst.Proposals, second)
+		return nil
+	}, now); err == nil || !strings.Contains(err.Error(), "multiple unresolved") {
+		t.Fatalf("a second unresolved proposal was stored: %v", err)
+	}
+}
+
+// TestFactoryRevisionProposalBaseMustMatchApproval checks the store binds a
+// proposal's base to the approval it names. Both sides are immutable, so a
+// record naming an approval that does not exist, or a hash that is not that
+// approval's, is corrupt rather than merely stale.
+func TestFactoryRevisionProposalBaseMustMatchApproval(t *testing.T) {
+	now := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name   string
+		want   string
+		mutate func(*FactoryRevisionProposal)
+	}{
+		{"wrong base hash", "base hash", func(p *FactoryRevisionProposal) { p.BaseHash = strings.Repeat("0", 64) }},
+		{"missing base revision", "approval that does not exist", func(p *FactoryRevisionProposal) { p.BaseRevision = 99 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, err := OpenFactoryStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			item := revisionItemWithProposal(t, store, now)
+			if _, err := store.Update(item.ID, "base", item.Version, json.RawMessage(`{"kind":"base"}`), func(dst *FactoryItem) error {
+				bad := pendingProposal(*dst)
+				bad.ID = factoryRevisionProposalID(dst.ID, "bad-base")
+				bad.Status = "rejected"
+				tc.mutate(&bad)
+				dst.Proposals = append(dst.Proposals, bad)
+				return nil
+			}, now); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("a proposal bound to %s was stored: %v", tc.name, err)
+			}
+		})
+	}
+}

@@ -864,9 +864,9 @@ func TestFactoryRevisionRoutineAuthorizationAudited(t *testing.T) {
 }
 
 // TestFactoryRevisionSupersedeAfterApprovalRejected checks an authorized
-// proposal is frozen until it activates or is decided: it cannot be superseded,
-// rejected, re-authorized or replaced by a conflicting retry, while stopping
-// the item stays available.
+// proposal is not re-authorized, is not replaced by a conflicting retry, and
+// does not stop the item being stopped, while it is explicitly retirable (see
+// TestFactoryRevisionAuthorizedProposalRetirable).
 func TestFactoryRevisionSupersedeAfterApprovalRejected(t *testing.T) {
 	f, fx := newRevisionEffectsFixture(t)
 	implementing := revisionImplementingItem(t, f)
@@ -881,23 +881,14 @@ func TestFactoryRevisionSupersedeAfterApprovalRejected(t *testing.T) {
 	}
 	p := authorized.Proposals[0]
 
-	for _, tc := range []struct {
-		name string
-		cmd  FactoryCommand
-	}{
-		{"supersede", FactoryCommand{RequestID: "supersede", Kind: "revision_supersede", Revision: revisionAt(authorized, 0)}},
-		{"reject", FactoryCommand{RequestID: "reject", Kind: "revision_reject", Revision: revisionAt(authorized, 0)}},
-		{"authorize again", func() FactoryCommand {
-			c := authorizeCommand(p, "amend", "wait_safe")
-			c.RequestID = "authorize-again"
-			return c
-		}()},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := f.command(tc.cmd); !errors.Is(err, ErrFactoryConflict) {
-				t.Fatalf("%s = %v, want a conflict", tc.name, err)
-			}
-		})
+	// Re-authorizing an already authorized proposal is still refused: one
+	// authorization is the whole of it.
+	if _, err := f.command(func() FactoryCommand {
+		c := authorizeCommand(p, "amend", "wait_safe")
+		c.RequestID = "authorize-again"
+		return c
+	}()); !errors.Is(err, ErrFactoryConflict) {
+		t.Fatalf("authorize again = %v, want a conflict", err)
 	}
 
 	// A retry that would replace the plan or move a route is refused while the
@@ -959,5 +950,48 @@ func TestFactoryRevisionSupersedeAfterApprovalRejected(t *testing.T) {
 	}
 	if _, err := activated.command(FactoryCommand{RequestID: "supersede-activated", Kind: "revision_supersede", Revision: revisionAt(final, 0)}); !errors.Is(err, ErrFactoryConflict) {
 		t.Fatalf("an activated proposal was superseded: %v", err)
+	}
+}
+
+// TestFactoryRevisionAuthorizedProposalRetirable checks an authorized revision
+// can still be retired on purpose. Authorization is not activation: an
+// amendment somebody decides against must not block the item for ever, and a
+// retired proposal never activates, so the approval it was written against is
+// the one that stays in force.
+func TestFactoryRevisionAuthorizedProposalRetirable(t *testing.T) {
+	for _, tc := range []struct{ kind, want string }{
+		{"revision_supersede", "superseded"},
+		{"revision_reject", "rejected"},
+	} {
+		t.Run(tc.want, func(t *testing.T) {
+			f := newRevisionFixture(t)
+			seeded := revisionImplementingItem(t, f)
+			if _, err := f.propose("rev-1", "plan v2\n", "spec v2"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.command(authorizeCommand(f.current().Proposals[0], "amend", "wait_safe")); err != nil {
+				t.Fatal(err)
+			}
+			authorized := f.current()
+			if authorized.Proposals[0].Status != "authorized" {
+				t.Fatalf("proposal = %+v", authorized.Proposals[0])
+			}
+			retired, err := f.command(FactoryCommand{RequestID: "retire", Kind: tc.kind, Revision: revisionAt(authorized, 0)})
+			if err != nil {
+				t.Fatalf("%s of an authorized proposal: %v", tc.kind, err)
+			}
+			if retired.Proposals[0].Status != tc.want {
+				t.Fatalf("proposal status = %q, want %q", retired.Proposals[0].Status, tc.want)
+			}
+			if retired.Proposals[0].Version != authorized.Proposals[0].Version+1 {
+				t.Fatalf("retirement did not take a version step: %+v", retired.Proposals[0])
+			}
+			if _, err := f.ctl.activateRevision(retired, 0); !errors.Is(err, ErrFactoryConflict) {
+				t.Fatalf("a %s proposal activated: %v", tc.want, err)
+			}
+			if got := f.current(); len(got.Approvals) != len(seeded.Approvals) {
+				t.Fatalf("a retirement appended an approval: %+v", got.Approvals)
+			}
+		})
 	}
 }

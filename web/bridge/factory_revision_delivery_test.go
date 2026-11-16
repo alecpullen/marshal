@@ -1149,6 +1149,96 @@ func TestFactoryRevisionWaitSafeNextPromptContainsNewPlan(t *testing.T) {
 	}
 }
 
+// TestFactoryRevisionTurnChangedBeforeSendIsUndelivered checks the one producer
+// of the undelivered state: the turn read again immediately before Send now no
+// longer matches the turn the intent was journalled against, so nothing is sent
+// and the attempt is recorded as a non-delivery.
+//
+// Undelivered is settled evidence, not a retry: it blocks activation, a later
+// delivery pass never resends the stale intent, and only a fresh explicit
+// delivery choice starts another attempt.
+func TestFactoryRevisionTurnChangedBeforeSendIsUndelivered(t *testing.T) {
+	f, fx, rt := newRevisionDeliveryFixture(t)
+	implementing := revisionImplementingItem(t, f)
+	fx.obs = revisionIdleObservation(implementing)
+	proposed, err := f.propose("rev-1", "plan v2\n", "spec v2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.command(authorizeCommand(proposed.Proposals[0], "amend", "interrupt")); err != nil {
+		t.Fatal(err)
+	}
+	// The intent is journalled against turn-1; the re-read before Send now names
+	// the turn that replaced it.
+	rt.pending = []RevisionSteeringState{
+		{TurnID: "turn-1", Active: true, Supported: true},
+		{TurnID: "turn-2", Active: true, Supported: true},
+	}
+	if err := f.ctl.deliverAuthorizedRevisions(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	stopped := f.current().Proposals[0].Delivery
+	if stopped.State != "undelivered" {
+		t.Fatalf("delivery state = %q, want undelivered", stopped.State)
+	}
+	// The intent named the turn it observed, so the journal says which turn the
+	// revision did not reach.
+	if stopped.TurnID != "turn-1" {
+		t.Fatalf("the delivery intent named turn %q, want turn-1", stopped.TurnID)
+	}
+	if calls := rt.steerCalls(); len(calls) != 0 {
+		t.Fatalf("an undelivered revision was sent anyway: %+v", calls)
+	}
+
+	// Nothing was delivered, so the old approval stays active: activation is
+	// blocked while undelivered stands, even with a fully idle observation.
+	fx.obs = revisionIdleObservation(f.current())
+	if err := f.ctl.activateRevisionAtSafeBoundary(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.current(); len(got.Approvals) != 1 {
+		t.Fatalf("an undelivered revision activated: %+v", got.Approvals)
+	}
+
+	// A settled non-delivery is not retried: another pass sends nothing.
+	if err := f.ctl.deliverAuthorizedRevisions(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls := rt.steerCalls(); len(calls) != 0 {
+		t.Fatalf("the settled attempt was dispatched again: %+v", calls)
+	}
+	if got := f.current().Proposals[0].Delivery.State; got != "undelivered" {
+		t.Fatalf("the settled attempt moved to %q without evidence", got)
+	}
+
+	// Only a fresh explicit choice clears it, and the re-armed attempt is what
+	// sends.
+	p := f.current().Proposals[0]
+	chosen, err := f.command(FactoryCommand{
+		RequestID: "choose-again", Kind: "revision_delivery_choice",
+		Revision: &FactoryRevisionCommand{
+			ProposalID: p.ID, ProposalVersion: p.Version,
+			CandidateHash: p.CandidateHash, Strategy: "interrupt",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := chosen.Proposals[0].Delivery; got == nil || got.State != "pending" {
+		t.Fatalf("the fresh choice did not clear the non-delivery: %+v", chosen.Proposals[0])
+	}
+	rt.pending = nil
+	if err := f.ctl.deliverAuthorizedRevisions(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls := rt.steerCalls(); len(calls) != 1 {
+		t.Fatalf("Send now calls after the fresh choice = %d, want exactly one", len(calls))
+	}
+	if got := f.current().Proposals[0].Delivery.State; got != "accepted" {
+		t.Fatalf("delivery state after the fresh attempt = %q, want accepted", got)
+	}
+}
+
 // TestFactoryRevisionDirectSteeringRemainsAvailable checks the existing queued
 // steer is untouched and that Send now stays a separate, explicit request.
 func TestFactoryRevisionDirectSteeringRemainsAvailable(t *testing.T) {

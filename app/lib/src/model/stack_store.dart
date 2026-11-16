@@ -274,7 +274,11 @@ class StackStore extends ChangeNotifier {
       case StackStatus.unsupported:
         return;
       case StackStatus.error:
-        // A retry is already due while in error; patches do not each fetch.
+        // Nothing is held and there is no retry timer: a patch cannot be
+        // applied to anything. What asks again is the next telemetry update,
+        // a reconnect or a stream gap, or the screen's Try again — not this
+        // patch, which would fetch once per patch for as long as the route
+        // kept failing.
         return;
       case StackStatus.loading:
         // The snapshot in flight may or may not include this patch. Whatever

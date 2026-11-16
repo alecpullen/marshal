@@ -194,9 +194,42 @@ func pruneStaleToolOutputs(wire []schema.ChatMessage, minSize int) ([]schema.Cha
 			ToolCallID: wire[t.msgIdx].ToolCallID,
 			Content:    formatPruneStub(t.tool, t.path, t.content),
 		}
+		// A superseded output's images go with its content: the stub is
+		// text only, so nothing downstream resolves bytes for it.
+		out[t.msgIdx].Images = nil
 		pruned++
 	}
 	return out, pruned
+}
+
+// shedImages drops images oldest-first until the estimated prompt fits
+// budget. It runs only where pruning already runs — after the prompt has
+// overflowed — so the cached prefix is never rewritten on the happy path.
+// Tool results shed before user messages: the user's own screenshots are the
+// thing they asked about.
+func shedImages(wire []schema.ChatMessage, budget int) ([]schema.ChatMessage, int) {
+	if estimateTokens(wire) <= budget {
+		return wire, 0
+	}
+	out := append([]schema.ChatMessage(nil), wire...)
+	shed := 0
+	for pass := 0; pass < 2 && estimateTokens(out) > budget; pass++ {
+		for i := range out {
+			if len(out[i].Images) == 0 {
+				continue
+			}
+			if pass == 0 && out[i].Role != schema.RoleTool {
+				continue
+			}
+			out[i].Images = nil
+			out[i].Content += "\n[image omitted to fit context]"
+			shed++
+			if estimateTokens(out) <= budget {
+				break
+			}
+		}
+	}
+	return out, shed
 }
 
 // formatPruneStub builds the visible replacement string. Test pins the

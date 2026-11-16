@@ -1606,20 +1606,25 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				// file. Pruning before summarizing is cheaper, preserves the
 				// most recent copy, and often drops us back below the
 				// threshold without needing the LLM at all.
-				if prunedMsgs, n := pruneStaleToolOutputs(messages, pruneMinSizeDefault); n > 0 && r.calibratedEstimate(r.withWorkingState(prunedMsgs)) <= turnThreshold {
-					messages = prunedMsgs
-					r.State.Logger().Info("context pruning recovered window", "pruned_outputs", n)
-					// Pruning drops stale tool output to stay under the
-					// budget. Say so: dropped context that leaves no trace
-					// reads to the user as the model losing track.
-					r.State.AddMessage(session.RoleSystem,
-						fmt.Sprintf("Pruned %d stale tool result(s) to stay within the context budget.", n),
-						session.ContentTypeCompaction)
-					continue
-				} else if n > 0 {
+				if prunedMsgs, n := pruneStaleToolOutputs(messages, pruneMinSizeDefault); n > 0 {
+					// Images cost far more than the summary line that
+					// stands in for them, so shed them here too — only ever
+					// on this side of the overflow gate.
+					shedMsgs, shed := shedImages(prunedMsgs, turnThreshold)
+					if r.calibratedEstimate(r.withWorkingState(shedMsgs)) <= turnThreshold {
+						messages = shedMsgs
+						r.State.Logger().Info("context pruning recovered window", "pruned_outputs", n, "shed_images", shed)
+						// Pruning drops stale tool output to stay under the
+						// budget. Say so: dropped context that leaves no trace
+						// reads to the user as the model losing track.
+						r.State.AddMessage(session.RoleSystem,
+							fmt.Sprintf("Pruned %d stale tool result(s) to stay within the context budget.", n),
+							session.ContentTypeCompaction)
+						continue
+					}
 					// Pruning helped but not enough — keep the pruned wire
 					// and proceed to compaction. The freshest reads survive.
-					messages = prunedMsgs
+					messages = shedMsgs
 				}
 
 				// T13: unified intra-turn compaction — rollover when enabled,
@@ -1664,7 +1669,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				// Prune first: compaction resends the transcript, so an
 				// oversize wire must shrink before summarisation can succeed.
 				if prunedMsgs, n := pruneStaleToolOutputs(messages, pruneMinSizeDefault); n > 0 {
-					messages = prunedMsgs
+					// The hard prune is already past the overflow gate, so
+					// shedding applies unconditionally here.
+					messages, _ = shedImages(prunedMsgs, turnThreshold)
 					if r.calibratedEstimate(r.withWorkingState(messages)) <= turnThreshold {
 						r.State.AddMessage(session.RoleSystem,
 							fmt.Sprintf("Pruned %d stale tool result(s) after the provider rejected the prompt as too long.", n),

@@ -160,6 +160,10 @@ func TestTwoSourceBuildsWarnOfSkew(t *testing.T) {
 		wantWarn      bool
 	}{
 		{"different commits", "dev+bbbbbbbbbbbb", "dev+aaaaaaaaaaaa", true},
+		// The same commit is the same build: dev+<commit> carries one, so it
+		// is compared and found equal — skew needs a difference, not merely
+		// two source builds.
+		{"same commit", "dev+aaaaaaaaaaaa", "dev+aaaaaaaaaaaa", false},
 		{"plain dev bridge", "dev", "dev+aaaaaaaaaaaa", false},
 		{"plain dev agent", "dev+bbbbbbbbbbbb", "dev", false},
 		{"both plain dev", "dev", "dev", false},

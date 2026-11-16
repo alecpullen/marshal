@@ -5,13 +5,13 @@ import (
 	"testing"
 )
 
-// stubBuildInfo makes readBuildInfo return info, ok for the duration of the
+// stubBuildInfo makes ReadBuildInfo return info, ok for the duration of the
 // test, and restores the real reader afterwards.
 func stubBuildInfo(t *testing.T, info *debug.BuildInfo, ok bool) {
 	t.Helper()
-	previous := readBuildInfo
-	t.Cleanup(func() { readBuildInfo = previous })
-	readBuildInfo = func() (*debug.BuildInfo, bool) { return info, ok }
+	previous := ReadBuildInfo
+	t.Cleanup(func() { ReadBuildInfo = previous })
+	ReadBuildInfo = func() (*debug.BuildInfo, bool) { return info, ok }
 }
 
 // settings builds a BuildInfo from alternating key/value pairs.
@@ -61,6 +61,22 @@ func TestAModifiedTreeIsDirty(t *testing.T) {
 	), true)
 
 	if got, want := Version(""), "dev+0123456789ab+dirty"; got != want {
+		t.Fatalf("Version(\"\") = %q, want %q", got, want)
+	}
+}
+
+// TestACleanTreeIsNotDirty pins the other half of the +dirty rule: Go stamps
+// "false" for a clean tree, and only the exact value "true" may add +dirty.
+// Without this case, a rule that appended +dirty for any non-empty
+// vcs.modified would pass every other test and mark every clean checkout
+// dirty.
+func TestACleanTreeIsNotDirty(t *testing.T) {
+	stubBuildInfo(t, settings(
+		"vcs.revision", "0123456789abcdef0123456789abcdef01234567",
+		"vcs.modified", "false",
+	), true)
+
+	if got, want := Version(""), "dev+0123456789ab"; got != want {
 		t.Fatalf("Version(\"\") = %q, want %q", got, want)
 	}
 }

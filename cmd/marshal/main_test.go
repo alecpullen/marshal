@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"testing"
 
@@ -530,30 +531,82 @@ func TestEveryModeSetsTheAgentVersion(t *testing.T) {
 
 // TestTheUserAgentCarriesTheVersion pins decision 2's User-Agent half: it
 // always names this build and its version, so a source build names its commit
-// there too instead of the package's marshal/dev default.
+// there too instead of the package's marshal/dev default. The expected values
+// are literals, not buildinfo.Version's answer, so a regression in the rule
+// fails here as well as in its own package.
 func TestTheUserAgentCarriesTheVersion(t *testing.T) {
-	oldVersion, oldUserAgent := version, provider.UserAgent
-	t.Cleanup(func() { version, provider.UserAgent = oldVersion, oldUserAgent })
+	oldVersion, oldAgent, oldUserAgent := version, acp.AgentVersion, provider.UserAgent
+	oldRead := buildinfo.ReadBuildInfo
+	t.Cleanup(func() {
+		version, acp.AgentVersion, provider.UserAgent = oldVersion, oldAgent, oldUserAgent
+		buildinfo.ReadBuildInfo = oldRead
+	})
 
 	for _, tc := range []struct {
-		name  string
-		stamp string
+		name      string
+		stamp     string
+		read      func() (*debug.BuildInfo, bool)
+		wantUA    string
+		wantAgent string
 	}{
-		{name: "stamped", stamp: "1.2.3-alpha"},
-		{name: "unstamped", stamp: ""},
+		{
+			name:      "stamped",
+			stamp:     "1.2.3-alpha",
+			wantUA:    "marshal/1.2.3-alpha",
+			wantAgent: "1.2.3-alpha",
+		},
+		{
+			name:  "a source build names its commit",
+			stamp: "",
+			read: func() (*debug.BuildInfo, bool) {
+				return &debug.BuildInfo{Settings: []debug.BuildSetting{
+					{Key: "vcs.revision", Value: "0123456789abcdef0123456789abcdef01234567"},
+				}}, true
+			},
+			wantUA:    "marshal/dev+0123456789ab",
+			wantAgent: "dev+0123456789ab",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			version = tc.stamp
-			// A value run must overwrite, so a run that never set it fails.
+			if tc.read != nil {
+				buildinfo.ReadBuildInfo = tc.read
+			} else {
+				buildinfo.ReadBuildInfo = oldRead
+			}
+			// Values run must overwrite, so a run that never set them fails.
 			provider.UserAgent = "sentinel"
+			acp.AgentVersion = ""
 			if err := run(context.Background(), []string{"--version"}, strings.NewReader(""), io.Discard, io.Discard); err != nil {
 				t.Fatalf("run(--version): %v", err)
 			}
-			want := "marshal/" + buildinfo.Version(tc.stamp)
-			if provider.UserAgent != want {
-				t.Fatalf("UserAgent = %q, want %q", provider.UserAgent, want)
+			if provider.UserAgent != tc.wantUA {
+				t.Fatalf("UserAgent = %q, want %q", provider.UserAgent, tc.wantUA)
+			}
+			if acp.AgentVersion != tc.wantAgent {
+				t.Fatalf("acp.AgentVersion = %q, want %q", acp.AgentVersion, tc.wantAgent)
 			}
 		})
+	}
+}
+
+// TestDaemonVersionResolvesASourceBuild pins task 2's daemonVersion step: it
+// is buildinfo.Version(version), so `marshal daemon status` names the commit
+// this marshal was built from rather than falling back to plain dev while the
+// daemon it talks to reports dev+<commit>.
+func TestDaemonVersionResolvesASourceBuild(t *testing.T) {
+	oldVersion, oldRead := version, buildinfo.ReadBuildInfo
+	t.Cleanup(func() { version, buildinfo.ReadBuildInfo = oldVersion, oldRead })
+
+	version = ""
+	buildinfo.ReadBuildInfo = func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{Settings: []debug.BuildSetting{
+			{Key: "vcs.revision", Value: "0123456789abcdef0123456789abcdef01234567"},
+		}}, true
+	}
+
+	if got, want := daemonVersion(), "dev+0123456789ab"; got != want {
+		t.Fatalf("daemonVersion() = %q, want %q", got, want)
 	}
 }
 

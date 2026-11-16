@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -334,6 +335,26 @@ func TestWebbridgeReportsItsVersion(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "webbridge") {
 		t.Fatalf("--version output does not contain 'webbridge': %q", out.String())
+	}
+}
+
+// TestDaemonVersionResolvesASourceBuild pins task 3's first step: the
+// bridge's own version — which GET /api/daemon reports and the fleet carries
+// as its buildVersion — is buildinfo.Version(version), so a source build
+// names its commit instead of falling back to plain dev (decision 7).
+func TestDaemonVersionResolvesASourceBuild(t *testing.T) {
+	oldVersion, oldRead := version, buildinfo.ReadBuildInfo
+	t.Cleanup(func() { version, buildinfo.ReadBuildInfo = oldVersion, oldRead })
+
+	version = ""
+	buildinfo.ReadBuildInfo = func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{Settings: []debug.BuildSetting{
+			{Key: "vcs.revision", Value: "0123456789abcdef0123456789abcdef01234567"},
+		}}, true
+	}
+
+	if got, want := daemonVersion(), "dev+0123456789ab"; got != want {
+		t.Fatalf("daemonVersion() = %q, want %q", got, want)
 	}
 }
 

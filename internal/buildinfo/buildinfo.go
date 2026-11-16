@@ -7,8 +7,11 @@ import (
 	"strings"
 )
 
-// readBuildInfo is debug.ReadBuildInfo; tests replace it.
-var readBuildInfo func() (*debug.BuildInfo, bool) = debug.ReadBuildInfo
+// ReadBuildInfo reads the running binary's build info. It is
+// debug.ReadBuildInfo; this package's tests replace it to feed the rule a
+// build's VCS settings, and a command's tests replace it to pin the version
+// that binary reports (a test binary carries none of its own).
+var ReadBuildInfo func() (*debug.BuildInfo, bool) = debug.ReadBuildInfo
 
 // revisionLength is how many hex characters of vcs.revision a source build
 // names.
@@ -22,7 +25,7 @@ func Version(stamped string) string {
 		return stamped
 	}
 
-	info, ok := readBuildInfo()
+	info, ok := ReadBuildInfo()
 	if !ok || info == nil {
 		return "dev"
 	}

@@ -576,7 +576,7 @@ no VCS information at all. A revision shorter than 12 characters is used whole.
 `IsSource` names a source build — `dev`, or `dev+` followed by anything — which
 is the question both binaries and the bridge ask before treating a version as
 something worth pinning an image to. The build info is read through the
-package-level `readBuildInfo`, which the tests replace: a test binary carries no
+package-level `ReadBuildInfo`, which the tests replace: a test binary carries no
 VCS settings, so the rule is proven by feeding it settings, not by building.
 
 `marshal` computes `buildinfo.Version(version)` once, at the top of `run`
@@ -613,7 +613,7 @@ was not touched.
   before this plan ran — the one file both touch, `cmd/marshal/main.go`, is
   exactly where the new `--viewers` code landed. Every symbol the plan names
   still exists and its description still holds; only line numbers moved.
-  `daemonVersion` is at `cmd/marshal/daemon.go:561`, as the plan already said.
+  `daemonVersion` is at `cmd/marshal/daemon.go:563`, as the plan already said.
 - **`""` beside `SourceBuild`.** `defaultAgentImageFor` keeps returning
   `:latest` for the empty version as well as for a source build: an unstamped
   `webbridge` with no VCS information has no tag to pin to either, and
@@ -623,10 +623,11 @@ was not touched.
   12 characters is used whole" is a second subtest inside
   `TestASourceBuildNamesItsCommit` rather than an unlisted test function.
 
-**The tests.** Task 1's six tests replace `readBuildInfo` through one helper
+**The tests.** Task 1's seven tests replace `ReadBuildInfo` through one helper
 and cover a stamped version winning, a 40-character revision cut to 12, the
-short one used whole, `+dirty`, no VCS info, no build info, and the six-version
-`IsSource` table. Task 2's `TestEveryModeSetsTheAgentVersion` replaces the app,
+short one used whole, `+dirty`, a clean tree (`vcs.modified` stamped `"false"`)
+staying clean, no VCS info, no build info, and the six-version `IsSource`
+table. Task 2's `TestEveryModeSetsTheAgentVersion` replaces the app,
 attach and fleet runners, clears `acp.AgentVersion` before each dispatch so no
 mode can pass by inheriting another's value, and restores the runners, `version`,
 `acp.AgentVersion` and `provider.UserAgent` in `t.Cleanup`;
@@ -638,9 +639,29 @@ the expected answer for each, so a copy that drifts the same way on both sides
 cannot pass; `TestDefaultImageTracksTheBuildVersion` gains the
 `dev+abc123def456` and `dev+abc123def456+dirty` cases; and
 `TestTwoSourceBuildsWarnOfSkew`, beside
-`TestVersionMismatchWarnsButDoesNotRefuse`, covers different commits warning and
-a plain `dev` on either side staying quiet, each case on a fresh fleet.
-`TestWebbridgeReportsItsVersion` keeps passing.
+`TestVersionMismatchWarnsButDoesNotRefuse`, covers different commits warning,
+the same commit staying quiet, and a plain `dev` on either side staying quiet,
+each case on a fresh fleet. `TestWebbridgeReportsItsVersion` keeps passing.
+
+**The review pass.** Three reviewers read the branch — code, tests and the
+record. Six findings were actioned: `TestACleanTreeIsNotDirty` pins the
+`vcs.modified` `"false"` half (without it, a rule that appended `+dirty` for
+any non-empty `vcs.modified` would mark every clean checkout dirty and pass);
+`TestTheUserAgentCarriesTheVersion` restores `acp.AgentVersion` and asserts
+literal expectations, gaining the source-build User-Agent and agent version;
+`TestTwoSourceBuildsWarnOfSkew` gained the same-commit cell; `daemonVersion` in
+both commands is pinned by `TestDaemonVersionResolvesASourceBuild`, which feeds
+`buildinfo.ReadBuildInfo` a revision, so neither can fall back to plain `dev`
+unnoticed — that is why the reader is exported rather than package-private.
+Three stale comments (`buildVersion`, `versionSkew`, `provider.UserAgent`) and
+the slipped `daemonVersion` anchor were corrected. Two findings were not
+actioned: `buildinfo.Version(version)` is called at each site that renders it
+rather than read from one variable, because it is a pure function of the
+linker stamp and build info, and threading a package-level resolved value
+through `run` would add test-order dependence for no behavioural difference;
+and `defaultAgentImageFor` still builds a tag from any non-source version,
+including a hypothetical one containing `+`, which is pre-existing behaviour
+this plan deliberately did not widen.
 
 Both mutation checks failed as the plan said they must. Setting
 `acp.AgentVersion` in the `acp` branch only made all three

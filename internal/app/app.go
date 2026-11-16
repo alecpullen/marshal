@@ -1159,7 +1159,27 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 		}
 	}
+	// Learned vision facts, loaded once for this runtime and shared: the
+	// router reads them to take images off a route, the runner writes them
+	// when a provider rejects image input. One copy, so a rejection learned
+	// this turn is the same fact the next turn's route resolves against.
+	visionOverrides := modelcache.CapabilityOverrides{Rejections: map[string]modelcache.Rejection{}}
+	if dataDir != "" {
+		visionOverrides = modelcache.LoadOverrides(dataDir)
+	}
 	router := routing.NewStaticRouter(cfg.RoutingConfig())
+	// No probe: no model-list vision signal exists yet, so the ladder falls
+	// through to the name heuristic and then to attempt.
+	router.Vision = routing.VisionFacts{
+		Rejected: func(preset routing.ModelPreset) bool {
+			pc, ok := cfg.Providers[preset.Provider]
+			if !ok {
+				return false
+			}
+			return visionOverrides.VisionRejected(preset.Provider, preset.Model,
+				modelcache.HashProvider(pc), modelcache.DefaultCapabilityTTL, time.Now())
+		},
+	}
 	parentPricing := pricing.Lookup(route.Preset, state.Logger())
 	// One write lock shared by the parent runner and every agent.run child:
 	// background children outlive the spawning turn, so parent and child
@@ -1236,6 +1256,25 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	recorder := metricsRecorder(database, projectID, state.SessionID(), state.Logger())
 	runner.MetricsObserver = recorder
 	runner.Pricing = parentPricing
+
+	// The same override copy the router above reads: a learned rejection
+	// recorded here is what the next turn's route resolution sees.
+	runner.VisionOverrides = &visionOverrides
+	if dataDir != "" {
+		runner.SaveVisionOverrides = func(o modelcache.CapabilityOverrides) error {
+			return modelcache.SaveOverrides(dataDir, o)
+		}
+	}
+	// HashProvider on both sides: the runner's write must match the router's
+	// read, or a learned rejection would never expire with a repointed
+	// endpoint and never apply to one that did not change.
+	runner.ProviderConfigHash = func(providerName string) string {
+		pc, ok := cfg.Providers[providerName]
+		if !ok {
+			return ""
+		}
+		return modelcache.HashProvider(pc)
+	}
 
 	runner.ModelProbe = modelProbe
 

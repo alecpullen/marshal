@@ -17,6 +17,7 @@ import (
 	"marshal/internal/interaction"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
+	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/skills"
@@ -325,6 +326,19 @@ type Runner struct {
 	// Nil means "no probe available" — resolution falls back to Marshal's
 	// documented defaults, and nothing clamps.
 	ModelProbe func(provider, model string) ModelProbe
+
+	// VisionOverrides is the shared record of which provider/model pairs
+	// refused image input. The router reads it to take images off a route;
+	// this runner writes it when a rejection is observed. Both sides hold
+	// the same copy, loaded once where the runtime is built.
+	VisionOverrides *modelcache.CapabilityOverrides
+	// SaveVisionOverrides persists VisionOverrides after a learned
+	// rejection. Nil (tests, headless paths) means "learn without saving".
+	SaveVisionOverrides func(modelcache.CapabilityOverrides) error
+	// ProviderConfigHash fingerprints a provider's configuration for the
+	// rejection record. Nil records "": a repointed endpoint then keeps
+	// the learned rejection, which is the harmless direction.
+	ProviderConfigHash func(providerName string) string
 
 	// clampNoticeKey identifies the clamp currently bannered, so a changed
 	// route or a different clamp re-notices while an unchanged clamp does not
@@ -1260,8 +1274,11 @@ func (r *Runner) RunTaskWithImages(ctx context.Context, goal string, images []sc
 	phases.end()
 	// Images are refused here, where the route is known, not in the client:
 	// the client has no router, and the refusal must name the model. An
-	// explicit vision = "on" is exempt — the user's word is final.
-	if len(images) > 0 && !route.Vision && !route.VisionForced {
+	// explicit vision = "on" is exempt — the user's word is final — and so
+	// is this session's send-anyway answer for the same model: the user has
+	// already been told the model looks blind and chose to try anyway.
+	if len(images) > 0 && !route.Vision && !route.VisionForced &&
+		!r.State.VisionForced(route.Preset.Provider, route.Preset.Model) {
 		return nil, &schema.VisionError{
 			Model:  route.Preset.Model,
 			Reason: schema.VisionReasonPresetOff,
@@ -1298,6 +1315,9 @@ func (r *Runner) RunTaskWithImages(ctx context.Context, goal string, images []sc
 	if r.TemperatureOverride != nil {
 		r.turnRequestOptions.temperature = r.TemperatureOverride
 	}
+	// An explicit vision = "on" makes the provider's own refusal the answer:
+	// the retry-without-images path is what would hide it.
+	r.turnRequestOptions.visionForced = route.VisionForced
 	defer func() {
 		r.turnRequestOptions = turnRequestOptions{}
 		r.semTracker = nil

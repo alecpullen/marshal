@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"marshal/internal/acp/service"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/db"
@@ -157,6 +158,9 @@ type TurnManagerConfig struct {
 	// Marshal reports whether the connection's client declared the marshal
 	// capability. Nil reports false.
 	Marshal func() bool
+	// Service resolves a session's service, for the follower and for a
+	// cancel that reaches a followed run. Nil disables both.
+	Service func(sessionID string) (*service.Session, bool)
 }
 
 // Turn-stop causes. An explicit cancellation is a request to stop the
@@ -271,6 +275,16 @@ type TurnManager struct {
 	childMu        sync.Mutex
 	childApprovals map[string]*childApprovals
 
+	// followMu guards followers, the per-session run followers this
+	// connection started (P5): each reports its session's service runs to
+	// this connection, started before their first event and ended after
+	// their last.
+	followMu  sync.Mutex
+	followers map[string]*runFollower
+	// service resolves a session's service, for the follower and for a
+	// cancel that reaches a followed run. Nil disables both.
+	service func(sessionID string) (*service.Session, bool)
+
 	// cancelTimeout overrides cancelWait for testing; zero means use the
 	// default const. Access is safe without a mutex because it is set
 	// only during construction and read only in CancelAndWait.
@@ -305,6 +319,8 @@ func NewTurnManager(cfg TurnManagerConfig) *TurnManager {
 		runHashes:       map[string]uint64{},
 		lastSwarm:       map[string]session.SwarmProgress{},
 		childApprovals:  map[string]*childApprovals{},
+		followers:       map[string]*runFollower{},
+		service:         cfg.Service,
 		clientBusy:      map[string]bool{},
 		busySet:         map[string]bool{},
 	}
@@ -1692,14 +1708,25 @@ func (m *TurnManager) finishTurn(
 	slot.settled.Store(true)
 	if rt.State != nil {
 		m.flushStack(sessionID, rt.State, false)
-		if notifyErr := m.notify("session/update", SessionUpdateParams{
-			SessionID: sessionID,
-			Update:    m.buildTelemetry(sessionID, rt.State, rt.DB, rt.ProjectID),
-		}); notifyErr != nil {
-			slog.Default().Warn("acp: session_telemetry notify failed", "session", sessionID, "err", notifyErr)
-		}
+		m.sendTelemetry(sessionID, rt)
 	}
 	return result, err
+}
+
+// sendTelemetry sends the session_telemetry notification built from rt's
+// state. finishTurn and a followed run's end both fire it, so a client that
+// follows a run sees the same settled telemetry a turn's client does. A notify
+// failure is logged, never surfaced: the work it describes is already done.
+func (m *TurnManager) sendTelemetry(sessionID string, rt *TurnRuntime) {
+	if rt == nil || rt.State == nil {
+		return
+	}
+	if notifyErr := m.notify("session/update", SessionUpdateParams{
+		SessionID: sessionID,
+		Update:    m.buildTelemetry(sessionID, rt.State, rt.DB, rt.ProjectID),
+	}); notifyErr != nil {
+		slog.Default().Warn("acp: session_telemetry notify failed", "session", sessionID, "err", notifyErr)
+	}
 }
 
 // SDDAnswerParams is the JSON-RPC body for session/sdd_answer.
@@ -2213,6 +2240,19 @@ func (m *TurnManager) Cancel(ctx context.Context, params json.RawMessage) (any, 
 		m.stopTurnWork(slot, cancelCause)
 		slot.clientCancelled.Store(true)
 		slot.cancel()
+		return nil, nil
+	}
+
+	// With no turn of its own, this connection's cancel reaches the run it
+	// follows: the session's service owns that run, so the service stops it
+	// with the same cause an explicit cancel always records.
+	if f := m.followerFor(p.SessionID); f != nil {
+		if svc, following := f.followRun(); following && svc != nil {
+			if err := svc.Stop(ctx, cancelCause); err != nil {
+				slog.Default().Warn("acp: followed run's stop was not accepted",
+					"session", p.SessionID, "error", err, "cause", cancelCause)
+			}
+		}
 	}
 	return nil, nil
 }

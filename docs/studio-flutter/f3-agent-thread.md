@@ -14,6 +14,28 @@ Read first: [design.md](design.md) §2, [design-system.md](design-system.md),
 **Before starting.** F2 has landed. Re-read the files above at the current
 `main`.
 
+## What F0 found
+
+From [findings/transcript-selection.md](findings/transcript-selection.md):
+
+- Flutter's `SelectionArea` over a lazily built list cannot select rows that
+  are not built, restarts a selection after a jump, and threw inside the
+  framework on select-all after scrolling away. It is not used for the
+  transcript.
+- Decision 5 is therefore settled: selection is **model-backed**. Anchors
+  are a node id and an offset in `model/`; the list draws highlight spans
+  and copies from the plain-text projection. The spike proved this for
+  plain-text rows on macOS with rows arriving.
+- This adds scope the rest of this document does not list: word and line
+  click, shift-extend, the context menu, accessibility, and selection
+  through rich text and tool rows. Plan a pull request for it between "The
+  thread screen" and "Composer and asks".
+- Selection was not exercised in a browser. Do that first: the web is half
+  the product.
+- Geist has no glyphs for ⌘ ⌥ ⏎ ✓ ✗ ▸ ▾ ⋯. Bundle a symbol fallback font in
+  this phase, by the design system's §10, before any transcript text needs
+  one. The web build must still fetch nothing from another host.
+
 ## Context
 
 A session's transcript is not assembled by the client. The agent builds a

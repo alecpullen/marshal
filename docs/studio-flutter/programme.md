@@ -109,6 +109,21 @@ before it, and opens with what to re-read before starting.
     the three widths in the design. Native iOS and Android builds are a
     follow-on after F8.
 
+## Raised by F0
+
+- **Decision 6 conflicts with the boundary rule.** Stores were to be
+  `ChangeNotifier`s, but that class is in Flutter and `model/` may not
+  import Flutter. Undecided. Recommended: allow `model/` to import
+  `package:flutter/foundation.dart` and nothing else from Flutter, and
+  change the boundary test to say so.
+- **Goldens are pinned to macOS**, where they were made. CI runs on Linux
+  and skips the pixel comparison there. Undecided: regenerate them on Linux,
+  or add a macOS step to CI.
+- **The sheet does not dim what is behind it**, because the design system
+  has no scrim token. Undecided.
+- First load of the web build is 3.2 MB compressed, of which the rendering
+  engine is 2.1 MB.
+
 ## Ship order
 
 Each phase is usable on its own. "Bridge work" is Go under `web/bridge` and

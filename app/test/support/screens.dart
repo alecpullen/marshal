@@ -172,7 +172,7 @@ Widget _shell({StateKind? state, Place place = const Place.overview()}) {
     now: shellNow,
     onRetry: () {},
     onSelect: (_) {},
-    content: plannedPlace(place, nav),
+    content: (_) => plannedPlace(place, nav),
   );
 }
 

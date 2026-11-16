@@ -24,7 +24,7 @@ void main() {
         now: shellNow,
         onRetry: () {},
         onSelect: opened.add,
-        content: plannedPlace(place, nav),
+        content: (_) => plannedPlace(place, nav),
       ),
       opened,
     );

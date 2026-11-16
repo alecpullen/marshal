@@ -2,9 +2,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
 import 'package:marshal_app/src/client/transport.dart';
 import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
+import 'package:marshal_app/src/model/inbox_model.dart' as inbox;
 import 'package:marshal_app/src/model/nav_model.dart';
 import 'package:marshal_app/src/model/place.dart';
 import 'package:marshal_app/src/model/section_model.dart';
+import 'package:marshal_app/src/model/thread_ref.dart' as threads;
+import 'package:marshal_app/src/ui/inbox/inbox.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 import 'package:marshal_app/src/ui/sections/section_page.dart';
 import 'package:marshal_app/src/ui/sections/unsaved_guard.dart';
@@ -140,7 +143,7 @@ void main() {
             ),
           ],
           place: const Place(PlaceKind.automations),
-          content: const SizedBox.shrink(),
+          content: (_) => const SizedBox.shrink(),
           onSelect: selected.add,
           unsaved: guard,
         ),
@@ -166,6 +169,70 @@ void main() {
     expect(model.hasUnsavedEdits, isFalse);
   });
 
+  testWidgets('leaving a dirty place through the Inbox asks first', (
+    tester,
+  ) async {
+    final model = _Section(['nightly']);
+    await model.load();
+    model.edit('nightly');
+    model.change('nightly gate');
+
+    final now = DateTime.utc(2026, 11, 17, 12);
+    final guard = UnsavedGuard();
+    addTearDown(guard.dispose);
+    final opened = <Place>[];
+
+    tester.view.physicalSize = const Size(900, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      EmberApp(
+        brightness: Brightness.light,
+        home: Shell(
+          nav: NavModel(
+            fixed: const [
+              NavPlace(kind: PlaceKind.overview, label: 'Overview'),
+            ],
+            projects: const [],
+          ),
+          hosts: const [
+            HostView(
+              name: 'local',
+              kind: HostKind.local,
+              reach: HostReach.live,
+              lastContact: null,
+            ),
+          ],
+          place: const Place(PlaceKind.automations),
+          onSelect: opened.add,
+          unsaved: guard,
+          content: (navigation) => _EditingPlace(
+            navigation: navigation,
+            model: model,
+            now: now,
+            asks: [_ask(now)],
+          ),
+        ),
+      ),
+    );
+
+    // The place watches the model it edits while it is mounted, which is what
+    // the guard asks about.
+    expect(guard.hasUnsavedEdits, isTrue);
+
+    // The Inbox's own callback leaves the place, and it asks as the sidebar
+    // does: a place's content is no way around the one guard.
+    await tester.tap(find.text('marshal › Reliable session recovery'));
+    await tester.pumpAndSettle();
+    expect(find.text('Leave without saving?'), findsOneWidget);
+    expect(opened, isEmpty);
+
+    await tester.tap(find.text('Discard the edit'));
+    await tester.pumpAndSettle();
+    expect(opened.single.kind, PlaceKind.thread);
+    expect(model.hasUnsavedEdits, isFalse);
+  });
+
   testWidgets('a detail is a sheet at 760 and wider', (tester) async {
     final model = _Section(['nightly']);
     await model.load();
@@ -187,4 +254,70 @@ void main() {
     expect(find.byType(PageBody), findsOneWidget);
     expect(find.text('Editing nightly'), findsOneWidget);
   });
+}
+
+/// An ask waiting in the Inbox fixture, with the thread its source line opens.
+inbox.Ask _ask(DateTime now) => inbox.Ask(
+  host: 'local',
+  id: 'tc-1',
+  kind: inbox.AskKind.approval,
+  thread: threads.ThreadRef(
+    host: 'local',
+    id: 'a-1',
+    project: '/home/u/marshal',
+    title: 'Reliable session recovery',
+    kind: threads.ThreadKind.agent,
+    status: threads.ThreadStatus.needsYou,
+    headline: 'Waiting for you',
+    lastActive: now.subtract(const Duration(minutes: 3)),
+  ),
+  title: 'git push',
+  body: 'The branch is ready',
+  actions: const [
+    inbox.AskAction('Approve once', primary: true),
+    inbox.AskAction('Deny'),
+  ],
+  since: now.subtract(const Duration(minutes: 12)),
+);
+
+/// A place that edits [model]: it watches the model with the shell's guard
+/// while it is mounted, as every place that edits does, and draws the real
+/// Inbox so leaving happens through the Inbox's own callback.
+class _EditingPlace extends StatefulWidget {
+  const _EditingPlace({
+    required this.navigation,
+    required this.model,
+    required this.now,
+    required this.asks,
+  });
+
+  final PlaceNavigation navigation;
+  final _Section model;
+  final DateTime now;
+  final List<inbox.Ask> asks;
+
+  @override
+  State<_EditingPlace> createState() => _EditingPlaceState();
+}
+
+class _EditingPlaceState extends State<_EditingPlace> {
+  @override
+  void initState() {
+    super.initState();
+    widget.navigation.unsaved?.watch(widget.model);
+  }
+
+  @override
+  void dispose() {
+    widget.navigation.unsaved?.unwatch(widget.model);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Inbox(
+    asks: widget.asks,
+    now: widget.now,
+    onSelect: widget.navigation.go,
+    onAnswer: (_, _, {String? reply, List<String>? answers}) {},
+  );
 }

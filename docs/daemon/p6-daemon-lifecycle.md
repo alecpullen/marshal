@@ -576,7 +576,66 @@ _To be filled by the executor._
 
 ### Plan 3 — staleness in the agent
 
-_To be filled by the executor._
+Executed on Linux at `4e748e6c` on branch `p6-3-staleness`, one commit per
+task: the wire, the record, the host's requests and its own writes, the
+session screen, then this record. The `TMPDIR` the plan names is a macOS path;
+every run used `TMPDIR=/tmp/p6-3-suite`.
+
+- **The record is taken by `RunWithViewers` alone,** so embedded mode, a
+  `--listen` container and a fleet agent's own child keep none, as B3 says.
+  `newAgentHost` hands it to the session manager, whose service builder puts
+  `ConfigWritten` and `PendingRestart` on every session's `Deps`. With no
+  record both are nil and no connection behaves differently.
+- **The executable's entry is compared the portable way** `internal/snapshot`
+  already uses — `os.SameFile` plus size and modification time — because
+  `syscall.Stat_t`'s modification-time field differs between Linux and macOS,
+  and this must build on both. That covers the device, inode, size and
+  modification time the plan asks for without OS-specific code.
+- **The eight writes report after they succeed,** and the five `config/`
+  methods do the same through the manager's `wrote`. A write that fails tells
+  no one: the record's whole purpose is that the child's own change is not a
+  reason, and a failed write changed nothing.
+- **`project/state` and `project/note` are registered only when the host keeps
+  a record,** and refused on a viewer's connection with `project/hold`'s
+  sentence, beside it in the same handler block. `project/note` answers the
+  count of sessions its note reached.
+- **Sessions are visited in creation order.** `SessionManager.All` now sorts
+  by an unexported sequence number assigned when a runtime is published, so
+  the first busy line is stable; no exported signature changed.
+
+**Deviations and gaps filled.** Task 4 needed two files its list did not name:
+`SessionSection.Render` is a pure function of `sessionsheet.Data`, which had no
+restart field, and `Data` is assembled only in `Model.sheetDataFor`. The plan's
+intent was unambiguous, so `Data` gained `Restart *acpwire.PendingRestart`, set
+from the session status, and the row renders from it — an internal struct field,
+no new exported surface. `project/note`'s answer is a bare integer count, since
+the plan declares `ProjectNoteParams` and no result type. `service.newSession`
+lives in `events.go`, outside the file list, so the two `Deps` fields are copied
+by a `withRecord` helper in `service.go` that `New` and `Host.swap` both use
+rather than touching the constructor. Task 2's verify regex does not match
+`TestAFilePutBackIsCurrent` or `TestAnUnreadableExecutableStillWatchesConfig`;
+both were run separately, in the same package.
+
+**Mutation checks.** Dropping `SaveUserValue`'s `ConfigWritten` call failed both
+`TestEveryConfigWriteReportsItself` (a table cell) and
+`TestASettingsWriteLeavesItsChildCurrent` ("stale = [config.toml changed], want
+none"), as the plan requires. Making `wrote` a no-op in task 2 failed
+`TestAnOwnWriteIsNotStale` in all four of its cells. Both were restored.
+
+**No manual run, and why.** Nothing asks `project/state` until plan 4's sweep,
+and the request is served only on the bridge's own connection, so a person has
+no way to see it yet — there is nothing to drive by hand. Task 3's tests drive
+both requests over a real host instead: `TestASettingsWriteLeavesItsChildCurrent`
+takes a settings write through a viewer and then reads `project/state` on the
+bridge's connection, and `TestTheStatusCarriesAPendingRestart` reads the restart
+out of a viewer's status after a stale answer.
+
+**Verification.** The baseline was clean — no package failed at the starting
+commit, so there is no failure this plan had to re-prove. `gofmt -l internal cmd
+test web` printed nothing; `CGO_ENABLED=1 go vet ./...` was clean; CI's suite
+command (`go test -p=1 ./... -count=1 -timeout 20m` with the twelve latency
+budgets skipped by name) passed every package; `CGO_ENABLED=1 go build -o
+marshal ./cmd/marshal` succeeded; the scripted usability suite passed.
 
 ### Plan 6 — a wake with no screen, and the two P4 warnings
 

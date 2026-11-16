@@ -754,7 +754,7 @@ func TestChatStreamingInlineThinkTagEmitsThinkingDelta(t *testing.T) {
 }
 
 func TestBuildChatRequestBodyIncludesResponseFormat(t *testing.T) {
-	body, err := buildChatRequestBody(schema.ChatRequest{
+	body, err := buildChatRequestBody(t.Context(), schema.ChatRequest{
 		Model:          "test-model",
 		Messages:       []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
 		ResponseFormat: &schema.ResponseFormat{Type: "json_object"},
@@ -789,7 +789,7 @@ func TestBuildChatRequestBodyReasoningEffort(t *testing.T) {
 	// varies by backend and the panel now gates visibility on resolved
 	// support, so the wire layer does not second-guess it.
 	for _, effort := range []string{"low", "medium", "high", "minimal", "xhigh"} {
-		body, err := buildChatRequestBody(newReq(effort), false, "")
+		body, err := buildChatRequestBody(t.Context(), newReq(effort), false, "")
 		if err != nil {
 			t.Fatalf("buildChatRequestBody(%q): %v", effort, err)
 		}
@@ -799,7 +799,7 @@ func TestBuildChatRequestBodyReasoningEffort(t *testing.T) {
 	}
 	// Explicit off requests none; default and empty omit the control.
 	for _, effort := range []string{"off", "default", ""} {
-		body, err := buildChatRequestBody(newReq(effort), false, "")
+		body, err := buildChatRequestBody(t.Context(), newReq(effort), false, "")
 		if err != nil {
 			t.Fatalf("buildChatRequestBody(%q): %v", effort, err)
 		}
@@ -814,7 +814,7 @@ func TestBuildChatRequestBodyReasoningEffort(t *testing.T) {
 }
 
 func TestBuildChatRequestBodyOmitsResponseFormatWhenNil(t *testing.T) {
-	body, err := buildChatRequestBody(schema.ChatRequest{
+	body, err := buildChatRequestBody(t.Context(), schema.ChatRequest{
 		Model:    "test-model",
 		Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
 	}, false, "")
@@ -834,7 +834,7 @@ func TestBuildChatRequestBodyOmitsResponseFormatWhenNil(t *testing.T) {
 
 func TestBuildChatRequestBodyToolWireShapes(t *testing.T) {
 	t.Run("omits tools for baseline request", func(t *testing.T) {
-		body, err := buildChatRequestBody(schema.ChatRequest{
+		body, err := buildChatRequestBody(t.Context(), schema.ChatRequest{
 			Model:    "test-model",
 			Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
 		}, false, "")
@@ -850,7 +850,7 @@ func TestBuildChatRequestBodyToolWireShapes(t *testing.T) {
 
 	t.Run("includes max_tokens when set", func(t *testing.T) {
 		maxTok := 2048
-		body, err := buildChatRequestBody(schema.ChatRequest{
+		body, err := buildChatRequestBody(t.Context(), schema.ChatRequest{
 			Model:     "test-model",
 			Messages:  []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
 			MaxTokens: &maxTok,
@@ -872,7 +872,7 @@ func TestBuildChatRequestBodyToolWireShapes(t *testing.T) {
 	})
 
 	t.Run("serializes tool definitions", func(t *testing.T) {
-		body, err := buildChatRequestBody(schema.ChatRequest{
+		body, err := buildChatRequestBody(t.Context(), schema.ChatRequest{
 			Model:    "test-model",
 			Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
 			Tools: []schema.ToolDefinition{{
@@ -897,7 +897,7 @@ func TestBuildChatRequestBodyToolWireShapes(t *testing.T) {
 	})
 
 	t.Run("serializes assistant calls and tool results", func(t *testing.T) {
-		body, err := buildChatRequestBody(schema.ChatRequest{
+		body, err := buildChatRequestBody(t.Context(), schema.ChatRequest{
 			Model: "test-model",
 			Messages: []schema.ChatMessage{
 				{
@@ -1311,7 +1311,7 @@ func TestBuildChatRequestBodyReasoningSummary(t *testing.T) {
 		Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
 	}
 
-	body, err := buildChatRequestBody(req, true, "")
+	body, err := buildChatRequestBody(t.Context(), req, true, "")
 	if err != nil {
 		t.Fatalf("buildChatRequestBody: %v", err)
 	}
@@ -1319,7 +1319,7 @@ func TestBuildChatRequestBodyReasoningSummary(t *testing.T) {
 		t.Fatalf("reasoning summary not requested: %s", body)
 	}
 
-	body, err = buildChatRequestBody(req, false, "")
+	body, err = buildChatRequestBody(t.Context(), req, false, "")
 	if err != nil {
 		t.Fatalf("buildChatRequestBody: %v", err)
 	}
@@ -1899,7 +1899,7 @@ func TestResponsesReasoningEffortField(t *testing.T) {
 	req := chatReq(false)
 	req.Model = "grok-4.7"
 	req.Thinking = "medium"
-	body, err := buildResponsesRequestBody(req, false)
+	body, err := buildResponsesRequestBody(t.Context(), req, false)
 	if err != nil {
 		t.Fatalf("buildResponsesRequestBody returned error: %v", err)
 	}
@@ -1922,7 +1922,7 @@ func TestResponsesReasoningEffortField(t *testing.T) {
 	}
 
 	// The summary flag adds summary:auto alongside the effort.
-	body, err = buildResponsesRequestBody(req, true)
+	body, err = buildResponsesRequestBody(t.Context(), req, true)
 	if err != nil {
 		t.Fatalf("buildResponsesRequestBody(summary) returned error: %v", err)
 	}
@@ -1938,7 +1938,7 @@ func TestResponsesReasoningEffortField(t *testing.T) {
 	// Explicit off requests none; default and empty omit the reasoning object.
 	for _, effort := range []string{"off", "default", ""} {
 		req.Thinking = effort
-		body, err = buildResponsesRequestBody(req, false)
+		body, err = buildResponsesRequestBody(t.Context(), req, false)
 		if err != nil {
 			t.Fatalf("buildResponsesRequestBody(%q) returned error: %v", effort, err)
 		}
@@ -2603,7 +2603,10 @@ func TestResponsesInputDefaultsEmptyToolCallArguments(t *testing.T) {
 		}},
 		{Role: schema.RoleTool, ToolCallID: "call_empty", Content: "ok"},
 	}
-	_, items := buildResponsesInput(msgs)
+	_, items, err := buildResponsesInput(t.Context(), msgs)
+	if err != nil {
+		t.Fatalf("buildResponsesInput: %v", err)
+	}
 
 	got := make(map[string]string)
 	for _, item := range items {
@@ -2628,7 +2631,7 @@ func TestResponsesInputDefaultsEmptyToolCallArguments(t *testing.T) {
 	req := chatReq(false)
 	req.Model = "grok-4.7"
 	req.Messages = msgs
-	body, err := buildResponsesRequestBody(req, false)
+	body, err := buildResponsesRequestBody(t.Context(), req, false)
 	if err != nil {
 		t.Fatalf("buildResponsesRequestBody returned error: %v", err)
 	}
@@ -2737,7 +2740,7 @@ func TestTokenUsageFromReadsFlatCachedTokens(t *testing.T) {
 }
 
 func TestBuildChatRequestBodyReplaysReasoningContent(t *testing.T) {
-	body, err := buildChatRequestBody(schema.ChatRequest{
+	body, err := buildChatRequestBody(t.Context(), schema.ChatRequest{
 		Model: "test-model",
 		Messages: []schema.ChatMessage{
 			{Role: schema.RoleUser, Content: "hi"},
@@ -2769,7 +2772,7 @@ func TestBuildChatRequestBodyReplaysReasoningContent(t *testing.T) {
 }
 
 func TestBuildChatRequestBodyReplaysReasoningField(t *testing.T) {
-	body, err := buildChatRequestBody(schema.ChatRequest{
+	body, err := buildChatRequestBody(t.Context(), schema.ChatRequest{
 		Model: "test-model",
 		Messages: []schema.ChatMessage{
 			{Role: schema.RoleAssistant, Content: "answer", Reasoning: &schema.Reasoning{Text: "plan"}},
@@ -2787,7 +2790,7 @@ func TestBuildChatRequestBodyReplaysReasoningField(t *testing.T) {
 }
 
 func TestBuildChatRequestBodyNoReplayWhenOff(t *testing.T) {
-	body, err := buildChatRequestBody(schema.ChatRequest{
+	body, err := buildChatRequestBody(t.Context(), schema.ChatRequest{
 		Model: "test-model",
 		Messages: []schema.ChatMessage{
 			{Role: schema.RoleAssistant, Content: "answer", Reasoning: &schema.Reasoning{Text: "plan"}},
@@ -3005,7 +3008,10 @@ func TestBuildResponsesInputPlacesReasoningBeforeFunctionCall(t *testing.T) {
 		},
 		{Role: schema.RoleTool, ToolCallID: "call_1", Content: "ok"},
 	}
-	_, items := buildResponsesInput(msgs)
+	_, items, err := buildResponsesInput(t.Context(), msgs)
+	if err != nil {
+		t.Fatalf("buildResponsesInput: %v", err)
+	}
 
 	var gotTypes []string
 	for _, item := range items {
@@ -3036,7 +3042,7 @@ func TestBuildResponsesInputPlacesReasoningBeforeFunctionCall(t *testing.T) {
 	req := chatReq(false)
 	req.Model = "grok-4.7"
 	req.Messages = msgs
-	body, err := buildResponsesRequestBody(req, false)
+	body, err := buildResponsesRequestBody(t.Context(), req, false)
 	if err != nil {
 		t.Fatalf("buildResponsesRequestBody returned error: %v", err)
 	}

@@ -723,7 +723,7 @@ func TestOllamaNativeReplaysThinking(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewOllamaNative: %v", err)
 	}
-	body, err := p.buildChatRequestBody(schema.ChatRequest{
+	body, err := p.buildChatRequestBody(t.Context(), schema.ChatRequest{
 		Model: "qwen3:8b",
 		Messages: []schema.ChatMessage{
 			{Role: schema.RoleUser, Content: "hi"},
@@ -759,7 +759,7 @@ func TestOllamaNativeNoThinkingWhenOff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewOllamaNative: %v", err)
 	}
-	body, err := p.buildChatRequestBody(schema.ChatRequest{
+	body, err := p.buildChatRequestBody(t.Context(), schema.ChatRequest{
 		Model: "qwen3:8b",
 		Messages: []schema.ChatMessage{
 			{Role: schema.RoleAssistant, Content: "answer", Reasoning: &schema.Reasoning{Text: "because"}},

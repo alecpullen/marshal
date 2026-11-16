@@ -105,11 +105,28 @@ type anthropicContentBlock struct {
 	Content      string                 `json:"content,omitempty"`
 	Thinking     string                 `json:"thinking,omitempty"`
 	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
+	Source       *anthropicImageSource  `json:"source,omitempty"`
+}
+
+// anthropicImageSource is the base64 arm of an image block's source.
+type anthropicImageSource struct {
+	Type      string `json:"type"` // "base64"
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
+}
+
+// anthropicToolResultBlock is a tool_result whose content is a block array
+// (text plus images). A text-only tool result keeps using
+// anthropicContentBlock, whose Content is a plain string.
+type anthropicToolResultBlock struct {
+	Type    string                  `json:"type"` // "tool_result"
+	ID      string                  `json:"tool_use_id"`
+	Content []anthropicContentBlock `json:"content"`
 }
 
 type anthropicMessage struct {
-	Role    string                  `json:"role"`
-	Content []anthropicContentBlock `json:"content"`
+	Role    string `json:"role"`
+	Content []any  `json:"content"`
 }
 
 type anthropicTool struct {
@@ -179,7 +196,13 @@ type anthropicBlockRef struct {
 // CacheAnchor message, the end of the cross-turn stable region, unless that
 // message is a leading system message (the system block already carries a
 // breakpoint) or Volatile.
-func toAnthropicMessages(msgs []schema.ChatMessage) (system []anthropicContentBlock, out []anthropicMessage, lastStable, anchor anthropicBlockRef) {
+//
+// Images ride blocks after the text they belong to: a user message's images
+// follow its text block, and a tool message's images live inside its
+// tool_result, whose content becomes a block array. Resolution goes through
+// src, so a request that carries images with no ImageSource fails instead of
+// sending text alone.
+func toAnthropicMessages(ctx context.Context, src schema.ImageSource, msgs []schema.ChatMessage) (system []anthropicContentBlock, out []anthropicMessage, lastStable, anchor anthropicBlockRef, err error) {
 	leading := true
 	for _, m := range msgs {
 		if m.Role != schema.RoleSystem {
@@ -200,14 +223,44 @@ func toAnthropicMessages(msgs []schema.ChatMessage) (system []anthropicContentBl
 			})
 		case schema.RoleUser:
 			out = appendAnthropicUserBlock(out, anthropicContentBlock{Type: "text", Text: m.Content})
+			for _, img := range m.Images {
+				b64, imageErr := imageB64(ctx, src, img)
+				if imageErr != nil {
+					return nil, nil, anthropicBlockRef{}, anthropicBlockRef{}, imageErr
+				}
+				out = appendAnthropicUserBlock(out, anthropicContentBlock{
+					Type:   "image",
+					Source: &anthropicImageSource{Type: "base64", MediaType: img.MIME, Data: b64},
+				})
+			}
 		case schema.RoleTool:
-			out = appendAnthropicUserBlock(out, anthropicContentBlock{
-				Type:      "tool_result",
-				ToolUseID: m.ToolCallID,
-				Content:   m.Content,
+			if len(m.Images) == 0 {
+				out = appendAnthropicUserBlock(out, anthropicContentBlock{
+					Type:      "tool_result",
+					ToolUseID: m.ToolCallID,
+					Content:   m.Content,
+				})
+				break
+			}
+			content := make([]anthropicContentBlock, 0, len(m.Images)+1)
+			content = append(content, anthropicContentBlock{Type: "text", Text: m.Content})
+			for _, img := range m.Images {
+				b64, imageErr := imageB64(ctx, src, img)
+				if imageErr != nil {
+					return nil, nil, anthropicBlockRef{}, anthropicBlockRef{}, imageErr
+				}
+				content = append(content, anthropicContentBlock{
+					Type:   "image",
+					Source: &anthropicImageSource{Type: "base64", MediaType: img.MIME, Data: b64},
+				})
+			}
+			out = appendAnthropicUserBlock(out, anthropicToolResultBlock{
+				Type:    "tool_result",
+				ID:      m.ToolCallID,
+				Content: content,
 			})
 		case schema.RoleAssistant:
-			blocks := make([]anthropicContentBlock, 0, len(m.ToolCalls)+1)
+			blocks := make([]any, 0, len(m.ToolCalls)+1)
 			if m.Content != "" {
 				blocks = append(blocks, anthropicContentBlock{Type: "text", Text: m.Content})
 			}
@@ -236,15 +289,32 @@ func toAnthropicMessages(msgs []schema.ChatMessage) (system []anthropicContentBl
 			}
 		}
 	}
-	return system, out, lastStable, anchor
+	return system, out, lastStable, anchor, nil
 }
 
-func appendAnthropicUserBlock(out []anthropicMessage, block anthropicContentBlock) []anthropicMessage {
+func appendAnthropicUserBlock(out []anthropicMessage, block any) []anthropicMessage {
 	if n := len(out); n > 0 && out[n-1].Role == "user" {
 		out[n-1].Content = append(out[n-1].Content, block)
 		return out
 	}
-	return append(out, anthropicMessage{Role: "user", Content: []anthropicContentBlock{block}})
+	return append(out, anthropicMessage{Role: "user", Content: []any{block}})
+}
+
+// setAnthropicCacheControl marks the block at ref as a cache breakpoint.
+// A converted message holds heterogeneous blocks, so the breakpoint is
+// placed by rewriting the stored value. A tool_result that carries images is
+// a block array rather than an anthropicContentBlock and has no
+// cache_control field of its own, so it takes no breakpoint.
+func setAnthropicCacheControl(messages []anthropicMessage, ref anthropicBlockRef) {
+	if !ref.ok {
+		return
+	}
+	block, ok := messages[ref.msg].Content[ref.block].(anthropicContentBlock)
+	if !ok {
+		return
+	}
+	block.CacheControl = anthropicEphemeralCache
+	messages[ref.msg].Content[ref.block] = block
 }
 
 // anthropicFinishReason maps Messages API stop reasons to the OpenAI-style
@@ -290,7 +360,7 @@ func anthropicToolCallsFromBlocks(blocks []anthropicContentBlock) []schema.ToolC
 
 // --- request building ---
 
-func (p *Anthropic) buildChatRequestBody(req schema.ChatRequest) ([]byte, error) {
+func (p *Anthropic) buildChatRequestBody(ctx context.Context, req schema.ChatRequest) ([]byte, error) {
 	if req.ThinkingOptions == nil && p.thinkingLookup != nil {
 		req.ThinkingOptions = p.thinkingLookup(req.Model)
 	}
@@ -299,7 +369,7 @@ func (p *Anthropic) buildChatRequestBody(req schema.ChatRequest) ([]byte, error)
 		req.ThinkingOptions = p.modelThinking[req.Model]
 		p.thinkingMu.RUnlock()
 	}
-	return buildAnthropicRequestBody(req, p.thinkingBudget, p.thinkingBudgetMargin)
+	return buildAnthropicRequestBody(ctx, req, p.thinkingBudget, p.thinkingBudgetMargin)
 }
 
 // buildAnthropicRequestBody is the package-level Messages body
@@ -308,14 +378,17 @@ func (p *Anthropic) buildChatRequestBody(req schema.ChatRequest) ([]byte, error)
 // thinkingBudgetMargin are the provider-level knobs; 0/0 gives the Go
 // path no provider-level thinking (the request's Thinking field still
 // maps through to budget_tokens).
-func buildAnthropicRequestBody(req schema.ChatRequest, thinkingBudget, thinkingBudgetMargin int) ([]byte, error) {
+func buildAnthropicRequestBody(ctx context.Context, req schema.ChatRequest, thinkingBudget, thinkingBudgetMargin int) ([]byte, error) {
 	if req.Model == "" {
 		return nil, errors.New("chat request: model is required")
 	}
 	if len(req.Messages) == 0 {
 		return nil, errors.New("chat request: at least one message is required")
 	}
-	system, messages, lastStable, anchor := toAnthropicMessages(req.Messages)
+	system, messages, lastStable, anchor, err := toAnthropicMessages(ctx, req.ImageSource, req.Messages)
+	if err != nil {
+		return nil, err
+	}
 
 	// Prompt caching breakpoints. The API allows four, and this uses all four:
 	//   - the tool definitions and the system prompt, the large and stable
@@ -333,12 +406,8 @@ func buildAnthropicRequestBody(req schema.ChatRequest, thinkingBudget, thinkingB
 	if len(system) > 0 {
 		system[len(system)-1].CacheControl = anthropicEphemeralCache
 	}
-	if anchor.ok {
-		messages[anchor.msg].Content[anchor.block].CacheControl = anthropicEphemeralCache
-	}
-	if lastStable.ok {
-		messages[lastStable.msg].Content[lastStable.block].CacheControl = anthropicEphemeralCache
-	}
+	setAnthropicCacheControl(messages, anchor)
+	setAnthropicCacheControl(messages, lastStable)
 	var tools []anthropicTool
 	for _, tool := range req.Tools {
 		tools = append(tools, anthropicTool{
@@ -445,7 +514,7 @@ func buildAnthropicRequestBody(req schema.ChatRequest, thinkingBudget, thinkingB
 // HTTP-level failures return synchronously; stream failures arrive as one
 // ChatEventError followed by channel close.
 func (p *Anthropic) Chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
-	body, err := p.buildChatRequestBody(req)
+	body, err := p.buildChatRequestBody(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("provider %q: %w", p.name, err)
 	}

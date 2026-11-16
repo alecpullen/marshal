@@ -304,7 +304,7 @@ func (p *OpenAICodex) post(ctx context.Context, req schema.ChatRequest, token st
 	}
 	// Codex rejects system-role input items. Keep the leading harness prompt
 	// in instructions and send later runtime guidance as developer messages.
-	body, err := buildResponsesRequestBodyWithSystemRole(req, p.reasoningSummary, []string{codexIncludeReasoning}, "developer")
+	body, err := buildResponsesRequestBodyWithSystemRole(ctx, req, p.reasoningSummary, []string{codexIncludeReasoning}, "developer")
 	if err != nil {
 		return nil, fmt.Errorf("provider %q: %w", p.name, err)
 	}

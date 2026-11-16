@@ -1,0 +1,48 @@
+{
+  "Recipe": {
+    "name": "gate",
+    "title": "The gate",
+    "description": "Runs the gate on a branch",
+    "kind": "prompt",
+    "mode": "auto",
+    "auto": true,
+    "workspace": "go",
+    "routing": {
+      "profile": "local"
+    },
+    "inputs": [
+      {
+        "name": "branch",
+        "label": "Branch",
+        "required": true
+      }
+    ],
+    "prompt": "Run the gate on {{ branch }}",
+    "limits": {
+      "maxMinutes": 30,
+      "maxUsd": 2.5
+    },
+    "output": "review-findings",
+    "builtin": true
+  },
+  "RecipeInput": {
+    "name": "branch",
+    "label": "Branch",
+    "required": true
+  },
+  "RecipeLimits": {
+    "maxMinutes": 30,
+    "maxUsd": 2.5
+  },
+  "RecipeRun": {
+    "project": "/home/u/marshal",
+    "repoId": "repo-1",
+    "ref": "main",
+    "inputs": {
+      "branch": "main"
+    }
+  },
+  "RecipeCopy": {
+    "name": "gate-copy"
+  }
+}

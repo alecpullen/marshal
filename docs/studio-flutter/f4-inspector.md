@@ -170,3 +170,108 @@ Suggested pull requests, in order.
 - Whether split diff is worth building in this phase or should wait for
   evidence it is wanted.
 - Whether an embedded preview is achievable on Linux desktop.
+
+## Implementation record
+
+Status: **implemented** on `studio/f4-inspector`, tasks 1–9, one commit each.
+Every Verify command was run; the environment-blocked ones are listed at the
+end, separately from real failures.
+
+### What landed, task by task
+
+1. **Contract.** `web/bridge/contract/{review,files,terminal,inspect}.go`
+   declare the eleven types the plan names, plus the supporting ones the wire
+   needs to be expressed at all: `FileList`, `StepDiffs`,
+   `NodeDetailResponse`, `ModelRequest` and its six request types,
+   `CallDetail`'s five detail types. The bridge aliases `ReviewComment` and
+   `ReviewCommentRequest` and uses the terminal's types directly; fixtures
+   live in `test/contract/{review,files,terminal,inspect}.json` and both
+   clients are regenerated and current. The Svelte client is re-pointed at
+   the generated types, and two latent bugs fell out of that: `getLastRequest`
+   and `getStepDiffs` returned the route's wrapper (`{request}`, `{steps}`) as
+   if it were the value.
+2. **The frame.** `InspectorState` (three widths, five tabs for an agent, a
+   pin, the followed node) and `Inspector`, laid out by `ThreadScreen` at 400
+   docked, as an outline plus the window when expanded, and as a `Sheet` below
+   1080. `⌘\` cycles the width; `i` closes and opens the column. Width and tab
+   travel in `Place`'s query (`w`, `t`), so a link restores them.
+3. **`DiffView` and `GateList`** in the kit, documented in §5, with gallery
+   specimens in every state, kit tests, and goldens regenerated on Linux.
+   `DiffSide` is `before`/`after` (`new` is a Dart keyword) and carries the
+   wire's `old`/`new`.
+4. **Changes, read.** `ChangesModel` reads the diff, the gate, the draft, the
+   steps and the comments; splits the diff per file; groups by step from
+   `StepDiff`; holds the viewed marks; and follows the file the agent is
+   editing. `ChangesTab` draws the gate, the files and the diff, with the
+   five §7 states.
+5. **Changes, comment and ship.** A line comment posts through the model and
+   its thread is listed with Resolve; `shipSheet` carries the message, the
+   pull-request choice, the override reason a failed gate requires, and one
+   view per `ShipOutcome`; Discard confirms and names what is lost.
+6. **Files.** `FilesModel` reads a directory at a time and refuses a path
+   outside the workspace before it is sent; `FilesTab` draws the tree with a
+   tooltip'd marker on changed files and a read-only viewer tokenised by
+   `re_highlight`, coloured from a fixed class map in `tokens.dart`.
+7. **Terminal.** `TerminalSession` opens the shell, decodes its stream through
+   one long-lived UTF-8 decoder, holds the agent on the first keystroke, hands
+   back on demand or after the injected idle wait, and posts keystrokes and
+   resizes. `terminal_view.dart` is the one file that imports `xterm` 4.0.0
+   and the one that uses `termBlue`/`termMagenta`/`termCyan`.
+8. **Preview and Inspect.** `PreviewModel` issues a URL per declared port;
+   the tab lists them and shows the selected one as its URL with Copy link,
+   `InspectModel` reads a node's detail and, on demand, the newest model
+   request; `InspectTab` shows actor, why, timing, sandbox, approval and call
+   id, then Output, Arguments, Thinking and Model request.
+9. **End to end.** `app/integration_test/f4_test.dart` drives the whole flow
+   against the fixture bridge; this record.
+
+### Decisions the plan left open
+
+- **`ExitRequest.noPr` (a contract change).** The bridge already had
+  `ExitOptions.NoPR`, withheld from the wire, so "open a pull request" had no
+  field to travel in. It is added as `noPr` with `omitempty`: absent means
+  open one, so today's JSON and older clients are unchanged.
+- **`ReviewComment.resolvedAt` is `*time.Time` with `omitempty`.** The wire's
+  `omitzero` cannot be expressed by either generator; the JSON is identical.
+- **The gate's checks.** The record carries one outcome, so the gate is one
+  row today; `GateList` is built for the many F5 will bring.
+- **Kit additions beyond the plan's list**, each documented in §5:
+  `RowItem.mono`, `RowItem.selected` (the file list's mono, selectable rows)
+  and `NavRow.mono` (the file tree's path labels).
+- **Export patch shows and copies the patch** rather than writing a file: the
+  app's lanes have no `dart:io` in `ui/` or `model/`, so saving needs a new
+  seam this phase does not add.
+- **The override's actor.** The app sends `by: ""` for a gate override,
+  exactly as the web client's `{reason}` does; neither fills the actor.
+- **Preview ports come from the caller**, because the bridge has no route
+  that lists them. On a desktop the tab shows the URL with Copy link and says
+  why it is not framed; there is no URL launcher dependency in this phase.
+- **`FilesModel.open` returns the model's `FileText`**, and `InspectModel`
+  exposes `InspectFacts`, so `ui/` never imports `client/` (the boundary test
+  is the reason).
+- **Keystrokes are sent base64-encoded but unchunked.** The wire's cap is
+  64 KiB per body, and a keystroke string is far below it.
+
+### Not built in this phase
+
+- The selected command's replay above the live shell (decision 9); the
+  Terminal tab's `planned` row says so.
+- A side-by-side diff (the plan's decision), and a web view for the preview:
+  an iframe needs `dart:ui_web` and `package:web`, which this app's lanes keep
+  in `client/*_web.dart`, and putting a widget factory there would put a
+  widget in the client lane. The preview shows its URL, with Copy link, and
+  says why. Extending the lane is a decision this plan did not make.
+- Split diff, file editing, forge check state (F5) and the work-item tab
+  sets (F6).
+
+### Environment-blocked, not failures
+
+- `flutter test --platform chrome test/ui/inspector/terminal_test.dart`: no
+  working browser here (Flutter's Chrome host stalls on CanvasKit). The
+  terminal's behaviour is covered by `test/model/terminal_session_test.dart`.
+- `flutter test integration_test -d linux`: no display and no CMake/GTK3. The
+  same flow is driven from `test/ui/inspector/{changes,ship}_test.dart`.
+- `flutter build linux --debug`: the same missing toolchain.
+- `cd web/ui && npm run check`: five errors and five warnings that predate
+  this branch (`fleet.test.ts`, `AgentConversation.svelte`, `Run.svelte`,
+  `Review.test.ts`, `Runs.test.ts`) and none added by it.

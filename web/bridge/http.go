@@ -215,6 +215,12 @@ func (s *Server) route(api http.Handler, w http.ResponseWriter, r *http.Request)
 		http.NotFound(w, r)
 		return
 	}
+	if isNextPath(r.URL.Path) {
+		// The Flutter Studio, before the Svelte one: both are client-side
+		// applications, and only the prefix tells them apart.
+		nextHandler().ServeHTTP(w, r)
+		return
+	}
 	if !strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/mcp" {
 		staticHandler().ServeHTTP(w, r)
 		return
@@ -766,6 +772,7 @@ func (s *Server) agentExit(w http.ResponseWriter, r *http.Request) {
 	res, err := s.fleet.Exit(r.Context(), r.PathValue("id"), ExitOptions{
 		CommitMessage: body.CommitMessage,
 		Override:      body.Override,
+		NoPR:          body.NoPR,
 	})
 	if err != nil {
 		writeErr(w, err)
@@ -1009,9 +1016,7 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "turn already in flight"})
 		return
 	}
-	var body struct {
-		Text string `json:"text"`
-	}
+	var body contract.PromptRequest
 	if !decodeJSON(w, r, &body) {
 		return
 	}
@@ -1043,9 +1048,7 @@ func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
 
 // steer redirects the in-flight turn.
 func (s *Server) steer(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Text string `json:"text"`
-	}
+	var body contract.SteerRequest
 	if !decodeJSON(w, r, &body) {
 		return
 	}
@@ -1253,9 +1256,7 @@ func subagentRefusalCode(message string) string {
 // forwarded as an atomic patch and the full committed state is returned.
 // New clients use the access routes and never need a dummy mode.
 func (s *Server) setMode(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Mode string `json:"mode"`
-	}
+	var body contract.ModeRequest
 	if !decodeJSON(w, r, &body) {
 		return
 	}

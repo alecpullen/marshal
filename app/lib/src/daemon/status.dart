@@ -92,11 +92,16 @@ class DaemonInfo {
     required this.version,
     required this.projects,
     required this.children,
+    this.socket = '',
   });
 
   final String version;
   final List<String> projects;
   final List<DaemonChild> children;
+
+  /// The daemon's socket, which a client dials to reach it (F1 decision 4:
+  /// the app reads this rather than computing the path).
+  final String socket;
 
   factory DaemonInfo.fromJson(Map<String, dynamic> json) => DaemonInfo(
     version: json['version'] as String? ?? '',
@@ -109,6 +114,7 @@ class DaemonInfo {
     children: ((json['children'] as List<dynamic>?) ?? const [])
         .map((e) => DaemonChild.fromJson(e as Map<String, dynamic>))
         .toList(),
+    socket: json['socket'] as String? ?? '',
   );
 }
 

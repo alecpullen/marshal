@@ -178,6 +178,35 @@ final class Ember {
   /// is the absence of one.
   Color get none => const Color(0x00000000);
 
+  // §2 — the syntax classes a read-only code viewer colours. The map is
+  // fixed (f4-inspector.md decisions): a class it does not name is [fg], so
+  // no token is invented for a token class the viewer has not been told
+  // about.
+
+  /// The classes a highlight.js-style tokeniser emits that this map names.
+  static const codeClasses = [
+    'keyword',
+    'literal',
+    'built_in',
+    'symbol',
+    'string',
+    'attr',
+    'regexp',
+    'number',
+    'meta',
+    'section',
+    'comment',
+  ];
+
+  /// The colour a token class takes.
+  Color codeToken(String className) => switch (className) {
+    'keyword' || 'literal' || 'built_in' || 'symbol' => accent,
+    'string' || 'attr' || 'regexp' => ok,
+    'number' || 'meta' || 'section' => warn,
+    'comment' => muted,
+    _ => fg,
+  };
+
   // §3 — the text roles, each in [fg]. Recolour with [TintText.tint].
 
   /// One headline number on a card. 22 / 600.
@@ -239,6 +268,12 @@ final class Ember {
   /// Code, paths, identifiers, counts and durations.
   static const monoFamily = 'Geist Mono';
 
+  /// The symbol fallback, bundled from `assets/fonts/` (pubspec.yaml):
+  /// Noto Sans Symbols 2, under its OFL licence. Geist has no glyph for
+  /// ⌘ ⌥ ⏎ ✓ ✗ ▸ ▾ ⋯ and the transcript needs them, so every role falls
+  /// back to it rather than drawing tofu. It is never a role's first family.
+  static const symbols = 'Noto Sans Symbols 2';
+
   TextStyle _sans(
     double size,
     FontWeight weight, {
@@ -248,6 +283,7 @@ final class Ember {
     inherit: false,
     color: fg,
     fontFamily: sans,
+    fontFamilyFallback: const [symbols],
     fontSize: size,
     fontWeight: weight,
     height: height,
@@ -261,6 +297,7 @@ final class Ember {
     inherit: false,
     color: fg,
     fontFamily: monoFamily,
+    fontFamilyFallback: const [symbols],
     fontSize: size,
     fontWeight: FontWeight.w400,
     height: height,

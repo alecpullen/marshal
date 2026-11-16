@@ -49,7 +49,9 @@ class TrayMenu {
   }
 }
 
-/// menuFor turns one status into the menu. A null status with a failure is
+/// menuFor turns one status into the menu. "Open Studio" is its first item:
+/// the window is what the app is for, and the daemon's state is what the menu
+/// reports once it is open. A null status with a failure is
 /// the app's own failure to read it; a null status without one means "not
 /// read yet".
 ///
@@ -69,6 +71,10 @@ TrayMenu menuFor({
   bool marshalMissing = false,
 }) {
   final entries = <Object>[
+    // The Studio is the app's one window, and the menu-bar item is its only
+    // way in while `LSUIElement` keeps the Dock empty (F2 decision 1).
+    const TrayItem(id: 'studio', label: 'Open Studio'),
+    const TraySeparator(),
     TrayItem(
       id: 'status',
       label: _statusLine(appVersion, status, failure, marshalMissing),

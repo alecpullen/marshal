@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from 'vitest'
 import { get } from 'svelte/store'
 import { createFileTree } from './fileTree'
 
-const entries = (...names: string[]) => ({ entries: names.map((name) => ({ name, dir: !name.includes('.'), size: 1 })) })
+const entries = (...names: string[]) => ({
+  root: '/p',
+  path: '',
+  entries: names.map((name) => ({ name, dir: !name.includes('.'), size: 1 })),
+})
 
 describe('file tree', () => {
   it('toggle loads a directory once and collapses without refetching', async () => {

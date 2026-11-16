@@ -169,3 +169,109 @@ Suggested pull requests, in order. Each begins with its contract types.
   or a plain monospace field with validation. Recommended: the plain field.
 - Whether Access should show the MCP clients or only link to Library, to
   avoid one list in two places.
+
+## Implementation record (F7 plan 1, 2026-11-17)
+
+Branch `studio/f7-1-automations-library`, off `studio/f2-shell`. Every task
+landed as one commit, `f7-1-automations-library: task N — <title>`.
+
+### What landed
+
+| Task | What it is | Where |
+|---|---|---|
+| 1 | The list pattern: `SectionModel` (save, stale save with reload, unsaved edits), `SectionPage` (a `PageBody`, optional tabs, `Rows`, the detail in a `Sheet` at 760 and a pushed page below), and the one guard the shell consults | `app/lib/src/model/section_model.dart`, `app/lib/src/ui/sections/{section_page,detail_host,unsaved_guard}.dart`, `app/lib/src/ui/shell/shell.dart` |
+| 2 | Schedules and recipes: their contract slices, both generated clients, their typed routes, their models, and the Automations place (Bots, Schedules, Watches, Recipes) | `web/bridge/contract/{schedules,recipes}.go`, `app/lib/src/model/{schedules,recipes}_model.dart`, `app/lib/src/ui/automations/*` |
+| 3 | Watches: the contract slice, the model, the tab (with its day's `Spark`), and the Overview's Automations card for the watches that tripped | `web/bridge/contract/watches.go`, `app/lib/src/model/watches_model.dart`, `app/lib/src/ui/automations/watches_tab.dart`, `app/lib/src/ui/overview/overview.dart` |
+| 4 | Bots: the contract slice, the model, the two bots per project, the held review with Post / Edit / Send to the author's agent / Discard, and `review_draft` asks in the Inbox | `web/bridge/contract/automations.go`, `app/lib/src/model/{bots_model,inbox_model}.dart`, `app/lib/src/ui/automations/{bots_tab,review_draft_sheet}.dart` |
+| 5 | Library: the contract slices, both models, the place and its four tabs — Skills with preview and confirm, Plugins with scan and confirm, MCP with clients, their tokens and their factory grants, Memory with provenance, confidence and the approved promotion | `web/bridge/contract/{library,clients}.go`, `app/lib/src/model/{library,clients}_model.dart`, `app/lib/src/ui/library/*` |
+| 6 | This record and the full verification | `docs/studio-flutter/f7-automations-library-settings.md` |
+
+Every list is a `SectionPage`: Bots, Schedules, Watches and Recipes in
+Automations; Skills, Plugins, MCP and Memory in Library. Each handles
+loading, empty, stale, error and unavailable, and each is registered in
+`app/test/support/screens.dart` with all five.
+
+### Verification
+
+| Task | Verify command | Result |
+|---|---|---|
+| 1 | `cd app && flutter test` | **pass** (614) |
+| 2 | `CGO_ENABLED=1 go test ./web/... -count=1`; `cd app && flutter test` | go **pass**; flutter **pass** (738) |
+| 3 | `CGO_ENABLED=1 go test ./web/... -count=1`; `cd app && flutter test` | go **pass**; flutter **pass** (802) |
+| 4 | `CGO_ENABLED=1 go test ./web/... -count=1`; `cd app && flutter test` | go **pass**; flutter **pass** (867) |
+| 5 | `CGO_ENABLED=1 go test ./web/... -count=1`; `cd app && flutter test` | go **pass**; flutter **pass** (1111) |
+| 6 | `cd app && flutter analyze && flutter test && dart format --output=none --set-exit-if-changed lib test`; `CGO_ENABLED=1 go test ./web/... -count=1`; `cd web/ui && npm run check && npm test` | analyze **pass** (no issues), test **pass** (1111), format **pass** (0 files changed); go **pass**; `npm run check` reports **5 errors and 5 warnings, unchanged from base** — the errors in `fleet.test.ts`, `AgentConversation.svelte`, `Run.svelte`, `Review.test.ts` and `Runs.test.ts`, the warnings in `IssuePicker.svelte:7`, `FactoryNew.svelte:265`, `DraftApproval.svelte:87`, `WorkingDraftConflict.svelte:90` and `WorkingDrafts.svelte:87` (Svelte-5 initial-value reactivity), all pre-existing and untouched by this branch, which changes nothing under `web/ui/src` but `lib/contract.ts`; `npm test` **pass** (120 files, 1355 tests) |
+
+The currency tests for both generators pass without `-update`
+(`TestDartContractIsCurrent`, `TestTypeScriptContractIsCurrent`), so
+`app/lib/src/client/contract.g.dart` and `web/ui/src/lib/contract.ts` are
+current.
+
+Environment-blocked, not failures: `flutter test --platform chrome` (no
+working browser host on this machine), `flutter build linux --debug` (no
+CMake/GTK3 development headers), and the `npm run check` set above, which
+predates this branch.
+
+### Blocked
+
+- **Undo a trip's reroute.** `POST /api/reroutes/{id}/undo` takes the id of
+  the reroute record a trip made, and nothing on the watch wire carries it:
+  the engine's watch row (`internal/acp/watch.go`) and the bridge's merge
+  (`web/bridge/watches.go`) report the rule, not the record. The route,
+  `BridgeClient.undoReroute` and `WatchesModel.undoReroute` are written and
+  tested (`undo posts the reroute undo`), and the watch detail draws
+  `Undo the reroute` disabled with one line saying why. It needs a decision:
+  add `rerouteId` to the bridge's watch row (a wire change), or a
+  `GET /api/reroutes?watch=…` route that lists a watch's records.
+- **Task 4's automatic-fixing switch.** F5 plan 1 is not in this branch, so
+  the CI fixer's detail draws the planned row the plan asks for. It is a
+  one-line swap for the switch when F5 lands.
+
+### Decisions this plan left open
+
+- **Bot settings are read-only here.** `/api/projects/settings` carries the
+  whole project document, so the contract adds `ProjectAutomations`: the one
+  key these screens read. Writing half that document (and its version) is
+  the settings slice's job, not this one's.
+- **`MCPClient` omits `tokenHash`.** The bridge's struct sends it and
+  `lib/api.ts` never declares it; a hash has no place in a UI contract, and
+  the token itself is only ever in `CreateClientResult`. `Schedule` keeps
+  `ownerId`, which the wire does send.
+- **`ApprovalAuthority` is an enum** mirroring the wire's `none`,
+  `user_directed` and `standing`, so a grant's authority is not a free
+  string in Dart.
+- **The review draft opens inside the bot's sheet**, not in a second one
+  (§5: one sheet per screen). `review_draft_sheet.dart` holds that view,
+  including its in-place delete confirmation.
+- **`model/AskKind.reviewDraft` draws as the kit's existing
+  `AskKind.review`** ("Review draft"); the design system gains no kind.
+- **Editing a draft edits its summary and its findings' titles.** The
+  bridge's PUT accepts bodies too; a finding-by-finding prose editor is a
+  later surface, and the section says what it does.
+- **Kit additions (§10 in one commit each, with the document, the gallery
+  specimen and regenerated Linux goldens):** `Field.multiline` (a prompt's
+  prose), `RowItem.spark` with `RowSpark` (a watch's day), and
+  `SectionPage`'s `createLabel`/`blank`, `readOnly` and `header`/`footer`.
+  `ConfirmAction` lives in `ui/automations/` rather than the kit: it is the
+  destructive confirmation two sections share, built only from kit pieces.
+- **`SectionModel` grew `store` and `replaceItems`** so a section action can
+  put what the bridge answered where it belongs (a copied recipe, a posted
+  draft, a bot whose held reviews changed) without reaching into the list.
+- **Fixture constructors.** Every section model has a `.fixture(rows)`
+  constructor, so the gallery and the enforcement tests draw real sections
+  with no bridge; a write on one throws rather than pretending.
+- **The places are built but not yet reachable from the shell.**
+  `AutomationsPlace` and `LibraryPlace` are real screens, registered and
+  held to §7/§9/§11, and `Studio` now owns the one unsaved-edit guard the
+  shell consults, but `Studio._content` still draws the planned place for
+  both. Wiring them needs a per-host `BridgeClient` the composition root
+  does not have: `FleetStore` keeps `owner.client` private and `HostView`
+  deliberately omits it, so exposing one means changing
+  `app/lib/src/model/fleet_store.dart`, which is outside this plan's files.
+  Their tabs take the state the shell knows, so the wiring is one
+  constructor each once that provider exists.
+- **Tests drive a scripted in-process `Transport`** for widget tests: the
+  widget binding answers every real HTTP request with 400, so `FakeBridge`
+  stays where it works (model-level `test()` cases) and a widget test
+  scripts the routes it expects.
+

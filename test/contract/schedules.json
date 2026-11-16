@@ -1,0 +1,19 @@
+{
+  "Schedule": {
+    "id": "s-1",
+    "name": "nightly gate",
+    "recipe": "gate",
+    "project": "/home/u/marshal",
+    "repoId": "repo-1",
+    "ref": "main",
+    "inputs": {
+      "branch": "main"
+    },
+    "cron": "0 3 * * *",
+    "enabled": true,
+    "lastRun": "2026-11-17T03:00:00Z",
+    "lastRunAgent": "a-1",
+    "lastResult": "passed",
+    "ownerId": "owner-1"
+  }
+}

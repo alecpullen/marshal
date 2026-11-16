@@ -1,0 +1,80 @@
+{
+  "AccessState": {
+    "mode": "act",
+    "auto": true,
+    "system_access": false,
+    "access_revision": 3
+  },
+  "AgentState": "awaiting-approval",
+  "AgentStatus": {
+    "id": "a-1",
+    "project": "/home/u/src/marshal",
+    "name": "fix the login bug",
+    "ownerId": "u-1",
+    "origin": "tui",
+    "clientId": "c-1",
+    "access": {
+      "mode": "act",
+      "auto": true,
+      "system_access": false,
+      "access_revision": 3
+    },
+    "status": "quarantined",
+    "activity": "running go test ./internal/app/...",
+    "contextPct": 42,
+    "changedFiles": 3,
+    "interrupted": true,
+    "versionWarning": "agent runs marshal 0.9.0; the daemon is 0.9.1",
+    "held": true,
+    "isolated": true,
+    "branch": "fix/login",
+    "updatedAt": "2026-11-17T04:00:00Z",
+    "sourceKind": "git",
+    "readOnly": true,
+    "targetBranch": "main",
+    "prUrl": "https://example.com/marshal/pull/7",
+    "pushedAt": "2026-11-17T04:05:00Z",
+    "gateOverride": {
+      "reason": "the flaky test is unrelated",
+      "at": "2026-11-17T04:06:00Z",
+      "by": "u-1",
+      "failedCommand": "go test ./...",
+      "skipped": true
+    },
+    "workspace": {
+      "name": "workspace",
+      "version": 2,
+      "source": "studio",
+      "timeout": "30m"
+    },
+    "pending": {
+      "kind": "question",
+      "id": "q-1",
+      "params": {
+        "question": "Which branch?"
+      }
+    }
+  },
+  "AgentWorkspace": {
+    "name": "workspace",
+    "version": 2,
+    "source": "studio",
+    "timeout": "30m"
+  },
+  "GateOverride": {
+    "reason": "the flaky test is unrelated",
+    "at": "2026-11-17T04:06:00Z",
+    "by": "u-1",
+    "failedCommand": "go test ./...",
+    "skipped": true
+  },
+  "PendingKind": "approval",
+  "PendingRequest": {
+    "kind": "question",
+    "id": "q-1",
+    "params": {
+      "question": "Which branch?"
+    }
+  },
+  "WorkspaceSource": "studio"
+}

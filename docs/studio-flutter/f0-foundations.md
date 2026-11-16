@@ -192,14 +192,15 @@ commit each. Item 8 (the spikes) is handled separately.
   are `RawTooltip`. A sheet's barrier was undimmed in F0 for want of a scrim token; the `scrim` token (2026-11-17) now dims it.
 - **Gallery and enforcement (5).** The gallery is `lib/src/ui/gallery/` and
   its debug entry is `lib/gallery_main.dart`. The registry of screens is
-  `test/support/screens.dart`. **The goldens are pinned to macOS**, which
-  answers the first open question with the closest thing this host could
-  check. Drawn with Geist, they rasterize through CoreText on macOS and
-  FreeType on Linux, and no Linux host was available to generate or compare
-  them. On any other OS they are skipped with the reason, so CI's Linux job
-  does not check pixels until they are regenerated on Linux and the pin is
-  flipped. The rest of the gallery test, and the four other enforcement
-  tests, run everywhere.
+  `test/support/screens.dart`. **The goldens are pinned to Linux**, which
+  answers the first open question: they are generated and compared on the
+  host CI's `app` job runs. They were generated on Fedora Linux 44
+  (x86_64), Flutter 3.50.0, Dart 3.14.0, and compared on the same host.
+  Drawn with Geist, they rasterize through FreeType there and through
+  CoreText on macOS, so on any other OS they are skipped with the reason.
+  The pin was flipped in F1, task 1: F0 generated them on macOS because no
+  Linux host was available, and this is that regeneration. The rest of the
+  gallery test, and the four other enforcement tests, run everywhere.
 - **Agent guidance (6).** `AGENTS.md` gains "The Studio's UI".
 
 ### Web build proof (7)

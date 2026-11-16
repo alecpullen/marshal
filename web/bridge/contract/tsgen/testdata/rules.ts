@@ -33,6 +33,10 @@ export interface Sample {
   raw: unknown;
   tags: string[];
   lookup: Record<string, number>;
+  /**
+   * OptLabels is a map dropped from the wire when it is empty.
+   */
+  optLabels?: Record<string, string>;
   shade: Color;
   nested: Inner;
   fallback: Label;

@@ -53,6 +53,28 @@ flutter build web -t lib/gallery_main.dart --release --no-web-resources-cdn
 `web/flutter_bootstrap.js` points the engine's font fallback at the app's
 own assets, so a web build requests nothing from any other host.
 
+F1's connection check is a second debug entry, on the gallery's own entry
+point: it lists the hosts this machine can reach — the local daemon, then each
+server profile in `fleet.toml` — with each one's state, when it was last heard
+from, and how many agents it runs. It is not in the shipped app.
+
+```sh
+flutter run -t lib/gallery_main.dart -d linux --dart-define=connection-check=true
+```
+
+`lib/src/client/` is the bridge client: the transport (a unix socket to the
+local daemon, HTTPS with a bearer token to a server, or the browser's own
+`fetch`), the typed routes, the fleet stream with its resume and backoff, and
+the host registry. It is the only code in the app that opens a socket. The
+generated contract types beside it come from `web/bridge/contract`; regenerate
+them with `go test ./web/bridge/contract/dartgen -run TestDartContractIsCurrent -update`.
+
+The token tests in `test/client/transport_web_test.dart` run in a browser:
+
+```sh
+flutter test --platform chrome test/client/transport_web_test.dart
+```
+
 Two commands run it from a checkout (`flutter` must be on `PATH`):
 
 ```sh

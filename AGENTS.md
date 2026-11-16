@@ -62,10 +62,28 @@ go build ./cmd/webbridge                    # embeds the built assets
 The SPA is baked in with `//go:embed`, so a change under `web/ui/src` is
 **invisible until `npm run build` reruns and the binary is rebuilt**.
 
+The Svelte Studio is frozen from F2 on: bug fixes only. The Studio's future is
+the Flutter app in `app/` (`docs/studio-flutter/`), which replaces the Svelte
+places one phase at a time; new UI work goes there, not under `web/ui/src`.
+
+The Flutter Studio is embedded beside it and served at `/next/` (F2):
+
+```bash
+cd app && flutter build web --base-href /next/ --output ../web/bridge/static-next
+go build ./cmd/webbridge
+```
+
+`web/bridge/static-next/` is the Flutter build; in a Go-only checkout it holds
+a placeholder index. The web tests and the release build both run that command
+before building `webbridge`, because `//go:embed` bakes it in.
+
 `web/bridge/contract` holds the fleet loop's wire types. `web/ui/src/lib/contract.ts`
 is generated from it: regenerate with
 `go test ./web/bridge/contract/tsgen -run TestTypeScriptContractIsCurrent -update`.
-`npm run check` type-checks the web UI.
+`npm run check` type-checks the web UI. The same package generates the app's
+Dart module, `app/lib/src/client/contract.g.dart`: regenerate with
+`go test ./web/bridge/contract/dartgen -run TestDartContractIsCurrent -update`.
+Both currency tests fail on a contract change that is not regenerated.
 
 `webbridge --profile local` is the user's local daemon (P4): a unix socket,
 host processes only, and no container machinery. Each project runs its own

@@ -1,0 +1,104 @@
+{
+  "Automations": {
+    "reviewBot": {
+      "enabled": true,
+      "repoId": "acme/widgets",
+      "labels": ["ready"],
+      "skipDrafts": true,
+      "authors": ["alec"],
+      "routing": {
+        "profile": "local"
+      },
+      "autoPost": false,
+      "holdSeverities": ["blocking"]
+    },
+    "ciFixer": {
+      "enabled": true,
+      "repoId": "acme/widgets",
+      "branches": ["main", "release/*"],
+      "maxMinutes": 30,
+      "maxUsd": 2.5,
+      "push": false,
+      "pushBranches": ["fix/*"]
+    }
+  },
+  "CIFixerSettings": {
+    "enabled": true,
+    "repoId": "acme/widgets",
+    "branches": ["main", "release/*"],
+    "maxMinutes": 30,
+    "maxUsd": 2.5,
+    "push": false,
+    "pushBranches": ["fix/*"]
+  },
+  "CIHistory": {
+    "id": "c-1",
+    "repoId": "acme/widgets",
+    "branch": "main",
+    "sha": "9f1ad475",
+    "check": "go",
+    "status": "fixed",
+    "reason": "a nil dereference in the parser",
+    "prUrl": "https://example.test/acme/widgets/pull/42",
+    "agentId": "a-1",
+    "costUsd": 0.42,
+    "createdAt": "2026-11-17T03:10:00Z",
+    "pushed": true
+  },
+  "Finding": {
+    "id": "f-1",
+    "severity": "blocking",
+    "path": "internal/repo/scan.go",
+    "line": 42,
+    "title": "The scan drops a file it cannot read",
+    "body": "A permission error ends the walk instead of being reported.",
+    "stepNode": "step-2"
+  },
+  "ProjectAutomations": {
+    "automations": {
+      "reviewBot": {
+        "enabled": true,
+        "repoId": "acme/widgets",
+        "skipDrafts": true,
+        "autoPost": false
+      }
+    }
+  },
+  "ReviewBotSettings": {
+    "enabled": true,
+    "repoId": "acme/widgets",
+    "labels": ["ready"],
+    "skipDrafts": true,
+    "authors": ["alec"],
+    "routing": {
+      "profile": "local"
+    },
+    "autoPost": false,
+    "holdSeverities": ["blocking"]
+  },
+  "ReviewDraft": {
+    "id": "d-1",
+    "repoId": "acme/widgets",
+    "number": 42,
+    "title": "Make the scan report a file it cannot read",
+    "prUrl": "https://example.test/acme/widgets/pull/42",
+    "headRef": "fix/scan",
+    "headSha": "9f1ad475",
+    "project": "/home/u/marshal",
+    "agentId": "a-1",
+    "findings": [
+      {
+        "id": "f-1",
+        "severity": "blocking",
+        "path": "internal/repo/scan.go",
+        "line": 42,
+        "title": "The scan drops a file it cannot read",
+        "body": "A permission error ends the walk instead of being reported.",
+        "stepNode": "step-2"
+      }
+    ],
+    "summary": "One blocking finding.",
+    "status": "draft",
+    "createdAt": "2026-11-17T03:10:00Z"
+  }
+}

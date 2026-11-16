@@ -1,0 +1,51 @@
+{
+  "OnTrip": {
+    "notify": true,
+    "resume": false,
+    "reroute": {
+      "role": "implementer",
+      "preset": "local"
+    }
+  },
+  "RerouteRule": {
+    "role": "implementer",
+    "preset": "local"
+  },
+  "WatchInfo": {
+    "agentId": "a-1",
+    "id": "w-1",
+    "name": "the gate",
+    "kind": "command",
+    "state": "watching",
+    "condition": "exit != 0",
+    "mode": "interval",
+    "intervalMs": 5000,
+    "owner": "a-1",
+    "fireCount": 2,
+    "lastSample": "exit 1",
+    "createdAt": 1763352000000,
+    "lastFiredAt": 1763352600000,
+    "samples": [
+      {
+        "at": 1763352600000,
+        "value": 1,
+        "tripped": true
+      }
+    ],
+    "onTrip": {
+      "notify": true,
+      "resume": false,
+      "reroute": {
+        "role": "implementer",
+        "preset": "local"
+      }
+    },
+    "notify": true,
+    "resume": false
+  },
+  "WatchSample": {
+    "at": 1763352600000,
+    "value": 1,
+    "tripped": true
+  }
+}

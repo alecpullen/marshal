@@ -1,0 +1,24 @@
+{
+  "ActionStatus": {
+    "status": "denied"
+  },
+  "ApproveResult": {
+    "agentId": "a-1",
+    "status": "spawning"
+  },
+  "PendingSubmission": {
+    "auto": true,
+    "clientId": "c-1",
+    "createdAt": "2026-11-17T04:40:00Z",
+    "expiresAt": "2026-11-17T05:40:00Z",
+    "id": "s-1",
+    "mode": "act",
+    "origin": "tui",
+    "ownerId": "u-1",
+    "plan": "docs/plan.md",
+    "prompt": "fix the login bug",
+    "ref": "refs/heads/main",
+    "repoId": "r-1",
+    "title": "Fix the login bug"
+  }
+}

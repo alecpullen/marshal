@@ -178,6 +178,35 @@ final class Ember {
   /// is the absence of one.
   Color get none => const Color(0x00000000);
 
+  // §2 — the syntax classes a read-only code viewer colours. The map is
+  // fixed (f4-inspector.md decisions): a class it does not name is [fg], so
+  // no token is invented for a token class the viewer has not been told
+  // about.
+
+  /// The classes a highlight.js-style tokeniser emits that this map names.
+  static const codeClasses = [
+    'keyword',
+    'literal',
+    'built_in',
+    'symbol',
+    'string',
+    'attr',
+    'regexp',
+    'number',
+    'meta',
+    'section',
+    'comment',
+  ];
+
+  /// The colour a token class takes.
+  Color codeToken(String className) => switch (className) {
+    'keyword' || 'literal' || 'built_in' || 'symbol' => accent,
+    'string' || 'attr' || 'regexp' => ok,
+    'number' || 'meta' || 'section' => warn,
+    'comment' => muted,
+    _ => fg,
+  };
+
   // §3 — the text roles, each in [fg]. Recolour with [TintText.tint].
 
   /// One headline number on a card. 22 / 600.

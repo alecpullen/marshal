@@ -24,10 +24,15 @@ class NavRow extends StatelessWidget {
     this.expanded,
     this.onToggle,
     this.indent = false,
+    this.mono = false,
   });
 
   /// What the row says.
   final String label;
+
+  /// Set the label in mono: for a row that names a path or another
+  /// identifier (§3), as `Pill.mono` does for a chip.
+  final bool mono;
 
   /// Opens what the row names.
   final VoidCallback onTap;
@@ -85,7 +90,9 @@ class NavRow extends StatelessWidget {
                 label,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: selected ? e.bodyStrong : e.body,
+                style: mono
+                    ? e.mono.tint(selected ? e.fg : e.muted)
+                    : (selected ? e.bodyStrong : e.body),
               ),
             ),
             if (count != null) ...[

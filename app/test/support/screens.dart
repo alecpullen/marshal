@@ -1,6 +1,7 @@
 import 'package:marshal_app/src/client/contract.g.dart'
     show
         DiffFile,
+        FileEntry,
         GateResult,
         StackSnapshot,
         StepDiff,
@@ -14,6 +15,7 @@ import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
 import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
 import 'package:marshal_app/src/model/inbox_model.dart' as model;
 import 'package:marshal_app/src/model/changes_model.dart';
+import 'package:marshal_app/src/model/files_model.dart';
 import 'package:marshal_app/src/model/inspector_state.dart';
 import 'package:marshal_app/src/model/overview_model.dart';
 import 'package:marshal_app/src/model/nav_model.dart';
@@ -25,6 +27,7 @@ import 'package:marshal_app/src/ui/debug/connection_check.dart';
 import 'package:marshal_app/src/ui/gallery/gallery.dart';
 import 'package:marshal_app/src/ui/inbox/inbox.dart';
 import 'package:marshal_app/src/ui/inspector/changes_tab.dart';
+import 'package:marshal_app/src/ui/inspector/files_tab.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 import 'package:marshal_app/src/ui/overview/overview.dart';
 import 'package:marshal_app/src/ui/shell/placeholder.dart';
@@ -358,6 +361,14 @@ final screens = <ScreenCase>[
     },
   ),
   ScreenCase(
+    name: 'inspector files',
+    ready: () => FilesTab(model: _filesModel()),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => FilesTab(model: _filesModel(), state: kind),
+    },
+  ),
+  ScreenCase(
     name: 'inspector changes',
     ready: () => ChangesTab(model: _changesModel()),
     states: {
@@ -370,6 +381,36 @@ final screens = <ScreenCase>[
 /// The inspector the screen cases show, with each tab's frame placeholder
 /// until the task that builds that tab supplies its body.
 InspectorState _inspectorState() => InspectorState();
+
+/// The workspace tree the inspector's Files tab shows.
+FilesModel _filesModel() => FilesModel.seeded(
+  changed: const {
+    'internal/viewmodel/testdata/index.json',
+    'internal/repo/symbols_test.go',
+  },
+  root: '/home/u/marshal',
+  tree: const {
+    '': [
+      FileEntry(name: 'internal', dir: true, size: 0),
+      FileEntry(name: 'scripts', dir: true, size: 0),
+      FileEntry(name: 'AGENTS.md', dir: false, size: 900),
+      FileEntry(name: 'go.mod', dir: false, size: 412),
+    ],
+    'internal': [
+      FileEntry(name: 'repo', dir: true, size: 0),
+      FileEntry(name: 'viewmodel', dir: true, size: 0),
+    ],
+    'internal/repo': [
+      FileEntry(name: 'symbols.go', dir: false, size: 300),
+      FileEntry(name: 'symbols_test.go', dir: false, size: 220),
+    ],
+    'internal/viewmodel': [FileEntry(name: 'detail.go', dir: false, size: 400)],
+  },
+  files: const {
+    'internal/repo/symbols.go': 'package repo\n\nfunc Symbols() {}\n',
+    'AGENTS.md': '# Marshal\n\nGuidance for agents.\n',
+  },
+);
 
 /// The changes the inspector's Changes tab shows: a failed gate, two files,
 /// one of them new, and the steps that changed them.

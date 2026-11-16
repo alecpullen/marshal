@@ -139,6 +139,22 @@ class BridgeClient {
     method: 'POST',
   );
 
+  /// GET /api/agents/{id}/files?path=: one directory of the agent's
+  /// workspace, directories first. The empty path is the workspace root.
+  Future<FileList> files(String agentId, String path) => _objectOf(
+    '/api/agents/${Uri.encodeComponent(agentId)}/files',
+    FileList.fromJson,
+    query: {'path': path},
+  );
+
+  /// GET /api/agents/{id}/file?path=: one regular file's content, capped by
+  /// the agent.
+  Future<FileContent> file(String agentId, String path) => _objectOf(
+    '/api/agents/${Uri.encodeComponent(agentId)}/file',
+    FileContent.fromJson,
+    query: {'path': path},
+  );
+
   /// GET /api/agents/{id}/commit-draft: the message the agent would commit.
   Future<CommitDraft> commitDraft(String agentId) => _objectOf(
     '/api/agents/${Uri.encodeComponent(agentId)}/commit-draft',

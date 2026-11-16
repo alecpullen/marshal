@@ -268,7 +268,7 @@ func (t *toolSet) fileReadOversizedHead(requestedPath string) (registry.ToolResu
 	}
 
 	if t.fileTracker != nil {
-		_ = t.fileTracker.RecordRead(path, time.Now(), observedRevision)
+		_ = t.fileTracker.RecordRead(path, info.ModTime(), observedRevision)
 	}
 
 	return registry.ToolResult{
@@ -365,9 +365,10 @@ func (t *toolSet) fileReadOversizedRange(requestedPath string, startLine, endLin
 	}
 
 	// Record the read exactly as the head path does: file.write_patch's
-	// freshness guard depends on it.
+	// freshness guard depends on it. The mark is the version's own stamp, so a
+	// retry can prove it is looking at the bytes this read was shown.
 	if t.fileTracker != nil {
-		_ = t.fileTracker.RecordRead(path, time.Now(), observedRevision)
+		_ = t.fileTracker.RecordRead(path, info.ModTime(), observedRevision)
 	}
 
 	// A start past the end of the file is an empty window, not an error —
@@ -510,7 +511,7 @@ func (t *toolSet) readWorkspaceFile(requestedPath string, maxBytes int64) ([]byt
 	}
 
 	if t.fileTracker != nil {
-		_ = t.fileTracker.RecordRead(path, time.Now(), observedRevision)
+		_ = t.fileTracker.RecordRead(path, info2.ModTime(), observedRevision)
 	}
 	return data, nil
 }
@@ -556,6 +557,19 @@ func (t *toolSet) checkFileRead(path string, info os.FileInfo) (filetrack.WriteS
 	if err != nil {
 		return filetrack.WriteState{}, readAllowed, err
 	}
+	// A read licenses the edit when it is a read of the version now on disk:
+	// the same write revision, and the same modification time the read was
+	// shown. The version's own stamp is what proves the bytes are the ones that
+	// were read — a clock watermark would license an edit over bytes that
+	// landed after the read whenever the file's stamp runs ahead of this
+	// process's clock (a remote mount, a container sharing a host clock, a
+	// host-generated tarball). This is decided before the newest writer's
+	// exemption, which ignores every read: one external touch (a formatter, a
+	// checkout, a shell-side edit) would otherwise make the path un-editable for
+	// the rest of the session, retries included.
+	if read.OK && (!write.OK || read.Revision >= write.Revision) && info.ModTime().Equal(read.At) {
+		return write, readAllowed, nil
+	}
 	if t.isNewestWriter(write) {
 		if info.ModTime().After(write.At) {
 			return write, readStale, nil
@@ -565,13 +579,8 @@ func (t *toolSet) checkFileRead(path string, info os.FileInfo) (filetrack.WriteS
 	if !read.OK {
 		return write, readNever, nil
 	}
-	if write.OK && write.Revision > read.Revision {
-		return write, readStale, nil
-	}
-	if info.ModTime().After(read.At) {
-		return write, readStale, nil
-	}
-	return write, readAllowed, nil
+	// The read predates the newest write, or the file changed after that read.
+	return write, readStale, nil
 }
 
 // recheckWriteGuard re-runs the read/staleness check immediately before a
@@ -647,21 +656,36 @@ func writerNote(write filetrack.WriteState, mod time.Time) string {
 func (t *toolSet) changedOnDiskError(path string, fp patch.FilePatch, write filetrack.WriteState, mod time.Time, refreshRead bool) error {
 	var region string
 	var start, end int
+	// shown is the version the embedded region was read from. It is stat'd from
+	// the descriptor the bytes came from rather than taken from the caller's
+	// earlier stat, so a write landing between the guard and this read cannot
+	// stamp the refreshed mark with a version other than the one displayed.
+	shown := mod
 	if len(fp.Chunks) > 0 {
-		data, err := os.ReadFile(path)
-		if err == nil {
-			search, _, failed := patch.FindFailingChunk(string(data), fp)
-			if !failed {
-				search = fp.Chunks[0].Search
+		if f, err := os.Open(path); err == nil {
+			info, statErr := f.Stat()
+			data, readErr := io.ReadAll(f)
+			_ = f.Close()
+			if statErr == nil {
+				shown = info.ModTime()
 			}
-			region, start, end = patch.NearestRegionLines(
-				string(data), search, patch.NearestRegionWindowSize(search))
+			if readErr == nil {
+				search, _, failed := patch.FindFailingChunk(string(data), fp)
+				if !failed {
+					search = fp.Chunks[0].Search
+				}
+				region, start, end = patch.NearestRegionLines(
+					string(data), search, patch.NearestRegionWindowSize(search))
+			}
 		}
 	}
 
 	refresh := false
 	if region != "" && refreshRead && t.fileTracker != nil {
-		if err := t.fileTracker.RecordRead(path, time.Now(), write.Revision); err == nil {
+		// Record the version that was just displayed: the retry is licensed by
+		// the bytes the error showed, so the mark is that version's own stamp,
+		// not this process's clock.
+		if err := t.fileTracker.RecordRead(path, shown, write.Revision); err == nil {
 			refresh = true
 		}
 	}
@@ -671,7 +695,7 @@ func (t *toolSet) changedOnDiskError(path string, fp patch.FilePatch, write file
 		suffix = "; the current region is shown below"
 	}
 	base := fmt.Errorf("file %s changed on disk since last read%s%s",
-		fp.Path, writerNote(write, mod), suffix)
+		fp.Path, writerNote(write, shown), suffix)
 	if region == "" {
 		return base
 	}
@@ -692,7 +716,16 @@ func (t *toolSet) recordWrite(path string) {
 	if t.fileTracker == nil {
 		return
 	}
-	if err := t.fileTracker.RecordWrite(path, time.Now(), t.actor()); err != nil {
+	// Record the version that was committed, not this process's clock: the
+	// writer exemption compares the file's modification time with this instant,
+	// so on a filesystem whose stamps run ahead of the clock (a remote mount, a
+	// container sharing a host clock) a clock-stamped write would make the
+	// agent's own commit look like a change that landed after it.
+	at := time.Now()
+	if info, err := os.Stat(path); err == nil {
+		at = info.ModTime()
+	}
+	if err := t.fileTracker.RecordWrite(path, at, t.actor()); err != nil {
 		// The write itself committed. A ledger failure must not fail the tool
 		// call, but it does mean the next edit may be treated as stale, so
 		// leave a trace instead of silently degrading the writer exemption.

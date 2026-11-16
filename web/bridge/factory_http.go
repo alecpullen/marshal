@@ -32,6 +32,11 @@ type factoryAPI struct {
 	store      *FactoryStore
 	controller *FactoryController
 	fleet      *Fleet
+	// assessor is the optional adapter that answers an explicitly requested
+	// completion assessment. It is nil by default, and a nil adapter records
+	// the assessment as unavailable: an assessment that does not exist is a
+	// state the surfaces render, and it never starts a planner of its own.
+	assessor FactoryCompletionAssessor
 }
 
 var errFactoryConfig = errors.New("factory configuration or capability unsupported")
@@ -66,7 +71,7 @@ func factoryFollowUpCandidate(c FactoryCreate) (FactoryCreate, error) {
 }
 
 func NewFactoryAPI(store *FactoryStore, controller *FactoryController, fleet *Fleet) FactoryAPI {
-	return &factoryAPI{store, controller, fleet}
+	return &factoryAPI{store: store, controller: controller, fleet: fleet}
 }
 func (a *factoryAPI) priorRequest(id string) bool {
 	if a.store == nil {
@@ -81,13 +86,21 @@ func (a *factoryAPI) Get(id string) (FactoryItem, error) {
 	if a.store == nil {
 		return FactoryItem{}, ErrFactoryUnavailable
 	}
-	return a.store.Get(id)
+	item, err := a.store.Get(id)
+	if err != nil {
+		return FactoryItem{}, err
+	}
+	return withAssessmentFreshness(item), nil
 }
 func (a *factoryAPI) List() []FactoryItem {
 	if a.store == nil {
 		return []FactoryItem{}
 	}
-	return a.store.List()
+	items := a.store.List()
+	for n := range items {
+		items[n] = withAssessmentFreshness(items[n])
+	}
+	return items
 }
 func (a *factoryAPI) Create(req FactoryCreate) (FactoryItem, error) {
 	if a.store == nil {
@@ -256,6 +269,14 @@ func (a *factoryAPI) Command(ctx context.Context, id string, cmd FactoryCommand)
 	if strings.TrimSpace(cmd.RequestID) == "" || cmd.ExpectedVersion == 0 {
 		return FactoryItem{}, fmt.Errorf("%w: requestId and expectedVersion required", errFactoryInput)
 	}
+	// An assessment is evidence about the business outcome, never a gate on
+	// it, so it is applied here: the adapter call is transport-side work that
+	// has to stay outside every store update. The MCP path
+	// (CommandAuthorized) has no case for this kind and answers it with a
+	// conflict, which is what makes the assessment Studio-only.
+	if cmd.Kind == "assess_completion" {
+		return a.assessCompletion(ctx, id, cmd)
+	}
 	if cmd.Kind == "retry" && cmd.Replacement != nil {
 		copy := *cmd.Replacement
 		copy.RequestID = cmd.RequestID
@@ -266,7 +287,11 @@ func (a *factoryAPI) Command(ctx context.Context, id string, cmd FactoryCommand)
 		if err != nil {
 			return FactoryItem{}, err
 		}
-		return a.store.Update(id, cmd.RequestID, cmd.ExpectedVersion, raw, nil, time.Now().UTC())
+		item, err := a.store.Update(id, cmd.RequestID, cmd.ExpectedVersion, raw, nil, time.Now().UTC())
+		if err != nil {
+			return FactoryItem{}, err
+		}
+		return withAssessmentFreshness(item), nil
 	}
 	item, err := a.store.Get(id)
 	if err != nil {
@@ -332,7 +357,11 @@ func (a *factoryAPI) Command(ctx context.Context, id string, cmd FactoryCommand)
 			return FactoryItem{}, err
 		}
 	}
-	return a.controller.Command(ctx, id, cmd)
+	applied, err := a.controller.Command(ctx, id, cmd)
+	if err != nil {
+		return FactoryItem{}, err
+	}
+	return withAssessmentFreshness(applied), nil
 }
 func (a *factoryAPI) preflight(ctx context.Context, c FactoryConfig, _ bool) error {
 	if a.fleet == nil || a.fleet.ws == nil {

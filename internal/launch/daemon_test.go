@@ -3,11 +3,13 @@ package launch
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -21,10 +23,12 @@ import (
 	"marshal/internal/acp/service"
 	"marshal/internal/acpclient"
 	"marshal/internal/acpclient/rpc"
+	"marshal/internal/acpwire"
 	"marshal/internal/app"
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui"
 	"marshal/internal/app/tui/fleet"
+	"marshal/internal/app/tui/reconnect"
 	"marshal/internal/daemon"
 	"marshal/internal/fleetclient"
 	"marshal/web/bridge/contract"
@@ -76,8 +80,11 @@ type fakeDaemon struct {
 	attachErr error
 	// agentAttachErr does the same for AttachAgent, as a refused open does.
 	agentAttachErr error
-	ctx            context.Context
-	cancel         context.CancelFunc
+	// nextSessionID, when set, is the session the next serve resumes rather
+	// than starting a fresh one: a reconnect lands on the session it left.
+	nextSessionID string
+	ctx           context.Context
+	cancel        context.CancelFunc
 
 	mu            sync.Mutex
 	infoCalls     int
@@ -151,6 +158,11 @@ func (f *fakeDaemon) serve(attachErr error, agentID string) (*daemon.Attachment,
 	f.mu.Lock()
 	previous := f.current
 	f.current = nil
+	// A test can name the session the next serve resumes: a reconnect must land
+	// on the session it left, and each serve otherwise mints its own from its
+	// attach's clock.
+	resume := f.nextSessionID
+	f.nextSessionID = ""
 	// Each attach's runtime gets its own clock: the session ID derives from it,
 	// so a shared clock would make a second attach collide with the first
 	// session's row.
@@ -164,6 +176,9 @@ func (f *fakeDaemon) serve(attachErr error, agentID string) (*daemon.Attachment,
 	appOpts := append(pipeAppOptions(f.dir, f.home),
 		app.WithNow(func() time.Time { return pipeNow.Add(time.Duration(seq) * time.Second) }),
 	)
+	if resume != "" {
+		appOpts = append(appOpts, app.WithExistingSession(resume))
+	}
 	embedded, err := app.NewEmbedded(f.ctx, appOpts...)
 	if err != nil {
 		return nil, err
@@ -206,6 +221,47 @@ func (f *fakeDaemon) drop() {
 	f.mu.Unlock()
 	if current != nil && current.agent != nil {
 		_ = current.agent.Close()
+	}
+}
+
+// serveSessionNext makes the next serve report the session ID it names: a
+// reconnect lands on the session it left rather than opening a new one, and
+// each serve otherwise mints its own from its attach's clock.
+func (f *fakeDaemon) serveSessionNext(sessionID string) {
+	f.mu.Lock()
+	f.nextSessionID = sessionID
+	f.mu.Unlock()
+}
+
+// refuseAttaches makes every later attach fail with err, as a daemon that has
+// gone away does: a reconnect's dial cannot land.
+func (f *fakeDaemon) refuseAttaches(err error) {
+	f.mu.Lock()
+	f.attachErr = err
+	f.agentAttachErr = err
+	f.mu.Unlock()
+}
+
+// restarting sends marshal/restarting on the session's stream, as the bridge
+// does before it closes it, and leaves the pipe open: the caller drops it.
+func (f *fakeDaemon) restarting(t *testing.T, reason string) {
+	t.Helper()
+	f.mu.Lock()
+	current := f.current
+	f.mu.Unlock()
+	if current == nil || current.agent == nil {
+		t.Fatal("the fake has no connection to send marshal/restarting on")
+	}
+	frame, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  acpwire.MethodRestarting,
+		"params":  acpwire.RestartingParams{Reason: reason},
+	})
+	if err != nil {
+		t.Fatalf("encode marshal/restarting: %v", err)
+	}
+	if _, err := current.agent.Write(append(frame, '\n')); err != nil {
+		t.Fatalf("send marshal/restarting: %v", err)
 	}
 }
 
@@ -628,25 +684,28 @@ func TestAResumeReattachesToTheChosenSession(t *testing.T) {
 	}
 }
 
+// TestALostConnectionNamesTheReattach: a connection that closes and does not
+// come back reports the loss with the command that reattaches, once the
+// reconnect's short window has passed.
 func TestALostConnectionNamesTheReattach(t *testing.T) {
 	dir := t.TempDir()
 	fake := newFakeDaemon(t, dir, t.TempDir())
 
-	err := Run(context.Background(), io.Discard,
-		WithDaemon("/tmp/marshal-test-daemon.sock"),
-		withDaemonClient(fake),
-		withWorkingDir(dir),
-		WithProgramRunner(func(ctx context.Context, _ tea.Model, _ io.Writer) ProgramResult {
-			// The daemon goes away while the program waits for work.
-			fake.drop()
-			select {
-			case <-ctx.Done():
-			case <-time.After(10 * time.Second):
-				t.Error("the program's context never ended after the daemon closed")
-			}
-			return ProgramResult{}
-		}),
-	)
+	script := &loopScript{t: t}
+	script.onSession = func(ctx context.Context, m tui.Model) tui.Model {
+		// The daemon goes away, and does not answer again.
+		fake.refuseAttaches(errors.New("connect: connection refused"))
+		fake.drop()
+		select {
+		case <-ctx.Done():
+		case <-time.After(10 * time.Second):
+			t.Error("the program's context never ended after the daemon closed")
+		}
+		return m
+	}
+	err := runOnTheDaemon(t, fake, dir, io.Discard, script,
+		loopFleet(filepath.Clean(dir), "sess-row"),
+		withReconnect(120*time.Millisecond, 10*time.Millisecond, 20*time.Millisecond))
 	if err == nil {
 		t.Fatal("Run succeeded after the daemon's connection closed")
 	}
@@ -746,16 +805,23 @@ type fleetPass struct {
 type loopScript struct {
 	t *testing.T
 	// onSession runs inside a session pass before it returns its result: a
-	// test drops the connection there.
-	onSession func(ctx context.Context, m tui.Model)
+	// test drops the connection there, or types into the screen. It returns
+	// the model the pass ends with, which is where the loop reads the draft
+	// from, as runProgram does.
+	onSession func(ctx context.Context, m tui.Model) tui.Model
 	// onFleet runs inside a fleet pass before it returns its result.
 	onFleet func(ctx context.Context, m fleet.Model)
+	// onWait runs inside a waiting pass before it returns its result: a test
+	// watches the attempts arrive there.
+	onWait func(ctx context.Context, m reconnect.Model)
 
 	fleetEnds   []ProgramResult
 	sessionEnds []ProgramResult
+	waitEnds    []ProgramResult
 
 	fleetPasses []fleetPass
 	sessions    []tui.Model
+	waits       []reconnect.Model
 }
 
 func (s *loopScript) run(ctx context.Context, m tea.Model, _ io.Writer) ProgramResult {
@@ -770,12 +836,22 @@ func (s *loopScript) run(ctx context.Context, m tea.Model, _ io.Writer) ProgramR
 			screen:   fleetScreen(model),
 		})
 		return nextResult(&s.fleetEnds)
+	case reconnect.Model:
+		if s.onWait != nil {
+			s.onWait(ctx, model)
+		}
+		s.waits = append(s.waits, model)
+		return nextResult(&s.waitEnds)
 	case tui.Model:
 		if s.onSession != nil {
-			s.onSession(ctx, model)
+			model = s.onSession(ctx, model)
 		}
 		s.sessions = append(s.sessions, model)
-		return nextResult(&s.sessionEnds)
+		res := nextResult(&s.sessionEnds)
+		// Decision 5: runProgram reads the screen's draft off the model it
+		// ended with, so the script does too.
+		res.Draft = model.Draft()
+		return res
 	default:
 		s.t.Fatalf("the daemon loop ran a %T", m)
 		return ProgramResult{}
@@ -996,9 +1072,10 @@ func TestSlashFleetFromAPlainSessionOpensTheFleet(t *testing.T) {
 	// fleet will show is only known inside the session pass: list the session
 	// the loop really ran, as the daemon's own fleet does. Doing it here leaves
 	// the cursor something to restore onto that is not the roster's first row.
-	script.onSession = func(context.Context, tui.Model) {
+	script.onSession = func(_ context.Context, m tui.Model) tui.Model {
 		id := fake.lastRuntime().SessionID
 		fleetClient.state.Daemon.Children[0].Sessions = []contract.DaemonSession{{ID: id}}
+		return m
 	}
 	if err := runOnTheDaemon(t, fake, dir, io.Discard, script, fleetClient); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -1090,16 +1167,20 @@ func TestALostConnectionReturnsToTheFleetWithANotice(t *testing.T) {
 			{},
 		},
 	}
-	script.onSession = func(ctx context.Context, _ tui.Model) {
-		// The daemon goes away while the screen waits for work.
+	script.onSession = func(ctx context.Context, m tui.Model) tui.Model {
+		// The daemon goes away while the screen waits for work, and never
+		// comes back: the reconnect's short window ends the loss.
+		fake.refuseAttaches(errors.New("connect: connection refused"))
 		fake.drop()
 		select {
 		case <-ctx.Done():
 		case <-time.After(10 * time.Second):
 			t.Error("the screen's context never ended after the daemon closed")
 		}
+		return m
 	}
-	if err := runTheFleet(t, fake, dir, io.Discard, script, loopFleet(root, "sess-row")); err != nil {
+	if err := runTheFleet(t, fake, dir, io.Discard, script, loopFleet(root, "sess-row"),
+		withReconnect(120*time.Millisecond, 10*time.Millisecond, 20*time.Millisecond)); err != nil {
 		t.Fatalf("Fleet: %v", err)
 	}
 
@@ -1203,15 +1284,21 @@ func TestBeforeTheFleetEndingsAreUnchanged(t *testing.T) {
 		fake := newFakeDaemon(t, dir, t.TempDir())
 
 		script := &loopScript{t: t}
-		script.onSession = func(ctx context.Context, _ tui.Model) {
+		script.onSession = func(ctx context.Context, m tui.Model) tui.Model {
+			// The daemon goes away and nothing serves the session again: the
+			// reconnect's short window ends it, and the loss is the loop's
+			// error as it was before the fleet had run.
+			fake.refuseAttaches(errors.New("connect: connection refused"))
 			fake.drop()
 			select {
 			case <-ctx.Done():
 			case <-time.After(10 * time.Second):
 				t.Error("the screen's context never ended after the daemon closed")
 			}
+			return m
 		}
-		err := runOnTheDaemon(t, fake, dir, io.Discard, script, loopFleet(dir, "sess-row"))
+		err := runOnTheDaemon(t, fake, dir, io.Discard, script, loopFleet(dir, "sess-row"),
+			withReconnect(120*time.Millisecond, 10*time.Millisecond, 20*time.Millisecond))
 		if err == nil {
 			t.Fatal("Run succeeded after the daemon's connection closed")
 		}
@@ -1271,7 +1358,10 @@ func TestADaemonSessionGetsTheFleet(t *testing.T) {
 		view   string
 	)
 	script := &loopScript{t: t, sessionEnds: []ProgramResult{{}}}
-	script.onSession = func(_ context.Context, m tui.Model) { view = sessionView(t, m) }
+	script.onSession = func(_ context.Context, m tui.Model) tui.Model {
+		view = sessionView(t, m)
+		return m
+	}
 
 	if err := runOnTheDaemon(t, fake, dir, io.Discard, script, client, recordFleetWiring(&wiring)); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -1387,12 +1477,13 @@ func TestTheLoopsFleetClientClosesWithIt(t *testing.T) {
 
 	var wiring []fleetWiring
 	script := &loopScript{t: t}
-	script.onSession = func(context.Context, tui.Model) {
+	script.onSession = func(_ context.Context, m tui.Model) tui.Model {
 		select {
 		case <-stream.opened:
 		case <-time.After(10 * time.Second):
 			t.Error("the loop's fleet client never reached the bridge")
 		}
+		return m
 	}
 
 	// No client is injected, so the loop builds and owns one.
@@ -1464,6 +1555,447 @@ func parkedNotifications(t *testing.T, w *fleet.Watch) []fleet.Notification {
 	}}
 	parked.Inbox.Groups.NeedsYou = []string{"a2"}
 	return w.Observe(parked)
+}
+
+// typeDraft types text into the screen's composer, as the user does, and
+// returns the model it leaves and the draft the screen then holds.
+func typeDraft(t *testing.T, m tui.Model, text string) (tui.Model, tui.Draft) {
+	t.Helper()
+	for _, r := range text {
+		next, _ := m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+		typed, ok := next.(tui.Model)
+		if !ok {
+			t.Fatalf("the screen updated to %T, want tui.Model", next)
+		}
+		m = typed
+	}
+	if m.Draft().Empty() {
+		t.Fatalf("typing %q left an empty draft", text)
+	}
+	return m, m.Draft()
+}
+
+// clearDraft deletes the composer's text with backspaces, as the user does.
+func clearDraft(t *testing.T, m tui.Model, runes int) tui.Model {
+	t.Helper()
+	for i := 0; i < runes; i++ {
+		next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
+		typed, ok := next.(tui.Model)
+		if !ok {
+			t.Fatalf("the screen updated to %T, want tui.Model", next)
+		}
+		m = typed
+	}
+	if !m.Draft().Empty() {
+		t.Fatalf("the composer still holds a draft after %d backspaces", runes)
+	}
+	return m
+}
+
+// userConfigHome is a home whose user config exists, so a daemon session screen
+// opens on its composer rather than the first-run connect panel: the draft
+// tests type into it.
+func userConfigHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	// The config must land in this home, so the ambient overrides cannot send
+	// the read elsewhere.
+	t.Setenv("MARSHAL_CONFIG_DIR", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	path := config.UserConfigPath(home)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("create the user config directory: %v", err)
+	}
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("write the user config: %v", err)
+	}
+	return home
+}
+
+// TestALostConnectionReconnectsToTheSameSession: a connection that closes is
+// reconnected to the session it left — not to a new one — with the waiting
+// screen between the two session screens (decisions 2 and 4).
+func TestALostConnectionReconnectsToTheSameSession(t *testing.T) {
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, t.TempDir())
+	root := filepath.Clean(dir)
+
+	dropped := false
+	script := &loopScript{t: t}
+	script.onSession = func(ctx context.Context, m tui.Model) tui.Model {
+		if dropped {
+			return m
+		}
+		dropped = true
+		fake.serveSessionNext(m.Session().ID())
+		fake.drop()
+		select {
+		case <-ctx.Done():
+		case <-time.After(10 * time.Second):
+			t.Error("the screen's context never ended after the daemon closed")
+		}
+		return m
+	}
+	if err := runOnTheDaemon(t, fake, dir, io.Discard, script, loopFleet(root, "sess-row"),
+		withReconnect(5*time.Second, 10*time.Millisecond, 50*time.Millisecond)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(script.sessions) != 2 {
+		t.Fatalf("session screens = %d, want 2: the reconnect runs the session again", len(script.sessions))
+	}
+	if len(script.waits) != 1 {
+		t.Fatalf("waiting screens = %d, want the one between them", len(script.waits))
+	}
+	left := script.sessions[0].Session().ID()
+	if got := script.sessions[1].Session().ID(); got != left {
+		t.Errorf("the reconnected screen runs session %q, want the session it left, %q", got, left)
+	}
+	calls := fake.attachCalls()
+	if len(calls) != 2 {
+		t.Fatalf("attaches = %d, want the first and the reconnect: %+v", len(calls), calls)
+	}
+	if calls[0].sessionID != "" {
+		t.Errorf("the first attach names session %q, want a new one", calls[0].sessionID)
+	}
+	if calls[1].sessionID != left {
+		t.Errorf("the reconnect attached %q, want the session it left, %q", calls[1].sessionID, left)
+	}
+}
+
+// TestAReconnectedScreenHasTheDraft: the draft the screen ended with comes back
+// with the reconnected screen, before any update (decision 5).
+func TestAReconnectedScreenHasTheDraft(t *testing.T) {
+	home := userConfigHome(t)
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, home)
+	root := filepath.Clean(dir)
+
+	var typed tui.Draft
+	dropped := false
+	script := &loopScript{t: t}
+	script.onSession = func(ctx context.Context, m tui.Model) tui.Model {
+		if dropped {
+			return m
+		}
+		dropped = true
+		var screen tui.Model
+		screen, typed = typeDraft(t, m, "keep me")
+		fake.serveSessionNext(m.Session().ID())
+		fake.drop()
+		select {
+		case <-ctx.Done():
+		case <-time.After(10 * time.Second):
+			t.Error("the screen's context never ended after the daemon closed")
+		}
+		return screen
+	}
+	if err := runOnTheDaemon(t, fake, dir, io.Discard, script, loopFleet(root, "sess-row"),
+		withReconnect(5*time.Second, 10*time.Millisecond, 50*time.Millisecond)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(script.sessions) != 2 {
+		t.Fatalf("session screens = %d, want 2", len(script.sessions))
+	}
+	// The second screen reports the draft as it stands, before any update.
+	got := script.sessions[1].Draft()
+	if got.Empty() {
+		t.Fatal("the reconnected screen has no draft: the session's draft was not kept")
+	}
+	if !reflect.DeepEqual(got, typed) {
+		t.Error("the reconnected screen's draft is not the one the session kept")
+	}
+}
+
+// TestAReturnFromTheFleetHasTheDraft: a screen that ends with /fleet and a draft
+// leaves the draft for the session, and the screen the fleet opens has it
+// (decision 5).
+func TestAReturnFromTheFleetHasTheDraft(t *testing.T) {
+	home := userConfigHome(t)
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, home)
+	root := filepath.Clean(dir)
+
+	var typed tui.Draft
+	pass := 0
+	script := &loopScript{t: t, sessionEnds: []ProgramResult{{ToFleet: true}, {}}}
+	script.onSession = func(_ context.Context, m tui.Model) tui.Model {
+		pass++
+		screen := m
+		if pass == 1 {
+			screen, typed = typeDraft(t, m, "keep me")
+			script.fleetEnds = []ProgramResult{
+				{Open: fleet.Target{Root: root, SessionID: m.Session().ID()}},
+				{},
+			}
+		}
+		fake.serveSessionNext(m.Session().ID())
+		return screen
+	}
+	if err := runOnTheDaemon(t, fake, dir, io.Discard, script, loopFleet(root, "sess-row")); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(script.sessions) != 2 {
+		t.Fatalf("session screens = %d, want the one the fleet opened again", len(script.sessions))
+	}
+	if got := script.sessions[1].Draft(); !reflect.DeepEqual(got, typed) {
+		t.Error("the screen the fleet opened does not have the draft its session kept")
+	}
+}
+
+// TestAnEmptyDraftClearsTheEntry: a screen that ends with nothing in its
+// composer clears the session's entry, so the next screen opens without it
+// (decision 5).
+func TestAnEmptyDraftClearsTheEntry(t *testing.T) {
+	home := userConfigHome(t)
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, home)
+	root := filepath.Clean(dir)
+
+	const text = "keep me"
+	pass := 0
+	script := &loopScript{t: t, sessionEnds: []ProgramResult{{ToFleet: true}, {ToFleet: true}, {}}}
+	script.onSession = func(_ context.Context, m tui.Model) tui.Model {
+		pass++
+		screen := m
+		switch pass {
+		case 1:
+			screen, _ = typeDraft(t, m, text)
+			script.fleetEnds = []ProgramResult{
+				{Open: fleet.Target{Root: root, SessionID: m.Session().ID()}},
+				{Open: fleet.Target{Root: root, SessionID: m.Session().ID()}},
+				{},
+			}
+		case 2:
+			// The screen opened with the draft; the user deletes it before
+			// the screen ends.
+			if m.Draft().Empty() {
+				t.Error("the screen the fleet reopened has no draft")
+			}
+			screen = clearDraft(t, m, len(text))
+		}
+		fake.serveSessionNext(m.Session().ID())
+		return screen
+	}
+	if err := runOnTheDaemon(t, fake, dir, io.Discard, script, loopFleet(root, "sess-row")); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(script.sessions) != 3 {
+		t.Fatalf("session screens = %d, want 3", len(script.sessions))
+	}
+	if got := script.sessions[2].Draft(); !got.Empty() {
+		t.Error("the screen after an empty draft still opened with one")
+	}
+}
+
+// TestTheReconnectGivesUpAfterItsWindow: a daemon that never serves again ends
+// the wait with the window, and the loop reports the loss as it always did
+// (decision 7).
+func TestTheReconnectGivesUpAfterItsWindow(t *testing.T) {
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, t.TempDir())
+
+	var sessionID string
+	dropped := false
+	script := &loopScript{t: t}
+	script.onSession = func(ctx context.Context, m tui.Model) tui.Model {
+		if dropped {
+			return m
+		}
+		dropped = true
+		sessionID = m.Session().ID()
+		fake.refuseAttaches(errors.New("connect: no such file or directory"))
+		fake.drop()
+		select {
+		case <-ctx.Done():
+		case <-time.After(10 * time.Second):
+			t.Error("the screen's context never ended after the daemon closed")
+		}
+		return m
+	}
+	err := runOnTheDaemon(t, fake, dir, io.Discard, script,
+		loopFleet(filepath.Clean(dir), "sess-row"),
+		withReconnect(120*time.Millisecond, 10*time.Millisecond, 20*time.Millisecond))
+	if err == nil {
+		t.Fatal("Run succeeded although the daemon never served the session again")
+	}
+	for _, want := range []string{"marshal attach", sessionID} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Run error = %q, want it to name %q", err, want)
+		}
+	}
+	if len(script.waits) != 1 {
+		t.Errorf("waiting screens = %d, want 1", len(script.waits))
+	}
+}
+
+// TestARefusedReconnectStopsAtOnce: a refusal with a 4xx status ends the
+// attempts at once, so the fake is asked for the session exactly once more
+// (decision 3).
+func TestARefusedReconnectStopsAtOnce(t *testing.T) {
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, t.TempDir())
+
+	dropped := false
+	script := &loopScript{t: t}
+	script.onSession = func(ctx context.Context, m tui.Model) tui.Model {
+		if dropped {
+			return m
+		}
+		dropped = true
+		fake.refuseAttaches(&daemon.AttachError{Status: 409, Message: "the session is gone"})
+		fake.drop()
+		select {
+		case <-ctx.Done():
+		case <-time.After(10 * time.Second):
+			t.Error("the screen's context never ended after the daemon closed")
+		}
+		return m
+	}
+	// A long window: the refusal, not the window, has to end the attempts.
+	err := runOnTheDaemon(t, fake, dir, io.Discard, script,
+		loopFleet(filepath.Clean(dir), "sess-row"),
+		withReconnect(10*time.Second, 10*time.Millisecond, 50*time.Millisecond))
+	if err == nil {
+		t.Fatal("Run succeeded after the reconnect was refused")
+	}
+	if calls := fake.attachCalls(); len(calls) != 2 {
+		t.Fatalf("attaches = %d, want the first and exactly one retry: %+v", len(calls), calls)
+	}
+	if len(script.waits) != 1 {
+		t.Errorf("waiting screens = %d, want 1", len(script.waits))
+	}
+}
+
+// TestGivingUpStopsTheAttempts: when the waiting screen ends because the user
+// gave up, no attempt follows it (decision 2).
+func TestGivingUpStopsTheAttempts(t *testing.T) {
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, t.TempDir())
+
+	dropped := false
+	script := &loopScript{t: t, waitEnds: []ProgramResult{{GaveUp: true}}}
+	script.onSession = func(ctx context.Context, m tui.Model) tui.Model {
+		if dropped {
+			return m
+		}
+		dropped = true
+		fake.refuseAttaches(errors.New("connect: connection refused"))
+		fake.drop()
+		select {
+		case <-ctx.Done():
+		case <-time.After(10 * time.Second):
+			t.Error("the screen's context never ended after the daemon closed")
+		}
+		return m
+	}
+	script.onWait = func(context.Context, reconnect.Model) {
+		// Let one retry be asked for before the user gives up.
+		deadline := time.Now().Add(5 * time.Second)
+		for len(fake.attachCalls()) < 2 && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	err := runOnTheDaemon(t, fake, dir, io.Discard, script,
+		loopFleet(filepath.Clean(dir), "sess-row"),
+		withReconnect(10*time.Second, 100*time.Millisecond, 100*time.Millisecond))
+	if err == nil {
+		t.Fatal("Run succeeded after the user gave up the wait")
+	}
+	if len(script.waits) != 1 {
+		t.Fatalf("waiting screens = %d, want 1", len(script.waits))
+	}
+	stopped := len(fake.attachCalls())
+	// The window has not ended, so an attempt that was not stopped would
+	// arrive within the wait between retries.
+	time.Sleep(300 * time.Millisecond)
+	if got := len(fake.attachCalls()); got != stopped {
+		t.Errorf("attaches = %d after the give-up, want the %d it stopped at", got, stopped)
+	}
+}
+
+// TestTheRestartReasonReachesTheWaitingScreen: the reason the bridge sends
+// before it closes the stream is what the waiting screen says (decision 4).
+func TestTheRestartReasonReachesTheWaitingScreen(t *testing.T) {
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, t.TempDir())
+
+	dropped := false
+	script := &loopScript{t: t, sessionEnds: []ProgramResult{{}, {}}}
+	script.onSession = func(ctx context.Context, m tui.Model) tui.Model {
+		if dropped {
+			return m
+		}
+		dropped = true
+		fake.restarting(t, "upgrade")
+		fake.drop()
+		select {
+		case <-ctx.Done():
+		case <-time.After(10 * time.Second):
+			t.Error("the screen's context never ended after the daemon closed")
+		}
+		return m
+	}
+	if err := runOnTheDaemon(t, fake, dir, io.Discard, script, loopFleet(filepath.Clean(dir), "sess-row"),
+		withReconnect(5*time.Second, 10*time.Millisecond, 50*time.Millisecond)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(script.waits) != 1 {
+		t.Fatalf("waiting screens = %d, want 1", len(script.waits))
+	}
+	screen := ansi.Strip(script.waits[0].View().Content)
+	if !strings.Contains(screen, "is restarting: upgrade") {
+		t.Errorf("the waiting screen does not say why the connection closed:\n%s", screen)
+	}
+}
+
+// TestTheVersionNoteIsAddedOnce: two attaches of one session with a differing
+// version add one note, not one per attach (decision 6).
+func TestTheVersionNoteIsAddedOnce(t *testing.T) {
+	dir := t.TempDir()
+	fake := newFakeDaemon(t, dir, t.TempDir())
+
+	dropped := false
+	script := &loopScript{t: t, sessionEnds: []ProgramResult{{}, {}}}
+	script.onSession = func(ctx context.Context, m tui.Model) tui.Model {
+		if dropped {
+			return m
+		}
+		dropped = true
+		fake.serveSessionNext(m.Session().ID())
+		fake.drop()
+		select {
+		case <-ctx.Done():
+		case <-time.After(10 * time.Second):
+			t.Error("the screen's context never ended after the daemon closed")
+		}
+		return m
+	}
+	if err := runOnTheDaemon(t, fake, dir, io.Discard, script, loopFleet(filepath.Clean(dir), "sess-row"),
+		withAgentVersion("other"),
+		withReconnect(5*time.Second, 10*time.Millisecond, 50*time.Millisecond)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	rt := fake.lastRuntime()
+	if rt == nil {
+		t.Fatal("the fake served no runtime")
+	}
+	var notes []string
+	for _, msg := range rt.State.Messages() {
+		if strings.Contains(msg.Content, "Restart the daemon after upgrading") {
+			notes = append(notes, msg.Content)
+		}
+	}
+	if len(notes) != 1 {
+		t.Fatalf("notes = %d across two attaches, want one: %v", len(notes), notes)
+	}
 }
 
 // TestNotifyOffKeepsTheBell: WithNotify(false) builds the watch with a nil

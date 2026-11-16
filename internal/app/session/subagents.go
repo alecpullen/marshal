@@ -481,6 +481,42 @@ func (s *State) SteerSubagent(requestID string, subagentID int64, message string
 		}
 		return fmt.Errorf("session: subagent steer request %q was already used for a different child or instruction", requestID)
 	}
+	var receipt subagentSteerReceipt
+	// The guard and the enqueue share one critical section with the receipt
+	// reservation: a caller replaying this request ID finds it reserved, and a
+	// settlement cannot land between the liveness check and the enqueue.
+	_, err := s.steerChildLocked(subagentID, message, func(view SubagentView) {
+		receipt = subagentSteerReceipt{
+			RequestID:  requestID,
+			SubagentID: subagentID,
+			Message:    message,
+			Label:      view.Label,
+		}
+		if s.subagentSteers == nil {
+			s.subagentSteers = make(map[string]subagentSteerReceipt)
+		}
+		s.subagentSteers[requestID] = receipt
+	})
+	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
+
+	s.recordSubagentSteer(receipt)
+	return nil
+}
+
+// steerChildLocked validates that a child is live and still draining its
+// steering queue, then enqueues message on it. The caller holds s.mu across
+// both, so a settlement landing in between cannot turn an accepted instruction
+// into one nothing will read: FinishSubagent takes the same lock. Lock order is
+// the parent's mu then the child's, which no path reverses — a child never
+// reaches its parent.
+//
+// record, when non-nil, runs inside the same critical section before the
+// enqueue, so a caller can reserve what it is about to deliver without opening
+// a window in which a concurrent caller delivers it too.
+func (s *State) steerChildLocked(subagentID int64, message string, record func(SubagentView)) (SubagentView, error) {
 	idx := -1
 	for i := range s.subagents {
 		if s.subagents[i].ID == subagentID {
@@ -489,44 +525,33 @@ func (s *State) SteerSubagent(requestID string, subagentID int64, message string
 		}
 	}
 	if idx < 0 {
-		s.mu.Unlock()
-		return fmt.Errorf("session: unknown subagent id %d", subagentID)
+		return SubagentView{}, fmt.Errorf("session: unknown subagent id %d", subagentID)
 	}
 	view := s.subagents[idx]
 	// A child that has settled — or is settling its terminal result — no longer
 	// drains its steering queue, so accepting the instruction would silently
-	// drop it and leave the caller believing it landed. FinishSubagent takes the
-	// same lock, so this check cannot be overtaken by a settlement landing
-	// between it and the enqueue below.
+	// drop it and leave the caller believing it landed.
 	if view.Child == nil {
-		s.mu.Unlock()
-		return fmt.Errorf("session: subagent %d has no live session to steer", subagentID)
+		return SubagentView{}, fmt.Errorf("session: subagent %d has no live session to steer", subagentID)
 	}
 	if view.Status != SubagentRunning || s.subagentSettling[subagentID] {
-		s.mu.Unlock()
-		return fmt.Errorf("session: subagent %d is no longer running; a message cannot reach a finished subagent", subagentID)
+		return SubagentView{}, fmt.Errorf("session: subagent %d is no longer running; a message cannot reach a finished subagent", subagentID)
 	}
-	receipt := subagentSteerReceipt{
-		RequestID:  requestID,
-		SubagentID: subagentID,
-		Message:    message,
-		Label:      view.Label,
+	if record != nil {
+		record(view)
 	}
-	if s.subagentSteers == nil {
-		s.subagentSteers = make(map[string]subagentSteerReceipt)
-	}
-	// Reserve the request before the enqueue, so two calls carrying the same
-	// request ID cannot both deliver. The child's queue is written inside this
-	// critical section: it is the last moment at which the child is known to be
-	// running, and FinishSubagent waits on this lock. Lock order is the parent's
-	// mu then the child's, which no path reverses: a child never reaches its
-	// parent.
-	s.subagentSteers[requestID] = receipt
 	view.Child.PushSteering(message)
-	s.mu.Unlock()
+	return view, nil
+}
 
-	s.recordSubagentSteer(receipt)
-	return nil
+// SteerChild delivers a parent agent's instruction to a live child under the
+// same liveness rules session/subagent_steer applies, so the agent.steer tool
+// and the session-owned path cannot drift apart. It records nothing: a parent's
+// own instruction is not a user request with a receipt to replay.
+func (s *State) SteerChild(subagentID int64, message string) (SubagentView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.steerChildLocked(subagentID, message, nil)
 }
 
 // subagentSteerReceiptLocked finds the receipt for a request ID, checking the

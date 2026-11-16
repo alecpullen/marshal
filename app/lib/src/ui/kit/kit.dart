@@ -1,0 +1,57 @@
+/// The kit: everything a screen under `lib/src/ui/` is built from
+/// (design-system.md §5), in one import.
+///
+/// A screen imports this and nothing from Material or Cupertino
+/// (`test/boundary_test.dart`, `test/design_rules_test.dart`). It brings:
+///
+/// - the components of §5, one file each;
+/// - the supporting pieces they share: `EmberApp`, the root; `Tip`, the one
+///   tooltip; the §6 vocabulary (`Status`, `ThreadKind`, `CheckState`,
+///   `Check`) and `Glyphs`, the one icon set;
+/// - the tokens;
+/// - Flutter's widgets layer, without the pieces a screen would only use to
+///   style something by hand — decorations, borders, radii, text styles,
+///   bare containers and boxes that paint. Those belong to the kit; a screen
+///   that needs one has found a gap in the kit (§10).
+library;
+
+export 'package:flutter/widgets.dart'
+    hide
+        Border,
+        BorderRadius,
+        BorderSide,
+        BoxDecoration,
+        BoxShadow,
+        ColoredBox,
+        Container,
+        DecoratedBox,
+        DefaultTextStyle,
+        Radius,
+        ShapeDecoration,
+        TextStyle;
+
+export '../tokens.dart';
+export 'ask_card.dart';
+export 'box.dart';
+export 'btn.dart';
+export 'check_strip.dart';
+export 'dot.dart';
+export 'ember_app.dart';
+export 'field.dart';
+export 'hairline.dart';
+export 'icon_btn.dart';
+export 'label.dart';
+export 'menu.dart';
+export 'meter.dart';
+export 'page_body.dart';
+export 'pill.dart';
+export 'pr_card.dart';
+export 'rows.dart';
+export 'segments.dart';
+export 'sheet.dart';
+export 'spark.dart';
+export 'state_message.dart';
+export 'tabs.dart';
+export 'thread_row.dart';
+export 'tip.dart';
+export 'vocabulary.dart';

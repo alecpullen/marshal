@@ -25,10 +25,18 @@ makes it the GUI for D2's installer.
 
 Two constraints shape the design:
 
-- **Dart cannot use `HttpClient` on a unix socket.** Speaking the daemon's
-  socket protocol from Flutter would mean hand-rolling HTTP over
-  `Socket.connect(..., type: unix)`. The app therefore shells out to a
-  versioned `marshal daemon status --json` and never opens the socket.
+- **The tray speaks to the daemon through its CLI, not its socket.** This
+  document first said Dart's `HttpClient` cannot use a unix socket, so that
+  speaking the daemon's protocol would mean hand-rolling HTTP over
+  `Socket.connect(..., type: unix)`. That was wrong: a spike on 2026-11-17
+  (recorded in [the Studio programme](../studio-flutter/programme.md), fact
+  1) had `HttpClient.connectionFactory` make a plain request and read a
+  streamed event response over the daemon's unix socket. The tray keeps
+  shelling out to a versioned `marshal daemon status --json` **by choice**:
+  the CLI is the interface the terminal already uses, it needs no client
+  for the socket protocol, and the tray cannot drift from it. The Studio,
+  which does need the protocol, opens the socket from `lib/src/client/`
+  (F1).
 - **`marshal daemon status --json` does not exist.** No subcommand of
   `marshal` emits JSON today. That is the only new dependency on the Go
   side, and it is small.
@@ -39,13 +47,23 @@ Two constraints shape the design:
 
 - Directory `app/`, a Flutter project named `marshal_app`, beside `web/ui`
   and built by the same release tag.
-- **Boundary rule, enforced by a test:** the app reaches Marshal only
+- **Boundary rule, enforced by a test:** the tray reaches Marshal only
   through `marshal daemon status --json` and the commands in the menu. It
   never opens the socket, never reads `fleet.json`, the state directory or
-  the config, and never embeds an agent-side Go type. All process and file
-  I/O lives in `lib/src/daemon/cli.dart`; every other file under `lib/`
-  imports neither `dart:io` nor `package:flutter` unless it is a rendering
-  adapter.
+  the config, and never embeds an agent-side Go type. All of the tray's
+  process and file I/O lives in `lib/src/daemon/cli.dart`; its other files
+  import neither `dart:io` nor `package:flutter` unless they are a
+  rendering adapter.
+- **Rewritten by the Studio's F0**
+  ([`f0-foundations.md`](../studio-flutter/f0-foundations.md), decision 3)
+  when the Studio moved into `app/`. `app/test/boundary_test.dart` replaced
+  `no_io_test.dart` and enforces: `dart:io` only in
+  `lib/src/daemon/cli.dart` and in `lib/src/client/` files ending
+  `_io.dart`; browser APIs only in `lib/src/client/` files ending
+  `_web.dart`; `lib/src/model/` imports neither Flutter nor `dart:io` nor a
+  browser API; `lib/src/ui/` never imports `lib/src/client/`; Material and
+  Cupertino only under `lib/src/ui/kit/`, in `lib/src/ui/tokens.dart` and in
+  the tray's existing files. The tray's half of the rule above stands.
 - This is the `web/` shape applied to Dart, so a later split into its own
   repository is a directory move rather than an untangling.
 
@@ -93,7 +111,7 @@ for a single document.
 
 ```
 app/lib/main.dart
-app/lib/src/daemon/cli.dart      the only file allowed dart:io
+app/lib/src/daemon/cli.dart      the tray's only file allowed dart:io
 app/lib/src/daemon/status.dart   Status/Service/Linger models and the parser
 app/lib/src/menu/model.dart      pure: Status -> menu items
 app/lib/src/menu/host.dart       TrayHost interface: setMenu, setTitle, onSelect, notify
@@ -197,18 +215,21 @@ to login items unasked is the kind of thing users uninstall.
   `daemon: null` variant written inline); `menu_model_test.dart` asserts
   the install/start/stop selection and the disabled items for each state;
   `no_io_test.dart` walks `lib/` and fails if any file other than
-  `lib/src/daemon/cli.dart` mentions `dart:io`; a widget test drives
-  `model.dart` with a fake `TrayHost`.
+  `lib/src/daemon/cli.dart` mentions `dart:io` (replaced in F0 by
+  `boundary_test.dart`, which reads each import and export directive and
+  enforces the layered rule in §1); a widget test drives `model.dart` with
+  a fake `TrayHost`.
 - CI: an `app` job in `.github/workflows/go-checks.yml` on `ubuntu-latest`
   with a pinned Flutter SDK: `flutter analyze`, `flutter test`. Building
   the macOS and Linux bundles stays in the release workflow.
 
 ## Decisions and trade-offs
 
-1. **The CLI is the app's only interface.** It keeps the app free of the
+1. **The CLI is the tray's only interface.** It keeps the tray free of the
    socket protocol, of contract codegen, and of any knowledge of the
    daemon's files, and it makes the front-end replaceable. The cost is a
-   process per poll, which is milliseconds.
+   process per poll, which is milliseconds. It is a choice, not a
+   constraint: Dart can reach the socket (§Context), and the Studio does.
 2. **Exit 0 under `--json`.** A machine consumer should read the document,
    not interpret an exit code. Text mode is untouched.
 3. **A shared fixture instead of a generator.** One document does not
@@ -269,6 +290,10 @@ compiled on this machine.
   release jobs pin it rather than a floating channel, because a Flutter
   upgrade changes both the analyzer's rules and `dart format`'s output and
   neither should arrive on a branch that did not touch the app.
+  **Superseded by F0 of the Studio programme**
+  ([`f0-foundations.md`](../studio-flutter/f0-foundations.md)): the app and
+  all three pins moved to Flutter **3.50.0** (Dart 3.14.0), with Material and
+  Cupertino from the `material_ui` and `cupertino_ui` packages.
 - `tray_manager` **0.5.3**, `launch_at_startup` **0.5.1**,
   `flutter_lints` **4.0.0**, all locked in `app/pubspec.lock`. The plan's
   floors (0.2.4 / 0.3.3 / 4.0.0) were superseded by what `flutter pub add`

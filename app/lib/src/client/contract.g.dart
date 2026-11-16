@@ -988,6 +988,109 @@ class PinState {
   }
 }
 
+/// FileEntry is one directory entry.
+class FileEntry {
+  const FileEntry({
+    required this.name,
+    required this.dir,
+    required this.size,
+  });
+
+  final String name;
+  final bool dir;
+  final int size;
+
+  factory FileEntry.fromJson(Map<String, dynamic> json) {
+    return FileEntry(
+      name: json['name'] as String,
+      dir: json['dir'] as bool,
+      size: (json['size'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    json['dir'] = dir;
+    json['size'] = size;
+    return json;
+  }
+}
+
+/// FileList is one directory's entries. Root is the workspace directory the
+/// paths are relative to, and Path is the directory asked for, empty for the
+/// root. Directories come first, then names, both in order.
+class FileList {
+  const FileList({
+    required this.root,
+    required this.path,
+    required this.entries,
+  });
+
+  final String root;
+  final String path;
+  final List<FileEntry> entries;
+
+  factory FileList.fromJson(Map<String, dynamic> json) {
+    return FileList(
+      root: json['root'] as String,
+      path: json['path'] as String,
+      entries: _list(
+        json['entries'],
+        (value) => _object(value, FileEntry.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['root'] = root;
+    json['path'] = path;
+    json['entries'] = [
+      for (final value in entries) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// FileContent is one regular file's content, capped by the agent. A Binary
+/// file carries no Content, and a Truncated one carries its first megabyte.
+class FileContent {
+  const FileContent({
+    required this.path,
+    required this.size,
+    required this.binary,
+    required this.truncated,
+    required this.content,
+  });
+
+  final String path;
+  final int size;
+  final bool binary;
+  final bool truncated;
+  final String content;
+
+  factory FileContent.fromJson(Map<String, dynamic> json) {
+    return FileContent(
+      path: json['path'] as String,
+      size: (json['size'] as num).toInt(),
+      binary: json['binary'] as bool,
+      truncated: json['truncated'] as bool,
+      content: json['content'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['path'] = path;
+    json['size'] = size;
+    json['binary'] = binary;
+    json['truncated'] = truncated;
+    json['content'] = content;
+    return json;
+  }
+}
+
 /// DiffFile is one changed file's stat line.
 class DiffFile {
   const DiffFile({
@@ -1568,6 +1671,1164 @@ class InboxDelta {
   }
 }
 
+/// StepDiff is one step's part of the session's diff, for the by-step view.
+/// Files is the paths it touched and Diff is their unified diff.
+class StepDiff {
+  const StepDiff({
+    required this.stepNode,
+    required this.turnNode,
+    required this.headline,
+    this.at,
+    required this.files,
+    required this.diff,
+  });
+
+  final String stepNode;
+  final String turnNode;
+  final String headline;
+  final int? at;
+  final List<String> files;
+  final String diff;
+
+  factory StepDiff.fromJson(Map<String, dynamic> json) {
+    return StepDiff(
+      stepNode: json['stepNode'] as String,
+      turnNode: json['turnNode'] as String,
+      headline: json['headline'] as String,
+      at: (json['at'] as num?)?.toInt(),
+      files: _list(
+        json['files'],
+        (value) => value as String,
+      ),
+      diff: json['diff'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['stepNode'] = stepNode;
+    json['turnNode'] = turnNode;
+    json['headline'] = headline;
+    if (at != null) {
+      json['at'] = at;
+    }
+    json['files'] = files;
+    json['diff'] = diff;
+    return json;
+  }
+}
+
+/// StepDiffs is GET /api/sessions/{id}/step-diffs' answer: the session's
+/// steps in order.
+class StepDiffs {
+  const StepDiffs({
+    required this.steps,
+  });
+
+  final List<StepDiff> steps;
+
+  factory StepDiffs.fromJson(Map<String, dynamic> json) {
+    return StepDiffs(
+      steps: _list(
+        json['steps'],
+        (value) => _object(value, StepDiff.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['steps'] = [
+      for (final value in steps) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// NodeDetail is everything about one node that the projected transcript
+/// caps or leaves out.
+class NodeDetail {
+  const NodeDetail({
+    this.calls,
+    this.narration,
+    this.thinking,
+    this.todo,
+    this.relations,
+    this.step,
+    this.completion,
+    this.body,
+  });
+
+  final List<CallDetail>? calls;
+  final List<String>? narration;
+  /// Thinking is a beat's thoughts, or a message's reasoning as one entry.
+  final List<ThoughtDetail>? thinking;
+  final TodoDetail? todo;
+  final RelationDetail? relations;
+  /// Step is the step record behind this node: a call's own step, or a
+  /// beat's first. It carries who spoke, the model, the "why" line and the
+  /// todo the step began under.
+  final StepDetail? step;
+  /// Completion is a completion's retained output and its report, neither
+  /// capped.
+  final CompletionDetail? completion;
+  /// Body is a run event's whole body.
+  final String? body;
+
+  factory NodeDetail.fromJson(Map<String, dynamic> json) {
+    return NodeDetail(
+      calls: _listOrNull(
+        json['calls'],
+        (value) => _object(value, CallDetail.fromJson),
+      ),
+      narration: _listOrNull(
+        json['narration'],
+        (value) => value as String,
+      ),
+      thinking: _listOrNull(
+        json['thinking'],
+        (value) => _object(value, ThoughtDetail.fromJson),
+      ),
+      todo: _objectOrNull(
+        json['todo'],
+        TodoDetail.fromJson,
+      ),
+      relations: _objectOrNull(
+        json['relations'],
+        RelationDetail.fromJson,
+      ),
+      step: _objectOrNull(
+        json['step'],
+        StepDetail.fromJson,
+      ),
+      completion: _objectOrNull(
+        json['completion'],
+        CompletionDetail.fromJson,
+      ),
+      body: json['body'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (calls != null) {
+      json['calls'] = [
+        for (final value in calls!) value.toJson(),
+      ];
+    }
+    if (narration != null) {
+      json['narration'] = narration!;
+    }
+    if (thinking != null) {
+      json['thinking'] = [
+        for (final value in thinking!) value.toJson(),
+      ];
+    }
+    if (todo != null) {
+      json['todo'] = todo!.toJson();
+    }
+    if (relations != null) {
+      json['relations'] = relations!.toJson();
+    }
+    if (step != null) {
+      json['step'] = step!.toJson();
+    }
+    if (completion != null) {
+      json['completion'] = completion!.toJson();
+    }
+    if (body != null) {
+      json['body'] = body;
+    }
+    return json;
+  }
+}
+
+/// NodeDetailResponse is GET /api/sessions/{id}/nodes/{nodeId}'s answer: the
+/// node's wire form and the detail the projection left out.
+class NodeDetailResponse {
+  const NodeDetailResponse({
+    required this.node,
+    required this.detail,
+  });
+
+  final WireNode node;
+  final NodeDetail detail;
+
+  factory NodeDetailResponse.fromJson(Map<String, dynamic> json) {
+    return NodeDetailResponse(
+      node: _object(
+        json['node'],
+        WireNode.fromJson,
+      ),
+      detail: _object(
+        json['detail'],
+        NodeDetail.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['node'] = node.toJson();
+    json['detail'] = detail.toJson();
+    return json;
+  }
+}
+
+/// CallDetail is one tool call with nothing capped.
+class CallDetail {
+  const CallDetail({
+    this.callID,
+    this.stepID,
+    required this.toolName,
+    this.args,
+    this.originalArgs,
+    this.output,
+    this.diff,
+    this.error,
+    this.exitCode,
+    this.model,
+    this.finishReason,
+    this.rewritten,
+    this.hooks,
+    this.sandbox,
+    this.symbols,
+    this.notice,
+    this.execution,
+    this.summary,
+  });
+
+  final String? callID;
+  final int? stepID;
+  final String toolName;
+  final String? args;
+  final String? originalArgs;
+  final String? output;
+  final String? diff;
+  final String? error;
+  final int? exitCode;
+  final String? model;
+  final String? finishReason;
+  final bool? rewritten;
+  /// Hooks is the hooks audit trail as the registry encodes it: an array of
+  /// records whose failed_open key is not camelCase, which the wire rules
+  /// refuse in a typed field, so each travels as raw bytes.
+  final List<Object?>? hooks;
+  final Object? sandbox;
+  final List<SymbolDetail>? symbols;
+  final NoticeDetail? notice;
+  /// Execution is the structured command-execution evidence this call
+  /// carries: what was launched, who owned it, and how it ended. It is
+  /// separate from Notice, which is coaching prose written for the model.
+  final ExecutionDetail? execution;
+  /// Summary is the call's own summary, uncut.
+  final String? summary;
+
+  factory CallDetail.fromJson(Map<String, dynamic> json) {
+    return CallDetail(
+      callID: json['callId'] as String?,
+      stepID: (json['stepId'] as num?)?.toInt(),
+      toolName: json['toolName'] as String,
+      args: json['args'] as String?,
+      originalArgs: json['originalArgs'] as String?,
+      output: json['output'] as String?,
+      diff: json['diff'] as String?,
+      error: json['error'] as String?,
+      exitCode: (json['exitCode'] as num?)?.toInt(),
+      model: json['model'] as String?,
+      finishReason: json['finishReason'] as String?,
+      rewritten: json['rewritten'] as bool?,
+      hooks: _listOrNull(
+        json['hooks'],
+        (value) => value,
+      ),
+      sandbox: json['sandbox'],
+      symbols: _listOrNull(
+        json['symbols'],
+        (value) => _object(value, SymbolDetail.fromJson),
+      ),
+      notice: _objectOrNull(
+        json['notice'],
+        NoticeDetail.fromJson,
+      ),
+      execution: _objectOrNull(
+        json['execution'],
+        ExecutionDetail.fromJson,
+      ),
+      summary: json['summary'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (callID != null) {
+      json['callId'] = callID;
+    }
+    if (stepID != null) {
+      json['stepId'] = stepID;
+    }
+    json['toolName'] = toolName;
+    if (args != null) {
+      json['args'] = args;
+    }
+    if (originalArgs != null) {
+      json['originalArgs'] = originalArgs;
+    }
+    if (output != null) {
+      json['output'] = output;
+    }
+    if (diff != null) {
+      json['diff'] = diff;
+    }
+    if (error != null) {
+      json['error'] = error;
+    }
+    if (exitCode != null) {
+      json['exitCode'] = exitCode;
+    }
+    if (model != null) {
+      json['model'] = model;
+    }
+    if (finishReason != null) {
+      json['finishReason'] = finishReason;
+    }
+    if (rewritten != null) {
+      json['rewritten'] = rewritten;
+    }
+    if (hooks != null) {
+      json['hooks'] = hooks!;
+    }
+    if (sandbox != null) {
+      json['sandbox'] = sandbox;
+    }
+    if (symbols != null) {
+      json['symbols'] = [
+        for (final value in symbols!) value.toJson(),
+      ];
+    }
+    if (notice != null) {
+      json['notice'] = notice!.toJson();
+    }
+    if (execution != null) {
+      json['execution'] = execution!.toJson();
+    }
+    if (summary != null) {
+      json['summary'] = summary;
+    }
+    return json;
+  }
+}
+
+/// ExecutionDetail is one managed command execution's structured evidence:
+/// what was launched, who owned it, how the launching caller related to it
+/// and how it ended.
+///
+/// Every field is optional. An absent Exit means no exit code was ever
+/// observed — a start-up failure, a still-running continuation, a lost
+/// record — and is never success. Empty State or Outcome means the record
+/// predates structured evidence or has not settled, which is likewise
+/// unknown rather than zero-valued fact.
+class ExecutionDetail {
+  const ExecutionDetail({
+    this.version,
+    this.executionID,
+    this.displayID,
+    this.conversationID,
+    this.actor,
+    this.turnID,
+    this.stepID,
+    this.toolCallID,
+    this.cwd,
+    this.generation,
+    this.pid,
+    this.state,
+    this.outcome,
+    this.attachment,
+    this.wait,
+    this.detachReason,
+    this.detachedAt,
+    this.stopCause,
+    this.stopRequestedAt,
+    this.exit,
+    this.truncated,
+    this.startedAt,
+    this.endedAt,
+  });
+
+  final int? version;
+  final String? executionID;
+  final String? displayID;
+  final String? conversationID;
+  final String? actor;
+  final String? turnID;
+  final String? stepID;
+  final String? toolCallID;
+  final String? cwd;
+  final int? generation;
+  final int? pid;
+  /// State is the lifecycle status ("running", "stopping", "completed",
+  /// "failed", "killed", "timed_out"); Outcome is the finer cause
+  /// ("nonzero_exit", "startup_failure", "stopped", "resource_limit", …).
+  final String? state;
+  final String? outcome;
+  final String? attachment;
+  /// Wait is the effective foreground wait the launch used; DetachReason
+  /// is why and DetachedAt when a wait handed the execution to the
+  /// background.
+  final String? wait;
+  final String? detachReason;
+  final int? detachedAt;
+  /// StopCause and StopRequestedAt record an accepted explicit stop
+  /// request separately from the outcome it produced.
+  final String? stopCause;
+  final int? stopRequestedAt;
+  /// Exit is the observed exit code; absent means none was observed.
+  final int? exit;
+  final bool? truncated;
+  final int? startedAt;
+  final int? endedAt;
+
+  factory ExecutionDetail.fromJson(Map<String, dynamic> json) {
+    return ExecutionDetail(
+      version: (json['version'] as num?)?.toInt(),
+      executionID: json['executionId'] as String?,
+      displayID: json['displayId'] as String?,
+      conversationID: json['conversationId'] as String?,
+      actor: json['actor'] as String?,
+      turnID: json['turnId'] as String?,
+      stepID: json['stepId'] as String?,
+      toolCallID: json['toolCallId'] as String?,
+      cwd: json['cwd'] as String?,
+      generation: (json['generation'] as num?)?.toInt(),
+      pid: (json['pid'] as num?)?.toInt(),
+      state: json['state'] as String?,
+      outcome: json['outcome'] as String?,
+      attachment: json['attachment'] as String?,
+      wait: json['wait'] as String?,
+      detachReason: json['detachReason'] as String?,
+      detachedAt: (json['detachedAt'] as num?)?.toInt(),
+      stopCause: json['stopCause'] as String?,
+      stopRequestedAt: (json['stopRequestedAt'] as num?)?.toInt(),
+      exit: (json['exit'] as num?)?.toInt(),
+      truncated: json['truncated'] as bool?,
+      startedAt: (json['startedAt'] as num?)?.toInt(),
+      endedAt: (json['endedAt'] as num?)?.toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (version != null) {
+      json['version'] = version;
+    }
+    if (executionID != null) {
+      json['executionId'] = executionID;
+    }
+    if (displayID != null) {
+      json['displayId'] = displayID;
+    }
+    if (conversationID != null) {
+      json['conversationId'] = conversationID;
+    }
+    if (actor != null) {
+      json['actor'] = actor;
+    }
+    if (turnID != null) {
+      json['turnId'] = turnID;
+    }
+    if (stepID != null) {
+      json['stepId'] = stepID;
+    }
+    if (toolCallID != null) {
+      json['toolCallId'] = toolCallID;
+    }
+    if (cwd != null) {
+      json['cwd'] = cwd;
+    }
+    if (generation != null) {
+      json['generation'] = generation;
+    }
+    if (pid != null) {
+      json['pid'] = pid;
+    }
+    if (state != null) {
+      json['state'] = state;
+    }
+    if (outcome != null) {
+      json['outcome'] = outcome;
+    }
+    if (attachment != null) {
+      json['attachment'] = attachment;
+    }
+    if (wait != null) {
+      json['wait'] = wait;
+    }
+    if (detachReason != null) {
+      json['detachReason'] = detachReason;
+    }
+    if (detachedAt != null) {
+      json['detachedAt'] = detachedAt;
+    }
+    if (stopCause != null) {
+      json['stopCause'] = stopCause;
+    }
+    if (stopRequestedAt != null) {
+      json['stopRequestedAt'] = stopRequestedAt;
+    }
+    if (exit != null) {
+      json['exit'] = exit;
+    }
+    if (truncated != null) {
+      json['truncated'] = truncated;
+    }
+    if (startedAt != null) {
+      json['startedAt'] = startedAt;
+    }
+    if (endedAt != null) {
+      json['endedAt'] = endedAt;
+    }
+    return json;
+  }
+}
+
+/// SymbolDetail is a symbol a call touched.
+class SymbolDetail {
+  const SymbolDetail({
+    required this.file,
+    required this.name,
+    this.kind,
+  });
+
+  final String file;
+  final String name;
+  final String? kind;
+
+  factory SymbolDetail.fromJson(Map<String, dynamic> json) {
+    return SymbolDetail(
+      file: json['file'] as String,
+      name: json['name'] as String,
+      kind: json['kind'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['file'] = file;
+    json['name'] = name;
+    if (kind != null) {
+      json['kind'] = kind;
+    }
+    return json;
+  }
+}
+
+/// NoticeDetail is a tool-UX notice attached to a call.
+class NoticeDetail {
+  const NoticeDetail({
+    required this.kind,
+    required this.text,
+  });
+
+  final String kind;
+  final String text;
+
+  factory NoticeDetail.fromJson(Map<String, dynamic> json) {
+    return NoticeDetail(
+      kind: json['kind'] as String,
+      text: json['text'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['kind'] = kind;
+    json['text'] = text;
+    return json;
+  }
+}
+
+/// ThoughtDetail is one finished reasoning block.
+class ThoughtDetail {
+  const ThoughtDetail({
+    required this.text,
+    this.durationMs,
+  });
+
+  final String text;
+  final int? durationMs;
+
+  factory ThoughtDetail.fromJson(Map<String, dynamic> json) {
+    return ThoughtDetail(
+      text: json['text'] as String,
+      durationMs: (json['durationMs'] as num?)?.toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['text'] = text;
+    if (durationMs != null) {
+      json['durationMs'] = durationMs;
+    }
+    return json;
+  }
+}
+
+/// TodoDetail is the todo a step or task belongs to.
+class TodoDetail {
+  const TodoDetail({
+    required this.id,
+    required this.content,
+    required this.status,
+    this.startedAt,
+    this.completedAt,
+  });
+
+  final String id;
+  final String content;
+  final String status;
+  final int? startedAt;
+  final int? completedAt;
+
+  factory TodoDetail.fromJson(Map<String, dynamic> json) {
+    return TodoDetail(
+      id: json['id'] as String,
+      content: json['content'] as String,
+      status: json['status'] as String,
+      startedAt: (json['startedAt'] as num?)?.toInt(),
+      completedAt: (json['completedAt'] as num?)?.toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['content'] = content;
+    json['status'] = status;
+    if (startedAt != null) {
+      json['startedAt'] = startedAt;
+    }
+    if (completedAt != null) {
+      json['completedAt'] = completedAt;
+    }
+    return json;
+  }
+}
+
+/// RelationDetail lists node keys of related steps.
+class RelationDetail {
+  const RelationDetail({
+    this.causedBy,
+    this.fixedBy,
+  });
+
+  final List<String>? causedBy;
+  final List<String>? fixedBy;
+
+  factory RelationDetail.fromJson(Map<String, dynamic> json) {
+    return RelationDetail(
+      causedBy: _listOrNull(
+        json['causedBy'],
+        (value) => value as String,
+      ),
+      fixedBy: _listOrNull(
+        json['fixedBy'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (causedBy != null) {
+      json['causedBy'] = causedBy!;
+    }
+    if (fixedBy != null) {
+      json['fixedBy'] = fixedBy!;
+    }
+    return json;
+  }
+}
+
+/// StepDetail is the step record behind a node: who spoke, with which model,
+/// and why.
+class StepDetail {
+  const StepDetail({
+    this.id,
+    this.owner,
+    this.model,
+    this.provider,
+    this.why,
+    this.todoID,
+  });
+
+  final int? id;
+  final String? owner;
+  final String? model;
+  final String? provider;
+  /// Why is the line the step was taken for.
+  final String? why;
+  final String? todoID;
+
+  factory StepDetail.fromJson(Map<String, dynamic> json) {
+    return StepDetail(
+      id: (json['id'] as num?)?.toInt(),
+      owner: json['owner'] as String?,
+      model: json['model'] as String?,
+      provider: json['provider'] as String?,
+      why: json['why'] as String?,
+      todoID: json['todoId'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (id != null) {
+      json['id'] = id;
+    }
+    if (owner != null) {
+      json['owner'] = owner;
+    }
+    if (model != null) {
+      json['model'] = model;
+    }
+    if (provider != null) {
+      json['provider'] = provider;
+    }
+    if (why != null) {
+      json['why'] = why;
+    }
+    if (todoID != null) {
+      json['todoId'] = todoID;
+    }
+    return json;
+  }
+}
+
+/// CompletionDetail is a completion's retained output and its report,
+/// neither capped.
+class CompletionDetail {
+  const CompletionDetail({
+    this.output,
+    this.report,
+    this.truncated,
+  });
+
+  final String? output;
+  final String? report;
+  /// Truncated is the completion's own flag: the job dropped earlier
+  /// output before it was retained.
+  final bool? truncated;
+
+  factory CompletionDetail.fromJson(Map<String, dynamic> json) {
+    return CompletionDetail(
+      output: json['output'] as String?,
+      report: json['report'] as String?,
+      truncated: json['truncated'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (output != null) {
+      json['output'] = output;
+    }
+    if (report != null) {
+      json['report'] = report;
+    }
+    if (truncated != null) {
+      json['truncated'] = truncated;
+    }
+    return json;
+  }
+}
+
+/// LastRequest is GET /api/sessions/{id}/last-request's answer: the newest
+/// model request the session made, or a null Request when it has made none.
+class LastRequest {
+  const LastRequest({
+    this.request,
+  });
+
+  final ModelRequest? request;
+
+  factory LastRequest.fromJson(Map<String, dynamic> json) {
+    return LastRequest(
+      request: _objectOrNull(
+        json['request'],
+        ModelRequest.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['request'] = request?.toJson();
+    return json;
+  }
+}
+
+/// ModelRequest is one model request as it went out, with what came of it.
+class ModelRequest {
+  const ModelRequest({
+    required this.attemptID,
+    this.at,
+    this.provider,
+    this.model,
+    this.generation,
+    this.leafID,
+    required this.messages,
+    required this.tools,
+    required this.options,
+    required this.outcome,
+    this.truncated,
+    this.omittedBytes,
+    this.messagesOmitted,
+    this.toolsOmitted,
+    this.packTokens,
+    this.packWindow,
+    this.packTruncated,
+    this.packSections,
+    this.packKnown,
+  });
+
+  final int attemptID;
+  final int? at;
+  final String? provider;
+  final String? model;
+  final String? generation;
+  final int? leafID;
+  final List<RequestMessage> messages;
+  final List<RequestTool> tools;
+  final RequestOptions options;
+  final RequestOutcome outcome;
+  final bool? truncated;
+  final int? omittedBytes;
+  final int? messagesOmitted;
+  final int? toolsOmitted;
+  final int? packTokens;
+  final int? packWindow;
+  final bool? packTruncated;
+  final int? packSections;
+  final bool? packKnown;
+
+  factory ModelRequest.fromJson(Map<String, dynamic> json) {
+    return ModelRequest(
+      attemptID: (json['attemptId'] as num).toInt(),
+      at: (json['at'] as num?)?.toInt(),
+      provider: json['provider'] as String?,
+      model: json['model'] as String?,
+      generation: json['generation'] as String?,
+      leafID: (json['leafId'] as num?)?.toInt(),
+      messages: _list(
+        json['messages'],
+        (value) => _object(value, RequestMessage.fromJson),
+      ),
+      tools: _list(
+        json['tools'],
+        (value) => _object(value, RequestTool.fromJson),
+      ),
+      options: _object(
+        json['options'],
+        RequestOptions.fromJson,
+      ),
+      outcome: _object(
+        json['outcome'],
+        RequestOutcome.fromJson,
+      ),
+      truncated: json['truncated'] as bool?,
+      omittedBytes: (json['omittedBytes'] as num?)?.toInt(),
+      messagesOmitted: (json['messagesOmitted'] as num?)?.toInt(),
+      toolsOmitted: (json['toolsOmitted'] as num?)?.toInt(),
+      packTokens: (json['packTokens'] as num?)?.toInt(),
+      packWindow: (json['packWindow'] as num?)?.toInt(),
+      packTruncated: json['packTruncated'] as bool?,
+      packSections: (json['packSections'] as num?)?.toInt(),
+      packKnown: json['packKnown'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['attemptId'] = attemptID;
+    if (at != null) {
+      json['at'] = at;
+    }
+    if (provider != null) {
+      json['provider'] = provider;
+    }
+    if (model != null) {
+      json['model'] = model;
+    }
+    if (generation != null) {
+      json['generation'] = generation;
+    }
+    if (leafID != null) {
+      json['leafId'] = leafID;
+    }
+    json['messages'] = [
+      for (final value in messages) value.toJson(),
+    ];
+    json['tools'] = [
+      for (final value in tools) value.toJson(),
+    ];
+    json['options'] = options.toJson();
+    json['outcome'] = outcome.toJson();
+    if (truncated != null) {
+      json['truncated'] = truncated;
+    }
+    if (omittedBytes != null) {
+      json['omittedBytes'] = omittedBytes;
+    }
+    if (messagesOmitted != null) {
+      json['messagesOmitted'] = messagesOmitted;
+    }
+    if (toolsOmitted != null) {
+      json['toolsOmitted'] = toolsOmitted;
+    }
+    if (packTokens != null) {
+      json['packTokens'] = packTokens;
+    }
+    if (packWindow != null) {
+      json['packWindow'] = packWindow;
+    }
+    if (packTruncated != null) {
+      json['packTruncated'] = packTruncated;
+    }
+    if (packSections != null) {
+      json['packSections'] = packSections;
+    }
+    if (packKnown != null) {
+      json['packKnown'] = packKnown;
+    }
+    return json;
+  }
+}
+
+/// RequestMessage is one message of the request.
+class RequestMessage {
+  const RequestMessage({
+    required this.role,
+    required this.content,
+    this.toolCalls,
+    this.toolCallID,
+    this.truncated,
+    this.omittedBytes,
+  });
+
+  final String role;
+  final String content;
+  final List<RequestToolCall>? toolCalls;
+  final String? toolCallID;
+  final bool? truncated;
+  final int? omittedBytes;
+
+  factory RequestMessage.fromJson(Map<String, dynamic> json) {
+    return RequestMessage(
+      role: json['role'] as String,
+      content: json['content'] as String,
+      toolCalls: _listOrNull(
+        json['toolCalls'],
+        (value) => _object(value, RequestToolCall.fromJson),
+      ),
+      toolCallID: json['toolCallId'] as String?,
+      truncated: json['truncated'] as bool?,
+      omittedBytes: (json['omittedBytes'] as num?)?.toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['role'] = role;
+    json['content'] = content;
+    if (toolCalls != null) {
+      json['toolCalls'] = [
+        for (final value in toolCalls!) value.toJson(),
+      ];
+    }
+    if (toolCallID != null) {
+      json['toolCallId'] = toolCallID;
+    }
+    if (truncated != null) {
+      json['truncated'] = truncated;
+    }
+    if (omittedBytes != null) {
+      json['omittedBytes'] = omittedBytes;
+    }
+    return json;
+  }
+}
+
+/// RequestToolCall is a tool call attached to a message.
+class RequestToolCall {
+  const RequestToolCall({
+    required this.id,
+    required this.name,
+    required this.args,
+    this.truncated,
+    this.omittedBytes,
+  });
+
+  final String id;
+  final String name;
+  final String args;
+  final bool? truncated;
+  final int? omittedBytes;
+
+  factory RequestToolCall.fromJson(Map<String, dynamic> json) {
+    return RequestToolCall(
+      id: json['id'] as String,
+      name: json['name'] as String,
+      args: json['args'] as String,
+      truncated: json['truncated'] as bool?,
+      omittedBytes: (json['omittedBytes'] as num?)?.toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['name'] = name;
+    json['args'] = args;
+    if (truncated != null) {
+      json['truncated'] = truncated;
+    }
+    if (omittedBytes != null) {
+      json['omittedBytes'] = omittedBytes;
+    }
+    return json;
+  }
+}
+
+/// RequestTool is a tool definition offered on the request.
+class RequestTool {
+  const RequestTool({
+    required this.name,
+    this.description,
+    this.parameters,
+    this.truncated,
+    this.omittedBytes,
+  });
+
+  final String name;
+  final String? description;
+  final String? parameters;
+  final bool? truncated;
+  final int? omittedBytes;
+
+  factory RequestTool.fromJson(Map<String, dynamic> json) {
+    return RequestTool(
+      name: json['name'] as String,
+      description: json['description'] as String?,
+      parameters: json['parameters'] as String?,
+      truncated: json['truncated'] as bool?,
+      omittedBytes: (json['omittedBytes'] as num?)?.toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    if (description != null) {
+      json['description'] = description;
+    }
+    if (parameters != null) {
+      json['parameters'] = parameters;
+    }
+    if (truncated != null) {
+      json['truncated'] = truncated;
+    }
+    if (omittedBytes != null) {
+      json['omittedBytes'] = omittedBytes;
+    }
+    return json;
+  }
+}
+
+/// RequestOptions records the options that actually went out.
+class RequestOptions {
+  const RequestOptions({
+    this.thinking,
+    required this.streaming,
+    this.maxTokens,
+    this.temperature,
+    this.responseFormat,
+    this.toolChoice,
+  });
+
+  final String? thinking;
+  final bool streaming;
+  final int? maxTokens;
+  final double? temperature;
+  final String? responseFormat;
+  final String? toolChoice;
+
+  factory RequestOptions.fromJson(Map<String, dynamic> json) {
+    return RequestOptions(
+      thinking: json['thinking'] as String?,
+      streaming: json['streaming'] as bool,
+      maxTokens: (json['maxTokens'] as num?)?.toInt(),
+      temperature: (json['temperature'] as num?)?.toDouble(),
+      responseFormat: json['responseFormat'] as String?,
+      toolChoice: json['toolChoice'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (thinking != null) {
+      json['thinking'] = thinking;
+    }
+    json['streaming'] = streaming;
+    if (maxTokens != null) {
+      json['maxTokens'] = maxTokens;
+    }
+    if (temperature != null) {
+      json['temperature'] = temperature;
+    }
+    if (responseFormat != null) {
+      json['responseFormat'] = responseFormat;
+    }
+    if (toolChoice != null) {
+      json['toolChoice'] = toolChoice;
+    }
+    return json;
+  }
+}
+
+/// RequestOutcome is what became of the attempt.
+class RequestOutcome {
+  const RequestOutcome({
+    required this.status,
+    this.err,
+    this.at,
+  });
+
+  final String status;
+  final String? err;
+  final int? at;
+
+  factory RequestOutcome.fromJson(Map<String, dynamic> json) {
+    return RequestOutcome(
+      status: json['status'] as String,
+      err: json['err'] as String?,
+      at: (json['at'] as num?)?.toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['status'] = status;
+    if (err != null) {
+      json['err'] = err;
+    }
+    if (at != null) {
+      json['at'] = at;
+    }
+    return json;
+  }
+}
+
 /// PendingSubmission is one submission awaiting an operator's decision, as
 /// GET /api/pending lists it.
 class PendingSubmission {
@@ -1788,6 +3049,121 @@ class ProjectStatus {
     if (orphanWorktrees != null) {
       json['orphanWorktrees'] = orphanWorktrees!;
     }
+    return json;
+  }
+}
+
+/// ReviewComment is one line comment on an agent's diff.
+///
+/// The routes are GET and POST /api/agents/{id}/review/comments, and
+/// POST /api/agents/{id}/review/comments/{cid}/resolve. A comment is
+/// delivered to the agent as steering when a turn is running and as a new
+/// prompt when it is not, so the thread it starts is the agent's reply in the
+/// same conversation.
+class ReviewComment {
+  const ReviewComment({
+    required this.id,
+    required this.agentID,
+    required this.path,
+    required this.line,
+    required this.side,
+    required this.quote,
+    required this.body,
+    required this.createdAt,
+    required this.sentAt,
+    this.resolvedAt,
+    required this.ownerID,
+  });
+
+  final String id;
+  final String agentID;
+  final String path;
+  final int line;
+  /// Side is "old" or "new": which side of the diff the line is on.
+  final String side;
+  /// Quote is the diff lines the comment is anchored to, shown to the
+  /// agent above the body.
+  final String quote;
+  final String body;
+  final String createdAt;
+  /// SentAt is when the bridge delivered the comment; it is zero until it
+  /// has.
+  final String sentAt;
+  /// ResolvedAt is when the operator resolved the thread, absent while it
+  /// is open.
+  final String? resolvedAt;
+  final String ownerID;
+
+  factory ReviewComment.fromJson(Map<String, dynamic> json) {
+    return ReviewComment(
+      id: json['id'] as String,
+      agentID: json['agentId'] as String,
+      path: json['path'] as String,
+      line: (json['line'] as num).toInt(),
+      side: json['side'] as String,
+      quote: json['quote'] as String,
+      body: json['body'] as String,
+      createdAt: json['createdAt'] as String,
+      sentAt: json['sentAt'] as String,
+      resolvedAt: json['resolvedAt'] as String?,
+      ownerID: json['ownerId'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['agentId'] = agentID;
+    json['path'] = path;
+    json['line'] = line;
+    json['side'] = side;
+    json['quote'] = quote;
+    json['body'] = body;
+    json['createdAt'] = createdAt;
+    json['sentAt'] = sentAt;
+    if (resolvedAt != null) {
+      json['resolvedAt'] = resolvedAt;
+    }
+    json['ownerId'] = ownerID;
+    return json;
+  }
+}
+
+/// ReviewCommentRequest is a comment's operator-supplied fields: the body of
+/// POST /api/agents/{id}/review/comments. Everything else about a comment is
+/// the bridge's to fill in.
+class ReviewCommentRequest {
+  const ReviewCommentRequest({
+    required this.path,
+    required this.line,
+    required this.side,
+    required this.quote,
+    required this.body,
+  });
+
+  final String path;
+  final int line;
+  final String side;
+  final String quote;
+  final String body;
+
+  factory ReviewCommentRequest.fromJson(Map<String, dynamic> json) {
+    return ReviewCommentRequest(
+      path: json['path'] as String,
+      line: (json['line'] as num).toInt(),
+      side: json['side'] as String,
+      quote: json['quote'] as String,
+      body: json['body'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['path'] = path;
+    json['line'] = line;
+    json['side'] = side;
+    json['quote'] = quote;
+    json['body'] = body;
     return json;
   }
 }
@@ -3799,6 +5175,116 @@ class ProjectRemovedDelta {
     final json = <String, dynamic>{};
     json['kind'] = rawEnums['kind'] ?? kind.wire;
     json['project'] = project;
+    return json;
+  }
+}
+
+/// TerminalOpened is POST …/terminal's answer.
+class TerminalOpened {
+  const TerminalOpened({
+    required this.terminalID,
+  });
+
+  final String terminalID;
+
+  factory TerminalOpened.fromJson(Map<String, dynamic> json) {
+    return TerminalOpened(
+      terminalID: json['terminalId'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['terminalId'] = terminalID;
+    return json;
+  }
+}
+
+/// TerminalChunk is one message of the terminal's event stream: output bytes
+/// in Data, base64 as SSE carries them, or the shell's end with its exit code
+/// and, when the shell never really started, why. A chunk carries one or the
+/// other, and the bridge replays retained output from the start, so a client
+/// never resumes a stream it lost.
+class TerminalChunk {
+  const TerminalChunk({
+    this.data,
+    this.exit,
+    this.error,
+  });
+
+  final String? data;
+  final int? exit;
+  /// Error is why the shell failed to start, on the chunk that ends the
+  /// stream.
+  final String? error;
+
+  factory TerminalChunk.fromJson(Map<String, dynamic> json) {
+    return TerminalChunk(
+      data: json['data'] as String?,
+      exit: (json['exit'] as num?)?.toInt(),
+      error: json['error'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (data != null) {
+      json['data'] = data;
+    }
+    if (exit != null) {
+      json['exit'] = exit;
+    }
+    if (error != null) {
+      json['error'] = error;
+    }
+    return json;
+  }
+}
+
+/// TerminalInput is POST …/input's body: base64 of at most 64 KiB of
+/// keystrokes. A client sends in pieces, in order, one request at a time.
+class TerminalInput {
+  const TerminalInput({
+    required this.data,
+  });
+
+  final String data;
+
+  factory TerminalInput.fromJson(Map<String, dynamic> json) {
+    return TerminalInput(
+      data: json['data'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['data'] = data;
+    return json;
+  }
+}
+
+/// TerminalResize is POST …/resize's body, and what opening a terminal asks
+/// for: the shell's size in character cells.
+class TerminalResize {
+  const TerminalResize({
+    required this.cols,
+    required this.rows,
+  });
+
+  final int cols;
+  final int rows;
+
+  factory TerminalResize.fromJson(Map<String, dynamic> json) {
+    return TerminalResize(
+      cols: (json['cols'] as num).toInt(),
+      rows: (json['rows'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['cols'] = cols;
+    json['rows'] = rows;
     return json;
   }
 }

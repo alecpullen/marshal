@@ -8,23 +8,44 @@ import type {
   BudgetAgentSpend as ContractBudgetAgentSpend,
   BudgetReport as ContractBudgetReport,
   Budgets as ContractBudgets,
+  CallDetail as ContractCallDetail,
   CommitDraft as ContractCommitDraft,
+  CompletionDetail as ContractCompletionDetail,
   Decision as ContractDecision,
   DiffFile as ContractDiffFile,
   DiffResult as ContractDiffResult,
+  ExecutionDetail as ContractExecutionDetail,
   ExitResult as ContractExitResult,
+  FileContent as ContractFileContent,
+  FileList as ContractFileList,
   GateRecord as ContractGateRecord,
   GateResult as ContractGateResult,
   Inbox as ContractInbox,
   InboxDelta as ContractInboxDelta,
   InboxGroups as ContractInboxGroups,
   InboxItem as ContractInboxItem,
+  LastRequest as ContractLastRequest,
   MergeResult as ContractMergeResult,
+  ModelRequest as ContractModelRequest,
+  NodeDetail as ContractNodeDetail,
+  NodeDetailResponse as ContractNodeDetailResponse,
+  NoticeDetail as ContractNoticeDetail,
   PendingRequest as ContractPendingRequest,
   PendingSubmission as ContractPendingSubmission,
   ProjectStatus as ContractProjectStatus,
+  RelationDetail as ContractRelationDetail,
+  RequestMessage as ContractRequestMessage,
+  RequestTool as ContractRequestTool,
+  ReviewComment as ContractReviewComment,
+  ReviewCommentRequest as ContractReviewCommentRequest,
   SpawnRequest as ContractSpawnRequest,
   SpawnResult as ContractSpawnResult,
+  StepDetail as ContractStepDetail,
+  StepDiff as ContractStepDiff,
+  StepDiffs as ContractStepDiffs,
+  SymbolDetail as ContractSymbolDetail,
+  ThoughtDetail as ContractThoughtDetail,
+  TodoDetail as ContractTodoDetail,
 } from './contract'
 
 /*
@@ -370,35 +391,23 @@ export async function getStack(sessionId: string, subagentId?: number): Promise<
   return orUnsupported(() => request('GET', `/api/sessions/${encodeURIComponent(sessionId)}/stack${q}`))
 }
 
-export interface CallDetail {
-  callId?: string
-  stepId?: number
-  toolName: string
-  args?: string
-  originalArgs?: string
-  output?: string
-  diff?: string
-  error?: string
-  exitCode?: number
-  model?: string
-  finishReason?: string
-  rewritten?: boolean
-  hooks?: unknown[]
-  sandbox?: unknown
-  symbols?: { file: string; name: string; kind?: string }[]
-  notice?: { kind: string; text: string }
-}
-export interface ThoughtDetail { text: string; durationMs?: number }
-export interface TodoDetail { id: string; content: string; status: string; startedAt?: number; completedAt?: number }
-export interface RelationDetail { causedBy?: string[]; fixedBy?: string[] }
-export interface NodeDetail {
-  calls?: CallDetail[]
-  narration?: string[]
-  thinking?: ThoughtDetail[]
-  todo?: TodoDetail
-  relations?: RelationDetail
-}
-export interface NodeDetailResponse { node: import('./stack').WireNode; detail: NodeDetail }
+/*
+  One node's detail, the newest model request, the by-step diffs and the
+  file browser are the generated contract (web/bridge/contract): the names
+  below are the shapes the Studio's screens already use, so a screen did not
+  change when the declarations moved out of this file.
+*/
+export type CallDetail = ContractCallDetail
+export type ExecutionDetail = ContractExecutionDetail
+export type NoticeDetail = ContractNoticeDetail
+export type SymbolDetail = ContractSymbolDetail
+export type ThoughtDetail = ContractThoughtDetail
+export type TodoDetail = ContractTodoDetail
+export type RelationDetail = ContractRelationDetail
+export type StepDetail = ContractStepDetail
+export type CompletionDetail = ContractCompletionDetail
+export type NodeDetail = ContractNodeDetail
+export type NodeDetailResponse = ContractNodeDetailResponse
 
 export async function getNode(sessionId: string, nodeId: string, subagentId?: number): Promise<NodeDetailResponse | 'unsupported'> {
   const q = subagentId ? `?subagent=${subagentId}` : ''
@@ -407,48 +416,35 @@ export async function getNode(sessionId: string, nodeId: string, subagentId?: nu
   )
 }
 
-export interface RequestMessage {
-  role: string
-  content: string
-  toolCalls?: { id: string; name: string; args: string }[]
-  toolCallId?: string
-  truncated?: boolean
-  omittedBytes?: number
-}
-export interface RequestJSON {
-  attemptId: number
-  at?: number
-  provider?: string
-  model?: string
-  messages: RequestMessage[]
-  tools: { name: string; description?: string; parameters?: string }[]
-  options: { thinking?: string; streaming: boolean; maxTokens?: number; temperature?: number; responseFormat?: string; toolChoice?: string }
-  outcome: { status: string; err?: string; at?: number }
-  truncated?: boolean
-  packTokens?: number
-  packWindow?: number
-  packKnown?: boolean
-}
+export type RequestMessage = ContractRequestMessage
+export type RequestTool = ContractRequestTool
+export type RequestJSON = ContractModelRequest
 
+/**
+ * The newest model request, or 'unsupported' for an agent that predates
+ * session/last_request. The route answers `{request}`; a session that has
+ * made no request answers a null one, which this client reports as
+ * 'unsupported'.
+ */
 export async function getLastRequest(sessionId: string): Promise<RequestJSON | 'unsupported'> {
-  return orUnsupported(() => request('GET', `/api/sessions/${encodeURIComponent(sessionId)}/last-request`))
+  const r = await orUnsupported(() =>
+    request<ContractLastRequest>('GET', `/api/sessions/${encodeURIComponent(sessionId)}/last-request`),
+  )
+  return r === 'unsupported' ? r : (r?.request ?? 'unsupported')
 }
 
-export interface StepDiff {
-  stepNode: string
-  turnNode: string
-  headline: string
-  at?: number
-  files: string[]
-  diff: string
-}
+export type StepDiff = ContractStepDiff
 
+/** The session's steps and their parts of the diff. The route answers `{steps}`. */
 export async function getStepDiffs(sessionId: string): Promise<StepDiff[] | 'unsupported'> {
-  return orUnsupported(() => request('GET', `/api/sessions/${encodeURIComponent(sessionId)}/step-diffs`))
+  const r = await orUnsupported(() =>
+    request<ContractStepDiffs>('GET', `/api/sessions/${encodeURIComponent(sessionId)}/step-diffs`),
+  )
+  return r === 'unsupported' ? r : (r?.steps ?? [])
 }
 
-export interface FileList { root?: string; path?: string; entries: { name: string; dir: boolean; size: number }[] }
-export interface FileView { path: string; size: number; binary: boolean; truncated: boolean; content: string }
+export type FileList = ContractFileList
+export type FileView = ContractFileContent
 
 export async function listFiles(agentId: string, path = ''): Promise<FileList | 'unsupported'> {
   return orUnsupported(() => request('GET', `/api/agents/${encodeURIComponent(agentId)}/files?path=${encodeURIComponent(path)}`))
@@ -854,18 +850,11 @@ export async function getRoster(sessionId: string): Promise<Roster | 'unsupporte
   return orUnsupported(() => request('GET', `/api/sessions/${encodeURIComponent(sessionId)}/roster`))
 }
 
-export interface ReviewComment {
-  id: string
-  agentId: string
-  path: string
-  line: number
-  side: 'old' | 'new'
-  quote: string
-  body: string
-  createdAt: string
-  sentAt: string
-  resolvedAt?: string
-}
+/** A line comment on a diff, and the thread it starts. */
+export type ReviewComment = ContractReviewComment
+
+/** The fields of a comment the operator supplies. */
+export type ReviewCommentRequest = ContractReviewCommentRequest
 
 /** The agent's drafted commit message, or 'unsupported' for an agent that cannot draft one. */
 export async function getCommitDraft(agentId: string): Promise<string | 'unsupported'> {
@@ -878,10 +867,7 @@ export async function listReviewComments(agentId: string): Promise<ReviewComment
   return r?.comments ?? []
 }
 
-export async function postReviewComment(
-  agentId: string,
-  c: { path: string; line: number; side: 'old' | 'new'; quote: string; body: string },
-): Promise<ReviewComment> {
+export async function postReviewComment(agentId: string, c: ReviewCommentRequest): Promise<ReviewComment> {
   return request('POST', `/api/agents/${encodeURIComponent(agentId)}/review/comments`, c)
 }
 

@@ -74,11 +74,8 @@ class BridgeClient {
       );
 
   /// GET /api/audit?limit=: the audit log, newest first.
-  Future<List<AuditEvent>> audit({int limit = 50}) => _listOf(
-    '/api/audit',
-    AuditEvent.fromJson,
-    query: {'limit': '$limit'},
-  );
+  Future<List<AuditEvent>> audit({int limit = 50}) =>
+      _listOf('/api/audit', AuditEvent.fromJson, query: {'limit': '$limit'});
 
   /// GET /api/disk: the bytes each part of the state directory takes.
   Future<DiskStatus> disk() => _objectOf('/api/disk', DiskStatus.fromJson);

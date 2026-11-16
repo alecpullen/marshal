@@ -92,6 +92,8 @@ class _HandoffFormState extends State<HandoffForm> {
 
   @override
   void dispose() {
+    // Closing the sheet saves what the autosave window had not yet written.
+    unawaited(widget.model.flush());
     widget.model.removeListener(_changed);
     for (final controller in _controllers.values) {
       controller.dispose();

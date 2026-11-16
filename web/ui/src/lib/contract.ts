@@ -525,6 +525,75 @@ export interface PinState {
 }
 
 /**
+ * WorkingDraftContent is one draft's editor state.
+ */
+export interface WorkingDraftContent {
+  title: string;
+  plan: string;
+  spec: string;
+  repoId: string;
+  targetBranchOverride: string;
+  workspaceOverride: string;
+  implementerOverride: string;
+  reviewerOverride: string;
+  reviewerInstructions: string;
+  maxRoundsOverride: string;
+  ciPollOverride: string;
+  ciWaitOverride: string;
+  checksMode: string;
+  expectedChecksText: string;
+  native: boolean;
+  nativeChosen: boolean;
+  implementerAuto: boolean;
+  noRequiredCiAcknowledged: boolean;
+}
+
+/**
+ * WorkingDraft is one durable draft. ProjectRoot is the store's identity for
+ * the draft's project and is never derived from content; the browser cannot
+ * move a draft between projects.
+ */
+export interface WorkingDraft {
+  id: string;
+  projectRoot: string;
+  version: number;
+  state: string;
+  content: WorkingDraftContent;
+  updatedAt: string;
+  factoryItemId?: string;
+  error?: string;
+}
+
+/**
+ * WorkingDraftCreateRequest is the POST /api/factory/working-drafts body.
+ */
+export interface WorkingDraftCreateRequest {
+  projectRoot: string;
+  requestId: string;
+  content: WorkingDraftContent;
+}
+
+/**
+ * WorkingDraftSaveRequest is the PUT /api/factory/working-drafts/{id} body:
+ * the version the editor last read, so a save made against a draft that has
+ * moved is refused rather than overwriting it.
+ */
+export interface WorkingDraftSaveRequest {
+  requestId: string;
+  expectedVersion: number;
+  content: WorkingDraftContent;
+}
+
+/**
+ * WorkingDraftDeleteRequest is the DELETE /api/factory/working-drafts/{id}
+ * body: a tombstone is a versioned write like any other.
+ */
+export interface WorkingDraftDeleteRequest {
+  requestId: string;
+  expectedVersion: number;
+}
+
+/**
  * FactorySubagentOverrides is one role's subagent settings as a draft or a
  * project's factory defaults state them. Every field is a pointer because the
  * resolution chain distinguishes "unset" from "stated": a missing override

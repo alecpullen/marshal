@@ -863,6 +863,68 @@ class BridgeClient {
     return FactoryItem.fromJson(body['item'] as Map<String, dynamic>);
   }
 
+  // Working drafts (F6). An unfinished handoff the bridge keeps, so a draft
+  // edited on one device is not lost on another and never overwritten
+  // silently.
+
+  /// POST /api/factory/working-drafts: create an unfinished handoff.
+  Future<WorkingDraft> createWorkingDraft(WorkingDraftCreateRequest request) =>
+      _draftOf('/api/factory/working-drafts', method: 'POST', body: request);
+
+  /// GET /api/factory/working-drafts?projectRoot=: the project's drafts, the
+  /// tombstones excluded.
+  Future<List<WorkingDraft>> workingDrafts(String projectRoot) async {
+    final body = await _objectOf<Map<String, dynamic>>(
+      '/api/factory/working-drafts',
+      (json) => json,
+      query: {'projectRoot': projectRoot},
+    );
+    return List.unmodifiable([
+      for (final value in (body['drafts'] as List<dynamic>? ?? const []))
+        WorkingDraft.fromJson(value as Map<String, dynamic>),
+    ]);
+  }
+
+  /// GET /api/factory/working-drafts/{id}: one draft, tombstones included.
+  Future<WorkingDraft> workingDraft(String id) =>
+      _draftOf('/api/factory/working-drafts/${Uri.encodeComponent(id)}');
+
+  /// PUT /api/factory/working-drafts/{id}: replace the content, but only if
+  /// the draft is still the version the editor read.
+  Future<WorkingDraft> saveWorkingDraft(
+    String id,
+    WorkingDraftSaveRequest request,
+  ) => _draftOf(
+    '/api/factory/working-drafts/${Uri.encodeComponent(id)}',
+    method: 'PUT',
+    body: request,
+  );
+
+  /// DELETE /api/factory/working-drafts/{id}: record a tombstone.
+  Future<WorkingDraft> deleteWorkingDraft(
+    String id,
+    WorkingDraftDeleteRequest request,
+  ) => _draftOf(
+    '/api/factory/working-drafts/${Uri.encodeComponent(id)}',
+    method: 'DELETE',
+    body: request,
+  );
+
+  /// The `{"draft": {...}}` envelope every working-draft write answers with.
+  Future<WorkingDraft> _draftOf(
+    String path, {
+    String method = 'GET',
+    Object? body,
+  }) async {
+    final answer = await _objectOf<Map<String, dynamic>>(
+      path,
+      (json) => json,
+      method: method,
+      body: body,
+    );
+    return WorkingDraft.fromJson(answer['draft'] as Map<String, dynamic>);
+  }
+
   // The planner (F6). A planning thread is one of the bridge's own agent
   // sessions: its routes are `/api/planners`, and it is driven by prompts,
   // answers and a journal read back by sequence.

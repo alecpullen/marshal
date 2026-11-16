@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import '../../model/drafts_model.dart';
 import '../../model/new_work_model.dart';
 import '../kit/kit.dart';
 
@@ -18,6 +19,8 @@ Sheet newWorkDialog(
   void Function(String agentId)? onStarted,
   void Function(StartedPlanner planner)? onPlanned,
   void Function(String prompt)? onWorkItem,
+  List<DraftVersion> drafts = const [],
+  void Function(DraftVersion draft)? onOpenDraft,
 }) => Sheet(
   title: 'Start a new agent',
   actions: [
@@ -42,14 +45,24 @@ Sheet newWorkDialog(
     ),
     Btn('Cancel', onTap: onCancel),
   ],
-  child: NewWorkForm(model: model),
+  child: NewWorkForm(model: model, drafts: drafts, onOpenDraft: onOpenDraft),
 );
 
 /// The dialog's body: the prompt, the kind, the chips and the three lists.
 class NewWorkForm extends StatefulWidget {
-  const NewWorkForm({super.key, required this.model});
+  const NewWorkForm({
+    super.key,
+    required this.model,
+    this.drafts = const [],
+    this.onOpenDraft,
+  });
 
   final NewWorkModel model;
+
+  /// The project's unfinished drafts (F6 decision 10): a draft is reopened
+  /// from here rather than retyped.
+  final List<DraftVersion> drafts;
+  final void Function(DraftVersion draft)? onOpenDraft;
 
   @override
   State<NewWorkForm> createState() => _NewWorkFormState();
@@ -185,6 +198,17 @@ class _NewWorkFormState extends State<NewWorkForm> {
                       onSelect: () => model.prefill(prompt),
                     ),
                 ], empty: 'No recent prompts'),
+                if (widget.onOpenDraft != null)
+                  _fillMenu('Drafts', [
+                    for (final draft in widget.drafts)
+                      MenuChoice(
+                        draft.title.trim().isEmpty
+                            ? 'Untitled work'
+                            : draft.title.trim(),
+                        'Open version ${draft.version ?? 'unsaved'}',
+                        onSelect: () => widget.onOpenDraft?.call(draft),
+                      ),
+                  ], empty: 'No unfinished drafts'),
                 _fillMenu('Recipes', [
                   for (final recipe in model.recipes)
                     MenuChoice(

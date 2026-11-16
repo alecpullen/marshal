@@ -1739,6 +1739,245 @@ class PinState {
   }
 }
 
+/// WorkingDraftContent is one draft's editor state.
+class WorkingDraftContent {
+  const WorkingDraftContent({
+    required this.title,
+    required this.plan,
+    required this.spec,
+    required this.repoID,
+    required this.targetBranchOverride,
+    required this.workspaceOverride,
+    required this.implementerOverride,
+    required this.reviewerOverride,
+    required this.reviewerInstructions,
+    required this.maxRoundsOverride,
+    required this.ciPollOverride,
+    required this.ciWaitOverride,
+    required this.checksMode,
+    required this.expectedChecksText,
+    required this.native,
+    required this.nativeChosen,
+    required this.implementerAuto,
+    required this.noRequiredCIAcknowledged,
+  });
+
+  final String title;
+  final String plan;
+  final String spec;
+  final String repoID;
+  final String targetBranchOverride;
+  final String workspaceOverride;
+  final String implementerOverride;
+  final String reviewerOverride;
+  final String reviewerInstructions;
+  final String maxRoundsOverride;
+  final String ciPollOverride;
+  final String ciWaitOverride;
+  final String checksMode;
+  final String expectedChecksText;
+  final bool native;
+  final bool nativeChosen;
+  final bool implementerAuto;
+  final bool noRequiredCIAcknowledged;
+
+  factory WorkingDraftContent.fromJson(Map<String, dynamic> json) {
+    return WorkingDraftContent(
+      title: json['title'] as String,
+      plan: json['plan'] as String,
+      spec: json['spec'] as String,
+      repoID: json['repoId'] as String,
+      targetBranchOverride: json['targetBranchOverride'] as String,
+      workspaceOverride: json['workspaceOverride'] as String,
+      implementerOverride: json['implementerOverride'] as String,
+      reviewerOverride: json['reviewerOverride'] as String,
+      reviewerInstructions: json['reviewerInstructions'] as String,
+      maxRoundsOverride: json['maxRoundsOverride'] as String,
+      ciPollOverride: json['ciPollOverride'] as String,
+      ciWaitOverride: json['ciWaitOverride'] as String,
+      checksMode: json['checksMode'] as String,
+      expectedChecksText: json['expectedChecksText'] as String,
+      native: json['native'] as bool,
+      nativeChosen: json['nativeChosen'] as bool,
+      implementerAuto: json['implementerAuto'] as bool,
+      noRequiredCIAcknowledged: json['noRequiredCiAcknowledged'] as bool,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['title'] = title;
+    json['plan'] = plan;
+    json['spec'] = spec;
+    json['repoId'] = repoID;
+    json['targetBranchOverride'] = targetBranchOverride;
+    json['workspaceOverride'] = workspaceOverride;
+    json['implementerOverride'] = implementerOverride;
+    json['reviewerOverride'] = reviewerOverride;
+    json['reviewerInstructions'] = reviewerInstructions;
+    json['maxRoundsOverride'] = maxRoundsOverride;
+    json['ciPollOverride'] = ciPollOverride;
+    json['ciWaitOverride'] = ciWaitOverride;
+    json['checksMode'] = checksMode;
+    json['expectedChecksText'] = expectedChecksText;
+    json['native'] = native;
+    json['nativeChosen'] = nativeChosen;
+    json['implementerAuto'] = implementerAuto;
+    json['noRequiredCiAcknowledged'] = noRequiredCIAcknowledged;
+    return json;
+  }
+}
+
+/// WorkingDraft is one durable draft. ProjectRoot is the store's identity for
+/// the draft's project and is never derived from content; the browser cannot
+/// move a draft between projects.
+class WorkingDraft {
+  const WorkingDraft({
+    required this.id,
+    required this.projectRoot,
+    required this.version,
+    required this.state,
+    required this.content,
+    required this.updatedAt,
+    this.factoryItemID,
+    this.error,
+  });
+
+  final String id;
+  final String projectRoot;
+  final int version;
+  final String state;
+  final WorkingDraftContent content;
+  final String updatedAt;
+  final String? factoryItemID;
+  final String? error;
+
+  factory WorkingDraft.fromJson(Map<String, dynamic> json) {
+    return WorkingDraft(
+      id: json['id'] as String,
+      projectRoot: json['projectRoot'] as String,
+      version: (json['version'] as num).toInt(),
+      state: json['state'] as String,
+      content: _object(
+        json['content'],
+        WorkingDraftContent.fromJson,
+      ),
+      updatedAt: json['updatedAt'] as String,
+      factoryItemID: json['factoryItemId'] as String?,
+      error: json['error'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['id'] = id;
+    json['projectRoot'] = projectRoot;
+    json['version'] = version;
+    json['state'] = state;
+    json['content'] = content.toJson();
+    json['updatedAt'] = updatedAt;
+    if (factoryItemID != null) {
+      json['factoryItemId'] = factoryItemID;
+    }
+    if (error != null) {
+      json['error'] = error;
+    }
+    return json;
+  }
+}
+
+/// WorkingDraftCreateRequest is the POST /api/factory/working-drafts body.
+class WorkingDraftCreateRequest {
+  const WorkingDraftCreateRequest({
+    required this.projectRoot,
+    required this.requestID,
+    required this.content,
+  });
+
+  final String projectRoot;
+  final String requestID;
+  final WorkingDraftContent content;
+
+  factory WorkingDraftCreateRequest.fromJson(Map<String, dynamic> json) {
+    return WorkingDraftCreateRequest(
+      projectRoot: json['projectRoot'] as String,
+      requestID: json['requestId'] as String,
+      content: _object(
+        json['content'],
+        WorkingDraftContent.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['projectRoot'] = projectRoot;
+    json['requestId'] = requestID;
+    json['content'] = content.toJson();
+    return json;
+  }
+}
+
+/// WorkingDraftSaveRequest is the PUT /api/factory/working-drafts/{id} body:
+/// the version the editor last read, so a save made against a draft that has
+/// moved is refused rather than overwriting it.
+class WorkingDraftSaveRequest {
+  const WorkingDraftSaveRequest({
+    required this.requestID,
+    required this.expectedVersion,
+    required this.content,
+  });
+
+  final String requestID;
+  final int expectedVersion;
+  final WorkingDraftContent content;
+
+  factory WorkingDraftSaveRequest.fromJson(Map<String, dynamic> json) {
+    return WorkingDraftSaveRequest(
+      requestID: json['requestId'] as String,
+      expectedVersion: (json['expectedVersion'] as num).toInt(),
+      content: _object(
+        json['content'],
+        WorkingDraftContent.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['requestId'] = requestID;
+    json['expectedVersion'] = expectedVersion;
+    json['content'] = content.toJson();
+    return json;
+  }
+}
+
+/// WorkingDraftDeleteRequest is the DELETE /api/factory/working-drafts/{id}
+/// body: a tombstone is a versioned write like any other.
+class WorkingDraftDeleteRequest {
+  const WorkingDraftDeleteRequest({
+    required this.requestID,
+    required this.expectedVersion,
+  });
+
+  final String requestID;
+  final int expectedVersion;
+
+  factory WorkingDraftDeleteRequest.fromJson(Map<String, dynamic> json) {
+    return WorkingDraftDeleteRequest(
+      requestID: json['requestId'] as String,
+      expectedVersion: (json['expectedVersion'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['requestId'] = requestID;
+    json['expectedVersion'] = expectedVersion;
+    return json;
+  }
+}
+
 /// FactorySubagentOverrides is one role's subagent settings as a draft or a
 /// project's factory defaults state them. Every field is a pointer because the
 /// resolution chain distinguishes "unset" from "stated": a missing override

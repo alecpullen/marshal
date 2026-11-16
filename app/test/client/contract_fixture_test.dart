@@ -16,6 +16,7 @@ const _fixtures = [
   'automations',
   'budgets',
   'clients',
+  'drafts',
   'factory',
   'finish',
   'inbox',
@@ -189,6 +190,16 @@ final _codecs = <String, _Codec>{
       PlannerContextQuestion.fromJson(_object(json)).toJson(),
   'PlannerContextView': (json) =>
       PlannerContextView.fromJson(_object(json)).toJson(),
+  // drafts.json — an unfinished handoff and its versioned writes.
+  'WorkingDraft': (json) => WorkingDraft.fromJson(_object(json)).toJson(),
+  'WorkingDraftContent': (json) =>
+      WorkingDraftContent.fromJson(_object(json)).toJson(),
+  'WorkingDraftCreateRequest': (json) =>
+      WorkingDraftCreateRequest.fromJson(_object(json)).toJson(),
+  'WorkingDraftSaveRequest': (json) =>
+      WorkingDraftSaveRequest.fromJson(_object(json)).toJson(),
+  'WorkingDraftDeleteRequest': (json) =>
+      WorkingDraftDeleteRequest.fromJson(_object(json)).toJson(),
   // library.json
   'SkillEntry': (json) => SkillEntry.fromJson(_object(json)).toJson(),
   'SkillPreview': (json) => SkillPreview.fromJson(_object(json)).toJson(),

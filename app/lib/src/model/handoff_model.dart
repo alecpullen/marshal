@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../client/contract.g.dart';
+import 'drafts_model.dart';
 
 // The create route and the defaults are passed in, so their fields stay
 // private: Dart has no private named parameter.
@@ -141,9 +142,11 @@ class HandoffModel extends ChangeNotifier {
     required this.spec,
     required Future<FactoryItem> Function(FactoryCreate draft) create,
     List<String> repositories = const [],
+    DraftsModel? drafts,
     String? hostID,
   }) : _create = create,
        repositories = List.unmodifiable(repositories),
+       drafts = drafts,
        hostID = hostID ?? defaults.hostID,
        _overrides = {};
 
@@ -170,6 +173,10 @@ class HandoffModel extends ChangeNotifier {
   /// sheet's repository menu offers. A project states no repository of its
   /// own yet, so the person picks one and the choice is the override.
   final List<String> repositories;
+
+  /// The working draft this review autosaves as (F6 decision 10). Null leaves
+  /// the review unsaved, which a host that keeps no drafts does.
+  final DraftsModel? drafts;
   final Map<String, Object?> _overrides;
 
   String? _failure;
@@ -219,14 +226,47 @@ class HandoffModel extends ChangeNotifier {
   void set(String field, Object value) {
     if (!HandoffField.all.contains(field)) return;
     _overrides[field] = value;
+    _autosave();
     notifyListeners();
   }
 
   /// Puts one field back to the project's value.
   void reset(String field) {
     if (_overrides.remove(field) == null) return;
+    _autosave();
     notifyListeners();
   }
+
+  /// Queues the draft the review is, two seconds after the last edit (F6
+  /// decision 10): a review that is never approved is not lost.
+  void _autosave() => drafts?.scheduleSave(draftContent);
+
+  /// Saves the queued draft now. The sheet calls this as it closes, so an edit
+  /// made inside the autosave window is not lost to a timer.
+  Future<void> flush() async => drafts?.saveNow();
+
+  /// The review as a working draft holds it: the editor's own values, with a
+  /// blank override meaning "follow the project's".
+  WorkingDraftContent get draftContent => WorkingDraftContent(
+    title: title,
+    plan: plan,
+    spec: spec,
+    repoID: _repoID,
+    targetBranchOverride: defaults.targetBranch,
+    workspaceOverride: _workspace,
+    implementerOverride: _model(HandoffField.implementer),
+    reviewerOverride: _model(HandoffField.reviewer),
+    reviewerInstructions: '',
+    maxRoundsOverride: '$_rounds',
+    ciPollOverride: '',
+    ciWaitOverride: '',
+    checksMode: _checks.isEmpty ? 'none' : 'custom',
+    expectedChecksText: _checks.join(', '),
+    native: _native,
+    nativeChosen: true,
+    implementerAuto: true,
+    noRequiredCIAcknowledged: _checks.isEmpty,
+  );
 
   /// What stops approval, in plain words. Empty means Approve may be pressed.
   List<String> get blockers => List.unmodifiable([

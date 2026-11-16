@@ -1,0 +1,101 @@
+{
+  "WorkingDraft": {
+    "content": {
+      "checksMode": "custom",
+      "ciPollOverride": "30",
+      "ciWaitOverride": "900",
+      "expectedChecksText": "build, unit",
+      "implementerAuto": true,
+      "implementerOverride": "local-fast",
+      "maxRoundsOverride": "3",
+      "native": true,
+      "nativeChosen": true,
+      "noRequiredCiAcknowledged": false,
+      "plan": "## Task 1\nRead the item.\n",
+      "repoId": "repo-1",
+      "reviewerInstructions": "Read the diff, not the summary.",
+      "reviewerOverride": "local-strong",
+      "spec": "Ship the work item thread.",
+      "targetBranchOverride": "main",
+      "title": "Work item thread",
+      "workspaceOverride": ""
+    },
+    "id": "d-1",
+    "projectRoot": "/home/u/marshal",
+    "state": "editing",
+    "updatedAt": "2026-11-17T04:00:00Z",
+    "version": 3
+  },
+  "WorkingDraftContent": {
+    "checksMode": "custom",
+    "ciPollOverride": "30",
+    "ciWaitOverride": "900",
+    "expectedChecksText": "build, unit",
+    "implementerAuto": true,
+    "implementerOverride": "local-fast",
+    "maxRoundsOverride": "3",
+    "native": true,
+    "nativeChosen": true,
+    "noRequiredCiAcknowledged": false,
+    "plan": "## Task 1\nRead the item.\n",
+    "repoId": "repo-1",
+    "reviewerInstructions": "Read the diff, not the summary.",
+    "reviewerOverride": "local-strong",
+    "spec": "Ship the work item thread.",
+    "targetBranchOverride": "main",
+    "title": "Work item thread",
+    "workspaceOverride": ""
+  },
+  "WorkingDraftCreateRequest": {
+    "content": {
+      "checksMode": "inherit",
+      "ciPollOverride": "",
+      "ciWaitOverride": "",
+      "expectedChecksText": "",
+      "implementerAuto": true,
+      "implementerOverride": "",
+      "maxRoundsOverride": "",
+      "native": true,
+      "nativeChosen": false,
+      "noRequiredCiAcknowledged": false,
+      "plan": "## Task 1\nRead the item.\n",
+      "repoId": "repo-1",
+      "reviewerInstructions": "",
+      "reviewerOverride": "",
+      "spec": "",
+      "targetBranchOverride": "",
+      "title": "Work item thread",
+      "workspaceOverride": ""
+    },
+    "projectRoot": "/home/u/marshal",
+    "requestId": "req-1"
+  },
+  "WorkingDraftDeleteRequest": {
+    "expectedVersion": 3,
+    "requestId": "req-3"
+  },
+  "WorkingDraftSaveRequest": {
+    "content": {
+      "checksMode": "inherit",
+      "ciPollOverride": "",
+      "ciWaitOverride": "",
+      "expectedChecksText": "",
+      "implementerAuto": true,
+      "implementerOverride": "",
+      "maxRoundsOverride": "",
+      "native": true,
+      "nativeChosen": false,
+      "noRequiredCiAcknowledged": false,
+      "plan": "## Task 1\nRead the item.\n",
+      "repoId": "repo-1",
+      "reviewerInstructions": "",
+      "reviewerOverride": "",
+      "spec": "",
+      "targetBranchOverride": "",
+      "title": "Work item thread",
+      "workspaceOverride": ""
+    },
+    "expectedVersion": 3,
+    "requestId": "req-2"
+  }
+}

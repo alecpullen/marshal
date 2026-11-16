@@ -18,6 +18,7 @@ var fixtureFiles = []string{
 	"automations.json",
 	"budgets.json",
 	"clients.json",
+	"drafts.json",
 	"factory.json",
 	"files.json",
 	"finish.json",
@@ -256,6 +257,12 @@ var fixtureTypes = map[string]reflect.Type{
 	"PlannerContextDecision":   reflect.TypeOf(PlannerContextDecision{}),
 	"PlannerContextQuestion":   reflect.TypeOf(PlannerContextQuestion{}),
 	"PlannerContextView":       reflect.TypeOf(PlannerContextView{}),
+	// drafts.json — an unfinished handoff and its versioned writes.
+	"WorkingDraft":              reflect.TypeOf(WorkingDraft{}),
+	"WorkingDraftContent":       reflect.TypeOf(WorkingDraftContent{}),
+	"WorkingDraftCreateRequest": reflect.TypeOf(WorkingDraftCreateRequest{}),
+	"WorkingDraftSaveRequest":   reflect.TypeOf(WorkingDraftSaveRequest{}),
+	"WorkingDraftDeleteRequest": reflect.TypeOf(WorkingDraftDeleteRequest{}),
 }
 
 // TestContractFixturesRoundTrip holds the contract types to the shared

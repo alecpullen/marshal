@@ -10,8 +10,8 @@ import (
 // encoders resolve them through ChatRequest.ImageSource at send time, so
 // transcripts, ACP frames and the cached prompt prefix stay small.
 type ImageRef struct {
-	Hash   string `json:"hash"`            // content hash; the store key
-	MIME   string `json:"mime"`            // "image/png" | "image/jpeg"
+	Hash   string `json:"hash"` // content hash; the store key
+	MIME   string `json:"mime"` // "image/png" | "image/jpeg"
 	Width  int    `json:"width"`
 	Height int    `json:"height"`
 	Bytes  int    `json:"bytes"`           // stored size, not source size

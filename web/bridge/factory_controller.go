@@ -323,6 +323,19 @@ func AdvanceFactory(item FactoryItem, observed FactoryObservation, now time.Time
 				role = "implementer"
 			}
 		case "set_draft":
+			if proposalID, ok := factoryRevisionTransition(i, last.ID); ok && last.Outcome != nil && last.Outcome.Confirmed && last.Outcome.Error == "" && factoryRevisionTransitionConfirmed(i, proposalID) && len(i.Approvals) > 0 && last.ApprovalRevision < i.Approvals[len(i.Approvals)-1].Revision {
+				// The ready PR returned to draft and the authorized revision
+				// activated: fresh work starts under the new approval, exactly
+				// as it does after a readiness that could not be confirmed.
+				if w := factoryWorker(i, "implementer"); w != nil && w.Parked {
+					kind = "resume"
+					role = "implementer"
+				} else {
+					kind = "implement"
+					role = "implementer"
+				}
+				break
+			}
 			i.State = "needs_input"
 			return i, nil, nil
 		default:
@@ -472,6 +485,15 @@ func CompleteFactoryEffect(item FactoryItem, effectID string, outcome FactoryOut
 	case "set_draft":
 		if outcome.PR != nil && len(i.PRs) > 0 {
 			i.PRs[len(i.PRs)-1] = *outcome.PR
+		}
+		if proposalID, ok := factoryRevisionTransition(i, effectID); ok {
+			// A revision transition is not the external-conflict redraft: the
+			// ready PR was returned to draft so the authorized revision can
+			// activate, so no conflict decision is recorded and the item waits
+			// at the boundary rather than asking for input.
+			i.State = "checking"
+			i.History = append(i.History, FactoryEvent{At: now, Kind: "revision_transition_drafted", EffectID: effectID, Message: proposalID})
+			break
 		}
 		factoryDecision(&i, "conflict", "PR readiness revoked after revision or CI evidence changed", now)
 	}
@@ -701,6 +723,16 @@ func factoryPick(items []FactoryItem, idle func(FactoryItem) bool) *FactoryItem 
 func (c *FactoryController) tick(ctx context.Context) error {
 	if !c.isReady() {
 		return nil
+	}
+	// A durable follow-up intent and an authorized amendment settle at the
+	// same safe boundary the scheduler uses. Neither dispatches anything here:
+	// a ready PR's return to draft is an ordinary journaled effect the
+	// scheduler below executes.
+	if err := c.reconcileRevisionFollowUps(); err != nil {
+		return err
+	}
+	if err := c.activateAuthorizedRevisions(ctx); err != nil {
+		return err
 	}
 	items := c.store.List()
 	// Observe closure even while a turn is dispatched or a stage is prepared.
@@ -1029,6 +1061,16 @@ func (c *FactoryController) command(ctx context.Context, itemID string, cmd Fact
 	autoAssess := c.autoAssess(before.ProjectRoot)
 	i, err := c.store.Update(itemID, cmd.RequestID, cmd.ExpectedVersion, raw, func(i *FactoryItem) error { return factoryApplyCommandFrom(i, cmd, p, autoAssess, c.now()) }, c.now())
 	if err == nil {
+		if cmd.Kind == "revision_follow_up_confirm" {
+			// The intent is durable before anything is created, and both the
+			// create and its association replay from the deterministic request
+			// identity, so a lost response cannot produce a second draft.
+			confirmed, confirmErr := c.confirmRevisionFollowUp(i, cmd.Revision)
+			if confirmErr != nil {
+				return confirmed, confirmErr
+			}
+			i = confirmed
+		}
 		if cmd.Kind == "stop" && before.Version == cmd.ExpectedVersion {
 			if canceler, ok := c.effects.(interface {
 				Cancel(context.Context, FactoryItem) error
@@ -1124,6 +1166,20 @@ func factoryApplyCommandFrom(i *FactoryItem, c FactoryCommand, p *factoryPrincip
 		if i.Decision == nil || i.Decision.ID != c.DecisionID || c.AdditionalRounds <= 0 || strings.TrimSpace(c.Reason) == "" {
 			return ErrFactoryConflict
 		}
+		if n, pending := factoryRevisionActivationPending(*i); pending {
+			// An authorized amendment is waiting for its safe boundary. A
+			// retry that replaced the plan or moved a route would append an
+			// approval and make the authorized base stale behind the user's
+			// back, so it is refused with a reason; a plain retry that only
+			// grants rounds is not a conflicting change and is admitted.
+			sel, err := factoryRouteSelectionOf(c)
+			if err != nil {
+				return err
+			}
+			if c.Replacement != nil || sel.hasImplementer || sel.hasReviewer {
+				return fmt.Errorf("%w: proposal %s is authorized and waits for a safe boundary; retry it after it activates or supersede it first", ErrFactoryConflict, i.Proposals[n].ID)
+			}
+		}
 		i.Grants = append(i.Grants, FactoryGrant{ID: c.RequestID, Reason: c.Reason, AdditionalRounds: c.AdditionalRounds, At: now})
 		if c.Replacement != nil {
 			r := *c.Replacement
@@ -1176,6 +1232,12 @@ func factoryApplyCommandFrom(i *FactoryItem, c FactoryCommand, p *factoryPrincip
 		return factoryApplyRevisionAssessResult(i, c, p, now)
 	case "revision_assess_retry":
 		return factoryApplyRevisionAssessRetry(i, c, p, now)
+	case "revision_authorize":
+		return factoryApplyRevisionAuthorize(i, c, p, now)
+	case "revision_delivery_choice":
+		return factoryApplyRevisionDeliveryChoice(i, c, p, now)
+	case "revision_follow_up_confirm":
+		return factoryApplyRevisionFollowUpConfirm(i, c, p, now)
 	default:
 		return ErrFactoryConflict
 	}

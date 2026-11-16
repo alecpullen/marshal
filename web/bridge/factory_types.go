@@ -349,8 +349,9 @@ type FactoryCommand struct {
 	ConfirmPreviousWorkerStopped bool            `json:"confirmPreviousWorkerStopped"`
 	// Revision is the structured payload of a plan-revision command:
 	// revision_propose, revision_supersede, revision_reject,
-	// revision_assess_request, revision_assess_claim, revision_assess_result
-	// and revision_assess_retry read it, and every other kind leaves it nil,
+	// revision_assess_request, revision_assess_claim, revision_assess_result,
+	// revision_assess_retry, revision_authorize, revision_delivery_choice and
+	// revision_follow_up_confirm read it, and every other kind leaves it nil,
 	// so a command those kinds do not carry marshals as it always did.
 	Revision *FactoryRevisionCommand `json:"revision,omitempty"`
 }

@@ -37,6 +37,34 @@ type factoryAPI struct {
 var errFactoryConfig = errors.New("factory configuration or capability unsupported")
 var errFactoryInput = errors.New("invalid factory input")
 
+// factoryStudioRevisionActor is the identity a Studio plan-revision command is
+// journalled under. It is derived here, on the server side of the transport:
+// FactoryCommand and FactoryRevisionCommand carry no field that could name an
+// identity, and factoryDecode refuses unknown fields, so the authenticated
+// Studio surface is the only caller that reaches the plain Command path with
+// one of these kinds.
+const factoryStudioRevisionActor = "studio"
+
+// factoryFollowUpCandidate is the exact follow-up draft a user confirmed,
+// normalised as the normal factory draft it becomes. It performs no external
+// work: the transport preflight reaches the fleet, and this is the validation
+// the journal itself can make before it records the intent.
+//
+// The returned create is keyed by the deterministic follow-up request identity
+// the caller supplies, so a request id in the payload is neither needed nor
+// used.
+func factoryFollowUpCandidate(c FactoryCreate) (FactoryCreate, error) {
+	normalized := c
+	if strings.TrimSpace(normalized.RequestID) == "" {
+		normalized.RequestID = "follow-up"
+	}
+	if err := factoryNormalize(&normalized); err != nil {
+		return FactoryCreate{}, fmt.Errorf("%w: %v", errFactoryInput, err)
+	}
+	normalized.RequestID = ""
+	return normalized, nil
+}
+
 func NewFactoryAPI(store *FactoryStore, controller *FactoryController, fleet *Fleet) FactoryAPI {
 	return &factoryAPI{store, controller, fleet}
 }
@@ -283,6 +311,20 @@ func (a *factoryAPI) Command(ctx context.Context, id string, cmd FactoryCommand)
 			if err := a.factoryValidateRoutes(ctx, candidate); err != nil {
 				return FactoryItem{}, err
 			}
+		}
+	}
+	if cmd.Kind == "revision_follow_up_confirm" {
+		// A follow-up becomes a normal factory draft, so it passes the same
+		// preflight every handoff does before the journal records its intent.
+		if cmd.Revision == nil || cmd.Revision.FollowUp == nil {
+			return FactoryItem{}, fmt.Errorf("%w: revision.followUp required", errFactoryInput)
+		}
+		candidate, err := factoryFollowUpCandidate(*cmd.Revision.FollowUp)
+		if err != nil {
+			return FactoryItem{}, err
+		}
+		if err := a.preflight(ctx, candidate.Config, true); err != nil {
+			return FactoryItem{}, err
 		}
 	}
 	return a.controller.Command(ctx, id, cmd)

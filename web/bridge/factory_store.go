@@ -558,6 +558,22 @@ func (s *FactoryStore) replayRequest(request, id, hash string) (FactoryItem, boo
 	return FactoryItem{}, false, nil
 }
 
+// ItemForRequest returns the item a journaled request produced, so a durable
+// intent whose association was lost can be reconciled with the record the same
+// request already created instead of creating a second one.
+func (s *FactoryStore) ItemForRequest(request string) (FactoryItem, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if strings.TrimSpace(request) == "" {
+		return FactoryItem{}, false
+	}
+	p, ok := s.requests[request]
+	if !ok {
+		return FactoryItem{}, false
+	}
+	return factoryCopy(p.Item), true
+}
+
 // Create stores a handoff whose replay identity and content are both the
 // request it received.
 func (s *FactoryStore) Create(req FactoryCreate, now time.Time) (FactoryItem, error) {

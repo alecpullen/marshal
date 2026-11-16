@@ -781,6 +781,12 @@ func (g *generator) fields(st *ast.StructType) ([]*field, error) {
 			if err != nil {
 				return nil, g.unsupported(ident.Pos(), err.Error())
 			}
+			// A field whose name is a Dart keyword keeps its JSON name and
+			// takes a trailing underscore in Dart: `extends` is a legal JSON
+			// key and a reserved word here.
+			if dartReserved[dartName] {
+				dartName += "_"
+			}
 			if first, clash := seen[dartName]; clash {
 				return nil, g.unsupported(ident.Pos(), fmt.Sprintf("field name collision: %s and %s both map to the Dart name %q", first, ident.Name, dartName))
 			}
@@ -1197,6 +1203,10 @@ func nullableMark(null bool) string {
 // lowerCamel renders a Go identifier in lower camel case: the leading run of
 // capitals lowercased, keeping its last letter when the run starts a word of
 // its own (MCPProjectID becomes mcpProjectID, AgentIdle becomes agentIdle).
+//
+// A name that is a Dart keyword is not rejected here: a field keeps its JSON
+// name and takes a trailing underscore (see the field loop), so `extends` is
+// expressible.
 func lowerCamel(name string) (string, error) {
 	if name == "" {
 		return "", fmt.Errorf("empty identifier")
@@ -1212,9 +1222,6 @@ func lowerCamel(name string) (string, error) {
 	out := string(unicode.ToLower(runes[0])) + string(runes[1:])
 	if end > 1 {
 		out = strings.ToLower(string(runes[:end])) + string(runes[end:])
-	}
-	if err := checkDartIdentifier(out); err != nil {
-		return "", err
 	}
 	return out, nil
 }

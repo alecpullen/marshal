@@ -601,6 +601,247 @@ export interface PinState {
 }
 
 /**
+ * EnvWorkspace is the `[workspace]` layer.
+ */
+export interface EnvWorkspace {
+  name: string;
+  base: string;
+  toolchains?: string[];
+  extends?: string;
+}
+
+/**
+ * EnvPackages is the `[packages]` layer.
+ */
+export interface EnvPackages {
+  apt?: string[];
+  go?: string[];
+  npm?: string[];
+  pip?: string[];
+}
+
+/**
+ * EnvMount is one entry of `[[mounts]]`.
+ */
+export interface EnvMount {
+  repo?: string;
+  volume?: string;
+  target: string;
+  readonly?: boolean;
+}
+
+/**
+ * EnvFile is one shared file of `[files]`.
+ */
+export interface EnvFile {
+  target: string;
+  readonly?: boolean;
+}
+
+/**
+ * EnvInject is one credential injection of `[inject]`.
+ */
+export interface EnvInject {
+  ref: string;
+  header?: string;
+  format?: string;
+}
+
+/**
+ * EnvNetwork is the `[network]` layer.
+ */
+export interface EnvNetwork {
+  /**
+   * open, allowlist or off
+   */
+  mode?: string;
+  egress?: string[];
+}
+
+/**
+ * EnvResources is the `[resources]` layer.
+ */
+export interface EnvResources {
+  cpu?: number;
+  memory?: string;
+  disk?: string;
+  timeout?: string;
+}
+
+/**
+ * EnvPolicy is the `[policy]` layer. Auto is optional: absent means the
+ * document does not set it, while an explicit false is a real value.
+ */
+export interface EnvPolicy {
+  mode?: string;
+  auto?: boolean;
+  allow?: string[];
+}
+
+/**
+ * EnvSetup is the `[setup]` layer.
+ */
+export interface EnvSetup {
+  run?: string;
+}
+
+/**
+ * EnvPreview is the `[preview]` layer: the ports the Studio may expose.
+ */
+export interface EnvPreview {
+  ports?: number[];
+}
+
+/**
+ * EnvDoc is a template's parsed document: the designer's two views of one
+ * thing, since every layer here is a range of the same source.
+ */
+export interface EnvDoc {
+  workspace: EnvWorkspace;
+  packages: EnvPackages;
+  mounts?: EnvMount[];
+  files?: Record<string, EnvFile>;
+  secretsEnv?: Record<string, string>;
+  inject?: Record<string, EnvInject>;
+  network: EnvNetwork;
+  resources: EnvResources;
+  policy: EnvPolicy;
+  setup: EnvSetup;
+  preview?: EnvPreview;
+}
+
+/**
+ * EnvSection is one layer's 1-based inclusive line range in the source.
+ */
+export interface EnvSection {
+  layer: number;
+  key: string;
+  startLine: number;
+  endLine: number;
+}
+
+/**
+ * EnvDiagnostic is one parse diagnostic.
+ */
+export interface EnvDiagnostic {
+  line: number;
+  message: string;
+  /**
+   * error or warning
+   */
+  severity: string;
+}
+
+/**
+ * EnvVersion is one built or buildable version of a template.
+ */
+export interface EnvVersion {
+  n: number;
+  at: string;
+  by: string;
+  sha256: string;
+  imageTag?: string;
+  /**
+   * pending, building, ok or failed
+   */
+  buildStatus: string;
+  sizeBytes?: number;
+  buildMs?: number;
+}
+
+/**
+ * EnvMeta is a template's own record.
+ */
+export interface EnvMeta {
+  name: string;
+  ownerId: string;
+  createdAt: string;
+  published: number;
+  pool: number;
+  versions: EnvVersion[];
+}
+
+/**
+ * EnvListItem is one row of GET /api/workspaces.
+ */
+export interface EnvListItem {
+  /**
+   * studio or repo
+   */
+  source: string;
+  name: string;
+  project?: string;
+  published?: number;
+  pool?: number;
+  versions?: EnvVersion[];
+  usage: number;
+  draftChanges?: boolean;
+}
+
+/**
+ * EnvPool is a template's warm pool.
+ */
+export interface EnvPool {
+  size: number;
+  idle: number;
+  starting: number;
+}
+
+/**
+ * EnvStarts is the median cold and warm start, in milliseconds; zero means
+ * no sample yet.
+ */
+export interface EnvStarts {
+  coldMs: number;
+  warmMs: number;
+}
+
+/**
+ * EnvBuilds is GET /api/workspaces/{name}/builds' answer.
+ */
+export interface EnvBuilds {
+  versions: EnvVersion[];
+  pool: EnvPool;
+  starts: EnvStarts;
+}
+
+/**
+ * EnvLoaded is GET /api/workspaces/{name}'s answer and what a draft save
+ * answers: the source, its parse, and the record behind it.
+ */
+export interface EnvLoaded {
+  source: string;
+  version: number;
+  doc: EnvDoc;
+  sections: EnvSection[];
+  diagnostics: EnvDiagnostic[];
+  meta: EnvMeta;
+}
+
+/**
+ * EnvCreate is POST /api/workspaces' body. From is `blank`, `starter:<name>`,
+ * `devcontainer:<path>` or `snapshot:<agent>`.
+ */
+export interface EnvCreate {
+  name: string;
+  from: string;
+}
+
+/**
+ * EnvDraft is PUT /api/workspaces/{name}/draft's body.
+ */
+export interface EnvDraft {
+  source: string;
+}
+
+/**
+ * EnvBuildStart is POST /api/workspaces/{name}/builds' body and answer.
+ */
+export interface EnvBuildStart {
+  version: number;
+}
+
+/**
  * FileEntry is one directory entry.
  */
 export interface FileEntry {

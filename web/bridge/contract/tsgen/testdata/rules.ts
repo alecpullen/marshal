@@ -55,6 +55,11 @@ export interface Sample {
   byName: Record<string, Inner>;
   optByName?: Record<string, Inner | null>;
   /**
+   * Extends is named after a Dart keyword: it keeps its JSON name and takes
+   * a trailing underscore in Dart.
+   */
+  extends?: string;
+  /**
    * Tricky has a tricky *\/ terminator in its comment.
    */
   tricky: string;

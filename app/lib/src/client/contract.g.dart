@@ -1934,6 +1934,918 @@ class PinState {
   }
 }
 
+/// EnvWorkspace is the `[workspace]` layer.
+class EnvWorkspace {
+  const EnvWorkspace({
+    required this.name,
+    required this.base,
+    this.toolchains,
+    this.extends_,
+  });
+
+  final String name;
+  final String base;
+  final List<String>? toolchains;
+  final String? extends_;
+
+  factory EnvWorkspace.fromJson(Map<String, dynamic> json) {
+    return EnvWorkspace(
+      name: json['name'] as String,
+      base: json['base'] as String,
+      toolchains: _listOrNull(
+        json['toolchains'],
+        (value) => value as String,
+      ),
+      extends_: json['extends'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    json['base'] = base;
+    if (toolchains != null) {
+      json['toolchains'] = toolchains!;
+    }
+    if (extends_ != null) {
+      json['extends'] = extends_;
+    }
+    return json;
+  }
+}
+
+/// EnvPackages is the `[packages]` layer.
+class EnvPackages {
+  const EnvPackages({
+    this.apt,
+    this.go,
+    this.npm,
+    this.pip,
+  });
+
+  final List<String>? apt;
+  final List<String>? go;
+  final List<String>? npm;
+  final List<String>? pip;
+
+  factory EnvPackages.fromJson(Map<String, dynamic> json) {
+    return EnvPackages(
+      apt: _listOrNull(
+        json['apt'],
+        (value) => value as String,
+      ),
+      go: _listOrNull(
+        json['go'],
+        (value) => value as String,
+      ),
+      npm: _listOrNull(
+        json['npm'],
+        (value) => value as String,
+      ),
+      pip: _listOrNull(
+        json['pip'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (apt != null) {
+      json['apt'] = apt!;
+    }
+    if (go != null) {
+      json['go'] = go!;
+    }
+    if (npm != null) {
+      json['npm'] = npm!;
+    }
+    if (pip != null) {
+      json['pip'] = pip!;
+    }
+    return json;
+  }
+}
+
+/// EnvMount is one entry of `[[mounts]]`.
+class EnvMount {
+  const EnvMount({
+    this.repo,
+    this.volume,
+    required this.target,
+    this.readonly,
+  });
+
+  final String? repo;
+  final String? volume;
+  final String target;
+  final bool? readonly;
+
+  factory EnvMount.fromJson(Map<String, dynamic> json) {
+    return EnvMount(
+      repo: json['repo'] as String?,
+      volume: json['volume'] as String?,
+      target: json['target'] as String,
+      readonly: json['readonly'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (repo != null) {
+      json['repo'] = repo;
+    }
+    if (volume != null) {
+      json['volume'] = volume;
+    }
+    json['target'] = target;
+    if (readonly != null) {
+      json['readonly'] = readonly;
+    }
+    return json;
+  }
+}
+
+/// EnvFile is one shared file of `[files]`.
+class EnvFile {
+  const EnvFile({
+    required this.target,
+    this.readonly,
+  });
+
+  final String target;
+  final bool? readonly;
+
+  factory EnvFile.fromJson(Map<String, dynamic> json) {
+    return EnvFile(
+      target: json['target'] as String,
+      readonly: json['readonly'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['target'] = target;
+    if (readonly != null) {
+      json['readonly'] = readonly;
+    }
+    return json;
+  }
+}
+
+/// EnvInject is one credential injection of `[inject]`.
+class EnvInject {
+  const EnvInject({
+    required this.ref,
+    this.header,
+    this.format,
+  });
+
+  final String ref;
+  final String? header;
+  final String? format;
+
+  factory EnvInject.fromJson(Map<String, dynamic> json) {
+    return EnvInject(
+      ref: json['ref'] as String,
+      header: json['header'] as String?,
+      format: json['format'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['ref'] = ref;
+    if (header != null) {
+      json['header'] = header;
+    }
+    if (format != null) {
+      json['format'] = format;
+    }
+    return json;
+  }
+}
+
+/// EnvNetwork is the `[network]` layer.
+class EnvNetwork {
+  const EnvNetwork({
+    this.mode,
+    this.egress,
+  });
+
+  /// open, allowlist or off
+  final String? mode;
+  final List<String>? egress;
+
+  factory EnvNetwork.fromJson(Map<String, dynamic> json) {
+    return EnvNetwork(
+      mode: json['mode'] as String?,
+      egress: _listOrNull(
+        json['egress'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (mode != null) {
+      json['mode'] = mode;
+    }
+    if (egress != null) {
+      json['egress'] = egress!;
+    }
+    return json;
+  }
+}
+
+/// EnvResources is the `[resources]` layer.
+class EnvResources {
+  const EnvResources({
+    this.cpu,
+    this.memory,
+    this.disk,
+    this.timeout,
+  });
+
+  final double? cpu;
+  final String? memory;
+  final String? disk;
+  final String? timeout;
+
+  factory EnvResources.fromJson(Map<String, dynamic> json) {
+    return EnvResources(
+      cpu: (json['cpu'] as num?)?.toDouble(),
+      memory: json['memory'] as String?,
+      disk: json['disk'] as String?,
+      timeout: json['timeout'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (cpu != null) {
+      json['cpu'] = cpu;
+    }
+    if (memory != null) {
+      json['memory'] = memory;
+    }
+    if (disk != null) {
+      json['disk'] = disk;
+    }
+    if (timeout != null) {
+      json['timeout'] = timeout;
+    }
+    return json;
+  }
+}
+
+/// EnvPolicy is the `[policy]` layer. Auto is optional: absent means the
+/// document does not set it, while an explicit false is a real value.
+class EnvPolicy {
+  const EnvPolicy({
+    this.mode,
+    this.auto,
+    this.allow,
+  });
+
+  final String? mode;
+  final bool? auto;
+  final List<String>? allow;
+
+  factory EnvPolicy.fromJson(Map<String, dynamic> json) {
+    return EnvPolicy(
+      mode: json['mode'] as String?,
+      auto: json['auto'] as bool?,
+      allow: _listOrNull(
+        json['allow'],
+        (value) => value as String,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (mode != null) {
+      json['mode'] = mode;
+    }
+    if (auto != null) {
+      json['auto'] = auto;
+    }
+    if (allow != null) {
+      json['allow'] = allow!;
+    }
+    return json;
+  }
+}
+
+/// EnvSetup is the `[setup]` layer.
+class EnvSetup {
+  const EnvSetup({
+    this.run,
+  });
+
+  final String? run;
+
+  factory EnvSetup.fromJson(Map<String, dynamic> json) {
+    return EnvSetup(
+      run: json['run'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (run != null) {
+      json['run'] = run;
+    }
+    return json;
+  }
+}
+
+/// EnvPreview is the `[preview]` layer: the ports the Studio may expose.
+class EnvPreview {
+  const EnvPreview({
+    this.ports,
+  });
+
+  final List<int>? ports;
+
+  factory EnvPreview.fromJson(Map<String, dynamic> json) {
+    return EnvPreview(
+      ports: _listOrNull(
+        json['ports'],
+        (value) => (value as num).toInt(),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    if (ports != null) {
+      json['ports'] = ports!;
+    }
+    return json;
+  }
+}
+
+/// EnvDoc is a template's parsed document: the designer's two views of one
+/// thing, since every layer here is a range of the same source.
+class EnvDoc {
+  const EnvDoc({
+    required this.workspace,
+    required this.packages,
+    this.mounts,
+    this.files,
+    this.secretsEnv,
+    this.inject,
+    required this.network,
+    required this.resources,
+    required this.policy,
+    required this.setup,
+    this.preview,
+  });
+
+  final EnvWorkspace workspace;
+  final EnvPackages packages;
+  final List<EnvMount>? mounts;
+  final Map<String, EnvFile>? files;
+  final Map<String, String>? secretsEnv;
+  final Map<String, EnvInject>? inject;
+  final EnvNetwork network;
+  final EnvResources resources;
+  final EnvPolicy policy;
+  final EnvSetup setup;
+  final EnvPreview? preview;
+
+  factory EnvDoc.fromJson(Map<String, dynamic> json) {
+    return EnvDoc(
+      workspace: _object(
+        json['workspace'],
+        EnvWorkspace.fromJson,
+      ),
+      packages: _object(
+        json['packages'],
+        EnvPackages.fromJson,
+      ),
+      mounts: _listOrNull(
+        json['mounts'],
+        (value) => _object(value, EnvMount.fromJson),
+      ),
+      files: _mapOrNull(
+        json['files'],
+        (value) => _object(value, EnvFile.fromJson),
+      ),
+      secretsEnv: _mapOrNull(
+        json['secretsEnv'],
+        (value) => value as String,
+      ),
+      inject: _mapOrNull(
+        json['inject'],
+        (value) => _object(value, EnvInject.fromJson),
+      ),
+      network: _object(
+        json['network'],
+        EnvNetwork.fromJson,
+      ),
+      resources: _object(
+        json['resources'],
+        EnvResources.fromJson,
+      ),
+      policy: _object(
+        json['policy'],
+        EnvPolicy.fromJson,
+      ),
+      setup: _object(
+        json['setup'],
+        EnvSetup.fromJson,
+      ),
+      preview: _objectOrNull(
+        json['preview'],
+        EnvPreview.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['workspace'] = workspace.toJson();
+    json['packages'] = packages.toJson();
+    if (mounts != null) {
+      json['mounts'] = [
+        for (final value in mounts!) value.toJson(),
+      ];
+    }
+    if (files != null) {
+      json['files'] = {for (final entry in files!.entries) entry.key: entry.value.toJson()};
+    }
+    if (secretsEnv != null) {
+      json['secretsEnv'] = secretsEnv!;
+    }
+    if (inject != null) {
+      json['inject'] = {for (final entry in inject!.entries) entry.key: entry.value.toJson()};
+    }
+    json['network'] = network.toJson();
+    json['resources'] = resources.toJson();
+    json['policy'] = policy.toJson();
+    json['setup'] = setup.toJson();
+    if (preview != null) {
+      json['preview'] = preview!.toJson();
+    }
+    return json;
+  }
+}
+
+/// EnvSection is one layer's 1-based inclusive line range in the source.
+class EnvSection {
+  const EnvSection({
+    required this.layer,
+    required this.key,
+    required this.startLine,
+    required this.endLine,
+  });
+
+  final int layer;
+  final String key;
+  final int startLine;
+  final int endLine;
+
+  factory EnvSection.fromJson(Map<String, dynamic> json) {
+    return EnvSection(
+      layer: (json['layer'] as num).toInt(),
+      key: json['key'] as String,
+      startLine: (json['startLine'] as num).toInt(),
+      endLine: (json['endLine'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['layer'] = layer;
+    json['key'] = key;
+    json['startLine'] = startLine;
+    json['endLine'] = endLine;
+    return json;
+  }
+}
+
+/// EnvDiagnostic is one parse diagnostic.
+class EnvDiagnostic {
+  const EnvDiagnostic({
+    required this.line,
+    required this.message,
+    required this.severity,
+  });
+
+  final int line;
+  final String message;
+  /// error or warning
+  final String severity;
+
+  factory EnvDiagnostic.fromJson(Map<String, dynamic> json) {
+    return EnvDiagnostic(
+      line: (json['line'] as num).toInt(),
+      message: json['message'] as String,
+      severity: json['severity'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['line'] = line;
+    json['message'] = message;
+    json['severity'] = severity;
+    return json;
+  }
+}
+
+/// EnvVersion is one built or buildable version of a template.
+class EnvVersion {
+  const EnvVersion({
+    required this.n,
+    required this.at,
+    required this.by,
+    required this.sha256,
+    this.imageTag,
+    required this.buildStatus,
+    this.sizeBytes,
+    this.buildMs,
+  });
+
+  final int n;
+  final String at;
+  final String by;
+  final String sha256;
+  final String? imageTag;
+  /// pending, building, ok or failed
+  final String buildStatus;
+  final int? sizeBytes;
+  final int? buildMs;
+
+  factory EnvVersion.fromJson(Map<String, dynamic> json) {
+    return EnvVersion(
+      n: (json['n'] as num).toInt(),
+      at: json['at'] as String,
+      by: json['by'] as String,
+      sha256: json['sha256'] as String,
+      imageTag: json['imageTag'] as String?,
+      buildStatus: json['buildStatus'] as String,
+      sizeBytes: (json['sizeBytes'] as num?)?.toInt(),
+      buildMs: (json['buildMs'] as num?)?.toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['n'] = n;
+    json['at'] = at;
+    json['by'] = by;
+    json['sha256'] = sha256;
+    if (imageTag != null) {
+      json['imageTag'] = imageTag;
+    }
+    json['buildStatus'] = buildStatus;
+    if (sizeBytes != null) {
+      json['sizeBytes'] = sizeBytes;
+    }
+    if (buildMs != null) {
+      json['buildMs'] = buildMs;
+    }
+    return json;
+  }
+}
+
+/// EnvMeta is a template's own record.
+class EnvMeta {
+  const EnvMeta({
+    required this.name,
+    required this.ownerID,
+    required this.createdAt,
+    required this.published,
+    required this.pool,
+    required this.versions,
+  });
+
+  final String name;
+  final String ownerID;
+  final String createdAt;
+  final int published;
+  final int pool;
+  final List<EnvVersion> versions;
+
+  factory EnvMeta.fromJson(Map<String, dynamic> json) {
+    return EnvMeta(
+      name: json['name'] as String,
+      ownerID: json['ownerId'] as String,
+      createdAt: json['createdAt'] as String,
+      published: (json['published'] as num).toInt(),
+      pool: (json['pool'] as num).toInt(),
+      versions: _list(
+        json['versions'],
+        (value) => _object(value, EnvVersion.fromJson),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    json['ownerId'] = ownerID;
+    json['createdAt'] = createdAt;
+    json['published'] = published;
+    json['pool'] = pool;
+    json['versions'] = [
+      for (final value in versions) value.toJson(),
+    ];
+    return json;
+  }
+}
+
+/// EnvListItem is one row of GET /api/workspaces.
+class EnvListItem {
+  const EnvListItem({
+    required this.source,
+    required this.name,
+    this.project,
+    this.published,
+    this.pool,
+    this.versions,
+    required this.usage,
+    this.draftChanges,
+  });
+
+  /// studio or repo
+  final String source;
+  final String name;
+  final String? project;
+  final int? published;
+  final int? pool;
+  final List<EnvVersion>? versions;
+  final int usage;
+  final bool? draftChanges;
+
+  factory EnvListItem.fromJson(Map<String, dynamic> json) {
+    return EnvListItem(
+      source: json['source'] as String,
+      name: json['name'] as String,
+      project: json['project'] as String?,
+      published: (json['published'] as num?)?.toInt(),
+      pool: (json['pool'] as num?)?.toInt(),
+      versions: _listOrNull(
+        json['versions'],
+        (value) => _object(value, EnvVersion.fromJson),
+      ),
+      usage: (json['usage'] as num).toInt(),
+      draftChanges: json['draftChanges'] as bool?,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['source'] = source;
+    json['name'] = name;
+    if (project != null) {
+      json['project'] = project;
+    }
+    if (published != null) {
+      json['published'] = published;
+    }
+    if (pool != null) {
+      json['pool'] = pool;
+    }
+    if (versions != null) {
+      json['versions'] = [
+        for (final value in versions!) value.toJson(),
+      ];
+    }
+    json['usage'] = usage;
+    if (draftChanges != null) {
+      json['draftChanges'] = draftChanges;
+    }
+    return json;
+  }
+}
+
+/// EnvPool is a template's warm pool.
+class EnvPool {
+  const EnvPool({
+    required this.size,
+    required this.idle,
+    required this.starting,
+  });
+
+  final int size;
+  final int idle;
+  final int starting;
+
+  factory EnvPool.fromJson(Map<String, dynamic> json) {
+    return EnvPool(
+      size: (json['size'] as num).toInt(),
+      idle: (json['idle'] as num).toInt(),
+      starting: (json['starting'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['size'] = size;
+    json['idle'] = idle;
+    json['starting'] = starting;
+    return json;
+  }
+}
+
+/// EnvStarts is the median cold and warm start, in milliseconds; zero means
+/// no sample yet.
+class EnvStarts {
+  const EnvStarts({
+    required this.coldMs,
+    required this.warmMs,
+  });
+
+  final int coldMs;
+  final int warmMs;
+
+  factory EnvStarts.fromJson(Map<String, dynamic> json) {
+    return EnvStarts(
+      coldMs: (json['coldMs'] as num).toInt(),
+      warmMs: (json['warmMs'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['coldMs'] = coldMs;
+    json['warmMs'] = warmMs;
+    return json;
+  }
+}
+
+/// EnvBuilds is GET /api/workspaces/{name}/builds' answer.
+class EnvBuilds {
+  const EnvBuilds({
+    required this.versions,
+    required this.pool,
+    required this.starts,
+  });
+
+  final List<EnvVersion> versions;
+  final EnvPool pool;
+  final EnvStarts starts;
+
+  factory EnvBuilds.fromJson(Map<String, dynamic> json) {
+    return EnvBuilds(
+      versions: _list(
+        json['versions'],
+        (value) => _object(value, EnvVersion.fromJson),
+      ),
+      pool: _object(
+        json['pool'],
+        EnvPool.fromJson,
+      ),
+      starts: _object(
+        json['starts'],
+        EnvStarts.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['versions'] = [
+      for (final value in versions) value.toJson(),
+    ];
+    json['pool'] = pool.toJson();
+    json['starts'] = starts.toJson();
+    return json;
+  }
+}
+
+/// EnvLoaded is GET /api/workspaces/{name}'s answer and what a draft save
+/// answers: the source, its parse, and the record behind it.
+class EnvLoaded {
+  const EnvLoaded({
+    required this.source,
+    required this.version,
+    required this.doc,
+    required this.sections,
+    required this.diagnostics,
+    required this.meta,
+  });
+
+  final String source;
+  final int version;
+  final EnvDoc doc;
+  final List<EnvSection> sections;
+  final List<EnvDiagnostic> diagnostics;
+  final EnvMeta meta;
+
+  factory EnvLoaded.fromJson(Map<String, dynamic> json) {
+    return EnvLoaded(
+      source: json['source'] as String,
+      version: (json['version'] as num).toInt(),
+      doc: _object(
+        json['doc'],
+        EnvDoc.fromJson,
+      ),
+      sections: _list(
+        json['sections'],
+        (value) => _object(value, EnvSection.fromJson),
+      ),
+      diagnostics: _list(
+        json['diagnostics'],
+        (value) => _object(value, EnvDiagnostic.fromJson),
+      ),
+      meta: _object(
+        json['meta'],
+        EnvMeta.fromJson,
+      ),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['source'] = source;
+    json['version'] = version;
+    json['doc'] = doc.toJson();
+    json['sections'] = [
+      for (final value in sections) value.toJson(),
+    ];
+    json['diagnostics'] = [
+      for (final value in diagnostics) value.toJson(),
+    ];
+    json['meta'] = meta.toJson();
+    return json;
+  }
+}
+
+/// EnvCreate is POST /api/workspaces' body. From is `blank`, `starter:&lt;name&gt;`,
+/// `devcontainer:&lt;path&gt;` or `snapshot:&lt;agent&gt;`.
+class EnvCreate {
+  const EnvCreate({
+    required this.name,
+    required this.from,
+  });
+
+  final String name;
+  final String from;
+
+  factory EnvCreate.fromJson(Map<String, dynamic> json) {
+    return EnvCreate(
+      name: json['name'] as String,
+      from: json['from'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['name'] = name;
+    json['from'] = from;
+    return json;
+  }
+}
+
+/// EnvDraft is PUT /api/workspaces/{name}/draft's body.
+class EnvDraft {
+  const EnvDraft({
+    required this.source,
+  });
+
+  final String source;
+
+  factory EnvDraft.fromJson(Map<String, dynamic> json) {
+    return EnvDraft(
+      source: json['source'] as String,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['source'] = source;
+    return json;
+  }
+}
+
+/// EnvBuildStart is POST /api/workspaces/{name}/builds' body and answer.
+class EnvBuildStart {
+  const EnvBuildStart({
+    required this.version,
+  });
+
+  final int version;
+
+  factory EnvBuildStart.fromJson(Map<String, dynamic> json) {
+    return EnvBuildStart(
+      version: (json['version'] as num).toInt(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{};
+    json['version'] = version;
+    return json;
+  }
+}
+
 /// FileEntry is one directory entry.
 class FileEntry {
   const FileEntry({

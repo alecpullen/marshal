@@ -5,6 +5,16 @@ import 'package:marshal_app/src/client/contract.g.dart'
         Credential,
         DaemonInfo,
         DiffFile,
+        EnvDoc,
+        EnvListItem,
+        EnvLoaded,
+        EnvMeta,
+        EnvNetwork,
+        EnvPackages,
+        EnvPolicy,
+        EnvResources,
+        EnvSetup,
+        EnvWorkspace,
         FileEntry,
         GateResult,
         ModelsConfig,
@@ -27,6 +37,7 @@ import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
 import 'package:marshal_app/src/model/bots_model.dart';
 import 'package:marshal_app/src/model/clients_model.dart';
 import 'package:marshal_app/src/model/connections_model.dart';
+import 'package:marshal_app/src/model/environments_model.dart';
 import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
 import 'package:marshal_app/src/model/general_model.dart';
 import 'package:marshal_app/src/model/hosts_model.dart';
@@ -63,6 +74,7 @@ import 'package:marshal_app/src/ui/library/memory_tab.dart';
 import 'package:marshal_app/src/ui/library/plugins_tab.dart';
 import 'package:marshal_app/src/ui/library/skills_tab.dart';
 import 'package:marshal_app/src/ui/settings/connections_section.dart';
+import 'package:marshal_app/src/ui/settings/environments_section.dart';
 import 'package:marshal_app/src/ui/settings/general_section.dart';
 import 'package:marshal_app/src/ui/settings/hosts_section.dart';
 import 'package:marshal_app/src/ui/settings/models_section.dart';
@@ -641,6 +653,19 @@ Widget _settings({int section = 0, StateKind? state}) {
     models: _settingsModels,
   );
   final models = ModelsModel.fixture(_settingsModels);
+  final environments = EnvironmentsModel.fixture(
+    items: const [
+      EnvListItem(
+        source: 'studio',
+        name: 'go-service',
+        published: 3,
+        pool: 2,
+        usage: 4,
+        draftChanges: true,
+      ),
+    ],
+    loaded: const {'go-service': _settingsEnvLoaded},
+  );
   final secrets = SecretsModel.fixture(
     status: const SecretsStatus(backend: 'local', healthy: true),
     refs: const ['vault:forge/github-token'],
@@ -689,6 +714,8 @@ Widget _settings({int section = 0, StateKind? state}) {
     sections: {
       SettingsSectionKind.hosts: (state) =>
           HostsSection(model: hosts, state: state, now: shellNow),
+      SettingsSectionKind.environments: (state) =>
+          EnvironmentsSection(model: environments, state: state),
       SettingsSectionKind.connections: (state) =>
           ConnectionsSection(model: connections, state: state),
       SettingsSectionKind.models: (state) =>
@@ -702,6 +729,34 @@ Widget _settings({int section = 0, StateKind? state}) {
     },
   );
 }
+
+/// One template's parsed document, as the Environments fixture shows it.
+const _settingsEnvLoaded = EnvLoaded(
+  source: '[workspace]\nname = "go-service"\nbase = "ubuntu:24.04"\n',
+  version: 0,
+  doc: EnvDoc(
+    workspace: EnvWorkspace(
+      name: 'go-service',
+      base: 'ubuntu:24.04',
+      toolchains: ['go@1.24'],
+    ),
+    packages: EnvPackages(),
+    network: EnvNetwork(mode: 'allowlist'),
+    resources: EnvResources(),
+    policy: EnvPolicy(),
+    setup: EnvSetup(),
+  ),
+  sections: [],
+  diagnostics: [],
+  meta: EnvMeta(
+    name: 'go-service',
+    ownerID: 'owner-1',
+    createdAt: '2026-11-16T09:00:00Z',
+    published: 3,
+    pool: 2,
+    versions: [],
+  ),
+);
 
 /// The global models config the Settings fixtures show.
 const _settingsModels = ModelsConfig(
@@ -838,6 +893,14 @@ final screens = <ScreenCase>[
     states: {
       for (final kind in requiredStates)
         kind: () => _settings(section: 0, state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'settings · environments',
+    ready: () => _settings(section: 1),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _settings(section: 1, state: kind),
     },
   ),
   ScreenCase(

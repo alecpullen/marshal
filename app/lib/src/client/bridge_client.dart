@@ -616,6 +616,79 @@ class BridgeClient {
     body: decision,
   );
 
+  /// GET /api/workspaces: the gallery of environment templates, with their
+  /// versions and how many agents run on each.
+  Future<List<EnvListItem>> environments() =>
+      _listOf('/api/workspaces', EnvListItem.fromJson);
+
+  /// GET /api/workspaces/{name}: one template's source, its parse and its
+  /// record. Without [version] the draft is read when there is one.
+  Future<EnvLoaded> environment(String name, {int? version}) => _objectOf(
+    '/api/workspaces/${Uri.encodeComponent(name)}',
+    EnvLoaded.fromJson,
+    query: {if (version != null) 'version': '$version'},
+  );
+
+  /// POST /api/workspaces: starts a template from [from], which is `blank`,
+  /// `starter:<name>`, `devcontainer:<path>` or `snapshot:<agent>`.
+  Future<EnvMeta> createEnvironment(String name, String from) => _objectOf(
+    '/api/workspaces',
+    EnvMeta.fromJson,
+    method: 'POST',
+    body: EnvCreate(name: name, from: from),
+  );
+
+  /// PUT /api/workspaces/{name}/draft: writes the source and answers its
+  /// parse.
+  Future<EnvLoaded> saveEnvironmentDraft(String name, String source) =>
+      _objectOf(
+        '/api/workspaces/${Uri.encodeComponent(name)}/draft',
+        EnvLoaded.fromJson,
+        method: 'PUT',
+        body: EnvDraft(source: source),
+      );
+
+  /// POST /api/workspaces/{name}/publish: publishes the draft and answers the
+  /// version it made.
+  Future<EnvVersion> publishEnvironment(String name) => _objectOf(
+    '/api/workspaces/${Uri.encodeComponent(name)}/publish',
+    EnvVersion.fromJson,
+    method: 'POST',
+    body: const <String, Object?>{},
+  );
+
+  /// DELETE /api/workspaces/{name}.
+  Future<void> deleteEnvironment(String name) => _send(
+    Request(
+      method: 'DELETE',
+      path: '/api/workspaces/${Uri.encodeComponent(name)}',
+    ),
+  );
+
+  /// GET /api/workspaces/{name}/builds: the versions, the warm pool and the
+  /// median start times.
+  Future<EnvBuilds> environmentBuilds(String name) => _objectOf(
+    '/api/workspaces/${Uri.encodeComponent(name)}/builds',
+    EnvBuilds.fromJson,
+  );
+
+  /// POST /api/workspaces/{name}/builds: starts a build and answers which
+  /// version it is building.
+  Future<EnvBuildStart> startEnvironmentBuild(String name, {int? version}) =>
+      _objectOf(
+        '/api/workspaces/${Uri.encodeComponent(name)}/builds',
+        EnvBuildStart.fromJson,
+        method: 'POST',
+        body: {'version': ?version},
+      );
+
+  /// GET …/builds/{n}/events: the build's log, from its first line. The
+  /// caller starts it.
+  EventStream environmentBuildLog(String name, int n) => EventStream(
+    _transport,
+    '/api/workspaces/${Uri.encodeComponent(name)}/builds/$n/events',
+  );
+
   /// GET /api/sessions/{id}/stack: one transcript's tree at its current
   /// revision. [subagentId] names a child transcript; 0 is the parent's.
   Future<StackSnapshot> stack(String sessionId, {int subagentId = 0}) =>

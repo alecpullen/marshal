@@ -104,6 +104,7 @@ class Sample {
     required this.pointers,
     required this.byName,
     this.optByName,
+    this.extends_,
     required this.tricky,
     this.rawEnums = const {},
   });
@@ -132,6 +133,9 @@ class Sample {
   /// to JSON rather than being written as it is.
   final Map<String, Inner> byName;
   final Map<String, Inner?>? optByName;
+  /// Extends is named after a Dart keyword: it keeps its JSON name and takes
+  /// a trailing underscore in Dart.
+  final String? extends_;
   /// Tricky has a tricky */ terminator in its comment.
   final String tricky;
 
@@ -189,6 +193,7 @@ class Sample {
         json['optByName'],
         (value) => _objectOrNull(value, Inner.fromJson),
       ),
+      extends_: json['extends'] as String?,
       tricky: json['tricky'] as String,
       rawEnums: rawEnums,
     );
@@ -223,6 +228,9 @@ class Sample {
     json['byName'] = {for (final entry in byName.entries) entry.key: entry.value.toJson()};
     if (optByName != null) {
       json['optByName'] = {for (final entry in optByName!.entries) entry.key: entry.value?.toJson()};
+    }
+    if (extends_ != null) {
+      json['extends'] = extends_;
     }
     json['tricky'] = tricky;
     return json;

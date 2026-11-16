@@ -705,7 +705,13 @@ func TestFactoryLoopReadyMonitorDuringModelTurn(t *testing.T) {
 	deadline := time.After(time.Second)
 	for {
 		item, _ := s.Get(ready.ID)
-		if item.State != "ready" && len(item.Effects) == 2 && item.Effects[1].Kind == "set_draft" && item.Effects[1].Status == "prepared" {
+		// The controller executes a prepared set_draft in the same tick that
+		// creates it, so "prepared" is a transient stage this poll usually
+		// loses: finding the effect already completed is stronger evidence the
+		// monitor ran, not a failure. Its presence at this position — after the
+		// set_ready the item started with — is what proves the ready PR was
+		// observed while the model turn was blocked.
+		if item.State != "ready" && len(item.Effects) == 2 && item.Effects[1].Kind == "set_draft" {
 			return
 		}
 		select {

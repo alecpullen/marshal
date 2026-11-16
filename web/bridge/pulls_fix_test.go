@@ -627,6 +627,42 @@ func TestAutoFixDispatchesOncePerHead(t *testing.T) {
 	}
 }
 
+// A dispatch the bridge refuses must not mark the head as auto-fixed: the
+// failure is still there, and the next pass may try it.
+func TestARefusedAutoFixLeavesTheHeadRetryable(t *testing.T) {
+	f, _, dispatches := autoFixFleet(t, &Automations{AutoFix: true})
+	stale, ok := f.pull("r1#7")
+	if !ok {
+		t.Fatal("the record vanished")
+	}
+	// The record the pass saw still fails the check, but the store's copy has
+	// moved on: the dispatch is refused.
+	stale.Checks = []contract.PullCheck{{Name: "lint", State: contract.CheckFailed}}
+	if _, err := f.updatePull("r1#7", func(r *contract.PullRecord) error {
+		r.Checks = []contract.PullCheck{{Name: "lint", State: contract.CheckPassed}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.autoFixPull(context.Background(), stale)
+	if *dispatches != 0 {
+		t.Fatalf("dispatches = %d, want 0: the dispatch was refused", *dispatches)
+	}
+
+	// The same head is retryable once the failure is back.
+	if _, err := f.updatePull("r1#7", func(r *contract.PullRecord) error {
+		r.Checks = []contract.PullCheck{{Name: "lint", State: contract.CheckFailed}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cur, _ := f.pull("r1#7")
+	f.autoFixPull(context.Background(), cur)
+	if *dispatches != 1 {
+		t.Fatalf("dispatches = %d, want 1: a refused dispatch must leave the head retryable", *dispatches)
+	}
+}
+
 func TestAutoFixIsOffByDefault(t *testing.T) {
 	cases := map[string]*Automations{
 		"no automation settings": nil,

@@ -318,12 +318,16 @@ func (f *Fleet) autoFixPull(ctx context.Context, rec contract.PullRecord) {
 	if !ok {
 		return
 	}
-	if !f.claimPullAutoFix(rec.ID, rec.HeadSHA) {
+	if f.pullAutoFixTaken(rec.ID, rec.HeadSHA) {
 		return
 	}
 	if _, err := f.dispatchPullFix(ctx, rec.ID, contract.PullFixRequest{Check: check.Name}, DefaultOwnerID); err != nil {
+		// A refused dispatch leaves the head retryable: the marker is set only
+		// once a dispatch was accepted.
 		slog.Default().Warn("webbridge: automatic pull fix", "pull", rec.ID, "err", err)
+		return
 	}
+	f.claimPullAutoFix(rec.ID, rec.HeadSHA)
 }
 
 // projectAutoFixesPulls reports whether a project asked for automatic fixes.
@@ -335,19 +339,25 @@ func (f *Fleet) projectAutoFixesPulls(root string) bool {
 	return ps.Automations != nil && ps.Automations.AutoFix
 }
 
-// claimPullAutoFix marks that an automatic fix was dispatched for head, and
-// reports false when one already was.
-func (f *Fleet) claimPullAutoFix(id, head string) bool {
+// pullAutoFixTaken reports whether an automatic fix was already dispatched for
+// this head.
+func (f *Fleet) pullAutoFixTaken(id, head string) bool {
+	if head == "" {
+		return false
+	}
+	f.auto.mu.Lock()
+	defer f.auto.mu.Unlock()
+	return f.auto.pullsAutoFix[id] == head
+}
+
+// claimPullAutoFix marks that an automatic fix was dispatched for head.
+func (f *Fleet) claimPullAutoFix(id, head string) {
 	f.auto.mu.Lock()
 	defer f.auto.mu.Unlock()
 	if f.auto.pullsAutoFix == nil {
 		f.auto.pullsAutoFix = map[string]string{}
 	}
-	if f.auto.pullsAutoFix[id] == head {
-		return false
-	}
 	f.auto.pullsAutoFix[id] = head
-	return true
 }
 
 // factoryItem returns one factory item, or false without a controller.

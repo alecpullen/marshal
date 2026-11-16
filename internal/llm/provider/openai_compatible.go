@@ -113,9 +113,9 @@ func (p *OpenAICompatible) Capabilities(ctx context.Context) schema.ProviderCapa
 
 // UserAgent is the User-Agent marshal's provider client identifies itself
 // with on OpenCode Zen endpoints, which ask clients to use their own name
-// and version rather than a generic HTTP-library default. cmd/marshal
-// stamps the release version at startup; local builds keep the dev
-// default.
+// and version rather than a generic HTTP-library default. cmd/marshal always
+// stamps this build's version at startup; only a build carrying no VCS stamp
+// keeps the marshal/dev default below.
 var UserAgent = "marshal/dev"
 
 // isOpencode reports whether this provider talks to OpenCode Zen, which

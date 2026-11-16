@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"runtime"
 	"runtime/debug"
+
+	"marshal/internal/buildinfo"
 )
 
 // Build metadata, injected at release time via -ldflags -X. GoReleaser sets
@@ -15,12 +17,12 @@ var (
 	date    = ""
 )
 
-// versionString renders the one-line version banner printed by --version.
+// versionString renders the one-line version banner printed by --version. Its
+// version word is the one run computes for the whole binary (decision 2), so a
+// source build names its commit here too; the commit and date after it are
+// unchanged.
 func versionString() string {
-	v, c, d := version, commit, date
-	if v == "" {
-		v = "dev"
-	}
+	v, c, d := buildinfo.Version(version), commit, date
 	if c == "" || d == "" {
 		vcsRev, vcsTime := buildStamps()
 		if c == "" {

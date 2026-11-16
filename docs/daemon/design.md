@@ -7,8 +7,10 @@ each spec with its own implementation record: P0 in §5,
 question), [`p3-acp-transport.md`](p3-acp-transport.md) and
 [`p4-local-daemon.md`](p4-local-daemon.md). P0's manual terminal check and
 P4's hands-on acceptance run are still to do. P5 is specified in
-[`p5-fleet-screen.md`](p5-fleet-screen.md), approved and not yet planned. Where a spec and
-this sketch differ, the spec wins.
+[`p5-fleet-screen.md`](p5-fleet-screen.md): plans 1 to 6 are implemented, and
+plans 7 and 8 are written. P6 is proposed in
+[`p6-daemon-lifecycle.md`](p6-daemon-lifecycle.md). Where a spec and this
+sketch differ, the spec wins.
 
 ## 1. Goal and scope
 
@@ -356,7 +358,8 @@ corruption.
 | P2 | TUI client seam with the in-process adapter (§4.5) — implemented (see the spec's implementation record): nine plans, with 2, 3 and 5 split into sub-plans, namely 1, 2a–2c, 3a–3d, 4, 5a–5e, 6, 7a–7d, 8a, 8b and 9 | Done when: the TUI reaches the agent side only through the client interface — it imports no agent-side package, holds no `session.State`, and does no project, config or keychain I/O (enforced by a boundary test) — and the transcript renders from the wire projection (§8 settled). The boundary test's allowlist is empty and `WithLegacyState` is gone |
 | P3 | ACP client transports; embedded mode over the pipe — implemented (see the spec's implementation record) | Embedded mode runs entirely over ACP and the adapter is deleted |
 | P4 | Bridge local profile ([`p4-local-daemon.md`](p4-local-daemon.md)): user service, unix listener, the attach relay (the sudo answer included), turns that outlive their caller, pinning, environment resolution, OAuth refresh run once, one `marshal acp` child per project for host-process agents — implemented (ten plans; see the spec's implementation record), hands-on acceptance pending (the spec's close-out) | A TUI can quit and reattach to a running turn on the local daemon |
-| P5 | Fleet screen in the Go TUI, shared types, server-computed views ([`p5-fleet-screen.md`](p5-fleet-screen.md), approved) | The fleet loop from `docs/fleet-cli/design.md` §1 works from the Go TUI against local and server profiles |
+| P5 | Fleet screen in the Go TUI, shared types, server-computed views ([`p5-fleet-screen.md`](p5-fleet-screen.md), approved; plans 1 to 6 implemented, 7 and 8 written) | The fleet loop from `docs/fleet-cli/design.md` §1 works from the Go TUI against local and server profiles |
+| P6 | The daemon across rebuilds and edits ([`p6-daemon-lifecycle.md`](p6-daemon-lifecycle.md), proposed): stale project children restarted when idle, the daemon's own restart, the screen reconnecting with its draft, config edits applied through the trust check (§6.2, §6.4) | Rebuilding both binaries while sessions run reaches every project at its next idle moment, without ending a turn, and every attached screen comes back on its session |
 
 P0 and P1 are independent of each other and of the later phases, and each
 is useful on its own.

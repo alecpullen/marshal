@@ -64,6 +64,13 @@ func TestDefaultImageTracksTheBuildVersion(t *testing.T) {
 	if got := defaultAgentImageFor("v1.2.3"); got != "ghcr.io/marshal/agent:v1.2.3" {
 		t.Fatalf("got %q", got)
 	}
+	// A source build has no published tag, whatever its version says
+	// (decision 4): :latest is the only workable default.
+	for _, version := range []string{"dev+abc123def456", "dev+abc123def456+dirty"} {
+		if got := defaultAgentImageFor(version); got != "ghcr.io/marshal/agent:latest" {
+			t.Fatalf("defaultAgentImageFor(%q) = %q, want the latest tag", version, got)
+		}
+	}
 }
 
 func TestDefaultImageFallsBackToLatestForADevBuild(t *testing.T) {

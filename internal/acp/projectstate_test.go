@@ -272,7 +272,10 @@ func TestProjectNoteReachesEverySession(t *testing.T) {
 }
 
 // TestProjectStateNamesWhatIsBusy pins decision 5: each session says what holds
-// it up, in the fixed order, and the sessions come in creation order.
+// it up, in the fixed order, and the sessions come in creation order. Its
+// first busy session is in a run and also holds a subagent, a job, a swarm and
+// an SDD run on it, so every one of the six line kinds B3 lists is asserted at
+// least once.
 func TestProjectStateNamesWhatIsBusy(t *testing.T) {
 	files := newRecordFiles(t)
 	p := newProjectHarness(t, files.executable, files.user, files.project)
@@ -289,6 +292,16 @@ func TestProjectStateNamesWhatIsBusy(t *testing.T) {
 	busyRT.State.SetTitle("planner")
 	go func() { _, _ = busySess.Prompt(context.Background(), acpwire.PromptParams{Text: "work"}) }()
 	waitFor(t, "the session's run to start", func() bool { return busySess.Status().Run != nil })
+
+	// The same session also holds a subagent, a job, a swarm and an SDD run,
+	// so every line kind B3 lists is asserted at least once. The registration
+	// is finished when the test's assertions are behind it: one child is one
+	// work item, and an unfinished one would keep the host's close waiting.
+	sub := busyRT.State.RegisterSubagent("scout", nil)
+	defer busyRT.State.FinishSubagent(sub.ID, "", nil)
+	busyRT.State.SetRunningJobsCount(1)
+	busyRT.State.SetSwarmProgress(session.SwarmProgress{Goal: "sweep the repo", Active: true})
+	busyRT.State.SetSDDProgress(session.SDDProgress{PlanName: "plan", Active: true})
 
 	// A session with a watching watch. Its name is its ID.
 	watchedRT, _ := p.adopt(t, "s2", service.Deps{})
@@ -316,7 +329,14 @@ func TestProjectStateNamesWhatIsBusy(t *testing.T) {
 	if err := p.bridge.Call(context.Background(), acpwire.MethodProjectState, nil, &got); err != nil {
 		t.Fatalf("project/state: %v", err)
 	}
-	want := []string{"a run in planner", "watch build in s2"}
+	want := []string{
+		"a run in planner",
+		"subagents in planner",
+		"jobs in planner",
+		"a swarm in planner",
+		"an SDD run in planner",
+		"watch build in s2",
+	}
 	if len(got.Busy) != len(want) {
 		t.Fatalf("project/state busy = %v, want %v", got.Busy, want)
 	}

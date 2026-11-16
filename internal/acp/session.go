@@ -961,8 +961,9 @@ func (m *SessionManager) number(rt *app.Runtime) {
 	m.seq[rt] = m.seqNext
 }
 
-// detach removes the runtime for id from the map under both locks and
-// returns the removed pointer (or false if id was unknown).
+// detach removes the runtime for id from the map under both locks, forgets
+// its creation-order entry, and returns the removed pointer (or false if id
+// was unknown).
 func (m *SessionManager) detach(id string) (*app.Runtime, bool) {
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
@@ -973,6 +974,13 @@ func (m *SessionManager) detach(id string) (*app.Runtime, bool) {
 		return nil, false
 	}
 	delete(m.sessions, id)
+	// The runtime's creation-order entry leaves with the session: number
+	// records every published runtime and removes nothing itself, so without
+	// this a long-lived project child retains one *app.Runtime per closed
+	// session. A replacement is not pruned this way: publishReplacement
+	// republishes a pointer number already knows, and number keeps the first
+	// number it gave it.
+	delete(m.seq, rt)
 	return rt, true
 }
 

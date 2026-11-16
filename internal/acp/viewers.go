@@ -28,6 +28,11 @@ const viewerMaxFrameBytes = 64 << 20
 // (decision 3).
 const ViewersEnv = "MARSHAL_ACP_VIEWERS"
 
+// ProjectChildEnv marks the child the bridge starts for a project, the only
+// one that keeps a start record (P6 B3): a fleet agent's own child serves
+// viewers too, and keeps none.
+const ProjectChildEnv = "MARSHAL_ACP_PROJECT_CHILD"
+
 // viewerLifecycleRefusal is what a viewer connection answers a call that would
 // start or load a runtime (P4 D2): the bridge owns sessions' lifecycles.
 func viewerLifecycleRefusal() error {
@@ -118,8 +123,17 @@ func RunWithViewers(ctx context.Context, stdin io.Reader, stdout, stderr io.Writ
 	}
 	trustStore := trust.NewStore(config.DataDir(home))
 	// What this child started from (decision 1): its executable and the two
-	// config files it read. A child that is not a project child keeps none.
-	record := newStartRecord(startExecutable(log), config.UserConfigPath(home), startProjectConfig(log), log)
+	// config files it read. Only a project child keeps one (P6 B3): the
+	// bridge marks the children it starts with ProjectChildEnv, so embedded
+	// mode, a `--listen` container and a fleet agent's own child keep none.
+	// The mark is read and dropped here, before anything can be spawned, so
+	// nothing this child starts inherits it.
+	projectChild := os.Getenv(ProjectChildEnv) != ""
+	os.Unsetenv(ProjectChildEnv)
+	var record *startRecord
+	if projectChild {
+		record = newStartRecord(startExecutable(log), config.UserConfigPath(home), startProjectConfig(log), log)
+	}
 
 	// One project-host registry for the process, shared by every connection's
 	// sessions and closed after all of them (see Run).

@@ -113,6 +113,46 @@ func TestAReplacedExecutableIsStale(t *testing.T) {
 	assertStale(t, rec, "a new marshal build", "config.toml changed", ".marshal/config.toml changed")
 }
 
+// TestAReplacedExecutableOfTheSameSizeAndDateIsStale pins decision 1's
+// device-and-inode leg: the replacement keeps the size and, after os.Chtimes,
+// the original's modification time, so size and time can no longer tell the
+// files apart. It is built beside the original while both exist — the two can
+// never share a device and inode — then moved over the path.
+func TestAReplacedExecutableOfTheSameSizeAndDateIsStale(t *testing.T) {
+	f := newRecordFiles(t)
+	rec := f.record(t)
+	orig, err := os.Stat(f.executable)
+	if err != nil {
+		t.Fatalf("stat the executable: %v", err)
+	}
+
+	// "the brick" is as long as "the build" it replaces.
+	same := filepath.Join(f.dir, "same-sized")
+	writeRecordFile(t, same, "the brick")
+	if err := os.Chtimes(same, orig.ModTime(), orig.ModTime()); err != nil {
+		t.Fatalf("restore the modification time: %v", err)
+	}
+	if err := os.Rename(same, f.executable); err != nil {
+		t.Fatalf("replace the executable: %v", err)
+	}
+
+	// The premise: nothing but the device and the inode still differ.
+	cur, err := os.Stat(f.executable)
+	if err != nil {
+		t.Fatalf("stat the replacement: %v", err)
+	}
+	if got := cur.Size(); got != orig.Size() {
+		t.Fatalf("the replacement is %d bytes, want the original's %d", got, orig.Size())
+	}
+	if !cur.ModTime().Equal(orig.ModTime()) {
+		t.Fatalf("the modification time is %v, want the original's %v", cur.ModTime(), orig.ModTime())
+	}
+	if os.SameFile(orig, cur) {
+		t.Fatal("the replacement shares the original's device and inode")
+	}
+	assertStale(t, rec, "a new marshal build")
+}
+
 // TestAnEditedConfigIsStale is decision 1's config entry: the SHA-256 of the
 // content the record kept, for each file it watches.
 func TestAnEditedConfigIsStale(t *testing.T) {

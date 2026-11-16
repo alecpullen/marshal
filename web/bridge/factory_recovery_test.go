@@ -759,6 +759,84 @@ func TestFactoryContinuationChildFailure(t *testing.T) {
 	})
 }
 
+// TestFactoryContinuationResumesTurnHoldingItsIdentity pins the recovery of a
+// turn that was prepared and then went back to waiting before anything was
+// sent: Continue re-reads the child projection and returns the turn to waiting
+// with its identity intact. That identity must resume and dispatch. Minting a
+// second one is not merely a duplicate — factoryContinuationID hashes the
+// identity it derives from, so a fresh derivation cannot reproduce the held ID,
+// and the turn would wait forever on work nothing re-dispatches.
+func TestFactoryContinuationResumesTurnHoldingItsIdentity(t *testing.T) {
+	f := newContinuationFixture(t, "s1")
+	f.transcript(0,
+		delegatedTurnStack(t, "turn:1", []int64{7}, delegatedReport("op1")),
+		delegatedStatus(t, true, delegatedChild(7, "done")))
+	// The journal holds the turn as waiting under an identity: exactly the state
+	// Continue leaves behind when it cannot prove the children settled.
+	f.update("unsent", func(dst *FactoryItem) error {
+		last := &dst.Effects[len(dst.Effects)-1]
+		if last.Delegated == nil {
+			return ErrFactoryConflict
+		}
+		next := *last.Delegated
+		next.ContinuationID = "cont-unsent"
+		next.State = factoryDelegatedWaiting
+		last.Delegated = &next
+		return nil
+	})
+	f.answer(0, func(_ int, id string) json.RawMessage {
+		return delegatedTurnStack(t, "turn:2", nil, continuationReport(id, "Which approach?"))
+	})
+	f.tick()
+
+	prompts := f.prompted()
+	if len(prompts) != 1 {
+		t.Fatalf("continuation prompts = %d, want 1: a waiting turn holding its identity was never dispatched", len(prompts))
+	}
+	if prompts[0].ContinuationID != "cont-unsent" {
+		t.Fatalf("the continuation minted %q, want the identity the turn already held", prompts[0].ContinuationID)
+	}
+	params := f.frames(0, "session/prompt")
+	if len(params) != 1 || continuationPromptID(params[0]) != "cont-unsent" {
+		t.Fatalf("the prompt did not name the resumed continuation: %v", params)
+	}
+	saved := f.current()
+	last := saved.Effects[len(saved.Effects)-1]
+	if last.Status != "completed" || last.Outcome == nil || last.Outcome.Report == nil {
+		t.Fatalf("the resumed continuation did not complete the effect: %+v", last)
+	}
+}
+
+// TestFactoryQuiesceKeepsPreparedContinuation proves a shutdown between the
+// journal write and the prompt does not hand back an ambiguity: a prepared
+// continuation was never sent, so a restart re-dispatches it instead of
+// demanding an operator decision.
+func TestFactoryQuiesceKeepsPreparedContinuation(t *testing.T) {
+	f := newContinuationFixture(t, "s1")
+	f.update("prepared", func(dst *FactoryItem) error {
+		last := &dst.Effects[len(dst.Effects)-1]
+		if last.Delegated == nil {
+			return ErrFactoryConflict
+		}
+		next := *last.Delegated
+		next.ContinuationID = "cont-prepared"
+		next.State = factoryDelegatedPrepared
+		last.Delegated = &next
+		return nil
+	})
+	if err := f.c.Quiesce(); err != nil {
+		t.Fatal(err)
+	}
+	saved := f.current()
+	last := saved.Effects[len(saved.Effects)-1]
+	if last.Status != "dispatched" || last.Delegated == nil || last.Delegated.State != factoryDelegatedPrepared {
+		t.Fatalf("a never-sent continuation was made uncertain: %+v", last)
+	}
+	if saved.Decision != nil {
+		t.Fatalf("a never-sent continuation demanded a decision: %+v", saved.Decision)
+	}
+}
+
 // TestFactoryContinuationRepeatsForNewChild proves the cycle repeats: a
 // continuation that launches new child work is waiting again, under a fresh
 // identity, and no report is accepted until that child settles.

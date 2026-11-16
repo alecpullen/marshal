@@ -604,10 +604,14 @@ func (c *FactoryController) Quiesce() error {
 			if len(item.Effects) == 0 || item.Effects[len(item.Effects)-1].Status != "dispatched" {
 				break
 			}
-			if d := item.Effects[len(item.Effects)-1].Delegated; d != nil && d.State == factoryDelegatedWaiting {
+			if d := item.Effects[len(item.Effects)-1].Delegated; d != nil && (d.State == factoryDelegatedWaiting || d.State == factoryDelegatedPrepared) {
 				// A waiting turn has nothing in flight: its report is early, not
 				// lost, so a restarted bridge resumes the same cycle instead of
-				// being handed an ambiguity the operator would have to clear.
+				// being handed an ambiguity the operator would have to clear. A
+				// prepared continuation is the same case one step earlier: the
+				// journal records it, but no prompt has been sent, so a restart
+				// re-dispatches it rather than trading auto-continuity for a
+				// decision.
 				break
 			}
 			_, err = c.internalUpdate(item, "shutdown_uncertain", func(dst *FactoryItem) error {
@@ -1016,11 +1020,26 @@ func (c *FactoryController) advanceDelegated(ctx context.Context, items []Factor
 	return false, nil
 }
 
-// prepareContinuation journals a fresh continuation identity as prepared,
-// bound to the effect, the worker session and the parent turn it continues. A
-// second continuation for one iteration is a conflict, never a second prompt.
+// prepareContinuation journals a continuation identity as prepared, bound to
+// the effect, the worker session and the parent turn it continues. A second
+// continuation for one iteration is a conflict, never a second prompt.
+//
+// A turn that went back to waiting with its identity intact was dispatched but
+// never reached the prompt: Continue re-reads the child projection before it
+// sends anything and returns the turn to waiting when it cannot prove the
+// children settled. That identity resumes here rather than a second one being
+// minted — factoryContinuationID hashes the identity it derives from, so a
+// fresh derivation is only correct when the turn carries none, and minting one
+// from a turn that already has an ID would leave it waiting on an identity
+// nothing re-dispatches.
 func (c *FactoryController) prepareContinuation(item FactoryItem, e FactoryEffect) (FactoryItem, FactoryEffect, error) {
-	continuationID := factoryContinuationID(e)
+	resume := e.Delegated != nil && e.Delegated.ContinuationID != ""
+	continuationID := ""
+	if resume {
+		continuationID = e.Delegated.ContinuationID
+	} else {
+		continuationID = factoryContinuationID(e)
+	}
 	if continuationID == "" {
 		return item, e, ErrFactoryConflict
 	}
@@ -1030,7 +1049,11 @@ func (c *FactoryController) prepareContinuation(item FactoryItem, e FactoryEffec
 			return ErrFactoryConflict
 		}
 		next := *last.Delegated
-		if next.ContinuationID != "" {
+		if resume {
+			if next.ContinuationID != continuationID {
+				return ErrFactoryConflict
+			}
+		} else if next.ContinuationID != "" {
 			return ErrFactoryConflict
 		}
 		next.ContinuationID = continuationID
@@ -1274,9 +1297,11 @@ func (c *FactoryController) finishEffect(ctx context.Context, dispatched Factory
 			last := &dst.Effects[len(dst.Effects)-1]
 			last.Delegated = &delegated
 			message := fmt.Sprintf("waiting on %d child(ren) the turn launched", len(delegated.ChildIDs))
-			if previous != "" {
+			if previous != "" && delegated.ContinuationID != previous {
 				// The continuation that launched them is spent: the new cycle
-				// carries a new identity, and this report is not its result.
+				// carries a new identity, and this report is not its result. A
+				// turn that kept its identity was never sent, so it reports
+				// nothing spent.
 				message += "; continuation " + previous + " launched new child work"
 			}
 			dst.History = append(dst.History, FactoryEvent{At: c.now(), Kind: "delegated_waiting", EffectID: e.ID, Message: message})

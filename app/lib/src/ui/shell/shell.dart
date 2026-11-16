@@ -4,6 +4,8 @@ import '../../model/inbox_model.dart';
 import '../../model/nav_model.dart';
 import '../../model/place.dart';
 import '../kit/kit.dart';
+import '../overview/overview.dart' show Overview;
+import '../../model/overview_model.dart' show buildOverview;
 import 'placeholder.dart';
 import 'sidebar.dart';
 
@@ -301,7 +303,22 @@ class _StudioState extends State<Studio> {
     return null;
   }
 
+  /// Opens a place, from the content as well as from the sidebar.
+  void _go(Place place) => setState(() => _place = place);
+
   /// What the place draws. A place whose screen a later step of F2 brings
   /// says so (design-system.md §7).
-  Widget _content(Place place, NavModel nav) => plannedPlace(place, nav);
+  Widget _content(Place place, NavModel nav) {
+    if (place.kind == PlaceKind.overview) {
+      return Overview(
+        overview: buildOverview(widget.store, widget.inbox),
+        now: widget.store.now,
+        hosts: widget.store.hosts,
+        onSelect: _go,
+        onAnswer: widget.inbox.answer,
+        onRetry: _reread,
+      );
+    }
+    return plannedPlace(place, nav);
+  }
 }

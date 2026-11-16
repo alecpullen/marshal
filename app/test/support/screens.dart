@@ -1,11 +1,14 @@
 import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
 import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
+import 'package:marshal_app/src/model/inbox_model.dart' as model;
+import 'package:marshal_app/src/model/overview_model.dart';
 import 'package:marshal_app/src/model/nav_model.dart';
 import 'package:marshal_app/src/model/place.dart';
 import 'package:marshal_app/src/model/thread_ref.dart' as model;
 import 'package:marshal_app/src/ui/debug/connection_check.dart';
 import 'package:marshal_app/src/ui/gallery/gallery.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
+import 'package:marshal_app/src/ui/overview/overview.dart';
 import 'package:marshal_app/src/ui/shell/placeholder.dart';
 import 'package:marshal_app/src/ui/shell/shell.dart';
 
@@ -155,6 +158,99 @@ Widget _shell({StateKind? state, Place place = const Place.overview()}) {
   );
 }
 
+/// One ask in the Overview's fixture.
+model.Ask _overviewAsk(
+  String id,
+  String title,
+  model.AskKind kind,
+  Duration age,
+) => model.Ask(
+  host: 'local',
+  id: id,
+  kind: kind,
+  thread: _shellThread(
+    'a-1',
+    'Reliable session recovery',
+    model.ThreadStatus.needsYou,
+  ),
+  title: title,
+  body: kind == model.AskKind.approval ? 'The branch is ready' : '',
+  actions: const [
+    model.AskAction('Approve once', primary: true),
+    model.AskAction('Deny'),
+  ],
+  since: shellNow.subtract(age),
+);
+
+/// The Overview's fixture: two asks, one running thread, one project, two
+/// hosts and today's spend.
+OverviewModel _overviewModel() => OverviewModel(
+  needsYou: [
+    _overviewAsk(
+      'tc-1',
+      'git push',
+      model.AskKind.approval,
+      const Duration(minutes: 12),
+    ),
+    _overviewAsk(
+      'q-1',
+      'Which branch?',
+      model.AskKind.question,
+      const Duration(minutes: 30),
+    ),
+  ],
+  running: [
+    _shellThread(
+      'a-1',
+      'Reliable session recovery',
+      model.ThreadStatus.running,
+    ),
+  ],
+  projects: const [
+    ProjectSummary(
+      id: '/home/u/marshal',
+      name: 'marshal',
+      needsYou: 2,
+      running: 1,
+      ready: 1,
+      failed: 0,
+      idle: 9,
+    ),
+  ],
+  capacity: [
+    HostCapacity(
+      host: 'local',
+      reach: HostReach.live,
+      lastContact: shellNow,
+      threads: 3,
+      needsYou: 2,
+    ),
+    HostCapacity(
+      host: 'studio',
+      reach: HostReach.unreachable,
+      lastContact: shellNow.subtract(const Duration(minutes: 4)),
+      threads: 1,
+      needsYou: 0,
+    ),
+  ],
+  spend: const SpendSummary(
+    day: '2026-11-17',
+    spentUSD: 4.5,
+    capUSD: 10,
+    blocked: false,
+  ),
+);
+
+Widget _overview({StateKind? state}) => Overview(
+  overview: _overviewModel(),
+  now: shellNow,
+  hosts: shellHosts,
+  state: state,
+  onRetry: () {},
+  onSelect: (_) {},
+  onAnswer: (_, _) {},
+);
+
 /// The registry of screens. F0 has one, the gallery; each later phase adds
 /// its screens here with fixture data, and `tooltips_test.dart`,
 /// `states_test.dart` and `overflow_test.dart` then hold them to the design
@@ -182,6 +278,13 @@ final screens = <ScreenCase>[
           state: kind,
           onRetry: () {},
         ),
+    },
+  ),
+  ScreenCase(
+    name: 'overview',
+    ready: () => _overview(),
+    states: {
+      for (final kind in requiredStates) kind: () => _overview(state: kind),
     },
   ),
   ScreenCase(

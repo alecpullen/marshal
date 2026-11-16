@@ -45,6 +45,17 @@ var errStopped = errors.New("bridge: child stopped")
 // request; answerRequest answers it as JSON-RPC -32800.
 var errRequestCancelled = errors.New("bridge: the child cancelled the request")
 
+// handlerError lets an OnRequest handler choose the JSON-RPC error code the
+// child is answered with, for the protocol's own codes (such as -32601 for a
+// method the handler does not implement). Every other error is answered
+// -32000, and errRequestCancelled -32800, as before.
+type handlerError struct {
+	Code    int
+	Message string
+}
+
+func (e *handlerError) Error() string { return e.Message }
+
 // cancelRequestMethod is JSON-RPC's $/cancel_request notification. It is a
 // literal because everything under web/ is standard-library only and so may
 // not import marshal/internal/acpwire.
@@ -654,9 +665,13 @@ func (c *Child) answerRequest(ctx context.Context, key string, id json.RawMessag
 	result, err := c.OnRequest(ctx, method, params)
 	if err != nil {
 		code, message := -32000, err.Error()
-		if errors.Is(err, errRequestCancelled) {
+		var he *handlerError
+		switch {
+		case errors.Is(err, errRequestCancelled):
 			// The child ended this request itself (P5 R2).
 			code, message = -32800, "request cancelled"
+		case errors.As(err, &he):
+			code, message = he.Code, he.Message
 		}
 		_ = c.writeFrame(map[string]any{
 			"jsonrpc": "2.0",

@@ -141,11 +141,12 @@ func runDaemonRefresh(ctx context.Context, args []string, stderr io.Writer) erro
 
 // runDaemonInstall renders and loads the unit.
 //
-// Usage: marshal daemon install [--webbridge PATH]
+// Usage: marshal daemon install [--webbridge PATH] [--no-linger]
 func runDaemonInstall(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("daemon install", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	webbridge := fs.String("webbridge", "", "the webbridge binary to run (default: beside marshal, else on PATH)")
+	noLinger := fs.Bool("no-linger", false, "do not enable systemd's linger for this user (Linux)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -170,8 +171,67 @@ func runDaemonInstall(ctx context.Context, args []string, stdout, stderr io.Writ
 	}
 	fmt.Fprintf(stdout, "unit: %s\n", m.UnitPath())
 	fmt.Fprintf(stdout, "socket: %s\n", spec.Paths.Socket)
+	daemonEnsureLinger(ctx, m, *noLinger, stdout)
 	daemonReadyNote(ctx, spec.Paths, stdout)
 	return nil
+}
+
+// daemonEnsureLinger enables the user's linger bit on Linux and says what it
+// found. It never fails the install: the unit is written and loaded by the
+// time it runs, so linger decides only whether the daemon survives logout.
+func daemonEnsureLinger(ctx context.Context, m *daemon.Manager, skip bool, stdout io.Writer) {
+	if m.GOOS != "linux" {
+		return
+	}
+	if skip {
+		fmt.Fprintln(stdout, "linger: left off (--no-linger)")
+		return
+	}
+	state, err := m.Linger(ctx)
+	if err != nil {
+		fmt.Fprintf(stdout, "linger: not enabled (read Linger: %v)\n", err)
+		return
+	}
+	if !state.Supported {
+		// Supported is false for two causes — loginctl missing, and no
+		// logind to answer for this user — so the parenthetical names
+		// neither.
+		fmt.Fprintln(stdout, "linger: not supported (loginctl unavailable)")
+		return
+	}
+	if state.Enabled {
+		fmt.Fprintln(stdout, "linger: already enabled")
+		return
+	}
+	if err := m.EnableLinger(ctx); err != nil {
+		fmt.Fprintf(stdout, "linger: not enabled (%v)\n", err)
+		return
+	}
+	fmt.Fprintln(stdout, "linger: enabled")
+}
+
+// daemonLingerLine is daemon status's linger line, and whether this platform
+// has one at all. macOS has no equivalent, so it gets no line rather than a
+// "not supported" one for something it does not need.
+func daemonLingerLine(ctx context.Context, m *daemon.Manager) (string, bool) {
+	if m.GOOS != "linux" {
+		return "", false
+	}
+	// status has to answer even when loginctl hangs: the socket read below
+	// is bounded the same way, so a stuck read is a line, not a wait.
+	lingerCtx, cancel := context.WithTimeout(ctx, daemonStatusTimeout)
+	defer cancel()
+	state, err := m.Linger(lingerCtx)
+	if err != nil {
+		return fmt.Sprintf("linger: unknown (%v)", err), true
+	}
+	if !state.Supported {
+		return "linger: not supported (loginctl unavailable)", true
+	}
+	if state.Enabled {
+		return "linger: enabled", true
+	}
+	return "linger: disabled (the daemon stops at logout)", true
 }
 
 // daemonUnitSpec is decision 10's unit: the webbridge, the resolved marshal,
@@ -285,6 +345,11 @@ func runDaemonService(ctx context.Context, sub string, args []string, stdout, st
 			return err
 		}
 		fmt.Fprintf(stdout, "uninstalled; data kept in %s\n", daemon.PathsFor(home).Dir)
+		// The linger bit is per user, not per unit: Marshal set it at
+		// install, but other user units depend on it, so it stays.
+		if state, err := m.Linger(ctx); err == nil && state.Supported && state.Enabled {
+			fmt.Fprintln(stdout, "linger: left enabled (per user, not per unit)")
+		}
 	}
 	return nil
 }
@@ -361,6 +426,9 @@ func runDaemonStatus(ctx context.Context, args []string, stdout, stderr io.Write
 		return fmt.Errorf("read the marshal daemon service: %w", err)
 	}
 	fmt.Fprintln(stdout, daemonServiceLine(state))
+	if line, ok := daemonLingerLine(ctx, m); ok {
+		fmt.Fprintln(stdout, line)
+	}
 
 	infoCtx, cancel := context.WithTimeout(ctx, daemonStatusTimeout)
 	defer cancel()

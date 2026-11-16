@@ -204,14 +204,13 @@ func (m Model) screen() string {
 		h = defaultHeight
 	}
 
-	title := m.title()
-	detail := m.detail()
+	// Both lines wrap: a dial error's first line is as long as the dial made
+	// it, a restart's reason as long as the bridge's sentence, and the frame
+	// is narrow.
+	titles := strings.Split(ansi.Hardwrap(m.title(), w, false), "\n")
+	details := strings.Split(ansi.Hardwrap(m.detail(), w, false), "\n")
 
-	// The detail line wraps: an error's first line is as long as the dial
-	// made it, and the frame is narrow.
-	details := strings.Split(ansi.Hardwrap(detail, w, false), "\n")
-
-	top := (h - (1 + len(details))) / 2
+	top := (h - (len(titles) + len(details))) / 2
 	if top < 0 {
 		top = 0
 	}
@@ -219,11 +218,13 @@ func (m Model) screen() string {
 	titleStyle := lipgloss.NewStyle().Foreground(m.th.AccentPrimary)
 	detailStyle := lipgloss.NewStyle().Foreground(m.th.FGMuted)
 
-	lines := make([]string, 0, top+1+len(details))
+	lines := make([]string, 0, top+len(titles)+len(details))
 	for i := 0; i < top; i++ {
 		lines = append(lines, "")
 	}
-	lines = append(lines, centre(title, w, titleStyle))
+	for _, line := range titles {
+		lines = append(lines, centre(line, w, titleStyle))
+	}
 	for _, line := range details {
 		lines = append(lines, centre(line, w, detailStyle))
 	}
@@ -243,7 +244,10 @@ func centre(text string, width int, style lipgloss.Style) string {
 // the reconnect otherwise.
 func (m Model) title() string {
 	if m.reason != "" {
-		return m.label + " is restarting: " + m.reason
+		// The reason is the bridge's sentence and may carry a newline: keep
+		// the title one row tall on its account, as detail does with a dial
+		// error. A reason wider than the frame still wraps in screen.
+		return m.label + " is restarting: " + firstLine(m.reason)
 	}
 	return "Reconnecting to " + m.label + ellipsis
 }

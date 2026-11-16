@@ -104,6 +104,49 @@ func TestTheWaitingScreenSaysWhyARestartHappens(t *testing.T) {
 	}
 }
 
+// TestTheTitleStaysInsideTheFrame checks the two things a reason can do to the
+// title: carry a newline, or be wider than the terminal. The first must not
+// push an uncentred row into the block, the second must not run off the frame.
+func TestTheTitleStaysInsideTheFrame(t *testing.T) {
+	// textRows is the render's rows with visible text, without the blank ones
+	// the centring adds above the block.
+	textRows := func(render string) []string {
+		var rows []string
+		for _, row := range strings.Split(render, "\n") {
+			if strings.TrimSpace(ansi.Strip(row)) != "" {
+				rows = append(rows, ansi.Strip(row))
+			}
+		}
+		return rows
+	}
+
+	t.Run("a reason with a newline keeps one title row", func(t *testing.T) {
+		const reason = "the daemon is restarting\nand back in a moment"
+		got := sized(t, "local", reason, attemptsOf(), 80, 24).View().Content
+
+		if !strings.Contains(got, "local is restarting: the daemon is restarting") {
+			t.Errorf("the title does not name the reason's first line:\n%s", got)
+		}
+		if rows := textRows(got); len(rows) != 2 {
+			t.Errorf("the screen draws %d text rows, want the title and the detail line:\n%s", len(rows), got)
+		}
+	})
+
+	t.Run("a reason wider than the frame wraps", func(t *testing.T) {
+		reason := strings.Repeat("the daemon is restarting ", 5) // 125 cells
+		got := sized(t, "local", reason, attemptsOf(), 80, 24).View().Content
+
+		for i, row := range strings.Split(got, "\n") {
+			if n := ansi.StringWidth(row); n > 80 {
+				t.Errorf("row %d is %d cells, wider than the terminal's 80: %q", i+1, n, ansi.Strip(row))
+			}
+		}
+		if rows := textRows(got); len(rows) < 3 {
+			t.Errorf("the long reason did not wrap: %d text rows:\n%s", len(rows), got)
+		}
+	})
+}
+
 // TestEachAttemptRepaints checks that an attempt's number and error reach the
 // screen, and that the next attempt replaces them.
 func TestEachAttemptRepaints(t *testing.T) {
@@ -305,6 +348,9 @@ func TestTheWaitingScreenMatchesItsGoldens(t *testing.T) {
 			}
 			if !g.coloured && strings.Contains(got, "\x1b") {
 				t.Errorf("the NO_COLOR frame carries escape sequences:\n%q", got)
+			}
+			if g.coloured && !strings.Contains(got, "\x1b") {
+				t.Errorf("the colour frame carries no escape sequence, so the theme stopped colouring it:\n%q", got)
 			}
 			checkGolden(t, g.name, got)
 		})

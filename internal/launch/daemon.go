@@ -445,14 +445,9 @@ func (l *daemonLoop) sessionStep(ctx context.Context, step daemonStep) (*daemonS
 			resume.dialled = reconnected
 			return &resume, nil
 		}
-		lostErr := rerr
-		if lostErr == nil {
-			lostErr = conn.err()
-		}
-		if lostErr == nil {
-			lostErr = errors.New("the connection closed")
-		}
-		lost := fmt.Errorf("launch: the daemon's connection closed: %w; `marshal attach %s` reattaches", lostErr, sessionID)
+		// The reconnect returns a cause whenever it fails, so the loss names
+		// it: there is no path here without one.
+		lost := fmt.Errorf("launch: the daemon's connection closed: %w; `marshal attach %s` reattaches", rerr, sessionID)
 		if l.fleetRan {
 			return &daemonStep{fleet: true, notice: fmt.Sprintf("lost the connection to %s: %v", step.label(), lost)}, nil
 		}
@@ -514,8 +509,9 @@ func (l *daemonLoop) reconnect(ctx context.Context, step daemonStep, reason stri
 	deadline := time.Now().Add(window)
 
 	// Decision 7: the window bounds every attempt, and the waiting screen's
-	// end cancels them early.
-	dialCtx, stopDials := context.WithTimeout(ctx, window)
+	// end cancels them early. The dial context takes the deadline itself, so
+	// the seconds the screen counts down are the seconds the dials get.
+	dialCtx, stopDials := context.WithDeadline(ctx, deadline)
 	defer stopDials()
 
 	attempts := make(chan reconnect.Attempt)

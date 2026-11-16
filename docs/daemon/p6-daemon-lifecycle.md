@@ -586,8 +586,10 @@ _To be filled by the executor._
   `New(label, reason, deadline, attempts, opts...)` reads "Reconnecting to
   <label>…", or, once a `marshal/restarting` has arrived, "<label> is
   restarting: <reason>", with the attempt count, the last error's first line
-  and the seconds left. `esc` and `q` give up (`GaveUp()`); a closed attempts
-  channel ends the wait without giving up. Tests:
+  and the seconds left. Both lines wrap to the frame's width, and a multi-line
+  reason keeps its first line, so the block stays centred. `esc`, `q` and
+  ctrl+c give up (`GaveUp()`); a closed attempts channel ends the wait without
+  giving up. Tests:
   `TestTheWaitingScreenNamesTheSession`,
   `TestTheWaitingScreenSaysWhyARestartHappens`, `TestEachAttemptRepaints`,
   `TestSecondsLeftRoundUpAndStopAtZero`, `TestTheScreenEndsWhenTheAttemptsDo`,
@@ -620,9 +622,10 @@ _To be filled by the executor._
   process ID comes from `MARSHAL_DAEMON_TEST_CHILD_PID`, which `runChild`
   writes for `acp --viewers` only (`test/daemon/main_test.go`): the bridge
   also starts its control agent from this binary with no arguments, and its
-  write would name the wrong process. `GET /api/daemon` reports no process
-  IDs. The waiting screen is driven there by a small command pump, because
-  the attempts channel is unbuffered and only the screen reads it.
+  write would name the wrong process. `GET /api/daemon` names the project's
+  children but no process IDs for them. The waiting screen is driven there by
+  a small command pump, because the attempts channel is unbuffered and only
+  the screen reads it.
 
 **Where it differs from B2.** B2 says "the loop adds a note only when the
 session's newest message is not already that note". The implementation reads a

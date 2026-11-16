@@ -3,9 +3,14 @@ package bridge
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -142,6 +147,350 @@ func TestRecordPullIsIdempotentByID(t *testing.T) {
 	}
 	if recs[0].Title != "A newer title" || recs[0].HeadSHA != "def456" {
 		t.Fatalf("the second recording did not replace the first: %+v", recs[0])
+	}
+}
+
+// pullForge is a GitHub-shaped forge a test drives directly: the open pull
+// requests it answers with, the check runs for each head, and the log of the
+// job behind a failed check. Every request it serves is recorded, so a test can
+// prove a record was never polled.
+type pullForge struct {
+	*httptest.Server
+	mu       sync.Mutex
+	open     []map[string]any
+	checks   map[string][]map[string]any
+	log      string
+	requests []string
+}
+
+func newPullForge(t *testing.T) *pullForge {
+	t.Helper()
+	pf := &pullForge{checks: map[string][]map[string]any{}, log: "the failing output\n"}
+	pf.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pf.mu.Lock()
+		defer pf.mu.Unlock()
+		pf.requests = append(pf.requests, r.URL.Path)
+		switch {
+		case r.URL.Path == "/repos/you/r/pulls":
+			_ = json.NewEncoder(w).Encode(pf.open)
+		case strings.HasPrefix(r.URL.Path, "/repos/you/r/commits/") && strings.HasSuffix(r.URL.Path, "/check-runs"):
+			sha := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/repos/you/r/commits/"), "/check-runs")
+			_ = json.NewEncoder(w).Encode(map[string]any{"check_runs": pf.checks[sha]})
+		case strings.Contains(r.URL.Path, "/actions/jobs/") && strings.HasSuffix(r.URL.Path, "/logs"):
+			_, _ = w.Write([]byte(pf.log))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(pf.Close)
+	return pf
+}
+
+// setOpen is the open pull request list the forge answers with.
+func (pf *pullForge) setOpen(number int, head string, draft bool) {
+	pf.mu.Lock()
+	defer pf.mu.Unlock()
+	pf.open = []map[string]any{{
+		"number":   number,
+		"title":    "A pull request",
+		"html_url": "https://github.com/you/r/pull/" + strconv.Itoa(number),
+		"draft":    draft,
+		"head":     map[string]any{"ref": "marshal/a1", "sha": head},
+		"base":     map[string]any{"ref": "main"},
+		"user":     map[string]any{"login": "you"},
+	}}
+}
+
+// setChecks is the check runs the forge reports for one head.
+func (pf *pullForge) setChecks(head string, checks ...map[string]any) {
+	pf.mu.Lock()
+	defer pf.mu.Unlock()
+	pf.checks[head] = checks
+}
+
+// called reports whether the forge served any request at all.
+func (pf *pullForge) called() bool {
+	pf.mu.Lock()
+	defer pf.mu.Unlock()
+	return len(pf.requests) > 0
+}
+
+// pullTestFleet is a fleet whose registered repo points at pf with a PAT.
+func pullTestFleet(t *testing.T, pf *pullForge) *Fleet {
+	t.Helper()
+	f := testFleet(t)
+	if err := f.ws.PutRepo(Repo{ID: "r1", URL: "https://github.com/you/r.git", Branch: "main",
+		CredRef: "pat1", OwnerID: DefaultOwnerID, Forge: "github", APIBase: pf.URL}); err != nil {
+		t.Fatal(err)
+	}
+	f.creds = NewCredentialStore([]Credential{{ID: "pat1", Kind: "pat", OwnerID: DefaultOwnerID, EnvVar: "TEST_PAT"}})
+	t.Setenv("TEST_PAT", "test-token")
+	return f
+}
+
+// pullDeltas is every "pull" delta the fleet stream carries.
+func pullDeltas(f *Fleet) []pullDelta {
+	var out []pullDelta
+	for _, e := range f.fleetLog.Tail(fleetStreamKey) {
+		var d pullDelta
+		if json.Unmarshal(e.Data, &d) == nil && d.Kind == "pull" {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// factoryPullItem journals one item whose open pull request is number, with a
+// round that observed checks on head.
+func factoryPullItem(t *testing.T, number int, head string, checks []FactoryCheck) (*FactoryStore, FactoryItem) {
+	t.Helper()
+	s, err := OpenFactoryStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	now := time.Now().UTC()
+	created, err := s.Create(factoryReq(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := s.Update(created.ID, "item-pull", created.Version, json.RawMessage(`{"kind":"item-pull"}`),
+		func(i *FactoryItem) error {
+			i.RepoID, i.ProjectRoot, i.Title = "r1", "/p", "Factory work"
+			i.PRs = []FactoryPR{{Number: number, URL: "https://github.com/you/r/pull/" + strconv.Itoa(number),
+				HeadRef: "factory/x", BaseRef: "main", HeadSHA: head, State: "open", Draft: true}}
+			i.Rounds = []FactoryRound{{Number: 1, HeadSHA: head,
+				CI: &FactoryCI{HeadSHA: head, Complete: true, Checks: checks}}}
+			return nil
+		}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, item
+}
+
+func TestMovedHeadClearsChecks(t *testing.T) {
+	pf := newPullForge(t)
+	pf.setOpen(7, "newhead", false)
+	pf.setChecks("newhead") // the new head has not reported yet
+	f := pullTestFleet(t, pf)
+	if err := f.recordPull(contract.PullRecord{RepoID: "r1", Number: 7, HeadSHA: "oldhead",
+		Checks:     []contract.PullCheck{{Name: "build", State: contract.CheckPassed, URL: "https://ci/1"}},
+		ObservedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	f.observePulls(context.Background())
+
+	rec, ok := f.pull("r1#7")
+	if !ok {
+		t.Fatal("the open record was removed")
+	}
+	if rec.HeadSHA != "newhead" {
+		t.Fatalf("head = %q, want newhead", rec.HeadSHA)
+	}
+	if len(rec.Checks) != 0 {
+		t.Fatalf("checks = %+v; the old head's checks were carried over", rec.Checks)
+	}
+	if rec.State != contract.PullInProgress {
+		t.Fatalf("state = %q, want in_progress for a head with no evidence", rec.State)
+	}
+}
+
+func TestFactoryPullIsNotPolled(t *testing.T) {
+	pf := newPullForge(t)
+	f := pullTestFleet(t, pf)
+	s, item := factoryPullItem(t, 9, "abc123", []FactoryCheck{{
+		Key: FactoryCheckKey{Kind: "check", Name: "test"}, SHA: "abc123",
+		Status: "completed", Conclusion: "failure", URL: "https://ci/9",
+	}})
+	// The record exists first, so wiring the controller's backfill leaves it.
+	if err := f.recordPull(contract.PullRecord{RepoID: "r1", Number: 9, HeadSHA: "abc123",
+		Origin: contract.PullOriginFactory, FactoryItem: item.ID, ObservedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	f.SetFactoryController(NewFactoryController(s, &loopEffects{store: s}, f.now))
+
+	f.observePulls(context.Background())
+
+	if pf.called() {
+		t.Fatalf("a factory item's record was polled: %v", pf.requests)
+	}
+	rec, ok := f.pull("r1#9")
+	if !ok {
+		t.Fatal("the factory record was removed")
+	}
+	if len(rec.Checks) != 1 || rec.Checks[0].Name != "test" || rec.Checks[0].State != contract.CheckFailed {
+		t.Fatalf("checks = %+v; want the item's own observation", rec.Checks)
+	}
+	if rec.State != contract.PullFailing {
+		t.Fatalf("state = %q, want failing", rec.State)
+	}
+}
+
+func TestClosedPullIsRemoved(t *testing.T) {
+	pf := newPullForge(t)
+	// The open list is the forge's answer, and this pull request is not in it.
+	f := pullTestFleet(t, pf)
+	if err := f.recordPull(contract.PullRecord{RepoID: "r1", Number: 7, HeadSHA: "abc123",
+		Checks:     []contract.PullCheck{{Name: "build", State: contract.CheckPassed}},
+		ObservedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	f.observePulls(context.Background())
+
+	if _, ok := f.pull("r1#7"); ok {
+		t.Fatal("a closed or merged pull request stayed in the index")
+	}
+	var removed string
+	for _, d := range pullDeltas(f) {
+		if d.Removed != "" {
+			removed = d.Removed
+		}
+	}
+	if removed != "r1#7" {
+		t.Fatalf("removal delta = %q, want r1#7", removed)
+	}
+}
+
+func TestDerivePullStateReady(t *testing.T) {
+	rec := contract.PullRecord{Checks: []contract.PullCheck{
+		{Name: "build", State: contract.CheckPassed},
+		{Name: "test", State: contract.CheckPassed},
+	}}
+	if got := derivePullState(rec, false); got != contract.PullReady {
+		t.Fatalf("state = %q, want ready", got)
+	}
+	// A draft with every check passed is not ready for review.
+	rec.Draft = true
+	if got := derivePullState(rec, false); got != contract.PullInProgress {
+		t.Fatalf("draft state = %q, want in_progress", got)
+	}
+	// The factory's own verdict makes its draft ready.
+	if got := derivePullState(rec, true); got != contract.PullReady {
+		t.Fatalf("factory-ready state = %q, want ready", got)
+	}
+}
+
+func TestDerivePullStateFailing(t *testing.T) {
+	rec := contract.PullRecord{Checks: []contract.PullCheck{
+		{Name: "build", State: contract.CheckPassed},
+		{Name: "test", State: contract.CheckFailed},
+	}}
+	if got := derivePullState(rec, false); got != contract.PullFailing {
+		t.Fatalf("state = %q, want failing", got)
+	}
+}
+
+func TestDerivePullStateInProgress(t *testing.T) {
+	for _, checks := range [][]contract.PullCheck{
+		nil,
+		{{Name: "build", State: contract.CheckRunning}},
+		{{Name: "build", State: contract.CheckPending}},
+	} {
+		if got := derivePullState(contract.PullRecord{Checks: checks}, false); got != contract.PullInProgress {
+			t.Fatalf("state for %+v = %q, want in_progress", checks, got)
+		}
+	}
+}
+
+func TestDerivePullStateBeingFixed(t *testing.T) {
+	rec := contract.PullRecord{
+		Fix:    &contract.PullFix{ID: "f1", Check: "test", HeadSHA: "abc"},
+		Checks: []contract.PullCheck{{Name: "test", State: contract.CheckFailed}},
+	}
+	if got := derivePullState(rec, false); got != contract.PullBeingFixed {
+		t.Fatalf("state = %q, want being_fixed", got)
+	}
+}
+
+func TestDerivePullStateChecksUnavailable(t *testing.T) {
+	rec := contract.PullRecord{Unavailable: "checks unavailable: an ssh credential cannot call the forge's API"}
+	if got := derivePullState(rec, false); got != contract.PullChecksUnavailable {
+		t.Fatalf("state = %q, want checks_unavailable", got)
+	}
+}
+
+func TestPullsIndexListsOpenRecords(t *testing.T) {
+	f := testFleet(t)
+	if err := f.recordPull(contract.PullRecord{RepoID: "r1", Number: 7, Title: "One",
+		Checks: []contract.PullCheck{{Name: "build", State: contract.CheckPassed}},
+		Origin: contract.PullOriginAgent, ObservedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.recordPull(contract.PullRecord{RepoID: "r1", Number: 8, Title: "Two",
+		Checks: []contract.PullCheck{{Name: "build", State: contract.CheckFailed}},
+		Origin: contract.PullOriginAgent, ObservedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &Server{fleet: f}
+	w := httptest.NewRecorder()
+	srv.listPulls(w, httptest.NewRequest("GET", "/api/pulls", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body)
+	}
+	var body struct {
+		Pulls []contract.PullRecord `json:"pulls"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Pulls) != 2 {
+		t.Fatalf("index = %+v, want two records", body.Pulls)
+	}
+	if body.Pulls[0].ID != "r1#7" || body.Pulls[1].ID != "r1#8" {
+		t.Fatalf("index order = %q, %q", body.Pulls[0].ID, body.Pulls[1].ID)
+	}
+	if body.Pulls[0].State != contract.PullReady || body.Pulls[1].State != contract.PullFailing {
+		t.Fatalf("states = %q, %q", body.Pulls[0].State, body.Pulls[1].State)
+	}
+}
+
+func TestPullDetailCarriesLogTail(t *testing.T) {
+	pf := newPullForge(t)
+	pf.setOpen(7, "abc123", false)
+	pf.setChecks("abc123", map[string]any{
+		"id": 412, "name": "lint", "status": "completed", "conclusion": "failure",
+		"html_url":    "https://github.com/you/r/runs/412",
+		"details_url": "https://github.com/you/r/actions/runs/412/job/9002",
+	})
+	f := pullTestFleet(t, pf)
+	if err := f.recordPull(contract.PullRecord{RepoID: "r1", Number: 7, HeadSHA: "abc123",
+		Checks:     []contract.PullCheck{{Name: "lint", State: contract.CheckFailed, URL: "https://github.com/you/r/runs/412"}},
+		ObservedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	detail := f.pullDetail(context.Background(), "r1#7")
+	if len(detail.Checks) != 1 {
+		t.Fatalf("checks = %+v", detail.Checks)
+	}
+	if !strings.Contains(detail.Checks[0].LogTail, "the failing output") {
+		t.Fatalf("log tail = %q", detail.Checks[0].LogTail)
+	}
+	// The index itself never carries the log.
+	if rec, _ := f.pull("r1#7"); len(rec.Checks) == 1 && rec.Checks[0].LogTail != "" {
+		t.Fatalf("the stored record carries a log tail: %+v", rec.Checks[0])
+	}
+}
+
+func TestPullChangeEmitsDelta(t *testing.T) {
+	f := testFleet(t)
+	if err := f.recordPull(contract.PullRecord{RepoID: "r1", Number: 7, Title: "One",
+		Origin: contract.PullOriginAgent, ObservedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	deltas := pullDeltas(f)
+	if len(deltas) != 1 {
+		t.Fatalf("pull deltas = %d, want 1", len(deltas))
+	}
+	if deltas[0].Pull == nil || deltas[0].Pull.ID != "r1#7" {
+		t.Fatalf("delta = %+v", deltas[0])
+	}
+	if deltas[0].SessionID == "" {
+		t.Fatal("the delta carries no stream session")
 	}
 }
 

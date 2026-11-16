@@ -40,6 +40,10 @@ func (f *Fleet) StartPoller(interval time.Duration) {
 			}
 		}
 	}()
+	// The pull request observer keeps its own cadence: a record whose checks
+	// are still running is read every 30s, and one whose checks have settled
+	// every 5 minutes.
+	f.startPullsObserver()
 }
 
 // pollOnce checks every watching repo. One repo's failure never stops

@@ -63,9 +63,7 @@ func (f *Fleet) recordPull(rec contract.PullRecord) error {
 	if rec.ObservedAt == 0 {
 		rec.ObservedAt = now
 	}
-	if rec.State == "" {
-		rec.State = contract.PullInProgress
-	}
+	rec.State = f.pullState(rec)
 	if rec.Checks == nil {
 		rec.Checks = []contract.PullCheck{}
 	}
@@ -96,6 +94,7 @@ func (f *Fleet) updatePull(id string, mutate func(*contract.PullRecord) error) (
 			return err
 		}
 		rec.UpdatedAt = f.now().UnixMilli()
+		rec.State = f.pullState(*rec)
 		return nil
 	})
 	if err != nil {

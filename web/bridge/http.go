@@ -324,6 +324,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/repos", s.listRepos)
 	s.mux.HandleFunc("POST /api/repos", s.registerRepo)
 	s.mux.HandleFunc("DELETE /api/repos/{id}", s.removeRepo)
+	// The pull requests the bridge opened, and the one index of their checks.
+	s.mux.HandleFunc("GET /api/pulls", s.listPulls)
+	s.mux.HandleFunc("GET /api/pulls/{id}", s.getPull)
 	s.mux.HandleFunc("GET /api/network", s.networkView)
 	s.mux.HandleFunc("GET /api/network/pending", s.networkPending)
 	s.mux.HandleFunc("POST /api/network/decisions", s.networkDecision)
@@ -369,7 +372,7 @@ func writeErr(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrFactoryConflict):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrUnknownRecipe), errors.Is(err, ErrUnknownSchedule):
+	case errors.Is(err, ErrUnknownRecipe), errors.Is(err, ErrUnknownSchedule), errors.Is(err, ErrUnknownPull):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrInvalidRecipe), errors.Is(err, ErrRecipeBuiltin), errors.Is(err, errInvalidSchedule):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

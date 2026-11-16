@@ -205,8 +205,9 @@ class _ScanState extends State<_Scan> {
         '${contents.mcpPolicyCount} MCP '
             '${contents.mcpPolicyCount == 1 ? 'policy' : 'policies'}',
     ];
-    if (parts.isEmpty)
+    if (parts.isEmpty) {
       return contents.hasManifest ? 'A manifest only' : 'Nothing';
+    }
     return parts.join(' · ');
   }
 }

@@ -1274,6 +1274,18 @@ export async function getVersionedProjectSettings(root: string): Promise<Version
   return { settings: { ...data, intake: data?.intake ?? {} }, etag }
 }
 
+/**
+ * `GET /api/factory/settings-version`: the combined version a factory review
+ * displays and an approval echoes back. It is the project's settings ETag plus,
+ * when the control session reports subagent defaults, the digest of those
+ * defaults — so a change on either side makes a reviewed version stale. The
+ * bridge composes it; a client never builds one of its own.
+ */
+export async function getFactorySettingsVersion(root: string): Promise<string> {
+  const body = await request<{ settingsVersion: string }>('GET', `/api/factory/settings-version${query({ projectRoot: root })}`)
+  return body.settingsVersion
+}
+
 /** `PUT /api/projects/settings` with `If-Match`; a 412 rejects with that APIError, retaining nothing. */
 export async function putVersionedProjectSettings(root: string, settings: ProjectSettings, etag: string): Promise<VersionedProjectSettings> {
   const { data, etag: next } = await requestVersioned<Partial<ProjectSettings> | null>('PUT', `/api/projects/settings${query({ root })}`, settings, etag)

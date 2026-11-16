@@ -464,7 +464,9 @@ async function postSubagent(path: string, body: unknown): Promise<unknown> {
  */
 function outcomeUnknown(e: unknown): boolean {
   if (!(e instanceof APIError)) return true
-  return e.status === 408 || e.status >= 500
+  // 501 is the session saying the control is not supported at all, which no
+  // retry can change; only a lost answer or a timeout is worth re-sending.
+  return e.status === 408 || (e.status >= 500 && e.status !== 501)
 }
 
 /**

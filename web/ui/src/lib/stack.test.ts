@@ -280,6 +280,25 @@ describe('child controls', () => {
     expect(post).toHaveBeenCalledTimes(1)
   })
 
+  it('does not retry a 501 the session answers with', async () => {
+    // 501 is the session saying it has no such control, not a lost answer:
+    // asking twice more would only repeat the same refusal.
+    const post = vi.fn().mockRejectedValue(new APIError(501, { error: 'steer is not supported', code: 'unsupported' }))
+    const controls = createSubagentControls('s1', 7, { post, newRequestId: () => 'req-1' })
+    await expect(controls.steer('go')).rejects.toBeInstanceOf(APIError)
+    expect(post).toHaveBeenCalledTimes(1)
+  })
+
+  it('still retries an unknown 5xx, which a retry can settle', async () => {
+    const post = vi
+      .fn()
+      .mockRejectedValueOnce(new APIError(502, { error: 'bridge: connection lost', code: 'connection_lost' }))
+      .mockResolvedValueOnce({ requestId: 'req-1', status: 'accepted' })
+    const controls = createSubagentControls('s1', 7, { post, newRequestId: () => 'req-1' })
+    expect(await controls.steer('go')).toEqual({ requestId: 'req-1', status: 'accepted' })
+    expect(post).toHaveBeenCalledTimes(2)
+  })
+
   it('reports a stop as the acknowledgement it is', async () => {
     const post = vi.fn().mockResolvedValueOnce({ cancelled: true })
     const controls = createSubagentControls('s1', 7, { post })

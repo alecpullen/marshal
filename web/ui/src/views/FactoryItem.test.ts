@@ -16,6 +16,9 @@ vi.mock('../lib/api', async (actual) => ({
   // The project's automatic-assessment setting, which the revision section
   // shows as the effective value rather than a default of its own.
   getProjectSettings: vi.fn(),
+  // The version an approval is reviewed against: the project's settings and,
+  // through its own route, the combined version the bridge composes.
+  getVersionedProjectSettings: vi.fn(), getFactorySettingsVersion: vi.fn(),
   /*
     The activity view's conversation is the real embeddable one, so the
     session reads it owns are mocked exactly as Chat's own test does: off
@@ -73,6 +76,12 @@ beforeEach(() => {
   // The project's factory settings: absent means automatic assessment is on.
   vi.mocked(api.getProjectSettings).mockReset()
   vi.mocked(api.getProjectSettings).mockResolvedValue({ intake: {} } as never)
+  // The approval's review: the project's ETag and the combined version the
+  // bridge composes from it and the session's reported defaults.
+  vi.mocked(api.getVersionedProjectSettings).mockReset()
+  vi.mocked(api.getVersionedProjectSettings).mockResolvedValue({ settings: { intake: {} }, etag: '"p1"' } as never)
+  vi.mocked(api.getFactorySettingsVersion).mockReset()
+  vi.mocked(api.getFactorySettingsVersion).mockResolvedValue('"p1":digest-1')
   // The retry's route pickers offer the real profiles the models API reports.
   vi.mocked(api.getModels).mockReset()
   vi.mocked(api.getModels).mockResolvedValue({ profiles: {
@@ -141,6 +150,38 @@ it('requires explicit approval before a draft starts', async () => {
   expect(screen.getByTestId('config-reviewer').textContent).toBe('strict')
   expect(approvalBlock.textContent).not.toContain('"profile"')
   expect(approvalBlock.textContent).not.toContain('{')
+})
+it('approveCarriesTheSettingsVersionTheReviewDisplayed', async () => {
+  const item = { ...base, draft: { ...base.draft, config: { ...base.draft.config, projectRoot: '/home/u/alpha', implementerRouting: { profile: 'careful' } } } } as Item
+  const approved = { ...item, state: 'implementing', version: 2 } as Item
+  getItem.mockResolvedValue(item)
+  vi.mocked(api.commandFactoryItem).mockResolvedValue(approved)
+  renderItem()
+  // The review binds itself to the combined version the bridge composes, so
+  // the approval echoes exactly that and the bridge can check both halves.
+  const version = await screen.findByTestId('subagent-settings-version')
+  await vi.waitFor(() => expect(version.textContent).toContain('"p1":digest-1'))
+  await fireEvent.click(screen.getByRole('button', { name: 'Approve & start' }))
+  await vi.waitFor(() => expect(vi.mocked(api.commandFactoryItem)).toHaveBeenCalled())
+  expect(vi.mocked(api.commandFactoryItem).mock.calls.at(-1)?.[1]).toMatchObject({ kind: 'approve', settingsVersion: '"p1":digest-1' })
+})
+it('surfacesASettingsVersionConflictAsTheReviewConflict', async () => {
+  const item = { ...base, draft: { ...base.draft, config: { ...base.draft.config, projectRoot: '/home/u/alpha' } } } as Item
+  getItem.mockResolvedValue(item)
+  vi.mocked(api.commandFactoryItem).mockRejectedValueOnce(new api.APIError(409, {
+    error: 'factory conflict: project or session settings changed since review (reviewed "\\"p1\\":digest-1", now "\\"p1\\":digest-2")',
+    code: 'conflict',
+  }))
+  renderItem()
+  const version = await screen.findByTestId('subagent-settings-version')
+  await vi.waitFor(() => expect(version.textContent).toContain('"p1":digest-1'))
+  await fireEvent.click(screen.getByRole('button', { name: 'Approve & start' }))
+  // The refusal is the review's own conflict, naming the version it displayed,
+  // not a bare error line — and it is what disables the approval.
+  const card = await screen.findByTestId('subagent-conflict')
+  expect(card.textContent).toContain('"p1":digest-1')
+  expect((screen.getByRole('button', { name: 'Approve & start' }) as HTMLButtonElement).disabled).toBe(true)
+  expect(onRefresh).toHaveBeenCalled()
 })
 it('proposalSaveDoesNotApprove', async () => {
   const { fireEvent } = await import('@testing-library/svelte')

@@ -1376,6 +1376,64 @@ func (f *factoryDefaultsFixture) approve(t *testing.T, id string, cmd FactoryCom
 	return doReq(t, f.srv, http.MethodPost, "/api/factory/items/"+id+"/commands", cmd, f.headers())
 }
 
+// readSettingsVersion asks the served route for a root's combined version.
+func (f *factoryDefaultsFixture) readSettingsVersion(t *testing.T, root string) *httptest.ResponseRecorder {
+	t.Helper()
+	return doReq(t, f.srv, http.MethodGet, "/api/factory/settings-version?projectRoot="+url.QueryEscape(root), nil, f.headers())
+}
+
+// TestFactorySettingsVersionRoute pins the one read a review surface binds
+// itself to: the route serves the same composition an approval checks, so a
+// client can neither build a version of its own nor drift from the bridge's.
+func TestFactorySettingsVersionRoute(t *testing.T) {
+	f := newFactoryDefaultsFixture(t)
+	f.putSubagentDefaults(t, &FactoryDefaults{})
+	var body struct {
+		SettingsVersion string `json:"settingsVersion"`
+	}
+
+	// A session that reports defaults contributes their digest, so a change to
+	// the project's settings or to the session's report moves the version.
+	f.reportSubagents(t, true, true, "", 2, "digest-1")
+	rec := f.readSettingsVersion(t, f.root)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("settings version: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	decodeBody(t, rec, &body)
+	if got, want := body.SettingsVersion, f.settingsVersion(t); got != want || !strings.HasSuffix(got, ":digest-1") {
+		t.Fatalf("settings version = %q, want %q with the session digest", got, want)
+	}
+
+	// A session that reports no defaults contributes nothing, so the version is
+	// the project's ETag alone — the behaviour a project without a Marshal
+	// snapshot has always had.
+	f.silencesSubagents()
+	rec = f.readSettingsVersion(t, f.root)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("settings version without a session report: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	decodeBody(t, rec, &body)
+	etag, err := f.fleet.ws.ProjectSettingsETag(f.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body.SettingsVersion != etag || strings.Contains(body.SettingsVersion, ":") {
+		t.Fatalf("settings version = %q, want the bare ETag %q", body.SettingsVersion, etag)
+	}
+
+	// A root the route cannot resolve is a bad request, never a version.
+	for _, root := range []string{"", "relative/path"} {
+		if rec := f.readSettingsVersion(t, root); rec.Code != http.StatusBadRequest {
+			t.Fatalf("projectRoot %q: status %d, want 400: %s", root, rec.Code, rec.Body.String())
+		}
+	}
+
+	// The route is behind the same bearer check as every other factory route.
+	if rec := doReq(t, f.srv, http.MethodGet, "/api/factory/settings-version?projectRoot="+url.QueryEscape(f.root), nil, nil); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated read: status %d, want 401", rec.Code)
+	}
+}
+
 // TestFactorySubagentDefaultsInheritance pins the chain: runtime defaults,
 // then the project's factory override, then the work item's own override, per
 // field. The draft keeps only what it states, so it follows a changed default

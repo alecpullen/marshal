@@ -31,6 +31,8 @@
     implementerRouting?: Record<string, unknown>
     reviewerRouting?: Record<string, unknown>
     confirmPreviousWorkerStopped?: boolean
+    /** The settings version the reviewer displayed; an approval echoes it back. */
+    settingsVersion?: string
     /** A revision lifecycle command's own half, sent beside the envelope. */
     revision?: FactoryRevisionCommand
   }
@@ -200,6 +202,12 @@
   */
   let pending = $state<FactoryCommand | null>(null)
   let alive = true
+  /**
+   * A settings-version refusal the bridge reported on an approval: the version
+   * this page displayed, which the review names back. It is cleared by the
+   * review's own reload, so the card cannot outlive the settings it describes.
+   */
+  let approvalConflict = $state<{ reviewed: string } | null>(null)
   /*
     Client names decorate provenance: a failed read leaves the stable IDs,
     which are still accurate, so this never becomes a page error.
@@ -261,15 +269,28 @@
       // carries what the bridge just wrote.
       return applied
     } catch (e) {
-      error = errMessage(e)
+      const message = errMessage(e)
+      error = message
       if (e instanceof APIError && e.status === 409) {
+        // A settings-version refusal names the version it compared, so the
+        // review that displayed that version shows the conflict card naming
+        // both — not a bare error line. A stale item version has no such name
+        // and keeps the refresh receipt below.
+        const settingsMoved = kind === 'approve' && !!input.settingsVersion && message.includes('settings changed since review')
+        if (settingsMoved) { approvalConflict = { reviewed: input.settingsVersion ?? '' }; error = '' }
         // Only the obsolete command is dropped: the panel that submitted it
         // stays mounted, so the person keeps their input and retries it
         // against the version the refresh just showed them.
         pending = null
         // Awaited, and its own failure reported: a stale command must say so
         // rather than leave the person on a version that cannot succeed.
-        try { await onRefresh(); notice = 'Item changed. Review the refreshed version before trying again.' } catch (refreshError) { error += `; refresh failed: ${errMessage(refreshError)}` }
+        try {
+          await onRefresh()
+          if (!settingsMoved) notice = 'Item changed. Review the refreshed version before trying again.'
+        } catch (refreshError) {
+          const failed = `refresh failed: ${errMessage(refreshError)}`
+          error = error ? `${error}; ${failed}` : failed
+        }
       }
       return null
     } finally { busy = false }
@@ -334,7 +355,21 @@
     {#if selectedView === 'approval'}
       {#if item.state === 'draft'}
         <div data-testid="draft-approval">
-          <DraftApproval item={item} busy={busy} onApprove={() => void command('approve')} />
+          <!--
+            The approval hands back the settings version this review displayed,
+            which the bridge checks against the one now in force; a refusal
+            arrives as the 409 the `command` path above turns into `conflict`.
+            No capability is passed here: this page has no read of a session's
+            status, so an override the backend cannot enforce is refused
+            server-side at approval and reported from that command's error.
+          -->
+          <DraftApproval
+            item={item}
+            busy={busy}
+            conflict={approvalConflict}
+            onApprove={(version) => void command('approve', { settingsVersion: version })}
+            onReload={() => { approvalConflict = null; void onRefresh() }}
+          />
         </div>
       {:else}
         <Card class="text-sm">This item is no longer a draft, so there is nothing to approve. <a class="text-accent underline" href={activityRoute} onclick={(e) => { e.preventDefault(); onNavigate(activityRoute) }}>Go to activity</a></Card>

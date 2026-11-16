@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -571,6 +572,28 @@ func (s *Server) factoryRoutes(api FactoryAPI) {
 			return
 		}
 		writeJSON(w, 200, map[string]any{"item": item})
+	})
+	// The version a review displays and an approval echoes back is composed
+	// from the project's settings and the control session's reported defaults.
+	// It is served from the same method an approval checks against, so a client
+	// can never build a version the bridge would compare differently.
+	s.mux.HandleFunc("GET /api/factory/settings-version", func(w http.ResponseWriter, r *http.Request) {
+		concrete, ok := api.(*factoryAPI)
+		if !ok {
+			factoryWriteError(w, fmt.Errorf("%w: fleet unavailable", ErrFactoryUnavailable), "", 0)
+			return
+		}
+		root := strings.TrimSpace(r.URL.Query().Get("projectRoot"))
+		if root == "" || !filepath.IsAbs(root) {
+			factoryWriteError(w, fmt.Errorf("%w: projectRoot must be an absolute path", errFactoryInput), "", 0)
+			return
+		}
+		version, err := concrete.factorySettingsVersion(r.Context(), root)
+		if err != nil {
+			factoryWriteError(w, err, "", 0)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"settingsVersion": version})
 	})
 }
 func factoryDecode(w http.ResponseWriter, r *http.Request, dst any) bool {

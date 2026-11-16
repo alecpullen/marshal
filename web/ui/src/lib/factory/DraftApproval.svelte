@@ -12,7 +12,7 @@
     subagentUnsupportedNotice,
     type ConfigSummaryRow,
   } from './config'
-  import { getVersionedProjectSettings } from '../api'
+  import { getFactorySettingsVersion, getVersionedProjectSettings } from '../api'
   import type { FactoryItem, FactorySubagentOverrides } from '../factory'
   import { resolveSubagentRole, subagentOverridesOf } from '../factory'
   import type { WireSubagentControls } from '../stack'
@@ -42,7 +42,8 @@
   export interface DraftApprovalProps {
     item: FactoryItem
     busy: boolean
-    onApprove: () => void
+    /** The version this review displayed, which the approval echoes back. */
+    onApprove: (settingsVersion: string) => void
     /** The session's reported child controls; absent means unknown, never unsupported. */
     capabilities?: WireSubagentControls | null
     /** The settings version this review is bound to, when the caller already read it. */
@@ -67,8 +68,16 @@
   }: DraftApprovalProps = $props()
 
   async function readProjectSettings(root: string): Promise<ApprovalSettingsRead> {
-    const versioned = await getVersionedProjectSettings(root)
-    return { version: versioned.etag, projectDefaults: versioned.settings.factoryDefaults ?? null }
+    // The version this review binds itself to is the combined one the bridge
+    // composes — the project's settings ETag and the control session's own
+    // defaults digest. Reading only the ETag would let the review miss a change
+    // to the session's defaults, so an approval would freeze settings nobody
+    // read. The defaults themselves still come from the project's settings.
+    const [version, versioned] = await Promise.all([
+      getFactorySettingsVersion(root),
+      getVersionedProjectSettings(root),
+    ])
+    return { version, projectDefaults: versioned.settings.factoryDefaults ?? null }
   }
 
   /** The project's own record, as this review last read it. */
@@ -143,7 +152,7 @@
     project
       ? `Reviewed against project settings version ${reviewed || project.version || 'unversioned'}`
       : readFailed
-        ? 'The project settings version could not be read, so this review is not bound to one. Reload before approving if that matters to you.'
+        ? 'The settings version could not be read, so this review is not bound to one. Reload the review before approving.'
         : 'Reading the project settings version…',
   )
   /** A stable hook per frozen row, so a test or a scan reads a labelled value. */
@@ -215,5 +224,22 @@
       </dl>
     </Card>
   {/if}
-  <div><Button disabled={busy || !!conflictInfo} onclick={onApprove}>Approve &amp; start</Button></div>
+  <div class="grid gap-1">
+    <div>
+      <Button
+        disabled={busy || !!conflictInfo || readFailed}
+        onclick={() => { if (!readFailed) onApprove(reviewed) }}
+      >Approve &amp; start</Button>
+    </div>
+    {#if readFailed}
+      <!--
+        Fail closed: an approval bound to no version would be an approval
+        nobody could check, so it is not offered at all. The copy says what to
+        do instead of leaving a dead control.
+      -->
+      <p class="text-xs text-muted" data-testid="approve-disabled">
+        The settings version could not be read, so this review cannot be approved. Reload the review to read it again.
+      </p>
+    {/if}
+  </div>
 </div>

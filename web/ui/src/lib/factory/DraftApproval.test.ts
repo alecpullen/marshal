@@ -6,8 +6,9 @@ import type { FactoryApproval, FactoryConfig, FactoryItem, FactorySubagentOverri
 
 vi.mock('../api', async (importActual) => ({
   ...(await importActual<typeof import('../api')>()),
-  // The version a review is bound to is read from the project, never invented.
+  // The version a review is bound to is read from the bridge, never invented.
   getVersionedProjectSettings: vi.fn(),
+  getFactorySettingsVersion: vi.fn(),
 }))
 
 afterEach(cleanup)
@@ -49,6 +50,9 @@ const projectSettings = (version: string, projectDefaults: { implementerSubagent
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(api.getVersionedProjectSettings).mockResolvedValue({ settings: { intake: {} }, etag: '"p1"' } as never)
+  // The version a review binds itself to is the combined one the bridge
+  // composes, so the default reader reads it from its own route.
+  vi.mocked(api.getFactorySettingsVersion).mockResolvedValue('"p1":digest-1')
 })
 
 describe('DraftApproval', () => {
@@ -90,6 +94,36 @@ describe('DraftApproval', () => {
     expect(onApprove).not.toHaveBeenCalled()
     await fireEvent.click(screen.getByRole('button', { name: 'Approve & start' }))
     expect(onApprove).toHaveBeenCalledTimes(1)
+  })
+
+  it('approvesAgainstTheCombinedVersionItDisplayed', async () => {
+    const onApprove = vi.fn()
+    // The default reader is the one under test: the version must come from the
+    // bridge's combined route, not from the project's ETag, or a change to the
+    // session's defaults would not move it.
+    vi.mocked(api.getFactorySettingsVersion).mockResolvedValue('"p1":digest-1')
+    render(DraftApproval, { item: draft(), busy: false, onApprove })
+    await waitFor(() => expect(screen.getByTestId('subagent-settings-version').textContent).toContain('"p1":digest-1'))
+    expect(api.getFactorySettingsVersion).toHaveBeenCalledWith('/home/u/alpha')
+    // The project's defaults are still read from the project's own settings.
+    expect(api.getVersionedProjectSettings).toHaveBeenCalledWith('/home/u/alpha')
+    await fireEvent.click(screen.getByRole('button', { name: 'Approve & start' }))
+    // The version handed to the approval is the one this review displayed.
+    expect(onApprove).toHaveBeenCalledWith('"p1":digest-1')
+  })
+
+  it('failsClosedWhenTheSettingsVersionCannotBeRead', async () => {
+    const onApprove = vi.fn()
+    vi.mocked(api.getFactorySettingsVersion).mockRejectedValue(new api.APIError(503, { error: 'fleet unavailable' }))
+    render(DraftApproval, { item: draft(), busy: false, onApprove })
+    // An approval bound to nothing is not offered: the control is inert and
+    // the review says why and what to do.
+    const disabled = await screen.findByTestId('approve-disabled')
+    expect(disabled.textContent).toContain('could not be read')
+    expect(disabled.textContent).toContain('Reload')
+    expect((screen.getByRole('button', { name: 'Approve & start' }) as HTMLButtonElement).disabled).toBe(true)
+    await fireEvent.click(screen.getByRole('button', { name: 'Approve & start' }))
+    expect(onApprove).not.toHaveBeenCalled()
   })
 
   it('disablesWhileBusy', () => {
@@ -192,6 +226,21 @@ describe('DraftApproval', () => {
     await view.rerender({ item: draft({ version: 2 }), busy: false, onApprove: vi.fn(), readSettings })
     await waitFor(() => expect(screen.getByTestId('subagent-conflict')).toBeTruthy())
     expect(screen.getByTestId('subagent-conflict').textContent).toContain('"p1:d2"')
+  })
+
+  it('treatsADigestMoveAsASettingsChangeOnItsOwn', async () => {
+    // The project's ETag is unchanged; only the session's reported defaults
+    // moved. A review bound to the ETag alone would approve settings it never
+    // read, which is exactly what the combined version exists to prevent.
+    const reads = ['"p1":digest-1', '"p1":digest-2']
+    const readSettings = vi.fn(async () => ({ version: reads.shift() ?? '"p1":digest-2' }))
+    const view = render(DraftApproval, { item: draft(), busy: false, onApprove: vi.fn(), readSettings })
+    await waitFor(() => expect(screen.getByTestId('subagent-settings-version').textContent).toContain('"p1":digest-1'))
+    await view.rerender({ item: draft({ version: 2 }), busy: false, onApprove: vi.fn(), readSettings })
+    const card = await screen.findByTestId('subagent-conflict')
+    expect(card.textContent).toContain('"p1":digest-1')
+    expect(card.textContent).toContain('"p1":digest-2')
+    expect((screen.getByRole('button', { name: 'Approve & start' }) as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('keepsAShortRoleLabelForPhonesBesideTheDesktopOne', async () => {

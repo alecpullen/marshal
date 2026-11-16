@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -78,7 +79,9 @@ func (c *FactoryController) completionLinkEvidence(ctx context.Context, item Fac
 	}
 	repo, forge, cred, err := c.completionForge(ctx, item)
 	if err != nil {
-		return nil, err
+		// An unavailable forge is a configuration or availability statement,
+		// not something the user typed wrong.
+		return nil, fmt.Errorf("%w: %w", errFactoryConfig, err)
 	}
 	number, err := factoryLinkNumber(link, repo)
 	if err != nil {
@@ -86,7 +89,7 @@ func (c *FactoryController) completionLinkEvidence(ctx context.Context, item Fac
 	}
 	pr, err := forge.GetFactoryPR(ctx, repo, number, cred)
 	if err != nil {
-		return nil, fmt.Errorf("factory: pull request %s could not be observed: %w", link, err)
+		return nil, factoryEvidenceError(link, err)
 	}
 	// The node ID is the identity a link dedups and a rename cannot change;
 	// a response without one, or about a different number, is not evidence.
@@ -94,6 +97,19 @@ func (c *FactoryController) completionLinkEvidence(ctx context.Context, item Fac
 		return nil, fmt.Errorf("%w: pull request %s did not come back with its immutable identity", errFactoryInput, link)
 	}
 	return &factoryCompletionEvidence{RepoID: repoID, Link: pr}, nil
+}
+
+// factoryEvidenceError classifies a pull request observation that failed. A
+// forge that answered with a rejection is the user naming something it cannot
+// link; a forge that could not answer at all — a 5xx, a throttled request, a
+// transport failure — is a configuration or availability problem, and telling
+// the surface its input was invalid would misdirect it.
+func factoryEvidenceError(link string, err error) error {
+	var apiErr *forgeAPIError
+	if errors.As(err, &apiErr) && apiErr.statusCode >= 400 && apiErr.statusCode < 500 && apiErr.statusCode != 429 {
+		return fmt.Errorf("%w: pull request %s could not be observed: %w", errFactoryInput, link, err)
+	}
+	return fmt.Errorf("%w: pull request %s could not be observed: %w", errFactoryConfig, link, err)
 }
 
 // completionRefreshEvidence re-observes every linked pull request. It never
@@ -319,9 +335,11 @@ func factoryFetched(ev *factoryCompletionEvidence, nodeID string) (FactoryPR, bo
 // linking a pull request for observation changes none of them.
 //
 // Association is churn-free. The snapshot moves only when the observed
-// identity, state, head or base actually changed, and the observation
-// timestamps belong to refresh_pr_evidence, so observing the same pull request
-// again neither journals nor returns a different item.
+// identity, state, head or base actually changed; a repeated identical
+// observation neither journals nor returns a different item. A snapshot that
+// does move carries the observation that produced it, because rendering forge
+// data it just read as stale would be telling the reader the opposite of what
+// happened.
 func factoryAssociateDelivery(i *FactoryItem, observed FactoryObservation, now time.Time) {
 	if observed.PR == nil {
 		return
@@ -341,6 +359,8 @@ func factoryAssociateDelivery(i *FactoryItem, observed FactoryObservation, now t
 			return
 		}
 		completion.Links[n].PR = pr
+		completion.Links[n].ObservedAt = now
+		completion.Links[n].Fresh = true
 		i.Completion = &completion
 		return
 	}

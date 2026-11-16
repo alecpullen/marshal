@@ -209,11 +209,14 @@ func (c *FactoryController) completionMergeForge(ctx context.Context, item Facto
 
 // advanceCompletionBatches drives the active merge batches forward.
 //
-// One batch moves per pass, so at most one reviewed merge is sent per tick and
-// an entry that could not be proven holds every later entry — of its own batch
-// and of any other — until a later pass reads the forge again. It is safe to
-// call repeatedly: every phase re-reads the journal, and a phase the journal
-// has already moved past is a conflict the next pass re-derives.
+// One batch mutates per pass, so at most one reviewed merge is sent per tick
+// and an entry that could not be proven holds every later entry of its own
+// batch until a later pass reads the forge again. A pass that changed nothing —
+// a forge that will not open, a pull request the forge will not describe — sent
+// nothing and dispatched nothing, so it must not hold the next item's batch
+// back: that is what keeps one broken repository from stalling every other
+// item's merges. Whether a batch moved is read from the journal rather than
+// assumed, because the journal write is what authorizes every merge.
 func (c *FactoryController) advanceCompletionBatches(ctx context.Context) error {
 	if c == nil || c.store == nil {
 		return nil
@@ -223,7 +226,14 @@ func (c *FactoryController) advanceCompletionBatches(ctx context.Context) error 
 		if completion.Batch == nil || completion.Batch.State != "active" {
 			continue
 		}
-		return c.advanceCompletionBatch(ctx, item)
+		if err := c.advanceCompletionBatch(ctx, item); err != nil {
+			return err
+		}
+		if after, err := c.store.Get(item.ID); err != nil || after.Version != item.Version {
+			// The batch moved, so this pass already spent its one mutation and
+			// may have sent a merge: nothing else may go out beside it.
+			return nil
+		}
 	}
 	return nil
 }
@@ -256,7 +266,12 @@ func (c *FactoryController) advanceCompletionBatch(ctx context.Context, item Fac
 func (c *FactoryController) reconcileCompletionStep(ctx context.Context, item FactoryItem, n int) error {
 	repo, forge, _, cred, err := c.completionMergeForge(ctx, item)
 	if err != nil {
-		return nil
+		// An earlier pass dispatched this entry, so its outcome is genuine
+		// uncertainty: the forge that would prove the merge cannot be reached.
+		// Recording that and stopping is what the design requires — waiting
+		// silently would leave the batch active for good, hold every later
+		// merge, and never tell the user why.
+		return c.stopCompletionStep(item.ID, n, "uncertain", "the merge could not be observed: "+err.Error())
 	}
 	step := item.Completion.Batch.Steps[n]
 	pr, readErr := forge.GetFactoryPR(ctx, repo, step.Number, cred)
@@ -285,7 +300,12 @@ func (c *FactoryController) reconcileCompletionStep(ctx context.Context, item Fa
 func (c *FactoryController) runCompletionStep(ctx context.Context, item FactoryItem, n int) error {
 	repo, forge, base, cred, err := c.completionMergeForge(ctx, item)
 	if err != nil {
-		return nil
+		// Nothing was dispatched: the batch never got as far as sending a
+		// merge, so this entry failed rather than became uncertain, and the
+		// batch stops with the reason the surface renders. Retrying a forge
+		// that will not open would wedge the batch and every later merge
+		// behind an active batch nobody can clear.
+		return c.stopCompletionStep(item.ID, n, "failed", err.Error())
 	}
 	step := item.Completion.Batch.Steps[n]
 	pr, readErr := forge.GetFactoryPR(ctx, repo, step.Number, cred)

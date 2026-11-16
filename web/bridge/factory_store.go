@@ -578,12 +578,15 @@ func validateFactoryCompletion(i FactoryItem) error {
 	if b == nil {
 		return nil
 	}
-	if strings.TrimSpace(b.ID) == "" || !factoryMergeBatchStates[b.State] {
+	if strings.TrimSpace(b.ID) == "" || strings.TrimSpace(b.RequestID) == "" || !factoryMergeBatchStates[b.State] {
 		return fmt.Errorf("invalid merge batch")
 	}
 	if e := validateFactoryRunChoice(b.RunChoice); e != nil {
 		return e
 	}
+	// A batch is the reviewed, ordered set the user authorized: one entry per
+	// pull request, not two attempts at the same one.
+	seenSteps := make(map[string]bool, len(b.Steps))
 	for _, s := range b.Steps {
 		if !factoryMergeStepStates[s.State] {
 			return fmt.Errorf("invalid merge step state")
@@ -595,6 +598,11 @@ func validateFactoryCompletion(i FactoryItem) error {
 		if strings.TrimSpace(s.RepoID) == "" || s.Number <= 0 || strings.TrimSpace(s.NodeID) == "" || strings.TrimSpace(s.HeadSHA) == "" || strings.TrimSpace(s.BaseRef) == "" {
 			return fmt.Errorf("invalid merge step identity")
 		}
+		key := s.RepoID + "\x00" + s.NodeID
+		if seenSteps[key] {
+			return fmt.Errorf("duplicate merge step")
+		}
+		seenSteps[key] = true
 		if !factoryMergeStrategies[s.Strategy] {
 			return fmt.Errorf("invalid merge step strategy")
 		}
@@ -627,11 +635,25 @@ func validateFactoryAssessment(a *FactoryAssessment) error {
 // assessment is about. The origin is optional, because a link observed before
 // it recorded who opened the PR still names a real PR, and the empty origin
 // says exactly that.
+//
+// The identity is not optional. A link without a repository or node ID is one
+// no command can observe again — link_pr would append a second, correct entry
+// beside it and leave the broken one stale for ever — so it is corrupt rather
+// than merely unfamiliar, and so is a second entry for the same identity.
 func validateFactoryPRLinks(links []FactoryPRLink) error {
+	seen := make(map[string]bool, len(links))
 	for _, l := range links {
 		if l.Origin != "" && !factoryLinkOrigins[l.Origin] {
 			return fmt.Errorf("invalid pr link origin")
 		}
+		if strings.TrimSpace(l.RepoID) == "" || strings.TrimSpace(l.PR.NodeID) == "" || l.PR.Number <= 0 || l.ObservedAt.IsZero() {
+			return fmt.Errorf("invalid pr link identity")
+		}
+		key := l.RepoID + "\x00" + l.PR.NodeID
+		if seen[key] {
+			return fmt.Errorf("duplicate pr link identity")
+		}
+		seen[key] = true
 	}
 	return nil
 }

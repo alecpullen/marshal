@@ -77,7 +77,7 @@ func TestCompletionLegacyReplay(t *testing.T) {
 	// A record carrying no status is open as well, and the store keeps it
 	// exactly as it was written: "open" is a reading, never a rewrite.
 	legacy, err := s.Update(i.ID, "legacy-completion", i.Version, json.RawMessage(`{"legacy":true}`), func(dst *FactoryItem) error {
-		dst.Completion = &FactoryCompletion{Links: []FactoryPRLink{{RepoID: "repo", PR: FactoryPR{Number: 7, State: "open"}, Origin: "user"}}}
+		dst.Completion = &FactoryCompletion{Links: []FactoryPRLink{{RepoID: "repo", PR: FactoryPR{Number: 7, NodeID: "PR_node7", State: "open"}, Origin: "user", ObservedAt: now}}}
 		return nil
 	}, now)
 	if err != nil {

@@ -1626,23 +1626,50 @@ func factoryApplyRevisionAssessRequest(i *FactoryItem, c FactoryCommand, p *fact
 // could not be stopped.
 func (c *FactoryController) requestCompletionStop(ctx context.Context, item FactoryItem) error {
 	now := c.now()
-	saved, err := c.internalUpdate(item, "completion_stop_requested", func(dst *FactoryItem) error {
-		completion := factoryCompletionOf(*dst)
-		// StopState is written only by the completion's run choice, so a value
-		// already there is a decision this intent must not overwrite.
-		if completion.StopState != "" {
-			return ErrFactoryConflict
+	// The intent is idempotent, so a concurrent writer that moved the item
+	// between the merge journal and this append is re-read and re-applied
+	// rather than dropped: the run choice the user recorded must reach the run
+	// it names, or the record says stopped and nothing was ever asked to stop.
+	current := item
+	var saved FactoryItem
+	for attempt := 0; ; attempt++ {
+		refused := false
+		written, err := c.internalUpdate(current, "completion_stop_requested", func(dst *FactoryItem) error {
+			completion := factoryCompletionOf(*dst)
+			// A stop already in flight, or one that already took, is the
+			// user's own earlier decision and this intent must not overwrite
+			// it. A failed or unconfirmed stop is not settled work: asking
+			// again is a new attempt, and refusing it would leave the run
+			// choice recorded on the batch with nothing delivering it.
+			if completion.StopState == "requested" || completion.StopState == "stopped" {
+				refused = true
+				return ErrFactoryConflict
+			}
+			completion.StopState = "requested"
+			dst.Completion = &completion
+			dst.History = append(dst.History, FactoryEvent{At: now, Kind: "completion_stop_requested", Message: "the run choice asked for the work item's run to stop"})
+			return nil
+		})
+		if err == nil {
+			saved = written
+			break
 		}
-		completion.StopState = "requested"
-		dst.Completion = &completion
-		dst.History = append(dst.History, FactoryEvent{At: now, Kind: "completion_stop_requested", Message: "the run choice asked for the work item's run to stop"})
-		return nil
-	})
-	if errors.Is(err, ErrFactoryConflict) {
-		return nil
-	}
-	if err != nil {
-		return err
+		if !errors.Is(err, ErrFactoryConflict) {
+			return err
+		}
+		if refused {
+			// The journal already carries this stop; there is nothing to
+			// deliver and nothing to retry.
+			return nil
+		}
+		if attempt >= 2 {
+			return nil
+		}
+		latest, getErr := c.store.Get(item.ID)
+		if getErr != nil {
+			return nil
+		}
+		current = latest
 	}
 	canceler, ok := c.effects.(interface {
 		Cancel(context.Context, FactoryItem) error
@@ -1660,6 +1687,12 @@ func (c *FactoryController) requestCompletionStop(ctx context.Context, item Fact
 	}
 	_, _ = c.internalUpdate(latest, "completion_stop_failed", func(dst *FactoryItem) error {
 		completion := factoryCompletionOf(*dst)
+		// Guarded like every other StopState write: an observation that
+		// already proved the stop must not be rewritten as a failure because a
+		// late cancellation error arrived after it.
+		if completion.StopState != "requested" {
+			return ErrFactoryConflict
+		}
 		completion.StopState = "failed"
 		dst.Completion = &completion
 		dst.History = append(dst.History, FactoryEvent{At: c.now(), Kind: "completion_stop_failed", Message: cancelErr.Error()})
@@ -1668,9 +1701,10 @@ func (c *FactoryController) requestCompletionStop(ctx context.Context, item Fact
 	return nil
 }
 
-// settleCompletionStops moves requested stops forward, one item per pass, so a
-// stop that could not be observed yet is retried on the next tick rather than
-// blocking anything else.
+// settleCompletionStops moves requested stops forward, so a stop that could not
+// be observed yet is retried on the next tick rather than blocking anything
+// else. A stop that settled in this pass spends it; one that is still waiting
+// does not, because nothing about it moved.
 func (c *FactoryController) settleCompletionStops(ctx context.Context) error {
 	if c == nil || c.store == nil || c.effects == nil {
 		return nil
@@ -1679,7 +1713,12 @@ func (c *FactoryController) settleCompletionStops(ctx context.Context) error {
 		if item.Completion == nil || item.Completion.StopState != "requested" {
 			continue
 		}
-		return c.settleCompletionStop(ctx, item)
+		if err := c.settleCompletionStop(ctx, item); err != nil {
+			return err
+		}
+		if after, err := c.store.Get(item.ID); err == nil && after.Version != item.Version {
+			return nil
+		}
 	}
 	return nil
 }
@@ -1724,26 +1763,37 @@ func (c *FactoryController) settleCompletionStop(ctx context.Context, item Facto
 }
 
 // factoryCompletionStopSettled reports whether the observation proves the
-// requested stop took. A journal with no unparked worker is stopped as soon as
-// the item's state owns no live work, or when the runtime it observed is idle
-// in both senses the factory trusts — the turn and the session's active work. A
-// journal that still records a running worker needs that same observation: the
-// row alone does not prove the turn ended.
+// requested stop took. The journal decides first: a run with no unparked worker
+// and no effect in flight is stopped whatever the runtime would say, because
+// there is nothing left for an observation to prove and waiting for one that
+// will never come would leave the stop requested for ever. A run the journal
+// still shows live needs that observation: the row alone does not prove the
+// turn ended.
 func factoryCompletionStopSettled(item FactoryItem, obs FactoryObservation, err error) bool {
+	if !factoryCompletionRunLive(item) {
+		return true
+	}
 	if err != nil {
 		return false
 	}
-	unparked := false
+	return obs.RuntimeKnown && obs.TurnIdle && obs.ActiveWorkKnown && obs.WorkIdle
+}
+
+// factoryCompletionRunLive reports whether the journal still records the item's
+// run doing anything: a worker that is not parked, or an effect that was
+// prepared or dispatched and has not settled.
+func factoryCompletionRunLive(item FactoryItem) bool {
 	for _, w := range item.Workers {
 		if !w.Parked {
-			unparked = true
-			break
+			return true
 		}
 	}
-	if !unparked && !factoryOwnsState(item.State) {
-		return true
+	for _, e := range item.Effects {
+		if e.Status == "prepared" || e.Status == "dispatched" {
+			return true
+		}
 	}
-	return obs.RuntimeKnown && obs.TurnIdle && obs.ActiveWorkKnown && obs.WorkIdle
+	return false
 }
 
 // factoryCompletionStopUnknown reports whether the requested stop cannot be
@@ -1753,10 +1803,5 @@ func factoryCompletionStopUnknown(item FactoryItem, obs FactoryObservation, err 
 	if err != nil || obs.RuntimeKnown {
 		return false
 	}
-	for _, w := range item.Workers {
-		if !w.Parked {
-			return true
-		}
-	}
-	return false
+	return factoryCompletionRunLive(item)
 }

@@ -163,3 +163,67 @@ not an error — `status` already exits non-zero only for a silent socket.
 ## Open questions
 
 None.
+
+## Implementation record
+
+Run 2026-11-16 from [the plan](plans/2026-11-16-d1-install-hardening-plan.md) on
+branch `d1-install-hardening`, based on `main` at `4e748e6c`. One commit per
+task; `main` did not move while it ran.
+
+**The manager.** `internal/daemon/manager.go` gained `LingerState` and two
+methods, `Linger` and `EnableLinger`, both answering without running anything on
+darwin, so the command needs no platform branch of its own. `Linger` runs
+`loginctl show-user <uid> -p Linger` — no `--value`, which older systemd lacks —
+and reads the keyed `Linger=yes` / `Linger=no` line. A runner error `notLoaded`
+already recognises, or `exec.ErrNotFound`, yields `LingerState{}` with no error:
+a machine with no `loginctl` is not a Marshal failure. Any other error is
+returned. `EnableLinger` runs `loginctl enable-linger <uid>` and wraps a refusal
+with the command's own output. `Manager.Install` and `Manager.Uninstall` are
+untouched: the manager gained primitives, not a policy.
+
+**`install`.** `runDaemonInstall` gained `--no-linger`, and calls the new
+`daemonEnsureLinger` between the `socket:` line and `daemonReadyNote`, so the
+readiness note stays the last word on whether the install worked. Every outcome
+is a line — already enabled, enabled, left off, not supported, not enabled — and
+none of them returns an error or changes the exit code, because the unit is
+written and loaded by the time linger runs.
+
+**`status` and `uninstall`.** `runDaemonStatus` prints `daemonLingerLine`'s
+answer immediately after the service line: enabled, disabled (the daemon stops
+at logout), not supported, or unknown. macOS gets no line at all, and the read
+failure is a line rather than an error, so `status` still exits non-zero only
+for a silent socket. `runDaemonService`'s `uninstall` branch reads the bit and,
+when it is supported and set, prints `linger: left enabled (per user, not per
+unit)`; nothing in the uninstall path runs `loginctl disable-linger`.
+
+**Tests.** Five new tests, none of which runs a real `loginctl` or `systemctl`:
+`TestLingerReadsAndSetsTheUsersBit` (enabled; disabled then enabled; `loginctl`
+missing; darwin), `TestDaemonInstallEnablesLinger`,
+`TestDaemonInstallLeavesLingerOffWithTheFlag`, `TestDaemonStatusReportsLinger`
+and `TestDaemonUninstallLeavesLingerEnabled`. The command tests drive the new
+`fakeDaemonManagerOS` seam, which builds a Linux or darwin `*daemon.Manager`
+over a scripted `Runner`; `fakeDaemonManager` now delegates to it, so no
+existing test changed and `TestDaemonStatusReportsARunningDaemon` keeps its
+seven lines because its manager is darwin.
+
+**Where this run fell short.** The plan said "the four tests"; five were
+written, because task 1's single test and task 3's two status/uninstall tests
+add up to one more than the task list implied. The command-level branches of
+`daemonEnsureLinger` for "already enabled", "not supported" and a failed read
+are exercised only through the manager's own test, not through `install`: they
+share the manager's parsing, and no test asserts each command line. The manual
+end-to-end check was not run: `marshal daemon install` on a live box writes a
+real unit into `~/.config/systemd/user` and can flip a real per-user systemd
+bit, which is a side effect this run did not take on the developer's machine.
+What was confirmed read-only on that Linux host is the assumption the parse
+rests on: `command -v loginctl` resolves and `loginctl show-user "$(id -u)" -p
+Linger` answers `Linger=yes`, keyed as parsed.
+
+**Verification.** Per task: `scripts/test.sh quick ./internal/daemon -run
+TestLinger` and the whole `./internal/daemon` package;
+`scripts/test.sh quick ./cmd/marshal -run 'TestDaemonInstall'`;
+`scripts/test.sh quick ./cmd/marshal -run 'TestDaemon'` (the whole daemon
+command surface); `gofmt -l` and `CGO_ENABLED=1 go vet` on both packages;
+`CGO_ENABLED=1 go build ./cmd/marshal`. Whole tree: `gofmt -l internal cmd test
+web` printed nothing, `CGO_ENABLED=1 go vet ./...` was clean, and
+`scripts/test.sh full` passed.

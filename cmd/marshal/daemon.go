@@ -207,6 +207,26 @@ func daemonEnsureLinger(ctx context.Context, m *daemon.Manager, skip bool, stdou
 	fmt.Fprintln(stdout, "linger: enabled")
 }
 
+// daemonLingerLine is daemon status's linger line, and whether this platform
+// has one at all. macOS has no equivalent, so it gets no line rather than a
+// "not supported" one for something it does not need.
+func daemonLingerLine(ctx context.Context, m *daemon.Manager) (string, bool) {
+	if m.GOOS != "linux" {
+		return "", false
+	}
+	state, err := m.Linger(ctx)
+	if err != nil {
+		return fmt.Sprintf("linger: unknown (%v)", err), true
+	}
+	if !state.Supported {
+		return "linger: not supported (loginctl not found)", true
+	}
+	if state.Enabled {
+		return "linger: enabled", true
+	}
+	return "linger: disabled (the daemon stops at logout)", true
+}
+
 // daemonUnitSpec is decision 10's unit: the webbridge, the resolved marshal,
 // the paths internal/daemon resolves, the location environment, and the idle
 // session timeout the user config gives.
@@ -318,6 +338,11 @@ func runDaemonService(ctx context.Context, sub string, args []string, stdout, st
 			return err
 		}
 		fmt.Fprintf(stdout, "uninstalled; data kept in %s\n", daemon.PathsFor(home).Dir)
+		// The linger bit is per user, not per unit: Marshal set it at
+		// install, but other user units depend on it, so it stays.
+		if state, err := m.Linger(ctx); err == nil && state.Supported && state.Enabled {
+			fmt.Fprintln(stdout, "linger: left enabled (per user, not per unit)")
+		}
 	}
 	return nil
 }
@@ -394,6 +419,9 @@ func runDaemonStatus(ctx context.Context, args []string, stdout, stderr io.Write
 		return fmt.Errorf("read the marshal daemon service: %w", err)
 	}
 	fmt.Fprintln(stdout, daemonServiceLine(state))
+	if line, ok := daemonLingerLine(ctx, m); ok {
+		fmt.Fprintln(stdout, line)
+	}
 
 	infoCtx, cancel := context.WithTimeout(ctx, daemonStatusTimeout)
 	defer cancel()

@@ -395,6 +395,75 @@ func TestDaemonInstallLeavesLingerOffWithTheFlag(t *testing.T) {
 	}
 }
 
+// TestDaemonStatusReportsLinger: status answers whether the install survives
+// logout, on the line after the service line and exactly once.
+func TestDaemonStatusReportsLinger(t *testing.T) {
+	daemonTestEnv(t)
+
+	fakeDaemonManagerOS(t, "linux", func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		line := strings.Join(append([]string{name}, args...), " ")
+		switch line {
+		case "loginctl show-user 501 -p Linger":
+			return []byte("Linger=yes\n"), nil
+		case "systemctl --user show --property=ActiveState,MainPID,LoadState " + daemon.Unit:
+			return []byte("LoadState=loaded\nActiveState=active\nMainPID=4242\n"), nil
+		}
+		return nil, nil
+	})
+	fakeDaemonSocket(t, fakeDaemonClient{})
+
+	var stdout, stderr bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"status"},
+		strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("runDaemon status: %v\nstderr: %s", err, stderr.String())
+	}
+
+	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("status printed %d lines, want the service and linger lines:\n%s", len(lines), stdout.String())
+	}
+	if !strings.HasPrefix(lines[0], "service:") {
+		t.Errorf("line 0 = %q, want the service line", lines[0])
+	}
+	if lines[1] != "linger: enabled" {
+		t.Errorf("line 1 = %q, want \"linger: enabled\"", lines[1])
+	}
+	if got := strings.Count(stdout.String(), "linger:"); got != 1 {
+		t.Errorf("status printed linger %d times, want once:\n%s", got, stdout.String())
+	}
+}
+
+// TestDaemonUninstallLeavesLingerEnabled pins D1's decision 3: the bit is per
+// user, so uninstall reports it and never clears it.
+func TestDaemonUninstallLeavesLingerEnabled(t *testing.T) {
+	daemonTestEnv(t)
+
+	var calls []string
+	fakeDaemonManagerOS(t, "linux", func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		line := strings.Join(append([]string{name}, args...), " ")
+		calls = append(calls, line)
+		if line == "loginctl show-user 501 -p Linger" {
+			return []byte("Linger=yes\n"), nil
+		}
+		return nil, nil
+	})
+
+	var stdout, stderr bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"uninstall"},
+		strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("runDaemon uninstall: %v\nstderr: %s", err, stderr.String())
+	}
+
+	if !strings.Contains(stdout.String(), "linger: left enabled (per user, not per unit)") {
+		t.Errorf("uninstall printed %q, want it to say the bit was left enabled", stdout.String())
+	}
+	for _, call := range calls {
+		if strings.Contains(call, "disable-linger") {
+			t.Errorf("uninstall ran %q; it must not clear a bit it does not own", call)
+		}
+	}
+}
+
 // TestDaemonStatusReportsARunningDaemon pins decision 12's happy path: three
 // lines, the daemon's version beside this marshal's, its start time, and its
 // projects — and a socket call bounded at two seconds. Under the daemon's line

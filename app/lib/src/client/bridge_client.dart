@@ -150,7 +150,7 @@ class BridgeClient {
             path: '/api/projects/settings',
             query: {'root': root},
             body: _withAutoFix(_object(read), on),
-            headers: {if (tag != null) 'If-Match': tag},
+            headers: {'If-Match': ?tag},
           ),
         );
         return;

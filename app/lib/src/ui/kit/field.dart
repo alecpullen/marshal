@@ -67,7 +67,7 @@ class _FieldState extends State<Field> {
         Text(widget.label, style: e.small.tint(e.muted)),
         const SizedBox(height: Space.s6),
         Container(
-          height: Sizes.row,
+          constraints: const BoxConstraints(minHeight: Sizes.row),
           padding: const EdgeInsets.symmetric(horizontal: Space.s8),
           alignment: Alignment.centerLeft,
           decoration: BoxDecoration(

@@ -39,7 +39,8 @@ class Btn extends StatelessWidget {
             ? e.onAccent
             : e.fg;
         Widget body = Container(
-          height: Sizes.control,
+          // At least 28; taller only when the text is scaled up.
+          constraints: const BoxConstraints(minHeight: Sizes.control),
           padding: const EdgeInsets.symmetric(horizontal: Space.s12),
           decoration: BoxDecoration(
             color: filled ? e.accent : (state.hovered ? e.hover : null),

@@ -93,7 +93,10 @@ class _Row extends StatelessWidget {
             ),
             if (value != null) ...[
               const SizedBox(width: Space.s12),
-              Flexible(
+              // At the right edge, and never wider than the sidebar, so a
+              // long value ellipsizes rather than crowding out the name.
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: Layout.sidebar),
                 child: Text(
                   value,
                   maxLines: 1,

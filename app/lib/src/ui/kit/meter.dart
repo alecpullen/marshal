@@ -71,6 +71,7 @@ class Meter extends StatelessWidget {
               borderRadius: BorderRadius.circular(Radii.bar),
               child: SizedBox(
                 height: thickness,
+                width: double.infinity,
                 child: Stack(
                   children: [
                     Positioned.fill(child: ColoredBox(color: e.border)),

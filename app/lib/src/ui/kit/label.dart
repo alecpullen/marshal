@@ -28,20 +28,26 @@ class Label extends StatelessWidget {
     final link = this.link;
     return Row(
       children: [
-        Flexible(
-          child: Text(
-            text.toUpperCase(),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: e.label.tint(e.muted),
+        Expanded(
+          child: Row(
+            children: [
+              Flexible(
+                child: Text(
+                  text.toUpperCase(),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: e.label.tint(e.muted),
+                ),
+              ),
+              if (count != null) ...[
+                const SizedBox(width: Space.s6),
+                Text('$count', style: e.monoSmall.tint(e.muted)),
+              ],
+            ],
           ),
         ),
-        if (count != null) ...[
-          const SizedBox(width: Space.s6),
-          Text('$count', style: e.monoSmall.tint(e.muted)),
-        ],
-        const Spacer(),
-        if (link != null)
+        if (link != null) ...[
+          const SizedBox(width: Space.s12),
           Press(
             onTap: link.onTap,
             builder: (context, state) {
@@ -56,6 +62,7 @@ class Label extends StatelessWidget {
               );
             },
           ),
+        ],
       ],
     );
   }

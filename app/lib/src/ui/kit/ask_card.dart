@@ -103,29 +103,38 @@ class AskCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
+          // The wait sits at the right end of the line, and drops to its
+          // own line when the kind and the source leave it no room.
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: Space.s12,
+            runSpacing: Space.s4,
             children: [
-              Icon(kind.icon, size: Sizes.iconRow, color: ink),
-              const SizedBox(width: Space.s6),
-              Text(kind.word, style: e.caption.tint(ink)),
-              if (source != null) ...[
-                const SizedBox(width: Space.s6),
-                Text('·', style: e.caption.tint(e.muted)),
-                const SizedBox(width: Space.s6),
-                Expanded(
-                  child: Press(
-                    onTap: onOpenSource,
-                    builder: (context, state) => Text(
-                      source,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: e.small.tint(state.hovered ? e.fg : e.muted),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(kind.icon, size: Sizes.iconRow, color: ink),
+                  const SizedBox(width: Space.s6),
+                  Text(kind.word, style: e.caption.tint(ink)),
+                  if (source != null) ...[
+                    const SizedBox(width: Space.s6),
+                    Text('·', style: e.caption.tint(e.muted)),
+                    const SizedBox(width: Space.s6),
+                    Flexible(
+                      child: Press(
+                        onTap: onOpenSource,
+                        builder: (context, state) => Text(
+                          source,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: e.small.tint(state.hovered ? e.fg : e.muted),
+                        ),
+                      ),
                     ),
-                  ),
-                ),
-              ] else
-                const Spacer(),
-              const SizedBox(width: Space.s12),
+                  ],
+                ],
+              ),
               _since(
                 Text('waiting $waiting', style: e.monoSmall.tint(e.muted)),
               ),

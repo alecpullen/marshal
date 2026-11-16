@@ -34,7 +34,7 @@ class ThreadRow extends StatelessWidget {
       onTap: onTap,
       selected: selected,
       builder: (context, state) => Container(
-        height: Sizes.row,
+        constraints: const BoxConstraints(minHeight: Sizes.row),
         padding: const EdgeInsets.symmetric(horizontal: Space.s8),
         decoration: BoxDecoration(
           color: selected ? e.selected : (state.hovered ? e.hover : null),

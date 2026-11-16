@@ -721,6 +721,10 @@ class _WorkItemPlace extends StatefulWidget {
 }
 
 class _WorkItemPlaceState extends State<_WorkItemPlace> {
+  /// The bridge's refusal of the last action, in its own words: a conflict is
+  /// not an error the person made, and the action stays available.
+  String? _error;
+
   @override
   void initState() {
     super.initState();
@@ -743,15 +747,73 @@ class _WorkItemPlaceState extends State<_WorkItemPlace> {
     final item = widget.factory.byId(host, widget.thread.id);
     if (item == null) return _missing(context, host);
     final pulls = widget.pulls?.forThread(widget.thread) ?? const <PullView>[];
+    final view = WorkItemView.of(host, item);
+    final store = widget.factory;
     return WorkItemScreen(
-      item: WorkItemView.of(host, item),
+      item: view,
       now: widget.now,
       pulls: pulls,
+      conflict: _error ?? store.conflictOf(host, item.id),
       onRetry: widget.onRetry,
+      onApprove: () => _command(() => store.approve(host, item.id)),
+      onAnswer: (answer) => _command(
+        () => store.answerDecision(
+          host,
+          item.id,
+          decisionID: view.decisionID,
+          answer: answer,
+        ),
+      ),
+      onRecover: (choice) => _command(
+        () => store.recover(
+          host,
+          item.id,
+          model: choice.model,
+          fresh: choice.fresh,
+          extraRounds: choice.rounds,
+        ),
+      ),
+      onComplete: () => _command(() => store.complete(host, item.id)),
+      onMergeAndComplete: () => _merge(host, item.id, pulls),
+      onReopen: () => _command(() => store.reopen(host, item.id)),
+      onStop: () => _command(() => store.stopItem(host, item.id)),
       pullActionsFor: widget.pulls == null
           ? null
           : (context, pull) =>
                 pullCardActions(context, pull: pull, model: widget.pulls!),
+    );
+  }
+
+  /// Runs one command, keeping the bridge's refusal for the thread to say and
+  /// leaving the action where it was, so the person can decide again.
+  Future<void> _command(Future<Object?> Function() action) async {
+    try {
+      await action();
+      if (mounted) setState(() => _error = null);
+    } catch (error) {
+      if (mounted) setState(() => _error = describeFailure(error));
+    }
+  }
+
+  /// Merges the reviewed pull request and completes the item. The identity is
+  /// the card's own, so nothing the surface assembled can be merged.
+  Future<void> _merge(String host, String id, List<PullView> pulls) async {
+    if (pulls.isEmpty) {
+      if (mounted) {
+        setState(() => _error = 'There is no pull request to merge yet.');
+      }
+      return;
+    }
+    final pull = pulls.first.record;
+    await _command(
+      () => widget.factory.mergeAndComplete(
+        host,
+        id,
+        repoID: pull.repoID,
+        number: pull.number,
+        headSHA: pull.headSHA,
+        baseRef: pull.baseRef,
+      ),
     );
   }
 

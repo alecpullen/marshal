@@ -57,8 +57,7 @@ class FactoryStore extends ChangeNotifier {
   /// a second sort here could disagree with it.
   List<FactoryItem> items({String? host, String? projectRoot}) {
     final all = [
-      for (final name in (host != null ? [host] : hosts))
-        ...?_items[name],
+      for (final name in (host != null ? [host] : hosts)) ...?_items[name],
     ];
     if (projectRoot == null) return List.unmodifiable(all);
     return List.unmodifiable([
@@ -186,6 +185,114 @@ class FactoryStore extends ChangeNotifier {
     }
   }
 
+  // The commands a screen sends (F6 decision 5). Each names what the person
+  // decided, never a wire payload: `ui/` reads `model/` and never touches
+  // `client/` (F1's boundary), and a command is built here where the wire is.
+
+  /// Approves a draft and starts it.
+  Future<FactoryItem> approve(String host, String id) =>
+      command(host, id, _command({'kind': 'approve'}));
+
+  /// Answers the decision the item is blocked on.
+  Future<FactoryItem> answerDecision(
+    String host,
+    String id, {
+    required String decisionID,
+    required String answer,
+  }) => command(
+    host,
+    id,
+    _command({'kind': 'answer', 'decisionId': decisionID, 'answer': answer}),
+  );
+
+  /// Recovers an item that stalled or ran out of rounds: on the same context
+  /// or a fresh one, optionally on another model, with more rounds allowed.
+  Future<FactoryItem> recover(
+    String host,
+    String id, {
+    String? model,
+    bool fresh = false,
+    int extraRounds = 0,
+  }) {
+    final name = model?.trim() ?? '';
+    return command(
+      host,
+      id,
+      _command({
+        'kind': 'recover',
+        'reason': fresh ? 'fresh' : 'continue',
+        'additionalRounds': extraRounds,
+        if (name.isNotEmpty) 'implementerRouting': {'model': name},
+      }),
+    );
+  }
+
+  /// Says the work counts as done.
+  Future<FactoryItem> complete(String host, String id) =>
+      command(host, id, _command({'kind': 'complete'}));
+
+  /// Reopens a completed item. The records that called it done stay.
+  Future<FactoryItem> reopen(String host, String id) =>
+      command(host, id, _command({'kind': 'reopen'}));
+
+  /// Stops the work, keeping what it produced. It is destructive and the
+  /// screen confirms it first. It is not [stop], which stops the poller.
+  Future<FactoryItem> stopItem(String host, String id, {String reason = ''}) =>
+      command(host, id, _command({'kind': 'stop', 'reason': reason}));
+
+  /// Merges the reviewed pull request and completes the item.
+  ///
+  /// The reviewed identity — the head and the base the person was shown — is
+  /// copied in, so the bridge merges exactly that and nothing the surface
+  /// assembled itself.
+  Future<FactoryItem> mergeAndComplete(
+    String host,
+    String id, {
+    required String repoID,
+    required int number,
+    required String headSHA,
+    required String baseRef,
+    String strategy = 'squash',
+  }) => command(
+    host,
+    id,
+    _command({
+      'kind': 'merge_and_complete',
+      'completion': {
+        'prs': [
+          {
+            'repoId': repoID,
+            'number': number,
+            'nodeId': '',
+            'headSha': headSHA,
+            'baseRef': baseRef,
+          },
+        ],
+        'strategy': strategy,
+        'completeAfter': true,
+      },
+    }),
+  );
+
+  /// One command with every field the wire requires, so a screen names only
+  /// what it decided. The request id and the expected version are the store's
+  /// (see [command]).
+  static FactoryCommand _command(Map<String, Object?> fields) =>
+      FactoryCommand.fromJson({
+        'requestId': '',
+        'kind': '',
+        'decisionId': '',
+        'answer': '',
+        'reason': '',
+        'expectedVersion': 0,
+        'additionalRounds': 0,
+        'replacement': null,
+        'implementerRouting': null,
+        'reviewerRouting': null,
+        'confirmPreviousWorkerStopped': false,
+        ...fields,
+      });
+
   /// What a version conflict says (F6 plan 1): not an error the person made.
   static const conflictWords = 'This changed while you were deciding';
 
@@ -207,9 +314,7 @@ class FactoryStore extends ChangeNotifier {
     final at = held.indexWhere((each) => each.id == item.id);
     final next = at < 0
         ? [...held, item]
-        : [
-            for (var i = 0; i < held.length; i++) i == at ? item : held[i],
-          ];
+        : [for (var i = 0; i < held.length; i++) i == at ? item : held[i]];
     _items[host] = List.unmodifiable(next);
     _loaded.add(host);
     _failure.remove(host);

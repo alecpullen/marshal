@@ -42,8 +42,14 @@ void main() {
   });
 
   test('an interrupting state keeps the stage the bridge recorded', () {
-    expect(stageOf(factoryItem(state: 'needs_input', stage: 'review')), Stage.review);
-    expect(stageOf(factoryItem(state: 'recovering', stage: 'plan')), Stage.plan);
+    expect(
+      stageOf(factoryItem(state: 'needs_input', stage: 'review')),
+      Stage.review,
+    );
+    expect(
+      stageOf(factoryItem(state: 'recovering', stage: 'plan')),
+      Stage.plan,
+    );
     // Without a recorded stage, an item with a round was implementing.
     final round = FactoryRound.fromJson({
       'number': 1,
@@ -58,7 +64,10 @@ void main() {
       'startedAt': '2026-11-17T09:10:00Z',
       'finishedAt': '0001-01-01T00:00:00Z',
     });
-    expect(stageOf(factoryItem(state: 'needs_input', rounds: [round])), Stage.implement);
+    expect(
+      stageOf(factoryItem(state: 'needs_input', rounds: [round])),
+      Stage.implement,
+    );
   });
 
   test('the filters keep the list they name', () {

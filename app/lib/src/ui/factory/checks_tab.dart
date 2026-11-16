@@ -59,13 +59,11 @@ class ChecksTab extends StatelessWidget {
   }
 
   /// One model check in the kit's vocabulary.
-  static Check _check(WorkItemCheck check) => Check(
-    check.name,
-    switch (check.state) {
-      WorkItemCheckState.passed => CheckState.passed,
-      WorkItemCheckState.failed => CheckState.failed,
-      WorkItemCheckState.running => CheckState.running,
-      WorkItemCheckState.pending => CheckState.pending,
-    },
-  );
+  static Check _check(WorkItemCheck check) =>
+      Check(check.name, switch (check.state) {
+        WorkItemCheckState.passed => CheckState.passed,
+        WorkItemCheckState.failed => CheckState.failed,
+        WorkItemCheckState.running => CheckState.running,
+        WorkItemCheckState.pending => CheckState.pending,
+      });
 }

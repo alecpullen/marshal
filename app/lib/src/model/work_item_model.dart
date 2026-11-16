@@ -188,10 +188,11 @@ class ActivityEntry {
 /// its kind, and anything else is the user's own action, which is what an
 /// approval, an answer and a completion are.
 List<ActivityEntry> activityOf(FactoryItem item) {
-  final events = [...item.history]..sort((a, b) {
-    final bySequence = a.sequence.compareTo(b.sequence);
-    return bySequence != 0 ? bySequence : a.at.compareTo(b.at);
-  });
+  final events = [...item.history]
+    ..sort((a, b) {
+      final bySequence = a.sequence.compareTo(b.sequence);
+      return bySequence != 0 ? bySequence : a.at.compareTo(b.at);
+    });
   return List.unmodifiable([
     for (final event in events)
       ActivityEntry(
@@ -268,10 +269,9 @@ List<Ask> asksOf(String host, FactoryItem item) {
         id: '${item.id}:decision',
         kind: AskKind.decision,
         thread: thread,
-        title:
-            decision.question.trim().isEmpty
-                ? 'The worker needs a decision'
-                : decision.question.trim(),
+        title: decision.question.trim().isEmpty
+            ? 'The worker needs a decision'
+            : decision.question.trim(),
         body: decision.reason.trim(),
         actions: const [
           AskAction('Answer', primary: true, kind: AskActionKind.reply),
@@ -335,12 +335,9 @@ String planSummary(String plan) {
   ).allMatches(text).length;
   final first = [
     for (final line in text.split('\n'))
-      if (line.trim().isNotEmpty && !line.trim().startsWith('#'))
-        line.trim(),
+      if (line.trim().isNotEmpty && !line.trim().startsWith('#')) line.trim(),
   ].firstOrNull;
-  final count = tasks == 0
-      ? 'plan'
-      : '$tasks ${tasks == 1 ? 'task' : 'tasks'}';
+  final count = tasks == 0 ? 'plan' : '$tasks ${tasks == 1 ? 'task' : 'tasks'}';
   return first == null ? count : '$count · $first';
 }
 
@@ -370,7 +367,6 @@ String completionDetail(FactoryItem item) {
     if (checks > 0) '$checks ${checks == 1 ? 'check' : 'checks'}',
   ].join(' · ');
 }
-
 
 /// One worker as a work item's screen draws it.
 class WorkItemWorker {
@@ -437,6 +433,7 @@ class WorkItemView {
     required this.endWord,
     required this.lastActive,
     required this.version,
+    required this.decisionID,
     required this.plan,
     required this.spec,
     required this.settings,
@@ -465,6 +462,7 @@ class WorkItemView {
       endWord: endStateWord(item),
       lastActive: lastActiveOfItem(item),
       version: item.version,
+      decisionID: item.decision?.id ?? '',
       plan: approval?.plan ?? item.draft.plan,
       spec: approval?.spec ?? item.draft.spec,
       settings: _settings(config, approval),
@@ -495,7 +493,8 @@ class WorkItemView {
       activity: activityOf(item),
       asks: asksOf(host, item),
       proposals: [
-        for (final proposal in item.proposals ?? const <FactoryRevisionProposal>[])
+        for (final proposal
+            in item.proposals ?? const <FactoryRevisionProposal>[])
           'Revision ${proposal.baseRevision + 1} · '
               '${proposal.status.replaceAll('_', ' ')}',
       ],
@@ -519,6 +518,10 @@ class WorkItemView {
 
   /// The version a command must name as the one on screen.
   final int version;
+
+  /// The decision the item is blocked on, or "" when it is blocked on none:
+  /// what an answer names.
+  final String decisionID;
 
   final String plan;
   final String spec;
@@ -596,9 +599,10 @@ class WorkItemView {
     check.key.name.isEmpty ? check.id : check.key.name,
     switch (check.conclusion) {
       'success' || 'neutral' || 'skipped' => WorkItemCheckState.passed,
-      '' => check.status == 'in_progress' || check.status == 'queued'
-          ? WorkItemCheckState.running
-          : WorkItemCheckState.pending,
+      '' =>
+        check.status == 'in_progress' || check.status == 'queued'
+            ? WorkItemCheckState.running
+            : WorkItemCheckState.pending,
       _ => WorkItemCheckState.failed,
     },
   );

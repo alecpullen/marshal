@@ -172,7 +172,8 @@ NavModel buildNavModel(
   final byProject = <String, _ProjectBuilder>{};
   for (final host in store.hosts) {
     final items = [
-      for (final item in factory?.items(host: host.name) ?? const <FactoryItem>[])
+      for (final item
+          in factory?.items(host: host.name) ?? const <FactoryItem>[])
         threadOfItem(host.name, item),
     ];
     final threads = [
@@ -192,10 +193,7 @@ NavModel buildNavModel(
     for (final thread in items) {
       if (grouped.contains(thread.project)) continue;
       byProject
-          .putIfAbsent(
-            thread.project,
-            () => _ProjectBuilder(thread.project),
-          )
+          .putIfAbsent(thread.project, () => _ProjectBuilder(thread.project))
           .add([thread]);
     }
   }

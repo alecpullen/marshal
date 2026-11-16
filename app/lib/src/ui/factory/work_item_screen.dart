@@ -1,19 +1,15 @@
 import '../../model/age.dart';
-import '../../model/inbox_model.dart' as model;
 import '../../model/pulls_model.dart';
 import '../../model/thread_ref.dart';
 import '../../model/work_item_model.dart';
 import '../kit/kit.dart';
 import '../pulls/pull_facts.dart';
 import 'agents_tab.dart';
+import 'item_asks.dart';
 import 'checks_tab.dart';
 import 'plan_tab.dart';
+import 'recovery_form.dart';
 import 'pulls_tab.dart';
-
-/// Answers an ask from the item's own thread. The reply is the person's words
-/// for a decision that takes them; a task without one is a choice.
-typedef AskHandler =
-    void Function(model.Ask ask, model.AskAction action, {String? reply});
 
 /// A work item's thread (F6 decisions 4–6): its stage, what it waits on, the
 /// pull request it reached, its activity, and its five inspector tabs.
@@ -36,7 +32,14 @@ class WorkItemScreen extends StatefulWidget {
     this.pulls = const [],
     this.changes,
     this.onRetry,
+    this.conflict,
+    this.onApprove,
     this.onAnswer,
+    this.onRecover,
+    this.onComplete,
+    this.onMergeAndComplete,
+    this.onReopen,
+    this.onStop,
     this.onOpenWorker,
     this.onProposeChange,
     this.pullActionsFor,
@@ -59,8 +62,30 @@ class WorkItemScreen extends StatefulWidget {
 
   final VoidCallback? onRetry;
 
-  /// Answers one of the pinned asks. Null draws its actions disabled.
-  final AskHandler? onAnswer;
+  /// The bridge's refusal of the last action, when it was a version
+  /// conflict: the item moved, and the action is still available.
+  final String? conflict;
+
+  /// Approves a draft and starts it.
+  final Future<void> Function()? onApprove;
+
+  /// Answers the decision with the person's words.
+  final Future<void> Function(String answer)? onAnswer;
+
+  /// Recovers the item with the choice its form collected.
+  final Future<void> Function(RecoveryChoice choice)? onRecover;
+
+  /// Says the work counts as done.
+  final Future<void> Function()? onComplete;
+
+  /// Merges the reviewed pull request and completes the item.
+  final Future<void> Function()? onMergeAndComplete;
+
+  /// Reopens a completed item.
+  final Future<void> Function()? onReopen;
+
+  /// Stops the work, after the confirmation the header's menu opens.
+  final Future<void> Function()? onStop;
 
   /// Opens a worker's own conversation (F6 plan 1, task 5).
   final void Function(WorkItemWorker worker)? onOpenWorker;
@@ -92,6 +117,25 @@ class _WorkItemScreenState extends State<WorkItemScreen> {
     return PageBody(
       title: item.title,
       subtitle: item.stageWords,
+      actions: [
+        if (widget.onStop != null)
+          Menu(
+            choices: [
+              MenuChoice(
+                'Stop the work',
+                'It keeps what it produced',
+                onSelect: () {
+                  _confirmStop(context);
+                },
+              ),
+            ],
+            anchor: (context, toggle) => IconBtn(
+              Glyphs.ellipsis,
+              tooltip: 'More actions',
+              onTap: toggle,
+            ),
+          ),
+      ],
       children: [
         if (state == StateKind.stale) ...[
           StateMessage.stale(
@@ -108,16 +152,25 @@ class _WorkItemScreenState extends State<WorkItemScreen> {
         ),
         if (item.asks.isNotEmpty) ...[
           const SizedBox(height: Space.s16),
-          for (final ask in item.asks) ...[
-            _askCard(ask),
-            const SizedBox(height: Space.s8),
-          ],
+          ItemAsks(
+            item: item,
+            now: _now,
+            conflict: widget.conflict,
+            onApprove: widget.onApprove,
+            onAnswer: widget.onAnswer,
+            onRecover: widget.onRecover,
+            onComplete: widget.onComplete,
+            onMergeAndComplete: widget.onMergeAndComplete,
+            onReopen: widget.onReopen,
+            onProposeChange: widget.onProposeChange,
+          ),
         ],
         if (widget.pulls.isNotEmpty) ...[
           const SizedBox(height: Space.s12),
           PrCard(
             pull: pullFactsOf(widget.pulls.first, now: _now),
-            actions: widget.pullActionsFor?.call(context, widget.pulls.first) ??
+            actions:
+                widget.pullActionsFor?.call(context, widget.pulls.first) ??
                 const PrActions(),
           ),
         ],
@@ -165,24 +218,6 @@ class _WorkItemScreenState extends State<WorkItemScreen> {
     );
   }
 
-  /// One ask, pinned in its own thread (§5: the same card everywhere).
-  Widget _askCard(model.Ask ask) => AskCard(
-    kind: _askKind(ask.kind),
-    placement: AskPlacement.thread,
-    title: ask.title,
-    body: ask.body.isEmpty ? null : ask.body,
-    waiting: relativeAge(ask.since, _now),
-    actions: [
-      for (final action in ask.actions)
-        AskAction(
-          action.label,
-          onTap: widget.onAnswer == null
-              ? null
-              : () => widget.onAnswer!(ask, action),
-        ),
-    ],
-  );
-
   Widget _tabContent(BuildContext context) => switch (_tab) {
     0 => PlanTab(item: widget.item, onProposeChange: widget.onProposeChange),
     1 => AgentsTab(item: widget.item, onOpen: widget.onOpenWorker),
@@ -213,19 +248,33 @@ class _WorkItemScreenState extends State<WorkItemScreen> {
     ThreadStatus.idle => Status.idle,
   };
 
-  /// A work item's four asks are drawn with the kit's existing kinds (F6):
-  /// the card's title and body say what is being decided.
-  static AskKind _askKind(model.AskKind kind) => switch (kind) {
-    model.AskKind.approvalDraft => AskKind.approval,
-    model.AskKind.decision => AskKind.decision,
-    model.AskKind.recovery => AskKind.decision,
-    model.AskKind.completion => AskKind.decision,
-    model.AskKind.approval => AskKind.approval,
-    model.AskKind.question => AskKind.question,
-    model.AskKind.intake => AskKind.intake,
-    model.AskKind.pull => AskKind.pull,
-    model.AskKind.reviewDraft => AskKind.review,
-  };
+  /// Stops the work after confirming it: the run ends, and what it produced
+  /// stays. It is destructive, so the sheet names what is lost.
+  Future<void> _confirmStop(BuildContext context) async {
+    final stop = await Sheet.show<bool>(
+      context,
+      Sheet(
+        title: 'Stop the work?',
+        actions: [
+          Btn.primary(
+            'Stop the work',
+            onTap: () => Navigator.maybePop(context, true),
+          ),
+          Btn(
+            'Keep it running',
+            onTap: () => Navigator.maybePop(context, false),
+          ),
+        ],
+        child: Text(
+          'The run ends here. The branch, the commits and the pull request '
+          'stay, and you can reopen the item later.',
+          style: Ember.of(context).body,
+        ),
+      ),
+    );
+    if (stop != true) return;
+    await widget.onStop?.call();
+  }
 
   Widget _stateMessage(StateKind state) {
     final retry = StateAction(

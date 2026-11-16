@@ -114,8 +114,7 @@ final _codecs = <String, _Codec>{
   'FactoryApproval': (json) => FactoryApproval.fromJson(_object(json)).toJson(),
   'FactoryWorker': (json) => FactoryWorker.fromJson(_object(json)).toJson(),
   'FactoryPR': (json) => FactoryPR.fromJson(_object(json)).toJson(),
-  'FactoryCheckKey': (json) =>
-      FactoryCheckKey.fromJson(_object(json)).toJson(),
+  'FactoryCheckKey': (json) => FactoryCheckKey.fromJson(_object(json)).toJson(),
   'FactoryCheck': (json) => FactoryCheck.fromJson(_object(json)).toJson(),
   'FactoryCI': (json) => FactoryCI.fromJson(_object(json)).toJson(),
   'FactoryRound': (json) => FactoryRound.fromJson(_object(json)).toJson(),

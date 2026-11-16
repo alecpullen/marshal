@@ -97,13 +97,7 @@ func classifyGit(op *ShellOperation) {
 		"ls-files", "describe", "blame", "grep", "cat-file":
 		op.Effects |= ShellRead
 	case "config":
-		// A global git config change mutates state outside the workspace;
-		// a local one is an ordinary read.
-		if hasFlag(op, "--global") {
-			op.Effects |= ShellEnvironment
-		} else {
-			op.Effects |= ShellRead
-		}
+		classifyGitConfig(op)
 	case "commit", "add", "rm", "mv", "checkout", "switch", "merge", "rebase",
 		"reset", "clean", "restore", "stash", "tag", "push", "pull", "fetch",
 		"clone", "init", "worktree":
@@ -111,6 +105,119 @@ func classifyGit(op *ShellOperation) {
 	default:
 		op.Effects |= ShellUnknown
 	}
+}
+
+// classifyGitConfig classifies a `git config` invocation by mode (AUD-04). It
+// is read only when it is provably a read: local setters mutate .git/config,
+// global and system setters mutate state outside the workspace, and an
+// unfamiliar form is unknown rather than read.
+func classifyGitConfig(op *ShellOperation) {
+	start := gitConfigArgStart(op)
+	if start < 0 {
+		op.Effects |= ShellUnknown
+		return
+	}
+	flags, operands := splitFlags(op.Argv[start:])
+	scoped := false
+	var readFlag, mutationFlag, unfamiliarFlag bool
+	for _, f := range flags {
+		if f.Name == "--global" || f.Name == "--system" {
+			scoped = true
+		}
+		switch {
+		case gitConfigReadFlag(f.Name):
+			readFlag = true
+		case gitConfigMutationFlag(f.Name):
+			mutationFlag = true
+		case !gitConfigModifierFlag(f.Name):
+			unfamiliarFlag = true
+		}
+	}
+
+	effects := ShellRead
+	switch {
+	case readFlag:
+		// A read flag wins: git rejects it alongside a mutation, and an
+		// unknown flag fails the invocation before anything is written.
+	case mutationFlag:
+		effects = gitConfigMutationEffects(scoped)
+	case unfamiliarFlag:
+		effects = ShellUnknown
+	case len(operands) >= 2:
+		// The bare setter form: `git config <key> <value>`.
+		effects = gitConfigMutationEffects(scoped)
+	}
+	if scoped {
+		// No --global/--system form is ever weaker than it was before: the
+		// environment bit is kept on reads, mutations and unfamiliar forms.
+		effects |= ShellEnvironment
+	}
+	op.Effects |= effects
+}
+
+// gitConfigMutationEffects is the effect of a `git config` form that writes.
+func gitConfigMutationEffects(scoped bool) ShellEffect {
+	if scoped {
+		return ShellEnvironment
+	}
+	return ShellWrite
+}
+
+// gitConfigReadFlag reports whether name is a read-only git config flag.
+func gitConfigReadFlag(name string) bool {
+	switch name {
+	case "--get", "--get-all", "--get-regexp", "--get-urlmatch", "--get-color",
+		"--get-colorbool", "--list", "-l":
+		return true
+	}
+	return false
+}
+
+// gitConfigMutationFlag reports whether name is a writing git config flag.
+func gitConfigMutationFlag(name string) bool {
+	switch name {
+	case "--unset", "--unset-all", "--add", "--replace-all",
+		"--rename-section", "--remove-section", "--edit":
+		return true
+	}
+	return false
+}
+
+// gitConfigModifierFlag reports whether name is a git config flag that only
+// selects a scope, a type, an output shape or includes. Any other flag makes
+// the invocation unfamiliar.
+func gitConfigModifierFlag(name string) bool {
+	switch name {
+	case "--global", "--system", "--local", "--file", "--worktree", "--type",
+		"--bool", "--int", "--path", "--bool-or-int", "--expiry-date",
+		"--show-origin", "--show-scope", "--name-only", "--null", "-z",
+		"--fixed-value", "--includes", "--no-includes", "--default":
+		return true
+	}
+	return false
+}
+
+// gitConfigArgStart returns the index just past the `config` subcommand, or -1
+// when the operation is not a `git config` invocation. It mirrors
+// gitSubcommand's skipping of git's global flags and their values.
+func gitConfigArgStart(op *ShellOperation) int {
+	argv := op.Argv
+	for i := 1; i < len(argv); i++ {
+		v := argv[i].Value
+		if v == "-C" || v == "-c" || v == "--config" || v == "--git-dir" ||
+			v == "--work-tree" || v == "--exec-path" || v == "--namespace" {
+			i++
+			continue
+		}
+		if strings.HasPrefix(v, "-") {
+			continue
+		}
+		if v == "config" {
+			return i + 1
+		}
+		return -1
+	}
+	return -1
 }
 
 func classifyGo(op *ShellOperation) {

@@ -247,3 +247,108 @@ func TestShellApprovedDestructionHasNoSecondGuardrailDeny(t *testing.T) {
 		t.Fatal("Act unexpectedly required an exact approval")
 	}
 }
+
+// TestShellPolicyWrappedCompoundPayloadsFailClosed covers the AUD-01 policy
+// half: a payload with any statement that is not provably read-only can never
+// be admitted as read-only, whatever its first statement looks like.
+func TestShellPolicyWrappedCompoundPayloadsFailClosed(t *testing.T) {
+	cfg := config.Default()
+	cfg.Tools.Shell.Deny.Patterns = nil
+	pe := NewEngine(&cfg, nil)
+	ask := interaction.State{Mode: interaction.ModeAsk, Revision: 1}
+	act := interaction.State{Mode: interaction.ModeAct, Revision: 1}
+
+	for _, cmd := range []string{
+		"sh -c 'echo ok; touch x'",
+		"sh -c 'echo ok; sudo rm x'",
+		"eval 'echo ok; rm -rf x'",
+		"sh -c 'echo ok > out.txt'",
+		"sh -c 'echo ok; npm publish'",
+	} {
+		if got := evalShell(t, pe, ask, cmd).Decision; got != DecisionDeny {
+			t.Fatalf("%q in Ask: decision = %q, want deny", cmd, got)
+		}
+	}
+
+	// The catastrophic and privileged statements behind a read are denied in
+	// every mode.
+	for _, cmd := range []string{
+		"sh -c 'echo ok; rm -rf /'",
+		"sh -c 'echo ok; sudo rm x'",
+	} {
+		if got := evalShell(t, pe, act, cmd).Decision; got != DecisionDeny {
+			t.Fatalf("%q in Act: decision = %q, want deny", cmd, got)
+		}
+	}
+
+	if got := evalShell(t, pe, act, "sh -c 'echo ok; touch x'").Decision; got != DecisionAllow {
+		t.Fatalf("wrapped write in Act: decision = %q, want allow", got)
+	}
+	if got := evalShell(t, pe, ask, "sh -c 'echo ok'").Decision; got != DecisionAllow {
+		t.Fatalf("wrapped read in Ask: decision = %q, want allow", got)
+	}
+}
+
+// TestShellPolicyWrappedPayloadMatchesConfiguredFloor covers the second
+// AUD-01 bypass: a configured floor prefix must match a statement inside a
+// wrapped payload, not only the flattened argv's first word.
+func TestShellPolicyWrappedPayloadMatchesConfiguredFloor(t *testing.T) {
+	cfg := config.Default()
+	cfg.Tools.Shell.Deny.Patterns = nil
+	cfg.Tools.Shell.FloorCommands = []string{"npm publish"}
+	pe := NewEngine(&cfg, nil)
+	act := interaction.State{Mode: interaction.ModeAct, Revision: 1}
+
+	for _, cmd := range []string{
+		"sh -c 'echo ok; npm publish'",
+		"eval 'echo ok; npm publish'",
+	} {
+		if ev := evalShell(t, pe, act, cmd); ev.Decision == DecisionAllow {
+			t.Fatalf("%q: decision = %q, want the configured floor to apply", cmd, ev.Decision)
+		}
+	}
+	if ev := evalShell(t, pe, act, "npm publish"); ev.Decision == DecisionAllow {
+		t.Fatalf("bare floored command: decision = %q, want approval", ev.Decision)
+	}
+	if got := evalShell(t, pe, act, "sh -c 'echo ok'").Decision; got != DecisionAllow {
+		t.Fatalf("wrapped read: decision = %q, want allow", got)
+	}
+}
+
+// TestShellPolicyGitConfigMutationsFailClosed covers AUD-04's policy half.
+func TestShellPolicyGitConfigMutationsFailClosed(t *testing.T) {
+	cfg := config.Default()
+	cfg.Tools.Shell.Deny.Patterns = nil
+	pe := NewEngine(&cfg, nil)
+	ask := interaction.State{Mode: interaction.ModeAsk, Revision: 1}
+	act := interaction.State{Mode: interaction.ModeAct, Revision: 1}
+
+	for _, cmd := range []string{
+		"git config user.name x",
+		"git config core.hooksPath /p",
+		"git config --unset some.key",
+		"git config --add some.key value",
+		"git config --system user.name x",
+	} {
+		if got := evalShell(t, pe, ask, cmd).Decision; got != DecisionDeny {
+			t.Fatalf("%q in Ask: decision = %q, want deny", cmd, got)
+		}
+	}
+
+	for _, cmd := range []string{
+		"git config --get user.name",
+		"git config --list",
+		"git config",
+		"git status",
+		"git diff",
+		"cat file",
+	} {
+		if got := evalShell(t, pe, ask, cmd).Decision; got != DecisionAllow {
+			t.Fatalf("%q in Ask: decision = %q, want allow", cmd, got)
+		}
+	}
+
+	if ev := evalShell(t, pe, act, "git config --global user.name x"); ev.Decision == DecisionAllow || !ev.Required.System {
+		t.Fatalf("global git config in Act = %+v, want a System requirement", ev)
+	}
+}

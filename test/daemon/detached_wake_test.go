@@ -108,6 +108,7 @@ func TestADetachedSessionsWakeRuns(t *testing.T) {
 	// extra wakes are allowed to run, an unscripted request never is.
 	fixture := newProviderFixture(t, []scriptedTurn{
 		{Text: wakeReply}, {Text: wakeReply}, {Text: wakeReply},
+		{Text: wakeReply}, {Text: wakeReply},
 	})
 	fixture.useProvider(t)
 	h := newDaemonHarness(t)

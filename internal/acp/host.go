@@ -953,6 +953,12 @@ func (h *agentHost) serveConnWith(ctx context.Context, stdin io.Reader, stdout i
 	defer cleanup()
 	h.sink.Set(srv.Notify)
 	defer h.sink.Clear()
+	// A connection's watch-resume binding is gated on this connection's
+	// liveness, so its death leaves the hook inert. On a host that serves
+	// viewers the session's own binding goes back (review A1), or a driver
+	// connection cycle would silence every later detached wake. Declared
+	// before the liveness defer, so it runs after it.
+	defer h.manager.RebindDetachedResume()
 	defer alive.Store(false)
 	return srv.Serve(ctx)
 }

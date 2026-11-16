@@ -918,6 +918,45 @@ func (m *SessionManager) servicePair(id string) (*service.Host, *service.Session
 	return host, sess, true
 }
 
+// RebindDetachedResume puts each session's own wake binding back after the
+// connection that replaced it ends (P6 plan 6 review, A1). A connection's
+// binding is gated on that connection's liveness flag, so the hook it
+// installed goes inert when the connection dies. On a host that serves viewers
+// nothing else restores the session's own binding, and every later wake with
+// no screen up would do nothing for the rest of the runtime's life: the
+// bridge's driver connection cycling — a webbridge re-exec, a relay reset — is
+// enough to get there, which is the case P6 exists for.
+//
+// Only sessions whose service this manager already built are rebound. A wake
+// resumes a session through that service, so a session without one has no wake
+// to restore, and building one here would put service construction on the
+// teardown path of every connection. The hook is replace-on-write, so
+// installing the session's own binding again is safe.
+func (m *SessionManager) RebindDetachedResume() {
+	if m.detachedResume == nil {
+		return
+	}
+	type bound struct {
+		rt   *app.Runtime
+		id   string
+		sess *service.Session
+	}
+	m.servicesMu.Lock()
+	rebind := make([]bound, 0, len(m.services))
+	for rt, pair := range m.services {
+		if rt == nil || rt.State == nil || pair == nil || pair.sess == nil {
+			continue
+		}
+		rebind = append(rebind, bound{rt: rt, id: rt.State.SessionID(), sess: pair.sess})
+	}
+	m.servicesMu.Unlock()
+	// Bind outside the lock: the binder reads the session's own state and the
+	// host's viewer count, and a close holding servicesMu must not wait on it.
+	for _, b := range rebind {
+		m.detachedResume(b.rt, b.id, b.sess)
+	}
+}
+
 // serviceDeps is the runtime's service dependencies with the child's record
 // on them (decision 3): every session this manager builds reports its own
 // config writes and carries the pending restart.

@@ -942,7 +942,10 @@ line numbers the plan cites had moved, but every anchor it names existed. The
   note, and carries the child's warning unchanged after
   "This project's environment could not be resolved fully: ". The warning
   travels on the dialled connection, so the reconnect path adds it at most
-  once.
+  once — "at most once" as `addNoteOnce` means it: the check reads the
+  session's newest messages (`noteOnceWindow`, 32), so a note that has scrolled
+  out of that window is added again, exactly as the version note has always
+  been.
 
 **The resume exemption — the one production change this plan did not list.**
 Task 6's test could not pass as written, and the reason was upstream of this
@@ -981,6 +984,65 @@ production tag format it is about.
   test builds the connection and sends the method itself — on a connection that
   never subscribes to the session's status, which is exactly a session with no
   viewer.
+
+**The branch review.** Three reviewers read the nine commits by area before
+the branch was pushed — the detached wake and the resume exemption, both
+warnings end to end, and the Info tab with this record and the repo's design
+constraints. They raised one major, five minor and three nit findings. All are
+fixed here except the two limits recorded below.
+
+- **The session's binding was never restored when a driver connection died
+  (major).** A non-marshal connection's `bindWatchResume` replaces the
+  session's own binding with one gated on that connection's liveness flag, so
+  its death left the hook inert — and on a viewers host nothing put the
+  session's binding back. A webbridge re-exec or a relay reset is enough to
+  reach it, and every later wake with no screen up would then have done
+  nothing for the rest of the runtime's life: the case this plan exists for.
+  `serveConnWith` now calls `SessionManager.RebindDetachedResume` once the flag
+  drops, which re-installs the session's own binding for every session whose
+  service is built. A viewer connection serves through `serveViewer`, which
+  binds nothing, so a screen coming and going never disturbs a live driver's
+  binding. `TestATeardownRestoresTheDetachedBinding` pins it.
+- **A refused wake was silent (minor).** The binder's goroutine discarded
+  `svc.Prompt`'s error, so a wake refused for a busy turn, a runner not built
+  yet or a closing session looked exactly like one that ran. It now logs one
+  warn line with the session, the watch and the error; the report stays in the
+  session's queue either way.
+- **The status forwarder's map delete was unqualified (minor).** A forwarder
+  that ended because its session went could delete a younger one that had
+  replaced it, leaving that one uncancellable and its viewer count alive — a
+  phantom screen suppressing detached wakes. The delete is now qualified on the
+  forwarder itself, the pattern `retireWorkForwarder` already used.
+- **A fire report could name a subagent that does not exist (nit).** The
+  "(from subagent …)" suffix now takes the same `subagentOwned` test the resume
+  rule does, so the `studio` provenance tag does not claim one.
+- **Two sentences were looser than the code (nit, minor).** `AGENTS.md` now
+  says "a watch a client started", since a subagent's own watch never resumes;
+  and "at most once" above now says what `addNoteOnce` checks.
+- **The recorded verify commands did not select the exemption's own tests
+  (minor).** `TestAClientStartedWatchKeepsResume` and `./internal/watch`'s two
+  exemption tests matched none of the plan's `-run` alternatives, so no
+  documented command would re-select them after a refactor. This is the command
+  that does, and it selects the restore test too:
+
+  ```
+  TMPDIR=/tmp/p6-6-suite CGO_ENABLED=1 go test ./internal/acp/ ./internal/watch/ \
+    -run 'Wake|ViewerCount|Binding|BindsWatchResume|KeepsResume|DropsResume|SubagentOwner' \
+    -count=1
+  ```
+
+**Two limits recorded, not fixed.**
+- **A wake that fires before a session's service is first built does nothing
+  (minor).** Decision 2 binds where the service is built, and that build is
+  lazy, so a watch firing in the window before anything reads the session's
+  service starts no turn; its report waits in the queue and the next wake
+  resumes. Binding at publish time would put service construction on the
+  create and resume paths, which decision 2 deliberately kept it off.
+- **The wake test's repeat budget is generous, not exact (nit).** The repeat
+  watch can fire again between the flag write and `watch_stop`, so five
+  identical replies are scripted rather than one; a fourth fire is still a
+  refusal the test fails on. Tightening it would mean making the stop window
+  deterministic, which the test deliberately does not do.
 
 **Mutation check.** Letting the hook resume even with a marshal viewer failed
 `TestAWakeWithAScreenIsTheScreens` ("a wake with a screen on the session

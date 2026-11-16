@@ -2,6 +2,7 @@ package acp
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 
 	"marshal/internal/acp/service"
@@ -100,9 +101,17 @@ func bindDetachedResume(rt *app.Runtime, svc *service.Session, sessionID string,
 		go func() {
 			// The watch's goroutine must not wait for a turn: the prompt runs
 			// the session's turn, on the session's own goroutine.
-			_, _ = svc.Prompt(context.Background(), acpwire.PromptParams{
+			_, err := svc.Prompt(context.Background(), acpwire.PromptParams{
 				WatchResume: &acpwire.WatchResume{Name: r.Name, Repeat: r.Mode == watch.ModeRepeat},
 			})
+			// A refused resume — the turn busy, the runner not built yet, the
+			// session closing — leaves the report in the session's queue and
+			// starts nothing, so say it: a wake that did nothing otherwise
+			// looks exactly like one that ran (review A2).
+			if err != nil {
+				slog.Default().Warn("acp: a detached wake did not resume the session",
+					"session", sessionID, "watch", r.Name, "err", err)
+			}
 		}()
 	})
 }

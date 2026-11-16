@@ -343,3 +343,49 @@ func TestTheServiceBuilderMakesTheDetachedBinding(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 	}
 }
+
+// TestATeardownRestoresTheDetachedBinding pins review A1. A non-marshal
+// connection's bindWatchResume replaces the session's own binding with one
+// gated on that connection's liveness flag, so the hook a driver connection
+// leaves behind when it ends is inert. On a host that serves viewers the
+// session's own binding has to go back — the bridge's connection cycling is
+// enough to reach this — or every later wake with no screen up does nothing
+// for the rest of the runtime's life.
+func TestATeardownRestoresTheDetachedBinding(t *testing.T) {
+	h := newWakeHost(t, true)
+	rt, sess, runner := newWakeRuntime(t, true)
+	h.manager.detachedResume(rt, wakeSession, sess)
+	// The service this test built is the runtime's, so the manager finds it
+	// where the service builder would have left it.
+	h.manager.servicesMu.Lock()
+	h.manager.services = map[*app.Runtime]*servicePair{rt: {sess: sess}}
+	h.manager.servicesMu.Unlock()
+
+	// A driver connection binds the hook, then dies: its flag drops and the
+	// binding it left behind starts nothing.
+	alive := &atomic.Bool{}
+	alive.Store(true)
+	bindWatchResume(rt.WatchResume, newResumeTestManager(t, rt.State, make(chan string, 1), nil),
+		wakeSession, alive, func() bool { return false })
+	alive.Store(false)
+	rt.WatchResume.Invoke(watch.Report{Name: "ci", Mode: watch.ModeOnce, Resume: true})
+	select {
+	case goal := <-runner.goals:
+		t.Fatalf("a dead connection's binding started %q, want nothing", goal)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	// The teardown puts the session's own binding back, and the next wake
+	// resumes the session again.
+	h.manager.RebindDetachedResume()
+	rt.WatchResume.Invoke(watch.Report{Name: "ci", Mode: watch.ModeOnce, Resume: true})
+	select {
+	case goal := <-runner.goals:
+		if !strings.Contains(goal, `Watch "ci" fired`) {
+			t.Fatalf("the restored binding's goal = %q, want it to name the watch", goal)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the restored binding started no run")
+	}
+	waitForWakeRun(t, sess, "the run the restored binding started")
+}

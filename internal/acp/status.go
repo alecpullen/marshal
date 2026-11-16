@@ -238,7 +238,14 @@ func (m *StatusManager) ensureForwarder(sessionID string) {
 func (m *StatusManager) runForwarder(sessionID string, f *statusForwarder, ctx context.Context) {
 	defer func() {
 		m.mu.Lock()
-		delete(m.forwarders, sessionID)
+		// Qualified: a forwarder that ended because its session went must not
+		// delete a younger one that replaced it in the map meanwhile (review
+		// A3). The newer forwarder would become uncancellable, and its viewer
+		// count would outlive it — a phantom screen suppressing every detached
+		// wake of that session.
+		if m.forwarders[sessionID] == f {
+			delete(m.forwarders, sessionID)
+		}
 		m.mu.Unlock()
 		m.fences.remove(sessionID, f.fence)
 		f.fence.close()

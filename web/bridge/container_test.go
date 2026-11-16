@@ -51,11 +51,22 @@ func TestTheAgentsRunVectorNamesTheViewerSocket(t *testing.T) {
 		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "n",
 		SocketDir:   "/srv/sock/n",
 		StateVolume: "marshal-state", WorkSubpath: "work/n", SocketSubpath: "sockets/n",
+		// A spawn record may set either env map: neither may move the viewer
+		// socket, so the run vector's own assignment is written last and wins.
+		Env:      map[string]string{containerViewersEnv: "unix:///marshal/data/env.sock"},
+		ExtraEnv: map[string]string{containerViewersEnv: "unix:///marshal/data/extra.sock"},
 	})
 	args := tr.buildRunArgs()
 
 	value := "unix://" + containerSocketDir + "/" + containerViewersName
 	want := containerViewersEnv + "=" + value
+	// Neither configured env map moved the socket: the only assignment naming
+	// the variable is the vector's own.
+	for _, a := range args {
+		if strings.HasPrefix(a, containerViewersEnv+"=") && a != want {
+			t.Fatalf("run args carry %q, want only %q", a, want)
+		}
+	}
 	at, image := -1, -1
 	for i, a := range args {
 		if a == want {

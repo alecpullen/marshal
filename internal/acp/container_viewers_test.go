@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -93,6 +95,13 @@ var containerViewerRefusals = []string{
 	"session/plugins_install_confirm",
 	"session/plugins_install_discard",
 	"session/plugins_remove",
+
+	// The connection's own cancel is a notification the server handles on its
+	// read goroutine rather than through a handler, so it is no acpclient.Methods
+	// Session row and TestEverySessionScreenMethodIsClassified cannot see it. It
+	// is off the list, and a viewer's cancel is dropped by omission; naming it
+	// here keeps that a decision rather than an accident.
+	"session/cancel",
 }
 
 // TestTheContainerListIsTheSessionScreens pins every entry of the list to a
@@ -188,5 +197,21 @@ func TestTheContainerListNamesRegisteredMethods(t *testing.T) {
 func TestTheContainerListIsSorted(t *testing.T) {
 	if !sort.StringsAreSorted(contract.ContainerViewerMethods) {
 		t.Errorf("ContainerViewerMethods is not sorted: %v", contract.ContainerViewerMethods)
+	}
+}
+
+// TestTheBridgeNamesTheViewersVariable pins the one literal the boundary forces
+// the bridge to write out: web/ is standard library only, so
+// web/bridge/container.go may not import this package and carries the
+// variable's name itself. A rename here must fail here rather than leave every
+// container's agent never told where to serve viewers.
+func TestTheBridgeNamesTheViewersVariable(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "web", "bridge", "container.go"))
+	if err != nil {
+		t.Fatalf("read the bridge's container.go: %v", err)
+	}
+	literal := `containerViewersEnv = "` + ViewersEnv + `"`
+	if !strings.Contains(string(source), literal) {
+		t.Fatalf("web/bridge/container.go does not carry %s: a container's agent would never learn where to serve viewers", literal)
 	}
 }

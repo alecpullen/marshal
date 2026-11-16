@@ -336,6 +336,30 @@ func assertDropped(t *testing.T, p *relayPair, frame string) {
 	readsNothing(t, p.client)
 }
 
+// TestARestrictedRelayLogsOneDropPerMethod pins decision 2's once-per-method
+// drop log: a viewer retrying a refused notification gets one line per method
+// per attach, where a line per frame would let it flood the log.
+func TestARestrictedRelayLogsOneDropPerMethod(t *testing.T) {
+	sink := &syncBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(sink, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	p := newRelayPair(t, "s-1")
+	p.restricted()
+	p.start(nil)
+
+	// The same unlisted notification twice: both are dropped, the first is
+	// logged.
+	frame := `{"jsonrpc":"2.0","method":"session/reload_config","params":{"sessionId":"s-1"}}` + "\n"
+	assertDropped(t, p, frame)
+	assertDropped(t, p, frame)
+
+	if got := strings.Count(sink.String(), "restricted relay dropped a frame"); got != 1 {
+		t.Fatalf("the relay logged %d drops for one method, want 1:\n%s", got, sink.String())
+	}
+}
+
 // TestARestrictedRelayRefusesAnUnlistedRequest: a container's viewer may not
 // call a method outside its session screen's surface, and the relay answers
 // with decision 2's sentence under the request's own id (W9, the relay's end).

@@ -74,15 +74,15 @@ session, with its index watched, until `marshal daemon unpin`. A fleet agent
 the local daemon starts on a local project runs on that project's child,
 beside the TUI's sessions. The bridge follows each fleet agent's session, so a
 turn started from its session screen shows in the fleet and its requests reach
-the bridge. Every agent's session opens with `⏎`: an agent with a child of its
-own — a git agent, a workspace agent, or any agent while the egress proxy is
-on — starts that child with a viewer socket of its own
-(`<state>/v/a-<hash>.sock`), and a containerized agent serves viewers inside
-its container on `viewers.sock` beside its control socket, which the attach
-dials on the host side. A containerized agent's viewers are kept to the
-session screen's methods (`contract.ContainerViewerMethods`), and every other
-call — a host call, a config write, a sign-in — is refused with "<method> is
-not available for a containerized agent". A daemon session screen shows
+the bridge. An agent with a child of its own — a git agent, a workspace agent,
+or any agent while the egress proxy is on — starts that child with a viewer
+socket of its own (`<state>/v/a-<hash>.sock`) and opens with `⏎` too. A
+containerized agent serves viewers inside its container on `viewers.sock`,
+beside its control socket, and the bridge's attach dials it on the host side;
+its viewers are kept to the session screen's methods
+(`contract.ContainerViewerMethods`), and every other call — a host call, a
+config write, a sign-in — is refused with "<method> is not available for a
+containerized agent". A daemon session screen shows
 `needs you N` in its status line — the fleet queue's items apart from the
 shown agent's own — and opening the fleet turns on the bell and the desktop
 notification (`internal/app/notify`, never imported by the TUI).

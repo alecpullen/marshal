@@ -2700,8 +2700,9 @@ On the bridge side `relayEnd.allow` carries `containerViewerSet()`, and
 still meets `refusal`, so a container's viewer can no more close the agent's
 session than any other viewer, while an unlisted request is answered under its
 own id with the sentence and the agent reads nothing. A restricted relay fails
-closed (decision 7): a frame that is not one JSON-RPC message — a batch, or
-malformed JSON — is dropped and logged rather than forwarded, and an answer to
+closed (decision 7): a frame that is not one JSON-RPC message — a batch,
+malformed JSON, or a frame with neither a method nor an id — is dropped and
+logged rather than forwarded, and an answer to
 one of the agent's own requests carries no method, so approvals and questions
 still reach the viewer and its answers still reach the agent. A refused
 notification has no answer; its drop is logged once per method per attach.
@@ -2746,10 +2747,11 @@ and closes the host. Task 3's flag and variable are covered in
 environment afterwards and that `--viewers` alone ignores it. Task 4's socket is
 covered in `web/bridge/container_test.go` and `ownviewers_test.go`: the run
 vector names it, the setup vector does not, `start` clears a stale one, and a
-container's child names it while a host process's runtime does not make one
-under `v/`. Task 5's relay is covered in `web/bridge/relay_test.go` against a
-fake agent socket that records every frame it reads: an unlisted request is
-answered with the sentence under its id and the agent reads nothing, an
+container's child names it in the agent's socket directory while nothing of its
+is made under `v/`. Task 5's relay is covered in
+`web/bridge/relay_test.go` against a fake agent socket that records every frame
+it reads: an unlisted request is answered with the sentence under its id and
+the agent reads nothing, an
 unlisted notification is dropped, a listed request and its answer pass, an
 answer to the agent's own `session/request_permission` reaches it, a batch and
 malformed JSON are dropped, a `session/close` still gets plan 4b's sentence, and
@@ -2787,6 +2789,29 @@ uncoded `data` the relay's `refusal` writes. On the control connection the same
 and not the process's, and the agent's log carried the two refusals at `WARN`.
 The relabelled mount (`:z`) is this machine's SELinux requirement, not the
 bridge's: the bridge mounts its own socket directory.
+
+### Plan 8's branch review
+
+The branch was reviewed against `14d6b2bc` by three independent
+`glm-5.3-flash` reviewers through `ollama-cloud`, split by file set: the agent
+(`internal/acp`, `cmd/marshal`), the bridge (`web/bridge` and its contract),
+and the tests and record (`test/daemon`, this section, `AGENTS.md`). No blocker
+was raised. Both ends' surfaces, the gate in `dispatch`, the relay's
+fail-closed paths and the W9 test were called sound; the isolation audit was
+clean and every claim in this record was checked against the code. Six findings
+were acted on in a follow-up commit. `web/bridge/container.go`'s
+`MARSHAL_ACP_VIEWERS` literal is now pinned to `acp.ViewersEnv` by a test,
+because the boundary forbids the import and a rename would otherwise have
+failed silently. The run vector's precedence over a spawn record's env is
+asserted rather than only commented. `restricted` returns the close rule's
+answer instead of asking the fleet twice, and reads a `null` id as no id, the
+way the file's other frames do. The once-per-method drop log is pinned, and
+`session/cancel` is named among the refusals a connection-level notification
+cannot appear in `acpclient.Methods`. Two sentences here were corrected: the
+fail-closed shapes, and the `v/` contrast, which was inverted. One finding was
+rejected: a reviewer read the manual run's "at `WARN`" as false because
+`dispatch` logs at Info, but `dispatchRequest` logs a refused request at Warn
+(`internal/acp/server.go:808`) as well, so the record stands.
 
 ## Branch review record
 

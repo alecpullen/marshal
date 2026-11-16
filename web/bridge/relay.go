@@ -302,7 +302,7 @@ func (r *relay) restricted(frame []byte) (answer []byte, refused bool) {
 		return nil, true
 	}
 	if cf.Method == "" {
-		if len(cf.ID) == 0 {
+		if !hasJSONValue(cf.ID) {
 			r.dropFrame("", "neither a method nor an id")
 			return nil, true
 		}
@@ -313,12 +313,13 @@ func (r *relay) restricted(frame []byte) (answer []byte, refused bool) {
 	}
 	// The close rule is asked before the list is enforced: decision 1 is a rule
 	// about sessions rather than about a method's surface, so a session/close or
-	// a replacing session/new the close rule refuses falls through to refusal,
-	// which answers it with its own sentence.
-	if _, closes := r.refusal(frame); closes {
-		return nil, false
+	// a replacing session/new the close rule refuses is answered with the close
+	// rule's own sentence. The answer is returned here rather than asked for
+	// again by pumpClient, so the fleet is asked once per frame.
+	if answer, closes := r.refusal(frame); closes {
+		return answer, true
 	}
-	if len(cf.ID) == 0 {
+	if !hasJSONValue(cf.ID) {
 		r.dropFrame(cf.Method, "not available for a containerized agent")
 		return nil, true
 	}

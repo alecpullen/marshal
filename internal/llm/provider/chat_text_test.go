@@ -78,6 +78,24 @@ func TestChatTextReturnsErrorEvent(t *testing.T) {
 	}
 }
 
+// A truncated title/摘要 must not be returned as if it were a complete one:
+// ChatText surfaces the interruption error, keeping the partial text for the
+// caller that wants to show it.
+func TestChatTextInterruptedStreamReturnsError(t *testing.T) {
+	cut := errors.New("provider stream ended without a [DONE] completion marker")
+	p := &scriptedStub{events: []schema.ChatEvent{
+		{Type: schema.ChatEventDelta, Delta: "partial"},
+		{Type: schema.ChatEventInterrupted, Err: cut},
+	}}
+	got, err := ChatText(context.Background(), p, schema.ChatRequest{Model: "m"})
+	if !errors.Is(err, cut) {
+		t.Fatalf("err = %v, want the interruption error", err)
+	}
+	if got != "partial" {
+		t.Errorf("partial text = %q, want %q", got, "partial")
+	}
+}
+
 func TestChatTextNoDoneReturnsError(t *testing.T) {
 	p := &scriptedStub{events: []schema.ChatEvent{
 		{Type: schema.ChatEventDelta, Delta: "partial"},

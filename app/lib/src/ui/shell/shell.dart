@@ -636,10 +636,13 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
   }
 
   /// Merges the pull request, after the confirmation that names it.
+  ///
+  /// A factory item's merge is not offered: it needs the reviewed identity a
+  /// pull record does not carry (F6). The review head draws it disabled.
   VoidCallback? _mergeFor(BuildContext context) {
     final pull = _pull;
     final pulls = widget.pulls;
-    if (pull == null || pulls == null) return null;
+    if (pull == null || pulls == null || pull.fromFactoryItem) return null;
     return () => unawaited(confirmMerge(context, pull: pull, model: pulls));
   }
 

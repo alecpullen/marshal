@@ -17,6 +17,7 @@ class Request {
     required this.path,
     this.query = const {},
     this.body,
+    this.headers = const {},
   });
 
   final String method;
@@ -28,6 +29,11 @@ class Request {
 
   /// The body, encoded as JSON when it is not null.
   final Object? body;
+
+  /// Headers the route reads in addition to the transport's own: a
+  /// conditional write names `If-Match` here. A transport sets them after the
+  /// ones it needs itself, so a bearer token is never dropped.
+  final Map<String, String> headers;
 }
 
 /// One answer from a bridge.

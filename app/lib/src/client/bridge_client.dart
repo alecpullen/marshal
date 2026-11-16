@@ -126,77 +126,73 @@ class BridgeClient {
     MergeRequest(commitMessage: commitMessage ?? ''),
   );
 
-  /// POST /api/factory/items/{id}/commands with a `merge_and_complete`: the
-  /// factory's own merge order for the pull request it reviewed.
-  ///
-  /// The item's version is read first, because the command must name the
-  /// version it was reviewed against — the controller refuses a command built
-  /// against a version it no longer holds (web/bridge/factory_types.go).
-  Future<void> mergeFactoryItem(
-    String itemID, {
-    required String repoID,
-    required int number,
-    required String headSHA,
-    required String baseRef,
-    String strategy = 'squash',
-  }) async {
-    final body = await _objectOf<Map<String, dynamic>>(
-      '/api/factory/items/${Uri.encodeComponent(itemID)}',
-      (json) => json,
-    );
-    final item = body['item'];
-    final version = item is Map<String, dynamic>
-        ? (item['version'] as num?)?.toInt() ?? 0
-        : 0;
-    await _post(
-      '/api/factory/items/${Uri.encodeComponent(itemID)}/commands',
-      <String, dynamic>{
-        'requestId': 'app-merge-${DateTime.now().microsecondsSinceEpoch}',
-        'kind': 'merge_and_complete',
-        'expectedVersion': version,
-        'completion': <String, dynamic>{
-          'prs': [
-            {
-              'repoId': repoID,
-              'number': number,
-              'nodeId': '',
-              'headSha': headSHA,
-              'baseRef': baseRef,
-            },
-          ],
-          'strategy': strategy,
-          'completeAfter': true,
-        },
-      },
-    );
-  }
-
   /// Sets one project's automatic pull-request fixing: it reads the project's
   /// whole settings document, changes `automations.autoFix` and writes it
-  /// back.
+  /// back, naming the ETag it read.
   ///
   /// The settings route replaces the document whole
   /// (web/bridge/projects.go), so sending only the key would drop every other
-  /// setting the project holds.
+  /// setting the project holds. It is also a conditional write: the route
+  /// compares `If-Match` with the ETag of what it stores and answers 412,
+  /// changing nothing, when another save got there first. That answer means
+  /// this change was decided against a document that no longer exists, so the
+  /// settings are read again — the value that won, with its own ETag — and the
+  /// change is made to that and written once more. The other save survives,
+  /// and this one is not lost.
   Future<void> setProjectAutoFix(String root, bool on) async {
-    final document = await _objectOf<Map<String, dynamic>>(
-      '/api/projects/settings',
-      (json) => json,
-      query: {'root': root},
-    );
+    var read = await _readSettings(root);
+    for (var attempt = 0; ; attempt++) {
+      final tag = _etagOf(read);
+      try {
+        await _send(
+          Request(
+            method: 'PUT',
+            path: '/api/projects/settings',
+            query: {'root': root},
+            body: _withAutoFix(_object(read), on),
+            headers: {'If-Match': ?tag},
+          ),
+        );
+        return;
+      } on BridgeFailure catch (failure) {
+        // A conflict is retried once, against what the bridge holds now; a
+        // second one means the project is being written faster than the
+        // setting can be read, and the failure is the caller's to show.
+        if (failure.status != 412 || attempt > 0) rethrow;
+        read = await _readSettings(root);
+      }
+    }
+  }
+
+  /// GET /api/projects/settings?root=…: the whole document, and the ETag that
+  /// names the version a write is decided against.
+  Future<Response> _readSettings(String root) =>
+      _send(Request(path: '/api/projects/settings', query: {'root': root}));
+
+  /// The settings document with this project's automatic fixing set, every
+  /// other key as it was read.
+  static Map<String, dynamic> _withAutoFix(
+    Map<String, dynamic> document,
+    bool on,
+  ) {
     final automations = document['automations'];
-    document['automations'] = <String, dynamic>{
-      if (automations is Map<String, dynamic>) ...automations,
-      'autoFix': on,
+    return <String, dynamic>{
+      ...document,
+      'automations': <String, dynamic>{
+        if (automations is Map<String, dynamic>) ...automations,
+        'autoFix': on,
+      },
     };
-    await _send(
-      Request(
-        method: 'PUT',
-        path: '/api/projects/settings',
-        query: {'root': root},
-        body: document,
-      ),
-    );
+  }
+
+  /// The ETag an answer carries, whatever case the transport reported it in.
+  static String? _etagOf(Response response) {
+    for (final MapEntry(:key, :value) in response.headers.entries) {
+      if (key.toLowerCase() != 'etag') continue;
+      final tag = value.trim();
+      return tag.isEmpty ? null : tag;
+    }
+    return null;
   }
 
   // Automations: schedules and recipes (F7).

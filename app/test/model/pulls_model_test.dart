@@ -21,6 +21,9 @@ void main() {
     ],
     String? unavailable,
     PullFix? fix,
+    PullOrigin origin = PullOrigin.pullOriginAgent,
+    String? agentID = 'a-1',
+    String? factoryItem,
   }) => PullRecord(
     id: 'acme/widgets#$number',
     repoID: 'acme/widgets',
@@ -34,8 +37,9 @@ void main() {
     draft: false,
     additions: 412,
     deletions: 96,
-    origin: PullOrigin.pullOriginAgent,
-    agentID: 'a-1',
+    origin: origin,
+    agentID: agentID,
+    factoryItem: factoryItem,
     state: state,
     checks: checks,
     reviews: '2 reviews passed',
@@ -388,7 +392,7 @@ void main() {
     expect(jsonDecode(second.body), {'text': 'and nothing else'});
   });
 
-  test('a merge posts the agent route, or the factory command', () async {
+  test('a merge posts the agent route', () async {
     final (fixture, _, model) = await modelFor([record()]);
     fixture.bridges['local']!.reply(
       'POST',
@@ -402,5 +406,30 @@ void main() {
         .requests('local')
         .lastWhere((r) => r.method == 'POST');
     expect(merged.uri, contains('/api/agents/a-1/merge'));
+  });
+
+  test('a factory item’s merge is refused, and posts nothing', () async {
+    // The factory's own command names the reviewed node id, and a pull record
+    // carries none: the bridge refuses a blank one with 400, so there is no
+    // request worth making (F5 review; F6 brings the reviewed identity).
+    final (fixture, _, model) = await modelFor([
+      record(
+        state: PullState.pullReady,
+        origin: PullOrigin.pullOriginFactory,
+        agentID: null,
+        factoryItem: 'item-7',
+      ),
+    ]);
+
+    await expectLater(
+      model.merge(model.views.single),
+      throwsA(isA<StateError>()),
+    );
+
+    expect(
+      fixture.requests('local').where((r) => r.method != 'GET'),
+      isEmpty,
+      reason: 'nothing is posted for a merge this build cannot make',
+    );
   });
 }

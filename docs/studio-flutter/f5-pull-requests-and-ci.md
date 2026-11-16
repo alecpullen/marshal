@@ -372,10 +372,16 @@ draft of the card mapping and it was moved into `PullView`.
 
 ### Unfinished, and what could not be verified
 
-- **Merge for a factory item** posts `merge_and_complete` with the item's
-  version read first. It is implemented against `factory_types.go` and covered
-  only at the request-shape level; no work-item thread exists yet (F6), so the
-  route has no end-to-end path in the app.
+- **Merge** is the agent's own route when an agent shipped the pull request.
+  A factory item's merge is **not offered**: the factory's `merge_and_complete`
+  names the pull request's reviewed node id, the bridge refuses a blank one
+  (400) and refuses a missing run choice (409), and `contract.PullRecord`
+  carries no node id — so the request the app could build is one the bridge
+  always answers. The earlier build sent exactly that (`'nodeId': ''`), which
+  no test covered and no bridge accepts. Merge is therefore drawn disabled,
+  with a tooltip saying the work item's merge arrives with work items (F6),
+  and `PullsModel.merge` refuses the call rather than posting it. The agent
+  route posts unchanged, and `test/model/pulls_model_test.dart` pins both.
 - **The integration flow** (`app/integration_test/f5_test.dart`) needs a device
   with a display and a Linux CMake/GTK3 toolchain, which this environment does
   not have: `flutter test integration_test -d linux` and

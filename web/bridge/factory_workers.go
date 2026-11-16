@@ -274,6 +274,14 @@ func (w *factoryWorkers) Observe(ctx context.Context, item FactoryItem) (Factory
 // revisionTarget resolves the live runtime that runs one item's worker, which
 // is what a delivery or a pause reaches. The ownership checks mirror Observe: a
 // parked, replaced or foreign worker is not this item's to steer.
+// revisionTarget takes the newest live worker, and deliberately ignores an
+// assessment's AffectedWorkerID: the id is a per-proposal fact, while this
+// method is reached through a per-item seam that status, send and pause share,
+// so honouring it in one of them alone would journal one worker's session and
+// steer another. Two live workers would be needed for the order to matter, and
+// a worker parks once its effect completes, so the item's effects serialize
+// them; when that stops holding, the fix is to resolve the session once and
+// pass it to every method rather than to prefer a worker here.
 func (w *factoryWorkers) revisionTarget(item FactoryItem) (*Registry, string, error) {
 	if w == nil || w.fleet == nil {
 		return nil, "", fmt.Errorf("%w: factory runtime unavailable", ErrFactoryRefused)

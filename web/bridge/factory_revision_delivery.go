@@ -190,6 +190,21 @@ func (r *Registry) observeRevisionReceipt(sessionID string, rec RevisionSteering
 	r.steerOrder[sessionID] = order
 }
 
+// clearRevisionReceipts drops the steering evidence observed before a restart.
+//
+// The turns that emitted these receipts died with the previous generation, so a
+// status like delivered no longer describes anything a live session is running.
+// Keeping one would let a later delivery pass settle this proposal on evidence
+// about a turn that no longer exists; dropping them leaves such a delivery
+// unproven, which the journal already records as uncertain and which never
+// resends on its own. The bounded memory is the smaller reason.
+func (r *Registry) clearRevisionReceipts() {
+	r.steerMu.Lock()
+	defer r.steerMu.Unlock()
+	r.steerReceipt = nil
+	r.steerOrder = nil
+}
+
 // revisionReceipt reads the newest observed receipt for one request. An absent
 // entry means no receipt was observed, which is not the same as a receipt that
 // said nothing happened.
@@ -272,6 +287,13 @@ func factoryRevisionPauseRequestID(itemID, proposalID string) string {
 	return "rev-pause-" + factoryDigest([]byte(itemID+"\x00"+proposalID))
 }
 
+// A delivery re-chosen after an uncertain outcome resends under this same id,
+// which is what keeps a reconciled resend from injecting the text twice: the
+// runtime keeps the receipt it already issued for a repeated request id and
+// refuses that id for a changed target or text
+// (internal/app/session/steering.go, State.SubmitSendNow). The dedup lives in
+// the runtime's turn, so it covers exactly the window a resend can occur in.
+//
 // factoryRevisionSteerRequestID is the journal identity of one proposal's Send
 // now request: the stable request ID a receipt is correlated against.
 func factoryRevisionSteerRequestID(itemID, proposalID string) string {

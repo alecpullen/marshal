@@ -1248,6 +1248,65 @@ func (f *mcpFactoryToolFixture) mustProposal(t *testing.T, itemID string) Factor
 	return p
 }
 
+// TestMCPRevisionAssessmentClaimedByOneClient checks the rule the specification
+// states most explicitly: an assessment is accepted only from the client that
+// claimed that attempt. Without it, one grant holder could answer a question
+// another was given, and any client could answer the one the planner was asked.
+func TestMCPRevisionAssessmentClaimedByOneClient(t *testing.T) {
+	f := newMCPFactoryToolFixture(t, revisionGrant())
+	other := revisionGrant()
+	other.ProjectID = f.projectID
+	_, otherToken := testAddClient(t, f.srv, MCPClient{ID: "c2", Name: "second", FactoryGrants: []MCPFactoryProjectGrant{other}})
+
+	item, p := f.revisionItem(t, "claim-owner", "revised plan\n", "revised spec")
+	factoryToolOK(t, f.srv, otherToken, factoryToolRevisionClaim, f.revisionClaimArgs(item, p, "claim-c2"))
+	claimed, p := f.revisionState(t, item.ID)
+
+	// The project's first client holds the same capability, and still cannot
+	// answer an attempt it did not claim.
+	misdirected := f.revisionClaimArgs(claimed, p, "assess-c1")
+	misdirected["assessment"] = revisionJudgement(p, "routine_clarification", "amend", "wait_safe")
+	if code := factoryToolErrorCode(t, f.srv, f.token, factoryToolRevisionAssess, misdirected); code != factoryCodeNotFound {
+		t.Fatalf("a client delivered a claim it did not hold: %q", code)
+	}
+	if after := f.mustProposal(t, item.ID); after.AssessmentState != "assessing" || after.Assessment != nil {
+		t.Fatalf("a refused delivery moved the proposal: %+v", after)
+	}
+
+	// The claimant itself still may.
+	own := f.revisionClaimArgs(claimed, p, "assess-c2")
+	own["assessment"] = revisionJudgement(p, "routine_clarification", "amend", "wait_safe")
+	if reply, value := runFactoryTool(t, f.srv, otherToken, factoryToolRevisionAssess, own); reply.IsError {
+		t.Fatalf("the claiming client could not deliver its own assessment: %v", value)
+	}
+
+	// A claim the controller journalled carries no client provenance, so no MCP
+	// client can answer it — the planner's question is not a client's to answer.
+	plannerItem, plannerProposal := f.revisionItem(t, "planner-claim", "revised plan\n", "revised spec")
+	now := time.Now().UTC()
+	journalled, err := f.store.Update(plannerItem.ID, "seed-planner-claim", plannerItem.Version,
+		json.RawMessage(`{"kind":"revision_assess_claim"}`), func(dst *FactoryItem) error {
+			proposal := &dst.Proposals[len(dst.Proposals)-1]
+			proposal.AssessmentState = "assessing"
+			proposal.Version++
+			proposal.UpdatedAt = now
+			dst.History = append(dst.History, FactoryEvent{At: now, Kind: "revision_assessment_claimed", Message: proposal.AssessmentAttemptID, EffectID: proposal.ID})
+			return nil
+		}, now)
+	if err != nil {
+		t.Fatalf("seeding a controller claim: %v", err)
+	}
+	_, plannerProposal = f.revisionState(t, journalled.ID)
+	stealing := f.revisionClaimArgs(journalled, plannerProposal, "assess-planner")
+	stealing["assessment"] = revisionJudgement(plannerProposal, "routine_clarification", "amend", "wait_safe")
+	if code := factoryToolErrorCode(t, f.srv, otherToken, factoryToolRevisionAssess, stealing); code != factoryCodeNotFound {
+		t.Fatalf("a client answered the planner's own claim: %q", code)
+	}
+	if after := f.mustProposal(t, journalled.ID); after.Assessment != nil || after.AssessmentState != "assessing" {
+		t.Fatalf("an answer to the planner's claim was recorded: %+v", after)
+	}
+}
+
 // TestMCPRevisionRoutineAuthorizationPolicy checks the four facts that have to
 // hold together before a routine clarification is authorized, and that
 // everything else is recorded and left for the operator. A pause

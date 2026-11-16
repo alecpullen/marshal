@@ -1156,6 +1156,7 @@ func (r *Registry) drainSession(id string) {
 // bridge_restarted.
 func (r *Registry) resumeAll() {
 	r.clearPending()
+	r.clearRevisionReceipts()
 
 	r.mu.Lock()
 	ids := make([]string, 0, len(r.sessions))

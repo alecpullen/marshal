@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -691,6 +692,330 @@ func TestFactoryWorkerSubagentSettingsAreRoleScoped(t *testing.T) {
 	// worker was measured against.
 	if item.Approvals[0].ImplementerSubagents != implementerSettings || item.Approvals[0].ReviewerSubagents != reviewerSettings {
 		t.Fatalf("the approval was rewritten: %+v", item.Approvals[0])
+	}
+}
+
+// delegatedReport is the accepted report a worker turn wrote. Written before the
+// children that turn launched settled, it is an early report: it must never
+// become the effect's result while those children are unproven.
+func delegatedReport(effectID string) string {
+	return "```json\n{\"operationId\":\"" + effectID + "\",\"outcome\":\"needs_input\",\"question\":\"Which approach?\",\"reason\":\"ambiguous\"}\n```"
+}
+
+// delegatedWorkers is the smallest world a delegated turn needs: one live worker
+// session per name, each with its own transport, so a test scripts a turn for one
+// session and the bridge reads that session's own child projection. Child ids are
+// session-local, so two sessions can both contain child 1.
+type delegatedWorkers struct {
+	fleet      *Fleet
+	item       FactoryItem
+	workers    []FactoryWorker
+	transports []*captureTransport
+}
+
+func newDelegatedWorkers(t *testing.T, itemID string, sessions ...string) *delegatedWorkers {
+	t.Helper()
+	root := t.TempDir()
+	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))
+	f := NewFleet(ws, "", nil, t.TempDir(), Limits{MaxConcurrent: len(sessions)}, "", nil, "")
+	dw := &delegatedWorkers{fleet: f, item: FactoryItem{ID: itemID, Approvals: []FactoryApproval{{Plan: "plan", Spec: "spec"}}}}
+	for _, session := range sessions {
+		w := FactoryWorker{AgentID: "agent-" + session, SessionID: session, Role: "implementer", SpawnEffectID: "spawn-" + session}
+		a := Agent{ID: w.AgentID, Project: root, SessionID: session, FactoryItemID: itemID, FactoryRole: w.Role, FactorySpawnEffectID: w.SpawnEffectID}
+		if err := ws.PutAgent(a); err != nil {
+			t.Fatal(err)
+		}
+		tr := &captureTransport{results: map[string]json.RawMessage{"session/end_work": json.RawMessage(`{"items":[]}`)}}
+		c := &Child{Transport: tr}
+		r := NewRegistry(c)
+		if err := c.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(c.Stop)
+		r.track(session, AgentPath(root))
+		f.runtimes[w.AgentID] = &agentRuntime{id: w.AgentID, root: root, sessionID: session, child: c, reg: r}
+		f.sessionAgent[session] = w.AgentID
+		if err := f.slots.acquire(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		dw.workers = append(dw.workers, w)
+		dw.transports = append(dw.transports, tr)
+		dw.item.Workers = append(dw.item.Workers, w)
+	}
+	return dw
+}
+
+// effect is the implement effect a turn of the n-th worker session runs under.
+func (d *delegatedWorkers) effect(n int, effectID string) FactoryEffect {
+	w := d.workers[n]
+	return FactoryEffect{ID: effectID, Kind: "implement", Worker: &w}
+}
+
+// script states one worker's turn: the stack its session reported before the
+// prompt, the stack it reports after it, and the children its own status
+// projects. The child projection is read after the turn, as a dispatched turn
+// reads it.
+func (d *delegatedWorkers) script(t *testing.T, n int, before, after, children json.RawMessage) {
+	t.Helper()
+	tr := d.transports[n]
+	tr.stackResult = before
+	tr.results = map[string]json.RawMessage{
+		"session/prompt":   json.RawMessage(`{"stopReason":"end_turn"}`),
+		"session/end_work": json.RawMessage(`{"items":[]}`),
+	}
+	if children != nil {
+		tr.results["session/status"] = children
+	}
+	tr.onRequest = func(method string) error {
+		if method == "session/prompt" {
+			tr.stackResult = after
+		}
+		return nil
+	}
+}
+
+// delegatedTurnStack is a session/stack snapshot naming one turn, the children
+// its rows started, and the final report the turn wrote.
+func delegatedTurnStack(t *testing.T, turn string, childIDs []int64, report string) json.RawMessage {
+	t.Helper()
+	nodes := []any{map[string]any{"id": turn, "kind": "turn"}}
+	for _, id := range childIDs {
+		nodes = append(nodes, map[string]any{
+			"id": fmt.Sprintf("%s:child:%d", turn, id), "kind": "tool", "parent": turn,
+			"tool": map[string]any{"name": "agent.run", "display": "agent.run", "subagentId": id},
+		})
+	}
+	if report != "" {
+		nodes = append(nodes, map[string]any{
+			"id": "final:" + turn, "kind": "final", "parent": turn,
+			"message": map[string]any{"content": report},
+		})
+	}
+	raw, err := json.Marshal(map[string]any{"roots": []string{turn}, "nodes": nodes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// delegatedChild is one child a worker session reports in its own status.
+func delegatedChild(id int64, status string) map[string]any {
+	return map[string]any{"id": id, "label": "child", "status": status}
+}
+
+// delegatedStatus is a worker session's session/status answer: whether it
+// projects its children at all, and the children it reports. A session that does
+// not advertise observation is unknown, never a settled empty set.
+func delegatedStatus(t *testing.T, observe bool, children ...map[string]any) json.RawMessage {
+	t.Helper()
+	status := map[string]any{"subagents": children}
+	if observe {
+		status["subagentControls"] = map[string]any{"settings": true, "steer": true, "stop": true, "observe": true}
+	}
+	raw, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// TestFactoryWaitsForDelegatedWork pins the gate at the worker turn: a turn that
+// launched children it has not proven settled hands back a waiting turn instead
+// of a result, and a turn whose children are all finished keeps the normal path.
+func TestFactoryWaitsForDelegatedWork(t *testing.T) {
+	t.Run("a child this turn launched and left running holds the turn", func(t *testing.T) {
+		dw := newDelegatedWorkers(t, "i1", "s1")
+		dw.script(t, 0,
+			delegatedTurnStack(t, "turn:1", nil, ""),
+			delegatedTurnStack(t, "turn:2", []int64{7}, delegatedReport("op1")),
+			delegatedStatus(t, true, delegatedChild(7, "running")))
+		out, err := newFactoryWorkers(dw.fleet).Execute(context.Background(), dw.item, dw.effect(0, "op1"))
+		if err != nil {
+			t.Fatalf("a turn waiting on its children failed: %v", err)
+		}
+		if out.Report != nil || out.Confirmed {
+			t.Fatalf("the early report was accepted: %+v", out)
+		}
+		d := out.Delegated
+		if d == nil {
+			t.Fatalf("a turn that launched a running child did not wait: %+v", out)
+		}
+		if d.State != "waiting" || d.EffectID != "op1" || d.WorkerID != dw.workers[0].AgentID || d.SessionID != "s1" {
+			t.Fatalf("delegated turn = %+v", d)
+		}
+		if len(d.ChildIDs) != 1 || d.ChildIDs[0] != 7 {
+			t.Fatalf("delegated children = %v, want child 7", d.ChildIDs)
+		}
+		if d.ParentTurnID != "turn:2" {
+			t.Fatalf("delegated parent turn = %q, want the turn the stack names", d.ParentTurnID)
+		}
+	})
+
+	t.Run("a child that finished settles so the turn advances", func(t *testing.T) {
+		for _, status := range []string{"done", "failed"} {
+			t.Run(status, func(t *testing.T) {
+				dw := newDelegatedWorkers(t, "i1", "s1")
+				dw.script(t, 0,
+					delegatedTurnStack(t, "turn:1", nil, ""),
+					delegatedTurnStack(t, "turn:2", []int64{7}, delegatedReport("op1")),
+					delegatedStatus(t, true, delegatedChild(7, status)))
+				out, err := newFactoryWorkers(dw.fleet).Execute(context.Background(), dw.item, dw.effect(0, "op1"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if out.Delegated != nil {
+					t.Fatalf("a %s child was not terminal: %+v", status, out.Delegated)
+				}
+				if out.Report == nil || out.Report.Outcome != "needs_input" || !out.Confirmed {
+					t.Fatalf("a settled turn lost its normal path: %+v", out)
+				}
+			})
+		}
+	})
+
+	t.Run("child work from an earlier turn is not this turn's", func(t *testing.T) {
+		dw := newDelegatedWorkers(t, "i1", "s1")
+		// Child 4 was already in the transcript before the prompt and is still
+		// running, so it belongs to an earlier turn: only children the pre-turn
+		// stack did not already show are this turn's.
+		dw.script(t, 0,
+			delegatedTurnStack(t, "turn:1", []int64{4}, ""),
+			delegatedTurnStack(t, "turn:2", []int64{4}, delegatedReport("op1")),
+			delegatedStatus(t, true, delegatedChild(4, "running")))
+		out, err := newFactoryWorkers(dw.fleet).Execute(context.Background(), dw.item, dw.effect(0, "op1"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.Delegated != nil {
+			t.Fatalf("an earlier turn's child held this turn: %+v", out.Delegated)
+		}
+		if out.Report == nil || !out.Confirmed {
+			t.Fatalf("the turn did not take its normal path: %+v", out)
+		}
+	})
+
+	t.Run("two worker sessions with identical child ids are not conflated", func(t *testing.T) {
+		dw := newDelegatedWorkers(t, "i1", "s1", "s2")
+		// Both sessions contain child 1. Session s1 launched it this turn and it
+		// is still running; session s2's child 1 was launched by an earlier turn
+		// and has finished. Identity is the pair, so neither answers the other.
+		dw.script(t, 0,
+			delegatedTurnStack(t, "turn:1", nil, ""),
+			delegatedTurnStack(t, "turn:2", []int64{1}, delegatedReport("op1")),
+			delegatedStatus(t, true, delegatedChild(1, "running")))
+		dw.script(t, 1,
+			delegatedTurnStack(t, "turn:1", []int64{1}, ""),
+			delegatedTurnStack(t, "turn:2", []int64{1}, delegatedReport("op2")),
+			delegatedStatus(t, true, delegatedChild(1, "done")))
+		workers := newFactoryWorkers(dw.fleet)
+		first, err := workers.Execute(context.Background(), dw.item, dw.effect(0, "op1"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first.Delegated == nil || first.Delegated.SessionID != "s1" || first.Delegated.ChildIDs[0] != 1 {
+			t.Fatalf("session s1's running child 1 did not hold its own turn: %+v", first)
+		}
+		second, err := workers.Execute(context.Background(), dw.item, dw.effect(1, "op2"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if second.Delegated != nil {
+			t.Fatalf("session s2's finished child 1 was read as s1's running one: %+v", second.Delegated)
+		}
+		if second.Report == nil || !second.Confirmed {
+			t.Fatalf("session s2 did not take its normal path: %+v", second)
+		}
+		obs, err := workers.Observe(context.Background(), dw.item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(obs.Children) != 2 {
+			t.Fatalf("child projections = %+v, want one per session", obs.Children)
+		}
+		for _, projection := range obs.Children {
+			if !projection.Known || len(projection.Children) != 1 || projection.Children[0].ID != 1 {
+				t.Fatalf("session %q projection = %+v", projection.SessionID, projection)
+			}
+			if projection.SessionID == "s1" && projection.Children[0].Terminal {
+				t.Fatalf("s1's running child was reported terminal: %+v", projection)
+			}
+			if projection.SessionID == "s2" && !projection.Children[0].Terminal {
+				t.Fatalf("s2's finished child was not reported terminal: %+v", projection)
+			}
+		}
+	})
+}
+
+// TestFactoryUnknownChildStateDoesNotAdvance pins what unknown means at the gate:
+// a child the projection does not name, a state it does not name as finished, an
+// ambiguous identity, and a session that cannot be read all hold the turn. None
+// of them counts as a settled empty set.
+func TestFactoryUnknownChildStateDoesNotAdvance(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		children json.RawMessage
+		errs     map[string]*rpcError
+	}{
+		{"a session that does not project its children", delegatedStatus(t, false, delegatedChild(7, "done")), nil},
+		{"a state the projection does not name", delegatedStatus(t, true, delegatedChild(7, "queued")), nil},
+		{"an ambiguous child identity", delegatedStatus(t, true, delegatedChild(7, "done"), delegatedChild(7, "done")), nil},
+		{"a child the projection does not name", delegatedStatus(t, true), nil},
+		{"a status the session could not answer", delegatedStatus(t, true, delegatedChild(7, "done")), map[string]*rpcError{"session/status": {Code: -32000, Message: "unavailable"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dw := newDelegatedWorkers(t, "i1", "s1")
+			dw.script(t, 0,
+				delegatedTurnStack(t, "turn:1", nil, ""),
+				delegatedTurnStack(t, "turn:2", []int64{7}, delegatedReport("op1")),
+				tc.children)
+			dw.transports[0].errs = tc.errs
+			out, err := newFactoryWorkers(dw.fleet).Execute(context.Background(), dw.item, dw.effect(0, "op1"))
+			if err != nil {
+				t.Fatalf("unknown child state failed the turn: %v", err)
+			}
+			if out.Report != nil || out.Confirmed {
+				t.Fatalf("an early report advanced on unknown child state: %+v", out)
+			}
+			if out.Delegated == nil || out.Delegated.State != "waiting" {
+				t.Fatalf("unknown child state did not wait: %+v", out.Delegated)
+			}
+			if len(out.Delegated.ChildIDs) != 1 || out.Delegated.ChildIDs[0] != 7 {
+				t.Fatalf("delegated children = %v, want child 7", out.Delegated.ChildIDs)
+			}
+		})
+	}
+}
+
+// TestFactoryNoChildrenUnchanged pins the ordinary turn: one that launched no
+// child is not deferred, and its result is exactly what the effect always took.
+func TestFactoryNoChildrenUnchanged(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		children json.RawMessage
+	}{
+		{"a session that projects no children", delegatedStatus(t, true)},
+		{"a session that does not project children at all", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dw := newDelegatedWorkers(t, "i1", "s1")
+			dw.script(t, 0,
+				delegatedTurnStack(t, "turn:1", nil, ""),
+				delegatedTurnStack(t, "turn:2", nil, delegatedReport("op1")),
+				tc.children)
+			out, err := newFactoryWorkers(dw.fleet).Execute(context.Background(), dw.item, dw.effect(0, "op1"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.Delegated != nil {
+				t.Fatalf("a turn that launched no child was deferred: %+v", out.Delegated)
+			}
+			if out.Report == nil || out.Report.Outcome != "needs_input" || !out.Confirmed || out.EffectID != "op1" {
+				t.Fatalf("the normal path changed: %+v", out)
+			}
+			if out.StopReason != "end_turn" {
+				t.Fatalf("stop reason = %q", out.StopReason)
+			}
+		})
 	}
 }
 

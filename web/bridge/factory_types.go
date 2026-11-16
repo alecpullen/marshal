@@ -281,6 +281,46 @@ type FactoryRound struct {
 	FinishedAt        time.Time      `json:"finishedAt"`
 }
 
+// FactoryDelegatedTurn is one worker turn's delegated child work: the children
+// the turn launched, and how far they have been proven. It is journalled beside
+// the effect that dispatched the turn, so the item keeps the effect and the
+// candidate identity it was dispatched with until its children are settled.
+// The waiting state is not an outcome: the report the turn wrote before those
+// children settled is early, and is never the effect's result.
+type FactoryDelegatedTurn struct {
+	EffectID       string  `json:"effectId"`
+	WorkerID       string  `json:"workerId"`
+	SessionID      string  `json:"sessionId"`
+	ParentTurnID   string  `json:"parentTurnId"`
+	ChildIDs       []int64 `json:"childIds"`
+	ContinuationID string  `json:"continuationId,omitempty"`
+	State          string  `json:"state"` // waiting, prepared, dispatched, settled, uncertain
+}
+
+// FactoryChild is one child of a worker session as that session's own status
+// projects it. Its identity is the pair, never the id alone: child ids are
+// session-local, so two worker sessions can both contain child 1 and must never
+// be conflated.
+type FactoryChild struct {
+	SessionID string `json:"sessionId"`
+	ID        int64  `json:"id"`
+	Label     string `json:"label,omitempty"`
+	Status    string `json:"status"`
+	// Terminal is true only for a state the projection names as finished.
+	Terminal bool `json:"terminal"`
+}
+
+// FactoryChildSession is one worker session's child projection: the children it
+// reported, and whether it reported at all. Known is false when the bridge
+// could not read the session's children — a missing session, an unsupported
+// projection, or an ambiguous child identity — because an unread projection can
+// never be read as a settled empty set.
+type FactoryChildSession struct {
+	SessionID string         `json:"sessionId"`
+	Known     bool           `json:"known"`
+	Children  []FactoryChild `json:"children,omitempty"`
+}
+
 type FactoryEffect struct {
 	// Outcome retains accepted stop reasons and confirmed adapter evidence.
 	Outcome          *FactoryOutcome `json:"outcome"`
@@ -294,6 +334,11 @@ type FactoryEffect struct {
 	ExpectedHead     string          `json:"expectedHead"`
 	ExpectedBase     string          `json:"expectedBase"`
 	CreatedAt        time.Time       `json:"createdAt"`
+	// Delegated is the turn's launched child work while it is not proven
+	// settled, and the waiting state Studio shows beside the effect's status.
+	// It is omitted when nil, so a record journalled before delegated turns
+	// existed keeps its bytes.
+	Delegated *FactoryDelegatedTurn `json:"delegated,omitempty"`
 }
 
 type FactoryOutcome struct {
@@ -307,6 +352,11 @@ type FactoryOutcome struct {
 	PR         *FactoryPR     `json:"pr"`
 	Report     *FactoryReport `json:"report"`
 	Confirmed  bool           `json:"confirmed"`
+	// Delegated is the waiting turn a worker effect hands back instead of a
+	// result: the turn launched children it did not prove settled, so the report
+	// it wrote before they settled is early and is never applied. It is omitted
+	// when nil, so a completed outcome keeps the bytes it always wrote.
+	Delegated *FactoryDelegatedTurn `json:"delegated,omitempty"`
 }
 
 type FactoryObservation struct {
@@ -315,15 +365,21 @@ type FactoryObservation struct {
 	TurnIdle        bool            `json:"turnIdle"`
 	ActiveWorkKnown bool            `json:"activeWorkKnown"`
 	WorkIdle        bool            `json:"workIdle"`
-	HeadSHA         string          `json:"headSha"`
-	TreeSHA         string          `json:"treeSha"`
-	BaseSHA         string          `json:"baseSha"`
-	RemoteHead      string          `json:"remoteHead"`
-	Dirty           bool            `json:"dirty"`
-	PR              *FactoryPR      `json:"pr"`
-	CI              *FactoryCI      `json:"ci"`
-	Error           string          `json:"error"`
-	ObservedAt      time.Time       `json:"observedAt"`
+	// Children is each live worker session's own child projection, keyed by the
+	// session that reported it: child ids are session-local, so a child is the
+	// pair and never the id alone. A session whose projection could not be read
+	// is present with Known false, which is unknown work rather than an empty
+	// settled set.
+	Children   []FactoryChildSession `json:"children,omitempty"`
+	HeadSHA    string                `json:"headSha"`
+	TreeSHA    string                `json:"treeSha"`
+	BaseSHA    string                `json:"baseSha"`
+	RemoteHead string                `json:"remoteHead"`
+	Dirty      bool                  `json:"dirty"`
+	PR         *FactoryPR            `json:"pr"`
+	CI         *FactoryCI            `json:"ci"`
+	Error      string                `json:"error"`
+	ObservedAt time.Time             `json:"observedAt"`
 }
 
 type FactoryDecision struct {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -183,6 +184,14 @@ func (w *factoryWorkers) Execute(ctx context.Context, item FactoryItem, effect F
 	if err != nil {
 		return result, fmt.Errorf("factory: read post-turn stack: %w", err)
 	}
+	// A turn that launched children is not finished when its own report arrives:
+	// the children are the work, so until they are proven settled the report is
+	// early. The effect keeps its dispatch and its candidate identity, and the
+	// delegated turn beside it is what a continuation resolves.
+	if delegated, waiting := w.delegatedTurn(ctx, rt, worker, effect, before, after); waiting {
+		result.Delegated = delegated
+		return result, nil
+	}
 	final, message, hasMessage := factoryFinal(after)
 	if final == "" || final == oldFinal || !hasMessage || strings.TrimSpace(message) == "" {
 		return result, fmt.Errorf("%w: no new final report in turn", ErrFactoryInvalidResult)
@@ -264,6 +273,182 @@ func decodeFactoryWork(raw json.RawMessage) (known, idle bool) {
 	return true, len(entries) == 0
 }
 
+// factoryStackChildren names the children a session/stack snapshot shows: the
+// subagent a tool row started, and the subagent a completion closed. It is how a
+// dispatched turn's own children are told from the work an earlier turn left,
+// because the pre-turn stack already shows every child the session had.
+func factoryStackChildren(raw json.RawMessage) map[int64]bool {
+	var tree struct {
+		Nodes []struct {
+			Tool *struct {
+				SubagentID int64 `json:"subagentId"`
+			} `json:"tool"`
+			Completion *struct {
+				SubagentID int64 `json:"subagentId"`
+			} `json:"completion"`
+		} `json:"nodes"`
+	}
+	out := make(map[int64]bool)
+	if json.Unmarshal(raw, &tree) != nil {
+		return out
+	}
+	for _, n := range tree.Nodes {
+		if n.Tool != nil && n.Tool.SubagentID > 0 {
+			out[n.Tool.SubagentID] = true
+		}
+		if n.Completion != nil && n.Completion.SubagentID > 0 {
+			out[n.Completion.SubagentID] = true
+		}
+	}
+	return out
+}
+
+// factoryStackTurn names the newest turn a session/stack snapshot shows, which
+// after a prompt answer is the turn that just ran.
+func factoryStackTurn(raw json.RawMessage) string {
+	var tree struct {
+		Roots []string `json:"roots"`
+	}
+	if json.Unmarshal(raw, &tree) != nil || len(tree.Roots) == 0 {
+		return ""
+	}
+	return tree.Roots[len(tree.Roots)-1]
+}
+
+// factoryChildTerminal reports whether a child state the session's projection
+// names is finished. done and failed are terminal; running is not, and a state
+// the projection does not name is not terminal either, so it counts as unknown
+// work rather than finished work.
+func factoryChildTerminal(status string) bool {
+	return status == "done" || status == "failed"
+}
+
+// factoryChildProjection decodes one worker session's session/status answer into
+// its children. Known is false for an agent that does not project its children
+// at all: it advertises no observation control, or answers a shape this cannot
+// read. A status the session sends without that control is not a claim that the
+// session has no children, so it is never read as a settled empty set.
+//
+// A child whose id is not a positive number, or one a second entry claims, is an
+// ambiguous identity: the projection then cannot say which child is which, so it
+// names none of them.
+func factoryChildProjection(raw json.RawMessage) ([]FactoryChild, bool) {
+	var status struct {
+		SubagentControls *struct {
+			Observe bool `json:"observe"`
+		} `json:"subagentControls"`
+		Subagents []struct {
+			ID     int64  `json:"id"`
+			Label  string `json:"label"`
+			Status string `json:"status"`
+		} `json:"subagents"`
+	}
+	if json.Unmarshal(raw, &status) != nil || status.SubagentControls == nil || !status.SubagentControls.Observe {
+		return nil, false
+	}
+	seen := make(map[int64]bool, len(status.Subagents))
+	out := make([]FactoryChild, 0, len(status.Subagents))
+	for _, s := range status.Subagents {
+		if s.ID <= 0 || seen[s.ID] {
+			return nil, false
+		}
+		seen[s.ID] = true
+		out = append(out, FactoryChild{ID: s.ID, Label: s.Label, Status: s.Status, Terminal: factoryChildTerminal(s.Status)})
+	}
+	return out, true
+}
+
+// sessionChildren reads one worker session's child projection from that session's
+// own status. A session the bridge cannot ask, or one that does not project its
+// children, contributes an unknown projection: nothing in it counts as settled.
+func (w *factoryWorkers) sessionChildren(ctx context.Context, rt *agentRuntime, sessionID string) FactoryChildSession {
+	out := FactoryChildSession{SessionID: sessionID}
+	if rt == nil || rt.child == nil || sessionID == "" {
+		return out
+	}
+	raw, err := rt.child.Request(ctx, "session/status", map[string]any{"sessionId": sessionID})
+	if err != nil {
+		return out
+	}
+	children, known := factoryChildProjection(raw)
+	if !known {
+		return out
+	}
+	out.Known = true
+	for _, child := range children {
+		child.SessionID = sessionID
+		out.Children = append(out.Children, child)
+	}
+	return out
+}
+
+// factoryParentTurn names the turn a delegated turn belongs to. The post-turn
+// stack's newest root is the turn that just ran, which is an identity the bridge
+// already holds; a stack that names no turn falls back to the effect's own
+// identity and the dispatch time rather than to a request the bridge would
+// otherwise not make.
+func factoryParentTurn(after json.RawMessage, effectID string) string {
+	if turn := factoryStackTurn(after); turn != "" {
+		return turn
+	}
+	return effectID + "@" + time.Now().UTC().Format(time.RFC3339Nano)
+}
+
+// delegatedTurn decides whether a dispatched turn is finished. A turn that
+// launched children owns their work: until each one is proven settled by the
+// worker session's own projection, the report the turn wrote is early and the
+// turn waits. Children the pre-turn stack already showed belong to an earlier
+// turn and are never this turn's, and a turn that launched no child has nothing
+// to wait for, so it keeps the normal path.
+//
+// The effect and its candidate identity are untouched: the caller persists the
+// returned turn beside them instead of completing the effect.
+func (w *factoryWorkers) delegatedTurn(ctx context.Context, rt *agentRuntime, worker FactoryWorker, effect FactoryEffect, before, after json.RawMessage) (*FactoryDelegatedTurn, bool) {
+	prior := factoryStackChildren(before)
+	children := w.sessionChildren(ctx, rt, worker.SessionID)
+	launched := make(map[int64]bool)
+	for id := range factoryStackChildren(after) {
+		if !prior[id] {
+			launched[id] = true
+		}
+	}
+	for _, child := range children.Children {
+		if !prior[child.ID] {
+			launched[child.ID] = true
+		}
+	}
+	if len(launched) == 0 {
+		return nil, false
+	}
+	// A child the projection does not name, a state it does not name as
+	// finished, and a projection the bridge could not read are all unknown, and
+	// unknown work never counts as settled.
+	terminal := make(map[int64]bool, len(children.Children))
+	for _, child := range children.Children {
+		terminal[child.ID] = child.Terminal
+	}
+	settled := children.Known
+	ids := make([]int64, 0, len(launched))
+	for id := range launched {
+		ids = append(ids, id)
+		if finished, ok := terminal[id]; !ok || !finished {
+			settled = false
+		}
+	}
+	if settled {
+		return nil, false
+	}
+	sort.Slice(ids, func(a, b int) bool { return ids[a] < ids[b] })
+	return &FactoryDelegatedTurn{
+		EffectID:     effect.ID,
+		WorkerID:     worker.AgentID,
+		SessionID:    worker.SessionID,
+		ParentTurnID: factoryParentTurn(after, effect.ID),
+		ChildIDs:     ids,
+		State:        "waiting",
+	}, true
+}
+
 func (w *factoryWorkers) Observe(ctx context.Context, item FactoryItem) (FactoryObservation, error) {
 	obs := FactoryObservation{ObservedAt: time.Now().UTC(), BaseSHA: item.BaseSHA}
 	// Every matched worker contributes to the idle conjunction below, but a
@@ -340,6 +525,10 @@ func (w *factoryWorkers) Observe(ctx context.Context, item FactoryItem) (Factory
 		if raw, err := rt.child.Request(ctx, "session/end_work", map[string]any{"sessionId": worker.SessionID}); err == nil {
 			obs.ActiveWorkKnown, obs.WorkIdle = decodeFactoryWork(raw)
 		}
+		// The children are a separate projection from the work snapshot above:
+		// end_work's boolean idle says nothing about which children a turn
+		// started, so every live session contributes its own child list.
+		obs.Children = append(obs.Children, w.sessionChildren(ctx, rt, worker.SessionID))
 	}
 	return obs, nil
 }

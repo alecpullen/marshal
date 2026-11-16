@@ -970,6 +970,21 @@ func (c *FactoryController) finishDispatch(ctx context.Context, dispatched Facto
 	if out.EffectID == "" {
 		out.EffectID = e.ID
 	}
+	// A turn that launched children it did not prove settled is not finished: the
+	// report it wrote is early, so it is never passed to CompleteFactoryEffect.
+	// The effect keeps its dispatch and the candidate identity it was dispatched
+	// with, and the delegated turn beside it is what a continuation resolves.
+	if out.Delegated != nil {
+		delegated := *out.Delegated
+		_, err := c.internalUpdate(dispatched, "delegated", func(dst *FactoryItem) error {
+			last := &dst.Effects[len(dst.Effects)-1]
+			last.Delegated = &delegated
+			dst.History = append(dst.History, FactoryEvent{At: c.now(), Kind: "delegated_waiting", EffectID: e.ID,
+				Message: fmt.Sprintf("waiting on %d child(ren) the turn launched", len(delegated.ChildIDs))})
+			return nil
+		})
+		return err
+	}
 	next, err := CompleteFactoryEffect(dispatched, e.ID, out, c.now())
 	if dispatched.State == "stopping" {
 		next.State = "stopping"

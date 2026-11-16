@@ -6,6 +6,7 @@ import { createStackStore, createSubagentControls, NO_SUBAGENT_CONTROLS, subagen
 const node = (id: string, o: Partial<WireNode> = {}): WireNode => ({ id, kind: 'step', ...o })
 
 const snapshot = (): StackSnapshot => ({
+  sessionId: 's1',
   rev: 5,
   roots: ['turn:1'],
   nodes: [node('turn:1', { kind: 'turn', children: ['step:1'] }), node('step:1', { parent: 'turn:1' })],

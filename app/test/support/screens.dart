@@ -1,16 +1,38 @@
-import 'package:marshal_app/src/client/contract.g.dart' show Recipe, Schedule;
+import 'package:marshal_app/src/client/contract.g.dart'
+    show
+        DiffFile,
+        FileEntry,
+        GateResult,
+        Recipe,
+        Schedule,
+        StackSnapshot,
+        StepDiff,
+        WireCall,
+        WireMessage,
+        WireNode,
+        WireReceipt,
+        WireStep,
+        WireTool;
 import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
 import 'package:marshal_app/src/model/bots_model.dart';
 import 'package:marshal_app/src/model/clients_model.dart';
 import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
 import 'package:marshal_app/src/model/library_model.dart';
 import 'package:marshal_app/src/model/inbox_model.dart' as model;
+import 'package:marshal_app/src/model/changes_model.dart';
+import 'package:marshal_app/src/model/files_model.dart';
+import 'package:marshal_app/src/model/inspect_model.dart';
+import 'package:marshal_app/src/model/inspector_state.dart';
+import 'package:marshal_app/src/model/preview_model.dart';
+import 'package:marshal_app/src/model/terminal_session.dart';
 import 'package:marshal_app/src/model/nav_model.dart';
 import 'package:marshal_app/src/model/overview_model.dart';
 import 'package:marshal_app/src/model/place.dart';
 import 'package:marshal_app/src/model/recipes_model.dart';
 import 'package:marshal_app/src/model/schedules_model.dart';
+import 'package:marshal_app/src/model/stack_store.dart';
 import 'package:marshal_app/src/model/thread_ref.dart' as model;
+import 'package:marshal_app/src/model/thread_view_state.dart';
 import 'package:marshal_app/src/model/watches_model.dart';
 import 'package:marshal_app/src/ui/automations/automations_place.dart';
 import 'package:marshal_app/src/ui/automations/bots_tab.dart';
@@ -25,10 +47,16 @@ import 'package:marshal_app/src/ui/library/memory_tab.dart';
 import 'package:marshal_app/src/ui/library/plugins_tab.dart';
 import 'package:marshal_app/src/ui/library/skills_tab.dart';
 import 'package:marshal_app/src/ui/inbox/inbox.dart';
+import 'package:marshal_app/src/ui/inspector/changes_tab.dart';
+import 'package:marshal_app/src/ui/inspector/files_tab.dart';
+import 'package:marshal_app/src/ui/inspector/inspect_tab.dart';
+import 'package:marshal_app/src/ui/inspector/preview_tab.dart';
+import 'package:marshal_app/src/ui/inspector/terminal_tab.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 import 'package:marshal_app/src/ui/overview/overview.dart';
 import 'package:marshal_app/src/ui/shell/placeholder.dart';
 import 'package:marshal_app/src/ui/shell/shell.dart';
+import 'package:marshal_app/src/ui/thread/thread_screen.dart';
 
 /// One screen the enforcement tests pump: its ready state with fixture data,
 /// and one case for each §7 state it handles.
@@ -657,7 +685,160 @@ final screens = <ScreenCase>[
         kind: () => _automations(tab: 3, state: kind),
     },
   ),
+  ScreenCase(
+    name: 'thread',
+    ready: () => _threadScreen(),
+    states: {
+      for (final kind in requiredStates) kind: () => _threadScreen(state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'thread with inspector',
+    ready: () => _threadScreen(inspector: _inspectorState()),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => _threadScreen(state: kind, inspector: _inspectorState()),
+    },
+  ),
+  ScreenCase(
+    name: 'inspector preview',
+    ready: () =>
+        PreviewTab(model: PreviewModel.seeded(ports: const [5173, 8080])),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => PreviewTab(
+          model: PreviewModel.seeded(ports: const [5173, 8080]),
+          state: kind,
+        ),
+    },
+  ),
+  ScreenCase(
+    name: 'inspector inspect',
+    ready: () => InspectTab(model: _inspectModel()),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => InspectTab(model: _inspectModel(), state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'inspector terminal',
+    ready: () => TerminalTab(session: TerminalSession.seeded()),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => TerminalTab(session: TerminalSession.seeded(), state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'inspector files',
+    ready: () => FilesTab(model: _filesModel()),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => FilesTab(model: _filesModel(), state: kind),
+    },
+  ),
+  ScreenCase(
+    name: 'inspector changes',
+    ready: () => ChangesTab(model: _changesModel()),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => ChangesTab(model: _changesModel(), state: kind),
+    },
+  ),
 ];
+
+/// The inspector the screen cases show, with each tab's frame placeholder
+/// until the task that builds that tab supplies its body.
+InspectorState _inspectorState() => InspectorState();
+
+/// The node the inspector's Inspect tab shows.
+InspectModel _inspectModel() => InspectModel.seeded(
+  facts: const InspectFacts(
+    title: 'edit  internal/viewmodel/testdata/index.json',
+    kind: 'tool',
+    actor: 'agent',
+    why: 'Drop three index entries whose files no test loads',
+    took: '300 ms',
+    sandbox: 'restricted · network isolated',
+    approval: 'auto',
+    callId: 'call_8f21c0',
+    output: 'Applied 1 edit. 9 lines removed.',
+    arguments: '{\n  "path": "internal/viewmodel/testdata/index.json"\n}',
+    thinking: ['The fold test loads stack_fold.json.'],
+  ),
+);
+
+/// The workspace tree the inspector's Files tab shows.
+FilesModel _filesModel() => FilesModel.seeded(
+  changed: const {
+    'internal/viewmodel/testdata/index.json',
+    'internal/repo/symbols_test.go',
+  },
+  root: '/home/u/marshal',
+  tree: const {
+    '': [
+      FileEntry(name: 'internal', dir: true, size: 0),
+      FileEntry(name: 'scripts', dir: true, size: 0),
+      FileEntry(name: 'AGENTS.md', dir: false, size: 900),
+      FileEntry(name: 'go.mod', dir: false, size: 412),
+    ],
+    'internal': [
+      FileEntry(name: 'repo', dir: true, size: 0),
+      FileEntry(name: 'viewmodel', dir: true, size: 0),
+    ],
+    'internal/repo': [
+      FileEntry(name: 'symbols.go', dir: false, size: 300),
+      FileEntry(name: 'symbols_test.go', dir: false, size: 220),
+    ],
+    'internal/viewmodel': [FileEntry(name: 'detail.go', dir: false, size: 400)],
+  },
+  files: const {
+    'internal/repo/symbols.go': 'package repo\n\nfunc Symbols() {}\n',
+    'AGENTS.md': '# Marshal\n\nGuidance for agents.\n',
+  },
+);
+
+/// The changes the inspector's Changes tab shows: a failed gate, two files,
+/// one of them new, and the steps that changed them.
+ChangesModel _changesModel() => ChangesModel.seeded(
+  gate: const GateResult(
+    ok: false,
+    skipped: false,
+    failedCommand: 'go test ./...',
+    output: 'FAIL marshal/internal/app',
+  ),
+  gateRanAt: shellNow.subtract(const Duration(minutes: 2)),
+  files: const [
+    DiffFile(
+      path: 'internal/viewmodel/testdata/index.json',
+      added: 0,
+      removed: 9,
+    ),
+    DiffFile(path: 'internal/repo/symbols_test.go', added: 3, removed: 11),
+    DiffFile(path: 'internal/repo/fixtures.go', added: 7, removed: 0),
+  ],
+  diff:
+      'diff --git a/internal/viewmodel/testdata/index.json '
+      'b/internal/viewmodel/testdata/index.json\n'
+      '--- a/internal/viewmodel/testdata/index.json\n'
+      '+++ b/internal/viewmodel/testdata/index.json\n'
+      '@@ -4,4 +4,1 @@\n'
+      '     "fixtures": [\n'
+      '-     "turn_legacy_v1.json",\n'
+      '-     "turn_legacy_v2.json",\n'
+      '-     "stack_old_fold.json",\n'
+      '     "stack_fold.json"\n',
+  steps: const [
+    StepDiff(
+      stepNode: 'step:1',
+      turnNode: 'turn:1',
+      headline: 'Removed the fixtures that are plainly dead',
+      files: ['internal/viewmodel/testdata/index.json'],
+      diff:
+          '@@ -4,4 +4,1 @@\n     "fixtures": [\n'
+          '-     "turn_legacy_v1.json",\n     "stack_fold.json"\n',
+    ),
+  ],
+);
 
 /// The states every screen that shows data must handle (§7). Planned is a
 /// row, not a screen state, so it is not required here.
@@ -668,3 +849,89 @@ const requiredStates = {
   StateKind.error,
   StateKind.unavailable,
 };
+
+/// The thread the screen cases show.
+model.ThreadRef get _threadRef => model.ThreadRef(
+  host: 'local',
+  id: 'a-1',
+  project: '/home/u/marshal',
+  title: 'Clean up the test fixtures',
+  kind: model.ThreadKind.agent,
+  status: model.ThreadStatus.running,
+  headline: 'Removing the fixtures nobody reads',
+  lastActive: DateTime.utc(2026, 11, 17, 4, 10),
+);
+
+/// One turn as the agent projects it: a prompt, a step with its call, and the
+/// receipt that closes it.
+StackSnapshot _threadSnapshot() => StackSnapshot(
+  sessionID: 's-1',
+  rev: 3,
+  roots: const ['turn:1'],
+  nodes: [
+    const WireNode(
+      id: 'turn:1',
+      kind: 'turn',
+      children: ['msg:1', 'step:1', 'receipt:1'],
+    ),
+    const WireNode(
+      id: 'msg:1',
+      kind: 'message',
+      parent: 'turn:1',
+      message: WireMessage(
+        role: 'user',
+        content: 'Clean up the test fixtures nobody uses any more.',
+      ),
+    ),
+    const WireNode(
+      id: 'step:1',
+      kind: 'step',
+      parent: 'turn:1',
+      live: true,
+      children: ['tool:1'],
+      step: WireStep(
+        headline: 'Mapped the fixtures and who reads them',
+        startedAt: 1000,
+        endedAt: 42000,
+      ),
+    ),
+    const WireNode(
+      id: 'tool:1',
+      kind: 'tool',
+      parent: 'step:1',
+      tool: WireTool(
+        name: 'file.read',
+        display: 'Read file',
+        verb: 'read',
+        calls: [
+          WireCall(
+            callID: 'c1',
+            target: 'internal/acp/stack.go',
+            summaryLine: '148 lines',
+          ),
+        ],
+      ),
+    ),
+    const WireNode(
+      id: 'receipt:1',
+      kind: 'receipt',
+      parent: 'turn:1',
+      receipt: WireReceipt(
+        durationMs: 95000,
+        tasks: 2,
+        steps: 4,
+        tools: 3,
+        files: 2,
+      ),
+    ),
+  ],
+);
+
+Widget _threadScreen({StateKind? state, InspectorState? inspector}) =>
+    ThreadScreen(
+      thread: _threadRef,
+      store: StackStore.seeded(_threadSnapshot()),
+      view: ThreadViewState(),
+      inspector: inspector,
+      state: state,
+    );

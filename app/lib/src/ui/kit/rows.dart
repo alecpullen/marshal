@@ -30,6 +30,8 @@ class RowItem {
     this.value,
     this.spark,
     this.onTap,
+    this.mono = false,
+    this.selected = false,
   }) : planned = false;
 
   /// A capability that does not exist yet, drawn as a disabled row with
@@ -38,6 +40,8 @@ class RowItem {
     : value = null,
       spark = null,
       onTap = null,
+      mono = false,
+      selected = false,
       planned = true;
 
   final String name;
@@ -48,6 +52,15 @@ class RowItem {
   final RowSpark? spark;
 
   final VoidCallback? onTap;
+
+  /// Set the name in mono: for a row that names a path or another
+  /// identifier (§3), as `Pill.mono` does for a chip.
+  final bool mono;
+
+  /// This row is the one the list is showing: it takes the `selected` fill,
+  /// as a `NavRow` does.
+  final bool selected;
+
   final bool planned;
 }
 
@@ -92,8 +105,9 @@ class _Row extends StatelessWidget {
     return Press(
       onTap: row.onTap,
       ringInside: true,
+      selected: row.selected,
       builder: (context, state) => Container(
-        color: state.hovered ? e.hover : null,
+        color: row.selected ? e.selected : (state.hovered ? e.hover : null),
         padding: const EdgeInsets.symmetric(
           horizontal: Space.s16,
           vertical: Space.s12,
@@ -104,7 +118,7 @@ class _Row extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(row.name, style: e.bodyStrong),
+                  Text(row.name, style: row.mono ? e.mono : e.bodyStrong),
                   const SizedBox(height: Space.s2),
                   Text(row.description, style: e.small.tint(e.muted)),
                 ],

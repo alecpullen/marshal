@@ -525,6 +525,38 @@ export interface PinState {
 }
 
 /**
+ * FileEntry is one directory entry.
+ */
+export interface FileEntry {
+  name: string;
+  dir: boolean;
+  size: number;
+}
+
+/**
+ * FileList is one directory's entries. Root is the workspace directory the
+ * paths are relative to, and Path is the directory asked for, empty for the
+ * root. Directories come first, then names, both in order.
+ */
+export interface FileList {
+  root: string;
+  path: string;
+  entries: FileEntry[];
+}
+
+/**
+ * FileContent is one regular file's content, capped by the agent. A Binary
+ * file carries no Content, and a Truncated one carries its first megabyte.
+ */
+export interface FileContent {
+  path: string;
+  size: number;
+  binary: boolean;
+  truncated: boolean;
+  content: string;
+}
+
+/**
  * DiffFile is one changed file's stat line.
  */
 export interface DiffFile {
@@ -599,6 +631,12 @@ export interface ExitRequest {
    * Override, when non-nil, pushes despite a failed or skipped gate.
    */
   override?: GateOverride;
+  /**
+   * NoPR pushes the branch without opening a pull request. It is the
+   * app's "open a pull request" choice, off; absent means open one, so a
+   * client that predates the field keeps today's behaviour.
+   */
+  noPr?: boolean;
 }
 
 /**
@@ -671,6 +709,319 @@ export interface InboxDelta {
 }
 
 /**
+ * StepDiff is one step's part of the session's diff, for the by-step view.
+ * Files is the paths it touched and Diff is their unified diff.
+ */
+export interface StepDiff {
+  stepNode: string;
+  turnNode: string;
+  headline: string;
+  at?: number;
+  files: string[];
+  diff: string;
+}
+
+/**
+ * StepDiffs is GET /api/sessions/{id}/step-diffs' answer: the session's
+ * steps in order.
+ */
+export interface StepDiffs {
+  steps: StepDiff[];
+}
+
+/**
+ * NodeDetail is everything about one node that the projected transcript
+ * caps or leaves out.
+ */
+export interface NodeDetail {
+  calls?: CallDetail[];
+  narration?: string[];
+  /**
+   * Thinking is a beat's thoughts, or a message's reasoning as one entry.
+   */
+  thinking?: ThoughtDetail[];
+  todo?: TodoDetail;
+  relations?: RelationDetail;
+  /**
+   * Step is the step record behind this node: a call's own step, or a
+   * beat's first. It carries who spoke, the model, the "why" line and the
+   * todo the step began under.
+   */
+  step?: StepDetail;
+  /**
+   * Completion is a completion's retained output and its report, neither
+   * capped.
+   */
+  completion?: CompletionDetail;
+  /**
+   * Body is a run event's whole body.
+   */
+  body?: string;
+}
+
+/**
+ * NodeDetailResponse is GET /api/sessions/{id}/nodes/{nodeId}'s answer: the
+ * node's wire form and the detail the projection left out.
+ */
+export interface NodeDetailResponse {
+  node: WireNode;
+  detail: NodeDetail;
+}
+
+/**
+ * CallDetail is one tool call with nothing capped.
+ */
+export interface CallDetail {
+  callId?: string;
+  stepId?: number;
+  toolName: string;
+  args?: string;
+  originalArgs?: string;
+  output?: string;
+  diff?: string;
+  error?: string;
+  exitCode?: number;
+  model?: string;
+  finishReason?: string;
+  rewritten?: boolean;
+  /**
+   * Hooks is the hooks audit trail as the registry encodes it: an array of
+   * records whose failed_open key is not camelCase, which the wire rules
+   * refuse in a typed field, so each travels as raw bytes.
+   */
+  hooks?: unknown[];
+  sandbox?: unknown;
+  symbols?: SymbolDetail[];
+  notice?: NoticeDetail;
+  /**
+   * Execution is the structured command-execution evidence this call
+   * carries: what was launched, who owned it, and how it ended. It is
+   * separate from Notice, which is coaching prose written for the model.
+   */
+  execution?: ExecutionDetail;
+  /**
+   * Summary is the call's own summary, uncut.
+   */
+  summary?: string;
+}
+
+/**
+ * ExecutionDetail is one managed command execution's structured evidence:
+ * what was launched, who owned it, how the launching caller related to it
+ * and how it ended.
+ *
+ * Every field is optional. An absent Exit means no exit code was ever
+ * observed — a start-up failure, a still-running continuation, a lost
+ * record — and is never success. Empty State or Outcome means the record
+ * predates structured evidence or has not settled, which is likewise
+ * unknown rather than zero-valued fact.
+ */
+export interface ExecutionDetail {
+  version?: number;
+  executionId?: string;
+  displayId?: string;
+  conversationId?: string;
+  actor?: string;
+  turnId?: string;
+  stepId?: string;
+  toolCallId?: string;
+  cwd?: string;
+  generation?: number;
+  pid?: number;
+  /**
+   * State is the lifecycle status ("running", "stopping", "completed",
+   * "failed", "killed", "timed_out"); Outcome is the finer cause
+   * ("nonzero_exit", "startup_failure", "stopped", "resource_limit", …).
+   */
+  state?: string;
+  outcome?: string;
+  attachment?: string;
+  /**
+   * Wait is the effective foreground wait the launch used; DetachReason
+   * is why and DetachedAt when a wait handed the execution to the
+   * background.
+   */
+  wait?: string;
+  detachReason?: string;
+  detachedAt?: number;
+  /**
+   * StopCause and StopRequestedAt record an accepted explicit stop
+   * request separately from the outcome it produced.
+   */
+  stopCause?: string;
+  stopRequestedAt?: number;
+  /**
+   * Exit is the observed exit code; absent means none was observed.
+   */
+  exit?: number;
+  truncated?: boolean;
+  startedAt?: number;
+  endedAt?: number;
+}
+
+/**
+ * SymbolDetail is a symbol a call touched.
+ */
+export interface SymbolDetail {
+  file: string;
+  name: string;
+  kind?: string;
+}
+
+/**
+ * NoticeDetail is a tool-UX notice attached to a call.
+ */
+export interface NoticeDetail {
+  kind: string;
+  text: string;
+}
+
+/**
+ * ThoughtDetail is one finished reasoning block.
+ */
+export interface ThoughtDetail {
+  text: string;
+  durationMs?: number;
+}
+
+/**
+ * TodoDetail is the todo a step or task belongs to.
+ */
+export interface TodoDetail {
+  id: string;
+  content: string;
+  status: string;
+  startedAt?: number;
+  completedAt?: number;
+}
+
+/**
+ * RelationDetail lists node keys of related steps.
+ */
+export interface RelationDetail {
+  causedBy?: string[];
+  fixedBy?: string[];
+}
+
+/**
+ * StepDetail is the step record behind a node: who spoke, with which model,
+ * and why.
+ */
+export interface StepDetail {
+  id?: number;
+  owner?: string;
+  model?: string;
+  provider?: string;
+  /**
+   * Why is the line the step was taken for.
+   */
+  why?: string;
+  todoId?: string;
+}
+
+/**
+ * CompletionDetail is a completion's retained output and its report,
+ * neither capped.
+ */
+export interface CompletionDetail {
+  output?: string;
+  report?: string;
+  /**
+   * Truncated is the completion's own flag: the job dropped earlier
+   * output before it was retained.
+   */
+  truncated?: boolean;
+}
+
+/**
+ * LastRequest is GET /api/sessions/{id}/last-request's answer: the newest
+ * model request the session made, or a null Request when it has made none.
+ */
+export interface LastRequest {
+  request: ModelRequest | null;
+}
+
+/**
+ * ModelRequest is one model request as it went out, with what came of it.
+ */
+export interface ModelRequest {
+  attemptId: number;
+  at?: number;
+  provider?: string;
+  model?: string;
+  generation?: string;
+  leafId?: number;
+  messages: RequestMessage[];
+  tools: RequestTool[];
+  options: RequestOptions;
+  outcome: RequestOutcome;
+  truncated?: boolean;
+  omittedBytes?: number;
+  messagesOmitted?: number;
+  toolsOmitted?: number;
+  packTokens?: number;
+  packWindow?: number;
+  packTruncated?: boolean;
+  packSections?: number;
+  packKnown?: boolean;
+}
+
+/**
+ * RequestMessage is one message of the request.
+ */
+export interface RequestMessage {
+  role: string;
+  content: string;
+  toolCalls?: RequestToolCall[];
+  toolCallId?: string;
+  truncated?: boolean;
+  omittedBytes?: number;
+}
+
+/**
+ * RequestToolCall is a tool call attached to a message.
+ */
+export interface RequestToolCall {
+  id: string;
+  name: string;
+  args: string;
+  truncated?: boolean;
+  omittedBytes?: number;
+}
+
+/**
+ * RequestTool is a tool definition offered on the request.
+ */
+export interface RequestTool {
+  name: string;
+  description?: string;
+  parameters?: string;
+  truncated?: boolean;
+  omittedBytes?: number;
+}
+
+/**
+ * RequestOptions records the options that actually went out.
+ */
+export interface RequestOptions {
+  thinking?: string;
+  streaming: boolean;
+  maxTokens?: number;
+  temperature?: number;
+  responseFormat?: string;
+  toolChoice?: string;
+}
+
+/**
+ * RequestOutcome is what became of the attempt.
+ */
+export interface RequestOutcome {
+  status: string;
+  err?: string;
+  at?: number;
+}
+
+/**
  * PendingSubmission is one submission awaiting an operator's decision, as
  * GET /api/pending lists it.
  */
@@ -720,6 +1071,17 @@ export interface ApproveResult {
  */
 export interface ActionStatus {
   status: string;
+}
+
+/**
+ * RepoIssue is one issue GET /api/repos/{id}/issues lists.
+ */
+export interface RepoIssue {
+  Number: number;
+  Title: string;
+  Body: string;
+  URL: string;
+  Labels?: string[];
 }
 
 /**
@@ -1005,6 +1367,57 @@ export interface RecipeCopy {
 }
 
 /**
+ * ReviewComment is one line comment on an agent's diff.
+ *
+ * The routes are GET and POST /api/agents/{id}/review/comments, and
+ * POST /api/agents/{id}/review/comments/{cid}/resolve. A comment is
+ * delivered to the agent as steering when a turn is running and as a new
+ * prompt when it is not, so the thread it starts is the agent's reply in the
+ * same conversation.
+ */
+export interface ReviewComment {
+  id: string;
+  agentId: string;
+  path: string;
+  line: number;
+  /**
+   * Side is "old" or "new": which side of the diff the line is on.
+   */
+  side: string;
+  /**
+   * Quote is the diff lines the comment is anchored to, shown to the
+   * agent above the body.
+   */
+  quote: string;
+  body: string;
+  createdAt: string;
+  /**
+   * SentAt is when the bridge delivered the comment; it is zero until it
+   * has.
+   */
+  sentAt: string;
+  /**
+   * ResolvedAt is when the operator resolved the thread, absent while it
+   * is open.
+   */
+  resolvedAt?: string;
+  ownerId: string;
+}
+
+/**
+ * ReviewCommentRequest is a comment's operator-supplied fields: the body of
+ * POST /api/agents/{id}/review/comments. Everything else about a comment is
+ * the bridge's to fill in.
+ */
+export interface ReviewCommentRequest {
+  path: string;
+  line: number;
+  side: string;
+  quote: string;
+  body: string;
+}
+
+/**
  * Schedule is one cron entry that runs a recipe: GET /api/schedules' answer,
  * and the body POST /api/schedules and PUT /api/schedules/{id} take
  * (web/bridge/schedules.go). `lastRun` is omitted until the schedule has
@@ -1031,6 +1444,83 @@ export interface Schedule {
    * OwnerID is the owner the bridge stored the schedule under.
    */
   ownerId: string;
+}
+
+/**
+ * SessionSummary is one session as GET /api/sessions lists it: the entry an
+ * agent's session/list returns for this project.
+ */
+export interface SessionSummary {
+  sessionId: string;
+  title?: string;
+  /**
+   * UpdatedAt is when the session last changed, Unix milliseconds.
+   */
+  updatedAt?: number;
+  messageCount?: number;
+}
+
+/**
+ * SessionList is GET /api/sessions' answer: the project's sessions.
+ */
+export interface SessionList {
+  sessions: SessionSummary[];
+}
+
+/**
+ * PromptRequest is a POST /api/sessions/{id}/prompt body: the text that
+ * starts a turn.
+ */
+export interface PromptRequest {
+  text: string;
+}
+
+/**
+ * SteerRequest is a POST /api/sessions/{id}/steer body: an instruction for
+ * the turn already running.
+ */
+export interface SteerRequest {
+  text: string;
+}
+
+/**
+ * ModeRequest is a POST /api/sessions/{id}/mode body: the permission mode to
+ * switch to.
+ */
+export interface ModeRequest {
+  mode: string;
+}
+
+/**
+ * Roster is GET /api/sessions/{id}/roster's answer: every role's live model
+ * binding, plus the swarm and SDD budgets.
+ */
+export interface Roster {
+  roles: RosterRole[];
+  swarmBudget: RosterBudget;
+  sddBudget: RosterBudget;
+}
+
+/**
+ * RosterRole is one role's resolved binding.
+ */
+export interface RosterRole {
+  role: string;
+  profile: string;
+  provider?: string;
+  model?: string;
+  presetName?: string;
+  customAgent?: string;
+  localOnly: boolean;
+  error?: string;
+}
+
+/**
+ * RosterBudget is one subsystem's token and round budget.
+ */
+export interface RosterBudget {
+  maxFixRounds: number;
+  maxTotalTokens: number;
 }
 
 /**
@@ -1069,6 +1559,372 @@ export interface SpawnResult {
    * minted.
    */
   warning?: string;
+}
+
+/**
+ * WireNode is one node. Exactly one payload pointer is set, chosen by Kind;
+ * a turn node carries none.
+ */
+export interface WireNode {
+  id: string;
+  kind: string;
+  parent?: string;
+  children?: string[];
+  live?: boolean;
+  /**
+   * Version is the hex of the node's payload hash: a client caches a
+   * rendered row while it is unchanged.
+   */
+  version?: string;
+  step?: WireStep;
+  tool?: WireTool;
+  message?: WireMessage;
+  thinking?: WireThinking;
+  runEvent?: WireRunEvent;
+  completion?: WireCompletion;
+  plan?: WirePlan;
+  receipt?: WireReceipt;
+  band?: WireBand;
+}
+
+/**
+ * WireStep is a step's header and reasoning.
+ */
+export interface WireStep {
+  headline: string;
+  rest?: string;
+  stepIds?: number[];
+  owner?: string;
+  roleWord?: string;
+  role?: string;
+  model?: string;
+  provider?: string;
+  todoId?: string;
+  todo?: WireTodoLabel;
+  startedAt?: number;
+  endedAt?: number;
+  thoughts?: WireThought[];
+  /**
+   * Narration is the beat's narration texts in order, each trimmed and an
+   * empty one kept, so the count is the beat's narration count.
+   */
+  narration?: string[];
+}
+
+/**
+ * WireTodoLabel marks the beat where work moves to a different todo.
+ */
+export interface WireTodoLabel {
+  id: string;
+  index: number;
+  total: number;
+  content: string;
+}
+
+/**
+ * WireThought is one finished reasoning block inside a step.
+ */
+export interface WireThought {
+  text: string;
+  durationMs?: number;
+}
+
+/**
+ * WireTool is a tool row: one call, a merged run of same-tool calls, or a
+ * call still running.
+ */
+export interface WireTool {
+  name: string;
+  display: string;
+  /**
+   * Verb is the word the row leads with.
+   */
+  verb?: string;
+  /**
+   * WorkKey is the stable conversation-work identity this row dispatched,
+   * so a client can pair the retained dispatch row with the pinned live
+   * card by identity rather than by display text.
+   */
+  workKey?: string;
+  calls?: WireCall[];
+  running?: WireRunning;
+  /**
+   * SubagentID names the subagent this row started, 0 when it started none.
+   */
+  subagentId?: number;
+  /**
+   * Callers says the row's call changed a resolved symbol whose callers the
+   * agent can look up.
+   */
+  callers?: boolean;
+}
+
+/**
+ * WireCall is one finished call.
+ */
+export interface WireCall {
+  callId?: string;
+  target?: string;
+  args?: string;
+  summary?: string;
+  output?: string;
+  error?: string;
+  exitCode?: number;
+  failed?: boolean;
+  approval?: string;
+  risk?: string;
+  files?: string[];
+  role?: string;
+  notice?: string;
+  durationMs?: number;
+  at?: number;
+  truncated?: boolean;
+  /**
+   * Subject is what the call acted on, scrubbed, its first line.
+   */
+  subject?: string;
+  /**
+   * SummaryLine is the summary's first line, scrubbed.
+   */
+  summaryLine?: string;
+  /**
+   * DiffStat is "+N −M" over the whole diff of an edit or a whole-file
+   * write.
+   */
+  diffStat?: string;
+  /**
+   * HookHint is the hook decision the row shows first.
+   */
+  hookHint?: string;
+  /**
+   * KilledReason is why the sandbox killed the command.
+   */
+  killedReason?: string;
+  /**
+   * JobID is the background job the call started.
+   */
+  jobId?: string;
+  /**
+   * Tail is a failed call's last output lines.
+   */
+  tail?: string[];
+}
+
+/**
+ * WireRunning is a call that has not finished.
+ */
+export interface WireRunning {
+  target?: string;
+  output?: string;
+  startedAt?: number;
+  truncated?: boolean;
+  /**
+   * Subject is what the call acts on, scrubbed.
+   */
+  subject?: string;
+  callId?: string;
+  /**
+   * Args is the arguments as the tool shows them, capped.
+   */
+  args?: string;
+}
+
+/**
+ * WireCompletion is one finished piece of background work at the moment it
+ * ended: a background job's exit or a subagent's end. Expanded, it is the
+ * issue report.
+ */
+export interface WireCompletion {
+  source: string;
+  id: string;
+  subagentId?: number;
+  label: string;
+  outcome: string;
+  failed?: boolean;
+  exitCode?: number;
+  stopCause?: string;
+  startedAt?: number;
+  endedAt?: number;
+  durationMs?: number;
+  measure?: string;
+  summary?: string;
+  command?: string;
+  cwd?: string;
+  output?: string;
+  report?: string;
+  error?: string;
+  workKey?: string;
+  executionId?: string;
+  reportMessageId?: number;
+  truncated?: boolean;
+}
+
+/**
+ * WirePlan is a beat's plan line: the todo list as the beat's last
+ * todo.write left it.
+ */
+export interface WirePlan {
+  /**
+   * Status is each item's status in list order: "completed",
+   * "in_progress" or "pending".
+   */
+  status?: string[];
+  done: number;
+  total: number;
+  active?: number;
+  activeText?: string;
+  cleared?: boolean;
+}
+
+/**
+ * WireMessage is a user prompt, an assistant reply, or any other message the
+ * transcript shows on its own row.
+ */
+export interface WireMessage {
+  role: string;
+  contentType?: string;
+  content: string;
+  /**
+   * IsFinal is the wire's "final": the field is spelled out here because
+   * Dart reserves the bare word, and both generators name a Dart field (but
+   * never a JSON key) after the Go field.
+   */
+  final?: boolean;
+  usage?: string;
+  salvaged?: boolean;
+  salvageReason?: string;
+  thinkMs?: number;
+  at?: number;
+  /**
+   * Reasoning is the message's reasoning text, capped.
+   */
+  reasoning?: string;
+  /**
+   * Truncated says the reasoning was cut.
+   */
+  truncated?: boolean;
+}
+
+/**
+ * WireThinking is a reasoning row outside any step, finished or live.
+ */
+export interface WireThinking {
+  text: string;
+  durationMs?: number;
+  /**
+   * StartedAt is when the live reasoning began.
+   */
+  startedAt?: number;
+}
+
+/**
+ * WireRunEvent is one plan-run event (verify failure, review, commit, …).
+ */
+export interface WireRunEvent {
+  kind: string;
+  taskN?: number;
+  title?: string;
+  detail?: string;
+  body?: string;
+  severity?: string;
+  at?: number;
+  truncated?: boolean;
+  /**
+   * BodyLines is the whole body's line count.
+   */
+  bodyLines?: number;
+}
+
+/**
+ * WireReceipt is the summary line closing a finished turn.
+ */
+export interface WireReceipt {
+  durationMs: number;
+  tasks: number;
+  steps: number;
+  tools: number;
+  files: number;
+  usage?: string;
+  salvaged?: boolean;
+}
+
+/**
+ * WireBand is the pinned band: todo progress with its stale signal, and the
+ * running cards. It travels as a node with ID "band" that is deliberately
+ * not in roots, so a transcript walk ignores it.
+ */
+export interface WireBand {
+  todos?: boolean;
+  done: number;
+  total: number;
+  active?: string;
+  stale?: boolean;
+  staleAgeMs?: number;
+  /**
+   * StaleSince is when the stale clock started, so a client can keep the
+   * age current between patches.
+   */
+  staleSince?: number;
+  next?: string[];
+  /**
+   * Tasks is the whole list for the Tasks tab, sent whenever the session
+   * has a list, idle or not.
+   */
+  tasks?: WireTask[];
+  entities?: WireBandEntity[];
+}
+
+/**
+ * WireTask is one todo in the Tasks tab, with its share of the transcript.
+ */
+export interface WireTask {
+  id?: string;
+  content: string;
+  status: string;
+  startedAt?: number;
+  completedAt?: number;
+  steps?: number;
+  workMs?: number;
+  /**
+   * Ref is the first beat bound to the todo, where a click jumps.
+   */
+  ref?: string;
+}
+
+/**
+ * WireBandEntity is one running card the band lists.
+ */
+export interface WireBandEntity {
+  ref: string;
+  label: string;
+  detail?: string;
+  startedAt?: number;
+}
+
+/**
+ * StackSnapshot is the whole stack at Rev, as session/stack answers.
+ */
+export interface StackSnapshot {
+  sessionId: string;
+  subagentId?: number;
+  rev: number;
+  roots: string[];
+  nodes: WireNode[];
+}
+
+/**
+ * StackPatch is one stack_patch update: what changed in one stack since
+ * BaseRev. A client whose revision is BaseRev applies it and moves to Rev; a
+ * client whose revision is anything else refetches the snapshot.
+ */
+export interface StackPatch {
+  kind: string;
+  subagentId?: number;
+  rev: number;
+  baseRev: number;
+  roots: string[];
+  upsert?: WireNode[];
+  remove?: string[];
 }
 
 /**
@@ -1123,6 +1979,47 @@ export interface BudgetDelta {
 export interface ProjectRemovedDelta {
   kind: DeltaKind;
   project: string;
+}
+
+/**
+ * TerminalOpened is POST …/terminal's answer.
+ */
+export interface TerminalOpened {
+  terminalId: string;
+}
+
+/**
+ * TerminalChunk is one message of the terminal's event stream: output bytes
+ * in Data, base64 as SSE carries them, or the shell's end with its exit code
+ * and, when the shell never really started, why. A chunk carries one or the
+ * other, and the bridge replays retained output from the start, so a client
+ * never resumes a stream it lost.
+ */
+export interface TerminalChunk {
+  data?: string;
+  exit?: number;
+  /**
+   * Error is why the shell failed to start, on the chunk that ends the
+   * stream.
+   */
+  error?: string;
+}
+
+/**
+ * TerminalInput is POST …/input's body: base64 of at most 64 KiB of
+ * keystrokes. A client sends in pieces, in order, one request at a time.
+ */
+export interface TerminalInput {
+  data: string;
+}
+
+/**
+ * TerminalResize is POST …/resize's body, and what opening a terminal asks
+ * for: the shell's size in character cells.
+ */
+export interface TerminalResize {
+  cols: number;
+  rows: number;
 }
 
 /**

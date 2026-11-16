@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -30,6 +31,8 @@ type ProgramResult struct {
 	Detached      string       // the session a detach left running; "" otherwise
 	ToFleet       bool         // the session screen ended with /fleet
 	Open          fleet.Target // the fleet program's target; zero means quit
+	Draft         tui.Draft    // the session screen's draft when it ended
+	GaveUp        bool         // the waiting screen ended because the user gave up
 }
 
 // ProgramRunner runs the TUI program. The default runs a tea.Program; tests
@@ -67,6 +70,13 @@ type options struct {
 	// daemon loop runs is given; tests read what the loop wired without
 	// driving a real program.
 	onFleetWiring func(client acpclient.Fleet, watch *fleet.Watch)
+
+	// reconnectWindow, reconnectFirst and reconnectMax are the reconnect's
+	// window and the waits between its attempts (decision 7). Zero values mean
+	// production's 60s, 1s and 5s, so no constructor literal sets them.
+	reconnectWindow time.Duration
+	reconnectFirst  time.Duration
+	reconnectMax    time.Duration
 
 	// remote is a server profile's loop: the transports the loop dials
 	// instead of the local daemon (decision 8). nil for the local daemon.
@@ -259,6 +269,12 @@ func runProgram(ctx context.Context, model tea.Model, output io.Writer) ProgramR
 	}
 	if opener, ok := finalModel.(interface{ Open() fleet.Target }); ok {
 		res.Open = opener.Open()
+	}
+	if drafter, ok := finalModel.(interface{ Draft() tui.Draft }); ok {
+		res.Draft = drafter.Draft()
+	}
+	if giver, ok := finalModel.(interface{ GaveUp() bool }); ok {
+		res.GaveUp = giver.GaveUp()
 	}
 	return res
 }

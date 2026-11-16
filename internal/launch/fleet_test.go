@@ -538,8 +538,9 @@ func TestAServerFleetDialsWithoutASharedFilesystem(t *testing.T) {
 
 	var shared []bool
 	script := loopFleetScript(t, dir)
-	script.onSession = func(_ context.Context, m tui.Model) {
+	script.onSession = func(_ context.Context, m tui.Model) tui.Model {
 		shared = append(shared, m.Host().SharedFilesystem())
+		return m
 	}
 
 	if err := runServerFleet(t, fake, dir, script); err != nil {
@@ -575,7 +576,10 @@ func TestAServerFleetNeverOpensTheConnectPanel(t *testing.T) {
 	dir := t.TempDir()
 	server := loopFleetScript(t, dir)
 	var onServer string
-	server.onSession = func(_ context.Context, m tui.Model) { onServer = sessionView(t, m) }
+	server.onSession = func(_ context.Context, m tui.Model) tui.Model {
+		onServer = sessionView(t, m)
+		return m
+	}
 	if err := runServerFleet(t, newFakeDaemon(t, dir, home), dir, server); err != nil {
 		t.Fatalf("ServerFleet: %v", err)
 	}
@@ -596,7 +600,10 @@ func TestAServerFleetNeverOpensTheConnectPanel(t *testing.T) {
 	daemon := &loopScript{t: t}
 	daemon.fleetEnds = []ProgramResult{{Open: fleet.Target{Root: daemonDir, SessionID: "s1"}}}
 	var onDaemon string
-	daemon.onSession = func(_ context.Context, m tui.Model) { onDaemon = sessionView(t, m) }
+	daemon.onSession = func(_ context.Context, m tui.Model) tui.Model {
+		onDaemon = sessionView(t, m)
+		return m
+	}
 	if err := Fleet(context.Background(), io.Discard, filepath.Join(t.TempDir(), "fleet.sock"),
 		withDaemonClient(newFakeDaemon(t, daemonDir, home)),
 		withWorkingDir(daemonDir),

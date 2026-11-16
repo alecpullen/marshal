@@ -2,6 +2,7 @@ package launch
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -22,6 +23,7 @@ import (
 	"marshal/internal/app/notify"
 	"marshal/internal/app/tui"
 	"marshal/internal/app/tui/fleet"
+	"marshal/internal/app/tui/reconnect"
 	"marshal/internal/daemon"
 	"marshal/internal/fleetclient"
 	"marshal/internal/repo"
@@ -38,6 +40,21 @@ const (
 	// daemonProfileLocal is the profile daemon mode runs on (P4 D1): a local
 	// daemon serves host processes from one user's machine.
 	daemonProfileLocal = "local"
+
+	// reconnectWindow is how long a lost connection is reconnected for before
+	// the loss is reported (decision 7). A daemon restart takes seconds, and a
+	// minute leaves room for a rebuild on either side of it.
+	reconnectWindow = 60 * time.Second
+	// reconnectFirstWait is the wait before the first retry, and
+	// reconnectMaxWait the largest wait between retries (decision 7).
+	reconnectFirstWait = time.Second
+	reconnectMaxWait   = 5 * time.Second
+
+	// noteOnceWindow is how many of the session's newest messages the
+	// note-once check reads (decision 6): a resumed session appends its own
+	// startup messages after the reloaded transcript, so the note it is
+	// looking for is not the last one.
+	noteOnceWindow = 32
 )
 
 // daemonClient is the part of *daemon.Client the daemon mode uses.
@@ -54,8 +71,9 @@ type daemonStep struct {
 	notice    string // an Events line for the fleet program
 	agentID   string
 	agentName string
-	root      string // the project
-	sessionID string // a daemon session; "" opens a new one on root
+	root      string      // the project
+	sessionID string      // a daemon session; "" opens a new one on root
+	dialled   *daemonConn // a connection the reconnect already dialled
 }
 
 // label names the step's session in a message: the agent's name, else the
@@ -94,6 +112,15 @@ func withDaemonClient(c daemonClient) Option {
 // withWorkingDir replaces os.Getwd for daemon mode's project lookup.
 func withWorkingDir(dir string) Option {
 	return func(o *options) { o.workingDir = dir }
+}
+
+// withReconnect sets the window and the waits (decision 7).
+func withReconnect(window, first, max time.Duration) Option {
+	return func(o *options) {
+		o.reconnectWindow = window
+		o.reconnectFirst = first
+		o.reconnectMax = max
+	}
 }
 
 // withAgentVersion replaces acp.AgentVersion as this build's version.
@@ -262,6 +289,11 @@ type daemonLoop struct {
 	// fleetRan reports whether the fleet program has run in this loop.
 	fleetRan bool
 
+	// drafts is what each session screen left in its composer, by session ID,
+	// kept for the loop's life (decision 5): a reconnect and a return from the
+	// fleet both open the screen with it.
+	drafts map[string]tui.Draft
+
 	cfg       config.Config
 	cfgLoaded bool
 }
@@ -329,27 +361,37 @@ func (l *daemonLoop) fleetStep(ctx context.Context, step daemonStep) (*daemonSte
 // sessionStep dials the step's session, runs the TUI on it, and reports what
 // comes next.
 func (l *daemonLoop) sessionStep(ctx context.Context, step daemonStep) (*daemonStep, error) {
-	conn, err := dialDaemon(ctx, l.opts, step)
-	if err != nil {
-		// Once the fleet has run, a session it could not open is a line on
-		// its Events ring rather than the end of the loop. The notice carries
-		// the plain failure: the "marshal attach / --embedded" way out that
-		// daemonServingError adds is wrong here, where a fleet is already up.
-		if l.fleetRan {
-			return &daemonStep{fleet: true, notice: fmt.Sprintf("could not open %s: %v", step.label(), err)}, nil
+	// Decision 5: the reconnect's step carries the connection it dialled, so
+	// the screen runs on it rather than dialling again.
+	conn := step.dialled
+	if conn == nil {
+		var err error
+		conn, err = dialDaemon(ctx, l.opts, step)
+		if err != nil {
+			// Once the fleet has run, a session it could not open is a line on
+			// its Events ring rather than the end of the loop. The notice carries
+			// the plain failure: the "marshal attach / --embedded" way out that
+			// daemonServingError adds is wrong here, where a fleet is already up.
+			if l.fleetRan {
+				return &daemonStep{fleet: true, notice: fmt.Sprintf("could not open %s: %v", step.label(), err)}, nil
+			}
+			var refused *daemonDialFailure
+			if errors.As(err, &refused) {
+				return nil, daemonServingError(l.opts, refused.what, refused.err)
+			}
+			return nil, err
 		}
-		var refused *daemonDialFailure
-		if errors.As(err, &refused) {
-			return nil, daemonServingError(l.opts, refused.what, refused.err)
-		}
-		return nil, err
 	}
+
+	// The session the screen runs on: the draft below is keyed by it, and the
+	// loss reports it. The ID does not change with the connection.
+	sessionID := conn.sess.ID()
 
 	// A daemon from a different build still serves the session, but its
 	// agent is not this binary: say so once, so an upgrade that left the
 	// daemon running is not mistaken for the new build's behaviour.
 	if theirs := conn.host.Agent().Version; theirs != l.opts.version() {
-		if nerr := conn.sess.AddNote(ctx, acpwire.Note{Text: l.opts.versionNote(theirs), ContentType: acpwire.ContentTypePlain}); nerr != nil {
+		if nerr := addNoteOnce(ctx, conn.sess, l.opts.versionNote(theirs)); nerr != nil {
 			l.logger.Warn("launch: writing the daemon's version note", "error", nerr)
 		}
 	}
@@ -372,18 +414,41 @@ func (l *daemonLoop) sessionStep(ctx context.Context, step daemonStep) (*daemonS
 	if step.agentID != "" {
 		tuiOpts = append(tuiOpts, tui.WithAgentSession(step.agentID, step.agentName))
 	}
+	// Decision 5: the screen opens with the draft its session kept, so a
+	// reconnect and a return from the fleet both find it.
+	if draft, kept := l.drafts[sessionID]; kept && !draft.Empty() {
+		tuiOpts = append(tuiOpts, tui.WithDraft(draft))
+	}
 	progResult := l.opts.programRunner(progCtx, tui.New(conn.host, conn.sess, tuiOpts...), l.stdout)
 	progCancel()
+
+	// Decision 5: the draft is kept for every ending, so the screen after a
+	// reconnect or a return from the fleet opens with it. A screen that ends
+	// with nothing in the composer clears the entry.
+	l.keepDraft(sessionID, progResult.Draft)
 
 	if cerr := conn.close(); cerr != nil {
 		l.logger.Warn("launch: closing the daemon's connection", "error", cerr)
 	}
 
-	// The session the TUI ran on, read after the close as the loss below is.
-	sessionID := conn.sess.ID()
-
 	if conn.connectionLost() {
-		lostErr := conn.err()
+		// Decision 4: the reconnect reuses the session's ID, so a first attach
+		// that opened a new session reconnects to the session it opened rather
+		// than opening another one.
+		resume := step
+		resume.sessionID = sessionID
+		resume.dialled = nil
+		reconnected, rerr := l.reconnect(ctx, resume, conn.restartReason())
+		if rerr == nil {
+			// Decision 5: the step carries the connection, so the screen that
+			// follows runs on it.
+			resume.dialled = reconnected
+			return &resume, nil
+		}
+		lostErr := rerr
+		if lostErr == nil {
+			lostErr = conn.err()
+		}
 		if lostErr == nil {
 			lostErr = errors.New("the connection closed")
 		}
@@ -420,6 +485,160 @@ func (l *daemonLoop) sessionStep(ctx context.Context, step daemonStep) (*daemonS
 		return &daemonStep{fleet: true, selected: step.selection(sessionID)}, nil
 	}
 	return nil, nil
+}
+
+// keepDraft keeps the draft a session screen ended with, and clears the entry
+// when it ended with nothing in the composer (decision 5).
+func (l *daemonLoop) keepDraft(sessionID string, draft tui.Draft) {
+	if draft.Empty() {
+		delete(l.drafts, sessionID)
+		return
+	}
+	if l.drafts == nil {
+		l.drafts = make(map[string]tui.Draft)
+	}
+	l.drafts[sessionID] = draft
+}
+
+// reconnectOutcome is what the attempts ended with: the connection one of them
+// attached, or why none did.
+type reconnectOutcome struct {
+	conn *daemonConn
+	err  error
+}
+
+// reconnect dials step again until it attaches, a refusal ends it, the
+// window ends or the user gives up (decisions 2, 3 and 7).
+func (l *daemonLoop) reconnect(ctx context.Context, step daemonStep, reason string) (*daemonConn, error) {
+	window, first, max := l.opts.reconnectTiming()
+	deadline := time.Now().Add(window)
+
+	// Decision 7: the window bounds every attempt, and the waiting screen's
+	// end cancels them early.
+	dialCtx, stopDials := context.WithTimeout(ctx, window)
+	defer stopDials()
+
+	attempts := make(chan reconnect.Attempt)
+	outcome := make(chan reconnectOutcome, 1)
+
+	// Decision 2: the attempts run on their own goroutine while the screen
+	// waits. The channel closes when they stop, which ends the screen.
+	go func() {
+		conn, err := l.dialUntilAttached(dialCtx, step, first, max, attempts)
+		outcome <- reconnectOutcome{conn: conn, err: err}
+	}()
+
+	progResult := l.opts.programRunner(ctx, reconnect.New(step.label(), reason, deadline, attempts), l.stdout)
+	if progResult.GaveUp {
+		// Decision 2: the user ended the wait, so the attempts stop here, and
+		// the outcome below waits for them to have stopped before returning.
+		stopDials()
+	}
+	res := <-outcome
+	if progResult.GaveUp {
+		// The user gave up: a connection that arrived anyway is not resumed,
+		// because the screen that asked for it is gone.
+		if res.conn != nil {
+			_ = res.conn.close()
+		}
+		if res.err != nil {
+			return nil, res.err
+		}
+		return nil, errors.New("the wait for the daemon was given up")
+	}
+	if res.err != nil {
+		return nil, res.err
+	}
+	return res.conn, nil
+}
+
+// dialUntilAttached dials step until it attaches, a 4xx refusal ends it at
+// once, or the window does, reporting each retry on attempts and closing the
+// channel when it stops (decision 3).
+func (l *daemonLoop) dialUntilAttached(ctx context.Context, step daemonStep, first, max time.Duration, attempts chan<- reconnect.Attempt) (*daemonConn, error) {
+	defer close(attempts)
+
+	wait := first
+	var last error
+	for n := 1; ; n++ {
+		conn, err := dialDaemon(ctx, l.opts, step)
+		if err == nil {
+			return conn, nil
+		}
+		last = err
+		if !retryableReconnect(err) {
+			return nil, err
+		}
+		select {
+		case attempts <- reconnect.Attempt{N: n, Err: err.Error()}:
+		case <-ctx.Done():
+			// The window ended, or the user gave up. The failure the screen
+			// last saw is the one to report.
+			return nil, last
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, last
+		case <-timer.C:
+		}
+		if wait < max {
+			wait *= 2
+			if wait > max {
+				wait = max
+			}
+		}
+	}
+}
+
+// retryableReconnect reports whether a failed reconnect is worth another
+// attempt (decision 3): a refusal with a 4xx status is not, and a dial failure,
+// a 5xx refusal and a session the new connection cannot attach yet are.
+func retryableReconnect(err error) bool {
+	var refused *daemon.AttachError
+	if errors.As(err, &refused) {
+		return refused.Status < 400 || refused.Status >= 500
+	}
+	return true
+}
+
+// reconnectTiming is the reconnect's window and the waits between attempts: the
+// seam's, else production's 60s, 1s and 5s (decision 7).
+func (o *options) reconnectTiming() (window, first, max time.Duration) {
+	window, first, max = o.reconnectWindow, o.reconnectFirst, o.reconnectMax
+	if window <= 0 {
+		window = reconnectWindow
+	}
+	if first <= 0 {
+		first = reconnectFirstWait
+	}
+	if max <= 0 {
+		max = reconnectMaxWait
+	}
+	return window, first, max
+}
+
+// addNoteOnce adds text as a note unless the session already carries it near
+// its end (decision 6). A read that fails adds the note, as before: a note too
+// many is better than a skew nobody is told about.
+//
+// The check reads a window of the newest messages rather than the single
+// newest one: a resumed session appends its own startup messages — the loaded
+// skill bodies among them — after the transcript it reloaded, so the note this
+// loop wrote before a daemon restart is not the last message when the next
+// attach reads. Comparing only the newest message would rewrite the note once
+// per restart, which is exactly the stacking decision 6 exists to stop.
+func addNoteOnce(ctx context.Context, sess acpclient.Session, text string) error {
+	page, err := sess.Messages(ctx, acpwire.MessageQuery{Last: noteOnceWindow})
+	if err == nil {
+		for _, msg := range page.Messages {
+			if msg.Content == text {
+				return nil
+			}
+		}
+	}
+	return sess.AddNote(ctx, acpwire.Note{Text: text, ContentType: acpwire.ContentTypePlain})
 }
 
 // fleetClientFor is the loop's fleet client: the injected one as it is, else
@@ -578,8 +797,11 @@ type daemonConn struct {
 	mu       sync.Mutex
 	closed   bool
 	lostFlag bool
-	lostCh   chan struct{}
-	done     chan struct{}
+	// restarting is the last marshal/restarting the agent sent: why it is
+	// about to close the stream (decision 4).
+	restarting *acpwire.RestartingParams
+	lostCh     chan struct{}
+	done       chan struct{}
 }
 
 // dialDaemon attaches the step's session on the daemon and dials its relay: the
@@ -605,12 +827,18 @@ func dialDaemon(ctx context.Context, opts *options, step daemonStep) (*daemonCon
 	}
 
 	stream := rpc.NewStream(attachment.Conn, attachment.Conn, rpc.MaxFrameBytes)
+	// The connection record exists before the dial, so the notification
+	// handler can record the agent's marshal/restarting on it (decision 4).
+	conn := newDaemonConn()
 	// The local daemon's agent is a different process on the same filesystem,
 	// so the client reads its files directly. A server's agent is not on it at
 	// all (decision 8), so nothing of the session is read as a local file. The
 	// version is not pinned either way, because a daemon older than this binary
 	// still serves the session (the note says so).
-	host, err := rpc.Dial(handshakeCtx, stream, rpc.DialOptions{SharedFilesystem: opts.remote == nil})
+	host, err := rpc.Dial(handshakeCtx, stream, rpc.DialOptions{
+		SharedFilesystem: opts.remote == nil,
+		Handlers:         rpc.Handlers{Notify: conn.note},
+	})
 	if err != nil {
 		_ = stream.Close()
 		return nil, &daemonDialFailure{what: "its agent could not be dialled", err: err}
@@ -621,7 +849,7 @@ func dialDaemon(ctx context.Context, opts *options, step daemonStep) (*daemonCon
 		_ = stream.Close()
 		return nil, &daemonDialFailure{what: fmt.Sprintf("session %q could not be attached", attachment.SessionID), err: err}
 	}
-	return newDaemonConn(host, sess), nil
+	return conn.adopt(host, sess), nil
 }
 
 // daemonDialFailure is what dialDaemon reports when the daemon answered but the
@@ -652,10 +880,19 @@ func daemonServingError(opts *options, what string, err error) error {
 	)
 }
 
-// newDaemonConn tracks the connection's end: lost closes when it ends on its
-// own, before close claims the shutdown.
-func newDaemonConn(host *rpc.Host, sess *rpc.Session) *daemonConn {
-	c := &daemonConn{host: host, sess: sess, lostCh: make(chan struct{}), done: make(chan struct{})}
+// newDaemonConn is the connection record dialDaemon fills as it dials: it
+// exists before the host does, so the notification handler Dial installs can
+// record a marshal/restarting on it (decision 4).
+func newDaemonConn() *daemonConn {
+	return &daemonConn{lostCh: make(chan struct{}), done: make(chan struct{})}
+}
+
+// adopt records the dialled host and session, and starts watching the
+// connection's end: lost closes when it ends on its own, before close claims
+// the shutdown.
+func (c *daemonConn) adopt(host *rpc.Host, sess *rpc.Session) *daemonConn {
+	c.host = host
+	c.sess = sess
 	go func() {
 		select {
 		case <-host.Done():
@@ -669,6 +906,32 @@ func newDaemonConn(host *rpc.Host, sess *rpc.Session) *daemonConn {
 		}
 	}()
 	return c
+}
+
+// note records a marshal/restarting: why the agent is about to close the
+// stream (decision 4). It runs on the connection's read goroutine.
+func (c *daemonConn) note(method string, params json.RawMessage) {
+	if method != acpwire.MethodRestarting {
+		return
+	}
+	var restarting acpwire.RestartingParams
+	if err := json.Unmarshal(params, &restarting); err != nil {
+		return
+	}
+	c.mu.Lock()
+	c.restarting = &restarting
+	c.mu.Unlock()
+}
+
+// restartReason is the reason the last marshal/restarting gave, "" when none
+// arrived.
+func (c *daemonConn) restartReason() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.restarting == nil {
+		return ""
+	}
+	return c.restarting.Reason
 }
 
 // lost is closed when the connection ended before close claimed the shutdown.

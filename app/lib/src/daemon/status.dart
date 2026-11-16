@@ -100,8 +100,12 @@ class DaemonInfo {
 
   factory DaemonInfo.fromJson(Map<String, dynamic> json) => DaemonInfo(
         version: json['version'] as String? ?? '',
-        projects:
-            ((json['projects'] as List<dynamic>?) ?? const []).cast<String>(),
+        // toList forces the cast now: a lazy cast throws only when read,
+        // which for projects is menu-build time, outside the poll's try —
+        // an uncaught async error that would take the tray down.
+        projects: ((json['projects'] as List<dynamic>?) ?? const [])
+            .cast<String>()
+            .toList(),
         children: ((json['children'] as List<dynamic>?) ?? const [])
             .map((e) => DaemonChild.fromJson(e as Map<String, dynamic>))
             .toList(),

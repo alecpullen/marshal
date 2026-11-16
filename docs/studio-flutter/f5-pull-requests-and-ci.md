@@ -285,3 +285,21 @@ only. Everything is under `web/`, and `TestWebIsStdlibOnly` still holds.
 - **Stopping a factory fix** issues the factory's own `stop` command for the
   item, because the worker is the factory's implementer; any other fix stops by
   discarding its worker.
+
+### Files the plan named that this work did not touch
+
+- **`test/contract/pulls.json`** (task 1) does not exist, because nothing
+  consumes it. The shared fixtures under `test/contract/` pair a Go test that
+  decodes a contract document with a Dart test that decodes it — today only
+  `daemon-status.json`, used by `cmd/marshal` and `app/test/status_test.dart`.
+  The app's pull-request model is tasks 6–8 of this phase, not this plan, so the
+  fixture would have no second reader. The "pull" wire itself is pinned in
+  `web/bridge/testdata/contract`, including a `delta_pull` recording beside the
+  other delta kinds.
+- **`web/bridge/fleetevents.go`** (task 4) is untouched: the delta's emission
+  lives with the record it announces, in `pulls.go` (`emitPull`,
+  `emitPullRemoved`), and `fleetevents.go` needed no change for it.
+- **The review bot's file** (task 2) is untouched by design: the review bot
+  opens no pull request. When one of its pulls ships, the exit path records it
+  with origin automation `review-bot`, which is `pulls.go`'s
+  `recordExitPull`.

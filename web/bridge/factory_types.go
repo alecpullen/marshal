@@ -51,15 +51,24 @@ type FactoryCreate struct {
 	Plan      string        `json:"plan"`
 	Spec      string        `json:"spec"`
 	Config    FactoryConfig `json:"config"`
+	// EditSnapshot is the reviewed selection a planner handoff bound to this
+	// draft. It is optional and absent on every draft a Studio surface creates,
+	// so those journals keep their bytes. The field is a pointer because
+	// "no selection" and "an empty selection" are different approvals.
+	EditSnapshot *EditSnapshot `json:"editSnapshot,omitempty"`
 }
 
 type FactoryApproval struct {
-	Revision   uint64        `json:"revision"`
-	Plan       string        `json:"plan"`
-	Spec       string        `json:"spec"`
-	PlanHash   string        `json:"planHash"`
-	Config     FactoryConfig `json:"config"`
-	ApprovedAt time.Time     `json:"approvedAt"`
+	Revision uint64 `json:"revision"`
+	Plan     string `json:"plan"`
+	Spec     string `json:"spec"`
+	// PlanHash binds the exact plan, spec and selection this revision was
+	// approved with (see factoryApprovalHash). An approval without a snapshot
+	// holds the digest it always has.
+	PlanHash     string        `json:"planHash"`
+	Config       FactoryConfig `json:"config"`
+	EditSnapshot *EditSnapshot `json:"editSnapshot,omitempty"`
+	ApprovedAt   time.Time     `json:"approvedAt"`
 }
 
 type FactoryGrant struct {

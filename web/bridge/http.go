@@ -18,9 +18,10 @@ import (
 	"marshal/web/bridge/contract"
 )
 
-// maxBodyBytes bounds inbound request bodies. Prompt and steer text
-// dominate; 1 MiB matches the ACP inbound frame cap.
-const maxBodyBytes = 1 << 20
+// maxBodyBytes bounds inbound request bodies. Prompt and steer text dominate;
+// the bound is also above the largest planner body, a plan and a spec at their
+// per-document limits.
+const maxBodyBytes = 2 << 20
 
 // maxAuditTail caps how many audit records a single feed request may
 // return. The UI polls every few seconds; a bounded tail keeps the
@@ -98,6 +99,11 @@ func NewServer(target any, args ...any) *Server {
 	s := &Server{fleet: fleet, reg: reg, log: log, publicURLBase: publicURLBase, mux: http.NewServeMux(),
 		factoryAuth: newFactoryMCPAuthorizer(ws)}
 	s.routes()
+	// The planner API owns live backend sessions, so it exists only when this
+	// server has a fleet to hold them.
+	if fleet != nil {
+		s.plannerRoutes()
+	}
 	for _, arg := range args {
 		if factory, ok := arg.(FactoryAPI); ok {
 			s.factory = factory
@@ -399,6 +405,24 @@ func writeErr(w http.ResponseWriter, err error) {
 func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	defer r.Body.Close()
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	if err := dec.Decode(v); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body: " + err.Error()})
+		return false
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "body must contain a single JSON value"})
+		return false
+	}
+	return true
+}
+
+// decodeStrictJSON is decodeJSON for a body whose every field is known: an
+// unknown field is a typo, and dropping it silently is worse than refusing it.
+func decodeStrictJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	defer r.Body.Close()
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body: " + err.Error()})
 		return false

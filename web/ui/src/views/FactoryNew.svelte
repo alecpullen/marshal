@@ -210,7 +210,7 @@
   import { createFactoryItem, getModels, getProjectSettings, listRepos, listWorkspaces, type WorkspaceListItem } from '../lib/api'
   import type { FactoryItem } from '../lib/factory'
   import type { RouteLeaveGuard } from '../lib/navigationGuard'
-  import { formatFactoryRoute, formatProjectRoute, formatWorkingDraftsRoute } from '../lib/routes'
+  import { formatFactoryRoute, formatProjectRoute, formatWorkingDraftsRoute, plannerRoute } from '../lib/routes'
   import { emptyWorkingDraftContent, sameWorkingDraftContent, type WorkingDraftController } from '../lib/working-drafts'
 
   /**
@@ -482,6 +482,16 @@
       <div class="flex flex-wrap gap-3">
         <a class="text-sm text-accent underline" href="#factory" onclick={(e) => { e.preventDefault(); onNavigate('#factory') }}>Factory</a>
         <a class="text-sm text-accent underline" href={formatWorkingDraftsRoute({}, projectRoot)} onclick={(e) => { e.preventDefault(); onNavigate(formatWorkingDraftsRoute({}, projectRoot)) }}>Working drafts</a>
+        <!--
+          The planner drafts the plan this form would otherwise ask for. The
+          link is additive: this form still creates a handoff typed by hand,
+          with the same rules it always applied.
+        -->
+        <a
+          class="text-sm text-accent underline"
+          href={plannerRoute({ kind: 'new', ...(projectRoot ? { project: projectRoot } : {}) })}
+          onclick={(e) => { e.preventDefault(); onNavigate(plannerRoute({ kind: 'new', ...(projectRoot ? { project: projectRoot } : {}) })) }}
+        >Plan with a Studio planner</a>
       </div>
       {#if projectRoot}
         <a class="text-sm text-accent underline" href={formatProjectRoute(projectRoot)} target="_blank" rel="noopener noreferrer" aria-label="Open project settings in a new tab">Project settings</a>

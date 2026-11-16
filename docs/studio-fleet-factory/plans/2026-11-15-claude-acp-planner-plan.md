@@ -150,3 +150,48 @@ Write the capability report as a table of planner and factory role requirements 
 - Handoff selection and user approval are separate. A seed never executes from mutable workspace bytes, and a detached command or unknown prompt is not evidence of completion.
 - A factory using this plan must include the approved design, plan and capability-report output; follow existing factory branch and review policies rather than pushing or merging autonomously.
 - The user approved this plan on 2026-11-15; execution follows the factory handoff. If live proof is unavailable, report that limitation and the untested capabilities explicitly.
+
+## Implementation record
+
+Delivered commits, oldest first:
+
+| Commit | Task |
+|---|---|
+| `103ff32c` | task 1 — worker seam |
+| `b2cec63e` | task 2 — ACP worker backend |
+| `ad640351` | task 3 — planner service |
+| `94108611` | task 4 — capture immutable handoff |
+| `e466c983` | task 5 — bind and seed selected edits |
+| `c5004e6c` | task 6 — Studio planner |
+
+Task 7 delivers `web/bridge/worker_acp_integration_test.go`
+(`TestACPWorkerIntegration`), the
+[capability report](../claude-acp-capability-report.md) and this record.
+
+Deviations, recorded verbatim rather than corrected:
+
+- Captured artifact text uses a new `PlannerSnapshotArtifact` type;
+  `PlannerArtifact` was already the planner record's reference type
+  (`{kind, ref, label}`) in task 3 and was left unchanged.
+- `Child.answerRequest` gained `handlerError` so a handler can choose the
+  protocol error code (`-32601`); every other error path is unchanged.
+- The adapter path is configured by the `MARSHAL_CLAUDE_ACP_ADAPTER` environment
+  variable (absolute, no download, no fallback).
+- Handoff resolves the factory API through `PlannerService.factorySource`
+  (`http.go` untouched); `factoryRoutes` publishes the API.
+- Snapshot diffs are persisted in the immutable snapshot record so review
+  survives workspace removal; the snapshot hash covers `{baseCommit, files}`
+  only.
+- File diffs are computed in-process (single-hunk, binary marker), not parsed
+  from git output.
+- `factoryValidateSnapshot` additionally rejects duplicate paths and any `.git`
+  path.
+- `factoryGit.beforeSeedWrite` exists solely as a nil-in-production test seam
+  for the interrupted-seed proof.
+- The Studio planner route is `#planner/new[?project=<root>]` and
+  `#planner/<id>`.
+
+Remains untested: real Claude adapter authentication and actions,
+process/resume behaviour against a real adapter, the local host platform
+matrix, and a real-browser desktop/390px walkthrough (no adapter or credentials
+in this environment; no browser session was driven).

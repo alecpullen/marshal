@@ -22,6 +22,7 @@
   import FactoryNew from './views/FactoryNew.svelte'
   import FactoryItem from './views/FactoryItem.svelte'
   import WorkingDrafts from './views/WorkingDrafts.svelte'
+  import Planner from './views/Planner.svelte'
   import ReviewBot from './views/automations/ReviewBot.svelte'
   import CIFixer from './views/automations/CIFixer.svelte'
   import Palette from './lib/Palette.svelte'
@@ -43,7 +44,7 @@
   import { loadPrefs, maybeNotify, show as showNotification, type FleetLike } from './lib/notify'
   import DecisionOutcomeView from './lib/inbox/DecisionOutcome.svelte'
   import { outcomeFor, type DecisionOutcome } from './lib/inbox/decision'
-  import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, parseRunRoute, parseLiveRoute, parseLibraryRoute, parseSettingsRoute, parseUsageRoute, parseWorkspacesRoute, parseNetworkRoute, parseProjectRoute, parseWatchesRoute, parseFactoryRoute, parseNewAgentRoute, parseRoadmapRoute, redirectLegacy } from './lib/routes'
+  import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, parseRunRoute, parseLiveRoute, parseLibraryRoute, parseSettingsRoute, parseUsageRoute, parseWorkspacesRoute, parseNetworkRoute, parseProjectRoute, parseWatchesRoute, parseFactoryRoute, parseNewAgentRoute, parseRoadmapRoute, parsePlannerRoute, redirectLegacy } from './lib/routes'
   import { isTokenRejected, listPending, listClients, requestToken, type PendingSubmission, type MCPClient, type NetDecisionKind } from './lib/api'
 
   let hash = $state('#')
@@ -312,6 +313,7 @@
   const watchesRoute = $derived(parseWatchesRoute(hash))
   const networkRoute = $derived(parseNetworkRoute(hash))
   const projectRoute = $derived(parseProjectRoute(hash))
+  const plannerRouteState = $derived(parsePlannerRoute(hash))
   const factoryRoute = $derived(parseFactoryRoute(hash))
   const newAgentRoute = $derived(parseNewAgentRoute(hash))
   const roadmapRoute = $derived(parseRoadmapRoute(hash))
@@ -428,6 +430,18 @@
       <div class="h-full overflow-y-auto">
         {#key `${networkRoute.workspace ?? ''}|${networkRoute.agent ?? ''}`}
           <Network workspace={networkRoute.workspace} agent={networkRoute.agent} onNavigate={navigate} />
+        {/key}
+      </div>
+    {:else if plannerRouteState}
+      <div class="h-full overflow-y-auto">
+        <!--
+          Keyed so moving between creation and one planner, or between two
+          planners, builds a fresh view: the session's replay cursor and
+          captured handoff belong to one planner and must not survive a
+          change of route.
+        -->
+        {#key plannerRouteState.kind === 'session' ? plannerRouteState.id : `new:${plannerRouteState.project ?? ''}`}
+          <Planner route={plannerRouteState} onNavigate={navigate} />
         {/key}
       </div>
     {:else if factoryRoute}

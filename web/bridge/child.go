@@ -45,6 +45,17 @@ var errStopped = errors.New("bridge: child stopped")
 // request; answerRequest answers it as JSON-RPC -32800.
 var errRequestCancelled = errors.New("bridge: the child cancelled the request")
 
+// handlerError lets an OnRequest handler choose the JSON-RPC error code the
+// child is answered with, for the protocol's own codes (such as -32601 for a
+// method the handler does not implement). Every other error is answered
+// -32000, and errRequestCancelled -32800, as before.
+type handlerError struct {
+	Code    int
+	Message string
+}
+
+func (e *handlerError) Error() string { return e.Message }
+
 // cancelRequestMethod is JSON-RPC's $/cancel_request notification. It is a
 // literal because everything under web/ is standard-library only and so may
 // not import marshal/internal/acpwire.
@@ -109,7 +120,11 @@ type Child struct {
 	// result or error is answered with the request's own id.
 	OnRequest func(ctx context.Context, method string, params json.RawMessage) (result any, err error)
 
-	mu         sync.Mutex // guards transport, stdin, stdout, stderrPipe, readDone, genCtx, genCancel, stopping, started
+	mu sync.Mutex // guards transport, stdin, stdout, stderrPipe, readDone, genCtx, genCancel, stopping, started
+	// gen counts spawned generations, from 1. A caller keys a session to the
+	// process that created it by reading it, and it is bumped in spawn, before
+	// OnRestart runs, so a replacement is never mistaken for the old process.
+	gen        uint64
 	transport  agentTransport
 	stdin      io.WriteCloser
 	stdout     io.ReadCloser
@@ -365,6 +380,7 @@ func (c *Child) spawn() error {
 	genCtx, genCancel := context.WithCancel(context.Background())
 
 	c.mu.Lock()
+	c.gen++
 	c.transport = tr
 	c.stdin = stdin
 	c.stdout = stdout
@@ -380,6 +396,16 @@ func (c *Child) spawn() error {
 	}()
 	go c.drainStderr(stderr)
 	return nil
+}
+
+// Generation reports which spawned process is live, counting from 1, and 0
+// before the first spawn. It is bumped inside spawn, before OnRestart is
+// called, so a caller comparing it never sees a live replacement under the old
+// generation's number.
+func (c *Child) Generation() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.gen
 }
 
 // signalCurrent sends sig to the generation that is live right now.
@@ -654,9 +680,13 @@ func (c *Child) answerRequest(ctx context.Context, key string, id json.RawMessag
 	result, err := c.OnRequest(ctx, method, params)
 	if err != nil {
 		code, message := -32000, err.Error()
-		if errors.Is(err, errRequestCancelled) {
+		var he *handlerError
+		switch {
+		case errors.Is(err, errRequestCancelled):
 			// The child ended this request itself (P5 R2).
 			code, message = -32800, "request cancelled"
+		case errors.As(err, &he):
+			code, message = he.Code, he.Message
 		}
 		_ = c.writeFrame(map[string]any{
 			"jsonrpc": "2.0",

@@ -1600,3 +1600,84 @@ export type { WorkingDraft, WorkingDraftContent }
 export async function getPreviewEnvironments(repoId: string, ref: string): Promise<PreviewReport> {
   return request<PreviewReport>('GET', `/api/repos/${encodeURIComponent(repoId)}/preview-environments${ref ? `?ref=${encodeURIComponent(ref)}` : ''}`)
 }
+
+import type {
+  PlannerContextView,
+  PlannerCreateRequest,
+  PlannerEvent,
+  PlannerPromptRequest,
+  PlannerSnapshotReply,
+  PlannerSnapshotRequest,
+  PlannerSnapshotView,
+  PlannerTurnReply,
+  PlannerView,
+} from './planner'
+
+const plannerPath = (id: string) => `/api/planners/${encodeURIComponent(id)}`
+
+/** Starts a planner. A 409 carrying `occupancy` is a workspace question, not a failure. */
+export async function createPlanner(req: PlannerCreateRequest): Promise<PlannerView> {
+  return request('POST', '/api/planners', req)
+}
+
+export async function getPlanner(id: string): Promise<PlannerView> {
+  return request('GET', plannerPath(id))
+}
+
+/** Pass the same request object on a retry: the request id is what makes it a replay. */
+export async function promptPlanner(id: string, req: PlannerPromptRequest): Promise<PlannerTurnReply> {
+  return request('POST', `${plannerPath(id)}/prompt`, req)
+}
+
+export async function cancelPlanner(id: string): Promise<void> {
+  await request('POST', `${plannerPath(id)}/cancel`)
+}
+
+/** Answers one open request; `response` is passed through to the backend unchanged. */
+export async function answerPlanner(id: string, requestId: string, response: unknown): Promise<void> {
+  await request('POST', `${plannerPath(id)}/requests/${encodeURIComponent(requestId)}`, { response })
+}
+
+/**
+ * The bounded replay after `sequence`. A read never dispatches anything, so a
+ * reconnect re-reads from here instead of resending a prompt.
+ */
+export async function plannerEvents(id: string, sequence = 0): Promise<PlannerEvent[]> {
+  return (await request<PlannerEvent[] | null>('GET', `${plannerPath(id)}/events?after=${sequence}`)) ?? []
+}
+
+export async function endPlanner(id: string): Promise<void> {
+  await request('DELETE', plannerPath(id))
+}
+
+/** Freezes one handoff for review; an empty `paths` is a documents-only snapshot. */
+export async function createPlannerSnapshot(id: string, req: PlannerSnapshotRequest): Promise<PlannerSnapshotReply> {
+  const reply = await request<PlannerSnapshotReply | null>('POST', `${plannerPath(id)}/snapshots`, req)
+  if (!reply) throw new APIError(500, { error: 'The bridge returned no snapshot.' })
+  return { ...reply, artifacts: reply.artifacts ?? [], files: reply.files ?? [], rejected: reply.rejected ?? [] }
+}
+
+export async function getPlannerSnapshot(id: string, snapshotId: string): Promise<PlannerSnapshotView> {
+  const view = await request<PlannerSnapshotView | null>('GET', `${plannerPath(id)}/snapshots/${encodeURIComponent(snapshotId)}`)
+  if (!view) throw new APIError(500, { error: 'The bridge returned no snapshot.' })
+  return { ...view, artifacts: view.artifacts ?? [], files: view.files ?? [] }
+}
+
+export async function plannerContext(id: string): Promise<PlannerContextView> {
+  const view = await request<Partial<PlannerContextView> | null>('GET', `${plannerPath(id)}/context`)
+  return {
+    artifacts: view?.artifacts ?? [],
+    decisions: view?.decisions ?? [],
+    unresolved: view?.unresolved ?? [],
+    absent: view?.absent ?? [],
+  }
+}
+
+/**
+ * Creates the factory draft one reviewed snapshot approves. The body is a
+ * normal factory create, so the draft this makes is the same draft the manual
+ * handoff form would have made.
+ */
+export async function handoffPlanner(id: string, snapshotId: string, req: FactoryCreate): Promise<FactoryItem> {
+  return (await request<{ item: FactoryItem }>('POST', `${plannerPath(id)}/snapshots/${encodeURIComponent(snapshotId)}/handoff`, req)).item
+}

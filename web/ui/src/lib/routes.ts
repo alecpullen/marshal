@@ -34,12 +34,13 @@ export function isScopedSessions(hash: string): boolean {
  * screen itself, and `#inbox` is its attention list. Neither is a separate
  * page, so no `home` member survives.
  */
-export type Page = 'fleet' | 'inbox' | 'new' | 'chat' | 'sessions' | 'runs' | 'run' | 'live' | 'library' | 'settings' | 'usage' | 'watches' | 'workspaces' | 'network' | 'project' | 'factory' | 'roadmap' | 'other'
+export type Page = 'fleet' | 'inbox' | 'new' | 'chat' | 'sessions' | 'runs' | 'run' | 'live' | 'library' | 'settings' | 'usage' | 'watches' | 'workspaces' | 'network' | 'project' | 'factory' | 'planner' | 'roadmap' | 'other'
 
 export function pageFromHash(hash: string): Page {
   if (hash === '' || hash === '#' || hash === '#fleet') return 'fleet'
   if (hash === '#inbox') return 'inbox'
   if (parseNewAgentRoute(hash)) return 'new'
+  if (parsePlannerRoute(hash)) return 'planner'
   if (parseFactoryRoute(hash)) return 'factory'
   if (parseChatRoute(hash)) return 'chat'
   if (hash === '#sessions' || isScopedSessions(hash)) return 'sessions'
@@ -403,4 +404,38 @@ export function formatFactoryRoute(route: FactoryRoute): string {
 export function formatWorkingDraftsRoute(route: { create?: boolean; draftId?: string | null }, projectRoot?: string): string {
   const segment = route.create ? '/new' : route.draftId ? `/${encodeURIComponent(route.draftId)}` : ''
   return `#factory/drafts${segment}${projectRoot ? `?project=${encodeURIComponent(projectRoot)}` : ''}`
+}
+
+/**
+ * The Studio planner: `#planner/new[?project=<root>]` creates one, and
+ * `#planner/<id>` is one session. A planner id is the 32-hex identity the
+ * bridge minted, so a hand-edited hash naming anything else is not a route and
+ * the shell shows its own Not Found rather than calling the API with it.
+ */
+export interface PlannerRoute {
+  kind: 'new' | 'session'
+  /** The session's planner id; present exactly when `kind` is `session`. */
+  id?: string
+  /** The project creation is scoped to, when the entry point knew one. */
+  project?: string
+}
+
+const PLANNER_ID = /^[0-9a-f]{32}$/
+
+export function parsePlannerRoute(hash: string): PlannerRoute | null {
+  if (hash === '#planner/new') return { kind: 'new' }
+  const create = /^#planner\/new\?(.*)$/.exec(hash)
+  if (create) {
+    const project = new URLSearchParams(create[1]).get('project')
+    return project ? { kind: 'new', project } : { kind: 'new' }
+  }
+  const m = /^#planner\/([^/?#]+)$/.exec(hash)
+  if (!m || !PLANNER_ID.test(m[1])) return null
+  return { kind: 'session', id: m[1] }
+}
+
+/** The inverse of parsePlannerRoute; every navigation to the planner uses it. */
+export function plannerRoute(route: PlannerRoute): string {
+  if (route.kind === 'new') return `#planner/new${route.project ? `?project=${encodeURIComponent(route.project)}` : ''}`
+  return `#planner/${encodeURIComponent(route.id ?? '')}`
 }

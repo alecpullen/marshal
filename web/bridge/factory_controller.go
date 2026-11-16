@@ -1053,7 +1053,7 @@ func factoryApplyCommandFrom(i *FactoryItem, c FactoryCommand, p *factoryPrincip
 		if i.State != "draft" {
 			return ErrFactoryConflict
 		}
-		a := FactoryApproval{Revision: uint64(len(i.Approvals) + 1), Plan: i.Draft.Plan, Spec: i.Draft.Spec, PlanHash: FactoryPlanHash(i.Draft.Plan, i.Draft.Spec), Config: i.Draft.Config, ApprovedAt: now}
+		a := FactoryApproval{Revision: uint64(len(i.Approvals) + 1), Plan: i.Draft.Plan, Spec: i.Draft.Spec, PlanHash: factoryApprovalHash(i.Draft.Plan, i.Draft.Spec, i.Draft.EditSnapshot), Config: i.Draft.Config, EditSnapshot: factoryCloneSnapshot(i.Draft.EditSnapshot), ApprovedAt: now}
 		i.Approvals = append(i.Approvals, a)
 		i.Grants = append(i.Grants, FactoryGrant{ID: c.RequestID, Reason: "initial approval", AdditionalRounds: a.Config.MaxRounds, At: now})
 		i.State = "queued"
@@ -1096,7 +1096,10 @@ func factoryApplyCommandFrom(i *FactoryItem, c FactoryCommand, p *factoryPrincip
 			if err := factoryNormalize(&r); err != nil {
 				return err
 			}
-			a := FactoryApproval{Revision: uint64(len(i.Approvals) + 1), Plan: r.Plan, Spec: r.Spec, PlanHash: FactoryPlanHash(r.Plan, r.Spec), Config: r.Config, ApprovedAt: now}
+			// A replacement is taken exactly as submitted: a replacement that
+			// omits the snapshot drops the selection, because the caller said
+			// what this draft is now made of.
+			a := FactoryApproval{Revision: uint64(len(i.Approvals) + 1), Plan: r.Plan, Spec: r.Spec, PlanHash: factoryApprovalHash(r.Plan, r.Spec, r.EditSnapshot), Config: r.Config, EditSnapshot: factoryCloneSnapshot(r.EditSnapshot), ApprovedAt: now}
 			i.Approvals = append(i.Approvals, a)
 		} else {
 			// A route-only retry: the plan and the specification are carried
@@ -1109,6 +1112,10 @@ func factoryApplyCommandFrom(i *FactoryItem, c FactoryCommand, p *factoryPrincip
 			}
 			if appended {
 				previous := i.Approvals[len(i.Approvals)-1]
+				// A route change moves the revision, not the approved work: the
+				// selection rides along with the plan, the specification and the
+				// digest that already binds it, and is never re-derived here.
+				approval.EditSnapshot = factoryCloneSnapshot(previous.EditSnapshot)
 				i.Approvals = append(i.Approvals, approval)
 				i.History = append(i.History, FactoryEvent{At: now, Kind: "route_changed", Message: factoryRouteChangeMessage(previous.Config, approval.Config)})
 			}

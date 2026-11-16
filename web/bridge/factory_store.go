@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -75,6 +77,152 @@ func factoryPlanHash(plan, spec string) string {
 		b.WriteString(s)
 	}
 	return factoryDigest(b.Bytes())
+}
+
+// factoryDigestPattern is the shape of one SHA-256 hex digest. A selected
+// file's hashes are checked against it because ContentSHA256 names a blob: a
+// value that is not a digest is a path, and a path must never reach the store.
+var factoryDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// factorySnapshotFileLimit matches the capture limit: an approval that selects
+// more files than a capture can hold is refused rather than half-applied.
+const factorySnapshotFileLimit = 100
+
+// factoryApprovalHash binds one approval to exactly what was approved: the
+// plan and specification bytes and, when the approval carries one, the
+// reviewed selection's own digest.
+//
+// An approval without a snapshot keeps the digest it has always had, so every
+// journal written before snapshots existed still validates and replays byte
+// for byte. A snapshot-bearing approval uses an explicitly versioned digest,
+// which is what keeps the two forms from ever being mistaken for each other.
+func factoryApprovalHash(plan, spec string, snap *EditSnapshot) string {
+	if snap == nil {
+		return FactoryPlanHash(plan, spec)
+	}
+	// The field order here is the digest's definition, not an accident: a
+	// verifier hashes this exact JSON.
+	canonical, _ := json.Marshal(struct {
+		Version            int    `json:"version"`
+		Plan               string `json:"plan"`
+		Spec               string `json:"spec"`
+		EditSnapshotSHA256 string `json:"editSnapshotSha256"`
+	}{Version: 2, Plan: plan, Spec: spec, EditSnapshotSHA256: snap.SHA256})
+	return factoryDigest(canonical)
+}
+
+// factoryCloneSnapshot returns a snapshot that shares no backing array with s.
+// A draft, an approval and a request body routinely hold the same snapshot in
+// one process, and none of them may mutate another's selection.
+func factoryCloneSnapshot(s *EditSnapshot) *EditSnapshot {
+	if s == nil {
+		return nil
+	}
+	out := &EditSnapshot{BaseCommit: s.BaseCommit, SHA256: s.SHA256}
+	if s.Files != nil {
+		out.Files = append([]SelectedFile(nil), s.Files...)
+	}
+	return out
+}
+
+// factoryValidateSnapshot refuses a selection a seed could not apply exactly.
+// Every rule here is one the seed depends on: a base commit it can resolve, a
+// blob name that is a digest, a path that stays inside the repository, and an
+// operation whose hashes say what it must verify before writing.
+func factoryValidateSnapshot(s *EditSnapshot) error {
+	if s == nil {
+		return nil
+	}
+	if !plannerCommitPattern.MatchString(s.BaseCommit) {
+		return fmt.Errorf("%w: edit snapshot base commit is not a commit id", errFactoryInput)
+	}
+	if !factoryDigestPattern.MatchString(s.SHA256) {
+		return fmt.Errorf("%w: edit snapshot digest is not a SHA-256", errFactoryInput)
+	}
+	// The recorded digest must describe this selection. A client that supplies
+	// its own EditSnapshot is not trusted to have hashed what it sent, and the
+	// approval digest binds this string, not the file list behind it.
+	if digest, err := plannerSnapshotDigest(*s); err != nil {
+		return fmt.Errorf("%w: edit snapshot digest: %v", errFactoryInput, err)
+	} else if digest != s.SHA256 {
+		return fmt.Errorf("%w: edit snapshot does not match its recorded digest", errFactoryInput)
+	}
+	if len(s.Files) > factorySnapshotFileLimit {
+		return fmt.Errorf("%w: an edit snapshot holds at most %d files", errFactoryInput, factorySnapshotFileLimit)
+	}
+	seen := make(map[string]bool, len(s.Files))
+	for _, file := range s.Files {
+		if problem := factorySnapshotPathProblem(file.Path); problem != "" {
+			return fmt.Errorf("%w: selected path %q %s", errFactoryInput, file.Path, problem)
+		}
+		if seen[file.Path] {
+			return fmt.Errorf("%w: selected path %q appears twice", errFactoryInput, file.Path)
+		}
+		seen[file.Path] = true
+		switch file.Operation {
+		case plannerFileCreate:
+			if file.BaseSHA256 != "" {
+				return fmt.Errorf("%w: create of %q carries a base hash", errFactoryInput, file.Path)
+			}
+			if !factoryDigestPattern.MatchString(file.ContentSHA256) {
+				return fmt.Errorf("%w: create of %q has no content hash", errFactoryInput, file.Path)
+			}
+		case plannerFileModify:
+			if !factoryDigestPattern.MatchString(file.BaseSHA256) || !factoryDigestPattern.MatchString(file.ContentSHA256) {
+				return fmt.Errorf("%w: modify of %q needs both hashes", errFactoryInput, file.Path)
+			}
+		case plannerFileDelete:
+			if !factoryDigestPattern.MatchString(file.BaseSHA256) {
+				return fmt.Errorf("%w: delete of %q has no base hash", errFactoryInput, file.Path)
+			}
+			if file.ContentSHA256 != "" {
+				return fmt.Errorf("%w: delete of %q carries a content hash", errFactoryInput, file.Path)
+			}
+		default:
+			return fmt.Errorf("%w: selected path %q has operation %q, not create, modify or delete", errFactoryInput, file.Path, file.Operation)
+		}
+	}
+	// A selection that nests one path inside another cannot be applied in any
+	// order: the seed would write the parent as a file and then fail to make a
+	// directory of it, leaving a half-applied checkout.
+	for _, file := range s.Files {
+		for parent := path.Dir(file.Path); parent != "."; parent = path.Dir(parent) {
+			if seen[parent] {
+				return fmt.Errorf("%w: selected path %q is inside selected path %q", errFactoryInput, file.Path, parent)
+			}
+		}
+	}
+	return nil
+}
+
+// factorySnapshotPathProblem explains why a selected path is not one a seed
+// may touch, or returns "" when it is. A path is repository-relative and names
+// no element of the repository's own metadata: writing through ".git" would
+// change the repository rather than the work.
+func factorySnapshotPathProblem(p string) string {
+	switch {
+	case p == "":
+		return "is empty"
+	case strings.HasPrefix(p, "/"):
+		return "is absolute"
+	case strings.ContainsRune(p, '\\'):
+		return "is not a slash path"
+	case strings.HasPrefix(p, ":"):
+		// git reads a leading ':' as pathspec magic even after "--", so this
+		// path would stage a different file than the one selected.
+		return "names git pathspec magic"
+	}
+	for _, part := range strings.Split(p, "/") {
+		switch part {
+		case "":
+			return "has an empty element"
+		case ".", "..":
+			return "is not a clean relative path"
+		case ".git":
+			return "names repository metadata"
+		}
+	}
+	return ""
 }
 func factoryCanonical(b []byte) ([]byte, error) {
 	if len(b) > factoryRequestLimit {
@@ -252,6 +400,12 @@ func factoryNormalize(r *FactoryCreate) error {
 	if len(r.Plan)+len(r.Spec) > factoryImportLimit {
 		return fmt.Errorf("plan/spec exceed 1 MiB")
 	}
+	// The snapshot is copied before it is checked, so the caller's value and
+	// the normalized one never share a selection even when nothing changes.
+	r.EditSnapshot = factoryCloneSnapshot(r.EditSnapshot)
+	if err := factoryValidateSnapshot(r.EditSnapshot); err != nil {
+		return err
+	}
 	c := &r.Config
 	if c.Native && c.Workspace != "" {
 		return fmt.Errorf("native and workspace are mutually exclusive")
@@ -308,14 +462,14 @@ func validateFactoryItem(i FactoryItem) error {
 		if a.Revision != uint64(n+1) || strings.TrimSpace(a.Plan) == "" {
 			return fmt.Errorf("invalid approval revision/plan")
 		}
-		ar := FactoryCreate{RequestID: "approval", Title: i.Title, Plan: a.Plan, Spec: a.Spec, Config: a.Config}
+		ar := FactoryCreate{RequestID: "approval", Title: i.Title, Plan: a.Plan, Spec: a.Spec, Config: a.Config, EditSnapshot: a.EditSnapshot}
 		if e := factoryNormalize(&ar); e != nil {
 			return e
 		}
 		if len(a.Config.ExpectedChecks) == 0 && !a.Config.NoRequiredCIAcknowledged {
 			return fmt.Errorf("expected checks or explicit no-required-CI acknowledgement required")
 		}
-		if len(a.Plan)+len(a.Spec) > factoryImportLimit || a.PlanHash != factoryPlanHash(a.Plan, a.Spec) {
+		if len(a.Plan)+len(a.Spec) > factoryImportLimit || a.PlanHash != factoryApprovalHash(a.Plan, a.Spec, a.EditSnapshot) {
 			return fmt.Errorf("invalid approval")
 		}
 	}

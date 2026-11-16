@@ -341,6 +341,11 @@ func (a *factoryAPI) preflight(ctx context.Context, c FactoryConfig, _ bool) err
 }
 
 func (s *Server) factoryRoutes(api FactoryAPI) {
+	// The planner's handoff route drafts through the factory service this
+	// server serves. NewServer sets the field before calling this, and setting
+	// it here keeps a server whose factory routes were installed directly
+	// working too; the planner service reads it when a handoff runs.
+	s.factory = api
 	s.mux.HandleFunc("GET /api/factory/items", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, map[string]any{"items": api.List()}) })
 	s.mux.HandleFunc("POST /api/factory/items", func(w http.ResponseWriter, r *http.Request) {
 		var body FactoryCreate

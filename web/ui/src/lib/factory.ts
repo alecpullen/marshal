@@ -1,10 +1,41 @@
 /** Factory API shapes mirror web/bridge/factory_types.go. */
 export interface FactoryCheckKey { kind: 'check_run' | 'commit_status'; name: string; appId: number }
+/**
+ * One role's subagent settings as a work item's draft or a project's factory
+ * defaults state them. Every field is optional on purpose: an absent field
+ * inherits the next source, an explicit `false` is not an absence, and an
+ * explicit empty `model` is a stated choice — normal child routing — rather
+ * than "follow".
+ */
+export interface FactorySubagentOverrides {
+  enabled?: boolean
+  model?: string
+  concurrency?: number
+}
+/**
+ * One role's resolved subagent settings: what the chain produced for a draft,
+ * and what an approval revision freezes. An approval journalled before these
+ * existed carries the zero value, so a zero `concurrency` means "no snapshot"
+ * rather than a cap of zero.
+ */
+export interface FactorySubagentSettings {
+  enabled: boolean
+  model: string
+  concurrency: number
+}
 export interface FactoryConfig {
   repoId: string; projectRoot: string; hostId: string; targetBranch: string; workspace: string; native: boolean
   implementerRouting: Record<string, unknown>; reviewerRouting: Record<string, unknown>
   reviewerInstructions: string; implementerAuto: boolean; expectedChecks: FactoryCheckKey[]
   noRequiredCiAcknowledged: boolean; maxRounds: number; ciPollSeconds: number; ciWaitSeconds: number
+  /**
+   * The work item's own subagent overrides, per role. Only an override the
+   * item states rides here: nothing is copied onto a draft from the project's
+   * defaults, so a draft follows a default it never stated while an override
+   * it does state stays fixed when that default changes.
+   */
+  implementerSubagents?: FactorySubagentOverrides
+  reviewerSubagents?: FactorySubagentOverrides
 }
 /**
  * The project's factory defaults. Every field is optional on purpose: an
@@ -22,6 +53,13 @@ export interface FactoryDefaults {
   maxRounds?: number
   ciPollSeconds?: number
   ciWaitSeconds?: number
+  /**
+   * The project's subagent overrides, per role. Pointers (optional here) for
+   * the same reason the handoff's are: an absent field inherits the session's
+   * reported defaults, and an explicit `false` is not an absence.
+   */
+  implementerSubagents?: FactorySubagentOverrides
+  reviewerSubagents?: FactorySubagentOverrides
 }
 /**
  * A create request's configuration. The fields the bridge never derives are
@@ -30,7 +68,16 @@ export interface FactoryDefaults {
  */
 export type FactoryCreateConfig = Pick<FactoryConfig, 'repoId' | 'projectRoot' | 'native' | 'implementerAuto' | 'noRequiredCiAcknowledged'> & Partial<Omit<FactoryConfig, 'repoId' | 'projectRoot' | 'native' | 'implementerAuto' | 'noRequiredCiAcknowledged'>>
 export interface FactoryCreate { requestId: string; title: string; plan: string; spec: string; config: FactoryCreateConfig }
-export interface FactoryApproval { revision: number; plan: string; spec: string; planHash: string; config: FactoryConfig; approvedAt: string }
+export interface FactoryApproval { revision: number; plan: string; spec: string; planHash: string; config: FactoryConfig; approvedAt: string
+  /**
+   * The subagent settings this revision froze: runtime defaults, then the
+   * project's override, then the draft's override, resolved when the approval
+   * was written. A revision approved before they were frozen carries the zero
+   * value, so nothing re-derives them for it.
+   */
+  implementerSubagents?: FactorySubagentSettings
+  reviewerSubagents?: FactorySubagentSettings
+}
 export interface FactoryGrant { id: string; reason: string; additionalRounds: number; at: string }
 export interface FactoryWorker { agentId: string; sessionId: string; role: string; spawnEffectId: string; parked: boolean }
 export interface FactoryPR { number: number; url: string; nodeId: string; headRef: string; baseRef: string; headSha: string; baseSha: string; state: string; draft: boolean }
@@ -184,7 +231,14 @@ export type FactoryRevisionCommandKind =
   | 'revision_authorize'
   | 'revision_delivery_choice'
   | 'revision_follow_up_confirm'
-export interface FactoryCommand { requestId: string; kind: 'approve' | 'answer' | 'stop' | 'retry' | 'reconcile' | 'recover' | FactoryRevisionCommandKind; expectedVersion: number; decisionId?: string; answer?: string; reason?: string; additionalRounds?: number; replacement?: FactoryCreate; implementerRouting?: Record<string, unknown>; reviewerRouting?: Record<string, unknown>; confirmPreviousWorkerStopped?: boolean; revision?: FactoryRevisionCommand }
+export interface FactoryCommand { requestId: string; kind: 'approve' | 'answer' | 'stop' | 'retry' | 'reconcile' | 'recover' | FactoryRevisionCommandKind; expectedVersion: number; decisionId?: string; answer?: string; reason?: string; additionalRounds?: number; replacement?: FactoryCreate; implementerRouting?: Record<string, unknown>; reviewerRouting?: Record<string, unknown>; confirmPreviousWorkerStopped?: boolean; revision?: FactoryRevisionCommand
+  /**
+   * The settings version the review surface displayed, as
+   * `"<projectSettingsETag>:<subagentDefaultsDigest>"`. The bridge refuses an
+   * approval whose version has moved as a conflict, because it would freeze
+   * settings nobody reviewed; a command that sends none is not checked.
+   */
+  settingsVersion?: string }
 export type FactoryFilter = 'current' | 'needs-you' | 'ready' | 'history'
 export type FactoryItemView = 'approval' | 'activity' | 'review' | 'prs' | 'documents'
 /**
@@ -242,6 +296,158 @@ export function provenanceLine(p: FactoryProvenance, clientName?: string): strin
   if (p.decisionId) parts.push(`decision ${p.decisionId}`)
   return parts.join(' · ')
 }
+/** The two roles whose subagent settings a project or a work item states. */
+export type FactorySubagentRole = 'implementer' | 'reviewer'
+
+/** One role's names: the desktop label may be longer than the phone one. */
+export interface FactorySubagentRoleSpec {
+  role: FactorySubagentRole
+  label: string
+  shortLabel: string
+}
+
+export const FACTORY_SUBAGENT_ROLES: FactorySubagentRoleSpec[] = [
+  { role: 'implementer', label: 'Implementer subagents', shortLabel: 'Implementer' },
+  { role: 'reviewer', label: 'Reviewer subagents', shortLabel: 'Reviewer' },
+]
+
+/** The concurrency range the backend enforces; anything else is refused, never clamped. */
+export const SUBAGENT_CONCURRENCY_MIN = 1
+export const SUBAGENT_CONCURRENCY_MAX = 8
+
+export function subagentConcurrencySupported(n: number): boolean {
+  return Number.isInteger(n) && n >= SUBAGENT_CONCURRENCY_MIN && n <= SUBAGENT_CONCURRENCY_MAX
+}
+
+/** One role's stated overrides out of a record that carries both roles. */
+export function subagentOverridesOf(
+  source: { implementerSubagents?: FactorySubagentOverrides; reviewerSubagents?: FactorySubagentOverrides } | null | undefined,
+  role: FactorySubagentRole,
+): FactorySubagentOverrides | undefined {
+  if (!source) return undefined
+  return role === 'implementer' ? source.implementerSubagents : source.reviewerSubagents
+}
+
+/** True when an override record states anything at all. */
+export function subagentOverridesPresent(o: FactorySubagentOverrides | null | undefined): boolean {
+  if (!o) return false
+  return o.enabled !== undefined || o.model !== undefined || o.concurrency !== undefined
+}
+
+/**
+ * Where one resolved subagent field came from. `unset` means nothing in the
+ * chain states it, which is not the same as an inherited value the caller
+ * could read: the surface has to say it cannot see the session's defaults.
+ */
+export type SubagentSource = 'item' | 'project' | 'runtime' | 'unset'
+
+export type FactorySubagentField = 'enabled' | 'model' | 'concurrency'
+
+/** One field of one role, as a surface states it: the value and where it came from. */
+export interface SubagentFieldView {
+  field: FactorySubagentField
+  label: string
+  /** The effective value, or `Inherited` when nothing before the runtime states it. */
+  value: string
+  source: SubagentSource
+  /** True only where the draft or the project states this field itself. */
+  explicit: boolean
+  /** Set when the value cannot be enforced: the backend refuses it rather than clamping. */
+  unsupported?: string
+}
+
+/** One role's resolved subagent settings as a surface presents them. */
+export interface SubagentRoleView {
+  role: FactorySubagentRole
+  label: string
+  shortLabel: string
+  fields: SubagentFieldView[]
+  /** True when this role states nothing of its own anywhere before the runtime. */
+  inherited: boolean
+}
+
+/** The chain a draft's settings resolve through, most specific first. */
+export interface SubagentChain {
+  /**
+   * The most specific layer the surface presents: the work item's own override
+   * on a draft, or the project's own record on the settings screen. It is what
+   * a defaults refresh leaves fixed.
+   */
+  item?: FactorySubagentOverrides | null
+  /** The project's factory default for this role. */
+  project?: FactorySubagentOverrides | null
+  /** The session's reported defaults, when the caller has them. */
+  runtime?: FactorySubagentSettings | null
+}
+
+const SUBAGENT_FIELD_LABELS: Record<FactorySubagentField, string> = {
+  enabled: 'Enabled',
+  model: 'Model',
+  concurrency: 'Concurrency',
+}
+
+/** How one effective value reads. `Inherited` is stated, never a guessed value. */
+function subagentValueText(field: FactorySubagentField, value: boolean | string | number | undefined): string {
+  if (value === undefined) return 'Inherited'
+  switch (field) {
+    case 'enabled':
+      return value === true ? 'On' : 'Off'
+    case 'model':
+      // An explicit empty model is a choice: the child routes normally.
+      return value === '' ? 'Normal child routing' : String(value)
+    case 'concurrency':
+      return typeof value === 'number' ? `${value} at a time` : String(value)
+  }
+}
+
+/**
+ * One role's settings, resolved through the chain a draft follows: the item's
+ * own override, then the project's factory default, then the session's
+ * reported defaults. An explicit field at the item stays fixed when a default
+ * refreshes; a field it does not state follows the default it inherits.
+ *
+ * A session that reported nothing leaves the last fields `unset` rather than
+ * inventing a value — the surface says it cannot read them.
+ */
+export function resolveSubagentRole(role: FactorySubagentRole, chain: SubagentChain = {}): SubagentRoleView {
+  const spec = FACTORY_SUBAGENT_ROLES.find((candidate) => candidate.role === role) ?? FACTORY_SUBAGENT_ROLES[0]
+  const layers: { overrides: FactorySubagentOverrides | null | undefined; source: SubagentSource }[] = [
+    { overrides: chain.item, source: 'item' },
+    { overrides: chain.project, source: 'project' },
+  ]
+  const runtime = chain.runtime ?? null
+  const fields = (['enabled', 'model', 'concurrency'] as FactorySubagentField[]).map((field): SubagentFieldView => {
+    const stated = layers.find((layer) => layer.overrides && layer.overrides[field] !== undefined)
+    const value = stated ? stated.overrides?.[field] : runtime ? runtime[field] : undefined
+    const source: SubagentSource = stated ? stated.source : runtime ? 'runtime' : 'unset'
+    const unsupported = field === 'concurrency' && typeof value === 'number' && !subagentConcurrencySupported(value)
+      ? `Concurrency must be ${SUBAGENT_CONCURRENCY_MIN} to ${SUBAGENT_CONCURRENCY_MAX}; the backend refuses anything else rather than clamping it.`
+      : undefined
+    return {
+      field,
+      label: SUBAGENT_FIELD_LABELS[field],
+      value: subagentValueText(field, value),
+      source,
+      // "Explicit" is the most specific layer the caller passed: the draft's own
+      // override on a review, the project's own record on the settings screen. A
+      // field a less specific layer supplies is inherited, because the surface
+      // showing it did not state it.
+      explicit: stated?.source === 'item',
+      unsupported,
+    }
+  })
+  return { role: spec.role, label: spec.label, shortLabel: spec.shortLabel, fields, inherited: fields.every((f) => !f.explicit) }
+}
+
+/**
+ * One role's effective settings in one line, for a read-only summary row.
+ * Nothing here resolves a fallback of its own: it prints the fields the chain
+ * already produced.
+ */
+export function subagentValueLine(view: SubagentRoleView): string {
+  return view.fields.map((f) => f.value).join(' · ')
+}
+
 /** How a worker's role is named on the factory screen. */
 export function workerRoleLabel(role: string): string {
   switch (role) {

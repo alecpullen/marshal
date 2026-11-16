@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"flag"
 	"io"
 	"net/url"
 	"os"
@@ -15,6 +17,11 @@ import (
 	"marshal/internal/app"
 	"marshal/internal/daemon"
 )
+
+// updateGolden rewrites the checked-in fixtures a currency test compares
+// against, so a deliberate document change is one command rather than a
+// hand-edited JSON diff.
+var updateGolden = flag.Bool("update", false, "rewrite the checked-in fixtures")
 
 // fakeDaemonClient answers `status` without a socket.
 type fakeDaemonClient struct {
@@ -1082,6 +1089,154 @@ func TestDaemonRefreshRefusesArguments(t *testing.T) {
 	}
 	if *calls != 0 {
 		t.Errorf("the refresh helper ran %d times, want none", *calls)
+	}
+}
+
+// TestTheStatusDocumentIsCurrent holds the JSON the tray app reads to the
+// example checked in beside the Flutter tests. A field added to the Go
+// document, dropped from it, or renamed fails here; regenerate with -update.
+func TestTheStatusDocumentIsCurrent(t *testing.T) {
+	const path = "../../test/contract/daemon-status.json"
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var status daemon.Status
+	if err := json.Unmarshal(raw, &status); err != nil {
+		t.Fatalf("decode %s: %v", path, err)
+	}
+	got, err := json.MarshalIndent(status, "", "  ")
+	if err != nil {
+		t.Fatalf("encode status: %v", err)
+	}
+	got = append(got, '\n')
+
+	if *updateGolden {
+		if err := os.WriteFile(path, got, 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+		return
+	}
+	if string(got) != string(raw) {
+		t.Errorf("%s is stale; regenerate with\n  go test ./cmd/marshal -run TestTheStatusDocumentIsCurrent -update", path)
+	}
+}
+
+// TestDaemonStatusJSONExitsZeroWhenSilent pins the decision the tray app
+// depends on: `--json` exits 0 whenever it wrote the document, and the
+// document says the socket did not answer.
+func TestDaemonStatusJSONExitsZeroWhenSilent(t *testing.T) {
+	daemonTestEnv(t)
+	fakeDaemonManager(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return []byte("state = running\npid = 77\n"), nil
+	})
+	fakeDaemonSocket(t, fakeDaemonClient{err: errors.New("dial unix: connect: no such file or directory")})
+
+	var stdout, stderr bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"status", "--json"},
+		strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("status --json with a silent socket: %v\nstderr: %s", err, stderr.String())
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
+		t.Fatalf("decode the status document: %v\n%s", err, stdout.String())
+	}
+	if _, ok := raw["daemon"]; ok {
+		t.Errorf("the document carries a daemon key a silent socket cannot have:\n%s", stdout.String())
+	}
+	var status daemon.Status
+	if err := json.Unmarshal(stdout.Bytes(), &status); err != nil {
+		t.Fatalf("decode the status document: %v", err)
+	}
+	if status.Answering {
+		t.Errorf("answering = true with a silent socket:\n%s", stdout.String())
+	}
+	if status.SchemaVersion != daemon.StatusSchema {
+		t.Errorf("schemaVersion = %d, want %d", status.SchemaVersion, daemon.StatusSchema)
+	}
+	// The service state is present even when the socket is not: the tray
+	// reads install/start/stop from it.
+	if !status.Service.Running || status.Service.PID != 77 {
+		t.Errorf("service = %+v, want the running service and its pid", status.Service)
+	}
+	if strings.Contains(stdout.String(), "socket:") {
+		t.Errorf("--json printed a human line:\n%s", stdout.String())
+	}
+}
+
+// TestDaemonStatusJSONCarriesTheDaemon: an answering daemon is in the
+// document, at the schema the app speaks.
+func TestDaemonStatusJSONCarriesTheDaemon(t *testing.T) {
+	daemonTestEnv(t)
+	fakeDaemonManager(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return []byte("state = running\npid = 4242\n"), nil
+	})
+	fakeDaemonSocket(t, fakeDaemonClient{info: daemon.Info{
+		Version:  "1.4.0",
+		Profile:  "local",
+		PID:      4242,
+		Projects: []string{"/work/one"},
+	}})
+
+	var stdout, stderr bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"status", "--json"},
+		strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("status --json: %v\nstderr: %s", err, stderr.String())
+	}
+
+	var status daemon.Status
+	if err := json.Unmarshal(stdout.Bytes(), &status); err != nil {
+		t.Fatalf("decode the status document: %v\n%s", err, stdout.String())
+	}
+	if status.SchemaVersion != 1 {
+		t.Errorf("schemaVersion = %d, want 1", status.SchemaVersion)
+	}
+	if !status.Answering {
+		t.Error("answering = false for an answering daemon")
+	}
+	if status.Daemon == nil {
+		t.Fatalf("no daemon in the document:\n%s", stdout.String())
+	}
+	if status.Daemon.Version != "1.4.0" {
+		t.Errorf("daemon.version = %q, want %q", status.Daemon.Version, "1.4.0")
+	}
+	if status.Service.PID != 4242 {
+		t.Errorf("service.pid = %d, want 4242", status.Service.PID)
+	}
+}
+
+// TestDaemonStatusJSONReportsLinger: the document always carries a linger
+// object, and on Linux it reports the bit D1's install sets.
+func TestDaemonStatusJSONReportsLinger(t *testing.T) {
+	daemonTestEnv(t)
+	fakeDaemonManagerOS(t, "linux", func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		line := strings.Join(append([]string{name}, args...), " ")
+		switch line {
+		case "loginctl show-user 501 -p Linger":
+			return []byte("Linger=yes\n"), nil
+		case "systemctl --user show --property=ActiveState,MainPID,LoadState " + daemon.Unit:
+			return []byte("LoadState=loaded\nActiveState=active\nMainPID=4242\n"), nil
+		}
+		return nil, nil
+	})
+	fakeDaemonSocket(t, fakeDaemonClient{})
+
+	var stdout, stderr bytes.Buffer
+	if err := runDaemon(context.Background(), []string{"status", "--json"},
+		strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("status --json: %v\nstderr: %s", err, stderr.String())
+	}
+	var status daemon.Status
+	if err := json.Unmarshal(stdout.Bytes(), &status); err != nil {
+		t.Fatalf("decode the status document: %v", err)
+	}
+	if !status.Linger.Supported || !status.Linger.Enabled {
+		t.Errorf("linger = %+v, want supported and enabled", status.Linger)
+	}
+	if strings.Contains(stdout.String(), "linger:") {
+		t.Errorf("--json printed a human line:\n%s", stdout.String())
 	}
 }
 

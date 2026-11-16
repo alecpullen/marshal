@@ -514,7 +514,7 @@ func TestAnthropicChatHTTPError(t *testing.T) {
 func TestAnthropicThinkingBudgetMargin(t *testing.T) {
 	parse := func(t *testing.T, p *Anthropic, req schema.ChatRequest) (budget, maxTokens int, present bool) {
 		t.Helper()
-		body, err := p.buildChatRequestBody(req)
+		body, err := p.buildChatRequestBody(t.Context(), req)
 		if err != nil {
 			t.Fatalf("buildChatRequestBody: %v", err)
 		}
@@ -589,7 +589,7 @@ func TestAnthropicThinkingBudgetMapping(t *testing.T) {
 
 	parseThinking := func(t *testing.T, req schema.ChatRequest) (budget int, present bool) {
 		t.Helper()
-		body, err := p.buildChatRequestBody(req)
+		body, err := p.buildChatRequestBody(t.Context(), req)
 		if err != nil {
 			t.Fatalf("buildChatRequestBody: %v", err)
 		}
@@ -623,7 +623,7 @@ func TestAnthropicThinkingBudgetMapping(t *testing.T) {
 	}
 	// "off" explicitly disables thinking even with a provider budget configured.
 	req.Thinking = "off"
-	body, err := p.buildChatRequestBody(req)
+	body, err := p.buildChatRequestBody(t.Context(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -753,20 +753,35 @@ func TestAnthropicWireCaptureMarksUnknownEventTypes(t *testing.T) {
 	}
 }
 
-func decodeAnthropicBody(t *testing.T, req schema.ChatRequest) anthropicRequest {
+// anthropicDecodedBody mirrors the wire request with each message's blocks
+// typed, so assertions can read a block directly. The encoder's own
+// anthropicMessage holds []any — a tool_result that carries images nests a
+// block array inside it, which a flat block struct cannot decode.
+type anthropicDecodedBody struct {
+	System   []anthropicContentBlock   `json:"system"`
+	Tools    []anthropicTool           `json:"tools"`
+	Messages []anthropicDecodedMessage `json:"messages"`
+}
+
+type anthropicDecodedMessage struct {
+	Role    string                  `json:"role"`
+	Content []anthropicContentBlock `json:"content"`
+}
+
+func decodeAnthropicBody(t *testing.T, req schema.ChatRequest) anthropicDecodedBody {
 	t.Helper()
-	raw, err := buildAnthropicRequestBody(req, 0, 0)
+	raw, err := buildAnthropicRequestBody(t.Context(), req, 0, 0)
 	if err != nil {
 		t.Fatalf("buildAnthropicRequestBody: %v", err)
 	}
-	var body anthropicRequest
+	var body anthropicDecodedBody
 	if err := json.Unmarshal(raw, &body); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
 	return body
 }
 
-func countBreakpoints(body anthropicRequest) int {
+func countBreakpoints(body anthropicDecodedBody) int {
 	n := 0
 	for _, b := range body.System {
 		if b.CacheControl != nil {

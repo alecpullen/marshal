@@ -12,10 +12,12 @@ type apiError struct {
 }
 
 type chatMessageBody struct {
-	Role       string         `json:"role"`
-	Content    string         `json:"content"`
-	ToolCalls  []toolCallBody `json:"tool_calls,omitempty"`
-	ToolCallID string         `json:"tool_call_id,omitempty"`
+	Role string `json:"role"`
+	// Content is a plain string for text-only messages and a content-part
+	// array for a multimodal one; use contentText to read either shape back.
+	Content    json.RawMessage `json:"content"`
+	ToolCalls  []toolCallBody  `json:"tool_calls,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
 	// Reasoning fields for non-streaming responses, mirroring the streaming
 	// delta conventions: reasoning_content (DeepSeek/vLLM), a plain reasoning
 	// string, or structured reasoning_details entries (OpenRouter), which is
@@ -31,6 +33,49 @@ type chatMessageBody struct {
 
 type streamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
+}
+
+// openAIContentPart is one entry of a multimodal content array.
+type openAIContentPart struct {
+	Type     string          `json:"type"`
+	Text     string          `json:"text,omitempty"`
+	ImageURL *openAIImageURL `json:"image_url,omitempty"`
+}
+
+type openAIImageURL struct {
+	URL string `json:"url"`
+}
+
+func textContent(s string) json.RawMessage {
+	b, _ := json.Marshal(s)
+	return b
+}
+
+func partsContent(parts []openAIContentPart) json.RawMessage {
+	b, _ := json.Marshal(parts)
+	return b
+}
+
+// contentText reads either wire shape, so response parsing keeps working.
+func (m chatMessageBody) contentText() string {
+	if len(m.Content) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(m.Content, &s); err == nil {
+		return s
+	}
+	var parts []openAIContentPart
+	if err := json.Unmarshal(m.Content, &parts); err == nil {
+		var out string
+		for _, p := range parts {
+			if p.Type == "text" {
+				out += p.Text
+			}
+		}
+		return out
+	}
+	return ""
 }
 
 type usageBody struct {

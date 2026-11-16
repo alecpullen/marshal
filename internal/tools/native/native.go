@@ -15,6 +15,7 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/diagnostics"
 	"marshal/internal/filetrack"
+	"marshal/internal/imagepayload"
 	"marshal/internal/index"
 	"marshal/internal/llm/embedding"
 	"marshal/internal/llm/routing"
@@ -141,6 +142,11 @@ type Options struct {
 	// GitOps is the git seam behind workspace.finish. nil defaults to
 	// worktree.CLIGitOps; tests inject worktree.FakeGitOps.
 	GitOps worktree.GitOps
+
+	// Images is the content-addressed store image.view writes to. nil means
+	// "this process serves no images": the tool is not registered at all,
+	// rather than registered and failing on every call.
+	Images *imagepayload.Store
 }
 
 type CommandRunner interface {
@@ -272,6 +278,10 @@ type toolSet struct {
 	// gitOps is the git seam behind workspace.finish. Defaults to
 	// worktree.CLIGitOps; tests inject worktree.FakeGitOps.
 	gitOps worktree.GitOps
+
+	// images is the content-addressed image store behind image.view. nil
+	// means no store was configured, and the tool is not registered.
+	images *imagepayload.Store
 }
 
 func RegisterAll(reg *registry.Registry, opts Options) error {
@@ -312,6 +322,12 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 	// index as fallback); with no querier wired it could only fail.
 	if tools.symbols != nil {
 		all = append(all, tools.symbolsTool())
+	}
+	// image.view needs somewhere to store what it produces. With no store
+	// wired it would be a tool that fails on every call, so it is not
+	// registered at all.
+	if tools.images != nil {
+		all = append(all, tools.imageViewTool())
 	}
 	if tools.sessionState != nil {
 		// transcript_read reads the live session transcript (and archived
@@ -490,6 +506,7 @@ func newToolSet(opts Options) (*toolSet, error) {
 		lspSync:  opts.LSPSync,
 		lspIndex: opts.LSPIndex,
 		gitOps:   opts.GitOps,
+		images:   opts.Images,
 	}
 	if ts.gitOps == nil {
 		ts.gitOps = worktree.CLIGitOps{}

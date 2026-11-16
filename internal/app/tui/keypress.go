@@ -188,6 +188,16 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		}
 		m.openSessionSheet()
 		return *m, nil, true
+	case "ctrl+v":
+		// Attach a clipboard image to the draft. The clipboard read and the
+		// upload run off the Update goroutine; only the chip and its ref
+		// land here, and a failure is a notice rather than a silent no-op.
+		// Any other surface owning the input keeps the key for itself.
+		if m.surfaceOwnsInput() {
+			return *m, nil, false
+		}
+		m.pasteImage()
+		return *m, nil, true
 	case "ctrl+r":
 		if m.sess.Status().HasBackup {
 			// Arm on the first press, revert on the second. Ctrl+R is
@@ -294,6 +304,27 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	case "alt+e":
 		m.cycleEffort()
 		return *m, nil, true
+	case "alt+r":
+		// Send anyway: a prompt refused because the route cannot see images
+		// goes out once more, with the override recorded, carrying the same
+		// text and the same refs. The key is armed for one prompt only, and
+		// an edited composer is a different draft.
+		d := m.visionDraft
+		if d == nil || !d.armed || !m.visionDraftIntact(d) {
+			m.visionDraft = nil
+			return *m, nil, true
+		}
+		if err := m.sess.ForceVision(m.ctx, d.provider, d.model); err != nil {
+			m.note("Could not record the vision override: " + err.Error())
+			m.refreshViewport()
+			return *m, nil, true
+		}
+		m.visionDraft = nil
+		m.resetInput()
+		m.images = nil
+		m.updateViewportHeight()
+		m.viewportFollow = true
+		return *m, m.submitLine(d.text, d.images), true
 	case "alt+shift+m":
 		m.cycleModel(false)
 		return *m, nil, true
@@ -348,6 +379,13 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		if len(m.pastes) > 0 {
 			value = m.expandPastes(value)
 		}
+		// The image chips describe the draft, not the message: their refs are
+		// carried beside the text, so the chip text comes out of the line.
+		images := append([]acpwire.PromptImage(nil), m.images...)
+		line := value
+		if len(images) > 0 {
+			value = stripImageChips(value)
+		}
 		if value != "" {
 			m.recordPrompt(value)
 		}
@@ -356,18 +394,25 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		// user presses Enter with no new input, pop the oldest queued
 		// steering message and submit it as the next turn. This must
 		// happen BEFORE the empty-input short-circuit so a blank
-		// prompt still drains the queue.
-		if value == "" && !m.busy {
+		// prompt still drains the queue. A draft holding only an image
+		// is not blank: its refs are the turn.
+		if value == "" && len(images) == 0 && !m.busy {
 			if followUp, ok := m.popOldestSteering(); ok {
 				value = followUp
+				line = followUp
 			} else {
 				return *m, nil, true
 			}
 		}
-		if value == "" {
+		if value == "" && len(images) == 0 {
 			return *m, nil, true
 		}
+		// The draft is what a vision refusal gives back and what send-anyway
+		// resends. A new prompt replaces it, so an armed override never
+		// carries another prompt's text.
+		m.visionDraft = &visionDraft{line: line, text: value, images: images}
 		m.resetInput()
+		m.images = nil
 		m.completionSuppressed = false
 		m.lastInputForPopups = ""
 		m.cmdArgMode = false
@@ -379,7 +424,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		m.updateViewportHeight()
 		m.viewportFollow = true
 
-		if strings.HasPrefix(value, "/") {
+		if strings.HasPrefix(value, "/") && len(images) == 0 {
 			mm, cmd := m.dispatchCommand(value)
 			return mm, cmd, true
 		}
@@ -390,22 +435,29 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			// have done then, because the calls ahead may swap the session or
 			// leave the agent busy.
 			line := value
-			m.enqueueStep(func(mm *Model) tea.Cmd { return mm.submitLine(line) })
+			attached := images
+			m.enqueueStep(func(mm *Model) tea.Cmd { return mm.submitLine(line, attached) })
 			return *m, nil, true
 		}
-		return *m, m.submitLine(value), true
+		return *m, m.submitLine(value, images), true
 	}
 	return *m, nil, false
 }
 
 // submitLine is what Enter does with a line that is not a command: it steers
 // a busy turn, echoes the line when no agent is ready, and otherwise starts a
-// prompt. A prompt that waited behind the call queue runs this when it reaches
-// the head, so it acts on the model the queued calls left (P3 R6).
-func (m *Model) submitLine(line string) tea.Cmd {
+// prompt carrying that line's images. A prompt that waited behind the call
+// queue runs this when it reaches the head, so it acts on the model the queued
+// calls left (P3 R6).
+func (m *Model) submitLine(line string, images []acpwire.PromptImage) tea.Cmd {
 	if m.busy {
 		// F16: turn is running — enqueue as a steering message
-		// instead of dropping the input.
+		// instead of dropping the input. Steering carries text only, so an
+		// attached image cannot ride it; say so rather than losing it in
+		// silence.
+		if len(images) > 0 {
+			m.note("Images cannot be steered; the running turn got the text only.")
+		}
 		m.sess.Steer(m.ctx, line)
 		m.refreshViewport()
 		return nil
@@ -419,7 +471,7 @@ func (m *Model) submitLine(line string) tea.Cmd {
 		m.refreshViewport()
 		return nil
 	}
-	_, cmd := m.startPrompt(line, false)
+	_, cmd := m.startPromptImages(line, false, images)
 	return cmd
 }
 

@@ -135,6 +135,13 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			TUIOnly:     true,
 		},
 		{
+			Name:        "image",
+			Description: "Attach an image file to the next prompt",
+			Args:        "<path>",
+			Group:       groupChat,
+			TUIOnly:     true,
+		},
+		{
 			Name:        "help",
 			Description: "Show available commands",
 			Args:        "[command]",

@@ -27,6 +27,7 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/filetrack"
 	"marshal/internal/hooks"
+	"marshal/internal/imagepayload"
 	"marshal/internal/interaction"
 	"marshal/internal/llm/embedding"
 	"marshal/internal/llm/pricing"
@@ -874,7 +875,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	// runtime's too: the wrapper wires the tools to an empty one and returns
 	// it.
 	lspHandle := lsp.NewHandle(nil, nil, state.Logger())
-	runner, reg, swarmRunner, mcpMgr, snapSvc, commandService, _, desktopCloser, subagentFactory, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(ctx, cfg, state, database, projectID, skillIndex, dataDir, additionalDirs, jobBroker, nil, nil, configReloader, homeDir, &swarm.WriteLock{}, nil, lspHandle, nil, auth...)
+	runner, reg, swarmRunner, mcpMgr, snapSvc, commandService, _, desktopCloser, subagentFactory, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(ctx, cfg, state, database, projectID, skillIndex, dataDir, nil, additionalDirs, jobBroker, nil, nil, configReloader, homeDir, &swarm.WriteLock{}, nil, lspHandle, nil, auth...)
 	var jobMgr *native.JobManager
 	if commandService != nil {
 		jobMgr = commandService.manager
@@ -938,7 +939,7 @@ func subagentDefaultsFor(cfg config.Config, route routing.Route) session.Subagen
 // and the diagnostics checker are wired to. The build never creates or
 // starts a language server: the runtime points the handle at the project
 // host's pooled servers (Runtime.bindLSP). A nil handle wires no LSP.
-func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], watchBroker *pubsub.Broker[watch.Event], watchResumeCell *WatchResumeHook, configReloader func(config.Config) error, homeDir string, writeLock *swarm.WriteLock, service *conversationCommandService, lspHandle *lsp.Handle, studio *marshalStudioCredential, auth ...provider.AuthResolver) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *conversationCommandService, *watch.Manager, func(), agent.SubagentRunnerFactory, func(planPath string, overrides map[routing.AgentRole]string) PipelineRunner, sddauthor.Factory, SwarmOverrideFactory, error) {
+func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, images *imagepayload.Store, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], watchBroker *pubsub.Broker[watch.Event], watchResumeCell *WatchResumeHook, configReloader func(config.Config) error, homeDir string, writeLock *swarm.WriteLock, service *conversationCommandService, lspHandle *lsp.Handle, studio *marshalStudioCredential, auth ...provider.AuthResolver) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *conversationCommandService, *watch.Manager, func(), agent.SubagentRunnerFactory, func(planPath string, overrides map[routing.AgentRole]string) PipelineRunner, sddauthor.Factory, SwarmOverrideFactory, error) {
 	authResolver := effectiveAuthResolver(firstAuthResolver(auth))
 	resolver := newRoutedProviderResolver(cfg, dataDir, authResolver).withSessionID(state.SessionID())
 	modelProbe := modelProbeFunc(cfg, dataDir)
@@ -1164,6 +1165,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		JobBroker:         jobBroker,
 		CommandAdmission:  rootAuthorizer.BeginCommand,
 		CommandAuthorizer: rootAuthorizer,
+		Images:            images,
 	}
 	if len(additionalDirs) > 0 {
 		nativeOpts.AdditionalRoots = additionalDirs
@@ -1202,7 +1204,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		// developer's keychain. authResolver.OpenStore never falls back to
 		// credentials.New, so an injected resolver's error stays local and a
 		// manager built without one refuses rather than swapping stores.
-		mcpMgr = mcp.NewManager(&cfg, mcp.WithManagerLogger(state.Logger()), mcp.WithCredentialFactory(authResolver.OpenStore))
+		mcpMgr = mcp.NewManager(&cfg, mcp.WithManagerLogger(state.Logger()), mcp.WithCredentialFactory(authResolver.OpenStore), mcp.WithImageStore(images))
 		// A server that will not start is a per-server failure, not a fatal
 		// one: the agent must still run, with the healthy servers' tools and
 		// a notice naming what was skipped. Aborting here used to leave the
@@ -1229,7 +1231,27 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 		}
 	}
+	// Learned vision facts, loaded once for this runtime and shared: the
+	// router reads them to take images off a route, the runner writes them
+	// when a provider rejects image input. One copy, so a rejection learned
+	// this turn is the same fact the next turn's route resolves against.
+	visionOverrides := modelcache.NewRegistry(modelcache.CapabilityOverrides{Rejections: map[string]modelcache.Rejection{}})
+	if dataDir != "" {
+		visionOverrides = modelcache.NewRegistry(modelcache.LoadOverrides(dataDir))
+	}
 	router := routing.NewStaticRouter(cfg.RoutingConfig())
+	// No probe: no model-list vision signal exists yet, so the ladder falls
+	// through to the name heuristic and then to attempt.
+	router.Vision = routing.VisionFacts{
+		Rejected: func(preset routing.ModelPreset) bool {
+			pc, ok := cfg.Providers[preset.Provider]
+			if !ok {
+				return false
+			}
+			return visionOverrides.VisionRejected(preset.Provider, preset.Model,
+				modelcache.HashProvider(pc), modelcache.DefaultCapabilityTTL, time.Now())
+		},
+	}
 	parentPricing := pricing.Lookup(route.Preset, state.Logger())
 	// One write lock shared by the parent runner and every agent.run child:
 	// background children outlive the spawning turn, so parent and child
@@ -1306,6 +1328,31 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	recorder := metricsRecorder(database, projectID, state.SessionID(), state.Logger())
 	runner.MetricsObserver = recorder
 	runner.Pricing = parentPricing
+
+	// The same override registry the router above reads: a learned rejection
+	// recorded here is what the next turn's route resolution sees, and its
+	// lock is what keeps a background child's route read from racing this
+	// runner's write.
+	runner.VisionOverrides = visionOverrides
+	// The request gate drops a ref whose bytes the store no longer holds, so
+	// a transcript replayed after a sweep degrades to text instead of failing
+	// every turn at encode time.
+	runner.ImageSource = images
+	if dataDir != "" {
+		runner.SaveVisionOverrides = func(o modelcache.CapabilityOverrides) error {
+			return modelcache.SaveOverrides(dataDir, o)
+		}
+	}
+	// HashProvider on both sides: the runner's write must match the router's
+	// read, or a learned rejection would never expire with a repointed
+	// endpoint and never apply to one that did not change.
+	runner.ProviderConfigHash = func(providerName string) string {
+		pc, ok := cfg.Providers[providerName]
+		if !ok {
+			return ""
+		}
+		return modelcache.HashProvider(pc)
+	}
 
 	runner.ModelProbe = modelProbe
 
@@ -1553,7 +1600,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 
 	subagentFactory, _ = buildSubagentFactoryWithLock(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, pricing.Lookup(route.Preset, state.Logger()), writeLock, nativeOpts, watchManager, commandService)
 	pipelineFactory := func(planPath string, overrides map[routing.AgentRole]string) PipelineRunner {
-		controller := buildPipelineController(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, planPath, modelProbe, overrides, commandService)
+		controller := buildPipelineController(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, planPath, modelProbe, overrides, commandService, images)
 		// A plan the controller cannot build must come back as a true nil
 		// interface: callers branch on == nil to report "could not build a
 		// runner" instead of running a non-nil interface wrapping nil.
@@ -1562,7 +1609,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		}
 		return controller
 	}
-	planAuthorFactory := buildPlanAuthorFactory(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, commandService)
+	planAuthorFactory := buildPlanAuthorFactory(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, commandService, images)
 
 	// The generation is committed last, and only on the success path: every
 	// candidate above has been built and validated, so this is the point at
@@ -1876,6 +1923,13 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 			r.MaxToolIterations = ca.MaxIterations
 		}
 	}
+	// A route that cannot carry images must not offer the tool that produces
+	// them: the model would spend a call only to be refused at the prompt
+	// boundary. Placed beside the custom-agent denylist so the two compose —
+	// whichever runs last, the tool is gone.
+	if !route.Vision {
+		r.Registry = agent.DenylistView(r.Registry, []string{"image.view"})
+	}
 	r.SystemPromptAddendum = composeAddendum(repoInstructions, customAddendum)
 	return r, nil
 }
@@ -1913,7 +1967,7 @@ func buildSwarmRunner(cfg config.Config, state *session.State, reg *registry.Reg
 // buildPipelineController wires a plan-execution controller for one plan.
 // It is built per run, not at startup: the controller is bound to a single
 // plan file.
-func buildPipelineController(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, commandRunner native.CommandRunner, planPath string, modelProbe func(provider, model string) agent.ModelProbe, overrides map[routing.AgentRole]string, commandService *conversationCommandService) *pipeline.ControllerAdapter {
+func buildPipelineController(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, commandRunner native.CommandRunner, planPath string, modelProbe func(provider, model string) agent.ModelProbe, overrides map[routing.AgentRole]string, commandService *conversationCommandService, images ...*imagepayload.Store) *pipeline.ControllerAdapter {
 	// Apply per-run role overrides to a copy of the routing config. The
 	// provider cache is shared with the startup resolver so providers are
 	// not rebuilt per run. Overrides are never written to disk.
@@ -1954,7 +2008,7 @@ func buildPipelineController(cfg config.Config, state *session.State, reg *regis
 				// chained OnTokens closure; read the updated value here.
 				state.UpdateSDDTokens(ctl.UsageTokens, cfg.SDD.MaxTotalTokens)
 			},
-			RegistryFactory: makePipelineRegistryFactory(cfg, state, pol, commandRunner, resolver, database, projectID, skillIndex, reg, commandService),
+			RegistryFactory: makePipelineRegistryFactory(cfg, state, pol, commandRunner, resolver, database, projectID, skillIndex, reg, commandService, images...),
 		},
 		Verifier: pipeline.DefaultVerifier(
 			state.WorkingDir,
@@ -1995,7 +2049,7 @@ func resolveAuthorPlansDir(workingDir, plansDirRel string) string {
 // plan-authoring runner for one request. The child may inspect the
 // repository and write exactly one plan artifact; it cannot modify source
 // files, run commands, spawn agents, or ask the user.
-func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, commandRunner native.CommandRunner, commandService *conversationCommandService) sddauthor.Factory {
+func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, commandRunner native.CommandRunner, commandService *conversationCommandService, images *imagepayload.Store) sddauthor.Factory {
 	repoInstructionsForPlanAuthor, _ := loadRepoInstructions(state.WorkingDir)
 	return func(req sddauthor.Request) (*sddauthor.Runner, error) {
 		route, p, err := resolver.ResolveRole(routing.RoleSDDPlanAuthor)
@@ -2029,6 +2083,7 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 			AgentID:        newWorkerActorID("plan-author"),
 			AgentLabel:     "the plan author",
 			NamedRoots:     map[string]string{"@plan": plansDir},
+			Images:         images,
 		}
 		// The plan-author's own engine reads the owner's live config/rules and
 		// is bounded by the artifact-only ceiling above. Its command tools are
@@ -2105,7 +2160,16 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 // it, so its commands belong to the same supervisor: one capacity, one count
 // callback, one exit sink and one stop target. Its output stays child-local
 // because SessionState is the runner's own child state.
-func makePipelineRegistryFactory(cfg config.Config, state *session.State, pol *policy.PolicyEngine, commandRunner native.CommandRunner, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, parentReg *registry.Registry, commandService *conversationCommandService) pipeline.RegistryFactory {
+func makePipelineRegistryFactory(cfg config.Config, state *session.State, pol *policy.PolicyEngine, commandRunner native.CommandRunner, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, parentReg *registry.Registry, commandService *conversationCommandService, images ...*imagepayload.Store) pipeline.RegistryFactory {
+	// The image store is variadic for the same reason buildSubagentFactory
+	// keeps its wrapper: a pipeline worker runs inside the conversation that
+	// dispatched it, so it borrows that conversation's store, while the test
+	// call sites that build a registry-only factory pass nothing and get a
+	// toolset with no image tools.
+	var imageStore *imagepayload.Store
+	if len(images) > 0 {
+		imageStore = images[0]
+	}
 	return func(ctx pipeline.ExecutionContext, scope pipeline.RegistryScope, childState *session.State) (*registry.Registry, error) {
 		childReg := registry.New()
 		var jobManager *native.JobManager
@@ -2128,6 +2192,7 @@ func makePipelineRegistryFactory(cfg config.Config, state *session.State, pol *p
 			// that already started.
 			CommandDir: ctx.WorkspaceRoot,
 			NamedRoots: ctx.NamedRoots(),
+			Images:     imageStore,
 		}
 		// The child's engine reads the captured owner's live config/rules and
 		// checks risk against THIS registry, so a scope-filtered tool is
@@ -2756,7 +2821,7 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	// The build uses effectiveCfg, not cfg: a session mode override must
 	// survive the reload, so the rebuilt policy engine has to agree with what
 	// the session reports.
-	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(rt.workCtx, effectiveCfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock, service, rt.LSPManager, rt.marshalStudio, rt.AuthResolver)
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(rt.workCtx, effectiveCfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.Images, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock, service, rt.LSPManager, rt.marshalStudio, rt.AuthResolver)
 	if err != nil {
 		// A failed dry run leaves the configured baseline, the override, the
 		// system flag and the existing runner exactly as they were.

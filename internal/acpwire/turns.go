@@ -7,6 +7,9 @@ type PromptParams struct {
 	// Queued says the text came off the steering queue. When the turn cannot
 	// start, the session puts the text back on the queue.
 	Queued bool `json:"queued,omitempty"`
+	// Images are the images this prompt attaches, already in the payload
+	// store. A prompt that carries any on a route without vision is refused.
+	Images []PromptImage `json:"images,omitempty"`
 	// WatchResume, when set, names the watch whose resume this turn is. The
 	// session writes the turn's text itself, from the watch and its own last
 	// assistant reply, and ignores Text. It is never combined with Queued: a

@@ -87,6 +87,17 @@ type turnRequestOptions struct {
 	thinking        string
 	thinkingOptions *schema.ThinkingOptions
 	temperature     *float64
+	// visionForced records that an explicit vision = "on" — or this session's
+	// send-anyway answer for the same model — put images on this turn on
+	// purpose, so a provider rejection must surface as itself instead of
+	// being retried without images.
+	visionForced bool
+	// visionOff records that the resolved route cannot take images, so a tool
+	// result's images are dropped at the request gate rather than costing a
+	// rejected request and a stripped retry on every image-bearing result.
+	// The zero value means "no route verdict" and leaves images alone, which
+	// is the safe direction for a caller that never resolved a route.
+	visionOff bool
 }
 
 func intPtr(v int) *int { return &v }
@@ -806,6 +817,13 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 	// handoff summary, plan) carries the current working state, and the
 	// request-inspection snapshot below records it as sent.
 	messages = r.withWorkingState(messages)
+	// Image gate. Both drops below rewrite the wire, which the cache-prefix
+	// rule otherwise forbids mid-turn — but neither is avoidable: a ref the
+	// store can no longer resolve fails the whole request at the encoder, and
+	// an image on a route that cannot take it costs a rejected request plus a
+	// stripped retry on every step. Both conditions are permanent for the
+	// rest of the turn, so the rewritten prefix is stable from here on.
+	messages = r.gateRequestImages(ctx, messages)
 
 	// Two independent bounds. The idle cause fires when the stream goes
 	// silent; the ceiling fires regardless of activity. Both carry an
@@ -894,6 +912,10 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 		Thinking:        thinking,
 		ThinkingOptions: r.turnRequestOptions.thinkingOptions,
 		Temperature:     requestTemperature,
+		// The same source the request gate consulted: refs that resolve there
+		// resolve here, so a dropped one is genuinely gone and a kept one
+		// genuinely has bytes.
+		ImageSource: r.ImageSource,
 	}
 	attemptID := r.captureRequestInspection(p, model, req)
 
@@ -912,6 +934,23 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 	defer close(watchdogDone)
 	go r.watchIdle(ctx, cancelIdle, &lastEvent, watchdogDone)
 	events, err := p.Chat(ctx, req)
+	if err != nil && !r.turnRequestOptions.visionForced && carriesImages(req.Messages) && isVisionRejection(err) {
+		// A provider that refuses image input is recoverable: the turn is
+		// worth more without its screenshots than not at all. Retried once,
+		// here, before the failure is classified — and the learned fact is
+		// persisted only when the retry actually succeeds, so a rejection
+		// the text-only request shares (a bad key, a dead endpoint) is not
+		// mislabelled as "this model is blind".
+		if retryMsgs, ok := withoutImages(req.Messages); ok {
+			retryReq := req
+			retryReq.Messages = retryMsgs
+			if retryEvents, retryErr := p.Chat(ctx, retryReq); retryErr == nil {
+				r.recordVisionRejection(p.Name(), model) // persist the fact
+				r.noteVisionRetry()                      // a user-visible notice
+				events, err = retryEvents, nil
+			}
+		}
+	}
 	if err != nil {
 		// The adapter runs the HTTP request inside Chat, so a bound that fires
 		// before the first event (time-to-first-byte, or the ceiling) surfaces

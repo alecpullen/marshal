@@ -45,13 +45,14 @@ type TextBlock struct {
 }
 
 // PromptCallParams is session/prompt's params from a marshal client: ACP's
-// session and prompt blocks, plus PromptParams' queued text and watch resume.
-// The client sends PromptParams.Text as one text block.
+// session and prompt blocks, plus PromptParams' queued text, its images and
+// its watch resume. The client sends PromptParams.Text as one text block.
 type PromptCallParams struct {
-	SessionID   string       `json:"sessionId"`
-	Prompt      []TextBlock  `json:"prompt"`
-	Queued      bool         `json:"queued,omitempty"`
-	WatchResume *WatchResume `json:"watchResume,omitempty"`
+	SessionID   string        `json:"sessionId"`
+	Prompt      []TextBlock   `json:"prompt"`
+	Queued      bool          `json:"queued,omitempty"`
+	Images      []PromptImage `json:"images,omitempty"`
+	WatchResume *WatchResume  `json:"watchResume,omitempty"`
 }
 
 // StopParams is session/stop's params.

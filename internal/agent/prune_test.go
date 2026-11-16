@@ -35,6 +35,35 @@ func TestPruneStaleToolOutputs_SupersededRead(t *testing.T) {
 	}
 }
 
+// TestPruneStaleToolOutputsDropsImages: a stubbed result's images go with its
+// content — the stub is text only and nothing should resolve their bytes —
+// while the newest result keeps its own.
+func TestPruneStaleToolOutputsDropsImages(t *testing.T) {
+	longRead := strings.Repeat("x", 5000) // > pruneMinSizeDefault
+	oldImage := schema.ImageRef{Hash: "old-old-old-old", MIME: "image/png", Width: 100, Height: 100, Bytes: 1024}
+	newImage := schema.ImageRef{Hash: "new-new-new-new", MIME: "image/png", Width: 200, Height: 200, Bytes: 2048}
+	wire := []schema.ChatMessage{
+		{Role: schema.RoleAssistant, ToolCalls: []schema.ToolCall{
+			{ID: "c1", Name: "file.read", Args: jsonRaw(`{"path":"a.go"}`)},
+		}},
+		{Role: schema.RoleTool, ToolCallID: "c1", Content: longRead, Images: []schema.ImageRef{oldImage}},
+		{Role: schema.RoleAssistant, ToolCalls: []schema.ToolCall{
+			{ID: "c2", Name: "file.read", Args: jsonRaw(`{"path":"a.go"}`)},
+		}},
+		{Role: schema.RoleTool, ToolCallID: "c2", Content: longRead, Images: []schema.ImageRef{newImage}},
+	}
+	got, pruned := pruneStaleToolOutputs(wire, pruneMinSizeDefault)
+	if pruned != 1 {
+		t.Fatalf("pruned = %d, want 1", pruned)
+	}
+	if len(got[1].Images) != 0 {
+		t.Fatalf("superseded result kept %d image(s)", len(got[1].Images))
+	}
+	if len(got[3].Images) != 1 || got[3].Images[0].Hash != newImage.Hash {
+		t.Fatalf("the newer result's images must survive; got %+v", got[3].Images)
+	}
+}
+
 // TestPruneStaleToolOutputs_SupersededSymbols: the `symbols` tool replaced
 // symbols.find, and a repeated lookup of the same name must supersede the
 // earlier result exactly as a repeated file.read does. Without a read-class

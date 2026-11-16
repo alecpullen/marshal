@@ -26,7 +26,7 @@ import (
 // system prompt and last tool definition, and the cache usage mapping
 // for free.
 func (p *OpenAICompatible) messagesChat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
-	body, err := buildAnthropicRequestBody(req, 0, 0)
+	body, err := buildAnthropicRequestBody(ctx, req, 0, 0)
 	if err != nil {
 		return nil, fmt.Errorf("provider %q: %w", p.name, err)
 	}

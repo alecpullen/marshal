@@ -79,6 +79,16 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Skills.BodyFullTurns, file.Skills.BodyFullTurns)
 		set(&cfg.Skills.LoadGateThresholdTokens, file.Skills.LoadGateThresholdTokens)
 	}
+	if file.Images != nil {
+		set(&cfg.Images.MaxInputBytes, file.Images.MaxInputBytes)
+		set(&cfg.Images.MaxStoredBytes, file.Images.MaxStoredBytes)
+		set(&cfg.Images.MaxEdge, file.Images.MaxEdge)
+		set(&cfg.Images.JPEGQuality, file.Images.JPEGQuality)
+		set(&cfg.Images.MaxPerMessage, file.Images.MaxPerMessage)
+		set(&cfg.Images.MaxRequestBytes, file.Images.MaxRequestBytes)
+		set(&cfg.Images.MaxStoreBytes, file.Images.MaxStoreBytes)
+		set(&cfg.Images.RetainDays, file.Images.RetainDays)
+	}
 	if file.Indexing != nil {
 		set(&cfg.Indexing.UseTreesitter, file.Indexing.UseTreesitter)
 		set(&cfg.Indexing.UseEmbeddings, file.Indexing.UseEmbeddings)
@@ -501,6 +511,7 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Scratchpad.MaxEntryTokens, file.Scratchpad.MaxEntryTokens)
 		set(&cfg.Scratchpad.ProjectionMaxTokens, file.Scratchpad.ProjectionMaxTokens)
 	}
+	cfg.Images = cfg.Images.Normalize()
 	return nil
 }
 

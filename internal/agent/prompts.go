@@ -1009,10 +1009,54 @@ func buildToolResultMessage(name string, result registry.ToolResult, toolCallID 
 	if result.Content != "" {
 		content += "\n\n" + result.Content
 	}
-	if toolCallID != "" {
-		return schema.ChatMessage{Role: schema.RoleTool, Content: content, ToolCallID: toolCallID}
+	const maxPerMessage = 10
+	if n := len(result.Images); n > 0 {
+		if n > maxPerMessage {
+			result.Images = result.Images[:maxPerMessage]
+			n = maxPerMessage
+		}
+		for _, img := range result.Images {
+			content += fmt.Sprintf("\n[image: %d×%d %s %s %s]",
+				img.Width, img.Height, shortMIME(img.MIME), humanBytes(img.Bytes), shortHash(img.Hash))
+		}
 	}
-	return schema.ChatMessage{Role: schema.RoleUser, Content: content}
+	if toolCallID != "" {
+		return schema.ChatMessage{Role: schema.RoleTool, Content: content, ToolCallID: toolCallID, Images: result.Images}
+	}
+	return schema.ChatMessage{Role: schema.RoleUser, Content: content, Images: result.Images}
+}
+
+// shortMIME abbreviates an image MIME type for the human-readable
+// "[image: …]" line a tool result carries.
+func shortMIME(mime string) string {
+	switch mime {
+	case "image/png":
+		return "png"
+	case "image/jpeg":
+		return "jpeg"
+	case "image/gif":
+		return "gif"
+	case "image/webp":
+		return "webp"
+	}
+	return mime
+}
+
+func humanBytes(n int) string {
+	switch {
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%d KB", n/(1<<10))
+	}
+	return fmt.Sprintf("%d B", n)
+}
+
+func shortHash(hash string) string {
+	if len(hash) > 8 {
+		return hash[:8]
+	}
+	return hash
 }
 
 func BuildToolErrorMessage(name string, reason string) schema.ChatMessage {

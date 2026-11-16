@@ -28,9 +28,11 @@ import (
 	"marshal/internal/daemon"
 	"marshal/internal/db"
 	"marshal/internal/hooks"
+	"marshal/internal/imagepayload"
 	"marshal/internal/interaction"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
+	"marshal/internal/llm/schema"
 	"marshal/internal/lsp"
 	"marshal/internal/progress"
 	"marshal/internal/pubsub"
@@ -147,7 +149,11 @@ type Runtime struct {
 	WorkingDir        string
 	HomeDir           string
 	DataDir           string
-	SkillIndex        *skills.Index
+	// Images is the agent-visible image store. Nil only when the data
+	// directory could not be prepared; every consumer treats nil as "this
+	// process serves no images".
+	Images     *imagepayload.Store
+	SkillIndex *skills.Index
 	// PluginCommands are slash commands contributed by verified plugins.
 	// Run() registers them into the TUI command registry; headless
 	// sessions ignore them.
@@ -1572,6 +1578,70 @@ func (rt *Runtime) Close(ctx context.Context) error {
 	return errors.Join(rt.quiesceErr, rt.closeErr)
 }
 
+// imageSweepTimeout bounds the startup eviction pass over the image store.
+// The pass is one directory walk plus one query; anything slower is a
+// filesystem problem, not a reason to hold up the session.
+const imageSweepTimeout = 10 * time.Second
+
+// openImageStore prepares the content-addressed image store under the data
+// directory. A failure is logged and yields nil: the agent runs without
+// images rather than not at all.
+func openImageStore(dataDir string, cfg config.Config, logger *slog.Logger) *imagepayload.Store {
+	if dataDir == "" {
+		return nil
+	}
+	store, err := imagepayload.Open(filepath.Join(dataDir, "images"), cfg.Images.PayloadConfig())
+	if err != nil {
+		// Silence here would surface much later as "this session has no
+		// image store", which reads like an internal invariant rather than
+		// the storage problem it is.
+		logger.Warn("image store unavailable", "dir", dataDir, "error", err)
+		return nil
+	}
+	return store
+}
+
+// referencedImageHashes returns every image hash a stored transcript still
+// names. It deliberately does not filter by session age: an over-broad set
+// only keeps files the retention window would otherwise evict, while a
+// too-narrow one would delete an image a transcript still shows.
+func referencedImageHashes(database *db.DB) func() (map[string]struct{}, error) {
+	return func() (map[string]struct{}, error) {
+		hashes := map[string]struct{}{}
+		if database == nil {
+			return hashes, nil
+		}
+		rows, err := database.SQLDB().QueryContext(context.Background(),
+			`SELECT images_json FROM messages WHERE images_json <> ''`)
+		if err != nil {
+			return nil, fmt.Errorf("query message images: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var raw string
+			if err := rows.Scan(&raw); err != nil {
+				return nil, fmt.Errorf("scan message images: %w", err)
+			}
+			// A row that does not decode is skipped, not an error: one
+			// corrupt transcript must not disable eviction for the whole
+			// store.
+			var refs []schema.ImageRef
+			if err := json.Unmarshal([]byte(raw), &refs); err != nil {
+				continue
+			}
+			for _, ref := range refs {
+				if ref.Hash != "" {
+					hashes[ref.Hash] = struct{}{}
+				}
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("read message images: %w", err)
+		}
+		return hashes, nil
+	}
+}
+
 // StartRuntime builds a Runtime from the supplied options. It performs every
 // step of session bootstrap that is independent of the transport: working
 // directory resolution, trust resolution, config load, .marshal directory
@@ -1859,6 +1929,11 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	// The runtime's one LSP handle. It starts empty; bindLSP points it at
 	// the host's pooled servers once the runtime exists.
 	lspHandle := lsp.NewHandle(nil, nil, logger)
+	// The runtime's one image store: the toolset, the ACP service and the
+	// startup sweep all share this handle, so no second store is opened over
+	// the same directory. nil when the data directory could not be prepared,
+	// which every consumer reads as "this process serves no images".
+	images := openImageStore(dataDir, cfg, logger)
 	// Studio enrollment is attempted here, exactly once, and before the runner
 	// is built so the session's built-in MCP client can present what the daemon
 	// issued. It is never required: an absent, offline, ambiguous or unsupported
@@ -1867,7 +1942,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	// a prompt, a tool result, a notice or a child's environment.
 	marshalStudio := newMarshalStudioCredential(homeDir, workingDir, sessionID)
 	marshalStudio.enroll()
-	runner, toolReg, swarmRunner, mcpMgr, snapSvc, commandService, watchMgr, desktopCloser, subagentFactory, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker, watchBroker, watchResumeCell, runOpts.configReloader, homeDir, writeLock, nil, lspHandle, marshalStudio, authResolver)
+	runner, toolReg, swarmRunner, mcpMgr, snapSvc, commandService, watchMgr, desktopCloser, subagentFactory, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(workCtx, cfg, state, database, projectID, skillIndex, dataDir, images, runOpts.additionalDirs, jobBroker, watchBroker, watchResumeCell, runOpts.configReloader, homeDir, writeLock, nil, lspHandle, marshalStudio, authResolver)
 	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
 		runner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
 	}
@@ -1931,6 +2006,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		WorkingDir:           workingDir,
 		HomeDir:              homeDir,
 		DataDir:              dataDir,
+		Images:               images,
 		SkillIndex:           skillIndex,
 		PluginCommands:       pluginCommands,
 		CommandRegistry:      cmdReg,
@@ -1944,6 +2020,16 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		additionalDirs:       runOpts.additionalDirs,
 		workCtx:              workCtx,
 		workCancel:           workCancel,
+	}
+	// The store outlives any one session, so evict what no transcript names
+	// before the first turn can add to it. The pass is bounded and
+	// best-effort: a sweep that cannot run must never fail startup.
+	if rt.Images != nil {
+		sweepCtx, sweepCancel := context.WithTimeout(workCtx, imageSweepTimeout)
+		if _, sweepErr := rt.Images.Sweep(sweepCtx, referencedImageHashes(database)); sweepErr != nil {
+			logger.Warn("image store sweep failed", "error", sweepErr)
+		}
+		sweepCancel()
 	}
 	// One snapshot-warning state shared by the runtime and its runner, so a
 	// pre-write capture warning and a maintenance warning about the same
@@ -2501,7 +2587,7 @@ func (rt *Runtime) newSessionLocked(name string, replacing bool) (*session.State
 		lock = &swarm.WriteLock{}
 	}
 	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(
-		rt.workCtx, rt.Config, newState, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock, nil, rt.LSPManager, rt.marshalStudio, rt.AuthResolver,
+		rt.workCtx, rt.Config, newState, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.Images, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock, nil, rt.LSPManager, rt.marshalStudio, rt.AuthResolver,
 	)
 	if err != nil {
 		// Roll back the empty session row so /sessions stays clean.

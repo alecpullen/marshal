@@ -475,6 +475,19 @@ type Session interface {
 	// service.
 	Prompt(ctx context.Context, params acpwire.PromptParams) (acpwire.PromptResult, error)
 
+	// ImagesPut uploads one image and returns the ref a later prompt attaches.
+	// The bytes travel once, here, so the prompt carries the ref only.
+	//
+	// ACP: session/images_put (exists).
+	ImagesPut(ctx context.Context, sessionID string, data []byte, label string) (acpwire.PromptImage, error)
+
+	// ForceVision records the user's send-anyway answer after a prompt was
+	// refused with CodeVisionUnsupported: images go to provider/model for the
+	// rest of the session, without a config change.
+	//
+	// ACP: session/vision_force (exists).
+	ForceVision(ctx context.Context, provider, model string) error
+
 	// Stop stops the session's run: the commands attached to it first, then
 	// the run itself. With nothing running it does nothing.
 	//

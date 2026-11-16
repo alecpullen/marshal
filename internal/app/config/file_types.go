@@ -125,6 +125,19 @@ type fileSkills struct {
 	LoadGateThresholdTokens *int     `toml:"load_gate_threshold_tokens"`
 }
 
+// fileImages mirrors ImagesConfig with nullable fields, so a project
+// [images] table overrides only the keys it names.
+type fileImages struct {
+	MaxInputBytes   *int64 `toml:"max_input_bytes"`
+	MaxStoredBytes  *int   `toml:"max_stored_bytes"`
+	MaxEdge         *int   `toml:"max_edge"`
+	JPEGQuality     *int   `toml:"jpeg_quality"`
+	MaxPerMessage   *int   `toml:"max_per_message"`
+	MaxRequestBytes *int64 `toml:"max_request_bytes"`
+	MaxStoreBytes   *int64 `toml:"max_store_bytes"`
+	RetainDays      *int   `toml:"retain_days"`
+}
+
 type fileShell struct {
 	DefaultTimeoutSeconds *int          `toml:"default_timeout_seconds"`
 	ForegroundWaitSeconds *int          `toml:"foreground_wait_seconds"`
@@ -380,6 +393,7 @@ type configFile struct {
 	Hooks       *fileHooks       `toml:"hooks"`
 	Session     *fileSession     `toml:"session"`
 	Skills      *fileSkills      `toml:"skills"`
+	Images      *fileImages      `toml:"images"`
 	// Providers stays a plain map: nil already distinguishes absent/present.
 	Providers map[string]ProviderConfig `toml:"providers"`
 	Models    *fileModels               `toml:"models"`

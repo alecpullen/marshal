@@ -17,21 +17,32 @@ import (
 
 // --- wire types (OpenAI Responses API) ---
 
-// responsesContentPart is one content part inside a role item's content
+// responsesContentPart is one text part inside a role item's content
 // array: input_text for user/system items, output_text for assistant
-// items.
+// items. Text is deliberately not omitempty: a strictly typed Responses
+// endpoint rejects a text part with no text field, and an empty-text
+// message has always been sent as {"type":"input_text","text":""}.
 type responsesContentPart struct {
 	Type string `json:"type"` // input_text | output_text
 	Text string `json:"text"`
+}
+
+// responsesImagePart is one input_image part of a user item's content.
+// It is a type of its own because an image part carries no text: putting
+// omitempty on the shared part's text field would drop "text" from every
+// empty-text message on the wire, not just from image parts.
+type responsesImagePart struct {
+	Type     string `json:"type"` // input_image
+	ImageURL string `json:"image_url"`
 }
 
 // responsesInputItem is one item in the top-level input array. Role
 // items are typed "message" and carry a content parts array;
 // function_call / function_call_output items carry their own fields.
 type responsesInputItem struct {
-	Type    string                 `json:"type"` // message | function_call | function_call_output
-	Role    string                 `json:"role,omitempty"`
-	Content []responsesContentPart `json:"content,omitempty"`
+	Type    string `json:"type"` // message | function_call | function_call_output
+	Role    string `json:"role,omitempty"`
+	Content []any  `json:"content,omitempty"` // responsesContentPart | responsesImagePart
 	// function_call fields
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
@@ -216,13 +227,18 @@ func reasoningItemFrom(item *responsesOutputItem) (schema.ReasoningItem, bool) {
 // top-level instructions field (matching @ai-sdk/openai, which OpenCode
 // itself uses); any mid-conversation system message (skill hints,
 // steering) becomes a role item at its position — order preserved.
-func buildResponsesInput(msgs []schema.ChatMessage) (instructions string, items []responsesInputItem) {
-	return buildResponsesInputWithSystemRole(msgs, "system")
+func buildResponsesInput(ctx context.Context, msgs []schema.ChatMessage) (instructions string, items []responsesInputItem, err error) {
+	return buildResponsesInputWithSystemRole(ctx, nil, msgs, "system")
 }
 
 // buildResponsesInputWithSystemRole keeps the leading harness prompt in
 // instructions and adapts subsequent system messages to the provider's role.
-func buildResponsesInputWithSystemRole(msgs []schema.ChatMessage, systemRole string) (instructions string, items []responsesInputItem) {
+//
+// A user message's images become input_image parts after its text part;
+// every other role keeps text, because only a user item can carry an image.
+// An image-only user message has no text part at all — see the user case
+// below for why that part is conditional.
+func buildResponsesInputWithSystemRole(ctx context.Context, src schema.ImageSource, msgs []schema.ChatMessage, systemRole string) (instructions string, items []responsesInputItem, err error) {
 	var sysParts []string
 	leading := true
 	for _, m := range msgs {
@@ -238,13 +254,28 @@ func buildResponsesInputWithSystemRole(msgs []schema.ChatMessage, systemRole str
 			items = append(items, responsesInputItem{
 				Type:    "message",
 				Role:    systemRole,
-				Content: []responsesContentPart{{Type: "input_text", Text: m.Content}},
+				Content: []any{responsesContentPart{Type: "input_text", Text: m.Content}},
 			})
 		case schema.RoleUser:
+			parts := make([]any, 0, len(m.Images)+1)
+			// An image-only message drops its text part: the endpoint
+			// requires text on input_text, and there is none to send. A
+			// message with no images keeps the part even when the text is
+			// empty, so a text-only turn's wire shape does not change.
+			if m.Content != "" || len(m.Images) == 0 {
+				parts = append(parts, responsesContentPart{Type: "input_text", Text: m.Content})
+			}
+			for _, img := range m.Images {
+				url, imageErr := imageDataURL(ctx, src, img)
+				if imageErr != nil {
+					return "", nil, imageErr
+				}
+				parts = append(parts, responsesImagePart{Type: "input_image", ImageURL: url})
+			}
 			items = append(items, responsesInputItem{
 				Type:    "message",
 				Role:    "user",
-				Content: []responsesContentPart{{Type: "input_text", Text: m.Content}},
+				Content: parts,
 			})
 		case schema.RoleAssistant:
 			// Replayed reasoning items precede the turn's message and
@@ -263,7 +294,7 @@ func buildResponsesInputWithSystemRole(msgs []schema.ChatMessage, systemRole str
 				items = append(items, responsesInputItem{
 					Type:    "message",
 					Role:    "assistant",
-					Content: []responsesContentPart{{Type: "output_text", Text: m.Content}},
+					Content: []any{responsesContentPart{Type: "output_text", Text: m.Content}},
 				})
 			}
 			for _, call := range m.ToolCalls {
@@ -290,29 +321,32 @@ func buildResponsesInputWithSystemRole(msgs []schema.ChatMessage, systemRole str
 			})
 		}
 	}
-	return strings.Join(sysParts, "\n\n"), items
+	return strings.Join(sysParts, "\n\n"), items, nil
 }
 
-func buildResponsesRequestBody(req schema.ChatRequest, reasoningSummary bool) ([]byte, error) {
-	return buildResponsesRequestBodyWithInclude(req, reasoningSummary, nil)
+func buildResponsesRequestBody(ctx context.Context, req schema.ChatRequest, reasoningSummary bool) ([]byte, error) {
+	return buildResponsesRequestBodyWithInclude(ctx, req, reasoningSummary, nil)
 }
 
 // buildResponsesRequestBodyWithInclude is buildResponsesRequestBody with an
 // explicit include list. The codex backend needs
 // ["reasoning.encrypted_content"] on every request; every other caller
 // passes nil and gets the previous wire shape byte for byte.
-func buildResponsesRequestBodyWithInclude(req schema.ChatRequest, reasoningSummary bool, include []string) ([]byte, error) {
-	return buildResponsesRequestBodyWithSystemRole(req, reasoningSummary, include, "system")
+func buildResponsesRequestBodyWithInclude(ctx context.Context, req schema.ChatRequest, reasoningSummary bool, include []string) ([]byte, error) {
+	return buildResponsesRequestBodyWithSystemRole(ctx, req, reasoningSummary, include, "system")
 }
 
-func buildResponsesRequestBodyWithSystemRole(req schema.ChatRequest, reasoningSummary bool, include []string, systemRole string) ([]byte, error) {
+func buildResponsesRequestBodyWithSystemRole(ctx context.Context, req schema.ChatRequest, reasoningSummary bool, include []string, systemRole string) ([]byte, error) {
 	if req.Model == "" {
 		return nil, errors.New("chat request: model is required")
 	}
 	if len(req.Messages) == 0 {
 		return nil, errors.New("chat request: at least one message is required")
 	}
-	instructions, input := buildResponsesInputWithSystemRole(req.Messages, systemRole)
+	instructions, input, err := buildResponsesInputWithSystemRole(ctx, req.ImageSource, req.Messages, systemRole)
+	if err != nil {
+		return nil, err
+	}
 
 	var tools []responsesTool
 	for _, tool := range req.Tools {
@@ -376,7 +410,7 @@ func (p *OpenAICompatible) responsesChat(ctx context.Context, req schema.ChatReq
 	if p.replayField == "" || p.replayRejected.Load() {
 		req.Messages = schema.WithoutReasoningItems(req.Messages)
 	}
-	body, err := buildResponsesRequestBody(req, p.reasoningSummary)
+	body, err := buildResponsesRequestBody(ctx, req, p.reasoningSummary)
 	if err != nil {
 		return nil, fmt.Errorf("provider %q: %w", p.name, err)
 	}

@@ -72,6 +72,8 @@ var Methods = []Method{
 	{Iface: "Session", Name: "ClearFinishedRun", ACP: "session/sdd_clear", Exists: true},
 	{Iface: "Session", Name: "TakeWatchResume", ACP: "session/watch_resume_take", Exists: true},
 	{Iface: "Session", Name: "Prompt", ACP: "session/prompt", Exists: true},
+	{Iface: "Session", Name: "ImagesPut", ACP: "session/images_put", Exists: true},
+	{Iface: "Session", Name: "ForceVision", ACP: "session/vision_force", Exists: true},
 	{Iface: "Session", Name: "Stop", ACP: "session/stop", Exists: true},
 	{Iface: "Session", Name: "Review", ACP: "session/review", Exists: true},
 	{Iface: "Session", Name: "RunAgent", ACP: "session/agent_run", Exists: true},

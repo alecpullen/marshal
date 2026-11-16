@@ -39,6 +39,27 @@ func TestDenylistViewEmptyInheritsAll(t *testing.T) {
 	}
 }
 
+// TestDenylistRemovesImageView pins the text-only-route gate: a registry that
+// carries image.view loses it when the route cannot take images.
+func TestDenylistRemovesImageView(t *testing.T) {
+	src := registry.New()
+	mustReg := func(tool registry.Tool) {
+		if err := src.Register(tool); err != nil {
+			t.Fatalf("register %s: %v", tool.Name, err)
+		}
+	}
+	mustReg(registry.Tool{Name: "image.view", Risk: registry.RiskReadOnly, Handler: nopHandler})
+	mustReg(registry.Tool{Name: "file.read", Risk: registry.RiskReadOnly, Handler: nopHandler})
+	view := DenylistView(src, []string{"image.view"})
+	if _, ok := view.Lookup("image.view"); ok {
+		t.Fatal("image.view survived a denylist that names it")
+	}
+	names := toolNames(view)
+	if len(names) != 1 || names[0] != "file.read" {
+		t.Fatalf("got %v, want [file.read]", names)
+	}
+}
+
 func toolNames(r *registry.Registry) []string {
 	var out []string
 	for _, t := range r.List() {

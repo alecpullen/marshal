@@ -226,6 +226,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/daemon", s.daemon)
 	s.mux.HandleFunc("GET /api/config", s.config)
 	s.mux.HandleFunc("GET /api/projects", s.listProjects)
+	// A project's image upload: the ref it answers is what a prompt attaches.
+	s.mux.HandleFunc("POST /api/projects/images", s.uploadImage)
 	s.mux.HandleFunc("POST /api/projects", s.addProject)
 	s.mux.HandleFunc("DELETE /api/projects", s.removeProject)
 	s.mux.HandleFunc("GET /api/agents", s.listAgents)

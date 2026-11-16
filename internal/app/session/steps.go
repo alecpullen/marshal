@@ -148,7 +148,7 @@ func (s *State) Step(id StepID) (Step, bool) {
 // AddNarration records the prose a model emitted alongside its tool calls as
 // a narration message belonging to step.
 func (s *State) AddNarration(step StepID, content string) {
-	s.appendMessageStepped(RoleAssistant, content, ContentTypeNarration, false, false, "", 0, "", step)
+	s.appendMessageStepped(RoleAssistant, content, ContentTypeNarration, false, false, "", 0, "", step, nil)
 }
 
 // branchIDsLocked is the set of in-memory message IDs on the active branch.

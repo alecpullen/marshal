@@ -24,6 +24,7 @@ require (
 	github.com/sergi/go-diff v1.4.0
 	github.com/smacker/go-tree-sitter v0.0.0-20240827094217-dd81d9e9be82
 	github.com/yuin/goldmark v1.7.8
+	golang.org/x/image v0.26.0
 	golang.org/x/sys v0.46.0
 	golang.org/x/text v0.24.0
 	gopkg.in/yaml.v3 v3.0.1

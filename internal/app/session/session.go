@@ -251,14 +251,19 @@ type State struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu                sync.Mutex
-	todoMu            sync.Mutex    // serializes todo reconciliation and persistence
-	hold              bool          // guarded by mu; see hold.go
-	holdCh            chan struct{} // closed and cleared on release; guarded by mu
-	messages          []Message
-	inProgress        InProgressMessage
-	notice            Notice
-	noticeSet         bool
+	mu         sync.Mutex
+	todoMu     sync.Mutex    // serializes todo reconciliation and persistence
+	hold       bool          // guarded by mu; see hold.go
+	holdCh     chan struct{} // closed and cleared on release; guarded by mu
+	messages   []Message
+	inProgress InProgressMessage
+	notice     Notice
+	noticeSet  bool
+	// visionForced records the provider/model pairs the user chose to send
+	// images on despite a refusal; guarded by mu. In-memory and
+	// session-scoped: the user is answering a question about this image on
+	// this model, not editing their setup mid-turn.
+	visionForced      map[string]bool
 	pendingApproval   *PendingToolCall
 	pendingQuestion   *PendingQuestion
 	pendingSkillGate  *PendingSkillGate

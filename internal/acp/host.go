@@ -286,6 +286,9 @@ func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyF
 		Perms:     perms,
 		Questions: questions,
 		Marshal:   marshal,
+		// The follower reports the session's service runs to a viewer, and a
+		// cancel with no turn of its own stops the run it follows (P5).
+		Service: manager.Service,
 	})
 	return tm
 }
@@ -426,6 +429,10 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool, notify Not
 	srv.Handle("session/last_request", turns.LastRequest)
 	srv.Handle("session/step_diffs", turns.StepDiffs)
 	srv.Handle("session/run", turns.Run)
+	// A viewer follows a session's service runs: the bridge starts them, and
+	// this connection only reports them (P5). Follow refuses a marshal client,
+	// which reads the same runs from the session's status.
+	srv.Handle(methodFollow, turns.Follow)
 	srv.HandleNotification("session/cancel", turns.Cancel)
 
 	watches := NewWatchManagerACP(func(sessionID string) (*watch.Manager, *pubsub.Broker[watch.Event], bool) {
@@ -711,6 +718,9 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool, notify Not
 	// through this connection's permission bridge, so they end with it.
 	return func() {
 		turns.CloseChildApprovals()
+		// A run follower reports one session's service runs to this
+		// connection, so it ends with it too (P5).
+		turns.CloseFollowers()
 		works.Close()
 		statuses.Close()
 		sheets.Close()

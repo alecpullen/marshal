@@ -1908,8 +1908,6 @@ attach's paused refusal failed `TestTheAgentAttachRefusals/a_paused_agent`.
 
 ### Plan 4c — a viewer's turn reaches the fleet
 
-Not yet run. Plan 4c's last task fills this in.
-
 **The batch's baseline** (plans 4c, 5a, 5b and 6), run at `bcceadab` — the code
 of `67efccb7`, which differs only in `docs/` — with
 `TMPDIR=/tmp/p5-5a-suite` on Linux, since `/private/tmp` is macOS's:
@@ -1934,6 +1932,167 @@ listed so a task does not investigate them or pass by repairing them:
 - `src/lib/Sidebar.test.ts:16:3`, `src/views/Review.test.ts:49:3` and
   `src/views/Runs.test.ts:15:52` — fixture literals missing `AgentRow` fields.
 - `src/lib/fleet.test.ts:78:42` — `system` is not in `AccessState`.
+
+**What was built.** A turn started from an agent's session screen now reaches
+the fleet. `internal/acp` gained `session/follow` (`follow.go`): the bridge's
+own connection asks the agent to report one session's runs from other
+connections, refused for a marshal client ("a marshal client reads its runs
+from the session's status"), idempotent per (session, runtime), and stopped
+with the connection (`CloseFollowers`) or the runtime's replacement. A
+`runFollower` subscribes to the session's events for its life and reads the
+service's `Status()` on every event and every 50ms (`statusInterval`, the
+status forwarder's cadence). A run whose ID it has not reported is sent as a
+`session/update` `followed_run` `started` with its ID and kind — before any of
+its events — and from then on the run's root events go through a
+`turnForwarder` built with `followed: true`, with the stack flushed on the
+turn's cadence. When the service reports no run, or a different one, the
+follower forwards what is still buffered, flushes the stack, sends the
+`session_telemetry` `finishTurn` sends, and only then sends `ended` with the
+last run's outcome and, for a failed run, its message. `session/cancel` with
+no turn of its own on the connection stops the followed service run with the
+same `cancelCause` an explicit cancel records. `runTurn`'s forward closure
+became `turnForwarder` and `forwarderOptions{failed, followed}`, shared by both
+builders so the two can never drift; the only `followed` differences are three
+— a missing bridge leaves a prompt unanswered with a warning naming the
+session, a failed question is left unanswered where a turn answers
+`Unanswered`, and a failed notify calls `failed` (the follower logs; `runTurn`
+still cancels its turn) — and settlement elsewhere and steering still end each
+RPC quietly, as plan 4a settled them. `finishTurn`'s telemetry send became
+`sendTelemetry`, used by the turn and the follower. `TurnManagerConfig` gained
+`Service`, `registerHandlers` passes `manager.Service` and registers the method
+on every connection (a viewer's is refused by `Follow`), and the cleanup
+closes the followers beside the child approval collectors.
+
+`web/bridge` follows each fleet agent's session. `Registry.Follow` sends
+`session/follow` through `call`, so an older agent's method-not-found becomes
+`ErrUnsupported{Feature: "follow"}` and is logged once per session;
+`NewRegistry` puts the registry first in the child's notification chain and
+hands each `session/update` to `observeFollowedRun`, which runs on the child's
+read goroutine and so lands before any request read after it. A `started`
+records the run and sets `Busy` and `accepting`; an `ended` for the recorded
+run clears it and, unless the bridge's own prompt is in flight (`ownTurn`),
+clears `Busy` and `accepting`, then emits `turn_end` — `end_turn` for `done`
+and `gated`, `cancelled` for `cancelled`, and the run's message as the event's
+`error` for `failed`, as a failed prompt does. `beginTurn` and `endTurn` own
+`ownTurn`, and `endTurn` leaves `Busy` and `accepting` set while a followed run
+is recorded; `resumeAll` clears both kinds of turn and re-follows each session
+that was followed. `fleet.go`'s `followAgentSession` follows after a spawn's
+`TrackFleet`, after each branch of `restoreSession`'s load, and after a child
+restart's resume: a method-not-found is the older agent already logged, any
+other failure is logged and never fails the spawn or the restore.
+
+Tests: `internal/acp`'s two forwarder tests pin that the move changed nothing
+and that a followed forwarder never answers for the viewer, and its seven
+follower tests cover a run start to end in order, its approval reaching the
+bridge, a viewer's answer ending the forwarded RPC, the connection's own turn
+never followed, the bridge's cancel stopping the run, a marshal client
+refused, and idempotency. `web/bridge`'s six tests cover a followed run
+marking the session busy, its approval brokered rather than denied, its end as
+a `turn_end` with each outcome, a late end not hiding the bridge's turn, a
+fleet agent's session followed at spawn and at restart, and an older agent
+left as it was. `test/daemon/viewer_turns_test.go` proves the whole path over
+a real local-profile bridge: a viewer's turn running in the fleet and ending
+idle with its changed file; its approval reaching the fleet and answered
+through `POST /api/permissions/{id}`; and `POST /api/sessions/{id}/cancel`
+ending it as `cancelled`. W4 was tightened:
+`TestTheFleetOpensAnAgentAndLeavesItRunning` now also requires the fleet's own
+row to say `running` while the run is in flight, and keeps the second viewer's
+check for the run's identity, which the row cannot name.
+
+**Where the plan was short, and how that was filled.**
+
+- **The forwarder owns the projection.** `newTurnForwarder` creates its own
+  `*turnProjection`, and `runTurn`'s local one is gone: the forwarder is the
+  only reader, so one constructor keeps the per-turn state per turn rather
+  than per builder.
+- **A missing bridge is not a failure.** Under `followed`, all three prompt
+  kinds are left unanswered with a warning, and `failed` is not called:
+  nothing tried and failed. `failed` is reserved for a bridge call that did
+  fail.
+- **The package has no invalid-request helper.** Decision 1's refusal is
+  `invalidParamsError` with the exact sentence; an unknown session is
+  `serverErrorf("session %s not found", id)`. `Follow` also fails closed when
+  the turn manager has no `Service`, with "session %s has no run service".
+- **The follower's update is projected onto a map.**
+  `SessionUpdateParams.Update` is `map[string]any`, so the typed
+  `followedRunUpdate` gained `update()`, which omits absent optional fields as
+  their JSON tags require.
+- **The service is resolved once, at `Follow`.** The follower stores it; a
+  replaced runtime is `ensureFollower`'s (stop the old, start a new), exactly
+  as `ensureChildApprovals` handles one.
+- **`ended` takes the `LastRun` from the same `Status()` read** that showed
+  the run gone or replaced. A nil `LastRun` is reported `done` with no error;
+  `failed` carries `LastRun.Error.Message`.
+- **`web/` decodes its own wire shape.** It is standard library only and
+  holds no shared Go type with the agent, so `followed_run` is decoded by
+  `registry.go`'s own `followedRunUpdate`, and an unknown or empty outcome
+  maps to `end_turn` (decision 9 settles `done`, `gated`, `cancelled` and
+  `failed`).
+- **The late-end test injects the update.** The helper child answers one
+  request at a time, so it cannot report an earlier run's end while a prompt
+  is in flight; `TestALateEndDoesNotHideTheBridgesTurn` sends the `ended`
+  through the child's `notify` instead.
+- **The real-bridge row is read from the bridge's own projection, not the
+  client's rows.** `test/daemon`'s first test reads the agent's row with
+  `agentStatus` — the `Snapshot()` that `GET /api/agents` serializes — and the
+  inbox through the fleet client. That row is reached by a bare status move,
+  which the client turns into rows only through the throttled inbox-move
+  refetch (`internal/fleetclient/apply.go`'s `applyInbox`), so what the test
+  reads there is the bridge's own projection rather than the client's. A
+  pending delta is the other case: `applyPending` refetches the agent rows
+  immediately, every time, which is what the approval test downstream relies
+  on. A helper commits a `.gitignore` covering
+  `.marshal/` in the harness's temp project, since the child writes that file
+  itself and an uncommitted one would count as the turn's second changed file.
+  A second helper prompts from the viewer on a goroutine.
+- **Task 3's mutation check had to be run by the controller.** The subagent's
+  editor refused every write to `registry.go` after `gofmt -w` rewrote it, so
+  the check was run here: dropping `accepting` from `observeFollowedRun`'s
+  `started` failed `TestAFollowedRunsApprovalIsBrokered` at its 2s wait, then
+  passed again after the line was restored.
+- **The plan's `TMPDIR=/private/tmp/...` is macOS's;** every run here used
+  `TMPDIR=/tmp/p5-4c-suite` on Linux.
+
+**The manual run.** Not run, by the user's decision: this environment has no
+TTY driver for the fleet program and no provider credentials. What a human
+should drive, in order:
+
+1. Build `marshal` from the branch and run
+   `webbridge --profile local --marshal-bin <built marshal>` with a scratch
+   `MARSHAL_DATA_DIR`, `--state-dir` and `--socket`.
+2. Give a scratch git project a `[tools.shell.confirm]` rule for a harmless
+   command and a passthrough sandbox, then trust it with `marshal --trust`.
+3. From `marshal fleet`, spawn an agent (`n`), then open its session screen
+   with `⏎` and prompt it from there: this is the turn the bridge did not
+   start.
+4. Confirm the fleet's row goes `running`, the Activity column moves with the
+   turn's tool call, and CTX and Δ update from its telemetry.
+5. Confirm the approval appears in `GET /api/agents` and in needs you, answer
+   it from the TUI, and see the fleet drop it as well.
+6. Confirm the agent returns to idle with the turn's changed files, and that
+   `x` on the row stops a second viewer's turn.
+
+**Verification.**
+
+| Command | Result |
+| --- | --- |
+| `TMPDIR=/tmp/p5-4c-suite CGO_ENABLED=1 go test ./internal/acp/ -count=1 -timeout 20m -skip '^Test(NoticeCallBudget\|ControlCallBudget\|AnswerCallBudget\|ResponseBarrierBudget\|SettingsCallBudget\|NoteCallBudget\|BrowserCallBudget\|EndCallBudget\|StackBusyFlipBudget\|StackPatchApplyBudget\|StackRoundTripBudget)$'` | Passed (16.4s), after every task that touched it. The eleven names are the budget tests `internal/acp` holds; the family's twelfth, `internal/app/tui`'s `TestAKeyPressOverThePipeBudget`, is only in the repo-wide CI row below, which names all twelve. |
+| `TMPDIR=/tmp/p5-4c-suite CGO_ENABLED=1 go test ./web/bridge/ -count=1 -timeout 20m` | Passed (135.0s). |
+| `GOOS=linux go vet ./web/...` and `GOOS=windows go vet ./web/bridge/...` | Clean. |
+| `TMPDIR=/tmp/p5-4c-suite CGO_ENABLED=1 go test ./test/daemon/ -count=1 -timeout 15m` | Passed (7.6s). |
+| `gofmt -l internal cmd test web` | No output. |
+| `CGO_ENABLED=1 go vet ./...` | Clean. |
+| `CGO_ENABLED=1 go build -o marshal ./cmd/marshal` | Built. |
+| CI's Go suite: `TMPDIR=/tmp/p5-4c-suite CGO_ENABLED=1 go test -p=1 ./... -count=1 -timeout 20m -skip '^Test(NoticeCallBudget\|ControlCallBudget\|AnswerCallBudget\|ResponseBarrierBudget\|SettingsCallBudget\|NoteCallBudget\|BrowserCallBudget\|EndCallBudget\|StackBusyFlipBudget\|StackPatchApplyBudget\|StackRoundTripBudget\|AKeyPressOverThePipeBudget)$'` | Passed; no package failed (`web/bridge` 135.7s, `test/daemon` 7.6s). The twelve skipped tests are the wall-clock budget tests CI also skips. |
+
+Each task's mutation check was run and restored: the followed forwarder
+answering `Unanswered` on a failed question failed
+`TestAFollowedForwarderNeverAnswersForTheViewer`; sending `started` after the
+run's first forwarded event failed the order assertion in
+`TestAFollowedRunIsReportedStartToEnd`; dropping `accepting` from `started`
+failed `TestAFollowedRunsApprovalIsBrokered`; and commenting out the fleet's
+follow after a spawn failed `TestAViewersTurnShowsAsRunningInTheFleet` and the
+tightened W4.
 
 ### Plan 5a — the fleet's actions
 
@@ -2104,7 +2263,140 @@ and only that one.
 
 ### Plan 5b — the diff tab and finishing an agent
 
-Not yet run. Plan 5b's last task fills this in.
+**What was built.** The fleet screen reviews an agent's work and finishes it.
+The Diff tab reads the changed files and one file's patch, `v` runs the gate,
+and `f` opens a modal that ships the work to the destination decision 5 picks,
+or discards it. The calls it takes are six new actions on the seam, through
+the client, and W7 drives the exit side of the finish against a real bridge.
+
+- **The seam** (`internal/acpclient/fleet.go`). `Fleet` gained `Diff`,
+  `CommitDraft`, `Verify`, `Merge`, `Exit` and `Discard`, each with its
+  `Routes:` doc line, and `FleetRoutes` gained six rows:
+  `GET /api/agents/{id}/diff`, `GET /api/agents/{id}/commit-draft`,
+  `POST /api/agents/{id}/verify`, `POST /api/agents/{id}/merge`,
+  `POST /api/agents/{id}/exit` and `POST /api/agents/{id}/discard`.
+  `TestFleetRouteTableCoversTheInterface` holds the table to the interface.
+- **The client** (`internal/fleetclient/actions.go`). Each action goes through
+  plan 5a's `post` and `getAction`, and so through one `action` helper. A 409
+  on `merge` is the refusal reported in the result's own shape, so it is
+  decoded as that result rather than raised as a `FleetError`: an unexported
+  `actionAnswering` accepts that one status. `Diff` sends `path` as an escaped
+  query parameter, and only when it is not empty. Both fakes that embed
+  `acpclient.Fleet` (`internal/app/tui/fleet/fleet_test.go`,
+  `internal/launch/fleet_test.go`) record the six calls.
+- **The Diff tab** (`internal/app/tui/fleet/diff.go`, new) sits behind `2`, as
+  plan 3 reserved it. `diffView` holds the shown agent and the changed-files
+  count it was read at, the files, the cursor, the selected file's raw patch,
+  its scroll and a failed read's sentence; `diffReadMsg` answers one read.
+  Reads are `tea.Cmd`s dispatched by `syncDiff`, which runs after every state
+  and every key: the file list when the agent or its count has changed, the
+  selected file's diff when the cursor moves. An answer for an agent, a
+  changed-files count or a path no longer shown is dropped. The patch renders
+  through `diffview.Render` at the panel's inner width in unified mode with
+  highlighting off, so the `+`
+  and `−` gutters carry the meaning under `NO_COLOR`; `J` and `K` scroll it a
+  row at a time. The header reads "<N> files +<added> −<removed>", the footer
+  names `j/k file` and `J/K scroll` while the tab is shown, a Sessions row has
+  no Diff tab, and a failed read shows its sentence in the panel and never on
+  the status line. Two frames pin it: `fleet-100x30-diff` and
+  `fleet-140x40-diff`.
+- **The gate and the finish modal** (`internal/app/tui/fleet/finish.go`, new).
+  `v` on the Info tab runs the gate, the line reading "verifying…" until the
+  call returns, its refusal shown as plan 5a shows an action failure. `f`
+  opens `finishModal` over the right panel on an idle agent, and refuses with
+  "finish needs <name> idle: cancel its turn first (x)" on a running or
+  waiting one. The modal's steps are decisions 3 to 8: a message field
+  pre-filled from `CommitDraft`, empty when that read fails or is unsupported;
+  `⏎` ships to `destination(a)`, which merges a local agent, leaves a patch
+  for a read-only git agent and exits any other git agent; `ctrl+d` asks for
+  the agent's name, and `Discard` needs it typed exactly; `esc` closes at any
+  step without acting. `mergeRefusal` turns a refused merge into decision 6's
+  sentences — `dirty` asks for a message and retries with it, `project_dirty`,
+  `target_moved` and `conflicts` say what to do and leave the modal on the
+  message step, and anything else reads "merge refused (<reason>)". A blocked
+  push shows the failed command and the last 20 lines of its output, then a
+  reason field: `⏎` on a non-empty reason exits again with the override, and
+  an empty reason is refused in the field. The result names where the work
+  went — the merged branch and target, or the pushed branch and the pull
+  request's URL — any key closes it, and every result and every failure is
+  also an Events line, the answer that lands after `esc` closed the modal
+  included. Two frames pin the modal: `fleet-100x30-finish` and
+  `fleet-100x30-blocked`. The help screen gained `v` and `f`, and the footer
+  names each only where it applies — `f` on an idle agent, `v` on the Info tab
+  with the right panel focused.
+- **W7** (`test/daemon/finish_test.go`, new; `test/daemon/main_test.go`).
+  Decision 9 is what makes it possible: the harness child accepts a plain
+  `acp` and runs `acp.Run` for it, because `web/bridge` starts an
+  agent-of-its-own child with no arguments, while `RunWithViewers` stays for
+  `acp --viewers unix://<socket>` and anything else is still an error.
+  `TestTheFinishFlowOverridesAFailedGate` builds a bare Go repository whose
+  one test fails, registers it, spawns a git agent from it in process, gives
+  it one change through its session, and then, through a `fleetclient` over
+  the harness's socket: the first `Exit` is blocked, its gate names
+  `go test ./...`, and nothing reached the bare repository; the second, with
+  an override reason, pushes the branch with the commit, and the row records
+  the override. `TestALocalAgentsMergeLandsOnItsTarget` merges an isolated
+  local agent and checks the project's target branch holds the change. Two
+  test-side arrangements are worth a sentence: the merge test sets a
+  committer identity in the project repository, because `session/merge` uses
+  `git merge --no-ff` and that needs one; and the override is read through a
+  client that attaches after the overridden exit, because an exit stores the
+  gate without moving an inbox group and so does not wake an already-connected
+  client to reread the agent list. No non-test file changed to make the
+  harness work.
+
+**The mutation checks.** Each was run and restored. Task 4's: sending the
+override on the first `Exit` in the client makes W7 fail on the first exit's
+result. Task 3's is the same shape on the modal: sending the override on the
+first exit fails `TestAGitAgentExits`.
+
+**The manual run.** Not performed in the environment this plan was executed
+in: it needs a live local daemon with a real model, which that environment did
+not have. The flow it would exercise is covered without one: W7 drives the
+gate, the blocked push and its override against a real bridge,
+`TestALocalAgentsMergeLandsOnItsTarget` the merge, and `TestDiscardNeedsTheNameTyped`
+the discard.
+
+**Verification.** `gofmt -l internal cmd test web` printed nothing;
+`CGO_ENABLED=1 go vet ./...` was clean; CI's suite command
+(`CGO_ENABLED=1 go test -p=1 ./... -count=1 -timeout 20m`, with the laptop
+latency budgets skipped) passed with nothing on the batch's baseline list
+failing; `CGO_ENABLED=1 go build -o marshal ./cmd/marshal` built;
+`go test ./test/usability/... -run TestScripted` passed; and the frames in
+`internal/app/tui/testdata` and `internal/app/tui/livebox/testdata` are
+unchanged from `main`.
+
+**Where the plan was short, and how that was filled.** Two deviations, both
+deliberate. The tab strip names `[Diff]` only while that tab is shown —
+`[Activity]  Info`, `Activity  [Diff]  Info`, `Activity  [Info]` — so the
+frames plan 3 pinned keep their exact text. The strip already named its tab
+that way for Activity and Info; Diff joins them rather than widening the strip
+on every tab. And the diff renders in `diffview.Render`'s own palette with
+highlighting off rather than in the theme's colours as task 2 asked: the `+`
+and `−` gutters must carry the whole meaning under `NO_COLOR`, and a
+highlighted patch would put a second palette underneath the theme's. Only the
+header's totals take the theme's added and removed colours.
+
+**The review, and what it changed.** The branch was reviewed by two
+independent `glm-5.3-flash` reviewers split by file set — the production code,
+and the tests, goldens and docs — and every finding was addressed in one
+follow-up commit.
+
+| Severity | Finding | Resolution |
+|---|---|---|
+| Major | Two file-list reads could be in flight for the same agent, and the older answer could replace the newer one, leaving the tab stale until the count moved again | `diffReadMsg` carries the changed-files count its read was dispatched at, and an answer whose count is not the tab's is dropped; `TestALateListForTheSameAgentIsDropped` applies a count-1 answer after a count-2 one |
+| Minor | A result that landed after `esc` closed the modal wrote no Events line, though decision 8 makes every result one | The closed-modal path draws the result through a throwaway modal for its Events line only; `TestAnAnswerAfterEscIsStillAnEvent` |
+| Minor | The footer named the Diff keys on a Sessions row, whose right panel has no Diff tab | The hints are gated on a row that has the tab |
+| Minor | A 409 whose body was not a `MergeResult` decoded into an empty one, losing the bridge's sentence | `actionAnswering` keeps an `{"error": …}` 409 as a `FleetError`; `TestAForeignRefusalKeepsItsSentence` |
+| Minor | The help screen still said `1 / 3 Activity or Info tab`, naming no Diff tab | It names `2 the Diff tab`; the Diff tab's `J`/`K` scroll and the drop-for-a-stale-path case gained tests |
+| Minor | `TestAnExitToAnotherDestinationSaysSo` asserted the substring `patch`, which any `patch` anywhere would satisfy | It asserts `leaves as a patch` |
+| Minor | `TestEscClosesTheModalWithoutActing` covered two of the four steps, though decision 4 claims all of them | It covers the message, discard, blocked and result steps |
+| Minor | This record counted its deviations wrongly and overstated what W7 drives | Both are corrected above |
+
+The reviewers' other notes needed no change: the gate's `GateRecord` is read
+through the Info tab's delta exactly as decision 2 says, two fast `v` presses
+are idempotent under `actionDone`'s sequence guard, and a read's 410 stays
+unreachable.
 
 ### Plan 6 — viewers everywhere, needs you and notifications
 

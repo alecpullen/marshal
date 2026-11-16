@@ -251,6 +251,7 @@ func (m Model) panelRight(outer, h int) string {
 		return m.frame(title, "", []string{m.plain("no agent selected")}, outer, h, focused)
 	}
 	inner := max(outer-4, 1)
+	rows := max(h-2, 0)
 	var body []string
 	switch {
 	case row.session:
@@ -261,9 +262,12 @@ func (m Model) panelRight(outer, h int) string {
 			body = []string{m.plain("no agent selected")}
 			break
 		}
-		if m.tab == 3 {
+		switch m.tab {
+		case diffTab:
+			body = m.diffLines(inner, rows)
+		case 3:
 			body = m.infoLines(a)
-		} else {
+		default:
 			body = m.activityLines(a, inner)
 		}
 	}
@@ -271,13 +275,18 @@ func (m Model) panelRight(outer, h int) string {
 }
 
 // rightTitle is the right panel's title: its tab strip, or Session for a
-// session row.
+// session row. The Diff tab adds its name to the strip only while it is shown,
+// so the strip the other two tabs draw keeps its exact text.
 func (m Model) rightTitle() string {
 	if row, ok := m.selectedRow(); ok && row.session {
 		return "Session"
 	}
 	selected := lipgloss.NewStyle().Foreground(m.th.AccentSecondary)
 	other := lipgloss.NewStyle().Foreground(m.th.FGMuted)
+	if m.tab == diffTab {
+		return other.Render("Activity") + other.Render("  ") +
+			selected.Render("[Diff]") + other.Render("  ") + other.Render("Info")
+	}
 	if m.tab == 3 {
 		return other.Render("Activity") + other.Render("  ") + selected.Render("[Info]")
 	}
@@ -826,6 +835,20 @@ func (m Model) footer(rows []agentRow) string {
 		}
 	case focusRight:
 		keys = "1/3 tab n spawn"
+		if m.tab == diffTab && m.shownAgentID() != "" {
+			// The Diff tab's own keys, named only while it is shown, and only
+			// on a row that has the tab: a Sessions row's right panel is the
+			// session's details whatever tab is selected.
+			keys = "j/k file J/K scroll 1/3 tab n spawn"
+		}
+	}
+	// f and v are the finish flow's keys (decisions 2 and 3), named only where
+	// they apply: f needs an idle agent, and v the Info tab of the right panel.
+	if m.canFinish() {
+		keys = addHint(keys, "f finish")
+	}
+	if m.focus == focusRight && m.tab == infoTab {
+		keys = addHint(keys, "v gate")
 	}
 	// ⏎ is only worth naming while it would do something.
 	if m.openTarget(rows) != (Target{}) {
@@ -869,7 +892,10 @@ func (m Model) helpScreen() string {
 		"a                answer the selected agent's request",
 		"n                spawn an agent",
 		"x                cancel the selected agent's turn",
+		"f                finish the selected agent",
 		"1 / 3            Activity or Info tab",
+		"2                the Diff tab",
+		"v                run the gate (Info tab)",
 		"z                zoom the focused panel",
 		"esc              unzoom, or clear the filter while it is open",
 		"/                filter agents by name or project",

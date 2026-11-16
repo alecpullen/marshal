@@ -85,6 +85,38 @@ type Fleet interface {
 	//
 	// Routes: GET /api/prompts/recent.
 	RecentPrompts(ctx context.Context, project string, limit int) ([]string, error)
+
+	// Diff is an agent's changed files and, when path is not "", that
+	// file's diff.
+	//
+	// Routes: GET /api/agents/{id}/diff.
+	Diff(ctx context.Context, agentID, path string) (contract.DiffResult, error)
+
+	// CommitDraft is the agent's suggested commit message.
+	//
+	// Routes: GET /api/agents/{id}/commit-draft.
+	CommitDraft(ctx context.Context, agentID string) (contract.CommitDraft, error)
+
+	// Verify runs the agent's gate and answers its record.
+	//
+	// Routes: POST /api/agents/{id}/verify.
+	Verify(ctx context.Context, agentID string) (contract.GateRecord, error)
+
+	// Merge merges a local agent's branch. A refusal is a result with
+	// Merged false and its reason, not an error.
+	//
+	// Routes: POST /api/agents/{id}/merge.
+	Merge(ctx context.Context, agentID string, req contract.MergeRequest) (contract.MergeResult, error)
+
+	// Exit commits, verifies and pushes a git agent's work.
+	//
+	// Routes: POST /api/agents/{id}/exit.
+	Exit(ctx context.Context, agentID string, req contract.ExitRequest) (contract.ExitResult, error)
+
+	// Discard throws the agent's work away and retires it.
+	//
+	// Routes: POST /api/agents/{id}/discard.
+	Discard(ctx context.Context, agentID string) error
 }
 
 // FleetError is a refused action (decision 2).
@@ -131,4 +163,10 @@ var FleetRoutes = []FleetRoute{
 	{Name: "ApproveIntake", Routes: []string{"POST /api/pending/{id}/approve"}},
 	{Name: "DenyIntake", Routes: []string{"POST /api/pending/{id}/deny"}},
 	{Name: "RecentPrompts", Routes: []string{"GET /api/prompts/recent"}},
+	{Name: "Diff", Routes: []string{"GET /api/agents/{id}/diff"}},
+	{Name: "CommitDraft", Routes: []string{"GET /api/agents/{id}/commit-draft"}},
+	{Name: "Verify", Routes: []string{"POST /api/agents/{id}/verify"}},
+	{Name: "Merge", Routes: []string{"POST /api/agents/{id}/merge"}},
+	{Name: "Exit", Routes: []string{"POST /api/agents/{id}/exit"}},
+	{Name: "Discard", Routes: []string{"POST /api/agents/{id}/discard"}},
 }

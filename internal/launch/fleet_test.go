@@ -19,6 +19,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui/fleet"
 	"marshal/internal/app/tui/theme"
+	"marshal/web/bridge/contract"
 )
 
 // fakeFleet is a fleet the test owns: it answers State from a field and never
@@ -30,6 +31,10 @@ type fakeFleet struct {
 
 	state   acpclient.FleetState
 	changed chan struct{}
+
+	// finishes records the finishing actions this test drove. The launch
+	// tests drive the fleet's lifecycle, so each answers an empty result.
+	finishes []string
 }
 
 func newFakeFleet() *fakeFleet {
@@ -42,6 +47,36 @@ func newFakeFleet() *fakeFleet {
 func (f *fakeFleet) State() acpclient.FleetState { return f.state }
 
 func (f *fakeFleet) Changed() <-chan struct{} { return f.changed }
+
+func (f *fakeFleet) Diff(_ context.Context, agentID, path string) (contract.DiffResult, error) {
+	f.finishes = append(f.finishes, "Diff "+agentID+" "+path)
+	return contract.DiffResult{}, nil
+}
+
+func (f *fakeFleet) CommitDraft(_ context.Context, agentID string) (contract.CommitDraft, error) {
+	f.finishes = append(f.finishes, "CommitDraft "+agentID)
+	return contract.CommitDraft{}, nil
+}
+
+func (f *fakeFleet) Verify(_ context.Context, agentID string) (contract.GateRecord, error) {
+	f.finishes = append(f.finishes, "Verify "+agentID)
+	return contract.GateRecord{}, nil
+}
+
+func (f *fakeFleet) Merge(_ context.Context, agentID string, req contract.MergeRequest) (contract.MergeResult, error) {
+	f.finishes = append(f.finishes, "Merge "+agentID)
+	return contract.MergeResult{}, nil
+}
+
+func (f *fakeFleet) Exit(_ context.Context, agentID string, req contract.ExitRequest) (contract.ExitResult, error) {
+	f.finishes = append(f.finishes, "Exit "+agentID)
+	return contract.ExitResult{}, nil
+}
+
+func (f *fakeFleet) Discard(_ context.Context, agentID string) error {
+	f.finishes = append(f.finishes, "Discard "+agentID)
+	return nil
+}
 
 // noProgram fails the test if the fleet program runs.
 func noProgram(t *testing.T) Option {

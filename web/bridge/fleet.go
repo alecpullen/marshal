@@ -1617,6 +1617,10 @@ func (f *Fleet) spawn(ctx context.Context, root string, opts SpawnOptions, tag *
 	// nothing, and on a project child it is what tells the fleet's session
 	// from a client's (P4 D10 decision 1).
 	rt.reg.TrackFleet(out.SessionID, agentCwd)
+	// The agent reports this session's runs from other connections from here
+	// on (P5 F5, plan 4c). An older agent without the method is left as it
+	// was: following never fails a spawn.
+	f.followAgentSession(ctx, rt, out.SessionID)
 	agent := a // copy the resolved agent
 	if out.Workspace != nil {
 		agent.Isolated = true
@@ -2162,6 +2166,17 @@ func (f *Fleet) releaseProjectAgent(rt *agentRuntime) {
 	f.rearmLinger(rt.project)
 }
 
+// followAgentSession asks the agent to report sessionID's runs from other
+// connections (P5 F5, plan 4c). An older agent answers method-not-found,
+// which Registry.Follow logs once per session. Any other failure is logged
+// here: following is an observation, and it never fails a spawn or a restore.
+func (f *Fleet) followAgentSession(ctx context.Context, rt *agentRuntime, sessionID string) {
+	if err := rt.reg.Follow(ctx, sessionID); err != nil && !errors.Is(err, ErrUnsupported{Feature: "follow"}) {
+		slog.Default().Warn("webbridge: follow an agent's session failed",
+			"agent", rt.id, "session", sessionID, "err", err)
+	}
+}
+
 // restoreSession reattaches the bridge to the ACP session already
 // running inside a reattached container. An agent with no persisted
 // session id (a pre-v2 record) is left addressable by agent id only.
@@ -2188,6 +2203,9 @@ func (f *Fleet) restoreSession(ctx context.Context, rt *agentRuntime, a Agent) e
 			f.mu.Unlock()
 			return fmt.Errorf("restore session %s for agent %s: %w", a.SessionID, a.ID, err)
 		}
+		// The restored session is a fleet agent's, so it is followed again:
+		// this child never heard the follow the last one did (P5 4c).
+		f.followAgentSession(ctx, rt, a.SessionID)
 	} else {
 		if err := rt.reg.Load(ctx, cwd, a.SessionID); err != nil {
 			return fmt.Errorf("restore session %s for agent %s: %w", a.SessionID, a.ID, err)
@@ -2196,6 +2214,9 @@ func (f *Fleet) restoreSession(ctx context.Context, rt *agentRuntime, a Agent) e
 		rt.sessionID = a.SessionID
 		f.sessionAgent[a.SessionID] = a.ID
 		f.mu.Unlock()
+		// A child of the agent's own carries this session alone, and it is
+		// the fleet's too (P5 4c).
+		f.followAgentSession(ctx, rt, a.SessionID)
 	}
 	// A reattached session reports no mode_changed for the state it already
 	// holds, so ask for it before the fleet claims any privileges. A failed

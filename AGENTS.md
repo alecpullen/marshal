@@ -72,13 +72,15 @@ and a trust there applies to the running session without restarting the
 program. `marshal daemon pin [dir]` keeps a project's child running with no
 session, with its index watched, until `marshal daemon unpin`. A fleet agent
 the local daemon starts on a local project runs on that project's child,
-beside the TUI's sessions. An agent with a child of its own — a git agent, a
-workspace agent, or any agent while the egress proxy is on — starts that child
-with a viewer socket of its own (`<state>/v/a-<hash>.sock`) and opens with `⏎`
-too; only a container's agent is still refused. A daemon session screen shows
-`needs you N` in its status line — the fleet queue's items apart from the
-shown agent's own — and opening the fleet turns on the bell and the desktop
-notification (`internal/app/notify`, never imported by the TUI).
+beside the TUI's sessions. The bridge follows each fleet agent's session, so a
+turn started from its session screen shows in the fleet and its requests reach
+the bridge. An agent with a child of its own — a git agent, a workspace agent,
+or any agent while the egress proxy is on — starts that child with a viewer
+socket of its own (`<state>/v/a-<hash>.sock`) and opens with `⏎` too; only a
+container's agent is still refused. A daemon session screen shows `needs you N`
+in its status line — the fleet queue's items apart from the shown agent's own —
+and opening the fleet turns on the bell and the desktop notification
+(`internal/app/notify`, never imported by the TUI).
 
 ### End-to-end and usability suites
 
@@ -135,8 +137,9 @@ TUI (rendering only)
   internal/app/tui/{settings,connect,agents,memory,skills,plugins,mcpauth,modeloptions,presetflow,probe,doctorpanel}
                            interactive surfaces for config, providers, roles, MCP, models
   internal/app/tui/fleet/   the fleet screen: the agents list, needs you, events,
-                           an agent's Activity or Info, and its actions —
-                           answering, spawn, cancel and intake
+                           an agent's Activity, Diff or Info and its actions —
+                           answering, spawn, cancel, intake and finishing it:
+                           the gate, exit, merge and discard
   internal/app/tui/{sddreview,castlist,gatepanel,postmortempanel,trustpanel,liveregion,textfield}
 
 Models

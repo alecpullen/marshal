@@ -44,14 +44,17 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// The cursor keys move whichever of the two list panels has focus.
+	// The cursor keys move whichever of the two list panels has focus, or the
+	// Diff tab's file while the right panel has focus.
 	switch msg.Code {
 	case tea.KeyDown:
 		m.moveCursor(1)
-		return m, nil
+		cmd := m.syncDiff()
+		return m, cmd
 	case tea.KeyUp:
 		m.moveCursor(-1)
-		return m, nil
+		cmd := m.syncDiff()
+		return m, cmd
 	case tea.KeyEnter:
 		// ⏎ settles an intake item in Needs you (decision 8); on any other
 		// row it opens that row. The filter has already taken its own Enter
@@ -76,12 +79,27 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.openSpawn()
 	case "x":
 		return m.cancelSelected()
+	case "f":
+		return m.openFinish()
+	case "v":
+		return m.verifySelected()
 	case "j":
 		m.moveCursor(1)
 	case "k":
 		m.moveCursor(-1)
+	case "J":
+		// The diff scrolls a row at a time while its tab is shown.
+		if m.focus == focusRight && m.tab == diffTab {
+			m.scrollDiff(1)
+		}
+	case "K":
+		if m.focus == focusRight && m.tab == diffTab {
+			m.scrollDiff(-1)
+		}
 	case "1":
 		m.tab = 1
+	case "2":
+		m.tab = diffTab
 	case "3":
 		m.tab = 3
 	case "z":
@@ -93,7 +111,11 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		m.help = !m.help
 	}
-	return m, nil
+	// The Diff tab follows the keys: a move to another agent reads its files,
+	// and a move between files reads the one under the cursor. Every other key
+	// leaves nothing to read.
+	cmd := m.syncDiff()
+	return m, cmd
 }
 
 // openRow ends the program with the selected row's target, so the loop can
@@ -176,14 +198,22 @@ func (m *Model) cycleFocus(back bool) {
 	}
 }
 
-// moveCursor moves the focused list panel's cursor by delta. Moving in Needs
-// you selects that item's agent, so the right panel follows it.
+// moveCursor moves the focused panel's cursor by delta: a list panel's row, or
+// the Diff tab's file while the right panel has focus. Moving in Needs you
+// selects that item's agent, so the right panel follows it.
 func (m *Model) moveCursor(delta int) {
 	switch m.focus {
 	case focusAgents:
 		m.moveAgents(delta)
 	case focusNeedsYou:
 		m.moveNeedsYou(delta)
+	case focusRight:
+		// The right panel's only list is the Diff tab's files. Its read
+		// follows the cursor, from the key handler's syncDiff.
+		if m.tab != diffTab || len(m.diff.files) == 0 {
+			return
+		}
+		m.diff.cursor = clamp(m.diff.cursor+delta, 0, len(m.diff.files)-1)
 	}
 }
 

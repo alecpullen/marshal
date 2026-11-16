@@ -184,6 +184,8 @@ Cupertino**. If the kit lacks a piece, see §10.
 | `Meter` | A labelled bar | Capacity and quota. Bar is `muted` unless it reports a fault |
 | `Spark` | A small line | One series, `fg`, no axes |
 | `CheckStrip` | One block per CI check | Order is the forge's order; tooltip names each check |
+| `DiffView` | A unified diff | One row per line, in `mono`; a removed line is filled `diffRemoved` and an added one `diffAdded`; the gutter shows the line's number and, on a removed or added line, takes a comment. Unified only: there is no split view |
+| `GateList` | The gate's checks | One row per check: the state's icon in the state's colour, the check's name, its detail in mono at the right. The order is the gate's own |
 | `Rows` | A list of name, description, value | Every settings-style list |
 | `NavRow` | A row of the sidebar | An icon, a label, an optional count; a project's row has a disclosure chevron instead of an icon. Only threads carry a status, in a `ThreadRow` |
 | `PageBody` | Title, subtitle, actions, content | Every page that is not a thread |
@@ -206,6 +208,10 @@ Added in F2: `NavRow`, the sidebar's row (an icon or a disclosure chevron, a
 label, an optional count; the selected row is filled and its icon is
 `accent`). A thread is never a `NavRow`: it is a `ThreadRow`, which carries
 its status.
+
+Added in F4: `DiffView` and `GateList`, the inspector's two read-only views of
+a change. Both are reused by the work item's inspector (F6), so neither knows
+what an agent or a session is: they take lines and checks.
 
 Variants as built in F0, beyond the table: `Box.flush` (no inner padding,
 for rows separated by `Hairline`s, as `Rows` uses); `Btn` and `Btn.primary`;

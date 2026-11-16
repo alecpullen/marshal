@@ -89,6 +89,8 @@ class _GalleryState extends State<Gallery> {
         ..._section('Meter', _meters()),
         ..._section('Spark', _spark()),
         ..._section('CheckStrip', _strips()),
+        ..._section('DiffView', _diffViews()),
+        ..._section('GateList', _gateLists()),
         ..._section('Rows', _rows()),
         ..._section('NavRow', _navRows()),
         ..._section('AskCard', _asks()),
@@ -369,6 +371,38 @@ class _GalleryState extends State<Gallery> {
       Check('test', CheckState.passed),
       Check('lint', CheckState.passed),
     ]),
+  ];
+
+  /// A diff a person reads: a header, two hunks and the three body kinds.
+  static const _diff =
+      'diff --git a/internal/viewmodel/index.json b/internal/viewmodel/index.json\n'
+      'index 3f1c2aa..a09e771 100644\n'
+      '--- a/internal/viewmodel/index.json\n'
+      '+++ b/internal/viewmodel/index.json\n'
+      '@@ -4,3 +4,1 @@\n'
+      '     "fixtures": [\n'
+      '-     "turn_legacy_v1.json",\n'
+      '-     "turn_legacy_v2.json",\n'
+      '     "turn_fixtures.json"\n'
+      '\\ No newline at end of file\n';
+
+  List<Widget> _diffViews() => [
+    const DiffView(diff: _diff),
+    DiffView(diff: _diff, onComment: (line) {}),
+    const DiffView(diff: '', emptyNote: 'No changes in this file'),
+  ];
+
+  /// Every state a gate check can be in, and a check with nothing to say
+  /// beside it.
+  List<Widget> _gateLists() => const [
+    GateList([
+      GateCheck('Build', CheckState.passed, detail: '4.1s'),
+      GateCheck('Tests', CheckState.passed, detail: '412 passed'),
+      GateCheck('Lint', CheckState.failed, detail: '1 warning'),
+      GateCheck('Usability', CheckState.running, detail: 'running'),
+      GateCheck('Release config', CheckState.pending),
+    ]),
+    GateList([GateCheck('Ran 2m ago', CheckState.passed)]),
   ];
 
   List<Widget> _rows() => [

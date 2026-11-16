@@ -193,6 +193,27 @@ func decodeFactoryWork(raw json.RawMessage) (known, idle bool) {
 
 func (w *factoryWorkers) Observe(ctx context.Context, item FactoryItem) (FactoryObservation, error) {
 	obs := FactoryObservation{ObservedAt: time.Now().UTC(), BaseSHA: item.BaseSHA}
+	// Every matched worker contributes to the idle conjunction below, but a
+	// parked worker has no runtime, so the loop skips it and contributes
+	// nothing. When every matched worker is parked there is then no runtime to
+	// be busy: the turn and the active work are known-idle. Leaving the flags
+	// unknown there made a fully parked item — which is what a ready item
+	// always is, its implementer parked after the last publish and its reviewer
+	// after the review — unable to reach a safe boundary at all.
+	matched, live := 0, 0
+	for _, worker := range item.Workers {
+		a, ok := w.fleet.ws.Agent(worker.AgentID)
+		if !ok || a.FactoryItemID != item.ID || a.FactoryRole != worker.Role || a.FactorySpawnEffectID != worker.SpawnEffectID {
+			continue
+		}
+		matched++
+		if !a.FactoryParked {
+			live++
+		}
+	}
+	if matched > 0 && live == 0 {
+		obs.RuntimeKnown, obs.TurnIdle, obs.ActiveWorkKnown, obs.WorkIdle = true, true, true, true
+	}
 	for _, worker := range item.Workers {
 		a, ok := w.fleet.ws.Agent(worker.AgentID)
 		if !ok || a.FactoryItemID != item.ID || a.FactoryRole != worker.Role || a.FactorySpawnEffectID != worker.SpawnEffectID {

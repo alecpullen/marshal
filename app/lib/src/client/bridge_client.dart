@@ -223,6 +223,67 @@ class BridgeClient {
     return response.body;
   }
 
+  /// POST /api/agents/{id}/terminal: opens a shell in the agent's workspace
+  /// and answers its id. Opening one asks for the size it starts at.
+  Future<TerminalOpened> openTerminal(
+    String agentId, {
+    required int cols,
+    required int rows,
+  }) => _objectOf(
+    '/api/agents/${Uri.encodeComponent(agentId)}/terminal',
+    TerminalOpened.fromJson,
+    method: 'POST',
+    body: TerminalResize(cols: cols, rows: rows),
+  );
+
+  /// GET …/terminal/{tid}/events: the shell's output stream. The caller
+  /// starts it.
+  EventStream terminalEvents(String agentId, String terminalId) => EventStream(
+    _transport,
+    '/api/agents/${Uri.encodeComponent(agentId)}/terminal/'
+    '${Uri.encodeComponent(terminalId)}/events',
+  );
+
+  /// POST …/terminal/{tid}/input: keystrokes, base64 as the wire carries
+  /// them.
+  Future<void> terminalInput(String agentId, String terminalId, String data) =>
+      _post(
+        '/api/agents/${Uri.encodeComponent(agentId)}/terminal/'
+        '${Uri.encodeComponent(terminalId)}/input',
+        TerminalInput(data: data),
+      );
+
+  /// POST …/terminal/{tid}/resize: the shell's size in character cells.
+  Future<void> terminalResize(
+    String agentId,
+    String terminalId,
+    int cols,
+    int rows,
+  ) => _post(
+    '/api/agents/${Uri.encodeComponent(agentId)}/terminal/'
+    '${Uri.encodeComponent(terminalId)}/resize',
+    TerminalResize(cols: cols, rows: rows),
+  );
+
+  /// POST …/terminal/{tid}/release: hands the agent back.
+  Future<void> terminalRelease(String agentId, String terminalId) => _post(
+    '/api/agents/${Uri.encodeComponent(agentId)}/terminal/'
+    '${Uri.encodeComponent(terminalId)}/release',
+    null,
+  );
+
+  /// DELETE …/terminal/{tid}: ends the shell.
+  Future<void> closeTerminal(String agentId, String terminalId) async {
+    await _send(
+      Request(
+        method: 'DELETE',
+        path:
+            '/api/agents/${Uri.encodeComponent(agentId)}/terminal/'
+            '${Uri.encodeComponent(terminalId)}',
+      ),
+    );
+  }
+
   Future<Response> _send(Request request) async {
     final response = await _transport.send(request);
     if (!response.ok) {

@@ -16,6 +16,7 @@ import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
 import 'package:marshal_app/src/model/inbox_model.dart' as model;
 import 'package:marshal_app/src/model/changes_model.dart';
 import 'package:marshal_app/src/model/files_model.dart';
+import 'package:marshal_app/src/model/terminal_session.dart';
 import 'package:marshal_app/src/model/inspector_state.dart';
 import 'package:marshal_app/src/model/overview_model.dart';
 import 'package:marshal_app/src/model/nav_model.dart';
@@ -28,6 +29,7 @@ import 'package:marshal_app/src/ui/gallery/gallery.dart';
 import 'package:marshal_app/src/ui/inbox/inbox.dart';
 import 'package:marshal_app/src/ui/inspector/changes_tab.dart';
 import 'package:marshal_app/src/ui/inspector/files_tab.dart';
+import 'package:marshal_app/src/ui/inspector/terminal_tab.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 import 'package:marshal_app/src/ui/overview/overview.dart';
 import 'package:marshal_app/src/ui/shell/placeholder.dart';
@@ -358,6 +360,14 @@ final screens = <ScreenCase>[
     states: {
       for (final kind in requiredStates)
         kind: () => _threadScreen(state: kind, inspector: _inspectorState()),
+    },
+  ),
+  ScreenCase(
+    name: 'inspector terminal',
+    ready: () => TerminalTab(session: TerminalSession.seeded()),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => TerminalTab(session: TerminalSession.seeded(), state: kind),
     },
   ),
   ScreenCase(

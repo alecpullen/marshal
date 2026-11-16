@@ -24,6 +24,7 @@ dependencies:
   # dependency honest rather than relying on a transitive one.
   web: ^1.1.1
   re_highlight: ^0.0.3
+  xterm: 4.0.0
 
 dev_dependencies:
   flutter_test:

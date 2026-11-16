@@ -219,7 +219,10 @@ for rows separated by `Hairline`s, as `Rows` uses); `Btn` and `Btn.primary`;
 identifiers; `Meter` and `Meter.fault`; `PageBody`'s width, `full` (1180) or
 `list` (860), from §4; `AskCard`'s placement — Inbox (everything), Overview
 (the body only for a decision) or its own thread (no source line);
-`PrCard`'s four states — ready, failing, in progress, being fixed.
+`PrCard`'s four states — ready, failing, in progress, being fixed. Added in
+F4: `RowItem.mono`, a row whose name is an identifier such as a path, and
+`RowItem.selected`, the row a list is showing, filled with `selected` as a
+`NavRow` is.
 
 Supporting pieces, shared by the components and exported with them by
 `kit.dart`. None is drawn on its own, and none has variants:

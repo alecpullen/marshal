@@ -429,6 +429,24 @@ class _GalleryState extends State<Gallery> {
         description: 'Notifications there are planned.',
       ),
     ]),
+    // A row whose name is an identifier, and the row the list is showing.
+    Rows([
+      RowItem(
+        name: 'internal/viewmodel/index.json',
+        description: 'Changed by this thread',
+        value: '+0 −9',
+        mono: true,
+        selected: true,
+        onTap: () {},
+      ),
+      RowItem(
+        name: 'internal/repo/symbols_test.go',
+        description: 'Changed by this thread',
+        value: '+3 −11',
+        mono: true,
+        onTap: () {},
+      ),
+    ]),
   ];
 
   List<Widget> _asks() => [

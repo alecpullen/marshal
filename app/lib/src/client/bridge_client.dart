@@ -116,6 +116,42 @@ class BridgeClient {
     return SpawnResult.fromJson(_object(response));
   }
 
+  /// GET /api/agents/{id}/diff: what the agent changed, and its unified diff.
+  Future<DiffResult> diff(String agentId) => _objectOf(
+    '/api/agents/${Uri.encodeComponent(agentId)}/diff',
+    DiffResult.fromJson,
+  );
+
+  /// GET /api/agents/{id}/gate: the stored verify record, or null when the
+  /// gate has not run (the bridge answers 204 with no body).
+  Future<GateRecord?> gate(String agentId) async {
+    final response = await _send(
+      Request(path: '/api/agents/${Uri.encodeComponent(agentId)}/gate'),
+    );
+    if (response.body.isEmpty) return null;
+    return GateRecord.fromJson(_object(response));
+  }
+
+  /// POST /api/agents/{id}/verify: runs the gate now and returns its record.
+  Future<GateRecord> verify(String agentId) => _objectOf(
+    '/api/agents/${Uri.encodeComponent(agentId)}/verify',
+    GateRecord.fromJson,
+    method: 'POST',
+  );
+
+  /// GET /api/agents/{id}/commit-draft: the message the agent would commit.
+  Future<CommitDraft> commitDraft(String agentId) => _objectOf(
+    '/api/agents/${Uri.encodeComponent(agentId)}/commit-draft',
+    CommitDraft.fromJson,
+  );
+
+  /// GET /api/sessions/{id}/step-diffs: the session's steps, each with its
+  /// part of the diff.
+  Future<StepDiffs> stepDiffs(String sessionId) => _objectOf(
+    '/api/sessions/${Uri.encodeComponent(sessionId)}/step-diffs',
+    StepDiffs.fromJson,
+  );
+
   Future<Response> _send(Request request) async {
     final response = await _transport.send(request);
     if (!response.ok) {
@@ -134,7 +170,10 @@ class BridgeClient {
     String path,
     T Function(Map<String, dynamic> json) fromJson, {
     Map<String, String> query = const {},
-  }) async => fromJson(_object(await _send(Request(path: path, query: query))));
+    String method = 'GET',
+  }) async => fromJson(
+    _object(await _send(Request(method: method, path: path, query: query))),
+  );
 
   Future<List<T>> _listOf<T>(
     String path,

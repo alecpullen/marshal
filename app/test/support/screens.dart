@@ -1,6 +1,9 @@
 import 'package:marshal_app/src/client/contract.g.dart'
     show
+        DiffFile,
+        GateResult,
         StackSnapshot,
+        StepDiff,
         WireCall,
         WireMessage,
         WireNode,
@@ -10,6 +13,7 @@ import 'package:marshal_app/src/client/contract.g.dart'
 import 'package:marshal_app/src/client/host.dart' show HostKind, HostReach;
 import 'package:marshal_app/src/model/fleet_store.dart' show HostView;
 import 'package:marshal_app/src/model/inbox_model.dart' as model;
+import 'package:marshal_app/src/model/changes_model.dart';
 import 'package:marshal_app/src/model/inspector_state.dart';
 import 'package:marshal_app/src/model/overview_model.dart';
 import 'package:marshal_app/src/model/nav_model.dart';
@@ -20,6 +24,7 @@ import 'package:marshal_app/src/model/thread_view_state.dart';
 import 'package:marshal_app/src/ui/debug/connection_check.dart';
 import 'package:marshal_app/src/ui/gallery/gallery.dart';
 import 'package:marshal_app/src/ui/inbox/inbox.dart';
+import 'package:marshal_app/src/ui/inspector/changes_tab.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 import 'package:marshal_app/src/ui/overview/overview.dart';
 import 'package:marshal_app/src/ui/shell/placeholder.dart';
@@ -352,11 +357,62 @@ final screens = <ScreenCase>[
         kind: () => _threadScreen(state: kind, inspector: _inspectorState()),
     },
   ),
+  ScreenCase(
+    name: 'inspector changes',
+    ready: () => ChangesTab(model: _changesModel()),
+    states: {
+      for (final kind in requiredStates)
+        kind: () => ChangesTab(model: _changesModel(), state: kind),
+    },
+  ),
 ];
 
 /// The inspector the screen cases show, with each tab's frame placeholder
 /// until the task that builds that tab supplies its body.
 InspectorState _inspectorState() => InspectorState();
+
+/// The changes the inspector's Changes tab shows: a failed gate, two files,
+/// one of them new, and the steps that changed them.
+ChangesModel _changesModel() => ChangesModel.seeded(
+  gate: const GateResult(
+    ok: false,
+    skipped: false,
+    failedCommand: 'go test ./...',
+    output: 'FAIL marshal/internal/app',
+  ),
+  gateRanAt: shellNow.subtract(const Duration(minutes: 2)),
+  files: const [
+    DiffFile(
+      path: 'internal/viewmodel/testdata/index.json',
+      added: 0,
+      removed: 9,
+    ),
+    DiffFile(path: 'internal/repo/symbols_test.go', added: 3, removed: 11),
+    DiffFile(path: 'internal/repo/fixtures.go', added: 7, removed: 0),
+  ],
+  diff:
+      'diff --git a/internal/viewmodel/testdata/index.json '
+      'b/internal/viewmodel/testdata/index.json\n'
+      '--- a/internal/viewmodel/testdata/index.json\n'
+      '+++ b/internal/viewmodel/testdata/index.json\n'
+      '@@ -4,4 +4,1 @@\n'
+      '     "fixtures": [\n'
+      '-     "turn_legacy_v1.json",\n'
+      '-     "turn_legacy_v2.json",\n'
+      '-     "stack_old_fold.json",\n'
+      '     "stack_fold.json"\n',
+  steps: const [
+    StepDiff(
+      stepNode: 'step:1',
+      turnNode: 'turn:1',
+      headline: 'Removed the fixtures that are plainly dead',
+      files: ['internal/viewmodel/testdata/index.json'],
+      diff:
+          '@@ -4,4 +4,1 @@\n     "fixtures": [\n'
+          '-     "turn_legacy_v1.json",\n     "stack_fold.json"\n',
+    ),
+  ],
+);
 
 /// The states every screen that shows data must handle (§7). Planned is a
 /// row, not a screen state, so it is not required here.

@@ -11,7 +11,8 @@ import 'vocabulary.dart';
 ///
 /// It has a title with a close button, its content, and a row of actions in
 /// which at most one is primary and it comes first. Open it with
-/// [Sheet.show]; Escape and a click outside close it too.
+/// [Sheet.show]; Escape and a click outside close it too. It dims what is
+/// behind it with the `scrim` token.
 class Sheet extends StatelessWidget {
   const Sheet({
     super.key,
@@ -35,7 +36,7 @@ class Sheet extends StatelessWidget {
       context: context,
       barrierDismissible: true,
       barrierLabel: 'Close',
-      barrierColor: e.none,
+      barrierColor: e.scrim,
       transitionDuration: Duration.zero,
       pageBuilder: (context, _, _) {
         final narrow = MediaQuery.sizeOf(context).width < Layout.narrow;

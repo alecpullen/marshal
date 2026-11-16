@@ -117,8 +117,6 @@ before it, and opens with what to re-read before starting.
 - **Goldens are pinned to macOS**, where they were made. CI runs on Linux
   and skips the pixel comparison there. Undecided: regenerate them on Linux,
   or add a macOS step to CI.
-- **The sheet does not dim what is behind it**, because the design system
-  has no scrim token. Undecided.
 - First load of the web build is 3.2 MB compressed, of which the rendering
   engine is 2.1 MB.
 

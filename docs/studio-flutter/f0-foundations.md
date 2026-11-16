@@ -189,7 +189,7 @@ commit each. Item 8 (the spikes) is handled separately.
   and the internal `Press`. Material is used in two places only. `EmberApp`
   is a `MaterialApp` underneath, and `Field` is a Material `TextField`.
   `Menu` is `RawMenuAnchor`, `Sheet` is `showGeneralDialog`, and tooltips
-  are `RawTooltip`. A sheet's barrier does not dim: §2 has no scrim token.
+  are `RawTooltip`. A sheet's barrier was undimmed in F0 for want of a scrim token; the `scrim` token (2026-11-17) now dims it.
 - **Gallery and enforcement (5).** The gallery is `lib/src/ui/gallery/` and
   its debug entry is `lib/gallery_main.dart`. The registry of screens is
   `test/support/screens.dart`. **The goldens are pinned to macOS**, which

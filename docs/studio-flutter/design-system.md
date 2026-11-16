@@ -60,7 +60,8 @@ Derived, defined once in `tokens.dart` and nowhere else:
 | `diffAdded` | `ok` at 12% | An added line |
 | `attention` | `warn` at 55% | The border of something that needs you |
 | `failing` | `err` at 55% | The border of something that failed |
-| `none` | fully transparent | An absent underline; a barrier that does not dim. Not a colour, the lack of one (added in F0) |
+| `scrim` | black at 45% dark, 30% light | What a sheet dims behind it |
+| `none` | fully transparent | An absent underline. Not a colour, the lack of one (added in F0) |
 
 Rules:
 
@@ -160,7 +161,7 @@ Cupertino**. If the kit lacks a piece, see §10.
 | `StateMessage` | Empty, loading, stale, error, planned | The only way these states are shown (§7) |
 | `Field` | A text input | Border only; the label is above it |
 | `Menu` | A popover of choices | Each item is a name and one line of explanation |
-| `Sheet` | A dialog or bottom sheet | One per screen at most |
+| `Sheet` | A dialog or bottom sheet; it dims what is behind it with `scrim` | One per screen at most |
 
 Variants as built in F0, beyond the table: `Box.flush` (no inner padding,
 for rows separated by `Hairline`s, as `Rows` uses); `Btn` and `Btn.primary`;

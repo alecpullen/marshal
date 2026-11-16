@@ -44,6 +44,7 @@ void main() {
         _alpha(e.diffAdded, e.ok, 0.12);
         _alpha(e.attention, e.warn, 0.55);
         _alpha(e.failing, e.err, 0.55);
+        _alpha(e.scrim, const Color(0xFF000000), dark ? 0.45 : 0.30);
       }
     });
   });

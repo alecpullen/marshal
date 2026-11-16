@@ -145,8 +145,13 @@ final class Ember {
   /// The border of something that failed.
   Color get failing => err.withValues(alpha: 0.55);
 
-  /// No colour at all: an unselected tab's underline, a barrier that does
-  /// not dim. Not a token of §2; it is the absence of one.
+  /// What a sheet draws over everything behind it: black at 45% in dark,
+  /// 30% in light.
+  Color get scrim =>
+      const Color(0xFF000000).withValues(alpha: isDark ? 0.45 : 0.30);
+
+  /// No colour at all: an unselected tab's underline. Not a token of §2; it
+  /// is the absence of one.
   Color get none => const Color(0x00000000);
 
   // §3 — the text roles, each in [fg]. Recolour with [TintText.tint].

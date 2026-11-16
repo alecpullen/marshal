@@ -36,6 +36,13 @@ void main() {
     await tester.pump();
   }
 
+  testWidgets('dims what is behind it with the scrim', (tester) async {
+    await open(tester);
+    final barrier = tester.widget<ModalBarrier>(find.byType(ModalBarrier).last);
+    expect(barrier.color, tokens().scrim);
+    expect(barrier.color!.a, greaterThan(0));
+  });
+
   testWidgets('a dialog in the middle of a wide window', (tester) async {
     await open(tester);
     expect(find.text('Start work'), findsOneWidget);

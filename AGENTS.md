@@ -62,6 +62,10 @@ go build ./cmd/webbridge                    # embeds the built assets
 The SPA is baked in with `//go:embed`, so a change under `web/ui/src` is
 **invisible until `npm run build` reruns and the binary is rebuilt**.
 
+The Svelte Studio is frozen from F2 on: bug fixes only. The Studio's future is
+the Flutter app in `app/` (`docs/studio-flutter/`), which replaces the Svelte
+places one phase at a time; new UI work goes there, not under `web/ui/src`.
+
 `web/bridge/contract` holds the fleet loop's wire types. `web/ui/src/lib/contract.ts`
 is generated from it: regenerate with
 `go test ./web/bridge/contract/tsgen -run TestTypeScriptContractIsCurrent -update`.

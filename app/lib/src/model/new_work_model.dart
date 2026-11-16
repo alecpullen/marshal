@@ -25,9 +25,8 @@ enum NewWorkKind {
   bool get planned => this != NewWorkKind.agent;
 }
 
-/// The choices the dialog opens with, taken from the project rather than
-/// invented: the project's root, its base branch, the environment, the model,
-/// the permission mode, the workspace and the host.
+/// The choices the dialog opens with: the project's root and the workspace it
+/// allows come from the project, and the rest say what this phase does.
 @immutable
 class NewWorkDefaults {
   const NewWorkDefaults({
@@ -41,22 +40,43 @@ class NewWorkDefaults {
   });
 
   /// What a project offers before anything is chosen.
+  ///
+  /// Only two of these come from the project: its root, and the workspace its
+  /// isolation answer allows. [baseBranch] is null because no route lists a
+  /// project's branches, and the request then carries no `baseRef` — the
+  /// bridge picks the project's own default, rather than the dialog naming a
+  /// branch it made up. [environment] and [permissionMode] are what this
+  /// phase does (a host process, mode `act`), not fields the project reports;
+  /// the record says so.
   factory NewWorkDefaults.fromProject(
     ProjectStatus project, {
     String host = 'local',
   }) => NewWorkDefaults(
     project: project.root,
-    baseBranch: 'main',
+    baseBranch: null,
     environment: 'Local',
     permissionMode: 'Act',
     workspace: project.isolation == 'available'
-        ? 'Isolated worktree'
-        : 'Project',
+        ? isolatedWorktree
+        : projectWorkspace,
     host: host,
   );
 
+  /// The chip's value when the branch is the project's own: the spawn request
+  /// then omits `baseRef` and the bridge decides.
+  static const projectDefaultBranch = 'The project default';
+
+  /// The workspace chip's two values: run in the project, or in an isolated
+  /// worktree of it.
+  static const isolatedWorktree = 'Isolated worktree';
+  static const projectWorkspace = 'Project';
+
   final String project;
-  final String baseBranch;
+
+  /// The base branch the dialog opens with, or null for the project's default
+  /// (the request carries no `baseRef`).
+  final String? baseBranch;
+
   final String environment;
   final String? model;
   final String permissionMode;
@@ -127,7 +147,8 @@ class NewWorkModel extends ChangeNotifier {
        _projects = projects,
        _choices = {
          'Project': defaults.project,
-         'Base branch': defaults.baseBranch,
+         'Base branch':
+             defaults.baseBranch ?? NewWorkDefaults.projectDefaultBranch,
          'Environment': defaults.environment,
          'Model': defaults.model ?? 'The project default',
          'Permission mode': defaults.permissionMode,
@@ -177,7 +198,7 @@ class NewWorkModel extends ChangeNotifier {
     options: {
       'Permission mode': const ['Ask'],
       'Workspace': project.isolation == 'available'
-          ? const ['Project']
+          ? const [NewWorkDefaults.projectWorkspace]
           : const [],
     },
     // The rest have one value this phase, and a pill says why rather than
@@ -352,18 +373,35 @@ class NewWorkModel extends ChangeNotifier {
   }
 
   /// Posts the spawn request and keeps what came back.
+  ///
+  /// The request carries only what the dialog actually knows: a base branch
+  /// when one was chosen (never the placeholder for the project's own
+  /// default), and the workspace choice as the `isolated` flag the bridge
+  /// reads — not as a made-up workspace name.
   Future<void> start() async {
     if (!canStart) return;
+    final label = _choices['Permission mode']!;
+    final mode = _modeWire(label);
+    if (mode == null) {
+      // An unknown mode is surfaced, never coerced: defaulting to `act` would
+      // silently start the most permissive mode there is.
+      _failure = 'The bridge takes the modes act and ask, not "$label".';
+      notifyListeners();
+      return;
+    }
     _failure = null;
     notifyListeners();
     try {
+      final baseBranch = _choices['Base branch'];
       _started = await _spawn(
         SpawnRequest(
           project: _choices['Project']!,
           prompt: _prompt.trim(),
-          mode: _modeWire(_choices['Permission mode']!),
-          baseRef: _choices['Base branch'],
-          workspace: _choices['Workspace'],
+          mode: mode,
+          baseRef: baseBranch == NewWorkDefaults.projectDefaultBranch
+              ? null
+              : baseBranch,
+          isolated: _choices['Workspace'] == NewWorkDefaults.isolatedWorktree,
         ),
       );
     } catch (error) {
@@ -372,11 +410,12 @@ class NewWorkModel extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// The permission mode as the wire spells it.
-  static String _modeWire(String label) => switch (label.toLowerCase()) {
+  /// The permission mode as the wire spells it, or null when the label is not
+  /// one the bridge takes.
+  static String? _modeWire(String label) => switch (label.toLowerCase()) {
     'act' => 'act',
     'ask' => 'ask',
-    _ => 'act',
+    _ => null,
   };
 
   /// A sheet that closes disposes the model while [load] is still waiting on

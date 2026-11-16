@@ -95,10 +95,17 @@ void main() {
   test('the defaults come from the project', () {
     final model = _Routes().model();
 
+    // The two that come from the project: its root, and the workspace its
+    // isolation answer allows.
     expect(model.choices['Project'], '/home/u/marshal');
-    expect(model.choices['Base branch'], 'main');
-    expect(model.choices['Permission mode'], 'Act');
     expect(model.choices['Workspace'], 'Isolated worktree');
+    // Nothing lists a project's branches, so the dialog names the project's
+    // own default rather than a branch it made up.
+    expect(model.choices['Base branch'], 'The project default');
+    // These two are what this phase does — a host process, mode act — not
+    // fields the project reports (see the F3 record).
+    expect(model.choices['Permission mode'], 'Act');
+    expect(model.choices['Environment'], 'Local');
     expect(model.kind, NewWorkKind.agent);
     expect(model.canStart, isFalse, reason: 'nothing to start yet');
     model.dispose();
@@ -137,8 +144,82 @@ void main() {
     expect(request.project, '/home/u/marshal');
     expect(request.prompt, 'Fix the login redirect');
     expect(request.mode, 'act');
-    expect(request.baseRef, 'main');
+    expect(
+      request.baseRef,
+      isNull,
+      reason: 'the project default is the bridge\'s to resolve',
+    );
+    expect(
+      request.isolated,
+      isTrue,
+      reason: 'the workspace the project allows',
+    );
     expect(model.started?.agentID, 'a-9');
+    model.dispose();
+  });
+
+  test('a chosen base branch is what the request carries', () async {
+    final routes = _Routes()
+      ..options = {
+        'Base branch': const ['release/2.0'],
+      };
+    final model = routes.model();
+    model.setChoice('Base branch', 'release/2.0');
+    model.prefill('Do the work');
+
+    await model.start();
+
+    expect(routes.spawns.single.baseRef, 'release/2.0');
+    model.dispose();
+  });
+
+  test('a project that cannot isolate sends no worktree', () async {
+    final routes = _Routes();
+    final model = NewWorkModel(
+      defaults: NewWorkDefaults.fromProject(
+        const ProjectStatus(
+          root: '/home/u/marshal',
+          available: true,
+          trust: TrustState.trustTrusted,
+          isolation: 'the project is not a git repository',
+        ),
+      ),
+      recentPrompts: routes.recentPrompts,
+      issues: routes.issueList,
+      recipes: routes.recipeList,
+      spawn: routes.spawn,
+    );
+    expect(model.choices['Workspace'], 'Project');
+
+    model.prefill('Do the work');
+    await model.start();
+
+    expect(routes.spawns.single.isolated, isFalse);
+    expect(
+      routes.spawns.single.workspace,
+      isNull,
+      reason: 'no workspace reference exists in this phase',
+    );
+    model.dispose();
+  });
+
+  test('an unknown permission mode is refused, never coerced', () async {
+    final routes = _Routes()
+      ..options = {
+        'Permission mode': const ['Yolo'],
+      };
+    final model = routes.model();
+    model.setChoice('Permission mode', 'Yolo');
+    model.prefill('Do the work');
+
+    await model.start();
+
+    expect(
+      routes.spawns,
+      isEmpty,
+      reason: 'the most permissive mode is never chosen for the user',
+    );
+    expect(model.failure, contains('Yolo'));
     model.dispose();
   });
 

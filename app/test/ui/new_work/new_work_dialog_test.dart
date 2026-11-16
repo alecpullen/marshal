@@ -159,10 +159,13 @@ void main() {
     // No route lists a project's branches, so the chip is a pill with the
     // reason, never a menu whose only entry is the value already set.
     final pill = tester.widget<Pill>(
-      find.widgetWithText(Pill, 'Base branch: main'),
+      find.widgetWithText(Pill, 'Base branch: The project default'),
     );
     expect(pill.tooltip, contains('F6'));
-    expect(find.widgetWithText(Btn, 'Base branch: main'), findsNothing);
+    expect(
+      find.widgetWithText(Btn, 'Base branch: The project default'),
+      findsNothing,
+    );
 
     model.dispose();
   });

@@ -291,6 +291,22 @@ The recorder test was deleted after it wrote the files.
   is still waiting on a route, so the answer that landed afterwards notified
   a disposed notifier. `NewWorkModel` now refuses to notify after dispose.
 
+- **The dialog's defaults are only what the phase knows.** The project root
+  and the workspace (`ProjectStatus.isolation` says whether an isolated
+  worktree can be offered) come from the project. The base branch does not:
+  no route lists a project's branches, and `GET /api/projects` carries none,
+  so the chip says "The project default" and the spawn request omits
+  `baseRef` — the bridge resolves the repo's own default — rather than the
+  dialog sending a guessed `main`. `Environment: Local` is a statement about
+  what a spawn does in this phase (a host process on this daemon), and
+  `Permission mode: Act` is the dialog's own default, not a project field;
+  both are named as such here and in the chips' tooltips. The request also
+  carries the workspace choice as the `isolated` flag the bridge reads, not
+  as a made-up workspace name: no workspace reference exists in this phase.
+  A permission mode the bridge's route does not take (`act`, `ask`) is
+  refused with a line in the dialog, never coerced — defaulting to `act`
+  would silently start the most permissive mode.
+
 **Environment-blocked, not failures.** `flutter test --platform chrome`
 (no working browser: the Chrome host stalls on CanvasKit), so
 `test/ui/thread/browser_selection_test.dart` — the plan's `drag selects in a

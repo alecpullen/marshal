@@ -128,30 +128,71 @@ class BridgeClient {
 
   /// Sets one project's automatic pull-request fixing: it reads the project's
   /// whole settings document, changes `automations.autoFix` and writes it
-  /// back.
+  /// back, naming the ETag it read.
   ///
   /// The settings route replaces the document whole
   /// (web/bridge/projects.go), so sending only the key would drop every other
-  /// setting the project holds.
+  /// setting the project holds. It is also a conditional write: the route
+  /// compares `If-Match` with the ETag of what it stores and answers 412,
+  /// changing nothing, when another save got there first. That answer means
+  /// this change was decided against a document that no longer exists, so the
+  /// settings are read again — the value that won, with its own ETag — and the
+  /// change is made to that and written once more. The other save survives,
+  /// and this one is not lost.
   Future<void> setProjectAutoFix(String root, bool on) async {
-    final document = await _objectOf<Map<String, dynamic>>(
-      '/api/projects/settings',
-      (json) => json,
-      query: {'root': root},
-    );
+    var read = await _readSettings(root);
+    for (var attempt = 0; ; attempt++) {
+      final tag = _etagOf(read);
+      try {
+        await _send(
+          Request(
+            method: 'PUT',
+            path: '/api/projects/settings',
+            query: {'root': root},
+            body: _withAutoFix(_object(read), on),
+            headers: {if (tag != null) 'If-Match': tag},
+          ),
+        );
+        return;
+      } on BridgeFailure catch (failure) {
+        // A conflict is retried once, against what the bridge holds now; a
+        // second one means the project is being written faster than the
+        // setting can be read, and the failure is the caller's to show.
+        if (failure.status != 412 || attempt > 0) rethrow;
+        read = await _readSettings(root);
+      }
+    }
+  }
+
+  /// GET /api/projects/settings?root=…: the whole document, and the ETag that
+  /// names the version a write is decided against.
+  Future<Response> _readSettings(String root) =>
+      _send(Request(path: '/api/projects/settings', query: {'root': root}));
+
+  /// The settings document with this project's automatic fixing set, every
+  /// other key as it was read.
+  static Map<String, dynamic> _withAutoFix(
+    Map<String, dynamic> document,
+    bool on,
+  ) {
     final automations = document['automations'];
-    document['automations'] = <String, dynamic>{
-      if (automations is Map<String, dynamic>) ...automations,
-      'autoFix': on,
+    return <String, dynamic>{
+      ...document,
+      'automations': <String, dynamic>{
+        if (automations is Map<String, dynamic>) ...automations,
+        'autoFix': on,
+      },
     };
-    await _send(
-      Request(
-        method: 'PUT',
-        path: '/api/projects/settings',
-        query: {'root': root},
-        body: document,
-      ),
-    );
+  }
+
+  /// The ETag an answer carries, whatever case the transport reported it in.
+  static String? _etagOf(Response response) {
+    for (final MapEntry(:key, :value) in response.headers.entries) {
+      if (key.toLowerCase() != 'etag') continue;
+      final tag = value.trim();
+      return tag.isEmpty ? null : tag;
+    }
+    return null;
   }
 
   // Automations: schedules and recipes (F7).

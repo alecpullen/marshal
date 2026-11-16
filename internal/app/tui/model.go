@@ -3897,16 +3897,45 @@ func (m *Model) drillIntoSubagent(id int64) bool {
 // running subagent onto the view stack, so inspecting live work does not
 // require a mouse. Returns false when no subagent is running.
 func (m *Model) drillIntoLatestRunningSubagent() bool {
+	id, ok := m.latestRunningSubagent()
+	return ok && m.drillIntoSubagent(id)
+}
+
+// latestRunningSubagent is the most recently registered running subagent: the
+// target Ctrl+F falls back to when nothing is selected.
+func (m *Model) latestRunningSubagent() (int64, bool) {
 	subs := m.sess.Status().Subagents
 	for i := len(subs) - 1; i >= 0; i-- {
-		if subs[i].Status != acpwire.SubagentRunning {
-			continue
-		}
-		if m.drillIntoSubagent(subs[i].ID) {
-			return true
+		if subs[i].Status == acpwire.SubagentRunning && subs[i].Drill != nil {
+			return subs[i].ID, true
 		}
 	}
-	return false
+	return 0, false
+}
+
+// drillIntoSelectedSubagent pushes the subagent the user has selected onto the
+// view stack — the transcript row or tray card under the browse cursor, else
+// the tray card they expanded — and falls back to the most recently registered
+// running one, so inspecting live work never needs a mouse. A drill-in ends
+// browse mode the way browse f does, because the child's transcript has none of
+// the parent's rows to cursor over. It reports false when nothing is drillable,
+// and while already drilled: a child dispatches no subagents, so drill-in stays
+// one level deep.
+func (m *Model) drillIntoSelectedSubagent() bool {
+	if len(m.viewStack) > 0 {
+		return false
+	}
+	id, ok := m.selectedSubagent()
+	if !ok {
+		id, ok = m.latestRunningSubagent()
+	}
+	if !ok {
+		return false
+	}
+	if m.browsing {
+		m.leaveBrowse()
+	}
+	return m.drillIntoSubagent(id)
 }
 
 // popDrill pops one level of subagent drill-down, returning false when the

@@ -440,6 +440,17 @@ type Session interface {
 	// ACP: session/subagent_cancel (exists).
 	CancelSubagent(ctx context.Context, subagentID int64) bool
 
+	// SteerSubagent delivers the user's instruction to the session's live
+	// subagent with that ID, at most once per params.RequestID. The status is
+	// accepted, not delivered: the child's queue took it, and the child reads
+	// it at its next step. A replay of the same request ID with the same child
+	// and message returns the same accepted result without delivering again; a
+	// reused request ID naming a different child or instruction, a blank
+	// message and an unknown or finished child are errors.
+	//
+	// ACP: session/subagent_steer (exists).
+	SteerSubagent(ctx context.Context, request acpwire.SubagentSteerParams) (acpwire.SubagentSteerResult, error)
+
 	// ClearFinishedRun clears a finished run's progress and its event log.
 	//
 	// ACP: session/sdd_clear (exists).

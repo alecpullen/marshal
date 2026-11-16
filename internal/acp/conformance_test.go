@@ -85,6 +85,7 @@ type seam interface {
 	SetEffort(ctx context.Context, level string) (string, error)
 	SetSudoUnlock(ctx context.Context, on bool) error
 	CancelSubagent(ctx context.Context, subagentID int64) bool
+	SteerSubagent(ctx context.Context, request acpwire.SubagentSteerParams) (acpwire.SubagentSteerResult, error)
 	ClearFinishedRun(ctx context.Context) error
 	TakeWatchResume(ctx context.Context) (name string, repeat bool, ok bool)
 	Work() (acpwire.WorkSnapshot, bool)

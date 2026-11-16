@@ -68,6 +68,7 @@ var Methods = []Method{
 	{Iface: "Session", Name: "SetEffort", ACP: "session/set_effort", Exists: true},
 	{Iface: "Session", Name: "SetSudoUnlock", ACP: "session/set_sudo_unlock", Exists: true},
 	{Iface: "Session", Name: "CancelSubagent", ACP: "session/subagent_cancel", Exists: true},
+	{Iface: "Session", Name: "SteerSubagent", ACP: "session/subagent_steer", Exists: true},
 	{Iface: "Session", Name: "ClearFinishedRun", ACP: "session/sdd_clear", Exists: true},
 	{Iface: "Session", Name: "TakeWatchResume", ACP: "session/watch_resume_take", Exists: true},
 	{Iface: "Session", Name: "Prompt", ACP: "session/prompt", Exists: true},

@@ -429,6 +429,13 @@ type State struct {
 	// failure and the source revision it belonged to, so a save that covers
 	// that revision clears exactly the errors it covered. Guarded by mu.
 	subagentSaveErrors map[int64]subagentSaveFailure
+	// subagentSteers is the accepted user-steering ledger: one receipt per
+	// request ID, naming the child and the instruction that request delivered.
+	// It is the in-memory index over the durable receipt messages the parent
+	// transcript carries, so a retry after a lost response — and a replay after
+	// a restart that restored the transcript — cannot enqueue a request twice.
+	// Guarded by mu.
+	subagentSteers map[string]subagentSteerReceipt
 	// runEvents is the plan-run event log: verify failures, review
 	// findings, commits, retries. In-memory only, never persisted.
 	runEvents []RunEvent

@@ -22,11 +22,12 @@ import (
 // The attach wire contract. The bridge speaks it as an external ACP
 // client, so the strings are the binding rather than a shared type.
 const (
-	attachPath     = "/api/projects/attach"
-	attachProtocol = "marshal-acp"
-	sessionHeader  = "Marshal-Session"
-	agentHeader    = "Marshal-Agent"
-	pinPath        = "/api/projects/pin"
+	attachPath       = "/api/projects/attach"
+	attachProtocol   = "marshal-acp"
+	sessionHeader    = "Marshal-Session"
+	agentHeader      = "Marshal-Agent"
+	envWarningHeader = "Marshal-Env-Warning"
+	pinPath          = "/api/projects/pin"
 )
 
 // ChildInfo is the contract's DaemonChild; see that declaration.
@@ -252,9 +253,10 @@ func (c *Client) Pin(ctx context.Context, root string, pinned bool) (PinState, e
 
 // Attachment is an attached session: its ID and the upgraded stream.
 type Attachment struct {
-	SessionID string
-	AgentID   string // the agent whose session this is; "" for a project attach
-	Conn      io.ReadWriteCloser
+	SessionID  string
+	AgentID    string // the agent whose session this is; "" for a project attach
+	EnvWarning string // the project child's environment warning; "" when none
+	Conn       io.ReadWriteCloser
 }
 
 // AttachError is a refused attach: the daemon's status and its sentence.
@@ -425,6 +427,10 @@ func (c *Client) upgrade(ctx context.Context, path string, body []byte) (*Attach
 	// A project attach leaves this empty; an agent attach names the agent
 	// whose session the stream is.
 	agent := strings.TrimSpace(resp.Header.Get(agentHeader))
+	// The project child's environment warning rides the same answer, so the
+	// client can say why the child fell back without asking the daemon about
+	// it (P6 T3). Absent when the environment resolved.
+	envWarning := strings.TrimSpace(resp.Header.Get(envWarningHeader))
 
 	if err := conn.SetDeadline(time.Time{}); err != nil {
 		_ = conn.Close()
@@ -440,9 +446,10 @@ func (c *Client) upgrade(ctx context.Context, path string, body []byte) (*Attach
 		return nil, fmt.Errorf("attach handshake: %w", err)
 	}
 	return &Attachment{
-		SessionID: attached,
-		AgentID:   agent,
-		Conn:      &attachConn{reader: reader, conn: conn},
+		SessionID:  attached,
+		AgentID:    agent,
+		EnvWarning: envWarning,
+		Conn:       &attachConn{reader: reader, conn: conn},
 	}, nil
 }
 

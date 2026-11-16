@@ -378,4 +378,21 @@ class NewWorkModel extends ChangeNotifier {
     'ask' => 'ask',
     _ => 'act',
   };
+
+  /// A sheet that closes disposes the model while [load] is still waiting on
+  /// a route; the answer that lands afterwards must not notify a disposed
+  /// notifier.
+  bool _disposed = false;
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
+  @override
+  void notifyListeners() {
+    if (_disposed) return;
+    super.notifyListeners();
+  }
 }

@@ -277,9 +277,25 @@ The recorder test was deleted after it wrote the files.
 - The context menu is the kit's `Box` and `Btn` at the pointer: `Menu`
   anchors to a control, and a pointer anchor would be a §10 change to it.
 
+- The plan's three outstanding tests exist now. `a selection spans rows that
+  are not built` (`test/ui/thread/selection_test.dart`) holds the pointer past
+  the list's bottom edge, so the edge auto-scroll walks the anchor down over
+  rows that leave the built window, and asserts the copy still spans the row
+  that is gone. `drag selects in a browser`
+  (`test/ui/thread/browser_selection_test.dart`) is `@TestOn('browser')`, so
+  the VM run skips it. `start posts the request and opens the thread`
+  (`test/ui/new_work/start_opens_the_thread_test.dart`) drives `⌘N`, the
+  dialog and Start through `Studio`, and asserts both the request and the
+  place the app lands on (`onThreadStarted` in `ui/shell/shell.dart`) — it
+  found a real defect: a sheet that closes disposes the model while `load()`
+  is still waiting on a route, so the answer that landed afterwards notified
+  a disposed notifier. `NewWorkModel` now refuses to notify after dispose.
+
 **Environment-blocked, not failures.** `flutter test --platform chrome`
-(no working browser: the Chrome host stalls on CanvasKit), so the browser
-half of selection is unverified here. `flutter build linux` and
+(no working browser: the Chrome host stalls on CanvasKit), so
+`test/ui/thread/browser_selection_test.dart` — the plan's `drag selects in a
+browser` — is written and skipped by the VM run, and the browser half of
+selection stays unverified here. `flutter build linux` and
 `flutter test integration_test -d linux` (no CMake/GTK3 headers, no display),
 so `integration_test/f3_test.dart` is written but has not run. `npm run
 check` has a pre-existing five errors, unchanged by this phase.

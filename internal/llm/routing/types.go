@@ -121,7 +121,11 @@ type ModelPreset struct {
 	ContextWindow   int    `toml:"context_window"`
 	MaxOutputTokens int    `toml:"max_output_tokens"`
 	ToolCalling     string `toml:"tool_calling"`
-	LocalOnly       bool   `toml:"local_only"`
+	// Vision is "" (unset, same as "auto"), "auto", "on" or "off". It
+	// answers "may this route be sent images", not "what does the model
+	// understand".
+	Vision    string `toml:"vision,omitempty"`
+	LocalOnly bool   `toml:"local_only"`
 	// Thinking controls reasoning effort: "" = provider default (nothing is
 	// sent on the wire), "off" disables thinking where the provider allows
 	// it, and any other value (low/medium/high, minimal, etc.) is passed
@@ -160,6 +164,13 @@ type ModelPreset struct {
 const (
 	ReasoningHistoryTurn         = "turn"
 	ReasoningHistoryFinalAnswers = "final_answers"
+)
+
+// ModelPreset.Vision values.
+const (
+	VisionAuto = "auto"
+	VisionOn   = "on"
+	VisionOff  = "off"
 )
 
 // RoleBinding is a oneOf: exactly one of Preset or CustomAgent is set.
@@ -244,6 +255,24 @@ type Route struct {
 	// preset's explicit value, else the locality default, lowered by a
 	// provider-reported limit. 0 only when resolution failed.
 	MaxOutput int
+	// Vision reports that this route may be sent images. Resolved per-turn
+	// by resolveRoute: explicit preset, learned rejection, probe, name
+	// heuristic, else attempt.
+	Vision bool
+	// VisionForced is true when the user set vision = "on", so a provider
+	// rejection surfaces as itself instead of being retried without images.
+	VisionForced bool
+}
+
+// VisionFacts supplies what the router cannot know about a model's image
+// support: what the provider advertised, and what a provider has already
+// refused. Both fields may be nil, and the zero value means "attempt".
+type VisionFacts struct {
+	// Probe reports what the provider's model list advertised for this
+	// preset; nil means it could not tell.
+	Probe func(preset ModelPreset) *bool
+	// Rejected reports whether this preset has refused image input before.
+	Rejected func(preset ModelPreset) bool
 }
 
 type Config struct {

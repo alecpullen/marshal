@@ -11,6 +11,9 @@ type ModelCapabilities struct {
 	// Reasoning reports whether the model can think; nil when the probe
 	// could not tell.
 	Reasoning *bool
+	// Vision reports whether the model can take images; nil when the probe
+	// could not tell.
+	Vision *bool
 }
 
 // CapabilityProber is implemented by providers that can probe a single

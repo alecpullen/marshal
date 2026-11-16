@@ -1,6 +1,8 @@
 import '../../model/age.dart';
+import '../../model/composer_model.dart';
 import '../../model/fleet_store.dart';
 import '../../model/inbox_model.dart';
+import '../../model/inbox_model.dart' as inbox;
 import '../../model/nav_model.dart';
 import '../../model/place.dart';
 import '../../model/stack_store.dart';
@@ -10,6 +12,7 @@ import '../inbox/inbox.dart' show Inbox;
 import '../kit/kit.dart';
 import '../overview/overview.dart' show Overview;
 import '../../model/overview_model.dart' show buildOverview;
+import '../thread/thread_composer.dart';
 import '../thread/thread_screen.dart';
 import 'placeholder.dart';
 import 'sidebar.dart';
@@ -233,6 +236,7 @@ class Studio extends StatefulWidget {
     required this.inbox,
     this.read,
     this.threadStore,
+    this.composerFor,
     this.initialPlace = const Place.overview(),
   });
 
@@ -247,6 +251,10 @@ class Studio extends StatefulWidget {
   /// thread place as planned: a test or an embedded host that supplies none
   /// gets the promise, never a socket.
   final StackStore Function(model.ThreadRef thread)? threadStore;
+
+  /// Builds a thread place's composer. Null leaves the thread without one.
+  final ComposerModel Function(model.ThreadRef thread, ThreadViewState view)?
+  composerFor;
 
   /// The place a deep link names.
   final Place initialPlace;
@@ -347,6 +355,15 @@ class _StudioState extends State<Studio> {
           key: ValueKey('${thread.host}/${thread.id}'),
           thread: thread,
           buildStore: build,
+          composerFor: widget.composerFor,
+          asks: [
+            for (final ask in widget.inbox.asks)
+              if (ask.thread?.host == thread.host &&
+                  ask.thread?.id == thread.id)
+                ask,
+          ],
+          onAnswer: widget.inbox.answer,
+          now: widget.store.now,
         );
       }
       return plannedPlace(place, nav);
@@ -373,10 +390,19 @@ class _ThreadPlace extends StatefulWidget {
     super.key,
     required this.thread,
     required this.buildStore,
+    this.composerFor,
+    this.asks = const [],
+    this.onAnswer,
+    this.now,
   });
 
   final model.ThreadRef thread;
   final StackStore Function(model.ThreadRef thread) buildStore;
+  final ComposerModel Function(model.ThreadRef thread, ThreadViewState view)?
+  composerFor;
+  final List<inbox.Ask> asks;
+  final void Function(inbox.Ask ask, inbox.AskAction action)? onAnswer;
+  final DateTime? now;
 
   @override
   State<_ThreadPlace> createState() => _ThreadPlaceState();
@@ -385,11 +411,13 @@ class _ThreadPlace extends StatefulWidget {
 class _ThreadPlaceState extends State<_ThreadPlace> {
   late final StackStore _store = widget.buildStore(widget.thread);
   late final ThreadViewState _view = ThreadViewState();
+  ComposerModel? _composer;
 
   @override
   void initState() {
     super.initState();
     _store.start();
+    _composer = widget.composerFor?.call(widget.thread, _view);
   }
 
   @override
@@ -398,10 +426,23 @@ class _ThreadPlaceState extends State<_ThreadPlace> {
       ..stop()
       ..dispose();
     _view.dispose();
+    _composer?.dispose();
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) =>
-      ThreadScreen(thread: widget.thread, store: _store, view: _view);
+  Widget build(BuildContext context) {
+    final composer = _composer;
+    return ThreadScreen(
+      thread: widget.thread,
+      store: _store,
+      view: _view,
+      asks: widget.asks,
+      onAnswer: widget.onAnswer,
+      now: widget.now,
+      composer: composer == null
+          ? null
+          : ThreadComposer(model: composer, view: _view),
+    );
+  }
 }

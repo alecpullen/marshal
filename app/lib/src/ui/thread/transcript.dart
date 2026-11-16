@@ -1,3 +1,5 @@
+import '../../model/age.dart';
+import '../../model/inbox_model.dart' as model;
 import '../../model/selection.dart';
 import '../../model/stack_store.dart';
 import '../../model/thread_view_state.dart';
@@ -63,6 +65,9 @@ class Transcript extends StatefulWidget {
     required this.store,
     required this.view,
     this.selection,
+    this.asks = const [],
+    this.onAnswer,
+    this.now,
     this.onOpenNode,
   });
 
@@ -75,6 +80,16 @@ class Transcript extends StatefulWidget {
   /// The text selection across the transcript. Null gives this transcript its
   /// own, which it disposes with itself.
   final TranscriptSelection? selection;
+
+  /// The asks waiting in this thread, pinned at the step that raised each
+  /// (spec decision 9).
+  final List<model.Ask> asks;
+
+  /// Answers an ask where it is pinned.
+  final void Function(model.Ask ask, model.AskAction action)? onAnswer;
+
+  /// What a waiting time is measured against.
+  final DateTime? now;
 
   /// Opens a node's detail. Null leaves rows that are not controls plain.
   final void Function(String nodeId)? onOpenNode;
@@ -157,6 +172,18 @@ class _TranscriptState extends State<Transcript> {
     widget.view.following = atEnd;
   }
 
+  /// The asks pinned after one row: those whose step is this row, and — after
+  /// the last row — those whose request named no step.
+  List<model.Ask> _asksFor(String rowId, bool last) {
+    final now = widget.now ?? DateTime.now();
+    return [
+      for (final ask in widget.asks)
+        if ((ask.step != null && rowId.endsWith('step:${ask.step}')) ||
+            (ask.step == null && last))
+          ask,
+    ].where((ask) => ask.since.isBefore(now)).toList();
+  }
+
   /// The live headline a "Jump to live" control carries: the newest row's
   /// first line, which is what the agent is doing now.
   String get _liveHeadline {
@@ -208,20 +235,32 @@ class _TranscriptState extends State<Transcript> {
               itemCount: _rows.length,
               itemBuilder: (context, index) {
                 final row = _rows[index];
+                final pinned = _asksFor(row.id, index == _rows.length - 1);
                 return Align(
                   alignment: Alignment.topCenter,
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: Layout.reading),
-                    child: SelectableRow(
-                      nodeId: row.id,
-                      child: _Row(
-                        nodeId: row.id,
-                        index: index,
-                        depth: row.depth,
-                        store: widget.store,
-                        view: widget.view,
-                        onOpen: widget.onOpenNode,
-                      ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        SelectableRow(
+                          nodeId: row.id,
+                          child: _Row(
+                            nodeId: row.id,
+                            index: index,
+                            depth: row.depth,
+                            store: widget.store,
+                            view: widget.view,
+                            onOpen: widget.onOpenNode,
+                          ),
+                        ),
+                        for (final ask in pinned)
+                          _PinnedAsk(
+                            ask: ask,
+                            now: widget.now,
+                            onAnswer: widget.onAnswer,
+                          ),
+                      ],
                     ),
                   ),
                 );
@@ -230,6 +269,44 @@ class _TranscriptState extends State<Transcript> {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// One ask, pinned in the transcript at the step that raised it: the same
+/// `AskCard` the Inbox draws, so answering it here or there is one action
+/// (spec decision 9).
+class _PinnedAsk extends StatelessWidget {
+  const _PinnedAsk({required this.ask, this.now, this.onAnswer});
+
+  final model.Ask ask;
+  final DateTime? now;
+  final void Function(model.Ask ask, model.AskAction action)? onAnswer;
+
+  @override
+  Widget build(BuildContext context) {
+    final at = now ?? DateTime.now();
+    final onAnswer = this.onAnswer;
+    return Padding(
+      padding: const EdgeInsets.only(left: Sizes.row, bottom: Space.s12),
+      child: AskCard(
+        kind: switch (ask.kind) {
+          model.AskKind.approval => AskKind.approval,
+          model.AskKind.question => AskKind.question,
+          model.AskKind.intake => AskKind.intake,
+        },
+        title: ask.title,
+        body: ask.body.isEmpty ? null : ask.body,
+        waiting: relativeAge(ask.since, at),
+        actions: [
+          for (final action in ask.actions)
+            AskAction(
+              action.label,
+              onTap: onAnswer == null ? null : () => onAnswer(ask, action),
+            ),
+        ],
+        placement: AskPlacement.thread,
+      ),
     );
   }
 }

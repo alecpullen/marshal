@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 
+import '../../model/inbox_model.dart' as asks_model;
 import '../../model/selection.dart';
 import '../../model/stack_store.dart';
 import '../../model/thread_ref.dart' as model;
@@ -76,6 +77,9 @@ class ThreadScreen extends StatefulWidget {
     this.onNewWork,
     this.onCopyRow,
     this.selection,
+    this.asks = const [],
+    this.onAnswer,
+    this.now,
   });
 
   /// The thread this screen is showing.
@@ -118,6 +122,16 @@ class ThreadScreen extends StatefulWidget {
   /// The text selection across the transcript. Null gives the screen its own,
   /// which it disposes with itself.
   final TranscriptSelection? selection;
+
+  /// The asks waiting in this thread; each is pinned at its step.
+  final List<asks_model.Ask> asks;
+
+  /// Answers an ask where it is pinned.
+  final void Function(asks_model.Ask ask, asks_model.AskAction action)?
+  onAnswer;
+
+  /// What a waiting time is measured against.
+  final DateTime? now;
 
   @override
   State<ThreadScreen> createState() => _ThreadScreenState();
@@ -276,6 +290,9 @@ class _ThreadScreenState extends State<ThreadScreen> {
                   store: store,
                   view: widget.view,
                   selection: _selection,
+                  asks: widget.asks,
+                  onAnswer: widget.onAnswer,
+                  now: widget.now,
                   onOpenNode: widget.onOpenNode,
                 ),
         ),

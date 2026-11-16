@@ -4,6 +4,7 @@ import 'src/client/host_discovery_stub.dart'
 import 'src/menu/desktop_stub.dart'
     if (dart.library.io) 'src/menu/desktop.dart';
 import 'src/model/fleet_store.dart';
+import 'src/model/composer_model.dart';
 import 'src/model/inbox_model.dart';
 import 'src/model/stack_store.dart';
 import 'src/ui/kit/kit.dart';
@@ -36,6 +37,11 @@ Future<void> main() async {
         threadStore: (thread) => StackStore(
           hosts.hosts.firstWhere((host) => host.name == thread.host).client,
           thread.id,
+        ),
+        composerFor: (thread, view) => ComposerModel.forSession(
+          hosts.hosts.firstWhere((host) => host.name == thread.host).client,
+          thread.id,
+          view: view,
         ),
       ),
     ),

@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:marshal_app/src/client/contract.g.dart';
+import 'package:marshal_app/src/model/inbox_model.dart' as model;
 import 'package:marshal_app/src/model/stack_store.dart';
 import 'package:marshal_app/src/model/thread_ref.dart' as model;
 import 'package:marshal_app/src/model/thread_view_state.dart';
@@ -105,6 +106,10 @@ Future<void> pumpThread(
   StateKind? state,
   VoidCallback? onNewWork,
   void Function(String nodeId)? onCopyRow,
+  Widget? composer,
+  List<model.Ask> asks = const [],
+  void Function(model.Ask ask, model.AskAction action)? onAnswer,
+  DateTime? now,
 }) async {
   tester.view.physicalSize = const Size(900, 700);
   tester.view.devicePixelRatio = 1;
@@ -124,6 +129,10 @@ Future<void> pumpThread(
         state: state,
         onNewWork: onNewWork,
         onCopyRow: onCopyRow,
+        composer: composer,
+        asks: asks,
+        onAnswer: onAnswer,
+        now: now,
       ),
     ),
   );

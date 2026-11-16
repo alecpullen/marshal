@@ -98,6 +98,11 @@ func NewServer(target any, args ...any) *Server {
 	s := &Server{fleet: fleet, reg: reg, log: log, publicURLBase: publicURLBase, mux: http.NewServeMux(),
 		factoryAuth: newFactoryMCPAuthorizer(ws)}
 	s.routes()
+	// The planner API owns live backend sessions, so it exists only when this
+	// server has a fleet to hold them.
+	if fleet != nil {
+		s.plannerRoutes()
+	}
 	for _, arg := range args {
 		if factory, ok := arg.(FactoryAPI); ok {
 			s.factory = factory

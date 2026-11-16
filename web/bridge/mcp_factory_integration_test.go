@@ -7,9 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -487,6 +490,131 @@ func waitEffect(t *testing.T, effects *handoffEffects, want string) {
 	case <-time.After(30 * time.Second):
 		t.Fatalf("the factory never dispatched %q (executed %v)", want, effects.seen())
 	}
+}
+
+// studioSocketPath returns an absolute Unix-socket path inside an owner-only
+// directory. t.TempDir() is 0700 already; the path is kept clear of sun_path
+// (104 bytes on macOS, 108 on Linux) by falling back to a short directory on a
+// platform whose temp root is long.
+func studioSocketPath(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	// t.TempDir() is not owner-only on every toolchain, and sun_path's
+	// directory must be: set the mode rather than assume it.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatalf("restrict the socket directory: %v", err)
+	}
+	if sock := filepath.Join(dir, "s.sock"); len(sock) < 100 {
+		return sock
+	}
+	short, err := os.MkdirTemp("", "mcp")
+	if err != nil {
+		t.Fatalf("short socket directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(short) })
+	if err := os.Chmod(short, 0o700); err != nil {
+		t.Fatalf("restrict the short socket directory: %v", err)
+	}
+	return filepath.Join(short, "s.sock")
+}
+
+// studioUnixClient returns an *http.Client whose transport dials sock. The
+// request's host is a name, not a lookup: the socket is the address, exactly
+// as the daemon's own client dials it.
+func studioUnixClient(sock string) *http.Client {
+	return &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", sock)
+		},
+	}}
+}
+
+// TestStudioIntegrationMCPOverOwnerOnlySocket serves the real bridge Server on
+// an owner-only Unix-socket listener — the transport a Marshal session has on
+// the local daemon — and drives it with the fixture's MCP client over real
+// JSON-RPC: initialize, tools/list, and an authorized read through the real
+// handler and the real factory grant.
+//
+// The production client (internal/tools/mcp.HTTPClient) is proven over the
+// same wire in its own package: web/ must not import marshal/internal
+// (TestWebIsStdlibOnly has no allowlist), so no single package can span both
+// halves of this proof.
+func TestStudioIntegrationMCPOverOwnerOnlySocket(t *testing.T) {
+	b := newHandoffBridge(t)
+	sock := studioSocketPath(t)
+	if info, err := os.Stat(filepath.Dir(sock)); err != nil {
+		t.Fatalf("stat the socket directory: %v", err)
+	} else if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		t.Fatalf("the socket directory mode is %04o, want owner-only", perm)
+	}
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Skipf("this platform cannot host a Unix socket: %v", err)
+	}
+	srv := &http.Server{Handler: b.srv}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	// The client speaks to the socket; the URL's host never resolves.
+	client := &handoffClient{url: "http://marshal-daemon/mcp", token: b.token, http: studioUnixClient(sock)}
+	client.initialize(t)
+
+	// Tool discovery over the socket: the real handler's advertised factory
+	// tools, with no authority tool among them.
+	tools := client.tools(t)
+	for _, name := range []string{
+		factoryToolProjects, factoryToolList, factoryToolGet, factoryToolCreateDraft,
+		factoryToolUpdateDraft, factoryToolApproveAndQueue, factoryToolAnswerQuestion,
+	} {
+		if _, ok := tools[name]; !ok {
+			t.Fatalf("tools/list over the socket is missing %s", name)
+		}
+	}
+
+	// An authorized read: the project this client's token is granted, with the
+	// authority the grant carries, and no host path in the result.
+	projects, text := client.mustCall(t, factoryToolProjects, map[string]any{})
+	entries, _ := projects["projects"].([]any)
+	if len(entries) != 1 {
+		t.Fatalf("factory_projects over the socket listed %v, want the one granted project", projects["projects"])
+	}
+	entry, _ := entries[0].(map[string]any)
+	if entry["projectId"] != b.projectID {
+		t.Fatalf("factory_projects listed %v, want %s", entry["projectId"], b.projectID)
+	}
+	capabilities, _ := entry["capabilities"].([]any)
+	if len(capabilities) == 0 {
+		t.Fatalf("the granted project reported no capability: %v", entry)
+	}
+	assertNoHostPath(t, text, b.root)
+
+	// Identity is the bearer's, and only an enrolled client token is identity.
+	// The shared API token that unlocks /api never reaches /mcp, and neither
+	// does an unknown token.
+	for name, token := range map[string]string{
+		"the bridge's shared API token": handoffAPIToken,
+		"an unknown token":              "not-an-enrolled-client",
+	} {
+		stranger := &handoffClient{url: "http://marshal-daemon/mcp", token: token, http: studioUnixClient(sock)}
+		status, _, payload, err := stranger.post(map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "initialize",
+			"params": map[string]any{"protocolVersion": mcpProtocolVersion},
+		})
+		if err != nil {
+			t.Fatalf("%s over the socket: %v", name, err)
+		}
+		if status != http.StatusUnauthorized {
+			t.Fatalf("%s over the socket: /mcp answered %d, want 401 (%s)", name, status, payload)
+		}
+	}
+
+	// A client that is enrolled but holds no grant on this project reads
+	// nothing: the same answer an unrelated project gets, naming neither.
+	_, otherToken := testAddClient(t, b.srv, MCPClient{ID: "c2", Name: "ungranted"})
+	stranger := &handoffClient{url: "http://marshal-daemon/mcp", token: otherToken, http: studioUnixClient(sock)}
+	stranger.initialize(t)
+	assertNoUnauthorizedAccess(t, stranger, b, "")
 }
 
 // TestMCPFactoryEndToEnd drives a complete authorized handoff: initialize,

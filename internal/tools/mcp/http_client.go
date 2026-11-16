@@ -41,6 +41,21 @@ func WithHTTPClientLogger(l *slog.Logger) HTTPClientOption {
 	return func(c *HTTPClient) { c.Logger = l }
 }
 
+// WithHTTPClient installs the *http.Client whose Do sends this client's
+// requests. It replaces only where the bytes are written — a Unix-socket
+// dialer, a pinned certificate pool, a timeout — and changes nothing else: the
+// endpoint is still whatever URL the caller configured, the token-source rules
+// below still apply, and ValidateRemoteServer remains the gate for a configured
+// remote server. A nil client is ignored, leaving the default transport in
+// place.
+func WithHTTPClient(hc *http.Client) HTTPClientOption {
+	return func(c *HTTPClient) {
+		if hc != nil {
+			c.http = hc
+		}
+	}
+}
+
 // WithHTTPOAuth installs a token source that supplies an OAuth bearer token
 // for each request. src is consulted once per POST so a refreshed token is
 // picked up without rebuilding the client.

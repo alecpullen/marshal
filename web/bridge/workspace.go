@@ -173,6 +173,13 @@ type ProjectSettings struct {
 	// existed still marshals byte-identically, and workspaceVersion does
 	// not change.
 	DesignatedMCPClientID string `json:"designatedMCPClientId,omitempty"`
+	// AutoAssessPlanChanges turns automatic assessment of a proposed factory
+	// plan revision on or off. It is a pointer so an absent value stays
+	// distinguishable from an explicit false: nil means the default, which
+	// is on, and only an explicit false is a user override. It is optional,
+	// so a settings record written before it existed still marshals
+	// byte-identically and workspaceVersion does not change.
+	AutoAssessPlanChanges *bool `json:"autoAssessPlanChanges,omitempty"`
 }
 
 // ProjectIntake mirrors Repo.Watch/WatchLabel and the client allowedRepos.
@@ -543,6 +550,12 @@ func canonicalModeTuple(mode string, auto *bool) (string, *bool, string, error) 
 
 // boolPtr returns a pointer to b, for the optional Auto defaults.
 func boolPtr(b bool) *bool { return &b }
+
+// autoAssessPlanChanges is the effective automatic-assessment preference: an
+// absent setting means on, and only an explicit false turns it off.
+func autoAssessPlanChanges(ps ProjectSettings) bool {
+	return ps.AutoAssessPlanChanges == nil || *ps.AutoAssessPlanChanges
+}
 
 // normalizeStoredInteraction canonicalizes the starting defaults the workspace
 // persists on agents, pending spawns and project settings. It runs on every

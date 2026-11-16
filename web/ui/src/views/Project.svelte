@@ -60,6 +60,13 @@
   let autoMode = $state<AutoChoice>('default')
   let isolation = $state<IsolationChoice>('default')
   let shipTarget = $state('')
+  /**
+   * Automatic assessment of plan changes. It is the project's own field, not a
+   * factory default: absent follows the handoff (which means on), and only a
+   * deliberate change writes it, so saving an unrelated field never
+   * materialises a value the user did not choose.
+   */
+  let autoAssessMode = $state<AutoChoice>('default')
   // Factory-only defaults, held as typed text so a cleared field stays absent.
   let targetBranch = $state('')
   let expectedChecksText = $state('')
@@ -91,7 +98,7 @@
   function draftSignature(): string {
     return JSON.stringify([
       workspace, factoryWorkspace, profile, implementerProfile, reviewerProfile,
-      mode, autoMode, isolation, shipTarget,
+      mode, autoMode, isolation, shipTarget, autoAssessMode,
       targetBranch, expectedChecksText, reviewerInstructions, maxRoundsText, ciPollText, ciWaitText,
       repoId, labels, clientIds, delegation, delegateClient,
     ])
@@ -112,6 +119,10 @@
     autoMode = autoOf(s)
     isolation = isolationOf(s)
     shipTarget = s.shipTarget ?? ''
+    // Absent is "follow the handoff", which is on; only an explicit false is a
+    // stored override, so the control shows the effective value rather than a
+    // default it invented.
+    autoAssessMode = autoOf({ auto: s.autoAssessPlanChanges })
     factoryWorkspace = f.workspace ?? ''
     implementerProfile = routingProfile(f.implementerRouting)
     reviewerProfile = routingProfile(f.reviewerRouting)
@@ -283,6 +294,11 @@
     const factoryDefaults = factoryDefaultsBody()
     if (factoryDefaults) next.factoryDefaults = factoryDefaults
     else delete next.factoryDefaults
+    // Only a deliberate choice writes this: following the handoff leaves the
+    // record exactly as it was read, which is what "absent means on" requires.
+    const assess = autoFrom(autoAssessMode)
+    if (assess === undefined) delete next.autoAssessPlanChanges
+    else next.autoAssessPlanChanges = assess
     return next
   }
 
@@ -522,6 +538,22 @@
         <label class="flex min-w-0 flex-col gap-1 text-xs">Max rounds
           <input aria-label="Max rounds" type="number" min="1" value={maxRoundsText} oninput={(e) => (maxRoundsText = e.currentTarget.value)} placeholder="Follow the handoff" class={field} />
         </label>
+        <label class="flex min-w-0 flex-col gap-1 text-xs">Automatic plan assessment
+          <select aria-label="Automatic plan assessment" bind:value={autoAssessMode} class={field}>
+            <option value="default">On — the default when nothing is set</option>
+            <option value="on">On — your explicit choice</option>
+            <option value="off">Off — assess only when asked</option>
+          </select>
+        </label>
+        <p class="text-xs text-muted" data-testid="auto-assess-effective">
+          {#if autoAssessMode === 'off'}
+            Effective now: off. A proposed plan change is only assessed when someone asks for an assessment.
+          {:else if autoAssessMode === 'on'}
+            Effective now: on, because you turned it on. Every proposal is assessed automatically.
+          {:else}
+            Effective now: on. Projects assess plan changes unless they explicitly turn it off, and this one does not.
+          {/if}
+        </p>
         <details class="min-w-0">
           <summary class="cursor-pointer text-xs text-muted">Advanced</summary>
           <div class="mt-2 flex flex-col gap-3">

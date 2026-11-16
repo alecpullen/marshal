@@ -552,6 +552,13 @@ export interface MCPFactoryProjectGrant {
   answerQuestion: boolean
   approveAndQueue: boolean
   approvalAuthority: 'none' | 'user_directed' | 'standing'
+  /**
+   * Revision authority. Both are optional so a grant written before they
+   * existed round trips unchanged: absent is the zero value, which grants
+   * nothing, so an old grant keeps exactly the permissions it had.
+   */
+  assessPlanChanges?: boolean
+  approveRoutineRevision?: boolean
 }
 
 /** One (client, project) pair's stored grant and the opaque version a write must name. */
@@ -1187,6 +1194,12 @@ export interface ProjectSettings {
    * into one of them.
    */
   factoryDefaults?: FactoryDefaults
+  /**
+   * Automatic assessment of proposed plan changes. Absent means on, which is
+   * the handoff's default; `false` is a deliberate override. A save that did
+   * not touch it must not write it.
+   */
+  autoAssessPlanChanges?: boolean
 }
 export interface ProjectHealth {
   /** The project's verify-gate commands; both empty means the gate has nothing to run. */
@@ -1473,7 +1486,7 @@ export async function listStatusLinks(): Promise<StatusLink[]> { return (await r
 export async function revokeStatusLink(id: string): Promise<void> { await request('DELETE', `/api/status-links/${q(id)}`) }
 
 
-import type { FactoryItem, FactoryCreate, FactoryCommand, FactoryDefaults } from './factory'
+import type { FactoryItem, FactoryCreate, FactoryCommand, FactoryDefaults, FactoryRevisionCommand } from './factory'
 import type { PreviewReport } from './preview'
 export async function listFactoryItems(): Promise<FactoryItem[]> {
   return (await request<{ items: FactoryItem[] | null }>('GET', '/api/factory/items')).items ?? []
@@ -1487,6 +1500,15 @@ export async function createFactoryItem(req: FactoryCreate): Promise<FactoryItem
 }
 export async function commandFactoryItem(id: string, cmd: FactoryCommand): Promise<FactoryItem> {
   return (await request<{ item: FactoryItem }>('POST', `/api/factory/items/${encodeURIComponent(id)}/commands`, cmd)).item
+}
+/**
+ * Attach one revision lifecycle command to the envelope the item view builds.
+ * The revision rides in `FactoryCommand.revision` beside the request id, the
+ * version it was reviewed against and the decision it answers, so a proposal,
+ * its assessment and its delivery are never sent as separate commands.
+ */
+export function factoryRevisionCommand(cmd: FactoryCommand, revision: FactoryRevisionCommand): FactoryCommand {
+  return { ...cmd, revision }
 }
 
 import type {

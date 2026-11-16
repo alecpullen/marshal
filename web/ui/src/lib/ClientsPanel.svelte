@@ -171,7 +171,7 @@
     if (value === 'none') grant.approveAndQueue = false
   }
 
-  function setCapability(key: 'read' | 'createDraft' | 'editDraft' | 'answerQuestion' | 'approveAndQueue', on: boolean) {
+  function setCapability(key: 'read' | 'createDraft' | 'editDraft' | 'answerQuestion' | 'approveAndQueue' | 'assessPlanChanges' | 'approveRoutineRevision', on: boolean) {
     if (grant) grant[key] = on
   }
 
@@ -391,6 +391,23 @@
           <input type="checkbox" checked={grant.answerQuestion} disabled={grantSaving} onchange={(e) => setCapability('answerQuestion', e.currentTarget.checked)} />
           Answer questions
         </label>
+        <!--
+          Revision permissions are separate capabilities with their own zero
+          value: an absent field grants nothing, so a grant written before
+          these existed keeps exactly the permissions it had.
+        -->
+        <label class="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={grant.assessPlanChanges === true} disabled={grantSaving} onchange={(e) => setCapability('assessPlanChanges', e.currentTarget.checked)} />
+          Assess plan changes
+        </label>
+        <label class="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={grant.approveRoutineRevision === true} disabled={grantSaving} onchange={(e) => setCapability('approveRoutineRevision', e.currentTarget.checked)} />
+          Approve routine revisions
+        </label>
+        <p class="text-xs text-muted">
+          Both are off unless you grant them here. Assessing a plan change is advice only, and approving a routine
+          revision still needs the approval authority below; granting either changes nothing that was already granted.
+        </p>
         <label class="flex flex-col gap-1 text-xs">Approval authority
           <select
             class="w-full min-w-0 rounded-md border border-border bg-bg px-3 py-2 text-sm"

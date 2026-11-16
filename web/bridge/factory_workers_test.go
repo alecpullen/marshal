@@ -203,6 +203,116 @@ func TestFactoryPromptFreshFinalAndStopReason(t *testing.T) {
 	}
 }
 
+// factoryObservationIdle is the idle conjunction the safe boundary reads, stated
+// as one value so a test asserts the whole of it rather than one flag.
+func factoryObservationIdle(o FactoryObservation) bool {
+	return o.RuntimeKnown && o.TurnIdle && o.ActiveWorkKnown && o.WorkIdle
+}
+
+// observerFixture is the smallest workspace Observe can read: a saved workspace
+// file and the fleet over it, with no runtime started. It is enough for every
+// shape whose workers are all parked, because a parked worker has no runtime.
+func observerFixture(t *testing.T) (*Fleet, *Workspace) {
+	t.Helper()
+	ws := NewWorkspace(filepath.Join(t.TempDir(), "fleet.json"))
+	f := NewFleet(ws, "", nil, t.TempDir(), Limits{}, "", nil, "")
+	t.Cleanup(f.Close)
+	return f, ws
+}
+
+// observerWorker puts the agent a worker row names into the registry, which is
+// the only thing Observe matches a row against.
+func observerWorker(t *testing.T, ws *Workspace, w FactoryWorker, itemID string, parked bool) {
+	t.Helper()
+	err := ws.PutAgent(Agent{
+		ID: w.AgentID, Project: t.TempDir(), SessionID: w.SessionID,
+		OwnerID: DefaultOwnerID, Origin: OriginUI,
+		FactoryItemID: itemID, FactoryRole: w.Role, FactorySpawnEffectID: w.SpawnEffectID,
+		FactoryParked: parked,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestFactoryWorkersObserveParkedShortcut drives the production Observe over
+// real workspace agents and pins what its parked shortcut may claim.
+//
+// The shortcut exists because a parked worker has no runtime to contribute a
+// turn or active-work reading, so when every worker the registry can account for
+// is parked there is nothing to be busy. It may only speak for rows it can
+// account for: a row with no agent behind it, which the item's own record does
+// not already record as parked, may be running, and the shortcut must not call
+// that item known-idle.
+func TestFactoryWorkersObserveParkedShortcut(t *testing.T) {
+	implementer := FactoryWorker{AgentID: "a-impl", SessionID: "s-impl", Role: "implementer", SpawnEffectID: "spawn-1"}
+
+	t.Run("every matched worker parked is known idle", func(t *testing.T) {
+		f, ws := observerFixture(t)
+		observerWorker(t, ws, implementer, "i-1", true)
+		obs, err := newFactoryWorkers(f).Observe(context.Background(), FactoryItem{ID: "i-1", Workers: []FactoryWorker{implementer}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !factoryObservationIdle(obs) {
+			t.Fatalf("a fully parked item is not known idle: %+v", obs)
+		}
+	})
+
+	t.Run("live worker with active work is not idle", func(t *testing.T) {
+		// A real runtime makes the flags evidence rather than a default: the
+		// turn reads idle while the worker's running work does not, so only the
+		// work half of the conjunction keeps the item off a safe boundary.
+		f, w, _, _ := parkedFixture(t, json.RawMessage(`{"items":[{"id":"job"}]}`), nil)
+		obs, err := newFactoryWorkers(f).Observe(context.Background(), FactoryItem{ID: "i1", Workers: []FactoryWorker{w}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !obs.RuntimeKnown || !obs.TurnIdle || !obs.ActiveWorkKnown || obs.WorkIdle {
+			t.Fatalf("the live worker's evidence is not what was stated: %+v", obs)
+		}
+		if factoryObservationIdle(obs) {
+			t.Fatalf("an item running active work was reported idle: %+v", obs)
+		}
+	})
+
+	for _, tc := range []struct {
+		name      string
+		rowParked bool
+		wantIdle  bool
+	}{
+		// The regression guard: the shortcut must not over-claim for a row the
+		// registry cannot match and the journal does not record as parked.
+		{"unaccounted row not recorded as parked is not idle", false, false},
+		// The row survives its agent being pruned; without this the shortcut
+		// would never fire and a ready item could not reach a safe boundary.
+		{"unaccounted row recorded as parked is idle", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, ws := observerFixture(t)
+			observerWorker(t, ws, implementer, "i-1", true)
+			// No agent exists for this row at all: it was pruned after the item
+			// recorded it.
+			gone := FactoryWorker{
+				AgentID: "a-gone", SessionID: "s-gone", Role: "reviewer",
+				SpawnEffectID: "spawn-2", Parked: tc.rowParked,
+			}
+			obs, err := newFactoryWorkers(f).Observe(context.Background(), FactoryItem{
+				ID: "i-1", Workers: []FactoryWorker{implementer, gone},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if idle := factoryObservationIdle(obs); idle != tc.wantIdle {
+				t.Fatalf("known idle = %v, want %v: %+v", idle, tc.wantIdle, obs)
+			}
+			if !tc.wantIdle && (obs.RuntimeKnown || obs.TurnIdle || obs.ActiveWorkKnown || obs.WorkIdle) {
+				t.Fatalf("the shortcut claimed a flag for a row it cannot account for: %+v", obs)
+			}
+		})
+	}
+}
+
 // TestFactorySpawnFactoryWorkerUsesTheLatestApprovalRouting proves the routing
 // source the factory relies on: a worker reads the latest approval's route and
 // it reaches the agent verbatim in the session/new frame.

@@ -345,6 +345,66 @@ describe('Project factory and agent defaults', () => {
     expect(written().factoryDefaults).toMatchObject({ workspace: 'repo:gone', hostId: 'remote', implementerRouting: { profile: 'gone-impl' } })
   })
 
+  it('automaticAssessmentVisibleAndConfigurable', async () => {
+    mount()
+    // Absent means on, and the screen says what that means instead of showing
+    // a blank or a local default it invented.
+    await waitFor(() => expect(screen.getByTestId('auto-assess-effective').textContent).toContain('Effective now: on'))
+    expect((screen.getByLabelText('Automatic plan assessment') as HTMLSelectElement).value).toBe('default')
+    // Nothing is savable until the record (and its version) arrived.
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Save defaults' }) as HTMLButtonElement).disabled).toBe(false))
+
+    // Following the handoff writes nothing at all.
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalled())
+    expect(written()).not.toHaveProperty('autoAssessPlanChanges')
+    expect(written().workspace).toBe('go-dev')
+
+    // Turning it off is a real override, and it is the only thing added.
+    await fireEvent.change(screen.getByLabelText('Automatic plan assessment'), { target: { value: 'off' } })
+    expect(screen.getByTestId('auto-assess-effective').textContent).toContain('Effective now: off')
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalledTimes(2))
+    expect(written(1).autoAssessPlanChanges).toBe(false)
+    // Every unrelated setting is carried through exactly as it was read.
+    expect(written(1).workspace).toBe('go-dev')
+    expect(written(1).routing).toEqual(settings.routing)
+    expect(written(1).intake).toEqual(settings.intake)
+
+    // Back to following the handoff removes the override rather than storing
+    // a fallback of the screen's own.
+    await fireEvent.change(screen.getByLabelText('Automatic plan assessment'), { target: { value: 'default' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    await waitFor(() => expect(api.putVersionedProjectSettings).toHaveBeenCalledTimes(3))
+    expect(written(2)).not.toHaveProperty('autoAssessPlanChanges')
+    expect(written(2).workspace).toBe('go-dev')
+  })
+
+  it('projectPreferenceConflictRetainsDraft', async () => {
+    ;(api.getVersionedProjectSettings as Mock).mockResolvedValue(versioned({ ...settings, autoAssessPlanChanges: false }))
+    ;(api.putVersionedProjectSettings as Mock).mockRejectedValue(new api.APIError(412, { error: 'project settings changed' }))
+
+    mount()
+    await waitFor(() => expect((screen.getByLabelText('Automatic plan assessment') as HTMLSelectElement).value).toBe('off'))
+    expect(screen.getByTestId('auto-assess-effective').textContent).toContain('Effective now: off')
+    await fireEvent.change(screen.getByLabelText('Automatic plan assessment'), { target: { value: 'on' } })
+    await waitFor(() => expect(screen.getByTestId('unsaved')).toBeTruthy())
+    await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('changed elsewhere')
+    // A refusal costs nobody the preference they changed, and nothing was
+    // written behind their back: one attempt, no retry.
+    expect((screen.getByLabelText('Automatic plan assessment') as HTMLSelectElement).value).toBe('on')
+    expect(screen.getByTestId('auto-assess-effective').textContent).toContain('Effective now: on, because you turned it on')
+    expect(api.putVersionedProjectSettings).toHaveBeenCalledTimes(1)
+
+    // Only an explicit reload takes the saved value back.
+    await fireEvent.click(within(alert).getByRole('button', { name: 'Reload' }))
+    await waitFor(() => expect(api.getVersionedProjectSettings).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect((screen.getByLabelText('Automatic plan assessment') as HTMLSelectElement).value).toBe('off'))
+  })
+
   it('failedLoadCannotSave', async () => {
     ;(api.getVersionedProjectSettings as Mock).mockRejectedValue(new api.APIError(503, { error: 'settings unavailable' }))
     mount()

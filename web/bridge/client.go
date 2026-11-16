@@ -45,13 +45,22 @@ type MCPClient struct {
 // implied by Autonomous or AllowedRepos: those are fleet-spawn policy, and
 // a client that may spawn agents may still propose no factory work.
 type MCPFactoryProjectGrant struct {
-	ProjectID         string `json:"projectId"`
-	Read              bool   `json:"read"`
-	CreateDraft       bool   `json:"createDraft"`
-	EditDraft         bool   `json:"editDraft"`
-	AnswerQuestion    bool   `json:"answerQuestion"`
-	ApproveAndQueue   bool   `json:"approveAndQueue"`
-	ApprovalAuthority string `json:"approvalAuthority"` // none, user_directed, standing
+	ProjectID       string `json:"projectId"`
+	Read            bool   `json:"read"`
+	CreateDraft     bool   `json:"createDraft"`
+	EditDraft       bool   `json:"editDraft"`
+	AnswerQuestion  bool   `json:"answerQuestion"`
+	ApproveAndQueue bool   `json:"approveAndQueue"`
+	// AssessPlanChanges and ApproveRoutineRevision are the plan-revision
+	// capabilities. Zero values grant nothing, and omitempty keeps a grant
+	// that holds neither marshalling exactly as it always did. Both are
+	// checked by the authorizer like every capability above: the first admits
+	// a claim on one proposal's assessment and the result its claimant
+	// delivers, and the second is one of the facts rechecked under the policy
+	// lock before a routine clarification is authorized.
+	AssessPlanChanges      bool   `json:"assessPlanChanges,omitempty"`
+	ApproveRoutineRevision bool   `json:"approveRoutineRevision,omitempty"`
+	ApprovalAuthority      string `json:"approvalAuthority"` // none, user_directed, standing
 }
 
 // FactoryGrantState is one client/project pair's stored grant and the

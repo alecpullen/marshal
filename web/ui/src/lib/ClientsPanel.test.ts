@@ -210,6 +210,61 @@ describe('ClientsPanel', () => {
     expect(api.getFactoryGrant).toHaveBeenCalledTimes(1)
   })
 
+  it('revisionGrantsDefaultOff', async () => {
+    // A grant stored before revision permissions existed carries neither
+    // field, which is the zero value: it grants nothing.
+    ;(api.getFactoryGrant as Mock).mockResolvedValue({
+      clientId: 'c1',
+      projectId: 'p1',
+      grant: zeroGrant(),
+      version: 'v0',
+    })
+    ;(api.putFactoryGrant as Mock).mockImplementation(
+      async (clientId: string, projectId: string, grant: api.MCPFactoryProjectGrant, version: string) => ({
+        clientId,
+        projectId,
+        grant,
+        version: `${version}+`,
+      }),
+    )
+
+    const user = await openGrant()
+    await screen.findByRole('button', { name: 'Save authority' })
+    const assess = screen.getByLabelText('Assess plan changes') as HTMLInputElement
+    const approveRevision = screen.getByLabelText('Approve routine revisions') as HTMLInputElement
+    expect(assess.checked).toBe(false)
+    expect(approveRevision.checked).toBe(false)
+
+    // Saving an old grant without touching them sends neither: the permissions
+    // it already had are untouched, not reset to false on the way through.
+    await user.click(screen.getByLabelText('Read work items'))
+    await user.click(screen.getByRole('button', { name: 'Save authority' }))
+    const first = (api.putFactoryGrant as Mock).mock.calls[0][2] as api.MCPFactoryProjectGrant
+    expect(first).not.toHaveProperty('assessPlanChanges')
+    expect(first).not.toHaveProperty('approveRoutineRevision')
+    expect(first.read).toBe(true)
+
+    // Granting one writes only that one.
+    await user.click(assess)
+    await user.click(screen.getByRole('button', { name: 'Save authority' }))
+    const second = (api.putFactoryGrant as Mock).mock.calls[1][2] as api.MCPFactoryProjectGrant
+    expect(second.assessPlanChanges).toBe(true)
+    expect(second).not.toHaveProperty('approveRoutineRevision')
+    // Nothing else about the grant moved, including the approval authority
+    // the revision permission does not imply.
+    expect(second.read).toBe(true)
+    expect(second.createDraft).toBe(false)
+    expect(second.approveAndQueue).toBe(false)
+    expect(second.approvalAuthority).toBe('none')
+
+    // And it can be taken away again.
+    await user.click(assess)
+    await user.click(screen.getByRole('button', { name: 'Save authority' }))
+    const third = (api.putFactoryGrant as Mock).mock.calls[2][2] as api.MCPFactoryProjectGrant
+    expect(third.assessPlanChanges).toBe(false)
+    expect(third.read).toBe(true)
+  })
+
   it('editsProjectScopedFactoryGrant', async () => {
     ;(api.getFactoryGrant as Mock).mockResolvedValue({
       clientId: 'c1',

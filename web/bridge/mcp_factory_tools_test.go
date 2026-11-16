@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
@@ -1066,4 +1067,337 @@ func decodeBareResult(t *testing.T, out rpcResponse) map[string]any {
 		t.Fatalf("decode result: %v (%s)", err, raw)
 	}
 	return value
+}
+
+// revisionGrant is the plan-revision capability set, plus what a test needs to
+// create the item it proposes against. Nothing here is implied: every
+// capability is switched on explicitly, exactly as the editor writes one.
+func revisionGrant() MCPFactoryProjectGrant {
+	return MCPFactoryProjectGrant{
+		Read: true, CreateDraft: true,
+		AssessPlanChanges: true, ApproveRoutineRevision: true,
+		ApprovalAuthority: factoryAuthorityNone,
+	}
+}
+
+// revisionItem creates one approved item and proposes a revision against it,
+// recording the assessment intent the project's default asks for.
+func (f *mcpFactoryToolFixture) revisionItem(t *testing.T, requestID, plan, spec string) (FactoryItem, FactoryRevisionProposal) {
+	t.Helper()
+	item := f.createDraft(t, f.clientID, f.handoff("create-"+requestID))
+	approved, err := f.api.Command(context.Background(), item.ID, FactoryCommand{
+		RequestID: "approve-" + requestID, Kind: "approve", ExpectedVersion: item.Version,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f.proposeRevision(t, approved, requestID, plan, spec)
+}
+
+// proposeRevision retires whatever is unresolved and saves one new candidate,
+// so a test can start a fresh attempt on the same item.
+func (f *mcpFactoryToolFixture) proposeRevision(t *testing.T, item FactoryItem, requestID, plan, spec string) (FactoryItem, FactoryRevisionProposal) {
+	t.Helper()
+	if len(item.Proposals) > 0 {
+		if last := item.Proposals[len(item.Proposals)-1]; factoryRevisionUnresolved(last.Status) {
+			superseded, err := f.api.Command(context.Background(), item.ID, FactoryCommand{
+				RequestID: "supersede-" + requestID, Kind: "revision_supersede", ExpectedVersion: item.Version,
+				Revision: &FactoryRevisionCommand{ProposalID: last.ID, ProposalVersion: last.Version},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			item = superseded
+		}
+	}
+	active := item.Approvals[len(item.Approvals)-1]
+	saved, err := f.api.Command(context.Background(), item.ID, FactoryCommand{
+		RequestID: "propose-" + requestID, Kind: "revision_propose", ExpectedVersion: item.Version,
+		Revision: &FactoryRevisionCommand{
+			BaseRevision: active.Revision, BaseHash: active.PlanHash,
+			Plan: plan, Spec: spec, CandidateHash: FactoryPlanHash(plan, spec),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return saved, saved.Proposals[len(saved.Proposals)-1]
+}
+
+// revisionState reads the item and its latest proposal as the journal holds
+// them.
+func (f *mcpFactoryToolFixture) revisionState(t *testing.T, itemID string) (FactoryItem, FactoryRevisionProposal) {
+	t.Helper()
+	item, err := f.store.Get(itemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return item, item.Proposals[len(item.Proposals)-1]
+}
+
+// revisionClaimArgs builds a claim call naming the attempt the journal holds.
+func (f *mcpFactoryToolFixture) revisionClaimArgs(item FactoryItem, p FactoryRevisionProposal, requestID string) map[string]any {
+	return map[string]any{
+		"projectId": f.projectID, "itemId": item.ID, "requestId": requestID,
+		"expectedVersion": item.Version, "proposalId": p.ID,
+		"proposalVersion": p.Version, "attemptId": p.AssessmentAttemptID,
+	}
+}
+
+// claimRevision claims the item's current attempt through the tool.
+func (f *mcpFactoryToolFixture) claimRevision(t *testing.T, itemID, requestID string) map[string]any {
+	t.Helper()
+	item, p := f.revisionState(t, itemID)
+	return factoryToolOK(t, f.srv, f.token, factoryToolRevisionClaim, f.revisionClaimArgs(item, p, requestID))
+}
+
+// revisionJudgement is the assessment a client delivers for one proposal: bound
+// to the candidate the proposal carries.
+func revisionJudgement(p FactoryRevisionProposal, classification, recommendation, strategy string) FactoryRevisionAssessment {
+	return FactoryRevisionAssessment{
+		Classification: classification,
+		Reason:         "the candidate only restates an existing step",
+		Recommendation: recommendation, Strategy: strategy, AssessorID: "planner-c1",
+		CandidateHash: p.CandidateHash, BaseRevision: p.BaseRevision,
+	}
+}
+
+// deliverAssessment sends one assessment of the attempt that was claimed last,
+// on behalf of whichever client holds token.
+func (f *mcpFactoryToolFixture) deliverAssessment(t *testing.T, token, itemID, requestID string, a FactoryRevisionAssessment) (factoryToolReply, map[string]any) {
+	t.Helper()
+	item, p := f.revisionState(t, itemID)
+	args := f.revisionClaimArgs(item, p, requestID)
+	args["assessment"] = a
+	return runFactoryTool(t, f.srv, token, factoryToolRevisionAssess, args)
+}
+
+// TestMCPRevisionProjectScopeAndGrant checks the revision tools are gated by
+// the grant they name and by the project the item belongs to: a client holding
+// read but not assessPlanChanges learns nothing, and another project's item is
+// not reachable through this project's id.
+func TestMCPRevisionProjectScopeAndGrant(t *testing.T) {
+	f := newMCPFactoryToolFixture(t, revisionGrant())
+	item, p := f.revisionItem(t, "one", "revised plan\n", "revised spec")
+
+	// The pending list names this proposal, its attempt and the exact candidate.
+	listed := factoryToolOK(t, f.srv, f.token, factoryToolRevisionPending, map[string]any{"projectId": f.projectID})
+	proposals, _ := listed["proposals"].([]any)
+	if len(proposals) != 1 {
+		t.Fatalf("pending listed %v, want one proposal", listed["proposals"])
+	}
+	entry, _ := proposals[0].(map[string]any)
+	if entry["itemId"] != item.ID || entry["proposalId"] != p.ID || entry["attemptId"] != p.AssessmentAttemptID ||
+		entry["candidateHash"] != p.CandidateHash || entry["autoAssess"] != true {
+		t.Fatalf("pending entry = %v", entry)
+	}
+
+	// The claim returns the assignment, bound to the stored bytes.
+	assignment := f.claimRevision(t, item.ID, "claim-1")
+	active := item.Approvals[len(item.Approvals)-1]
+	if assignment["candidateHash"] != p.CandidateHash || assignment["attemptId"] != p.AssessmentAttemptID {
+		t.Fatalf("the assignment is not bound to the candidate: %v", assignment)
+	}
+	if assignment["approvedPlan"] != active.Plan || assignment["approvedSpec"] != active.Spec ||
+		assignment["proposedPlan"] != p.Plan || assignment["proposedSpec"] != p.Spec {
+		t.Fatalf("the assignment lost the plan text: %v", assignment)
+	}
+	if assignment["baseRevision"] != float64(p.BaseRevision) {
+		t.Fatalf("assignment base revision = %v, want %d", assignment["baseRevision"], p.BaseRevision)
+	}
+
+	// Another project's item is not reachable through this project.
+	otherRoot := t.TempDir()
+	if err := f.fleet.ws.AddProject(otherRoot); err != nil {
+		t.Fatal(err)
+	}
+	otherReq := f.handoff("other-project")
+	otherReq.Config.ProjectRoot = otherRoot
+	other, err := f.store.Create(otherReq, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, p = f.revisionState(t, item.ID)
+	crossProject := f.revisionClaimArgs(item, p, "claim-cross")
+	crossProject["itemId"] = other.ID
+	if code := factoryToolErrorCode(t, f.srv, f.token, factoryToolRevisionClaim, crossProject); code != factoryCodeNotFound {
+		t.Fatalf("another project's item answered %q", code)
+	}
+
+	// A grant without the assessment capability sees nothing and claims
+	// nothing, so a project id cannot be used to learn that work exists.
+	if err := f.restoreGrant(MCPFactoryProjectGrant{ProjectID: f.projectID, Read: true, ApprovalAuthority: factoryAuthorityNone}); err != nil {
+		t.Fatal(err)
+	}
+	if code := factoryToolErrorCode(t, f.srv, f.token, factoryToolRevisionPending, map[string]any{"projectId": f.projectID}); code != factoryCodeNotFound {
+		t.Fatalf("a read-only grant listed pending assessments: %q", code)
+	}
+	item, p = f.revisionState(t, item.ID)
+	if code := factoryToolErrorCode(t, f.srv, f.token, factoryToolRevisionClaim, f.revisionClaimArgs(item, p, "claim-readonly")); code != factoryCodeNotFound {
+		t.Fatalf("a read-only grant claimed an assessment: %q", code)
+	}
+	if still := f.mustProposal(t, item.ID); still.AssessmentState != "assessing" {
+		t.Fatalf("a denied claim moved the proposal: %+v", still)
+	}
+}
+
+// mustProposal reads the latest proposal of one item.
+func (f *mcpFactoryToolFixture) mustProposal(t *testing.T, itemID string) FactoryRevisionProposal {
+	t.Helper()
+	_, p := f.revisionState(t, itemID)
+	return p
+}
+
+// TestMCPRevisionAssessmentClaimedByOneClient checks the rule the specification
+// states most explicitly: an assessment is accepted only from the client that
+// claimed that attempt. Without it, one grant holder could answer a question
+// another was given, and any client could answer the one the planner was asked.
+func TestMCPRevisionAssessmentClaimedByOneClient(t *testing.T) {
+	f := newMCPFactoryToolFixture(t, revisionGrant())
+	other := revisionGrant()
+	other.ProjectID = f.projectID
+	_, otherToken := testAddClient(t, f.srv, MCPClient{ID: "c2", Name: "second", FactoryGrants: []MCPFactoryProjectGrant{other}})
+
+	item, p := f.revisionItem(t, "claim-owner", "revised plan\n", "revised spec")
+	factoryToolOK(t, f.srv, otherToken, factoryToolRevisionClaim, f.revisionClaimArgs(item, p, "claim-c2"))
+	claimed, p := f.revisionState(t, item.ID)
+
+	// The project's first client holds the same capability, and still cannot
+	// answer an attempt it did not claim.
+	misdirected := f.revisionClaimArgs(claimed, p, "assess-c1")
+	misdirected["assessment"] = revisionJudgement(p, "routine_clarification", "amend", "wait_safe")
+	if code := factoryToolErrorCode(t, f.srv, f.token, factoryToolRevisionAssess, misdirected); code != factoryCodeNotFound {
+		t.Fatalf("a client delivered a claim it did not hold: %q", code)
+	}
+	if after := f.mustProposal(t, item.ID); after.AssessmentState != "assessing" || after.Assessment != nil {
+		t.Fatalf("a refused delivery moved the proposal: %+v", after)
+	}
+
+	// The claimant itself still may.
+	own := f.revisionClaimArgs(claimed, p, "assess-c2")
+	own["assessment"] = revisionJudgement(p, "routine_clarification", "amend", "wait_safe")
+	if reply, value := runFactoryTool(t, f.srv, otherToken, factoryToolRevisionAssess, own); reply.IsError {
+		t.Fatalf("the claiming client could not deliver its own assessment: %v", value)
+	}
+
+	// A claim the controller journalled carries no client provenance, so no MCP
+	// client can answer it — the planner's question is not a client's to answer.
+	plannerItem, plannerProposal := f.revisionItem(t, "planner-claim", "revised plan\n", "revised spec")
+	now := time.Now().UTC()
+	journalled, err := f.store.Update(plannerItem.ID, "seed-planner-claim", plannerItem.Version,
+		json.RawMessage(`{"kind":"revision_assess_claim"}`), func(dst *FactoryItem) error {
+			proposal := &dst.Proposals[len(dst.Proposals)-1]
+			proposal.AssessmentState = "assessing"
+			proposal.Version++
+			proposal.UpdatedAt = now
+			dst.History = append(dst.History, FactoryEvent{At: now, Kind: "revision_assessment_claimed", Message: proposal.AssessmentAttemptID, EffectID: proposal.ID})
+			return nil
+		}, now)
+	if err != nil {
+		t.Fatalf("seeding a controller claim: %v", err)
+	}
+	_, plannerProposal = f.revisionState(t, journalled.ID)
+	stealing := f.revisionClaimArgs(journalled, plannerProposal, "assess-planner")
+	stealing["assessment"] = revisionJudgement(plannerProposal, "routine_clarification", "amend", "wait_safe")
+	if code := factoryToolErrorCode(t, f.srv, otherToken, factoryToolRevisionAssess, stealing); code != factoryCodeNotFound {
+		t.Fatalf("a client answered the planner's own claim: %q", code)
+	}
+	if after := f.mustProposal(t, journalled.ID); after.Assessment != nil || after.AssessmentState != "assessing" {
+		t.Fatalf("an answer to the planner's claim was recorded: %+v", after)
+	}
+}
+
+// TestMCPRevisionRoutineAuthorizationPolicy checks the four facts that have to
+// hold together before a routine clarification is authorized, and that
+// everything else is recorded and left for the operator. A pause
+// recommendation is recorded and claims no pause in every case.
+func TestMCPRevisionRoutineAuthorizationPolicy(t *testing.T) {
+	withoutRoutine := func(g MCPFactoryProjectGrant) MCPFactoryProjectGrant {
+		g.ApproveRoutineRevision = false
+		return g
+	}
+	for _, tc := range []struct {
+		name           string
+		grant          func(MCPFactoryProjectGrant) MCPFactoryProjectGrant
+		designated     string
+		delegation     bool
+		classification string
+		strategy       string
+		wantStatus     string
+		wantAuthority  string
+	}{
+		{name: "delegated routine clarification", designated: "c1", delegation: true,
+			classification: "routine_clarification", strategy: "interrupt",
+			wantStatus: "authorized", wantAuthority: factoryAuthorityRoutineRevision},
+		{name: "delegation off", designated: "c1", delegation: false,
+			classification: "routine_clarification", strategy: "wait_safe",
+			wantStatus: "awaiting_authorization"},
+		{name: "scope change is never routine", designated: "c1", delegation: true,
+			classification: "scope_change", strategy: "hold",
+			wantStatus: "awaiting_authorization"},
+		{name: "needs user is never routine", designated: "c1", delegation: true,
+			classification: "needs_user", strategy: "hold",
+			wantStatus: "awaiting_authorization"},
+		{name: "no routine capability", grant: withoutRoutine, designated: "c1", delegation: true,
+			classification: "routine_clarification", strategy: "wait_safe",
+			wantStatus: "awaiting_authorization"},
+		{name: "designated client is another", designated: "c2", delegation: true,
+			classification: "routine_clarification", strategy: "wait_safe",
+			wantStatus: "awaiting_authorization"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			grant := revisionGrant()
+			if tc.grant != nil {
+				grant = tc.grant(grant)
+			}
+			f := newMCPFactoryToolFixture(t, grant)
+			if tc.designated != "c1" {
+				// The settings route only accepts a client that exists.
+				f.addClient(t, tc.designated, revisionGrant())
+			}
+			f.setDelegation(t, tc.delegation, tc.designated)
+
+			item, p := f.revisionItem(t, "one", "revised plan\n", "revised spec")
+			f.claimRevision(t, item.ID, "claim")
+			reply, value := f.deliverAssessment(t, f.token, item.ID, "assess",
+				revisionJudgement(p, tc.classification, "amend", tc.strategy))
+			if reply.IsError {
+				t.Fatalf("the assessment was refused: %v", value)
+			}
+			if value["status"] != tc.wantStatus {
+				t.Fatalf("status = %v, want %q", value["status"], tc.wantStatus)
+			}
+			if got, _ := value["authority"].(string); got != tc.wantAuthority {
+				t.Fatalf("authority = %q, want %q", got, tc.wantAuthority)
+			}
+			// The recommendation is recorded, and it is not a pause.
+			if value["strategy"] != tc.strategy || value["classification"] != tc.classification {
+				t.Fatalf("the recommendation was not recorded: %v", value)
+			}
+			if pause, _ := value["pauseState"].(string); pause != "" {
+				t.Fatalf("a recommendation claimed the pause %q", pause)
+			}
+
+			// The journal agrees with the projection, and keeps the
+			// classification and the planner's provenance explicit.
+			_, recorded := f.revisionState(t, item.ID)
+			if recorded.Status != tc.wantStatus || recorded.Authority != tc.wantAuthority || recorded.PauseState != "" || recorded.PauseRequestID != "" {
+				t.Fatalf("recorded proposal = %+v", recorded)
+			}
+			if recorded.Assessment == nil || recorded.Assessment.Classification != tc.classification ||
+				recorded.Assessment.Strategy != tc.strategy || recorded.Assessment.AssessorID != "planner-c1" ||
+				recorded.Assessment.CandidateHash != p.CandidateHash || recorded.Assessment.BaseRevision != p.BaseRevision {
+				t.Fatalf("recorded assessment = %+v", recorded.Assessment)
+			}
+			if recorded.Routing != "amend" || recorded.AssessmentState != "assessed" {
+				t.Fatalf("routing/state = %q/%q", recorded.Routing, recorded.AssessmentState)
+			}
+			if tc.wantAuthority != "" && recorded.AuthorizedBy != f.clientID {
+				t.Fatalf("authorizedBy = %q, want the claiming client", recorded.AuthorizedBy)
+			}
+			if tc.wantAuthority == "" && recorded.AuthorizedBy != "" {
+				t.Fatalf("an unauthorized proposal names an authorizer: %+v", recorded)
+			}
+		})
+	}
 }

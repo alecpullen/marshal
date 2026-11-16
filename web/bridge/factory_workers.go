@@ -193,6 +193,35 @@ func decodeFactoryWork(raw json.RawMessage) (known, idle bool) {
 
 func (w *factoryWorkers) Observe(ctx context.Context, item FactoryItem) (FactoryObservation, error) {
 	obs := FactoryObservation{ObservedAt: time.Now().UTC(), BaseSHA: item.BaseSHA}
+	// Every matched worker contributes to the idle conjunction below, but a
+	// parked worker has no runtime, so the loop skips it and contributes
+	// nothing. When every matched worker is parked there is then no runtime to
+	// be busy: the turn and the active work are known-idle. Leaving the flags
+	// unknown there made a fully parked item — which is what a ready item
+	// always is, its implementer parked after the last publish and its reviewer
+	// after the review — unable to reach a safe boundary at all.
+	matched, live, unaccounted := 0, 0, 0
+	for _, worker := range item.Workers {
+		a, ok := w.fleet.ws.Agent(worker.AgentID)
+		if !ok || a.FactoryItemID != item.ID || a.FactoryRole != worker.Role || a.FactorySpawnEffectID != worker.SpawnEffectID {
+			// A worker the registry cannot account for is unobserved work. The
+			// item's own record may still say it is parked — that is how a row
+			// survives its agent being pruned — in which case it contributes no
+			// runtime. A row the journal does not already record as parked may
+			// be running, so the shortcut below cannot speak for it.
+			if !worker.Parked {
+				unaccounted++
+			}
+			continue
+		}
+		matched++
+		if !a.FactoryParked {
+			live++
+		}
+	}
+	if matched > 0 && live == 0 && unaccounted == 0 {
+		obs.RuntimeKnown, obs.TurnIdle, obs.ActiveWorkKnown, obs.WorkIdle = true, true, true, true
+	}
 	for _, worker := range item.Workers {
 		a, ok := w.fleet.ws.Agent(worker.AgentID)
 		if !ok || a.FactoryItemID != item.ID || a.FactoryRole != worker.Role || a.FactorySpawnEffectID != worker.SpawnEffectID {
@@ -240,6 +269,88 @@ func (w *factoryWorkers) Observe(ctx context.Context, item FactoryItem) (Factory
 		}
 	}
 	return obs, nil
+}
+
+// revisionTarget resolves the live runtime that runs one item's worker, which
+// is what a delivery or a pause reaches. The ownership checks mirror Observe: a
+// parked, replaced or foreign worker is not this item's to steer.
+// revisionTarget takes the newest live worker, and deliberately ignores an
+// assessment's AffectedWorkerID: the id is a per-proposal fact, while this
+// method is reached through a per-item seam that status, send and pause share,
+// so honouring it in one of them alone would journal one worker's session and
+// steer another. Two live workers would be needed for the order to matter, and
+// a worker parks once its effect completes, so the item's effects serialize
+// them; when that stops holding, the fix is to resolve the session once and
+// pass it to every method rather than to prefer a worker here.
+func (w *factoryWorkers) revisionTarget(item FactoryItem) (*Registry, string, error) {
+	if w == nil || w.fleet == nil {
+		return nil, "", fmt.Errorf("%w: factory runtime unavailable", ErrFactoryRefused)
+	}
+	for n := len(item.Workers) - 1; n >= 0; n-- {
+		worker := item.Workers[n]
+		if worker.Parked || worker.SessionID == "" {
+			continue
+		}
+		a, ok := w.fleet.ws.Agent(worker.AgentID)
+		if !ok || a.FactoryItemID != item.ID || a.FactoryRole != worker.Role || a.FactorySpawnEffectID != worker.SpawnEffectID || a.FactoryParked {
+			continue
+		}
+		rt, err := w.fleet.runtimeForAgent(worker.AgentID)
+		if err != nil || rt.reg == nil {
+			continue
+		}
+		if w.fleet.sessionIDFor(rt) != worker.SessionID {
+			continue
+		}
+		if _, ok := rt.reg.lookup(worker.SessionID); !ok {
+			continue
+		}
+		return rt.reg, worker.SessionID, nil
+	}
+	return nil, "", fmt.Errorf("%w: no live worker runtime for item %s", ErrFactoryRefused, item.ID)
+}
+
+// RevisionSession is the session a delivery or a pause is aimed at.
+func (w *factoryWorkers) RevisionSession(_ context.Context, item FactoryItem) (string, error) {
+	_, session, err := w.revisionTarget(item)
+	return session, err
+}
+
+// RevisionSteeringStatus reads the worker session's Send now snapshot.
+func (w *factoryWorkers) RevisionSteeringStatus(ctx context.Context, item FactoryItem) (RevisionSteeringState, error) {
+	reg, session, err := w.revisionTarget(item)
+	if err != nil {
+		return RevisionSteeringState{}, err
+	}
+	return reg.RevisionSteeringStatus(ctx, session)
+}
+
+// RevisionSendNow submits one Send now request to the worker session.
+func (w *factoryWorkers) RevisionSendNow(ctx context.Context, item FactoryItem, turnID, requestID, text string) (RevisionSteeringReceipt, error) {
+	reg, session, err := w.revisionTarget(item)
+	if err != nil {
+		return RevisionSteeringReceipt{}, err
+	}
+	return reg.RevisionSendNow(ctx, session, turnID, requestID, text)
+}
+
+// RevisionPause asks the worker session to stop through the one existing cancel
+// path. It is not the factory's terminal stop: nothing is parked or discarded.
+func (w *factoryWorkers) RevisionPause(ctx context.Context, item FactoryItem) error {
+	reg, session, err := w.revisionTarget(item)
+	if err != nil {
+		return err
+	}
+	return reg.Cancel(ctx, session)
+}
+
+// RevisionReceipt reads the newest receipt this registry observed for a request.
+func (w *factoryWorkers) RevisionReceipt(item FactoryItem, requestID string) (RevisionSteeringReceipt, bool) {
+	reg, session, err := w.revisionTarget(item)
+	if err != nil {
+		return RevisionSteeringReceipt{}, false
+	}
+	return reg.revisionReceipt(session, requestID)
 }
 
 func (f *Fleet) ParkFactoryWorker(ctx context.Context, worker FactoryWorker) error {

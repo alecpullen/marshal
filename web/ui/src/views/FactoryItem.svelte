@@ -11,13 +11,14 @@
   import ReviewView from '../lib/factory/ReviewView.svelte'
   import Button from '../lib/ui/Button.svelte'
   import AgentConversation from '../lib/session/AgentConversation.svelte'
-  import { APIError, commandFactoryItem, errMessage, listClients } from '../lib/api'
-  import { provenanceLine } from '../lib/factory'
+  import FactoryRevision from '../lib/FactoryRevision.svelte'
+  import { APIError, commandFactoryItem, errMessage, factoryRevisionCommand, getProjectSettings, listClients } from '../lib/api'
+  import { effectiveAutoAssess, provenanceLine } from '../lib/factory'
   import { formatChatRoute, formatFactoryRoute, parseFactoryRoute } from '../lib/routes'
   import type { DockTabParam } from '../lib/routes'
   import { defaultFactoryItemView } from '../lib/studio/model'
   import type { AgentRow } from '../lib/fleet'
-  import type { FactoryCommand, FactoryCreate, FactoryItem, FactoryItemView, FactoryRoute } from '../lib/factory'
+  import type { FactoryCommand, FactoryCreate, FactoryItem, FactoryItemView, FactoryRevisionCommand, FactoryRoute } from '../lib/factory'
 
   import type { FactoryState } from '../lib/factoryStore'
 
@@ -30,6 +31,23 @@
     implementerRouting?: Record<string, unknown>
     reviewerRouting?: Record<string, unknown>
     confirmPreviousWorkerStopped?: boolean
+    /** A revision lifecycle command's own half, sent beside the envelope. */
+    revision?: FactoryRevisionCommand
+  }
+  /**
+   * What each command says when it lands. The revision kinds say what did *not*
+   * happen as well, because saving a proposal and approving one are different
+   * acts and a receipt is not a delivery.
+   */
+  const NOTICES: Partial<Record<FactoryCommand['kind'], string>> = {
+    stop: 'Stop requested. Waiting for worker confirmation.',
+    revision_propose: 'Proposal saved. It is not approved, and nothing has been started or changed.',
+    revision_supersede: 'Proposal superseded. Nothing was approved.',
+    revision_reject: 'Proposal rejected. The approved revision is unchanged.',
+    revision_assess_request: 'Assessment requested. The result appears here when it arrives.',
+    revision_authorize: 'Revision approved. Delivery is reported separately.',
+    revision_delivery_choice: 'Delivery choice recorded. The receipt below says how far it got.',
+    revision_follow_up_confirm: 'Follow-up requested. This item keeps its approved revision.',
   }
   /** The decision kinds the recovery panel presents; everything else is a question. */
   const RECOVERY_KINDS = ['exhausted', 'no_progress', 'worker_failed', 'invalid_result', 'ci_unavailable', 'ci_wait', 'conflict', 'recovery']
@@ -220,14 +238,16 @@
     person typed; the identity a request must carry — its request ID, the
     version it was reviewed against, and the decision it answers — is built
     here from the latest item, so a panel can never submit a stale decision
-    binding of its own.
+    binding of its own. A revision command rides in the same envelope, so a
+    proposal, its assessment and its delivery are never sent apart from it.
   */
-  async function command(kind: FactoryCommand['kind'], input: FactoryCommandInput = {}) {
-    if (!item || busy) return
+  async function command(kind: FactoryCommand['kind'], input: FactoryCommandInput = {}): Promise<FactoryItem | null> {
+    if (!item || busy) return null
     busy = true; error = ''; notice = ''
     try {
       {
-        const c: FactoryCommand = { requestId: crypto.randomUUID(), kind, expectedVersion: item.version, decisionId: item.decision?.id, ...input }
+        const base: FactoryCommand = { requestId: crypto.randomUUID(), kind, expectedVersion: item.version, decisionId: item.decision?.id, ...input }
+        const c = input.revision ? factoryRevisionCommand(base, input.revision) : base
         pending = pending && JSON.stringify({ ...pending, requestId: '', replacement: pending.replacement && { ...pending.replacement, requestId: '' } }) === JSON.stringify({ ...c, requestId: '', replacement: c.replacement && { ...c.replacement, requestId: '' } }) ? pending : c
       }
       const applied = await commandFactoryItem(itemId, pending)
@@ -235,7 +255,11 @@
       // list can render again, then show it here.
       upsert(applied)
       fetched = applied
-      pending = null; notice = kind === 'stop' ? 'Stop requested. Waiting for worker confirmation.' : `${kind} accepted`
+      pending = null; notice = NOTICES[kind] ?? `${kind} accepted`
+      // Handed back as well as shown: a multi-step revision path takes its next
+      // command's versions and base from this item, which is the only read that
+      // carries what the bridge just wrote.
+      return applied
     } catch (e) {
       error = errMessage(e)
       if (e instanceof APIError && e.status === 409) {
@@ -247,8 +271,40 @@
         // rather than leave the person on a version that cannot succeed.
         try { await onRefresh(); notice = 'Item changed. Review the refreshed version before trying again.' } catch (refreshError) { error += `; refresh failed: ${errMessage(refreshError)}` }
       }
+      return null
     } finally { busy = false }
   }
+  /**
+    The decision panels collect a person's input and hand it back with a kind;
+    they need the command's effect, not whether it succeeded.
+  */
+  const panelRun = async (kind: FactoryCommand['kind'], input?: FactoryCommandInput): Promise<void> => {
+    await command(kind, input)
+  }
+  /*
+    The project's automatic-assessment preference decides what "automatic"
+    means on this screen. It is read once per project and never guessed at: the
+    handoff's default is on, but a failed read is reported as a read that
+    failed — the screen must not claim a setting nobody managed to open.
+  */
+  let autoAssess = $state(true)
+  /** False once a read failed, so the section says it could not read the setting. */
+  let autoAssessKnown = $state(true)
+  let assessRoot = $state('')
+  $effect(() => {
+    const root = item?.projectRoot
+    if (!root || root === assessRoot) return
+    assessRoot = root
+    void (async () => {
+      try {
+        autoAssess = effectiveAutoAssess(await getProjectSettings(root))
+        autoAssessKnown = true
+      } catch {
+        autoAssess = true
+        autoAssessKnown = false
+      }
+    })()
+  })
   /*
     A view tab moves within this item, so the worker drill-in the route names
     stays selected: the tab hash keeps only the view change, and `agent` is
@@ -301,6 +357,15 @@
       -->
       <div class={conversationId && desktop ? 'grid min-w-0 items-start gap-4 xl:grid-cols-2' : 'grid min-w-0 gap-4'} data-testid="factory-activity-layout">
         <div class={activityHidden ? 'hidden' : 'grid min-w-0 gap-4'} data-testid="factory-activity-pane">
+          <!--
+            Plan changes belong to the item, not to a decision: a proposal can
+            be written and read at any time, so this is never gated on a
+            planner, a decision or a worker being available. A draft has no
+            approved revision to revise yet, so it is left to the approval tab.
+          -->
+          {#if item.state !== 'draft' || item.proposals?.length}
+            <FactoryRevision {item} {busy} {autoAssess} {autoAssessKnown} run={(kind, revision) => command(kind, { revision })} />
+          {/if}
           {#if item.decision}
             <!--
               Keyed by the decision's id, never by the item's version: the same
@@ -311,9 +376,9 @@
             -->
             {#key item.decision.id}
               {#if RECOVERY_KINDS.includes(item.decision.kind)}
-                <RecoveryPanel {item} {busy} run={command} />
+                <RecoveryPanel {item} {busy} run={panelRun} />
               {:else}
-                <DecisionPanel {item} {busy} run={command} />
+                <DecisionPanel {item} {busy} run={panelRun} />
               {/if}
             {/key}
           {/if}

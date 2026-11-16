@@ -327,6 +327,12 @@ func (f *factoryEffects) Execute(ctx context.Context, item FactoryItem, e Factor
 		if after.Number != stored.Number || after.NodeID != stored.NodeID {
 			return out, fmt.Errorf("%w: PR identity changed after mutation", ErrFactoryUncertain)
 		}
+		if draft && !after.Draft {
+			// The draft flag is what the caller acts on: an unconfirmed
+			// mutation is not evidence the PR was returned to draft, so no
+			// revision transition may be activated from it.
+			return out, fmt.Errorf("%w: PR draft state unconfirmed after mutation", ErrFactoryUncertain)
+		}
 		if !draft {
 			ci, ciErr := forge.ObserveFactoryCI(ctx, repo, e.ExpectedHead, cred)
 			conf := item.Approvals[len(item.Approvals)-1].Config

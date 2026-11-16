@@ -140,6 +140,14 @@ type Registry struct {
 	quesMu      sync.Mutex
 	questions   map[string]chan Answers
 	quesSession map[string]string // questionId -> issuing sessionId
+
+	// steerMu guards the Send now receipts this registry observed: the newest
+	// receipt per session and request, bounded by
+	// revisionSteeringReceiptLimit. A receipt is evidence for its own request
+	// and nothing else, so the map is keyed by both.
+	steerMu      sync.Mutex
+	steerReceipt map[string]map[string]RevisionSteeringReceipt
+	steerOrder   map[string][]string
 }
 
 // NewRegistry wires a Registry onto a started Child, installing the
@@ -165,6 +173,9 @@ func NewRegistry(child *Child) *Registry {
 		}
 		if method == "session/update" {
 			r.observeFollowedRun(params)
+			// A Send now receipt is evidence only where it was observed, so it
+			// is captured here rather than inferred later from an idle session.
+			r.observeSteeringReceiptUpdate(params)
 		}
 	}
 	prevOnRestart := child.OnRestart
@@ -1145,6 +1156,7 @@ func (r *Registry) drainSession(id string) {
 // bridge_restarted.
 func (r *Registry) resumeAll() {
 	r.clearPending()
+	r.clearRevisionReceipts()
 
 	r.mu.Lock()
 	ids := make([]string, 0, len(r.sessions))

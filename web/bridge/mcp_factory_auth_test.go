@@ -2,11 +2,13 @@ package bridge
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -689,5 +691,158 @@ func TestMCPFactoryGrantExistingFleetAutonomyDoesNotGrantAccess(t *testing.T) {
 		}); !errors.Is(err, errFactoryDenied) {
 			t.Fatalf("%s beside autonomy: err = %v, want denial", capability, err)
 		}
+	}
+}
+
+// TestMCPRevisionRevocationRacesAuthorization checks the routine-authorization
+// decision is taken under the policy lock. A revocation that returns before a
+// delivery is admitted denies it and journals nothing; a revocation that
+// arrives after the append cannot take back an authorization that already
+// committed.
+func TestMCPRevisionRevocationRacesAuthorization(t *testing.T) {
+	f := newMCPFactoryToolFixture(t, revisionGrant())
+	f.setDelegation(t, true, f.clientID)
+	item, p := f.revisionItem(t, "race", "revised plan\n", "revised spec")
+	f.claimRevision(t, item.ID, "claim-0")
+
+	// Deterministic half: with the grant revoked, the delivery is denied and
+	// the journal keeps only the claim it had.
+	if err := f.revoke(); err != nil {
+		t.Fatal(err)
+	}
+	denied, value := f.deliverAssessment(t, f.token, item.ID, "assess-denied",
+		revisionJudgement(p, "routine_clarification", "amend", "wait_safe"))
+	if !denied.IsError || value["code"] != factoryCodeNotFound {
+		t.Fatalf("a revoked grant delivered an assessment: %v", value)
+	}
+	if _, still := f.revisionState(t, item.ID); still.Assessment != nil || still.Authority != "" ||
+		still.Status != "proposed" || still.AssessmentState != "assessing" {
+		t.Fatalf("a denied delivery journalled an assessment: %+v", still)
+	}
+
+	// Race half: each iteration restores the grant, starts a fresh attempt and
+	// races one revocation against one delivery.
+	grant := revisionGrant()
+	for i := 0; i < 8; i++ {
+		if err := f.restoreGrant(grant); err != nil {
+			t.Fatal(err)
+		}
+		item, p = f.revisionState(t, item.ID)
+		if factoryRevisionUnresolved(p.Status) {
+			item, p = f.proposeRevision(t, item, fmt.Sprintf("race-%d", i), fmt.Sprintf("race plan %d\n", i), "race spec")
+		}
+		f.claimRevision(t, item.ID, fmt.Sprintf("claim-race-%d", i))
+		item, p = f.revisionState(t, item.ID)
+		args := f.revisionClaimArgs(item, p, fmt.Sprintf("assess-race-%d", i))
+		args["assessment"] = revisionJudgement(p, "routine_clarification", "amend", "wait_safe")
+
+		var wg sync.WaitGroup
+		var reply factoryToolReply
+		var callErr error
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			reply, _, callErr = callFactoryTool(f.srv, f.token, factoryToolRevisionAssess, args)
+		}()
+		go func() {
+			defer wg.Done()
+			_ = f.revoke()
+		}()
+		wg.Wait()
+		if callErr != nil {
+			t.Fatalf("race %d: %v", i, callErr)
+		}
+		_, after := f.revisionState(t, item.ID)
+		if reply.IsError {
+			// A revocation that landed first must leave no authority behind.
+			if after.Assessment != nil || after.Authority != "" || after.AuthorizedBy != "" {
+				t.Fatalf("race %d: a denied delivery authorized the proposal: %+v", i, after)
+			}
+			continue
+		}
+		if after.AssessmentState != "assessed" || after.Assessment == nil {
+			t.Fatalf("race %d: an admitted delivery recorded no assessment: %+v", i, after)
+		}
+		switch after.Status {
+		case "authorized":
+			if after.Authority != factoryAuthorityRoutineRevision || after.AuthorizedBy != f.clientID {
+				t.Fatalf("race %d: authorization without delegated routine authority: %+v", i, after)
+			}
+		case "awaiting_authorization":
+			if after.Authority != "" {
+				t.Fatalf("race %d: an undecided proposal carries authority: %+v", i, after)
+			}
+		default:
+			t.Fatalf("race %d: unexpected status %q", i, after.Status)
+		}
+	}
+}
+
+// TestMCPRevisionCannotSelfDesignate checks a client cannot take the routine
+// authority a project did not delegate to it: not by holding the capability,
+// not by naming an authority in its arguments, and not through the question
+// capability that already exists.
+func TestMCPRevisionCannotSelfDesignate(t *testing.T) {
+	grant := revisionGrant()
+	// The designated client also holds the question capability, so the test can
+	// prove answering a question does not authorize a plan revision.
+	grant.AnswerQuestion = true
+	f := newMCPFactoryToolFixture(t, grant)
+	f.setDelegation(t, true, f.clientID)
+	other := revisionGrant()
+	other.ProjectID = f.projectID
+	_, otherToken := testAddClient(t, f.srv, MCPClient{ID: "c2", Name: "second", FactoryGrants: []MCPFactoryProjectGrant{other}})
+
+	item, p := f.revisionItem(t, "self", "revised plan\n", "revised spec")
+	// The second client holds assessPlanChanges, so it may claim and deliver —
+	// but the routine authority belongs to the designated client.
+	factoryToolOK(t, f.srv, otherToken, factoryToolRevisionClaim, f.revisionClaimArgs(item, p, "claim-c2"))
+	item, p = f.revisionState(t, item.ID)
+	args := f.revisionClaimArgs(item, p, "assess-c2")
+	args["assessment"] = revisionJudgement(p, "routine_clarification", "amend", "wait_safe")
+	reply, value := runFactoryTool(t, f.srv, otherToken, factoryToolRevisionAssess, args)
+	if reply.IsError {
+		t.Fatalf("a grant holder could not deliver its assessment: %v", value)
+	}
+	if value["status"] != "awaiting_authorization" {
+		t.Fatalf("a client authorized what was delegated to another: %v", value)
+	}
+	if got, _ := value["authority"].(string); got != "" {
+		t.Fatalf("a client granted itself the authority %q", got)
+	}
+	_, recorded := f.revisionState(t, item.ID)
+	if recorded.Status != "awaiting_authorization" || recorded.Authority != "" || recorded.AuthorizedBy != "" {
+		t.Fatalf("recorded proposal = %+v", recorded)
+	}
+
+	// No argument can ask for the authority: both tools decode strictly, so an
+	// authority field is refused rather than ignored.
+	selfAuthority := f.revisionClaimArgs(item, p, "assess-authority")
+	selfAuthority["authority"] = factoryAuthorityRoutineRevision
+	selfAuthority["assessment"] = revisionJudgement(p, "routine_clarification", "amend", "wait_safe")
+	if code := factoryToolErrorCode(t, f.srv, otherToken, factoryToolRevisionAssess, selfAuthority); code != factoryCodeInvalidInput {
+		t.Fatalf("an authority argument answered %q", code)
+	}
+	claimState := f.revisionClaimArgs(item, p, "assess-state")
+	claimState["assessment"] = map[string]any{
+		"classification": "routine_clarification", "reason": "self", "recommendation": "amend",
+		"strategy": "wait_safe", "assessorId": "c2", "candidateHash": p.CandidateHash,
+		"baseRevision": p.BaseRevision, "status": "authorized", "authority": factoryAuthorityRoutineRevision,
+	}
+	if code := factoryToolErrorCode(t, f.srv, otherToken, factoryToolRevisionAssess, claimState); code != factoryCodeInvalidInput {
+		t.Fatalf("an assessment carrying a state answered %q", code)
+	}
+	if after := f.mustProposal(t, item.ID); after.Version != recorded.Version || after.Status != "awaiting_authorization" {
+		t.Fatalf("a refused argument moved the proposal: %+v", after)
+	}
+
+	// Answering a question is a different capability: the designated client
+	// with delegation on may answer, and it still authorizes no revision.
+	version := f.seedQuestion(t, item.ID)
+	factoryToolOK(t, f.srv, f.token, factoryToolAnswerQuestion,
+		f.answer(item.ID, "answer-1", version, "decision-1", factoryAuthorityDelegated))
+	if after := f.mustProposal(t, item.ID); after.Status != "awaiting_authorization" ||
+		after.Authority != "" || after.Assessment == nil || after.AuthorizedBy != "" {
+		t.Fatalf("an answer authorized a plan revision: %+v", after)
 	}
 }

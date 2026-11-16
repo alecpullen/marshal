@@ -482,7 +482,118 @@ func validateFactoryItem(i FactoryItem) error {
 			}
 		}
 	}
+	unresolved := 0
+	seenProposals := make(map[string]bool, len(i.Proposals))
+	for _, p := range i.Proposals {
+		if e := validateFactoryRevisionProposal(p); e != nil {
+			return e
+		}
+		if seenProposals[p.ID] {
+			return fmt.Errorf("duplicate proposal id")
+		}
+		seenProposals[p.ID] = true
+		// A proposal's base names the approval it was written against, and both
+		// sides are immutable, so the binding is checkable here as well as by the
+		// controller. A record naming an approval that does not exist, or a hash
+		// that is not that approval's, is corrupt rather than merely stale.
+		if p.BaseRevision > uint64(len(i.Approvals)) {
+			return fmt.Errorf("proposal names an approval that does not exist")
+		}
+		if i.Approvals[p.BaseRevision-1].PlanHash != p.BaseHash {
+			return fmt.Errorf("proposal base hash does not match its approval")
+		}
+		if factoryRevisionUnresolved(p.Status) {
+			unresolved++
+		}
+	}
+	if unresolved > 1 {
+		return fmt.Errorf("multiple unresolved proposals")
+	}
 	return nil
+}
+
+// validateFactoryRevisionProposal checks one proposal as the journal stores it.
+// A proposal's candidate, base and authorship are immutable content; its state
+// moves, and a state that names an attempt must name one.
+func validateFactoryRevisionProposal(p FactoryRevisionProposal) error {
+	if strings.TrimSpace(p.ID) == "" || p.Version == 0 || p.BaseRevision == 0 || strings.TrimSpace(p.BaseHash) == "" {
+		return fmt.Errorf("invalid proposal identity")
+	}
+	if strings.TrimSpace(p.Plan) == "" || len(p.Plan)+len(p.Spec) > factoryImportLimit || p.CandidateHash != factoryPlanHash(p.Plan, p.Spec) {
+		return fmt.Errorf("invalid proposal content")
+	}
+	if !factoryRevisionProposalStates[p.Status] || !factoryRevisionAssessmentStates[p.AssessmentState] {
+		return fmt.Errorf("invalid proposal state")
+	}
+	if p.CreatedAt.IsZero() || p.UpdatedAt.IsZero() || p.UpdatedAt.Before(p.CreatedAt) {
+		return fmt.Errorf("invalid proposal timestamp")
+	}
+	if (p.AssessmentState == "pending" || p.AssessmentState == "assessing") && strings.TrimSpace(p.AssessmentAttemptID) == "" {
+		return fmt.Errorf("invalid proposal assessment attempt")
+	}
+	if a := p.Assessment; a != nil {
+		if !factoryRevisionClassifications[a.Classification] || !factoryRevisionRoutings[a.Recommendation] || !factoryRevisionStrategies[a.Strategy] || strings.TrimSpace(a.AssessorID) == "" || a.CandidateHash != p.CandidateHash || a.BaseRevision != p.BaseRevision {
+			return fmt.Errorf("invalid proposal assessment")
+		}
+	}
+	if d := p.Delivery; d != nil {
+		if !factoryRevisionStrategies[d.Strategy] || !factoryRevisionDeliveryStates[d.State] || d.CandidateHash != p.CandidateHash {
+			return fmt.Errorf("invalid proposal delivery")
+		}
+	}
+	if p.Routing != "" && !factoryRevisionRoutings[p.Routing] {
+		return fmt.Errorf("invalid proposal routing")
+	}
+	if p.PauseState != "" && !factoryRevisionPauseStates[p.PauseState] {
+		return fmt.Errorf("invalid proposal pause state")
+	}
+	return nil
+}
+
+// factoryRevisionCarryOver checks one stored proposal against the update that
+// carried it forward. Everything but its state, assessment, authority and
+// delivery is journal history, and its version moves at most one step per
+// mutation, so a caller writing from a stale read conflicts.
+func factoryRevisionCarryOver(a, b FactoryRevisionProposal) error {
+	if a.ID != b.ID || a.BaseRevision != b.BaseRevision || a.BaseHash != b.BaseHash || a.Plan != b.Plan || a.Spec != b.Spec || a.CandidateHash != b.CandidateHash || a.CreatedBy != b.CreatedBy || a.AutoAssess != b.AutoAssess || !a.CreatedAt.Equal(b.CreatedAt) {
+		return fmt.Errorf("immutable proposal content")
+	}
+	if b.Version < a.Version || b.Version > a.Version+1 {
+		return fmt.Errorf("invalid proposal version")
+	}
+	// A state that moved has to say so in the version. Without this, two item
+	// versions could carry the same proposal version with different states, and
+	// the ProposalVersion guard would admit a command written from the older
+	// read: the promise in FactoryRevisionProposal's comment would rest on
+	// caller discipline instead of on the layer that makes it.
+	if !bytes.Equal(factoryRevisionState(a), factoryRevisionState(b)) && b.Version != a.Version+1 {
+		return fmt.Errorf("proposal state moved without a version step")
+	}
+	return nil
+}
+
+// factoryRevisionState projects the fields a mutation may move, so the store
+// can tell a proposal carried forward unchanged from one that advanced.
+// Everything absent here is immutable history, checked by factoryRevisionCarryOver.
+func factoryRevisionState(p FactoryRevisionProposal) []byte {
+	b, _ := json.Marshal(struct {
+		Status              string                     `json:"status"`
+		AssessmentState     string                     `json:"assessmentState"`
+		AssessmentAttemptID string                     `json:"assessmentAttemptId"`
+		Assessment          *FactoryRevisionAssessment `json:"assessment"`
+		AuthorizedBy        string                     `json:"authorizedBy"`
+		Authority           string                     `json:"authority"`
+		Routing             string                     `json:"routing"`
+		PauseState          string                     `json:"pauseState"`
+		PauseRequestID      string                     `json:"pauseRequestId"`
+		Delivery            *FactoryRevisionDelivery   `json:"delivery"`
+		FollowUpRequestID   string                     `json:"followUpRequestId"`
+		FollowUpItemID      string                     `json:"followUpItemId"`
+		UpdatedAt           time.Time                  `json:"updatedAt"`
+	}{p.Status, p.AssessmentState, p.AssessmentAttemptID, p.Assessment, p.AuthorizedBy,
+		p.Authority, p.Routing, p.PauseState, p.PauseRequestID, p.Delivery,
+		p.FollowUpRequestID, p.FollowUpItemID, p.UpdatedAt})
+	return b
 }
 func (s *FactoryStore) replayRequest(request, id, hash string) (FactoryItem, bool, error) {
 	if p, ok := s.requests[request]; ok {
@@ -492,6 +603,22 @@ func (s *FactoryStore) replayRequest(request, id, hash string) (FactoryItem, boo
 		return factoryCopy(p.Item), true, nil
 	}
 	return FactoryItem{}, false, nil
+}
+
+// ItemForRequest returns the item a journaled request produced, so a durable
+// intent whose association was lost can be reconciled with the record the same
+// request already created instead of creating a second one.
+func (s *FactoryStore) ItemForRequest(request string) (FactoryItem, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if strings.TrimSpace(request) == "" {
+		return FactoryItem{}, false
+	}
+	p, ok := s.requests[request]
+	if !ok {
+		return FactoryItem{}, false
+	}
+	return factoryCopy(p.Item), true
 }
 
 // Create stores a handoff whose replay identity and content are both the
@@ -617,6 +744,16 @@ func (s *FactoryStore) Update(id, requestID string, expectedVersion uint64, comm
 		b, _ := json.Marshal(old.Grants[n])
 		if !bytes.Equal(a, b) {
 			return FactoryItem{}, fmt.Errorf("immutable grant history")
+		}
+	}
+	// Proposed revisions are journal history too: a stored proposal is
+	// carried forward, never rewritten, and only its state moves.
+	if len(i.Proposals) < len(old.Proposals) {
+		return FactoryItem{}, fmt.Errorf("immutable proposal history")
+	}
+	for n := range old.Proposals {
+		if e := factoryRevisionCarryOver(old.Proposals[n], i.Proposals[n]); e != nil {
+			return FactoryItem{}, e
 		}
 	}
 	i.Version++

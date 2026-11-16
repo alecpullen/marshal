@@ -1,5 +1,40 @@
-import { describe, it, expect, vi } from 'vitest'
-import { createFactoryPoller } from './factory'
+import { describe, it, expect, vi, beforeAll } from 'vitest'
+// @ts-expect-error -- vitest runs on node, and this project installs no node type package.
+import { webcrypto } from 'node:crypto'
+import { createFactoryPoller, factoryPlanHash } from './factory'
+
+/*
+  jsdom's crypto carries randomUUID but no SubtleCrypto, so the digest the
+  browser has is installed here. In a browser this is the platform's own.
+*/
+beforeAll(() => {
+  if (!globalThis.crypto.subtle) {
+    Object.defineProperty(globalThis.crypto, 'subtle', { value: webcrypto.subtle, configurable: true })
+  }
+})
+
+/*
+  The same two fixtures, and the same expected digests, as
+  web/bridge/factory_planhash_vectors_test.go (TestFactoryPlanHashVectors).
+  Neither side derives them: both assert literals, so a change to the framing,
+  the endianness or the encoder on either side fails there.
+*/
+describe('factoryPlanHash', () => {
+  it('matches the bridge for an empty plan and specification', async () => {
+    expect(await factoryPlanHash('', '')).toBe('374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb')
+  })
+  it('hashes UTF-8 bytes, lengths included', async () => {
+    expect(await factoryPlanHash('plan v2\n', 'spéc v2')).toBe('a7be07bf8aae8d9356ab7ee4bf6b3d42660fd3ef58e27a870ed64bb95a0b3207')
+  })
+  it('binds the two parts in order, so a swap is a different candidate', async () => {
+    const plan = 'plan v2\n'
+    const spec = 'spéc v2'
+    const forward = await factoryPlanHash(plan, spec)
+    expect(forward).not.toBe(await factoryPlanHash(spec, plan))
+    // Whitespace is part of the bytes, exactly as the bridge compares them.
+    expect(await factoryPlanHash(plan + '\n', spec)).not.toBe(forward)
+  })
+})
 
 describe('factory poller', () => {
   it('loads immediately, uses active and idle cadence, and stops', async () => {

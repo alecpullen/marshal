@@ -221,3 +221,34 @@ func TestParsePlanDependsOnNoneAndFences(t *testing.T) {
 		t.Errorf("fenced example was stripped:\n%s", p.Tasks[2].Body)
 	}
 }
+
+func TestPlanNextReadySkipsTasksWithUnmetDependencies(t *testing.T) {
+	p, err := parseInline(t, "## Task 1: A\n\nDepends on: none\n\nbody a\n\n"+
+		"## Task 2: B\n\nDepends on: 1\n\nbody b\n\n"+
+		"## Task 3: C\n\nDepends on: 1\n\nbody c\n")
+	if err != nil {
+		t.Fatalf("ParsePlan: %v", err)
+	}
+	// Nothing done: only the root is ready.
+	if got, ok := p.NextReady(map[int]bool{}); !ok || got.N != 1 {
+		t.Fatalf("NextReady(empty) = %+v ok=%v, want task 1", got, ok)
+	}
+	// A completed task that is nobody's prerequisite changes nothing.
+	if got, ok := p.NextReady(map[int]bool{3: true}); !ok || got.N != 1 {
+		t.Fatalf("NextReady({3}) = %+v ok=%v, want task 1", got, ok)
+	}
+	// The root done: the first task in file order whose deps are met wins.
+	if got, ok := p.NextReady(map[int]bool{1: true}); !ok || got.N != 2 {
+		t.Fatalf("NextReady({1}) = %+v ok=%v, want task 2", got, ok)
+	}
+	// A task whose dependency is unmet is never returned, and a completed
+	// task is never returned again.
+	done := map[int]bool{1: true, 2: true}
+	if got, ok := p.NextReady(done); !ok || got.N != 3 {
+		t.Fatalf("NextReady({1,2}) = %+v ok=%v, want task 3", got, ok)
+	}
+	done[3] = true
+	if got, ok := p.NextReady(done); ok {
+		t.Fatalf("NextReady(everything done) = %+v ok=%v, want ok=false", got, ok)
+	}
+}

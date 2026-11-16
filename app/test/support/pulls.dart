@@ -99,13 +99,15 @@ String _summary(List<PullCheckView> checks, PullGroup group) {
     for (final check in checks)
       if (check.state == PullCheckState.failed) check.name,
   ];
-  if (failed.isNotEmpty)
+  if (failed.isNotEmpty) {
     return '${failed.length} failing: ${failed.join(', ')}';
+  }
   final passed = checks
       .where((check) => check.state == PullCheckState.passed)
       .length;
-  if (passed == checks.length)
+  if (passed == checks.length) {
     return '$passed of ${checks.length} checks passed';
+  }
   return '$passed of ${checks.length} checks passed, the rest running';
 }
 

@@ -3,6 +3,7 @@ import '../../model/fleet_store.dart';
 import '../../model/inbox_model.dart';
 import '../../model/nav_model.dart';
 import '../../model/place.dart';
+import '../inbox/inbox.dart' show Inbox;
 import '../kit/kit.dart';
 import '../overview/overview.dart' show Overview;
 import '../../model/overview_model.dart' show buildOverview;
@@ -314,6 +315,15 @@ class _StudioState extends State<Studio> {
         overview: buildOverview(widget.store, widget.inbox),
         now: widget.store.now,
         hosts: widget.store.hosts,
+        onSelect: _go,
+        onAnswer: widget.inbox.answer,
+        onRetry: _reread,
+      );
+    }
+    if (place.kind == PlaceKind.inbox) {
+      return Inbox(
+        asks: widget.inbox.asks,
+        now: widget.store.now,
         onSelect: _go,
         onAnswer: widget.inbox.answer,
         onRetry: _reread,

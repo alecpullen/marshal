@@ -7,6 +7,7 @@ import 'package:marshal_app/src/model/place.dart';
 import 'package:marshal_app/src/model/thread_ref.dart' as model;
 import 'package:marshal_app/src/ui/debug/connection_check.dart';
 import 'package:marshal_app/src/ui/gallery/gallery.dart';
+import 'package:marshal_app/src/ui/inbox/inbox.dart';
 import 'package:marshal_app/src/ui/kit/kit.dart';
 import 'package:marshal_app/src/ui/overview/overview.dart';
 import 'package:marshal_app/src/ui/shell/placeholder.dart';
@@ -241,6 +242,28 @@ OverviewModel _overviewModel() => OverviewModel(
   ),
 );
 
+Widget _inbox({StateKind? state}) => Inbox(
+  asks: [
+    _overviewAsk(
+      'tc-1',
+      'git push',
+      model.AskKind.approval,
+      const Duration(minutes: 12),
+    ),
+    _overviewAsk(
+      's-1',
+      'Fix the flaky test',
+      model.AskKind.intake,
+      const Duration(minutes: 30),
+    ),
+  ],
+  now: shellNow,
+  state: state,
+  onRetry: () {},
+  onSelect: (_) {},
+  onAnswer: (_, _, {reply}) {},
+);
+
 Widget _overview({StateKind? state}) => Overview(
   overview: _overviewModel(),
   now: shellNow,
@@ -278,6 +301,13 @@ final screens = <ScreenCase>[
           state: kind,
           onRetry: () {},
         ),
+    },
+  ),
+  ScreenCase(
+    name: 'inbox',
+    ready: () => _inbox(),
+    states: {
+      for (final kind in requiredStates) kind: () => _inbox(state: kind),
     },
   ),
   ScreenCase(

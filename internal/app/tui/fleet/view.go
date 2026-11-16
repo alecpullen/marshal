@@ -835,8 +835,10 @@ func (m Model) footer(rows []agentRow) string {
 		}
 	case focusRight:
 		keys = "1/3 tab n spawn"
-		if m.tab == diffTab {
-			// The Diff tab's own keys, named only while it is shown.
+		if m.tab == diffTab && m.shownAgentID() != "" {
+			// The Diff tab's own keys, named only while it is shown, and only
+			// on a row that has the tab: a Sessions row's right panel is the
+			// session's details whatever tab is selected.
 			keys = "j/k file J/K scroll 1/3 tab n spawn"
 		}
 	}
@@ -892,6 +894,7 @@ func (m Model) helpScreen() string {
 		"x                cancel the selected agent's turn",
 		"f                finish the selected agent",
 		"1 / 3            Activity or Info tab",
+		"2                the Diff tab",
 		"v                run the gate (Info tab)",
 		"z                zoom the focused panel",
 		"esc              unzoom, or clear the filter while it is open",

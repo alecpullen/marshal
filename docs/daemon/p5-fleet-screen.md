@@ -2108,7 +2108,7 @@ and only that one.
 The Diff tab reads the changed files and one file's patch, `v` runs the gate,
 and `f` opens a modal that ships the work to the destination decision 5 picks,
 or discards it. The calls it takes are six new actions on the seam, through
-the client, and W7 drives the whole finish against a real bridge.
+the client, and W7 drives the exit side of the finish against a real bridge.
 
 - **The seam** (`internal/acpclient/fleet.go`). `Fleet` gained `Diff`,
   `CommitDraft`, `Verify`, `Merge`, `Exit` and `Discard`, each with its
@@ -2131,9 +2131,10 @@ the client, and W7 drives the whole finish against a real bridge.
   its scroll and a failed read's sentence; `diffReadMsg` answers one read.
   Reads are `tea.Cmd`s dispatched by `syncDiff`, which runs after every state
   and every key: the file list when the agent or its count has changed, the
-  selected file's diff when the cursor moves. An answer for an agent or a path
-  no longer shown is dropped. The patch renders through `diffview.Render` at
-  the panel's inner width in unified mode with highlighting off, so the `+`
+  selected file's diff when the cursor moves. An answer for an agent, a
+  changed-files count or a path no longer shown is dropped. The patch renders
+  through `diffview.Render` at the panel's inner width in unified mode with
+  highlighting off, so the `+`
   and `−` gutters carry the meaning under `NO_COLOR`; `J` and `K` scroll it a
   row at a time. The header reads "<N> files +<added> −<removed>", the footer
   names `j/k file` and `J/K scroll` while the tab is shown, a Sessions row has
@@ -2159,8 +2160,11 @@ the client, and W7 drives the whole finish against a real bridge.
   an empty reason is refused in the field. The result names where the work
   went — the merged branch and target, or the pushed branch and the pull
   request's URL — any key closes it, and every result and every failure is
-  also an Events line. Two frames pin the modal: `fleet-100x30-finish` and
-  `fleet-100x30-blocked`. The help screen and the footer gained `v` and `f`.
+  also an Events line, the answer that lands after `esc` closed the modal
+  included. Two frames pin the modal: `fleet-100x30-finish` and
+  `fleet-100x30-blocked`. The help screen gained `v` and `f`, and the footer
+  names each only where it applies — `f` on an idle agent, `v` on the Info tab
+  with the right panel focused.
 - **W7** (`test/daemon/finish_test.go`, new; `test/daemon/main_test.go`).
   Decision 9 is what makes it possible: the harness child accepts a plain
   `acp` and runs `acp.Run` for it, because `web/bridge` starts an
@@ -2208,7 +2212,32 @@ deliberate. The tab strip names `[Diff]` only while that tab is shown —
 `[Activity]  Info`, `Activity  [Diff]  Info`, `Activity  [Info]` — so the
 frames plan 3 pinned keep their exact text. The strip already named its tab
 that way for Activity and Info; Diff joins them rather than widening the strip
-on every tab.
+on every tab. And the diff renders in `diffview.Render`'s own palette with
+highlighting off rather than in the theme's colours as task 2 asked: the `+`
+and `−` gutters must carry the whole meaning under `NO_COLOR`, and a
+highlighted patch would put a second palette underneath the theme's. Only the
+header's totals take the theme's added and removed colours.
+
+**The review, and what it changed.** The branch was reviewed by two
+independent `glm-5.3-flash` reviewers split by file set — the production code,
+and the tests, goldens and docs — and every finding was addressed in one
+follow-up commit.
+
+| Severity | Finding | Resolution |
+|---|---|---|
+| Major | Two file-list reads could be in flight for the same agent, and the older answer could replace the newer one, leaving the tab stale until the count moved again | `diffReadMsg` carries the changed-files count its read was dispatched at, and an answer whose count is not the tab's is dropped; `TestALateListForTheSameAgentIsDropped` applies a count-1 answer after a count-2 one |
+| Minor | A result that landed after `esc` closed the modal wrote no Events line, though decision 8 makes every result one | The closed-modal path draws the result through a throwaway modal for its Events line only; `TestAnAnswerAfterEscIsStillAnEvent` |
+| Minor | The footer named the Diff keys on a Sessions row, whose right panel has no Diff tab | The hints are gated on a row that has the tab |
+| Minor | A 409 whose body was not a `MergeResult` decoded into an empty one, losing the bridge's sentence | `actionAnswering` keeps an `{"error": …}` 409 as a `FleetError`; `TestAForeignRefusalKeepsItsSentence` |
+| Minor | The help screen still said `1 / 3 Activity or Info tab`, naming no Diff tab | It names `2 the Diff tab`; the Diff tab's `J`/`K` scroll and the drop-for-a-stale-path case gained tests |
+| Minor | `TestAnExitToAnotherDestinationSaysSo` asserted the substring `patch`, which any `patch` anywhere would satisfy | It asserts `leaves as a patch` |
+| Minor | `TestEscClosesTheModalWithoutActing` covered two of the four steps, though decision 4 claims all of them | It covers the message, discard, blocked and result steps |
+| Minor | This record counted its deviations wrongly and overstated what W7 drives | Both are corrected above |
+
+The reviewers' other notes needed no change: the gate's `GateRecord` is read
+through the Info tab's delta exactly as decision 2 says, two fast `v` presses
+are idempotent under `actionDone`'s sequence guard, and a read's 410 stays
+unreachable.
 
 ### Plan 6 — viewers everywhere, needs you and notifications
 

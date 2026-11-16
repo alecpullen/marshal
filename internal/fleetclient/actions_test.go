@@ -576,6 +576,30 @@ func TestARefusedMergeIsAResult(t *testing.T) {
 	}
 }
 
+// TestAForeignRefusalKeepsItsSentence: a 409 is the merge's result only when
+// its body is one. A bridge that refused something else sends {"error": …},
+// and that sentence is the refusal — not a bare "merge refused" with the
+// reason lost.
+func TestAForeignRefusalKeepsItsSentence(t *testing.T) {
+	b := newActionBridge(t)
+	b.reply(http.StatusConflict, `{"error":"the project is held by another operator"}`)
+
+	got, err := b.client(nil).Merge(context.Background(), "a1", contract.MergeRequest{})
+	if err == nil {
+		t.Fatalf("a foreign 409 answered %+v as a merge result, want an error", got)
+	}
+	var refusal *acpclient.FleetError
+	if !errors.As(err, &refusal) {
+		t.Fatalf("the refusal is %T, want *acpclient.FleetError", err)
+	}
+	if refusal.Status != http.StatusConflict {
+		t.Errorf("the refusal carries status %d, want %d", refusal.Status, http.StatusConflict)
+	}
+	if want := "the project is held by another operator"; refusal.Message != want {
+		t.Errorf("the refusal says %q, want %q", refusal.Message, want)
+	}
+}
+
 // TestADiffReadNamesItsPath: a file's diff names the file as the path query
 // parameter, escaped, so a path with a slash or a space survives the trip.
 func TestADiffReadNamesItsPath(t *testing.T) {

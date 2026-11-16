@@ -185,6 +185,105 @@ func TestALateDiffForAnotherAgentIsDropped(t *testing.T) {
 	}
 }
 
+func TestALateListForTheSameAgentIsDropped(t *testing.T) {
+	f := newFakeFleet()
+	f.diffAnswer = contract.DiffResult{Files: []contract.DiffFile{{Path: "old.go"}}}
+	m := sized(t, f.change(t, New(f, fixedClock()), diffState(1)))
+	m, cmd := press(t, m, tea.KeyPressMsg{Code: '2', Text: "2"})
+	m = reads(t, m, cmd)
+
+	// The count moves while that list read is still out: the second read goes
+	// out and its answer lands first.
+	f.diffAnswer = contract.DiffResult{Files: []contract.DiffFile{{Path: "new.go"}}}
+	m = deliverAndRead(t, f, m, diffState(2))
+	if got := m.diff.files[0].Path; got != "new.go" {
+		t.Fatalf("the files after the count changed = %q, want new.go", got)
+	}
+	before := len(f.diffs)
+
+	// The first list's answer arrives last. It was read at count 1, so it must
+	// not replace the list read at count 2, nor start a read of its own.
+	next, follow := m.Update(diffReadMsg{
+		agentID: "a1",
+		count:   1,
+		result:  contract.DiffResult{Files: []contract.DiffFile{{Path: "old.go"}}},
+	})
+	m = reads(t, next.(Model), follow)
+
+	if got := m.diff.files[0].Path; got != "new.go" {
+		t.Fatalf("the late list overwrote the newer one: %q, want new.go", got)
+	}
+	if got := m.diff.count; got != 2 {
+		t.Fatalf("the tab now holds count %d, want 2", got)
+	}
+	if got, want := m.diff.path, "new.go"; got != want {
+		t.Fatalf("the file the panel holds = %q, want %q", got, want)
+	}
+	if got := len(f.diffs); got != before {
+		t.Fatalf("the late list started a read: %d reads, want %d: %+v", got, before, f.diffs)
+	}
+}
+
+func TestALateDiffForAnotherFileIsDropped(t *testing.T) {
+	f := newFakeFleet()
+	f.diffAnswer = diffFiles()
+	m := sized(t, f.change(t, New(f, fixedClock()), diffState(2)))
+	m, cmd := press(t, m, tea.KeyPressMsg{Code: '2', Text: "2"})
+	m = reads(t, m, cmd)
+
+	// The cursor moves to the second file, whose diff is read instead.
+	m = tabTo(t, m, 3)
+	f.diffAnswer = contract.DiffResult{Diff: "--- a/b.go\n+++ b/b.go\n"}
+	m, cmd = press(t, m, tea.KeyPressMsg{Code: 'j', Text: "j"})
+	m = reads(t, m, cmd)
+	if got, want := m.diff.path, "b.go"; got != want {
+		t.Fatalf("the file the panel holds = %q, want %q", got, want)
+	}
+
+	// The first file's answer arrives after the cursor left it.
+	next, _ := m.Update(diffReadMsg{
+		agentID: "a1",
+		count:   2,
+		path:    "a.go",
+		result:  contract.DiffResult{Diff: "--- a/a.go\n+++ b/a.go\n"},
+	})
+	m = next.(Model)
+
+	if got := m.diff.path; got != "b.go" {
+		t.Fatalf("the late answer moved the panel to %q, want b.go", got)
+	}
+	if got := m.diff.patch; !strings.Contains(got, "b/b.go") {
+		t.Fatalf("the late answer's diff was shown: %q", got)
+	}
+}
+
+func TestTheDiffScrollsArowAtATime(t *testing.T) {
+	f := newFakeFleet()
+	f.diffAnswer = diffFiles()
+	m := sized(t, f.change(t, New(f, fixedClock()), diffState(2)))
+	m, cmd := press(t, m, tea.KeyPressMsg{Code: '2', Text: "2"})
+	m = reads(t, m, cmd)
+	m = tabTo(t, m, 3)
+
+	m, _ = press(t, m, tea.KeyPressMsg{Code: 'J', Text: "J"})
+	if got := m.diff.scroll; got != 1 {
+		t.Fatalf("the scroll after J = %d, want 1", got)
+	}
+	m, _ = press(t, m, tea.KeyPressMsg{Code: 'J', Text: "J"})
+	if got := m.diff.scroll; got != 2 {
+		t.Fatalf("the scroll after a second J = %d, want 2", got)
+	}
+	for i := 0; i < 3; i++ {
+		m, _ = press(t, m, tea.KeyPressMsg{Code: 'K', Text: "K"})
+	}
+	if got := m.diff.scroll; got != 0 {
+		t.Fatalf("the scroll after K past the top = %d, want 0", got)
+	}
+	if got := m.diff.cursor; got != 0 {
+		t.Fatalf("scrolling moved the file cursor to %d, want 0", got)
+	}
+}
+
 func TestTheDiffHeaderTotals(t *testing.T) {
 	f := newFakeFleet()
 	f.diffAnswer = contract.DiffResult{

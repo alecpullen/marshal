@@ -66,6 +66,26 @@ func (c *Client) actionAnswering(ctx context.Context, method, path string, body,
 		if resp.StatusCode != accept {
 			return actionError(resp)
 		}
+		// The bridge reports this refusal in the result's own shape — unless
+		// it refused something else, which it sends as {"error": …}: that is
+		// an error too, and its sentence is the one worth keeping.
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+		if err != nil {
+			return fmt.Errorf("fleet action %s: %w", path, err)
+		}
+		var refusal struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(body, &refusal) == nil && strings.TrimSpace(refusal.Error) != "" {
+			return refusalError(resp.StatusCode, body)
+		}
+		if out == nil {
+			return nil
+		}
+		if err := json.Unmarshal(body, out); err != nil {
+			return fmt.Errorf("fleet action %s: %w", path, err)
+		}
+		return nil
 	}
 	if out == nil {
 		return nil
@@ -88,13 +108,18 @@ func (c *Client) actionClient() *http.Client {
 
 // actionError turns a refused answer into the seam's error (decision 2).
 func actionError(resp *http.Response) error {
-	// A late answer to a settled request is not an error: something else
-	// answered it first.
-	if resp.StatusCode == http.StatusGone {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	return refusalError(resp.StatusCode, body)
+}
+
+// refusalError is actionError's mapping for a body already read: a late answer
+// to a settled request is ErrSettled, and everything else carries the bridge's
+// own sentence.
+func refusalError(status int, body []byte) error {
+	if status == http.StatusGone {
 		return acpclient.ErrSettled
 	}
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	var refusal struct {
 		Error string `json:"error"`
 		Scope string `json:"scope"`
@@ -102,11 +127,11 @@ func actionError(resp *http.Response) error {
 	_ = json.Unmarshal(body, &refusal)
 
 	message := strings.TrimSpace(refusal.Error)
-	if resp.StatusCode == http.StatusTooManyRequests && refusal.Scope != "" {
+	if status == http.StatusTooManyRequests && refusal.Scope != "" {
 		// The budget refusal's sentence is the web UI's, not the wire's.
 		message = fmt.Sprintf("Budget reached (%s)", refusal.Scope)
 	}
-	return &acpclient.FleetError{Status: resp.StatusCode, Message: message}
+	return &acpclient.FleetError{Status: status, Message: message}
 }
 
 // Spawn starts an agent.

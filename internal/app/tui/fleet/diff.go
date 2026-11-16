@@ -50,9 +50,12 @@ type diffView struct {
 	err error
 }
 
-// diffReadMsg is one diff read's answer.
+// diffReadMsg is one diff read's answer. count is the changed-files count the
+// read was dispatched at, so an answer that was read before the agent's count
+// moved cannot replace the list read after it.
 type diffReadMsg struct {
 	agentID string
+	count   int
 	path    string // "" for the file list
 	result  contract.DiffResult
 	err     error
@@ -111,22 +114,25 @@ func (m *Model) diffFileCmd() tea.Cmd {
 }
 
 // diffCmd reads one path's diff — the file list itself when path is "" — in a
-// command, bounded by actionTimeout as every call to the fleet is.
+// command, bounded by actionTimeout as every call to the fleet is. The answer
+// carries the count the read was dispatched at, so a list read that was in
+// flight when the agent's count moved is dropped rather than applied.
 func (m Model) diffCmd(agentID, path string) tea.Cmd {
-	f := m.fleet
+	f, count := m.fleet, m.diff.count
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), actionTimeout)
 		defer cancel()
 		result, err := f.Diff(ctx, agentID, path)
-		return diffReadMsg{agentID: agentID, path: path, result: result, err: err}
+		return diffReadMsg{agentID: agentID, count: count, path: path, result: result, err: err}
 	}
 }
 
-// handleDiffRead applies one diff read's answer. An answer for an agent or a
-// path the tab no longer shows is dropped: the screen moved on while it was in
-// flight.
+// handleDiffRead applies one diff read's answer. An answer for an agent, a
+// changed-files count or a path the tab no longer shows is dropped: the screen
+// moved on while it was in flight.
 func (m Model) handleDiffRead(msg diffReadMsg) (tea.Model, tea.Cmd) {
-	if m.tab != diffTab || m.diff.agent == "" || m.diff.agent != msg.agentID || m.shownAgentID() != msg.agentID {
+	if m.tab != diffTab || m.diff.agent == "" || m.diff.agent != msg.agentID ||
+		m.diff.count != msg.count || m.shownAgentID() != msg.agentID {
 		return m, nil
 	}
 	if msg.path == "" {
